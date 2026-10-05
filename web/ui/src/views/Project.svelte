@@ -22,10 +22,11 @@
   import type { AgentRow, AgentTelemetry } from '../lib/fleet'
   import { MODES, SHIP_TARGETS, healthChecks, soft, isolatedFrom, isolationOf, latestAgent, parseWorkspaceRef, type Dot, type IsolationChoice } from '../lib/project/model'
   import { shortName } from '../lib/utils'
+  import { formatAutomationRoute, type AutomationPage } from '../lib/routes'
 
   let { root, agents, telemetry = {}, onNavigate }: { root: string; agents: AgentRow[]; telemetry?: Record<string, AgentTelemetry>; onNavigate: (hash: string) => void } = $props()
 
-  let tab = $state<'overview' | 'session'>('overview')
+  let tab = $state<'overview' | 'session' | 'automations'>('overview')
   let error = $state('')
   let notice = $state('')
 
@@ -187,7 +188,7 @@
     <p class="truncate font-mono text-xs text-muted">{root}</p>
   </header>
 
-  <Tabs label="Project" tabs={[{ value: 'overview', label: 'Overview' }, { value: 'session', label: 'Session sheet' }]} value={tab} onchange={(t) => (tab = t as 'overview' | 'session')} />
+  <Tabs label="Project" tabs={[{ value: 'overview', label: 'Overview' }, { value: 'session', label: 'Session sheet' }, { value: 'automations', label: 'Automations' }]} value={tab} onchange={(t) => (tab = t as 'overview' | 'session' | 'automations')} />
 
   {#if error}<Card class="border-attention text-sm" role="alert">{error}</Card>{/if}
   {#if notice}<Card class="text-sm" role="status">{notice}</Card>{/if}
@@ -302,6 +303,16 @@
           <p class="text-sm text-muted">{policyNote}</p>
         {/if}
       </Card>
+    </div>
+  {:else if tab === 'automations'}
+    <div class="grid gap-4 lg:grid-cols-2" data-testid="automations-tab">
+      {#each [{ page: 'review-bot', title: 'Review bot', blurb: 'Reviews new pull requests and keeps the findings as a draft for you to post.', on: saved.automations?.reviewBot?.enabled }, { page: 'ci-fixer', title: 'CI fixer', blurb: 'Reproduces a failing check and opens a fix, or gives up and says why.', on: saved.automations?.ciFixer?.enabled }] as a (a.page)}
+        <Card class="flex flex-col gap-2">
+          <div class="flex items-center gap-2"><h2 class="text-sm font-semibold">{a.title}</h2><Tag tone={a.on ? 'ok' : 'neutral'}>{a.on ? 'on' : 'off'}</Tag></div>
+          <p class="text-sm text-muted">{a.blurb}</p>
+          <a class="text-sm text-accent hover:underline" href={formatAutomationRoute(root, a.page as AutomationPage)} onclick={(e) => { e.preventDefault(); onNavigate(formatAutomationRoute(root, a.page as AutomationPage)) }}>Open {a.title}</a>
+        </Card>
+      {/each}
     </div>
   {:else}
     <Card class="flex flex-col gap-3" data-testid="session-sheet">

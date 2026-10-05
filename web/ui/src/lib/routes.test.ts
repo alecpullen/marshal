@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, parseLibraryRoute, formatLibraryRoute, parseSettingsRoute, parseUsageRoute, parseNetworkRoute, formatNetworkRoute, parseProjectRoute, formatProjectRoute, redirectLegacy, parseWorkspacesRoute, formatWorkspacesRoute, type ChatRoute } from './routes'
+import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, formatChatRoute, parseRunRoute, formatRunRoute, parseLiveRoute, formatLiveRoute, parseLibraryRoute, formatLibraryRoute, parseSettingsRoute, parseUsageRoute, parseNetworkRoute, formatNetworkRoute, parseProjectRoute, formatProjectRoute, formatAutomationRoute, redirectLegacy, parseWorkspacesRoute, formatWorkspacesRoute, type ChatRoute } from './routes'
 
 describe('sessionsProjectFromHash', () => {
   it('returns null for the unscoped route and non-sessions hashes', () => {
@@ -153,6 +153,11 @@ describe('control page routes', () => {
     expect(parseProjectRoute('#projects')).toBeNull()
     expect(parseProjectRoute('#projects/%E0%A4%A')).toEqual({ root: '%E0%A4%A' })
     expect(formatProjectRoute('/home/u/alpha')).toBe('#projects/%2Fhome%2Fu%2Falpha')
+    expect(parseProjectRoute('#projects/%2Fp/automations/review-bot')).toEqual({ root: '/p', automations: 'review-bot' })
+    expect(parseProjectRoute('#projects/%2Fp/automations/ci-fixer?draft=d1')).toEqual({ root: '/p', automations: 'ci-fixer', draft: 'd1' })
+    expect(parseProjectRoute('#projects/%2Fp/automations/other')).toBeNull()
+    expect(parseProjectRoute(formatAutomationRoute('/p q', 'review-bot', 'd 1'))).toEqual({ root: '/p q', automations: 'review-bot', draft: 'd 1' })
+    expect(pageFromHash('#projects/%2Fp/automations/ci-fixer')).toBe('project')
     expect(pageFromHash('#network?agent=a1')).toBe('network')
     expect(pageFromHash('#projects/%2Fp')).toBe('project')
     for (const t of ['secrets', 'credentials', 'repos']) expect(parseSettingsRoute(`#settings/${t}`)).toEqual({ tab: t })

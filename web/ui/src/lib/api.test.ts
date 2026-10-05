@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory } from './api'
+import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending, listReviewDrafts, getReviewDraft, editReviewDraft, postReviewDraft, discardReviewDraft, sendDraftToAuthor, runReviewBot, listCIHistory, getCIHistory, createWebhookSecret, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory } from './api'
 
 function reply(status: number, body?: unknown) {
   return vi.fn().mockResolvedValue({
@@ -419,6 +419,61 @@ describe('network, secrets, repos and project settings API', () => {
     expect(JSON.parse(f.mock.calls[1][1].body)).toEqual({ mode: 'edit', intake: { labels: ['a'] } })
     await getProjectHealth('/p')
     expect(f.mock.calls[2][0]).toBe('/api/projects/health?root=%2Fp')
+  })
+})
+
+describe('automations API', () => {
+  beforeEach(() => setToken('t'))
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('lists and reads drafts, defaulting missing findings to none', async () => {
+    const f = reply(200, { drafts: [{ id: 'd1', status: 'draft' }] })
+    vi.stubGlobal('fetch', f)
+    expect((await listReviewDrafts({ project: '/p', status: 'draft' }))[0].findings).toEqual([])
+    expect(f.mock.calls[0][0]).toBe('/api/automations/review/drafts?project=%2Fp&status=draft')
+    await listReviewDrafts()
+    expect(f.mock.calls[1][0]).toBe('/api/automations/review/drafts')
+    vi.stubGlobal('fetch', reply(200, { drafts: null }))
+    expect(await listReviewDrafts()).toEqual([])
+    const g = reply(200, { id: 'd 1' })
+    vi.stubGlobal('fetch', g)
+    await getReviewDraft('d 1')
+    expect(g.mock.calls[0][0]).toBe('/api/automations/review/drafts/d%201')
+  })
+
+  it('calls the draft actions', async () => {
+    const f = reply(200, { id: 'd1', findings: [] })
+    vi.stubGlobal('fetch', f)
+    await editReviewDraft('d1', { findings: [], summary: 's' })
+    await postReviewDraft('d1')
+    await discardReviewDraft('d1')
+    await sendDraftToAuthor('d1', ['f1'])
+    await runReviewBot('r1', 7)
+    const calls = f.mock.calls.map((c) => [c[1].method, c[0]])
+    expect(calls).toEqual([
+      ['PUT', '/api/automations/review/drafts/d1'],
+      ['POST', '/api/automations/review/drafts/d1/post'],
+      ['POST', '/api/automations/review/drafts/d1/discard'],
+      ['POST', '/api/automations/review/drafts/d1/send-to-author'],
+      ['POST', '/api/automations/review/run'],
+    ])
+    expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ findings: [], summary: 's' })
+    expect(JSON.parse(f.mock.calls[3][1].body)).toEqual({ findingIds: ['f1'] })
+    expect(JSON.parse(f.mock.calls[4][1].body)).toEqual({ repoId: 'r1', number: 7 })
+  })
+
+  it('reads CI history and creates a webhook secret', async () => {
+    const f = reply(200, { history: [{ id: 'c1' }] })
+    vi.stubGlobal('fetch', f)
+    expect(await listCIHistory({ project: '/p' })).toEqual([{ id: 'c1' }])
+    expect(f.mock.calls[0][0]).toBe('/api/automations/ci/history?project=%2Fp')
+    await getCIHistory('c/1')
+    expect(f.mock.calls[1][0]).toBe('/api/automations/ci/history/c%2F1')
+    const g = reply(200, { secret: 'abc' })
+    vi.stubGlobal('fetch', g)
+    expect(await createWebhookSecret('my repo')).toBe('abc')
+    expect(g.mock.calls[0][0]).toBe('/api/repos/my%20repo/webhook-secret')
+    expect(g.mock.calls[0][1].method).toBe('POST')
   })
 })
 

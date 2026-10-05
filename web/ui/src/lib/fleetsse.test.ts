@@ -107,6 +107,12 @@ describe('parseFleetEvent', () => {
   })
 })
 
+describe('automation deltas', () => {
+  it('accepts one with no session', () => {
+    expect(parseFleetEvent('{"kind":"automation","type":"ci_result","id":"c1","status":"fixed"}')).toEqual({ kind: 'automation', type: 'ci_result', id: 'c1', status: 'fixed' })
+  })
+})
+
 describe('build log stream', () => {
   afterEach(() => vi.unstubAllGlobals())
 

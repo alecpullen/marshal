@@ -272,6 +272,16 @@ describe('run, budget and reroute deltas', () => {
     expect(get(state).watchTick).toBe(2)
   })
 
+  it('records automation deltas without touching rows', () => {
+    const rows = [row({ id: 'a' })]
+    expect(applyDeltaTo(rows, { kind: 'automation', type: 'review_draft', id: 'd1' })).toBe(rows)
+    const { state, actions } = createFleetStore()
+    actions.applyDelta({ kind: 'automation', type: 'review_draft', id: 'd1' })
+    actions.applyDelta({ kind: 'automation', type: 'ci_result', id: 'c1', status: 'fixed' })
+    expect(get(state).automationTick).toBe(2)
+    expect(get(state).automations.map((e) => [e.type, e.id, e.status])).toEqual([['review_draft', 'd1', undefined], ['ci_result', 'c1', 'fixed']])
+  })
+
   it('keeps budget state and queues reroute notices in the store', () => {
     const { state, actions } = createFleetStore()
     actions.applyDelta({ kind: 'budget', scope: 'daily', spentUsd: 3, capUsd: 5, action: 'block' })

@@ -237,13 +237,23 @@ export function formatNetworkRoute(r: NetworkRoute): string {
   return `#network${r.agent ? `?agent=${encodeURIComponent(r.agent)}` : ''}`
 }
 
-/** The project overview: `#projects/<encoded root>`; null for the bare project list. */
-export function parseProjectRoute(hash: string): { root: string } | null {
-  const m = /^#projects\/(.+)$/.exec(hash)
-  return m ? { root: decodeSafe(m[1]) } : null
+export type AutomationPage = 'review-bot' | 'ci-fixer'
+/**
+ * The project overview `#projects/<encoded root>`, or one of its automations
+ * pages `#projects/<root>/automations/review-bot|ci-fixer[?draft=<id>]`;
+ * null for the bare project list. An unknown page is not a route.
+ */
+export function parseProjectRoute(hash: string): { root: string; automations?: AutomationPage; draft?: string } | null {
+  const m = /^#projects\/([^/?]+)(?:\/automations\/(review-bot|ci-fixer)(?:\?(.*))?)?$/.exec(hash)
+  if (!m) return null
+  if (!m[2]) return { root: decodeSafe(m[1]) }
+  const draft = new URLSearchParams(m[3] ?? '').get('draft')
+  return { root: decodeSafe(m[1]), automations: m[2] as AutomationPage, ...(draft ? { draft } : {}) }
 }
 
 export const formatProjectRoute = (root: string) => `#projects/${encodeURIComponent(root)}`
+export const formatAutomationRoute = (root: string, page: AutomationPage, draft?: string) =>
+  `${formatProjectRoute(root)}/automations/${page}${draft ? `?draft=${encodeURIComponent(draft)}` : ''}`
 
 /** Where an old standalone page moved to, or null when the hash is current. */
 export function redirectLegacy(hash: string): string | null {

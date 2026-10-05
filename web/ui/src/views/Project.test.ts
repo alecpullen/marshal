@@ -40,6 +40,19 @@ beforeEach(() => {
   ;(api.getModels as Mock).mockResolvedValue({ profiles: { fast: {}, careful: {} } })
 })
 
+describe('Project automations tab', () => {
+  it('links to both automations pages with their on/off state', async () => {
+    ;(api.getProjectSettings as Mock).mockResolvedValue({ ...settings, automations: { reviewBot: { enabled: true, repoId: 'r1', skipDrafts: true, autoPost: false, holdSeverities: [] } } })
+    const onNavigate = vi.fn()
+    mount({ onNavigate })
+    await fireEvent.click(screen.getByRole('tab', { name: 'Automations' }))
+    await waitFor(() => expect(within(screen.getByTestId('automations-tab')).getAllByText('on')).toHaveLength(1))
+    expect(within(screen.getByTestId('automations-tab')).getByText('off')).toBeTruthy()
+    await fireEvent.click(screen.getByRole('link', { name: 'Open CI fixer' }))
+    expect(onNavigate).toHaveBeenCalledWith('#projects/%2Fhome%2Fu%2Falpha/automations/ci-fixer')
+  })
+})
+
 describe('Project overview', () => {
   it('loads the saved settings into the defaults and intake cards', async () => {
     mount()

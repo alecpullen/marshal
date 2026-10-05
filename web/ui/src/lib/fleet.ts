@@ -34,6 +34,7 @@ export interface BudgetDelta { kind: 'budget'; scope: 'daily' | 'agent'; agentId
 export interface RerouteDelta { kind: 'reroute'; id: string; watch: string; role: string; from: string; to: string }
 /** A watch changed state (or fired). `sessionId` is the owner agent, or `studio`; the Watches page refetches on it. */
 export interface WatchDelta { kind: 'watch'; sessionId?: string; event?: unknown }
+export interface AutomationEvent { type: string; id: string; status?: string; at: number }
 export type BudgetState = Omit<BudgetDelta, 'kind'>
 export type RerouteNotice = Omit<RerouteDelta, 'kind'>
 export interface ProjectRemovedDelta { kind: 'project_removed'; project: string }
@@ -43,8 +44,8 @@ export interface ProjectRemovedDelta { kind: 'project_removed'; project: string 
  * the snapshot is the authority on what is still outstanding.
  */
 export interface PendingDelta { kind: 'pending'; sessionId: string; pendingKind: 'approval' | 'question' }
-/** An automation ran; it only feeds notifications. */
-export interface AutomationDelta { kind: 'automation'; sessionId?: string; agentId?: string; title?: string; text?: string }
+/** An automation ran (review draft or CI result). `id`/`type` are set for those; the rest feeds notifications. */
+export interface AutomationDelta { kind: 'automation'; type?: string; id?: string; status?: string; sessionId?: string; agentId?: string; title?: string; text?: string }
 export type FleetEvent = AutomationDelta | NetworkBlockDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
 export function toRow(a: AgentStatus): AgentRow { return { ...a, name: a.name ?? '', mode: a.mode ?? '', activity: a.activity ?? '', contextPct: a.contextPct ?? 0, changedFiles: a.changedFiles ?? 0, interrupted: a.interrupted ?? false } }
 const rank: Record<AgentRow['status'], number> = { 'awaiting-approval': 0, 'awaiting-question': 0, error: 1, running: 2, idle: 3 }
@@ -193,6 +194,10 @@ export function createFleetStore() {
     decisions: [] as NetworkDecisionItem[],
     /** The last telemetry delta per agent. */
     telemetry: {} as Record<string, AgentTelemetry>,
+    /** Review drafts and CI results as they arrive, newest last; views refetch their lists when it grows. */
+    automations: [] as AutomationEvent[],
+    /** Bumped on every automation delta; views that list drafts or CI results refetch when it moves. */
+    automationTick: 0,
   })
   async function refresh() {
     state.update((s) => ({ ...s, loading: true, error: null }))
@@ -225,6 +230,7 @@ export function createFleetStore() {
         return { ...s, budget: b, budgetTick: s.budgetTick + 1 }
       }
       if (d.kind === 'watch') return { ...s, watchTick: s.watchTick + 1 }
+      if (d.kind === 'automation' && d.id) return { ...s, automations: [...s.automations, { type: d.type ?? '', id: d.id, status: d.status, at: Date.now() }].slice(-50), automationTick: s.automationTick + 1 }
       if (d.kind === 'network_block') {
         const agentId = d.agentId ?? d.sessionId
         const item: NetworkDecisionItem = { agentId, host: d.host, workspace: d.workspace, at: d.at ?? Date.now() }

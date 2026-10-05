@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, cleanup, screen } from '@testing-library/svelte'
+import { render, cleanup, screen, waitFor, within } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import Home from './Home.svelte'
 import * as api from '../lib/api.js'
@@ -19,6 +19,8 @@ vi.mock('../lib/api.js', async (importActual) => {
     postNetworkDecision: vi.fn().mockResolvedValue({ ok: true }),
     getDiskUsage: vi.fn().mockRejectedValue(new Error('no disk')),
     listAudit: vi.fn().mockResolvedValue([]),
+    listReviewDrafts: vi.fn().mockResolvedValue([]),
+    listCIHistory: vi.fn().mockResolvedValue([]),
   }
 })
 
@@ -159,5 +161,40 @@ describe('Home stale decisions', () => {
     render(Home, { agents, pending: [], decisions, onDecide: async () => {}, onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {} })
     expect(screen.getAllByTestId('network-decision')).toHaveLength(1)
     expect(screen.queryByText(/ghost\.example/)).toBeNull()
+  })
+})
+
+describe('Home automations', () => {
+  const projects = [{ root: '/home/u/alpha', available: true }]
+  const draft = { id: 'd1', repoId: 'r1', number: 12, headSha: 'abc', agentId: 'rv', summary: '', status: 'draft', createdAt: '2026-10-05T00:00:00Z', findings: [{ id: 'f1', severity: 'blocking', title: 't', body: 'b' }, { id: 'f2', severity: 'nit', title: 't', body: 'b' }] }
+
+  it('lists review drafts in Ready to ship and opens the draft on the automations page', async () => {
+    vi.mocked(api.listReviewDrafts).mockResolvedValue([draft] as never)
+    const onNavigate = vi.fn()
+    render(Home, { agents: [], pending: [], onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate, projects })
+    const row = await screen.findByTestId('draft-ready')
+    expect(api.listReviewDrafts).toHaveBeenCalledWith({ project: '/home/u/alpha', status: 'draft' })
+    expect(row.textContent).toContain('Review draft for PR #12')
+    expect(row.textContent).toContain('1 blocking')
+    expect(screen.getByText(/Ready to ship · 1/)).toBeTruthy()
+    await userEvent.click(within(row).getByRole('button', { name: 'Open' }))
+    expect(onNavigate).toHaveBeenCalledWith('#projects/%2Fhome%2Fu%2Falpha/automations/review-bot?draft=d1')
+  })
+
+  it('shows a fresh CI fix for a day and hides an old one', async () => {
+    const h = (id: string, createdAt: string) => ({ id, repoId: 'r1', sha: 's', check: 'go test', status: 'fixed', reason: 'ok', prUrl: 'https://github.com/o/n/pull/' + id.slice(1), costUsd: 1, createdAt })
+    vi.mocked(api.listCIHistory).mockResolvedValue([h('c5', new Date().toISOString()), h('c6', new Date(Date.now() - 30 * 3600 * 1000).toISOString()), { ...h('c7', new Date().toISOString()), status: 'gave up' }] as never)
+    render(Home, { agents: [], pending: [], onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {}, projects })
+    const row = await screen.findByTestId('ci-fix-ready')
+    expect(row.textContent).toContain('CI fix ready: PR #5')
+    expect(screen.getAllByTestId('ci-fix-ready')).toHaveLength(1)
+  })
+
+  it('refetches when an automation delta arrives', async () => {
+    vi.mocked(api.listReviewDrafts).mockClear()
+    const { rerender } = render(Home, { agents: [], pending: [], onRefreshPending: () => {}, onOpenAgent: () => {}, onNavigate: () => {}, projects, automationTick: 0 })
+    await waitFor(() => expect(api.listReviewDrafts).toHaveBeenCalledTimes(1))
+    await rerender({ automationTick: 1 })
+    await waitFor(() => expect(api.listReviewDrafts).toHaveBeenCalledTimes(2))
   })
 })

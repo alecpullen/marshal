@@ -721,11 +721,11 @@ indexed in [`README.md`](README.md).
 
 | Phase | Ships |
 |---|---|
-| **W1 · Foundation** | Design system and shell; `viewmodel` move and the stack stream; transcript rendering with browse keys; Home inbox; owner and origin fields in the data model |
-| **W2 · Session & ship** | Session dock (all four states) with Inspect, Changes and Files; Review & ship (PR style + by step); New agent (prompt first) |
-| **W3 · Runs & control** | Runs (lanes, graph, timeline); Library; Models & routing; Usage & budgets; Live wall; Watch monitors |
-| **W4 · Workspaces** | Gallery, layer builder + source, build pipeline, mounts, secrets vault, egress proxy, warm pools; Network inspector; Projects 2.0 |
-| **W5 · Automations & ops** | Terminal and Preview tabs; PR review bot; CI fixer; schedules and recipes; notifications; shared memory scopes; status page |
+| **W1 · Foundation** ([spec](specs/2026-10-03-w1-foundation-design.md)) | Design system and shell; `viewmodel` move and the stack stream; transcript rendering with browse keys; Home inbox; owner and origin fields in the data model |
+| **W2 · Session & ship** ([spec](specs/2026-10-03-w2-session-and-ship-design.md)) | Session dock (all four states) with Inspect, Changes and Files; Review & ship (PR style + by step); New agent (prompt first) |
+| **W3 · Runs & control** ([spec](specs/2026-10-03-w3-runs-and-control-design.md)) | Runs (lanes, graph, timeline); Library; Models & routing; Usage & budgets; Live wall; Watch monitors |
+| **W4 · Workspaces** ([spec](specs/2026-10-03-w4-workspaces-design.md)) | Gallery, layer builder + source, build pipeline, mounts, secrets vault, egress proxy, warm pools; Network inspector; Projects 2.0 |
+| **W5 · Automations & ops** (in progress: the UI plans are built; the forge automations backend (B11) has not merged and the manual passes are outstanding; [spec](specs/2026-10-03-w5-automations-and-ops-design.md)) | Terminal and Preview tabs; PR review bot; CI fixer; schedules and recipes; notifications; shared memory scopes; status page |
 | **Later** | Multiple users (accounts, sign-in, roles, team memory) |
 
 ## 10. Open questions

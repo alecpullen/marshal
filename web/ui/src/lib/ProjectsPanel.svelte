@@ -4,6 +4,7 @@
   import Badge from './ui/Badge.svelte'
   import { listProjects, addProject, removeProject, errMessage, type ProjectStatus } from './api'
   import { shortName } from './utils'
+  import { formatProjectRoute } from './routes'
 
   let projects = $state<ProjectStatus[]>([])
   let loading = $state(false)
@@ -85,7 +86,7 @@
     {#each projects as p (p.root)}
       <li class="flex items-center justify-between gap-3 border-t border-border pt-2 first:border-0 first:pt-0">
         <div class="min-w-0">
-          <div class="truncate text-sm font-medium" title={p.root}>{shortName(p.root)}</div>
+          <div class="truncate text-sm font-medium"><a class="hover:underline" href={formatProjectRoute(p.root)} title={p.root}>{shortName(p.root)}</a></div>
           <div class="mt-1 flex flex-wrap gap-2 text-xs text-muted">
             {#if !p.available}
               <span class="text-danger">! {p.error ?? 'unavailable'}</span>

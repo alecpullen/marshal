@@ -15,6 +15,8 @@
   import Gallery from './views/workspaces/Gallery.svelte'
   import Designer from './views/workspaces/Designer.svelte'
   import Builds from './views/workspaces/Builds.svelte'
+  import Network from './views/Network.svelte'
+  import Project from './views/Project.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -23,9 +25,11 @@
   import ProjectsPanel from './lib/ProjectsPanel.svelte'
   import SessionsPanel from './lib/SessionsPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
-  import { createFleetStore } from './lib/fleet'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, redirectLegacy } from './lib/routes'
-  import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
+  import { createFleetStore, type NetworkDecisionItem } from './lib/fleet'
+  import DecisionOutcomeView from './lib/inbox/DecisionOutcome.svelte'
+  import { outcomeFor, type DecisionOutcome } from './lib/inbox/decision'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, redirectLegacy } from './lib/routes'
+  import { listPending, listClients, type PendingSubmission, type MCPClient, type NetDecisionKind } from './lib/api'
 
   let hash = $state('#')
 
@@ -66,6 +70,13 @@
     their own before.
   */
   const { state: fleet, actions } = createFleetStore()
+
+  // What a settled decision shows: a draft toast or a repo-patch modal. Owned here so Home and Live share it.
+  let decisionOutcome = $state<DecisionOutcome | null>(null)
+  async function decideNetwork(item: NetworkDecisionItem, decision: NetDecisionKind) {
+    const res = await actions.decideNetwork(item.agentId, item.host, decision)
+    decisionOutcome = outcomeFor(item, decision, res)
+  }
 
   let pending = $state<PendingSubmission[]>([])
   let clients = $state<MCPClient[]>([])
@@ -159,6 +170,8 @@
   const settingsRoute = $derived(parseSettingsRoute(hash))
   const usageRoute = $derived(parseUsageRoute(hash))
   const workspacesRoute = $derived(parseWorkspacesRoute(hash))
+  const networkRoute = $derived(parseNetworkRoute(hash))
+  const projectRoute = $derived(parseProjectRoute(hash))
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -230,6 +243,8 @@
           route={liveRoute}
           onRefreshPending={refreshPending}
           onNavigate={navigate}
+          decisions={$fleet.decisions}
+          onDecide={decideNetwork}
         />
       </div>
     {:else if libraryRoute}
@@ -243,6 +258,18 @@
     {:else if usageRoute}
       <div class="h-full overflow-y-auto">
         <Usage tab={usageRoute.tab} agents={$fleet.agents} budgetTick={$fleet.budgetTick} onNavigate={navigate} />
+      </div>
+    {:else if networkRoute}
+      <div class="h-full overflow-y-auto">
+        {#key `${networkRoute.workspace ?? ''}|${networkRoute.agent ?? ''}`}
+          <Network workspace={networkRoute.workspace} agent={networkRoute.agent} onNavigate={navigate} />
+        {/key}
+      </div>
+    {:else if projectRoute}
+      <div class="h-full overflow-y-auto">
+        {#key projectRoute.root}
+          <Project root={projectRoute.root} agents={$fleet.agents} telemetry={$fleet.telemetry} onNavigate={navigate} />
+        {/key}
       </div>
     {:else if workspacesRoute}
       <div class="h-full overflow-y-auto">
@@ -300,6 +327,8 @@
           {pending}
           notices={$fleet.notices}
           onDismissNotice={actions.dismissNotice}
+          decisions={$fleet.decisions}
+          onDecide={decideNetwork}
           onRefreshPending={refreshPending}
           onOpenAgent={(id) => navigate(`#chat/${id}`)}
           onNavigate={navigate}
@@ -325,6 +354,7 @@
   </div>
 {/if}
 
+<DecisionOutcomeView outcome={decisionOutcome} onClose={() => (decisionOutcome = null)} />
 <Palette open={paletteOpen} agents={$fleet.agents} onClose={() => (paletteOpen = false)} onNavigate={navigate} />
 
 <style>

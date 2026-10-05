@@ -4,10 +4,12 @@
   import Tag from '../lib/ui/Tag.svelte'
   import Segmented from '../lib/ui/Segmented.svelte'
   import PendingActions from '../lib/inbox/PendingActions.svelte'
+  import NetworkDecision from '../lib/inbox/NetworkDecision.svelte'
+  import type { DecideFn } from '../lib/inbox/decision'
   import DiskPanel from '../lib/DiskPanel.svelte'
   import ActivityFeed from '../lib/ActivityFeed.svelte'
   import { buildInbox } from '../lib/inbox'
-  import { describePending, type AgentRow, type RerouteNotice } from '../lib/fleet'
+  import { describePending, type AgentRow, type NetworkDecisionItem, type RerouteNotice } from '../lib/fleet'
   import { APIError, approvePending, denyPending, undoReroute, errMessage, type PendingSubmission } from '../lib/api'
   import { shortName } from '../lib/utils'
 
@@ -19,12 +21,17 @@
     onNavigate,
     notices = [],
     onDismissNotice = () => {},
+    decisions = [],
+    onDecide = async () => {},
   }: {
     agents: AgentRow[]
     pending: PendingSubmission[]
     /** Watches that rerouted a role, each undoable until dismissed. */
     notices?: RerouteNotice[]
     onDismissNotice?: (id: string) => void
+    /** Requests the egress proxy blocked, each waiting on Block, Allow for this agent, or Add to workspace. */
+    decisions?: NetworkDecisionItem[]
+    onDecide?: DecideFn
     onRefreshPending: () => void
     onOpenAgent: (id: string) => void
     onNavigate: (hash: string) => void
@@ -49,6 +56,9 @@
   }
 
   const inbox = $derived(buildInbox(agents, pending, scope === 'mine'))
+  // Oldest first, so the request that has waited longest is on top.
+  const netDecisions = $derived([...decisions].filter((d) => agents.some((a) => a.id === d.agentId)).sort((a, b) => a.at - b.at))
+  const agentName = (id: string) => agents.find((a) => a.id === id)?.name || id
 
   const originLetter = (origin?: string) =>
     ({ ui: 'U', cli: 'C', mcp: 'M', issue: '#' })[origin ?? ''] ?? (origin ? origin[0].toUpperCase() : '·')
@@ -119,7 +129,7 @@
   <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem]">
     <div class="flex flex-col gap-6">
       <section aria-labelledby="inbox-needs">
-        <h2 id="inbox-needs" class="mb-2 text-xs tracking-wide text-attention uppercase">Needs you · {inbox.needsYou.length}</h2>
+        <h2 id="inbox-needs" class="mb-2 text-xs tracking-wide text-attention uppercase">Needs you · {inbox.needsYou.length + netDecisions.length}</h2>
         <div class="flex flex-col gap-2">
           {#each inbox.needsYou as item (item.kind === 'agent' ? 'a:' + item.agent.id : 'i:' + item.submission.id)}
             <Card class="flex items-center gap-3 p-3">
@@ -142,9 +152,15 @@
                 <Button variant="danger" onclick={() => run(() => denyPending(p.id))}>Deny</Button>
               {/if}
             </Card>
-          {:else}
-            <p class="text-sm text-muted">Nothing is waiting on you.</p>
           {/each}
+          {#each netDecisions as d (d.agentId + '|' + d.host)}
+            <Card class="flex items-center gap-3 p-3">
+              <NetworkDecision item={d} agentName={agentName(d.agentId)} {onDecide} />
+            </Card>
+          {/each}
+          {#if inbox.needsYou.length + netDecisions.length === 0}
+            <p class="text-sm text-muted">Nothing is waiting on you.</p>
+          {/if}
         </div>
       </section>
 

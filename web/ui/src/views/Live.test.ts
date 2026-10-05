@@ -104,6 +104,24 @@ describe('Live wall', () => {
     expect(onRefreshPending).toHaveBeenCalled()
   })
 
+  it('tints a tile with a blocked request and decides inline', async () => {
+    const onDecide = vi.fn().mockResolvedValue(undefined)
+    const decisions = [
+      { agentId: 'a1', host: 'later.example', at: 2 },
+      { agentId: 'a1', host: 'first.example', at: 1, workspace: 'go-dev' },
+    ]
+    mount([agent({ id: 'a1' }), agent({ id: 'a2' })], { decisions, onDecide })
+    const tiles = screen.getAllByTestId('tile')
+    const [t1, t2] = ['a1', 'a2'].map((id) => tiles.find((t) => t.getAttribute('data-agent') === id)!)
+    expect(t1.className).toContain('bg-warn/10')
+    expect(t2.className).not.toContain('bg-warn/10')
+    // The oldest request of the agent is the one shown.
+    expect(t1.textContent).toContain('a1 tried to reach first.example')
+    expect(t1.textContent).not.toContain('later.example')
+    await fireEvent.click(screen.getByRole('button', { name: 'Allow for this agent' }))
+    expect(onDecide).toHaveBeenCalledWith(decisions[1], 'allow-agent')
+  })
+
   it('opens the chat with the dock collapsed on a tile click, but not on a control click', async () => {
     const onNavigate = vi.fn()
     mount([agent({ id: 'ask', pending: { kind: 'approval', id: 'tc1', params: { command: 'ls' } } })], { onNavigate })

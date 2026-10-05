@@ -86,3 +86,14 @@ describe('ProjectsPanel', () => {
     expect(await screen.findByText('root is not a git worktree')).toBeTruthy()
   })
 })
+
+describe('ProjectsPanel overview links', () => {
+  it('links each project row to its overview', async () => {
+    vi.resetAllMocks()
+    ;(api.listProjects as Mock).mockResolvedValue(seeded)
+    render(ProjectsPanel)
+    const link = (await screen.findByText('alpha')).closest('a')
+    expect(link?.getAttribute('href')).toBe('#projects/%2Fhome%2Fu%2Falpha')
+    expect(screen.getByTitle('/home/u/gamma').getAttribute('href')).toBe('#projects/%2Fhome%2Fu%2Fgamma')
+  })
+})

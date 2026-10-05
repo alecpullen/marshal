@@ -44,10 +44,10 @@ beforeEach(() => {
   vi.mocked(api.getWorkspace).mockResolvedValue(loaded())
   vi.mocked(api.listBuilds).mockResolvedValue({ versions: [{ n: 1, at: 0, buildStatus: 'ok', sizeBytes: 100 * 1024 * 1024 }], pool: { size: 0, idle: 1, starting: 0 }, starts: { coldMs: 42000, warmMs: 1500 } })
   vi.mocked(api.getSecretsStatus).mockResolvedValue({ backend: 'local', healthy: true })
-  vi.mocked(api.getNetworkHosts).mockResolvedValue({ processMode: false, rows: [{ host: 'proxy.golang.org', requests: 7, blocked: 0, bytesUp: 0, bytesDown: 0, lastSeen: 0, decision: 'allow' }] })
-  vi.mocked(api.listRepos).mockResolvedValue([{ id: 'lib' }])
+  vi.mocked(api.getNetworkHosts).mockResolvedValue({ processMode: false, rows: [{ host: 'proxy.golang.org', requests: 7, blocked: 0, bytesUp: 0, bytesDown: 0, lastSeen: 0, decision: 'allow' }] } as never)
+  vi.mocked(api.listRepos).mockResolvedValue([{ id: 'lib' }] as never)
   vi.mocked(api.listProjects).mockResolvedValue([{ root: '/p', available: true }] as api.ProjectStatus[])
-  vi.mocked(api.getProjectHealth).mockResolvedValue({ verify: { build: 'go build ./...', test: 'go test ./...' } })
+  vi.mocked(api.getProjectHealth).mockResolvedValue({ verify: { build: 'go build ./...', test: 'go test ./...' } } as api.ProjectHealth)
 })
 
 async function open() {
@@ -219,7 +219,7 @@ describe('Designer', () => {
     await fireEvent.change(await within(gate).findByLabelText('Gate project'), { target: { value: '/p' } })
     await waitFor(() => expect(within(gate).getByText('runnable')).toBeTruthy())
     expect(api.getProjectHealth).toHaveBeenCalledWith('/p')
-    vi.mocked(api.getProjectHealth).mockResolvedValue({ verify: { build: 'npm run build', test: 'npm test' } })
+    vi.mocked(api.getProjectHealth).mockResolvedValue({ verify: { build: 'npm run build', test: 'npm test' } } as api.ProjectHealth)
     await fireEvent.change(within(gate).getByLabelText('Gate project'), { target: { value: '' } })
     await fireEvent.change(within(gate).getByLabelText('Gate project'), { target: { value: '/p' } })
     await waitFor(() => expect(within(gate).getByText('may be skipped')).toBeTruthy())

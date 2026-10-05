@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store'
-import { listAgents, listProjects, type AgentStatus, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
+import { getNetworkPending, listAgents, listProjects, postNetworkDecision, type AgentStatus, type NetDecisionKind, type NetDecisionResult, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
 export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; gate?: GateRecord; run?: RunDetail; runAt?: number }
@@ -12,7 +12,17 @@ export interface FleetDelta {
   changedFiles?: number
   /** The latest verify record. Its output is left out of the stream; GET …/gate has it. */
   gate?: GateRecord
+  /** Optional telemetry sections; the bridge's digest carries only the two counts above today. */
+  toolStats?: ToolStat[]
+  rules?: string[]
 }
+/** The engine's `session_telemetry` tool row. */
+export interface ToolStat { name: string; calls: number; errors?: number; slowestMs?: number }
+/** The last `telemetry` delta of an agent, for the project page's session-sheet tab. */
+export interface AgentTelemetry { contextPct: number; changedFiles: number; toolStats?: ToolStat[]; rules?: string[]; at: number }
+/** A request the egress proxy blocked, awaiting Block, Allow for this agent, or Add to workspace. */
+export interface NetworkBlockDelta { kind: 'network_block'; sessionId: string; agentId?: string; host: string; workspace?: string; at?: number }
+export interface NetworkDecisionItem { agentId: string; host: string; workspace?: string; at: number }
 /** A run's latest detail (run_progress). `at` is when the bridge saw it, in ms. */
 export interface RunDelta { kind: 'run'; sessionId: string; run: RunDetail; at?: number }
 /** A daily or per-agent budget check; no session, so it never touches a row. */
@@ -30,7 +40,7 @@ export interface ProjectRemovedDelta { kind: 'project_removed'; project: string 
  * the snapshot is the authority on what is still outstanding.
  */
 export interface PendingDelta { kind: 'pending'; sessionId: string; pendingKind: 'approval' | 'question' }
-export type FleetEvent = FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
+export type FleetEvent = NetworkBlockDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
 export function toRow(a: AgentStatus): AgentRow { return { ...a, name: a.name ?? '', mode: a.mode ?? '', activity: a.activity ?? '', contextPct: a.contextPct ?? 0, changedFiles: a.changedFiles ?? 0, interrupted: a.interrupted ?? false } }
 const rank: Record<AgentRow['status'], number> = { 'awaiting-approval': 0, 'awaiting-question': 0, error: 1, running: 2, idle: 3 }
 export function sortAttentionFirst(rows: AgentRow[]): AgentRow[] { return [...rows].sort((a,b) => rank[a.status] - rank[b.status] || a.id.localeCompare(b.id)) }
@@ -62,7 +72,7 @@ export function groupAgents(agents: AgentRow[]): AgentGroups {
 export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
   if (d.kind === 'project_removed') return rows.filter((r) => r.project !== d.project)
   // Budget, reroute and watch deltas are fleet-wide; the store handles them.
-  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch') return rows
+  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch' || d.kind === 'network_block') return rows
   let changed = false
   const out = rows.map((r) => {
     if (r.id !== d.sessionId) return r
@@ -173,11 +183,16 @@ export function createFleetStore() {
     watchTick: 0,
     /** Bumped on every budget delta; views that show spend refetch when it moves. */
     budgetTick: 0,
+    /** Blocked requests waiting on a person, oldest first, one per (agent, host). */
+    decisions: [] as NetworkDecisionItem[],
+    /** The last telemetry delta per agent. */
+    telemetry: {} as Record<string, AgentTelemetry>,
   })
   async function refresh() {
     state.update((s) => ({ ...s, loading: true, error: null }))
     try {
-      const [a, p] = await Promise.all([listAgents(), listProjects()])
+      // Pending prompts survive a reload through the bridge; a bridge without the route just has none to restore.
+      const [a, p, pend] = await Promise.all([listAgents(), listProjects(), getNetworkPending().catch(() => [])])
       // The snapshot's rows have no run digest; keep the one deltas gave us.
       state.update((s) => {
         const prev = new Map(s.agents.map((r) => [r.id, r]))
@@ -185,7 +200,13 @@ export function createFleetStore() {
           const old = prev.get(r.id)
           return old?.run ? { ...r, run: old.run, runAt: old.runAt } : r
         })
-        return { ...s, agents, projects: p, loading: false, error: null }
+        // A request for an agent that is gone has nobody left to decide for.
+        const live = new Set(agents.map((r) => r.id))
+        const byKey = new Map<string, NetworkDecisionItem>()
+        for (const d of s.decisions) byKey.set(`${d.agentId}|${d.host}`, d)
+        for (const d of pend) byKey.set(`${d.agentId}|${d.host}`, { agentId: d.agentId, host: d.host, workspace: d.workspace, at: d.at })
+        const decisions = [...byKey.values()].filter((d) => live.has(d.agentId)).sort((x, y) => x.at - y.at)
+        return { ...s, agents, projects: p, loading: false, error: null, decisions }
       })
     } catch (e) {
       state.update((s) => ({ ...s, loading: false, error: e instanceof Error ? e.message : String(e) }))
@@ -198,6 +219,18 @@ export function createFleetStore() {
         return { ...s, budget: b, budgetTick: s.budgetTick + 1 }
       }
       if (d.kind === 'watch') return { ...s, watchTick: s.watchTick + 1 }
+      if (d.kind === 'network_block') {
+        const agentId = d.agentId ?? d.sessionId
+        const item: NetworkDecisionItem = { agentId, host: d.host, workspace: d.workspace, at: d.at ?? Date.now() }
+        // A later delta for the same (agent, host) replaces the earlier one in place.
+        const i = s.decisions.findIndex((x) => x.agentId === agentId && x.host === d.host)
+        const decisions = i < 0 ? [...s.decisions, item] : s.decisions.map((x, j) => (j === i ? item : x))
+        return { ...s, decisions: decisions.sort((a, b) => a.at - b.at) }
+      }
+      if (d.kind === 'telemetry') {
+        const t: AgentTelemetry = { contextPct: d.contextPct ?? 0, changedFiles: d.changedFiles ?? 0, toolStats: d.toolStats, rules: d.rules, at: Date.now() }
+        return { ...s, telemetry: { ...s.telemetry, [d.sessionId]: t }, agents: applyDeltaTo(s.agents, d), projects: s.projects }
+      }
       if (d.kind === 'reroute') {
         const { kind: _k, ...n } = d
         return { ...s, notices: [...s.notices.filter((x) => x.id !== n.id), n] }
@@ -212,5 +245,11 @@ export function createFleetStore() {
   function dismissNotice(id: string) {
     state.update((s) => ({ ...s, notices: s.notices.filter((n) => n.id !== id) }))
   }
-  return { state, actions: { refresh, applyDelta, dismissNotice } }
+  /** Posts the decision, then drops the item; a failed post keeps it so the person can retry. */
+  async function decideNetwork(agentId: string, host: string, decision: NetDecisionKind): Promise<NetDecisionResult> {
+    const res = await postNetworkDecision(agentId, host, decision)
+    state.update((s) => ({ ...s, decisions: s.decisions.filter((x) => !(x.agentId === agentId && x.host === host)) }))
+    return res
+  }
+  return { state, actions: { refresh, applyDelta, dismissNotice, decideNetwork } }
 }

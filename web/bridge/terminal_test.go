@@ -666,3 +666,97 @@ func TestTestShellIsLimitedToTwoPerWorkspace(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalFinalReleaseIsRetriedWhenTheAgentIsUnreachable(t *testing.T) {
+	old := releaseRetryDelays
+	releaseRetryDelays = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}
+	t.Cleanup(func() { releaseRetryDelays = old })
+	e := newTermEnv(t, false)
+	var mu sync.Mutex
+	offCalls := 0
+	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
+		if on {
+			return nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		offCalls++
+		if offCalls <= 2 {
+			return errors.New("unreachable")
+		}
+		return nil
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.settled(t)
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	waitFor(t, 5*time.Second, "release retried to success", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return offCalls == 3
+	})
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if offCalls != 3 {
+		t.Fatalf("off calls = %d, want to stop after the first success", offCalls)
+	}
+}
+
+func TestTerminalFinalReleaseRetryYieldsToANewTerminal(t *testing.T) {
+	old := releaseRetryDelays
+	releaseRetryDelays = []time.Duration{50 * time.Millisecond, 50 * time.Millisecond}
+	t.Cleanup(func() { releaseRetryDelays = old })
+	e := newTermEnv(t, false)
+	var mu sync.Mutex
+	offCalls := 0
+	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
+		if on {
+			return nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		offCalls++
+		return errors.New("unreachable")
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.settled(t)
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	e.open(t) // a new terminal now owns the hold
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if offCalls != 1 {
+		t.Fatalf("off calls = %d, want only the first attempt", offCalls)
+	}
+}
+
+func TestTerminalCloseRemovesTheTTYFile(t *testing.T) {
+	e := newTermEnv(t, false)
+	tid := e.open(t)
+	f := ttyFile(tid)
+	if err := os.WriteFile(f, []byte("/dev/pts/9\n"), 0o600); err != nil {
+		t.Skipf("cannot write %s: %v", f, err)
+	}
+	t.Cleanup(func() { _ = os.Remove(f) })
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	waitFor(t, 5*time.Second, "tty file removed", func() bool {
+		_, err := os.Stat(f)
+		return os.IsNotExist(err)
+	})
+}
+
+func TestTerminalCloseRemovesTheTTYFileInTheContainer(t *testing.T) {
+	e := newTermEnv(t, true)
+	tid := e.open(t)
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	waitFor(t, 5*time.Second, "rm exec", func() bool {
+		for _, c := range e.fs.shorts {
+			if strings.Join(c.args, " ") == "exec "+containerNameFor(e.id)+" rm -f "+ttyFile(tid) {
+				return true
+			}
+		}
+		return false
+	})
+}

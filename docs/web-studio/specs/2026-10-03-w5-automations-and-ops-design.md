@@ -185,6 +185,13 @@ bridge exposes a port only when it is declared.
   `/preview/…`; the API listener answers `/preview/…` with 404. The host and
   scheme of the URL come from the request that issued it (or the public
   URL). With no preview listener, issuing answers 501 `preview_unconfigured`.
+- **Per-agent origin.** When the issuing host is `localhost` (or a
+  `*.localhost` name, which browsers resolve to loopback), the URL's host is
+  `a<hash of agentId>.localhost`, so one agent's preview is a different
+  origin from another's and cannot read it. The preview handler answers 404
+  unless the request arrived on the agent's own label. Any other host cannot
+  be subdivided without wildcard DNS, so previews of all agents share an
+  origin there.
 - The first request with `t` sets the cookie `mp_<agentId>_<port>`. The
   cookie is HttpOnly and SameSite=Strict, with `Path` set to the preview
   prefix.

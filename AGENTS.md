@@ -145,8 +145,9 @@ web/                                  — external ACP client (web/bridge Go ser
   the control agent (`web/bridge/control.go`), templates and builds
   (`wsstore.go`, `wsbuild.go`), secrets (`secrets.go`), the egress proxy
   (`egress_proxy.go`), terminals (`terminal.go`), recipes and schedules
-  (`recipes.go`, `schedules.go`). Forge automations (webhooks, review bot,
-  CI fixer) are not listed until they are on main.
+  (`recipes.go`, `schedules.go`), and forge automations: webhooks
+  (`hooks.go`), the review bot (`reviewbot.go`) and the CI fixer
+  (`cifixer.go`).
 ```
 
 ### Data flow

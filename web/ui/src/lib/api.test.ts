@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending } from './api'
+import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory } from './api'
 
 function reply(status: number, body?: unknown) {
   return vi.fn().mockResolvedValue({
@@ -420,4 +420,79 @@ describe('network, secrets, repos and project settings API', () => {
     await getProjectHealth('/p')
     expect(f.mock.calls[2][0]).toBe('/api/projects/health?root=%2Fp')
   })
+})
+
+describe('W5 ops API', () => {
+  beforeEach(() => setToken('t'))
+  afterEach(() => vi.unstubAllGlobals())
+
+  const call = async (fn: () => Promise<unknown>, body: unknown = {}) => {
+    const f = reply(200, body)
+    vi.stubGlobal('fetch', f)
+    await fn()
+    const [url, init] = f.mock.calls[0]
+    return { url, method: init.method, body: init.body ? JSON.parse(init.body) : undefined }
+  }
+
+  it('terminals use the agent route and the workspace shell route', async () => {
+    expect(await call(() => openTerminal('a1', { cols: 80, rows: 24 }), { terminalId: 't' })).toMatchObject({ url: '/api/agents/a1/terminal', method: 'POST', body: { cols: 80, rows: 24 } })
+    expect(await call(() => openWorkspaceShell('svc', { cols: 80, rows: 24 }), { terminalId: 't' })).toMatchObject({ url: '/api/workspaces/svc/shell', method: 'POST' })
+    expect(await call(() => terminalResize({ agentId: 'a1' }, 't1', { cols: 100, rows: 30 }))).toMatchObject({ url: '/api/agents/a1/terminal/t1/resize', body: { cols: 100, rows: 30 } })
+    expect(await call(() => terminalResize({ workspace: 'svc' }, 't1', { cols: 1, rows: 2 }))).toMatchObject({ url: '/api/workspaces/svc/shell/t1/resize' })
+    expect(await call(() => terminalRelease('a1', 't1'))).toMatchObject({ url: '/api/agents/a1/terminal/t1/release', method: 'POST' })
+    expect(await call(() => closeTerminal({ agentId: 'a1' }, 't1'))).toMatchObject({ url: '/api/agents/a1/terminal/t1', method: 'DELETE' })
+    expect(await call(() => closeTerminal({ workspace: 'svc' }, 't1'))).toMatchObject({ url: '/api/workspaces/svc/shell/t1', method: 'DELETE' })
+    expect(terminalEventsUrl({ agentId: 'a1' }, 't1')).toBe('/api/agents/a1/terminal/t1/events')
+    expect(terminalEventsUrl({ workspace: 'svc' }, 't1')).toBe('/api/workspaces/svc/shell/t1/events')
+  })
+
+  it('terminal input is base64 of the UTF-8 bytes', async () => {
+    const r = await call(() => terminalInput({ agentId: 'a1' }, 't1', 'ls é\r'))
+    expect(r).toMatchObject({ url: '/api/agents/a1/terminal/t1/input', method: 'POST' })
+    expect(r.body.data).toBe(btoa(String.fromCharCode(...new TextEncoder().encode('ls é\r'))))
+  })
+
+  it('openPreview posts the port', async () => {
+    expect(await call(() => openPreview('a1', 3000), { url: 'http://x' })).toMatchObject({ url: '/api/agents/a1/preview/3000', method: 'POST' })
+  })
+
+  it('recipes', async () => {
+    expect(await call(() => listRecipes(), [])).toMatchObject({ url: '/api/recipes', method: 'GET' })
+    expect(await call(() => getRecipe('fix bug'))).toMatchObject({ url: '/api/recipes/fix%20bug' })
+    expect(await call(() => saveRecipe({ name: 'r', kind: 'prompt', prompt: 'p' }))).toMatchObject({ url: '/api/recipes/r', method: 'PUT', body: { name: 'r', prompt: 'p' } })
+    expect(await call(() => deleteRecipe('r'))).toMatchObject({ url: '/api/recipes/r', method: 'DELETE' })
+    expect(await call(() => copyRecipe('r', 'r2'))).toMatchObject({ url: '/api/recipes/r/copy', method: 'POST', body: { name: 'r2' } })
+    expect(await call(() => runRecipe('r', { project: '/p', inputs: { a: '1' } }), { agentId: 'a' })).toMatchObject({ url: '/api/recipes/r/run', method: 'POST', body: { project: '/p', inputs: { a: '1' } } })
+  })
+
+  it('schedules create without an id and replace with one', async () => {
+    const s = { name: 'n', recipe: 'r', cron: '0 9 * * *', enabled: true }
+    expect(await call(() => listSchedules(), [])).toMatchObject({ url: '/api/schedules', method: 'GET' })
+    expect(await call(() => saveSchedule(s))).toMatchObject({ url: '/api/schedules', method: 'POST', body: s })
+    expect(await call(() => saveSchedule({ ...s, id: 'x1' }))).toMatchObject({ url: '/api/schedules/x1', method: 'PUT' })
+    expect(await call(() => deleteSchedule('x1'))).toMatchObject({ url: '/api/schedules/x1', method: 'DELETE' })
+    expect(await call(() => runSchedule('x1'))).toMatchObject({ url: '/api/schedules/x1/run', method: 'POST' })
+  })
+
+  it('notifications default to no webhooks', async () => {
+    vi.stubGlobal('fetch', reply(200, null))
+    expect(await getNotifications()).toEqual({ webhooks: [] })
+    const w = { webhooks: [{ url: 'https://h', events: ['budget'] }] }
+    expect(await call(() => saveNotifications(w), w)).toMatchObject({ url: '/api/notifications', method: 'PUT', body: w })
+    expect(await call(() => testNotifications())).toMatchObject({ url: '/api/notifications/test', method: 'POST' })
+  })
+
+  it('status links', async () => {
+    expect(await call(() => createStatusLink('a1', 24), { id: 'l', url: '/s/tok' })).toMatchObject({ url: '/api/status-links', method: 'POST', body: { agentId: 'a1', ttlHours: 24 } })
+    expect(await call(() => listStatusLinks(), [])).toMatchObject({ url: '/api/status-links', method: 'GET' })
+    expect(await call(() => revokeStatusLink('l'))).toMatchObject({ url: '/api/status-links/l', method: 'DELETE' })
+  })
+
+  it('memory scopes, suggestions and promotion', async () => {
+    expect(await call(() => listMemory('/p', 'global'), { entries: [] })).toMatchObject({ url: '/api/library/memory?project=%2Fp&scope=global' })
+    expect(await call(() => memorySuggestions('/p'), { suggestions: [] })).toMatchObject({ url: '/api/library/memory/suggestions?project=%2Fp', method: 'GET' })
+    expect(await call(() => promoteMemory(7, '/p', 'global'))).toMatchObject({ url: '/api/library/memory/7/promote?project=%2Fp', method: 'POST', body: { scope: 'global' } })
+    expect(await call(() => promoteMemory(7, '/p', 'workspace', 'svc'))).toMatchObject({ body: { scope: 'workspace', scopeKey: 'svc' } })
+  })
+
 })

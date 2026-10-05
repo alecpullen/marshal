@@ -229,12 +229,12 @@ describe('Chat', () => {
       await screen.findByText(/browse · j\/k move/)
     }
 
-    it('renders the dock docked by default, with Terminal disabled', async () => {
+    it('renders the dock docked by default, with Terminal and Preview tabs', async () => {
       ;(api.getStack as Mock).mockResolvedValue(tree())
       render(Chat, { sessionId: 's1', onBack: () => {} })
       expect((await screen.findByTestId('dock')).getAttribute('data-size')).toBe('docked')
-      expect((screen.getByRole('tab', { name: 'Terminal' }) as HTMLButtonElement).disabled).toBe(true)
-      expect((screen.getByRole('tab', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(true)
+      expect((screen.getByRole('tab', { name: 'Terminal' }) as HTMLButtonElement).disabled).toBe(false)
+      expect((screen.getByRole('tab', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(false)
     })
 
     it('renders the strip when the stored size is collapsed', async () => {

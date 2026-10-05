@@ -2,14 +2,17 @@ import { writable } from 'svelte/store'
 import { getNetworkPending, listAgents, listProjects, postNetworkDecision, type AgentStatus, type NetDecisionKind, type NetDecisionResult, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
-export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; gate?: GateRecord; run?: RunDetail; runAt?: number }
+export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; heldBy?: string; gate?: GateRecord; run?: RunDetail; runAt?: number }
 export interface FleetDelta {
-  kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate'
+  kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate' | 'hold'
   sessionId: string
   activity?: string
   mode?: string
   contextPct?: number
   changedFiles?: number
+  /** A hold delta: whether the agent is held, and by whom (`terminal`). */
+  held?: boolean
+  by?: string
   /** The latest verify record. Its output is left out of the stream; GET …/gate has it. */
   gate?: GateRecord
   /** Optional telemetry sections; the bridge's digest carries only the two counts above today. */
@@ -40,7 +43,9 @@ export interface ProjectRemovedDelta { kind: 'project_removed'; project: string 
  * the snapshot is the authority on what is still outstanding.
  */
 export interface PendingDelta { kind: 'pending'; sessionId: string; pendingKind: 'approval' | 'question' }
-export type FleetEvent = NetworkBlockDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
+/** An automation ran; it only feeds notifications. */
+export interface AutomationDelta { kind: 'automation'; sessionId?: string; agentId?: string; title?: string; text?: string }
+export type FleetEvent = AutomationDelta | NetworkBlockDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
 export function toRow(a: AgentStatus): AgentRow { return { ...a, name: a.name ?? '', mode: a.mode ?? '', activity: a.activity ?? '', contextPct: a.contextPct ?? 0, changedFiles: a.changedFiles ?? 0, interrupted: a.interrupted ?? false } }
 const rank: Record<AgentRow['status'], number> = { 'awaiting-approval': 0, 'awaiting-question': 0, error: 1, running: 2, idle: 3 }
 export function sortAttentionFirst(rows: AgentRow[]): AgentRow[] { return [...rows].sort((a,b) => rank[a.status] - rank[b.status] || a.id.localeCompare(b.id)) }
@@ -72,7 +77,7 @@ export function groupAgents(agents: AgentRow[]): AgentGroups {
 export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
   if (d.kind === 'project_removed') return rows.filter((r) => r.project !== d.project)
   // Budget, reroute and watch deltas are fleet-wide; the store handles them.
-  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch' || d.kind === 'network_block') return rows
+  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch' || d.kind === 'automation' || d.kind === 'network_block') return rows
   let changed = false
   const out = rows.map((r) => {
     if (r.id !== d.sessionId) return r
@@ -80,6 +85,7 @@ export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
     if (d.kind === 'activity') return { ...r, activity: d.activity ?? r.activity }
     if (d.kind === 'mode') return { ...r, mode: d.mode ?? r.mode }
     if (d.kind === 'gate') return { ...r, gate: d.gate ?? r.gate }
+    if (d.kind === 'hold') return { ...r, held: d.held === true, heldBy: d.held === true ? d.by : undefined }
     if (d.kind === 'run') return { ...r, run: d.run, runAt: d.at ?? Date.now() }
     if (d.kind === 'telemetry') return { ...r, contextPct: d.contextPct ?? r.contextPct, changedFiles: d.changedFiles ?? r.changedFiles }
     if (d.kind === 'pending') {

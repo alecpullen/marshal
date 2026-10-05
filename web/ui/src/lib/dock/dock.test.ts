@@ -99,3 +99,15 @@ describe('dock persistence', () => {
     expect(load()).toEqual({ size: 'docked', width: 440 })
   })
 })
+
+describe('terminal unread mark', () => {
+  it('is set by output while the tab is not showing and cleared by opening it', () => {
+    let s = initialDock({ tab: 'inspect' })
+    s = reduce(s, { type: 'terminalOutput' })
+    expect(s.unseenTerminal).toBe(true)
+    s = reduce(s, { type: 'openTab', tab: 'terminal' })
+    expect(s.unseenTerminal).toBe(false)
+    expect(reduce(s, { type: 'terminalOutput' }).unseenTerminal).toBe(false)
+    expect(reduce({ ...s, size: 'collapsed' }, { type: 'terminalOutput' }).unseenTerminal).toBe(true)
+  })
+})

@@ -4,6 +4,7 @@
   import Toast from '../lib/ui/Toast.svelte'
   import SkillsTab from '../lib/library/SkillsTab.svelte'
   import PluginsTab from '../lib/library/PluginsTab.svelte'
+  import RecipesTab from '../lib/library/RecipesTab.svelte'
   import MemoryTab from '../lib/library/MemoryTab.svelte'
   import ClientsPanel from '../lib/ClientsPanel.svelte'
   import { listProjects, type ProjectStatus } from '../lib/api'
@@ -27,6 +28,7 @@
     { value: 'plugins', label: 'Plugins' },
     { value: 'mcp', label: 'MCP' },
     { value: 'memory', label: 'Memory' },
+    { value: 'recipes', label: 'Recipes' },
   ]
 </script>
 
@@ -42,6 +44,8 @@
       <PluginsTab {projects} project={route.project} onToast={(t) => (toast = t)} />
     {:else if route.tab === 'memory'}
       <MemoryTab {projects} project={route.project} onProject={(root) => onNavigate(formatLibraryRoute({ tab: 'memory', project: root }))} onToast={(t) => (toast = t)} />
+    {:else if route.tab === 'recipes'}
+      <RecipesTab {projects} onToast={(t) => (toast = t)} {onNavigate} />
     {:else}
       <ClientsPanel />
     {/if}

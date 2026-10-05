@@ -4,6 +4,7 @@
   import Button from '../lib/ui/Button.svelte'
   import Tag from '../lib/ui/Tag.svelte'
   import Badge from '../lib/ui/Badge.svelte'
+  import WatchesTabs from '../lib/watches/WatchesTabs.svelte'
   import Sparkline from '../lib/watches/Sparkline.svelte'
   import WatchDetail from '../lib/watches/WatchDetail.svelte'
   import WatchForm from '../lib/watches/WatchForm.svelte'
@@ -57,6 +58,7 @@
     <h1 class="text-lg font-semibold">Watches</h1>
     <Button onclick={() => (creating = true)} disabled={creating}>New watch</Button>
   </header>
+  <WatchesTabs tab="watches" {onNavigate} />
 
   {#if error}<Card class="border-attention text-sm" role="alert">{error}</Card>{/if}
 

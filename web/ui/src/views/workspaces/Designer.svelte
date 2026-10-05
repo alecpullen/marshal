@@ -4,6 +4,7 @@
   import Modal from '../../lib/ui/Modal.svelte'
   import Segmented from '../../lib/ui/Segmented.svelte'
   import DiffLines from '../../lib/DiffLines.svelte'
+  import Terminal from '../../lib/dock/Terminal.svelte'
   import SourceEditor from '../../lib/workspaces/SourceEditor.svelte'
   import SidePanel from '../../lib/workspaces/SidePanel.svelte'
   import BaseLayer from '../../lib/workspaces/layers/BaseLayer.svelte'
@@ -16,7 +17,7 @@
   import ResourcesLayer from '../../lib/workspaces/layers/ResourcesLayer.svelte'
   import SetupLayer from '../../lib/workspaces/layers/SetupLayer.svelte'
   import {
-    diffWorkspace, errMessage, getNetworkHosts, getSecretsStatus, getWorkspace, listBuilds, listRepos, patchWorkspace,
+    diffWorkspace, errMessage, getNetworkHosts, getSecretsStatus, getWorkspace, listBuilds, listRepos, openWorkspaceShell, patchWorkspace,
     publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild,
     type BuildsInfo, type NetRow, type RepoInfo, type SecretsStatus, type WSNetwork,
   } from '../../lib/api'
@@ -24,6 +25,7 @@
   import { changedLines } from '../../lib/workspaces/sourceEditor'
 
   let { name, onNavigate }: { name: string; onNavigate: (hash: string) => void } = $props()
+  let shellOpen = $state(false)
 
   type View = 'layers' | 'both' | 'source'
   const VIEW_KEY = 'marshal.ui.ws.view'
@@ -199,7 +201,7 @@
     <Segmented label="View" options={VIEW_OPTIONS} value={view} onchange={setView} />
     <Button variant="ghost" onclick={askPublish} disabled={busy || !st.doc}>Publish</Button>
     <Button onclick={build} disabled={busy || published === 0} title={published === 0 ? 'Publish first' : undefined}>Build</Button>
-    <Button variant="ghost" disabled title="Arrives with the terminal in W5">Test shell (W5)</Button>
+    <Button variant="ghost" onclick={() => (shellOpen = true)} disabled={published === 0} title={published === 0 ? 'Publish and build first' : 'A throwaway shell in the built image'}>Test shell</Button>
   </header>
 
   {#if loadError}<p role="alert" class="text-sm text-err">{loadError}</p>{/if}
@@ -232,6 +234,17 @@
     <p class="text-sm text-muted">Loading…</p>
   {/if}
 </div>
+
+{#if shellOpen}
+  <Modal title="Test shell · {name}" description="A throwaway container of the built image, with the workspace environment only." onDismiss={() => void (shellOpen = false)}>
+    <div class="flex h-96 flex-col" data-testid="test-shell">
+      <Terminal target={{ workspace: name }} open={(size) => openWorkspaceShell(name, size)} onClose={() => (shellOpen = false)} />
+    </div>
+    {#snippet footer()}
+      <Button variant="ghost" onclick={() => (shellOpen = false)}>Close</Button>
+    {/snippet}
+  </Modal>
+{/if}
 
 {#if publishDiff}
   <Modal title="Publish {name}?" description={publishDiff.first ? 'This is the first version.' : `Changes since v${published}:`} onDismiss={() => void (publishDiff = null)}>

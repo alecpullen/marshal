@@ -6,7 +6,7 @@
 
 export type DockSize = 'collapsed' | 'docked' | 'expanded'
 export type DockMode = 'follow' | 'select'
-export type DockTab = 'inspect' | 'changes' | 'files'
+export type DockTab = 'inspect' | 'changes' | 'files' | 'terminal' | 'preview'
 
 export interface DockState {
   size: DockSize
@@ -16,6 +16,8 @@ export interface DockState {
   pinned: boolean
   selected?: string
   unseenChanges: boolean
+  /** Terminal output arrived while the tab was not showing. */
+  unseenTerminal: boolean
 }
 
 export type DockAction =
@@ -27,6 +29,7 @@ export type DockAction =
   | { type: 'openTab'; tab: DockTab }
   | { type: 'togglePin' }
   | { type: 'liveEdit' }
+  | { type: 'terminalOutput' }
 
 export const MIN_WIDTH = 320
 export const MAX_WIDTH = 720
@@ -38,7 +41,7 @@ const INSPECTABLE = new Set(['tool', 'step', 'task', 'subagent'])
 const NEXT_SIZE: Record<DockSize, DockSize> = { collapsed: 'docked', docked: 'expanded', expanded: 'collapsed' }
 
 export function initialDock(over: Partial<DockState> = {}): DockState {
-  return { size: 'docked', width: DEFAULT_WIDTH, mode: 'follow', tab: 'inspect', pinned: false, unseenChanges: false, ...over }
+  return { size: 'docked', width: DEFAULT_WIDTH, mode: 'follow', tab: 'inspect', pinned: false, unseenChanges: false, unseenTerminal: false, ...over }
 }
 
 export function clampWidth(px: number): number {
@@ -67,6 +70,7 @@ export function reduce(s: DockState, a: DockAction): DockState {
         tab: a.tab,
         size: s.size === 'collapsed' ? 'docked' : s.size,
         unseenChanges: a.tab === 'changes' ? false : s.unseenChanges,
+        unseenTerminal: a.tab === 'terminal' ? false : s.unseenTerminal,
       }
     case 'togglePin':
       return { ...s, pinned: !s.pinned }
@@ -75,6 +79,8 @@ export function reduce(s: DockState, a: DockAction): DockState {
       if (s.mode === 'follow' && !s.pinned && s.size !== 'collapsed') return { ...s, tab: 'changes', unseenChanges: false }
       if (s.size === 'collapsed' || s.tab !== 'changes') return { ...s, unseenChanges: true }
       return s
+    case 'terminalOutput':
+      return s.size === 'collapsed' || s.tab !== 'terminal' ? (s.unseenTerminal ? s : { ...s, unseenTerminal: true }) : s
   }
 }
 

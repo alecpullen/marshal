@@ -42,7 +42,7 @@ export function pageFromHash(hash: string): Page {
   if (parseLibraryRoute(hash)) return 'library'
   if (parseSettingsRoute(hash)) return 'settings'
   if (parseUsageRoute(hash)) return 'usage'
-  if (hash === '#watches') return 'watches'
+  if (parseWatchesRoute(hash)) return 'watches'
   if (parseNetworkRoute(hash)) return 'network'
   if (parseProjectRoute(hash)) return 'project'
   if (parseWorkspacesRoute(hash)) return 'workspaces'
@@ -50,7 +50,7 @@ export function pageFromHash(hash: string): Page {
 }
 
 export type DockSizeParam = 'collapsed' | 'docked' | 'expanded'
-export type DockTabParam = 'inspect' | 'changes' | 'files'
+export type DockTabParam = 'inspect' | 'changes' | 'files' | 'terminal' | 'preview'
 
 /** A session page URL: `#chat/<id>[/review][?node=…&dock=…&tab=…]`. */
 export interface ChatRoute {
@@ -62,7 +62,7 @@ export interface ChatRoute {
 }
 
 const DOCK_SIZES: readonly string[] = ['collapsed', 'docked', 'expanded']
-const DOCK_TABS: readonly string[] = ['inspect', 'changes', 'files']
+const DOCK_TABS: readonly string[] = ['inspect', 'changes', 'files', 'terminal', 'preview']
 
 function decodeSafe(s: string): string {
   try {
@@ -155,8 +155,8 @@ export function formatLiveRoute(r: LiveRoute): string {
   return `#live${qs ? `?${qs}` : ''}`
 }
 
-export type LibraryTab = 'skills' | 'plugins' | 'mcp' | 'memory'
-const LIBRARY_TABS: readonly string[] = ['skills', 'plugins', 'mcp', 'memory']
+export type LibraryTab = 'skills' | 'plugins' | 'mcp' | 'memory' | 'recipes'
+const LIBRARY_TABS: readonly string[] = ['skills', 'plugins', 'mcp', 'memory', 'recipes']
 
 /** The Library URL: `#library[/<tab>][?project=<root>]`; a bare `#library` is Skills. */
 export interface LibraryRoute { tab: LibraryTab; project?: string }
@@ -174,8 +174,8 @@ export function formatLibraryRoute(r: LibraryRoute): string {
   return `#library/${r.tab}${r.project ? `?project=${encodeURIComponent(r.project)}` : ''}`
 }
 
-export type SettingsTab = 'models' | 'providers' | 'secrets' | 'credentials' | 'repos' | 'tokens'
-const SETTINGS_TABS: readonly string[] = ['models', 'providers', 'secrets', 'credentials', 'repos', 'tokens']
+export type SettingsTab = 'models' | 'providers' | 'secrets' | 'credentials' | 'repos' | 'tokens' | 'notifications' | 'status-links'
+const SETTINGS_TABS: readonly string[] = ['models', 'providers', 'secrets', 'credentials', 'repos', 'tokens', 'notifications', 'status-links']
 
 /** `#settings[/<tab>]`; a bare `#settings` is Models. */
 export function parseSettingsRoute(hash: string): { tab: SettingsTab } | null {
@@ -183,6 +183,15 @@ export function parseSettingsRoute(hash: string): { tab: SettingsTab } | null {
   if (!m) return null
   const tab = m[1] ?? 'models'
   return SETTINGS_TABS.includes(tab) ? { tab: tab as SettingsTab } : null
+}
+
+export type WatchesTab = 'watches' | 'schedules'
+
+/** `#watches` or `#watches/schedules`. */
+export function parseWatchesRoute(hash: string): { tab: WatchesTab } | null {
+  if (hash === '#watches') return { tab: 'watches' }
+  if (hash === '#watches/schedules') return { tab: 'schedules' }
+  return null
 }
 
 export type UsageTab = 'cost' | 'audit' | 'disk'

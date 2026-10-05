@@ -59,6 +59,12 @@ const (
 	AuditStatusLinkRevoked  = "status_link_revoked"
 	AuditNotificationsSaved = "notifications_saved"
 	AuditMemoryPromoted     = "memory_promoted"
+
+	AuditWebhookSecretSet   = "webhook_secret_set"
+	AuditReviewPosted       = "review_posted"
+	AuditReviewDiscarded    = "review_discarded"
+	AuditReviewSentToAuthor = "review_sent_to_author"
+	AuditCIFixerResult      = "ci_fixer_result"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

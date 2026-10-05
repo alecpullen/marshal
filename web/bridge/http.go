@@ -106,6 +106,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.statusPublic(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, hooksPrefix) {
+		s.hooksPublic(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, previewPrefix) {
 		http.NotFound(w, r)
 		return
@@ -163,6 +167,7 @@ func (s *Server) routes() {
 	s.scheduleRoutes()
 	s.notificationRoutes()
 	s.statusLinkRoutes()
+	s.automationRoutes()
 	s.modelsRoutes()
 	s.budgetRoutes()
 	s.watchRoutes()

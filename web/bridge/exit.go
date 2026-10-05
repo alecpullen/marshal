@@ -28,6 +28,11 @@ type ExitOptions struct {
 	CommitMessage string `json:"commitMessage"`
 	// Override, when non-nil, pushes despite a failed or skipped gate.
 	Override *GateOverride `json:"override,omitempty"`
+	// Branch and NoPR are for the bridge's own automations and never come
+	// off the wire: Branch names the pushed branch in place of the agent's
+	// default, and NoPR pushes without opening a pull request.
+	Branch string `json:"-"`
+	NoPR   bool   `json:"-"`
 }
 
 // ExitResult reports the outcome. Blocked means the gate refused and no
@@ -89,6 +94,9 @@ func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (Exi
 
 	// 4. Push — the only bridge-side git operation at exit.
 	branch := branchNameFor(a)
+	if opts.Branch != "" {
+		branch = opts.Branch
+	}
 	cred, err := f.credentialForAgent(ctx, a)
 	if err != nil {
 		return ExitResult{}, err
@@ -108,7 +116,9 @@ func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (Exi
 	// Every failure here falls through to extraction rather than
 	// returning. The push has already succeeded by this point, and
 	// failing the exit would strand work that is safely on the remote.
-	if pr, err := f.createPR(ctx, a, branch, verify); err == nil {
+	if opts.NoPR {
+		// A push straight to a branch has no pull request to look for.
+	} else if pr, err := f.createPR(ctx, a, branch, verify); err == nil {
 		a.PRUrl = pr.URL
 	} else {
 		if !errors.Is(err, errNoForge) {

@@ -121,6 +121,9 @@ type ProjectSettings struct {
 	// ShipTarget is merge, push or patch.
 	ShipTarget string        `json:"shipTarget,omitempty"`
 	Intake     ProjectIntake `json:"intake"`
+	// Automations configures the forge automations (W5.4). It is optional,
+	// so the workspace version does not change.
+	Automations *Automations `json:"automations,omitempty"`
 }
 
 // ProjectIntake mirrors Repo.Watch/WatchLabel and the client allowedRepos.

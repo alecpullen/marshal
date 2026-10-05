@@ -381,3 +381,10 @@ describe('hold deltas', () => {
     expect(back[0]).toMatchObject({ held: false, heldBy: undefined })
   })
 })
+
+describe('held on load', () => {
+  it('toRow keeps held from the agent list and treats a missing field as not held', () => {
+    expect(toRow({ id: 'a', project: '/p', status: 'idle', updatedAt: '', held: true }).held).toBe(true)
+    expect(toRow({ id: 'b', project: '/p', status: 'idle', updatedAt: '' }).held ?? false).toBe(false)
+  })
+})

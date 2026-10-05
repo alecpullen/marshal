@@ -130,6 +130,8 @@ export interface PendingRequest {
 }
 
 export interface AgentStatus {
+  /** True while a terminal holds the agent or a hand-back is pending; omitted when false. */
+  held?: boolean
   id: string
   project: string
   name?: string

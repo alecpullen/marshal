@@ -2,7 +2,7 @@ import { writable } from 'svelte/store'
 import { getNetworkPending, listAgents, listProjects, postNetworkDecision, type AgentStatus, type NetDecisionKind, type NetDecisionResult, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
-export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; /** Set by a hold delta while someone types in the agent's terminal. */ held?: boolean; heldBy?: string; gate?: GateRecord; run?: RunDetail; runAt?: number }
+export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; heldBy?: string; gate?: GateRecord; run?: RunDetail; runAt?: number }
 export interface FleetDelta {
   kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate' | 'hold'
   sessionId: string

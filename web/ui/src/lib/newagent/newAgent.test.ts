@@ -56,6 +56,11 @@ describe('model choice', () => {
     expect([...FAST_ROLES].sort()).toEqual(['repo_scout', 'router', 'summarizer', 'title'])
   })
 
+  it('sends nothing for a preset when no role can take an override', () => {
+    expect(routingFor({ kind: 'preset', name: 'big' }, [])).toBeUndefined()
+    expect(routingFor({ kind: 'preset', name: 'big' }, ['router', 'title'])).toBeUndefined()
+  })
+
   it('validates a remembered choice against the config', () => {
     const cfg = { profiles: { cheap: {} }, presets: { big: {} } }
     expect(validModel({ kind: 'profile', name: 'cheap' }, cfg)).toEqual({ kind: 'profile', name: 'cheap' })

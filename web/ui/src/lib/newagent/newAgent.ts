@@ -74,6 +74,9 @@ export function rememberWorkspace(project: string, ref: string): void {
  */
 export const FAST_ROLES: readonly string[] = ['router', 'title', 'summarizer', 'repo_scout']
 
+/** The roles a preset applies to: every role except the fast ones. */
+export const overridableRoles = (roles: readonly string[]): string[] => roles.filter((r) => !FAST_ROLES.includes(r))
+
 /** What the Model chip picks: the server default, a routing profile, or one preset for the main roles. */
 export type ModelChoice = { kind: 'default' } | { kind: 'profile'; name: string } | { kind: 'preset'; name: string }
 
@@ -86,8 +89,9 @@ export const DEFAULT_MODEL: ModelChoice = { kind: 'default' }
 export function routingFor(choice: ModelChoice, roles: readonly string[]): RoutingChoice | undefined {
   if (choice.kind === 'profile') return { profile: choice.name }
   if (choice.kind === 'preset') {
-    const overrides = Object.fromEntries(roles.filter((r) => !FAST_ROLES.includes(r)).map((r) => [r, choice.name]))
-    return { overrides }
+    // No overridable roles means nothing would be sent, which the server treats as the default profile.
+    const overrides = Object.fromEntries(overridableRoles(roles).map((r) => [r, choice.name]))
+    return Object.keys(overrides).length > 0 ? { overrides } : undefined
   }
   return undefined
 }

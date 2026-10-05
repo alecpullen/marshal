@@ -223,6 +223,59 @@ describe('NewAgent', () => {
       expect(await screen.findByText('Default profile')).toBeTruthy()
     })
 
+    it('keeps the stored choice when the model list cannot load', async () => {
+      localStorage.setItem('marshal.ui.newagent', JSON.stringify({ project: '/work/alpha', model: { kind: 'preset', name: 'big' } }))
+      ;(api.getModels as Mock).mockRejectedValue(new Error('down'))
+      await create()
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
+      expect(JSON.parse(localStorage.getItem('marshal.ui.newagent')!).model).toEqual({ kind: 'preset', name: 'big' })
+    })
+
+    it('keeps the remembered model across a recipe run and hides the chip while one is selected', async () => {
+      localStorage.setItem('marshal.ui.newagent', JSON.stringify({ project: '/work/alpha', model: { kind: 'preset', name: 'big' } }))
+      ;(api.listRecipes as Mock).mockResolvedValue([{ name: 'r', title: 'R', kind: 'prompt', mode: 'plan', prompt: 'go', inputs: [] }])
+      ;(api.runRecipe as Mock).mockResolvedValue({ agentId: 'r1' })
+      render(NewAgent, { onDone: vi.fn() })
+      expect(await screen.findByText('big preset')).toBeTruthy()
+      await fireEvent.click(screen.getByRole('tab', { name: 'Recipes' }))
+      await fireEvent.click(await screen.findByText('R'))
+      expect(screen.queryByText('big preset')).toBeNull()
+      await fireEvent.click(screen.getByText('Create agent'))
+      await waitFor(() => expect(api.runRecipe).toHaveBeenCalled())
+      expect(JSON.parse(localStorage.getItem('marshal.ui.newagent')!).model).toEqual({ kind: 'preset', name: 'big' })
+    })
+
+    it('does not offer presets when no role can take an override', async () => {
+      ;(api.getModels as Mock).mockResolvedValue({ ...models, roles: ['router', 'title'] })
+      await create()
+      await fireEvent.click(screen.getByText('Default profile'))
+      expect(await screen.findByText(/Unavailable/)).toBeTruthy()
+      expect(screen.queryByText('big')).toBeNull()
+    })
+
+    it('does not overwrite a pick made before the model list arrives', async () => {
+      localStorage.setItem('marshal.ui.newagent', JSON.stringify({ project: '/work/alpha', model: { kind: 'preset', name: 'big' } }))
+      let release!: (v: unknown) => void
+      ;(api.getModels as Mock).mockReturnValue(new Promise((r) => (release = r)))
+      render(NewAgent, { onDone: vi.fn() })
+      await screen.findByText('alpha')
+      await fireEvent.click(screen.getByText('Default profile'))
+      await fireEvent.click(screen.getAllByText('Default profile')[1])
+      release(models)
+      await waitFor(() => expect(api.getModels).toHaveBeenCalled())
+      await new Promise((r) => setTimeout(r, 0))
+      expect(screen.getByText('Default profile', { selector: 'button.rounded-full' })).toBeTruthy()
+    })
+
+    it('groups profiles and presets and hides the selection marker from screen readers', async () => {
+      await create()
+      await fireEvent.click(screen.getByText('Default profile'))
+      expect(await screen.findByRole('group', { name: 'Profiles' })).toBeTruthy()
+      expect(screen.getByRole('group', { name: /Presets/ })).toBeTruthy()
+      expect(document.querySelector('[aria-hidden="true"]')?.textContent).toContain('●')
+    })
+
     it('stays on the default when the model list cannot load', async () => {
       ;(api.getModels as Mock).mockRejectedValue(new Error('down'))
       await create()

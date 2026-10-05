@@ -6,7 +6,7 @@
   import IssuePicker from '../lib/IssuePicker.svelte'
   import Chip from '../lib/newagent/Chip.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import { DEFAULT_MODEL, MODES, canIsolate, defaults, loadRemembered, loadWorkspace, modelLabel, remember, rememberWorkspace, routingFor, validModel, type Choice, type ModelChoice } from '../lib/newagent/newAgent'
+  import { DEFAULT_MODEL, MODES, canIsolate, defaults, loadRemembered, loadWorkspace, modelLabel, overridableRoles, remember, rememberWorkspace, routingFor, validModel, type Choice, type ModelChoice } from '../lib/newagent/newAgent'
   import WorkspaceChip from '../lib/workspaces/WorkspaceChip.svelte'
 
   let { onDone }: { onDone: (id: string | null, warning?: string) => void } = $props()
@@ -17,6 +17,16 @@
 
   let models = $state<ModelsConfig | null>(null)
   let model = $state<ModelChoice>(DEFAULT_MODEL)
+  // What was stored before this visit; kept as is until the model list has loaded, so a failed load never erases it.
+  let storedModel: ModelChoice | undefined
+  let modelPicked = false
+  const overridable = $derived(overridableRoles(models?.roles ?? []))
+
+  function pickModel(m: ModelChoice) {
+    modelPicked = true
+    model = m
+  }
+  const modelToRemember = () => (models ? model : storedModel)
   let prompt = $state('')
   let tab = $state<'issues' | 'recent' | 'recipes'>('recent')
   let recipes = $state<Recipe[]>([])
@@ -34,6 +44,7 @@
   onMount(async () => {
     promptEl?.focus()
     const remembered = loadRemembered()
+    storedModel = remembered.model
     try {
       projects = await listProjects()
       choice = defaults(projects, remembered)
@@ -45,7 +56,11 @@
     // The model list is optional: without it the chip stays on the default.
     try {
       models = await getModels()
-      model = validModel(remembered.model, models)
+      // A pick made while the list was loading wins over the remembered one.
+      if (!modelPicked) {
+        const m = validModel(remembered.model, models)
+        model = m.kind === 'preset' && overridable.length === 0 ? DEFAULT_MODEL : m
+      }
     } catch {
       models = null
     }
@@ -101,7 +116,7 @@
       if (recipe) {
         // The recipe's limits only apply through its own run route.
         const r = await runRecipe(recipe.name, { project: choice.project, inputs: recipeInputs })
-        remember(choice)
+        remember(choice, modelToRemember())
         onDone(r.agentId)
         return
       }
@@ -115,7 +130,7 @@
         baseRef: choice.isolated && choice.baseRef.trim() ? choice.baseRef.trim() : undefined,
         routing: routingFor(model, models?.roles ?? []),
       })
-      remember(choice, model)
+      remember(choice, modelToRemember())
       rememberWorkspace(choice.project, workspace)
       onDone(r.agentId, r.warning)
     } catch (e) {
@@ -208,27 +223,37 @@
         {/key}
       {/if}
 
-      <Chip label="Model" value={modelLabel(model)}>
-        <button type="button" class="rounded px-2 py-1 text-left hover:bg-hover" aria-pressed={model.kind === 'default'} onclick={() => (model = DEFAULT_MODEL)}>
-          {model.kind === 'default' ? '● ' : ''}Default profile
-        </button>
-        {#if models && Object.keys(models.profiles).length > 0}
-          <div class="px-2 pt-1 text-xs text-muted">Profiles</div>
-          {#each Object.keys(models.profiles).sort() as name (name)}
-            <button type="button" class="rounded px-2 py-1 text-left hover:bg-hover" aria-pressed={model.kind === 'profile' && model.name === name} onclick={() => (model = { kind: 'profile', name })}>
-              {model.kind === 'profile' && model.name === name ? '● ' : ''}{name}{name === models.defaultProfile ? ' (default)' : ''}
-            </button>
-          {/each}
-        {/if}
-        {#if models && Object.keys(models.presets).length > 0}
-          <div class="px-2 pt-1 text-xs text-muted">Presets (all roles except the fast ones)</div>
-          {#each Object.keys(models.presets).sort() as name (name)}
-            <button type="button" class="rounded px-2 py-1 text-left hover:bg-hover" aria-pressed={model.kind === 'preset' && model.name === name} onclick={() => (model = { kind: 'preset', name })}>
-              {model.kind === 'preset' && model.name === name ? '● ' : ''}{name}
-            </button>
-          {/each}
-        {/if}
-      </Chip>
+      {#if !recipe}
+        <Chip label="Model" value={modelLabel(model)}>
+          <button type="button" class="rounded px-2 py-1 text-left hover:bg-hover" aria-pressed={model.kind === 'default'} onclick={() => pickModel(DEFAULT_MODEL)}>
+            {#if model.kind === 'default'}<span aria-hidden="true">● </span>{/if}Default profile
+          </button>
+          {#if models && Object.keys(models.profiles).length > 0}
+            <div role="group" aria-labelledby="model-profiles" class="flex flex-col">
+              <div id="model-profiles" class="px-2 pt-1 text-xs text-muted">Profiles</div>
+              {#each Object.keys(models.profiles).sort() as name (name)}
+                <button type="button" class="rounded px-2 py-1 text-left hover:bg-hover" aria-pressed={model.kind === 'profile' && model.name === name} onclick={() => pickModel({ kind: 'profile', name })}>
+                  {#if model.kind === 'profile' && model.name === name}<span aria-hidden="true">● </span>{/if}{name}{name === models.defaultProfile ? ' (default)' : ''}
+                </button>
+              {/each}
+            </div>
+          {/if}
+          {#if models && Object.keys(models.presets).length > 0}
+            <div role="group" aria-labelledby="model-presets" class="flex flex-col">
+              <div id="model-presets" class="px-2 pt-1 text-xs text-muted">Presets (all roles except the fast ones)</div>
+              {#if overridable.length === 0}
+                <div class="px-2 py-1 text-xs text-muted">Unavailable: the bridge listed no roles a preset can apply to.</div>
+              {:else}
+                {#each Object.keys(models.presets).sort() as name (name)}
+                  <button type="button" class="rounded px-2 py-1 text-left hover:bg-hover" aria-pressed={model.kind === 'preset' && model.name === name} onclick={() => pickModel({ kind: 'preset', name })}>
+                    {#if model.kind === 'preset' && model.name === name}<span aria-hidden="true">● </span>{/if}{name}
+                  </button>
+                {/each}
+              {/if}
+            </div>
+          {/if}
+        </Chip>
+      {/if}
 
       <Button class="ml-auto" disabled={busy || !choice.project} onclick={create}>Create agent <span class="text-xs opacity-70">⌘↵</span></Button>
     </div>

@@ -8,6 +8,7 @@
   import Graph from '../lib/runs/Graph.svelte'
   import Timeline, { type Sample } from '../lib/runs/Timeline.svelte'
   import Dock from '../lib/dock/Dock.svelte'
+  import StatusShare from '../lib/StatusShare.svelte'
   import OpsTabs from '../lib/dock/OpsTabs.svelte'
   import InspectTab from '../lib/dock/InspectTab.svelte'
   import ChangesTab from '../lib/dock/ChangesTab.svelte'
@@ -226,6 +227,7 @@
             <Tag tone={summary.running ? 'ok' : summary.phase === 'failed' ? 'err' : 'neutral'}>{summary.phase || (summary.running ? 'running' : 'finished')}</Tag>
             {#if sdd?.branch}<span class="font-mono text-xs text-muted">⎇ {sdd.branch}</span>{/if}
             <span class="flex-1"></span>
+            <StatusShare {agentId} />
             <span class="font-mono text-xs text-muted">{summary.done}/{summary.total} {summary.kind === 'sdd' ? 'tasks' : 'roles'}</span>
             <span class="font-mono text-xs text-muted">{tokensUsed.toLocaleString()}{tokensMax ? ` / ${tokensMax.toLocaleString()}` : ''} tokens</span>
             {#if elapsed}<span class="font-mono text-xs text-muted">{elapsed}</span>{/if}

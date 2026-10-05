@@ -169,3 +169,23 @@ describe('workspaces routes', () => {
     expect(pageFromHash('#workspaces')).toBe('workspaces')
   })
 })
+
+import { parseWatchesRoute as _pw, parseSettingsRoute as _ps, parseLibraryRoute as _pl, parseChatRoute as _pc } from './routes'
+describe('W5.5 routes', () => {
+  it('watches has a schedules tab', () => {
+    expect(_pw('#watches')).toEqual({ tab: 'watches' })
+    expect(_pw('#watches/schedules')).toEqual({ tab: 'schedules' })
+    expect(_pw('#watches/x')).toBeNull()
+  })
+  it('settings has notifications and status-links', () => {
+    expect(_ps('#settings/notifications')).toEqual({ tab: 'notifications' })
+    expect(_ps('#settings/status-links')).toEqual({ tab: 'status-links' })
+  })
+  it('library has recipes', () => {
+    expect(_pl('#library/recipes')).toEqual({ tab: 'recipes', project: undefined })
+  })
+  it('chat accepts the terminal and preview dock tabs', () => {
+    expect(_pc('#chat/a1?tab=terminal')?.tab).toBe('terminal')
+    expect(_pc('#chat/a1?tab=preview')?.tab).toBe('preview')
+  })
+})

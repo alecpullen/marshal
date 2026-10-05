@@ -3,6 +3,8 @@
   import Toast from '../lib/ui/Toast.svelte'
   import ClientsPanel from '../lib/ClientsPanel.svelte'
   import Models from './settings/Models.svelte'
+  import Notifications from './settings/Notifications.svelte'
+  import StatusLinks from './settings/StatusLinks.svelte'
   import Providers from './settings/Providers.svelte'
   import type { SettingsTab } from '../lib/routes'
 
@@ -13,6 +15,8 @@
     { value: 'models', label: 'Models' },
     { value: 'providers', label: 'Providers' },
     { value: 'tokens', label: 'Tokens' },
+    { value: 'notifications', label: 'Notifications' },
+    { value: 'status-links', label: 'Status links' },
   ]
 </script>
 
@@ -23,6 +27,10 @@
     <Models {budgetTick} onToast={(t) => (toast = t)} />
   {:else if tab === 'providers'}
     <Providers onToast={(t) => (toast = t)} />
+  {:else if tab === 'notifications'}
+    <Notifications onToast={(t) => (toast = t)} />
+  {:else if tab === 'status-links'}
+    <StatusLinks onToast={(t) => (toast = t)} />
   {:else}
     <ClientsPanel />
   {/if}

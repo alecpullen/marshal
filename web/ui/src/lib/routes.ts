@@ -172,8 +172,8 @@ export function formatLibraryRoute(r: LibraryRoute): string {
   return `#library/${r.tab}${r.project ? `?project=${encodeURIComponent(r.project)}` : ''}`
 }
 
-export type SettingsTab = 'models' | 'providers' | 'tokens'
-const SETTINGS_TABS: readonly string[] = ['models', 'providers', 'tokens']
+export type SettingsTab = 'models' | 'providers' | 'tokens' | 'notifications' | 'status-links'
+const SETTINGS_TABS: readonly string[] = ['models', 'providers', 'tokens', 'notifications', 'status-links']
 
 /** `#settings[/<tab>]`; a bare `#settings` is Models. */
 export function parseSettingsRoute(hash: string): { tab: SettingsTab } | null {

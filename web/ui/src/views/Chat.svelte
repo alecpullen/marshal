@@ -18,6 +18,7 @@
   import InspectTab from '../lib/dock/InspectTab.svelte'
   import ChangesTab from '../lib/dock/ChangesTab.svelte'
   import FilesTab, { type OpenRequest } from '../lib/dock/FilesTab.svelte'
+  import StatusShare from '../lib/StatusShare.svelte'
   import OpsTabs from '../lib/dock/OpsTabs.svelte'
   import { createNodeCache } from '../lib/dock/nodeCache'
   import { initialDock, load as loadDock, reduce, save as saveDock, type DockAction, type DockState } from '../lib/dock/dock'
@@ -529,6 +530,7 @@
       />
     {/if}
     <ModeSwitcher mode={$session.mode} onChange={changeMode} />
+    <StatusShare agentId={sessionId} />
     <a class="review" href="#chat/{sessionId}/review">Review</a>
     <span class="connection" class:connected={$session.connected} title={$session.connected ? 'connected' : 'disconnected'}>
       {$session.connected ? '●' : '○'}

@@ -25,6 +25,8 @@
   import SessionsPanel from './lib/SessionsPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
+  import { get } from 'svelte/store'
+  import { loadPrefs, maybeNotify, show as showNotification, type FleetLike } from './lib/notify'
   import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseWatchesRoute, redirectLegacy } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
@@ -67,6 +69,9 @@
     their own before.
   */
   const { state: fleet, actions } = createFleetStore()
+
+  // Finished runs already announced by a browser notification.
+  const announcedRuns = new Set<string>()
 
   let pending = $state<PendingSubmission[]>([])
   let clients = $state<MCPClient[]>([])
@@ -131,6 +136,11 @@
     const disconnect = connectFleetSSE({
       onDelta: (d) => {
         actions.applyDelta(d)
+        const toast = maybeNotify(d as FleetLike, loadPrefs(), document.visibilityState === 'visible', {
+          nameOf: (id) => get(fleet).agents.find((a) => a.id === id)?.name || id,
+          seen: announcedRuns,
+        })
+        if (toast) showNotification(toast)
         if (d.kind === 'project_removed' && hash !== '#') navigate('#')
         // A pending delta carries only the kind; refetch to pick up the
         // payload the attention list needs to render a decision.

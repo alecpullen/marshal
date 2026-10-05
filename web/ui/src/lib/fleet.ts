@@ -33,7 +33,9 @@ export interface ProjectRemovedDelta { kind: 'project_removed'; project: string 
  * the snapshot is the authority on what is still outstanding.
  */
 export interface PendingDelta { kind: 'pending'; sessionId: string; pendingKind: 'approval' | 'question' }
-export type FleetEvent = FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
+/** Events that are about the fleet rather than one row; they only feed notifications. */
+export interface ExtraDelta { kind: 'automation' | 'network_block'; sessionId?: string; agentId?: string; host?: string; title?: string; text?: string }
+export type FleetEvent = ExtraDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
 export function toRow(a: AgentStatus): AgentRow { return { ...a, name: a.name ?? '', mode: a.mode ?? '', activity: a.activity ?? '', contextPct: a.contextPct ?? 0, changedFiles: a.changedFiles ?? 0, interrupted: a.interrupted ?? false } }
 const rank: Record<AgentRow['status'], number> = { 'awaiting-approval': 0, 'awaiting-question': 0, error: 1, running: 2, idle: 3 }
 export function sortAttentionFirst(rows: AgentRow[]): AgentRow[] { return [...rows].sort((a,b) => rank[a.status] - rank[b.status] || a.id.localeCompare(b.id)) }
@@ -65,7 +67,7 @@ export function groupAgents(agents: AgentRow[]): AgentGroups {
 export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
   if (d.kind === 'project_removed') return rows.filter((r) => r.project !== d.project)
   // Budget, reroute and watch deltas are fleet-wide; the store handles them.
-  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch') return rows
+  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch' || d.kind === 'automation' || d.kind === 'network_block') return rows
   let changed = false
   const out = rows.map((r) => {
     if (r.id !== d.sessionId) return r

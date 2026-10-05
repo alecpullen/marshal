@@ -335,12 +335,21 @@ func (f *Fleet) DiscardReviewDraft(id string) (ReviewDraft, error) {
 
 // buildReview turns a draft into the forge's review: findings with a path
 // and line become inline comments, the rest fold into the body by severity.
-func buildReview(d ReviewDraft) Review {
+func buildReview(d ReviewDraft) Review { return buildReviewMode(d, false) }
+
+// buildReviewMode is buildReview; with fold, nothing is inline: a finding
+// with a location goes into the body with that location in front.
+func buildReviewMode(d ReviewDraft, fold bool) Review {
 	var body strings.Builder
 	body.WriteString(strings.TrimSpace(d.Summary))
 	var loose []DraftFinding
 	var inline []ReviewLine
 	for _, fd := range d.Findings {
+		if fold && fd.Path != "" && fd.Line > 0 {
+			fd.Title = fmt.Sprintf("`%s:%d` %s", fd.Path, fd.Line, fd.Title)
+			loose = append(loose, fd)
+			continue
+		}
 		if fd.Path != "" && fd.Line > 0 {
 			text := fmt.Sprintf("**%s**: %s", fd.Severity, fd.Title)
 			if fd.Body != "" {
@@ -398,7 +407,14 @@ func (f *Fleet) PostReviewDraft(ctx context.Context, id string) (ReviewDraft, er
 	if err != nil {
 		return d, err
 	}
-	url, err := forge.PostReview(ctx, repo, d.Number, buildReview(d), cred)
+	review := buildReview(d)
+	url, err := forge.PostReview(ctx, repo, d.Number, review, cred)
+	var apiErr *forgeAPIError
+	if err != nil && len(review.Comments) > 0 && errors.As(err, &apiErr) && apiErr.statusCode == http.StatusUnprocessableEntity {
+		// One inline comment on a line outside the diff fails the whole
+		// review. Post it again with every finding in the body.
+		url, err = forge.PostReview(ctx, repo, d.Number, buildReviewMode(d, true), cred)
+	}
 	if err != nil {
 		return d, err
 	}

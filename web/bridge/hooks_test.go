@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -215,4 +216,54 @@ func TestWebhookSecretRouteRefusesTheEnvBackend(t *testing.T) {
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "secrets backend") {
 		t.Fatalf("code = %d, body = %s", rec.Code, rec.Body)
 	}
+}
+
+func TestHooksDropAReplayedDelivery(t *testing.T) {
+	e, prs, _ := hookEnv(t)
+	body := `{"action":"opened","number":7,"pull_request":{"head":{"sha":"abc"}}}`
+	h := githubHeaders("pull_request", "s3cret", body)
+	h["X-GitHub-Delivery"] = "d-1"
+	for range 2 {
+		if rec := postHook(e.srv, "r1", body, h); rec.Code != http.StatusAccepted {
+			t.Fatalf("code = %d", rec.Code)
+		}
+	}
+	<-prs
+	select {
+	case ev := <-prs:
+		t.Fatalf("a replayed delivery dispatched %+v", ev)
+	case <-time.After(150 * time.Millisecond):
+	}
+	// Another delivery id is new work, and an id is per repo.
+	h["X-GitHub-Delivery"] = "d-2"
+	postHook(e.srv, "r1", body, h)
+	<-prs
+	// A forged replay (bad signature) must not poison the cache.
+	bad := map[string]string{"X-GitHub-Event": "pull_request", "X-Hub-Signature-256": "sha256=00", "X-GitHub-Delivery": "d-3"}
+	postHook(e.srv, "r1", body, bad)
+	h["X-GitHub-Delivery"] = "d-3"
+	postHook(e.srv, "r1", body, h)
+	select {
+	case <-prs:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a rejected delivery id blocked the genuine one")
+	}
+}
+
+func TestHooksLookUpTheSecretBeforeReadingTheBody(t *testing.T) {
+	e := newAutoEnv(t, nil) // no secret for r1
+	req := httptest.NewRequest(http.MethodPost, hooksPrefix+"r1", &failReader{t: t})
+	rec := httptest.NewRecorder()
+	e.srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("code = %d, want 401", rec.Code)
+	}
+}
+
+// failReader fails the test if anything reads it.
+type failReader struct{ t *testing.T }
+
+func (r *failReader) Read([]byte) (int, error) {
+	r.t.Error("the body was read before the secret was found")
+	return 0, io.EOF
 }

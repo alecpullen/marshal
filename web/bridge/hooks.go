@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // hooksPrefix is where forges deliver webhooks. It is outside /api, so it
@@ -63,6 +64,46 @@ func hookSignatureOK(r *http.Request, secret, body []byte) bool {
 	mac := hmac.New(sha256.New, secret)
 	mac.Write(body)
 	return hmac.Equal(mac.Sum(nil), want)
+}
+
+// deliveryID is the forge's unique id for one delivery.
+func deliveryID(r *http.Request) string {
+	if id := r.Header.Get("X-GitHub-Delivery"); id != "" {
+		return id
+	}
+	return r.Header.Get("X-Gitea-Delivery")
+}
+
+const (
+	deliveryWindow = time.Hour
+	deliveryCap    = 4096
+)
+
+// seenDelivery records a delivery id and reports whether it was already
+// seen within the window.
+func (f *Fleet) seenDelivery(key string) bool {
+	now := f.now()
+	f.auto.mu.Lock()
+	defer f.auto.mu.Unlock()
+	if f.auto.deliveries == nil {
+		f.auto.deliveries = map[string]time.Time{}
+	}
+	if at, ok := f.auto.deliveries[key]; ok && now.Sub(at) < deliveryWindow {
+		return true
+	}
+	if len(f.auto.deliveries) >= deliveryCap {
+		for k, at := range f.auto.deliveries {
+			if now.Sub(at) >= deliveryWindow {
+				delete(f.auto.deliveries, k)
+			}
+		}
+		if len(f.auto.deliveries) >= deliveryCap {
+			// Everything is fresh: start over rather than grow.
+			f.auto.deliveries = map[string]time.Time{}
+		}
+	}
+	f.auto.deliveries[key] = now
+	return false
 }
 
 // hookEvent is a webhook reduced to what the automations act on.
@@ -175,17 +216,29 @@ func (s *Server) hooksPublic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// An unknown repo, a missing secret and a bad signature all answer the
+	// same, so the route does not say which repos exist. The secret is
+	// looked up first: an unauthenticated caller must not make the bridge
+	// read a megabyte for nothing.
+	secret, err := s.fleet.secrets.Get(r.Context(), DefaultOwnerID, hookSecretPath(repoID))
+	if err != nil || len(secret) == 0 {
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxHookBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	// An unknown repo, a missing secret and a bad signature all answer the
-	// same, so the route does not say which repos exist.
-	secret, err := s.fleet.secrets.Get(r.Context(), DefaultOwnerID, hookSecretPath(repoID))
-	if err != nil || len(secret) == 0 || !hookSignatureOK(r, secret, body) {
+	if !hookSignatureOK(r, secret, body) {
 		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	// A signed delivery can still be replayed; a delivery id seen in the
+	// window is acknowledged and dropped.
+	if id := deliveryID(r); id != "" && s.fleet.seenDelivery(repoID+"|"+id) {
+		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	ev := parseHook(r, repoID, body)

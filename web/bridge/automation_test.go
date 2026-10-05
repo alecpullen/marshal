@@ -23,6 +23,8 @@ type forgeStub struct {
 	checkRuns map[string]string
 	reviews   []string
 	reviewURL string
+	// rejectInline answers 422 to a review that carries inline comments.
+	rejectInline bool
 }
 
 func newForgeStub(t *testing.T) *forgeStub {
@@ -49,6 +51,11 @@ func newForgeStub(t *testing.T) *forgeStub {
 			http.NotFound(w, r)
 		case r.Method == "POST" && strings.HasSuffix(p, "/reviews"):
 			b, _ := io.ReadAll(r.Body)
+			if s.rejectInline && !strings.Contains(string(b), `"comments":[]`) {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"message":"Line could not be resolved"}`))
+				return
+			}
 			s.reviews = append(s.reviews, string(b))
 			_, _ = w.Write([]byte(`{"html_url":"` + s.reviewURL + `"}`))
 		case r.Method == "GET" && strings.HasPrefix(p, "/repos/you/r/commits/") && strings.HasSuffix(p, "/check-runs"):
@@ -94,6 +101,8 @@ type autoEnv struct {
 	srv   *Server
 	forge *forgeStub
 	root  string
+	// tips is each branch's tip commit, as the repo's mirror reports it.
+	tips map[string]string
 }
 
 func newAutoEnv(t *testing.T, a *Automations) *autoEnv {
@@ -114,7 +123,14 @@ func newAutoEnvOn(t *testing.T, f *Fleet, a *Automations) *autoEnv {
 	if err := f.ws.PutProjectSettings(root, ProjectSettings{Automations: a}); err != nil {
 		t.Fatal(err)
 	}
-	return &autoEnv{f: f, srv: NewServer(f, ""), forge: stub, root: root}
+	e := &autoEnv{f: f, srv: NewServer(f, ""), forge: stub, root: root, tips: map[string]string{}}
+	f.auto.branchHead = func(_ context.Context, _ Repo, branch string) (string, error) {
+		if sha, ok := e.tips[branch]; ok {
+			return sha, nil
+		}
+		return "", fmt.Errorf("no such branch %q", branch)
+	}
+	return e
 }
 
 func (e *autoEnv) setAutomations(t *testing.T, a *Automations) {

@@ -16,10 +16,15 @@ import (
 
 // CI history statuses.
 const (
-	ciFixed          = "fixed"
-	ciNotReproduced  = "didn't reproduce"
-	ciGaveUp         = "gave up"
-	ciLogTailBytes   = 32 << 10
+	ciFixed         = "fixed"
+	ciNotReproduced = "didn't reproduce"
+	ciGaveUp        = "gave up"
+	ciLogTailBytes  = 32 << 10
+	// ciMaxPushedFixes pushed fixes per (repo, branch) within ciLoopWindow
+	// is the most the fixer makes: a fix that is still red would otherwise
+	// be fixed again on its own new commit, without end.
+	ciMaxPushedFixes = 2
+	ciLoopWindow     = time.Hour
 	ciWorkflowPrefix = ".github/workflows/"
 )
 
@@ -36,6 +41,9 @@ type CIHistoryEntry struct {
 	AgentID   string    `json:"agentId,omitempty"`
 	CostUSD   float64   `json:"costUsd"`
 	CreatedAt time.Time `json:"createdAt"`
+	// Pushed marks a fix pushed straight to the branch, which the loop
+	// guard counts.
+	Pushed bool `json:"pushed,omitempty"`
 }
 
 // diffEntry is one changed file of an agent's diff.
@@ -190,12 +198,24 @@ func (f *Fleet) onCheckEvent(ctx context.Context, ev checkEvent) {
 
 func (f *Fleet) fixCI(ctx context.Context, ev checkEvent) error {
 	root, ci, ok := f.ciFixerSettings(ev.repoID)
-	if !ok || !matchesAny(ci.Branches, ev.ref) {
+	// An event with no branch cannot be matched against the watched ones.
+	if !ok || ev.ref == "" || !matchesAny(ci.Branches, ev.ref) {
 		return nil
 	}
 	repo, ok := f.ws.Repo(ev.repoID)
 	if !ok {
 		return ErrUnknownRepo
+	}
+	// Trust the repo, not the payload: the commit must be the tip of the
+	// branch in our own mirror. That drops replayed or delayed failures of
+	// an old commit, and a fork's same-named branch, whose commit is not
+	// on ours.
+	tip, err := f.branchHead(ctx, repo, ev.ref)
+	if err != nil {
+		return fmt.Errorf("resolve the tip of %s: %w", ev.ref, err)
+	}
+	if tip != ev.sha {
+		return nil
 	}
 	forge, cred, err := f.forgeFor(ctx, repo)
 	if err != nil {
@@ -215,6 +235,12 @@ func (f *Fleet) fixCI(ctx context.Context, ev checkEvent) error {
 			f.autoRelease(key)
 			continue
 		}
+		if ci.Push && matchesAny(ci.PushBranches, ev.ref) && f.pushLoop(repo.ID, ev.ref) {
+			f.recordCIGaveUp(repo, ev, check, fmt.Sprintf("loop guard: %d fixes pushed to %s in the last %s are still red",
+				ciMaxPushedFixes, ev.ref, ciLoopWindow))
+			f.autoRelease(key)
+			return nil
+		}
 		// Only the first new failure: its fix may well fix the others, and
 		// the next event picks up whatever is still red.
 		if err := f.startCIFix(ctx, root, ci, repo, forge, cred, ev, check, key); err != nil {
@@ -224,6 +250,33 @@ func (f *Fleet) fixCI(ctx context.Context, ev checkEvent) error {
 		return nil
 	}
 	return nil
+}
+
+// pushLoop reports whether the fixer has already pushed its limit of fixes
+// to a branch recently.
+func (f *Fleet) pushLoop(repoID, branch string) bool {
+	n := 0
+	cutoff := f.now().Add(-ciLoopWindow)
+	for _, h := range f.ciHistory().all() {
+		if h.RepoID == repoID && h.Branch == branch && h.Pushed && h.Status == ciFixed && h.CreatedAt.After(cutoff) {
+			n++
+		}
+	}
+	return n >= ciMaxPushedFixes
+}
+
+// recordCIGaveUp writes a history entry for a check the fixer declined
+// before any agent ran.
+func (f *Fleet) recordCIGaveUp(repo Repo, ev checkEvent, check CheckInfo, reason string) {
+	e := CIHistoryEntry{ID: newAutoID(), RepoID: repo.ID, Branch: ev.ref, SHA: ev.sha, Check: check.Name,
+		Status: ciGaveUp, Reason: reason, CreatedAt: f.now()}
+	if err := f.ciHistory().put(e.ID, e); err != nil {
+		slog.Default().Warn("webbridge: store CI history", "repo", repo.ID, "err", err)
+		return
+	}
+	f.auditf(AuditEvent{Event: AuditCIFixerResult, OwnerID: DefaultOwnerID, RepoID: repo.ID, Detail: ciGaveUp})
+	f.emitAutomation("ci_result", e.ID, "", ciGaveUp, "CI fixer: "+ciGaveUp,
+		fmt.Sprintf("%s on %s: %s (%s)", check.Name, shortSHA(ev.sha), ciGaveUp, reason))
 }
 
 func (f *Fleet) startCIFix(ctx context.Context, root string, ci *CIFixerSettings, repo Repo, forge Forge, cred Credential, ev checkEvent, check CheckInfo, key string) error {
@@ -426,6 +479,7 @@ func (f *Fleet) finishCI(repo Repo, ci *CIFixerSettings, ev checkEvent, check Ch
 		record(ciGaveUp, "ship target is "+exit.Destination+", not push")
 	default:
 		entry.PRURL = exit.PRUrl
+		entry.Pushed = push
 		reason := "opened a pull request"
 		if push {
 			reason = "pushed to " + base

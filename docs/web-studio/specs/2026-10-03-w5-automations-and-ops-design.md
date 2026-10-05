@@ -406,13 +406,21 @@ Each action is audited (`review_posted` and so on).
 
 **Run:**
 1. A failed check on a watched branch triggers it, de-duplicated by
-   `(repo, sha, check)`.
+   `(repo, sha, check)`. The event's branch must be non-empty and its
+   commit must be the branch's current tip in the bridge's own mirror;
+   otherwise the event is dropped. That rejects replayed or delayed
+   failures and a fork's same-named branch.
 2. Fetch the log with `CheckLog`.
 3. Run `fix-ci` with origin `ci`:
    - a git-sourced spawn at the failing SHA, edit mode, isolated;
    - the prompt includes the check name, the failing command when it can
      be inferred, and the log tail;
    - limits from the settings.
+
+**Loop guard.** In push mode a fix that is still red would be fixed
+again on its own new commit. The fixer therefore makes at most two pushed
+fixes per `(repo, branch)` per hour; a further failure is recorded as
+`gave up` ("loop guard") without running an agent.
 
 **Guards (bridge-side, deterministic):**
 1. **Reproduce first.** The `ci-result` must have `reproduced: true`.

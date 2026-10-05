@@ -119,6 +119,7 @@ func TestCIFixerRunsFixCIForTheFirstFailedCheck(t *testing.T) {
 	a.CIFixer.MaxMinutes, a.CIFixer.MaxUSD = 20, 3.5
 	e := newAutoEnv(t, a)
 	e.forge.checkRuns["c1"] = twoFailures
+	e.tips["main"] = "c1"
 	spy := e.spyRecipes()
 
 	e.f.onCheckEvent(t.Context(), checkEvent{repoID: "r1", ref: "main", sha: "c1"})
@@ -141,6 +142,7 @@ func TestCIFixerRunsFixCIForTheFirstFailedCheck(t *testing.T) {
 func TestCIFixerIgnoresUnwatchedBranchesAndWhenOff(t *testing.T) {
 	e := newAutoEnv(t, nil)
 	e.forge.checkRuns["c1"] = twoFailures
+	e.tips["main"], e.tips["feature/x"], e.tips["release/1.2"] = "c1", "c1", "c1"
 	spy := e.spyRecipes()
 	e.f.onCheckEvent(t.Context(), checkEvent{repoID: "r1", ref: "main", sha: "c1"})
 	e.setAutomations(t, ciFixerOn())
@@ -157,6 +159,7 @@ func TestCIFixerIgnoresUnwatchedBranchesAndWhenOff(t *testing.T) {
 func TestCIFixerDedupesOnRepoSHAAndCheck(t *testing.T) {
 	e := newAutoEnv(t, ciFixerOn())
 	e.forge.checkRuns["c1"] = twoFailures
+	e.tips["main"] = "c1"
 	spy := e.spyRecipes()
 	ev := checkEvent{repoID: "r1", ref: "main", sha: "c1"}
 
@@ -183,6 +186,7 @@ func TestCIFixerDedupesOnRepoSHAAndCheck(t *testing.T) {
 	}
 	// A new commit is new work.
 	e.forge.checkRuns["c2"] = twoFailures
+	e.tips["main"] = "c2"
 	e.f.onCheckEvent(t.Context(), checkEvent{repoID: "r1", ref: "main", sha: "c2"})
 	if spy.count() != 3 {
 		t.Fatalf("a new commit's failure was skipped: %d runs", spy.count())
@@ -211,8 +215,13 @@ func TestCIFixerPollFallbackChecksTheTipOfEachWatchedBranch(t *testing.T) {
 	if _, req := spy.last(); req.Ref != "tip1" {
 		t.Errorf("ref = %q", req.Ref)
 	}
-	if len(asked) != 1 || asked[0] != "main" {
-		t.Errorf("branches resolved = %v (a glob cannot be polled)", asked)
+	if len(asked) == 0 {
+		t.Fatal("no branch tip was resolved")
+	}
+	for _, b := range asked {
+		if b != "main" {
+			t.Errorf("resolved %q: a glob cannot be polled", b)
+		}
 	}
 }
 
@@ -546,5 +555,106 @@ func TestWebhookSecretRouteRefusesToOverwriteANotificationSecret(t *testing.T) {
 	}
 	if rec := doReq(t, e.srv, http.MethodPost, "/api/repos/r1/webhook-secret", nil, nil); rec.Code != http.StatusConflict {
 		t.Fatalf("code = %d, want 409", rec.Code)
+	}
+}
+
+func TestCIFixerDropsEventsThatAreNotTheBranchTip(t *testing.T) {
+	a := ciFixerOn()
+	a.CIFixer.Branches = []string{"*"}
+	e := newAutoEnv(t, a)
+	e.forge.checkRuns["old"], e.forge.checkRuns["forkc"], e.forge.checkRuns["tip"] = twoFailures, twoFailures, twoFailures
+	e.tips["main"] = "tip"
+	spy := e.spyRecipes()
+	ctx := t.Context()
+
+	// A replayed or delayed failure of a commit that is no longer the tip.
+	e.f.onCheckEvent(ctx, checkEvent{repoID: "r1", ref: "main", sha: "old"})
+	// A fork's branch named main: its commit is not on ours.
+	e.f.onCheckEvent(ctx, checkEvent{repoID: "r1", ref: "main", sha: "forkc"})
+	// An event with no branch, which "*" would otherwise match.
+	e.f.onCheckEvent(ctx, checkEvent{repoID: "r1", ref: "", sha: "tip"})
+	// A branch the mirror does not know.
+	e.f.onCheckEvent(ctx, checkEvent{repoID: "r1", ref: "ghost", sha: "tip"})
+	if spy.count() != 0 {
+		t.Fatalf("recipe runs = %d, want none", spy.count())
+	}
+	e.f.onCheckEvent(ctx, checkEvent{repoID: "r1", ref: "main", sha: "tip"})
+	if spy.count() != 1 {
+		t.Fatalf("the real tip was not fixed: %d runs", spy.count())
+	}
+}
+
+func TestCIFixerPushLoopGuardStopsAfterTwoPushedFixes(t *testing.T) {
+	a := ciFixerOn()
+	a.CIFixer.Push, a.CIFixer.PushBranches = true, []string{"main"}
+	e := newAutoEnv(t, a)
+	spy := e.spyRecipes()
+	now := e.f.now()
+	// The fixer pushed twice to main within the hour, and main is red again.
+	for i, sha := range []string{"p1", "p2"} {
+		entry := CIHistoryEntry{ID: newAutoID(), RepoID: "r1", Branch: "main", SHA: sha, Check: "test",
+			Status: ciFixed, Pushed: true, CreatedAt: now.Add(-time.Duration(i+1) * time.Minute)}
+		if err := e.f.ciHistory().put(entry.ID, entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.forge.checkRuns["p3"] = twoFailures
+	e.tips["main"] = "p3"
+	e.f.onCheckEvent(t.Context(), checkEvent{repoID: "r1", ref: "main", sha: "p3"})
+	if spy.count() != 0 {
+		t.Fatalf("the fixer ran a third time: %d runs", spy.count())
+	}
+	var guard *CIHistoryEntry
+	for _, h := range e.f.CIHistory("") {
+		if h.SHA == "p3" {
+			guard = &h
+		}
+	}
+	if guard == nil || guard.Status != ciGaveUp || !strings.Contains(guard.Reason, "loop guard") {
+		t.Fatalf("guard entry = %+v", guard)
+	}
+	// The same event again is deduped, not recorded twice.
+	e.f.onCheckEvent(t.Context(), checkEvent{repoID: "r1", ref: "main", sha: "p3"})
+	n := 0
+	for _, h := range e.f.CIHistory("") {
+		if h.SHA == "p3" {
+			n++
+		}
+	}
+	if n != 2 { // one entry per failed check: test and lint
+		t.Fatalf("entries for p3 = %d", n)
+	}
+}
+
+func TestCIFixerLoopGuardIgnoresOldAndPRModeFixes(t *testing.T) {
+	a := ciFixerOn()
+	a.CIFixer.Push, a.CIFixer.PushBranches = true, []string{"main"}
+	e := newAutoEnv(t, a)
+	spy := e.spyRecipes()
+	old := CIHistoryEntry{ID: newAutoID(), RepoID: "r1", Branch: "main", SHA: "o1", Check: "test",
+		Status: ciFixed, Pushed: true, CreatedAt: e.f.now().Add(-3 * time.Hour)}
+	pr := CIHistoryEntry{ID: newAutoID(), RepoID: "r1", Branch: "main", SHA: "o2", Check: "test",
+		Status: ciFixed, Pushed: false, CreatedAt: e.f.now().Add(-time.Minute)}
+	for _, h := range []CIHistoryEntry{old, pr, {ID: newAutoID(), RepoID: "r1", Branch: "main", SHA: "o3", Check: "test",
+		Status: ciFixed, Pushed: false, CreatedAt: e.f.now()}} {
+		if err := e.f.ciHistory().put(h.ID, h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.forge.checkRuns["n1"] = twoFailures
+	e.tips["main"] = "n1"
+	e.f.onCheckEvent(t.Context(), checkEvent{repoID: "r1", ref: "main", sha: "n1"})
+	if spy.count() != 1 {
+		t.Fatalf("recipe runs = %d: old and PR-mode fixes must not count", spy.count())
+	}
+}
+
+func TestCIFixerRecordsPushedFixesForTheLoopGuard(t *testing.T) {
+	a := ciFixerOn()
+	a.CIFixer.Push, a.CIFixer.PushBranches = true, []string{"main"}
+	h := newCIHarness(t, a)
+	h.exitRes = ExitResult{Destination: "push", Branch: "main"}
+	if got := h.finish(t, "main", ciRes(CIResult{Reproduced: true, Fixed: true})); !got.Pushed {
+		t.Fatalf("entry = %+v", got)
 	}
 }

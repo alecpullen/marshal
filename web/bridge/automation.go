@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Automations is a project's forge automation settings.
@@ -160,8 +161,10 @@ func (f *Fleet) ciFixerSettings(repoID string) (string, *CIFixerSettings, bool) 
 type autoState struct {
 	mu       sync.Mutex
 	inflight map[string]bool
-	drafts   *autoStore[ReviewDraft]
-	history  *autoStore[CIHistoryEntry]
+	// deliveries holds recent webhook delivery ids, against replay.
+	deliveries map[string]time.Time
+	drafts     *autoStore[ReviewDraft]
+	history    *autoStore[CIHistoryEntry]
 
 	// Tests replace these; nil uses the Fleet's own.
 	onPR      func(context.Context, prEvent)

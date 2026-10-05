@@ -459,3 +459,33 @@ func TestReviewBotManualRunSkipsFiltersAndMayRedoADiscardedDraft(t *testing.T) {
 		t.Fatal("an operator could not re-run a discarded review")
 	}
 }
+
+func TestReviewDraftPostFallsBackToABodyOnlyReviewOn422(t *testing.T) {
+	e := newAutoEnv(t, reviewBotOn())
+	e.forge.rejectInline = true
+	d := storeDraft(t, e, ReviewDraft{Summary: "Looks ok.", Findings: assignFindingIDs([]DraftFinding{
+		{ReviewFinding: ReviewFinding{Severity: "should-fix", Path: "gone.go", Line: 99, Title: "naming", Body: "rename x"}},
+		{ReviewFinding: ReviewFinding{Severity: "nit", Title: "typo"}},
+	})})
+	rec := doReq(t, e.srv, http.MethodPost, "/api/automations/review/drafts/"+d.ID+"/post", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d: %s", rec.Code, rec.Body)
+	}
+	posted := e.forge.postedReviews()
+	if len(posted) != 1 {
+		t.Fatalf("reviews = %d", len(posted))
+	}
+	var body struct {
+		Body     string
+		Comments []any
+	}
+	if err := json.Unmarshal([]byte(posted[0]), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Comments) != 0 || !strings.Contains(body.Body, "`gone.go:99` naming: rename x") || !strings.Contains(body.Body, "- typo") {
+		t.Fatalf("fallback review = %+v", body)
+	}
+	if got := e.f.ReviewDrafts("", draftStatusPosted); len(got) != 1 {
+		t.Fatal("the draft was not marked posted after the fallback")
+	}
+}

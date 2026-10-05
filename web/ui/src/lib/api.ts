@@ -1022,6 +1022,7 @@ export interface ProjectSettings {
   isolated?: boolean
   shipTarget?: 'merge' | 'push' | 'patch' | ''
   intake: { repoId?: string; labels?: string[]; clients?: string[] }
+  automations?: { reviewBot?: ReviewBotSettings; ciFixer?: CIFixerSettings }
 }
 export interface ProjectHealth {
   /** The project's verify-gate commands; both empty means the gate has nothing to run. */
@@ -1047,4 +1048,70 @@ export async function getProjectHealth(root: string): Promise<ProjectHealth> {
 /** The `[policy]` of a Studio template (its draft, or `version`); null when there is none to show. */
 export async function getWorkspacePolicy(name: string, version?: number): Promise<{ mode?: string; allow?: string[] } | null> {
   return (await getWorkspace(name, version)).doc?.policy ?? null
+}
+
+/** `projectSettings.automations.reviewBot` (W5.4). `routing` is opaque here: the page keeps it as the bridge sent it. */
+export interface ReviewBotSettings {
+  enabled: boolean
+  repoId: string
+  labels?: string[]
+  skipDrafts: boolean
+  authors?: string[]
+  routing?: RoutingChoice
+  autoPost: boolean
+  holdSeverities: string[]
+}
+/** `projectSettings.automations.ciFixer` (W5.4). */
+export interface CIFixerSettings {
+  enabled: boolean
+  repoId: string
+  branches: string[]
+  maxMinutes: number
+  maxUsd: number
+  push: boolean
+  pushBranches: string[]
+}
+export type FindingSeverity = 'blocker' | 'major' | 'minor' | 'nit' | string
+export interface Finding { id: string; severity: FindingSeverity; path?: string; line?: number; title: string; body: string; stepNode?: string }
+/** `failed` is a run whose result could not be parsed. */
+export type ReviewDraftStatus = 'draft' | 'posted' | 'discarded' | 'failed'
+export interface ReviewDraft {
+  id: string
+  repoId: string
+  number: number
+  headSHA: string
+  agentId: string
+  findings: Finding[]
+  summary: string
+  status: ReviewDraftStatus
+  createdAt: string
+  postedUrl?: string
+  error?: string
+}
+/** `fixed`, `didn't reproduce`, or `gave up` (optionally `gave up: <reason>`). */
+export interface CIHistory { id: string; repoId: string; sha: string; check: string; status: string; reason: string; prUrl?: string; costUsd: number; agentId?: string; createdAt?: string }
+
+const draftPath = (id: string) => `/api/automations/review/drafts/${q(id)}`
+export async function listReviewDrafts(opts: { project?: string; status?: ReviewDraftStatus } = {}): Promise<ReviewDraft[]> {
+  return ((await request<ReviewDraft[] | null>('GET', `/api/automations/review/drafts${query({ project: opts.project, status: opts.status })}`)) ?? []).map(withFindings)
+}
+export async function getReviewDraft(id: string): Promise<ReviewDraft> { return withFindings(await request<ReviewDraft>('GET', draftPath(id))) }
+export async function editReviewDraft(id: string, edit: { findings: Finding[]; summary: string }): Promise<ReviewDraft> {
+  return withFindings(await request<ReviewDraft>('PUT', draftPath(id), edit))
+}
+export async function postReviewDraft(id: string): Promise<ReviewDraft> { return withFindings(await request<ReviewDraft>('POST', `${draftPath(id)}/post`)) }
+export async function discardReviewDraft(id: string): Promise<void> { await request('POST', `${draftPath(id)}/discard`) }
+/** 404 when no Marshal agent owns the PR; callers show their own message for it. */
+export async function sendDraftToAuthor(id: string, findingIds: string[]): Promise<void> { await request('POST', `${draftPath(id)}/send-to-author`, { findingIds }) }
+/** Runs the bot on a PR now; 409 when the project's review bot is off. */
+export async function runReviewBot(repoId: string, number: number): Promise<void> { await request('POST', '/api/automations/review/run', { repoId, number }) }
+const withFindings = (d: ReviewDraft): ReviewDraft => ({ ...d, findings: d.findings ?? [] })
+
+export async function listCIHistory(opts: { project?: string } = {}): Promise<CIHistory[]> {
+  return (await request<CIHistory[] | null>('GET', `/api/automations/ci/history${query({ project: opts.project })}`)) ?? []
+}
+export async function getCIHistory(id: string): Promise<CIHistory> { return request('GET', `/api/automations/ci/history/${q(id)}`) }
+/** The secret comes back once; the forge's webhook form is where it goes. */
+export async function createWebhookSecret(repoId: string): Promise<string> {
+  return (await request<{ secret: string }>('POST', `/api/repos/${q(repoId)}/webhook-secret`)).secret
 }

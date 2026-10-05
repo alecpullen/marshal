@@ -264,6 +264,7 @@ export function parseFleetEvent(data: string): FleetEvent | 'overflow' | null {
     if (value.kind === 'budget') return parseBudget(value)
     if (value.kind === 'reroute') return parseReroute(value)
     if (value.kind === 'watch') return value as unknown as FleetEvent
+    if (value.kind === 'automation' && typeof value.id === 'string') return { kind: 'automation', type: String(value.type ?? ''), id: value.id, status: typeof value.status === 'string' ? value.status : undefined }
     // The bridge may address a run delta as agentId; rows are keyed by sessionId.
     if (value.kind === 'run' && typeof value.sessionId !== 'string' && typeof value.agentId === 'string') {
       value.sessionId = value.agentId

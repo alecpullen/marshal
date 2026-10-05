@@ -1,6 +1,6 @@
 # Marshal Web Studio — Design
 
-Status: draft, in progress. Decisions recorded 2026-10-03.
+Status: W1–W5 shipped (see §9). Decisions recorded 2026-10-03.
 Base: `main` at `2ddc09e`.
 Mockups:
 - [`mockups/design.html`](mockups/design.html): high-fidelity, the chosen direction.

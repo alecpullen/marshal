@@ -1564,6 +1564,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			TargetBranch: a.TargetBranch, PRUrl: a.PRUrl,
 			GateOverride: a.GateOverride, Workspace: a.Workspace,
 		}
+		st.Held = f.agentHeld(a.ID)
 		if !a.PushedAt.IsZero() {
 			st.PushedAt = &a.PushedAt
 		}
@@ -1609,6 +1610,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 // so Resume can restart against it.
 func (f *Fleet) releaseAgent(id string, destroy bool) {
 	f.closeTerminals(id)
+	f.clearUnreleased(id)
 	if destroy {
 		f.dropPreviewTokens(id)
 	}

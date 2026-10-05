@@ -793,3 +793,56 @@ func TestTerminalRetryHandsTheHoldToANewTerminal(t *testing.T) {
 		return offs == 2
 	})
 }
+
+func (e *termEnv) heldInSnapshot() bool {
+	for _, a := range e.f.Snapshot() {
+		if a.ID == e.id {
+			return a.Held
+		}
+	}
+	return false
+}
+
+func TestAgentListReportsHeld(t *testing.T) {
+	e := newTermEnv(t, false)
+	if e.heldInSnapshot() {
+		t.Fatal("held before any terminal")
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.waitHolds(t, true, 1)
+	waitFor(t, 5*time.Second, "held in the agent list", e.heldInSnapshot)
+	e.post(t, "POST", "/api/agents/"+e.id+"/terminal/"+tid+"/release", "")
+	waitFor(t, 5*time.Second, "not held after hand-back", func() bool { return !e.heldInSnapshot() })
+	rec := e.post(t, "GET", "/api/agents", "")
+	if strings.Contains(rec.Body.String(), `"held"`) {
+		t.Fatalf("held is omitted when false: %s", rec.Body)
+	}
+}
+
+func TestAgentListStaysHeldUntilAFailedHandBackLands(t *testing.T) {
+	e := newTermEnv(t, false)
+	e.f.releaseRetry = []time.Duration{50 * time.Millisecond, 50 * time.Millisecond}
+	var mu sync.Mutex
+	failOff := true
+	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if !on && failOff {
+			return errors.New("unreachable")
+		}
+		return nil
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.settled(t)
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	waitFor(t, 5*time.Second, "terminal gone", func() bool { _, err := e.f.terminalFor(e.id, tid); return err != nil })
+	if !e.heldInSnapshot() {
+		t.Fatal("the agent is still held, but the list says otherwise")
+	}
+	mu.Lock()
+	failOff = false
+	mu.Unlock()
+	waitFor(t, 5*time.Second, "cleared once handed back", func() bool { return !e.heldInSnapshot() })
+}

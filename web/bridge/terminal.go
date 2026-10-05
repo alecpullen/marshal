@@ -103,12 +103,15 @@ type terminal struct {
 type terminalState struct {
 	mu   sync.Mutex
 	byID map[string][]*terminal // owner -> open terminals
-	log  *EventLog
+	// unreleased holds agents whose last terminal closed without the agent
+	// acknowledging the hand-back, so the agent is still held.
+	unreleased map[string]bool
+	log        *EventLog
 }
 
 func (f *Fleet) terminals() *terminalState {
 	f.termOnce.Do(func() {
-		f.term = &terminalState{byID: make(map[string][]*terminal), log: NewEventLog()}
+		f.term = &terminalState{byID: make(map[string][]*terminal), unreleased: make(map[string]bool), log: NewEventLog()}
 		if f.done != nil {
 			go f.idleTerminalLoop()
 		}
@@ -550,8 +553,39 @@ func (f *Fleet) releaseTerminalHold(t *terminal) {
 	stillHeld := t.held && !t.holdUnsupported
 	t.mu.Unlock()
 	if stillHeld {
+		st := f.terminals()
+		st.mu.Lock()
+		st.unreleased[t.agentID] = true
+		st.mu.Unlock()
 		go f.retryRelease(t)
 	}
+}
+
+// agentHeld reports whether a terminal is holding the agent: one holds it
+// now, or a closed one's hand-back has not gone through yet.
+func (f *Fleet) agentHeld(agentID string) bool {
+	st := f.terminals()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.unreleased[agentID] {
+		return true
+	}
+	for _, t := range st.byID[agentID] {
+		t.mu.Lock()
+		held := t.held
+		t.mu.Unlock()
+		if held {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *Fleet) clearUnreleased(agentID string) {
+	st := f.terminals()
+	st.mu.Lock()
+	delete(st.unreleased, agentID)
+	st.mu.Unlock()
 }
 
 // retryRelease keeps trying to hand the agent back after a failed release,
@@ -570,6 +604,7 @@ func (f *Fleet) retryRelease(t *terminal) {
 			return
 		}
 		if _, err := f.runtimeForAgent(t.agentID); err != nil {
+			f.clearUnreleased(t.agentID)
 			return
 		}
 		st := f.terminals()
@@ -585,6 +620,7 @@ func (f *Fleet) retryRelease(t *terminal) {
 				o.want, o.held = true, true
 				o.mu.Unlock()
 			}
+			f.clearUnreleased(t.agentID)
 			return
 		}
 		f.syncHold(t)
@@ -592,6 +628,7 @@ func (f *Fleet) retryRelease(t *terminal) {
 		held := t.held
 		t.mu.Unlock()
 		if !held {
+			f.clearUnreleased(t.agentID)
 			return
 		}
 	}

@@ -158,6 +158,7 @@ streaming sibling:
   other failure backs off for 30s. Typing never waits on the call.
 - **Hand back** (a button, or closing the terminal) calls `hold {on:false}`.
 - The hold also auto-releases after 2 minutes without input.
+- `GET /api/agents` carries `held` (boolean, omitted when false) on each agent: true while a terminal holds the agent or a hand-back is pending. The UI reads it on load, then follows `hold` deltas; a missing field means not held.
 
 **Recording and audit.** Output and input are recorded to
 `<state>/terminal/<agentId>/<unix>.log` (mode 0600). A recording holds

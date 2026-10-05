@@ -141,6 +141,12 @@ web/                                  — external ACP client (web/bridge Go ser
   import `marshal/internal/...` or any third-party module. `TestWebIsStdlibOnly`
   in `web/bridge/boundary_test.go` enforces this. If you need agent-side data,
   extend the JSON contract — do not share a Go type.
+- Bridge subsystems added across W1–W5; check these before rebuilding one:
+  the control agent (`web/bridge/control.go`), templates and builds
+  (`wsstore.go`, `wsbuild.go`), secrets (`secrets.go`), the egress proxy
+  (`egress_proxy.go`), terminals (`terminal.go`), recipes and schedules
+  (`recipes.go`, `schedules.go`), and automations (`hooks.go`,
+  `reviewbot.go`, `cifixer.go`).
 ```
 
 ### Data flow

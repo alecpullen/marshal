@@ -88,6 +88,9 @@ type config struct {
 	baoCAFile       string
 	// egress turns the egress proxy on (default) or off.
 	egress string
+	// publicURL is the externally reachable base URL, used for the links
+	// in outbound notifications. Empty yields relative links.
+	publicURL string
 }
 
 // parseConfig resolves flags over environment variables over defaults.
@@ -124,6 +127,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	baoSecretIDFile := fs.String("bao-secret-id-file", envOr("WEBBRIDGE_BAO_SECRET_ID_FILE", ""), "file holding the AppRole secret id")
 	egress := fs.String("egress", envOr("WEBBRIDGE_EGRESS", "on"), "egress proxy for agents: on or off")
 	baoCAFile := fs.String("bao-ca-file", envOr("WEBBRIDGE_BAO_CA_FILE", ""), "extra CA certificate to trust for OpenBao")
+	publicURL := fs.String("public-url", envOr("WEBBRIDGE_PUBLIC_URL", ""), "externally reachable base URL, used for links in outbound notifications")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -132,7 +136,7 @@ func parseConfig(args []string, stderr io.Writer) (config, error) {
 	}
 	cfg := config{addr: *addr, previewAddr: *previewAddr, token: *token, marshalBin: *marshalBin, cwdRoot: *cwdRoot, projects: projects, workspace: *workspace, stateDir: *stateDir, stateVolume: *stateVolume, agentEnv: agentEnv, tlsCert: *tlsCert, tlsKey: *tlsKey, maxConcurrent: *maxConcurrent, maxDiskMB: *maxDiskMB, maxCloneMB: *maxCloneMB,
 		secrets: *secrets, secretsKeyFile: *secretsKeyFile, baoAddr: *baoAddr, baoMount: *baoMount,
-		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress}
+		baoRoleIDFile: *baoRoleIDFile, baoSecretIDFile: *baoSecretIDFile, baoCAFile: *baoCAFile, egress: *egress, publicURL: *publicURL}
 	pm, err := parseProjectMounts(projectMounts)
 	if err != nil {
 		return config{}, err
@@ -386,8 +390,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// Watch labelled issues on registered repos. Off by default; only
 	// repos with Watch set are polled.
 	fleet.StartPoller(0)
+	// Run due schedules. Fleet mode only: registry mode has no scheduler.
+	fleet.StartScheduler(nil)
 
-	api := bridge.NewServer(fleet, cfg.token)
+	api := bridge.NewServer(fleet, cfg.token, cfg.publicURL)
 	srv := &http.Server{
 		Addr:              cfg.addr,
 		Handler:           api,

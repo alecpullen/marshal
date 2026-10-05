@@ -222,3 +222,87 @@ func TestLibraryRejectsBadScope(t *testing.T) {
 		}
 	}
 }
+
+func TestLibraryMemoryScopeSuggestionsAndPromote(t *testing.T) {
+	s, f, agent := libraryServer(t)
+	root := t.TempDir()
+	agent.results["session/memory_list"] = map[string]any{"entries": []any{}}
+	agent.results["session/memory_suggestions"] = map[string]any{"suggestions": []map[string]any{
+		{"memoryId": 7, "matchProjectRoot": "/other", "suggestedScope": "global"}}}
+	agent.results["session/memory_promote"] = map[string]any{}
+
+	// scope reaches memory_list; without it, none is sent.
+	if rec := doReq(t, s, http.MethodGet, "/api/library/memory?project="+root+"&scope=workspace", nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := doReq(t, s, http.MethodGet, "/api/library/memory?project="+root, nil, nil); rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	got := agent.calls("session/memory_list")
+	if len(got) != 2 || !strings.Contains(got[0], `"scope":"workspace"`) || strings.Contains(got[1], `"scope"`) {
+		t.Fatalf("memory_list params = %v", got)
+	}
+
+	rec := doReq(t, s, http.MethodGet, "/api/library/memory/suggestions?project="+root, nil, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"memoryId":7`) {
+		t.Fatalf("suggestions: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := agent.calls("session/memory_suggestions"); len(got) != 1 || !strings.Contains(got[0], `"sessionId":"s-2"`) {
+		t.Fatalf("suggestions params = %v", got)
+	}
+
+	rec = doReq(t, s, http.MethodPost, "/api/library/memory/7/promote?project="+root,
+		map[string]any{"scope": "workspace", "scopeKey": "go-service"}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("promote: %d %s", rec.Code, rec.Body.String())
+	}
+	p := agent.calls("session/memory_promote")
+	if len(p) != 1 || !strings.Contains(p[0], `"id":7`) || !strings.Contains(p[0], `"scope":"workspace"`) || !strings.Contains(p[0], `"scopeKey":"go-service"`) {
+		t.Fatalf("promote params = %v", p)
+	}
+	if e := findEvent(auditTail(t, f), AuditMemoryPromoted); e == nil || !strings.Contains(e.Detail, "7") || !strings.Contains(e.Detail, "workspace") {
+		t.Fatalf("promote not audited: %+v", e)
+	}
+
+	// Bad requests never reach the agent.
+	for name, tc := range map[string]struct {
+		path string
+		body any
+	}{
+		"no scope":   {"/api/library/memory/7/promote?project=" + root, map[string]any{}},
+		"no project": {"/api/library/memory/7/promote", map[string]any{"scope": "global"}},
+		"bad id":     {"/api/library/memory/abc/promote?project=" + root, map[string]any{"scope": "global"}},
+	} {
+		if rec := doReq(t, s, http.MethodPost, tc.path, tc.body, nil); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", name, rec.Code)
+		}
+	}
+	if rec := doReq(t, s, http.MethodGet, "/api/library/memory/suggestions", nil, nil); rec.Code != http.StatusBadRequest {
+		t.Errorf("suggestions without a project: %d", rec.Code)
+	}
+	if n := len(agent.calls("session/memory_promote")); n != 1 {
+		t.Errorf("a rejected promote reached the agent (%d calls)", n)
+	}
+}
+
+func TestLibraryMemoryScopeRoutesAnswer501WithoutTheMethods(t *testing.T) {
+	s, f, agent := libraryServer(t)
+	agent.handler = func(m string, _ json.RawMessage) (any, *rpcError, bool) {
+		if m == "session/memory_suggestions" || m == "session/memory_promote" {
+			return nil, &rpcError{Code: -32601, Message: "method not found"}, true
+		}
+		return nil, nil, false
+	}
+	root := t.TempDir()
+	rec := doReq(t, s, http.MethodGet, "/api/library/memory/suggestions?project="+root, nil, nil)
+	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "memory_suggestions_unsupported") {
+		t.Errorf("suggestions: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = doReq(t, s, http.MethodPost, "/api/library/memory/7/promote?project="+root, map[string]any{"scope": "global"}, nil)
+	if rec.Code != http.StatusNotImplemented {
+		t.Errorf("promote: %d %s", rec.Code, rec.Body.String())
+	}
+	if findEvent(auditTail(t, f), AuditMemoryPromoted) != nil {
+		t.Error("a failed promote was audited")
+	}
+}

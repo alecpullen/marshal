@@ -78,6 +78,9 @@ type budgetState struct {
 	agentAlert map[string]bool
 	paused     map[string]bool
 	overridden map[string]bool
+	// agentCaps are per-agent cap overrides in USD, set for a recipe run
+	// with a maxUsd limit. They always pause.
+	agentCaps  map[string]float64
 	seededRows map[string]struct{}
 }
 
@@ -88,8 +91,32 @@ func newBudgetState(f *Fleet) *budgetState {
 		agentAlert: map[string]bool{},
 		paused:     map[string]bool{},
 		overridden: map[string]bool{},
+		agentCaps:  map[string]float64{},
 		seededRows: map[string]struct{}{},
 	}
+}
+
+// capFor is the per-agent cap and action in force for an agent: its own
+// override when it has one, else the configured one. Called with b.mu held.
+func (b *budgetState) capFor(id string) (float64, string) {
+	if c, ok := b.agentCaps[id]; ok {
+		return c, budgetPause
+	}
+	return b.cfg.PerAgentUSD, b.cfg.OnAgentCap
+}
+
+// setAgentCap gives one agent its own pause-at cap, replacing the
+// configured per-agent cap for it.
+func (b *budgetState) setAgentCap(id string, usd float64) {
+	b.mu.Lock()
+	b.agentCaps[id] = usd
+	b.mu.Unlock()
+}
+
+func (b *budgetState) clearAgentCap(id string) {
+	b.mu.Lock()
+	delete(b.agentCaps, id)
+	b.mu.Unlock()
 }
 
 func dayOf(t time.Time) string { return t.UTC().Format("2006-01-02") }
@@ -178,7 +205,7 @@ func (f *Fleet) checkBudgets(row UsageRow) {
 	var cancelAgent string
 
 	b.mu.Lock()
-	if !b.loaded {
+	if _, capped := b.agentCaps[row.AgentID]; !b.loaded && !capped {
 		b.mu.Unlock()
 		return
 	}
@@ -202,10 +229,10 @@ func (f *Fleet) checkBudgets(row UsageRow) {
 		}
 		deltas = append(deltas, budgetDelta{Scope: "daily", SpentUSD: microToUSD(b.daySpend), CapUSD: cap, Action: action})
 	}
-	if cap := b.cfg.PerAgentUSD; cap > 0 && b.agentSpend[row.AgentID] >= usdToMicro(cap) &&
+	if cap, capAction := b.capFor(row.AgentID); cap > 0 && b.agentSpend[row.AgentID] >= usdToMicro(cap) &&
 		!b.agentAlert[row.AgentID] && !b.overridden[row.AgentID] {
 		b.agentAlert[row.AgentID] = true
-		action := b.cfg.OnAgentCap
+		action := capAction
 		if action != budgetPause {
 			action = budgetWarn
 		}
@@ -220,7 +247,7 @@ func (f *Fleet) checkBudgets(row UsageRow) {
 
 	for _, d := range deltas {
 		d.Kind, d.SessionID = "budget", d.AgentID
-		_, _ = f.fleetLog.Append(fleetStreamKey, d)
+		f.emit(d)
 	}
 	if cancelAgent != "" {
 		if rt, err := f.runtimeForAgent(cancelAgent); err == nil {
@@ -274,7 +301,7 @@ func (b *budgetState) applyBudgets(cfg Budgets, now time.Time) {
 		delete(b.agentAlert, id)
 	}
 	for id := range b.paused {
-		if cfg.PerAgentUSD <= 0 || b.agentSpend[id] < usdToMicro(cfg.PerAgentUSD) || cfg.OnAgentCap != budgetPause {
+		if cap, act := b.capFor(id); cap <= 0 || b.agentSpend[id] < usdToMicro(cap) || act != budgetPause {
 			delete(b.paused, id)
 		} else {
 			b.agentAlert[id] = true

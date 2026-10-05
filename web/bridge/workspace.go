@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const workspaceVersion = 10
+const workspaceVersion = 11
 
 // ErrUnknownRepo is returned when a repo id is not registered.
 var ErrUnknownRepo = errors.New("bridge: unknown repo")
@@ -30,6 +30,11 @@ const (
 	OriginCLI   = "cli"
 	OriginMCP   = "mcp"
 	OriginIssue = "issue"
+	// OriginSchedule, OriginReviewBot and OriginCI mark agents the bridge
+	// started itself: a due schedule, a PR review automation, a CI fixer.
+	OriginSchedule  = "schedule"
+	OriginReviewBot = "review-bot"
+	OriginCI        = "ci"
 )
 
 type Agent struct {
@@ -88,6 +93,8 @@ type Agent struct {
 	ContainerName string `json:"containerName,omitempty"`
 	WorkSubpath   string `json:"workSubpath,omitempty"`
 	SocketSubpath string `json:"socketSubpath,omitempty"`
+	// Recipe names the recipe this agent was started from (v11).
+	Recipe string `json:"recipe,omitempty"`
 }
 
 // AgentWorkspace records which workspace template an agent runs in.
@@ -212,6 +219,12 @@ type workspaceFile struct {
 	Credentials []Credential `json:"credentials,omitempty"`
 	// ProjectSettings maps a project root to its settings (v9).
 	ProjectSettings map[string]ProjectSettings `json:"projectSettings,omitempty"`
+	// Schedules run recipes on a cron (v11).
+	Schedules []Schedule `json:"schedules,omitempty"`
+	// Notifications configures outbound webhooks (v11).
+	Notifications NotifyConfig `json:"notifications,omitzero"`
+	// StatusLinks are revocable public status page tokens, stored hashed (v11).
+	StatusLinks []StatusLink `json:"statusLinks,omitempty"`
 }
 
 // WatchRule is what the bridge does when a Studio watch fires.
@@ -245,6 +258,9 @@ type Workspace struct {
 	watchRules      map[string]WatchRule
 	credentials     map[string]Credential
 	projectSettings map[string]ProjectSettings
+	schedules       map[string]Schedule
+	notifications   NotifyConfig
+	statusLinks     map[string]StatusLink
 }
 
 func NewWorkspace(path string) *Workspace {
@@ -259,6 +275,8 @@ func NewWorkspace(path string) *Workspace {
 		watchRules:      make(map[string]WatchRule),
 		credentials:     make(map[string]Credential),
 		projectSettings: make(map[string]ProjectSettings),
+		schedules:       make(map[string]Schedule),
+		statusLinks:     make(map[string]StatusLink),
 	}
 }
 
@@ -327,6 +345,15 @@ func (w *Workspace) Load() (string, error) {
 	w.projectSettings = make(map[string]ProjectSettings, len(f.ProjectSettings))
 	for root, ps := range f.ProjectSettings {
 		w.projectSettings[root] = ps
+	}
+	w.schedules = make(map[string]Schedule, len(f.Schedules))
+	for _, sc := range f.Schedules {
+		w.schedules[sc.ID] = sc
+	}
+	w.notifications = f.Notifications.clone()
+	w.statusLinks = make(map[string]StatusLink, len(f.StatusLinks))
+	for _, l := range f.StatusLinks {
+		w.statusLinks[l.ID] = l
 	}
 	return "", nil
 }
@@ -409,6 +436,15 @@ func (w *Workspace) save() error {
 			f.ProjectSettings[root] = ps
 		}
 	}
+	for _, sc := range w.schedules {
+		f.Schedules = append(f.Schedules, sc)
+	}
+	sort.Slice(f.Schedules, func(i, j int) bool { return f.Schedules[i].ID < f.Schedules[j].ID })
+	f.Notifications = w.notifications.clone()
+	for _, l := range w.statusLinks {
+		f.StatusLinks = append(f.StatusLinks, l)
+	}
+	sort.Slice(f.StatusLinks, func(i, j int) bool { return f.StatusLinks[i].ID < f.StatusLinks[j].ID })
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode workspace: %w", err)

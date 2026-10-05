@@ -127,6 +127,7 @@ func (f *Fleet) dispatchRun(ctx context.Context, rt *agentRuntime, agentID, meth
 		if err != nil {
 			f.live.setRunErr(agentID, gen, err.Error())
 		}
+		f.fireRunDone(agentID, err)
 		done <- outcome{raw, err}
 	}()
 	select {

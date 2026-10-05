@@ -205,6 +205,19 @@ type Fleet struct {
 	// clock is the time source for budget days and usage windows. Nil
 	// means time.Now.
 	clock func() time.Time
+	// recipes stores recipes; runDone holds one-shot run-completion hooks
+	// registered by RunRecipe, keyed by agent id.
+	recipes   *RecipeStore
+	runDoneMu sync.Mutex
+	runDone   map[string]func(error)
+	// notify delivers webhooks for fleet events; publicURLBase builds their links.
+	notify        *notifier
+	notifyMu      sync.Mutex
+	publicURLBase string
+	// statusRate limits the public status pages per client IP.
+	statusRate statusLimiter
+	// sched tracks scheduler ticks and runs in flight.
+	sched schedulerState
 	// reroutes holds automatic rebindings so they can be undone.
 	reroutes rerouteLog
 	// routingMu serialises read-modify-write of the routing section: a
@@ -328,8 +341,10 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		buildLog:      NewEventLog(),
 		builds:        newBuildLimiter(),
 		wsExtras:      make(map[string]wsExtras),
+		recipes:       NewRecipeStore(stateDir),
 	}
 	f.pools = newPoolManager(f)
+	f.notify = newNotifier(f)
 	f.budgets = newBudgetState(f)
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
@@ -1526,7 +1541,7 @@ func (f *Fleet) attachClassifier(rt *agentRuntime) {
 				go f.recordUsage(rt.id, d.Usage)
 			}
 			f.live.apply(d)
-			_, _ = f.fleetLog.Append(fleetStreamKey, d)
+			f.emit(d)
 		}
 	}
 
@@ -1541,7 +1556,7 @@ func (f *Fleet) attachClassifier(rt *agentRuntime) {
 		}
 		if p, ok := classifyRegistryEvent(payload); ok {
 			f.live.observePending(rt.id, p)
-			_, _ = f.fleetLog.Append(fleetStreamKey, fleetDelta{
+			f.emit(fleetDelta{
 				Kind: "pending", SessionID: rt.id, PendingKind: p.kind,
 			})
 		}

@@ -69,6 +69,9 @@ func NewServer(target any, args ...any) *Server {
 			publicURLBase, _ = args[2].(string)
 		}
 	}
+	if fleet != nil && publicURLBase != "" {
+		fleet.SetPublicURLBase(publicURLBase)
+	}
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux()}
 	s.routes()
 	s.http = s.mux
@@ -99,6 +102,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Previews are served from their own origin (PreviewHandler), never
 	// from this one: an app the agent runs must not share storage with the
 	// UI that holds the bearer token.
+	if strings.HasPrefix(r.URL.Path, statusPrefix) {
+		s.statusPublic(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, previewPrefix) {
 		http.NotFound(w, r)
 		return
@@ -152,6 +159,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/roster", s.sessionRoster)
 	s.mux.HandleFunc("GET /api/sessions/{id}/step-diffs", s.sessionStepDiffs)
 	s.libraryRoutes()
+	s.recipeRoutes()
+	s.scheduleRoutes()
+	s.notificationRoutes()
+	s.statusLinkRoutes()
 	s.modelsRoutes()
 	s.budgetRoutes()
 	s.watchRoutes()
@@ -227,6 +238,12 @@ func writeErr(w http.ResponseWriter, err error) {
 	var setup ErrSetupFailed
 	var merge ErrWorkspaceMerge
 	switch {
+	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrInvalidRecipe), errors.Is(err, ErrRecipeBuiltin), errors.Is(err, errInvalidSchedule):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrRecipeExists):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrTemplateNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrTemplateName), errors.Is(err, ErrTemplatePool), errors.Is(err, ErrWorkspaceMountTarget):
@@ -352,7 +369,7 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	_, _ = s.fleet.FleetLog().Append(fleetStreamKey, map[string]any{"kind": "project_removed", "project": body.Root})
+	s.fleet.emit(map[string]any{"kind": "project_removed", "project": body.Root})
 	writeJSON(w, http.StatusOK, s.fleet.ProjectStatus())
 }
 

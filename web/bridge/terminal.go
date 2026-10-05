@@ -481,7 +481,7 @@ func (f *Fleet) callHold(t *terminal, on bool) (ok, unsupported bool) {
 		}
 		return false, unsupported
 	}
-	_, _ = f.fleetLog.Append(fleetStreamKey, fleetDelta{
+	f.emit(fleetDelta{
 		Kind: "hold", SessionID: t.agentID, AgentID: t.agentID, Held: &on, By: "terminal",
 	})
 	return true, false

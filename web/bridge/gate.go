@@ -30,7 +30,7 @@ func (f *Fleet) storeGate(agentID string, res *gateResult) gateRecord {
 			r.Output = ""
 			slim.Result = &r
 		}
-		_, _ = f.fleetLog.Append(fleetStreamKey, fleetDelta{Kind: "gate", SessionID: agentID, Gate: &slim})
+		f.emit(fleetDelta{Kind: "gate", SessionID: agentID, Gate: &slim})
 	}
 	return rec
 }

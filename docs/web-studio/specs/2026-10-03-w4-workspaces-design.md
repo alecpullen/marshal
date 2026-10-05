@@ -505,7 +505,7 @@ decisions:
 |---|---|
 | `block` | Dismiss |
 | `allow-agent` | Add a per-agent grant, held in memory for the agent's lifetime, and push a new policy |
-| `add-to-workspace` | Use `workspace/patch` on the template's draft to append the host to `[network].egress`, then report the draft as changed. A Studio template gets a draft change. A repo template gets a downloadable patch instead, since the bridge doesn't write to repos. |
+| `add-to-workspace` | Use `workspace/patch` on the template's draft to append the host to `[network].egress`, then report the draft as changed. A Studio template gets a draft change. A repo template gets a downloadable patch instead, since the bridge doesn't write to repos; it is read only from a trusted project, as a regular file (no symlinks) of at most 256 KiB. A Studio draft is replaced only if it is unchanged since it was read, otherwise the decision answers 409. |
 
 `GET /api/network/pending[?agent=<id>]` returns
 `{pending: [{kind:"network_block", sessionId, agentId, host, workspace?, at}]}`:
@@ -552,6 +552,19 @@ The CA is generated lazily per workspace with `crypto/x509` and
   the secrets API refuses to write, delete or list it, and egress
   injection refuses refs under it. Vault credentials may reference only
   `git/` (or `env/` on the env backend).
+- **Warm pools.** A pooled container is wired to the proxy when it
+  starts, under a pseudo agent ID (`pool-<name>-v<n>-<k>`): proxy env,
+  the `marshal-agents` network and the CA mount, like any agent. When an
+  agent adopts it, the proxy serves the agent's policy under the
+  container's baked-in credentials too (an alias), so grants, IP pin and
+  CA generation follow the agent, and logs and blocked requests are
+  attributed to the agent. After a bridge restart a surviving pool
+  container is adopted only if it sits on the egress network; with the
+  proxy down, a workspace that needs it adopts nothing and fills nothing.
+- **CA generation across restarts.** The generation each agent started
+  under is persisted; a reattached agent (or one that adopted a pool
+  container) keeps it, so a rotation followed by a restart does not
+  change what its container trusts.
 - **Failure.** If the proxy cannot start, workspaces whose network policy
   is `allowlist` or `off`, or that inject credentials, refuse to start
   agents (the error names the proxy). Open workspaces run unproxied.

@@ -188,7 +188,9 @@ func TestPoolDeleteDropsIdleContainers(t *testing.T) {
 
 func TestPoolAdoptsRunningContainersOnStartup(t *testing.T) {
 	e := newWSSpawnEnv(t)
-	publishDoc(t, e.f, "svc", sampleDoc("svc"))
+	doc := sampleDoc("svc")
+	doc.Network = WSNetwork{} // an open network needs no proxy wiring
+	publishDoc(t, e.f, "svc", doc)
 	e.f.templates.SetBuild("svc", 1, "ok", "marshal-derived-svc", 1, 1)
 	e.f.templates.SetPool("svc", 2)
 	// One container is held by an agent, one is idle, one is surplus, one

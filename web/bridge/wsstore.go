@@ -180,6 +180,35 @@ func (s *TemplateStore) SaveDraft(name string, source []byte) error {
 	return s.writeAtomic(filepath.Join(s.tdir(name), "draft.toml"), source)
 }
 
+// ErrDraftChanged is returned by SaveDraftIf when the draft is no longer
+// the source the caller read.
+var ErrDraftChanged = errors.New("bridge: the draft changed while it was being edited")
+
+// SaveDraftIf replaces the draft with next only if it still equals prev,
+// under one hold of the store lock, so a concurrent save is not lost.
+func (s *TemplateStore) SaveDraftIf(name string, prev, next []byte) error {
+	if err := validTemplateName(name); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.readMeta(name); err != nil {
+		return err
+	}
+	path := filepath.Join(s.tdir(name), "draft.toml")
+	cur, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ErrTemplateNoDraft
+	}
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(cur, prev) {
+		return ErrDraftChanged
+	}
+	return s.writeAtomic(path, next)
+}
+
 // Publish copies the draft to v<n+1>.toml and appends a pending version.
 func (s *TemplateStore) Publish(name, by string) (TemplateVersion, error) {
 	if err := validTemplateName(name); err != nil {

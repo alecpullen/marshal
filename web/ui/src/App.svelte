@@ -12,6 +12,7 @@
   import Settings from './views/Settings.svelte'
   import Usage from './views/Usage.svelte'
   import Watches from './views/Watches.svelte'
+  import Schedules from './views/Schedules.svelte'
   import Gallery from './views/workspaces/Gallery.svelte'
   import Designer from './views/workspaces/Designer.svelte'
   import Builds from './views/workspaces/Builds.svelte'
@@ -24,7 +25,7 @@
   import SessionsPanel from './lib/SessionsPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore } from './lib/fleet'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, redirectLegacy } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseWatchesRoute, redirectLegacy } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient } from './lib/api'
 
   let hash = $state('#')
@@ -159,6 +160,7 @@
   const settingsRoute = $derived(parseSettingsRoute(hash))
   const usageRoute = $derived(parseUsageRoute(hash))
   const workspacesRoute = $derived(parseWorkspacesRoute(hash))
+  const watchesRoute = $derived(parseWatchesRoute(hash))
 
   /*
     Sessions open either unscoped (#sessions — the project picker) or
@@ -258,9 +260,13 @@
           {/key}
         {/if}
       </div>
-    {:else if hash === '#watches'}
+    {:else if watchesRoute}
       <div class="h-full overflow-y-auto">
-        <Watches agents={$fleet.agents} tick={$fleet.watchTick} onNavigate={navigate} />
+        {#if watchesRoute.tab === 'schedules'}
+          <Schedules projects={$fleet.projects} onNavigate={navigate} />
+        {:else}
+          <Watches agents={$fleet.agents} tick={$fleet.watchTick} onNavigate={navigate} />
+        {/if}
       </div>
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">

@@ -8,6 +8,7 @@
   import Graph from '../lib/runs/Graph.svelte'
   import Timeline, { type Sample } from '../lib/runs/Timeline.svelte'
   import Dock from '../lib/dock/Dock.svelte'
+  import OpsTabs from '../lib/dock/OpsTabs.svelte'
   import InspectTab from '../lib/dock/InspectTab.svelte'
   import ChangesTab from '../lib/dock/ChangesTab.svelte'
   import FilesTab from '../lib/dock/FilesTab.svelte'
@@ -324,8 +325,9 @@
       <InspectTab sessionId={agentId} stack={$stack} {dock} {cache} onSelect={(id) => dispatch({ type: 'select', nodeId: id, kind: 'step' })} />
     {:else if dock.tab === 'changes'}
       <ChangesTab {agentId} sessionId={agentId} stack={$stack} {dock} gate={agent?.gate} changedFiles={agent?.changedFiles ?? 0} />
-    {:else}
+    {:else if dock.tab === 'files'}
       <FilesTab {agentId} stack={$stack} {dock} />
     {/if}
+    <OpsTabs {agentId} sessionId={agentId} stack={$stack} {dock} {cache} row={agent} onTerminalOutput={() => dispatch({ type: 'terminalOutput' })} />
   </Dock>
 </div>

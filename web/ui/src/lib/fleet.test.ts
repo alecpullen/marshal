@@ -284,3 +284,14 @@ describe('run, budget and reroute deltas', () => {
     expect(get(state).notices).toHaveLength(0)
   })
 })
+
+describe('hold deltas', () => {
+  it('mark the agent held and clear it on hand back', () => {
+    const rows = [row({ id: 'a' }), row({ id: 'b' })]
+    const held = applyDeltaTo(rows, { kind: 'hold', sessionId: 'a', held: true, by: 'terminal' })
+    expect(held[0]).toMatchObject({ held: true, heldBy: 'terminal' })
+    expect(held[1].held).toBeUndefined()
+    const back = applyDeltaTo(held, { kind: 'hold', sessionId: 'a', held: false, by: 'terminal' })
+    expect(back[0]).toMatchObject({ held: false, heldBy: undefined })
+  })
+})

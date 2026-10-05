@@ -2,14 +2,17 @@ import { writable } from 'svelte/store'
 import { listAgents, listProjects, type AgentStatus, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
-export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; gate?: GateRecord; run?: RunDetail; runAt?: number }
+export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; /** Set by a hold delta while someone types in the agent's terminal. */ held?: boolean; heldBy?: string; gate?: GateRecord; run?: RunDetail; runAt?: number }
 export interface FleetDelta {
-  kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate'
+  kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate' | 'hold'
   sessionId: string
   activity?: string
   mode?: string
   contextPct?: number
   changedFiles?: number
+  /** A hold delta: whether the agent is held, and by whom (`terminal`). */
+  held?: boolean
+  by?: string
   /** The latest verify record. Its output is left out of the stream; GET …/gate has it. */
   gate?: GateRecord
 }
@@ -70,6 +73,7 @@ export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
     if (d.kind === 'activity') return { ...r, activity: d.activity ?? r.activity }
     if (d.kind === 'mode') return { ...r, mode: d.mode ?? r.mode }
     if (d.kind === 'gate') return { ...r, gate: d.gate ?? r.gate }
+    if (d.kind === 'hold') return { ...r, held: d.held === true, heldBy: d.held === true ? d.by : undefined }
     if (d.kind === 'run') return { ...r, run: d.run, runAt: d.at ?? Date.now() }
     if (d.kind === 'telemetry') return { ...r, contextPct: d.contextPct ?? r.contextPct, changedFiles: d.changedFiles ?? r.changedFiles }
     if (d.kind === 'pending') {

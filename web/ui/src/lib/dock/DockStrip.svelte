@@ -12,6 +12,8 @@
     { id: 'inspect', label: 'Inspect', icon: '◎' },
     { id: 'changes', label: 'Changes', icon: glyph.Edit },
     { id: 'files', label: 'Files', icon: glyph.File },
+    { id: 'terminal', label: 'Terminal', icon: glyph.Shell },
+    { id: 'preview', label: 'Preview', icon: '◫' },
   ]
 </script>
 
@@ -29,6 +31,8 @@
         <span class="absolute top-1.5 right-1.5 size-2 rounded-full bg-err" data-testid="gate-dot" title="Gate failed"></span>
       {:else if t.id === 'changes' && dock.unseenChanges}
         <span class="absolute top-1.5 right-1.5 size-2 rounded-full bg-accent" data-testid="unseen-dot" title="New changes"></span>
+      {:else if t.id === 'terminal' && dock.unseenTerminal}
+        <span class="absolute top-1.5 right-1.5 size-2 rounded-full bg-accent" data-testid="terminal-unread" title="New output"></span>
       {/if}
     </button>
   {/each}

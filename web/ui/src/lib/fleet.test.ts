@@ -278,6 +278,7 @@ describe('run, budget and reroute deltas', () => {
     const { state, actions } = createFleetStore()
     actions.applyDelta({ kind: 'automation', type: 'review_draft', id: 'd1' })
     actions.applyDelta({ kind: 'automation', type: 'ci_result', id: 'c1', status: 'fixed' })
+    expect(get(state).automationTick).toBe(2)
     expect(get(state).automations.map((e) => [e.type, e.id, e.status])).toEqual([['review_draft', 'd1', undefined], ['ci_result', 'c1', 'fixed']])
   })
 

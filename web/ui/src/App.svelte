@@ -17,6 +17,8 @@
   import Builds from './views/workspaces/Builds.svelte'
   import Network from './views/Network.svelte'
   import Project from './views/Project.svelte'
+  import ReviewBot from './views/automations/ReviewBot.svelte'
+  import CIFixer from './views/automations/CIFixer.svelte'
   import Sidebar from './lib/Sidebar.svelte'
   import Rail from './lib/Rail.svelte'
   import Palette from './lib/Palette.svelte'
@@ -268,7 +270,13 @@
     {:else if projectRoute}
       <div class="h-full overflow-y-auto">
         {#key projectRoute.root}
-          <Project root={projectRoute.root} agents={$fleet.agents} telemetry={$fleet.telemetry} onNavigate={navigate} />
+          {#if projectRoute.automations === 'review-bot'}
+            <ReviewBot root={projectRoute.root} draftId={projectRoute.draft} refreshTick={$fleet.automationTick} onNavigate={navigate} />
+          {:else if projectRoute.automations === 'ci-fixer'}
+            <CIFixer root={projectRoute.root} agents={$fleet.agents} refreshTick={$fleet.automationTick} onNavigate={navigate} />
+          {:else}
+            <Project root={projectRoute.root} agents={$fleet.agents} telemetry={$fleet.telemetry} onNavigate={navigate} />
+          {/if}
         {/key}
       </div>
     {:else if workspacesRoute}

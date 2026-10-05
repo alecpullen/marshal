@@ -192,6 +192,8 @@ export function createFleetStore() {
     telemetry: {} as Record<string, AgentTelemetry>,
     /** Review drafts and CI results as they arrive, newest last; views refetch their lists when it grows. */
     automations: [] as AutomationEvent[],
+    /** Bumped on every automation delta; views that list drafts or CI results refetch when it moves. */
+    automationTick: 0,
   })
   async function refresh() {
     state.update((s) => ({ ...s, loading: true, error: null }))
@@ -224,7 +226,7 @@ export function createFleetStore() {
         return { ...s, budget: b, budgetTick: s.budgetTick + 1 }
       }
       if (d.kind === 'watch') return { ...s, watchTick: s.watchTick + 1 }
-      if (d.kind === 'automation') return { ...s, automations: [...s.automations, { type: d.type, id: d.id, status: d.status, at: Date.now() }].slice(-50) }
+      if (d.kind === 'automation') return { ...s, automations: [...s.automations, { type: d.type, id: d.id, status: d.status, at: Date.now() }].slice(-50), automationTick: s.automationTick + 1 }
       if (d.kind === 'network_block') {
         const agentId = d.agentId ?? d.sessionId
         const item: NetworkDecisionItem = { agentId, host: d.host, workspace: d.workspace, at: d.at ?? Date.now() }

@@ -335,6 +335,8 @@
           {pending}
           notices={$fleet.notices}
           onDismissNotice={actions.dismissNotice}
+          projects={$fleet.projects}
+          automationTick={$fleet.automationTick}
           decisions={$fleet.decisions}
           onDecide={decideNetwork}
           onRefreshPending={refreshPending}

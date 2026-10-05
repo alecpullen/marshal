@@ -18,6 +18,8 @@ vi.mock('../lib/api.js', async (importActual) => {
     postReviewComment: vi.fn(),
     resolveReviewComment: vi.fn(),
     exitAgent: vi.fn(),
+    getProjectSettings: vi.fn(),
+    runReviewBot: vi.fn(),
     mergeAgent: vi.fn(),
     discardAgent: vi.fn(),
   }
@@ -68,8 +70,60 @@ beforeEach(() => {
   ;(api.getCommitDraft as Mock).mockResolvedValue('fix: set x to 2')
   ;(api.listReviewComments as Mock).mockResolvedValue([])
   ;(api.getStepDiffs as Mock).mockResolvedValue('unsupported')
+  ;(api.getProjectSettings as Mock).mockResolvedValue({ intake: {} })
 })
 afterEach(cleanup)
+
+describe('Request review bot', () => {
+  const botOn = { intake: {}, automations: { reviewBot: { enabled: true, repoId: 'r1', skipDrafts: true, autoPost: false, holdSeverities: [] } } }
+  const push = async () => {
+    await fireEvent.click(screen.getByText('Push & open PR'))
+    await fireEvent.click(await screen.findByText('Push'))
+  }
+
+  it('is disabled when the project has no review bot', async () => {
+    render(Review, { agentId: 'a1', agent: agent() })
+    await waitFor(() => expect(api.getProjectSettings).toHaveBeenCalledWith('/p'))
+    expect((screen.getByLabelText('Request review bot') as HTMLInputElement).disabled).toBe(true)
+  })
+
+  it('runs the bot on the new PR after a successful push', async () => {
+    ;(api.getProjectSettings as Mock).mockResolvedValue(botOn)
+    ;(api.exitAgent as Mock).mockResolvedValue({ destination: 'push', prUrl: 'https://github.com/o/n/pull/12' })
+    ;(api.runReviewBot as Mock).mockResolvedValue(undefined)
+    const onShipped = vi.fn()
+    render(Review, { agentId: 'a1', agent: agent(), onShipped })
+    const box = screen.getByLabelText('Request review bot') as HTMLInputElement
+    await waitFor(() => expect(box.disabled).toBe(false))
+    await fireEvent.click(box)
+    await waitFor(() => expect((screen.getByLabelText('Commit message') as HTMLTextAreaElement).value).toBe('fix: set x to 2'))
+    await push()
+    await waitFor(() => expect(api.runReviewBot).toHaveBeenCalledWith('r1', 12))
+    await waitFor(() => expect(onShipped).toHaveBeenCalledWith({ kind: 'pushed', message: 'Pushed. Pull request opened. Review bot requested.', href: 'https://github.com/o/n/pull/12' }))
+  })
+
+  it('does not run the bot when the box is unchecked, and reports a failed run without failing the push', async () => {
+    ;(api.getProjectSettings as Mock).mockResolvedValue(botOn)
+    ;(api.exitAgent as Mock).mockResolvedValue({ destination: 'push', prUrl: 'https://github.com/o/n/pull/12' })
+    const onShipped = vi.fn()
+    render(Review, { agentId: 'a1', agent: agent(), onShipped })
+    await waitFor(() => expect((screen.getByLabelText('Request review bot') as HTMLInputElement).disabled).toBe(false))
+    await waitFor(() => expect((screen.getByLabelText('Commit message') as HTMLTextAreaElement).value).toBe('fix: set x to 2'))
+    await push()
+    await waitFor(() => expect(onShipped).toHaveBeenCalled())
+    expect(api.runReviewBot).not.toHaveBeenCalled()
+    cleanup()
+    ;(api.runReviewBot as Mock).mockRejectedValue(new api.APIError(409, { error: 'review bot is off' }))
+    const again = vi.fn()
+    render(Review, { agentId: 'a1', agent: agent(), onShipped: again })
+    const box = screen.getByLabelText('Request review bot') as HTMLInputElement
+    await waitFor(() => expect(box.disabled).toBe(false))
+    await fireEvent.click(box)
+    await waitFor(() => expect((screen.getByLabelText('Commit message') as HTMLTextAreaElement).value).toBe('fix: set x to 2'))
+    await push()
+    await waitFor(() => expect(again).toHaveBeenCalledWith(expect.objectContaining({ kind: 'pushed', message: 'Pushed. Pull request opened. Review bot not started: review bot is off' })))
+  })
+})
 
 describe('Review left column', () => {
   it('renders gate, files, summary and ship from fixtures', async () => {
@@ -79,7 +133,7 @@ describe('Review left column', () => {
     expect(screen.getAllByText('b.go').length).toBeGreaterThan(0)
     expect(await screen.findByText('Done: fixed x')).toBeTruthy()
     expect(screen.getByText('Push & open PR')).toBeTruthy()
-    expect((screen.getByLabelText('Request review bot') ?? screen.getByTitle('Coming in W5'))).toBeTruthy()
+    expect(screen.getByLabelText('Request review bot')).toBeTruthy()
   })
 
   it('prefills the commit draft and pushes with the edited message', async () => {

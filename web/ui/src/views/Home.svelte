@@ -10,7 +10,9 @@
   import ActivityFeed from '../lib/ActivityFeed.svelte'
   import { buildInbox } from '../lib/inbox'
   import { describePending, type AgentRow, type NetworkDecisionItem, type RerouteNotice } from '../lib/fleet'
-  import { APIError, approvePending, denyPending, undoReroute, errMessage, type PendingSubmission } from '../lib/api'
+  import { APIError, approvePending, denyPending, undoReroute, errMessage, listCIHistory, listReviewDrafts, type CIHistory, type PendingSubmission, type ProjectStatus, type ReviewDraft } from '../lib/api'
+  import { prNumber, recentFixes, severityCounts, severityTone } from '../lib/automations/model'
+  import { formatAutomationRoute } from '../lib/routes'
   import { shortName } from '../lib/utils'
 
   let {
@@ -23,6 +25,8 @@
     onDismissNotice = () => {},
     decisions = [],
     onDecide = async () => {},
+    projects = [],
+    automationTick = 0,
   }: {
     agents: AgentRow[]
     pending: PendingSubmission[]
@@ -32,6 +36,10 @@
     /** Requests the egress proxy blocked, each waiting on Block, Allow for this agent, or Add to workspace. */
     decisions?: NetworkDecisionItem[]
     onDecide?: DecideFn
+    /** Where review drafts and CI fixes are looked up, one project at a time. */
+    projects?: ProjectStatus[]
+    /** Bumped when an `automation` delta arrives. */
+    automationTick?: number
     onRefreshPending: () => void
     onOpenAgent: (id: string) => void
     onNavigate: (hash: string) => void
@@ -62,6 +70,31 @@
 
   const originLetter = (origin?: string) =>
     ({ ui: 'U', cli: 'C', mcp: 'M', issue: '#' })[origin ?? ''] ?? (origin ? origin[0].toUpperCase() : '·')
+
+  // Review drafts and CI fixes are optional extras: a bridge without automations just shows none.
+  let drafts = $state<{ root: string; draft: ReviewDraft }[]>([])
+  let fixes = $state<CIHistory[]>([])
+  const roots = $derived(projects.map((p) => p.root).join('\n'))
+  $effect(() => {
+    void automationTick
+    const rs = roots ? roots.split('\n') : []
+    let stale = false
+    void Promise.all(
+      rs.map(async (root) => ({
+        root,
+        drafts: await listReviewDrafts({ project: root, status: 'draft' }).catch(() => []),
+        history: await listCIHistory({ project: root }).catch(() => []),
+      })),
+    ).then((all) => {
+      if (stale) return
+      drafts = all.flatMap((r) => r.drafts.filter((d) => d.status === 'draft').map((draft) => ({ root: r.root, draft })))
+      fixes = all.flatMap((r) => recentFixes(r.history, Date.now()))
+    })
+    return () => {
+      stale = true
+    }
+  })
+  const readyCount = $derived(inbox.ready.length + drafts.length + fixes.length)
 
   let notice = $state<string | null>(null)
 
@@ -165,7 +198,7 @@
       </section>
 
       <section aria-labelledby="inbox-ready">
-        <h2 id="inbox-ready" class="mb-2 text-xs tracking-wide text-accent uppercase">Ready to ship · {inbox.ready.length}</h2>
+        <h2 id="inbox-ready" class="mb-2 text-xs tracking-wide text-accent uppercase">Ready to ship · {readyCount}</h2>
         <div class="flex flex-col gap-2">
           {#each inbox.ready as a (a.id)}
             <Card class="flex items-center gap-3 p-3">
@@ -178,9 +211,31 @@
               <Button variant="ghost" onclick={() => onOpenAgent(a.id)}>Review</Button>
               <Button onclick={() => onOpenAgent(a.id)}>Open PR</Button>
             </Card>
-          {:else}
-            <p class="text-sm text-muted">No finished work to ship.</p>
           {/each}
+          {#each drafts as { root, draft: d } (d.id)}
+            <Card class="flex items-center gap-3 p-3" data-testid="draft-ready">
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-sm font-medium">Review draft for PR #{d.number} <span class="font-normal text-muted">· {shortName(root)}</span></div>
+                <div class="flex flex-wrap gap-1 pt-0.5">
+                  {#each severityCounts(d.findings) as c (c.severity)}<Tag tone={severityTone(c.severity)}>{c.count} {c.severity}</Tag>{:else}<span class="text-xs text-muted">no findings</span>{/each}
+                </div>
+              </div>
+              <Button onclick={() => onNavigate(formatAutomationRoute(root, 'review-bot', d.id))}>Open</Button>
+            </Card>
+          {/each}
+          {#each fixes as h (h.id)}
+            {@const n = prNumber(h.prUrl)}
+            <Card class="flex items-center gap-3 p-3" data-testid="ci-fix-ready">
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-sm font-medium">CI fix ready{n ? `: PR #${n}` : ''}</div>
+                <div class="truncate text-xs text-muted">{h.check} · {h.reason}</div>
+              </div>
+              <a class="inline-flex min-h-11 items-center rounded-md border border-border px-3 text-sm hover:bg-surface" href={h.prUrl} target="_blank" rel="noopener noreferrer">Open PR</a>
+            </Card>
+          {/each}
+          {#if readyCount === 0}
+            <p class="text-sm text-muted">No finished work to ship.</p>
+          {/if}
         </div>
       </section>
 

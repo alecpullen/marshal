@@ -3,9 +3,10 @@
   import Button from '../ui/Button.svelte'
   import Modal from '../ui/Modal.svelte'
   import GateResult from '../GateResult.svelte'
-  import { APIError, discardAgent, ensureToken, errMessage, exitAgent, getCommitDraft, mergeAgent, patchUrl, type ExitResult, type MergeResult } from '../api'
+  import { APIError, discardAgent, ensureToken, errMessage, exitAgent, getCommitDraft, getProjectSettings, mergeAgent, runReviewBot, patchUrl, type ExitResult, type MergeResult } from '../api'
   import { mergeRefusalMessage } from '../diff'
   import { exitDestination } from '../exit'
+  import { prNumber } from '../automations/model'
   import type { AgentRow } from '../fleet'
 
   export type ShipOutcome = { kind: 'merged' | 'pushed' | 'discarded'; message: string; href?: string }
@@ -19,7 +20,17 @@
   let confirming = $state<'merge' | 'push' | 'discard' | null>(null)
   const dest = $derived(exitDestination({ sourceKind: agent.sourceKind ?? '', readOnly: agent.readOnly ?? false }))
 
+  // The project's review bot, when it is on: "Request review bot" runs it on the PR this push opens.
+  let botRepo = $state('')
+  let requestReview = $state(false)
+
   onMount(async () => {
+    try {
+      const bot = (await getProjectSettings(agent.project)).automations?.reviewBot
+      if (bot?.enabled && bot.repoId) botRepo = bot.repoId
+    } catch {
+      // Without settings the toggle just stays disabled.
+    }
     try {
       const d = await getCommitDraft(agent.id)
       if (d !== 'unsupported' && !message) message = d
@@ -57,12 +68,26 @@
         notice = 'Push was blocked by the gate.'
       } else {
         blocked = null
-        onDone({ kind: 'pushed', message: r.prUrl ? 'Pushed. Pull request opened.' : 'Pushed.', href: r.prUrl })
+        let message = r.prUrl ? 'Pushed. Pull request opened.' : 'Pushed.'
+        if (requestReview) message += await startReview(r.prUrl)
+        onDone({ kind: 'pushed', message, href: r.prUrl })
       }
     } catch (e) {
       notice = errMessage(e)
     } finally {
       busy = false
+    }
+  }
+
+  // The push already succeeded, so a failure here is reported in its message, not thrown.
+  async function startReview(prUrl?: string): Promise<string> {
+    const n = prNumber(prUrl)
+    if (!n) return ' No pull request to review.'
+    try {
+      await runReviewBot(botRepo, n)
+      return ' Review bot requested.'
+    } catch (e) {
+      return ` Review bot not started: ${errMessage(e)}`
     }
   }
 
@@ -110,7 +135,9 @@
   {#if dest === 'push'}
     <label class="flex items-center gap-2 text-sm text-muted"><input type="checkbox" checked disabled /> Open a pull request <span class="text-xs">PR is created on push</span></label>
   {/if}
-  <label class="flex items-center gap-2 text-sm text-dim" title="Coming in W5"><input type="checkbox" disabled /> Request review bot</label>
+  <label class="flex items-center gap-2 text-sm {botRepo ? 'text-muted' : 'text-dim'}" title={botRepo ? '' : 'Turn on the review bot in the project’s automations'}>
+    <input type="checkbox" bind:checked={requestReview} disabled={!botRepo || dest !== 'push'} /> Request review bot
+  </label>
 
   {#if blocked?.verify}
     <GateResult result={blocked.verify} onOverride={(reason) => push({ reason })} />

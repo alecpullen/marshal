@@ -1,4 +1,4 @@
-import type { CIHistory, Finding, RepoRow, ReviewDraft } from '../api'
+import type { CIHistory, Finding, RepoRow } from '../api'
 import type { Tone } from '../glyphs'
 
 export const SEVERITIES = ['blocker', 'major', 'minor', 'nit'] as const
@@ -23,7 +23,7 @@ export const severityCounts = (findings: Finding[]) => groupBySeverity(findings)
 
 /** The PR number at the end of a forge PR URL (`…/pull/12`, `…/pulls/12`), or undefined. */
 export function prNumber(url?: string): number | undefined {
-  const m = /\/pulls?\/(\d+)(?:[/?#].*)?$/.exec(url ?? '')
+  const m = /\/(?:pulls?|pr)\/(\d+)(?:[/?#].*)?$/.exec(url ?? '')
   return m ? Number(m[1]) : undefined
 }
 
@@ -55,5 +55,3 @@ const DAY = 24 * 3600 * 1000
 export function recentFixes(history: CIHistory[], now: number): CIHistory[] {
   return history.filter((h) => h.status === 'fixed' && h.prUrl && (!h.createdAt || now - new Date(h.createdAt).getTime() < DAY))
 }
-
-export const openDrafts = (drafts: ReviewDraft[]) => drafts.filter((d) => d.status === 'draft')

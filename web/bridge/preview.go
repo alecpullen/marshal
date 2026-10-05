@@ -3,8 +3,10 @@ package bridge
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -227,7 +229,7 @@ func (s *Server) issuePreview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"url": s.previewOrigin(r, pp) + u})
+	writeJSON(w, http.StatusOK, map[string]string{"url": s.previewOrigin(r, pp, r.PathValue("id")) + u})
 }
 
 // SetPreviewPort records the port of the preview listener, so issued
@@ -251,7 +253,14 @@ func (s *Server) PreviewHandler() http.Handler {
 
 // previewOrigin is scheme://host:previewPort for the host the caller used
 // to reach the bridge (or the configured public URL's).
-func (s *Server) previewOrigin(r *http.Request, port int) string {
+//
+// When that host is localhost (or a *.localhost name, which browsers resolve
+// to loopback), the URL's host is also specific to the agent, so the preview
+// of one agent is a different origin from the preview of another and a page
+// one agent serves cannot read the other's. Any other host cannot be
+// subdivided without wildcard DNS, so previews of all agents share the
+// origin there.
+func (s *Server) previewOrigin(r *http.Request, port int, agentID string) string {
 	scheme, host := "http", r.Host
 	if r.TLS != nil {
 		scheme = "https"
@@ -267,7 +276,41 @@ func (s *Server) previewOrigin(r *http.Request, port int) string {
 	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
 		host = "[" + host + "]" // bare IPv6
 	}
+	if isLocalhostName(host) {
+		host = agentOriginLabel(agentID) + ".localhost"
+	}
 	return fmt.Sprintf("%s://%s:%d", scheme, host, port)
+}
+
+// isLocalhostName reports whether host (no port) is localhost or a
+// subdomain of it.
+func isLocalhostName(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return host == "localhost" || strings.HasSuffix(host, ".localhost")
+}
+
+// agentOriginLabel is the DNS label that stands for an agent in its preview
+// origin: a fixed-length hash, since agent ids may hold characters a host
+// name cannot.
+func agentOriginLabel(agentID string) string {
+	sum := sha256.Sum256([]byte(agentID))
+	return "a" + hex.EncodeToString(sum[:10])
+}
+
+// previewHostAllowed is the per-agent origin check. On a localhost name the
+// request must arrive on the agent's own label, so a page served from one
+// agent's origin cannot fetch another agent's preview, whatever cookies it
+// could present. On any other host there is nothing to check.
+func previewHostAllowed(reqHost, agentID string) bool {
+	host := reqHost
+	if h, _, err := net.SplitHostPort(reqHost); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if !isLocalhostName(host) {
+		return true
+	}
+	return strings.ToLower(strings.TrimSuffix(host, ".")) == agentOriginLabel(agentID)+".localhost"
 }
 
 // preview authenticates a /preview/… request by token or cookie and then
@@ -281,6 +324,10 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 	}
 	id, port, rest, ok := parsePreviewPath(r.URL.Path)
 	if !ok {
+		notFound()
+		return
+	}
+	if !previewHostAllowed(r.Host, id) {
 		notFound()
 		return
 	}

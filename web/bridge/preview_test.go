@@ -275,17 +275,49 @@ func TestPreviewOriginUsesTheCallersHostAndScheme(t *testing.T) {
 	s := &Server{}
 	req := httptest.NewRequest("GET", "/", nil)
 	req.Host = "bridge.lan:7700"
-	if got := s.previewOrigin(req, 9000); got != "http://bridge.lan:9000" {
+	if got := s.previewOrigin(req, 9000, "a"); got != "http://bridge.lan:9000" {
 		t.Fatalf("origin = %q", got)
 	}
 	req.TLS = &tls.ConnectionState{}
 	req.Host = "[::1]:7700"
-	if got := s.previewOrigin(req, 9000); got != "https://[::1]:9000" {
+	if got := s.previewOrigin(req, 9000, "a"); got != "https://[::1]:9000" {
 		t.Fatalf("v6 origin = %q", got)
 	}
 	s.publicURLBase = "https://studio.example.com"
-	if got := s.previewOrigin(req, 9000); got != "https://studio.example.com:9000" {
+	if got := s.previewOrigin(req, 9000, "a"); got != "https://studio.example.com:9000" {
 		t.Fatalf("public origin = %q", got)
+	}
+}
+
+func TestPreviewOriginIsPerAgentOnLocalhost(t *testing.T) {
+	s := &Server{}
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "localhost:7700"
+	a, b := s.previewOrigin(req, 9000, "agent_a"), s.previewOrigin(req, 9000, "agent_b")
+	if a == b || !strings.HasSuffix(a, ".localhost:9000") || !strings.HasPrefix(a, "http://") {
+		t.Fatalf("origins %q, %q", a, b)
+	}
+	req.Host = "x.localhost:7700"
+	if got := s.previewOrigin(req, 9000, "agent_a"); got != a {
+		t.Fatalf("from a localhost subdomain: %q, want %q", got, a)
+	}
+	req.Host = "127.0.0.1:7700"
+	if got := s.previewOrigin(req, 9000, "agent_a"); got != "http://127.0.0.1:9000" {
+		t.Fatalf("an IP cannot be subdivided: %q", got)
+	}
+}
+
+func TestPreviewRefusesAnotherAgentsHostOnLocalhost(t *testing.T) {
+	p := newPreviewEnv(t, 3000)
+	tok, _ := p.issue(t, 3000)
+	own := agentOriginLabel(p.id) + ".localhost:9911"
+	other := agentOriginLabel("someone-else") + ".localhost:9911"
+	path := "/preview/" + p.id + "/3000/?t=" + tok
+	for host, want := range map[string]int{own: http.StatusFound, other: http.StatusNotFound, "localhost:9911": http.StatusNotFound} {
+		rec := p.do("GET", path, func(r *http.Request) { r.Host = host })
+		if rec.Code != want {
+			t.Errorf("host %s = %d, want %d", host, rec.Code, want)
+		}
 	}
 }
 

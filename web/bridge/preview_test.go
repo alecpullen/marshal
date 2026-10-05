@@ -280,8 +280,8 @@ func TestPreviewOriginUsesTheCallersHostAndScheme(t *testing.T) {
 		t.Fatalf("origin = %q", got)
 	}
 	req.TLS = &tls.ConnectionState{}
-	req.Host = "[::1]:7700"
-	if got, _ := s.previewOrigin(req, 9000, "a"); got != "https://[::1]:9000" {
+	req.Host = "[2001:db8::1]:7700"
+	if got, _ := s.previewOrigin(req, 9000, "a"); got != "https://[2001:db8::1]:9000" {
 		t.Fatalf("v6 origin = %q", got)
 	}
 	s.publicURLBase = "https://studio.example.com"
@@ -303,9 +303,15 @@ func TestPreviewOriginCarriesTheTokenOnLocalhost(t *testing.T) {
 	if got, _ := s.previewOrigin(req, 9000, "aaaa"); got != a {
 		t.Fatalf("from a localhost subdomain: %q, want %q", got, a)
 	}
-	req.Host = "127.0.0.1:7700"
-	if got, in := s.previewOrigin(req, 9000, "aaaa"); got != "http://127.0.0.1:9000" || in {
-		t.Fatalf("an IP cannot be subdivided: %q", got)
+	for _, h := range []string{"127.0.0.1:7700", "[::1]:7700"} {
+		req.Host = h
+		if got, in := s.previewOrigin(req, 9000, "aaaa"); got != a || !in {
+			t.Fatalf("loopback %s: %q, want %q", h, got, a)
+		}
+	}
+	req.Host = "192.168.1.5:7700"
+	if got, in := s.previewOrigin(req, 9000, "aaaa"); got != "http://192.168.1.5:9000" || in {
+		t.Fatalf("a LAN IP cannot be subdivided: %q", got)
 	}
 }
 
@@ -337,6 +343,10 @@ func TestPreviewOnLocalhostNeedsNoCookie(t *testing.T) {
 		if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = host }); rec.Code != http.StatusNotFound {
 			t.Errorf("host %s = %d, want 404", host, rec.Code)
 		}
+	}
+	// A direct request by loopback IP carries no token in its host.
+	if rec := p.do("GET", u.Path, func(r *http.Request) { r.Host = "127.0.0.1:9911" }); rec.Code != http.StatusNotFound {
+		t.Errorf("loopback IP host = %d, want 404", rec.Code)
 	}
 	// A token for another port is no use on this one.
 	if rec := p.do("GET", "/preview/"+p.id+"/4000/", func(r *http.Request) { r.Host = u.Host }); rec.Code != http.StatusNotFound {
@@ -380,6 +390,29 @@ func TestPreviewForwardProcessModeReachesThePort(t *testing.T) {
 	}
 	if gotCookie != "session=keep" {
 		t.Fatalf("upstream cookies = %q, want only the app's own", gotCookie)
+	}
+}
+
+func TestPreviewOnLocalhostSendsNoReferrer(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Referrer-Policy", "unsafe-url")
+		_, _ = io.WriteString(w, "hi")
+	}))
+	defer up.Close()
+	port, _ := strconv.Atoi(strings.TrimPrefix(up.URL[strings.LastIndex(up.URL, ":"):], ":"))
+	p := newPreviewEnv(t, port)
+	rec := p.do("POST", "/api/agents/"+p.id+"/preview/"+strconv.Itoa(port), func(r *http.Request) { r.Host = "127.0.0.1:7700" })
+	var out struct{ URL string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(out.URL)
+	rec = p.do("GET", u.Path, func(r *http.Request) { r.Host = u.Host })
+	if rec.Code != http.StatusOK || rec.Body.String() != "hi" {
+		t.Fatalf("forward = %d %q", rec.Code, rec.Body)
+	}
+	if got := rec.Header().Values("Referrer-Policy"); len(got) != 1 || got[0] != "no-referrer" {
+		t.Fatalf("Referrer-Policy = %v, want only no-referrer", got)
 	}
 }
 
@@ -427,7 +460,7 @@ func upgradeServer(t *testing.T) net.Listener {
 
 // handshakeAndEcho dials addr, sends a WebSocket upgrade for path with the
 // given cookie and checks that bytes echo back.
-func handshakeAndEcho(t *testing.T, addr, path, cookie string) {
+func handshakeAndEcho(t *testing.T, addr, host, path, cookie string) {
 	t.Helper()
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
@@ -435,7 +468,7 @@ func handshakeAndEcho(t *testing.T, addr, path, cookie string) {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	req := "GET " + path + " HTTP/1.1\r\nHost: " + addr + "\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n" +
+	req := "GET " + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n" +
 		"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCookie: " + cookie + "\r\n\r\n"
 	if _, err := io.WriteString(conn, req); err != nil {
 		t.Fatal(err)
@@ -472,7 +505,11 @@ func TestPreviewForwardWebSocketUpgradePassesThrough(t *testing.T) {
 	bridge := httptest.NewServer(p.srv.PreviewHandler())
 	defer bridge.Close()
 	cookie := "mp_" + p.id + "_" + strconv.Itoa(port) + "=" + tok
-	handshakeAndEcho(t, strings.TrimPrefix(bridge.URL, "http://"), "/preview/"+p.id+"/"+strconv.Itoa(port)+"/ws", cookie)
+	addr := strings.TrimPrefix(bridge.URL, "http://")
+	// Another host: the ?t= token and cookie path.
+	handshakeAndEcho(t, addr, "bridge.lan:7700", "/preview/"+p.id+"/"+strconv.Itoa(port)+"/ws", cookie)
+	// A localhost name: the token in the host, no cookie.
+	handshakeAndEcho(t, addr, "p"+tok+".localhost:9911", "/preview/"+p.id+"/"+strconv.Itoa(port)+"/ws", "")
 }
 
 // ---- the sidecar's preview listener ---------------------------------------

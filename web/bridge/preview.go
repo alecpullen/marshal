@@ -258,7 +258,7 @@ func (s *Server) PreviewHandler() http.Handler {
 // to reach the bridge (or the configured public URL's).
 //
 // When that host is localhost (or a *.localhost name, which browsers resolve
-// to loopback), the URL's host is also specific to the token, so each issued
+// to loopback, or a loopback IP such as the 127.0.0.1 the bridge prints), the URL's host is also specific to the token, so each issued
 // preview is its own origin and a page one agent serves cannot read the
 // preview of another. The token rides in the host name there
 // (p<token>.localhost) and is the credential: such an origin is cross-site to
@@ -294,10 +294,13 @@ func tokenOf(u string) string {
 	return tok
 }
 
-// isLocalhostName reports whether host (no port) is localhost or a
-// subdomain of it.
+// isLocalhostName reports whether host (no port) is localhost, a subdomain
+// of it, or a loopback address.
 func isLocalhostName(host string) bool {
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback() // 127.0.0.1 and ::1 are the same machine
+	}
 	return host == "localhost" || strings.HasSuffix(host, ".localhost")
 }
 
@@ -376,6 +379,7 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 	}
 	if rest == "/" && !strings.HasSuffix(r.URL.Path, "/") {
 		// /preview/<id>/<port> without the trailing slash.
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		http.Redirect(w, r, prefix, http.StatusFound)
 		return
 	}
@@ -437,7 +441,16 @@ func (f *Fleet) forwardPreview(w http.ResponseWriter, r *http.Request, agentID s
 	} else {
 		target.Host = fmt.Sprintf("127.0.0.1:%d", port)
 	}
+	_, tokenInHost := hostPreviewToken(r.Host)
 	rp := &httputil.ReverseProxy{
+		ModifyResponse: func(resp *http.Response) error {
+			if tokenInHost {
+				// The origin holds the credential, so keep it out of the
+				// Referer the previewed page sends to other sites.
+				resp.Header.Set("Referrer-Policy", "no-referrer")
+			}
+			return nil
+		},
 		Director: func(out *http.Request) {
 			out.URL.Scheme, out.URL.Host = target.Scheme, target.Host
 			out.URL.Path = path

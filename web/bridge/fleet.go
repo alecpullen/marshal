@@ -128,17 +128,18 @@ type Fleet struct {
 	// the real starter; tests inject a fake.
 	streamer streamStarter
 
-	// term holds open terminals, created on first use.
+	// previews holds the live preview tokens, created on first use.
 	previewOnce sync.Once
 	previews    *previewStore
 	// previewForward replaces the real forwarder; tests set it.
 	previewForward func(w http.ResponseWriter, r *http.Request, agentID string, port int, rest string)
 
 	// holdCall replaces the session/hold request; tests set it.
+	holdCall func(ctx context.Context, agentID string, on bool) error
 	// releaseRetry overrides the waits between hand-back retries (tests).
 	releaseRetry []time.Duration
-	holdCall     func(ctx context.Context, agentID string, on bool) error
 
+	// term holds open terminals, created on first use.
 	termOnce sync.Once
 	term     *terminalState
 

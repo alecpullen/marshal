@@ -112,7 +112,7 @@ func (f *Fleet) onControlNotification(method string, params json.RawMessage) {
 		return
 	}
 	d.SessionID, d.AgentID = studioOwner, studioOwner
-	_, _ = f.fleetLog.Append(fleetStreamKey, d)
+	f.emit(d)
 	var ev struct {
 		WatchID string `json:"watchId"`
 		Name    string `json:"name"`
@@ -243,7 +243,7 @@ type rerouteDelta struct {
 }
 
 func (f *Fleet) emitReroute(rr *Reroute) {
-	_, _ = f.fleetLog.Append(fleetStreamKey, rerouteDelta{
+	f.emit(rerouteDelta{
 		Kind: "reroute", SessionID: studioOwner, AgentID: studioOwner,
 		ID: rr.ID, WatchID: rr.WatchID, Watch: rr.Watch, Role: rr.Role,
 		From: bindingLabel(rr.From), To: bindingLabel(rr.To), At: rr.At.UnixMilli(),

@@ -915,10 +915,8 @@ export interface WSLoaded { source: string; doc: WSDoc; sections: WSSection[]; d
 export interface PoolStatus { size: number; idle: number; starting: number }
 export interface BuildsInfo { versions: TemplateVersion[] | null; pool?: PoolStatus; starts?: { coldMs: number; warmMs: number } }
 export type WorkspaceFrom = 'blank' | `starter:${string}` | `devcontainer:${string}` | `snapshot:${string}`
-export interface SecretsStatus { backend: string; healthy: boolean; error?: string }
 export interface NetRow { host: string; requests: number; blocked: number; bytesUp: number; bytesDown: number; lastSeen: number; decision: string; injected?: boolean; rule?: string }
-export interface RepoInfo { id: string; url?: string; branch?: string; forge?: string }
-export interface ProjectSettings { workspace?: string; mode?: string; isolated?: boolean; shipTarget?: string }
+export type RepoInfo = RepoRow
 
 const wsPath = (name: string) => `/api/workspaces/${encodeURIComponent(name)}`
 
@@ -942,16 +940,140 @@ export async function listBuilds(name: string): Promise<BuildsInfo> { return req
 export async function startBuild(name: string, version?: number): Promise<{ version: number }> {
   return request('POST', `${wsPath(name)}/builds`, version ? { version } : {})
 }
-export async function getSecretsStatus(): Promise<SecretsStatus> { return request('GET', '/api/secrets/status') }
-export async function getNetworkHosts(workspace: string): Promise<{ processMode: boolean; rows: NetRow[] }> {
-  return request('GET', `/api/network?workspace=${encodeURIComponent(workspace)}&view=hosts`)
-}
-export async function listRepos(): Promise<RepoInfo[]> { return request('GET', '/api/repos') }
-/** The project's verify-gate commands (W4.2); both empty means the gate has nothing to run. */
-export interface ProjectHealth { verify?: { build: string; test: string } }
-export async function getProjectHealth(root: string): Promise<ProjectHealth> { return request('GET', `/api/projects/health?root=${encodeURIComponent(root)}`) }
-export async function getProjectSettings(root: string): Promise<ProjectSettings> { return request('GET', `/api/projects/settings?root=${encodeURIComponent(root)}`) }
+// Network inspector, secrets, credentials, repos and project settings (W4.2 and W4.3 bridge routes).
 
+export type NetRule = 'allowlisted' | 'granted' | 'open' | 'injected' | 'blocked' | 'allowed'
+/** One row of `GET /api/network?view=hosts`. `lastSeen` is Unix ms. */
+export interface NetHostRow {
+  workspace?: string
+  agentId?: string
+  host: string
+  rule: NetRule
+  requests: number
+  blocked: number
+  bytesUp: number
+  bytesDown: number
+  lastSeen: number
+  decision: 'allow' | 'block'
+  injected?: boolean
+}
+export interface NetHosts { processMode: boolean; rows: NetHostRow[] }
+/** One connection record (`view=requests`). */
+export interface NetRecord {
+  at: number
+  agentId: string
+  workspace?: string
+  host: string
+  port: number
+  decision: 'allow' | 'block'
+  injected?: boolean
+  bytesUp: number
+  bytesDown: number
+  durationMs: number
+}
+/** One row of `view=agents`. */
+export interface NetAgentRow {
+  agentId: string
+  workspace?: string
+  hosts: number
+  requests: number
+  blocked: number
+  bytesUp: number
+  bytesDown: number
+  lastSeen: number
+}
+export type NetView = 'hosts' | 'requests' | 'agents'
+export type NetDecisionKind = 'block' | 'allow-agent' | 'add-to-workspace'
+/**
+ * What `add-to-workspace` returns. A repo template gets a `patch` to copy; a
+ * Studio template's draft changed, so there is nothing to show but a toast.
+ */
+export interface NetDecisionResult { ok?: boolean; patch?: string; workspace?: string; source?: string }
+
+const netQuery = (view: NetView, scope: { workspace?: string; agent?: string }) => query({ view, workspace: scope.workspace, agent: scope.agent })
+export async function getNetworkHosts(scope: { workspace?: string; agent?: string } = {}): Promise<NetHosts> {
+  const r = await request<Partial<NetHosts> | null>('GET', `/api/network${netQuery('hosts', scope)}`)
+  return { processMode: r?.processMode === true, rows: r?.rows ?? [] }
+}
+export async function getNetworkRequests(scope: { workspace?: string; agent?: string } = {}): Promise<NetRecord[]> {
+  return (await request<NetRecord[] | null>('GET', `/api/network${netQuery('requests', scope)}`)) ?? []
+}
+export async function getNetworkAgents(scope: { workspace?: string } = {}): Promise<NetAgentRow[]> {
+  return (await request<NetAgentRow[] | null>('GET', `/api/network${netQuery('agents', scope)}`)) ?? []
+}
+/** `GET /api/network/pending`: blocked requests still awaiting a decision, oldest first, shaped like the `network_block` delta. */
+export interface NetPending { kind: 'network_block'; sessionId: string; agentId: string; host: string; workspace?: string; at: number }
+export async function getNetworkPending(agent?: string): Promise<NetPending[]> {
+  return (await request<{ pending?: NetPending[] } | null>('GET', `/api/network/pending${query({ agent })}`))?.pending ?? []
+}
+export async function postNetworkDecision(agentId: string, host: string, decision: NetDecisionKind): Promise<NetDecisionResult> {
+  return (await request<NetDecisionResult | undefined>('POST', '/api/network/decisions', { agentId, host, decision })) ?? {}
+}
+
+export interface SecretsStatus { backend: 'env' | 'local' | 'openbao' | string; healthy: boolean; error?: string }
+export type CredentialKind = 'none' | 'pat' | 'ssh' | 'vault'
+export interface CredentialRow { id: string; kind: CredentialKind; envVar?: string; keyPath?: string; ref?: string; user?: string; set: boolean }
+export interface CredentialInput { id: string; kind: CredentialKind; envVar?: string; keyPath?: string; ref?: string; user?: string }
+export interface RepoRow { id: string; url: string; branch?: string; forge?: string; apiBase?: string; credRef?: string; watch?: boolean; watchLabel?: string }
+
+export async function getSecretsStatus(): Promise<SecretsStatus> { return request('GET', '/api/secrets/status') }
+/** Refs only, as `vault:<path>`; a value has no route out. */
+export async function listSecrets(prefix?: string): Promise<string[]> {
+  return (await request<{ refs?: string[] }>('GET', `/api/secrets${query({ prefix })}`)).refs ?? []
+}
+/** `ref` is `vault:<path>` or the bare path; slashes in it stay slashes. */
+const secretPath = (ref: string) => ref.replace(/^vault:/, '').split('/').map(q).join('/')
+export async function putSecret(ref: string, value: string): Promise<void> {
+  await request('PUT', `/api/secrets/${secretPath(ref)}`, { value })
+}
+export async function deleteSecret(ref: string): Promise<void> {
+  await request('DELETE', `/api/secrets/${secretPath(ref)}`)
+}
+export async function listCredentials(): Promise<CredentialRow[]> {
+  return (await request<CredentialRow[] | null>('GET', '/api/credentials')) ?? []
+}
+export async function putCredential(c: CredentialInput): Promise<CredentialRow> { return request('POST', '/api/credentials', c) }
+export async function deleteCredential(id: string): Promise<void> { await request('DELETE', `/api/credentials/${q(id)}`) }
+export async function listRepos(): Promise<RepoRow[]> {
+  return (await request<RepoRow[] | null>('GET', '/api/repos')) ?? []
+}
+export async function registerRepo(r: RepoRow): Promise<RepoRow> { return request('POST', '/api/repos', r) }
+export async function removeRepo(id: string): Promise<void> { await request('DELETE', `/api/repos/${q(id)}`) }
+
+/** `GET`/`PUT /api/projects/settings?root=`. `routing` is a W3 routing object (profile and overrides). */
+export interface ProjectSettings {
+  workspace?: string
+  routing?: RoutingChoice
+  mode?: string
+  isolated?: boolean
+  shipTarget?: 'merge' | 'push' | 'patch' | ''
+  intake: { repoId?: string; labels?: string[]; clients?: string[] }
+}
+export interface ProjectHealth {
+  /** The project's verify-gate commands; both empty means the gate has nothing to run. */
+  verify?: { build: string; test: string }
+  gateRunnable: 'yes' | 'no' | 'unknown'
+  mirrorFresh: { repoId: string; present: boolean; ageSeconds?: number; head?: string }[]
+  orphanWorktrees: string[]
+  trust: string
+  workspaceResolves?: { ref: string; resolves: boolean; built: boolean; error?: string }
+}
+export async function getProjectSettings(root: string): Promise<ProjectSettings> {
+  const s = await request<Partial<ProjectSettings> | null>('GET', `/api/projects/settings${query({ root })}`)
+  return { ...s, intake: s?.intake ?? {} }
+}
+export async function putProjectSettings(root: string, s: ProjectSettings): Promise<ProjectSettings> {
+  const r = await request<Partial<ProjectSettings> | null>('PUT', `/api/projects/settings${query({ root })}`, s)
+  return { ...r, intake: r?.intake ?? {} }
+}
+export async function getProjectHealth(root: string): Promise<ProjectHealth> {
+  return request('GET', `/api/projects/health${query({ root })}`)
+}
+
+/** The `[policy]` of a Studio template (its draft, or `version`); null when there is none to show. */
+export async function getWorkspacePolicy(name: string, version?: number): Promise<{ mode?: string; allow?: string[] } | null> {
+  return (await getWorkspace(name, version)).doc?.policy ?? null
+}
 
 // Terminals, previews, recipes, schedules, notifications and status links (W5.2-W5.3 bridge routes).
 
@@ -1074,7 +1196,3 @@ export async function createStatusLink(agentId: string, ttlHours: number): Promi
 export async function listStatusLinks(): Promise<StatusLink[]> { return (await request<StatusLink[] | null>('GET', '/api/status-links')) ?? [] }
 export async function revokeStatusLink(id: string): Promise<void> { await request('DELETE', `/api/status-links/${q(id)}`) }
 
-/** Secret references (`vault:…`) the vault holds, for pickers; values are never returned. */
-export async function listSecrets(prefix?: string): Promise<string[]> {
-  return (await request<{ refs?: string[] }>('GET', `/api/secrets${query({ prefix })}`)).refs ?? []
-}

@@ -532,6 +532,7 @@
     <ModeSwitcher mode={$session.mode} onChange={changeMode} />
     <StatusShare agentId={sessionId} />
     <a class="review" href="#chat/{sessionId}/review">Review</a>
+    <a class="review" href="#network?agent={encodeURIComponent(sessionId)}">Network</a>
     <span class="connection" class:connected={$session.connected} title={$session.connected ? 'connected' : 'disconnected'}>
       {$session.connected ? '●' : '○'}
     </span>

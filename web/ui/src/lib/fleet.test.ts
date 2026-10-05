@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { get } from 'svelte/store'
 import { applyDeltaTo, createFleetStore, groupAgents, describePending, sortAttentionFirst, toPendingPermission, toPendingQuestion, toRow, type AgentRow } from './fleet'
-import type { AgentStatus } from './api'
+import { setToken, type AgentStatus } from './api'
 
 const row = (x: Partial<AgentRow>): AgentRow => ({
   id: 'x',
@@ -282,6 +282,92 @@ describe('run, budget and reroute deltas', () => {
     expect(get(state).notices).toHaveLength(1)
     actions.dismissNotice('r1')
     expect(get(state).notices).toHaveLength(0)
+  })
+})
+
+describe('network_block decisions', () => {
+  const block = (host: string, agentId = 'a1', at = 1) => ({ kind: 'network_block' as const, sessionId: agentId, agentId, host, workspace: 'go', at })
+
+  it('collects one decision per (agent, host), a later delta replacing the earlier', () => {
+    const { state, actions } = createFleetStore()
+    actions.applyDelta(block('a.com', 'a1', 1))
+    actions.applyDelta(block('b.com', 'a1', 2))
+    actions.applyDelta(block('a.com', 'a2', 3))
+    actions.applyDelta({ ...block('a.com', 'a1', 9), workspace: 'node' })
+    const d = get(state).decisions
+    expect(d.map((x) => `${x.agentId}/${x.host}`)).toEqual(['a1/b.com', 'a2/a.com', 'a1/a.com'])
+    expect(d.find((x) => x.agentId === 'a1' && x.host === 'a.com')?.workspace).toBe('node')
+  })
+
+  it('leaves agent rows alone', () => {
+    const rows = [row({ id: 'a1' })]
+    expect(applyDeltaTo(rows, block('a.com'))).toBe(rows)
+  })
+
+  it('decideNetwork posts, then removes the item; a failed post keeps it', async () => {
+    const { state, actions } = createFleetStore()
+    actions.applyDelta(block('a.com'))
+    actions.applyDelta(block('b.com'))
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: false, status: 500, text: async () => '{"error":"x"}' }).mockResolvedValue({ ok: true, status: 200, text: async () => '{"ok":true}' })
+    vi.stubGlobal('fetch', fetchMock)
+    setToken('t')
+    await expect(actions.decideNetwork('a1', 'a.com', 'block')).rejects.toBeTruthy()
+    expect(get(state).decisions).toHaveLength(2)
+    await actions.decideNetwork('a1', 'a.com', 'allow-agent')
+    expect(get(state).decisions.map((x) => x.host)).toEqual(['b.com'])
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ agentId: 'a1', host: 'a.com', decision: 'allow-agent' })
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('telemetry deltas', () => {
+  it('keeps the last telemetry per agent and still updates the row', () => {
+    const { state, actions } = createFleetStore()
+    state.update((s) => ({ ...s, agents: [row({ id: 'a1' })] }))
+    actions.applyDelta({ kind: 'telemetry', sessionId: 'a1', contextPct: 42, changedFiles: 3 })
+    actions.applyDelta({ kind: 'telemetry', sessionId: 'a1', contextPct: 55, changedFiles: 4, toolStats: [{ name: 'x', calls: 1, errors: 1, slowestMs: 5 }], rules: ['no-network'] })
+    const s = get(state)
+    expect(s.telemetry.a1).toMatchObject({ contextPct: 55, changedFiles: 4, rules: ['no-network'] })
+    expect(s.agents[0].contextPct).toBe(55)
+  })
+})
+
+describe('stale decisions', () => {
+  it('refresh restores pending prompts from the bridge, merged with live ones', async () => {
+    const { state, actions } = createFleetStore()
+    actions.applyDelta({ kind: 'network_block', sessionId: 'a1', agentId: 'a1', host: 'live.com', at: 5 })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (u: string) => ({
+      ok: true,
+      status: 200,
+      text: async () =>
+        u === '/api/agents' ? JSON.stringify([{ id: 'a1', project: '/p', status: 'idle', updatedAt: '' }, { id: 'a2', project: '/p', status: 'idle', updatedAt: '' }])
+        : u === '/api/network/pending' ? JSON.stringify({ pending: [{ kind: 'network_block', sessionId: 'a2', agentId: 'a2', host: 'old.com', workspace: 'w', at: 1 }] })
+        : '[]',
+    })))
+    setToken('t')
+    await actions.refresh()
+    expect(get(state).decisions.map((d) => `${d.agentId}/${d.host}`)).toEqual(['a2/old.com', 'a1/live.com'])
+    vi.unstubAllGlobals()
+  })
+
+  it('refresh still works when the pending route is missing', async () => {
+    const { state, actions } = createFleetStore()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (u: string) => u === '/api/network/pending' ? { ok: false, status: 404, text: async () => '' } : { ok: true, status: 200, text: async () => '[]' }))
+    setToken('t')
+    await actions.refresh()
+    expect(get(state).error).toBeNull()
+    vi.unstubAllGlobals()
+  })
+
+  it('refresh drops decisions of agents that are gone', async () => {
+    const { state, actions } = createFleetStore()
+    actions.applyDelta({ kind: 'network_block', sessionId: 'gone', agentId: 'gone', host: 'a.com', at: 1 })
+    actions.applyDelta({ kind: 'network_block', sessionId: 'a1', agentId: 'a1', host: 'b.com', at: 2 })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (u: string) => ({ ok: true, status: 200, text: async () => (u === '/api/agents' ? JSON.stringify([{ id: 'a1', project: '/p', status: 'idle', updatedAt: '' }]) : '[]') })))
+    setToken('t')
+    await actions.refresh()
+    expect(get(state).decisions.map((d) => d.agentId)).toEqual(['a1'])
+    vi.unstubAllGlobals()
   })
 })
 

@@ -36,6 +36,9 @@ type EgressAgentPolicy struct {
 	// Inject maps a host to the header the proxy adds to requests for it.
 	// Presence of an entry makes the proxy terminate TLS for that host.
 	Inject map[string]EgressInjection `json:"inject,omitempty"`
+	// PreviewPorts are the agent's declared preview ports. The sidecar's
+	// preview listener forwards only to these.
+	PreviewPorts []int `json:"previewPorts,omitempty"`
 }
 
 // EgressInjection is one injected header; Value is already formatted.

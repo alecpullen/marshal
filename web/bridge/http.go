@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,6 +38,9 @@ type Server struct {
 	// absolute links (e.g. the operator-approval URL an MCP spawn
 	// returns). Empty falls back to the listen address.
 	publicURLBase string
+	// previewPort is the port of the separate preview listener, 0 until
+	// the host has started one (see SetPreviewPort).
+	previewPort atomic.Int32
 }
 
 func NewServer(target any, args ...any) *Server {
@@ -65,6 +69,9 @@ func NewServer(target any, args ...any) *Server {
 			publicURLBase, _ = args[2].(string)
 		}
 	}
+	if fleet != nil && publicURLBase != "" {
+		fleet.SetPublicURLBase(publicURLBase)
+	}
 	s := &Server{fleet: fleet, reg: reg, log: log, publicURLBase: publicURLBase, mux: http.NewServeMux()}
 	s.routes()
 	s.http = s.mux
@@ -92,6 +99,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// /mcp joins /api/ on the mux side. It is not under /api/ because it
 	// authenticates per client rather than with the shared bearer token,
 	// but it must still reach the mux rather than the SPA fallback.
+	// Previews are served from their own origin (PreviewHandler), never
+	// from this one: an app the agent runs must not share storage with the
+	// UI that holds the bearer token.
+	if strings.HasPrefix(r.URL.Path, statusPrefix) {
+		s.statusPublic(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, previewPrefix) {
+		http.NotFound(w, r)
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/mcp" {
 		staticHandler().ServeHTTP(w, r)
 		return
@@ -116,6 +134,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/agents/{id}/review/comments", s.addReviewComment)
 	s.mux.HandleFunc("POST /api/agents/{id}/review/comments/{cid}/resolve", s.resolveReviewComment)
 	s.mux.HandleFunc("GET /api/prompts/recent", s.recentPrompts)
+	s.mux.HandleFunc("POST /api/agents/{id}/preview/{port}", s.issuePreview)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal", s.terminalOpen)
+	s.mux.HandleFunc("GET /api/agents/{id}/terminal/{tid}/events", s.terminalEvents)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal/{tid}/input", s.terminalInput)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal/{tid}/resize", s.terminalResize)
+	s.mux.HandleFunc("POST /api/agents/{id}/terminal/{tid}/release", s.terminalRelease)
+	s.mux.HandleFunc("DELETE /api/agents/{id}/terminal/{tid}", s.terminalClose)
 	s.mux.HandleFunc("POST /api/agents/{id}/merge", s.agentMerge)
 	s.mux.HandleFunc("POST /api/agents/{id}/discard", s.agentDiscard)
 	s.mux.HandleFunc("POST /api/agents/{id}/exit", s.agentExit)
@@ -134,9 +159,15 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sessions/{id}/roster", s.sessionRoster)
 	s.mux.HandleFunc("GET /api/sessions/{id}/step-diffs", s.sessionStepDiffs)
 	s.libraryRoutes()
+	s.recipeRoutes()
+	s.scheduleRoutes()
+	s.notificationRoutes()
+	s.statusLinkRoutes()
 	s.modelsRoutes()
 	s.budgetRoutes()
 	s.watchRoutes()
+	s.workspaceRoutes()
+	s.projectSettingsRoutes()
 	s.mux.HandleFunc("GET /api/runs", s.listRuns)
 	s.mux.HandleFunc("GET /api/runs/{agentId}", s.getRun)
 	s.mux.HandleFunc("POST /api/runs", s.startRun)
@@ -155,6 +186,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/prune", s.pruneDisk)
 	s.mux.HandleFunc("GET /api/audit", s.listAudit)
 	s.mux.HandleFunc("POST /api/workspaces/{name}/ca/rotate", s.rotateWorkspaceCA)
+	s.mux.HandleFunc("POST /api/workspaces/{name}/shell", s.workspaceShellOpen)
+	s.mux.HandleFunc("GET /api/workspaces/{name}/shell/{tid}/events", s.workspaceShellEvents)
+	s.mux.HandleFunc("POST /api/workspaces/{name}/shell/{tid}/input", s.workspaceShellInput)
+	s.mux.HandleFunc("POST /api/workspaces/{name}/shell/{tid}/resize", s.workspaceShellResize)
+	s.mux.HandleFunc("DELETE /api/workspaces/{name}/shell/{tid}", s.workspaceShellClose)
 	s.mux.HandleFunc("GET /api/credentials", s.listCredentials)
 	s.mux.HandleFunc("POST /api/credentials", s.putCredential)
 	s.mux.HandleFunc("DELETE /api/credentials/{id}", s.deleteCredential)
@@ -199,7 +235,37 @@ func writeErr(w http.ResponseWriter, err error) {
 	var unsupported ErrUnsupported
 	var rpc *rpcError
 	var budget ErrBudget
+	var setup ErrSetupFailed
+	var merge ErrWorkspaceMerge
 	switch {
+	case errors.Is(err, ErrUnknownRecipe), errors.Is(err, ErrUnknownSchedule):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrInvalidRecipe), errors.Is(err, ErrRecipeBuiltin), errors.Is(err, errInvalidSchedule):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrRecipeExists):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrTemplateNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrTemplateName), errors.Is(err, ErrTemplatePool), errors.Is(err, ErrWorkspaceMountTarget):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrTemplateExists), errors.Is(err, ErrTemplateInUse), errors.Is(err, ErrBuildBusy), errors.Is(err, ErrTemplateNoDraft):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrWorkspaceNotBuilt):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "code": "workspace_not_built"})
+	case errors.Is(err, ErrUntrustedRepoTemplate):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrWorkspaceInvalid), errors.As(err, &merge):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+	case errors.As(err, &setup):
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error(), "code": "setup_failed", "output": setup.Output})
+	case errors.Is(err, ErrPreviewPortNotDeclared):
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrTooManyTerminals):
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownTerminal):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, errTerminalInput):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownReroute):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, errRerouteConflict):
@@ -216,7 +282,7 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, errScopeMismatch):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, errInvalidRun), errors.Is(err, errInvalidLibrary):
+	case errors.Is(err, errInvalidRun), errors.Is(err, errInvalidLibrary), errors.Is(err, errInvalidProjectSettings):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, errInvalidReview):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -303,7 +369,7 @@ func (s *Server) removeProject(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	_, _ = s.fleet.FleetLog().Append(fleetStreamKey, map[string]any{"kind": "project_removed", "project": body.Root})
+	s.fleet.emit(map[string]any{"kind": "project_removed", "project": body.Root})
 	writeJSON(w, http.StatusOK, s.fleet.ProjectStatus())
 }
 
@@ -350,15 +416,19 @@ func ValidateProjectRoot(root string) error {
 
 func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Project  string `json:"project"`
-		Name     string `json:"name"`
-		Mode     string `json:"mode"`
-		Prompt   string `json:"prompt"`
-		Isolated bool   `json:"isolated"`
+		Project string `json:"project"`
+		Name    string `json:"name"`
+		Mode    string `json:"mode"`
+		Prompt  string `json:"prompt"`
+		// Isolated is a pointer so a request that leaves it out takes the
+		// project's default.
+		Isolated *bool  `json:"isolated"`
 		Branch   string `json:"branch"`
 		BaseRef  string `json:"baseRef"`
 		// Routing picks this agent's models; see SpawnOptions.Routing.
 		Routing json.RawMessage `json:"routing"`
+		// Workspace is a workspace reference: name, name@3 or repo:name.
+		Workspace string `json:"workspace"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -367,9 +437,24 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// A request that leaves a field out takes the project's default.
+	defaults := s.fleet.ws.ProjectSettingsFor(body.Project)
+	isolated := defaults.Isolated != nil && *defaults.Isolated
+	if body.Isolated != nil {
+		isolated = *body.Isolated
+	}
+	if body.Mode == "" {
+		body.Mode = defaults.Mode
+	}
+	if len(body.Routing) == 0 || string(body.Routing) == "null" {
+		body.Routing = defaults.Routing
+	}
+	if body.Workspace == "" {
+		body.Workspace = defaults.Workspace
+	}
 	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
-		Name: body.Name, Mode: body.Mode, Isolated: body.Isolated, Branch: body.Branch, BaseRef: body.BaseRef,
-		Routing: body.Routing,
+		Name: body.Name, Mode: body.Mode, Isolated: isolated, Branch: body.Branch, BaseRef: body.BaseRef,
+		Routing: body.Routing, Workspace: body.Workspace,
 	})
 	if id == "" {
 		writeErr(w, err)

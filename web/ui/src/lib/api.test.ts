@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getNetworkHosts, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getSecretsStatus, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory, listSecrets } from './api'
+import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory } from './api'
+
 function reply(status: number, body?: unknown) {
   return vi.fn().mockResolvedValue({
     ok: status >= 200 && status < 300,
@@ -311,7 +312,7 @@ describe('workspaces API', () => {
     expect(await call(() => startBuild('svc'))).toMatchObject({ url: '/api/workspaces/svc/builds', method: 'POST' })
     expect(await call(() => startBuild('svc', 2))).toMatchObject({ body: { version: 2 } })
     expect(await call(() => getSecretsStatus())).toMatchObject({ url: '/api/secrets/status' })
-    expect(await call(() => getNetworkHosts('svc'), { rows: [] })).toMatchObject({ url: '/api/network?workspace=svc&view=hosts' })
+    expect(await call(() => getNetworkHosts({ workspace: 'svc' }), { rows: [] })).toMatchObject({ url: '/api/network?view=hosts&workspace=svc' })
   })
 
   it('diffWorkspace accepts plain text or {diff}', async () => {
@@ -326,6 +327,98 @@ describe('workspaces API', () => {
   it('spawnAgent sends the workspace reference', async () => {
     const r = await call(() => spawnAgent({ project: '/p', workspace: 'svc@2' }), { agentId: 'a' })
     expect(r.body).toMatchObject({ workspace: 'svc@2' })
+  })
+})
+
+describe('network, secrets, repos and project settings API', () => {
+  beforeEach(() => setToken('t'))
+  afterEach(() => vi.unstubAllGlobals())
+
+  it.each([
+    ['hosts', () => getNetworkHosts({ workspace: 'go dev', agent: 'a1' }), '/api/network?view=hosts&workspace=go+dev&agent=a1'],
+    ['hosts unscoped', () => getNetworkHosts(), '/api/network?view=hosts'],
+    ['requests', () => getNetworkRequests({ agent: 'a1' }), '/api/network?view=requests&agent=a1'],
+    ['agents', () => getNetworkAgents({ workspace: 'w' }), '/api/network?view=agents&workspace=w'],
+  ])('%s', async (_n, call, url) => {
+    const f = reply(200, null)
+    vi.stubGlobal('fetch', f)
+    await call()
+    expect(f.mock.calls[0][0]).toBe(url)
+    expect(f.mock.calls[0][1].method).toBe('GET')
+  })
+
+  it('getNetworkHosts reads processMode and tolerates an empty body', async () => {
+    vi.stubGlobal('fetch', reply(200, { processMode: true, rows: [{ host: 'a.com' }] }))
+    expect(await getNetworkHosts()).toEqual({ processMode: true, rows: [{ host: 'a.com' }] })
+    vi.stubGlobal('fetch', reply(200, null))
+    expect(await getNetworkHosts()).toEqual({ processMode: false, rows: [] })
+  })
+
+  it('getNetworkPending unwraps the list and scopes by agent', async () => {
+    const f = reply(200, { pending: [{ kind: 'network_block', sessionId: 'a1', agentId: 'a1', host: 'h', at: 1 }] })
+    vi.stubGlobal('fetch', f)
+    expect(await getNetworkPending('a 1')).toHaveLength(1)
+    expect(f.mock.calls[0][0]).toBe('/api/network/pending?agent=a+1')
+    vi.stubGlobal('fetch', reply(200, null))
+    expect(await getNetworkPending()).toEqual([])
+  })
+
+  it('postNetworkDecision posts the body', async () => {
+    const f = reply(200, { ok: true })
+    vi.stubGlobal('fetch', f)
+    await postNetworkDecision('a1', 'api.x.com', 'allow-agent')
+    expect(f.mock.calls[0][0]).toBe('/api/network/decisions')
+    expect(JSON.parse(f.mock.calls[0][1].body)).toEqual({ agentId: 'a1', host: 'api.x.com', decision: 'allow-agent' })
+  })
+
+  it('secrets: status, list, put and delete keep ref slashes', async () => {
+    const f = reply(200, { refs: ['vault:git/github'] })
+    vi.stubGlobal('fetch', f)
+    expect(await listSecrets('git/')).toEqual(['vault:git/github'])
+    expect(f.mock.calls[0][0]).toBe('/api/secrets?prefix=git%2F')
+    await getSecretsStatus()
+    expect(f.mock.calls[1][0]).toBe('/api/secrets/status')
+    await putSecret('vault:git/github', 's3cret')
+    expect(f.mock.calls[2][0]).toBe('/api/secrets/git/github')
+    expect(f.mock.calls[2][1].method).toBe('PUT')
+    expect(JSON.parse(f.mock.calls[2][1].body)).toEqual({ value: 's3cret' })
+    await deleteSecret('providers/openai')
+    expect(f.mock.calls[3][0]).toBe('/api/secrets/providers/openai')
+    expect(f.mock.calls[3][1].method).toBe('DELETE')
+  })
+
+  it('credentials and repos', async () => {
+    const f = reply(200, [])
+    vi.stubGlobal('fetch', f)
+    await listCredentials()
+    await putCredential({ id: 'gh', kind: 'vault', ref: 'vault:git/github' })
+    await deleteCredential('a/b')
+    await listRepos()
+    await registerRepo({ id: 'r', url: 'https://x/y.git', forge: 'github' })
+    await removeRepo('r')
+    const calls = f.mock.calls.map((c) => [c[1].method, c[0]])
+    expect(calls).toEqual([
+      ['GET', '/api/credentials'],
+      ['POST', '/api/credentials'],
+      ['DELETE', '/api/credentials/a%2Fb'],
+      ['GET', '/api/repos'],
+      ['POST', '/api/repos'],
+      ['DELETE', '/api/repos/r'],
+    ])
+    expect(JSON.parse(f.mock.calls[1][1].body)).toEqual({ id: 'gh', kind: 'vault', ref: 'vault:git/github' })
+  })
+
+  it('project settings and health take the root as a query', async () => {
+    const f = reply(200, {})
+    vi.stubGlobal('fetch', f)
+    expect((await getProjectSettings('/p q')).intake).toEqual({})
+    expect(f.mock.calls[0][0]).toBe('/api/projects/settings?root=%2Fp+q')
+    await putProjectSettings('/p', { mode: 'edit', intake: { labels: ['a'] } })
+    expect(f.mock.calls[1][0]).toBe('/api/projects/settings?root=%2Fp')
+    expect(f.mock.calls[1][1].method).toBe('PUT')
+    expect(JSON.parse(f.mock.calls[1][1].body)).toEqual({ mode: 'edit', intake: { labels: ['a'] } })
+    await getProjectHealth('/p')
+    expect(f.mock.calls[2][0]).toBe('/api/projects/health?root=%2Fp')
   })
 })
 
@@ -402,8 +495,4 @@ describe('W5 ops API', () => {
     expect(await call(() => promoteMemory(7, '/p', 'workspace', 'svc'))).toMatchObject({ body: { scope: 'workspace', scopeKey: 'svc' } })
   })
 
-  it('listSecrets unwraps refs', async () => {
-    vi.stubGlobal('fetch', reply(200, { refs: ['vault:a'] }))
-    expect(await listSecrets('vault:')).toEqual(['vault:a'])
-  })
 })

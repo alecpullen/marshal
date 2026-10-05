@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,8 +36,10 @@ const (
 	egressNetwork   = "marshal-agents"
 	egressContainer = "marshal-egress"
 	egressPort      = 3128
-	egressSubpath   = "egress"
-	egressMountDir  = "/egress"
+	// egressPreviewPort is the sidecar's preview listener.
+	egressPreviewPort = 8081
+	egressSubpath     = "egress"
+	egressMountDir    = "/egress"
 
 	// Where the CA material mounts inside an agent container.
 	containerCABundle = "/marshal/ca-bundle.pem"
@@ -81,6 +84,8 @@ type egressAgent struct {
 	// caID is the CA generation the agent was started with. Rotation
 	// retires it but the proxy keeps signing this agent's leaves with it.
 	caID string
+	// previewPorts are the workspace's declared preview ports.
+	previewPorts []int
 }
 
 // egressHost owns the egress policy and the way agents reach the proxy.
@@ -98,6 +103,10 @@ type egressHost struct {
 	caGens map[string]caGen
 	// proxyAddr is host:port agents dial (container name or loopback).
 	proxyAddr string
+
+	// previewPort is the host port the sidecar's preview listener is
+	// published on (container mode), 0 until known.
+	previewPort atomic.Int32
 
 	// process mode
 	proxy   *EgressProxy
@@ -188,6 +197,7 @@ func (a *egressAgent) rebuild(allow []string, inject map[string]EgressInjection)
 	a.policy = EgressAgentPolicy{
 		Token: a.token, IP: a.ip, Workspace: a.workspace, CA: a.caID, Mode: mode,
 		Allow: allowAll, Grants: append([]string(nil), a.grants...), Inject: inject,
+		PreviewPorts: append([]int(nil), a.previewPorts...),
 	}
 }
 
@@ -209,6 +219,18 @@ func (h *egressHost) grant(agentID, host string) bool {
 	a.policy.Grants = append([]string(nil), a.grants...)
 	h.publishLocked()
 	return true
+}
+
+// setPreviewPorts records the ports an agent's workspace declares for
+// preview and pushes the new policy.
+func (h *egressHost) setPreviewPorts(agentID string, ports []int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if a, ok := h.agents[agentID]; ok {
+		a.previewPorts = append([]int(nil), ports...)
+		a.policy.PreviewPorts = append([]int(nil), ports...)
+		h.publishLocked()
+	}
 }
 
 func (h *egressHost) setIP(agentID, ip string) {
@@ -424,7 +446,7 @@ func (h *egressHost) register(ctx context.Context, agentID, workspace string, sp
 	defer h.mu.Unlock()
 	a := &egressAgent{token: h.tokenFor(agentID), spec: spec, workspace: workspace}
 	if old, ok := h.agents[agentID]; ok {
-		a.ip, a.grants, a.caID = old.ip, old.grants, old.caID
+		a.ip, a.grants, a.caID, a.previewPorts = old.ip, old.grants, old.caID, old.previewPorts
 	}
 	a.rebuild(allow, inject)
 	h.agents[agentID] = a

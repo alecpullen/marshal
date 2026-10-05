@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import PendingActions from '../inbox/PendingActions.svelte'
+  import NetworkDecision from '../inbox/NetworkDecision.svelte'
+  import type { DecideFn } from '../inbox/decision'
   import Tag from '../ui/Tag.svelte'
-  import { describePending, type AgentRow } from '../fleet'
+  import { describePending, type AgentRow, type NetworkDecisionItem } from '../fleet'
   import { connectSSE } from '../sse'
   import { createStackStore, type StackState, type StackStore } from '../stack'
   import { gateState } from '../dock/gate'
@@ -17,10 +19,15 @@
     agent,
     onRefreshPending,
     onNavigate,
+    decision = undefined,
+    onDecide = async () => {},
   }: {
     agent: AgentRow
     onRefreshPending: () => void
     onNavigate: (hash: string) => void
+    /** A blocked request of this agent awaiting a decision; it tints the tile and shows inline. */
+    decision?: NetworkDecisionItem
+    onDecide?: DecideFn
   } = $props()
 
   /*
@@ -139,7 +146,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
 <article
   bind:this={el}
-  class="flex min-h-40 cursor-pointer flex-col gap-2 rounded-lg border p-3 hover:bg-hover {agent.pending ? 'border-warn bg-warn/10' : 'border-border bg-surface'}"
+  class="flex min-h-40 cursor-pointer flex-col gap-2 rounded-lg border p-3 hover:bg-hover {agent.pending || decision ? 'border-warn bg-warn/10' : 'border-border bg-surface'}"
   data-testid="tile"
   data-agent={agent.id}
   onclick={onClick}
@@ -179,6 +186,12 @@
     <div class="flex flex-wrap items-center gap-2 border-t border-warn/30 pt-2">
       <div class="min-w-0 flex-1 truncate text-xs" title={describePending(agent.pending)}>{describePending(agent.pending)}</div>
       <PendingActions {agent} onResolved={onRefreshPending} onOpen={open} />
+    </div>
+  {/if}
+
+  {#if decision}
+    <div class="border-t border-warn/30 pt-2">
+      <NetworkDecision item={decision} agentName={agent.name} compact {onDecide} />
     </div>
   {/if}
 </article>

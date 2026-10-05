@@ -27,6 +27,17 @@ func (l *EventLog) ServeSSE(w http.ResponseWriter, r *http.Request) {
 
 // ServeSSEKey streams one log key, including replay and live events.
 func (l *EventLog) ServeSSEKey(w http.ResponseWriter, r *http.Request, key string) {
+	l.serveSSEKey(w, r, key, false)
+}
+
+// ServeSSEKeyFromStart is ServeSSEKey for logs a client reads from the
+// beginning, like a build log: a fresh connect replays every retained
+// event before going live, where ServeSSEKey sends live events only.
+func (l *EventLog) ServeSSEKeyFromStart(w http.ResponseWriter, r *http.Request, key string) {
+	l.serveSSEKey(w, r, key, true)
+}
+
+func (l *EventLog) serveSSEKey(w http.ResponseWriter, r *http.Request, key string, fromStart bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "bridge: streaming unsupported", http.StatusInternalServerError)
@@ -45,7 +56,13 @@ func (l *EventLog) ServeSSEKey(w http.ResponseWriter, r *http.Request, key strin
 	defer unsub()
 
 	afterID := lastEventID(r)
-	replay, overflowed := l.Replay(key, afterID)
+	var replay []Event
+	var overflowed bool
+	if fromStart && afterID == 0 {
+		replay = l.Tail(key)
+	} else {
+		replay, overflowed = l.Replay(key, afterID)
+	}
 	if overflowed {
 		writeSSE(w, Event{ID: 0, SessionID: key, Data: overflowNudgePayload})
 	}

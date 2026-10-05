@@ -28,7 +28,7 @@ export function isScopedSessions(hash: string): boolean {
 }
 
 /** The old Dashboard now lives at #fleet; the empty hash is Home. */
-export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'library' | 'settings' | 'usage' | 'watches' | 'workspaces' | 'other'
+export type Page = 'home' | 'fleet' | 'new' | 'chat' | 'sessions' | 'runs' | 'run' | 'live' | 'library' | 'settings' | 'usage' | 'watches' | 'workspaces' | 'network' | 'project' | 'other'
 
 export function pageFromHash(hash: string): Page {
   if (hash === '' || hash === '#') return 'home'
@@ -43,6 +43,8 @@ export function pageFromHash(hash: string): Page {
   if (parseSettingsRoute(hash)) return 'settings'
   if (parseUsageRoute(hash)) return 'usage'
   if (parseWatchesRoute(hash)) return 'watches'
+  if (parseNetworkRoute(hash)) return 'network'
+  if (parseProjectRoute(hash)) return 'project'
   if (parseWorkspacesRoute(hash)) return 'workspaces'
   return 'other'
 }
@@ -172,8 +174,8 @@ export function formatLibraryRoute(r: LibraryRoute): string {
   return `#library/${r.tab}${r.project ? `?project=${encodeURIComponent(r.project)}` : ''}`
 }
 
-export type SettingsTab = 'models' | 'providers' | 'tokens' | 'notifications' | 'status-links'
-const SETTINGS_TABS: readonly string[] = ['models', 'providers', 'tokens', 'notifications', 'status-links']
+export type SettingsTab = 'models' | 'providers' | 'secrets' | 'credentials' | 'repos' | 'tokens' | 'notifications' | 'status-links'
+const SETTINGS_TABS: readonly string[] = ['models', 'providers', 'secrets', 'credentials', 'repos', 'tokens', 'notifications', 'status-links']
 
 /** `#settings[/<tab>]`; a bare `#settings` is Models. */
 export function parseSettingsRoute(hash: string): { tab: SettingsTab } | null {
@@ -217,6 +219,31 @@ export function parseWorkspacesRoute(hash: string): WorkspacesRoute | null {
 export function formatWorkspacesRoute(r: WorkspacesRoute): string {
   return r.name ? `#workspaces/${encodeURIComponent(r.name)}/${r.view === 'gallery' ? 'edit' : r.view}` : '#workspaces'
 }
+
+/** The network inspector: `#network?agent=<id>` for one agent, `#workspaces/<name>/network` for one workspace. */
+export interface NetworkRoute { workspace?: string; agent?: string }
+
+export function parseNetworkRoute(hash: string): NetworkRoute | null {
+  const ws = /^#workspaces\/([^/?]+)\/network$/.exec(hash)
+  if (ws) return { workspace: decodeSafe(ws[1]) }
+  const m = /^#network(?:\?(.*))?$/.exec(hash)
+  if (!m) return null
+  const q = new URLSearchParams(m[1] ?? '')
+  return { agent: q.get('agent') || undefined, workspace: q.get('workspace') || undefined }
+}
+
+export function formatNetworkRoute(r: NetworkRoute): string {
+  if (r.workspace && !r.agent) return `#workspaces/${encodeURIComponent(r.workspace)}/network`
+  return `#network${r.agent ? `?agent=${encodeURIComponent(r.agent)}` : ''}`
+}
+
+/** The project overview: `#projects/<encoded root>`; null for the bare project list. */
+export function parseProjectRoute(hash: string): { root: string } | null {
+  const m = /^#projects\/(.+)$/.exec(hash)
+  return m ? { root: decodeSafe(m[1]) } : null
+}
+
+export const formatProjectRoute = (root: string) => `#projects/${encodeURIComponent(root)}`
 
 /** Where an old standalone page moved to, or null when the hash is current. */
 export function redirectLegacy(hash: string): string | null {

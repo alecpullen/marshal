@@ -56,7 +56,7 @@ func (f *Fleet) Exit(ctx context.Context, agentID string, opts ExitOptions) (Exi
 	if !ok {
 		return ExitResult{}, fmt.Errorf("%w: agent %s", ErrUnknownAgent, agentID)
 	}
-	dest := exitDestination(a)
+	dest := f.shipDestination(a)
 	if dest != "push" {
 		return ExitResult{Destination: dest}, nil
 	}

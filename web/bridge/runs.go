@@ -127,6 +127,7 @@ func (f *Fleet) dispatchRun(ctx context.Context, rt *agentRuntime, agentID, meth
 		if err != nil {
 			f.live.setRunErr(agentID, gen, err.Error())
 		}
+		f.fireRunDone(agentID, err)
 		done <- outcome{raw, err}
 	}()
 	select {
@@ -211,8 +212,15 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		// A run keeps its isolation unless the project says otherwise.
+		defaults := s.fleet.ws.ProjectSettingsFor(body.Project)
+		isolated := true
+		if defaults.Isolated != nil {
+			isolated = *defaults.Isolated
+		}
 		id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
-			Name: runName(req), Origin: OriginUI, Isolated: true,
+			Name: runName(req), Origin: OriginUI, Isolated: isolated,
+			Mode: defaults.Mode, Routing: defaults.Routing, Workspace: defaults.Workspace,
 		})
 		if err != nil {
 			// Spawn can return an id with an error (the agent exists but is

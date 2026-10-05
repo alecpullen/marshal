@@ -41,6 +41,24 @@ const (
 	AuditSecretDeleted   = "secret_deleted"
 	AuditCARotated       = "ca_rotated"
 	AuditNetworkDecision = "network_decision"
+
+	AuditWorkspaceCreated   = "workspace_created"
+	AuditWorkspacePublished = "workspace_published"
+	AuditWorkspaceDeleted   = "workspace_deleted"
+	AuditWorkspaceBuild     = "workspace_build"
+	AuditWorkspaceSnapshot  = "workspace_snapshot"
+	AuditAgentTimeout       = "agent_timeout"
+	AuditProjectSettings    = "project_settings"
+	AuditTerminalOpened     = "terminal_opened"
+	AuditTerminalClosed     = "terminal_closed"
+	AuditRecipeSaved        = "recipe_saved"
+	AuditRecipeDeleted      = "recipe_deleted"
+	AuditScheduleSaved      = "schedule_saved"
+	AuditScheduleDeleted    = "schedule_deleted"
+	AuditStatusLinkCreated  = "status_link_created"
+	AuditStatusLinkRevoked  = "status_link_revoked"
+	AuditNotificationsSaved = "notifications_saved"
+	AuditMemoryPromoted     = "memory_promoted"
 )
 
 // defaultAuditMaxBytes is when a file rotates. Records are small, so a

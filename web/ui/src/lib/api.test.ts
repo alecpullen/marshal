@@ -427,13 +427,13 @@ describe('automations API', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('lists and reads drafts, defaulting missing findings to none', async () => {
-    const f = reply(200, [{ id: 'd1', status: 'draft' }])
+    const f = reply(200, { drafts: [{ id: 'd1', status: 'draft' }] })
     vi.stubGlobal('fetch', f)
     expect((await listReviewDrafts({ project: '/p', status: 'draft' }))[0].findings).toEqual([])
     expect(f.mock.calls[0][0]).toBe('/api/automations/review/drafts?project=%2Fp&status=draft')
     await listReviewDrafts()
     expect(f.mock.calls[1][0]).toBe('/api/automations/review/drafts')
-    vi.stubGlobal('fetch', reply(200, null))
+    vi.stubGlobal('fetch', reply(200, { drafts: null }))
     expect(await listReviewDrafts()).toEqual([])
     const g = reply(200, { id: 'd 1' })
     vi.stubGlobal('fetch', g)
@@ -463,9 +463,9 @@ describe('automations API', () => {
   })
 
   it('reads CI history and creates a webhook secret', async () => {
-    const f = reply(200, [])
+    const f = reply(200, { history: [{ id: 'c1' }] })
     vi.stubGlobal('fetch', f)
-    await listCIHistory({ project: '/p' })
+    expect(await listCIHistory({ project: '/p' })).toEqual([{ id: 'c1' }])
     expect(f.mock.calls[0][0]).toBe('/api/automations/ci/history?project=%2Fp')
     await getCIHistory('c/1')
     expect(f.mock.calls[1][0]).toBe('/api/automations/ci/history/c%2F1')

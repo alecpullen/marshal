@@ -96,11 +96,6 @@
   const repoChoices = $derived([...new Set([...repos.map((r) => r.id), ...(repoId ? [repoId] : [])])])
   const open = $derived(drafts.find((d) => d.id === draftId))
   const repoOf = (id: string) => repos.find((r) => r.id === id)
-  const prLink = (d: ReviewDraft) => {
-    const url = repoOf(d.repoId)?.url
-    return url && /^https?:\/\//.test(url) ? `${url.replace(/\.git$/, '').replace(/\/$/, '')}/pull/${d.number}` : null
-  }
-
   // A post or discard changes the draft: replace it in the list, or drop it.
   function changed(id: string, d: ReviewDraft | null) {
     drafts = d ? drafts.map((x) => (x.id === id ? d : x)) : drafts.map((x) => (x.id === id ? { ...x, status: 'discarded' as const } : x))
@@ -165,7 +160,7 @@
               <span class="flex-1"></span>
               <span class="text-xs text-muted">{new Date(d.createdAt).toLocaleString()}</span>
             </a>
-            {#if prLink(d)}<a class="ml-2 text-xs text-accent hover:underline" href={prLink(d)} target="_blank" rel="noopener noreferrer">Open PR on the forge</a>{/if}
+            {#if d.prUrl}<a class="ml-2 text-xs text-accent hover:underline" href={d.prUrl} target="_blank" rel="noopener noreferrer">{d.title || 'Open PR on the forge'}</a>{/if}
           </li>
         {:else}
           <li class="text-sm text-muted">No reviews yet.</li>

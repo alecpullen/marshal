@@ -1,7 +1,7 @@
 import type { CIHistory, Finding, RepoRow } from '../api'
 import type { Tone } from '../glyphs'
 
-export const SEVERITIES = ['blocker', 'major', 'minor', 'nit'] as const
+export const SEVERITIES = ['blocking', 'should-fix', 'nit'] as const
 
 const rank = (s: string) => {
   const i = (SEVERITIES as readonly string[]).indexOf(s)
@@ -9,7 +9,7 @@ const rank = (s: string) => {
 }
 
 export function severityTone(s: string): Tone {
-  return s === 'blocker' ? 'err' : s === 'major' ? 'warn' : s === 'minor' ? 'info' : 'neutral'
+  return s === 'blocking' ? 'err' : s === 'should-fix' ? 'warn' : 'neutral'
 }
 
 /** Findings grouped by severity, most severe first; severities the bridge invents sort last. */
@@ -37,6 +37,15 @@ function webBase(url: string): string | null {
   return `https://${m[1].startsWith('http') ? m[2] : m[2].replace(/:\d+$/, '')}/${m[3]}`
 }
 
+/** The registered repo a PR URL belongs to, or undefined when none of them matches. */
+export function repoForPR(repos: Pick<RepoRow, 'id' | 'url'>[], prUrl?: string): string | undefined {
+  const lower = (prUrl ?? '').toLowerCase()
+  return repos.find((r) => {
+    const base = webBase(r.url)
+    return base && lower.startsWith(base.toLowerCase() + '/')
+  })?.id
+}
+
 /** A link to `path` (and `line`) at `sha` on the forge, or null when the repo URL cannot be read. */
 export function forgeFileUrl(repo: Pick<RepoRow, 'url' | 'forge'> | undefined, sha: string, path: string, line?: number): string | null {
   const base = repo ? webBase(repo.url) : null
@@ -51,7 +60,7 @@ export function ciTone(status: string): Tone {
 }
 
 const DAY = 24 * 3600 * 1000
-/** Results for the inbox: fixes that opened a PR within the last day. */
+/** Results for the inbox: fixes that opened a PR within the last day. One with no timestamp is not shown; the history table still has it. */
 export function recentFixes(history: CIHistory[], now: number): CIHistory[] {
-  return history.filter((h) => h.status === 'fixed' && h.prUrl && (!h.createdAt || now - new Date(h.createdAt).getTime() < DAY))
+  return history.filter((h) => h.status === 'fixed' && h.prUrl && h.createdAt && now - Date.parse(h.createdAt) < DAY)
 }

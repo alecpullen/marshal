@@ -27,14 +27,14 @@ const draft = (o: Partial<api.ReviewDraft> = {}): api.ReviewDraft => ({
   id: 'd1',
   repoId: 'r1',
   number: 12,
-  headSHA: 'abc123',
+  headSha: 'abc123',
   agentId: 'a9',
   summary: 'Two things to look at.',
   status: 'draft',
   createdAt: '2026-10-05T00:00:00Z',
   findings: [
     { id: 'f1', severity: 'nit', title: 'Naming', body: 'rename x', path: 'a.go', line: 3 },
-    { id: 'f2', severity: 'blocker', title: 'Leaks a goroutine', body: 'close the channel', path: 'src/b.go', line: 40, stepNode: 'step:7' },
+    { id: 'f2', severity: 'blocking', title: 'Leaks a goroutine', body: 'close the channel', path: 'src/b.go', line: 40, stepNode: 'step:7' },
   ],
   ...o,
 })
@@ -59,14 +59,14 @@ describe('Review bot settings', () => {
     await fireEvent.change(screen.getByLabelText('Review repo'), { target: { value: 'r1' } })
     await fireEvent.input(screen.getByLabelText('Labels'), { target: { value: 'ready, bot' } })
     await fireEvent.click(screen.getByLabelText('Post reviews automatically'))
-    await fireEvent.click(screen.getByLabelText('blocker'))
+    await fireEvent.click(screen.getByLabelText('blocking'))
     await fireEvent.click(screen.getByRole('button', { name: 'Save settings' }))
     await waitFor(() => expect(api.putProjectSettings).toHaveBeenCalled())
     const [root, body] = (api.putProjectSettings as Mock).mock.calls[0]
     expect(root).toBe(ROOT)
     expect(body.mode).toBe('edit')
     expect(body.automations.ciFixer.repoId).toBe('r1')
-    expect(body.automations.reviewBot).toMatchObject({ enabled: true, repoId: 'r1', labels: ['ready', 'bot'], skipDrafts: true, autoPost: true, holdSeverities: ['blocker'] })
+    expect(body.automations.reviewBot).toMatchObject({ enabled: true, repoId: 'r1', labels: ['ready', 'bot'], skipDrafts: true, autoPost: true, holdSeverities: ['blocking'] })
   })
 
   it('shows the webhook secret once, with the payload URL', async () => {
@@ -107,7 +107,7 @@ describe('Drafts', () => {
     const row = await screen.findByTestId('draft-row')
     expect(api.listReviewDrafts).toHaveBeenCalledWith({ project: ROOT })
     expect(within(row).getByText('PR #12')).toBeTruthy()
-    expect(within(row).getByText('1 blocker')).toBeTruthy()
+    expect(within(row).getByText('1 blocking')).toBeTruthy()
     expect(within(row).getByText('1 nit')).toBeTruthy()
     await fireEvent.click(row)
     expect(onNavigate).toHaveBeenCalledWith('#projects/%2Fhome%2Fu%2Falpha/automations/review-bot?draft=d1')
@@ -117,7 +117,7 @@ describe('Drafts', () => {
     mount({ draftId: 'd1' })
     await screen.findByTestId('draft-view')
     const sections = screen.getAllByRole('region').map((r) => r.getAttribute('aria-label'))
-    expect(sections).toEqual(['blocker findings', 'nit findings'])
+    expect(sections).toEqual(['blocking findings', 'nit findings'])
     expect((await screen.findByRole('link', { name: 'src/b.go:40' })).getAttribute('href')).toBe('https://github.com/o/n/blob/abc123/src/b.go#L40')
     expect(screen.getByRole('link', { name: 'Evidence' }).getAttribute('href')).toBe('#chat/a9?node=step%3A7')
   })
@@ -129,18 +129,18 @@ describe('Drafts', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
     const titles = screen.getAllByLabelText('Title') as HTMLInputElement[]
     await fireEvent.input(titles[0], { target: { value: 'Leaks a goroutine on error' } })
-    await fireEvent.change(screen.getAllByLabelText('Severity')[1], { target: { value: 'minor' } })
+    await fireEvent.change(screen.getAllByLabelText('Severity')[1], { target: { value: 'should-fix' } })
     await fireEvent.click(screen.getByRole('button', { name: 'Save edits' }))
     await waitFor(() => expect(api.editReviewDraft).toHaveBeenCalled())
     const [id, body] = (api.editReviewDraft as Mock).mock.calls[0]
     expect(id).toBe('d1')
     expect(body.summary).toBe('Two things to look at.')
     expect(body.findings.find((f: api.Finding) => f.id === 'f2').title).toBe('Leaks a goroutine on error')
-    expect(body.findings.find((f: api.Finding) => f.id === 'f1').severity).toBe('minor')
+    expect(body.findings.find((f: api.Finding) => f.id === 'f1').severity).toBe('should-fix')
   })
 
   it('confirms before posting, then shows the review link', async () => {
-    ;(api.postReviewDraft as Mock).mockResolvedValue(draft({ status: 'posted', postedUrl: 'https://github.com/o/n/pull/12#pullrequestreview-1' }))
+    ;(api.postReviewDraft as Mock).mockResolvedValue(draft({ status: 'posted', reviewUrl: 'https://github.com/o/n/pull/12#pullrequestreview-1' }))
     mount({ draftId: 'd1' })
     await screen.findByTestId('draft-view')
     await fireEvent.click(screen.getByRole('button', { name: 'Post' }))
@@ -161,14 +161,14 @@ describe('Drafts', () => {
   })
 
   it('sends the chosen findings to the author agent', async () => {
-    ;(api.sendDraftToAuthor as Mock).mockResolvedValue(undefined)
+    ;(api.sendDraftToAuthor as Mock).mockResolvedValue({ sent: 1, skipped: 1 })
     mount({ draftId: 'd1' })
     await screen.findByTestId('draft-view')
     await fireEvent.click(screen.getByRole('button', { name: 'Send to author agent' }))
     await fireEvent.click(screen.getByLabelText('Send Naming'))
     await fireEvent.click(screen.getByRole('button', { name: /Send 1 to author/ }))
     await waitFor(() => expect(api.sendDraftToAuthor).toHaveBeenCalledWith('d1', ['f2']))
-    expect(await screen.findByText('Sent 1 finding to the author agent.')).toBeTruthy()
+    expect(await screen.findByText('Sent 1 finding to the author agent (1 skipped).')).toBeTruthy()
   })
 
   it('says so when no agent owns the PR', async () => {
@@ -178,6 +178,17 @@ describe('Drafts', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Send to author agent' }))
     await fireEvent.click(screen.getByRole('button', { name: /Send 2 to author/ }))
     expect(await screen.findByText('No Marshal agent owns this PR')).toBeTruthy()
+  })
+
+  it('offers only Discard on a failed draft', async () => {
+    ;(api.listReviewDrafts as Mock).mockResolvedValue([draft({ status: 'failed', error: 'no structured result', findings: [] })])
+    ;(api.discardReviewDraft as Mock).mockResolvedValue(undefined)
+    mount({ draftId: 'd1' })
+    await screen.findByTestId('draft-view')
+    expect(screen.getByRole('alert').textContent).toContain('no structured result')
+    expect(screen.queryByRole('button', { name: 'Post' })).toBeNull()
+    await fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    await waitFor(() => expect(api.discardReviewDraft).toHaveBeenCalledWith('d1'))
   })
 
   it('refetches drafts when the refresh tick moves', async () => {

@@ -166,7 +166,7 @@ describe('Home stale decisions', () => {
 
 describe('Home automations', () => {
   const projects = [{ root: '/home/u/alpha', available: true }]
-  const draft = { id: 'd1', repoId: 'r1', number: 12, headSHA: 'abc', agentId: 'rv', summary: '', status: 'draft', createdAt: '2026-10-05T00:00:00Z', findings: [{ id: 'f1', severity: 'blocker', title: 't', body: 'b' }, { id: 'f2', severity: 'nit', title: 't', body: 'b' }] }
+  const draft = { id: 'd1', repoId: 'r1', number: 12, headSha: 'abc', agentId: 'rv', summary: '', status: 'draft', createdAt: '2026-10-05T00:00:00Z', findings: [{ id: 'f1', severity: 'blocking', title: 't', body: 'b' }, { id: 'f2', severity: 'nit', title: 't', body: 'b' }] }
 
   it('lists review drafts in Ready to ship and opens the draft on the automations page', async () => {
     vi.mocked(api.listReviewDrafts).mockResolvedValue([draft] as never)
@@ -175,7 +175,7 @@ describe('Home automations', () => {
     const row = await screen.findByTestId('draft-ready')
     expect(api.listReviewDrafts).toHaveBeenCalledWith({ project: '/home/u/alpha', status: 'draft' })
     expect(row.textContent).toContain('Review draft for PR #12')
-    expect(row.textContent).toContain('1 blocker')
+    expect(row.textContent).toContain('1 blocking')
     expect(screen.getByText(/Ready to ship · 1/)).toBeTruthy()
     await userEvent.click(within(row).getByRole('button', { name: 'Open' }))
     expect(onNavigate).toHaveBeenCalledWith('#projects/%2Fhome%2Fu%2Falpha/automations/review-bot?draft=d1')

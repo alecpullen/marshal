@@ -1071,7 +1071,7 @@ export interface CIFixerSettings {
   push: boolean
   pushBranches: string[]
 }
-export type FindingSeverity = 'blocker' | 'major' | 'minor' | 'nit' | string
+export type FindingSeverity = 'blocking' | 'should-fix' | 'nit' | string
 export interface Finding { id: string; severity: FindingSeverity; path?: string; line?: number; title: string; body: string; stepNode?: string }
 /** `failed` is a run whose result could not be parsed. */
 export type ReviewDraftStatus = 'draft' | 'posted' | 'discarded' | 'failed'
@@ -1079,21 +1079,25 @@ export interface ReviewDraft {
   id: string
   repoId: string
   number: number
-  headSHA: string
-  agentId: string
+  headSha: string
+  title?: string
+  prUrl?: string
+  project?: string
+  agentId?: string
   findings: Finding[]
   summary: string
   status: ReviewDraftStatus
   createdAt: string
-  postedUrl?: string
+  reviewUrl?: string
   error?: string
 }
 /** `fixed`, `didn't reproduce`, or `gave up` (optionally `gave up: <reason>`). */
-export interface CIHistory { id: string; repoId: string; sha: string; check: string; status: string; reason: string; prUrl?: string; costUsd: number; agentId?: string; createdAt?: string }
+export interface CIHistory { id: string; repoId: string; branch?: string; sha: string; check: string; status: string; reason: string; prUrl?: string; costUsd: number; agentId?: string; /** RFC 3339 */ createdAt?: string }
 
 const draftPath = (id: string) => `/api/automations/review/drafts/${q(id)}`
 export async function listReviewDrafts(opts: { project?: string; status?: ReviewDraftStatus } = {}): Promise<ReviewDraft[]> {
-  return ((await request<ReviewDraft[] | null>('GET', `/api/automations/review/drafts${query({ project: opts.project, status: opts.status })}`)) ?? []).map(withFindings)
+  const r = await request<{ drafts?: ReviewDraft[] | null } | null>('GET', `/api/automations/review/drafts${query({ project: opts.project, status: opts.status })}`)
+  return (r?.drafts ?? []).map(withFindings)
 }
 export async function getReviewDraft(id: string): Promise<ReviewDraft> { return withFindings(await request<ReviewDraft>('GET', draftPath(id))) }
 export async function editReviewDraft(id: string, edit: { findings: Finding[]; summary: string }): Promise<ReviewDraft> {
@@ -1102,13 +1106,16 @@ export async function editReviewDraft(id: string, edit: { findings: Finding[]; s
 export async function postReviewDraft(id: string): Promise<ReviewDraft> { return withFindings(await request<ReviewDraft>('POST', `${draftPath(id)}/post`)) }
 export async function discardReviewDraft(id: string): Promise<void> { await request('POST', `${draftPath(id)}/discard`) }
 /** 404 when no Marshal agent owns the PR; callers show their own message for it. */
-export async function sendDraftToAuthor(id: string, findingIds: string[]): Promise<void> { await request('POST', `${draftPath(id)}/send-to-author`, { findingIds }) }
+export async function sendDraftToAuthor(id: string, findingIds: string[]): Promise<{ sent: number; skipped: number }> {
+  const r = await request<{ sent?: number; skipped?: number } | undefined>('POST', `${draftPath(id)}/send-to-author`, { findingIds })
+  return { sent: r?.sent ?? findingIds.length, skipped: r?.skipped ?? 0 }
+}
 /** Runs the bot on a PR now; 409 when the project's review bot is off. */
 export async function runReviewBot(repoId: string, number: number): Promise<void> { await request('POST', '/api/automations/review/run', { repoId, number }) }
 const withFindings = (d: ReviewDraft): ReviewDraft => ({ ...d, findings: d.findings ?? [] })
 
 export async function listCIHistory(opts: { project?: string } = {}): Promise<CIHistory[]> {
-  return (await request<CIHistory[] | null>('GET', `/api/automations/ci/history${query({ project: opts.project })}`)) ?? []
+  return (await request<{ history?: CIHistory[] | null } | null>('GET', `/api/automations/ci/history${query({ project: opts.project })}`))?.history ?? []
 }
 export async function getCIHistory(id: string): Promise<CIHistory> { return request('GET', `/api/automations/ci/history/${q(id)}`) }
 /** The secret comes back once; the forge's webhook form is where it goes. */

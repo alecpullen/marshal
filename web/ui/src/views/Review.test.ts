@@ -19,6 +19,7 @@ vi.mock('../lib/api.js', async (importActual) => {
     resolveReviewComment: vi.fn(),
     exitAgent: vi.fn(),
     getProjectSettings: vi.fn(),
+    listRepos: vi.fn(),
     runReviewBot: vi.fn(),
     mergeAgent: vi.fn(),
     discardAgent: vi.fn(),
@@ -71,6 +72,7 @@ beforeEach(() => {
   ;(api.listReviewComments as Mock).mockResolvedValue([])
   ;(api.getStepDiffs as Mock).mockResolvedValue('unsupported')
   ;(api.getProjectSettings as Mock).mockResolvedValue({ intake: {} })
+  ;(api.listRepos as Mock).mockResolvedValue([{ id: 'r1', url: 'https://github.com/o/n.git' }, { id: 'r2', url: 'https://github.com/o/other.git' }])
 })
 afterEach(cleanup)
 
@@ -100,6 +102,20 @@ describe('Request review bot', () => {
     await push()
     await waitFor(() => expect(api.runReviewBot).toHaveBeenCalledWith('r1', 12))
     await waitFor(() => expect(onShipped).toHaveBeenCalledWith({ kind: 'pushed', message: 'Pushed. Pull request opened. Review bot requested.', href: 'https://github.com/o/n/pull/12' }))
+  })
+
+  it('does not run the bot on a PR from a different repo than the one it watches', async () => {
+    ;(api.getProjectSettings as Mock).mockResolvedValue(botOn)
+    ;(api.exitAgent as Mock).mockResolvedValue({ destination: 'push', prUrl: 'https://github.com/o/other/pull/4' })
+    const onShipped = vi.fn()
+    render(Review, { agentId: 'a1', agent: agent(), onShipped })
+    const box = screen.getByLabelText('Request review bot') as HTMLInputElement
+    await waitFor(() => expect(box.disabled).toBe(false))
+    await fireEvent.click(box)
+    await waitFor(() => expect((screen.getByLabelText('Commit message') as HTMLTextAreaElement).value).toBe('fix: set x to 2'))
+    await push()
+    await waitFor(() => expect(onShipped).toHaveBeenCalledWith(expect.objectContaining({ message: 'Pushed. Pull request opened. Review bot not started: it watches r1, not r2.' })))
+    expect(api.runReviewBot).not.toHaveBeenCalled()
   })
 
   it('does not run the bot when the box is unchecked, and reports a failed run without failing the push', async () => {

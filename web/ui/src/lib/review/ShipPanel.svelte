@@ -3,10 +3,10 @@
   import Button from '../ui/Button.svelte'
   import Modal from '../ui/Modal.svelte'
   import GateResult from '../GateResult.svelte'
-  import { APIError, discardAgent, ensureToken, errMessage, exitAgent, getCommitDraft, getProjectSettings, mergeAgent, runReviewBot, patchUrl, type ExitResult, type MergeResult } from '../api'
+  import { APIError, discardAgent, ensureToken, errMessage, exitAgent, getCommitDraft, getProjectSettings, listRepos, mergeAgent, runReviewBot, patchUrl, type ExitResult, type MergeResult, type RepoRow } from '../api'
   import { mergeRefusalMessage } from '../diff'
   import { exitDestination } from '../exit'
-  import { prNumber } from '../automations/model'
+  import { prNumber, repoForPR } from '../automations/model'
   import type { AgentRow } from '../fleet'
 
   export type ShipOutcome = { kind: 'merged' | 'pushed' | 'discarded'; message: string; href?: string }
@@ -23,11 +23,13 @@
   // The project's review bot, when it is on: "Request review bot" runs it on the PR this push opens.
   let botRepo = $state('')
   let requestReview = $state(false)
+  let repos = $state<RepoRow[]>([])
 
   onMount(async () => {
     try {
       const bot = (await getProjectSettings(agent.project)).automations?.reviewBot
       if (bot?.enabled && bot.repoId) botRepo = bot.repoId
+      if (botRepo) repos = await listRepos().catch(() => [])
     } catch {
       // Without settings the toggle just stays disabled.
     }
@@ -83,6 +85,9 @@
   async function startReview(prUrl?: string): Promise<string> {
     const n = prNumber(prUrl)
     if (!n) return ' No pull request to review.'
+    // The bot watches one repo; a PR the agent opened elsewhere is not its to review.
+    const prRepo = repoForPR(repos, prUrl)
+    if (prRepo && prRepo !== botRepo) return ` Review bot not started: it watches ${botRepo}, not ${prRepo}.`
     try {
       await runReviewBot(botRepo, n)
       return ' Review bot requested.'

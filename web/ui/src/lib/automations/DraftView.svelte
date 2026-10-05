@@ -19,9 +19,11 @@
   let error = $state('')
 
   const isDraft = $derived(draft.status === 'draft')
+  // A failed run has nothing to post or edit, but it can still be cleared.
+  const isFailed = $derived(draft.status === 'failed')
   // Grouped from the saved draft even while editing, so changing a severity does not move the card under the cursor.
   const groups = $derived(groupBySeverity(draft.findings))
-  const fileUrl = (f: Finding) => (f.path ? forgeFileUrl(repo, draft.headSHA, f.path, f.line) : null)
+  const fileUrl = (f: Finding) => (f.path ? forgeFileUrl(repo, draft.headSha, f.path, f.line) : null)
   const evidence = (f: Finding) => (f.stepNode && draft.agentId ? `#chat/${encodeURIComponent(draft.agentId)}?node=${encodeURIComponent(f.stepNode)}` : null)
 
   function startEdit() {
@@ -64,8 +66,8 @@
   const send = () =>
     run(async () => {
       try {
-        await sendDraftToAuthor(draft.id, selected)
-        notice = `Sent ${selected.length} finding${selected.length === 1 ? '' : 's'} to the author agent.`
+        const { sent, skipped } = await sendDraftToAuthor(draft.id, selected)
+        notice = `Sent ${sent} finding${sent === 1 ? '' : 's'} to the author agent${skipped ? ` (${skipped} skipped)` : ''}.`
         sending = false
         selected = []
       } catch (e) {
@@ -78,9 +80,9 @@
 
 <div class="flex flex-col gap-3" data-testid="draft-view">
   <div class="flex flex-wrap items-center gap-2">
-    <h3 class="text-sm font-semibold">Review of PR #{draft.number}</h3>
+    <h3 class="text-sm font-semibold">Review of PR #{draft.number}{draft.title ? `: ${draft.title}` : ''}</h3>
     <Tag tone={draft.status === 'posted' ? 'ok' : draft.status === 'draft' ? 'accent' : 'neutral'}>{draft.status}</Tag>
-    {#if draft.postedUrl}<a class="text-sm text-accent hover:underline" href={draft.postedUrl} target="_blank" rel="noopener noreferrer">View review</a>{/if}
+    {#if draft.reviewUrl}<a class="text-sm text-accent hover:underline" href={draft.reviewUrl} target="_blank" rel="noopener noreferrer">View review</a>{/if}
     {#if draft.agentId}<a class="text-sm text-accent hover:underline" href="#chat/{encodeURIComponent(draft.agentId)}">Reviewer session</a>{/if}
   </div>
   {#if draft.error}<p class="text-sm text-err" role="alert">{draft.error}</p>{/if}
@@ -108,7 +110,9 @@
     <p class="text-sm text-muted">No findings.</p>
   {/each}
 
-  {#if isDraft}
+  {#if isFailed}
+    <div><Button variant="ghost" disabled={busy} onclick={discard}>Discard</Button></div>
+  {:else if isDraft}
     <div class="flex flex-wrap gap-2">
       {#if editing}
         <Button disabled={busy} onclick={save}>Save edits</Button>

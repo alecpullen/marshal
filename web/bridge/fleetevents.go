@@ -285,18 +285,22 @@ type AgentStatus struct {
 	Name    string `json:"name,omitempty"`
 	// OwnerID, Origin and ClientID mirror Agent.OwnerID, Agent.Origin and
 	// Agent.ClientID in workspace.go.
-	OwnerID      string    `json:"ownerId,omitempty"`
-	Origin       string    `json:"origin,omitempty"`
-	ClientID     string    `json:"clientId,omitempty"`
-	Mode         string    `json:"mode,omitempty"`
-	Status       string    `json:"status"`
-	Activity     string    `json:"activity,omitempty"`
-	ContextPct   int       `json:"contextPct,omitempty"`
-	ChangedFiles int       `json:"changedFiles,omitempty"`
-	Interrupted  bool      `json:"interrupted,omitempty"`
-	Isolated     bool      `json:"isolated,omitempty"`
-	Branch       string    `json:"branch,omitempty"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	OwnerID      string `json:"ownerId,omitempty"`
+	Origin       string `json:"origin,omitempty"`
+	ClientID     string `json:"clientId,omitempty"`
+	Mode         string `json:"mode,omitempty"`
+	Status       string `json:"status"`
+	Activity     string `json:"activity,omitempty"`
+	ContextPct   int    `json:"contextPct,omitempty"`
+	ChangedFiles int    `json:"changedFiles,omitempty"`
+	Interrupted  bool   `json:"interrupted,omitempty"`
+	// Held is true while a terminal is holding the agent (the agent is
+	// paused for someone typing), so a reloaded page shows it without
+	// waiting for the next "hold" delta.
+	Held      bool      `json:"held,omitempty"`
+	Isolated  bool      `json:"isolated,omitempty"`
+	Branch    string    `json:"branch,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
 	// SourceKind is "local" or "git"; the exit panel routes on it and
 	// ReadOnly to decide between merge, push, and patch.
 	SourceKind string `json:"sourceKind,omitempty"`

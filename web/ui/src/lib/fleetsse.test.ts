@@ -3,6 +3,11 @@ import { connectBuildLog, connectSSE, parseBuildLogEvent, parseFleetEvent } from
 import { setToken } from './api'
 
 describe('parseFleetEvent', () => {
+  it('passes automation and network_block events that name no session', () => {
+    expect(parseFleetEvent('{"kind":"automation","title":"Nightly ran"}')).toMatchObject({ kind: 'automation', title: 'Nightly ran' })
+    expect(parseFleetEvent('{"kind":"network_block","host":"x.test"}')).toMatchObject({ kind: 'network_block', host: 'x.test' })
+  })
+
   it('parses an activity delta', () => {
     expect(parseFleetEvent('{"kind":"activity","sessionId":"s1","activity":"file.read"}')).toEqual({
       kind: 'activity',
@@ -105,7 +110,6 @@ describe('parseFleetEvent', () => {
 describe('automation deltas', () => {
   it('accepts one with no session', () => {
     expect(parseFleetEvent('{"kind":"automation","type":"ci_result","id":"c1","status":"fixed"}')).toEqual({ kind: 'automation', type: 'ci_result', id: 'c1', status: 'fixed' })
-    expect(parseFleetEvent('{"kind":"automation","type":"review_draft"}')).toBeNull()
   })
 })
 

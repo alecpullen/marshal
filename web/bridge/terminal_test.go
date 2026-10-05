@@ -666,3 +666,183 @@ func TestTestShellIsLimitedToTwoPerWorkspace(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalFinalReleaseIsRetriedWhenTheAgentIsUnreachable(t *testing.T) {
+	e := newTermEnv(t, false)
+	e.f.releaseRetry = []time.Duration{10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond}
+	var mu sync.Mutex
+	offCalls := 0
+	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
+		if on {
+			return nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		offCalls++
+		if offCalls <= 2 {
+			return errors.New("unreachable")
+		}
+		return nil
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.settled(t)
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	waitFor(t, 5*time.Second, "release retried to success", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return offCalls == 3
+	})
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if offCalls != 3 {
+		t.Fatalf("off calls = %d, want to stop after the first success", offCalls)
+	}
+}
+
+func TestTerminalFinalReleaseRetryYieldsToANewTerminal(t *testing.T) {
+	e := newTermEnv(t, false)
+	e.f.releaseRetry = []time.Duration{50 * time.Millisecond, 50 * time.Millisecond}
+	var mu sync.Mutex
+	offCalls := 0
+	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
+		if on {
+			return nil
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		offCalls++
+		return errors.New("unreachable")
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.settled(t)
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	e.open(t) // a new terminal now owns the hold
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if offCalls != 1 {
+		t.Fatalf("off calls = %d, want only the first attempt", offCalls)
+	}
+}
+
+func TestTerminalCloseRemovesTheTTYFile(t *testing.T) {
+	e := newTermEnv(t, false)
+	tid := e.open(t)
+	f := ttyFile(tid)
+	if err := os.WriteFile(f, []byte("/dev/pts/9\n"), 0o600); err != nil {
+		t.Skipf("cannot write %s: %v", f, err)
+	}
+	t.Cleanup(func() { _ = os.Remove(f) })
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	waitFor(t, 5*time.Second, "tty file removed", func() bool {
+		_, err := os.Stat(f)
+		return os.IsNotExist(err)
+	})
+}
+
+func TestTerminalCloseRemovesTheTTYFileInTheContainer(t *testing.T) {
+	e := newTermEnv(t, true)
+	tid := e.open(t)
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	waitFor(t, 5*time.Second, "rm exec", func() bool {
+		e.fs.mu.Lock()
+		defer e.fs.mu.Unlock()
+		for _, c := range e.fs.shorts {
+			if strings.Join(c.args, " ") == "exec "+containerNameFor(e.id)+" rm -f "+ttyFile(tid) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestTerminalRetryHandsTheHoldToANewTerminal(t *testing.T) {
+	e := newTermEnv(t, false)
+	e.f.releaseRetry = []time.Duration{50 * time.Millisecond}
+	var mu sync.Mutex
+	failOff := true
+	offs := 0
+	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if !on {
+			offs++
+			if failOff {
+				return errors.New("unreachable")
+			}
+		}
+		return nil
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.settled(t)
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	second := e.open(t)
+	time.Sleep(300 * time.Millisecond) // the retry wakes and yields
+	mu.Lock()
+	failOff = false
+	mu.Unlock()
+	// Without any input, releasing the new terminal still hands the agent back.
+	e.post(t, "POST", "/api/agents/"+e.id+"/terminal/"+second+"/release", "")
+	waitFor(t, 5*time.Second, "hand-back by the new terminal", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return offs == 2
+	})
+}
+
+func (e *termEnv) heldInSnapshot() bool {
+	for _, a := range e.f.Snapshot() {
+		if a.ID == e.id {
+			return a.Held
+		}
+	}
+	return false
+}
+
+func TestAgentListReportsHeld(t *testing.T) {
+	e := newTermEnv(t, false)
+	if e.heldInSnapshot() {
+		t.Fatal("held before any terminal")
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.waitHolds(t, true, 1)
+	waitFor(t, 5*time.Second, "held in the agent list", e.heldInSnapshot)
+	e.post(t, "POST", "/api/agents/"+e.id+"/terminal/"+tid+"/release", "")
+	waitFor(t, 5*time.Second, "not held after hand-back", func() bool { return !e.heldInSnapshot() })
+	rec := e.post(t, "GET", "/api/agents", "")
+	if strings.Contains(rec.Body.String(), `"held"`) {
+		t.Fatalf("held is omitted when false: %s", rec.Body)
+	}
+}
+
+func TestAgentListStaysHeldUntilAFailedHandBackLands(t *testing.T) {
+	e := newTermEnv(t, false)
+	e.f.releaseRetry = []time.Duration{50 * time.Millisecond, 50 * time.Millisecond}
+	var mu sync.Mutex
+	failOff := true
+	e.f.holdCall = func(_ context.Context, _ string, on bool) error {
+		mu.Lock()
+		defer mu.Unlock()
+		if !on && failOff {
+			return errors.New("unreachable")
+		}
+		return nil
+	}
+	tid := e.open(t)
+	e.input(t, tid, "a")
+	e.settled(t)
+	e.post(t, "DELETE", "/api/agents/"+e.id+"/terminal/"+tid, "")
+	waitFor(t, 5*time.Second, "terminal gone", func() bool { _, err := e.f.terminalFor(e.id, tid); return err != nil })
+	if !e.heldInSnapshot() {
+		t.Fatal("the agent is still held, but the list says otherwise")
+	}
+	mu.Lock()
+	failOff = false
+	mu.Unlock()
+	waitFor(t, 5*time.Second, "cleared once handed back", func() bool { return !e.heldInSnapshot() })
+}

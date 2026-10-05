@@ -12,6 +12,7 @@
   import Settings from './views/Settings.svelte'
   import Usage from './views/Usage.svelte'
   import Watches from './views/Watches.svelte'
+  import Schedules from './views/Schedules.svelte'
   import Gallery from './views/workspaces/Gallery.svelte'
   import Designer from './views/workspaces/Designer.svelte'
   import Builds from './views/workspaces/Builds.svelte'
@@ -28,9 +29,11 @@
   import SessionsPanel from './lib/SessionsPanel.svelte'
   import { connectFleetSSE } from './lib/sse'
   import { createFleetStore, type NetworkDecisionItem } from './lib/fleet'
+  import { get } from 'svelte/store'
+  import { loadPrefs, maybeNotify, show as showNotification, type FleetLike } from './lib/notify'
   import DecisionOutcomeView from './lib/inbox/DecisionOutcome.svelte'
   import { outcomeFor, type DecisionOutcome } from './lib/inbox/decision'
-  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, redirectLegacy } from './lib/routes'
+  import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, parseWatchesRoute, redirectLegacy } from './lib/routes'
   import { listPending, listClients, type PendingSubmission, type MCPClient, type NetDecisionKind } from './lib/api'
 
   let hash = $state('#')
@@ -72,6 +75,9 @@
     their own before.
   */
   const { state: fleet, actions } = createFleetStore()
+
+  // Finished runs already announced by a browser notification.
+  const announcedRuns = new Set<string>()
 
   // What a settled decision shows: a draft toast or a repo-patch modal. Owned here so Home and Live share it.
   let decisionOutcome = $state<DecisionOutcome | null>(null)
@@ -143,6 +149,11 @@
     const disconnect = connectFleetSSE({
       onDelta: (d) => {
         actions.applyDelta(d)
+        const toast = maybeNotify(d as FleetLike, loadPrefs(), document.visibilityState === 'visible', {
+          nameOf: (id) => get(fleet).agents.find((a) => a.id === id)?.name || id,
+          seen: announcedRuns,
+        })
+        if (toast) showNotification(toast)
         if (d.kind === 'project_removed' && hash !== '#') navigate('#')
         // A pending delta carries only the kind; refetch to pick up the
         // payload the attention list needs to render a decision.
@@ -172,6 +183,7 @@
   const settingsRoute = $derived(parseSettingsRoute(hash))
   const usageRoute = $derived(parseUsageRoute(hash))
   const workspacesRoute = $derived(parseWorkspacesRoute(hash))
+  const watchesRoute = $derived(parseWatchesRoute(hash))
   const networkRoute = $derived(parseNetworkRoute(hash))
   const projectRoute = $derived(parseProjectRoute(hash))
 
@@ -293,9 +305,13 @@
           {/key}
         {/if}
       </div>
-    {:else if hash === '#watches'}
+    {:else if watchesRoute}
       <div class="h-full overflow-y-auto">
-        <Watches agents={$fleet.agents} tick={$fleet.watchTick} onNavigate={navigate} />
+        {#if watchesRoute.tab === 'schedules'}
+          <Schedules projects={$fleet.projects} onNavigate={navigate} />
+        {:else}
+          <Watches agents={$fleet.agents} tick={$fleet.watchTick} onNavigate={navigate} />
+        {/if}
       </div>
     {:else if hash === '#new'}
       <div class="h-full overflow-y-auto">

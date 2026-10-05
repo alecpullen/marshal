@@ -128,7 +128,7 @@ type Fleet struct {
 	// the real starter; tests inject a fake.
 	streamer streamStarter
 
-	// term holds open terminals, created on first use.
+	// previews holds the live preview tokens, created on first use.
 	previewOnce sync.Once
 	previews    *previewStore
 	// previewForward replaces the real forwarder; tests set it.
@@ -136,7 +136,10 @@ type Fleet struct {
 
 	// holdCall replaces the session/hold request; tests set it.
 	holdCall func(ctx context.Context, agentID string, on bool) error
+	// releaseRetry overrides the waits between hand-back retries (tests).
+	releaseRetry []time.Duration
 
+	// term holds open terminals, created on first use.
 	termOnce sync.Once
 	term     *terminalState
 
@@ -1577,6 +1580,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			TargetBranch: a.TargetBranch, PRUrl: a.PRUrl,
 			GateOverride: a.GateOverride, Workspace: a.Workspace,
 		}
+		st.Held = f.agentHeld(a.ID)
 		if !a.PushedAt.IsZero() {
 			st.PushedAt = &a.PushedAt
 		}
@@ -1622,6 +1626,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 // so Resume can restart against it.
 func (f *Fleet) releaseAgent(id string, destroy bool) {
 	f.closeTerminals(id)
+	f.clearUnreleased(id)
 	if destroy {
 		f.dropPreviewTokens(id)
 	}

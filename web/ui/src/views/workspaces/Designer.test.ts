@@ -4,13 +4,28 @@ import Designer from './Designer.svelte'
 import * as api from '../../lib/api.js'
 import type { WSDoc, WSLoaded } from '../../lib/api.js'
 
+vi.mock('@xterm/xterm', () => ({
+  Terminal: class {
+    cols = 80
+    rows = 24
+    loadAddon() {}
+    open() {}
+    onData() {}
+    onResize() {}
+    write() {}
+    dispose() {}
+  },
+}))
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: class { fit() {} } }))
+vi.mock('../../lib/sse', () => ({ connectSSE: () => () => {} }))
+
 vi.mock('../../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../../lib/api.js')>()
   return {
     ...actual,
     getWorkspace: vi.fn(), patchWorkspace: vi.fn(), saveWorkspaceDraft: vi.fn(), publishWorkspace: vi.fn(), diffWorkspace: vi.fn(),
     listBuilds: vi.fn(), startBuild: vi.fn(), setWorkspacePool: vi.fn(), rotateWorkspaceCA: vi.fn(), getSecretsStatus: vi.fn(),
-    getNetworkHosts: vi.fn(), listRepos: vi.fn(), listProjects: vi.fn(), getProjectHealth: vi.fn(),
+    getNetworkHosts: vi.fn(), openWorkspaceShell: vi.fn(), closeTerminal: vi.fn().mockResolvedValue(undefined), listRepos: vi.fn(), listProjects: vi.fn(), getProjectHealth: vi.fn(),
   }
 })
 
@@ -140,7 +155,7 @@ describe('Designer', () => {
     await waitFor(() => expect(api.setWorkspacePool).toHaveBeenCalledWith('svc', 2))
   })
 
-  it('Build starts the published version and opens the builds page; Test shell is disabled', async () => {
+  it('Build starts the published version and opens the builds page; Test shell is enabled once published', async () => {
     vi.mocked(api.startBuild).mockResolvedValue({ version: 1 })
     const { nav } = await open()
     const buildBtn = () => screen.getByRole('button', { name: 'Build' })
@@ -148,7 +163,17 @@ describe('Designer', () => {
     await fireEvent.click(buildBtn())
     await waitFor(() => expect(api.startBuild).toHaveBeenCalledWith('svc', 1))
     await waitFor(() => expect(nav).toHaveBeenCalledWith('#workspaces/svc/builds'))
-    expect(screen.getByText(/Test shell/).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: 'Test shell' }).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('Test shell opens a terminal on the workspace route', async () => {
+    vi.mocked(api.openWorkspaceShell).mockResolvedValue({ terminalId: 't9' })
+    await open()
+    const btn = () => screen.getByRole('button', { name: 'Test shell' })
+    await waitFor(() => expect(btn().hasAttribute('disabled')).toBe(false))
+    await fireEvent.click(btn())
+    await waitFor(() => expect(api.openWorkspaceShell).toHaveBeenCalledWith('svc', { cols: 80, rows: 24 }))
+    expect(screen.getByTestId('test-shell')).toBeTruthy()
   })
 
   it('the side panel shows start times, and rotating the CA asks first', async () => {

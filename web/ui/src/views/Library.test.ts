@@ -21,6 +21,9 @@ vi.mock('../lib/api.js', async (importActual) => {
     listMemory: vi.fn(),
     deleteMemory: vi.fn(),
     setMemoryConfidence: vi.fn(),
+    memorySuggestions: vi.fn(),
+    promoteMemory: vi.fn(),
+    listAgents: vi.fn(),
     listClients: vi.fn(),
   }
 })
@@ -41,6 +44,9 @@ beforeEach(() => {
     { id: 7, kind: 'fact', content: 'Uses pnpm', confidence: 'tentative', sourceSessionId: 's9', createdAt: '', updatedAt: '' },
   ])
   ;(api.listClients as Mock).mockResolvedValue([])
+  ;(api.memorySuggestions as Mock).mockResolvedValue([])
+  ;(api.listAgents as Mock).mockResolvedValue([])
+  localStorage.clear()
 })
 
 const mount = (tab: 'skills' | 'plugins' | 'mcp' | 'memory', project?: string) =>
@@ -116,6 +122,56 @@ describe('Library plugins', () => {
     expect(within(card).getByText('1 hooks')).toBeTruthy()
     await fireEvent.click(within(card).getByText('Confirm'))
     await waitFor(() => expect(api.confirmPlugin).toHaveBeenCalledWith('scan1', 'global', undefined))
+  })
+})
+
+describe('Library memory scopes and suggestions', () => {
+  const entry = { id: 7, kind: 'fact', content: 'Uses pnpm', confidence: 'tentative', createdAt: '', updatedAt: '', scope: 'project', learnedProjectRoot: '/work/alpha', learnedAgent: 'a1', learnedStep: 4, confirmedBy: ['a2', 'a3'] }
+
+  it('shows scope, provenance and confirmations, linking an agent that still exists', async () => {
+    ;(api.listMemory as Mock).mockResolvedValue([entry])
+    ;(api.listAgents as Mock).mockResolvedValue([{ id: 'a1' }])
+    mount('memory')
+    const row = await screen.findByTestId('memory-row')
+    expect(within(row).getByTestId('memory-scope').textContent).toBe('project')
+    expect(row.textContent).toContain('alpha')
+    await waitFor(() => expect(within(row).getByRole('link', { name: 'step 4' }).getAttribute('href')).toBe('#chat/a1?node=step%3A4'))
+    expect(within(row).getByTitle('a2, a3').textContent).toBe('2')
+  })
+
+  it('the scope filter refetches with the scope', async () => {
+    ;(api.listMemory as Mock).mockResolvedValue([entry])
+    mount('memory')
+    await screen.findByTestId('memory-row')
+    await fireEvent.click(screen.getByRole('button', { name: 'Global' }))
+    await waitFor(() => expect(api.listMemory).toHaveBeenCalledWith('/work/alpha', 'global'))
+  })
+
+  it('promote posts the suggested scope; dismiss persists per browser', async () => {
+    ;(api.listMemory as Mock).mockResolvedValue([entry])
+    ;(api.memorySuggestions as Mock).mockResolvedValue([
+      { memoryId: 7, matchProjectRoot: '/work/beta', suggestedScope: 'global' },
+      { memoryId: 8, matchProjectRoot: '/work/gamma', suggestedScope: 'global' },
+    ])
+    ;(api.promoteMemory as Mock).mockResolvedValue(undefined)
+    mount('memory')
+    const sg = await screen.findAllByTestId('memory-suggestion')
+    expect(sg[0].textContent).toContain('Uses pnpm')
+    expect(sg[0].textContent).toContain('Also learned in beta')
+    await fireEvent.click(within(sg[0]).getByRole('button', { name: 'Promote to global' }))
+    await waitFor(() => expect(api.promoteMemory).toHaveBeenCalledWith(7, '/work/alpha', 'global', undefined))
+
+    await fireEvent.click(within((await screen.findAllByTestId('memory-suggestion'))[1]).getByRole('button', { name: 'Dismiss' }))
+    expect(JSON.parse(localStorage.getItem('marshal.ui.memory.dismissed')!)).toEqual(['8:/work/gamma'])
+  })
+
+  it('hides suggestions dismissed earlier', async () => {
+    localStorage.setItem('marshal.ui.memory.dismissed', JSON.stringify(['7:/work/beta']))
+    ;(api.listMemory as Mock).mockResolvedValue([entry])
+    ;(api.memorySuggestions as Mock).mockResolvedValue([{ memoryId: 7, matchProjectRoot: '/work/beta', suggestedScope: 'global' }])
+    mount('memory')
+    await screen.findByTestId('memory-row')
+    expect(screen.queryByTestId('memory-suggestion')).toBeNull()
   })
 })
 

@@ -130,6 +130,8 @@ export interface PendingRequest {
 }
 
 export interface AgentStatus {
+  /** True while a terminal holds the agent or a hand-back is pending; omitted when false. */
+  held?: boolean
   id: string
   project: string
   name?: string
@@ -655,7 +657,25 @@ export interface PluginEntry { name: string; source: string; ref?: string; commi
 export interface PluginContents { hasManifest: boolean; skillCount: number; commandCount: number; hookCount: number; mcpServerCount: number; mcpPolicyCount: number }
 export interface PluginScan { scanToken: string; name: string; source: string; ref?: string; commit: string; contents: PluginContents }
 export type MemoryConfidence = 'tentative' | 'confirmed' | 'stale'
-export interface MemoryEntry { id: number; kind: string; content: string; confidence: MemoryConfidence | string; sourceSessionId?: string; createdAt: string; updatedAt: string }
+export type MemoryScope = 'project' | 'workspace' | 'global'
+export interface MemoryEntry {
+  id: number
+  kind: string
+  content: string
+  confidence: MemoryConfidence | string
+  sourceSessionId?: string
+  createdAt: string
+  updatedAt: string
+  scope?: MemoryScope | string
+  scopeKey?: string
+  /** Root of the project the memory was learned in. */
+  learnedProjectRoot?: string
+  learnedAgent?: string
+  learnedStep?: number
+  confirmedBy?: string[]
+}
+/** A project memory another project holds too, with the scope it could be promoted to. */
+export interface MemorySuggestion { memoryId: number; matchProjectRoot: string; suggestedScope: MemoryScope | string }
 
 export async function listSkills(scope: LibraryScope, project?: string): Promise<SkillEntry[] | 'unsupported'> {
   const r = await orUnsupported(() => request<{ skills?: SkillEntry[] }>('GET', `/api/library/skills${query({ scope, project })}`))
@@ -692,12 +712,19 @@ export async function removePlugin(name: string, scope: LibraryScope, project?: 
   await request('DELETE', `/api/library/plugins/${q(name)}${query({ scope, project })}`)
 }
 
-export async function listMemory(project: string): Promise<MemoryEntry[] | 'unsupported'> {
-  const r = await orUnsupported(() => request<{ entries?: MemoryEntry[] }>('GET', `/api/library/memory${query({ project })}`))
+export async function listMemory(project: string, scope?: MemoryScope): Promise<MemoryEntry[] | 'unsupported'> {
+  const r = await orUnsupported(() => request<{ entries?: MemoryEntry[] }>('GET', `/api/library/memory${query({ project, scope })}`))
   return r === 'unsupported' ? r : (r?.entries ?? [])
 }
 export async function deleteMemory(id: number, project: string): Promise<void> {
   await request('DELETE', `/api/library/memory/${id}${query({ project })}`)
+}
+export async function memorySuggestions(project: string): Promise<MemorySuggestion[] | 'unsupported'> {
+  const r = await orUnsupported(() => request<{ suggestions?: MemorySuggestion[] }>('GET', `/api/library/memory/suggestions${query({ project })}`))
+  return r === 'unsupported' ? r : (r?.suggestions ?? [])
+}
+export async function promoteMemory(id: number, project: string, scope: MemoryScope, scopeKey?: string): Promise<void> {
+  await request('POST', `/api/library/memory/${id}/promote${query({ project })}`, { scope, ...(scopeKey ? { scopeKey } : {}) })
 }
 export async function setMemoryConfidence(id: number, project: string, confidence: string): Promise<void> {
   await request('POST', `/api/library/memory/${id}/confidence${query({ project })}`, { confidence })
@@ -864,6 +891,7 @@ export interface WSDoc {
   resources: WSResources
   policy: WSPolicy
   setup: { run: string }
+  preview?: { ports: number[] }
 }
 /** One layer's 1-based inclusive source line range. Layers 1 and 2 share `[workspace]`. */
 export interface WSSection { layer: number; key: string; startLine: number; endLine: number }
@@ -1122,3 +1150,124 @@ export async function getCIHistory(id: string): Promise<CIHistory> { return requ
 export async function createWebhookSecret(repoId: string): Promise<string> {
   return (await request<{ secret: string }>('POST', `/api/repos/${q(repoId)}/webhook-secret`)).secret
 }
+// Terminals, previews, recipes, schedules, notifications and status links (W5.2-W5.3 bridge routes).
+
+const b64 = (text: string): string => {
+  const bytes = new TextEncoder().encode(text)
+  let bin = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return btoa(bin)
+}
+
+/** What a terminal belongs to: an agent's session, or a workspace's throwaway Test shell. */
+export type TerminalTarget = { agentId: string } | { workspace: string }
+export interface TerminalSize { cols: number; rows: number }
+export interface TerminalOpen { terminalId: string }
+
+const termBase = (t: TerminalTarget) =>
+  'agentId' in t ? `/api/agents/${q(t.agentId)}/terminal` : `/api/workspaces/${q(t.workspace)}/shell`
+
+export const terminalEventsUrl = (t: TerminalTarget, tid: string) => `${termBase(t)}/${q(tid)}/events`
+
+export async function openTerminal(agentId: string, size: TerminalSize): Promise<TerminalOpen> {
+  return request('POST', termBase({ agentId }), size)
+}
+export async function openWorkspaceShell(name: string, size: TerminalSize): Promise<TerminalOpen> {
+  return request('POST', termBase({ workspace: name }), size)
+}
+/** `data` is raw text; it goes out base64-encoded, one request of at most 64 KiB. */
+export async function terminalInput(t: TerminalTarget, tid: string, data: string): Promise<void> {
+  await request('POST', `${termBase(t)}/${q(tid)}/input`, { data: b64(data) })
+}
+export async function terminalResize(t: TerminalTarget, tid: string, size: TerminalSize): Promise<void> {
+  await request('POST', `${termBase(t)}/${q(tid)}/resize`, size)
+}
+/** Hand the agent back: it resumes while the terminal stays open. */
+export async function terminalRelease(agentId: string, tid: string): Promise<void> {
+  await request('POST', `${termBase({ agentId })}/${q(tid)}/release`, {})
+}
+export async function closeTerminal(t: TerminalTarget, tid: string): Promise<void> {
+  await request('DELETE', `${termBase(t)}/${q(tid)}`)
+}
+
+/** An absolute URL on the bridge's separate preview origin. */
+export async function openPreview(agentId: string, port: number): Promise<{ url: string }> {
+  return request('POST', `/api/agents/${q(agentId)}/preview/${port}`, {})
+}
+
+export type RecipeKind = 'prompt' | 'sdd' | 'swarm'
+export interface RecipeInput { name: string; label?: string; required?: boolean }
+export interface RecipeLimits { maxMinutes?: number; maxUsd?: number }
+export interface Recipe {
+  name: string
+  title?: string
+  description?: string
+  kind: RecipeKind | string
+  mode?: string
+  workspace?: string
+  routing?: RoutingChoice
+  inputs?: RecipeInput[]
+  prompt: string
+  limits?: RecipeLimits
+  output?: string
+  builtin?: boolean
+}
+export type RecipeRunRequest = { project?: string; repoId?: string; ref?: string; inputs?: Record<string, string> }
+
+export async function listRecipes(): Promise<Recipe[]> { return (await request<Recipe[] | null>('GET', '/api/recipes')) ?? [] }
+export async function getRecipe(name: string): Promise<Recipe> { return request('GET', `/api/recipes/${q(name)}`) }
+export async function saveRecipe(rec: Recipe): Promise<Recipe> { return request('PUT', `/api/recipes/${q(rec.name)}`, rec) }
+export async function deleteRecipe(name: string): Promise<void> { await request('DELETE', `/api/recipes/${q(name)}`) }
+export async function copyRecipe(name: string, as: string): Promise<Recipe> { return request('POST', `/api/recipes/${q(name)}/copy`, { name: as }) }
+export async function runRecipe(name: string, run: RecipeRunRequest): Promise<{ agentId: string }> {
+  return request('POST', `/api/recipes/${q(name)}/run`, run)
+}
+
+export interface Schedule {
+  id: string
+  name: string
+  recipe: string
+  project?: string
+  repoId?: string
+  ref?: string
+  inputs?: Record<string, string>
+  cron: string
+  enabled: boolean
+  lastRun?: string
+  lastRunAgent?: string
+  lastResult?: string
+}
+export type ScheduleInput = Omit<Schedule, 'id' | 'lastRun' | 'lastRunAgent' | 'lastResult'> & { id?: string }
+
+export async function listSchedules(): Promise<Schedule[]> { return (await request<Schedule[] | null>('GET', '/api/schedules')) ?? [] }
+/** Without an id this creates; with one it replaces. */
+export async function saveSchedule(s: ScheduleInput): Promise<Schedule> {
+  return s.id ? request('PUT', `/api/schedules/${q(s.id)}`, s) : request('POST', '/api/schedules', s)
+}
+export async function deleteSchedule(id: string): Promise<void> { await request('DELETE', `/api/schedules/${q(id)}`) }
+export async function runSchedule(id: string): Promise<{ agentId: string }> { return request('POST', `/api/schedules/${q(id)}/run`, {}) }
+
+export type NotifyEvent = 'needs_you' | 'run_finished' | 'budget' | 'automation' | 'watch_fired' | 'network_block'
+export interface Webhook { id?: string; url: string; secretRef?: string; events: NotifyEvent[] | string[] }
+export interface NotificationSettings { webhooks: Webhook[] }
+
+export async function getNotifications(): Promise<NotificationSettings> {
+  const r = await request<NotificationSettings | null>('GET', '/api/notifications')
+  return { webhooks: r?.webhooks ?? [] }
+}
+export async function saveNotifications(s: NotificationSettings): Promise<NotificationSettings> {
+  const r = await request<NotificationSettings | null>('PUT', '/api/notifications', s)
+  return { webhooks: r?.webhooks ?? [] }
+}
+export async function testNotifications(): Promise<{ sent: number }> { return request('POST', '/api/notifications/test', {}) }
+
+export interface StatusLink { id: string; agentId: string; createdAt: string; expiresAt: string; revokedAt?: string }
+/** `url` is a path on the bridge; the token in it is shown once and never listed again. */
+export interface StatusLinkCreated { id: string; url: string; expiresAt: string }
+
+export async function createStatusLink(agentId: string, ttlHours: number): Promise<StatusLinkCreated> {
+  return request('POST', '/api/status-links', { agentId, ttlHours })
+}
+export async function listStatusLinks(): Promise<StatusLink[]> { return (await request<StatusLink[] | null>('GET', '/api/status-links')) ?? [] }
+export async function revokeStatusLink(id: string): Promise<void> { await request('DELETE', `/api/status-links/${q(id)}`) }
+

@@ -22,6 +22,8 @@
     { id: 'inspect', label: 'Inspect' },
     { id: 'changes', label: 'Changes' },
     { id: 'files', label: 'Files' },
+    { id: 'terminal', label: 'Terminal' },
+    { id: 'preview', label: 'Preview' },
   ]
 
   // Dragging the left edge resizes; the width is clamped by the reducer.
@@ -98,10 +100,8 @@
         >
           {t.label}
           {#if t.id === 'changes' && dock.unseenChanges}<span class="ml-1 inline-block size-1.5 rounded-full bg-accent align-middle"></span>{/if}
+          {#if t.id === 'terminal' && dock.unseenTerminal}<span class="ml-1 inline-block size-1.5 rounded-full bg-accent align-middle" data-testid="terminal-unread" title="New output"></span>{/if}
         </button>
-      {/each}
-      {#each ['Terminal', 'Preview'] as name (name)}
-        <button type="button" role="tab" disabled title="Coming in W5" class="rounded px-2 py-1 text-dim">{name}</button>
       {/each}
     </div>
 

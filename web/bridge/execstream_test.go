@@ -192,6 +192,9 @@ func isShortCommand(name string, args []string) bool {
 	if name == "sh" {
 		return true
 	}
+	if len(args) >= 3 && args[0] == "exec" && args[2] == "rm" {
+		return true // the tty file cleanup
+	}
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == "sh" && args[i+1] == "-c" {
 			return true

@@ -40,6 +40,11 @@ const (
 	terminalHoldBackoff = 30 * time.Second
 )
 
+// defaultReleaseRetryDelays are the waits before each further attempt to hand an
+// agent back after the final release failed, so an agent that was briefly
+// unreachable is not left held.
+var defaultReleaseRetryDelays = []time.Duration{2 * time.Second, 5 * time.Second, 15 * time.Second, 30 * time.Second, 60 * time.Second}
+
 // ErrTooManyTerminals is returned when an owner already has the maximum
 // number of open terminals. It maps to 429.
 var ErrTooManyTerminals = errors.New("bridge: too many terminals open for this agent")
@@ -86,6 +91,9 @@ type terminal struct {
 	bytesIn         int64
 	bytesOut        int64
 	once            sync.Once
+	// rmTTY removes the PTY record file the wrapper left behind. It is
+	// nil for a test shell, whose container is thrown away.
+	rmTTY func()
 	// cleanup runs once after the process ends, for a test shell's
 	// container and egress registration.
 	cleanup func()
@@ -95,12 +103,15 @@ type terminal struct {
 type terminalState struct {
 	mu   sync.Mutex
 	byID map[string][]*terminal // owner -> open terminals
-	log  *EventLog
+	// unreleased holds agents whose last terminal closed without the agent
+	// acknowledging the hand-back, so the agent is still held.
+	unreleased map[string]bool
+	log        *EventLog
 }
 
 func (f *Fleet) terminals() *terminalState {
 	f.termOnce.Do(func() {
-		f.term = &terminalState{byID: make(map[string][]*terminal), log: NewEventLog()}
+		f.term = &terminalState{byID: make(map[string][]*terminal), unreleased: make(map[string]bool), log: NewEventLog()}
 		if f.done != nil {
 			go f.idleTerminalLoop()
 		}
@@ -292,6 +303,7 @@ func (f *Fleet) OpenTerminal(ctx context.Context, agentID string, cols, rows int
 		t.resize = func(rows, cols int) error {
 			return f.runStream("", path, "exec", name, "sh", "-c", resizeCommand(t.id, rows, cols))
 		}
+		t.rmTTY = func() { _ = f.runStream("", path, "exec", name, "rm", "-f", ttyFile(t.id)) }
 	} else {
 		root, err := f.agentActiveRoot(ctx, agentID)
 		if err != nil {
@@ -302,6 +314,7 @@ func (f *Fleet) OpenTerminal(ctx context.Context, agentID string, cols, rows int
 		t.resize = func(rows, cols int) error {
 			return f.runStream(root, "sh", "-c", resizeCommand(t.id, rows, cols))
 		}
+		t.rmTTY = func() { _ = os.Remove(ttyFile(t.id)) }
 	}
 	st := f.terminals()
 	if err := st.reserve(agentID, t); err != nil {
@@ -421,6 +434,9 @@ func (f *Fleet) finishTerminal(t *terminal) {
 			_ = in.Close()
 		}
 		t.proc.Kill()
+		if t.rmTTY != nil {
+			go t.rmTTY() // off the close path: a hung exec must not stall it
+		}
 		t.mu.Lock()
 		if t.log != nil {
 			_ = t.log.Close()
@@ -533,6 +549,90 @@ func (f *Fleet) releaseTerminalHold(t *terminal) {
 	t.want = false
 	t.mu.Unlock()
 	f.syncHold(t)
+	t.mu.Lock()
+	stillHeld := t.held && !t.holdUnsupported
+	t.mu.Unlock()
+	if stillHeld {
+		st := f.terminals()
+		st.mu.Lock()
+		st.unreleased[t.agentID] = true
+		st.mu.Unlock()
+		go f.retryRelease(t)
+	}
+}
+
+// agentHeld reports whether a terminal is holding the agent: one holds it
+// now, or a closed one's hand-back has not gone through yet.
+func (f *Fleet) agentHeld(agentID string) bool {
+	st := f.terminals()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.unreleased[agentID] {
+		return true
+	}
+	for _, t := range st.byID[agentID] {
+		t.mu.Lock()
+		held := t.held
+		t.mu.Unlock()
+		if held {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *Fleet) clearUnreleased(agentID string) {
+	st := f.terminals()
+	st.mu.Lock()
+	delete(st.unreleased, agentID)
+	st.mu.Unlock()
+}
+
+// retryRelease keeps trying to hand the agent back after a failed release,
+// with growing waits. It stops when the agent is handed back, is gone, or
+// has another terminal open (that terminal inherits the hold and hands it
+// back), or when the fleet closes.
+func (f *Fleet) retryRelease(t *terminal) {
+	delays := f.releaseRetry
+	if delays == nil {
+		delays = defaultReleaseRetryDelays
+	}
+	for _, d := range delays {
+		select {
+		case <-time.After(d):
+		case <-f.done:
+			return
+		}
+		if _, err := f.runtimeForAgent(t.agentID); err != nil {
+			f.clearUnreleased(t.agentID)
+			return
+		}
+		st := f.terminals()
+		st.mu.Lock()
+		others := append([]*terminal(nil), st.byID[t.agentID]...)
+		st.mu.Unlock()
+		if len(others) > 0 {
+			// The agent is still held. Hand that hold to the open
+			// terminals, so release, close or the idle timer sends the
+			// hand-back even if nobody types again.
+			for _, o := range others {
+				o.mu.Lock()
+				o.want, o.held = true, true
+				o.mu.Unlock()
+			}
+			f.clearUnreleased(t.agentID)
+			return
+		}
+		f.syncHold(t)
+		t.mu.Lock()
+		held := t.held
+		t.mu.Unlock()
+		if !held {
+			f.clearUnreleased(t.agentID)
+			return
+		}
+	}
+	slog.Default().Warn("webbridge: could not hand the agent back after a terminal closed", "agent", t.agentID)
 }
 
 func (f *Fleet) terminalFor(owner, tid string) (*terminal, error) {

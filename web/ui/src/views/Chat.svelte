@@ -18,6 +18,8 @@
   import InspectTab from '../lib/dock/InspectTab.svelte'
   import ChangesTab from '../lib/dock/ChangesTab.svelte'
   import FilesTab, { type OpenRequest } from '../lib/dock/FilesTab.svelte'
+  import StatusShare from '../lib/StatusShare.svelte'
+  import OpsTabs from '../lib/dock/OpsTabs.svelte'
   import { createNodeCache } from '../lib/dock/nodeCache'
   import { initialDock, load as loadDock, reduce, save as saveDock, type DockAction, type DockState } from '../lib/dock/dock'
   import { gateState } from '../lib/dock/gate'
@@ -528,6 +530,7 @@
       />
     {/if}
     <ModeSwitcher mode={$session.mode} onChange={changeMode} />
+    <StatusShare agentId={sessionId} />
     <a class="review" href="#chat/{sessionId}/review">Review</a>
     <a class="review" href="#network?agent={encodeURIComponent(sessionId)}">Network</a>
     <span class="connection" class:connected={$session.connected} title={$session.connected ? 'connected' : 'disconnected'}>
@@ -649,9 +652,10 @@
         <InspectTab {sessionId} {subagentId} stack={$shown} {dock} {cache} onSelect={(id) => selectNode(id)} />
       {:else if dock.tab === 'changes'}
         <ChangesTab agentId={sessionId} {sessionId} stack={$stack} {dock} drilled={drill.length > 0} gate={agent?.gate} changedFiles={row?.changedFiles ?? 0} />
-      {:else}
+      {:else if dock.tab === 'files'}
         <FilesTab agentId={sessionId} stack={$shown} {dock} request={fileRequest} />
       {/if}
+      <OpsTabs agentId={sessionId} {sessionId} {subagentId} stack={$shown} {dock} {cache} {row} onTerminalOutput={() => dispatch({ type: 'terminalOutput' })} />
     </Dock>
   {/if}
   </div>

@@ -158,6 +158,7 @@ streaming sibling:
   other failure backs off for 30s. Typing never waits on the call.
 - **Hand back** (a button, or closing the terminal) calls `hold {on:false}`.
 - The hold also auto-releases after 2 minutes without input.
+- `GET /api/agents` carries `held` (boolean, omitted when false) on each agent: true while a terminal holds the agent or a hand-back is pending. The UI reads it on load, then follows `hold` deltas; a missing field means not held.
 
 **Recording and audit.** Output and input are recorded to
 `<state>/terminal/<agentId>/<unix>.log` (mode 0600). A recording holds
@@ -185,6 +186,20 @@ bridge exposes a port only when it is declared.
   `/preview/…`; the API listener answers `/preview/…` with 404. The host and
   scheme of the URL come from the request that issued it (or the public
   URL). With no preview listener, issuing answers 501 `preview_unconfigured`.
+- **Per-preview origin on localhost.** When the issuing host is `localhost`
+  (or a `*.localhost` name, which browsers resolve to loopback) or a loopback
+  IP such as the `127.0.0.1` the bridge prints, the URL is
+  `<scheme>://p<token>.localhost:<previewPort>/preview/<agentId>/<port>/`.
+  The token is in the host name and is the credential, so no cookie is used:
+  that origin is cross-site to the Studio at `localhost`, so a cookie could
+  not be set or sent in an embedded frame. Each issued preview is its own
+  origin, so one agent's page cannot read another's. On a localhost name the
+  handler accepts only the host token (404 otherwise), and proxied responses
+  carry `Referrer-Policy: no-referrer` so the origin does not leak in a
+  `Referer` (it cannot be hidden from an `Origin` header the page sends
+  itself). Any other host cannot
+  be subdivided without wildcard DNS, so previews share one origin there and
+  use the `?t=` token and cookie below.
 - The first request with `t` sets the cookie `mp_<agentId>_<port>`. The
   cookie is HttpOnly and SameSite=Strict, with `Path` set to the preview
   prefix.

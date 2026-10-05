@@ -2,14 +2,17 @@ import { writable } from 'svelte/store'
 import { getNetworkPending, listAgents, listProjects, postNetworkDecision, type AgentStatus, type NetDecisionKind, type NetDecisionResult, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
-export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; gate?: GateRecord; run?: RunDetail; runAt?: number }
+export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; heldBy?: string; gate?: GateRecord; run?: RunDetail; runAt?: number }
 export interface FleetDelta {
-  kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate'
+  kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate' | 'hold'
   sessionId: string
   activity?: string
   mode?: string
   contextPct?: number
   changedFiles?: number
+  /** A hold delta: whether the agent is held, and by whom (`terminal`). */
+  held?: boolean
+  by?: string
   /** The latest verify record. Its output is left out of the stream; GET …/gate has it. */
   gate?: GateRecord
   /** Optional telemetry sections; the bridge's digest carries only the two counts above today. */
@@ -31,8 +34,6 @@ export interface BudgetDelta { kind: 'budget'; scope: 'daily' | 'agent'; agentId
 export interface RerouteDelta { kind: 'reroute'; id: string; watch: string; role: string; from: string; to: string }
 /** A watch changed state (or fired). `sessionId` is the owner agent, or `studio`; the Watches page refetches on it. */
 export interface WatchDelta { kind: 'watch'; sessionId?: string; event?: unknown }
-/** A review draft or CI fix result; no session, so it only moves lists and notifications. */
-export interface AutomationDelta { kind: 'automation'; type: string; id: string; status?: string }
 export interface AutomationEvent { type: string; id: string; status?: string; at: number }
 export type BudgetState = Omit<BudgetDelta, 'kind'>
 export type RerouteNotice = Omit<RerouteDelta, 'kind'>
@@ -43,7 +44,9 @@ export interface ProjectRemovedDelta { kind: 'project_removed'; project: string 
  * the snapshot is the authority on what is still outstanding.
  */
 export interface PendingDelta { kind: 'pending'; sessionId: string; pendingKind: 'approval' | 'question' }
-export type FleetEvent = NetworkBlockDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta | AutomationDelta
+/** An automation ran (review draft or CI result). `id`/`type` are set for those; the rest feeds notifications. */
+export interface AutomationDelta { kind: 'automation'; type?: string; id?: string; status?: string; sessionId?: string; agentId?: string; title?: string; text?: string }
+export type FleetEvent = AutomationDelta | NetworkBlockDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
 export function toRow(a: AgentStatus): AgentRow { return { ...a, name: a.name ?? '', mode: a.mode ?? '', activity: a.activity ?? '', contextPct: a.contextPct ?? 0, changedFiles: a.changedFiles ?? 0, interrupted: a.interrupted ?? false } }
 const rank: Record<AgentRow['status'], number> = { 'awaiting-approval': 0, 'awaiting-question': 0, error: 1, running: 2, idle: 3 }
 export function sortAttentionFirst(rows: AgentRow[]): AgentRow[] { return [...rows].sort((a,b) => rank[a.status] - rank[b.status] || a.id.localeCompare(b.id)) }
@@ -75,7 +78,7 @@ export function groupAgents(agents: AgentRow[]): AgentGroups {
 export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
   if (d.kind === 'project_removed') return rows.filter((r) => r.project !== d.project)
   // Budget, reroute and watch deltas are fleet-wide; the store handles them.
-  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch' || d.kind === 'network_block' || d.kind === 'automation') return rows
+  if (d.kind === 'budget' || d.kind === 'reroute' || d.kind === 'watch' || d.kind === 'automation' || d.kind === 'network_block') return rows
   let changed = false
   const out = rows.map((r) => {
     if (r.id !== d.sessionId) return r
@@ -83,6 +86,7 @@ export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
     if (d.kind === 'activity') return { ...r, activity: d.activity ?? r.activity }
     if (d.kind === 'mode') return { ...r, mode: d.mode ?? r.mode }
     if (d.kind === 'gate') return { ...r, gate: d.gate ?? r.gate }
+    if (d.kind === 'hold') return { ...r, held: d.held === true, heldBy: d.held === true ? d.by : undefined }
     if (d.kind === 'run') return { ...r, run: d.run, runAt: d.at ?? Date.now() }
     if (d.kind === 'telemetry') return { ...r, contextPct: d.contextPct ?? r.contextPct, changedFiles: d.changedFiles ?? r.changedFiles }
     if (d.kind === 'pending') {
@@ -226,7 +230,7 @@ export function createFleetStore() {
         return { ...s, budget: b, budgetTick: s.budgetTick + 1 }
       }
       if (d.kind === 'watch') return { ...s, watchTick: s.watchTick + 1 }
-      if (d.kind === 'automation') return { ...s, automations: [...s.automations, { type: d.type, id: d.id, status: d.status, at: Date.now() }].slice(-50), automationTick: s.automationTick + 1 }
+      if (d.kind === 'automation' && d.id) return { ...s, automations: [...s.automations, { type: d.type ?? '', id: d.id, status: d.status, at: Date.now() }].slice(-50), automationTick: s.automationTick + 1 }
       if (d.kind === 'network_block') {
         const agentId = d.agentId ?? d.sessionId
         const item: NetworkDecisionItem = { agentId, host: d.host, workspace: d.workspace, at: d.at ?? Date.now() }

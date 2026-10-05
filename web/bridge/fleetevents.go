@@ -306,6 +306,8 @@ type AgentStatus struct {
 	PushedAt *time.Time `json:"pushedAt,omitempty"`
 	// GateOverride, when non-nil, records a pushed-despite-failure decision.
 	GateOverride *GateOverride `json:"gateOverride,omitempty"`
+	// Workspace is the workspace the agent runs in, when it has one.
+	Workspace *AgentWorkspace `json:"workspace,omitempty"`
 	// Pending is set only while the agent is genuinely parked on an
 	// approval or question, so the dashboard can resolve it in place.
 	Pending *PendingRequest `json:"pending,omitempty"`

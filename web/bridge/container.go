@@ -85,6 +85,12 @@ type ContainerConfig struct {
 	MemoryMB int
 	// Env is injected verbatim. Never populate this from os.Environ().
 	Env map[string]string
+	// ExtraMounts are pre-rendered runtime arguments (--mount …) appended
+	// after the socket mount: a workspace's library, volume and file
+	// mounts. The workspace code validates every target.
+	ExtraMounts []string
+	// ExtraEnv is merged over Env before the sorted env loop.
+	ExtraEnv map[string]string
 }
 
 // commandRunner executes a container-runtime command and returns its
@@ -162,6 +168,36 @@ func (c *containerTransport) buildRunArgs() []string {
 		"--name", c.cfg.Name,
 		"-w", containerWorkDir,
 	}
+	args = append(args, c.commonRunArgs()...)
+	args = append(args,
+		c.cfg.Image,
+		"acp",
+		"--listen", "unix://"+containerSocketDir+"/"+containerSocketName,
+	)
+	return args
+}
+
+// setupContainerPrefix names the one-shot setup container.
+const setupContainerPrefix = "marshal-setup-"
+
+// buildSetupArgs assembles the one-shot container that runs a workspace's
+// setup command with the same image, mounts, resources and env as the
+// agent. The image's entrypoint is marshal, so the shell is named
+// explicitly.
+func (c *containerTransport) buildSetupArgs(cmd string) []string {
+	args := []string{
+		"run", "--rm",
+		"--name", setupContainerPrefix + strings.TrimPrefix(c.cfg.Name, containerNamePrefix),
+		"-w", containerWorkDir,
+	}
+	args = append(args, c.commonRunArgs()...)
+	return append(args, "--entrypoint", "sh", c.cfg.Image, "-c", cmd)
+}
+
+// commonRunArgs is the part of the run vector the agent and its setup
+// step share: mounts, resource caps and environment.
+func (c *containerTransport) commonRunArgs() []string {
+	var args []string
 	if c.cfg.LocalMount != "" {
 		// A LocalPath agent works on the host checkout itself, so its
 		// workspace is a bind mount of the (translated) host path rather
@@ -173,6 +209,7 @@ func (c *containerTransport) buildRunArgs() []string {
 	}
 	args = append(args,
 		volumeMount(c.cfg.RuntimeName, c.cfg.StateVolume, containerSocketDir, c.cfg.SocketSubpath, false)...)
+	args = append(args, c.cfg.ExtraMounts...)
 	if c.cfg.HomeConfigSubpath != "" {
 		// The shared homes: config is read-only for project agents and
 		// writable only for the control agent, which owns config edits.
@@ -198,8 +235,11 @@ func (c *containerTransport) buildRunArgs() []string {
 	}
 	// Sorted so the argument vector is deterministic and testable. The
 	// home env vars join the map first so they sort with the rest.
-	env := make(map[string]string, len(c.cfg.Env)+2)
+	env := make(map[string]string, len(c.cfg.Env)+len(c.cfg.ExtraEnv)+2)
 	for k, v := range c.cfg.Env {
+		env[k] = v
+	}
+	for k, v := range c.cfg.ExtraEnv {
 		env[k] = v
 	}
 	if c.cfg.HomeConfigSubpath != "" {
@@ -214,11 +254,6 @@ func (c *containerTransport) buildRunArgs() []string {
 	for _, k := range keys {
 		args = append(args, "-e", k+"="+env[k])
 	}
-	args = append(args,
-		c.cfg.Image,
-		"acp",
-		"--listen", "unix://"+containerSocketDir+"/"+containerSocketName,
-	)
 	return args
 }
 
@@ -446,13 +481,15 @@ func (c *containerTransport) Reattach() (io.WriteCloser, io.ReadCloser, io.ReadC
 }
 
 // listAgentContainers returns the names of running containers this
-// bridge owns, newest first.
+// bridge owns, newest first: agents, and warm-pool containers an agent
+// may have taken over.
 func (c *containerTransport) listAgentContainers() ([]string, error) {
 	// c.exec uses CombinedOutput, so stderr is mixed in. The HasPrefix
 	// post-filter below keeps only valid container names, so diagnostic
 	// lines from the runtime CLI are harmlessly dropped.
 	out, err := c.exec("ps",
 		"--filter", "name="+containerNamePrefix,
+		"--filter", "name="+poolContainerPrefix,
 		"--format", "{{.Names}}")
 	if err != nil {
 		return nil, fmt.Errorf("bridge: list agent containers: %w", err)
@@ -463,7 +500,7 @@ func (c *containerTransport) listAgentContainers() ([]string, error) {
 		// Docker's --filter name= does a substring match, not a prefix
 		// match, so a foreign container like "foo-marshal-agent-bar" would
 		// appear here. Post-filter with HasPrefix to keep only ours.
-		if name != "" && strings.HasPrefix(name, containerNamePrefix) {
+		if name != "" && (strings.HasPrefix(name, containerNamePrefix) || strings.HasPrefix(name, poolContainerPrefix)) {
 			names = append(names, name)
 		}
 	}

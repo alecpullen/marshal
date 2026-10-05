@@ -1,8 +1,11 @@
 package bridge
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -341,4 +344,95 @@ func TestV5MigratesToV6(t *testing.T) {
 	if ws.Agents()[0].IssueNumber != 0 {
 		t.Fatal("migration invented an issue number")
 	}
+}
+
+func TestWorkspaceV8LoadsAndSavesAtCurrentVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	v8 := `{"version":8,"projects":["/p"],"agents":[{"id":"a1","project":"/p","ownerId":"local","origin":"ui"}]}`
+	if err := os.WriteFile(path, []byte(v8), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := NewWorkspace(path)
+	if quarantined, err := w.Load(); err != nil || quarantined != "" {
+		t.Fatalf("Load = %q, %v", quarantined, err)
+	}
+	a, ok := w.Agent("a1")
+	if !ok || a.Workspace != nil || a.ContainerName != "" {
+		t.Fatalf("agent = %+v", a)
+	}
+	if err := w.PutProjectSettings("/p", ProjectSettings{Workspace: "svc"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"version": 10`) {
+		t.Fatalf("saved file is not v10:\n%s", data)
+	}
+}
+
+func TestProjectSettingsRoundTripAndRemoveWithProject(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	w := NewWorkspace(path)
+	if err := w.AddProject("/p"); err != nil {
+		t.Fatal(err)
+	}
+	yes := true
+	want := ProjectSettings{
+		Workspace: "svc@2", Mode: "plan", Isolated: &yes, ShipTarget: "push",
+		Routing: json.RawMessage(`{"profile":"fast"}`),
+		Intake:  ProjectIntake{RepoID: "r", Labels: []string{"marshal"}, Clients: []string{"c1"}},
+	}
+	if err := w.PutProjectSettings("/p", want); err != nil {
+		t.Fatal(err)
+	}
+	w2 := NewWorkspace(path)
+	if _, err := w2.Load(); err != nil {
+		t.Fatal(err)
+	}
+	got := w2.ProjectSettingsFor("/p")
+	if got.Workspace != "svc@2" || got.Mode != "plan" || got.Isolated == nil || !*got.Isolated || got.ShipTarget != "push" ||
+		compactJSON(t, got.Routing) != `{"profile":"fast"}` || got.Intake.RepoID != "r" || len(got.Intake.Labels) != 1 {
+		t.Fatalf("settings = %+v", got)
+	}
+	if err := w2.RemoveProject("/p"); err != nil {
+		t.Fatal(err)
+	}
+	if got := w2.ProjectSettingsFor("/p"); got.Workspace != "" {
+		t.Fatalf("settings survived their project: %+v", got)
+	}
+}
+
+func TestAgentOverridesReachTheContainerConfig(t *testing.T) {
+	f := testFleet(t)
+	plain := Agent{ID: "a1", Project: "/p", SourceKind: "git", Profile: DefaultRuntimeProfile()}
+	cfg, err := f.containerConfigFor(plain, "/usr/bin/docker", "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Name != "marshal-agent-a1" || cfg.WorkSubpath != "work/a1" || cfg.SocketSubpath != "sockets/a1" {
+		t.Fatalf("derived names = %q %q %q", cfg.Name, cfg.WorkSubpath, cfg.SocketSubpath)
+	}
+	pooled := plain
+	pooled.ContainerName, pooled.WorkSubpath, pooled.SocketSubpath = "marshal-pool-svc-v1-0", "pool/svc-0/work", "pool/svc-0/sock"
+	cfg, err = f.containerConfigFor(pooled, "/usr/bin/docker", "docker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(newContainerTransport(cfg).buildRunArgs(), " ")
+	for _, want := range []string{"--name marshal-pool-svc-v1-0", "volume-subpath=pool/svc-0/work", "volume-subpath=pool/svc-0/sock"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("args lack %q:\n%s", want, args)
+		}
+	}
+	if cfg.SocketDir != filepath.Join(f.stateDir, "pool/svc-0/sock") {
+		t.Fatalf("socket dir = %q", cfg.SocketDir)
+	}
+}
+
+func compactJSON(t *testing.T, raw json.RawMessage) string {
+	t.Helper()
+	var b bytes.Buffer
+	if err := json.Compact(&b, raw); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
 }

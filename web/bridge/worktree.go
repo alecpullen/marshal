@@ -35,19 +35,54 @@ func (g *gitRunner) PrepareTree(stateDir, agentID, mirror, url, ref string) (str
 	if err := os.RemoveAll(dir); err != nil {
 		return "", fmt.Errorf("clear stale workspace: %w", err)
 	}
+	return g.cloneTree(dir, mirror, url, ref, false)
+}
 
+// PrepareTreeIn is PrepareTree into a directory a running container has
+// already mounted, as a warm-pool container has. The directory itself is
+// kept (removing it would orphan the mount) and only its contents are
+// replaced.
+func (g *gitRunner) PrepareTreeIn(dir, mirror, url, ref string) (string, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create workspace: %w", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("read workspace: %w", err)
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return "", fmt.Errorf("clear stale workspace: %w", err)
+		}
+	}
+	return g.cloneTree(dir, mirror, url, ref, true)
+}
+
+// cloneTree clones the mirror into an empty dir and checks out ref. It
+// removes dir's contents on failure, and dir itself unless keepDir.
+func (g *gitRunner) cloneTree(dir, mirror, url, ref string, keepDir bool) (string, error) {
+	clean := func() {
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				_ = os.RemoveAll(filepath.Join(dir, e.Name()))
+			}
+		}
+		if !keepDir {
+			_ = os.Remove(dir)
+		}
+	}
 	// No credential needed: the source is a local path.
 	if _, err := g.run("", Credential{Kind: "none"}, "clone", mirror, dir); err != nil {
-		_ = os.RemoveAll(dir)
+		clean()
 		return "", fmt.Errorf("create workspace: %w", err)
 	}
 	if _, err := g.run(dir, Credential{Kind: "none"}, "remote", "set-url", "origin", url); err != nil {
-		_ = os.RemoveAll(dir)
+		clean()
 		return "", fmt.Errorf("repoint origin: %w", err)
 	}
 	if ref != "" {
 		if _, err := g.run(dir, Credential{Kind: "none"}, "checkout", ref); err != nil {
-			_ = os.RemoveAll(dir)
+			clean()
 			return "", fmt.Errorf("checkout %s: %w", ref, err)
 		}
 	}

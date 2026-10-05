@@ -336,3 +336,35 @@ func TestBuildRunArgsWithoutHomesOmitsThem(t *testing.T) {
 		t.Errorf("homes leaked into a config that did not ask for them:\n%s", joined)
 	}
 }
+
+func TestContainerExtraMountsAndEnv(t *testing.T) {
+	tr := newContainerTransport(ContainerConfig{
+		Runtime: "/usr/bin/docker", RuntimeName: "docker", Image: "img", Name: "marshal-agent-n",
+		WorkspaceDir: "/w", SocketDir: "/s",
+		StateVolume: "marshal-state", WorkSubpath: "work/n", SocketSubpath: "sockets/n",
+		Env:         map[string]string{"A": "base", "B": "base"},
+		ExtraEnv:    map[string]string{"B": "extra", "C": "extra"},
+		ExtraMounts: []string{"--mount", "type=volume,source=cache,target=/cache"},
+	})
+	args := strings.Join(tr.buildRunArgs(), " ")
+	for _, want := range []string{"--mount type=volume,source=cache,target=/cache", "-e A=base", "-e B=extra", "-e C=extra"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("args lack %q:\n%s", want, args)
+		}
+	}
+	if strings.Contains(args, "-e B=base") {
+		t.Errorf("an ExtraEnv key did not override Env:\n%s", args)
+	}
+	for _, forbidden := range []string{"--privileged", "--network host", "docker.sock"} {
+		if strings.Contains(args, forbidden) {
+			t.Errorf("run args contain %q:\n%s", forbidden, args)
+		}
+	}
+	setup := tr.buildSetupArgs("make deps")
+	joined := strings.Join(setup, " ")
+	if setup[0] != "run" || strings.Contains(joined, " -d ") || strings.Contains(joined, "acp --listen") ||
+		!strings.Contains(joined, "--name marshal-setup-n") || !strings.HasSuffix(joined, "--entrypoint sh img -c make deps") ||
+		!strings.Contains(joined, "type=volume,source=cache,target=/cache") {
+		t.Errorf("setup args = %q", joined)
+	}
+}

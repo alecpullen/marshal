@@ -63,6 +63,10 @@ type agentRuntime struct {
 	// agent itself once session/new returns. Empty until then.
 	sessionID string
 
+	// timeoutStop cancels the workspace deadline, when one is armed.
+	timeoutMu   sync.Mutex
+	timeoutStop func()
+
 	// sourceKind is "local" or "git"; stopAgent uses it to decide whether
 	// the agent's prepared working tree must be removed.
 	sourceKind string
@@ -245,6 +249,22 @@ type Fleet struct {
 	// state nothing references.
 	provisioning map[string]string
 
+	// templates is the Studio workspace template store; wsParses caches
+	// control-agent parses of workspace sources.
+	templates *TemplateStore
+	wsParses  *wsParseCache
+	// buildLog carries workspace build output, keyed build:<name>:<n>.
+	buildLog *EventLog
+	builds   *buildLimiter
+	pools    *poolManager
+	// wsExtras holds the mounts and environment computed for an agent
+	// that is spawning, so its container config reuses the resolution the
+	// spawn already did. Keyed by agent id; cleared once the runtime starts.
+	wsMu     sync.Mutex
+	wsExtras map[string]wsExtras
+	// afterFunc schedules a deadline; tests replace it. Nil is time.AfterFunc.
+	afterFunc func(d time.Duration, fn func()) (stop func())
+
 	// pruneMu serializes prune callers against each other: the HTTP
 	// prune endpoint and the spawn-path enforceDisk prune both call
 	// Prune, and a removeTree racing itself on an already-vanished
@@ -287,7 +307,13 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 		provisioning:  make(map[string]string),
 		ctl:           newControlRuntime(),
 		usage:         NewUsageLog(stateDir),
+		templates:     NewTemplateStore(stateDir),
+		wsParses:      newWSParseCache(),
+		buildLog:      NewEventLog(),
+		builds:        newBuildLimiter(),
+		wsExtras:      make(map[string]wsExtras),
 	}
+	f.pools = newPoolManager(f)
 	f.budgets = newBudgetState(f)
 	// Remote sources need git and (later) credentials. Absent git is not
 	// fatal at startup: local-path spawns still work, and a git-sourced
@@ -301,6 +327,7 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 	f.creds = NewCredentialStore(ws.Credentials())
 	f.secrets = NewEnvProvider()
 	f.creds.SetProvider(f.secrets)
+	f.workspaceEgress = f.agentWorkspaceEgress
 	f.newRuntime = func(a Agent) (*Child, error) {
 		// The proxy wiring is prepared up front: a refusal (credential
 		// injection that cannot work) must stop the spawn.
@@ -323,36 +350,9 @@ func NewFleet(ws *Workspace, marshalBin string, agentEnv map[string]string, stat
 			}
 			return child, nil
 		}
-		cfg := ContainerConfig{
-			Runtime:       runtime,
-			RuntimeName:   name,
-			Image:         a.Profile.Image,
-			Name:          containerNameFor(a.ID),
-			WorkspaceDir:  a.Project,
-			SocketDir:     socketDirFor(f.stateDir, a.ID),
-			StateVolume:   f.stateVolume,
-			WorkSubpath:   "work/" + a.ID,
-			SocketSubpath: "sockets/" + a.ID,
-			CPUs:          a.Profile.CPUs,
-			MemoryMB:      a.Profile.MemoryMB,
-			Env:           withEnv(f.agentEnv, wiring.Env),
-			Network:       wiring.Network,
-			ExtraVolumes:  wiring.Volumes,
-			// Every agent shares one config home (read-only) and one data
-			// home, so memories and usage outlive any single container.
-			HomeConfigSubpath: homeConfigSubpath,
-			HomeDataSubpath:   homeDataSubpath,
-		}
-		f.ensureHomes()
-		// A LocalPath agent works on the host checkout itself, so its
-		// workspace is a bind mount of the daemon's view of that path.
-		// Git-sourced agents use a volume subpath instead.
-		if a.SourceKind == "local" {
-			hostPath, err := f.localMountFor(a)
-			if err != nil {
-				return nil, fmt.Errorf("bridge: refuse local agent mount for %s: %w (declare the root with --project-mount)", a.ID, err)
-			}
-			cfg.LocalMount = hostPath
+		cfg, err := f.containerConfigWith(a, runtime, name, wiring)
+		if err != nil {
+			return nil, err
 		}
 		return &Child{Transport: newContainerTransport(cfg), Containerized: true}, nil
 	}
@@ -372,6 +372,67 @@ func withEnv(base, extra map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// containerConfigFor is the container shape for an agent: derived names
+// unless the agent carries overrides (a pooled container), the profile's
+// image and caps, and a workspace's extra mounts and environment.
+func (f *Fleet) containerConfigFor(a Agent, runtime, runtimeName string) (ContainerConfig, error) {
+	return f.containerConfigWith(a, runtime, runtimeName, egressWiring{})
+}
+
+// containerConfigWith is containerConfigFor plus the egress proxy's
+// environment, network and volumes for the agent.
+func (f *Fleet) containerConfigWith(a Agent, runtime, runtimeName string, wiring egressWiring) (ContainerConfig, error) {
+	cfg := ContainerConfig{
+		Runtime:       runtime,
+		RuntimeName:   runtimeName,
+		Image:         a.Profile.Image,
+		Name:          containerNameFor(a.ID),
+		WorkspaceDir:  a.Project,
+		SocketDir:     socketDirFor(f.stateDir, a.ID),
+		StateVolume:   f.stateVolume,
+		WorkSubpath:   "work/" + a.ID,
+		SocketSubpath: "sockets/" + a.ID,
+		CPUs:          a.Profile.CPUs,
+		MemoryMB:      a.Profile.MemoryMB,
+		Env:           withEnv(f.agentEnv, wiring.Env),
+		Network:       wiring.Network,
+		ExtraVolumes:  wiring.Volumes,
+		// Every agent shares one config home (read-only) and one data
+		// home, so memories and usage outlive any single container.
+		HomeConfigSubpath: homeConfigSubpath,
+		HomeDataSubpath:   homeDataSubpath,
+	}
+	if a.ContainerName != "" {
+		cfg.Name = a.ContainerName
+	}
+	if a.WorkSubpath != "" {
+		cfg.WorkSubpath = a.WorkSubpath
+	}
+	if a.SocketSubpath != "" {
+		cfg.SocketSubpath = a.SocketSubpath
+		cfg.SocketDir = filepath.Join(f.stateDir, a.SocketSubpath)
+	}
+	f.ensureHomes()
+	// A LocalPath agent works on the host checkout itself, so its
+	// workspace is a bind mount of the daemon's view of that path.
+	// Git-sourced agents use a volume subpath instead.
+	if a.SourceKind == "local" {
+		hostPath, err := f.localMountFor(a)
+		if err != nil {
+			return cfg, fmt.Errorf("bridge: refuse local agent mount for %s: %w (declare the root with --project-mount)", a.ID, err)
+		}
+		cfg.LocalMount = hostPath
+	}
+	if a.Workspace != nil {
+		mounts, env, err := f.workspaceRuntimeExtras(a, runtimeName)
+		if err != nil {
+			return cfg, err
+		}
+		cfg.ExtraMounts, cfg.ExtraEnv = mounts, env
+	}
+	return cfg, nil
 }
 
 // Subpaths of the state volume that hold the shared homes.
@@ -646,6 +707,7 @@ func (f *Fleet) startRuntime(ctx context.Context, a Agent) (*agentRuntime, error
 	rt := &agentRuntime{id: a.ID, root: a.Project, profile: a.Profile,
 		child: child, reg: reg, log: log, sourceKind: a.SourceKind,
 		containerized: child.Containerized}
+	f.armWorkspaceTimeout(rt, a)
 	f.attachClassifier(rt)
 
 	if err := child.Start(); err != nil {
@@ -827,6 +889,9 @@ type SpawnOptions struct {
 	// Routing selects per-session model routing, forwarded verbatim as
 	// session/new's routing parameter.
 	Routing json.RawMessage
+	// Workspace is a workspace reference (see ParseWSRef). Empty falls back
+	// to the project's default, then to the profile and devcontainer.
+	Workspace string
 }
 
 // gitSource is the resolved remote source for a spawn, or a local path.
@@ -899,6 +964,51 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	a.SourceRef = src.ref
 	a.ReadOnly = src.readOnly
 
+	t0 := time.Now()
+
+	// A workspace (explicit, or the project's default) replaces the
+	// profile's image and caps, and adds mounts, policy and a setup step.
+	// It must be built: running an agent on a stale or missing image is
+	// worse than refusing. A Studio reference resolves now, before any
+	// state exists; a repo reference needs the checkout and resolves once
+	// workDir is known.
+	wsRefText := opts.Workspace
+	if wsRefText == "" {
+		wsRefText = f.ws.ProjectSettingsFor(root).Workspace
+	}
+	var wsRef WSRef
+	var wsRes *Resolved
+	var wsImage string
+	resolveWorkspace := func(templateRoot, trustRoot string) error {
+		res, err := f.ResolveWorkspaceIn(ctx, wsRef, templateRoot, trustRoot)
+		if err != nil {
+			return err
+		}
+		img, err := f.builtImage(res)
+		if err == nil && f.repoOverlayAddsImageLayers(ctx, res) {
+			err = fmt.Errorf("%w: repo:%s adds toolchains or packages, which are image layers; add them to %s and rebuild", ErrWorkspaceNotBuilt, res.Name, res.ImageName)
+		}
+		if err != nil {
+			return err
+		}
+		wsRes, wsImage = &res, img
+		return nil
+	}
+	if wsRefText != "" {
+		var err error
+		if wsRef, err = ParseWSRef(wsRefText); err != nil {
+			return "", err
+		}
+		if wsRef.Source == "studio" {
+			if err := resolveWorkspace("", ""); err != nil {
+				return "", err
+			}
+		}
+	}
+	// A git-sourced spawn on a Studio workspace takes a warm container
+	// when the template keeps a pool and one is idle.
+	var pooled *poolEntry
+
 	// The workspace directory is the local path for local spawns, or a
 	// freshly prepared git working tree for remote sources.
 	workDir := root
@@ -950,9 +1060,25 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 			src.gitRef = head
 		}
 		a.TargetBranch = src.gitRef
-		workDir, err = f.git.PrepareTree(f.stateDir, a.ID, mirror, src.url, src.gitRef)
-		if err != nil {
-			return "", err
+		if wsRes != nil && wsRes.Source == "studio" {
+			if e, ok := f.pools.take(wsRes.ImageName, wsRes.ImageVersion); ok {
+				pooled = &e
+			}
+		}
+		if pooled != nil {
+			workDir, err = f.git.PrepareTreeIn(filepath.Join(f.stateDir, pooled.workSubpath), mirror, src.url, src.gitRef)
+			if err != nil {
+				f.pools.discard(*pooled)
+				f.pools.fillAsync(pooled.name, pooled.version)
+				return "", err
+			}
+			a.ContainerName, a.WorkSubpath, a.SocketSubpath = pooled.container, pooled.workSubpath, pooled.socketSubpath
+			f.pools.fillAsync(pooled.name, pooled.version)
+		} else {
+			workDir, err = f.git.PrepareTree(f.stateDir, a.ID, mirror, src.url, src.gitRef)
+			if err != nil {
+				return "", err
+			}
 		}
 	} else {
 		if err := f.ws.AddProject(root); err != nil {
@@ -961,18 +1087,43 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	}
 	a.Project = workDir
 
+	cleanTree := func() {
+		if pooled != nil {
+			f.pools.discard(*pooled)
+			return
+		}
+		if src.kind == "git" && f.git != nil {
+			_ = f.git.RemoveTree(f.stateDir, a.ID)
+		}
+	}
+	if wsRefText != "" && wsRes == nil {
+		trustRoot := workDir
+		if src.kind == "git" {
+			trustRoot = f.ws.ProjectRootByRepo(src.ref)
+		}
+		if err := resolveWorkspace(workDir, trustRoot); err != nil {
+			cleanTree()
+			return "", err
+		}
+	}
+
 	// Resolve the runtime profile now that workDir is known, so a
 	// git-sourced repo with a .devcontainer/devcontainer.json is
 	// honoured. For local spawns workDir == root.
 	profile, _ := ResolveProfile(workDir, opts.Profile, f.buildVersion)
 	a.Profile = profile
+	if wsRes != nil {
+		a.Workspace = &AgentWorkspace{Name: wsRes.Name, Version: wsRes.Version, Source: wsRes.Source, Timeout: wsRes.Doc.Resources.Timeout}
+		a.Profile.Image = wsImage
+		applyResources(&a.Profile, wsRes.Doc.Resources)
+	}
 
 	// A declared base (e.g. node:20) carries no marshal. Derive an image
 	// that adds marshal on top, and run the agent against that. A marshal
 	// image is used as-is. A build failure refuses the spawn — running an
 	// agent in an environment the repo did not ask for is worse than
 	// refusing to run it.
-	if !strings.HasPrefix(a.Profile.Image, agentImageRepo) {
+	if wsRes == nil && !strings.HasPrefix(a.Profile.Image, agentImageRepo) {
 		derived, err := f.ensureDerivedImage(ctx, a.Profile.Image)
 		if err != nil {
 			if src.kind == "git" && f.git != nil {
@@ -986,16 +1137,46 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	// Enforce the disk budget before acquiring a slot: refusing a new
 	// spawn is the control, not stopping an existing agent.
 	if err := f.enforceDisk(); err != nil {
-		if src.kind == "git" && f.git != nil {
-			_ = f.git.RemoveTree(f.stateDir, a.ID)
-		}
+		cleanTree()
 		return "", err
 	}
 
-	if err := f.slots.acquire(ctx); err != nil {
-		if src.kind == "git" && f.git != nil {
-			_ = f.git.RemoveTree(f.stateDir, a.ID)
+	// A workspace's mounts and environment are rendered once here, held
+	// for the container config, and used for the one-shot setup step.
+	if wsRes != nil {
+		_, rtName, ok := f.runtimeInfo()
+		if !ok {
+			cleanTree()
+			return "", ErrWorkspaceNeedsRuntime
 		}
+		ex, err := f.buildWorkspaceExtras(ctx, a, wsRes.Doc, wsRes.ImageName, rtName)
+		if err != nil {
+			cleanTree()
+			return "", err
+		}
+		f.wsMu.Lock()
+		f.wsExtras[a.ID] = ex
+		f.wsMu.Unlock()
+		defer func() {
+			f.wsMu.Lock()
+			delete(f.wsExtras, a.ID)
+			f.wsMu.Unlock()
+		}()
+		if run := wsRes.Doc.Setup.Run; run != "" {
+			rtPath, _, _ := f.runtimeInfo()
+			cfg, err := f.containerConfigFor(a, rtPath, rtName)
+			if err == nil {
+				err = f.runWorkspaceSetup(ctx, cfg, run)
+			}
+			if err != nil {
+				cleanTree()
+				return "", err
+			}
+		}
+	}
+
+	if err := f.slots.acquire(ctx); err != nil {
+		cleanTree()
 		return "", fmt.Errorf("wait for an agent slot: %w", err)
 	}
 
@@ -1042,6 +1223,16 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	if len(opts.Routing) > 0 && string(opts.Routing) != "null" {
 		params["routing"] = opts.Routing
 	}
+	if wsRes != nil && (wsRes.Doc.Policy.Mode != "" || len(wsRes.Doc.Policy.Allow) > 0) {
+		policy := map[string]any{}
+		if wsRes.Doc.Policy.Mode != "" {
+			policy["mode"] = wsRes.Doc.Policy.Mode
+		}
+		if len(wsRes.Doc.Policy.Allow) > 0 {
+			policy["allow"] = wsRes.Doc.Policy.Allow
+		}
+		params["policy"] = policy
+	}
 	raw, err := rt.child.Request(ctx, "session/new", params)
 	if err != nil {
 		f.stopAgent(a.ID)
@@ -1063,6 +1254,9 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	rt.sessionID = out.SessionID
 	f.sessionAgent[out.SessionID] = a.ID
 	f.mu.Unlock()
+	if wsRes != nil && wsRes.ImageName != "" {
+		f.pools.recordStart(wsRes.ImageName, pooled != nil, time.Since(t0))
+	}
 
 	// Persist the session id with the agent record so a later reattach
 	// can restore the mapping. Must be set before the copy below.
@@ -1350,7 +1544,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 			Isolated: a.Isolated, Branch: a.Branch, UpdatedAt: live.updatedAt,
 			SourceKind: a.SourceKind, ReadOnly: a.ReadOnly,
 			TargetBranch: a.TargetBranch, PRUrl: a.PRUrl,
-			GateOverride: a.GateOverride,
+			GateOverride: a.GateOverride, Workspace: a.Workspace,
 		}
 		if !a.PushedAt.IsZero() {
 			st.PushedAt = &a.PushedAt
@@ -1406,6 +1600,7 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 	if rt == nil {
 		return
 	}
+	rt.stopTimeout()
 	if !destroy {
 		rt.child.Detach()
 		f.slots.release()
@@ -1417,6 +1612,10 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 	// Stop the child first so it is no longer writing to the
 	// bind-mounted workspace, then remove the git-sourced tree.
 	rt.child.Stop()
+	// A pooled agent's tree lives in its pool directory, not work/<id>.
+	if poolRoot := filepath.Join(f.stateDir, "pool") + string(filepath.Separator); strings.HasPrefix(rt.root, poolRoot) {
+		_ = os.RemoveAll(filepath.Dir(rt.root))
+	}
 	if rt.sourceKind == "git" && f.git != nil {
 		if err := f.git.RemoveTree(f.stateDir, id); err != nil {
 			slog.Default().Warn("webbridge: remove agent workspace failed",
@@ -1478,6 +1677,8 @@ func (f *Fleet) ReattachAll(ctx context.Context) []error {
 			errs = append(errs, err)
 		}
 	}
+	f.failInterruptedBuilds()
+	f.pools.adopt()
 	return errs
 }
 

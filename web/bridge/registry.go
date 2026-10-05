@@ -90,6 +90,10 @@ type Registry struct {
 	// session (e.g. "bridge_restarted"). Task 3's event bus consumes it.
 	OnEvent func(sessionId string, payload any)
 
+	// OnPrompt, if set, is called with the session id each time a prompt
+	// is sent. The fleet uses it to arm a workspace's agent timeout.
+	OnPrompt func(sessionID string)
+
 	// testHookBeforeRegister, when non-nil, is invoked between a pending
 	// request's generation capture and its registration. Tests use it to
 	// force a cancel in the late-registration race window.
@@ -219,6 +223,9 @@ func (r *Registry) Prompt(ctx context.Context, id, text string) error {
 	params := map[string]any{
 		"sessionId": id,
 		"prompt":    []map[string]string{{"type": "text", "text": text}},
+	}
+	if r.OnPrompt != nil {
+		r.OnPrompt(id)
 	}
 	r.beginTurn(id)
 	res, err := r.child.Request(ctx, "session/prompt", params)

@@ -164,6 +164,9 @@ func (f *Fleet) Prune() (reclaimed int64, err error) {
 	// the only nesting it ever appears in.
 	inFlight := f.provisioningSnapshot()
 	live := f.liveMirrors(inFlight)
+	for dir := range f.workspaceMountedMirrors() {
+		live[dir] = true
+	}
 	liveAgents := make(map[string]bool)
 	for _, a := range f.ws.Agents() {
 		liveAgents[a.ID] = true

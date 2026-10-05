@@ -32,6 +32,7 @@
   let host = $state<HTMLDivElement | null>(null)
   let exited = $state<number | null>(null)
   let error = $state('')
+  let inputError = $state('')
 
   function themeColor(name: string, fallback: string): string {
     try {
@@ -74,12 +75,23 @@
     let stopSSE = () => {}
     let sending: Promise<void> = Promise.resolve()
 
-    const send = (text: string) => {
-      onInput?.()
+    // Keystrokes typed before the shell has opened wait here and go out first.
+    let early = ''
+    const post = (text: string) => {
       for (let i = 0; i < text.length; i += CHUNK) {
         const piece = text.slice(i, i + CHUNK)
-        sending = sending.then(() => (tid ? terminalInput(target, tid, piece).catch(() => {}) : undefined))
+        sending = sending.then(() =>
+          terminalInput(target, tid, piece).then(
+            () => void (inputError = ''),
+            (e) => void (inputError = `Input was not delivered: ${errMessage(e)}`),
+          ),
+        )
       }
+    }
+    const send = (text: string) => {
+      onInput?.()
+      if (!tid) early += text
+      else post(text)
     }
     term.onData(send)
     term.onResize(({ cols, rows }) => {
@@ -102,6 +114,8 @@
           return
         }
         tid = r.terminalId
+        if (early) post(early)
+        early = ''
         stopSSE = connectSSE({
           url: terminalEventsUrl(target, tid),
           // The bridge replays the terminal's retained output only from id 0.
@@ -138,6 +152,7 @@
 
 <div class="flex min-h-0 flex-1 flex-col gap-1" data-testid="terminal">
   {#if error}<p class="rounded border border-border bg-bg p-2 text-xs text-err" role="alert">{error}</p>{/if}
+  {#if inputError}<p class="rounded border border-border bg-bg p-2 text-xs text-err" role="alert" data-testid="input-error">{inputError}</p>{/if}
   <div bind:this={host} class="min-h-48 flex-1 overflow-hidden rounded bg-bg p-1"></div>
   {#if exited !== null}
     <div class="flex items-center gap-2 text-xs text-muted">

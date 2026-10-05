@@ -17,6 +17,15 @@
     workspace?: { name: string; version: number; source: 'studio' | 'repo' }
   } = $props()
 
+  function isForeignOrigin(url: string): boolean {
+    try {
+      const u = new URL(url, location.href)
+      return (u.protocol === 'http:' || u.protocol === 'https:') && u.origin !== location.origin
+    } catch {
+      return false
+    }
+  }
+
   let ports = $state<number[]>([])
   let loaded = $state(false)
   let error = $state('')
@@ -42,6 +51,12 @@
     error = ''
     try {
       const r = await openPreview(agentId, port)
+      // allow-same-origin is only safe on an origin of its own: a preview on
+      // this app's origin could read its storage and call its API.
+      if (!isForeignOrigin(r.url)) {
+        error = 'Preview refused: the bridge returned a URL on this app\'s own origin.'
+        return
+      }
       current = { port, url: r.url }
       frameKey++
     } catch (e) {

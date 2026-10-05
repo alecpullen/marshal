@@ -51,4 +51,16 @@ describe('PreviewTab', () => {
     await waitFor(() => expect(screen.getByTestId('preview-empty')).toBeTruthy())
     expect(api.getWorkspace).not.toHaveBeenCalled()
   })
+
+  it('refuses to frame a URL on the UI origin or a relative one', async () => {
+    vi.mocked(api.getWorkspace).mockResolvedValue(doc([3000]))
+    for (const url of [`${location.origin}/preview/a1/3000/`, '/preview/a1/3000/', 'javascript:alert(1)']) {
+      vi.mocked(api.openPreview).mockResolvedValue({ url })
+      const view = render(PreviewTab, { agentId: 'a1', workspace: ws })
+      await fireEvent.click(await screen.findByRole('button', { name: 'Open :3000' }))
+      expect((await screen.findByRole('alert')).textContent).toContain('refused')
+      expect(screen.queryByTitle('Preview of port 3000')).toBeNull()
+      view.unmount()
+    }
+  })
 })

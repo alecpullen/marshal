@@ -83,6 +83,29 @@ describe('TerminalTab', () => {
     expect(new TextDecoder().decode(h.term!.write.mock.calls[0][0])).toBe('hello')
   })
 
+  it('buffers keystrokes typed before the shell opens and sends them first', async () => {
+    let release!: (v: { terminalId: string }) => void
+    vi.mocked(api.openTerminal).mockReturnValue(new Promise((r) => (release = r)))
+    renderTab()
+    await fireEvent.click(screen.getByRole('button', { name: 'Open shell' }))
+    await waitFor(() => expect(h.term).not.toBeNull())
+    h.term!.data('ls')
+    h.term!.data('\r')
+    expect(api.terminalInput).not.toHaveBeenCalled()
+    release({ terminalId: 't1' })
+    await waitFor(() => expect(api.terminalInput).toHaveBeenCalledWith({ agentId: 'a1' }, 't1', 'ls\r'))
+  })
+
+  it('shows an error when input is not delivered, and clears it on the next success', async () => {
+    renderTab()
+    await openShell()
+    vi.mocked(api.terminalInput).mockRejectedValueOnce(new Error('terminal gone'))
+    h.term!.data('a')
+    expect((await screen.findByTestId('input-error')).textContent).toContain('terminal gone')
+    h.term!.data('b')
+    await waitFor(() => expect(screen.queryByTestId('input-error')).toBeNull())
+  })
+
   it('reports an exit and keeps the shell closable', async () => {
     renderTab()
     await openShell()

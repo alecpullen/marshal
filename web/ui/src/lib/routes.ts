@@ -153,8 +153,8 @@ export function formatLiveRoute(r: LiveRoute): string {
   return `#live${qs ? `?${qs}` : ''}`
 }
 
-export type LibraryTab = 'skills' | 'plugins' | 'mcp' | 'memory'
-const LIBRARY_TABS: readonly string[] = ['skills', 'plugins', 'mcp', 'memory']
+export type LibraryTab = 'skills' | 'plugins' | 'mcp' | 'memory' | 'recipes'
+const LIBRARY_TABS: readonly string[] = ['skills', 'plugins', 'mcp', 'memory', 'recipes']
 
 /** The Library URL: `#library[/<tab>][?project=<root>]`; a bare `#library` is Skills. */
 export interface LibraryRoute { tab: LibraryTab; project?: string }

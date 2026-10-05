@@ -5,7 +5,7 @@ import * as api from '../lib/api.js'
 
 vi.mock('../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../lib/api.js')>()
-  return { ...actual, listProjects: vi.fn(), spawnAgent: vi.fn(), recentPrompts: vi.fn(), listIssues: vi.fn(), listWorkspaces: vi.fn(), getProjectSettings: vi.fn(), getProjectHealth: vi.fn() }
+  return { ...actual, listProjects: vi.fn(), spawnAgent: vi.fn(), recentPrompts: vi.fn(), listIssues: vi.fn(), listWorkspaces: vi.fn(), listRecipes: vi.fn(), runRecipe: vi.fn(), getProjectSettings: vi.fn(), getProjectHealth: vi.fn() }
 })
 
 const projects = [
@@ -21,6 +21,7 @@ beforeEach(() => {
   ;(api.recentPrompts as Mock).mockResolvedValue(['earlier prompt one', 'earlier prompt two'])
   ;(api.spawnAgent as Mock).mockResolvedValue({ agentId: 'a9' })
   ;(api.listWorkspaces as Mock).mockResolvedValue([])
+  ;(api.listRecipes as Mock).mockResolvedValue([])
   ;(api.getProjectSettings as Mock).mockResolvedValue({})
   ;(api.getProjectHealth as Mock).mockResolvedValue({ verify: { build: '', test: '' } })
 })
@@ -138,5 +139,30 @@ describe('NewAgent', () => {
       await waitFor(() => expect(api.spawnAgent).toHaveBeenCalled())
       expect((api.spawnAgent as Mock).mock.calls[0][0].workspace).toBeUndefined()
     })
+  })
+
+  it('picking a recipe sets the mode, fills the prompt, and submit calls runRecipe', async () => {
+    ;(api.listRecipes as Mock).mockResolvedValue([
+      { name: 'fix-ci', title: 'Fix a failing check', kind: 'prompt', mode: 'plan', prompt: 'Fix {{check}}', inputs: [{ name: 'check', label: 'Failing check', required: true }], limits: { maxMinutes: 20 } },
+    ])
+    ;(api.runRecipe as Mock).mockResolvedValue({ agentId: 'r1' })
+    const onDone = vi.fn()
+    render(NewAgent, { onDone })
+    await screen.findByText('alpha')
+    await fireEvent.click(screen.getByRole('tab', { name: 'Recipes' }))
+    await fireEvent.click(await screen.findByText('Fix a failing check'))
+    expect((screen.getByLabelText('Prompt') as HTMLTextAreaElement).value).toBe('Fix {{check}}')
+    expect(screen.getByText('plan')).toBeTruthy()
+
+    // A required input blocks the run.
+    await fireEvent.click(screen.getByText('Create agent'))
+    expect((await screen.findByRole('alert')).textContent).toContain('check')
+    expect(api.runRecipe).not.toHaveBeenCalled()
+
+    await fireEvent.input(screen.getByLabelText(/Failing check/), { target: { value: 'lint' } })
+    await fireEvent.click(screen.getByText('Create agent'))
+    await waitFor(() => expect(api.runRecipe).toHaveBeenCalledWith('fix-ci', { project: '/work/alpha', inputs: { check: 'lint' } }))
+    expect(api.spawnAgent).not.toHaveBeenCalled()
+    await waitFor(() => expect(onDone).toHaveBeenCalledWith('r1'))
   })
 })

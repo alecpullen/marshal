@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { listProjects, recentPrompts, spawnAgent, errMessage, type Issue, type ProjectStatus } from '../lib/api'
+  import { listProjects, listRecipes, recentPrompts, runRecipe, spawnAgent, errMessage, type Issue, type ProjectStatus, type Recipe } from '../lib/api'
+  import { MODES as MODE_LIST } from '../lib/newagent/newAgent'
+  import { limitsLabel, missingRequired } from '../lib/recipes/recipes'
   import IssuePicker from '../lib/IssuePicker.svelte'
   import Chip from '../lib/newagent/Chip.svelte'
   import Button from '../lib/ui/Button.svelte'
@@ -13,7 +15,10 @@
   let choice = $state<Choice>({ project: '', mode: 'edit', isolated: false, branch: '', baseRef: '' })
   let workspace = $state('')
   let prompt = $state('')
-  let tab = $state<'issues' | 'recent'>('recent')
+  let tab = $state<'issues' | 'recent' | 'recipes'>('recent')
+  let recipes = $state<Recipe[]>([])
+  let recipe = $state<Recipe | null>(null)
+  let recipeInputs = $state<Record<string, string>>({})
   let recent = $state<string[]>([])
   let error = $state('')
   let busy = $state(false)
@@ -29,6 +34,7 @@
       projects = await listProjects()
       choice = defaults(projects, loadRemembered())
       workspace = loadWorkspace(choice.project)
+      recipes = await listRecipes().catch(() => [])
     } catch (e) {
       error = errMessage(e)
     }
@@ -52,14 +58,42 @@
     promptEl?.focus()
   }
 
+  function pickRecipe(r: Recipe) {
+    recipe = r
+    recipeInputs = {}
+    prompt = r.prompt
+    if (r.mode && (MODE_LIST as readonly string[]).includes(r.mode)) choice = { ...choice, mode: r.mode as Choice['mode'] }
+    if (r.workspace) workspace = r.workspace
+  }
+
+  function clearRecipe() {
+    recipe = null
+    recipeInputs = {}
+    prompt = ''
+  }
+
   async function create() {
     if (!choice.project) {
       error = 'Pick a project first.'
       return
     }
+    if (recipe) {
+      const missing = missingRequired(recipe, recipeInputs)
+      if (missing.length) {
+        error = `Fill in: ${missing.join(', ')}`
+        return
+      }
+    }
     busy = true
     error = ''
     try {
+      if (recipe) {
+        // The recipe's limits only apply through its own run route.
+        const r = await runRecipe(recipe.name, { project: choice.project, inputs: recipeInputs })
+        remember(choice)
+        onDone(r.agentId)
+        return
+      }
       const r = await spawnAgent({
         project: choice.project,
         prompt: prompt.trim() || undefined,
@@ -90,12 +124,27 @@
   {#if error}<div class="rounded border border-danger bg-danger/10 p-3 text-sm" role="alert">{error}</div>{/if}
 
   <div class="flex flex-col gap-3 rounded-lg border border-border bg-surface p-3">
+    {#if recipe}
+      <div class="flex flex-col gap-2 rounded border border-border bg-bg p-3 text-sm" data-testid="recipe-inputs">
+        <div class="flex items-center gap-2">
+          <span class="font-medium">{recipe.title || recipe.name}</span>
+          <span class="text-xs text-muted">{limitsLabel(recipe)}</span>
+          <button type="button" class="ml-auto text-xs text-muted hover:text-fg" onclick={clearRecipe}>Clear recipe</button>
+        </div>
+        {#each recipe.inputs ?? [] as input (input.name)}
+          <label class="flex flex-col gap-1 text-xs">{input.label || input.name}{input.required ? ' *' : ''}
+            <input bind:value={recipeInputs[input.name]} class="rounded border border-border bg-surface p-1.5 text-sm" />
+          </label>
+        {/each}
+      </div>
+    {/if}
     <textarea
       bind:this={promptEl}
       bind:value={prompt}
       rows="7"
       placeholder="What should the agent do?"
       aria-label="Prompt"
+      readonly={!!recipe}
       class="w-full resize-y rounded bg-bg p-3 text-sm"
       onkeydown={(e) => {
         if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
@@ -155,6 +204,7 @@
     <div class="flex gap-2 border-b border-border text-sm" role="tablist">
       <button type="button" role="tab" aria-selected={tab === 'recent'} class="px-3 py-1.5 {tab === 'recent' ? 'border-b-2 border-accent' : 'text-muted'}" onclick={() => (tab = 'recent')}>Recent prompts</button>
       <button type="button" role="tab" aria-selected={tab === 'issues'} class="px-3 py-1.5 {tab === 'issues' ? 'border-b-2 border-accent' : 'text-muted'}" onclick={() => (tab = 'issues')}>Issues</button>
+      <button type="button" role="tab" aria-selected={tab === 'recipes'} class="px-3 py-1.5 {tab === 'recipes' ? 'border-b-2 border-accent' : 'text-muted'}" onclick={() => (tab = 'recipes')}>Recipes</button>
     </div>
     {#if tab === 'recent'}
       {#if recent.length === 0}
@@ -164,6 +214,21 @@
           {#each recent as r (r)}
             <li>
               <button type="button" class="w-full truncate rounded border border-border bg-surface px-3 py-2 text-left text-sm hover:bg-hover" onclick={() => { prompt = r; promptEl?.focus() }}>{r}</button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {:else if tab === 'recipes'}
+      {#if recipes.length === 0}
+        <p class="text-sm text-muted">No recipes yet. Add one in the Library.</p>
+      {:else}
+        <ul class="flex flex-col gap-1">
+          {#each recipes as r (r.name)}
+            <li>
+              <button type="button" class="w-full rounded border bg-surface px-3 py-2 text-left text-sm hover:bg-hover {recipe?.name === r.name ? 'border-accent' : 'border-border'}" aria-pressed={recipe?.name === r.name} onclick={() => pickRecipe(r)}>
+                <span class="font-medium">{r.title || r.name}</span>
+                {#if r.description}<span class="block text-xs text-muted">{r.description}</span>{/if}
+              </button>
             </li>
           {/each}
         </ul>

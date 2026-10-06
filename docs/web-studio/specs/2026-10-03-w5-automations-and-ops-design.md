@@ -638,3 +638,57 @@ automations unusable outright:
 The CI fixer also needs a workspace with the project's toolchain: the
 default agent image carries none, so a Go failure needs a Go workspace
 (§8.8) before it can be reproduced.
+
+## 10. End-to-end pass
+
+Run 2026-10-06, after the manual passes, against the same environment.
+`scripts/e2e/` drives every bridge route group over HTTP the way the SPA
+does — 210 checks across eight groups (sessions, agents, terminal and
+preview, ops, workspaces, secrets and egress, forge, error handling).
+**209 pass, 0 fail, 1 skip**; the skip needs a routing profile the
+environment does not define.
+
+```
+python3 scripts/e2e/run_e2e.py \
+    --base http://127.0.0.1:7700 --token TOK \
+    --project /tmp/w5proj --project2 /tmp/w5proj2 \
+    --repo w5forge --workspace w5prev --provider ollama-cloud-2
+```
+
+The pass found ten defects, each fixed with a test that fails without the
+fix. One is severe.
+
+**A slot leak that wedges the bridge.** `releaseAgent` is the only caller
+of `slots.release`, so an agent that cannot be retired holds its
+concurrency slot forever. Two paths left such agents behind:
+
+- `Discard` refused to retire an agent whose session was gone or no longer
+  isolated (it had been merged, or its worktree was already removed).
+- `RuntimeForSession` failed outright when a persisted agent's session
+  could not be restored — exactly the state a bridge restart leaves.
+
+Enough of those fill the pool, and `Spawn` then blocks forever waiting for
+a slot that never comes: the bridge stops accepting work. This was
+observed live — 21 agents against `--max-concurrent 20`, after which
+`POST /api/sessions` hung indefinitely. `Discard` now retires the record
+in both cases, and `Spawn` bounds its wait for a slot so a full pool
+reports itself instead of hanging the caller.
+
+The rest:
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | `GET /api/sessions` 502'd with "unknown project" for any project with no live agent, so the Sessions panel could not open a fresh project | fall back to the control agent's per-project session |
+| 2 | `writeErr` mapped `ErrUnregisteredRepo`, `ErrUnknownRepo` and an unknown pending submission to 502 | 404 — the caller named something that does not exist |
+| 3 | `RunReviewBot` checked the bot settings before resolving the repo, so an unknown repo reported "the review bot is off" (409) | resolve the repo first: 404 |
+| 4 | Patch export on a local agent returned 502 | 409 — a conflict, not a gateway fault |
+| 5 | A skill preview whose source cannot be fetched returned an internal error (502) | invalid params (400) |
+| 6 | A terminal resize arriving before the shell recorded its tty failed with "exit status 1" (502) | retry briefly |
+| 7 | The workspace test shell ran `podman run <image> script …`, but a derived workspace image inherits the agent image's `ENTRYPOINT` (`["marshal"]`), so it ran `marshal script …` and died at once | override the entrypoint |
+
+Two further findings were the harness's own wrong assumptions, not
+product defects, and are recorded here so they are not re-reported:
+`DELETE /api/sessions/{id}` removes the session's transcript, not the
+agent (the agent is retired by discard/exit); and discarding a *local*
+isolated agent removes its worktree but keeps the record, whereas a
+git-sourced agent is retired outright.

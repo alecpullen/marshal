@@ -1312,17 +1312,44 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		agent.Branch = out.Workspace.Branch
 		agent.TargetBranch = out.Workspace.TargetBranch
 	}
-	if opts.Mode != "" {
-		if err := rt.reg.SetMode(ctx, out.SessionID, opts.Mode); err != nil {
+	mode := effectiveSpawnMode(origin, opts.Mode)
+	if mode != "" {
+		if err := rt.reg.SetMode(ctx, out.SessionID, mode); err != nil {
 			_ = f.ws.PutAgent(agent)
-			return a.ID, fmt.Errorf("agent created but setting mode %q failed: %w", opts.Mode, err)
+			return a.ID, fmt.Errorf("agent created but setting mode %q failed: %w", mode, err)
 		}
 	}
+	// Persist what the agent actually runs under, not what was requested,
+	// so the exit panel and the agent list do not misreport the mode.
+	agent.Mode = mode
 	if err := f.ws.PutAgent(agent); err != nil {
 		return a.ID, fmt.Errorf("agent created but recording it failed: %w", err)
 	}
 	f.auditf(AuditEvent{Event: AuditSpawn, OwnerID: a.OwnerID, AgentID: a.ID, Origin: origin})
 	return a.ID, nil
+}
+
+// effectiveSpawnMode resolves the approval mode a spawn actually runs under.
+//
+// An agent the bridge starts itself — a due schedule, the review bot, the CI
+// fixer — has nobody attached to answer an approval prompt. Edit mode confirms
+// every command that is neither safe-listed nor covered by an allow rule, and
+// an unanswered confirmation has no timeout: the turn waits until its deadline
+// and the work never happens. So an unattended automation that asked for edit
+// mode runs in auto instead, which answers those confirmations itself.
+//
+// Only edit is promoted. Plan refuses a write outright rather than prompting,
+// so it never stalls, and granting it auto would quietly give the read-only
+// review bot write access it never had.
+func effectiveSpawnMode(origin, requested string) string {
+	if requested != "edit" {
+		return requested
+	}
+	switch origin {
+	case OriginSchedule, OriginReviewBot, OriginCI:
+		return "auto"
+	}
+	return requested
 }
 
 // Diff, Merge and Discard are thin ACP pass-throughs. The bridge holds no

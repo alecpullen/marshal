@@ -397,11 +397,19 @@ func (h *egressHost) caGenerationsInUse(workspace string) map[string]bool {
 // ---- policy construction --------------------------------------------------
 
 // injectionValue formats a secret for a header.
+//
+// Both placeholder spellings are honoured: the workspace doc, the designer
+// that writes it, and its parse test all use "{}" (`format = "Bearer {}"`),
+// while this package's own type documents "{value}". A format naming neither
+// is passed through unchanged rather than guessed at, so what the operator
+// literally wrote is what is sent.
 func injectionValue(format string, secret []byte) string {
 	if format == "" {
 		format = "{value}"
 	}
-	return strings.ReplaceAll(format, "{value}", strings.TrimSpace(string(secret)))
+	value := strings.TrimSpace(string(secret))
+	format = strings.ReplaceAll(format, "{value}", value)
+	return strings.ReplaceAll(format, "{}", value)
 }
 
 // providerHost extracts the host of a provider base URL.

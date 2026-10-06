@@ -742,6 +742,62 @@ func TestDiscardRetiresAGitSourcedAgent(t *testing.T) {
 	}
 }
 
+// A bridge-originated agent (a due schedule, the review bot, the CI fixer)
+// starts with nobody attached, so an approval prompt can never be answered:
+// the turn waits until its deadline and the work never happens. Edit mode
+// prompts before every command that is not safe-listed or covered by an
+// allow rule, so it is the mode that stalls an automation. It runs in auto
+// instead, which answers those prompts itself.
+func TestAutomationSpawnRunsInAutoMode(t *testing.T) {
+	f, _, agentOf := agentFleet(t)
+	id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{
+		Origin: OriginCI, Mode: "edit", Prompt: "reproduce the failure"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	calls := agentOf(id).calls("session/set_mode")
+	if len(calls) != 1 || !strings.Contains(calls[0], `"mode":"auto"`) {
+		t.Fatalf("set_mode = %v, want auto for an unattended automation", calls)
+	}
+	a, ok := f.ws.Agent(id)
+	if !ok || a.Mode != "auto" {
+		t.Fatalf("agent mode = %+v, want the mode it actually runs under", a)
+	}
+}
+
+// The operator's own agents are attended: an edit-mode prompt is the
+// interaction they asked for, so the mode must not be promoted.
+func TestOperatorSpawnKeepsItsMode(t *testing.T) {
+	f, _, agentOf := agentFleet(t)
+	for name, origin := range map[string]string{"ui": OriginUI, "mcp": OriginMCP} {
+		id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{
+			Origin: origin, Mode: "edit", Prompt: "x"})
+		if err != nil {
+			t.Fatalf("%s: Spawn: %v", name, err)
+		}
+		calls := agentOf(id).calls("session/set_mode")
+		if len(calls) != 1 || !strings.Contains(calls[0], `"mode":"edit"`) {
+			t.Fatalf("%s: set_mode = %v, want edit unchanged", name, calls)
+		}
+	}
+}
+
+// The review bot runs the read-only review-pr recipe in plan mode. Plan
+// refuses a write rather than prompting, so it never stalls; promoting it
+// would quietly grant an unattended reviewer write access it never had.
+func TestReviewBotKeepsPlanMode(t *testing.T) {
+	f, _, agentOf := agentFleet(t)
+	id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{
+		Origin: OriginReviewBot, Mode: "plan", Prompt: "review"})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	calls := agentOf(id).calls("session/set_mode")
+	if len(calls) != 1 || !strings.Contains(calls[0], `"mode":"plan"`) {
+		t.Fatalf("set_mode = %v, want plan unchanged", calls)
+	}
+}
+
 func TestSpawnAgainstRawURLIsReadOnly(t *testing.T) {
 	f := testFleet(t)
 	if f.git == nil {

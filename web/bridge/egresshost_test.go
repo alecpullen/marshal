@@ -666,6 +666,34 @@ func TestEgressRefreshPublishesOnlyOnChange(t *testing.T) {
 	}
 }
 
+// The workspace doc, the designer that writes it, and its own parse test all
+// spell the injected value "{}" — `format = "Bearer {}"`. The substitution
+// therefore has to understand "{}" as well as the longer "{value}" spelling,
+// or a header written by the designer goes out with a literal "{}" in it.
+func TestInjectionValueSubstitutesBothPlaceholderSpellings(t *testing.T) {
+	for _, c := range []struct{ format, want string }{
+		{"Bearer {}", "Bearer sekret"},
+		{"Bearer {value}", "Bearer sekret"},
+		{"{}", "sekret"},
+		{"{value}", "sekret"},
+		{"token {} and {value}", "token sekret and sekret"},
+		{"", "sekret"},
+		{"Bearer", "Bearer"},
+	} {
+		if got := injectionValue(c.format, []byte("sekret")); got != c.want {
+			t.Errorf("injectionValue(%q) = %q, want %q", c.format, got, c.want)
+		}
+	}
+}
+
+// A secret with a trailing newline is still injected trimmed, in both
+// spellings: the askpass and vault backends both hand back the raw bytes.
+func TestInjectionValueTrimsTheSecretInBothSpellings(t *testing.T) {
+	if got := injectionValue("Bearer {}", []byte("s3cret\n")); got != "Bearer s3cret" {
+		t.Errorf(`injectionValue("Bearer {}", ...) = %q`, got)
+	}
+}
+
 func TestEgressSidecarWithoutAPreviewPortIsReplaced(t *testing.T) {
 	f, rt := testEgressFleet(t, false)
 	rt.network, rt.image, rt.running = true, true, true

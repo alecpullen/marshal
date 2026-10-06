@@ -725,7 +725,7 @@ indexed in [`README.md`](README.md).
 | **W2 · Session & ship** ([spec](specs/2026-10-03-w2-session-and-ship-design.md)) | Session dock (all four states) with Inspect, Changes and Files; Review & ship (PR style + by step); New agent (prompt first) |
 | **W3 · Runs & control** ([spec](specs/2026-10-03-w3-runs-and-control-design.md)) | Runs (lanes, graph, timeline); Library; Models & routing; Usage & budgets; Live wall; Watch monitors |
 | **W4 · Workspaces** ([spec](specs/2026-10-03-w4-workspaces-design.md)) | Gallery, layer builder + source, build pipeline, mounts, secrets vault, egress proxy, warm pools; Network inspector; Projects 2.0 |
-| **W5 · Automations & ops** (shipped; the manual passes that need a container runtime, a model provider and a live forge are still to do; [spec](specs/2026-10-03-w5-automations-and-ops-design.md)) | Terminal and Preview tabs; PR review bot; CI fixer; schedules and recipes; notifications; shared memory scopes; status page |
+| **W5 · Automations & ops** (shipped; all eight manual passes run 2026-10-06 against podman, a model provider and a live Gitea forge, recorded in the [spec](specs/2026-10-03-w5-automations-and-ops-design.md) §9) | Terminal and Preview tabs; PR review bot; CI fixer; schedules and recipes; notifications; shared memory scopes; status page |
 | **Later** | Multiple users (accounts, sign-in, roles, team memory) |
 
 ## 10. Open questions

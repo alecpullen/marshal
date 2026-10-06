@@ -579,3 +579,62 @@ The Library → Memory tab gains:
 7. A memory learned in two projects is suggested for promotion, and once
    promoted, it is available to agents in a third project.
 8. All suites pass as in earlier phases.
+
+## 9. Manual passes
+
+Run 2026-10-06 against podman 6.1.3 (container runtime), the
+`ollama-cloud-2` model provider, and a live Gitea 1.26.4 forge, driving
+`web/bridge` over its HTTP API with a containerized control agent. All
+eight criteria pass.
+
+| # | Criterion | Result |
+|---|---|---|
+| 1 | Terminal: hold on first input, hand back resumes | Pass |
+| 2 | Preview of a declared port; undeclared ports refused | Pass |
+| 3 | Scheduled `summarize-changes` runs with origin `schedule` | Pass |
+| 4 | A PR on a watched repo produces a draft; Post publishes it | Pass: draft with five severity-labelled findings, posted on the forge |
+| 5 | A failing check produces a fixer run; a skip is rejected; a real fix opens a PR | Pass, both halves — see below |
+| 6 | A status link shows only progress, tasks and the headline; expires; revocable | Pass |
+| 7 | A memory in two projects is suggested for promotion, then reaches a third | Pass |
+| 8 | All suites pass | Pass |
+
+Criterion 5, in detail. A failing `ci/test` on `main` produced a fixer run
+that reproduced the failure, found `Add` returning `a - b`, patched it to
+`a + b`, re-ran the suite to green, passed the build-and-test gate, and
+opened a pull request. A second scenario gated the suite on a signed
+fixture that is absent from the repository and every image, so the only
+local "fix" was to stub or skip it: the fixer gave up, changed no code and
+opened no pull request.
+
+The passes found and fixed seven defects, two of which made the forge
+automations unusable outright:
+
+1. A git-sourced spawn always requested worktree isolation, but its tree is
+   a detached checkout, which isolation refuses — so every forge automation
+   died at spawn.
+2. `session/diff` and `session/discard` refused any session that was not in
+   a worktree. The fixer's forbidden-change guard reads the diff before
+   shipping, and it discards the agent on every refused run, so neither
+   half of its job could happen.
+3. An unattended automation could not approve its own shell command. Edit
+   mode confirms every command that is neither safe-listed nor covered by
+   an allow rule, and an unanswered confirmation has no timeout, so a
+   fixer run waited out its deadline. Agents the bridge starts itself now
+   run in `auto` when they asked for `edit`.
+4. `CommitAll` failed with "Author identity unknown" in an agent's
+   checkout, because a clone carries no identity; a correct fix could
+   never ship.
+5. Reattaching an agent whose container was gone left a runtime with no
+   child, and retiring it dereferenced the nil and panicked on the
+   start-up path, taking the control plane down.
+6. The egress proxy substituted `{value}` while the workspace doc, the
+   designer and its parse test all use `{}`, so a designer-written header
+   went out with a literal `{}`.
+7. Starting the fleet while an egress sidecar was being replaced is
+   fragile: podman resets the sidecar's resolver to the internal network's
+   aardvark resolver, which on some hosts does not forward external names,
+   and every model call then 502s through the proxy. Environmental.
+
+The CI fixer also needs a workspace with the project's toolchain: the
+default agent image carries none, so a Go failure needs a Go workspace
+(§8.8) before it can be reproduced.

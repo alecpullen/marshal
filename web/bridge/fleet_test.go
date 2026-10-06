@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -472,6 +473,31 @@ func TestReattachAllReconnectsPersistedAgents(t *testing.T) {
 	}
 	if _, err := f.runtimeForAgent(id); err != nil {
 		t.Fatalf("agent %s was not reattached: %v", id, err)
+	}
+}
+
+// A reattach whose container is gone leaves a runtime with no child: the
+// transport could not be built, so there is nothing to talk to. Retiring
+// that runtime must not dereference the missing child — a crash on start-up
+// takes the whole control plane down, and every other agent with it.
+func TestReattachOfAVanishedAgentDoesNotPanic(t *testing.T) {
+	f := testFleet(t)
+	// A persisted record for an agent whose container no longer exists. The
+	// runtime builder fails, so the runtime carries a nil child.
+	if err := f.ws.PutAgent(Agent{ID: "gone", Project: "/p", OwnerID: DefaultOwnerID,
+		SourceKind: "local", SessionID: "sess_gone", CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	f.newRuntime = func(a Agent) (*Child, error) {
+		return nil, fmt.Errorf("container %s is gone", a.ID)
+	}
+
+	errs := f.ReattachAll(context.Background())
+	if len(errs) == 0 {
+		t.Fatal("a vanished agent was reattached without error")
+	}
+	if _, err := f.runtimeForAgent("gone"); err == nil {
+		t.Fatal("the failed runtime is still registered")
 	}
 }
 

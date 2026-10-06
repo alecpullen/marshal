@@ -1693,8 +1693,18 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 		return
 	}
 	rt.stopTimeout()
-	if !destroy {
-		rt.child.Detach()
+	// A runtime whose transport could not be built carries no child: a
+	// reattach to a container that is gone leaves exactly that. There is
+	// nothing to detach or stop, so skip both rather than dereference nil —
+	// this runs on the start-up path, where a panic takes the whole control
+	// plane down with it.
+	if rt.child != nil {
+		if !destroy {
+			rt.child.Detach()
+			f.slots.release()
+			return
+		}
+	} else if !destroy {
 		f.slots.release()
 		return
 	}
@@ -1703,7 +1713,9 @@ func (f *Fleet) releaseAgent(id string, destroy bool) {
 	}
 	// Stop the child first so it is no longer writing to the
 	// bind-mounted workspace, then remove the git-sourced tree.
-	rt.child.Stop()
+	if rt.child != nil {
+		rt.child.Stop()
+	}
 	// A pooled agent's tree lives in its pool directory, not work/<id>.
 	if poolRoot := filepath.Join(f.stateDir, "pool") + string(filepath.Separator); strings.HasPrefix(rt.root, poolRoot) {
 		_ = os.RemoveAll(filepath.Dir(rt.root))

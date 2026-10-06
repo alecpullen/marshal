@@ -34,7 +34,10 @@ func (f *Fleet) Patch(ctx context.Context, agentID string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: agent %s", ErrUnknownAgent, agentID)
 	}
 	if a.SourceKind != "git" {
-		return nil, fmt.Errorf("bridge: patch export applies to git-sourced agents only")
+		// A local agent works in the project itself, so there is no
+		// checkout to diff against. The caller asked for something this
+		// agent cannot provide; that is a conflict, not a gateway fault.
+		return nil, fmt.Errorf("%w: patch export applies to git-sourced agents only", ErrAgentNoWorkspace)
 	}
 	out, err := f.git.FormatPatch(a.Project, a.TargetBranch)
 	if err != nil {

@@ -378,6 +378,30 @@ func TestTerminalResizeSetsThePTYWithoutTypingIntoTheShell(t *testing.T) {
 	}
 }
 
+// A resize can arrive before the shell has recorded its tty: the wrapper
+// writes the tty file as its first act, but the terminal is addressable
+// from the moment it is opened. The stty then fails with "exit status 1",
+// which must not surface as a 502 — the client resizes on every layout
+// change, and the size it asked for is still the size it wants.
+func TestTerminalResizeRetriesUntilTheTTYExists(t *testing.T) {
+	e := newTermEnv(t, false)
+	tid := e.open(t)
+	e.fs.mu.Lock()
+	e.fs.failShorts = 2
+	e.fs.mu.Unlock()
+
+	rec := e.post(t, "POST", "/api/agents/"+e.id+"/terminal/"+tid+"/resize", `{"cols":120,"rows":40}`)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("resize = %d %s, want 204", rec.Code, rec.Body)
+	}
+	e.fs.mu.Lock()
+	n := len(e.fs.shorts)
+	e.fs.mu.Unlock()
+	if n < 3 {
+		t.Fatalf("resize attempts = %d, want at least 3 (two failures then a success)", n)
+	}
+}
+
 func TestTerminalResizeInContainerModeExecsStty(t *testing.T) {
 	e := newTermEnv(t, true)
 	tid := e.open(t)
@@ -569,11 +593,11 @@ func TestTestShellRunsTheBuiltImageWithMountsAndEnv(t *testing.T) {
 	_, call := fs.last()
 	got := strings.Join(call.args, " ")
 	for _, want := range []string{
-		"run --rm -i --name marshal-shell-",
+		"run --rm -i --entrypoint script --name marshal-shell-",
 		"--mount type=volume,source=gocache,target=/go/pkg",
 		"-e MARSHAL_WORKSPACE=svc",
 		"-e TERM=xterm-256color",
-		"marshal-derived-svc script -qfc tty > /tmp/.marshal-tty-",
+		"marshal-derived-svc -qfc tty > /tmp/.marshal-tty-",
 		"; stty rows 20 cols 90; exec sh /dev/null",
 	} {
 		if !strings.Contains(got, want) {
@@ -586,6 +610,33 @@ func TestTestShellRunsTheBuiltImageWithMountsAndEnv(t *testing.T) {
 	// A test shell must not receive the agent provider keys.
 	if strings.Contains(got, "API_KEY") {
 		t.Errorf("provider key leaked into the shell: %s", got)
+	}
+}
+
+// A derived workspace image inherits the agent image's ENTRYPOINT
+// (["marshal"]), so `podman run <image> script …` runs `marshal script …`
+// and the shell dies at once with "unknown argument \"script\"". The test
+// shell must override the entrypoint.
+func TestTestShellOverridesTheAgentEntrypoint(t *testing.T) {
+	e := newWSSpawnEnv(t)
+	e.builtTemplate(t, "svc", sampleDoc("svc"))
+	fs := &fakeStreamer{}
+	e.f.streamer = fs.start
+	srv := NewServer(e.f, "")
+
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest("POST", "/api/workspaces/svc/shell", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("shell = %d %s", rec.Code, rec.Body)
+	}
+	_, call := fs.last()
+	got := strings.Join(call.args, " ")
+	if !strings.Contains(got, "--entrypoint script") {
+		t.Fatalf("the test shell does not override the image entrypoint:\n%s", got)
+	}
+	// The entrypoint override must come before the image name.
+	if strings.Index(got, "--entrypoint script") > strings.Index(got, "marshal-derived-svc") {
+		t.Fatalf("--entrypoint appears after the image name:\n%s", got)
 	}
 }
 

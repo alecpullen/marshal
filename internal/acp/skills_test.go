@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -133,6 +134,32 @@ func TestSkillsInstallPreviewRejectsEmptySource(t *testing.T) {
 	_, err := mgr.SkillsInstallPreview(context.Background(), raw)
 	if err == nil {
 		t.Fatal("SkillsInstallPreview with blank source: got nil error, want an error")
+	}
+}
+
+// A source that cannot be fetched is the caller's mistake — a typo, a
+// path that does not exist, a URL that 404s — not an internal fault. The
+// bridge maps an invalid-params error to 400 and an internal error to
+// 502, so returning the latter tells the user the bridge is broken when
+// their input is simply wrong.
+func TestSkillsInstallPreviewRejectsAnUnfetchableSource(t *testing.T) {
+	mgr := NewSkillsManager(SkillsManagerConfig{
+		Lookup: func(sessionID string) (*SkillsRuntime, bool) { return &SkillsRuntime{}, true },
+	})
+	raw, _ := json.Marshal(SkillsInstallPreviewParams{
+		SessionID: "sess_1",
+		Source:    filepath.Join(t.TempDir(), "does-not-exist.md"),
+	})
+	_, err := mgr.SkillsInstallPreview(context.Background(), raw)
+	if err == nil {
+		t.Fatal("SkillsInstallPreview with an unfetchable source: got nil error, want an error")
+	}
+	var rpc *jsonRPCError
+	if !errors.As(err, &rpc) {
+		t.Fatalf("error type = %T, want *jsonRPCError", err)
+	}
+	if rpc.Code != invalidParams {
+		t.Fatalf("error code = %d, want %d (invalid params): %v", rpc.Code, invalidParams, err)
 	}
 }
 

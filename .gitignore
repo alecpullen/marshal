@@ -52,3 +52,7 @@ skills-lock.json
 # Test/build binaries
 *.test
 tui.test
+
+# Python bytecode from the E2E harness
+__pycache__/
+*.pyc

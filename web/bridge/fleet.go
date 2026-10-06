@@ -29,6 +29,17 @@ var ErrUnregisteredRepo = errors.New("bridge: repo is not registered")
 // does not track. The HTTP layer maps it to 404.
 var ErrUnknownAgent = errors.New("bridge: unknown agent")
 
+// ErrUnknownPending is returned for an intake submission id the workspace
+// does not hold — already approved, denied, or expired. The HTTP layer
+// maps it to 404.
+var ErrUnknownPending = errors.New("bridge: unknown pending submission")
+
+// spawnSlotTimeout bounds how long Spawn waits for a free concurrency
+// slot. Agents beyond the limit wait rather than being rejected, but the
+// wait must end: an HTTP caller has no deadline of its own, so an
+// unbounded wait is indistinguishable from a hung bridge.
+const spawnSlotTimeout = 2 * time.Minute
+
 // Agent lifecycle states, reported to the fleet UI.
 const (
 	AgentQueued           = "queued"
@@ -138,6 +149,9 @@ type Fleet struct {
 	holdCall func(ctx context.Context, agentID string, on bool) error
 	// releaseRetry overrides the waits between hand-back retries (tests).
 	releaseRetry []time.Duration
+	// slotWait bounds how long Spawn waits for a free concurrency slot.
+	// Zero means spawnSlotTimeout; tests shorten it.
+	slotWait time.Duration
 
 	// term holds open terminals, created on first use.
 	termOnce sync.Once
@@ -1212,7 +1226,16 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		}
 	}
 
-	if err := f.slots.acquire(ctx); err != nil {
+	// Bound the wait for a slot. Agents beyond the limit wait rather than
+	// being rejected, but an HTTP caller has no deadline of its own, so
+	// an unbounded wait here is indistinguishable from a hung bridge.
+	slotWait := f.slotWait
+	if slotWait <= 0 {
+		slotWait = spawnSlotTimeout
+	}
+	slotCtx, cancelSlot := context.WithTimeout(ctx, slotWait)
+	defer cancelSlot()
+	if err := f.slots.acquire(slotCtx); err != nil {
 		cleanTree()
 		return "", fmt.Errorf("wait for an agent slot: %w", err)
 	}
@@ -1420,6 +1443,15 @@ func (f *Fleet) Merge(ctx context.Context, id, commitMessage string) (json.RawMe
 func (f *Fleet) Discard(ctx context.Context, id string) error {
 	rt, err := f.RuntimeForSession(id)
 	if err != nil {
+		// The runtime could not be resolved: the session is gone, or
+		// reattaching to it failed. Discard is the operator's "throw this
+		// work away", so retire the record anyway rather than leaving an
+		// agent that can never be removed — and, with it, a concurrency
+		// slot that is never released.
+		if _, ok := f.ws.Agent(id); ok {
+			f.stopAgent(id)
+			return f.ws.RemoveAgent(id)
+		}
 		return err
 	}
 	// A git-sourced agent's whole workspace is the throwaway checkout the
@@ -1432,7 +1464,20 @@ func (f *Fleet) Discard(ctx context.Context, id string) error {
 		return f.ws.RemoveAgent(a.ID)
 	}
 	if _, rerr := rt.child.Request(ctx, "session/discard", map[string]any{"sessionId": f.sessionIDFor(rt)}); rerr != nil {
-		return rerr
+		// The child can refuse for reasons that do not mean the agent
+		// should survive: the session is gone (a bridge restart, or a
+		// session closed out from under it) or it is no longer isolated
+		// (it was merged, or the worktree was already removed). Discard
+		// is the operator's "throw this work away", so retire the agent
+		// anyway.
+		//
+		// Leaving the record behind is not harmless: releaseAgent is the
+		// only caller of slots.release, so an agent that cannot be
+		// retired leaks its concurrency slot. Enough of them fill the
+		// pool and Spawn blocks forever waiting for a slot that will
+		// never come.
+		f.stopAgent(id)
+		return f.ws.RemoveAgent(id)
 	}
 	a, ok := f.ws.Agent(id)
 	if ok {

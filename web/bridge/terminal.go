@@ -190,6 +190,31 @@ func resizeCommand(tid string, rows, cols int) string {
 	return fmt.Sprintf(`stty -F "$(cat %s)" rows %d cols %d`, ttyFile(tid), rows, cols)
 }
 
+// resizeRetryDelay is how long to wait between resize attempts while the
+// shell's wrapper has not yet recorded its tty.
+const resizeRetryDelay = 50 * time.Millisecond
+
+// resizeRetries bounds the attempts. The wrapper writes the tty file as
+// its first act, so a few tens of milliseconds is ample; the bound exists
+// so a terminal whose wrapper never started fails rather than hanging.
+const resizeRetries = 20
+
+// resizePTY runs the resize command, retrying while the tty file is not
+// there yet. A resize can arrive before the shell has recorded its tty —
+// the terminal is addressable from the moment it is opened — and the stty
+// then fails with "exit status 1". The client resizes on every layout
+// change, so that must not surface as an error.
+func (f *Fleet) resizePTY(run func() error) error {
+	var err error
+	for i := 0; i < resizeRetries; i++ {
+		if err = run(); err == nil {
+			return nil
+		}
+		time.Sleep(resizeRetryDelay)
+	}
+	return err
+}
+
 // runStream runs a short command to completion through the streamer.
 func (f *Fleet) runStream(dir, bin string, args ...string) error {
 	p, err := f.startStream(dir, bin, args...)
@@ -690,7 +715,7 @@ func (f *Fleet) ResizeTerminal(owner, tid string, cols, rows int) error {
 	if t.resize == nil {
 		return errors.New("bridge: this terminal cannot be resized")
 	}
-	return t.resize(rows, cols)
+	return f.resizePTY(func() error { return t.resize(rows, cols) })
 }
 
 // ReleaseTerminal hands the agent back without closing the shell.
@@ -879,7 +904,11 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 		}
 	}
 
-	args := []string{"run", "--rm", "-i", "--name", container}
+	// A derived workspace image inherits the agent image's ENTRYPOINT
+	// (["marshal"]), so naming `script` as the command would run
+	// `marshal script …` and the shell would die at once. Override the
+	// entrypoint: this container is a throwaway test shell, not an agent.
+	args := []string{"run", "--rm", "-i", "--entrypoint", "script", "--name", container}
 	if wiring.Network != "" {
 		args = append(args, "--network", wiring.Network)
 	}
@@ -902,7 +931,7 @@ func (f *Fleet) OpenWorkspaceShell(ctx context.Context, name string, cols, rows 
 	for _, k := range keys {
 		args = append(args, "-e", k+"="+env[k])
 	}
-	args = append(args, image, "script", "-qfc", terminalScript(cols, rows, "sh", t.id), "/dev/null")
+	args = append(args, image, "-qfc", terminalScript(cols, rows, "sh", t.id), "/dev/null")
 
 	owner := t.owner
 	t.resize = func(rows, cols int) error {

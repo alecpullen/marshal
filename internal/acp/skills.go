@@ -226,19 +226,24 @@ func (m *SkillsManager) SkillsInstallPreview(ctx context.Context, params json.Ra
 	}
 	stagedPath, err := skills.Install(ctx, p.Source, tempDir, "")
 	if err != nil {
+		// A source that cannot be fetched is the caller's mistake — a
+		// typo, a missing path, a URL that 404s — not an internal fault.
+		// The bridge maps invalid params to 400 and an internal error to
+		// 502, so reporting the latter would blame the bridge for bad
+		// input.
 		os.RemoveAll(tempDir)
-		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("install preview: %v", err)}
+		return nil, invalidParamsError("install preview: %v", err)
 	}
 	name := strings.TrimSuffix(filepath.Base(stagedPath), ".md")
 	idx, err := skills.LoadSkills(tempDir, tempDir)
 	if err != nil {
 		os.RemoveAll(tempDir)
-		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("parse staged skill: %v", err)}
+		return nil, invalidParamsError("parse staged skill: %v", err)
 	}
 	skill, ok := idx.Load(name)
 	if !ok {
 		os.RemoveAll(tempDir)
-		return nil, &jsonRPCError{Code: internalError, Message: fmt.Sprintf("staged skill %q not found after install", name)}
+		return nil, invalidParamsError("staged skill %q not found after install", name)
 	}
 
 	token := fmt.Sprintf("stg_%d", time.Now().UnixNano())

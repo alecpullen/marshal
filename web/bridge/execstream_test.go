@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os/exec"
 	"strings"
@@ -97,6 +98,9 @@ type fakeStreamer struct {
 	procs  []*fakeStream
 	echo   bool
 	err    error
+	// failShorts makes the next N run-to-completion commands fail, as a
+	// resize does when the shell has not yet recorded its tty.
+	failShorts int
 }
 
 func (fs *fakeStreamer) start(dir, name string, args ...string) (streamProc, error) {
@@ -106,9 +110,13 @@ func (fs *fakeStreamer) start(dir, name string, args ...string) (streamProc, err
 		return nil, fs.err
 	}
 	if isShortCommand(name, args) {
+		fs.shorts = append(fs.shorts, streamCall{dir, name, append([]string(nil), args...)})
+		if fs.failShorts > 0 {
+			fs.failShorts--
+			return nil, errors.New("exit status 1")
+		}
 		p := newFakeStream(false)
 		p.exit()
-		fs.shorts = append(fs.shorts, streamCall{dir, name, append([]string(nil), args...)})
 		return p, nil
 	}
 	p := newFakeStream(fs.echo)

@@ -283,6 +283,12 @@ func writeErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownAgent):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownRepo), errors.Is(err, ErrUnregisteredRepo):
+		// The caller named a repo the bridge does not know. That is a
+		// 404, not a gateway fault.
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	case errors.Is(err, ErrUnknownPending):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrUnknownReviewComment):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 	case errors.Is(err, errScopeMismatch):
@@ -664,16 +670,29 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	if s.fleet != nil {
 		rt, err := s.fleet.runtimeForRoot(cwd)
 		if err != nil {
-			writeErr(w, err)
-			return
+			// No live agent is rooted at this project. That is the common
+			// case for a project the bridge manages but has not used yet,
+			// and the Sessions panel lists every project from
+			// /api/projects, so fall back to the control agent's own
+			// session for the root rather than failing the request.
+			if !errors.Is(err, ErrUnknownProject) {
+				writeErr(w, err)
+				return
+			}
+			reg, err = s.fleet.controlRegistryForRoot(r.Context(), cwd)
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
+		} else {
+			agentCwd, err := rt.agentPath(cwd)
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
+			params["cwd"] = string(agentCwd)
+			reg = rt.reg
 		}
-		agentCwd, err := rt.agentPath(cwd)
-		if err != nil {
-			writeErr(w, err)
-			return
-		}
-		params["cwd"] = string(agentCwd)
-		reg = rt.reg
 	} else {
 		reg = s.reg
 	}

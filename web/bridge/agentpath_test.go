@@ -376,6 +376,26 @@ func TestLoadSessionSendsTheAgentsViewOfCwd(t *testing.T) {
 	}
 }
 
+// The Sessions panel lists every project from GET /api/projects and calls
+// listSessions(root) when one is picked. A project the bridge manages but
+// has no live agent for is the common case — a fresh project, or one whose
+// agents have all been retired — so listing its sessions must work rather
+// than 502 with "unknown project".
+func TestListSessionsWorksForAProjectWithNoLiveAgent(t *testing.T) {
+	root := t.TempDir()
+	f, _ := testFleetWithContainerizedAgent(t)
+	// No project agent is started for root; the control agent answers.
+	ctl := newFakeAgent()
+	f.newControl = func() (*Child, error) { return &Child{Transport: ctl}, nil }
+	srv := NewServer(f, "")
+
+	rec := doReq(t, srv, http.MethodGet, "/api/sessions?cwd="+url.QueryEscape(root), nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/sessions for a project with no live agent = %d, want 200 (body %s)",
+			rec.Code, rec.Body.String())
+	}
+}
+
 // TestListSessionsRejectsAPathOutsideTheWorkspace covers the error path
 // writeErr added for ErrOutsideWorkspace: a client-supplied cwd that the
 // agent has no view of is the caller's mistake (400), not a bad gateway.

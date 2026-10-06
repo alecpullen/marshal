@@ -476,12 +476,15 @@ func (f *Fleet) SendReviewToAuthor(ctx context.Context, id string, findingIDs []
 // RunReviewBot runs the bot on a PR now, at the PR's current head. It
 // returns errReviewBotOff when no project wants reviews for the repo.
 func (f *Fleet) RunReviewBot(ctx context.Context, repoID string, number int) error {
-	if _, _, ok := f.reviewBotSettings(repoID); !ok {
-		return errReviewBotOff
-	}
+	// Resolve the repo first: an unknown repo is a 404, and reporting it
+	// as "the bot is off" (409) tells the user to switch the bot on for a
+	// repo that does not exist.
 	repo, ok := f.ws.Repo(repoID)
 	if !ok {
 		return ErrUnknownRepo
+	}
+	if _, _, ok := f.reviewBotSettings(repoID); !ok {
+		return errReviewBotOff
 	}
 	forge, cred, err := f.forgeFor(ctx, repo)
 	if err != nil {

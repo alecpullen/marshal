@@ -148,11 +148,11 @@ func planPathFor(workDir, pendingID string) string {
 func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
 	p, ok := f.ws.PendingByID(pendingID)
 	if !ok {
-		return "", fmt.Errorf("bridge: unknown pending submission %s", pendingID)
+		return "", fmt.Errorf("%w: %s", ErrUnknownPending, pendingID)
 	}
 	if !p.ExpiresAt.IsZero() && time.Now().UTC().After(p.ExpiresAt) {
 		_ = f.ws.DeletePending(pendingID)
-		return "", fmt.Errorf("bridge: submission %s expired at %s", pendingID, p.ExpiresAt)
+		return "", fmt.Errorf("%w: %s expired at %s", ErrUnknownPending, pendingID, p.ExpiresAt)
 	}
 
 	agentID, err := f.spawnFromRequest(ctx, SpawnRequest{
@@ -180,7 +180,7 @@ func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
 func (f *Fleet) Deny(pendingID string) error {
 	p, ok := f.ws.PendingByID(pendingID)
 	if !ok {
-		return fmt.Errorf("bridge: unknown pending submission %s", pendingID)
+		return fmt.Errorf("%w: %s", ErrUnknownPending, pendingID)
 	}
 	if err := f.ws.DeletePending(pendingID); err != nil {
 		return err

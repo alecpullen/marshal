@@ -114,6 +114,69 @@ func TestCLIGitOpsCommitAllNothingToCommit(t *testing.T) {
 	}
 }
 
+// initRepoWithoutIdentity creates a git repo whose only commit was made
+// with an identity supplied on the command line, leaving the repository
+// with none of its own — exactly what an agent's throwaway checkout looks
+// like, since the bridge makes it with `git clone` and never configures it.
+func initRepoWithoutIdentity(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-b", "main"}} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	writeRepoFile(t, dir, "seed.txt", "seed\n")
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", "seed"}} {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		// The identity is passed for this one commit only; it is NOT
+		// written to the repository's config.
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Seed", "GIT_AUTHOR_EMAIL=seed@example.com",
+			"GIT_COMMITTER_NAME=Seed", "GIT_COMMITTER_EMAIL=seed@example.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	return dir
+}
+
+// A bridge-made agent checkout has no git identity: the bridge clones it and
+// clones do not carry one. CommitAll then fails with "Author identity
+// unknown" and the agent's work can never be shipped — the exit path, the
+// pipeline controller and the CI fixer all commit through here.
+func TestCLIGitOpsCommitAllWithoutARepoIdentity(t *testing.T) {
+	repo := initRepoWithoutIdentity(t)
+	g := CLIGitOps{}
+
+	// Guard the fixture: the repo must genuinely have no identity, or the
+	// test would pass for the wrong reason.
+	if out, err := exec.Command("git", "-C", repo, "config", "user.email").CombinedOutput(); err == nil {
+		t.Fatalf("fixture has a repo identity (%q); it is not exercising the bug", strings.TrimSpace(string(out)))
+	}
+
+	writeRepoFile(t, repo, "new.txt", "hello\n")
+	if _, err := g.CommitAll(repo, "fix: something"); err != nil {
+		t.Fatalf("CommitAll without a repo identity: %v", err)
+	}
+	dirty, err := g.IsDirty(repo)
+	if err != nil {
+		t.Fatalf("IsDirty: %v", err)
+	}
+	if dirty {
+		t.Fatal("the commit did not take")
+	}
+	author, err := g.run(repo, "log", "-1", "--format=%an <%ae>")
+	if err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	if !strings.Contains(author, "@") {
+		t.Fatalf("commit author = %q, want a usable identity", author)
+	}
+}
+
 func TestCLIWorktreeRemoveAndPrune(t *testing.T) {
 	repo := initRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt")

@@ -195,11 +195,35 @@ func (g CLIGitOps) IsDirty(dir string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+// commitIdentity is the author marshal commits under when the repository
+// has none of its own. A clone carries no identity, and an agent's checkout
+// is a clone, so without this every agent commit fails with "Author identity
+// unknown" and the work can never be shipped.
+const (
+	commitAuthorName  = "marshal"
+	commitAuthorEmail = "marshal@local"
+)
+
+// CommitAll stages every change and commits it under the repository's own
+// identity, falling back to marshal's when it has none.
+//
+// The fallback is passed as command-scoped config rather than written to the
+// repository: the same code commits in the operator's worktrees, and their
+// configured identity must win where one exists. A repository that has an
+// identity is therefore left entirely alone.
 func (g CLIGitOps) CommitAll(dir, message string) (string, error) {
 	if _, err := g.run(dir, "add", "-A"); err != nil {
 		return "", err
 	}
-	if _, err := g.run(dir, "commit", "-m", message); err != nil {
+	args := []string{"commit", "-m", message}
+	if _, err := g.run(dir, "config", "user.email"); err != nil {
+		// No identity in this repository: supply one for this commit only.
+		args = append([]string{
+			"-c", "user.name=" + commitAuthorName,
+			"-c", "user.email=" + commitAuthorEmail,
+		}, args...)
+	}
+	if _, err := g.run(dir, args...); err != nil {
 		return "", err
 	}
 	return g.RevParse(dir, "HEAD")

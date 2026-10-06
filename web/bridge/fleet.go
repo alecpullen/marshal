@@ -1247,7 +1247,13 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		return "", fmt.Errorf("resolve cwd for agent %s: %w", a.ID, aerr)
 	}
 	params := map[string]any{"cwd": agentCwd, "mcpServers": []any{}, "name": opts.Name}
-	if opts.Isolated {
+	// A git-sourced agent already works in a throwaway checkout of the
+	// mirror at the target ref, so isolation would add nothing. It would
+	// also fail: the checkout is at a raw ref, which is a detached HEAD,
+	// and the agent refuses to isolate one because there is no branch to
+	// merge back into. The exit path pushes from a.Project, so the
+	// session's active root must stay the tree itself.
+	if opts.Isolated && src.kind != "git" {
 		iso := map[string]any{}
 		if opts.Branch != "" {
 			iso["branch"] = opts.Branch

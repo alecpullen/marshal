@@ -671,6 +671,32 @@ func TestSpawnAgainstRegisteredRepoIsWritable(t *testing.T) {
 	}
 }
 
+func TestGitSourcedSpawnDoesNotRequestIsolation(t *testing.T) {
+	f, _, agentOf := agentFleet(t)
+	if f.git == nil {
+		t.Skip("git not installed")
+	}
+	if err := f.ws.PutRepo(Repo{ID: "r1", URL: newBareRepoFixture(t),
+		Branch: "main", OwnerID: DefaultOwnerID}); err != nil {
+		t.Fatal(err)
+	}
+	// Recipes spawn isolated, and the forge automations go through them.
+	// A git-sourced tree is already a throwaway checkout at the target
+	// ref, so isolation must not be requested: that tree is in detached
+	// HEAD, and the agent refuses to isolate it.
+	id, err := f.Spawn(ctlContext(t), "", SpawnOptions{RepoID: "r1", Prompt: "x", Isolated: true})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	calls := agentOf(id).calls("session/new")
+	if len(calls) != 1 {
+		t.Fatalf("session/new calls = %v", calls)
+	}
+	if strings.Contains(calls[0], `"isolation"`) {
+		t.Fatalf("a git-sourced spawn requested isolation: %s", calls[0])
+	}
+}
+
 func TestSpawnAgainstRawURLIsReadOnly(t *testing.T) {
 	f := testFleet(t)
 	if f.git == nil {

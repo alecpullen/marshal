@@ -1345,6 +1345,13 @@ func (f *Fleet) Diff(ctx context.Context, id, path string) (json.RawMessage, err
 	if path != "" {
 		params["path"] = path
 	}
+	// A git-sourced agent works in a plain checkout, not a worktree, so its
+	// session records no diff base. The bridge does: it checked the tree out
+	// at the agent's target ref — the same base patch export uses — so name
+	// it here. Without it there is nothing to diff against.
+	if a, ok := f.ws.Agent(id); ok && a.SourceKind == "git" && a.TargetBranch != "" {
+		params["base"] = a.TargetBranch
+	}
 	return rt.child.Request(ctx, "session/diff", params)
 }
 
@@ -1387,6 +1394,15 @@ func (f *Fleet) Discard(ctx context.Context, id string) error {
 	rt, err := f.RuntimeForSession(id)
 	if err != nil {
 		return err
+	}
+	// A git-sourced agent's whole workspace is the throwaway checkout the
+	// bridge made for it, not a worktree on a branch, so session/discard has
+	// nothing to remove and refuses it. Retiring the agent removes the
+	// checkout and drops the record, which is what discarding its work means
+	// here. Its target ref is on the forge, so nothing is lost.
+	if a, ok := f.ws.Agent(id); ok && a.SourceKind == "git" {
+		f.stopAgent(id)
+		return f.ws.RemoveAgent(a.ID)
 	}
 	if _, rerr := rt.child.Request(ctx, "session/discard", map[string]any{"sessionId": f.sessionIDFor(rt)}); rerr != nil {
 		return rerr

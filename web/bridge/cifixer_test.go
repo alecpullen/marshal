@@ -434,7 +434,14 @@ func TestCIFixerReadsTheDiffThroughTheAgent(t *testing.T) {
 	if len(hist) != 1 || hist[0].Status != ciGaveUp || !strings.Contains(hist[0].Reason, "pkg/a_test.go") {
 		t.Fatalf("history = %+v", hist)
 	}
-	if count(tr.methods(), "session/discard") != 1 || count(tr.methods(), "session/commit") != 0 {
+	// The run is discarded, not committed. This agent is git-sourced, so its
+	// workspace is a throwaway checkout rather than a worktree: discarding it
+	// retires the agent and removes the checkout, and session/discard (which
+	// would refuse a checkout) is never sent.
+	if _, ok := f.ws.Agent(id); ok {
+		t.Error("a tampering run's agent is still listed; its work was not discarded")
+	}
+	if count(tr.methods(), "session/discard") != 0 || count(tr.methods(), "session/commit") != 0 {
 		t.Fatalf("methods = %v: a tampering run must be discarded, not committed", tr.methods())
 	}
 	_ = e

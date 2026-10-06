@@ -697,6 +697,51 @@ func TestGitSourcedSpawnDoesNotRequestIsolation(t *testing.T) {
 	}
 }
 
+// A git-sourced agent's checkout is not a worktree, so its diff base is not
+// recorded on the session. The bridge knows the ref the tree was checked out
+// at, and must name it — otherwise the CI fixer's forbidden-change guard has
+// no diff to read and every fix is refused.
+func TestDiffNamesTheCheckoutsBaseForAGitSourcedAgent(t *testing.T) {
+	tr := &scriptedTransport{gate: gateResult{OK: true}}
+	f := testFleetScripted(t, tr)
+	id := spawnGitAgent(t, f)
+
+	if _, err := f.Diff(context.Background(), id, ""); err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	params := tr.paramsOf("session/diff")
+	if len(params) != 1 {
+		t.Fatalf("session/diff calls = %v", params)
+	}
+	if !strings.Contains(params[0], `"base":"main"`) {
+		t.Fatalf("session/diff params = %s: the checkout's base ref was not named", params[0])
+	}
+}
+
+// Discard means "stop this agent and throw its work away". A git-sourced
+// agent's whole workspace is a throwaway checkout, not a worktree, so there
+// is no branch to delete — session/discard refuses one. Retiring the agent is
+// the only discard it has, and the CI fixer calls it on every refused fix.
+func TestDiscardRetiresAGitSourcedAgent(t *testing.T) {
+	tr := &scriptedTransport{gate: gateResult{OK: true}}
+	f := testFleetScripted(t, tr)
+	id := spawnGitAgent(t, f)
+	treeDir := workspaceDirFor(f.stateDir, id)
+
+	if err := f.Discard(context.Background(), id); err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+	if _, ok := f.ws.Agent(id); ok {
+		t.Fatal("a discarded git-sourced agent is still listed")
+	}
+	if _, err := os.Stat(treeDir); !os.IsNotExist(err) {
+		t.Fatalf("the throwaway checkout survived the discard: %v", err)
+	}
+	if n := len(tr.paramsOf("session/discard")); n != 0 {
+		t.Fatalf("session/discard calls = %d: a checkout has no worktree to discard", n)
+	}
+}
+
 func TestSpawnAgainstRawURLIsReadOnly(t *testing.T) {
 	f := testFleet(t)
 	if f.git == nil {

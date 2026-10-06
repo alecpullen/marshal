@@ -128,7 +128,10 @@ type FakeGitOps struct {
 	ResetMerges int
 	Deleted     []string
 	// DiffStatOut backs DiffNumstat; DiffOut backs Diff and DiffPath.
-	DiffStatOut string
+	// DiffNumstatFunc, when set, runs after the call is recorded and its
+	// result is returned instead, so tests can observe the range asked for.
+	DiffStatOut     string
+	DiffNumstatFunc func(dir, rng string) (string, error)
 	// AbbrevRef is returned by RevParse for "--abbrev-ref HEAD".
 	AbbrevRef string
 	// SquashMerges records SquashMerge calls by branch; SquashMergeErr, when
@@ -323,6 +326,9 @@ func (f *FakeGitOps) BranchDelete(dir, branch string, force bool) error {
 
 func (f *FakeGitOps) DiffNumstat(dir, rng string) (string, error) {
 	f.record("DiffNumstat")
+	if f.DiffNumstatFunc != nil {
+		return f.DiffNumstatFunc(dir, rng)
+	}
 	return f.DiffStatOut, nil
 }
 

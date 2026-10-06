@@ -187,7 +187,38 @@ func TestDiffReturnsUnifiedDiffForOnePath(t *testing.T) {
 	}
 }
 
-func TestDiffRejectsNonIsolatedSession(t *testing.T) {
+// A git-sourced agent works in a plain checkout at the target ref, not a
+// worktree, so it has no recorded base. Its diff is still meaningful — the
+// caller knows what the checkout started from — so the base comes in on the
+// call. Without one there is nothing to diff against and the call is refused.
+func TestDiffUsesTheCallersBaseForANonIsolatedSession(t *testing.T) {
+	git := worktree.NewFakeGitOps()
+	git.DiffStatOut = "2\t0\ta.go\n"
+	var rangeAsked string
+	git.DiffNumstatFunc = func(_ string, rng string) (string, error) {
+		rangeAsked = rng
+		return git.DiffStatOut, nil
+	}
+	st := newWorktreeTestState(t, "/home/u/repo") // at the project root, not isolated
+	m := NewWorktreeManager(WorktreeManagerConfig{
+		Git: git,
+		Lookup: func(string) (*WorktreeRuntime, bool) {
+			return &WorktreeRuntime{State: st, ProjectRoot: "/home/u/repo"}, true
+		},
+	})
+	res, err := m.Diff(context.Background(), json.RawMessage(`{"sessionId":"s1","base":"abc123"}`))
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	if rangeAsked != "abc123" {
+		t.Fatalf("diff range = %q, want the caller's base", rangeAsked)
+	}
+	if out := res.(DiffResult); len(out.Files) != 1 || out.Files[0].Path != "a.go" {
+		t.Fatalf("Files = %+v", out.Files)
+	}
+}
+
+func TestDiffRejectsANonIsolatedSessionWithNoBase(t *testing.T) {
 	git := worktree.NewFakeGitOps()
 	st := newWorktreeTestState(t, "/home/u/repo") // at the project root, not isolated
 	m := NewWorktreeManager(WorktreeManagerConfig{
@@ -197,7 +228,7 @@ func TestDiffRejectsNonIsolatedSession(t *testing.T) {
 		},
 	})
 	if _, err := m.Diff(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err == nil {
-		t.Fatal("expected an error for a session that is not isolated")
+		t.Fatal("expected an error for a session that is not isolated and names no base")
 	}
 }
 

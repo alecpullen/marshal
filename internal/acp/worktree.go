@@ -206,6 +206,11 @@ type DiffResult struct {
 type diffParams struct {
 	SessionID string `json:"sessionId"`
 	Path      string `json:"path,omitempty"`
+	// Base is the revision to diff against. It is required for a session
+	// that is not in a worktree: such a session works in a plain checkout,
+	// whose starting point the session does not record — only whatever
+	// created the checkout knows the ref it was checked out at.
+	Base string `json:"base,omitempty"`
 }
 
 // isolated resolves a session and requires it to be in a worktree. It uses
@@ -246,33 +251,59 @@ func parseNumstat(out string) []DiffFile {
 	return files
 }
 
+// diffRoot resolves the tree to diff and the revision to diff it against.
+//
+// An isolated session records its own base: the commit its worktree branch
+// started from. A session that works in a plain checkout records none,
+// because the ref it was checked out at is known only to whatever made the
+// checkout; such a caller names the base on the call.
+func (w *WorktreeManager) diffRoot(sessionID string, base string) (session.Workspace, string, error) {
+	if w.lookup == nil {
+		return session.Workspace{}, "", serverErrorf("worktree manager has no session lookup configured")
+	}
+	rt, ok := w.runtime(sessionID)
+	if !ok || rt == nil || rt.State == nil {
+		return session.Workspace{}, "", serverErrorf("unknown session %q", sessionID)
+	}
+	ws := rt.State.Workspace()
+	if ws.Branch != "" && ws.ActiveRoot != ws.ProjectRoot {
+		rng := ws.BaseSha
+		if rng == "" {
+			// A resumed session has no in-memory base; recover it from the
+			// project side, where the branch and its target still differ.
+			b, berr := w.git.MergeBase(ws.ProjectRoot, ws.Branch, "HEAD")
+			if berr != nil {
+				return session.Workspace{}, "", serverErrorf("resolve diff base: %v", berr)
+			}
+			rng = b
+		}
+		return ws, rng, nil
+	}
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return session.Workspace{}, "", serverErrorf("session %q is not isolated in a worktree and named no base to diff against", sessionID)
+	}
+	return ws, base, nil
+}
+
 // Diff handles session/diff.
 //
-// The range is the recorded base SHA with no right-hand side, which git reads
-// as "base versus the working tree" — so it covers both work committed on the
+// The range is a base revision with no right-hand side, which git reads as
+// "base versus the working tree" — so it covers both work committed on the
 // branch and changes still uncommitted, which is what the operator is judging.
 //
-// The base comes from the workspace, not from a merge-base call: inside a
-// worktree HEAD *is* the branch tip, so MergeBase(worktree, "HEAD", branch)
-// returns the tip and the diff would always be empty.
+// For an isolated session the base comes from the workspace, not from a
+// merge-base call: inside a worktree HEAD *is* the branch tip, so
+// MergeBase(worktree, "HEAD", branch) returns the tip and the diff would
+// always be empty. For a plain checkout the caller supplies it.
 func (w *WorktreeManager) Diff(_ context.Context, params json.RawMessage) (any, error) {
 	var p diffParams
 	if err := decodeParams(params, &p, "session/diff"); err != nil {
 		return nil, err
 	}
-	_, ws, err := w.isolated(p.SessionID)
+	ws, rng, err := w.diffRoot(p.SessionID, p.Base)
 	if err != nil {
 		return nil, err
-	}
-	rng := ws.BaseSha
-	if rng == "" {
-		// A resumed session has no in-memory base; recover it from the
-		// project side, where the branch and its target still differ.
-		base, berr := w.git.MergeBase(ws.ProjectRoot, ws.Branch, "HEAD")
-		if berr != nil {
-			return nil, serverErrorf("resolve diff base: %v", berr)
-		}
-		rng = base
 	}
 
 	stat, err := w.git.DiffNumstat(ws.ActiveRoot, rng)

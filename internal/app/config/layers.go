@@ -40,6 +40,11 @@ type Layers struct {
 	// ProjectBudgetsIgnored reports that the project file carried a
 	// [budgets] section, which is user-global only and was not applied.
 	ProjectBudgetsIgnored bool
+	// ProjectSnapshotGlobalIgnored reports that the project file carried
+	// snapshots.global_max_bytes, which is user-global only. The key is
+	// stripped before merge so the user-global value always wins, and the
+	// project's value is never able to raise or lower the ceiling.
+	ProjectSnapshotGlobalIgnored bool
 	// BudgetFixes lists the dotted paths of [budgets] values that were
 	// invalid and replaced by their defaults.
 	BudgetFixes    []string
@@ -112,6 +117,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	}
 	var projectFile configFile
 	projectBudgetsIgnored := false
+	projectSnapshotGlobalIgnored := false
 	if applyProject {
 		var err error
 		projectFile, err = loadFile(projectPath)
@@ -122,6 +128,13 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 		if projectFile.Budgets != nil {
 			projectBudgetsIgnored = true
 			projectFile.Budgets = nil
+		}
+		// snapshots.global_max_bytes is user-global only: strip it before
+		// merge so the user value always wins and the project cannot move
+		// the cross-workspace ceiling in either direction.
+		if projectFile.Snapshots != nil && projectFile.Snapshots.GlobalMaxBytes != nil {
+			projectSnapshotGlobalIgnored = true
+			projectFile.Snapshots.GlobalMaxBytes = nil
 		}
 		if err := merge(&cfg, projectFile); err != nil {
 			return Layers{}, fmt.Errorf("merge config %s: %w", projectPath, err)
@@ -170,9 +183,10 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	coercePresetPricing(&cfg)
 	budgetFixes := normalizeBudgets(&cfg.Budgets)
 	return Layers{
-		ProjectBudgetsIgnored: projectBudgetsIgnored,
-		BudgetFixes:           budgetFixes,
-		Default:               def, User: user, Merged: cfg, Migrated: migrated,
+		ProjectBudgetsIgnored:        projectBudgetsIgnored,
+		ProjectSnapshotGlobalIgnored: projectSnapshotGlobalIgnored,
+		BudgetFixes:                  budgetFixes,
+		Default:                      def, User: user, Merged: cfg, Migrated: migrated,
 		SubtaskIterationsSet: subtaskSet,
 		SidePanelIgnoredBy:   sidePanelIgnoredBy(userFile, projectFile),
 		HoistedProviders:     hoistedProviders,

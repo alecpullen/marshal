@@ -536,21 +536,41 @@ func (t *toolSet) configSDDSetTool() registry.Tool {
 func (t *toolSet) configSnapshotsSetTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "config.snapshots.set",
-		Description: "Set fields in the [snapshots] section (enabled, retention_days, max_file_bytes). Omitted fields are preserved.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"enabled":{"type":"boolean"},"retention_days":{"type":"integer"},"max_file_bytes":{"type":"integer"}},"additionalProperties":false}`),
+		Description: "Set fields in the [snapshots] section (enabled, retention_days, max_file_bytes, workspace_max_bytes, global_max_bytes). Omitted fields are preserved. workspace_max_bytes and global_max_bytes must be positive byte counts; global_max_bytes is user-global only.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"scope":{"type":"string","enum":["project","global"]},"enabled":{"type":"boolean"},"retention_days":{"type":"integer"},"max_file_bytes":{"type":"integer"},"workspace_max_bytes":{"type":"integer"},"global_max_bytes":{"type":"integer"}},"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		var args struct {
 			configWriteEnvelope
-			Enabled       *bool `json:"enabled"`
-			RetentionDays *int  `json:"retention_days"`
-			MaxFileBytes  *int  `json:"max_file_bytes"`
+			Enabled           *bool  `json:"enabled"`
+			RetentionDays     *int   `json:"retention_days"`
+			MaxFileBytes      *int   `json:"max_file_bytes"`
+			WorkspaceMaxBytes *int64 `json:"workspace_max_bytes"`
+			GlobalMaxBytes    *int64 `json:"global_max_bytes"`
 		}
 		if err := json.Unmarshal(call.Args, &args); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("decode config.snapshots.set args: %w", err)
 		}
 		scope := args.resolvedScope()
+		// The global ceiling is user-global only: reject a project-scoped
+		// update before any approval or write so it can never be persisted
+		// into the shared, often-committed project file.
+		if scope == "project" && args.GlobalMaxBytes != nil {
+			return registry.ToolResult{}, fmt.Errorf("config.snapshots.set: snapshots.global_max_bytes is user-global only and cannot be written to the project config — rerun with scope \"global\"")
+		}
+		// Validate before committing: an invalid limit must never be saved.
+		// Omission is preserved — only the supplied keys are checked.
+		if args.WorkspaceMaxBytes != nil {
+			if err := config.ValidateSnapshotLimit("snapshots.workspace_max_bytes", *args.WorkspaceMaxBytes); err != nil {
+				return registry.ToolResult{}, err
+			}
+		}
+		if args.GlobalMaxBytes != nil {
+			if err := config.ValidateSnapshotLimit("snapshots.global_max_bytes", *args.GlobalMaxBytes); err != nil {
+				return registry.ToolResult{}, err
+			}
+		}
 		reason := fmt.Sprintf("config.snapshots.set (%s scope): update snapshots section", scope)
 		return t.commitConfigWrite(ctx, scope, reason, false, func(cfg *config.Config) {
 			if args.Enabled != nil {
@@ -561,6 +581,12 @@ func (t *toolSet) configSnapshotsSetTool() registry.Tool {
 			}
 			if args.MaxFileBytes != nil {
 				cfg.Snapshots.MaxFileBytes = *args.MaxFileBytes
+			}
+			if args.WorkspaceMaxBytes != nil {
+				cfg.Snapshots.WorkspaceMaxBytes = *args.WorkspaceMaxBytes
+			}
+			if args.GlobalMaxBytes != nil {
+				cfg.Snapshots.GlobalMaxBytes = *args.GlobalMaxBytes
 			}
 		})
 	}

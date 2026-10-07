@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"marshal/internal/app/config"
 )
 
 // formatBytes renders an int64 byte count as a human-readable string.
@@ -76,6 +78,27 @@ func bytesField(id, title string, get func() int64, apply func(int64)) *field {
 		func(v string) error {
 			n, err := parseBytes(v)
 			if err != nil {
+				return err
+			}
+			apply(n)
+			return nil
+		})
+}
+
+// positiveBytesField is bytesField plus a positive-only check: the parsed
+// value is validated against the same rule as the config layer (budgets are
+// always on — zero is not "unlimited") before it is applied. An invalid
+// value never reaches the working config, so a UI-only edit cannot persist
+// an invalid storage limit.
+func positiveBytesField(id, title string, get func() int64, apply func(int64)) *field {
+	return scalarField(id, title,
+		func() string { return formatBytes(get()) },
+		func(v string) error {
+			n, err := parseBytes(v)
+			if err != nil {
+				return err
+			}
+			if err := config.ValidateSnapshotLimit(id, n); err != nil {
 				return err
 			}
 			apply(n)

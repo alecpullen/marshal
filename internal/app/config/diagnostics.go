@@ -305,6 +305,27 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		})
 	}
 
+	// 12: snapshot storage budgets. Both are user-configurable byte sizes and
+	// merge() copies them verbatim, so a hand-edited config can carry 0 or a
+	// negative value. Zero does NOT disable budgets — an invalid limit fails
+	// closed for storage — so it must be reported rather than silently
+	// accepted, and never normalized to "unlimited". The write-time setters
+	// (config.snapshots.set, the settings frame) enforce the same rule before
+	// saving, so an invalid value is never persisted in the first place; this
+	// catch covers files edited outside those paths.
+	for _, d := range ValidateSnapshotLimits(cfg) {
+		d.Source = layers.ProvenanceOf(d.Path).SetBy.String()
+		ds = append(ds, d)
+	}
+	if layers.ProjectSnapshotGlobalIgnored {
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     "snapshots.global_max_bytes",
+			Message:  "snapshots.global_max_bytes is user-global only; the project config's value is ignored",
+			Source:   LayerProject.String(),
+		})
+	}
+
 	// Sort: errors before warnings, then by Path within each group.
 	sort.SliceStable(ds, func(i, j int) bool {
 		if ds[i].Severity != ds[j].Severity {

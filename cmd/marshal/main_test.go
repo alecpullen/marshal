@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -122,6 +123,34 @@ func TestACPListenFlagRoutesToListener(t *testing.T) {
 	}
 	if gotNetwork != "unix" || gotAddr != "/run/marshal/agent.sock" {
 		t.Fatalf("got (%q, %q), want (unix, /run/marshal/agent.sock)", gotNetwork, gotAddr)
+	}
+}
+
+// TestRunDispatchesSnapshotsSubcommand pins the dispatch anchor: `marshal
+// snapshots` must reach the snapshots runner with its remaining arguments and
+// all three streams, exactly like `plugin`. It is asserted through the
+// package-level seam so the test never opens the real store.
+func TestRunDispatchesSnapshotsSubcommand(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	called := false
+	oldSnapshots := snapshotsRunner
+	defer func() { snapshotsRunner = oldSnapshots }()
+	snapshotsRunner = func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		called = true
+		if len(args) != 1 || args[0] != "status" {
+			t.Errorf("args = %v, want [status]", args)
+		}
+		fmt.Fprintln(stdout, "snapshots ran")
+		return nil
+	}
+	if err := run(context.Background(), []string{"snapshots", "status"}, bytes.NewBuffer(nil), &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !called {
+		t.Fatal("snapshotsRunner was not called")
+	}
+	if !strings.Contains(stdout.String(), "snapshots ran") {
+		t.Errorf("stdout = %q, want the subcommand's output", stdout.String())
 	}
 }
 

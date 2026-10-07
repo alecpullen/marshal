@@ -74,14 +74,18 @@ func (b *recordingBroker) Close() {
 }
 
 // recordingSnapshot satisfies SnapshotCloser and records the stage name.
+//
+// There is deliberately no Prune method: the close path must NOT prune. The
+// fake records the lifecycle stage it was actually asked to run, so a test can
+// assert that shutdown joined snapshot work and ran no storage maintenance.
 type recordingSnapshot struct {
 	record func(string)
 	err    error
 }
 
-func (s *recordingSnapshot) Prune(_ context.Context, _ int) error {
+func (s *recordingSnapshot) CloseSnapshots(_ context.Context) error {
 	if s.record != nil {
-		s.record("snapshot")
+		s.record("snapshotClose")
 	}
 	return s.err
 }
@@ -247,7 +251,8 @@ func TestRuntimeCloseClosesResourcesAfterQuiesce(t *testing.T) {
 
 	// Fake every cleanup stage so we can verify the full prescribed order:
 	//   Quiesce → MCP → jobBroker → steeringBroker → eventBroker →
-	//   dbPrune → snapshot → dbClose → resourceClosers (reversed) → state shutdown.
+	//   dbPrune → snapshotClose → dbClose → resourceClosers (reversed) →
+	//   state shutdown.
 	mcp := &recordingMCP{name: "mcp", record: record}
 	jobBroker := &recordingBroker{name: "jobBroker", record: record}
 	steeringBroker := &recordingBroker{name: "steeringBroker", record: record}
@@ -310,8 +315,8 @@ func TestRuntimeCloseClosesResourcesAfterQuiesce(t *testing.T) {
 		"jobBroker",      // 3. job broker
 		"steeringBroker", // 4. steering broker
 		"eventBroker",    // 5. event broker
-		"dbPrune",        // 6a. DB prune (inside snapshot stage)
-		"snapshot",       // 6b. snapshot filesystem prune
+		"dbPrune",        // 6a. DB prune (bounded bookkeeping, inside snapshot stage)
+		"snapshotClose",  // 6b. snapshot cancellation/join (NO filesystem prune)
 		"dbClose",        // 7. database
 		"closeFn-2",      // 8. resourceClosers reversed (fn2 before fn1)
 		"closeFn-1",

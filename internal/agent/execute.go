@@ -361,15 +361,13 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	defer r.State.ClearActiveToolCallID(callID)
 
-	if r.Snapshotter != nil && r.SnapshotRecorder != nil && tool.Risk != registry.RiskReadOnly {
-		files := changedFilesForTool(toolName, argsMap)
-		if hash, snapErr := r.Snapshotter.Track(ctx); snapErr == nil && hash != "" {
-			if _, saveErr := r.SnapshotRecorder.SaveSnapshot(r.State.SessionID(), r.State.TurnIndex(), hash, files, r.Now()); saveErr != nil {
-				r.State.Logger().Warn("failed to record pre-write snapshot", "error", saveErr)
-			}
-		} else if snapErr != nil {
-			r.State.Logger().Warn("pre-write snapshot failed", "error", snapErr)
-		}
+	// Pre-write capture, non-read-only tools only. A capture that fails or is
+	// SKIPPED now produces a user-visible warning through the shared helper;
+	// a session DB row is written only for a capture that PUBLISHED a hash.
+	// The tool still runs either way — no continuation, permission, or
+	// approval behaviour changes here.
+	if tool.Risk != registry.RiskReadOnly {
+		r.snapshotCapture(ctx, SnapshotPhasePreWrite, changedFilesForTool(toolName, argsMap))
 	}
 
 	if r.WriteGate != nil && tool.Risk != registry.RiskReadOnly {

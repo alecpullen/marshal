@@ -340,6 +340,8 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Snapshots.Enabled, file.Snapshots.Enabled)
 		set(&cfg.Snapshots.RetentionDays, file.Snapshots.RetentionDays)
 		set(&cfg.Snapshots.MaxFileBytes, file.Snapshots.MaxFileBytes)
+		set(&cfg.Snapshots.WorkspaceMaxBytes, file.Snapshots.WorkspaceMaxBytes)
+		set(&cfg.Snapshots.GlobalMaxBytes, file.Snapshots.GlobalMaxBytes)
 	}
 	if file.Titling != nil {
 		set(&cfg.Titling.Enabled, file.Titling.Enabled)

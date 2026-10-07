@@ -387,6 +387,16 @@ type Runner struct {
 	Snapshotter      Snapshotter
 	SnapshotRecorder SnapshotRecorder
 
+	// snapshotWarnings deduplicates the user-visible "no rollback snapshot"
+	// warnings this runner emits (see snapshot_warning.go). It is unexported
+	// on purpose: it is internal bookkeeping, not part of the construction
+	// contract, and a Runner assembled as a bare struct literal still warns
+	// — it simply cannot suppress, which is the safe direction to fail in.
+	// An in-place config reload keeps this state (CopyFrom does not touch it),
+	// so a reload does not re-warn about a condition the user already knows
+	// about.
+	snapshotWarnings *SnapshotWarningState
+
 	// HookRunner, when set, runs pre_tool_use and turn_end lifecycle hooks
 	// against every tool call. The interface is kept package-local so tests
 	// can substitute a fake without depending on internal/hooks internals.
@@ -521,6 +531,9 @@ func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEn
 		// look like an explicit user ceiling and left the derivation dead.
 		MaxTurnContextTokens: 0,
 		tracker:              newProgressTracker(),
+		// Pre-allocated so suppression works for every runner built through
+		// NewRunner, which is every production construction path.
+		snapshotWarnings: NewSnapshotWarningState(),
 	}
 }
 
@@ -760,11 +773,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		r.State.AddMessage(session.RoleSystem, note, session.ContentTypePlain)
 	}
 	r.State.IncrementTurnIndex()
-	if r.Snapshotter != nil {
-		if _, err := r.Snapshotter.Track(ctx); err != nil {
-			r.State.Logger().Warn("turn-start snapshot failed", "error", err)
-		}
-	}
+	// Turn-start capture. It records no session DB row (the pre-write hook is
+	// where rows have always been written, and it carries the changed files);
+	// what it guarantees is that a skipped or failed capture at the top of the
+	// turn is VISIBLE rather than only logged. Continuation is unchanged.
+	r.snapshotCapture(ctx, SnapshotPhaseTurnStart, nil)
 	if db := r.State.DB(); db != nil {
 		if mails, err := db.UnreadMail(r.State.SessionID()); err == nil && len(mails) > 0 {
 			var b strings.Builder

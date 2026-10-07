@@ -233,6 +233,16 @@ type SnapshotsConfig struct {
 	Enabled       bool `toml:"enabled"`
 	RetentionDays int  `toml:"retention_days"`
 	MaxFileBytes  int  `toml:"max_file_bytes"`
+	// WorkspaceMaxBytes caps managed snapshot storage per workspace. It is
+	// positive-only: zero does not mean "unlimited" (invalid values fail
+	// closed for storage and are reported by ValidateSnapshotLimits). The
+	// per-workspace ceiling may be project-scoped.
+	WorkspaceMaxBytes int64 `toml:"workspace_max_bytes"`
+	// GlobalMaxBytes caps managed snapshot storage across workspaces. It is
+	// user-global only: the project config may not raise or lower it, and a
+	// project file that sets it is ignored with a diagnostic. Positive-only,
+	// like WorkspaceMaxBytes.
+	GlobalMaxBytes int64 `toml:"global_max_bytes"`
 }
 
 type TUIConfig struct {

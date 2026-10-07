@@ -198,9 +198,11 @@ type filePostmortem struct {
 }
 
 type fileSnapshots struct {
-	Enabled       *bool `toml:"enabled"`
-	RetentionDays *int  `toml:"retention_days"`
-	MaxFileBytes  *int  `toml:"max_file_bytes"`
+	Enabled           *bool  `toml:"enabled"`
+	RetentionDays     *int   `toml:"retention_days"`
+	MaxFileBytes      *int   `toml:"max_file_bytes"`
+	WorkspaceMaxBytes *int64 `toml:"workspace_max_bytes"`
+	GlobalMaxBytes    *int64 `toml:"global_max_bytes"`
 }
 
 type fileHistory struct {

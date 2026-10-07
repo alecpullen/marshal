@@ -41,6 +41,10 @@ func SaveProjectConfig(path string, cfg Config, layers Layers) error {
 	// often-committed file (they live in the user config; see
 	// SaveUserConfigProviderAPIKey and writeGlobalSections).
 	writeSections(&file, cfg, Default())
+	// snapshots.global_max_bytes is user-global only: strip it before the
+	// layer diff so it is never emitted into the project file, regardless of
+	// whether a layer snapshot was supplied.
+	stripProjectSnapshotGlobal(&file, cfg)
 	applyProjectLayer(&file, cfg, layers)
 
 	data, err := toml.Marshal(&file)
@@ -388,9 +392,11 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	}
 	if cfg.Snapshots != def.Snapshots {
 		file.Snapshots = &fileSnapshots{
-			Enabled:       strutil.Ptr(cfg.Snapshots.Enabled),
-			RetentionDays: strutil.Ptr(cfg.Snapshots.RetentionDays),
-			MaxFileBytes:  strutil.Ptr(cfg.Snapshots.MaxFileBytes),
+			Enabled:           strutil.Ptr(cfg.Snapshots.Enabled),
+			RetentionDays:     strutil.Ptr(cfg.Snapshots.RetentionDays),
+			MaxFileBytes:      strutil.Ptr(cfg.Snapshots.MaxFileBytes),
+			WorkspaceMaxBytes: strutil.Ptr(cfg.Snapshots.WorkspaceMaxBytes),
+			GlobalMaxBytes:    strutil.Ptr(cfg.Snapshots.GlobalMaxBytes),
 		}
 	}
 	if cfg.Titling != def.Titling {

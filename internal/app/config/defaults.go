@@ -161,9 +161,11 @@ func Default() Config {
 			OnExit: "prompt",
 		},
 		Snapshots: SnapshotsConfig{
-			Enabled:       true,
-			RetentionDays: 7,
-			MaxFileBytes:  2_000_000,
+			Enabled:           true,
+			RetentionDays:     7,
+			MaxFileBytes:      2_000_000,
+			WorkspaceMaxBytes: DefaultWorkspaceMaxBytes,
+			GlobalMaxBytes:    DefaultGlobalMaxBytes,
 		},
 		Permissions: PermissionsConfig{
 			Rules: nil,

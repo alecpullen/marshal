@@ -54,6 +54,28 @@ func snapshotsFrame(s *state) *frame {
 				f.Desc = "skip snapshots for files larger than this"
 				return f
 			}(),
+			func() *field {
+				// Per-workspace ceiling: project-scoped, so it is written to
+				// the project config by the normal commit path.
+				f := positiveBytesField("snapshots.workspace_max_bytes", "Workspace budget",
+					func() int64 { return s.cfg.Snapshots.WorkspaceMaxBytes },
+					func(v int64) { s.cfg.Snapshots.WorkspaceMaxBytes = v })
+				f.TomlPath = "snapshots.workspace_max_bytes"
+				f.Desc = "cap managed snapshot storage for this workspace"
+				return f
+			}(),
+			func() *field {
+				// Cross-workspace ceiling: user-global only. SetFieldWriteGlobal
+				// routes this row's commits to the user config, so a project
+				// save can never raise or lower it.
+				f := positiveBytesField("snapshots.global_max_bytes", "Global budget",
+					func() int64 { return s.cfg.Snapshots.GlobalMaxBytes },
+					func(v int64) { s.cfg.Snapshots.GlobalMaxBytes = v })
+				f.TomlPath = "snapshots.global_max_bytes"
+				f.Desc = "cap managed snapshot storage across all workspaces"
+				SetFieldWriteGlobal(f, true)
+				return f
+			}(),
 		}
 	})
 }

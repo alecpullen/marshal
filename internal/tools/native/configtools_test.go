@@ -1141,6 +1141,160 @@ func TestCustomAgentsSetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestConfigSnapshotsSetSchemaIncludesStorageBudgets(t *testing.T) {
+	ts := toolSet{config: config.Default()}
+	tools, err := newConfigToolSet(ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := tools.configSnapshotsSetTool()
+	schema := string(tool.Schema)
+	for _, key := range []string{"workspace_max_bytes", "global_max_bytes"} {
+		if !strings.Contains(schema, key) {
+			t.Errorf("schema missing %q:\n%s", key, schema)
+		}
+	}
+}
+
+func TestConfigSnapshotsSetPreservesOmittedFields(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := config.ProjectConfigPath(dir)
+
+	cfg := config.Default()
+	cfg.Snapshots.WorkspaceMaxBytes = 8_589_934_592
+	cfg.Snapshots.GlobalMaxBytes = 21_474_836_480
+	var reloaded *config.Config
+	ts := toolSet{
+		config:         cfg,
+		configPath:     cfgPath,
+		configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil },
+	}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configSnapshotsSetTool())
+	tool, _ := reg.Lookup("config.snapshots.set")
+
+	// Only set retention; the two budgets must survive untouched.
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		ID: "1", Name: "config.snapshots.set",
+		Args: json.RawMessage(`{"retention_days":3}`),
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if reloaded.Snapshots.WorkspaceMaxBytes != 8_589_934_592 {
+		t.Errorf("omitted workspace budget was clobbered: %d", reloaded.Snapshots.WorkspaceMaxBytes)
+	}
+	if reloaded.Snapshots.GlobalMaxBytes != 21_474_836_480 {
+		t.Errorf("omitted global budget was clobbered: %d", reloaded.Snapshots.GlobalMaxBytes)
+	}
+	if reloaded.Snapshots.RetentionDays != 3 {
+		t.Errorf("retention_days = %d, want 3", reloaded.Snapshots.RetentionDays)
+	}
+}
+
+func TestConfigSnapshotsSetProjectWorkspaceBudget(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := config.ProjectConfigPath(dir)
+
+	cfg := config.Default()
+	var reloaded *config.Config
+	ts := toolSet{
+		config:         cfg,
+		configPath:     cfgPath,
+		configReloader: func(c config.Config) error { cc := c; reloaded = &cc; return nil },
+	}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configSnapshotsSetTool())
+	tool, _ := reg.Lookup("config.snapshots.set")
+
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		ID: "1", Name: "config.snapshots.set",
+		Args: json.RawMessage(`{"workspace_max_bytes":4294967296}`),
+	})
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if reloaded.Snapshots.WorkspaceMaxBytes != 4_294_967_296 {
+		t.Fatalf("workspace budget = %d, want 4 GiB", reloaded.Snapshots.WorkspaceMaxBytes)
+	}
+	if reloaded.Snapshots.GlobalMaxBytes != config.DefaultGlobalMaxBytes {
+		t.Errorf("global budget changed: %d", reloaded.Snapshots.GlobalMaxBytes)
+	}
+}
+
+func TestConfigSnapshotsSetRejectsProjectScopedGlobal(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := config.ProjectConfigPath(dir)
+
+	cfg := config.Default()
+	reloaded := false
+	ts := toolSet{
+		config:         cfg,
+		configPath:     cfgPath,
+		configReloader: func(c config.Config) error { reloaded = true; return nil },
+	}
+	tools, _ := newConfigToolSet(ts)
+	reg := registry.New()
+	reg.Register(tools.configSnapshotsSetTool())
+	tool, _ := reg.Lookup("config.snapshots.set")
+
+	_, err := tool.Handler(context.Background(), registry.ToolCall{
+		ID: "1", Name: "config.snapshots.set",
+		Args: json.RawMessage(`{"scope":"project","global_max_bytes":1073741824}`),
+	})
+	if err == nil {
+		t.Fatal("project-scoped global_max_bytes update must be rejected")
+	}
+	if !strings.Contains(err.Error(), "user-global") {
+		t.Errorf("error should explain the key is user-global only, got: %v", err)
+	}
+	if reloaded {
+		t.Error("a rejected write must not reload or persist")
+	}
+	if _, statErr := os.Stat(cfgPath); statErr == nil {
+		t.Error("a rejected write must not create the project config")
+	}
+}
+
+func TestConfigSnapshotsSetRejectsInvalidLimits(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := config.ProjectConfigPath(dir)
+
+	for _, args := range []string{
+		`{"workspace_max_bytes":0}`,
+		`{"workspace_max_bytes":-1}`,
+		`{"global_max_bytes":0}`,
+	} {
+		cfg := config.Default()
+		before := cfg.Snapshots
+		reloaded := false
+		ts := toolSet{
+			config:         cfg,
+			configPath:     cfgPath,
+			configReloader: func(c config.Config) error { reloaded = true; return nil },
+		}
+		tools, _ := newConfigToolSet(ts)
+		reg := registry.New()
+		reg.Register(tools.configSnapshotsSetTool())
+		tool, _ := reg.Lookup("config.snapshots.set")
+
+		_, err := tool.Handler(context.Background(), registry.ToolCall{
+			ID: "1", Name: "config.snapshots.set", Args: json.RawMessage(args),
+		})
+		if err == nil {
+			t.Errorf("invalid limit %s accepted", args)
+		}
+		if reloaded {
+			t.Errorf("invalid limit %s was persisted", args)
+		}
+		if ts.config.Snapshots != before {
+			t.Errorf("invalid limit %s mutated the working config", args)
+		}
+	}
+}
+
 func TestCustomAgentsDeleteRemovesKey(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")

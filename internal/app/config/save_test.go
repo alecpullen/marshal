@@ -531,7 +531,16 @@ func fullEditedConfig() Config {
 		Policies:                 map[string]string{"fs": "confirm"},
 		DisclosureThresholdTools: 25,
 	}
-	cfg.Snapshots = SnapshotsConfig{Enabled: false, RetentionDays: 14, MaxFileBytes: 1000}
+	// global_max_bytes is user-global only and is stripped from the project
+	// file by design, so a full project-save round trip can only carry it at
+	// its default. Its round trip is covered separately via the user config.
+	cfg.Snapshots = SnapshotsConfig{
+		Enabled:           false,
+		RetentionDays:     14,
+		MaxFileBytes:      1000,
+		WorkspaceMaxBytes: 4_294_967_296,
+		GlobalMaxBytes:    DefaultGlobalMaxBytes,
+	}
 	cfg.Titling = TitlingConfig{Enabled: false, TimeoutMs: 2500}
 	cfg.Watch = WatchConfig{ResumeEnabled: false}
 	cfg.Permissions.Rules = []PermissionRule{{Permission: "shell", Pattern: "go *", Action: "allow"}}

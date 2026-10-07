@@ -1075,10 +1075,41 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if dataDir != "" && cfg.Snapshots.Enabled {
 		snapSvc = snapshot.NewRooted(dataDir, state.WorkingDir,
 			func() string { return state.Workspace().ActiveRoot },
-			int64(cfg.Snapshots.MaxFileBytes), cfg.Indexing.Ignore, state.Logger())
+			int64(cfg.Snapshots.MaxFileBytes), cfg.Indexing.Ignore, state.Logger(),
+			// The ceilings and the user-global reader are installed here so a
+			// sweep enforces exactly what a capture admits against. The reader
+			// is consulted under the store lock on every decision, so a limit
+			// the user lowers takes effect without restarting this process.
+			snapshot.WithRootedLimits(snapshotLimits(cfg)),
+			snapshot.WithRootedGlobalLimits(snapshotGlobalLimitsReader(homeDir, cfg)))
 		state.SetSnapshotter(snapSvc)
 		runner.Snapshotter = snapSvc
+		// The recorder is wired here so the pre-write hook can record a
+		// PUBLISHED capture. It is only ever invoked with a real hash, so a
+		// store that declines or skips a capture can never leave a row
+		// implying the snapshot exists.
 		runner.SnapshotRecorder = database
+
+		// Bounded STARTUP maintenance: reconcile interrupted work across every
+		// store and reclaim whole expired generations, then surface whatever
+		// the store still needs. It never repacks and never runs on the
+		// shutdown path. A failure here is a warning, never a reason to fail
+		// the session: the store's own admission continues to enforce the
+		// budgets either way.
+		//
+		// It is SKIPPED for a workspace that has never captured anything, in
+		// either layout. A whole-root sweep for a session with no store of its
+		// own would pay to measure every OTHER store on the machine (real,
+		// repeated latency on a store holding hundreds of gigabytes of legacy
+		// history) and would fabricate store metadata for a workspace that
+		// asked for none. The check is two Lstats.
+		if snapSvc.HasActiveStore() {
+			maintenanceCtx, maintenanceCancel := context.WithTimeout(ctx, startupSnapshotMaintenanceTimeout)
+			report, maintenanceErr := snapSvc.Maintain(maintenanceCtx, cfg.Snapshots.RetentionDays)
+			timedOut := maintenanceCtx.Err() != nil
+			maintenanceCancel()
+			reportStartupSnapshotMaintenance(runner, state, report, maintenanceErr, timedOut)
+		}
 	}
 
 	state.SetActiveRoute(session.RouteInfo{
@@ -2540,6 +2571,14 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		rt.Runner = newRunner
 	} else {
 		rt.Runner.CopyFrom(newRunner)
+	}
+	// The live runner keeps the runtime's snapshot-warning suppression state,
+	// whether it was mutated in place or adopted wholesale: a reload must not
+	// re-warn the user about a snapshot condition they have already been told
+	// about, and a capture that succeeds later must still clear the state that
+	// suppressed it.
+	if rt.SnapshotWarnings != nil {
+		rt.Runner.SetSnapshotWarningState(rt.SnapshotWarnings)
 	}
 	if rt.SwarmRunner == nil {
 		rt.SwarmRunner = newSwarmRunner

@@ -22,6 +22,7 @@ var acpListener = acp.ListenAndServe
 var historyRunner = runHistory
 var calibrateRunner = runCalibrateTokens
 var pluginRunner = runPlugin
+var snapshotsRunner = runSnapshots
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
@@ -87,6 +88,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 	if len(args) > 0 && args[0] == "plugin" {
 		return pluginRunner(ctx, args[1:], stdin, stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "snapshots" {
+		return snapshotsRunner(ctx, args[1:], stdin, stdout, stderr)
 	}
 	if len(args) > 0 {
 		return fmt.Errorf("unknown argument %q", args[0])

@@ -39,6 +39,13 @@ import (
 // drain. Package-level so tests can override it without sleeping five seconds.
 var jobShutdownTimeout = 5 * time.Second
 
+// snapshotCloseTimeout bounds how long Close waits for snapshot work to be
+// cancelled and joined, and how long the store's own status probe may take.
+// Both are small on purpose: shutdown must do NO heavy storage work, so this
+// budget only has to cover joining an in-flight capture or a bounded read-only
+// status query.
+var snapshotCloseTimeout = 5 * time.Second
+
 // MCPCloser closes an MCP manager during Runtime.Close.
 type MCPCloser interface {
 	Close() error
@@ -49,9 +56,40 @@ type BrokerCloser interface {
 	Close()
 }
 
-// SnapshotCloser prunes old snapshots during Runtime.Close.
+// SnapshotCloser is the snapshot service's lifecycle on the shutdown path.
+//
+// It deliberately has NO prune method. The lifecycle it replaces ran a
+// filesystem prune and then `git gc --prune=now` on every shutdown; the gc
+// could not free anything (snapshots were parent-chained and reachable from
+// HEAD), and an interrupted repack left 171 GiB of tmp_pack_* files behind.
+// Shutdown now performs NO heavy storage work: it cancels and joins bounded
+// snapshot work only. Maintenance runs at startup and before admission, where
+// it is bounded and observable.
 type SnapshotCloser interface {
-	Prune(ctx context.Context, retentionDays int) error
+	// CloseSnapshots cancels and joins any in-flight snapshot work. It must
+	// not reconcile, reclaim, repack, or take the store lock for a sweep.
+	CloseSnapshots(ctx context.Context) error
+}
+
+// SnapshotStatusCloser is the optional extension of SnapshotCloser for a
+// snapshot service that can report its own health. It lets Runtime.Close
+// surface a structured maintenance failure through the same user-visible
+// warning the agent's capture hooks use, instead of only logging it.
+//
+// Status must be read-only and cheap: it runs at shutdown, so it may measure
+// and list but must never reconcile or reclaim.
+type SnapshotStatusCloser interface {
+	SnapshotCloser
+	// Status returns a non-nil error when the store needs attention, with a
+	// message carrying the snapshot store's structured reason.
+	Status(ctx context.Context) error
+}
+
+// maintenanceSnapshotCloser is the interface Close actually calls for the
+// close-time status probe. It is separate from SnapshotStatusCloser only so a
+// service that reports health WITHOUT a lifecycle method still works.
+type maintenanceSnapshotCloser interface {
+	Status(ctx context.Context) error
 }
 
 // DBCloser closes a database and prunes old snapshots during Runtime.Close.
@@ -110,6 +148,14 @@ type Runtime struct {
 	JobManager      *native.JobManager
 	WatchManager    *watch.Manager
 	DesktopCloser   func()
+	// SnapshotWarnings carries the runtime's snapshot-warning suppression
+	// state. It is shared with the agent runner (Runner.SetSnapshotWarningState)
+	// so an in-turn capture warning and a runtime maintenance warning about the
+	// same workspace and reason are one event, and so a later successful
+	// capture clears whichever one was showing. Never nil for a Runtime built
+	// by startRuntime.
+	SnapshotWarnings *agent.SnapshotWarningState
+
 	// WatchResume is the settable auto-resume hook invoked by the watch
 	// manager's OnFire closure after each fired report is queued. The ACP
 	// host binds it per session; the TUI never sets it, so TUI behavior
@@ -429,20 +475,63 @@ func (rt *Runtime) Close(ctx context.Context) error {
 			}
 		}
 
-		// 6. bounded snapshot DB prune and filesystem prune.
+		// 6. snapshot lifecycle and bounded DB bookkeeping.
+		//
+		// NO filesystem prune, NO reconciliation, and NO Git gc/repack run
+		// here. That is the whole point of this stage: the old shutdown path
+		// pruned refs and then ran `git gc --prune=now` under a 30 s deadline,
+		// ignoring the error; the gc could not free anything because snapshots
+		// were reachable from HEAD, and an interrupted repack left 171 GiB of
+		// tmp_pack_* garbage. Shutdown now cancels and joins bounded snapshot
+		// work, and the only storage query it makes is a read-only status
+		// probe that measures and lists but never reconciles or reclaims.
 		if rt.Snapshot != nil {
+			// 6a. DB snapshot-row retention. This is bounded bookkeeping in
+			// SQLite (one DELETE), not storage work on the snapshots root, so it
+			// stays. An expired row's hash must now resolve to the explicit
+			// typed expiry error rather than a leaked Git error, which the
+			// store's lookup already does.
 			if rt.DB != nil && rt.Logger != nil {
 				if perr := rt.DB.PruneSnapshotsOlderThan(rt.Config.Snapshots.RetentionDays); perr != nil {
 					rt.Logger.Warn("snapshot DB prune failed", "error", perr)
 				}
 			}
-			if rt.Logger != nil {
-				pruneCtx, pruneCancel := context.WithTimeout(ctx, 30*time.Second)
-				defer pruneCancel() // defer is scoped to this closeOnce.Do closure, not to Close itself
-				if perr := rt.Snapshot.Prune(pruneCtx, rt.Config.Snapshots.RetentionDays); perr != nil {
-					rt.Logger.Warn("snapshot prune failed", "error", perr)
+			// 6b. Cancel and join in-flight snapshot work.
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), snapshotCloseTimeout)
+			if cerr := rt.Snapshot.CloseSnapshots(closeCtx); cerr != nil {
+				if rt.Logger != nil {
+					if ctxErr := closeCtx.Err(); ctxErr != nil && errors.Is(cerr, ctxErr) {
+						rt.Logger.Debug("snapshot close cancelled", "error", cerr)
+					} else {
+						rt.Logger.Warn("snapshot close failed", "error", cerr)
+					}
 				}
 			}
+			// 6c. Read-only health probe for the active workspace. Its context
+			// is deliberately NOT derived from the caller's ctx: Close is
+			// normally reached from a cancelled context, and a probe that
+			// inherited that cancellation would look like a storage failure on
+			// every single shutdown. An expected shutdown is not a
+			// recovery-required event.
+			if sc, ok := rt.Snapshot.(maintenanceSnapshotCloser); ok && rt.Logger != nil {
+				statusCtx, statusCancel := context.WithTimeout(context.Background(), snapshotCloseTimeout)
+				statusErr := sc.Status(statusCtx)
+				cancelled := statusCtx.Err() != nil
+				statusCancel()
+				// A status error is the store's own structured signal that it
+				// needs attention — a condition the user can still act on after
+				// the session ends, so it is reported through the same
+				// user-visible warning the agent's capture hooks use.
+				if statusErr == nil {
+					// Healthy at close: clear any suppression so a future run's
+					// first problem is visible again.
+					rt.SnapshotWarnings.Reset()
+				} else {
+					rt.SnapshotWarnings.ReportMaintenance(rt.State,
+						agent.SnapshotPhaseMaintenance, statusErr, cancelled)
+				}
+			}
+			closeCancel()
 		}
 
 		// 7. database.
@@ -804,6 +893,17 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		workCtx:              workCtx,
 		workCancel:           workCancel,
 	}
+	// One snapshot-warning state shared by the runtime and its runner, so a
+	// pre-write capture warning and a maintenance warning about the same
+	// workspace and reason are one visible event, and a later successful
+	// capture clears whichever of them was showing. It is created even when
+	// snapshots are disabled, because the close-time maintenance path always
+	// runs; the state itself is nil-receiver safe, so tests that build a
+	// Runtime literal are unaffected.
+	rt.SnapshotWarnings = agent.NewSnapshotWarningState()
+	if rt.Runner != nil {
+		rt.Runner.SetSnapshotWarningState(rt.SnapshotWarnings)
+	}
 	// AI-01: re-seed the pack's repo sections when an index pass completes.
 	rt.subscribeIndexReseed(indexBroker, database, projectID)
 	// Start the LSP manager's worker loop here so both Run (TUI) and
@@ -980,6 +1080,12 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	rt.State = newState
 	rt.SessionID = sessionID
 	rt.Runner = newRunner
+	// A new session shares the runtime's snapshot-warning suppression state,
+	// so the swap does not re-warn about a condition the runtime already
+	// reported to this user.
+	if rt.SnapshotWarnings != nil {
+		newRunner.SetSnapshotWarningState(rt.SnapshotWarnings)
+	}
 	rt.ToolRegistry = newReg
 	rt.SwarmRunner = newSwarmRunner
 	rt.PipelineFactory = newPipelineFactory

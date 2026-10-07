@@ -31,6 +31,7 @@ import checks_forge  # noqa: E402
 import checks_ops  # noqa: E402
 import checks_secrets  # noqa: E402
 import checks_sessions  # noqa: E402
+import checks_spa  # noqa: E402
 import checks_terminal  # noqa: E402
 import checks_workspaces  # noqa: E402
 
@@ -43,6 +44,7 @@ GROUPS = {
     "F": ("secrets", checks_secrets),
     "G": ("forge", checks_forge),
     "H": ("errors", checks_errors),
+    "I": ("spa and auth", checks_spa),
 }
 
 
@@ -60,7 +62,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--model", default=os.environ.get("E2E_MODEL", ""))
     p.add_argument(
         "--groups",
-        default="ABCDEFGH",
+        default="ABCDEFGHI",
         help="which groups to run, e.g. ABH (default: all)",
     )
     p.add_argument("--json", dest="json_out", default="", help="write a JSON report here")

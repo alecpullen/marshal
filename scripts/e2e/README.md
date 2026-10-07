@@ -28,6 +28,7 @@ check as it runs. The exit code is non-zero when any check fails.
 | F secrets | secrets, credentials, network view, egress decisions |
 | G forge | repos, issues, review drafts, CI history, webhook secrets |
 | H errors | auth, malformed and oversize bodies, unknown routes, traversal, SSE, MCP, clients, pending |
+| I spa and auth | the served shell, its assets and cache policy, client-route fallback, the bearer contract, and the token handling baked into the served bundle |
 
 ## Writing a check
 

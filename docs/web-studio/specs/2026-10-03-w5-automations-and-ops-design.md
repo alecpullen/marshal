@@ -692,3 +692,82 @@ product defects, and are recorded here so they are not re-reported:
 agent (the agent is retired by discard/exit); and discarding a *local*
 isolated agent removes its worktree but keeps the record, whereas a
 git-sourced agent is retired outright.
+
+## 11. Second end-to-end pass
+
+Run 2026-10-07, prompted by a browser report that the Studio asked for
+the bearer token "over and over". Nine groups, 222 checks: **221 pass,
+0 fail, 1 skip**. The pass was preceded by the client-side fixes below,
+which the HTTP suite could not have found on its own — every one is in
+the layer a browser exercises and curl does not.
+
+### The re-prompt loop
+
+The bridge gates all `/api` routes with `bearerAuth`, a byte-for-byte
+constant-time compare. The SPA prompted for the token and stored exactly
+what was typed. The token is normally copied from the handover, where it
+appears inside `Authorization: Bearer <token>`; pasting that produced
+`Authorization: Bearer Bearer <token>`, which the compare rejects. The
+client treated every 401 as "my token is stale", cleared it, and prompted
+again — so the loop could not be escaped by pasting the same thing twice.
+Two fixes:
+
+- `normalizeToken` strips a leading `Authorization:` header name and a
+  `Bearer` scheme, so any of the forms a user copies reduces to the bare
+  token.
+- A declined prompt is remembered (`promptDeclined`), so the SPA opens one
+  dialog rather than one per in-flight request — the shell fires several
+  at mount and the pollers every few seconds, which is why one dismissal
+  produced a stack of prompts.
+
+The SSE transport had the same fault from the other side: it retried a
+rejected bearer forever at a 30s backoff, and its token lookup sat outside
+the try, so a declined prompt became an unhandled rejection that silently
+stopped the stream. A 401 is now terminal for that connection and the
+lookup reports through `onEvent`.
+
+### The suite that reported green while the UI was broken
+
+Two defects made the HTTP suite's clean result misleading.
+
+**The embedded SPA is a build-time snapshot.** `web/bridge/assets.go`
+bakes `static/` into the binary with `//go:embed`, so a change under
+`web/ui/src` is invisible until `npm run build` reruns *and* the binary is
+rebuilt. Nothing in the suite loaded the shell, so a binary serving a
+stale bundle scored perfectly. Group **I (spa and auth)** now pins the
+contract at the boundary a browser sees: the document and its assets
+resolve, `index.html` is never cached, hashed assets are immutable,
+client routes fall back to the shell, unknown `/api` paths 404 as JSON,
+every `/api` route demands a bearer, a doubled `Bearer` prefix is rejected
+(why the client must normalize), and the served bundle carries the
+normalization rule and the decline guard.
+
+**`looksHashed` matched no asset Vite emits.** The predicate accepted only
+a run of `[a-f0-9]`, but Vite's hashes are base64url
+(`index-CPIn_Y0W.js`, `index-zKuPc3MY.css`), so every asset fell to the
+revalidate branch: `Cache-Control` was absent entirely and the immutable
+branch of `serveFile` was dead code. Browsers re-requested the whole
+~1.2 MB bundle on every load. Group I caught it on its first run.
+
+### The UI suite could not run at all
+
+`npm test` was failing 83 of 848 tests, and no CI workflow ran it, so it
+went unnoticed. Three independent causes:
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | Node 26 defines an experimental `localStorage` global that resolves to `undefined` without `--localstorage-file`, and it shadows jsdom's, so `window.localStorage` was undefined in every test ("Cannot read properties of undefined") | `src/test-setup.ts` installs an in-memory `Storage` only when the real one is missing |
+| 2 | `@xterm/xterm` was in the lockfile but absent from `node_modules`, so four files failed to collect | `npm ci` |
+| 3 | bits-ui's body-scroll-lock restores the body style on a ~24ms timer that fired after jsdom teardown, so vitest reported an unhandled error and the run exited non-zero even when every assertion passed | the setup file drains the timer while the window is alive |
+
+The suite is now 848/848 green with a meaningful exit status, and
+`svelte-check` reports no errors.
+
+### Harness notes
+
+Group I found one defect on its first run (`looksHashed`), which is the
+point of adding it: the previous 209 checks could not see the layer where
+the user's bug lived. Two checks in the new group are regression guards
+rather than feature coverage — the doubled-`Bearer` rejection and the
+served-bundle marker — and both exist because the failure they pin is
+invisible to a route-by-route sweep.

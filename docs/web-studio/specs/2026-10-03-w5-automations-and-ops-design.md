@@ -705,20 +705,45 @@ the layer a browser exercises and curl does not.
 
 The bridge gates all `/api` routes with `bearerAuth`, a byte-for-byte
 constant-time compare. The SPA prompted for the token and stored exactly
-what was typed. The token is normally copied from the handover, where it
-appears inside `Authorization: Bearer <token>`; pasting that produced
-`Authorization: Bearer Bearer <token>`, which the compare rejects. The
-client treated every 401 as "my token is stale", cleared it, and prompted
-again — so the loop could not be escaped by pasting the same thing twice.
-Two fixes:
+what was typed, and the client treated every 401 as "my token is stale",
+cleared it, and prompted again — a loop that pasting the same thing twice
+could not escape. Two contributing fixes:
 
 - `normalizeToken` strips a leading `Authorization:` header name and a
-  `Bearer` scheme, so any of the forms a user copies reduces to the bare
-  token.
+  `Bearer` scheme, so the forms a user copies from a handover or a `curl`
+  line reduce to the bare token. A doubled prefix is a real failure mode:
+  the bridge rejects `Bearer Bearer x`, and group I pins that.
 - A declined prompt is remembered (`promptDeclined`), so the SPA opens one
   dialog rather than one per in-flight request — the shell fires several
   at mount and the pollers every few seconds, which is why one dismissal
   produced a stack of prompts.
+
+**Correction (2026-10-07).** The doubled prefix was *not* the cause of
+this report. The operator pasted the bare token, which both the old and
+new clients send correctly, and the loop continued after the fixes above
+shipped. The real cause was that the browser was not talking to the
+bridge under test at all:
+
+- The browser's live sockets went to `100.72.103.14:7700` (a bridge on
+  another tailnet host), not to `100.71.221.84:7700` where the work was
+  deployed. `lsof -a -p <bridge-pid> -iTCP` showed only LISTEN sockets —
+  nothing had ever connected to it.
+- The browser profile held 144 references to the other host and none to
+  the deployed one, and its `sessionStorage` entry under namespace
+  `http://100.72.103.14:7700/` was the token issued here, which that
+  instance rejects (401 in every form, including the bare one).
+- That instance serves a bundle built ten UI commits earlier
+  (`index-D5GsJNNn.js`, from commit `33096fd4`), so it still had the
+  clear-on-401 loop with no normalization guard.
+
+The generalizable defect the report *did* expose is recorded below: a
+refused token was re-prompted for, so a wrong token was an unescapable
+loop rather than a correctable mistake. That is now fixed and pinned.
+The operational lesson is narrower but sharper: **verify which endpoint
+the client under test is actually hitting before changing its code**, and
+never infer that from a curl probe of the endpoint you *intended* to
+serve. Two bridges on one tailnet, both on port 7700, made the intended
+and actual targets indistinguishable from the code alone.
 
 The SSE transport had the same fault from the other side: it retried a
 rejected bearer forever at a 30s backoff, and its token lookup sat outside
@@ -760,14 +785,64 @@ went unnoticed. Three independent causes:
 | 2 | `@xterm/xterm` was in the lockfile but absent from `node_modules`, so four files failed to collect | `npm ci` |
 | 3 | bits-ui's body-scroll-lock restores the body style on a ~24ms timer that fired after jsdom teardown, so vitest reported an unhandled error and the run exited non-zero even when every assertion passed | the setup file drains the timer while the window is alive |
 
-The suite is now 848/848 green with a meaningful exit status, and
-`svelte-check` reports no errors.
+The suite is now 852/852 green with a meaningful exit status, and
+`svelte-check` reports no errors (one pre-existing warning in
+`IssuePicker.svelte`, unrelated to this work).
+
+### A refused token is not a missing token
+
+The one real defect the loop report exposed. Every 401 called
+`clearToken()`, which forgot the refusal *and* re-armed the prompt guard,
+so the next request asked for the value the bridge had just rejected and
+sent it again. The decline guard did not help: it only covers pressing
+Cancel, not entering a wrong value. A wrong token was therefore an
+unescapable loop rather than a correctable mistake — which is exactly the
+state a user lands in when they paste a token issued by a different
+bridge, as happened here.
+
+The two cases are now distinct:
+
+| State | Cause | Behaviour |
+|---|---|---|
+| missing / declined | no token, or the prompt was cancelled | prompt once; fail fast afterwards until an entry succeeds |
+| **rejected** | the bridge refused the token we sent | never re-prompt. Drop the value, record the refusal, and fail fast until the user supplies a *different* token |
+
+- `rejectToken()` records the refusal; `isTokenRejected()` reads it;
+  `requestToken()` is the deliberate path back, adopting whatever the
+  user enters. `ensureToken()` throws `"Token rejected"` while the
+  refusal stands.
+- Both transports honour it: `request()` and `connectSSE` call
+  `rejectToken()` rather than `clearToken()`. The SSE loop already treated
+  401 as terminal, so this only changes what the *next* request does.
+- The shell shows a persistent banner with an **Enter a different token**
+  action, because a client that stops calling the API would otherwise
+  leave the UI silently dead with no way back.
+
+Tests: three in `auth.test.ts` (the loop itself — one fetch, zero
+prompts, five later calls all fail fast; re-entry clears the refusal;
+cancelling leaves it standing) and one in `fleetsse.test.ts` (the stream
+stops after one fetch and never prompts). E2E group I gains a check that
+the served bundle carries both the refusal state and the recovery action.
 
 ### Harness notes
 
 Group I found one defect on its first run (`looksHashed`), which is the
 point of adding it: the previous 209 checks could not see the layer where
-the user's bug lived. Two checks in the new group are regression guards
-rather than feature coverage — the doubled-`Bearer` rejection and the
-served-bundle marker — and both exist because the failure they pin is
-invisible to a route-by-route sweep.
+the user's bug lived. Three checks in the new group are regression guards
+rather than feature coverage — the doubled-`Bearer` rejection, the
+served-bundle normalization marker, and the rejected-token marker — and
+all exist because the failure they pin is invisible to a route-by-route
+sweep.
+
+The rejected-token check was verified to discriminate rather than merely
+pass: the bundle shipped by the previous fix carries both older guards and
+passes the older checks, yet has zero occurrences of the rejected-token
+marker, so it fails the new check. A marker check that cannot fail is
+decoration.
+
+**Group I is a boundary check, not a coverage claim.** It can only see
+what the binary serves. Had it existed and been run against the *other*
+host, it would have reported the stale bundle immediately — the deployed
+instance and the browser's actual target diverged, and nothing in the
+harness compared them. Worth adding if a second bridge is ever stood up
+again on the same tailnet.

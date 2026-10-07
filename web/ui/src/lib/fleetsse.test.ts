@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { connectBuildLog, connectSSE, parseBuildLogEvent, parseFleetEvent } from './sse'
-import { setToken } from './api'
+import { clearToken, isTokenRejected, setToken } from './api'
 
 describe('parseFleetEvent', () => {
   it('passes automation and network_block events that name no session', () => {
@@ -175,5 +175,43 @@ describe('build log stream', () => {
     await vi.waitFor(() => expect(done).toEqual(['failed']))
     expect(lines).toEqual(['step 1', 'step 2'])
     expect(f.mock.calls[0][0]).toBe('/api/workspaces/go%20service/builds/3/events?lastEventId=0')
+  })
+})
+
+/*
+  The stream is the other half of the rejected-token contract. It used to
+  clear the token on a 401 and rely on the next request to re-prompt, while
+  its own reconnect loop kept retrying the refused bearer at a 30s backoff.
+  A refused token must instead end the stream and stand until the user
+  supplies a different one.
+*/
+describe('a stream the bridge refuses', () => {
+  beforeEach(() => clearToken())
+  afterEach(() => {
+    clearToken()
+    vi.unstubAllGlobals()
+  })
+
+  it('stops on 401 instead of retrying the refused bearer', async () => {
+    setToken('stale-token')
+    const f = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: async () => JSON.stringify({ error: 'unauthorized' }),
+    })
+    vi.stubGlobal('fetch', f)
+    // A prompt that would hand back the same refused value, if asked.
+    const prompts = vi.fn(() => 'stale-token')
+    vi.stubGlobal('prompt', prompts)
+
+    const errors: unknown[] = []
+    connectSSE({ sessionId: 's1', onEvent: (e) => { if (e.type === 'error') errors.push(e.error) } })
+
+    await vi.waitFor(() => expect(errors.length).toBe(1))
+    expect(isTokenRejected()).toBe(true)
+    // Give a would-be retry longer than its first backoff to misbehave.
+    await new Promise((r) => setTimeout(r, 60))
+    expect(f).toHaveBeenCalledTimes(1)
+    expect(prompts).not.toHaveBeenCalled()
   })
 })

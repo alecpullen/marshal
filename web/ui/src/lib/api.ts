@@ -12,6 +12,17 @@ let memoryToken: string | null = null
 */
 let promptDeclined = false
 
+/*
+  Set when the bridge refuses the token we sent. A 401 means the *value* is
+  wrong — stale, revoked, or issued by a different bridge — so re-prompting
+  cannot help: the same value goes out and the same 401 comes back. Clearing
+  the token and prompting again (the original behaviour) turned every poller
+  into a dialog and made the refusal an unescapable loop. Instead the client
+  fails fast until the user deliberately supplies a different token, which is
+  what `requestToken` is for.
+*/
+let tokenRejected = false
+
 export function getToken(): string | null {
   if (memoryToken) return memoryToken
   try {
@@ -48,6 +59,7 @@ export function setToken(token: string): void {
   if (!t) return
   memoryToken = t
   promptDeclined = false
+  tokenRejected = false
   try {
     sessionStorage.setItem(TOKEN_KEY, t)
   } catch {
@@ -59,6 +71,7 @@ export function setToken(token: string): void {
 export function clearToken(): void {
   memoryToken = null
   promptDeclined = false
+  tokenRejected = false
   try {
     sessionStorage.removeItem(TOKEN_KEY)
   } catch {
@@ -66,10 +79,34 @@ export function clearToken(): void {
   }
 }
 
-export function ensureToken(): string {
-  const token = getToken()
-  if (token) return token
-  if (promptDeclined) throw new AuthError('Token is required')
+/**
+ * Record that the bridge refused the token we sent. Note this is not
+ * `clearToken`: clearing forgets the refusal and re-arms the prompt, which is
+ * the loop. The stored value is dropped so it is never sent again, but the
+ * refusal stands until the user enters a different token.
+ */
+export function rejectToken(): void {
+  memoryToken = null
+  tokenRejected = true
+  try {
+    sessionStorage.removeItem(TOKEN_KEY)
+  } catch {
+    // ignore
+  }
+}
+
+/** True while the bridge has refused the current token. */
+export function isTokenRejected(): boolean {
+  return tokenRejected
+}
+
+/**
+ * Ask the user for a token and adopt it, whatever the current state. This is
+ * the deliberate path back from a refusal: the UI offers it as an action, so
+ * a wrong token is something the user fixes rather than something the client
+ * re-asks for on a timer.
+ */
+export function requestToken(): string {
   const entered = window.prompt('Enter the Marshal webbridge bearer token:')
   if (entered === null) {
     promptDeclined = true
@@ -82,6 +119,17 @@ export function ensureToken(): string {
   }
   setToken(normalized)
   return normalized
+}
+
+export function ensureToken(): string {
+  const token = getToken()
+  if (token) return token
+  // A refused token is not a missing one, and prompting for it again would
+  // send the same value and earn the same 401. Fail fast; the UI offers
+  // re-entry instead.
+  if (tokenRejected) throw new AuthError('Token rejected')
+  if (promptDeclined) throw new AuthError('Token is required')
+  return requestToken()
 }
 
 export class AuthError extends Error {
@@ -151,9 +199,9 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
     }
   }
   if (res.status === 401) {
-    // Forgetting the token makes the next request prompt again, once rather
-    // than once per in-flight request (clearToken re-arms the guard).
-    clearToken()
+    // Mark the token refused rather than forgetting it: the next request must
+    // fail fast instead of prompting for the value the bridge just rejected.
+    rejectToken()
     throw new AuthError('Unauthorized')
   }
   if (!res.ok) {

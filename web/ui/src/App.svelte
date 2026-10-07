@@ -34,9 +34,30 @@
   import DecisionOutcomeView from './lib/inbox/DecisionOutcome.svelte'
   import { outcomeFor, type DecisionOutcome } from './lib/inbox/decision'
   import { sessionsProjectFromHash, isScopedSessions, pageFromHash, parseChatRoute, parseRunRoute, parseLiveRoute, parseLibraryRoute, parseSettingsRoute, parseUsageRoute, parseWorkspacesRoute, parseNetworkRoute, parseProjectRoute, parseWatchesRoute, redirectLegacy } from './lib/routes'
-  import { listPending, listClients, type PendingSubmission, type MCPClient, type NetDecisionKind } from './lib/api'
+  import { isTokenRejected, listPending, listClients, requestToken, type PendingSubmission, type MCPClient, type NetDecisionKind } from './lib/api'
 
   let hash = $state('#')
+
+  /*
+    A token the bridge refused is not a transient error: the client stops
+    calling the API rather than re-prompting, because re-prompting for the
+    value the server just rejected is a loop. That leaves the UI with no way
+    back unless it offers one, so this surfaces the refusal as an action.
+    Re-checked on a timer because the refusal happens inside a request, not
+    in a store the shell can subscribe to.
+  */
+  let tokenRejected = $state(false)
+
+  function enterToken() {
+    try {
+      requestToken()
+    } catch {
+      // Cancelling or entering nothing leaves the refusal standing, which
+      // is the honest outcome: the banner stays until a token is accepted.
+    }
+    tokenRejected = isTokenRejected()
+    if (!tokenRejected) actions.refresh()
+  }
 
   /*
     Collapsed is a rail that keeps its place in the layout rather than an
@@ -117,6 +138,11 @@
       navOpen = window.innerWidth >= 1024
     }
 
+    tokenRejected = isTokenRejected()
+    const tokenPoll = setInterval(() => {
+      tokenRejected = isTokenRejected()
+    }, 1000)
+
     // A project added or removed in ProjectsPanel is already reflected in
     // that panel's own list, but the sidebar badge reads the fleet store —
     // so returning from these routes is the moment to bring it back in
@@ -170,6 +196,7 @@
     return () => {
       window.removeEventListener('hashchange', update)
       window.removeEventListener('keydown', onKey)
+      clearInterval(tokenPoll)
       ctl.abort()
       disconnect()
     }
@@ -372,6 +399,15 @@
     {/if}
   </main>
 </div>
+
+{#if tokenRejected}
+  <div class="fixed right-4 bottom-4 z-50 max-w-sm rounded-md border border-danger bg-raise p-3 text-sm shadow-lg" role="alert" data-testid="token-rejected">
+    <p>The bridge rejected this token. Requests are paused rather than retried, because retrying sends the same refused value.</p>
+    <div class="mt-2 flex items-center gap-2">
+      <button type="button" class="cursor-pointer rounded border border-border px-2 py-1 text-xs hover:bg-hover" onclick={enterToken}>Enter a different token</button>
+    </div>
+  </div>
+{/if}
 
 {#if toast}
   <div class="fixed right-4 bottom-4 z-50 max-w-sm rounded-md border border-attention bg-raise p-3 text-sm shadow-lg" role="status">

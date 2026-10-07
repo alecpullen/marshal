@@ -1,4 +1,4 @@
-import { clearToken, ensureToken, getToken } from './api.js'
+import { ensureToken, getToken, rejectToken } from './api.js'
 import type { FleetEvent, ProjectRemovedDelta } from './fleet'
 
 export interface SSEMessage {
@@ -123,7 +123,10 @@ export function connectSSE({ sessionId, query, url, resume = true, onEvent, sign
         })
         if (!res.ok) {
           if (res.status === 401) {
-            clearToken()
+            // The bridge refused the bearer. Mark it rejected: the stream
+            // stops below, and the next request fails fast rather than
+            // prompting for the same value again.
+            rejectToken()
             unauthorized = true
           }
           throw new Error(`SSE connect failed: ${res.status}`)

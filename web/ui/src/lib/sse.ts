@@ -1,4 +1,4 @@
-import { ensureToken, getToken } from './api.js'
+import { clearToken, ensureToken, getToken } from './api.js'
 import type { FleetEvent, ProjectRemovedDelta } from './fleet'
 
 export interface SSEMessage {
@@ -96,7 +96,19 @@ export function connectSSE({ sessionId, query, url, resume = true, onEvent, sign
 
   const run = async () => {
     while (!cancelled) {
-      const token = getToken() ?? ensureToken()
+      // A 401 is terminal for this connection: retrying the same bearer
+      // forever cannot succeed, and at a 30s backoff it is a silent drip of
+      // rejected requests. Stop and let the next request re-prompt.
+      let unauthorized = false
+      // No token means no stream: retrying cannot succeed, and prompt() is
+      // shown once per decline, so a spin here would only repeat the error.
+      let token: string
+      try {
+        token = getToken() ?? ensureToken()
+      } catch (err) {
+        onEvent({ type: 'error', error: err instanceof Error ? err : new Error(String(err)) })
+        return
+      }
       const lastId = resume ? getLastEventId(streamKey) : memId
       try {
         const target = url
@@ -110,6 +122,10 @@ export function connectSSE({ sessionId, query, url, resume = true, onEvent, sign
           signal: abortController.signal,
         })
         if (!res.ok) {
+          if (res.status === 401) {
+            clearToken()
+            unauthorized = true
+          }
           throw new Error(`SSE connect failed: ${res.status}`)
         }
         if (!res.body) {
@@ -144,7 +160,7 @@ export function connectSSE({ sessionId, query, url, resume = true, onEvent, sign
         onEvent({ type: 'error', error: err instanceof Error ? err : new Error(String(err)) })
       }
 
-      if (cancelled) return
+      if (cancelled || unauthorized) return
       await sleep(reconnectDelay)
       reconnectDelay = Math.min(reconnectDelay * 2, maxDelay)
       abortController = new AbortController()

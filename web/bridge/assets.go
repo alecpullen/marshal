@@ -91,36 +91,70 @@ func serveFile(w http.ResponseWriter, r *http.Request, name string, f fs.File) {
 }
 
 // looksHashed reports whether a filename appears to contain a content hash
-// (e.g. assets/main-a3f1c2.js). Hashed assets can be cached forever.
+// (e.g. assets/index-a3f1c2.js). Hashed assets can be cached forever.
+//
+// Vite's hashes are base64url, so they carry upper-case letters, digits and
+// the URL-safe "-"/"_" (index-CPIn_Y0W.js, index-zKuPc3MY.css). An earlier
+// version accepted only a run of [a-f0-9] and therefore matched none of the
+// assets Vite actually emits: every chunk fell to the revalidate branch, so
+// the immutable cache was never set and browsers re-requested the whole
+// bundle on every load.
 func looksHashed(name string) bool {
 	base := path.Base(name)
-	// A typical Vite hashed chunk contains an 8+ char hex/alphanumeric hash
-	// delimited by dots or dashes: main-a1b2c3d4.js or main.a1b2c3d4.js.
+	// The extension carries no hash; drop it so the dot convention
+	// (main.a1b2c3d4.js) does not mistake the suffix for one.
+	stem := base
+	if i := strings.LastIndex(base, "."); i > 0 {
+		stem = base[:i]
+	}
 	for _, sep := range []string{"-", "."} {
-		parts := strings.Split(base, sep)
-		for _, part := range parts[:max(0, len(parts)-1)] {
-			if len(part) >= 8 && isHash(part) {
-				return true
-			}
+		// The tail after the last separator is the usual form:
+		// index-CPIn_Y0W, main.a1b2c3d4.
+		if i := strings.LastIndex(stem, sep); i >= 0 && isHashTail(stem[i+1:]) {
+			return true
+		}
+		// A hash may itself contain "-" (go-C27-OAKa), so the tail after
+		// the first separator is a candidate too. It is looser — a
+		// descriptive name like "some-long-name" tails here — so it must
+		// carry a digit to qualify.
+		if i := strings.Index(stem, sep); i >= 0 && isHashWithDigit(stem[i+1:]) {
+			return true
 		}
 	}
 	return false
 }
 
-func isHash(s string) bool {
+// isHashTail reports whether s is shaped like a Vite hash: 8+ base64url
+// characters that are not all lower-case letters. "BgDaEnEv" qualifies (a
+// real Vite hash need not contain a digit) while a word like "documentation"
+// does not.
+func isHashTail(s string) bool {
+	if len(s) < 8 || !base64url(s) {
+		return false
+	}
 	for _, r := range s {
-		if !((r >= 'a' && r <= 'f') || (r >= '0' && r <= '9')) {
+		if !(r >= 'a' && r <= 'z') {
+			return true
+		}
+	}
+	return false
+}
+
+// isHashWithDigit reports whether s could be a hash containing separators.
+func isHashWithDigit(s string) bool {
+	return len(s) >= 8 && base64url(s) && strings.ContainsAny(s, "0123456789")
+}
+
+// base64url reports whether s is drawn from the base64url alphabet.
+func base64url(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r == '-', r == '_':
+		default:
 			return false
 		}
 	}
 	return true
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // openStatic is exposed for tests that need to inspect the embedded tree.

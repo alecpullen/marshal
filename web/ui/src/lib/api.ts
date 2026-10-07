@@ -4,6 +4,14 @@ const TOKEN_KEY = 'marshal:token'
 
 let memoryToken: string | null = null
 
+/*
+  Set when the user dismisses the prompt. Without it every request in flight
+  (the SPA opens several at mount, and the pollers fire every few seconds)
+  opens its own dialog, so one dismissal produced a stack of prompts. It is
+  cleared by any successful entry, so a later deliberate entry still prompts.
+*/
+let promptDeclined = false
+
 export function getToken(): string | null {
   if (memoryToken) return memoryToken
   try {
@@ -14,10 +22,45 @@ export function getToken(): string | null {
   return memoryToken
 }
 
+/**
+ * Reduces what a user actually pastes to the bare token.
+ *
+ * The prompt asks for the token, but the token is normally copied from a
+ * command line, where it appears as `Authorization: Bearer <token>` or as
+ * an `-H 'Authorization: Bearer <token>'` argument. Storing that verbatim
+ * sent `Authorization: Bearer Bearer <token>`, and the bridge's
+ * constant-time compare is byte-for-byte, so every request 401'd, the
+ * stored token was cleared on each 401, and the prompt came straight back
+ * — a loop that cannot be escaped by pasting the same thing again.
+ */
+export function normalizeToken(raw: string): string {
+  let t = raw.trim()
+  // Strip a leading "Authorization:" header name, then a "Bearer" scheme, in
+  // either order, so both a header line and a bare value survive. A lone
+  // "Bearer" (the scheme with no token after it) reduces to nothing.
+  t = t.replace(/^authorization\s*:\s*/i, '')
+  t = t.replace(/^bearer(?:\s+|$)/i, '')
+  return t.trim()
+}
+
 export function setToken(token: string): void {
-  memoryToken = token
+  const t = normalizeToken(token)
+  if (!t) return
+  memoryToken = t
+  promptDeclined = false
   try {
-    sessionStorage.setItem(TOKEN_KEY, token)
+    sessionStorage.setItem(TOKEN_KEY, t)
+  } catch {
+    // ignore
+  }
+}
+
+/** Drop the token from memory and storage, so the next call prompts again. */
+export function clearToken(): void {
+  memoryToken = null
+  promptDeclined = false
+  try {
+    sessionStorage.removeItem(TOKEN_KEY)
   } catch {
     // ignore
   }
@@ -26,10 +69,19 @@ export function setToken(token: string): void {
 export function ensureToken(): string {
   const token = getToken()
   if (token) return token
+  if (promptDeclined) throw new AuthError('Token is required')
   const entered = window.prompt('Enter the Marshal webbridge bearer token:')
-  if (!entered) throw new AuthError('Token is required')
-  setToken(entered)
-  return entered
+  if (entered === null) {
+    promptDeclined = true
+    throw new AuthError('Token is required')
+  }
+  const normalized = normalizeToken(entered)
+  if (!normalized) {
+    promptDeclined = true
+    throw new AuthError('Token is required')
+  }
+  setToken(normalized)
+  return normalized
 }
 
 export class AuthError extends Error {
@@ -99,12 +151,9 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
     }
   }
   if (res.status === 401) {
-    memoryToken = null
-    try {
-      sessionStorage.removeItem(TOKEN_KEY)
-    } catch {
-      // ignore
-    }
+    // Forgetting the token makes the next request prompt again, once rather
+    // than once per in-flight request (clearToken re-arms the guard).
+    clearToken()
     throw new AuthError('Unauthorized')
   }
   if (!res.ok) {

@@ -16,6 +16,10 @@ export default defineConfig(({ mode }) => ({
     // DOMPurify needs a real DOM to bind to, and component tests need one
     // too. Without this vitest defaults to node and sanitize() is absent.
     environment: 'jsdom',
+    // Node 26's own `localStorage` global shadows jsdom's and is undefined
+    // without --localstorage-file, which broke every test that touches it.
+    // See src/test-setup.ts.
+    setupFiles: ['./src/test-setup.ts'],
   },
   /*
     Svelte ships a server build and a client build. Without the browser

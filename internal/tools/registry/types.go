@@ -88,6 +88,13 @@ const (
 	// silently coerced it into range. Distinct from NoticeCappedResults,
 	// which marks result-set truncation, so consumers can switch cleanly.
 	NoticeContextClamped = "context_clamped"
+	// NoticeKindKnobIgnored marks a line-matching parameter that was silently
+	// dropped because it does not apply: a kind query resolves via the symbol
+	// index, so context and non-auto mode are ignored rather than rejecting
+	// the call. Postmortems showed agents re-issuing the same rejected call
+	// unchanged, so the call now succeeds and this notice carries the
+	// remediation.
+	NoticeKindKnobIgnored = "kind_knob_ignored"
 )
 
 type ToolResult struct {

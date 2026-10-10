@@ -44,7 +44,7 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 		Description: "Search workspace files for matching lines. Default mode=auto: bare words do a case-sensitive substring match, pattern-shaped queries are compiled as RE2 (choice echo in summary). Use kind=func|method|type|import to resolve via the symbol index instead of line-matching. context adds 0-3 surrounding lines; results cap at 200 with guidance.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string","description":` +
 			t.pathDescription("directory or file to search, relative to the workspace") +
-			`},"max_results":{"type":"integer"},"mode":{"type":"string","enum":["auto","substring","regex"]},"kind":{"type":"string","enum":["function","method","type","import"],"description":"Resolve via the symbol index instead of line-matching; when set, context and mode are rejected, while path, include, and max_results still filter results"},"include":{"type":"string"},"context":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
+			`},"max_results":{"type":"integer"},"mode":{"type":"string","enum":["auto","substring","regex"]},"kind":{"type":"string","enum":["function","method","type","import"],"description":"Resolve via the symbol index instead of line-matching; when set, context and mode are ignored (a notice explains), while path, include, and max_results still filter results"},"include":{"type":"string"},"context":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
 		Risk: registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -53,17 +53,36 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 			return registry.ToolResult{}, err
 		}
 
-		// Kind queries resolve through the symbol index and reject the
-		// line-matching knobs (context, non-auto mode) up front.
+		// Kind queries resolve through the symbol index, so the line-matching
+		// knobs (context, non-auto mode) do not apply. They are dropped with a
+		// kind_knob_ignored notice rather than rejecting the call: postmortems
+		// showed agents re-issuing the same rejected call unchanged (the
+		// single most-repeated tool failure), so the call now succeeds and the
+		// notice carries the remediation instead.
+		var kindNotice *registry.ToolNotice
 		if args.Kind != "" {
 			if !validSymbolKinds[args.Kind] {
 				return registry.ToolResult{}, fmt.Errorf("repo.search kind %q is not one of function, method, type, import", args.Kind)
 			}
+			ignored := make([]string, 0, 2)
 			if args.Context != 0 {
-				return registry.ToolResult{}, fmt.Errorf("repo.search context does not apply when kind is set")
+				ignored = append(ignored, "context")
+				args.Context = 0
 			}
 			if args.Mode != "" && args.Mode != "auto" {
-				return registry.ToolResult{}, fmt.Errorf("repo.search mode does not apply when kind is set")
+				ignored = append(ignored, "mode")
+				args.Mode = ""
+			}
+			if len(ignored) > 0 {
+				applies := "does not apply to kind queries"
+				if len(ignored) > 1 {
+					applies = "do not apply to kind queries"
+				}
+				kindNotice = &registry.ToolNotice{
+					Kind: registry.NoticeKindKnobIgnored,
+					Text: fmt.Sprintf("%s %s (kind queries resolve via the symbol index)", strings.Join(ignored, " and "), applies),
+					Data: map[string]any{"ignored": strings.Join(ignored, ",")},
+				}
 			}
 			if t.db == nil || t.projectID == 0 {
 				return registry.ToolResult{}, errors.New("database not configured for repo.search kind queries")
@@ -85,6 +104,22 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 		}
 
 		if args.Kind != "" {
+			// finishKindResult attaches the kind_knob_ignored notice, when one
+			// was recorded, to any kind-branch result. The footer is appended
+			// after limitOutput so the remediation survives output truncation,
+			// mirroring the line branch's clamp handling.
+			finishKindResult := func(result registry.ToolResult) registry.ToolResult {
+				if kindNotice == nil {
+					return result
+				}
+				if result.Content == "" {
+					result.Content = kindNotice.Text
+				} else {
+					result.Content += "\n" + kindNotice.Text
+				}
+				result.Notice = kindNotice
+				return result
+			}
 			// Validate the include glob up front, exactly as the line-search
 			// path does, so a bad pattern is a clear error rather than a
 			// silently empty result.
@@ -122,10 +157,10 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 					// filter can only match nothing. Report that honestly rather
 					// than failing the call, which would be inconsistent with the
 					// unfiltered kind query that succeeds against these roots.
-					return registry.ToolResult{
+					return finishKindResult(registry.ToolResult{
 						Summary: "No matching symbols (path outside the indexed workspace)",
 						Content: fmt.Sprintf("path %q resolves outside the indexed workspace (e.g. a linked worktree or an additional root); the symbol index stores workspace-relative paths, so no indexed symbol can match it — retry without a path, or run the search from that root", args.Path),
-					}, nil
+					}), nil
 				}
 				// "." means the workspace root itself: no restriction.
 				if rel != "." {
@@ -165,17 +200,17 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 			if len(symbols) == 0 {
 				// Keep the plain message byte-for-byte when no filter was given.
 				if !filtered {
-					return registry.ToolResult{
+					return finishKindResult(registry.ToolResult{
 						Summary: "No matching symbols",
 						Content: "No matching symbols — run repo.index first if the index may be missing",
-					}, nil
+					}), nil
 				}
 				// Say which filter applied, so a model can tell "no such symbol"
 				// apart from "my filter excluded it".
-				return registry.ToolResult{
+				return finishKindResult(registry.ToolResult{
 					Summary: "No matching symbols (filtered)",
 					Content: fmt.Sprintf("No matching symbols after applying %s — the symbol may exist outside the filtered scope, or run repo.index first if the index may be missing", describeSymbolFilters(pathPrefix, args.Include)),
-				}, nil
+				}), nil
 			}
 
 			rendered := t.renderSymbolSkeletons(symbols)
@@ -197,10 +232,10 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 				summary += " (capped)"
 				content += fmt.Sprintf("\n(result capped at %d symbols; more matching symbols may exist — narrow the query or add a path/include filter)", limit)
 			}
-			return registry.ToolResult{
+			return finishKindResult(registry.ToolResult{
 				Summary: summary,
 				Content: limitOutput(content, t.maxOutputBytes),
-			}, nil
+			}), nil
 		}
 
 		var match lineMatcher

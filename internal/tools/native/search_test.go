@@ -707,23 +707,75 @@ func TestRepoSearchKindFunctionHeaderOnly(t *testing.T) {
 	}
 }
 
-func TestRepoSearchKindRejectsContext(t *testing.T) {
+func TestRepoSearchKindDropsContext(t *testing.T) {
 	root := t.TempDir()
-	reg := newKindSearchRegistry(t, root, nil)
-	if _, err := invokeTool(t, reg, "repo.search", `{"query":"x","kind":"type","context":1}`); err == nil {
-		t.Fatal("expected error when context is set with kind")
-	} else if !strings.Contains(err.Error(), "context does not apply when kind is set") {
-		t.Fatalf("error = %v, want it to mention context does not apply", err)
+	reg := newKindSearchRegistry(t, root, []db.Symbol{
+		{FilePath: "foo.go", Kind: "type", Name: "Foo", Signature: "type Foo struct", LineStart: 1, LineEnd: 1},
+	})
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"Foo","kind":"type","context":1}`)
+	if err != nil {
+		t.Fatalf("repo.search kind+context failed: %v", err)
+	}
+	if !strings.Contains(result.Content, "type Foo struct") {
+		t.Fatalf("Content missing symbol skeleton:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "context does not apply to kind queries") {
+		t.Fatalf("Content missing knob-ignored footer:\n%s", result.Content)
+	}
+	if result.Notice == nil {
+		t.Fatal("Notice = nil, want kind_knob_ignored")
+	}
+	if result.Notice.Kind != registry.NoticeKindKnobIgnored {
+		t.Fatalf("Notice.Kind = %q, want %q", result.Notice.Kind, registry.NoticeKindKnobIgnored)
+	}
+	if result.Notice.Data["ignored"] != "context" {
+		t.Fatalf("Notice.Data[ignored] = %v, want context", result.Notice.Data["ignored"])
 	}
 }
 
-func TestRepoSearchKindRejectsRegexMode(t *testing.T) {
+func TestRepoSearchKindDropsRegexMode(t *testing.T) {
 	root := t.TempDir()
-	reg := newKindSearchRegistry(t, root, nil)
-	if _, err := invokeTool(t, reg, "repo.search", `{"query":"x","kind":"type","mode":"regex"}`); err == nil {
-		t.Fatal("expected error when mode is set with kind")
-	} else if !strings.Contains(err.Error(), "mode does not apply when kind is set") {
-		t.Fatalf("error = %v, want it to mention mode does not apply", err)
+	reg := newKindSearchRegistry(t, root, []db.Symbol{
+		{FilePath: "foo.go", Kind: "type", Name: "Foo", Signature: "type Foo struct", LineStart: 1, LineEnd: 1},
+	})
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"Foo","kind":"type","mode":"regex"}`)
+	if err != nil {
+		t.Fatalf("repo.search kind+mode failed: %v", err)
+	}
+	if !strings.Contains(result.Content, "type Foo struct") {
+		t.Fatalf("Content missing symbol skeleton:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, "mode does not apply to kind queries") {
+		t.Fatalf("Content missing knob-ignored footer:\n%s", result.Content)
+	}
+	if result.Notice == nil {
+		t.Fatal("Notice = nil, want kind_knob_ignored")
+	}
+	if result.Notice.Kind != registry.NoticeKindKnobIgnored {
+		t.Fatalf("Notice.Kind = %q, want %q", result.Notice.Kind, registry.NoticeKindKnobIgnored)
+	}
+	if result.Notice.Data["ignored"] != "mode" {
+		t.Fatalf("Notice.Data[ignored] = %v, want mode", result.Notice.Data["ignored"])
+	}
+}
+
+func TestRepoSearchKindDropsContextAndModeTogether(t *testing.T) {
+	root := t.TempDir()
+	reg := newKindSearchRegistry(t, root, []db.Symbol{
+		{FilePath: "foo.go", Kind: "type", Name: "Foo", Signature: "type Foo struct", LineStart: 1, LineEnd: 1},
+	})
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"Foo","kind":"type","context":2,"mode":"substring"}`)
+	if err != nil {
+		t.Fatalf("repo.search kind+context+mode failed: %v", err)
+	}
+	if !strings.Contains(result.Content, "context and mode do not apply to kind queries") {
+		t.Fatalf("Content missing plural knob-ignored footer:\n%s", result.Content)
+	}
+	if result.Notice == nil {
+		t.Fatal("Notice = nil, want kind_knob_ignored")
+	}
+	if result.Notice.Data["ignored"] != "context,mode" {
+		t.Fatalf("Notice.Data[ignored] = %v, want context,mode", result.Notice.Data["ignored"])
 	}
 }
 

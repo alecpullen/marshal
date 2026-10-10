@@ -87,11 +87,16 @@ type approvalModel struct {
 // made non-bypassable, and session-allow would be a silent no-op — session
 // rules are only consulted for shell.run/test.run
 // (internal/tools/policy/policy.go).
+//
+// shell.sudo is in this class: privileged execution is gated on a per-command
+// password prompt, so an always-allow would let a later command run as root
+// with no authentication at all.
 func forcedPromptClass(tc *session.PendingToolCall) bool {
 	if tc == nil {
 		return false
 	}
 	return tc.Name == "config.write" ||
+		tc.Name == "shell.sudo" ||
 		tc.Risk == "model-cost-consent" ||
 		isModeElevationApproval(tc)
 }

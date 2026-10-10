@@ -316,7 +316,10 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Name: "system",
 			Description: "System access: file tools may read/write absolute paths anywhere on the filesystem; " +
 				"shell file editing is permitted; guardrails shrink to a catastrophic floor. " +
-				"Sticky until toggled off. Does not change approval friction.",
+				"Sticky until toggled off. Does not change approval friction. " +
+				"`/system unlock` toggles privileged unlock: privileged commands reuse sudo's own timestamp grace " +
+				"instead of authenticating fresh each time.",
+			Args:    "[unlock]",
 			Group:   groupWorkflow,
 			TUIOnly: true,
 		},

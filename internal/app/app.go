@@ -753,6 +753,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		JobManager:     jobManager,
 		JobBroker:      jobBroker,
 		Guardrail:      func(cmd string, system bool) error { return pol.GuardrailCheck(cmd, system) },
+		SudoPolicy:     pol.CheckPrivileged,
 		ConfigPath:     config.ProjectConfigPath(state.WorkingDir),
 		UserConfigPath: config.UserConfigPath(homeDir),
 		ConfigReloader: configReloader,
@@ -2412,6 +2413,11 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			return nil
 		default:
 		}
+
+		// The TUI can raise a masked secret prompt; ACP/web cannot, so
+		// shell.sudo refuses there rather than blocking on a prompt no
+		// transport can answer.
+		state.SetSecretPromptCapable(true)
 
 		progResult := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
 

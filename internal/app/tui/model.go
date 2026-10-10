@@ -234,6 +234,7 @@ type Model struct {
 	questionModel      *questionModel
 	childQuestionModel *questionModel
 	skillGateModel     *skillGateModel
+	sudoAuthModel      *sudoAuthModel
 
 	// F18: editor completions. cmdPopup is fed by the commands registry
 	// (triggered by `/` at position 0) and filePopup is fed by the repo
@@ -1452,6 +1453,9 @@ func New(state *session.State, opts ...Option) Model {
 	if sg := m.state.PendingSkillGate(); sg != nil {
 		m.skillGateModel = newSkillGateModel(sg, max(m.leftWidth-4, 30))
 	}
+	if sa := m.state.PendingSudoAuth(); sa != nil {
+		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
+	}
 
 	m.gitInfo = gitinfo.Read(state.Workspace().ActiveRoot)
 	m.lastGitRead = m.now()
@@ -2413,7 +2417,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
 	// tool decision is pending. These must be intercepted before the
 	// approval/question routing below, which would otherwise swallow them.
-	if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingChildQuestion() != nil || m.state.PendingSkillGate() != nil {
+	if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingChildQuestion() != nil || m.state.PendingSkillGate() != nil || m.state.PendingSudoAuth() != nil {
 		if k, ok := msg.(tea.KeyPressMsg); ok {
 			switch k.String() {
 			case "ctrl+o":
@@ -2430,6 +2434,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+	}
+
+	// Inline privileged-auth prompt: while a sudo password is pending, route
+	// messages to the masked form (scroll gestures first, mirroring the
+	// approval and question forms).
+	if sa := m.state.PendingSudoAuth(); sa != nil {
+		if updated, cmd, handled := m.scrollTranscript(msg); handled {
+			return updated, cmd
+		}
+		return m.handleSudoAuth(msg, sa)
 	}
 
 	// Inline skill-gate dialog: while a skill load gate is pending, route
@@ -2971,6 +2985,36 @@ func (m Model) handleSkillGate(msg tea.Msg, sg *session.PendingSkillGate) (tea.M
 	return m, nil
 }
 
+// handleSudoAuth routes messages to the inline masked password prompt while a
+// privileged-command authentication is pending. The decision is responded on
+// the original pending struct; the password lives only in the decision value
+// on that channel and is zeroed by the tool handler after use.
+func (m Model) handleSudoAuth(msg tea.Msg, sa *session.PendingSudoAuth) (tea.Model, tea.Cmd) {
+	if m.sudoAuthModel == nil || m.sudoAuthModel.sa != sa {
+		// Build lazily — and rebuild when the open form is bound to a pending
+		// struct that was superseded while it was up (parity with the
+		// approval/question/skill-gate pending-identity guards).
+		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
+		return m, nil
+	}
+	sm, cmd := m.sudoAuthModel.Update(msg)
+	m.sudoAuthModel = sm
+	if !sm.IsDone() {
+		return m, cmd
+	}
+	decision := sm.Decision()
+	m.sudoAuthModel = nil
+	// Respond only if the slot still holds this prompt: a pending resolved
+	// out-from-under the form (shutdown race) must not have its replacement
+	// cleared without a response.
+	if cur := m.state.PendingSudoAuth(); cur == sa {
+		sa.Respond(decision)
+		m.state.SetPendingSudoAuth(nil)
+	}
+	m.refreshViewport()
+	return m, nil
+}
+
 // scrollTranscript routes viewport scroll gestures to the transcript
 // viewport so the user can review history while an approval or question
 // panel is open. It returns (model, cmd, true) when the message was handled.
@@ -3050,7 +3094,15 @@ func (m Model) inputChromeRows() int {
 	if sd := m.state.SDDProgress(); sd.Active {
 		rows++ // SDD hint row
 	}
-	if sg := m.state.PendingSkillGate(); sg != nil {
+	if sa := m.state.PendingSudoAuth(); sa != nil {
+		content := ""
+		if m.sudoAuthModel != nil {
+			content = m.sudoAuthModel.View()
+		} else {
+			content = renderSudoAuthPanel(sa, max(m.leftWidth-4, 1))
+		}
+		rows += lipgloss.Height(content)
+	} else if sg := m.state.PendingSkillGate(); sg != nil {
 		content := ""
 		if m.skillGateModel != nil {
 			content = m.skillGateModel.View()
@@ -3102,7 +3154,7 @@ func (m Model) inputChromeRows() int {
 
 func (m Model) inputAreaRows() int {
 	rows := m.inputChromeRows()
-	if m.state.PendingQuestion() == nil && m.state.PendingChildQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil {
+	if m.state.PendingQuestion() == nil && m.state.PendingChildQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil && m.state.PendingSudoAuth() == nil {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
 		rows += max(m.input.Height(), 1)
@@ -4219,6 +4271,9 @@ func (m Model) settingsBlockReason() string {
 	}
 	if m.state.PendingChildQuestion() != nil {
 		return "Answer the pending subagent question to save."
+	}
+	if m.state.PendingSudoAuth() != nil {
+		return "Authenticate or deny the pending privileged command to save."
 	}
 	if m.dock.IsOpen() {
 		if _, browser := m.dock.Panel().(*settings.BrowserPanel); browser {

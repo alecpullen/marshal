@@ -184,7 +184,15 @@ func (m Model) renderInputArea() string {
 	inputInnerWidth := max(m.leftWidth-4, 1)
 	rows := make([]string, 0, 4)
 
-	if sg := m.state.PendingSkillGate(); sg != nil {
+	if sa := m.state.PendingSudoAuth(); sa != nil {
+		if m.sudoAuthModel != nil {
+			rows = append(rows, m.sudoAuthModel.View())
+		} else {
+			rows = append(rows, renderSudoAuthPanel(sa, inputInnerWidth))
+		}
+		// The textarea is deliberately not rendered: every keypress routes to
+		// the masked prompt while it is pending.
+	} else if sg := m.state.PendingSkillGate(); sg != nil {
 		if m.skillGateModel != nil {
 			rows = append(rows, m.skillGateModel.View())
 		} else {
@@ -241,6 +249,8 @@ func (m Model) inputBarColor() color.Color {
 	switch {
 	case m.successPulse:
 		return successColor
+	case m.state.PendingSudoAuth() != nil:
+		return warningColor
 	case m.state.PendingSkillGate() != nil:
 		return violetColor
 	case m.state.PendingQuestion() != nil, m.state.PendingChildQuestion() != nil:
@@ -318,7 +328,7 @@ func (m Model) suggestionGhost() string {
 	// The completion popup, approval, question, child-question, and
 	// skill-gate panels all hide the textarea; a ghost would be a visual
 	// conflict, so suppress it.
-	if m.activeCompletionPopup() != nil || m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingChildQuestion() != nil || m.state.PendingSkillGate() != nil {
+	if m.activeCompletionPopup() != nil || m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingChildQuestion() != nil || m.state.PendingSkillGate() != nil || m.state.PendingSudoAuth() != nil {
 		return ""
 	}
 	// The ghost is spliced into a single rendered row. A newline would add

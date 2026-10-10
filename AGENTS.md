@@ -1,191 +1,211 @@
 # AGENTS.md
 
-This file provides guidance to AI coding agents (Claude Code, Kimi Code, Codex, etc.) when working with code in this repository.
+Guidance for AI coding agents (Claude Code, Kimi Code, Codex, …) working in
+this repository. Marshal loads the first of `AGENTS.md` / `CLAUDE.md` /
+`GEMINI.md` / `.cursorrules` as repo-level instructions
+(`internal/app/instructions.go`), so this file is part of the prompt.
 
 ## Project
 
-**Marshal** is a local-friendly TUI coding agent for developers who want control over inference, context, tooling, and repository knowledge. Built in Go with Bubble Tea. The binary is named `marshal`.
+**Marshal** is a local-friendly TUI coding agent: it understands a repository,
+edits files, runs shell commands and tests, and keeps project context across
+sessions — with local models as first-class citizens and any
+OpenAI-compatible, Anthropic, or Ollama-native endpoint as a supported
+backend. Go + Bubble Tea, cgo (tree-sitter), SQLite. Binary: `marshal`.
+
+A separate fleet control plane (`cmd/webbridge` + `web/`) drives many agent
+sessions over ACP from a browser.
 
 ## Commands
 
 ```bash
-# Build (requires CGO_ENABLED=1 and a C toolchain — needed for the
-# tree-sitter dependency used by Go symbol extraction)
-go build ./cmd/marshal
+# Build. CGO_ENABLED=1 is required: tree-sitter (internal/repo/symbols.go)
+# links a C library, so a C toolchain must be present.
+CGO_ENABLED=1 go build ./cmd/marshal
 
-# Run
-go run ./cmd/marshal
-
-# Run all tests
-go test ./...
-
-# Run a single package's tests
-go test ./internal/app/...
-go test ./internal/app/config/...
-
-# Format
-gofmt -w .
-
-# Vet
+go run ./cmd/marshal          # run the TUI
+go test ./...                 # all tests
+go test ./internal/app/...    # one package (prefer the narrowest scope)
 go vet ./...
+gofmt -w .
 ```
 
-## Architecture
+`marshal` also dispatches subcommands: `acp` (headless JSON-RPC server),
+`history`, `plugin`, `snapshots`, `calibrate-tokens`. Top-level flags are
+`--trust` and `--version`.
 
-The current codebase is **Milestones A-Q complete** (skeleton, TUI shell, config, provider abstraction, tool registry, read/search/shell tools, approval system, patch tool, git integration, SQLite project/session DB, repo scanner, tree-sitter symbol index, repo map, context packs, role-based model routing, knowledge agent, swarm runtime with specialist roles, plan execution pipeline, MCP/plugin ecosystem, sandboxed command execution with restricted/container/passthrough backends, and ACP v1 conversation lifecycle). See `.docs-archive/04-tooling-and-shell-safety.md` for sandbox details and `.docs-archive/10-acp.md` for the ACP support matrix. Removed subsystems are documented in `.docs-archive/attic/`.
+### Web control plane
 
-This tree is complete for `internal/`. Check here before building
-something — several subsystems that sound like they need writing already
-exist (the docked-panel host, the session sheet, the provider connect flow).
+```bash
+cd web/ui && npm install && npm run build   # writes web/bridge/static/
+go build ./cmd/webbridge                    # embeds the built assets
+```
+
+The SPA is baked in with `//go:embed`, so a change under `web/ui/src` is
+**invisible until `npm run build` reruns and the binary is rebuilt**.
+
+### End-to-end and usability suites
+
+```bash
+python3 scripts/e2e/run_e2e.py --base http://127.0.0.1:7700 --token TOK ...   # see scripts/e2e/README.md
+go test ./test/usability/... -run TestScripted -v -timeout 5m
+```
+
+The usability harness execs a real binary: build `./marshal` at the repo root
+first, or point `USABILITY_MARSHAL_BINARY` at one.
+
+## Where things live
+
+`docs/ARCHITECTURE.md` is the canonical narrative — high-level flow, project
+identity, and the full layer table. Read it before this map. Below is the
+short version, grouped by concern.
 
 ```
-cmd/marshal/main.go                   — thin entrypoint, delegates to internal/app
+Runtime & orchestration
+  internal/agent/          single-agent loop (runner, tools, protocol, budget)
+  internal/agent/swarm/    multi-agent orchestration, lock, verdict
+  internal/pipeline/       plan execution: implementer/reviewer subagents, build+test gate
+  internal/acp/            ACP v1 transport (sessions, prompts, permissions)
+  internal/viewmodel/      transcript tree (turn → step → row) + JSON projection, shared with ACP
+  internal/worker/         lifecycle contract for supervised background workers
+  internal/pubsub/         in-process typed event broker
+  internal/watch/          background watches (command/job/file sources)
+  internal/worktree/       agent and pipeline worktrees: seed, list, finish
+  internal/postmortem/     per-session harness-friction report
 
-Runtime and orchestration
-internal/agent/                       — agent runtime (single-agent loop)
-internal/agent/swarm/                 — swarm orchestration, lock, state, verdict
-internal/agent/agenttest/             — shared test stubs for the agent package
-internal/pipeline/                    — plan execution: implementer/reviewer/branch-reviewer subagents, build+test gate, controller-owned commits
-internal/worker/                      — lifecycle contract for supervised background workers
-internal/pubsub/                      — in-process typed event broker
-internal/acp/                         — ACP v1 headless transport (initialize, session lifecycle, prompt/cancel, permissions)
-internal/viewmodel/                    — transcript view model (turn → task → step → row, receipts), text helpers, and its JSON wire projection; shared by the TUI and ACP
+App shell & config
+  internal/app/            Run(), dependency wiring, signal handling, repo instructions
+  internal/app/config/     TOML loading, defaults, merge rules
+  internal/app/session/    shared mutable state between TUI and agent
+  internal/trust/          folder-trust store, resolver, project-config hashing
+  internal/credentials/    OS-keychain secret store
+  internal/oauth/          OAuth 2.1 + PKCE client (loopback, DCR)
+  internal/workspacecfg/   sandbox workspace TOML: parse, validate, patch, render
+  internal/testenv/        test helpers immune to ambient XDG_*/home env
+  internal/pathutil/       path resolution helpers
 
-App shell
-internal/app/app.go                   — Run(), dependency wiring, signal handling
-internal/app/config/                  — TOML config loading, defaults, merge rules
-internal/app/logging/                 — slog logger construction
-internal/app/session/                 — in-memory app state, message list, shutdown context
-internal/app/clipboard/               — local clipboard helpers (pbcopy, wl-copy, xclip, xsel); OSC 52 fallback lives in the TUI
-internal/trust/                       — folder-trust store, resolver, project-config hashing
-
-TUI
-internal/app/tui/                     — Bubble Tea model (View/Update/Init); model.go is the hub
-internal/app/tui/dock/                — hosts a single interactive panel above the input area
-internal/app/tui/sessionsheet/        — session sheet (Ctrl+B): read-only sections in a docked panel
-internal/app/tui/inspector/           — full-screen inspector for one step or tool call (browse mode `i`)
-internal/app/tui/settings/            — /settings browser: field list, pane stack, config frames
-internal/app/tui/connect/             — provider connect flow (template → base URL → key → probe → model)
-internal/app/tui/agents/              — /agents roster panel with per-role attribution
-internal/app/tui/memory/              — /memory panel
-internal/app/tui/castlist/            — pre-flight cast list shown before /sdd and /swarm
-internal/app/tui/picker/              — centered modal selection list
-internal/app/tui/chrome/              — shared panel dressing: gutter-framed panels with titles
-internal/app/tui/layout/              — shared responsive breakpoints and dock-panel width policy
-internal/app/tui/theme/               — semantic color slots with NO_COLOR/16/256 detection
-internal/app/tui/huhtheme/            — huh.Theme retuned to the marshal palette
-internal/app/tui/help/                — persistent keybinding footer and ? help overlay
-internal/app/tui/probe/               — provider model-list probing as tea.Cmds
-internal/app/tui/changedfiles/        — working-tree diff against a base ref
-internal/app/tui/gitinfo/             — current branch and linked-worktree name
-internal/app/tui/fuzzy/               — shared filter-as-you-type matcher
-internal/app/tui/listpanel/           — shared list engine: row model, cursor/scroll, frames, drill-in; consumed by settings, docpanel
-internal/app/tui/docpanel/            — renders commands.Doc as a docked scrollable panel (help/tools/log/context/branches/history)
-
-Commands and knowledge
-internal/commands/                    — slash commands (/plan, /test, /profile, …)
-internal/history/                     — generation listing, transcript dump, archived-turn search
-internal/contextpack/                 — context pack builder and budget logic
-internal/rollover/                    — context-window rollover for long sessions
-internal/knowledge/                   — durable project memory agent
-internal/skills/                      — skill-based instruction sets
-internal/export/                      — session transcript → self-contained HTML
-internal/redact/                      — masks secret-bearing values for safe export
-internal/diffview/                    — unified diffs as styled, syntax-highlighted output
+TUI (rendering only)
+  internal/app/tui/        Bubble Tea model; model.go is the hub
+  internal/app/tui/{dock,sessionsheet,inspector,docpanel,listpanel,chrome,layout,picker,fuzzy,glyph,theme,help}
+                           shared panel host, session sheet, browse inspector, list engine, dressing
+  internal/app/tui/{settings,connect,agents,memory,skills,plugins,mcpauth,modeloptions,presetflow,probe,doctorpanel}
+                           interactive surfaces for config, providers, roles, MCP, models
+  internal/app/tui/{sddreview,castlist,gatepanel,postmortempanel,trustpanel,changedfiles,gitinfo,liveregion,textfield}
 
 Models
-internal/llm/                         — provider abstraction
-internal/llm/routing/                 — route resolver, model presets, role profiles
-internal/llm/provider/templates.go    — built-in provider templates (ollama, openai, groq, …)
-internal/llm/catalog/                 — curated table of well-known models
-internal/llm/schema/                  — tool/response schema types
-internal/llm/streaming/               — streaming response handling
-internal/llm/embedding/               — local-friendly text embedding
-internal/llm/pricing/                 — per-model token pricing table
+  internal/llm/            provider abstraction (OpenAI-compatible, Anthropic, Ollama-native, Codex)
+  internal/llm/provider/{limits,modelcache,oauthworker}   limit discovery, model-list cache, token refresh
+  internal/llm/routing/    route resolver, model presets, role profiles
+  internal/llm/{schema,streaming,embedding,pricing,catalog}
 
 Repo intelligence
-internal/repo/                        — repo scanner, file hashing, gitignore, repo map/card
-internal/repo/symbols.go              — tree-sitter symbol extraction (Go, TS/JS, Python, Rust)
-internal/index/                       — chunking, embedding indexer, file watcher
-internal/retrieval/                   — semantic retrieval over embeddings
-internal/lsp/                         — LSP client/manager with symbol, query, diagnostics adapters
-internal/diagnostics/                 — configurable per-language checkers (go vet, …)
+  internal/repo/           scanner, hashing, gitignore, repo map/card, tree-sitter symbols
+  internal/index/          chunking, embedding indexer, file watcher
+  internal/retrieval/      semantic retrieval over embeddings
+  internal/lsp/            LSP client/manager with symbol, query, diagnostics adapters
+  internal/diagnostics/    configurable per-language checkers
+
+Context & knowledge
+  internal/contextpack/    context pack builder and budget logic
+  internal/rollover/       context-window rollover for long sessions
+  internal/knowledge/      durable project memory agent
+  internal/skills/         skill-based instruction sets (builtin/ ships the defaults)
+  internal/commands/       slash commands (/plan, /sdd, /swarm, /settings, …)
+  internal/history/        generation listing, transcript dump, archived-turn search
+  internal/{export,redact,diffview}   HTML export, secret masking, styled unified diffs
+
+SDD plan authoring
+  internal/sddauthor/      converts an approved design into one reviewed executable plan
+  internal/sddplans/       discovers plan files a /sdd run can execute
 
 Persistence
-internal/db/                          — SQLite project/session persistence
-internal/db/symbols.go                — symbol DB schema and queries
-internal/db/migrations.go             — schema; all CREATE TABLE statements live here
-internal/snapshot/                    — git-backed workspace snapshots for rollback
-internal/filetrack/                   — per-session file read/write timestamps
+  internal/db/             SQLite project/session persistence (migrations.go owns the schema)
+  internal/snapshot/       git-backed workspace snapshots, bounded storage, rollback
+  internal/filetrack/      per-session file read/write timestamps
 
-Tools and safety
-internal/tools/registry/              — tool registration and dispatch
-internal/tools/native/                — native tools: file, search, shell, git, repo, symbols
-internal/tools/native/symbols_find.go — symbols.find tool implementation
-internal/tools/patch/                 — patch apply and approval
-internal/tools/policy/                — command approval and risk policy
-internal/tools/mcp/                   — MCP client, protocol, manager
-internal/tools/desktop/               — browser/desktop automation tools
-internal/permissions/                 — tool permission rules, approval-pattern derivation
-internal/hooks/                       — user-defined hook runner (PreToolUse, …)
-internal/plugins/                     — third-party plugin loading (MCP servers, hooks)
-internal/sandbox/                     — restricted, container, and passthrough execution backends
+Tools & safety
+  internal/tools/registry/  tool registration and dispatch
+  internal/tools/native/    file, search, shell, git, repo, symbols, jobs, scratchpad, recall
+  internal/tools/{patch,policy,mcp,desktop}
+  internal/permissions/     tool permission rules, approval-pattern derivation
+  internal/{hooks,plugins}/ user hooks and third-party plugin loading
+  internal/sandbox/         restricted, container, and passthrough execution backends
+  internal/{jsonextract,strutil}
 
-Utilities
-internal/strutil/                     — shared string helpers (truncation, token formatting)
-internal/jsonextract/                 — pulls the first JSON value out of model output
-
-External ACP client
-web/                                  — external ACP client (web/bridge Go server, web/ui Svelte SPA)
-- `web/` is an external ACP client: **standard library only**. It must not
-  import `marshal/internal/...` or any third-party module. `TestWebIsStdlibOnly`
-  in `web/bridge/boundary_test.go` enforces this. If you need agent-side data,
-  extend the JSON contract — do not share a Go type.
-- Bridge subsystems added across W1–W5; check these before rebuilding one:
-  the control agent (`web/bridge/control.go`), templates and builds
-  (`wsstore.go`, `wsbuild.go`), secrets (`secrets.go`), the egress proxy
-  (`egress_proxy.go`), terminals (`terminal.go`), recipes and schedules
-  (`recipes.go`, `schedules.go`), and forge automations: webhooks
-  (`hooks.go`), the review bot (`reviewbot.go`) and the CI fixer
-  (`cifixer.go`).
+Web control plane
+  cmd/webbridge/           HTTP + SSE server supervising `marshal acp` children
+  web/bridge/              bridge subsystems (see the boundary rule below)
+  web/ui/                  Svelte 5 + Vite SPA (dev-only Node toolchain)
 ```
 
-### Data flow
+This tree is complete: several subsystems that sound like they still need
+writing already exist (the docked-panel host, the session sheet, the provider
+connect flow, the plan-execution pipeline, worktree isolation). Check the map
+and `docs/ARCHITECTURE.md` before building one.
 
-`app.Run()` loads config → creates `session.State` → wires `tui.Model` and the agent loop → hands off to `tea.NewProgram`. The `session.State` is the shared mutable state between the TUI and agent layers.
+## Design constraints
 
-### Config loading
+These are load-bearing; code comments and tests point back at them.
 
-Config is merged in order (later wins):
+- **`web/` is standard library only.** Everything under `web/` is an external
+  ACP client: it must not import `marshal/internal/...` or any third-party
+  module. `TestWebIsStdlibOnly` (`web/bridge/boundary_test.go`) enforces this
+  in CI. If it fails, do not add an exception — either the code belongs on the
+  agent side of ACP, or the data belongs in the JSON contract. Extend the
+  contract; do not share a Go type.
+- **The TUI renders only.** No routing, policy, or prompt logic in
+  `internal/app/tui/`. It talks to the agent loop through the structural
+  `AgentRunner` interface so it never imports `internal/agent`.
+- **Tool-safe.** Shell execution is risk-classified and approval-gated; file
+  writes prefer `file.write` / `file.write_patch` because they alone give diff
+  review, backups, and rollback.
+- **Local-friendly.** Defaults assume no built-in providers; remote providers
+  are opt-in and must be configured explicitly. Never assume a hosted model.
+- **Provider-flexible.** The model layer is swappable without TUI changes.
+
+## Config
+
+Merged in order, later wins:
+
 1. Built-in defaults (`config.Default()`)
 2. `~/.config/marshal/config.toml`
 3. `.marshal/config.toml` (project-local)
 
-`[providers]` and `[models.presets]` are user-global only: project configs
-never carry them, all editing surfaces save them to the user config, and a
-trusted project file that still has them is hoisted into the user config on
-load (conflicting entries stay project-local with a deprecation diagnostic).
+`[providers]` and `[models.presets]` are **user-global only**. Project configs
+never carry them; every editing surface saves them to the user config, and a
+trusted project file that still has them is hoisted on load (a conflicting
+entry stays project-local with a deprecation diagnostic).
 
-### Dependency injection seams
+`MARSHAL_CONFIG_DIR` / `XDG_CONFIG_HOME` relocate the config dir;
+`MARSHAL_DATA_DIR` / `XDG_DATA_HOME` relocate the data dir (trust store, model
+cache, logs). Project-scoped state anchors at the **git repository root**, not
+the launch directory, so launching from a subdirectory lands in the same
+project.
 
-`app.Run()` accepts 10 functional options (`app.go:105-210`) so tests can inject fakes without spinning up a real TUI. The most-used are `WithConfigLoader`, `WithProgramRunner`, and `WithNow`; also available are `WithTrustResolver`, `WithWorkingDir`, `WithKnowledgeHook`, `WithWorker`, `WithSessionID`, `WithExistingSession`, and `WithAdditionalDirectories`. Tests in `app_test.go` use this pattern exclusively.
+## Testing notes
 
-### Specs and plans
+- Most packages need cgo, so run the suite with a C toolchain available.
+- `app.Run()` takes functional options (`app.go`) so tests inject fakes
+  instead of starting a real TUI — `WithConfigLoader`, `WithProgramRunner`,
+  `WithNow`, and nine others. `app_test.go` uses this pattern exclusively;
+  prefer it over driving a real program.
+- `internal/testenv.SanitizeXDG` neutralises ambient `XDG_*` vars in
+  `TestMain`. Any new test that injects a temp home into config resolution must
+  live in a package that calls it, or GitHub runners will silently redirect it.
+- Tests that need a specific context window must inject it through the
+  production path (a scripted `routing.RouteResolver`); `RunTask` overwrites
+  the window from the resolved route.
+- CI: `usability.yml` runs only `./test/usability/...`; the full `go test ./...`
+  suite runs in `release.yaml` on tag pushes. Full-suite regressions therefore
+  surface at release time — run the suite locally before assuming a change is
+  clean.
+
+## Specs and plans
 
 Feature design docs and phase specs live in the public tree under
-`docs/<feature>/` (for example `docs/single-stack/` and
-`docs/web-studio/`). Commit them with the work they describe, and keep
-them current when decisions change. Reviewers should not flag them as
-violations.
+`docs/<feature>/` (for example `docs/single-stack/` and `docs/web-studio/`).
+Commit them with the work they describe and keep them current when decisions
+change — reviewers should not flag them as violations.
 
-Historical specs and plans are archived in `.docs-archive/superpowers/specs/`
-and `.docs-archive/superpowers/plans/`. That archive is gitignored and
-stays out of the repo. Scratch execution plans and drafts that aren't meant
-to be published can also go there.
-
-## Design constraints
-
-- **Local-friendly**: default config has no built-in providers; remote providers are allowed but must be configured explicitly. Don't assume a hosted model.
-- **Provider-flexible**: the model layer is swappable without TUI changes.
-- **Tool-safe**: shell execution is classified and requires user approval before running.
-- The TUI is responsible for rendering only — no routing, policy, or prompt logic should live there.
+Historical specs, scratch execution plans, and drafts that are not meant to be
+published go in `.docs-archive/` (gitignored).

@@ -20,11 +20,14 @@ adversarial round.
 > `TestGitPushFloorBypassShapes` / `TestGitPushFloorBypassShapesFlagOff`
 > in `internal/tools/policy/system_floor_test.go`.
 >
-> Separately, the **privilege-escalation half** of item 1 is now closed by
-> the `shell.sudo` inversion (2026-10-10): under system access every
-> privilege-wrapper shape is a Deny in `shell.run`, pinned by
-> `TestPrivilegeWrappersDenyUnderSystemAccess`. See
-> `docs/system-access-mode.md`.
+> Separately, the **privilege-escalation half** of item 1 is **narrowed**
+> by the `shell.sudo` inversion (2026-10-10): under system access the
+> wrapper shapes listed in item 1 are now a Deny in `shell.run`, pinned by
+> `TestPrivilegeWrappersDenyUnderSystemAccess`. It is **not** a full
+> closure — quoted/escaped wrapper names (`'sudo' id`), `sudoedit`,
+> `busybox sudo`, interpreter payloads (`perl -e`, `python3 -c`, `awk`),
+> and `find -exec`/`script`/`tmux`/`expect` shapes still reach Allow. See
+> the "Known gaps" section of `docs/system-access-mode.md`.
 
 ## 1. The non-bypassable git-push floor is bypassable by wrapper and payload shapes
 

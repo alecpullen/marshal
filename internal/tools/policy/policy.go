@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"marshal/internal/app/config"
@@ -1256,6 +1257,25 @@ func (pe *PolicyEngine) GuardrailCheck(command string, system bool) error {
 	dec, reason := pe.EvaluateGuardrails(command, "deny", system)
 	if dec == DecisionDeny {
 		return fmt.Errorf("command blocked by conservative guardrail: %s", reason)
+	}
+	return nil
+}
+
+// CheckPrivileged validates a bare command submitted to the shell.sudo tool.
+// It rejects an empty command and any command that itself invokes a
+// privilege wrapper (the leading sudo is added by Marshal, never by the
+// agent). It does NOT reject a command that merely mentions sudo — that is
+// the false-positive boundary the argv-aware walker exists to hold.
+//
+// The catastrophic floor is applied separately, inside the payload, by
+// GuardrailCheck: the privileged gate and the floor are independent checks
+// and both must pass.
+func (pe *PolicyEngine) CheckPrivileged(command string) error {
+	if strings.TrimSpace(command) == "" {
+		return errors.New("command is required")
+	}
+	if w := PrivilegeWrapperDeny(command); w != "" {
+		return fmt.Errorf("command invokes privilege wrapper %q; pass the bare command — Marshal adds sudo itself", w)
 	}
 	return nil
 }

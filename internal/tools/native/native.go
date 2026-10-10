@@ -80,6 +80,11 @@ type Options struct {
 	// Evaluate upstream in the agent loop).
 	Guardrail func(command string, system bool) error
 
+	// SudoPolicy validates a bare command submitted to shell.sudo. Wired to
+	// (*policy.PolicyEngine).CheckPrivileged in app.go. Optional; when nil,
+	// shell.sudo refuses every command (fail closed).
+	SudoPolicy func(command string) error
+
 	// LSP is an optional LSPQuerier for symbol-name-addressed definition,
 	// references, and hover tools. nil when LSP is unavailable.
 	LSP LSPQuerier
@@ -158,6 +163,10 @@ type toolSet struct {
 	ssrfCheck     func(*url.URL) bool
 
 	guardrail func(command string, system bool) error
+
+	// sudoPolicy validates a bare command submitted to shell.sudo. nil means
+	// shell.sudo refuses every command (fail closed).
+	sudoPolicy func(command string) error
 
 	config config.Config
 
@@ -394,6 +403,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		diagnostics:     newDiagnosticsChecker(opts),
 
 		guardrail:              opts.Guardrail,
+		sudoPolicy:             opts.SudoPolicy,
 		webEnabled:             opts.Config.Web.Enabled,
 		webFetchTimeout:        opts.Config.Web.FetchTimeout,
 		webSearchURL:           opts.Config.Web.SearchURL,

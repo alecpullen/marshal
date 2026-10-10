@@ -1,0 +1,30 @@
+# Config used only for capturing the README's TUI image.
+#
+# It is passed to the capture run via MARSHAL_CONFIG_DIR, so it never touches
+# your real ~/.config/marshal/config.toml. Copy it and edit if you want a
+# different provider or model.
+#
+# The model name below must match something your provider actually serves;
+# override with UISHOT_MODEL=... when running generate.sh.
+
+[profile]
+default = 'shot'
+
+[agent]
+# Writes are allowed without a prompt, but shell commands still go through the
+# approval gate — which is what makes the transcript show a real tool call.
+approval_mode = 'copilot'
+
+[providers.ollama]
+type = 'ollama'
+base_url = 'http://localhost:11434'
+
+[models.presets.shot]
+provider = 'ollama'
+model = 'qwen2.5-coder:7b'
+context_window = 32768
+# Required for a hand-written preset that points at a localhost endpoint.
+# Remote access is gated off by default (remote_providers_allowed = false),
+# and that gate keys on this flag — not on the base URL — so without it
+# marshal reports "remote provider blocked" for your own machine.
+local_only = true

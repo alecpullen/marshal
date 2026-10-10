@@ -11,6 +11,8 @@ you must sign up for.
 > **Status: alpha (v0.0.3-alpha).** Usable day to day, but interfaces, config
 > keys, and on-disk formats may change without a migration path before 0.1.0.
 
+![The Marshal TUI answering a question about a small Go project](docs/ui/tui-session.svg)
+
 ---
 
 ## Why Marshal
@@ -83,10 +85,16 @@ base_url = "http://localhost:11434"
 provider = "ollama"
 model = "qwen2.5-coder:14b"
 context_window = 32768
+local_only = true          # required for a localhost endpoint; see note below
 
 [profile]
 default = "coder"
 ```
+
+> **`local_only` is not optional for a local preset.** Remote providers are
+> gated off by default, and that gate keys on this flag rather than on the
+> base URL. Omit it and marshal reports `remote provider blocked` for your own
+> machine. (Presets created through `/connect` set it for you.)
 
 Different roles can use different models — a small local model for search and
 summarisation, a frontier model for patches. See `/profiles` and `/agents`.
@@ -195,6 +203,8 @@ agents across many projects and repos.
 ```bash
 webbridge --project /path/to/repo --addr 127.0.0.1:7700
 ```
+
+![The Web Studio fleet dashboard](docs/ui/web-fleet.png)
 
 It supervises one `marshal acp` child per agent and serves a Svelte SPA. Both
 clients render the same turn → task → step → tool-call hierarchy, because the

@@ -43,6 +43,15 @@ type sudoRunner struct {
 }
 
 func (r sudoRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	// execRunner installs the deadline; this runner bypasses it, so it must
+	// install its own. Without this the advertised timeout_seconds is a no-op
+	// and a hung privileged command holds the session-wide single-flight lock
+	// until the turn is cancelled.
+	if req.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
+		defer cancel()
+	}
 	argv := sudoArgv(req.Command, r.fresh)
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = req.Dir
@@ -61,7 +70,7 @@ func (r sudoRunner) Run(ctx context.Context, req CommandRequest) (CommandResult,
 
 // sudoArgv builds the privileged command line:
 //
-//	sudo [-k] -S -p <empty> -- <shell> -o pipefail -c <command>
+//	sudo [-k] -S -p <empty> -- <shell> -o pipefail -c 'exec </dev/null; <command>'
 //
 // -S reads the password from stdin; -p with an empty argument suppresses
 // sudo's own prompt text; -- stops option parsing so a command starting with
@@ -69,16 +78,26 @@ func (r sudoRunner) Run(ctx context.Context, req CommandRequest) (CommandResult,
 // to the shell, so there is no argv-injection path. The shell is NOT a login
 // shell: a login shell as root would source root's profiles, an unnecessary
 // surprise.
+//
+// The payload is prefixed with `exec </dev/null;` because sudo and the
+// command it execs share fd 0. sudo reads the password from that fd, but if
+// it never consumes it (NOPASSWD, or a warm unlock grant) the password is
+// still readable and the command can print it — `shell.sudo {"command":"cat"}`
+// would echo the password into the transcript, the audit ledger and the
+// model's context. Redirecting the payload's stdin to /dev/null closes that
+// channel. It is consistent with the documented limitation that privileged
+// commands see EOF on stdin.
 func sudoArgv(command string, fresh bool) []string {
 	argv := []string{"sudo"}
 	if fresh {
 		argv = append(argv, "-k")
 	}
 	argv = append(argv, "-S", "-p", "", "--")
+	payload := "exec </dev/null; " + command
 	if bash, err := exec.LookPath("bash"); err == nil {
-		return append(argv, bash, "-o", "pipefail", "-c", command)
+		return append(argv, bash, "-o", "pipefail", "-c", payload)
 	}
-	return append(argv, "/bin/sh", "-c", command)
+	return append(argv, "/bin/sh", "-c", payload)
 }
 
 // sudoEnv is the child environment: the sandbox allowlist (never Marshal's
@@ -164,6 +183,16 @@ func (t *toolSet) runSudo(ctx context.Context, callID string, args sudoArgs) (re
 	}
 	if err := t.sudoPolicy(command); err != nil {
 		return registry.ToolResult{}, err
+	}
+	// The catastrophic floor applies INSIDE the payload too. CheckPrivileged
+	// deliberately does not reject floor commands (it only rejects a command
+	// that invokes a privilege wrapper), so without this the tool would be a
+	// way to run `rm -rf /etc` as root past the floor that shell.run obeys.
+	// The two checks are independent and both must pass.
+	if t.guardrail != nil {
+		if err := t.guardrail(command, true); err != nil {
+			return registry.ToolResult{}, err
+		}
 	}
 	if _, err := exec.LookPath("sudo"); err != nil {
 		return registry.ToolResult{}, errors.New("sudo not found on PATH")

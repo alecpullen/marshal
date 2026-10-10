@@ -75,6 +75,14 @@ var guardrailPatterns = []string{
 // guardrailPatterns that survives system access (spec §4). sudo, git reset
 // --hard and git clean -fd are dropped; the recursive rm/chmod/chown checks
 // survive only for absolute operands and are handled argv-aware below.
+//
+// sudo is deliberately NOT listed here. This slice also backs the substring
+// loop in analyzeCommandDepth, so listing it would deny any command that
+// merely mentions the word (`grep sudo /etc/sudoers`) — the false-positive
+// boundary the argv-aware privilegeWrapperInArgv exists to hold. Privilege
+// wrappers are denied by that walker (Evaluate and analyzeCommandDepth), with
+// a token-level backstop in isBlockedByGuardrailLegacy for the parse-failure
+// path.
 var systemGuardrailPatterns = []string{
 	"mkfs", "shutdown", "reboot",
 }
@@ -244,6 +252,19 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, o
 	cfg := pe.config
 	if cfg == nil {
 		cfg = &config.Config{}
+	}
+
+	// Privilege wrappers deny before the non-bypassable floor: a
+	// privilege-prefixed push (`sudo git push`) must not be downgraded to the
+	// floor's Confirm, which auto mode would then auto-approve.
+	if eo.system && (toolName == "shell.run" || toolName == "test.run") {
+		if cmdRaw, ok := args["command"]; ok {
+			if cmd, ok := cmdRaw.(string); ok {
+				if w := PrivilegeWrapperDeny(cmd); w != "" {
+					return DecisionDeny, privilegeDenyReason(w), nil
+				}
+			}
+		}
 	}
 
 	// git push floor: non-bypassable in every mode. Runs before the mode
@@ -571,6 +592,20 @@ func isBlockedByGuardrailLegacy(cmd string, system bool) bool {
 			return true
 		}
 	}
+
+	// Privilege wrappers fail closed on the legacy path too: the AST walker
+	// could not parse the command, so the argv-aware privilege check never
+	// ran. This is a token-level check, not a substring one — a command that
+	// merely mentions sudo (`grep sudo /etc/sudoers`) parses fine and never
+	// reaches here, so the false-positive boundary is preserved.
+	if system {
+		for _, f := range strings.Fields(cmd) {
+			if privilegeWrappers[lastSegment(f)] {
+				return true
+			}
+		}
+	}
+
 	for _, b := range legacyRMGuardrail {
 		if strings.Contains(cmd, b) {
 			// System access drops the relative-path recursive delete; an
@@ -746,6 +781,17 @@ func analyzeCommandDepth(cmd string, system bool, depth int) (guardrailVerdict, 
 	}
 	if len(stages) == 0 {
 		return guardrailVerdict{}, nil
+	}
+
+	// Privilege wrappers are Deny under system access: privileged execution
+	// is expressible only through the shell.sudo tool. This runs before every
+	// other floor check so no wrapper shape can reach a softer verdict.
+	if system {
+		for _, st := range stages {
+			if w := privilegeWrapperInArgv(stageLiteralArgv(st), depth); w != "" {
+				return guardrailVerdict{blocked: true, reason: privilegeDenyReason(w)}, nil
+			}
+		}
 	}
 
 	// Stage-level rm guardrail: catches rm with recursive+force after common
@@ -1570,6 +1616,78 @@ func skipFloorWrappersFor(argv []string, system bool) []string {
 		return skipFloorWrappers(argv)
 	}
 	return skipCommonWrappers(argv)
+}
+
+// privilegeWrappers are the commands that escalate to another user. Under
+// system access they are Deny inside shell.run: privileged execution is
+// expressible only through the shell.sudo tool, which keeps sudo on the
+// critical path for every privileged action.
+var privilegeWrappers = map[string]bool{
+	"sudo": true, "su": true, "doas": true, "pkexec": true, "run0": true,
+}
+
+// privilegeDenyReason is the deny reason for a privilege wrapper. It names
+// shell.sudo so the agent is steered to the supported path instead of
+// retrying wrapper shapes.
+func privilegeDenyReason(w string) string {
+	return "blocked by conservative guardrail: privilege wrapper \"" + w +
+		"\" is not allowed in shell.run; use the shell.sudo tool instead"
+}
+
+// PrivilegeWrapperDeny reports the privilege wrapper cmd invokes, or "".
+// Exported so Evaluate can apply the deny BEFORE the non-bypassable floor,
+// which would otherwise return a Confirm for a privilege-prefixed push
+// (`sudo git push`) and never reach the guardrail check.
+func PrivilegeWrapperDeny(cmd string) string {
+	return privilegeWrapperInStages(cmd, 0)
+}
+
+// privilegeWrapperInStages reports the privilege wrapper any stage of cmd
+// invokes, or "".
+func privilegeWrapperInStages(cmd string, depth int) string {
+	stages, err := parseStages(cmd)
+	if err != nil {
+		return ""
+	}
+	for _, st := range stages {
+		if w := privilegeWrapperInArgv(stageLiteralArgv(st), depth); w != "" {
+			return w
+		}
+	}
+	return ""
+}
+
+// privilegeWrapperInArgv reports the privilege wrapper an argv invokes, or
+// "". It strips every NON-privilege wrapper (env/nice/exec/command/nohup/
+// setsid/timeout/watch) and recurses into the payload-carrying wrappers
+// (xargs, eval, inline shell payloads) so a nested invocation is still seen.
+// It deliberately does not strip the privilege wrapper itself — that is the
+// thing being detected.
+//
+// skipFloorWrappersExtended(argv, false) is exactly the stripper needed:
+// with system=false it strips the transparent prefixes but leaves sudo in
+// place (see skipFloorWrappersFor, policy.go:1568).
+func privilegeWrapperInArgv(argv []string, depth int) string {
+	argv = skipFloorWrappersExtended(argv, false)
+	if len(argv) == 0 {
+		return ""
+	}
+	if name := lastSegment(argv[0]); privilegeWrappers[name] {
+		return name
+	}
+	if depth >= maxGuardrailDepth {
+		return ""
+	}
+	if payload, ok := shellPayloadFromArgv(argv); ok {
+		return privilegeWrapperInStages(payload, depth+1)
+	}
+	switch lastSegment(argv[0]) {
+	case "xargs":
+		return privilegeWrapperInArgv(xargsPayload(argv), depth+1)
+	case "eval":
+		return privilegeWrapperInStages(shellWordLiteral(strings.Join(argv[1:], " ")), depth+1)
+	}
+	return ""
 }
 
 // stageIsRMDestructive reports whether a pipeline stage runs rm with both

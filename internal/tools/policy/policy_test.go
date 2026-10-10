@@ -114,7 +114,9 @@ func TestEvaluateWithSystemShrinksGuardrails(t *testing.T) {
 		wantReason string
 	}{
 		{name: "sudo without system", cmd: "sudo ls", wantDeny: true},
-		{name: "sudo with system", cmd: "sudo ls", system: true, wantDeny: false},
+		// Under system access sudo is a privilege-wrapper Deny, not a
+		// released guardrail: privileged execution is shell.sudo only.
+		{name: "sudo with system", cmd: "sudo ls", system: true, wantDeny: true},
 		{name: "rm -rf absolute with system", cmd: "rm -rf /tmp/x", system: true, wantDeny: true},
 		{name: "rm -rf relative with system", cmd: "rm -rf rel/x", system: true, wantDeny: false},
 		{name: "rm -rf relative without system", cmd: "rm -rf rel/x", wantDeny: true},
@@ -161,25 +163,35 @@ func TestEvaluateWithSystemShrinksGuardrails(t *testing.T) {
 	}
 }
 
-func TestWithSystemPerCallOnly(t *testing.T) {
+func TestWithSystemPerCallOnlyAndPrivilegeDeny(t *testing.T) {
 	pe := NewEngine(&config.Config{}, []string{})
 	pe.SetApprovalMode(ModeEdit)
 
-	dec, _, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "sudo ls"}, WithSystem(true))
+	// Both calls deny, for different reasons: with the option it is the
+	// privilege-wrapper deny (steering to shell.sudo), without it the
+	// flag-off `sudo` substring guardrail. The point of the test is that the
+	// option is per-call and never leaks into engine state.
+	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "sudo ls"}, WithSystem(true))
 	if err != nil {
 		t.Fatalf("Evaluate(sudo ls, system) error: %v", err)
 	}
-	if dec == DecisionDeny {
-		t.Fatal("Evaluate(sudo ls, system) = deny, want it past the guardrail floor")
+	if dec != DecisionDeny {
+		t.Fatalf("Evaluate(sudo ls, system) = %v (%s), want the privilege-wrapper deny", dec, reason)
+	}
+	if !strings.Contains(reason, "shell.sudo") {
+		t.Fatalf("Evaluate(sudo ls, system) reason = %q, want it to name shell.sudo", reason)
 	}
 
 	// The same engine, no option: the flag must not have leaked into state.
-	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "sudo ls"})
+	dec, reason, err = pe.Evaluate("shell.run", map[string]interface{}{"command": "sudo ls"})
 	if err != nil {
 		t.Fatalf("Evaluate(sudo ls) error: %v", err)
 	}
 	if dec != DecisionDeny {
 		t.Fatalf("Evaluate(sudo ls) after a system call = %v (%s), want deny (no engine-state leakage)", dec, reason)
+	}
+	if strings.Contains(reason, "shell.sudo") {
+		t.Fatalf("Evaluate(sudo ls) reason = %q, want the flag-off guardrail reason, not the privilege deny", reason)
 	}
 }
 

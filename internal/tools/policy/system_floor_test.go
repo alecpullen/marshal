@@ -9,11 +9,11 @@ import (
 )
 
 // TestGitPushFloorSurvivesPrivilegeWrapper pins that the non-bypassable push
-// floor cannot be skipped by prefixing a privilege wrapper. Under system
-// access the `sudo` substring guardrail is gone, so without the floor seeing
-// through the wrapper a `sudo git push` auto-approved in auto mode. Flag-off
-// behavior must stay a guardrail Deny, not become the floor's Confirm — that
-// is why the wrapper stripping is scoped to the system floor.
+// floor cannot be skipped by prefixing a privilege wrapper, and that the
+// privilege deny now runs BEFORE the floor: a privilege-prefixed push is a
+// Deny (steering to shell.sudo), not the floor's Confirm, which auto mode
+// would then auto-approve. Flag-off behavior is unchanged — the `sudo`
+// substring guardrail already denies these.
 func TestGitPushFloorSurvivesPrivilegeWrapper(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -22,14 +22,15 @@ func TestGitPushFloorSurvivesPrivilegeWrapper(t *testing.T) {
 		want   Decision
 	}{
 		{name: "plain push system", cmd: "git push", system: true, want: DecisionConfirm},
-		{name: "privilege push system", cmd: "sudo git push", system: true, want: DecisionConfirm},
-		{name: "privilege push with remote system", cmd: "sudo git push origin main", system: true, want: DecisionConfirm},
-		{name: "privilege push path-prefixed git system", cmd: "sudo /usr/bin/git push", system: true, want: DecisionConfirm},
-		{name: "env privilege push system", cmd: "env sudo git push", system: true, want: DecisionConfirm},
+		// Privilege wrappers deny before the floor under system access.
+		{name: "privilege push system", cmd: "sudo git push", system: true, want: DecisionDeny},
+		{name: "privilege push with remote system", cmd: "sudo git push origin main", system: true, want: DecisionDeny},
+		{name: "privilege push path-prefixed git system", cmd: "sudo /usr/bin/git push", system: true, want: DecisionDeny},
+		{name: "env privilege push system", cmd: "env sudo git push", system: true, want: DecisionDeny},
 		// Flag-off keeps the stricter guardrail Deny.
 		{name: "privilege push flag off", cmd: "sudo git push", want: DecisionDeny},
-		// A non-push sudo command is not the floor either way.
-		{name: "privilege non-push system", cmd: "sudo git status", system: true, want: DecisionAllow},
+		// A non-push sudo command is a privilege deny under system access.
+		{name: "privilege non-push system", cmd: "sudo git status", system: true, want: DecisionDeny},
 	}
 
 	for _, tc := range tests {
@@ -49,6 +50,9 @@ func TestGitPushFloorSurvivesPrivilegeWrapper(t *testing.T) {
 			}
 			if tc.want == DecisionConfirm && !strings.Contains(reason, "non-bypassable floor") {
 				t.Fatalf("Evaluate(%q) reason = %q, want the non-bypassable push floor", tc.cmd, reason)
+			}
+			if tc.want == DecisionDeny && tc.system && !strings.Contains(reason, "shell.sudo") {
+				t.Fatalf("Evaluate(%q) reason = %q, want it to name shell.sudo", tc.cmd, reason)
 			}
 		})
 	}
@@ -97,9 +101,12 @@ func TestSystemFloorFailsClosed(t *testing.T) {
 		{name: "reboot via sudo", cmd: "sudo reboot", system: true, want: DecisionDeny},
 
 		{name: "rm relative", cmd: "rm -rf rel/x", system: true, want: DecisionAllow},
-		{name: "rm sudo relative", cmd: "sudo rm -rf rel/x", system: true, want: DecisionAllow},
-		{name: "sudo ls", cmd: "sudo ls", system: true, want: DecisionAllow},
-		{name: "sudo find without delete", cmd: "sudo find / -name x", system: true, want: DecisionAllow},
+		// Privilege wrappers are Deny under system access (spec §1): the
+		// previously-Allowed plain sudo shapes are the accepted cost of
+		// making privileged execution expressible only through shell.sudo.
+		{name: "rm sudo relative", cmd: "sudo rm -rf rel/x", system: true, want: DecisionDeny},
+		{name: "sudo ls", cmd: "sudo ls", system: true, want: DecisionDeny},
+		{name: "sudo find without delete", cmd: "sudo find / -name x", system: true, want: DecisionDeny},
 		{name: "rm relative without system", cmd: "rm -rf rel/x", want: DecisionDeny},
 		{name: "rm absolute without system", cmd: "rm -rf /etc", want: DecisionDeny},
 	}
@@ -138,8 +145,6 @@ func TestGitPushFloorBypassShapes(t *testing.T) {
 	cmds := []string{
 		"sh -c 'git push'",
 		"bash -c 'git push'",
-		"su -c 'git push'",
-		"su root -c 'git push'",
 		"exec git push",
 		"command git push",
 		"builtin git push",
@@ -151,13 +156,11 @@ func TestGitPushFloorBypassShapes(t *testing.T) {
 		"eval 'git push origin main'",
 		"exec sh -c 'git push'",
 		"nohup bash -c 'git push origin main'",
-		"timeout 5 su -c 'git push'",
 		// Combined single-dash shell flags still carry the payload.
 		"bash -lc 'git push'",
 		"bash -ic 'git push'",
 		"sh -oc 'git push'",
 		"zsh -lc 'git push'",
-		"sudo bash -lc 'git push'",
 		// Nested payloads must recurse, not be mangled by quote trimming.
 		`sh -c 'sh -c "git push"'`,
 		// Wrapper flags that take a value must not desync the operand skip.
@@ -223,7 +226,6 @@ func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
 		"bash -ic 'git push'",
 		"sh -oc 'git push'",
 		"zsh -lc 'git push'",
-		"sudo bash -lc 'git push'",
 		`sh -c 'sh -c "git push"'`,
 		"timeout -k 5 5 git push",
 		"timeout -s KILL 5 git push",
@@ -248,6 +250,82 @@ func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
 			}
 			if dec == DecisionAllow {
 				t.Fatalf("Evaluate(%q, flag off) = Allow (%s), want a human gate", cmd, reason)
+			}
+		})
+	}
+}
+
+// TestPrivilegeWrappersDenyUnderSystemAccess pins the inversion: under
+// system access every privilege-wrapper shape is Deny in shell.run, at any
+// depth, and the reason steers the agent to shell.sudo. Flag-off behaviour
+// is unchanged (the sudo substring guardrail already denies these).
+func TestPrivilegeWrappersDenyUnderSystemAccess(t *testing.T) {
+	denied := []string{
+		"sudo ls",
+		"sudo rm -rf rel/x",
+		"sudo find / -name x",
+		"sudo git status",
+		"sudo git push",
+		"sudo sh -c 'git push'",
+		"sudo su -c 'git push'",
+		"sudo bash -c 'rm -rf /'",
+		"sudo bash -lc 'git push'",
+		"eval 'sudo id'",
+		"nohup sudo id &",
+		"xargs -n1 sudo rm -rf",
+		"env sudo id",
+		"command sudo id",
+		"exec sudo id",
+		"timeout 5 sudo id",
+		`sh -c "sudo id"`,
+		"sudo -u root id",
+		"su -c id",
+		"su root -c id",
+		// su-wrapped pushes are privilege denies, not the floor's Confirm:
+		// the privilege check runs first.
+		"su -c 'git push'",
+		"su root -c 'git push'",
+		"timeout 5 su -c 'git push'",
+		"doas id",
+		"pkexec id",
+		"run0 id",
+		"sudo",
+	}
+	for _, cmd := range denied {
+		t.Run(cmd, func(t *testing.T) {
+			pe := NewEngine(&config.Config{}, []string{})
+			pe.SetApprovalMode(ModeAuto)
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			}
+			if dec != DecisionDeny {
+				t.Fatalf("Evaluate(%q, system) = %v (%s), want Deny", cmd, dec, reason)
+			}
+			if !strings.Contains(reason, "shell.sudo") {
+				t.Fatalf("Evaluate(%q) reason = %q, want it to name shell.sudo", cmd, reason)
+			}
+		})
+	}
+
+	// The false-positive boundary: a command that merely MENTIONS sudo is
+	// not a privilege wrapper. This is why the check is argv-aware rather
+	// than a substring match.
+	allowed := []string{
+		"grep sudo /etc/sudoers",
+		"cat /var/log/sudo.log",
+		"echo sudo",
+	}
+	for _, cmd := range allowed {
+		t.Run("not-a-wrapper/"+cmd, func(t *testing.T) {
+			pe := NewEngine(&config.Config{}, []string{})
+			pe.SetApprovalMode(ModeAuto)
+			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
+			if err != nil {
+				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			}
+			if dec == DecisionDeny {
+				t.Fatalf("Evaluate(%q, system) = Deny (%s), want it past the privilege check", cmd, reason)
 			}
 		})
 	}

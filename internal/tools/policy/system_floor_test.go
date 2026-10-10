@@ -290,6 +290,25 @@ func TestPrivilegeWrappersDenyUnderSystemAccess(t *testing.T) {
 		"pkexec id",
 		"run0 id",
 		"sudo",
+		// Quoted/escaped wrapper names: the printer re-emits quoting, so
+		// argv0 must be decoded before the wrapper lookup or a single quote
+		// character evades the deny.
+		`'sudo' id`,
+		`"sudo" id`,
+		`\sudo id`,
+		`s'u'd'o' id`,
+		`'su' -c id`,
+		// sudoedit is a real setuid sudo front-end.
+		"sudoedit /etc/fstab",
+		// Multi-call and transparent-prefix wrappers.
+		"busybox sudo id",
+		"busybox su -c id",
+		"time sudo id",
+		"time -p sudo id",
+		// find's -exec payload is a payload carrier, like xargs.
+		`find / -exec sudo id \;`,
+		`find / -exec sh -c 'sudo id' \;`,
+		`find / -execdir sudo id +`,
 	}
 	for _, cmd := range denied {
 		t.Run(cmd, func(t *testing.T) {

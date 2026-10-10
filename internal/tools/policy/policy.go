@@ -641,6 +641,7 @@ func isBlockedByGuardrailLegacy(cmd string, system bool) bool {
 // stage text.
 type stage struct {
 	argv0    string
+	argv0Lit string // decoded literal for argv0; "" when the word expands
 	fullText string
 	args     []string // individual argument tokens (excluding argv0)
 	argLits  []string // decoded literal per arg; "" when the word expands
@@ -676,14 +677,50 @@ func wordLiteral(w *syntax.Word) string {
 	return b.String()
 }
 
-// stageLiteralArgv returns the stage's argv with each argument decoded to its
-// literal value where the parser can prove one. The floor uses this so
-// quoting and escaping cannot hide a command: the printed form of
+// unescapeLit removes the backslash escapes the shell would strip from a
+// literal word. mvdan's parser keeps the raw source in Lit.Value, so `\sudo`
+// arrives as `\sudo` even though the shell runs `sudo`. Only argv0 is
+// unescaped: operand classification deliberately treats a backslash as
+// non-literal and fails closed, so unescaping operands would loosen it.
+func unescapeLit(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			if s[i] == '\n' {
+				continue
+			}
+			b.WriteByte(s[i])
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// stageLiteralArgv returns the stage's argv with argv0 and each argument
+// decoded to its literal value where the parser can prove one. The floor uses
+// this so quoting and escaping cannot hide a command: the printed form of
 // `sh -c 'sh -c '\”git push'\”'` is not valid shell on its own, but its
 // decoded literal is.
+//
+// argv0 is decoded too, and that matters: the printer re-emits quoting, so a
+// quoted wrapper name arrives as the literal string `'sudo'` and
+// lastSegment("'sudo'") is not "sudo". Decoding here is what stops
+// `'sudo' id`, `"sudo" id`, `\sudo id` and `s'u'd'o' id` from evading every
+// argv0-based check in this file. A word that expands (a variable, a command
+// substitution) decodes to "" and falls back to the printed form; such a
+// stage is flagged dynamic and denied separately.
 func stageLiteralArgv(st stage) []string {
 	argv := make([]string, 0, len(st.args)+1)
-	argv = append(argv, st.argv0)
+	if st.argv0Lit != "" {
+		argv = append(argv, st.argv0Lit)
+	} else {
+		argv = append(argv, st.argv0)
+	}
 	for i, a := range st.args {
 		if i < len(st.argLits) && st.argLits[i] != "" {
 			argv = append(argv, st.argLits[i])
@@ -732,7 +769,7 @@ func parseStages(cmd string) ([]stage, error) {
 			}
 			return true
 		})
-		stages = append(stages, stage{argv0: b.String(), fullText: full.String(), args: args, argLits: argLits, dynamic: dyn})
+		stages = append(stages, stage{argv0: b.String(), argv0Lit: unescapeLit(wordLiteral(call.Args[0])), fullText: full.String(), args: args, argLits: argLits, dynamic: dyn})
 		return true
 	})
 	return stages, nil
@@ -833,7 +870,7 @@ func analyzeCommandDepth(cmd string, system bool, depth int) (guardrailVerdict, 
 	// untouched keeps flag-off decisions and reasons byte-identical.
 	if system {
 		for _, st := range stages {
-			eff := skipFloorWrappers(append([]string{st.argv0}, st.args...))
+			eff := skipFloorWrappers(stageLiteralArgv(st))
 			if len(eff) == 0 {
 				continue
 			}
@@ -954,7 +991,7 @@ func recursiveDeleteStagesProvablyRelative(stages []stage, name string, skipFirs
 // effectiveArgv0 returns the command a stage actually runs, after common
 // wrappers (env, nice, sudo) and after unwrapping an xargs payload.
 func effectiveArgv0(st stage) string {
-	argv := skipFloorWrappers(append([]string{st.argv0}, st.args...))
+	argv := skipFloorWrappers(stageLiteralArgv(st))
 	if len(argv) > 0 && lastSegment(argv[0]) == "xargs" {
 		argv = xargsPayload(argv)
 	}
@@ -972,7 +1009,7 @@ func effectiveArgv0(st stage) string {
 // targets come from another stage) all return false, keeping the deny.
 // skipFirstOperand drops the leading mode argument (chmod/chown).
 func stageDeletionProvablyRelative(st stage, skipFirstOperand bool) bool {
-	argv := skipFloorWrappers(append([]string{st.argv0}, st.args...))
+	argv := skipFloorWrappers(stageLiteralArgv(st))
 	if len(argv) > 0 && lastSegment(argv[0]) == "xargs" {
 		argv = xargsPayload(argv)
 	}
@@ -1018,7 +1055,7 @@ func provablyRelativeOperand(op string) bool {
 // the outer parse sees only the shell name and cannot inspect the commands
 // inside it.
 func shellInlinePayload(st stage) (string, bool) {
-	return shellPayloadFromArgv(skipFloorWrappers(append([]string{st.argv0}, st.args...)))
+	return shellPayloadFromArgv(skipFloorWrappers(stageLiteralArgv(st)))
 }
 
 // shellPayloadFromArgv extracts the `-c` payload from an already
@@ -1126,7 +1163,7 @@ func decodeShellEscapes(s string) string {
 // argument the outer parse cannot inspect. su may take an optional leading
 // user operand (and `-`/`--login` flags) before `-c`.
 func suInlinePayload(st stage) (string, bool) {
-	return suPayloadFromArgv(skipFloorWrappers(append([]string{st.argv0}, st.args...)))
+	return suPayloadFromArgv(skipFloorWrappers(stageLiteralArgv(st)))
 }
 
 // suPayloadFromArgv extracts the `-c` payload from an already
@@ -1466,7 +1503,7 @@ func floorExtraPrefixInArgv(argv []string, extra []string) string {
 // invocation. It handles path-prefixed git binaries, git global options such
 // as `-c key=val`, and common prefix wrappers like `env` and `nice`.
 func stageIsGitPush(s stage) bool {
-	return gitPushInArgv(skipCommonWrappers(append([]string{s.argv0}, s.args...)))
+	return gitPushInArgv(skipCommonWrappers(stageLiteralArgv(s)))
 }
 
 // gitPushInArgv reports whether an already-wrapper-stripped argv is a git push
@@ -1583,8 +1620,17 @@ func skipFloorWrappersExtended(argv []string, system bool) []string {
 	argv = skipFloorWrappersFor(argv, system)
 	for len(argv) > 0 {
 		switch lastSegment(argv[0]) {
-		case "exec", "command", "builtin", "nohup", "setsid":
+		case "exec", "command", "builtin", "nohup", "setsid", "busybox":
 			argv = argv[1:]
+		case "time":
+			// time [-p] <cmd...>: a transparent prefix in both bash and sh.
+			// Skipping its own flags keeps `time -p sudo id` from leaving
+			// `-p` as argv0 and hiding the wrapper behind it.
+			i := 1
+			for i < len(argv) && strings.HasPrefix(argv[i], "-") {
+				i++
+			}
+			argv = argv[i:]
 		case "timeout":
 			// timeout [flags] <duration> <cmd...>: skip flags then the duration.
 			// -k/--kill-after and -s/--signal take a value, so consuming them
@@ -1643,7 +1689,8 @@ func skipFloorWrappersFor(argv []string, system bool) []string {
 // expressible only through the shell.sudo tool, which keeps sudo on the
 // critical path for every privileged action.
 var privilegeWrappers = map[string]bool{
-	"sudo": true, "su": true, "doas": true, "pkexec": true, "run0": true,
+	"sudo": true, "sudoedit": true, "su": true, "doas": true,
+	"pkexec": true, "run0": true,
 }
 
 // privilegeDenyReason is the deny reason for a privilege wrapper. It names
@@ -1704,17 +1751,40 @@ func privilegeWrapperInArgv(argv []string, depth int) string {
 	switch lastSegment(argv[0]) {
 	case "xargs":
 		return privilegeWrapperInArgv(xargsPayload(argv), depth+1)
+	case "find":
+		// find's -exec/-execdir payload runs a command per match; it is a
+		// payload carrier like xargs, not a transparent prefix.
+		return privilegeWrapperInArgv(findExecPayload(argv), depth+1)
 	case "eval":
 		return privilegeWrapperInStages(shellWordLiteral(strings.Join(argv[1:], " ")), depth+1)
 	}
 	return ""
 }
 
+// findExecPayload returns the argv of find's first -exec/-execdir payload, or
+// nil when there is none. The payload runs until a `;` (or `+`) terminator.
+func findExecPayload(argv []string) []string {
+	for i := 1; i < len(argv); i++ {
+		if argv[i] != "-exec" && argv[i] != "-execdir" {
+			continue
+		}
+		var payload []string
+		for j := i + 1; j < len(argv); j++ {
+			if argv[j] == ";" || argv[j] == "+" {
+				break
+			}
+			payload = append(payload, argv[j])
+		}
+		return payload
+	}
+	return nil
+}
+
 // stageIsRMDestructive reports whether a pipeline stage runs rm with both
 // recursive and force flags. It inspects the effective command after common
 // wrappers and also detects rm as an xargs payload.
 func stageIsRMDestructive(s stage) bool {
-	argv := skipCommonWrappers(append([]string{s.argv0}, s.args...))
+	argv := skipCommonWrappers(stageLiteralArgv(s))
 	if len(argv) > 0 && lastSegment(argv[0]) == "rm" {
 		if hasFlagInArgs(argv[1:], "r", "R", "recursive") && hasFlagInArgs(argv[1:], "f", "force") {
 			return true

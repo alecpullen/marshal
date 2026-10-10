@@ -122,6 +122,7 @@ Tools and safety
 internal/tools/registry/              — tool registration and dispatch
 internal/tools/native/                — native tools: file, search, shell, git, repo, symbols
 internal/tools/native/symbols_find.go — symbols.find tool implementation
+internal/tools/native/sudo.go         — shell.sudo: privileged execution via sudo, password on stdin, no PTY
 internal/tools/patch/                 — patch apply and approval
 internal/tools/policy/                — command approval and risk policy
 internal/tools/mcp/                   — MCP client, protocol, manager

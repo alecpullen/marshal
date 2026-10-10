@@ -11,9 +11,24 @@ backup rollback restoring out-of-root writes to the wrong path) were
 fixed before merge; what follows is the residue from the second,
 adversarial round.
 
+> **Note (2026-10-10):** items 1 and 2 below were **closed** by the
+> `system-access-floor-hardening` work (commits `3a59e36d`…`f9dd67ae`,
+> 2026-09-24) — the recursive floor matcher, extended wrapper table, and
+> shell-word decoding. This document was not updated at the time, so the
+> "Status: open" lines below are stale; they are kept for the history of
+> the contract. The regression net is
+> `TestGitPushFloorBypassShapes` / `TestGitPushFloorBypassShapesFlagOff`
+> in `internal/tools/policy/system_floor_test.go`.
+>
+> Separately, the **privilege-escalation half** of item 1 is now closed by
+> the `shell.sudo` inversion (2026-10-10): under system access every
+> privilege-wrapper shape is a Deny in `shell.run`, pinned by
+> `TestPrivilegeWrappersDenyUnderSystemAccess`. See
+> `docs/system-access-mode.md`.
+
 ## 1. The non-bypassable git-push floor is bypassable by wrapper and payload shapes
 
-**Status: open. Severity: critical (system access + auto mode), high (flag off + auto mode).**
+**Status: closed (2026-09-24, `system-access-floor-hardening`). Severity was: critical (system access + auto mode), high (flag off + auto mode).**
 
 The push floor is documented and tested as non-bypassable in every mode:
 it runs before `applyModeTransform` (`internal/tools/policy/policy.go:253`),
@@ -93,7 +108,7 @@ should add the table above as table-driven regression cases.
 
 ## 2. Pre-existing: the same bypasses work with the flag off
 
-**Status: open. Severity: high. Not a regression from this branch.**
+**Status: closed (2026-09-24, `system-access-floor-hardening`). Severity was: high. Not a regression from this branch.**
 
 With system access off, in `ModeAuto`, these all reach Allow:
 `exec git push`, `command git push`, `sh -c 'git push'`,
@@ -118,6 +133,11 @@ Recorded so a future fix does not regress them.
   `sudo find / -delete`, `sudo dd if=/dev/zero of=/dev/sda`.
 - **Expected Allows hold.** `rm -rf rel/x`, `sudo rm -rf rel/x`,
   `sudo ls`, `sudo find / -name x`.
+  **Superseded (2026-10-10):** the three `sudo` entries are now **Deny**
+  under system access. Privileged execution is expressible only through the
+  `shell.sudo` tool, so a bare `sudo` in `shell.run` is refused with a
+  reason naming that tool. `rm -rf rel/x` (unescalated) still Allows.
+  This is the deliberate cost recorded in the `shell.sudo` design (spec §1).
 - **No false positives.** Every Confirm verdict in system+auto was a real
   push. `sudo git pushd` correctly lands Allow in system+auto (not a push)
   and Deny flag-off (sudo guardrail).

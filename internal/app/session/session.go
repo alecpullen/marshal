@@ -42,6 +42,7 @@ const (
 	EventPendingQuestionChanged  = "pending_question_changed"
 	EventChildQuestionChanged    = "child_question_changed"
 	EventPendingSkillGateChanged = "pending_skill_gate_changed"
+	EventPendingSudoAuthChanged  = "pending_sudo_auth_changed"
 	EventBrowserChanged          = "browser_changed"
 	EventStepChanged             = "step_changed"
 	EventHoldChanged             = "hold_changed"
@@ -68,7 +69,11 @@ type Event struct {
 	// (TUI/ACP) can answer on escalation.
 	PendingChildQuestion *PendingChildQuestion
 	PendingSkillGate     *PendingSkillGate
-	Browser              *BrowserInfo
+	// PendingSudoAuth carries a privileged-command authentication prompt.
+	// The snapshot deliberately carries only ResponseChan — never a password
+	// — so no subscriber can observe a credential.
+	PendingSudoAuth *PendingSudoAuth
+	Browser         *BrowserInfo
 	// Step carries a step that began or ended (EventStepChanged).
 	Step *Step
 	// Held carries the new hold state (EventHoldChanged).
@@ -232,8 +237,24 @@ type State struct {
 	childQuestions    []*PendingChildQuestion
 	pendingSkillGate  *PendingSkillGate
 	skillGateDisabled bool
-	skillGateAllowed  map[string]bool
-	skillGateDenied   map[string]int
+	// pendingSudoAuth is the in-flight privileged-command authentication
+	// prompt. Single-valued: sudoMu serializes shell.sudo session-wide so a
+	// second concurrent call cannot clobber it.
+	pendingSudoAuth *PendingSudoAuth
+	// secretPromptCapable reports whether the attached transport can raise a
+	// masked secret prompt. Defaults false (fail closed): an ACP/web client
+	// has no secret channel, so shell.sudo refuses rather than blocking on a
+	// prompt no transport can answer. Set true only by the TUI wiring.
+	secretPromptCapable bool
+	// sudoUnlock is the opt-in sudo timestamp-grace mode (omit -k). Runtime
+	// only, never a config default; sticky until toggled off.
+	sudoUnlock bool
+	// sudoMu serializes privileged commands session-wide. The pending-auth
+	// slot is single-valued, so two concurrent shell.sudo calls would clobber
+	// each other; the lock is held across prompt + execute.
+	sudoMu           sync.Mutex
+	skillGateAllowed map[string]bool
+	skillGateDenied  map[string]int
 	// activeToolCall is the latest in-flight call; activeTools holds every
 	// one by ToolCallID (concurrent calls in envelope mode).
 	activeToolCall *ActiveToolCall
@@ -829,6 +850,45 @@ func (s *State) SetSystemAccess(on bool) {
 	s.systemAccess = on
 }
 
+// SecretPromptCapable reports whether the attached transport can raise a
+// masked secret prompt. False by default.
+func (s *State) SecretPromptCapable() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.secretPromptCapable
+}
+
+// SetSecretPromptCapable records whether the transport can raise a masked
+// secret prompt. The TUI wiring sets this true; ACP/web leave it false.
+func (s *State) SetSecretPromptCapable(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.secretPromptCapable = on
+}
+
+// SudoUnlockEnabled reports whether the session has opted into sudo's own
+// timestamp grace (omit -k) instead of forcing fresh authentication.
+func (s *State) SudoUnlockEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sudoUnlock
+}
+
+// SetSudoUnlockEnabled toggles the opt-in unlock. Runtime-only, never a
+// config default; sticky until toggled off.
+func (s *State) SetSudoUnlockEnabled(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sudoUnlock = on
+}
+
+// TryLockSudo attempts to take the session-wide privileged-command lock,
+// returning false when another shell.sudo call already holds it.
+func (s *State) TryLockSudo() bool { return s.sudoMu.TryLock() }
+
+// UnlockSudo releases the privileged-command lock.
+func (s *State) UnlockSudo() { s.sudoMu.Unlock() }
+
 func (s *State) TurnIndex() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1051,15 +1111,16 @@ func (s *State) WaitForWork(ctx context.Context) error {
 }
 
 // ResolvePendingForShutdown atomically clears the pending approval,
-// pending question, and steering queue for a graceful shutdown. It sends
-// a denial on the approval channel (non-blocking), an AnswerUnanswered
-// answer per question on the question channel (non-blocking), and
-// publishes cleared-state events. The channels are closed on the send
-// side after all values have been sent (or dropped) so the waiter can
-// unblock safely.
+// pending question, pending privileged-auth prompt, and steering queue for
+// a graceful shutdown. It sends a denial on the approval channel
+// (non-blocking), an AnswerUnanswered answer per question on the question
+// channel (non-blocking), a denial on the sudo-auth channel (non-blocking,
+// carrying no password), and publishes cleared-state events. The channels
+// are closed on the send side after all values have been sent (or dropped)
+// so the waiter can unblock safely.
 //
-// After this call, PendingApproval() and PendingQuestion() return nil
-// and SteeringQueue() is empty.
+// After this call, PendingApproval(), PendingQuestion() and
+// PendingSudoAuth() return nil and SteeringQueue() is empty.
 func (s *State) ResolvePendingForShutdown() {
 	s.mu.Lock()
 	approval := s.pendingApproval
@@ -1070,6 +1131,8 @@ func (s *State) ResolvePendingForShutdown() {
 	s.childQuestions = nil
 	skillGate := s.pendingSkillGate
 	s.pendingSkillGate = nil
+	sudoAuth := s.pendingSudoAuth
+	s.pendingSudoAuth = nil
 	s.steeringQueue = nil
 	s.mu.Unlock()
 
@@ -1080,6 +1143,7 @@ func (s *State) ResolvePendingForShutdown() {
 	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: nil})
 	s.publishEvent(EventChildQuestionChanged, Event{PendingChildQuestion: nil})
 	s.publishEvent(EventPendingSkillGateChanged, Event{PendingSkillGate: nil})
+	s.publishEvent(EventPendingSudoAuthChanged, Event{PendingSudoAuth: nil})
 	broker := func() *pubsub.Broker[SteeringEvent] {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -1112,6 +1176,12 @@ func (s *State) ResolvePendingForShutdown() {
 	// once-only guarantee).
 	if skillGate != nil {
 		skillGate.Respond(SkillGateDeny)
+	}
+
+	// Deny any pending privileged-auth prompt. The decision carries no
+	// password, so nothing secret is buffered after this point.
+	if sudoAuth != nil {
+		sudoAuth.Respond(SudoAuthDecision{OK: false})
 	}
 }
 

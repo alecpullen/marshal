@@ -507,3 +507,86 @@ func (s *State) PendingSkillGate() *PendingSkillGate {
 	defer s.mu.Unlock()
 	return s.pendingSkillGate
 }
+
+// SudoAuthDecision is the user's response to a pending privileged-command
+// authentication prompt. Password is the secret read from the masked TUI
+// input; the caller MUST zero it immediately after use. OK=false means the
+// user denied (Esc), and Password is nil.
+type SudoAuthDecision struct {
+	OK       bool
+	Password []byte
+}
+
+// PendingSudoAuth carries one privileged-command authentication prompt from
+// the shell.sudo tool awaiting the user's password. The handler blocks on
+// ResponseChan; the TUI sends exactly one decision. Mirrors PendingToolCall's
+// once-only Respond protocol.
+//
+// The password never travels on an Event: SetPendingSudoAuth publishes a
+// snapshot carrying only ResponseChan, exactly as SetPendingApproval does
+// (pending.go:171). The secret exists solely in the decision value on that
+// channel, and the handler zeroes it immediately after Run returns.
+type PendingSudoAuth struct {
+	Command string
+	Reason  string
+	StepID  StepID
+	// AllowUnlock reports whether the session has opt-in unlock enabled, so
+	// the modal can say which sudoers knob governs the grace window.
+	AllowUnlock bool
+	// Attempt is the 1-based attempt number; >1 means a previous password was
+	// rejected.
+	Attempt int
+	// Error is the message from the previous failed attempt ("" on the first).
+	Error        string
+	ResponseChan chan SudoAuthDecision
+	responded    sync.Once
+}
+
+// Respond sends a decision to the response channel exactly once (guarded by
+// sync.Once). Safe to call multiple times; only the first call produces a
+// send. The send is non-blocking so an unbuffered channel with no receiver
+// does not deadlock. The channel is closed after the send so the handler can
+// detect that no more responses are coming.
+func (p *PendingSudoAuth) Respond(d SudoAuthDecision) {
+	if p == nil {
+		return
+	}
+	p.responded.Do(func() {
+		if p.ResponseChan != nil {
+			select {
+			case p.ResponseChan <- d:
+			default:
+			}
+			close(p.ResponseChan)
+		}
+	})
+}
+
+// SetPendingSudoAuth installs the pending prompt and publishes an event-safe
+// snapshot. The snapshot carries only ResponseChan, never a password, so no
+// subscriber can observe a credential.
+func (s *State) SetPendingSudoAuth(sa *PendingSudoAuth) {
+	s.mu.Lock()
+	s.pendingSudoAuth = sa
+	var snap *PendingSudoAuth
+	if sa != nil {
+		snap = &PendingSudoAuth{
+			Command:      sa.Command,
+			Reason:       sa.Reason,
+			StepID:       sa.StepID,
+			AllowUnlock:  sa.AllowUnlock,
+			Attempt:      sa.Attempt,
+			Error:        sa.Error,
+			ResponseChan: sa.ResponseChan,
+		}
+	}
+	s.mu.Unlock()
+	s.publishEvent(EventPendingSudoAuthChanged, Event{PendingSudoAuth: snap})
+}
+
+// PendingSudoAuth returns the pending privileged-auth prompt, or nil.
+func (s *State) PendingSudoAuth() *PendingSudoAuth {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingSudoAuth
+}

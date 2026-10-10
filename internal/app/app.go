@@ -1811,6 +1811,14 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			childOpts := baseNativeOpts
 			childOpts.SessionState = childState    // per-agent: active call, output, approvals
 			childOpts.WorkspaceState = parentState // per-workspace: backups, active root
+			// A subagent must not be able to run privileged commands: its
+			// prompt would have no transport to render it, so the call would
+			// hang until turn cancellation. Today that is enforced only by
+			// the child's SecretPromptCapable defaulting to false — a fragile
+			// gate, since any future change that propagates the flag to child
+			// states would silently hand children a working shell.sudo. Clear
+			// the policy seam here so the documented gate is the real one.
+			childOpts.SudoPolicy = nil
 			childReg := registry.New()
 			if err := native.RegisterAll(childReg, childOpts); err != nil {
 				return nil, nil, fmt.Errorf("agent.run: child registry: %w", err)

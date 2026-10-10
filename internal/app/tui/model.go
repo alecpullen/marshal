@@ -1807,6 +1807,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.skillGateModel != nil {
 			m.skillGateModel.SetSize(max(m.leftWidth-4, 30))
 		}
+		if m.sudoAuthModel != nil {
+			m.sudoAuthModel.SetSize(max(m.leftWidth-4, 30))
+		}
 		// Refresh git state on focus/resize: a fresh view should reflect
 		// current branch even if it changed in another tool.
 		m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
@@ -2995,8 +2998,11 @@ func (m Model) handleSudoAuth(msg tea.Msg, sa *session.PendingSudoAuth) (tea.Mod
 		// struct that was superseded while it was up (parity with the
 		// approval/question/skill-gate pending-identity guards).
 		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
-		return m, nil
 	}
+	// msg is applied exactly once, including on the build path above: the
+	// prompt appears asynchronously, so the user is often already typing when
+	// it opens. Dropping that first keystroke would silently corrupt the
+	// password (and burn one of only three attempts).
 	sm, cmd := m.sudoAuthModel.Update(msg)
 	m.sudoAuthModel = sm
 	if !sm.IsDone() {

@@ -2,6 +2,7 @@ package native
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +50,12 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"csv.inspect":        registry.RiskReadOnly,
 		"workspace.worktree": registry.RiskWorkspaceWrite,
 		"workspace.finish":   registry.RiskWorkspaceWrite,
-		"shell.sudo":         registry.RiskDestructive,
+	}
+	// shell.sudo is registered only on non-Windows platforms (sudo.go is
+	// //go:build !windows), so the expectation must be conditional or this
+	// test fails on Windows.
+	if runtime.GOOS != "windows" {
+		want["shell.sudo"] = registry.RiskDestructive
 	}
 	if got := reg.List(); len(got) != len(want) {
 		t.Fatalf("len(List()) = %d, want %d", len(got), len(want))
@@ -288,7 +294,10 @@ func TestRegisterAllDefersConfigAndDataTools(t *testing.T) {
 		}
 	}
 
-	wantDeferred := map[string]bool{"csv.inspect": true, "json.query": true, "shell.sudo": true}
+	wantDeferred := map[string]bool{"csv.inspect": true, "json.query": true}
+	if runtime.GOOS != "windows" {
+		wantDeferred["shell.sudo"] = true
+	}
 	for _, name := range configNames {
 		wantDeferred[name] = true
 	}

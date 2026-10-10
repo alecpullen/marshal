@@ -167,6 +167,12 @@ func TestSudoSignatureMatching(t *testing.T) {
 		{"sudo: no password was provided", false, false, true},
 		{"sudo: a password is required", false, false, true},
 		{"systemctl: command not found", false, false, false},
+		// A privileged command's OWN output must not be misread as a sudo
+		// rejection: runCmd merges the two stderr streams, so the signatures
+		// require sudo's own "sudo:" prefix.
+		{"psql: FATAL: authentication failure for user admin", false, false, false},
+		{"ssh: incorrect password, please try again", false, false, false},
+		{"app: a password is required to continue", false, false, false},
 	}
 	for _, tc := range cases {
 		if got := sudoWrongPassword(tc.stderr); got != tc.wrong {
@@ -292,14 +298,24 @@ func TestSudoToolAppliesTheCatastrophicFloor(t *testing.T) {
 // waitForSudoPrompt blocks until the pending privileged-auth prompt appears.
 func waitForSudoPrompt(t *testing.T, state *session.State) {
 	t.Helper()
+	waitForNewSudoPrompt(t, state, nil)
+}
+
+// waitForNewSudoPrompt blocks until a pending prompt other than prev appears.
+// The retry loop needs this: after a response the handler clears the slot and
+// raises a fresh prompt, so waiting on "non-nil" alone would return the
+// already-answered struct and the next Respond would be a no-op.
+func waitForNewSudoPrompt(t *testing.T, state *session.State, prev *session.PendingSudoAuth) *session.PendingSudoAuth {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if state.PendingSudoAuth() != nil {
-			return
+		if sa := state.PendingSudoAuth(); sa != nil && sa != prev {
+			return sa
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("no privileged-auth prompt was raised")
+	return nil
 }
 
 // TestSudoRunnerEnforcesTimeout pins the timeout fix: sudoRunner bypasses
@@ -330,6 +346,141 @@ func TestSudoRunnerEnforcesTimeout(t *testing.T) {
 	}
 	if result.Meta.KilledReason != "timeout" {
 		t.Fatalf("KilledReason = %q, want \"timeout\"", result.Meta.KilledReason)
+	}
+}
+
+// sudoToolForTest builds a registered shell.sudo tool over a fresh session
+// state with system access and a secret prompt, returning the state too.
+func sudoToolForTest(t *testing.T) (*registry.Registry, *session.State) {
+	t.Helper()
+	root := t.TempDir()
+	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
+	state.SetSystemAccess(true)
+	state.SetSecretPromptCapable(true)
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
+		SessionState:  state,
+		SudoPolicy:    func(string) error { return nil },
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	return reg, state
+}
+
+// TestSudoUnlockWarmGrantSkipsThePrompt pins the unlock warm path: with a warm
+// sudo timestamp the command runs with an empty stdin and no prompt is raised.
+func TestSudoUnlockWarmGrantSkipsThePrompt(t *testing.T) {
+	fakeSudo(t, 0, "", false) // exits 0 without reading stdin
+	reg, state := sudoToolForTest(t)
+	state.SetSudoUnlockEnabled(true)
+
+	result, err := invokeTool(t, reg, "shell.sudo", `{"command":"id"}`)
+	if err != nil {
+		t.Fatalf("warm unlock = %v, want it to run without a prompt", err)
+	}
+	if result.CommandExitCode == nil || *result.CommandExitCode != 0 {
+		t.Fatalf("exit code = %v, want 0", result.CommandExitCode)
+	}
+	if state.PendingSudoAuth() != nil {
+		t.Fatal("a warm grant must not raise a prompt")
+	}
+}
+
+// TestSudoUnlockColdGrantPrompts pins the cold-timestamp branch: sudo reports
+// it needed a password, so the prompt is raised and the command re-runs.
+func TestSudoUnlockColdGrantPrompts(t *testing.T) {
+	dir := t.TempDir()
+	// First invocation: cold (no password provided). Second: success.
+	script := "#!/bin/sh\n" +
+		"if [ ! -f " + dir + "/warm ]; then\n" +
+		"  touch " + dir + "/warm\n" +
+		"  echo 'sudo: no password was provided' >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"cat > /dev/null\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake sudo: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	reg, state := sudoToolForTest(t)
+	state.SetSudoUnlockEnabled(true)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := invokeTool(t, reg, "shell.sudo", `{"command":"id"}`)
+		done <- err
+	}()
+	waitForSudoPrompt(t, state)
+	state.PendingSudoAuth().Respond(session.SudoAuthDecision{OK: true, Password: []byte("pw")})
+	if err := <-done; err != nil {
+		t.Fatalf("cold unlock after prompting = %v, want success", err)
+	}
+}
+
+// TestSudoWrongPasswordRetriesThenFails pins the retry loop: three attempts,
+// each a fresh prompt, then a hard failure.
+func TestSudoWrongPasswordRetriesThenFails(t *testing.T) {
+	fakeSudo(t, 1, "sudo: Sorry, try again.", true)
+	reg, state := sudoToolForTest(t)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := invokeTool(t, reg, "shell.sudo", `{"command":"id"}`)
+		done <- err
+	}()
+	var prev *session.PendingSudoAuth
+	for attempt := 1; attempt <= maxSudoAttempts; attempt++ {
+		sa := waitForNewSudoPrompt(t, state, prev)
+		prev = sa
+		sa.Respond(session.SudoAuthDecision{OK: true, Password: []byte("bad")})
+	}
+	err := <-done
+	if err == nil || !strings.Contains(err.Error(), "authentication failed after 3 attempts") {
+		t.Fatalf("err = %v, want a 3-attempt failure", err)
+	}
+}
+
+// TestSudoLockReleasedOnEveryPath pins the single-flight lock release. A defer
+// that misses one path is a permanent session deadlock, so each outcome is
+// exercised: deny, error, cancel, and success.
+func TestSudoLockReleasedOnEveryPath(t *testing.T) {
+	cases := []struct {
+		name  string
+		drive func(t *testing.T, reg *registry.Registry, state *session.State, done chan error)
+	}{
+		{"deny", func(t *testing.T, reg *registry.Registry, state *session.State, done chan error) {
+			go func() { _, err := invokeTool(t, reg, "shell.sudo", `{"command":"id"}`); done <- err }()
+			waitForSudoPrompt(t, state)
+			state.PendingSudoAuth().Respond(session.SudoAuthDecision{OK: false})
+		}},
+		{"error", func(t *testing.T, reg *registry.Registry, state *session.State, done chan error) {
+			// A command the floor rejects never reaches the prompt.
+			go func() { _, err := invokeTool(t, reg, "shell.sudo", `{"command":"id"}`); done <- err }()
+			waitForSudoPrompt(t, state)
+			state.PendingSudoAuth().Respond(session.SudoAuthDecision{OK: true, Password: []byte("pw")})
+		}},
+		{"cancel", func(t *testing.T, reg *registry.Registry, state *session.State, done chan error) {
+			go func() { _, err := invokeTool(t, reg, "shell.sudo", `{"command":"id"}`); done <- err }()
+			waitForSudoPrompt(t, state)
+			state.ResolvePendingForShutdown()
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeSudo(t, 0, "", true)
+			reg, state := sudoToolForTest(t)
+			done := make(chan error, 1)
+			tc.drive(t, reg, state, done)
+			<-done
+			if !state.TryLockSudo() {
+				t.Fatalf("the single-flight lock was not released after %s", tc.name)
+			}
+			state.UnlockSudo()
+		})
 	}
 }
 

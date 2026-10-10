@@ -112,11 +112,18 @@ func sudoEnv() []string {
 }
 
 // sudoWrongPassword reports whether sudo rejected the password we supplied.
+//
+// The signatures are deliberately narrow. runCmd merges sudo's stderr with the
+// privileged command's own stderr (the child inherits fd 2), so a broad
+// substring like "authentication failure" would misread a database client's
+// or ssh's own output as a sudo rejection — re-prompting the user three times
+// and discarding the real output. sudo prefixes its own diagnostics with
+// "sudo:", so requiring that prefix keeps the discrimination reliable.
 func sudoWrongPassword(stderr string) bool {
 	s := strings.ToLower(stderr)
-	return strings.Contains(s, "sorry, try again") ||
-		strings.Contains(s, "incorrect password") ||
-		strings.Contains(s, "authentication failure")
+	return strings.Contains(s, "sudo: sorry, try again") ||
+		strings.Contains(s, "sudo: incorrect password") ||
+		strings.Contains(s, "sudo: authentication failure")
 }
 
 // sudoRequiresTTY reports whether sudo refused because it has no terminal.
@@ -124,9 +131,9 @@ func sudoWrongPassword(stderr string) bool {
 // PTY — that would defeat the no-terminal-capture property.
 func sudoRequiresTTY(stderr string) bool {
 	s := strings.ToLower(stderr)
-	return strings.Contains(s, "a terminal is required") ||
-		strings.Contains(s, "no tty present") ||
-		strings.Contains(s, "must have a tty")
+	return strings.Contains(s, "sudo: a terminal is required") ||
+		strings.Contains(s, "sudo: no tty present") ||
+		strings.Contains(s, "sudo: must have a tty")
 }
 
 // sudoNeedsPassword reports whether sudo wanted a password it did not get.
@@ -135,8 +142,8 @@ func sudoRequiresTTY(stderr string) bool {
 // password. It is the warm/cold discriminator.
 func sudoNeedsPassword(stderr string) bool {
 	s := strings.ToLower(stderr)
-	return strings.Contains(s, "no password was provided") ||
-		strings.Contains(s, "a password is required")
+	return strings.Contains(s, "sudo: no password was provided") ||
+		strings.Contains(s, "sudo: a password is required")
 }
 
 // sudoTool builds the shell.sudo native tool. It is Deferred so its full

@@ -125,6 +125,11 @@ type CommandRequest struct {
 	Stdout         io.Writer
 	Stderr         io.Writer
 	OnStart        func(pid int)
+	// Stdin, when non-nil, is written to the child's stdin. The privileged
+	// runner uses it to deliver the sudo password over a pipe — never
+	// os.Stdin, never a PTY, so the secret cannot be echoed or captured. The
+	// caller MUST zero the slice after Run returns.
+	Stdin []byte
 }
 
 type CommandResult struct {
@@ -239,6 +244,9 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 	jsonTool := tools.jsonQueryTool()
 	jsonTool.Deferred = true
 	all = append(all, csvTool, jsonTool)
+	// shell.sudo is platform-gated (no sudo on Windows) and Deferred: its
+	// full contract is disclosed on demand via tools.select.
+	all = append(all, tools.sudoTools()...)
 	// references/definition/hover answer through the LSP querier; with no
 	// server wired they could only ever return "no lsp", so they are not
 	// registered at all.

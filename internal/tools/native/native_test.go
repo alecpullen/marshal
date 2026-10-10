@@ -49,6 +49,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"csv.inspect":        registry.RiskReadOnly,
 		"workspace.worktree": registry.RiskWorkspaceWrite,
 		"workspace.finish":   registry.RiskWorkspaceWrite,
+		"shell.sudo":         registry.RiskDestructive,
 	}
 	if got := reg.List(); len(got) != len(want) {
 		t.Fatalf("len(List()) = %d, want %d", len(got), len(want))
@@ -287,12 +288,12 @@ func TestRegisterAllDefersConfigAndDataTools(t *testing.T) {
 		}
 	}
 
-	wantDeferred := map[string]bool{"csv.inspect": true, "json.query": true}
+	wantDeferred := map[string]bool{"csv.inspect": true, "json.query": true, "shell.sudo": true}
 	for _, name := range configNames {
 		wantDeferred[name] = true
 	}
 	if len(deferred) != len(wantDeferred) {
-		t.Fatalf("len(ListDeferred()) = %d, want %d (config.* + csv.inspect + json.query)", len(deferred), len(wantDeferred))
+		t.Fatalf("len(ListDeferred()) = %d, want %d (config.* + csv.inspect + json.query + shell.sudo)", len(deferred), len(wantDeferred))
 	}
 	for name := range wantDeferred {
 		if !deferred[name] {

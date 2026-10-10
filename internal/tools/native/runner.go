@@ -1,6 +1,7 @@
 package native
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os/exec"
@@ -66,6 +67,9 @@ func runCmd(ctx context.Context, cmd *exec.Cmd, req CommandRequest) (CommandResu
 	stderr := NewBoundedOutput(OutputLimit(req.MaxOutputBytes), req.Stderr)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	if req.Stdin != nil {
+		cmd.Stdin = bytes.NewReader(req.Stdin)
+	}
 
 	setProcessGroup(cmd)
 

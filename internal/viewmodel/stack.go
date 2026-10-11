@@ -1,10 +1,10 @@
 // Package viewmodel turns the session transcript into a tree: turn → step → row.
 //
 // It holds structure only, with no styling. Grouping tool calls under the
-// narration that explains them is done here, from the step IDs the runner
-// stamped on each item, with a timestamp heuristic only for sessions that
-// predate step IDs. The TUI renders the tree and internal/acp projects it for
-// web clients; keeping the grouping here lets it be tested without either.
+// narration that explains them is done here: a beat is one narrated response
+// and the narrationless responses after it, from the step IDs the runner
+// stamped on each item. The TUI renders the tree and internal/acp projects it
+// for web clients; keeping the grouping here lets it be tested without either.
 package viewmodel
 
 import (
@@ -66,20 +66,25 @@ type Node struct {
 	Queue   *QueueInfo
 }
 
-// StepInfo is a step node's payload.
+// StepInfo is a beat's payload. A beat is one narrated model response and
+// every narrationless response the same actor made after it, so a tool call
+// always sits under the narration that motivated it. Step is the first
+// response's record (zero for a beat built from step-less legacy items);
+// its EndedAt is the last merged response's end, zero while any is open.
 type StepInfo struct {
-	Step         session.Step // zero ID for heuristic steps
+	Step session.Step
+	// StepIDs are the responses merged into this beat, in order. Empty for a
+	// step-less beat.
+	StepIDs      []session.StepID
 	Narration    []*session.Message
 	Thinking     []*session.ThinkingEntry
-	LiveThinking string // in-progress reasoning when this is the live step
-	Heuristic    bool
+	LiveThinking string // in-progress reasoning when this is the live beat
 
-	// TodoID is the task the step renders under: the stored binding, or for a
-	// narrated step whose only tool call was a todo.write, the todo that
-	// write set in progress. Empty means no task.
+	// TodoID is the task the beat's first response was bound to: the stored
+	// binding, or for a narrated response whose only call was a todo.write,
+	// the todo that write set in progress. Empty means no task.
 	TodoID string
-	// TodoWrites are the step's todo.write calls. They are never rows: the
-	// task headers replace them.
+	// TodoWrites are the beat's todo.write calls. They are never rows.
 	TodoWrites []registry.AuditEvent
 }
 
@@ -290,6 +295,7 @@ type block struct {
 
 type stepAcc struct {
 	info   *StepInfo
+	loose  bool
 	audits []registry.AuditEvent
 	cards  []*Node
 	first  time.Time
@@ -299,8 +305,8 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	var blocks []block
 	steps := map[session.StepID]*stepAcc{}
 	var stepOrder []session.StepID
-	var heuristics []*stepAcc
-	var curH *stepAcc
+	var loose []*stepAcc
+	var curLoose *stepAcc
 
 	idStep := func(id session.StepID) *stepAcc {
 		if a, ok := steps[id]; ok {
@@ -312,9 +318,9 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		stepOrder = append(stepOrder, id)
 		return a
 	}
-	newHeuristic := func(ts time.Time) *stepAcc {
-		a := &stepAcc{info: &StepInfo{Heuristic: true}, first: ts}
-		heuristics = append(heuristics, a)
+	newLoose := func(ts time.Time) *stepAcc {
+		a := &stepAcc{info: &StepInfo{}, loose: true, first: ts}
+		loose = append(loose, a)
 		return a
 	}
 	touch := func(a *stepAcc, ts time.Time) {
@@ -341,48 +347,53 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 			m := it.Message
 			if m != nil && m.ContentType == session.ContentTypeNarration {
 				if m.StepID > 0 {
+					curLoose = nil
 					a := idStep(m.StepID)
 					a.info.Narration = append(a.info.Narration, m)
 					touch(a, it.Timestamp)
 				} else {
-					curH = newHeuristic(it.Timestamp)
-					curH.info.Narration = append(curH.info.Narration, m)
+					curLoose = newLoose(it.Timestamp)
+					curLoose.info.Narration = append(curLoose.info.Narration, m)
 				}
 				continue
 			}
-			curH = nil
+			curLoose = nil
 			blocks = append(blocks, block{it.Timestamp, passthrough(&items[i])})
 		case session.KindAudit:
 			if it.Audit == nil {
 				continue
 			}
 			if it.Audit.StepID > 0 {
+				curLoose = nil
 				a := idStep(it.Audit.StepID)
 				a.audits = append(a.audits, *it.Audit)
 				touch(a, it.Timestamp)
 			} else {
-				if curH == nil {
-					curH = newHeuristic(it.Timestamp)
+				if curLoose == nil {
+					curLoose = newLoose(it.Timestamp)
 				}
-				curH.audits = append(curH.audits, *it.Audit)
+				curLoose.audits = append(curLoose.audits, *it.Audit)
 			}
 		case session.KindThinking:
 			if it.Thinking == nil {
 				continue
 			}
 			if it.Thinking.StepID > 0 {
+				curLoose = nil
 				a := idStep(it.Thinking.StepID)
 				a.info.Thinking = append(a.info.Thinking, it.Thinking)
 				touch(a, it.Timestamp)
 			} else {
-				if curH == nil {
-					curH = newHeuristic(it.Timestamp)
+				if curLoose == nil {
+					curLoose = newLoose(it.Timestamp)
 				}
-				curH.info.Thinking = append(curH.info.Thinking, it.Thinking)
+				curLoose.info.Thinking = append(curLoose.info.Thinking, it.Thinking)
 			}
 		case session.KindSubagent:
+			curLoose = nil
 			cards = append(cards, it)
 		default:
+			curLoose = nil
 			blocks = append(blocks, block{it.Timestamp, passthrough(&items[i])})
 		}
 	}
@@ -451,7 +462,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		if atc.StepID > 0 && steps[atc.StepID] != nil {
 			activeByStep[atc.StepID] = append(activeByStep[atc.StepID], atc)
 		} else {
-			// Unstamped calls go to a heuristic live step if there is one,
+			// Unstamped calls go to a loose live beat if there is one,
 			// else stand at turn level.
 			strayActive = append(strayActive, atc)
 		}
@@ -461,7 +472,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	maxWritten := 0 // the longest list any todo.write in this turn wrote
 	finish := func(a *stepAcc, isLive bool, active []session.ActiveToolCall) *Node {
 		node := &Node{Kind: KindStep, Step: a.info, Live: isLive}
-		if a.info.Heuristic {
+		if a.loose {
 			node.ID = NodeID{KindStep, fmt.Sprintf("hstep:%d", a.first.UnixNano())}
 		} else if a.info.Step.ID != 0 {
 			node.ID = NodeID{KindStep, fmt.Sprintf("step:%d", a.info.Step.ID)}
@@ -480,6 +491,9 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 		node.Children = toolRows(audits, active)
 		node.Children = append(node.Children, a.cards...)
+		if a.info.Step.ID != 0 {
+			a.info.StepIDs = []session.StepID{a.info.Step.ID}
+		}
 		a.info.TodoID = effectiveTodoID(a.info, len(audits) == 0 && len(active) == 0, s.Todos)
 		node.Version = versionOfStep(node)
 		return node
@@ -498,10 +512,10 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 		blocks = append(blocks, block{ts, n})
 	}
-	// A heuristic live step: the last heuristic step of the last turn while
-	// busy and no ID-stamped step is open.
-	for i, a := range heuristics {
-		isLive := live == nil && s.Busy && lastTurn && i == len(heuristics)-1
+	// A loose live step: the last loose step of the last turn while busy and
+	// no ID-stamped step is open.
+	for i, a := range loose {
+		isLive := live == nil && s.Busy && lastTurn && i == len(loose)-1
 		var active []session.ActiveToolCall
 		if isLive {
 			active = strayActive
@@ -522,7 +536,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	if reasoning != "" && !liveThinkingPlaced {
 		blocks = append(blocks, block{s.InProgress.StartedAt, &Node{
 			ID: LiveThinkingID, Kind: KindThinking, Live: true,
-			Step: &StepInfo{LiveThinking: reasoning, Heuristic: true},
+			Step: &StepInfo{LiveThinking: reasoning},
 		}})
 	}
 	for i := range strayActive {
@@ -541,6 +555,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	for _, b := range blocks {
 		out = append(out, b.node)
 	}
+	out = mergeBeats(out)
 	// Whether the turn is task-driven is settled by the lists it wrote, not
 	// only by the list as it stands now: a later rewrite to one item must not
 	// flatten a finished turn after the fact.
@@ -778,8 +793,11 @@ func versionOfStep(n *Node) uint64 {
 	st := n.Step
 	r := st.Step
 	b.f("td|%s|%d|", st.TodoID, len(st.TodoWrites))
-	b.f("st|%d|%d|%s|%s|%s|%s|%d|%d|%v|%d|", r.ID, r.TurnMsgID, r.Actor.Role, r.Actor.Label, r.Actor.Model, r.Actor.Provider,
-		r.StartedAt.UnixNano(), r.EndedAt.UnixNano(), st.Heuristic, len(st.LiveThinking))
+	b.f("st|%d|%d|%s|%s|%s|%s|%d|%d|%d|%d|", r.ID, r.TurnMsgID, r.Actor.Role, r.Actor.Label, r.Actor.Model, r.Actor.Provider,
+		r.StartedAt.UnixNano(), r.EndedAt.UnixNano(), len(st.StepIDs), len(st.LiveThinking))
+	for _, id := range st.StepIDs {
+		b.f("sid|%d|", id)
+	}
 	for _, m := range st.Narration {
 		b.f("n|%d|%s|", m.ID, m.Content)
 	}

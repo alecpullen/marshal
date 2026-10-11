@@ -178,7 +178,7 @@ func groupTasks(nodes []*Node, turnKey string, s Snapshot, lastTurn, wroteList b
 	segments := map[string]int{}
 	for _, n := range nodes {
 		id := ""
-		if n.Kind == KindStep && n.Step != nil && !n.Step.Heuristic {
+		if n.Kind == KindStep && n.Step != nil {
 			id = n.Step.TodoID
 			// A short list does not drive the transcript, but work under a
 			// todo that has since left the list still gets its dropped header.

@@ -87,7 +87,7 @@ func stepDiff(step *Node) (StepDiff, bool) {
 	d.StepNode = step.ID.Key
 	d.Diff = strings.Join(diffs, "\n")
 	if step.Step != nil {
-		d.Headline, _, _ = StepHeadline(step.Step, step.Children)
+		d.Headline, _ = StepHeadline(step.Step)
 	}
 	return d, true
 }

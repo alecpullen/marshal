@@ -67,15 +67,15 @@ func TestProjectLinksParentsAndChildren(t *testing.T) {
 	}
 }
 
-func TestProjectInfersHeadlineWithoutNarration(t *testing.T) {
+func TestProjectLeavesNarrationlessBeatHeadless(t *testing.T) {
 	tree := Project(Build(Snapshot{
 		Items: []session.TranscriptItem{userMsg(1, 0), audit("file.read", 7, "c1", 2), audit("file.read", 7, "c2", 3)},
 		Steps: []session.Step{{ID: 7, TurnMsgID: 1, StartedAt: at(1), EndedAt: at(4)}},
 		Now:   at(6),
 	}))
 	st := wireByID(t, tree)["step:7"].Step
-	if st == nil || st.Headline != "read 2 files" || !st.Inferred {
-		t.Fatalf("step = %+v, want inferred \"read 2 files\"", st)
+	if st == nil || st.Headline != "" || st.Inferred {
+		t.Fatalf("step = %+v, want headless beat", st)
 	}
 }
 

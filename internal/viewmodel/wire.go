@@ -271,13 +271,13 @@ func wireNode(n *Node) WireNode {
 
 func wireStep(n *Node) *WireStep {
 	si := n.Step
-	head, rest, inferred := StepHeadline(si, n.Children)
+	head, rest := StepHeadline(si)
 	st := si.Step
 	ws := &WireStep{
-		Headline: head, Rest: rest, Inferred: inferred,
+		Headline: head, Rest: rest,
 		Owner: StepOwner(st), RoleWord: StepRoleWord(st), Role: st.Actor.Role,
 		Model: st.Actor.Model, Provider: st.Actor.Provider,
-		TodoID: si.TodoID, Heuristic: si.Heuristic,
+		TodoID:    si.TodoID,
 		StartedAt: ms(st.StartedAt), EndedAt: ms(st.EndedAt),
 		LiveThinking: si.LiveThinking,
 	}

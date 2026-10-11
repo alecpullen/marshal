@@ -60,9 +60,6 @@ func shape(nodes []*Node) string {
 			if n.Live {
 				extra = " live"
 			}
-			if n.Step != nil && n.Step.Heuristic {
-				extra += " heuristic"
-			}
 			if len(n.Tools) > 1 {
 				extra += fmt.Sprintf(" x%d", len(n.Tools))
 			}
@@ -96,7 +93,7 @@ func TestBuildGroupsByStepID(t *testing.T) {
 		t.Fatalf("shape:\n%s\nwant:\n%s", got, want)
 	}
 	st := nodes[0].Children[1]
-	if st.Kind != KindStep || len(st.Step.Narration) != 1 || st.Step.Step.ID != 1 || st.Step.Heuristic {
+	if st.Kind != KindStep || len(st.Step.Narration) != 1 || st.Step.Step.ID != 1 || len(st.Step.StepIDs) != 1 || st.Step.StepIDs[0] != 1 {
 		t.Fatalf("step node = %+v", st.Step)
 	}
 	if nodes[0].Children[2].Kind != KindFinal {
@@ -117,7 +114,6 @@ func TestBuildMergesSameToolRunsWithinAStepOnly(t *testing.T) {
   msg:1
   step:1
     tool:1:a x3
-  step:2
     tool:2:d
 `
 	if got := shape(nodes); got != want {
@@ -140,7 +136,7 @@ func TestBuildDoesNotMergeFailuresOrEdits(t *testing.T) {
 func TestBuildHeuristicStepsForLegacySessions(t *testing.T) {
 	nodes := Build(Snapshot{Items: []session.TranscriptItem{
 		userMsg(1, 0),
-		audit("file.read", 0, "", 1), // before any narration: unnarrated step
+		audit("file.read", 0, "", 1), // before any narration: a loose beat
 		narration(2, 0, 2, "Checking the guard."),
 		audit("search.text", 0, "", 3),
 		thinking(0, 4),
@@ -148,6 +144,10 @@ func TestBuildHeuristicStepsForLegacySessions(t *testing.T) {
 		audit("test.run", 0, "", 6),
 		final(4, 7),
 	}})
+	want := fmt.Sprintf("turn:1\n  msg:1\n  hstep:%d\n    tool:%d\n  hstep:%d\n    tool:%d\n  hstep:%d\n    tool:%d\n  msg:4\n", at(1).UnixNano(), at(1).UnixNano(), at(2).UnixNano(), at(3).UnixNano(), at(5).UnixNano(), at(6).UnixNano())
+	if got := shape(nodes); got != want {
+		t.Fatalf("shape:\n%s\nwant:\n%s", got, want)
+	}
 	var steps []*Node
 	for _, c := range nodes[0].Children {
 		if c.Kind == KindStep {
@@ -155,18 +155,18 @@ func TestBuildHeuristicStepsForLegacySessions(t *testing.T) {
 		}
 	}
 	if len(steps) != 3 {
-		t.Fatalf("heuristic steps = %d, want 3 (unnarrated, guard, tests):\n%s", len(steps), shape(nodes))
+		t.Fatalf("loose beats = %d, want 3 (unnarrated, guard, tests):\n%s", len(steps), shape(nodes))
 	}
 	for _, s := range steps {
-		if !s.Step.Heuristic || !strings.HasPrefix(s.ID.Key, "hstep:") {
-			t.Errorf("step %+v is not a heuristic step", s.ID)
+		if !strings.HasPrefix(s.ID.Key, "hstep:") {
+			t.Errorf("step %+v is not a loose beat", s.ID)
 		}
 	}
-	if len(steps[0].Step.Narration) != 0 || len(steps[0].Children) != 1 {
-		t.Errorf("first step should be the unnarrated read: %+v", steps[0])
+	if len(steps[0].Step.Narration) != 0 || len(steps[0].Children) != 1 || len(steps[0].Step.StepIDs) != 0 {
+		t.Errorf("first beat should be the step-less read: %+v", steps[0])
 	}
 	if len(steps[1].Children) != 1 || len(steps[1].Step.Thinking) != 1 {
-		t.Errorf("guard step should own the search and the thought: %s", shape(nodes))
+		t.Errorf("guard beat should own the search and the thought: %s", shape(nodes))
 	}
 }
 
@@ -176,14 +176,9 @@ func TestBuildHeuristicStepEndsAtAnotherMessage(t *testing.T) {
 	nodes := Build(Snapshot{Items: []session.TranscriptItem{
 		userMsg(1, 0), narration(2, 0, 1, "A."), audit("file.read", 0, "", 2), sys, audit("file.read", 0, "", 4),
 	}})
-	var n int
-	for _, c := range nodes[0].Children {
-		if c.Kind == KindStep {
-			n++
-		}
-	}
-	if n != 2 {
-		t.Fatalf("a system message must close the heuristic step; steps = %d\n%s", n, shape(nodes))
+	want := fmt.Sprintf("turn:1\n  msg:1\n  hstep:%d\n    tool:%d\n  msg:9\n  hstep:%d\n    tool:%d\n", at(1).UnixNano(), at(2).UnixNano(), at(4).UnixNano(), at(4).UnixNano())
+	if got := shape(nodes); got != want {
+		t.Fatalf("a system message must close the loose beat:\n%s\nwant:\n%s", got, want)
 	}
 }
 
@@ -193,14 +188,13 @@ func TestBuildMixedStepIDsAndLegacy(t *testing.T) {
 			userMsg(1, 0),
 			narration(2, 0, 1, "Legacy."), audit("file.read", 0, "", 2),
 			narration(3, 1, 4, "Stamped."), audit("file.read", 1, "c", 5),
+			audit("shell.run", 0, "tail", 6),
 		},
 		Steps: []session.Step{step(1, 4, 6, "")},
 	})
-	want := `turn:1
-  msg:1
-  hstep:` // legacy first by time
-	if got := shape(nodes); !strings.HasPrefix(got, want) || !strings.Contains(got, "step:1") {
-		t.Fatalf("shape:\n%s", got)
+	want := fmt.Sprintf("turn:1\n  msg:1\n  hstep:%d\n    tool:%d\n  step:1\n    tool:1:c\n    tool:tail\n", at(1).UnixNano(), at(2).UnixNano())
+	if got := shape(nodes); got != want {
+		t.Fatalf("shape:\n%s\nwant:\n%s", got, want)
 	}
 }
 
@@ -443,10 +437,14 @@ func TestToolKeysAreScopedToTheirStep(t *testing.T) {
 		},
 		Steps: []session.Step{step(1, 1, 4, ""), step(2, 5, 6, "")},
 	})
-	a := nodes[0].Children[1].Children[0].ID
-	b := nodes[0].Children[2].Children[0].ID
+	beat := nodes[0].Children[1]
+	if len(beat.Children) != 2 {
+		t.Fatalf("merged beat children = %d, want 2", len(beat.Children))
+	}
+	a := beat.Children[0].ID
+	b := beat.Children[1].ID
 	if a == b {
-		t.Fatalf("two steps' call_0 rows share identity %v", a)
+		t.Fatalf("two merged responses' call_0 rows share identity %v", a)
 	}
 }
 
@@ -456,8 +454,8 @@ func stepOf(id session.StepID, turn int64, start, end int) session.Step {
 	return st
 }
 
-// A step the runner has just opened has no narration yet. Its first call must
-// still render inside it, not inside a nearby step-less item's step.
+// A step the runner has just opened has no narration yet. A nearby legacy
+// step-less item remains the loose beat and absorbs the stamped live call.
 func TestBuildPlacesCallInFreshStepDespiteStepLessItem(t *testing.T) {
 	nodes := Build(Snapshot{
 		Items: []session.TranscriptItem{userMsg(1, 0), audit("git.rollback", 0, "", 1)},
@@ -468,13 +466,11 @@ func TestBuildPlacesCallInFreshStepDespiteStepLessItem(t *testing.T) {
 		},
 	})
 	got := shape(nodes)
-	if !strings.Contains(got, "step:1 live\n    tool:1:r live") {
-		t.Fatalf("the live call must sit in the fresh live step:\n%s", got)
+	if !strings.Contains(got, "hstep:") || !strings.Contains(got, "tool:1:r live") {
+		t.Fatalf("the live call must sit in the merged loose beat:\n%s", got)
 	}
-	for _, n := range nodes[0].Children {
-		if n.Step != nil && n.Step.Heuristic && n.Live {
-			t.Fatalf("the step-less item's heuristic step must not be live:\n%s", got)
-		}
+	if !nodes[0].Children[1].Live {
+		t.Fatalf("the merged loose beat must be live:\n%s", got)
 	}
 }
 

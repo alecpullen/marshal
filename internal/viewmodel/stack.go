@@ -470,7 +470,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 
 	todoActivity := false
 	maxWritten := 0 // the longest list any todo.write in this turn wrote
-	finish := func(a *stepAcc, isLive bool, active []session.ActiveToolCall) *Node {
+	finish := func(id session.StepID, a *stepAcc, isLive bool, active []session.ActiveToolCall) *Node {
 		node := &Node{Kind: KindStep, Step: a.info, Live: isLive}
 		if a.loose {
 			node.ID = NodeID{KindStep, fmt.Sprintf("hstep:%d", a.first.UnixNano())}
@@ -491,8 +491,8 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 		node.Children = toolRows(audits, active)
 		node.Children = append(node.Children, a.cards...)
-		if a.info.Step.ID != 0 {
-			a.info.StepIDs = []session.StepID{a.info.Step.ID}
+		if id != 0 {
+			a.info.StepIDs = []session.StepID{id}
 		}
 		a.info.TodoID = effectiveTodoID(a.info, len(audits) == 0 && len(active) == 0, s.Todos)
 		node.Version = versionOfStep(node)
@@ -502,7 +502,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	for _, id := range stepOrder {
 		a := steps[id]
 		isLive := a == live
-		n := finish(a, isLive, activeByStep[id])
+		n := finish(id, a, isLive, activeByStep[id])
 		if empty(n) {
 			continue
 		}
@@ -525,7 +525,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 				liveThinkingPlaced = true
 			}
 		}
-		n := finish(a, isLive, active)
+		n := finish(0, a, isLive, active)
 		if empty(n) {
 			continue
 		}

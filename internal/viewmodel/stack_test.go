@@ -204,6 +204,9 @@ func TestBuildStepWithoutRecordGetsZeroActor(t *testing.T) {
 	if st.Kind != KindStep || st.Step.Step.ID != 0 || st.Step.Step.Actor.Role != "" {
 		t.Fatalf("orphan step = %+v", st.Step)
 	}
+	if len(st.Step.StepIDs) != 1 || st.Step.StepIDs[0] != 7 {
+		t.Fatalf("orphan step IDs = %v, want [7]", st.Step.StepIDs)
+	}
 }
 
 func TestBuildOmitsEmptySteps(t *testing.T) {

@@ -42,7 +42,7 @@ type WireNode struct {
 	Thinking *WireThinking `json:"thinking,omitempty"`
 	Subagent *WireSubagent `json:"subagent,omitempty"`
 	RunEvent *WireRunEvent `json:"runEvent,omitempty"`
-	JobExit  *WireJobExit  `json:"jobExit,omitempty"`
+	Marker   *WireMarker   `json:"marker,omitempty"`
 	Receipt  *WireReceipt  `json:"receipt,omitempty"`
 }
 
@@ -87,6 +87,29 @@ type WireTool struct {
 	Display string       `json:"display"`
 	Calls   []WireCall   `json:"calls,omitempty"`
 	Running *WireRunning `json:"running,omitempty"`
+	// Job is set when this row is a background job's card: the call that
+	// started the job, settled in place by its exit.
+	Job *WireJob `json:"job,omitempty"`
+}
+
+// WireJob is a background job's card.
+type WireJob struct {
+	ID         string `json:"id"`
+	Command    string `json:"command"`
+	Running    bool   `json:"running,omitempty"`
+	ExitCode   int    `json:"exitCode"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+	Output     string `json:"output,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
+}
+
+// WireMarker is a one-line completion marker: what finished, and when.
+type WireMarker struct {
+	Refs       []string `json:"refs"`
+	Labels     []string `json:"labels"`
+	Failed     bool     `json:"failed,omitempty"`
+	At         int64    `json:"at,omitempty"`
+	DurationMs int64    `json:"durationMs,omitempty"`
 }
 
 // WireCall is one finished call.
@@ -167,17 +190,6 @@ type WireRunEvent struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
-// WireJobExit is a background job's exit record.
-type WireJobExit struct {
-	JobID      string `json:"jobId"`
-	Command    string `json:"command"`
-	ExitCode   int    `json:"exitCode"`
-	DurationMs int64  `json:"durationMs,omitempty"`
-	Output     string `json:"output,omitempty"`
-	At         int64  `json:"at,omitempty"`
-	Truncated  bool   `json:"truncated,omitempty"`
-}
-
 // WireReceipt is the summary line closing a finished turn.
 type WireReceipt struct {
 	DurationMs int64  `json:"durationMs"`
@@ -246,10 +258,23 @@ func wireNode(n *Node) WireNode {
 	case n.Kind == KindThinking && n.Step != nil:
 		// The live reasoning region when no step could hold it.
 		w.Thinking = &WireThinking{Text: n.Step.LiveThinking}
+	case n.Marker != nil:
+		m := n.Marker
+		wm := &WireMarker{Labels: m.Labels, Failed: m.Failed, At: ms(m.At), DurationMs: m.Dur.Milliseconds()}
+		for _, r := range m.Refs {
+			wm.Refs = append(wm.Refs, r.Key)
+		}
+		w.Marker = wm
 	case n.Active != nil:
 		w.Tool = wireActive(n.Active)
 	case len(n.Tools) > 0:
 		w.Tool = wireTools(n.Tools)
+		if j := n.Job; j != nil {
+			wj := &WireJob{ID: j.ID, Command: j.Command, Running: j.Running, ExitCode: j.ExitCode,
+				DurationMs: j.Duration.Milliseconds()}
+			wj.Output, wj.Truncated = capTail(j.Output)
+			w.Tool.Job = wj
+		}
 	case n.Item != nil:
 		wireItem(&w, n.Item)
 	}
@@ -282,7 +307,7 @@ func wireTools(evs []registry.AuditEvent) *WireTool {
 	wt := &WireTool{Name: evs[0].ToolName, Display: DisplayToolName(evs[0].ToolName)}
 	for _, ev := range evs {
 		c := WireCall{
-			CallID: ev.ToolCallID, Target: ToolTarget(ev), Summary: ev.ResultSummary,
+			CallID: ev.ToolCallID, Target: ToolTarget(ev), Summary: DisplaySummary(ev),
 			Error: ev.Error, ExitCode: ev.CommandExitCode, Failed: EventFailed(ev),
 			Approval: string(ev.Approval), Risk: string(ev.Risk), Files: ev.FilesChanged,
 			Role: ev.AgentRole, DurationMs: ev.Duration.Milliseconds(), At: ms(ev.Timestamp),
@@ -335,12 +360,6 @@ func wireItem(w *WireNode, it *session.TranscriptItem) {
 			Severity: e.Severity, At: ms(e.At)}
 		wr.Body, wr.Truncated = capText(e.Body)
 		w.RunEvent = wr
-	case it.JobExit != nil:
-		j := it.JobExit
-		wj := &WireJobExit{JobID: j.ID, Command: j.Command, ExitCode: j.ExitCode,
-			DurationMs: j.Duration.Milliseconds(), At: ms(j.At)}
-		wj.Output, wj.Truncated = capTail(j.Output)
-		w.JobExit = wj
 	}
 }
 

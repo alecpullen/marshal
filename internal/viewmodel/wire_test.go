@@ -153,9 +153,34 @@ func TestWireStepCarriesTodoLabelAndFold(t *testing.T) {
 }
 
 func TestKindStringCoversEveryKind(t *testing.T) {
-	for k := KindTurn; k <= KindReceipt; k++ {
+	for k := KindTurn; k <= KindMarker; k++ {
 		if s := k.String(); s == "" || s == "unknown" {
 			t.Fatalf("Kind(%d) has no wire name", k)
 		}
+	}
+}
+
+func TestWireMarkerAndJobCard(t *testing.T) {
+	nodes := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-4"), jobExit(5, "job-4", 2),
+	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
+	var sawJob, sawMarker bool
+	for _, n := range Project(nodes).Nodes {
+		if n.Tool != nil && n.Tool.Job != nil {
+			sawJob = n.Tool.Job.ExitCode == 2 && !n.Tool.Job.Running
+		}
+		if n.Kind == "marker" {
+			sawMarker = n.Marker != nil && n.Marker.Failed && n.Marker.Refs[0] == "tool:1:j"
+		}
+	}
+	if !sawJob || !sawMarker {
+		t.Fatalf("job %v marker %v", sawJob, sawMarker)
+	}
+}
+
+func TestAwaitSummaryIsJustTheWait(t *testing.T) {
+	ev := registry.AuditEvent{ToolName: "agent.await", ResultSummary: "subagent 1 completed: Task 4", Duration: 18e9}
+	if got := DisplaySummary(ev); got != "waited 18s" {
+		t.Fatalf("got %q", got)
 	}
 }

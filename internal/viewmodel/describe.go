@@ -4,11 +4,30 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
+
+// DisplaySummary is the summary a row shows. An await's result names what
+// finished, which the completion marker already says; its row just reports
+// the wait.
+func DisplaySummary(ev registry.AuditEvent) string {
+	if ev.ToolName == "agent.await" && ev.Error == "" {
+		return "waited " + compactWait(ev.Duration)
+	}
+	return ev.ResultSummary
+}
+
+func compactWait(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+}
 
 // The functions in this file turn tree payloads into the short phrases every
 // client shows: a step's headline, a tool call's subject, an owner's name.

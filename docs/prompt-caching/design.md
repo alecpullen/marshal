@@ -186,3 +186,5 @@ the UI; it was never labelled as what it was.
   from one turn share everything up to the working-state tail. On
   ollama-cloud and Codex, `turn_metrics.cache_read_tokens` for a fresh
   multi-step turn is non-zero.
+
+**Status (2026-10-12):** unit verification complete on the `prompt-caching` branch. Live checks (plan Task 8 steps 2–4: wire-capture prefix diff, `cache_read_tokens` on ollama-cloud and Codex, Kimi's usage field name) are pending and must be run interactively with real provider credentials.

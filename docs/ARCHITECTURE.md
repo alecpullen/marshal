@@ -110,6 +110,29 @@ Results streamed back to TUI transcript
 State persisted to SQLite
 ```
 
+## Prompt layout and caching
+
+Every request is laid out so that provider prompt caches can reuse
+everything except what changed since the previous request:
+
+```
+[0] system prompt               stable within a turn (rebuilt only when skills,
+                                loaded tools or system access change)
+[1] context pack (stable part)  repo card, map, memories, summaries, plan, pins
+    skill bodies
+    replayed history
+    skill hint                  per-turn; directly before the goal
+    goal, then the turn's tool loop (append-only)
+[n] working state (Volatile)    todos, scratchpad, semantic snippets; rebuilt
+                                for every request, never stored
+```
+
+The working state is appended in `chatOnceAttempt`, the single dispatch
+point. Anthropic places cache breakpoints on the tools, the system prompt and
+the last non-`Volatile` block; OpenAI and Codex requests carry a
+session-derived `prompt_cache_key`. `TestPromptPrefixStableAcrossSteps`
+guards the layout. Design: `docs/prompt-caching/design.md`.
+
 ## Web UI dependency rules
 
 - `web/bridge/` and `cmd/webbridge/` are pure Go and embed only the compiled

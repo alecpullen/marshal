@@ -164,6 +164,12 @@ These are load-bearing; code comments and tests point back at them.
 - **Local-friendly.** Defaults assume no built-in providers; remote providers
   are opt-in and must be configured explicitly. Never assume a hosted model.
 - **Provider-flexible.** The model layer is swappable without TUI changes.
+- **Cache-stable prompt prefix.** Anything that changes within a turn
+  (todos, scratchpad, retrieval snippets, per-turn hints) goes after the
+  history: in the working-state tail (`contextpack.IsVolatile`) or
+  directly before the goal. Never insert or rewrite a message ahead of
+  the transcript mid-turn; `TestPromptPrefixStableAcrossSteps` fails if
+  you do.
 
 ## Config
 

@@ -16,6 +16,7 @@
     onlyNodes = undefined,
     onToggleFold,
     onToggleDensity,
+    onSelect,
   }: {
     store: Readable<StackState>
     density: Density
@@ -27,6 +28,7 @@
     onlyNodes?: ReadonlySet<string>
     onToggleFold?: (id: string) => void
     onToggleDensity?: (id: string) => void
+    onSelect?: (id: string) => void
   } = $props()
 
   let now = $state(Date.now())
@@ -51,6 +53,7 @@
     now,
     onToggleFold,
     onToggleDensity,
+    onSelect,
   })
 </script>
 

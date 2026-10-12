@@ -57,7 +57,33 @@ export interface WireCall {
   truncated?: boolean
 }
 export interface WireRunning { target?: string; output?: string; startedAt?: number; truncated?: boolean }
-export interface WireTool { name: string; display: string; calls?: WireCall[]; running?: WireRunning }
+export interface WireTool {
+  name: string
+  display: string
+  calls?: WireCall[]
+  running?: WireRunning
+  /** Set when this row is a background job's card. */
+  job?: WireJob
+}
+/** A background job's card: the call that started it, settled in place. */
+export interface WireJob {
+  id: string
+  command: string
+  running?: boolean
+  exitCode: number
+  durationMs?: number
+  output?: string
+  truncated?: boolean
+}
+/** A one-line completion marker: what finished, and when. */
+export interface WireMarker {
+  /** Node IDs of the cards this marker reports on. */
+  refs: string[]
+  labels: string[]
+  failed?: boolean
+  at?: number
+  durationMs?: number
+}
 export interface WireMessage {
   role: string
   contentType?: string
@@ -96,15 +122,7 @@ export interface WireRunEvent {
   at?: number
   truncated?: boolean
 }
-export interface WireJobExit {
-  jobId: string
-  command: string
-  exitCode: number
-  durationMs?: number
-  output?: string
-  at?: number
-  truncated?: boolean
-}
+
 export interface WireReceipt {
   durationMs: number
   tasks: number
@@ -127,7 +145,7 @@ export interface WireNode {
   thinking?: WireThinking
   subagent?: WireSubagent
   runEvent?: WireRunEvent
-  jobExit?: WireJobExit
+  marker?: WireMarker
   receipt?: WireReceipt
 }
 

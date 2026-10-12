@@ -9,7 +9,7 @@
   import ThinkingRow from './ThinkingRow.svelte'
   import SubagentCard from './SubagentCard.svelte'
   import RunEventRow from './RunEventRow.svelte'
-  import JobExitRow from './JobExitRow.svelte'
+  import MarkerRow from './MarkerRow.svelte'
   import ReceiptLine from './ReceiptLine.svelte'
 
   let { id, ctx }: { id: string; ctx: TranscriptCtx } = $props()
@@ -60,8 +60,10 @@
     <div data-node-id={id}><SubagentCard sub={node.subagent} /></div>
   {:else if node.kind === 'runEvent' && node.runEvent}
     <div data-node-id={id}><RunEventRow event={node.runEvent} /></div>
-  {:else if node.kind === 'jobExit' && node.jobExit}
-    <div data-node-id={id}><JobExitRow job={node.jobExit} open={density === 'full'} /></div>
+  {:else if node.kind === 'marker' && node.marker}
+    <div data-node-id={id} class={isCursor ? 'border-l-2 border-violet pl-2 -ml-2.5' : ''}>
+      <MarkerRow marker={node.marker} onJump={(ref) => ctx.onSelect?.(ref)} />
+    </div>
   {:else if node.kind === 'receipt' && node.receipt}
     <div data-node-id={id}><ReceiptLine receipt={node.receipt} /></div>
   {:else}

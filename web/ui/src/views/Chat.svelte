@@ -214,6 +214,13 @@
     transcriptEl?.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.scrollIntoView?.({ block: 'center' })
   }
 
+  // scrollToNode follows a completion marker to the card it reports on. The
+  // card stays where the work was dispatched, which can be many screens back.
+  function scrollToNode(id: string) {
+    if (!$shown.nodes.has(id)) return
+    transcriptEl?.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.scrollIntoView?.({ block: 'center' })
+  }
+
   // Clicking a row selects it.
   function onTranscriptClick(e: MouseEvent) {
     const target = e.target as HTMLElement
@@ -565,6 +572,7 @@
         {cursor}
         onToggleFold={toggleFold}
         onToggleDensity={toggleDensity}
+        onSelect={scrollToNode}
       />
       {#if $shown.roots.length === 0 && !$session.busy}
         <div class="empty">

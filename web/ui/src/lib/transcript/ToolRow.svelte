@@ -11,12 +11,19 @@
   const merged = $derived(calls.length > 1)
   const open = $derived(density === 'full' || expanded)
   const failedAny = $derived(calls.some((c) => c.failed))
-  const lead = $derived(tool.running ? glyph.Running : failedAny ? glyph.Error : toolGlyph(tool.name))
-  const leadTone = $derived(tool.running ? 'text-accent' : failedAny ? 'text-err' : 'text-muted')
+  const job = $derived(tool.job)
+  const jobFailed = $derived(!!job && !job.running && job.exitCode !== 0)
+  const lead = $derived(job ? (job.running ? glyph.Running : jobFailed ? glyph.Error : glyph.Job) : tool.running ? glyph.Running : failedAny ? glyph.Error : toolGlyph(tool.name))
+  const leadTone = $derived(job ? (job.running ? 'text-accent' : jobFailed ? 'text-err' : 'text-muted') : tool.running ? 'text-accent' : failedAny ? 'text-err' : 'text-muted')
 
   const failure = (c: WireCall) => c.error || (c.exitCode ? `exit ${c.exitCode}` : c.failed ? 'failed' : '')
   const elapsed = $derived(tool.running?.startedAt ? compactDuration(Math.max(0, now - tool.running.startedAt)) : '')
   const anyTruncated = $derived(calls.some((c) => c.truncated) || !!tool.running?.truncated)
+  // A job card reports the job's own clock: running since it started, or the
+  // duration it ran once it settled.
+  const jobTail = $derived(
+    job ? (job.running ? `running${job.durationMs ? ` · ${compactDuration(job.durationMs)}` : ''}` : `exit ${job.exitCode}${job.durationMs ? ` · ${compactDuration(job.durationMs)}` : ''}`) : '',
+  )
 </script>
 
 {#snippet line(target: string | undefined, summary: string | undefined, fail: string)}
@@ -33,7 +40,17 @@
 {/snippet}
 
 <div class="py-px text-xs">
-  {#if tool.running}
+  {#if job}
+    <button class="flex w-full cursor-pointer items-baseline gap-2 text-left" onclick={() => (expanded = !expanded)} aria-expanded={open}>
+      <span class={leadTone}>{lead}</span>
+      <span class="shrink-0 font-mono text-sub">{job.id}</span>
+      <span class="truncate font-mono text-muted">{job.command}</span>
+      <span class="ml-auto shrink-0 text-muted">{jobTail}</span>
+    </button>
+    {#if open && job.output}
+      <pre class="mt-1 ml-5 max-h-48 overflow-auto rounded bg-surface p-2 font-mono whitespace-pre-wrap text-muted">{job.output}</pre>
+    {/if}
+  {:else if tool.running}
     <button class="flex w-full cursor-pointer items-baseline gap-2 text-left" onclick={() => (expanded = !expanded)}>
       <span class="animate-pulse {leadTone}">{lead}</span>
       {@render line(tool.running.target, '', '')}

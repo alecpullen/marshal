@@ -60,6 +60,9 @@ export function flattenVisible(ctx: TranscriptCtx, roots: string[]): BrowseCtx {
 export function nodeText(n: WireNode): string {
   if (n.step) return [n.step.headline, n.step.rest].filter(Boolean).join('\n')
   if (n.tool) {
+    // A job card copies the job's own record: the shell.run that started it
+    // is only the handle, and its command text is truncated in the row.
+    if (n.tool.job) return [n.tool.job.id, n.tool.job.command, n.tool.job.output].filter(Boolean).join('\n')
     const calls = n.tool.calls ?? []
     if (calls.length) return calls.map((c) => [c.target, c.output].filter(Boolean).join('\n')).join('\n\n')
     return [n.tool.running?.target, n.tool.running?.output].filter(Boolean).join('\n')
@@ -67,7 +70,7 @@ export function nodeText(n: WireNode): string {
   if (n.message) return n.message.content
   if (n.thinking) return n.thinking.text
   if (n.subagent) return [n.subagent.label, n.subagent.summary].filter(Boolean).join('\n')
-  if (n.jobExit) return [n.jobExit.command, n.jobExit.output].filter(Boolean).join('\n')
+  if (n.marker) return `${n.marker.labels.join(' ')} ${n.marker.failed ? 'failed' : 'done'}`
   if (n.runEvent) return [n.runEvent.title, n.runEvent.detail, n.runEvent.body].filter(Boolean).join('\n')
   return ''
 }

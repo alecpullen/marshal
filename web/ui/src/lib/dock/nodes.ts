@@ -72,7 +72,7 @@ export function nodeLabel(n: WireNode | undefined, id = ''): string {
   if (n.message) return n.message.content.split('\n')[0].slice(0, 80)
   if (n.thinking) return 'thinking'
   if (n.runEvent) return n.runEvent.title ?? n.runEvent.kind
-  if (n.jobExit) return n.jobExit.command
+  if (n.marker) return `${n.marker.labels.join(' ')} ${n.marker.failed ? 'failed' : 'done'}`
   return id || n.id
 }
 

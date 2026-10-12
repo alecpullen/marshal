@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { render, cleanup, screen } from '@testing-library/svelte'
+import userEvent from '@testing-library/user-event'
 import { writable } from 'svelte/store'
 import Transcript from './Transcript.svelte'
 import { BEAT_ROW_CAP, type StackState, type WireNode } from '../stack'
@@ -87,6 +88,53 @@ const longBeatNodes: WireNode[] = [
 const longBeatStore = () =>
   writable<StackState>({ status: 'ready', rev: 1, roots: ['turn:3'], nodes: new Map(longBeatNodes.map((n) => [n.id, n])) })
 
+// A job card and a completion marker: the card is the shell.run that started
+// the job, and the marker records the moment it finished, at the end of the
+// beat that was running when it did. The two sit in different places.
+const jobNodes: WireNode[] = [
+  { id: 'turn:4', kind: 'turn', children: ['step:11', 'marker:tool:11:j'] },
+  {
+    id: 'step:11',
+    kind: 'step',
+    parent: 'turn:4',
+    children: ['tool:11'],
+    step: { headline: 'Running the backend gate.', stepIds: [11] },
+  },
+  {
+    id: 'tool:11',
+    kind: 'tool',
+    parent: 'step:11',
+    tool: {
+      name: 'shell.run',
+      display: 'Run command',
+      calls: [{ target: 'pytest -q', summary: 'started background job job-4' }],
+      job: { id: 'job-4', command: 'pytest -q --junitxml=/tmp/a.xml', running: true, exitCode: 0 },
+    },
+  },
+  {
+    id: 'marker:tool:11:j',
+    kind: 'marker',
+    parent: 'turn:4',
+    marker: { refs: ['tool:11'], labels: ['#3 Task 1'], durationMs: 81000 },
+  },
+]
+
+const jobStore = () =>
+  writable<StackState>({ status: 'ready', rev: 1, roots: ['turn:4'], nodes: new Map(jobNodes.map((n) => [n.id, n])) })
+
+// The same job, settled: the card carries the outcome and the marker says it
+// failed.
+const settledJobNodes: WireNode[] = jobNodes.map((n) =>
+  n.id === 'tool:11'
+    ? { ...n, tool: { ...n.tool!, job: { id: 'job-4', command: 'pytest -q', running: false, exitCode: 2, durationMs: 122000, output: 'undefined reference to foo' } } }
+    : n.id === 'marker:tool:11:j'
+      ? { ...n, marker: { refs: ['tool:11'], labels: ['job-4'], failed: true } }
+      : n,
+)
+
+const settledJobStore = () =>
+  writable<StackState>({ status: 'ready', rev: 1, roots: ['turn:4'], nodes: new Map(settledJobNodes.map((n) => [n.id, n])) })
+
 describe('Transcript', () => {
   it('shows the prompt, steps, tool rows and receipt at the steps density', () => {
     render(Transcript, { store: stackStore(), density: 'steps', foldTasks: false })
@@ -167,6 +215,32 @@ describe('Transcript', () => {
     expect(screen.queryByText('call-0.go')).toBeNull()
     expect(screen.queryByText('call-1.go')).toBeNull()
     expect(screen.getByText(`call-${BEAT_ROW_CAP + 1}.go`)).toBeTruthy()
+  })
+
+  it('renders a job card on one line with its outcome', () => {
+    const { container } = render(Transcript, { store: jobStore(), density: 'steps', foldTasks: false })
+    const card = container.querySelector('[data-node-id="tool:11"]')
+    expect(card).toBeTruthy()
+    expect(card?.textContent).toContain('job-4')
+    expect(card?.textContent).toContain('pytest -q')
+    expect(card?.textContent).toContain('running')
+  })
+
+  it('settles a job card in place and shows its output only when open', () => {
+    render(Transcript, { store: settledJobStore(), density: 'steps', foldTasks: false })
+    expect(screen.getByText(/exit 2/)).toBeTruthy()
+    expect(screen.queryByText(/undefined reference to foo/)).toBeNull()
+    cleanup()
+    render(Transcript, { store: settledJobStore(), density: 'full', foldTasks: false })
+    expect(screen.getByText(/undefined reference to foo/)).toBeTruthy()
+  })
+
+  it('renders a completion marker as one line, and jumps to its card when clicked', async () => {
+    const onSelect = vi.fn()
+    render(Transcript, { store: jobStore(), density: 'steps', foldTasks: false, onSelect })
+    expect(screen.getByText(/#3 Task 1 done/)).toBeTruthy()
+    await userEvent.click(screen.getByText(/#3 Task 1 done/))
+    expect(onSelect).toHaveBeenCalledWith('tool:11')
   })
 
   it('limits the tree to onlyNodes with their ancestors and descendants', () => {

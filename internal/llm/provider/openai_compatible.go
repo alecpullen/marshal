@@ -210,6 +210,9 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 // habit — an embedded error event inside an HTTP-200 stream, which is why
 // the first stream event is peeked at before the channel is handed back.
 func (p *OpenAICompatible) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	if p.sendsPromptCacheKey() {
+		req.PromptCacheKey = promptCacheKey(p.sessionID)
+	}
 	if req.ThinkingOptions == nil && p.thinkingLookup != nil {
 		req.ThinkingOptions = p.thinkingLookup(req.Model)
 	}
@@ -391,6 +394,7 @@ func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool) ([]byte
 		StreamOptions:   streamOpts,
 		ReasoningEffort: reasoningEffort,
 		Reasoning:       reasoning,
+		PromptCacheKey:  req.PromptCacheKey,
 	})
 }
 

@@ -79,4 +79,9 @@ type ChatRequest struct {
 	Thinking string
 	// ThinkingOptions carries explicit preset capability overrides to the encoder.
 	ThinkingOptions *ThinkingOptions
+	// PromptCacheKey routes requests that share a prompt prefix to the
+	// same provider cache (OpenAI's prompt_cache_key). Providers fill it
+	// from their own session identity on endpoints known to accept it;
+	// callers leave it empty. Empty is never sent.
+	PromptCacheKey string
 }

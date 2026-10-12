@@ -77,6 +77,8 @@ type OpenAICodex struct {
 	// provCfg is the provider's config, used to hash the cache entry so a
 	// repointed provider invalidates its cached list.
 	provCfg config.ProviderConfig
+	// sessionID seeds prompt_cache_key.
+	sessionID string
 }
 
 // CodexOptions configures NewOpenAICodex.
@@ -95,6 +97,9 @@ type CodexOptions struct {
 	// ProviderConfig is the config this provider was built from, used for
 	// cache hashing.
 	ProviderConfig config.ProviderConfig
+	// SessionID is the stable per-conversation identifier; it seeds
+	// prompt_cache_key so a session's requests reach a warm cache.
+	SessionID string
 }
 
 // NewOpenAICodex constructs the codex backend. The engine must be non-nil:
@@ -136,6 +141,7 @@ func NewOpenAICodex(opts CodexOptions) (*OpenAICodex, error) {
 		staticModels:     models,
 		dataDir:          opts.DataDir,
 		provCfg:          opts.ProviderConfig,
+		sessionID:        opts.SessionID,
 	}, nil
 }
 
@@ -208,6 +214,10 @@ func (p *OpenAICodex) post(ctx context.Context, req schema.ChatRequest, token st
 	// Enforce the endpoint restriction for direct provider callers as well
 	// as the agent loop, which gates temperature using our capabilities.
 	req.Temperature = nil
+	// The Codex backend keys server-side prompt caching on
+	// prompt_cache_key (docs/codex-spike-findings-2026-09-14.md §3), as
+	// the codex CLI does with its conversation id.
+	req.PromptCacheKey = promptCacheKey(p.sessionID)
 	// Codex rejects system-role input items. Keep the leading harness prompt
 	// in instructions and send later runtime guidance as developer messages.
 	body, err := buildResponsesRequestBodyWithSystemRole(req, p.reasoningSummary, []string{codexIncludeReasoning}, "developer")

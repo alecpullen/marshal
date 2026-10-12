@@ -145,6 +145,7 @@ func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir str
 			StaticModels:     codexStaticModels(pc),
 			DataDir:          dataDir,
 			ProviderConfig:   pc,
+			SessionID:        sessionID,
 		})
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported type %q", name, pc.Type)

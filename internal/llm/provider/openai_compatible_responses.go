@@ -79,7 +79,8 @@ type responsesRequestBody struct {
 	// Include lists extra response fields to return. The codex backend
 	// requires ["reasoning.encrypted_content"] on every request (it 400s
 	// without it); the openai_compatible path leaves it empty.
-	Include []string `json:"include,omitempty"`
+	Include        []string `json:"include,omitempty"`
+	PromptCacheKey string   `json:"prompt_cache_key,omitempty"`
 }
 
 // --- usage ---
@@ -307,6 +308,7 @@ func buildResponsesRequestBodyWithSystemRole(req schema.ChatRequest, reasoningSu
 		Store:           false,
 		Text:            text,
 		Include:         include,
+		PromptCacheKey:  req.PromptCacheKey,
 	})
 }
 

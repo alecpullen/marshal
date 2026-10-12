@@ -72,6 +72,7 @@ type chatCompletionRequestBody struct {
 	StreamOptions   *streamOptions         `json:"stream_options,omitempty"`
 	ReasoningEffort string                 `json:"reasoning_effort,omitempty"`
 	Reasoning       *reasoningBody         `json:"reasoning,omitempty"`
+	PromptCacheKey  string                 `json:"prompt_cache_key,omitempty"`
 }
 
 type toolDefinitionBody struct {

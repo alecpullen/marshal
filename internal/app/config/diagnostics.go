@@ -326,6 +326,24 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		})
 	}
 
+	// 13: sandbox env allowlist. An explicit-empty allowlist is a deliberate
+	// opt-out, but it is also reachable by accident: the /settings list-drill
+	// stores [] when its last entry is deleted, and the value is merged
+	// wholesale, so once written it is indistinguishable from a curated list.
+	// It strips HOME — and with it the GOPATH/GOMODCACHE that the Go toolchain
+	// derives — so every `go` invocation in the shell breaks. That is too
+	// consequential to leave unreported, hence a warning naming the layer that
+	// set it rather than an error or a silent default.
+	if al := cfg.Tools.Shell.Sandbox.EnvAllowlist; al != nil && len(al) == 0 {
+		path := "tools.shell.sandbox.env_allowlist"
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     path,
+			Message:  "sandbox env allowlist is explicitly empty — the child gets almost no environment, stripping HOME (and with it GOPATH/GOMODCACHE) so toolchain commands such as `go build` fail; restore the defaults or list the variables you need",
+			Source:   layers.ProvenanceOf(path).SetBy.String(),
+		})
+	}
+
 	// Sort: errors before warnings, then by Path within each group.
 	sort.SliceStable(ds, func(i, j int) bool {
 		if ds[i].Severity != ds[j].Severity {

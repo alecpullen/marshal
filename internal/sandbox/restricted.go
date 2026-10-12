@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 
@@ -95,16 +96,35 @@ func (r *Restricted) Run(ctx context.Context, req native.CommandRequest) (native
 func (r *Restricted) buildEnv() []string {
 	parent := os.Environ()
 	// Explicit-empty allowlist (len=0 and != nil): the user has
-	// intentionally denied all environment variables. We pass only
-	// PATH (when present and not denied) so the child can find
-	// executables. This is the restricted-backend behavior: local
-	// dev convenience means PATH is still inherited. The container
-	// backend passes nothing for an explicit-empty allowlist.
+	// intentionally denied all but a floor of environment variables. We
+	// pass PATH (when present and not denied) so the child can find
+	// executables, and HOME so the shell and toolchains can resolve their
+	// state. This is the restricted-backend behavior: local dev
+	// convenience means PATH is still inherited. The container backend
+	// passes nothing for an explicit-empty allowlist.
+	//
+	// Why HOME is on the floor rather than denied (F-SAFE-23 follow-up):
+	// this backend reports FilesystemIsolation=false, so withholding HOME
+	// buys no isolation — the command can read the real home directory
+	// either way. It buys only breakage: the shell tool runs
+	// `bash -o pipefail -lc`, whose login startup sources the user's
+	// ~/.bashrc, where a PATH="$HOME/.local/bin:..." line expands to
+	// "/.local/bin:..." under an unset HOME — and without HOME the Go
+	// toolchain cannot derive GOPATH/GOMODCACHE, so every `go` invocation
+	// failed with "neither GOMODCACHE nor GOPATH is set". Every other
+	// variable stays denied; nil still means "use AllowList" and empty
+	// still means "deny everything else".
 	if r.cfg.EnvAllowlist != nil && len(r.cfg.EnvAllowlist) == 0 {
+		var env []string
 		if v, ok := os.LookupEnv("PATH"); ok && !r.denySet["PATH"] {
-			return []string{"PATH=" + v}
+			env = append(env, "PATH="+v)
 		}
-		return nil
+		if !r.denySet["HOME"] {
+			if home := homeDir(); home != "" {
+				env = envutil.Set(env, "HOME", home)
+			}
+		}
+		return env
 	}
 	// Nil: use AllowList — only pass safe vars minus denylist.
 	if r.cfg.EnvAllowlist == nil {
@@ -140,6 +160,21 @@ func (r *Restricted) buildEnv() []string {
 
 	// Apply denylist to the final result.
 	return envutil.FilterKeys(out, r.denySet)
+}
+
+// homeDir resolves the invoking user's home directory for the env floor.
+// It prefers os.UserHomeDir (which honours $HOME when set) and falls back
+// to the passwd entry, because the very case this exists for is $HOME
+// being absent. A resolution failure returns "" so the caller omits HOME
+// rather than hard-erroring: a broken NSS must not brick all execution.
+func homeDir() string {
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		return h
+	}
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		return u.HomeDir
+	}
+	return ""
 }
 
 func denySet(keys []string) map[string]bool {

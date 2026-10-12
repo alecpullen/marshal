@@ -151,6 +151,25 @@ func sandboxFrame(s *state) *frame {
 				f := listDrill("sandbox.env_allowlist", "Env allowlist", &sb.EnvAllowlist)
 				f.TomlPath = "tools.shell.sandbox.env_allowlist"
 				f.Desc = "environment variables passed into the sandbox"
+				f.Keywords = []string{"environment", "env", "gopath", "go build"}
+				// An empty list means "deny all env" and strips HOME, which
+				// breaks the Go toolchain (see sandbox.Restricted.buildEnv);
+				// /doctor reports the same condition. Flag it in place so the
+				// state is visible where it was created.
+				f.Warn = sb.EnvAllowlist != nil && len(sb.EnvAllowlist) == 0
+				// The drill has no other way back: deleting every row is the
+				// only way to empty it, and the section-level reset is too
+				// blunt (it also discards backend and limit settings). Append
+				// a targeted restore action to the drill's own frame.
+				inner := f.Build
+				f.Build = func() *frame {
+					fr := inner()
+					base := fr.List.Fields
+					fr.List.Fields = func() []*field {
+						return append(base(), envAllowlistRestoreField(s, &sb.EnvAllowlist))
+					}
+					return fr
+				}
 				return f
 			}(),
 			func() *field {

@@ -8,17 +8,26 @@ import "marshal/internal/llm/routing"
 // field requires editing just this struct plus SandboxConfig itself, plus
 // the merge block.
 type sandboxFile struct {
-	Backend           *string  `toml:"backend"`
-	MemoryLimitMB     *int     `toml:"memory_limit_mb"`
-	CPUSeconds        *int     `toml:"cpu_seconds"`
-	MaxProcesses      *int     `toml:"max_processes"`
-	FileSizeLimitMB   *int     `toml:"file_size_limit_mb"`
-	ContainerRuntime  *string  `toml:"container_runtime"`
-	ContainerImage    *string  `toml:"container_image"`
-	AllowFallback     *bool    `toml:"allow_fallback"`
-	UnsafePassthrough *bool    `toml:"unsafe_passthrough"`
-	EnvAllowlist      []string `toml:"env_allowlist"`
-	EnvDenylist       []string `toml:"env_denylist"`
+	Backend           *string `toml:"backend"`
+	MemoryLimitMB     *int    `toml:"memory_limit_mb"`
+	CPUSeconds        *int    `toml:"cpu_seconds"`
+	MaxProcesses      *int    `toml:"max_processes"`
+	FileSizeLimitMB   *int    `toml:"file_size_limit_mb"`
+	ContainerRuntime  *string `toml:"container_runtime"`
+	ContainerImage    *string `toml:"container_image"`
+	AllowFallback     *bool   `toml:"allow_fallback"`
+	UnsafePassthrough *bool   `toml:"unsafe_passthrough"`
+	// Slices are held as *[]string so the three states the save path must
+	// distinguish survive an encode: nil = key absent, &[]string{} = the key
+	// is present and empty, and a pointer to items = a real list. A bare
+	// []string cannot express "absent" — go-toml/v2 emits a nil slice as
+	// "[]", so an ordinary save wrote env_allowlist = [] (and
+	// floor_commands = [], parent_question_roles = []) for keys the file had
+	// never carried, and on the next load that empty array overrode the
+	// non-empty default. Every scalar in this file is already a pointer for
+	// exactly this reason; the slices were the oversight.
+	EnvAllowlist *[]string `toml:"env_allowlist"`
+	EnvDenylist  *[]string `toml:"env_denylist"`
 }
 
 type fileProject struct {
@@ -38,28 +47,28 @@ type fileProfile struct {
 }
 
 type fileAgent struct {
-	Provider                 *string  `toml:"provider"`
-	Model                    *string  `toml:"model"`
-	MaxToolIterations        *int     `toml:"max_tool_iterations"`
-	MaxRetries               *int     `toml:"max_retries"`
-	MaxTurnContextTokens     *int     `toml:"max_turn_context_tokens"`
-	ReconnectMaxWaitSeconds  *int     `toml:"reconnect_max_wait_seconds"`
-	MaxToolResultChars       *int     `toml:"max_tool_result_chars"`
-	MaxStructuredOutputChars *int     `toml:"max_structured_output_chars"`
-	PlanFirst                *bool    `toml:"plan_first"`
-	NarrationPrompt          *bool    `toml:"narration_prompt"`
-	IntentNudge              *bool    `toml:"intent_nudge"`
-	SubtaskIterations        *int     `toml:"subtask_iterations"`
-	ApprovalMode             *string  `toml:"approval_mode"`
-	HistoryBudgetTokens      *int     `toml:"history_budget_tokens"`
-	ParseRepairFeedback      *bool    `toml:"parse_repair_feedback"`
-	VerificationGate         *bool    `toml:"verification_gate"`
-	MaxTouchedFileBytes      *int     `toml:"max_touched_file_bytes"`
-	ThinkingBudgetMargin     *int     `toml:"thinking_budget_margin"`
-	MaxConcurrentSubagents   *int     `toml:"max_concurrent_subagents"`
-	ParentQuestionRoles      []string `toml:"parent_question_roles"`
-	ParentQuestionTimeout    *string  `toml:"parent_question_timeout"`
-	ParentQuestionMaxPerTask *int     `toml:"parent_question_max_per_task"`
+	Provider                 *string   `toml:"provider"`
+	Model                    *string   `toml:"model"`
+	MaxToolIterations        *int      `toml:"max_tool_iterations"`
+	MaxRetries               *int      `toml:"max_retries"`
+	MaxTurnContextTokens     *int      `toml:"max_turn_context_tokens"`
+	ReconnectMaxWaitSeconds  *int      `toml:"reconnect_max_wait_seconds"`
+	MaxToolResultChars       *int      `toml:"max_tool_result_chars"`
+	MaxStructuredOutputChars *int      `toml:"max_structured_output_chars"`
+	PlanFirst                *bool     `toml:"plan_first"`
+	NarrationPrompt          *bool     `toml:"narration_prompt"`
+	IntentNudge              *bool     `toml:"intent_nudge"`
+	SubtaskIterations        *int      `toml:"subtask_iterations"`
+	ApprovalMode             *string   `toml:"approval_mode"`
+	HistoryBudgetTokens      *int      `toml:"history_budget_tokens"`
+	ParseRepairFeedback      *bool     `toml:"parse_repair_feedback"`
+	VerificationGate         *bool     `toml:"verification_gate"`
+	MaxTouchedFileBytes      *int      `toml:"max_touched_file_bytes"`
+	ThinkingBudgetMargin     *int      `toml:"thinking_budget_margin"`
+	MaxConcurrentSubagents   *int      `toml:"max_concurrent_subagents"`
+	ParentQuestionRoles      *[]string `toml:"parent_question_roles"`
+	ParentQuestionTimeout    *string   `toml:"parent_question_timeout"`
+	ParentQuestionMaxPerTask *int      `toml:"parent_question_max_per_task"`
 }
 
 type filePrivacy struct {
@@ -96,7 +105,7 @@ type fileShell struct {
 	AllowNetwork          *bool         `toml:"allow_network"`
 	AutoApprove           *bool         `toml:"auto_approve"`
 	GuardrailDynamicArgv0 *string       `toml:"guardrail_dynamic_argv0"`
-	FloorCommands         []string      `toml:"floor_commands"`
+	FloorCommands         *[]string     `toml:"floor_commands"`
 	Allow                 *CommandRules `toml:"allow"`
 	Confirm               *CommandRules `toml:"confirm"`
 	Deny                  *PatternRules `toml:"deny"`

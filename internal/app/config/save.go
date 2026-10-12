@@ -155,7 +155,11 @@ func fileField[T any](section any, name string) *T {
 	return f.Interface().(*T)
 }
 
-func fileSlice[T any](section any, name string) []T {
+// fileSlice returns the file's value for a *[]T field, or nil when the key is
+// absent. Pointer-ness is what carries "absent": a bare []T decodes an explicit
+// "[]" and an absent key to the same nil, so the save path could not tell them
+// apart (see sandboxFile in file_types.go).
+func fileSlice[T any](section any, name string) *[]T {
 	if section == nil {
 		return nil
 	}
@@ -170,13 +174,28 @@ func fileSlice[T any](section any, name string) []T {
 	if !f.IsValid() || f.IsNil() {
 		return nil
 	}
-	return f.Interface().([]T)
+	return f.Interface().(*[]T)
 }
 
-// putSlice writes merged into dst when the file already carries the key
-// or when merged differs from the default (using DeepEqual for slices).
-func putSlice[T any](dst *[]T, fileVal []T, merged, def []T) {
-	if len(fileVal) > 0 || !reflect.DeepEqual(merged, def) {
+// putSlice writes merged into dst when the file already carries the key or when
+// merged differs from the default (using DeepEqual for slices).
+//
+// Presence is tested as fileVal != nil, not len(fileVal) > 0: [] is a
+// *meaningful* value for a slice key (for tools.shell.sandbox.env_allowlist it
+// means "deny-all env" — see sandbox.Restricted.buildEnv), so a
+// present-but-empty entry in the file must count as the user having set the
+// key. Under the old len() rule a settings "reset to defaults" wrote nothing
+// at all, because merged == def, and an explicit-empty list recorded elsewhere
+// then survived the merge and won again on the next load — the reset silently
+// appeared to do nothing. Absent (nil) still writes nothing, so an ordinary
+// save does not start baking defaults into a shared project config.
+//
+// The pointers exist because a bare []T cannot express "absent": go-toml/v2
+// encodes a nil slice as "[]", so an ordinary save used to resurrect empty
+// arrays for keys the file never carried, silently overriding non-empty
+// defaults on the next load.
+func putSlice[T any](dst **[]T, fileVal, merged, def *[]T) {
+	if fileVal != nil || !reflect.DeepEqual(merged, def) {
 		*dst = merged
 	}
 }
@@ -222,7 +241,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&agent.MaxTouchedFileBytes, fileField[int](file.Agent, "MaxTouchedFileBytes"), cfg.Agent.MaxTouchedFileBytes, def.Agent.MaxTouchedFileBytes)
 	putKey(&agent.ThinkingBudgetMargin, fileField[int](file.Agent, "ThinkingBudgetMargin"), cfg.Agent.ThinkingBudgetMargin, def.Agent.ThinkingBudgetMargin)
 	putKey(&agent.MaxConcurrentSubagents, fileField[int](file.Agent, "MaxConcurrentSubagents"), cfg.Agent.MaxConcurrentSubagents, def.Agent.MaxConcurrentSubagents)
-	putSlice(&agent.ParentQuestionRoles, fileSlice[string](file.Agent, "ParentQuestionRoles"), cfg.Agent.ParentQuestionRoles, def.Agent.ParentQuestionRoles)
+	putSlice(&agent.ParentQuestionRoles, fileSlice[string](file.Agent, "ParentQuestionRoles"), strutil.Ptr(cfg.Agent.ParentQuestionRoles), strutil.Ptr(def.Agent.ParentQuestionRoles))
 	putKey(&agent.ParentQuestionTimeout, fileField[string](file.Agent, "ParentQuestionTimeout"), cfg.Agent.ParentQuestionTimeout.String(), def.Agent.ParentQuestionTimeout.String())
 	putKey(&agent.ParentQuestionMaxPerTask, fileField[int](file.Agent, "ParentQuestionMaxPerTask"), cfg.Agent.ParentQuestionMaxPerTask, def.Agent.ParentQuestionMaxPerTask)
 	file.Agent = agent
@@ -245,7 +264,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&shell.AllowNetwork, fileField[bool](file.Tools.Shell, "AllowNetwork"), cfg.Tools.Shell.AllowNetwork, def.Tools.Shell.AllowNetwork)
 	putKey(&shell.AutoApprove, fileField[bool](file.Tools.Shell, "AutoApprove"), cfg.Tools.Shell.AutoApprove, def.Tools.Shell.AutoApprove)
 	putKey(&shell.GuardrailDynamicArgv0, fileField[string](file.Tools.Shell, "GuardrailDynamicArgv0"), cfg.Tools.Shell.GuardrailDynamicArgv0, def.Tools.Shell.GuardrailDynamicArgv0)
-	putSlice(&shell.FloorCommands, fileSlice[string](file.Tools.Shell, "FloorCommands"), cfg.Tools.Shell.FloorCommands, def.Tools.Shell.FloorCommands)
+	putSlice(&shell.FloorCommands, fileSlice[string](file.Tools.Shell, "FloorCommands"), strutil.Ptr(cfg.Tools.Shell.FloorCommands), strutil.Ptr(def.Tools.Shell.FloorCommands))
 
 	if file.Tools.Shell.Sandbox == nil {
 		file.Tools.Shell.Sandbox = &sandboxFile{}
@@ -260,8 +279,8 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&sandbox.ContainerImage, fileField[string](file.Tools.Shell.Sandbox, "ContainerImage"), cfg.Tools.Shell.Sandbox.ContainerImage, def.Tools.Shell.Sandbox.ContainerImage)
 	putKey(&sandbox.AllowFallback, fileField[bool](file.Tools.Shell.Sandbox, "AllowFallback"), cfg.Tools.Shell.Sandbox.AllowFallback, def.Tools.Shell.Sandbox.AllowFallback)
 	putKey(&sandbox.UnsafePassthrough, fileField[bool](file.Tools.Shell.Sandbox, "UnsafePassthrough"), cfg.Tools.Shell.Sandbox.UnsafePassthrough, def.Tools.Shell.Sandbox.UnsafePassthrough)
-	putSlice(&sandbox.EnvAllowlist, fileSlice[string](file.Tools.Shell.Sandbox, "EnvAllowlist"), cfg.Tools.Shell.Sandbox.EnvAllowlist, def.Tools.Shell.Sandbox.EnvAllowlist)
-	putSlice(&sandbox.EnvDenylist, fileSlice[string](file.Tools.Shell.Sandbox, "EnvDenylist"), cfg.Tools.Shell.Sandbox.EnvDenylist, def.Tools.Shell.Sandbox.EnvDenylist)
+	putSlice(&sandbox.EnvAllowlist, fileSlice[string](file.Tools.Shell.Sandbox, "EnvAllowlist"), strutil.Ptr(cfg.Tools.Shell.Sandbox.EnvAllowlist), strutil.Ptr(def.Tools.Shell.Sandbox.EnvAllowlist))
+	putSlice(&sandbox.EnvDenylist, fileSlice[string](file.Tools.Shell.Sandbox, "EnvDenylist"), strutil.Ptr(cfg.Tools.Shell.Sandbox.EnvDenylist), strutil.Ptr(def.Tools.Shell.Sandbox.EnvDenylist))
 	shell.Allow = file.Tools.Shell.Allow
 	shell.Confirm = file.Tools.Shell.Confirm
 	shell.Deny = file.Tools.Shell.Deny

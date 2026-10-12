@@ -55,7 +55,7 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.ThinkingBudgetMargin, file.Agent.ThinkingBudgetMargin)
 		set(&cfg.Agent.MaxConcurrentSubagents, file.Agent.MaxConcurrentSubagents)
 		if file.Agent.ParentQuestionRoles != nil {
-			cfg.Agent.ParentQuestionRoles = file.Agent.ParentQuestionRoles
+			cfg.Agent.ParentQuestionRoles = *file.Agent.ParentQuestionRoles
 		}
 		if file.Agent.ParentQuestionTimeout != nil && *file.Agent.ParentQuestionTimeout != "" {
 			d, err := time.ParseDuration(*file.Agent.ParentQuestionTimeout)
@@ -218,7 +218,7 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Tools.Shell.GuardrailDynamicArgv0 = *s.GuardrailDynamicArgv0
 		}
 		if s.FloorCommands != nil {
-			cfg.Tools.Shell.FloorCommands = s.FloorCommands
+			cfg.Tools.Shell.FloorCommands = *s.FloorCommands
 		}
 		if s.Allow != nil && s.Allow.Commands != nil {
 			cfg.Tools.Shell.Allow.Commands = s.Allow.Commands
@@ -240,10 +240,10 @@ func merge(cfg *Config, file configFile) error {
 			set(&cfg.Tools.Shell.Sandbox.AllowFallback, s.Sandbox.AllowFallback)
 			set(&cfg.Tools.Shell.Sandbox.UnsafePassthrough, s.Sandbox.UnsafePassthrough)
 			if s.Sandbox.EnvAllowlist != nil {
-				cfg.Tools.Shell.Sandbox.EnvAllowlist = s.Sandbox.EnvAllowlist
+				cfg.Tools.Shell.Sandbox.EnvAllowlist = *s.Sandbox.EnvAllowlist
 			}
 			if s.Sandbox.EnvDenylist != nil {
-				cfg.Tools.Shell.Sandbox.EnvDenylist = s.Sandbox.EnvDenylist
+				cfg.Tools.Shell.Sandbox.EnvDenylist = *s.Sandbox.EnvDenylist
 			}
 		}
 	}

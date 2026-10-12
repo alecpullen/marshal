@@ -10,16 +10,21 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/tools/native"
 )
 
-// todoStack seeds a turn driving a four-item list: the first is done, the
-// second in progress, the last two waiting. It returns the model with the
+// todoStack seeds a busy turn driving a four-item list: the first is done,
+// the second in progress, the last two waiting. It returns the model with the
 // frame already built.
+//
+// The turn must be busy: the band only shows progress while work is running,
+// so an abandoned list cannot hold a row for the rest of the session.
 func todoStack(t *testing.T) Model {
 	t.Helper()
 	m := newTestModel(t)
 	m.resize(100, 60)
 	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
 	todos := []db.TodoItem{
 		{ID: "t1", Content: "Read", Status: "in_progress", StartedAt: time.Now()},
 		{ID: "t2", Content: "Write", Status: "pending"},
@@ -37,104 +42,47 @@ func todoStack(t *testing.T) Model {
 	return m
 }
 
-// TestPinnedStripHoldsOnlyTheFinishedAndActiveTodos pins the top strip to
-// the collapsed done stack and the todo in progress: the waiting ones are
-// the bottom band's job, and must not appear here.
-func TestPinnedStripHoldsOnlyTheFinishedAndActiveTodos(t *testing.T) {
-	m := todoStack(t)
-	strip := stripANSI(m.renderTodoStrip())
-	for _, want := range []string{"1/4 Read", "2/4 Write"} {
-		if !strings.Contains(strip, want) {
-			t.Errorf("strip must keep %q:\n%s", want, strip)
+// todoDrivenTurn makes the model's latest turn one that is working from the
+// list: a user turn, the list, and a beat bound to its in-progress item.
+//
+// The band only shows todo progress for such a turn (viewmodel's
+// DrivenByTodos), so a list merely present on the session — left over from an
+// earlier turn, or never touched by this one — holds no band rows. Tests that
+// want band progress must say so through this helper rather than by setting
+// todos alone.
+func todoDrivenTurn(t *testing.T, m *Model, todos []native.TodoItem) {
+	t.Helper()
+	for i := range todos {
+		if todos[i].ID == "" {
+			todos[i].ID = fmt.Sprintf("t%d", i+1)
 		}
 	}
-	for _, unwanted := range []string{"3/4 Test", "4/4 Ship"} {
-		if strings.Contains(strip, unwanted) {
-			t.Errorf("waiting todo %q must not be in the top strip:\n%s", unwanted, strip)
-		}
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	if err := m.state.SetTodos(todos); err != nil {
+		t.Fatalf("SetTodos: %v", err)
 	}
-
-	// The strip is the first thing in the frame, and its two rows are the
-	// done todo and the active one.
-	frame := strings.Split(stripANSI(m.viewString()), "\n")
-	for i, w := range []string{"✓ 1/4 Read", "▸ 2/4 Write"} {
-		if i >= len(frame) || !strings.Contains(frame[i], w) {
-			t.Fatalf("frame row %d should hold %q:\n%s", i, w, strings.Join(frame[:min(6, len(frame))], "\n"))
-		}
-	}
-	if m.todoStripRows() != 2 {
-		t.Errorf("strip rows = %d, want 2", m.todoStripRows())
-	}
-}
-
-// TestWaitingTodosStackInABandBelowTheTranscript is the headline behaviour:
-// pending todos render pinned under the transcript, above the now bar.
-func TestWaitingTodosStackInABandBelowTheTranscript(t *testing.T) {
-	m := todoStack(t)
-	band := stripANSI(m.renderTodoBand())
-	for _, want := range []string{"3/4 Test", "4/4 Ship"} {
-		if !strings.Contains(band, want) {
-			t.Errorf("band must list the waiting todo %q:\n%s", want, band)
-		}
-	}
-	for _, unwanted := range []string{"1/4 Read", "2/4 Write"} {
-		if strings.Contains(band, unwanted) {
-			t.Errorf("band must not repeat the strip's %q:\n%s", unwanted, band)
-		}
-	}
-
-	frame := strings.Split(stripANSI(m.viewString()), "\n")
-	at := func(sub string) int {
-		for i, l := range frame {
-			if strings.Contains(l, sub) {
-				return i
-			}
-		}
-		t.Fatalf("frame is missing %q:\n%s", sub, strings.Join(frame, "\n"))
-		return -1
-	}
-	stripRow, bandRow := at("1/4 Read"), at("3/4 Test")
-	if !(stripRow < bandRow) {
-		t.Fatalf("the strip must sit above the band: strip row %d, band row %d", stripRow, bandRow)
-	}
-}
-
-// TestTodoBandIsEmptyOnceTheListIsDone keeps a finished list from pinning a
-// band for the rest of the session.
-func TestTodoBandIsEmptyOnceTheListIsDone(t *testing.T) {
-	m := todoStack(t)
-	for _, td := range []db.TodoItem{
-		{ID: "t2", Content: "Write", Status: "completed", CompletedAt: time.Now()},
-		{ID: "t3", Content: "Test", Status: "completed", CompletedAt: time.Now()},
-		{ID: "t4", Content: "Ship", Status: "completed", CompletedAt: time.Now()},
-	} {
-		todos := m.state.Todos()
-		for i := range todos {
-			if todos[i].ID == td.ID {
-				todos[i].Status, todos[i].CompletedAt = "completed", time.Now()
-			}
-		}
-		_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
-	}
+	// BeginStep binds the step to the in-progress todo by ID, which is what
+	// makes the turn driven by the list.
+	stepUnder(m, "Working the list. Steadily.", "w")
 	m.invalidateTranscript()
 	m.refreshViewport()
-	if rows := m.todoBandRows(); rows != 0 {
-		t.Fatalf("a finished list must not pin a band, rows = %d", rows)
-	}
-	if band := stripANSI(m.renderTodoBand()); band != "" {
-		t.Fatalf("band must render empty once nothing is waiting:\n%s", band)
-	}
 }
+
+// todoProgress and the todo counters are the band's inputs; the band itself
+// is rendered by the now bar and pinned in nowbar_test.go.
 
 // TestTodoBandIsBudgetedInTheFrameHeight is the regression guard for the
 // geometry rule in view.go: an unbudgeted band row makes the left column
 // taller than the frame and pushes the input area and the status footer off
 // the bottom of the screen.
 //
-// The row count alone cannot catch that — clipLeftColumn trims the surplus
-// from the top and reports it through its hook, so the frame still comes out
-// the right height with the strip scrolled away. The trim count is the real
-// signal.
+// The band's rows are the now bar's rows now, so the guard covers the same
+// ground through nowBarRows.
+//
+// The row count alone cannot catch an unbudgeted row — clipLeftColumn trims
+// the surplus from the top and reports it through its hook, so the frame
+// still comes out the right height with the transcript scrolled away. The
+// trim count is the real signal.
 func TestTodoBandIsBudgetedInTheFrameHeight(t *testing.T) {
 	for _, h := range []int{30, 40, 60} {
 		t.Run(fmt.Sprintf("h%d", h), func(t *testing.T) {
@@ -142,7 +90,7 @@ func TestTodoBandIsBudgetedInTheFrameHeight(t *testing.T) {
 			m.resize(100, h)
 			m.invalidateTranscript()
 			m.refreshViewport()
-			if m.todoBandRows() == 0 {
+			if m.nowBarRows() == 0 {
 				t.Fatalf("precondition: the band must be showing")
 			}
 			trimmed := 0

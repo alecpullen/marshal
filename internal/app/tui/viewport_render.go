@@ -71,10 +71,9 @@ func (m *Model) refreshViewport() {
 		Now:             m.now(),
 	}
 	turns := viewmodel.Build(snap)
-	m.todoStrip = nil
-	if len(turns) > 0 && viewmodel.DrivenByTodos(turns[len(turns)-1]) {
-		m.todoStrip = snap.Todos
-	}
+	// The band is derived here, once, so the now bar and the frame height
+	// both read the same value.
+	m.band = viewmodel.BandOf(snap, turns)
 	m.updateViewportHeight()
 
 	width := m.viewport.Width()

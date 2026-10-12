@@ -149,13 +149,11 @@ func TestInputAndFooterVisibleWithTodosAndFullTranscript(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := scrolledModel(t, 140, 30)
-			if err := m.state.SetTodos([]native.TodoItem{
+			todoDrivenTurn(t, m, []native.TodoItem{
 				{Content: "first task", Status: native.TodoCompleted},
 				{Content: "second task", Status: native.TodoInProgress},
 				{Content: "third task", Status: native.TodoPending},
-			}); err != nil {
-				t.Fatalf("SetTodos: %v", err)
-			}
+			})
 			if !tc.scrolled {
 				m.viewportFollow = true
 			}

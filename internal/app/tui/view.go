@@ -98,15 +98,9 @@ func (m *Model) viewString() string {
 		left = padRows(dockView, m.height-statusLineRows)
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
-		// The waiting todos stack under the transcript: the strip above it
-		// holds the work done and under way, and the band below holds what
-		// is still to come.
-		if band := m.renderTodoBand(); band != "" {
-			rows = append(rows, chrome.PaintBand(band, m.leftWidth, theme.Current().TranscriptBG()))
-		}
 		// The now bar carries every live-progress surface in one place just
-		// above the input: the run/todo progress row, the turn spinner, and
-		// the running agents, browser, jobs and watches.
+		// above the input: the band's progress and checklist rows, the turn
+		// spinner, and the running agents, browser, jobs and watches.
 		if bar := renderNowBar(plan, m.leftWidth); bar != "" {
 			rows = append(rows, bar)
 		}
@@ -168,9 +162,7 @@ func (m Model) renderTranscriptFrame() string {
 		hint := mutedStyle().Render("↑ scrolled — End to follow")
 		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
 	}
-	if strip := m.renderTodoStrip(); strip != "" {
-		content = lipgloss.JoinVertical(lipgloss.Left, strip, content)
-	}
+
 	if v, ok := m.drilledInto(); ok {
 		label := v.Label
 		if v.Role != "" {

@@ -209,6 +209,7 @@ func TestNowBarClockIsTheInProgressTasksElapsedTime(t *testing.T) {
 			{ID: "t1", Content: "Working", Status: "in_progress", StartedAt: now.Add(-42 * time.Second)},
 			{ID: "t2", Content: "Next", Status: "pending"},
 		},
+		Band: viewmodel.BandInfo{Todos: true, Done: 0, Total: 2, Active: "Working", Next: []string{"Next"}},
 	}
 	_, _, elapsed := nowBarHead(in)
 	if elapsed != "42s" {
@@ -395,22 +396,8 @@ func stepUnder(m *Model, narration, call string) {
 	m.state.EndStep(id)
 }
 
-func TestTodoStackPinsEveryTodoAboveTheTranscriptAndDividesItsWork(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(100, 60)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	todos := []db.TodoItem{
-		{ID: "t1", Content: "Read", Status: "in_progress", StartedAt: time.Now()},
-		{ID: "t2", Content: "Write", Status: "pending"},
-		{ID: "t3", Content: "Test", Status: "pending"},
-		{ID: "t4", Content: "Ship", Status: "pending"},
-	}
-	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
-	stepUnder(&m, "Reading it. Slowly.", "a")
-	todos[0].Status, todos[0].CompletedAt = "completed", time.Now()
-	todos[1].Status, todos[1].StartedAt = "in_progress", time.Now()
-	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
-	stepUnder(&m, "Writing it. Quickly.", "b")
+func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
+	m := todoStack(t)
 
 	lines := transcriptLines(&m)
 	text := strings.Join(lines, "\n")
@@ -431,108 +418,46 @@ func TestTodoStackPinsEveryTodoAboveTheTranscriptAndDividesItsWork(t *testing.T)
 		t.Fatalf("order must be divider, work, next divider, next work:\n%s", text)
 	}
 	if strings.Contains(text, "3/4 Test") || strings.Contains(text, "4/4 Ship") {
-		t.Errorf("waiting todos live in the pinned band, not the transcript:\n%s", text)
+		t.Errorf("waiting todos live in the band, not the transcript:\n%s", text)
 	}
 
-	// The strip is the first thing in the frame and holds the work done and
-	// under way; the waiting todos stack in the band below the transcript.
-	frame := strings.Split(stripANSI(m.viewString()), "\n")
-	rowOf := func(sub string) int {
-		for i, l := range frame {
-			if strings.Contains(l, sub) {
-				return i
-			}
+	// The band carries the progress: the head row holds the count and the
+	// active item, the checklist holds the done count and what comes next.
+	// The per-todo rows are gone — the transcript's dividers cover those.
+	plain := stripANSI(nowBarOut(m))
+	if !strings.Contains(plain, "1/4") || !strings.Contains(plain, "Write") {
+		t.Errorf("band head should count progress and name the active todo:\n%s", plain)
+	}
+	if !strings.Contains(plain, "1 done") || !strings.Contains(plain, "next: Test") {
+		t.Errorf("band checklist should hold the done count and the next waiting todo:\n%s", plain)
+	}
+	for _, gone := range []string{"✓ 1/4", "▸ 2/4", "· 3/4"} {
+		if strings.Contains(plain, gone) {
+			t.Errorf("the band must not re-render per-todo rows (%q):\n%s", gone, plain)
 		}
-		t.Fatalf("frame is missing %q:\n%s", sub, strings.Join(frame, "\n"))
-		return -1
-	}
-	for i, w := range []string{"✓ 1/4 Read", "▸ 2/4 Write"} {
-		if i >= len(frame) || !strings.Contains(frame[i], w) {
-			t.Fatalf("frame row %d should hold %q:\n%s", i, w, strings.Join(frame[:min(8, len(frame))], "\n"))
-		}
-	}
-	if first, last := rowOf("3/4 Test"), rowOf("4/4 Ship"); !(first < last) {
-		t.Errorf("the band lists the waiting todos in order (rows %d, %d)", first, last)
-	}
-	if strip, band := rowOf("1/4 Read"), rowOf("3/4 Test"); !(strip < band) {
-		t.Errorf("the strip sits above the band (rows %d, %d)", strip, band)
-	}
-	if m.todoStripRows() != 2 {
-		t.Errorf("strip rows = %d, want 2", m.todoStripRows())
 	}
 }
 
-func TestTodoStripNotShownWhenTheTurnNeverTouchedTheList(t *testing.T) {
+func TestBandNotShownWhenTheTurnNeverTouchedTheList(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "A", Status: "pending"}, {ID: "t2", Content: "B", Status: "pending"}})
 	m.state.AddMessage(session.RoleUser, "unrelated", session.ContentTypePlain)
 	stepUnder(&m, "Just reading. Nothing else.", "a")
-	transcriptLines(&m)
-	if m.todoStripRows() != 0 {
-		t.Fatalf("leftover todos must not pin a strip on an unrelated turn, rows = %d", m.todoStripRows())
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if m.band.Todos {
+		t.Fatalf("leftover todos must not put progress in the band on an unrelated turn: %+v", m.band)
+	}
+	if plain := stripANSI(nowBarOut(m)); strings.Contains(plain, "done") || strings.Contains(plain, "next:") {
+		t.Fatalf("the band must not show todo progress for an unrelated turn:\n%s", plain)
 	}
 }
 
-func TestStripWindowCentersOnTheActiveTodo(t *testing.T) {
-	var todos []db.TodoItem
-	for i := 1; i <= 10; i++ {
-		st := "pending"
-		switch {
-		case i <= 4:
-			st = "completed"
-		case i == 5:
-			st = "in_progress"
-		}
-		todos = append(todos, db.TodoItem{ID: fmt.Sprintf("t%d", i), Content: fmt.Sprintf("item %d", i), Status: st})
-	}
-	v := stripWindow(todos, 6)
-	if len(v.rows) != 6 {
-		t.Fatalf("rows = %d, want 6", len(v.rows))
-	}
-	if v.rows[0].text != "3 done" || v.rows[1].index != 4 || v.rows[2].index != 5 || v.rows[len(v.rows)-1].text != "+3 more" {
-		t.Fatalf("window = %+v", v.rows)
-	}
-	// On a short terminal (three rows) the active todo must still be shown,
-	// not the one before it.
-	short := stripWindow(todos, 3)
-	var shown bool
-	for _, r := range short.rows {
-		if r.todo != nil && r.todo.ID == "t5" {
-			shown = true
-		}
-	}
-	if !shown || len(short.rows) > 3 {
-		t.Fatalf("a 3-row window must include the active todo and stay in budget: %+v", short.rows)
-	}
-	for _, maxRows := range []int{3, 4, 5, 6} {
-		for active := 1; active <= 10; active++ {
-			var l []db.TodoItem
-			for i := 1; i <= 10; i++ {
-				st := "pending"
-				if i < active {
-					st = "completed"
-				} else if i == active {
-					st = "in_progress"
-				}
-				l = append(l, db.TodoItem{ID: fmt.Sprintf("t%d", i), Content: "x", Status: st})
-			}
-			w := stripWindow(l, maxRows)
-			found := false
-			for _, r := range w.rows {
-				if r.todo != nil && r.index == active {
-					found = true
-				}
-			}
-			if !found || len(w.rows) > maxRows {
-				t.Errorf("maxRows=%d active=%d: rows=%d found=%v", maxRows, active, len(w.rows), found)
-			}
-		}
-	}
-	if got := stripWindow(todos[:3], 6); len(got.rows) != 3 {
-		t.Fatalf("a short list shows whole, got %d rows", len(got.rows))
-	}
-}
+// TestStripWindowCentersOnTheActiveTodo pinned the todo strip's row window.
+// The strip is gone: the band shows one progress line and one checklist line
+// (nowbar_test.go), and the full list opens in the Ctrl+T Tasks panel, which
+// numbers every todo against the whole list (TestTasksDocShowsStepCounts).
 
 func TestTransientNarrationFlowsWithoutHeadersWhenThereAreNoTodos(t *testing.T) {
 	m := newTestModel(t)

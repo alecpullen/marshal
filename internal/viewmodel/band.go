@@ -56,7 +56,7 @@ func TodoClockOf(s Snapshot) session.TodoClock {
 func BandOf(s Snapshot, turns []*Node) BandInfo {
 	var b BandInfo
 	if len(turns) > 0 && taskMode(s.Todos) && DrivenByTodos(turns[len(turns)-1]) {
-		b.Todos, b.Total = true, len(s.Todos)
+		b.Total = len(s.Todos)
 		active := -1
 		for i, t := range s.Todos {
 			switch {
@@ -82,6 +82,9 @@ func BandOf(s Snapshot, turns []*Node) BandInfo {
 				}
 			}
 		}
+		// A fully completed list is not progress: it must not hold band rows
+		// for the rest of the session. The list is still there for Ctrl+T.
+		b.Todos = b.Done < len(s.Todos)
 		b.Stale, b.StaleAge = session.TodoStale(s.Todos, TodoClockOf(s), s.Busy, s.Now)
 	}
 	var walk func(ns []*Node)

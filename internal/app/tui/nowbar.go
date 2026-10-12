@@ -15,11 +15,15 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
+	"marshal/internal/viewmodel"
 )
 
 const (
-	// nowBarMaxRows caps the bar, summary and overflow rows included.
-	nowBarMaxRows = 4
+	// nowBarMaxRows caps the bar, summary and overflow rows included. The
+	// band's own budget is one progress row, one checklist row and four
+	// entity rows (design §4), plus the live-mirror row when the reader has
+	// scrolled away.
+	nowBarMaxRows = 6
 	// nowBarCompactHeight is the frame height below which the bar collapses
 	// to a single summary row: on a short terminal every row comes out of
 	// the transcript.
@@ -31,8 +35,12 @@ const (
 // nowBarInput is everything planNowBar reads. It is a value so the plan is
 // a pure function and tests can drive every row-selection case directly.
 type nowBarInput struct {
-	SDD    session.SDDProgress
-	Swarm  session.SwarmProgress
+	SDD   session.SDDProgress
+	Swarm session.SwarmProgress
+	// Band is the pinned band: todo progress with its stale signal, and the
+	// running cards. viewmodel.BandOf builds it, so the TUI and the web
+	// cannot disagree about the same session.
+	Band   viewmodel.BandInfo
 	Todos  []native.TodoItem
 	Agents []session.SubagentView // running, with a child, registry order
 	// AgentHeadlines is each agent's latest narration headline, aligned with
@@ -104,6 +112,9 @@ func planNowBar(in nowBarInput) nowBarPlan {
 	}
 	if head != "" {
 		plan.rows = append(plan.rows, head)
+	}
+	if list := nowBarChecklist(in); list != "" {
+		plan.rows = append(plan.rows, list)
 	}
 	room := nowBarMaxRows - len(plan.rows)
 	shown := actors
@@ -178,11 +189,11 @@ func nowBarHead(in nowBarInput) (row, text, elapsed string) {
 		// An unfinished list is only pinned while a turn runs. Idle, a list
 		// the agent abandoned would otherwise hold a row for the rest of the
 		// session; Ctrl+T still shows it.
-		if done, inProgress := todoProgress(in.Todos); len(in.Todos) > 0 && done < len(in.Todos) {
+		if in.Band.Todos {
 			src = srcTodos
-			blocks = progressBlocks(done, len(in.Todos), nowBarMaxBlocks)
-			todoText = fmt.Sprintf("%d/%d", done, len(in.Todos))
-			if c := nowBarTodoFocus(in.Todos, inProgress); c != "" {
+			blocks = progressBlocks(in.Band.Done, in.Band.Total, nowBarMaxBlocks)
+			todoText = fmt.Sprintf("%d/%d", in.Band.Done, in.Band.Total)
+			if c := oneLine(in.Band.Active); c != "" {
 				todoText += " · " + c
 			}
 		}
@@ -215,14 +226,30 @@ func nowBarHead(in nowBarInput) (row, text, elapsed string) {
 			}
 		}
 	}
+	// The right-hand side is the stale tag ahead of the clock. An unmaintained
+	// list says so because it is the one signal that the plan the agent is
+	// following has drifted from the work. `elapsed` itself stays plain: the
+	// compact summary row reuses it.
+	right := elapsed
+	if right != "" {
+		right = mutedStyle().Render(right)
+	}
+	if in.Band.Stale {
+		tag := warningStyle().Render("stale " + formatElapsed(in.Band.StaleAge))
+		if elapsed != "" {
+			right = tag + dimSeparator + right
+		} else {
+			right = tag
+		}
+	}
 	// Cells the text may use: the row minus the " g " glyph cell group, the
 	// blocks and their space, and the right-aligned clock and its gap.
 	budget := inner - 3
 	if blocks != "" {
 		budget -= ansi.StringWidth(blocks) + 1
 	}
-	if elapsed != "" {
-		budget -= ansi.StringWidth(elapsed) + 1
+	if right != "" {
+		budget -= ansi.StringWidth(right) + 1
 	}
 	budget = max(budget, 1)
 
@@ -241,25 +268,48 @@ func nowBarHead(in nowBarInput) (row, text, elapsed string) {
 	if blocks != "" {
 		left += blocks + " "
 	}
-	return nowBarJustify(left+text, elapsed, inner), text, elapsed
+	return nowBarJustifyStyled(left+text, right, inner), text, elapsed
 }
 
 func nowBarElapsed(in nowBarInput) string {
 	return formatElapsed(max(in.Now.Sub(in.TurnStartedAt), 0))
 }
 
-// nowBarTodoFocus is the in-progress item's content, else the first
-// pending one.
-func nowBarTodoFocus(todos []native.TodoItem, inProgress int) string {
-	if inProgress >= 0 {
-		return oneLine(todos[inProgress].Content)
+// nowBarChecklist is the band's second line: the collapsed done count and the
+// waiting items, on one line, with `+N` for the ones that did not fit.
+//
+// "" unless a running turn is working from a list. Idle, an abandoned list
+// would otherwise hold a row for the rest of the session; Ctrl+T still shows
+// the full list.
+func nowBarChecklist(in nowBarInput) string {
+	if !in.Band.Todos || !in.Busy {
+		return ""
 	}
-	for _, t := range todos {
-		if t.Status != native.TodoCompleted {
-			return oneLine(t.Content)
+	inner := max(in.Width-1, 1)
+	head := "  " + glyph.OK + " " + fmt.Sprintf("%d done", in.Band.Done)
+	if len(in.Band.Next) == 0 {
+		return head
+	}
+	prefix := head + dimSeparator + glyph.Running + " next: "
+	// Fit the waiting items one at a time; whatever does not fit becomes a
+	// +N count, which is only drawn when it fits beside the items shown — a
+	// clipped count is worse than no count.
+	shown := 1
+	for i := 2; i <= len(in.Band.Next); i++ {
+		cand := strings.Join(in.Band.Next[:i], dimSeparator)
+		if ansi.StringWidth(prefix)+ansi.StringWidth(cand) > inner {
+			break
+		}
+		shown = i
+	}
+	text := prefix + ansi.Truncate(strings.Join(in.Band.Next[:shown], dimSeparator),
+		max(inner-ansi.StringWidth(prefix), 1), "…")
+	if rest := len(in.Band.Next) - shown; rest > 0 {
+		if tail := fmt.Sprintf("  +%d", rest); ansi.StringWidth(text)+ansi.StringWidth(tail) <= inner {
+			text += dimStyle().Render(tail)
 		}
 	}
-	return ""
+	return text
 }
 
 // nowBarJustify right-aligns right within width cells, truncating left so
@@ -268,10 +318,20 @@ func nowBarJustify(left, right string, width int) string {
 	if right == "" {
 		return ansi.Truncate(left, width, "…")
 	}
+	return nowBarJustifyStyled(left, mutedStyle().Render(right), width)
+}
+
+// nowBarJustifyStyled is nowBarJustify for a right side that is already
+// painted, so the caller can colour part of it (the stale tag) without the
+// muted wrapper flattening it. Widths ignore SGR, so the layout is the same.
+func nowBarJustifyStyled(left, right string, width int) string {
+	if right == "" {
+		return ansi.Truncate(left, width, "…")
+	}
 	rw := ansi.StringWidth(right)
 	left = ansi.Truncate(left, max(width-rw-1, 1), "…")
 	gap := max(width-ansi.StringWidth(left)-rw, 1)
-	return left + strings.Repeat(" ", gap) + mutedStyle().Render(right)
+	return left + strings.Repeat(" ", gap) + right
 }
 
 // nowBarActors renders the actor rows in order — subagents, browser, jobs,
@@ -354,6 +414,8 @@ func nowBarSummary(in nowBarInput, headText, elapsed string, inner int) string {
 	if headText == "" && in.Browser.SessionOpen {
 		headText = browserStripText(in.Browser, in.Spinner)
 	}
+	// A short frame has no checklist row, but the stale tag still rides on
+	// the right-hand side: the head already put it there.
 	var left string
 	switch {
 	case headText != "" && tail != "":
@@ -396,6 +458,7 @@ func (m Model) nowBarInput() nowBarInput {
 	in := nowBarInput{
 		SDD:           m.state.SDDProgress(),
 		Swarm:         m.state.SwarmProgress(),
+		Band:          m.band,
 		Todos:         m.viewedTodos(),
 		Provider:      m.state.ActiveRoute().Provider,
 		Browser:       m.state.BrowserInfo(),

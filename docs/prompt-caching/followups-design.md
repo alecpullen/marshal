@@ -83,6 +83,20 @@ and a failed handoff summary ends the turn, so any failure counts. A wrong
 latch costs only the cache benefit. JSON-envelope mode is
 unchanged: it never sends tool definitions.
 
+Network failures that outlast the reconnect wait, thinking loops and
+cancellation are not `tool_choice` rejections: they return unchanged, with
+no retry and no latch.
+
+*Anthropic limitation.* Anthropic's cache hierarchy keeps the tools and system
+tiers when `tool_choice` changes but invalidates the messages tier. Loop
+requests omit `tool_choice`; tools-disabled calls send `{"type":"none"}`. So
+on the Anthropic and OpenCode `/messages` wires, finalize, handoff and plan
+calls reuse only tools and system, not the transcript (still better than
+before, when they reused nothing). On automatic-prefix providers (OpenAI,
+DeepSeek, Kimi, Ollama Cloud, llama.cpp) the full prefix match is expected.
+Omitting `tool_choice` on Anthropic, relying on the directive plus the
+fallback, is an open follow-up that needs measurement.
+
 **F4 — Snapshot the discovered models once per runner.** `agentRoster()` reads
 the discovery cache the first time and reuses that map for the runner's
 lifetime, which is one session (`app.go:897`). The config-derived parts are
@@ -106,6 +120,10 @@ deferral. Document it; do not restructure.
   would not help other backends.
 - The 1-hour TTL, the second rolling breakpoint, and the web UI cache
   display (parent design §4).
+- Plan-first turns: the refreshed plan rewrites the stable pack, so the
+  cross-turn region does not hold on them.
+- Subagent, swarm and pipeline runners each keep their own latch and roster
+  snapshot.
 
 ## 4. Verification
 
@@ -123,5 +141,7 @@ deferral. Document it; do not restructure.
   turn's first request reports `cache_read_tokens` covering the previous
   turn's history. On an OpenAI-compatible provider, a finalize call after a
   tool loop reports cache reads.
+- **Live:** on Anthropic, a finalize/handoff call's cache reads cover tools +
+  system only (expected).
 
 **Status (unit):** verified on the `prompt-caching-followups` branch. Live checks pending alongside the parent design's.

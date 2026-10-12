@@ -130,13 +130,18 @@ everything except what changed since the previous request:
 
 The working state is appended in `chatOnceAttempt`, the single dispatch
 point. Everything up to the `CacheAnchor` opens the next turn's first
-request unchanged (`TestCrossTurnStableRegionIsAppendOnly`); within a turn
+request unchanged (`TestCrossTurnStableRegionIsAppendOnly`; not on plan-first
+turns: the refreshed plan rewrites the stable pack); within a turn
 the prefix only grows (`TestPromptPrefixStableAcrossSteps`). Anthropic
 places cache breakpoints on the tools, the system prompt, the anchor and
 the last non-`Volatile` block. OpenAI and Codex requests carry a
-session-derived `prompt_cache_key`. Tools-disabled calls (finalize, handoff
-summary, plan) keep the tool definitions with `tool_choice: none` so they
-share the loop's prefix. Loading a deferred tool with `tools.select` costs
+session-derived `prompt_cache_key`. In native-tools mode, tools-disabled
+calls (finalize, handoff summary, plan) keep the tool definitions with
+`tool_choice: none`. On automatic-prefix providers they then share the
+loop's whole prefix; on Anthropic, changing `tool_choice` invalidates the
+cached messages, so they reuse the tools and system prompt only. A provider
+that rejects `none` (or whose model calls a tool anyway) is switched to
+tool-less calls for the session. Loading a deferred tool with `tools.select` costs
 one cache miss, because tools head every provider's prefix. Design:
 `docs/prompt-caching/design.md`, `docs/prompt-caching/followups-design.md`.
 

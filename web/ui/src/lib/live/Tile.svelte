@@ -6,7 +6,7 @@
   import Tag from '../ui/Tag.svelte'
   import { describePending, type AgentRow, type NetworkDecisionItem } from '../fleet'
   import { connectSSE } from '../sse'
-  import { createStackStore, type StackState, type StackStore } from '../stack'
+  import { createStackStore, type StackState, type StackStore, type WireBand } from '../stack'
   import { gateState } from '../dock/gate'
   import { orderedNodes } from '../dock/nodes'
   import { compactDuration } from '../transcript/format'
@@ -124,6 +124,18 @@
   const gate = $derived(gateState(agent.gate))
   const summary = $derived(summarize(agent.run, !!agent.pending))
 
+  // The band's todo progress, as one segment per item. The tile is a glance,
+  // not a transcript: it shows the shape of the plan (how much is done, what
+  // is running) without the checklist the chat's own bar carries.
+  const band = $derived<WireBand | undefined>(snap?.nodes.get('band')?.band)
+  const segments = $derived.by(() => {
+    const b = band
+    if (!b?.todos || !b.total) return null
+    return Array.from({ length: b.total }, (_, i) =>
+      i < b.done ? 'bg-ok' : i === b.done && b.active ? 'bg-accent' : 'bg-line',
+    )
+  })
+
   const started = $derived(summary?.startedAt ?? (agent.updatedAt ? new Date(agent.updatedAt).getTime() : NaN))
   const elapsed = $derived(Number.isFinite(started) ? compactDuration(Math.max(0, now - started)) : '')
 
@@ -159,6 +171,19 @@
       <li class="truncate text-muted">{agent.activity || (snap ? 'No steps yet' : '')}</li>
     {/each}
   </ul>
+
+  {#if segments}
+    <div class="flex items-center gap-1.5" data-testid="tile-progress" title="{band?.done}/{band?.total}">
+      <div class="flex h-1.5 min-w-0 flex-1 gap-px overflow-hidden rounded-full">
+        {#each segments as tone, i (i)}
+          <span class="h-full flex-1 {tone}"></span>
+        {/each}
+      </div>
+      <span class="shrink-0 font-mono text-xs {band?.stale ? 'text-warn' : 'text-muted'}">
+        {band?.done}/{band?.total}{band?.stale ? ' · stale' : ''}
+      </span>
+    </div>
+  {/if}
 
   <div class="mt-auto flex flex-wrap items-center gap-1.5">
     {#if agent.workspace}<span data-testid="tile-workspace" class="max-w-40 truncate"><Tag tone="neutral">{workspaceTag(agent.workspace)}</Tag></span>{/if}

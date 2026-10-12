@@ -123,6 +123,25 @@ export interface WireRunEvent {
   truncated?: boolean
 }
 
+/** The pinned band: todo progress with its stale signal, and running cards. */
+export interface WireBand {
+  todos?: boolean
+  done: number
+  total: number
+  active?: string
+  stale?: boolean
+  staleAgeMs?: number
+  next?: string[]
+  entities?: WireBandEntity[]
+}
+/** One running card the band lists. */
+export interface WireBandEntity {
+  ref: string
+  label: string
+  detail?: string
+  startedAt?: number
+}
+
 export interface WireReceipt {
   durationMs: number
   tasks: number
@@ -147,6 +166,7 @@ export interface WireNode {
   runEvent?: WireRunEvent
   marker?: WireMarker
   receipt?: WireReceipt
+  band?: WireBand
 }
 
 export interface StackSnapshot {

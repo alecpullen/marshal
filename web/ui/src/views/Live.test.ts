@@ -174,4 +174,31 @@ describe('Live wall', () => {
     expect(tags).toHaveLength(1)
     expect(tags[0].textContent).toContain('▦ go-service@v3')
   })
+
+  it('draws the band progress on a tile as one segment per todo', async () => {
+    // The tile reads the band node viewmodel ships, so the wall shows the
+    // same plan shape as the chat's own bar.
+    ;(stack.createStackStore as Mock).mockImplementation(() => ({
+      ...writable({
+        status: 'ready',
+        rev: 1,
+        roots: [],
+        nodes: new Map([['band', { id: 'band', kind: 'band', band: { todos: true, done: 2, total: 9, active: 'Task 2', stale: true } }]]),
+      }),
+      load: vi.fn().mockResolvedValue(undefined),
+      destroy,
+      onEvent: vi.fn(),
+    }))
+    mount([agent({ id: 'a1', status: 'running' })])
+    setVisible(screen.getByTestId('tile'), true)
+    await waitFor(() => expect(screen.getByTestId('tile-progress')).toBeTruthy())
+
+    const progress = screen.getByTestId('tile-progress')
+    const segs = [...progress.querySelectorAll('span.h-full')]
+    expect(segs).toHaveLength(9)
+    expect(segs.filter((s) => s.className.includes('bg-ok'))).toHaveLength(2)
+    expect(segs.filter((s) => s.className.includes('bg-accent'))).toHaveLength(1)
+    expect(progress.textContent).toContain('2/9')
+    expect(progress.textContent).toContain('stale')
+  })
 })

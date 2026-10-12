@@ -88,8 +88,8 @@ func (ContextSection) Render(d Data, width, maxRows int) []string {
 		if stats.AvgTokens > 0 && u.MaxTokens > u.EstimatedTokens {
 			detail += fmt.Sprintf(" · ~%d turns", (u.MaxTokens-u.EstimatedTokens)/stats.AvgTokens)
 		}
-		if stats.CacheHitPct > 0 {
-			detail += fmt.Sprintf(" · %d%% cache", stats.CacheHitPct)
+		if stats.PromptCachePct > 0 {
+			detail += fmt.Sprintf(" · %d%% cached", stats.PromptCachePct)
 		}
 		rows = append(rows, railRow("", detail, "", width))
 	}

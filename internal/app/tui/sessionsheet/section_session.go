@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/db"
 	"marshal/internal/strutil"
 )
 
@@ -68,12 +69,25 @@ func budgetLabel(d Data) string {
 	return fmt.Sprintf(" tools %d · no cap", b.Used)
 }
 
+// cachedShare is the percentage of the session's prompt tokens served from
+// the provider's prompt cache; 0 when nothing was reported.
+func cachedShare(t db.UsageTotals) int {
+	if t.PromptTokens <= 0 || t.CacheReadTokens <= 0 {
+		return 0
+	}
+	return int(t.CacheReadTokens * 100 / t.PromptTokens)
+}
+
 func (SessionSection) Render(d Data, width, maxRows int) []string {
+	tokens := fmt.Sprintf(" %s in · %s out",
+		strutil.CompactTokens(int(d.Totals.PromptTokens)),
+		strutil.CompactTokens(int(d.Totals.CompletionTokens)))
+	if pct := cachedShare(d.Totals); pct > 0 {
+		tokens += fmt.Sprintf(" · %d%% cached", pct)
+	}
 	rows := []string{
 		ansi.Truncate(fmt.Sprintf(" turn %d · %s", d.Totals.Turns, shortDuration(sessionElapsed(d))), width, "…"),
-		ansi.Truncate(fmt.Sprintf(" %s in · %s out",
-			strutil.CompactTokens(int(d.Totals.PromptTokens)),
-			strutil.CompactTokens(int(d.Totals.CompletionTokens))), width, "…"),
+		ansi.Truncate(tokens, width, "…"),
 	}
 	if label := budgetLabel(d); label != "" {
 		rows = append(rows, ansi.Truncate(label, width, "…"))

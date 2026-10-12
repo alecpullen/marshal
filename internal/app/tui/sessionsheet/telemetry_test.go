@@ -33,9 +33,9 @@ func TestTelemetry(t *testing.T) {
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	turns := []db.TurnMetricsRow{
 		// most recent first
-		{StartedAt: now.Add(-1 * time.Minute), PromptTokens: 1000, CompletionTokens: 200, CacheHits: 1},
-		{StartedAt: now.Add(-3 * time.Minute), PromptTokens: 800, CompletionTokens: 200, CacheHits: 0},
-		{StartedAt: now.Add(-5 * time.Minute), PromptTokens: 700, CompletionTokens: 100, CacheHits: 1},
+		{StartedAt: now.Add(-1 * time.Minute), PromptTokens: 1000, CompletionTokens: 200, CacheReadTokens: 900},
+		{StartedAt: now.Add(-3 * time.Minute), PromptTokens: 800, CompletionTokens: 200, CacheReadTokens: 0},
+		{StartedAt: now.Add(-5 * time.Minute), PromptTokens: 700, CompletionTokens: 100, CacheReadTokens: 350},
 	}
 	got := Telemetry(turns, now)
 
@@ -47,9 +47,9 @@ func TestTelemetry(t *testing.T) {
 	if got.BurnPerMin != 600 {
 		t.Errorf("BurnPerMin = %d, want 600", got.BurnPerMin)
 	}
-	// 2 of 3 turns had a cache hit
-	if got.CacheHitPct != 66 {
-		t.Errorf("CacheHitPct = %d, want 66", got.CacheHitPct)
+	// (900 + 0 + 350) cached of (1000 + 800 + 700) prompt tokens = 50%
+	if got.PromptCachePct != 50 {
+		t.Errorf("PromptCachePct = %d, want 50", got.PromptCachePct)
 	}
 	// Series is oldest-first for left-to-right rendering
 	want := []int{800, 1000, 1200}
@@ -63,7 +63,7 @@ func TestTelemetry(t *testing.T) {
 
 func TestTelemetryEmpty(t *testing.T) {
 	got := Telemetry(nil, time.Now())
-	if got.AvgTokens != 0 || got.BurnPerMin != 0 || got.CacheHitPct != 0 {
+	if got.AvgTokens != 0 || got.BurnPerMin != 0 || got.PromptCachePct != 0 {
 		t.Errorf("Telemetry(nil) = %+v, want zero", got)
 	}
 	if len(got.Series) != 0 {

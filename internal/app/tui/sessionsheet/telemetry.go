@@ -43,10 +43,14 @@ func Sparkline(values []int, width int) string {
 // TelemetryStats is the derived per-turn summary the context section
 // renders below the composition breakdown.
 type TelemetryStats struct {
-	AvgTokens   int
-	BurnPerMin  int
-	CacheHitPct int
-	Series      []int // oldest first
+	AvgTokens  int
+	BurnPerMin int
+	// PromptCachePct is the share of prompt tokens the provider served
+	// from its prompt cache across these turns. 0 when none were reported.
+	// The previous metric counted turns with a tool-result cache hit,
+	// which read as a prompt-cache rate next to token stats.
+	PromptCachePct int
+	Series         []int // oldest first
 }
 
 // Telemetry derives per-turn statistics from persisted turn metrics.
@@ -57,21 +61,22 @@ func Telemetry(turns []db.TurnMetricsRow, now time.Time) TelemetryStats {
 	}
 
 	series := make([]int, len(turns))
-	total, hits := 0, 0
+	total, prompt, cached := 0, 0, 0
 	for i, t := range turns {
 		n := t.PromptTokens + t.CompletionTokens
 		total += n
-		if t.CacheHits > 0 {
-			hits++
-		}
+		prompt += t.PromptTokens
+		cached += t.CacheReadTokens
 		// Reverse into oldest-first order for left-to-right rendering.
 		series[len(turns)-1-i] = n
 	}
 
 	stats := TelemetryStats{
-		AvgTokens:   total / len(turns),
-		CacheHitPct: hits * 100 / len(turns),
-		Series:      series,
+		AvgTokens: total / len(turns),
+		Series:    series,
+	}
+	if prompt > 0 {
+		stats.PromptCachePct = cached * 100 / prompt
 	}
 
 	oldest := turns[len(turns)-1].StartedAt

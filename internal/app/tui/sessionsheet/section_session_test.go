@@ -160,3 +160,21 @@ func TestSessionSectionBudgetRow(t *testing.T) {
 		t.Fatalf("one-line summary missing budget, got %q", one)
 	}
 }
+
+func TestSessionSectionShowsPromptCacheShare(t *testing.T) {
+	d := sessionData(time.Now())
+	d.Totals.CacheReadTokens = 16_840 // 40% of 42_100
+	joined := StripANSI(strings.Join(SessionSection{}.Render(d, 40, 0), "\n"))
+	if !strings.Contains(joined, "40% cached") {
+		t.Errorf("want the prompt-cache share, got %q", joined)
+	}
+}
+
+// Review focus 5: a provider that reports no cache data shows nothing,
+// not a misleading "0% cached".
+func TestSessionSectionOmitsCacheShareWithoutCacheData(t *testing.T) {
+	joined := StripANSI(strings.Join(SessionSection{}.Render(sessionData(time.Now()), 40, 0), "\n"))
+	if strings.Contains(joined, "cached") {
+		t.Errorf("no cache reads were reported; want no cache label, got %q", joined)
+	}
+}

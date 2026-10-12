@@ -4431,42 +4431,13 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 // handleJobCount handles a jobCountMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
-	// A job that was running in the previous snapshot and is not running in
-	// this one has finished. This is the only place a job's outcome reaches
-	// the transcript.
-	wasRunning := map[string]native.JobInfo{}
-	for _, j := range m.jobs {
-		if j.Status == native.StatusRunning {
-			wasRunning[j.ID] = j
-		}
-	}
-	for _, j := range msg.jobs {
-		if j.Status == native.StatusRunning {
-			continue
-		}
-		prev, ok := wasRunning[j.ID]
-		if !ok {
-			continue
-		}
-		code := 0
-		if j.ExitCode != nil {
-			code = *j.ExitCode
-		} else if j.Status != native.StatusCompleted {
-			// Killed or timed out with no code recorded: non-zero so the row
-			// renders as a failure rather than a clean exit.
-			code = -1
-		}
-		m.state.AddJobExit(session.JobExit{
-			ID: j.ID, Command: j.Command, ExitCode: code,
-			Duration: time.Since(prev.StartedAt),
-		})
-	}
+	// Job exits are recorded agent-side (the JobManager's exit callback), so
+	// every client sees a settled card. This handler only refreshes the
+	// cached snapshot: repaint now so a settled card renders even when the
+	// user is idle (no tick, notice, or pulse would otherwise trigger a
+	// rebuild).
 	m.jobCount = msg.count
 	m.jobs = msg.jobs
-	// A job exit row was appended to the transcript above; repaint now so it
-	// renders even when the user is idle (no tick, notice, or pulse would
-	// otherwise trigger a rebuild). Without this the exit stays invisible
-	// until some unrelated event refreshes the viewport.
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
 	// Re-arm the pump: exactly one in-flight subscription at a time

@@ -1,3 +1,4 @@
+// internal/app/tui/jobs_test.go — TestJobExitRepaintsViewport
 package tui
 
 import (
@@ -19,97 +20,18 @@ func runningJob(id int, cmd string, ago time.Duration) native.JobInfo {
 	}
 }
 
-// A job that was running in the previous snapshot and is absent (or no
-// longer running) in the next one must be recorded as a JobExit in the
-// transcript. This is the TUI-layer test for the diff-based detection in
-// handleJobCount.
-func TestHandleJobCountRecordsExitForFinishedJob(t *testing.T) {
-	m := newTestModel(t)
-	started := time.Now().Add(-2 * time.Minute)
-	m.jobs = []native.JobInfo{{
-		ID: "job-9", Command: "go test ./...", Status: native.StatusRunning, StartedAt: started,
-	}}
-
-	code := 3
-	m2, _ := m.handleJobCount(jobCountMsg{
-		count: 0,
-		jobs: []native.JobInfo{{
-			ID: "job-9", Command: "go test ./...", Status: native.StatusFailed, StartedAt: started, ExitCode: &code,
-		}},
-	})
-	mm := asModel(t, m2)
-
-	var exits []session.JobExit
-	for _, item := range mm.state.Transcript() {
-		if item.Kind == session.KindJobExit && item.JobExit != nil {
-			exits = append(exits, *item.JobExit)
-		}
-	}
-	if len(exits) != 1 {
-		t.Fatalf("expected exactly one job exit, got %d", len(exits))
-	}
-	if exits[0].ID != "job-9" || exits[0].ExitCode != 3 {
-		t.Fatalf("wrong exit recorded: %+v", exits[0])
-	}
-}
-
-// A job that starts and finishes between two snapshots is still caught:
-// the broker publishes on every change, so the running snapshot is always
-// observed before the finished one.
-func TestHandleJobCountRecordsExitForJobThatFinishedBetweenSnapshots(t *testing.T) {
-	m := newTestModel(t)
-	started := time.Now().Add(-time.Minute)
-	m.jobs = []native.JobInfo{{
-		ID: "job-10", Command: "make", Status: native.StatusRunning, StartedAt: started,
-	}}
-
-	m2, _ := m.handleJobCount(jobCountMsg{
-		count: 0,
-		jobs: []native.JobInfo{{
-			ID: "job-10", Command: "make", Status: native.StatusCompleted, StartedAt: started,
-		}},
-	})
-	mm := asModel(t, m2)
-
-	var exits []session.JobExit
-	for _, item := range mm.state.Transcript() {
-		if item.Kind == session.KindJobExit && item.JobExit != nil {
-			exits = append(exits, *item.JobExit)
-		}
-	}
-	if len(exits) != 1 {
-		t.Fatalf("expected exactly one job exit, got %d", len(exits))
-	}
-}
-
-// A job that is still running across snapshots must NOT be recorded as an
-// exit.
-func TestHandleJobCountDoesNotRecordExitForStillRunningJob(t *testing.T) {
-	m := newTestModel(t)
-	started := time.Now().Add(-time.Minute)
-	m.jobs = []native.JobInfo{{
-		ID: "job-11", Command: "sleep 30", Status: native.StatusRunning, StartedAt: started,
-	}}
-
-	m2, _ := m.handleJobCount(jobCountMsg{
-		count: 1,
-		jobs: []native.JobInfo{{
-			ID: "job-11", Command: "sleep 30", Status: native.StatusRunning, StartedAt: started,
-		}},
-	})
-	mm := asModel(t, m2)
-
-	for _, item := range mm.state.Transcript() {
-		if item.Kind == session.KindJobExit {
-			t.Fatal("a still-running job must not produce a job exit")
-		}
-	}
-}
-
-// The headline fix: when a job finishes while the user is idle, the exit
-// row must appear in the rendered viewport immediately. handleJobCount
-// must call refreshViewport, or the cached viewport content never shows
-// the new row until some unrelated event triggers a rebuild.
+// Job exits are recorded agent-side now: the JobManager's exit callback
+// (wired in app.go) appends the JobExit to the session, so the TUI and ACP
+// sessions both see a job's card settle. The TUI's job-count handler only
+// refreshes its cached snapshot.
+//
+// What remains this layer's job is the repaint: an exit appended by the
+// agent-side callback must become visible when the count change arrives,
+// even while the user is idle (no tick, notice, or pulse would otherwise
+// trigger a rebuild). The deleted diff-tests
+// (TestHandleJobCountRecordsExitForFinishedJob and friends) pinned the old
+// client-side diff, which no longer exists; the append itself is covered by
+// TestJobManagerOnExitFiresOncePerJob in internal/tools/native.
 func TestJobExitRepaintsViewport(t *testing.T) {
 	m := newTestModel(t)
 	started := time.Now().Add(-time.Minute)
@@ -121,6 +43,12 @@ func TestJobExitRepaintsViewport(t *testing.T) {
 	if strings.Contains(before, "go vet ./...") {
 		t.Fatal("the running job should not yet appear as an exit row")
 	}
+
+	// The agent-side callback records the exit, then its count change lands
+	// here.
+	m.state.AddJobExit(session.JobExit{
+		ID: "job-12", Command: "go vet ./...", ExitCode: 0, Duration: time.Minute,
+	})
 
 	code := 0
 	m2, _ := m.handleJobCount(jobCountMsg{

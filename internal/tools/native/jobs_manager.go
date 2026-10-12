@@ -73,6 +73,7 @@ type JobManager struct {
 	jobs           map[string]*job
 	nextID         int
 	onChange       func(int)
+	onExit         func(JobInfo, time.Duration, string)
 	jobBroker      *pubsub.Broker[JobEvent]
 	lastNotified   int
 	closed         bool
@@ -145,6 +146,15 @@ func NewJobManager(ctx context.Context, runner CommandRunner, dir string, maxJob
 func (m *JobManager) SetOnChange(fn func(int)) {
 	m.mu.Lock()
 	m.onChange = fn
+	m.mu.Unlock()
+}
+
+// SetOnExit registers a callback invoked once when a job finishes, with its
+// settled info, how long it ran and its buffered output. It runs outside the
+// manager's locks and must not call back into the JobManager.
+func (m *JobManager) SetOnExit(fn func(info JobInfo, ran time.Duration, output string)) {
+	m.mu.Lock()
+	m.onExit = fn
 	m.mu.Unlock()
 }
 
@@ -295,6 +305,20 @@ func (m *JobManager) runJob(j *job, ctx context.Context, command string) {
 		j.info.ExitCode = &result.ExitCode
 	}
 	j.mu.Unlock()
+
+	// Report the settled outcome before the count change: the callback
+	// records the exit in the transcript, so a client reacting to the count
+	// already sees the card settled.
+	m.mu.Lock()
+	onExit := m.onExit
+	m.mu.Unlock()
+	if onExit != nil {
+		j.mu.Lock()
+		info := j.info
+		ran := j.completedAt.Sub(info.StartedAt)
+		j.mu.Unlock()
+		onExit(info, ran, j.stdout.String()+j.stderr.String())
+	}
 
 	m.notifyChange()
 	close(j.done)

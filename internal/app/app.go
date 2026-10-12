@@ -644,6 +644,15 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// Background jobs start in the session's active root, so they land in
 	// the worktree while the session is isolated.
 	jobManager.SetDirFunc(func() string { return state.Workspace().ActiveRoot })
+	// Job exits reach the transcript from here, not from a client, so the
+	// TUI and ACP sessions both see a job's card settle.
+	jobManager.SetOnExit(func(info native.JobInfo, ran time.Duration, output string) {
+		code := -1
+		if info.ExitCode != nil {
+			code = *info.ExitCode
+		}
+		state.AddJobExit(session.JobExit{ID: info.ID, Command: info.Command, ExitCode: code, Duration: ran, Output: output})
+	})
 	// Roll back partially-built resources on any later failure. Each
 	// resource appends its cleanup as it comes up; the deferred func runs
 	// them in reverse order, but only when a failure return set buildErr.

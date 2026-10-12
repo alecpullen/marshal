@@ -9,11 +9,24 @@ const BeatRowCap = 8
 // when the same actor produced both. Any other block between them (a
 // message, a run event, a turn-level card) ends the beat, so the transcript
 // stays chronological.
+//
+// A completion marker that lands inside a beat is held until the beat ends,
+// so a card finishing mid-beat does not split the work around it.
 func mergeBeats(nodes []*Node) []*Node {
 	out := make([]*Node, 0, len(nodes))
 	var beat *Node
+	var held []*Node // markers that landed inside the open beat
+	flush := func() {
+		out = append(out, held...)
+		held = nil
+	}
 	for _, n := range nodes {
+		if n.Kind == KindMarker && beat != nil {
+			held = append(held, n)
+			continue
+		}
 		if n.Kind != KindStep || n.Step == nil {
+			flush()
 			out = append(out, n)
 			beat = nil
 			continue
@@ -22,9 +35,11 @@ func mergeBeats(nodes []*Node) []*Node {
 			absorb(beat, n)
 			continue
 		}
+		flush()
 		out = append(out, n)
 		beat = n
 	}
+	flush()
 	return out
 }
 

@@ -35,6 +35,7 @@ const (
 	KindThinking
 	KindPassthrough
 	KindReceipt
+	KindMarker
 )
 
 // NodeID is a node's identity across rebuilds. The tree is rebuilt from the
@@ -60,6 +61,8 @@ type Node struct {
 	Tools   []registry.AuditEvent // len > 1 = merged same-tool run within a step
 	Active  *session.ActiveToolCall
 	Receipt *ReceiptInfo
+	Job     *JobState
+	Marker  *MarkerInfo
 }
 
 // StepInfo is a beat's payload. A beat is one narrated model response and
@@ -170,7 +173,8 @@ func Mergeable(ev *registry.AuditEvent) bool {
 	if ev == nil {
 		return false
 	}
-	return !isDiffTool(ev.ToolName) && ev.Error == "" && len(ev.Hooks) == 0 && len(ev.Symbols) == 0
+	return !isDiffTool(ev.ToolName) && ev.Error == "" && len(ev.Hooks) == 0 && len(ev.Symbols) == 0 &&
+		JobStartID(*ev) == ""
 }
 
 // isDiffTool is the set of tools whose result is a diff; edits always render
@@ -189,6 +193,19 @@ func Build(s Snapshot) []*Node {
 		}
 		items = append(items, it)
 	}
+	// Index the cards before dropping job exits from the tree: an exit is
+	// no longer a row of its own (the card it settles carries the outcome,
+	// and a marker carries the moment), but it is still what settles the
+	// card that started the job.
+	ci := indexCards(items)
+	kept := items[:0]
+	for _, it := range items {
+		if it.Kind == session.KindJobExit {
+			continue
+		}
+		kept = append(kept, it)
+	}
+	items = kept
 
 	stepByID := make(map[session.StepID]session.Step, len(s.Steps))
 	for _, st := range s.Steps {
@@ -238,7 +255,17 @@ func Build(s Snapshot) []*Node {
 		if t.msg != nil {
 			turnMsgID = t.msg.ID
 		}
-		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg)
+		// A completion lands in the turn whose window contains it, which is
+		// not always the turn that dispatched its card: a subagent or a job
+		// can outlive the prompt that started it.
+		var from, to time.Time
+		if t.msg != nil {
+			from = t.msg.CreatedAt
+		}
+		if i+1 < len(turns) && turns[i+1].msg != nil {
+			to = turns[i+1].msg.CreatedAt
+		}
+		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg, ci, ci.markersIn(from, to))
 		out = append(out, node)
 	}
 	return out
@@ -303,7 +330,7 @@ type stepAcc struct {
 	first  time.Time
 }
 
-func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64, turnKey string, userMsg *session.Message) []*Node {
+func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64, turnKey string, userMsg *session.Message, ci cardIndex, markers []block) []*Node {
 	var blocks []block
 	steps := map[session.StepID]*stepAcc{}
 	var stepOrder []session.StepID
@@ -493,6 +520,11 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 			audits = append(audits, ev)
 		}
 		node.Children = toolRows(audits, active)
+		// A shell row that started a background job becomes that job's card,
+		// settled already when the transcript holds the exit.
+		for _, r := range node.Children {
+			ci.settleJob(r)
+		}
 		node.Children = append(node.Children, a.cards...)
 		if id != 0 {
 			a.info.StepIDs = []session.StepID{id}
@@ -547,6 +579,8 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		blocks = append(blocks, block{atc.StartedAt, activeNode(&atc)})
 	}
 
+	// Completion markers join the turn at the moment they happened.
+	blocks = append(blocks, markers...)
 	sort.SliceStable(blocks, func(i, j int) bool {
 		ti, tj := blocks[i].ts, blocks[j].ts
 		if ti.IsZero() || tj.IsZero() {
@@ -559,6 +593,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		out = append(out, b.node)
 	}
 	out = mergeBeats(out)
+	out = coalesceMarkers(out)
 	// Whether the turn is task-driven is settled by the lists it wrote, not
 	// only by the list as it stands now: a later rewrite to one item must not
 	// flatten a finished turn after the fact.
@@ -647,11 +682,6 @@ func passthrough(it *session.TranscriptItem) *Node {
 	case session.KindRunEvent:
 		n.Kind = KindRunEvent
 		n.ID = NodeID{KindRunEvent, fmt.Sprintf("run:%d", it.Timestamp.UnixNano())}
-	case session.KindJobExit:
-		n.Kind = KindJobExit
-		if it.JobExit != nil {
-			n.ID = NodeID{KindJobExit, "job:" + it.JobExit.ID}
-		}
 	case session.KindThinking:
 		n.Kind = KindThinking
 		if it.Thinking != nil {
@@ -790,8 +820,6 @@ func versionOfItem(it *session.TranscriptItem) uint64 {
 			v.ToolCalls, v.CurrentTool, v.TokensUsed, v.Summary, v.Role, v.Model, v.Fallback, v.Provider)
 	case it.RunEvent != nil:
 		b.f("r|%v|", *it.RunEvent)
-	case it.JobExit != nil:
-		b.f("j|%v|", *it.JobExit)
 	}
 	return b.sum()
 }

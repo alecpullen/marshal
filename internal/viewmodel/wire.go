@@ -201,6 +201,7 @@ var kindNames = [...]string{
 	KindThinking:    "thinking",
 	KindPassthrough: "passthrough",
 	KindReceipt:     "receipt",
+	KindMarker:      "marker",
 }
 
 // String is the kind's wire name.

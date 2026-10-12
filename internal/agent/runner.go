@@ -1176,13 +1176,13 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// Deliver the body of any skill loaded since the last iteration.
 		messages = r.appendSkillBodies(messages)
 
-		if turnThreshold > 0 && r.calibratedEstimate(messages) > turnThreshold {
+		if turnThreshold > 0 && r.calibratedEstimate(r.withWorkingState(messages)) > turnThreshold {
 			// D2: prune superseded tool outputs first. Most overflows are
 			// 2-3 huge tool results, especially re-reads of the same
 			// file. Pruning before summarizing is cheaper, preserves the
 			// most recent copy, and often drops us back below the
 			// threshold without needing the LLM at all.
-			if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && r.calibratedEstimate(prunedMsgs) <= turnThreshold {
+			if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && r.calibratedEstimate(r.withWorkingState(prunedMsgs)) <= turnThreshold {
 				messages = prunedMsgs
 				r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n)
 				// Pruning drops stale tool output to stay under the

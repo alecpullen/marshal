@@ -335,6 +335,11 @@ func (r *Runner) chatOnce(ctx context.Context, p provider.Provider, model string
 // everything here is torn down when the attempt ends, including when the
 // attempt is cut short by a detected loop.
 func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
+	// The single dispatch point: every request (loop step, finalize,
+	// handoff summary, plan) carries the current working state, and the
+	// request-inspection snapshot below records it as sent.
+	messages = r.withWorkingState(messages)
+
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, r.effectiveChatTimeout())
 	defer cancel()

@@ -365,13 +365,23 @@ func TestRunAddsPlanToContextPackBeforeSnippetsAndToolOutput(t *testing.T) {
 		t.Fatalf("action request missing context pack: %#v", p.Requests[1].Messages)
 	}
 
+	// Tool output is turn-volatile, so it rides in the working-state tail
+	// at the end of the request rather than in the stable context pack.
+	reqMsgs := p.Requests[1].Messages
+	tail := reqMsgs[len(reqMsgs)-1]
+	if !tail.Volatile || !strings.Contains(tail.Content, "## go.test") {
+		t.Fatalf("action request missing tool output in the working-state tail: %#v", tail)
+	}
+	if strings.Contains(actionContext, "## go.test") {
+		t.Fatalf("tool output must not be in the stable context pack:\n%s", actionContext)
+	}
+
 	planIdx := strings.Index(actionContext, "## Current Plan")
 	snippetIdx := strings.Index(actionContext, "## internal/app/app.go")
-	toolIdx := strings.Index(actionContext, "## go.test")
-	if planIdx == -1 || snippetIdx == -1 || toolIdx == -1 {
+	if planIdx == -1 || snippetIdx == -1 {
 		t.Fatalf("missing expected sections in action context:\n%s", actionContext)
 	}
-	if !(planIdx < snippetIdx && snippetIdx < toolIdx) {
+	if !(planIdx < snippetIdx) {
 		t.Fatalf("section order wrong in action context:\n%s", actionContext)
 	}
 }

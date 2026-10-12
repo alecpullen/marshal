@@ -435,6 +435,24 @@ func (r *Runner) setContextPackMessage(messages []schema.ChatMessage, pack conte
 	return messages
 }
 
+// withWorkingState returns messages plus this request's working-state
+// tail. The tail is rebuilt for every request and never stored in the
+// runner's message slice, so it cannot leak into compaction, pruning,
+// archives or history replay, and a retry never stacks a second copy.
+// The input is not modified.
+func (r *Runner) withWorkingState(messages []schema.ChatMessage) []schema.ChatMessage {
+	if r.State == nil {
+		return messages
+	}
+	msg, ok := BuildWorkingStateMessage(r.State.ContextPack())
+	if !ok {
+		return messages
+	}
+	out := make([]schema.ChatMessage, len(messages), len(messages)+1)
+	copy(out, messages)
+	return append(out, msg)
+}
+
 // appendSkillHint appends this turn's skill suggestion message, if any.
 // Called after setContextPackMessage so it lands behind the cache prefix.
 func (r *Runner) appendSkillHint(messages []schema.ChatMessage) []schema.ChatMessage {

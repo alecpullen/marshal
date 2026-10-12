@@ -930,12 +930,29 @@ func BuildPlanningPrompt(goal string) schema.ChatMessage {
 	}
 }
 
+// BuildContextPackMessage renders the stable part of the context pack, the
+// message that sits at index 1 right after the system prompt. Turn-volatile
+// sections are left out: they ride in BuildWorkingStateMessage at the end
+// of the wire so that rewriting them cannot invalidate the provider's
+// prompt cache for the transcript in between.
 func BuildContextPackMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
-	rendered := contextpack.Render(pack)
+	rendered := contextpack.RenderStable(pack)
 	if rendered == "" {
 		return schema.ChatMessage{}, false
 	}
 	return schema.ChatMessage{Role: schema.RoleUser, Content: rendered}, true
+}
+
+// BuildWorkingStateMessage renders the turn-volatile part of the context
+// pack (todos, scratchpad projection, semantic snippets) as the
+// per-request tail. It is marked Volatile so providers keep cache
+// breakpoints in front of it.
+func BuildWorkingStateMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
+	rendered := contextpack.RenderVolatile(pack)
+	if rendered == "" {
+		return schema.ChatMessage{}, false
+	}
+	return schema.ChatMessage{Role: schema.RoleUser, Content: rendered, Volatile: true}, true
 }
 
 // BuildToolResultMessage formats a tool result for the model. The

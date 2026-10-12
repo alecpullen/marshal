@@ -21,6 +21,12 @@ type ChatMessage struct {
 	Content    string
 	ToolCalls  []ToolCall
 	ToolCallID string
+	// Volatile marks a message the runner regenerates for every request
+	// (the working-state tail). It is never part of the reusable prompt
+	// prefix, so providers that place explicit cache breakpoints
+	// (Anthropic cache_control) must place them before it. Wire encoders
+	// otherwise send it like any other message.
+	Volatile bool
 }
 
 type ToolCall struct {

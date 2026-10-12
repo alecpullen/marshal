@@ -1,0 +1,14 @@
+{
+  "name": "marshal-uishot",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Capture Marshal UI (TUI to SVG, Web Studio to PNG) for the README.",
+  "scripts": {
+    "setup": "npm install && npx playwright install chromium"
+  },
+  "dependencies": {
+    "@xterm/headless": "^6.0.0",
+    "playwright": "^1.64.0"
+  }
+}

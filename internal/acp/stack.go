@@ -190,7 +190,11 @@ func (m *TurnManager) flushProjector(sessionID string, subagentID int64, st *ses
 	if !p.active || (onlyDirty && !p.dirty) {
 		return
 	}
-	patch, changed := p.diff(viewmodel.Project(viewmodel.Build(stackSnapshotOf(st, busy, drilled, time.Now()))))
+	snap := stackSnapshotOf(st, busy, drilled, time.Now())
+	turns := viewmodel.Build(snap)
+	tree := viewmodel.Project(turns)
+	tree.Nodes = append(tree.Nodes, viewmodel.ProjectBand(viewmodel.BandOf(snap, turns)))
+	patch, changed := p.diff(tree)
 	p.dirty = false
 	if changed {
 		patch.SubagentID = subagentID
@@ -288,7 +292,13 @@ func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *s
 	p := m.stackFor(stackKey(request.SessionID, request.SubagentID))
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	tree := viewmodel.Project(viewmodel.Build(stackSnapshotOf(src, busy, drilled, time.Now())))
+	snap := stackSnapshotOf(src, busy, drilled, time.Now())
+	turns := viewmodel.Build(snap)
+	tree := viewmodel.Project(turns)
+	// The band rides along as an extra node. It is not in roots, so a
+	// transcript walk never sees it, but the projector carries it to web
+	// clients like any other node.
+	tree.Nodes = append(tree.Nodes, viewmodel.ProjectBand(viewmodel.BandOf(snap, turns)))
 	activated := false
 	if !p.active {
 		activated = true

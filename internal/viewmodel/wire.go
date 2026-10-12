@@ -44,6 +44,41 @@ type WireNode struct {
 	RunEvent *WireRunEvent `json:"runEvent,omitempty"`
 	Marker   *WireMarker   `json:"marker,omitempty"`
 	Receipt  *WireReceipt  `json:"receipt,omitempty"`
+	Band     *WireBand     `json:"band,omitempty"`
+}
+
+// WireBand is the pinned band: todo progress with its stale signal, and the
+// running cards. It travels as a node with ID "band" that is deliberately not
+// in roots, so a transcript walk ignores it while the stack patch protocol
+// carries it with no change.
+type WireBand struct {
+	Todos      bool             `json:"todos,omitempty"`
+	Done       int              `json:"done"`
+	Total      int              `json:"total"`
+	Active     string           `json:"active,omitempty"`
+	Stale      bool             `json:"stale,omitempty"`
+	StaleAgeMs int64            `json:"staleAgeMs,omitempty"`
+	Next       []string         `json:"next,omitempty"`
+	Entities   []WireBandEntity `json:"entities,omitempty"`
+}
+
+// WireBandEntity is one running card the band lists.
+type WireBandEntity struct {
+	Ref       string `json:"ref"`
+	Label     string `json:"label"`
+	Detail    string `json:"detail,omitempty"`
+	StartedAt int64  `json:"startedAt,omitempty"`
+}
+
+// ProjectBand is the band as a wire node. Its ID is fixed so every patch
+// updates the same node rather than accumulating copies.
+func ProjectBand(b BandInfo) WireNode {
+	wb := &WireBand{Todos: b.Todos, Done: b.Done, Total: b.Total, Active: b.Active, Stale: b.Stale,
+		StaleAgeMs: b.StaleAge.Milliseconds(), Next: b.Next}
+	for _, e := range b.Entities {
+		wb.Entities = append(wb.Entities, WireBandEntity{Ref: e.Ref.Key, Label: e.Label, Detail: e.Detail, StartedAt: ms(e.Started)})
+	}
+	return WireNode{ID: "band", Kind: "band", Band: wb}
 }
 
 // WireStep is a step's header and reasoning. Times are Unix milliseconds;

@@ -100,6 +100,28 @@ func TestStackSnapshotForKnownSession(t *testing.T) {
 	}
 }
 
+// The band travels as an extra node with a fixed ID. It is not in roots, so a
+// transcript walk ignores it, but it must reach the client the same way.
+func TestStackSnapshotCarriesTheBand(t *testing.T) {
+	m, st, _ := newStackTestManager(t)
+	st.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	snap := takeStack(t, m)
+	var band *viewmodel.WireNode
+	for i := range snap.Nodes {
+		if snap.Nodes[i].Kind == "band" {
+			band = &snap.Nodes[i]
+		}
+	}
+	if band == nil || band.ID != "band" || band.Band == nil {
+		t.Fatalf("no band node in %+v", snap.Nodes)
+	}
+	for _, r := range snap.Roots {
+		if r == "band" {
+			t.Fatal("the band must not be a root: it is not part of the transcript")
+		}
+	}
+}
+
 func TestStackUnknownSession(t *testing.T) {
 	m, _, _ := newStackTestManager(t)
 	for _, id := range []string{"missing", "s1"} {
@@ -200,15 +222,37 @@ func TestStackSnapshotJSONEmptyArrays(t *testing.T) {
 
 func TestStackSnapshotFlushesThenAnswers(t *testing.T) {
 	m, st, notices := newStackTestManager(t)
-	takeStack(t, m)
+	first := takeStack(t, m)
 	st.AddMessage(session.RoleUser, "new turn", session.ContentTypePlain)
 	snap := takeStack(t, m)
 	if len(*notices) != 1 {
 		t.Fatalf("notifications = %d", len(*notices))
 	}
 	p := stackPatchFromNotice(t, (*notices)[0])
-	if p.BaseRev != 1 || p.Rev != snap.Rev || snap.Rev != 2 || len(snap.Nodes) != len(p.Upsert) {
+	if p.BaseRev != 1 || p.Rev != snap.Rev || snap.Rev != 2 {
 		t.Fatalf("patch = %+v, snapshot = %+v", p, snap)
+	}
+	// The patch carries what changed; the snapshot is the union of that and
+	// what the client already held. (The band rides along unchanged at this
+	// rev, so an upsert-only comparison would be wrong.)
+	have := map[string]bool{}
+	for _, n := range first.Nodes {
+		have[n.ID] = true
+	}
+	for _, n := range p.Upsert {
+		have[n.ID] = true
+	}
+	for _, id := range p.Remove {
+		delete(have, id)
+	}
+	if len(have) != len(snap.Nodes) {
+		t.Fatalf("patch and snapshot disagree: patch reaches %d nodes, snapshot has %d (%+v)",
+			len(have), len(snap.Nodes), snap.Nodes)
+	}
+	for _, n := range snap.Nodes {
+		if !have[n.ID] {
+			t.Fatalf("node %s is in the snapshot but neither held nor patched", n.ID)
+		}
 	}
 	takeStack(t, m)
 	if len(*notices) != 1 {

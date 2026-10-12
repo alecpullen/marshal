@@ -281,12 +281,22 @@ func RenderAgentRoster(cfg config.Config) string {
 	return RenderAgentRosterWithDiscovered(cfg, nil)
 }
 
-// agentRoster renders the runner's system-prompt roster, enriched with
-// fresh discovered models read from the model discovery cache recorded on
-// the session state. Best-effort and cheap: a missing, unreadable, or
-// stale cache simply yields no discovered entries.
+// agentRoster renders the roster for the system prompt. The discovered-
+// models part is snapshotted on first use and reused for the runner's
+// lifetime (one session). It comes from an on-disk cache that a background
+// refresh rewrites and a 24h TTL expires against the wall clock, so
+// re-reading it on every build let the system prompt, the head of every
+// provider's prompt cache, change between turns with no user action. The
+// config-derived parts are rendered every time, so a preset added
+// mid-session still appears; newly discovered models appear next session.
 func (r *Runner) agentRoster() string {
-	return RenderAgentRosterWithDiscovered(r.State.Config, DiscoveredModelsFromCache(r.State.Config, r.State.ModelCacheDir(), time.Now()))
+	r.rosterMu.Lock()
+	if r.discoveredModels == nil {
+		r.discoveredModels = DiscoveredModelsFromCache(r.State.Config, r.State.ModelCacheDir(), time.Now())
+	}
+	discovered := r.discoveredModels
+	r.rosterMu.Unlock()
+	return RenderAgentRosterWithDiscovered(r.State.Config, discovered)
 }
 
 // RenderAgentRosterWithDiscovered is RenderAgentRoster with a discovered-

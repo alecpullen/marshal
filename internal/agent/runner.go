@@ -497,6 +497,10 @@ type Runner struct {
 	// of this runner's life. See chatWithRetryNoNativeTools.
 	toolChoiceMu      sync.Mutex
 	toolChoiceNoneOff map[string]bool
+	// discoveredModels is the model-discovery snapshot the agent roster
+	// renders from, read once per runner (one session). See agentRoster.
+	rosterMu         sync.Mutex
+	discoveredModels map[string][]schema.ModelInfo
 	// turnToolResultChars is the tool-result character cap derived from
 	// this turn's context threshold. Per-turn state: reset at the top of
 	// RunTask. 0 means "not derived yet"; toolResultChars falls back to

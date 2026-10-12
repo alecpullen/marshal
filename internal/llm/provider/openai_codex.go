@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/provider/limits"
@@ -79,6 +80,10 @@ type OpenAICodex struct {
 	provCfg config.ProviderConfig
 	// sessionID seeds prompt_cache_key.
 	sessionID string
+	// cacheKeyRejected latches once the endpoint answers 400 naming
+	// prompt_cache_key. Acceptance of the field is not live-verified, so a
+	// rejection degrades to uncached requests instead of failing every call.
+	cacheKeyRejected atomic.Bool
 }
 
 // CodexOptions configures NewOpenAICodex.
@@ -164,7 +169,8 @@ func (p *OpenAICodex) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 // Error contract matches the other backends: HTTP-level failures return
 // synchronously, in-stream failures arrive as one ChatEventError followed by
 // channel close. A 401 is retried once through a forced token refresh before
-// being surfaced as *oauth.ErrAuthRequired.
+// being surfaced as *oauth.ErrAuthRequired. A 400 naming prompt_cache_key is
+// retried once without the key, and the key is dropped for later requests.
 func (p *OpenAICodex) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
 	token, err := p.engine.TokenSource(ctx)
 	if err != nil {
@@ -188,6 +194,23 @@ func (p *OpenAICodex) Chat(ctx context.Context, req schema.ChatRequest) (<-chan 
 		resp, err = p.post(ctx, req, token)
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	// The endpoint is strict about unknown fields. If it rejects
+	// prompt_cache_key, remember that and retry the same request without it.
+	if resp.StatusCode == http.StatusBadRequest && !p.cacheKeyRejected.Load() && p.sessionID != "" {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if strings.Contains(string(body), "prompt_cache_key") {
+			p.cacheKeyRejected.Store(true)
+			resp, err = p.post(ctx, req, token)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// Not ours: hand the body back so mapError reports it.
+			resp.Body = io.NopCloser(bytes.NewReader(body))
 		}
 	}
 
@@ -217,7 +240,12 @@ func (p *OpenAICodex) post(ctx context.Context, req schema.ChatRequest, token st
 	// The Codex backend keys server-side prompt caching on
 	// prompt_cache_key (docs/codex-spike-findings-2026-09-14.md §3), as
 	// the codex CLI does with its conversation id.
-	req.PromptCacheKey = promptCacheKey(p.sessionID)
+	// Skipped once the endpoint has rejected the field (see Chat).
+	if p.cacheKeyRejected.Load() {
+		req.PromptCacheKey = ""
+	} else {
+		req.PromptCacheKey = promptCacheKey(p.sessionID)
+	}
 	// Codex rejects system-role input items. Keep the leading harness prompt
 	// in instructions and send later runtime guidance as developer messages.
 	body, err := buildResponsesRequestBodyWithSystemRole(req, p.reasoningSummary, []string{codexIncludeReasoning}, "developer")

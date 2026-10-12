@@ -139,3 +139,102 @@ func TestCodexSendsPromptCacheKey(t *testing.T) {
 		t.Fatalf("prompt_cache_key = %v, want %q", got, promptCacheKey("sess_123"))
 	}
 }
+
+// codexKeyServer serves codexSSE, except that a body carrying
+// prompt_cache_key (or any body when onlyForKey is false) gets the given status and body when rejectStatus is non-zero.
+func codexKeyServer(t *testing.T, rejectStatus int, rejectBody string, onlyForKey bool) (*httptest.Server, *[]map[string]any) {
+	t.Helper()
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		bodies = append(bodies, body)
+		if _, hasKey := body["prompt_cache_key"]; hasKey || !onlyForKey {
+			if rejectStatus != 0 {
+				w.WriteHeader(rejectStatus)
+				_, _ = w.Write([]byte(rejectBody))
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(codexSSE))
+	}))
+	t.Cleanup(server.Close)
+	return server, &bodies
+}
+
+func codexChatOnce(t *testing.T, p *OpenAICodex) error {
+	t.Helper()
+	events, err := p.Chat(t.Context(), schema.ChatRequest{
+		Model:    "gpt-5.6-luna",
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		return err
+	}
+	for range events {
+	}
+	return nil
+}
+
+func newCodexKeyProvider(t *testing.T, baseURL string) *OpenAICodex {
+	t.Helper()
+	engine, _ := codexTestEngine(t, codexTestToken("acct-abc"))
+	caps := schema.ProviderCapabilities{ToolCalling: true, StructuredOutput: true, Reasoning: true}
+	p, err := NewOpenAICodex(CodexOptions{
+		Name: "codex", BaseURL: baseURL, Engine: engine, Capabilities: &caps,
+		StaticModels: []string{"gpt-5.6-luna"}, SessionID: "sess_123",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICodex: %v", err)
+	}
+	return p
+}
+
+// The endpoint's acceptance of prompt_cache_key is not live-verified, so a
+// rejection must degrade to an uncached request rather than failing every
+// Codex call.
+func TestCodexRetriesWithoutPromptCacheKeyWhenRejected(t *testing.T) {
+	server, bodies := codexKeyServer(t, http.StatusBadRequest, `{"detail":"Unsupported parameter: prompt_cache_key"}`, true)
+	p := newCodexKeyProvider(t, server.URL)
+
+	if err := codexChatOnce(t, p); err != nil {
+		t.Fatalf("Chat after a prompt_cache_key rejection: %v", err)
+	}
+	if len(*bodies) != 2 {
+		t.Fatalf("server saw %d requests, want 2 (rejected, then retried)", len(*bodies))
+	}
+	if _, ok := (*bodies)[0]["prompt_cache_key"]; !ok {
+		t.Fatal("first request must carry prompt_cache_key")
+	}
+	if _, ok := (*bodies)[1]["prompt_cache_key"]; ok {
+		t.Fatalf("retry still carries prompt_cache_key: %v", (*bodies)[1])
+	}
+
+	if err := codexChatOnce(t, p); err != nil {
+		t.Fatalf("second Chat: %v", err)
+	}
+	if len(*bodies) != 3 {
+		t.Fatalf("server saw %d requests after the second Chat, want 3 (no re-probe)", len(*bodies))
+	}
+	if _, ok := (*bodies)[2]["prompt_cache_key"]; ok {
+		t.Fatal("later request sent prompt_cache_key after the endpoint rejected it")
+	}
+}
+
+func TestCodexDoesNotRetryUnrelated400(t *testing.T) {
+	server, bodies := codexKeyServer(t, http.StatusBadRequest, `{"detail":"Missing required parameter: include"}`, false)
+	p := newCodexKeyProvider(t, server.URL)
+
+	err := codexChatOnce(t, p)
+	if err == nil || !strings.Contains(err.Error(), "Missing required parameter") {
+		t.Fatalf("Chat error = %v, want the 400 detail surfaced", err)
+	}
+	if len(*bodies) != 1 {
+		t.Fatalf("server saw %d requests, want 1 (no retry)", len(*bodies))
+	}
+	if _, ok := (*bodies)[0]["prompt_cache_key"]; !ok {
+		t.Fatal("a failed unrelated 400 must not disable the cache key")
+	}
+}

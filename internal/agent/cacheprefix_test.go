@@ -72,6 +72,11 @@ func TestPromptPrefixStableAcrossSteps(t *testing.T) {
 	clock := time.Unix(1_000, 0)
 	now := func() time.Time { return clock }
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{}, session.WithClock(now))
+	// A stable pack so the run exercises stable + volatile sections together.
+	state.SetContextPack(contextpack.Pack{
+		Sections:   []contextpack.Section{{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal"}},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000},
+	})
 	if err := state.SetScratchpadEntry("notes", "first finding", "text"); err != nil {
 		t.Fatalf("SetScratchpadEntry: %v", err)
 	}
@@ -102,19 +107,37 @@ func TestPromptPrefixStableAcrossSteps(t *testing.T) {
 
 	assertPrefixStable(t, p.Requests)
 
+	// Message 1 is the stable pack: byte-identical on every request, with
+	// no volatile section in it.
+	for i, req := range p.Requests {
+		if len(req.Messages) < 2 {
+			t.Fatalf("request %d has %d messages, want at least 2", i, len(req.Messages))
+		}
+		m := req.Messages[1]
+		if !strings.Contains(m.Content, "Project context pack:") || !strings.Contains(m.Content, "Project: marshal") {
+			t.Fatalf("request %d message 1 is not the stable context pack: %.300q", i, m.Content)
+		}
+		if strings.Contains(m.Content, "Current Todos") {
+			t.Fatalf("request %d stable pack contains the volatile todos: %.300q", i, m.Content)
+		}
+		if m.Content != p.Requests[0].Messages[1].Content {
+			t.Fatalf("request %d message 1 differs from request 0:\nwas: %.300q\nnow: %.300q", i, p.Requests[0].Messages[1].Content, m.Content)
+		}
+	}
+
 	last := p.Requests[len(p.Requests)-1].Messages
 	tail := last[len(last)-1]
 	if !tail.Volatile || !strings.Contains(tail.Content, "Current Todos") || !strings.Contains(tail.Content, "Scratchpad") {
 		t.Fatalf("last message must be the volatile working state with todos and scratchpad, got %+v", tail)
 	}
 	for i, m := range last[:len(last)-1] {
-		if m.Volatile || strings.Contains(m.Content, "Current working state:") {
+		if m.Volatile || strings.Contains(m.Content, "Current working state") {
 			t.Fatalf("message %d is a stale working-state copy; exactly one tail is allowed", i)
 		}
 	}
 	// Review focus 2: the tail is wire-only and never reaches the transcript.
 	for _, m := range state.Messages() {
-		if strings.Contains(m.Content, "Current working state:") {
+		if strings.Contains(m.Content, "Current working state") {
 			t.Fatalf("working-state tail leaked into the session transcript: %q", m.Content)
 		}
 	}

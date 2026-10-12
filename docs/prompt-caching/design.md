@@ -97,16 +97,22 @@ stable sections have lower priority numbers (10–30, plus pinned) and are
 admitted before volatile ones (35–50), so stable content never depends on
 volatile sizes. Rendering splits: `RenderStable` stays at index 1 under
 "Project context pack:", and `RenderVolatile` becomes the working-state
-message. The pack's truncation note (`Estimated tokens: N/M`) moves to the
-volatile render, because its estimate changes whenever a volatile section
-does.
+message. The pack's truncation note (`Context pack truncated (~N/M tokens).`)
+moves to the volatile render, because its estimate changes whenever a
+volatile section does.
 
 **D2 — Working state is a per-request tail, never stored.** The runner
 appends the working-state message (`Role: user`, `Volatile: true`) inside
 `chatOnceAttempt`, the single dispatch point, so it is never part of the
 runner's `messages` slice. It cannot leak into compaction, pruning,
 archives or history replay, and every request (main loop, finalize,
-handoff summary, plan) carries the current copy. Budget checks measure the
+handoff summary, plan) carries the current copy. The one exception is
+`Runner.Chat`, the side-call used for rollover digests: it bypasses
+`chatOnceAttempt`, so digest requests carry no tail (the next loop request
+does). Because the tail is the last message of every request, its header
+frames it as "Current working state (reference only, refreshed every
+request; act on the latest user or system message above):" so stale todos
+cannot override the latest request. Budget checks measure the
 wire including the tail. Moving the tail makes the relative scratchpad
 ages harmless, so they stay: they are useful to the model, and absolute
 timestamps would add nothing once the section no longer sits in the prefix.

@@ -5,6 +5,9 @@ import (
 	"strings"
 )
 
+// Render renders the whole pack in one block. Production code uses
+// RenderStable and RenderVolatile so the volatile sections can sit at the
+// end of the wire; Render is kept as the whole-pack view for builder tests.
 func Render(pack Pack) string {
 	if pack.IsEmpty() {
 		return ""
@@ -55,12 +58,17 @@ func RenderStable(pack Pack) string {
 	return renderPart(pack, "Project context pack:", false)
 }
 
-// RenderVolatile renders the turn-volatile sections under the "Current
-// working state:" header. The pack's truncation note renders here rather
-// than in the stable part: its token estimate moves whenever a volatile
-// section does. Empty when there is nothing volatile and no truncation.
+// volatileHeader frames the working-state tail. The tail is the last message
+// of every request, so the header tells the model it is reference material
+// and must not override the latest user or system message above it.
+const volatileHeader = "Current working state (reference only, refreshed every request; act on the latest user or system message above):"
+
+// RenderVolatile renders the turn-volatile sections under the working-state
+// header. The pack's truncation note renders here rather than in the stable
+// part: its token estimate moves whenever a volatile section does. Empty
+// when there is nothing volatile and no truncation.
 func RenderVolatile(pack Pack) string {
-	return renderPart(pack, "Current working state:", true)
+	return renderPart(pack, volatileHeader, true)
 }
 
 func renderPart(pack Pack, header string, volatile bool) string {
@@ -82,8 +90,7 @@ func renderPart(pack Pack, header string, volatile bool) string {
 	var b strings.Builder
 	b.WriteString(header + "\n")
 	if note {
-		fmt.Fprintf(&b, "Estimated tokens: %d/%d\n", pack.TokenUsage.EstimatedTokens, pack.TokenUsage.MaxTokens)
-		b.WriteString("Truncated: true\n")
+		fmt.Fprintf(&b, "Context pack truncated (~%d/%d tokens).\n", pack.TokenUsage.EstimatedTokens, pack.TokenUsage.MaxTokens)
 	}
 	b.WriteString(body.String())
 	return strings.TrimRight(b.String(), "\n")

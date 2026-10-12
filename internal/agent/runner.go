@@ -1824,6 +1824,10 @@ func stringSetsEqual(a, b []string) bool {
 // Chat calls the runner's provider with the given messages and returns
 // a single ChatMessage response. It satisfies the rollover.chatModel interface
 // used by LLMSummaryProvider for digest generation.
+//
+// Chat bypasses chatOnceAttempt, so these side-call requests carry no
+// working-state tail. That is acceptable: the digest only summarises the
+// given messages, and the next loop request gets the tail as usual.
 func (r *Runner) Chat(ctx context.Context, messages []schema.ChatMessage) (schema.ChatMessage, error) {
 	model := r.Model
 	if r.DigestModel != "" {

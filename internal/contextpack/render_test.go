@@ -36,7 +36,7 @@ func TestRenderSplitsSectionsByVolatility(t *testing.T) {
 	if !strings.HasPrefix(stable, "Project context pack:\n") {
 		t.Fatalf("stable header missing:\n%s", stable)
 	}
-	if !strings.HasPrefix(volatile, "Current working state:\n") {
+	if !strings.HasPrefix(volatile, "Current working state (reference only, refreshed every request; act on the latest user or system message above):\n") {
 		t.Fatalf("volatile header missing:\n%s", volatile)
 	}
 	for _, want := range []string{"CARD-MARKER", "MEMORY-MARKER"} {
@@ -93,10 +93,10 @@ func TestRenderStableUnaffectedByVolatileChanges(t *testing.T) {
 	if RenderVolatile(a) == RenderVolatile(b) {
 		t.Fatal("volatile render did not change; the fixture is not exercising anything")
 	}
-	if !strings.Contains(RenderVolatile(b), "Truncated: true") {
+	if !strings.Contains(RenderVolatile(b), "Context pack truncated") {
 		t.Errorf("truncation note must render in the volatile part:\n%s", RenderVolatile(b))
 	}
-	if strings.Contains(RenderStable(b), "Estimated tokens") {
+	if strings.Contains(RenderStable(b), "Context pack truncated") || strings.Contains(RenderStable(b), "Estimated tokens") {
 		t.Errorf("truncation note must not render in the stable part:\n%s", RenderStable(b))
 	}
 }

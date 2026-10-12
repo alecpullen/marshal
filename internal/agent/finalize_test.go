@@ -7,6 +7,7 @@ import (
 
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/llm/schema"
+	"marshal/internal/tools/registry"
 )
 
 func TestFinalizeProducesFlaggedCompletion(t *testing.T) {
@@ -228,7 +229,7 @@ func TestFinalizeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 func TestFinalizeNativeUsesProseDirectly(t *testing.T) {
 	state := newTestState(t)
 	prov := &agenttest.ScriptedProvider{Responses: []string{"This is the native prose answer."}}
-	r := NewRunner(prov, nil, nil, state, "test-model")
+	r := NewRunner(prov, registry.New(), nil, state, "test-model")
 	r.NativeTools = true
 
 	task := NewTask("do the thing", r.Now())
@@ -270,8 +271,11 @@ func TestFinalizeNativeRecoversAfterToolCall(t *testing.T) {
 			nil,
 		},
 	}
-	r := NewRunner(prov, nil, nil, state, "test-model")
+	r := NewRunner(prov, registry.New(), nil, state, "test-model")
 	r.NativeTools = true
+	// These tests exercise finalize's own correction loop, which only runs
+	// once the tool_choice "none" fallback has latched; see toolchoice_test.go.
+	r.rejectToolChoiceNone(prov.Name())
 
 	task := NewTask("do the thing", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
@@ -310,8 +314,11 @@ func TestFinalizeNativeSynthesizesWhenModelKeepsCallingTools(t *testing.T) {
 			{{ID: "call_1", Name: "file.read", Args: nil}},
 		},
 	}
-	r := NewRunner(prov, nil, nil, state, "test-model")
+	r := NewRunner(prov, registry.New(), nil, state, "test-model")
 	r.NativeTools = true
+	// These tests exercise finalize's own correction loop, which only runs
+	// once the tool_choice "none" fallback has latched; see toolchoice_test.go.
+	r.rejectToolChoiceNone(prov.Name())
 
 	task := NewTask("do the thing", r.Now())
 	task.Plan = []string{"Read the file"}
@@ -346,8 +353,11 @@ func TestFinalizeNativeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 			{{ID: "call_1", Name: "file.read", Args: nil}},
 		},
 	}
-	r := NewRunner(prov, nil, nil, state, "test-model")
+	r := NewRunner(prov, registry.New(), nil, state, "test-model")
 	r.NativeTools = true
+	// These tests exercise finalize's own correction loop, which only runs
+	// once the tool_choice "none" fallback has latched; see toolchoice_test.go.
+	r.rejectToolChoiceNone(prov.Name())
 
 	task := NewTask("go", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "go"}}
@@ -417,7 +427,7 @@ func TestFinalizeNativePairsToolCallsWithToolResults(t *testing.T) {
 			nil,
 		},
 	}
-	r := NewRunner(prov, nil, nil, state, "test-model")
+	r := NewRunner(prov, registry.New(), nil, state, "test-model")
 	r.NativeTools = true
 
 	task := NewTask("do the thing", r.Now())

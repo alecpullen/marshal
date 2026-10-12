@@ -491,6 +491,12 @@ type Runner struct {
 	// message in the current turn's wire transcript. -1 means no context-pack
 	// message is currently tracked. Reset at the start of each RunTask.
 	contextPackMsgIndex int
+	// toolChoiceNoneOff records providers that cannot honour tool_choice
+	// "none": they rejected it, or the model called a tool anyway.
+	// Tools-disabled calls to them omit the tool definitions for the rest
+	// of this runner's life. See chatWithRetryNoNativeTools.
+	toolChoiceMu      sync.Mutex
+	toolChoiceNoneOff map[string]bool
 	// turnToolResultChars is the tool-result character cap derived from
 	// this turn's context threshold. Per-turn state: reset at the top of
 	// RunTask. 0 means "not derived yet"; toolResultChars falls back to

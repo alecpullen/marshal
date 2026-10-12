@@ -491,6 +491,16 @@ type Runner struct {
 	// message in the current turn's wire transcript. -1 means no context-pack
 	// message is currently tracked. Reset at the start of each RunTask.
 	contextPackMsgIndex int
+	// toolChoiceNoneOff records providers that cannot honour tool_choice
+	// "none": they rejected it, or the model called a tool anyway.
+	// Tools-disabled calls to them omit the tool definitions for the rest
+	// of this runner's life. See chatWithRetryNoNativeTools.
+	toolChoiceMu      sync.Mutex
+	toolChoiceNoneOff map[string]bool
+	// discoveredModels is the model-discovery snapshot the agent roster
+	// renders from, read once per runner (one session). See agentRoster.
+	rosterMu         sync.Mutex
+	discoveredModels map[string][]schema.ModelInfo
 	// turnToolResultChars is the tool-result character cap derived from
 	// this turn's context threshold. Per-turn state: reset at the top of
 	// RunTask. 0 means "not derived yet"; toolResultChars falls back to
@@ -645,6 +655,15 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.HookRunner = other.HookRunner
 	r.TitleManager = other.TitleManager
 	r.Classifier = other.Classifier
+
+	// A reload may repoint the provider, so the per-runner caches keyed to
+	// the old one (tool_choice latch, roster model snapshot) start over.
+	r.toolChoiceMu.Lock()
+	r.toolChoiceNoneOff = nil
+	r.toolChoiceMu.Unlock()
+	r.rosterMu.Lock()
+	r.discoveredModels = nil
+	r.rosterMu.Unlock()
 }
 
 func (r *Runner) role() AgentRole {
@@ -923,6 +942,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		budget := historyBudget(route.Window, r.HistoryBudgetTokens)
 		messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
 	}
+	markCacheAnchor(messages)
 	messages = r.appendSkillHint(messages)
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
@@ -982,6 +1002,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				budget := historyBudget(route.Window, r.HistoryBudgetTokens)
 				messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
 			}
+			markCacheAnchor(messages)
 			messages = r.appendSkillHint(messages)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}

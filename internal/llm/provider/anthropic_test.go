@@ -748,3 +748,64 @@ func TestAnthropicBreakpointEdgeCases(t *testing.T) {
 		t.Error("a volatile-only transcript must not get a message breakpoint")
 	}
 }
+
+// The anchor's last block carries the fourth breakpoint, so a turn's first
+// request reads the previous turn's history instead of rewriting it.
+func TestAnthropicAnchorBreakpoint(t *testing.T) {
+	body := decodeAnthropicBody(t, schema.ChatRequest{
+		Model: "claude-test",
+		Tools: []schema.ToolDefinition{{Name: "read", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleSystem, Content: "harness prompt"},
+			{Role: schema.RoleUser, Content: "Project context pack:\n\n## Repo Card\n\nProject: marshal"},
+			{Role: schema.RoleUser, Content: "first question"},
+			{Role: schema.RoleAssistant, Content: "Answer one.", CacheAnchor: true},
+			{Role: schema.RoleUser, Content: "second question"},
+			{Role: schema.RoleUser, Content: "Current working state (reference only)", Volatile: true},
+		},
+	})
+
+	// Wire: user[pack, q1], assistant[ans1], user[q2, tail]
+	if got := body.Messages[1].Content[0]; got.CacheControl == nil {
+		t.Errorf("anchor block (assistant answer) must carry a breakpoint: %+v", got)
+	}
+	last := body.Messages[2]
+	if last.Content[0].CacheControl == nil {
+		t.Error("the rolling breakpoint must stay on the last stable block")
+	}
+	if last.Content[1].CacheControl != nil {
+		t.Error("the volatile tail must not carry a breakpoint")
+	}
+	if got := countBreakpoints(body); got != 4 {
+		t.Errorf("breakpoints = %d, want 4 (tools, system, anchor, rolling)", got)
+	}
+}
+
+// Review focus 5: an anchor on a leading system message or on the rolling
+// block adds nothing.
+func TestAnthropicAnchorNeverExceedsFour(t *testing.T) {
+	onSystem := decodeAnthropicBody(t, schema.ChatRequest{Model: "claude-test", Messages: []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "sys", CacheAnchor: true},
+		{Role: schema.RoleUser, Content: "hi"},
+	}})
+	if got := countBreakpoints(onSystem); got != 2 {
+		t.Errorf("anchor on the leading system message: breakpoints = %d, want 2 (system, rolling)", got)
+	}
+
+	onRolling := decodeAnthropicBody(t, schema.ChatRequest{Model: "claude-test", Messages: []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "hi", CacheAnchor: true},
+	}})
+	if got := countBreakpoints(onRolling); got != 2 {
+		t.Errorf("anchor on the rolling block: breakpoints = %d, want 2", got)
+	}
+
+	onVolatile := decodeAnthropicBody(t, schema.ChatRequest{Model: "claude-test", Messages: []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "q"},
+		{Role: schema.RoleUser, Content: "state", Volatile: true, CacheAnchor: true},
+	}})
+	if onVolatile.Messages[0].Content[1].CacheControl != nil {
+		t.Error("a volatile message must never carry a breakpoint, anchor or not")
+	}
+}

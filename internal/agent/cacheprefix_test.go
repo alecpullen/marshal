@@ -251,3 +251,143 @@ func TestSkillHintFollowsReplayedHistory(t *testing.T) {
 		t.Fatalf("replayed first-turn goal (index %d) must precede the hint (index %d)", goals[0], hint)
 	}
 }
+
+// anchorIndex returns the index of the single CacheAnchor message, failing
+// the test when there is not exactly one.
+func anchorIndex(t *testing.T, msgs []schema.ChatMessage) int {
+	t.Helper()
+	idx, n := -1, 0
+	for i, m := range msgs {
+		if m.CacheAnchor {
+			idx, n = i, n+1
+		}
+	}
+	if n != 1 {
+		t.Fatalf("want exactly one CacheAnchor message, got %d", n)
+	}
+	return idx
+}
+
+func hintIndex(msgs []schema.ChatMessage) int {
+	for i, m := range msgs {
+		if strings.HasPrefix(m.Content, "Skill suggestions for this request") {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestCrossTurnStableRegionIsAppendOnly pins follow-up item 1 (design
+// followups-design.md §1). Everything up to and including turn N's
+// CacheAnchor (system prompt, stable pack, skill bodies, replayed history)
+// must open turn N+1's first request unchanged. That is what lets an
+// automatic prefix cache, and Anthropic's anchor breakpoint, reuse a turn's
+// history on the next turn.
+func TestCrossTurnStableRegionIsAppendOnly(t *testing.T) {
+	e, candidates := rankFixture()
+	idx := skills.NewIndex()
+	for _, c := range candidates {
+		idx.Set(c.Name, c)
+	}
+	state := newTestState(t)
+	state.SetContextPack(contextpack.Pack{
+		Sections:   []contextpack.Section{{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4}},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	})
+	p := &agenttest.ScriptedProvider{
+		Responses:     []string{"Answer one.", "Answer two.", "Answer three."},
+		FinishReasons: []string{"stop", "stop", "stop"},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SkillIndex = idx
+	r.SkillEmbedder = e
+	r.SetForceClass(string(ClassQuestion))
+
+	const goal = "fix the flaky test" // rankFixture keys its vectors on this text
+	var firsts []schema.ChatRequest
+	for i := 0; i < 3; i++ {
+		start := len(p.Requests)
+		if err := r.Run(context.Background(), goal); err != nil {
+			t.Fatalf("Run %d: %v", i, err)
+		}
+		firsts = append(firsts, p.Requests[start])
+	}
+
+	for k, req := range firsts {
+		a := anchorIndex(t, req.Messages)
+		if h := hintIndex(req.Messages); h >= 0 && h <= a {
+			t.Fatalf("turn %d: skill hint (index %d) must come after the anchor (index %d)", k+1, h, a)
+		}
+	}
+	for k := 1; k < len(firsts); k++ {
+		prev, cur := firsts[k-1].Messages, firsts[k].Messages
+		pa, ca := anchorIndex(t, prev), anchorIndex(t, cur)
+		if ca <= pa {
+			t.Fatalf("turn %d anchor (index %d) must sit after turn %d's (index %d): the region grows each turn", k+1, ca, k, pa)
+		}
+		for j := 0; j <= pa; j++ {
+			if !sameMessage(prev[j], cur[j]) {
+				t.Fatalf("turn %d rewrote message %d of turn %d's stable region:\nwas: %.200q\nnow: %.200q", k+1, j, k, prev[j].Content, cur[j].Content)
+			}
+		}
+		if len(firsts[k].Tools) != len(firsts[k-1].Tools) {
+			t.Fatalf("tool definitions changed between turns %d and %d", k, k+1)
+		}
+		for i := range firsts[k].Tools {
+			if firsts[k].Tools[i].Name != firsts[k-1].Tools[i].Name || string(firsts[k].Tools[i].Parameters) != string(firsts[k-1].Tools[i].Parameters) {
+				t.Fatalf("tool definition %d changed between turns %d and %d", i, k, k+1)
+			}
+		}
+	}
+}
+
+// Review focus 3: a wire rebuilt by compaction carries exactly one anchor,
+// before the hint and the goal.
+func TestHandoffWireAnchorsBeforeHint(t *testing.T) {
+	_, candidates := rankFixture()
+	idx := skills.NewIndex()
+	for _, c := range candidates {
+		idx.Set(c.Name, c)
+	}
+	p := &agenttest.ScriptedProvider{Responses: []string{"progress summary"}}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
+	r.SkillIndex = idx
+	r.skillHints = []string{"tdd"}
+
+	old := []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "fix the bug"},
+	}
+	fresh, err := r.summarizeAndContinue(context.Background(), p, "test-model", old, "fix the bug", nil)
+	if err != nil {
+		t.Fatalf("summarizeAndContinue: %v", err)
+	}
+	a := anchorIndex(t, fresh)
+	h := hintIndex(fresh)
+	if h < 0 || h <= a {
+		t.Fatalf("hint (index %d) must follow the anchor (index %d)", h, a)
+	}
+}
+
+// Review focus 4: replacing the pack keeps its anchor; removing it moves the
+// anchor to the previous message.
+func TestSetContextPackMessageKeepsAnchor(t *testing.T) {
+	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
+	r.contextPackMsgIndex = -1
+	stable := contextpack.Pack{Sections: []contextpack.Section{{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal"}}}
+
+	msgs := r.setContextPackMessage([]schema.ChatMessage{{Role: schema.RoleSystem, Content: "sys"}}, stable)
+	markCacheAnchor(msgs)
+	if !msgs[1].CacheAnchor {
+		t.Fatalf("fixture: anchor should be on the pack message, got %+v", msgs)
+	}
+	msgs = r.setContextPackMessage(msgs, stable)
+	if !msgs[1].CacheAnchor {
+		t.Fatal("replacing the pack message dropped the anchor")
+	}
+	msgs = r.setContextPackMessage(msgs, contextpack.Pack{})
+	if len(msgs) != 1 || !msgs[0].CacheAnchor {
+		t.Fatalf("removing the anchored pack must move the anchor to the previous message, got %+v", msgs)
+	}
+}

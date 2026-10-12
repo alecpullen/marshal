@@ -175,8 +175,11 @@ type anthropicBlockRef struct {
 // blocks merge into one user message, as the API requires.
 //
 // lastStable is the final block contributed by a non-Volatile message:
-// where the rolling cache breakpoint goes.
-func toAnthropicMessages(msgs []schema.ChatMessage) (system []anthropicContentBlock, out []anthropicMessage, lastStable anthropicBlockRef) {
+// where the rolling cache breakpoint goes. anchor is the final block of the
+// CacheAnchor message, the end of the cross-turn stable region, unless that
+// message is a leading system message (the system block already carries a
+// breakpoint) or Volatile.
+func toAnthropicMessages(msgs []schema.ChatMessage) (system []anthropicContentBlock, out []anthropicMessage, lastStable, anchor anthropicBlockRef) {
 	leading := true
 	for _, m := range msgs {
 		if m.Role != schema.RoleSystem {
@@ -226,10 +229,14 @@ func toAnthropicMessages(msgs []schema.ChatMessage) (system []anthropicContentBl
 		}
 		if !m.Volatile && len(out) > 0 {
 			last := len(out) - 1
-			lastStable = anthropicBlockRef{msg: last, block: len(out[last].Content) - 1, ok: true}
+			ref := anthropicBlockRef{msg: last, block: len(out[last].Content) - 1, ok: true}
+			lastStable = ref
+			if m.CacheAnchor {
+				anchor = ref
+			}
 		}
 	}
-	return system, out, lastStable
+	return system, out, lastStable, anchor
 }
 
 func appendAnthropicUserBlock(out []anthropicMessage, block anthropicContentBlock) []anthropicMessage {
@@ -308,11 +315,15 @@ func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingB
 	if len(req.Messages) == 0 {
 		return nil, errors.New("chat request: at least one message is required")
 	}
-	system, messages, lastStable := toAnthropicMessages(req.Messages)
+	system, messages, lastStable, anchor := toAnthropicMessages(req.Messages)
 
-	// Prompt caching breakpoints. The API allows four; this uses three:
+	// Prompt caching breakpoints. The API allows four, and this uses all four:
 	//   - the tool definitions and the system prompt, the large and stable
 	//     head of the prefix;
+	//   - the cache anchor, the end of the cross-turn stable region (stable
+	//     pack, skill bodies, replayed history). The next turn's anchor
+	//     sits a few blocks later, within the API's ~20-block lookback, so
+	//     each turn's first request reads the previous turn's history;
 	//   - a rolling breakpoint on the last block of the stable transcript.
 	//     Each request reads the entry the previous request wrote (the API
 	//     looks back about 20 blocks from a breakpoint) and writes a longer
@@ -321,6 +332,9 @@ func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingB
 	//     request and would make the entry unreadable.
 	if len(system) > 0 {
 		system[len(system)-1].CacheControl = anthropicEphemeralCache
+	}
+	if anchor.ok {
+		messages[anchor.msg].Content[anchor.block].CacheControl = anthropicEphemeralCache
 	}
 	if lastStable.ok {
 		messages[lastStable.msg].Content[lastStable.block].CacheControl = anthropicEphemeralCache

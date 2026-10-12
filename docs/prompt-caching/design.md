@@ -165,7 +165,7 @@ the UI; it was never labelled as what it was.
   OpenAI's cache prefix, so these calls always miss, and the handoff
   summary is the largest request in a long session. Sending the tools with
   `tool_choice: none` would fix it, but changes provider-facing behaviour
-  that some backends may not support. Separate change.
+  that some backends may not support. Separate change. Taken up in [followups-design.md](followups-design.md).
 - **Lookback limit.** Anthropic looks back about 20 blocks from a
   breakpoint. A step that adds more (more than about 10 parallel tool calls)
   misses once and re-writes. A second rolling breakpoint could extend
@@ -175,7 +175,7 @@ the UI; it was never labelled as what it was.
 - **Cross-turn history.** History replay (`buildHistoryMessages`) is not
   byte-identical to the live wire (tool results are folded into ledger
   summaries), so the cross-turn prefix ends at the first replayed
-  exchange. Fixing that is a history-format change, not a caching change.
+  exchange. Fixing that is a history-format change, not a caching change. Taken up in [followups-design.md](followups-design.md).
 - **Web UI display** of cache share; the ACP usage payload already carries
   `cacheReadTokens`.
 - **DeepSeek `prompt_cache_miss_tokens` → `CacheWriteTokens`.** DeepSeek has

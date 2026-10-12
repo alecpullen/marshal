@@ -76,7 +76,70 @@ func (r *Runner) chatWithRetry(ctx context.Context, p provider.Provider, model s
 	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, true)
 }
 
+func (r *Runner) toolChoiceNoneRejected(providerName string) bool {
+	r.toolChoiceMu.Lock()
+	defer r.toolChoiceMu.Unlock()
+	return r.toolChoiceNoneOff[providerName]
+}
+
+// rejectToolChoiceNone latches providerName to tool-less tools-disabled
+// calls. reason names what triggered it and is logged.
+func (r *Runner) rejectToolChoiceNone(providerName, reason string) {
+	r.toolChoiceMu.Lock()
+	defer r.toolChoiceMu.Unlock()
+	if r.toolChoiceNoneOff == nil {
+		r.toolChoiceNoneOff = make(map[string]bool)
+	}
+	if !r.toolChoiceNoneOff[providerName] {
+		r.toolChoiceNoneOff[providerName] = true
+		if r.State != nil {
+			r.State.Logger().Info("tool_choice none not honoured; tools-disabled calls will omit tool definitions", "provider", providerName, "reason", reason)
+		}
+	}
+}
+
+// isCancellation reports whether err ended the call on the caller's side
+// (Esc, turn cancel, deadline), which must never be retried.
+func isCancellation(err error) bool {
+	return err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+}
+
+// chatWithRetryNoNativeTools runs a call that must not use tools: finalize,
+// the handoff summary, the plan-first plan. In native-tools mode it still
+// sends the loop's tool definitions, with tool_choice "none". The
+// definitions head every provider's prompt cache, so dropping them made
+// these calls, which include the largest request of a long session, miss
+// the cache entirely. A provider that rejects tool_choice, or whose model
+// calls a tool anyway (Ollama-native has no tool_choice field), gets one
+// retry without tools and is latched to tool-less calls from then on.
+//
+// On automatic-prefix providers (OpenAI, DeepSeek, Kimi, Ollama Cloud,
+// llama.cpp) these calls share the loop's whole prefix. On Anthropic,
+// changing tool_choice invalidates the cached messages, so they reuse only
+// the tools and system prompt.
+// See docs/prompt-caching/followups-design.md (F3).
 func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat) (chatResult, error) {
+	sentTools := r.NativeTools && !r.toolChoiceNoneRejected(p.Name())
+	res, err := r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, false)
+	// Failures that say nothing about tool_choice return unchanged, with no
+	// retry and no latch: cancellation, a network outage that outlasted the
+	// reconnect wait (retrying would start a second wait), and a thinking loop.
+	if !sentTools || isCancellation(err) || isNetworkError(err) || errors.Is(err, errThinkingLoop) || (err == nil && len(res.ToolCalls) == 0) {
+		return res, err
+	}
+	// The provider failed the request, or the model called a tool
+	// despite "none". Strict servers do not always name the offending
+	// field, so any other failure counts: the worst a wrong latch costs is
+	// the cache benefit, never the call.
+	reason := "model called a tool"
+	if err != nil {
+		msg := err.Error()
+		if len(msg) > 200 {
+			msg = msg[:200] + "…"
+		}
+		reason = "error: " + msg
+	}
+	r.rejectToolChoiceNone(p.Name(), reason)
 	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, false)
 }
 
@@ -350,9 +413,17 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	var loopSnippet string
 
 	var tools []schema.ToolDefinition
+	toolChoice := ""
 	if r.NativeTools {
-		if includeNativeTools {
+		switch {
+		case includeNativeTools:
 			tools = r.buildToolDefinitions()
+		case !r.toolChoiceNoneRejected(p.Name()):
+			// A tools-disabled call keeps the definitions so its prefix
+			// matches the loop's; tool_choice "none" forbids calls. See
+			// chatWithRetryNoNativeTools for the fallback.
+			tools = r.buildToolDefinitions()
+			toolChoice = "none"
 		}
 	}
 	// responseFormat is passed in from RunTask (or a caller in the chain)
@@ -397,6 +468,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 		ContextWindow:   r.turnRequestOptions.contextWindow,
 		ResponseFormat:  responseFormat,
 		Tools:           tools,
+		ToolChoice:      toolChoice,
 		Thinking:        thinking,
 		ThinkingOptions: r.turnRequestOptions.thinkingOptions,
 		Temperature:     requestTemperature,

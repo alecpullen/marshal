@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider/modelcache"
@@ -1760,5 +1762,44 @@ func TestSystemPromptOptionsMatchesWrappers(t *testing.T) {
 	})
 	if want.Content != got.Content {
 		t.Fatalf("struct-based prompt differs from wrapper:\n--- want ---\n%s\n--- got ---\n%s", want.Content, got.Content)
+	}
+}
+
+// The roster heads the system prompt, which heads every provider's prompt
+// cache. Its discovered-models part comes from an on-disk cache that a
+// background refresh rewrites and a 24h TTL expires, so it must be read
+// once per runner. Otherwise the system prompt changes between turns with
+// no user action.
+func TestAgentRosterSnapshotsDiscoveredModels(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "openai_compatible", BaseURL: "http://localhost:1234/v1"},
+	}
+	save := func(id string) {
+		t.Helper()
+		err := modelcache.Save(dir, modelcache.Cache{Providers: map[string]modelcache.Entry{
+			"local": {
+				ConfigHash: modelcache.HashProvider(cfg.Providers["local"]),
+				Models:     []schema.ModelInfo{{ID: id}},
+				FetchedAt:  time.Now(),
+			},
+		}})
+		if err != nil {
+			t.Fatalf("modelcache.Save: %v", err)
+		}
+	}
+	save("alpha-model")
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	state.SetModelCacheDir(dir)
+	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&cfg, nil), state, "test-model")
+
+	first := r.agentRoster()
+	if !strings.Contains(first, "alpha-model") {
+		t.Fatalf("fixture: roster should list the discovered model, got %q", first)
+	}
+	save("beta-model") // a background refresh between turns
+	if got := r.agentRoster(); got != first {
+		t.Fatalf("roster changed mid-session:\nwas: %q\nnow: %q", first, got)
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/schema"
 	"marshal/internal/rollover"
+	"marshal/internal/skills"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -462,6 +463,40 @@ func TestRolloverAndContinueWithRolloverEnabled(t *testing.T) {
 	}
 	if fresh[3].Role != schema.RoleUser {
 		t.Fatalf("expected user role for continue-instruction at message 3, got %q", fresh[3].Role)
+	}
+}
+
+// The window rebuilt by a rollover carries exactly one cache anchor, ahead
+// of the skill hint and the goal, so the next request still caches the
+// stable region.
+func TestRolloverAndContinueAnchorsBeforeHint(t *testing.T) {
+	ctrl := newTestController(true)
+	ctrl.Policy = rollover.Policy{Mode: rollover.PolicyContextPercent, ContextPercent: 0}
+	state := newRolloverTestState(t)
+	_, candidates := rankFixture()
+	idx := skills.NewIndex()
+	for _, c := range candidates {
+		idx.Set(c.Name, c)
+	}
+	runner := &Runner{
+		Registry:             registry.New(),
+		Policy:               policy.NewEngine(&config.Config{}, nil),
+		State:                state,
+		Model:                "test-model",
+		MaxTurnContextTokens: 1000,
+		Rollover:             &Rollover{Controller: ctrl, State: state},
+		SkillIndex:           idx,
+		skillHints:           []string{"tdd"},
+	}
+
+	fresh, err := rolloverAndContinue(context.Background(), runner, []schema.ChatMessage{{Role: schema.RoleUser, Content: "hello"}}, "test goal", runner.MaxTurnContextTokens)
+	if err != nil {
+		t.Fatalf("rolloverAndContinue: %v", err)
+	}
+	a := anchorIndex(t, fresh)
+	h := hintIndex(fresh)
+	if h < 0 || h <= a {
+		t.Fatalf("skill hint (index %d) must follow the anchor (index %d)", h, a)
 	}
 }
 

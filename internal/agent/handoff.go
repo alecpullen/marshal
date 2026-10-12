@@ -35,6 +35,7 @@ func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, 
 	fresh := []schema.ChatMessage{r.systemPromptMessage()}
 	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())
 	fresh = r.appendSkillBodies(fresh)
+	markCacheAnchor(fresh)
 	fresh = r.appendSkillHint(fresh)
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},

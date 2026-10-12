@@ -49,19 +49,29 @@ type WireNode struct {
 // WireStep is a step's header and reasoning. Times are Unix milliseconds;
 // zero means unset.
 type WireStep struct {
-	Headline     string        `json:"headline"`
-	Rest         string        `json:"rest,omitempty"`
-	StepIDs      []int64       `json:"stepIds,omitempty"`
-	Owner        string        `json:"owner,omitempty"`
-	RoleWord     string        `json:"roleWord,omitempty"`
-	Role         string        `json:"role,omitempty"`
-	Model        string        `json:"model,omitempty"`
-	Provider     string        `json:"provider,omitempty"`
-	TodoID       string        `json:"todoId,omitempty"`
-	StartedAt    int64         `json:"startedAt,omitempty"`
-	EndedAt      int64         `json:"endedAt,omitempty"`
-	Thoughts     []WireThought `json:"thoughts,omitempty"`
-	LiveThinking string        `json:"liveThinking,omitempty"`
+	Headline     string         `json:"headline"`
+	Rest         string         `json:"rest,omitempty"`
+	StepIDs      []int64        `json:"stepIds,omitempty"`
+	Owner        string         `json:"owner,omitempty"`
+	RoleWord     string         `json:"roleWord,omitempty"`
+	Role         string         `json:"role,omitempty"`
+	Model        string         `json:"model,omitempty"`
+	Provider     string         `json:"provider,omitempty"`
+	TodoID       string         `json:"todoId,omitempty"`
+	Todo         *WireTodoLabel `json:"todo,omitempty"`
+	Folded       bool           `json:"folded,omitempty"`
+	StartedAt    int64          `json:"startedAt,omitempty"`
+	EndedAt      int64          `json:"endedAt,omitempty"`
+	Thoughts     []WireThought  `json:"thoughts,omitempty"`
+	LiveThinking string         `json:"liveThinking,omitempty"`
+}
+
+// WireTodoLabel marks the beat where work moves to a different todo.
+type WireTodoLabel struct {
+	ID      string `json:"id"`
+	Index   int    `json:"index"`
+	Total   int    `json:"total"`
+	Content string `json:"content"`
 }
 
 // WireThought is one finished reasoning block inside a step.
@@ -259,6 +269,10 @@ func wireStep(n *Node) *WireStep {
 	}
 	for _, t := range si.Thinking {
 		ws.Thoughts = append(ws.Thoughts, WireThought{Text: t.Text, DurationMs: t.Duration.Milliseconds()})
+	}
+	ws.Folded = si.Folded
+	if l := si.Todo; l != nil {
+		ws.Todo = &WireTodoLabel{ID: l.ID, Index: l.Index, Total: l.Total, Content: l.Content}
 	}
 	return ws
 }

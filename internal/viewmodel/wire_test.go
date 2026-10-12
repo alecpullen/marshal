@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
@@ -129,6 +130,26 @@ func TestProjectCapsLargeText(t *testing.T) {
 	if _, err := json.Marshal(tree); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestWireStepCarriesTodoLabelAndFold(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0), narration(2, 1, 1, "Old."), audit("file.read", 1, "a", 2), final(3, 3),
+			userMsg(5, 10), narration(6, 2, 11, "New."), audit("file.read", 2, "b", 12),
+		},
+		Steps: []session.Step{func() session.Step { s := stepFor(1, "p", 1, 2); s.TurnMsgID = 1; return s }(), stepOf(2, 5, 11, 12)},
+		Todos: todos(db.TodoItem{ID: "p", Content: "Parser", Status: "completed"}, db.TodoItem{ID: "q", Content: "Q", Status: "pending"}),
+	})
+	for _, n := range Project(nodes).Nodes {
+		if n.ID == "step:1" {
+			if n.Step.Todo == nil || n.Step.Todo.Content != "Parser" || !n.Step.Folded {
+				t.Fatalf("step:1 = %+v", n.Step)
+			}
+			return
+		}
+	}
+	t.Fatal("step:1 missing")
 }
 
 func TestKindStringCoversEveryKind(t *testing.T) {

@@ -158,17 +158,43 @@ type anthropicResponse struct {
 
 // --- message conversion ---
 
-// toAnthropicMessages extracts system messages into the top-level system
-// field and converts the rest into strictly alternating user/assistant
-// messages. Consecutive tool-result messages merge into a single user
-// message, as the Messages API requires.
-func toAnthropicMessages(msgs []schema.ChatMessage) (system []anthropicContentBlock, out []anthropicMessage) {
+// anthropicBlockRef locates one content block in a converted message list.
+type anthropicBlockRef struct {
+	msg, block int
+	ok         bool
+}
+
+// toAnthropicMessages converts the transcript to Messages API shape.
+//
+// Only the leading run of system messages becomes the top-level system
+// field. A system message later in the transcript (a skill hint, a
+// mid-turn nudge, a finalize directive) stays where it is, as a user text
+// block wrapped in <system-reminder> tags. Hoisting it into system would
+// rewrite the cached system prefix mid-turn and strip it of its position
+// next to the exchange it is about. Consecutive tool-result and user
+// blocks merge into one user message, as the API requires.
+//
+// lastStable is the final block contributed by a non-Volatile message:
+// where the rolling cache breakpoint goes.
+func toAnthropicMessages(msgs []schema.ChatMessage) (system []anthropicContentBlock, out []anthropicMessage, lastStable anthropicBlockRef) {
+	leading := true
 	for _, m := range msgs {
+		if m.Role != schema.RoleSystem {
+			leading = false
+		}
 		switch m.Role {
 		case schema.RoleSystem:
-			if m.Content != "" {
-				system = append(system, anthropicContentBlock{Type: "text", Text: m.Content})
+			if m.Content == "" {
+				continue
 			}
+			if leading {
+				system = append(system, anthropicContentBlock{Type: "text", Text: m.Content})
+				continue
+			}
+			out = appendAnthropicUserBlock(out, anthropicContentBlock{
+				Type: "text",
+				Text: "<system-reminder>\n" + m.Content + "\n</system-reminder>",
+			})
 		case schema.RoleUser:
 			out = appendAnthropicUserBlock(out, anthropicContentBlock{Type: "text", Text: m.Content})
 		case schema.RoleTool:
@@ -191,12 +217,19 @@ func toAnthropicMessages(msgs []schema.ChatMessage) (system []anthropicContentBl
 					Type: "tool_use", ID: call.ID, Name: call.Name, Input: input,
 				})
 			}
-			if len(blocks) > 0 {
-				out = append(out, anthropicMessage{Role: "assistant", Content: blocks})
+			if len(blocks) == 0 {
+				continue
 			}
+			out = append(out, anthropicMessage{Role: "assistant", Content: blocks})
+		default:
+			continue
+		}
+		if !m.Volatile && len(out) > 0 {
+			last := len(out) - 1
+			lastStable = anthropicBlockRef{msg: last, block: len(out[last].Content) - 1, ok: true}
 		}
 	}
-	return system, out
+	return system, out, lastStable
 }
 
 func appendAnthropicUserBlock(out []anthropicMessage, block anthropicContentBlock) []anthropicMessage {
@@ -275,12 +308,22 @@ func buildAnthropicRequestBody(req schema.ChatRequest, thinkingBudget, thinkingB
 	if len(req.Messages) == 0 {
 		return nil, errors.New("chat request: at least one message is required")
 	}
-	system, messages := toAnthropicMessages(req.Messages)
+	system, messages, lastStable := toAnthropicMessages(req.Messages)
 
-	// Prompt caching breakpoints on the two large, stable prefixes: the
-	// system prompt and the tool definitions.
+	// Prompt caching breakpoints. The API allows four; this uses three:
+	//   - the tool definitions and the system prompt, the large and stable
+	//     head of the prefix;
+	//   - a rolling breakpoint on the last block of the stable transcript.
+	//     Each request reads the entry the previous request wrote (the API
+	//     looks back about 20 blocks from a breakpoint) and writes a longer
+	//     one, so a tool loop pays full price only for what is new. The
+	//     Volatile working-state tail sits after it: it changes every
+	//     request and would make the entry unreadable.
 	if len(system) > 0 {
 		system[len(system)-1].CacheControl = anthropicEphemeralCache
+	}
+	if lastStable.ok {
+		messages[lastStable.msg].Content[lastStable.block].CacheControl = anthropicEphemeralCache
 	}
 	var tools []anthropicTool
 	for _, tool := range req.Tools {

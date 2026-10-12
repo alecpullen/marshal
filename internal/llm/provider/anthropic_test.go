@@ -619,3 +619,132 @@ func TestAnthropicWireCaptureMarksUnknownEventTypes(t *testing.T) {
 		t.Fatalf("known no-op event wrongly flagged:\n%s", data)
 	}
 }
+
+func decodeAnthropicBody(t *testing.T, req schema.ChatRequest) anthropicRequest {
+	t.Helper()
+	raw, err := buildAnthropicRequestBody(req, 0, 0)
+	if err != nil {
+		t.Fatalf("buildAnthropicRequestBody: %v", err)
+	}
+	var body anthropicRequest
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	return body
+}
+
+func countBreakpoints(body anthropicRequest) int {
+	n := 0
+	for _, b := range body.System {
+		if b.CacheControl != nil {
+			n++
+		}
+	}
+	for _, tool := range body.Tools {
+		if tool.CacheControl != nil {
+			n++
+		}
+	}
+	for _, m := range body.Messages {
+		for _, b := range m.Content {
+			if b.CacheControl != nil {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func toolLoopMessages(tail ...schema.ChatMessage) []schema.ChatMessage {
+	msgs := []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "harness prompt"},
+		{Role: schema.RoleSystem, Content: "repo instructions"},
+		{Role: schema.RoleUser, Content: "fix it"},
+		{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{{ID: "c1", Name: "read", Args: json.RawMessage(`{"p":"a"}`)}}},
+		{Role: schema.RoleTool, ToolCallID: "c1", Content: "file body"},
+	}
+	return append(msgs, tail...)
+}
+
+// Only the leading system run becomes the system field. A later system
+// message (nudge, hint, finalize directive) stays where it was, wrapped as
+// a system reminder, so it neither rewrites the cached system prefix
+// mid-turn nor loses its position.
+func TestAnthropicKeepsMidConversationSystemInPlace(t *testing.T) {
+	body := decodeAnthropicBody(t, schema.ChatRequest{
+		Model:    "claude-test",
+		Messages: toolLoopMessages(schema.ChatMessage{Role: schema.RoleSystem, Content: "Call a tool or give a final answer."}),
+	})
+
+	if len(body.System) != 2 || body.System[0].Text != "harness prompt" || body.System[1].Text != "repo instructions" {
+		t.Fatalf("system = %+v, want exactly the two leading system messages", body.System)
+	}
+	if body.System[1].CacheControl == nil {
+		t.Error("the last leading system block must keep its breakpoint")
+	}
+	last := body.Messages[len(body.Messages)-1]
+	if last.Role != "user" || len(last.Content) != 2 {
+		t.Fatalf("last message = %+v, want one user message holding the tool result and the reminder", last)
+	}
+	want := "<system-reminder>\nCall a tool or give a final answer.\n</system-reminder>"
+	if last.Content[1].Type != "text" || last.Content[1].Text != want {
+		t.Fatalf("reminder block = %+v, want text %q", last.Content[1], want)
+	}
+}
+
+// The rolling breakpoint goes on the last stable block, never on the
+// volatile working-state tail, which changes every request.
+func TestAnthropicRollingBreakpointSkipsVolatileTail(t *testing.T) {
+	body := decodeAnthropicBody(t, schema.ChatRequest{
+		Model: "claude-test",
+		Tools: []schema.ToolDefinition{{Name: "read", Parameters: json.RawMessage(`{"type":"object"}`)}},
+		Messages: toolLoopMessages(schema.ChatMessage{
+			Role: schema.RoleUser, Content: "Current working state:\n\n## Current Todos\n\n- [~] read", Volatile: true,
+		}),
+	})
+
+	last := body.Messages[len(body.Messages)-1]
+	if len(last.Content) != 2 || last.Content[0].Type != "tool_result" {
+		t.Fatalf("last message = %+v, want [tool_result, working-state text]", last)
+	}
+	if last.Content[0].CacheControl == nil {
+		t.Error("tool_result (last stable block) must carry the rolling breakpoint")
+	}
+	if last.Content[1].CacheControl != nil {
+		t.Error("the volatile tail must not carry a breakpoint")
+	}
+	if got := countBreakpoints(body); got != 3 {
+		t.Errorf("breakpoints = %d, want 3 (tools, system, rolling); the API allows at most 4", got)
+	}
+}
+
+func TestAnthropicRollingBreakpointOnLastBlockWithoutTail(t *testing.T) {
+	body := decodeAnthropicBody(t, schema.ChatRequest{Model: "claude-test", Messages: toolLoopMessages()})
+	last := body.Messages[len(body.Messages)-1]
+	if last.Content[len(last.Content)-1].CacheControl == nil {
+		t.Fatalf("last block must carry the rolling breakpoint: %+v", last)
+	}
+}
+
+// Review focus 3: odd transcripts must neither panic nor mark a volatile block.
+func TestAnthropicBreakpointEdgeCases(t *testing.T) {
+	// An empty assistant message before any user message contributes no
+	// block; the stable-block tracker must not index out of range.
+	body := decodeAnthropicBody(t, schema.ChatRequest{Model: "claude-test", Messages: []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleAssistant},
+		{Role: schema.RoleUser, Content: "hi"},
+	}})
+	if body.Messages[0].Content[0].CacheControl == nil {
+		t.Errorf("the user block is the last stable block: %+v", body.Messages)
+	}
+
+	// Only a volatile message after the system prompt: no message breakpoint.
+	body = decodeAnthropicBody(t, schema.ChatRequest{Model: "claude-test", Messages: []schema.ChatMessage{
+		{Role: schema.RoleSystem, Content: "sys"},
+		{Role: schema.RoleUser, Content: "state", Volatile: true},
+	}})
+	if body.Messages[0].Content[0].CacheControl != nil {
+		t.Error("a volatile-only transcript must not get a message breakpoint")
+	}
+}

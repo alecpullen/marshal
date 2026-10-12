@@ -44,6 +44,10 @@ type usageBody struct {
 	// and distinct from "not reported".
 	PromptCacheHitTokens  *int `json:"prompt_cache_hit_tokens,omitempty"`
 	PromptCacheMissTokens *int `json:"prompt_cache_miss_tokens,omitempty"`
+	// Moonshot (Kimi) reports prompt cache hits as a flat usage field
+	// rather than under prompt_tokens_details. Pointer for the same
+	// absent-versus-zero reason as the DeepSeek fields.
+	CachedTokens *int `json:"cached_tokens,omitempty"`
 }
 
 // tokenDetails holds the OpenAI usage detail breakdowns.

@@ -2653,3 +2653,26 @@ func TestResponsesWireCaptureQuietsKnownNoOps(t *testing.T) {
 		}
 	}
 }
+
+// Moonshot (Kimi) reports prompt cache hits as a flat usage field. The
+// OpenAI detail object and DeepSeek's field still take precedence.
+func TestTokenUsageFromReadsFlatCachedTokens(t *testing.T) {
+	cases := []struct {
+		name, raw string
+		want      int
+	}{
+		{"kimi flat", `{"prompt_tokens":1000,"completion_tokens":10,"total_tokens":1010,"cached_tokens":768}`, 768},
+		{"openai details win", `{"prompt_tokens":1000,"prompt_tokens_details":{"cached_tokens":512},"cached_tokens":768}`, 512},
+		{"deepseek wins over flat", `{"prompt_tokens":1000,"prompt_cache_hit_tokens":256,"cached_tokens":768}`, 256},
+		{"absent", `{"prompt_tokens":1000}`, 0},
+	}
+	for _, tc := range cases {
+		var u usageBody
+		if err := json.Unmarshal([]byte(tc.raw), &u); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := tokenUsageFrom(&u).CacheReadTokens; got != tc.want {
+			t.Errorf("%s: CacheReadTokens = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}

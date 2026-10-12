@@ -498,6 +498,10 @@ func tokenUsageFrom(u *usageBody) *schema.TokenUsage {
 	if out.CacheReadTokens == 0 && u.PromptCacheHitTokens != nil {
 		out.CacheReadTokens = *u.PromptCacheHitTokens
 	}
+	// Moonshot (Kimi) flat field, used only when neither of the above reported.
+	if out.CacheReadTokens == 0 && u.CachedTokens != nil {
+		out.CacheReadTokens = *u.CachedTokens
+	}
 	if u.PromptCacheMissTokens != nil {
 		out.CacheWriteTokens = *u.PromptCacheMissTokens
 	}

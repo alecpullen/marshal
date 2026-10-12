@@ -405,11 +405,15 @@ func TestActorColorIsStableAndOrchestratorHasNone(t *testing.T) {
 	}
 }
 
-func TestLiveSubagentCardShowsChildHeadlineAndTool(t *testing.T) {
+// The card's one activity line is the child's LATEST move: the tool it is
+// running now, else the headline it last narrated. A stale headline must not
+// displace the thing actually happening.
+func TestLiveSubagentCardShowsLatestActivity(t *testing.T) {
 	child := newChildState(t)
 	child.AddNarration(child.BeginStep(session.Actor{}), "Tracing the config loader. It has three layers.")
-	child.SetActiveToolCall(session.ActiveToolCall{Name: "file.read", ToolCallID: "c", StartedAt: time.Now()})
 	v := session.SubagentView{ID: 1, Label: "explore repo", Status: session.SubagentRunning, StartedAt: time.Now(), Child: child}
+
+	// Narrating, nothing running: the headline is the latest activity.
 	out := stripANSI(renderSubagentCard(v, false, "⠋", regionView{}, 80))
 	if !strings.Contains(out, "Tracing the config loader.") {
 		t.Fatalf("card should show the child's headline:\n%s", out)
@@ -417,8 +421,15 @@ func TestLiveSubagentCardShowsChildHeadlineAndTool(t *testing.T) {
 	if strings.Contains(out, "three layers") {
 		t.Errorf("only the first sentence is the headline:\n%s", out)
 	}
+
+	// A tool starts: it displaces the headline, which is now stale.
+	child.SetActiveToolCall(session.ActiveToolCall{Name: "file.read", ToolCallID: "c", StartedAt: time.Now()})
+	out = stripANSI(renderSubagentCard(v, false, "⠋", regionView{}, 80))
 	if !strings.Contains(out, "Read file") {
 		t.Errorf("card should name the running tool:\n%s", out)
+	}
+	if strings.Contains(out, "Tracing the config loader.") {
+		t.Errorf("the running tool is the latest activity; the headline must not also show:\n%s", out)
 	}
 
 	// Before the child narrates, the card keeps its raw activity tail.

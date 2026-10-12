@@ -27,7 +27,7 @@ type browseItem struct {
 func navigable(k viewmodel.Kind) bool {
 	switch k {
 	case viewmodel.KindStep, viewmodel.KindTool, viewmodel.KindSubagent, viewmodel.KindMessage,
-		viewmodel.KindFinal, viewmodel.KindRunEvent, viewmodel.KindJobExit, viewmodel.KindPassthrough, viewmodel.KindReceipt:
+		viewmodel.KindFinal, viewmodel.KindRunEvent, viewmodel.KindMarker, viewmodel.KindPassthrough, viewmodel.KindReceipt:
 		return true
 	}
 	return false

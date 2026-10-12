@@ -14,6 +14,9 @@ type clickTarget struct {
 	// node is what the click toggles (or, for a live region, scrolls).
 	node     viewmodel.NodeID
 	subagent *session.SubagentView
+	// jumpTo scrolls the viewport to another node rather than toggling it:
+	// a completion marker jumps to the card whose work it reports on.
+	jumpTo viewmodel.NodeID
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
 	isLiveRegion bool
@@ -182,12 +185,32 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 			}
 		}
 	}
-	if target.subagent != nil {
+	switch {
+	case target.jumpTo.Key != "":
+		// A marker is a pointer, not a row with state of its own: it scrolls
+		// to the card it reports on. Nothing to redraw.
+		if r, ok := m.regionFor(target.jumpTo); ok {
+			m.viewportFollow = false
+			m.viewport.SetYOffset(r.startLine)
+		}
+	case target.subagent != nil:
 		m.drillIntoSubagent(*target.subagent)
-	} else {
+	default:
 		m.toggleExpanded(target.node)
+		m.invalidateTranscript()
+		m.refreshViewport()
 	}
-	m.invalidateTranscript()
-	m.refreshViewport()
 	return nil, true
+}
+
+// regionFor returns the recorded content-line range of a node, if the
+// renderer recorded one. A card scrolled out of the window has no region,
+// and the jump is then a no-op rather than a scroll to nowhere.
+func (m *Model) regionFor(id viewmodel.NodeID) (nodeRegion, bool) {
+	for _, r := range m.nodeRegions {
+		if r.target.node == id {
+			return r, true
+		}
+	}
+	return nodeRegion{}, false
 }

@@ -597,59 +597,13 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 			return ""
 		}
 		return renderRunEvent(*item.RunEvent, detailExpanded, width)
-	case session.KindJobExit:
-		if item.JobExit == nil {
-			return ""
-		}
-		return renderJobExit(*item.JobExit, detailExpanded, width)
 	}
 	return ""
 }
 
-// renderJobExit renders a finished background job as one settled transcript
-// row, expanding to its buffered output. It is history, so it is flat: the
-// tint marks activity, not severity.
-func renderJobExit(e session.JobExit, expanded bool, width int) string {
-	g, style := glyph.Job, statusOkStyle()
-	gutterColor := theme.Current().FGMuted
-	if e.ExitCode != 0 {
-		g, style = glyph.Error, errorStyle()
-		gutterColor = theme.Current().StatusError
-	}
-	parts := []string{e.ID, e.Command, fmt.Sprintf("exit %d", e.ExitCode)}
-	if e.Duration > 0 {
-		parts = append(parts, formatElapsed(e.Duration))
-	}
-	head := strings.Join(parts, dimSeparator)
-	if e.Output != "" {
-		if expanded {
-			head += " " + glyph.DisclosureExpanded
-		} else {
-			head += " " + glyph.DisclosureCollapsed
-		}
-	}
-	cw := contentWidth(width)
-	var b strings.Builder
-	for i, hl := range strings.Split(ansi.Wrap(head, cw, WrapBreakpoints), "\n") {
-		if i == 0 {
-			b.WriteString(gutterPrefix(g, gutterColor))
-		} else {
-			b.WriteString(continuation())
-		}
-		b.WriteString(style.Render(hl))
-		b.WriteString("\n")
-	}
-	if expanded && e.Output != "" {
-		for _, line := range strings.Split(strings.TrimRight(e.Output, "\n"), "\n") {
-			for _, wl := range strings.Split(ansi.Wrap(line, cw, WrapBreakpoints), "\n") {
-				b.WriteString(continuation())
-				b.WriteString(mutedStyle().Render(wl))
-				b.WriteString("\n")
-			}
-		}
-	}
-	return b.String()
-}
+// A finished job is not a row of its own any more: its card is the shell.run
+// that started it, settled in place (steps.go renderJobCard), and the moment
+// it finished is a completion marker. renderJobExit lived here.
 
 // subagentTailBudget is how many logical tail lines to pull from a running
 // child. liveregion windows them to the visible rows, so this only needs to
@@ -713,15 +667,16 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 			Title:      v.Label,
 			Right:      dur,
 			Meta:       strings.Join(meta, dimSeparator),
-			Body:       subagentBodyLines(v.Child, subagentTailBudget),
-			MaxRows:    liveregion.SubagentRows,
-			Offset:     rv.offset,
-			MinRows:    rv.minRows,
-			Live:       true,
-			Width:      width,
-		}
-		if v.Child != nil {
-			spec.Footer = "ctrl+f to drill in"
+			// One dim line: the child's latest activity. The card is a
+			// status row, not a window onto the child's work — ctrl+f (in
+			// browse help) opens that. It used to pad to a high-water mark
+			// and carry a footer, which made a running child the tallest
+			// thing on screen.
+			Body:    lastN(subagentBodyLines(v.Child, subagentTailBudget), 1),
+			MaxRows: liveSubagentRows,
+			Offset:  rv.offset,
+			Live:    true,
+			Width:   width,
 		}
 		out = liveregion.Render(spec, th)
 	} else {
@@ -734,9 +689,15 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 
 	if expanded && v.Summary != "" {
 		cw := contentWidth(width)
+		// The summary is markdown. Rendering it as prose keeps its structure
+		// without the heading markers a raw wrap would leak.
+		body := v.Summary
+		if md, ok := renderMarkdown(v.Summary, cw); ok {
+			body = strings.TrimRight(md, "\n")
+		}
 		var b strings.Builder
 		b.WriteString(out)
-		for _, line := range strings.Split(ansi.Wrap(v.Summary, cw, WrapBreakpoints), "\n") {
+		for _, line := range strings.Split(body, "\n") {
 			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(line))
 			b.WriteString("\n")
@@ -1052,8 +1013,8 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 	}
 	if event.Error != "" {
 		head += dimSeparator + event.Error
-	} else if event.ResultSummary != "" && !summaryDupesCommand {
-		head += dimSeparator + event.ResultSummary
+	} else if s := viewmodel.DisplaySummary(event); s != "" && !summaryDupesCommand {
+		head += dimSeparator + s
 	}
 	if event.ResultContent != "" || event.Error != "" {
 		if expanded {

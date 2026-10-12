@@ -229,6 +229,8 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		switch {
 		case ch.Kind == viewmodel.KindTool && ch.Active != nil:
 			row(ch.ID, renderActiveToolRow(*ch.Active, c, c.liveToolExpanded(ch.ID), width), subRegion{})
+		case ch.Kind == viewmodel.KindTool && ch.Job != nil:
+			row(ch.ID, renderJobCard(ch, c.toolSpinner, c.now, c.level(ch.ID, sd) == densityFull, width), subRegion{live: ch.Job.Running})
 		case ch.Kind == viewmodel.KindTool && len(ch.Tools) > 1:
 			rd := c.level(ch.ID, sd)
 			if rd == densityOutline {
@@ -249,9 +251,6 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 			if cd == densityOutline {
 				card = headRow(card)
 			}
-			if cnt := strings.Count(card, "\n"); cnt > rv.minRows && cd != densityOutline {
-				c.noteRows(ch.ID, cnt)
-			}
 			sub := subRegion{live: v.Status == session.SubagentRunning && cd != densityOutline}
 			if v.Child != nil {
 				sub.subagent = &v
@@ -260,6 +259,80 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		}
 	}
 	return b.String(), subs
+}
+
+// renderJobCard renders a background job's card: the shell.run row that
+// started it, settled in place by the job's exit. One row, with the outcome
+// right-aligned so a long command can never push it off the line.
+func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded bool, width int) string {
+	j := row.Job
+	g, style := glyph.Job, statusOkStyle()
+	gutterColor := theme.Current().FGMuted
+	var tail string
+	if j.Running {
+		g = spinner
+		if g == "" {
+			g = glyph.Running
+		}
+		gutterColor = theme.Current().AccentPrimary
+		tail = "running"
+		if started := row.Tools[0].Timestamp; !started.IsZero() {
+			tail += dimSeparator + formatElapsed(max(now.Sub(started), 0))
+		}
+	} else {
+		if j.ExitCode != 0 {
+			g, style = glyph.Error, errorStyle()
+			gutterColor = theme.Current().StatusError
+		}
+		tail = fmt.Sprintf("exit %d", j.ExitCode)
+		if j.Duration > 0 {
+			tail += dimSeparator + formatElapsed(j.Duration)
+		}
+	}
+	head := j.ID
+	if cmd := firstLine(j.Command); cmd != "" {
+		head += dimSeparator + cmd
+	}
+	if j.Output != "" {
+		if expanded {
+			head += " " + glyph.DisclosureExpanded
+		} else {
+			head += " " + glyph.DisclosureCollapsed
+		}
+	}
+	var b strings.Builder
+	b.WriteString(indentLines(nowBarJustify(gutterPrefix(g, gutterColor)+style.Render(head), tail, width-stepRowIndent), stepRowIndent))
+	b.WriteString("\n")
+	if expanded && j.Output != "" {
+		cw := contentWidth(width)
+		for _, line := range strings.Split(strings.TrimRight(j.Output, "\n"), "\n") {
+			for _, wl := range strings.Split(ansi.Wrap(line, cw, WrapBreakpoints), "\n") {
+				b.WriteString(continuation())
+				b.WriteString(mutedStyle().Render(wl))
+				b.WriteString("\n")
+			}
+		}
+	}
+	return b.String()
+}
+
+// renderMarker is a completion marker: one dim row at the moment the work it
+// reports on finished. The card itself stays where it was dispatched;
+// selecting the marker jumps to it.
+func renderMarker(m *viewmodel.MarkerInfo, width int) string {
+	g, color := glyph.OK, theme.Current().FGMuted
+	if m.Failed {
+		g, color = glyph.Error, theme.Current().StatusError
+	}
+	word := "done"
+	if m.Failed && len(m.Labels) == 1 {
+		word = "failed"
+	}
+	text := strings.Join(m.Labels, " ") + " " + word
+	if m.Dur > 0 {
+		text += dimSeparator + formatElapsed(m.Dur)
+	}
+	return gutterPrefix(g, color) + mutedStyle().Render(ansi.Truncate(text, max(width-gutterWidth, 1), "…")) + "\n"
 }
 
 // renderTodoDivider is the dim rule a beat opens with when work moves to a
@@ -663,11 +736,28 @@ func subagentBodyLines(child *session.State, n int) []string {
 }
 
 // subagentSummaryHeadline is the first sentence of a settled child's final
-// summary.
+// summary. Summaries are markdown, so heading marks come off before the
+// sentence becomes a row: "## Task 2 complete" reads as "Task 2 complete".
 func subagentSummaryHeadline(summary string) string {
 	head, _ := firstSentence(strings.TrimSpace(summary))
-	return stripEmphasis(head)
+	return stripMarkdownHeading(stripEmphasis(head))
 }
+
+// stripMarkdownHeading drops leading heading markers and their padding.
+func stripMarkdownHeading(s string) string { return strings.TrimLeft(s, "# ") }
+
+// lastN returns the last n elements, or the whole slice when it is shorter.
+func lastN(lines []string, n int) []string {
+	if n <= 0 || len(lines) <= n {
+		return lines
+	}
+	return lines[len(lines)-n:]
+}
+
+// liveSubagentRows caps a running card: header, meta and one dim activity
+// line. The card used to pad to a high-water mark and carry a drill-in
+// footer, which made a running child the tallest thing on screen.
+const liveSubagentRows = 3
 
 // liveStepSummary describes the beat now running — its narrated headline, or
 // the narration it continues — and the category glyph of its running tool,

@@ -10,13 +10,20 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
 
-// THE regression test for the reported bug: a running card must not shrink
+// THE regression test for the reported bug: a running card must not resize
 // when the child's activity tail flips from streamed reasoning to audit
 // summaries.
-func TestSubagentCardDoesNotShrinkWhenTailSourceFlips(t *testing.T) {
+//
+// The card now shows exactly one activity line whatever the source, so its
+// height no longer tracks how much the child has said. (A child with nothing
+// to report yet is one row shorter; that is the design's "no blank padding"
+// rule, not a shrink.) This guards against anyone reintroducing a multi-line
+// body without also restoring the padding that made it stable.
+func TestSubagentCardDoesNotResizeWhenTailSourceFlips(t *testing.T) {
 	m := newTestModel(t)
 	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	// Phase 1: the child streams several lines of reasoning.
@@ -27,9 +34,12 @@ func TestSubagentCardDoesNotShrinkWhenTailSourceFlips(t *testing.T) {
 	m.refreshViewport()
 	tall := strings.Count(m.viewport.GetContent(), "\n")
 
-	// Phase 2: a tool starts, reasoning is cleared, and the tail falls back
-	// to a much shorter audit-summary list.
+	// Phase 2: reasoning is cleared and the tail falls back to audit
+	// summaries, a source with a different line count. The card may gain a
+	// row (its metrics appear), but it must not lose one: a transcript that
+	// jumps up under the reader is the bug this guards.
 	child.BeginStreaming()
+	child.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(200, 0), ToolName: "file.read", ResultSummary: "read a.go"})
 	m.invalidateTranscript()
 	m.refreshViewport()
 	if got := strings.Count(m.viewport.GetContent(), "\n"); got < tall {
@@ -49,18 +59,17 @@ func TestRegionRowsArePruned(t *testing.T) {
 
 func TestRegionScrollRepaintsViewport(t *testing.T) {
 	m := newTestModel(t)
-	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	child.BeginStreaming()
+	// The in-progress thinking box: a live region with room to scroll.
+	// A running subagent card no longer scrolls (one body line), so it can
+	// no longer carry this test.
+	m.state.BeginStreaming()
 	for i := 0; i < 40; i++ {
-		child.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
+		m.state.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
 	}
-	v := m.state.RegisterSubagent("reviewer", child)
-
 	m.refreshViewport()
 	before := m.viewport.GetContent()
 
-	key := viewmodel.NodeID{Kind: viewmodel.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
-	m.regionOffset = map[viewmodel.NodeID]int{key: 5}
+	m.regionOffset = map[viewmodel.NodeID]int{viewmodel.LiveThinkingID: 5}
 	m.refreshViewport()
 	after := m.viewport.GetContent()
 
@@ -140,15 +149,14 @@ func TestRegionOffsetNeverGoesNegative(t *testing.T) {
 // setting the offset directly.
 func TestWheelOverLiveRegionScrollsRegionAndRepaints(t *testing.T) {
 	m := newTestModel(t)
-	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	child.BeginStreaming()
+	// The in-progress thinking box: a live region with room to scroll.
+	m.state.BeginStreaming()
 	for i := 0; i < 40; i++ {
-		child.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
+		m.state.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
 	}
-	v := m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
 
-	key := viewmodel.NodeID{Kind: viewmodel.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
+	key := viewmodel.LiveThinkingID
 	var region nodeRegion
 	found := false
 	for _, r := range m.nodeRegions {
@@ -157,7 +165,7 @@ func TestWheelOverLiveRegionScrollsRegionAndRepaints(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("expected a live-region click region for the running subagent")
+		t.Fatal("expected a live-region click region for the in-progress thinking box")
 	}
 
 	// Aim the wheel at the middle of the region's content lines.

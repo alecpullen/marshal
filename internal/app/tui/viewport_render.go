@@ -266,21 +266,15 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 			m.noteRegionRows(viewmodel.LiveThinkingID, cnt)
 		}
 		return box, nil
+	case n.Kind == viewmodel.KindMarker && n.Marker != nil:
+		return renderMarker(n.Marker, width), nil
 	case n.Kind == viewmodel.KindTool && n.Active != nil:
 		return renderActiveToolCall(*n.Active, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
 	case n.Item != nil:
 		rv := m.regionView(n.ID)
 		d := m.densityOf(n.ID, m.density)
 		m.recordDensity(n.ID, d)
-		out := renderTranscriptItem(*n.Item, d == densityFull, m.spinnerFrame, rv, m.callers[n.ID], width)
-		// Record the tallest this region has been, so a later shrink in the
-		// child's activity tail cannot shrink the card.
-		if n.Kind == viewmodel.KindSubagent {
-			if cnt := strings.Count(out, "\n"); cnt > rv.minRows {
-				m.noteRegionRows(n.ID, cnt)
-			}
-		}
-		return out, nil
+		return renderTranscriptItem(*n.Item, d == densityFull, m.spinnerFrame, rv, m.callers[n.ID], width), nil
 	}
 	return "", nil
 }
@@ -296,6 +290,8 @@ func (m *Model) blockTarget(n *viewmodel.Node) *clickTarget {
 		return &clickTarget{node: viewmodel.LiveThinkingID, isLiveRegion: true}
 	case n.Kind == viewmodel.KindTool:
 		return &clickTarget{node: n.ID}
+	case n.Kind == viewmodel.KindMarker && n.Marker != nil && len(n.Marker.Refs) > 0:
+		return &clickTarget{node: n.ID, jumpTo: n.Marker.Refs[0]}
 	case n.Kind == viewmodel.KindThinking:
 		return &clickTarget{node: n.ID}
 	case n.Kind == viewmodel.KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Child != nil:

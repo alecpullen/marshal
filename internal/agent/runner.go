@@ -923,6 +923,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		budget := historyBudget(route.Window, r.HistoryBudgetTokens)
 		messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
 	}
+	markCacheAnchor(messages)
 	messages = r.appendSkillHint(messages)
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
@@ -982,6 +983,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				budget := historyBudget(route.Window, r.HistoryBudgetTokens)
 				messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
 			}
+			markCacheAnchor(messages)
 			messages = r.appendSkillHint(messages)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}

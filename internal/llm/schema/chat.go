@@ -27,6 +27,13 @@ type ChatMessage struct {
 	// (Anthropic cache_control) must place them before it. Wire encoders
 	// otherwise send it like any other message.
 	Volatile bool
+	// CacheAnchor marks the last message of the cross-turn stable region:
+	// system prompt, stable context pack, skill bodies and replayed
+	// history. Everything up to and including it opens the next turn's
+	// first request unchanged, so providers with explicit cache
+	// breakpoints (Anthropic) place one here. The runner sets exactly one
+	// per freshly built wire.
+	CacheAnchor bool
 }
 
 type ToolCall struct {

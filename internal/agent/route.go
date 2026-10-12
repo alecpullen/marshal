@@ -403,6 +403,21 @@ func (r *Runner) mergeSemantic(ctx context.Context, goal string, projectID int64
 	})
 }
 
+// markCacheAnchor flags the last message as the end of the cross-turn
+// stable region and clears any earlier flag, so a wire carries exactly one
+// anchor. Call it when a wire is built from scratch, after the replayed
+// history and skill bodies and before the skill hint and the goal: those
+// change every turn and must sit after the anchor. See
+// docs/prompt-caching/followups-design.md (F1).
+func markCacheAnchor(messages []schema.ChatMessage) {
+	for i := range messages {
+		messages[i].CacheAnchor = false
+	}
+	if n := len(messages); n > 0 {
+		messages[n-1].CacheAnchor = true
+	}
+}
+
 // setContextPackMessage ensures messages contains exactly one up-to-date
 // context-pack message, replacing the one tracked at r.contextPackMsgIndex.
 // It updates r.contextPackMsgIndex to the message's final index. Callers that
@@ -410,15 +425,22 @@ func (r *Runner) mergeSemantic(ctx context.Context, goal string, projectID int64
 func (r *Runner) setContextPackMessage(messages []schema.ChatMessage, pack contextpack.Pack) []schema.ChatMessage {
 	msg, ok := BuildContextPackMessage(pack)
 	if !ok {
-		// Empty pack: remove the tracked message if it still exists.
-		if r.contextPackMsgIndex >= 0 && r.contextPackMsgIndex < len(messages) {
-			messages = append(messages[:r.contextPackMsgIndex], messages[r.contextPackMsgIndex+1:]...)
+		// Empty pack: remove the tracked message if it still exists. An
+		// anchor it carried moves to the message before it, so the wire
+		// keeps exactly one.
+		if i := r.contextPackMsgIndex; i >= 0 && i < len(messages) {
+			anchored := messages[i].CacheAnchor
+			messages = append(messages[:i], messages[i+1:]...)
+			if anchored && i > 0 {
+				messages[i-1].CacheAnchor = true
+			}
 		}
 		r.contextPackMsgIndex = -1
 		return messages
 	}
 
 	if r.contextPackMsgIndex >= 0 && r.contextPackMsgIndex < len(messages) {
+		msg.CacheAnchor = messages[r.contextPackMsgIndex].CacheAnchor
 		messages[r.contextPackMsgIndex] = msg
 		return messages
 	}

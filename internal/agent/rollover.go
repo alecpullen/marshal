@@ -149,6 +149,7 @@ func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessa
 	fresh := []schema.ChatMessage{r.systemPromptMessage()}
 	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())
 	fresh = r.appendSkillBodies(fresh)
+	markCacheAnchor(fresh)
 	fresh = r.appendSkillHint(fresh)
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},

@@ -461,7 +461,6 @@ export async function getLastRequest(sessionId: string): Promise<RequestJSON | '
 export interface StepDiff {
   stepNode: string
   turnNode: string
-  taskNode?: string
   headline: string
   at?: number
   files: string[]

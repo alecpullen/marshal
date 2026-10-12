@@ -179,7 +179,7 @@
           {/each}
           {#if detail === 'unsupported' && wireCalls.some((c) => c.truncated)}<p class="text-[11px] text-muted">Output is capped on this agent.</p>{/if}
         {:else}
-          <pre class="max-h-96 overflow-auto rounded bg-bg p-2 font-mono text-xs whitespace-pre-wrap">{node.message?.content ?? node.task?.content ?? node.subagent?.summary ?? node.jobExit?.output ?? node.runEvent?.body ?? nodeLabel(node)}</pre>
+          <pre class="max-h-96 overflow-auto rounded bg-bg p-2 font-mono text-xs whitespace-pre-wrap">{node.message?.content ?? node.subagent?.summary ?? node.jobExit?.output ?? node.runEvent?.body ?? nodeLabel(node)}</pre>
         {/if}
       {:else if active === 'args'}
         {#each shownCalls as c, i (i)}

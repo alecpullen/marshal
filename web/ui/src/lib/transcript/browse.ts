@@ -10,7 +10,7 @@ export interface BrowseState {
 export interface BrowseCtx {
   /** Every row the transcript shows, in order. */
   ids: string[]
-  /** Indexes into ids where J/K stop: a task header, or a turn's first row. */
+  /** Indexes into ids where J/K stop: a todo divider, or a turn's first row. */
   stops: number[]
   /** Whether the last row is live, so G can resume following it. */
   lastLive: boolean
@@ -43,12 +43,11 @@ export function flattenVisible(ctx: TranscriptCtx, roots: string[]): BrowseCtx {
     const density = effective(id, ctx.overrides, parentOf, ctx.global)
     if (!visible(n.kind, density)) return
     if (!CONTAINERS.has(n.kind)) {
-      if (n.kind === 'task' || firstOfTurn.v) stops.push(ids.length)
+      if (n.step?.todo || firstOfTurn.v) stops.push(ids.length)
       firstOfTurn.v = false
       ids.push(id)
     }
-    const folded =
-      !!n.task && ctx.foldTasks && n.task.status === 'completed' && !n.task.unresolvedFailure && !n.live && !ctx.unfolded.has(id)
+    const folded = !!n.step?.folded && ctx.foldTasks && !n.live && !ctx.unfolded.has(id)
     if (folded) return
     for (const c of n.children ?? []) walk(c, firstOfTurn)
   }
@@ -66,7 +65,6 @@ export function nodeText(n: WireNode): string {
     return [n.tool.running?.target, n.tool.running?.output].filter(Boolean).join('\n')
   }
   if (n.message) return n.message.content
-  if (n.task) return n.task.content
   if (n.thinking) return n.thinking.text
   if (n.subagent) return [n.subagent.label, n.subagent.summary].filter(Boolean).join('\n')
   if (n.jobExit) return [n.jobExit.command, n.jobExit.output].filter(Boolean).join('\n')

@@ -4,7 +4,8 @@
   import FileDiffView from './FileDiff.svelte'
   import { getStepDiffs, errMessage, type StepDiff } from '../api'
   import { hunkKey, parseUnified, rewrittenBy, type FileDiff } from './unified'
-  import type { StackState } from '../stack'
+  import { orderedNodes } from '../dock/nodes'
+  import type { StackState, WireTodoLabel } from '../stack'
 
   let {
     agentId,
@@ -58,18 +59,40 @@
   const rewritten = $derived(rewrittenBy(steps.map((s) => ({ stepNode: s.stepNode, files: s.parsed }))))
   const headlineOf = (id: string) => steps.find((s) => s.stepNode === id)?.headline ?? id
 
-  // Tasks in order of first appearance, then steps within each.
+  /*
+    The todo divider in force at each beat. The wire labels only the beat
+    where work moves on, so a step belongs to the newest label at or before
+    it in display order. Each transition gets its own group key, so a todo
+    the agent returns to later does not merge back into its first group.
+  */
+  const labelAt = $derived.by(() => {
+    const out = new Map<string, { key: string; label: WireTodoLabel }>()
+    let n = 0
+    for (const root of stack.roots) {
+      // The label resets per turn on the wire, so it does here too: a turn
+      // that never labels a beat must not inherit the previous turn's todo.
+      let cur: { key: string; label: WireTodoLabel } | undefined
+      for (const node of orderedNodes({ nodes: stack.nodes, roots: [root] })) {
+        if (node.kind !== 'step' || !node.step) continue
+        if (node.step.todo) cur = { key: `todo:${n++}:${node.step.todo.id}`, label: node.step.todo }
+        if (cur) out.set(node.id, cur)
+      }
+    }
+    return out
+  })
+
+  // Steps in order of first appearance, grouped under the todo they ran for.
   const groups = $derived.by(() => {
-    const out: { taskNode: string; steps: ParsedStep[] }[] = []
+    const out: { key: string; label?: WireTodoLabel; steps: ParsedStep[] }[] = []
     for (const s of steps) {
-      const key = s.taskNode ?? ''
-      let g = out.find((x) => x.taskNode === key)
-      if (!g) out.push((g = { taskNode: key, steps: [] }))
+      const at = labelAt.get(s.stepNode)
+      const key = at?.key ?? ''
+      let g = out.find((x) => x.key === key)
+      if (!g) out.push((g = { key, label: at?.label, steps: [] }))
       g.steps.push(s)
     }
     return out
   })
-  const taskOf = (id: string) => (id ? stack.nodes.get(id)?.task : undefined)
   const stepOf = (id: string) => stack.nodes.get(id)?.step
 </script>
 
@@ -81,11 +104,10 @@
   <div class="text-sm text-muted">No step has changed files yet.</div>
 {:else}
   <div class="flex flex-col gap-6" data-testid="by-step">
-    {#each groups as g (g.taskNode)}
-      {@const t = taskOf(g.taskNode)}
+    {#each groups as g (g.key)}
       <section class="flex flex-col gap-3">
         <h2 class="text-sm font-semibold">
-          {#if t}<span class="text-muted">{t.index ?? '·'}/{t.total ?? '·'}</span> {t.content}{:else}No task{/if}
+          {#if g.label}<span class="text-muted">{g.label.index}/{g.label.total}</span> {g.label.content}{:else}<span class="text-muted">No todo label</span>{/if}
         </h2>
         {#each g.steps as s (s.stepNode)}
           {@const st = stepOf(s.stepNode)}

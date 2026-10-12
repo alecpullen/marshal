@@ -7,11 +7,29 @@ import { BEAT_ROW_CAP, type StackState, type WireNode } from '../stack'
 
 afterEach(cleanup)
 
+// A turn of two beats. The first is finished (the wire marks it folded) and
+// carries the todo label for the work it moves on to; the second is still
+// live, so it never folds.
 const nodes: WireNode[] = [
-  { id: 'turn:1', kind: 'turn', children: ['msg:1', 'task:1', 'task:2', 'final:1', 'receipt:1'] },
+  { id: 'turn:1', kind: 'turn', children: ['msg:1', 'step:1', 'step:2', 'final:1', 'receipt:1'] },
   { id: 'msg:1', kind: 'message', parent: 'turn:1', message: { role: 'user', content: 'fix the bug' } },
-  { id: 'task:1', kind: 'task', parent: 'turn:1', children: ['step:1'], task: { todoId: 't1', content: 'Find the bug', status: 'completed', index: 1, total: 2, steps: 1, tools: 3, edits: 0, workMs: 12000 } },
-  { id: 'step:1', kind: 'step', parent: 'task:1', children: ['tool:1', 'tool:2'], step: { headline: 'Reading the handler', rest: 'It looks at main.go first.\nThen the tests.', role: 'implementer', owner: 'implementer', startedAt: 1000, endedAt: 4000 } },
+  {
+    id: 'step:1',
+    kind: 'step',
+    parent: 'turn:1',
+    children: ['tool:1', 'tool:2'],
+    step: {
+      headline: 'Reading the handler',
+      rest: 'It looks at main.go first.\nThen the tests.',
+      role: 'implementer',
+      owner: 'implementer',
+      todoId: 'p',
+      todo: { id: 'p', index: 3, total: 9, content: 'AccessibleModal' },
+      folded: true,
+      startedAt: 1000,
+      endedAt: 4000,
+    },
+  },
   {
     id: 'tool:1',
     kind: 'tool',
@@ -19,8 +37,8 @@ const nodes: WireNode[] = [
     tool: { name: 'file.read', display: 'Read file', calls: [{ target: 'a.go', summary: '40 lines' }, { target: 'b.go', summary: '12 lines' }, { target: 'c.go', failed: true, error: 'not found' }] },
   },
   { id: 'tool:2', kind: 'tool', parent: 'step:1', tool: { name: 'shell.run', display: 'Run command', calls: [{ target: 'go test ./...', summary: 'ok', exitCode: 0 }] } },
-  { id: 'task:2', kind: 'task', parent: 'turn:1', children: ['step:2'], task: { todoId: 't2', content: 'Fix it', status: 'in_progress', index: 2, total: 2, steps: 1, tools: 1, edits: 1 } },
-  { id: 'step:2', kind: 'step', parent: 'task:2', children: [], step: { headline: 'Patching the handler' } },
+  { id: 'step:2', kind: 'step', parent: 'turn:1', live: true, children: ['tool:3'], step: { headline: 'Patching the handler', todoId: 'p', folded: true } },
+  { id: 'tool:3', kind: 'tool', parent: 'step:2', tool: { name: 'file.write', display: 'Write file', calls: [{ target: 'main.go', summary: 'ok' }] } },
   { id: 'final:1', kind: 'final', parent: 'turn:1', message: { role: 'assistant', content: 'All **done**.', final: true } },
   { id: 'receipt:1', kind: 'receipt', parent: 'turn:1', receipt: { durationMs: 400000, tasks: 2, steps: 2, tools: 4, files: 1, usage: '212k tok' } },
 ]
@@ -98,19 +116,25 @@ describe('Transcript', () => {
     expect(screen.getByText('Then the tests.', { exact: false })).toBeTruthy()
   })
 
-  it('folds a finished task but not the live one', () => {
-    render(Transcript, { store: stackStore(), density: 'steps', foldTasks: true })
-    expect(screen.getByText('Find the bug')).toBeTruthy()
-    expect(screen.queryByText('Reading the handler')).toBeNull()
-    expect(screen.getByText('1 step · 3 tools · 12s')).toBeTruthy()
-    expect(screen.getByText('Patching the handler')).toBeTruthy()
+  it('marks the beat that moves work to another todo with a divider', () => {
+    render(Transcript, { store: stackStore(), density: 'steps', foldTasks: false })
+    // Only the transition beat carries a label, so exactly one divider shows.
+    expect(screen.getAllByText('3/9 AccessibleModal')).toHaveLength(1)
   })
 
-  it('opens a folded task through the toggle callback', async () => {
-    const toggled: string[] = []
-    render(Transcript, { store: stackStore(), density: 'steps', foldTasks: true, onToggleFold: (id: string) => toggled.push(id) })
-    await userEvent.click(screen.getByText('Find the bug'))
-    expect(toggled).toEqual(['task:1'])
+  it('folds a finished beat to its header but not the live one', () => {
+    render(Transcript, { store: stackStore(), density: 'steps', foldTasks: true })
+    expect(screen.getByText('Reading the handler')).toBeTruthy()
+    expect(screen.queryByText('Read file')).toBeNull()
+    expect(screen.queryByText('It looks at main.go first.')).toBeNull()
+    // A live beat never folds, even when the wire marked it folded.
+    expect(screen.getByText('Write file')).toBeTruthy()
+  })
+
+  it('unfolds a folded beat when the reader opens its id', () => {
+    render(Transcript, { store: stackStore(), density: 'steps', foldTasks: true, unfolded: new Set(['step:1']) })
+    expect(screen.getByText('Read file')).toBeTruthy()
+    expect(screen.getByText('It looks at main.go first.')).toBeTruthy()
   })
 
   it('applies a per-node override down the subtree', () => {
@@ -150,7 +174,7 @@ describe('Transcript', () => {
     render(Transcript, { store: stackStore(), density: 'steps', foldTasks: false, onlyNodes: new Set(['step:1']) })
     expect(screen.getByText('Reading the handler')).toBeTruthy()
     expect(screen.getByText('Read file')).toBeTruthy()
-    expect(screen.getByText('Find the bug')).toBeTruthy()
+    expect(screen.getByText('3/9 AccessibleModal')).toBeTruthy()
     expect(screen.queryByText('Patching the handler')).toBeNull()
     expect(screen.queryByText('fix the bug')).toBeNull()
   })

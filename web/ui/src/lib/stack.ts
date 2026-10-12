@@ -19,12 +19,24 @@ export interface WireStep {
   model?: string
   provider?: string
   todoId?: string
+  /** Set on the one beat where work moves to a different todo. */
+  todo?: WireTodoLabel
+  /** The agent finished this beat and it is older than the newest few. */
+  folded?: boolean
   /** The `session.Step` IDs this beat merges, oldest first. */
   stepIds?: number[]
   startedAt?: number
   endedAt?: number
   thoughts?: WireThought[]
   liveThinking?: string
+}
+// A todo transition, shown once as a divider rather than repeated on every
+// later beat of the same todo.
+export interface WireTodoLabel {
+  id: string
+  index: number
+  total: number
+  content: string
 }
 export interface WireCall {
   callId?: string
@@ -93,22 +105,6 @@ export interface WireJobExit {
   at?: number
   truncated?: boolean
 }
-export interface WireTask {
-  todoId: string
-  content: string
-  status: string
-  index?: number
-  total?: number
-  dropped?: boolean
-  steps: number
-  workMs?: number
-  tools: number
-  edits: number
-  unresolvedFailure?: boolean
-  firstNarration?: string
-  startedAt?: number
-  completedAt?: number
-}
 export interface WireReceipt {
   durationMs: number
   tasks: number
@@ -132,7 +128,6 @@ export interface WireNode {
   subagent?: WireSubagent
   runEvent?: WireRunEvent
   jobExit?: WireJobExit
-  task?: WireTask
   receipt?: WireReceipt
 }
 

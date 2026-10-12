@@ -84,6 +84,7 @@ func TestEscEntersBrowseModeOnNewestStepAndDoesNotCancelTheTurn(t *testing.T) {
 	if m.cursor.Kind != viewmodel.KindStep {
 		t.Fatalf("cursor = %+v, want the newest step", m.cursor)
 	}
+	// Every beat of the turn is browsable; the cursor is the newest of them.
 	steps := 0
 	var newest viewmodel.NodeID
 	for _, it := range m.browseItems {
@@ -92,7 +93,7 @@ func TestEscEntersBrowseModeOnNewestStepAndDoesNotCancelTheTurn(t *testing.T) {
 			newest = it.id
 		}
 	}
-	if m.cursor != newest || steps != 1 { // the finished first task is folded
+	if m.cursor != newest || steps == 0 {
 		t.Fatalf("cursor %v, newest step %v (steps %d)", m.cursor, newest, steps)
 	}
 	if m.input.Value() != "half-typed" {
@@ -128,7 +129,7 @@ func TestBrowseMovementKeys(t *testing.T) {
 	}
 	m = pressKeys(m, "g", "J")
 	if k := m.browseItems[m.cursorIndex()].kind; !m.browseItems[m.cursorIndex()].jump {
-		t.Fatalf("J should land on a stop (task header or turn start), got kind %v", k)
+		t.Fatalf("J should land on a stop (a labelled beat or turn start), got kind %v", k)
 	}
 	idx := m.cursorIndex()
 	m = pressKeys(m, "K")
@@ -193,21 +194,23 @@ func TestEscLeavesBrowseAndFollowResumesOnlyAtBottom(t *testing.T) {
 	}
 }
 
-func TestZTogglesTaskFolding(t *testing.T) {
+func TestZTogglesBeatFolding(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 60)
 	scriptedTasks(t, &m, 3, 2, true)
 	m.refreshViewport()
-	if strings.Contains(viewText(&m), "Working on task 1 part 1") {
-		t.Fatal("tasks start folded")
+	// One tool row per beat, and every beat folded but the newest
+	// viewmodel.FoldKeep: folding hides a beat's rows, never its narration.
+	if got := strings.Count(viewText(&m), "Read file"); got != viewmodel.FoldKeep {
+		t.Fatalf("Read file rendered %d times, want %d at rest:\n%s", got, viewmodel.FoldKeep, viewText(&m))
 	}
 	m = pressKeys(m, "esc", "z")
-	if !strings.Contains(viewText(&m), "Working on task 1 part 1") {
-		t.Fatal("z unfolds every task")
+	if got := strings.Count(viewText(&m), "Read file"); got != 6 {
+		t.Fatalf("z must unfold every finished beat, saw %d tool rows:\n%s", got, viewText(&m))
 	}
 	m = pressKeys(m, "z")
-	if strings.Contains(viewText(&m), "Working on task 1 part 1") {
-		t.Fatal("z again refolds them")
+	if got := strings.Count(viewText(&m), "Read file"); got != viewmodel.FoldKeep {
+		t.Fatalf("z again refolds them, saw %d tool rows:\n%s", got, viewText(&m))
 	}
 }
 

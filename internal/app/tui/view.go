@@ -91,8 +91,11 @@ func (m *Model) viewString() string {
 	var left string
 	if m.dock.FullFrameOpen() {
 		// A FullFrame panel owns everything above the status line: the
-		// transcript, now bar, and input area are hidden.
-		left = dockView
+		// transcript, now bar, and input area are hidden. It is padded to
+		// the rows it owns, because a panel whose content is shorter than
+		// the frame (the inspector on a short node) would otherwise leave
+		// the frame short of the terminal height.
+		left = padRows(dockView, m.height-statusLineRows)
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
 		// The waiting todos stack under the transcript: the strip above it
@@ -121,6 +124,18 @@ func (m *Model) viewString() string {
 	// scrollable, so nothing the user must always see is lost.
 	left = clipLeftColumn(left, m.height-statusLineRows)
 	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
+}
+
+// padRows grows s to exactly rows lines with blank ones, so a block that
+// renders shorter than the space it owns still fills it.
+func padRows(s string, rows int) string {
+	if rows < 1 {
+		return s
+	}
+	if h := lipgloss.Height(s); h < rows {
+		s += strings.Repeat("\n", rows-h)
+	}
+	return s
 }
 
 // clipLeftColumnHook is a test seam: set, it is told how many rows

@@ -42,16 +42,6 @@ func (m *Model) nodeCopyText(n *viewmodel.Node) string {
 			}
 		}
 		return strings.Join(lines, "\n")
-	case n.Kind == viewmodel.KindTask && n.Task != nil:
-		lines := []string{taskTitle(n.Task)}
-		for _, st := range n.Children {
-			if st.Step == nil {
-				continue
-			}
-			head, _ := stepHeadline(st.Step)
-			lines = append(lines, "- "+head)
-		}
-		return strings.Join(lines, "\n")
 	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return plainText(renderReceipt(n.Receipt, 200))
 	case n.Item != nil && n.Item.Message != nil:

@@ -96,6 +96,11 @@ func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
 func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited density) (string, []subRegion) {
 	si := n.Step
 	rows := n.Children
+	// A folded beat draws at outline unless the user opened it; folding
+	// itself is decided in viewmodel, the z toggle only switches it off.
+	if si.Folded && c.foldTasks && (c.hasOverride == nil || !c.hasOverride(n.ID)) {
+		inherited = densityOutline
+	}
 	sd := c.level(n.ID, inherited)
 	var b strings.Builder
 	var subs []subRegion
@@ -123,6 +128,9 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		write(s)
 		sub.end = lines
 		subs = append(subs, sub)
+	}
+	if si.Todo != nil {
+		write(renderTodoDivider(si.Todo, width))
 	}
 
 	head, rest := stepHeadline(si)
@@ -252,6 +260,16 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		}
 	}
 	return b.String(), subs
+}
+
+// renderTodoDivider is the dim rule a beat opens with when work moves to a
+// different todo: "── 3/9 AccessibleModal initialFocus ──────".
+func renderTodoDivider(l *viewmodel.TodoLabel, width int) string {
+	text := fmt.Sprintf(" %d/%d %s ", l.Index, l.Total, oneLine(l.Content))
+	room := max(width-gutterWidth-4, 8)
+	text = ansi.Truncate(text, room, "…")
+	fill := max(width-gutterWidth-2-ansi.StringWidth(text), 2)
+	return strings.Repeat(" ", gutterWidth) + mutedStyle().Render("──"+text+strings.Repeat("─", fill)) + "\n"
 }
 
 // headRow keeps only the first line of a rendered block, newline included.

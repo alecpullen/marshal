@@ -26,7 +26,7 @@ type browseItem struct {
 // navigable reports whether browse mode can put the cursor on a node.
 func navigable(k viewmodel.Kind) bool {
 	switch k {
-	case viewmodel.KindTask, viewmodel.KindStep, viewmodel.KindTool, viewmodel.KindSubagent, viewmodel.KindMessage,
+	case viewmodel.KindStep, viewmodel.KindTool, viewmodel.KindSubagent, viewmodel.KindMessage,
 		viewmodel.KindFinal, viewmodel.KindRunEvent, viewmodel.KindJobExit, viewmodel.KindPassthrough, viewmodel.KindReceipt:
 		return true
 	}
@@ -34,16 +34,13 @@ func navigable(k viewmodel.Kind) bool {
 }
 
 // collectBrowse appends the navigable nodes of one rendered top-level block.
-// A task contributes its header line only; its steps and their rows come from
+// A beat that opens a todo is a J/K stop; its steps and their rows come from
 // the sub-regions the renderer recorded.
 func collectBrowse(items []browseItem, n *viewmodel.Node, out string, subs []subRegion, base int, turnFirst bool) []browseItem {
 	lines := strings.Count(out, "\n")
 	if navigable(n.Kind) {
-		end := base + lines
-		if n.Kind == viewmodel.KindTask {
-			end = base + 1
-		}
-		items = append(items, browseItem{id: n.ID, kind: n.Kind, start: base, end: end, jump: n.Kind == viewmodel.KindTask || turnFirst})
+		labelled := n.Kind == viewmodel.KindStep && n.Step != nil && n.Step.Todo != nil
+		items = append(items, browseItem{id: n.ID, kind: n.Kind, start: base, end: base + lines, jump: turnFirst || labelled})
 	}
 	for _, sr := range subs {
 		if !navigable(sr.id.Kind) {
@@ -166,8 +163,8 @@ func (m *Model) moveCursor(to int) {
 	m.scrollToCursor()
 }
 
-// jumpCursor moves to the next or previous stop (a task header, or the first
-// node of a turn).
+// jumpCursor moves to the next or previous stop (a labelled beat, or the
+// first node of a turn).
 func (m *Model) jumpCursor(dir int) {
 	i := m.cursorIndex()
 	if i < 0 {
@@ -270,7 +267,7 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 		if m.foldTasks {
 			word = "on"
 		}
-		cmd := m.setFlash("Fold finished tasks: " + word)
+		cmd := m.setFlash("Fold finished beats: " + word)
 		m.invalidateTranscript()
 		m.refreshViewport()
 		m.scrollToCursor()
@@ -339,7 +336,7 @@ func (m *Model) paintCursor(content string) string {
 
 	// A step's own rows get the lighter overlay.
 	lighter := map[int]bool{}
-	if cur.kind == viewmodel.KindStep || cur.kind == viewmodel.KindTask {
+	if cur.kind == viewmodel.KindStep {
 		for _, it := range m.browseItems {
 			if (it.kind == viewmodel.KindTool || it.kind == viewmodel.KindSubagent) && it.start >= cur.start && it.end <= cur.end {
 				for l := it.start; l < it.end; l++ {

@@ -1,0 +1,5 @@
+[permissions]
+[[permissions.rules]]
+permission = 'shell'
+pattern = 'go test'
+action = 'allow'

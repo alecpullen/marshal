@@ -3193,6 +3193,11 @@ func TestCompletedToolCallsRemainInTranscriptLog(t *testing.T) {
 		CommandExitCode: &exitCode,
 	})
 
+	// A call logged before the first user turn joins the "pre" turn, whose
+	// beats are all finished and therefore fold to one outline row. Unfold
+	// them to read the rows this test is about.
+	m.foldTasks = false
+	m.invalidateTranscript()
 	m.refreshViewport()
 	view := stripANSI(m.View().Content)
 

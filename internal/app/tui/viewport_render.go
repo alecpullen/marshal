@@ -172,9 +172,9 @@ func (m *Model) refreshViewport() {
 			indexTree(node, tree)
 			out, subs := m.renderNode(node, rctx, width, themeSig)
 			if out != "" {
-				folded := node.Kind == viewmodel.KindTask && rctx.taskFolded(node)
-				isTight := (prevFolded && (node.Kind == viewmodel.KindTask || node.Kind == viewmodel.KindQueue)) ||
-					(prevNarrationOnly && node.Kind == viewmodel.KindStep)
+				folded := node.Kind == viewmodel.KindStep && node.Step != nil && node.Step.Folded && rctx.foldTasks && !rctx.hasOverride(node.ID)
+				isTight := (prevFolded && folded) ||
+					(prevNarrationOnly && node.Kind == viewmodel.KindStep && (node.Step == nil || node.Step.Todo == nil))
 				if isTight && len(blocks) > 0 {
 					lineCursor-- // no blank line before a tight block
 					nextTight = true
@@ -200,7 +200,7 @@ func (m *Model) refreshViewport() {
 	m.pruneRenderState(seen)
 	m.nodeRegions = regions
 	m.setBrowseItems(bitems, tree)
-	m.taskStats = countTaskStats(turns)
+	m.taskStats = countTodoStats(turns)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	var sb strings.Builder
@@ -254,13 +254,8 @@ func (m *Model) renderNode(n *viewmodel.Node, c *stepRenderCtx, width int, theme
 // drawNode is the renderer proper: it dispatches on what the node holds.
 func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string, []subRegion) {
 	switch {
-	case n.Kind == viewmodel.KindTask && n.Task != nil:
-		return renderTask(n, c, width, m.density)
 	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return renderReceipt(n.Receipt, width), nil
-	case n.Kind == viewmodel.KindQueue:
-		// The waiting todos live in the pinned band below the transcript.
-		return "", nil
 	case n.Kind == viewmodel.KindStep && n.Step != nil:
 		return renderStep(n, c, width, m.density)
 	case n.Kind == viewmodel.KindThinking && n.Step != nil:
@@ -295,7 +290,7 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 // messages are not interactive.
 func (m *Model) blockTarget(n *viewmodel.Node) *clickTarget {
 	switch {
-	case n.Kind == viewmodel.KindStep, n.Kind == viewmodel.KindTask:
+	case n.Kind == viewmodel.KindStep:
 		return &clickTarget{node: n.ID}
 	case n.Kind == viewmodel.KindThinking && n.Step != nil:
 		return &clickTarget{node: viewmodel.LiveThinkingID, isLiveRegion: true}
@@ -332,18 +327,20 @@ type taskStat struct {
 	work  time.Duration
 }
 
-// countTaskStats sums the steps and working time under each task header, per
-// todo ID (a task split into segments adds up).
-func countTaskStats(turns []*viewmodel.Node) map[string]taskStat {
+// countTodoStats sums the responses and working time bound to each todo.
+func countTodoStats(turns []*viewmodel.Node) map[string]taskStat {
 	stats := map[string]taskStat{}
 	for _, turn := range turns {
 		for _, n := range turn.Children {
-			if n.Kind == viewmodel.KindTask && n.Task != nil {
-				st := stats[n.Task.TodoID]
-				st.steps += n.Task.Steps
-				st.work += n.Task.Work
-				stats[n.Task.TodoID] = st
+			if n.Kind != viewmodel.KindStep || n.Step == nil || n.Step.TodoID == "" {
+				continue
 			}
+			st := stats[n.Step.TodoID]
+			st.steps += max(len(n.Step.StepIDs), 1)
+			if s, e := n.Step.Step.StartedAt, n.Step.Step.EndedAt; !s.IsZero() && e.After(s) {
+				st.work += e.Sub(s)
+			}
+			stats[n.Step.TodoID] = st
 		}
 	}
 	return stats
@@ -415,7 +412,7 @@ func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
 	ov, hasOv := m.override(n.ID)
 	fmt.Fprintf(h, "%s|%v|%d|%d|%d|", n.ID.Key, hasOv, ov, m.regionOffset[n.ID], m.regionRows[n.ID])
 	fmt.Fprintf(h, "d%d|", m.density)
-	if n.Kind == viewmodel.KindStep || n.Kind == viewmodel.KindTask {
+	if n.Kind == viewmodel.KindStep {
 		fmt.Fprintf(h, "%s|%s|%v|", c.routeModel, c.routeProvider, m.foldTasks)
 	}
 	if lines, ok := m.callers[n.ID]; ok {

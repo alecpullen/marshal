@@ -16,11 +16,11 @@ import (
 
 func TestClickRegionsCoverThinkingAndAuditBlocks(t *testing.T) {
 	m := newTestModel(t)
-	ts1 := time.Unix(600, 0)
-	ts2 := time.Unix(601, 0)
-	m.state.LogThinking(session.ThinkingEntry{Text: "why I did this", Duration: time.Second, StartedAt: ts1})
+	// The reasoning belongs to the newest turn: an earlier turn's beat folds
+	// to an outline row, which hides the thinking row it contains.
 	m.state.AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
-	_ = ts2
+	ts1 := time.Now()
+	m.state.LogThinking(session.ThinkingEntry{Text: "why I did this", Duration: time.Second, StartedAt: ts1})
 	m.invalidateTranscript()
 	m.refreshViewport()
 

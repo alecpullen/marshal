@@ -66,3 +66,20 @@ func TestRelationsStepUnion(t *testing.T) {
 		t.Fatalf("step FixedBy = %v, want %v", got.FixedBy, want)
 	}
 }
+
+func TestResolveBeatsMapsMergedStepToItsBeat(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Fixing."),
+			audit("file.write", 2, "w", 4),
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 1, 3, 5)},
+	})
+	idx := RelationIndex{stepNodeID(2): {FixedBy: []NodeID{stepNodeID(2)}}}
+	got := ResolveBeats(idx, nodes)
+	rel, ok := got[stepNodeID(1)]
+	if !ok || len(rel.FixedBy) != 1 || rel.FixedBy[0] != stepNodeID(1) {
+		t.Fatalf("resolved = %+v", got)
+	}
+}

@@ -52,14 +52,13 @@ type WireNode struct {
 type WireStep struct {
 	Headline     string        `json:"headline"`
 	Rest         string        `json:"rest,omitempty"`
-	Inferred     bool          `json:"inferred,omitempty"`
+	StepIDs      []int64       `json:"stepIds,omitempty"`
 	Owner        string        `json:"owner,omitempty"`
 	RoleWord     string        `json:"roleWord,omitempty"`
 	Role         string        `json:"role,omitempty"`
 	Model        string        `json:"model,omitempty"`
 	Provider     string        `json:"provider,omitempty"`
 	TodoID       string        `json:"todoId,omitempty"`
-	Heuristic    bool          `json:"heuristic,omitempty"`
 	StartedAt    int64         `json:"startedAt,omitempty"`
 	EndedAt      int64         `json:"endedAt,omitempty"`
 	Thoughts     []WireThought `json:"thoughts,omitempty"`
@@ -277,7 +276,7 @@ func wireStep(n *Node) *WireStep {
 		Headline: head, Rest: rest,
 		Owner: StepOwner(st), RoleWord: StepRoleWord(st), Role: st.Actor.Role,
 		Model: st.Actor.Model, Provider: st.Actor.Provider,
-		TodoID:    si.TodoID,
+		TodoID: si.TodoID, StepIDs: si.StepIDs,
 		StartedAt: ms(st.StartedAt), EndedAt: ms(st.EndedAt),
 		LiveThinking: si.LiveThinking,
 	}

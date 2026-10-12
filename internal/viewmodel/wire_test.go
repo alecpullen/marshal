@@ -52,8 +52,8 @@ func TestProjectLinksParentsAndChildren(t *testing.T) {
 	if st.Kind != "step" || st.Step == nil {
 		t.Fatalf("step:7 = %+v", st)
 	}
-	if st.Step.Headline != "Reading the config loader." || st.Step.Rest != "Then the tests." || st.Step.Inferred {
-		t.Fatalf("headline = %q rest = %q inferred = %v", st.Step.Headline, st.Step.Rest, st.Step.Inferred)
+	if st.Step.Headline != "Reading the config loader." || st.Step.Rest != "Then the tests." {
+		t.Fatalf("headline = %q rest = %q", st.Step.Headline, st.Step.Rest)
 	}
 	tool := byID["tool:7:c1"]
 	if tool.Kind != "tool" || tool.Tool == nil || tool.Tool.Display != "Read file" || len(tool.Tool.Calls) != 1 {
@@ -74,9 +74,30 @@ func TestProjectLeavesNarrationlessBeatHeadless(t *testing.T) {
 		Now:   at(6),
 	}))
 	st := wireByID(t, tree)["step:7"].Step
-	if st == nil || st.Headline != "" || st.Inferred {
+	if st == nil || st.Headline != "" {
 		t.Fatalf("step = %+v, want headless beat", st)
 	}
+}
+
+func TestWireStepCarriesMergedStepIDs(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Committing."),
+			audit("shell.run", 2, "g", 4),
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 1, 3, 5)},
+	})
+	tree := Project(nodes)
+	for _, n := range tree.Nodes {
+		if n.Kind == "step" {
+			if len(n.Step.StepIDs) != 2 {
+				t.Fatalf("stepIds = %v", n.Step.StepIDs)
+			}
+			return
+		}
+	}
+	t.Fatal("no step node")
 }
 
 func TestProjectRunningCallIsLive(t *testing.T) {

@@ -3,7 +3,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/url"
+	"syscall"
 	"testing"
+	"time"
 
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
@@ -13,7 +17,7 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-func toolsDisabledRunner(t *testing.T, p *agenttest.ScriptedProvider, native bool) *Runner {
+func toolsDisabledRunner(t *testing.T, p provider.Provider, native bool) *Runner {
 	t.Helper()
 	reg := registry.New()
 	registerFakeRead(t, reg, false)
@@ -143,5 +147,80 @@ func TestToolsDisabledCallInEnvelopeModeSendsNoTools(t *testing.T) {
 	}
 	if p.Requests[0].Tools != nil || p.Requests[0].ToolChoice != "" {
 		t.Fatalf("envelope mode: tools=%d choice=%q, want none", len(p.Requests[0].Tools), p.Requests[0].ToolChoice)
+	}
+}
+
+// A network outage is not a tool_choice rejection. After the reconnect wait
+// gives up, the error comes back unchanged: no second reconnect wait, no
+// latch (which would cost the session its cache benefit for nothing).
+func TestToolsDisabledCallDoesNotRetryNetworkError(t *testing.T) {
+	drop := &url.Error{Op: "Post", URL: "http://provider", Err: syscall.ECONNRESET}
+	p := &partialThenErrorProvider{err: drop}
+	r := toolsDisabledRunner(t, p, true)
+	r.ReconnectMaxWait = time.Millisecond
+	now := time.Unix(1000, 0)
+	r.Now = func() time.Time { return now }
+	r.Sleep = func(ctx context.Context, d time.Duration) error {
+		now = now.Add(d)
+		return ctx.Err()
+	}
+
+	_, err := r.chatWithRetryNoNativeTools(context.Background(), p, "test-model", toolsDisabledMsgs, nil)
+	if !isNetworkError(err) {
+		t.Fatalf("want the network error back, got %v", err)
+	}
+	// One request plus one reconnect probe; a latch-and-retry would run a
+	// second reconnect wait and double this.
+	if p.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2 (request + one reconnect probe)", p.calls)
+	}
+	if r.toolChoiceNoneRejected(p.Name()) {
+		t.Fatal("a network failure must not latch tool_choice none off")
+	}
+}
+
+// A thinking loop is a model failure, not a tool_choice rejection.
+func TestToolsDisabledCallDoesNotRetryThinkingLoop(t *testing.T) {
+	p := &agenttest.ScriptedProvider{
+		Thinking:  loopScript(4),
+		Responses: []string{"", "", "", ""},
+	}
+	r := toolsDisabledRunner(t, p, true)
+	_, err := r.chatWithRetryNoNativeTools(context.Background(), p, "test-model", toolsDisabledMsgs, nil)
+	if !errors.Is(err, errThinkingLoop) {
+		t.Fatalf("want errThinkingLoop back, got %v", err)
+	}
+	// chatOnce itself makes the abort plus one nudged retry; a fallback
+	// retry would add two more.
+	if p.Calls != 2 {
+		t.Fatalf("provider calls = %d, want 2", p.Calls)
+	}
+	if r.toolChoiceNoneRejected(p.Name()) {
+		t.Fatal("a thinking loop must not latch tool_choice none off")
+	}
+}
+
+// A config reload mutates the live runner through CopyFrom. The provider may
+// now point somewhere else, so the tool_choice latch and the roster's
+// discovered-models snapshot must not survive it.
+func TestCopyFromResetsPerRunnerCaches(t *testing.T) {
+	p := &agenttest.ScriptedProvider{}
+	r := toolsDisabledRunner(t, p, true)
+	r.agentRoster()
+	r.rejectToolChoiceNone(p.Name(), "test")
+	if r.discoveredModels == nil || !r.toolChoiceNoneRejected(p.Name()) {
+		t.Fatalf("setup: snapshot=%v latched=%v, want both set", r.discoveredModels != nil, r.toolChoiceNoneRejected(p.Name()))
+	}
+
+	r.CopyFrom(toolsDisabledRunner(t, p, true))
+
+	if r.toolChoiceNoneRejected(p.Name()) {
+		t.Fatal("CopyFrom must clear the tool_choice latch")
+	}
+	r.rosterMu.Lock()
+	snap := r.discoveredModels
+	r.rosterMu.Unlock()
+	if snap != nil {
+		t.Fatal("CopyFrom must drop the discovered-models snapshot so it is re-read")
 	}
 }

@@ -655,6 +655,15 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.HookRunner = other.HookRunner
 	r.TitleManager = other.TitleManager
 	r.Classifier = other.Classifier
+
+	// A reload may repoint the provider, so the per-runner caches keyed to
+	// the old one (tool_choice latch, roster model snapshot) start over.
+	r.toolChoiceMu.Lock()
+	r.toolChoiceNoneOff = nil
+	r.toolChoiceMu.Unlock()
+	r.rosterMu.Lock()
+	r.discoveredModels = nil
+	r.rosterMu.Unlock()
 }
 
 func (r *Runner) role() AgentRole {

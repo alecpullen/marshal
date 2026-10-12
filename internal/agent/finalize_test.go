@@ -275,7 +275,7 @@ func TestFinalizeNativeRecoversAfterToolCall(t *testing.T) {
 	r.NativeTools = true
 	// These tests exercise finalize's own correction loop, which only runs
 	// once the tool_choice "none" fallback has latched; see toolchoice_test.go.
-	r.rejectToolChoiceNone(prov.Name())
+	r.rejectToolChoiceNone(prov.Name(), "test")
 
 	task := NewTask("do the thing", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}
@@ -318,7 +318,7 @@ func TestFinalizeNativeSynthesizesWhenModelKeepsCallingTools(t *testing.T) {
 	r.NativeTools = true
 	// These tests exercise finalize's own correction loop, which only runs
 	// once the tool_choice "none" fallback has latched; see toolchoice_test.go.
-	r.rejectToolChoiceNone(prov.Name())
+	r.rejectToolChoiceNone(prov.Name(), "test")
 
 	task := NewTask("do the thing", r.Now())
 	task.Plan = []string{"Read the file"}
@@ -357,7 +357,7 @@ func TestFinalizeNativeEscalatesCorrectionMessageOnLastRetry(t *testing.T) {
 	r.NativeTools = true
 	// These tests exercise finalize's own correction loop, which only runs
 	// once the tool_choice "none" fallback has latched; see toolchoice_test.go.
-	r.rejectToolChoiceNone(prov.Name())
+	r.rejectToolChoiceNone(prov.Name(), "test")
 
 	task := NewTask("go", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "go"}}
@@ -431,7 +431,7 @@ func TestFinalizeNativePairsToolCallsWithToolResults(t *testing.T) {
 	r.NativeTools = true
 	// Pre-latch so the tool call reaches finalize's own pairing logic
 	// instead of being absorbed by the tool-less fallback retry.
-	r.rejectToolChoiceNone(prov.Name())
+	r.rejectToolChoiceNone(prov.Name(), "test")
 
 	task := NewTask("do the thing", r.Now())
 	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "do the thing"}}

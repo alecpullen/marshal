@@ -82,7 +82,9 @@ func (r *Runner) toolChoiceNoneRejected(providerName string) bool {
 	return r.toolChoiceNoneOff[providerName]
 }
 
-func (r *Runner) rejectToolChoiceNone(providerName string) {
+// rejectToolChoiceNone latches providerName to tool-less tools-disabled
+// calls. reason names what triggered it and is logged.
+func (r *Runner) rejectToolChoiceNone(providerName, reason string) {
 	r.toolChoiceMu.Lock()
 	defer r.toolChoiceMu.Unlock()
 	if r.toolChoiceNoneOff == nil {
@@ -91,7 +93,7 @@ func (r *Runner) rejectToolChoiceNone(providerName string) {
 	if !r.toolChoiceNoneOff[providerName] {
 		r.toolChoiceNoneOff[providerName] = true
 		if r.State != nil {
-			r.State.Logger().Info("tool_choice none not honoured; tools-disabled calls will omit tool definitions", "provider", providerName)
+			r.State.Logger().Info("tool_choice none not honoured; tools-disabled calls will omit tool definitions", "provider", providerName, "reason", reason)
 		}
 	}
 }
@@ -110,19 +112,34 @@ func isCancellation(err error) bool {
 // the cache entirely. A provider that rejects tool_choice, or whose model
 // calls a tool anyway (Ollama-native has no tool_choice field), gets one
 // retry without tools and is latched to tool-less calls from then on.
+//
+// On automatic-prefix providers (OpenAI, DeepSeek, Kimi, Ollama Cloud,
+// llama.cpp) these calls share the loop's whole prefix. On Anthropic,
+// changing tool_choice invalidates the cached messages, so they reuse only
+// the tools and system prompt.
 // See docs/prompt-caching/followups-design.md (F3).
 func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat) (chatResult, error) {
 	sentTools := r.NativeTools && !r.toolChoiceNoneRejected(p.Name())
 	res, err := r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, false)
-	if !sentTools || isCancellation(err) || (err == nil && len(res.ToolCalls) == 0) {
+	// Failures that say nothing about tool_choice return unchanged, with no
+	// retry and no latch: cancellation, a network outage that outlasted the
+	// reconnect wait (retrying would start a second wait), and a thinking loop.
+	if !sentTools || isCancellation(err) || isNetworkError(err) || errors.Is(err, errThinkingLoop) || (err == nil && len(res.ToolCalls) == 0) {
 		return res, err
 	}
 	// The provider failed the request, or the model called a tool
 	// despite "none". Strict servers do not always name the offending
-	// field, so any failure counts: the worst a wrong latch costs is the
-	// cache benefit, never the call. Transient network failures do not
-	// reach here (chatWithRetryWithNativeTools waits them out).
-	r.rejectToolChoiceNone(p.Name())
+	// field, so any other failure counts: the worst a wrong latch costs is
+	// the cache benefit, never the call.
+	reason := "model called a tool"
+	if err != nil {
+		msg := err.Error()
+		if len(msg) > 200 {
+			msg = msg[:200] + "…"
+		}
+		reason = "error: " + msg
+	}
+	r.rejectToolChoiceNone(p.Name(), reason)
 	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, false)
 }
 

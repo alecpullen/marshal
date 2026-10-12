@@ -116,11 +116,12 @@ Every request is laid out so that provider prompt caches can reuse
 everything except what changed since the previous request:
 
 ```
-[0] system prompt               stable within a turn (rebuilt only when skills,
-                                loaded tools or system access change)
+[0] system prompt               stable within a session (rebuilt only when skills,
+                                loaded tools or system access change; the agent
+                                roster's discovered models are snapshotted per session)
 [1] context pack (stable part)  repo card, map, memories, summaries, plan, pins
     skill bodies
-    replayed history
+    replayed history            ← CacheAnchor: end of the cross-turn stable region
     skill hint                  per-turn; directly before the goal
     goal, then the turn's tool loop (append-only)
 [n] working state (Volatile)    todos, scratchpad, semantic snippets; rebuilt
@@ -128,10 +129,16 @@ everything except what changed since the previous request:
 ```
 
 The working state is appended in `chatOnceAttempt`, the single dispatch
-point. Anthropic places cache breakpoints on the tools, the system prompt and
-the last non-`Volatile` block; OpenAI and Codex requests carry a
-session-derived `prompt_cache_key`. `TestPromptPrefixStableAcrossSteps`
-guards the layout. Design: `docs/prompt-caching/design.md`.
+point. Everything up to the `CacheAnchor` opens the next turn's first
+request unchanged (`TestCrossTurnStableRegionIsAppendOnly`); within a turn
+the prefix only grows (`TestPromptPrefixStableAcrossSteps`). Anthropic
+places cache breakpoints on the tools, the system prompt, the anchor and
+the last non-`Volatile` block. OpenAI and Codex requests carry a
+session-derived `prompt_cache_key`. Tools-disabled calls (finalize, handoff
+summary, plan) keep the tool definitions with `tool_choice: none` so they
+share the loop's prefix. Loading a deferred tool with `tools.select` costs
+one cache miss, because tools head every provider's prefix. Design:
+`docs/prompt-caching/design.md`, `docs/prompt-caching/followups-design.md`.
 
 ## Web UI dependency rules
 

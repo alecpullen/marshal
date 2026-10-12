@@ -123,3 +123,5 @@ deferral. Document it; do not restructure.
   turn's first request reports `cache_read_tokens` covering the previous
   turn's history. On an OpenAI-compatible provider, a finalize call after a
   tool loop reports cache reads.
+
+**Status (unit):** verified on the `prompt-caching-followups` branch. Live checks pending alongside the parent design's.

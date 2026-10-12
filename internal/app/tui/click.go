@@ -50,13 +50,18 @@ func (m *Model) contentLineForClick(x, y int) (int, bool) {
 // regionAt returns the click target whose range contains line, if any.
 // m.clickRegions is small (tens of entries, one per visible transcript
 // block) so a linear scan is fine.
+//
+// The narrowest range wins, so a row inside a block beats the block itself.
+// On a tie the later range wins: a block's sub-regions are recorded after it,
+// and a headless beat (no header line) has a block range identical to its
+// single row's, where the row is the more specific target.
 func (m *Model) regionAt(line int) (clickTarget, bool) {
 	best := -1
 	for i, r := range m.nodeRegions {
 		if line < r.startLine || line >= r.endLine {
 			continue
 		}
-		if best < 0 || r.endLine-r.startLine < m.nodeRegions[best].endLine-m.nodeRegions[best].startLine {
+		if best < 0 || r.endLine-r.startLine <= m.nodeRegions[best].endLine-m.nodeRegions[best].startLine {
 			best = i
 		}
 	}

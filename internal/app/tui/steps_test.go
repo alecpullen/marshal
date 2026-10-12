@@ -101,24 +101,6 @@ func TestNarratedStepRendersHeadlineAndNestedToolRows(t *testing.T) {
 	}
 }
 
-func TestUnnarratedStepShowsInferredHeadline(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(100, 30)
-	stepFixture(t, &m, session.Actor{}, "", readEvent("a.go"), readEvent("b.go"))
-	var header string
-	for _, l := range transcriptLines(&m) {
-		if strings.Contains(l, "read 2 files") {
-			header = l
-		}
-	}
-	if header == "" {
-		t.Fatal("inferred headline missing")
-	}
-	if !strings.Contains(header, "inferred") {
-		t.Errorf("inferred headline's meta must be tagged: %q", header)
-	}
-}
-
 func TestOwnerLabelIsRightAlignedAndSurvivesNoColor(t *testing.T) {
 	for _, noColor := range []bool{false, true} {
 		t.Run(fmt.Sprintf("NO_COLOR=%v", noColor), func(t *testing.T) {
@@ -387,40 +369,13 @@ func TestFirstSentence(t *testing.T) {
 	}
 }
 
-func TestInferHeadline(t *testing.T) {
-	tool := func(name, args string) *viewmodel.Node {
-		return &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{{ToolName: name, Args: []byte(args)}}}
-	}
-	cases := []struct {
-		name string
-		rows []*viewmodel.Node
-		want string
-	}{
-		{"reads aggregate", []*viewmodel.Node{tool("file.read", `{"path":"a"}`), tool("file.read", `{"path":"b"}`)}, "read 2 files"},
-		{"one read", []*viewmodel.Node{tool("file.read", `{"path":"a"}`)}, "read 1 file"},
-		{"search", []*viewmodel.Node{tool("repo.search", `{"query":"ErrEmpty"}`)}, `searched "ErrEmpty"`},
-		{"shell", []*viewmodel.Node{tool("shell.run", `{"command":"go test ./..."}`)}, "ran go …"},
-		{"edit", []*viewmodel.Node{tool("file.write_patch", `{"path":"internal/a/parser.go"}`)}, "edited parser.go"},
-		{"two clauses", []*viewmodel.Node{tool("file.read", `{"path":"a"}`), tool("repo.search", `{"query":"x"}`)}, `read 1 file · searched "x"`},
-		{"overflow", []*viewmodel.Node{tool("file.read", `{"path":"a"}`), tool("repo.search", `{"query":"x"}`), tool("shell.run", `{"command":"ls"}`)}, `read 1 file · searched "x" …`},
-		{"other tool uses its display name", []*viewmodel.Node{tool("web.fetch", `{}`)}, "Fetch page"},
-		{"agents", []*viewmodel.Node{{Kind: viewmodel.KindSubagent}, {Kind: viewmodel.KindSubagent}}, "dispatched 2 agents"},
-		{"nothing", nil, ""},
-	}
-	for _, c := range cases {
-		if got := inferHeadline(c.rows); got != c.want {
-			t.Errorf("%s: inferHeadline = %q, want %q", c.name, got, c.want)
-		}
-	}
-}
-
 func TestRightMetaDropOrder(t *testing.T) {
-	p := metaParts{tag: "inferred", owner: "reviewer #1", role: "reviewer", model: "gpt-5 @ openai", dur: "1m 4s"}
+	p := metaParts{owner: "reviewer #1", role: "reviewer", model: "gpt-5 @ openai", dur: "1m 4s"}
 	plain := func(width int) string {
 		text, _ := rightMeta(p, 40, width)
 		return stripANSI(text)
 	}
-	if got := plain(200); got != "inferred · reviewer #1 · gpt-5 @ openai · 1m 4s" {
+	if got := plain(200); got != "reviewer #1 · gpt-5 @ openai · 1m 4s" {
 		t.Errorf("full meta = %q", got)
 	}
 	// Narrowing drops the model first, then the duration, then shortens the
@@ -429,10 +384,9 @@ func TestRightMetaDropOrder(t *testing.T) {
 		width int
 		want  string
 	}{
-		{3 + 2 + 24 + len("inferred · reviewer #1 · 1m 4s"), "inferred · reviewer #1 · 1m 4s"},
-		{3 + 2 + 24 + len("inferred · reviewer #1"), "inferred · reviewer #1"},
-		{3 + 2 + 24 + len("inferred · reviewer"), "inferred · reviewer"},
-		{3 + 2 + 24 + len("inferred"), "inferred"},
+		{3 + 2 + 24 + len("reviewer #1 · 1m 4s"), "reviewer #1 · 1m 4s"},
+		{3 + 2 + 24 + len("reviewer #1"), "reviewer #1"},
+		{3 + 2 + 24 + len("reviewer"), "reviewer"},
 		{3 + 2 + 24, ""},
 	}
 	for _, s := range steps {

@@ -79,6 +79,16 @@ func (c *stepRenderCtx) liveToolExpanded(id viewmodel.NodeID) bool {
 	return c.liveExpanded != nil && c.liveExpanded(id)
 }
 
+// callersFor is the nil-safe form of the callers callback: a render context
+// built by hand (tests, a one-off render) has no blast-radius cache, and a
+// missing callback must read as "no callers" rather than panic.
+func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
+	if c.callers == nil {
+		return nil
+	}
+	return c.callers(id)
+}
+
 // renderStep renders one step: a header (state glyph, headline, right-aligned
 // owner meta), the narration continuation, thinking rows, then tool rows and
 // subagent cards at nested indent. Every piece ends in a newline, so the
@@ -115,11 +125,13 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		subs = append(subs, sub)
 	}
 
-	head, rest, inferred := stepHeadline(si, rows)
+	head, rest := stepHeadline(si)
+	headless := head == ""
 
 	failed := stepFailed(rows)
 
-	// Header.
+	// Header. A headless beat (no narration) has none: its rows stand on
+	// their own rather than under an invented title.
 	g, gc := stepGlyph(n, failed, c)
 	meta := metaParts{
 		owner:      stepOwner(si.Step),
@@ -128,13 +140,16 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		dur:        stepDuration(n, c.now),
 		ownerColor: actorColor(si.Step.Actor.Role),
 	}
-	if inferred {
-		meta.tag = "inferred"
-	}
 	if sd == densityOutline {
 		meta.tools = countToolCalls(rows)
 	}
-	if !inferred {
+	switch {
+	case headless && sd == densityOutline:
+		summary, _ := renderMeta("", "", fmt.Sprintf("%d tools", meta.tools), meta.dur, nil)
+		write(gutterPrefix(g, gc) + summary + "\n")
+	case headless:
+		// No header line.
+	default:
 		// Render narration as a single Markdown document so formatting and
 		// code fences survive sentence boundaries. Density never hides it.
 		var texts []string
@@ -166,8 +181,6 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 			write(strings.Repeat(" ", max(width-metaW, gutterWidth)) + metaText + "\n")
 		}
 		rest = "" // The full narration has already been rendered once.
-	} else {
-		write(stepHeaderLine(g, gc, head, inferred, meta, width) + "\n")
 	}
 	if sd == densityOutline {
 		// Outline hides reasoning and tool rows, never narration.
@@ -196,6 +209,13 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		}
 	}
 
+	// A long beat shows its newest rows; the rest collapse into one line.
+	// A user override on the beat (Enter / click to full) shows them all.
+	if over := len(rows) - viewmodel.BeatRowCap; over > 0 && sd != densityFull {
+		write(strings.Repeat(" ", nestedBodyIndent) + mutedStyle().Render(fmt.Sprintf("+%d earlier calls", over)) + "\n")
+		rows = rows[over:]
+	}
+
 	// Tool rows and subagent cards.
 	for _, ch := range rows {
 		switch {
@@ -212,7 +232,7 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 			if rd == densityOutline {
 				continue
 			}
-			row(ch.ID, renderToolRow(ch.Tools[0], rd == densityFull, c.callers(ch.ID), width), subRegion{})
+			row(ch.ID, renderToolRow(ch.Tools[0], rd == densityFull, c.callersFor(ch.ID), width), subRegion{})
 		case ch.Kind == viewmodel.KindSubagent && ch.Item != nil && ch.Item.Subagent != nil:
 			v := *ch.Item.Subagent
 			rv := c.region(ch.ID)
@@ -400,8 +420,7 @@ const notableStepDuration = 15 * time.Second
 
 // metaParts are the pieces of a step header's right-aligned meta.
 type metaParts struct {
-	tag        string // "inferred"
-	tools      int    // outline density: how many calls the collapsed step hides
+	tools      int // outline density: how many calls the collapsed step hides
 	owner      string
 	role       string // owner shortened to the role word
 	model      string
@@ -416,7 +435,7 @@ type metaParts struct {
 // styled text and its visible width.
 func rightMeta(p metaParts, headlineWidth, width int) (string, int) {
 	budget := width - gutterWidth - 2 - min(headlineWidth, minHeadlineCols)
-	type cand struct{ tag, owner, model, tools, dur string }
+	type cand struct{ owner, model, tools, dur string }
 	tools := ""
 	switch {
 	case p.tools == 1:
@@ -425,16 +444,15 @@ func rightMeta(p metaParts, headlineWidth, width int) (string, int) {
 		tools = fmt.Sprintf("%d tools", p.tools)
 	}
 	cands := []cand{
-		{p.tag, p.owner, p.model, tools, p.dur},
-		{p.tag, p.owner, "", tools, p.dur},
-		{p.tag, p.owner, "", tools, ""},
-		{p.tag, p.role, "", tools, ""},
-		{p.tag, "", "", tools, ""},
-		{"", "", "", tools, ""},
-		{"", "", "", "", ""},
+		{p.owner, p.model, tools, p.dur},
+		{p.owner, "", tools, p.dur},
+		{p.owner, "", tools, ""},
+		{p.role, "", tools, ""},
+		{"", "", tools, ""},
+		{"", "", "", ""},
 	}
 	for _, cd := range cands {
-		text, w := renderMeta(cd.tag, cd.owner, cd.model, cd.tools, cd.dur, p.ownerColor)
+		text, w := renderMeta(cd.owner, cd.model, cd.tools, cd.dur, p.ownerColor)
 		if w <= budget {
 			return text, w
 		}
@@ -442,7 +460,7 @@ func rightMeta(p metaParts, headlineWidth, width int) (string, int) {
 	return "", 0
 }
 
-func renderMeta(tag, owner, model, tools, dur string, ownerColor color.Color) (string, int) {
+func renderMeta(owner, model, tools, dur string, ownerColor color.Color) (string, int) {
 	var plain, styled []string
 	add := func(s string, style lipgloss.Style) {
 		if s == "" {
@@ -451,7 +469,6 @@ func renderMeta(tag, owner, model, tools, dur string, ownerColor color.Color) (s
 		plain = append(plain, s)
 		styled = append(styled, style.Render(s))
 	}
-	add(tag, thinkingLineStyle())
 	ownerStyle := mutedStyle()
 	if ownerColor != nil {
 		ownerStyle = lipgloss.NewStyle().Foreground(ownerColor)
@@ -466,11 +483,8 @@ func renderMeta(tag, owner, model, tools, dur string, ownerColor color.Color) (s
 
 // stepHeaderLine assembles " ✓ headline        owner · 12s" to exactly the
 // frame width at most: the headline is truncated to what the meta leaves.
-func stepHeaderLine(g string, gc color.Color, head string, inferred bool, meta metaParts, width int) string {
+func stepHeaderLine(g string, gc color.Color, head string, meta metaParts, width int) string {
 	headStyle := lipgloss.NewStyle().Foreground(theme.Current().FGEmphasis)
-	if inferred {
-		headStyle = thinkingLineStyle().Italic(true)
-	}
 	metaText, metaW := rightMeta(meta, ansi.StringWidth(head), width)
 	avail := max(width-gutterWidth, 1)
 	headRoom := avail
@@ -486,12 +500,12 @@ func stepHeaderLine(g string, gc color.Color, head string, inferred bool, meta m
 	return line
 }
 
-// stepHeadline picks the header text. A narrated step uses the first sentence
+// stepHeadline picks the header text. A narrated beat uses the first sentence
 // of its first narration; the remainder (and any later narration) becomes the
-// continuation. Without narration the headline is inferred from the tool rows
-// and rendered as such.
-func stepHeadline(si *viewmodel.StepInfo, rows []*viewmodel.Node) (head, rest string, inferred bool) {
-	return viewmodel.StepHeadline(si, rows)
+// continuation. A beat without narration is headless (head == ""): its rows
+// render on their own, with no invented title.
+func stepHeadline(si *viewmodel.StepInfo) (head, rest string) {
+	return viewmodel.StepHeadline(si)
 }
 
 // firstSentence splits s at the first ". ", "! ", "? " or newline that comes
@@ -550,16 +564,6 @@ func renderNestedThinking(t *session.ThinkingEntry, expanded bool, width int) st
 	}
 	return b.String()
 }
-
-// ---- inferred headline -------------------------------------------------
-
-// inferHeadline describes what a step did from its tool rows when the model
-// did not narrate: up to two clauses joined by " · ", then "…" if more
-// follow. It is shown italic and tagged "inferred" because it is a guess at
-// intent, not the agent's own words.
-func inferHeadline(rows []*viewmodel.Node) string { return viewmodel.InferHeadline(rows) }
-
-func isSearchTool(name string) bool { return viewmodel.IsSearchTool(name) }
 
 func plural(n int, one, many string) string {
 	if n == 1 {
@@ -647,9 +651,9 @@ func subagentSummaryHeadline(summary string) string {
 	return stripEmphasis(head)
 }
 
-// liveStepSummary describes the step now running — its narrated headline, or
-// an inferred one — and the category glyph of its running tool, for the now
-// bar's live-mirror row.
+// liveStepSummary describes the beat now running — its narrated headline, or
+// the narration it continues — and the category glyph of its running tool,
+// for the now bar's live-mirror row.
 func (m Model) liveStepSummary() (headline, toolGlyph string) {
 	state, _ := m.transcriptSource()
 	live, ok := state.OpenStep()
@@ -659,19 +663,17 @@ func (m Model) liveStepSummary() (headline, toolGlyph string) {
 	if h, _ := firstSentence(state.StepNarration(live.ID)); h != "" {
 		headline = stripEmphasis(h)
 	}
-	var rows []*viewmodel.Node
-	for _, ev := range state.StepAudits(live.ID) {
-		rows = append(rows, &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{ev}})
-	}
 	for _, atc := range state.ActiveToolCalls() {
 		if atc.StepID == live.ID {
-			a := atc
-			rows = append(rows, &viewmodel.Node{Kind: viewmodel.KindTool, Active: &a})
 			toolGlyph = toolCategoryGlyph(atc.Name)
 		}
 	}
 	if headline == "" {
-		headline = inferHeadline(rows)
+		// A narrationless response continues the beat its actor last
+		// narrated; mirror that narration rather than invent a title.
+		if h, _ := firstSentence(state.LatestNarrationLine()); h != "" {
+			headline = stripEmphasis(h)
+		}
 	}
 	return headline, toolGlyph
 }

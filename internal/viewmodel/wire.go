@@ -43,7 +43,6 @@ type WireNode struct {
 	Subagent *WireSubagent `json:"subagent,omitempty"`
 	RunEvent *WireRunEvent `json:"runEvent,omitempty"`
 	JobExit  *WireJobExit  `json:"jobExit,omitempty"`
-	Task     *WireTask     `json:"task,omitempty"`
 	Receipt  *WireReceipt  `json:"receipt,omitempty"`
 }
 
@@ -169,24 +168,6 @@ type WireJobExit struct {
 	Truncated  bool   `json:"truncated,omitempty"`
 }
 
-// WireTask is a task header.
-type WireTask struct {
-	TodoID            string `json:"todoId"`
-	Content           string `json:"content"`
-	Status            string `json:"status"`
-	Index             int    `json:"index,omitempty"`
-	Total             int    `json:"total,omitempty"`
-	Dropped           bool   `json:"dropped,omitempty"`
-	Steps             int    `json:"steps"`
-	WorkMs            int64  `json:"workMs,omitempty"`
-	Tools             int    `json:"tools"`
-	Edits             int    `json:"edits"`
-	UnresolvedFailure bool   `json:"unresolvedFailure,omitempty"`
-	FirstNarration    string `json:"firstNarration,omitempty"`
-	StartedAt         int64  `json:"startedAt,omitempty"`
-	CompletedAt       int64  `json:"completedAt,omitempty"`
-}
-
 // WireReceipt is the summary line closing a finished turn.
 type WireReceipt struct {
 	DurationMs int64  `json:"durationMs"`
@@ -209,9 +190,7 @@ var kindNames = [...]string{
 	KindJobExit:     "jobExit",
 	KindThinking:    "thinking",
 	KindPassthrough: "passthrough",
-	KindTask:        "task",
 	KindReceipt:     "receipt",
-	KindQueue:       "queue",
 }
 
 // String is the kind's wire name.
@@ -247,8 +226,6 @@ func wireNode(n *Node) WireNode {
 		w.Children = append(w.Children, c.ID.Key)
 	}
 	switch {
-	case n.Task != nil:
-		w.Task = wireTask(n.Task)
 	case n.Receipt != nil:
 		r := n.Receipt
 		w.Receipt = &WireReceipt{DurationMs: r.Duration.Milliseconds(), Tasks: r.Tasks, Steps: r.Steps,
@@ -349,15 +326,6 @@ func wireItem(w *WireNode, it *session.TranscriptItem) {
 			DurationMs: j.Duration.Milliseconds(), At: ms(j.At)}
 		wj.Output, wj.Truncated = capTail(j.Output)
 		w.JobExit = wj
-	}
-}
-
-func wireTask(t *TaskInfo) *WireTask {
-	return &WireTask{
-		TodoID: t.TodoID, Content: t.Content, Status: t.Status, Index: t.Index, Total: t.Total,
-		Dropped: t.Dropped, Steps: t.Steps, WorkMs: t.Work.Milliseconds(), Tools: t.Tools, Edits: t.Edits,
-		UnresolvedFailure: t.UnresolvedFailure, FirstNarration: t.FirstNarration,
-		StartedAt: ms(t.StartedAt), CompletedAt: ms(t.CompletedAt),
 	}
 }
 

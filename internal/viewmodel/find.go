@@ -25,34 +25,32 @@ func Find(turns []*Node, key string) (n *Node, parent *Node) {
 
 // StepDiff is the diff a step produced, for the review page's by-step view.
 type StepDiff struct {
-	StepNode, TurnNode, TaskNode, Headline string
-	At                                     time.Time
-	Files                                  []string
-	Diff                                   string
+	StepNode, TurnNode, Headline string
+	At                           time.Time
+	Files                        []string
+	Diff                         string
 }
 
 // StepDiffs lists, in tree order, every step that made a diff-tool call.
 func StepDiffs(turns []*Node) []StepDiff {
 	var out []StepDiff
 	for _, turn := range turns {
-		var walk func(n *Node, task string)
-		walk = func(n *Node, task string) {
+		var walk func(n *Node)
+		walk = func(n *Node) {
 			switch n.Kind {
-			case KindTask:
-				task = n.ID.Key
 			case KindStep:
 				if d, ok := stepDiff(n); ok {
-					d.TurnNode, d.TaskNode = turn.ID.Key, task
+					d.TurnNode = turn.ID.Key
 					out = append(out, d)
 				}
 				return
 			}
 			for _, c := range n.Children {
-				walk(c, task)
+				walk(c)
 			}
 		}
 		for _, c := range turn.Children {
-			walk(c, "")
+			walk(c)
 		}
 	}
 	return out

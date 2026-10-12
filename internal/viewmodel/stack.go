@@ -34,9 +34,7 @@ const (
 	KindJobExit
 	KindThinking
 	KindPassthrough
-	KindTask
 	KindReceipt
-	KindQueue
 )
 
 // NodeID is a node's identity across rebuilds. The tree is rebuilt from the
@@ -61,9 +59,7 @@ type Node struct {
 	Step    *StepInfo
 	Tools   []registry.AuditEvent // len > 1 = merged same-tool run within a step
 	Active  *session.ActiveToolCall
-	Task    *TaskInfo
 	Receipt *ReceiptInfo
-	Queue   *QueueInfo
 }
 
 // StepInfo is a beat's payload. A beat is one narrated model response and
@@ -86,6 +82,12 @@ type StepInfo struct {
 	TodoID string
 	// TodoWrites are the beat's todo.write calls. They are never rows.
 	TodoWrites []registry.AuditEvent
+
+	// Todo is set on the beat where work moves to a different todo.
+	Todo *TodoLabel
+	// Folded is true for a finished beat the transcript collapses to one
+	// line (see foldBeats).
+	Folded bool
 }
 
 // Snapshot is everything Build reads.
@@ -468,7 +470,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 
-	todoActivity := false
 	maxWritten := 0 // the longest list any todo.write in this turn wrote
 	finish := func(id session.StepID, a *stepAcc, isLive bool, active []session.ActiveToolCall) *Node {
 		node := &Node{Kind: KindStep, Step: a.info, Live: isLive}
@@ -483,7 +484,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		for _, ev := range a.audits {
 			if ev.ToolName == todoWriteTool {
 				a.info.TodoWrites = append(a.info.TodoWrites, ev)
-				todoActivity = true
 				maxWritten = max(maxWritten, todoWriteLen(ev))
 				continue
 			}
@@ -559,9 +559,14 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	// Whether the turn is task-driven is settled by the lists it wrote, not
 	// only by the list as it stands now: a later rewrite to one item must not
 	// flatten a finished turn after the fact.
-	out = groupTasks(out, turnKey, s, lastTurn, maxWritten >= MinTaskTodos)
-	if lastTurn {
-		out = addQueue(out, turnKey, s, todoActivity)
+	labelTransitions(out, s.Todos, maxWritten >= MinTaskTodos)
+	foldBeats(out, lastTurn)
+	// foldBeats and labelTransitions run after finish/absorb computed each
+	// beat's version, so recompute it now that the payload is final.
+	for _, n := range out {
+		if n.Kind == KindStep {
+			n.Version = versionOfStep(n)
+		}
 	}
 	if !(s.Busy && lastTurn) {
 		if rc := receipt(turnKey, out, userMsg, s); rc != nil {
@@ -793,6 +798,10 @@ func versionOfStep(n *Node) uint64 {
 	st := n.Step
 	r := st.Step
 	b.f("td|%s|%d|", st.TodoID, len(st.TodoWrites))
+	if st.Todo != nil {
+		b.f("lbl|%s|%d|%d|%s|", st.Todo.ID, st.Todo.Index, st.Todo.Total, st.Todo.Content)
+	}
+	b.f("fold|%v|", st.Folded)
 	b.f("st|%d|%d|%s|%s|%s|%s|%d|%d|%d|%d|", r.ID, r.TurnMsgID, r.Actor.Role, r.Actor.Label, r.Actor.Model, r.Actor.Provider,
 		r.StartedAt.UnixNano(), r.EndedAt.UnixNano(), len(st.StepIDs), len(st.LiveThinking))
 	for _, id := range st.StepIDs {

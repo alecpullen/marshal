@@ -62,6 +62,11 @@ const (
 	// Same split as ContentTypeSkillBody: reaches the model, invisible to
 	// the reader.
 	ContentTypeSubagentReport ContentType = "subagent_report"
+	// ContentTypeSubagentNotice marks the one-line "✓ subagent N completed"
+	// system notice. The transcript shows the subagent's card and a
+	// completion marker instead, so viewmodel drops it; plain-text exports
+	// still carry it.
+	ContentTypeSubagentNotice ContentType = "subagent_notice"
 	// ContentTypeWatchReport marks a background watch's completion report,
 	// persisted under RoleUser so buildHistoryMessages replays it and it
 	// survives restart. Restart durability applies to drained reports and

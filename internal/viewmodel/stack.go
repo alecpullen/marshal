@@ -347,6 +347,9 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		switch it.Kind {
 		case session.KindMessage:
 			m := it.Message
+			if m != nil && m.ContentType == session.ContentTypeSubagentNotice {
+				continue
+			}
 			if m != nil && m.ContentType == session.ContentTypeNarration {
 				if m.StepID > 0 {
 					curLoose = nil

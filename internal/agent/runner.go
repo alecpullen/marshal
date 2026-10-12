@@ -443,6 +443,12 @@ type Runner struct {
 	trackerMu    sync.Mutex
 	stats        *turnStats
 	statsMu      sync.Mutex
+
+	// todoClock measures how long the todo list has gone unmaintained and
+	// todoNudged records that this list version has already been nudged about
+	// it. Both are per-turn state, reset by startTodoClock (todonudge.go).
+	todoClock  session.TodoClock
+	todoNudged bool
 	// finishReasonMu guards turnFinishReason, which is written by RunTask
 	// (the model-response writer) and read by logToolCall from parallel tool
 	// execution goroutines.
@@ -799,6 +805,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.trackerMu.Lock()
 	r.tracker = newProgressTracker()
 	r.trackerMu.Unlock()
+
+	// The stale-todo clock starts with the turn, so a list carried in from an
+	// earlier session is judged from now rather than from when it was written.
+	r.startTodoClock()
 
 	r.statsMu.Lock()
 	r.stats = &turnStats{m: TurnMetrics{

@@ -255,6 +255,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			r.countToolCall(false, true)
 			msg := r.buildCachedToolResultMessage(toolName, cached, toolCallID)
 			msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+			msg.Content += r.todoNudge()
 			return []schema.ChatMessage{msg}, nil
 		}
 	}
@@ -414,6 +415,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		if tier >= failedRepeatNudge {
 			msg.Content += fmt.Sprintf("\n\nthis identical call already failed %d times; re-read the target and retry with exact bytes from disk.", streak)
 		}
+		msg.Content += r.todoNudge()
 		// Forced retry correction (tier 3+): on the third identical-args
 		// file.write_patch failure, stop coaching and name the exact bytes to
 		// re-read. Purely additive diagnostic text — it never changes control
@@ -452,11 +454,18 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	event.Rewritten = toolWasRewritten
 	r.logToolCall(callID, event)
 
+	// A successful todo.write is the list being maintained: restart the stale
+	// clock so the nudge does not fire on the very next call.
+	if toolName == "todo.write" {
+		r.noteTodoWrite()
+	}
+
 	msg := r.buildToolResultMessage(toolName, summarized, toolCallID)
 	r.trackerMu.Lock()
 	count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(summarized.Content), true)
 	r.trackerMu.Unlock()
 	msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+	msg.Content += r.todoNudge()
 	r.countToolCall(false, false)
 	return []schema.ChatMessage{msg}, nil
 }

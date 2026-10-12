@@ -1,6 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { render, cleanup, screen } from '@testing-library/svelte'
-import userEvent from '@testing-library/user-event'
 import { writable } from 'svelte/store'
 import Transcript from './Transcript.svelte'
 import { BEAT_ROW_CAP, type StackState, type WireNode } from '../stack'

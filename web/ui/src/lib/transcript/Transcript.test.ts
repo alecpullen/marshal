@@ -3,7 +3,7 @@ import { render, cleanup, screen } from '@testing-library/svelte'
 import userEvent from '@testing-library/user-event'
 import { writable } from 'svelte/store'
 import Transcript from './Transcript.svelte'
-import type { StackState, WireNode } from '../stack'
+import { BEAT_ROW_CAP, type StackState, type WireNode } from '../stack'
 
 afterEach(cleanup)
 
@@ -28,6 +28,47 @@ const nodes: WireNode[] = [
 function stackStore() {
   return writable<StackState>({ status: 'ready', rev: 1, roots: ['turn:1'], nodes: new Map(nodes.map((n) => [n.id, n])) })
 }
+
+// A narrationless beat: the model narrated nothing, so the beat has no
+// headline and its rows stand alone under the turn.
+const beatNodes: WireNode[] = [
+  { id: 'turn:2', kind: 'turn', children: ['step:9'] },
+  {
+    id: 'step:9',
+    kind: 'step',
+    parent: 'turn:2',
+    children: ['tool:9', 'tool:10', 'tool:11'],
+    step: { headline: '', stepIds: [9] },
+  },
+  { id: 'tool:9', kind: 'tool', parent: 'step:9', tool: { name: 'file.read', display: 'Read file', calls: [{ target: 'one.go' }] } },
+  { id: 'tool:10', kind: 'tool', parent: 'step:9', tool: { name: 'file.read', display: 'Read file', calls: [{ target: 'two.go' }] } },
+  { id: 'tool:11', kind: 'tool', parent: 'step:9', tool: { name: 'shell.run', display: 'Run command', calls: [{ target: 'go vet ./...' }] } },
+]
+
+const beatStore = () =>
+  writable<StackState>({ status: 'ready', rev: 1, roots: ['turn:2'], nodes: new Map(beatNodes.map((n) => [n.id, n])) })
+
+// A beat with more rows than fit: the model ran calls without narrating in
+// between, so the older ones must collapse behind a count.
+const call = (i: number) => ({
+  kind: 'tool',
+  parent: 'step:10',
+  tool: { name: 'file.read', display: 'Read file', calls: [{ target: `call-${i}.go` }] },
+})
+const longBeatNodes: WireNode[] = [
+  { id: 'turn:3', kind: 'turn', children: ['step:10'] },
+  {
+    id: 'step:10',
+    kind: 'step',
+    parent: 'turn:3',
+    children: Array.from({ length: BEAT_ROW_CAP + 2 }, (_, i) => `tool:2${i}`),
+    step: { headline: '', stepIds: [10] },
+  },
+  ...Array.from({ length: BEAT_ROW_CAP + 2 }, (_, i) => ({ id: `tool:2${i}`, ...call(i) })) as WireNode[],
+]
+
+const longBeatStore = () =>
+  writable<StackState>({ status: 'ready', rev: 1, roots: ['turn:3'], nodes: new Map(longBeatNodes.map((n) => [n.id, n])) })
 
 describe('Transcript', () => {
   it('shows the prompt, steps, tool rows and receipt at the steps density', () => {
@@ -80,6 +121,29 @@ describe('Transcript', () => {
   it('marks the cursor node', () => {
     const { container } = render(Transcript, { store: stackStore(), density: 'steps', foldTasks: false, cursor: 'step:1' })
     expect(container.querySelector('[data-node-id="step:1"]')?.className).toContain('border-violet')
+  })
+
+  it('renders a narrationless beat as rows under the turn, with no inferred tag and no header', () => {
+    const { container } = render(Transcript, { store: beatStore(), density: 'steps', foldTasks: false })
+    expect(screen.queryByText(/inferred/)).toBeNull()
+    // StepHeader renders nothing at all for an empty headline with no owner
+    // and no thoughts, so the beat's own node holds no header row.
+    const step = container.querySelector('[data-node-id="step:9"]')
+    expect(step).toBeTruthy()
+    expect(step?.textContent?.trim()).toBe('')
+    expect(container.querySelector('[data-node-id="step:9"] .items-baseline')).toBeNull()
+    expect(screen.getByText('one.go')).toBeTruthy()
+    expect(screen.getByText('two.go')).toBeTruthy()
+    expect(screen.getByText('go vet ./...')).toBeTruthy()
+  })
+
+  it('caps a long beat at BEAT_ROW_CAP rows behind an earlier-calls count', () => {
+    render(Transcript, { store: longBeatStore(), density: 'steps', foldTasks: false })
+    expect(screen.getByText('+2 earlier calls')).toBeTruthy()
+    // The oldest rows are the ones that collapse.
+    expect(screen.queryByText('call-0.go')).toBeNull()
+    expect(screen.queryByText('call-1.go')).toBeNull()
+    expect(screen.getByText(`call-${BEAT_ROW_CAP + 1}.go`)).toBeTruthy()
   })
 
   it('limits the tree to onlyNodes with their ancestors and descendants', () => {

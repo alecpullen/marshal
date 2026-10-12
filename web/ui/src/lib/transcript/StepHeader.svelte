@@ -20,13 +20,14 @@
 </script>
 
 <div class="py-1">
-  <div class="flex items-baseline gap-2 text-sm">
-    <span class={live ? 'animate-pulse text-accent' : 'text-dim'}>{live ? glyph.Running : glyph.Ambient}</span>
-    {#if owner}<Tag role={step.role}>{owner}</Tag>{/if}
-    <span class="min-w-0 truncate italic">{step.headline}</span>
-    {#if step.inferred}<Tag tone="neutral">inferred</Tag>{/if}
-    {#if duration}<span class="ml-auto shrink-0 font-mono text-xs text-muted">{duration}</span>{/if}
-  </div>
+  {#if step.headline || owner}
+    <div class="flex items-baseline gap-2 text-sm">
+      <span class={live ? 'animate-pulse text-accent' : 'text-dim'}>{live ? glyph.Running : glyph.Ambient}</span>
+      {#if owner}<Tag role={step.role}>{owner}</Tag>{/if}
+      <span class="min-w-0 truncate italic">{step.headline}</span>
+      {#if duration}<span class="ml-auto shrink-0 font-mono text-xs text-muted">{duration}</span>{/if}
+    </div>
+  {/if}
   {#if step.rest && density === 'full'}
     <!-- renderMarkdown sanitises with DOMPurify. -->
     <div class="mt-1 ml-5 text-sm text-sub break-words">{@html renderMarkdown(step.rest)}</div>

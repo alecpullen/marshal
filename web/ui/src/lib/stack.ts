@@ -4,18 +4,23 @@ import { APIError, getStack } from './api'
 // Wire shapes, mirroring internal/viewmodel/wire.go. Times are Unix
 // milliseconds; absent means unset.
 
+// How many rows a beat shows before older ones collapse into a count, a
+// mirror of viewmodel.BeatRowCap. Models that rarely narrate otherwise push
+// the live tail off the transcript.
+export const BEAT_ROW_CAP = 8
+
 export interface WireThought { text: string; durationMs?: number }
 export interface WireStep {
   headline: string
   rest?: string
-  inferred?: boolean
   owner?: string
   roleWord?: string
   role?: string
   model?: string
   provider?: string
   todoId?: string
-  heuristic?: boolean
+  /** The `session.Step` IDs this beat merges, oldest first. */
+  stepIds?: number[]
   startedAt?: number
   endedAt?: number
   thoughts?: WireThought[]

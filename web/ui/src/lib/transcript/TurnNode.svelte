@@ -1,6 +1,7 @@
 <script lang="ts">
   import Self from './TurnNode.svelte'
   import type { TranscriptCtx } from './ctx'
+  import { BEAT_ROW_CAP } from '../stack'
   import { effective, visible } from './density'
   import TaskRow from './TaskRow.svelte'
   import StepHeader from './StepHeader.svelte'
@@ -43,7 +44,11 @@
     <div data-node-id={id} class={isCursor ? 'border-l-2 border-violet pl-2 -ml-2.5' : ''}>
       <StepHeader step={node.step} live={!!node.live} {density} now={ctx.now} />
     </div>
-    <div class="ml-5">{@render kids()}</div>
+    {@const over = density === 'full' ? 0 : Math.max(0, children.length - BEAT_ROW_CAP)}
+    <div class="ml-5">
+      {#if over > 0}<div class="text-xs text-muted">+{over} earlier calls</div>{/if}
+      {#each children.slice(over) as c (c)}<Self id={c} {ctx} />{/each}
+    </div>
   {:else if node.kind === 'tool' && node.tool}
     <div data-node-id={id} class="ml-5 {isCursor ? 'border-l-2 border-violet pl-2 -ml-2.5' : ''}">
       <ToolRow tool={node.tool} {density} now={ctx.now} />

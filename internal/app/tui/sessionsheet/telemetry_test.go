@@ -83,3 +83,15 @@ func TestTelemetrySingleTurnNoDivideByZero(t *testing.T) {
 		t.Errorf("BurnPerMin = %d, want 0 (no elapsed time)", got.BurnPerMin)
 	}
 }
+
+// A provider whose prompt_tokens excludes cached tokens would otherwise
+// show more than 100%.
+func TestTelemetryClampsPromptCachePct(t *testing.T) {
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	got := Telemetry([]db.TurnMetricsRow{
+		{StartedAt: now, PromptTokens: 100, CacheReadTokens: 900},
+	}, now)
+	if got.PromptCachePct != 100 {
+		t.Errorf("PromptCachePct = %d, want 100", got.PromptCachePct)
+	}
+}

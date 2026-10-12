@@ -178,3 +178,12 @@ func TestSessionSectionOmitsCacheShareWithoutCacheData(t *testing.T) {
 		t.Errorf("no cache reads were reported; want no cache label, got %q", joined)
 	}
 }
+
+func TestSessionSectionClampsPromptCacheShare(t *testing.T) {
+	d := sessionData(time.Now())
+	d.Totals.CacheReadTokens = d.Totals.PromptTokens * 3
+	joined := StripANSI(strings.Join(SessionSection{}.Render(d, 40, 0), "\n"))
+	if !strings.Contains(joined, "100% cached") {
+		t.Errorf("want the share clamped to 100%%, got %q", joined)
+	}
+}

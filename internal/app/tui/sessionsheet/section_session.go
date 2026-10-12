@@ -75,7 +75,9 @@ func cachedShare(t db.UsageTotals) int {
 	if t.PromptTokens <= 0 || t.CacheReadTokens <= 0 {
 		return 0
 	}
-	return int(t.CacheReadTokens * 100 / t.PromptTokens)
+	// Clamp: a provider whose prompt_tokens excludes cached tokens would
+	// otherwise read above 100%.
+	return int(min(t.CacheReadTokens*100/t.PromptTokens, 100))
 }
 
 func (SessionSection) Render(d Data, width, maxRows int) []string {

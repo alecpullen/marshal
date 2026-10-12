@@ -76,7 +76,9 @@ func Telemetry(turns []db.TurnMetricsRow, now time.Time) TelemetryStats {
 		Series:    series,
 	}
 	if prompt > 0 {
-		stats.PromptCachePct = cached * 100 / prompt
+		// Clamp: a provider whose prompt_tokens excludes cached tokens
+		// would otherwise read above 100%.
+		stats.PromptCachePct = min(cached*100/prompt, 100)
 	}
 
 	oldest := turns[len(turns)-1].StartedAt

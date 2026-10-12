@@ -453,8 +453,33 @@ func (r *Runner) withWorkingState(messages []schema.ChatMessage) []schema.ChatMe
 	return append(out, msg)
 }
 
+// systemPromptMessage builds messages[0] from the runner's live state.
+// Every build site goes through here. The system prompt heads the
+// provider's cache prefix, so two sites that disagree on an option produce
+// different bytes and miss the cache. They also send the model a different
+// prompt: rollover and plan-first used to drop SystemAccess and Narration.
+func (r *Runner) systemPromptMessage() schema.ChatMessage {
+	return BuildSystemPromptWithSystem(SystemPromptOptions{
+		Role:         r.role(),
+		Tools:        r.Registry.List(),
+		Deferred:     r.Registry.ListDeferred(),
+		SkillIndex:   r.SkillIndex,
+		ActiveSkills: r.State.ActiveSkills(),
+		NativeTools:  r.NativeTools,
+		Mode:         r.Policy.ApprovalMode(),
+		Addendum:     r.SystemPromptAddendum,
+		WorkingDir:   r.State.WorkingDir,
+		Roster:       r.agentRoster(),
+		LoadedNames:  r.State.LoadedToolNames(),
+		SystemAccess: r.State.SystemAccess(),
+		Narration:    r.NarrationPrompt,
+	})
+}
+
 // appendSkillHint appends this turn's skill suggestion message, if any.
-// Called after setContextPackMessage so it lands behind the cache prefix.
+// Call it immediately before appending the turn's goal: the hint changes
+// every turn, so it must come after the replayed history and skill bodies,
+// or a turn's first request re-pays that history at full price.
 func (r *Runner) appendSkillHint(messages []schema.ChatMessage) []schema.ChatMessage {
 	if r.SkillIndex == nil || len(r.skillHints) == 0 {
 		return messages

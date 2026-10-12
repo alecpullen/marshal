@@ -126,8 +126,7 @@ func TestSummarizeAndContinueResetsSkillBodyAgesAndReinsertsHint(t *testing.T) {
 		t.Fatal("fresh wire must not contain a body-age stub message")
 	}
 
-	// The hint message must be present (after the system prompt, before the
-	// skill body). It should contain the hinted skill's name.
+	// The hint message must be present (after the skill bodies, before the goal).
 	if !strings.Contains(joined.String(), "tdd") {
 		t.Fatal("fresh wire missing the skill hint message")
 	}

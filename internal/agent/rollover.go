@@ -146,12 +146,10 @@ func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessa
 	r.contextPackMsgIndex = -1
 	r.emittedSkills = nil
 	r.State.ResetAllSkillBodyAges()
-	fresh := []schema.ChatMessage{
-		BuildSystemPromptWithAddendum(r.role(), r.Registry.List(), r.Registry.ListDeferred(), r.SkillIndex, r.State.ActiveSkills(), r.NativeTools, r.Policy.ApprovalMode(), r.SystemPromptAddendum, r.State.WorkingDir, r.agentRoster(), r.State.LoadedToolNames()...),
-	}
+	fresh := []schema.ChatMessage{r.systemPromptMessage()}
 	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())
-	fresh = r.appendSkillHint(fresh)
 	fresh = r.appendSkillBodies(fresh)
+	fresh = r.appendSkillHint(fresh)
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},
 		schema.ChatMessage{Role: schema.RoleAssistant, Content: "Progress summary (earlier transcript was compacted to fit the context budget):\n\n" + seedDigest},

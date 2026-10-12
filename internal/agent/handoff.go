@@ -32,26 +32,10 @@ func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, 
 	r.contextPackMsgIndex = -1
 	r.emittedSkills = nil
 	r.State.ResetAllSkillBodyAges()
-	fresh := []schema.ChatMessage{
-		BuildSystemPromptWithSystem(SystemPromptOptions{
-			Role:         r.role(),
-			Tools:        r.Registry.List(),
-			Deferred:     r.Registry.ListDeferred(),
-			SkillIndex:   r.SkillIndex,
-			ActiveSkills: r.State.ActiveSkills(),
-			NativeTools:  r.NativeTools,
-			Mode:         r.Policy.ApprovalMode(),
-			Addendum:     r.SystemPromptAddendum,
-			WorkingDir:   r.State.WorkingDir,
-			Roster:       r.agentRoster(),
-			LoadedNames:  r.State.LoadedToolNames(),
-			SystemAccess: r.State.SystemAccess(),
-			Narration:    r.NarrationPrompt,
-		}),
-	}
+	fresh := []schema.ChatMessage{r.systemPromptMessage()}
 	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())
-	fresh = r.appendSkillHint(fresh)
 	fresh = r.appendSkillBodies(fresh)
+	fresh = r.appendSkillHint(fresh)
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},
 		schema.ChatMessage{Role: schema.RoleAssistant, Content: "Progress summary (earlier transcript was compacted to fit the context budget):\n\n" + summary},

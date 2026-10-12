@@ -10,8 +10,10 @@ import (
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/llm/schema"
+	"marshal/internal/skills"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -136,5 +138,93 @@ func TestWithWorkingStateDoesNotMutateInput(t *testing.T) {
 	}
 	if !out[1].Volatile {
 		t.Fatalf("tail not marked Volatile: %+v", out[1])
+	}
+}
+
+// Plan-first rebuilds the wire after the planning call. The rebuilt system
+// prompt must be byte-identical to the one the planning call sent: the
+// rebuild used BuildSystemPromptWithAddendum, which silently dropped the
+// narration addendum and the system-access rules.
+func TestPlanFirstRebuildKeepsSystemPrompt(t *testing.T) {
+	state := newTestState(t)
+	state.SetContextPack(contextpack.Pack{
+		Sections:   []contextpack.Section{{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4}},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
+	})
+	p := &agenttest.ScriptedProvider{
+		Responses:     []string{"1. look\n2. answer", "Done."},
+		FinishReasons: []string{"stop", "stop"},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.NarrationPrompt = true
+	r.PlanFirst = true
+	r.SetForceClass(string(ClassEdit))
+
+	if _, err := r.RunTask(context.Background(), "tidy the readme"); err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if len(p.Requests) < 2 {
+		t.Fatalf("got %d requests, want plan + execution", len(p.Requests))
+	}
+	plan, exec := p.Requests[0].Messages[0], p.Requests[1].Messages[0]
+	if plan.Content != exec.Content {
+		t.Fatalf("system prompt changed between the planning call and execution:\nplan: %.200q\nexec: %.200q", plan.Content, exec.Content)
+	}
+}
+
+// The skill hint changes every turn. It must sit after the replayed
+// history, directly before the new goal, so the history stays inside the
+// reusable prefix on a turn's first request.
+func TestSkillHintFollowsReplayedHistory(t *testing.T) {
+	e, candidates := rankFixture()
+	idx := skills.NewIndex()
+	for _, c := range candidates {
+		idx.Set(c.Name, c)
+	}
+	p := &agenttest.ScriptedProvider{Responses: []string{"First answer.", "Second answer."}, FinishReasons: []string{"stop", "stop"}}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SkillIndex = idx
+	r.SkillEmbedder = e
+	r.SetForceClass(string(ClassQuestion))
+
+	const goal = "fix the flaky test" // rankFixture keys its vectors on this text
+	for i := 0; i < 2; i++ {
+		// Run, not RunTask: Run records the user message, which is what
+		// the second turn's history replay reads back.
+		if err := r.Run(context.Background(), goal); err != nil {
+			t.Fatalf("Run %d: %v", i, err)
+		}
+	}
+
+	msgs := p.Requests[len(p.Requests)-1].Messages
+	hint := -1
+	for i, m := range msgs {
+		if strings.HasPrefix(m.Content, "Skill suggestions for this request") {
+			hint = i
+		}
+	}
+	if hint < 0 {
+		t.Fatalf("second turn carried no skill hint: %#v", msgs)
+	}
+	if hint+1 >= len(msgs) || msgs[hint+1].Role != schema.RoleUser || msgs[hint+1].Content != goal {
+		t.Fatalf("hint must sit immediately before the new goal; got %#v", msgs[hint:])
+	}
+	// History replay may wrap the old goal, so match by substring, and
+	// insist the replay is really there: without it the ordering check
+	// below would pass vacuously.
+	var goals []int
+	for i, m := range msgs {
+		if m.Role == schema.RoleUser && strings.Contains(m.Content, goal) {
+			goals = append(goals, i)
+		}
+	}
+	if len(goals) < 2 {
+		t.Fatalf("history replay did not carry the first turn's goal (fixture problem, not the hint): %#v", msgs)
+	}
+	if goals[0] >= hint {
+		t.Fatalf("replayed first-turn goal (index %d) must precede the hint (index %d)", goals[0], hint)
 	}
 }

@@ -163,13 +163,17 @@ runner appends, following the existing `repeatReminder` pattern
 
 ```
 <system-reminder>
-Your todo list hasn't changed in 6m / 9 responses; "<active item>" is still
+Your todo list hasn't changed in 6m / 9 responses; "Task 2 — …" is still
 in progress. Update it with todo.write to reflect what's done, or clear it if
 the plan changed.
 </system-reminder>
 ```
 
-- Sent once per list version; a `todo.write` resets the clock.
+- Sent once per list version; a `todo.write` resets the clock. The latch is
+  mutex-guarded, because read-only tool calls run in parallel.
+- The quoted item is `%q`-quoted with its angle brackets escaped and truncated
+  at 120 runes, so it cannot close the fence early or ride along whole; see
+  Post-review hardening.
 - Only the actor that owns the list (the orchestrator); never subagents.
 - Not a transcript row. The band's stale tag clears on the next write.
 
@@ -279,6 +283,86 @@ deliberately differs from it.
    They now gate beat folding; only the flash text changed
    (`Fold finished beats: on/off`).
 7. **Run-together narration words were not ours to fix.** See Findings.
+
+## Post-review hardening
+
+A code and security review of the finished branch raised four issues; all
+four are fixed. None of them changed the transcript's structure, the shape of
+the wire contract, or any user-visible layout.
+
+### Terminal control sequences in model-authored text
+
+Display text in the transcript comes from the model: a todo item's content, a
+subagent's label, the command a job runs, a job's own output. It was rendered
+verbatim, so a model that emitted a terminal escape sequence was writing
+straight into the terminal — OSC 52 (clipboard write), OSC 0 (window title),
+OSC 8 (hyperlink), CSI 2J (screen clear) — and the transcript repaints once
+per frame.
+
+`viewmodel` gains two scrubbers, applied at the projection boundary so the
+TUI, ACP and web all receive the same text:
+
+- `ScrubText` for single-line rows. It also flattens `\n`, `\r` and `\t` to
+  spaces, so a todo containing a line break cannot split a one-line band row
+  and make the height budget undercount.
+- `ScrubBlock` for text whose line structure *is* the content — an expanded
+  job's output, a subagent's summary. It keeps `\n` and `\t` and drops `\r`,
+  so a CRLF collapses to one break instead of double-spacing.
+
+Both drop C0 (including ESC), DEL and C1, leave every printable byte alone (a
+path, an emoji and a CJK glyph survive byte-for-byte), and are idempotent:
+`Build` scrubs once and the renderers scrub again at their own boundary.
+Neither is used to compute a node ID, a key or a filter — identity always
+comes from the raw value, so scrubbing can never merge two rows into one.
+
+The TUI renderers that read the session directly rather than through the
+projection scrub at their own boundary too: the job card, the completion
+marker, the todo divider, the subagent card (a live region — it repaints on
+every spinner tick) and the band's rows. `web/ui` needs no change: it renders
+the wire payload, which is already scrubbed.
+
+### Guards on exported helpers
+
+Three exported helpers indexed or dereferenced data that only `Build`
+guarantees:
+
+- `BandOf` read `n.Tools[0].Timestamp` for a running job. `Build` always
+  attaches exactly one call to a job card, but a tree that has been rebuilt,
+  filtered or merged need not. The new `Node.JobStart()` returns the zero time
+  instead, and the row renders with its elapsed time unknown.
+- `markerNode` took `m.Refs[0].Key` and paired each ref with `m.Labels[i]`. A
+  marker with no refs now falls back to a key derived from its own timestamp
+  (rather than the empty key every such marker would otherwise share), and the
+  version hash tolerates a label slice shorter than the ref slice.
+- `StepHeadline` called `strings.TrimSpace(m.Content)` on every narration
+  entry; a nil entry is now skipped.
+
+### The nudge's fence, its bound and its latch
+
+Three changes to the stale-todo reminder (§4b):
+
+- The item's content was interpolated into a literal `<system-reminder>` fence
+  with `%q`, which does not escape angle brackets. An item containing the
+  closing tag ended the fence early, and everything after it was read as
+  marshal's own voice. `nudgeQuote` now writes `<` and `>` as `\u003c` and
+  `\u003e`, so the fence closes exactly once, at the end.
+- The same content was unbounded, and the reminder is appended once per list
+  version, so one enormous item rode along whole every time it fired. The
+  quoted item is now truncated at 120 runes.
+- `todoClock` and `todoNudged` were plain fields read and written from the
+  parallel read-only tool phase, so two calls in one batch could each pass the
+  latch and append the reminder twice. Both are now guarded by `todoMu`,
+  following `trackerMu`'s convention for per-turn state reached from tool
+  goroutines.
+
+Tests: `TestRenderersDropTerminalControlSequences` asserts on the **raw**
+render — never through `ansi.Strip`, which removes escape sequences and would
+therefore pass whether or not a renderer leaked them — and bans ESC-introduced
+sequences other than the renderer's own SGR styling, which a correct render is
+full of. `internal/viewmodel/scrub_test.go` pins the scrubbers' byte-fidelity
+and idempotence, `hardening_test.go` the three guards, and
+`todonudge_fence_test.go` the fence, the bound, and 16 concurrent callers
+firing the reminder exactly once.
 
 ## Findings
 

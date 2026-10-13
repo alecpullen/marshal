@@ -1,7 +1,7 @@
 # Transcript beats: fact-driven transcript, todos as labels
 
 Date: 2026-10-10
-Status: design approved in brainstorm; awaiting spec review
+Status: implemented on `transcript-beats`; see "Decisions during implementation"
 
 ## Problem
 
@@ -190,14 +190,27 @@ the plan changed.
 
 `internal/viewmodel/wire.go`:
 
-- **Removed:** node kinds `task`, `queue`, `jobExit`; step fields `inferred`,
-  `heuristic`.
-- **Changed:** `step` → `beat` with `stepIds: []`, `todo?: {id, index, total,
-  content}` (transition beats only), `folded: bool`.
-- **New:** `marker` node `{refs: [cardKey], status, ended}`.
-- **Card fields:** subagent and job cards gain `status`, `exit`, `ended`.
-- **Band payload:** `band: {progress, active, stale?, next[], entities[]}`
-  alongside the tree.
+- **Removed:** node kinds `task`, `queue` and `jobExit`; step fields `inferred`
+  and `heuristic`; the `WireJobExit` payload.
+- **Changed:** the wire kind stays `step`, and a beat keeps the key
+  `step:<firstStepID>` — a beat is a `KindStep` node that merged responses, and
+  keeping the key preserved expand state and the render cache for free. A beat
+  adds `stepIds: []` (the merged responses, first first), `todo?: {id, index,
+  total, content}` (transition beats only) and `folded: bool`.
+- **New:** a `marker` node `{refs: [cardKey], labels: [], failed?, at?,
+  durationMs?}` recording the moment a card finished. Markers with nothing
+  between them merge, and a marker that lands inside an open beat is held until
+  the beat ends so it cannot split the work around it.
+- **Tool rows:** a background job's card is its own `shell.run` row, settled in
+  place, carrying `tool.job: {id, command, running?, exitCode, durationMs?,
+  output?, truncated?}`.
+- **Band:** travels as its own node — ID `band`, kind `band`, deliberately not
+  in `roots`, so a transcript walk ignores it while the existing stack-patch
+  protocol carries it unchanged. `{todos?, done, total, active?, stale?,
+  staleAgeMs?, next[], entities: [{ref, label, detail?, startedAt?}]}`.
+- **Subagent cards:** unchanged on the wire. They now render as one activity
+  line while running, and the completion notice they used to duplicate arrives
+  as a `ContentTypeSubagentNotice` message that the tree drops.
 
 No compatibility shim: `cmd/webbridge` embeds the SPA built from the same
 commit. `web/ui` updates `src/lib/stack.ts`,
@@ -237,6 +250,35 @@ any wire change:
 3. Lifecycle cards and tail markers.
 4. Band payload and stale tag; then the runner nudge.
 5. Output polish.
+
+## Decisions during implementation
+
+The design above describes the intent; these are the places the code
+deliberately differs from it.
+
+1. **The wire kind stays `step`; beat keys stay `step:<firstStepID>`.** The
+   design said `beat` / `beat:<id>`. Renaming would have touched ~15 web sites
+   for no user-visible gain, and keeping the key preserved expand state and the
+   render cache across the change. A beat is a `KindStep` node whose
+   `StepInfo.StepIDs` lists every response it merged.
+2. **The band ships as an extra wire node** with ID `band` and kind `band`,
+   not as a field on the tree. It is not in `roots`, so transcript rendering
+   ignores it and the existing ACP diff/patch machinery carries it with no
+   protocol change.
+3. **The TUI band is the existing now bar** (`internal/app/tui/nowbar.go`),
+   which already held a progress row plus subagent/job/watch rows. The top todo
+   strip (`renderTodoStrip`) and the waiting band (`renderTodoBand`) were
+   deleted; the band's checklist row replaces both. `todo_strip.go` is gone.
+4. **Job exits are recorded agent-side.** `JobManager.SetOnExit` is wired in
+   `internal/app/app.go` to `state.AddJobExit`, replacing the TUI's job-count
+   diff, so an ACP or web session sees a card settle too.
+5. **The drill-in footer is gone from running subagent cards** rather than
+   shown on focus: a card that is a status row should not carry a keyboard
+   hint. `ctrl+f` stays documented in the browse help.
+6. **`[tui.transcript] fold_finished_tasks` and the `z` toggle are kept.**
+   They now gate beat folding; only the flash text changed
+   (`Fold finished beats: on/off`).
+7. **Run-together narration words were not ours to fix.** See Findings.
 
 ## Findings
 

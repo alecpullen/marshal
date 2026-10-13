@@ -557,6 +557,12 @@ func renderAgentMarkdown(content string, width int) string {
 }
 
 func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int) string {
+	return renderTranscriptItemIn(item, detailExpanded, spinnerFrame, rv, callers, width, "")
+}
+
+// renderTranscriptItemIn is renderTranscriptItem with the session's active
+// root, so a pass-through shell row elides a leading cd into it.
+func renderTranscriptItemIn(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int, workdir string) string {
 	switch item.Kind {
 	case session.KindThinking:
 		if item.Thinking == nil {
@@ -567,7 +573,7 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 		if item.Audit == nil {
 			return ""
 		}
-		return renderCompletedToolCall(*item.Audit, detailExpanded, callers, width)
+		return renderCompletedToolCallIn(*item.Audit, detailExpanded, callers, width, workdir)
 	case session.KindMessage:
 		if item.Message == nil {
 			return ""
@@ -597,59 +603,13 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 			return ""
 		}
 		return renderRunEvent(*item.RunEvent, detailExpanded, width)
-	case session.KindJobExit:
-		if item.JobExit == nil {
-			return ""
-		}
-		return renderJobExit(*item.JobExit, detailExpanded, width)
 	}
 	return ""
 }
 
-// renderJobExit renders a finished background job as one settled transcript
-// row, expanding to its buffered output. It is history, so it is flat: the
-// tint marks activity, not severity.
-func renderJobExit(e session.JobExit, expanded bool, width int) string {
-	g, style := glyph.Job, statusOkStyle()
-	gutterColor := theme.Current().FGMuted
-	if e.ExitCode != 0 {
-		g, style = glyph.Error, errorStyle()
-		gutterColor = theme.Current().StatusError
-	}
-	parts := []string{e.ID, e.Command, fmt.Sprintf("exit %d", e.ExitCode)}
-	if e.Duration > 0 {
-		parts = append(parts, formatElapsed(e.Duration))
-	}
-	head := strings.Join(parts, dimSeparator)
-	if e.Output != "" {
-		if expanded {
-			head += " " + glyph.DisclosureExpanded
-		} else {
-			head += " " + glyph.DisclosureCollapsed
-		}
-	}
-	cw := contentWidth(width)
-	var b strings.Builder
-	for i, hl := range strings.Split(ansi.Wrap(head, cw, WrapBreakpoints), "\n") {
-		if i == 0 {
-			b.WriteString(gutterPrefix(g, gutterColor))
-		} else {
-			b.WriteString(continuation())
-		}
-		b.WriteString(style.Render(hl))
-		b.WriteString("\n")
-	}
-	if expanded && e.Output != "" {
-		for _, line := range strings.Split(strings.TrimRight(e.Output, "\n"), "\n") {
-			for _, wl := range strings.Split(ansi.Wrap(line, cw, WrapBreakpoints), "\n") {
-				b.WriteString(continuation())
-				b.WriteString(mutedStyle().Render(wl))
-				b.WriteString("\n")
-			}
-		}
-	}
-	return b.String()
-}
+// A finished job is not a row of its own any more: its card is the shell.run
+// that started it, settled in place (steps.go renderJobCard), and the moment
+// it finished is a completion marker. renderJobExit lived here.
 
 // subagentTailBudget is how many logical tail lines to pull from a running
 // child. liveregion windows them to the visible rows, so this only needs to
@@ -666,6 +626,14 @@ const subagentTailBudget = 40
 func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame string, rv regionView, width int) string {
 	th := theme.Current()
 	live := v.Status == session.SubagentRunning
+	// The label and the summary are the model's own text — a child's
+	// description, its narration — and this card is a live region, so it
+	// repaints on every tick. Scrub once here: v is a copy, and every field
+	// below reads the scrubbed value.
+	v.Label = viewmodel.ScrubText(v.Label)
+	v.CurrentTool = viewmodel.ScrubText(v.CurrentTool)
+	v.SalvagedReason = viewmodel.ScrubText(v.SalvagedReason)
+	v.Summary = viewmodel.ScrubBlock(v.Summary)
 
 	// Duration: elapsed while running, total once finished.
 	var dur string
@@ -713,15 +681,16 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 			Title:      v.Label,
 			Right:      dur,
 			Meta:       strings.Join(meta, dimSeparator),
-			Body:       subagentBodyLines(v.Child, subagentTailBudget),
-			MaxRows:    liveregion.SubagentRows,
-			Offset:     rv.offset,
-			MinRows:    rv.minRows,
-			Live:       true,
-			Width:      width,
-		}
-		if v.Child != nil {
-			spec.Footer = "ctrl+f to drill in"
+			// One dim line: the child's latest activity. The card is a
+			// status row, not a window onto the child's work — ctrl+f (in
+			// browse help) opens that. It used to pad to a high-water mark
+			// and carry a footer, which made a running child the tallest
+			// thing on screen.
+			Body:    lastN(subagentBodyLines(v.Child, subagentTailBudget), 1),
+			MaxRows: liveSubagentRows,
+			Offset:  rv.offset,
+			Live:    true,
+			Width:   width,
 		}
 		out = liveregion.Render(spec, th)
 	} else {
@@ -734,9 +703,15 @@ func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame stri
 
 	if expanded && v.Summary != "" {
 		cw := contentWidth(width)
+		// The summary is markdown. Rendering it as prose keeps its structure
+		// without the heading markers a raw wrap would leak.
+		body := v.Summary
+		if md, ok := renderMarkdown(v.Summary, cw); ok {
+			body = strings.TrimRight(md, "\n")
+		}
 		var b strings.Builder
 		b.WriteString(out)
-		for _, line := range strings.Split(ansi.Wrap(v.Summary, cw, WrapBreakpoints), "\n") {
+		for _, line := range strings.Split(body, "\n") {
 			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(line))
 			b.WriteString("\n")
@@ -993,7 +968,15 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	return b.String()
 }
 
+// renderCompletedToolCall renders a settled call with no working tree known,
+// so a shell command keeps the text the model wrote.
 func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers []string, width int) string {
+	return renderCompletedToolCallIn(event, expanded, callers, width, "")
+}
+
+// renderCompletedToolCallIn is renderCompletedToolCall with the session's
+// active root, which elides a leading cd into it from shell rows.
+func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers []string, width int, workdir string) string {
 	g := toolCategoryGlyph(event.ToolName)
 	style := statusOkStyle()
 	if event.Error != "" {
@@ -1019,7 +1002,7 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 	// the tool-name-first shape whenever there are no symbols, which is
 	// every language without a tree-sitter grammar and every whole-file
 	// rewrite — so the fallback is the common path, not a degraded one.
-	if s := shellSubject(event); shellRow && s != "" {
+	if s := shellSubjectIn(event, workdir); shellRow && s != "" {
 		head = s
 		// The summary duplicates the head only for normal foreground
 		// runs (command + exit code). Background jobs ("started
@@ -1052,8 +1035,8 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 	}
 	if event.Error != "" {
 		head += dimSeparator + event.Error
-	} else if event.ResultSummary != "" && !summaryDupesCommand {
-		head += dimSeparator + event.ResultSummary
+	} else if s := viewmodel.DisplaySummary(event); s != "" && !summaryDupesCommand {
+		head += dimSeparator + s
 	}
 	if event.ResultContent != "" || event.Error != "" {
 		if expanded {
@@ -1065,16 +1048,23 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 
 	cw := contentWidth(width)
 	var b strings.Builder
-	headWrapped := ansi.Wrap(head, cw, WrapBreakpoints)
-	headLines := strings.Split(headWrapped, "\n")
-	for i, hl := range headLines {
-		if i == 0 {
-			b.WriteString(gutter)
-		} else {
-			b.WriteString(continuation())
-		}
-		b.WriteString(style.Render(hl))
+	if !expanded {
+		// A collapsed row is one line. The transcript is a list of what
+		// happened, and a wrapped row costs the reader a line for detail they
+		// did not ask for; expanding it is how they ask.
+		b.WriteString(gutter)
+		b.WriteString(style.Render(ansi.Truncate(oneLine(head), cw, "…")))
 		b.WriteString("\n")
+	} else {
+		for i, hl := range strings.Split(ansi.Wrap(head, cw, WrapBreakpoints), "\n") {
+			if i == 0 {
+				b.WriteString(gutter)
+			} else {
+				b.WriteString(continuation())
+			}
+			b.WriteString(style.Render(hl))
+			b.WriteString("\n")
+		}
 	}
 	// Blast radius: a continuation line naming what references the symbol
 	// this row changed. It is a settled one-time addition to a settled row,

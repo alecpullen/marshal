@@ -328,10 +328,15 @@ func TestRenderSubagentCardContent(t *testing.T) {
 		Child:     child,
 	}
 	out := stripANSI(renderSubagentCard(running, false, "⠋", regionView{}, 80))
-	for _, want := range []string{"explore repo", "7 tool calls", "ctrl+f to drill in"} {
+	for _, want := range []string{"explore repo", "7 tool calls"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("running card missing %q, got:\n%s", want, out)
 		}
+	}
+	// The card is a status row, not a window onto the child's work, so it
+	// carries no drill-in footer. ctrl+f stays in the browse help.
+	if strings.Contains(out, "ctrl+f") {
+		t.Fatalf("running card must not carry a drill-in footer, got:\n%s", out)
 	}
 
 	done := session.SubagentView{

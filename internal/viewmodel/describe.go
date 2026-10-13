@@ -3,13 +3,52 @@ package viewmodel
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
+
+// ElideWorkdir shortens a command that starts by changing into the session's
+// working tree: "cd <root> && pytest" reads as "⌂ pytest".
+//
+// A shell command that has to run in the worktree has to say so, and the
+// path is both long and already implied by the row's context. Only a leading
+// cd into the root, followed by a separator, is elided: a cd somewhere else
+// is information the reader needs.
+func ElideWorkdir(cmd, root string) string {
+	if root == "" {
+		return cmd
+	}
+	for _, sep := range []string{" && ", "; "} {
+		for _, q := range []string{root, `"` + root + `"`, "'" + root + "'"} {
+			if p := "cd " + q + sep; strings.HasPrefix(cmd, p) {
+				return "⌂ " + strings.TrimPrefix(cmd, p)
+			}
+		}
+	}
+	return cmd
+}
+
+// DisplaySummary is the summary a row shows. An await's result names what
+// finished, which the completion marker already says; its row just reports
+// the wait.
+func DisplaySummary(ev registry.AuditEvent) string {
+	if ev.ToolName == "agent.await" && ev.Error == "" {
+		return "waited " + compactWait(ev.Duration)
+	}
+	return ev.ResultSummary
+}
+
+func compactWait(d time.Duration) string {
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%60)
+}
 
 // The functions in this file turn tree payloads into the short phrases every
 // client shows: a step's headline, a tool call's subject, an owner's name.
@@ -46,33 +85,32 @@ func StepRoleWord(st session.Step) string {
 	return o
 }
 
-// StepHeadline picks the header text. A narrated step uses the first sentence
-// of its first narration; the remainder (and any later narration) becomes the
-// continuation. Without narration the headline is inferred from the tool rows
-// and rendered as such.
-func StepHeadline(si *StepInfo, rows []*Node) (head, rest string, inferred bool) {
+// StepHeadline picks a beat's header: the first sentence of its first
+// narration, with the remainder (and any later narration) as the
+// continuation. A beat without narration is headless (head == ""): its rows
+// render on their own, with no invented title.
+func StepHeadline(si *StepInfo) (head, rest string) {
 	var texts []string
 	for _, m := range si.Narration {
+		// A caller-built tree can hold a nil narration entry; a header must
+		// never be the thing that panics a renderer.
+		if m == nil {
+			continue
+		}
 		if t := strings.TrimSpace(m.Content); t != "" {
 			texts = append(texts, t)
 		}
 	}
-	if len(texts) > 0 {
-		h, r := FirstSentence(texts[0])
-		parts := []string{}
-		if r != "" {
-			parts = append(parts, r)
-		}
-		parts = append(parts, texts[1:]...)
-		return StripEmphasis(h), strings.Join(parts, "\n\n"), false
+	if len(texts) == 0 {
+		return "", ""
 	}
-	if h := InferHeadline(rows); h != "" {
-		return h, "", true
+	h, r := FirstSentence(texts[0])
+	parts := []string{}
+	if r != "" {
+		parts = append(parts, r)
 	}
-	if len(si.Thinking) > 0 || si.LiveThinking != "" {
-		return "thinking", "", true
-	}
-	return "working", "", true
+	parts = append(parts, texts[1:]...)
+	return StripEmphasis(h), strings.Join(parts, "\n\n")
 }
 
 // FirstSentence splits s at the first ". ", "! ", "? " or newline that comes
@@ -101,124 +139,6 @@ func FirstSentence(s string) (head, rest string) {
 // which is rendered as plain text.
 func StripEmphasis(s string) string {
 	return strings.NewReplacer("**", "", "__", "", "`", "", "*", "", "~~", "").Replace(s)
-}
-
-// InferHeadline describes what a step did from its tool rows when the model
-// did not narrate: up to two clauses joined by " · ", then "…" if more
-// follow. Clients mark it as inferred because it is a guess at intent, not
-// the agent's own words.
-func InferHeadline(rows []*Node) string {
-	type clause struct {
-		kind  string
-		count int
-		text  string
-	}
-	var order []string
-	byKind := map[string]*clause{}
-	touch := func(kind string) *clause {
-		c, ok := byKind[kind]
-		if !ok {
-			c = &clause{kind: kind}
-			byKind[kind] = c
-			order = append(order, kind)
-		}
-		return c
-	}
-	visit := func(name, target string, n int) {
-		switch {
-		case name == "file.read":
-			touch("read").count += n
-		case IsSearchTool(name):
-			c := touch("search")
-			c.count += n
-			if c.text == "" && target != "" {
-				c.text = target
-			}
-		case name == "shell.run" || name == "test.run":
-			c := touch("ran:" + name)
-			c.count += n
-			if c.text == "" {
-				if f := strings.Fields(target); len(f) > 0 {
-					c.text = f[0]
-				}
-			}
-		case name == "file.write_patch" || name == "patch.apply" || strings.HasPrefix(name, "file.write"):
-			c := touch("edit")
-			c.count += n
-			if c.text == "" && target != "" {
-				c.text = filepath.Base(target)
-			}
-		case name == "agent.run":
-			touch("agents").count += n
-		default:
-			c := touch("other:" + name)
-			c.count += n
-			c.text = DisplayToolName(name)
-		}
-	}
-	for _, r := range rows {
-		switch {
-		case r.Kind == KindSubagent:
-			visit("agent.run", "", 1)
-		case r.Active != nil:
-			visit(r.Active.Name, strings.TrimPrefix(r.Active.Args, "$ "), 1)
-		default:
-			for _, ev := range r.Tools {
-				visit(ev.ToolName, ToolTarget(ev), 1)
-			}
-		}
-	}
-	var parts []string
-	for _, k := range order {
-		c := byKind[k]
-		switch {
-		case k == "read":
-			parts = append(parts, fmt.Sprintf("read %d %s", c.count, plural(c.count, "file", "files")))
-		case k == "search":
-			if c.text != "" {
-				parts = append(parts, fmt.Sprintf("searched %q", c.text))
-			} else {
-				parts = append(parts, "searched")
-			}
-		case strings.HasPrefix(k, "ran:"):
-			if c.text != "" {
-				parts = append(parts, "ran "+c.text+" …")
-			} else {
-				parts = append(parts, "ran a command")
-			}
-		case k == "edit":
-			if c.text != "" {
-				parts = append(parts, "edited "+c.text)
-			} else {
-				parts = append(parts, fmt.Sprintf("edited %d %s", c.count, plural(c.count, "file", "files")))
-			}
-		case k == "agents":
-			parts = append(parts, fmt.Sprintf("dispatched %d %s", c.count, plural(c.count, "agent", "agents")))
-		default:
-			parts = append(parts, c.text)
-		}
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	out := strings.Join(parts[:min(len(parts), 2)], " · ")
-	if len(parts) > 2 {
-		out += " …"
-	}
-	return out
-}
-
-// IsSearchTool reports whether a tool's subject is a query.
-func IsSearchTool(name string) bool {
-	return strings.HasPrefix(name, "repo.search") || strings.HasPrefix(name, "codebase.search") ||
-		strings.HasPrefix(name, "symbols.") || name == "web.search" || strings.HasPrefix(name, "search.")
-}
-
-func plural(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
 }
 
 // ToolTarget returns the short human-facing subject of a tool call — the

@@ -68,12 +68,11 @@ export function nodeLabel(n: WireNode | undefined, id = ''): string {
   if (!n) return id
   if (n.step) return n.step.headline
   if (n.tool) return [n.tool.display, n.tool.calls?.[0]?.target ?? n.tool.running?.target].filter(Boolean).join(' ')
-  if (n.task) return n.task.content
   if (n.subagent) return n.subagent.label
   if (n.message) return n.message.content.split('\n')[0].slice(0, 80)
   if (n.thinking) return 'thinking'
   if (n.runEvent) return n.runEvent.title ?? n.runEvent.kind
-  if (n.jobExit) return n.jobExit.command
+  if (n.marker) return `${n.marker.labels.join(' ')} ${n.marker.failed ? 'failed' : 'done'}`
   return id || n.id
 }
 

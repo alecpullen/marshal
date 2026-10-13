@@ -623,13 +623,11 @@ func newViewTestModelWithRegistryAndFileIndex(t *testing.T, width, height int, p
 
 func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 	m := newTestModel(t)
-	if err := m.state.SetTodos([]native.TodoItem{
+	todoDrivenTurn(t, &m, []native.TodoItem{
 		{Content: "scaffold parser", Status: native.TodoCompleted},
 		{Content: "implement parser", Status: native.TodoInProgress},
 		{Content: "add tests", Status: native.TodoPending},
-	}); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
+	})
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
 	m.refreshViewport()
 
@@ -653,9 +651,11 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 	if inputRow >= 0 && todoRow > inputRow {
 		t.Fatalf("todo progress row must render above the input row (todo=%d input=%d)", todoRow, inputRow)
 	}
-	// The transcript no longer carries todos.
-	if strings.Contains(stripANSI(m.viewport.View()), "implement parser") {
-		t.Fatal("todos must not be rendered into the transcript any more")
+	// The transcript carries the transition divider — the work's own heading —
+	// while the band carries the counts. Neither duplicates the other.
+	transcript := stripANSI(m.viewport.View())
+	if !strings.Contains(transcript, "2/3 implement parser") {
+		t.Fatalf("the transcript should carry the todo divider:\n%s", transcript)
 	}
 }
 
@@ -722,13 +722,11 @@ func TestTurnSpinnerReservedWhenIdle(t *testing.T) {
 // always-reserved (but empty) turn-spinner row. Nothing is reserved now.
 func TestNoBlankRowAboveNowBar(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	if err := m.state.SetTodos([]native.TodoItem{
+	todoDrivenTurn(t, &m, []native.TodoItem{
 		{Content: "first task", Status: "completed"},
 		{Content: "second task", Status: "in_progress"},
 		{Content: "third task", Status: "pending"},
-	}); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
+	})
 	// Fill the transcript so its bottom row is real content: an empty
 	// viewport pads with blanks, which would mask the spinner row.
 	for i := 0; i < 40; i++ {
@@ -898,18 +896,17 @@ func TestTurnRowFoldsIntoSDDProgressRow(t *testing.T) {
 
 // TestTurnSpinnerGlyphGatedOnFirst200ms avoids a glyph flash on fast turns.
 // TestTodoProgressRowCarriesTurnElapsed pins that a busy turn with todos
-// shows one progress row — blocks, counts, the in-progress item and the turn
-// clock — directly above the input, not a separate spinner row.
+// shows the band — the progress row (blocks, counts, the in-progress item and
+// the turn clock) over the checklist row — in the two rows directly above the
+// input.
 func TestTodoProgressRowCarriesTurnElapsed(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	if err := m.state.SetTodos([]native.TodoItem{
+	todoDrivenTurn(t, &m, []native.TodoItem{
 		{Content: "first task", Status: "completed"},
 		{Content: "second task", Status: "in_progress"},
 		{Content: "third task", Status: "pending"},
 		{Content: "fourth task", Status: "pending"},
-	}); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
+	})
 	m.busy = true
 	m.turnStartedAt = m.now().Add(-24 * time.Second)
 	m.spinnerFrame = "⠹"
@@ -930,8 +927,13 @@ func TestTodoProgressRowCarriesTurnElapsed(t *testing.T) {
 			t.Errorf("progress row %q missing %q", lines[row], want)
 		}
 	}
-	if inputTop := 30 - m.inputAreaRows() - statusLineRows; row != inputTop-1 {
-		t.Errorf("progress row at %d, want directly above the input at %d", row, inputTop)
+	// The band is two rows: progress over checklist, both above the input.
+	inputTop := 30 - m.inputAreaRows() - statusLineRows
+	if row != inputTop-2 {
+		t.Errorf("progress row at %d, want two above the input at %d", row, inputTop)
+	}
+	if list := lines[inputTop-1]; !strings.Contains(list, "1 done") || !strings.Contains(list, "next: third task") {
+		t.Errorf("checklist row %q should hold the done count and what comes next", list)
 	}
 	if len(lines) != 30 {
 		t.Errorf("frame = %d rows, want 30", len(lines))

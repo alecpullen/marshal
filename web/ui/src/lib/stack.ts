@@ -4,22 +4,39 @@ import { APIError, getStack } from './api'
 // Wire shapes, mirroring internal/viewmodel/wire.go. Times are Unix
 // milliseconds; absent means unset.
 
+// How many rows a beat shows before older ones collapse into a count, a
+// mirror of viewmodel.BeatRowCap. Models that rarely narrate otherwise push
+// the live tail off the transcript.
+export const BEAT_ROW_CAP = 8
+
 export interface WireThought { text: string; durationMs?: number }
 export interface WireStep {
   headline: string
   rest?: string
-  inferred?: boolean
   owner?: string
   roleWord?: string
   role?: string
   model?: string
   provider?: string
   todoId?: string
-  heuristic?: boolean
+  /** Set on the one beat where work moves to a different todo. */
+  todo?: WireTodoLabel
+  /** The agent finished this beat and it is older than the newest few. */
+  folded?: boolean
+  /** The `session.Step` IDs this beat merges, oldest first. */
+  stepIds?: number[]
   startedAt?: number
   endedAt?: number
   thoughts?: WireThought[]
   liveThinking?: string
+}
+// A todo transition, shown once as a divider rather than repeated on every
+// later beat of the same todo.
+export interface WireTodoLabel {
+  id: string
+  index: number
+  total: number
+  content: string
 }
 export interface WireCall {
   callId?: string
@@ -40,7 +57,37 @@ export interface WireCall {
   truncated?: boolean
 }
 export interface WireRunning { target?: string; output?: string; startedAt?: number; truncated?: boolean }
-export interface WireTool { name: string; display: string; calls?: WireCall[]; running?: WireRunning }
+export interface WireTool {
+  name: string
+  display: string
+  calls?: WireCall[]
+  running?: WireRunning
+  /** Set when this row is a background job's card. */
+  job?: WireJob
+}
+/** A background job's card: the call that started it, settled in place. */
+export interface WireJob {
+  id: string
+  command: string
+  running?: boolean
+  /** The session ended while the job ran; exitCode means nothing. */
+  lost?: boolean
+  exitCode: number
+  /** When the job was dispatched (unix ms), for a running card's clock. */
+  startedAt?: number
+  durationMs?: number
+  output?: string
+  truncated?: boolean
+}
+/** A one-line completion marker: what finished, and when. */
+export interface WireMarker {
+  /** Node IDs of the cards this marker reports on. */
+  refs: string[]
+  labels: string[]
+  failed?: boolean
+  at?: number
+  durationMs?: number
+}
 export interface WireMessage {
   role: string
   contentType?: string
@@ -79,31 +126,28 @@ export interface WireRunEvent {
   at?: number
   truncated?: boolean
 }
-export interface WireJobExit {
-  jobId: string
-  command: string
-  exitCode: number
-  durationMs?: number
-  output?: string
-  at?: number
-  truncated?: boolean
+
+/** The pinned band: todo progress with its stale signal, and running cards. */
+export interface WireBand {
+  todos?: boolean
+  done: number
+  total: number
+  active?: string
+  stale?: boolean
+  staleAgeMs?: number
+  /** When the stale clock started (unix ms); ticks the age between patches. */
+  staleSince?: number
+  next?: string[]
+  entities?: WireBandEntity[]
 }
-export interface WireTask {
-  todoId: string
-  content: string
-  status: string
-  index?: number
-  total?: number
-  dropped?: boolean
-  steps: number
-  workMs?: number
-  tools: number
-  edits: number
-  unresolvedFailure?: boolean
-  firstNarration?: string
+/** One running card the band lists. */
+export interface WireBandEntity {
+  ref: string
+  label: string
+  detail?: string
   startedAt?: number
-  completedAt?: number
 }
+
 export interface WireReceipt {
   durationMs: number
   tasks: number
@@ -126,9 +170,9 @@ export interface WireNode {
   thinking?: WireThinking
   subagent?: WireSubagent
   runEvent?: WireRunEvent
-  jobExit?: WireJobExit
-  task?: WireTask
+  marker?: WireMarker
   receipt?: WireReceipt
+  band?: WireBand
 }
 
 export interface StackSnapshot {

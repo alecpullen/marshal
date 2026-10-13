@@ -25,7 +25,7 @@ describe('dock reducer', () => {
   })
 
   it('select enters select mode and switches to inspect for inspectable kinds', () => {
-    for (const kind of ['tool', 'step', 'task', 'subagent']) {
+    for (const kind of ['tool', 'step', 'subagent']) {
       const s = reduce(d({ tab: 'files' }), { type: 'select', nodeId: 'n', kind })
       expect(s).toMatchObject({ mode: 'select', selected: 'n', tab: 'inspect' })
     }

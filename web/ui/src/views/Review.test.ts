@@ -278,15 +278,55 @@ describe('Review by step', () => {
     const d1 = 'diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,2 @@\n package a\n+var x = 1\n'
     const d2 = 'diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,2 @@\n package a\n-var x = 1\n+var x = 2\n'
     ;(api.getStepDiffs as Mock).mockResolvedValue([
-      { stepNode: 's1', turnNode: 't1', taskNode: 'k1', headline: 'add x', files: ['a.go'], diff: d1 },
-      { stepNode: 's2', turnNode: 't1', taskNode: 'k1', headline: 'tweak x', files: ['a.go'], diff: d2 },
+      { stepNode: 's1', turnNode: 't1', headline: 'add x', files: ['a.go'], diff: d1 },
+      { stepNode: 's2', turnNode: 't1', headline: 'tweak x', files: ['a.go'], diff: d2 },
     ])
     render(Review, { agentId: 'a1', agent: agent() })
     await screen.findByText('var x = 2')
     await fireEvent.click(screen.getByText('By step'))
     expect(await screen.findByText('rewritten in tweak x')).toBeTruthy()
     expect(screen.getAllByText('Open step')).toHaveLength(2)
-    expect(screen.getByText('No task')).toBeTruthy()
+    expect(screen.getByText('No todo label')).toBeTruthy()
+  })
+
+  // The wire labels only the beat where work moves on, so the page groups
+  // each step under the newest divider at or before it.
+  const t = (id: string, children: string[], over: object = {}) => ({ id, kind: 'turn', children, ...over })
+  const beat = (id: string, over: object = {}) => ({ id, kind: 'step', parent: 't1', step: { headline: id, ...over } })
+  it('groups steps under the todo divider in force at each beat', async () => {
+    const d = 'diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,1 @@\n package a\n+var x = 1\n'
+    ;(api.getStepDiffs as Mock).mockResolvedValue([
+      { stepNode: 'b1', turnNode: 't1', headline: 'add x', files: ['a.go'], diff: d },
+      { stepNode: 'b2', turnNode: 't1', headline: 'tweak x', files: ['a.go'], diff: d },
+      { stepNode: 'b3', turnNode: 't1', headline: 'more x', files: ['a.go'], diff: d },
+    ])
+    ;(api.getStack as Mock).mockResolvedValue({
+      rev: 1,
+      roots: ['t1'],
+      nodes: [
+        t('t1', ['b1', 'b2', 'b3']),
+        beat('b1', { todo: { id: 'p', index: 3, total: 9, content: 'AccessibleModal' } }),
+        beat('b2'),
+        beat('b3', { todo: { id: 'q', index: 4, total: 9, content: 'Focus trap' } }),
+      ],
+    })
+    render(Review, { agentId: 'a1', agent: agent() })
+    await fireEvent.click(await screen.findByText('By step'))
+    await screen.findByText('add x')
+    // The heading splits the count and the todo name across spans, so read
+    // each group's whole text. FileDiffView nests its own sections, so only
+    // the testid's direct children are groups.
+    const groups = screen.getByTestId('by-step').querySelectorAll(':scope > section')
+    expect(groups).toHaveLength(2)
+    expect(groups[0].textContent).toContain('3/9')
+    expect(groups[0].textContent).toContain('AccessibleModal')
+    // b2 carries no label of its own, so it stays under the divider before it.
+    expect(groups[0].textContent).toContain('add x')
+    expect(groups[0].textContent).toContain('tweak x')
+    expect(groups[1].textContent).toContain('4/9')
+    expect(groups[1].textContent).toContain('Focus trap')
+    expect(groups[1].textContent).toContain('more x')
+    expect(groups[1].textContent).not.toContain('tweak x')
   })
 
   it('falls back to net effect when unsupported', async () => {

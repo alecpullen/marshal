@@ -56,6 +56,9 @@ type stackProjector struct {
 	// final marks a subagent projector flushed after its subagent stopped
 	// running; nothing more changes, so later ticks skip it.
 	final bool
+	// wakeAt is when the tree changes on elapsed time alone (the band's
+	// stale tag appearing); a dirty-only flush still runs once it passes.
+	wakeAt time.Time
 }
 
 // stackIdleInterval bounds how stale an idle session's stack can be.
@@ -187,11 +190,19 @@ func (m *TurnManager) flushProjector(sessionID string, subagentID int64, st *ses
 	p := m.stackFor(stackKey(sessionID, subagentID))
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.active || (onlyDirty && !p.dirty) {
+	now := time.Now()
+	due := !p.wakeAt.IsZero() && !now.Before(p.wakeAt)
+	if !p.active || (onlyDirty && !p.dirty && !due) {
 		return
 	}
-	patch, changed := p.diff(viewmodel.Project(viewmodel.Build(stackSnapshotOf(st, busy, drilled, time.Now()))))
+	snap := stackSnapshotOf(st, busy, drilled, now)
+	turns := viewmodel.Build(snap)
+	tree := viewmodel.Project(turns)
+	band := viewmodel.BandOf(snap, turns)
+	tree.Nodes = append(tree.Nodes, viewmodel.ProjectBand(band))
+	patch, changed := p.diff(tree)
 	p.dirty = false
+	p.wakeAt = band.StaleAt
 	if changed {
 		patch.SubagentID = subagentID
 		m.notifyStackPatch(sessionID, patch)
@@ -288,7 +299,13 @@ func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *s
 	p := m.stackFor(stackKey(request.SessionID, request.SubagentID))
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	tree := viewmodel.Project(viewmodel.Build(stackSnapshotOf(src, busy, drilled, time.Now())))
+	snap := stackSnapshotOf(src, busy, drilled, time.Now())
+	turns := viewmodel.Build(snap)
+	tree := viewmodel.Project(turns)
+	// The band rides along as an extra node. It is not in roots, so a
+	// transcript walk never sees it, but the projector carries it to web
+	// clients like any other node.
+	tree.Nodes = append(tree.Nodes, viewmodel.ProjectBand(viewmodel.BandOf(snap, turns)))
 	activated := false
 	if !p.active {
 		activated = true

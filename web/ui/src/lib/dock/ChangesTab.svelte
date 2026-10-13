@@ -99,7 +99,6 @@
   const shown = $derived.by(() => {
     if (!Array.isArray(stepDiffs) || !selectedStep) return []
     if (selectedStep.kind === 'step') return stepDiffs.filter((d) => d.stepNode === selectedStep.id)
-    if (selectedStep.kind === 'task') return stepDiffs.filter((d) => d.taskNode === selectedStep.id)
     return []
   })
 

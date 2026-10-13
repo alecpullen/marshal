@@ -91,19 +91,16 @@ func (m *Model) viewString() string {
 	var left string
 	if m.dock.FullFrameOpen() {
 		// A FullFrame panel owns everything above the status line: the
-		// transcript, now bar, and input area are hidden.
-		left = dockView
+		// transcript, now bar, and input area are hidden. It is padded to
+		// the rows it owns, because a panel whose content is shorter than
+		// the frame (the inspector on a short node) would otherwise leave
+		// the frame short of the terminal height.
+		left = padRows(dockView, m.height-statusLineRows)
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
-		// The waiting todos stack under the transcript: the strip above it
-		// holds the work done and under way, and the band below holds what
-		// is still to come.
-		if band := m.renderTodoBand(); band != "" {
-			rows = append(rows, chrome.PaintBand(band, m.leftWidth, theme.Current().TranscriptBG()))
-		}
 		// The now bar carries every live-progress surface in one place just
-		// above the input: the run/todo progress row, the turn spinner, and
-		// the running agents, browser, jobs and watches.
+		// above the input: the band's progress and checklist rows, the turn
+		// spinner, and the running agents, browser, jobs and watches.
 		if bar := renderNowBar(plan, m.leftWidth); bar != "" {
 			rows = append(rows, bar)
 		}
@@ -121,6 +118,18 @@ func (m *Model) viewString() string {
 	// scrollable, so nothing the user must always see is lost.
 	left = clipLeftColumn(left, m.height-statusLineRows)
 	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
+}
+
+// padRows grows s to exactly rows lines with blank ones, so a block that
+// renders shorter than the space it owns still fills it.
+func padRows(s string, rows int) string {
+	if rows < 1 {
+		return s
+	}
+	if h := lipgloss.Height(s); h < rows {
+		s += strings.Repeat("\n", rows-h)
+	}
+	return s
 }
 
 // clipLeftColumnHook is a test seam: set, it is told how many rows
@@ -153,9 +162,7 @@ func (m Model) renderTranscriptFrame() string {
 		hint := mutedStyle().Render("↑ scrolled — End to follow")
 		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
 	}
-	if strip := m.renderTodoStrip(); strip != "" {
-		content = lipgloss.JoinVertical(lipgloss.Left, strip, content)
-	}
+
 	if v, ok := m.drilledInto(); ok {
 		label := v.Label
 		if v.Role != "" {

@@ -194,7 +194,7 @@ func (m *Model) toolDetail(n *viewmodel.Node) inspector.Detail {
 
 func (m *Model) stepDetail(n *viewmodel.Node) inspector.Detail {
 	si := n.Step
-	head, _, _ := stepHeadline(si, n.Children)
+	head, _ := stepHeadline(si)
 	d := inspector.Detail{Subject: head}
 	d.Title = "step"
 	if si.Step.ID != 0 {

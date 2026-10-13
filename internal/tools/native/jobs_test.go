@@ -769,6 +769,36 @@ func waitForStatus(t *testing.T, jm *JobManager, id string, statusWant JobStatus
 	}
 }
 
+func TestJobManagerOnExitFiresOncePerJob(t *testing.T) {
+	ctx := context.Background()
+	runner := newFakeRunner(withResult(CommandResult{Stdout: "out\n", ExitCode: 0}))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	var mu sync.Mutex
+	var got []JobInfo
+	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) {
+		mu.Lock()
+		got = append(got, info)
+		mu.Unlock()
+	})
+	id, err := jm.Start(ctx, "echo hi", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jm.Wait(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || got[0].ID != id || got[0].Status == StatusRunning {
+		t.Fatalf("onExit calls = %+v", got)
+	}
+	if got[0].Status != StatusCompleted {
+		t.Fatalf("status = %q, want completed", got[0].Status)
+	}
+}
+
 func TestJobManagerStartRejectsCancelledManagerCtx(t *testing.T) {
 	parentCtx, parentCancel := context.WithCancel(context.Background())
 	runner := newFakeRunner()

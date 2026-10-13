@@ -178,8 +178,13 @@
             {#if 'truncated' in c && c.truncated && detail !== 'unsupported'}<p class="text-[11px] text-muted">output truncated</p>{/if}
           {/each}
           {#if detail === 'unsupported' && wireCalls.some((c) => c.truncated)}<p class="text-[11px] text-muted">Output is capped on this agent.</p>{/if}
+          {#if node.tool.job?.output}
+            <div class="mt-2 font-mono text-[11px] text-muted">{node.tool.job.id} · buffered output</div>
+            <pre class="max-h-96 overflow-auto rounded bg-bg p-2 font-mono text-xs whitespace-pre-wrap">{node.tool.job.output}</pre>
+            {#if node.tool.job.truncated}<p class="text-[11px] text-muted">output truncated</p>{/if}
+          {/if}
         {:else}
-          <pre class="max-h-96 overflow-auto rounded bg-bg p-2 font-mono text-xs whitespace-pre-wrap">{node.message?.content ?? node.task?.content ?? node.subagent?.summary ?? node.jobExit?.output ?? node.runEvent?.body ?? nodeLabel(node)}</pre>
+          <pre class="max-h-96 overflow-auto rounded bg-bg p-2 font-mono text-xs whitespace-pre-wrap">{node.message?.content ?? node.subagent?.summary ?? node.runEvent?.body ?? nodeLabel(node)}</pre>
         {/if}
       {:else if active === 'args'}
         {#each shownCalls as c, i (i)}

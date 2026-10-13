@@ -135,7 +135,7 @@ func (m *Model) toggleExpanded(id viewmodel.NodeID) {
 		return
 	}
 	cur := m.shownDensity(id)
-	if id.Kind == viewmodel.KindStep || id.Kind == viewmodel.KindTask {
+	if id.Kind == viewmodel.KindStep {
 		m.setOverride(id, cur.nextOverride())
 		return
 	}

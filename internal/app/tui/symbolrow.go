@@ -27,12 +27,17 @@ func subjectFirstTool(name string) bool {
 
 // shellSubject renders a command row: the command itself, then its exit
 // code and how long it took.
-func shellSubject(event registry.AuditEvent) string {
+func shellSubject(event registry.AuditEvent) string { return shellSubjectIn(event, "") }
+
+// shellSubjectIn is shellSubject with the session's active root, so a command
+// that begins by entering the working tree reads "⌂ pytest" rather than
+// repeating a path the row's context already implies.
+func shellSubjectIn(event registry.AuditEvent, workdir string) string {
 	cmd := toolTarget(event)
 	if cmd == "" {
 		return ""
 	}
-	parts := []string{cmd}
+	parts := []string{viewmodel.ElideWorkdir(cmd, workdir)}
 	if event.CommandExitCode != nil {
 		parts = append(parts, fmt.Sprintf("exit %d", *event.CommandExitCode))
 	}

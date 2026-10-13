@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
@@ -52,8 +53,8 @@ func TestProjectLinksParentsAndChildren(t *testing.T) {
 	if st.Kind != "step" || st.Step == nil {
 		t.Fatalf("step:7 = %+v", st)
 	}
-	if st.Step.Headline != "Reading the config loader." || st.Step.Rest != "Then the tests." || st.Step.Inferred {
-		t.Fatalf("headline = %q rest = %q inferred = %v", st.Step.Headline, st.Step.Rest, st.Step.Inferred)
+	if st.Step.Headline != "Reading the config loader." || st.Step.Rest != "Then the tests." {
+		t.Fatalf("headline = %q rest = %q", st.Step.Headline, st.Step.Rest)
 	}
 	tool := byID["tool:7:c1"]
 	if tool.Kind != "tool" || tool.Tool == nil || tool.Tool.Display != "Read file" || len(tool.Tool.Calls) != 1 {
@@ -67,16 +68,37 @@ func TestProjectLinksParentsAndChildren(t *testing.T) {
 	}
 }
 
-func TestProjectInfersHeadlineWithoutNarration(t *testing.T) {
+func TestProjectLeavesNarrationlessBeatHeadless(t *testing.T) {
 	tree := Project(Build(Snapshot{
 		Items: []session.TranscriptItem{userMsg(1, 0), audit("file.read", 7, "c1", 2), audit("file.read", 7, "c2", 3)},
 		Steps: []session.Step{{ID: 7, TurnMsgID: 1, StartedAt: at(1), EndedAt: at(4)}},
 		Now:   at(6),
 	}))
 	st := wireByID(t, tree)["step:7"].Step
-	if st == nil || st.Headline != "read 2 files" || !st.Inferred {
-		t.Fatalf("step = %+v, want inferred \"read 2 files\"", st)
+	if st == nil || st.Headline != "" {
+		t.Fatalf("step = %+v, want headless beat", st)
 	}
+}
+
+func TestWireStepCarriesMergedStepIDs(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Committing."),
+			audit("shell.run", 2, "g", 4),
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 1, 3, 5)},
+	})
+	tree := Project(nodes)
+	for _, n := range tree.Nodes {
+		if n.Kind == "step" {
+			if len(n.Step.StepIDs) != 2 {
+				t.Fatalf("stepIds = %v", n.Step.StepIDs)
+			}
+			return
+		}
+	}
+	t.Fatal("no step node")
 }
 
 func TestProjectRunningCallIsLive(t *testing.T) {
@@ -110,10 +132,77 @@ func TestProjectCapsLargeText(t *testing.T) {
 	}
 }
 
+func TestWireStepCarriesTodoLabelAndFold(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0), narration(2, 1, 1, "Old."), audit("file.read", 1, "a", 2), final(3, 3),
+			userMsg(5, 10), narration(6, 2, 11, "New."), audit("file.read", 2, "b", 12),
+		},
+		Steps: []session.Step{func() session.Step { s := stepFor(1, "p", 1, 2); s.TurnMsgID = 1; return s }(), stepOf(2, 5, 11, 12)},
+		Todos: todos(db.TodoItem{ID: "p", Content: "Parser", Status: "completed"}, db.TodoItem{ID: "q", Content: "Q", Status: "pending"}),
+	})
+	for _, n := range Project(nodes).Nodes {
+		if n.ID == "step:1" {
+			if n.Step.Todo == nil || n.Step.Todo.Content != "Parser" || !n.Step.Folded {
+				t.Fatalf("step:1 = %+v", n.Step)
+			}
+			return
+		}
+	}
+	t.Fatal("step:1 missing")
+}
+
 func TestKindStringCoversEveryKind(t *testing.T) {
-	for k := KindTurn; k <= KindReceipt; k++ {
+	for k := KindTurn; k <= KindMarker; k++ {
 		if s := k.String(); s == "" || s == "unknown" {
 			t.Fatalf("Kind(%d) has no wire name", k)
 		}
+	}
+}
+
+func TestWireMarkerAndJobCard(t *testing.T) {
+	nodes := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-4"), jobExit(5, "job-4", 2),
+	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
+	var sawJob, sawMarker bool
+	for _, n := range Project(nodes).Nodes {
+		if n.Tool != nil && n.Tool.Job != nil {
+			sawJob = n.Tool.Job.ExitCode == 2 && !n.Tool.Job.Running
+		}
+		if n.Kind == "marker" {
+			sawMarker = n.Marker != nil && n.Marker.Failed && n.Marker.Refs[0] == "tool:1:j"
+		}
+	}
+	if !sawJob || !sawMarker {
+		t.Fatalf("job %v marker %v", sawJob, sawMarker)
+	}
+}
+
+func TestElideWorkdir(t *testing.T) {
+	root := "/home/a/proj/.marshal/worktrees/x"
+	if got := ElideWorkdir("cd "+root+" && pytest -q", root); got != "⌂ pytest -q" {
+		t.Fatalf("got %q", got)
+	}
+	if got := ElideWorkdir("cd /elsewhere && ls", root); got != "cd /elsewhere && ls" {
+		t.Fatalf("other dirs stay: %q", got)
+	}
+	// The separators a shell command uses, and quoting of the root.
+	for _, cmd := range []string{"cd " + root + "; ls", `cd "` + root + `" && ls`, "cd '" + root + "' && ls"} {
+		if got := ElideWorkdir(cmd, root); !strings.HasPrefix(got, "⌂ ") {
+			t.Errorf("ElideWorkdir(%q) = %q", cmd, got)
+		}
+	}
+	if got := ElideWorkdir("cd "+root, root); got != "cd "+root {
+		t.Fatalf("a bare cd is not a prefix we elide: %q", got)
+	}
+	if got := ElideWorkdir("pytest -q", ""); got != "pytest -q" {
+		t.Fatalf("no root, no elision: %q", got)
+	}
+}
+
+func TestAwaitSummaryIsJustTheWait(t *testing.T) {
+	ev := registry.AuditEvent{ToolName: "agent.await", ResultSummary: "subagent 1 completed: Task 4", Duration: 18e9}
+	if got := DisplaySummary(ev); got != "waited 18s" {
+		t.Fatalf("got %q", got)
 	}
 }

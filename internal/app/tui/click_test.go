@@ -16,11 +16,11 @@ import (
 
 func TestClickRegionsCoverThinkingAndAuditBlocks(t *testing.T) {
 	m := newTestModel(t)
-	ts1 := time.Unix(600, 0)
-	ts2 := time.Unix(601, 0)
-	m.state.LogThinking(session.ThinkingEntry{Text: "why I did this", Duration: time.Second, StartedAt: ts1})
+	// The reasoning belongs to the newest turn: an earlier turn's beat folds
+	// to an outline row, which hides the thinking row it contains.
 	m.state.AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
-	_ = ts2
+	ts1 := time.Now()
+	m.state.LogThinking(session.ThinkingEntry{Text: "why I did this", Duration: time.Second, StartedAt: ts1})
 	m.invalidateTranscript()
 	m.refreshViewport()
 
@@ -265,5 +265,53 @@ func TestNoNowBarNoBand(t *testing.T) {
 	m := newTestModel(t)
 	if _, _, ok := m.nowBarBand(m.nowBarPlan()); ok {
 		t.Fatal("nothing live means no band")
+	}
+}
+
+// A completion marker in a later turn points at a job card inside an earlier
+// turn's folded beat. The card has no region while folded; clicking the
+// marker opens the beat and lands on the card rather than doing nothing.
+func TestMarkerClickOpensTheBeatHidingItsCard(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	m.foldTasks = true
+	m.state.AddMessage(session.RoleUser, "run the gate", session.ContentTypePlain)
+	s1 := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(s1, "Starting the gate.")
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "shell.run", StepID: s1, ToolCallID: "j",
+		Args: []byte(`{"command":"pytest -q","background":true}`), ResultSummary: session.JobStartPrefix + "job-1"})
+	m.state.EndStep(s1)
+	m.state.AddMessageFinal(session.RoleAssistant, "started", session.ContentTypePlain)
+	m.state.AddMessage(session.RoleUser, "anything else?", session.ContentTypePlain)
+	s2 := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(s2, "Waiting.")
+	m.state.EndStep(s2)
+	m.state.AddJobExit(session.JobExit{ID: "job-1", Command: "pytest -q", ExitCode: 1})
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	var marker nodeRegion
+	for _, r := range m.nodeRegions {
+		if r.target.jumpTo.Key != "" {
+			marker = r
+		}
+	}
+	card := marker.target.jumpTo
+	if card.Key == "" {
+		t.Fatal("no completion marker region")
+	}
+	if _, ok := m.regionFor(card); ok {
+		t.Fatal("precondition: the card's beat must be folded, leaving the card no region")
+	}
+
+	top := m.scrollHintRows()
+	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: top + marker.startLine - m.viewport.YOffset(), Button: tea.MouseLeft})
+	mm := asModel(t, updated)
+	r, ok := mm.regionFor(card)
+	if !ok {
+		t.Fatal("clicking the marker must open the beat that hides its card")
+	}
+	if want := max(0, min(r.startLine, mm.viewport.TotalLineCount()-mm.viewport.Height())); mm.viewport.YOffset() != want {
+		t.Fatalf("viewport at %d, card starts at %d", mm.viewport.YOffset(), r.startLine)
 	}
 }

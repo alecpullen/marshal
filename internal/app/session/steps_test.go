@@ -322,3 +322,27 @@ func TestTodoIDFloorCoversIDsOnlyStepsStillCarry(t *testing.T) {
 		t.Fatalf("floor = %d, want 4 (the step still carries t4)", got)
 	}
 }
+
+func TestContinuedNarrationStaysInTheTurnAndActor(t *testing.T) {
+	s := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{})
+	s.AddMessage(RoleUser, "first", ContentTypePlain)
+	a := s.BeginStep(Actor{})
+	s.AddNarration(a, "Now I'll update the README.")
+	s.EndStep(a)
+	b := s.BeginStep(Actor{})
+	if got := s.ContinuedNarration(b); got != "Now I'll update the README." {
+		t.Fatalf("same turn, same actor: %q", got)
+	}
+	s.EndStep(b)
+	sub := s.BeginStep(Actor{Role: "implementer", Label: "implementer"})
+	if got := s.ContinuedNarration(sub); got != "" {
+		t.Fatalf("another actor's narration is not this beat's: %q", got)
+	}
+	s.EndStep(sub)
+
+	s.AddMessage(RoleUser, "second", ContentTypePlain)
+	c := s.BeginStep(Actor{})
+	if got := s.ContinuedNarration(c); got != "" {
+		t.Fatalf("a new turn must not continue the previous turn's narration: %q", got)
+	}
+}

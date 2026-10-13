@@ -3193,6 +3193,11 @@ func TestCompletedToolCallsRemainInTranscriptLog(t *testing.T) {
 		CommandExitCode: &exitCode,
 	})
 
+	// A call logged before the first user turn joins the "pre" turn, whose
+	// beats are all finished and therefore fold to one outline row. Unfold
+	// them to read the rows this test is about.
+	m.foldTasks = false
+	m.invalidateTranscript()
 	m.refreshViewport()
 	view := stripANSI(m.View().Content)
 
@@ -5769,17 +5774,30 @@ func TestConnectDoneClearsEnvRefWhenSavingLiteralKey(t *testing.T) {
 
 func TestNowBarFollowsDrilledSubagentTodos(t *testing.T) {
 	m := newTestModel(t)
-	if err := m.state.SetTodos([]native.TodoItem{{Content: "parent task", Status: native.TodoPending}}); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
+	// Both lists belong to a turn that is working them: the band only shows
+	// progress a running turn is actually driving.
+	todoDrivenTurn(t, &m, []native.TodoItem{
+		{ID: "p1", Content: "parent task", Status: native.TodoInProgress},
+		{ID: "p2", Content: "parent next", Status: native.TodoPending},
+	})
+
 	childState := session.New(m.state.Config, t.TempDir(), time.Now(), session.Persistence{})
-	if err := childState.SetTodos([]native.TodoItem{{Content: "child task", Status: native.TodoInProgress}}); err != nil {
+	childState.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	if err := childState.SetTodos([]native.TodoItem{
+		{ID: "c1", Content: "child task", Status: native.TodoInProgress},
+		{ID: "c2", Content: "child next", Status: native.TodoPending},
+	}); err != nil {
 		t.Fatalf("child SetTodos: %v", err)
 	}
+	childStep := childState.BeginStep(session.Actor{})
+	childState.AddNarration(childStep, "Working the child list. Steadily.")
+	childState.EndStep(childStep)
 
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
 	m.viewStack = append(m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: childState})
-	body := nowBarOut(m)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	body := stripANSI(nowBarOut(m))
 	if !strings.Contains(body, "child task") {
 		t.Fatalf("drilled bar must show the child's todos:\n%s", body)
 	}
@@ -5788,7 +5806,9 @@ func TestNowBarFollowsDrilledSubagentTodos(t *testing.T) {
 	}
 
 	m.viewStack = nil
-	body = nowBarOut(m)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	body = stripANSI(nowBarOut(m))
 	if !strings.Contains(body, "parent task") {
 		t.Fatalf("undrilled bar must show the parent's todos:\n%s", body)
 	}
@@ -6924,22 +6944,35 @@ func TestCtrlTWithoutTodosOnlyAddsNotice(t *testing.T) {
 
 func TestAllDoneTodosLeaveTheNowBar(t *testing.T) {
 	m := newTestModel(t)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	if err := m.state.SetTodos([]native.TodoItem{
-		{Content: "scaffold parser", Status: native.TodoCompleted},
+		{ID: "t1", Content: "scaffold parser", Status: native.TodoInProgress},
+		{ID: "t2", Content: "wire the parser", Status: native.TodoPending},
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
-	if got := nowBarOut(m); got != "" {
-		t.Fatalf("a finished todo list must not occupy the bar:\n%s", got)
-	}
-	if err := m.state.SetTodos([]native.TodoItem{
-		{Content: "new work", Status: native.TodoInProgress},
-	}); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
+	// The beat binds to the in-progress todo, so this turn is working the
+	// list and the band shows it.
+	stepUnder(&m, "Starting the parser. Carefully.", "a")
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
-	if !strings.Contains(stripANSI(nowBarOut(m)), "new work") {
-		t.Fatal("a fresh todo list must show in the bar")
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if got := stripANSI(nowBarOut(m)); !strings.Contains(got, "scaffold parser") {
+		t.Fatalf("a live todo list must occupy the bar:\n%s", got)
+	}
+
+	// Finish every item: a fully completed list is not progress, so it must
+	// stop holding band rows even though the turn is still bound to it.
+	if err := m.state.SetTodos([]native.TodoItem{
+		{ID: "t1", Content: "scaffold parser", Status: native.TodoCompleted},
+		{ID: "t2", Content: "wire the parser", Status: native.TodoCompleted},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if got := stripANSI(nowBarOut(m)); strings.Contains(got, "scaffold parser") || strings.Contains(got, "done") {
+		t.Fatalf("a finished todo list must not occupy the bar:\n%s", got)
 	}
 }
 

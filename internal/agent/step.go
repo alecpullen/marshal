@@ -44,6 +44,9 @@ func (r *Runner) beginStep(model, provider string) {
 	r.endOpenStep()
 	r.curModel, r.curProvider = model, provider
 	r.curStep = r.State.BeginStep(r.actor(model, provider))
+	// One more response against the stale-todo clock; the nudge needs both
+	// time and responses to fire (session.TodoStale).
+	r.noteResponse()
 }
 
 // endOpenStep ends the step in flight, if any. Deferred from RunTask so a

@@ -8,11 +8,13 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/tools/native"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -29,6 +31,80 @@ var nowBarT0 = time.Unix(10_000, 0)
 
 func nowBarBase() nowBarInput {
 	return nowBarInput{Now: nowBarT0, Width: 100, Height: 40}
+}
+
+// baseNowBarInput is a busy, wide input: the shape the band tests start from.
+func baseNowBarInput() nowBarInput {
+	in := nowBarBase()
+	in.Busy = true
+	in.TurnStartedAt = nowBarT0.Add(-72 * time.Second)
+	in.Spinner = "⠋"
+	return in
+}
+
+// The band's progress head carries the todo count, the active item and the
+// stale tag, and its second line collapses the done count and names what
+// comes next.
+func TestNowBarShowsStaleTagAndChecklist(t *testing.T) {
+	in := baseNowBarInput()
+	// Narrow enough that only the first waiting item fits: the checklist
+	// names what it can and counts the rest, rather than truncating.
+	in.Width = 60
+	in.Band = viewmodel.BandInfo{Todos: true, Done: 2, Total: 9, Active: "Task 2", Stale: true,
+		StaleAge: 12 * time.Minute,
+		Next:     []string{"Task 3 — LoRA picker", "Task 4 — VerdictControl", "Task 5 — Ship it"}}
+	p := planNowBar(in)
+	if len(p.rows) < 2 {
+		t.Fatalf("rows = %d:\n%s", len(p.rows), stripANSI(strings.Join(p.rows, "\n")))
+	}
+	head := ansi.Strip(p.rows[0])
+	if !strings.Contains(head, "2/9") || !strings.Contains(head, "stale 12m") {
+		t.Fatalf("head = %q", head)
+	}
+	list := ansi.Strip(p.rows[1])
+	if !strings.Contains(list, "2 done") || !strings.Contains(list, "next: Task 3") || !strings.Contains(list, "+2") {
+		t.Fatalf("checklist = %q", list)
+	}
+	// The named items are the earliest ones, never the ones that did not fit.
+	if strings.Contains(list, "Task 5") {
+		t.Fatalf("checklist named an item it should have counted: %q", list)
+	}
+	if w := lipgloss.Width(list); w > in.Width {
+		t.Fatalf("checklist is %d cells, frame is %d", w, in.Width)
+	}
+}
+
+// A short frame collapses the bar to one row and drops the checklist, but the
+// stale tag must survive: it is the signal the design keeps on every frame.
+func TestNowBarCompactRowKeepsStaleTag(t *testing.T) {
+	in := baseNowBarInput()
+	in.Width = 80
+	in.Height = nowBarCompactHeight - 1
+	in.Band = viewmodel.BandInfo{Todos: true, Done: 2, Total: 9, Active: "Task 2", Stale: true, StaleAge: 7 * time.Minute}
+	p := planNowBar(in)
+	if len(p.rows) != 1 {
+		t.Fatalf("rows = %d, want the one compact row", len(p.rows))
+	}
+	if row := ansi.Strip(p.rows[0]); !strings.Contains(row, "stale 7m") {
+		t.Fatalf("compact row = %q, want the stale tag", row)
+	}
+}
+
+// The band is capped: progress, checklist, entity rows and the overflow row
+// together never exceed nowBarMaxRows.
+func TestNowBarCapsAtSixRows(t *testing.T) {
+	in := baseNowBarInput()
+	in.Band = viewmodel.BandInfo{Todos: true, Done: 1, Total: 4, Active: "A", Next: []string{"B"}}
+	for i := 0; i < 8; i++ {
+		in.JobTexts = append(in.JobTexts, fmt.Sprintf("job-%d", i))
+	}
+	p := planNowBar(in)
+	if len(p.rows) != nowBarMaxRows {
+		t.Fatalf("rows = %d, want %d:\n%s", len(p.rows), nowBarMaxRows, stripANSI(strings.Join(p.rows, "\n")))
+	}
+	if !strings.Contains(ansi.Strip(p.rows[nowBarMaxRows-1]), "more") {
+		t.Fatalf("last row = %q", ansi.Strip(p.rows[nowBarMaxRows-1]))
+	}
 }
 
 func nowBarTodos(statuses ...string) []native.TodoItem {
@@ -73,8 +149,9 @@ func TestPlanNowBar(t *testing.T) {
 		{"todos 2/4 busy", func() nowBarInput {
 			in := busy(nowBarBase())
 			in.Todos = nowBarTodos("completed", "completed", "in_progress", "pending")
+			in.Band = viewmodel.BandInfo{Todos: true, Done: 2, Total: 4, Active: "task 3", Next: []string{"task 4"}}
 			return in
-		}, 1, []string{"▰▰▱▱", "2/4 · task 3", "1m 12s", "⠋"}, nil},
+		}, 2, []string{"▰▰▱▱", "2/4 · task 3", "1m 12s", "⠋", "2 done", "next: task 4"}, nil},
 		{"abandoned todos do not pin the bar when idle", func() nowBarInput {
 			in := nowBarBase()
 			in.Todos = nowBarTodos("completed", "pending")
@@ -118,11 +195,12 @@ func TestPlanNowBar(t *testing.T) {
 			in.JobTexts = []string{"┆ j1", "┆ j2"}
 			in.WatchTexts = []string{"○ w1", "○ w2"}
 			return in
-		}, 4, []string{"#1  agent1", "#2  agent2", "… 4 more"}, []string{"○ w2"}},
+		}, nowBarMaxRows, []string{"#1  agent1", "#2  agent2", "… 2 more"}, []string{"○ w2"}},
 		{"short frame is one summary row", func() nowBarInput {
 			in := busy(nowBarBase())
 			in.Height = 24
 			in.Todos = nowBarTodos("completed", "in_progress", "pending")
+			in.Band = viewmodel.BandInfo{Todos: true, Done: 1, Total: 3, Active: "task 2"}
 			in.Agents = nowBarAgents(2)
 			in.JobTexts = []string{"┆ j1"}
 			return in
@@ -182,13 +260,20 @@ func TestPlanNowBarAgentRowsMapForClicks(t *testing.T) {
 
 func TestPlanNowBarOverflowKeepsOnlyShownAgents(t *testing.T) {
 	in := nowBarBase()
-	in.Agents = nowBarAgents(6)
+	in.Agents = nowBarAgents(8)
 	plan := planNowBar(in)
 	if len(plan.rows) != nowBarMaxRows || len(plan.agents) != nowBarMaxRows-1 {
 		t.Fatalf("rows=%d agents=%d", len(plan.rows), len(plan.agents))
 	}
-	if !strings.Contains(stripANSI(plan.rows[3]), "… 3 more") {
-		t.Fatalf("overflow row = %q", stripANSI(plan.rows[3]))
+	last := stripANSI(plan.rows[nowBarMaxRows-1])
+	if !strings.Contains(last, "… 3 more") {
+		t.Fatalf("overflow row = %q", last)
+	}
+	// The click map must reach exactly the agents still on screen.
+	for i, v := range plan.agents {
+		if v.ID != int64(i+1) {
+			t.Fatalf("agent %d = #%d: the overflow row must not leave a gap in the click map", i, v.ID)
+		}
 	}
 }
 
@@ -317,7 +402,8 @@ func TestNowBarCapsJobsAndWatchesWithOverflow(t *testing.T) {
 	if got := strings.Count(plain, "\n") + 1; got != nowBarMaxRows {
 		t.Fatalf("bar rendered %d rows, cap is %d:\n%s", got, nowBarMaxRows, plain)
 	}
-	if !strings.Contains(plain, "… 7 more") {
+	// Ten entities, five rows of room: five shown, five counted.
+	if !strings.Contains(plain, "… 5 more") {
 		t.Fatalf("expected a shared overflow row:\n%s", plain)
 	}
 }
@@ -382,7 +468,7 @@ func TestNowBarShowsBrowserOnlyWhenRowIsVisible(t *testing.T) {
 	if !planNowBar(in).showsBrowser {
 		t.Error("browser row is visible with one agent; the status line should drop its copy")
 	}
-	in.Agents = nowBarAgents(3) // turn row + 2 agents + overflow row
+	in.Agents = nowBarAgents(6) // turn row + 4 agents + overflow row: the browser is past the cut
 	if planNowBar(in).showsBrowser {
 		t.Error("browser row folded into the overflow; the status line must carry the URL")
 	}

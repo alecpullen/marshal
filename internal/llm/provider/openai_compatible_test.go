@@ -134,6 +134,80 @@ func TestChatStreamingDeltasAndDone(t *testing.T) {
 	assertChannelClosed(t, events)
 }
 
+// Streamed chunks concatenate byte-for-byte: a space that falls on a chunk
+// boundary must survive.
+//
+// This is the evidence for the "run-together narration words" investigation
+// (docs/transcript-beats/design.md, Findings). The client was suspected of
+// trimming per chunk; it does not, so a joined word in the stored transcript
+// is what the endpoint emitted, and marshal cannot tell a dropped space from
+// one the model never sent.
+func TestChatStreamingPreservesSpaceAcrossChunkBoundary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"Waiting for a\"}}]}\n\n" +
+				"data: {\"choices\":[{\"delta\":{\"content\":\" slot.\"}}]}\n\n" +
+				"data: [DONE]\n\n",
+		))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	events, err := p.Chat(t.Context(), chatReq(true))
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	var sb strings.Builder
+	for ev := range events {
+		if ev.Type == schema.ChatEventDelta && ev.Kind != schema.DeltaThinking {
+			sb.WriteString(ev.Delta)
+		}
+	}
+	if got := sb.String(); got != "Waiting for a slot." {
+		t.Fatalf("joined text = %q, want %q", got, "Waiting for a slot.")
+	}
+}
+
+// The inline reasoning parser splits content around its tags, holding back
+// bytes that might be a tag split across chunks. That holdback must never eat
+// ordinary text: the spaces either side of a reasoning block have to survive.
+//
+// The tags are built with escapes rather than written literally, so nothing
+// that treats these markers as markup can mangle the fixture before the
+// parser ever sees it.
+func TestInlineThinkParserPreservesSpacesAroundReasoningBlocks(t *testing.T) {
+	open, shut := "\x3cthink\x3e", "\x3c/think\x3e"
+
+	feed := func(chunks ...string) (content, thinking string) {
+		p := inlineThinkParser{}
+		var c, th strings.Builder
+		for _, chunk := range chunks {
+			cc, tt := p.feed(chunk)
+			c.WriteString(cc)
+			th.WriteString(tt)
+		}
+		cc, tt := p.flush()
+		c.WriteString(cc)
+		th.WriteString(tt)
+		return c.String(), th.String()
+	}
+
+	// A plain split with no tags in play.
+	if got, _ := feed("Waiting for a", " slot."); got != "Waiting for a slot." {
+		t.Fatalf("content = %q, want %q", got, "Waiting for a slot.")
+	}
+	// The same boundary with a reasoning block opening right after it.
+	got, thinking := feed("Waiting for a", open+"why", shut+" slot.")
+	if got != "Waiting for a slot." {
+		t.Fatalf("content = %q, want %q", got, "Waiting for a slot.")
+	}
+	if thinking != "why" {
+		t.Fatalf("thinking = %q, want %q", thinking, "why")
+	}
+}
+
 func TestChatStreamingFinishReasonWithoutDoneSentinel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -11,7 +11,6 @@ import (
 type StepDiffJSON struct {
 	StepNode string   `json:"stepNode"`
 	TurnNode string   `json:"turnNode"`
-	TaskNode string   `json:"taskNode,omitempty"`
 	Headline string   `json:"headline"`
 	At       int64    `json:"at,omitempty"`
 	Files    []string `json:"files"`
@@ -34,7 +33,7 @@ func (m *TurnManager) StepDiffs(ctx context.Context, params json.RawMessage) (an
 		if files == nil {
 			files = []string{}
 		}
-		steps = append(steps, StepDiffJSON{StepNode: d.StepNode, TurnNode: d.TurnNode, TaskNode: d.TaskNode,
+		steps = append(steps, StepDiffJSON{StepNode: d.StepNode, TurnNode: d.TurnNode,
 			Headline: d.Headline, At: ms(d.At), Files: files, Diff: d.Diff})
 	}
 	return map[string]any{"steps": steps}, nil

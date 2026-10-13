@@ -14,6 +14,9 @@ type clickTarget struct {
 	// node is what the click toggles (or, for a live region, scrolls).
 	node     viewmodel.NodeID
 	subagent *session.SubagentView
+	// jumpTo scrolls the viewport to another node rather than toggling it:
+	// a completion marker jumps to the card whose work it reports on.
+	jumpTo viewmodel.NodeID
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
 	isLiveRegion bool
@@ -39,7 +42,7 @@ func (m *Model) contentLineForClick(x, y int) (int, bool) {
 	if x < 0 || x >= m.leftWidth {
 		return 0, false
 	}
-	top := m.scrollHintRows() + m.breadcrumbRows() + m.todoStripRows()
+	top := m.scrollHintRows() + m.breadcrumbRows()
 	height := m.viewport.Height()
 	if y < top || y >= top+height {
 		return 0, false
@@ -50,13 +53,18 @@ func (m *Model) contentLineForClick(x, y int) (int, bool) {
 // regionAt returns the click target whose range contains line, if any.
 // m.clickRegions is small (tens of entries, one per visible transcript
 // block) so a linear scan is fine.
+//
+// The narrowest range wins, so a row inside a block beats the block itself.
+// On a tie the later range wins: a block's sub-regions are recorded after it,
+// and a headless beat (no header line) has a block range identical to its
+// single row's, where the row is the more specific target.
 func (m *Model) regionAt(line int) (clickTarget, bool) {
 	best := -1
 	for i, r := range m.nodeRegions {
 		if line < r.startLine || line >= r.endLine {
 			continue
 		}
-		if best < 0 || r.endLine-r.startLine < m.nodeRegions[best].endLine-m.nodeRegions[best].startLine {
+		if best < 0 || r.endLine-r.startLine <= m.nodeRegions[best].endLine-m.nodeRegions[best].startLine {
 			best = i
 		}
 	}
@@ -79,7 +87,7 @@ func (m *Model) nowBarBand(plan nowBarPlan) (top, bottom int, ok bool) {
 	if len(plan.rows) == 0 || m.dock.FullFrameOpen() {
 		return 0, 0, false
 	}
-	top = m.scrollHintRows() + m.breadcrumbRows() + m.todoStripRows() + m.viewport.Height() + m.todoBandRows()
+	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height()
 	return top, top + len(plan.rows), true
 }
 
@@ -177,12 +185,41 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 			}
 		}
 	}
-	if target.subagent != nil {
+	switch {
+	case target.jumpTo.Key != "":
+		// A marker is a pointer, not a row with state of its own: it scrolls
+		// to the card it reports on. A card with no region may sit in a
+		// beat that is folded or capped; opening the beat at full density
+		// shows every row, and the jump retries once.
+		r, ok := m.regionFor(target.jumpTo)
+		if beat, inBeat := m.rowBeat[target.jumpTo]; !ok && inBeat {
+			m.setOverride(beat, densityFull)
+			m.invalidateTranscript()
+			m.refreshViewport()
+			r, ok = m.regionFor(target.jumpTo)
+		}
+		if ok {
+			m.viewportFollow = false
+			m.viewport.SetYOffset(r.startLine)
+		}
+	case target.subagent != nil:
 		m.drillIntoSubagent(*target.subagent)
-	} else {
+	default:
 		m.toggleExpanded(target.node)
+		m.invalidateTranscript()
+		m.refreshViewport()
 	}
-	m.invalidateTranscript()
-	m.refreshViewport()
 	return nil, true
+}
+
+// regionFor returns the recorded content-line range of a node, if the
+// renderer recorded one. A card scrolled out of the window has no region,
+// and the jump is then a no-op rather than a scroll to nowhere.
+func (m *Model) regionFor(id viewmodel.NodeID) (nodeRegion, bool) {
+	for _, r := range m.nodeRegions {
+		if r.target.node == id {
+			return r, true
+		}
+	}
+	return nodeRegion{}, false
 }

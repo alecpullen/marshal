@@ -199,6 +199,36 @@ func (s *State) StepNarration(id StepID) string {
 	return ""
 }
 
+// ContinuedNarration returns the narration the step continues: the latest
+// narration in the step's turn by the same actor, or "" when the turn has
+// none yet. A narrationless response belongs to the beat its actor last
+// narrated in this turn — never to an earlier turn's, or another actor's.
+func (s *State) ContinuedNarration(id StepID) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	actors := make(map[StepID]Actor, len(s.steps))
+	var actor Actor
+	for _, st := range s.steps {
+		actors[st.ID] = st.Actor
+		if st.ID == id {
+			actor = st.Actor
+		}
+	}
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		m := &s.messages[i]
+		if IsUserTurnMessage(m) {
+			return ""
+		}
+		if m.ContentType != ContentTypeNarration || strings.TrimSpace(m.Content) == "" {
+			continue
+		}
+		if a := actors[m.StepID]; a.Role == actor.Role && a.Label == actor.Label {
+			return m.Content
+		}
+	}
+	return ""
+}
+
 // StepAudits returns the audit events stamped with a step.
 func (s *State) StepAudits(id StepID) []registry.AuditEvent {
 	s.mu.Lock()

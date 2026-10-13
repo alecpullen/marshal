@@ -37,7 +37,7 @@ export const DEFAULT_WIDTH = 440
 const STORAGE_KEY = 'marshal.ui.dock'
 
 // Node kinds whose selection switches an unpinned dock to Inspect.
-const INSPECTABLE = new Set(['tool', 'step', 'task', 'subagent'])
+const INSPECTABLE = new Set(['tool', 'step', 'subagent'])
 const NEXT_SIZE: Record<DockSize, DockSize> = { collapsed: 'docked', docked: 'expanded', expanded: 'collapsed' }
 
 export function initialDock(over: Partial<DockState> = {}): DockState {

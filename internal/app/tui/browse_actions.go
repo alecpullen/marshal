@@ -30,30 +30,16 @@ func (m *Model) nodeCopyText(n *viewmodel.Node) string {
 		}
 		return strings.Join(parts, "\n\n")
 	case n.Kind == viewmodel.KindStep && n.Step != nil:
-		// The narration already opens with the headline; the headline alone
-		// stands in only for a step that did not narrate.
+		// The narration already opens with the headline. A headless beat has
+		// no headline to stand in for it, so it copies its rows only.
 		var lines []string
 		for _, msg := range n.Step.Narration {
 			lines = append(lines, strings.TrimSpace(msg.Content))
-		}
-		if len(lines) == 0 {
-			head, _, _ := stepHeadline(n.Step, n.Children)
-			lines = append(lines, head)
 		}
 		for _, row := range n.Children {
 			for _, ev := range row.Tools {
 				lines = append(lines, "- "+ev.ToolName+" "+toolTarget(ev))
 			}
-		}
-		return strings.Join(lines, "\n")
-	case n.Kind == viewmodel.KindTask && n.Task != nil:
-		lines := []string{taskTitle(n.Task)}
-		for _, st := range n.Children {
-			if st.Step == nil {
-				continue
-			}
-			head, _, _ := stepHeadline(st.Step, st.Children)
-			lines = append(lines, "- "+head)
 		}
 		return strings.Join(lines, "\n")
 	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:

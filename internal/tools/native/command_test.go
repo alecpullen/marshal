@@ -95,6 +95,21 @@ func TestTestRunToolDocumentsCommandOverride(t *testing.T) {
 	}
 }
 
+func TestFormatCommandOutputOmitsEmptyStreams(t *testing.T) {
+	cases := map[string]struct{ out, err, want string }{
+		"stdout only": {"a\nb\n", "", "a\nb"},
+		"stderr only": {"", "boom\n", "stderr:\nboom"},
+		"both":        {"a\n", "w\n", "stdout:\na\n\nstderr:\nw"},
+		"neither":     {"", "", ""},
+		"blank edges": {"\n\nx\n\n", "", "x"},
+	}
+	for name, c := range cases {
+		if got := formatCommandOutput(c.out, c.err); got != c.want {
+			t.Errorf("%s: got %q want %q", name, got, c.want)
+		}
+	}
+}
+
 func TestShellRunInvokesRunnerForAllowedCommand(t *testing.T) {
 	root := t.TempDir()
 	runner := &fakeRunner{result: CommandResult{Stdout: "ok\n", ExitCode: 0}}
@@ -114,8 +129,10 @@ func TestShellRunInvokesRunnerForAllowedCommand(t *testing.T) {
 	if result.CommandExitCode == nil || *result.CommandExitCode != 0 {
 		t.Fatalf("CommandExitCode = %#v", result.CommandExitCode)
 	}
-	if !strings.Contains(result.Content, "stdout:\nok") {
-		t.Fatalf("Content = %q", result.Content)
+	// A clean run with no stderr shows the output alone: the streams are only
+	// labelled when there are two of them to tell apart.
+	if result.Content != "ok" {
+		t.Fatalf("Content = %q, want the bare stdout", result.Content)
 	}
 }
 
@@ -268,7 +285,11 @@ func TestShellRunStreamsOutputToSession(t *testing.T) {
 
 func TestCommandOutputIsLimited(t *testing.T) {
 	root := t.TempDir()
-	runner := &fakeRunner{result: CommandResult{Stdout: "abcdef", ExitCode: 0}}
+	// The output itself must exceed the cap. It used to be the "stdout:" /
+	// "stderr:" labels that pushed a short result over the limit; the
+	// formatter now omits empty streams, so the test has to carry its own
+	// bulk or it would pass without exercising truncation at all.
+	runner := &fakeRunner{result: CommandResult{Stdout: strings.Repeat("abcdef", 8), ExitCode: 0}}
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string, bool) error { return nil }, MaxOutputBytes: 12}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)

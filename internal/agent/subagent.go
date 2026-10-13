@@ -441,7 +441,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			if runErr != nil {
 				mark, verb = "✗", "failed"
 			}
-			state.AddMessage(session.RoleSystem, mark+" "+summaryLine, session.ContentTypePlain)
+			state.AddMessage(session.RoleSystem, mark+" "+summaryLine, session.ContentTypeSubagentNotice)
 			report := fmt.Sprintf("[subagent %d %s] %s", view.ID, verb, content)
 			if salvagedReason != "" {
 				// The salvage marker lives on the summary line; fold it into

@@ -998,45 +998,53 @@ func TestActiveToolCallWrapsLongOutput(t *testing.T) {
 	}
 }
 
-func TestCompletedToolCallWrapsLongSummary(t *testing.T) {
+// A collapsed row keeps to one line whatever its summary; expanding is how a
+// reader asks for the rest. (The expanded cases below cover the wrap.)
+func TestCompletedToolCallTruncatesLongSummary(t *testing.T) {
 	long := strings.Repeat("summary-part-", 10) // 130 chars
 	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
 		ToolName:      "file.read",
 		ResultSummary: long,
 	}, false, nil, 30))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
+	if len(lines) != 1 {
+		t.Fatalf("collapsed row must stay one line, got %d:\n%s", len(lines), out)
 	}
-	for _, line := range lines {
+	if w := ansi.StringWidth(lines[0]); w > 30 {
+		t.Fatalf("line is %d cells wide, budget 30: %q", w, lines[0])
+	}
+	if !strings.Contains(lines[0], "…") || !strings.Contains(lines[0], "summary-part-") {
+		t.Fatalf("collapsed row should truncate with an ellipsis:\n%s", out)
+	}
+	// Expanded, the same summary wraps inside the budget.
+	expanded := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.read",
+		ResultSummary: long,
+	}, true, nil, 30))
+	for _, line := range strings.Split(strings.TrimRight(expanded, "\n"), "\n") {
 		if w := ansi.StringWidth(line); w > 30 {
-			t.Fatalf("line is %d cells wide, budget 30: %q", w, line)
+			t.Fatalf("expanded line is %d cells wide, budget 30: %q", w, line)
 		}
-	}
-	joined := strings.Join(lines, "")
-	if !strings.Contains(joined, "summary-part-") {
-		t.Fatalf("wrapped output is missing content:\n%s", out)
 	}
 }
 
-func TestCompletedToolCallWrapsLongError(t *testing.T) {
+func TestCompletedToolCallTruncatesLongError(t *testing.T) {
 	long := strings.Repeat("error-detail-", 10) // 130 chars
 	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
 		ToolName: "shell.run",
 		Error:    long,
 	}, false, nil, 30))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
+	if len(lines) != 1 {
+		t.Fatalf("collapsed row must stay one line, got %d:\n%s", len(lines), out)
 	}
-	for _, line := range lines {
-		if w := ansi.StringWidth(line); w > 30 {
-			t.Fatalf("line is %d cells wide, budget 30: %q", w, line)
-		}
+	if w := ansi.StringWidth(lines[0]); w > 30 {
+		t.Fatalf("line is %d cells wide, budget 30: %q", w, lines[0])
 	}
-	joined := strings.Join(lines, "")
-	if !strings.Contains(joined, "error-detail-") {
-		t.Fatalf("wrapped output is missing content:\n%s", out)
+	// Truncation may cut inside the repeated fragment, so match the stable
+	// prefix rather than the whole token.
+	if !strings.Contains(lines[0], "error-detail") || !strings.Contains(lines[0], "✗") {
+		t.Fatalf("collapsed row should name the error and mark the failure:\n%s", out)
 	}
 }
 
@@ -1289,7 +1297,10 @@ func TestSubagentCardShowsProviderModel(t *testing.T) {
 	}
 }
 
-func TestRunningSubagentCardRendersReasoningTail(t *testing.T) {
+// A running card is one line of latest activity, not a window onto the
+// child's work: the newest line only. The full tail stays available in the
+// drill-in view.
+func TestRunningSubagentCardRendersLatestReasoningLine(t *testing.T) {
 	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	child.BeginStreaming()
 	child.AppendThinking("line one\nline two\nline three")
@@ -1300,14 +1311,15 @@ func TestRunningSubagentCardRendersReasoningTail(t *testing.T) {
 		Child:     child,
 	}
 	got := stripANSI(renderSubagentCard(v, false, "⠋", regionView{}, 100))
-	for _, want := range []string{"line one", "line two", "line three"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("card missing tail line %q:\n%s", want, got)
-		}
+	if !strings.Contains(got, "line three") {
+		t.Fatalf("card missing the latest activity line:\n%s", got)
+	}
+	if strings.Contains(got, "line one") || strings.Contains(got, "line two") {
+		t.Fatalf("card must show only the latest line:\n%s", got)
 	}
 }
 
-func TestRunningSubagentCardRendersAuditTailWhenNoReasoning(t *testing.T) {
+func TestRunningSubagentCardRendersLatestAuditWhenNoReasoning(t *testing.T) {
 	child := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	child.LogToolCall(registry.AuditEvent{ToolName: "file.read", ResultSummary: "read a.go"})
 	child.LogToolCall(registry.AuditEvent{ToolName: "file.read", ResultSummary: "read b.go"})
@@ -1318,8 +1330,11 @@ func TestRunningSubagentCardRendersAuditTailWhenNoReasoning(t *testing.T) {
 		Child:     child,
 	}
 	got := stripANSI(renderSubagentCard(v, false, "⠋", regionView{}, 100))
-	if !strings.Contains(got, "read a.go") || !strings.Contains(got, "read b.go") {
-		t.Fatalf("card should render recent audit summaries, got:\n%s", got)
+	if !strings.Contains(got, "read b.go") {
+		t.Fatalf("card should render the latest audit summary, got:\n%s", got)
+	}
+	if strings.Contains(got, "read a.go") {
+		t.Fatalf("card must show only the latest summary, got:\n%s", got)
 	}
 }
 
@@ -1513,49 +1528,11 @@ func TestThinkingSummaryStaysUnboundedAndFlat(t *testing.T) {
 	}
 }
 
-func TestJobExitRowSuccess(t *testing.T) {
-	e := session.JobExit{ID: "job-2", Command: "go test ./...", ExitCode: 0, Duration: 107 * time.Second}
-	plain := ansi.Strip(renderJobExit(e, false, 80))
-	for _, want := range []string{"job-2", "go test ./...", "exit 0"} {
-		if !strings.Contains(plain, want) {
-			t.Errorf("missing %q in %q", want, plain)
-		}
-	}
-	if strings.Contains(plain, glyph.Error) {
-		t.Errorf("a clean exit must not use the error glyph: %q", plain)
-	}
-}
-
-func TestJobExitRowFailure(t *testing.T) {
-	e := session.JobExit{ID: "job-3", Command: "make", ExitCode: 2, Duration: time.Second}
-	plain := ansi.Strip(renderJobExit(e, false, 80))
-	if !strings.Contains(plain, glyph.Error) {
-		t.Errorf("a non-zero exit must use the error glyph: %q", plain)
-	}
-	if !strings.Contains(plain, "exit 2") {
-		t.Errorf("missing exit code: %q", plain)
-	}
-}
-
-func TestJobExitExpandsToOutput(t *testing.T) {
-	e := session.JobExit{ID: "job-4", Command: "make", ExitCode: 1, Output: "undefined reference to foo"}
-	if strings.Contains(ansi.Strip(renderJobExit(e, false, 80)), "undefined reference") {
-		t.Error("collapsed row must not show the output")
-	}
-	if !strings.Contains(ansi.Strip(renderJobExit(e, true, 80)), "undefined reference") {
-		t.Error("expanded row must show the output")
-	}
-}
-
-// A job exit is history and must be flat.
-func TestJobExitRowIsNotTinted(t *testing.T) {
-	theme.Reload(theme.LoadFor(false, "xterm-256color"))
-	t.Cleanup(func() { theme.Reload(theme.LoadFor(false, "xterm-256color")) })
-	e := session.JobExit{ID: "job-2", Command: "go test ./...", Duration: time.Second}
-	if strings.Contains(renderJobExit(e, false, 80), "48;5;") {
-		t.Fatal("flat = history: a job exit row must not be tinted")
-	}
-}
+// The four job-exit row tests (success, failure, expansion, no tint) lived
+// here. A job exit is no longer a row: its card is the shell.run that started
+// it, settled in place, and the moment it finished is a completion marker.
+// The card's own coverage is TestJobCardIsOneLineAndSettles in
+// cards_render_test.go.
 
 func TestCompactionMarkerRendersAsOneLine(t *testing.T) {
 	out := renderMessage(session.Message{

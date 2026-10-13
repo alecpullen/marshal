@@ -229,6 +229,8 @@ type fileTUI struct {
 	Transcript   *fileTranscript   `toml:"transcript"`
 }
 
+// fileTranscript mirrors [tui.transcript]; FoldFinishedTasks folds finished
+// beats to one row (the z toggle).
 type fileTranscript struct {
 	Density           *string `toml:"density"`
 	FoldFinishedTasks *bool   `toml:"fold_finished_tasks"`

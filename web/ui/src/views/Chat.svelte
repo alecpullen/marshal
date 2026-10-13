@@ -1,6 +1,6 @@
 <script lang="ts">
   import { workspaceTag } from '../lib/workspaces/model'
-  import { onMount, onDestroy, untrack } from 'svelte'
+  import { onMount, onDestroy, tick, untrack } from 'svelte'
   import { createSessionStore, transcriptEntries, type Mode } from '../lib/store.js'
   import Composer from '../lib/Composer.svelte'
   import ModeSwitcher from '../lib/ModeSwitcher.svelte'
@@ -212,6 +212,24 @@
     const id = liveStep($shown)?.id
     if (!id) return
     transcriptEl?.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.scrollIntoView?.({ block: 'center' })
+  }
+
+  // scrollToNode follows a completion marker to the card it reports on. The
+  // card stays where the work was dispatched, which can be many screens back.
+  // Scroll to a node — a completion marker jumping to its card. A card in a
+  // folded beat, or behind its "+N earlier calls" cap, is not in the DOM, so
+  // its beat opens at full density first.
+  async function scrollToNode(id: string) {
+    const node = $shown.nodes.get(id)
+    if (!node) return
+    const find = () => transcriptEl?.querySelector(`[data-node-id="${CSS.escape(id)}"]`)
+    const beat = node.parent ? $shown.nodes.get(node.parent) : undefined
+    if (!find() && beat?.kind === 'step' && node.parent) {
+      unfolded = new Set(unfolded).add(node.parent)
+      overrides = new Map(overrides).set(node.parent, 'full')
+      await tick()
+    }
+    find()?.scrollIntoView?.({ block: 'center' })
   }
 
   // Clicking a row selects it.
@@ -565,6 +583,7 @@
         {cursor}
         onToggleFold={toggleFold}
         onToggleDensity={toggleDensity}
+        onSelect={scrollToNode}
       />
       {#if $shown.roots.length === 0 && !$session.busy}
         <div class="empty">

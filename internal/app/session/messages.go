@@ -62,6 +62,11 @@ const (
 	// Same split as ContentTypeSkillBody: reaches the model, invisible to
 	// the reader.
 	ContentTypeSubagentReport ContentType = "subagent_report"
+	// ContentTypeSubagentNotice marks the one-line "✓ subagent N completed"
+	// system notice. The transcript shows the subagent's card and a
+	// completion marker instead, so viewmodel drops it; plain-text exports
+	// still carry it.
+	ContentTypeSubagentNotice ContentType = "subagent_notice"
 	// ContentTypeWatchReport marks a background watch's completion report,
 	// persisted under RoleUser so buildHistoryMessages replays it and it
 	// survives restart. Restart durability applies to drained reports and
@@ -238,6 +243,7 @@ func (s *State) loadFromDB() {
 		}
 	}
 	s.loadStepsLocked(idMap)
+	s.loadJobExitsLocked()
 
 	// Restore scratchpad entries from the per-key scratchpad_entries table.
 	// This is independent of message state so a session with scratchpad data

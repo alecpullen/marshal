@@ -278,8 +278,8 @@ type TranscriptConfig struct {
 	// (one row per step), "steps" (the default), or "full". Any other value
 	// is reported as a diagnostic and treated as "steps".
 	Density string `toml:"density"`
-	// FoldFinishedTasks collapses a completed task to one row. It is the
-	// session default for the z toggle in browse mode.
+	// FoldFinishedTasks folds finished beats to one row. It is the session
+	// default for the z toggle in browse mode.
 	FoldFinishedTasks bool `toml:"fold_finished_tasks"`
 }
 

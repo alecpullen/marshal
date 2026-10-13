@@ -63,11 +63,16 @@ func TestFinishedTasksFoldAndTheReceiptSummarisesTheTurn(t *testing.T) {
 			t.Errorf("missing %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(text, "Working on task 1 part 1") {
-		t.Errorf("a finished task must be folded to one row:\n%s", text)
+	// Six beats, all finished: all but the newest viewmodel.FoldKeep fold to
+	// outline rows, which keep the narration headline and its call count but
+	// hide the tool rows themselves.
+	if got := strings.Count(text, "Read file"); got != viewmodel.FoldKeep {
+		t.Errorf("Read file rendered %d times, want %d: a folded beat hides its tool rows:\n%s", got, viewmodel.FoldKeep, text)
 	}
-	if !strings.Contains(text, "2 steps") || !strings.Contains(text, "▹") {
-		t.Errorf("folded rows carry step count and the expand mark:\n%s", text)
+	for _, want := range []string{"Working on task 1 part 1. Details follow.", "1 tool"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("a folded beat still renders %q:\n%s", want, text)
+		}
 	}
 }
 
@@ -76,18 +81,20 @@ func TestRunningTurnFoldsDoneTasksAndKeepsTheLiveOneOpen(t *testing.T) {
 	m.resize(120, 60)
 	scriptedTasks(t, &m, 3, 2, false)
 	text := viewText(&m)
-	if strings.Contains(text, "Working on task 1 part 1") || strings.Contains(text, "Working on task 2 part 1") {
-		t.Errorf("completed tasks fold while the turn runs:\n%s", text)
+	if strings.Contains(text, "Working on task 1 part 1. Details follow.                                    1 tool") {
+		t.Errorf("want a folded outline row, not a full one:\n%s", text)
 	}
-	if !strings.Contains(text, "Working on task 3 part 1") {
-		t.Errorf("the in-progress task stays open:\n%s", text)
+	// The turn's newest beats stay open, and they are the ones carrying the
+	// task-3 narration the model is working on.
+	if !strings.Contains(text, "Working on task 3 part 1") || !strings.Contains(text, "Working on task 3 part 2") {
+		t.Errorf("the newest beats of a running turn stay open:\n%s", text)
 	}
 	if strings.Contains(text, "done ·") {
 		t.Errorf("no receipt before the turn ends:\n%s", text)
 	}
 }
 
-func TestFailedTaskStaysOpen(t *testing.T) {
+func TestFailedBeatStaysOpen(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 60)
 	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
@@ -100,8 +107,10 @@ func TestFailedTaskStaysOpen(t *testing.T) {
 	m.state.EndStep(id)
 	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Make tests pass", Status: "completed", StartedAt: time.Now(), CompletedAt: time.Now()}})
 	text := viewText(&m)
-	if !strings.Contains(text, "Running the suite") {
-		t.Fatalf("a completed task with an unresolved failure must stay open:\n%s", text)
+	// The failing beat is the newest of its turn, so it stays unfolded: a
+	// beat only folds once the model has moved past it.
+	if !strings.Contains(text, "Running the suite") || !strings.Contains(text, "exit 1") {
+		t.Fatalf("the failed beat must stay open:\n%s", text)
 	}
 }
 
@@ -123,15 +132,20 @@ func TestTodoWriteNeverRendersAsARow(t *testing.T) {
 	}
 }
 
-func TestDroppedTaskRendersUnderADroppedHeader(t *testing.T) {
+func TestDroppedTodoGetsNoDivider(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
 	scriptedTasks(t, &m, 2, 1, false)
-	// The model rewrites its list without task 1.
+	// The model rewrites its list without task 1, so its beats are bound to
+	// a todo the list no longer holds: no divider names it, and the work
+	// still renders.
 	_ = m.state.SetTodos([]db.TodoItem{{ID: "t2", Content: "Task number 2", Status: "in_progress", StartedAt: time.Now()}})
 	text := viewText(&m)
-	if !strings.Contains(text, "dropped") {
-		t.Fatalf("a removed todo's steps render under a dropped header:\n%s", text)
+	if strings.Contains(text, "1/1 Task number 1") || strings.Contains(text, "dropped") {
+		t.Fatalf("a removed todo gets no divider:\n%s", text)
+	}
+	if !strings.Contains(text, "Working on task 1 part 1") {
+		t.Fatalf("the dropped todo's work still renders:\n%s", text)
 	}
 }
 
@@ -195,6 +209,7 @@ func TestNowBarClockIsTheInProgressTasksElapsedTime(t *testing.T) {
 			{ID: "t1", Content: "Working", Status: "in_progress", StartedAt: now.Add(-42 * time.Second)},
 			{ID: "t2", Content: "Next", Status: "pending"},
 		},
+		Band: viewmodel.BandInfo{Todos: true, Done: 0, Total: 2, Active: "Working", Next: []string{"Next"}},
 	}
 	_, _, elapsed := nowBarHead(in)
 	if elapsed != "42s" {
@@ -226,9 +241,10 @@ func TestFailedRowShowsItsLastOutputLinesCollapsed(t *testing.T) {
 	}
 }
 
-// Golden rows for the task chrome: exact text at 80 and 140 columns. Durations
-// are fixed through the todo timestamps so the rows are deterministic.
-func TestTaskChromeGolden(t *testing.T) {
+// Golden rows for the todo chrome: exact text at 80 and 140 columns. The
+// divider is the only task chrome left; durations are fixed through the todo
+// timestamps so any row that carries one is deterministic.
+func TestTodoDividerGolden(t *testing.T) {
 	start := time.Now().Add(-10 * time.Minute)
 	for _, width := range []int{80, 140} {
 		m := newTestModel(t)
@@ -242,36 +258,22 @@ func TestTaskChromeGolden(t *testing.T) {
 		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "completed", StartedAt: start, CompletedAt: start.Add(3 * time.Minute)}, {ID: "t2", Content: "Test it", Status: "pending"}})
 		lines := transcriptLines(&m)
 
-		var folded string
+		var divider string
 		for _, l := range lines {
-			if strings.Contains(l, "Wire the parser") {
-				folded = strings.TrimRight(l, " ")
-			}
-		}
-		want := " ✓ 1/2 Wire the parser"
-		// The clock is the steps' working time, which a test cannot pin, so it
-		// is matched rather than compared.
-		tail := regexp.MustCompile(`1 step · 1 tool( · \d+s)? ▹$`)
-		if !strings.HasPrefix(folded, want) || !tail.MatchString(folded) {
-			t.Errorf("w=%d folded row = %q, want prefix %q and a step/tool/clock tail", width, folded, want)
-		}
-		if got := len([]rune(folded)); got > width {
-			t.Errorf("w=%d folded row is %d wide", width, got)
-		}
-
-		// Unfold: the open header is a rule ending in the task's duration.
-		m.foldTasks = false
-		var header string
-		for _, l := range transcriptLines(&m) {
 			if strings.Contains(l, "1/2 Wire the parser") {
-				header = strings.TrimRight(l, " ")
+				divider = strings.TrimRight(l, " ")
 			}
 		}
-		if !strings.HasPrefix(header, " ✓ 1/2 Wire the parser ─") {
-			t.Errorf("w=%d open header = %q", width, header)
+		if !strings.HasPrefix(divider, "   ── 1/2 Wire the parser ") {
+			t.Errorf("w=%d divider = %q", width, divider)
 		}
-		if got := len([]rune(header)); got != width {
-			t.Errorf("w=%d open header should fill the frame, is %d wide", width, got)
+		if got := len([]rune(divider)); got != width {
+			t.Errorf("w=%d divider should fill the frame, is %d wide", width, got)
+		}
+		// The todo is complete and the beat is the turn's newest, so it stays
+		// open: the divider is followed by the beat's own row.
+		if !strings.Contains(strings.Join(lines, "\n"), "Reading the parser.") {
+			t.Errorf("w=%d the beat under the divider still renders:\n%s", width, strings.Join(lines, "\n"))
 		}
 	}
 }
@@ -394,22 +396,8 @@ func stepUnder(m *Model, narration, call string) {
 	m.state.EndStep(id)
 }
 
-func TestTodoStackPinsEveryTodoAboveTheTranscriptAndFoldsFinishedWork(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(100, 60)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	todos := []db.TodoItem{
-		{ID: "t1", Content: "Read", Status: "in_progress", StartedAt: time.Now()},
-		{ID: "t2", Content: "Write", Status: "pending"},
-		{ID: "t3", Content: "Test", Status: "pending"},
-		{ID: "t4", Content: "Ship", Status: "pending"},
-	}
-	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
-	stepUnder(&m, "Reading it. Slowly.", "a")
-	todos[0].Status, todos[0].CompletedAt = "completed", time.Now()
-	todos[1].Status, todos[1].StartedAt = "in_progress", time.Now()
-	_ = m.state.SetTodos(append([]db.TodoItem(nil), todos...))
-	stepUnder(&m, "Writing it. Quickly.", "b")
+func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
+	m := todoStack(t)
 
 	lines := transcriptLines(&m)
 	text := strings.Join(lines, "\n")
@@ -422,119 +410,54 @@ func TestTodoStackPinsEveryTodoAboveTheTranscriptAndFoldsFinishedWork(t *testing
 		t.Fatalf("missing %q:\n%s", sub, text)
 		return -1
 	}
-	done, open, step := at("1/4 Read"), at("2/4 Write"), at("Writing it.")
-	if !(done < open && open < step) {
-		t.Fatalf("order must be folded row, open header, then its work:\n%s", text)
-	}
-	if strings.Contains(text, "Reading it.") {
-		t.Errorf("the finished todo's work is folded away:\n%s", text)
-	}
-	if open != done+1 || step != open+1 {
-		t.Errorf("folded row, open header and first step sit together:\n%s", text)
+	// Each todo's work sits under the divider naming it, in list order. Both
+	// beats are finished, but they are the newest of the turn, so they stay
+	// open; a beat only folds once the model has moved past it.
+	read, first, write, second := at("1/4 Read"), at("Reading it."), at("2/4 Write"), at("Writing it.")
+	if !(read < first && first < write && write < second) {
+		t.Fatalf("order must be divider, work, next divider, next work:\n%s", text)
 	}
 	if strings.Contains(text, "3/4 Test") || strings.Contains(text, "4/4 Ship") {
-		t.Errorf("waiting todos live in the pinned band, not the transcript:\n%s", text)
+		t.Errorf("waiting todos live in the band, not the transcript:\n%s", text)
 	}
 
-	// The strip is the first thing in the frame and holds the work done and
-	// under way; the waiting todos stack in the band below the transcript.
-	frame := strings.Split(stripANSI(m.viewString()), "\n")
-	rowOf := func(sub string) int {
-		for i, l := range frame {
-			if strings.Contains(l, sub) {
-				return i
-			}
+	// The band carries the progress: the head row holds the count and the
+	// active item, the checklist holds the done count and what comes next.
+	// The per-todo rows are gone — the transcript's dividers cover those.
+	plain := stripANSI(nowBarOut(m))
+	if !strings.Contains(plain, "1/4") || !strings.Contains(plain, "Write") {
+		t.Errorf("band head should count progress and name the active todo:\n%s", plain)
+	}
+	if !strings.Contains(plain, "1 done") || !strings.Contains(plain, "next: Test") {
+		t.Errorf("band checklist should hold the done count and the next waiting todo:\n%s", plain)
+	}
+	for _, gone := range []string{"✓ 1/4", "▸ 2/4", "· 3/4"} {
+		if strings.Contains(plain, gone) {
+			t.Errorf("the band must not re-render per-todo rows (%q):\n%s", gone, plain)
 		}
-		t.Fatalf("frame is missing %q:\n%s", sub, strings.Join(frame, "\n"))
-		return -1
-	}
-	for i, w := range []string{"✓ 1/4 Read", "▸ 2/4 Write"} {
-		if i >= len(frame) || !strings.Contains(frame[i], w) {
-			t.Fatalf("frame row %d should hold %q:\n%s", i, w, strings.Join(frame[:min(8, len(frame))], "\n"))
-		}
-	}
-	if first, last := rowOf("3/4 Test"), rowOf("4/4 Ship"); !(first < last) {
-		t.Errorf("the band lists the waiting todos in order (rows %d, %d)", first, last)
-	}
-	if strip, band := rowOf("1/4 Read"), rowOf("3/4 Test"); !(strip < band) {
-		t.Errorf("the strip sits above the band (rows %d, %d)", strip, band)
-	}
-	if m.todoStripRows() != 2 {
-		t.Errorf("strip rows = %d, want 2", m.todoStripRows())
 	}
 }
 
-func TestTodoStripNotShownWhenTheTurnNeverTouchedTheList(t *testing.T) {
+func TestBandNotShownWhenTheTurnNeverTouchedTheList(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "A", Status: "pending"}, {ID: "t2", Content: "B", Status: "pending"}})
 	m.state.AddMessage(session.RoleUser, "unrelated", session.ContentTypePlain)
 	stepUnder(&m, "Just reading. Nothing else.", "a")
-	transcriptLines(&m)
-	if m.todoStripRows() != 0 {
-		t.Fatalf("leftover todos must not pin a strip on an unrelated turn, rows = %d", m.todoStripRows())
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if m.band.Todos {
+		t.Fatalf("leftover todos must not put progress in the band on an unrelated turn: %+v", m.band)
+	}
+	if plain := stripANSI(nowBarOut(m)); strings.Contains(plain, "done") || strings.Contains(plain, "next:") {
+		t.Fatalf("the band must not show todo progress for an unrelated turn:\n%s", plain)
 	}
 }
 
-func TestStripWindowCentersOnTheActiveTodo(t *testing.T) {
-	var todos []db.TodoItem
-	for i := 1; i <= 10; i++ {
-		st := "pending"
-		switch {
-		case i <= 4:
-			st = "completed"
-		case i == 5:
-			st = "in_progress"
-		}
-		todos = append(todos, db.TodoItem{ID: fmt.Sprintf("t%d", i), Content: fmt.Sprintf("item %d", i), Status: st})
-	}
-	v := stripWindow(todos, 6)
-	if len(v.rows) != 6 {
-		t.Fatalf("rows = %d, want 6", len(v.rows))
-	}
-	if v.rows[0].text != "3 done" || v.rows[1].index != 4 || v.rows[2].index != 5 || v.rows[len(v.rows)-1].text != "+3 more" {
-		t.Fatalf("window = %+v", v.rows)
-	}
-	// On a short terminal (three rows) the active todo must still be shown,
-	// not the one before it.
-	short := stripWindow(todos, 3)
-	var shown bool
-	for _, r := range short.rows {
-		if r.todo != nil && r.todo.ID == "t5" {
-			shown = true
-		}
-	}
-	if !shown || len(short.rows) > 3 {
-		t.Fatalf("a 3-row window must include the active todo and stay in budget: %+v", short.rows)
-	}
-	for _, maxRows := range []int{3, 4, 5, 6} {
-		for active := 1; active <= 10; active++ {
-			var l []db.TodoItem
-			for i := 1; i <= 10; i++ {
-				st := "pending"
-				if i < active {
-					st = "completed"
-				} else if i == active {
-					st = "in_progress"
-				}
-				l = append(l, db.TodoItem{ID: fmt.Sprintf("t%d", i), Content: "x", Status: st})
-			}
-			w := stripWindow(l, maxRows)
-			found := false
-			for _, r := range w.rows {
-				if r.todo != nil && r.index == active {
-					found = true
-				}
-			}
-			if !found || len(w.rows) > maxRows {
-				t.Errorf("maxRows=%d active=%d: rows=%d found=%v", maxRows, active, len(w.rows), found)
-			}
-		}
-	}
-	if got := stripWindow(todos[:3], 6); len(got.rows) != 3 {
-		t.Fatalf("a short list shows whole, got %d rows", len(got.rows))
-	}
-}
+// TestStripWindowCentersOnTheActiveTodo pinned the todo strip's row window.
+// The strip is gone: the band shows one progress line and one checklist line
+// (nowbar_test.go), and the full list opens in the Ctrl+T Tasks panel, which
+// numbers every todo against the whole list (TestTasksDocShowsStepCounts).
 
 func TestTransientNarrationFlowsWithoutHeadersWhenThereAreNoTodos(t *testing.T) {
 	m := newTestModel(t)
@@ -633,9 +556,10 @@ func TestTightJoinsKeepClickAndBrowsePositionsOnTheirRows(t *testing.T) {
 	}
 
 	lines := transcriptLines(&m)
+	// A labelled beat's region opens on its divider, so the todo lines count
+	// as that beat's start.
 	wants := map[viewmodel.Kind][]string{
-		viewmodel.KindTask: {"1/3 Read", "2/3 Write"},
-		viewmodel.KindStep: {"Writing the first half", "Writing the second half", "One thought", "Another thought"},
+		viewmodel.KindStep: {"1/3 Read", "2/3 Write", "Writing the first half", "Writing the second half", "One thought", "Another thought"},
 	}
 	seen := 0
 	for _, r := range m.nodeRegions {
@@ -654,11 +578,11 @@ func TestTightJoinsKeepClickAndBrowsePositionsOnTheirRows(t *testing.T) {
 		}
 		seen++
 	}
-	if seen < 6 {
-		t.Fatalf("expected regions for two tasks and four steps, saw %d:\n%s", seen, strings.Join(lines, "\n"))
+	if seen < 5 {
+		t.Fatalf("expected regions for two labelled beats and three more, saw %d:\n%s", seen, strings.Join(lines, "\n"))
 	}
 	for _, it := range m.browseItems {
-		if it.kind != viewmodel.KindTask && it.kind != viewmodel.KindStep {
+		if it.kind != viewmodel.KindStep {
 			continue
 		}
 		if it.start >= len(lines) || strings.TrimSpace(lines[it.start]) == "" {

@@ -14,4 +14,6 @@ export interface TranscriptCtx {
   now: number
   onToggleFold?: (id: string) => void
   onToggleDensity?: (id: string) => void
+  /** Select a node by id: a completion marker jumping to its card. */
+  onSelect?: (id: string) => void
 }

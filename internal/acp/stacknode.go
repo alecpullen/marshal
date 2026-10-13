@@ -209,10 +209,8 @@ func (m *TurnManager) StackNode(ctx context.Context, params json.RawMessage) (an
 			detail.Thinking = append(detail.Thinking, ThoughtDetail{Text: t.Text, DurationMs: t.Duration.Milliseconds()})
 		}
 		detail.Todo = todoDetail(state, n.Step.TodoID)
-	case n.Kind == viewmodel.KindTask && n.Task != nil:
-		detail.Todo = todoDetail(state, n.Task.TodoID)
 	}
-	if rel, ok := viewmodel.Relations(state.Transcript())[n.ID]; ok {
+	if rel, ok := viewmodel.ResolveBeats(viewmodel.Relations(state.Transcript()), tree)[n.ID]; ok {
 		detail.Relations = &RelationDetail{CausedBy: keysOf(rel.CausedBy), FixedBy: keysOf(rel.FixedBy)}
 	}
 	node := viewmodel.Project([]*viewmodel.Node{n}).Nodes[0]

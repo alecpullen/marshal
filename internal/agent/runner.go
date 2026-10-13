@@ -447,6 +447,12 @@ type Runner struct {
 	// todoClock measures how long the todo list has gone unmaintained and
 	// todoNudged records that this list version has already been nudged about
 	// it. Both are per-turn state, reset by startTodoClock (todonudge.go).
+	//
+	// Guarded by todoMu, not by trackerMu: read-only tool calls run in
+	// parallel, so the nudge and the todo.write reset are both reached from
+	// several goroutines at once, none of which holds trackerMu at the
+	// point they run.
+	todoMu     sync.Mutex
 	todoClock  session.TodoClock
 	todoNudged bool
 	// finishReasonMu guards turnFinishReason, which is written by RunTask

@@ -998,45 +998,53 @@ func TestActiveToolCallWrapsLongOutput(t *testing.T) {
 	}
 }
 
-func TestCompletedToolCallWrapsLongSummary(t *testing.T) {
+// A collapsed row keeps to one line whatever its summary; expanding is how a
+// reader asks for the rest. (The expanded cases below cover the wrap.)
+func TestCompletedToolCallTruncatesLongSummary(t *testing.T) {
 	long := strings.Repeat("summary-part-", 10) // 130 chars
 	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
 		ToolName:      "file.read",
 		ResultSummary: long,
 	}, false, nil, 30))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
+	if len(lines) != 1 {
+		t.Fatalf("collapsed row must stay one line, got %d:\n%s", len(lines), out)
 	}
-	for _, line := range lines {
+	if w := ansi.StringWidth(lines[0]); w > 30 {
+		t.Fatalf("line is %d cells wide, budget 30: %q", w, lines[0])
+	}
+	if !strings.Contains(lines[0], "…") || !strings.Contains(lines[0], "summary-part-") {
+		t.Fatalf("collapsed row should truncate with an ellipsis:\n%s", out)
+	}
+	// Expanded, the same summary wraps inside the budget.
+	expanded := stripANSI(renderCompletedToolCall(registry.AuditEvent{
+		ToolName:      "file.read",
+		ResultSummary: long,
+	}, true, nil, 30))
+	for _, line := range strings.Split(strings.TrimRight(expanded, "\n"), "\n") {
 		if w := ansi.StringWidth(line); w > 30 {
-			t.Fatalf("line is %d cells wide, budget 30: %q", w, line)
+			t.Fatalf("expanded line is %d cells wide, budget 30: %q", w, line)
 		}
-	}
-	joined := strings.Join(lines, "")
-	if !strings.Contains(joined, "summary-part-") {
-		t.Fatalf("wrapped output is missing content:\n%s", out)
 	}
 }
 
-func TestCompletedToolCallWrapsLongError(t *testing.T) {
+func TestCompletedToolCallTruncatesLongError(t *testing.T) {
 	long := strings.Repeat("error-detail-", 10) // 130 chars
 	out := stripANSI(renderCompletedToolCall(registry.AuditEvent{
 		ToolName: "shell.run",
 		Error:    long,
 	}, false, nil, 30))
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected wrapping to produce multiple lines, got %d:\n%s", len(lines), out)
+	if len(lines) != 1 {
+		t.Fatalf("collapsed row must stay one line, got %d:\n%s", len(lines), out)
 	}
-	for _, line := range lines {
-		if w := ansi.StringWidth(line); w > 30 {
-			t.Fatalf("line is %d cells wide, budget 30: %q", w, line)
-		}
+	if w := ansi.StringWidth(lines[0]); w > 30 {
+		t.Fatalf("line is %d cells wide, budget 30: %q", w, lines[0])
 	}
-	joined := strings.Join(lines, "")
-	if !strings.Contains(joined, "error-detail-") {
-		t.Fatalf("wrapped output is missing content:\n%s", out)
+	// Truncation may cut inside the repeated fragment, so match the stable
+	// prefix rather than the whole token.
+	if !strings.Contains(lines[0], "error-detail") || !strings.Contains(lines[0], "✗") {
+		t.Fatalf("collapsed row should name the error and mark the failure:\n%s", out)
 	}
 }
 

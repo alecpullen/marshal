@@ -112,6 +112,7 @@ func (m *Model) refreshViewport() {
 		routeProvider: transcriptState.ActiveRoute().Provider,
 		sandbox:       transcriptState.SandboxInfo(),
 		allowNetwork:  transcriptState.Config.Tools.Shell.AllowNetwork,
+		workdir:       transcriptState.Workspace().ActiveRoot,
 	}
 
 	blocks := make([]string, 0, len(items)+4)
@@ -273,7 +274,7 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 		rv := m.regionView(n.ID)
 		d := m.densityOf(n.ID, m.density)
 		m.recordDensity(n.ID, d)
-		return renderTranscriptItem(*n.Item, d == densityFull, m.spinnerFrame, rv, m.callers[n.ID], width), nil
+		return renderTranscriptItemIn(*n.Item, d == densityFull, m.spinnerFrame, rv, m.callers[n.ID], width, c.workdir), nil
 	}
 	return "", nil
 }

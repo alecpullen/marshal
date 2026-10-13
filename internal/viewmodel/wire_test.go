@@ -178,6 +178,28 @@ func TestWireMarkerAndJobCard(t *testing.T) {
 	}
 }
 
+func TestElideWorkdir(t *testing.T) {
+	root := "/home/a/proj/.marshal/worktrees/x"
+	if got := ElideWorkdir("cd "+root+" && pytest -q", root); got != "⌂ pytest -q" {
+		t.Fatalf("got %q", got)
+	}
+	if got := ElideWorkdir("cd /elsewhere && ls", root); got != "cd /elsewhere && ls" {
+		t.Fatalf("other dirs stay: %q", got)
+	}
+	// The separators a shell command uses, and quoting of the root.
+	for _, cmd := range []string{"cd " + root + "; ls", `cd "` + root + `" && ls`, "cd '" + root + "' && ls"} {
+		if got := ElideWorkdir(cmd, root); !strings.HasPrefix(got, "⌂ ") {
+			t.Errorf("ElideWorkdir(%q) = %q", cmd, got)
+		}
+	}
+	if got := ElideWorkdir("cd "+root, root); got != "cd "+root {
+		t.Fatalf("a bare cd is not a prefix we elide: %q", got)
+	}
+	if got := ElideWorkdir("pytest -q", ""); got != "pytest -q" {
+		t.Fatalf("no root, no elision: %q", got)
+	}
+}
+
 func TestAwaitSummaryIsJustTheWait(t *testing.T) {
 	ev := registry.AuditEvent{ToolName: "agent.await", ResultSummary: "subagent 1 completed: Task 4", Duration: 18e9}
 	if got := DisplaySummary(ev); got != "waited 18s" {

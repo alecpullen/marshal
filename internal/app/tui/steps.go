@@ -61,6 +61,9 @@ type stepRenderCtx struct {
 	routeProvider string
 	sandbox       session.SandboxInfo
 	allowNetwork  bool
+	// workdir is the session's active root. A shell row that begins by
+	// changing into it says "⌂ cmd" instead of repeating the path.
+	workdir string
 }
 
 // level resolves and records a node's density.
@@ -230,7 +233,7 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		case ch.Kind == viewmodel.KindTool && ch.Active != nil:
 			row(ch.ID, renderActiveToolRow(*ch.Active, c, c.liveToolExpanded(ch.ID), width), subRegion{})
 		case ch.Kind == viewmodel.KindTool && ch.Job != nil:
-			row(ch.ID, renderJobCard(ch, c.toolSpinner, c.now, c.level(ch.ID, sd) == densityFull, width), subRegion{live: ch.Job.Running})
+			row(ch.ID, renderJobCard(ch, c.toolSpinner, c.now, c.level(ch.ID, sd) == densityFull, width, c.workdir), subRegion{live: ch.Job.Running})
 		case ch.Kind == viewmodel.KindTool && len(ch.Tools) > 1:
 			rd := c.level(ch.ID, sd)
 			if rd == densityOutline {
@@ -242,7 +245,7 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 			if rd == densityOutline {
 				continue
 			}
-			row(ch.ID, renderToolRow(ch.Tools[0], rd == densityFull, c.callersFor(ch.ID), width), subRegion{})
+			row(ch.ID, renderToolRow(ch.Tools[0], rd == densityFull, c.callersFor(ch.ID), width, c.workdir), subRegion{})
 		case ch.Kind == viewmodel.KindSubagent && ch.Item != nil && ch.Item.Subagent != nil:
 			v := *ch.Item.Subagent
 			rv := c.region(ch.ID)
@@ -264,7 +267,7 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 // renderJobCard renders a background job's card: the shell.run row that
 // started it, settled in place by the job's exit. One row, with the outcome
 // right-aligned so a long command can never push it off the line.
-func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded bool, width int) string {
+func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded bool, width int, workdir string) string {
 	j := row.Job
 	g, style := glyph.Job, statusOkStyle()
 	gutterColor := theme.Current().FGMuted
@@ -290,7 +293,7 @@ func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded 
 		}
 	}
 	head := j.ID
-	if cmd := firstLine(j.Command); cmd != "" {
+	if cmd := firstLine(viewmodel.ElideWorkdir(j.Command, workdir)); cmd != "" {
 		head += dimSeparator + cmd
 	}
 	if j.Output != "" {
@@ -369,8 +372,8 @@ func countToolCalls(rows []*viewmodel.Node) int {
 // renderToolRow renders a settled tool call inside a step. It is the
 // top-level row, indented: width is reduced by the indent so wrapping stays
 // inside the frame, and every line (continuations included) shifts with it.
-func renderToolRow(ev registry.AuditEvent, expanded bool, callers []string, width int) string {
-	out := indentLines(renderCompletedToolCall(ev, expanded, callers, width-stepRowIndent), stepRowIndent)
+func renderToolRow(ev registry.AuditEvent, expanded bool, callers []string, width int, workdir string) string {
+	out := indentLines(renderCompletedToolCallIn(ev, expanded, callers, width-stepRowIndent, workdir), stepRowIndent)
 	if !expanded && viewmodel.EventFailed(ev) {
 		out += failedTail(ev, width)
 	}

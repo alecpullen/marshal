@@ -557,6 +557,12 @@ func renderAgentMarkdown(content string, width int) string {
 }
 
 func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int) string {
+	return renderTranscriptItemIn(item, detailExpanded, spinnerFrame, rv, callers, width, "")
+}
+
+// renderTranscriptItemIn is renderTranscriptItem with the session's active
+// root, so a pass-through shell row elides a leading cd into it.
+func renderTranscriptItemIn(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int, workdir string) string {
 	switch item.Kind {
 	case session.KindThinking:
 		if item.Thinking == nil {
@@ -567,7 +573,7 @@ func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spin
 		if item.Audit == nil {
 			return ""
 		}
-		return renderCompletedToolCall(*item.Audit, detailExpanded, callers, width)
+		return renderCompletedToolCallIn(*item.Audit, detailExpanded, callers, width, workdir)
 	case session.KindMessage:
 		if item.Message == nil {
 			return ""
@@ -954,7 +960,15 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	return b.String()
 }
 
+// renderCompletedToolCall renders a settled call with no working tree known,
+// so a shell command keeps the text the model wrote.
 func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers []string, width int) string {
+	return renderCompletedToolCallIn(event, expanded, callers, width, "")
+}
+
+// renderCompletedToolCallIn is renderCompletedToolCall with the session's
+// active root, which elides a leading cd into it from shell rows.
+func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers []string, width int, workdir string) string {
 	g := toolCategoryGlyph(event.ToolName)
 	style := statusOkStyle()
 	if event.Error != "" {
@@ -980,7 +994,7 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 	// the tool-name-first shape whenever there are no symbols, which is
 	// every language without a tree-sitter grammar and every whole-file
 	// rewrite — so the fallback is the common path, not a degraded one.
-	if s := shellSubject(event); shellRow && s != "" {
+	if s := shellSubjectIn(event, workdir); shellRow && s != "" {
 		head = s
 		// The summary duplicates the head only for normal foreground
 		// runs (command + exit code). Background jobs ("started
@@ -1026,16 +1040,23 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 
 	cw := contentWidth(width)
 	var b strings.Builder
-	headWrapped := ansi.Wrap(head, cw, WrapBreakpoints)
-	headLines := strings.Split(headWrapped, "\n")
-	for i, hl := range headLines {
-		if i == 0 {
-			b.WriteString(gutter)
-		} else {
-			b.WriteString(continuation())
-		}
-		b.WriteString(style.Render(hl))
+	if !expanded {
+		// A collapsed row is one line. The transcript is a list of what
+		// happened, and a wrapped row costs the reader a line for detail they
+		// did not ask for; expanding it is how they ask.
+		b.WriteString(gutter)
+		b.WriteString(style.Render(ansi.Truncate(oneLine(head), cw, "…")))
 		b.WriteString("\n")
+	} else {
+		for i, hl := range strings.Split(ansi.Wrap(head, cw, WrapBreakpoints), "\n") {
+			if i == 0 {
+				b.WriteString(gutter)
+			} else {
+				b.WriteString(continuation())
+			}
+			b.WriteString(style.Render(hl))
+			b.WriteString("\n")
+		}
 	}
 	// Blast radius: a continuation line naming what references the symbol
 	// this row changed. It is a settled one-time addition to a settled row,

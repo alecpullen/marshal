@@ -11,6 +11,27 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// ElideWorkdir shortens a command that starts by changing into the session's
+// working tree: "cd <root> && pytest" reads as "⌂ pytest".
+//
+// A shell command that has to run in the worktree has to say so, and the
+// path is both long and already implied by the row's context. Only a leading
+// cd into the root, followed by a separator, is elided: a cd somewhere else
+// is information the reader needs.
+func ElideWorkdir(cmd, root string) string {
+	if root == "" {
+		return cmd
+	}
+	for _, sep := range []string{" && ", "; "} {
+		for _, q := range []string{root, `"` + root + `"`, "'" + root + "'"} {
+			if p := "cd " + q + sep; strings.HasPrefix(cmd, p) {
+				return "⌂ " + strings.TrimPrefix(cmd, p)
+			}
+		}
+	}
+	return cmd
+}
+
 // DisplaySummary is the summary a row shows. An await's result names what
 // finished, which the completion marker already says; its row just reports
 // the wait.

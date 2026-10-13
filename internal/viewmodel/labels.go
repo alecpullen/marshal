@@ -33,7 +33,7 @@ func labelTransitions(nodes []*Node, todos []db.TodoItem, wroteList bool) {
 		if id != prev {
 			for i, td := range todos {
 				if td.ID == id {
-					n.Step.Todo = &TodoLabel{ID: id, Index: i + 1, Total: len(todos), Content: td.Content}
+					n.Step.Todo = &TodoLabel{ID: id, Index: i + 1, Total: len(todos), Content: ScrubText(td.Content)}
 					break
 				}
 			}

@@ -75,10 +75,10 @@ func BandOf(s Snapshot, turns []*Node) BandInfo {
 			}
 		}
 		if active >= 0 {
-			b.Active = s.Todos[active].Content
+			b.Active = ScrubText(s.Todos[active].Content)
 			for _, t := range s.Todos[active+1:] {
 				if t.Status != "completed" && t.Status != "in_progress" {
-					b.Next = append(b.Next, t.Content)
+					b.Next = append(b.Next, ScrubText(t.Content))
 				}
 			}
 		}
@@ -93,9 +93,9 @@ func BandOf(s Snapshot, turns []*Node) BandInfo {
 			switch {
 			case n.Kind == KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Status == session.SubagentRunning:
 				v := n.Item.Subagent
-				b.Entities = append(b.Entities, BandEntity{Ref: n.ID, Label: fmt.Sprintf("#%d %s", v.ID, v.Label), Detail: v.CurrentTool, Started: v.StartedAt})
+				b.Entities = append(b.Entities, BandEntity{Ref: n.ID, Label: fmt.Sprintf("#%d %s", v.ID, ScrubText(v.Label)), Detail: ScrubText(v.CurrentTool), Started: v.StartedAt})
 			case n.Job != nil && n.Job.Running:
-				b.Entities = append(b.Entities, BandEntity{Ref: n.ID, Label: n.Job.ID, Detail: n.Job.Command, Started: n.Tools[0].Timestamp})
+				b.Entities = append(b.Entities, BandEntity{Ref: n.ID, Label: n.Job.ID, Detail: ScrubText(n.Job.Command), Started: n.JobStart()})
 			}
 			walk(n.Children)
 		}

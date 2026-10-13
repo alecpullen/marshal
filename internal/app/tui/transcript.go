@@ -626,6 +626,14 @@ const subagentTailBudget = 40
 func renderSubagentCard(v session.SubagentView, expanded bool, spinnerFrame string, rv regionView, width int) string {
 	th := theme.Current()
 	live := v.Status == session.SubagentRunning
+	// The label and the summary are the model's own text — a child's
+	// description, its narration — and this card is a live region, so it
+	// repaints on every tick. Scrub once here: v is a copy, and every field
+	// below reads the scrubbed value.
+	v.Label = viewmodel.ScrubText(v.Label)
+	v.CurrentTool = viewmodel.ScrubText(v.CurrentTool)
+	v.SalvagedReason = viewmodel.ScrubText(v.SalvagedReason)
+	v.Summary = viewmodel.ScrubBlock(v.Summary)
 
 	// Duration: elapsed while running, total once finished.
 	var dur string

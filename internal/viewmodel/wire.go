@@ -73,10 +73,13 @@ type WireBandEntity struct {
 // ProjectBand is the band as a wire node. Its ID is fixed so every patch
 // updates the same node rather than accumulating copies.
 func ProjectBand(b BandInfo) WireNode {
-	wb := &WireBand{Todos: b.Todos, Done: b.Done, Total: b.Total, Active: b.Active, Stale: b.Stale,
-		StaleAgeMs: b.StaleAge.Milliseconds(), Next: b.Next}
+	wb := &WireBand{Todos: b.Todos, Done: b.Done, Total: b.Total, Active: ScrubText(b.Active), Stale: b.Stale,
+		StaleAgeMs: b.StaleAge.Milliseconds()}
+	for _, n := range b.Next {
+		wb.Next = append(wb.Next, ScrubText(n))
+	}
 	for _, e := range b.Entities {
-		wb.Entities = append(wb.Entities, WireBandEntity{Ref: e.Ref.Key, Label: e.Label, Detail: e.Detail, StartedAt: ms(e.Started)})
+		wb.Entities = append(wb.Entities, WireBandEntity{Ref: e.Ref.Key, Label: ScrubText(e.Label), Detail: ScrubText(e.Detail), StartedAt: ms(e.Started)})
 	}
 	return WireNode{ID: "band", Kind: "band", Band: wb}
 }
@@ -305,9 +308,14 @@ func wireNode(n *Node) WireNode {
 	case len(n.Tools) > 0:
 		w.Tool = wireTools(n.Tools)
 		if j := n.Job; j != nil {
-			wj := &WireJob{ID: j.ID, Command: j.Command, Running: j.Running, ExitCode: j.ExitCode,
+			wj := &WireJob{ID: j.ID, Command: ScrubText(j.Command), Running: j.Running, ExitCode: j.ExitCode,
 				DurationMs: j.Duration.Milliseconds()}
 			wj.Output, wj.Truncated = capTail(j.Output)
+			if s := ScrubBlock(wj.Output); s != wj.Output {
+				// A scrub that changed the text is itself a reason for a
+				// client to ask for the full payload.
+				wj.Output, wj.Truncated = s, true
+			}
 			w.Tool.Job = wj
 		}
 	case n.Item != nil:
@@ -329,11 +337,11 @@ func wireStep(n *Node) *WireStep {
 		LiveThinking: si.LiveThinking,
 	}
 	for _, t := range si.Thinking {
-		ws.Thoughts = append(ws.Thoughts, WireThought{Text: t.Text, DurationMs: t.Duration.Milliseconds()})
+		ws.Thoughts = append(ws.Thoughts, WireThought{Text: ScrubBlock(t.Text), DurationMs: t.Duration.Milliseconds()})
 	}
 	ws.Folded = si.Folded
 	if l := si.Todo; l != nil {
-		ws.Todo = &WireTodoLabel{ID: l.ID, Index: l.Index, Total: l.Total, Content: l.Content}
+		ws.Todo = &WireTodoLabel{ID: l.ID, Index: l.Index, Total: l.Total, Content: ScrubText(l.Content)}
 	}
 	return ws
 }
@@ -342,17 +350,20 @@ func wireTools(evs []registry.AuditEvent) *WireTool {
 	wt := &WireTool{Name: evs[0].ToolName, Display: DisplayToolName(evs[0].ToolName)}
 	for _, ev := range evs {
 		c := WireCall{
-			CallID: ev.ToolCallID, Target: ToolTarget(ev), Summary: DisplaySummary(ev),
-			Error: ev.Error, ExitCode: ev.CommandExitCode, Failed: EventFailed(ev),
-			Approval: string(ev.Approval), Risk: string(ev.Risk), Files: ev.FilesChanged,
-			Role: ev.AgentRole, DurationMs: ev.Duration.Milliseconds(), At: ms(ev.Timestamp),
+			CallID: ev.ToolCallID, Target: ScrubText(ToolTarget(ev)), Summary: ScrubText(DisplaySummary(ev)),
+			Error: ScrubBlock(ev.Error), ExitCode: ev.CommandExitCode, Failed: EventFailed(ev),
+			Approval: string(ev.Approval), Risk: string(ev.Risk), Role: ev.AgentRole,
+			DurationMs: ev.Duration.Milliseconds(), At: ms(ev.Timestamp),
+		}
+		for _, f := range ev.FilesChanged {
+			c.Files = append(c.Files, ScrubText(f))
 		}
 		var cut1, cut2 bool
 		c.Args, cut1 = capText(string(ev.Args))
 		c.Output, cut2 = capText(ev.ResultContent)
 		c.Truncated = cut1 || cut2
 		if ev.Notice != nil {
-			c.Notice = ev.Notice.Text
+			c.Notice = ScrubText(ev.Notice.Text)
 		}
 		wt.Calls = append(wt.Calls, c)
 	}
@@ -379,15 +390,15 @@ func wireItem(w *WireNode, it *session.TranscriptItem) {
 			ThinkMs: m.ThinkDuration.Milliseconds(), At: ms(it.Timestamp),
 		}
 	case it.Thinking != nil:
-		w.Thinking = &WireThinking{Text: it.Thinking.Text, DurationMs: it.Thinking.Duration.Milliseconds()}
+		w.Thinking = &WireThinking{Text: ScrubBlock(it.Thinking.Text), DurationMs: it.Thinking.Duration.Milliseconds()}
 	case it.Subagent != nil:
 		v := it.Subagent
 		ws := &WireSubagent{
-			Label: v.Label, Status: subagentStatus(v.Status), Role: string(v.Role), Model: v.Model,
-			Provider: v.Provider, ToolCalls: v.ToolCalls, CurrentTool: v.CurrentTool, Tokens: v.TokensUsed,
-			Error: v.Error, Salvaged: v.SalvagedReason, StartedAt: ms(v.StartedAt), EndedAt: ms(v.EndedAt),
+			Label: ScrubText(v.Label), Status: subagentStatus(v.Status), Role: string(v.Role), Model: v.Model,
+			Provider: v.Provider, ToolCalls: v.ToolCalls, CurrentTool: ScrubText(v.CurrentTool), Tokens: v.TokensUsed,
+			Error: ScrubBlock(v.Error), Salvaged: ScrubText(v.SalvagedReason), StartedAt: ms(v.StartedAt), EndedAt: ms(v.EndedAt),
 		}
-		ws.Summary, ws.Truncated = capText(v.Summary)
+		ws.Summary, ws.Truncated = capText(ScrubBlock(v.Summary))
 		w.Subagent = ws
 	case it.RunEvent != nil:
 		e := it.RunEvent

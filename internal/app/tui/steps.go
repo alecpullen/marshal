@@ -279,7 +279,9 @@ func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded 
 		}
 		gutterColor = theme.Current().AccentPrimary
 		tail = "running"
-		if started := row.Tools[0].Timestamp; !started.IsZero() {
+		// JobStart, not Tools[0]: a caller-built tree can hold a running job
+		// whose starting call is not attached, and the row still renders.
+		if started := row.JobStart(); !started.IsZero() {
 			tail += dimSeparator + formatElapsed(max(now.Sub(started), 0))
 		}
 	} else {
@@ -292,8 +294,10 @@ func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded 
 			tail += dimSeparator + formatElapsed(j.Duration)
 		}
 	}
-	head := j.ID
-	if cmd := firstLine(viewmodel.ElideWorkdir(j.Command, workdir)); cmd != "" {
+	head := viewmodel.ScrubText(j.ID)
+	// The command is model-authored shell text and this renderer prints it
+	// verbatim, so it is scrubbed here as well as at the viewmodel boundary.
+	if cmd := firstLine(viewmodel.ScrubText(viewmodel.ElideWorkdir(j.Command, workdir))); cmd != "" {
 		head += dimSeparator + cmd
 	}
 	if j.Output != "" {
@@ -308,7 +312,8 @@ func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded 
 	b.WriteString("\n")
 	if expanded && j.Output != "" {
 		cw := contentWidth(width)
-		for _, line := range strings.Split(strings.TrimRight(j.Output, "\n"), "\n") {
+		out := viewmodel.ScrubBlock(j.Output)
+		for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 			for _, wl := range strings.Split(ansi.Wrap(line, cw, WrapBreakpoints), "\n") {
 				b.WriteString(continuation())
 				b.WriteString(mutedStyle().Render(wl))
@@ -331,7 +336,7 @@ func renderMarker(m *viewmodel.MarkerInfo, width int) string {
 	if m.Failed && len(m.Labels) == 1 {
 		word = "failed"
 	}
-	text := strings.Join(m.Labels, " ") + " " + word
+	text := viewmodel.ScrubText(strings.Join(m.Labels, " ") + " " + word)
 	if m.Dur > 0 {
 		text += dimSeparator + formatElapsed(m.Dur)
 	}
@@ -341,7 +346,7 @@ func renderMarker(m *viewmodel.MarkerInfo, width int) string {
 // renderTodoDivider is the dim rule a beat opens with when work moves to a
 // different todo: "── 3/9 AccessibleModal initialFocus ──────".
 func renderTodoDivider(l *viewmodel.TodoLabel, width int) string {
-	text := fmt.Sprintf(" %d/%d %s ", l.Index, l.Total, oneLine(l.Content))
+	text := fmt.Sprintf(" %d/%d %s ", l.Index, l.Total, oneLine(viewmodel.ScrubText(l.Content)))
 	room := max(width-gutterWidth-4, 8)
 	text = ansi.Truncate(text, room, "…")
 	fill := max(width-gutterWidth-2-ansi.StringWidth(text), 2)

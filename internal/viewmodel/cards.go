@@ -87,17 +87,40 @@ func indexCards(items []session.TranscriptItem) cardIndex {
 	return ci
 }
 
+// markerNode builds a completion marker's node. A marker's text is
+// model-authored — a subagent's label, a job's ID — so it is scrubbed here,
+// at the one place every marker is constructed, rather than at each renderer.
 func markerNode(m MarkerInfo) *Node {
-	n := &Node{ID: NodeID{KindMarker, "marker:" + m.Refs[0].Key}, Kind: KindMarker, Marker: &m}
+	labels := make([]string, len(m.Labels))
+	for i, l := range m.Labels {
+		labels[i] = ScrubText(l)
+	}
+	m.Labels = labels
+	n := &Node{ID: NodeID{KindMarker, "marker:" + markerKey(m)}, Kind: KindMarker, Marker: &m}
 	n.Version = versionOfMarker(&m)
 	return n
+}
+
+// markerKey is a marker's identity: the first card it reports on. A marker
+// with no refs — which Build never produces — falls back to its timestamp, so
+// it still has a distinct key rather than the empty key every such marker
+// would otherwise share.
+func markerKey(m MarkerInfo) string {
+	if len(m.Refs) > 0 {
+		return m.Refs[0].Key
+	}
+	return fmt.Sprintf("t%d", m.At.UnixNano())
 }
 
 func versionOfMarker(m *MarkerInfo) uint64 {
 	b := newHash()
 	b.f("mk|%v|%d|%d|", m.Failed, m.At.UnixNano(), m.Dur)
 	for i, r := range m.Refs {
-		b.f("r|%s|%s|", r.Key, m.Labels[i])
+		label := ""
+		if i < len(m.Labels) {
+			label = m.Labels[i]
+		}
+		b.f("r|%s|%s|", r.Key, label)
 	}
 	return b.sum()
 }
@@ -111,15 +134,30 @@ func (ci cardIndex) settleJob(row *Node) {
 	if id == "" {
 		return
 	}
-	js := &JobState{ID: id, Command: ToolTarget(row.Tools[0]), Running: true}
+	js := &JobState{ID: id, Command: ScrubText(ToolTarget(row.Tools[0])), Running: true}
 	if e, ok := ci.exits[id]; ok {
-		js.Running, js.ExitCode, js.Duration, js.Output = false, e.ExitCode, e.Duration, e.Output
+		js.Running, js.ExitCode, js.Duration = false, e.ExitCode, e.Duration
+		// Block, not Text: an expanded job card renders the output's own
+		// line structure, so its newlines are content.
+		js.Output = ScrubBlock(e.Output)
 	}
 	row.Job = js
 	row.Live = js.Running
 	b := newHash()
 	b.f("job|%d|%v|%d|%d|%d|", row.Version, js.Running, js.ExitCode, js.Duration, len(js.Output))
 	row.Version = b.sum()
+}
+
+// JobStart is when a job card's shell call was dispatched, or the zero time
+// when the card carries no call. Build always pairs a job with the single call
+// that started it, but a tree that has been rebuilt or filtered can hold a job
+// whose runs are gone, and neither the band nor the TUI may index an empty
+// slice for it: the card still renders, with its elapsed time unknown.
+func (n *Node) JobStart() time.Time {
+	if len(n.Tools) == 0 {
+		return time.Time{}
+	}
+	return n.Tools[0].Timestamp
 }
 
 // markersIn returns the markers whose time falls in [from, to). A zero from

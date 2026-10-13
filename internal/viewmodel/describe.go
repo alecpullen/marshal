@@ -92,6 +92,11 @@ func StepRoleWord(st session.Step) string {
 func StepHeadline(si *StepInfo) (head, rest string) {
 	var texts []string
 	for _, m := range si.Narration {
+		// A caller-built tree can hold a nil narration entry; a header must
+		// never be the thing that panics a renderer.
+		if m == nil {
+			continue
+		}
 		if t := strings.TrimSpace(m.Content); t != "" {
 			texts = append(texts, t)
 		}

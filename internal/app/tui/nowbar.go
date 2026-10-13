@@ -342,9 +342,13 @@ func nowBarActors(in nowBarInput) (rows []string, agents []*session.SubagentView
 	inner := max(in.Width-1, 1)
 	for i := range in.Agents {
 		v := &in.Agents[i]
-		label := fmt.Sprintf("#%d  %s", v.ID, oneLine(v.Label))
+		// The label is the model's own description of the child, and the
+		// headline is its narration: both are scrubbed before they reach a
+		// terminal. These rows read the session directly rather than through
+		// the viewmodel, so this is the only scrub they get.
+		label := fmt.Sprintf("#%d  %s", v.ID, oneLine(viewmodel.ScrubText(v.Label)))
 		if i < len(in.AgentHeadlines) && in.AgentHeadlines[i] != "" {
-			label += "  " + oneLine(in.AgentHeadlines[i])
+			label += "  " + oneLine(viewmodel.ScrubText(in.AgentHeadlines[i]))
 		}
 		// The model is only news when it differs from the parent's route.
 		if v.Model != "" && (v.Model != in.Model || (v.Provider != "" && v.Provider != in.Provider)) {
@@ -487,7 +491,7 @@ func (m Model) nowBarInput() nowBarInput {
 	for _, j := range m.runningJobs() {
 		line := fmt.Sprintf("%s  %s  %s",
 			j.ID,
-			strutil.Truncate(oneLine(j.Command), max(width/2, 12), true),
+			strutil.Truncate(oneLine(viewmodel.ScrubText(j.Command)), max(width/2, 12), true),
 			formatElapsed(max(now.Sub(j.StartedAt), 0)))
 		in.JobTexts = append(in.JobTexts, dimStyle().Render(glyph.Job+" "+line))
 	}

@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/tools/native"
+	"marshal/internal/viewmodel"
 )
 
 // todoLine renders one todo row: ✓ teal done, ▸ coral bold in-progress,
@@ -33,7 +34,7 @@ func todoLine(t native.TodoItem, width int) string {
 	default:
 		g, c = glyph.Ambient, theme.Current().FGMuted
 	}
-	return gutterPrefix(g, c) + labelStyle.Render(ansi.Truncate(t.Content, max(width-3, 1), "…"))
+	return gutterPrefix(g, c) + labelStyle.Render(ansi.Truncate(viewmodel.ScrubText(t.Content), max(width-3, 1), "…"))
 }
 
 // todoProgress returns the completed count and the index of the
@@ -98,7 +99,7 @@ func tasksDoc(todos []native.TodoItem, stats map[string]taskStat) commands.Doc {
 				detail = append(detail, compactDuration(st.work))
 			}
 		}
-		rows = append(rows, commands.Row{Text: g + " " + t.Content, Detail: strings.Join(detail, " · ")})
+		rows = append(rows, commands.Row{Text: g + " " + viewmodel.ScrubText(t.Content), Detail: strings.Join(detail, " · ")})
 	}
 	return commands.Doc{Title: fmt.Sprintf("Tasks %d/%d", done, len(todos)), Rows: rows}
 }

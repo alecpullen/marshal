@@ -182,8 +182,19 @@ func clampTimeout(seconds int, defaultTimeout time.Duration, maxTimeout time.Dur
 	return timeout
 }
 
+// formatCommandOutput labels the streams only when both have content, and
+// trims blank lines at the edges, so a quiet command does not show an empty
+// "stderr:" block to the user or the model.
 func formatCommandOutput(stdout string, stderr string) string {
-	return "stdout:\n" + stdout + "\n\nstderr:\n" + stderr
+	stdout = strings.Trim(stdout, "\n")
+	stderr = strings.Trim(stderr, "\n")
+	switch {
+	case stdout != "" && stderr != "":
+		return "stdout:\n" + stdout + "\n\nstderr:\n" + stderr
+	case stderr != "":
+		return "stderr:\n" + stderr
+	}
+	return stdout
 }
 
 func shellQuote(s string) string {

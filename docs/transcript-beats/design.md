@@ -183,9 +183,8 @@ the plan changed.
 - Collapsed shell rows show one line; a leading `cd <session worktree> && `
   is elided to `⌂ `.
 - Expanded diffs keep their file header (`AGENTS.md +3 -2`) as the row title.
-- Narration word-joining ("aslot", "thetodos", "finalverification"): first
-  confirm whether streamed narration chunks lose a boundary space in our join
-  or the provider emits them that way; fix at the confirmed cause.
+- Narration word-joining ("aslot", "thetodos", "finalverification"):
+  investigated; the endpoint emitted it. See Findings.
 
 ### 6. Wire contract
 
@@ -238,3 +237,46 @@ any wire change:
 3. Lifecycle cards and tail markers.
 4. Band payload and stale tag; then the runner nudge.
 5. Output polish.
+
+## Findings
+
+### Run-together narration words (Task 22)
+
+**Verdict: the endpoint emitted them. Nothing in marshal drops the space, and
+no client-side fix could tell a dropped space from one the model never sent.**
+
+Checked for a join in our own path, in the order a delta travels:
+
+- `openai_compatible.go` (`streamChatEvents`) forwards `choice.Delta.Content`
+  to the think parser and emits the returned content unchanged. No trimming.
+- `think_parser.go` only ever splits its buffer into "emit now" and "hold back
+  in case this is a split tag". Both halves are preserved and in order, so the
+  holdback cannot swallow a leading space.
+- `ollama_native.go` and `anthropic.go` emit `Content` / `text_delta` text
+  verbatim; the reasoning shapes are a separate channel.
+- `agent/chat.go` accumulates content deltas with `sb.WriteString(event.Delta)`
+  and thinking deltas on their own buffer. No per-chunk `TrimSpace` anywhere in
+  the delta path (a repo-wide search for one comes back empty).
+- `runner.go` stores narration as `strings.TrimSpace(res.Text)`, which trims
+  only the ends of the whole message, never interior text.
+- There is no content reassembly or re-stitching path that could rejoin split
+  tokens without a separator.
+
+The stored data agrees. Across the project database, 5,559 narration rows hold
+14 matches for a probe list of known joins (`thetests`, `thetest.`, `thecode.`,
+`theplan`, `thefile`, `thetask`, `thetodos`, `aslot`, `finalverification`), in
+two sessions, both of which ran fast chat models on a hosted endpoint. Every
+one sits mid-sentence, e.g. `… not the real errors. Let me verify the API names
+I used and run thetests.` and `… my test's precondition was wrong, not thecode.`
+
+Two tests pin the client side so a future regression cannot be mistaken for
+this: `TestChatStreamingPreservesSpaceAcrossChunkBoundary` (a space arriving on
+a chunk boundary survives the SSE path) and
+`TestInlineThinkParserPreservesSpacesAroundReasoningBlocks` (the tag holdback
+does not eat adjacent spaces). Both live in
+`internal/llm/provider/openai_compatible_test.go`.
+
+If it recurs, settle it with raw bytes rather than inference: set
+`MARSHAL_WIRE_CAPTURE` (response) and `MARSHAL_WIRE_CAPTURE_REQUESTS` (request)
+and compare the captured chunks with the stored narration. That shows the
+endpoint's exact deltas for the suspect message.

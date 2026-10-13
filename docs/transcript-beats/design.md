@@ -58,8 +58,9 @@ The user mostly **watches runs live**; the design optimises for that.
 A **beat** is a narrated model response plus every subsequent narrationless
 response by the same actor.
 
-- A new beat starts on: new narration, a user prompt or steering message, or
-  an actor change. Thinking, tool results, awaits and subagent completions do
+- A new beat starts on: new narration, a user prompt or steering message, an
+  actor change, or a response bound to a different todo (so the new todo gets
+  its transition marker and its own work time). Thinking, tool results, awaits and subagent completions do
   **not** start a beat.
 - The beat headline is always the first narration line, the agent's own
   words. Inferred headlines are deleted: `viewmodel.StepHeadline`'s tool-row
@@ -106,7 +107,7 @@ a running card never auto-folds.
 | Entity | Card anchored at | Updated in place by (no longer a row) |
 |---|---|---|
 | Subagent | its `agent.run` call (existing `KindSubagent` card) | the subagent report message, joined by subagent ID |
-| Background job | the `shell.run` that started it | `KindJobExit`, joined by job ID |
+| Background job | the `shell.run` that started it | `KindJobExit`, joined to the latest unsettled start of its job ID |
 | Await | its `agent.await` call | its own result |
 
 - **Subagent, running:** title line `#3 <label> · 1m21s` with model/tokens/
@@ -116,12 +117,19 @@ a running card never auto-folds.
   expanded result summary is markdown-stripped.
 - **Job:** one line `job-4 · <command first line…> · running 1m`, settling to
   `✓ exit 0 · 2m02s` / `✗ exit -1`. The full command shows when expanded.
+  Job exits persist with the session (`session_state` key `job_exits`, output
+  capped to its last 16 KiB), and `AddJobExit` publishes `EventJobExit` so
+  ACP re-projects the card. Job IDs restart at `job-1` in every process, so
+  an exit settles the latest unsettled start of its ID, never an earlier
+  one. A start restored on resume with no exit is **lost** — the job died
+  with the process — and renders `⚠ ended with session` with no marker.
 - **Await:** `waiting on #3 #5 · 18s` while live, settling to `waited 18s`
   (it no longer names completions).
 - **Tail marker:** each completion emits a one-line dim `marker` node at its
   completion timestamp, in time order: `✓ #3 <label> done · 1m21s`,
   `✗ job-6 exit -1 · 2m02s`. Completions landing together merge into one
-  marker (`✓ #3 #5 done`). Selecting a marker jumps to its card.
+  marker (`✓ #3 #5 done`). Selecting a marker jumps to its card, first
+  opening the beat that hides it (folded, or past the row cap).
 - The joins happen in `viewmodel` so both clients get them.
 
 ### 4. Pinned band
@@ -154,7 +162,9 @@ runner:
 
 - **Stale** when the turn is busy, the list has an `in_progress` item, and at
   least **5 minutes and 8 model responses (steps)** have passed since the last
-  `todo.write`.
+  `todo.write`. The responses counted are the list owner's: the actor that
+  opened the turn, whatever its role. That is exactly what the runner counts
+  for itself, so the band's tag and the nudge agree.
 - Not stale for an empty list, an all-completed list, or no in-progress item.
 
 **Nudge:** on the first tool result after the threshold is crossed, the
@@ -206,12 +216,17 @@ the plan changed.
   between them merge, and a marker that lands inside an open beat is held until
   the beat ends so it cannot split the work around it.
 - **Tool rows:** a background job's card is its own `shell.run` row, settled in
-  place, carrying `tool.job: {id, command, running?, exitCode, durationMs?,
-  output?, truncated?}`.
+  place, carrying `tool.job: {id, command, running?, lost?, exitCode,
+  startedAt?, durationMs?, output?, truncated?}`. `startedAt` lets a client
+  tick a running card's clock.
 - **Band:** travels as its own node — ID `band`, kind `band`, deliberately not
   in `roots`, so a transcript walk ignores it while the existing stack-patch
   protocol carries it unchanged. `{todos?, done, total, active?, stale?,
-  staleAgeMs?, next[], entities: [{ref, label, detail?, startedAt?}]}`.
+  staleAgeMs?, staleSince?, next[], entities: [{ref, label, detail?,
+  startedAt?}]}`. `todos` is set only while a turn runs, so every client hides
+  an idle list alike; `staleSince` lets a client tick the stale age between
+  patches, and the ACP projector wakes itself when the tag would appear on
+  elapsed time alone.
 - **Subagent cards:** unchanged on the wire. They now render as one activity
   line while running, and the completion notice they used to duplicate arrives
   as a `ContentTypeSubagentNotice` message that the tree drops.

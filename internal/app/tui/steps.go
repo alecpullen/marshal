@@ -284,6 +284,12 @@ func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded 
 		if started := row.JobStart(); !started.IsZero() {
 			tail += dimSeparator + formatElapsed(max(now.Sub(started), 0))
 		}
+	} else if j.Lost {
+		// The session ended while the job ran: there is no exit code to
+		// report, and the card must not claim one.
+		g, style = glyph.Warning, warningStyle()
+		gutterColor = theme.Current().StatusWarning
+		tail = "ended with session"
 	} else {
 		if j.ExitCode != 0 {
 			g, style = glyph.Error, errorStyle()
@@ -312,6 +318,8 @@ func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded 
 	b.WriteString("\n")
 	if expanded && j.Output != "" {
 		cw := contentWidth(width)
+		// Scrubbed at the projection and again here, at this renderer's own
+		// boundary; the session caps the output, so the second pass is cheap.
 		out := viewmodel.ScrubBlock(j.Output)
 		for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 			for _, wl := range strings.Split(ansi.Wrap(line, cw, WrapBreakpoints), "\n") {
@@ -751,8 +759,17 @@ func subagentSummaryHeadline(summary string) string {
 	return stripMarkdownHeading(stripEmphasis(head))
 }
 
-// stripMarkdownHeading drops leading heading markers and their padding.
-func stripMarkdownHeading(s string) string { return strings.TrimLeft(s, "# ") }
+// stripMarkdownHeading drops a leading ATX heading marker — one to six '#'
+// followed by a space — and its padding. Anything else starting with '#' is
+// text: "#3 done" keeps its number.
+func stripMarkdownHeading(s string) string {
+	t := strings.TrimLeft(s, " ")
+	n := len(t) - len(strings.TrimLeft(t, "#"))
+	if n == 0 || n > 6 || (n < len(t) && t[n] != ' ') {
+		return s
+	}
+	return strings.TrimLeft(t[n:], " ")
+}
 
 // lastN returns the last n elements, or the whole slice when it is shorter.
 func lastN(lines []string, n int) []string {
@@ -786,8 +803,10 @@ func (m Model) liveStepSummary() (headline, toolGlyph string) {
 	}
 	if headline == "" {
 		// A narrationless response continues the beat its actor last
-		// narrated; mirror that narration rather than invent a title.
-		if h, _ := firstSentence(state.LatestNarrationLine()); h != "" {
+		// narrated in this turn; mirror that narration rather than invent a
+		// title. A turn that has not narrated yet gets no headline: the
+		// previous turn's narration describes finished work.
+		if h, _ := firstSentence(state.ContinuedNarration(live.ID)); h != "" {
 			headline = stripEmphasis(h)
 		}
 	}

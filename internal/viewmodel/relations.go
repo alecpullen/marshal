@@ -139,9 +139,12 @@ func ResolveBeats(idx RelationIndex, turns []*Node) RelationIndex {
 		}
 		return id
 	}
-	resolveAll := func(ids []NodeID) []NodeID {
+	// resolveAll maps ids to their beats, dropping duplicates and self: a
+	// failure and its fix that merged into one beat are not a relation
+	// between beats, and a beat must never cite itself.
+	resolveAll := func(ids []NodeID, self NodeID) []NodeID {
 		var out []NodeID
-		seen := map[NodeID]bool{}
+		seen := map[NodeID]bool{self: true}
 		for _, id := range ids {
 			if r := resolve(id); !seen[r] {
 				seen[r] = true
@@ -154,8 +157,11 @@ func ResolveBeats(idx RelationIndex, turns []*Node) RelationIndex {
 	for k, rel := range idx {
 		key := resolve(k)
 		cur := out[key]
-		cur.CausedBy = resolveAll(append(cur.CausedBy, rel.CausedBy...))
-		cur.FixedBy = resolveAll(append(cur.FixedBy, rel.FixedBy...))
+		cur.CausedBy = resolveAll(append(cur.CausedBy, rel.CausedBy...), key)
+		cur.FixedBy = resolveAll(append(cur.FixedBy, rel.FixedBy...), key)
+		if len(cur.CausedBy) == 0 && len(cur.FixedBy) == 0 {
+			continue
+		}
 		out[key] = cur
 	}
 	return out

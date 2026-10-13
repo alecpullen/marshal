@@ -46,6 +46,12 @@ describe('NowBar band', () => {
     expect(screen.getByText(/\+\d/)).toBeTruthy()
   })
 
+  it('ticks the stale age on its own clock between patches', () => {
+    const since: WireBand = { ...band, staleAgeMs: 360000, staleSince: 1_000_000 }
+    render(NowBar, { stack: state([bandNode(since)]), now: 1_000_000 + 900_000, onStop: () => {} })
+    expect(screen.getByText(/stale 15m/)).toBeTruthy()
+  })
+
   it('shows no progress rows without a band, and no bar when nothing is running', () => {
     const { container } = render(NowBar, { stack: state([]), now: Date.now(), onStop: () => {} })
     expect(container.querySelector('[data-testid="now-bar"]')).toBeNull()

@@ -508,6 +508,10 @@ type Model struct {
 	// signal, and the running cards. viewmodel.BandOf builds it in
 	// refreshViewport; the now bar renders it.
 	band viewmodel.BandInfo
+	// rowBeat maps each row of a beat to the beat, from the last build, so
+	// a completion marker can open the beat that hides its card (folded, or
+	// past the row cap) before jumping to it.
+	rowBeat map[viewmodel.NodeID]viewmodel.NodeID
 	// sheetPanel is the open Ctrl+B session sheet, kept for the same reason.
 	sheetPanel *sessionsheet.Panel
 

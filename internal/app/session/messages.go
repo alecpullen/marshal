@@ -243,6 +243,7 @@ func (s *State) loadFromDB() {
 		}
 	}
 	s.loadStepsLocked(idMap)
+	s.loadJobExitsLocked()
 
 	// Restore scratchpad entries from the per-key scratchpad_entries table.
 	// This is independent of message state so a session with scratchpad data

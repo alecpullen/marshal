@@ -208,6 +208,39 @@ describe('Transcript', () => {
     expect(screen.getByText('go vet ./...')).toBeTruthy()
   })
 
+  it('folds a headless beat to a clickable tool count rather than nothing', async () => {
+    const folded = beatNodes.map((n) => (n.id === 'step:9' ? { ...n, step: { ...n.step!, folded: true } } : n))
+    const store = writable<StackState>({ status: 'ready', rev: 1, roots: ['turn:2'], nodes: new Map(folded.map((n) => [n.id, n])) })
+    const onToggleFold = vi.fn()
+    render(Transcript, { store, density: 'steps', foldTasks: true, onToggleFold })
+    expect(screen.queryByText('one.go')).toBeNull()
+    const summary = screen.getByTestId('folded-summary')
+    expect(summary.textContent).toContain('3 tools')
+    await userEvent.click(summary)
+    expect(onToggleFold).toHaveBeenCalledWith('step:9')
+  })
+
+  it('shows a running job card its elapsed time and a lost one no exit code', () => {
+    const withJob = (job: NonNullable<WireNode['tool']>['job']) =>
+      writable<StackState>({
+        status: 'ready',
+        rev: 1,
+        roots: ['turn:4'],
+        nodes: new Map(jobNodes.map((n) => [n.id, n.id === 'tool:11' ? { ...n, tool: { ...n.tool!, job } } : n])),
+      })
+    vi.useFakeTimers({ now: 200_000, toFake: ['Date'] })
+    try {
+      render(Transcript, { store: withJob({ id: 'job-4', command: 'pytest -q', running: true, exitCode: 0, startedAt: 80_000 }), density: 'steps', foldTasks: false })
+      expect(screen.getByText(/running · 2m/)).toBeTruthy()
+      cleanup()
+      render(Transcript, { store: withJob({ id: 'job-4', command: 'pytest -q', lost: true, exitCode: -1 }), density: 'steps', foldTasks: false })
+      expect(screen.getByText('ended with session')).toBeTruthy()
+      expect(screen.queryByText(/exit -1/)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('caps a long beat at BEAT_ROW_CAP rows behind an earlier-calls count', () => {
     render(Transcript, { store: longBeatStore(), density: 'steps', foldTasks: false })
     expect(screen.getByText('+2 earlier calls')).toBeTruthy()

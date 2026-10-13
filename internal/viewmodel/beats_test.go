@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
@@ -147,12 +148,12 @@ func TestBeatLegacyItemsAttachByPosition(t *testing.T) {
 
 func TestBeatKeepsFirstTodoIdentityAndUpdatesVersion(t *testing.T) {
 	s1, s2 := stepOf(1, 1, 1, 3), stepOf(2, 1, 3, 5)
-	s1.TodoID, s2.TodoID = "first", "second"
+	s1.TodoID = "first"
 	a := &Node{ID: NodeID{KindStep, "step:1"}, Kind: KindStep, Step: &StepInfo{Step: s1, StepIDs: []session.StepID{1}, TodoID: "first"}}
 	a.Version = versionOfStep(a)
 	before := a.Version
 	b := &Node{ID: NodeID{KindStep, "step:2"}, Kind: KindStep, Step: &StepInfo{
-		Step: s2, StepIDs: []session.StepID{2}, TodoID: "second",
+		Step: s2, StepIDs: []session.StepID{2},
 		TodoWrites: []registry.AuditEvent{{ToolName: "todo.write"}},
 	}}
 	out := mergeBeats([]*Node{a, b})
@@ -161,6 +162,33 @@ func TestBeatKeepsFirstTodoIdentityAndUpdatesVersion(t *testing.T) {
 	}
 	if out[0].Version == before {
 		t.Fatal("absorbing a response must invalidate the beat version")
+	}
+}
+
+// A narrationless response bound to a different todo starts its own beat, so
+// the new todo gets its divider and its own work time.
+func TestBeatEndsAtTodoChange(t *testing.T) {
+	s1, s2 := stepOf(1, 1, 1, 3), stepOf(2, 1, 3, 5)
+	a := &Node{ID: NodeID{KindStep, "step:1"}, Kind: KindStep, Step: &StepInfo{Step: s1, StepIDs: []session.StepID{1}, TodoID: "first"}}
+	b := &Node{ID: NodeID{KindStep, "step:2"}, Kind: KindStep, Step: &StepInfo{Step: s2, StepIDs: []session.StepID{2}, TodoID: "second"}}
+	out := mergeBeats([]*Node{a, b})
+	if len(out) != 2 || out[1].Step.TodoID != "second" {
+		t.Fatalf("beats = %+v, want the second todo in its own beat", out)
+	}
+	labelTransitions(out, []db.TodoItem{{ID: "first", Content: "A"}, {ID: "second", Content: "B"}}, true)
+	if out[1].Step.Todo == nil || out[1].Step.Todo.ID != "second" {
+		t.Fatalf("second todo has no divider: %+v", out[1].Step.Todo)
+	}
+}
+
+// A loose (legacy) response has no recorded end; absorbing it must not reopen
+// the finished beat.
+func TestBeatAbsorbingLooseStepKeepsItsEnd(t *testing.T) {
+	a := &Node{ID: NodeID{KindStep, "step:1"}, Kind: KindStep, Step: &StepInfo{Step: stepOf(1, 1, 1, 3), StepIDs: []session.StepID{1}}}
+	b := &Node{ID: NodeID{KindStep, "step:loose"}, Kind: KindStep, Step: &StepInfo{}}
+	out := mergeBeats([]*Node{a, b})
+	if len(out) != 1 || !out[0].Step.Step.EndedAt.Equal(at(3)) {
+		t.Fatalf("beat end = %v, want %v", out[0].Step.Step.EndedAt, at(3))
 	}
 }
 

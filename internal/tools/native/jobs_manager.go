@@ -317,7 +317,10 @@ func (m *JobManager) runJob(j *job, ctx context.Context, command string) {
 		info := j.info
 		ran := j.completedAt.Sub(info.StartedAt)
 		j.mu.Unlock()
-		onExit(info, ran, j.stdout.String()+j.stderr.String())
+		// Formatted like a foreground call's output, so the streams stay
+		// apart: raw concatenation glues a stdout line with no trailing
+		// newline onto the first stderr line.
+		onExit(info, ran, formatCommandOutput(j.stdout.String(), j.stderr.String()))
 	}
 
 	m.notifyChange()

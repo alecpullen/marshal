@@ -45,6 +45,7 @@ const (
 	EventBrowserChanged          = "browser_changed"
 	EventStepChanged             = "step_changed"
 	EventHoldChanged             = "hold_changed"
+	EventJobExit                 = "job_exit"
 )
 
 // Event is the union payload published on the session event broker
@@ -73,6 +74,8 @@ type Event struct {
 	Step *Step
 	// Held carries the new hold state (EventHoldChanged).
 	Held bool
+	// JobExit carries a background job's exit (EventJobExit).
+	JobExit *JobExit
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
@@ -322,8 +325,8 @@ type State struct {
 	// runEvents is the plan-run event log: verify failures, review
 	// findings, commits, retries. In-memory only, never persisted.
 	runEvents []RunEvent
-	// jobExits is the transcript record of background jobs finishing.
-	// In-memory only, never persisted.
+	// jobExits is the transcript record of background jobs finishing,
+	// persisted in session_state and restored on resume (see jobexit.go).
 	jobExits  []JobExit
 	turnUsage turnUsage
 	// turnQuota is the latest subscription quota reading from an

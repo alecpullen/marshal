@@ -81,7 +81,7 @@
         <span class="min-w-0 truncate font-mono">{band.done}/{band.total}{band.active ? ` · ${band.active}` : ''}</span>
         <span class="ml-auto flex shrink-0 items-center gap-2">
           {#if band.stale}
-            <span class="text-warn">stale {compactDuration(band.staleAgeMs ?? 0)}</span>
+            <span class="text-warn">stale {compactDuration(band.staleSince ? Math.max(0, now - band.staleSince) : (band.staleAgeMs ?? 0))}</span>
           {/if}
           {#if elapsed}<span class="font-mono text-muted">{elapsed}</span>{/if}
         </span>

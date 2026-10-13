@@ -70,7 +70,11 @@ export interface WireJob {
   id: string
   command: string
   running?: boolean
+  /** The session ended while the job ran; exitCode means nothing. */
+  lost?: boolean
   exitCode: number
+  /** When the job was dispatched (unix ms), for a running card's clock. */
+  startedAt?: number
   durationMs?: number
   output?: string
   truncated?: boolean
@@ -131,6 +135,8 @@ export interface WireBand {
   active?: string
   stale?: boolean
   staleAgeMs?: number
+  /** When the stale clock started (unix ms); ticks the age between patches. */
+  staleSince?: number
   next?: string[]
   entities?: WireBandEntity[]
 }

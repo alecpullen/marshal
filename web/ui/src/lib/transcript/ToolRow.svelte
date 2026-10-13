@@ -12,18 +12,50 @@
   const open = $derived(density === 'full' || expanded)
   const failedAny = $derived(calls.some((c) => c.failed))
   const job = $derived(tool.job)
-  const jobFailed = $derived(!!job && !job.running && job.exitCode !== 0)
-  const lead = $derived(job ? (job.running ? glyph.Running : jobFailed ? glyph.Error : glyph.Job) : tool.running ? glyph.Running : failedAny ? glyph.Error : toolGlyph(tool.name))
-  const leadTone = $derived(job ? (job.running ? 'text-accent' : jobFailed ? 'text-err' : 'text-muted') : tool.running ? 'text-accent' : failedAny ? 'text-err' : 'text-muted')
+  const jobFailed = $derived(!!job && !job.running && !job.lost && job.exitCode !== 0)
+  const lead = $derived(
+    job
+      ? job.running
+        ? glyph.Running
+        : job.lost
+          ? glyph.Warning
+          : jobFailed
+            ? glyph.Error
+            : glyph.Job
+      : tool.running
+        ? glyph.Running
+        : failedAny
+          ? glyph.Error
+          : toolGlyph(tool.name),
+  )
+  const leadTone = $derived(
+    job
+      ? job.running
+        ? 'text-accent'
+        : job.lost
+          ? 'text-warn'
+          : jobFailed
+            ? 'text-err'
+            : 'text-muted'
+      : tool.running
+        ? 'text-accent'
+        : failedAny
+          ? 'text-err'
+          : 'text-muted',
+  )
 
   const failure = (c: WireCall) => c.error || (c.exitCode ? `exit ${c.exitCode}` : c.failed ? 'failed' : '')
   const elapsed = $derived(tool.running?.startedAt ? compactDuration(Math.max(0, now - tool.running.startedAt)) : '')
   const anyTruncated = $derived(calls.some((c) => c.truncated) || !!tool.running?.truncated)
   // A job card reports the job's own clock: running since it started, or the
-  // duration it ran once it settled.
-  const jobTail = $derived(
-    job ? (job.running ? `running${job.durationMs ? ` · ${compactDuration(job.durationMs)}` : ''}` : `exit ${job.exitCode}${job.durationMs ? ` · ${compactDuration(job.durationMs)}` : ''}`) : '',
-  )
+  // duration it ran once it settled. A lost job has neither an exit code nor
+  // a known run time.
+  const jobTail = $derived.by(() => {
+    if (!job) return ''
+    if (job.running) return `running${job.startedAt ? ` · ${compactDuration(Math.max(0, now - job.startedAt))}` : ''}`
+    if (job.lost) return 'ended with session'
+    return `exit ${job.exitCode}${job.durationMs ? ` · ${compactDuration(job.durationMs)}` : ''}`
+  })
 </script>
 
 {#snippet line(target: string | undefined, summary: string | undefined, fail: string)}

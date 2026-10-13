@@ -52,12 +52,15 @@ type WireNode struct {
 // in roots, so a transcript walk ignores it while the stack patch protocol
 // carries it with no change.
 type WireBand struct {
-	Todos      bool             `json:"todos,omitempty"`
-	Done       int              `json:"done"`
-	Total      int              `json:"total"`
-	Active     string           `json:"active,omitempty"`
-	Stale      bool             `json:"stale,omitempty"`
-	StaleAgeMs int64            `json:"staleAgeMs,omitempty"`
+	Todos      bool   `json:"todos,omitempty"`
+	Done       int    `json:"done"`
+	Total      int    `json:"total"`
+	Active     string `json:"active,omitempty"`
+	Stale      bool   `json:"stale,omitempty"`
+	StaleAgeMs int64  `json:"staleAgeMs,omitempty"`
+	// StaleSince is when the stale clock started (unix ms), so a client can
+	// keep the age current between patches.
+	StaleSince int64            `json:"staleSince,omitempty"`
 	Next       []string         `json:"next,omitempty"`
 	Entities   []WireBandEntity `json:"entities,omitempty"`
 }
@@ -74,7 +77,7 @@ type WireBandEntity struct {
 // updates the same node rather than accumulating copies.
 func ProjectBand(b BandInfo) WireNode {
 	wb := &WireBand{Todos: b.Todos, Done: b.Done, Total: b.Total, Active: ScrubText(b.Active), Stale: b.Stale,
-		StaleAgeMs: b.StaleAge.Milliseconds()}
+		StaleAgeMs: b.StaleAge.Milliseconds(), StaleSince: ms(b.StaleSince)}
 	for _, n := range b.Next {
 		wb.Next = append(wb.Next, ScrubText(n))
 	}
@@ -132,10 +135,15 @@ type WireTool struct {
 
 // WireJob is a background job's card.
 type WireJob struct {
-	ID         string `json:"id"`
-	Command    string `json:"command"`
-	Running    bool   `json:"running,omitempty"`
-	ExitCode   int    `json:"exitCode"`
+	ID      string `json:"id"`
+	Command string `json:"command"`
+	Running bool   `json:"running,omitempty"`
+	// Lost: the session ended while the job ran; ExitCode means nothing.
+	Lost     bool `json:"lost,omitempty"`
+	ExitCode int  `json:"exitCode"`
+	// StartedAt is when the job was dispatched (unix ms), so a client can
+	// show a running card's elapsed time; 0 when unknown.
+	StartedAt  int64  `json:"startedAt,omitempty"`
 	DurationMs int64  `json:"durationMs,omitempty"`
 	Output     string `json:"output,omitempty"`
 	Truncated  bool   `json:"truncated,omitempty"`
@@ -308,8 +316,8 @@ func wireNode(n *Node) WireNode {
 	case len(n.Tools) > 0:
 		w.Tool = wireTools(n.Tools)
 		if j := n.Job; j != nil {
-			wj := &WireJob{ID: j.ID, Command: ScrubText(j.Command), Running: j.Running, ExitCode: j.ExitCode,
-				DurationMs: j.Duration.Milliseconds()}
+			wj := &WireJob{ID: j.ID, Command: ScrubText(j.Command), Running: j.Running, Lost: j.Lost, ExitCode: j.ExitCode,
+				StartedAt: ms(n.JobStart()), DurationMs: j.Duration.Milliseconds()}
 			wj.Output, wj.Truncated = capTail(j.Output)
 			if s := ScrubBlock(wj.Output); s != wj.Output {
 				// A scrub that changed the text is itself a reason for a

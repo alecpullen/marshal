@@ -552,3 +552,24 @@ func TestStackIdleStartsFromSubagentActivation(t *testing.T) {
 		t.Fatalf("patch = %+v", p)
 	}
 }
+
+// The band's stale tag can appear on elapsed time alone, with no session
+// event to mark the projector dirty; a dirty-only flush must still run once
+// the band's wake time passes.
+func TestStackDirtyFlushRunsWhenBandWakeIsDue(t *testing.T) {
+	m, st, notices := newStackTestManager(t)
+	takeStack(t, m)
+	st.AddMessage(session.RoleUser, "hello", session.ContentTypePlain) // no broker: nothing marks dirty
+	m.flushDirtyStack("s1", st)
+	if len(*notices) != 0 {
+		t.Fatalf("not dirty and no wake due: notifications = %d", len(*notices))
+	}
+	p := m.stackFor("s1")
+	p.mu.Lock()
+	p.wakeAt = time.Now().Add(-time.Second)
+	p.mu.Unlock()
+	m.flushDirtyStack("s1", st)
+	if len(*notices) != 1 {
+		t.Fatalf("wake due: notifications = %d, want 1", len(*notices))
+	}
+}

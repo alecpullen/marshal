@@ -226,22 +226,7 @@ func nowBarHead(in nowBarInput) (row, text, elapsed string) {
 			}
 		}
 	}
-	// The right-hand side is the stale tag ahead of the clock. An unmaintained
-	// list says so because it is the one signal that the plan the agent is
-	// following has drifted from the work. `elapsed` itself stays plain: the
-	// compact summary row reuses it.
-	right := elapsed
-	if right != "" {
-		right = mutedStyle().Render(right)
-	}
-	if in.Band.Stale {
-		tag := warningStyle().Render("stale " + formatElapsed(in.Band.StaleAge))
-		if elapsed != "" {
-			right = tag + dimSeparator + right
-		} else {
-			right = tag
-		}
-	}
+	right := nowBarRight(in, elapsed)
 	// Cells the text may use: the row minus the " g " glyph cell group, the
 	// blocks and their space, and the right-aligned clock and its gap.
 	budget := inner - 3
@@ -269,6 +254,27 @@ func nowBarHead(in nowBarInput) (row, text, elapsed string) {
 		left += blocks + " "
 	}
 	return nowBarJustifyStyled(left+text, right, inner), text, elapsed
+}
+
+// nowBarRight is the painted right-hand side of the head row, and of the
+// compact summary row that replaces it: the stale tag ahead of the clock. An
+// unmaintained list says so because it is the one signal that the plan the
+// agent is following has drifted from the work, so a short frame that drops
+// the checklist row must still carry it. `elapsed` itself stays plain.
+func nowBarRight(in nowBarInput, elapsed string) string {
+	right := elapsed
+	if right != "" {
+		right = mutedStyle().Render(right)
+	}
+	if in.Band.Stale {
+		tag := warningStyle().Render("stale " + formatElapsed(in.Band.StaleAge))
+		if elapsed != "" {
+			right = tag + dimSeparator + right
+		} else {
+			right = tag
+		}
+	}
+	return right
 }
 
 func nowBarElapsed(in nowBarInput) string {
@@ -419,19 +425,20 @@ func nowBarSummary(in nowBarInput, headText, elapsed string, inner int) string {
 		headText = browserStripText(in.Browser, in.Spinner)
 	}
 	// A short frame has no checklist row, but the stale tag still rides on
-	// the right-hand side: the head already put it there.
+	// the right-hand side, as on the head row it replaces.
+	right := nowBarRight(in, elapsed)
 	var left string
 	switch {
 	case headText != "" && tail != "":
 		// Truncate the progress text, never the counts.
-		avail := max(inner-1-ansi.StringWidth(tail)-ansi.StringWidth(dimSeparator)-ansi.StringWidth(elapsed)-1, 1)
+		avail := max(inner-1-ansi.StringWidth(tail)-ansi.StringWidth(dimSeparator)-ansi.StringWidth(right)-1, 1)
 		left = " " + ansi.Truncate(headText, avail, "…") + dimSeparator + dimStyle().Render(tail)
 	case headText != "":
 		left = " " + headText
 	default:
 		left = " " + dimStyle().Render(tail)
 	}
-	return nowBarJustify(left, elapsed, inner)
+	return nowBarJustifyStyled(left, right, inner)
 }
 
 // progressBlocks draws done/total as ▰▰▱▱ scaled to min(total, maxCells)

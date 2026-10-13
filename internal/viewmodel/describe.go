@@ -141,14 +141,6 @@ func StripEmphasis(s string) string {
 	return strings.NewReplacer("**", "", "__", "", "`", "", "*", "", "~~", "").Replace(s)
 }
 
-// IsSearchTool reports whether a tool's subject is a query. It remains a
-// small compatibility helper for the TUI until its inferred-headline code is
-// removed in the follow-up task.
-func IsSearchTool(name string) bool {
-	return strings.HasPrefix(name, "repo.search") || strings.HasPrefix(name, "codebase.search") ||
-		strings.HasPrefix(name, "symbols.") || name == "web.search" || strings.HasPrefix(name, "search.")
-}
-
 // ToolTarget returns the short human-facing subject of a tool call — the
 // path it read, the command it ran, the query it searched for.
 func ToolTarget(event registry.AuditEvent) string {

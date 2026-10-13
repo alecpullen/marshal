@@ -6,9 +6,10 @@ package viewmodel
 const BeatRowCap = 8
 
 // mergeBeats folds each narrationless step into the beat directly before it,
-// when the same actor produced both. Any other block between them (a
-// message, a run event, a turn-level card) ends the beat, so the transcript
-// stays chronological.
+// when the same actor produced both and it did not move to a different todo.
+// Any other block between them (a message, a run event, a turn-level card)
+// ends the beat, so the transcript stays chronological; a todo change ends it
+// too, so the new todo gets its divider and its own work time.
 //
 // A completion marker that lands inside a beat is held until the beat ends,
 // so a card finishing mid-beat does not split the work around it.
@@ -31,7 +32,7 @@ func mergeBeats(nodes []*Node) []*Node {
 			beat = nil
 			continue
 		}
-		if beat != nil && len(n.Step.Narration) == 0 && sameActor(beat.Step, n.Step) {
+		if beat != nil && len(n.Step.Narration) == 0 && sameActor(beat.Step, n.Step) && sameTodo(beat.Step, n.Step) {
 			absorb(beat, n)
 			continue
 		}
@@ -52,6 +53,12 @@ func sameActor(a, b *StepInfo) bool {
 	return a.Step.Actor.Role == b.Step.Actor.Role && a.Step.Actor.Label == b.Step.Actor.Label
 }
 
+// sameTodo reports whether n continues the beat's todo: n bound to no todo
+// stays with whatever the beat is working on.
+func sameTodo(beat, n *StepInfo) bool {
+	return n.TodoID == "" || n.TodoID == beat.TodoID
+}
+
 // absorb moves n's content into beat. The beat keeps its own ID, so expand
 // state and the render cache carry over as responses join it.
 func absorb(beat, n *Node) {
@@ -62,7 +69,10 @@ func absorb(beat, n *Node) {
 		if !started.IsZero() && started.Before(bi.Step.StartedAt) {
 			bi.Step.StartedAt = started
 		}
-	} else {
+	} else if ni.Step.ID != 0 || ni.Step.EndedAt.After(bi.Step.EndedAt) {
+		// A stamped response's zero EndedAt means it is still open, so the
+		// beat is too. A loose (legacy) response's zero EndedAt means only
+		// that it was never recorded, and must not reopen a finished beat.
 		bi.Step.EndedAt = ni.Step.EndedAt
 	}
 	bi.StepIDs = append(bi.StepIDs, ni.StepIDs...)

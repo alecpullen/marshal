@@ -3,7 +3,6 @@ package viewmodel
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"marshal/internal/app/session"
@@ -15,9 +14,14 @@ import (
 type JobState struct {
 	ID, Command string
 	Running     bool
-	ExitCode    int
-	Duration    time.Duration
-	Output      string
+	// Lost: the session ended while the job ran, so its outcome is unknown.
+	// A lost job is not running and has no exit code.
+	Lost     bool
+	ExitCode int
+	Duration time.Duration
+	// Output is the job's output tail (the session caps it), scrubbed when
+	// the card settles; renderers scrub again at their own boundary.
+	Output string
 }
 
 // MarkerInfo is a one-line completion marker at the moment cards finished.
@@ -30,36 +34,43 @@ type MarkerInfo struct {
 	Dur    time.Duration // the single ref's run time; 0 when merged
 }
 
-const jobStartPrefix = "started background job "
-
 // JobStartID returns the job ID a shell call started in the background, or ""
 // when the call ran in the foreground.
 func JobStartID(ev registry.AuditEvent) string {
-	if !IsShellFamily(ev.ToolName) || !strings.HasPrefix(ev.ResultSummary, jobStartPrefix) {
+	if !IsShellFamily(ev.ToolName) {
 		return ""
 	}
-	return strings.TrimSpace(strings.TrimPrefix(ev.ResultSummary, jobStartPrefix))
+	return session.JobStartedID(ev.ResultSummary)
 }
 
 // cardIndex is what Build learns about cards from the whole transcript
 // before splitting it into turns: a card and its completion can sit in
 // different turns.
 type cardIndex struct {
-	exits    map[string]*session.JobExit // by job ID
-	jobCards map[string]NodeID           // job ID → the start row's ID
-	markers  []block                     // completion markers, by time
+	exits   map[NodeID]*session.JobExit // start row's ID → the exit that settles it
+	exitRef map[*session.JobExit]NodeID // exit → the start row it settles
+	markers []block                     // completion markers, by time
 }
 
+// indexCards pairs each job exit with the start it settles. Job IDs restart
+// at job-1 in every process, so an ID alone is ambiguous across a resume: an
+// exit settles the latest start of its ID before it, and each start at most
+// once.
 func indexCards(items []session.TranscriptItem) cardIndex {
-	ci := cardIndex{exits: map[string]*session.JobExit{}, jobCards: map[string]NodeID{}}
+	ci := cardIndex{exits: map[NodeID]*session.JobExit{}, exitRef: map[*session.JobExit]NodeID{}}
+	pending := map[string]NodeID{} // job ID → its latest unsettled start
 	for _, it := range items {
 		if it.Audit != nil {
 			if id := JobStartID(*it.Audit); id != "" {
-				ci.jobCards[id] = ToolID(*it.Audit)
+				pending[id] = ToolID(*it.Audit)
 			}
 		}
-		if it.JobExit != nil {
-			ci.exits[it.JobExit.ID] = it.JobExit
+		if e := it.JobExit; e != nil {
+			if ref, ok := pending[e.ID]; ok {
+				ci.exits[ref] = e
+				ci.exitRef[e] = ref
+				delete(pending, e.ID)
+			}
 		}
 	}
 	for _, it := range items {
@@ -72,11 +83,14 @@ func indexCards(items []session.TranscriptItem) cardIndex {
 				Failed: v.Status == session.SubagentFailed,
 				At:     v.EndedAt, Dur: v.EndedAt.Sub(v.StartedAt),
 			})})
-		case it.JobExit != nil:
+		case it.JobExit != nil && !it.JobExit.Lost:
+			// A lost job has no finish to mark: its card says so instead.
 			j := it.JobExit
-			ref, ok := ci.jobCards[j.ID]
+			ref, ok := ci.exitRef[j]
 			if !ok {
-				ref = NodeID{KindJobExit, "job:" + j.ID}
+				// No start to point at (it sits on a rewound branch). The
+				// time keeps two such exits of a reused ID apart.
+				ref = NodeID{KindJobExit, fmt.Sprintf("job:%s@%d", j.ID, j.At.UnixNano())}
 			}
 			ci.markers = append(ci.markers, block{j.At, markerNode(MarkerInfo{
 				Refs: []NodeID{ref}, Labels: []string{j.ID}, Failed: j.ExitCode != 0, At: j.At, Dur: j.Duration,
@@ -135,16 +149,17 @@ func (ci cardIndex) settleJob(row *Node) {
 		return
 	}
 	js := &JobState{ID: id, Command: ScrubText(ToolTarget(row.Tools[0])), Running: true}
-	if e, ok := ci.exits[id]; ok {
-		js.Running, js.ExitCode, js.Duration = false, e.ExitCode, e.Duration
+	if e, ok := ci.exits[row.ID]; ok {
+		js.Running, js.Lost, js.ExitCode, js.Duration = false, e.Lost, e.ExitCode, e.Duration
 		// Block, not Text: an expanded job card renders the output's own
-		// line structure, so its newlines are content.
+		// line structure, so its newlines are content. The session bounds
+		// the output, so this one scrub per build stays cheap.
 		js.Output = ScrubBlock(e.Output)
 	}
 	row.Job = js
 	row.Live = js.Running
 	b := newHash()
-	b.f("job|%d|%v|%d|%d|%d|", row.Version, js.Running, js.ExitCode, js.Duration, len(js.Output))
+	b.f("job|%d|%v|%v|%d|%d|%d|", row.Version, js.Running, js.Lost, js.ExitCode, js.Duration, len(js.Output))
 	row.Version = b.sum()
 }
 

@@ -151,3 +151,52 @@ func TestRunningJobCardHasNoMarker(t *testing.T) {
 		t.Fatal("no marker until it exits")
 	}
 }
+
+// Job IDs restart at job-1 in every process. After a resume, the new job-1's
+// exit settles only the new card; the old one is lost, not running and not
+// settled by someone else's exit.
+func TestReusedJobIDSettlesOnlyTheLatestStart(t *testing.T) {
+	lost := session.TranscriptItem{Timestamp: at(2), Kind: session.KindJobExit,
+		JobExit: &session.JobExit{ID: "job-1", ExitCode: -1, At: at(2), Lost: true}}
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0), narration(2, 1, 1, "Start."), jobStart(1, "old", 2, "job-1"), lost, final(3, 3),
+			userMsg(5, 10), narration(6, 2, 11, "Again."), jobStart(2, "new", 12, "job-1"), jobExit(14, "job-1", 4),
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 5, 11, 15)},
+	})
+	old, cur := findNode(nodes, "tool:1:old"), findNode(nodes, "tool:2:new")
+	if old == nil || old.Job.Running || !old.Job.Lost || old.Live {
+		t.Fatalf("old card = %+v, want lost and settled", old.Job)
+	}
+	if cur == nil || cur.Job.Running || cur.Job.Lost || cur.Job.ExitCode != 4 {
+		t.Fatalf("new card = %+v, want exit 4", cur.Job)
+	}
+	got := shape(nodes)
+	if strings.Count(got, "marker:") != 1 || !strings.Contains(got, "marker:tool:2:new") {
+		t.Fatalf("one marker, for the new job only:\n%s", got)
+	}
+}
+
+func TestOrphanJobExitsOfReusedIDGetDistinctMarkers(t *testing.T) {
+	nodes := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0), jobExit(4, "job-1", 0), userMsg(2, 6), jobExit(9, "job-1", 1),
+	}})
+	seen := map[string]bool{}
+	var walk func(ns []*Node)
+	walk = func(ns []*Node) {
+		for _, n := range ns {
+			if n.Kind == KindMarker {
+				if seen[n.ID.Key] {
+					t.Fatalf("duplicate marker ID %q", n.ID.Key)
+				}
+				seen[n.ID.Key] = true
+			}
+			walk(n.Children)
+		}
+	}
+	walk(nodes)
+	if len(seen) != 2 {
+		t.Fatalf("markers = %v, want 2", seen)
+	}
+}

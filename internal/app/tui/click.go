@@ -188,8 +188,17 @@ func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	switch {
 	case target.jumpTo.Key != "":
 		// A marker is a pointer, not a row with state of its own: it scrolls
-		// to the card it reports on. Nothing to redraw.
-		if r, ok := m.regionFor(target.jumpTo); ok {
+		// to the card it reports on. A card with no region may sit in a
+		// beat that is folded or capped; opening the beat at full density
+		// shows every row, and the jump retries once.
+		r, ok := m.regionFor(target.jumpTo)
+		if beat, inBeat := m.rowBeat[target.jumpTo]; !ok && inBeat {
+			m.setOverride(beat, densityFull)
+			m.invalidateTranscript()
+			m.refreshViewport()
+			r, ok = m.regionFor(target.jumpTo)
+		}
+		if ok {
 			m.viewportFollow = false
 			m.viewport.SetYOffset(r.startLine)
 		}

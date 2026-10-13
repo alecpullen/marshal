@@ -74,6 +74,22 @@ func TestNowBarShowsStaleTagAndChecklist(t *testing.T) {
 	}
 }
 
+// A short frame collapses the bar to one row and drops the checklist, but the
+// stale tag must survive: it is the signal the design keeps on every frame.
+func TestNowBarCompactRowKeepsStaleTag(t *testing.T) {
+	in := baseNowBarInput()
+	in.Width = 80
+	in.Height = nowBarCompactHeight - 1
+	in.Band = viewmodel.BandInfo{Todos: true, Done: 2, Total: 9, Active: "Task 2", Stale: true, StaleAge: 7 * time.Minute}
+	p := planNowBar(in)
+	if len(p.rows) != 1 {
+		t.Fatalf("rows = %d, want the one compact row", len(p.rows))
+	}
+	if row := ansi.Strip(p.rows[0]); !strings.Contains(row, "stale 7m") {
+		t.Fatalf("compact row = %q, want the stale tag", row)
+	}
+}
+
 // The band is capped: progress, checklist, entity rows and the overflow row
 // together never exceed nowBarMaxRows.
 func TestNowBarCapsAtSixRows(t *testing.T) {

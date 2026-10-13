@@ -74,6 +74,7 @@ func (m *Model) refreshViewport() {
 	// The band is derived here, once, so the now bar and the frame height
 	// both read the same value.
 	m.band = viewmodel.BandOf(snap, turns)
+	m.rowBeat = rowBeats(turns)
 	m.updateViewportHeight()
 
 	width := m.viewport.Width()
@@ -277,6 +278,22 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 		return renderTranscriptItemIn(*n.Item, d == densityFull, m.spinnerFrame, rv, m.callers[n.ID], width, c.workdir), nil
 	}
 	return "", nil
+}
+
+// rowBeats maps every row inside a beat to that beat.
+func rowBeats(turns []*viewmodel.Node) map[viewmodel.NodeID]viewmodel.NodeID {
+	out := map[viewmodel.NodeID]viewmodel.NodeID{}
+	for _, turn := range turns {
+		for _, n := range turn.Children {
+			if n.Kind != viewmodel.KindStep {
+				continue
+			}
+			for _, row := range n.Children {
+				out[row.ID] = n.ID
+			}
+		}
+	}
+	return out
 }
 
 // blockTarget says what a click on a top-level block does. Steps and

@@ -590,8 +590,8 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// session.rollover.enabled is unset, local routes with small windows
 	// default on and everything else stays off (see
 	// RolloverConfig.EffectiveEnabled). Normalizing here lets every
-	// downstream consumer — the recall_history gate, the usage counter, the
-	// controller — read the plain flag. cfg is a value copy, so this does
+	// downstream consumer — the usage counter, the controller — read the
+	// plain flag. cfg is a value copy, so this does
 	// not leak into the stored config or the /settings view. Skipped without
 	// a database: the controller archives generations to the DB, so rollover
 	// cannot function (and must not start) without one.

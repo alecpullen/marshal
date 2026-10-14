@@ -237,11 +237,9 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		)
 		// transcript_read reads the live session transcript (and archived
 		// generations via the db, when wired). It needs only the session
-		// state to exist; the db is consulted lazily by the archived path.
+		// state to exist; the db is consulted lazily by the archived path
+		// and by the "query" search that absorbed recall_history.
 		all = append(all, tools.transcriptReadTool())
-	}
-	if recallToolEnabled(tools.config.Session.Rollover) {
-		all = append(all, tools.recallHistoryTool())
 	}
 	// agent.run is registered separately by app.Run after the policy engine
 	// is constructed; the native toolset does not have access to the engine

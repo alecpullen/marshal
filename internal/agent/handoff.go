@@ -39,7 +39,7 @@ func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, 
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},
 		schema.ChatMessage{Role: schema.RoleAssistant, Content: "Progress summary (earlier transcript was compacted to fit the context budget):\n\n" + summary},
-		schema.ChatMessage{Role: schema.RoleUser, Content: continueInstruction(r.hasTool("recall_history"))},
+		schema.ChatMessage{Role: schema.RoleUser, Content: continueInstruction(r.hasTool("transcript_read"))},
 	)
 
 	r.State.AddMessage(session.RoleSystem, "Context compacted mid-turn; continuing from a progress summary.", session.ContentTypePlain)

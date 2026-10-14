@@ -48,15 +48,12 @@ func NewTranscriptTool(state *session.State, database *db.DB) registry.Tool {
 	t := &transcriptTool{state: state, db: database}
 	return registry.Tool{
 		Name: "transcript_read",
-		Description: "Read this session's own conversation transcript, including " +
-			"turns that have aged out of the replayed history window (collapsed to " +
-			"a one-line stub). Reads the live current session by default; pass " +
-			"generation_seq (sequence 0 is the first generation and is a valid " +
-			"value) to read an archived generation instead. Every turn is " +
-			"labelled with the turn number printed in its header — pass that " +
-			"number back as turn_seq to re-read one turn. For archived turns " +
-			"the header number is the same turn number recall_history prints.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"generation_seq":{"type":"integer","description":"Read an archived generation by sequence number. Sequence 0 is the first generation of the session and is a valid value; omit this field entirely to read the live current session transcript."},"session_id":{"type":"string","description":"Session to read; defaults to the current session."},"turn_seq":{"type":"integer","description":"Return only the one turn whose header prints this number (the recall_history follow-up case). 0 is valid for archived generations, whose turn numbers start at 0."},"offset":{"type":"integer","description":"Skip this many turns before emitting (paging). Use the offset named in the continuation footer."},"limit":{"type":"integer","description":"Max turns to return (default 20, max 100)."},"max_chars":{"type":"integer","description":"Hard cap on returned characters (default 16000, max 64000)."},"include_all":{"type":"boolean","description":"Live transcript only: also show turns excluded from history replay, such as non-final assistant narration and system notes. Internal markers (compaction, loaded-skill tags and skill bodies) stay hidden."}},"additionalProperties":false}`),
+		Description: "Read this session's transcript, including turns aged out of the replayed history, " +
+			"or search archived turns across the project. Default: the live transcript, paged by offset/limit. " +
+			`"generation_seq" reads an archived generation (0 is the first). ` +
+			`"turn_seq" re-reads one turn by its header number. ` +
+			`"query" searches archived turns for a distinctive phrase (an exact command, error text, path or decision) and ignores paging.`,
+		Schema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"limit_matches":{"type":"integer"},"generation_seq":{"type":"integer","description":"archived generation to read; omit for the live transcript"},"session_id":{"type":"string","description":"defaults to the current session"},"turn_seq":{"type":"integer","description":"one turn by its header number"},"offset":{"type":"integer","description":"turns to skip"},"limit":{"type":"integer","description":"max turns (default 20, max 100)"},"max_chars":{"type":"integer","description":"character cap (default 16000, max 64000)"},"include_all":{"type":"boolean","description":"live only: include non-replayed narration and notes"}},"additionalProperties":false}`),
 		Risk:   registry.RiskReadOnly,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 			// generation_seq and turn_seq are pointers so an explicit 0 is
@@ -65,6 +62,8 @@ func NewTranscriptTool(state *session.State, database *db.DB) registry.Tool {
 			// 0), and archived turn numbers are 0-based, so a plain int
 			// would make both unreachable.
 			var args struct {
+				Query         string `json:"query"`
+				LimitMatches  int    `json:"limit_matches"`
 				GenerationSeq *int   `json:"generation_seq"`
 				SessionID     string `json:"session_id"`
 				TurnSeq       *int   `json:"turn_seq"`
@@ -75,6 +74,16 @@ func NewTranscriptTool(state *session.State, database *db.DB) registry.Tool {
 			}
 			if err := json.Unmarshal(call.Args, &args); err != nil {
 				return registry.ToolResult{}, fmt.Errorf("transcript_read: invalid args: %w", err)
+			}
+
+			// A query is a project-wide search of archived turns, not a
+			// page: paging args are ignored so a stray offset cannot
+			// silently truncate the matches.
+			if strings.TrimSpace(args.Query) != "" {
+				if t.db == nil {
+					return registry.ToolResult{}, fmt.Errorf("transcript_read: history search needs the session database")
+				}
+				return searchArchivedTurns(t.db, args.Query, args.LimitMatches)
 			}
 
 			sessionID := args.SessionID

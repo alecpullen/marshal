@@ -94,46 +94,32 @@ func TestRegisterAllIncludesScratchpadWithSessionState(t *testing.T) {
 	}
 }
 
-func TestRegisterAll_RecallHistoryGatedByRolloverConfig(t *testing.T) {
-	tests := []struct {
-		name    string
-		enabled bool
-		policy  string
-		rollPol string
-		want    bool
-	}{
-		{"rollover disabled", false, "context_percent", "context_percent", false},
-		{"rollover enabled + never", true, "never", "context_percent", false},
-		{"rollover enabled + always", true, "always", "context_percent", true},
-		{"rollover enabled + auto + context_percent", true, "auto", "context_percent", true},
-		{"rollover enabled + auto + turn_count", true, "auto", "turn_count", true},
-		{"rollover enabled + auto + caller_checkpoint", true, "auto", "caller_checkpoint", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			reg := registry.New()
-			opts := Options{
-				WorkspaceRoot: root,
-				CommandRunner: &fakeRunner{},
-				Config: config.Config{
-					Session: config.SessionConfig{
-						Rollover: config.RolloverConfig{
-							Enabled:           tt.enabled,
-							RecallToolEnabled: tt.policy,
-							Policy:            tt.rollPol,
-						},
-					},
-				},
-			}
-			if err := RegisterAll(reg, opts); err != nil {
-				t.Fatalf("RegisterAll returned error: %v", err)
-			}
-			_, ok := reg.Lookup("recall_history")
-			if ok != tt.want {
-				t.Errorf("recall_history present = %v, want %v", ok, tt.want)
-			}
-		})
+// TestRegisterAll_NeverRegistersRecallHistory pins the Tier 2a merge:
+// recall_history was folded into transcript_read's "query", so it must not
+// be registered whatever the rollover config says. The rollover settings
+// still exist (they gate archiving and the compaction policy); only the
+// separate tool name is gone.
+func TestRegisterAll_NeverRegistersRecallHistory(t *testing.T) {
+	for _, cfg := range []config.RolloverConfig{
+		{Enabled: false, RecallToolEnabled: "always"},
+		{Enabled: true, RecallToolEnabled: "always"},
+		{Enabled: true, RecallToolEnabled: "auto", Policy: "context_percent"},
+	} {
+		root := t.TempDir()
+		reg := registry.New()
+		if err := RegisterAll(reg, Options{
+			WorkspaceRoot: root,
+			CommandRunner: &fakeRunner{},
+			SessionState:  session.New(config.Config{}, root, time.Now(), session.Persistence{}),
+			Config: config.Config{
+				Session: config.SessionConfig{Rollover: cfg},
+			},
+		}); err != nil {
+			t.Fatalf("RegisterAll returned error: %v", err)
+		}
+		if _, ok := reg.Lookup("recall_history"); ok {
+			t.Errorf("recall_history must not be registered (config %+v)", cfg)
+		}
 	}
 }
 

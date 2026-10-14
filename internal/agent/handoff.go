@@ -36,7 +36,6 @@ func (r *Runner) summarizeAndContinue(ctx context.Context, p provider.Provider, 
 	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())
 	fresh = r.appendSkillBodies(fresh)
 	markCacheAnchor(fresh)
-	fresh = r.appendSkillHint(fresh)
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},
 		schema.ChatMessage{Role: schema.RoleAssistant, Content: "Progress summary (earlier transcript was compacted to fit the context budget):\n\n" + summary},

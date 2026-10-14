@@ -108,7 +108,6 @@ Repo intelligence
 Context & knowledge
   internal/contextpack/    context pack builder and budget logic
   internal/rollover/       context-window rollover for long sessions
-  internal/knowledge/      durable project memory agent
   internal/skills/         skill-based instruction sets (builtin/ ships the defaults)
   internal/commands/       slash commands (/plan, /sdd, /swarm, /settings, …)
   internal/history/        generation listing, transcript dump, archived-turn search
@@ -217,3 +216,7 @@ change — reviewers should not flag them as violations.
 
 Historical specs, scratch execution plans, and drafts that are not meant to be
 published go in `.docs-archive/` (gitignored).
+
+When asked to review code or completed work in this repository, dispatch a
+reviewer subagent with `agent.run` instead of reviewing inline, unless the
+change is trivially small.

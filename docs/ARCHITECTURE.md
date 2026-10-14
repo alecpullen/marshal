@@ -84,7 +84,7 @@ plans retain the legacy agent strategy.
 | LLM | `internal/llm/`, `internal/llm/routing/` | Provider abstraction, model presets, role-based routing. |
 | Tools | `internal/tools/registry/`, `internal/tools/native/`, `internal/tools/patch/`, `internal/tools/policy/`, `internal/tools/mcp/` | Tool registration, file/search/shell/git tools, patch apply, risk policy, MCP clients. |
 | Repo intelligence | `internal/repo/`, `internal/index/`, `internal/retrieval/`, `internal/lsp/` | Repo scanning, tree-sitter symbol extraction, embeddings, semantic retrieval, LSP integration. |
-| Knowledge | `internal/knowledge/`, `internal/contextpack/`, `internal/rollover/` | Durable project memory, context budget, long-session rollover. |
+| Knowledge | `internal/contextpack/`, `internal/rollover/` | Curated memory injection, context budget, long-session rollover. |
 | Persistence | `internal/db/`, `internal/snapshot/`, `internal/filetrack/` | SQLite schema, workspace snapshots, file access tracking. |
 | ACP | `internal/acp/` | Headless JSON-RPC server for editor/IDE integration. |
 | Web bridge | `web/bridge/`, `cmd/webbridge/` | Fleet control plane: supervises one `marshal acp` child per project, brokers approvals, serves the REST API and SSE streams, and drives per-agent worktree isolation, diff, merge and discard entirely over ACP. |
@@ -119,10 +119,9 @@ everything except what changed since the previous request:
 [0] system prompt               stable within a session (rebuilt only when skills,
                                 loaded tools or system access change; the agent
                                 roster's discovered models are snapshotted per session)
-[1] context pack (stable part)  repo card, map, memories, summaries, plan, pins
+[1] context pack (stable part)  curated memories, plan, pins
     skill bodies
     replayed history            ← CacheAnchor: end of the cross-turn stable region
-    skill hint                  per-turn; directly before the goal
     goal, then the turn's tool loop (append-only)
 [n] working state (Volatile)    todos, scratchpad, semantic snippets; rebuilt
                                 for every request, never stored

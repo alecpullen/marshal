@@ -791,11 +791,6 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		}
 	}
 
-	// AI-01: seed the context pack with repo orientation from the index.
-	// No-op on a fresh project until the startup scan's re-seed lands.
-	seedRepoContext(state, database, projectID)
-	seedSessionSummaries(state, database, projectID)
-
 	autoloadSkills(cfg, skillIndex, state, logger)
 
 	workCtx, workCancel := context.WithCancel(ctx)
@@ -904,8 +899,6 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	if rt.Runner != nil {
 		rt.Runner.SetSnapshotWarningState(rt.SnapshotWarnings)
 	}
-	// AI-01: re-seed the pack's repo sections when an index pass completes.
-	rt.subscribeIndexReseed(indexBroker, database, projectID)
 	// Start the LSP manager's worker loop here so both Run (TUI) and
 	// StartRuntime (ACP/headless) get it, and restart the manager against
 	// the session's active root on every WorkspaceEvent so hover /
@@ -973,23 +966,6 @@ func autoloadSkills(cfg config.Config, idx *skills.Index, state *session.State, 
 	}
 }
 
-// subscribeIndexReseed re-seeds the context pack's repo sections on every
-// completed index pass. Seeding is idempotent (replace-by-kind), so a pass
-// that changed nothing just re-renders identical content. The goroutine
-// ends when the broker closes or workCtx is cancelled.
-func (rt *Runtime) subscribeIndexReseed(indexBroker *pubsub.Broker[index.Report], database *db.DB, projectID int64) {
-	ch := indexBroker.Subscribe(rt.workCtx)
-	go func() {
-		for {
-			if _, ok := <-ch; !ok {
-				return
-			}
-			seedRepoContext(rt.State, database, projectID)
-			seedSessionSummaries(rt.State, database, projectID)
-		}
-	}()
-}
-
 // NewSession creates a brand-new session (new DB row, new SessionID, fresh
 // State) and rebuilds the agent runtime against it. On success it swaps the
 // new state/runner into rt and returns the new pieces; on failure it leaves
@@ -1041,8 +1017,6 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		newState.SetSubagentBroker(must[*pubsub.Broker[session.SubagentEvent]](rt.SubagentBroker))
 	}
 	autoloadSkills(rt.Config, rt.SkillIndex, newState, rt.Logger)
-	seedRepoContext(newState, db, rt.ProjectID)
-	seedSessionSummaries(newState, db, rt.ProjectID)
 
 	// Reuse the runtime's stable WriteLock so a /session new keeps the same
 	// gate across the swap (in-flight children from the old session hold it).

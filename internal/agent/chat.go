@@ -632,7 +632,7 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 	hasAskUser := false
 	for _, tool := range tools {
 		// Deferred tools — MCP tools above the disclosure threshold and
-		// low-use native tools (config.*, csv.inspect, json.query) — are
+		// low-use native tools (config.read, csv.inspect, json.query, shell.sudo) — are
 		// hidden from the agent's prompt by default and only revealed once
 		// the agent explicitly opts in via tools.select.
 		if deferred[tool.Name] && !loaded[tool.Name] {

@@ -27,9 +27,10 @@ that:
 - **Every shell command is classified before it runs.** Marshal labels the
   risk, shows you why, and asks. Approved commands run under a sandbox by
   default. You choose how much friction you want, per session.
-- **The agent has a memory that outlives the session.** When you exit, a
-  knowledge pass distills the transcript into durable project memories and
-  file summaries. Next session, they come back automatically.
+- **Project knowledge lives where you can read it.** Durable guidance goes in
+  your repo's AGENTS.md. Memories you confirm or promote (in the web memory
+  library) come back automatically in later sessions; nothing is learned
+  behind your back.
 - **It is a server as well as a CLI.** `webbridge` hosts many agents across
   many projects in one browser UI, with worktree isolation, an egress proxy,
   and automations that watch your repos.
@@ -123,11 +124,9 @@ enable explicitly for any other route.
 
 ### Knowledge and memory
 
-On exit, a knowledge pass reviews the transcript, tool activity and touched
-files, asks a model to distill them, and persists memories (tagged `fact`,
-`architecture` or `decision`) plus file summaries to SQLite. Memory is read
-back into the context pack on later turns. `/memory` opens a browser for
-reviewing and pruning it.
+Marshal injects only curated memories: ones confirmed in `/memory` or the web
+memory library, or promoted to workspace or global scope. It no longer runs a
+background knowledge pass. Put standing project guidance in AGENTS.md.
 
 ### Safe, sandboxed tools
 

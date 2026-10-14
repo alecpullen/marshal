@@ -232,12 +232,10 @@ func TestApprovalMnemonicKeysSelectChoices(t *testing.T) {
 	}
 }
 
-// config.write is deliberately non-bypassable: persisting an always-allow
-// rule for it would be a safety hole, and a session rule would be a silent
-// no-op since session rules only match shell.run/test.run.
+// shell.sudo is deliberately non-bypassable: an always-allow rule would let a later command run as root with no authentication.
 func TestForcedPromptsHideAlwaysAndSession(t *testing.T) {
 	for _, tc := range []*session.PendingToolCall{
-		{Name: "config.write"},
+		{Name: "shell.sudo"},
 		{Name: "agent.run", Risk: "model-cost-consent"},
 		{Name: "file.write", Reason: "mode-elevation: edit requires write access"},
 	} {
@@ -252,7 +250,7 @@ func TestForcedPromptsHideAlwaysAndSession(t *testing.T) {
 
 // Approve, deny and edit are always available.
 func TestForcedPromptsKeepCoreChoices(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{Name: "config.write"}, session.SandboxInfo{}, false, false, 80)
+	am := newApprovalModel(&session.PendingToolCall{Name: "shell.sudo"}, session.SandboxInfo{}, false, false, 80)
 	have := map[approvalChoice]bool{}
 	for _, c := range am.candidates {
 		have[c] = true
@@ -267,7 +265,7 @@ func TestForcedPromptsKeepCoreChoices(t *testing.T) {
 // A mnemonic for a filtered-out choice must do nothing, not select an
 // absent option.
 func TestFilteredMnemonicIsInert(t *testing.T) {
-	am := newApprovalModel(&session.PendingToolCall{Name: "config.write"}, session.SandboxInfo{}, false, false, 80)
+	am := newApprovalModel(&session.PendingToolCall{Name: "shell.sudo"}, session.SandboxInfo{}, false, false, 80)
 	before := am.choice
 	am, _ = am.Update(keyPress("A"))
 	if am.choice != before {

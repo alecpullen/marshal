@@ -14,7 +14,6 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
-	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/limits"
@@ -166,9 +165,7 @@ type HookRunner interface {
 
 // MemoryProvider supplies durable project memories for injection into the
 // context pack at the start of each turn. It returns contextpack.MemoryNote
-// (not a type from internal/knowledge) so that internal/agent never needs
-// to depend on internal/knowledge (the two packages must not import each
-// other; see the Milestone N design doc).
+// so that internal/agent does not depend on the storage layer behind it.
 type MemoryProvider interface {
 	Memories(projectID int64) ([]contextpack.MemoryNote, error)
 }
@@ -274,11 +271,6 @@ type Runner struct {
 	ForceClass         string // if set, overrides Classify() in Run()
 	SkillIndex         *skills.Index
 
-	// SkillEmbedder overrides embedder resolution for computeSkillHints.
-	// Nil means resolve from config (unconfigured = hints silently off).
-	// Tests inject a fake; production leaves this nil.
-	SkillEmbedder embedding.Embedder
-
 	// Pricing holds the resolved per-token-category rates for the active
 	// model, used by emitMetrics to compute EstimatedCostCents. Set by
 	// app.go from the resolved route preset via pricing.Lookup. Zero value
@@ -380,8 +372,8 @@ type Runner struct {
 	MetricsObserver func(TurnMetrics)
 
 	// CompactionObserver, when set, is invoked after each successful
-	// compaction/rollover rebuild of the wire history. Used to schedule
-	// knowledge extraction at natural checkpoints. Nil disables.
+	// compaction/rollover rebuild of the wire history. No production caller
+	// sets it since the knowledge pass was removed. Nil disables.
 	CompactionObserver func()
 
 	Snapshotter      Snapshotter
@@ -426,13 +418,6 @@ type Runner struct {
 	// re-queries (AI-10). Per-RunTask; nil outside Run. Guarded by its own
 	// mutex because read-only tools mutate it from parallel goroutines.
 	semTracker *semanticRequeryTracker
-
-	// skillRanker caches skill-description vectors for the session.
-	skillRanker *skillRanker
-	// skillHints holds this turn's ranked skill suggestions. Rebuilt each
-	// turn by computeSkillHints; surfaced to the model as its own message
-	// (never in messages[0], which is the provider's cache prefix).
-	skillHints []string
 
 	// RunTaskFunc overrides RunTask for testing (see the named type below).
 	RunTaskFunc RunTaskFunc
@@ -918,10 +903,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.semTracker = newSemanticRequeryTracker()
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
-	// Rank skills against the goal so the prompt can suggest them. This
-	// only suggests — see computeSkillHints for why gating on similarity
-	// does not work. Class defaults (no embedder needed) are merged in.
-	r.computeSkillHints(ctx, goal, task.Class)
 	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
 
@@ -959,7 +940,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
 	}
 	markCacheAnchor(messages)
-	messages = r.appendSkillHint(messages)
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 
 	// T12: end-of-turn flushArchive and maybeRollover so cross-turn rollover
@@ -1019,7 +999,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
 			}
 			markCacheAnchor(messages)
-			messages = r.appendSkillHint(messages)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}
 		r.State.AddMessage(session.RoleAssistant, planText, session.ContentTypePlan)

@@ -498,27 +498,6 @@ func (r *Runner) systemPromptMessage() schema.ChatMessage {
 	})
 }
 
-// appendSkillHint appends this turn's skill suggestion message, if any.
-// Call it immediately before appending the turn's goal: the hint changes
-// every turn, so it must come after the replayed history and skill bodies,
-// or a turn's first request re-pays that history at full price.
-func (r *Runner) appendSkillHint(messages []schema.ChatMessage) []schema.ChatMessage {
-	if r.SkillIndex == nil || len(r.skillHints) == 0 {
-		return messages
-	}
-	hinted := make([]skills.Skill, 0, len(r.skillHints))
-	for _, name := range r.skillHints {
-		if sk, ok := r.SkillIndex.Load(name); ok {
-			hinted = append(hinted, sk)
-		}
-	}
-	msg, ok := BuildSkillHintMessage(hinted)
-	if !ok {
-		return messages
-	}
-	return append(messages, msg)
-}
-
 // appendSkillBodies appends the wrapped body of every active skill whose
 // body is not already on the wire, and records it as emitted. The system
 // prompt tells the model an active skill's "body already in context", so

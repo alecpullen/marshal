@@ -429,10 +429,7 @@ const (
 	ruleFactGathering        = "- Use fact-gathering tools only to obtain facts you don't already have in the transcript or context pack.\n"
 	ruleFinalAnswer          = "- Once the requested change is made and validated, produce a final answer — do not keep exploring.\n"
 	ruleStopAfterValidation  = "- Stop after validation succeeds; do not re-verify work that already passed.\n"
-	ruleDocsArchive          = "- Write specs and plans to .docs-archive/superpowers/{specs,plans}/ (gitignored), never tracked docs/.\n"
-	ruleWorkspaceFinish      = "- Merge sessions with workspace.finish, not shell.run git merge; pop or drop any stash you create before finishing.\n"
-	ruleReplaceTerminator    = "- REPLACE blocks end with >>>>>>> REPLACE; the closing ======= line is a diff-hunk separator the parser has to repair.\n"
-	ruleReviewerSubagent     = "- When the user asks for a review of code or completed work, dispatch a reviewer subagent with agent.run instead of reviewing inline, unless the change is trivially small."
+	ruleReplaceTerminator    = "- REPLACE blocks end with >>>>>>> REPLACE; the closing ======= line is a diff-hunk separator the parser has to repair."
 )
 
 const baseRules = "Rules:\n" +
@@ -446,10 +443,7 @@ const baseRules = "Rules:\n" +
 	ruleFactGathering +
 	ruleFinalAnswer +
 	ruleStopAfterValidation +
-	ruleDocsArchive +
-	ruleWorkspaceFinish +
-	ruleReplaceTerminator +
-	ruleReviewerSubagent
+	ruleReplaceTerminator
 
 // baseRulesSystem is the system-access composition: identical to baseRules
 // except the file-tools rule is swapped for its system variant.
@@ -464,10 +458,7 @@ const baseRulesSystem = "Rules:\n" +
 	ruleFactGathering +
 	ruleFinalAnswer +
 	ruleStopAfterValidation +
-	ruleDocsArchive +
-	ruleWorkspaceFinish +
-	ruleReplaceTerminator +
-	ruleReviewerSubagent
+	ruleReplaceTerminator
 
 // baseRulesFor selects the rule block for the session's access mode.
 func baseRulesFor(systemAccess bool) string {
@@ -485,31 +476,6 @@ func baseRulesFor(systemAccess bool) string {
 // (skills.max_active) and misfit loads waste both the budget and the
 // context window.
 const skillDirective = `Skills are instruction sets you load on demand with skill.load. Deciding to load one is YOUR job — load skills whose description directly matches what you are about to do, BEFORE acting. Active skills are budgeted; don't over-load. When a loaded skill tells you to dispatch or spawn a subagent, use the agent.run tool.`
-
-// BuildSkillHintMessage renders this turn's ranked skill suggestions as its
-// own system message.
-//
-// It is deliberately NOT part of the system prompt: hints are recomputed
-// every turn from the goal, and messages[0] is the provider's cache prefix.
-// Folding per-turn content into it would miss the cache on every request,
-// on a tool that measures exactly that (db.turn_metrics.cache_read_tokens).
-//
-// The wording keeps the decision with the model. Similarity ranking cannot
-// tell "a skill applies" from "no skill applies" — measured separation is
-// negative — so this is a shortlist, never an instruction.
-func BuildSkillHintMessage(hints []skills.Skill) (schema.ChatMessage, bool) {
-	if len(hints) == 0 {
-		return schema.ChatMessage{}, false
-	}
-	var b strings.Builder
-	b.WriteString("Skill suggestions for this request, ranked by description similarity.\n")
-	b.WriteString("This ranking is a shortlist, not a judgement: it cannot tell whether any skill actually applies.\n")
-	b.WriteString("Load one with skill.load ONLY if its description matches what you are about to do. Ignoring all of them is a normal outcome.\n\n")
-	for _, sk := range hints {
-		b.WriteString(fmt.Sprintf("- `%s` — %s\n", sk.Name, sk.Description))
-	}
-	return schema.ChatMessage{Role: schema.RoleSystem, Content: b.String()}, true
-}
 
 const todoAddendum = `
 Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end. When the carried-over list is corrupted or stale and you need to replace it wholesale, pass "drop_unfinished": true — the submitted list becomes the whole list and no items are carried over.
@@ -662,7 +628,7 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 
 // BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
 // list of deferred tools (MCP servers above the disclosure threshold, plus
-// low-use native tools such as config.*) appended as a compact
+// low-use native tools such as csv.inspect) appended as a compact
 // announcement. The runner passes the registry's ListDeferred() so the
 // agent can see what it might want to opt into via tools.select.
 func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
@@ -876,8 +842,8 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 }
 
 // deferredAnnouncementCap caps the number of deferred tools listed
-// in the system prompt so a large deferred set (a huge MCP server, the
-// config.* family) doesn't drown the agent's available context. Once
+// in the system prompt so a large deferred set (a huge MCP server, or
+// many deferred native tools) doesn't drown the agent's available context. Once
 // exceeded, an "and N more" suffix tells
 // the agent it can call tools.select with a specific name to opt in to
 // any of the remaining tools.

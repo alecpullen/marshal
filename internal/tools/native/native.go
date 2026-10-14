@@ -97,17 +97,6 @@ type Options struct {
 	// repo.index. nil when LSP is unavailable.
 	LSPIndex index.LSPSymbols
 
-	// ConfigPath is the project-local config file path (.marshal/config.toml).
-	// Required for config.* tools.
-	ConfigPath string
-	// UserConfigPath is the global config file path (~/.config/marshal/config.toml).
-	// Required for config.* global-scope writes.
-	UserConfigPath string
-	// ConfigReloader hot-swaps the agent runtime from a new config. When nil,
-	// config.* write tools are not registered. Mirrors the configReloader seam
-	// wired in app.go.
-	ConfigReloader func(config.Config) error
-
 	// GitOps is the git seam behind workspace.finish. nil defaults to
 	// worktree.CLIGitOps; tests inject worktree.FakeGitOps.
 	GitOps worktree.GitOps
@@ -192,10 +181,6 @@ type toolSet struct {
 	// repo.index. nil when LSP is unavailable.
 	lspIndex index.LSPSymbols
 
-	configPath     string
-	userConfigPath string
-	configReloader func(config.Config) error
-
 	// gitOps is the git seam behind workspace.finish. Defaults to
 	// worktree.CLIGitOps; tests inject worktree.FakeGitOps.
 	gitOps worktree.GitOps
@@ -238,7 +223,7 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.workspaceFinishTool(),
 	}
 	// csv.inspect and json.query are low-use; defer them behind tools.select
-	// alongside the config.* tools so they don't occupy the prompt each turn.
+	// so they don't occupy the prompt each turn.
 	csvTool := tools.csvInspectTool()
 	csvTool.Deferred = true
 	jsonTool := tools.jsonQueryTool()
@@ -278,15 +263,10 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 	if recallToolEnabled(tools.config.Session.Rollover) {
 		all = append(all, tools.recallHistoryTool())
 	}
-	if tools.db != nil {
-		all = append(all, tools.memoryWriteTool())
-	}
 	// agent.run is registered separately by app.Run after the policy engine
 	// is constructed; the native toolset does not have access to the engine
 	// until then. See internal/app/app.go.
-	if tools.configReloader != nil {
-		all = append(all, tools.configTools()...)
-	}
+	all = append(all, tools.configReadTool())
 	if tools.webEnabled {
 		all = append(all, tools.webFetchTool())
 		if tools.webSearchURL != "" {
@@ -428,12 +408,9 @@ func newToolSet(opts Options) (*toolSet, error) {
 			pc := opts.Config.Providers[route.Preset.Provider]
 			return embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
 		},
-		lsp:            opts.LSP,
-		lspIndex:       opts.LSPIndex,
-		configPath:     opts.ConfigPath,
-		userConfigPath: opts.UserConfigPath,
-		configReloader: opts.ConfigReloader,
-		gitOps:         opts.GitOps,
+		lsp:      opts.LSP,
+		lspIndex: opts.LSPIndex,
+		gitOps:   opts.GitOps,
 	}
 	if ts.gitOps == nil {
 		ts.gitOps = worktree.CLIGitOps{}

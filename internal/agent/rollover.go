@@ -150,7 +150,6 @@ func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessa
 	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())
 	fresh = r.appendSkillBodies(fresh)
 	markCacheAnchor(fresh)
-	fresh = r.appendSkillHint(fresh)
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},
 		schema.ChatMessage{Role: schema.RoleAssistant, Content: "Progress summary (earlier transcript was compacted to fit the context budget):\n\n" + seedDigest},

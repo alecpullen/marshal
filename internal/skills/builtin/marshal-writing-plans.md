@@ -6,15 +6,15 @@ risk: read_only
 
 # Marshal Plan Writing (non-SDD)
 
-Use this skill after `brainstorming` has produced an approved spec (see
-`docs/specs/`) and the work will be executed inline rather than through the
+Use this skill after `brainstorming` has produced an approved spec (in the
+repo's spec location, default `docs/specs/`) and the work will be executed inline rather than through the
 `/sdd` pipeline. You are authoring a plan, not implementing source changes.
 The output is a plain Markdown plan that `marshal-executing-plans` — or a
 human — executes task-by-task.
 
 ## Required workflow
 
-1. Read the approved spec from `docs/specs/` first. The design must be
+1. Read the approved spec first (repo's spec location, default `docs/specs/`). The design must be
    locked before a plan is written — never propose a plan before the design
    is approved.
 2. Inspect the repository before naming files, symbols, tests, or commands.
@@ -37,7 +37,7 @@ human — executes task-by-task.
    or commit it was authored against, and a link to the spec file.
 7. Tail the plan with a final full-suite verification (`go test ./...`,
    `gofmt`, `go vet` per AGENTS.md) and integration notes.
-8. Write the plan to `docs/plans/YYYY-MM-DD-<topic>-plan.md`. By default,
+8. Write the plan to the plan location named in the repo instructions, defaulting to `docs/plans/YYYY-MM-DD-<topic>-plan.md`. By default,
    do NOT commit it — the plan is a durable local artifact. Only commit it
    if the repo's own conventions (AGENTS.md, `.gitignore`) explicitly say
    such artifacts are committed; check those conventions first, and never

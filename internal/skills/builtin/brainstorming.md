@@ -60,7 +60,7 @@ Pushback revises that section before moving on.
 
 ### Phase 5 — Spec artifact
 
-Write the approved design to `docs/specs/YYYY-MM-DD-<topic>-design.md`, containing:
+Write the approved design to the spec location named in the repo instructions (AGENTS.md or equivalent), defaulting to `docs/specs/YYYY-MM-DD-<topic>-design.md`, containing:
 
 - Context
 - The approved design sections

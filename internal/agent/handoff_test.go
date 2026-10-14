@@ -72,10 +72,9 @@ func TestSummarizeAndContinueErrorsOnEmptySummary(t *testing.T) {
 
 // summarizeAndContinue is a from-scratch wire rebuild (the default compaction
 // path when rollover is disabled). It must reset skill body ages so the
-// fresh wire re-sends full bodies, and it must re-insert the skill hint
-// message — mirroring rollover.go exactly. Regression for the review finding
-// that the plan missed this fourth wire-rebuild site.
-func TestSummarizeAndContinueResetsSkillBodyAgesAndReinsertsHint(t *testing.T) {
+// fresh wire re-sends full bodies, mirroring rollover.go exactly. Regression
+// for the review finding that the plan missed this fourth wire-rebuild site.
+func TestSummarizeAndContinueResetsSkillBodyAges(t *testing.T) {
 	p := &agenttest.ScriptedProvider{Responses: []string{"## Summary\nDone some work."}}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
@@ -94,9 +93,6 @@ func TestSummarizeAndContinueResetsSkillBodyAgesAndReinsertsHint(t *testing.T) {
 	if got := state.SkillBodyAge("tdd"); got < 2 {
 		t.Fatalf("precondition: age = %d, want >= 2", got)
 	}
-
-	// Set a skill hint so we can verify it reappears after compaction.
-	runner.skillHints = []string{"tdd"}
 
 	old := []schema.ChatMessage{
 		BuildSystemPrompt(RoleGeneral, nil, nil, nil, false),
@@ -126,12 +122,7 @@ func TestSummarizeAndContinueResetsSkillBodyAgesAndReinsertsHint(t *testing.T) {
 		t.Fatal("fresh wire must not contain a body-age stub message")
 	}
 
-	// The hint message must be present (after the skill bodies, before the goal).
-	if !strings.Contains(joined.String(), "tdd") {
-		t.Fatal("fresh wire missing the skill hint message")
-	}
-
-	// messages[0] must still be the system prompt (hint goes after it).
+	// messages[0] must still be the system prompt.
 	if fresh[0].Role != schema.RoleSystem {
 		t.Fatal("rebuilt messages must start with the system prompt")
 	}

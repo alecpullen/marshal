@@ -48,6 +48,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"codebase_search":    registry.RiskReadOnly,
 		"json.query":         registry.RiskReadOnly,
 		"csv.inspect":        registry.RiskReadOnly,
+		"config.read":        registry.RiskReadOnly,
 		"workspace.worktree": registry.RiskWorkspaceWrite,
 		"workspace.finish":   registry.RiskWorkspaceWrite,
 	}
@@ -258,14 +259,13 @@ func (fakeLSPQuerier) Hover(ctx context.Context, filePath string, line, col int)
 	return "", false
 }
 
-func TestRegisterAllDefersConfigAndDataTools(t *testing.T) {
+func TestRegisterAllDefersOnlyLowUseTools(t *testing.T) {
 	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{
-		WorkspaceRoot:  t.TempDir(),
-		CommandRunner:  &fakeRunner{},
-		SessionState:   state,
-		ConfigReloader: func(config.Config) error { return nil },
+		WorkspaceRoot: t.TempDir(),
+		CommandRunner: &fakeRunner{},
+		SessionState:  state,
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -274,43 +274,23 @@ func TestRegisterAllDefersConfigAndDataTools(t *testing.T) {
 	for _, tool := range reg.ListDeferred() {
 		deferred[tool.Name] = true
 	}
-
-	// Derive the expected deferred set from the registry instead of
-	// hard-coding counts, so adding/removing a config.* tool fails with an
-	// actionable message rather than a stale magic number. The invariant is:
-	// every registered config.* tool is deferred, and the deferred set is
-	// exactly {all config.*} ∪ {csv.inspect, json.query}.
-	all := make(map[string]bool)
-	for _, tool := range reg.List() {
-		all[tool.Name] = true
-	}
-	configNames := []string{}
-	for name := range all {
-		if strings.HasPrefix(name, "config.") {
-			configNames = append(configNames, name)
-			if !deferred[name] {
-				t.Fatalf("expected config.* tool %s to be deferred", name)
-			}
-		}
-	}
-
-	wantDeferred := map[string]bool{"csv.inspect": true, "json.query": true}
+	want := map[string]bool{"config.read": true, "csv.inspect": true, "json.query": true}
 	if runtime.GOOS != "windows" {
-		wantDeferred["shell.sudo"] = true
+		want["shell.sudo"] = true
 	}
-	for _, name := range configNames {
-		wantDeferred[name] = true
+	if len(deferred) != len(want) {
+		t.Fatalf("ListDeferred() = %v, want exactly %v", deferred, want)
 	}
-	if len(deferred) != len(wantDeferred) {
-		t.Fatalf("len(ListDeferred()) = %d, want %d (config.* + csv.inspect + json.query + shell.sudo)", len(deferred), len(wantDeferred))
-	}
-	for name := range wantDeferred {
+	for name := range want {
 		if !deferred[name] {
 			t.Fatalf("expected %s to be deferred", name)
 		}
 	}
-
-	// Core tools are never deferred.
+	for _, tool := range reg.List() {
+		if strings.HasPrefix(tool.Name, "config.") && tool.Name != "config.read" {
+			t.Fatalf("config setter %s must not be registered", tool.Name)
+		}
+	}
 	for _, name := range []string{"file.read", "file.write_patch", "shell.run", "test.run", "repo.search", "tools.select"} {
 		if deferred[name] {
 			t.Fatalf("expected %s to stay non-deferred", name)
@@ -318,14 +298,26 @@ func TestRegisterAllDefersConfigAndDataTools(t *testing.T) {
 	}
 }
 
+// Review focus 3: a resumed session may still name a deleted setter.
+func TestToolsSelectRejectsRemovedConfigSetter(t *testing.T) {
+	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, SessionState: state}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	_, err := invokeTool(t, reg, "tools.select", `{"names":["config.agent.set"]}`)
+	if err == nil || !strings.Contains(err.Error(), "unknown or non-deferred tools: config.agent.set") {
+		t.Fatalf("tools.select error = %v, want unknown-tool rejection", err)
+	}
+}
+
 func TestToolsSelectLoadsDeferredNativeTool(t *testing.T) {
 	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{
-		WorkspaceRoot:  t.TempDir(),
-		CommandRunner:  &fakeRunner{},
-		SessionState:   state,
-		ConfigReloader: func(config.Config) error { return nil },
+		WorkspaceRoot: t.TempDir(),
+		CommandRunner: &fakeRunner{},
+		SessionState:  state,
 	}); err != nil {
 		t.Fatalf("register: %v", err)
 	}

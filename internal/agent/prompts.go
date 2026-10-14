@@ -628,7 +628,7 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 
 // BuildSystemPromptWithDeferred is BuildSystemPrompt with an additional
 // list of deferred tools (MCP servers above the disclosure threshold, plus
-// low-use native tools such as config.*) appended as a compact
+// low-use native tools such as csv.inspect) appended as a compact
 // announcement. The runner passes the registry's ListDeferred() so the
 // agent can see what it might want to opt into via tools.select.
 func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
@@ -842,8 +842,8 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 }
 
 // deferredAnnouncementCap caps the number of deferred tools listed
-// in the system prompt so a large deferred set (a huge MCP server, the
-// config.* family) doesn't drown the agent's available context. Once
+// in the system prompt so a large deferred set (a huge MCP server, or
+// many deferred native tools) doesn't drown the agent's available context. Once
 // exceeded, an "and N more" suffix tells
 // the agent it can call tools.select with a specific name to opt in to
 // any of the remaining tools.

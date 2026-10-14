@@ -763,9 +763,6 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		JobBroker:      jobBroker,
 		Guardrail:      func(cmd string, system bool) error { return pol.GuardrailCheck(cmd, system) },
 		SudoPolicy:     pol.CheckPrivileged,
-		ConfigPath:     config.ProjectConfigPath(state.WorkingDir),
-		UserConfigPath: config.UserConfigPath(homeDir),
-		ConfigReloader: configReloader,
 	}
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
@@ -1792,8 +1789,8 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		// Seed the child with the parent's session context. Layer-aware
 		// project saves (config.SaveProjectConfig) compare against
 		// state.Layers(): a child without the snapshot silently regresses to
-		// write-everything, and the config.*.set tools are loadable in the
-		// child via the shared ConfigReloader — so a subagent could bake
+		// write-everything, and config writes from the TUI reach children
+		// through the shared ConfigReloader — so a subagent could bake
 		// user-global values into the committable .marshal/config.toml.
 		childState.SetLayers(parentState.Layers())
 		childState.SetHomeDir(parentState.HomeDir())

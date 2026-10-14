@@ -1774,3 +1774,19 @@ func TestAgentRosterSnapshotsDiscoveredModels(t *testing.T) {
 		t.Fatalf("roster changed mid-session:\nwas: %q\nnow: %q", first, got)
 	}
 }
+
+// Review focus 3: a loaded name that is no longer registered must neither
+// appear as an available tool nor break the build of the prompt.
+func TestStaleLoadedConfigSetterIsIgnoredInPrompt(t *testing.T) {
+	read := registry.Tool{Name: "config.read", Description: "Read config.", Risk: registry.RiskReadOnly, Deferred: true}
+	msg := BuildSystemPromptWithSystem(SystemPromptOptions{
+		Role: RoleGeneral, Tools: []registry.Tool{read}, Deferred: []registry.Tool{read},
+		Mode: policy.ModeEdit, LoadedNames: []string{"config.agent.set"},
+	})
+	if strings.Contains(msg.Content, "config.agent.set") {
+		t.Fatalf("stale loaded name leaked into the prompt:\n%s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "config.read") {
+		t.Fatalf("config.read must still be announced:\n%s", msg.Content)
+	}
+}

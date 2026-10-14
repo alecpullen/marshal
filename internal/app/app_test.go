@@ -1173,7 +1173,7 @@ func TestReloadAgentRuntimeAddsRemoteMCPServer(t *testing.T) {
 		workCtx:      ctx,
 	}
 
-	// Add the remote server the way the agent would: through config.mcp.set.
+	// Add the remote server the way /settings would.
 	reloaded := reloadableAgentConfig("provider")
 	reloaded.MCP.Servers = map[string]config.MCPServerConfig{
 		"remote": {
@@ -3334,7 +3334,7 @@ func TestAgentRunSystemFlagParentWithoutSystem(t *testing.T) {
 func TestBuildSubagentFactorySeedsChildSessionContext(t *testing.T) {
 	// Regression: a child session built without the parent's layer snapshot
 	// makes layer-aware project saves (config.SaveProjectConfig) fall back
-	// to write-everything, so a subagent running config.*.set tools would
+	// to write-everything, so a subagent that saves config would
 	// bake user-global values into the committable .marshal/config.toml.
 	cfg := config.Default()
 	cfg.Project.Name = "child-context-test"
@@ -4301,30 +4301,24 @@ func TestRunResolvesOptionsOnce(t *testing.T) {
 	}
 }
 
-func TestBuildAgentRunnerRegistersConfigToolsWhenReloaderProvided(t *testing.T) {
-	// Verify that buildAgentRunner wires config.* tools into the registry
-	// when configReloader is non-nil, and omits them when nil.
+func TestBuildAgentRunnerRegistersOnlyConfigRead(t *testing.T) {
+	// config.read is registered whatever the reloader; the setter tools are
+	// gone, so no reloader can add one to the registry.
 	ctx := context.Background()
 	cfg := nativeToolAgentConfig("test-provider")
-
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 
-	// With configReloader: config.read should be registered.
-	_, regWith, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, func(config.Config) error { return nil }, "")
+	_, reg, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
-		t.Fatalf("buildAgentRunner (with reloader): %v", err)
+		t.Fatalf("buildAgentRunner: %v", err)
 	}
-	if _, ok := regWith.Lookup("config.read"); !ok {
-		t.Fatal("config.read not registered when configReloader is non-nil")
+	if _, ok := reg.Lookup("config.read"); !ok {
+		t.Fatal("config.read not registered")
 	}
-
-	// Without configReloader: config.read should NOT be registered.
-	_, regWithout, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
-	if err != nil {
-		t.Fatalf("buildAgentRunner (without reloader): %v", err)
-	}
-	if _, ok := regWithout.Lookup("config.read"); ok {
-		t.Fatal("config.read registered when configReloader is nil, want absent")
+	for _, tool := range reg.List() {
+		if strings.HasPrefix(tool.Name, "config.") && tool.Name != "config.read" {
+			t.Fatalf("config setter %s must not be registered", tool.Name)
+		}
 	}
 }
 

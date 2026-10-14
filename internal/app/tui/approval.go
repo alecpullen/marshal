@@ -96,8 +96,7 @@ func forcedPromptClass(tc *session.PendingToolCall) bool {
 	if tc == nil {
 		return false
 	}
-	return tc.Name == "config.write" ||
-		tc.Name == "shell.sudo" ||
+	return tc.Name == "shell.sudo" ||
 		tc.Risk == "model-cost-consent" ||
 		isModeElevationApproval(tc)
 }

@@ -279,7 +279,7 @@ func NewParentAskTool(pq ParentQuestioner, timeout time.Duration, maxPerTask int
 // parent answered on the user's behalf. A child question is normally answered
 // by the parent from context, so the user must be able to see what was decided
 // for them and correct it in their next message — the parent then pushes that
-// correction into the live child via parent.correct.
+// correction into the live child via agent.steer.
 func formatAnsweredNotice(pending *session.PendingChildQuestion, answers []session.Answer) string {
 	pairs := make([]string, 0, len(answers))
 	for _, a := range answers {
@@ -289,58 +289,6 @@ func formatAnsweredNotice(pending *session.PendingChildQuestion, answers []sessi
 		"subagent %d (%s) asked %s; I answered on your behalf. Reply with a correction if that is wrong and I will push it to the subagent.",
 		pending.ChildID, pending.ChildDesc, strings.Join(pairs, ", "),
 	)
-}
-
-// parentCorrectArgs carries a user override for an answer the parent already
-// gave a child.
-type parentCorrectArgs struct {
-	ChildID    int64  `json:"child_id"`
-	Correction string `json:"correction"`
-}
-
-// NewParentCorrectTool builds the parent-side override affordance: it turns a
-// user's correction into a steering message on the LIVE child's own state, so
-// the child sees it at its next loop-top exactly like a user steering message.
-// Reusing PushSteering means the correction rides the existing, already-tested
-// steering path rather than a new delivery mechanism.
-func NewParentCorrectTool(state *session.State) registry.Tool {
-	tool := registry.Tool{
-		Name: "parent.correct",
-		Description: "Push a correction into a subagent that is still running, after you already answered its parent.ask question. " +
-			"Use this when the user replies that your answer was wrong. The correction is delivered to the child as steering at its next step, so phrase it as an instruction (e.g. \"use Postgres, not SQLite\"). " +
-			"Only a running subagent can be corrected; a finished one has stopped and cannot receive it.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"child_id":{"type":"integer","description":"The subagent id shown on its card, e.g. 3 for \"subagent 3\"."},"correction":{"type":"string","description":"The correction to deliver, phrased as an instruction to the subagent."}},"required":["child_id","correction"],"additionalProperties":false}`),
-		Risk:   registry.RiskReadOnly,
-	}
-	tool.Handler = func(_ context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-		var args parentCorrectArgs
-		if err := json.Unmarshal(call.Args, &args); err != nil {
-			return registry.ToolResult{}, fmt.Errorf("decode parent.correct arguments: %w", err)
-		}
-		correction := strings.TrimSpace(args.Correction)
-		if correction == "" {
-			return registry.ToolResult{}, errors.New("correction must not be empty")
-		}
-		view, ok := state.Subagent(args.ChildID)
-		if !ok {
-			return registry.ToolResult{}, fmt.Errorf("unknown subagent %d", args.ChildID)
-		}
-		if view.Child == nil {
-			return registry.ToolResult{}, fmt.Errorf("subagent %d has no live session to correct", args.ChildID)
-		}
-		// A finished child no longer drains its steering queue, so accepting
-		// the correction would silently drop it and leave the user believing
-		// it landed.
-		if view.Status != session.SubagentRunning {
-			return registry.ToolResult{}, fmt.Errorf("subagent %d is no longer running; a correction cannot reach a finished subagent", args.ChildID)
-		}
-		view.Child.PushSteering("[parent correction] " + correction)
-		return registry.ToolResult{
-			Summary: fmt.Sprintf("corrected subagent %d", args.ChildID),
-			Content: fmt.Sprintf("Pushed the correction to subagent %d (%s); it will see it at its next step.", args.ChildID, view.Label),
-		}, nil
-	}
-	return tool
 }
 
 // parentRespondArgs mirrors the question.ask answer shape (and session.Answer)

@@ -690,18 +690,17 @@ reviewer = "mock/mock-model"
 		t.Fatalf("JobManager.Start: %v", err)
 	}
 
-	// The job.list tool must see the same job (proving pointer identity
-	// between Runtime.JobManager and the toolset's job manager).
-	tool, ok := rt.ToolRegistry.Lookup("job.list")
-	if !ok {
-		t.Fatal("job.list not registered in ToolRegistry")
+	// The model-facing job.* tools were retired in the context-diet Tier 2a
+	// cut: agent.await/agent.kill reach the same manager through the
+	// adapter. Assert the runtime hands out the manager the job landed in.
+	found := false
+	for _, j := range rt.JobManager.List() {
+		if j.ID == id {
+			found = true
+		}
 	}
-	result, err := tool.Handler(ctx, registry.ToolCall{Args: json.RawMessage("{}")})
-	if err != nil {
-		t.Fatalf("job.list handler: %v", err)
-	}
-	if !strings.Contains(result.Content, id) {
-		t.Fatalf("job.list output %q does not contain job id %q", result.Content, id)
+	if !found {
+		t.Fatalf("job %s is not visible from the runtime's job manager", id)
 	}
 }
 

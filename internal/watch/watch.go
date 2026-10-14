@@ -555,7 +555,8 @@ func (m *Manager) fire(w *watch, sample Sample) {
 }
 
 // Stop idempotently stops a watch. Unknown or already-terminal IDs return
-// success with a "was already gone" note (mirrors job.kill conventions).
+// success with a "was already gone" note (mirrors the idempotent-kill
+// convention the retired job tools used).
 func (m *Manager) Stop(id string) (string, error) {
 	m.mu.Lock()
 	w, ok := m.watches[id]

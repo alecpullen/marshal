@@ -227,9 +227,12 @@ var toolDisplayNames = map[string]string{
 	"mode.request":     "Switch mode",
 	"question.ask":     "Ask question",
 	"ask_user":         "Ask user",
+	"agent.output":     "Peek at subagent",
+	"agent.kill":       "Cancel subagent",
+	"agent.steer":      "Steer subagent",
 	"agent.run":        "Run subagent",
-	// agent.await is multipurpose (subagents, background jobs, watches), so
-	// the transcript row describes the action, not the target class.
+	// agent.await is multipurpose (subagents and background jobs), so the
+	// transcript row describes the action, not the target class.
 	"agent.await": "Waiting…",
 }
 

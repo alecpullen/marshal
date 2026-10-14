@@ -6,7 +6,6 @@ import (
 
 	"marshal/internal/agent"
 	"marshal/internal/tools/native"
-	"marshal/internal/watch"
 )
 
 // jobAwaitAdapter exposes the native JobManager to agent.await through
@@ -53,48 +52,12 @@ func (a jobAwaitAdapter) JobOutputTail(id string, maxLines int) string {
 	return strings.TrimRight(out, "\n")
 }
 
-// watchAwaitAdapter exposes watch transitions to agent.await through
-// agent.WatchAwaitSource.
-type watchAwaitAdapter struct{ m *watch.Manager }
-
-func (a watchAwaitAdapter) OutstandingWatches() []agent.AwaitWatchInfo {
-	watches := a.m.List()
-	out := make([]agent.AwaitWatchInfo, 0, len(watches))
-	for _, w := range watches {
-		// Only once-mode, still-watching watches can "finish"; repeat
-		// watches never do, so await would block forever on them.
-		if w.Mode != watch.ModeOnce || w.State != watch.StateWatching {
-			continue
-		}
-		out = append(out, agent.AwaitWatchInfo{
-			ID:         w.ID,
-			Name:       w.Name,
-			Kind:       string(w.Kind),
-			State:      string(w.State),
-			Condition:  w.Condition,
-			Mode:       string(w.Mode),
-			FireCount:  w.FireCount,
-			LastSample: w.LastSample,
-			LastError:  w.LastError,
-		})
-	}
-	return out
-}
-
-func (a watchAwaitAdapter) AwaitWatch(ctx context.Context, id string) (agent.AwaitWatchInfo, error) {
-	info, err := a.m.WaitFire(ctx, id)
+func (a jobAwaitAdapter) PeekJob(id string, tailLines int) (agent.AwaitJobInfo, string, error) {
+	info, out, err := a.m.Output(id, tailLines)
 	if err != nil {
-		return agent.AwaitWatchInfo{}, err
+		return agent.AwaitJobInfo{}, "", err
 	}
-	return agent.AwaitWatchInfo{
-		ID:         info.ID,
-		Name:       info.Name,
-		Kind:       string(info.Kind),
-		State:      string(info.State),
-		Condition:  info.Condition,
-		Mode:       string(info.Mode),
-		FireCount:  info.FireCount,
-		LastSample: info.LastSample,
-		LastError:  info.LastError,
-	}, nil
+	return agent.AwaitJobInfo{ID: info.ID, Command: info.Command, Status: string(info.Status), ExitCode: info.ExitCode}, strings.TrimRight(out, "\n"), nil
 }
+
+func (a jobAwaitAdapter) KillJob(id string) error { return a.m.Kill(id) }

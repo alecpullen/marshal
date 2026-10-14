@@ -23,26 +23,9 @@ type JobAwaitSource interface {
 	// JobOutputTail returns a bounded tail of the job's combined output;
 	// "" when unknown.
 	JobOutputTail(id string, maxLines int) string
-}
-
-// AwaitWatchInfo is the agent package's own snapshot of a watch.
-type AwaitWatchInfo struct {
-	ID         string
-	Name       string
-	Kind       string
-	State      string
-	Condition  string
-	Mode       string
-	FireCount  int
-	LastSample string
-	LastError  string
-}
-
-// WatchAwaitSource is the await seam for watches.
-type WatchAwaitSource interface {
-	// OutstandingWatches returns once-mode watches that have not yet fired.
-	// Repeat-mode watches never finish, so they are never outstanding.
-	OutstandingWatches() []AwaitWatchInfo
-	// AwaitWatch blocks until the watch fires/stops/errors or ctx ends.
-	AwaitWatch(ctx context.Context, id string) (AwaitWatchInfo, error)
+	// PeekJob returns the job's current state and a bounded output tail
+	// without waiting.
+	PeekJob(id string, tailLines int) (AwaitJobInfo, string, error)
+	// KillJob terminates a running background job.
+	KillJob(id string) error
 }

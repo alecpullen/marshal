@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,8 @@ type fakeJobSource struct {
 	outstanding []AwaitJobInfo
 	wait        func(ctx context.Context, id string) (AwaitJobInfo, error)
 	tail        string
+	peek        func(id string, tailLines int) (AwaitJobInfo, string, error)
+	killed      string
 }
 
 func (f *fakeJobSource) OutstandingJobs() []AwaitJobInfo {
@@ -32,28 +35,31 @@ func (f *fakeJobSource) AwaitJob(ctx context.Context, id string) (AwaitJobInfo, 
 
 func (f *fakeJobSource) JobOutputTail(string, int) string { return f.tail }
 
-type fakeWatchSource struct {
-	outstanding []AwaitWatchInfo
-	wait        func(ctx context.Context, id string) (AwaitWatchInfo, error)
+func (f *fakeJobSource) PeekJob(id string, tailLines int) (AwaitJobInfo, string, error) {
+	if f.peek == nil {
+		return AwaitJobInfo{}, "", fmt.Errorf("unknown job %s", id)
+	}
+	return f.peek(id, tailLines)
 }
 
-func (f *fakeWatchSource) OutstandingWatches() []AwaitWatchInfo { return f.outstanding }
-
-func (f *fakeWatchSource) AwaitWatch(ctx context.Context, id string) (AwaitWatchInfo, error) {
-	return f.wait(ctx, id)
+func (f *fakeJobSource) KillJob(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.killed = id
+	return nil
 }
 
 func newAwaitTool(state *session.State, opts ...AwaitOption) registry.Tool {
 	return NewSubagentAwaitTool(state, opts...)
 }
 
-func TestAgentAwaitValidatesFiveModes(t *testing.T) {
+func TestAgentAwaitValidatesModes(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	await := newAwaitTool(state)
 	for _, args := range []string{
 		`{"id": 1, "job_id": "job-1"}`,
 		`{"any": true, "all": true}`,
-		`{"job_id": "job-1", "watch_id": "w1"}`,
+		`{"any": true, "job_id": "job-1"}`,
 		`{}`,
 		`{"timeout_seconds": 5}`,
 	} {
@@ -75,12 +81,62 @@ func TestAgentAwaitJobIDWithoutSource(t *testing.T) {
 	}
 }
 
-func TestAgentAwaitWatchIDWithoutSource(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	await := newAwaitTool(state)
-	_, err := await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"watch_id": "w1"}`)})
-	if err == nil || !strings.Contains(err.Error(), "no watch source") {
-		t.Fatalf("err = %v, want no-source", err)
+// Review focus 5: peek must return a finished job's state and tail
+// immediately, without waiting.
+func TestAgentAwaitPeekFinishedJob(t *testing.T) {
+	code := 1
+	jobs := &fakeJobSource{peek: func(id string, _ int) (AwaitJobInfo, string, error) {
+		if id != "job-1" {
+			return AwaitJobInfo{}, "", fmt.Errorf("unknown job %s", id)
+		}
+		return AwaitJobInfo{ID: "job-1", Command: "go test", Status: "exited", ExitCode: &code}, "FAIL x", nil
+	}}
+	tool := newAwaitTool(newTestState(t), WithAwaitJobs(jobs))
+	done := make(chan struct{})
+	var res registry.ToolResult
+	var err error
+	go func() {
+		res, err = tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"job_id":"job-1","peek":true}`)})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("peek blocked")
+	}
+	if err != nil || !strings.Contains(res.Content, "exited") || !strings.Contains(res.Content, "exit: 1") || !strings.Contains(res.Content, "FAIL x") {
+		t.Fatalf("peek result = %+v, %v", res, err)
+	}
+}
+
+func TestAgentAwaitPeekRequiresATarget(t *testing.T) {
+	tool := newAwaitTool(newTestState(t))
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"any":true,"peek":true}`)}); err == nil {
+		t.Fatal("peek with any must be rejected")
+	}
+}
+
+func TestAgentAwaitPeekJobWithoutSource(t *testing.T) {
+	tool := newAwaitTool(newTestState(t))
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"job_id":"job-1","peek":true}`)})
+	if err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("err = %v, want jobs-not-available", err)
+	}
+}
+
+func TestAgentKillKillsJob(t *testing.T) {
+	jobs := &fakeJobSource{}
+	tool := NewSubagentKillTool(newTestState(t), WithAwaitJobs(jobs))
+	if _, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"job_id":"job-2"}`)}); err != nil || jobs.killed != "job-2" {
+		t.Fatalf("kill job: err=%v killed=%q", err, jobs.killed)
+	}
+}
+
+func TestAgentKillJobWithoutSource(t *testing.T) {
+	tool := NewSubagentKillTool(newTestState(t))
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"job_id":"job-2"}`)})
+	if err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("err = %v, want jobs-not-available", err)
 	}
 }
 
@@ -140,22 +196,6 @@ func TestAgentAwaitJobResultFormat(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "line2") {
 		t.Fatalf("content missing output tail: %q", res.Content)
-	}
-}
-
-func TestAgentAwaitWatchResultFormat(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	watches := &fakeWatchSource{}
-	watches.wait = func(ctx context.Context, id string) (AwaitWatchInfo, error) {
-		return AwaitWatchInfo{ID: id, Name: "tests", Kind: "command", State: "fired", Condition: "exit_code 0", Mode: "once", FireCount: 1, LastSample: "ok"}, nil
-	}
-	await := newAwaitTool(state, WithAwaitWatches(watches))
-	res, err := await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"watch_id": "w2"}`)})
-	if err != nil {
-		t.Fatalf("await watch: %v", err)
-	}
-	if !strings.Contains(res.Summary, "watch tests fired") || !strings.Contains(res.Content, "last_sample: ok") {
-		t.Fatalf("result = %q / %q", res.Summary, res.Content)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -529,61 +528,7 @@ func TestPendingChildQuestionHintOnlyWhenWaiting(t *testing.T) {
 	}
 }
 
-// TestParentCorrectRoutesToChildSteering is the override path: the correction
-// lands on the LIVE child's own steering queue, enveloped so the child can
-// tell it apart from ordinary user steering, and never on the parent's queue.
-func TestParentCorrectRoutesToChildSteering(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	childState := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(1))
-	view := state.RegisterSubagentWithMeta("migrate the schema", childState, session.SubagentMeta{Role: RoleSubtask})
-
-	tool := NewParentCorrectTool(state)
-	args := fmt.Sprintf(`{"child_id":%d,"correction":"use Postgres, not SQLite"}`, view.ID)
-	res, err := tool.Handler(context.Background(), registry.ToolCall{ID: "call_correct", Name: "parent.correct", Args: json.RawMessage(args)})
-	if err != nil {
-		t.Fatalf("Handler: %v", err)
-	}
-	if !strings.Contains(res.Summary, fmt.Sprintf("%d", view.ID)) {
-		t.Errorf("summary should name the corrected child; got: %s", res.Summary)
-	}
-
-	queued := childState.SteeringQueue()
-	if len(queued) != 1 {
-		t.Fatalf("child steering queue = %v, want exactly one correction", queued)
-	}
-	if !strings.Contains(queued[0], "[parent correction]") || !strings.Contains(queued[0], "use Postgres, not SQLite") {
-		t.Errorf("queued steering should be the enveloped correction; got: %s", queued[0])
-	}
-	if len(state.SteeringQueue()) != 0 {
-		t.Error("the correction must go to the child, not the parent")
-	}
-}
-
-// TestParentCorrectRejectsUnknownFinishedAndEmpty keeps every failure mode
-// actionable rather than silently dropping the user's correction.
-func TestParentCorrectRejectsUnknownFinishedAndEmpty(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	tool := NewParentCorrectTool(state)
-
-	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "c", Name: "parent.correct", Args: json.RawMessage(`{"child_id":99,"correction":"x"}`)})
-	if err == nil || !strings.Contains(err.Error(), "unknown subagent") {
-		t.Fatalf("unknown child error = %v, want a named 'unknown subagent'", err)
-	}
-
-	childState := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(1))
-	view := state.RegisterSubagentWithMeta("finished child", childState, session.SubagentMeta{Role: RoleSubtask})
-
-	_, err = tool.Handler(context.Background(), registry.ToolCall{ID: "c", Name: "parent.correct", Args: json.RawMessage(fmt.Sprintf(`{"child_id":%d,"correction":"  "}`, view.ID))})
-	if err == nil || !strings.Contains(err.Error(), "must not be empty") {
-		t.Fatalf("empty correction error = %v, want 'must not be empty'", err)
-	}
-
-	state.FinishSubagent(view.ID, "done", nil)
-	_, err = tool.Handler(context.Background(), registry.ToolCall{ID: "c", Name: "parent.correct", Args: json.RawMessage(fmt.Sprintf(`{"child_id":%d,"correction":"x"}`, view.ID))})
-	if err == nil || !strings.Contains(err.Error(), "no longer running") {
-		t.Fatalf("finished child error = %v, want 'no longer running'", err)
-	}
-	if len(childState.SteeringQueue()) != 0 {
-		t.Error("a finished child must not receive steering")
-	}
-}
+// The parent.correct handler tests were renamed to agent.steer tests in the
+// context-diet Tier 2a cut: the tool now steers any running subagent rather
+// than only overriding a parent.ask answer. They live in
+// subagent_async_test.go beside the other agent.* tool tests.

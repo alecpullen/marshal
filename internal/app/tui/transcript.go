@@ -759,8 +759,8 @@ func settledSubagentRow(v session.SubagentView, expanded bool, dur string, meta 
 
 // subagentTailLines returns up to n dim continuation lines summarising
 // what a running subagent is currently doing. It delegates to the shared
-// session implementation so the TUI card and agent.output read the same
-// tail source and cannot drift.
+// session implementation so the TUI card and agent.await's peek read the
+// same tail source and cannot drift.
 func subagentTailLines(child *session.State, n int) []string {
 	if child == nil {
 		return nil

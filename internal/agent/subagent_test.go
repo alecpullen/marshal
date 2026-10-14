@@ -349,14 +349,14 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	}
 	mustReg(&registry.Tool{Name: "file.read", Description: "read", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "agent.run", Description: "delegate", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
+	mustReg(&registry.Tool{Name: "agent.await", Description: "wait", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "agent.kill", Description: "cancel", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
+	mustReg(&registry.Tool{Name: "agent.steer", Description: "steer", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "web.fetch", Description: "fetch", Schema: []byte(`{}`), Risk: registry.RiskNetwork, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "shell.run", Description: "shell", Schema: []byte(`{}`), Risk: registry.RiskCommand, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "diagnostics.check", Description: "diag", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Deferred: true, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "question.ask", Description: "ask", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
-	mustReg(&registry.Tool{Name: "ask_user", Description: "ask alias", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "parent.respond", Description: "respond", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
-	mustReg(&registry.Tool{Name: "parent.correct", Description: "correct", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 
 	view := SubtaskScopeView(reg)
 	names := make(map[string]bool, len(view.List()))
@@ -377,6 +377,18 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	}
 	if _, ok := view.Lookup("agent.kill"); ok {
 		t.Fatal("Lookup(agent.kill) must fail in subtask view")
+	}
+	if names["agent.await"] {
+		t.Fatal("subtask view must NOT contain agent.await (children cannot wait on subagents)")
+	}
+	if names["agent.steer"] {
+		t.Fatal("subtask view must NOT contain agent.steer (children cannot steer siblings)")
+	}
+	if _, ok := view.Lookup("agent.await"); ok {
+		t.Fatal("Lookup(agent.await) must fail in subtask view")
+	}
+	if _, ok := view.Lookup("agent.steer"); ok {
+		t.Fatal("Lookup(agent.steer) must fail in subtask view")
 	}
 	if !names["shell.run"] {
 		t.Fatal("subtask view missing shell.run (implementation tools must be visible to child)")
@@ -402,24 +414,11 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	if _, ok := view.Lookup("question.ask"); ok {
 		t.Fatal("Lookup(question.ask) must fail in subtask view")
 	}
-	// ask_user is the alias for question.ask and routes through the same
-	// orphaned child session.State, so it must be excluded for the same
-	// reason.
-	if names["ask_user"] {
-		t.Fatal("subtask view must NOT contain ask_user (no user to answer it)")
-	}
-	if _, ok := view.Lookup("ask_user"); ok {
-		t.Fatal("Lookup(ask_user) must fail in subtask view")
-	}
-	// parent.respond and parent.correct are the parent-side halves of the
-	// question bridge: their handlers close over the PARENT's state, so a
-	// child holding them could answer a sibling's pending question or steer
-	// a sibling's runner. Only the parent decides those.
+	// parent.respond is the parent-side half of the question bridge: its
+	// handler closes over the PARENT's state, so a child holding it could
+	// answer a sibling's pending question. Only the parent decides that.
 	if names["parent.respond"] {
 		t.Fatal("subtask view must NOT contain parent.respond (answers belong to the parent)")
-	}
-	if names["parent.correct"] {
-		t.Fatal("subtask view must NOT contain parent.correct (corrections belong to the parent)")
 	}
 }
 

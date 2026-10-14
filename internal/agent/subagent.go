@@ -93,17 +93,16 @@ func runSubagentChild(ctx context.Context, child *Runner, prompt string) (summar
 }
 
 // SubtaskScopeView returns a registry view for a subtask child. It excludes
-// agent.run plus its companions agent.await, agent.output, and agent.kill (a
-// subtask's own session has no subagents to wait on, peek at, or cancel — a
-// child cannot have children), deferred tools (MCP tools above the
-// disclosure threshold and low-use native tools — the child should not
-// auto-load arbitrary tool surfaces during an ad-hoc task), and question.ask
-// plus its alias ask_user (a subtask runs in its own orphaned child
-// session.State that no ACP client or TUI ever sees — there is no live user
-// who could answer a question, so the call would block forever). All other
-// tools are visible so the child can perform implementation work; their own
-// Risk levels and the shared policy engine still gate approval for writes,
-// commands, and destructive tools.
+// the background-work family (agent.run, agent.await, agent.kill, agent.steer
+// — a subtask's own session has no subagents to wait on, peek at, cancel, or
+// steer), deferred tools (MCP tools above the disclosure threshold and
+// low-use native tools — the child should not auto-load arbitrary tool
+// surfaces during an ad-hoc task), and question.ask (a subtask runs in its
+// own orphaned child session.State that no ACP client or TUI ever sees —
+// there is no live user who could answer a question, so the call would block
+// forever). All other tools are visible so the child can perform
+// implementation work; their own Risk levels and the shared policy engine
+// still gate approval for writes, commands, and destructive tools.
 //
 // parent.ask is the one sanctioned exception to the "no live user" rule, and
 // it is deliberately NOT listed here: the child does not ask a user, it asks
@@ -112,17 +111,18 @@ func runSubagentChild(ctx context.Context, child *Runner, prompt string) (summar
 // that child's own view ID and description, and only when the spawning
 // configuration whitelists the child's role.
 //
-// parent.respond and parent.correct are the parent-side halves of that seam
-// and ARE excluded here: their handlers close over the PARENT's state, so a
-// child that called them would answer a sibling's pending question or steer a
-// sibling's runner — decisions that belong to the parent alone.
+// parent.respond is the parent-side half of that seam and IS excluded here:
+// its handler closes over the PARENT's state, so a child that called it would
+// answer a sibling's pending question — a decision that belongs to the parent
+// alone.
 func SubtaskScopeView(src *registry.Registry) *registry.Registry {
 	view := registry.New()
 	for _, tool := range src.List() {
 		if tool.Deferred {
 			continue
 		}
-		if tool.Name == "agent.run" || tool.Name == "agent.await" || tool.Name == "agent.output" || tool.Name == "agent.kill" || tool.Name == "question.ask" || tool.Name == "ask_user" || tool.Name == "parent.respond" || tool.Name == "parent.correct" {
+		switch tool.Name {
+		case "agent.run", "agent.await", "agent.kill", "agent.steer", "question.ask", "parent.respond":
 			continue
 		}
 		_ = view.Register(tool)
@@ -270,7 +270,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 	concurrency := state.SubagentMaxConcurrency()
 	tool := registry.Tool{
 		Name:        "agent.run",
-		Description: fmt.Sprintf("Delegate a scoped subtask to a fresh child agent context. The child runs in the BACKGROUND: this tool returns immediately with a handle (subagent N) and the child's report is delivered to you as a [subagent N finished] message when it completes — do NOT assume the task is done when this tool returns. Call agent.await with the subagent id when you need the result before continuing, or agent.output to peek at progress. Maximum depth: 1. Maximum concurrency: %d. Multiple agent.run calls in a single response all start immediately (max %d in flight); writes across agents are serialized. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. Pass `model` as an explicit provider/model pair to override the model selection; an explicit `model` takes precedence over the named `agent`'s own preset. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer). Use this tool when a loaded skill instructs you to dispatch or spawn a subagent.", concurrency, concurrency),
+		Description: fmt.Sprintf("Delegate a scoped subtask to a fresh child agent context. The child runs in the BACKGROUND: this tool returns immediately with a handle (subagent N) and the child's report is delivered to you as a [subagent N finished] message when it completes — do NOT assume the task is done when this tool returns. Call agent.await with the subagent id when you need the result before continuing, or agent.await with \"peek\": true to check progress. Maximum depth: 1. Maximum concurrency: %d. Multiple agent.run calls in a single response all start immediately (max %d in flight); writes across agents are serialized. Pass `agent` to run as a named custom agent (configured via /agents); omit for an ad-hoc subtask. Pass `model` as an explicit provider/model pair to override the model selection; an explicit `model` takes precedence over the named `agent`'s own preset. The child has the same implementation tools as the parent except nested agent.run and question.ask (its session has no user who could answer). Use this tool when a loaded skill instructs you to dispatch or spawn a subagent.", concurrency, concurrency),
 		Schema: json.RawMessage(
 			`{"type":"object","properties":{"prompt":{"type":"string","description":"The subtask description passed verbatim to the child agent."},"description":{"type":"string","description":"A short label for the subtask shown in the tool result summary."},"agent":{"type":"string","description":"Name of a configured custom agent to run as. Omit for an ad-hoc subtask."},"model":{"type":"string","description":"Optional provider/model pair (e.g. \"openai/gpt-4o-mini\") to run the child on. Omitted uses the default model selection; explicit overrides the named agent's own preset."},"temperature":{"type":"number","description":"Optional sampling temperature override for this subtask. Lower values (e.g. 0.1) produce more focused, deterministic output for tight-scope implementers; higher values (e.g. 0.4) allow more creativity. Omitted uses the role/preset default."},"thinking":{"type":"string","description":"Optional reasoning effort override for this subtask (e.g. \"low\", \"medium\", \"high\"). Lower values reduce reasoning time for well-specified mechanical tasks. Omitted uses the role/preset default."},"system":{"type":"boolean","description":"Run the child with system access (full filesystem read/write). Requires the parent to have system access."}},"required":["prompt","description"],"additionalProperties":false}`,
 		),
@@ -479,7 +479,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		}()
 		return registry.ToolResult{
 			Summary: fmt.Sprintf("started as subagent %d — %s", view.ID, args.Description),
-			Content: fmt.Sprintf("Subagent %d (%s) is running in the background (%d in flight, max %d). Its report will be delivered to you as a [subagent %d finished] message when it completes. To wait for it, call agent.await with \"id\": %d; to peek at progress, call agent.output with \"id\": %d. Do not treat the task as complete until its result arrives.",
+			Content: fmt.Sprintf("Subagent %d (%s) is running in the background (%d in flight, max %d). Its report will be delivered to you as a [subagent %d finished] message when it completes. To wait for it, call agent.await with \"id\": %d; to peek at progress, call agent.await with \"id\": %d and \"peek\": true. Do not treat the task as complete until its result arrives.",
 				view.ID, args.Description, state.SubagentConcurrency(), state.SubagentMaxConcurrency(), view.ID, view.ID, view.ID),
 		}, nil
 	}

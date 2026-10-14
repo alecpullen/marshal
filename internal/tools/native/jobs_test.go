@@ -503,9 +503,17 @@ func TestRegisterAllHonorsConfigBackgroundLimits(t *testing.T) {
 	cfg.Tools.Shell.MaxBackgroundJobs = 1
 	cfg.Tools.Shell.BackgroundRetention = 30 * time.Minute
 
+	// The job.* tools were retired in the context-diet Tier 2a cut, so the
+	// test drives the manager the registry was built with directly (the
+	// model reaches the same handle through agent.await/kill). The runner
+	// must block, or every job finishes instantly and the cap never trips.
+	release := make(chan struct{})
+	jm := NewJobManager(context.Background(), newFakeRunner(withRelease(release)), root, 1, cfg.Tools.Shell.BackgroundRetention, 100000)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
 	reg := registry.New()
 	state := session.New(cfg, root, time.Now(), session.Persistence{})
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, Config: cfg, SessionState: state}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, Config: cfg, SessionState: state, JobManager: jm}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -519,54 +527,15 @@ func TestRegisterAllHonorsConfigBackgroundLimits(t *testing.T) {
 	}
 
 	jobID := strings.TrimPrefix(strings.TrimSpace(res.Content), "job_id: ")
-	if _, err := invokeTool(t, reg, "job.kill", fmt.Sprintf(`{"job_id":"%s"}`, jobID)); err != nil {
-		t.Fatalf("job.kill: %v", err)
+	if err := jm.Kill(jobID); err != nil {
+		t.Fatalf("Kill: %v", err)
 	}
 }
 
-func TestJobOutputAndListTools(t *testing.T) {
-	root := t.TempDir()
-	reg := registry.New()
-	state := session.New(config.Config{}, root, time.Now(), session.Persistence{})
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, SessionState: state}); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-
-	res, err := invokeTool(t, reg, "shell.run", `{"command":"sleep 30","background":true,"timeout_seconds":5}`)
-	if err != nil {
-		t.Fatalf("start background job: %v", err)
-	}
-	jobID := strings.TrimPrefix(strings.TrimSpace(res.Content), "job_id: ")
-
-	listRes, err := invokeTool(t, reg, "job.list", `{}`)
-	if err != nil {
-		t.Fatalf("job.list: %v", err)
-	}
-	if !strings.Contains(listRes.Content, jobID) {
-		t.Fatalf("job.list content = %q, want %q", listRes.Content, jobID)
-	}
-
-	outRes, err := invokeTool(t, reg, "job.output", fmt.Sprintf(`{"job_id":"%s"}`, jobID))
-	if err != nil {
-		t.Fatalf("job.output: %v", err)
-	}
-	if !strings.Contains(outRes.Content, "status: running") {
-		t.Fatalf("job.output content = %q, want status running", outRes.Content)
-	}
-
-	if _, err := invokeTool(t, reg, "job.kill", fmt.Sprintf(`{"job_id":"%s"}`, jobID)); err != nil {
-		t.Fatalf("job.kill: %v", err)
-	}
-	time.Sleep(100 * time.Millisecond)
-
-	outRes, err = invokeTool(t, reg, "job.output", fmt.Sprintf(`{"job_id":"%s"}`, jobID))
-	if err != nil {
-		t.Fatalf("job.output after kill: %v", err)
-	}
-	if !strings.Contains(outRes.Content, "status: killed") {
-		t.Fatalf("job.output content after kill = %q, want status killed", outRes.Content)
-	}
-}
+// TestJobOutputAndListTools was removed with the job.output/job.kill/job.list
+// tools in the context-diet Tier 2a cut. The manager behaviour it checked
+// (live bounded output, listing, kill-then-status) is covered at the manager
+// level by TestJobOutputIsLiveAndBounded and TestJobKillWaitsForRunner above.
 
 func TestJobEventCarriesSnapshot(t *testing.T) {
 	jm := NewJobManager(context.Background(), newFakeRunner(), "", 25, time.Hour, 100000)

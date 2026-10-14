@@ -733,7 +733,7 @@ func subagentHeadline(child *session.State) string {
 
 // subagentBodyLines is the live card's body: the child's headline and what
 // tool it is running. Before the child has narrated anything it falls back to
-// the raw activity tail, which agent.output also reads.
+// the raw activity tail, which agent.await's peek also reads.
 func subagentBodyLines(child *session.State, n int) []string {
 	head := subagentHeadline(child)
 	if head == "" {

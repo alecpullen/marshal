@@ -863,20 +863,26 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
+	// agent.await and agent.kill both cover the same two classes of
+	// background work: subagents and shell jobs. Both take the job adapter so
+	// await can wait on (or peek at) a job and kill can terminate one.
 	if err := reg.Register(agent.NewSubagentAwaitTool(state,
 		agent.WithAwaitJobs(jobAwaitAdapter{m: jobManager}),
-		agent.WithAwaitWatches(watchAwaitAdapter{m: watchManager}),
 	)); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
 	}
-	if err := reg.Register(agent.NewSubagentOutputTool(state)); err != nil {
-		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.output: %w", err)
-	}
-	if err := reg.Register(agent.NewSubagentKillTool(state)); err != nil {
+	if err := reg.Register(agent.NewSubagentKillTool(state,
+		agent.WithAwaitJobs(jobAwaitAdapter{m: jobManager}),
+	)); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.kill: %w", err)
+	}
+	// agent.steer sends an instruction into a running subagent. Main agent
+	// only: SubtaskScopeView excludes it, so a child cannot steer a sibling.
+	if err := reg.Register(agent.NewSubagentSteerTool(state)); err != nil {
+		buildErr = err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.steer: %w", err)
 	}
 	// parent.respond is the MAIN agent's answer affordance for a subagent
 	// blocked on parent.ask. It is registered only here — a subtask child has
@@ -885,13 +891,6 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if err := reg.Register(agent.NewParentRespondTool(state)); err != nil {
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register parent.respond: %w", err)
-	}
-	// parent.correct is the override half: when the user says the parent's
-	// answer was wrong, the correction reaches the still-running child as
-	// steering. Main agent only, like parent.respond.
-	if err := reg.Register(agent.NewParentCorrectTool(state)); err != nil {
-		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register parent.correct: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.WriteGate = writeLock

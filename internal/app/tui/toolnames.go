@@ -63,6 +63,10 @@ var toolPluralNames = map[string]string{
 	"git.status":       "Git status",
 	"symbols.find":     "Find symbols",
 	"todos":            "Update todos",
+	"agent.output":     "Peek at subagents",
+	"agent.kill":       "Cancel subagents",
+	"agent.steer":      "Steer subagents",
+	"agent.run":        "Run subagents",
 	// Self-plural: grouped headings must not render "Waiting…s".
 	"agent.await": "Waiting…",
 }

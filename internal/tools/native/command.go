@@ -77,6 +77,8 @@ func (t *toolSet) testRunTool() registry.Tool {
 			"the override is subject to the same approval policy.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
+		// Internal: the general agent runs tests through shell.run; only the swarm tester (TesterView) gets this constrained tool.
+		Internal: true,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[testRunArgs](tool, call.Args)

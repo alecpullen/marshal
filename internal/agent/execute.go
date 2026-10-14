@@ -791,10 +791,16 @@ var batchUnsafeReadOnlyTools = map[string]bool{
 // the system prompt advertises, so it must never name a tool that
 // executeActions would serialise or that would race on shared state.
 func batchSafeReadOnlyNames(tools []registry.Tool) []string {
+	internal := make(map[string]bool)
+	for _, t := range tools {
+		if t.Internal {
+			internal[t.Name] = true
+		}
+	}
 	all := registry.ReadOnlyNames(tools)
 	safe := make([]string, 0, len(all))
 	for _, name := range all {
-		if requiresSerialTool(name) || batchUnsafeReadOnlyTools[name] {
+		if internal[name] || requiresSerialTool(name) || batchUnsafeReadOnlyTools[name] {
 			continue
 		}
 		safe = append(safe, name)

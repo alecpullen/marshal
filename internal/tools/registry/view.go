@@ -92,6 +92,7 @@ func testerTestRunTool(tool Tool) Tool {
 		call.Args = []byte(`{}`)
 		return original(ctx, call)
 	}
+	testerTool.Internal = false
 	return testerTool
 }
 

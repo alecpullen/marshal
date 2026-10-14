@@ -65,7 +65,7 @@ reviewer = "mock/m"
 
 	var schemaBytes int
 	for _, tl := range r.Registry.List() {
-		if tl.Deferred {
+		if tl.Deferred || tl.Internal {
 			continue
 		}
 		b, err := json.Marshal(struct {

@@ -11,6 +11,15 @@ func nopHandler(ctx context.Context, call ToolCall) (ToolResult, error) {
 	return ToolResult{Summary: "ok"}, nil
 }
 
+func TestTesterViewExposesInternalTestRun(t *testing.T) {
+	src := New()
+	_ = src.Register(Tool{Name: "test.run", Risk: RiskCommand, Internal: true, Handler: func(context.Context, ToolCall) (ToolResult, error) { return ToolResult{}, nil }})
+	got, ok := TesterView(src).Lookup("test.run")
+	if !ok || got.Internal {
+		t.Fatalf("TesterView must register a non-internal test.run; ok=%v internal=%v", ok, got.Internal)
+	}
+}
+
 func TestReadOnlyViewFiltersOutWriteTools(t *testing.T) {
 	src := New()
 	mustRegister := func(tool Tool) {

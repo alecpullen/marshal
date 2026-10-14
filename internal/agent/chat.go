@@ -631,6 +631,9 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 	defs := make([]schema.ToolDefinition, 0, len(tools)+1)
 	hasAskUser := false
 	for _, tool := range tools {
+		if tool.Internal {
+			continue
+		}
 		// Deferred tools — MCP tools above the disclosure threshold and
 		// low-use native tools (config.read, csv.inspect, json.query, shell.sudo) — are
 		// hidden from the agent's prompt by default and only revealed once

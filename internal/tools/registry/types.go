@@ -36,7 +36,11 @@ type Tool struct {
 	Risk        RiskLevel
 	Cacheable   bool
 	Deferred    bool
-	Handler     ToolHandler
+	// Internal tools are dispatchable by the runtime (envelope-mode patch
+	// actions, role views that re-expose them) but are never offered to the
+	// model: no tool definition, no prompt listing, no deferred announcement.
+	Internal bool
+	Handler  ToolHandler
 
 	// validator is the compiled form of Schema, built once by Register.
 	// Shared by pointer through cloneTool: jsonschema.Schema is immutable

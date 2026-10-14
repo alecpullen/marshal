@@ -732,6 +732,9 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	if !nativeTools {
 		b.WriteString("\n\nAvailable tools:\n")
 		for _, tool := range tools {
+			if tool.Internal {
+				continue
+			}
 			// Deferred tools the agent hasn't loaded are announced compactly via
 			// writeDeferredAnnouncement; listing them in full here would
 			// double-pay the prompt cost deferral exists to save. Loaded
@@ -755,7 +758,7 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	// loaded" — that would tell the model a tool it now has is unavailable.
 	var notLoaded []registry.Tool
 	for _, tool := range deferredTools {
-		if !loaded[tool.Name] {
+		if !tool.Internal && !loaded[tool.Name] {
 			notLoaded = append(notLoaded, tool)
 		}
 	}

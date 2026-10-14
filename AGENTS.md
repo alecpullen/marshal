@@ -108,7 +108,6 @@ Repo intelligence
 Context & knowledge
   internal/contextpack/    context pack builder and budget logic
   internal/rollover/       context-window rollover for long sessions
-  internal/knowledge/      durable project memory agent
   internal/skills/         skill-based instruction sets (builtin/ ships the defaults)
   internal/commands/       slash commands (/plan, /sdd, /swarm, /settings, …)
   internal/history/        generation listing, transcript dump, archived-turn search

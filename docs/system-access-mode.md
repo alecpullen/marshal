@@ -26,6 +26,13 @@ Design: `.docs-archive/superpowers/specs/2026-10-10-system-mode-sudo-design.md`
   that invokes a privilege wrapper — you pass the *bare* command; Marshal
   adds the leading `sudo`. The catastrophic floor is **not** currently
   applied to the payload (see "Known gaps").
+- **What you see is what runs.** A command holding a control character a
+  terminal acts on (ESC, CR, a C1 control) or a bidi override is refused
+  before any prompt, by the policy engine for every shell tool and again by
+  `CheckPrivileged`: printed raw, it could erase or redraw itself as a
+  different command. Newlines and tabs are allowed. The prompt also shows any
+  control in the command, reason or error as a visible escape (`\x1b`), so
+  nothing reaching it can rewrite it.
 - **TUI only (v1).** ACP/web clients have no secret channel, so a
   privileged call from one is refused cleanly rather than blocking on a
   prompt no transport can answer. `State.SecretPromptCapable` is the hook a
@@ -127,6 +134,7 @@ means unlock may appear to do nothing on such a box; check
 |---|---|
 | Wrong password | Prompt re-raised with "incorrect password", up to 3 attempts, then the call fails. Never loops unattended. |
 | `sudo` not on PATH | Tool error before any prompt. |
+| Control character in the command | Refused before any prompt; the agent is told to spell it as `$'\e'` or `printf '\033'`. |
 | `requiretty` set | Tool error recommending `Defaults !requiretty`. No PTY is allocated. |
 | NOPASSWD | Not detected — the command just runs. Marshal never sniffs sudoers to skip the gate. |
 | You press Esc | Deny. Nothing executes. Esc always denies. |

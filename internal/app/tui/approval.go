@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/huhtheme"
 	"marshal/internal/diffview"
+	"marshal/internal/strutil"
 )
 
 // approvalChoice is the set of actions the inline approval chooser offers.
@@ -135,17 +136,41 @@ func (w approvalWhy) ownerLine(tc *session.PendingToolCall) string {
 	if w.owner == "" {
 		return ""
 	}
+	owner := strutil.ShowControls(w.owner)
 	if tc.Name == "shell.run" {
-		return w.owner + " wants to run a command"
+		return owner + " wants to run a command"
 	}
-	return w.owner + " wants to " + strings.ToLower(DisplayToolName(tc.Name))
+	return owner + " wants to " + strings.ToLower(DisplayToolName(tc.Name))
 }
 
+// whyLine quotes the step's narration, which the model wrote, so its
+// controls are shown like the command's (see shownToolCall).
 func (w approvalWhy) whyLine() string {
 	if w.why == "" {
 		return ""
 	}
-	return "why  \"" + w.why + "\""
+	return "why  \"" + strutil.ShowControls(w.why) + "\""
+}
+
+// shownToolCall is tc as an approval prompt displays it. The prompt is what
+// the user authorises, and every text field in it is model-written — the
+// command, the arguments, the patch behind the diff — or can quote it, so a
+// control character in any of them (ESC, CR, a bidi override) could erase,
+// overwrite or reorder what the user reads. Each one is shown as a visible
+// escape instead (strutil.ShowControls). Only the renderers read the copy:
+// the edit prefill, saved rules and the decision use tc itself.
+func shownToolCall(tc *session.PendingToolCall) *session.PendingToolCall {
+	return &session.PendingToolCall{
+		ID:      tc.ID,
+		Name:    tc.Name,
+		Args:    strutil.ShowControls(tc.Args),
+		Command: strutil.ShowControls(tc.Command),
+		Risk:    strutil.ShowControls(tc.Risk),
+		Reason:  strutil.ShowControls(tc.Reason),
+		Diff:    strutil.ShowControls(tc.Diff),
+		Schema:  strutil.ShowControls(tc.Schema),
+		StepID:  tc.StepID,
+	}
 }
 
 func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allowNetwork, hasBackup bool, width int, why ...approvalWhy) *approvalModel {
@@ -307,9 +332,10 @@ func (am *approvalModel) View() string {
 	if am.form == nil || am.tc == nil {
 		return ""
 	}
+	tc := shownToolCall(am.tc)
 	var b strings.Builder
-	if am.tc.Diff != "" && am.width > 0 {
-		diff := diffview.Render(am.tc.Diff, diffview.Options{
+	if tc.Diff != "" && am.width > 0 {
+		diff := diffview.Render(tc.Diff, diffview.Options{
 			Width:     am.width,
 			Mode:      diffview.ModeAuto,
 			Highlight: true,
@@ -328,12 +354,12 @@ func (am *approvalModel) View() string {
 
 	b.WriteString(gutterPrefix(glyph.Warning, warningColor))
 	headParts := []string{}
-	if am.tc.Name == "shell.run" {
-		headParts = append(headParts, am.tc.Command)
+	if tc.Name == "shell.run" {
+		headParts = append(headParts, tc.Command)
 	} else {
-		headParts = append(headParts, am.tc.Name)
+		headParts = append(headParts, tc.Name)
 	}
-	headParts = append(headParts, riskText(am.tc))
+	headParts = append(headParts, riskText(tc))
 	if iso := sandboxIsolationText(am.sb, am.allowNetwork); iso != "" {
 		headParts = append(headParts, iso)
 	}
@@ -391,6 +417,7 @@ func approvalSummary(tc *session.PendingToolCall, sb session.SandboxInfo, allowN
 	if len(why) > 0 {
 		w = why[0]
 	}
+	tc = shownToolCall(tc)
 	titleStyle := lipgloss.NewStyle().Foreground(warningColor).Bold(true)
 	muted := mutedStyle()
 	text := lipgloss.NewStyle()

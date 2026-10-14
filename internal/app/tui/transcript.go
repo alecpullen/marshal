@@ -1325,6 +1325,7 @@ func renderApprovalPanel(tc *session.PendingToolCall, sb session.SandboxInfo, al
 	if len(why) > 0 {
 		w = why[0]
 	}
+	tc = shownToolCall(tc)
 	var b strings.Builder
 	headParts := []string{}
 	if tc.Name == "shell.run" {

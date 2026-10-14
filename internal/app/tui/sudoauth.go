@@ -10,6 +10,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/textfield"
+	"marshal/internal/strutil"
 )
 
 // sudoAuthModel renders the privileged-command password prompt inline in the
@@ -83,21 +84,25 @@ func (m *sudoAuthModel) View() string {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	// The command is shown verbatim: the user authorises the literal text.
-	for _, line := range strings.Split(ansi.Wrap(m.sa.Command, contentWidth, WrapBreakpoints), "\n") {
+	// The command is shown verbatim — the user authorises the literal text —
+	// except that a control character shows as a visible escape: one the
+	// terminal acted on could erase or overwrite part of the command, and the
+	// prompt would then show something other than what runs as root. The
+	// model wrote the reason too, so it gets the same treatment.
+	for _, line := range strings.Split(ansi.Wrap(strutil.ShowControls(m.sa.Command), contentWidth, WrapBreakpoints), "\n") {
 		b.WriteString(indent)
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
 	if m.sa.Reason != "" {
-		for _, line := range strings.Split(ansi.Wrap(m.sa.Reason, contentWidth, WrapBreakpoints), "\n") {
+		for _, line := range strings.Split(ansi.Wrap(strutil.ShowControls(m.sa.Reason), contentWidth, WrapBreakpoints), "\n") {
 			b.WriteString(indent)
 			b.WriteString(mutedStyle().Render(line))
 			b.WriteString("\n")
 		}
 	}
 	if m.sa.Error != "" {
-		for _, line := range strings.Split(ansi.Wrap(m.sa.Error, contentWidth, WrapBreakpoints), "\n") {
+		for _, line := range strings.Split(ansi.Wrap(strutil.ShowControls(m.sa.Error), contentWidth, WrapBreakpoints), "\n") {
 			b.WriteString(indent)
 			b.WriteString(warningStyle().Render(line))
 			b.WriteString("\n")

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"marshal/internal/app/config"
 	"marshal/internal/permissions"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/patch"
 	"marshal/internal/tools/registry"
 	"path/filepath"
@@ -253,6 +254,18 @@ func (pe *PolicyEngine) Evaluate(toolName string, args map[string]interface{}, o
 	cfg := pe.config
 	if cfg == nil {
 		cfg = &config.Config{}
+	}
+
+	// A shell command carrying a display control is refused before anything
+	// else, in every mode: the approval prompt is where the user authorises
+	// the command, and a control the terminal acts on (ESC, CR) or a bidi
+	// override could make it show something other than what runs.
+	if isShellCommandTool(toolName) {
+		if cmd, ok := args["command"].(string); ok {
+			if err := checkCommandControls(cmd); err != nil {
+				return DecisionDeny, "blocked by guardrail: " + err.Error(), nil
+			}
+		}
 	}
 
 	// Privilege wrappers deny before the non-bypassable floor: a
@@ -1311,8 +1324,31 @@ func (pe *PolicyEngine) CheckPrivileged(command string) error {
 	if strings.TrimSpace(command) == "" {
 		return errors.New("command is required")
 	}
+	// Evaluate already refuses these; the password prompt checks again
+	// because it is the last thing the user reads before root runs it.
+	if err := checkCommandControls(command); err != nil {
+		return err
+	}
 	if w := PrivilegeWrapperDeny(command); w != "" {
 		return fmt.Errorf("command invokes privilege wrapper %q; pass the bare command — Marshal adds sudo itself", w)
+	}
+	return nil
+}
+
+// isShellCommandTool reports whether toolName runs its "command" argument
+// through a shell.
+func isShellCommandTool(toolName string) bool {
+	return toolName == "shell.run" || toolName == "test.run" || toolName == "shell.sudo"
+}
+
+// checkCommandControls rejects a command holding a character a terminal or
+// a bidi-aware renderer acts on instead of showing (strutil.IsDisplayControl).
+// A shell never needs the raw byte: $'\e' and printf '\033' produce it at
+// run time, and they display as what they are.
+func checkCommandControls(cmd string) error {
+	if r, bad := strutil.FirstDisplayControl(cmd); bad {
+		return fmt.Errorf("the command contains control character U+%04X, which the approval prompt cannot show as written; "+
+			"spell it with an escape the shell expands, such as $'\\e' or printf '\\033'", r)
 	}
 	return nil
 }

@@ -7,7 +7,7 @@ import (
 )
 
 func TestIsVolatile(t *testing.T) {
-	volatile := []SectionKind{SectionTodos, SectionScratchpad, SectionSemantic, SectionToolOutput}
+	volatile := []SectionKind{SectionTodos, SectionSemantic, SectionToolOutput}
 	stable := []SectionKind{SectionRepoCard, SectionRepoMap, SectionMemory, SectionPlan, SectionFileSnippet, SectionSessionSummaries}
 	for _, k := range volatile {
 		if !IsVolatile(k) {
@@ -27,7 +27,6 @@ func TestRenderSplitsSectionsByVolatility(t *testing.T) {
 		{Kind: SectionMemory, Title: "Project Memories", Content: "MEMORY-MARKER"},
 		{Kind: SectionSemantic, Title: "Relevant Code", Content: "SEMANTIC-MARKER"},
 		{Kind: SectionTodos, Title: "Current Todos", Content: "TODO-MARKER"},
-		{Kind: SectionScratchpad, Title: "Scratchpad", Content: "SCRATCH-MARKER"},
 	}}
 
 	stable := RenderStable(pack)
@@ -44,7 +43,7 @@ func TestRenderSplitsSectionsByVolatility(t *testing.T) {
 			t.Errorf("%s must render only in the stable part", want)
 		}
 	}
-	for _, want := range []string{"SEMANTIC-MARKER", "TODO-MARKER", "SCRATCH-MARKER"} {
+	for _, want := range []string{"SEMANTIC-MARKER", "TODO-MARKER"} {
 		if !strings.Contains(volatile, want) || strings.Contains(stable, want) {
 			t.Errorf("%s must render only in the volatile part", want)
 		}
@@ -65,24 +64,20 @@ func TestRenderPartsEmptyWhenNothingToShow(t *testing.T) {
 	}
 }
 
-// The point of the split: rewriting the todo list or letting the
-// scratchpad's relative ages tick must not change a single byte of the
-// stable render, even when the pack is over budget and truncated (the
-// truncation note's token estimate moves with every volatile change).
+// The point of the split: rewriting the todo list must not change a single
+// byte of the stable render, even when the pack is over budget and truncated
+// (the truncation note's token estimate moves with every volatile change).
 func TestRenderStableUnaffectedByVolatileChanges(t *testing.T) {
 	clock := time.Unix(10_000, 0)
 	now := func() time.Time { return clock }
 	const budget = 400
 	bigMap := strings.Repeat("internal/some/dir/\n", 400) // forces truncation
 	base := MergeRepoSections(Pack{}, "Project: marshal", bigMap, budget, now)
-	scratch := []ScratchpadEntry{{Key: "notes", Content: "finding", Format: "text", Updated: clock.UnixMilli()}}
 
 	a := MergeTodos(base, []TodoItem{{Content: "read a", Status: "in_progress"}}, budget, now)
-	a = MergeScratchpad(a, scratch, budget, 0, now)
 
 	clock = clock.Add(5 * time.Minute)
 	b := MergeTodos(base, []TodoItem{{Content: "read a", Status: "completed"}, {Content: "read b", Status: "in_progress"}}, budget, now)
-	b = MergeScratchpad(b, scratch, budget, 0, now)
 
 	if !a.TokenUsage.Truncated || !b.TokenUsage.Truncated {
 		t.Fatalf("fixture must truncate the pack (got %v / %v)", a.TokenUsage.Truncated, b.TokenUsage.Truncated)

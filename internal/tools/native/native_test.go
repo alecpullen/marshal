@@ -69,27 +69,18 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 	}
 }
 
-func TestRegisterAllOmitsScratchpadWithoutSessionState(t *testing.T) {
-	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	for _, name := range []string{"scratchpad.write", "scratchpad.read", "scratchpad.list", "scratchpad.delete"} {
-		if _, ok := reg.Lookup(name); ok {
-			t.Fatalf("expected %s to be omitted when SessionState is nil", name)
-		}
-	}
-}
-
-func TestRegisterAllIncludesScratchpadWithSessionState(t *testing.T) {
+// TestRegisterAll_NeverRegistersScratchpad pins the Tier 2a removal: the
+// scratchpad tools and their context-pack projection are gone from the
+// model's surface, whatever session state the registry is given.
+func TestRegisterAll_NeverRegistersScratchpad(t *testing.T) {
 	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, SessionState: state}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	for _, name := range []string{"scratchpad.write", "scratchpad.read", "scratchpad.list", "scratchpad.delete"} {
-		if _, ok := reg.Lookup(name); !ok {
-			t.Fatalf("expected %s to be registered when SessionState is set", name)
+		if _, ok := reg.Lookup(name); ok {
+			t.Errorf("%s must not be registered", name)
 		}
 	}
 }

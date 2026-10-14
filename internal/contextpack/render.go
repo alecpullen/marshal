@@ -34,15 +34,14 @@ func Render(pack Pack) string {
 }
 
 // IsVolatile reports whether sections of kind k are rewritten within a
-// turn: todo.write after every step, scratchpad.write (whose projection
-// also prints relative ages), and mid-turn semantic re-queries. Volatile
-// sections render into the per-request working-state message at the end
-// of the wire, not the context pack near its start: anything that changes
-// near the start invalidates the provider prompt cache for everything
-// after it. See docs/prompt-caching/design.md (D1).
+// turn: todo.write after every step and mid-turn semantic re-queries.
+// Volatile sections render into the per-request working-state message at
+// the end of the wire, not the context pack near its start: anything that
+// changes near the start invalidates the provider prompt cache for
+// everything after it. See docs/prompt-caching/design.md (D1).
 func IsVolatile(k SectionKind) bool {
 	switch k {
-	case SectionTodos, SectionScratchpad, SectionSemantic, SectionToolOutput:
+	case SectionTodos, SectionSemantic, SectionToolOutput:
 		return true
 	}
 	return false

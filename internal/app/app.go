@@ -1537,9 +1537,9 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 
 // makePipelineRegistryFactory returns a RegistryFactory that builds a fresh
 // tool registry bound to a per-dispatch execution context. The dispatcher
-// passes the runner's own child session so stateful tools (todo.write,
-// scratchpad) land where the drill-down card renders; the native toolset
-// still closes over the per-dispatch worktree root and artifact aliases.
+// passes the runner's own child session so stateful tools (todo.write)
+// land where the drill-down card renders; the native toolset still closes
+// over the per-dispatch worktree root and artifact aliases.
 // The returned registry is then filtered by scope.
 //
 // ScopeFallback narrows file.write_patch to the controller-supplied

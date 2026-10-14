@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -273,7 +272,6 @@ type State struct {
 	activity          Activity
 	plan              []string
 	todos             []db.TodoItem
-	scratchpad        map[string]db.ScratchpadEntry
 	activeSkills      map[string]bool
 	// skillOrder records activation sequence per skill so eviction can pick
 	// the least-recently-activated. Kept separate from activeSkills because
@@ -346,8 +344,6 @@ type State struct {
 	turnQuota *schema.QuotaInfo
 	title     string
 	titleSet  bool
-
-	scratchpadConfig config.ScratchpadConfig
 
 	// Task 5: work gate for shutdown sequencing. workMu protects
 	// quiescing and is paired with workWG so BeginQuiesce can set the
@@ -745,10 +741,9 @@ func WithSubagentMaxConcurrency(n int) Option {
 	}
 }
 
-// WithClock overrides the function used to stamp scratchpad entry
-// timestamps. Tests pass a frozen clock so entries written back-to-back
-// share an Updated value and ordering is deterministic; the default is
-// time.Now.
+// WithClock overrides the state's clock. The spinner-dwell logic reads it
+// via PinnedSpinnerLabel, and tests pass a frozen clock so a dwell window
+// can be advanced deterministically; the default is time.Now.
 func WithClock(now func() time.Time) Option {
 	return func(s *State) {
 		if now != nil {
@@ -759,8 +754,6 @@ func WithClock(now func() time.Time) Option {
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opts ...Option) *State {
 	ctx, cancel := context.WithCancel(context.Background())
-	scratchpadCfg := cfg.Scratchpad
-	scratchpadCfg.ApplyDefaults()
 	s := &State{
 		Config:                 cfg,
 		WorkingDir:             workingDir,
@@ -785,8 +778,6 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		nextMsgID:              1,
 		nextStepSeq:            1,
 		workspace:              Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
-		scratchpad:             make(map[string]db.ScratchpadEntry),
-		scratchpadConfig:       scratchpadCfg,
 		subagentMaxConcurrency: defaultSubagentMaxConcurrency,
 	}
 	for _, opt := range opts {
@@ -1405,185 +1396,6 @@ func (s *State) Todos() []db.TodoItem {
 	result := make([]db.TodoItem, len(s.todos))
 	copy(result, s.todos)
 	return result
-}
-
-// SetScratchpadEntry upserts a single entry by key. Empty keys or content are
-// rejected, and entries larger than MaxEntryTokens are refused. After the
-// upsert the scratchpad budget is enforced by evicting oldest entries first.
-// The entry is persisted to the scratchpad_entries table.
-func (s *State) SetScratchpadEntry(key, content, format string) error {
-	if strings.TrimSpace(key) == "" {
-		return fmt.Errorf("scratchpad key must not be empty")
-	}
-	if strings.TrimSpace(content) == "" {
-		return fmt.Errorf("scratchpad content must not be empty")
-	}
-	if format == "" {
-		format = "text"
-	}
-
-	tokens := contextpack.EstimateTokens(content)
-	if tokens > s.scratchpadConfig.MaxEntryTokens {
-		return fmt.Errorf("scratchpad entry %q is ~%d tokens, exceeds max %d", key, tokens, s.scratchpadConfig.MaxEntryTokens)
-	}
-
-	entry := db.ScratchpadEntry{
-		Key:       key,
-		Content:   content,
-		Format:    format,
-		Updated:   s.now().UnixMilli(),
-		SizeBytes: len(content),
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	preSnapshot := s.scratchpadSnapshotLocked()
-	s.scratchpad[key] = entry
-	s.enforceScratchpadBudgetLocked()
-	var evictedKeys []string
-	for _, e := range preSnapshot {
-		if _, ok := s.scratchpad[e.Key]; !ok {
-			evictedKeys = append(evictedKeys, e.Key)
-		}
-	}
-	// The new key is not in preSnapshot. If enforcement self-evicted it,
-	// make sure any DB row for this key (including a previous value) is
-	// removed and do not re-save it.
-	if _, ok := s.scratchpad[key]; !ok && !slices.Contains(evictedKeys, key) {
-		evictedKeys = append(evictedKeys, key)
-	}
-
-	if s.persistenceEnabled() {
-		// Only persist the new value if it survived enforcement.
-		if _, ok := s.scratchpad[key]; ok {
-			if err := s.db.SaveScratchpadEntry(s.sessionID, entry); err != nil {
-				s.logger.Warn("failed to persist scratchpad entry", "error", err)
-			}
-		}
-		for _, evictedKey := range evictedKeys {
-			if err := s.db.DeleteScratchpadEntry(s.sessionID, evictedKey); err != nil {
-				s.logger.Warn("failed to delete evicted scratchpad entry", "error", err, "key", evictedKey)
-			}
-		}
-	}
-	s.Logger().Debug("scratchpad write",
-		"key", key,
-		"tokens", tokens,
-		"total_entries", len(s.scratchpad),
-	)
-	return nil
-}
-
-// DeleteScratchpadEntry removes a single entry by key. Returns nil if the
-// key does not exist (idempotent).
-func (s *State) DeleteScratchpadEntry(key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	_, existed := s.scratchpad[key]
-	delete(s.scratchpad, key)
-
-	if existed {
-		s.Logger().Debug("scratchpad delete", "key", key)
-	}
-
-	if existed && s.persistenceEnabled() {
-		if err := s.db.DeleteScratchpadEntry(s.sessionID, key); err != nil {
-			s.logger.Warn("failed to delete scratchpad entry", "error", err, "key", key)
-		}
-	}
-	return nil
-}
-
-// Scratchpad returns a defensive copy of all entries sorted newest first.
-func (s *State) Scratchpad() []db.ScratchpadEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.scratchpadSnapshotLocked()
-}
-
-// ScratchpadEntry returns a single entry by key, or ok=false if not found.
-func (s *State) ScratchpadEntry(key string) (db.ScratchpadEntry, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.scratchpad[key]
-	s.Logger().Debug("scratchpad read", "key", key, "hit", ok)
-	return e, ok
-}
-
-// ScratchpadConfig returns the applied scratchpad configuration for this
-// session. Defaults are populated by New, so the returned value is always
-// usable.
-func (s *State) ScratchpadConfig() config.ScratchpadConfig {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.scratchpadConfig
-}
-
-// scratchpadSnapshotLocked returns a defensive copy of all entries sorted
-// newest first so callers get deterministic order.
-func (s *State) scratchpadSnapshotLocked() []db.ScratchpadEntry {
-	out := make([]db.ScratchpadEntry, 0, len(s.scratchpad))
-	for _, e := range s.scratchpad {
-		out = append(out, e)
-	}
-	// Sort newest first so callers get deterministic order. Entries come out
-	// of a map, so there is no insertion order for a stable sort to preserve:
-	// equal Updated values must be broken by key, or callers that truncate
-	// the projection (the context pack) drop a different entry each run.
-	slices.SortFunc(out, func(a, b db.ScratchpadEntry) int {
-		if a.Updated > b.Updated {
-			return -1
-		}
-		if a.Updated < b.Updated {
-			return 1
-		}
-		return strings.Compare(a.Key, b.Key)
-	})
-	return out
-}
-
-// enforceScratchpadBudgetLocked evicts oldest entries first until the
-// scratchpad satisfies both MaxEntries and MaxTotalTokens.
-func (s *State) enforceScratchpadBudgetLocked() {
-	if len(s.scratchpad) == 0 {
-		return
-	}
-
-	// Build a list oldest-first by Updated.
-	entries := make([]db.ScratchpadEntry, 0, len(s.scratchpad))
-	for _, e := range s.scratchpad {
-		entries = append(entries, e)
-	}
-	// Entries come out of a map, so there is no insertion order for a stable
-	// sort to preserve: equal Updated values must be broken by key or the
-	// eviction victim is random. This is the exact reverse of
-	// scratchpadSnapshotLocked's ordering, so "oldest" here always means the
-	// last entry a caller would see there.
-	slices.SortFunc(entries, func(a, b db.ScratchpadEntry) int {
-		if a.Updated < b.Updated {
-			return -1
-		}
-		if a.Updated > b.Updated {
-			return 1
-		}
-		return strings.Compare(b.Key, a.Key)
-	})
-
-	totalTokens := 0
-	for _, e := range s.scratchpad {
-		totalTokens += contextpack.EstimateTokens(e.Content)
-	}
-
-	for _, e := range entries {
-		if len(s.scratchpad) <= s.scratchpadConfig.MaxEntries && totalTokens <= s.scratchpadConfig.MaxTotalTokens {
-			break
-		}
-		s.Logger().Debug("scratchpad eviction", "key", e.Key)
-		delete(s.scratchpad, e.Key)
-		totalTokens -= contextpack.EstimateTokens(e.Content)
-	}
 }
 
 func (s *State) AddSessionRule(prefix string) {

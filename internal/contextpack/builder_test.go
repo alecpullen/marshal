@@ -124,18 +124,18 @@ func TestOversizedSectionCannotStarveTheRest(t *testing.T) {
 }
 
 func TestBudgetIsAllocatedInPriorityOrder(t *testing.T) {
-	// Scratchpad (50) is inserted FIRST but is the least foundational.
+	// Todos (45) is inserted FIRST but is the least foundational.
 	// Memory (15) is inserted last. With only enough budget for one of
 	// them, Memory must win on priority, not on insertion order.
 	filler := strings.Repeat("x ", 2000) // ~1000 tokens each
 	sections := []Section{
-		{Kind: SectionScratchpad, Title: "Scratchpad", Priority: 50, Content: filler},
+		{Kind: SectionTodos, Title: "Current Todos", Priority: 45, Content: filler},
 		{Kind: SectionMemory, Title: "Project Memories", Priority: 15, Content: "MEMORY-MARKER " + filler},
 	}
 
 	pack := buildPackFromSections(sections, 1200, time.Now().UTC())
 
 	if !strings.Contains(Render(pack), "MEMORY-MARKER") {
-		t.Error("memory (priority 15) lost its budget to scratchpad (priority 50)")
+		t.Error("memory (priority 15) lost its budget to todos (priority 45)")
 	}
 }

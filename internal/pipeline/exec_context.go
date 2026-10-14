@@ -36,7 +36,7 @@ func (c ExecutionContext) NamedRoots() map[string]string {
 // context, session scope, and the runner's own session state. Each dispatch
 // creates its own registry so native tool handlers close over the correct
 // workspace root and artifact aliases rather than the parent session's
-// project root; stateful tools (todo.write, scratchpad.*) land on the
+// project root; stateful tools (todo.write) land on the
 // runner's session, which is what the drill-down card renders.
 type RegistryFactory func(ctx ExecutionContext, scope RegistryScope, state *session.State) (*registry.Registry, error)
 

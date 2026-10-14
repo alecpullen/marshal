@@ -229,12 +229,6 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		)
 	}
 	if tools.sessionState != nil {
-		all = append(all,
-			tools.scratchpadWriteTool(),
-			tools.scratchpadReadTool(),
-			tools.scratchpadListTool(),
-			tools.scratchpadDeleteTool(),
-		)
 		// transcript_read reads the live session transcript (and archived
 		// generations via the db, when wired). It needs only the session
 		// state to exist; the db is consulted lazily by the archived path

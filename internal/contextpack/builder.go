@@ -148,8 +148,8 @@ func buildPackFromSections(sections []Section, maxTokens int, generatedAt time.T
 		}
 	}
 
-	// Allocate lowest-Priority-first (RepoCard=10 ... Scratchpad=50 —
-	// lower means more foundational) rather than in insertion order, so
+	// Allocate lowest-Priority-first (RepoCard=10 ... Todos=45 — lower
+	// means more foundational) rather than in insertion order, so
 	// which sections survive budget pressure is decided by importance.
 	// allocOrder holds indices into regular; the render order below is
 	// still insertion order, so only survival is priority-driven.
@@ -403,80 +403,6 @@ func newSemanticSection(snippets []FileSnippet) (Section, bool) {
 		Priority: 35,
 		Content:  strings.Join(parts, "\n\n"),
 	}, true
-}
-
-func newScratchpadSection(entries []ScratchpadEntry, projectionMaxTokens int, now time.Time) (Section, bool) {
-	if len(entries) == 0 {
-		return Section{}, false
-	}
-
-	const header = "Keys parked in working memory (use scratchpad.read for full content):"
-	lines := []string{header}
-	used := EstimateTokens(header)
-
-	for _, e := range entries {
-		preview := strings.ReplaceAll(e.Content, "\n", " ")
-		preview = strings.TrimSpace(preview)
-		runes := []rune(preview)
-		if len(runes) > 80 {
-			preview = string(runes[:80]) + "..."
-		}
-		tokens := EstimateTokens(e.Content)
-		format := e.Format
-		if format == "" {
-			format = "text"
-		}
-		age := formatAge(e.Updated, now)
-		line := fmt.Sprintf("- %s (%s, ~%d tokens, %s): %s", e.Key, format, tokens, age, preview)
-		lineTokens := EstimateTokens(line)
-
-		if used+lineTokens > projectionMaxTokens && len(lines) > 1 {
-			lines = append(lines, "...")
-			break
-		}
-		lines = append(lines, line)
-		used += lineTokens
-	}
-
-	return Section{
-		Kind:     SectionScratchpad,
-		Title:    "Scratchpad",
-		Priority: 50,
-		Content:  strings.Join(lines, "\n"),
-	}, true
-}
-
-func formatAge(updated int64, now time.Time) string {
-	if updated <= 0 {
-		return "unknown age"
-	}
-	d := now.Sub(time.UnixMilli(updated))
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	}
-}
-
-// MergeScratchpad replaces any existing scratchpad section with a
-// projection built from entries, inserted before file-snippet/tool-output
-// sections, then rebudgets within maxTokens. Empty entries removes the
-// section. projectionMaxTokens caps the size of the scratchpad projection;
-// when zero or negative it defaults to one eighth of the pack's current
-// max-token budget.
-func MergeScratchpad(pack Pack, entries []ScratchpadEntry, maxTokens, projectionMaxTokens int, now func() time.Time) Pack {
-	maxTokens, generatedAt := resolvePackParams(pack, maxTokens, now)
-	if projectionMaxTokens <= 0 {
-		projectionMaxTokens = pack.TokenUsage.MaxTokens / 8
-	}
-	sec, ok := newScratchpadSection(entries, projectionMaxTokens, generatedAt)
-	sections := replaceSection(pack.Sections, SectionScratchpad, sec, ok, SectionFileSnippet, SectionToolOutput)
-	return buildPackFromSections(sections, maxTokens, generatedAt)
 }
 
 func newTodosSection(todos []TodoItem) (Section, bool) {

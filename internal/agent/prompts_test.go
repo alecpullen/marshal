@@ -900,20 +900,6 @@ func TestBuildSystemPromptWithModeDefaultAdvertisesModeRequest(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptIncludesScratchpadAddendumForNativeTools(t *testing.T) {
-	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, true, policy.ModeAuto, "", "", "")
-	if !strings.Contains(prompt.Content, "scratchpad.write") {
-		t.Fatal("expected scratchpad addendum when nativeTools is true")
-	}
-}
-
-func TestBuildSystemPromptOmitsScratchpadAddendumForJSONTools(t *testing.T) {
-	prompt := BuildSystemPromptWithAddendum(RoleGeneral, nil, nil, nil, nil, false, policy.ModeAuto, "", "", "")
-	if strings.Contains(prompt.Content, "scratchpad.write") {
-		t.Fatal("expected no scratchpad addendum when nativeTools is false")
-	}
-}
-
 func TestBuildSystemPromptIncludesWorkingDir(t *testing.T) {
 	wantDir := "/Users/alecpullen/projects/marshal"
 	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", wantDir, "")
@@ -1745,5 +1731,14 @@ func TestStaleLoadedConfigSetterIsIgnoredInPrompt(t *testing.T) {
 	}
 	if !strings.Contains(msg.Content, "config.read") {
 		t.Fatalf("config.read must still be announced:\n%s", msg.Content)
+	}
+}
+
+// The scratchpad was removed from the model's view in the context-diet
+// Tier 2a cut, so no shipped prompt text may teach it.
+func TestNativePromptHasNoScratchpadAddendum(t *testing.T) {
+	msg := BuildSystemPromptWithSystem(SystemPromptOptions{Role: RoleGeneral, NativeTools: true, Mode: policy.ModeEdit})
+	if strings.Contains(msg.Content, "scratchpad") {
+		t.Fatalf("native prompt still mentions the scratchpad:\n%s", msg.Content)
 	}
 }

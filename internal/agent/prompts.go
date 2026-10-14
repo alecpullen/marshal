@@ -478,10 +478,6 @@ const todoAddendum = `
 Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end. When the carried-over list is corrupted or stale and you need to replace it wholesale, pass "drop_unfinished": true — the submitted list becomes the whole list and no items are carried over.
 `
 
-const scratchpadAddendum = `
-Use scratchpad.write to park structured intermediate state (audit results, file lists, decision logs) that is too large for the context budget but must survive context compaction. A compact projection is injected into the context pack automatically; use scratchpad.read to retrieve full content when needed. Prefer the scratchpad over /tmp files for state you may need to reference in later turns.
-`
-
 const FinalizationDirective = `You are being asked to stop using tools and conclude this turn. Produce the best final answer you can from the transcript, context pack, and tool results already gathered. Do NOT call tools. If a required fact is genuinely missing, state what you would check next and give your best partial answer. Respond with a single action of type "final".`
 
 // NativeFinalizationDirective is the prose-oriented counterpart to
@@ -700,9 +696,6 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 			break
 		}
 	}
-	if nativeTools {
-		b.WriteString(scratchpadAddendum)
-	}
 	if d := modeDirective(mode); d != "" {
 		b.WriteString("\n\n")
 		b.WriteString(d)
@@ -894,9 +887,9 @@ func BuildContextPackMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
 }
 
 // BuildWorkingStateMessage renders the turn-volatile part of the context
-// pack (todos, scratchpad projection, semantic snippets) as the
-// per-request tail. It is marked Volatile so providers keep cache
-// breakpoints in front of it.
+// pack (todos, semantic snippets, tool output) as the per-request tail.
+// It is marked Volatile so providers keep cache breakpoints in front of
+// it.
 func BuildWorkingStateMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
 	rendered := contextpack.RenderVolatile(pack)
 	if rendered == "" {

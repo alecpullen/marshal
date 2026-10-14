@@ -32,7 +32,6 @@ const (
 	SectionRepoMap          SectionKind = "repo_map"
 	SectionMemory           SectionKind = "memory"
 	SectionPlan             SectionKind = "plan"
-	SectionScratchpad       SectionKind = "scratchpad"
 	SectionTodos            SectionKind = "todos"
 	SectionFileSnippet      SectionKind = "file_snippet"
 	SectionToolOutput       SectionKind = "tool_output"
@@ -85,16 +84,6 @@ type MemoryNote struct {
 	Content    string
 	Confidence string    // mirrors db confidence values; "stale" is dropped at render
 	UpdatedAt  time.Time // zero sorts oldest within a kind/confidence rung
-}
-
-// ScratchpadEntry is contextpack's own view of a scratchpad entry —
-// just enough to render a projection section. Declared here (not
-// imported from internal/db) to avoid a circular dependency.
-type ScratchpadEntry struct {
-	Key     string
-	Content string
-	Format  string
-	Updated int64 // unix timestamp in milliseconds
 }
 
 // TodoItem is contextpack's own view of a todo entry — just enough to

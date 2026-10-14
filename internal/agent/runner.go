@@ -886,7 +886,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.semTracker = newSemanticRequeryTracker()
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
-	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
 
 	effectiveRF := r.ResponseFormat
@@ -1126,10 +1125,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			lastRenderedSystemAccess = currentSystemAccess
 		}
 
-		// Refresh the scratchpad projection before the next model call so
-		// entries written in earlier turns (e.g. scratchpad.write) appear in
-		// the context pack of subsequent turns.
-		r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 		r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
 		r.maybeRequerySemantic(ctx, goal, r.semanticSource(r.ProjectID), route.ContextBudget.MaxRepoContextTokens)
 		messages = r.setContextPackMessage(messages, r.State.ContextPack())

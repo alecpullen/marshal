@@ -4902,6 +4902,7 @@ reviewer = "mock/m"
 		"watch.start", "watch.stop", "watch.status", "watch.list",
 		"sessions.list", "session.send", "ask_user", "skill.install", "skill.unload",
 		"repo.map", "repo.card", "repo.index", "csv.inspect", "json.query", "file.page",
+		"scratchpad.write", "scratchpad.read", "scratchpad.list", "scratchpad.delete",
 	} {
 		if _, ok := rt.Runner.Registry.Lookup(name); ok {
 			t.Errorf("retired tool %s is still registered", name)

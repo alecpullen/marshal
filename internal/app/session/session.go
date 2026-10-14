@@ -40,7 +40,6 @@ const (
 	EventAuditAdded              = "audit_added"
 	EventPendingApprovalChanged  = "pending_approval_changed"
 	EventPendingQuestionChanged  = "pending_question_changed"
-	EventChildQuestionChanged    = "child_question_changed"
 	EventPendingSkillGateChanged = "pending_skill_gate_changed"
 	EventPendingSudoAuthChanged  = "pending_sudo_auth_changed"
 	EventBrowserChanged          = "browser_changed"
@@ -58,18 +57,14 @@ const (
 // ResponseChan) for subscribers that need to respond (e.g., the ACP
 // permission bridge).
 type Event struct {
-	Message         *Message
-	Thinking        *InProgressMessage
-	Activity        *Activity
-	ActiveTool      *ActiveToolCall
-	Audit           *registry.AuditEvent
-	PendingApproval *PendingToolCall
-	PendingQuestion *PendingQuestion
-	// PendingChildQuestion carries a background subagent's question to its
-	// parent. Like PendingQuestion it includes ResponseChan so a subscriber
-	// (TUI/ACP) can answer on escalation.
-	PendingChildQuestion *PendingChildQuestion
-	PendingSkillGate     *PendingSkillGate
+	Message          *Message
+	Thinking         *InProgressMessage
+	Activity         *Activity
+	ActiveTool       *ActiveToolCall
+	Audit            *registry.AuditEvent
+	PendingApproval  *PendingToolCall
+	PendingQuestion  *PendingQuestion
+	PendingSkillGate *PendingSkillGate
 	// PendingSudoAuth carries a privileged-command authentication prompt.
 	// The snapshot deliberately carries only ResponseChan — never a password
 	// — so no subscriber can observe a credential.
@@ -225,19 +220,15 @@ type State struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu              sync.Mutex
-	hold            bool          // guarded by mu; see hold.go
-	holdCh          chan struct{} // closed and cleared on release; guarded by mu
-	messages        []Message
-	inProgress      InProgressMessage
-	notice          Notice
-	noticeSet       bool
-	pendingApproval *PendingToolCall
-	pendingQuestion *PendingQuestion
-	// childQuestions is the FIFO queue of subagent questions waiting for
-	// the parent (spec §7): concurrent children queue behind one another
-	// rather than overwriting a single shared slot.
-	childQuestions    []*PendingChildQuestion
+	mu                sync.Mutex
+	hold              bool          // guarded by mu; see hold.go
+	holdCh            chan struct{} // closed and cleared on release; guarded by mu
+	messages          []Message
+	inProgress        InProgressMessage
+	notice            Notice
+	noticeSet         bool
+	pendingApproval   *PendingToolCall
+	pendingQuestion   *PendingQuestion
 	pendingSkillGate  *PendingSkillGate
 	skillGateDisabled bool
 	// pendingSudoAuth is the in-flight privileged-command authentication
@@ -1130,8 +1121,6 @@ func (s *State) ResolvePendingForShutdown() {
 	s.pendingApproval = nil
 	question := s.pendingQuestion
 	s.pendingQuestion = nil
-	childQuestions := s.childQuestions
-	s.childQuestions = nil
 	skillGate := s.pendingSkillGate
 	s.pendingSkillGate = nil
 	sudoAuth := s.pendingSudoAuth
@@ -1144,7 +1133,6 @@ func (s *State) ResolvePendingForShutdown() {
 	// are unaffected, and those that did get the cleared value.
 	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: nil})
 	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: nil})
-	s.publishEvent(EventChildQuestionChanged, Event{PendingChildQuestion: nil})
 	s.publishEvent(EventPendingSkillGateChanged, Event{PendingSkillGate: nil})
 	s.publishEvent(EventPendingSudoAuthChanged, Event{PendingSudoAuth: nil})
 	broker := func() *pubsub.Broker[SteeringEvent] {
@@ -1166,13 +1154,6 @@ func (s *State) ResolvePendingForShutdown() {
 	// nil channel and once-only guarantee).
 	if question != nil {
 		question.Respond(UnansweredAnswers(question.Questions))
-	}
-
-	// Answer every pending child question with "Unanswered" so every
-	// blocked subagent unblocks instead of waiting out its timeout
-	// (Respond handles nil channel and once-only guarantee).
-	for _, childQuestion := range childQuestions {
-		childQuestion.Respond(UnansweredAnswers(childQuestion.Questions))
 	}
 
 	// Deny any pending skill gate (Respond handles nil channel and

@@ -4955,3 +4955,40 @@ reviewer = "mock/m"
 		}
 	}
 }
+
+func TestNoSubagentQuestionChannel(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[profile]
+default = "p"
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "k"
+[models.presets."mock/m"]
+local_only = true
+[agent_profiles.p]
+implementer = "mock/m"
+planner = "mock/m"
+repo_scout = "mock/m"
+tester = "mock/m"
+reviewer = "mock/m"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := StartRuntime(context.Background(), WithWorkingDir(tmp), WithHomeDir(t.TempDir()), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+	for _, name := range []string{"parent.respond", "parent.correct", "parent.ask"} {
+		if _, ok := rt.Runner.Registry.Lookup(name); ok {
+			t.Errorf("%s must not be registered", name)
+		}
+	}
+	if _, ok := rt.Runner.Registry.Lookup("agent.steer"); !ok {
+		t.Error("agent.steer must be registered")
+	}
+}

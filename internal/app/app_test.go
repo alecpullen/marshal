@@ -762,18 +762,21 @@ reviewer = "mock/mock-model"
 		t.Fatalf("WatchManager.Start: %v", err)
 	}
 
-	// The watch.list tool must see the same watch (proving pointer identity
-	// between Runtime.WatchManager and the toolset's watch manager).
-	tool, ok := rt.ToolRegistry.Lookup("watch.list")
-	if !ok {
-		t.Fatal("watch.list not registered in ToolRegistry")
+	// The model-facing watch.* tools were retired in the context-diet Tier 2a
+	// cut, so the manager is reached through the runtime accessor now. Assert
+	// the accessor hands back the very manager the runtime owns and that the
+	// watch it just started is visible through it.
+	if rt.CurrentWatchManager() != rt.WatchManager {
+		t.Fatal("CurrentWatchManager must return the runtime's own manager")
 	}
-	result, err := tool.Handler(ctx, registry.ToolCall{Args: json.RawMessage("{}")})
-	if err != nil {
-		t.Fatalf("watch.list handler: %v", err)
+	found := false
+	for _, w := range rt.CurrentWatchManager().List() {
+		if w.ID == id {
+			found = true
+		}
 	}
-	if !strings.Contains(result.Content, id) {
-		t.Fatalf("watch.list output %q does not contain watch id %q", result.Content, id)
+	if !found {
+		t.Fatalf("watch %s is not visible from the runtime's watch manager", id)
 	}
 }
 
@@ -4867,4 +4870,89 @@ knowledge = "mock/m"
 		t.Fatalf("StartRuntime: %v", err)
 	}
 	defer rt.Close(context.Background())
+}
+
+func TestRuntimeRegistersNoRetiredTools(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[profile]
+default = "p"
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "k"
+[models.presets."mock/m"]
+local_only = true
+[agent_profiles.p]
+implementer = "mock/m"
+planner = "mock/m"
+repo_scout = "mock/m"
+tester = "mock/m"
+reviewer = "mock/m"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := StartRuntime(context.Background(), WithWorkingDir(tmp), WithHomeDir(t.TempDir()), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+	for _, name := range []string{
+		"watch.start", "watch.stop", "watch.status", "watch.list",
+		"sessions.list", "session.send", "ask_user", "skill.install", "skill.unload",
+		"repo.map", "repo.card", "repo.index", "csv.inspect", "json.query", "file.page",
+	} {
+		if _, ok := rt.Runner.Registry.Lookup(name); ok {
+			t.Errorf("retired tool %s is still registered", name)
+		}
+	}
+	for _, name := range []string{"skill.load", "file.read", "file.edit", "agent.await"} {
+		if _, ok := rt.Runner.Registry.Lookup(name); !ok {
+			t.Errorf("kept tool %s is missing", name)
+		}
+	}
+}
+
+// No model-facing text may teach a tool the model no longer has.
+func TestNoToolDescriptionNamesARetiredTool(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[profile]
+default = "p"
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "k"
+[models.presets."mock/m"]
+local_only = true
+[agent_profiles.p]
+implementer = "mock/m"
+planner = "mock/m"
+repo_scout = "mock/m"
+tester = "mock/m"
+reviewer = "mock/m"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := StartRuntime(context.Background(), WithWorkingDir(tmp), WithHomeDir(t.TempDir()), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+	retired := []string{"file.page", "repo.map", "repo.card", "repo.index", "ask_user", "skill.install", "skill.unload", "csv.inspect", "json.query", "sessions.list", "session.send", "watch.start"}
+	for _, tl := range rt.Runner.Registry.List() {
+		if tl.Internal {
+			continue
+		}
+		text := tl.Description + string(tl.Schema)
+		for _, name := range retired {
+			if strings.Contains(text, name) {
+				t.Errorf("tool %s still mentions retired tool %s", tl.Name, name)
+			}
+		}
+	}
 }

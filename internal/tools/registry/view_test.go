@@ -352,27 +352,10 @@ func TestFallbackWriterViewNarrowsFileWritePatch(t *testing.T) {
 	}
 }
 
-// TestFallbackWriterViewExcludesSkillInstall pins the security boundary:
-// the fallback child runs unattended under an auto-approving policy, so it
-// must not be able to fetch a remote document and persist it into the
-// user-global skill store (a durable prompt-injection surface).
-func TestFallbackWriterViewExcludesSkillInstall(t *testing.T) {
-	src := New()
-	if err := src.Register(Tool{Name: "skill.install", Description: "install", Risk: RiskWorkspaceWrite, Handler: nopHandler}); err != nil {
-		t.Fatalf("Register(skill.install): %v", err)
-	}
-	if err := src.Register(Tool{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler}); err != nil {
-		t.Fatalf("Register(file.read): %v", err)
-	}
-
-	view := FallbackWriterView(src, []string{"internal/foo"})
-	if _, ok := view.Lookup("skill.install"); ok {
-		t.Error("fallback view must not expose skill.install")
-	}
-	if _, ok := view.Lookup("file.read"); !ok {
-		t.Error("fallback view must retain read-only tools")
-	}
-}
+// TestFallbackWriterViewExcludesSkillInstall was removed with the
+// skill.install tool itself in the context-diet Tier 2a cut: the name is no
+// longer registered by any surface, so there is no case left to filter and no
+// prompt-injection surface for the fallback child to reach.
 
 // TestFallbackWriterViewExcludesWebTools pins the security boundary: the
 // fallback child runs unattended under an auto-approving policy, so it must

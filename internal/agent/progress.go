@@ -21,7 +21,7 @@ const (
 
 func categorize(toolName string) toolCategory {
 	switch toolName {
-	case "file.read", "repo.card", "repo.index", "repo.map", "symbols.find":
+	case "file.read", "symbols.find":
 		return catRead
 	case "repo.search":
 		return catSearch

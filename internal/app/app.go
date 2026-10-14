@@ -786,14 +786,6 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		buildErr = err
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
-	// Register the watch.* tools. They live in the watch package (which
-	// imports internal/tools/native for JobEvent/JobInfo), so they cannot be
-	// part of the native toolset without an import cycle.
-	if err := watch.RegisterTools(reg, watchManager); err != nil {
-		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register watch tools: %w", err)
-	}
-
 	skills.RegisterTool(reg, skillIndex, state, skills.SkillsToolOptions{
 		HomeDir:    homeDir,
 		WorkingDir: state.WorkingDir,

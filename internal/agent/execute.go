@@ -597,17 +597,6 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 
 	for _, call := range calls {
 		call.Name = normalizeToolName(r.Registry, call.Name)
-		if call.Name == "ask_user" {
-			if err := flushRunBatch(); err != nil {
-				return nil, err
-			}
-			msg, err := r.executeNativeAskUser(ctx, call)
-			if err != nil {
-				return nil, err
-			}
-			msgs = append(msgs, msg)
-			continue
-		}
 		if call.Name == "question.ask" {
 			if err := flushRunBatch(); err != nil {
 				return nil, err
@@ -641,49 +630,6 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 		return nil, err
 	}
 	return msgs, nil
-}
-
-func (r *Runner) executeNativeAskUser(ctx context.Context, call schema.ToolCall) (schema.ChatMessage, error) {
-	if r.role() != RoleGeneral {
-		return BuildNativeToolErrorMessage(call.Name, fmt.Sprintf("%s is not available for the %s role", call.Name, r.role()), call.ID), nil
-	}
-	if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
-		return BuildNativeToolErrorMessage(call.Name, "ask_user is not available in auto mode; proceed with your best judgment and state the assumption you made", call.ID), nil
-	}
-	// executeNativeToolCalls short-circuits on tool name before the agent
-	// path's early validation runs, so ask_user/question.ask need an
-	// explicit ValidateArgs here — the schema (required, minLength) covers
-	// both decode and content checks.
-	if tool, ok := r.Registry.Lookup(call.Name); ok {
-		if err := registry.ValidateArgs(tool, call.Args); err != nil {
-			r.countToolCall(true, false)
-			r.noteInvalidArgs()
-			return BuildNativeToolErrorMessage(call.Name, err.Error(), call.ID), nil
-		}
-	}
-	var payload struct {
-		Question string `json:"question"`
-	}
-	if err := json.Unmarshal(call.Args, &payload); err != nil {
-		r.countToolCall(true, false)
-		return BuildNativeToolErrorMessage(call.Name, "arguments are not valid JSON", call.ID), nil
-	}
-	answer, waitErr := r.requestAnswer(ctx, payload.Question)
-	if waitErr != nil {
-		return schema.ChatMessage{}, waitErr
-	}
-	r.countToolCall(false, false)
-	if r.turnBudget != nil {
-		r.turnBudget.overhead++
-		r.withStats(func(s *turnStats) { s.m.Iterations = r.turnBudget.total() })
-	}
-	if strings.TrimSpace(answer) == "" {
-		r.trackerMu.Lock()
-		r.tracker.recordIdle("ask_user declined")
-		r.trackerMu.Unlock()
-		return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "The user declined to answer. Proceed with your best judgment and state the assumption you made."}, nil
-	}
-	return schema.ChatMessage{Role: schema.RoleTool, ToolCallID: call.ID, Content: "User answered: " + answer}, nil
 }
 
 // executeNativeQuestionAsk handles the new structured question.ask tool,
@@ -772,7 +718,7 @@ func (r *Runner) allReadOnly(actions []ModelAction) error {
 // parallel-batch race on the single PendingQuestion slot.
 func requiresSerialTool(name string) bool {
 	switch name {
-	case "question.ask", "ask_user", "skill.load", "mode.request":
+	case "question.ask", "skill.load", "mode.request":
 		return true
 	}
 	return false

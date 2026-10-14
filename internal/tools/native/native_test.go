@@ -22,14 +22,10 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 
 	want := map[string]registry.RiskLevel{
 		"file.read":          registry.RiskReadOnly,
-		"file.page":          registry.RiskReadOnly,
 		"file.write_patch":   registry.RiskWorkspaceWrite,
 		"file.edit":          registry.RiskWorkspaceWrite,
 		"file.write":         registry.RiskWorkspaceWrite,
 		"repo.search":        registry.RiskReadOnly,
-		"repo.index":         registry.RiskReadOnly,
-		"repo.map":           registry.RiskReadOnly,
-		"repo.card":          registry.RiskReadOnly,
 		"symbols.find":       registry.RiskReadOnly,
 		"git.status":         registry.RiskReadOnly,
 		"git.diff":           registry.RiskReadOnly,
@@ -42,13 +38,10 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"job.kill":           registry.RiskCommand,
 		"job.list":           registry.RiskReadOnly,
 		"question.ask":       registry.RiskReadOnly,
-		"ask_user":           registry.RiskReadOnly,
 		"mode.request":       registry.RiskReadOnly,
 		"diagnostics.check":  registry.RiskReadOnly,
 		"tools.select":       registry.RiskReadOnly,
 		"codebase_search":    registry.RiskReadOnly,
-		"json.query":         registry.RiskReadOnly,
-		"csv.inspect":        registry.RiskReadOnly,
 		"config.read":        registry.RiskReadOnly,
 		"workspace.worktree": registry.RiskWorkspaceWrite,
 		"workspace.finish":   registry.RiskWorkspaceWrite,
@@ -275,7 +268,7 @@ func TestRegisterAllDefersOnlyLowUseTools(t *testing.T) {
 	for _, tool := range reg.ListDeferred() {
 		deferred[tool.Name] = true
 	}
-	want := map[string]bool{"config.read": true, "csv.inspect": true, "json.query": true}
+	want := map[string]bool{"config.read": true}
 	if runtime.GOOS != "windows" {
 		want["shell.sudo"] = true
 	}

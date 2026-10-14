@@ -545,7 +545,7 @@ func TestBuildSystemPromptReadOnlyListExcludesWriteTools(t *testing.T) {
 
 // TestBuildSystemPromptReadOnlyListExcludesSerialTools verifies the
 // advertised actions[] list names only tools that are genuinely safe to
-// run concurrently. question.ask / ask_user / mode.request / skill.load
+// run concurrently. question.ask / mode.request / skill.load
 // are read-only but serial-gated by executeActions, and tools.select
 // mutates session state a sibling call may be reading; advertising any of
 // them invites a parallel call the runner has to serialise or that races.
@@ -553,7 +553,6 @@ func TestBuildSystemPromptReadOnlyListExcludesSerialTools(t *testing.T) {
 	tools := []registry.Tool{
 		{Name: "file.read", Risk: registry.RiskReadOnly, Description: "Read a file."},
 		{Name: "question.ask", Risk: registry.RiskReadOnly, Description: "Ask."},
-		{Name: "ask_user", Risk: registry.RiskReadOnly, Description: "Ask."},
 		{Name: "mode.request", Risk: registry.RiskReadOnly, Description: "Request a mode."},
 		{Name: "skill.load", Risk: registry.RiskReadOnly, Description: "Load a skill."},
 		{Name: "tools.select", Risk: registry.RiskReadOnly, Description: "Select tools."},
@@ -575,7 +574,7 @@ func TestBuildSystemPromptReadOnlyListExcludesSerialTools(t *testing.T) {
 	if !strings.Contains(list, "file.read") {
 		t.Errorf("read-only list %q missing file.read", list)
 	}
-	for _, name := range []string{"question.ask", "ask_user", "mode.request", "skill.load", "tools.select"} {
+	for _, name := range []string{"question.ask", "mode.request", "skill.load", "tools.select"} {
 		if strings.Contains(list, name) {
 			t.Errorf("read-only list %q must not advertise %s", list, name)
 		}

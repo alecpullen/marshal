@@ -12,6 +12,21 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// fakeEmbedder is a 2-dim embedder used by the codebase_search tests.
+type fakeEmbedder struct {
+	model string
+}
+
+func (f *fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i := range texts {
+		out[i] = []float32{float32(len(texts[i])), 1}
+	}
+	return out, nil
+}
+func (f *fakeEmbedder) Model() string { return f.model }
+func (f *fakeEmbedder) Dims() int     { return 2 }
+
 func TestCodebaseSearchNotConfigured(t *testing.T) {
 	ts := newTestToolSetWithRepo(t)
 	ts.resolveEmbedder = func() (embedding.Embedder, error) { return nil, routing.ErrEmbeddingNotConfigured }

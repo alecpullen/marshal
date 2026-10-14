@@ -222,8 +222,8 @@ func TestResumeGoalWithQuote(t *testing.T) {
 	if !strings.Contains(goal, `You last said: "I'll wait for the build to finish.".`) {
 		t.Fatalf("goal = %q, want the quoted last statement", goal)
 	}
-	if strings.Contains(goal, "stop it with watch.stop") {
-		t.Fatalf("goal = %q, want no stop hint for a once watch", goal)
+	if strings.Contains(goal, "repeat watch") {
+		t.Fatalf("goal = %q, want no repeat hint for a once watch", goal)
 	}
 }
 
@@ -260,56 +260,22 @@ func TestResumeGoalTruncatesQuote(t *testing.T) {
 }
 
 func TestResumeGoalRepeatSuffix(t *testing.T) {
-	if goal := ResumeGoal("build", "", true); !strings.Contains(goal, "stop it with watch.stop") {
-		t.Fatalf("repeat goal = %q, want the stop hint", goal)
+	// The repeat hint must not name watch.stop: the model-facing watch.*
+	// tools were retired, so the model cannot stop a watch itself.
+	if goal := ResumeGoal("build", "", true); !strings.Contains(goal, "repeat watch") {
+		t.Fatalf("repeat goal = %q, want the repeat hint", goal)
 	}
-	if goal := ResumeGoal("build", "", false); strings.Contains(goal, "stop it with watch.stop") {
-		t.Fatalf("once goal = %q, want no stop hint", goal)
+	if goal := ResumeGoal("build", "", true); strings.Contains(goal, "watch.stop") {
+		t.Fatalf("repeat goal = %q, must not name the retired watch.stop tool", goal)
 	}
-}
-
-// watchIDFromContent pulls the watch ID out of a watch.start tool result.
-func watchIDFromContent(t *testing.T, content string) string {
-	t.Helper()
-	for _, line := range strings.Split(content, "\n") {
-		if strings.HasPrefix(line, "watch_id: ") {
-			return strings.TrimPrefix(line, "watch_id: ")
-		}
-	}
-	t.Fatalf("no watch_id in content %q", content)
-	return ""
-}
-
-func TestWatchStartResumeArgParses(t *testing.T) {
-	m := newToolsManager(t, Deps{RunSample: fakeRunSample("", 0)})
-	reg := registerTools(t, m)
-
-	res, err := invoke(t, reg, "watch.start", `{"name":"w","kind":"command","command":"echo hi","interval":"5s","resume":true}`)
-	if err != nil {
-		t.Fatalf("watch.start with resume: %v", err)
-	}
-	id := watchIDFromContent(t, res.Content)
-	w := m.getWatch(id)
-	if w == nil {
-		t.Fatalf("watch %s not found", id)
-	}
-	if !w.notify {
-		t.Fatal("resume=true did not force notify")
-	}
-	if !w.resume {
-		t.Fatal("resume=true did not reach the watch")
-	}
-
-	// resume absent still parses and stays inert.
-	res, err = invoke(t, reg, "watch.start", `{"name":"w2","kind":"command","command":"echo hi","interval":"5s"}`)
-	if err != nil {
-		t.Fatalf("watch.start without resume: %v", err)
-	}
-	w2 := m.getWatch(watchIDFromContent(t, res.Content))
-	if w2 == nil {
-		t.Fatal("second watch not found")
-	}
-	if w2.resume {
-		t.Fatal("absent resume arg produced resume intent")
+	if goal := ResumeGoal("build", "", false); strings.Contains(goal, "repeat watch") {
+		t.Fatalf("once goal = %q, want no repeat hint", goal)
 	}
 }
+
+// TestWatchStartResumeArgParses was removed with the model-facing watch.*
+// tools in the context-diet Tier 2a cut: watch.start is no longer registered
+// as a tool, so there is no tool-argument path to parse. Resume intent itself
+// is still covered by TestStartResumeForcesNotify and
+// TestStartOwnedWatchDropsResume above, which drive Manager.Start directly,
+// and the ACP watch surface drives the same Spec fields.

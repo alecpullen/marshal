@@ -99,7 +99,7 @@ func TestNamedRootAliasIsDocumentedInToolSchemas(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	for _, name := range []string{"file.read", "file.page", "file.write_patch", "repo.search"} {
+	for _, name := range []string{"file.read", "file.write_patch", "repo.search"} {
 		tool, ok := reg.Lookup(name)
 		if !ok {
 			t.Fatalf("%s not registered", name)

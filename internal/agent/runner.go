@@ -794,23 +794,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// what it guarantees is that a skipped or failed capture at the top of the
 	// turn is VISIBLE rather than only logged. Continuation is unchanged.
 	r.snapshotCapture(ctx, SnapshotPhaseTurnStart, nil)
-	if db := r.State.DB(); db != nil {
-		if mails, err := db.UnreadMail(r.State.SessionID()); err == nil && len(mails) > 0 {
-			var b strings.Builder
-			b.WriteString("Mail from other sessions:\n")
-			ids := make([]int64, 0, len(mails))
-			for _, mail := range mails {
-				fmt.Fprintf(&b, "- [%s] %s\n", mail.FromSession, mail.Body)
-				ids = append(ids, mail.ID)
-			}
-			r.State.AddMessage(session.RoleSystem, strings.TrimRight(b.String(), "\n"), session.ContentTypePlain)
-			if merr := db.MarkMailRead(ids, r.Now()); merr != nil {
-				r.State.Logger().Warn("failed to mark session mail read", "error", merr)
-			}
-		} else if err != nil {
-			r.State.Logger().Warn("failed to load session mail", "error", err)
-		}
-	}
 
 	r.trackerMu.Lock()
 	r.tracker = newProgressTracker()
@@ -1891,10 +1874,10 @@ func changedFilesForTool(toolName string, argsMap map[string]interface{}) []stri
 
 // referencedPathsForTool returns the workspace paths a tool call reads or
 // writes — the trigger signal for mid-turn semantic re-queries (AI-10).
-// Reads add file.read/file.page; writes reuse changedFilesForTool.
+// Reads add file.read; writes reuse changedFilesForTool.
 func referencedPathsForTool(toolName string, argsMap map[string]interface{}) []string {
 	switch toolName {
-	case "file.read", "file.page":
+	case "file.read":
 		if path, ok := argsMap["path"].(string); ok && path != "" {
 			return []string{path}
 		}

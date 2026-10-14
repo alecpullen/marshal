@@ -23,7 +23,7 @@ var validSymbolKinds = map[string]bool{
 func (t *toolSet) symbolsFindTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "symbols.find",
-		Description: "Find functions, methods, types, and imports in the indexed repository by name and/or kind. Run repo.index first if no index exists.",
+		Description: "Find functions, methods, types, and imports in the indexed repository by name and/or kind.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"Case-insensitive substring to filter symbol names"},"kind":{"type":"string","enum":["function","method","type","import"],"description":"Optional exact symbol kind filter"},"limit":{"type":"integer","minimum":1,"maximum":200,"description":"Maximum number of symbols to return (default 50, clamped to 200)"}},"required":["name"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
@@ -46,7 +46,7 @@ func (t *toolSet) symbolsFindTool() registry.Tool {
 		if len(symbols) == 0 {
 			return registry.ToolResult{
 				Summary: "No matching symbols",
-				Content: "Run repo.index to build the symbol index first, or adjust your filters.",
+				Content: "No matching symbols — adjust your filters, or re-run repo.index for a fresh symbol index.",
 			}, nil
 		}
 

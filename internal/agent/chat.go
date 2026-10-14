@@ -628,8 +628,7 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 			loaded[name] = true
 		}
 	}
-	defs := make([]schema.ToolDefinition, 0, len(tools)+1)
-	hasAskUser := false
+	defs := make([]schema.ToolDefinition, 0, len(tools))
 	for _, tool := range tools {
 		if tool.Internal {
 			continue
@@ -641,9 +640,6 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 		if deferred[tool.Name] && !loaded[tool.Name] {
 			continue
 		}
-		if tool.Name == "ask_user" {
-			hasAskUser = true
-		}
 		parameters := tool.Schema
 		if len(parameters) == 0 {
 			parameters = json.RawMessage(`{"type":"object"}`)
@@ -652,18 +648,6 @@ func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {
 			Name:        nameToAlias[tool.Name],
 			Description: tool.Description,
 			Parameters:  parameters,
-		})
-	}
-	// Fallback for a registry that doesn't already register the real
-	// ask_user tool (internal/tools/native/question.go's askUserTool, wired
-	// in native.go). Registering it twice produces two identically-named
-	// tool definitions — some providers (Kimi, confirmed live) reject the
-	// whole request outright with "function name ask_user is duplicated".
-	if r.role() == RoleGeneral && !hasAskUser {
-		defs = append(defs, schema.ToolDefinition{
-			Name:        "ask_user",
-			Description: "Ask the user one specific clarifying question.",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"question":{"type":"string"}},"required":["question"]}`),
 		})
 	}
 	return defs

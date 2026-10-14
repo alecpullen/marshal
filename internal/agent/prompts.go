@@ -107,7 +107,7 @@ func baseEnvironment(workingDir string) string {
 	var b strings.Builder
 	b.WriteString(`You receive a context pack with each turn. It contains relevant files, symbols, summaries, recent tool results, and durable project memories. Use it before asking to read files, but request raw files when you need un-summarised content or specific line ranges.
 
-When a tool result is large, use file.read with start_line/end_line (1-based, inclusive) or use file.page to read one page at a time instead of re-reading the spilled output file.
+When a tool result is large, read the spilled file with file.read start_line/end_line (1-based, inclusive).
 
 Project memories are durable facts about the codebase. You may read them in the context pack; you do not update them directly during a normal turn.
 
@@ -416,7 +416,7 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 // (pinned by prompts_test.go).
 const (
 	rulePreferSmallChanges = "- Prefer small, verifiable changes over large refactors.\n"
-	ruleReadBeforeEdit     = "- Never invent file contents; read before editing. Do not read a guessed path you have not confirmed exists — verify it first with repo.search, symbols.find, or repo.map if you are not already certain.\n"
+	ruleReadBeforeEdit     = "- Never invent file contents; read before editing. Do not read a guessed path you have not confirmed exists — verify it first with repo.search or symbols.find if you are not already certain.\n"
 	ruleFileToolsWrite     = "- Write files only with the file.write or file.edit tools — never via shell redirection, heredocs, or tee, which bypass diff review, backups, and rollback.\n"
 	// ruleFileToolsWriteSystem is the system-access variant of
 	// ruleFileToolsWrite: shell file editing is permitted, but the file

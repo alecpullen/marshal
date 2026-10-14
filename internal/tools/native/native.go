@@ -195,7 +195,6 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 
 	all := []registry.Tool{
 		tools.fileReadTool(),
-		tools.filePageTool(),
 		tools.fileWritePatchTool(),
 		tools.fileEditTool(),
 		tools.fileWriteTool(),
@@ -206,16 +205,12 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.gitBlameTool(),
 		tools.shellRunTool(),
 		tools.testRunTool(),
-		tools.repoIndexTool(),
-		tools.repoMapTool(),
-		tools.repoCardTool(),
 		tools.symbolsFindTool(),
 		tools.todoWriteTool(),
 		tools.jobOutputTool(),
 		tools.jobKillTool(),
 		tools.jobListTool(),
 		tools.questionAskTool(),
-		tools.askUserTool(),
 		tools.modeRequestTool(),
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
@@ -223,13 +218,6 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.workspaceWorktreeTool(),
 		tools.workspaceFinishTool(),
 	}
-	// csv.inspect and json.query are low-use; defer them behind tools.select
-	// so they don't occupy the prompt each turn.
-	csvTool := tools.csvInspectTool()
-	csvTool.Deferred = true
-	jsonTool := tools.jsonQueryTool()
-	jsonTool.Deferred = true
-	all = append(all, csvTool, jsonTool)
 	// shell.sudo is platform-gated (no sudo on Windows) and Deferred: its
 	// full contract is disclosed on demand via tools.select.
 	all = append(all, tools.sudoTools()...)
@@ -254,12 +242,6 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		// generations via the db, when wired). It needs only the session
 		// state to exist; the db is consulted lazily by the archived path.
 		all = append(all, tools.transcriptReadTool())
-	}
-	if tools.db != nil && tools.sessionState != nil {
-		all = append(all,
-			tools.sessionsListTool(),
-			tools.sessionSendTool(),
-		)
 	}
 	if recallToolEnabled(tools.config.Session.Rollover) {
 		all = append(all, tools.recallHistoryTool())

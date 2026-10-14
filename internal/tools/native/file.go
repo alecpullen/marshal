@@ -89,7 +89,7 @@ type fileReadArgs struct {
 func (t *toolSet) fileReadTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "file.read",
-		Description: "Read a workspace file. If the file exceeds the size limit I show the head and how to continue (file.read start_line / file.page / repo.search kind). Lines are clipped at 1500 chars; ranged reads over the byte budget are truncated with a footer. Use start_line/end_line (1-based, inclusive) to page.",
+		Description: "Read a workspace file. If the file exceeds the size limit I show the head and how to continue (file.read start_line / repo.search). Lines are clipped at 1500 chars; ranged reads over the byte budget are truncated with a footer. Use start_line/end_line (1-based, inclusive) to page.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
 			t.pathDescription(readPathBaseDescription) +
 			`},"start_line":{"type":"integer","description":"1-based first line to return"},"end_line":{"type":"integer","description":"1-based last line to return"}},"required":["path"],"additionalProperties":false}`),
@@ -215,7 +215,7 @@ func (t *toolSet) fileReadOversizedHead(requestedPath string) (registry.ToolResu
 	headText, _ := clipLines(strings.Join(head, "\n"))
 	headText = limitOutput(headText, t.maxOutputBytes)
 
-	footer := fmt.Sprintf("showing lines 1-%d of %d (%d bytes); continue with file.read start_line=%d, page with file.page, or narrow with repo.search kind:...",
+	footer := fmt.Sprintf("showing lines 1-%d of %d (%d bytes); continue with file.read start_line=%d, or narrow with repo.search",
 		shown, totalLines, totalBytes, shown+1)
 
 	content := footer
@@ -365,7 +365,7 @@ func (t *toolSet) fileReadOversizedRange(requestedPath string, startLine, endLin
 		windowFooter = fmt.Sprintf("showing line %d of %d (%d bytes) truncated: a single line is longer than the %d-byte output budget; the rest of that line is not reachable with file.read — extract a byte range with shell.run (e.g. tail -c +N), or narrow with repo.search",
 			shownStart, totalLines, totalBytes, budget)
 	} else {
-		windowFooter = fmt.Sprintf("showing lines %d-%d of %d (%d bytes); continue with file.read start_line=%d, page with file.page, or narrow with repo.search kind:...",
+		windowFooter = fmt.Sprintf("showing lines %d-%d of %d (%d bytes); continue with file.read start_line=%d, or narrow with repo.search",
 			shownStart, shownEnd, totalLines, totalBytes, shownEnd+1)
 	}
 
@@ -403,76 +403,9 @@ func (t *toolSet) fileReadOversizedRange(requestedPath string, startLine, endLin
 	return result, nil
 }
 
-func (t *toolSet) filePageTool() registry.Tool {
-	type filePageArgs struct {
-		Path     string `json:"path"`
-		Page     int    `json:"page"`
-		PageSize int    `json:"page_size"`
-	}
-	tool := registry.Tool{
-		Name:        "file.page",
-		Description: "Read a page of a workspace file by 1-based page number. Useful for iterating through large files without spilling tool output.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
-			t.pathDescription(readPathBaseDescription) +
-			`},"page":{"type":"integer","description":"1-based page number"},"page_size":{"type":"integer","description":"lines per page (default 200, max 1000)"}},"required":["path","page"],"additionalProperties":false}`),
-		Risk: registry.RiskReadOnly,
-	}
-	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-		args, err := decodeArgs[filePageArgs](tool, call.Args)
-		if err != nil {
-			return registry.ToolResult{}, err
-		}
-		if args.Path == "" {
-			return registry.ToolResult{}, fmt.Errorf("file.page path is required")
-		}
-		if args.Page < 1 {
-			return registry.ToolResult{}, fmt.Errorf("file.page page must be >= 1")
-		}
-		pageSize := args.PageSize
-		if pageSize <= 0 {
-			pageSize = 200
-		}
-		const maxPageSize = 1000
-		if pageSize > maxPageSize {
-			pageSize = maxPageSize
-		}
-
-		data, err := t.readWorkspaceFile(args.Path, int64(maxPageableFileBytes))
-		if err != nil {
-			return registry.ToolResult{}, err
-		}
-
-		lines := strings.Split(string(data), "\n")
-		if len(lines) > 0 && lines[len(lines)-1] == "" {
-			lines = lines[:len(lines)-1]
-		}
-		totalLines := len(lines)
-		startLine := (args.Page-1)*pageSize + 1
-		if startLine > totalLines {
-			return registry.ToolResult{}, fmt.Errorf("file.page page %d is past end of file (total lines %d)", args.Page, totalLines)
-		}
-		endLine := startLine + pageSize - 1
-		if endLine > totalLines {
-			endLine = totalLines
-		}
-
-		content := strings.Join(lines[startLine-1:endLine], "\n")
-		if endLine == totalLines && strings.HasSuffix(string(data), "\n") {
-			content += "\n"
-		}
-		content = limitOutput(content, t.maxOutputBytes)
-
-		return registry.ToolResult{
-			Summary: fmt.Sprintf("read %s page %d (lines %d-%d of %d)", args.Path, args.Page, startLine, endLine, totalLines),
-			Content: content,
-		}, nil
-	}
-	return tool
-}
-
 // readWorkspaceFile resolves and reads a regular workspace file up to maxBytes.
 // It performs the same path validation, TOCTOU size check, and read tracking
-// used by both file.read and file.page.
+// used by file.read.
 func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byte, error) {
 	path, err := t.resolveToolPath(requestedPath, true)
 	if err != nil {

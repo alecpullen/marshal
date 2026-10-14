@@ -123,13 +123,6 @@ func FallbackWriterView(src *Registry, allowed []string) *Registry {
 				}
 				return nil
 			}))
-		case tool.Name == "skill.install":
-			// Skill installation is a network-egress plus persistent
-			// prompt-injection surface: it can fetch a remote document and
-			// write it into the user-global skill store, which every future
-			// session loads. The fallback child runs unattended under an
-			// auto-approving policy, so it must not reach it — the same
-			// reason ReadOnlyView and ArtifactWriterView filter it out.
 		case tool.Risk == RiskNetwork:
 			// Network egress: the fallback child runs unattended under an
 			// auto-approving policy, so it must not reach the network. Keyed
@@ -300,7 +293,7 @@ func PlanWriterView(src *Registry, alias string, allowed []string) *Registry {
 			// Deferred tools are never exposed to the authoring child.
 		case tool.Risk == RiskReadOnly:
 			switch tool.Name {
-			case "agent.run", "question.ask", "ask_user", "mode.request":
+			case "agent.run", "question.ask", "mode.request":
 				// Nested-agent, question, and mode tools are excluded: the
 				// orphaned child must not spawn agents or ask the user.
 			case "diagnostics.check", "recall_history":

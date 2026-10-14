@@ -539,7 +539,7 @@ func (r *Runner) appendSkillBodies(messages []schema.ChatMessage) []schema.ChatM
 		if full > 0 && r.State.SkillBodyAge(name) >= full {
 			content = fmt.Sprintf(
 				"Skill `%s` is active but its full text is no longer in context. "+
-					"Call skill.load with name=%q to re-read it, or skill.unload to drop it.\n",
+					"Call skill.load with name=%q to re-read it.\n",
 				name, name)
 		}
 		messages = append(messages, schema.ChatMessage{

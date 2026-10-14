@@ -51,9 +51,8 @@ Plans use a hybrid encoding. Choose per task based on the nature of the
 change:
 
 - **Mechanical changes** — new files, config entries, boilerplate, precise
-  patch hunks. Embed the complete code verbatim: full file contents, or an
-  exact `file.write_patch`-style SEARCH/REPLACE block. The executor applies
-  it as-is.
+  edits. Embed the complete code verbatim: full file contents, or the exact
+  old/new strings for a targeted edit. The executor applies it as-is.
 - **Judgment changes** — edits entangled with existing code, refactors,
   anything whose exact text depends on what is actually there. Write prose
   steps plus verified anchors (symbol names, file:line, distinctive

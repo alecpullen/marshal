@@ -119,10 +119,9 @@ everything except what changed since the previous request:
 [0] system prompt               stable within a session (rebuilt only when skills,
                                 loaded tools or system access change; the agent
                                 roster's discovered models are snapshotted per session)
-[1] context pack (stable part)  repo card, map, memories, summaries, plan, pins
+[1] context pack (stable part)  curated memories, plan, pins
     skill bodies
     replayed history            ← CacheAnchor: end of the cross-turn stable region
-    skill hint                  per-turn; directly before the goal
     goal, then the turn's tool loop (append-only)
 [n] working state (Volatile)    todos, scratchpad, semantic snippets; rebuilt
                                 for every request, never stored

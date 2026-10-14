@@ -14,6 +14,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/tools/native"
 	"marshal/internal/trust"
@@ -722,5 +723,54 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 	case <-state.Done():
 	default:
 		t.Error("session state was not shut down after Close")
+	}
+}
+
+// The context pack starts empty of repo orientation: no repo card,
+// directory map or recent-session summaries, even when the index and
+// session history exist.
+func TestRuntimeSeedsNoRepoOrientation(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "main.go"), []byte("package main\nfunc main() {}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	start := func() *Runtime {
+		rt, err := StartRuntime(context.Background(), WithWorkingDir(tmp), WithHomeDir(t.TempDir()), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+		if err != nil {
+			t.Fatalf("StartRuntime: %v", err)
+		}
+		return rt
+	}
+	// First start creates the project row under whatever root the runtime
+	// resolves (temp dirs are symlinked on macOS, so never guess the path).
+	// Record an ended session with a summary against that row, then restart.
+	first := start()
+	pid := first.ProjectID
+	if err := first.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	database, err := db.Open(db.Path(tmp))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(100, 0)
+	if err := database.CreateSession("sess_old", pid, "old", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.EndSession("sess_old", now, "did some work"); err != nil {
+		t.Fatal(err)
+	}
+	database.Close()
+
+	rt := start()
+	defer rt.Close(context.Background())
+	for _, s := range rt.State.ContextPack().Sections {
+		switch s.Kind {
+		case contextpack.SectionRepoCard, contextpack.SectionRepoMap, contextpack.SectionSessionSummaries:
+			t.Fatalf("context pack carries %s section %q", s.Kind, s.Title)
+		}
 	}
 }

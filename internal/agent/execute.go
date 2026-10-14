@@ -417,11 +417,11 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		}
 		msg.Content += r.todoNudge()
 		// Forced retry correction (tier 3+): on the third identical-args
-		// file.write_patch failure, stop coaching and name the exact bytes to
+		// write-tool failure, stop coaching and name the exact bytes to
 		// re-read. Purely additive diagnostic text — it never changes control
 		// flow, the returned messages, or the error.
-		if toolName == "file.write_patch" && tier >= failedRepeatInject {
-			msg.Content += failedPatchTargetHint(r, args, execErr)
+		if (toolName == "file.write_patch" || toolName == "file.edit") && tier >= failedRepeatInject {
+			msg.Content += failedPatchTargetHint(r, toolName, args, execErr)
 		}
 		return []schema.ChatMessage{msg}, nil
 	}

@@ -210,6 +210,7 @@ func SymbolLabel(s registry.SymbolRef) string {
 var toolDisplayNames = map[string]string{
 	"file.read":        "Read file",
 	"file.write_patch": "Edit file",
+	"file.edit":        "Edit file",
 	"patch.apply":      "Apply patch",
 	"shell.run":        "Run command",
 	"test.run":         "Run tests",

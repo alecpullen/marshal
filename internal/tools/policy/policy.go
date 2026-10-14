@@ -1934,20 +1934,16 @@ func subjectsForTool(toolName string, args map[string]interface{}, normCmd strin
 	switch toolName {
 	case "shell.run", "test.run":
 		return []string{normCmd}
-	case "file.write_patch":
-		if patchArg, ok := args["patch"]; ok {
-			if patchStr, ok := patchArg.(string); ok {
-				patches, err := patch.Parse(patchStr)
-				if err == nil {
-					var paths []string
-					for _, p := range patches {
-						paths = append(paths, p.Path)
-					}
-					return paths
-				}
-			}
+	case "file.write_patch", "file.edit":
+		patches, ok := patch.FromToolArgs(toolName, args)
+		if !ok {
+			return nil
 		}
-		return nil
+		paths := make([]string, 0, len(patches))
+		for _, p := range patches {
+			paths = append(paths, p.Path)
+		}
+		return paths
 	case "file.write":
 		if path, ok := args["path"].(string); ok && path != "" {
 			return []string{path}

@@ -34,6 +34,11 @@ func SummarizeToolArgs(toolName string, args json.RawMessage) string {
 		// The patch body is large and would flood the live tool-call line;
 		// the file path is surfaced separately via ActiveToolCall.Path.
 		return "patch"
+	case "file.edit":
+		if p, ok := m["path"].(string); ok {
+			return p
+		}
+		return ""
 	case "agent.await":
 		// Numeric and boolean arguments only, so the default branch's
 		// "first string value" rule finds nothing and returns "". A
@@ -59,16 +64,22 @@ func SummarizeToolArgs(toolName string, args json.RawMessage) string {
 	}
 }
 
-// firstPatchPathFromArgs extracts the first "File: <path>" line from a
-// file.write_patch proposal's raw args, used to name the file a file-edit
-// tool is working on. It returns "" for any other tool or when no path is
-// present.
+// firstPatchPathFromArgs names the file a write tool is working on: the first
+// "File: <path>" line of a file.write_patch proposal, or file.edit's own path
+// argument. It returns "" for any other tool or when no path is present.
 func firstPatchPathFromArgs(toolName string, args json.RawMessage) string {
-	if toolName != "file.write_patch" || len(args) == 0 {
+	if len(args) == 0 {
 		return ""
 	}
 	var m map[string]interface{}
 	if err := json.Unmarshal(args, &m); err != nil {
+		return ""
+	}
+	if toolName == "file.edit" {
+		p, _ := m["path"].(string)
+		return p
+	}
+	if toolName != "file.write_patch" {
 		return ""
 	}
 	p, ok := m["patch"].(string)

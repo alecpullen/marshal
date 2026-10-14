@@ -24,7 +24,15 @@ func PreviewPatchDiff(workspaceRoot string, patchText string, system bool) (stri
 	if len(patches) == 0 {
 		return "", fmt.Errorf("no valid patches found in proposal")
 	}
+	return PreviewFilePatches(workspaceRoot, patches, system)
+}
 
+// PreviewFilePatches dry-runs already-parsed patches against the files
+// currently on disk and returns the combined unified diff, writing nothing.
+// It is the shared preview path for file.write_patch and file.edit, so a
+// caller never has to round file.edit's structured fields through patch text
+// just to render a diff.
+func PreviewFilePatches(workspaceRoot string, patches []patch.FilePatch, system bool) (string, error) {
 	var diffs []string
 	for _, fp := range patches {
 		var path string

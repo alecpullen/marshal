@@ -116,8 +116,13 @@ func FallbackWriterView(src *Registry, allowed []string) *Registry {
 			// Deferred tools are never exposed to the fallback child.
 		case tool.Name == "file.write_patch":
 			_ = view.Register(fallbackWriterPatchTool(tool, allowedSet))
-		case tool.Name == "file.write":
-			_ = view.Register(fallbackWriterFileWriteTool(tool, allowedSet))
+		case tool.Name == "file.write" || tool.Name == "file.edit":
+			_ = view.Register(pathScopedTool(tool, func(cleaned, raw string) error {
+				if !pathInAllowlist(cleaned, allowedSet) {
+					return fmt.Errorf("%s in fallback scope may only write under the declared scope (path %q is outside)", tool.Name, raw)
+				}
+				return nil
+			}))
 		case tool.Name == "skill.install":
 			// Skill installation is a network-egress plus persistent
 			// prompt-injection surface: it can fetch a remote document and
@@ -138,10 +143,11 @@ func FallbackWriterView(src *Registry, allowed []string) *Registry {
 	return view
 }
 
-// fallbackWriterFileWriteTool narrows file.write to the declared allowlist,
-// mirroring fallbackWriterPatchTool. Without this the whole-file write tool
-// would bypass the fallback agent's path guard entirely.
-func fallbackWriterFileWriteTool(tool Tool, allowed map[string]bool) Tool {
+// pathScopedTool narrows a path-addressed write tool (file.write, file.edit)
+// to paths check accepts. check receives the cleaned path and returns a
+// non-nil error to reject it. Without this the whole-file write tools would
+// bypass a scoped view's path guard entirely.
+func pathScopedTool(tool Tool, check func(cleaned, raw string) error) Tool {
 	original := tool.Handler
 	filtered := tool
 	filtered.Handler = func(ctx context.Context, call ToolCall) (ToolResult, error) {
@@ -149,11 +155,10 @@ func fallbackWriterFileWriteTool(tool Tool, allowed map[string]bool) Tool {
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal(call.Args, &args); err != nil {
-			return ToolResult{}, fmt.Errorf("file.write in fallback scope could not parse arguments: %w", err)
+			return ToolResult{}, fmt.Errorf("%s could not parse arguments: %w", tool.Name, err)
 		}
-		cleaned := cleanScopePath(args.Path)
-		if !pathInAllowlist(cleaned, allowed) {
-			return ToolResult{}, fmt.Errorf("file.write in fallback scope may only write under the declared scope (path %q is outside)", args.Path)
+		if err := check(cleanScopePath(args.Path), args.Path); err != nil {
+			return ToolResult{}, err
 		}
 		return original(ctx, call)
 	}
@@ -236,6 +241,13 @@ func ArtifactWriterView(src *Registry, artifactAlias string) *Registry {
 			_ = view.Register(tool)
 		case tool.Name == "file.write_patch":
 			_ = view.Register(artifactWriterPatchTool(tool, artifactAlias))
+		case tool.Name == "file.write" || tool.Name == "file.edit":
+			_ = view.Register(pathScopedTool(tool, func(cleaned, raw string) error {
+				if !strings.HasPrefix(cleaned, artifactAlias+"/") {
+					return fmt.Errorf("%s in artifact-writer scope may only write under %s/ (path %q is outside)", tool.Name, artifactAlias, raw)
+				}
+				return nil
+			}))
 		}
 	}
 	return view
@@ -302,6 +314,13 @@ func PlanWriterView(src *Registry, alias string, allowed []string) *Registry {
 			}
 		case tool.Name == "file.write_patch":
 			_ = view.Register(planWriterPatchTool(tool, alias, allowedSet))
+		case tool.Name == "file.write" || tool.Name == "file.edit":
+			_ = view.Register(pathScopedTool(tool, func(cleaned, raw string) error {
+				if !allowedSet[cleaned] {
+					return fmt.Errorf("%s in plan-writer scope may only write the candidate plan (path %q is not allowed)", tool.Name, raw)
+				}
+				return nil
+			}))
 		}
 	}
 	return view

@@ -24,7 +24,7 @@ the transcript can see. You are recording, not judging.
 3. **Write the observations.** Set `agent_observations` to a JSON array of
    **short strings** — one observation per string, each a concrete, factual
    statement of what happened. Keep each entry to a single sentence. Use
-   `file.write_patch` to edit the report file in place, replacing the `null`
+   `file.edit` to edit the report file in place, replacing the `null`
    value of `agent_observations` with your array. In the same patch, set
    `coverage.agent_pass` to `true` and `coverage.agent_pass_reason` to
    `"completed"`. Do not reformat or rewrite the rest of the file.

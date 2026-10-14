@@ -52,6 +52,7 @@ func DisplayToolName(name string) string { return viewmodel.DisplayToolName(name
 // head noun is not the last word ("Query JSON" → "Query JSON documents").
 var toolPluralNames = map[string]string{
 	"file.write_patch": "Edit files",
+	"file.edit":        "Edit files",
 	"patch.apply":      "Apply patches",
 	"test.run":         "Run tests",
 	"repo.search":      "Search repo",

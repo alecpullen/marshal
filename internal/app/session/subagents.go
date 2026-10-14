@@ -342,7 +342,7 @@ func (s *State) CurrentToolLabel() string {
 	}
 	atc := *s.activeToolCall
 	switch atc.Name {
-	case "file.write_patch":
+	case "file.write_patch", "file.edit":
 		if atc.Path != "" {
 			return "editing " + atc.Path
 		}

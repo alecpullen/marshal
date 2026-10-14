@@ -180,7 +180,7 @@ func Mergeable(ev *registry.AuditEvent) bool {
 // isDiffTool is the set of tools whose result is a diff; edits always render
 // their own diff row, so they never merge.
 func isDiffTool(name string) bool {
-	return name == "file.write_patch" || name == "patch.apply"
+	return name == "file.write_patch" || name == "file.edit" || name == "patch.apply"
 }
 
 // Build groups a snapshot into turn nodes, plus a preamble turn for items

@@ -19,7 +19,7 @@ import (
 // the tool-name-first shape.
 func subjectFirstTool(name string) bool {
 	switch name {
-	case "file.write_patch", "file.write", "file.read", "symbols.find":
+	case "file.write_patch", "file.edit", "file.write", "file.read", "symbols.find":
 		return true
 	}
 	return viewmodel.IsShellFamily(name)

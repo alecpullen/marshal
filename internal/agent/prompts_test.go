@@ -114,7 +114,7 @@ func TestBaseRulesOmitSummariseRule(t *testing.T) {
 
 func TestBaseRulesKeepShellWriteRule(t *testing.T) {
 	for _, want := range []string{
-		"file.write or file.write_patch",
+		"file.write or file.edit",
 		"never via shell redirection, heredocs, or tee",
 	} {
 		if !strings.Contains(baseRules, want) {
@@ -150,7 +150,7 @@ func TestBaseRulesMergedReadBeforeEdit(t *testing.T) {
 
 func TestBaseRulesForbidShellFileWrites(t *testing.T) {
 	for _, want := range []string{
-		"file.write or file.write_patch",
+		"file.write or file.edit",
 		"never via shell redirection, heredocs, or tee",
 	} {
 		if !strings.Contains(baseRules, want) {
@@ -170,7 +170,7 @@ func TestBuildSystemPromptSystemVariant(t *testing.T) {
 	if !strings.Contains(content, systemAccessDirective) {
 		t.Errorf("system variant missing systemAccessDirective:\n%s", content)
 	}
-	if !strings.Contains(content, "- Write files with the file.write or file.write_patch tools whenever practical") {
+	if !strings.Contains(content, "- Write files with the file.write or file.edit tools whenever practical") {
 		t.Errorf("system variant missing amended file-tools rule:\n%s", content)
 	}
 	if strings.Contains(content, "never via shell redirection, heredocs, or tee") {
@@ -235,56 +235,19 @@ func TestBuildSystemPromptImplementerHasCorrectAllowedActions(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptDescribesPatchFormat(t *testing.T) {
-	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil, false)
-	content := msg.Content
+// The model edits through file.edit now, so the shipped system prompt must
+// not spend tokens teaching the retired file.write_patch patch syntax — even
+// when the internal tool is still registered and listed.
+func TestBuildSystemPromptOmitsRetiredPatchFormat(t *testing.T) {
+	tools := append(dummyTools(), registry.Tool{
+		Name:        "file.write_patch",
+		Risk:        registry.RiskWorkspaceWrite,
+		Description: "Apply search/replace patch blocks to workspace files.",
+	})
+	content := BuildSystemPrompt(RoleGeneral, tools, nil, nil, false).Content
 
-	if !strings.Contains(content, "<<<<<<< SEARCH") {
-		t.Error("system prompt missing search/replace patch marker <<<<<<< SEARCH")
-	}
-	if !strings.Contains(content, ">>>>>>> REPLACE") {
-		t.Error("system prompt missing search/replace patch marker >>>>>>> REPLACE")
-	}
-}
-
-func TestNativePatchFormatIsTrimmed(t *testing.T) {
-	// The trimmed format must contain the delimiter syntax and the
-	// exact-match rule, but must NOT contain the full multi-line examples
-	// or the unified-diff example.
-	for _, want := range []string{
-		"<<<<<<< SEARCH",
-		">>>>>>> REPLACE",
-		"must match the file content exactly",
-		"prefer the file.write tool",
-	} {
-		if !strings.Contains(nativePatchFormat, want) {
-			t.Errorf("nativePatchFormat missing %q", want)
-		}
-	}
-	for _, unwanted := range []string{
-		"File: internal/app/config/types_test.go",
-		"--- a/internal/app/config/types.go",
-		"@@ -1,4 +1,5 @@",
-	} {
-		if strings.Contains(nativePatchFormat, unwanted) {
-			t.Errorf("nativePatchFormat should not contain %q (example removed)", unwanted)
-		}
-	}
-	if len(nativePatchFormat) > 600 {
-		t.Errorf("nativePatchFormat is %d chars, should be under 600 (was 1708)", len(nativePatchFormat))
-	}
-}
-
-func TestNativePatchFormatIncludesChainedExample(t *testing.T) {
-	for _, want := range []string{
-		"prefer the file.write tool",
-		">>>>>>> REPLACE",
-		"chain",
-		"must match the file content exactly",
-	} {
-		if !strings.Contains(nativePatchFormat, want) {
-			t.Errorf("nativePatchFormat missing %q", want)
-		}
+	if strings.Contains(content, "## file.write_patch format") {
+		t.Errorf("system prompt still teaches the retired patch format:\n%s", content)
 	}
 }
 
@@ -298,8 +261,6 @@ func TestBuildSystemPromptContainsActionExamples(t *testing.T) {
 		`"type": "patch"`,
 		`"type": "final"`,
 		`"type": "ask_user"`,
-		"<<<<<<< SEARCH",
-		">>>>>>> REPLACE",
 		"Unified diffs are also accepted but search/replace is preferred",
 	} {
 		if !strings.Contains(content, want) {
@@ -975,7 +936,7 @@ func TestBuildSystemPromptOmitsWorkingDirWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptNativePatchFormatCoversAuditFindings(t *testing.T) {
+func TestBuildSystemPromptNativeOmitsRetiredPatchFormat(t *testing.T) {
 	tools := append(dummyTools(), registry.Tool{
 		Name:        "file.write_patch",
 		Risk:        registry.RiskWorkspaceWrite,
@@ -984,14 +945,13 @@ func TestBuildSystemPromptNativePatchFormatCoversAuditFindings(t *testing.T) {
 	msg := BuildSystemPromptWithAddendum(RoleGeneral, tools, nil, nil, nil, true, policy.ModeEdit, "", "/tmp/workspace", "")
 	content := msg.Content
 
-	for _, want := range []string{
+	for _, unwanted := range []string{
+		"## file.write_patch format",
+		"<<<<<<< SEARCH",
 		">>>>>>> REPLACE",
-		"must match the file content exactly",
-		"prefer the file.write tool",
-		"chain",
 	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("native system prompt missing audit guidance %q\n%s", want, content)
+		if strings.Contains(content, unwanted) {
+			t.Errorf("native system prompt still teaches the retired patch format %q\n%s", unwanted, content)
 		}
 	}
 }
@@ -1032,8 +992,8 @@ func TestBaseRulesCarryNoRepoSpecificWorkflow(t *testing.T) {
 				t.Errorf("base rules must not mention %q:\n%s", banned, rules)
 			}
 		}
-		if !strings.Contains(rules, ">>>>>>> REPLACE") {
-			t.Errorf("base rules lost the REPLACE terminator rule:\n%s", rules)
+		if strings.Contains(rules, ">>>>>>> REPLACE") {
+			t.Errorf("base rules must not teach the retired patch format:\n%s", rules)
 		}
 	}
 }
@@ -1631,10 +1591,8 @@ func TestBuildSystemPromptOmitsRosterWithoutAgentRun(t *testing.T) {
 }
 
 func TestPromptsNoLongerForbidUnifiedDiff(t *testing.T) {
-	for _, s := range []string{baseOutputFormat, nativePatchFormat} {
-		if strings.Contains(s, "Do not use unified diff") {
-			t.Error("prompt still forbids unified diffs")
-		}
+	if strings.Contains(baseOutputFormat, "Do not use unified diff") {
+		t.Error("prompt still forbids unified diffs")
 	}
 }
 

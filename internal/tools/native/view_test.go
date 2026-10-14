@@ -64,7 +64,11 @@ func TestPlanWriterViewExcludesDiagnosticsAndRecallFromRealNativeRegistry(t *tes
 		case registry.RiskCommand, registry.RiskNetwork, registry.RiskDestructive, registry.RiskEnvironment:
 			t.Errorf("plan-author view exposes %q at risk %q", tool.Name, tool.Risk)
 		case registry.RiskWorkspaceWrite:
-			if tool.Name != "file.write_patch" {
+			switch tool.Name {
+			case "file.write_patch", "file.write", "file.edit":
+				// The candidate plan is written with any of the path-scoped
+				// write tools; each is narrowed to the allowed plan paths.
+			default:
 				t.Errorf("plan-author view exposes unexpected workspace-write tool %q", tool.Name)
 			}
 		}

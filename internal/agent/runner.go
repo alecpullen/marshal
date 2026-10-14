@@ -1878,22 +1878,11 @@ func changedFilesForTool(toolName string, argsMap map[string]interface{}) []stri
 		}
 		return nil
 	}
-	if toolName != "file.write_patch" {
-		return nil
-	}
-	patchArg, ok := argsMap["patch"]
+	patches, ok := patch.FromToolArgs(toolName, argsMap)
 	if !ok {
 		return nil
 	}
-	patchStr, ok := patchArg.(string)
-	if !ok {
-		return nil
-	}
-	patches, err := patch.Parse(patchStr)
-	if err != nil {
-		return nil
-	}
-	var files []string
+	files := make([]string, 0, len(patches))
 	for _, p := range patches {
 		files = append(files, p.Path)
 	}

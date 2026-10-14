@@ -1252,7 +1252,7 @@ func splitDiffFiles(diff string) []diffFile {
 }
 
 func isDiffTool(name string) bool {
-	return name == "file.write_patch" || name == "patch.apply"
+	return name == "file.write_patch" || name == "file.edit" || name == "patch.apply"
 }
 
 // hookIndicatorText picks the single highest-signal hook event from the

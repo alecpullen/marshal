@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/strutil"
+	"marshal/internal/tools/patch"
 	"marshal/internal/tools/registry"
 )
 
@@ -25,11 +26,9 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 	}
 
 	diff := ""
-	if toolName == "file.write_patch" {
-		if patchText, ok := argsMap["patch"].(string); ok {
-			if preview, previewErr := PreviewPatchDiff(r.State.WorkingDir, patchText, r.State.SystemAccess()); previewErr == nil {
-				diff = preview
-			}
+	if patches, ok := patch.FromToolArgs(toolName, argsMap); ok {
+		if preview, previewErr := PreviewFilePatches(r.State.WorkingDir, patches, r.State.SystemAccess()); previewErr == nil {
+			diff = preview
 		}
 	}
 

@@ -24,6 +24,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"file.read":          registry.RiskReadOnly,
 		"file.page":          registry.RiskReadOnly,
 		"file.write_patch":   registry.RiskWorkspaceWrite,
+		"file.edit":          registry.RiskWorkspaceWrite,
 		"file.write":         registry.RiskWorkspaceWrite,
 		"repo.search":        registry.RiskReadOnly,
 		"repo.index":         registry.RiskReadOnly,

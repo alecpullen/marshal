@@ -13,8 +13,8 @@ import (
 )
 
 // failedPatchTargetHint builds the tier-3+ retry hint for a failed
-// file.write_patch: which SEARCH block actually failed, and the exact file.read
-// call that shows the current bytes for it.
+// file.write_patch or file.edit: which SEARCH block actually failed, and the
+// exact file.read call that shows the current bytes for it.
 //
 // It deliberately does NOT inline the region. The tool's own error already
 // embeds the nearest region for the failing chunk (both "search block not
@@ -26,8 +26,8 @@ import (
 //
 // Any failure to parse, resolve, read, or match returns "" — a retry aid must
 // never become a new error path.
-func failedPatchTargetHint(r *Runner, args json.RawMessage, execErr error) string {
-	search, path, ok := failingPatchTarget(r, args, execErr)
+func failedPatchTargetHint(r *Runner, toolName string, args json.RawMessage, execErr error) string {
+	search, path, ok := failingPatchTarget(r, toolName, args, execErr)
 	if !ok {
 		return ""
 	}
@@ -74,7 +74,7 @@ const maxHintReadBytes = 1 << 20
 // of the file it failed in. Only a SEARCH block that could not be located at
 // all qualifies (patch.FailureGateMatches): an ambiguous match has a different
 // remedy and must not trigger a re-read.
-func failingPatchTarget(r *Runner, args json.RawMessage, execErr error) (search, path string, ok bool) {
+func failingPatchTarget(r *Runner, toolName string, args json.RawMessage, execErr error) (search, path string, ok bool) {
 	if execErr == nil || !patch.FailureGateMatches(execErr.Error()) || len(args) == 0 {
 		return "", "", false
 	}
@@ -82,12 +82,11 @@ func failingPatchTarget(r *Runner, args json.RawMessage, execErr error) (search,
 	if err := json.Unmarshal(args, &m); err != nil {
 		return "", "", false
 	}
-	patchText, _ := m["patch"].(string)
-	if patchText == "" {
-		return "", "", false
-	}
-	patches, err := patch.Parse(patchText)
-	if err != nil || len(patches) == 0 {
+	// FromToolArgs covers both write tools: file.edit's single chunk comes
+	// straight from its structured fields, so a literal "=======" line in the
+	// content cannot be mistaken for a delimiter.
+	patches, ok := patch.FromToolArgs(toolName, m)
+	if !ok {
 		return "", "", false
 	}
 	// The failing file is located, never assumed to be the first one: walk the

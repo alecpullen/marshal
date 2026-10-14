@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -503,7 +504,12 @@ func TestFallbackWriterFileWriteToolRejectsUnmarshalError(t *testing.T) {
 		},
 	}
 
-	wrapped := fallbackWriterFileWriteTool(tool, allowed)
+	wrapped := pathScopedTool(tool, func(cleaned, raw string) error {
+		if !pathInAllowlist(cleaned, allowed) {
+			return fmt.Errorf("file.write in fallback scope may only write under the declared scope (path %q is outside)", raw)
+		}
+		return nil
+	})
 	// Pass invalid JSON — the handler should return a parse error instead
 	// of falling through to an empty-path allowlist rejection.
 	_, err := wrapped.Handler(context.Background(), ToolCall{Args: []byte("{invalid json")})
@@ -512,5 +518,26 @@ func TestFallbackWriterFileWriteToolRejectsUnmarshalError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "could not parse arguments") {
 		t.Errorf("expected parse error, got: %v", err)
+	}
+}
+
+// Review focus 3: the plan-writer child creates its plan with file.write.
+func TestPlanWriterViewAllowsScopedFileWrite(t *testing.T) {
+	src := New()
+	ok := func(context.Context, ToolCall) (ToolResult, error) { return ToolResult{Summary: "ok"}, nil }
+	_ = src.Register(Tool{Name: "file.write", Risk: RiskWorkspaceWrite, Handler: ok})
+	_ = src.Register(Tool{Name: "file.edit", Risk: RiskWorkspaceWrite, Handler: ok})
+	view := PlanWriterView(src, "@run", []string{"@run/plan.md"})
+	for _, name := range []string{"file.write", "file.edit"} {
+		tool, found := view.Lookup(name)
+		if !found {
+			t.Fatalf("%s missing from plan-writer view", name)
+		}
+		if _, err := tool.Handler(context.Background(), ToolCall{Name: name, Args: []byte(`{"path":"@run/plan.md"}`)}); err != nil {
+			t.Fatalf("%s on the allowed plan path: %v", name, err)
+		}
+		if _, err := tool.Handler(context.Background(), ToolCall{Name: name, Args: []byte(`{"path":"internal/x.go"}`)}); err == nil {
+			t.Fatalf("%s outside the plan path must be rejected", name)
+		}
 	}
 }

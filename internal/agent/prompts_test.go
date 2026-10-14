@@ -1043,38 +1043,17 @@ func TestBuildSystemPromptSubtaskDescribesActualCapabilities(t *testing.T) {
 	}
 }
 
-// todoAddendum ("Use todo.write for any user request with 3 or more
-// steps...") used to be appended unconditionally regardless of role. But
-// swarm's read-only-scoped roles (planner, scouts, reviewer — ScopeReadOnly)
-// and the tester (ScopeTester) are built from registry.ReadOnlyView /
-// TesterView, neither of which includes todo.write (RiskWorkspaceWrite).
-// Telling those roles to use a tool that isn't in their actual tool list
-// wastes an iteration on an "unknown tool" error at best. The addendum must
-// only appear when todo.write is actually available.
-func TestTodoAddendumOmittedWhenToolNotAvailable(t *testing.T) {
+// The todo guidance lives in todo.write's own description (Tier 2a moved it
+// there from a system-prompt addendum), so the system prompt must not carry
+// a second copy of it. That matters beyond redundancy: swarm's
+// read-only-scoped roles (planner, scouts, reviewer — ScopeReadOnly) and the
+// tester (ScopeTester) are built from registry.ReadOnlyView / TesterView,
+// neither of which includes todo.write (RiskWorkspaceWrite), so prompt text
+// teaching it would tell those roles to use a tool they do not have.
+func TestPromptOmitsTodoWriteGuidanceWithoutTheTool(t *testing.T) {
 	msg := BuildSystemPrompt(RoleGeneral, dummyTools(), nil, nil, false)
 	if strings.Contains(msg.Content, "todo.write") {
 		t.Errorf("prompt references todo.write but it is not in the tool list\n%s", msg.Content)
-	}
-}
-
-func TestTodoAddendumIncludedWhenToolAvailable(t *testing.T) {
-	tools := append(dummyTools(), registry.Tool{
-		Name: "todo.write", Risk: registry.RiskWorkspaceWrite, Description: "Track task progress.",
-	})
-	msg := BuildSystemPrompt(RoleGeneral, tools, nil, nil, false)
-	if !strings.Contains(msg.Content, "Use todo.write for any user request") {
-		t.Errorf("prompt missing todoAddendum even though todo.write is available\n%s", msg.Content)
-	}
-}
-
-func TestTodoAddendumDocumentsDropUnfinished(t *testing.T) {
-	tools := append(dummyTools(), registry.Tool{
-		Name: "todo.write", Risk: registry.RiskWorkspaceWrite, Description: "Track task progress.",
-	})
-	msg := BuildSystemPrompt(RoleGeneral, tools, nil, nil, false)
-	if !strings.Contains(msg.Content, "drop_unfinished") {
-		t.Errorf("todoAddendum must document the drop_unfinished escape hatch\n%s", msg.Content)
 	}
 }
 
@@ -1197,7 +1176,7 @@ func TestRenderAgentRosterListsPresetsAndCustomAgents(t *testing.T) {
 		"Read-only reviewer",
 		"Model presets (valid provider/model pairs):",
 		"openai/gpt-4o-mini",
-		"model must be a provider/model pair; the provider must be configured",
+		"model must be a provider/model pair from a configured provider",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("roster missing %q:\n%s", want, got)
@@ -1285,13 +1264,8 @@ func TestRenderAgentRosterFooterIsHonest(t *testing.T) {
 	if strings.Contains(got, "must name one of these") {
 		t.Errorf("footer still overstates authority:\n%s", got)
 	}
-	for _, want := range []string{
-		"model must be a provider/model pair; the provider must be configured",
-		"listed presets are only what is configured locally — any model the provider serves is valid",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("footer missing %q:\n%s", want, got)
-		}
+	if want := "model must be a provider/model pair from a configured provider"; !strings.Contains(got, want) {
+		t.Errorf("footer missing %q:\n%s", want, got)
 	}
 }
 
@@ -1360,7 +1334,7 @@ func TestRenderAgentRosterAnnotatesRoleBindings(t *testing.T) {
 
 func TestRenderAgentRosterUnboundPresetOmitsRoles(t *testing.T) {
 	cfg := config.Default()
-	pa := "paid/gpt-4o-mini" // not in any pricing table → no cost data
+	pa := "paid/gpt-4o-mini" // pricing-tabled and cheap
 	pc := "paid/local-only"
 	cfg.Models.Presets = map[string]routing.ModelPreset{
 		pa: {Provider: "paid", Model: "gpt-4o-mini", ContextWindow: 4096},
@@ -1375,7 +1349,10 @@ func TestRenderAgentRosterUnboundPresetOmitsRoles(t *testing.T) {
 	if strings.Contains(got, "[\""+pc+"\"] — roles:") {
 		t.Errorf("second preset must not claim synthesized roles:\n%s", got)
 	}
-	if !strings.Contains(got, "- paid/gpt-4o-mini — 4k ctx · cheap\n") || !strings.Contains(got, "- paid/local-only — 4k ctx · cheap (no cost data — likely local/unpriced)\n") {
+	// The unpriced sibling carries no price fact at all (Tier 2a dropped the
+	// "no cost data" label, which every unknown model got and so
+	// distinguished nothing); only its ctx fact remains.
+	if !strings.Contains(got, "- paid/gpt-4o-mini — 4k ctx · cheap\n") || !strings.Contains(got, "- paid/local-only — 4k ctx\n") {
 		t.Errorf("unbound preset line changed shape:\n%s", got)
 	}
 }
@@ -1393,8 +1370,12 @@ func TestRenderAgentRosterObjectiveFactAnnotations(t *testing.T) {
 	if !strings.Contains(got, "- anthropic/claude-sonnet-4 — 200k ctx · local · thinking: high") {
 		t.Errorf("sonnet preset missing facts or priced as cheap:\n%s", got)
 	}
-	if !strings.Contains(got, "- anthropic/claude-haiku-x — 200k ctx · cheap (no cost data — likely local/unpriced)") {
-		t.Errorf("unpriced preset missing cost-data note:\n%s", got)
+	// An unpriced preset claims only what is known: its configured window.
+	if !strings.Contains(got, "- anthropic/claude-haiku-x — 200k ctx") {
+		t.Errorf("unpriced preset missing its ctx fact, or gained a guessed price:\n%s", got)
+	}
+	if strings.Contains(got, "no cost data") {
+		t.Errorf("unpriced preset still carries the dropped no-cost-data label:\n%s", got)
 	}
 	if strings.Count(got, "roles:") != 0 {
 		t.Errorf("no profiles configured, so no preset may claim roles:\n%s", got)
@@ -1463,17 +1444,16 @@ func TestRenderAgentRosterGuidanceRanksByBindings(t *testing.T) {
 	cfg.Profile.ActivePreset = "ollama/qwen2.5-coder:14b"
 	got := RenderAgentRoster(cfg)
 	for _, want := range []string{
-		"match the subtask to the role bindings",
+		"Pick a subagent model by the role bindings above",
 		"review",
-		"cheap",
 		"marked local",
-		"model must be a provider/model pair; the provider must be configured.",
+		"model must be a provider/model pair from a configured provider.",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("guidance/footer missing %q:\n%s", want, got)
 		}
 	}
-	if !strings.HasSuffix(strings.TrimSpace(got), "model must be a provider/model pair; the provider must be configured. The listed presets are only what is configured locally — any model the provider serves is valid, and discovered entries above reflect each provider's current model list.") {
+	if !strings.HasSuffix(strings.TrimSpace(got), "model must be a provider/model pair from a configured provider.") {
 		t.Errorf("guidance must precede, not replace, the footer contract:\n%s", got)
 	}
 	// The synthesized single-model profile binds every chat role to the
@@ -1495,16 +1475,11 @@ func TestRenderAgentRosterNoGuidanceWhenNothingAnnotated(t *testing.T) {
 		"anthropic/claude-sonnet-4": {Provider: "anthropic", Model: "claude-sonnet-4"},
 	}
 	got := RenderAgentRoster(cfg)
-	if strings.Contains(got, "match the subtask to the role bindings") {
+	if strings.Contains(got, "Pick a subagent model by the role bindings above") {
 		t.Errorf("guidance emitted with no annotations to back it:\n%s", got)
 	}
-	for _, want := range []string{
-		"model must be a provider/model pair; the provider must be configured",
-		"listed presets are only what is configured locally — any model the provider serves is valid",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("footer missing %q:\n%s", want, got)
-		}
+	if want := "model must be a provider/model pair from a configured provider"; !strings.Contains(got, want) {
+		t.Errorf("footer missing %q:\n%s", want, got)
 	}
 }
 
@@ -1740,5 +1715,30 @@ func TestNativePromptHasNoScratchpadAddendum(t *testing.T) {
 	msg := BuildSystemPromptWithSystem(SystemPromptOptions{Role: RoleGeneral, NativeTools: true, Mode: policy.ModeEdit})
 	if strings.Contains(msg.Content, "scratchpad") {
 		t.Fatalf("native prompt still mentions the scratchpad:\n%s", msg.Content)
+	}
+}
+
+// TestRosterDropsNoiseAndEmbeddingPreset pins the Tier 2a roster slimming:
+// an unpriced preset no longer claims a price fact ("no cost data" was pure
+// noise — every unknown model got it, so it distinguished nothing), and the
+// preset named as the embedding route is not offered as a subagent model
+// (an embedding model cannot chat).
+func TestRosterDropsNoiseAndEmbeddingPreset(t *testing.T) {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{"p": {Type: "openai_compatible", BaseURL: "http://x"}}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"p/chat":  {Provider: "p", Model: "chat"},
+		"p/embed": {Provider: "p", Model: "embed"},
+	}
+	cfg.Indexing.EmbeddingPreset = "p/embed"
+	got := RenderAgentRoster(cfg)
+	if strings.Contains(got, "no cost data") {
+		t.Errorf("roster still carries the unpriced label:\n%s", got)
+	}
+	if strings.Contains(got, "p/embed") {
+		t.Errorf("roster offers the embedding preset as a subagent model:\n%s", got)
+	}
+	if !strings.Contains(got, "p/chat") {
+		t.Errorf("roster lost the chat preset:\n%s", got)
 	}
 }

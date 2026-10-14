@@ -78,7 +78,7 @@ func TestQuestionToolDescriptionsGuideUsage(t *testing.T) {
 	tools := &toolSet{}
 
 	ask := tools.questionAskTool()
-	for _, want := range []string{"options", "never embed", "mode.request"} {
+	for _, want := range []string{"options", "never as lettered text", "mode.request"} {
 		if !strings.Contains(ask.Description, want) {
 			t.Errorf("question.ask description missing %q\n%s", want, ask.Description)
 		}

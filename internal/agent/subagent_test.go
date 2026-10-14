@@ -183,11 +183,11 @@ func TestSubagentToolDescriptionStatesConfiguredCap(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithSubagentMaxConcurrency(5))
 	factory := func(_ SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, nil, nil }
 	tool := NewSubagentTool(factory, nil, registry.New(), state)
-	if !strings.Contains(tool.Description, "Maximum concurrency: 5") {
+	if !strings.Contains(tool.Description, "Up to 5 run at once") {
 		t.Fatalf("description does not state the configured cap:\n%s", tool.Description)
 	}
-	if strings.Contains(tool.Description, "concurrency: 2") {
-		t.Fatal("description still carries the old hardcoded cap")
+	if strings.Contains(tool.Description, "Up to 3 run at once") {
+		t.Fatal("description still carries the default cap, not the configured one")
 	}
 }
 

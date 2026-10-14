@@ -49,7 +49,7 @@ func (t *toolSet) todoWriteTool() registry.Tool {
 func newTodoWriteTool(state *session.State) registry.Tool {
 	tool := registry.Tool{
 		Name:        "todo.write",
-		Description: "Replace the session todo list. Use for any task with 3+ steps or multiple requirements; mark items completed immediately, never batch-complete at the end. Unfinished items omitted from the new list are kept automatically (carried over); completed items may be dropped. Pass \"drop_unfinished\": true only when the carried list is corrupted or stale and you need to replace it wholesale: the submitted list becomes the whole list, even if that drops unfinished items you left out.",
+		Description: "Replace the session todo list. Use it for work with 3+ steps or several requirements, and mark each item completed as soon as it is done. Unfinished items you omit are carried over; pass \"drop_unfinished\": true to make the submitted list the whole list.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed"]}},"required":["content","status"],"additionalProperties":false}},"drop_unfinished":{"type":"boolean","description":"When true, skip auto-carry: the submitted list becomes the whole list and unfinished items omitted from it are dropped. Default false keeps auto-carry."}},"required":["todos"],"additionalProperties":false}`),
 		Risk:        registry.RiskWorkspaceWrite,
 	}

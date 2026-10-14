@@ -159,6 +159,21 @@ func DiscoveredModelsFromCache(cfg config.Config, dataDir string, now time.Time)
 // profile, profiles in sorted order, roles in AllRoles order. Returns ""
 // when the preset is bound by no profile, so unbound presets render
 // exactly as before.
+// rosterRoleNoteAllowed is the set of roles worth naming in the roster: the
+// ones a parent model actually dispatches a subagent for. Bookkeeping roles
+// (router, title, summarizer, knowledge) and the SDD pipeline roles are
+// dropped — they are not subagent targets, so naming them only spends
+// prompt-prefix tokens.
+var rosterRoleNoteAllowed = map[routing.AgentRole]bool{
+	routing.RoleImplementer:      true,
+	routing.RoleReviewer:         true,
+	routing.RoleSecurityReviewer: true,
+	routing.RolePlanner:          true,
+	routing.RoleRepoScout:        true,
+	routing.RoleTester:           true,
+	routing.RoleSubtask:          true,
+}
+
 func presetRoleNote(bindings map[string][]routing.PresetRoleBinding, name string) string {
 	segs, ok := bindings[name]
 	if !ok || len(segs) == 0 {
@@ -168,9 +183,19 @@ func presetRoleNote(bindings map[string][]routing.PresetRoleBinding, name string
 	for _, seg := range segs {
 		roleStrs := make([]string, 0, len(seg.Roles))
 		for _, r := range seg.Roles {
+			if !rosterRoleNoteAllowed[r] {
+				continue
+			}
 			roleStrs = append(roleStrs, string(r))
 		}
+		// A profile that binds only dropped roles adds no information.
+		if len(roleStrs) == 0 {
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("%s (profile %s)", strings.Join(roleStrs, ", "), seg.Profile))
+	}
+	if len(parts) == 0 {
+		return ""
 	}
 	return "roles: " + strings.Join(parts, ", ")
 }
@@ -202,8 +227,11 @@ const cheapThreshold = 100
 // guess, keeping the roster honest.
 func pricingNote(p routing.ModelPreset) string {
 	r := pricing.Lookup(p, nil)
+	// An unpriced preset renders no price fact at all. Saying "no cost data"
+	// on every unknown model distinguished nothing — it is the default state,
+	// not a property of the model — so it only spent prefix tokens.
 	if r.InputPerMTokCents+r.OutputPerMTokCents == 0 {
-		return "cheap (no cost data — likely local/unpriced)"
+		return ""
 	}
 	if r.InputPerMTokCents+r.OutputPerMTokCents <= cheapThreshold {
 		return "cheap"
@@ -346,6 +374,11 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 		}
 		sort.Strings(presetNames)
 		for _, pname := range presetNames {
+			// The embedding preset cannot chat, so offering it as a subagent
+			// model teaches the model to dispatch into a guaranteed failure.
+			if pname == rc.EmbeddingPreset {
+				continue
+			}
 			p := cfg.Models.Presets[pname]
 			notes := make([]string, 0, 2)
 			if note := presetRoleNote(bindings, pname); note != "" {
@@ -404,9 +437,9 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 		}
 	}
 	if annotated > 0 {
-		b.WriteString("Choosing a subagent model: match the subtask to the role bindings written above — the role bindings are the user's own task-to-model ranking. Give a review or security-review subtask the preset bound to that role, and give quick lookups, titles, or summaries a preset marked cheap. Prefer bound presets over unbound presets and discovered models for tool-heavy subtasks, and prefer a preset marked local when the subtask touches secrets or private data. Only capabilities written on these lines are claimed; when no listed model suits the subtask, dispatch without the model argument and the parent's default model is used.\n")
+		b.WriteString("Pick a subagent model by the role bindings above (the user's own ranking); prefer a preset marked local for secrets or private data; omit model to use your own.\n")
 	}
-	b.WriteString("model must be a provider/model pair; the provider must be configured. The listed presets are only what is configured locally — any model the provider serves is valid, and discovered entries above reflect each provider's current model list.")
+	b.WriteString("model must be a provider/model pair from a configured provider.")
 	return b.String()
 }
 
@@ -473,10 +506,6 @@ func baseRulesFor(systemAccess bool) string {
 // (skills.max_active) and misfit loads waste both the budget and the
 // context window.
 const skillDirective = `Skills are instruction sets you load on demand with skill.load. Deciding to load one is YOUR job — load skills whose description directly matches what you are about to do, BEFORE acting. Active skills are budgeted; don't over-load. When a loaded skill tells you to dispatch or spawn a subagent, use the agent.run tool.`
-
-const todoAddendum = `
-Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end. When the carried-over list is corrupted or stale and you need to replace it wholesale, pass "drop_unfinished": true — the submitted list becomes the whole list and no items are carried over.
-`
 
 const FinalizationDirective = `You are being asked to stop using tools and conclude this turn. Produce the best final answer you can from the transcript, context pack, and tool results already gathered. Do NOT call tools. If a required fact is genuinely missing, state what you would check next and give your best partial answer. Respond with a single action of type "final".`
 
@@ -690,12 +719,6 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	b.WriteString(baseEnvironment(workingDir))
 	b.WriteString("\n\n")
 	b.WriteString(baseRulesFor(opts.SystemAccess))
-	for _, tool := range tools {
-		if tool.Name == "todo.write" {
-			b.WriteString(todoAddendum)
-			break
-		}
-	}
 	if d := modeDirective(mode); d != "" {
 		b.WriteString("\n\n")
 		b.WriteString(d)

@@ -16,7 +16,9 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
 
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+	// codebase_search is registered only when an embedding route resolves,
+	// so the full-surface assertion needs one configured.
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, Config: embeddingConfig()}); err != nil {
 		t.Fatalf("RegisterAll returned error: %v", err)
 	}
 

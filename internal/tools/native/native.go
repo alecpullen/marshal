@@ -211,9 +211,13 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.modeRequestTool(),
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
-		tools.codebaseSearchTool(),
 		tools.workspaceWorktreeTool(),
 		tools.workspaceFinishTool(),
+	}
+	// codebase_search only works with an embedding route; offering it
+	// otherwise teaches the model a tool that answers "unavailable".
+	if _, err := routing.NewStaticRouter(opts.Config.RoutingConfig()).ResolveEmbedding(); err == nil {
+		all = append(all, tools.codebaseSearchTool())
 	}
 	// shell.sudo is platform-gated (no sudo on Windows) and Deferred: its
 	// full contract is disclosed on demand via tools.select.

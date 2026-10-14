@@ -53,6 +53,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool's approval prompt would be silently allowed. They are stripped
   structurally, which also keeps `web.fetch` — an in-process HTTP client —
   from bypassing the container sandbox's network isolation.
+- Exiting the TUI always marks the session ended, with or without a
+  configured provider.
+
+### Removed
+
+- The background knowledge pass (every 5 turns, at compaction and at exit)
+  and the `memory.write` tool. Only curated memories — confirmed, or
+  promoted to workspace/global scope — are injected into the prompt.
+- Per-turn skill suggestions and the embedding skill ranker.
+- The repo card, directory map and recent-session summaries from the
+  context pack.
+- The `config.*` write tools (`config.write` and its 29 per-section
+  `set`/`delete` tools); `config.read` remains. Use `/settings`, `/models`
+  or `/connect` to change configuration.
+- Repository-specific workflow rules (spec location, reviewer subagent)
+  from the shipped system prompt, and the spec-location note on file writes.
 
 ### Fixed
 

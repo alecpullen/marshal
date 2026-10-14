@@ -196,62 +196,6 @@ func TestPlanFirstRebuildKeepsSystemPrompt(t *testing.T) {
 	}
 }
 
-// The skill hint changes every turn. It must sit after the replayed
-// history, directly before the new goal, so the history stays inside the
-// reusable prefix on a turn's first request.
-func TestSkillHintFollowsReplayedHistory(t *testing.T) {
-	e, candidates := rankFixture()
-	idx := skills.NewIndex()
-	for _, c := range candidates {
-		idx.Set(c.Name, c)
-	}
-	p := &agenttest.ScriptedProvider{Responses: []string{"First answer.", "Second answer."}, FinishReasons: []string{"stop", "stop"}}
-	state := newTestState(t)
-	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	r.NativeTools = true
-	r.SkillIndex = idx
-	r.SkillEmbedder = e
-	r.SetForceClass(string(ClassQuestion))
-
-	const goal = "fix the flaky test" // rankFixture keys its vectors on this text
-	for i := 0; i < 2; i++ {
-		// Run, not RunTask: Run records the user message, which is what
-		// the second turn's history replay reads back.
-		if err := r.Run(context.Background(), goal); err != nil {
-			t.Fatalf("Run %d: %v", i, err)
-		}
-	}
-
-	msgs := p.Requests[len(p.Requests)-1].Messages
-	hint := -1
-	for i, m := range msgs {
-		if strings.HasPrefix(m.Content, "Skill suggestions for this request") {
-			hint = i
-		}
-	}
-	if hint < 0 {
-		t.Fatalf("second turn carried no skill hint: %#v", msgs)
-	}
-	if hint+1 >= len(msgs) || msgs[hint+1].Role != schema.RoleUser || msgs[hint+1].Content != goal {
-		t.Fatalf("hint must sit immediately before the new goal; got %#v", msgs[hint:])
-	}
-	// History replay may wrap the old goal, so match by substring, and
-	// insist the replay is really there: without it the ordering check
-	// below would pass vacuously.
-	var goals []int
-	for i, m := range msgs {
-		if m.Role == schema.RoleUser && strings.Contains(m.Content, goal) {
-			goals = append(goals, i)
-		}
-	}
-	if len(goals) < 2 {
-		t.Fatalf("history replay did not carry the first turn's goal (fixture problem, not the hint): %#v", msgs)
-	}
-	if goals[0] >= hint {
-		t.Fatalf("replayed first-turn goal (index %d) must precede the hint (index %d)", goals[0], hint)
-	}
-}
-
 // anchorIndex returns the index of the single CacheAnchor message, failing
 // the test when there is not exactly one.
 func anchorIndex(t *testing.T, msgs []schema.ChatMessage) int {
@@ -268,13 +212,52 @@ func anchorIndex(t *testing.T, msgs []schema.ChatMessage) int {
 	return idx
 }
 
-func hintIndex(msgs []schema.ChatMessage) int {
-	for i, m := range msgs {
-		if strings.HasPrefix(m.Content, "Skill suggestions for this request") {
-			return i
+// skillFixture is a small installed-skill roster. It carries no embedder:
+// skill hints are gone, so nothing ranks these against the goal.
+func skillFixture() []skills.Skill {
+	return []skills.Skill{
+		{Name: "tdd", Description: "test-driven development workflow"},
+		{Name: "cooking", Description: "recipes for dinner"},
+		{Name: "lint", Description: "bulk lint fixing"},
+	}
+}
+
+// No request may carry a per-turn skill suggestion message. Edit-class
+// turns used to get TDD/verification suggestions from class defaults even
+// without an embedder; this pins that the whole mechanism is gone and the
+// goal directly follows the cache anchor.
+func TestNoSkillHintMessageOnWire(t *testing.T) {
+	idx := skills.NewIndex()
+	for _, c := range skillFixture() {
+		idx.Set(c.Name, c)
+	}
+	idx.Set("test-driven-development", skills.Skill{Name: "test-driven-development", Description: "tests first"})
+	idx.Set("verification-before-completion", skills.Skill{Name: "verification-before-completion", Description: "verify"})
+	p := &agenttest.ScriptedProvider{Responses: []string{"First answer.", "Second answer."}, FinishReasons: []string{"stop", "stop"}}
+	state := newTestState(t)
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.SkillIndex = idx
+	r.SetForceClass(string(ClassEdit))
+
+	const goal = "fix the flaky test"
+	for i := 0; i < 2; i++ {
+		if err := r.Run(context.Background(), goal); err != nil {
+			t.Fatalf("Run %d: %v", i, err)
 		}
 	}
-	return -1
+	for k, req := range p.Requests {
+		for _, m := range req.Messages {
+			if strings.HasPrefix(m.Content, "Skill suggestions for this request") {
+				t.Fatalf("request %d carried a skill hint message", k)
+			}
+		}
+	}
+	first := p.Requests[len(p.Requests)-1].Messages
+	a := anchorIndex(t, first)
+	if a+1 >= len(first) || first[a+1].Role != schema.RoleUser || first[a+1].Content != goal {
+		t.Fatalf("goal must directly follow the anchor; got %#v", first[a:])
+	}
 }
 
 // TestCrossTurnStableRegionIsAppendOnly pins follow-up item 1 (design
@@ -284,7 +267,7 @@ func hintIndex(msgs []schema.ChatMessage) int {
 // automatic prefix cache, and Anthropic's anchor breakpoint, reuse a turn's
 // history on the next turn.
 func TestCrossTurnStableRegionIsAppendOnly(t *testing.T) {
-	e, candidates := rankFixture()
+	candidates := skillFixture()
 	idx := skills.NewIndex()
 	for _, c := range candidates {
 		idx.Set(c.Name, c)
@@ -301,10 +284,9 @@ func TestCrossTurnStableRegionIsAppendOnly(t *testing.T) {
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.NativeTools = true
 	r.SkillIndex = idx
-	r.SkillEmbedder = e
 	r.SetForceClass(string(ClassQuestion))
 
-	const goal = "fix the flaky test" // rankFixture keys its vectors on this text
+	const goal = "fix the flaky test"
 	var firsts []schema.ChatRequest
 	for i := 0; i < 3; i++ {
 		start := len(p.Requests)
@@ -316,8 +298,8 @@ func TestCrossTurnStableRegionIsAppendOnly(t *testing.T) {
 
 	for k, req := range firsts {
 		a := anchorIndex(t, req.Messages)
-		if h := hintIndex(req.Messages); h >= 0 && h <= a {
-			t.Fatalf("turn %d: skill hint (index %d) must come after the anchor (index %d)", k+1, h, a)
+		if a+1 >= len(req.Messages) || req.Messages[a+1].Content != goal {
+			t.Fatalf("turn %d: the goal must directly follow the anchor (index %d)", k+1, a)
 		}
 	}
 	for k := 1; k < len(firsts); k++ {
@@ -343,17 +325,15 @@ func TestCrossTurnStableRegionIsAppendOnly(t *testing.T) {
 }
 
 // Review focus 3: a wire rebuilt by compaction carries exactly one anchor,
-// before the hint and the goal.
-func TestHandoffWireAnchorsBeforeHint(t *testing.T) {
-	_, candidates := rankFixture()
+// with the goal directly after it.
+func TestHandoffWireGoalFollowsAnchor(t *testing.T) {
 	idx := skills.NewIndex()
-	for _, c := range candidates {
+	for _, c := range skillFixture() {
 		idx.Set(c.Name, c)
 	}
 	p := &agenttest.ScriptedProvider{Responses: []string{"progress summary"}}
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
 	r.SkillIndex = idx
-	r.skillHints = []string{"tdd"}
 
 	old := []schema.ChatMessage{
 		{Role: schema.RoleSystem, Content: "sys"},
@@ -364,9 +344,8 @@ func TestHandoffWireAnchorsBeforeHint(t *testing.T) {
 		t.Fatalf("summarizeAndContinue: %v", err)
 	}
 	a := anchorIndex(t, fresh)
-	h := hintIndex(fresh)
-	if h < 0 || h <= a {
-		t.Fatalf("hint (index %d) must follow the anchor (index %d)", h, a)
+	if a+1 >= len(fresh) || fresh[a+1].Content != "fix the bug" {
+		t.Fatalf("goal must directly follow the anchor (index %d): %#v", a, fresh[a:])
 	}
 }
 

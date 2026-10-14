@@ -97,8 +97,8 @@ const (
 	// ContentTypeSkillAuto records the skills the ranker auto-loaded at the
 	// start of one turn. Content is the newline-separated skill names.
 	//
-	// Legacy: the ranker no longer auto-loads skills (it emits hints
-	// instead — see internal/agent/skillrank.go). This content type is
+	// Legacy: the ranker no longer auto-loads skills (skill hints were
+	// removed in the context-diet Tier 1 work). This content type is
 	// retained so old session transcripts still render correctly. No new
 	// messages with this type are produced.
 	//

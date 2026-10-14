@@ -486,31 +486,6 @@ func baseRulesFor(systemAccess bool) string {
 // context window.
 const skillDirective = `Skills are instruction sets you load on demand with skill.load. Deciding to load one is YOUR job — load skills whose description directly matches what you are about to do, BEFORE acting. Active skills are budgeted; don't over-load. When a loaded skill tells you to dispatch or spawn a subagent, use the agent.run tool.`
 
-// BuildSkillHintMessage renders this turn's ranked skill suggestions as its
-// own system message.
-//
-// It is deliberately NOT part of the system prompt: hints are recomputed
-// every turn from the goal, and messages[0] is the provider's cache prefix.
-// Folding per-turn content into it would miss the cache on every request,
-// on a tool that measures exactly that (db.turn_metrics.cache_read_tokens).
-//
-// The wording keeps the decision with the model. Similarity ranking cannot
-// tell "a skill applies" from "no skill applies" — measured separation is
-// negative — so this is a shortlist, never an instruction.
-func BuildSkillHintMessage(hints []skills.Skill) (schema.ChatMessage, bool) {
-	if len(hints) == 0 {
-		return schema.ChatMessage{}, false
-	}
-	var b strings.Builder
-	b.WriteString("Skill suggestions for this request, ranked by description similarity.\n")
-	b.WriteString("This ranking is a shortlist, not a judgement: it cannot tell whether any skill actually applies.\n")
-	b.WriteString("Load one with skill.load ONLY if its description matches what you are about to do. Ignoring all of them is a normal outcome.\n\n")
-	for _, sk := range hints {
-		b.WriteString(fmt.Sprintf("- `%s` — %s\n", sk.Name, sk.Description))
-	}
-	return schema.ChatMessage{Role: schema.RoleSystem, Content: b.String()}, true
-}
-
 const todoAddendum = `
 Use todo.write for any user request with 3 or more steps, or when the user lists multiple requirements. After completing each requirement, update the todo list immediately. Never batch-complete all items at the end. When the carried-over list is corrupted or stale and you need to replace it wholesale, pass "drop_unfinished": true — the submitted list becomes the whole list and no items are carried over.
 `

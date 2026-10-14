@@ -138,7 +138,21 @@ export interface WireBand {
   /** When the stale clock started (unix ms); ticks the age between patches. */
   staleSince?: number
   next?: string[]
+  /** The whole list, for the Tasks tab: sent whenever there is one, idle or not. */
+  tasks?: WireTask[]
   entities?: WireBandEntity[]
+}
+/** One todo in the Tasks tab, with its share of the transcript. Times are unix ms. */
+export interface WireTask {
+  id?: string
+  content: string
+  status: string
+  startedAt?: number
+  completedAt?: number
+  steps?: number
+  workMs?: number
+  /** The first beat worked under it, where a click jumps. */
+  ref?: string
 }
 /** One running card the band lists. */
 export interface WireBandEntity {

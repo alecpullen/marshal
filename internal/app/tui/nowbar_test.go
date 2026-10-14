@@ -107,6 +107,45 @@ func TestNowBarCapsAtSixRows(t *testing.T) {
 	}
 }
 
+// A tall frame opens the checklist into one row per waiting item, as far as
+// the rows the cards leave free, counting the rest on the last row.
+func TestNowBarTallFrameOpensTheChecklist(t *testing.T) {
+	in := baseNowBarInput()
+	in.Height = nowBarTallHeight
+	in.Band = viewmodel.BandInfo{Todos: true, Done: 1, Total: 8, Active: "A",
+		Next: []string{"B", "C", "D", "E", "F", "G"}}
+	p := planNowBar(in)
+	got := make([]string, len(p.rows))
+	for i, r := range p.rows {
+		got[i] = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ansi.Strip(r)), "▍"))
+	}
+	want := []string{glyph.Ambient + " B", glyph.Ambient + " C", glyph.Ambient + " D", glyph.Ambient + " E", "… +2 more"}
+	if len(p.rows) != nowBarMaxRows || strings.Join(got[1:], "|") != strings.Join(want, "|") {
+		t.Fatalf("rows = %q, want the head then %q", got, want)
+	}
+	for _, r := range p.rows {
+		if w := lipgloss.Width(r); w > in.Width {
+			t.Fatalf("row %q is %d cells, frame is %d", ansi.Strip(r), w, in.Width)
+		}
+	}
+
+	// Cards keep their rows: with three running, the list has two rows left,
+	// too few to name two items and count the rest, so it folds back to the
+	// summary line.
+	in.JobTexts = []string{"job-1", "job-2", "job-3"}
+	p = planNowBar(in)
+	if len(p.rows) != 5 || !strings.Contains(ansi.Strip(p.rows[1]), "next: B") {
+		t.Fatalf("with cards: rows = %q, want the head, the summary line and the cards", stripANSI(strings.Join(p.rows, "\n")))
+	}
+
+	// Below the tall height the summary line is all the list gets.
+	in.JobTexts = nil
+	in.Height = nowBarTallHeight - 1
+	if p = planNowBar(in); len(p.rows) != 2 {
+		t.Fatalf("short frame: rows = %d, want the head and the summary line", len(p.rows))
+	}
+}
+
 func nowBarTodos(statuses ...string) []native.TodoItem {
 	out := make([]native.TodoItem, len(statuses))
 	for i, s := range statuses {

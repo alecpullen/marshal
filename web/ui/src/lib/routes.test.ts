@@ -83,6 +83,7 @@ describe('chat route', () => {
 
   it('drops bad dock and tab values and rejects non-chat hashes', () => {
     expect(parseChatRoute('#chat/a?dock=huge&tab=nope&node=')).toEqual({ id: 'a', view: 'session' })
+    expect(parseChatRoute('#chat/a?tab=tasks')).toEqual({ id: 'a', view: 'session', tab: 'tasks' })
     expect(parseChatRoute('#fleet')).toBeNull()
     expect(parseChatRoute('#chat/')).toBeNull()
   })

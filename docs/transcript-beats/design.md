@@ -145,8 +145,12 @@ At most 1 + 1 + 4 lines above the input:
 
 - Line 1: progress from todos only (count, active todo, elapsed), plus the
   stale tag (§4b) in dim amber.
-- Line 2: collapsed done count, next waiting items on one line, `+N`. The
-  full list opens via the session sheet.
+- Line 2: collapsed done count, next waiting items on one line, `+N`. On a
+  TUI frame of 44 rows or more (`nowBarTallHeight`) with entity rows to spare,
+  it opens into one row per waiting item, the last counting the rest; running
+  cards keep priority, so the list folds back to one line as cards start. It
+  only opens when it can name at least two items. The full list is the Tasks
+  view (§4c).
 - Entity rows: running subagents **and** background jobs, one line each, max
   4, then `+N more`. A row disappears when its entity finishes.
 - Lines 1–2 are omitted when the list is shorter than 2 or the turn never
@@ -187,6 +191,26 @@ the plan changed.
 - Only the actor that owns the list (the orchestrator); never subagents.
 - Not a transcript row. The band's stale tag clears on the next write.
 
+### 4c. Tasks views
+
+The band shows the active item and what is next, and only while a turn runs.
+The whole list has its own view on each client:
+
+- **TUI:** Ctrl+T opens the Tasks panel in the dock; it refreshes live, so
+  left open it is a pinned list.
+- **Web:** a Tasks tab in the session dock, beside Inspect and Changes. Each
+  row has the status glyph, the step count and finished working time, and
+  jumps to the first beat worked under it. Clicking the band's progress row
+  opens the tab. A change to the list while another tab shows marks the tab
+  with a dot; it never switches tabs on its own, since the list moves on every
+  todo write.
+
+Both views stay up when the turn ends, so an unfinished list the band has
+dropped is still there to read. Both read `BandInfo.Tasks`, which viewmodel
+fills whenever the session has a list, with each item's counts from
+`TaskStats` — the same beats the transcript draws under the todo's divider —
+so the TUI, the web and the transcript agree.
+
 ### 5. Output polish
 
 - Shell output: omit `stdout:`/`stderr:` labels when only one stream has
@@ -223,8 +247,11 @@ the plan changed.
   in `roots`, so a transcript walk ignores it while the existing stack-patch
   protocol carries it unchanged. `{todos?, done, total, active?, stale?,
   staleAgeMs?, staleSince?, next[], entities: [{ref, label, detail?,
-  startedAt?}]}`. `todos` is set only while a turn runs, so every client hides
-  an idle list alike; `staleSince` lets a client tick the stale age between
+  startedAt?}], tasks?: [{id?, content, status, startedAt?, completedAt?,
+  steps?, workMs?, ref?}]}`. `todos` is set only while a turn runs, so every
+  client hides an idle list alike; `tasks` is the whole list for the Tasks
+  views (§4c) and is sent whenever there is one, with `ref` the first beat
+  bound to the item; `staleSince` lets a client tick the stale age between
   patches, and the ACP projector wakes itself when the tag would appear on
   elapsed time alone.
 - **Subagent cards:** unchanged on the wire. They now render as one activity

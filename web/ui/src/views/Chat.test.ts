@@ -264,6 +264,54 @@ describe('Chat', () => {
       expect((screen.getByRole('tab', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(false)
     })
 
+    describe('tasks', () => {
+      const band = (bStatus: string) => ({
+        id: 'band',
+        kind: 'band',
+        band: {
+          todos: true,
+          done: 1,
+          total: 3,
+          active: 'Second',
+          tasks: [
+            { id: 'a', content: 'First', status: 'completed', steps: 2, workMs: 90000, ref: 'step:1' },
+            { id: 'b', content: 'Second', status: bStatus },
+            { id: 'c', content: 'Third', status: 'pending' },
+          ],
+        },
+      })
+      const patch = (payload: object) => {
+        const call = (connectSSE as Mock).mock.calls.at(-1)![0] as { onEvent: (e: unknown) => void }
+        call.onEvent({ type: 'message', message: { data: JSON.stringify({ method: 'session/update', params: { sessionId: 's1', update: payload } }) } })
+      }
+
+      it("opens from the band's progress row and jumps to where a task started", async () => {
+        const scroll = vi.fn()
+        Element.prototype.scrollIntoView = scroll
+        ;(api.getStack as Mock).mockResolvedValue(tree([band('in_progress')]))
+        render(Chat, { sessionId: 's1', onBack: () => {} })
+        await fireEvent.click(await screen.findByTestId('band-progress'))
+        expect(screen.getByRole('tab', { name: 'Tasks' }).getAttribute('aria-selected')).toBe('true')
+        const rows = within(screen.getByTestId('tasks')).getAllByTestId('task-row')
+        expect(rows.map((r) => r.getAttribute('data-status'))).toEqual(['completed', 'in_progress', 'pending'])
+        expect(rows[0].textContent).toContain('2 steps · 1m30s')
+        expect((rows[1] as HTMLButtonElement).disabled).toBe(true)
+        await fireEvent.click(rows[0])
+        await waitFor(() => expect(scroll).toHaveBeenCalled())
+      })
+
+      it('marks the Tasks tab when the list changes while another tab is showing', async () => {
+        ;(api.getStack as Mock).mockResolvedValue(tree([band('in_progress')]))
+        render(Chat, { sessionId: 's1', onBack: () => {} })
+        await screen.findByTestId('band-progress')
+        expect(screen.queryByTestId('tasks-unseen')).toBeNull()
+        patch({ kind: 'stack_patch', rev: 2, baseRev: 1, roots: ['turn:1'], upsert: [band('completed')] })
+        expect(await screen.findByTestId('tasks-unseen')).toBeTruthy()
+        await fireEvent.click(screen.getByRole('tab', { name: 'Tasks' }))
+        expect(screen.queryByTestId('tasks-unseen')).toBeNull()
+      })
+    })
+
     it('renders the strip when the stored size is collapsed', async () => {
       localStorage.setItem('marshal.ui.dock', JSON.stringify({ size: 'collapsed', width: 440 }))
       ;(api.getStack as Mock).mockResolvedValue(tree())

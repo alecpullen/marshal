@@ -408,7 +408,7 @@ type Model struct {
 	copyRemote func() bool
 	// taskStats counts steps and work time per todo as the transcript groups them (with the
 	// render-time re-binding), so the Tasks panel agrees with the headers.
-	taskStats   map[string]taskStat
+	taskStats   map[string]viewmodel.TaskStat
 	cursor      viewmodel.NodeID
 	browseItems []browseItem
 	browseTree  map[viewmodel.NodeID]*viewmodel.Node

@@ -18,6 +18,7 @@
   import InspectTab from '../lib/dock/InspectTab.svelte'
   import ChangesTab from '../lib/dock/ChangesTab.svelte'
   import FilesTab, { type OpenRequest } from '../lib/dock/FilesTab.svelte'
+  import TasksTab from '../lib/dock/TasksTab.svelte'
   import StatusShare from '../lib/StatusShare.svelte'
   import OpsTabs from '../lib/dock/OpsTabs.svelte'
   import { createNodeCache } from '../lib/dock/nodeCache'
@@ -156,6 +157,21 @@
     const prev = editKey
     editKey = key
     if (prev !== undefined && key && key !== prev) dispatch({ type: 'liveEdit' })
+  })
+
+  // A changed task list marks the Tasks tab. The list belongs to the shown
+  // transcript, so drilling in or out sets a new baseline rather than counting
+  // as a change.
+  let tasksKey: string | undefined
+  let tasksOwner: number | undefined
+  $effect(() => {
+    if ($shown.status !== 'ready') return
+    const owner = drill.at(-1)?.subagentId ?? -1
+    const key = ($shown.nodes.get('band')?.band?.tasks ?? []).map((t) => `${t.id ?? ''}:${t.status}:${t.content}`).join('\n')
+    const prev = owner === tasksOwner ? tasksKey : undefined
+    tasksKey = key
+    tasksOwner = owner
+    if (prev !== undefined && key !== prev) untrack(() => dispatch({ type: 'tasksChanged' }))
   })
 
   const gateFailed = $derived(gateState(agent?.gate) === 'failed')
@@ -653,7 +669,7 @@
   {/if}
 
   {#if useStack}
-    <NowBar stack={$stack} {now} hint={stopHint} selecting={dock.mode === 'select'} onStop={() => actions.cancel()} onJumpLive={jumpToLive} />
+    <NowBar stack={$stack} {now} hint={stopHint} selecting={dock.mode === 'select'} onStop={() => actions.cancel()} onJumpLive={jumpToLive} onOpenTasks={() => dispatch({ type: 'openTab', tab: 'tasks' })} />
     {#if browsing}
       <div class="browse-hint" role="status">browse · j/k move · J/K jump · Enter detail · z fold · y copy · Esc exit</div>
     {/if}
@@ -673,6 +689,8 @@
         <ChangesTab agentId={sessionId} {sessionId} stack={$stack} {dock} drilled={drill.length > 0} gate={agent?.gate} changedFiles={row?.changedFiles ?? 0} />
       {:else if dock.tab === 'files'}
         <FilesTab agentId={sessionId} stack={$shown} {dock} request={fileRequest} />
+      {:else if dock.tab === 'tasks'}
+        <TasksTab stack={$shown} {now} onJump={scrollToNode} />
       {/if}
       <OpsTabs agentId={sessionId} {sessionId} {subagentId} stack={$shown} {dock} {cache} {row} onTerminalOutput={() => dispatch({ type: 'terminalOutput' })} />
     </Dock>

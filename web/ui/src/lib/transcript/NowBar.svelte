@@ -12,6 +12,7 @@
     selecting = false,
     onStop,
     onJumpLive,
+    onOpenTasks,
   }: {
     stack: StackState
     now: number
@@ -20,6 +21,8 @@
     selecting?: boolean
     onStop: () => void
     onJumpLive?: () => void
+    /** Opens the full list; the progress row is its handle when given. */
+    onOpenTasks?: () => void
   } = $props()
 
   const live = $derived([...stack.nodes.values()].filter((n) => n.live))
@@ -73,7 +76,7 @@
     {/if}
 
     {#if band?.todos}
-      <div class="flex items-center gap-2 px-4 pt-1.5" data-testid="band-progress">
+      {#snippet progressRow()}
         {#if progress}<span class="shrink-0 font-mono text-accent">{progress}</span>{/if}
         <!-- Count and active item are one phrase ("2/9 · Task 2") in one
              element, so the count can never survive while the item it belongs
@@ -85,7 +88,20 @@
           {/if}
           {#if elapsed}<span class="font-mono text-muted">{elapsed}</span>{/if}
         </span>
-      </div>
+      {/snippet}
+      {#if onOpenTasks}
+        <button
+          type="button"
+          class="flex w-full cursor-pointer items-center gap-2 px-4 pt-1.5 text-left hover:text-fg"
+          title="Show all tasks"
+          onclick={onOpenTasks}
+          data-testid="band-progress"
+        >
+          {@render progressRow()}
+        </button>
+      {:else}
+        <div class="flex items-center gap-2 px-4 pt-1.5" data-testid="band-progress">{@render progressRow()}</div>
+      {/if}
       {#if checklist}
         <div class="flex items-center gap-2 px-4 pt-0.5 text-muted" data-testid="band-checklist">
           <!-- One element per phrase, so the done count and the next items

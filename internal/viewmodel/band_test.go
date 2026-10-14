@@ -83,3 +83,38 @@ func TestBandHidesTodosWhenIdle(t *testing.T) {
 		t.Fatalf("StaleAt = %v, want %v (the write plus the stale age)", b.StaleAt, want)
 	}
 }
+
+// The Tasks views show the whole list with each item's share of the
+// transcript, idle included: the list outlives the band's own gating, so an
+// unfinished one is still there to read once the turn ends.
+func TestBandTasksCarryTheWholeListWhenIdle(t *testing.T) {
+	s := Snapshot{Items: []session.TranscriptItem{userMsg(1, 0), todoWrite(1, "w", 1, `{"todos":[]}`), narration(2, 1, 1, "On A.")},
+		Steps: []session.Step{stepOf(1, 1, 1, 4)}, Now: at(10),
+		Todos: todos(db.TodoItem{ID: "a", Content: "A\x07", Status: "in_progress", StartedAt: at(1)}, db.TodoItem{ID: "b", Content: "B", Status: "pending"})}
+	s.Steps[0].TodoID = "a"
+	turns := Build(s)
+	var beat NodeID
+	for _, n := range turns[len(turns)-1].Children {
+		if n.Kind == KindStep {
+			beat = n.ID
+		}
+	}
+	b := BandOf(s, turns)
+	if b.Todos || len(b.Tasks) != 2 {
+		t.Fatalf("idle band: todos=%v tasks=%+v, want the list without the pinned rows", b.Todos, b.Tasks)
+	}
+	a := b.Tasks[0]
+	if a.Content != "A" || a.Status != "in_progress" || !a.StartedAt.Equal(at(1)) {
+		t.Fatalf("task a = %+v, want scrubbed content and its status and start", a)
+	}
+	if a.Steps != 1 || a.Work != at(4).Sub(at(1)) || beat == (NodeID{}) || a.First != beat {
+		t.Fatalf("task a stat = %+v, want the one beat bound to it", a.TaskStat)
+	}
+	if b.Tasks[1].Steps != 0 || b.Tasks[1].First != (NodeID{}) {
+		t.Fatalf("task b = %+v, want no beats yet", b.Tasks[1])
+	}
+	w := ProjectBand(b).Band
+	if len(w.Tasks) != 2 || w.Tasks[0].Ref != a.First.Key || w.Tasks[0].WorkMs != 3000 || w.Tasks[1].Ref != "" {
+		t.Fatalf("wire tasks = %+v", w.Tasks)
+	}
+}

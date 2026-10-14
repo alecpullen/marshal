@@ -23,9 +23,53 @@ type BandInfo struct {
 	// StaleAt is when the band would turn stale with no further event: the
 	// tag can appear on elapsed time alone, so a projector that refreshes
 	// only on events must wake for it. Zero when no such moment is ahead.
-	StaleAt  time.Time
-	Next     []string // waiting items after the active one, in list order
+	StaleAt time.Time
+	Next    []string // waiting items after the active one, in list order
+	// Tasks is the whole list with each item's share of the transcript. It
+	// is not gated like Todos: the Tasks views show a short list, and one
+	// left unfinished when the turn ended, which the band itself drops.
+	Tasks    []BandTask
 	Entities []BandEntity
+}
+
+// BandTask is one todo in the full list the Tasks views show.
+type BandTask struct {
+	ID, Content, Status    string
+	StartedAt, CompletedAt time.Time
+	TaskStat
+}
+
+// TaskStat is a todo's share of the transcript: the beats bound to it, their
+// responses and finished working time. It is counted from the same beats the
+// transcript draws under the todo's divider, so the views always agree.
+type TaskStat struct {
+	Steps int
+	Work  time.Duration
+	// First is the first beat bound to the todo, where a jump to it lands;
+	// the zero NodeID when no beat has worked on it yet.
+	First NodeID
+}
+
+// TaskStats sums the responses and working time bound to each todo.
+func TaskStats(turns []*Node) map[string]TaskStat {
+	stats := map[string]TaskStat{}
+	for _, turn := range turns {
+		for _, n := range turn.Children {
+			if n.Kind != KindStep || n.Step == nil || n.Step.TodoID == "" {
+				continue
+			}
+			st := stats[n.Step.TodoID]
+			if st.First == (NodeID{}) {
+				st.First = n.ID
+			}
+			st.Steps += max(len(n.Step.StepIDs), 1)
+			if s, e := n.Step.Step.StartedAt, n.Step.Step.EndedAt; !s.IsZero() && e.After(s) {
+				st.Work += e.Sub(s)
+			}
+			stats[n.Step.TodoID] = st
+		}
+	}
+	return stats
 }
 
 // BandEntity is one running card the band lists.
@@ -78,6 +122,17 @@ func TodoClockOf(s Snapshot) session.TodoClock {
 // BandOf builds the band for the latest turn.
 func BandOf(s Snapshot, turns []*Node) BandInfo {
 	var b BandInfo
+	if len(s.Todos) > 0 {
+		stats := TaskStats(turns)
+		b.Tasks = make([]BandTask, len(s.Todos))
+		for i, t := range s.Todos {
+			b.Tasks[i] = BandTask{ID: t.ID, Content: ScrubText(t.Content), Status: t.Status,
+				StartedAt: t.StartedAt, CompletedAt: t.CompletedAt}
+			if t.ID != "" {
+				b.Tasks[i].TaskStat = stats[t.ID]
+			}
+		}
+	}
 	if len(turns) > 0 && taskMode(s.Todos) && DrivenByTodos(turns[len(turns)-1]) {
 		b.Total = len(s.Todos)
 		active := -1

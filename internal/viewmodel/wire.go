@@ -60,9 +60,26 @@ type WireBand struct {
 	StaleAgeMs int64  `json:"staleAgeMs,omitempty"`
 	// StaleSince is when the stale clock started (unix ms), so a client can
 	// keep the age current between patches.
-	StaleSince int64            `json:"staleSince,omitempty"`
-	Next       []string         `json:"next,omitempty"`
-	Entities   []WireBandEntity `json:"entities,omitempty"`
+	StaleSince int64    `json:"staleSince,omitempty"`
+	Next       []string `json:"next,omitempty"`
+	// Tasks is the whole list for the Tasks tab. Unlike todos it is sent
+	// whenever the session has a list, idle or not.
+	Tasks    []WireTask       `json:"tasks,omitempty"`
+	Entities []WireBandEntity `json:"entities,omitempty"`
+}
+
+// WireTask is one todo in the Tasks tab, with its share of the transcript.
+// Times are Unix milliseconds; zero means unset.
+type WireTask struct {
+	ID          string `json:"id,omitempty"`
+	Content     string `json:"content"`
+	Status      string `json:"status"`
+	StartedAt   int64  `json:"startedAt,omitempty"`
+	CompletedAt int64  `json:"completedAt,omitempty"`
+	Steps       int    `json:"steps,omitempty"`
+	WorkMs      int64  `json:"workMs,omitempty"`
+	// Ref is the first beat bound to the todo, where a click jumps.
+	Ref string `json:"ref,omitempty"`
 }
 
 // WireBandEntity is one running card the band lists.
@@ -80,6 +97,10 @@ func ProjectBand(b BandInfo) WireNode {
 		StaleAgeMs: b.StaleAge.Milliseconds(), StaleSince: ms(b.StaleSince)}
 	for _, n := range b.Next {
 		wb.Next = append(wb.Next, ScrubText(n))
+	}
+	for _, t := range b.Tasks {
+		wb.Tasks = append(wb.Tasks, WireTask{ID: t.ID, Content: ScrubText(t.Content), Status: t.Status,
+			StartedAt: ms(t.StartedAt), CompletedAt: ms(t.CompletedAt), Steps: t.Steps, WorkMs: t.Work.Milliseconds(), Ref: t.First.Key})
 	}
 	for _, e := range b.Entities {
 		wb.Entities = append(wb.Entities, WireBandEntity{Ref: e.Ref.Key, Label: ScrubText(e.Label), Detail: ScrubText(e.Detail), StartedAt: ms(e.Started)})

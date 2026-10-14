@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"strings"
-	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/theme"
@@ -201,7 +200,7 @@ func (m *Model) refreshViewport() {
 	m.pruneRenderState(seen)
 	m.nodeRegions = regions
 	m.setBrowseItems(bitems, tree)
-	m.taskStats = countTodoStats(turns)
+	m.taskStats = viewmodel.TaskStats(turns)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	var sb strings.Builder
@@ -331,32 +330,6 @@ func (m *Model) noteRegionRows(id viewmodel.NodeID, rows int) {
 	if rows > m.regionRows[id] {
 		m.regionRows[id] = rows
 	}
-}
-
-// taskStat is what the Tasks panel shows per todo, taken from the same task
-// nodes as the transcript headers so the two always agree.
-type taskStat struct {
-	steps int
-	work  time.Duration
-}
-
-// countTodoStats sums the responses and working time bound to each todo.
-func countTodoStats(turns []*viewmodel.Node) map[string]taskStat {
-	stats := map[string]taskStat{}
-	for _, turn := range turns {
-		for _, n := range turn.Children {
-			if n.Kind != viewmodel.KindStep || n.Step == nil || n.Step.TodoID == "" {
-				continue
-			}
-			st := stats[n.Step.TodoID]
-			st.steps += max(len(n.Step.StepIDs), 1)
-			if s, e := n.Step.Step.StartedAt, n.Step.Step.EndedAt; !s.IsZero() && e.After(s) {
-				st.work += e.Sub(s)
-			}
-			stats[n.Step.TodoID] = st
-		}
-	}
-	return stats
 }
 
 // collectSeen records every node ID a block can address: the block, its rows,

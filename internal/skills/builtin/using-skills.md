@@ -21,8 +21,8 @@ task but is never loaded might as well not exist.
 ## Known chains
 
 - New feature or behaviour change: brainstorming (interrogate → design
-  sections → spec at `docs/specs/` → user review) → marshal-writing-plans
-  (consumes the approved spec, plan at `docs/plans/` with verbatim code for
+  sections → spec at the repo's spec location, default `docs/specs/` → user review) → marshal-writing-plans
+  (consumes the approved spec, plan at the repo's plan location, default `docs/plans/`, with verbatim code for
   mechanical edits and prose + verified anchors for judgment edits, then
   self-reviews and waits for user approval) → marshal-executing-plans
   (executes the approved plan task-by-task, applying embedded code verbatim).

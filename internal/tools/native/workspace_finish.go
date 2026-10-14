@@ -28,6 +28,7 @@ func (t *toolSet) workspaceFinishTool() registry.Tool {
 	tool := registry.Tool{
 		Name: "workspace.finish",
 		Description: "Merge the session's worktree branch into the base branch (squash by default, squash=false for --no-ff), then remove the worktree and delete the branch. " +
+			"Use this instead of shell.run git merge, and pop or drop any stash you created before calling it. " +
 			"Guards: refuses when the project checkout is dirty or its HEAD moved. Commit any worktree changes first, or pass message to commit them.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"},"squash":{"type":"boolean"},"target":{"type":"string"}},"additionalProperties":false}`),
 		Risk:   registry.RiskWorkspaceWrite,

@@ -1018,52 +1018,23 @@ func TestBaseRulesEncourageEarlyFinal(t *testing.T) {
 	}
 }
 
-func TestBaseRulesNudgesReviewerSubagent(t *testing.T) {
-	want := "dispatch a reviewer subagent with agent.run instead of reviewing inline"
-	if !strings.Contains(baseRules, want) {
-		t.Errorf("baseRules missing reviewer subagent nudge %q", want)
-	}
-}
-
-func TestBaseRulesIncludeWorkflowConventions(t *testing.T) {
-	for _, want := range []string{
-		"Write specs and plans to .docs-archive/superpowers/{specs,plans}/",
-		"Merge sessions with workspace.finish, not shell.run git merge",
-		"REPLACE blocks end with >>>>>>> REPLACE",
-	} {
-		if !strings.Contains(baseRules, want) {
-			t.Errorf("baseRules missing workflow convention %q", want)
+// The shipped rules must not carry this repository's own workflow: where
+// specs live, how to review, and how to merge are product-neutral or belong
+// in the repo's AGENTS.md / the relevant tool description.
+func TestBaseRulesCarryNoRepoSpecificWorkflow(t *testing.T) {
+	for _, rules := range []string{baseRules, baseRulesSystem} {
+		for _, banned := range []string{
+			".docs-archive",
+			"dispatch a reviewer subagent",
+			"workspace.finish",
+		} {
+			if strings.Contains(rules, banned) {
+				t.Errorf("base rules must not mention %q:\n%s", banned, rules)
+			}
 		}
-	}
-}
-
-func TestBaseRulesSystemIncludeWorkflowConventions(t *testing.T) {
-	for _, want := range []string{
-		"Write specs and plans to .docs-archive/superpowers/{specs,plans}/",
-		"Merge sessions with workspace.finish, not shell.run git merge",
-		"REPLACE blocks end with >>>>>>> REPLACE",
-	} {
-		if !strings.Contains(baseRulesSystem, want) {
-			t.Errorf("baseRulesSystem missing workflow convention %q", want)
+		if !strings.Contains(rules, ">>>>>>> REPLACE") {
+			t.Errorf("base rules lost the REPLACE terminator rule:\n%s", rules)
 		}
-	}
-}
-
-func TestWorkflowConventionConstants(t *testing.T) {
-	if !strings.Contains(ruleDocsArchive, ".docs-archive/superpowers/") {
-		t.Errorf("ruleDocsArchive missing .docs-archive/superpowers/ path %q", ruleDocsArchive)
-	}
-	if !strings.Contains(ruleWorkspaceFinish, "workspace.finish") {
-		t.Errorf("ruleWorkspaceFinish missing workspace.finish %q", ruleWorkspaceFinish)
-	}
-	if !strings.Contains(ruleReplaceTerminator, ">>>>>>> REPLACE") {
-		t.Errorf("ruleReplaceTerminator missing >>>>>>> REPLACE terminator %q", ruleReplaceTerminator)
-	}
-}
-
-func TestBaseRulesReviewerRuleIsLast(t *testing.T) {
-	if !strings.HasSuffix(baseRules, ruleReviewerSubagent) {
-		t.Errorf("baseRules should end with the reviewer subagent rule:\n%s", baseRules)
 	}
 }
 

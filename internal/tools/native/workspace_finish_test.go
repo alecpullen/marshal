@@ -247,3 +247,16 @@ func TestWorkspaceFinishTargetArgResolvedToSHA(t *testing.T) {
 		t.Fatal("target argument was not resolved via RevParse")
 	}
 }
+
+func TestWorkspaceFinishDescriptionCarriesMergeGuidance(t *testing.T) {
+	tools, err := newToolSet(Options{WorkspaceRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
+	}
+	desc := tools.workspaceFinishTool().Description
+	for _, want := range []string{"instead of shell.run git merge", "stash"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("workspace.finish description missing %q: %s", want, desc)
+		}
+	}
+}

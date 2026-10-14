@@ -217,3 +217,7 @@ change — reviewers should not flag them as violations.
 
 Historical specs, scratch execution plans, and drafts that are not meant to be
 published go in `.docs-archive/` (gitignored).
+
+When asked to review code or completed work in this repository, dispatch a
+reviewer subagent with `agent.run` instead of reviewing inline, unless the
+change is trivially small.

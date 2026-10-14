@@ -27,7 +27,6 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
-	"marshal/internal/app/tui/settings"
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
@@ -448,22 +447,6 @@ func TestBuildAgentRunnerSetsNativeToolsFromProviderCapability(t *testing.T) {
 	}
 	if runner.ResponseFormat != nil {
 		t.Fatalf("runner.ResponseFormat = %+v, want nil in native mode", runner.ResponseFormat)
-	}
-}
-
-func TestBuildAgentRunnerWiresKnowledgeSchedulerObservers(t *testing.T) {
-	ctx := context.Background()
-	cfg := nativeToolAgentConfig("test-provider")
-	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	runner, _, _, _, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "")
-	if err != nil {
-		t.Fatalf("buildAgentRunner: %v", err)
-	}
-	if runner.MetricsObserver == nil {
-		t.Fatal("MetricsObserver should be set so turns drive the knowledge scheduler")
-	}
-	if runner.CompactionObserver == nil {
-		t.Fatal("CompactionObserver should be set so compaction triggers knowledge extraction")
 	}
 }
 
@@ -1644,47 +1627,6 @@ func TestRunDisplaysActiveLegacyRouteWhenAgentConfigured(t *testing.T) {
 	}
 }
 
-func TestRunTriggersKnowledgeEndSessionButSkipsWithNoMessages(t *testing.T) {
-	dir := t.TempDir()
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(origWd)
-
-	now := time.Unix(100, 0)
-	err = Run(context.Background(), bytes.NewBuffer(nil),
-		WithNow(func() time.Time { return now }),
-		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
-			return config.Default(), nil
-		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-			return ProgramResult{}
-		}),
-	)
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	database, dberr := db.Open(db.Path(dir))
-	if dberr != nil {
-		t.Fatalf("open db: %v", dberr)
-	}
-	defer database.Close()
-
-	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
-	got, err := database.GetSession(sessionID)
-	if err != nil {
-		t.Fatalf("GetSession failed: %v", err)
-	}
-	if got.EndedAt != nil || got.Summary != "" {
-		t.Fatalf("expected no session-end write with no messages, got %#v", got)
-	}
-}
-
 func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 	dir := t.TempDir()
 	// Keep the developer's real config and trust store out of the test.
@@ -1826,65 +1768,7 @@ func TestRunResumesExistingSession(t *testing.T) {
 	}
 }
 
-func TestRunUsesLiveConfigForShutdownKnowledgePass(t *testing.T) {
-	oldServer := newKnowledgeTestServer(t, `{"session_summary":"used old config"}`)
-	newServer := newKnowledgeTestServer(t, `{"session_summary":"used reloaded config"}`)
-
-	dir := t.TempDir()
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(origWd)
-
-	now := time.Unix(100, 0)
-	initialCfg := knowledgeEnabledConfig(oldServer.URL, "old-provider")
-	reloadedCfg := knowledgeEnabledConfig(newServer.URL, "new-provider")
-
-	err = Run(context.Background(), bytes.NewBuffer(nil),
-		WithNow(func() time.Time { return now }),
-		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
-			return initialCfg, nil
-		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-			state := modelState(t, model)
-			state.AddMessage(session.RoleUser, "summarize this session", session.ContentTypePlain)
-
-			m := model.(tui.Model)
-			updated, _ := m.Update(settings.ChangedMsg{Cfg: reloadedCfg})
-			_ = updated.(tui.Model)
-			return ProgramResult{}
-		}),
-	)
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	database, dberr := db.Open(db.Path(dir))
-	if dberr != nil {
-		t.Fatalf("open db: %v", dberr)
-	}
-	defer database.Close()
-
-	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
-	got, err := database.GetSession(sessionID)
-	if err != nil {
-		t.Fatalf("GetSession failed: %v", err)
-	}
-	if got.Summary != "used reloaded config" {
-		t.Fatalf("Summary = %q, want %q", got.Summary, "used reloaded config")
-	}
-	if got.EndedAt == nil {
-		t.Fatal("EndedAt is nil, want set")
-	}
-}
-
-func TestRunReturnsProgramRunnerErrorAfterKnowledgeEndSession(t *testing.T) {
-	server := newKnowledgeTestServer(t, `{"session_summary":"runner failed but knowledge ran"}`)
-
+func TestRunMarksSessionEndedEvenWhenProgramRunnerFails(t *testing.T) {
 	dir := t.TempDir()
 	origWd, err := os.Getwd()
 	if err != nil {
@@ -1899,140 +1783,36 @@ func TestRunReturnsProgramRunnerErrorAfterKnowledgeEndSession(t *testing.T) {
 	wantErr := errors.New("program runner failed")
 	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return now }),
-		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
-			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
-		}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return config.Default(), nil }),
 		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-			state := modelState(t, model)
-			state.AddMessage(session.RoleUser, "keep session history", session.ContentTypePlain)
+			modelState(t, model).AddMessage(session.RoleUser, "keep session history", session.ContentTypePlain)
 			return ProgramResult{Err: wantErr}
 		}),
 	)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Run error = %v, want %v", err, wantErr)
 	}
-
 	database, dberr := db.Open(db.Path(dir))
 	if dberr != nil {
 		t.Fatalf("open db: %v", dberr)
 	}
 	defer database.Close()
-
-	sessionID := fmt.Sprintf("sess_%d", now.UnixNano())
-	got, err := database.GetSession(sessionID)
+	got, err := database.GetSession(fmt.Sprintf("sess_%d", now.UnixNano()))
 	if err != nil {
 		t.Fatalf("GetSession failed: %v", err)
 	}
-	if got.Summary != "runner failed but knowledge ran" {
-		t.Fatalf("Summary = %q, want %q", got.Summary, "runner failed but knowledge ran")
-	}
 	if got.EndedAt == nil {
-		t.Fatal("EndedAt is nil, want set")
+		t.Fatal("EndedAt is nil: exit must mark the session ended even with no provider")
+	}
+	if got.Summary != "" {
+		t.Fatalf("Summary = %q, want empty (no knowledge pass)", got.Summary)
 	}
 }
 
-func TestRunBoundsShutdownKnowledgePass(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
-			http.NotFound(w, r)
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}))
-	defer server.Close()
-
-	dir := t.TempDir()
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(origWd)
-
-	now := time.Unix(100, 0)
-	previousTimeout := shutdownKnowledgeTimeout
-	shutdownKnowledgeTimeout = 25 * time.Millisecond
-	defer func() { shutdownKnowledgeTimeout = previousTimeout }()
-
-	start := time.Now()
-	err = Run(context.Background(), bytes.NewBuffer(nil),
-		WithNow(func() time.Time { return now }),
-		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
-			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
-		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-			state := modelState(t, model)
-			state.AddMessage(session.RoleUser, "keep session history", session.ContentTypePlain)
-			return ProgramResult{}
-		}),
-	)
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("Run took %s, want shutdown knowledge pass bounded", elapsed)
-	}
-}
-
-func TestShutdownKnowledgeFeedbackPrinted(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
-			http.NotFound(w, r)
-			return
-		}
-		time.Sleep(200 * time.Millisecond)
-	}))
-	defer server.Close()
-
-	dir := t.TempDir()
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(origWd)
-
-	now := time.Unix(100, 0)
-	previousTimeout := shutdownKnowledgeTimeout
-	shutdownKnowledgeTimeout = 25 * time.Millisecond
-	defer func() { shutdownKnowledgeTimeout = previousTimeout }()
-
-	// Capture stderr by replacing os.Stderr for the duration of Run.
-	origStderr := os.Stderr
-	r, w, _ := os.Pipe()
-	os.Stderr = w
-
-	err = Run(context.Background(), bytes.NewBuffer(nil),
-		WithNow(func() time.Time { return now }),
-		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
-			return knowledgeEnabledConfig(server.URL, "test-provider"), nil
-		}),
-		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-			state := modelState(t, model)
-			state.AddMessage(session.RoleUser, "hello world", session.ContentTypePlain)
-			return ProgramResult{}
-		}),
-	)
-
-	w.Close()
-	os.Stderr = origStderr
-
-	var stderrBuf bytes.Buffer
-	io.Copy(&stderrBuf, r)
-
-	if err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-	if !strings.Contains(stderrBuf.String(), "saving session memories") {
-		t.Fatalf("stderr = %q, want it to contain the feedback line", stderrBuf.String())
-	}
-}
-
-func TestDBMemoryProviderFiltersStaleMemories(t *testing.T) {
+// Only memories a person curated reach the prompt: confirmed project
+// memories, or anything promoted to workspace/global scope. Tentative
+// auto-learned rows and stale rows never do.
+func TestDBMemoryProviderInjectsOnlyCuratedMemories(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -2041,7 +1821,6 @@ func TestDBMemoryProviderFiltersStaleMemories(t *testing.T) {
 	if err := database.Migrate(); err != nil {
 		t.Fatalf("migrate db: %v", err)
 	}
-
 	projectID, err := database.GetOrCreateProject("/repo", "repo")
 	if err != nil {
 		t.Fatalf("GetOrCreateProject failed: %v", err)
@@ -2050,34 +1829,28 @@ func TestDBMemoryProviderFiltersStaleMemories(t *testing.T) {
 	if err := database.CreateSession("sess_1", projectID, "", now); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	if err := database.SaveMemory(projectID, "fact", "keep me", "sess_1", now); err != nil {
-		t.Fatalf("SaveMemory confirmed failed: %v", err)
-	}
-	if err := database.SaveMemory(projectID, "fact", "drop me", "sess_1", now); err != nil {
-		t.Fatalf("SaveMemory stale failed: %v", err)
+	for _, text := range []string{"tentative note", "confirmed note", "stale note"} {
+		if err := database.SaveMemory(projectID, "fact", text, "sess_1", now); err != nil {
+			t.Fatalf("SaveMemory %q: %v", text, err)
+		}
 	}
 	stored, err := database.GetMemories(projectID)
-	if err != nil {
-		t.Fatalf("GetMemories failed: %v", err)
+	if err != nil || len(stored) != 3 {
+		t.Fatalf("GetMemories = %v, %v; want 3 rows", stored, err)
 	}
-	if len(stored) != 2 {
-		t.Fatalf("len(stored) = %d, want 2", len(stored))
+	if err := database.SetMemoryConfidence(stored[1].ID, db.MemoryConfidenceConfirmed, now.Add(time.Second)); err != nil {
+		t.Fatalf("confirm: %v", err)
 	}
-	staleID := stored[1].ID
-	if err := database.SetMemoryConfidence(staleID, db.MemoryConfidenceStale, now.Add(time.Second)); err != nil {
-		t.Fatalf("SetMemoryConfidence failed: %v", err)
+	if err := database.SetMemoryConfidence(stored[2].ID, db.MemoryConfidenceStale, now.Add(time.Second)); err != nil {
+		t.Fatalf("stale: %v", err)
 	}
 
-	provider := dbMemoryProvider{db: database}
-	memories, err := provider.Memories(projectID)
+	memories, err := (&dbMemoryProvider{db: database}).Memories(projectID)
 	if err != nil {
 		t.Fatalf("Memories failed: %v", err)
 	}
-	if len(memories) != 1 {
-		t.Fatalf("len(memories) = %d, want 1", len(memories))
-	}
-	if memories[0].Content != "keep me" {
-		t.Fatalf("memory content = %q, want %q", memories[0].Content, "keep me")
+	if len(memories) != 1 || memories[0].Content != "confirmed note" {
+		t.Fatalf("memories = %+v, want only the confirmed note", memories)
 	}
 }
 
@@ -2116,7 +1889,8 @@ func TestDBMemoryProviderReadsScopesForWorkspace(t *testing.T) {
 	for _, n := range notes {
 		got = append(got, n.Content)
 	}
-	want := []string{"project note", "workspace note", "global note"}
+	// "project note" is tentative and project-scoped: not curated, not injected.
+	want := []string{"workspace note", "global note"}
 	if len(got) != len(want) {
 		t.Fatalf("notes = %v, want %v", got, want)
 	}
@@ -2315,7 +2089,7 @@ security_reviewer = "mock/mock-model"
 	}
 }
 
-func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
+func TestRunQuiescesBeforeShutdownHookAndClosesAfter(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
 		t.Fatalf("mkdir .marshal: %v", err)
@@ -2335,8 +2109,8 @@ func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
 
 	now := time.Unix(100, 0)
 
-	// Program runner: start tracked work and add a message so knowledge
-	// has something to summarise. The work ends when quiesce cancels
+	// Program runner: start tracked work and add a message so the runtime
+	// has a turn to quiesce. The work ends when quiesce cancels
 	// the work context (observed via state.Done()).
 	var statePtr *session.State
 	workEnded := make(chan struct{})
@@ -2355,29 +2129,29 @@ func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
 		return ProgramResult{}
 	}
 
-	// Hook: verify during the knowledge window that the session is
+	// Hook: verify during the shutdown window that the session is
 	// quiesced (no new work can start) and the DB is still usable.
-	knowledgeRan := make(chan struct{})
-	knowledgeHook := func(hookCtx context.Context, st *session.State, database *db.DB) {
+	hookRan := make(chan struct{})
+	shutdownHook := func(hookCtx context.Context, st *session.State, database *db.DB) {
 		// Verify quiesce: BeginWork should be rejected.
 		if err := st.BeginWork(); !errors.Is(err, session.ErrSessionQuiescing) {
-			t.Errorf("BeginWork during knowledge = %v, want ErrSessionQuiescing", err)
+			t.Errorf("BeginWork during shutdown hook = %v, want ErrSessionQuiescing", err)
 		}
 
 		// Verify DB is usable.
 		_, err := database.GetOrCreateProject(dir, "knowledge-hook-check")
 		if err != nil {
-			t.Errorf("DB unusable during knowledge: %v", err)
+			t.Errorf("DB unusable during shutdown hook: %v", err)
 		}
 
-		close(knowledgeRan)
+		close(hookRan)
 	}
 
 	err = Run(context.Background(), bytes.NewBuffer(nil),
 		WithNow(func() time.Time { return now }),
 		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
 		WithProgramRunner(programRunner),
-		WithKnowledgeHook(knowledgeHook),
+		WithShutdownHook(shutdownHook),
 	)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -2390,15 +2164,15 @@ func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
 		t.Fatal("work was not completed before Run returned")
 	}
 
-	// Verify knowledge ran.
+	// Verify the shutdown hook ran.
 	select {
-	case <-knowledgeRan:
+	case <-hookRan:
 	default:
-		t.Fatal("knowledge hook was not called")
+		t.Fatal("shutdown hook was not called")
 	}
 
-	// Verify the database was usable for the knowledge pass: the
-	// session should have been ended with the knowledge summary.
+	// Verify the database was usable after the hook: the session should be
+	// marked ended before Close.
 	database, dberr := db.Open(db.Path(dir))
 	if dberr != nil {
 		t.Fatalf("open db: %v", dberr)
@@ -2410,11 +2184,8 @@ func TestRunQuiescesBeforeKnowledgeAndClosesAfter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
-	if got.Summary != "" {
-		t.Logf("session summary written: %q", got.Summary)
-	}
-	if got.EndedAt != nil {
-		t.Logf("session ended at: %v", got.EndedAt)
+	if got.EndedAt == nil {
+		t.Fatal("session must be marked ended before Close")
 	}
 }
 
@@ -4828,11 +4599,6 @@ func TestRunShutdownQuiesceBoundedToOneSecond(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	now := time.Unix(100, 0)
-	// Override the knowledge timeout to near-zero so it doesn't
-	// contribute to the elapsed time — we're measuring Quiesce only.
-	prevKnowledgeTimeout := shutdownKnowledgeTimeout
-	shutdownKnowledgeTimeout = 1 * time.Millisecond
-	defer func() { shutdownKnowledgeTimeout = prevKnowledgeTimeout }()
 
 	start := time.Now()
 	err = Run(context.Background(), bytes.NewBuffer(nil),
@@ -4877,9 +4643,6 @@ func TestRunShutdownDoesNotWaitForWorkers(t *testing.T) {
 	defer os.Chdir(origWd)
 
 	now := time.Unix(100, 0)
-	prevKnowledgeTimeout := shutdownKnowledgeTimeout
-	shutdownKnowledgeTimeout = 1 * time.Millisecond
-	defer func() { shutdownKnowledgeTimeout = prevKnowledgeTimeout }()
 
 	start := time.Now()
 	err = Run(context.Background(), bytes.NewBuffer(nil),
@@ -5024,4 +4787,84 @@ func TestReloadAgentRuntimeSerializesOnReloadMu(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("reloadAgentRuntime did not complete after reloadMu was released")
 	}
+}
+
+// Review focus 1: marking a session ended at exit must not stop it being
+// resumed.
+func TestEndedSessionStillResumes(t *testing.T) {
+	dir := t.TempDir()
+	origWd, _ := os.Getwd()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+	now := time.Unix(100, 0)
+	run := func(opts ...Option) {
+		base := []Option{
+			WithNow(func() time.Time { return now }),
+			WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return config.Default(), nil }),
+			WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+			WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+				modelState(t, model).AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+				return ProgramResult{}
+			}),
+		}
+		if err := Run(context.Background(), bytes.NewBuffer(nil), append(base, opts...)...); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	}
+	run()
+	id := fmt.Sprintf("sess_%d", now.UnixNano())
+	run(WithExistingSession(id))
+
+	database, err := db.Open(db.Path(dir))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+	msgs, err := database.GetMessages(id)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	var users int
+	for _, m := range msgs {
+		if m.Role == string(session.RoleUser) {
+			users++
+		}
+	}
+	if users != 2 {
+		t.Fatalf("resumed session has %d user messages, want 2 (one per run)", users)
+	}
+}
+
+// Review focus 4: a config that still binds the retired knowledge role
+// starts normally.
+func TestRuntimeStartsWithKnowledgeRoleBound(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[profile]
+default = "p"
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "k"
+[models.presets."mock/m"]
+local_only = true
+[agent_profiles.p]
+implementer = "mock/m"
+planner = "mock/m"
+repo_scout = "mock/m"
+tester = "mock/m"
+reviewer = "mock/m"
+knowledge = "mock/m"
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := StartRuntime(context.Background(), WithWorkingDir(tmp), WithHomeDir(t.TempDir()), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
 }

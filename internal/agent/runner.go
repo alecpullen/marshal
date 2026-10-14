@@ -165,9 +165,7 @@ type HookRunner interface {
 
 // MemoryProvider supplies durable project memories for injection into the
 // context pack at the start of each turn. It returns contextpack.MemoryNote
-// (not a type from internal/knowledge) so that internal/agent never needs
-// to depend on internal/knowledge (the two packages must not import each
-// other; see the Milestone N design doc).
+// so that internal/agent does not depend on the storage layer behind it.
 type MemoryProvider interface {
 	Memories(projectID int64) ([]contextpack.MemoryNote, error)
 }
@@ -374,8 +372,8 @@ type Runner struct {
 	MetricsObserver func(TurnMetrics)
 
 	// CompactionObserver, when set, is invoked after each successful
-	// compaction/rollover rebuild of the wire history. Used to schedule
-	// knowledge extraction at natural checkpoints. Nil disables.
+	// compaction/rollover rebuild of the wire history. No production caller
+	// sets it since the knowledge pass was removed. Nil disables.
 	CompactionObserver func()
 
 	Snapshotter      Snapshotter

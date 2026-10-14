@@ -29,7 +29,6 @@ import (
 	"marshal/internal/filetrack"
 	"marshal/internal/hooks"
 	"marshal/internal/index"
-	"marshal/internal/knowledge"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
@@ -101,7 +100,7 @@ type options struct {
 	sessionID         string
 	existingSessionID string
 	additionalDirs    []string
-	knowledgeHook     func(ctx context.Context, state *session.State, database *db.DB)
+	shutdownHook      func(ctx context.Context, state *session.State, database *db.DB)
 	workers           []worker.Worker
 	configReloader    func(config.Config) error
 	sessionRouting    config.SessionRouting
@@ -123,10 +122,6 @@ func WithSessionRouting(profile string, overrides map[routing.AgentRole]string) 
 		opts.sessionRouting = config.SessionRouting{Profile: profile, Overrides: overrides}
 	}
 }
-
-var (
-	shutdownKnowledgeTimeout = 2 * time.Second
-)
 
 func WithNow(now func() time.Time) Option {
 	return func(opts *options) {
@@ -181,13 +176,12 @@ func WithWorkingDir(dir string) Option {
 	}
 }
 
-// WithKnowledgeHook registers a callback that is invoked after knowledge
-// EndSession completes but before runtime Close. Tests use this hook to
-// observe session state and database availability during the knowledge
-// finalization window.
-func WithKnowledgeHook(hook func(ctx context.Context, state *session.State, database *db.DB)) Option {
+// WithShutdownHook registers a callback invoked during TUI exit after the
+// runtime has quiesced and the session is marked ended, but before the
+// runtime closes. Tests use it to observe the shutdown window.
+func WithShutdownHook(hook func(ctx context.Context, state *session.State, database *db.DB)) Option {
 	return func(opts *options) {
-		opts.knowledgeHook = hook
+		opts.shutdownHook = hook
 	}
 }
 
@@ -411,8 +405,10 @@ func (r *routedProviderResolver) providerFor(route routing.Route) (provider.Prov
 	return p, nil
 }
 
-// Memories returns the project's notes, then workspace notes, then global
-// notes (see db.GetScopedMemories), skipping stale ones.
+// Memories returns the curated notes visible to this project: confirmed
+// project memories, then workspace and global memories (promoted by a
+// person, see db.GetScopedMemories). Tentative project memories — what an
+// agent learned on its own — and stale memories are never injected.
 func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, error) {
 	memories, err := p.db.GetScopedMemories(projectID, p.workspace)
 	if err != nil {
@@ -421,6 +417,11 @@ func (p *dbMemoryProvider) Memories(projectID int64) ([]contextpack.MemoryNote, 
 	notes := make([]contextpack.MemoryNote, 0, len(memories))
 	for _, m := range memories {
 		if m.Confidence == db.MemoryConfidenceStale {
+			continue
+		}
+		curated := m.Confidence == db.MemoryConfidenceConfirmed ||
+			m.Scope == db.MemoryScopeWorkspace || m.Scope == db.MemoryScopeGlobal
+		if !curated {
 			continue
 		}
 		notes = append(notes, contextpack.MemoryNote{Kind: m.Kind, Content: m.Content, Confidence: m.Confidence, UpdatedAt: m.UpdatedAt})
@@ -913,30 +914,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	runner.MemoryProvider = newDBMemoryProvider(database)
 	runner.ProjectID = projectID
 	recorder := metricsRecorder(database, projectID, state.SessionID(), state.Logger())
-	scheduler := &knowledgeScheduler{
-		run: func(ctx context.Context, in knowledge.ExtractInput) { knowledge.Extract(ctx, in) },
-		input: func() knowledge.ExtractInput {
-			agentLabel, stepID := knowledge.Provenance(state)
-			return knowledge.ExtractInput{
-				DB:                  database,
-				ProjectID:           projectID,
-				SessionID:           state.SessionID(),
-				RouteResolver:       resolver,
-				WorkingDir:          state.WorkingDir,
-				MaxTouchedFileBytes: state.Config.Agent.MaxTouchedFileBytes,
-				Messages:            state.Messages(),
-				AuditLog:            state.AuditLog(),
-				AgentLabel:          agentLabel,
-				StepID:              stepID,
-				Logger:              state.Logger(),
-			}
-		},
-	}
-	runner.MetricsObserver = func(m agent.TurnMetrics) {
-		recorder(m)
-		scheduler.OnTurn()
-	}
-	runner.CompactionObserver = scheduler.OnCompaction
+	runner.MetricsObserver = recorder
 	runner.Pricing = parentPricing
 
 	limitsTable := loadLimitsTable(ctx, cfg, dataDir)
@@ -2437,9 +2415,9 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 
 		if progResult.ResumeSession != "" && progResult.Err == nil {
 			// User chose to resume a different session. Tear down the
-			// current runtime without finalising knowledge (the current
-			// transcript is already persisted; knowledge can run when that
-			// session is eventually exited) and restart startRuntime in
+			// current runtime (the current transcript is already persisted,
+			// and that session is marked ended when it is eventually exited)
+			// and restart startRuntime in
 			// existing-session mode.
 			_ = rt.Close(context.Background())
 			runOpts.sessionID = ""
@@ -2450,7 +2428,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		progErr := progResult.Err
 		if !reloadForTrust {
 			// Phase 1: quiesce — cancel and join active work/jobs without
-			// closing persistence so knowledge finalization can use the DB.
+			// closing persistence so the session can be marked ended.
 			quiesceCtx, cancelQuiesce := context.WithTimeout(context.Background(), 1*time.Second)
 			quiesceErr := rt.Quiesce(quiesceCtx)
 			cancelQuiesce()
@@ -2458,31 +2436,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			// Workers are cancelled via rt.workCtx (cancelled in Quiesce
 			// above) and reclaimed by process exit — no need to wait.
 
-			// Phase 2: knowledge — finalize the session while DB and logger
-			// are still open.
-			// Print a visible status line so the user knows why the terminal
-			// is briefly occupied after the TUI exits. Only print when the
-			// knowledge pass will actually run: a provider is configured and
-			// the session has at least one user message.
-			if len(state.Config.Providers) > 0 && knowledge.HasUserMessage(state.Messages()) {
-				fmt.Fprintln(os.Stderr, "Marshal is saving session memories…")
+			// Phase 2: mark the session ended while the DB is still open.
+			if err := database.EndSession(sessionID, runOpts.now(), ""); err != nil {
+				logger.Warn("mark session ended failed", "error", err, "session_id", sessionID)
 			}
-			knowledgeCtx, cancelKnowledge := context.WithTimeout(context.Background(), shutdownKnowledgeTimeout)
-			knowledge.EndSession(knowledgeCtx, knowledge.EndSessionInput{
-				DB:                  database,
-				ProjectID:           projectID,
-				SessionID:           sessionID,
-				State:               state,
-				RouteResolver:       newRoutedProviderResolver(state.Config, rt.DataDir).withSessionID(state.SessionID()),
-				WorkingDir:          workingDir,
-				MaxTouchedFileBytes: state.Config.Agent.MaxTouchedFileBytes,
-				Now:                 runOpts.now,
-				Logger:              logger,
-			})
-			cancelKnowledge()
-
-			if runOpts.knowledgeHook != nil {
-				runOpts.knowledgeHook(knowledgeCtx, state, database)
+			if runOpts.shutdownHook != nil {
+				runOpts.shutdownHook(context.Background(), state, database)
 			}
 
 			// Clean up spill files from this session.
@@ -2498,7 +2457,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 
 		// Trust granted inline: tear down quietly and reinitialise via the
 		// same startRuntime path as startup — now with the project config in
-		// force. No Quiesce/knowledge: no agent work ever ran.
+		// force. No Quiesce: no agent work ever ran.
 		reloadForTrust = false
 		// Use Background: the user may have cancelled ctx during the trust
 		// prompt; the deferred Close covers the final rt, this covers reload

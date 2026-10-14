@@ -22,6 +22,7 @@
     { id: 'inspect', label: 'Inspect' },
     { id: 'changes', label: 'Changes' },
     { id: 'files', label: 'Files' },
+    { id: 'tasks', label: 'Tasks' },
     { id: 'terminal', label: 'Terminal' },
     { id: 'preview', label: 'Preview' },
   ]
@@ -100,6 +101,7 @@
         >
           {t.label}
           {#if t.id === 'changes' && dock.unseenChanges}<span class="ml-1 inline-block size-1.5 rounded-full bg-accent align-middle"></span>{/if}
+          {#if t.id === 'tasks' && dock.unseenTasks}<span class="ml-1 inline-block size-1.5 rounded-full bg-accent align-middle" data-testid="tasks-unseen" title="The task list changed"></span>{/if}
           {#if t.id === 'terminal' && dock.unseenTerminal}<span class="ml-1 inline-block size-1.5 rounded-full bg-accent align-middle" data-testid="terminal-unread" title="New output"></span>{/if}
         </button>
       {/each}

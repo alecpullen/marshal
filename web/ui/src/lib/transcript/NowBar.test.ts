@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach } from 'vitest'
-import { render, cleanup, screen } from '@testing-library/svelte'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { render, cleanup, screen, fireEvent } from '@testing-library/svelte'
 import NowBar from './NowBar.svelte'
 import type { StackState, WireBand, WireNode } from '../stack'
 
@@ -32,6 +32,18 @@ describe('NowBar band', () => {
     expect(screen.getByText(/stale 12m/)).toBeTruthy()
     expect(screen.getByText(/next: Task 3/)).toBeTruthy()
     expect(screen.getByText(/#3 Task 1/)).toBeTruthy()
+  })
+
+  it('makes the progress row a button only when it has somewhere to go', async () => {
+    const open = vi.fn()
+    render(NowBar, { stack: state([bandNode(band)]), now: Date.now(), onStop: () => {}, onOpenTasks: open })
+    const row = screen.getByTestId('band-progress')
+    expect(row.tagName).toBe('BUTTON')
+    await fireEvent.click(row)
+    expect(open).toHaveBeenCalledOnce()
+    cleanup()
+    render(NowBar, { stack: state([bandNode(band)]), now: Date.now(), onStop: () => {} })
+    expect(screen.getByTestId('band-progress').tagName).toBe('DIV')
   })
 
   it('shows the bar for band progress even when nothing is live', () => {

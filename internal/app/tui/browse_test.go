@@ -449,7 +449,7 @@ func TestTasksPanelStepCountsMatchTheTaskHeaders(t *testing.T) {
 	m.state.EndStep(c)
 	m.invalidateTranscript()
 	m.refreshViewport()
-	if m.taskStats["t1"].steps != 1 || m.taskStats["t2"].steps != 2 {
+	if m.taskStats["t1"].Steps != 1 || m.taskStats["t2"].Steps != 2 {
 		t.Fatalf("taskStats = %v, want t1:1 t2:2 (the narrated todo.write step renders under t2)", m.taskStats)
 	}
 }

@@ -13,6 +13,7 @@
   import InspectTab from '../lib/dock/InspectTab.svelte'
   import ChangesTab from '../lib/dock/ChangesTab.svelte'
   import FilesTab from '../lib/dock/FilesTab.svelte'
+  import TasksTab from '../lib/dock/TasksTab.svelte'
   import Transcript from '../lib/transcript/Transcript.svelte'
   import { createNodeCache } from '../lib/dock/nodeCache'
   import { initialDock, load as loadDock, reduce, save as saveDock, type DockAction, type DockState } from '../lib/dock/dock'
@@ -329,6 +330,8 @@
       <ChangesTab {agentId} sessionId={agentId} stack={$stack} {dock} gate={agent?.gate} changedFiles={agent?.changedFiles ?? 0} />
     {:else if dock.tab === 'files'}
       <FilesTab {agentId} stack={$stack} {dock} />
+    {:else if dock.tab === 'tasks'}
+      <TasksTab stack={$stack} {now} onJump={(id) => dispatch({ type: 'select', nodeId: id, kind: 'step' })} />
     {/if}
     <OpsTabs {agentId} sessionId={agentId} stack={$stack} {dock} {cache} row={agent} onTerminalOutput={() => dispatch({ type: 'terminalOutput' })} />
   </Dock>

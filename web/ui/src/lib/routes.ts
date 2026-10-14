@@ -50,7 +50,7 @@ export function pageFromHash(hash: string): Page {
 }
 
 export type DockSizeParam = 'collapsed' | 'docked' | 'expanded'
-export type DockTabParam = 'inspect' | 'changes' | 'files' | 'terminal' | 'preview'
+export type DockTabParam = 'inspect' | 'changes' | 'files' | 'tasks' | 'terminal' | 'preview'
 
 /** A session page URL: `#chat/<id>[/review][?node=…&dock=…&tab=…]`. */
 export interface ChatRoute {
@@ -62,7 +62,7 @@ export interface ChatRoute {
 }
 
 const DOCK_SIZES: readonly string[] = ['collapsed', 'docked', 'expanded']
-const DOCK_TABS: readonly string[] = ['inspect', 'changes', 'files', 'terminal', 'preview']
+const DOCK_TABS: readonly string[] = ['inspect', 'changes', 'files', 'tasks', 'terminal', 'preview']
 
 function decodeSafe(s: string): string {
   try {

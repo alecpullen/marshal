@@ -78,10 +78,10 @@ func (m Model) viewedTodos() []native.TodoItem {
 // tasksDoc builds the Ctrl+T Tasks panel: one row per todo, using the same
 // glyphs as todoLine. docpanel supplies the `esc close` hint.
 //
-// Each row also carries its step count (the steps under that task's header in
-// the transcript, so the two views agree), its duration once completed, or its live elapsed time while in
-// progress.
-func tasksDoc(todos []native.TodoItem, stats map[string]taskStat) commands.Doc {
+// Each row also carries its step count and finished working time, counted by
+// viewmodel.TaskStats from the beats under that task's divider, so the panel,
+// the transcript and the web Tasks tab agree.
+func tasksDoc(todos []native.TodoItem, stats map[string]viewmodel.TaskStat) commands.Doc {
 	done, _ := todoProgress(todos)
 	rows := make([]commands.Row, 0, len(todos))
 	for _, t := range todos {
@@ -93,10 +93,10 @@ func tasksDoc(todos []native.TodoItem, stats map[string]taskStat) commands.Doc {
 			g = glyph.Running
 		}
 		var detail []string
-		if st := stats[t.ID]; t.ID != "" && st.steps > 0 {
-			detail = append(detail, pluralCount(st.steps, "step", "steps"))
-			if st.work > 0 {
-				detail = append(detail, compactDuration(st.work))
+		if st := stats[t.ID]; t.ID != "" && st.Steps > 0 {
+			detail = append(detail, pluralCount(st.Steps, "step", "steps"))
+			if st.Work > 0 {
+				detail = append(detail, compactDuration(st.Work))
 			}
 		}
 		rows = append(rows, commands.Row{Text: g + " " + viewmodel.ScrubText(t.Content), Detail: strings.Join(detail, " · ")})

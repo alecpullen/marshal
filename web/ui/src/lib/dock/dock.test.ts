@@ -111,3 +111,16 @@ describe('terminal unread mark', () => {
     expect(reduce({ ...s, size: 'collapsed' }, { type: 'terminalOutput' }).unseenTerminal).toBe(true)
   })
 })
+
+describe('tasks unseen mark', () => {
+  it('marks a changed list only while the tab is not showing, and never switches to it', () => {
+    let s = initialDock({ tab: 'inspect' })
+    s = reduce(s, { type: 'tasksChanged' })
+    expect(s.unseenTasks).toBe(true)
+    expect(s.tab).toBe('inspect')
+    s = reduce(s, { type: 'openTab', tab: 'tasks' })
+    expect(s.unseenTasks).toBe(false)
+    expect(reduce(s, { type: 'tasksChanged' }).unseenTasks).toBe(false)
+    expect(reduce({ ...s, size: 'collapsed' }, { type: 'tasksChanged' }).unseenTasks).toBe(true)
+  })
+})

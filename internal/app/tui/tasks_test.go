@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
@@ -189,7 +190,7 @@ func TestTasksDocShowsStepCountsAndWorkTime(t *testing.T) {
 		{ID: "t2", Content: "Live one", Status: "in_progress"},
 		{ID: "t3", Content: "Later", Status: "pending"},
 	}
-	doc := tasksDoc(todos, map[string]taskStat{"t1": {steps: 2, work: 3 * time.Minute}, "t2": {steps: 1, work: 90 * time.Second}})
+	doc := tasksDoc(todos, map[string]viewmodel.TaskStat{"t1": {Steps: 2, Work: 3 * time.Minute}, "t2": {Steps: 1, Work: 90 * time.Second}})
 	if got := doc.Rows[0].Detail; got != "2 steps · 3m00s" {
 		t.Errorf("completed row detail = %q", got)
 	}
@@ -383,7 +384,7 @@ func TestRebindPrefersTheTodoStartedNearestTheWrite(t *testing.T) {
 	m.state.EndStep(id)
 	m.invalidateTranscript()
 	m.refreshViewport()
-	if m.taskStats["t1"].steps != 1 || m.taskStats["t2"].steps != 0 {
+	if m.taskStats["t1"].Steps != 1 || m.taskStats["t2"].Steps != 0 {
 		t.Fatalf("taskStats = %v: the old step must stay with t1, not move under the later twin", m.taskStats)
 	}
 }
@@ -422,14 +423,18 @@ func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
 	}
 
 	// The band carries the progress: the head row holds the count and the
-	// active item, the checklist holds the done count and what comes next.
-	// The per-todo rows are gone — the transcript's dividers cover those.
+	// active item, the checklist what comes next — on this tall frame, one
+	// row per waiting todo. The numbered per-todo rows are gone — the
+	// transcript's dividers cover those.
+	if m.height < nowBarTallHeight {
+		t.Fatalf("frame is %d rows; the test expects a tall one", m.height)
+	}
 	plain := stripANSI(nowBarOut(m))
 	if !strings.Contains(plain, "1/4") || !strings.Contains(plain, "Write") {
 		t.Errorf("band head should count progress and name the active todo:\n%s", plain)
 	}
-	if !strings.Contains(plain, "1 done") || !strings.Contains(plain, "next: Test") {
-		t.Errorf("band checklist should hold the done count and the next waiting todo:\n%s", plain)
+	if !strings.Contains(plain, glyph.Ambient+" Test") || !strings.Contains(plain, glyph.Ambient+" Ship") {
+		t.Errorf("band checklist should list the waiting todos:\n%s", plain)
 	}
 	for _, gone := range []string{"✓ 1/4", "▸ 2/4", "· 3/4"} {
 		if strings.Contains(plain, gone) {

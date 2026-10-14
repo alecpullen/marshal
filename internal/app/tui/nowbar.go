@@ -22,12 +22,16 @@ const (
 	// nowBarMaxRows caps the bar, summary and overflow rows included. The
 	// band's own budget is one progress row, one checklist row and four
 	// entity rows (design §4), plus the live-mirror row when the reader has
-	// scrolled away.
+	// scrolled away. On a tall frame the checklist may take the entity rows
+	// no card is using.
 	nowBarMaxRows = 6
 	// nowBarCompactHeight is the frame height below which the bar collapses
 	// to a single summary row: on a short terminal every row comes out of
 	// the transcript.
 	nowBarCompactHeight = 30
+	// nowBarTallHeight is the frame height from which the checklist opens
+	// into one row per waiting item.
+	nowBarTallHeight = 44
 	// nowBarMaxBlocks is the widest progress-block run.
 	nowBarMaxBlocks = 10
 )
@@ -113,9 +117,7 @@ func planNowBar(in nowBarInput) nowBarPlan {
 	if head != "" {
 		plan.rows = append(plan.rows, head)
 	}
-	if list := nowBarChecklist(in); list != "" {
-		plan.rows = append(plan.rows, list)
-	}
+	plan.rows = append(plan.rows, nowBarChecklistRows(in, nowBarMaxRows-len(plan.rows)-len(actors))...)
 	room := nowBarMaxRows - len(plan.rows)
 	shown := actors
 	overflow := 0
@@ -316,6 +318,35 @@ func nowBarChecklist(in nowBarInput) string {
 		}
 	}
 	return text
+}
+
+// nowBarChecklistRows is the band's checklist. On a tall frame with spare
+// rows it is one row per waiting item, the last counting any that did not
+// fit; otherwise it is nowBarChecklist's single line. spare is the rows the
+// bar has left once the actors are placed: the cards keep priority, so the
+// list folds back to one line as cards start and reopens as they finish.
+func nowBarChecklistRows(in nowBarInput, spare int) []string {
+	line := nowBarChecklist(in)
+	if line == "" {
+		return nil
+	}
+	next := in.Band.Next
+	// Opening only pays when it shows at least two items: with less room the
+	// summary line, which packs several, says more.
+	if in.Height < nowBarTallHeight || len(next) < 2 || spare < min(len(next), 3) {
+		return []string{line}
+	}
+	inner := max(in.Width-1, 1)
+	n := min(len(next), spare)
+	rows := make([]string, 0, n)
+	for i, item := range next[:n] {
+		if i == n-1 && n < len(next) {
+			rows = append(rows, dimStyle().Render(fmt.Sprintf("  … +%d more", len(next)-i)))
+			break
+		}
+		rows = append(rows, mutedStyle().Render("  "+glyph.Ambient+" "+ansi.Truncate(oneLine(item), max(inner-4, 1), "…")))
+	}
+	return rows
 }
 
 // nowBarJustify right-aligns right within width cells, truncating left so

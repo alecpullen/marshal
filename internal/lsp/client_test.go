@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -190,4 +191,50 @@ func TestClientCloseIdempotent(t *testing.T) {
 	c.Close()
 	// Second close must not panic.
 	c.Close()
+}
+
+func TestClientDoneClosesWhenServerExits(t *testing.T) {
+	c, s := newScripted(t)
+	s.kill()
+	select {
+	case <-c.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Done not closed after server exit")
+	}
+	if _, err := c.Request(context.Background(), "x", nil); err == nil || !strings.Contains(err.Error(), "exited") {
+		t.Fatalf("Request after exit = %v, want server-exited error", err)
+	}
+}
+
+func TestClientTracksDiagnosticArrival(t *testing.T) {
+	c, s := newScripted(t)
+	seq0, _ := c.DiagState()
+	s.publish("file:///a.go", Diagnostic{Severity: 1, Message: "boom"})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		seq, last := c.DiagState()
+		if seq > seq0 && !last.IsZero() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("diagnostic arrival not recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := c.AllDiagnostics()["file:///a.go"]; len(got) != 1 || got[0].Message != "boom" {
+		t.Fatalf("AllDiagnostics = %+v", got)
+	}
+}
+
+func TestInitializeAdvertisesSymbolAndSyncCapabilities(t *testing.T) {
+	c, s := newScripted(t)
+	if err := c.Initialize(context.Background(), "file:///r"); err != nil {
+		t.Fatal(err)
+	}
+	p := string(s.lastRequest("initialize"))
+	for _, want := range []string{`"symbol"`, `"didChangeWatchedFiles"`, `"didSave":true`, `"publishDiagnostics"`} {
+		if !strings.Contains(p, want) {
+			t.Errorf("initialize params missing %s: %s", want, p)
+		}
+	}
 }

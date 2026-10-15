@@ -3,13 +3,12 @@ package diagnostics
 import (
 	"context"
 	"strings"
-	"sync"
 	"testing"
 )
 
 func TestGoCheckerFindsVetError(t *testing.T) {
 	c := NewChecker(map[string]string{"go": "go vet {package}"})
-	c.runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	c.runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		if name != "go" {
 			t.Fatalf("runner name = %q, want go", name)
 		}
@@ -18,7 +17,7 @@ func TestGoCheckerFindsVetError(t *testing.T) {
 		}
 		return []byte("./testdata/bad.go:5:2: declared and not used: x\n"), nil
 	}
-	out, err := c.Check([]string{"testdata/bad.go"}, "go")
+	out, err := c.Check("/repo", []string{"testdata/bad.go"}, "go")
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
@@ -29,7 +28,7 @@ func TestGoCheckerFindsVetError(t *testing.T) {
 
 func TestMissingCheckerReturnsEmptyString(t *testing.T) {
 	e := NewChecker(map[string]string{})
-	out, err := e.Check([]string{"foo.rs"}, "rust")
+	out, err := e.Check("/repo", []string{"foo.rs"}, "rust")
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
@@ -40,10 +39,10 @@ func TestMissingCheckerReturnsEmptyString(t *testing.T) {
 
 func TestConfiguredCheckerRunsCleanReportsNone(t *testing.T) {
 	c := NewChecker(map[string]string{"go": "go vet {package}"})
-	c.runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	c.runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		return nil, nil
 	}
-	out, err := c.Check([]string{"x.go"}, "go")
+	out, err := c.Check("/repo", []string{"x.go"}, "go")
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
@@ -52,16 +51,21 @@ func TestConfiguredCheckerRunsCleanReportsNone(t *testing.T) {
 	}
 }
 
-type fakeLSPSource struct {
-	out string
-	ok  bool
+// Review focus 1: the fallback must check the session's worktree copy.
+func TestCheckerRunsInGivenDir(t *testing.T) {
+	var gotDir string
+	c := NewChecker(map[string]string{"go": "go vet {package}"})
+	c.runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		gotDir = dir
+		return nil, nil
+	}
+	if _, err := c.Check("/wt/feature", []string{"a/x.go"}, "go"); err != nil {
+		t.Fatal(err)
+	}
+	if gotDir != "/wt/feature" {
+		t.Fatalf("checker ran in %q, want the active root", gotDir)
+	}
 }
-
-func (f fakeLSPSource) Diagnostics(string, string) (string, bool) { return f.out, f.ok }
-
-type lspStubFunc func(lang, filePath string) (string, bool)
-
-func (f lspStubFunc) Diagnostics(lang, filePath string) (string, bool) { return f(lang, filePath) }
 
 func TestInferPackages(t *testing.T) {
 	cases := []struct {
@@ -90,11 +94,11 @@ func TestInferPackages(t *testing.T) {
 func TestCheckRunsPerDistinctPackage(t *testing.T) {
 	var ran []string
 	c := NewChecker(map[string]string{"go": "govet {package}"})
-	c.runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	c.runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		ran = append(ran, strings.Join(args, " "))
 		return []byte("issue near " + args[len(args)-1]), nil
 	}
-	out, err := c.Check([]string{"a/x.go", "a/y.go", "b/z.go"}, "go")
+	out, err := c.Check("/repo", []string{"a/x.go", "a/y.go", "b/z.go"}, "go")
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -109,76 +113,14 @@ func TestCheckRunsPerDistinctPackage(t *testing.T) {
 func TestCheckPlaceholderFreeTemplateRunsOnce(t *testing.T) {
 	runs := 0
 	c := NewChecker(map[string]string{"go": "govet"})
-	c.runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	c.runner = func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
 		runs++
 		return nil, nil
 	}
-	if _, err := c.Check([]string{"a/x.go", "b/z.go"}, "go"); err != nil {
+	if _, err := c.Check("/repo", []string{"a/x.go", "b/z.go"}, "go"); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 	if runs != 1 {
 		t.Fatalf("runs = %d, want 1 (no {package} placeholder)", runs)
-	}
-}
-
-func TestCheckLSPConsultsEveryFile(t *testing.T) {
-	c := NewChecker(nil)
-	var seen []string
-	c.SetLSPSource(lspStubFunc(func(lang, filePath string) (string, bool) {
-		seen = append(seen, filePath)
-		return "diag for " + filePath, true
-	}))
-	out, err := c.Check([]string{"a/x.go", "b/z.go"}, "go")
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if len(seen) != 2 || seen[0] != "a/x.go" || seen[1] != "b/z.go" {
-		t.Fatalf("LSP consulted %v, want both files", seen)
-	}
-	if !strings.Contains(out, "diag for a/x.go") || !strings.Contains(out, "diag for b/z.go") {
-		t.Fatalf("output %q missing per-file diagnostics", out)
-	}
-}
-
-func TestCheckerPrefersLSP(t *testing.T) {
-	c := NewChecker(nil) // no command checkers configured
-	c.SetLSPSource(fakeLSPSource{out: "a.go:1: oops", ok: true})
-	out, err := c.Check([]string{"a.go"}, "go")
-	if err != nil || out != "a.go:1: oops" {
-		t.Fatalf("out=%q err=%v", out, err)
-	}
-}
-
-func TestCheckerConcurrentWithSetLSPSource(t *testing.T) {
-	c := NewChecker(map[string]string{"go": "go vet {package}"})
-	c.runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return nil, nil
-	}
-	var wg sync.WaitGroup
-	// Writer goroutine: set LSP source concurrently.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 100; i++ {
-			c.SetLSPSource(fakeLSPSource{ok: false})
-		}
-	}()
-	// Reader goroutine: call Check concurrently.
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _ = c.Check([]string{"x.go"}, "go")
-		}()
-	}
-	wg.Wait()
-}
-
-func TestCheckerFallsBackWhenNoLSP(t *testing.T) {
-	c := NewChecker(nil)
-	c.SetLSPSource(fakeLSPSource{ok: false})
-	out, _ := c.Check([]string{"a.rs"}, "rust")
-	if out != "" { // no commands configured, no lsp → empty (caller renders "none")
-		t.Fatalf("expected empty fallback, got %q", out)
 	}
 }

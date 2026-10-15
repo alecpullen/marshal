@@ -64,7 +64,11 @@ func (t *toolSet) shellRunTool() registry.Tool {
 				Content: fmt.Sprintf("job_id: %s", id),
 			}, nil
 		}
-		return t.runShellCommand(ctx, call.ID, args.Command, timeout)
+		res, err := t.runShellCommand(ctx, call.ID, args.Command, timeout)
+		if t.lspSync != nil {
+			t.lspSync.Rescan()
+		}
+		return res, err
 	}
 	return tool
 }
@@ -89,7 +93,11 @@ func (t *toolSet) testRunTool() registry.Tool {
 		if command == "" {
 			command = t.testCommand
 		}
-		return t.runShellCommand(ctx, call.ID, command, defaultTestTimeout)
+		res, err := t.runShellCommand(ctx, call.ID, command, defaultTestTimeout)
+		if t.lspSync != nil {
+			t.lspSync.Rescan()
+		}
+		return res, err
 	}
 	return tool
 }

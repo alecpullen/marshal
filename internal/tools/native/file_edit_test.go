@@ -1,6 +1,7 @@
 package native
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,5 +100,48 @@ func TestFileEditMissingFilePointsAtFileWriteNotPatchFormat(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "SEARCH block") {
 		t.Errorf("error = %v, must not teach the retired patch format", err)
+	}
+}
+
+type fakeSync struct {
+	begun   []string
+	rescans int
+	ok      bool
+}
+
+func (f *fakeSync) BeginEdit(paths []string) (func(context.Context) string, bool) {
+	f.begun = append(f.begun, paths...)
+	if !f.ok {
+		return nil, false
+	}
+	return func(context.Context) string { return "diagnostics: no new errors" }, true
+}
+func (f *fakeSync) Rescan() { f.rescans++ }
+
+func TestFileEditReportsLSPDiagnostics(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\nvar x = 1\n"), 0o644)
+	sync := &fakeSync{ok: true}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, LSPSync: sync}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := invokeTool(t, reg, "file.edit", `{"path":"a.go","old_string":"var x = 1","new_string":"var x = 2"}`)
+	if err != nil || !strings.Contains(res.Content, "diagnostics: no new errors") || len(sync.begun) != 1 {
+		t.Fatalf("res=%+v err=%v begun=%v", res, err, sync.begun)
+	}
+}
+
+func TestShellRunRescansLSP(t *testing.T) {
+	sync := &fakeSync{}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, LSPSync: sync}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := invokeTool(t, reg, "shell.run", `{"command":"true"}`); err != nil {
+		t.Fatal(err)
+	}
+	if sync.rescans != 1 {
+		t.Fatalf("rescans = %d, want 1", sync.rescans)
 	}
 }

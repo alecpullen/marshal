@@ -629,6 +629,17 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 	var backups []session.BackupFile
 	var symbols []registry.SymbolRef
 
+	var paths []string
+	for _, fp := range patches {
+		paths = append(paths, fp.Path)
+	}
+	var finishDiag func(context.Context) string
+	if t.lspSync != nil {
+		if f, ok := t.lspSync.BeginEdit(paths); ok {
+			finishDiag = f
+		}
+	}
+
 	// Apply for real
 	for _, fp := range patches {
 		path, err := t.resolveToolPath(fp.Path, false)
@@ -713,11 +724,6 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 		ws.StoreBackup(backups)
 	}
 
-	var paths []string
-	for _, fp := range patches {
-		paths = append(paths, fp.Path)
-	}
-
 	content := strings.Join(diffs, "\n\n")
 	// Surface healed format mistakes so the model corrects its next
 	// proposal instead of relying on the repair. The patch applied, so
@@ -727,8 +733,10 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 			strings.Join(repairs, "\n- ") +
 			"\nClose every REPLACE block with \">>>>>>> REPLACE\"."
 	}
-	if t.diagnostics != nil {
-		diag, _ := t.diagnostics.Check(paths, languageOf(paths))
+	if finishDiag != nil {
+		content += "\n\n" + finishDiag(ctx)
+	} else if t.diagnostics != nil {
+		diag, _ := t.diagnostics.Check(t.activeRoot(), paths, languageOf(paths))
 		if diag != "" {
 			content += "\n\n" + diag
 		}
@@ -859,6 +867,12 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			}
 		}
 
+		var finishDiag func(context.Context) string
+		if t.lspSync != nil {
+			if f, ok := t.lspSync.BeginEdit([]string{args.Path}); ok {
+				finishDiag = f
+			}
+		}
 		if err := os.WriteFile(path, []byte(content), mode); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("write file %s: %w", args.Path, err)
 		}
@@ -883,8 +897,10 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			FilesChanged: []string{args.Path},
 			Symbols:      symbolsForEdit(ctx, args.Path, content, diff),
 		}
-		if t.diagnostics != nil {
-			diag, _ := t.diagnostics.Check([]string{args.Path}, languageOf([]string{args.Path}))
+		if finishDiag != nil {
+			result.Content += "\n\n" + finishDiag(ctx)
+		} else if t.diagnostics != nil {
+			diag, _ := t.diagnostics.Check(t.activeRoot(), []string{args.Path}, languageOf([]string{args.Path}))
 			if diag != "" {
 				result.Content += "\n\n" + diag
 			}

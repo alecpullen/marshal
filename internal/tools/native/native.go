@@ -33,6 +33,14 @@ type FileTracker interface {
 	RecordWrite(path string, at time.Time) error
 }
 
+// LSPSync is the live language-server seam (lsp.Sync): BeginEdit brackets a
+// write to report the errors it caused; Rescan announces files changed by
+// shell commands. Nil when no language server is configured.
+type LSPSync interface {
+	BeginEdit(paths []string) (func(ctx context.Context) string, bool)
+	Rescan()
+}
+
 type Options struct {
 	WorkspaceRoot  string
 	CommandRunner  CommandRunner
@@ -89,9 +97,9 @@ type Options struct {
 	// references, and hover tools. nil when LSP is unavailable.
 	LSP LSPQuerier
 
-	// LSPSource is an optional diagnostics source consulted before the
-	// configured command checkers. nil when LSP is unavailable.
-	LSPSource diagnostics.LSPSource
+	// LSPSync is the live language-server seam behind edit diagnostics and
+	// post-command rescans. nil when LSP is unavailable.
+	LSPSync LSPSync
 
 	// LSPIndex is an optional LSP-backed symbol provider consulted by the
 	// symbol-index build. nil when LSP is unavailable.
@@ -176,6 +184,12 @@ type toolSet struct {
 	// lsp is an optional LSPQuerier for symbol-name-addressed definition,
 	// references, and hover tools. nil when LSP is unavailable.
 	lsp LSPQuerier
+
+	// lspSync is the live language-server seam: it brackets writes so the
+	// errors they caused come back with the edit, and announces files
+	// changed by shell commands so open documents are re-synced. nil when
+	// no language server is configured.
+	lspSync LSPSync
 
 	// lspIndex is an optional LSP-backed symbol provider consulted by the
 	// symbol-index build. nil when LSP is unavailable.
@@ -385,6 +399,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 			return embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
 		},
 		lsp:      opts.LSP,
+		lspSync:  opts.LSPSync,
 		lspIndex: opts.LSPIndex,
 		gitOps:   opts.GitOps,
 	}

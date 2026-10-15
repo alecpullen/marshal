@@ -647,12 +647,19 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	jobManager.SetDirFunc(func() string { return state.Workspace().ActiveRoot })
 	// Job exits reach the transcript from here, not from a client, so the
 	// TUI and ACP sessions both see a job's card settle.
+	// lspSync is declared here (and assigned below, where lspHandle is built)
+	// so a background job that changes files on disk can announce them once
+	// it exits. Nil until then — the callback checks.
+	var lspSync native.LSPSync
 	jobManager.SetOnExit(func(info native.JobInfo, ran time.Duration, output string) {
 		code := -1
 		if info.ExitCode != nil {
 			code = *info.ExitCode
 		}
 		state.AddJobExit(session.JobExit{ID: info.ID, Command: info.Command, ExitCode: code, Duration: ran, Output: output})
+		if lspSync != nil {
+			lspSync.Rescan()
+		}
 	})
 	// Roll back partially-built resources on any later failure. Each
 	// resource appends its cleanup as it comes up; the deferred func runs
@@ -779,8 +786,9 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	if lspHandle != nil {
 		nativeOpts.LSP = lsp.NewQueryAdapter(lspHandle)
-		nativeOpts.LSPSource = lsp.NewDiagnosticsAdapter(lspHandle)
+		nativeOpts.LSPSync = lsp.NewSync(lspHandle)
 		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspHandle)
+		lspSync = lsp.NewSync(lspHandle)
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err

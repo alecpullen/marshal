@@ -9,13 +9,10 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-// newDiagnosticsChecker creates a Checker and wires the optional LSP source.
+// newDiagnosticsChecker creates a Checker from the configured per-language
+// commands.
 func newDiagnosticsChecker(opts Options) *diagnostics.Checker {
-	c := diagnostics.NewChecker(opts.Config.Diagnostics.Commands)
-	if opts.LSPSource != nil {
-		c.SetLSPSource(opts.LSPSource)
-	}
-	return c
+	return diagnostics.NewChecker(opts.Config.Diagnostics.Commands)
 }
 
 type diagnosticsArgs struct {
@@ -38,7 +35,7 @@ func (t *toolSet) diagnosticsCheckTool() registry.Tool {
 		if path == "" {
 			path = "."
 		}
-		out, err := t.diagnostics.Check([]string{path}, languageOf([]string{path}))
+		out, err := t.diagnostics.Check(t.activeRoot(), []string{path}, languageOf([]string{path}))
 		if err != nil {
 			return registry.ToolResult{}, err
 		}

@@ -59,7 +59,7 @@ func (h *Handle) Root() string {
 // Restart builds a new Manager rooted at root, swaps it in, and returns
 // both managers. The caller shuts old down and runs newM.
 func (h *Handle) Restart(root string) (newM, old *Manager) {
-	newM = NewManager(root, h.servers, h.log)
+	newM = NewManager(root, ServersForRoot(h.servers, root), h.log)
 	h.mu.Lock()
 	old = h.m
 	h.m = newM

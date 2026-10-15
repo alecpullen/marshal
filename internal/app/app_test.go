@@ -4181,7 +4181,10 @@ reviewer = "mock/mock-model"
 [lsp]
 enabled = true
 
-[lsp.servers.stub]
+# The server language key must be one the active root actually contains:
+# the manager starts servers only for languages present in the repo. The
+# stub script below is lsp-stub.sh, so "shell" is the key that matches.
+[lsp.servers.shell]
 command = "` + stub + `"
 `
 	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configToml), 0644); err != nil {
@@ -4197,7 +4200,7 @@ command = "` + stub + `"
 	defer rt.Close(context.Background())
 
 	if rt.LSPManager == nil {
-		t.Fatal("LSPManager was not constructed even though [lsp.servers.stub] was configured")
+		t.Fatal("LSPManager was not constructed even though [lsp.servers.shell] was configured")
 	}
 
 	// Generous because the whole suite competes for CPU: the loop below

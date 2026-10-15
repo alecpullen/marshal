@@ -774,7 +774,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if lspEnabled(cfg.LSP) {
 		servers := lsp.DetectServers(toServerSpecs(cfg.LSP.Servers), disabledLangs(cfg.LSP.Servers))
 		if len(servers) > 0 {
-			lspHandle = lsp.NewHandle(lsp.NewManager(state.Workspace().ActiveRoot, servers, state.Logger()), servers, state.Logger())
+			lspHandle = lsp.NewHandle(lsp.NewManager(state.Workspace().ActiveRoot, lsp.ServersForRoot(servers, state.Workspace().ActiveRoot), state.Logger()), servers, state.Logger())
 		}
 	}
 	if lspHandle != nil {

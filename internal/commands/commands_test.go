@@ -228,6 +228,43 @@ func TestToolsCommandReturnsDoc(t *testing.T) {
 	}
 }
 
+// /tools is the one tool list the user reads directly. Internal tools are
+// dispatchable by the runtime but never offered to the model, so the row must
+// say so rather than reading as a promise the request does not keep.
+func TestToolsCommandMarksInternalTools(t *testing.T) {
+	cmdReg := New()
+	toolReg := registry.New()
+	toolReg.Register(registry.Tool{
+		Name:        "test.run",
+		Risk:        registry.RiskCommand,
+		Internal:    true,
+		Description: "Run the configured test command in the workspace",
+		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+			return registry.ToolResult{Summary: "ok"}, nil
+		},
+	})
+	RegisterAll(cmdReg, toolReg)
+
+	cmd, _ := cmdReg.Lookup("tools")
+	res := cmd.Handler(newTestState(), nil)
+	if res.Doc == nil {
+		t.Fatalf("/tools should return a Doc, got %+v", res)
+	}
+	found := false
+	for _, row := range res.Doc.Rows {
+		if row.Text != "test.run" {
+			continue
+		}
+		found = true
+		if !strings.Contains(row.Detail, "internal") {
+			t.Errorf("test.run detail = %q, want it marked internal", row.Detail)
+		}
+	}
+	if !found {
+		t.Fatalf("test.run missing from /tools rows: %+v", res.Doc.Rows)
+	}
+}
+
 func TestRouteCommand(t *testing.T) {
 	cmdReg := New()
 	toolReg := registry.New()

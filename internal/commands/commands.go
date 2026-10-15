@@ -163,9 +163,16 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				}
 				var rows []Row
 				for _, tool := range toolReg.List() {
+					detail := fmt.Sprintf("(%s) — %s", tool.Risk, tool.Description)
+					if tool.Internal {
+						// Internal tools are dispatchable by the runtime but
+						// never offered to the model. Say so, or this list
+						// reads as a promise the request does not keep.
+						detail = fmt.Sprintf("(%s, internal — not offered to the model) — %s", tool.Risk, tool.Description)
+					}
 					rows = append(rows, Row{
 						Text:   tool.Name,
-						Detail: fmt.Sprintf("(%s) — %s", tool.Risk, tool.Description),
+						Detail: detail,
 					})
 				}
 				return Panel("Tools", false, rows)

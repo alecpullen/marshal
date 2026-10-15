@@ -65,8 +65,9 @@ func TesterView(src *Registry) *Registry {
 }
 
 // OrchestratorView returns a new Registry containing src's read-only
-// tools plus sdd.* tools plus agent.run, but dropping file.write_patch,
-// shell.run, and test.run. The SDD orchestrator must never edit source
+// tools plus sdd.* tools plus agent.run, dropping the file-write tools
+// (file.write_patch, file.write, file.edit) and the command tools
+// (shell.run, test.run). The SDD orchestrator must never edit source
 // or run arbitrary shell — it writes only via sdd.* tools to .marshal/sdd/
 // and dispatches workers via agent.run. This is the preventive edit
 // guard (spec §8, UNKNOWN 4): structural enforcement, not prompt-only.
@@ -97,8 +98,9 @@ func testerTestRunTool(tool Tool) Tool {
 }
 
 // FallbackWriterView returns a new Registry containing src's tools with
-// file.write_patch narrowed to exactly the listed allowed paths (or
-// their descendants). The marshal.agent fallback agent's shell channel
+// the file-write tools (file.write_patch, file.write, file.edit) narrowed
+// to exactly the listed allowed paths (or their descendants). The
+// marshal.agent fallback agent's shell channel
 // remains available because command execution is governed by
 // sandbox/policy at a higher layer; this view protects only the
 // file-write surface. Allowed paths are interpreted as directory

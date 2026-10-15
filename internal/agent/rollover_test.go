@@ -522,15 +522,18 @@ func TestRolloverAndContinueNilRollover(t *testing.T) {
 }
 
 // TestCompactionTellsTheModelItCanRecall verifies that the continue
-// instruction names recall_history when that tool is available, and never
-// advertises it when it is disabled.
+// instruction names transcript_read when that tool is available, and never
+// advertises it when it is not.
 func TestCompactionTellsTheModelItCanRecall(t *testing.T) {
 	fresh := continueInstruction(true)
-	if !strings.Contains(fresh, "recall_history") {
-		t.Errorf("continue instruction does not mention recall_history: %q", fresh)
+	if !strings.Contains(fresh, "transcript_read") {
+		t.Errorf("continue instruction does not mention transcript_read: %q", fresh)
 	}
-	if plain := continueInstruction(false); strings.Contains(plain, "recall_history") {
-		t.Errorf("must not advertise a disabled tool: %q", plain)
+	if !strings.Contains(fresh, `"query"`) {
+		t.Errorf("continue instruction must name the query argument: %q", fresh)
+	}
+	if plain := continueInstruction(false); strings.Contains(plain, "transcript_read") {
+		t.Errorf("must not advertise an unavailable tool: %q", plain)
 	}
 }
 

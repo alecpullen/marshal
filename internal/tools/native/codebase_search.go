@@ -46,7 +46,7 @@ func (t *toolSet) codebaseSearchTool() registry.Tool {
 		}
 		if count, _, _ := t.db.ChunkGeneration(t.projectID); count == 0 {
 			return registry.ToolResult{Summary: "no semantic index",
-				Content: "No semantic index yet — run `repo.index` to build it."}, nil
+				Content: "No semantic index yet — the background indexer builds it once embeddings are configured."}, nil
 		}
 		src := retrieval.NewSemanticSource(t.db, embedder, t.projectID)
 		hits, err := src.Retrieve(ctx, retrieval.Query{Text: args.Query, Limit: args.Limit, PathPrefix: args.Path})

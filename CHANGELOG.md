@@ -56,6 +56,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exiting the TUI always marks the session ended, with or without a
   configured provider.
 
+**Context diet, Tier 2a: smaller tool surface**
+
+- `file.edit {path, old_string, new_string}` replaces `file.write_patch` for
+  the model. Permission rules and hooks written for `file.write_patch` keep
+  applying.
+- `agent.await` gains `peek`, `agent.kill` accepts `job_id`, and
+  `parent.correct` is now `agent.steer {id, message}`. Killing a background
+  job no longer prompts: `job.kill`'s `RiskCommand` level is deliberately
+  dropped, so a job this session started is cancelled like a subagent kill.
+- `agent.output`'s `"transcript": true` option is dropped; `agent.await` with
+  `"peek": true` returns the five most recent activity lines plus the summary.
+- `file.edit` takes `old_string`/`new_string` only, so a model holding a
+  unified diff (`---/+++/@@` hunks) must transcode it. Whole-file creation
+  uses `file.write`; multi-file edits use parallel calls.
+- `[session.rollover] recall_tool_enabled` is inert — the tool it gated is now
+  `transcript_read`'s `query` — but the key is still accepted so existing
+  configs keep loading.
+- `transcript_read` takes a `query` to search archived turns.
+- `codebase_search` is offered only when an embedding route is configured.
+- The model roster no longer labels unpriced models "cheap", hides
+  internal-only roles, and leaves out the embedding preset.
+
 ### Removed
 
 - The background knowledge pass (every 5 turns, at compaction and at exit)
@@ -69,6 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or `/connect` to change configuration.
 - Repository-specific workflow rules (spec location, reviewer subagent)
   from the shipped system prompt, and the spec-location note on file writes.
+- Model-facing tools retired: `watch.*`, `sessions.list`, `session.send`,
+  `ask_user`, `skill.install`, `skill.unload`, `repo.map`, `repo.card`,
+  `repo.index`, `csv.inspect`, `json.query`, `file.page`, `job.*`,
+  `agent.output`, `recall_history`, `scratchpad.*`, `parent.ask`,
+  `parent.respond`. `test.run` and `file.write_patch` remain internal only.
+- The subagent question channel and its `[agent] parent_question_*` settings.
 
 ### Fixed
 

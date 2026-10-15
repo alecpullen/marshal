@@ -74,55 +74,13 @@ func TestQuestionAskRequiresAtLeastOneQuestion(t *testing.T) {
 	}
 }
 
-func TestAskUserAliasWrapsSingleQuestion(t *testing.T) {
-	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
-	tools := &toolSet{sessionState: state}
-	tool := tools.askUserTool()
-
-	args, _ := json.Marshal(map[string]any{"question": "Should we archive or delete?"})
-
-	type result struct {
-		res registry.ToolResult
-		err error
-	}
-	resultCh := make(chan result, 1)
-	go func() {
-		res, err := tool.Handler(context.Background(), registry.ToolCall{Args: args})
-		resultCh <- result{res, err}
-	}()
-
-	pq := waitPendingQuestion(t, state)
-	if len(pq.Questions) != 1 || pq.Questions[0].Question != "Should we archive or delete?" {
-		t.Fatalf("Questions = %+v", pq.Questions)
-	}
-
-	pq.ResponseChan <- []session.Answer{
-		{Question: "Should we archive or delete?", Answer: "archive"},
-	}
-
-	res := <-resultCh
-	if res.err != nil {
-		t.Fatalf("handler error: %v", res.err)
-	}
-	if res.res.Summary != "user answered" {
-		t.Fatalf("summary = %q, want user answered", res.res.Summary)
-	}
-}
-
 func TestQuestionToolDescriptionsGuideUsage(t *testing.T) {
 	tools := &toolSet{}
 
 	ask := tools.questionAskTool()
-	for _, want := range []string{"options", "never embed", "mode.request"} {
+	for _, want := range []string{"options", "never as lettered text", "mode.request"} {
 		if !strings.Contains(ask.Description, want) {
 			t.Errorf("question.ask description missing %q\n%s", want, ask.Description)
-		}
-	}
-
-	alias := tools.askUserTool()
-	for _, want := range []string{"question.ask", "mode.request"} {
-		if !strings.Contains(alias.Description, want) {
-			t.Errorf("ask_user description missing %q\n%s", want, alias.Description)
 		}
 	}
 }

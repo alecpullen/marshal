@@ -202,14 +202,14 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 				if !filtered {
 					return finishKindResult(registry.ToolResult{
 						Summary: "No matching symbols",
-						Content: "No matching symbols — run repo.index first if the index may be missing",
+						Content: "No matching symbols — the symbol index refreshes automatically; adjust your filters",
 					}), nil
 				}
 				// Say which filter applied, so a model can tell "no such symbol"
 				// apart from "my filter excluded it".
 				return finishKindResult(registry.ToolResult{
 					Summary: "No matching symbols (filtered)",
-					Content: fmt.Sprintf("No matching symbols after applying %s — the symbol may exist outside the filtered scope, or run repo.index first if the index may be missing", describeSymbolFilters(pathPrefix, args.Include)),
+					Content: fmt.Sprintf("No matching symbols after applying %s — the symbol may exist outside the filtered scope", describeSymbolFilters(pathPrefix, args.Include)),
 				}), nil
 			}
 

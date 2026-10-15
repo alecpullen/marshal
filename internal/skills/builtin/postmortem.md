@@ -20,11 +20,11 @@ the transcript can see. You are recording, not judging.
    capture: which tools the agent chose and whether a different tool was
    clearly the right one; strategies it repeated after they failed; places
    where it misread the prompt or the task goal. You may also consult
-   `recall_history` if earlier turns are not visible.
+   `transcript_read` with a `"query"` if earlier turns are not visible.
 3. **Write the observations.** Set `agent_observations` to a JSON array of
    **short strings** — one observation per string, each a concrete, factual
    statement of what happened. Keep each entry to a single sentence. Use
-   `file.write_patch` to edit the report file in place, replacing the `null`
+   `file.edit` to edit the report file in place, replacing the `null`
    value of `agent_observations` with your array. In the same patch, set
    `coverage.agent_pass` to `true` and `coverage.agent_pass_reason` to
    `"completed"`. Do not reformat or rewrite the rest of the file.

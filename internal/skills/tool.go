@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
@@ -28,40 +26,6 @@ func RegisterTool(reg *registry.Registry, idx *Index, state *session.State, opts
 		Cacheable:   false,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 			return handleSkillLoad(call, idx, state)
-		},
-	})
-	reg.Register(registry.Tool{
-		Name:        "skill.unload",
-		Description: "Drop a loaded skill from the agent's context by name, so its body stops consuming context on every turn. Call this when you are done with a skill's procedure.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","minLength":1,"description":"Name of the skill to unload"}},"required":["name"],"additionalProperties":false}`),
-		Risk:        registry.RiskReadOnly,
-		Cacheable:   false,
-		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			var args struct {
-				Name string `json:"name"`
-			}
-			if err := json.Unmarshal(call.Args, &args); err != nil {
-				return registry.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
-			}
-			if args.Name == "" {
-				return registry.ToolResult{}, fmt.Errorf("missing required argument: name")
-			}
-			if err := NewSkillLoader(idx, state).Unload(args.Name); err != nil {
-				return registry.ToolResult{}, err
-			}
-			return registry.ToolResult{
-				Summary: fmt.Sprintf("Skill %q unloaded.", args.Name),
-			}, nil
-		},
-	})
-	reg.Register(registry.Tool{
-		Name:        "skill.install",
-		Description: "Install a skill from a local .md file, a bundle directory, a git URL, or a raw http(s) .md URL, then make it loadable immediately. Use this when a setup guide or the user points you at a skill to install. After a successful install, call skill.load with the returned name to activate it.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"source":{"type":"string","minLength":1,"description":"Local path, bundle directory, git URL (github:owner/repo, git@…, https://…/.git), or a raw http(s) URL ending in .md"},"name":{"type":"string","description":"Store name for the installed skill; derived from the source when omitted"},"project":{"type":"boolean","description":"Install into the project (.marshal/skills) instead of the user-global skills directory"}},"required":["source"],"additionalProperties":false}`),
-		Risk:        registry.RiskWorkspaceWrite,
-		Cacheable:   false,
-		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			return handleSkillInstall(ctx, call, idx, opts)
 		},
 	})
 }
@@ -209,54 +173,5 @@ func handleSkillLoad(call registry.ToolCall, idx *Index, state *session.State) (
 	}
 	return registry.ToolResult{
 		Summary: fmt.Sprintf("Skill %q loaded into context.", args.Name),
-	}, nil
-}
-
-// handleSkillInstall installs a skill from a local file, bundle directory,
-// or URL into the requested scope directory, then parses the installed
-// file and inserts it into the in-memory index so it is loadable via
-// skill.load in the same turn — without the hot insert, a freshly
-// installed skill would stay invisible until the next full index rebuild.
-func handleSkillInstall(ctx context.Context, call registry.ToolCall, idx *Index, opts SkillsToolOptions) (registry.ToolResult, error) {
-	var args struct {
-		Source  string `json:"source"`
-		Name    string `json:"name"`
-		Project bool   `json:"project"`
-	}
-	if err := json.Unmarshal(call.Args, &args); err != nil {
-		return registry.ToolResult{}, fmt.Errorf("invalid arguments: %w", err)
-	}
-	if args.Source == "" {
-		return registry.ToolResult{}, fmt.Errorf("missing required argument: source")
-	}
-	if args.Name != "" && !ValidName(args.Name) {
-		return registry.ToolResult{}, fmt.Errorf("invalid skill name %q", args.Name)
-	}
-
-	targetDir := ScopeDir(opts.HomeDir, opts.WorkingDir, args.Project)
-	installedPath, err := Install(ctx, args.Source, targetDir, args.Name)
-	if err != nil {
-		return registry.ToolResult{}, fmt.Errorf("install skill: %w", err)
-	}
-
-	skillPath := installedPath
-	if info, statErr := os.Stat(installedPath); statErr == nil && info.IsDir() {
-		skillPath = filepath.Join(installedPath, BundleFileName)
-	}
-	skill, err := parseSkillFile(skillPath)
-	if err != nil {
-		// Do not leave an unloadable artifact behind in the skills store:
-		// it would be re-scanned (and warned about) on every future start.
-		_ = os.RemoveAll(installedPath)
-		return registry.ToolResult{}, fmt.Errorf("installed skill is not loadable: %w", err)
-	}
-	idx.Set(skill.Name, skill)
-
-	scopeLabel := "user-global"
-	if args.Project {
-		scopeLabel = "project"
-	}
-	return registry.ToolResult{
-		Summary: fmt.Sprintf("Installed skill %q (%s scope) at %s. Call skill.load with name %q to activate it.", skill.Name, scopeLabel, installedPath, skill.Name),
 	}, nil
 }

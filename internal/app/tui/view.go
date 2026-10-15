@@ -217,13 +217,6 @@ func (m Model) renderInputArea() string {
 		// question is pending every keypress routes to the question form
 		// (handleQuestion), so a visible textarea would be a dead input
 		// that swallows nothing yet appears typable.
-	} else if child := m.state.PendingChildQuestion(); child != nil {
-		if m.childQuestionModel != nil {
-			rows = append(rows, m.childQuestionModel.View())
-		} else {
-			rows = append(rows, renderChildQuestionPanel(child, inputInnerWidth))
-		}
-		// Same dead-input reasoning as the question branch above.
 	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
 		switch {
 		case isModeElevationApproval(tc):
@@ -260,7 +253,7 @@ func (m Model) inputBarColor() color.Color {
 		return warningColor
 	case m.state.PendingSkillGate() != nil:
 		return violetColor
-	case m.state.PendingQuestion() != nil, m.state.PendingChildQuestion() != nil:
+	case m.state.PendingQuestion() != nil:
 		return violetColor
 	case m.hasPendingApproval():
 		return warningColor
@@ -269,30 +262,6 @@ func (m Model) inputBarColor() color.Color {
 	default:
 		return accentColor
 	}
-}
-
-// renderChildQuestionPanel is the non-huh fallback for a child question
-// (mirrors renderQuestionPanel's role for runner questions): rendered
-// before the form's first Update builds it, e.g. on the very first frame.
-func renderChildQuestionPanel(child *session.PendingChildQuestion, width int) string {
-	var b strings.Builder
-	for i, q := range child.Questions {
-		fmt.Fprintf(&b, "? %s", q.Question)
-		if len(q.Options) > 0 {
-			labels := make([]string, 0, len(q.Options))
-			for _, o := range q.Options {
-				labels = append(labels, o.Label)
-			}
-			fmt.Fprintf(&b, " (%s)", strings.Join(labels, ", "))
-		}
-		b.WriteString("\n")
-		_ = i
-	}
-	header := "from subagent " + child.ChildDesc
-	if strings.TrimSpace(child.ChildDesc) == "" {
-		header = fmt.Sprintf("from subagent %d", child.ChildID)
-	}
-	return chromeRail(header+"\n"+b.String(), violetColor)
 }
 
 // gutteredInput renders the textarea with the ▍ state bar prepended to
@@ -332,10 +301,9 @@ func (m Model) suggestionGhost() string {
 	if m.suggestion == "" || m.suggestionDismissed || m.busy {
 		return ""
 	}
-	// The completion popup, approval, question, child-question, and
-	// skill-gate panels all hide the textarea; a ghost would be a visual
-	// conflict, so suppress it.
-	if m.activeCompletionPopup() != nil || m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingChildQuestion() != nil || m.state.PendingSkillGate() != nil || m.state.PendingSudoAuth() != nil {
+	// The completion popup, approval, question, and skill-gate panels all
+	// hide the textarea; a ghost would be a visual conflict, so suppress it.
+	if m.activeCompletionPopup() != nil || m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSkillGate() != nil || m.state.PendingSudoAuth() != nil {
 		return ""
 	}
 	// The ghost is spliced into a single rendered row. A newline would add

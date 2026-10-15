@@ -399,3 +399,47 @@ func TestTranscriptRegisteredAlongsideSessionTools(t *testing.T) {
 		t.Fatalf("expected RiskReadOnly, got %v", tool.Risk)
 	}
 }
+
+// TestTranscriptReadQuerySearchesArchivedTurns pins the merge: the query
+// argument searches archived turns across the project, exactly as the
+// retired recall_history tool did.
+func TestTranscriptReadQuerySearchesArchivedTurns(t *testing.T) {
+	database := newTestRecallDB(t, "ran distinctive-phrase-42 here")
+	defer database.Close()
+	state := session.New(config.Default(), "/test/repo", time.Now(), session.Persistence{})
+	tool := NewTranscriptTool(state, database)
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Name: "transcript_read", Args: []byte(`{"query":"distinctive-phrase-42"}`)})
+	if err != nil {
+		t.Fatalf("transcript_read query: %v", err)
+	}
+	if !strings.Contains(res.Content, "distinctive-phrase-42") {
+		t.Fatalf("query result missing the match: %q", res.Content)
+	}
+}
+
+// TestTranscriptReadQueryNeedsDatabase keeps the failure actionable when the
+// tool was built without a project db.
+func TestTranscriptReadQueryNeedsDatabase(t *testing.T) {
+	state := session.New(config.Default(), "/test/repo", time.Now(), session.Persistence{})
+	tool := NewTranscriptTool(state, nil)
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Name: "transcript_read", Args: []byte(`{"query":"anything"}`)})
+	if err == nil || !strings.Contains(err.Error(), "needs the session database") {
+		t.Fatalf("err = %v, want a needs-database error", err)
+	}
+}
+
+// TestTranscriptReadQueryIgnoresPaging: a query is a search, not a page, so
+// paging args must not silently truncate the matches.
+func TestTranscriptReadQueryIgnoresPaging(t *testing.T) {
+	database := newTestRecallDB(t, "ran distinctive-phrase-42 here")
+	defer database.Close()
+	state := session.New(config.Default(), "/test/repo", time.Now(), session.Persistence{})
+	tool := NewTranscriptTool(state, database)
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Name: "transcript_read", Args: []byte(`{"query":"distinctive-phrase-42","offset":99,"limit":1,"max_chars":10}`)})
+	if err != nil {
+		t.Fatalf("transcript_read query with paging args: %v", err)
+	}
+	if !strings.Contains(res.Content, "distinctive-phrase-42") {
+		t.Fatalf("paging args must be ignored for a query; got: %q", res.Content)
+	}
+}

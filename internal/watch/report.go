@@ -60,7 +60,7 @@ func ResumeGoal(name, lastAssistant string, repeat bool) string {
 	}
 	b.WriteString(" The watch report is delivered in this turn; pick up where you left off.")
 	if repeat {
-		b.WriteString(" If you are done with this watch, stop it with watch.stop.")
+		b.WriteString(" This is a repeat watch — it keeps firing until it is stopped.")
 	}
 	return b.String()
 }

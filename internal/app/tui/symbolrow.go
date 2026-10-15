@@ -19,7 +19,7 @@ import (
 // the tool-name-first shape.
 func subjectFirstTool(name string) bool {
 	switch name {
-	case "file.write_patch", "file.write", "file.read", "symbols.find":
+	case "file.write_patch", "file.edit", "file.write", "file.read", "symbols.find":
 		return true
 	}
 	return viewmodel.IsShellFamily(name)
@@ -49,10 +49,14 @@ func shellSubjectIn(event registry.AuditEvent, workdir string) string {
 
 // searchQualifiers gives each ◈ tool a short, distinguishable label.
 //
-// toolCategoryGlyph maps five tools onto ◈ (toolnames.go), so unlike the
+// toolCategoryGlyph maps several tools onto ◈ (toolnames.go), so unlike the
 // shell family the glyph cannot stand alone here: a literal grep and a
 // semantic search answer different questions and cost very different
 // amounts, and a reader must be able to tell them apart at a glance.
+//
+// json.query and csv.inspect are retired (context-diet Tier 2a); their
+// entries stay so persisted transcripts still render a qualifier instead of
+// a bare ◈.
 var searchQualifiers = map[string]string{
 	"repo.search":     "search",
 	"codebase.search": "semantic",
@@ -72,9 +76,9 @@ func searchQualifier(name string) (string, bool) {
 // phrase well ("4 matches", "no matches", "3 found"), and the caller
 // appends it.
 //
-// json.query is special: its primary subject is the jq expression, not the
-// file path (the tool's own description leads with the expression). For
-// every other search-family tool toolTarget's path-first ordering is
+// json.query is special — and retired; the entry survives for persisted
+// transcripts: its primary subject was the jq expression, not the file path.
+// For every live search-family tool toolTarget's path-first ordering is
 // correct, so we only override the lookup order for json.query.
 func searchSubject(event registry.AuditEvent) string {
 	q, ok := searchQualifier(event.ToolName)

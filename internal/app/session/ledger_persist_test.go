@@ -53,12 +53,6 @@ func TestLogToolCallCapsAgentRunContent(t *testing.T) {
 
 func TestLogToolCallPersistsLedgerOnAssistantFinal(t *testing.T) {
 	cfg := config.Default()
-	cfg.Scratchpad = config.ScratchpadConfig{
-		MaxEntries:          100,
-		MaxTotalTokens:      100000,
-		MaxEntryTokens:      100000,
-		ProjectionMaxTokens: 1000,
-	}
 	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
 
 	// Two tool calls must accumulate into the buffer.
@@ -104,12 +98,6 @@ func TestLogToolCallPersistsLedgerOnAssistantFinal(t *testing.T) {
 // ledger never drops an entry silently.
 func TestLedgerSummaryFallbackInToolAudit(t *testing.T) {
 	cfg := config.Default()
-	cfg.Scratchpad = config.ScratchpadConfig{
-		MaxEntries:          100,
-		MaxTotalTokens:      100000,
-		MaxEntryTokens:      100000,
-		ProjectionMaxTokens: 1000,
-	}
 	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
 
 	s.LogToolCall(registry.AuditEvent{ToolName: "shell.run", Approval: registry.ApprovalApproved})

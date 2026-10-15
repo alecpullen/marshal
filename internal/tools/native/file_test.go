@@ -577,27 +577,6 @@ func TestFileReadRejectsSymlinkEscapingAbsolutePath(t *testing.T) {
 	}
 }
 
-func TestFilePageAcceptsAbsolutePathInsideRoot(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\nthree\nfour\nfive\n")
-	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-
-	args, err := json.Marshal(map[string]any{"path": filepath.Join(root, "notes.txt"), "page": 1})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	result, err := invokeTool(t, reg, "file.page", string(args))
-	if err != nil {
-		t.Fatalf("file.page absolute path inside root returned error: %v", err)
-	}
-	if !strings.Contains(result.Content, "one") {
-		t.Fatalf("Content should contain first-page content, got: %q", result.Content)
-	}
-}
-
 func TestFileReadRejectsInvalidRange(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\n")
@@ -612,92 +591,7 @@ func TestFileReadRejectsInvalidRange(t *testing.T) {
 	}
 }
 
-func TestFilePageReadsFirstPage(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\nthree\nfour\nfive\n")
-	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-
-	result, err := invokeTool(t, reg, "file.page", `{"path":"notes.txt","page":1,"page_size":2}`)
-	if err != nil {
-		t.Fatalf("file.page returned error: %v", err)
-	}
-	if result.Content != "one\ntwo" {
-		t.Fatalf("Content = %q, want first two lines", result.Content)
-	}
-	if !strings.Contains(result.Summary, "page 1") || !strings.Contains(result.Summary, "lines 1-2 of 5") {
-		t.Fatalf("Summary = %q, want page and line info", result.Summary)
-	}
-}
-
-func TestFilePageReadsSecondPage(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\nthree\nfour\nfive\n")
-	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-
-	result, err := invokeTool(t, reg, "file.page", `{"path":"notes.txt","page":2,"page_size":2}`)
-	if err != nil {
-		t.Fatalf("file.page returned error: %v", err)
-	}
-	if result.Content != "three\nfour" {
-		t.Fatalf("Content = %q, want middle two lines", result.Content)
-	}
-	if !strings.Contains(result.Summary, "lines 3-4 of 5") {
-		t.Fatalf("Summary = %q, want lines 3-4 of 5", result.Summary)
-	}
-}
-
-func TestFilePageDefaultsPageSize(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\nthree\n")
-	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-
-	result, err := invokeTool(t, reg, "file.page", `{"path":"notes.txt","page":1}`)
-	if err != nil {
-		t.Fatalf("file.page returned error: %v", err)
-	}
-	if result.Content != "one\ntwo\nthree\n" {
-		t.Fatalf("Content = %q, want all lines with default page size", result.Content)
-	}
-}
-
-func TestFilePageRejectsPastEnd(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\n")
-	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-
-	_, err := invokeTool(t, reg, "file.page", `{"path":"notes.txt","page":5,"page_size":2}`)
-	if err == nil {
-		t.Fatal("file.page past end returned nil error")
-	}
-}
-
-func TestFilePageRejectsInvalidPage(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\n")
-	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-
-	_, err := invokeTool(t, reg, "file.page", `{"path":"notes.txt","page":0}`)
-	if err == nil {
-		t.Fatal("file.page page 0 returned nil error")
-	}
-}
-
-func TestFilePageReadsFileLargerThanOutputLimit(t *testing.T) {
+func TestFileReadFallsBackToHeadWhenLargerThanOutputLimit(t *testing.T) {
 	root := t.TempDir()
 	var sb strings.Builder
 	for i := 0; i < 20000; i++ {
@@ -722,19 +616,6 @@ func TestFilePageReadsFileLargerThanOutputLimit(t *testing.T) {
 	}
 	if head.Notice == nil || head.Notice.Kind != registry.NoticeOversizeFallback {
 		t.Fatalf("file.read oversized Notice = %#v, want %q", head.Notice, registry.NoticeOversizeFallback)
-	}
-
-	// file.page should still be able to page through it.
-	result, err := invokeTool(t, reg, "file.page", `{"path":"big.txt","page":1,"page_size":3}`)
-	if err != nil {
-		t.Fatalf("file.page returned error: %v", err)
-	}
-	want := "line 00000\nline 00001\nline 00002"
-	if result.Content != want {
-		t.Fatalf("Content = %q, want %q", result.Content, want)
-	}
-	if !strings.Contains(result.Summary, "lines 1-3 of 20000") {
-		t.Fatalf("Summary = %q, want lines 1-3 of 20000", result.Summary)
 	}
 }
 
@@ -1229,8 +1110,7 @@ func TestFileReadOversizedRangeKeepsCarriageReturns(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "crlf.txt"), "alpha\r\nbeta\r\ngamma\r\n")
 
-	// The budget forces file.read down the streaming path; file.page still
-	// reads the same file whole, so the two can be compared directly.
+	// The budget forces file.read down the streaming path.
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{
 		WorkspaceRoot:  root,
@@ -1254,19 +1134,6 @@ func TestFileReadOversizedRangeKeepsCarriageReturns(t *testing.T) {
 	}
 	if strings.Contains(ranged.Content, "alpha\nbeta") {
 		t.Fatalf("ranged read dropped the '\\r' that selectLines keeps: %q", ranged.Content)
-	}
-
-	// page_size 2 keeps the page inside the budget (13 bytes), so file.page
-	// emits the same two lines whole for comparison.
-	page, err := invokeTool(t, reg, "file.page", `{"path":"crlf.txt","page":1,"page_size":2}`)
-	if err != nil {
-		t.Fatalf("file.page returned error: %v", err)
-	}
-	if page.Content != "alpha\r\nbeta\r" {
-		t.Fatalf("file.page content = %q, want %q", page.Content, "alpha\r\nbeta\r")
-	}
-	if !strings.HasPrefix(ranged.Content, page.Content) {
-		t.Fatalf("ranged read %q should start with the same lines file.page emits (%q)", ranged.Content, page.Content)
 	}
 }
 
@@ -2393,7 +2260,7 @@ func TestReadToolSchemasDocumentAbsolutePaths(t *testing.T) {
 		t.Fatalf("RegisterAll error: %v", err)
 	}
 
-	readTools := []string{"file.read", "file.page"}
+	readTools := []string{"file.read"}
 	writeTools := []string{"file.write", "file.write_patch"}
 
 	for _, name := range readTools {

@@ -59,41 +59,9 @@ func TestNativeQuestionAskDeclined(t *testing.T) {
 	}
 }
 
-func TestNativeAskUserCountsAgainstIterationBudget(t *testing.T) {
-	state := newTestState(t)
-	p := &agenttest.ScriptedProvider{
-		Responses: []string{"Ask1.", "Ask2."},
-		ToolCalls: [][]schema.ToolCall{
-			{{ID: "c1", Name: "ask_user", Args: json.RawMessage(`{"question":"Q1?"}`)}},
-			{{ID: "c2", Name: "ask_user", Args: json.RawMessage(`{"question":"Q2?"}`)}},
-		},
-	}
-	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	r.NativeTools = true
-	r.SetForceClass(string(ClassQuestion))
-
-	var got *TurnMetrics
-	r.MetricsObserver = func(m TurnMetrics) { got = &m }
-
-	answerPendingQuestions(state, 2, "yes")
-
-	task, err := r.RunTask(context.Background(), "ask repeatedly")
-	if err != nil {
-		t.Fatalf("RunTask err = %v", err)
-	}
-	if task.Summary != "Ask2." {
-		t.Fatalf("Summary = %q, want Ask2.", task.Summary)
-	}
-	if got == nil || got.Iterations < 4 {
-		// Each ask_user batch consumes 1 tool iteration for the model turn
-		// that issued it + 1 overhead iteration from executeNativeAskUser;
-		// Iterations reports the total, so 2 per call × 2 calls = 4.
-		t.Fatalf("Iterations = %d, want at least 4", got.Iterations)
-	}
-	if r.turnBudget != nil {
-		t.Fatalf("turnBudget should be nil after RunTask")
-	}
-}
+// The native ask_user budget test was removed with the tool itself in the
+// context-diet Tier 2a cut. TestNativeQuestionAskCountsAgainstIterationBudget
+// below pins the same accounting for the surviving question.ask channel.
 
 func TestNativeQuestionAskCountsAgainstIterationBudget(t *testing.T) {
 	state := newTestState(t)

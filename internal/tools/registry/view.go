@@ -65,8 +65,9 @@ func TesterView(src *Registry) *Registry {
 }
 
 // OrchestratorView returns a new Registry containing src's read-only
-// tools plus sdd.* tools plus agent.run, but dropping file.write_patch,
-// shell.run, and test.run. The SDD orchestrator must never edit source
+// tools plus sdd.* tools plus agent.run, dropping the file-write tools
+// (file.write_patch, file.write, file.edit) and the command tools
+// (shell.run, test.run). The SDD orchestrator must never edit source
 // or run arbitrary shell — it writes only via sdd.* tools to .marshal/sdd/
 // and dispatches workers via agent.run. This is the preventive edit
 // guard (spec §8, UNKNOWN 4): structural enforcement, not prompt-only.
@@ -92,12 +93,14 @@ func testerTestRunTool(tool Tool) Tool {
 		call.Args = []byte(`{}`)
 		return original(ctx, call)
 	}
+	testerTool.Internal = false
 	return testerTool
 }
 
 // FallbackWriterView returns a new Registry containing src's tools with
-// file.write_patch narrowed to exactly the listed allowed paths (or
-// their descendants). The marshal.agent fallback agent's shell channel
+// the file-write tools (file.write_patch, file.write, file.edit) narrowed
+// to exactly the listed allowed paths (or their descendants). The
+// marshal.agent fallback agent's shell channel
 // remains available because command execution is governed by
 // sandbox/policy at a higher layer; this view protects only the
 // file-write surface. Allowed paths are interpreted as directory
@@ -115,15 +118,13 @@ func FallbackWriterView(src *Registry, allowed []string) *Registry {
 			// Deferred tools are never exposed to the fallback child.
 		case tool.Name == "file.write_patch":
 			_ = view.Register(fallbackWriterPatchTool(tool, allowedSet))
-		case tool.Name == "file.write":
-			_ = view.Register(fallbackWriterFileWriteTool(tool, allowedSet))
-		case tool.Name == "skill.install":
-			// Skill installation is a network-egress plus persistent
-			// prompt-injection surface: it can fetch a remote document and
-			// write it into the user-global skill store, which every future
-			// session loads. The fallback child runs unattended under an
-			// auto-approving policy, so it must not reach it — the same
-			// reason ReadOnlyView and ArtifactWriterView filter it out.
+		case tool.Name == "file.write" || tool.Name == "file.edit":
+			_ = view.Register(pathScopedTool(tool, func(cleaned, raw string) error {
+				if !pathInAllowlist(cleaned, allowedSet) {
+					return fmt.Errorf("%s in fallback scope may only write under the declared scope (path %q is outside)", tool.Name, raw)
+				}
+				return nil
+			}))
 		case tool.Risk == RiskNetwork:
 			// Network egress: the fallback child runs unattended under an
 			// auto-approving policy, so it must not reach the network. Keyed
@@ -137,10 +138,11 @@ func FallbackWriterView(src *Registry, allowed []string) *Registry {
 	return view
 }
 
-// fallbackWriterFileWriteTool narrows file.write to the declared allowlist,
-// mirroring fallbackWriterPatchTool. Without this the whole-file write tool
-// would bypass the fallback agent's path guard entirely.
-func fallbackWriterFileWriteTool(tool Tool, allowed map[string]bool) Tool {
+// pathScopedTool narrows a path-addressed write tool (file.write, file.edit)
+// to paths check accepts. check receives the cleaned path and returns a
+// non-nil error to reject it. Without this the whole-file write tools would
+// bypass a scoped view's path guard entirely.
+func pathScopedTool(tool Tool, check func(cleaned, raw string) error) Tool {
 	original := tool.Handler
 	filtered := tool
 	filtered.Handler = func(ctx context.Context, call ToolCall) (ToolResult, error) {
@@ -148,11 +150,10 @@ func fallbackWriterFileWriteTool(tool Tool, allowed map[string]bool) Tool {
 			Path string `json:"path"`
 		}
 		if err := json.Unmarshal(call.Args, &args); err != nil {
-			return ToolResult{}, fmt.Errorf("file.write in fallback scope could not parse arguments: %w", err)
+			return ToolResult{}, fmt.Errorf("%s could not parse arguments: %w", tool.Name, err)
 		}
-		cleaned := cleanScopePath(args.Path)
-		if !pathInAllowlist(cleaned, allowed) {
-			return ToolResult{}, fmt.Errorf("file.write in fallback scope may only write under the declared scope (path %q is outside)", args.Path)
+		if err := check(cleanScopePath(args.Path), args.Path); err != nil {
+			return ToolResult{}, err
 		}
 		return original(ctx, call)
 	}
@@ -235,6 +236,13 @@ func ArtifactWriterView(src *Registry, artifactAlias string) *Registry {
 			_ = view.Register(tool)
 		case tool.Name == "file.write_patch":
 			_ = view.Register(artifactWriterPatchTool(tool, artifactAlias))
+		case tool.Name == "file.write" || tool.Name == "file.edit":
+			_ = view.Register(pathScopedTool(tool, func(cleaned, raw string) error {
+				if !strings.HasPrefix(cleaned, artifactAlias+"/") {
+					return fmt.Errorf("%s in artifact-writer scope may only write under %s/ (path %q is outside)", tool.Name, artifactAlias, raw)
+				}
+				return nil
+			}))
 		}
 	}
 	return view
@@ -287,20 +295,26 @@ func PlanWriterView(src *Registry, alias string, allowed []string) *Registry {
 			// Deferred tools are never exposed to the authoring child.
 		case tool.Risk == RiskReadOnly:
 			switch tool.Name {
-			case "agent.run", "question.ask", "ask_user", "mode.request":
+			case "agent.run", "question.ask", "mode.request":
 				// Nested-agent, question, and mode tools are excluded: the
 				// orphaned child must not spawn agents or ask the user.
-			case "diagnostics.check", "recall_history":
+			case "diagnostics.check":
 				// Side-effectful despite the RiskReadOnly label:
 				// diagnostics.check runs configured per-language shell
-				// commands and recall_history dereferences the session DB
-				// (panics when nil). Stripped so the orphan cannot run
-				// arbitrary checkers or touch archived-turn storage.
+				// commands. Stripped so the orphan cannot run arbitrary
+				// checkers.
 			default:
 				_ = view.Register(tool)
 			}
 		case tool.Name == "file.write_patch":
 			_ = view.Register(planWriterPatchTool(tool, alias, allowedSet))
+		case tool.Name == "file.write" || tool.Name == "file.edit":
+			_ = view.Register(pathScopedTool(tool, func(cleaned, raw string) error {
+				if !allowedSet[cleaned] {
+					return fmt.Errorf("%s in plan-writer scope may only write the candidate plan (path %q is not allowed)", tool.Name, raw)
+				}
+				return nil
+			}))
 		}
 	}
 	return view

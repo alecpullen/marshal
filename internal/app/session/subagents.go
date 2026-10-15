@@ -71,7 +71,7 @@ type SubagentView struct {
 	SalvagedReason string
 
 	// Error carries the failure text when Status == SubagentFailed so
-	// agent.await / agent.output can report why the child failed. Empty
+	// agent.await can report why the child failed. Empty
 	// for running or successful subagents.
 	Error string
 }
@@ -342,7 +342,7 @@ func (s *State) CurrentToolLabel() string {
 	}
 	atc := *s.activeToolCall
 	switch atc.Name {
-	case "file.write_patch":
+	case "file.write_patch", "file.edit":
 		if atc.Path != "" {
 			return "editing " + atc.Path
 		}
@@ -468,14 +468,14 @@ func (s *State) WaitAnySubagent(ctx context.Context, ids []int64) (SubagentView,
 // maxReasoningTailBytes caps how much of the in-progress reasoning buffer
 // SubagentActivityTail scans. The reasoning buffer can grow unboundedly
 // within one model call; without this cap, splitting it into lines would
-// copy the entire buffer on every agent.output call or TUI frame.
+// copy the entire buffer on every agent.await peek or TUI frame.
 const maxReasoningTailBytes = 8192
 
 // SubagentActivityTail returns up to n lines summarising what a running
 // subagent is currently doing. It prefers the trailing end of streamed
 // reasoning, then recent audit-log result summaries. It lives here (rather
 // than duplicated in the agent and TUI packages) so the two consumers —
-// agent.output and the TUI card — cannot drift apart.
+// agent.await's peek and the TUI card — cannot drift apart.
 //
 // M-4: only the trailing maxReasoningTailBytes of the reasoning buffer are
 // scanned, so a very long reasoning stream does not cause the tail to

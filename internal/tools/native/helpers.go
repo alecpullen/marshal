@@ -220,7 +220,7 @@ func resolveSystemPath(abs string) (string, error) {
 }
 
 // resolveReadToolPath resolves a path for a read-side tool other than the
-// file tools (repo.search, csv.inspect, json.query). With system access on it
+// file tools (today: repo.search's path filter). With system access on it
 // accepts absolute paths anywhere on the filesystem, matching the file tools
 // and the system-access prompt directive. Without the flag the prior
 // containment behavior is preserved exactly.

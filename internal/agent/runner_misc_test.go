@@ -6,10 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -301,8 +298,8 @@ func TestRunNativeToolCallFeedsRoleToolThenAnswers(t *testing.T) {
 	if len(p.Requests) != 2 {
 		t.Fatalf("provider requests = %d, want 2", len(p.Requests))
 	}
-	if len(p.Requests[0].Tools) != 2 {
-		t.Fatalf("len(request tools) = %d, want demo.read + ask_user: %+v", len(p.Requests[0].Tools), p.Requests[0].Tools)
+	if len(p.Requests[0].Tools) != 1 {
+		t.Fatalf("len(request tools) = %d, want just demo.read: %+v", len(p.Requests[0].Tools), p.Requests[0].Tools)
 	}
 	foundToolResult := false
 	for _, msg := range p.Requests[1].Messages {
@@ -363,40 +360,9 @@ func TestRunNativeMultiCallBatchFeedsEachRoleToolInOrder(t *testing.T) {
 	}
 }
 
-func TestRunNativeAskUserFeedsAnswerAsRoleTool(t *testing.T) {
-	state := newTestState(t)
-	p := &agenttest.ScriptedProvider{
-		Responses: []string{"Need clarification.", "Archived as requested."},
-		ToolCalls: [][]schema.ToolCall{
-			{{ID: "call_question", Name: "ask_user", Args: json.RawMessage(`{"question":"Archive or delete?"}`)}},
-		},
-	}
-	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	r.NativeTools = true
-	r.SetForceClass(string(ClassQuestion))
-
-	questionCh := answerPendingQuestion(state, "archive")
-
-	task, err := r.RunTask(context.Background(), "clean up old records")
-	if err != nil {
-		t.Fatalf("RunTask err = %v", err)
-	}
-	if got := <-questionCh; got != "Archive or delete?" {
-		t.Fatalf("question = %q", got)
-	}
-	if task.Summary != "Archived as requested." {
-		t.Fatalf("Summary = %q", task.Summary)
-	}
-	found := false
-	for _, msg := range p.Requests[1].Messages {
-		if msg.Role == schema.RoleTool && msg.ToolCallID == "call_question" && strings.Contains(msg.Content, "archive") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("answer not fed back as role:tool: %#v", p.Requests[1].Messages)
-	}
-}
+// The native ask_user tool was retired in the context-diet Tier 2a cut:
+// question.ask is the single question channel now, and its native dispatch is
+// covered by TestNativeQuestionAskCountsAgainstIterationBudget below.
 
 // TestRunNativeQuestionAskRejectsNonArrayOptionsWithExample drives
 // question.ask through the runner with an options field shaped as an
@@ -1102,7 +1068,7 @@ func TestModeRequestIsSerialGated(t *testing.T) {
 	if !requiresSerialTool("mode.request") {
 		t.Fatal("mode.request must be serial-gated: it blocks on the single PendingApproval slot")
 	}
-	for _, name := range []string{"question.ask", "ask_user", "skill.load"} {
+	for _, name := range []string{"question.ask", "skill.load"} {
 		if !requiresSerialTool(name) {
 			t.Fatalf("%s must remain serial-gated", name)
 		}
@@ -1121,7 +1087,6 @@ func TestBatchSafeReadOnlyNamesExcludesSerialAndStatefulTools(t *testing.T) {
 		{Name: "file.read", Risk: registry.RiskReadOnly},
 		{Name: "repo.search", Risk: registry.RiskReadOnly},
 		{Name: "question.ask", Risk: registry.RiskReadOnly},
-		{Name: "ask_user", Risk: registry.RiskReadOnly},
 		{Name: "mode.request", Risk: registry.RiskReadOnly},
 		{Name: "skill.load", Risk: registry.RiskReadOnly},
 		{Name: "tools.select", Risk: registry.RiskReadOnly},
@@ -1258,62 +1223,11 @@ func TestRunnerMarksFinalAnswer(t *testing.T) {
 	}
 }
 
-// TestRunInstallsThenLoadsSkillViaToolCalls covers the end-to-end agent
-// flow the skill.install tool exists for: the model installs a skill from
-// a local file and then loads it in the same turn. The install must
-// hot-insert into the live index, otherwise the subsequent skill.load
-// resolves against the startup-cached index and fails.
-func TestRunInstallsThenLoadsSkillViaToolCalls(t *testing.T) {
-	srcDir := t.TempDir()
-	srcPath := filepath.Join(srcDir, "installed-skill.md")
-	src := "+++\nname = \"installed-skill\"\ndescription = \"Installed mid-turn\"\n+++\n\n# Installed\n\nBody of the installed skill.\n"
-	if err := os.WriteFile(srcPath, []byte(src), 0644); err != nil {
-		t.Fatalf("write source skill: %v", err)
-	}
-
-	idx := skills.NewIndex()
-	reg := registry.New()
-	state := newTestState(t)
-	// The skill load gate would block this test's unattended skill.load on
-	// the pending prompt; this test covers install/load mechanics, not gating.
-	state.Config.Skills.LoadGateThresholdTokens = 0
-
-	pol := policy.NewEngine(&config.Config{}, nil)
-	skills.RegisterTool(reg, idx, state, skills.SkillsToolOptions{
-		HomeDir:    t.TempDir(),
-		WorkingDir: t.TempDir(),
-	})
-
-	p := &agenttest.ScriptedProvider{Responses: []string{
-		`{"rationale":"install the skill the user pointed at","action":{"type":"tool_call","tool":"skill.install","args":{"source":` + strconv.Quote(srcPath) + `}}}`,
-		`{"rationale":"now activate it","action":{"type":"tool_call","tool":"skill.load","args":{"name":"installed-skill"}}}`,
-		`{"rationale":"done","action":{"type":"final","content":"Installed and loaded."}}`,
-	}}
-	runner := NewRunner(p, reg, pol, state, "test-model")
-	runner.SkillIndex = idx
-
-	if err := runner.Run(context.Background(), "Install the skill at that path"); err != nil {
-		t.Fatalf("Run returned error: %v", err)
-	}
-
-	if _, ok := idx.Load("installed-skill"); !ok {
-		t.Fatal("skill.install did not hot-insert into the live index")
-	}
-	if !state.HasActiveSkill("installed-skill") {
-		t.Fatal("HasActiveSkill(installed-skill) = false, want true")
-	}
-
-	foundBody := false
-	for _, m := range state.Messages() {
-		if strings.Contains(m.Content, "Body of the installed skill.") {
-			foundBody = true
-			break
-		}
-	}
-	if !foundBody {
-		t.Fatal("installed skill body not found in session messages")
-	}
-}
+// TestRunInstallsThenLoadsSkillViaToolCalls was removed with the
+// skill.install tool in the context-diet Tier 2a cut: installation is now a
+// user-initiated action (skill.install no longer exists as a tool), so there
+// is no install-then-load agent flow left to cover. The install/hot-insert
+// mechanics themselves are still covered by install_test.go.
 
 func TestRunLoadsSkillViaToolCall(t *testing.T) {
 	idx := skills.NewIndex()
@@ -1541,9 +1455,6 @@ func TestChangedFilesForToolFileWrite(t *testing.T) {
 func TestReferencedPathsForTool(t *testing.T) {
 	if got := referencedPathsForTool("file.read", map[string]interface{}{"path": "a.go"}); len(got) != 1 || got[0] != "a.go" {
 		t.Fatalf("file.read = %v, want [a.go]", got)
-	}
-	if got := referencedPathsForTool("file.page", map[string]interface{}{"path": "b.go"}); len(got) != 1 || got[0] != "b.go" {
-		t.Fatalf("file.page = %v, want [b.go]", got)
 	}
 	if got := referencedPathsForTool("file.read", map[string]interface{}{}); got != nil {
 		t.Fatalf("file.read no path = %v, want nil", got)

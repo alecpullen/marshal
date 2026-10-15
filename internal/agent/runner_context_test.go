@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
@@ -37,72 +36,6 @@ func TestMergeMemoriesRemovesExistingMemorySectionWhenProviderReturnsNone(t *tes
 	for _, section := range state.ContextPack().Sections {
 		if section.Kind == contextpack.SectionMemory {
 			t.Fatalf("stale memory section remained in context pack: %#v", state.ContextPack().Sections)
-		}
-	}
-}
-
-func TestMergeScratchpadPassesConfiguredProjectionBudget(t *testing.T) {
-	cfg := config.Default()
-	cfg.Scratchpad.ProjectionMaxTokens = 30
-	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{}, session.WithClock(func() time.Time { return time.Unix(100, 0) }))
-	if err := state.SetScratchpadEntry("alpha", "first scratchpad entry content", "text"); err != nil {
-		t.Fatalf("SetScratchpadEntry: %v", err)
-	}
-	if err := state.SetScratchpadEntry("beta", "second scratchpad entry content", "text"); err != nil {
-		t.Fatalf("SetScratchpadEntry: %v", err)
-	}
-	state.SetContextPack(contextpack.Pack{
-		Sections: []contextpack.Section{
-			{Kind: contextpack.SectionRepoCard, Content: "Project: marshal", EstimatedTokens: 4},
-		},
-		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 4},
-	})
-
-	runner := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	runner.mergeScratchpad(0)
-
-	pack := state.ContextPack()
-	var scratchpadSection *contextpack.Section
-	for i := range pack.Sections {
-		if pack.Sections[i].Kind == contextpack.SectionScratchpad {
-			scratchpadSection = &pack.Sections[i]
-			break
-		}
-	}
-	if scratchpadSection == nil {
-		t.Fatalf("expected a scratchpad section, got %#v", pack.Sections)
-	}
-	if !strings.Contains(scratchpadSection.Content, "...") {
-		t.Fatalf("expected projection to be truncated by configured budget, got %q", scratchpadSection.Content)
-	}
-	if strings.Contains(scratchpadSection.Content, "beta (") {
-		t.Fatalf("expected second entry to be truncated out of projection, got %q", scratchpadSection.Content)
-	}
-}
-
-func TestMergeScratchpadRemovingLastEntryRemovesProjection(t *testing.T) {
-	state := newTestState(t)
-	if err := state.SetScratchpadEntry("only", "only entry content", "text"); err != nil {
-		t.Fatalf("SetScratchpadEntry: %v", err)
-	}
-	state.SetContextPack(contextpack.Pack{
-		Sections: []contextpack.Section{
-			{Kind: contextpack.SectionRepoCard, Content: "Project: marshal", EstimatedTokens: 4},
-			{Kind: contextpack.SectionScratchpad, Title: "Scratchpad", Content: "old projection", Priority: 50, EstimatedTokens: 2},
-		},
-		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000, EstimatedTokens: 6},
-	})
-
-	if err := state.DeleteScratchpadEntry("only"); err != nil {
-		t.Fatalf("DeleteScratchpadEntry: %v", err)
-	}
-
-	runner := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
-	runner.mergeScratchpad(0)
-
-	for _, section := range state.ContextPack().Sections {
-		if section.Kind == contextpack.SectionScratchpad {
-			t.Fatalf("stale scratchpad section remained after deleting last entry: %#v", state.ContextPack().Sections)
 		}
 	}
 }

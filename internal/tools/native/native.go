@@ -93,8 +93,8 @@ type Options struct {
 	// configured command checkers. nil when LSP is unavailable.
 	LSPSource diagnostics.LSPSource
 
-	// LSPIndex is an optional LSP-backed symbol provider consulted during
-	// repo.index. nil when LSP is unavailable.
+	// LSPIndex is an optional LSP-backed symbol provider consulted by the
+	// symbol-index build. nil when LSP is unavailable.
 	LSPIndex index.LSPSymbols
 
 	// GitOps is the git seam behind workspace.finish. nil defaults to
@@ -177,8 +177,8 @@ type toolSet struct {
 	// references, and hover tools. nil when LSP is unavailable.
 	lsp LSPQuerier
 
-	// lspIndex is an optional LSP-backed symbol provider consulted during
-	// repo.index. nil when LSP is unavailable.
+	// lspIndex is an optional LSP-backed symbol provider consulted by the
+	// symbol-index build. nil when LSP is unavailable.
 	lspIndex index.LSPSymbols
 
 	// gitOps is the git seam behind workspace.finish. Defaults to
@@ -195,8 +195,8 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 
 	all := []registry.Tool{
 		tools.fileReadTool(),
-		tools.filePageTool(),
 		tools.fileWritePatchTool(),
+		tools.fileEditTool(),
 		tools.fileWriteTool(),
 		tools.repoSearchTool(),
 		tools.gitStatusTool(),
@@ -205,30 +205,20 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.gitBlameTool(),
 		tools.shellRunTool(),
 		tools.testRunTool(),
-		tools.repoIndexTool(),
-		tools.repoMapTool(),
-		tools.repoCardTool(),
 		tools.symbolsFindTool(),
 		tools.todoWriteTool(),
-		tools.jobOutputTool(),
-		tools.jobKillTool(),
-		tools.jobListTool(),
 		tools.questionAskTool(),
-		tools.askUserTool(),
 		tools.modeRequestTool(),
 		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
-		tools.codebaseSearchTool(),
 		tools.workspaceWorktreeTool(),
 		tools.workspaceFinishTool(),
 	}
-	// csv.inspect and json.query are low-use; defer them behind tools.select
-	// so they don't occupy the prompt each turn.
-	csvTool := tools.csvInspectTool()
-	csvTool.Deferred = true
-	jsonTool := tools.jsonQueryTool()
-	jsonTool.Deferred = true
-	all = append(all, csvTool, jsonTool)
+	// codebase_search only works with an embedding route; offering it
+	// otherwise teaches the model a tool that answers "unavailable".
+	if _, err := routing.NewStaticRouter(opts.Config.RoutingConfig()).ResolveEmbedding(); err == nil {
+		all = append(all, tools.codebaseSearchTool())
+	}
 	// shell.sudo is platform-gated (no sudo on Windows) and Deferred: its
 	// full contract is disclosed on demand via tools.select.
 	all = append(all, tools.sudoTools()...)
@@ -243,25 +233,11 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		)
 	}
 	if tools.sessionState != nil {
-		all = append(all,
-			tools.scratchpadWriteTool(),
-			tools.scratchpadReadTool(),
-			tools.scratchpadListTool(),
-			tools.scratchpadDeleteTool(),
-		)
 		// transcript_read reads the live session transcript (and archived
 		// generations via the db, when wired). It needs only the session
-		// state to exist; the db is consulted lazily by the archived path.
+		// state to exist; the db is consulted lazily by the archived path
+		// and by the "query" search that absorbed recall_history.
 		all = append(all, tools.transcriptReadTool())
-	}
-	if tools.db != nil && tools.sessionState != nil {
-		all = append(all,
-			tools.sessionsListTool(),
-			tools.sessionSendTool(),
-		)
-	}
-	if recallToolEnabled(tools.config.Session.Rollover) {
-		all = append(all, tools.recallHistoryTool())
 	}
 	// agent.run is registered separately by app.Run after the policy engine
 	// is constructed; the native toolset does not have access to the engine

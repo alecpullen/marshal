@@ -604,7 +604,7 @@ func (c *Controller) runFallbackAndVerifyGate(ctx context.Context, t TaskSpec, t
 			return report, execType, fmt.Errorf("pipeline: task %d has unresolved work and strategy is strict", t.N)
 		}
 		// Adaptive: dispatch one agent for the remaining work. The
-		// fallback's file.write_patch is narrowed to the marshal.agent
+		// fallback's file-write tools are narrowed to the marshal.agent
 		// scope declared by the plan; an empty scope is rejected so the
 		// fallback cannot rewrite the worktree at large.
 		if len(taskIR.AllowedFiles) == 0 {

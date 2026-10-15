@@ -7,7 +7,7 @@ import (
 	"marshal/internal/viewmodel"
 )
 
-// toolCategoryGlyphs maps a tool-name prefix to the gutter glyph for its maps a tool-name prefix to the gutter glyph for its
+// toolCategoryGlyphs maps a tool-name prefix to the gutter glyph for its
 // category. Order matters: the first matching prefix wins, so write tools
 // come before the broader file prefix. Single-cell glyphs only — state
 // glyphs (▸ running, ✗ error) always win over these.
@@ -16,6 +16,7 @@ var toolCategoryGlyphs = []struct {
 	glyph  string
 }{
 	{"file.write", glyph.Edit},
+	{"file.edit", glyph.Edit},
 	{"patch.", glyph.Edit},
 	{"file.", glyph.File},
 	{"shell.", glyph.Shell},
@@ -52,6 +53,7 @@ func DisplayToolName(name string) string { return viewmodel.DisplayToolName(name
 // head noun is not the last word ("Query JSON" → "Query JSON documents").
 var toolPluralNames = map[string]string{
 	"file.write_patch": "Edit files",
+	"file.edit":        "Edit files",
 	"patch.apply":      "Apply patches",
 	"test.run":         "Run tests",
 	"repo.search":      "Search repo",
@@ -62,6 +64,10 @@ var toolPluralNames = map[string]string{
 	"git.status":       "Git status",
 	"symbols.find":     "Find symbols",
 	"todos":            "Update todos",
+	"agent.output":     "Peek at subagents",
+	"agent.kill":       "Cancel subagents",
+	"agent.steer":      "Steer subagents",
+	"agent.run":        "Run subagents",
 	// Self-plural: grouped headings must not render "Waiting…s".
 	"agent.await": "Waiting…",
 }

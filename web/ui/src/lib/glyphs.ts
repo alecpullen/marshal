@@ -31,6 +31,7 @@ export const glyph = {
 // the first matching prefix wins, so write tools precede the broader file.
 const toolCategoryGlyphs: [string, string][] = [
   ['file.write', glyph.Edit],
+  ['file.edit', glyph.Edit],
   ['patch.', glyph.Edit],
   ['file.', glyph.File],
   ['shell.', glyph.Shell],

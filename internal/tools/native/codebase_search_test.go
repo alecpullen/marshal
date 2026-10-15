@@ -6,11 +6,27 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/app/config"
 	"marshal/internal/db"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
+
+// fakeEmbedder is a 2-dim embedder used by the codebase_search tests.
+type fakeEmbedder struct {
+	model string
+}
+
+func (f *fakeEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i := range texts {
+		out[i] = []float32{float32(len(texts[i])), 1}
+	}
+	return out, nil
+}
+func (f *fakeEmbedder) Model() string { return f.model }
+func (f *fakeEmbedder) Dims() int     { return 2 }
 
 func TestCodebaseSearchNotConfigured(t *testing.T) {
 	ts := newTestToolSetWithRepo(t)
@@ -68,21 +84,48 @@ func TestCodebaseSearchReturnsHits(t *testing.T) {
 	}
 }
 
+// embeddingConfig returns a config whose embedding route resolves: a local
+// provider plus the canonical preset name the router synthesizes. Web tools
+// stay off so the registered set stays the base surface plus
+// codebase_search, which is what the registry-surface assertions expect.
+func embeddingConfig() config.Config {
+	cfg := config.Default()
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
+	}
+	cfg.Indexing.EmbeddingPreset = "ollama/nomic-embed-text"
+	cfg.Web.Enabled = false
+	return cfg
+}
+
 func TestCodebaseSearchRegistered(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, Config: embeddingConfig()}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	tool, ok := reg.Lookup("codebase_search")
 	if !ok {
-		t.Fatal("codebase_search not registered")
+		t.Fatal("codebase_search not registered with an embedding route configured")
 	}
 	if tool.Risk != registry.RiskReadOnly {
 		t.Fatalf("expected RiskReadOnly, got %v", tool.Risk)
 	}
 	if tool.Handler == nil {
 		t.Fatal("handler is nil")
+	}
+}
+
+// TestCodebaseSearchRegisteredOnlyWithEmbeddings pins the Tier 2a cut: the
+// tool only works with an embedding route, so offering it otherwise teaches
+// the model a tool whose only answer is "unavailable".
+func TestCodebaseSearchRegisteredOnlyWithEmbeddings(t *testing.T) {
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, Config: config.Default()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reg.Lookup("codebase_search"); ok {
+		t.Fatal("codebase_search must not be registered without an embedding route")
 	}
 }
 

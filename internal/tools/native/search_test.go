@@ -818,7 +818,7 @@ func TestRepoSearchKindZeroResults(t *testing.T) {
 	if result.Summary != "No matching symbols" {
 		t.Fatalf("Summary = %q, want %q", result.Summary, "No matching symbols")
 	}
-	if result.Content != "No matching symbols — run repo.index first if the index may be missing" {
+	if result.Content != "No matching symbols — the symbol index refreshes automatically; adjust your filters" {
 		t.Fatalf("Content = %q", result.Content)
 	}
 	if result.Notice != nil {

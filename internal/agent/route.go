@@ -263,43 +263,6 @@ func (r *Runner) mergeMemories(maxTokenOverride int) {
 	})
 }
 
-// mergeScratchpad injects the session's current scratchpad entries into
-// the context pack as a projection section. Called during turn setup so
-// the agent can see what keys it has parked without consuming the full
-// content in the context budget.
-func (r *Runner) mergeScratchpad(maxTokenOverride int) {
-	entries := r.State.Scratchpad()
-	if len(entries) == 0 {
-		// Nothing to inject, but we still need to clear a stale projection
-		// if the previous turn left one behind.
-		hasScratchpad := false
-		for _, s := range r.State.ContextPack().Sections {
-			if s.Kind == contextpack.SectionScratchpad {
-				hasScratchpad = true
-				break
-			}
-		}
-		if !hasScratchpad {
-			return
-		}
-	}
-	cpEntries := make([]contextpack.ScratchpadEntry, len(entries))
-	for i, e := range entries {
-		cpEntries[i] = contextpack.ScratchpadEntry{Key: e.Key, Content: e.Content, Format: e.Format, Updated: e.Updated}
-	}
-	projectionMax := r.State.ScratchpadConfig().ProjectionMaxTokens
-	r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
-		maxTokens := maxTokenOverride
-		if maxTokens <= 0 {
-			maxTokens = pack.TokenUsage.MaxTokens
-		}
-		if maxTokens <= 0 {
-			maxTokens = contextpack.DefaultMaxTokens
-		}
-		return contextpack.MergeScratchpad(pack, cpEntries, maxTokens, projectionMax, r.Now)
-	})
-}
-
 // mergeTodos injects the session's current todo list into the context
 // pack as a projection section. Called during turn setup and before each
 // model call so todo.write replacements are visible to the model on the
@@ -539,7 +502,7 @@ func (r *Runner) appendSkillBodies(messages []schema.ChatMessage) []schema.ChatM
 		if full > 0 && r.State.SkillBodyAge(name) >= full {
 			content = fmt.Sprintf(
 				"Skill `%s` is active but its full text is no longer in context. "+
-					"Call skill.load with name=%q to re-read it, or skill.unload to drop it.\n",
+					"Call skill.load with name=%q to re-read it.\n",
 				name, name)
 		}
 		messages = append(messages, schema.ChatMessage{

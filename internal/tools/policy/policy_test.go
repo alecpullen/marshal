@@ -1112,7 +1112,7 @@ func TestEvaluate_RiskWorkspaceWriteRequiresConfirmation(t *testing.T) {
 }
 
 func TestEvaluate_SessionStateToolsAllowed(t *testing.T) {
-	for _, name := range []string{"todo.write", "scratchpad.write", "scratchpad.delete"} {
+	for _, name := range []string{"todo.write"} {
 		t.Run(name, func(t *testing.T) {
 			reg := registry.New()
 			if err := reg.Register(registry.Tool{Name: name, Risk: registry.RiskWorkspaceWrite, Handler: dummyHandler}); err != nil {

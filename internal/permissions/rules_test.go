@@ -166,3 +166,13 @@ func TestMatchesPrefixWithoutWildcard(t *testing.T) {
 		t.Fatal("git should not match got")
 	}
 }
+
+// Review focus 1: the user's real config allows file.write_patch on **.
+func TestLegacyWritePatchRuleAppliesToFileEdit(t *testing.T) {
+	if !permissionMatches("file.write_patch", PermissionForTool("file.edit")) {
+		t.Fatal("a file.write_patch rule must match file.edit calls")
+	}
+	if PermissionForTool("file.write_patch") != "file.edit" {
+		t.Fatal("file.write_patch and file.edit must share one permission key")
+	}
+}

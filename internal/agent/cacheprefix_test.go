@@ -62,10 +62,9 @@ func assertPrefixStable(t *testing.T, reqs []schema.ChatRequest) {
 
 // TestPromptPrefixStableAcrossSteps is the regression guard for the cache
 // prefix (docs/prompt-caching/design.md). Between steps it does what a real
-// turn does: the model rewrites its todo list and wall-clock time passes, so
-// the scratchpad projection's relative ages tick. Neither may change any
-// message a previous request already sent; both must still reach the model
-// in the working-state tail.
+// turn does: the model rewrites its todo list and wall-clock time passes.
+// Neither may change any message a previous request already sent; both must
+// still reach the model in the working-state tail.
 func TestPromptPrefixStableAcrossSteps(t *testing.T) {
 	reg := registry.New()
 	registerFakeRead(t, reg, false)
@@ -77,9 +76,6 @@ func TestPromptPrefixStableAcrossSteps(t *testing.T) {
 		Sections:   []contextpack.Section{{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal"}},
 		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000},
 	})
-	if err := state.SetScratchpadEntry("notes", "first finding", "text"); err != nil {
-		t.Fatalf("SetScratchpadEntry: %v", err)
-	}
 	call := func(id, path string) []schema.ToolCall {
 		return []schema.ToolCall{{ID: id, Name: "file.read", Args: json.RawMessage(`{"path":"` + path + `"}`)}}
 	}
@@ -127,8 +123,8 @@ func TestPromptPrefixStableAcrossSteps(t *testing.T) {
 
 	last := p.Requests[len(p.Requests)-1].Messages
 	tail := last[len(last)-1]
-	if !tail.Volatile || !strings.Contains(tail.Content, "Current Todos") || !strings.Contains(tail.Content, "Scratchpad") {
-		t.Fatalf("last message must be the volatile working state with todos and scratchpad, got %+v", tail)
+	if !tail.Volatile || !strings.Contains(tail.Content, "Current Todos") {
+		t.Fatalf("last message must be the volatile working state with todos, got %+v", tail)
 	}
 	for i, m := range last[:len(last)-1] {
 		if m.Volatile || strings.Contains(m.Content, "Current working state") {

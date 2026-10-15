@@ -123,7 +123,7 @@ everything except what changed since the previous request:
     skill bodies
     replayed history            ← CacheAnchor: end of the cross-turn stable region
     goal, then the turn's tool loop (append-only)
-[n] working state (Volatile)    todos, scratchpad, semantic snippets; rebuilt
+[n] working state (Volatile)    todos, semantic snippets, tool output; rebuilt
                                 for every request, never stored
 ```
 

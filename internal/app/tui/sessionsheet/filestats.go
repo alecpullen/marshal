@@ -18,7 +18,7 @@ type FileStat struct {
 
 // readTools are the tools whose Args carry the path of a file they read.
 // Only file.read is tracked here: other tools that happen to take a path
-// argument (file.page, git.diff, …) are not part of the working set — the
+// argument (git.diff, git.blame, …) are not part of the working set — the
 // plan scopes reads to file.read specifically. Writes are identified by
 // FilesChanged instead, which the write tools populate directly.
 var readTools = map[string]bool{"file.read": true}

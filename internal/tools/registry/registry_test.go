@@ -207,7 +207,11 @@ func TestReadOnlyNamesIncludesReadOnlyToolsAndExcludesOthers(t *testing.T) {
 	readOnly := testTool("file.read")
 	shell := testTool("shell.run")
 	shell.Risk = RiskCommand
-	for _, tool := range []Tool{readOnly, shell} {
+	// Read-only but internal: dispatchable by the runtime, never offered to
+	// the model, so it must not appear in the model-facing read-only list.
+	internalReadOnly := testTool("internal.read")
+	internalReadOnly.Internal = true
+	for _, tool := range []Tool{readOnly, shell, internalReadOnly} {
 		if err := reg.Register(tool); err != nil {
 			t.Fatalf("Register(%q): %v", tool.Name, err)
 		}
@@ -221,6 +225,9 @@ func TestReadOnlyNamesIncludesReadOnlyToolsAndExcludesOthers(t *testing.T) {
 		}
 		if name == "shell.run" {
 			t.Fatalf("ReadOnlyNames() = %v, must not contain shell.run", names)
+		}
+		if name == "internal.read" {
+			t.Fatalf("ReadOnlyNames() = %v, must not contain the internal tool internal.read", names)
 		}
 	}
 	if !found {

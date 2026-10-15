@@ -94,7 +94,7 @@ func (r *Rollover) compactContext(ctx context.Context, wire []schema.ChatMessage
 // It is shared by the rollover and summarizeAndContinue paths so the two
 // compaction routes cannot drift.
 //
-// When recall_history is registered the instruction names it: the digest
+// When transcript_read is registered the instruction names it: the digest
 // is deliberately lossy, and at the moment detail has just been
 // compressed away the model is at its least likely to remember that a
 // retrieval tool exists. Naming it here is the difference between the
@@ -104,7 +104,7 @@ func continueInstruction(recallAvailable bool) string {
 	if !recallAvailable {
 		return base
 	}
-	return base + " The summary is lossy: if you need a specific detail from earlier — an exact command, an error message, a file path, a decision and its reasoning — call recall_history to search the archived transcript rather than guessing or redoing the work."
+	return base + " The summary is lossy: if you need a specific detail from earlier — an exact command, an error message, a file path, a decision and its reasoning — call transcript_read with a \"query\" to search the archived transcript rather than guessing or redoing the work."
 }
 
 // hasTool reports whether a tool is registered for this turn.
@@ -153,7 +153,7 @@ func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessa
 	fresh = append(fresh,
 		schema.ChatMessage{Role: schema.RoleUser, Content: goal},
 		schema.ChatMessage{Role: schema.RoleAssistant, Content: "Progress summary (earlier transcript was compacted to fit the context budget):\n\n" + seedDigest},
-		schema.ChatMessage{Role: schema.RoleUser, Content: continueInstruction(r.hasTool("recall_history"))},
+		schema.ChatMessage{Role: schema.RoleUser, Content: continueInstruction(r.hasTool("transcript_read"))},
 	)
 	return fresh, nil
 }

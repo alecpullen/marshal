@@ -23,7 +23,7 @@ type questionAskArgs struct {
 func (t *toolSet) questionAskTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "question.ask",
-		Description: "Ask the user one or more clarifying questions in a single round-trip. Use this tool only when you need information or a decision from the user in order to proceed. Rules: (1) If a question has a known set of choices, you MUST pass them in the options field — never embed lettered or numbered choices (e.g. 'A) ... B) ... C) ...') in the question text; options render as a selectable list in the UI. The user can always supply a custom answer outside the list via the Other affordance. (2) Never use this tool to deliver instructions (e.g. asking the user to set an environment variable, run a command, or edit a file) — write instructions in your normal message text instead. (3) Never use this tool to request a permission-mode switch (default/plan/edit/copilot/auto) — call the mode.request tool instead; the user cannot change modes while a question popup is open. Example: {\"questions\":[{\"question\":\"Pick one\",\"options\":[\"simple\",{\"label\":\"rich\",\"description\":\"with explanation\"}]}]}",
+		Description: "Ask the user one or more questions in a single round-trip, only when you need information or a decision to proceed. Put known choices in options (never as lettered text); the user can always answer outside them. Don't use it to give instructions or to request a mode switch (use mode.request).",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object","properties":{"label":{"type":"string"},"description":{"type":"string"}},"required":["label"],"additionalProperties":false}]}},"multi":{"type":"boolean"}},"required":["question"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
@@ -180,29 +180,4 @@ func ValidateQuestionAsk(raw json.RawMessage) error {
 		}
 	}
 	return nil
-}
-
-func (t *toolSet) askUserTool() registry.Tool {
-	tool := registry.Tool{
-		Name:        "ask_user",
-		Description: "Ask the user a single free-text question (alias for question.ask with one question and no options). Use it only when you need information or a decision from the user. If the question has a known set of choices, call question.ask with the options field instead. Never use it to deliver instructions — state those in your normal message text — and never to request a permission-mode switch; call mode.request for that.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"question":{"type":"string"}},"required":["question"],"additionalProperties":false}`),
-		Risk:        registry.RiskReadOnly,
-	}
-	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-		var args struct {
-			Question string `json:"question"`
-		}
-		if err := json.Unmarshal(call.Args, &args); err != nil {
-			return registry.ToolResult{}, fmt.Errorf("decode ask_user arguments: %w", err)
-		}
-		if strings.TrimSpace(args.Question) == "" {
-			return registry.ToolResult{}, fmt.Errorf("question string is required")
-		}
-		newArgs, _ := json.Marshal(map[string]any{
-			"questions": []map[string]any{{"question": args.Question}},
-		})
-		return t.questionAskTool().Handler(ctx, registry.ToolCall{Args: newArgs})
-	}
-	return tool
 }

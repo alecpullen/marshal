@@ -3,12 +3,22 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
 
 func nopHandler(ctx context.Context, call ToolCall) (ToolResult, error) {
 	return ToolResult{Summary: "ok"}, nil
+}
+
+func TestTesterViewExposesInternalTestRun(t *testing.T) {
+	src := New()
+	_ = src.Register(Tool{Name: "test.run", Risk: RiskCommand, Internal: true, Handler: func(context.Context, ToolCall) (ToolResult, error) { return ToolResult{}, nil }})
+	got, ok := TesterView(src).Lookup("test.run")
+	if !ok || got.Internal {
+		t.Fatalf("TesterView must register a non-internal test.run; ok=%v internal=%v", ok, got.Internal)
+	}
 }
 
 func TestReadOnlyViewFiltersOutWriteTools(t *testing.T) {
@@ -342,27 +352,10 @@ func TestFallbackWriterViewNarrowsFileWritePatch(t *testing.T) {
 	}
 }
 
-// TestFallbackWriterViewExcludesSkillInstall pins the security boundary:
-// the fallback child runs unattended under an auto-approving policy, so it
-// must not be able to fetch a remote document and persist it into the
-// user-global skill store (a durable prompt-injection surface).
-func TestFallbackWriterViewExcludesSkillInstall(t *testing.T) {
-	src := New()
-	if err := src.Register(Tool{Name: "skill.install", Description: "install", Risk: RiskWorkspaceWrite, Handler: nopHandler}); err != nil {
-		t.Fatalf("Register(skill.install): %v", err)
-	}
-	if err := src.Register(Tool{Name: "file.read", Description: "read", Risk: RiskReadOnly, Handler: nopHandler}); err != nil {
-		t.Fatalf("Register(file.read): %v", err)
-	}
-
-	view := FallbackWriterView(src, []string{"internal/foo"})
-	if _, ok := view.Lookup("skill.install"); ok {
-		t.Error("fallback view must not expose skill.install")
-	}
-	if _, ok := view.Lookup("file.read"); !ok {
-		t.Error("fallback view must retain read-only tools")
-	}
-}
+// TestFallbackWriterViewExcludesSkillInstall was removed with the
+// skill.install tool itself in the context-diet Tier 2a cut: the name is no
+// longer registered by any surface, so there is no case left to filter and no
+// prompt-injection surface for the fallback child to reach.
 
 // TestFallbackWriterViewExcludesWebTools pins the security boundary: the
 // fallback child runs unattended under an auto-approving policy, so it must
@@ -494,7 +487,12 @@ func TestFallbackWriterFileWriteToolRejectsUnmarshalError(t *testing.T) {
 		},
 	}
 
-	wrapped := fallbackWriterFileWriteTool(tool, allowed)
+	wrapped := pathScopedTool(tool, func(cleaned, raw string) error {
+		if !pathInAllowlist(cleaned, allowed) {
+			return fmt.Errorf("file.write in fallback scope may only write under the declared scope (path %q is outside)", raw)
+		}
+		return nil
+	})
 	// Pass invalid JSON — the handler should return a parse error instead
 	// of falling through to an empty-path allowlist rejection.
 	_, err := wrapped.Handler(context.Background(), ToolCall{Args: []byte("{invalid json")})
@@ -503,5 +501,26 @@ func TestFallbackWriterFileWriteToolRejectsUnmarshalError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "could not parse arguments") {
 		t.Errorf("expected parse error, got: %v", err)
+	}
+}
+
+// Review focus 3: the plan-writer child creates its plan with file.write.
+func TestPlanWriterViewAllowsScopedFileWrite(t *testing.T) {
+	src := New()
+	ok := func(context.Context, ToolCall) (ToolResult, error) { return ToolResult{Summary: "ok"}, nil }
+	_ = src.Register(Tool{Name: "file.write", Risk: RiskWorkspaceWrite, Handler: ok})
+	_ = src.Register(Tool{Name: "file.edit", Risk: RiskWorkspaceWrite, Handler: ok})
+	view := PlanWriterView(src, "@run", []string{"@run/plan.md"})
+	for _, name := range []string{"file.write", "file.edit"} {
+		tool, found := view.Lookup(name)
+		if !found {
+			t.Fatalf("%s missing from plan-writer view", name)
+		}
+		if _, err := tool.Handler(context.Background(), ToolCall{Name: name, Args: []byte(`{"path":"@run/plan.md"}`)}); err != nil {
+			t.Fatalf("%s on the allowed plan path: %v", name, err)
+		}
+		if _, err := tool.Handler(context.Background(), ToolCall{Name: name, Args: []byte(`{"path":"internal/x.go"}`)}); err == nil {
+			t.Fatalf("%s outside the plan path must be rejected", name)
+		}
 	}
 }

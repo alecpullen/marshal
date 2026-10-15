@@ -122,7 +122,9 @@ func callDetail(ev registry.AuditEvent) CallDetail {
 	return c
 }
 
-func isDiffToolName(name string) bool { return name == "file.write_patch" || name == "patch.apply" }
+func isDiffToolName(name string) bool {
+	return name == "file.write_patch" || name == "file.edit" || name == "patch.apply"
+}
 
 func activeCallDetail(a *session.ActiveToolCall) CallDetail {
 	return CallDetail{CallID: a.ToolCallID, StepID: int64(a.StepID), ToolName: a.Name, Args: indentJSON([]byte(a.Args)), Output: a.Output}

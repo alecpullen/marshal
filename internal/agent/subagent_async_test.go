@@ -16,8 +16,11 @@ import (
 )
 
 // newAsyncRunToolPair builds an agent.run tool with the given exec stub plus
-// the await and output tools, all sharing one parent session.
-func newAsyncRunToolPair(state *session.State, exec func(ctx context.Context, child *Runner, prompt string) (string, string, error)) (run, await, output registry.Tool) {
+// the await tool, all sharing one parent session. The third return value is
+// the same await tool: agent.output was folded into agent.await's
+// "peek": true in the context-diet Tier 2a cut, so peeking is expressed
+// through agent.await now.
+func newAsyncRunToolPair(state *session.State, exec func(ctx context.Context, child *Runner, prompt string) (string, string, error)) (run, await, peek registry.Tool) {
 	run = NewSubagentTool(
 		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, state, nil },
 		nil,
@@ -26,8 +29,8 @@ func newAsyncRunToolPair(state *session.State, exec func(ctx context.Context, ch
 		WithSubagentExec(exec),
 	)
 	await = NewSubagentAwaitTool(state)
-	output = NewSubagentOutputTool(state)
-	return run, await, output
+	peek = await
+	return run, await, peek
 }
 
 // newChildState builds a real child session state so a subagent registered
@@ -278,19 +281,19 @@ func TestAgentAwaitCancelledByTurnContext(t *testing.T) {
 	state.Shutdown()
 }
 
-func TestAgentOutputRunningAndFinished(t *testing.T) {
+func TestAgentAwaitPeekRunningAndFinished(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	release := make(chan struct{})
-	run, _, output := newAsyncRunToolPair(state, func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+	run, _, peek := newAsyncRunToolPair(state, func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
 		<-release
 		return "the report", "", nil
 	})
 	run.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"prompt":"x","description":"y"}`)})
 	viewID := state.Subagents()[0].ID
 
-	res, err := output.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, viewID))})
+	res, err := peek.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(fmt.Sprintf(`{"id": %d, "peek": true}`, viewID))})
 	if err != nil {
-		t.Fatalf("output: %v", err)
+		t.Fatalf("peek: %v", err)
 	}
 	if !strings.Contains(res.Content, "status: running") {
 		t.Fatalf("running peek = %q, want status: running", res.Content)
@@ -302,154 +305,92 @@ func TestAgentOutputRunningAndFinished(t *testing.T) {
 	if _, err := state.WaitSubagent(ctx, viewID); err != nil {
 		t.Fatalf("WaitSubagent: %v", err)
 	}
-	res, err = output.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, viewID))})
+	res, err = peek.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(fmt.Sprintf(`{"id": %d, "peek": true}`, viewID))})
 	if err != nil {
-		t.Fatalf("output: %v", err)
+		t.Fatalf("peek: %v", err)
 	}
 	if !strings.Contains(res.Content, "status: finished") || !strings.Contains(res.Content, "the report") {
 		t.Fatalf("finished peek = %q, want status and report", res.Content)
 	}
 }
 
-func TestAgentOutputUnknownID(t *testing.T) {
+func TestAgentAwaitPeekUnknownID(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	_, _, output := newAsyncRunToolPair(state, nil)
-	_, err := output.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"id": 999}`)})
+	_, _, peek := newAsyncRunToolPair(state, nil)
+	_, err := peek.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"id": 999, "peek": true}`)})
 	if err == nil || !strings.Contains(err.Error(), "unknown subagent id") {
 		t.Fatalf("err = %v, want unknown-id error", err)
 	}
 }
 
-// runOutputChildWithMessages starts a background child whose exec adds the
-// given messages to the child state and returns a fixed report, then waits
-// for it to finish. It returns the finished view and the output tool.
-func runOutputChildWithMessages(t *testing.T, state *session.State, add func(childState *session.State)) (session.SubagentView, registry.Tool) {
-	t.Helper()
-	childState := newChildState(t)
-	run := NewSubagentTool(
-		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, childState, nil },
-		nil,
-		registry.New(),
-		state,
-		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
-			if add != nil {
-				add(childState)
-			}
-			return "report text", "", nil
-		}),
-	)
-	output := NewSubagentOutputTool(state)
-	if _, err := run.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"prompt":"x","description":"y"}`)}); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	viewID := state.Subagents()[0].ID
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	view, err := state.WaitSubagent(ctx, viewID)
-	if err != nil {
-		t.Fatalf("WaitSubagent: %v", err)
-	}
-	return view, output
-}
+// The agent.output transcript tests that lived here were removed with the
+// tool in the context-diet Tier 2a cut: agent.await's "peek": true returns
+// status, report and activity tail, but deliberately not a message
+// transcript (it duplicated the tail at real token cost).
 
-func TestAgentOutputTranscriptIncludesCommittedMessages(t *testing.T) {
+// TestAgentSteerRoutesToChildSteering: the instruction lands on the LIVE
+// child's own steering queue, enveloped so the child can tell it apart from
+// ordinary user steering, and never on the parent's queue.
+func TestAgentSteerRoutesToChildSteering(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
-		childState.AddMessage(session.RoleUser, "build the widget", session.ContentTypePlain)
-		childState.AddMessage(session.RoleAssistant, "done building", session.ContentTypePlain)
-	})
-	res, err := output.Handler(context.Background(), registry.ToolCall{
-		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
-	})
+	childState := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(1))
+	view := state.RegisterSubagentWithMeta("migrate the schema", childState, session.SubagentMeta{Role: RoleSubtask})
+
+	tool := NewSubagentSteerTool(state)
+	args := fmt.Sprintf(`{"id":%d,"message":"use Postgres, not SQLite"}`, view.ID)
+	res, err := tool.Handler(context.Background(), registry.ToolCall{ID: "call_steer", Name: "agent.steer", Args: json.RawMessage(args)})
 	if err != nil {
-		t.Fatalf("output: %v", err)
+		t.Fatalf("Handler: %v", err)
 	}
-	if !strings.Contains(res.Content, "transcript:") {
-		t.Fatalf("content missing transcript block: %q", res.Content)
+	if !strings.Contains(res.Summary, fmt.Sprintf("%d", view.ID)) {
+		t.Errorf("summary should name the steered child; got: %s", res.Summary)
 	}
-	if !strings.Contains(res.Content, "build the widget") {
-		t.Fatalf("content missing committed user message: %q", res.Content)
+
+	queued := childState.SteeringQueue()
+	if len(queued) != 1 {
+		t.Fatalf("child steering queue = %v, want exactly one message", queued)
 	}
-	if !strings.Contains(res.Content, "done building") {
-		t.Fatalf("content missing committed assistant message: %q", res.Content)
+	if !strings.Contains(queued[0], "[steering from parent]") || !strings.Contains(queued[0], "use Postgres, not SQLite") {
+		t.Errorf("queued steering should be the enveloped message; got: %s", queued[0])
+	}
+	if len(state.SteeringQueue()) != 0 {
+		t.Error("the message must go to the child, not the parent")
 	}
 }
 
-func TestAgentOutputTranscriptExcludesNarrationAndSkillBodies(t *testing.T) {
+// TestAgentSteerRejectsUnknownFinishedAndEmpty keeps every failure mode
+// actionable rather than silently dropping the instruction.
+func TestAgentSteerRejectsUnknownFinishedAndEmpty(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
-		childState.AddMessage(session.RoleAssistant, "about to check the guard", session.ContentTypeNarration)
-		childState.AddMessage(session.RoleSystem, "big skill", session.ContentTypeSkillBody)
-		childState.AddMessage(session.RoleUser, "plain message", session.ContentTypePlain)
-	})
-	res, err := output.Handler(context.Background(), registry.ToolCall{
-		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
-	})
-	if err != nil {
-		t.Fatalf("output: %v", err)
+	tool := NewSubagentSteerTool(state)
+
+	_, err := tool.Handler(context.Background(), registry.ToolCall{ID: "c", Name: "agent.steer", Args: json.RawMessage(`{"id":99,"message":"x"}`)})
+	if err == nil || !strings.Contains(err.Error(), "unknown subagent") {
+		t.Fatalf("unknown child error = %v, want a named 'unknown subagent'", err)
 	}
-	if !strings.Contains(res.Content, "plain message") {
-		t.Fatalf("content missing plain message: %q", res.Content)
+
+	childState := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(1))
+	view := state.RegisterSubagentWithMeta("finished child", childState, session.SubagentMeta{Role: RoleSubtask})
+
+	_, err = tool.Handler(context.Background(), registry.ToolCall{ID: "c", Name: "agent.steer", Args: json.RawMessage(fmt.Sprintf(`{"id":%d,"message":"  "}`, view.ID))})
+	if err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("empty message error = %v, want 'must not be empty'", err)
 	}
-	if strings.Contains(res.Content, "about to check the guard") {
-		t.Fatalf("content must not include narration: %q", res.Content)
+
+	state.FinishSubagent(view.ID, "done", nil)
+	_, err = tool.Handler(context.Background(), registry.ToolCall{ID: "c", Name: "agent.steer", Args: json.RawMessage(fmt.Sprintf(`{"id":%d,"message":"x"}`, view.ID))})
+	if err == nil || !strings.Contains(err.Error(), "no longer running") {
+		t.Fatalf("finished child error = %v, want 'no longer running'", err)
 	}
-	if strings.Contains(res.Content, "big skill") {
-		t.Fatalf("content must not include skill bodies: %q", res.Content)
+	if len(childState.SteeringQueue()) != 0 {
+		t.Error("a finished child must not receive steering")
 	}
 }
 
-func TestAgentOutputTranscriptBoundedByDefault(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
-		for i := 0; i < 30; i++ {
-			childState.AddMessage(session.RoleUser, strings.Repeat("x", 2000), session.ContentTypePlain)
-		}
-	})
-	res, err := output.Handler(context.Background(), registry.ToolCall{
-		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
-	})
-	if err != nil {
-		t.Fatalf("output: %v", err)
-	}
-	if len(res.Content) >= 8000 {
-		t.Fatalf("transcript content too large: %d bytes", len(res.Content))
-	}
-	if !strings.Contains(res.Content, "transcript truncated") {
-		t.Fatalf("content missing truncation marker: %q", res.Content)
-	}
-}
-
-func TestAgentOutputTranscriptAbsentWithoutArg(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	view, output := runOutputChildWithMessages(t, state, func(childState *session.State) {
-		childState.AddMessage(session.RoleUser, "build the widget", session.ContentTypePlain)
-	})
-	res, err := output.Handler(context.Background(), registry.ToolCall{
-		Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, view.ID)),
-	})
-	if err != nil {
-		t.Fatalf("output: %v", err)
-	}
-	if strings.Contains(res.Content, "transcript:") {
-		t.Fatalf("transcript must be opt-in, got %q", res.Content)
-	}
-}
-
-func TestAgentOutputTranscriptOmittedForPipelineCards(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	// A pipeline/SDD card: Child == nil.
-	view := state.RegisterSubagentWithMeta("review · main.go", nil, session.SubagentMeta{})
-	state.FinishSubagent(view.ID, "review done", nil)
-	output := NewSubagentOutputTool(state)
-	res, err := output.Handler(context.Background(), registry.ToolCall{
-		Args: json.RawMessage(fmt.Sprintf(`{"id": %d,"transcript":true}`, view.ID)),
-	})
-	if err != nil {
-		t.Fatalf("output: %v", err)
-	}
-	if strings.Contains(res.Content, "transcript:") {
-		t.Fatalf("pipeline card must not emit a transcript block, got %q", res.Content)
+func TestAgentSteerIsReadOnly(t *testing.T) {
+	tool := NewSubagentSteerTool(session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}))
+	if tool.Risk != registry.RiskReadOnly {
+		t.Fatalf("agent.steer risk = %v, want RiskReadOnly", tool.Risk)
 	}
 }
 
@@ -535,16 +476,23 @@ func TestAgentKillRequiresID(t *testing.T) {
 	}
 }
 
-func TestAgentKillSchemaAdvertisesID(t *testing.T) {
+// agent.kill covers two target classes, so the schema advertises both and the
+// handler enforces exactly-one (pinned by TestAgentKillRequiresID below).
+func TestAgentKillSchemaAdvertisesBothTargets(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	kill := NewSubagentKillTool(state)
-	if !strings.Contains(string(kill.Schema), `"required":["id"]`) {
-		t.Fatal("schema must require id")
+	for _, want := range []string{`"id"`, `"job_id"`} {
+		if !strings.Contains(string(kill.Schema), want) {
+			t.Fatalf("schema must advertise %s: %s", want, kill.Schema)
+		}
 	}
 	if !strings.Contains(string(kill.Schema), `"additionalProperties":false`) {
 		t.Fatal("schema must reject additional properties")
 	}
-	if !strings.Contains(kill.Description, "agent.output") {
+	if strings.Contains(string(kill.Schema), `"required"`) {
+		t.Fatal("neither target is individually required; the handler enforces exactly one")
+	}
+	if !strings.Contains(kill.Description, "agent.await") {
 		t.Fatal("description must document the asynchronous terminal-state follow-up")
 	}
 }
@@ -559,7 +507,7 @@ func TestAgentKillIsReadOnlyRisk(t *testing.T) {
 
 func TestSubtaskScopeViewExcludesAsyncTools(t *testing.T) {
 	src := registry.New()
-	for _, name := range []string{"agent.run", "agent.await", "agent.output", "agent.kill", "file.read"} {
+	for _, name := range []string{"agent.run", "agent.await", "agent.kill", "agent.steer", "file.read"} {
 		tool := registry.Tool{Name: name, Schema: json.RawMessage(`{"type":"object"}`), Risk: registry.RiskReadOnly}
 		tool.Handler = func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
 			return registry.ToolResult{}, nil
@@ -569,7 +517,7 @@ func TestSubtaskScopeViewExcludesAsyncTools(t *testing.T) {
 		}
 	}
 	view := SubtaskScopeView(src)
-	for _, name := range []string{"agent.run", "agent.await", "agent.output", "agent.kill"} {
+	for _, name := range []string{"agent.run", "agent.await", "agent.kill", "agent.steer"} {
 		if _, ok := view.Lookup(name); ok {
 			t.Fatalf("%s must be excluded from the subtask scope view", name)
 		}

@@ -794,23 +794,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// what it guarantees is that a skipped or failed capture at the top of the
 	// turn is VISIBLE rather than only logged. Continuation is unchanged.
 	r.snapshotCapture(ctx, SnapshotPhaseTurnStart, nil)
-	if db := r.State.DB(); db != nil {
-		if mails, err := db.UnreadMail(r.State.SessionID()); err == nil && len(mails) > 0 {
-			var b strings.Builder
-			b.WriteString("Mail from other sessions:\n")
-			ids := make([]int64, 0, len(mails))
-			for _, mail := range mails {
-				fmt.Fprintf(&b, "- [%s] %s\n", mail.FromSession, mail.Body)
-				ids = append(ids, mail.ID)
-			}
-			r.State.AddMessage(session.RoleSystem, strings.TrimRight(b.String(), "\n"), session.ContentTypePlain)
-			if merr := db.MarkMailRead(ids, r.Now()); merr != nil {
-				r.State.Logger().Warn("failed to mark session mail read", "error", merr)
-			}
-		} else if err != nil {
-			r.State.Logger().Warn("failed to load session mail", "error", err)
-		}
-	}
 
 	r.trackerMu.Lock()
 	r.tracker = newProgressTracker()
@@ -903,7 +886,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.semTracker = newSemanticRequeryTracker()
 	r.mergeMemories(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeSemantic(ctx, goal, r.ProjectID, route.ContextBudget.MaxRepoContextTokens)
-	r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 	r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
 
 	effectiveRF := r.ResponseFormat
@@ -1104,15 +1086,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		for _, msg := range r.State.DrainSubagentReports() {
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: msg})
 		}
-		// A subagent blocked on parent.ask holds the PendingChildQuestion
-		// slot. The synthetic report above announces the question once; this
-		// hint is the standing affordance that tells the parent HOW to
-		// answer it. It is re-derived from live state every loop-top and is
-		// deliberately not persisted: persisting would repeat it in the
-		// transcript on every iteration while the child waits.
-		if hint, ok := r.pendingChildQuestionHint(); ok {
-			messages = append(messages, hint)
-		}
 		// Drain background watch completion reports alongside subagent
 		// reports. These are machine-generated (never user-typed), so they
 		// do not count as a user intervention for the doom-loop guard, but
@@ -1152,10 +1125,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			lastRenderedSystemAccess = currentSystemAccess
 		}
 
-		// Refresh the scratchpad projection before the next model call so
-		// entries written in earlier turns (e.g. scratchpad.write) appear in
-		// the context pack of subsequent turns.
-		r.mergeScratchpad(route.ContextBudget.MaxRepoContextTokens)
 		r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
 		r.maybeRequerySemantic(ctx, goal, r.semanticSource(r.ProjectID), route.ContextBudget.MaxRepoContextTokens)
 		messages = r.setContextPackMessage(messages, r.State.ContextPack())
@@ -1878,22 +1847,11 @@ func changedFilesForTool(toolName string, argsMap map[string]interface{}) []stri
 		}
 		return nil
 	}
-	if toolName != "file.write_patch" {
-		return nil
-	}
-	patchArg, ok := argsMap["patch"]
+	patches, ok := patch.FromToolArgs(toolName, argsMap)
 	if !ok {
 		return nil
 	}
-	patchStr, ok := patchArg.(string)
-	if !ok {
-		return nil
-	}
-	patches, err := patch.Parse(patchStr)
-	if err != nil {
-		return nil
-	}
-	var files []string
+	files := make([]string, 0, len(patches))
 	for _, p := range patches {
 		files = append(files, p.Path)
 	}
@@ -1902,10 +1860,10 @@ func changedFilesForTool(toolName string, argsMap map[string]interface{}) []stri
 
 // referencedPathsForTool returns the workspace paths a tool call reads or
 // writes — the trigger signal for mid-turn semantic re-queries (AI-10).
-// Reads add file.read/file.page; writes reuse changedFilesForTool.
+// Reads add file.read; writes reuse changedFilesForTool.
 func referencedPathsForTool(toolName string, argsMap map[string]interface{}) []string {
 	switch toolName {
-	case "file.read", "file.page":
+	case "file.read":
 		if path, ok := argsMap["path"].(string); ok && path != "" {
 			return []string{path}
 		}
@@ -1930,30 +1888,4 @@ func (r *Runner) verificationGateOn(route routing.Route) bool {
 		return *route.Preset.VerificationGate
 	}
 	return r.VerificationGate
-}
-
-// pendingChildQuestionHint returns the loop-top affordance message telling
-// the parent how to answer a subagent that is blocked on parent.ask. ok is
-// false when no child question is outstanding, or when this runner is a
-// subtask child that has no children of its own to answer.
-func (r *Runner) pendingChildQuestionHint() (schema.ChatMessage, bool) {
-	if r.role() == RoleSubtask {
-		return schema.ChatMessage{}, false
-	}
-	queued := r.State.ChildQuestions()
-	if len(queued) == 0 {
-		return schema.ChatMessage{}, false
-	}
-	head := queued[0]
-	var b strings.Builder
-	fmt.Fprintf(&b, "[system hint] subagent %d (%s) is blocked waiting on your answer. Questions:\n", head.ChildID, head.ChildDesc)
-	b.WriteString(formatChildQuestions(head.Questions))
-	if remaining := len(queued) - 1; remaining > 0 {
-		fmt.Fprintf(&b, "%d more subagent question(s) are queued behind this one and become answerable next.\n", remaining)
-	}
-	b.WriteString("Call parent.respond with one answer per question in the same order (answers determined by the task description or the repository), or escalate to the user with question.ask first and relay their answer.")
-	return schema.ChatMessage{
-		Role:    schema.RoleUser,
-		Content: b.String(),
-	}, true
 }

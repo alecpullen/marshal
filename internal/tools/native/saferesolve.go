@@ -12,10 +12,11 @@ import (
 // outside the designated workspace root.
 var ErrPathEscapes = errors.New("native: path escapes workspace root")
 
-// readAllowedUnderHome are the Marshal-owned directories file.read and
-// file.page may reach without a workspace override. Writes NEVER use this
-// list. Every entry is a directory subtree; a single-file entry would need
-// exact-match handling of its own rather than the prefix rule below.
+// readAllowedUnderHome are the Marshal-owned directories the read side may
+// reach without a workspace override: file.read, and repo.search's path
+// filter. Writes NEVER use this list. Every entry is a directory subtree; a
+// single-file entry would need exact-match handling of its own rather than
+// the prefix rule below.
 //
 // $HOME/.config/marshal/config.toml is deliberately absent: it can carry
 // literal provider api_key values (config types.go: "literal key; wins over

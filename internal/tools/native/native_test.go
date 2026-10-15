@@ -16,19 +16,18 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
 
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+	// codebase_search is registered only when an embedding route resolves,
+	// so the full-surface assertion needs one configured.
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, Config: embeddingConfig()}); err != nil {
 		t.Fatalf("RegisterAll returned error: %v", err)
 	}
 
 	want := map[string]registry.RiskLevel{
 		"file.read":          registry.RiskReadOnly,
-		"file.page":          registry.RiskReadOnly,
 		"file.write_patch":   registry.RiskWorkspaceWrite,
+		"file.edit":          registry.RiskWorkspaceWrite,
 		"file.write":         registry.RiskWorkspaceWrite,
 		"repo.search":        registry.RiskReadOnly,
-		"repo.index":         registry.RiskReadOnly,
-		"repo.map":           registry.RiskReadOnly,
-		"repo.card":          registry.RiskReadOnly,
 		"symbols.find":       registry.RiskReadOnly,
 		"git.status":         registry.RiskReadOnly,
 		"git.diff":           registry.RiskReadOnly,
@@ -37,17 +36,11 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"shell.run":          registry.RiskCommand,
 		"test.run":           registry.RiskCommand,
 		"todo.write":         registry.RiskWorkspaceWrite,
-		"job.output":         registry.RiskReadOnly,
-		"job.kill":           registry.RiskCommand,
-		"job.list":           registry.RiskReadOnly,
 		"question.ask":       registry.RiskReadOnly,
-		"ask_user":           registry.RiskReadOnly,
 		"mode.request":       registry.RiskReadOnly,
 		"diagnostics.check":  registry.RiskReadOnly,
 		"tools.select":       registry.RiskReadOnly,
 		"codebase_search":    registry.RiskReadOnly,
-		"json.query":         registry.RiskReadOnly,
-		"csv.inspect":        registry.RiskReadOnly,
 		"config.read":        registry.RiskReadOnly,
 		"workspace.worktree": registry.RiskWorkspaceWrite,
 		"workspace.finish":   registry.RiskWorkspaceWrite,
@@ -78,71 +71,48 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 	}
 }
 
-func TestRegisterAllOmitsScratchpadWithoutSessionState(t *testing.T) {
-	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
-		t.Fatalf("register: %v", err)
-	}
-	for _, name := range []string{"scratchpad.write", "scratchpad.read", "scratchpad.list", "scratchpad.delete"} {
-		if _, ok := reg.Lookup(name); ok {
-			t.Fatalf("expected %s to be omitted when SessionState is nil", name)
-		}
-	}
-}
-
-func TestRegisterAllIncludesScratchpadWithSessionState(t *testing.T) {
+// TestRegisterAll_NeverRegistersScratchpad pins the Tier 2a removal: the
+// scratchpad tools and their context-pack projection are gone from the
+// model's surface, whatever session state the registry is given.
+func TestRegisterAll_NeverRegistersScratchpad(t *testing.T) {
 	state := session.New(config.Config{}, "/tmp", time.Now(), session.Persistence{})
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, SessionState: state}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	for _, name := range []string{"scratchpad.write", "scratchpad.read", "scratchpad.list", "scratchpad.delete"} {
-		if _, ok := reg.Lookup(name); !ok {
-			t.Fatalf("expected %s to be registered when SessionState is set", name)
+		if _, ok := reg.Lookup(name); ok {
+			t.Errorf("%s must not be registered", name)
 		}
 	}
 }
 
-func TestRegisterAll_RecallHistoryGatedByRolloverConfig(t *testing.T) {
-	tests := []struct {
-		name    string
-		enabled bool
-		policy  string
-		rollPol string
-		want    bool
-	}{
-		{"rollover disabled", false, "context_percent", "context_percent", false},
-		{"rollover enabled + never", true, "never", "context_percent", false},
-		{"rollover enabled + always", true, "always", "context_percent", true},
-		{"rollover enabled + auto + context_percent", true, "auto", "context_percent", true},
-		{"rollover enabled + auto + turn_count", true, "auto", "turn_count", true},
-		{"rollover enabled + auto + caller_checkpoint", true, "auto", "caller_checkpoint", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			reg := registry.New()
-			opts := Options{
-				WorkspaceRoot: root,
-				CommandRunner: &fakeRunner{},
-				Config: config.Config{
-					Session: config.SessionConfig{
-						Rollover: config.RolloverConfig{
-							Enabled:           tt.enabled,
-							RecallToolEnabled: tt.policy,
-							Policy:            tt.rollPol,
-						},
-					},
-				},
-			}
-			if err := RegisterAll(reg, opts); err != nil {
-				t.Fatalf("RegisterAll returned error: %v", err)
-			}
-			_, ok := reg.Lookup("recall_history")
-			if ok != tt.want {
-				t.Errorf("recall_history present = %v, want %v", ok, tt.want)
-			}
-		})
+// TestRegisterAll_NeverRegistersRecallHistory pins the Tier 2a merge:
+// recall_history was folded into transcript_read's "query", so it must not
+// be registered whatever the rollover config says. The rollover settings
+// still exist (they gate archiving and the compaction policy); only the
+// separate tool name is gone.
+func TestRegisterAll_NeverRegistersRecallHistory(t *testing.T) {
+	for _, cfg := range []config.RolloverConfig{
+		{Enabled: false, RecallToolEnabled: "always"},
+		{Enabled: true, RecallToolEnabled: "always"},
+		{Enabled: true, RecallToolEnabled: "auto", Policy: "context_percent"},
+	} {
+		root := t.TempDir()
+		reg := registry.New()
+		if err := RegisterAll(reg, Options{
+			WorkspaceRoot: root,
+			CommandRunner: &fakeRunner{},
+			SessionState:  session.New(config.Config{}, root, time.Now(), session.Persistence{}),
+			Config: config.Config{
+				Session: config.SessionConfig{Rollover: cfg},
+			},
+		}); err != nil {
+			t.Fatalf("RegisterAll returned error: %v", err)
+		}
+		if _, ok := reg.Lookup("recall_history"); ok {
+			t.Errorf("recall_history must not be registered (config %+v)", cfg)
+		}
 	}
 }
 
@@ -274,7 +244,7 @@ func TestRegisterAllDefersOnlyLowUseTools(t *testing.T) {
 	for _, tool := range reg.ListDeferred() {
 		deferred[tool.Name] = true
 	}
-	want := map[string]bool{"config.read": true, "csv.inspect": true, "json.query": true}
+	want := map[string]bool{"config.read": true}
 	if runtime.GOOS != "windows" {
 		want["shell.sudo"] = true
 	}

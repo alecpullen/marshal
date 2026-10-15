@@ -95,8 +95,8 @@ func PermissionForTool(toolName string) string {
 	switch toolName {
 	case "shell.run", "test.run":
 		return "shell"
-	case "file.write_patch":
-		return "file.write_patch"
+	case "file.write_patch", "file.edit":
+		return "file.edit"
 	default:
 		return toolName
 	}
@@ -122,6 +122,11 @@ func permissionMatches(rulePermission, toolPermission string) bool {
 		return true
 	}
 	if rulePermission == "shell" && (toolPermission == "shell.run" || toolPermission == "test.run") {
+		return true
+	}
+	// Legacy alias: rules written for the retired model-facing
+	// file.write_patch tool keep governing its successor.
+	if rulePermission == "file.write_patch" && toolPermission == "file.edit" {
 		return true
 	}
 	if strings.HasSuffix(rulePermission, ".*") {

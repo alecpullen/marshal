@@ -241,9 +241,6 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&agent.MaxTouchedFileBytes, fileField[int](file.Agent, "MaxTouchedFileBytes"), cfg.Agent.MaxTouchedFileBytes, def.Agent.MaxTouchedFileBytes)
 	putKey(&agent.ThinkingBudgetMargin, fileField[int](file.Agent, "ThinkingBudgetMargin"), cfg.Agent.ThinkingBudgetMargin, def.Agent.ThinkingBudgetMargin)
 	putKey(&agent.MaxConcurrentSubagents, fileField[int](file.Agent, "MaxConcurrentSubagents"), cfg.Agent.MaxConcurrentSubagents, def.Agent.MaxConcurrentSubagents)
-	putSlice(&agent.ParentQuestionRoles, fileSlice[string](file.Agent, "ParentQuestionRoles"), strutil.Ptr(cfg.Agent.ParentQuestionRoles), strutil.Ptr(def.Agent.ParentQuestionRoles))
-	putKey(&agent.ParentQuestionTimeout, fileField[string](file.Agent, "ParentQuestionTimeout"), cfg.Agent.ParentQuestionTimeout.String(), def.Agent.ParentQuestionTimeout.String())
-	putKey(&agent.ParentQuestionMaxPerTask, fileField[int](file.Agent, "ParentQuestionMaxPerTask"), cfg.Agent.ParentQuestionMaxPerTask, def.Agent.ParentQuestionMaxPerTask)
 	file.Agent = agent
 
 	privacy := &filePrivacy{}
@@ -467,11 +464,11 @@ func writeSections(file *configFile, cfg Config, def Config) {
 		}
 	}
 	// Sections below were previously merged on load but never written
-	// back, so config.session.rollover.set / config.lsp.set /
-	// config.history.set / config.scratchpad.set / config.agents.set
-	// reported success and lost their values on restart. Same rule as the
-	// sections above: write when the file already carries the section or
-	// the merged value differs from Default().
+	// back, so the per-section config write tools reported success and lost
+	// their values on restart. Those tools are gone (settings are edited
+	// through /settings, /models and /connect), but the rule they needed
+	// still holds for hand-edited files: write when the file already
+	// carries the section or the merged value differs from Default().
 	if file.Session != nil || !reflect.DeepEqual(cfg.Session, def.Session) {
 		session := &fileSession{}
 		if file.Session != nil && file.Session.Rollover != nil {

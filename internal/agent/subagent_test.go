@@ -183,11 +183,11 @@ func TestSubagentToolDescriptionStatesConfiguredCap(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithSubagentMaxConcurrency(5))
 	factory := func(_ SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, nil, nil }
 	tool := NewSubagentTool(factory, nil, registry.New(), state)
-	if !strings.Contains(tool.Description, "Maximum concurrency: 5") {
+	if !strings.Contains(tool.Description, "Up to 5 run at once") {
 		t.Fatalf("description does not state the configured cap:\n%s", tool.Description)
 	}
-	if strings.Contains(tool.Description, "concurrency: 2") {
-		t.Fatal("description still carries the old hardcoded cap")
+	if strings.Contains(tool.Description, "Up to 3 run at once") {
+		t.Fatal("description still carries the default cap, not the configured one")
 	}
 }
 
@@ -349,14 +349,13 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	}
 	mustReg(&registry.Tool{Name: "file.read", Description: "read", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "agent.run", Description: "delegate", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
+	mustReg(&registry.Tool{Name: "agent.await", Description: "wait", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "agent.kill", Description: "cancel", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
+	mustReg(&registry.Tool{Name: "agent.steer", Description: "steer", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "web.fetch", Description: "fetch", Schema: []byte(`{}`), Risk: registry.RiskNetwork, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "shell.run", Description: "shell", Schema: []byte(`{}`), Risk: registry.RiskCommand, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "diagnostics.check", Description: "diag", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Deferred: true, Handler: stubAgentRunHandler})
 	mustReg(&registry.Tool{Name: "question.ask", Description: "ask", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
-	mustReg(&registry.Tool{Name: "ask_user", Description: "ask alias", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
-	mustReg(&registry.Tool{Name: "parent.respond", Description: "respond", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
-	mustReg(&registry.Tool{Name: "parent.correct", Description: "correct", Schema: []byte(`{}`), Risk: registry.RiskReadOnly, Handler: stubAgentRunHandler})
 
 	view := SubtaskScopeView(reg)
 	names := make(map[string]bool, len(view.List()))
@@ -377,6 +376,18 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	}
 	if _, ok := view.Lookup("agent.kill"); ok {
 		t.Fatal("Lookup(agent.kill) must fail in subtask view")
+	}
+	if names["agent.await"] {
+		t.Fatal("subtask view must NOT contain agent.await (children cannot wait on subagents)")
+	}
+	if names["agent.steer"] {
+		t.Fatal("subtask view must NOT contain agent.steer (children cannot steer siblings)")
+	}
+	if _, ok := view.Lookup("agent.await"); ok {
+		t.Fatal("Lookup(agent.await) must fail in subtask view")
+	}
+	if _, ok := view.Lookup("agent.steer"); ok {
+		t.Fatal("Lookup(agent.steer) must fail in subtask view")
 	}
 	if !names["shell.run"] {
 		t.Fatal("subtask view missing shell.run (implementation tools must be visible to child)")
@@ -401,25 +412,6 @@ func TestSubtaskScopeViewFiltersTools(t *testing.T) {
 	}
 	if _, ok := view.Lookup("question.ask"); ok {
 		t.Fatal("Lookup(question.ask) must fail in subtask view")
-	}
-	// ask_user is the alias for question.ask and routes through the same
-	// orphaned child session.State, so it must be excluded for the same
-	// reason.
-	if names["ask_user"] {
-		t.Fatal("subtask view must NOT contain ask_user (no user to answer it)")
-	}
-	if _, ok := view.Lookup("ask_user"); ok {
-		t.Fatal("Lookup(ask_user) must fail in subtask view")
-	}
-	// parent.respond and parent.correct are the parent-side halves of the
-	// question bridge: their handlers close over the PARENT's state, so a
-	// child holding them could answer a sibling's pending question or steer
-	// a sibling's runner. Only the parent decides those.
-	if names["parent.respond"] {
-		t.Fatal("subtask view must NOT contain parent.respond (answers belong to the parent)")
-	}
-	if names["parent.correct"] {
-		t.Fatal("subtask view must NOT contain parent.correct (corrections belong to the parent)")
 	}
 }
 
@@ -1087,128 +1079,5 @@ func TestSubagentReportStillReplaysIntoHistory(t *testing.T) {
 	}
 }
 
-// recordingParentQuestioner captures the SubagentRef each child presents, so
-// a test can assert the parent.ask tool registered on a child carries that
-// child's OWN view ID and description rather than a zero ref.
-type recordingParentQuestioner struct {
-	mu   sync.Mutex
-	refs []SubagentRef
-}
-
-func (r *recordingParentQuestioner) AskParent(_ context.Context, from SubagentRef, q []session.Question) ([]session.Answer, error) {
-	r.mu.Lock()
-	r.refs = append(r.refs, from)
-	r.mu.Unlock()
-	out := make([]session.Answer, 0, len(q))
-	for _, one := range q {
-		out = append(out, session.Answer{Question: one.Question, Answer: "yes"})
-	}
-	return out, nil
-}
-
-func (r *recordingParentQuestioner) recorded() []SubagentRef {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]SubagentRef(nil), r.refs...)
-}
-
-// TestAgentRunRegistersParentAskWhenAllowed pins the Task 4 wiring: a
-// whitelisted ad-hoc child gets parent.ask on its own registry, carrying that
-// child's view ID and description, and the call actually reaches the
-// ParentQuestioner seam.
-func TestAgentRunRegistersParentAskWhenAllowed(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	pq := &recordingParentQuestioner{}
-	var (
-		hasTool bool
-		summary string
-	)
-	factory := func(SubagentRequest) (*Runner, *session.State, error) {
-		childState := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(1))
-		return &Runner{Registry: registry.New()}, childState, nil
-	}
-	tool := NewSubagentTool(factory, nil, registry.New(), state,
-		WithParentQuestioner(pq),
-		WithParentAskAllowed(true),
-		WithSubagentExec(func(ctx context.Context, child *Runner, _ string) (string, string, error) {
-			ask, ok := child.Registry.Lookup("parent.ask")
-			hasTool = ok
-			if !ok {
-				return "", "", errors.New("child registry has no parent.ask")
-			}
-			res, err := ask.Handler(ctx, registry.ToolCall{Args: json.RawMessage(`{"questions":[{"question":"Which DB?"}]}`)})
-			if err != nil {
-				return "", "", err
-			}
-			summary = res.Summary
-			return "done", "", nil
-		}),
-	)
-	runAsyncSubagent(t, tool, state, `{"prompt":"x","description":"probe the registry"}`)
-	if !hasTool {
-		t.Fatal("whitelisted child must see parent.ask on its registry")
-	}
-	if summary != "parent answered" {
-		t.Fatalf("parent.ask summary = %q, want %q", summary, "parent answered")
-	}
-	refs := pq.recorded()
-	if len(refs) != 1 {
-		t.Fatalf("questioner calls = %d, want 1", len(refs))
-	}
-	if refs[0].Desc != "probe the registry" {
-		t.Fatalf("ref description = %q, want the agent.run description", refs[0].Desc)
-	}
-	if refs[0].ID == 0 {
-		t.Fatal("ref ID = 0; the tool must carry the child's own view ID")
-	}
-}
-
-// TestAgentRunOmitsParentAskWithoutWhitelist is the negative half: the gate
-// is per spawning configuration, so a child whose role was not whitelisted
-// must not see parent.ask at all.
-func TestAgentRunOmitsParentAskWithoutWhitelist(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	pq := &recordingParentQuestioner{}
-	var hasTool bool
-	factory := func(SubagentRequest) (*Runner, *session.State, error) {
-		childState := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(1))
-		return &Runner{Registry: registry.New()}, childState, nil
-	}
-	tool := NewSubagentTool(factory, nil, registry.New(), state,
-		WithParentQuestioner(pq),
-		WithSubagentExec(func(_ context.Context, child *Runner, _ string) (string, string, error) {
-			_, hasTool = child.Registry.Lookup("parent.ask")
-			return "done", "", nil
-		}),
-	)
-	runAsyncSubagent(t, tool, state, `{"prompt":"x","description":"not whitelisted"}`)
-	if hasTool {
-		t.Fatal("child must not see parent.ask when the role is not whitelisted")
-	}
-	if got := len(pq.recorded()); got != 0 {
-		t.Fatalf("questioner calls = %d, want 0", got)
-	}
-}
-
-// TestAgentRunOmitsParentAskWithoutQuestioner guards the other half of the
-// gate: allowed=true with a nil questioner must not register a tool that can
-// only fail.
-func TestAgentRunOmitsParentAskWithoutQuestioner(t *testing.T) {
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	var hasTool bool
-	factory := func(SubagentRequest) (*Runner, *session.State, error) {
-		childState := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{}, session.WithDepth(1))
-		return &Runner{Registry: registry.New()}, childState, nil
-	}
-	tool := NewSubagentTool(factory, nil, registry.New(), state,
-		WithParentAskAllowed(true),
-		WithSubagentExec(func(_ context.Context, child *Runner, _ string) (string, string, error) {
-			_, hasTool = child.Registry.Lookup("parent.ask")
-			return "done", "", nil
-		}),
-	)
-	runAsyncSubagent(t, tool, state, `{"prompt":"x","description":"nil questioner"}`)
-	if hasTool {
-		t.Fatal("child must not see parent.ask when no questioner is wired")
-	}
-}
+// The parent.ask registration tests that lived here were removed with the
+// subagent question channel in the context-diet Tier 2a cut.

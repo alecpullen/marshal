@@ -20,9 +20,9 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-// maxPageableFileBytes is the largest file file.page will load into memory.
-// It is intentionally larger than the per-tool output limit so the model can
-// page through big files a screen at a time.
+// maxPageableFileBytes bounds a file loaded whole into memory for symbol
+// context (search.go's readSymbolFileLines). It is intentionally larger than
+// the per-tool output limit so a large file's symbols still get a body.
 const maxPageableFileBytes = 10 * 1024 * 1024 // 10 MiB
 
 // Head-fallback budget for file.read when a file exceeds the per-tool size
@@ -89,7 +89,7 @@ type fileReadArgs struct {
 func (t *toolSet) fileReadTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "file.read",
-		Description: "Read a workspace file. If the file exceeds the size limit I show the head and how to continue (file.read start_line / file.page / repo.search kind). Lines are clipped at 1500 chars; ranged reads over the byte budget are truncated with a footer. Use start_line/end_line (1-based, inclusive) to page.",
+		Description: "Read a workspace file. If the file exceeds the size limit I show the head and how to continue (file.read start_line / repo.search). Lines are clipped at 1500 chars; ranged reads over the byte budget are truncated with a footer. Use start_line/end_line (1-based, inclusive) to page.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
 			t.pathDescription(readPathBaseDescription) +
 			`},"start_line":{"type":"integer","description":"1-based first line to return"},"end_line":{"type":"integer","description":"1-based last line to return"}},"required":["path"],"additionalProperties":false}`),
@@ -215,7 +215,7 @@ func (t *toolSet) fileReadOversizedHead(requestedPath string) (registry.ToolResu
 	headText, _ := clipLines(strings.Join(head, "\n"))
 	headText = limitOutput(headText, t.maxOutputBytes)
 
-	footer := fmt.Sprintf("showing lines 1-%d of %d (%d bytes); continue with file.read start_line=%d, page with file.page, or narrow with repo.search kind:...",
+	footer := fmt.Sprintf("showing lines 1-%d of %d (%d bytes); continue with file.read start_line=%d, or narrow with repo.search",
 		shown, totalLines, totalBytes, shown+1)
 
 	content := footer
@@ -365,7 +365,7 @@ func (t *toolSet) fileReadOversizedRange(requestedPath string, startLine, endLin
 		windowFooter = fmt.Sprintf("showing line %d of %d (%d bytes) truncated: a single line is longer than the %d-byte output budget; the rest of that line is not reachable with file.read — extract a byte range with shell.run (e.g. tail -c +N), or narrow with repo.search",
 			shownStart, totalLines, totalBytes, budget)
 	} else {
-		windowFooter = fmt.Sprintf("showing lines %d-%d of %d (%d bytes); continue with file.read start_line=%d, page with file.page, or narrow with repo.search kind:...",
+		windowFooter = fmt.Sprintf("showing lines %d-%d of %d (%d bytes); continue with file.read start_line=%d, or narrow with repo.search",
 			shownStart, shownEnd, totalLines, totalBytes, shownEnd+1)
 	}
 
@@ -403,76 +403,9 @@ func (t *toolSet) fileReadOversizedRange(requestedPath string, startLine, endLin
 	return result, nil
 }
 
-func (t *toolSet) filePageTool() registry.Tool {
-	type filePageArgs struct {
-		Path     string `json:"path"`
-		Page     int    `json:"page"`
-		PageSize int    `json:"page_size"`
-	}
-	tool := registry.Tool{
-		Name:        "file.page",
-		Description: "Read a page of a workspace file by 1-based page number. Useful for iterating through large files without spilling tool output.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
-			t.pathDescription(readPathBaseDescription) +
-			`},"page":{"type":"integer","description":"1-based page number"},"page_size":{"type":"integer","description":"lines per page (default 200, max 1000)"}},"required":["path","page"],"additionalProperties":false}`),
-		Risk: registry.RiskReadOnly,
-	}
-	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-		args, err := decodeArgs[filePageArgs](tool, call.Args)
-		if err != nil {
-			return registry.ToolResult{}, err
-		}
-		if args.Path == "" {
-			return registry.ToolResult{}, fmt.Errorf("file.page path is required")
-		}
-		if args.Page < 1 {
-			return registry.ToolResult{}, fmt.Errorf("file.page page must be >= 1")
-		}
-		pageSize := args.PageSize
-		if pageSize <= 0 {
-			pageSize = 200
-		}
-		const maxPageSize = 1000
-		if pageSize > maxPageSize {
-			pageSize = maxPageSize
-		}
-
-		data, err := t.readWorkspaceFile(args.Path, int64(maxPageableFileBytes))
-		if err != nil {
-			return registry.ToolResult{}, err
-		}
-
-		lines := strings.Split(string(data), "\n")
-		if len(lines) > 0 && lines[len(lines)-1] == "" {
-			lines = lines[:len(lines)-1]
-		}
-		totalLines := len(lines)
-		startLine := (args.Page-1)*pageSize + 1
-		if startLine > totalLines {
-			return registry.ToolResult{}, fmt.Errorf("file.page page %d is past end of file (total lines %d)", args.Page, totalLines)
-		}
-		endLine := startLine + pageSize - 1
-		if endLine > totalLines {
-			endLine = totalLines
-		}
-
-		content := strings.Join(lines[startLine-1:endLine], "\n")
-		if endLine == totalLines && strings.HasSuffix(string(data), "\n") {
-			content += "\n"
-		}
-		content = limitOutput(content, t.maxOutputBytes)
-
-		return registry.ToolResult{
-			Summary: fmt.Sprintf("read %s page %d (lines %d-%d of %d)", args.Path, args.Page, startLine, endLine, totalLines),
-			Content: content,
-		}, nil
-	}
-	return tool
-}
-
 // readWorkspaceFile resolves and reads a regular workspace file up to maxBytes.
 // It performs the same path validation, TOCTOU size check, and read tracking
-// used by both file.read and file.page.
+// used by file.read.
 func (t *toolSet) readWorkspaceFile(requestedPath string, maxBytes int64) ([]byte, error) {
 	path, err := t.resolveToolPath(requestedPath, true)
 	if err != nil {
@@ -614,6 +547,9 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 			t.pathDescription("search/replace patch blocks; each block's `File:` header is a file path relative to the workspace") +
 			`}},"required":["patch"],"additionalProperties":false}`),
 		Risk: registry.RiskWorkspaceWrite,
+		// Internal: reached only by envelope-mode patch actions; the model
+		// edits through file.edit.
+		Internal: true,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[fileWritePatchArgs](tool, call.Args)
@@ -629,172 +565,180 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 		if len(patches) == 0 {
 			return registry.ToolResult{}, fmt.Errorf("no valid patches found in proposal")
 		}
-
-		// Dry run first
-		for _, fp := range patches {
-			path, err := t.resolveToolPath(fp.Path, false)
-			if err != nil {
-				return registry.ToolResult{}, err
-			}
-
-			if t.fileTracker != nil {
-				lastRead, hasRead, err := t.fileTracker.LastReadTime(path)
-				if err != nil {
-					return registry.ToolResult{}, fmt.Errorf(
-						"cannot verify read state for %s: %w; re-read it before editing", fp.Path, err)
-				}
-				info, statErr := os.Stat(path)
-				if statErr != nil {
-					if os.IsNotExist(statErr) {
-						// New file creation: no on-disk version to be stale against.
-						continue
-					}
-					return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
-				}
-				if hasRead && info.ModTime().After(lastRead) {
-					return registry.ToolResult{}, changedOnDiskError(path, fp)
-				}
-				if !hasRead {
-					return registry.ToolResult{}, fmt.Errorf(
-						"file %s was never read this session; read it before editing", fp.Path)
-				}
-			} else {
-				slog.Warn("file.write_patch with nil fileTracker; TOCTOU check skipped",
-					"path", fp.Path)
-			}
-
-			data, err := os.ReadFile(path)
-			if err != nil {
-				if os.IsNotExist(err) {
-					// New file creation: no existing content to validate.
-					continue
-				}
-				return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, err)
-			}
-			ok, err := patch.ValidatePatch(string(data), fp)
-			if !ok || err != nil {
-				return registry.ToolResult{}, fmt.Errorf("patch validation failed for %s: %v", fp.Path, err)
-			}
-		}
-
-		// Generate diff to display in session
-		var diffs []string
-		var backups []session.BackupFile
-		var symbols []registry.SymbolRef
-
-		// Apply for real
-		for _, fp := range patches {
-			path, err := t.resolveToolPath(fp.Path, false)
-			if err != nil {
-				return registry.ToolResult{}, err
-			}
-			data, err := os.ReadFile(path)
-			var original string
-			fileExists := err == nil
-			if err != nil {
-				if !os.IsNotExist(err) {
-					return registry.ToolResult{}, err
-				}
-				// New file creation: verify SEARCH block is empty.
-				for _, chunk := range fp.Chunks {
-					if chunk.Search != "" {
-						return registry.ToolResult{}, fmt.Errorf(
-							"file %s does not exist but patch has a non-empty SEARCH block; use an empty SEARCH block to create a new file", fp.Path)
-					}
-				}
-			} else {
-				original = string(data)
-			}
-
-			info, err := os.Stat(path)
-			var mode os.FileMode = 0644
-			if err == nil {
-				mode = info.Mode()
-			}
-
-			diff, err := patch.GenerateDiff(fp.Path, original, fp)
-			if err == nil {
-				diffs = append(diffs, diff)
-			}
-
-			backups = append(backups, session.BackupFile{
-				Path:    fp.Path,
-				Content: original,
-				Mode:    mode,
-				Exists:  fileExists,
-			})
-
-			patched := patch.ApplyPatch(original, fp)
-			if diff != "" {
-				symbols = append(symbols, symbolsForEdit(ctx, fp.Path, patched, diff)...)
-			}
-			if strings.Contains(original, "\r\n") {
-				// Normalize safely: collapse existing CRLF to LF first so a
-				// naive LF->CRLF conversion does not turn CRLF into CRCRLF.
-				patched = strings.ReplaceAll(patched, "\r\n", "\n")
-				patched = strings.ReplaceAll(patched, "\n", "\r\n")
-			}
-
-			// TOCTOU re-check — verify file hasn't been modified
-			// between the validate loop and this write. This closes the window
-			// between the fileTracker check in the validate loop and the actual
-			// write. When fileTracker is nil (e.g. no session active) the check
-			// is skipped, which is a known gap.
-			if t.fileTracker != nil {
-				lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
-				if lrErr == nil && hasRead {
-					writeStat, statErr := os.Stat(path)
-					if statErr == nil && writeStat.ModTime().After(lastRead) {
-						return registry.ToolResult{}, changedOnDiskError(path, fp)
-					}
-				}
-			} else {
-				slog.Warn("file.write_patch TOCTOU re-check skipped: nil fileTracker",
-					"path", fp.Path)
-			}
-
-			if err := os.WriteFile(path, []byte(patched), mode); err != nil {
-				return registry.ToolResult{}, fmt.Errorf("write file %s: %w", fp.Path, err)
-			}
-
-			if t.fileTracker != nil {
-				_ = t.fileTracker.RecordWrite(path, time.Now())
-				_ = t.fileTracker.RecordRead(path, time.Now())
-			}
-		}
-
-		if ws := t.wsState(); ws != nil {
-			ws.StoreBackup(backups)
-		}
-
-		var paths []string
-		for _, fp := range patches {
-			paths = append(paths, fp.Path)
-		}
-
-		content := strings.Join(diffs, "\n\n")
-		// Surface healed format mistakes so the model corrects its next
-		// proposal instead of relying on the repair. The patch applied, so
-		// this is a notice appended to a success, not an error.
-		if len(patchRepairs) > 0 {
-			content += "\n\nNote — the proposal's format was repaired before applying:\n- " +
-				strings.Join(patchRepairs, "\n- ") +
-				"\nClose every REPLACE block with \">>>>>>> REPLACE\"."
-		}
-		if t.diagnostics != nil {
-			diag, _ := t.diagnostics.Check(paths, languageOf(paths))
-			if diag != "" {
-				content += "\n\n" + diag
-			}
-		}
-		return registry.ToolResult{
-			Summary:      fmt.Sprintf("Applied patches to: %s", strings.Join(paths, ", ")),
-			Content:      content,
-			FilesChanged: append([]string(nil), paths...),
-			Symbols:      symbols,
-		}, nil
+		return t.applyFilePatches(ctx, patches, patchRepairs, "use an empty SEARCH block to create a new file")
 	}
 	return tool
+}
+
+// applyFilePatches is the single write path for file.write_patch and
+// file.edit: stale-file and read-before-edit guards, validation, backups,
+// diff, TOCTOU re-check, write, diagnostics. repairs are format repairs the
+// patch parser made (always nil for file.edit). createHint is the guidance
+// appended when the target file does not exist; it differs per caller
+// because only file.write_patch speaks the SEARCH-block format.
+func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatch, repairs []string, createHint string) (registry.ToolResult, error) {
+	// Dry run first
+	for _, fp := range patches {
+		path, err := t.resolveToolPath(fp.Path, false)
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+
+		if t.fileTracker != nil {
+			lastRead, hasRead, err := t.fileTracker.LastReadTime(path)
+			if err != nil {
+				return registry.ToolResult{}, fmt.Errorf(
+					"cannot verify read state for %s: %w; re-read it before editing", fp.Path, err)
+			}
+			info, statErr := os.Stat(path)
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					// New file creation: no on-disk version to be stale against.
+					continue
+				}
+				return registry.ToolResult{}, fmt.Errorf("stat %s: %w", fp.Path, statErr)
+			}
+			if hasRead && info.ModTime().After(lastRead) {
+				return registry.ToolResult{}, changedOnDiskError(path, fp)
+			}
+			if !hasRead {
+				return registry.ToolResult{}, fmt.Errorf(
+					"file %s was never read this session; read it before editing", fp.Path)
+			}
+		} else {
+			slog.Warn("file.write_patch with nil fileTracker; TOCTOU check skipped",
+				"path", fp.Path)
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// New file creation: no existing content to validate.
+				continue
+			}
+			return registry.ToolResult{}, fmt.Errorf("read file %s: %w", fp.Path, err)
+		}
+		ok, err := patch.ValidatePatch(string(data), fp)
+		if !ok || err != nil {
+			return registry.ToolResult{}, fmt.Errorf("patch validation failed for %s: %v", fp.Path, err)
+		}
+	}
+
+	// Generate diff to display in session
+	var diffs []string
+	var backups []session.BackupFile
+	var symbols []registry.SymbolRef
+
+	// Apply for real
+	for _, fp := range patches {
+		path, err := t.resolveToolPath(fp.Path, false)
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+		data, err := os.ReadFile(path)
+		var original string
+		fileExists := err == nil
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return registry.ToolResult{}, err
+			}
+			// New file creation: verify SEARCH block is empty.
+			for _, chunk := range fp.Chunks {
+				if chunk.Search != "" {
+					return registry.ToolResult{}, fmt.Errorf("file %s does not exist; %s", fp.Path, createHint)
+				}
+			}
+		} else {
+			original = string(data)
+		}
+
+		info, err := os.Stat(path)
+		var mode os.FileMode = 0644
+		if err == nil {
+			mode = info.Mode()
+		}
+
+		diff, err := patch.GenerateDiff(fp.Path, original, fp)
+		if err == nil {
+			diffs = append(diffs, diff)
+		}
+
+		backups = append(backups, session.BackupFile{
+			Path:    fp.Path,
+			Content: original,
+			Mode:    mode,
+			Exists:  fileExists,
+		})
+
+		patched := patch.ApplyPatch(original, fp)
+		if diff != "" {
+			symbols = append(symbols, symbolsForEdit(ctx, fp.Path, patched, diff)...)
+		}
+		if strings.Contains(original, "\r\n") {
+			// Normalize safely: collapse existing CRLF to LF first so a
+			// naive LF->CRLF conversion does not turn CRLF into CRCRLF.
+			patched = strings.ReplaceAll(patched, "\r\n", "\n")
+			patched = strings.ReplaceAll(patched, "\n", "\r\n")
+		}
+
+		// TOCTOU re-check — verify file hasn't been modified
+		// between the validate loop and this write. This closes the window
+		// between the fileTracker check in the validate loop and the actual
+		// write. When fileTracker is nil (e.g. no session active) the check
+		// is skipped, which is a known gap.
+		if t.fileTracker != nil {
+			lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
+			if lrErr == nil && hasRead {
+				writeStat, statErr := os.Stat(path)
+				if statErr == nil && writeStat.ModTime().After(lastRead) {
+					return registry.ToolResult{}, changedOnDiskError(path, fp)
+				}
+			}
+		} else {
+			slog.Warn("file.write_patch TOCTOU re-check skipped: nil fileTracker",
+				"path", fp.Path)
+		}
+
+		if err := os.WriteFile(path, []byte(patched), mode); err != nil {
+			return registry.ToolResult{}, fmt.Errorf("write file %s: %w", fp.Path, err)
+		}
+
+		if t.fileTracker != nil {
+			_ = t.fileTracker.RecordWrite(path, time.Now())
+			_ = t.fileTracker.RecordRead(path, time.Now())
+		}
+	}
+
+	if ws := t.wsState(); ws != nil {
+		ws.StoreBackup(backups)
+	}
+
+	var paths []string
+	for _, fp := range patches {
+		paths = append(paths, fp.Path)
+	}
+
+	content := strings.Join(diffs, "\n\n")
+	// Surface healed format mistakes so the model corrects its next
+	// proposal instead of relying on the repair. The patch applied, so
+	// this is a notice appended to a success, not an error.
+	if len(repairs) > 0 {
+		content += "\n\nNote — the proposal's format was repaired before applying:\n- " +
+			strings.Join(repairs, "\n- ") +
+			"\nClose every REPLACE block with \">>>>>>> REPLACE\"."
+	}
+	if t.diagnostics != nil {
+		diag, _ := t.diagnostics.Check(paths, languageOf(paths))
+		if diag != "" {
+			content += "\n\n" + diag
+		}
+	}
+	return registry.ToolResult{
+		Summary:      fmt.Sprintf("Applied patches to: %s", strings.Join(paths, ", ")),
+		Content:      content,
+		FilesChanged: append([]string(nil), paths...),
+		Symbols:      symbols,
+	}, nil
 }
 
 type fileWriteArgs struct {
@@ -811,8 +755,8 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 	tool := registry.Tool{
 		Name: "file.write",
 		Description: "Create a new file or overwrite an existing file with the exact content provided. " +
-			"Prefer this over file.write_patch when writing a whole new file or replacing most of a file's content; " +
-			"use file.write_patch for targeted edits. " +
+			"Prefer this over file.edit when writing a whole new file or replacing most of a file's content; " +
+			"use file.edit for targeted edits. " +
 			"Never write files via shell.run redirection or heredocs — those bypass diff review and rollback. " +
 			"Always read before overwriting an existing file.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +

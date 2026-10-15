@@ -91,10 +91,13 @@ func (r *Registry) List() []Tool {
 // ReadOnlyNames returns the sorted names of every tool in tools whose
 // risk level is RiskReadOnly. Used to teach the actions[] read-only rule
 // from the live registry so the list cannot drift from reality.
+//
+// Internal tools are skipped: the list is model-facing text, and an internal
+// tool is never offered to the model even though the runtime can dispatch it.
 func ReadOnlyNames(tools []Tool) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
-		if tool.Risk == RiskReadOnly {
+		if tool.Risk == RiskReadOnly && !tool.Internal {
 			names = append(names, tool.Name)
 		}
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -12,9 +11,8 @@ import (
 )
 
 var (
-	ErrNilPendingQuestion      = errors.New("acp: question bridge: nil pending question")
-	ErrNilPendingChildQuestion = errors.New("acp: question bridge: nil pending child question")
-	ErrQuestionMissingItems    = errors.New("acp: question bridge: pending question has no questions")
+	ErrNilPendingQuestion   = errors.New("acp: question bridge: nil pending question")
+	ErrQuestionMissingItems = errors.New("acp: question bridge: pending question has no questions")
 )
 
 // QuestionRequest is the JSON-RPC payload for `session/request_question`.
@@ -24,11 +22,6 @@ type QuestionRequest struct {
 	SessionID  string             `json:"sessionId"`
 	QuestionID string             `json:"questionId"`
 	Questions  []session.Question `json:"questions"`
-	// FromSubagent, when non-empty, attributes the question to a background
-	// subagent so the client can render attribution (e.g. "from subagent
-	// <desc>"). It is additive and omitted for parent-loop questions, so the
-	// wire shape of an ordinary QuestionRequest is unchanged.
-	FromSubagent string `json:"fromSubagent,omitempty"`
 }
 
 // QuestionResponse is the JSON-RPC result for `session/request_question`.
@@ -87,7 +80,7 @@ func (b *QuestionBridge) Ask(ctx context.Context, sessionID string, pending *ses
 	if pending == nil {
 		return ErrNilPendingQuestion
 	}
-	answers, err := b.ask(ctx, sessionID, pending.Questions, "")
+	answers, err := b.ask(ctx, sessionID, pending.Questions)
 	if err != nil {
 		return err
 	}
@@ -95,47 +88,17 @@ func (b *QuestionBridge) Ask(ctx context.Context, sessionID string, pending *ses
 	return nil
 }
 
-// AskChild translates a session.PendingChildQuestion into the same
-// QuestionRequest wire shape as Ask, tagging it with a child attribution (so
-// the client renders "from subagent <desc>"), and writes the answers back
-// through pending.Respond. It reuses the same translation and Unanswered
-// fallback as Ask rather than forking the logic.
-func (b *QuestionBridge) AskChild(ctx context.Context, sessionID string, pending *session.PendingChildQuestion) error {
-	if pending == nil {
-		return ErrNilPendingChildQuestion
-	}
-	answers, err := b.ask(ctx, sessionID, pending.Questions, childAttribution(pending.ChildDesc))
-	if err != nil {
-		return err
-	}
-	pending.Respond(answers)
-	return nil
-}
-
-// childAttribution renders the human-readable attribution string for a
-// question escalated from a background subagent. An unknown/empty description
-// still attributes to "a subagent" rather than dropping the provenance.
-func childAttribution(desc string) string {
-	desc = strings.TrimSpace(desc)
-	if desc == "" {
-		return "from subagent"
-	}
-	return "from subagent " + desc
-}
-
-// ask is the shared translation core for Ask and AskChild: it sends the
-// questions to the client (with an optional child attribution) and applies
-// the same declined / answer-count-mismatch collapse to Unanswered. A
-// client/transport error is returned to the caller.
-func (b *QuestionBridge) ask(ctx context.Context, sessionID string, questions []session.Question, fromSubagent string) ([]session.Answer, error) {
+// ask is the shared translation core for Ask: it sends the questions to the
+// client and applies the same declined / answer-count-mismatch collapse to
+// Unanswered. A client/transport error is returned to the caller.
+func (b *QuestionBridge) ask(ctx context.Context, sessionID string, questions []session.Question) ([]session.Answer, error) {
 	if len(questions) == 0 {
 		return nil, ErrQuestionMissingItems
 	}
 	resp, err := b.client.RequestQuestion(ctx, QuestionRequest{
-		SessionID:    sessionID,
-		QuestionID:   fmt.Sprintf("q_%d_%d", time.Now().UnixNano(), b.idCtr.Add(1)),
-		Questions:    questions,
-		FromSubagent: fromSubagent,
+		SessionID:  sessionID,
+		QuestionID: fmt.Sprintf("q_%d_%d", time.Now().UnixNano(), b.idCtr.Add(1)),
+		Questions:  questions,
 	})
 	if err != nil {
 		return nil, err

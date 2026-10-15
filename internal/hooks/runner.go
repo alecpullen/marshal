@@ -146,6 +146,11 @@ func match(pattern, value string) bool {
 	if pattern == "" || pattern == "*" {
 		return true
 	}
+	// Legacy alias: hooks written for the retired model-facing
+	// file.write_patch tool keep matching its successor.
+	if pattern == "file.write_patch" && value == "file.edit" {
+		return true
+	}
 	ok, err := filepath.Match(pattern, value)
 	return err == nil && ok
 }

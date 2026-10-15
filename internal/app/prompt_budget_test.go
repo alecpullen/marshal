@@ -16,8 +16,8 @@ import (
 // the context-diet Tier 1 work (docs/context-diet/design.md). Lower them as
 // later tiers cut more; never raise them without a design note saying why.
 const (
-	maxSystemPromptBytes = 11000
-	maxToolSchemaBytes   = 31500
+	maxSystemPromptBytes = 9000
+	maxToolSchemaBytes   = 16000
 )
 
 func TestDefaultPromptBudget(t *testing.T) {
@@ -39,6 +39,8 @@ planner = "mock/m"
 repo_scout = "mock/m"
 tester = "mock/m"
 reviewer = "mock/m"
+[lsp]
+enabled = false
 `), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -63,11 +65,12 @@ reviewer = "mock/m"
 		Narration:    r.NarrationPrompt,
 	}).Content
 
-	var schemaBytes int
+	var schemaBytes, modelTools int
 	for _, tl := range r.Registry.List() {
-		if tl.Deferred {
+		if tl.Deferred || tl.Internal {
 			continue
 		}
+		modelTools++
 		b, err := json.Marshal(struct {
 			Name        string
 			Description string
@@ -81,7 +84,7 @@ reviewer = "mock/m"
 			t.Errorf("removed tool %s is registered", tl.Name)
 		}
 	}
-	t.Logf("system prompt %d bytes (ceiling %d), tool schemas %d bytes (ceiling %d)", len(sys), maxSystemPromptBytes, schemaBytes, maxToolSchemaBytes)
+	t.Logf("system prompt %d bytes (ceiling %d), tool schemas %d bytes (ceiling %d) across %d model-facing tools", len(sys), maxSystemPromptBytes, schemaBytes, maxToolSchemaBytes, modelTools)
 
 	if len(sys) > maxSystemPromptBytes {
 		t.Errorf("system prompt is %d bytes, over the %d ceiling", len(sys), maxSystemPromptBytes)
@@ -89,7 +92,7 @@ reviewer = "mock/m"
 	if schemaBytes > maxToolSchemaBytes {
 		t.Errorf("tool schemas are %d bytes, over the %d ceiling", schemaBytes, maxToolSchemaBytes)
 	}
-	for _, banned := range []string{".docs-archive", "dispatch a reviewer subagent", "config.agent.set", "Skill suggestions for this request"} {
+	for _, banned := range []string{".docs-archive", "dispatch a reviewer subagent", "config.agent.set", "Skill suggestions for this request", "file.write_patch format", "scratchpad.write", "recall_history"} {
 		if strings.Contains(sys, banned) {
 			t.Errorf("system prompt contains removed text %q", banned)
 		}

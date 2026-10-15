@@ -1,6 +1,7 @@
 package permissions
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 
@@ -26,9 +27,13 @@ func PatternForApproval(tc *session.PendingToolCall) string {
 		}
 		return strings.Join(argv, " ")
 	}
-	if tc.Name == "file.write_patch" {
-		patches, err := patch.Parse(tc.Args)
-		if err != nil || len(patches) == 0 {
+	if tc.Name == "file.write_patch" || tc.Name == "file.edit" {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(tc.Args), &m); err != nil {
+			return "**"
+		}
+		patches, ok := patch.FromToolArgs(tc.Name, m)
+		if !ok {
 			return "**"
 		}
 		dir := commonDir(patches)

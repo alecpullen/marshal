@@ -62,6 +62,7 @@ var toolPluralNames = map[string]string{
 	"csv.inspect":      "Inspect CSVs",
 	"web.search":       "Search web",
 	"git.status":       "Git status",
+	"symbols":          "Symbols",
 	"symbols.find":     "Find symbols",
 	"todos":            "Update todos",
 	"agent.output":     "Peek at subagents",

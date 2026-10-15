@@ -93,9 +93,10 @@ type Options struct {
 	// shell.sudo refuses every command (fail closed).
 	SudoPolicy func(command string) error
 
-	// LSP is an optional LSPQuerier for symbol-name-addressed definition,
-	// references, and hover tools. nil when LSP is unavailable.
-	LSP LSPQuerier
+	// Symbols answers symbol-name lookups for the `symbols` tool: through a
+	// language server when one is ready, else through the symbol index. Set
+	// unconditionally; the query tolerates a nil language-server handle.
+	Symbols SymbolQuerier
 
 	// LSPSync is the live language-server seam behind edit diagnostics and
 	// post-command rescans. nil when LSP is unavailable.
@@ -181,9 +182,9 @@ type toolSet struct {
 	// tests can supply a fake; production wiring resolves via the router.
 	resolveEmbedder func() (embedding.Embedder, error)
 
-	// lsp is an optional LSPQuerier for symbol-name-addressed definition,
-	// references, and hover tools. nil when LSP is unavailable.
-	lsp LSPQuerier
+	// symbols answers symbol-name lookups for the `symbols` tool. nil when
+	// no querier is wired.
+	symbols SymbolQuerier
 
 	// lspSync is the live language-server seam: it brackets writes so the
 	// errors they caused come back with the edit, and announces files
@@ -219,11 +220,9 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 		tools.gitBlameTool(),
 		tools.shellRunTool(),
 		tools.testRunTool(),
-		tools.symbolsFindTool(),
 		tools.todoWriteTool(),
 		tools.questionAskTool(),
 		tools.modeRequestTool(),
-		tools.diagnosticsCheckTool(),
 		tools.toolsSelectTool(),
 		tools.workspaceWorktreeTool(),
 		tools.workspaceFinishTool(),
@@ -236,15 +235,10 @@ func RegisterAll(reg *registry.Registry, opts Options) error {
 	// shell.sudo is platform-gated (no sudo on Windows) and Deferred: its
 	// full contract is disclosed on demand via tools.select.
 	all = append(all, tools.sudoTools()...)
-	// references/definition/hover answer through the LSP querier; with no
-	// server wired they could only ever return "no lsp", so they are not
-	// registered at all.
-	if tools.lsp != nil {
-		all = append(all,
-			tools.referencesTool(),
-			tools.definitionTool(),
-			tools.hoverTool(),
-		)
+	// symbols answers through the querier (language server first, symbol
+	// index as fallback); with no querier wired it could only fail.
+	if tools.symbols != nil {
+		all = append(all, tools.symbolsTool())
 	}
 	if tools.sessionState != nil {
 		// transcript_read reads the live session transcript (and archived
@@ -398,7 +392,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 			pc := opts.Config.Providers[route.Preset.Provider]
 			return embedding.NewFromConfig(route.Preset.Provider, pc, route.Preset.Model)
 		},
-		lsp:      opts.LSP,
+		symbols:  opts.Symbols,
 		lspSync:  opts.LSPSync,
 		lspIndex: opts.LSPIndex,
 		gitOps:   opts.GitOps,

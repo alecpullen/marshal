@@ -35,16 +35,15 @@ type repoSearchArgs struct {
 	Mode       string `json:"mode"`
 	Include    string `json:"include"`
 	Context    int    `json:"context"`
-	Kind       string `json:"kind"`
 }
 
 func (t *toolSet) repoSearchTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "repo.search",
-		Description: "Search workspace files for matching lines. Default mode=auto: bare words do a case-sensitive substring match, pattern-shaped queries are compiled as RE2 (choice echo in summary). Use kind=func|method|type|import to resolve via the symbol index instead of line-matching. context adds 0-3 surrounding lines; results cap at 200 with guidance.",
+		Description: "Search workspace files for matching lines. Default mode=auto: bare words do a case-sensitive substring match, pattern-shaped queries are compiled as RE2. context adds 0-3 surrounding lines; results cap at 200 with guidance. Use symbols to find declarations and references.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string","description":` +
 			t.pathDescription("directory or file to search, relative to the workspace") +
-			`},"max_results":{"type":"integer"},"mode":{"type":"string","enum":["auto","substring","regex"]},"kind":{"type":"string","enum":["function","method","type","import"],"description":"Resolve via the symbol index instead of line-matching; when set, context and mode are ignored (a notice explains), while path, include, and max_results still filter results"},"include":{"type":"string"},"context":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
+			`},"max_results":{"type":"integer"},"mode":{"type":"string","enum":["auto","substring","regex"]},"include":{"type":"string"},"context":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),
 		Risk: registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -53,189 +52,16 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 			return registry.ToolResult{}, err
 		}
 
-		// Kind queries resolve through the symbol index, so the line-matching
-		// knobs (context, non-auto mode) do not apply. They are dropped with a
-		// kind_knob_ignored notice rather than rejecting the call: postmortems
-		// showed agents re-issuing the same rejected call unchanged (the
-		// single most-repeated tool failure), so the call now succeeds and the
-		// notice carries the remediation instead.
-		var kindNotice *registry.ToolNotice
-		if args.Kind != "" {
-			if !validSymbolKinds[args.Kind] {
-				return registry.ToolResult{}, fmt.Errorf("repo.search kind %q is not one of function, method, type, import", args.Kind)
-			}
-			ignored := make([]string, 0, 2)
-			if args.Context != 0 {
-				ignored = append(ignored, "context")
-				args.Context = 0
-			}
-			if args.Mode != "" && args.Mode != "auto" {
-				ignored = append(ignored, "mode")
-				args.Mode = ""
-			}
-			if len(ignored) > 0 {
-				applies := "does not apply to kind queries"
-				if len(ignored) > 1 {
-					applies = "do not apply to kind queries"
-				}
-				kindNotice = &registry.ToolNotice{
-					Kind: registry.NoticeKindKnobIgnored,
-					Text: fmt.Sprintf("%s %s (kind queries resolve via the symbol index)", strings.Join(ignored, " and "), applies),
-					Data: map[string]any{"ignored": strings.Join(ignored, ",")},
-				}
-			}
-			if t.db == nil || t.projectID == 0 {
-				return registry.ToolResult{}, errors.New("database not configured for repo.search kind queries")
-			}
-		}
-
-		if args.Query == "" && args.Kind == "" {
+		if args.Query == "" {
 			return registry.ToolResult{}, fmt.Errorf("repo.search query is required")
 		}
 
-		// Limit is needed by both the line-matching walk and the kind branch,
-		// so compute it before either path runs.
 		limit := args.MaxResults
 		if limit <= 0 {
 			limit = defaultSearchMaxResults
 		}
 		if limit > hardSearchMaxResults {
 			limit = hardSearchMaxResults
-		}
-
-		if args.Kind != "" {
-			// finishKindResult attaches the kind_knob_ignored notice, when one
-			// was recorded, to any kind-branch result. The footer is appended
-			// after limitOutput so the remediation survives output truncation,
-			// mirroring the line branch's clamp handling.
-			finishKindResult := func(result registry.ToolResult) registry.ToolResult {
-				if kindNotice == nil {
-					return result
-				}
-				if result.Content == "" {
-					result.Content = kindNotice.Text
-				} else {
-					result.Content += "\n" + kindNotice.Text
-				}
-				result.Notice = kindNotice
-				return result
-			}
-			// Validate the include glob up front, exactly as the line-search
-			// path does, so a bad pattern is a clear error rather than a
-			// silently empty result.
-			if args.Include != "" {
-				if _, err := path.Match(args.Include, ""); err != nil {
-					return registry.ToolResult{}, fmt.Errorf("repo.search invalid include glob %q: %w", args.Include, err)
-				}
-			}
-
-			// Resolve the path filter to a workspace-relative prefix (slash-
-			// separated, like db.Symbol.FilePath). A path naming a file matches
-			// that file exactly; a directory matches its whole subtree.
-			// resolveReadToolPath rejects traversal and absolute paths, mirroring
-			// the line-search path.
-			pathPrefix := ""
-			if args.Path != "" {
-				resolved, err := t.resolveReadToolPath(args.Path)
-				if err != nil {
-					return registry.ToolResult{}, err
-				}
-				rel, err := workspaceRel(t.activeRoot(), resolved)
-				if err != nil {
-					// workspaceRel fails for two reasons: the active root cannot
-					// be resolved at all (a genuine error worth surfacing), or the
-					// resolved path lies outside it. The latter is benign and
-					// expected: resolveReadToolPath accepts paths in any allowed
-					// root (a linked worktree, a configured extra directory), so a
-					// valid read path can sit outside the workspace root.
-					if _, rootErr := filepath.EvalSymlinks(t.activeRoot()); rootErr != nil {
-						return registry.ToolResult{}, err
-					}
-					// db.Symbol rows store workspace-relative paths (the scanner
-					// and indexer both root at the active workspace), so no
-					// indexed symbol can ever carry a path outside the root: the
-					// filter can only match nothing. Report that honestly rather
-					// than failing the call, which would be inconsistent with the
-					// unfiltered kind query that succeeds against these roots.
-					return finishKindResult(registry.ToolResult{
-						Summary: "No matching symbols (path outside the indexed workspace)",
-						Content: fmt.Sprintf("path %q resolves outside the indexed workspace (e.g. a linked worktree or an additional root); the symbol index stores workspace-relative paths, so no indexed symbol can match it — retry without a path, or run the search from that root", args.Path),
-					}), nil
-				}
-				// "." means the workspace root itself: no restriction.
-				if rel != "." {
-					pathPrefix = rel
-				}
-			}
-
-			filtered := pathPrefix != "" || args.Include != ""
-
-			// The DB applies its LIMIT before we can post-filter, so a filtered
-			// query could come back short even though more matching symbols sit
-			// beyond the cutoff. Deliberately over-fetch to the hard ceiling
-			// while filtering, then trim to the caller's limit afterwards.
-			fetchLimit := limit
-			if filtered && hardSearchMaxResults > fetchLimit {
-				fetchLimit = hardSearchMaxResults
-			}
-
-			symbols, err := t.db.FindSymbols(t.projectID, args.Query, args.Kind, fetchLimit)
-			if err != nil {
-				return registry.ToolResult{}, fmt.Errorf("find symbols: %w", err)
-			}
-			// Fewer rows than asked for means the DB had nothing more to give,
-			// so post-filtering cannot have hidden anything.
-			dbExhausted := len(symbols) < fetchLimit
-
-			symbols = filterSymbols(symbols, pathPrefix, args.Include)
-			// Capture the post-filter count before trimming. A trim drops rows
-			// exactly as a truncated DB scan does, so completeness must account
-			// for both: dbExhausted only proves the scan finished, not that the
-			// returned result is whole.
-			filteredCount := len(symbols)
-			if filteredCount > limit {
-				symbols = symbols[:limit]
-			}
-
-			if len(symbols) == 0 {
-				// Keep the plain message byte-for-byte when no filter was given.
-				if !filtered {
-					return finishKindResult(registry.ToolResult{
-						Summary: "No matching symbols",
-						Content: "No matching symbols — the symbol index refreshes automatically; adjust your filters",
-					}), nil
-				}
-				// Say which filter applied, so a model can tell "no such symbol"
-				// apart from "my filter excluded it".
-				return finishKindResult(registry.ToolResult{
-					Summary: "No matching symbols (filtered)",
-					Content: fmt.Sprintf("No matching symbols after applying %s — the symbol may exist outside the filtered scope", describeSymbolFilters(pathPrefix, args.Include)),
-				}), nil
-			}
-
-			rendered := t.renderSymbolSkeletons(symbols)
-			summary := fmt.Sprintf("found %d symbols matching %s (kind: %s)", len(symbols), args.Query, args.Kind)
-			content := rendered
-			if filtered {
-				summary += fmt.Sprintf(" (filtered by %s)", describeSymbolFilters(pathPrefix, args.Include))
-				if !dbExhausted || filteredCount > limit {
-					// Either the DB scan stopped at its LIMIT or the post-filter
-					// trim dropped rows, so the result may be incomplete. Say so
-					// instead of implying completeness.
-					content += "\n(filter applied after the symbol lookup; more matching symbols may exist — narrow the query or the path/include filter)"
-				}
-			} else if !dbExhausted {
-				// Unfiltered kind query: fetchLimit == limit and the DB returned
-				// exactly that many rows, so its LIMIT may have cut the scan short.
-				// Disclose the possible truncation instead of implying completeness
-				// (the filtered branch above already discloses its own truncation).
-				summary += " (capped)"
-				content += fmt.Sprintf("\n(result capped at %d symbols; more matching symbols may exist — narrow the query or add a path/include filter)", limit)
-			}
-			return finishKindResult(registry.ToolResult{
-				Summary: summary,
-				Content: limitOutput(content, t.maxOutputBytes),
-			}), nil
 		}
 
 		var match lineMatcher

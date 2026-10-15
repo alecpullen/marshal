@@ -784,8 +784,10 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			lspHandle = lsp.NewHandle(lsp.NewManager(state.Workspace().ActiveRoot, lsp.ServersForRoot(servers, state.Workspace().ActiveRoot), state.Logger()), servers, state.Logger())
 		}
 	}
+	// symbols answers through the language servers and falls back to the
+	// symbol index, so it is wired unconditionally; lspHandle may be nil.
+	nativeOpts.Symbols = lsp.NewSymbolQuery(lspHandle, database, projectID)
 	if lspHandle != nil {
-		nativeOpts.LSP = lsp.NewQueryAdapter(lspHandle)
 		nativeOpts.LSPSync = lsp.NewSync(lspHandle)
 		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspHandle)
 		lspSync = lsp.NewSync(lspHandle)
@@ -2223,7 +2225,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			func() bool { return clipboard.Remote(os.Getenv) },
 		))
 		if rt.LSPManager != nil {
-			tuiOpts = append(tuiOpts, tui.WithReferenceFinder(lsp.NewQueryAdapter(rt.LSPManager)))
+			tuiOpts = append(tuiOpts, tui.WithReferenceFinder(lsp.NewSymbolQuery(rt.LSPManager, nil, 0)))
 		}
 		tuiOpts = append(tuiOpts, tui.WithRunnerSource(func() (context.Context, tui.AgentRunner) {
 			rt.mu.Lock()

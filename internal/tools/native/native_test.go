@@ -18,7 +18,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 
 	// codebase_search is registered only when an embedding route resolves,
 	// so the full-surface assertion needs one configured.
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, Config: embeddingConfig()}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, Config: embeddingConfig(), Symbols: &fakeQuerier{}}); err != nil {
 		t.Fatalf("RegisterAll returned error: %v", err)
 	}
 
@@ -28,7 +28,7 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"file.edit":          registry.RiskWorkspaceWrite,
 		"file.write":         registry.RiskWorkspaceWrite,
 		"repo.search":        registry.RiskReadOnly,
-		"symbols.find":       registry.RiskReadOnly,
+		"symbols":            registry.RiskReadOnly,
 		"git.status":         registry.RiskReadOnly,
 		"git.diff":           registry.RiskReadOnly,
 		"git.log":            registry.RiskReadOnly,
@@ -38,7 +38,6 @@ func TestRegisterAllRegistersExpectedTools(t *testing.T) {
 		"todo.write":         registry.RiskWorkspaceWrite,
 		"question.ask":       registry.RiskReadOnly,
 		"mode.request":       registry.RiskReadOnly,
-		"diagnostics.check":  registry.RiskReadOnly,
 		"tools.select":       registry.RiskReadOnly,
 		"codebase_search":    registry.RiskReadOnly,
 		"config.read":        registry.RiskReadOnly,
@@ -153,7 +152,7 @@ func TestShellRunDescriptionMentionsWorkspaceCwdAndNativeSearch(t *testing.T) {
 	if !ok {
 		t.Fatal("shell.run not registered")
 	}
-	for _, want := range []string{"workspace root", "current working directory", "repo.search", "symbols.find", "file.read", "Never use shell.run to create or modify files"} {
+	for _, want := range []string{"workspace root", "current working directory", "repo.search", "symbols", "file.read", "Never use shell.run to create or modify files"} {
 		if !strings.Contains(tool.Description, want) {
 			t.Errorf("shell.run description missing %q: %s", want, tool.Description)
 		}
@@ -213,20 +212,6 @@ func assertTimeout(t *testing.T, got time.Duration, want time.Duration) {
 	if got != want {
 		t.Fatalf("timeout = %s, want %s", got, want)
 	}
-}
-
-type fakeLSPQuerier struct{}
-
-func (fakeLSPQuerier) Definition(ctx context.Context, filePath string, line, col int) ([]string, bool) {
-	return nil, false
-}
-
-func (fakeLSPQuerier) References(ctx context.Context, filePath string, line, col int) ([]string, bool) {
-	return nil, false
-}
-
-func (fakeLSPQuerier) Hover(ctx context.Context, filePath string, line, col int) (string, bool) {
-	return "", false
 }
 
 func TestRegisterAllDefersOnlyLowUseTools(t *testing.T) {
@@ -312,29 +297,23 @@ func TestToolsSelectLoadsDeferredNativeTool(t *testing.T) {
 	}
 }
 
-func TestRegisterAllGatesLSPToolsOnQuerier(t *testing.T) {
-	lspNames := []string{"references", "definition", "hover"}
-
-	// Without a querier the LSP tools are not registered at all — they
-	// could only ever return "no lsp".
+func TestRegisterAllGatesSymbolsToolOnQuerier(t *testing.T) {
+	// Without a querier the symbols tool is not registered at all — it
+	// could only ever fail.
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	for _, name := range lspNames {
-		if _, ok := reg.Lookup(name); ok {
-			t.Fatalf("expected %s to be omitted when LSP querier is nil", name)
-		}
+	if _, ok := reg.Lookup("symbols"); ok {
+		t.Fatal("expected symbols to be omitted when the symbol querier is nil")
 	}
 
-	// With a querier they register normally.
+	// With a querier it registers normally.
 	reg = registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, LSP: fakeLSPQuerier{}}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, Symbols: &fakeQuerier{}}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	for _, name := range lspNames {
-		if _, ok := reg.Lookup(name); !ok {
-			t.Fatalf("expected %s to be registered when LSP querier is set", name)
-		}
+	if _, ok := reg.Lookup("symbols"); !ok {
+		t.Fatal("expected symbols to be registered when the symbol querier is set")
 	}
 }

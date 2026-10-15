@@ -298,11 +298,6 @@ func PlanWriterView(src *Registry, alias string, allowed []string) *Registry {
 			case "agent.run", "question.ask", "mode.request":
 				// Nested-agent, question, and mode tools are excluded: the
 				// orphaned child must not spawn agents or ask the user.
-			case "diagnostics.check":
-				// Side-effectful despite the RiskReadOnly label:
-				// diagnostics.check runs configured per-language shell
-				// commands. Stripped so the orphan cannot run arbitrary
-				// checkers.
 			default:
 				_ = view.Register(tool)
 			}

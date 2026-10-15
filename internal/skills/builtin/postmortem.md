@@ -33,7 +33,7 @@ Example patch of the field:
 
 ```json
 "agent_observations": [
-  "used shell.run grep to find a symbol when symbols.find was available",
+  "used shell.run grep to find a symbol when symbols was available",
   "retried the same failing patch three times without reading the file first"
 ]
 ```

@@ -56,7 +56,7 @@ change:
 - **Judgment changes** — edits entangled with existing code, refactors,
   anything whose exact text depends on what is actually there. Write prose
   steps plus verified anchors (symbol names, file:line, distinctive
-  strings), each confirmed via `symbols.find` / `definition` / `hover` /
+  strings), each confirmed via `symbols` (find / definition / hover) or
   `repo.search` before being written into the plan.
 
 The executor applies embedded code verbatim; prose+anchor steps may be

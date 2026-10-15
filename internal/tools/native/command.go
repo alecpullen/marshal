@@ -33,7 +33,7 @@ func (t *toolSet) shellRunTool() registry.Tool {
 	tool := registry.Tool{
 		Name: "shell.run",
 		Description: "Run a shell command with the workspace root as the current working directory. " +
-			"Prefer native tools such as repo.search, symbols.find, and file.read over broad filesystem commands " +
+			"Prefer native tools such as repo.search, symbols, and file.read over broad filesystem commands " +
 			"(e.g. find /, ls -R /, grep -r /). Commands are subject to conservative guardrails. " +
 			"Never use shell.run to create or modify files (no redirection, heredocs, or tee) — use file.write or file.edit instead. ",
 		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer"},"background":{"type":"boolean"}},"required":["command"],"additionalProperties":false}`),

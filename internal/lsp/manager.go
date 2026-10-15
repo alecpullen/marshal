@@ -132,6 +132,8 @@ type Manager struct {
 	mu    sync.Mutex
 	state map[string]*serverState
 
+	ws *Workspace
+
 	// start launches one language server. NewManager defaults it to
 	// startProcess; tests substitute fakes.
 	start func(ctx context.Context, lang string, spec ServerSpec) (*Client, func(), error)
@@ -155,6 +157,7 @@ func NewManager(root string, servers map[string]ServerSpec, log *slog.Logger) *M
 		m.state[lang] = &serverState{}
 	}
 	m.start = m.startProcess
+	m.ws = NewWorkspace(m)
 	return m
 }
 
@@ -331,3 +334,6 @@ func (m *Manager) ServerFor(lang string) (*Client, bool) {
 	}
 	return st.client, true
 }
+
+// Workspace returns the manager's document-sync workspace.
+func (m *Manager) Workspace() *Workspace { return m.ws }

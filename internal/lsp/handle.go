@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 )
@@ -65,4 +66,24 @@ func (h *Handle) Restart(root string) (newM, old *Manager) {
 	h.m = newM
 	h.mu.Unlock()
 	return newM, old
+}
+
+// Sync adapts a Handle to native.LSPSync: it always talks to the current
+// manager's Workspace, so a worktree restart needs no rewiring.
+type Sync struct{ h *Handle }
+
+func NewSync(h *Handle) *Sync { return &Sync{h: h} }
+
+func (s *Sync) BeginEdit(paths []string) (func(ctx context.Context) string, bool) {
+	if s == nil || s.h == nil || s.h.Get() == nil {
+		return nil, false
+	}
+	return s.h.Get().Workspace().BeginEdit(paths)
+}
+
+func (s *Sync) Rescan() {
+	if s == nil || s.h == nil || s.h.Get() == nil {
+		return
+	}
+	s.h.Get().Workspace().Rescan()
 }

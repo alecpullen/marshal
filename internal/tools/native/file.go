@@ -20,9 +20,9 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-// maxPageableFileBytes is the largest file file.page will load into memory.
-// It is intentionally larger than the per-tool output limit so the model can
-// page through big files a screen at a time.
+// maxPageableFileBytes bounds a file loaded whole into memory for symbol
+// context (search.go's readSymbolFileLines). It is intentionally larger than
+// the per-tool output limit so a large file's symbols still get a body.
 const maxPageableFileBytes = 10 * 1024 * 1024 // 10 MiB
 
 // Head-fallback budget for file.read when a file exceeds the per-tool size
@@ -565,7 +565,7 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 		if len(patches) == 0 {
 			return registry.ToolResult{}, fmt.Errorf("no valid patches found in proposal")
 		}
-		return t.applyFilePatches(ctx, patches, patchRepairs)
+		return t.applyFilePatches(ctx, patches, patchRepairs, "use an empty SEARCH block to create a new file")
 	}
 	return tool
 }
@@ -573,8 +573,10 @@ func (t *toolSet) fileWritePatchTool() registry.Tool {
 // applyFilePatches is the single write path for file.write_patch and
 // file.edit: stale-file and read-before-edit guards, validation, backups,
 // diff, TOCTOU re-check, write, diagnostics. repairs are format repairs the
-// patch parser made (always nil for file.edit).
-func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatch, repairs []string) (registry.ToolResult, error) {
+// patch parser made (always nil for file.edit). createHint is the guidance
+// appended when the target file does not exist; it differs per caller
+// because only file.write_patch speaks the SEARCH-block format.
+func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatch, repairs []string, createHint string) (registry.ToolResult, error) {
 	// Dry run first
 	for _, fp := range patches {
 		path, err := t.resolveToolPath(fp.Path, false)
@@ -643,8 +645,7 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 			// New file creation: verify SEARCH block is empty.
 			for _, chunk := range fp.Chunks {
 				if chunk.Search != "" {
-					return registry.ToolResult{}, fmt.Errorf(
-						"file %s does not exist but patch has a non-empty SEARCH block; use an empty SEARCH block to create a new file", fp.Path)
+					return registry.ToolResult{}, fmt.Errorf("file %s does not exist; %s", fp.Path, createHint)
 				}
 			}
 		} else {

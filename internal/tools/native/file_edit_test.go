@@ -83,3 +83,21 @@ func TestFileWritePatchIsInternal(t *testing.T) {
 		t.Fatalf("file.write_patch must stay registered as Internal; ok=%v", ok)
 	}
 }
+
+// A file.edit against a path that does not exist is a common model slip (a
+// typo, or a file it meant to create). The error it gets back must name a
+// tool the model actually has — file.write — and must not teach the retired
+// SEARCH-block format, which file.edit cannot express.
+func TestFileEditMissingFilePointsAtFileWriteNotPatchFormat(t *testing.T) {
+	reg := newEditRegistry(t, t.TempDir())
+	_, err := invokeTool(t, reg, "file.edit", `{"path":"missing.go","old_string":"a","new_string":"b"}`)
+	if err == nil {
+		t.Fatal("expected an error editing a missing file")
+	}
+	if !strings.Contains(err.Error(), "file.write") {
+		t.Errorf("error = %v, want it to point at file.write", err)
+	}
+	if strings.Contains(err.Error(), "SEARCH block") {
+		t.Errorf("error = %v, must not teach the retired patch format", err)
+	}
+}

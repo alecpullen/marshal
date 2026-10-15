@@ -41,7 +41,7 @@ func (t *toolSet) fileEditTool() registry.Tool {
 		res, err := t.applyFilePatches(ctx, []patch.FilePatch{{
 			Path:   args.Path,
 			Chunks: []patch.PatchChunk{{Search: args.OldString, Replace: args.NewString}},
-		}}, nil)
+		}}, nil, "use file.write to create a new file")
 		if err != nil {
 			return registry.ToolResult{}, err
 		}

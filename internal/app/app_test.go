@@ -4955,6 +4955,24 @@ reviewer = "mock/m"
 			}
 		}
 	}
+
+	// Builtin skill bodies are model-facing prompt text too: the skill index
+	// and any active skill body ship in the same request as the tool list.
+	// This scan is how the postmortem skill's `recall_history` and the
+	// parallel-agents skill's `agent.output` were found. Handler-emitted error
+	// strings cannot be scanned this way; the native tests cover those.
+	skills := rt.Runner.SkillIndex.List()
+	if len(skills) == 0 {
+		t.Fatal("no skills loaded; the skill-body scan below would be vacuous")
+	}
+	for _, sk := range skills {
+		text := sk.Description + "\n" + sk.Body
+		for _, name := range retired {
+			if strings.Contains(text, name) {
+				t.Errorf("skill %s still mentions retired tool %s", sk.Name, name)
+			}
+		}
+	}
 }
 
 func TestNoSubagentQuestionChannel(t *testing.T) {

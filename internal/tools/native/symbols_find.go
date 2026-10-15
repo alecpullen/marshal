@@ -46,7 +46,7 @@ func (t *toolSet) symbolsFindTool() registry.Tool {
 		if len(symbols) == 0 {
 			return registry.ToolResult{
 				Summary: "No matching symbols",
-				Content: "No matching symbols — adjust your filters, or re-run repo.index for a fresh symbol index.",
+				Content: "No matching symbols — the symbol index refreshes automatically; adjust your filters",
 			}, nil
 		}
 

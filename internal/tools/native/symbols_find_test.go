@@ -106,3 +106,36 @@ func TestSymbolsFindToolRequiresDB(t *testing.T) {
 		t.Fatal("expected error when DB not configured")
 	}
 }
+
+// The no-match result is model-facing text on a common path. It must not
+// send the model to repo.index, a tool retired in the context-diet Tier 2a
+// cut: the symbol index refreshes on its own, so only the filters are
+// actionable.
+func TestSymbolsFindNoMatchDoesNotNameRepoIndex(t *testing.T) {
+	tmp := t.TempDir()
+	dbConn, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer dbConn.Close()
+	if err := dbConn.Migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := dbConn.GetOrCreateProject(tmp, "test")
+	if err != nil {
+		t.Fatalf("get or create project: %v", err)
+	}
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: tmp, DB: dbConn, ProjectID: projectID}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	tool, _ := reg.Lookup("symbols.find")
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"name":"no-such-symbol-anywhere"}`)})
+	if err != nil {
+		t.Fatalf("symbols.find: %v", err)
+	}
+	if strings.Contains(res.Content, "repo.index") {
+		t.Errorf("no-match content = %q, must not name the retired repo.index", res.Content)
+	}
+}

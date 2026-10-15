@@ -21,7 +21,7 @@ Use the `agent.run` tool, one call per unit. Multiple `agent.run` calls in a sin
 `agent.run` returns a **handle, not a result** — the child runs in the background. The task is not done when the call returns.
 
 - `agent.await` — block until a subagent finishes and collect its report.
-- `agent.output` — peek at progress without blocking.
+- `agent.await` with `"peek": true` — check progress without blocking.
 
 Writes across agents are serialised by a write lock, so concurrent edits cannot interleave mid-write. That protects file integrity; it does **not** make two agents editing the same file correct. Keep file sets disjoint.
 

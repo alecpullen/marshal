@@ -159,8 +159,9 @@ These are load-bearing; code comments and tests point back at them.
   `internal/app/tui/`. It talks to the agent loop through the structural
   `AgentRunner` interface so it never imports `internal/agent`.
 - **Tool-safe.** Shell execution is risk-classified and approval-gated; file
-  writes prefer `file.write` / `file.write_patch` because they alone give diff
-  review, backups, and rollback.
+  writes prefer `file.write` / `file.edit` because they alone give diff
+  review, backups, and rollback. (`file.write_patch` still exists, but as an
+  internal tool reached only by envelope-mode patch actions.)
 - **Local-friendly.** Defaults assume no built-in providers; remote providers
   are opt-in and must be configured explicitly. Never assume a hosted model.
 - **Provider-flexible.** The model layer is swappable without TUI changes.

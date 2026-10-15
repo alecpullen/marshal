@@ -39,6 +39,8 @@ planner = "mock/m"
 repo_scout = "mock/m"
 tester = "mock/m"
 reviewer = "mock/m"
+[lsp]
+enabled = false
 `), 0644); err != nil {
 		t.Fatal(err)
 	}

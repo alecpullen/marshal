@@ -62,7 +62,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the model. Permission rules and hooks written for `file.write_patch` keep
   applying.
 - `agent.await` gains `peek`, `agent.kill` accepts `job_id`, and
-  `parent.correct` is now `agent.steer {id, message}`.
+  `parent.correct` is now `agent.steer {id, message}`. Killing a background
+  job no longer prompts: `job.kill`'s `RiskCommand` level is deliberately
+  dropped, so a job this session started is cancelled like a subagent kill.
+- `agent.output`'s `"transcript": true` option is dropped; `agent.await` with
+  `"peek": true` returns the five most recent activity lines plus the summary.
+- `file.edit` takes `old_string`/`new_string` only, so a model holding a
+  unified diff (`---/+++/@@` hunks) must transcode it. Whole-file creation
+  uses `file.write`; multi-file edits use parallel calls.
+- `[session.rollover] recall_tool_enabled` is inert — the tool it gated is now
+  `transcript_read`'s `query` — but the key is still accepted so existing
+  configs keep loading.
 - `transcript_read` takes a `query` to search archived turns.
 - `codebase_search` is offered only when an embedding route is configured.
 - The model roster no longer labels unpriced models "cheap", hides

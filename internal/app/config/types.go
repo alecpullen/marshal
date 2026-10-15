@@ -348,6 +348,10 @@ type SessionConfig struct {
 }
 
 // RolloverConfig controls automatic context rollover behaviour.
+//
+// RecallToolEnabled is retired (context-diet Tier 2a): recall_history merged
+// into transcript_read's "query". The key is still parsed and written back so
+// existing config files load unchanged, but nothing reads the value.
 type RolloverConfig struct {
 	Enabled                 bool              `toml:"enabled"`
 	Policy                  string            `toml:"policy"`

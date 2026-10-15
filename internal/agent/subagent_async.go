@@ -448,7 +448,11 @@ func NewSubagentKillTool(state *session.State, opts ...AwaitOption) registry.Too
 		Name:        "agent.kill",
 		Description: `Cancel a background subagent ("id") or shell job ("job_id"). Kills are immediate but asynchronous: the child's context is cancelled and its completion path marks it failed with "context canceled". A killed subagent's report arrives marked failed; observe a terminal state with agent.await (add "peek": true to check without waiting).`,
 		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"job_id":{"type":"string"}},"additionalProperties":false}`),
-		Risk:        registry.RiskReadOnly,
+		// RiskReadOnly is deliberate for both targets: job.kill was
+		// RiskCommand, but a background job this session started, inside the
+		// workspace, is as safe to cancel as a subagent. See
+		// docs/context-diet/tier2a-design.md, decision 4.
+		Risk: registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		var args agentKillArgs

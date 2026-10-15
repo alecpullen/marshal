@@ -56,6 +56,10 @@ result summaries, plus 32 postmortems.
      create files with empty-SEARCH patches.
    - The patch-format prompt section and the REPLACE-terminator rule are
      removed.
+   - Unified-diff input (`---/+++/@@` hunks) has no `file.edit` equivalent: a
+     model holding one must transcode it to `old_string`/`new_string`.
+     Whole-file creation uses `file.write` and multi-file edits use parallel
+     calls, so only the diff-syntax convenience is lost.
 3. **Deleted tools** (calls since 2026-08-01):
 
    | Tool(s) | Calls |
@@ -72,7 +76,17 @@ result summaries, plus 32 postmortems.
 4. **Background work:**
    - `agent.await` gains `peek: true`, which returns status immediately for an
      `id` or `job_id`. It absorbs `agent.output` and `job.output`.
-   - `agent.kill` accepts `job_id`, absorbing `job.kill`.
+   - `agent.output`'s `"transcript": true` option (a bounded transcript of the
+     child's committed messages) is dropped rather than re-homed: `peek`
+     returns the five most recent activity lines plus the summary, and no
+     postmortem showed the transcript form in use.
+   - `agent.kill` accepts `job_id`, absorbing `job.kill`. This deliberately
+     drops `job.kill`'s `RiskCommand` level: `agent.kill` stays
+     `RiskReadOnly`, so killing a background job no longer prompts. The blast
+     radius is jobs the session itself started, inside the workspace. The
+     alternative — splitting the risk by argument class — would make the
+     approval decision depend on arguments, which the name-keyed policy does
+     not express. `TestAgentKillIsReadOnlyRisk` pins the new behavior.
    - `job.list` goes, and so does `agent.await`'s `watch_id` (agents can no
      longer start watches).
 5. **Subagent questions are removed and steering stays.**
@@ -110,22 +124,30 @@ result summaries, plus 32 postmortems.
 
 Measured 2026-10-15 by `TestDefaultPromptBudget`
 (`internal/app/prompt_budget_test.go`) against a default runtime in native
-tools mode, with no embedding route and no LSP server:
+tools mode, with the fixture pinning `[lsp] enabled = false` and no embedding
+route. Both are pinned in that fixture because both are machine-dependent:
+without the LSP pin the count and the schema bytes vary with whatever
+language servers happen to be on PATH. The system-prompt figure includes the
+fixture's temporary working directory, which appears in the prompt, so it
+moves by a byte or two between machines; the schema bytes and the tool count
+do not depend on it.
 
 | Metric | Before Tier 2a | After Tier 2a | Ceiling |
 |---|---|---|---|
-| Model-facing tools | 53 | 27 | — |
-| Tool schemas | ~31 KB | 14,796 B | 16,000 B |
+| Model-facing tools | 53 | 24 | — |
+| Tool schemas | ~31 KB | 14,098 B | 16,000 B |
 | System prompt | ~10.5 KB | 7,611 B | 9,000 B |
 
-Both byte budgets landed inside the design's estimates. The tool count sits
-two above the "about 25" projection because it is taken with no embedding
-route (so `codebase_search` is absent) but with `web.fetch` present
-(`[web] enabled` defaults to true) and `shell.sudo` registered on non-Windows
-platforms.
+Both byte budgets landed inside the design's estimates. The tool count is one
+under the "about 25" projection, and the gap is fully accounted for: the
+measurement runs with no embedding route (so `codebase_search` is absent), no
+language server (so `definition`, `references` and `hover` are absent), and
+`shell.sudo` excluded — it is `Deferred`, and the walk skips deferred tools,
+which are disclosed on demand via `tools.select`. `web.fetch` is present
+because `[web] enabled` defaults to true.
 
-The measurement deliberately runs with no embedding route and no LSP server:
-that is the floor of the tool surface, and the guard test's ceilings are
-pinned to it so a regression cannot hide behind an optional tool being
-absent. `codebase_search` adds its schema only when embeddings resolve;
-`definition`, `references` and `hover` only when a language server is found.
+The measurement deliberately runs at the floor of the tool surface, and the
+guard test's ceilings are pinned to it so a regression cannot hide behind an
+optional tool being absent. On a machine with a language server for the
+repository and an embedding route, the same walk sees 27 tools and about
+14,800 schema bytes; both stay under the ceilings.

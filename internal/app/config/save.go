@@ -464,11 +464,11 @@ func writeSections(file *configFile, cfg Config, def Config) {
 		}
 	}
 	// Sections below were previously merged on load but never written
-	// back, so config.session.rollover.set / config.lsp.set /
-	// config.history.set / config.scratchpad.set / config.agents.set
-	// reported success and lost their values on restart. Same rule as the
-	// sections above: write when the file already carries the section or
-	// the merged value differs from Default().
+	// back, so the per-section config write tools reported success and lost
+	// their values on restart. Those tools are gone (settings are edited
+	// through /settings, /models and /connect), but the rule they needed
+	// still holds for hand-edited files: write when the file already
+	// carries the section or the merged value differs from Default().
 	if file.Session != nil || !reflect.DeepEqual(cfg.Session, def.Session) {
 		session := &fileSession{}
 		if file.Session != nil && file.Session.Rollover != nil {

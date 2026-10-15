@@ -17,7 +17,7 @@ import (
 // later tiers cut more; never raise them without a design note saying why.
 const (
 	maxSystemPromptBytes = 9000
-	maxToolSchemaBytes   = 16000
+	maxToolSchemaBytes   = 15000
 )
 
 func TestDefaultPromptBudget(t *testing.T) {
@@ -92,7 +92,7 @@ enabled = false
 	if schemaBytes > maxToolSchemaBytes {
 		t.Errorf("tool schemas are %d bytes, over the %d ceiling", schemaBytes, maxToolSchemaBytes)
 	}
-	for _, banned := range []string{".docs-archive", "dispatch a reviewer subagent", "config.agent.set", "Skill suggestions for this request", "file.write_patch format", "scratchpad.write", "recall_history"} {
+	for _, banned := range []string{".docs-archive", "dispatch a reviewer subagent", "config.agent.set", "Skill suggestions for this request", "file.write_patch format", "scratchpad.write", "recall_history", "diagnostics.check", "symbols.find"} {
 		if strings.Contains(sys, banned) {
 			t.Errorf("system prompt contains removed text %q", banned)
 		}

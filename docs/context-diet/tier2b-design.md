@@ -219,3 +219,29 @@ A language-server problem never fails a tool call.
 
 Installing language servers, LSP code actions or rename, and diagnostics
 beyond errors (warnings and hints).
+
+## Measured result
+
+Landed 2026-10-16. `TestDefaultPromptBudget` on a default native-tools
+request, with `[lsp] enabled = false`:
+
+| Metric | Value | Ceiling |
+| --- | --- | --- |
+| System prompt | 7,606 bytes | 9,000 |
+| Tool schemas | 13,599 bytes | 15,000 |
+| Model-facing tools | 23 | — |
+
+The tool-schema ceiling dropped from 16,000 to 15,000 bytes as planned; the
+measured figure sits 1,401 bytes under it. The five retired surfaces
+(`symbols.find`, `definition`, `references`, `hover`, `repo.search kind=`)
+were replaced by one `symbols` tool, and `diagnostics.check` was removed.
+
+Live verification on this machine (gopls and typescript-language-server
+installed): all five `TestLive*` tests pass, and all five skip under `-short`
+or when the binaries are absent.
+
+## Post-landing check
+
+After a week of real use, run the tool-call analysis from the bloat review
+(per-op `symbols` result summaries from `tool_calls`) and record the success
+rate per op here.

@@ -108,10 +108,9 @@ Marshal indexes your repository into SQLite: file hashes and languages, then
 symbols, then optionally embeddings. Symbol extraction uses a language server
 when one is found on your `PATH`, and falls back to tree-sitter grammars (Go,
 TypeScript/JavaScript, Python, Rust) when it is not. From that index come the
-repo map, per-file summaries, and the `repo.map`, `symbols.find` and
-`codebase_search` tools; when a language server is available the agent also
-gets `definition`, `references` and `hover`. Diagnostics are fed back into its
-edits.
+repo map, per-file summaries, and the `symbols.find` and `codebase_search`
+tools; when a language server is available the agent also gets `definition`,
+`references` and `hover`. Diagnostics are fed back into its edits.
 
 ### Context that fits the window
 

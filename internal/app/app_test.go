@@ -4943,7 +4943,7 @@ reviewer = "mock/m"
 		t.Fatalf("StartRuntime: %v", err)
 	}
 	defer rt.Close(context.Background())
-	retired := []string{"file.page", "repo.map", "repo.card", "repo.index", "ask_user", "skill.install", "skill.unload", "csv.inspect", "json.query", "sessions.list", "session.send", "watch.start"}
+	retired := []string{"file.page", "repo.map", "repo.card", "repo.index", "ask_user", "skill.install", "skill.unload", "csv.inspect", "json.query", "sessions.list", "session.send", "watch.start", "agent.output", "job.output", "job.kill", "job.list", "recall_history", "scratchpad.", "parent.respond", "parent.ask", "parent.correct", "file.write_patch", "watch_id"}
 	for _, tl := range rt.Runner.Registry.List() {
 		if tl.Internal {
 			continue

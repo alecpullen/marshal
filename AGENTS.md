@@ -124,7 +124,8 @@ Persistence
 
 Tools & safety
   internal/tools/registry/  tool registration and dispatch
-  internal/tools/native/    file, search, shell, git, repo, symbols, jobs, scratchpad, recall
+  internal/tools/native/    file, search, shell, git, symbols, todos, transcript,
+                           diagnostics, config, workspace, agents
   internal/tools/native/sudo.go   the one privileged-execution path: password on stdin,
                            never argv or env, and no PTY
   internal/tools/{patch,policy,mcp,desktop}
@@ -164,7 +165,7 @@ These are load-bearing; code comments and tests point back at them.
   are opt-in and must be configured explicitly. Never assume a hosted model.
 - **Provider-flexible.** The model layer is swappable without TUI changes.
 - **Cache-stable prompt prefix.** Anything that changes within a turn
-  (todos, scratchpad, retrieval snippets, per-turn hints) goes after the
+  (todos, retrieval snippets, tool output, per-turn hints) goes after the
   history: in the working-state tail (`contextpack.IsVolatile`) or
   directly before the goal. Never insert or rewrite a message ahead of
   the transcript mid-turn; `TestPromptPrefixStableAcrossSteps` fails if

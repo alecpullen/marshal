@@ -93,8 +93,8 @@ type Options struct {
 	// configured command checkers. nil when LSP is unavailable.
 	LSPSource diagnostics.LSPSource
 
-	// LSPIndex is an optional LSP-backed symbol provider consulted during
-	// repo.index. nil when LSP is unavailable.
+	// LSPIndex is an optional LSP-backed symbol provider consulted by the
+	// symbol-index build. nil when LSP is unavailable.
 	LSPIndex index.LSPSymbols
 
 	// GitOps is the git seam behind workspace.finish. nil defaults to
@@ -177,8 +177,8 @@ type toolSet struct {
 	// references, and hover tools. nil when LSP is unavailable.
 	lsp LSPQuerier
 
-	// lspIndex is an optional LSP-backed symbol provider consulted during
-	// repo.index. nil when LSP is unavailable.
+	// lspIndex is an optional LSP-backed symbol provider consulted by the
+	// symbol-index build. nil when LSP is unavailable.
 	lspIndex index.LSPSymbols
 
 	// gitOps is the git seam behind workspace.finish. Defaults to

@@ -52,7 +52,7 @@ const (
 	// ScopeFallback restricts the child registry's file-write tools to
 	// the declared marshal.agent allowed files. The shell channel stays
 	// enabled so the agent can run arbitrary commands (sandbox/policy
-	// governs those at a higher layer), but file.write_patch is
+	// governs those at a higher layer), but the file-write tools are
 	// narrowed to the scope so the fallback cannot modify unrelated
 	// parts of the worktree.
 	ScopeFallback

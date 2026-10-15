@@ -35,7 +35,7 @@ type Dispatcher struct {
 
 	// FallbackAllowedFiles, when non-empty, narrows the next implementer
 	// dispatch to ScopeFallback and restricts the child registry's
-	// file.write_patch to these paths. Set by the controller immediately
+	// file-write tools to these paths. Set by the controller immediately
 	// before dispatching a marshal.agent fallback; cleared afterwards.
 	// An empty value preserves the legacy ScopeFull behavior.
 	FallbackAllowedFiles []string

@@ -21,5 +21,5 @@ export function receiptText(r: { durationMs: number; tasks: number; steps: numbe
 }
 
 /** Tools whose row leads with the subject (file or command) rather than the verb. */
-const SUBJECT_FIRST = new Set(['file.write_patch', 'file.write', 'file.read', 'symbols.find', 'shell.run', 'test.run'])
+const SUBJECT_FIRST = new Set(['file.write_patch', 'file.edit', 'file.write', 'file.read', 'symbols.find', 'shell.run', 'test.run'])
 export const subjectFirst = (name: string) => SUBJECT_FIRST.has(name)

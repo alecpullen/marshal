@@ -4,6 +4,7 @@ import { glyph, roleTone, toolGlyph } from './glyphs'
 describe('toolGlyph', () => {
   const cases: [string, string][] = [
     ['file.write_patch', glyph.Edit],
+    ['file.edit', glyph.Edit],
     ['patch.apply', glyph.Edit],
     ['file.read', glyph.File],
     ['shell.run', glyph.Shell],

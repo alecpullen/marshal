@@ -7,7 +7,7 @@ import (
 	"marshal/internal/viewmodel"
 )
 
-// toolCategoryGlyphs maps a tool-name prefix to the gutter glyph for its maps a tool-name prefix to the gutter glyph for its
+// toolCategoryGlyphs maps a tool-name prefix to the gutter glyph for its
 // category. Order matters: the first matching prefix wins, so write tools
 // come before the broader file prefix. Single-cell glyphs only — state
 // glyphs (▸ running, ✗ error) always win over these.
@@ -16,6 +16,7 @@ var toolCategoryGlyphs = []struct {
 	glyph  string
 }{
 	{"file.write", glyph.Edit},
+	{"file.edit", glyph.Edit},
 	{"patch.", glyph.Edit},
 	{"file.", glyph.File},
 	{"shell.", glyph.Shell},

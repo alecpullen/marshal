@@ -5,6 +5,7 @@ import "testing"
 func TestToolCategoryGlyph(t *testing.T) {
 	cases := map[string]string{
 		"file.read":        "≡",
+		"file.edit":        "✎",
 		"file.write_patch": "✎",
 		"patch.apply":      "✎",
 		"shell.run":        "›",

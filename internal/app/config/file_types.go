@@ -96,6 +96,7 @@ type fileSkills struct {
 
 type fileShell struct {
 	DefaultTimeoutSeconds *int          `toml:"default_timeout_seconds"`
+	ForegroundWaitSeconds *int          `toml:"foreground_wait_seconds"`
 	MaxOutputBytes        *int          `toml:"max_output_bytes"`
 	MaxBackgroundJobs     *int          `toml:"max_background_jobs"`
 	BackgroundRetention   *string       `toml:"background_retention"`

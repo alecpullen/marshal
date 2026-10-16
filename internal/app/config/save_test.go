@@ -212,6 +212,147 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	}
 }
 
+// The wait round-trips through a project save, including an explicit value
+// that differs from the default, and the deprecated timeout key keeps its
+// own round trip for compatibility.
+func TestSaveProjectConfigRoundTripsForegroundWait(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.Tools.Shell.ForegroundWaitSeconds = 42
+	cfg.Tools.Shell.DefaultTimeoutSeconds = 45
+
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("SaveProjectConfig: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), "foreground_wait_seconds = 42") {
+		t.Fatalf("foreground_wait_seconds not persisted:\n%s", data)
+	}
+	if !strings.Contains(string(data), "default_timeout_seconds = 45") {
+		t.Fatalf("legacy timeout key not preserved:\n%s", data)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Tools.Shell.ForegroundWaitSeconds != 42 {
+		t.Fatalf("ForegroundWaitSeconds = %d, want 42", loaded.Tools.Shell.ForegroundWaitSeconds)
+	}
+	if loaded.Tools.Shell.DefaultTimeoutSeconds != 45 {
+		t.Fatalf("DefaultTimeoutSeconds = %d, want the legacy 45", loaded.Tools.Shell.DefaultTimeoutSeconds)
+	}
+}
+
+// A default-valued wait must not be written into a file that never carried
+// the key — the per-key save rule that keeps deleted keys deleted.
+func TestSaveProjectConfigOmitsDefaultForegroundWait(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("[tools.shell]\nmax_background_jobs = 4\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(data), "foreground_wait_seconds") {
+		t.Errorf("default wait written into a file that never carried the key:\n%s", data)
+	}
+	// An existing key is updated rather than dropped when the value changes.
+	cfg.Tools.Shell.ForegroundWaitSeconds = 15
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("save (override): %v", err)
+	}
+	reloaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Tools.Shell.ForegroundWaitSeconds != 15 {
+		t.Fatalf("ForegroundWaitSeconds = %d, want 15", reloaded.Tools.Shell.ForegroundWaitSeconds)
+	}
+}
+
+// Layer-aware project saves and the wait. When the project layer contributes
+// nothing to [tools], applyProjectLayer drops the whole section, so a
+// non-default user-layer wait never reaches the project file. When the
+// project layer does change [tools], the section is written per-key — the
+// pre-existing contract for that group (see the note in writeSections) — and
+// the wait is written with it rather than being silently dropped.
+func TestSaveProjectConfigForegroundWaitLayerAware(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".marshal", "config.toml")
+
+	user := Default()
+	user.Tools.Shell.ForegroundWaitSeconds = 20
+	merged := user // the project layer contributes nothing to [tools]
+	merged.Commands.Test = "go test ./internal/..."
+	if err := SaveProjectConfig(path, merged, Layers{User: user, Merged: merged}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(data), "foreground_wait_seconds") {
+		t.Errorf("user-layer wait leaked into the project file:\n%s", data)
+	}
+
+	// The project layer changes [tools] itself: the section is present, and
+	// the wait is persisted with the rest of the per-key group.
+	project := Default()
+	project.Tools.Shell.ForegroundWaitSeconds = 35
+	project.Tools.Shell.MaxBackgroundJobs = 7
+	mergedProject := project
+	if err := SaveProjectConfig(path, mergedProject, Layers{User: Default(), Merged: mergedProject}); err != nil {
+		t.Fatalf("save (project value): %v", err)
+	}
+	data, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(data), "foreground_wait_seconds = 35") {
+		t.Errorf("project-layer wait was dropped:\n%s", data)
+	}
+}
+
+// The user-global writer round-trips the wait too, so a global-target edit
+// from /settings survives.
+func TestSaveUserConfigSectionRoundTripsForegroundWait(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	cfg := Default()
+	cfg.Tools.Shell.ForegroundWaitSeconds = 33
+	if err := SaveUserConfigSection(path, cfg); err != nil {
+		t.Fatalf("SaveUserConfigSection: %v", err)
+	}
+	loaded, err := loadFile(path)
+	if err != nil {
+		t.Fatalf("loadFile: %v", err)
+	}
+	if loaded.Tools == nil || loaded.Tools.Shell == nil || loaded.Tools.Shell.ForegroundWaitSeconds == nil ||
+		*loaded.Tools.Shell.ForegroundWaitSeconds != 33 {
+		t.Fatalf("tools.shell.foreground_wait_seconds not persisted: %+v", loaded.Tools)
+	}
+}
+
 func TestSaveProjectConfigRoundTripsAgentScalars(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")

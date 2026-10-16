@@ -6,11 +6,11 @@ func shellFrame(s *state) *frame {
 	return newFrame("Shell", func() []*field {
 		return []*field{
 			func() *field {
-				f := intField("shell.timeout", "Default timeout (s)",
-					func() int { return s.cfg.Tools.Shell.DefaultTimeoutSeconds }, 0,
-					func(v int) { s.cfg.Tools.Shell.DefaultTimeoutSeconds = v })
-				f.TomlPath = "tools.shell.default_timeout_seconds"
-				f.Desc = "default max seconds for shell command execution"
+				f := intField("shell.foreground_wait", "Foreground wait (s)",
+					func() int { return s.cfg.Tools.Shell.ForegroundWaitSeconds }, 1,
+					func(v int) { s.cfg.Tools.Shell.ForegroundWaitSeconds = v })
+				f.TomlPath = "tools.shell.foreground_wait_seconds"
+				f.Desc = "seconds to wait before a command continues in the background"
 				return f
 			}(),
 			func() *field {
@@ -22,11 +22,11 @@ func shellFrame(s *state) *frame {
 				return f
 			}(),
 			func() *field {
-				f := intField("shell.max_jobs", "Max background jobs",
+				f := intField("shell.max_jobs", "Max running commands",
 					func() int { return s.cfg.Tools.Shell.MaxBackgroundJobs }, 0,
 					func(v int) { s.cfg.Tools.Shell.MaxBackgroundJobs = v })
 				f.TomlPath = "tools.shell.max_background_jobs"
-				f.Desc = "max concurrent background shell processes"
+				f.Desc = "max concurrent foreground and background shell processes"
 				return f
 			}(),
 			func() *field {

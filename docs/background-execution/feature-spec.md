@@ -112,6 +112,8 @@ With `background: true`, the call does not wait; a nonnegative timeout argument 
 
 Add `tools.shell.foreground_wait_seconds`, default 10 and constrained to a positive integer. A config reload changes the default for future calls, not an already-running wait. Explicit `background: true` is the immediate-return option.
 
+`tools.shell.default_timeout_seconds` is **deprecated compatibility data**. Existing files keep loading and saving it, and its value is preserved verbatim, but it no longer drives ordinary shell execution: it must not override `foreground_wait_seconds` and must not become a hidden execution deadline. It is no longer an editable `/settings` row (`/set tools.shell.default_timeout_seconds` no longer resolves). A config that carries only the legacy key still gets the new wait default.
+
 An illustrative continuation result:
 
 ```text
@@ -194,7 +196,7 @@ No interactive confirmation is possible after a forced OS kill or lost terminal.
 ## Capacity, policy and output
 
 - Reserve execution capacity before launching, including commands initially attached in the foreground. Handoff never needs a new slot and never kills an existing job to make room.
-- Reuse the existing configured job capacity as the managed-command limit for this feature, counting attached and detached running commands. Preserve the existing configuration key for compatibility and document its broadened meaning. Lowering it below the active count affects admission of future commands only.
+- Reuse the existing configured job capacity as the managed-command limit for this feature, counting attached and detached running commands. Preserve the existing configuration key for compatibility and document its broadened meaning. `tools.shell.max_background_jobs` therefore now means "max concurrent running commands" — it counts foreground-attached commands as well as detached ones, and `/settings` labels it `Max running commands`. Lowering it below the active count affects admission of future commands only.
 - Preserve approval, sandbox selection, environment filtering, pre-launch rollback protection and command guardrails. Handoff is continuation of the already-approved invocation, not a second invocation or permission bypass.
 - Preserve the current coordination rules for explicit background commands when a foreground command detaches. This feature does not claim to solve whole-process concurrent workspace editing; the broader effects/locking work is a separate triage item.
 - Keep output bounded per command, retain a useful recent tail of stdout and stderr, and disclose truncation. Reaching the output limit must not stop execution or freeze the retained tail at the first captured bytes.

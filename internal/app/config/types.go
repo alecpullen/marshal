@@ -453,8 +453,17 @@ type DesktopConfig struct {
 }
 
 type ShellToolConfig struct {
-	DefaultTimeoutSeconds int           `toml:"default_timeout_seconds"`
-	MaxOutputBytes        int           `toml:"max_output_bytes"`
+	// Deprecated: DefaultTimeoutSeconds no longer bounds ordinary shell
+	// execution. It is retained for load/save compatibility so existing
+	// config files keep working, and it must never override
+	// ForegroundWaitSeconds or become a hidden execution deadline. See
+	// docs/background-execution/feature-spec.md.
+	DefaultTimeoutSeconds int `toml:"default_timeout_seconds"`
+	ForegroundWaitSeconds int `toml:"foreground_wait_seconds"`
+	MaxOutputBytes        int `toml:"max_output_bytes"`
+	// MaxBackgroundJobs is the managed-command capacity: it counts running
+	// commands with either attachment (foreground and background), not
+	// background jobs alone. Lowering it never evicts an admitted command.
 	MaxBackgroundJobs     int           `toml:"max_background_jobs"`
 	BackgroundRetention   time.Duration `toml:"background_retention"`
 	AllowNetwork          bool          `toml:"allow_network"`

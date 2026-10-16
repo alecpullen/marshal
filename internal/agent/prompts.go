@@ -461,7 +461,9 @@ const (
 	ruleAskUser              = "- If the request is ambiguous or a decision would materially change the outcome, ask the user with question.ask instead of guessing.\n"
 	ruleFactGathering        = "- Use fact-gathering tools only to obtain facts you don't already have in the transcript or context pack.\n"
 	ruleFinalAnswer          = "- Once the requested change is made and validated, produce a final answer — do not keep exploring.\n"
-	ruleStopAfterValidation  = "- Stop after validation succeeds; do not re-verify work that already passed."
+	ruleStopAfterValidation  = "- Stop after validation succeeds; do not re-verify work that already passed.\n"
+	rulePreferPurposeBuilt   = "- Prefer repo.search, symbols, and file.read over shell.run for finding and reading code; use shell.run for building, testing, and running programs.\n"
+	ruleGitAndWorkspace      = "- Use the git.* tools for repository state and the workspace tools for worktree isolation and merging; do not run git merge or git stash through shell.run."
 )
 
 const baseRules = "Rules:\n" +
@@ -474,7 +476,9 @@ const baseRules = "Rules:\n" +
 	ruleAskUser +
 	ruleFactGathering +
 	ruleFinalAnswer +
-	ruleStopAfterValidation
+	ruleStopAfterValidation +
+	rulePreferPurposeBuilt +
+	ruleGitAndWorkspace
 
 // baseRulesSystem is the system-access composition: identical to baseRules
 // except the file-tools rule is swapped for its system variant.
@@ -488,7 +492,9 @@ const baseRulesSystem = "Rules:\n" +
 	ruleAskUser +
 	ruleFactGathering +
 	ruleFinalAnswer +
-	ruleStopAfterValidation
+	ruleStopAfterValidation +
+	rulePreferPurposeBuilt +
+	ruleGitAndWorkspace
 
 // baseRulesFor selects the rule block for the session's access mode.
 func baseRulesFor(systemAccess bool) string {

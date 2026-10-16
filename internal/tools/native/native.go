@@ -120,9 +120,12 @@ type CommandRequest struct {
 	Dir            string
 	Timeout        time.Duration
 	MaxOutputBytes int
-	Stdout         io.Writer
-	Stderr         io.Writer
-	OnStart        func(pid int)
+	// RetainOutputTail keeps recent output and forwards all observer bytes.
+	// The default preserves prefix capture for existing non-managed callers.
+	RetainOutputTail bool
+	Stdout           io.Writer
+	Stderr           io.Writer
+	OnStart          func(pid int)
 	// Stdin, when non-nil, is written to the child's stdin. The privileged
 	// runner uses it to deliver the sudo password over a pipe — never
 	// os.Stdin, never a PTY, so the secret cannot be echoed or captured. The

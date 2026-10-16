@@ -194,3 +194,97 @@ func TestExecRunnerPipelineFailureExitCode(t *testing.T) {
 		t.Fatal("pipeline with failing first command reported exit code 0")
 	}
 }
+
+// TestExecRunnerRetainOutputTailKeepsLateMarker proves the managed mode: the
+// retained text stays bounded and recent, while the observer keeps receiving
+// bytes written after the capture cap. Task 2's contract for the runner.
+func TestExecRunnerRetainOutputTailKeepsLateMarker(t *testing.T) {
+	const limit = 16
+	const filler = "aaaaaaaaaaaaaaaaaaaaaaaa" // 24 bytes, past the cap on its own
+	var stdout, stderr bytes.Buffer
+	runner := execRunner{}
+	req := CommandRequest{
+		Command: "printf '" + filler + "'; printf 'late-marker'; " +
+			"printf 'bbbbbbbbbbbbbbbbbbbbbbbb' >&2; printf 'late-stderr' >&2",
+		MaxOutputBytes:   limit,
+		RetainOutputTail: true,
+		Stdout:           &stdout,
+		Stderr:           &stderr,
+	}
+	result, err := runner.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(result.Stdout) != limit {
+		t.Fatalf("Stdout len = %d, want %d", len(result.Stdout), limit)
+	}
+	if len(result.Stderr) != limit {
+		t.Fatalf("Stderr len = %d, want %d", len(result.Stderr), limit)
+	}
+	if !strings.HasSuffix(result.Stdout, "late-marker") {
+		t.Fatalf("Stdout = %q, want the late marker retained", result.Stdout)
+	}
+	if !strings.HasSuffix(result.Stderr, "late-stderr") {
+		t.Fatalf("Stderr = %q, want the late marker retained", result.Stderr)
+	}
+	if !result.Meta.OutputTruncated {
+		t.Fatal("OutputTruncated should be true")
+	}
+	// The observer sees everything, including the late markers.
+	if !strings.Contains(stdout.String(), filler+"late-marker") {
+		t.Fatalf("observer stdout = %q, want every byte forwarded", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "bbbbbbbbbbbbbbbbbbbbbbbb"+"late-stderr") {
+		t.Fatalf("observer stderr = %q, want every byte forwarded", stderr.String())
+	}
+}
+
+// TestExecRunnerPrefixModeStillStopsAtCap pins the default for unrelated
+// callers: without RetainOutputTail the observer receives the prefix only.
+func TestExecRunnerPrefixModeStillStopsAtCap(t *testing.T) {
+	var stdout bytes.Buffer
+	runner := execRunner{}
+	req := CommandRequest{
+		Command:        "printf 'aaaa'; printf 'cccclate-marker'",
+		MaxOutputBytes: 8,
+		Stdout:         &stdout,
+	}
+	result, err := runner.Run(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if strings.Contains(result.Stdout, "late-marker") {
+		t.Fatalf("Stdout = %q, want prefix-only capture by default", result.Stdout)
+	}
+	if strings.Contains(stdout.String(), "late-marker") {
+		t.Fatalf("observer stdout = %q, want prefix-only forwarding by default", stdout.String())
+	}
+}
+
+// TestExecRunnerRetainOutputTailTimeoutStillApplies: tail mode must not weaken
+// the timeout support unrelated explicit internal callers rely on.
+func TestExecRunnerRetainOutputTailTimeoutStillApplies(t *testing.T) {
+	var stdout bytes.Buffer
+	runner := execRunner{}
+	req := CommandRequest{
+		Command:          "printf 'started'; sleep 30",
+		MaxOutputBytes:   8,
+		RetainOutputTail: true,
+		Timeout:          50 * time.Millisecond,
+		Stdout:           &stdout,
+	}
+	start := time.Now()
+	result, err := runner.Run(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected a timeout error from a killed sleep, got nil")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("command ran %v — timeout not enforced in tail mode", elapsed)
+	}
+	if result.Meta.KilledReason != "timeout" {
+		t.Fatalf("KilledReason = %q, want %q", result.Meta.KilledReason, "timeout")
+	}
+	if !strings.Contains(stdout.String(), "started") {
+		t.Fatalf("observer stdout = %q, want bytes written before the kill", stdout.String())
+	}
+}

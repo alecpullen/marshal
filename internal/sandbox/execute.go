@@ -34,8 +34,8 @@ const terminationGrace = 2 * time.Second
 // caller's responsibility. It only attaches output writers, starts the
 // command, waits, and handles termination.
 func executeCommand(ctx context.Context, cmd *exec.Cmd, req native.CommandRequest, meta registry.SandboxMeta) (native.CommandResult, error) {
-	stdout := native.NewBoundedOutput(native.OutputLimit(req.MaxOutputBytes), req.Stdout)
-	stderr := native.NewBoundedOutput(native.OutputLimit(req.MaxOutputBytes), req.Stderr)
+	stdout := native.NewCommandOutput(native.OutputLimit(req.MaxOutputBytes), req.Stdout, req.RetainOutputTail)
+	stderr := native.NewCommandOutput(native.OutputLimit(req.MaxOutputBytes), req.Stderr, req.RetainOutputTail)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 

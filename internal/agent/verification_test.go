@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -137,12 +138,22 @@ func TestLooksLikeVerificationCommandMatchesCommandFieldOnly(t *testing.T) {
 	}
 }
 
-func TestUnverifiedMutation_DiagnosticsCheckCounts(t *testing.T) {
+// Retired tools must neither be named to the model nor satisfy anything the
+// model's incentives turn on. context-diet Tier 2b deleted diagnostics.check
+// and folded diagnostics into the edit result, but the verification gate and
+// its nudge message both still named it. Nothing else guards these: the
+// prompt-budget test scans the system prompt, and app_test.go scans tool
+// descriptions, schemas and skill bodies — none of them reaches a mid-turn
+// system message or this switch.
+func TestRetiredToolIsNeitherNamedNorCounted(t *testing.T) {
+	if strings.Contains(verificationNudgeMessage, "diagnostics.check") {
+		t.Error("the verification nudge names the retired diagnostics.check")
+	}
 	tr := newProgressTracker()
 	tr.record("file.write", `{"path":"a.go","content":"x"}`, hashToolResult("ok"), true)
 	tr.record("diagnostics.check", `{}`, hashToolResult("clean"), true)
-	if _, fire := tr.unverifiedMutation(); fire {
-		t.Fatal("diagnostics.check must count as verification")
+	if _, fire := tr.unverifiedMutation(); !fire {
+		t.Error("a tool that no longer exists must not satisfy the verification gate")
 	}
 }
 

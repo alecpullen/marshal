@@ -20,11 +20,6 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-// maxPageableFileBytes bounds a file loaded whole into memory for symbol
-// context (search.go's readSymbolFileLines). It is intentionally larger than
-// the per-tool output limit so a large file's symbols still get a body.
-const maxPageableFileBytes = 10 * 1024 * 1024 // 10 MiB
-
 // Head-fallback budget for file.read when a file exceeds the per-tool size
 // limit: show at most this many lines or bytes, whichever comes first.
 const (

@@ -80,6 +80,35 @@ func TestBeginEditReportsErrorCausedInAnotherFile(t *testing.T) {
 	}
 }
 
+// TestBeginEditWaitsOutEmptyPublishBeforeReportingAnError pins the sequence
+// a real server produces for an edited file: it republishes that file's
+// diagnostics first — usually cleared, because it has not re-analysed the
+// dependents yet — and the error in the file that depends on it lands much
+// later. Settling on the first publish's quiet window would report this edit
+// as clean.
+func TestBeginEditWaitsOutEmptyPublishBeforeReportingAnError(t *testing.T) {
+	w, s, root := newTestWorkspace(t)
+	os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o644)
+	finish, ok := w.BeginEdit([]string{"a.go"})
+	if !ok {
+		t.Fatal("BeginEdit not ok with a ready server")
+	}
+	go func() {
+		// The edited file itself, cleared: a server publishes this before
+		// the dependent diagnostics have been recomputed.
+		time.Sleep(30 * time.Millisecond)
+		s.publish(toFileURI(root, "a.go"))
+		// The dependent file, after the quiet window has already elapsed
+		// since the publish above.
+		time.Sleep(120 * time.Millisecond)
+		s.publish(toFileURI(root, "b.go"), Diagnostic{Severity: 1, Message: "not enough arguments in call to a.Add", Range: Range{Start: Position{Line: 6}}})
+	}()
+	out := finish(context.Background())
+	if !strings.Contains(out, "b.go:7: not enough arguments") {
+		t.Fatalf("finish = %q, want the dependent file's new error", out)
+	}
+}
+
 func TestBeginEditCleanEditReturnsAfterGrace(t *testing.T) {
 	w, _, root := newTestWorkspace(t)
 	os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n"), 0o644)

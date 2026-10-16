@@ -196,7 +196,7 @@ func TestLiveAgentIndexesAndMapsRepo(t *testing.T) {
 
 func TestLiveAgentIndexesAndFindsSymbols(t *testing.T) {
 	runner, state, ctx := newLiveAgentRunner(t)
-	runLiveGoal(t, runner, state, ctx, 4*time.Minute, "Run repo.index, then use symbols.find to locate the symbol 'DefaultMaxToolIterations' and report which file it is in.")
+	runLiveGoal(t, runner, state, ctx, 4*time.Minute, "Run repo.index, then use symbols to locate the symbol 'DefaultMaxToolIterations' and report which file it is in.")
 	if !strings.Contains(finalAnswer(state), "runner.go") {
 		t.Fatalf("final answer did not mention runner.go: %s", finalAnswer(state))
 	}

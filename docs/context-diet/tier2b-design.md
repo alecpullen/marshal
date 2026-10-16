@@ -214,6 +214,11 @@ A language-server problem never fails a tool call.
 - Servers for Svelte, Python and Rust aren't installed on this machine. They
   work through `[lsp.servers]` config once installed, but have no live tests
   here.
+- A `[lsp.servers]` key must be a language `repo.DetectLanguage` can return
+  (`go`, `typescript`, `python`, `rust`, …). `ServersForRoot` keeps only the
+  servers whose language occurs in the repo, and it detects those languages
+  through the same table, so a key outside it — `[lsp.servers.svelte]`, say —
+  is silently never started.
 
 ## Out of scope
 

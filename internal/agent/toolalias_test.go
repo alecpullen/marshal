@@ -40,12 +40,20 @@ func TestSanitizeToolNameAlwaysStartsWithLetter(t *testing.T) {
 // new tool's name collides with an existing one after sanitization and
 // needs to be renamed, not silently allowed to shadow the other.
 func TestToolAliasMapIsInjectiveForCurrentNativeToolSet(t *testing.T) {
+	// Every name native.RegisterAll can register, taken from the `Name`
+	// fields in internal/tools/native. Codebase_search, shell.sudo, symbols,
+	// transcript_read and the web tools are conditional at registration time
+	// (embedding route, platform, querier, session state, config); they are
+	// pinned here by name so the naming-convention guard does not depend on
+	// a config or a GOOS. agent.* is registered by internal/app, not here.
 	names := []string{
-		"file.read", "file.write_patch", "shell.run", "test.run",
-		"job.output", "job.kill", "job.list", "diagnostics.check",
-		"question.ask", "mode.request", "repo.card", "repo.index",
-		"repo.search", "symbols.find", "todo.write", "repo.map",
-		"tools.select", "git.status", "git.diff",
+		"file.read", "file.write", "file.write_patch", "file.edit",
+		"repo.search", "symbols", "codebase_search", "transcript_read",
+		"git.status", "git.diff", "git.log", "git.blame",
+		"shell.run", "shell.sudo", "test.run",
+		"todo.write", "question.ask", "mode.request", "tools.select",
+		"workspace.worktree", "workspace.finish", "config.read",
+		"web.fetch", "web.search",
 	}
 	tools := make([]registry.Tool, len(names))
 	for i, n := range names {

@@ -6,8 +6,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
-
-	"marshal/internal/repo"
 )
 
 func jsonUnmarshal(raw []byte, v any) error {
@@ -67,10 +65,6 @@ func posParams(root, filePath string, line, col int, extra map[string]any) map[s
 		p[k] = v
 	}
 	return p
-}
-
-func langFor(filePath string) string {
-	return repo.DetectLanguage(filePath)
 }
 
 // flattenHoverContents converts the Hover.Contents union (MarkupContent |

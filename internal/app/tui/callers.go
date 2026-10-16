@@ -20,7 +20,7 @@ const maxCallersShown = 3
 // which is the common case: LSP is optional and off by default. The
 // interface is declared here, narrow, rather than taking *lsp.Handle — the
 // TUI needs exactly one method and should not take on the LSP package.
-// lsp.QueryAdapter satisfies it as-is.
+// lsp.SymbolQuery satisfies it as-is.
 type ReferenceFinder interface {
 	References(ctx context.Context, filePath string, line, col int) ([]string, bool)
 }

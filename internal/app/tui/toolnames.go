@@ -25,7 +25,7 @@ var toolCategoryGlyphs = []struct {
 	{"codebase.search", glyph.Search},
 	{"json.", glyph.Search},
 	{"csv.", glyph.Search},
-	{"symbols.", glyph.Search},
+	{"symbols", glyph.Search},
 	{"agent.", glyph.Agent},
 	{"web.", glyph.Web},
 	{"browser.", glyph.Web},

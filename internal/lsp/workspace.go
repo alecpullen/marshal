@@ -125,6 +125,13 @@ func snapshot(clients []*Client) map[string][]Diagnostic {
 }
 
 // settle waits for the servers to finish reacting to writes made at since.
+//
+// The grace period is a floor on every settle, not just the "no publish
+// arrived" case. A server republishes the edited file's own diagnostics
+// first — usually cleared, because the files that depend on it have not been
+// re-analysed yet — and that early publish would otherwise close the quiet
+// window long before the error in a dependent file arrives. Waiting out the
+// floor is what makes "errors this edit caused, in any file" real.
 func (w *Workspace) settle(ctx context.Context, clients []*Client, since time.Time) bool {
 	for {
 		now := time.Now()
@@ -135,7 +142,7 @@ func (w *Workspace) settle(ctx context.Context, clients []*Client, since time.Ti
 			}
 		}
 		switch {
-		case latest.After(since) && now.Sub(latest) >= w.quiet:
+		case latest.After(since) && now.Sub(since) >= w.grace && now.Sub(latest) >= w.quiet:
 			return true
 		case !latest.After(since) && now.Sub(since) >= w.grace:
 			return true

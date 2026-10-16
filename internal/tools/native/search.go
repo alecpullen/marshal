@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"strings"
 
-	"marshal/internal/db"
 	"marshal/internal/repo"
 	"marshal/internal/tools/registry"
 )
@@ -240,45 +239,6 @@ func matchInclude(pattern, rel string) (bool, error) {
 	return path.Match(pattern, path.Base(rel))
 }
 
-// filterSymbols keeps only the symbol rows whose workspace-relative FilePath
-// lies inside pathPrefix (a directory subtree, or the exact file when path
-// named a file) and matches the include glob. An empty value disables the
-// corresponding filter, and a filter that matches nothing yields an empty
-// slice rather than an error.
-func filterSymbols(symbols []db.Symbol, pathPrefix, include string) []db.Symbol {
-	if pathPrefix == "" && include == "" {
-		return symbols
-	}
-	kept := make([]db.Symbol, 0, len(symbols))
-	for _, s := range symbols {
-		if pathPrefix != "" && s.FilePath != pathPrefix && !strings.HasPrefix(s.FilePath, pathPrefix+"/") {
-			continue
-		}
-		if include != "" {
-			// The glob is validated before this point; a bad pattern here
-			// degrades to a skip, matching searchFile's call-site behavior.
-			if ok, err := matchInclude(include, s.FilePath); err != nil || !ok {
-				continue
-			}
-		}
-		kept = append(kept, s)
-	}
-	return kept
-}
-
-// describeSymbolFilters renders the active kind-query filters for summaries
-// and no-match messages, e.g. `path "internal/" and include "*.go"`.
-func describeSymbolFilters(pathPrefix, include string) string {
-	var parts []string
-	if pathPrefix != "" {
-		parts = append(parts, fmt.Sprintf("path %q", pathPrefix))
-	}
-	if include != "" {
-		parts = append(parts, fmt.Sprintf("include %q", include))
-	}
-	return strings.Join(parts, " and ")
-}
-
 func (t *toolSet) searchFiles(ctx context.Context, start string, match lineMatcher, include string, ctxLines int, limit int) ([]string, bool, []error, int, error) {
 	var walkErrs []error
 	var matches []string
@@ -492,98 +452,4 @@ func (t *toolSet) searchFile(path string, match lineMatcher, include string, ctx
 	}
 
 	return lines, matchCount
-}
-
-// symbolBodyIndentMax bounds how many extra indentation columns still count
-// as "one level deeper" than the header line. It matches the common 4-space
-// Go/gofmt indent; tab-indented files are handled separately below.
-const symbolBodyIndentMax = 4
-
-// leadingWhitespace returns the run of leading space and tab characters in s.
-func leadingWhitespace(s string) string {
-	for i, r := range s {
-		if r != ' ' && r != '\t' {
-			return s[:i]
-		}
-	}
-	return s
-}
-
-// readSymbolFileLines loads the workspace file for a symbol and returns its
-// lines, or nil when the file is missing, unreadable, or over the pageable
-// byte budget. It never fails the enclosing call: a missing body degrades to
-// a header-only skeleton plus a file.read hint.
-func (t *toolSet) readSymbolFileLines(rel string) []string {
-	data, err := t.readWorkspaceFile(rel, int64(maxPageableFileBytes))
-	if err != nil {
-		return nil
-	}
-	return strings.Split(string(data), "\n")
-}
-
-// renderSymbolSkeletons formats symbol rows as skeleton headers: one line
-// per symbol "path:start-end  signature", followed by the body's top-level
-// declaration lines (for types/imports) when the symbol spans multiple
-// lines, then a "+N more lines — file.read path:start-end" marker.
-func (t *toolSet) renderSymbolSkeletons(symbols []db.Symbol) string {
-	var b strings.Builder
-	// Cache per-file line slices so a multi-symbol file is read once. A nil
-	// entry records an unreadable/oversized file. ok distinguishes "not yet
-	// loaded" from "loaded but nil".
-	fileLines := make(map[string][]string)
-	loaded := make(map[string]bool)
-
-	for _, s := range symbols {
-		fmt.Fprintf(&b, "%s:%d-%d  %s\n", s.FilePath, s.LineStart, s.LineEnd, s.Signature)
-
-		// Lines belonging to the symbol, 1-based inclusive. Total body lines
-		// beyond the header line is LineEnd-LineStart (0 for one-line symbols).
-		bodyBeyondHeader := s.LineEnd - s.LineStart
-		if bodyBeyondHeader <= 0 {
-			continue
-		}
-
-		if !loaded[s.FilePath] {
-			fileLines[s.FilePath] = t.readSymbolFileLines(s.FilePath)
-			loaded[s.FilePath] = true
-		}
-		lines := fileLines[s.FilePath]
-
-		shown := 0
-		if lines != nil && s.LineStart >= 1 && s.LineEnd <= len(lines) {
-			// Only type symbols get a body peek (a struct/interface shape
-			// glimpse). function/method/import stay header-only, so shown
-			// remains 0 for them.
-			if s.Kind == "type" {
-				headerLine := lines[s.LineStart-1]
-				headerIndent := leadingWhitespace(headerLine)
-				// Direct declaration lines: non-empty lines exactly one
-				// indentation level deeper than the header. This is a
-				// pragmatic struct-shape peek, not AST rendering; nested
-				// members (deeper indent) and blank lines are skipped.
-				for _, ln := range lines[s.LineStart:s.LineEnd] {
-					trimmed := strings.TrimSpace(ln)
-					if trimmed == "" {
-						continue
-					}
-					indent := leadingWhitespace(ln)
-					if !strings.HasPrefix(indent, headerIndent) {
-						continue
-					}
-					extra := indent[len(headerIndent):]
-					oneLevel := extra == "\t" || (len(extra) > 0 && len(extra) <= symbolBodyIndentMax && strings.Trim(extra, " ") == "")
-					if !oneLevel {
-						continue
-					}
-					fmt.Fprintf(&b, "  %s\n", trimmed)
-					shown++
-				}
-			}
-		}
-
-		if unshown := bodyBeyondHeader - shown; unshown > 0 {
-			fmt.Fprintf(&b, "  +%d more lines — file.read %s:%d-%d\n", unshown, s.FilePath, s.LineStart, s.LineEnd)
-		}
-	}
-	return b.String()
 }

@@ -20,7 +20,7 @@ import (
 // always printed. Symbols are inlined for the printed files only; the
 // symbol table is otherwise unchanged. Unexported symbols and imports
 // are omitted here to keep the map compact, but remain fully queryable
-// via the symbols.find tool.
+// via the symbols tool.
 func RenderDirectoryMap(files []db.FileIndex, symbols []db.Symbol, maxFiles int) string {
 	if maxFiles <= 0 {
 		maxFiles = 200
@@ -116,7 +116,7 @@ func summarySuffix(path string, bySummary map[string]string) string {
 // groupExportedSymbols indexes symbols by file path, keeping only the
 // exported top-level functions, methods, and types useful for repo-map
 // orientation. Imports and unexported symbols are excluded here; both
-// remain fully queryable via symbols.find. Export rules are per-language
+// remain fully queryable via symbols. Export rules are per-language
 // (see isExportedName).
 func groupExportedSymbols(symbols []db.Symbol) map[string][]db.Symbol {
 	byFile := map[string][]db.Symbol{}

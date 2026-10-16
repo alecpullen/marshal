@@ -2002,7 +2002,7 @@ func fallbackResponseFormat(caps schema.ProviderCapabilities) *schema.ResponseFo
 // buildIndexWorkers assembles the indexing background workers: the
 // fsnotify watcher (only when config.WatchEnabled allows) and the one-shot
 // startup scan (AI-02 — always; hashes+symbols even without embeddings so
-// repo.map/symbols.find work on a fresh project). Every successful pass
+// repo.map/symbols work on a fresh project). Every successful pass
 // publishes indexEventCompleted on indexBroker, which triggers the
 // context-pack re-seed in startRuntime.
 func buildIndexWorkers(cfg config.Config, state *session.State, database *db.DB, projectID int64, workingDir string, lspAdapter index.LSPSymbols, indexBroker *pubsub.Broker[index.Report], logger *slog.Logger) []worker.Worker {

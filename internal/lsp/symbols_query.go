@@ -139,14 +139,17 @@ func (q *SymbolQuery) Query(ctx context.Context, req SymbolRequest) (SymbolResul
 
 // References lists where the symbol at filePath:line:col is used, for the
 // TUI's blast-radius lookup. ok is false when no server is ready for the
-// file's language. It is a faithful port of QueryAdapter.locations for
-// textDocument/references, so that lookup keeps its behaviour.
+// file's language. It is a port of QueryAdapter.locations for
+// textDocument/references, except that it resolves the client through
+// serverLang rather than repo.DetectLanguage: the TypeScript server also
+// serves JavaScript, so a .js file must reach it instead of looking for a
+// "javascript" server that is never registered.
 func (q *SymbolQuery) References(ctx context.Context, filePath string, line, col int) ([]string, bool) {
 	if q == nil || q.h == nil {
 		return nil, false
 	}
 	root := q.h.Root()
-	client, ok := q.h.ServerFor(langFor(filePath))
+	client, ok := q.h.ServerFor(serverLang(filePath))
 	if !ok {
 		return nil, false
 	}

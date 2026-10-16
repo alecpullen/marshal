@@ -68,10 +68,10 @@ func TestLiveSignatureChangeReportsBrokenCaller(t *testing.T) {
 	m, h, ctx := startLive(t, dir)
 	warm(t, h, ctx)
 	m.Workspace().maxWait = 15 * time.Second
-	// gopls publishes an empty set for the edited file as soon as it sees
-	// the write and the error in the depending file about a second later,
-	// so the default 300 ms quiet window closes in the gap. Widen it.
-	m.Workspace().quiet = 2 * time.Second
+	// Production timings otherwise. gopls publishes for the edited file as
+	// soon as it sees the write and reports the error in the depending file
+	// about a second later; settle's grace floor covers that gap. Widening
+	// quiet here would mask exactly that bug.
 	finish, ok := m.Workspace().BeginEdit([]string{"a/a.go"})
 	if !ok {
 		t.Fatal("BeginEdit not ok")
@@ -124,9 +124,7 @@ func TestLiveWorktreeDiagnosticsUseWorktreeCopy(t *testing.T) {
 	}
 	warm(t, h, cctx)
 	newM.Workspace().maxWait = 15 * time.Second
-	// As above: the worktree server needs more than the default quiet window
-	// to publish the error in the depending file.
-	newM.Workspace().quiet = 2 * time.Second
+	// Production timings otherwise, as above.
 	finish, ok := newM.Workspace().BeginEdit([]string{"a/a.go"})
 	if !ok {
 		t.Fatal("BeginEdit not ok in worktree")

@@ -19,7 +19,7 @@ import (
 // the tool-name-first shape.
 func subjectFirstTool(name string) bool {
 	switch name {
-	case "file.write_patch", "file.edit", "file.write", "file.read", "symbols.find":
+	case "file.write_patch", "file.edit", "file.write", "file.read", "symbols", "symbols.find":
 		return true
 	}
 	return viewmodel.IsShellFamily(name)
@@ -60,6 +60,7 @@ func shellSubjectIn(event registry.AuditEvent, workdir string) string {
 var searchQualifiers = map[string]string{
 	"repo.search":     "search",
 	"codebase.search": "semantic",
+	"symbols":         "symbols",
 	"symbols.find":    "symbols",
 	"json.query":      "json",
 	"csv.inspect":     "csv",
@@ -94,11 +95,17 @@ func searchSubject(event registry.AuditEvent) string {
 
 // searchTarget returns the subject string for a search-family row. It
 // prefers the jq expression for json.query (where the expression is the
-// point and the path is context) and falls back to toolTarget's
-// path-first ordering for every other search tool.
+// point and the path is context) and the symbol name for symbols (where the
+// name is the point and a pinning path is context), and falls back to
+// toolTarget's path-first ordering for every other search tool.
 func searchTarget(event registry.AuditEvent) string {
 	if event.ToolName == "json.query" {
 		if s := argString(event.Args, "query"); s != "" {
+			return s
+		}
+	}
+	if event.ToolName == "symbols" {
+		if s := argString(event.Args, "name"); s != "" {
 			return s
 		}
 	}

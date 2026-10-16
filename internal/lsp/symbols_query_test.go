@@ -97,10 +97,48 @@ func TestPathLineAddressingSkipsWorkspaceSymbol(t *testing.T) {
 	}
 }
 
+// References must look the client up under the language the server is
+// registered as, not repo.DetectLanguage's name for the file. The TypeScript
+// server also serves JavaScript, so a .js file must reach it; keying on
+// "javascript" finds no server and the TUI's blast-radius lookup silently
+// reports nothing.
+func TestReferencesFindsTypeScriptServerForJavaScriptFile(t *testing.T) {
+	root := t.TempDir()
+	os.WriteFile(filepath.Join(root, "a.js"), []byte("export function sum(a, b) { return a + b }\n"), 0o644)
+	c, s := newScripted(t)
+	m := NewManager(root, map[string]ServerSpec{"typescript": {}}, nil)
+	m.start = func(ctx context.Context, _ string, _ ServerSpec) (*Client, func(), error) {
+		return c, func() {}, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go m.Run(ctx)
+	if !m.WaitReady(ctx, "typescript", 2*time.Second) {
+		t.Fatal("harness server not ready")
+	}
+	q := NewSymbolQuery(NewHandle(m, nil, nil), nil, 0)
+	q.wait = 200 * time.Millisecond
+
+	s.handle("textDocument/references", `[{"uri":"`+toFileURI(root, "b.js")+`","range":{"start":{"line":4,"character":2}}}]`)
+	got, ok := q.References(context.Background(), "a.js", 1, 16)
+	if !ok {
+		t.Fatal("References did not find the typescript server for a .js file")
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "b.js:5") {
+		t.Fatalf("References = %v, want one hit at b.js:5", got)
+	}
+}
+
 // Review focus 3.
 func TestIdentifierColumnCountsUTF16(t *testing.T) {
 	if got := identifierColumn(`	x := "café"; y := sum(x)`, "sum"); got != 19 {
 		t.Fatalf("identifierColumn = %d, want 19 (tab=1, é=1 UTF-16 unit)", got)
+	}
+	// A non-BMP rune is one rune but two UTF-16 units, so this case is the
+	// one that distinguishes UTF-16 counting from rune counting: a
+	// utf8.RuneCountInString regression reports 16 here, not 17.
+	if got := identifierColumn("\tx := \"😀\"; y := sum(x)", "sum"); got != 17 {
+		t.Fatalf("identifierColumn = %d, want 17 (tab=1, 😀=2 UTF-16 units)", got)
 	}
 	if identifierColumn("summary := 1", "sum") != -1 {
 		t.Fatal("must match whole identifiers only")

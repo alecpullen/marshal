@@ -13,6 +13,7 @@ describe('toolGlyph', () => {
     ['codebase.search', glyph.Search],
     ['json.query', glyph.Search],
     ['csv.inspect', glyph.Search],
+    ['symbols', glyph.Search],
     ['symbols.find', glyph.Search],
     ['agent.await', glyph.Agent],
     ['web.search', glyph.Web],

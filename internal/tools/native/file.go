@@ -84,7 +84,7 @@ type fileReadArgs struct {
 func (t *toolSet) fileReadTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "file.read",
-		Description: "Read a workspace file. If the file exceeds the size limit I show the head and how to continue (file.read start_line / repo.search). Lines are clipped at 1500 chars; ranged reads over the byte budget are truncated with a footer. Use start_line/end_line (1-based, inclusive) to page.",
+		Description: "Read a workspace file. If the file exceeds the size limit, the head is shown with how to continue (file.read start_line / repo.search). Lines are clipped at 1500 chars; ranged reads over the byte budget are truncated with a footer. Use start_line/end_line (1-based, inclusive) to page.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":` +
 			t.pathDescription(readPathBaseDescription) +
 			`},"start_line":{"type":"integer","description":"1-based first line to return"},"end_line":{"type":"integer","description":"1-based last line to return"}},"required":["path"],"additionalProperties":false}`),

@@ -39,7 +39,7 @@ type repoSearchArgs struct {
 func (t *toolSet) repoSearchTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "repo.search",
-		Description: "Search workspace files for matching lines. Default mode=auto: bare words do a case-sensitive substring match, pattern-shaped queries are compiled as RE2. context adds 0-3 surrounding lines; results cap at 200 with guidance. Use symbols to find declarations and references.",
+		Description: "Search workspace files for matching lines. Default mode=auto: bare words do a case-sensitive substring match, pattern-shaped queries are compiled as RE2. context adds 0-3 surrounding lines; results cap at 200 with guidance. Use symbols to find declarations and references. Use file.read for whole files; repo.search returns matching lines.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"path":{"type":"string","description":` +
 			t.pathDescription("directory or file to search, relative to the workspace") +
 			`},"max_results":{"type":"integer"},"mode":{"type":"string","enum":["auto","substring","regex"]},"include":{"type":"string"},"context":{"type":"integer"}},"required":["query"],"additionalProperties":false}`),

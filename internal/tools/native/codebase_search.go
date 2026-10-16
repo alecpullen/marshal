@@ -22,7 +22,7 @@ type codebaseSearchArgs struct {
 func (t *toolSet) codebaseSearchTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "codebase_search",
-		Description: "Semantic search over the indexed codebase. Returns the most relevant code/doc snippets for a natural-language query.",
+		Description: "Semantic search over the indexed codebase. Returns the most relevant code/doc snippets for a natural-language query. For literal strings use repo.search; this is for concepts.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"},"path":{"type":"string"}},"required":["query"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}

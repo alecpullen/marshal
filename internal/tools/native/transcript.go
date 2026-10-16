@@ -52,7 +52,8 @@ func NewTranscriptTool(state *session.State, database *db.DB) registry.Tool {
 			"or search archived turns across the project. Default: the live transcript, paged by offset/limit. " +
 			`"generation_seq" reads an archived generation (0 is the first). ` +
 			`"turn_seq" re-reads one turn by its header number. ` +
-			`"query" searches archived turns for a distinctive phrase (an exact command, error text, path or decision) and ignores paging.`,
+			`"query" searches archived turns for a distinctive phrase (an exact command, error text, path or decision) and ignores paging. ` +
+			`For source code use file.read, repo.search, or symbols instead.`,
 		Schema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"},"limit_matches":{"type":"integer"},"generation_seq":{"type":"integer","description":"archived generation to read; omit for the live transcript"},"session_id":{"type":"string","description":"defaults to the current session"},"turn_seq":{"type":"integer","description":"one turn by its header number"},"offset":{"type":"integer","description":"turns to skip"},"limit":{"type":"integer","description":"max turns (default 20, max 100)"},"max_chars":{"type":"integer","description":"character cap (default 16000, max 64000)"},"include_all":{"type":"boolean","description":"live only: include non-replayed narration and notes"}},"additionalProperties":false}`),
 		Risk:   registry.RiskReadOnly,
 		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

@@ -22,7 +22,8 @@ func (t *toolSet) workspaceWorktreeTool() registry.Tool {
 	tool := registry.Tool{
 		Name: "workspace.worktree",
 		Description: "Isolate the session in a git worktree for a branch, or return to the project root. " +
-			"Configured setup hooks run automatically in fresh worktrees (sandboxed, from trusted project config).",
+			"Configured setup hooks run automatically in fresh worktrees (sandboxed, from trusted project config). " +
+			"Refuses when the branch already exists without a worktree; choose a branch that is not already present.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"branch":{"type":"string","minLength":1}},"additionalProperties":false}`),
 		Risk:   registry.RiskWorkspaceWrite,
 	}

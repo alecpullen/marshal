@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -156,10 +157,23 @@ type CommandOrigin struct {
 
 // JobInfo is a snapshot of a managed command's metadata.
 type JobInfo struct {
-	ID      string
-	PID     int
-	Command string
-	Status  JobStatus
+	ID string
+	// ExecutionID is the cross-resume identity of this execution: the display
+	// ID alone repeats in every process (job-1, job-1 again after a restart),
+	// so pairing a start with its completion — and its persisted record —
+	// needs the owning conversation, the runtime generation and the origin
+	// call as well. It is composed at admission and never changes, even when
+	// the execution hands off from a foreground wait to the background.
+	ExecutionID string
+	PID         int
+	Command     string
+	// Dir is the working directory resolved at admission and captured for the
+	// execution's life, so a later workspace change cannot redirect it. It is
+	// empty in the snapshot Launch returns (the directory is resolved after
+	// admission to keep the directory function outside the manager lock) and
+	// populated for every later read.
+	Dir    string
+	Status JobStatus
 	// Outcome is empty until the execution settles. See JobOutcome.
 	Outcome JobOutcome
 	// Attachment is foreground while the launching caller waits, background
@@ -169,6 +183,12 @@ type JobInfo struct {
 	// which is also when a foreground wait budget starts. It is earlier than
 	// the process start, so process startup time counts as part of the wait.
 	StartedAt time.Time
+	// EndedAt is the settlement time; zero while the execution runs.
+	EndedAt time.Time
+	// Wait is the effective foreground wait the launching caller resolved,
+	// recorded as evidence only. No wall-clock budget in this service ends a
+	// process, so this never bounds execution.
+	Wait time.Duration
 	// ExitCode is the process exit code when one is meaningful: always for a
 	// natural settlement (including a non-zero exit), and for a stopped
 	// execution when the runner observed a non-zero code. Nil for a startup
@@ -176,6 +196,9 @@ type JobInfo struct {
 	ExitCode        *int
 	Sandbox         registry.SandboxMeta
 	OutputTruncated bool
+	// OutputTail is a bounded recent tail of the command's output, kept for
+	// the exit evidence a completion carries. Empty while the execution runs.
+	OutputTail string
 	// Origin carries the conversation/actor/turn/step/tool-call identity and
 	// config generation captured at admission.
 	Origin CommandOrigin
@@ -184,6 +207,76 @@ type JobInfo struct {
 	// process exited is evidence only and never relabels a natural completion.
 	StopCause       string
 	StopRequestedAt time.Time
+}
+
+// Execution returns the structured, persistable record of this execution: the
+// identity, origin, attachment and outcome a transcript needs to pair a start
+// with its completion across a resume. It is the one mapping from the manager's
+// snapshot to the stored payload, so a field added here cannot be forgotten by
+// a producer.
+func (i JobInfo) Execution() registry.CommandExecution {
+	ex := registry.CommandExecution{
+		ExecutionID:     i.ExecutionID,
+		DisplayID:       i.ID,
+		ConversationID:  i.Origin.ConversationID,
+		Actor:           i.Origin.Actor,
+		TurnID:          i.Origin.TurnID,
+		StepID:          i.Origin.StepID,
+		ToolCallID:      i.Origin.ToolCallID,
+		Cwd:             i.Dir,
+		Generation:      i.Origin.Generation,
+		PID:             i.PID,
+		StartedAt:       i.StartedAt,
+		EndedAt:         i.EndedAt,
+		State:           string(i.Status),
+		Outcome:         string(i.Outcome),
+		Attachment:      executionAttachment(i.Attachment),
+		StopCause:       i.StopCause,
+		StopRequestedAt: i.StopRequestedAt,
+		Truncated:       i.OutputTruncated,
+	}
+	if i.Wait > 0 {
+		ex.Wait = i.Wait.String()
+	}
+	if i.ExitCode != nil {
+		code := *i.ExitCode
+		ex.ExitCode = &code
+	}
+	return ex
+}
+
+// executionAttachment maps the manager's attachment onto the stored payload's
+// spelling of it.
+func executionAttachment(a Attachment) registry.ExecutionAttachment {
+	if a == AttachmentBackground {
+		return registry.ExecutionAttachmentBackground
+	}
+	return registry.ExecutionAttachmentForeground
+}
+
+// ExecutionIdentity composes an execution's cross-resume identity from its
+// display ID and the origin captured at admission. Display IDs restart in every
+// process, so an identity that has to survive a resume must name the
+// conversation, the runtime generation and the originating call as well.
+func ExecutionIdentity(displayID string, origin CommandOrigin) string {
+	parts := make([]string, 0, 6)
+	parts = append(parts, "job="+displayID)
+	if origin.ConversationID != "" {
+		parts = append(parts, "conv="+origin.ConversationID)
+	}
+	if origin.Generation != 0 {
+		parts = append(parts, "gen="+strconv.Itoa(origin.Generation))
+	}
+	if origin.TurnID != "" {
+		parts = append(parts, "turn="+origin.TurnID)
+	}
+	if origin.StepID != "" {
+		parts = append(parts, "step="+origin.StepID)
+	}
+	if origin.ToolCallID != "" {
+		parts = append(parts, "call="+origin.ToolCallID)
+	}
+	return strings.Join(parts, "|")
 }
 
 // LaunchSpec is the immutable snapshot of an admitted command. Everything the
@@ -210,6 +303,10 @@ type LaunchSpec struct {
 	// Detached requests background attachment from the start: Launch returns as
 	// soon as the command is admitted and the caller does not wait for it.
 	Detached bool
+	// Wait is the effective foreground wait the launching caller resolved,
+	// recorded for evidence only. The manager never uses it as an execution
+	// deadline: no wall-clock budget ends a process.
+	Wait time.Duration
 }
 
 // WaitEndReason explains why a foreground wait stopped waiting. It never
@@ -298,13 +395,33 @@ type JobManager struct {
 	turnStops     map[string]string
 	turnStopOrder []string
 	onChange      func(int)
-	onExit        func(JobInfo, time.Duration, string)
+	onExit        func(JobInfo, time.Duration, string) error
+	// settlements holds completions the exit sink has not acknowledged, keyed
+	// by execution ID, so a failed durable write can be retried instead of
+	// leaving a settled card that never comes back after a resume.
+	settlements   map[string]settlement
 	jobBroker     *pubsub.Broker[JobEvent]
 	lastNotified  int
 	closed        bool
 	wg            sync.WaitGroup
 	managerCtx    context.Context
 	managerCancel context.CancelFunc
+}
+
+// settlement is one unacknowledged completion: everything the exit sink needs
+// to try the durable write again.
+type settlement struct {
+	info   JobInfo
+	ran    time.Duration
+	output string
+	err    error
+}
+
+// SettlementError reports a completion whose durable record the exit sink has
+// still not accepted.
+type SettlementError struct {
+	Info JobInfo
+	Err  error
 }
 
 type job struct {
@@ -396,11 +513,20 @@ func (m *JobManager) SetOnChange(fn func(int)) {
 	m.mu.Unlock()
 }
 
-// SetOnExit registers a callback invoked once when an execution finishes, with
-// its settled info, how long it ran and its bounded output tail. It runs
-// outside the manager's locks, so it may query the manager; it must not launch
-// or stop executions.
-func (m *JobManager) SetOnExit(fn func(info JobInfo, ran time.Duration, output string)) {
+// SetOnExit registers a callback invoked once when a detached execution
+// finishes, with its settled info, how long it ran and its bounded output tail.
+// A foreground execution that settled while its caller was still waiting is not
+// reported here: that result reaches the transcript as the call's normal tool
+// audit, and reporting it twice would settle one execution twice.
+//
+// The callback returns whether the completion was made durable. A non-nil error
+// means the sink could not store it, so the manager keeps the settlement pending
+// and reports it through PendingSettlements until RetrySettlements succeeds;
+// nothing may announce a completion that was never stored.
+//
+// It runs outside the manager's locks, so it may query the manager; it must not
+// launch or stop executions.
+func (m *JobManager) SetOnExit(fn func(info JobInfo, ran time.Duration, output string) error) {
 	m.mu.Lock()
 	m.onExit = fn
 	m.mu.Unlock()
@@ -497,12 +623,14 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	now := time.Now()
 	j := &job{
 		info: JobInfo{
-			ID:         id,
-			Command:    command,
-			Status:     StatusRunning,
-			Attachment: AttachmentForeground,
-			StartedAt:  now,
-			Origin:     spec.Origin,
+			ID:          id,
+			ExecutionID: ExecutionIdentity(id, spec.Origin),
+			Command:     command,
+			Status:      StatusRunning,
+			Attachment:  AttachmentForeground,
+			StartedAt:   now,
+			Wait:        spec.Wait,
+			Origin:      spec.Origin,
 		},
 		cancel:     jobCancel,
 		done:       make(chan struct{}),
@@ -517,10 +645,6 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	}
 	j.stdoutSink = &jobSink{tail: j.stdout, stream: spec.Stdout, live: &j.attached}
 	j.stderrSink = &jobSink{tail: j.stderr, stream: spec.Stderr, live: &j.attached}
-
-	// Capture the admitted snapshot before publishing the job, so the return
-	// value is read without any chance of a concurrent write to it.
-	admitted := j.info
 
 	m.jobs[id] = j
 	m.active++
@@ -540,6 +664,13 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 			jobDir = defaultDir
 		}
 	}
+	// Record the resolved directory on the execution: it is part of the
+	// captured snapshot a completion reports, and the reason a later reload
+	// cannot redirect an admitted command.
+	j.mu.Lock()
+	j.info.Dir = jobDir
+	admitted := j.info
+	j.mu.Unlock()
 
 	// Publish admission before the goroutine starts, even when the detached
 	// count is unchanged: the execution snapshot moved, and a client must never
@@ -605,6 +736,12 @@ func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, ru
 	j.info.Status = status
 	j.info.Outcome = outcome
 	j.info.ExitCode = exitCode
+	j.info.EndedAt = j.completedAt
+	// The settled snapshot carries the retained tail: it is the evidence a
+	// completion reports, and the count event deliberately drops it (see
+	// notifyChange) so a finished job never re-ships its output on every later
+	// change.
+	j.info.OutputTail = j.tailedOutputLocked()
 	j.terminal = true
 	info := j.info
 	ran := j.completedAt.Sub(info.StartedAt)
@@ -612,17 +749,13 @@ func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, ru
 
 	output := formatCommandOutput(j.stdout.String(), j.stderr.String())
 
-	// Report the settled outcome before the count change: the callback records
-	// the exit in the transcript, so a client reacting to the count already sees
-	// the card settled. Callbacks run with no manager lock held.
-	m.mu.Lock()
-	onExit := m.onExit
-	m.mu.Unlock()
-	if onExit != nil {
-		// Formatted like a foreground call's output, so the streams stay
-		// apart: raw concatenation glues a stdout line with no trailing
-		// newline onto the first stderr line.
-		onExit(info, ran, output)
+	// A detached completion is the transcript's only record of it, so it goes to
+	// the exit sink, which stores it durably before anything is published. A
+	// foreground completion is not reported here: the waiting caller receives it
+	// as its normal tool result, which the agent audits, and reporting it here
+	// as well would settle one execution twice.
+	if info.Attachment == AttachmentBackground {
+		m.reportSettlement(info, ran, output)
 	}
 
 	m.mu.Lock()
@@ -632,6 +765,75 @@ func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, ru
 	m.notifyChange()
 	close(j.done)
 	m.wg.Done()
+}
+
+// reportSettlement hands one detached completion to the exit sink and records
+// whether the sink accepted it. A sink that reports an error leaves the
+// settlement pending, so RetrySettlements can offer it again rather than a
+// settled card never coming back after a resume; a successful report clears any
+// earlier failure for the same execution.
+//
+// It runs with no manager lock held: the sink writes to the session's database,
+// and holding the manager lock across that would stall every admission and
+// status query behind one disk write.
+func (m *JobManager) reportSettlement(info JobInfo, ran time.Duration, output string) {
+	m.mu.Lock()
+	onExit := m.onExit
+	m.mu.Unlock()
+	if onExit == nil {
+		return
+	}
+
+	if err := onExit(info, ran, output); err != nil {
+		m.mu.Lock()
+		if m.settlements == nil {
+			m.settlements = make(map[string]settlement)
+		}
+		m.settlements[info.ID] = settlement{info: info, ran: ran, output: output, err: err}
+		m.mu.Unlock()
+		return
+	}
+	m.mu.Lock()
+	delete(m.settlements, info.ID)
+	m.mu.Unlock()
+}
+
+// PendingSettlements reports the detached completions whose durable record the
+// exit sink has not accepted, oldest first. A caller surfaces these instead of
+// assuming an outcome is stored: nothing announced a completion that failed to
+// persist.
+func (m *JobManager) PendingSettlements() []SettlementError {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]SettlementError, 0, len(m.settlements))
+	for _, s := range m.settlements {
+		out = append(out, SettlementError{Info: s.info, Err: s.err})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Info.StartedAt.Equal(out[j].Info.StartedAt) {
+			return out[i].Info.StartedAt.Before(out[j].Info.StartedAt)
+		}
+		return out[i].Info.ID < out[j].Info.ID
+	})
+	return out
+}
+
+// RetrySettlements offers every pending completion to the exit sink again and
+// returns the ones that still failed. It is a no-op when nothing is pending.
+// The record for an execution is identified by its identity, so a retry updates
+// it rather than producing a second completion.
+func (m *JobManager) RetrySettlements() []SettlementError {
+	m.mu.Lock()
+	pending := make([]settlement, 0, len(m.settlements))
+	for _, s := range m.settlements {
+		pending = append(pending, s)
+	}
+	m.mu.Unlock()
+
+	for _, s := range pending {
+		m.reportSettlement(s.info, s.ran, s.output)
+	}
+	return m.PendingSettlements()
 }
 
 // recordCapturedOutputLocked folds a runner's captured stdout/stderr into the
@@ -1242,7 +1444,14 @@ func (m *JobManager) notifyChange() {
 		if !j.info.Status.Terminal() && j.info.Attachment == AttachmentBackground {
 			count++
 		}
-		snapshot = append(snapshot, j.info)
+		info := j.info
+		// A settled job keeps its retained tail for the exit evidence, but the
+		// change event does not re-ship it: the card that settles from it is
+		// built from the completion record, and a session that launches many
+		// jobs would otherwise pay for every finished job's output on every
+		// later count change.
+		info.OutputTail = ""
+		snapshot = append(snapshot, info)
 		j.mu.Unlock()
 	}
 	sortJobs(snapshot)

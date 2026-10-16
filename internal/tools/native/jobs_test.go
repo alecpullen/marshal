@@ -1164,7 +1164,7 @@ func TestCallbacksRunOutsideLocksAndMayReenter(t *testing.T) {
 		_ = jm.List()
 		_ = jm.ActiveCount()
 	})
-	jm.SetOnExit(func(info JobInfo, r time.Duration, output string) {
+	jm.SetOnExit(func(info JobInfo, r time.Duration, output string) error {
 		mu.Lock()
 		exitInfo = append(exitInfo, info)
 		ran = append(ran, r)
@@ -1172,6 +1172,7 @@ func TestCallbacksRunOutsideLocksAndMayReenter(t *testing.T) {
 		mu.Unlock()
 		// Re-enters the manager from the exit callback too.
 		_ = jm.List()
+		return nil
 	})
 
 	info, err := jm.Launch(context.Background(), LaunchSpec{Command: "callback", Detached: true})
@@ -2010,10 +2011,11 @@ func TestJobManagerOnExitFiresOncePerJob(t *testing.T) {
 
 	var mu sync.Mutex
 	var got []JobInfo
-	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) {
+	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) error {
 		mu.Lock()
 		got = append(got, info)
 		mu.Unlock()
+		return nil
 	})
 	id, err := jm.Start(ctx, "echo hi", time.Minute)
 	if err != nil {
@@ -2048,5 +2050,182 @@ func TestJobManagerStartRejectsCancelledManagerCtx(t *testing.T) {
 	_, err := jm.Start(context.Background(), "echo hello", 0)
 	if err == nil {
 		t.Fatal("expected error when managerCtx is cancelled, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 4: one completion per execution, and only a detached one is reported
+// ---------------------------------------------------------------------------
+
+// A foreground command's outcome is the waiting caller's tool result, which the
+// agent audits. Reporting it to the exit sink as well would settle one
+// execution twice, so the sink must only ever see detached completions.
+func TestOnExitReportsDetachedCompletionsOnly(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	runner := newFakeRunner(withRelease(release), withResult(CommandResult{Stdout: "out\n", ExitCode: 0}))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	var mu sync.Mutex
+	var reported []string
+	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) error {
+		mu.Lock()
+		reported = append(reported, info.ID)
+		mu.Unlock()
+		return nil
+	})
+
+	foreground, err := jm.Launch(ctx, LaunchSpec{Command: "foreground"})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	close(release)
+	if _, err := jm.Wait(ctx, foreground.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	mu.Lock()
+	got := append([]string(nil), reported...)
+	mu.Unlock()
+	if len(got) != 0 {
+		t.Fatalf("a foreground completion reached the exit sink: %v", got)
+	}
+
+	detached, err := jm.Launch(ctx, LaunchSpec{Command: "detached", Detached: true})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if _, err := jm.Wait(ctx, detached.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	// Reading the outcome again must not report it again: one execution has one
+	// completion.
+	if _, err := jm.Wait(ctx, detached.ID); err != nil {
+		t.Fatalf("second Wait: %v", err)
+	}
+
+	mu.Lock()
+	got = append([]string(nil), reported...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != detached.ID {
+		t.Fatalf("reports = %v, want exactly one, for the detached job %q", got, detached.ID)
+	}
+}
+
+// A sink that cannot store a completion leaves it pending: nothing may announce
+// an outcome the session cannot restore, and a retry must be able to offer it
+// again.
+func TestSettlementIsRetainedWhenTheSinkFails(t *testing.T) {
+	ctx := context.Background()
+	runner := newFakeRunner(withResult(CommandResult{Stdout: "late\n", ExitCode: 0}))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	var mu sync.Mutex
+	failing := true
+	attempts := 0
+	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		if failing {
+			return errors.New("store unavailable")
+		}
+		return nil
+	})
+
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "detached", Detached: true})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if _, err := jm.Wait(ctx, info.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	pending := jm.PendingSettlements()
+	if len(pending) != 1 || pending[0].Info.ID != info.ID || pending[0].Err == nil {
+		t.Fatalf("pending = %+v, want the failed settlement retained", pending)
+	}
+
+	mu.Lock()
+	failing = false
+	mu.Unlock()
+	if left := jm.RetrySettlements(); len(left) != 0 {
+		t.Fatalf("RetrySettlements left %+v, want a clean retry", left)
+	}
+	if left := jm.PendingSettlements(); len(left) != 0 {
+		t.Fatalf("pending after a successful retry = %+v", left)
+	}
+	mu.Lock()
+	got := attempts
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("sink calls = %d, want the failure plus exactly one retry", got)
+	}
+}
+
+// A settled snapshot carries the evidence a stored completion needs: the
+// identity that pairs it across a resume, the observed exit, the retained tail
+// and the truncation flag.
+func TestSettledJobInfoCarriesExecutionEvidence(t *testing.T) {
+	ctx := context.Background()
+	// A natural non-zero exit is reported by the runner as both an exit code
+	// and its own error, which is how classifySettlement tells it apart from a
+	// clean completion.
+	runner := newFakeRunner(
+		withResult(CommandResult{
+			Stdout: "tail\n", ExitCode: 2,
+			Meta: registry.SandboxMeta{OutputTruncated: true},
+		}),
+		withRunErr(errors.New("exit status 2")),
+	)
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	origin := CommandOrigin{
+		ConversationID: "conv-1", Actor: "implementer",
+		TurnID: "turn-1", StepID: "step-1", ToolCallID: "call-1", Generation: 7,
+	}
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "go test", Detached: true, Wait: 10 * time.Second, Origin: origin})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	settled, err := jm.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	if settled.ExecutionID != ExecutionIdentity(info.ID, origin) {
+		t.Fatalf("ExecutionID = %q, want %q", settled.ExecutionID, ExecutionIdentity(info.ID, origin))
+	}
+	if settled.EndedAt.IsZero() || settled.EndedAt.Before(settled.StartedAt) {
+		t.Fatalf("EndedAt = %v, want the settlement time", settled.EndedAt)
+	}
+	if settled.ExitCode == nil || *settled.ExitCode != 2 {
+		t.Fatalf("ExitCode = %v, want the observed 2", settled.ExitCode)
+	}
+	if settled.OutputTail == "" {
+		t.Fatal("a settled snapshot must carry its retained tail")
+	}
+
+	ex := settled.Execution()
+	if ex.ExecutionID != settled.ExecutionID || ex.DisplayID != info.ID {
+		t.Fatalf("execution identity in payload = %+v, want %q / %q", ex, settled.ExecutionID, info.ID)
+	}
+	if ex.ConversationID != "conv-1" || ex.Actor != "implementer" || ex.TurnID != "turn-1" ||
+		ex.StepID != "step-1" || ex.ToolCallID != "call-1" || ex.Generation != 7 {
+		t.Fatalf("origin lost in payload: %+v", ex)
+	}
+	if ex.Attachment != registry.ExecutionAttachmentBackground {
+		t.Fatalf("attachment = %q, want background", ex.Attachment)
+	}
+	if ex.State != string(StatusFailed) || ex.Outcome != string(OutcomeNonZeroExit) {
+		t.Fatalf("state/outcome = %q/%q, want failed/nonzero_exit", ex.State, ex.Outcome)
+	}
+	if ex.ExitCode == nil || *ex.ExitCode != 2 || !ex.Truncated || ex.Wait != "10s" {
+		t.Fatalf("payload evidence = %+v", ex)
+	}
+	if ex.StartedAt.IsZero() || ex.EndedAt.IsZero() {
+		t.Fatalf("payload times = %v/%v, want both recorded", ex.StartedAt, ex.EndedAt)
 	}
 }

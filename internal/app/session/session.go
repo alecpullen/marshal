@@ -337,8 +337,30 @@ type State struct {
 	runEvents []RunEvent
 	// jobExits is the transcript record of background jobs finishing,
 	// persisted in session_state and restored on resume (see jobexit.go).
-	jobExits  []JobExit
-	turnUsage turnUsage
+	jobExits []JobExit
+	// jobExitSaveMu serializes the snapshot-and-write sequence that stores
+	// job exits and guards jobExitsPending. It is deliberately separate from
+	// mu: the write spans a database round trip, which must not be held while
+	// the rest of the session waits, and two saves that interleaved a
+	// snapshot with a write could store an older list over a newer one.
+	jobExitSaveMu sync.Mutex
+	// jobExitsPending marks a job-exit list that is recorded in memory but
+	// could not be written durably, so a later caller can retry it instead of
+	// leaving a settled card that never comes back after a resume.
+	jobExitsPending bool
+	// jobExitsUnpublished holds completions recorded but not yet announced,
+	// keyed by execution identity: their event is published only once their
+	// durable write succeeds, so no client re-projects a card whose outcome the
+	// session cannot restore. A retried settlement replaces its own entry
+	// instead of announcing the same completion twice. Guarded by
+	// jobExitSaveMu.
+	jobExitsUnpublished map[string]JobExit
+	// jobExitsPublished is the set of identities whose completion event has
+	// been announced, so a duplicate delivery or a retry after success
+	// announces nothing. It grows with the session's completions, like
+	// jobExits itself. Guarded by jobExitSaveMu.
+	jobExitsPublished map[string]bool
+	turnUsage         turnUsage
 	// turnQuota is the latest subscription quota reading from an
 	// OAuth-backed provider; nil when the active provider reports none.
 	turnQuota *schema.QuotaInfo

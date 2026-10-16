@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -716,5 +717,295 @@ func TestGetToolCalls_LegacyRowLacksNotice(t *testing.T) {
 	}
 	if calls[0].Notice != nil {
 		t.Errorf("legacy row Notice = %+v, want nil", calls[0].Notice)
+	}
+}
+
+// TestSaveAndGetToolCalls_CommandExecution covers the structured
+// command-execution payload: it survives the JSON round trip through
+// notice_json and decodes from the *persisted* map form, where numbers have
+// become float64 and timestamps their RFC3339 text.
+func TestSaveAndGetToolCalls_CommandExecution(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+	projectID, err := db.GetOrCreateProject("/repo", "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject failed: %v", err)
+	}
+	const sessionID = "session-exec"
+	if err := db.CreateSession(sessionID, projectID, "exec test", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	code := 7
+	started := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	ended := started.Add(90 * time.Second)
+	ex := registry.CommandExecution{
+		ExecutionID:     "job=job-3|conv=session-exec|call=c1",
+		DisplayID:       "job-3",
+		ConversationID:  "session-exec",
+		Actor:           "implementer",
+		TurnID:          "turn-1",
+		StepID:          "step-2",
+		ToolCallID:      "c1",
+		Cwd:             "/repo",
+		Generation:      4,
+		PID:             4242,
+		StartedAt:       started,
+		EndedAt:         ended,
+		State:           "failed",
+		Outcome:         "nonzero_exit",
+		Wait:            "10s",
+		Attachment:      registry.ExecutionAttachmentBackground,
+		DetachReason:    "wait expired",
+		DetachedAt:      started.Add(10 * time.Second),
+		StopCause:       "turn stop",
+		StopRequestedAt: ended.Add(-time.Second),
+		ExitCode:        &code,
+		Truncated:       true,
+	}
+	notice, err := registry.CommandExecutionNotice(ex)
+	if err != nil {
+		t.Fatalf("CommandExecutionNotice failed: %v", err)
+	}
+	if notice.Text != "" {
+		t.Fatalf("an execution record is metadata, not coaching: text = %q", notice.Text)
+	}
+
+	event := registry.AuditEvent{
+		Timestamp:     started,
+		ToolName:      "shell.run",
+		Args:          argsJSON(`{"command":"go test","background":true}`),
+		ResultSummary: "started background job job-3",
+		Notice:        notice,
+	}
+	if err := db.SaveToolCall(sessionID, event); err != nil {
+		t.Fatalf("SaveToolCall failed: %v", err)
+	}
+
+	calls, err := db.GetToolCalls(sessionID)
+	if err != nil {
+		t.Fatalf("GetToolCalls failed: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(calls))
+	}
+	got := calls[0].Notice
+	if got == nil || got.Kind != registry.NoticeCommandExecution {
+		t.Fatalf("Notice = %+v, want a command-execution record", got)
+	}
+	if _, isMap := got.Data[registry.CommandExecutionKey].(map[string]any); !isMap {
+		t.Fatalf("persisted payload = %T, want the JSON map form",
+			got.Data[registry.CommandExecutionKey])
+	}
+	decoded, ok := registry.DecodeCommandExecution(got)
+	if !ok {
+		t.Fatalf("persisted payload did not decode: %#v", got.Data)
+	}
+	if decoded.Version != registry.CommandExecutionVersion {
+		t.Errorf("Version = %d, want %d", decoded.Version, registry.CommandExecutionVersion)
+	}
+	if decoded.ExecutionID != ex.ExecutionID || decoded.DisplayID != ex.DisplayID {
+		t.Errorf("identity = %q / %q, want %q / %q", decoded.ExecutionID, decoded.DisplayID, ex.ExecutionID, ex.DisplayID)
+	}
+	if decoded.ConversationID != ex.ConversationID || decoded.Actor != ex.Actor ||
+		decoded.TurnID != ex.TurnID || decoded.StepID != ex.StepID || decoded.ToolCallID != ex.ToolCallID {
+		t.Errorf("origin lost: %+v", decoded)
+	}
+	if decoded.Cwd != ex.Cwd || decoded.Generation != ex.Generation || decoded.PID != ex.PID {
+		t.Errorf("captured facts lost: cwd %q gen %d pid %d", decoded.Cwd, decoded.Generation, decoded.PID)
+	}
+	if !decoded.StartedAt.Equal(started) || !decoded.EndedAt.Equal(ended) || !decoded.DetachedAt.Equal(ex.DetachedAt) ||
+		!decoded.StopRequestedAt.Equal(ex.StopRequestedAt) {
+		t.Errorf("times lost: %+v", decoded)
+	}
+	if decoded.State != ex.State || decoded.Outcome != ex.Outcome || decoded.Wait != ex.Wait {
+		t.Errorf("state/outcome/wait = %q/%q/%q", decoded.State, decoded.Outcome, decoded.Wait)
+	}
+	if decoded.Attachment != registry.ExecutionAttachmentBackground || decoded.DetachReason != ex.DetachReason {
+		t.Errorf("attachment evidence = %q/%q", decoded.Attachment, decoded.DetachReason)
+	}
+	if decoded.StopCause != ex.StopCause {
+		t.Errorf("StopCause = %q, want %q", decoded.StopCause, ex.StopCause)
+	}
+	if decoded.ExitCode == nil || *decoded.ExitCode != code {
+		t.Errorf("ExitCode = %v, want %d", decoded.ExitCode, code)
+	}
+	if !decoded.Truncated {
+		t.Error("Truncated = false, want the payload to remember the cap")
+	}
+}
+
+// TestDecodeCommandExecutionRejectsForeignVersions pins that an unknown payload
+// version is not guessed at: a reader falls back rather than misreading a shape
+// it does not know.
+func TestDecodeCommandExecutionRejectsForeignVersions(t *testing.T) {
+	for _, payload := range []any{
+		map[string]any{"version": float64(99), "execution_id": "e1"},
+		map[string]any{"version": float64(99), "display_id": "job-1"},
+		"not a payload",
+		42,
+	} {
+		n := &registry.ToolNotice{Kind: registry.NoticeCommandExecution,
+			Data: map[string]any{registry.CommandExecutionKey: payload}}
+		if ex, ok := registry.DecodeCommandExecution(n); ok {
+			t.Errorf("payload %#v decoded as %+v, want a refusal", payload, ex)
+		}
+	}
+	// A payload with no version at all is still readable: it predates the
+	// version field, and its shape is the one we know.
+	n := &registry.ToolNotice{Kind: registry.NoticeCommandExecution,
+		Data: map[string]any{registry.CommandExecutionKey: map[string]any{"execution_id": "e1", "pid": float64(11)}}}
+	ex, ok := registry.DecodeCommandExecution(n)
+	if !ok || ex.ExecutionID != "e1" || ex.PID != 11 {
+		t.Fatalf("version-less payload = %+v, ok = %v", ex, ok)
+	}
+}
+
+// TestNewAuditEventDeepCopiesExecutionEvidence pins the deep copy. A
+// continuation rewrites the payload the caller still holds — that is how a
+// running execution reports its state — so an audit already recorded must not
+// change with it.
+func TestNewAuditEventDeepCopiesExecutionEvidence(t *testing.T) {
+	code := 1
+	notice := registry.NewCommandExecutionNotice(registry.CommandExecution{
+		ExecutionID: "e1", DisplayID: "job-1", ExitCode: &code,
+		Attachment: registry.ExecutionAttachmentForeground,
+	})
+	event := registry.NewAuditEvent(time.Now(),
+		registry.Tool{Name: "shell.run", Risk: registry.RiskCommand},
+		registry.ToolCall{Name: "shell.run", Args: argsJSON(`{"command":"go test"}`)},
+		registry.ToolResult{Summary: "ok", Notice: notice},
+		registry.ApprovalNotRequired, nil)
+
+	// The same object the caller handed over is rewritten, as a handoff does.
+	notice.WithExecution(registry.CommandExecution{
+		ExecutionID: "e1", DisplayID: "job-1", State: "completed",
+		Attachment: registry.ExecutionAttachmentBackground,
+	})
+	notice.Text = "coaching added later"
+
+	decoded, ok := event.Notice.Execution()
+	if !ok {
+		t.Fatal("the audit lost the execution payload")
+	}
+	if decoded.State != "" || decoded.Attachment != registry.ExecutionAttachmentForeground {
+		t.Fatalf("the audit payload followed the caller's rewrite: %+v", decoded)
+	}
+	if decoded.ExitCode == nil || *decoded.ExitCode != 1 {
+		t.Fatalf("exit = %v, want the recorded 1", decoded.ExitCode)
+	}
+	if event.Notice.Text != "" {
+		t.Fatalf("the audit text followed the caller: %q", event.Notice.Text)
+	}
+
+	// The copy owns the exit-code pointer as well.
+	code = 9
+	again, _ := event.Notice.Execution()
+	if again.ExitCode == nil || *again.ExitCode != 1 {
+		t.Fatalf("the copy aliases the caller's pointer: %v", again.ExitCode)
+	}
+
+	// A payload in its map form is copied deeply too, nested maps included.
+	original := map[string]any{"execution_id": "e2", "nested": map[string]any{"k": "v"}}
+	mapNotice := &registry.ToolNotice{Kind: registry.NoticeCommandExecution,
+		Data: map[string]any{registry.CommandExecutionKey: original}}
+	mapEvent := registry.NewAuditEvent(time.Now(),
+		registry.Tool{Name: "shell.run", Risk: registry.RiskCommand},
+		registry.ToolCall{Name: "shell.run"}, registry.ToolResult{Notice: mapNotice},
+		registry.ApprovalNotRequired, nil)
+	original["nested"].(map[string]any)["k"] = "changed"
+	original["execution_id"] = "changed"
+	got := mapEvent.Notice.Data[registry.CommandExecutionKey].(map[string]any)
+	if got["execution_id"] != "e2" {
+		t.Fatalf("execution_id = %#v, want the recorded e2", got["execution_id"])
+	}
+	if nested, _ := got["nested"].(map[string]any); nested["k"] != "v" {
+		t.Fatalf("nested metadata aliased the caller: %#v", got["nested"])
+	}
+}
+
+// TestJobExitRecordsRoundTripStructuredEvidence covers the additive fields on
+// the stored job-exit record: they survive session_state's JSON while the
+// original six fields keep their meaning.
+func TestJobExitRecordsRoundTripStructuredEvidence(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	code := 4
+	started := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	record := JobExitRecord{
+		ID: "job-2", Command: "go test", ExitCode: 4, DurationMs: 5000, Output: "FAIL", At: started.Add(time.Minute),
+		ExecutionID: "e2", ActualExitCode: &code, ConversationID: "s1", Actor: "implementer",
+		TurnID: "turn-1", StepID: "step-2", ToolCallID: "c1", Cwd: "/repo", Generation: 3, PID: 77,
+		StartedAt: started, EndedAt: started.Add(time.Minute),
+		State: "failed", Outcome: "nonzero_exit", Attachment: "background", Wait: "10s",
+		DetachReason: "wait expired", DetachedAt: started.Add(10 * time.Second),
+		StopCause: "turn stop", StopRequestedAt: started.Add(50 * time.Second), Truncated: true,
+	}
+	if err := db.SaveJobExits("exit-sess", []JobExitRecord{record}); err != nil {
+		t.Fatalf("SaveJobExits failed: %v", err)
+	}
+	got, err := db.LoadJobExits("exit-sess")
+	if err != nil {
+		t.Fatalf("LoadJobExits failed: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("records = %d, want 1", len(got))
+	}
+	if !reflect.DeepEqual(got[0], record) {
+		t.Fatalf("round trip:\n got %+v\nwant %+v", got[0], record)
+	}
+}
+
+// TestLoadJobExitsLegacyRowStaysLegacy pins the compatibility rule: a record
+// written before the structured fields existed loads with them empty — unknown,
+// not zero-valued facts — and its -1 keeps meaning "no exit was observed"
+// rather than success.
+func TestLoadJobExitsLegacyRowStaysLegacy(t *testing.T) {
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+	if err := db.Migrate(); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	// Exactly what the pre-Task-4 writer produced.
+	const legacy = `[{"id":"job-1","command":"go test","exit_code":-1,"at":"2026-01-02T03:04:05Z"}]`
+	if _, err := db.sqlDB.Exec(
+		`INSERT INTO session_state (session_id, key, value) VALUES (?, 'job_exits', ?)`,
+		"legacy-sess", legacy,
+	); err != nil {
+		t.Fatalf("insert legacy job exits: %v", err)
+	}
+
+	got, err := db.LoadJobExits("legacy-sess")
+	if err != nil {
+		t.Fatalf("LoadJobExits failed: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("records = %d, want 1", len(got))
+	}
+	r := got[0]
+	if r.ID != "job-1" || r.ExitCode != -1 || r.Command != "go test" {
+		t.Fatalf("legacy fields changed: %+v", r)
+	}
+	if r.ExecutionID != "" || r.ActualExitCode != nil || r.State != "" || r.Outcome != "" ||
+		r.Attachment != "" || r.Wait != "" || r.StopCause != "" || r.Truncated ||
+		r.PID != 0 || r.Generation != 0 || !r.StartedAt.IsZero() || !r.EndedAt.IsZero() {
+		t.Fatalf("a legacy row invented structured facts: %+v", r)
 	}
 }

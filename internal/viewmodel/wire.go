@@ -162,6 +162,18 @@ type WireJob struct {
 	// Lost: the session ended while the job ran; ExitCode means nothing.
 	Lost     bool `json:"lost,omitempty"`
 	ExitCode int  `json:"exitCode"`
+	// Exit is the observed exit code, omitted when none was observed (a lost
+	// job, a start-up failure, a legacy record). A client must render an
+	// absent exit as unknown, never as success: ExitCode's -1 is the legacy
+	// spelling of the same "unknown".
+	Exit *int `json:"exit,omitempty"`
+	// Status is the execution's lifecycle status; Attachment is how the
+	// launching caller related to it. Both are omitted on a legacy record.
+	Status     string `json:"status,omitempty"`
+	Attachment string `json:"attachment,omitempty"`
+	// StopCause is an accepted explicit stop request's cause, when one was
+	// recorded.
+	StopCause string `json:"stopCause,omitempty"`
 	// StartedAt is when the job was dispatched (unix ms), so a client can
 	// show a running card's elapsed time; 0 when unknown.
 	StartedAt  int64  `json:"startedAt,omitempty"`
@@ -338,13 +350,19 @@ func wireNode(n *Node) WireNode {
 		w.Tool = wireTools(n.Tools)
 		if j := n.Job; j != nil {
 			wj := &WireJob{ID: j.ID, Command: ScrubText(j.Command), Running: j.Running, Lost: j.Lost, ExitCode: j.ExitCode,
+				Status: j.Status, Attachment: j.Attachment, StopCause: j.StopCause,
 				StartedAt: ms(n.JobStart()), DurationMs: j.Duration.Milliseconds()}
+			if j.Exit != nil {
+				code := *j.Exit
+				wj.Exit = &code
+			}
 			wj.Output, wj.Truncated = capTail(j.Output)
 			if s := ScrubBlock(wj.Output); s != wj.Output {
 				// A scrub that changed the text is itself a reason for a
 				// client to ask for the full payload.
 				wj.Output, wj.Truncated = s, true
 			}
+			wj.Truncated = wj.Truncated || j.Truncated
 			w.Tool.Job = wj
 		}
 	case n.Item != nil:

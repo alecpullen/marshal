@@ -3,6 +3,7 @@ package viewmodel
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"marshal/internal/app/session"
@@ -18,10 +19,38 @@ type JobState struct {
 	// A lost job is not running and has no exit code.
 	Lost     bool
 	ExitCode int
-	Duration time.Duration
+	// Exit is the observed exit code when the process produced one. Nil means
+	// no exit was observed — a lost job, a start-up failure, or a legacy
+	// record — and must never be read as success. ExitCode keeps the legacy
+	// field's -1-as-unknown convention for clients that predate it.
+	Exit *int
+	// Status is the execution's lifecycle status ("running", "stopping",
+	// "completed", "failed", "killed", "timed_out"); Attachment is how the
+	// launching caller related to it ("background" for a card). Both are empty
+	// on a legacy record, which the renderer must present as unknown rather
+	// than as success.
+	Status     string
+	Attachment string
+	// StopCause is an accepted explicit stop request's cause, recorded
+	// separately from the outcome it produced.
+	StopCause string
+	// Truncated reports whether the job's retained output hit its cap.
+	Truncated bool
+	Duration  time.Duration
 	// Output is the job's output tail (the session caps it), scrubbed when
 	// the card settles; renderers scrub again at their own boundary.
 	Output string
+}
+
+// JobStartOf reports the managed execution a shell-family call started, or
+// ok=false when the call did not start a card. A foreground command — even one
+// whose audit carries structured execution metadata — has its own tool row and
+// must not become a background card.
+func JobStartOf(ev registry.AuditEvent) (session.JobStart, bool) {
+	if !IsShellFamily(ev.ToolName) {
+		return session.JobStart{}, false
+	}
+	return session.JobStarted(ev)
 }
 
 // MarkerInfo is a one-line completion marker at the moment cards finished.
@@ -35,12 +64,15 @@ type MarkerInfo struct {
 }
 
 // JobStartID returns the job ID a shell call started in the background, or ""
-// when the call ran in the foreground.
+// when the call ran in the foreground. It prefers the structured execution
+// record and falls back to the legacy result summary, so a row cannot merge
+// into a collapsed run just because its metadata replaced the summary text.
 func JobStartID(ev registry.AuditEvent) string {
-	if !IsShellFamily(ev.ToolName) {
+	js, ok := JobStartOf(ev)
+	if !ok {
 		return ""
 	}
-	return session.JobStartedID(ev.ResultSummary)
+	return js.DisplayID
 }
 
 // cardIndex is what Build learns about cards from the whole transcript
@@ -52,12 +84,51 @@ type cardIndex struct {
 	markers []block                     // completion markers, by time
 }
 
-// indexCards pairs each job exit with the start it settles. Job IDs restart
-// at job-1 in every process, so an ID alone is ambiguous across a resume: an
-// exit settles the latest start of its ID before it, and each start at most
-// once.
+// indexCards pairs each job exit with the start it settles.
+//
+// Structured records pair by execution identity first, so it does not matter
+// which order they reached the transcript in: a completion can be written before
+// the audit row of the call that started it, and display IDs repeat across
+// resumes (job-1 in every process). Only the records without an identity fall
+// back to the legacy rule — an exit settles the latest start of its display ID
+// before it, and each start at most once.
 func indexCards(items []session.TranscriptItem) cardIndex {
 	ci := cardIndex{exits: map[NodeID]*session.JobExit{}, exitRef: map[*session.JobExit]NodeID{}}
+
+	// Identity pass: every structured start, keyed by the identity its exit
+	// carries, then every exit — a lost one included — matched against it. A
+	// lost exit keeps the identity of the start it belongs to, so a card that
+	// will never settle is still paired with its own start rather than with a
+	// later start that reused the display ID.
+	byIdentity := map[string]NodeID{}
+	for _, it := range items {
+		if it.Audit == nil {
+			continue
+		}
+		js, ok := JobStartOf(*it.Audit)
+		if !ok || !js.Structured || js.Identity == "" {
+			continue
+		}
+		byIdentity["exec:"+js.Identity] = ToolID(*it.Audit)
+	}
+	for _, it := range items {
+		e := it.JobExit
+		if e == nil {
+			continue
+		}
+		identity := e.Identity()
+		if !strings.HasPrefix(identity, "exec:") {
+			continue
+		}
+		if ref, ok := byIdentity[identity]; ok {
+			ci.exits[ref] = e
+			ci.exitRef[e] = ref
+		}
+	}
+
+	// Legacy pass: order-based pairing by display ID for everything the
+	// identity pass did not settle — a record written before structured
+	// metadata existed has nothing else to pair on.
 	pending := map[string]NodeID{} // job ID → its latest unsettled start
 	for _, it := range items {
 		if it.Audit != nil {
@@ -66,11 +137,23 @@ func indexCards(items []session.TranscriptItem) cardIndex {
 			}
 		}
 		if e := it.JobExit; e != nil {
-			if ref, ok := pending[e.ID]; ok {
-				ci.exits[ref] = e
-				ci.exitRef[e] = ref
-				delete(pending, e.ID)
+			if _, settled := ci.exitRef[e]; settled {
+				// Already paired by identity; it settles no other start.
+				continue
 			}
+			ref, ok := pending[e.ID]
+			if !ok {
+				continue
+			}
+			if _, settled := ci.exits[ref]; settled {
+				// The start this display ID resolves to was paired by
+				// identity, so this exit belongs to an earlier start of the
+				// same display ID — or to one whose call is gone.
+				continue
+			}
+			ci.exits[ref] = e
+			ci.exitRef[e] = ref
+			delete(pending, e.ID)
 		}
 	}
 	for _, it := range items {
@@ -139,28 +222,68 @@ func versionOfMarker(m *MarkerInfo) uint64 {
 	return b.sum()
 }
 
-// settleJob attaches a job card to a shell.run row that started one.
+// settleJob attaches a job card to a shell.run row that started one. A row
+// whose call started no card — a foreground command, even one whose audit
+// carries structured execution metadata — is left alone: its own tool row is
+// the whole record of it.
 func (ci cardIndex) settleJob(row *Node) {
 	if row.Kind != KindTool || len(row.Tools) != 1 {
 		return
 	}
-	id := JobStartID(row.Tools[0])
-	if id == "" {
+	js, ok := JobStartOf(row.Tools[0])
+	if !ok {
 		return
 	}
-	js := &JobState{ID: id, Command: ScrubText(ToolTarget(row.Tools[0])), Running: true}
+	card := &JobState{
+		ID:      js.DisplayID,
+		Command: ScrubText(ToolTarget(row.Tools[0])),
+		Running: true,
+	}
+	// The start's own metadata describes the execution as it was admitted: the
+	// attachment it ended up with, its status and its identity. A card that
+	// never settles (a lost job) still shows them.
+	if js.Structured {
+		ex := js.Execution
+		card.Attachment = string(ex.Attachment)
+		card.Status, card.StopCause, card.Truncated = ex.State, ex.StopCause, ex.Truncated
+	}
 	if e, ok := ci.exits[row.ID]; ok {
-		js.Running, js.Lost, js.ExitCode, js.Duration = false, e.Lost, e.ExitCode, e.Duration
+		card.Running, card.Lost, card.ExitCode, card.Duration = false, e.Lost, e.ExitCode, e.Duration
+		card.Exit = e.Exit
+		if e.State != "" {
+			card.Status = e.State
+		}
+		if e.StopCause != "" {
+			card.StopCause = e.StopCause
+		}
+		card.Truncated = card.Truncated || e.Truncated
 		// Block, not Text: an expanded job card renders the output's own
 		// line structure, so its newlines are content. The session bounds
 		// the output, so this one scrub per build stays cheap.
-		js.Output = ScrubBlock(e.Output)
+		card.Output = ScrubBlock(e.Output)
 	}
-	row.Job = js
-	row.Live = js.Running
+	row.Job = card
+	row.Live = card.Running
+	row.Version = versionOfJob(row.Version, card)
+}
+
+// versionOfJob hashes a card's rendered state onto its row. Every field the
+// renderer reads is part of the hash: a status or truncation change that left
+// the exit code alone must still invalidate a cached render.
+func versionOfJob(rowVersion uint64, js *JobState) uint64 {
 	b := newHash()
-	b.f("job|%d|%v|%v|%d|%d|%d|", row.Version, js.Running, js.Lost, js.ExitCode, js.Duration, len(js.Output))
-	row.Version = b.sum()
+	b.f("job|%d|%v|%v|%d|%d|%d|", rowVersion, js.Running, js.Lost, js.ExitCode, js.Duration, len(js.Output))
+	b.f("%s|%s|%s|%v|%v|", js.Status, js.Attachment, js.StopCause, js.Truncated, exitCodeOrUnknown(js.Exit))
+	return b.sum()
+}
+
+// exitCodeOrUnknown renders an optional exit code for hashing, keeping "no exit
+// observed" distinct from zero.
+func exitCodeOrUnknown(code *int) string {
+	if code == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%d", *code)
 }
 
 // JobStart is when a job card's shell call was dispatched, or the zero time

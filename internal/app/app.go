@@ -646,20 +646,34 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// the worktree while the session is isolated.
 	jobManager.SetDirFunc(func() string { return state.Workspace().ActiveRoot })
 	// Job exits reach the transcript from here, not from a client, so the
-	// TUI and ACP sessions both see a job's card settle.
+	// TUI and ACP sessions both see a job's card settle. The sink reports
+	// whether the outcome was made durable: the manager keeps an unacknowledged
+	// completion pending and retries it, because announcing one that was never
+	// stored leaves a resumed session showing a card that runs forever.
+	//
+	// The manager only sends detached completions here. A foreground command's
+	// outcome reaches the transcript as the tool call's own audit, so routing it
+	// here too would settle one execution twice.
 	// lspSync is declared here (and assigned below, where lspHandle is built)
 	// so a background job that changes files on disk can announce them once
 	// it exits. Nil until then — the callback checks.
 	var lspSync native.LSPSync
-	jobManager.SetOnExit(func(info native.JobInfo, ran time.Duration, output string) {
-		code := -1
-		if info.ExitCode != nil {
-			code = *info.ExitCode
-		}
-		state.AddJobExit(session.JobExit{ID: info.ID, Command: info.Command, ExitCode: code, Duration: ran, Output: output})
+	jobManager.SetOnExit(func(info native.JobInfo, ran time.Duration, output string) error {
+		exit := session.JobExitFromExecution(info.Execution(), info.Command, output, ran, info.ExitCode)
+		err := state.AddJobExit(exit)
+		// The rescan follows the files the command changed on disk, which
+		// happened whether or not the outcome was stored, so it is not gated on
+		// the durable write.
 		if lspSync != nil {
 			lspSync.Rescan()
 		}
+		if err != nil {
+			// Surface the failure and leave the record pending: it is already in
+			// the transcript in memory, and the manager retries the durable write.
+			state.Logger().Error("job exit was not persisted", "error", err, "job", info.ID, "execution", info.ExecutionID)
+			return err
+		}
+		return nil
 	})
 	// Roll back partially-built resources on any later failure. Each
 	// resource appends its cleanup as it comes up; the deferred func runs

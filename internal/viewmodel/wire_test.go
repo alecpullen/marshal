@@ -178,6 +178,78 @@ func TestWireMarkerAndJobCard(t *testing.T) {
 	}
 }
 
+// A client outside the process needs the same execution evidence the card
+// renders: the observed exit (distinct from the legacy -1 spelling of unknown),
+// the lifecycle state, the attachment, an accepted stop's cause and whether the
+// retained output was capped.
+func TestWireJobCarriesExecutionEvidence(t *testing.T) {
+	code := 3
+	start := structuredJobStart(1, "j", 2, "job-5", "exec-5")
+	exit := structuredJobExit(5, "job-5", "exec-5", &code)
+	exit.JobExit.State, exit.JobExit.StopCause, exit.JobExit.Truncated = "killed", "turn stop", true
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start, exit},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+	})
+	var job *WireJob
+	for _, n := range Project(nodes).Nodes {
+		if n.Tool != nil && n.Tool.Job != nil {
+			job = n.Tool.Job
+		}
+	}
+	if job == nil {
+		t.Fatal("no job card in the projection")
+	}
+	if job.Exit == nil || *job.Exit != 3 || job.ExitCode != 3 {
+		t.Fatalf("exit = %v / %d, want the observed 3", job.Exit, job.ExitCode)
+	}
+	if job.Status != "killed" || job.Attachment != "background" || job.StopCause != "turn stop" || !job.Truncated {
+		t.Fatalf("job = %+v, want its evidence projected", job)
+	}
+	if job.Running || job.Lost {
+		t.Fatalf("job = %+v, want a settled card", job)
+	}
+	if _, err := json.Marshal(job); err != nil {
+		t.Fatalf("a card with evidence must marshal: %v", err)
+	}
+}
+
+// An exit that was never observed is projected as absent, not as a zero a client
+// would render as success; the legacy -1 field stays for older clients.
+func TestWireJobOmitsUnobservedExit(t *testing.T) {
+	nodes := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0), narration(2, 1, 1, "Go."),
+		structuredJobStart(1, "j", 2, "job-6", "exec-6"),
+		session.TranscriptItem{Timestamp: at(5), Kind: session.KindJobExit,
+			JobExit: &session.JobExit{ID: "job-6", ExecutionID: "exec-6", ExitCode: -1,
+				State: "failed", Outcome: "startup_failure", At: at(5)}},
+	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
+	for _, n := range Project(nodes).Nodes {
+		if n.Tool == nil || n.Tool.Job == nil {
+			continue
+		}
+		job := n.Tool.Job
+		if job.Exit != nil {
+			t.Fatalf("Exit = %v, want it omitted for an unobserved exit", *job.Exit)
+		}
+		if job.ExitCode != -1 {
+			t.Fatalf("ExitCode = %d, want the legacy -1", job.ExitCode)
+		}
+		raw, err := json.Marshal(job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), `"exit"`) {
+			t.Fatalf("the wire omitted nothing: %s", raw)
+		}
+		if !strings.Contains(string(raw), `"status":"failed"`) {
+			t.Fatalf("the wire lost the lifecycle status: %s", raw)
+		}
+		return
+	}
+	t.Fatal("no job card in the projection")
+}
+
 func TestElideWorkdir(t *testing.T) {
 	root := "/home/a/proj/.marshal/worktrees/x"
 	if got := ElideWorkdir("cd "+root+" && pytest -q", root); got != "⌂ pytest -q" {

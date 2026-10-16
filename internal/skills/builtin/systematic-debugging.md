@@ -15,8 +15,8 @@ list of files you read.
 
 ## The loop
 
-1. **Reproduce it.** Get a reliable command that shows the failure. If you cannot reproduce it, everything after this is speculation. For intermittent failures, run it in a loop until you have a rate.
-2. **Read the actual error.** The whole message, the whole stack trace, the actual line. Not the summary you assumed it said.
+1. **Reproduce it.** Get a reliable command that shows the failure, and run it with `shell.run`. If you cannot reproduce it, everything after this is speculation. For intermittent failures, run it in a loop until you have a rate.
+2. **Read the actual error.** The whole message, the whole stack trace, the actual line. Not the summary you assumed it said. Then read the source it names with `repo.search`, `symbols`, or `file.read` — not from memory.
 3. **Form one hypothesis.** State what you think is wrong and — critically — what you would expect to observe if you were right.
 4. **Test that hypothesis cheaply.** A log line, a targeted test, reading the function. One variable at a time.
 5. **Confirm or discard, then repeat.** A discarded hypothesis is progress: write down what it ruled out.

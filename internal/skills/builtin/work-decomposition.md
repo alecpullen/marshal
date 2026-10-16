@@ -39,4 +39,6 @@ A unit is the smallest thing worth a fresh reviewer's gate. Fold setup, config, 
 ## Then decide
 
 Two or more genuinely independent units → `dispatching-parallel-agents`.
-Otherwise, do them in order yourself. Parallelism has coordination cost; it is not free.
+Dispatch one child per independent unit with `agent.run`, then collect the
+reports with `agent.await`. Otherwise, do them in order yourself. Parallelism
+has coordination cost; it is not free.

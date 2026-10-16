@@ -10,6 +10,8 @@ risk: read_only
 
 ## Before claiming completion
 
+Run each of these with `shell.run` and read the output it returns.
+
 1. **Run the build.** `CGO_ENABLED=1 go build ./cmd/marshal`
 2. **Run the tests.** `go test ./...` — not just the package you touched. Your change is exactly the kind that breaks a neighbour.
 3. **Vet and format.** `go vet ./...` and `gofmt -l .`

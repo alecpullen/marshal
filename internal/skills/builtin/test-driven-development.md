@@ -9,9 +9,9 @@ risk: workspace_write
 ## The cycle
 
 1. **Red** — write one test for the behaviour you want. Be specific: real inputs, real expected output.
-2. **Verify red** — run it and confirm it fails, *and that it fails for the right reason*. A test that passes before you write code is testing nothing.
-3. **Green** — write the minimum implementation that passes.
-4. **Verify green** — run it again.
+2. **Verify red** — run it with `shell.run` and confirm it fails, *and that it fails for the right reason*. A test that passes before you write code is testing nothing.
+3. **Green** — write the minimum implementation that passes, with `file.edit` (or `file.write` for a new file).
+4. **Verify green** — run it again with `shell.run`.
 5. **Refactor** — clean up with the test as your safety net.
 6. **Commit** — test and implementation together.
 

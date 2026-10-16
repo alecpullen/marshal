@@ -15,8 +15,10 @@ conflict, follow this skill.
 1. Read the whole plan first. Load only the task you are working on.
 2. Implement exactly one task at a time; do not start the next task until
    the current one verifies.
-3. Run the task's verification command(s) and confirm they pass.
+3. Run the task's verification command(s) with `shell.run` and confirm they
+   pass.
 4. Commit after each verified task:
+   - Check what changed with `git.status` and `git.diff` first.
    - Stage only the files the task touched (`git add <paths>`), never
      `git add -A` on an unfamiliar tree.
    - Commit message: `<plan-slug>: task N — <task title>`.
@@ -24,7 +26,7 @@ conflict, follow this skill.
      pre-existing changes into your commits.
 5. Mark the task complete in your todo list, then move to the next task.
 6. When all tasks verify, report a summary with the list of commits
-   (`git log --oneline <base>..HEAD`).
+   (`git.log`, or `git log --oneline <base>..HEAD`).
 
 Never commit failing work "to fix later". If a task cannot be verified,
 stop and report instead of committing.

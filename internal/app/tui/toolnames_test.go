@@ -12,6 +12,7 @@ func TestToolCategoryGlyph(t *testing.T) {
 		"test.run":         "›",
 		"repo.search":      "◈",
 		"codebase.search":  "◈",
+		"symbols":          "◈",
 		"symbols.find":     "◈",
 		"agent.run":        "⧉",
 		"web.fetch":        "◇",

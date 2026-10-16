@@ -61,7 +61,7 @@ func TestSymbolSubjectEmptyWithoutSymbols(t *testing.T) {
 }
 
 func TestSubjectFirstOnlyForSubjectTools(t *testing.T) {
-	for _, tool := range []string{"file.write_patch", "file.write", "file.read", "symbols.find"} {
+	for _, tool := range []string{"file.write_patch", "file.write", "file.read", "symbols", "symbols.find"} {
 		if !subjectFirstTool(tool) {
 			t.Errorf("%s should render subject-first", tool)
 		}
@@ -170,7 +170,11 @@ func TestSearchSubjectLeadsWithQuery(t *testing.T) {
 }
 
 func TestEverySearchToolHasADistinctQualifier(t *testing.T) {
-	tools := []string{"repo.search", "codebase.search", "symbols.find", "json.query", "csv.inspect"}
+	// The live search family, plus the retired names that stay in the map so
+	// persisted transcripts still render a qualifier. symbols.find is absent
+	// deliberately: it is the same tool as symbols under its old name, so a
+	// shared qualifier is the intent, not a collision.
+	tools := []string{"repo.search", "codebase.search", "symbols", "json.query", "csv.inspect"}
 	seen := map[string]string{}
 	for _, tool := range tools {
 		q, ok := searchQualifier(tool)
@@ -181,6 +185,31 @@ func TestEverySearchToolHasADistinctQualifier(t *testing.T) {
 			t.Fatalf("%s and %s share the qualifier %q", prev, tool, q)
 		}
 		seen[q] = tool
+	}
+	if q, ok := searchQualifier("symbols.find"); !ok || q != "symbols" {
+		t.Fatalf("retired symbols.find must still render with the symbols qualifier, got %q ok=%v", q, ok)
+	}
+}
+
+// TestSymbolsToolRowLeadsWithTheName: a symbol lookup's subject is the name,
+// so a row that also carries a path must not lead with the path. This is the
+// symbols-row counterpart of the json.query case in searchTarget.
+func TestSymbolsToolRowLeadsWithTheName(t *testing.T) {
+	e := registry.AuditEvent{
+		ToolName:      "symbols",
+		Args:          json.RawMessage(`{"name":"Parse","op":"definition","path":"a.go"}`),
+		ResultSummary: "a.go:2",
+	}
+	got := searchSubject(e)
+	if !strings.Contains(got, "Parse") || strings.Contains(got, "a.go") {
+		t.Fatalf("symbols row must lead with the name: %q", got)
+	}
+	if !strings.HasPrefix(got, "symbols ") {
+		t.Fatalf("symbols row must carry the qualifier: %q", got)
+	}
+	out := stripANSI(renderCompletedToolCall(e, false, nil, 100))
+	if !strings.Contains(out, glyph.Search) {
+		t.Fatalf("symbols row must wear the search glyph:\n%s", out)
 	}
 }
 

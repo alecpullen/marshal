@@ -35,6 +35,7 @@ import (
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/lsp"
 	"marshal/internal/oauth"
 	"marshal/internal/pipeline"
 	"marshal/internal/tools/desktop"
@@ -4181,7 +4182,10 @@ reviewer = "mock/mock-model"
 [lsp]
 enabled = true
 
-[lsp.servers.stub]
+# The server language key must be one the active root actually contains:
+# the manager starts servers only for languages present in the repo. The
+# stub script below is lsp-stub.sh, so "shell" is the key that matches.
+[lsp.servers.shell]
 command = "` + stub + `"
 `
 	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(configToml), 0644); err != nil {
@@ -4197,7 +4201,7 @@ command = "` + stub + `"
 	defer rt.Close(context.Background())
 
 	if rt.LSPManager == nil {
-		t.Fatal("LSPManager was not constructed even though [lsp.servers.stub] was configured")
+		t.Fatal("LSPManager was not constructed even though [lsp.servers.shell] was configured")
 	}
 
 	// Generous because the whole suite competes for CPU: the loop below
@@ -4566,6 +4570,29 @@ func TestSubagentEditsStillBackUpToParent(t *testing.T) {
 	}
 	if !parentState.HasBackup() {
 		t.Fatal("parent should have a backup for /undo, got 0")
+	}
+}
+
+// TestSubagentChildRegistryKeepsSymbolsTool pins the Tier 2b integration
+// note: agent.run children are built from the parent's native options, so
+// they register the same `symbols` tool the parent has.
+func TestSubagentChildRegistryKeepsSymbolsTool(t *testing.T) {
+	cfg := config.Default()
+	parentState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	reg := registry.New()
+	factory, _ := buildSubagentFactoryWithLock(cfg, parentState, nil, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{}, &swarm.WriteLock{}, native.Options{
+		WorkspaceRoot: t.TempDir(),
+		Symbols:       lsp.NewSymbolQuery(nil, nil, 0),
+	}, nil)
+	child, _, err := factory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	if child.Registry == nil {
+		t.Fatal("child.Registry should be set")
+	}
+	if _, ok := child.Registry.Lookup("symbols"); !ok {
+		t.Fatal("child registry must retain the parent's symbols tool")
 	}
 }
 
@@ -4943,7 +4970,7 @@ reviewer = "mock/m"
 		t.Fatalf("StartRuntime: %v", err)
 	}
 	defer rt.Close(context.Background())
-	retired := []string{"file.page", "repo.map", "repo.card", "repo.index", "ask_user", "skill.install", "skill.unload", "csv.inspect", "json.query", "sessions.list", "session.send", "watch.start", "agent.output", "job.output", "job.kill", "job.list", "recall_history", "scratchpad.", "parent.respond", "parent.ask", "parent.correct", "file.write_patch", "watch_id"}
+	retired := []string{"file.page", "repo.map", "repo.card", "repo.index", "ask_user", "skill.install", "skill.unload", "csv.inspect", "json.query", "sessions.list", "session.send", "watch.start", "agent.output", "job.output", "job.kill", "job.list", "recall_history", "scratchpad.", "parent.respond", "parent.ask", "parent.correct", "file.write_patch", "watch_id", "symbols.find", "diagnostics.check", "repo.search kind"}
 	for _, tl := range rt.Runner.Registry.List() {
 		if tl.Internal {
 			continue

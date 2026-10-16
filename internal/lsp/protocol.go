@@ -27,6 +27,14 @@ type Diagnostic struct {
 	Severity int    `json:"severity"`
 	Message  string `json:"message"`
 }
+
+// SymbolInformation is one workspace/symbol result.
+type SymbolInformation struct {
+	Name          string   `json:"name"`
+	Kind          int      `json:"kind"`
+	ContainerName string   `json:"containerName"`
+	Location      Location `json:"location"`
+}
 type Hover struct {
 	Contents json.RawMessage `json:"contents"`
 }

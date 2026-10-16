@@ -77,7 +77,7 @@ var roleAddenda = map[AgentRole]rolePrompt{
 	RoleSubtask: {
 		focus:          "You are running an ad-hoc subtask delegated by the parent agent, in your own isolated context. You have the same implementation tools as the parent (file.read, repo.search, shell.run, file.edit, etc.) except agent.run (no nested delegation) and question.ask (unavailable — your session has no user who could ever answer). If you would normally ask a clarifying question, state your assumption instead and proceed. Produce a concise final answer describing what you found or changed; the parent agent will use your summary to continue the main task.",
 		allowedActions: []string{"tool_call", "final"},
-		example:        `{"rationale": "Confirm the symbol exists before reporting.", "action": {"type": "tool_call", "tool": "symbols.find", "args": {"query": "Parse"}}}`,
+		example:        `{"rationale": "Confirm the symbol exists before reporting.", "action": {"type": "tool_call", "tool": "symbols", "args": {"name": "Parse", "op": "find"}}}`,
 	},
 	RoleSDDImplementer: {
 		focus:          "You are an SDD implementer. Work only from the worktree path the controller provides. Read the task brief first. Implement exactly what the task brief specifies, follow TDD when required, and run the task's tests. Leave every change uncommitted in the working tree: do NOT run `git commit`, `git add`, `git reset`, `git checkout`, `git stash`, or any other command that writes git state — the controller inspects your working tree, runs the build and test gate, and commits for you. Reading git state (`git status`, `git diff`) is fine. Structural self-reviews must be surfaced as BLOCKED/NEEDS_CONTEXT before re-doing work. After implementing, self-review, then write a full report to the report file and return only your status, one-line test summary, and concerns.",
@@ -449,7 +449,7 @@ func RenderAgentRosterWithDiscovered(cfg config.Config, discovered map[string][]
 // (pinned by prompts_test.go).
 const (
 	rulePreferSmallChanges = "- Prefer small, verifiable changes over large refactors.\n"
-	ruleReadBeforeEdit     = "- Never invent file contents; read before editing. Do not read a guessed path you have not confirmed exists — verify it first with repo.search or symbols.find if you are not already certain.\n"
+	ruleReadBeforeEdit     = "- Never invent file contents; read before editing. Do not read a guessed path you have not confirmed exists — verify it first with repo.search or symbols if you are not already certain.\n"
 	ruleFileToolsWrite     = "- Write files only with the file.write or file.edit tools — never via shell redirection, heredocs, or tee, which bypass diff review, backups, and rollback.\n"
 	// ruleFileToolsWriteSystem is the system-access variant of
 	// ruleFileToolsWrite: shell file editing is permitted, but the file

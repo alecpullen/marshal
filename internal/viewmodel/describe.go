@@ -222,6 +222,7 @@ var toolDisplayNames = map[string]string{
 	"web.search":       "Search web",
 	"git.status":       "Git status",
 	"git.diff":         "Git diff",
+	"symbols":          "Symbols",
 	"symbols.find":     "Find symbols",
 	"todos":            "Update todos",
 	"mode.request":     "Switch mode",

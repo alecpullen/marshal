@@ -78,6 +78,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The model roster no longer labels unpriced models "cheap", hides
   internal-only roles, and leaves out the embedding preset.
 
+**Context diet, Tier 2b: language servers that answer**
+
+- One `symbols` tool (find / definition / references / hover) replaces
+  `symbols.find`, `definition`, `references`, `hover` and `repo.search kind=`.
+  It resolves names through the language server, queries at the identifier's
+  real position, and falls back to the symbol index with a note.
+- After each edit, the tool result reports the errors that edit caused in any
+  file, from the language server, instead of running `go vet` on the edited
+  package. `diagnostics.check` is gone.
+- Language servers start only for languages present in the repository, restart
+  once after a crash, and are kept in sync after shell commands.
+
 ### Removed
 
 - The background knowledge pass (every 5 turns, at compaction and at exit)
@@ -100,6 +112,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `[diagnostics]` command checker ran in Marshal's launch directory, so a
+  worktree session checked the project checkout's copy and reported stale
+  errors. It now runs in the session's active root.
+- A clean file no longer looks like "no language server" to the diagnostics
+  path.
 - The verification reminder no longer treats every `shell.run` as an edit.
   Classification is now an explicit allowlist with two structural rules:
   patterns anchor to command-segment starts (`^`, `;`, `|`, `&`, newline,

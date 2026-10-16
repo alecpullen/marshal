@@ -35,6 +35,15 @@ describe('dock node helpers', () => {
     expect(nodeFile(tree.nodes.get('step:1')!)).toBeUndefined()
   })
 
+  it('resolves a symbols lookup to the file it points at', () => {
+    const t = mk([
+      { id: 'turn:1', kind: 'turn', children: ['step:1'] },
+      { id: 'step:1', kind: 'step', parent: 'turn:1', step: { headline: 'one' }, children: ['tool:1'] },
+      { id: 'tool:1', kind: 'tool', parent: 'step:1', tool: { name: 'symbols', display: 'symbols', calls: [{ target: 'a.go:2' }] } },
+    ])
+    expect(nodeFile(t.nodes.get('tool:1')!)).toEqual({ path: 'a.go', line: 2 })
+  })
+
   it('splits targets and subagent keys', () => {
     expect(splitTarget('x/y.ts')).toEqual({ path: 'x/y.ts' })
     expect(splitTarget('x/y.ts:10-20')).toEqual({ path: 'x/y.ts', line: 10 })

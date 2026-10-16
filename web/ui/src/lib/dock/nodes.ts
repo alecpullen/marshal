@@ -31,7 +31,7 @@ export function latestStepId(stack: Pick<StackState, 'nodes' | 'roots'>): string
     .at(-1)?.id
 }
 
-const FILE_READ_TOOLS = new Set(['file.read', 'symbols.find'])
+const FILE_READ_TOOLS = new Set(['file.read', 'symbols', 'symbols.find'])
 
 /** A node's edit calls, i.e. those naming the files they changed. */
 export function editCalls(n: WireNode): WireCall[] {

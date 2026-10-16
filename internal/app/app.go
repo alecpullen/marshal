@@ -647,12 +647,19 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	jobManager.SetDirFunc(func() string { return state.Workspace().ActiveRoot })
 	// Job exits reach the transcript from here, not from a client, so the
 	// TUI and ACP sessions both see a job's card settle.
+	// lspSync is declared here (and assigned below, where lspHandle is built)
+	// so a background job that changes files on disk can announce them once
+	// it exits. Nil until then — the callback checks.
+	var lspSync native.LSPSync
 	jobManager.SetOnExit(func(info native.JobInfo, ran time.Duration, output string) {
 		code := -1
 		if info.ExitCode != nil {
 			code = *info.ExitCode
 		}
 		state.AddJobExit(session.JobExit{ID: info.ID, Command: info.Command, ExitCode: code, Duration: ran, Output: output})
+		if lspSync != nil {
+			lspSync.Rescan()
+		}
 	})
 	// Roll back partially-built resources on any later failure. Each
 	// resource appends its cleanup as it comes up; the deferred func runs
@@ -774,13 +781,16 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if lspEnabled(cfg.LSP) {
 		servers := lsp.DetectServers(toServerSpecs(cfg.LSP.Servers), disabledLangs(cfg.LSP.Servers))
 		if len(servers) > 0 {
-			lspHandle = lsp.NewHandle(lsp.NewManager(state.Workspace().ActiveRoot, servers, state.Logger()), servers, state.Logger())
+			lspHandle = lsp.NewHandle(lsp.NewManager(state.Workspace().ActiveRoot, lsp.ServersForRoot(servers, state.Workspace().ActiveRoot), state.Logger()), servers, state.Logger())
 		}
 	}
+	// symbols answers through the language servers and falls back to the
+	// symbol index, so it is wired unconditionally; lspHandle may be nil.
+	nativeOpts.Symbols = lsp.NewSymbolQuery(lspHandle, database, projectID)
 	if lspHandle != nil {
-		nativeOpts.LSP = lsp.NewQueryAdapter(lspHandle)
-		nativeOpts.LSPSource = lsp.NewDiagnosticsAdapter(lspHandle)
+		nativeOpts.LSPSync = lsp.NewSync(lspHandle)
 		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspHandle)
+		lspSync = lsp.NewSync(lspHandle)
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
@@ -1992,7 +2002,7 @@ func fallbackResponseFormat(caps schema.ProviderCapabilities) *schema.ResponseFo
 // buildIndexWorkers assembles the indexing background workers: the
 // fsnotify watcher (only when config.WatchEnabled allows) and the one-shot
 // startup scan (AI-02 — always; hashes+symbols even without embeddings so
-// repo.map/symbols.find work on a fresh project). Every successful pass
+// repo.map/symbols work on a fresh project). Every successful pass
 // publishes indexEventCompleted on indexBroker, which triggers the
 // context-pack re-seed in startRuntime.
 func buildIndexWorkers(cfg config.Config, state *session.State, database *db.DB, projectID int64, workingDir string, lspAdapter index.LSPSymbols, indexBroker *pubsub.Broker[index.Report], logger *slog.Logger) []worker.Worker {
@@ -2215,7 +2225,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			func() bool { return clipboard.Remote(os.Getenv) },
 		))
 		if rt.LSPManager != nil {
-			tuiOpts = append(tuiOpts, tui.WithReferenceFinder(lsp.NewQueryAdapter(rt.LSPManager)))
+			tuiOpts = append(tuiOpts, tui.WithReferenceFinder(lsp.NewSymbolQuery(rt.LSPManager, nil, 0)))
 		}
 		tuiOpts = append(tuiOpts, tui.WithRunnerSource(func() (context.Context, tui.AgentRunner) {
 			rt.mu.Lock()

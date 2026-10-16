@@ -53,7 +53,7 @@ const (
 	// intentNudgeMessage is sent once per turn when a short "I'll do X next"
 	// reply arrives with no tool call (see looksLikeIntentOnly).
 	intentNudgeMessage       = "You said what you would do next but did not call a tool. Call the tool now, or give your final answer."
-	verificationNudgeMessage = "You made changes this session (last change: %s %s) but have not verified them. Run test.run or diagnostics.check — or the project's test/build command via shell.run — before finishing. If verification is genuinely impossible (no test suite, docs-only change), say so in your final answer."
+	verificationNudgeMessage = "You made changes this session (last change: %s %s) but have not verified them. Run test.run — or the project's test/build command via shell.run — before finishing. If verification is genuinely impossible (no test suite, docs-only change), say so in your final answer."
 	// emptyModelResponsePlaceholder stands in for a truly empty model
 	// response when recording the assistant's turn in the conversation.
 	// Some providers reject the next request outright if any assistant

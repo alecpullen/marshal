@@ -35,6 +35,36 @@ func TestPruneStaleToolOutputs_SupersededRead(t *testing.T) {
 	}
 }
 
+// TestPruneStaleToolOutputs_SupersededSymbols: the `symbols` tool replaced
+// symbols.find, and a repeated lookup of the same name must supersede the
+// earlier result exactly as a repeated file.read does. Without a read-class
+// key the call falls through to the unique-args sentinel, so nothing is ever
+// superseded and every repeat keeps its full output.
+func TestPruneStaleToolOutputs_SupersededSymbols(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	wire := []schema.ChatMessage{
+		{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{
+			{ID: "c1", Name: "symbols", Args: jsonRaw(`{"name":"Parse","op":"find"}`)},
+		}},
+		{Role: schema.RoleTool, ToolCallID: "c1", Content: long},
+		// Same subject, refined: the later lookup supersedes the earlier.
+		{Role: schema.RoleAssistant, ToolCalls: []schema.ToolCall{
+			{ID: "c2", Name: "symbols", Args: jsonRaw(`{"name":"Parse","op":"definition"}`)},
+		}},
+		{Role: schema.RoleTool, ToolCallID: "c2", Content: long},
+	}
+	got, pruned := pruneStaleToolOutputs(wire, pruneMinSizeDefault)
+	if pruned != 1 {
+		t.Fatalf("pruned = %d, want 1", pruned)
+	}
+	if !strings.HasPrefix(got[1].Content, "[pruned stale output of symbols(Parse):") {
+		t.Fatalf("expected c1 result to be stubbed, got %q", got[1].Content)
+	}
+	if got[3].Content != long {
+		t.Fatalf("the newer c2 result must survive intact; got %q", got[3].Content)
+	}
+}
+
 // TestPruneStaleToolOutputs_NothingSuperseded: a single, non-repeated
 // shell.run result must be left alone — non-read-class tools never
 // collide, even when called once (which would be the case anyway).

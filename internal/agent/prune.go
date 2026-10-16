@@ -34,12 +34,23 @@ func toolKey(toolName string, args json.RawMessage) string {
 		return toolName + "\x00" + string(args)
 	}
 	switch toolName {
-	case "file.read", "file.read_range", "symbols.find", "search.grep":
+	case "file.read", "file.read_range", "search.grep":
 		if p, ok := stringField(m, "path"); ok {
 			return toolName + "|" + p
 		}
 		if q, ok := stringField(m, "query"); ok {
 			return toolName + "|" + q
+		}
+		return toolName + "\x00" + string(args)
+	case "symbols":
+		// The subject of a symbol lookup is the name, and a path pins one
+		// occurrence of it. Keying on the name first keeps two different
+		// names in one file distinct, so only a genuine repeat supersedes.
+		if n, ok := stringField(m, "name"); ok {
+			return toolName + "|" + n
+		}
+		if p, ok := stringField(m, "path"); ok {
+			return toolName + "|" + p
 		}
 		return toolName + "\x00" + string(args)
 	}
@@ -81,9 +92,9 @@ func wireToolMeta(assistant *schema.ChatMessage) map[string]struct {
 
 // pruneStaleToolOutputs replaces tool-result messages whose (tool, path)
 // was re-called later in the same turn, shrinking the wire before
-// compaction. Only read-class tools with a stable path key (file.read,
-// file.read_range, symbols.find, search.grep) participate — every other
-// tool gets a unique key so its outputs are never superseded.
+// compaction. Only read-class tools with a stable key (file.read,
+// file.read_range, search.grep, symbols) participate — every other tool
+// gets a unique key so its outputs are never superseded.
 //
 // The returned slice is a fresh copy of wire; the original is not
 // mutated. pruned is the number of outputs replaced. minSize is the

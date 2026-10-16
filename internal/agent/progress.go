@@ -21,7 +21,7 @@ const (
 
 func categorize(toolName string) toolCategory {
 	switch toolName {
-	case "file.read", "symbols.find":
+	case "file.read", "symbols":
 		return catRead
 	case "repo.search":
 		return catSearch
@@ -606,8 +606,9 @@ func looksLikeVerificationCommand(args string) bool {
 }
 
 // unverifiedMutation reports the last successful mutating call and whether
-// it lacks any later verification call. Verification means test.run,
-// diagnostics.check, or a test-like shell.run. Mutations are KNOWN edits
+// it lacks any later verification call. Verification means test.run or a
+// test-like shell.run — diagnostics arrive folded into the edit that caused
+// them, so they are not a separate call any more. Mutations are KNOWN edits
 // only: file.write/file.write_patch by name, or shell.run commands on the
 // explicit mutating allowlist (looksLikeMutatingShellCommand). Every other
 // shell.run — housekeeping like git commit, research like git log, and any
@@ -630,7 +631,7 @@ func (t *progressTracker) unverifiedMutation() (callEntry, bool) {
 		if e.name == idleEntryName {
 			continue
 		}
-		isVerification := e.name == "test.run" || e.name == "diagnostics.check" ||
+		isVerification := e.name == "test.run" ||
 			(e.name == "shell.run" && looksLikeVerificationCommand(e.args))
 		if isVerification {
 			// A verification call satisfies the gate regardless of whether it

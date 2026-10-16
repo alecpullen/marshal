@@ -7,38 +7,28 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-// TestPlanWriterViewExcludesDiagnosticsFromRealNativeRegistry asserts the
-// SDD plan-authoring view filters the side-effectful native tool that
-// carries RiskReadOnly but runs configured shell commands. The test builds a
-// real native registry so a future addition to PlanWriterView that relies on
-// an "exclude-by-Risk" shortcut fails here instead of in production.
-func TestPlanWriterViewExcludesDiagnosticsFromRealNativeRegistry(t *testing.T) {
+// TestPlanWriterViewOverRealNativeRegistry asserts the SDD plan-authoring
+// view keeps the read-only repository tools the authoring child needs and
+// never exposes a side-effectful one. The test builds a real native registry
+// so a future addition to PlanWriterView that relies on an "exclude-by-Risk"
+// shortcut fails here instead of in production.
+func TestPlanWriterViewOverRealNativeRegistry(t *testing.T) {
 	root := t.TempDir()
 	src := registry.New()
 	if err := RegisterAll(src, Options{
 		WorkspaceRoot: root,
 		CommandRunner: &fakeRunner{},
 		Config:        config.Config{},
+		Symbols:       &fakeQuerier{},
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	// The tool must be present in the source registry; otherwise the
-	// assertion below cannot distinguish a real filter from a missing
-	// registration.
-	if _, ok := src.Lookup("diagnostics.check"); !ok {
-		t.Fatal("precondition: source registry must register diagnostics.check")
-	}
-
 	view := registry.PlanWriterView(src, "@plan", []string{"@plan/feature.md"})
 
-	if _, ok := view.Lookup("diagnostics.check"); ok {
-		t.Error("diagnostics.check must be excluded from the plan-author view: it runs configured shell commands")
-	}
-
-	// The view must also keep the safe repository-read tools the
-	// authoring child actually needs to inspect the repo.
-	for _, name := range []string{"file.read", "repo.search", "symbols.find"} {
+	// The view must keep the safe repository-read tools the authoring child
+	// actually needs to inspect the repo.
+	for _, name := range []string{"file.read", "repo.search", "symbols"} {
 		if _, ok := view.Lookup(name); !ok {
 			t.Errorf("plan-author view must retain read-only tool %q", name)
 		}

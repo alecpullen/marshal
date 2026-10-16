@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Client is one JSON-RPC connection to one language server.
@@ -22,11 +24,14 @@ type Client struct {
 
 	writeMu sync.Mutex // serializes writes to c.w (server stdin)
 
-	diagMu sync.Mutex
-	diags  map[string][]Diagnostic
+	diagMu   sync.Mutex
+	diags    map[string][]Diagnostic
+	diagSeq  uint64
+	lastDiag time.Time
 
 	closed    chan struct{}
 	closeOnce sync.Once
+	done      chan struct{}
 }
 
 func newClient(w io.Writer, r io.Reader) *Client {
@@ -36,6 +41,7 @@ func newClient(w io.Writer, r io.Reader) *Client {
 		pending: map[int]chan json.RawMessage{},
 		diags:   map[string][]Diagnostic{},
 		closed:  make(chan struct{}),
+		done:    make(chan struct{}),
 	}
 	go c.readLoop()
 	return c
@@ -52,6 +58,28 @@ func (c *Client) ClearDiagnostics(uri string) {
 	c.diagMu.Lock()
 	delete(c.diags, uri)
 	c.diagMu.Unlock()
+}
+
+// Done is closed when the server stream ends: the server exited or broke.
+func (c *Client) Done() <-chan struct{} { return c.done }
+
+// DiagState reports how many publishDiagnostics notifications have arrived
+// and when the last one did.
+func (c *Client) DiagState() (uint64, time.Time) {
+	c.diagMu.Lock()
+	defer c.diagMu.Unlock()
+	return c.diagSeq, c.lastDiag
+}
+
+// AllDiagnostics returns a copy of the diagnostics cache keyed by URI.
+func (c *Client) AllDiagnostics() map[string][]Diagnostic {
+	c.diagMu.Lock()
+	defer c.diagMu.Unlock()
+	out := make(map[string][]Diagnostic, len(c.diags))
+	for k, v := range c.diags {
+		out[k] = append([]Diagnostic(nil), v...)
+	}
+	return out
 }
 
 // writeMessage serializes a framed message to the server's stdin.
@@ -99,6 +127,7 @@ func trimHeader(line, key string) string {
 }
 
 func (c *Client) readLoop() {
+	defer close(c.done)
 	for {
 		body, err := readMessage(c.r)
 		if err != nil {
@@ -138,6 +167,8 @@ func (c *Client) readLoop() {
 			if json.Unmarshal(m.Params, &p) == nil {
 				c.diagMu.Lock()
 				c.diags[p.URI] = p.Diagnostics
+				c.diagSeq++
+				c.lastDiag = time.Now()
 				c.diagMu.Unlock()
 			}
 		}
@@ -203,6 +234,11 @@ func (c *Client) Request(ctx context.Context, method string, params any) (json.R
 		delete(c.pending, id)
 		c.mu.Unlock()
 		return nil, fmt.Errorf("lsp client closed")
+	case <-c.done:
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
+		return nil, errors.New("lsp server exited")
 	case res := <-ch:
 		return res, nil
 	}
@@ -223,11 +259,17 @@ func (c *Client) Initialize(ctx context.Context, rootURI string) error {
 		"processId": nil,
 		"rootUri":   rootURI,
 		"capabilities": map[string]any{
+			"workspace": map[string]any{
+				"symbol":                map[string]any{},
+				"didChangeWatchedFiles": map[string]any{"dynamicRegistration": false},
+			},
 			"textDocument": map[string]any{
-				"documentSymbol": map[string]any{},
-				"definition":     map[string]any{},
-				"references":     map[string]any{},
-				"hover":          map[string]any{},
+				"synchronization":    map[string]any{"didSave": true},
+				"publishDiagnostics": map[string]any{},
+				"documentSymbol":     map[string]any{},
+				"definition":         map[string]any{},
+				"references":         map[string]any{},
+				"hover":              map[string]any{},
 			},
 		},
 	})

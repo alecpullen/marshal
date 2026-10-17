@@ -4942,6 +4942,11 @@ reviewer = "mock/m"
 	}
 }
 
+// retiredToolNames are tool names (and name-shaped fragments) the model must
+// never be taught again. Shared by TestNoToolDescriptionNamesARetiredTool and
+// TestToolsDocumentationDrift so the two cannot drift apart.
+var retiredToolNames = []string{"file.page", "repo.map", "repo.card", "repo.index", "ask_user", "skill.install", "skill.unload", "csv.inspect", "json.query", "sessions.list", "session.send", "watch.start", "agent.output", "job.output", "job.kill", "job.list", "recall_history", "scratchpad.", "parent.respond", "parent.ask", "parent.correct", "file.write_patch", "watch_id", "symbols.find", "diagnostics.check", "repo.search kind"}
+
 // No model-facing text may teach a tool the model no longer has.
 func TestNoToolDescriptionNamesARetiredTool(t *testing.T) {
 	tmp := t.TempDir()
@@ -4970,13 +4975,12 @@ reviewer = "mock/m"
 		t.Fatalf("StartRuntime: %v", err)
 	}
 	defer rt.Close(context.Background())
-	retired := []string{"file.page", "repo.map", "repo.card", "repo.index", "ask_user", "skill.install", "skill.unload", "csv.inspect", "json.query", "sessions.list", "session.send", "watch.start", "agent.output", "job.output", "job.kill", "job.list", "recall_history", "scratchpad.", "parent.respond", "parent.ask", "parent.correct", "file.write_patch", "watch_id", "symbols.find", "diagnostics.check", "repo.search kind"}
 	for _, tl := range rt.Runner.Registry.List() {
 		if tl.Internal {
 			continue
 		}
 		text := tl.Description + string(tl.Schema)
-		for _, name := range retired {
+		for _, name := range retiredToolNames {
 			if strings.Contains(text, name) {
 				t.Errorf("tool %s still mentions retired tool %s", tl.Name, name)
 			}
@@ -4994,7 +4998,7 @@ reviewer = "mock/m"
 	}
 	for _, sk := range skills {
 		text := sk.Description + "\n" + sk.Body
-		for _, name := range retired {
+		for _, name := range retiredToolNames {
 			if strings.Contains(text, name) {
 				t.Errorf("skill %s still mentions retired tool %s", sk.Name, name)
 			}

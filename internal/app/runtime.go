@@ -23,6 +23,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/hooks"
 	"marshal/internal/index"
+	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/lsp"
 	"marshal/internal/pubsub"
@@ -210,6 +211,14 @@ type Runtime struct {
 	// mid-swap — the posture the TUI has always had, deliberately accepted
 	// rather than fixed here (see docs/mcp-oauth-verification.md).
 	ConfigReloader func(config.Config) error
+	// AuthResolver is the credential/OAuth dependency this runtime selected
+	// (WithAuthResolver, or provider.DefaultAuthResolver() when omitted). It
+	// is resolved once at the outer construction boundary and retained here so
+	// every rebuild — reloadAgentRuntime, NewSession, and the Run
+	// resume/restart loop — hands the SAME resolver to provider construction,
+	// the refresh workers and the MCP managers. Never nil for a Runtime built
+	// by startRuntime, including the inactive-provider startup path.
+	AuthResolver provider.AuthResolver
 	// WriteLock is the single swarm.WriteLock shared by the parent runner
 	// and every agent.run child. It is created once at startRuntime and
 	// reused across config reloads so in-flight background children (which
@@ -587,6 +596,15 @@ func StartRuntime(ctx context.Context, opts ...Option) (*Runtime, error) {
 // startRuntime is the internal implementation shared by Run and StartRuntime.
 // It expects a fully-resolved options struct — no option iteration.
 func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
+	// Resolve the credential/OAuth dependency first: an explicitly nil
+	// injection is rejected before any state is created, and an omitted one
+	// selects the production default exactly once. The value is carried on the
+	// Runtime so every rebuild path reuses this same object.
+	authResolver, err := resolveAuthResolver(runOpts)
+	if err != nil {
+		return nil, err
+	}
+
 	workingDir, err := resolveWorkingDir(runOpts.workingDir)
 	if err != nil {
 		return nil, err
@@ -814,7 +832,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// closure built inside it captures the cell, and the OnFire closure is
 	// built before the Runtime exists.
 	watchResumeCell := &WatchResumeHook{}
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, watchMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, watchMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock, authResolver)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -884,6 +902,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		TrustPromptPending:   trustPromptPending,
 		LSPManager:           lspHandle,
 		ConfigReloader:       runOpts.configReloader,
+		AuthResolver:         authResolver,
 		additionalDirs:       runOpts.additionalDirs,
 		workCtx:              workCtx,
 		workCancel:           workCancel,
@@ -1019,13 +1038,15 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	autoloadSkills(rt.Config, rt.SkillIndex, newState, rt.Logger)
 
 	// Reuse the runtime's stable WriteLock so a /session new keeps the same
-	// gate across the swap (in-flight children from the old session hold it).
+	// gate across the swap (in-flight children from the old session hold it),
+	// and hand the rebuild the same auth resolver the runtime selected: a new
+	// session must not silently reacquire the production credential backend.
 	lock := rt.WriteLock
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
 	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
-		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock,
+		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, rt.AuthResolver,
 	)
 	if err != nil {
 		// Roll back the empty session row so /sessions stays clean.

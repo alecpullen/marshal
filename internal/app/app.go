@@ -25,6 +25,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
 	"marshal/internal/contextpack"
+	"marshal/internal/credentials"
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
 	"marshal/internal/hooks"
@@ -104,6 +105,15 @@ type options struct {
 	workers           []worker.Worker
 	configReloader    func(config.Config) error
 	sessionRouting    config.SessionRouting
+	// authResolver is the credential/OAuth dependency the runtime hands to
+	// every credential-backed consumer it builds: provider construction, the
+	// OAuth refresh workers and the MCP managers. authResolverSet records an
+	// explicit injection (including an explicitly nil one) so an omitted
+	// option can select the production default without masking a caller's
+	// nil — which is rejected rather than silently swapping in the real
+	// OS keychain.
+	authResolver    provider.AuthResolver
+	authResolverSet bool
 }
 
 type Option func(*options)
@@ -112,6 +122,42 @@ type Option func(*options)
 // routing given to WithSessionRouting names an unknown profile, role or
 // preset.
 var ErrInvalidSessionRouting = errors.New("invalid session routing")
+
+// ErrAuthResolverRequired is returned by StartRuntime when a caller injects
+// an explicitly nil provider.AuthResolver. An omitted option means "use the
+// production default"; an explicit nil is a bug in the caller, and treating
+// it as "default" would silently point an isolated runtime at the real OS
+// keychain.
+var ErrAuthResolverRequired = errors.New("app: WithAuthResolver requires a non-nil auth resolver")
+
+// WithAuthResolver pins the credential/OAuth dependency the runtime uses for
+// every credential-backed construction: provider building (including Codex
+// OAuth engines), the per-provider token-refresh workers, and the MCP
+// managers' OAuth token stores. Production omits it, which selects
+// provider.DefaultAuthResolver(); tests inject an isolated resolver so no
+// part of startup or rebuild can reach the developer's real keychain.
+//
+// Passing an explicitly nil resolver is rejected at StartRuntime rather than
+// quietly falling back to the production default.
+func WithAuthResolver(auth provider.AuthResolver) Option {
+	return func(opts *options) {
+		opts.authResolver = auth
+		opts.authResolverSet = true
+	}
+}
+
+// resolveAuthResolver picks the effective resolver for one runtime. An
+// omitted option selects the production default; an explicitly injected
+// (therefore nil) resolver is an error.
+func resolveAuthResolver(opts options) (provider.AuthResolver, error) {
+	if !opts.authResolverSet {
+		return provider.DefaultAuthResolver(), nil
+	}
+	if opts.authResolver == nil {
+		return nil, ErrAuthResolverRequired
+	}
+	return opts.authResolver, nil
+}
 
 // WithSessionRouting gives the runtime's session its own routing: profile
 // (when non-empty) replaces the configured default profile, and overrides
@@ -268,6 +314,12 @@ type routedProviderResolver struct {
 	mu        *sync.Mutex // guards providers; swarm may resolve roles from concurrent paths
 	providers map[string]provider.Provider
 	sessionID string
+	// auth is the credential/OAuth dependency every provider this resolver
+	// builds must use. It is never nil: the runtime resolves the default
+	// once at its construction boundary (see resolveAuthResolver) and every
+	// copy below carries the same value forward, so no rebuild can fall back
+	// to the process-wide default after an isolated startup.
+	auth provider.AuthResolver
 }
 
 // dbMemoryProvider adapts stored project memories for context-pack
@@ -283,7 +335,15 @@ func newDBMemoryProvider(database *db.DB) *dbMemoryProvider {
 	return &dbMemoryProvider{db: database, workspace: os.Getenv("MARSHAL_WORKSPACE")}
 }
 
-func newRoutedProviderResolver(cfg config.Config, dataDir string) *routedProviderResolver {
+// newRoutedProviderResolver builds the resolver for one runtime generation.
+//
+// auth is the runtime's selected credential/OAuth dependency. The runtime
+// paths always pass one explicitly (see resolveAuthResolver). The parameter is
+// variadic only so call sites outside this change — test fixtures that predate
+// injection — keep compiling: an omitted resolver selects
+// unmappedAuthResolver, which fails every credential entry point rather than
+// falling back to the production OS keychain.
+func newRoutedProviderResolver(cfg config.Config, dataDir string, auth ...provider.AuthResolver) *routedProviderResolver {
 	return &routedProviderResolver{
 		router:    routing.NewStaticRouter(cfg.RoutingConfig()),
 		cfg:       cfg,
@@ -291,7 +351,42 @@ func newRoutedProviderResolver(cfg config.Config, dataDir string) *routedProvide
 		mu:        &sync.Mutex{},
 		providers: make(map[string]provider.Provider),
 		sessionID: "",
+		auth:      effectiveAuthResolver(firstAuthResolver(auth)),
 	}
+}
+
+// firstAuthResolver returns the explicitly supplied resolver, or nil when the
+// caller omitted one.
+func firstAuthResolver(auth []provider.AuthResolver) provider.AuthResolver {
+	if len(auth) == 0 {
+		return nil
+	}
+	return auth[0]
+}
+
+// effectiveAuthResolver returns auth when one was selected, and a
+// fail-closed resolver otherwise. It never substitutes the production
+// default: a code path that forgot to thread the resolver must fail loudly
+// before it can open the developer's real credential store.
+func effectiveAuthResolver(auth provider.AuthResolver) provider.AuthResolver {
+	if auth != nil {
+		return auth
+	}
+	return unmappedAuthResolver{}
+}
+
+// unmappedAuthResolver is the credential dependency used when no resolver was
+// selected. Every entry point refuses, naming what it refused to do, so a
+// missed injection surfaces as a provider/MCP failure in the test that
+// provoked it instead of reaching the real OS keychain.
+type unmappedAuthResolver struct{}
+
+func (unmappedAuthResolver) OpenStore(service string) (credentials.Store, error) {
+	return nil, fmt.Errorf("app: no auth resolver was selected; refusing to open the OS credential store for %q", service)
+}
+
+func (unmappedAuthResolver) CodexOAuthEngine(name string) (*oauth.Engine, error) {
+	return nil, fmt.Errorf("app: no auth resolver was selected; refusing to build the production OAuth engine for %q", name)
 }
 
 // withSessionID returns a copy of the resolver that stamps the given stable
@@ -310,6 +405,7 @@ func (r *routedProviderResolver) withSessionID(sessionID string) *routedProvider
 		mu:        r.mu,
 		providers: r.providers,
 		sessionID: sessionID,
+		auth:      r.auth,
 	}
 }
 
@@ -332,6 +428,7 @@ func (r *routedProviderResolver) withRoleOverrides(overrides map[routing.AgentRo
 		providers: r.providers, // shared cache
 		mu:        r.mu,        // shared mutex (pointer)
 		sessionID: r.sessionID,
+		auth:      r.auth,
 	}
 }
 
@@ -397,7 +494,11 @@ func (r *routedProviderResolver) providerFor(route routing.Route) (provider.Prov
 	if !ok {
 		return nil, fmt.Errorf("routing provider %q is not configured", route.Preset.Provider)
 	}
-	p, err := provider.NewFromConfigWithSession(route.Preset.Provider, providerConfig, r.dataDir, r.cfg.Privacy.RemoteLimitDiscovery, r.cfg.Agent.ThinkingBudgetMargin, r.sessionID)
+	// The runtime's selected resolver, never the process-wide default: the
+	// Codex OAuth engine a provider holds must come from the same resolver the
+	// refresh worker and the MCP managers use, so a test runtime cannot reach
+	// the developer's keychain and two runtimes cannot share tokens.
+	p, err := provider.NewFromConfigWithAuth(route.Preset.Provider, providerConfig, r.dataDir, r.cfg.Privacy.RemoteLimitDiscovery, r.cfg.Agent.ThinkingBudgetMargin, r.sessionID, effectiveAuthResolver(r.auth))
 	if err != nil {
 		return nil, err
 	}
@@ -565,11 +666,15 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 // lock. Production uses buildAgentRunnerWithLock so the parent runner and
 // every agent.run child share the runtime's stable WriteLock across config
 // reloads. (Keeping this wrapper avoids churning the ~25 test call sites.)
-func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
+//
+// An auth fixture passes its resolver as the trailing argument; every other
+// fixture omits it and therefore fails closed (see newRoutedProviderResolver)
+// instead of reaching the real OS keychain.
+func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	// The watch manager is owned by the runtime (via buildAgentRunnerWithLock);
 	// this wrapper discards it so the ~25 test call sites that use
 	// buildAgentRunner directly do not need to change.
-	runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{})
+	runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{}, auth...)
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err
 }
 
@@ -578,9 +683,12 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // agent.run child serialize writes on the same gate, and so a config reload
 // (which rebuilds the runner and the subagent factory) reuses the same lock
 // that in-flight background children from the pre-reload generation already
-// hold.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
-	resolver := newRoutedProviderResolver(cfg, dataDir).withSessionID(state.SessionID())
+// hold. It also takes the runtime's selected auth resolver as its LAST
+// parameter (variadic so pre-existing non-auth call sites keep compiling and
+// fail closed instead of reaching the real keychain).
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
+	authResolver := effectiveAuthResolver(firstAuthResolver(auth))
+	resolver := newRoutedProviderResolver(cfg, dataDir, authResolver).withSessionID(state.SessionID())
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
@@ -803,7 +911,13 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 
 	var mcpMgr *mcp.Manager
 	if len(cfg.MCP.Servers) > 0 {
-		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()))
+		// The manager's OAuth token store comes from the runtime's selected
+		// resolver, so a remote MCP server's tokens land where the rest of
+		// this runtime reads them — and a test runtime never reaches the
+		// developer's keychain. authResolver.OpenStore never falls back to
+		// credentials.New, so an injected resolver's error stays local and a
+		// manager built without one refuses rather than swapping stores.
+		mcpMgr = mcp.NewManager(&cfg, mcp.WithManagerLogger(state.Logger()), mcp.WithCredentialFactory(authResolver.OpenStore))
 		// A server that will not start is a per-server failure, not a fatal
 		// one: the agent must still run, with the healthy servers' tools and
 		// a notice naming what was skipped. Aborting here used to leave the
@@ -2052,20 +2166,24 @@ func buildIndexWorkers(cfg config.Config, state *session.State, database *db.DB,
 }
 
 // buildOAuthWorkers returns one token-refresh worker per provider entry that
-// authenticates with OAuth. The worker shares the provider's engine (via
-// provider.CodexOAuthEngine), so a proactive refresh and an inline chat-time
-// refresh serialize on the same mutex rather than racing.
+// authenticates with OAuth. Both the worker and the provider backend get their
+// engine from the same auth resolver, so a proactive refresh and an inline
+// chat-time refresh serialize on the same mutex rather than racing: the
+// resolver's per-name engine cache is what guarantees the two hold the exact
+// same *oauth.Engine (see provider.AuthResolver).
 //
-// A provider whose engine cannot be built (no OS keychain) is skipped with a
-// warning: the provider itself will report the same problem when used, and a
-// missing keychain must not prevent the rest of the app from starting.
-func buildOAuthWorkers(cfg config.Config, logger *slog.Logger) []worker.Worker {
+// A provider whose engine cannot be built (no OS keychain, or a resolver that
+// refuses) is skipped with a warning: the provider itself will report the same
+// problem when used, and a missing keychain must not prevent the rest of the
+// app from starting.
+func buildOAuthWorkers(cfg config.Config, logger *slog.Logger, auth ...provider.AuthResolver) []worker.Worker {
+	authResolver := effectiveAuthResolver(firstAuthResolver(auth))
 	var out []worker.Worker
 	for name, pc := range cfg.Providers {
 		if pc.Auth != "oauth" || pc.Type != "openai_codex" {
 			continue
 		}
-		engine, err := provider.CodexOAuthEngine(name)
+		engine, err := authResolver.CodexOAuthEngine(name)
 		if err != nil {
 			logger.Warn("oauth refresh worker not started", "provider", name, "err", err)
 			continue
@@ -2106,6 +2224,19 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		opt(&runOpts)
 	}
 	runOpts.deferTrustPrompt = true
+
+	// Resolve the credential/OAuth dependency ONCE, at the outer construction
+	// boundary: an explicitly nil injection is rejected here, and an omitted
+	// one becomes the production default stored back on the options. Every
+	// startRuntime iteration in the resume/restart loop below therefore hands
+	// the very same object to provider construction, the refresh workers and
+	// the MCP managers.
+	authResolver, err := resolveAuthResolver(runOpts)
+	if err != nil {
+		return err
+	}
+	runOpts.authResolver = authResolver
+	runOpts.authResolverSet = true
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -2353,7 +2484,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			workers = buildIndexWorkers(cfg, state, database, projectID, workingDir, lspAdapter,
 				must[*pubsub.Broker[index.Report]](rt.IndexBroker), logger)
 		}
-		workers = append(workers, buildOAuthWorkers(cfg, logger)...)
+		workers = append(workers, buildOAuthWorkers(cfg, logger, rt.AuthResolver)...)
 		// LSPManager is started inside startRuntime (shared by Run and
 		// StartRuntime) — see runtime.go. Do not start it again here.
 		var workerWG sync.WaitGroup
@@ -2480,7 +2611,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, rt.AuthResolver)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
@@ -2595,8 +2726,12 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 
 	// Update the active route so the status bar reflects the new model
 	// immediately, without waiting for the next turn to call resolveRoute.
-	// This mirrors the startup wiring in buildAgentRunner.
-	resolver := newRoutedProviderResolver(cfg, rt.DataDir).withSessionID(rt.State.SessionID())
+	// This mirrors the startup wiring in buildAgentRunner, and reuses the
+	// runtime's selected auth resolver: this throwaway resolver has its own
+	// provider cache but must not reach a different credential backend. The
+	// runtime's own resolver (whose engine and store caches survive the
+	// reload) is deliberately untouched here — rebuilds never clear it.
+	resolver := newRoutedProviderResolver(cfg, rt.DataDir, rt.AuthResolver).withSessionID(rt.State.SessionID())
 	if route, rp, rErr := resolver.Resolve("edit"); rErr == nil {
 		rt.State.SetActiveRoute(session.RouteInfo{
 			Role:             route.Role,

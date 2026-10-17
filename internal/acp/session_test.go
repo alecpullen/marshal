@@ -21,7 +21,9 @@ import (
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/credentials"
 	"marshal/internal/db"
+	"marshal/internal/llm/provider"
 	"marshal/internal/tools/policy"
 	"marshal/internal/trust"
 )
@@ -1556,5 +1558,112 @@ func TestSessionNewPolicyModeWithoutRunnerFails(t *testing.T) {
 	m2 := policyTestManager(t, rt2)
 	if _, err := m2.Create(context.Background(), policyNewParams(t, `{"allow":["make"]}`)); err != nil {
 		t.Fatalf("allow-only policy without runner: %v", err)
+	}
+}
+
+// TestSessionResumeAndNewRetainInjectedAuthResolver walks the ACP lifecycle
+// with an injected auth resolver: session/new, session/resume (existing-session
+// mode) and a second session/new must all publish runtimes carrying the SAME
+// resolver through ACP's Options seam, so a headless session cannot silently
+// reacquire the production credential backend on a rebuild.
+//
+// The fixture declares no providers and no MCP servers, so a correctly
+// threaded runtime never asks the resolver for anything; the counting resolver
+// fails if it does.
+func TestSessionResumeAndNewRetainInjectedAuthResolver(t *testing.T) {
+	const fixtureConfig = `[project]
+name = "acp-resume-auth"
+
+[commands]
+test = "fixture-test-cmd"
+`
+	home := t.TempDir()
+	if err := os.MkdirAll(config.UserDir(home), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(home), []byte(fixtureConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	auth := &countingStoreResolver{store: credentials.NewMemStore()}
+	work := t.TempDir()
+
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: app.StartRuntime,
+		CloseRuntime: func(ctx context.Context, rt *app.Runtime) error { return rt.Close(ctx) },
+		Notify:       func(string, any) error { return nil },
+		Options: []app.Option{
+			app.WithHomeDir(home),
+			app.WithAuthResolver(auth),
+			// No trust resolver: the headless path would prompt, so grant the
+			// fixture trust inline instead.
+			app.WithTrustResolver(trust.FixedResolver{Decision: trust.DecisionTrustPermanent}),
+		},
+	})
+	m.SetTurnCanceller(noopCancel())
+
+	params := `{"cwd":` + jsonString(work) + `,"mcpServers":[]}`
+
+	// session/new
+	newRes, err := m.Create(context.Background(), json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	firstID := newRes.(SessionResponse).SessionID
+	first, ok := m.Get(firstID)
+	if !ok {
+		t.Fatalf("Get(%s) ok=false", firstID)
+	}
+	if first.AuthResolver != provider.AuthResolver(auth) {
+		t.Fatal("session/new did not retain the injected resolver")
+	}
+
+	// Persist it so session/resume can re-open it in existing-session mode.
+	first.State.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+
+	// session/resume for the same id tears the runtime down and rebuilds it.
+	resumeParams := `{"cwd":` + jsonString(work) + `,"mcpServers":[],"sessionId":` + jsonString(firstID) + `}`
+	if _, err := m.Resume(context.Background(), json.RawMessage(resumeParams)); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	resumed, ok := m.Get(firstID)
+	if !ok {
+		t.Fatalf("Get(%s) after resume ok=false", firstID)
+	}
+	if resumed == first {
+		t.Fatal("test premise broken: resume did not rebuild the runtime")
+	}
+	if resumed.AuthResolver != provider.AuthResolver(auth) {
+		t.Fatal("session/resume did not retain the injected resolver")
+	}
+
+	// A second session/new publishes another runtime on the same resolver.
+	secondRes, err := m.Create(context.Background(), json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("second Create: %v", err)
+	}
+	secondID := secondRes.(SessionResponse).SessionID
+	defer func() { _ = m.Close(context.Background(), secondID) }()
+	defer func() { _ = m.Close(context.Background(), firstID) }()
+
+	second, ok := m.Get(secondID)
+	if !ok {
+		t.Fatalf("Get(%s) ok=false", secondID)
+	}
+	if second.AuthResolver != provider.AuthResolver(auth) {
+		t.Fatal("a second session/new did not retain the injected resolver")
+	}
+
+	// Nothing in the fixture needs credentials, so the resolver must not have
+	// been asked for a store or an engine by any of the three runtimes. The
+	// explicit OpenStore below accounts for the single call asserted.
+	if got := len(auth.opened()); got != 0 {
+		t.Fatalf("resolver OpenStore calls = %d, want 0 before the explicit probe", got)
+	}
+	if _, err := (&CommandManager{}).openCredentialStore(commandRuntimeFor(second)); err != nil {
+		t.Fatalf("openCredentialStore: %v", err)
+	}
+	if got := len(auth.opened()); got != 1 {
+		t.Fatalf("resolver OpenStore calls = %d, want exactly the explicit one", got)
 	}
 }

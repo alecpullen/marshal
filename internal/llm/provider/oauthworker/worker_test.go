@@ -431,3 +431,70 @@ func TestName(t *testing.T) {
 		t.Fatalf("Name() = %q, want custom", got)
 	}
 }
+
+// TestRunPersistsRotatedTokenForInlineReads pins the hand-off the app-level
+// composition depends on: a worker's proactive refresh must leave the rotated
+// token where an inline TokenSource call — the one a provider makes on every
+// chat request — reads it without another refresh. Before this test, worker
+// coverage asserted only that the refresh happened, not that its result was
+// visible on the inline path that shares the same engine.
+func TestRunPersistsRotatedTokenForInlineReads(t *testing.T) {
+	clock := newFakeClock()
+
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	refresh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "rotated-access",
+			"refresh_token": "rotated-refresh",
+			"expires_in":    3600,
+			"token_type":    "Bearer",
+		})
+	}))
+	defer refresh.Close()
+
+	// The stored token is already expired, so the schedule is the 1s floor and
+	// the first due cycle refreshes.
+	engine := tokenStore(t, &oauth.StoredTokens{
+		AccessToken:  "expired-access",
+		RefreshToken: "stale-refresh",
+		IssuedAt:     clock.Now().Add(-2 * time.Hour),
+		ExpiresAt:    clock.Now().Add(-time.Hour),
+	})
+	engine.Flow.TokenURL = refresh.URL
+
+	sleeper := &sleepRecorder{stopAfter: 2, clock: clock}
+	w := &Worker{
+		Engine:   engine,
+		Provider: "codex",
+		Logger:   quietLogger(),
+		Now:      clock.Now,
+		Sleep:    sleeper.Sleep,
+	}
+
+	if err := w.Run(context.Background()); err != nil {
+		t.Fatalf("Run returned %v, want nil", err)
+	}
+
+	// The inline path — the same call a provider makes per request — must see
+	// the rotated token, and must not have triggered a second refresh.
+	token, err := engine.TokenSource(context.Background())
+	if err != nil {
+		t.Fatalf("TokenSource after the proactive refresh: %v", err)
+	}
+	if token != "rotated-access" {
+		t.Fatalf("inline token = %q, want the token the worker's refresh stored", token)
+	}
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("token endpoint calls = %d, want exactly 1 (the inline read must reuse the stored token)", got)
+	}
+}

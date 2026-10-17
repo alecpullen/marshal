@@ -13,7 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/app"
 	"marshal/internal/app/session"
+	"marshal/internal/credentials"
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
@@ -394,7 +396,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 			if !ok || rt == nil {
 				return nil, false
 			}
-			return &CommandRuntime{State: rt.State, Registry: rt.CommandRegistry, ReloadConfig: rt.ConfigReloader}, true
+			return commandRuntimeFor(rt), true
 		},
 		HasActive: turns.HasActiveTurn,
 		// The host-level sink so a headless command's mid-flight notice (the
@@ -521,6 +523,28 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 		pluginsMgr.CloseSession(sessionID)
 		return err
 	})
+}
+
+// commandRuntimeFor projects a live runtime onto the per-session slice the
+// CommandManager needs.
+//
+// OpenStore hands the headless /mcp auth flow the store opener the session's
+// owning runtime selected (app.Runtime.AuthResolver — the same resolver that
+// built the provider, its refresh worker and the MCP managers), so tokens are
+// written where the rest of that runtime reads them, and a runtime started
+// with an injected resolver never reaches the real OS keychain. A runtime
+// built without one (a test/embedded Runtime literal) leaves the field nil and
+// the manager's documented fallback applies.
+func commandRuntimeFor(rt *app.Runtime) *CommandRuntime {
+	crt := &CommandRuntime{
+		State:        rt.State,
+		Registry:     rt.CommandRegistry,
+		ReloadConfig: rt.ConfigReloader,
+	}
+	if auth := rt.AuthResolver; auth != nil {
+		crt.OpenStore = func() (credentials.Store, error) { return auth.OpenStore("marshal") }
+	}
+	return crt
 }
 
 // serveConn serves a single connection. It creates a fresh Server, wires

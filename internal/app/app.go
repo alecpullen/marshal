@@ -2347,6 +2347,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
+		// The TUI's auth-backed surfaces (provider probes, the connect
+		// wizard's sign-in engine and token store, the settings browser,
+		// /mcp auth) must use the dependency this runtime selected. Without
+		// this the TUI would fall back to the production adapter and, under
+		// an injected resolver, reach the real OS keychain.
+		tuiOpts = append(tuiOpts, tui.WithAuthResolver(rt.AuthResolver))
 		tuiOpts = append(tuiOpts, tui.WithWorkingDir(workingDir))
 		tuiOpts = append(tuiOpts, tui.WithSkillIndex(rt.SkillIndex))
 		// Copy prefers a local clipboard helper and falls back to OSC 52 over

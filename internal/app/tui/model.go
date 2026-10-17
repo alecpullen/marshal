@@ -460,6 +460,13 @@ type Model struct {
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
 	discovered   map[string][]schema.ModelInfo
+	// auth is the credential/OAuth dependency the runtime selected. Every
+	// auth-backed surface this model opens — the connect wizard, provider
+	// probes, the settings browser, /mcp auth — consumes it, so an isolated
+	// runtime (tests, an embedded app) never reaches the developer's real OS
+	// keychain. New selects the production adapter when no option supplies
+	// one.
+	auth provider.AuthResolver
 	// modelCacheDir, when set, enables on-disk caching of the discovered
 	// list via internal/llm/provider/modelcache. Without it discovery is
 	// in-memory only.
@@ -478,6 +485,10 @@ type Model struct {
 	// flight, set while the authorization panel is docked. It scopes the
 	// success/cancel message to the right server when AuthDoneMsg arrives.
 	mcpAuthServer string
+	// openBrowser launches the authorization URL for /mcp auth. New selects
+	// mcpauth.OpenBrowser when no option supplies one; tests inject a stub so
+	// an executed flow never opens a real browser.
+	openBrowser func(url string) error
 
 	// doctorFixProvider is non-empty while the /doctor panel is in key-input
 	// sub-mode: the input prompt asks for an API key for this provider.
@@ -659,6 +670,24 @@ func WithHomeDir(homeDir string) Option {
 // capability support.
 func WithDataDir(dataDir string) Option {
 	return func(m *Model) { m.dataDir = dataDir }
+}
+
+// WithAuthResolver pins the credential/OAuth dependency the TUI's auth-backed
+// surfaces use: provider/model probes, the connect wizard (including the
+// OAuth sign-in engine and its token store), the settings browser and
+// /mcp auth. app.Run passes the runtime's already-selected resolver, so an
+// app-level injection reaches every one of them. Omitting the option selects
+// the production adapter at construction.
+func WithAuthResolver(auth provider.AuthResolver) Option {
+	return func(m *Model) { m.auth = auth }
+}
+
+// WithOpenBrowser overrides the browser launcher used by /mcp auth and the
+// connect wizard's OAuth sign-in. Production omits it, which selects
+// mcpauth.OpenBrowser; tests inject a recorder so an executed authorization
+// command never opens a real browser.
+func WithOpenBrowser(open func(url string) error) Option {
+	return func(m *Model) { m.openBrowser = open }
 }
 
 func WithWorkingDir(workDir string) Option {
@@ -1206,6 +1235,7 @@ func (m *Model) openSettingsBrowser(query string) {
 	opts := []settings.BrowserOption{
 		settings.WithProvenance(m.provenanceForPath),
 		settings.WithDataDir(m.modelCacheDir),
+		settings.WithAuthResolver(m.auth),
 	}
 	if home, err := m.userHome(); err == nil {
 		opts = append(opts, settings.WithUserConfigPath(config.UserConfigPath(home)))
@@ -1389,6 +1419,16 @@ func New(state *session.State, opts ...Option) Model {
 	}
 	for _, opt := range opts {
 		opt(&m)
+	}
+	// Select the production adapters only when no option supplied one. Doing
+	// it once here — rather than per call site — means every surface below
+	// (probes, connect, settings, /mcp auth) shares one dependency and an
+	// injected resolver cannot be partially bypassed.
+	if m.auth == nil {
+		m.auth = provider.DefaultAuthResolver()
+	}
+	if m.openBrowser == nil {
+		m.openBrowser = mcpauth.OpenBrowser
 	}
 
 	// The LSP reference-lookup context is independent of m.ctx (the program's
@@ -4775,9 +4815,11 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 // openConnect opens the connect overlay for adding/reconnecting a provider.
 func (m *Model) openConnect(_ string) {
 	opts := connect.Opts{
-		Cfg:        m.state.Config,
-		Discovered: m.discovered,
-		DataDir:    m.modelCacheDir,
+		Cfg:         m.state.Config,
+		Discovered:  m.discovered,
+		DataDir:     m.modelCacheDir,
+		Auth:        m.auth,
+		OpenBrowser: m.openBrowser,
 	}
 	// Providers are saved to the user-global config; the summary screen's
 	// "save to:" line should name that file.
@@ -4805,6 +4847,8 @@ func (m *Model) openModels() tea.Cmd {
 		AllProviders:     true,
 		ScopedProvider:   names[0],
 		DataDir:          m.modelCacheDir,
+		Auth:             m.auth,
+		OpenBrowser:      m.openBrowser,
 	})
 	m.connectModel.SetSize(m.leftWidth, m.height)
 	m.dock.Open(connect.Panel{Model: m.connectModel})
@@ -4826,7 +4870,7 @@ func (m *Model) probeProviders(names []string) tea.Cmd {
 		if !probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed {
 			continue
 		}
-		cmds = append(cmds, probe.Provider("models", n, pc, m.modelCacheDir, m.state.Config.Privacy.RemoteLimitDiscovery, m.state.Config.Agent.ThinkingBudgetMargin))
+		cmds = append(cmds, probe.ProviderWithAuth("models", n, pc, m.modelCacheDir, m.state.Config.Privacy.RemoteLimitDiscovery, m.state.Config.Agent.ThinkingBudgetMargin, m.auth))
 	}
 	return tea.Batch(cmds...)
 }

@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
@@ -26,6 +27,11 @@ type state struct {
 	// settings. Empty disables it, which silently strips context/output
 	// limits from every discovered model.
 	dataDir string
+	// auth is the credential/OAuth dependency every probe launched from
+	// this state must use. newState selects the production adapter, and
+	// WithAuthResolver overrides it, so a panel built without an injected
+	// resolver keeps the pre-existing production behavior.
+	auth provider.AuthResolver
 	// probed records providers already probed during this browser's
 	// lifetime, so rebuilding a frame does not re-probe on every refresh.
 	probed map[string]bool
@@ -42,6 +48,10 @@ func newState(cfg config.Config) *state {
 		discovered:  map[string][]schema.ModelInfo{},
 		actionState: map[string]actionState{},
 		probed:      map[string]bool{},
+		// Select the production credential/OAuth adapter up front so every
+		// probe path has one dependency, and an injected resolver (see
+		// BrowserOption WithAuthResolver) simply replaces it.
+		auth: provider.DefaultAuthResolver(),
 	}
 }
 

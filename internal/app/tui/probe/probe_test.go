@@ -1,14 +1,20 @@
 package probe
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/credentials"
+	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/limits"
+	"marshal/internal/oauth"
 )
 
 func TestIsLocalhost(t *testing.T) {
@@ -151,5 +157,96 @@ func TestProviderFillsLimitsFromOnDiskCache(t *testing.T) {
 	if msg.Models[0].ContextWindow != 128000 || msg.Models[0].MaxOutputTokens != 16384 {
 		t.Errorf("limits = %d/%d, want 128000/16384 from the on-disk cache",
 			msg.Models[0].ContextWindow, msg.Models[0].MaxOutputTokens)
+	}
+}
+
+// ── Explicit-auth probe entry point ──────────────────────────────────
+
+// memAuth is a test AuthResolver: an in-memory token store plus a record of
+// which services and provider names were asked for.
+type memAuth struct {
+	store *credentials.MemStore
+	// storeErr, when set, fails OpenStore/CodexOAuthEngine. It stands in for
+	// an unavailable OS keychain.
+	storeErr error
+	services []string
+	engines  []string
+}
+
+func newMemAuth() *memAuth { return &memAuth{store: credentials.NewMemStore()} }
+
+func (a *memAuth) OpenStore(service string) (credentials.Store, error) {
+	a.services = append(a.services, service)
+	if a.storeErr != nil {
+		return nil, a.storeErr
+	}
+	return a.store, nil
+}
+
+func (a *memAuth) CodexOAuthEngine(name string) (*oauth.Engine, error) {
+	a.engines = append(a.engines, name)
+	if a.storeErr != nil {
+		return nil, a.storeErr
+	}
+	return provider.NewCodexOAuthEngineWithStore(name, a.store)
+}
+
+// TestProviderWithAuthUsesInjectedResolver: an openai_codex probe must build
+// its token store through the supplied resolver, so a probe launched from an
+// isolated runtime never opens the developer's keychain. The probe fails with
+// the injected error and must not fall back to the production adapter.
+func TestProviderWithAuthUsesInjectedResolver(t *testing.T) {
+	auth := newMemAuth()
+	auth.storeErr = fmt.Errorf("injected store failure: %w", credentials.ErrKeyringUnavailable)
+
+	pc := config.ProviderConfig{
+		Type:     "openai_codex",
+		Template: "openai-codex",
+		BaseURL:  "https://chatgpt.com/backend-api",
+		Auth:     "oauth",
+	}
+	msg := ProviderWithAuth("f", "codex", pc, "", false, 0, auth)().(ResultMsg)
+
+	if len(auth.engines) != 1 || auth.engines[0] != "codex" {
+		t.Fatalf("engine requests = %v, want one for \"codex\"", auth.engines)
+	}
+	if msg.Err == nil {
+		t.Fatal("a failing injected resolver must produce an error")
+	}
+	if !errors.Is(msg.Err, credentials.ErrKeyringUnavailable) {
+		t.Fatalf("err = %v, want the injected failure wrapped", msg.Err)
+	}
+}
+
+// TestProviderWithAuthNilResolverFailsClosed: a nil resolver must error rather
+// than silently selecting the production keychain.
+func TestProviderWithAuthNilResolverFailsClosed(t *testing.T) {
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://127.0.0.1:1/v1"}
+	msg := ProviderWithAuth("f", "p", pc, "", false, 0, nil)().(ResultMsg)
+	if msg.Err == nil {
+		t.Fatal("a nil resolver must fail the probe, not fall back to the real keychain")
+	}
+	if !strings.Contains(msg.Err.Error(), "auth resolver is required") {
+		t.Fatalf("err = %v, want an auth-resolver-required error", msg.Err)
+	}
+}
+
+// TestProviderWrapperSelectsProductionAdapter: the legacy wrapper keeps
+// working for callers with no injected dependency (success path through a
+// test-owned server).
+func TestProviderWrapperSelectsProductionAdapter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[{"id":"m1","owned_by":"x"}]}`)
+	}))
+	defer srv.Close()
+
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL}
+	msg := Provider("f", "p", pc, "", false, 0)().(ResultMsg)
+	if msg.Err != nil {
+		t.Fatalf("provider: %v", msg.Err)
+	}
+	if len(msg.Models) != 1 || msg.Models[0].ID != "m1" {
+		t.Fatalf("models = %v, want the server's list", msg.Models)
 	}
 }

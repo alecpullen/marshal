@@ -85,6 +85,16 @@ type Opts struct {
 	// DataDir enables the on-disk limit table during probing (read from
 	// cache; refreshed remotely only per privacy.remote_limit_discovery).
 	DataDir string
+	// Auth is the credential/OAuth dependency every provider this wizard
+	// constructs must use — capability/model probes and the sign-in engine.
+	// Nil selects the production adapter (see New); an embedded or test
+	// caller injects an isolated resolver so the wizard never reaches the
+	// real OS keychain.
+	Auth provider.AuthResolver
+	// OpenBrowser launches the authorization URL during sign-in. Nil keeps
+	// the production behavior (mcpauth.OpenBrowser). Tests inject a stub so
+	// an executed login command never opens a real browser.
+	OpenBrowser func(url string) error
 }
 
 type Model struct {
@@ -114,6 +124,8 @@ type Model struct {
 	allProviders     bool
 	probeErrs        map[string]error
 	dataDir          string
+	auth             provider.AuthResolver
+	openBrowser      func(url string) error
 	confirm          *presetflow.ConfirmState
 	detectingCaps    bool
 	capProbeID       uint64
@@ -131,6 +143,18 @@ func New(opts Opts) *Model {
 	ri := textfield.New()
 	ri.SetVirtualCursor(true)
 	ri.Focus()
+	// Select the production credential/OAuth adapter only when the caller
+	// supplied none. Resolving it here (rather than inside the probe and
+	// sign-in paths) means one wizard has one dependency for its whole
+	// lifetime, including through every step that rebuilds a provider client.
+	auth := opts.Auth
+	if auth == nil {
+		auth = provider.DefaultAuthResolver()
+	}
+	openBrowser := opts.OpenBrowser
+	if openBrowser == nil {
+		openBrowser = mcpauth.OpenBrowser
+	}
 	m := &Model{
 		cfg:            opts.Cfg,
 		discovered:     opts.Discovered,
@@ -140,6 +164,8 @@ func New(opts Opts) *Model {
 		cfgPath:        opts.CfgPath,
 		allProviders:   opts.AllProviders,
 		dataDir:        opts.DataDir,
+		auth:           auth,
+		openBrowser:    openBrowser,
 	}
 	if opts.SkipToIntroModel {
 		enterPickModelStep(m, opts.ScopedProvider)
@@ -148,6 +174,16 @@ func New(opts Opts) *Model {
 	m.enterPickTemplate()
 	return m
 }
+
+// AuthResolver returns the credential/OAuth dependency this wizard uses. It
+// exposes the selected dependency (never nil — New resolves the production
+// adapter when none was injected) so callers and tests can verify that a
+// panel was built from the intended runtime.
+func (m *Model) AuthResolver() provider.AuthResolver { return m.auth }
+
+// OpenBrowserFn returns the browser launcher the sign-in flow uses, or nil
+// if none was selected (New always selects one).
+func (m *Model) OpenBrowserFn() func(url string) error { return m.openBrowser }
 
 func (m *Model) Init() tea.Cmd { return nil }
 
@@ -376,8 +412,11 @@ func (d *oauthDisplay) URL() string {
 // launching a browser is a UI concern, and internal/llm/provider must not
 // depend on the TUI. Without this the flow would dead-end — Authorize would
 // wait on a loopback callback the user was never told how to trigger.
-func oauthLogin(engine *oauth.Engine, providerName string, display *oauthDisplay) tea.Cmd {
-	engine.Open = func(u string) { _ = mcpauth.OpenBrowser(u) }
+func oauthLogin(engine *oauth.Engine, providerName string, display *oauthDisplay, open func(url string) error) tea.Cmd {
+	if open == nil {
+		open = mcpauth.OpenBrowser
+	}
+	engine.Open = func(u string) { _ = open(u) }
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), oauthLoginTimeout)
 		defer cancel()
@@ -531,7 +570,7 @@ func (m *Model) probeCapabilities(requestID uint64) (tea.Cmd, context.CancelFunc
 	// Capability probing only needs the provider client. Limit-table discovery
 	// already happened during model-list discovery and must not block the TUI
 	// while this confirmation screen is opening.
-	prov, err := provider.NewFromConfig(m.providerName, m.providerCfg, m.dataDir, probeOnlyLimits, m.cfg.Agent.ThinkingBudgetMargin)
+	prov, err := provider.NewFromConfigWithAuth(m.providerName, m.providerCfg, m.dataDir, probeOnlyLimits, m.cfg.Agent.ThinkingBudgetMargin, "", m.auth)
 	if err != nil {
 		return nil, nil
 	}
@@ -822,13 +861,25 @@ func (m *Model) enterOAuthLogin() (*Model, tea.Cmd) {
 	m.err = ""
 	m.picker = nil
 
-	engine, err := provider.CodexOAuthEngine(m.providerName)
+	engine, err := m.codexOAuthEngine()
 	if err != nil {
 		m.err = err.Error()
 		return m, nil
 	}
 	m.oauthDisplay = &oauthDisplay{}
-	return m, oauthLogin(engine, m.providerName, m.oauthDisplay)
+	return m, oauthLogin(engine, m.providerName, m.oauthDisplay, m.openBrowser)
+}
+
+// codexOAuthEngine returns the OAuth engine backing this wizard's sign-in,
+// built from the credential dependency the caller supplied. It never falls
+// back to the process-wide engine: under an injected resolver the token
+// store must stay private to whoever supplied it, and a test or embedded
+// caller must not reach the real OS keychain.
+func (m *Model) codexOAuthEngine() (*oauth.Engine, error) {
+	if m.auth != nil {
+		return m.auth.CodexOAuthEngine(m.providerName)
+	}
+	return provider.CodexOAuthEngine(m.providerName)
 }
 
 // oauthURL returns the authorization URL the running flow has produced, or
@@ -1147,7 +1198,7 @@ func (m *Model) advanceToPickModel() (*Model, tea.Cmd) {
 }
 
 func (m *Model) runProbe() tea.Cmd {
-	return probe.Provider("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Privacy.RemoteLimitDiscovery, m.cfg.Agent.ThinkingBudgetMargin)
+	return probe.ProviderWithAuth("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Privacy.RemoteLimitDiscovery, m.cfg.Agent.ThinkingBudgetMargin, m.auth)
 }
 
 // refreshCmd emits a RefreshMsg naming the providers whose entries the

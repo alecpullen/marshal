@@ -23,14 +23,31 @@ func IsLocalhost(baseURL string) bool {
 	return routing.IsLocalProvider(baseURL)
 }
 
-// Provider probes name's model list. dataDir enables the on-disk limit
-// table so probed models carry context/output limits; the cached table is
-// refreshed from remote sources only when remoteLimitDiscovery is set.
-// Pass "" to skip limit resolution. thinkingBudgetMargin is the
-// AgentConfig value threaded to Anthropic providers.
+// Provider probes name's model list using the production credential/OAuth
+// dependency. It is the wrapper for callers that have no injected resolver
+// of their own; callers wired from a runtime must use ProviderWithAuth so a
+// probe cannot reach a credential backend the runtime did not select.
+//
+// dataDir enables the on-disk limit table so probed models carry
+// context/output limits; the cached table is refreshed from remote sources
+// only when remoteLimitDiscovery is set. Pass "" to skip limit resolution.
+// thinkingBudgetMargin is the AgentConfig value threaded to Anthropic
+// providers.
 func Provider(fieldID, name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool, thinkingBudgetMargin int) tea.Cmd {
+	return ProviderWithAuth(fieldID, name, pc, dataDir, remoteLimitDiscovery, thinkingBudgetMargin, provider.DefaultAuthResolver())
+}
+
+// ProviderWithAuth probes name's model list through the explicitly supplied
+// credential/OAuth dependency. An openai_codex provider builds its token
+// store and OAuth engine from auth, so a TUI running under an isolated
+// runtime (tests, an embedded app) never falls back to the real OS keychain.
+//
+// A nil auth fails every probe with an error rather than selecting the
+// production adapter: silently substituting the real keychain is exactly
+// what an injected resolver exists to prevent.
+func ProviderWithAuth(fieldID, name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool, thinkingBudgetMargin int, auth provider.AuthResolver) tea.Cmd {
 	return func() tea.Msg {
-		p, err := provider.NewFromConfig(name, pc, dataDir, remoteLimitDiscovery, thinkingBudgetMargin)
+		p, err := provider.NewFromConfigWithAuth(name, pc, dataDir, remoteLimitDiscovery, thinkingBudgetMargin, "", auth)
 		if err != nil {
 			return ResultMsg{FieldID: fieldID, Provider: name, Err: err}
 		}

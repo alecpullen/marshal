@@ -44,7 +44,7 @@ func TestShellRunUsesActiveRoot(t *testing.T) {
 	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
 	runner := &fakeRunner{}
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, SessionState: state}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, SessionState: state, JobManager: newTestCommandService(t, runner, root, state, nil)}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	wt := filepath.Join(root, ".marshal", "worktrees", "feat-x")
@@ -76,7 +76,7 @@ func TestJobManagerStartResolvesDirFunc(t *testing.T) {
 	dir := "/orig"
 	m.SetDirFunc(func() string { return dir })
 	dir = "/worktree"
-	if _, err := m.Start(context.Background(), "true", time.Second); err != nil {
+	if _, err := launchBackground(context.Background(), m, "true"); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	select {

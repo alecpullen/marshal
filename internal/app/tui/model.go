@@ -159,8 +159,11 @@ const (
 	noticeBannerDuration = 30 * time.Second
 
 	// settingsBusyMessage is shown when runtime work makes a settings change
-	// unsafe to persist.
-	settingsBusyMessage = "Stop the active turn and background jobs before applying settings."
+	// unsafe to persist. A background command is NOT that work: the
+	// conversation's command service survives a reload (only future launches
+	// take the new defaults), so a running job no longer blocks a settings
+	// write.
+	settingsBusyMessage = "Stop the active turn before applying settings."
 
 	// singleModelProfileName is the profile /connect and /models write into when
 	// the user picks one model for everything.
@@ -4266,8 +4269,13 @@ func postmortemAgentGoal(path string) string {
 
 // settingsBlockReason returns a message when runtime work, a pending
 // decision, or another dock surface makes a settings write unsafe.
+//
+// A running background command is deliberately not a reason to block: the
+// command service survives the reload, so applying settings changes only what
+// FUTURE launches resolve. Blocking on jobs would refuse a save the running
+// work cannot observe.
 func (m Model) settingsBlockReason() string {
-	if m.busy || m.state.RunningJobsCount() > 0 {
+	if m.busy {
 		return settingsBusyMessage
 	}
 	if m.hasPendingApproval() {

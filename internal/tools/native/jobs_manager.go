@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,13 @@ var ErrTurnStopped = errors.New("turn has been stopped")
 // unique and a stopped turn cannot admit new commands anyway, so only the most
 // recent decisions are retained.
 const maxStoppedTurns = 64
+
+// defaultMaxJobs and defaultRetention are the admission limits a service uses
+// when its launch policy names none.
+const (
+	defaultMaxJobs   = 25
+	defaultRetention = 8 * time.Hour
+)
 
 // foregroundStopSettleTimeout bounds how long WaitForeground waits for an
 // execution to settle after an explicit stop was accepted for it. It is a join
@@ -374,16 +382,19 @@ type ForegroundResult struct {
 // callback may query the manager.
 type JobManager struct {
 	runner CommandRunner
-	dir    string
-	// dirFn, when set via SetDirFunc, resolves the working directory for
-	// each execution at admission (the session's active root). Until set,
-	// executions use dir.
-	dirFn          func() string
-	maxJobs        int
-	retention      time.Duration
-	maxOutputBytes int
-	mu             sync.Mutex
-	jobs           map[string]*job
+	// policy is the committed launch policy. Every field it names is a default
+	// for future admissions only: an admitted execution keeps the snapshot it
+	// captured, so committing a new policy never re-times, redirects or
+	// re-limits work that is already running.
+	policy LaunchPolicy
+	// retired holds closers a previous launch policy owned while executions
+	// admitted under it are still running. An entry is dropped — and closed —
+	// as soon as no active execution references it, so a resource an admitted
+	// command captured outlives the policy that introduced it without retaining
+	// whole unrelated generations.
+	retired []io.Closer
+	mu      sync.Mutex
+	jobs    map[string]*job
 	// active counts every admitted execution that has not settled, across both
 	// attachments. Capacity is reserved against it: a stopping process keeps
 	// its slot until it settles, and a foreground-to-background handoff
@@ -453,6 +464,11 @@ type job struct {
 	stopIssued     bool
 	stopPending    bool
 	terminal       bool
+	// resources are the closeable resources this execution captured at
+	// admission (its runner's declared backends). They keep such a resource
+	// open past the policy commit that replaced it, and are what
+	// referencedResourcesLocked consults.
+	resources []io.Closer
 }
 
 // jobSink retains a bounded tail of one command stream and forwards bytes to
@@ -474,33 +490,272 @@ func (s *jobSink) Write(p []byte) (int, error) {
 	return s.tail.Write(p)
 }
 
+// LaunchPolicy is a conversation command service's committed default set for
+// future admissions. Every field is a default only: an admitted execution keeps
+// the snapshot it captured at admission (runner, cwd, output policy, wait), so
+// committing a new policy never re-times, redirects or re-limits work that is
+// already running. A lowered MaxJobs therefore blocks future admission without
+// evicting anything active.
+type LaunchPolicy struct {
+	// Generation identifies the runtime configuration generation that committed
+	// this policy. It is stamped onto each admission's execution origin, so a
+	// launch can be told apart from a later generation's launch even when both
+	// use the same display id.
+	Generation int
+	// Runner is the command runner future admissions use when their spec names
+	// none.
+	Runner CommandRunner
+	// Dir is the working directory future admissions use when neither the spec
+	// nor DirFunc resolves one.
+	Dir string
+	// DirFunc, when non-nil, resolves the working directory at admission (the
+	// session's active root).
+	DirFunc func() string
+	// MaxJobs bounds future admission across both attachments. Non-positive
+	// means defaultMaxJobs.
+	MaxJobs int
+	// Retention bounds how long settled executions stay queryable. Non-positive
+	// means defaultRetention.
+	Retention time.Duration
+	// MaxOutputBytes is the default retained tail per stream for future
+	// admissions. Non-positive means the manager's default.
+	MaxOutputBytes int
+	// Resources are the closeable resources this generation owns (a sandbox
+	// backend, a runner's private pool, …). They are inherited by admissions
+	// through ResourceReferencer and are closed only once no admitted execution
+	// that declared them is still running.
+	Resources []io.Closer
+}
+
+// ResourceReferencer is the optional seam a command runner implements to declare
+// the closeable resources one admission depends on. It is how a service retains
+// exactly what an admitted execution captured — a reload that swaps a backend
+// keeps the old backend's closer alive only while an old-generation command is
+// still running, rather than retaining a whole generation wholesale.
+type ResourceReferencer interface {
+	// CommandResources names the resources a command launched through this
+	// runner still needs. Nil is valid and means "nothing to retain".
+	CommandResources() []io.Closer
+}
+
+// launchPolicyDefaults fills in every unset default so the committed policy is
+// always complete. A zero-valued policy is a valid policy.
+func launchPolicyDefaults(p LaunchPolicy) LaunchPolicy {
+	if p.MaxJobs <= 0 {
+		p.MaxJobs = defaultMaxJobs
+	}
+	if p.Retention <= 0 {
+		p.Retention = defaultRetention
+	}
+	if p.MaxOutputBytes <= 0 {
+		p.MaxOutputBytes = defaultMaxOutputBytes
+	}
+	return p
+}
+
+// NewCommandService creates the command service a conversation owns: the one
+// supervisor from admission through settlement for every ordinary command in
+// that conversation. The manager derives its lifetime from ctx: when the parent
+// context is cancelled all admitted commands are cancelled.
+//
+// It is the owner-construction constructor. A rebuild (config reload, new
+// session in the same conversation, a child registry that borrows the
+// conversation's service) MUST NOT call it: it commits a new LaunchPolicy on the
+// existing service through CommitLaunchPolicy, so handles, ids and the ownership
+// installed here survive the rebuild.
+func NewCommandService(ctx context.Context, policy LaunchPolicy) *JobManager {
+	policy = launchPolicyDefaults(policy)
+	managerCtx, managerCancel := context.WithCancel(ctx)
+	return &JobManager{
+		policy:        policy,
+		jobs:          make(map[string]*job),
+		turnStops:     make(map[string]string),
+		managerCtx:    managerCtx,
+		managerCancel: managerCancel,
+	}
+}
+
 // NewJobManager creates a job manager with the given runner and limits.
 // The manager derives its lifetime from ctx: when the parent context is
 // cancelled all admitted commands are cancelled. Non-positive maxJobs defaults
 // to 25; non-positive retention defaults to 8h; non-positive maxOutputBytes
 // defaults to 200000.
+//
+// It is the direct form of NewCommandService for callers that own a manager
+// outright (tests, embedded callers) and commit no generation.
 func NewJobManager(ctx context.Context, runner CommandRunner, dir string, maxJobs int, retention time.Duration, maxOutputBytes int) *JobManager {
-	if maxJobs <= 0 {
-		maxJobs = 25
+	return NewCommandService(ctx, LaunchPolicy{
+		Runner:         runner,
+		Dir:            dir,
+		MaxJobs:        maxJobs,
+		Retention:      retention,
+		MaxOutputBytes: maxOutputBytes,
+	})
+}
+
+// CurrentLaunchPolicy returns a copy of the committed policy. Resources are
+// copied shallowly: the slice is the caller's, the closers are shared.
+func (m *JobManager) CurrentLaunchPolicy() LaunchPolicy {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p := m.policy
+	p.Resources = append([]io.Closer(nil), m.policy.Resources...)
+	return p
+}
+
+// Generation reports the committed config generation.
+func (m *JobManager) Generation() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.policy.Generation
+}
+
+// CommitLaunchPolicy installs policy as the service's default set for FUTURE
+// admissions, atomically: a concurrent Launch sees either the whole previous
+// policy or the whole new one. Executions already admitted are untouched.
+//
+// Resources the previous policy owned are kept only while an admitted execution
+// actually references them (see ResourceReferencer); the rest are closed here
+// and returned. A failed caller therefore leaves the service exactly as it was
+// as long as it never calls this — validation belongs before the commit.
+func (m *JobManager) CommitLaunchPolicy(policy LaunchPolicy) []io.Closer {
+	policy = launchPolicyDefaults(policy)
+
+	m.mu.Lock()
+	previous := m.policy
+	m.policy = policy
+	// Carry the previous generation's still-referenced resources forward so they
+	// stay open past this commit, then drop — and close — anything nothing
+	// references any more.
+	var closed []io.Closer
+	for _, c := range previous.Resources {
+		if c == nil {
+			continue
+		}
+		if m.resourceReferencedLocked(c) {
+			m.retired = append(m.retired, c)
+		} else {
+			closed = append(closed, c)
+		}
 	}
-	if retention <= 0 {
-		retention = 8 * time.Hour
+	held := make([]io.Closer, 0, len(m.retired))
+	for _, c := range m.retired {
+		if m.resourceReferencedLocked(c) {
+			held = append(held, c)
+			continue
+		}
+		closed = append(closed, c)
 	}
-	if maxOutputBytes <= 0 {
-		maxOutputBytes = defaultMaxOutputBytes
+	for i := len(held); i < len(m.retired); i++ {
+		m.retired[i] = nil
 	}
-	managerCtx, managerCancel := context.WithCancel(ctx)
-	return &JobManager{
-		runner:         runner,
-		dir:            dir,
-		maxJobs:        maxJobs,
-		retention:      retention,
-		maxOutputBytes: maxOutputBytes,
-		jobs:           make(map[string]*job),
-		turnStops:      make(map[string]string),
-		managerCtx:     managerCtx,
-		managerCancel:  managerCancel,
+	m.retired = held
+	m.mu.Unlock()
+
+	closeClosers(closed)
+	return closed
+}
+
+// resourceReferencedLocked reports whether at least one admitted, not-yet-settled
+// execution declared c among the resources it captured at admission. The
+// manager lock must be held.
+func (m *JobManager) resourceReferencedLocked(c io.Closer) bool {
+	if c == nil {
+		return false
 	}
+	for _, j := range m.jobs {
+		j.mu.Lock()
+		settled := j.terminal
+		held := append([]io.Closer(nil), j.resources...)
+		j.mu.Unlock()
+		if settled {
+			continue
+		}
+		for _, want := range held {
+			if sameCloser(want, c) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// releaseResourcesLocked drops every retained resource no admitted execution
+// references any more and returns the ones to close. Called after a settlement,
+// when the last command holding an old generation's backend may have finished.
+// The manager lock must be held; closing happens after it is released.
+func (m *JobManager) releaseResourcesLocked() []io.Closer {
+	if len(m.retired) == 0 {
+		return nil
+	}
+	var closed []io.Closer
+	held := m.retired[:0]
+	for _, c := range m.retired {
+		if m.resourceReferencedLocked(c) {
+			held = append(held, c)
+			continue
+		}
+		closed = append(closed, c)
+	}
+	for i := len(held); i < len(m.retired); i++ {
+		m.retired[i] = nil
+	}
+	m.retired = held
+	return closed
+}
+
+// closeRetainedResources takes every resource the service still holds and
+// returns them. Shutdown uses it; nothing may be left open behind a closed
+// service.
+func (m *JobManager) closeRetainedResources() []io.Closer {
+	m.mu.Lock()
+	held := append([]io.Closer(nil), m.retired...)
+	m.retired = nil
+	m.mu.Unlock()
+	return held
+}
+
+// closeClosers closes each non-nil closer, ignoring errors: a resource released
+// on the reload or shutdown path must not fail that path.
+func closeClosers(closers []io.Closer) {
+	for _, c := range closers {
+		if c != nil {
+			_ = c.Close()
+		}
+	}
+}
+
+// ResourcesOf returns the closers runner declares through ResourceReferencer.
+// A runner that declares nothing — including one with no closeable resources at
+// all — retains nothing, which is the common case. It is the exported form of
+// the manager's own per-admission capture, so a caller composing a LaunchPolicy
+// names exactly what its runner actually needs.
+func ResourcesOf(runner CommandRunner) []io.Closer {
+	referencer, ok := runner.(ResourceReferencer)
+	if !ok || referencer == nil {
+		return nil
+	}
+	return referencer.CommandResources()
+}
+
+// sameCloser reports whether two closers name the same resource. Pointer-shaped
+// values compare by pointer; anything else falls back to comparable equality.
+func sameCloser(a, b io.Closer) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	va, vb := reflect.ValueOf(a), reflect.ValueOf(b)
+	if va.Type() != vb.Type() {
+		return false
+	}
+	switch va.Kind() {
+	case reflect.Pointer, reflect.Chan, reflect.Map, reflect.Func, reflect.UnsafePointer:
+		return va.Pointer() == vb.Pointer()
+	}
+	if va.Type().Comparable() {
+		return a == b
+	}
+	return false
 }
 
 // SetOnChange registers a callback that is invoked whenever the detached-job
@@ -542,11 +797,12 @@ func (m *JobManager) SetBroker(b *pubsub.Broker[JobEvent]) {
 }
 
 // SetDirFunc makes executions resolve their working directory from fn at
-// admission. Until set, the manager uses the dir passed to NewJobManager.
+// admission, as a future-admission default. Until set, executions use the dir
+// committed with the launch policy.
 func (m *JobManager) SetDirFunc(fn func() string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.dirFn = fn
+	m.policy.DirFunc = fn
+	m.mu.Unlock()
 }
 
 // Launch admits a managed command and returns its execution snapshot. The
@@ -587,15 +843,15 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 			return JobInfo{}, fmt.Errorf("%w: %s", ErrTurnStopped, turnID)
 		}
 	}
-	if m.active >= m.maxJobs {
-		max := m.maxJobs
+	if m.active >= m.policy.MaxJobs {
+		max := m.policy.MaxJobs
 		m.mu.Unlock()
 		return JobInfo{}, fmt.Errorf("too many running commands (max %d)", max)
 	}
 
 	runner := spec.Runner
 	if runner == nil {
-		runner = m.runner
+		runner = m.policy.Runner
 	}
 	if runner == nil {
 		m.mu.Unlock()
@@ -604,7 +860,7 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 
 	limit := spec.MaxOutputBytes
 	if limit <= 0 {
-		limit = m.maxOutputBytes
+		limit = m.policy.MaxOutputBytes
 	}
 	limit = OutputLimit(limit)
 
@@ -617,26 +873,38 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	jobCtx, jobCancel := context.WithCancel(m.managerCtx)
 
 	jobDir := spec.Dir
-	dirFn := m.dirFn
-	defaultDir := m.dir
+	dirFn := m.policy.DirFunc
+	defaultDir := m.policy.Dir
+	// Capture the resources this admission actually depends on, before the
+	// goroutine starts: they are what keeps a replaced backend open until this
+	// command releases it.
+	resources := ResourcesOf(runner)
+	// Stamp the generation this admission belongs to, so a later generation's
+	// launch is distinguishable even when the display id repeats. A spec that
+	// already names a generation (a child inheriting its parent's) keeps it.
+	origin := spec.Origin
+	if origin.Generation == 0 {
+		origin.Generation = m.policy.Generation
+	}
 
 	now := time.Now()
 	j := &job{
 		info: JobInfo{
 			ID:          id,
-			ExecutionID: ExecutionIdentity(id, spec.Origin),
+			ExecutionID: ExecutionIdentity(id, origin),
 			Command:     command,
 			Status:      StatusRunning,
 			Attachment:  AttachmentForeground,
 			StartedAt:   now,
 			Wait:        spec.Wait,
-			Origin:      spec.Origin,
+			Origin:      origin,
 		},
 		cancel:     jobCancel,
 		done:       make(chan struct{}),
 		stdout:     NewBoundedOutputTail(limit, nil),
 		stderr:     NewBoundedOutputTail(limit, nil),
 		admittedAt: now,
+		resources:  resources,
 	}
 	if spec.Detached {
 		j.info.Attachment = AttachmentBackground
@@ -680,20 +948,6 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	go m.runJob(j, jobCtx, jobDir, command, runner, limit)
 
 	return admitted, nil
-}
-
-// Start launches command as a background job and returns its execution ID.
-//
-// Deprecated: timeout is retained for compiling callers only and is ignored —
-// it used to be an execution deadline. Use Launch with a captured LaunchSpec
-// and Detached set for new code. This wrapper is removed once callers migrate.
-func (m *JobManager) Start(ctx context.Context, command string, timeout time.Duration) (string, error) {
-	_ = timeout // A former duration must never end an execution.
-	info, err := m.Launch(ctx, LaunchSpec{Command: command, Detached: true})
-	if err != nil {
-		return "", err
-	}
-	return info.ID, nil
 }
 
 func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, runner CommandRunner, limit int) {
@@ -760,7 +1014,17 @@ func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, ru
 
 	m.mu.Lock()
 	m.active--
+	// The command that may have been the last holder of a replaced generation's
+	// resource has just settled, so drop — and close — anything nothing
+	// references any more. Closing happens outside the lock below.
+	released := m.releaseResourcesLocked()
 	m.mu.Unlock()
+
+	for _, c := range released {
+		if c != nil {
+			_ = c.Close()
+		}
+	}
 
 	m.notifyChange()
 	close(j.done)
@@ -1382,14 +1646,16 @@ func (m *JobManager) lookup(id string) (*job, error) {
 }
 
 // evictCompleted removes settled executions whose completion timestamp is older
-// than the configured retention duration. Active executions are never evicted,
+// than the committed retention duration. Active executions are never evicted,
 // however small the current capacity is.
 func (m *JobManager) evictCompleted() {
-	if m.retention <= 0 {
+	m.mu.Lock()
+	retention := m.policy.Retention
+	if retention <= 0 {
+		m.mu.Unlock()
 		return
 	}
-	cutoff := time.Now().Add(-m.retention)
-	m.mu.Lock()
+	cutoff := time.Now().Add(-retention)
 	defer m.mu.Unlock()
 	for id, j := range m.jobs {
 		j.mu.Lock()
@@ -1424,10 +1690,20 @@ func (m *JobManager) Shutdown(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+
+	// Every execution has settled, so the service owns nothing any more. A
+	// resource the current policy still names is released by its owner (the
+	// runtime closes the backend it committed); only the resources retained
+	// across a policy commit belong to the closed service.
+	for _, c := range m.closeRetainedResources() {
+		if c != nil {
+			_ = c.Close()
+		}
+	}
+	return nil
 }
 
 // notifyChange reports the current detached-execution count to the OnChange

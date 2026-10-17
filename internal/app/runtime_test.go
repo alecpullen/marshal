@@ -179,9 +179,8 @@ func TestRuntimeQuiesceJoinsBackgroundJobs(t *testing.T) {
 	}
 
 	// Start a background job that will block until cancelled.
-	_, err := jobManager.Start(ctx, "blocking-job", time.Hour)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
+	if _, err := jobManager.Launch(ctx, native.LaunchSpec{Command: "blocking-job", Detached: true}); err != nil {
+		t.Fatalf("Launch: %v", err)
 	}
 	<-jobStarted
 
@@ -653,9 +652,8 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 		},
 	}
 	jobManager := native.NewJobManager(ctx, fr, t.TempDir(), 5, time.Hour, 1024*1024)
-	_, err := jobManager.Start(ctx, "blocking", time.Hour)
-	if err != nil {
-		t.Fatalf("Start: %v", err)
+	if _, err := jobManager.Launch(ctx, native.LaunchSpec{Command: "blocking", Detached: true}); err != nil {
+		t.Fatalf("Launch: %v", err)
 	}
 	<-jobStarted
 
@@ -693,21 +691,21 @@ func TestRuntimeCloseJoinsErrorsAndContinues(t *testing.T) {
 		},
 	}
 
-	err = rt.Close(ctx)
-	if err == nil {
+	closeErr := rt.Close(ctx)
+	if closeErr == nil {
 		t.Fatal("expected Close to return errors, got nil")
 	}
 
 	// (a) errors.Is for each injected failure.
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Close error should contain DeadlineExceeded, got %v", err)
+	if !errors.Is(closeErr, context.DeadlineExceeded) {
+		t.Errorf("Close error should contain DeadlineExceeded, got %v", closeErr)
 	}
-	if !errors.Is(err, mcpErr) {
-		t.Errorf("Close error should contain %q, got %v", mcpErr, err)
+	if !errors.Is(closeErr, mcpErr) {
+		t.Errorf("Close error should contain %q, got %v", mcpErr, closeErr)
 	}
 	// steering broker has no Close() return value, so no error.
-	if !errors.Is(err, dbErr) {
-		t.Errorf("Close error should contain %q, got %v", dbErr, err)
+	if !errors.Is(closeErr, dbErr) {
+		t.Errorf("Close error should contain %q, got %v", dbErr, closeErr)
 	}
 
 	// (b) Later stages (resourceClosers, state shutdown) still ran.

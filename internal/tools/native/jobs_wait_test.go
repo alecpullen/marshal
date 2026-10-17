@@ -33,7 +33,7 @@ func TestJobManagerWaitUnknownID(t *testing.T) {
 func TestJobManagerWaitReturnsTerminalJobImmediately(t *testing.T) {
 	ctx := context.Background()
 	m := NewJobManager(ctx, &waitTestRunner{}, t.TempDir(), 5, time.Hour, 1<<20)
-	id, err := m.Start(ctx, "true", 0)
+	id, err := launchBackground(ctx, m, "true")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestJobManagerWaitReturnsTerminalJobImmediately(t *testing.T) {
 func TestJobManagerWaitBlocksUntilDone(t *testing.T) {
 	ctx := context.Background()
 	m := NewJobManager(ctx, &waitTestRunner{delay: 150 * time.Millisecond}, t.TempDir(), 5, time.Hour, 1<<20)
-	id, err := m.Start(ctx, "slow", 0)
+	id, err := launchBackground(ctx, m, "slow")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestJobManagerWaitBlocksUntilDone(t *testing.T) {
 func TestJobManagerWaitHonorsContextCancel(t *testing.T) {
 	ctx := context.Background()
 	m := NewJobManager(ctx, &waitTestRunner{delay: time.Hour}, t.TempDir(), 5, time.Hour, 1<<20)
-	id, err := m.Start(ctx, "hang", 0)
+	id, err := launchBackground(ctx, m, "hang")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestJobManagerWaitHonorsContextCancel(t *testing.T) {
 func TestJobManagerWaitAfterKill(t *testing.T) {
 	ctx := context.Background()
 	m := NewJobManager(ctx, &waitTestRunner{delay: time.Hour}, t.TempDir(), 5, time.Hour, 1<<20)
-	id, err := m.Start(ctx, "killme", 0)
+	id, err := launchBackground(ctx, m, "killme")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -121,11 +121,11 @@ func TestJobManagerWaitAfterKill(t *testing.T) {
 func TestJobManagerOutstandingListsOnlyDetachedRunning(t *testing.T) {
 	ctx := context.Background()
 	m := NewJobManager(ctx, &waitTestRunner{delay: time.Hour}, t.TempDir(), 5, time.Hour, 1<<20)
-	idA, err := m.Start(ctx, "a", 0)
+	idA, err := launchBackground(ctx, m, "a")
 	if err != nil {
 		t.Fatalf("Start a: %v", err)
 	}
-	if _, err := m.Start(ctx, "b", 0); err != nil {
+	if _, err := launchBackground(ctx, m, "b"); err != nil {
 		t.Fatalf("Start b: %v", err)
 	}
 	if got := len(m.Outstanding()); got != 2 {

@@ -132,6 +132,7 @@ func TestShellOutputStreamsToSessionStateNotWorkspace(t *testing.T) {
 	if err := RegisterAll(reg, Options{
 		WorkspaceRoot:  root,
 		CommandRunner:  runner,
+		JobManager:     newTestCommandService(t, runner, root, child, nil),
 		Guardrail:      func(string, bool) error { return nil },
 		MaxOutputBytes: 100,
 		SessionState:   child,

@@ -48,7 +48,7 @@ func TestShellRunGitMergeNote(t *testing.T) {
 	root := t.TempDir()
 	runner := &fakeRunner{result: CommandResult{Stdout: "merged\n", ExitCode: 0}}
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string, bool) error { return nil }}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, JobManager: newTestCommandService(t, runner, root, nil, nil), Guardrail: func(string, bool) error { return nil }}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	res, err := invokeTool(t, reg, "shell.run", `{"command":"git merge feature-x"}`)
@@ -73,6 +73,7 @@ func TestShellRunGitMergeNoteSurvivesTruncation(t *testing.T) {
 	if err := RegisterAll(reg, Options{
 		WorkspaceRoot:  root,
 		CommandRunner:  runner,
+		JobManager:     newTestCommandService(t, runner, root, nil, nil),
 		Guardrail:      func(string, bool) error { return nil },
 		MaxOutputBytes: limit,
 	}); err != nil {
@@ -127,7 +128,7 @@ func TestShellRunInvokesRunnerForAllowedCommand(t *testing.T) {
 	root := t.TempDir()
 	runner := &fakeRunner{result: CommandResult{Stdout: "ok\n", ExitCode: 0}}
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string, bool) error { return nil }}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, JobManager: newTestCommandService(t, runner, root, nil, nil), Guardrail: func(string, bool) error { return nil }}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -158,6 +159,7 @@ func TestShellRunBlocksDangerousCommandBeforeRunner(t *testing.T) {
 	if err := RegisterAll(reg, Options{
 		WorkspaceRoot: root,
 		CommandRunner: runner,
+		JobManager:    newTestCommandService(t, runner, root, nil, nil),
 		Guardrail: func(cmd string, system bool) error {
 			if strings.Contains(strings.ToLower(cmd), "rm -rf") {
 				return fmt.Errorf("blocked by guardrail: %s", cmd)
@@ -335,7 +337,7 @@ func TestTestRunUsesDefaultCommandAndWait(t *testing.T) {
 	root := t.TempDir()
 	runner := &fakeRunner{result: CommandResult{Stdout: "pass\n", ExitCode: 0}}
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string, bool) error { return nil }}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, JobManager: newTestCommandService(t, runner, root, nil, nil), Guardrail: func(string, bool) error { return nil }}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -391,6 +393,7 @@ func TestTestRunAllowsOverrideButAppliesGuardrails(t *testing.T) {
 	if err := RegisterAll(reg, Options{
 		WorkspaceRoot: root,
 		CommandRunner: runner,
+		JobManager:    newTestCommandService(t, runner, root, nil, nil),
 		TestCommand:   "go test ./pkg",
 		Guardrail: func(cmd string, system bool) error {
 			lower := strings.ToLower(cmd)
@@ -420,11 +423,14 @@ func TestTestRunAllowsOverrideButAppliesGuardrails(t *testing.T) {
 }
 
 func TestShellRunRejectsGuardrailDeniedCommand(t *testing.T) {
+	root := t.TempDir()
+	runner := &fakeRunner{}
 	reg := registry.New()
 	denied := map[string]bool{"rm -rf /": true}
 	if err := RegisterAll(reg, Options{
-		WorkspaceRoot: t.TempDir(),
-		CommandRunner: &fakeRunner{},
+		WorkspaceRoot: root,
+		CommandRunner: runner,
+		JobManager:    newTestCommandService(t, runner, root, nil, nil),
 		Guardrail: func(cmd string, system bool) error {
 			if denied[cmd] {
 				return fmt.Errorf("blocked: %s", cmd)
@@ -449,7 +455,7 @@ func TestShellRunStreamsOutputToSession(t *testing.T) {
 	}
 	root := t.TempDir()
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string, bool) error { return nil }, MaxOutputBytes: 100, SessionState: state}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, JobManager: newTestCommandService(t, runner, root, state, nil), Guardrail: func(string, bool) error { return nil }, MaxOutputBytes: 100, SessionState: state}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -478,7 +484,7 @@ func TestCommandOutputIsLimited(t *testing.T) {
 	// bulk or it would pass without exercising truncation at all.
 	runner := &fakeRunner{result: CommandResult{Stdout: strings.Repeat("abcdef", 8), ExitCode: 0}}
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string, bool) error { return nil }, MaxOutputBytes: 12}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, JobManager: newTestCommandService(t, runner, root, nil, nil), Guardrail: func(string, bool) error { return nil }, MaxOutputBytes: 12}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -498,7 +504,7 @@ func TestShellRunNonZeroExitReturnsOutputNotError(t *testing.T) {
 		err:    fmt.Errorf("exit status 1"),
 	}
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string, bool) error { return nil }}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, JobManager: newTestCommandService(t, runner, root, nil, nil), Guardrail: func(string, bool) error { return nil }}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	result, err := invokeTool(t, reg, "shell.run", `{"command":"go test ./..."}`)
@@ -537,7 +543,7 @@ func TestShellRunTerminatedCommandStillReturnsError(t *testing.T) {
 		err:    fmt.Errorf("signal: killed"),
 	}
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string, bool) error { return nil }}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, JobManager: newTestCommandService(t, runner, root, nil, nil), Guardrail: func(string, bool) error { return nil }}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	res, err := invokeTool(t, reg, "shell.run", `{"command":"go test ./..."}`)
@@ -559,7 +565,7 @@ func TestShellRunStartupFailureStillReturnsError(t *testing.T) {
 		err:    fmt.Errorf("exec: not found"),
 	}
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Guardrail: func(string, bool) error { return nil }}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, JobManager: newTestCommandService(t, runner, root, nil, nil), Guardrail: func(string, bool) error { return nil }}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	_, err := invokeTool(t, reg, "shell.run", `{"command":"nonexistent-binary"}`)

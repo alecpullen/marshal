@@ -145,9 +145,20 @@ type Runtime struct {
 	// shared by the TUI and any headless transport (ACP). Built once here
 	// so there is a single source of truth for command registration.
 	CommandRegistry *commands.Registry
-	JobManager      *native.JobManager
-	WatchManager    *watch.Manager
-	DesktopCloser   func()
+	// CommandService is the conversation's command supervisor: the one
+	// service every ordinary command in this conversation is admitted
+	// through, from admission to settlement, and the target an explicit turn
+	// stop reaches (via the session's registered TurnStopService).
+	//
+	// It survives a config reload and a replacement session: a rebuild
+	// BORROWS it and commits new launch defaults for future work, so
+	// already-admitted commands, their handles and their identities are never
+	// repointed or closed by a rebuild. JobManager is the same supervisor's
+	// handle for callers that only need admission and status.
+	CommandService *conversationCommandService
+	JobManager     *native.JobManager
+	WatchManager   *watch.Manager
+	DesktopCloser  func()
 	// SnapshotWarnings carries the runtime's snapshot-warning suppression
 	// state. It is shared with the agent runner (Runner.SetSnapshotWarningState)
 	// so an in-turn capture warning and a runtime maintenance warning about the
@@ -232,6 +243,17 @@ type Runtime struct {
 	closeOnce   sync.Once
 	quiesceErr  error
 	closeErr    error
+}
+
+// commandServiceManager returns the supervisor's manager handle, or nil when
+// the build never reached owner construction (a provider-resolution failure
+// returns before the service exists). Callers that only want the handle must go
+// through this rather than dereferencing the service.
+func commandServiceManager(s *conversationCommandService) *native.JobManager {
+	if s == nil {
+		return nil
+	}
+	return s.manager
 }
 
 // CurrentWatchManager returns the runtime's watch manager under the pointer
@@ -814,7 +836,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// closure built inside it captures the cell, and the OnFire closure is
 	// built before the Runtime exists.
 	watchResumeCell := &WatchResumeHook{}
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, jobMgr, watchMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, commandService, watchMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock, nil)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -868,7 +890,8 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		WorkspaceBroker:      workspaceBroker,
 		SubagentBroker:       subagentBroker,
 		IndexBroker:          indexBroker,
-		JobManager:           jobMgr,
+		CommandService:       commandService,
+		JobManager:           commandServiceManager(commandService),
 		WatchManager:         watchMgr,
 		WatchResume:          watchResumeCell,
 		DesktopCloser:        desktopCloser,
@@ -1025,7 +1048,7 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		lock = &swarm.WriteLock{}
 	}
 	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
-		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock,
+		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, nil,
 	)
 	if err != nil {
 		// Roll back the empty session row so /sessions stays clean.
@@ -1046,7 +1069,15 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	oldState := rt.State
 	oldRunner := rt.Runner
 	oldMCP := rt.MCPManager
-	oldJobMgr := rt.JobManager
+	// The replaced conversation's own command supervisor. It is NOT the one
+	// the candidate borrowed (the candidate got a fresh owner), so it is
+	// genuinely retired here: every session-scoped identity it held belongs to
+	// the session being replaced. A Runtime literal that predates the service
+	// field still carries its manager, so adopt it rather than leaking it.
+	oldCommandService := rt.CommandService
+	if oldCommandService == nil && rt.JobManager != nil {
+		oldCommandService = &conversationCommandService{manager: rt.JobManager, generation: 1}
+	}
 	oldWatchMgr := rt.WatchManager
 	oldDesktopCloser := rt.DesktopCloser
 	oldLSP := rt.LSPManager
@@ -1065,7 +1096,13 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	rt.PipelineFactory = newPipelineFactory
 	rt.PlanAuthorFactory = newPlanAuthorFactory
 	rt.CustomAgentFactory = newSubagentFactory
-	rt.JobManager = newJobMgr
+	// A replacement session is a NEW conversation, so it gets its own
+	// command supervisor: a fresh session id, a fresh transcript and a fresh
+	// running-count callback all have to agree on which service they mean.
+	// The previous conversation's service is torn down below with the rest of
+	// the replaced generation.
+	rt.CommandService = newJobMgr
+	rt.JobManager = newJobMgr.manager
 	rt.WatchManager = newWatchMgr
 	rt.DesktopCloser = newDesktopCloser
 	if newMCP != nil {
@@ -1086,10 +1123,10 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 	if oldMCP != nil {
 		_ = oldMCP.Close()
 	}
-	if oldJobMgr != nil {
+	if oldCommandService != nil && oldCommandService.manager != nil && oldCommandService != rt.CommandService {
 		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = oldJobMgr.Shutdown(sc)
+		_ = oldCommandService.manager.Shutdown(sc)
 	}
 	if oldWatchMgr != nil {
 		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)

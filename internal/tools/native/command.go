@@ -162,6 +162,15 @@ func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string,
 	if command == "" {
 		return registry.ToolResult{}, fmt.Errorf("command is required")
 	}
+	// An ordinary command has exactly one owner: the conversation's command
+	// service, injected at construction. A registry built without one (a
+	// filtered read-only scope, a plan-author child, a mis-wired test fixture)
+	// must fail here, before the guardrail and before any launch, rather than
+	// creating a private supervisor whose commands nothing can stop, count or
+	// settle.
+	if t.jobManager == nil {
+		return registry.ToolResult{}, fmt.Errorf("shell execution is unavailable: this registry has no conversation command service")
+	}
 	// Guardrails are validated before admission, so a denied command never
 	// reaches the service.
 	if t.guardrail != nil {
@@ -178,7 +187,7 @@ func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string,
 	// follows attachment without this path relaunching anything.
 	info, err := t.jobManager.Launch(ctx, LaunchSpec{
 		Command:        command,
-		Dir:            t.activeRoot(),
+		Dir:            t.commandRoot(),
 		Runner:         t.runner,
 		MaxOutputBytes: t.maxOutputBytes,
 		Stdout:         t.activeCallWriter(callID),

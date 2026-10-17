@@ -561,6 +561,147 @@ func NewRolloverController(sessionID string, cfg config.RolloverConfig, database
 	return ctrl, nil
 }
 
+// conversationCommandService is the command supervisor ONE conversation owns,
+// from admission through settlement, plus the two things a rebuild may update
+// on it: the committed launch generation and the live LSP rescan seam.
+//
+// Ownership is the point. The service is created once per conversation (see
+// newConversationCommandService) and every later build — a config reload, a
+// child registry, a pipeline dispatch — borrows it. That is what keeps handles,
+// ids, the count callback, the job broker and the exit sink stable across a
+// reload: a rebuild changes FUTURE launches (its launch defaults) and never
+// repoints or closes the supervisor itself.
+type conversationCommandService struct {
+	manager *native.JobManager
+	// generation is the launch generation currently committed to the service.
+	// It is bumped only by a successful commit, so a failed candidate build
+	// leaves the previous generation in force.
+	generation int
+
+	mu sync.Mutex
+	// lsp is the live language-server rescan seam. A completion resolves it at
+	// settlement time (not at installation), so a job that finishes after a
+	// reload re-syncs through the generation that is live now rather than the
+	// one that admitted it.
+	lsp native.LSPSync
+}
+
+// nextGeneration is the generation a build should commit. It is read from the
+// SERVICE, not from a caller's counter: a service that was adopted from an
+// already-live manager (a Runtime assembled before the service existed, a
+// fixture that owns a manager directly) reports the generation it actually has,
+// so a rebuild never re-commits a generation number an already-admitted
+// execution is using.
+func (s *conversationCommandService) nextGeneration() int {
+	if s == nil {
+		return 1
+	}
+	if s.manager != nil {
+		if gen := s.manager.Generation(); gen >= 0 {
+			return gen + 1
+		}
+	}
+	return s.generation + 1
+}
+
+// setLiveLSP records the rescan seam of the generation that just became live.
+func (s *conversationCommandService) setLiveLSP(sync native.LSPSync) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.lsp = sync
+	s.mu.Unlock()
+}
+
+// rescanLSP announces files a settled command changed on disk. A nil seam (no
+// language server configured, or none live yet) is a no-op.
+func (s *conversationCommandService) rescanLSP() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	sync := s.lsp
+	s.mu.Unlock()
+	if sync != nil {
+		sync.Rescan()
+	}
+}
+
+// newConversationCommandService creates the conversation's command service and
+// installs everything that belongs to its owner: the parent's running-count
+// callback, the F19 job broker and the exit sink that makes a detached
+// completion durable.
+//
+// These are installed HERE and nowhere else. A rebuild must not re-install them
+// — a child registry or a reload that repointed them would leave the parent's
+// evidence and its stop target aimed at a toolset that is being replaced.
+func newConversationCommandService(ctx context.Context, cfg config.Config, state *session.State, jobBroker *pubsub.Broker[native.JobEvent]) *conversationCommandService {
+	svc := &conversationCommandService{generation: 1}
+	svc.manager = native.NewCommandService(ctx, commandLaunchPolicy(cfg, state, 1, nil, nil))
+	if state != nil {
+		svc.manager.SetOnChange(state.SetRunningJobsCount)
+		// The conversation's service is the target an explicit turn stop
+		// reaches: the session owns it, so Ctrl+C (or /stop, or a cancelled
+		// review/pipeline/SDD turn) can mark that turn's attached commands
+		// stopping BEFORE the agent's own waits are cancelled. Installing it
+		// once, at owner construction, is what keeps a child registry or a
+		// reload from silently replacing the stop target.
+		state.SetTurnStopService(svc.manager)
+	}
+	if jobBroker != nil {
+		svc.manager.SetBroker(jobBroker)
+	}
+	svc.manager.SetOnExit(func(info native.JobInfo, ran time.Duration, output string) error {
+		exit := session.JobExitFromExecution(info.Execution(), info.Command, output, ran, info.ExitCode)
+		err := state.AddJobExit(exit)
+		// The rescan follows the files the command changed on disk, which
+		// happened whether or not the outcome was stored, so it is not gated on
+		// the durable write. It resolves the LIVE handle, so a command admitted
+		// before a reload still re-syncs through the generation running now.
+		svc.rescanLSP()
+		if err != nil {
+			// Surface the failure and leave the record pending: it is already in
+			// the transcript in memory, and the manager retries the durable write.
+			state.Logger().Error("job exit was not persisted", "error", err, "job", info.ID, "execution", info.ExecutionID)
+			return err
+		}
+		return nil
+	})
+	return svc
+}
+
+// commandLaunchPolicy renders one generation's launch defaults from config.
+// Only the defaults belong here: an execution admitted under the previous
+// generation keeps the runner, cwd, output policy and wait it captured, so
+// committing this policy re-times and re-limits nothing that is already running.
+func commandLaunchPolicy(cfg config.Config, state *session.State, generation int, runner native.CommandRunner, resources []io.Closer) native.LaunchPolicy {
+	policy := native.LaunchPolicy{
+		Generation:     generation,
+		Runner:         runner,
+		MaxJobs:        cfg.Tools.Shell.MaxBackgroundJobs,
+		Retention:      cfg.Tools.Shell.BackgroundRetention,
+		MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
+		Resources:      resources,
+	}
+	if state != nil {
+		policy.DirFunc = func() string { return state.Workspace().ActiveRoot }
+	}
+	return policy
+}
+
+// commitLaunchPolicy atomically installs policy as the service's defaults for
+// future launches. It is called only after a candidate generation has been
+// fully built and validated, so a failed candidate never mutates the service.
+func (s *conversationCommandService) commitLaunchPolicy(policy native.LaunchPolicy, liveLSP native.LSPSync) {
+	if s == nil || s.manager == nil {
+		return
+	}
+	s.manager.CommitLaunchPolicy(policy)
+	s.generation = policy.Generation
+	s.setLiveLSP(liveLSP)
+}
+
 // buildAgentRunner is the test-facing form: children serialize on a private
 // lock. Production uses buildAgentRunnerWithLock so the parent runner and
 // every agent.run child share the runtime's stable WriteLock across config
@@ -569,7 +710,11 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 	// The watch manager is owned by the runtime (via buildAgentRunnerWithLock);
 	// this wrapper discards it so the ~25 test call sites that use
 	// buildAgentRunner directly do not need to change.
-	runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{})
+	runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{}, nil)
+	var jobMgr *native.JobManager
+	if commandService != nil {
+		jobMgr = commandService.manager
+	}
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err
 }
 
@@ -579,7 +724,20 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // (which rebuilds the runner and the subagent factory) reuses the same lock
 // that in-flight background children from the pre-reload generation already
 // hold.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
+//
+// service is the conversation's command service. A nil service means this call
+// is the OWNER construction: it creates the service and installs the parent's
+// count callback, job broker and exit sink on it. A non-nil service means this
+// call is a REBUILD (a config reload, a replacement session) and only borrows
+// it: nothing about the service's ownership, identity or callbacks is touched,
+// so an explicit turn stop, a background card and an already-admitted command
+// all keep pointing at the one supervisor the rebuild found.
+//
+// Either way, a successful build commits a new launch GENERATION as the
+// service's defaults for future launches. That commit is the last thing the
+// function does, so a candidate that fails validation leaves the previous
+// generation — and the service — exactly as they were.
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	resolver := newRoutedProviderResolver(cfg, dataDir).withSessionID(state.SessionID())
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
@@ -631,57 +789,22 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// (config.LoadSessionLayers) can locate the user config layer.
 	state.SetHomeDir(homeDir)
 
-	// Milestone Q: construct the JobManager from the sandboxed command
-	// runner so background jobs honour the configured sandbox backend,
-	// output limit, and concurrency limits.
-	jobManager := native.NewJobManager(
-		ctx,
-		commandRunner,
-		state.WorkingDir,
-		cfg.Tools.Shell.MaxBackgroundJobs,
-		cfg.Tools.Shell.BackgroundRetention,
-		cfg.Tools.Shell.MaxOutputBytes,
-	)
-	// Background jobs start in the session's active root, so they land in
-	// the worktree while the session is isolated.
-	jobManager.SetDirFunc(func() string { return state.Workspace().ActiveRoot })
-	// The conversation's command service is the target an explicit turn stop
-	// reaches: the session owns it, so Ctrl+C (or /stop, or a cancelled
-	// review/pipeline/SDD turn) can mark that turn's attached commands stopping
-	// BEFORE the agent's own waits are cancelled. Installing it here — once, at
-	// owner construction — is what keeps a child registry or a reload from
-	// silently replacing the stop target.
-	state.SetTurnStopService(jobManager)
-	// Job exits reach the transcript from here, not from a client, so the
-	// TUI and ACP sessions both see a job's card settle. The sink reports
-	// whether the outcome was made durable: the manager keeps an unacknowledged
-	// completion pending and retries it, because announcing one that was never
-	// stored leaves a resumed session showing a card that runs forever.
+	// Milestone Q: the conversation's command service supervises every
+	// ordinary command — foreground and background — from admission through
+	// settlement. It honours the configured sandbox backend, output limit and
+	// concurrency limits, and it is created ONCE per conversation.
 	//
-	// The manager only sends detached completions here. A foreground command's
-	// outcome reaches the transcript as the tool call's own audit, so routing it
-	// here too would settle one execution twice.
-	// lspSync is declared here (and assigned below, where lspHandle is built)
-	// so a background job that changes files on disk can announce them once
-	// it exits. Nil until then — the callback checks.
-	var lspSync native.LSPSync
-	jobManager.SetOnExit(func(info native.JobInfo, ran time.Duration, output string) error {
-		exit := session.JobExitFromExecution(info.Execution(), info.Command, output, ran, info.ExitCode)
-		err := state.AddJobExit(exit)
-		// The rescan follows the files the command changed on disk, which
-		// happened whether or not the outcome was stored, so it is not gated on
-		// the durable write.
-		if lspSync != nil {
-			lspSync.Rescan()
-		}
-		if err != nil {
-			// Surface the failure and leave the record pending: it is already in
-			// the transcript in memory, and the manager retries the durable write.
-			state.Logger().Error("job exit was not persisted", "error", err, "job", info.ID, "execution", info.ExecutionID)
-			return err
-		}
-		return nil
-	})
+	// A rebuild (a config reload, a replacement session, a child registry)
+	// borrows the service it is given. It must not create a second one: two
+	// supervisors would each hold their own capacity, ids, count callback and
+	// settlement map, and an explicit turn stop would reach only the one the
+	// registry happened to capture.
+	owned := service == nil
+	commandService := service
+	if commandService == nil {
+		commandService = newConversationCommandService(ctx, cfg, state, jobBroker)
+	}
+	jobManager := commandService.manager
 	// Roll back partially-built resources on any later failure. Each
 	// resource appends its cleanup as it comes up; the deferred func runs
 	// them in reverse order, but only when a failure return set buildErr.
@@ -697,11 +820,13 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			cleanup[i]()
 		}
 	}()
-	cleanup = append(cleanup, func() {
-		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		jobManager.Shutdown(sc)
-	})
+	if owned {
+		cleanup = append(cleanup, func() {
+			sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			jobManager.Shutdown(sc)
+		})
+	}
 
 	// Milestone W: construct the watch manager from the sandboxed command
 	// runner and the job broker. Command samples run through the same
@@ -808,10 +933,11 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// symbols answers through the language servers and falls back to the
 	// symbol index, so it is wired unconditionally; lspHandle may be nil.
 	nativeOpts.Symbols = lsp.NewSymbolQuery(lspHandle, database, projectID)
+	var lspSync native.LSPSync
 	if lspHandle != nil {
-		nativeOpts.LSPSync = lsp.NewSync(lspHandle)
-		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspHandle)
 		lspSync = lsp.NewSync(lspHandle)
+		nativeOpts.LSPSync = lspSync
+		nativeOpts.LSPIndex = lsp.NewSymbolAdapter(lspHandle)
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
@@ -851,7 +977,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// writes must serialize on the same gate. The lock is the caller's
 	// (buildAgentRunnerWithLock passes the runtime's stable lock so a config
 	// reload reuses the same gate in-flight children already hold).
-	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock, nativeOpts, watchManager)
+	subagentFactory, subagentResolver := buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, parentPricing, writeLock, nativeOpts, watchManager, commandService)
 	if err := reg.Register(agent.NewSubagentTool(
 		subagentFactory,
 		subagentResolver,
@@ -1166,12 +1292,19 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		desktopCloser = closer
 	}
 
-	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts, watchManager)
+	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts, watchManager, commandService)
 	pipelineFactory := func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner {
-		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable, overrides)
+		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable, overrides, commandService)
 	}
-	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner)
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, watchManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
+	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, commandService)
+
+	// The generation is committed last, and only on the success path: every
+	// candidate above has been built and validated, so this is the point at
+	// which the new defaults become the service's — atomically, for future
+	// launches only. A failure returned earlier leaves the service, its
+	// callbacks and the previous generation exactly as they were.
+	commandService.commitLaunchPolicy(commandLaunchPolicy(cfg, state, commandService.nextGeneration(), commandRunner, native.ResourcesOf(commandRunner)), lspSync)
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, watchManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
 }
 
 // beginSessionStop registers the conversation-level stop group for one parent
@@ -1445,7 +1578,7 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 // buildPipelineController wires a plan-execution controller for one plan.
 // It is built per run, not at startup: the controller is bound to a single
 // plan file.
-func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string, lt *limits.Table, overrides map[routing.AgentRole]string) *pipeline.ControllerAdapter {
+func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string, lt *limits.Table, overrides map[routing.AgentRole]string, commandService *conversationCommandService) *pipeline.ControllerAdapter {
 	// Apply per-run role overrides to a copy of the routing config. The
 	// provider cache is shared with the startup resolver so providers are
 	// not rebuilt per run. Overrides are never written to disk.
@@ -1486,7 +1619,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 				// chained OnTokens closure; read the updated value here.
 				state.UpdateSDDTokens(ctl.UsageTokens, cfg.SDD.MaxTotalTokens)
 			},
-			RegistryFactory: makePipelineRegistryFactory(cfg, state, commandRunner, resolver, database, projectID, skillIndex, reg),
+			RegistryFactory: makePipelineRegistryFactory(cfg, state, commandRunner, resolver, database, projectID, skillIndex, reg, commandService),
 		},
 		Verifier: pipeline.DefaultVerifier(
 			state.WorkingDir,
@@ -1527,7 +1660,7 @@ func resolveAuthorPlansDir(workingDir, plansDirRel string) string {
 // plan-authoring runner for one request. The child may inspect the
 // repository and write exactly one plan artifact; it cannot modify source
 // files, run commands, spawn agents, or ask the user.
-func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner) sddauthor.Factory {
+func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, commandService *conversationCommandService) sddauthor.Factory {
 	repoInstructionsForPlanAuthor, _ := loadRepoInstructions(state.WorkingDir)
 	return func(req sddauthor.Request) (*sddauthor.Runner, error) {
 		route, p, err := resolver.ResolveRole(routing.RoleSDDPlanAuthor)
@@ -1547,6 +1680,11 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		// plans_dir cannot trick the child into writing outside the repo.
 		childReg := registry.New()
 		plansDir := resolveAuthorPlansDir(state.WorkingDir, cfg.SDD.PlansDir)
+		// No-command path: the authoring child never runs an ordinary command
+		// — PlanWriterView strips the command tools below — so it is given no
+		// command service at all. A dispatch that somehow reached shell.run
+		// therefore fails with a clear owner error instead of supervising a
+		// command into a registry the conversation does not own.
 		nativeOpts := native.Options{
 			WorkspaceRoot:  state.WorkingDir,
 			CommandRunner:  commandRunner,
@@ -1608,16 +1746,33 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 // allowlist (set on Dispatcher.FallbackAllowedFiles immediately before
 // each fallback dispatch) so the marshal.agent fallback cannot modify
 // parts of the worktree outside its declared scope.
-func makePipelineRegistryFactory(cfg config.Config, state *session.State, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry) pipeline.RegistryFactory {
+//
+// commandService is the conversation's command service, borrowed — never
+// created here. A pipeline worker runs inside the conversation that dispatched
+// it, so its commands belong to the same supervisor: one capacity, one count
+// callback, one exit sink and one stop target. Its output stays child-local
+// because SessionState is the runner's own child state.
+func makePipelineRegistryFactory(cfg config.Config, state *session.State, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry, commandService *conversationCommandService) pipeline.RegistryFactory {
 	return func(ctx pipeline.ExecutionContext, scope pipeline.RegistryScope, childState *session.State) (*registry.Registry, error) {
 		childReg := registry.New()
+		var jobManager *native.JobManager
+		if commandService != nil {
+			jobManager = commandService.manager
+		}
 		nativeOpts := native.Options{
 			WorkspaceRoot:  ctx.WorkspaceRoot,
 			CommandRunner:  commandRunner,
 			MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
 			SessionState:   childState,
 			Config:         cfg,
-			NamedRoots:     ctx.NamedRoots(),
+			JobManager:     jobManager,
+			// A dispatch's commands belong to THIS dispatch's worktree, not to
+			// whatever the session's active root happens to be later. Capturing
+			// it here — per registry, read at admission — is what stops a
+			// sibling dispatch or a workspace change from redirecting a command
+			// that already started.
+			CommandDir: ctx.WorkspaceRoot,
+			NamedRoots: ctx.NamedRoots(),
 		}
 		// When the pipeline runs in a worktree (WorkspaceRoot != RepoRoot),
 		// expose the project root as an additional root so workers can read
@@ -1692,8 +1847,12 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 // private lock. Production uses buildSubagentFactoryWithLock so the parent
 // runner and every agent.run child share one gate. (Keeping this wrapper
 // avoids churning the ~25 test call sites.)
+//
+// It passes no command service: the wrapper's empty base options already mean
+// children fall back to a filtered view of the parent registry (no native
+// command tools of their own), and those tests never execute a tool.
 func buildSubagentFactory(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
-	return buildSubagentFactoryWithLock(cfg, parentState, parentProvider, parentReg, pol, defaultModel, router, resolver, database, projectID, parentPricing, &swarm.WriteLock{}, native.Options{}, nil)
+	return buildSubagentFactoryWithLock(cfg, parentState, parentProvider, parentReg, pol, defaultModel, router, resolver, database, projectID, parentPricing, &swarm.WriteLock{}, native.Options{}, nil, nil)
 }
 
 // buildSubagentFactoryWithLock returns a closure that constructs a fresh
@@ -1717,7 +1876,16 @@ func buildSubagentFactory(cfg config.Config, parentState *session.State, parentP
 // writeLock is the shared swarm.WriteLock every child runner serializes its
 // writes on. Production passes the parent runner's own gate so parent and
 // background children (which outlive the spawning turn) serialize together.
-func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing, writeLock *swarm.WriteLock, baseNativeOpts native.Options, watchTransferrer agent.WatchTransferrer) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
+//
+// commandService is the conversation's command service, borrowed — never
+// created here. A child's shell commands belong to the conversation that
+// spawned it, so they are counted, settled and stopped through the same
+// supervisor as the parent's; its output stays child-local because the child
+// registry is bound to the child's own SessionState. A nil service (the test
+// wrapper, or a scope with no command tools) simply leaves the child with no
+// command owner, and a dispatch through one fails clearly instead of
+// supervising commands into a registry nothing owns.
+func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State, parentProvider provider.Provider, parentReg *registry.Registry, pol *policy.PolicyEngine, defaultModel string, router *routing.StaticRouter, resolver *routedProviderResolver, database *db.DB, projectID int64, parentPricing pricing.ModelPricing, writeLock *swarm.WriteLock, baseNativeOpts native.Options, watchTransferrer agent.WatchTransferrer, commandService *conversationCommandService) (agent.SubagentRunnerFactory, agent.SubagentModelResolver) {
 	// A child tool ceiling is opt-in. An unset value, like an explicit zero,
 	// leaves the child unlimited. Negative values are treated as unset.
 	subtaskIters := cfg.Agent.SubtaskIterations
@@ -1809,6 +1977,16 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			childOpts := baseNativeOpts
 			childOpts.SessionState = childState    // per-agent: active call, output, approvals
 			childOpts.WorkspaceState = parentState // per-workspace: backups, active root
+			// A child's commands belong to the conversation that spawned it,
+			// so the child borrows the conversation's command service rather
+			// than owning one. Its output stays child-local (SessionState is
+			// the child's), while the running count and the durable exit sink
+			// stay parent-owned (both were installed at owner construction).
+			// A nil service — the test wrapper, a fixture without an owner —
+			// leaves the child with no command owner, and a shell dispatch
+			// through it fails clearly instead of supervising commands into a
+			// registry nothing owns.
+			childOpts.JobManager = commandServiceManager(commandService)
 			// A subagent must not be able to run privileged commands: its
 			// prompt would have no transport to render it, so the call would
 			// hang until turn cancellation. Today that is enforced only by
@@ -2548,7 +2726,24 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock)
+	// Borrow the conversation's command service. A reload changes FUTURE
+	// launches only: the candidate build validates first and the new launch
+	// generation is committed last, so a failed candidate leaves the service,
+	// its callbacks and the previous generation untouched — and the service is
+	// never closed here. A reload that shut the old manager down would kill
+	// still-running commands and orphan every handle the transcript, the TUI
+	// lane and agent.await already hold.
+	service := rt.CommandService
+	if service == nil && rt.JobManager != nil {
+		// A Runtime assembled without the service field (test fixtures from
+		// before the service existed) still owns a manager. Adopt it rather
+		// than minting a second supervisor: that keeps the handles and
+		// callbacks the fixture already holds, which is exactly the
+		// ownership rule production follows.
+		service = &conversationCommandService{manager: rt.JobManager, generation: 1}
+		rt.CommandService = service
+	}
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service)
 	if err != nil {
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
@@ -2564,7 +2759,6 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// at a time) and the pointer mutex.
 	rt.State.Config = cfg
 	oldMCP := rt.MCPManager
-	oldJobMgr := rt.JobManager
 	oldWatchMgr := rt.WatchManager
 	oldDesktopCloser := rt.DesktopCloser
 	oldLSP := rt.LSPManager
@@ -2621,7 +2815,8 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	} else {
 		rt.LSPManager = nil
 	}
-	rt.JobManager = newJobMgr
+	rt.JobManager = newJobMgr.manager
+	rt.CommandService = newJobMgr
 	rt.WatchManager = newWatchMgr
 	rt.DesktopCloser = newDesktopCloser
 	rt.CustomAgentFactory = newSubagentFactory
@@ -2635,13 +2830,11 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
 	}
-	if oldJobMgr != nil {
-		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		if err := oldJobMgr.Shutdown(sc); err != nil {
-			cleanupErr = errors.Join(cleanupErr, err)
-		}
-	}
+	// The command service is deliberately NOT shut down here. A reload is not
+	// the end of the conversation: its commands keep running under the same
+	// supervisor, which is what lets a foreground wait hand off and an
+	// agent.await keep resolving the same handle across the reload. The
+	// runtime's own Close (after Quiesce) is the only place the service ends.
 	if oldWatchMgr != nil {
 		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()

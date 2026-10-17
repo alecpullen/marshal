@@ -91,7 +91,12 @@ func (m *Model) handleModelOptionsChanged(msg modeloptions.ChangedMsg) tea.Cmd {
 	// panel. The panel emitted a mutated clone, so m.state.Config carries the
 	// pre-edit membership — presets another marshal process persisted after
 	// this process loaded survive the merge.
-	if !m.busy && m.state.RunningJobsCount() == 0 {
+	//
+	// A running background command does not defer the reload: command
+	// ownership survives a reload, so a job admitted before it keeps its
+	// captured runner, cwd, output policy and wait, and only future launches
+	// resolve the new defaults.
+	if !m.busy {
 		saveErr, reloadErr := m.savePresetsAndReload(userPath, msg.Config, m.state.Config.Models.Presets)
 		if saveErr != nil || reloadErr != nil {
 			m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not apply %s option: save=%v reload=%v", msg.FieldID, saveErr, reloadErr), session.ContentTypePlain)
@@ -147,11 +152,16 @@ func (m *Model) savePresetsAndReload(userPath string, cfg config.Config, baselin
 // flushPendingModelOptions applies a pending options candidate if the model is
 // now idle. Returns a command that emits the result, or nil if no work is
 // needed.
+//
+// Only an active TURN defers the reload. Background commands are not a reason
+// to wait: the conversation's command service survives a reload, so applying
+// the candidate changes future launches without disturbing a command that is
+// already running.
 func (m *Model) flushPendingModelOptions() tea.Cmd {
 	if m.pendingModelOptions == nil {
 		return nil
 	}
-	if m.busy || m.state.RunningJobsCount() > 0 {
+	if m.busy {
 		return nil
 	}
 	pending := m.pendingModelOptions

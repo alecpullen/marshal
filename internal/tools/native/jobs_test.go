@@ -173,6 +173,46 @@ func newFakeRunner(opts ...fakeRunnerOption) *fakeCommandRunner {
 	return f
 }
 
+// launchBackground admits command as a background execution through the launch
+// API and returns its display id. It stands in for the removed Start wrapper,
+// whose timeout argument was ignored: a managed command has no execution
+// deadline, so there is no duration to pass.
+func launchBackground(ctx context.Context, jm *JobManager, command string) (string, error) {
+	info, err := jm.Launch(ctx, LaunchSpec{Command: command, Detached: true})
+	if err != nil {
+		return "", err
+	}
+	return info.ID, nil
+}
+
+// newTestCommandService builds a test-OWNED conversation command service. Tests
+// that expose shell.run or test.run must inject an owner explicitly: the toolset
+// no longer creates one implicitly, so a dispatch through an ownerless registry
+// fails rather than quietly supervising commands nothing can stop or settle.
+// The optional state and broker receive the same count callback the
+// conversation's owner installs in production, and cleanup shuts the service
+// down so no test leaks a process.
+func newTestCommandService(t *testing.T, runner CommandRunner, dir string, state *session.State, broker *pubsub.Broker[JobEvent]) *JobManager {
+	t.Helper()
+	jm := NewCommandService(context.Background(), LaunchPolicy{
+		Runner:         runner,
+		Dir:            dir,
+		MaxOutputBytes: 1 << 20,
+	})
+	if state != nil {
+		jm.SetOnChange(state.SetRunningJobsCount)
+	}
+	if broker != nil {
+		jm.SetBroker(broker)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = jm.Shutdown(ctx)
+	})
+	return jm
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests — fake-runner based
 // ---------------------------------------------------------------------------
@@ -186,7 +226,7 @@ func TestJobManagerUsesConfiguredRunnerAndReportsSandboxMeta(t *testing.T) {
 
 	// Start a job. The goroutine will call runner.Run which calls OnStart
 	// (setting PID) and then blocks on the release channel.
-	id, err := jm.Start(ctx, "echo hello", time.Second)
+	id, err := launchBackground(ctx, jm, "echo hello")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -253,8 +293,8 @@ func TestFormerDurationCannotKillExecution(t *testing.T) {
 	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
-	// A duration far shorter than the command's runtime. It is ignored.
-	id, err := jm.Start(ctx, "sleep 30", 10*time.Millisecond)
+	// A former duration is gone from the API: no wait can end an execution.
+	id, err := launchBackground(ctx, jm, "sleep 30")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -347,7 +387,7 @@ func TestJobOutputIsLiveAndBounded(t *testing.T) {
 	flooded := newFakeRunner(withLiveOutput("hello world\n"), withExtraBytes(200000))
 	jm2 := NewJobManager(ctx, flooded, t.TempDir(), 25, time.Hour, 100)
 	t.Cleanup(func() { _ = jm2.Shutdown(context.Background()) })
-	floodID, err := jm2.Start(ctx, "chatty", time.Second)
+	floodID, err := launchBackground(ctx, jm2, "chatty")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -417,7 +457,7 @@ func TestCompletedJobsDoNotConsumeConcurrency(t *testing.T) {
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
 	// Start job 1 — it completes immediately.
-	id1, err := jm.Start(ctx, "job1", time.Second)
+	id1, err := launchBackground(ctx, jm, "job1")
 	if err != nil {
 		t.Fatalf("start job1: %v", err)
 	}
@@ -426,7 +466,7 @@ func TestCompletedJobsDoNotConsumeConcurrency(t *testing.T) {
 
 	// maxJobs=1 but job 1 is completed (retained, not evicted).
 	// Since only unsettled commands count toward the limit, job 2 must start.
-	id2, err := jm.Start(ctx, "job2", time.Second)
+	id2, err := launchBackground(ctx, jm, "job2")
 	if err != nil {
 		t.Fatalf("start job2 with maxJobs=1 and a completed retained job1: %v", err)
 	}
@@ -518,10 +558,14 @@ func TestJobLoweredCapacityNeverEvictsActiveCommands(t *testing.T) {
 
 	// A reload may lower the limit for future admissions; active commands must
 	// survive it. The capacity is read at admission, so lowering it now affects
-	// only launches that have not happened yet.
-	jm.mu.Lock()
-	jm.maxJobs = 1
-	jm.mu.Unlock()
+	// only launches that have not happened yet. Committing it through the
+	// service's own policy is exactly what a reload does.
+	jm.CommitLaunchPolicy(LaunchPolicy{
+		Generation: jm.Generation(),
+		Runner:     jm.CurrentLaunchPolicy().Runner,
+		MaxJobs:    1,
+		Retention:  time.Hour,
+	})
 	if got := len(jm.ActiveExecutions()); got != 3 {
 		t.Fatalf("ActiveExecutions = %d, want 3 after lowering capacity", got)
 	}
@@ -547,6 +591,213 @@ func TestJobLoweredCapacityNeverEvictsActiveCommands(t *testing.T) {
 	}
 }
 
+// resourceRunner is a fake CommandRunner that also declares the closeable
+// resources one admission depends on, so a service can retain exactly what a
+// replaced generation's command still needs.
+type resourceRunner struct {
+	fakeCommandRunner
+	resources []io.Closer
+}
+
+func (r *resourceRunner) CommandResources() []io.Closer { return r.resources }
+
+// countingCloser records how many times Close ran.
+type countingCloser struct {
+	mu     sync.Mutex
+	closed int
+}
+
+func (c *countingCloser) Close() error {
+	c.mu.Lock()
+	c.closed++
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *countingCloser) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
+// TestJobCommittedPolicyChangesFutureLaunchesOnly pins the reload contract at
+// the service: committing a new policy re-times, redirects and re-limits
+// NOTHING that is already running, and every later launch takes the new
+// defaults — including the new generation, so a launch from one generation is
+// distinguishable from another even when the display id repeats.
+func TestJobCommittedPolicyChangesFutureLaunchesOnly(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	firstStarted := make(chan struct{})
+	first := newFakeRunner(withRelease(release), withPID(111), withStarted(firstStarted))
+	jm := NewCommandService(ctx, LaunchPolicy{
+		Generation:     1,
+		Runner:         first,
+		Dir:            "/dir-one",
+		MaxOutputBytes: 64,
+		MaxJobs:        25,
+		Retention:      time.Hour,
+	})
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "long", Detached: true})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if info.Origin.Generation != 1 {
+		t.Fatalf("admitted generation = %d, want 1", info.Origin.Generation)
+	}
+	// The process exists: OnStart published its PID before the runner blocked.
+	<-firstStarted
+
+	// A reload: a new runner, a new directory, a new output policy, a new
+	// capacity, and a new generation.
+	secondStarted := make(chan struct{})
+	second := newFakeRunner(withResult(CommandResult{Stdout: "from-second-runner\n", ExitCode: 0}), withPID(222), withStarted(secondStarted))
+	jm.CommitLaunchPolicy(LaunchPolicy{
+		Generation:     2,
+		Runner:         second,
+		Dir:            "/dir-two",
+		MaxOutputBytes: 4096,
+		MaxJobs:        1,
+		Retention:      time.Hour,
+	})
+	if got := jm.Generation(); got != 2 {
+		t.Fatalf("generation after commit = %d, want 2", got)
+	}
+
+	// The admitted command keeps its captured snapshot in full.
+	live, _, err := jm.Output(info.ID, 0)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if live.Dir != "/dir-one" {
+		t.Fatalf("admitted dir = %q, want the captured /dir-one", live.Dir)
+	}
+	if live.ExecutionID != info.ExecutionID || live.Origin.Generation != 1 {
+		t.Fatalf("admitted identity changed: %+v (was %+v)", live, info)
+	}
+	if live.Status != StatusRunning {
+		t.Fatalf("admitted status = %q, want running: a policy commit must not stop it", live.Status)
+	}
+	if live.PID != 111 {
+		t.Fatalf("admitted PID = %d, want the same 111", live.PID)
+	}
+	if got := first.countRuns(); got != 1 {
+		t.Fatalf("old runner runs = %d, want 1 (the new runner must not be substituted)", got)
+	}
+
+	// It still runs to its own conclusion under its own runner.
+	close(release)
+	settled, err := jm.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if settled.Status != StatusCompleted || settled.Origin.Generation != 1 {
+		t.Fatalf("settled = %q/gen %d, want completed at generation 1", settled.Status, settled.Origin.Generation)
+	}
+	if got := second.countRuns(); got != 0 {
+		t.Fatalf("new runner runs = %d, want 0: an admitted command keeps its captured runner", got)
+	}
+
+	// A later launch resolves the committed generation wholesale.
+	next, err := jm.Launch(ctx, LaunchSpec{Command: "short", Detached: true})
+	if err != nil {
+		t.Fatalf("launch after commit: %v", err)
+	}
+	if next.Origin.Generation != 2 {
+		t.Fatalf("new launch generation = %d, want 2", next.Origin.Generation)
+	}
+	<-secondStarted
+	// The second runner has no release channel, so it settles on its own.
+	// Wait for the terminal snapshot rather than assuming a status change:
+	// the launch may already have completed by the time we look.
+	nextInfo, _, err := jm.Output(next.ID, 0)
+	if err != nil {
+		t.Fatalf("Output(new): %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for nextInfo.Status != StatusCompleted && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+		nextInfo, _, err = jm.Output(next.ID, 0)
+		if err != nil {
+			t.Fatalf("Output(new): %v", err)
+		}
+	}
+	if nextInfo.Status != StatusCompleted {
+		t.Fatalf("new launch status = %q, want completed", nextInfo.Status)
+	}
+	if nextInfo.Dir != "/dir-two" {
+		t.Fatalf("new launch dir = %q, want the committed /dir-two", nextInfo.Dir)
+	}
+	if nextInfo.PID != 222 {
+		t.Fatalf("new launch PID = %d, want the committed runner's 222", nextInfo.PID)
+	}
+	if got := second.countRuns(); got != 1 {
+		t.Fatalf("new runner runs = %d, want 1", got)
+	}
+}
+
+// TestJobRetainsReplacedGenerationResourceUntilItsCommandSettles pins the
+// resource rule: a reload keeps exactly what an admitted command still
+// references and closes the rest, rather than retaining a whole generation
+// wholesale or dropping a backend out from under a running process.
+func TestJobRetainsReplacedGenerationResourceUntilItsCommandSettles(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	backend := &countingCloser{}
+	first := &resourceRunner{
+		fakeCommandRunner: *newFakeRunner(withRelease(release)),
+		resources:         []io.Closer{backend},
+	}
+	jm := NewCommandService(ctx, LaunchPolicy{
+		Generation: 1,
+		Runner:     first,
+		Dir:        "/dir",
+		MaxJobs:    25,
+		Retention:  time.Hour,
+		Resources:  []io.Closer{backend},
+	})
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "long", Detached: true})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
+	// The reload swaps the backend for a new one.
+	replacement := &countingCloser{}
+	jm.CommitLaunchPolicy(LaunchPolicy{
+		Generation: 2,
+		Runner:     &resourceRunner{fakeCommandRunner: *newFakeRunner(), resources: []io.Closer{replacement}},
+		Dir:        "/dir",
+		MaxJobs:    25,
+		Retention:  time.Hour,
+		Resources:  []io.Closer{replacement},
+	})
+
+	if got := backend.count(); got != 0 {
+		t.Fatalf("old backend closed %d times while its command is still running, want 0", got)
+	}
+
+	// Once the command it admitted has settled, the replaced backend is
+	// released — and released exactly once.
+	close(release)
+	if _, err := jm.Wait(ctx, info.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for backend.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := backend.count(); got != 1 {
+		t.Fatalf("old backend closed %d times after its command settled, want exactly 1", got)
+	}
+	if got := replacement.count(); got != 0 {
+		t.Fatalf("the live generation's backend closed %d times, want 0", got)
+	}
+}
+
 func TestJobKillWaitsForRunner(t *testing.T) {
 	ctx := context.Background()
 	ch := make(chan struct{})
@@ -554,7 +805,7 @@ func TestJobKillWaitsForRunner(t *testing.T) {
 	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 100000)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
-	id, err := jm.Start(ctx, "sleep 30", 5*time.Second)
+	id, err := launchBackground(ctx, jm, "sleep 30")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -681,7 +932,7 @@ func TestLateStopDoesNotRelabelNaturalCompletion(t *testing.T) {
 	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
-	id, err := jm.Start(ctx, "true", time.Second)
+	id, err := launchBackground(ctx, jm, "true")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -826,7 +1077,7 @@ func TestJobManagerParentCancellationKillsJobs(t *testing.T) {
 	jm := NewJobManager(parentCtx, runner, t.TempDir(), 25, time.Hour, 100000)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
-	_, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	_, err := launchBackground(context.Background(), jm, "sleep 30")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -857,7 +1108,7 @@ func TestJobManagerShutdownJoinsAndRejectsStart(t *testing.T) {
 	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 100000)
 
 	// Start a job that blocks.
-	id, err := jm.Start(ctx, "sleep 30", 5*time.Second)
+	id, err := launchBackground(ctx, jm, "sleep 30")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -887,10 +1138,10 @@ func TestJobManagerShutdownJoinsAndRejectsStart(t *testing.T) {
 		t.Fatal("Shutdown did not return within 1s")
 	}
 
-	// After Shutdown returns, Start should return ErrJobManagerClosed.
-	_, err = jm.Start(context.Background(), "echo hi", time.Second)
-	if err != ErrJobManagerClosed {
-		t.Fatalf("Start after shutdown: err=%v, want ErrJobManagerClosed", err)
+	// After Shutdown returns, a launch should return ErrJobManagerClosed.
+	_, err = launchBackground(context.Background(), jm, "echo hi")
+	if !errors.Is(err, ErrJobManagerClosed) {
+		t.Fatalf("launch after shutdown: err=%v, want ErrJobManagerClosed", err)
 	}
 }
 
@@ -900,7 +1151,7 @@ func TestJobManagerShutdownHonorsCallerDeadline(t *testing.T) {
 	runner := newFakeRunner(withRelease(ch))
 	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 100000)
 
-	_, err := jm.Start(ctx, "sleep 30", 5*time.Second)
+	_, err := launchBackground(ctx, jm, "sleep 30")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -922,7 +1173,7 @@ func TestJobManagerShutdownHonorsCallerDeadline(t *testing.T) {
 func TestJobManagerEvictsCompletedJobsByRetention(t *testing.T) {
 	jm := NewJobManager(context.Background(), newFakeRunner(), t.TempDir(), 25, 100*time.Millisecond, 100000)
 
-	id, err := jm.Start(context.Background(), "echo hello", time.Second)
+	id, err := launchBackground(context.Background(), jm, "echo hello")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -959,11 +1210,14 @@ func TestShellRunBackgroundInvokesGuardrail(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
 	state := session.New(config.Config{}, root, time.Now(), session.Persistence{})
+	runner := &fakeRunner{}
 
 	blocked := false
 	if err := RegisterAll(reg, Options{
 		WorkspaceRoot: root,
+		CommandRunner: runner,
 		SessionState:  state,
+		JobManager:    newTestCommandService(t, runner, root, state, nil),
 		Guardrail: func(command string, system bool) error {
 			blocked = true
 			return fmt.Errorf("guardrail blocked %q", command)
@@ -990,7 +1244,8 @@ func TestShellRunBackgroundStartsJob(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
 	state := session.New(config.Config{}, root, time.Now(), session.Persistence{})
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, SessionState: state}); err != nil {
+	runner := newFakeRunner(withRelease(make(chan struct{})))
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, SessionState: state, JobManager: newTestCommandService(t, runner, root, state, nil)}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -1011,7 +1266,7 @@ func TestShellRunBackgroundUsesWorkspaceRoot(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
 	state := session.New(config.Config{}, root, time.Now(), session.Persistence{})
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, SessionState: state}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, SessionState: state, JobManager: newTestCommandService(t, nil, root, state, nil)}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -1079,7 +1334,7 @@ func TestJobEventCarriesSnapshot(t *testing.T) {
 	ch := broker.Subscribe(subCtx)
 	jm.SetBroker(broker)
 
-	if _, err := jm.Start(context.Background(), "sleep 1", 5*time.Second); err != nil {
+	if _, err := launchBackground(context.Background(), jm, "sleep 1"); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	select {
@@ -1223,7 +1478,7 @@ func TestJobManagerPublishesViaBroker(t *testing.T) {
 	ch := broker.Subscribe(subCtx)
 	jm.SetBroker(broker)
 
-	id, err := jm.Start(context.Background(), "echo hi", time.Second)
+	id, err := launchBackground(context.Background(), jm, "echo hi")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -1249,7 +1504,7 @@ func TestJobManagerStartAndKill(t *testing.T) {
 	jm := NewJobManager(context.Background(), runner, "", 25, time.Hour, 100000)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
-	id, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	id, err := launchBackground(context.Background(), jm, "sleep 30")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -1298,9 +1553,9 @@ func TestJobManagerEnforcesMaxJobs(t *testing.T) {
 	runner := newFakeRunner(withRelease(ch))
 	jm := NewJobManager(context.Background(), runner, "", 2, time.Hour, 100000)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
-	_, _ = jm.Start(context.Background(), "sleep 30", 5*time.Second)
-	_, _ = jm.Start(context.Background(), "sleep 30", 5*time.Second)
-	_, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	_, _ = launchBackground(context.Background(), jm, "sleep 30")
+	_, _ = launchBackground(context.Background(), jm, "sleep 30")
+	_, err := launchBackground(context.Background(), jm, "sleep 30")
 	if err == nil {
 		t.Fatal("expected too many jobs error")
 	}
@@ -1315,7 +1570,7 @@ func TestJobManagerRunsInWorkspaceDir(t *testing.T) {
 	jm := NewJobManager(context.Background(), runner, root, 25, time.Hour, 100000)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
-	_, err := jm.Start(context.Background(), "echo hi", 5*time.Second)
+	_, err := launchBackground(context.Background(), jm, "echo hi")
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -1371,11 +1626,16 @@ func TestLaunchSnapshotsRunnerDirAndLimits(t *testing.T) {
 		t.Fatalf("Launch: %v", err)
 	}
 
-	// After admission, change everything the manager could re-resolve.
-	jm.runner = newFakeRunner()
-	jm.dir = "/after-admission"
-	jm.SetDirFunc(func() string { return "/dir-fn" })
-	jm.maxOutputBytes = 8
+	// After admission, change everything the manager could re-resolve for a
+	// FUTURE launch: the committed runner, directory and output defaults.
+	perLaunch2 := newFakeRunner(withResult(CommandResult{Stdout: "late", ExitCode: 0}))
+	jm.CommitLaunchPolicy(LaunchPolicy{
+		Generation:     jm.Generation() + 1,
+		Runner:         perLaunch2,
+		Dir:            "/after-admission",
+		DirFunc:        func() string { return "/dir-fn" },
+		MaxOutputBytes: 8,
+	})
 
 	res, err := jm.WaitForeground(ctx, info.ID, 5*time.Second)
 	if err != nil {
@@ -1409,7 +1669,7 @@ func TestJobOutputSeparatesStdoutAndStderr(t *testing.T) {
 	runner := newFakeRunner(withResult(CommandResult{Stdout: "out-line\n", Stderr: "err-line\n"}))
 	jm := NewJobManager(context.Background(), runner, t.TempDir(), 1, time.Minute, 1<<20)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
-	id, err := jm.Start(context.Background(), "echo out-line; echo err-line 1>&2", time.Second)
+	id, err := launchBackground(context.Background(), jm, "echo out-line; echo err-line 1>&2")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -1919,7 +2179,7 @@ func TestWaitRemainsNonDestructive(t *testing.T) {
 	jm := NewJobManager(ctx, runner, t.TempDir(), 5, time.Hour, 1<<20)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
-	id, err := jm.Start(ctx, "sleep 30", time.Hour)
+	id, err := launchBackground(ctx, jm, "sleep 30")
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -2021,7 +2281,7 @@ func TestJobManagerOnExitFiresOncePerJob(t *testing.T) {
 		mu.Unlock()
 		return nil
 	})
-	id, err := jm.Start(ctx, "echo hi", time.Minute)
+	id, err := launchBackground(ctx, jm, "echo hi")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2051,7 +2311,7 @@ func TestJobManagerStartRejectsCancelledManagerCtx(t *testing.T) {
 	parentCancel()
 
 	// Use a fresh call context that is NOT cancelled.
-	_, err := jm.Start(context.Background(), "echo hello", 0)
+	_, err := launchBackground(context.Background(), jm, "echo hello")
 	if err == nil {
 		t.Fatal("expected error when managerCtx is cancelled, got nil")
 	}

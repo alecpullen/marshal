@@ -5240,13 +5240,6 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 			reason: settingsBusyMessage,
 		},
 		{
-			name: "background job active",
-			block: func(m *Model) {
-				m.state.SetRunningJobsCount(1)
-			},
-			reason: settingsBusyMessage,
-		},
-		{
 			name: "tool approval pending",
 			block: func(m *Model) {
 				m.state.SetPendingApproval(&session.PendingToolCall{
@@ -6657,11 +6650,14 @@ func TestSettingsBlockReason(t *testing.T) {
 		}
 	})
 
-	t.Run("running jobs", func(t *testing.T) {
+	t.Run("running background command", func(t *testing.T) {
+		// A background command no longer blocks a settings write: the
+		// conversation's command service survives the reload, so the save
+		// changes only what FUTURE launches resolve.
 		m := New(state)
 		state.SetRunningJobsCount(1)
-		if got := m.settingsBlockReason(); got != settingsBusyMessage {
-			t.Fatalf("settingsBlockReason = %q, want %q", got, settingsBusyMessage)
+		if got := m.settingsBlockReason(); got != "" {
+			t.Fatalf("settingsBlockReason = %q, want no block while a command runs in the background", got)
 		}
 		state.SetRunningJobsCount(0)
 	})

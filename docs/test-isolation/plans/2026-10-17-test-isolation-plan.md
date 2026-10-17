@@ -1,8 +1,11 @@
 # Test isolation and credential access — implementation plan
 
-Status: ready for review; implementation has not started.
+Status: implemented. See the [implementation record](../feature-spec.md#implementation-record)
+in the approved design for what landed, the acceptance-check evidence, and the
+declared deviations.
 Date: 2026-10-17.
-Base: `main` at `16d0c04a5a357fae9250765c3d51beda5c07a3cd`.
+Base: `main` at `16d0c04a5a357fae9250765c3d51beda5c07a3cd`; executed on branch
+`test-isolation` from `c31240a3` (which contains that base).
 Approved design: [Isolated tests and credential access](../feature-spec.md).
 Authoring: [marshal-writing-plans](../../../internal/skills/builtin/marshal-writing-plans.md) and [work-decomposition](../../../internal/skills/builtin/work-decomposition.md).
 Execution after approval: [marshal-executing-plans](../../../internal/skills/builtin/marshal-executing-plans.md).
@@ -553,9 +556,9 @@ Expected: formatting check prints nothing; full default tests, targeted races, v
 ## Integration notes
 
 - Tasks 3–6 are interface/file-coupled; execute sequentially. Task 1 makes low-level credential verification safe before broader suite runs. Do not run the entire TUI suite before Task 6 has replaced its default OAuth-engine construction in tests.
-- Rebase/adapt `buildAgentRunnerWithLock` and lifecycle tests against the background-execution delivery instead of restoring its old signatures or manager cleanup.
+- Rebase/adapt `buildAgentRunnerWithLock` and lifecycle tests against the background-execution delivery instead of restoring its old signatures or manager cleanup. **Not applicable at execution time:** that delivery was not merged into the base, so the edits were made against the current tree. Re-check this when it lands.
 - Retain production public factory wrappers and shared OAuth engine behavior. Injected instances must never fall back to global credentials after an error or during rebuild.
-- The spec is approved; this plan remains uncommitted for review. Implementation has not started.
+- Executed as written, with the deviations recorded in the design's [implementation record](../feature-spec.md#implementation-record).
 
 ## Plan authoring checks
 

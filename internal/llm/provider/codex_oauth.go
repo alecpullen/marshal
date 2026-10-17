@@ -99,19 +99,31 @@ func CodexOAuthEngine(name string) (*oauth.Engine, error) {
 }
 
 // NewCodexOAuthEngine builds the OAuth engine for one openai_codex provider
-// entry. Tokens are stored one-per-provider-entry under
-// marshal:provider:<name>, so two codex entries can hold two different
-// ChatGPT logins.
-//
-// The engine is pinned: no RFC 8414 discovery, no dynamic client
-// registration. Open is left nil — the interactive Authorize flow is driven
-// from the UI layer, and startup only ever reads stored tokens.
+// entry, opening the OS keychain store it shares with the rest of the
+// process. Callers that already hold a store — a test, or a resolver that
+// owns a private cache — use NewCodexOAuthEngineWithStore instead.
 func NewCodexOAuthEngine(name string) (*oauth.Engine, error) {
 	store, err := codexCredentialsNew("marshal")
 	if err != nil {
 		// Never fall back to plaintext. Surface the keychain problem so the
 		// user learns why the provider cannot authenticate.
 		return nil, fmt.Errorf("OS keychain unavailable — OAuth tokens cannot be stored: %w", err)
+	}
+	return NewCodexOAuthEngineWithStore(name, store)
+}
+
+// NewCodexOAuthEngineWithStore builds the OAuth engine for one
+// openai_codex provider entry around an explicitly supplied token store.
+// Tokens are stored one-per-provider-entry under marshal:provider:<name>, so
+// two codex entries can hold two different ChatGPT logins.
+//
+// The engine is pinned: no RFC 8414 discovery, no dynamic client
+// registration. Open is left nil — the interactive Authorize flow is driven
+// from the UI layer, and startup only ever reads stored tokens. A nil store
+// is rejected here rather than panicking on first token read.
+func NewCodexOAuthEngineWithStore(name string, store credentials.Store) (*oauth.Engine, error) {
+	if store == nil {
+		return nil, fmt.Errorf("openai_codex: OAuth token store is required")
 	}
 	return &oauth.Engine{
 		ServerURL:  codexIssuer,

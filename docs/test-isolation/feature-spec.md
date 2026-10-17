@@ -1,9 +1,9 @@
 # Isolated tests and credential access
 
-Status: approved for implementation planning.
+Status: implemented.
 Date: 2026-10-17.
 Source baseline: `16d0c04a`.
-Implementation: not started.
+Implementation: complete; see [Implementation record](#implementation-record).
 
 ## Purpose
 
@@ -159,6 +159,108 @@ Both deliveries may touch app construction and rebuild wiring. Implement against
 
 The two features remain independently specified: one determines how user work lives and stops; this one determines which resources tests are allowed to access.
 
+## Implementation record
+
+Implemented on branch `test-isolation`, based on `c31240a3` (which contains the
+plan's `16d0c04a` baseline). One commit per plan task, in order:
+
+| Task | Commit subject |
+| --- | --- |
+| 1 | `test-isolation: task 1 — Make credential constructor coverage hermetic` |
+| 2 | `test-isolation: task 2 — Isolate default home/config environments` |
+| 3 | `test-isolation: task 3 — Add isolated OAuth resolvers without changing production sharing` |
+| 4 | `test-isolation: task 4 — Make MCP credential construction instance-scoped` |
+| 5 | `test-isolation: task 5 — Carry auth dependencies through app lifecycle and workers` |
+| 6 | `test-isolation: task 6 — Inject auth into TUI login, discovery and settings probes` |
+| 7 | `test-isolation: task 7 — Close remaining default-suite leaks and enforce the boundary` |
+
+### API names as implemented
+
+- `internal/credentials`: `newWithOpener(service, open)` (private); `New` is the
+  `keyring.Open` wrapper. Live switch is exactly `MARSHAL_CREDENTIALS_LIVE_TEST=1`,
+  service `marshal-credentials-selftest`, per-invocation key.
+- `internal/testenv`: `IsolateHome() (func(), error)` and `Run(m *testing.M) int`.
+  `SanitizeXDG` is retained for its existing contract.
+- `internal/llm/provider`: `AuthResolver`, `DefaultAuthResolver()`,
+  `NewAuthResolver(open func(string) (credentials.Store, error))`,
+  `NewCodexOAuthEngineWithStore(name, store)`,
+  `NewFromConfigWithAuth(name, pc, dataDir, remoteLimitDiscovery, thinkingBudgetMargin, sessionID, auth)`.
+- `internal/tools/mcp`: `WithCredentialFactory(func(string) (credentials.Store, error))`;
+  the `oauthCredentialsNew` package global is gone.
+- `internal/acp`: `CommandRuntime.OpenStore`; precedence is
+  `CommandManagerConfig.OpenStore` → `CommandRuntime.OpenStore` → `credentials.New("marshal")`.
+- `internal/app`: `WithAuthResolver(provider.AuthResolver)`, `Runtime.AuthResolver`,
+  `ErrAuthResolverRequired`.
+- `internal/app/tui`: `WithAuthResolver`, `WithOpenBrowser`, `probe.ProviderWithAuth`,
+  `connect.Opts.Auth`/`OpenBrowser`, `settings.WithAuthResolver`.
+
+### Acceptance checks
+
+| # | Check | Evidence |
+| --- | --- | --- |
+| 1 | Ambient OAuth/MCP config is not loaded by an isolated DB/logging test | `TestLoaderIsolationIgnoresAmbientUserConfig` (`internal/app/app_test.go`) plants a synthetic ambient config and proves a control load *would* merge it; `TestFixtureStartupDoesNotTouchAmbientCredentialConfig` (`internal/app/runtime_test.go`) |
+| 2 | Loader reads only its fixture layers | Same test's injected-home load; `internal/app/config` fixtures |
+| 3 | Provider and refresh worker share one injected engine | `TestOAuthWorkerSharesEngineAndRefreshesAgainstOwnedServer`, `assertProviderWorkerShareEngine`; `TestRunPersistsRotatedTokenForInlineReads` (`oauthworker`) |
+| 4 | Unexpected credential construction fails before the OS | `unmappedAuthResolver` fails closed on omitted injection; `TestWithAuthResolverRejectsExplicitNil`; `denyingAuthResolver` in `factory_test.go` |
+| 5 | Startup, reload, new and resumed sessions retain the dependency | App lifecycle tests; `TestSessionResumeAndNewRetainInjectedAuthResolver` (`internal/acp/session_test.go`) |
+| 6 | Same-name runtimes cannot observe each other's tokens | `TestAuthResolverKeepsEnginesAndTokensPrivatePerResolver`; `TestManagersUseIndependentCredentialStoresConcurrently`; `-shuffle=on -count=2` runs |
+| 7 | Missing tokens, unavailable stores, failed/successful refresh, shutdown | `internal/tools/mcp` OAuth fixtures; `TestOAuthEngineErrorsStayPerServer`; `oauthworker` tests |
+| 8 | MCP manager/auth use injected stores and owned HTTP/browser | `TestCommandManagerMCPAuthUsesRuntimeStore`, `…RuntimeStoreFailurePropagates`, `…SeparateSessionStores`; `TestMCPAuthAuthorizeCommandUsesStubBrowser` |
+| 9 | Constructor unit tests open no real backend; live test opt-in and self-cleaning | `TestNewNeverReturnsNilStore` (fake opener), `TestNewWithOpenerUnavailableBackend`, `TestNewWithOpenerSelectsSecureBackendsOnly`; `TestLiveKeyringRoundTrip` skips unless `=1` |
+| 10 | A developer-supplied local endpoint is not used incidentally | Task 7 audit below; `newConfigTestManager` now installs a failing test-owned probe |
+| 11 | Focused and full ordinary suites pass without keychain interaction | Task 8 verification run |
+
+### Task 7 audit
+
+Default-build test paths were audited for real credential, config and endpoint
+reach. One actionable finding:
+
+- `internal/acp/config_test.go` — `newConfigTestManager` passed a nil probe to
+  `NewConfigManager`, which installs production's `provider.NewFromConfig` +
+  `p.Models(ctx)`. The fixture providers include `http://localhost:11434`, so a
+  test that did not override `m.probe` would have probed whatever the developer
+  had listening there. The shared fixture now installs a failing test-owned
+  probe.
+
+Everything else was already isolated by Tasks 1–6: ACP host/session tests inject
+`app.WithAuthResolver` with a memory-backed `countingStoreResolver` and assert
+zero unrequested opens; `factory_test.go` uses `httptest` handlers and
+`credentials.NewMemStore()` and asserts the production `codexEngines` cache stays
+untouched; `manager_test.go` routes every OAuth path through
+`WithCredentialFactory`; `app_test.go`/`runtime_test.go` carry the ambient-config
+regressions. Real-shaped URLs (`https://api.anthropic.com`, `localhost:11434`)
+appear only as constructor inputs that make no request.
+
+`test/usability/usability_test.go` now also strips the ambient provider API-key
+variables and `MARSHAL_CREDENTIALS_LIVE_TEST` from the child environment, keeping
+its explicit Marshal/XDG paths, binary path and Go cache settings.
+
+The environment-gated provider integration files
+(`internal/llm/provider/{integration,anthropic_integration,ollama_native_integration}_test.go`)
+all carry `//go:build integration`, are absent from an untagged `go test -list`,
+and appear only under `-tags=integration`. They were not run.
+
+### Deviations from the plan
+
+- **Background execution was not merged.** The plan's rebase instruction was a
+  no-op: `reliable-background-execution` is not an ancestor of the base, so the
+  `app.go`/`runtime.go` edits were made against the current tree.
+- **Omitted injection fails closed.** The plan required rejecting an explicitly
+  nil resolver. `newRoutedProviderResolver`, `buildAgentRunnerWithLock` and
+  `buildOAuthWorkers` additionally treat an *omitted* resolver as
+  `unmappedAuthResolver` rather than `DefaultAuthResolver()`. Only
+  `resolveAuthResolver` (reached from `Run`/`StartRuntime`) selects the
+  production default, so a missed thread surfaces as a failure instead of
+  silently reopening the keychain.
+- **`internal/app/tui/model_options.go`** was added to Task 6's file set: its
+  `probeThinkingOptions` called `probe.Provider` directly and would otherwise
+  have bypassed the injected resolver on a model-discovery path.
+- **Task 7 step 5 is partial.** The counting/failing-factory assertions it asks
+  for largely already existed from Tasks 1–6 and were verified by reading rather
+  than duplicated. One gap is recorded rather than filled: `internal/app/tui/connect`
+  has no counting assertion that non-OAuth tests never *call* the default
+  resolver. It is only reached on the OAuth path, so this is a nicety, not a hole.
+
 ## Review boundary
 
-The detailed default-suite boundary, instance-scoped injection and retention of the existing explicit live-keyring test are approved. The implementation plan is a separate reviewable artifact; implementation has not started.
+The detailed default-suite boundary, instance-scoped injection and retention of the existing explicit live-keyring test are approved and implemented. The implementation plan is a separate reviewable artifact; see the implementation record above for what landed and where it deviates.

@@ -63,6 +63,12 @@ implementer = "coder"
 	// (config-project-identity refactor), and CI runners export the XDG
 	// variables. Pin every config-location override into the temp home so
 	// the app reads this file and nothing else.
+	//
+	// The developer's ambient credential variables are dropped rather than
+	// inherited: the child would otherwise be able to authenticate to a real
+	// endpoint with a real key. The scripted scenarios run entirely against
+	// the test-owned local provider written above, so none of these has a
+	// legitimate use in the child's environment.
 	overrides := map[string]string{
 		"HOME":               homeDir,
 		"XDG_CONFIG_HOME":    filepath.Join(homeDir, ".config"),
@@ -70,11 +76,28 @@ implementer = "coder"
 		"MARSHAL_CONFIG_DIR": filepath.Join(homeDir, ".config", "marshal"),
 		"MARSHAL_DATA_DIR":   filepath.Join(homeDir, ".local", "share", "marshal"),
 	}
+	dropped := map[string]bool{}
+	for _, key := range []string{
+		"OLLAMA_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY",
+		"OPENAI_API_KEY", "OPENCODE_API_KEY", "ANTHROPIC_API_KEY",
+		"GEMINI_API_KEY", "DEEPSEEK_API_KEY", "KIMI_API_KEY",
+		"MISTRAL_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY",
+		"XAI_API_KEY", "CEREBRAS_API_KEY",
+		// The live-keyring opt-in must not leak into the child either: its
+		// scenarios never exercise the real OS keychain.
+		"MARSHAL_CREDENTIALS_LIVE_TEST",
+	} {
+		dropped[key] = true
+	}
 	env := os.Environ()[:0]
 	for _, e := range os.Environ() {
 		eq := strings.Index(e, "=")
 		if eq > 0 {
-			if _, pinned := overrides[e[:eq]]; pinned {
+			name := e[:eq]
+			if _, pinned := overrides[name]; pinned {
+				continue
+			}
+			if dropped[name] {
 				continue
 			}
 		}

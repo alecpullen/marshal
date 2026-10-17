@@ -19,6 +19,16 @@ type CommandRuntime struct {
 	// (app.Runtime.ConfigReloader). Nil in embedded/test runtimes; the
 	// auth flow treats nil as token-stored-only reporting.
 	ReloadConfig func(config.Config) error
+
+	// OpenStore opens the credential store this session's OAuth tokens are
+	// written to. The owning runtime supplies its selected opener here (in
+	// production, the app's auth resolver opener) so a headless /mcp auth
+	// flow cannot silently fall back to a different store than the rest of
+	// the runtime uses. Nil in embedded runtimes and tests that have no
+	// selected opener; see CommandManagerConfig.OpenStore for the fallback
+	// order, and note that a supplied opener's error propagates rather than
+	// being retried against the real OS keychain.
+	OpenStore func() (credentials.Store, error)
 }
 
 // CommandLookup returns the runtime registered for an ACP session id.
@@ -41,9 +51,16 @@ type CommandManagerConfig struct {
 	// known. When nil, notifications are skipped.
 	Notify NotifyFunc
 
-	// OpenStore opens the OS credential store OAuth tokens are written to.
-	// When nil, credentials.New("marshal") is used. Injectable so the
-	// keyring-unavailable path can be covered without a real OS keychain.
+	// OpenStore is the manager-wide credential-store opener, overriding the
+	// per-session runtime opener. When both it and CommandRuntime.OpenStore
+	// are nil, credentials.New("marshal") is used — the production fallback
+	// for legacy embedded callers that have no selected opener.
+	//
+	// Whichever opener wins is used exactly once: its error propagates and is
+	// never retried against the real OS keychain, so an injected store (or an
+	// injected failure) cannot be silently swapped for the developer's own
+	// credentials. Injectable so the keyring-unavailable path can be covered
+	// without a real OS keychain.
 	OpenStore func() (credentials.Store, error)
 }
 

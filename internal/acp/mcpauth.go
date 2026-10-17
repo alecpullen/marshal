@@ -59,9 +59,9 @@ func (m *CommandManager) runHeadless(ctx context.Context, sessionID string, rt *
 
 // mcpAuth is the headless /mcp auth <name> implementation. It resolves the
 // named server with commands.ResolveOAuthServer (the same validation the TUI
-// runs, so failure sentences match), opens the OS credential store, and
-// drives oauth.Engine.Authorize against a display that emits the
-// authorization URL to the connected client.
+// runs, so failure sentences match), opens the credential store this runtime
+// selected (see openCredentialStore), and drives oauth.Engine.Authorize
+// against a display that emits the authorization URL to the connected client.
 //
 // Authorize blocks until the loopback callback arrives, the context is
 // cancelled, or the five-minute loopback timeout elapses, so it runs on its
@@ -91,7 +91,7 @@ func (m *CommandManager) mcpAuth(ctx context.Context, sessionID string, rt *Comm
 		return commands.Result{}, invalidParamsError("%s", err.Error())
 	}
 
-	store, err := m.openCredentialStore()
+	store, err := m.openCredentialStore(rt)
 	if err != nil {
 		if errors.Is(err, credentials.ErrKeyringUnavailable) {
 			return commands.Result{}, &jsonRPCError{Code: internalError, Message: fmt.Sprintf(
@@ -166,11 +166,24 @@ func mcpServers(rt *CommandRuntime) map[string]config.MCPServerConfig {
 	return rt.State.Config.MCP.Servers
 }
 
-// openCredentialStore opens the OS credential store, honouring the
-// injectable seam when one is configured.
-func (m *CommandManager) openCredentialStore() (credentials.Store, error) {
+// openCredentialStore opens the credential store for the headless auth flow,
+// applying this precedence:
+//
+//  1. CommandManagerConfig.OpenStore — the manager-wide override, which
+//     outranks everything (existing embedded callers rely on it).
+//  2. rt.OpenStore — the store opener the session's owning runtime selected,
+//     so a headless flow writes where the rest of the runtime reads.
+//  3. credentials.New("marshal") — the production fallback for legacy
+//     embedded callers that never selected an opener.
+//
+// An injected opener (1 or 2) is authoritative: its error is returned as-is
+// and is never retried against the real OS keychain.
+func (m *CommandManager) openCredentialStore(rt *CommandRuntime) (credentials.Store, error) {
 	if m.openStore != nil {
 		return m.openStore()
+	}
+	if rt != nil && rt.OpenStore != nil {
+		return rt.OpenStore()
 	}
 	return credentials.New("marshal")
 }

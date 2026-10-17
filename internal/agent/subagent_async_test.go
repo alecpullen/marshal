@@ -527,6 +527,72 @@ func TestSubtaskScopeViewExcludesAsyncTools(t *testing.T) {
 	}
 }
 
+// TestAwaitMixedSubagentAndJobTargets is the mixed-class case a managed shell
+// command now reaches: a background job and a background child can be
+// outstanding at the same time, and "any"/"all" must cover both classes without
+// the loser of a race being cancelled.
+func TestAwaitMixedSubagentAndJobTargets(t *testing.T) {
+	st := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	slowChild := st.RegisterSubagentWithMeta("slow child", newChildState(t), session.SubagentMeta{})
+	exit := 0
+	jobs := &fakeJobSource{
+		outstanding: []AwaitJobInfo{
+			{ID: "job-1", Command: "download", Status: "running"},
+			{ID: "job-2", Command: "suite", Status: "running"},
+		},
+	}
+	jobs.wait = func(ctx context.Context, id string) (AwaitJobInfo, error) {
+		if id == "job-2" {
+			return AwaitJobInfo{ID: id, Command: "suite", Status: "completed", ExitCode: &exit}, nil
+		}
+		<-ctx.Done()
+		return AwaitJobInfo{}, ctx.Err()
+	}
+
+	_, await, _ := newAsyncRunToolPair(st, nil)
+	await = NewSubagentAwaitTool(st, WithAwaitJobs(jobs))
+
+	res, err := await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"any":true}`)})
+	if err != nil {
+		t.Fatalf("agent.await any: %v", err)
+	}
+	if !strings.Contains(res.Summary, "job job-2 completed") {
+		t.Fatalf("summary = %q, want the finishing job", res.Summary)
+	}
+	// The unfinished job and the unfinished child are both untouched.
+	if jobs.killed != "" {
+		t.Fatalf("killed %q, want nothing: the any cleanup cancels waiters only", jobs.killed)
+	}
+	if got := st.Subagents(); len(got) != 1 || got[0].ID != slowChild.ID || got[0].Status != session.SubagentRunning {
+		t.Fatalf("subagents = %+v, want the slow child still running", got)
+	}
+}
+
+// TestAwaitAllCoversJobsAndSubagentsAfterTimeout pins that an expired "all"
+// reports every remaining class as still running: a job and a child outstanding
+// at once are both named, and neither is stopped by the timeout.
+func TestAwaitAllCoversJobsAndSubagentsAfterTimeout(t *testing.T) {
+	st := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	st.RegisterSubagentWithMeta("slow child", newChildState(t), session.SubagentMeta{})
+	jobs := &fakeJobSource{outstanding: []AwaitJobInfo{{ID: "job-1", Command: "download", Status: "running"}}}
+	jobs.wait = func(ctx context.Context, id string) (AwaitJobInfo, error) {
+		<-ctx.Done()
+		return AwaitJobInfo{}, ctx.Err()
+	}
+
+	await := NewSubagentAwaitTool(st, WithAwaitJobs(jobs))
+	res, err := await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"all":true,"timeout_seconds":1}`)})
+	if err != nil {
+		t.Fatalf("agent.await all: %v", err)
+	}
+	if !strings.Contains(res.Summary, "still running") {
+		t.Fatalf("summary = %q, want the remaining work named", res.Summary)
+	}
+	if jobs.killed != "" {
+		t.Fatalf("killed %q, want nothing", jobs.killed)
+	}
+}
+
 // TestAgentAwaitReturnsImmediatelyForApprovalPendingChild guards I-3:
 // agent.await on a child pending user approval returns immediately with a
 // liveness notice instead of blocking the parent turn indefinitely.

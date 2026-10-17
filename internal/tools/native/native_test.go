@@ -177,6 +177,17 @@ func TestLimitOutputTruncatesWithMarker(t *testing.T) {
 	}
 }
 
+// fakeRunner is the package's simplest runner seam: it records every request
+// and returns the canned result. It imposes no execution deadline of its own,
+// because managed commands arrive with req.Timeout == 0 and must run to their
+// own conclusion.
+//
+// Like the real runner it publishes a process through OnStart — a managed
+// command's outcome depends on whether a process ever started, so a fixture
+// that stayed silent would make every non-zero exit look like a startup
+// failure. A canned error with no result at all stands for a runner that never
+// got that far (an unstartable binary), which is the one case that publishes
+// nothing.
 type fakeRunner struct {
 	requests []CommandRequest
 	result   CommandResult
@@ -185,8 +196,8 @@ type fakeRunner struct {
 
 func (f *fakeRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
 	f.requests = append(f.requests, req)
-	if req.Timeout <= 0 {
-		return CommandResult{}, context.DeadlineExceeded
+	if req.OnStart != nil && !(f.err != nil && f.result == (CommandResult{})) {
+		req.OnStart(4242)
 	}
 	// Write to observers if set, simulating live streaming.
 	if req.Stdout != nil && f.result.Stdout != "" {

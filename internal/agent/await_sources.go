@@ -11,10 +11,22 @@ import (
 // imports internal/tools/native (native's in-package tests import agent;
 // either import direction closes the known test-binary cycle).
 type AwaitJobInfo struct {
-	ID       string
-	Command  string
-	Status   string
+	ID      string
+	Command string
+	// Status is the execution's lifecycle state ("running", "stopping",
+	// "completed", "failed", "killed", "timed_out"). A continuation reports
+	// running or stopping, so an await result can say what the command is doing
+	// rather than only that it has not exited.
+	Status string
+	// ExitCode is the observed exit code when the process produced one. Nil
+	// means none was observed — still running, a start-up failure, or an
+	// explicit stop the runner could not attribute an exit to — and must never
+	// be read as success.
 	ExitCode *int
+	// StopCause is an accepted explicit stop request's cause, recorded
+	// separately from the outcome. It explains why a job that never produced an
+	// exit code stopped.
+	StopCause string
 }
 
 // ExecutionControl is the runner-facing execution-control seam: the narrow

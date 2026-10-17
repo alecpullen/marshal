@@ -1035,13 +1035,17 @@ func TestRegisterAllHonorsConfigBackgroundLimits(t *testing.T) {
 	// test drives the manager the registry was built with directly (the
 	// model reaches the same handle through agent.await/kill). The runner
 	// must block, or every job finishes instantly and the cap never trips.
+	// The same blocking runner is the toolset's CommandRunner: a managed
+	// launch captures the runner it was built with, so a fixture that wired
+	// only the manager would leave the tool on the real runner.
 	release := make(chan struct{})
-	jm := NewJobManager(context.Background(), newFakeRunner(withRelease(release)), root, 1, cfg.Tools.Shell.BackgroundRetention, 100000)
+	runner := newFakeRunner(withRelease(release))
+	jm := NewJobManager(context.Background(), runner, root, 1, cfg.Tools.Shell.BackgroundRetention, 100000)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
 
 	reg := registry.New()
 	state := session.New(cfg, root, time.Now(), session.Persistence{})
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, Config: cfg, SessionState: state, JobManager: jm}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Config: cfg, SessionState: state, JobManager: jm}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -2227,5 +2231,355 @@ func TestSettledJobInfoCarriesExecutionEvidence(t *testing.T) {
 	}
 	if ex.StartedAt.IsZero() || ex.EndedAt.IsZero() {
 		t.Fatalf("payload times = %v/%v, want both recorded", ex.StartedAt, ex.EndedAt)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 6: regressions driven by a real JobManager, not a fake await source
+// ---------------------------------------------------------------------------
+
+// TestManagedForegroundLaunchSharesOneExecutionWithItsHandoff pins the whole
+// managed foreground path against the real service: one launch, one identity,
+// one PID, and no wall-clock timer anywhere in it.
+//
+// The launch is not a second admission when the wait ends, so the runner sees
+// exactly one Run call and the execution keeps the identity the caller already
+// holds.
+func TestManagedForegroundLaunchSharesOneExecutionWithItsHandoff(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	runner := newFakeRunner(withStarted(started), withRelease(release), withPID(51015), withLiveOutput("early line\n"))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	origin := CommandOrigin{ConversationID: "conv-9", Actor: "parent", TurnID: "turn-9", StepID: "step-1", ToolCallID: "call-1"}
+	info, err := jm.Launch(ctx, LaunchSpec{
+		Command:        "long download",
+		MaxOutputBytes: 1 << 20,
+		Origin:         origin,
+		Wait:           time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-started
+
+	res, err := jm.WaitForeground(ctx, info.ID, time.Second)
+	if err != nil {
+		t.Fatalf("WaitForeground: %v", err)
+	}
+	if res.Terminal {
+		t.Fatalf("result = %+v, want a continuation", res)
+	}
+	if res.Info.ExecutionID != info.ExecutionID || res.Info.PID != 51015 {
+		t.Fatalf("continuation identity = %q/pid %d, want the same %q/51015", res.Info.ExecutionID, res.Info.PID, info.ExecutionID)
+	}
+	if res.Info.Attachment != AttachmentBackground {
+		t.Fatalf("attachment = %q, want background after the wait ended", res.Info.Attachment)
+	}
+	if res.RunError != nil || res.Info.ExitCode != nil {
+		t.Fatalf("continuation = %+v, want no exit and no error", res)
+	}
+	if !strings.Contains(res.Output, "early line") {
+		t.Fatalf("continuation output = %q, want the recent tail", res.Output)
+	}
+	if got := runner.countRuns(); got != 1 {
+		t.Fatalf("runner runs = %d, want exactly 1", got)
+	}
+
+	// A continuation is outstanding background work, so another await can
+	// still find it.
+	outstanding := jm.Outstanding()
+	if len(outstanding) != 1 || outstanding[0].ID != info.ID {
+		t.Fatalf("Outstanding = %+v, want the handed-off execution", outstanding)
+	}
+
+	// Release it and confirm the natural outcome arrives on the same identity.
+	close(release)
+	settled, err := jm.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if settled.Status != StatusCompleted || settled.Outcome != OutcomeCompleted {
+		t.Fatalf("settled = %q/%q, want completed", settled.Status, settled.Outcome)
+	}
+	if settled.ExitCode == nil || *settled.ExitCode != 0 {
+		t.Fatalf("ExitCode = %v, want the actual 0", settled.ExitCode)
+	}
+}
+
+// TestManagedForegroundCompletionIsNotOutstandingWork pins the attachment
+// split the await scan depends on: a foreground command that settles while its
+// caller waits was never background work, so it must not appear as an awaitable
+// target afterwards.
+func TestManagedForegroundCompletionIsNotOutstandingWork(t *testing.T) {
+	ctx := context.Background()
+	runner := newFakeRunner(withResult(CommandResult{Stdout: "ok\n", ExitCode: 0}))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "quick", Origin: CommandOrigin{TurnID: "turn-1"}})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	res, err := jm.WaitForeground(ctx, info.ID, 5*time.Second)
+	if err != nil {
+		t.Fatalf("WaitForeground: %v", err)
+	}
+	if !res.Terminal {
+		t.Fatalf("result = %+v, want a terminal result", res)
+	}
+	if got := jm.Outstanding(); len(got) != 0 {
+		t.Fatalf("Outstanding = %+v, want none for a foreground completion", got)
+	}
+	if got := jm.RunningCount(); got != 0 {
+		t.Fatalf("RunningCount = %d, want 0", got)
+	}
+}
+
+// TestManagedForegroundWaitExpiryKeepsTheProcessAlive pins that an expired wait
+// never terminates the process: the runner is still blocked afterwards, exactly
+// one process exists, and no stop was recorded.
+func TestManagedForegroundWaitExpiryKeepsTheProcessAlive(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	runner := newFakeRunner(withStarted(started), withRelease(release))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "hang", Origin: CommandOrigin{TurnID: "turn-1"}})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-started
+
+	for i := 0; i < 3; i++ {
+		res, err := jm.WaitForeground(ctx, info.ID, 20*time.Millisecond)
+		if err != nil {
+			t.Fatalf("WaitForeground %d: %v", i, err)
+		}
+		if res.Terminal {
+			t.Fatalf("wait %d returned %+v, want a continuation", i, res)
+		}
+		if res.WaitEnd != WaitEndExpired {
+			t.Fatalf("wait %d WaitEnd = %q, want expired", i, res.WaitEnd)
+		}
+	}
+
+	live, _, err := jm.Output(info.ID, 0)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if live.Status != StatusRunning {
+		t.Fatalf("status = %q, want running after repeated expired waits", live.Status)
+	}
+	if live.StopCause != "" {
+		t.Fatalf("StopCause = %q, want none: a wait expiry must not stop anything", live.StopCause)
+	}
+	if got := runner.countRuns(); got != 1 {
+		t.Fatalf("runner runs = %d, want 1 (no relaunch)", got)
+	}
+
+	close(release)
+	if _, err := jm.Wait(ctx, info.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+}
+
+// TestManagedCanceledWaitLeavesOtherWorkRunning pins any/all cleanup semantics
+// at the service boundary: ending one caller's wait cancels that wait only, so
+// every other execution keeps running and nobody is stopped.
+func TestManagedCanceledWaitLeavesOtherWorkRunning(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	worker := newFakeRunner(withRelease(release))
+	jm := NewJobManager(ctx, worker, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	winner, err := jm.Launch(ctx, LaunchSpec{Command: "winner", Origin: CommandOrigin{TurnID: "turn-1"}})
+	if err != nil {
+		t.Fatalf("Launch winner: %v", err)
+	}
+	loser, err := jm.Launch(ctx, LaunchSpec{Command: "loser", Origin: CommandOrigin{TurnID: "turn-1"}})
+	if err != nil {
+		t.Fatalf("Launch loser: %v", err)
+	}
+	// Neither launch is complete until both goroutines have reached the runner:
+	// the assertion below counts Run calls, and admission does not wait for the
+	// goroutine it starts.
+	waitForRunCount(t, worker, 2, time.Second)
+
+	// Cancel the wait on the loser, exactly as an any-winner cleanup does.
+	waitCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	res, err := jm.WaitForeground(waitCtx, loser.ID, time.Hour)
+	if err != nil {
+		t.Fatalf("WaitForeground: %v", err)
+	}
+	if res.Terminal || res.WaitEnd != WaitEndCanceled {
+		t.Fatalf("result = %+v, want a canceled continuation", res)
+	}
+
+	for _, id := range []string{winner.ID, loser.ID} {
+		info, _, err := jm.Output(id, 0)
+		if err != nil {
+			t.Fatalf("Output(%s): %v", id, err)
+		}
+		if info.Status != StatusRunning {
+			t.Fatalf("job %s status = %q, want running after a sibling's canceled wait", id, info.Status)
+		}
+		if info.StopCause != "" {
+			t.Fatalf("job %s StopCause = %q, want none", id, info.StopCause)
+		}
+	}
+	if got := worker.countRuns(); got != 2 {
+		t.Fatalf("runner runs = %d, want 2 (one per launch, no relaunch)", got)
+	}
+
+	close(release)
+	for _, id := range []string{winner.ID, loser.ID} {
+		if _, err := jm.Wait(ctx, id); err != nil {
+			t.Fatalf("Wait(%s): %v", id, err)
+		}
+	}
+}
+
+// waitForRunCount blocks until the runner has been entered count times, so a
+// test can assert on launches without racing the goroutines admission starts.
+func waitForRunCount(t *testing.T, runner *fakeCommandRunner, count int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for runner.countRuns() < count {
+		if time.Now().After(deadline) {
+			t.Fatalf("runner entered %d times, want %d", runner.countRuns(), count)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// TestManagedPeekLeavesAnExecutionUntouched pins that a peek (the manager's
+// Output) is read-only: it reports the live state and tail without detaching,
+// stopping or otherwise changing the execution.
+func TestManagedPeekLeavesAnExecutionUntouched(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	runner := newFakeRunner(withStarted(started), withRelease(release), withLiveOutput("peekable\n"))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "download", Origin: CommandOrigin{TurnID: "turn-1"}})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-started
+
+	// Peek while still attached: the state and the tail are visible and the
+	// attachment is unchanged.
+	peeked, tail, err := jm.Output(info.ID, 20)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if peeked.Status != StatusRunning || peeked.Attachment != AttachmentForeground {
+		t.Fatalf("peek = %q/%q, want running/foreground", peeked.Status, peeked.Attachment)
+	}
+	if !strings.Contains(tail, "peekable") {
+		t.Fatalf("tail = %q, want the live output", tail)
+	}
+
+	// After handing off, a peek reports the same execution as background work.
+	if _, err := jm.WaitForeground(ctx, info.ID, 0); err != nil {
+		t.Fatalf("WaitForeground: %v", err)
+	}
+	peeked, _, err = jm.Output(info.ID, 20)
+	if err != nil {
+		t.Fatalf("Output after handoff: %v", err)
+	}
+	if peeked.Attachment != AttachmentBackground || peeked.Status != StatusRunning {
+		t.Fatalf("peek after handoff = %q/%q, want running/background", peeked.Status, peeked.Attachment)
+	}
+	if got := runner.countRuns(); got != 1 {
+		t.Fatalf("runner runs = %d, want 1 (a peek must not relaunch)", got)
+	}
+
+	close(release)
+	if _, err := jm.Wait(ctx, info.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+}
+
+// TestManagedStopWaitsForTheActualOutcome pins the explicit-stop rule at the
+// service boundary: stopping a still-attached command reports the process's own
+// outcome rather than a continuation, and a detached sibling is untouched.
+func TestManagedStopWaitsForTheActualOutcome(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	runner := newFakeRunner(withRelease(release), withResult(CommandResult{ExitCode: -1}))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	attached, err := jm.Launch(ctx, LaunchSpec{Command: "attached", Origin: CommandOrigin{TurnID: "turn-1"}})
+	if err != nil {
+		t.Fatalf("Launch attached: %v", err)
+	}
+	detached, err := jm.Launch(ctx, LaunchSpec{Command: "detached", Detached: true, Origin: CommandOrigin{TurnID: "turn-1"}})
+	if err != nil {
+		t.Fatalf("Launch detached: %v", err)
+	}
+
+	// The caller waits; the turn stop is accepted while it is still attached.
+	waited := make(chan ForegroundResult, 1)
+	go func() {
+		res, err := jm.WaitForeground(ctx, attached.ID, time.Hour)
+		if err != nil {
+			t.Errorf("WaitForeground: %v", err)
+			waited <- ForegroundResult{}
+			return
+		}
+		waited <- res
+	}()
+	time.Sleep(30 * time.Millisecond)
+
+	ids, err := jm.StopAttached("turn-1", "user stopped the turn")
+	if err != nil {
+		t.Fatalf("StopAttached: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != attached.ID {
+		t.Fatalf("stopped = %v, want only the attached %s", ids, attached.ID)
+	}
+
+	// The detached job survived its turn's stop: it is still running while the
+	// attached command's termination is still settling.
+	alive, _, err := jm.Output(detached.ID, 0)
+	if err != nil {
+		t.Fatalf("Output detached: %v", err)
+	}
+	if alive.Status != StatusRunning {
+		t.Fatalf("detached status = %q, want running: a detached job survives its turn's stop", alive.Status)
+	}
+	if alive.StopCause != "" {
+		t.Fatalf("detached StopCause = %q, want none", alive.StopCause)
+	}
+
+	select {
+	case res := <-waited:
+		if !res.Terminal {
+			t.Fatalf("result = %+v, want the terminal stopped outcome", res)
+		}
+		if res.Info.Outcome != OutcomeStopped {
+			t.Fatalf("outcome = %q, want stopped", res.Info.Outcome)
+		}
+		if res.Info.StopCause != "user stopped the turn" {
+			t.Fatalf("StopCause = %q, want the turn's cause", res.Info.StopCause)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stopped command's outcome never reached the waiting caller")
+	}
+
+	close(release)
+	if _, err := jm.Wait(ctx, detached.ID); err != nil {
+		t.Fatalf("Wait detached: %v", err)
 	}
 }

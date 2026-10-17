@@ -14,16 +14,29 @@ import (
 // in-package tests import agent; either direction closes the cycle).
 type jobAwaitAdapter struct{ m *native.JobManager }
 
+// awaitJobInfo converts one manager snapshot into the agent's own view. Status,
+// exit and stop cause all travel: an await result has to be able to say what a
+// job is doing, whether it exited, and why it stopped, without the caller
+// guessing from the exit code alone.
+func awaitJobInfo(info native.JobInfo) agent.AwaitJobInfo {
+	return agent.AwaitJobInfo{
+		ID:        info.ID,
+		Command:   info.Command,
+		Status:    string(info.Status),
+		ExitCode:  info.ExitCode,
+		StopCause: info.StopCause,
+	}
+}
+
+// OutstandingJobs reports the detached running/stopping jobs. It reads
+// JobManager.Outstanding deliberately: a foreground command attached to its
+// waiting call is not background work, so it must not become an extra target
+// for any/all while its own call is still blocked on it.
 func (a jobAwaitAdapter) OutstandingJobs() []agent.AwaitJobInfo {
 	jobs := a.m.Outstanding()
 	out := make([]agent.AwaitJobInfo, 0, len(jobs))
 	for _, j := range jobs {
-		out = append(out, agent.AwaitJobInfo{
-			ID:       j.ID,
-			Command:  j.Command,
-			Status:   string(j.Status),
-			ExitCode: j.ExitCode,
-		})
+		out = append(out, awaitJobInfo(j))
 	}
 	return out
 }
@@ -33,12 +46,7 @@ func (a jobAwaitAdapter) AwaitJob(ctx context.Context, id string) (agent.AwaitJo
 	if err != nil {
 		return agent.AwaitJobInfo{}, err
 	}
-	return agent.AwaitJobInfo{
-		ID:       info.ID,
-		Command:  info.Command,
-		Status:   string(info.Status),
-		ExitCode: info.ExitCode,
-	}, nil
+	return awaitJobInfo(info), nil
 }
 
 func (a jobAwaitAdapter) JobOutputTail(id string, maxLines int) string {
@@ -57,7 +65,7 @@ func (a jobAwaitAdapter) PeekJob(id string, tailLines int) (agent.AwaitJobInfo, 
 	if err != nil {
 		return agent.AwaitJobInfo{}, "", err
 	}
-	return agent.AwaitJobInfo{ID: info.ID, Command: info.Command, Status: string(info.Status), ExitCode: info.ExitCode}, strings.TrimRight(out, "\n"), nil
+	return awaitJobInfo(info), strings.TrimRight(out, "\n"), nil
 }
 
 func (a jobAwaitAdapter) KillJob(id string) error { return a.m.Kill(id) }

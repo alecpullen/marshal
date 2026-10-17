@@ -44,8 +44,8 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 	}
 	tool := registry.Tool{
 		Name:        "agent.await",
-		Description: `Wait for background work: a subagent ("id"), a background shell job ("job_id"), the first to finish ("any": true), or everything ("all": true). Pass exactly one. "peek": true with "id" or "job_id" returns current status and recent output immediately instead of waiting. "timeout_seconds" bounds a wait; on expiry you get what is still running. Subagent reports also arrive on their own when they finish.`,
-		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"job_id":{"type":"string"},"any":{"type":"boolean"},"all":{"type":"boolean"},"peek":{"type":"boolean"},"timeout_seconds":{"type":"integer"}},"additionalProperties":false}`),
+		Description: `Wait for background work: a subagent ("id"), a background shell job ("job_id"), the first to finish ("any": true), or everything ("all": true). Pass exactly one. "peek": true with "id" or "job_id" returns current status and recent output immediately instead of waiting. "timeout_seconds" bounds a wait; on expiry you get what is still running, and nothing is stopped. A job result reports its status, its actual exit code when the process produced one, and the stop cause when it was stopped. Subagent reports also arrive on their own when they finish.`,
+		Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"integer"},"job_id":{"type":"string"},"any":{"type":"boolean"},"all":{"type":"boolean"},"peek":{"type":"boolean"},"timeout_seconds":{"type":"integer","description":"maximum seconds to wait; it never stops the targets"}},"additionalProperties":false}`),
 		// MUST stay read-only: a blocking handler that held the write gate
 		// would deadlock the very child it is waiting for, once the parent
 		// runner carries a WriteGate.
@@ -74,6 +74,12 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 		if modes != 1 {
 			return registry.ToolResult{}, fmt.Errorf("%s requires exactly one of \"id\", \"any\": true, \"all\": true, or \"job_id\"", tool.Name)
 		}
+		// Validate the wait budget before every mode, peek included: a peek
+		// with a negative timeout is a caller mistake whether or not this
+		// particular mode would have waited.
+		if args.TimeoutSeconds < 0 {
+			return registry.ToolResult{}, fmt.Errorf("%s: timeout_seconds must be >= 0", tool.Name)
+		}
 		if args.Peek {
 			switch {
 			case args.ID != 0:
@@ -91,6 +97,9 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 				if info.ExitCode != nil {
 					fmt.Fprintf(&b, "exit: %d\n", *info.ExitCode)
 				}
+				if info.StopCause != "" {
+					fmt.Fprintf(&b, "stopped: %s\n", info.StopCause)
+				}
 				if tail != "" {
 					b.WriteString("\n" + tail)
 				}
@@ -98,9 +107,6 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 			default:
 				return registry.ToolResult{}, fmt.Errorf("%s: peek needs \"id\" or \"job_id\"", tool.Name)
 			}
-		}
-		if args.TimeoutSeconds < 0 {
-			return registry.ToolResult{}, fmt.Errorf("%s: timeout_seconds must be >= 0", tool.Name)
 		}
 		if args.TimeoutSeconds > 0 {
 			var cancel context.CancelFunc
@@ -373,15 +379,25 @@ func (a awaitOptions) awaitTimeoutResult(state *session.State, timeoutSeconds in
 // jobAwaitTailLines bounds the output tail included in job await results.
 const jobAwaitTailLines = 40
 
-// jobResultText renders a finished job's await result. exit renders as
-// "n/a" when the job died without an exit code (killed/timeout).
+// jobResultText renders a job's await result: its status, its actual exit code
+// when the process produced one, and the stop cause when it was stopped. A
+// running or stopping job has no exit — "n/a" says so rather than implying a
+// code nobody observed — and an explicit stop reports why it stopped instead of
+// pretending the exit code explains it.
 func jobResultText(info AwaitJobInfo, tail string) (summaryLine, content string) {
+	status := info.Status
+	if status == "" {
+		status = "unknown"
+	}
 	exit := "n/a"
 	if info.ExitCode != nil {
 		exit = fmt.Sprintf("%d", *info.ExitCode)
 	}
-	summaryLine = fmt.Sprintf("job %s %s (exit %s): %s", info.ID, info.Status, exit, info.Command)
+	summaryLine = fmt.Sprintf("job %s %s (exit %s): %s", info.ID, status, exit, info.Command)
 	content = summaryLine
+	if info.StopCause != "" {
+		content += "\nstopped: " + info.StopCause
+	}
 	if tail != "" {
 		content += "\n\noutput tail:\n" + tail
 	}

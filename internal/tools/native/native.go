@@ -289,6 +289,20 @@ func (t *toolSet) activeRoot() string {
 	return t.root
 }
 
+// foregroundWait is how long an ordinary shell.run/test.run call waits for its
+// command before the command continues in the background. It comes from the
+// config this toolset was built with — a reload builds a new toolset — so a
+// settings change applies to future calls and never re-times a wait already in
+// flight. Config validation rejects a non-positive
+// tools.shell.foreground_wait_seconds, so the fallback only covers a toolset
+// built without a config (tests, embedded callers).
+func (t *toolSet) foregroundWait() time.Duration {
+	if seconds := t.config.Tools.Shell.ForegroundWaitSeconds; seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return defaultForegroundWait
+}
+
 // systemAccess reports whether this toolset's session has the
 // system-access modifier. Nil-safe: no session state means no system
 // access — containment is enforced as today.

@@ -1454,22 +1454,19 @@ func TestRunReturnsInjectedConfigLoadError(t *testing.T) {
 }
 
 func TestRunCreatesDatabase(t *testing.T) {
+	// Explicit fixtures: a test-owned working directory carrying its own
+	// project config, plus a test-owned home. The test asserts database
+	// creation, not config loading, so it must never reach the developer's
+	// real config or data directories. No provider is configured, so
+	// startup constructs neither a provider nor an OAuth refresh worker.
 	dir := t.TempDir()
+	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
 		t.Fatalf("mkdir .marshal: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte("[project]\nname = \"test\"\n"), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(origWd)
 
 	runnerCalled := false
 	runner := func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
@@ -1480,9 +1477,10 @@ func TestRunCreatesDatabase(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = Run(ctx, bytes.NewBuffer(nil), WithNow(func() time.Time {
+	err := Run(ctx, bytes.NewBuffer(nil), WithNow(func() time.Time {
 		return time.Unix(1000, 0)
-	}), WithProgramRunner(runner), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	}), WithWorkingDir(dir), WithHomeDir(home),
+		WithProgramRunner(runner), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1501,7 +1499,11 @@ func TestRunCreatesDatabase(t *testing.T) {
 // alt-screen: the logger must write to .marshal/marshal.log, never to the
 // stdout/stderr writers the TUI paints to.
 func TestRunLogsToFileNotTerminal(t *testing.T) {
+	// Explicit fixtures: test-owned working directory and home. Logging goes
+	// to <working dir>/.marshal/marshal.log, so the assertion does not need —
+	// and must not touch — the developer's real config or data directories.
 	dir := t.TempDir()
+	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
 		t.Fatalf("mkdir .marshal: %v", err)
 	}
@@ -1509,26 +1511,18 @@ func TestRunLogsToFileNotTerminal(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(origWd)
-
 	stdout := bytes.NewBuffer(nil)
 	stderr := bytes.NewBuffer(nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = Run(ctx, stdout, WithNow(func() time.Time {
+	err := Run(ctx, stdout, WithNow(func() time.Time {
 		return time.Unix(1000, 0)
-	}), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-		return ProgramResult{}
-	}), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	}), WithWorkingDir(dir), WithHomeDir(home),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			return ProgramResult{}
+		}), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1544,6 +1538,126 @@ func TestRunLogsToFileNotTerminal(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "marshal started") {
 		t.Fatalf("expected startup log in %s, got %q", logPath, string(data))
+	}
+}
+
+// TestLoaderIsolationIgnoresAmbientUserConfig is the loader-level regression
+// for the isolation contract. The package runs with HOME pointed at a
+// temporary directory (internal/testenv.Run), so a synthetic "developer"
+// config planted at the process-default user path is exactly what an
+// unisolated load would have picked up.
+//
+// The ambient fixture is deliberately credential-shaped — an OAuth Codex
+// provider and an OAuth MCP server with non-routable endpoints — and the
+// control load proves an unisolated load would have merged them. Loading
+// configuration never constructs a provider or opens a credential store
+// (internal/app/config does not depend on either package), so this test
+// stays off the real keychain even if the isolation it asserts were broken.
+func TestLoaderIsolationIgnoresAmbientUserConfig(t *testing.T) {
+	const ambientUserConfig = `[project]
+name = "ambient-project"
+
+[providers.ambient-codex]
+type = "openai_codex"
+base_url = "https://example.invalid/backend-api"
+auth = "oauth"
+
+[mcp.servers.ambient-mcp]
+url = "https://example.invalid/mcp"
+type = "http"
+auth = "oauth"
+`
+
+	const fixtureUserConfig = `[project]
+name = "fixture-project"
+
+[commands]
+test = "fixture-test-cmd"
+`
+
+	// The premise of the regression: the process-default config location is
+	// the isolated temporary home, not a developer override.
+	for _, key := range []string{"MARSHAL_CONFIG_DIR", "MARSHAL_DATA_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
+		if got := os.Getenv(key); got != "" {
+			t.Fatalf("%s = %q, want the isolated empty value", key, got)
+		}
+	}
+	processHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	// Safety guard: the ambient fixture may only be planted in a test-owned
+	// home. If the package isolation (internal/testenv.Run in main_test.go)
+	// is ever dropped, the process-default home is the developer's real home
+	// and this test must fail rather than overwrite their user config.
+	if !strings.HasPrefix(processHome, os.TempDir()) {
+		t.Fatalf("process home %q is not a test-owned temporary directory; refusing to plant an ambient config there", processHome)
+	}
+
+	ambientPath := config.UserConfigPath(processHome)
+	if err := os.MkdirAll(filepath.Dir(ambientPath), 0o755); err != nil {
+		t.Fatalf("mkdir ambient config dir: %v", err)
+	}
+	priorAmbient, priorErr := os.ReadFile(ambientPath)
+	if err := os.WriteFile(ambientPath, []byte(ambientUserConfig), 0o644); err != nil {
+		t.Fatalf("write ambient config: %v", err)
+	}
+	t.Cleanup(func() {
+		// Restore whatever was at the process-default path so the synthetic
+		// ambient config cannot leak into other tests in this package.
+		if priorErr == nil {
+			_ = os.WriteFile(ambientPath, priorAmbient, 0o644)
+			return
+		}
+		_ = os.Remove(ambientPath)
+	})
+
+	// Control: a load that resolves the process-default home sees the
+	// ambient fixture. Without this the regression would be vacuous.
+	control, err := config.Load(config.LoadOptions{HomeDir: processHome, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load ambient config: %v", err)
+	}
+	if got := control.Providers["ambient-codex"].Auth; got != "oauth" {
+		t.Fatalf("control load did not see the ambient OAuth provider: providers=%+v", control.Providers)
+	}
+	if got := control.MCP.Servers["ambient-mcp"].Auth; got != "oauth" {
+		t.Fatalf("control load did not see the ambient OAuth MCP server: servers=%+v", control.MCP.Servers)
+	}
+
+	// Injected fixtures: a separate home and working directory. Only their
+	// own layer may contribute.
+	fixtureHome := t.TempDir()
+	fixtureWork := t.TempDir()
+	fixturePath := config.UserConfigPath(fixtureHome)
+	if err := os.MkdirAll(filepath.Dir(fixturePath), 0o755); err != nil {
+		t.Fatalf("mkdir fixture config dir: %v", err)
+	}
+	if err := os.WriteFile(fixturePath, []byte(fixtureUserConfig), 0o644); err != nil {
+		t.Fatalf("write fixture config: %v", err)
+	}
+
+	cfg, err := config.Load(config.LoadOptions{HomeDir: fixtureHome, WorkingDir: fixtureWork})
+	if err != nil {
+		t.Fatalf("load fixture config: %v", err)
+	}
+	if cfg.Project.Name != "fixture-project" {
+		t.Errorf("Project.Name = %q, want the fixture value", cfg.Project.Name)
+	}
+	if cfg.Commands.Test != "fixture-test-cmd" {
+		t.Errorf("Commands.Test = %q, want the fixture value", cfg.Commands.Test)
+	}
+	if _, ok := cfg.Providers["ambient-codex"]; ok {
+		t.Errorf("injected load inherited the ambient provider: %+v", cfg.Providers)
+	}
+	if _, ok := cfg.MCP.Servers["ambient-mcp"]; ok {
+		t.Errorf("injected load inherited the ambient MCP server: %+v", cfg.MCP.Servers)
+	}
+	if len(cfg.Providers) != 0 {
+		t.Errorf("injected load Providers = %+v, want none declared by the fixture", cfg.Providers)
+	}
+	if len(cfg.MCP.Servers) != 0 {
+		t.Errorf("injected load MCP servers = %+v, want none declared by the fixture", cfg.MCP.Servers)
 	}
 }
 

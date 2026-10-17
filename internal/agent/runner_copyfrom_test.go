@@ -260,3 +260,53 @@ func TestRunnerSkipsTitleManagerForSubagent(t *testing.T) {
 		t.Fatal("main provider Chat was never called; the turn did not proceed")
 	}
 }
+
+// TestCopyFromTransfersExecutionControl guards the reload path for the
+// execution-control seam: app.reloadAgentRuntime rebuilds the runner and mutates
+// the live one in place via CopyFrom, so the rebuilt seam must transfer — or a
+// reloaded runner silently loses the ability to give an explicit stop a target.
+func TestCopyFromTransfersExecutionControl(t *testing.T) {
+	state := newTestState(t)
+	svc := &fakeStopService{}
+	state.SetTurnStopService(svc)
+
+	control := NewSessionExecutionControl(state)
+	target := &Runner{}
+	target.CopyFrom(&Runner{ExecutionControl: control})
+	if target.ExecutionControl == nil {
+		t.Fatal("CopyFrom did not transfer ExecutionControl")
+	}
+
+	// A source without one must clear a stale seam, not preserve it.
+	stale := &Runner{ExecutionControl: control}
+	stale.CopyFrom(&Runner{})
+	if stale.ExecutionControl != nil {
+		t.Fatal("CopyFrom preserved a stale ExecutionControl when source had nil")
+	}
+}
+
+// TestDirectRunnerAllocatesItsOwnStopGroup pins the direct-use path: a runner
+// with no parent registration still gets a stop target of its own, so a turn
+// driven outside the TUI (a script, a test, an embedded caller) can be stopped.
+func TestDirectRunnerAllocatesItsOwnStopGroup(t *testing.T) {
+	state := newTestState(t)
+	svc := &fakeStopService{}
+	state.SetTurnStopService(svc)
+
+	p := &agenttest.ScriptedProvider{
+		Responses: []string{`{"rationale":"done","action":{"type":"final","content":"ok"}}`},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.ExecutionControl = NewSessionExecutionControl(state)
+
+	// While the turn runs, its group is registered and reachable.
+	if _, err := r.RunTask(context.Background(), "direct run"); err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if token := state.CurrentTurnStop(); token != nil {
+		t.Fatalf("direct runner left its registration behind: %q", token.TurnID())
+	}
+	if stops, _, _ := svc.snapshot(); len(stops) != 0 {
+		t.Fatalf("a normally-finished direct run requested a stop: %v", stops)
+	}
+}

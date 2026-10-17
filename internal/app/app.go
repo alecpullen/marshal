@@ -645,6 +645,13 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// Background jobs start in the session's active root, so they land in
 	// the worktree while the session is isolated.
 	jobManager.SetDirFunc(func() string { return state.Workspace().ActiveRoot })
+	// The conversation's command service is the target an explicit turn stop
+	// reaches: the session owns it, so Ctrl+C (or /stop, or a cancelled
+	// review/pipeline/SDD turn) can mark that turn's attached commands stopping
+	// BEFORE the agent's own waits are cancelled. Installing it here — once, at
+	// owner construction — is what keeps a child registry or a reload from
+	// silently replacing the stop target.
+	state.SetTurnStopService(jobManager)
 	// Job exits reach the transcript from here, not from a client, so the
 	// TUI and ACP sessions both see a job's card settle. The sink reports
 	// whether the outcome was made durable: the manager keeps an unacknowledged
@@ -879,6 +886,11 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.WriteGate = writeLock
+	// The execution-control seam is what gives an explicit turn stop a precise
+	// target: the session owns the conversation's command service and the stop
+	// registration, so the parent runner and every synthetic worker share the
+	// one target a user's stop names.
+	runner.ExecutionControl = agent.NewSessionExecutionControl(state)
 	// Wire the watch manager as the runner's WatchTransferrer so a
 	// subagent's once watches re-parent to the parent and its repeat
 	// watches stop when the subagent finishes or is killed.
@@ -1162,6 +1174,22 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	return runner, reg, swarmRunner, mcpMgr, snapSvc, jobManager, watchManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
 }
 
+// beginSessionStop registers the conversation-level stop group for one parent
+// operation — a TUI turn, a /review dispatch, an SDD run, a pipeline dispatch,
+// an ACP prompt — BEFORE that operation is dispatched, and returns the teardown
+// that clears only that registration (never a newer operation's).
+//
+// Registering first is the point: a stop that lands while the operation is still
+// starting must have a target, and the group identity is what every command the
+// operation launches records as its turn.
+func beginSessionStop(state *session.State, actor string) (stop func()) {
+	if state == nil {
+		return func() {}
+	}
+	token, _ := state.BeginTurnStop(actor)
+	return func() { state.EndTurnStop(token) }
+}
+
 // mcpFailureMessage renders per-server MCP start failures as one notice
 // line. Names and reasons only — never header values.
 //
@@ -1276,6 +1304,12 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	}
 	r := agent.NewRunner(p, toolReg, pol, runnerState, route.Preset.Model)
 	r.Role = role
+	// Synchronous role workers (pipeline implementer/reviewer, swarm roles)
+	// inherit the parent operation's stop group: a user stopping the running
+	// turn must reach the commands this worker launched, and those commands
+	// belong to the same conversation operation. NewSyntheticExecutionControl
+	// falls back to a self-allocated group when no parent registration exists.
+	r.ExecutionControl = agent.NewSyntheticExecutionControl(s.state)
 	// AI-03: without a RouteResolver, resolveRoute returns a zero route and
 	// role runners compact against the 60000-token fallback regardless of
 	// their model's real window, ignore per-role context budgets, and get no
@@ -1537,6 +1571,10 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		childRunner := agent.NewRunner(p, childReg, childPol, childState, route.Preset.Model)
 		childRunner.Role = agent.RoleSDDPlanAuthor
 		childRunner.ActorLabel = "plan author"
+		// The plan author runs synchronously inside the parent's SDD operation,
+		// so it inherits that operation's stop group: a user stopping the turn
+		// reaches the author's commands too.
+		childRunner.ExecutionControl = agent.NewSyntheticExecutionControl(state)
 		childRunner.NarrationPrompt = cfg.Agent.NarrationPrompt
 		childRunner.IntentNudge = cfg.Agent.IntentNudge
 		childRunner.SkillIndex = skillIndex
@@ -1936,6 +1974,11 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		// goroutine can re-parent the child's once watches and stop its
 		// repeat watches when the subagent ends.
 		child.WatchTransferrer = watchTransferrer
+		// A synthetic child (agent.run) owns its own stop group, but it shares
+		// the parent's session and command service, so its commands still
+		// arbitrate at one boundary. newSubagentFactory's caller replaces this
+		// with the child's dedicated group once the view id exists.
+		child.ExecutionControl = agent.NewSyntheticExecutionControl(parentState)
 		// C-1: wire the snapshot service onto the child runner so its
 		// pre-write snapshots are recorded against the child's own session
 		// ID. Without this, a background child can clobber files with no
@@ -2280,6 +2323,13 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			))
 			tuiOpts = append(tuiOpts, tui.WithReviewDispatcher(
 				func(ctx context.Context, focus, model, reviewRange string) error {
+					// Register the review operation's stop group at the dispatch
+					// entry point, before the subagent is built: a stop that
+					// arrives while the review is still starting must have a
+					// target, and the review worker inherits this group so a
+					// command it launches is reachable from the same stop.
+					releaseStop := beginSessionStop(rt.State, "")
+					defer releaseStop()
 					return runReviewSubagent(ctx, rt.State, rt.CustomAgentFactory, focus, model, reviewRange)
 				},
 			))
@@ -2335,6 +2385,10 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				PlanAuthorFactory:    planAuthorFactory,
 				ToolRegistry:         toolReg,
 				ReviewDispatcher: func(ctx context.Context, focus, model, reviewRange string) error {
+					// Same contract as the startup wiring: register the review
+					// operation's stop group at dispatch, before any worker work.
+					releaseStop := beginSessionStop(state, "")
+					defer releaseStop()
 					return runReviewSubagent(ctx, state, rt.CustomAgentFactory, focus, model, reviewRange)
 				},
 			}, nil

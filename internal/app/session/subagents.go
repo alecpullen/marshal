@@ -96,6 +96,34 @@ type SubagentEvent struct {
 // State.mu-held increment and keeps registration cheap.
 var subagentSeq atomic.Int64
 
+// RegisterSubagentStopGroup associates a child's own explicit-stop group with
+// its subagent view id, so a targeted child stop reaches exactly that child's
+// attached commands and nothing else. The group is allocated separately from the
+// parent operation's because a background child outlives its parent's turn.
+func (s *State) RegisterSubagentStopGroup(id int64, token *TurnStopToken) {
+	if s == nil || token == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.subagentStopGroups == nil {
+		s.subagentStopGroups = make(map[int64]*TurnStopToken)
+	}
+	s.subagentStopGroups[id] = token
+	s.mu.Unlock()
+}
+
+// ClearSubagentStopGroup drops a finished child's stop group so a later card
+// reusing the id cannot inherit it. Called on normal completion: a child that
+// finished on its own is never stopped by its explicit-stop wrapper.
+func (s *State) ClearSubagentStopGroup(id int64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	delete(s.subagentStopGroups, id)
+	s.mu.Unlock()
+}
+
 // RegisterSubagent records a new running subagent and returns its view. The
 // returned view's Child pointer is the live child state; the caller owns
 // finishing the registration via FinishSubagent. Publishing happens after
@@ -182,10 +210,16 @@ func (s *State) SetSubagentSalvaged(id int64, reason string) {
 	}
 }
 
-// CancelSubagent cancels the context of a running subagent with the
-// given view ID. It returns true if a running subagent was found and a
-// cancel function existed. The subagent handler is responsible for
-// finishing the view when the child returns.
+// CancelSubagent performs a TARGETED stop of a running subagent: it asks the
+// conversation's command service to stop that child's own attached commands
+// FIRST, then cancels the child's context. It returns true if a running
+// subagent was found and a cancel function existed. The subagent handler is
+// responsible for finishing the view when the child returns.
+//
+// This is the explicit-stop path only. A child that finishes on its own never
+// reaches it: its completion goroutine calls the plain context cancel, so normal
+// completion terminates nothing. A child's previously detached jobs are
+// conversation-owned and keep running.
 func (s *State) CancelSubagent(id int64) bool {
 	s.mu.Lock()
 	var cancel context.CancelFunc
@@ -197,12 +231,20 @@ func (s *State) CancelSubagent(id int64) bool {
 			break
 		}
 	}
+	token := s.subagentStopGroups[id]
 	s.mu.Unlock()
-	if found && cancel != nil {
-		cancel()
-		return true
+	if !found || cancel == nil {
+		return false
 	}
-	return false
+	// Service acceptance precedes cancellation: the child's attached commands
+	// are marked stopping (and the child's turn is refused any new admission)
+	// before the child's context is cancelled, so a command the child launched
+	// is never left running with no stop request against it.
+	if token != nil {
+		_, _ = token.Stop(fmt.Sprintf("subagent %d stopped", id))
+	}
+	cancel()
+	return true
 }
 
 // AddSubagentTokens increments the token counter for a running subagent

@@ -15,6 +15,33 @@ import (
 	"marshal/internal/watch/watchctx"
 )
 
+// ownedExecutionControl is the ExecutionControl a synthetic child owns when it
+// has a stop group of its own rather than inheriting a parent operation's: an
+// agent.run child, a review/pipeline worker whose commands belong to that one
+// child. It never touches a parent's registration, so a targeted child stop
+// cannot stop the parent's work and a parent turn stop cannot stop the child's
+// (the child outlives its parent's turn by design).
+type ownedExecutionControl struct {
+	stop *session.TurnStopToken
+}
+
+func (c ownedExecutionControl) BeginOperation(string) (*session.TurnStopToken, bool) {
+	return c.stop, true
+}
+
+func (c ownedExecutionControl) StopOperation(token *session.TurnStopToken, cause string) ([]string, error) {
+	return token.Stop(cause)
+}
+
+// ReleaseOperation reports false on purpose: a child's group is released by the
+// child's own completion path (ClearSubagentStopGroup), not by each turn inside
+// it, so a later turn of the same child still has a stop target.
+func (c ownedExecutionControl) ReleaseOperation(*session.TurnStopToken) bool { return false }
+
+func (c ownedExecutionControl) StopExecution(executionID, cause string) error {
+	return c.stop.StopTarget(executionID, cause)
+}
+
 // SubagentRequest carries the caller's explicit choices for one agent.run
 // child. Agent is "" for an ad-hoc subtask or the name of a configured
 // custom agent. Model is an optional "provider/model" pair; "" means use
@@ -301,12 +328,25 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		// and turn-cancel (Esc) must not kill it. Session Shutdown still
 		// cancels it (State.Context is cancelled by Shutdown).
 		childCtx, cancel := context.WithCancel(state.Context())
+		// Give the child its own stop group so a TARGETED stop of this child
+		// reaches only this child's attached commands. The parent's turn stop
+		// never touches it (a child outlives its parent's turn), which is why
+		// the group is allocated separately instead of inherited.
+		childStop := session.NewTurnStopToken(state.GetTurnStopService(), fmt.Sprintf("subagent-%d", view.ID))
+		child.ExecutionControl = ownedExecutionControl{stop: childStop}
+		// Register the child's stop group BEFORE its cancel handle, so a
+		// targeted stop can never find the handle without the group it must
+		// stop first. CancelSubagent (session/subagents.go) is the wrapper that
+		// stops the group's attached commands and only then calls this cancel;
+		// the child's normal completion below calls the same handle, which is
+		// correct because finishing is not being stopped.
+		state.RegisterSubagentStopGroup(view.ID, childStop)
+		state.SetSubagentCancel(view.ID, cancel)
 		// Stamp the subagent owner tag on the child's context so any
 		// watch.start call the child makes is attributed to it (the
 		// watch.start handler reads it via watch.OwnerFromContext). The
 		// tag is "subagent-<id>" matching the view ID assigned above.
 		childCtx = watchctx.WithOwner(childCtx, fmt.Sprintf("subagent-%d", view.ID))
-		state.SetSubagentCancel(view.ID, cancel)
 		prev := child.UsageObserver
 		child.UsageObserver = func(u schema.TokenUsage) {
 			if prev != nil {
@@ -394,6 +434,11 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			state.PushSubagentReport(report)
 			state.ExitSubagent()
 			state.FinishSubagent(view.ID, summary, runErr)
+			// The child finished on its own, so its explicit-stop group is done:
+			// dropping the registration here is what keeps a later card that
+			// reuses the id from inheriting it. Nothing is stopped — normal
+			// completion never invokes the explicit-stop wrapper.
+			state.ClearSubagentStopGroup(view.ID)
 			// Re-parent the child's once watches to the parent and stop its
 			// repeat watches now that the subagent has ended. The child's
 			// runner carries the WatchTransferrer (wired in app.go to the

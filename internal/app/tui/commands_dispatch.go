@@ -351,6 +351,11 @@ func init() {
 				m.refreshViewport()
 				return m, nil
 			}
+			// Register the review operation's stop group before dispatch: the
+			// review subagent runs synchronously under this operation and may
+			// launch commands, so the same stop must reach them. A registration
+			// is set before m.busy so the very first keypress has a target.
+			m.beginTurnStopRegistration()
 			m.busy = true
 			m.turnStartedAt = m.now()
 			agentCtx, cancel := context.WithCancel(m.ctx)
@@ -359,6 +364,10 @@ func init() {
 			if base != "" && reviewRange != "" {
 				m.state.EndWork()
 				m.busy = false
+				// The review never started, so its registration is cleared here:
+				// leaving it behind would let the next stop keystroke name an
+				// operation that already refused to run.
+				m.releaseTurnStop()
 				m.state.AddMessage(session.RoleSystem, "review: --base and an explicit range are mutually exclusive", session.ContentTypePlain)
 				m.refreshViewport()
 				return *m, nil

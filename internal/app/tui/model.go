@@ -220,15 +220,20 @@ type Model struct {
 	// trustRefresh, when set, advances the permanent-trust config hash after
 	// an interactive project-config save succeeds: the user approved the new
 	// config from a trusted session, so the next launch must not re-prompt.
-	trustRefresh   func(workingDir string)
-	memoryDB       *db.DB
-	memoryProject  int64
-	homeDir        string
-	dataDir        string
-	workDir        string
-	skillIndex     *skills.Index
-	cmdRegistry    *commands.Registry
-	agentCancel    context.CancelFunc
+	trustRefresh  func(workingDir string)
+	memoryDB      *db.DB
+	memoryProject int64
+	homeDir       string
+	dataDir       string
+	workDir       string
+	skillIndex    *skills.Index
+	cmdRegistry   *commands.Registry
+	agentCancel   context.CancelFunc
+	// endPendingStop clears THIS turn's stop registration (see cancelTurn and
+	// stopTurnWork). It is stored on the model so a turn that ends normally
+	// unregisters without ever requesting execution stop — the difference
+	// between finishing and being stopped. Nil when no turn registered one.
+	endPendingStop func()
 	approvalMode   policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
 	approvalModel  *approvalModel
 	questionModel  *questionModel
@@ -3776,6 +3781,12 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 	// clear any stale provider notice from an earlier failed turn. If this
 	// turn also fails, handleAgentFinished re-sets it.
 	m.state.ClearNotice(session.NoticeProvider)
+	// Register the turn's stop group before the turn is dispatched. Everything
+	// from here can block (provider resolution, titling, the first model call),
+	// and a stop that lands during any of it must name this operation. The
+	// runner adopts this registration instead of allocating its own, so the
+	// stop the user's keystroke names is the turn actually running.
+	m.beginTurnStopRegistration()
 	m.busy = true
 	m.turnStartedAt = m.now()
 	// A fresh prompt means the user is acting on their own — clear any
@@ -3877,6 +3888,12 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
+	// Register the SDD authoring operation's stop group before dispatch, the
+	// same way startAgentRun does for a prompt turn: the authoring run can
+	// block in provider work, and a stop must be able to name it. The author
+	// inherits this group (NewSyntheticExecutionControl), so a command it
+	// launches is reachable from the same stop.
+	releaseStop := m.beginTurnStopRegistration()
 	m.busy = true
 	m.turnStartedAt = m.now()
 	agentCtx, cancel := context.WithCancel(m.ctx)
@@ -3886,7 +3903,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		Design:   design,
 		RepoRoot: m.state.WorkingDir,
 		PlanPath: planPath,
-	}), tickCmd(), spinnerTickCmd())
+	}, releaseStop), tickCmd(), spinnerTickCmd())
 }
 
 type agentFinishedMsg struct{ err error }
@@ -4067,21 +4084,71 @@ func (m Model) turnSpinnerFrame() string {
 	return m.spinnerFrame
 }
 
-// cancelTurn cancels the in-flight agent turn, if any. Shared by double
+// cancelTurn stops the in-flight agent turn, if any. Shared by double
 // Ctrl+C and the /stop command. The steering queue is NOT cleared here — that happens
 // in handleAgentFinished so the finishing goroutine can observe the
 // cancellation state and avoid double-processing.
+//
+// The order is the contract: the conversation's stop operation is invoked FIRST,
+// so the command service marks and stops the commands still attached to this
+// turn — and refuses the stopped turn any further admission — and only then does
+// the agent's own wait/provider context get cancelled. Cancelling first would
+// leave a foreground command running with no stop request against it.
 func (m *Model) cancelTurn() bool {
 	if m.agentCancel == nil && !m.busy {
 		return false
 	}
 	m.cancelling = true
+	m.stopTurnWork("turn stopped")
 	if m.agentCancel != nil {
 		m.agentCancel()
 		m.agentCancel = nil
 	}
 	m.refreshViewport()
 	return true
+}
+
+// stopTurnWork asks the session's explicit-stop entry point to stop this turn's
+// attached commands before any agent cancellation. A session without a command
+// service (or with no registration) reports that nothing was stopped; the
+// caller still cancels its own context, so a turn with no commands behaves
+// exactly as before this feature.
+func (m *Model) stopTurnWork(cause string) {
+	if m.state == nil {
+		return
+	}
+	if _, err := m.state.RequestTurnStop(cause); err != nil && !errors.Is(err, session.ErrNoTurnStopService) {
+		m.state.Logger().Warn("turn stop was not accepted by the command service", "error", err)
+	}
+}
+
+// beginTurnStopRegistration registers the stop group for one TUI turn entry
+// point — a normal prompt turn, a /review dispatch, an SDD run — and remembers
+// the teardown on the model. The actor is empty: a TUI turn is the
+// orchestrator's own work, and the session's turn identity supplies the rest.
+//
+// It returns the teardown so a caller that never proceeds past admission can
+// clear its own registration immediately rather than leaving a stale target.
+func (m *Model) beginTurnStopRegistration() func() {
+	if m.state == nil {
+		return func() {}
+	}
+	token, _ := m.state.BeginTurnStop("")
+	stop := func() { m.state.EndTurnStop(token) }
+	m.endPendingStop = stop
+	return stop
+}
+
+// releaseTurnStop clears this turn's registration without stopping anything.
+// Called when a turn ends — normally or after a cancel (the stop decision was
+// already taken by the service) — so the next operation starts from a clean
+// registration and a stale one cannot be stopped by a later keystroke.
+func (m *Model) releaseTurnStop() {
+	if m.endPendingStop == nil {
+		return
+	}
+	m.endPendingStop()
+	m.endPendingStop = nil
 }
 
 // beginShutdown cancels the in-flight turn, clears pending state, and
@@ -4250,6 +4317,11 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.busy = false
 	m.turnStartedAt = time.Time{}
 	m.agentCancel = nil
+	// The turn is over, so its stop registration is done. Clearing it never
+	// requests execution stop: a turn that ended normally leaves its detached
+	// commands running, and a turn that was cancelled already had its stop
+	// decision taken by the command service.
+	m.releaseTurnStop()
 	// Restore the shared runner's original NewRunner so a per-run override
 	// does not leak into the next run. This runs on success, failure, and
 	// cancel — the defer-style guarantee the plan requires.
@@ -4405,6 +4477,7 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	m.busy = false
 	m.turnStartedAt = time.Time{}
 	m.agentCancel = nil
+	m.releaseTurnStop()
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	if msg.err != nil {
 		m.state.SetNotice(noticeForError(msg.err, "plan-author"))

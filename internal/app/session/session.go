@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"marshal/internal/app/config"
@@ -373,6 +375,21 @@ type State struct {
 	workMu    sync.Mutex
 	workWG    sync.WaitGroup
 	quiescing bool
+
+	// Task 5: the registered operation stop group — the target an explicit
+	// turn stop reaches. turnStopService is the conversation's command
+	// service, installed by app construction; turnStopPendingCause retains a
+	// stop requested before the turn it belongs to registered (Ctrl+C landing
+	// while a turn is still starting up must not be lost). turnStopMu is a
+	// leaf lock: no callback and no Service call ever runs while it is held.
+	turnStopMu           sync.Mutex
+	turnStop             *TurnStopToken
+	turnStopPendingCause string
+	turnStopService      TurnStopService
+	// subagentStopGroups maps an agent.run child's view id to that child's own
+	// stop group, so a targeted stop of one child reaches only that child's
+	// attached commands. Guarded by mu, alongside the subagent registry.
+	subagentStopGroups map[int64]*TurnStopToken
 
 	// loadErr captures a cold-load error from loadFromDB (Task 3).
 	// Exposed via LoadError() so StartRuntime can abort existing-session
@@ -1087,6 +1104,409 @@ func (s *State) BeginWork() error {
 // programming error that would panic via the WaitGroup.
 func (s *State) EndWork() {
 	s.workWG.Done()
+}
+
+// ---------------------------------------------------------------------------
+// Explicit turn stops
+//
+// An explicit turn stop (Ctrl+C, /stop, a cancelled review/pipeline/SDD turn, a
+// targeted child kill) must have a precise target: the commands still attached
+// to that one operation. The work-gate registration above is the natural place
+// for it — it already brackets a unit of work — so the stop group lives beside
+// it and is registered/cleared the same way, before dispatch and on finish.
+//
+// Order matters (shared contract 3): the command service accepts the stop FIRST
+// — marking that operation's attached executions as stopping and refusing that
+// turn any further admission — and only then does the caller cancel the agent's
+// wait/provider context. Ordinary cleanup cancels and unregisters WITHOUT
+// requesting execution stop, so a turn that ends normally never kills work that
+// was left running in the background.
+// ---------------------------------------------------------------------------
+
+// ErrNoTurnStopService is returned when a session has no command service to
+// stop: a session built without commands (a scoped child, a test fixture) has
+// nothing to stop, and silently succeeding would tell the caller an execution
+// was marked stopped when no service ever heard it.
+var ErrNoTurnStopService = errors.New("session: no command service is registered for turn stops")
+
+// TurnStopService is the conversation-owned command service an explicit turn
+// stop reaches. It is deliberately narrow and defined here (rather than in
+// internal/tools/native) so the session and the TUI can both name it: the
+// native JobManager implements it and app construction injects it.
+//
+// StopAttached is the admission/detachment synchronization point: it atomically
+// marks every command still attached to the turn as stopping and remembers the
+// turn as stopped, so a stopped turn cannot admit more commands. Implementations
+// must not stop executions that detached (or settled) first, and return the
+// affected execution ids.
+type TurnStopService interface {
+	// StopAttached stops and rejects the attached commands of one turn.
+	StopAttached(turnID, cause string) ([]string, error)
+	// RequestStop requests termination of one execution: the targeted form
+	// used when a stop names a single child instead of a turn.
+	RequestStop(executionID, cause string) error
+}
+
+// turnStopSeq allocates process-unique turn ids for stop groups. It is
+// process-wide (not per session) so a group allocated without a session — a
+// runner used directly, which must allocate its own — still names a target no
+// other operation can collide with.
+var turnStopSeq atomic.Uint64
+
+// allocateTurnID mints the identity a stop group uses at the command service.
+func allocateTurnID(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		prefix = "turn"
+	}
+	return fmt.Sprintf("%s-%d", prefix, turnStopSeq.Add(1))
+}
+
+// TurnStopToken is one operation's stop group: the target an explicit turn stop
+// reaches, and the thing a stop registration replaces or clears. It names the
+// actor whose commands belong to the group, the group's identity at the service,
+// and the service call that accepts the stop.
+//
+// A token outlives its registration. Once its turn is marked stopped, the token
+// keeps reporting that stop — and the service keeps refusing that turn's
+// admission — so a late start (a synchronous review worker inheriting the
+// parent's token, say) cannot resurrect a stopped turn.
+type TurnStopToken struct {
+	actor  string
+	turnID string
+	// service is the conversation's command service. Nil for a session built
+	// without commands; Stop then reports that rather than pretending otherwise.
+	service TurnStopService
+
+	mu        sync.Mutex
+	stopped   bool
+	stopCause string
+	// stopAccepted marks that this token has already asked the service, so a
+	// concurrent second Stop waits for the answer instead of asking twice.
+	stopAccepted bool
+	stopCh       chan struct{}
+	// executionIDs are the executions the accepted stop targeted.
+	executionIDs []string
+	stopErr      error
+}
+
+// NewTurnStopToken allocates a stop group for an operation with no session
+// registration yet — app construction at an entry point, or a runner used
+// directly with no turn in flight. The turn id is minted here so the group can
+// be stopped before its first command exists.
+func NewTurnStopToken(service TurnStopService, actor string) *TurnStopToken {
+	prefix := "turn"
+	if actor = strings.TrimSpace(actor); actor != "" {
+		prefix = "turn-" + actor
+	}
+	return &TurnStopToken{service: service, actor: actor, turnID: allocateTurnID(prefix)}
+}
+
+// Actor reports who owns the group.
+func (t *TurnStopToken) Actor() string {
+	if t == nil {
+		return ""
+	}
+	return t.actor
+}
+
+// TurnID reports the group's identity at the command service.
+func (t *TurnStopToken) TurnID() string {
+	if t == nil {
+		return ""
+	}
+	return t.turnID
+}
+
+// Stopped reports whether the group's stop was accepted.
+func (t *TurnStopToken) Stopped() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.stopped
+}
+
+// StopCause returns the cause of the accepted stop, "" when none was.
+func (t *TurnStopToken) StopCause() string {
+	if t == nil {
+		return ""
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.stopCause
+}
+
+// StoppedExecutionIDs returns the executions the accepted stop targeted, in the
+// order the service reported them.
+func (t *TurnStopToken) StoppedExecutionIDs() []string {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]string(nil), t.executionIDs...)
+}
+
+// HasService reports whether the group can reach a command service at all.
+func (t *TurnStopToken) HasService() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.service != nil
+}
+
+// Stop accepts an explicit stop for this group: it asks the service to stop and
+// reject the group's attached commands FIRST, records the outcome, and only then
+// reports success to the caller — which is what cancels the agent context.
+// Service acceptance precedes agent cancellation, so a stop the service never
+// accepted cannot cancel the turn's agent work.
+//
+// Concurrent and repeated stops share one service decision.
+func (t *TurnStopToken) Stop(cause string) ([]string, error) {
+	if t == nil {
+		return nil, nil
+	}
+	if cause = strings.TrimSpace(cause); cause == "" {
+		cause = "turn stopped"
+	}
+
+	t.mu.Lock()
+	if t.stopAccepted {
+		// Another caller already asked; wait for its answer instead of issuing a
+		// second stop the service would have to deduplicate.
+		ch := t.stopCh
+		t.mu.Unlock()
+		<-ch
+	} else {
+		t.stopAccepted = true
+		t.stopCause = cause
+		t.stopCh = make(chan struct{})
+		ch := t.stopCh
+		t.mu.Unlock()
+		ids, err := t.performStop(cause)
+		close(ch)
+		return ids, err
+	}
+	t.mu.Lock()
+	ids, err := append([]string(nil), t.executionIDs...), t.stopErr
+	t.mu.Unlock()
+	return ids, err
+}
+
+// performStop asks the service for the stop decision and records it. It runs
+// exactly once per token, from whichever Stop call won the race, and always
+// outside the token's lock: the service may query the session.
+func (t *TurnStopToken) performStop(cause string) ([]string, error) {
+	t.mu.Lock()
+	service, turnID := t.service, t.turnID
+	t.mu.Unlock()
+	if service == nil || turnID == "" {
+		// Nothing to stop. Record the decision so the caller can still cancel its
+		// own agent context, and report it rather than pretending a service
+		// accepted a stop that does not exist.
+		t.mu.Lock()
+		t.stopped = true
+		t.stopErr = ErrNoTurnStopService
+		t.mu.Unlock()
+		return nil, ErrNoTurnStopService
+	}
+	ids, err := service.StopAttached(turnID, cause)
+	t.mu.Lock()
+	t.stopped = true
+	t.executionIDs = append([]string(nil), ids...)
+	t.stopErr = err
+	t.mu.Unlock()
+	return ids, err
+}
+
+// StopTarget requests termination of one execution belonging to this group.
+// Unlike Stop it does not mark the group's turn stopped: a targeted child stop
+// must not refuse admission for the parent's other work.
+func (t *TurnStopToken) StopTarget(executionID, cause string) error {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	service := t.service
+	t.mu.Unlock()
+	if service == nil {
+		return ErrNoTurnStopService
+	}
+	return service.RequestStop(executionID, cause)
+}
+
+// RequestTurnStop is the session's explicit-stop entry point (contract 3). It
+// resolves the registered stop group and asks the command service to stop and
+// reject that group's attached commands, then reports the service's decision so
+// the caller can cancel the agent context — service acceptance precedes agent
+// cancellation.
+//
+// A stop that arrives before any group is registered is retained: the next
+// registration adopts the pending cause, so a keystroke landing while a turn is
+// still starting cannot be lost.
+func (s *State) RequestTurnStop(cause string) ([]string, error) {
+	if s == nil {
+		return nil, nil
+	}
+	cause = strings.TrimSpace(cause)
+	s.turnStopMu.Lock()
+	token := s.turnStop
+	if token == nil {
+		// Retain the request for the next registration instead of dropping it.
+		s.turnStopPendingCause = cause
+		s.turnStopMu.Unlock()
+		return nil, nil
+	}
+	s.turnStopMu.Unlock()
+	return token.Stop(cause)
+}
+
+// BeginTurnStop registers a stop group for one operation and returns its token
+// plus any stop cause requested before the registration existed. The actor is
+// stamped here, before any work is dispatched, so a stop reaches the operation
+// even while it is still blocked in title generation or provider resolution.
+//
+// Registration replaces any previous group: one operation at a time is the
+// session's contract. A replaced token keeps its own stopped state, and the
+// service keeps refusing its turn.
+func (s *State) BeginTurnStop(actor string) (token *TurnStopToken, pendingCause string) {
+	if s == nil {
+		return nil, ""
+	}
+	prefix := "turn"
+	if actor = strings.TrimSpace(actor); actor != "" {
+		prefix = "turn-" + actor
+	}
+	if s.sessionID != "" {
+		prefix = s.sessionID + "/" + prefix
+	}
+	token = &TurnStopToken{actor: actor, turnID: allocateTurnID(prefix)}
+	s.turnStopMu.Lock()
+	token.service = s.turnStopService
+	pendingCause = s.turnStopPendingCause
+	s.turnStopPendingCause = ""
+	s.turnStop = token
+	s.turnStopMu.Unlock()
+	// A stop that arrived before this registration names THIS operation: the
+	// user asked to stop before the operation announced itself, so the
+	// registration adopts it immediately. Consuming it later would let a turn
+	// do work the user already asked to stop.
+	if pendingCause != "" {
+		_, _ = token.Stop(pendingCause)
+	}
+	return token, pendingCause
+}
+
+// EndTurnStop clears the registration ONLY when it is still the same token, so
+// a finishing operation cannot unregister the stop group a newer operation
+// installed. Ordinary cleanup uses this: it cancels and unregisters without
+// requesting execution stop. Returns whether the registration was cleared.
+func (s *State) EndTurnStop(token *TurnStopToken) bool {
+	if s == nil || token == nil {
+		return false
+	}
+	s.turnStopMu.Lock()
+	defer s.turnStopMu.Unlock()
+	if s.turnStop != token {
+		return false
+	}
+	s.turnStop = nil
+	return true
+}
+
+// CurrentTurnStop returns the registered stop group, or nil.
+func (s *State) CurrentTurnStop() *TurnStopToken {
+	if s == nil {
+		return nil
+	}
+	s.turnStopMu.Lock()
+	defer s.turnStopMu.Unlock()
+	return s.turnStop
+}
+
+// SetTurnStopService installs the conversation's command service. App
+// construction calls it once; a nil service (a read-only filtered registry, a
+// session with no commands) makes RequestTurnStop report that nothing can be
+// stopped rather than silently succeeding.
+func (s *State) SetTurnStopService(service TurnStopService) {
+	if s == nil {
+		return
+	}
+	s.turnStopMu.Lock()
+	s.turnStopService = service
+	s.turnStopMu.Unlock()
+}
+
+// GetTurnStopService returns the installed command service, or nil.
+func (s *State) GetTurnStopService() TurnStopService {
+	if s == nil {
+		return nil
+	}
+	s.turnStopMu.Lock()
+	defer s.turnStopMu.Unlock()
+	return s.turnStopService
+}
+
+// StopExecution requests termination of one execution belonging to this
+// conversation by its execution id. It is the targeted form (an agent.kill-style
+// stop, or a stop of one child's command) and deliberately does NOT mark any
+// turn stopped, so its siblings and the parent operation keep admitting work.
+func (s *State) StopExecution(executionID, cause string) error {
+	if s == nil {
+		return ErrNoTurnStopService
+	}
+	if strings.TrimSpace(executionID) == "" {
+		return errors.New("session: execution id is required")
+	}
+	service := s.GetTurnStopService()
+	if service == nil {
+		return ErrNoTurnStopService
+	}
+	return service.RequestStop(executionID, cause)
+}
+
+// stopOriginKey carries one tool-call's execution origin on the handler's
+// context. It is a private key type so nothing outside this package can
+// overwrite the identity a managed command records.
+type stopOriginKey struct{}
+
+// ExecutionOrigin identifies the conversation work one managed command belongs
+// to: the conversation, the actor that requested it, the turn whose explicit
+// stop targets it, and the originating call. It is defined here, in the shared
+// leaf both internal/agent and internal/tools/native already import, because a
+// tool handler needs to read it while the package that stamps it cannot be
+// imported by the package that consumes it (internal/tools/native's in-package
+// tests import internal/agent).
+type ExecutionOrigin struct {
+	ConversationID string
+	Actor          string
+	TurnID         string
+	StepID         string
+	ToolCallID     string
+	Generation     int
+}
+
+// WithExecutionOrigin stamps an execution origin onto a tool handler's context.
+func WithExecutionOrigin(ctx context.Context, origin ExecutionOrigin) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, stopOriginKey{}, origin)
+}
+
+// ExecutionOriginFromContext reads the execution origin a runner stamped onto a
+// tool handler's context. ok is false for a handler called outside a runner
+// turn (a direct tool invocation, a test), where there is no turn to stop.
+func ExecutionOriginFromContext(ctx context.Context) (ExecutionOrigin, bool) {
+	if ctx == nil {
+		return ExecutionOrigin{}, false
+	}
+	origin, ok := ctx.Value(stopOriginKey{}).(ExecutionOrigin)
+	return origin, ok
 }
 
 // BeginQuiesce sets the quiescing gate so subsequent BeginWork calls

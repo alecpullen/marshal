@@ -40,6 +40,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+**Tool-usage prompting and tool architecture docs**
+
+- Two rules in the cached system-prompt prefix now name the tool families by
+  job: `repo.search` / `symbols` / `file.read` for finding and reading code,
+  and the `git.*` / workspace tools for repository state and isolation. The
+  prompt grew by the measured amount recorded in the commit; the ceilings
+  (`maxSystemPromptBytes`, `maxToolSchemaBytes`) were not raised.
+- The descriptions of `shell.run`, `repo.search`, `transcript_read`,
+  `codebase_search`, `workspace.worktree`, `file.read` and `agent.run` now
+  name the sibling tool each is most often confused with. `agent.run`'s
+  `"agent"` argument is documented as a configured custom agent, not a role
+  binding.
+- Five built-in skills that named no tool (`systematic-debugging`,
+  `test-driven-development`, `verification-before-completion`,
+  `work-decomposition`, `marshal-executing-plans`) now name the tools that
+  perform the steps they mandate.
+- New `docs/tools/` documents the model-facing tool surface family by family —
+  exact arguments, risk levels, call sequences, real failure modes, and Go
+  anchors. `TestToolsDocumentationDrift` fails when the docs and the registry
+  drift apart in either direction, or when a retired tool name reappears.
+
 **Web tools are enabled by default**
 
 - `[web] enabled` now defaults to `true`, so `web.fetch` is available out of

@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/progress"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
@@ -534,3 +535,187 @@ func TestTasksPanelStaysLiveWhileTodosChange(t *testing.T) {
 		t.Fatalf("open Tasks panel did not follow the todo list:\n%s", view)
 	}
 }
+
+// workRunningCard is a running command card with one activity line, so a
+// collapsed card is exactly two rows.
+func workRunningCard(key string, started time.Time) viewmodel.WorkItem {
+	return viewmodel.WorkItem{
+		TaskKey:   key,
+		Kind:      "command",
+		Label:     key,
+		SourceID:  key,
+		State:     "running",
+		StartedAt: started,
+		Activity:  "working",
+	}
+}
+
+func workSnapOf(items ...viewmodel.WorkItem) viewmodel.WorkSnapshot {
+	return viewmodel.WorkSnapshot{Version: 1, Items: items}
+}
+
+// workPlanOrder lists the distinct TaskKeys of a plan's work hits in row order
+// with the rows each occupied.
+func workPlanOrder(plan nowBarPlan) (keys []string, counts []int) {
+	for _, h := range plan.workHits {
+		if h.TaskKey == "" {
+			continue
+		}
+		if n := len(keys); n > 0 && keys[n-1] == h.TaskKey {
+			counts[n-1]++
+			continue
+		}
+		keys = append(keys, h.TaskKey)
+		counts = append(counts, 1)
+	}
+	return keys, counts
+}
+
+// The live-work bar is bounded on every frame: one summary row below the
+// compact height, otherwise min(nowBarWorkMaxRows, height/4), with an overflow
+// row that names the exact number of live items it hides.
+func TestWorkNowBarBudgetAndExactOverflow(t *testing.T) {
+	many := make([]viewmodel.WorkItem, 0, 12)
+	for i := range 12 {
+		many = append(many, workRunningCard(fmt.Sprintf("work:%02d", i), nowBarT0.Add(-time.Duration(i)*time.Second)))
+	}
+
+	cases := []struct {
+		name          string
+		width, height int
+		rows          int
+	}{
+		{"80x24", 80, 24, 1},
+		{"120x40", 120, 40, 9},
+		{"200x60", 200, 60, 9},
+		{"narrow", 40, 40, 9},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := nowBarBase()
+			in.Width, in.Height = tc.width, tc.height
+			in.Work = workSnapOf(many...)
+			plan := planNowBar(in)
+			if len(plan.rows) != tc.rows {
+				t.Fatalf("rows = %d, want %d:\n%s", len(plan.rows), tc.rows, stripANSI(strings.Join(plan.rows, "\n")))
+			}
+			if budget := workRowBudget(in); len(plan.rows) > budget {
+				t.Fatalf("rows %d exceed the budget %d", len(plan.rows), budget)
+			}
+			for i, row := range plan.rows {
+				if w := lipgloss.Width(row); w > tc.width {
+					t.Fatalf("row %d is %d cells, frame is %d: %q", i, w, tc.width, stripANSI(row))
+				}
+			}
+			plain := stripANSI(strings.Join(plan.rows, "\n"))
+			if tc.rows == 1 {
+				if !strings.Contains(plain, "12") {
+					t.Fatalf("compact row must count the live work:\n%s", plain)
+				}
+				return
+			}
+			// 12 live cards, four two-row cards placed, eight hidden.
+			if !strings.Contains(plain, "… 8 more live") {
+				t.Fatalf("overflow must name the exact hidden-live count:\n%s", plain)
+			}
+		})
+	}
+}
+
+// The selected card is ordered first, blocked work next, then a stable
+// StartedAt order; one explicit expansion opens to at most six rows while every
+// other card folds to one, and a stale expansion is cleared.
+func TestWorkNowBarExpandedAndBlockedOrdering(t *testing.T) {
+	a := workRunningCard("work:a", nowBarT0.Add(-30*time.Second))
+	b := viewmodel.WorkItem{TaskKey: "work:b", Kind: "command", Label: "work:b", SourceID: "work:b",
+		State: "blocked", StartedAt: nowBarT0.Add(-20 * time.Second)}
+	c := workRunningCard("work:c", nowBarT0.Add(-10*time.Second))
+	c.ProgressConfig = &progress.Config{Profile: "generic", Source: "events-v1"}
+	c.Progress = &progress.Snapshot{
+		Frame: progress.Frame{
+			Version: 1, Sequence: 1, PrimaryMetricID: "files",
+			Phase:   &progress.Phase{ID: "build", Label: "build"},
+			Metrics: []progress.Metric{{ID: "files", Label: "Files", Unit: "files", Current: 3, Total: workFloatPtr(10)}},
+			Rows:    []progress.Row{{ID: "r1", Label: "one", State: "done"}, {ID: "r2", Label: "two", State: "running"}},
+		},
+		ObservedAt: nowBarT0,
+	}
+	c.Activity = "linking"
+	c.OutputTail = "first line\nlast output"
+
+	in := nowBarBase()
+	in.Work = workSnapOf(a, b, c)
+	in.WorkSelected = "work:c"
+	in.WorkExpanded = "work:c"
+
+	keys, counts := workPlanOrder(planNowBar(in))
+	if strings.Join(keys, ",") != "work:c,work:b,work:a" {
+		t.Fatalf("card order = %v, want the selected card first then the blocked one", keys)
+	}
+	if counts[0] != nowBarWorkCardExpandedRows {
+		t.Fatalf("expanded card rows = %d, want %d", counts[0], nowBarWorkCardExpandedRows)
+	}
+	if counts[1] != 1 || counts[2] != 1 {
+		t.Fatalf("other cards must fold to one row while one is expanded: %v", counts)
+	}
+
+	// A stale expansion (its item settled or disappeared) clears, restoring the
+	// collapsed two-row cards.
+	in.WorkExpanded = "work:gone"
+	keys, counts = workPlanOrder(planNowBar(in))
+	if strings.Join(keys, ",") != "work:c,work:b,work:a" {
+		t.Fatalf("order changed after clearing the expansion: %v", keys)
+	}
+	for i, n := range counts {
+		if n != nowBarWorkCardRows {
+			t.Fatalf("collapsed card %d has %d rows, want %d: %v", i, n, nowBarWorkCardRows, counts)
+		}
+	}
+}
+
+// Every plan work hit names a row that was actually drawn, and the model's
+// per-frame targets agree with the rows the same plan rendered.
+func TestWorkNowBarHitTargetsMatchRenderedRows(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 40)
+	items := []viewmodel.WorkItem{
+		workRunningCard("work:one", nowBarT0.Add(-30*time.Second)),
+		workRunningCard("work:two", nowBarT0.Add(-20*time.Second)),
+		workRunningCard("work:three", nowBarT0.Add(-10*time.Second)),
+	}
+	m.workSnapshot = workSnapOf(items...)
+	m.workExpanded = "work:two"
+
+	m.viewString()
+
+	plan := m.nowBarPlan()
+	if len(plan.workHits) == 0 {
+		t.Fatal("the plan drew no work rows")
+	}
+	firstRow := map[string]int{}
+	for _, h := range plan.workHits {
+		if h.Row < 0 || h.Row >= len(plan.rows) {
+			t.Fatalf("hit for %q points at row %d of %d", h.TaskKey, h.Row, len(plan.rows))
+		}
+		if h.TaskKey == "" {
+			continue
+		}
+		if _, ok := firstRow[h.TaskKey]; !ok {
+			firstRow[h.TaskKey] = h.Row
+			// The card's first row is its header and must name the item.
+			if !strings.Contains(stripANSI(plan.rows[h.Row]), h.TaskKey) {
+				t.Fatalf("row %d does not carry %q: %q", h.Row, h.TaskKey, stripANSI(plan.rows[h.Row]))
+			}
+		}
+	}
+	if len(m.workHits) != len(firstRow) {
+		t.Fatalf("model hit map has %d targets, plan drew %d cards", len(m.workHits), len(firstRow))
+	}
+	for key, hit := range m.workHits {
+		if hit.Row != firstRow[key] {
+			t.Fatalf("hit for %q is at row %d, plan drew its first row at %d", key, hit.Row, firstRow[key])
+		}
+	}
+}
+
+func workFloatPtr(v float64) *float64 { return &v }

@@ -63,6 +63,7 @@ import (
 	"marshal/internal/permissions"
 	"marshal/internal/pipeline"
 	"marshal/internal/postmortem"
+	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
@@ -760,6 +761,25 @@ type Model struct {
 	// signal, and the running cards. viewmodel.BandOf builds it in
 	// refreshViewport; the now bar renders it.
 	band viewmodel.BandInfo
+
+	// workService is the runtime's Work facade (WithWork). When attached the
+	// now bar renders the immutable WorkSnapshot's bounded cards instead of
+	// the legacy owner rows; nil (the default) leaves the existing now bar
+	// untouched. Task 18 owns the event pump that refreshes workSnapshot.
+	workService viewmodel.WorkService
+	// workSnapshot is the newest immutable Work projection. The bar only
+	// reads it: it never mutates the snapshot and never fills a gap from the
+	// agent, job or watch owners.
+	workSnapshot viewmodel.WorkSnapshot
+	// workPrevious holds the previous progress observation per TaskKey, kept
+	// so a card can derive a measured rate and ETA from two observations.
+	workPrevious map[string]*progress.Snapshot
+	// workExpanded names the single card the reader opened. Empty is the
+	// collapsed default; a card whose item settles or disappears clears it.
+	workExpanded string
+	// workHits is this frame's work hit targets keyed by TaskKey, rebuilt in
+	// viewString from the same plan the rows came from.
+	workHits map[string]workHit
 	// rowBeat maps each row of a beat to the beat, from the last build, so
 	// a completion marker can open the beat that hides its card (folded, or
 	// past the row cap) before jumping to it.
@@ -1107,6 +1127,18 @@ func WithWatchBroker(ctx context.Context, broker *pubsub.Broker[watch.Event]) Op
 	return func(m *Model) {
 		m.ctx = ctx
 		m.watchBroker = broker
+	}
+}
+
+// WithWork wires the runtime's Work facade. When set, the now bar renders
+// the immutable WorkSnapshot's bounded cards from the runtime projection and
+// never reads the local agent, job or watch owners. A nil service (the
+// default) leaves the existing now bar fallback intact, so old behaviour and
+// its tests are unchanged. Task 18 connects the event pump that refreshes the
+// snapshot; until then callers may inject one directly.
+func WithWork(service viewmodel.WorkService) Option {
+	return func(m *Model) {
+		m.workService = service
 	}
 }
 

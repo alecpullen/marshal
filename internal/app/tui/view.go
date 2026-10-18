@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
+	"marshal/internal/viewmodel"
 )
 
 // stripANSI removes SGR escape sequences so tests can inspect visible runes
@@ -75,8 +76,10 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
+	m.reconcileWorkExpansion()
 	plan := planNowBar(m.nowBarInput())
 	m.nowBarMemo = &plan
+	m.recordWorkPlan(plan)
 	// The sheet's data func must see this frame's model, not the copy it was
 	// opened from, or it would render stale values.
 	if m.sheetPanel != nil {
@@ -118,6 +121,22 @@ func (m *Model) viewString() string {
 	// scrollable, so nothing the user must always see is lost.
 	left = clipLeftColumn(left, m.height-statusLineRows)
 	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
+}
+
+// reconcileWorkExpansion clears the expanded card when its item has settled or
+// disappeared: an expansion is a property of live work, so once the work is no
+// longer live the next frame returns to the collapsed default. It never touches
+// the composer or prompt focus, and it never stops any work.
+func (m *Model) reconcileWorkExpansion() {
+	if m.workExpanded == "" {
+		return
+	}
+	for _, it := range m.workSnapshot.Items {
+		if it.TaskKey == m.workExpanded && viewmodel.WorkActive(it) {
+			return
+		}
+	}
+	m.workExpanded = ""
 }
 
 // padRows grows s to exactly rows lines with blank ones, so a block that

@@ -294,7 +294,7 @@ func TestHardStallAsksUserAndContinuesOnGuidance(t *testing.T) {
 		for {
 			if q := state.PendingQuestion(); q != nil && len(q.Questions) > 0 {
 				canonical := q.Questions[0].Question
-				q.ResponseChan <- []session.Answer{{Question: canonical, Answer: "try reading the config file instead"}}
+				q.Respond([]session.Answer{{Question: canonical, Answer: "try reading the config file instead"}})
 				return
 			}
 			time.Sleep(time.Millisecond)
@@ -345,7 +345,7 @@ func TestHardStallFinalizesWhenUserDeclines(t *testing.T) {
 		for {
 			if q := state.PendingQuestion(); q != nil && len(q.Questions) > 0 {
 				canonical := q.Questions[0].Question
-				q.ResponseChan <- []session.Answer{{Question: canonical, Answer: ""}} // decline
+				q.Respond([]session.Answer{{Question: canonical, Answer: ""}}) // decline
 				return
 			}
 			time.Sleep(time.Millisecond)

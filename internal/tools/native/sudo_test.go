@@ -4,6 +4,7 @@ package native
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -505,5 +506,105 @@ func TestSudoToolSingleFlight(t *testing.T) {
 	_, err := invokeTool(t, reg, "shell.sudo", `{"command":"id"}`)
 	if err == nil || !strings.Contains(err.Error(), "another privileged command") {
 		t.Fatalf("shell.sudo while the lock is held = %v, want the retry error", err)
+	}
+}
+
+// TestSudoSteeringCancelBeforeDispatchZerosSecret pins what an interrupted
+// privileged prompt must guarantee.
+//
+// A steering interruption of the owning operation settles the prompt
+// canonically before the password is ever dispatched, so the privileged runner
+// is never invoked: no process ran as root and no credential left the process.
+// The call fails rather than reporting success, and the canceled prompt leaves
+// no live slot behind for a late answer to settle.
+func TestSudoSteeringCancelBeforeDispatchZerosSecret(t *testing.T) {
+	dir := t.TempDir()
+	ran := filepath.Join(dir, "ran")
+	seen := filepath.Join(dir, "stdin")
+	// A fake sudo that records that it ran, plus a copy of whatever password
+	// reached its stdin — so a dispatch would be visible as a file, not merely as
+	// a missing assertion.
+	script := "#!/bin/sh\n" +
+		"printf ran > " + ran + "\n" +
+		"cat > " + seen + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "sudo"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake sudo: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	root := t.TempDir()
+	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
+	state.SetSystemAccess(true)
+	state.SetSecretPromptCapable(true)
+	opCtx, turn, _ := steeringToolContext(t, state, nil)
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
+		SessionState:  state,
+		SudoPolicy:    func(string) error { return nil },
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	tool, ok := reg.Lookup("shell.sudo")
+	if !ok {
+		t.Fatal("shell.sudo not registered")
+	}
+
+	done := make(chan toolOutcome, 1)
+	go func() {
+		res, err := tool.Handler(opCtx, registry.ToolCall{ID: "call-sudo", Name: "shell.sudo", Args: []byte(`{"command":"systemctl restart nginx"}`)})
+		done <- toolOutcome{res: res, err: err}
+	}()
+
+	// The prompt is up; the interruption settles it canonically.
+	var prompt *session.PendingSudoAuth
+	deadline := time.Now().Add(5 * time.Second)
+	for prompt == nil && time.Now().Before(deadline) {
+		prompt = state.PendingSudoAuth()
+		if prompt == nil {
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	if prompt == nil {
+		t.Fatal("shell.sudo never raised its privileged-auth prompt")
+	}
+	steerNow(t, state, turn, "r1")
+
+	out := awaitOutcome(t, done)
+	if out.err == nil {
+		t.Fatal("a canceled privileged prompt returned success")
+	}
+	// The interruption must be reported through its DISTINCT cause, not as a
+	// user denial: an empty canceled-prompt denial is channel-wise
+	// indistinguishable from a user decline, and "denied by user" would count
+	// an intentional stop as a tool failure and feed the failed-repeat ladder.
+	if !errors.Is(out.err, session.ErrSendNow) {
+		t.Fatalf("canceled privileged prompt error = %v, want the distinct steering cause (session.ErrSendNow)", out.err)
+	}
+	// Nothing was dispatched and no credential was written anywhere the child
+	// could see it.
+	if _, err := os.Stat(ran); err == nil {
+		t.Fatal("the privileged runner was invoked for a canceled prompt")
+	}
+	if data, err := os.ReadFile(seen); err == nil && len(data) > 0 {
+		t.Fatalf("password bytes reached the privileged process: %q", data)
+	}
+	if strings.Contains(out.res.Content, "password") {
+		t.Fatalf("content = %q, want no credential material in the result", out.res.Content)
+	}
+	// The prompt is settled: the canceled record is gone, so a late password on
+	// this copy cannot settle anything and cannot reach the privileged runner.
+	if state.PendingSudoAuth() != nil {
+		t.Fatal("the canceled prompt was left pending")
+	}
+	prompt.Respond(session.SudoAuthDecision{OK: true, Password: []byte("late-secret")})
+	if _, err := os.Stat(ran); err == nil {
+		t.Fatal("a late password was dispatched after the prompt was canceled")
+	}
+	if data, err := os.ReadFile(seen); err == nil && len(data) > 0 {
+		t.Fatalf("a late password reached the privileged process: %q", data)
 	}
 }

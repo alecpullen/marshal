@@ -182,12 +182,11 @@ func answerPendingQuestion(state *session.State, answer string) <-chan string {
 // answerPendingQuestions answers the next n questions the runner asks, in
 // order, from a single goroutine.
 //
-// Claiming the question — clearing PendingQuestion before sending on its
-// ResponseChan — is what makes this safe. Two answerers racing on the same
-// pending question would both send on a buffer-1 channel; the loser blocks
-// forever, the next question is never answered, and the test hangs until its
-// timeout. Answering from one goroutine and claiming first removes both
-// halves of that race.
+// Respond settles the request in the session's canonical registry, which
+// claims the answer before delivering it. Two answerers racing on the same
+// pending question therefore cannot both send on its buffer-1 channel: the
+// loser's claim finds the record settled and nothing is written. Answering
+// from one goroutine keeps the answers in order.
 func answerPendingQuestions(state *session.State, n int, answer string) <-chan string {
 	questionCh := make(chan string, n)
 	go func() {
@@ -199,9 +198,13 @@ func answerPendingQuestions(state *session.State, n int, answer string) <-chan s
 					continue
 				}
 				canonical := q.Questions[0].Question
-				state.SetPendingQuestion(nil) // claim before answering
+				// Respond settles the prompt canonically: the registry claims
+				// the answer before delivering it, so a second answerer's call
+				// is a no-op rather than a second send on a buffer-1 channel.
+				// The old claim-before-send (SetPendingQuestion(nil)) would now
+				// supersede the registered request and be refused.
+				q.Respond([]session.Answer{{Question: canonical, Answer: answer}})
 				questionCh <- canonical
-				q.ResponseChan <- []session.Answer{{Question: canonical, Answer: answer}}
 				break
 			}
 		}

@@ -202,6 +202,27 @@ func snapshotIsCancellation(ctx context.Context, err error) bool {
 	return false
 }
 
+// snapshotIsSteeringCancellation reports whether err is this operation's own
+// steering cancellation, as opposed to a genuine capture failure or a root
+// turn/session cancellation. The distinction is deliberate: an interruption the
+// user asked for is not a "rollback protection is missing" event, so it is
+// logged and shown to nobody, while a real store fault and a shutdown both keep
+// their existing handling.
+func snapshotIsSteeringCancellation(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if !session.SteeringRequested(ctx) {
+		return false
+	}
+	// A root cancel is not steering: IsSteeringCancellation itself refuses a
+	// context whose parent turn context has ended.
+	if !session.IsSteeringCancellation(ctx, err) && !errors.Is(err, session.ErrSendNow) {
+		return false
+	}
+	return true
+}
+
 // snapshotReasonDetail is the one-line explanation of a reason.
 func snapshotReasonDetail(reason snapshotReason) string {
 	switch reason {
@@ -586,6 +607,16 @@ func (r *Runner) snapshotCapture(ctx context.Context, phase SnapshotPhase, files
 	hash, err := r.Snapshotter.Track(ctx)
 	switch {
 	case err != nil:
+		if snapshotIsSteeringCancellation(ctx, err) {
+			// The user interrupted this operation: the capture did not fail,
+			// it was stopped on purpose. Suppress the "rollback protection is
+			// missing" warning for exactly this cause, and nothing else — a
+			// real store fault and a root turn/shutdown cancellation keep the
+			// handling below.
+			snapshotLogger(r.State).Debug("snapshot capture interrupted by steering",
+				"phase", string(phase), "error", err)
+			return
+		}
 		if snapshotIsCancellation(ctx, err) {
 			// Expected abort/shutdown: log it, show nothing, and leave the
 			// suppression state alone (this is neither a success nor a new

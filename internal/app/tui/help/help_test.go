@@ -32,6 +32,63 @@ func TestFooterBusyShowsCancelAndQueue(t *testing.T) {
 	if !strings.Contains(out, "Ctrl+C stop") || !strings.Contains(out, "Ctrl+X clear queue") {
 		t.Fatalf("busy footer missing cancel/queue hints: %q", out)
 	}
+	// Enter queues; it does not interrupt. The label must say so, because
+	// Alt+Enter is the key that interrupts.
+	if !strings.Contains(out, "Enter queue") {
+		t.Fatalf("busy footer missing the queue hint: %q", out)
+	}
+	if strings.Contains(out, "Alt+Enter") {
+		t.Fatalf("busy footer offered send now without a supported turn: %q", out)
+	}
+}
+
+// TestFooterSendNowRequiresCapability pins the gate on the interruption hint:
+// a supported busy turn advertises both actions with distinct labels, and a
+// turn the runtime cannot interrupt advertises only the queueing one.
+func TestFooterSendNowRequiresCapability(t *testing.T) {
+	supported := stripANSI(Footer(FooterHints{Busy: true, SendNowAvailable: true}))
+	if !strings.Contains(supported, "Enter queue") {
+		t.Fatalf("supported busy footer lost the queue hint: %q", supported)
+	}
+	if !strings.Contains(supported, "Alt+Enter send now") {
+		t.Fatalf("supported busy footer missing the send-now hint: %q", supported)
+	}
+
+	// Idle: the busy actions do not apply at all.
+	idle := stripANSI(Footer(FooterHints{SendNowAvailable: true}))
+	if strings.Contains(idle, "send now") {
+		t.Fatalf("idle footer advertised send now: %q", idle)
+	}
+
+	// Busy but unsupported: the runtime has no interruption handler, so the
+	// hint would promise an action that cannot happen.
+	unsupported := stripANSI(Footer(FooterHints{Busy: true}))
+	if strings.Contains(unsupported, "send now") {
+		t.Fatalf("unsupported busy footer advertised send now: %q", unsupported)
+	}
+}
+
+// TestFooterPromptKeepsAnswerAndSendNowDistinct pins that a pending prompt
+// keeps exactly one ordinary answer key and gains a separate interruption hint,
+// so the two actions never collapse into one ambiguous label.
+func TestFooterPromptKeepsAnswerAndSendNowDistinct(t *testing.T) {
+	out := stripANSI(Footer(FooterHints{QuestionPending: true, SendNowAvailable: true}))
+	if got := strings.Count(out, "Enter answer"); got != 1 {
+		t.Fatalf("question footer has %d answer hints, want exactly 1: %q", got, out)
+	}
+	if !strings.Contains(out, "Alt+Enter send now") {
+		t.Fatalf("question footer missing the separate send-now hint: %q", out)
+	}
+
+	// The same distinction for an approval prompt: confirm stays the ordinary
+	// answer, and send now is its own key.
+	approval := stripANSI(Footer(FooterHints{ApprovalPending: true, SendNowAvailable: true}))
+	if got := strings.Count(approval, "Enter confirm"); got != 1 {
+		t.Fatalf("approval footer has %d confirm hints, want exactly 1: %q", got, approval)
+	}
+	if !strings.Contains(approval, "Alt+Enter send now") {
+		t.Fatalf("approval footer missing the separate send-now hint: %q", approval)
+	}
 }
 
 func TestFooterQuestionShowsAnswer(t *testing.T) {

@@ -19,9 +19,16 @@ type jobCountMsg struct {
 // steeringMsg is the tea.Msg the steering broker pump emits when a
 // SteeringEvent lands. Handling it updates the cached queued
 // count so the status line shows "queued <n>" and re-arms the pump.
+//
+// snapshot and receipt are the additive Send now channels: the same event
+// carries the current steering snapshot and, when a request moved, that
+// request's receipt. Either may be nil — an ordinary queue-only publish
+// carries neither.
 type steeringMsg struct {
 	queueLen int
 	message  string
+	snapshot *session.SteeringSnapshot
+	receipt  *session.SteeringReceipt
 }
 
 // workspaceMsg is the tea.Msg the workspace broker pump emits when the

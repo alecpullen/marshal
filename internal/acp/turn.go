@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,6 +103,14 @@ type TurnRuntime struct {
 	// Steer enqueues a mid-turn steering message, consumed by the runner
 	// at its next loop-top. Nil means the runtime does not support steering.
 	Steer func(text string)
+	// SteeringSnapshot reads the session's live Send now snapshot (active
+	// turn, supported controller, current operation, pending count). Nil
+	// means the runtime cannot report one, so Send now fails closed.
+	SteeringSnapshot func() session.SteeringSnapshot
+	// SendNow accepts one Send now request through the session's own service
+	// and returns its accepted receipt. Nil means the runtime does not
+	// support Send now.
+	SendNow func(session.SendNowRequest) (session.SteeringReceipt, error)
 	// State is the session's shared state, needed for reading swarm/SDD
 	// progress and gate status. Never nil for a runtime built by
 	// SessionManager; tests may still construct a TurnRuntime with a nil
@@ -190,6 +199,12 @@ type activeTurn struct {
 	done            chan struct{}
 	clientCancelled atomic.Bool
 	settled         atomic.Bool // runner finished; slot remains reserved through cleanup
+
+	// id is the turn slot's opaque identity, independent of the session's
+	// own steering turn id. An active-but-unsupported controller reports this
+	// as its turnId so a client can tell it apart from nothing at all without
+	// ever receiving a control token it could steer.
+	id string
 
 	// state is the session whose stop group this turn registers. It is
 	// captured before the slot is published so an explicit cancel can still
@@ -461,12 +476,110 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 		}, true
 	case session.EventHoldChanged:
 		return map[string]any{"kind": "hold", "held": ev.Payload.Held}, true
+	case session.EventSteeringState:
+		// Additive: a client that predates Send now ignores the new kind. The
+		// snapshot is already a deep copy; the wire projection copies it again
+		// so a subscriber's mutation cannot reach the event.
+		if ev.Payload.Steering != nil {
+			return steeringStateUpdate(*ev.Payload.Steering), true
+		}
+	case session.EventSteeringReceipt:
+		// Additive, and the final delivery/undelivered receipt is published
+		// through this same path before the turn's event stream closes: the
+		// turn loop drains buffered events after the runner returns and before
+		// finishTurn, so a client always observes the settled status.
+		if ev.Payload.SteeringReceipt != nil {
+			return steeringReceiptUpdate(*ev.Payload.SteeringReceipt), true
+		}
 	case session.EventPendingSkillGateChanged:
 		// The gate reaches the client through the permission request
 		// bridge, not as a transcript update.
 		return nil, false
 	}
 	return nil, false
+}
+
+// steeringStateWire projects a session snapshot onto the JSON boundary. Every
+// field is copied; no wire field aliases an internal struct.
+func steeringStateWire(snap session.SteeringSnapshot) SteeringStateWire {
+	return SteeringStateWire{
+		Version:       snap.Version,
+		TurnID:        snap.TurnID,
+		Active:        snap.Active,
+		Supported:     snap.Supported,
+		Held:          snap.Held,
+		OperationID:   snap.OperationID,
+		OperationKind: string(snap.OperationKind),
+		PendingCount:  snap.PendingCount,
+	}
+}
+
+// steeringReceiptWire projects a session receipt onto the JSON boundary,
+// deep-copying its outcome list.
+func steeringReceiptWire(rec session.SteeringReceipt) SteeringReceiptWire {
+	out := SteeringReceiptWire{
+		Version:     rec.Version,
+		RequestID:   rec.RequestID,
+		TurnID:      rec.TurnID,
+		Status:      string(rec.Status),
+		OperationID: rec.OperationID,
+	}
+	if len(rec.Outcomes) > 0 {
+		out.Outcomes = make([]SteeringOutcomeWire, len(rec.Outcomes))
+		for i, o := range rec.Outcomes {
+			out.Outcomes[i] = SteeringOutcomeWire{
+				Kind:        o.Kind,
+				State:       o.State,
+				ToolCallID:  o.ToolCallID,
+				ExecutionID: o.ExecutionID,
+				AgentID:     o.AgentID,
+				Summary:     o.Summary,
+			}
+		}
+	}
+	return out
+}
+
+// steeringStateUpdate builds the additive session/update body for one snapshot.
+// It carries the same fields as SteeringStateWire, flattened under the update's
+// own "kind" so a client reads them without a nested object.
+func steeringStateUpdate(snap session.SteeringSnapshot) map[string]any {
+	w := steeringStateWire(snap)
+	update := map[string]any{
+		"kind":         "steering_state",
+		"version":      w.Version,
+		"turnId":       w.TurnID,
+		"active":       w.Active,
+		"supported":    w.Supported,
+		"held":         w.Held,
+		"pendingCount": w.PendingCount,
+	}
+	if w.OperationID != "" {
+		update["operationId"] = w.OperationID
+	}
+	if w.OperationKind != "" {
+		update["operationKind"] = w.OperationKind
+	}
+	return update
+}
+
+// steeringReceiptUpdate builds the additive session/update body for one receipt.
+func steeringReceiptUpdate(rec session.SteeringReceipt) map[string]any {
+	w := steeringReceiptWire(rec)
+	update := map[string]any{
+		"kind":      "steering_receipt",
+		"version":   w.Version,
+		"requestId": w.RequestID,
+		"turnId":    w.TurnID,
+		"status":    w.Status,
+	}
+	if w.OperationID != "" {
+		update["operationId"] = w.OperationID
+	}
+	if len(w.Outcomes) > 0 {
+		update["outcomes"] = w.Outcomes
+	}
+	return update
 }
 
 // scopedToolCallID makes a provider's call ID unique across the session. Some
@@ -603,6 +716,7 @@ func (m *TurnManager) runTurn(
 		cancel: slotCancel,
 		done:   make(chan struct{}),
 		state:  slotState,
+		id:     rand.Text(),
 	}
 
 	// Reserve the per-session slot.
@@ -764,8 +878,20 @@ func (m *TurnManager) runTurn(
 					"session", sessionID, "approval", pa.ID)
 			} else {
 				go func() {
-					decision, err := m.bridge.Request(turnCtx, sessionID, pa)
+					// The outbound RPC runs under a context that also stops when
+					// the prompt's owning operation is interrupted, so a steering
+					// cancellation ends this one request without cancelling the
+					// turn or leaking the goroutine until a late client answer.
+					original := promptContextFor(rt, pa.Key)
+					rpcCtx, cleanup := promptRPCContext(turnCtx, original)
+					defer cleanup()
+					decision, err := m.bridge.Request(rpcCtx, sessionID, pa)
 					if err != nil {
+						if steeringEndedPrompt(rt, pa.Key, original, err) {
+							// Steering ended this RPC; the session already settled
+							// the canonical request. The turn continues.
+							return
+						}
 						slotCancel()
 						subCancel()
 						return
@@ -784,7 +910,7 @@ func (m *TurnManager) runTurn(
 		if ev.Type == session.EventPendingQuestionChanged &&
 			ev.Payload.PendingQuestion != nil {
 			pending := ev.Payload.PendingQuestion
-			if _, loaded := turnAnswered.LoadOrStore(pending.ResponseChan, true); loaded {
+			if _, loaded := turnAnswered.LoadOrStore(promptGuardKey(pending.Key, pending.ResponseChan), true); loaded {
 				return
 			}
 			if m.qbridge == nil {
@@ -792,9 +918,19 @@ func (m *TurnManager) runTurn(
 			} else {
 				go func() {
 					// No wall-clock question timeout: the wait ends on client
-					// disconnect / session shutdown (turnCtx cancellation) or
-					// a bridge error, which still answers Unanswered.
-					if err := m.qbridge.Ask(turnCtx, sessionID, pending); err != nil {
+					// disconnect / session shutdown (turnCtx cancellation), on a
+					// steering cancellation of the owning operation, or on a
+					// bridge error, which still answers Unanswered.
+					original := promptContextFor(rt, pending.Key)
+					rpcCtx, cleanup := promptRPCContext(turnCtx, original)
+					defer cleanup()
+					if err := m.qbridge.Ask(rpcCtx, sessionID, pending); err != nil {
+						if steeringEndedPrompt(rt, pending.Key, original, err) {
+							// A canceled question must never be answered with a
+							// fabricated Unanswered: the session's canonical
+							// settlement already reported the interruption.
+							return
+						}
 						slog.Default().Warn("acp: question bridge failed; answering Unanswered",
 							"session", sessionID, "err", err)
 						pending.Respond(session.UnansweredAnswers(pending.Questions))
@@ -810,7 +946,7 @@ func (m *TurnManager) runTurn(
 		if ev.Type == session.EventPendingSkillGateChanged &&
 			ev.Payload.PendingSkillGate != nil {
 			sg := ev.Payload.PendingSkillGate
-			if _, loaded := turnGateAnswered.LoadOrStore(sg.ResponseChan, true); loaded {
+			if _, loaded := turnGateAnswered.LoadOrStore(promptGuardKey(sg.Key, sg.ResponseChan), true); loaded {
 				return
 			}
 			if m.bridge == nil {
@@ -821,7 +957,16 @@ func (m *TurnManager) runTurn(
 					"session", sessionID, "skill", sg.Skill)
 			} else {
 				go func() {
-					if _, err := m.bridge.RequestSkillGate(turnCtx, sessionID, sg); err != nil {
+					original := promptContextFor(rt, sg.Key)
+					rpcCtx, cleanup := promptRPCContext(turnCtx, original)
+					defer cleanup()
+					if _, err := m.bridge.RequestSkillGate(rpcCtx, sessionID, sg); err != nil {
+						if steeringEndedPrompt(rt, sg.Key, original, err) {
+							// A canceled gate must not be recorded as a sticky
+							// denial. The session's canonical settlement already
+							// reported the interruption; the turn continues.
+							return
+						}
 						slotCancel()
 						subCancel()
 					}
@@ -933,9 +1078,27 @@ func (m *TurnManager) resolveAccessRequest(ctx context.Context, sessionID string
 			})
 			return nil
 		}
-		choice, err := m.bridge.CollectAccess(ctx, sessionID, toolCallID, request)
+		// The outbound RPC also stops when the prompt's own operation is
+		// interrupted, so a steering cancellation ends this collection
+		// without cancelling the turn. The mirror record is looked up by its
+		// opaque request id, which is this request's key.
+		accessKey := session.PromptKey{ID: requestID}
+		original := promptContextFor(rt, accessKey)
+		rpcCtx, cleanup := promptRPCContext(ctx, original)
+		choice, err := m.bridge.CollectAccess(rpcCtx, sessionID, toolCallID, request)
+		cleanup()
 		if err != nil {
-			// A client or transport failure, including an invalid typed
+			if steeringEndedPrompt(rt, accessKey, original, err) {
+				// The operation's own interruption settled this request through
+				// the canonical resolver; the turn continues.
+				return nil
+			}
+			// A request that settled or was replaced while the client was
+			// deciding is no longer ours to fail.
+			if req, still := readRequest(); !still || req.RequestID != requestID {
+				return nil
+			}
+			// A real client or transport failure, including an invalid typed
 			// identity. Cancel this exact request so the tool unblocks, then
 			// report the failure so the turn cancels.
 			rt.State.CancelAccess(requestID, session.AccessFailed, err.Error())
@@ -1557,13 +1720,53 @@ func (m *TurnManager) SetEffort(ctx context.Context, params json.RawMessage) (an
 type SteerParams struct {
 	SessionID string `json:"sessionId"`
 	Text      string `json:"text"`
+	Delivery  string `json:"delivery,omitempty"`
+	TurnID    string `json:"turnId,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
 }
 
-// Steer handles session/steer: it enqueues a steering message into the
-// session's steering queue. Steering requires an active turn — when the
-// turn has ended, the client should send session/prompt instead, so a
-// steer against an idle session is an explicit error rather than silently
-// queued.
+// The steering wire types duplicate the external JSON contract field by field.
+// No wire field aliases an internal struct: the ACP transport is an external
+// client boundary, so a change to session's own types must not silently change
+// the bytes a client sends or reads.
+type SteeringStateWire struct {
+	Version       uint64 `json:"version"`
+	TurnID        string `json:"turnId"`
+	Active        bool   `json:"active"`
+	Supported     bool   `json:"supported"`
+	Held          bool   `json:"held"`
+	OperationID   string `json:"operationId,omitempty"`
+	OperationKind string `json:"operationKind,omitempty"`
+	PendingCount  int    `json:"pendingCount"`
+}
+
+// SteeringOutcomeWire is one settled effect an interrupted operation left
+// behind, as reported to a client.
+type SteeringOutcomeWire struct {
+	Kind        string `json:"kind"`
+	State       string `json:"state"`
+	ToolCallID  string `json:"toolCallId,omitempty"`
+	ExecutionID string `json:"executionId,omitempty"`
+	AgentID     string `json:"agentId,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+}
+
+// SteeringReceiptWire is the JSON-RPC result of one accepted Send now request.
+type SteeringReceiptWire struct {
+	Version     uint64                `json:"version"`
+	RequestID   string                `json:"requestId"`
+	TurnID      string                `json:"turnId"`
+	Status      string                `json:"status"`
+	OperationID string                `json:"operationId,omitempty"`
+	Outcomes    []SteeringOutcomeWire `json:"outcomes,omitempty"`
+}
+
+// Steer handles session/steer. A queued request (delivery omitted or
+// "queued") enqueues a steering message for the active turn, exactly as
+// before: it requires an active turn and non-empty text. A "now" request
+// (Send now) targets one explicit turn and request identity and delegates
+// atomic acceptance to the session's own service; there is no fallback to
+// queued delivery.
 func (m *TurnManager) Steer(ctx context.Context, params json.RawMessage) (any, error) {
 	var p SteerParams
 	if len(params) > 0 {
@@ -1574,6 +1777,20 @@ func (m *TurnManager) Steer(ctx context.Context, params json.RawMessage) (any, e
 	if p.SessionID == "" {
 		return nil, fmt.Errorf("acp: session/steer requires sessionId")
 	}
+	switch p.Delivery {
+	case "", "queued":
+		return m.queueSteer(p)
+	case "now":
+		return m.sendNow(p)
+	default:
+		return nil, invalidParamsError("session/steer: unknown delivery %q: want queued or now", p.Delivery)
+	}
+}
+
+// queueSteer is the backward-compatible session/steer path: an omitted
+// delivery means queued, non-empty text is required, and an idle turn is an
+// explicit error rather than a silent enqueue. Its result is unchanged.
+func (m *TurnManager) queueSteer(p SteerParams) (any, error) {
 	if strings.TrimSpace(p.Text) == "" {
 		return nil, invalidParamsError("session/steer requires non-empty text")
 	}
@@ -1581,10 +1798,7 @@ func (m *TurnManager) Steer(ctx context.Context, params json.RawMessage) (any, e
 	if !ok {
 		return nil, serverErrorf("unknown session: %s", p.SessionID)
 	}
-	m.activeTurnsMu.Lock()
-	_, active := m.activeTurns[p.SessionID]
-	m.activeTurnsMu.Unlock()
-	if !active {
+	if !m.turnActive(p.SessionID) {
 		return nil, serverErrorf("session %s has no active turn; send session/prompt instead", p.SessionID)
 	}
 	if rt.Steer == nil {
@@ -1592,6 +1806,138 @@ func (m *TurnManager) Steer(ctx context.Context, params json.RawMessage) (any, e
 	}
 	rt.Steer(p.Text)
 	return map[string]any{}, nil
+}
+
+// sendNow is the Send now path: it requires the explicit turn and request
+// identity, an active supported turn, and the runtime's own acceptance
+// service. Empty text is accepted only when the runtime can flush already
+// queued work, which is the runtime's decision to make. Every refusal is an
+// explicit JSON-RPC error; nothing is silently queued.
+func (m *TurnManager) sendNow(p SteerParams) (any, error) {
+	if p.TurnID == "" {
+		return nil, invalidParamsError("session/steer delivery=now requires turnId")
+	}
+	if p.RequestID == "" {
+		return nil, invalidParamsError("session/steer delivery=now requires requestId")
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, serverErrorf("unknown session: %s", p.SessionID)
+	}
+	if rt.SteeringSnapshot == nil || rt.SendNow == nil {
+		return nil, serverErrorf("session %s does not support send now", p.SessionID)
+	}
+	snap := rt.SteeringSnapshot()
+	if !snap.Active {
+		return nil, serverErrorf("session %s has no active turn to steer", p.SessionID)
+	}
+	if !snap.Supported {
+		return nil, serverErrorf("session %s does not support send now for this turn", p.SessionID)
+	}
+	if snap.TurnID != p.TurnID {
+		return nil, serverErrorf("session %s: turn %s is stale; the active turn is %s", p.SessionID, p.TurnID, snap.TurnID)
+	}
+	receipt, err := rt.SendNow(session.SendNowRequest{
+		SessionID: p.SessionID,
+		TurnID:    p.TurnID,
+		RequestID: p.RequestID,
+		Text:      p.Text,
+	})
+	if err != nil {
+		// The session refused the request (inactive, closing, unsupported,
+		// stale, conflicting or an empty flush). Nothing was queued or stopped.
+		return nil, serverErrorf("send now: %v", err)
+	}
+	return steeringReceiptWire(receipt), nil
+}
+
+// SteeringStatus handles session/steering_status: a poll-style read of the
+// session's Send now snapshot, supplying an authoritative turn identity even
+// to a client that missed an event. It is safe on an idle session (an inactive
+// snapshot) and never leaks a control token: an active turn whose controller
+// has no interruption handler reports the ACP slot's opaque id with the
+// session's own supported flag (false for an SDD/swarm controller).
+func (m *TurnManager) SteeringStatus(ctx context.Context, params json.RawMessage) (any, error) {
+	var p sessionIDParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/steering_status params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/steering_status requires sessionId")
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, fmt.Errorf("acp: unknown session: %s", p.SessionID)
+	}
+	slot := m.slotFor(p.SessionID)
+
+	// No runtime snapshot: report only what the ACP slot itself knows. A
+	// running turn is visible, but without a controller it is unsupported and
+	// its identity is the slot's opaque id.
+	if rt.SteeringSnapshot == nil {
+		if slot == nil {
+			return SteeringStateWire{}, nil
+		}
+		return SteeringStateWire{TurnID: slot.id, Active: true}, nil
+	}
+
+	snap := rt.SteeringSnapshot()
+	if snap.Active || slot == nil || snap.Supported {
+		// An eligible turn reports its own identity; an idle session reports
+		// the inactive snapshot unchanged. A supported runner whose steering
+		// turn has not opened yet is reported inactive too: synthesizing an
+		// active turn with the slot's opaque id would invite a `now` request
+		// that sendNow must then reject, because the session has no active turn
+		// to steer.
+		return steeringStateWire(snap), nil
+	}
+	// A turn is running on this connection but the session has no eligible
+	// steering turn: its runner is an SDD/swarm controller. Report it as
+	// active, identified by the ACP slot id, never by a session turn id the
+	// client could steer.
+	wire := steeringStateWire(snap)
+	wire.TurnID = slot.id
+	wire.Active = true
+	wire.OperationID = ""
+	wire.OperationKind = ""
+	wire.PendingCount = 0
+	return wire, nil
+}
+
+// promptGuardKey is the per-turn dedupe identity for a pending prompt event.
+// A registered prompt publishes an event copy with no channel, so its canonical
+// key is the identity; an unregistered legacy fixture keeps the channel.
+func promptGuardKey(key session.PromptKey, ch any) any {
+	if key.ID != "" {
+		return key
+	}
+	return ch
+}
+
+// promptContextFor returns the owning operation context of a registered prompt
+// key, or nil for a legacy unregistered prompt or a runtime without state.
+func promptContextFor(rt *TurnRuntime, key session.PromptKey) context.Context {
+	if rt == nil || rt.State == nil || key.ID == "" {
+		return nil
+	}
+	return rt.State.PromptContext(key)
+}
+
+// steeringEndedPrompt reports whether err is the cancellation of a prompt RPC
+// because the operation that owned the prompt was interrupted by user
+// steering. Such an error ends only that one RPC: the session already settled
+// the canonical request, and the turn itself continues. A real client or
+// transport failure returns false, so the caller keeps full-turn failure
+// behavior.
+func steeringEndedPrompt(rt *TurnRuntime, key session.PromptKey, original context.Context, err error) bool {
+	if rt != nil && rt.State != nil && key.ID != "" {
+		if errors.Is(rt.State.PromptCause(key), session.ErrSendNow) {
+			return true
+		}
+	}
+	return session.IsSteeringCancellation(original, err)
 }
 
 // sessionIDParams is the shared JSON-RPC params body for poll-style status

@@ -363,6 +363,17 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: warningStyle().Render(fmt.Sprintf("queued %d", n)), priority: 8})
 	}
 
+	// Send now progress. It rides the status line rather than a transcript card:
+	// the action is a property of the running turn, and the transcript must keep
+	// rendering truthfully while an operation is being interrupted.
+	if seg, active := m.steeringStatusSegment(); active {
+		style := dimStyle()
+		if seg == "send now: undelivered" || seg == "send now: waiting for a safe boundary" {
+			style = warningStyle()
+		}
+		segs = append(segs, statusSeg{text: style.Render(seg), priority: 8})
+	}
+
 	if m.ShouldShowStatusURL() {
 		if bi := m.state.BrowserInfo(); bi.SessionOpen {
 			segs = append(segs, statusSeg{
@@ -481,6 +492,9 @@ func (m Model) footerHints() help.FooterHints {
 		RunActive:            m.hasRunningSubagent(),
 		DrilledRunActive:     m.drilledIntoRunningSubagent(),
 		Browsing:             m.browsing,
+		// The interruption hint is only advertised when the runtime can honour
+		// it: a busy turn with a supported, active steering snapshot.
+		SendNowAvailable: m.busy && m.steeringSnapshot.Active && m.steeringSnapshot.Supported,
 	}
 }
 

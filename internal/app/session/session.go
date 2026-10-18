@@ -50,6 +50,12 @@ const (
 	EventHoldChanged             = "hold_changed"
 	EventEffortChanged           = "effort_changed"
 	EventJobExit                 = "job_exit"
+	// EventSteeringState carries a steering snapshot (queue depth, active
+	// turn, current operation, pending count). EventSteeringReceipt carries
+	// one request's settled receipt. Both are additive: a client that does
+	// not know them ignores them.
+	EventSteeringState   = "steering_state"
+	EventSteeringReceipt = "steering_receipt"
 )
 
 // Event is the union payload published on the session event broker
@@ -57,9 +63,11 @@ const (
 // nil. Payloads passed to Publish must be safe copies (no shared pointers
 // to internal state that may be mutated by concurrent writers).
 //
-// PendingApproval and PendingQuestion carry the full pointer (including
-// ResponseChan) for subscribers that need to respond (e.g., the ACP
-// permission bridge).
+// PendingApproval and PendingQuestion carry a display copy of the pending
+// request. A registered prompt's copy carries the canonical key and responder
+// and never a response channel, so a subscriber cannot answer or clear a
+// request on its own; only an unregistered legacy fixture still carries
+// ResponseChan.
 type Event struct {
 	Message          *Message
 	Thinking         *InProgressMessage
@@ -80,6 +88,13 @@ type Event struct {
 	Held bool
 	// JobExit carries a background job's exit (EventJobExit).
 	JobExit *JobExit
+	// Steering carries a steering snapshot (EventSteeringState): queue
+	// depth, the active turn, the current operation and the pending count.
+	// SteeringReceipt carries one request's settled receipt
+	// (EventSteeringReceipt). Both are deep copies, so a subscriber cannot
+	// mutate session state through them.
+	Steering        *SteeringSnapshot
+	SteeringReceipt *SteeringReceipt
 	// Effort carries an effort override or application (EventEffortChanged).
 	Effort *EffortChange
 }
@@ -247,6 +262,11 @@ type State struct {
 	// also lives under mu, but only the access gate may settle it.
 	pendingAccessCtx    context.Context
 	pendingAccessIntent AccessIntent
+	// prompts is the canonical registry of live human-request prompts
+	// (approval/question/skill/sudo), keyed by PromptKey.ID. Guarded by
+	// accessMu: the same gate that arbitrates a user answer against an
+	// accepted steering cancellation. See prompts.go.
+	prompts map[string]*promptRecord
 	// secretPromptCapable reports whether the attached transport can raise a
 	// masked secret prompt. Defaults false (fail closed): an ACP/web client
 	// has no secret channel, so shell.sudo refuses rather than blocking on a
@@ -448,9 +468,19 @@ type State struct {
 	layers config.Layers
 
 	// F16: steering queue (mid-turn user messages). Published to the broker
-	// so the TUI transcript and status line update without polling.
-	steeringQueue  []string
+	// so the TUI transcript and status line update without polling. Entries
+	// are typed so every queued message has a stable internal ID: the
+	// Send now controller tracks which entries one accepted request covers,
+	// and a string-only queue could not tell two identical texts apart.
+	steeringQueue  []SteeringMessage
 	steeringBroker *pubsub.Broker[SteeringEvent]
+
+	// steeringMu guards the Send now controller below. Lock order is
+	// accessMu → steeringMu → State.mu, with no inverse acquisition; the
+	// controller's snapshot/event publication and its callbacks all run
+	// outside these locks.
+	steeringMu sync.Mutex
+	steering   steeringControl
 
 	// subagentReports is the machine-generated completion queue for
 	// background agent.run children. It is deliberately separate from the
@@ -1121,6 +1151,11 @@ func (s *State) finishAccessLocked(result AccessResult) {
 	s.pendingAccessIntent = AccessIntent{}
 	s.mu.Unlock()
 
+	// The registry mirror is settled with the same outcome, so a cancellation
+	// racing this acknowledgement finds a settled record rather than a second
+	// claim on a request that no longer exists.
+	s.finishPromptMirrorLocked(result.RequestID, causeForAccessStatus(result.Status))
+
 	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: nil})
 
 	// Deliberately bypass PendingToolCall.Respond: its guard makes Respond a
@@ -1156,6 +1191,13 @@ func (s *State) RegisterAccess(ctx context.Context, pending *PendingToolCall, in
 	}
 	if err := ctx.Err(); err != nil {
 		return AccessRequest{}, false, fmt.Errorf("session: register access: context already done: %w", err)
+	}
+	// An operation whose steering cancellation was already accepted must not
+	// publish a new prompt. The other four Register* methods reject such a
+	// context through newPromptRecordLocked; without the same check here an
+	// access request would flash on screen only to be canceled immediately.
+	if SteeringRequested(ctx) {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: %w", errPromptRequested)
 	}
 	if pending == nil {
 		return AccessRequest{}, false, fmt.Errorf("session: register access: no pending call")
@@ -1233,6 +1275,14 @@ func (s *State) RegisterAccess(ctx context.Context, pending *PendingToolCall, in
 	s.pendingAccessCtx = ctx
 	s.pendingAccessIntent = intent
 	s.mu.Unlock()
+
+	// Mirror the request into the canonical prompt registry. The mirror
+	// carries the access request's own opaque ID as its key and never owns
+	// settlement: finishAccessLocked remains the one acknowledger, and
+	// CancelOperationPrompts reaches it through the existing CancelAccess
+	// path. What the mirror buys is a single cancellation-intent boundary:
+	// ResolveAccess and Send now both decide under accessMu.
+	s.mirrorAccessPromptLocked(ctx, pending, req.RequestID)
 
 	// Published after State.mu is released (subscribers may call back into
 	// State). The event copy carries the request metadata but no
@@ -1330,6 +1380,12 @@ func (s *State) ResolveAccess(choice AccessChoice, prepare AccessPrepare) (Acces
 	if s.quiescingLocked() {
 		return s.finishAccessCanceledLocked(req, actual, "session is quiescing"), nil
 	}
+	// Steering cancellation intent recorded by SubmitSendNow is checked at the
+	// same gate: an approval cannot slip through the interval between accepting
+	// steering and signalling its cancellation.
+	if SteeringRequested(s.pendingAccessCtx) {
+		return s.finishAccessCanceledLocked(req, actual, ErrSendNow.Error()), nil
+	}
 
 	// The chooser answered against the pair it was shown. If the session has
 	// moved on, applying the choice would grant a capability the user never
@@ -1416,6 +1472,12 @@ func (s *State) ResolveAccess(choice AccessChoice, prepare AccessPrepare) (Acces
 	}
 	if s.quiescingLocked() {
 		return s.finishAccessCanceledLocked(req, actual, "session is quiescing"), nil
+	}
+	// The same shared cancellation-intent boundary SubmitSendNow sets under
+	// this gate. A grant whose claim reached here first still applies below;
+	// only intent already recorded when this line runs prevents it.
+	if SteeringRequested(s.pendingAccessCtx) {
+		return s.finishAccessCanceledLocked(req, actual, ErrSendNow.Error()), nil
 	}
 
 	// Only now is authority moved: apply (the resolver's setter) runs with
@@ -3366,7 +3428,9 @@ func (s *State) WaitForWork(ctx context.Context) error {
 // so the waiter can unblock safely.
 //
 // After this call, PendingApproval(), PendingQuestion() and
-// PendingSudoAuth() return nil and SteeringQueue() is empty.
+// PendingSudoAuth() return nil. SteeringQueue() is empty except for entries an
+// accepted Send now request is still responsible for: those survive, and their
+// receipts are marked undelivered rather than erased.
 //
 // The access gate is held for the whole function: settlement of a typed access
 // request and the ordinary cleanup happen under it, so a grant cannot be
@@ -3394,6 +3458,43 @@ func (s *State) ResolvePendingForShutdown() {
 		s.finishAccessCanceledLocked(typedReq, actual, "session is shutting down")
 	}
 
+	// Shutdown settles every live prompt through the canonical registry. It
+	// runs while each record can still compare its own prompt, and it skips a
+	// record another claim already owns: that claim completes under its own
+	// resolver contract and must not be rolled back. A typed access request
+	// was already settled above by its own helper.
+	shutdownErr := errors.New("session is shutting down")
+	for _, rec := range s.prompts {
+		if rec.settled || rec.claimed || rec.access {
+			continue
+		}
+		rec.claimed = true
+		rec.cause = shutdownErr
+		deliverCanceledPrompt(rec, shutdownErr)
+		s.settlePromptLocked(rec, shutdownErr)
+	}
+	s.prompts = nil
+
+	// Accepted-but-undelivered steering survives shutdown. The user asked
+	// explicitly for it to be delivered, and the spec requires it be reported
+	// as undelivered rather than erased: only entries no accepted request is
+	// still responsible for are dropped. The receipts are marked here, under
+	// the same gate, so the final status is observable before the session goes
+	// away. Lock order is accessMu → steeringMu → State.mu, which this holds.
+	s.steeringMu.Lock()
+	protected := s.protectedSteeringIDsLocked()
+	var undelivered []SteeringReceipt
+	for _, id := range s.steering.order {
+		rec := s.steering.requests[id]
+		if rec == nil || rec.delivered {
+			continue
+		}
+		rec.receipt.Status = SteeringUndelivered
+		rec.receipt.Version++
+		undelivered = append(undelivered, cloneSteeringReceipt(rec.receipt))
+	}
+	s.steeringMu.Unlock()
+
 	s.mu.Lock()
 	approval := s.pendingApproval
 	s.pendingApproval = nil
@@ -3403,7 +3504,18 @@ func (s *State) ResolvePendingForShutdown() {
 	s.pendingSkillGate = nil
 	sudoAuth := s.pendingSudoAuth
 	s.pendingSudoAuth = nil
-	s.steeringQueue = nil
+	if len(protected) == 0 {
+		s.steeringQueue = nil
+	} else {
+		kept := s.steeringQueue[:0]
+		for _, e := range s.steeringQueue {
+			if protected[e.ID] {
+				kept = append(kept, e)
+			}
+		}
+		s.steeringQueue = kept
+	}
+	remainingSteering := len(s.steeringQueue)
 	s.mu.Unlock()
 
 	// Publish cleared-state events regardless of whether there was a
@@ -3424,30 +3536,35 @@ func (s *State) ResolvePendingForShutdown() {
 		return s.steeringBroker
 	}()
 	if broker != nil {
-		broker.Publish("steering", SteeringEvent{QueueLen: 0})
+		broker.Publish("steering", SteeringEvent{QueueLen: remainingSteering})
+	}
+	for i := range undelivered {
+		r := undelivered[i]
+		s.publishSteeringState(&r)
 	}
 
-	// Deny any pending ordinary approval (Respond handles nil channel and
-	// once-only guarantee). A typed request was already settled above.
-	if approval != nil && approval.Access == nil {
+	// Deny any pending ordinary approval. A registered prompt was already
+	// settled through the canonical registry above, so Respond would re-enter
+	// the access gate this function holds; only an unregistered legacy fixture
+	// delivers on its own channel here. A typed request was settled above too.
+	if approval != nil && approval.Access == nil && approval.canonical == nil {
 		approval.Respond(UserApprovalDecision{Approved: false})
 	}
 
-	// Answer every pending question with "Unanswered" (Respond handles
-	// nil channel and once-only guarantee).
-	if question != nil {
+	// Answer every pending question with "Unanswered". Registered prompts were
+	// settled by the registry loop above (see the approval comment).
+	if question != nil && question.canonical == nil {
 		question.Respond(UnansweredAnswers(question.Questions))
 	}
 
-	// Deny any pending skill gate (Respond handles nil channel and
-	// once-only guarantee).
-	if skillGate != nil {
+	// Deny any pending skill gate. Registered prompts were settled above.
+	if skillGate != nil && skillGate.canonical == nil {
 		skillGate.Respond(SkillGateDeny)
 	}
 
 	// Deny any pending privileged-auth prompt. The decision carries no
 	// password, so nothing secret is buffered after this point.
-	if sudoAuth != nil {
+	if sudoAuth != nil && sudoAuth.canonical == nil {
 		sudoAuth.Respond(SudoAuthDecision{OK: false})
 	}
 }

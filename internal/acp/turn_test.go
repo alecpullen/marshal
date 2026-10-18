@@ -4458,6 +4458,859 @@ func TestSessionCancelStopsOnlyTheTurnsAttachedCommand(t *testing.T) {
 	}
 }
 
+// ---- Send now (session/steer delivery=now, session/steering_status) ----
+
+// sendNowSessionID is the ACP session id every Send now fixture uses. The
+// session's own id must match it: the runtime's SubmitSendNow compares them.
+const sendNowSessionID = "sess_sendnow"
+
+// sendNowHarness drives a real ACP turn against a real session, with the
+// runtime's Send now seams bound, so session/steer delivery=now,
+// session/steering_status and the steering session/update projection all run
+// through the production path.
+type sendNowHarness struct {
+	t       *testing.T
+	state   *session.State
+	broker  *pubsub.Broker[session.Event]
+	manager *TurnManager
+	session string
+
+	// run is the RunnerFunc the current turn executes. Assign it before start.
+	run RunnerFunc
+
+	mu      sync.Mutex
+	updates []map[string]any
+}
+
+func newSendNowHarness(t *testing.T, installHandler bool) *sendNowHarness {
+	t.Helper()
+	return newSendNowHarnessWith(t, installHandler, &fakePermissionClient{}, &gatedQuestionClient{})
+}
+
+func newSendNowHarnessWith(t *testing.T, installHandler bool, perms PermissionClient, questions QuestionClient) *sendNowHarness {
+	t.Helper()
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: sendNowSessionID})
+	if installHandler {
+		state.SetOperationInterrupt(func(context.Context, session.OperationRef) (session.OperationStop, error) {
+			return session.OperationStop{}, nil
+		})
+	}
+	broker := pubsub.NewBroker[session.Event]()
+	state.SetEventBroker(broker)
+	h := &sendNowHarness{
+		t: t, state: state, broker: broker, session: sendNowSessionID,
+	}
+	h.manager = NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID:        sessionID,
+				State:            state,
+				BeginWork:        identityBeginWork,
+				Events:           broker,
+				Run:              h.run,
+				Steer:            state.PushSteering,
+				SteeringSnapshot: state.SteeringSnapshot,
+				SendNow:          state.SubmitSendNow,
+			}, true
+		},
+		Notify: func(method string, params any) error {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if p, ok := params.(SessionUpdateParams); ok {
+				h.updates = append(h.updates, p.Update)
+			}
+			return nil
+		},
+		Perms:     perms,
+		Questions: questions,
+	})
+	return h
+}
+
+// start runs one prompt turn in the background and returns its outcome.
+func (h *sendNowHarness) start() <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.manager.PromptTurn(context.Background(), json.RawMessage(
+			fmt.Sprintf(`{"sessionId":%q,"prompt":[{"type":"text","text":"hi"}]}`, h.session)))
+		done <- err
+	}()
+	return done
+}
+
+func (h *sendNowHarness) awaitTurn(done <-chan error) error {
+	h.t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		h.t.Fatal("the turn did not finish")
+		return nil
+	}
+}
+
+func (h *sendNowHarness) cancel() {
+	_, _ = h.manager.Cancel(context.Background(), json.RawMessage(fmt.Sprintf(`{"sessionId":%q}`, h.session)))
+}
+
+func (h *sendNowHarness) status() SteeringStateWire {
+	h.t.Helper()
+	res, err := h.manager.SteeringStatus(context.Background(), json.RawMessage(fmt.Sprintf(`{"sessionId":%q}`, h.session)))
+	if err != nil {
+		h.t.Fatalf("SteeringStatus: %v", err)
+	}
+	w, ok := res.(SteeringStateWire)
+	if !ok {
+		h.t.Fatalf("SteeringStatus result = %T, want SteeringStateWire", res)
+	}
+	return w
+}
+
+func (h *sendNowHarness) steerRaw(raw string) (any, error) {
+	return h.manager.Steer(context.Background(), json.RawMessage(raw))
+}
+
+func (h *sendNowHarness) steerNow(turnID, requestID, text string) (SteeringReceiptWire, error) {
+	h.t.Helper()
+	res, err := h.steerRaw(fmt.Sprintf(
+		`{"sessionId":%q,"delivery":"now","turnId":%q,"requestId":%q,"text":%q}`,
+		h.session, turnID, requestID, text))
+	if err != nil {
+		return SteeringReceiptWire{}, err
+	}
+	w, ok := res.(SteeringReceiptWire)
+	if !ok {
+		h.t.Fatalf("session/steer delivery=now result = %T, want SteeringReceiptWire", res)
+	}
+	return w, nil
+}
+
+// receiptStatuses returns (version, status) for every observed
+// steering_receipt update naming requestID, in arrival order.
+func (h *sendNowHarness) receiptStatuses(requestID string) [][2]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out [][2]string
+	for _, u := range h.updates {
+		if u["kind"] != "steering_receipt" || fmt.Sprint(u["requestId"]) != requestID {
+			continue
+		}
+		out = append(out, [2]string{fmt.Sprint(u["version"]), fmt.Sprint(u["status"])})
+	}
+	return out
+}
+
+func (h *sendNowHarness) latestReceiptStatus(requestID string) string {
+	all := h.receiptStatuses(requestID)
+	if len(all) == 0 {
+		return ""
+	}
+	return all[len(all)-1][1]
+}
+
+func recvOpRef(t *testing.T, ch <-chan session.OperationRef, what string) session.OperationRef {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		return session.OperationRef{}
+	}
+}
+
+func waitClosed(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// sendNowSteerRunner opens the session's eligible steering turn, optionally
+// opens one operation, signals through ready, then parks until the turn is
+// cancelled.
+func sendNowSteerRunner(state *session.State, openOperation bool, ready chan<- session.OperationRef) RunnerFunc {
+	return func(ctx context.Context, prompt string) error {
+		turnID, err := state.BeginSteeringTurn(ctx)
+		if err != nil {
+			return err
+		}
+		defer state.EndSteeringTurn(turnID, "test complete")
+		var ref session.OperationRef
+		if openOperation {
+			_, r, err := state.BeginSteeringOperation(ctx, turnID, session.OperationModel)
+			if err != nil {
+				return err
+			}
+			ref = r
+		}
+		if ready != nil {
+			ready <- ref
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+}
+
+// Queued steering keeps its exact wire contract and result, and the new
+// parameters/DTOs round trip with their JSON names.
+func TestACPSendNowQueuedCompatibilityAndWireRoundTrip(t *testing.T) {
+	t.Run("queued parameters and result unchanged", func(t *testing.T) {
+		broker := pubsub.NewBroker[session.Event]()
+		steered := make(chan string, 2)
+		turnStarted := make(chan struct{})
+		manager := NewTurnManager(TurnManagerConfig{
+			Lookup: func(sessionID string) (*TurnRuntime, bool) {
+				return &TurnRuntime{
+					SessionID: sessionID,
+					BeginWork: identityBeginWork,
+					Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+						close(turnStarted)
+						<-ctx.Done()
+						return ctx.Err()
+					}),
+					Events: broker,
+					Steer:  func(text string) { steered <- text },
+				}, true
+			},
+			Notify: func(method string, params any) error { return nil },
+		})
+		go func() {
+			_, _ = manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_q","prompt":[{"type":"text","text":"hi"}]}`))
+		}()
+		<-turnStarted
+
+		// Omitted delivery is queued and the legacy result shape is unchanged.
+		res, err := manager.Steer(context.Background(), json.RawMessage(`{"sessionId":"sess_q","text":"first"}`))
+		if err != nil {
+			t.Fatalf("Steer(queued): %v", err)
+		}
+		if m, ok := res.(map[string]any); !ok || len(m) != 0 {
+			t.Fatalf("queued result = %#v, want an empty map", res)
+		}
+		// Explicit "queued" behaves identically.
+		if _, err := manager.Steer(context.Background(), json.RawMessage(`{"sessionId":"sess_q","delivery":"queued","text":"second"}`)); err != nil {
+			t.Fatalf("Steer(delivery=queued): %v", err)
+		}
+		for _, want := range []string{"first", "second"} {
+			select {
+			case got := <-steered:
+				if got != want {
+					t.Fatalf("steered = %q, want %q", got, want)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("queued steer %q never reached the runtime", want)
+			}
+		}
+		_, _ = manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"sess_q"}`))
+	})
+
+	t.Run("now params and DTOs round trip", func(t *testing.T) {
+		var p SteerParams
+		if err := json.Unmarshal([]byte(`{"sessionId":"s1","text":"stop","delivery":"now","turnId":"t1","requestId":"r1"}`), &p); err != nil {
+			t.Fatalf("unmarshal SteerParams: %v", err)
+		}
+		if p.SessionID != "s1" || p.Text != "stop" || p.Delivery != "now" || p.TurnID != "t1" || p.RequestID != "r1" {
+			t.Fatalf("SteerParams = %+v", p)
+		}
+		// Omitted fields stay absent so a legacy client needs no new fields.
+		var q SteerParams
+		if err := json.Unmarshal([]byte(`{"sessionId":"s1","text":"x"}`), &q); err != nil {
+			t.Fatalf("unmarshal legacy SteerParams: %v", err)
+		}
+		if q.Delivery != "" || q.TurnID != "" || q.RequestID != "" {
+			t.Fatalf("omitted fields = %+v, want zero values", q)
+		}
+
+		stateJSON, err := json.Marshal(SteeringStateWire{
+			Version: 3, TurnID: "t1", Active: true, Supported: true, Held: true,
+			OperationID: "op1", OperationKind: "tools", PendingCount: 2,
+		})
+		if err != nil {
+			t.Fatalf("marshal SteeringStateWire: %v", err)
+		}
+		for _, want := range []string{
+			`"version":3`, `"turnId":"t1"`, `"active":true`, `"supported":true`,
+			`"held":true`, `"operationId":"op1"`, `"operationKind":"tools"`, `"pendingCount":2`,
+		} {
+			if !strings.Contains(string(stateJSON), want) {
+				t.Fatalf("steering state wire missing %s in %s", want, stateJSON)
+			}
+		}
+		receiptJSON, err := json.Marshal(SteeringReceiptWire{
+			Version: 2, RequestID: "r1", TurnID: "t1", Status: "interrupting", OperationID: "op1",
+			Outcomes: []SteeringOutcomeWire{{
+				Kind: "command", State: "stopped", ToolCallID: "call-1",
+				ExecutionID: "exec-1", AgentID: "agent-1", Summary: "stopped",
+			}},
+		})
+		if err != nil {
+			t.Fatalf("marshal SteeringReceiptWire: %v", err)
+		}
+		for _, want := range []string{
+			`"version":2`, `"requestId":"r1"`, `"turnId":"t1"`, `"status":"interrupting"`,
+			`"operationId":"op1"`, `"kind":"command"`, `"state":"stopped"`,
+			`"toolCallId":"call-1"`, `"executionId":"exec-1"`, `"agentId":"agent-1"`, `"summary":"stopped"`,
+		} {
+			if !strings.Contains(string(receiptJSON), want) {
+				t.Fatalf("steering receipt wire missing %s in %s", want, receiptJSON)
+			}
+		}
+
+		// The converters copy every field, including the outcome slice: a wire
+		// value never aliases internal state.
+		internal := session.SteeringReceipt{
+			Version: 7, RequestID: "r1", TurnID: "t1", Status: session.SteeringDelivered,
+			OperationID: "op1",
+			Outcomes:    []session.SteeringOutcome{{Kind: "command", State: "stopped", Summary: "ok"}},
+		}
+		wire := steeringReceiptWire(internal)
+		if wire.Status != "delivered" || wire.Version != 7 || len(wire.Outcomes) != 1 ||
+			wire.Outcomes[0].Kind != "command" || wire.Outcomes[0].State != "stopped" {
+			t.Fatalf("steeringReceiptWire = %+v, want every field copied", wire)
+		}
+		wire.Outcomes[0].Kind = "mutated"
+		if internal.Outcomes[0].Kind != "command" {
+			t.Fatal("the wire receipt aliased the session's outcome slice")
+		}
+	})
+}
+
+// The status method supplies an authoritative turn identity even to a client
+// that missed an event, and never hands an unsupported controller a control
+// token.
+func TestACPSendNowStatusHasAuthoritativeTurnIdentity(t *testing.T) {
+	t.Run("active supported reports the session turn id", func(t *testing.T) {
+		h := newSendNowHarness(t, true)
+		ready := make(chan session.OperationRef, 1)
+		h.run = sendNowSteerRunner(h.state, false, ready)
+		done := h.start()
+		recvOpRef(t, ready, "the steering turn to open")
+
+		status := h.status()
+		if !status.Active || !status.Supported {
+			t.Fatalf("status = %+v, want active and supported", status)
+		}
+		if status.TurnID == "" {
+			t.Fatal("status turnId is empty, want the session's own turn identity")
+		}
+		if status.Version == 0 {
+			t.Fatal("status version = 0, want the session revision")
+		}
+		// Missed-event recovery: a second read names the same turn.
+		again := h.status()
+		if again.TurnID != status.TurnID || !again.Active || !again.Supported {
+			t.Fatalf("second status = %+v, want the same authoritative turn", again)
+		}
+		h.cancel()
+		if err := h.awaitTurn(done); err != nil {
+			t.Fatalf("PromptTurn: %v", err)
+		}
+	})
+
+	t.Run("active unsupported reports an opaque slot id", func(t *testing.T) {
+		h := newSendNowHarness(t, false) // no interruption handler: unsupported
+		started := make(chan struct{})
+		h.run = RunnerFunc(func(ctx context.Context, prompt string) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		done := h.start()
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the unsupported turn never started")
+		}
+
+		status := h.status()
+		if !status.Active || status.Supported {
+			t.Fatalf("status = %+v, want active and unsupported", status)
+		}
+		if status.TurnID == "" {
+			t.Fatal("an active unsupported turn reported no identity at all")
+		}
+		if status.OperationID != "" || status.PendingCount != 0 {
+			t.Fatalf("status = %+v, want no operation or pending state for an unsupported turn", status)
+		}
+		// The slot id is not a control token: a now request against it fails
+		// closed and cannot interrupt the unsupported turn.
+		if _, err := h.steerNow(status.TurnID, "r-unsupported", "stop"); err == nil {
+			t.Fatal("a now request interrupted an unsupported controller")
+		}
+		if q := h.state.SteeringQueue(); len(q) != 0 {
+			t.Fatalf("queue = %v, want empty after a rejected request", q)
+		}
+		h.cancel()
+		if err := h.awaitTurn(done); err != nil {
+			t.Fatalf("PromptTurn: %v", err)
+		}
+	})
+
+	t.Run("supported runner whose steering turn has not opened stays inactive", func(t *testing.T) {
+		// The interrupt handler is registered at the session level, so the
+		// snapshot already reports Supported before any steering turn opens.
+		// A supported runner that has not yet called BeginSteeringTurn must be
+		// reported as an inactive turn, not synthesised into an active one: the
+		// pre-fix SteeringStatus set Active:true with the slot's opaque id while
+		// keeping Supported:true, so a client following that snapshot sent
+		// delivery:"now" with the slot id and was refused by sendNow ("no
+		// active turn to steer"). If the supported branch of the
+		// `snap.Active || slot == nil || snap.Supported` guard is removed, this
+		// subtest fails on Active and on the slot identity; the now request
+		// below pins the other half of the contract, that no identity this
+		// status hands out is ever accepted for steering while the turn is
+		// closed.
+		h := newSendNowHarness(t, true) // handler installed: the runner is Supported
+		started := make(chan struct{})
+		h.run = RunnerFunc(func(ctx context.Context, prompt string) error {
+			close(started)
+			// Parks without calling BeginSteeringTurn: the ACP slot runs, but
+			// the session has no eligible steering turn yet.
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		done := h.start()
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the supported turn never started")
+		}
+
+		// Fixture check: the slot is live, and the session snapshot is
+		// inactive but supported — the exact shape the fix protects.
+		slot := h.manager.slotFor(h.session)
+		if slot == nil {
+			t.Fatal("no ACP slot was reserved for the running turn")
+		}
+		if snap := h.state.SteeringSnapshot(); snap.Active || !snap.Supported {
+			t.Fatalf("session snapshot = %+v, want inactive but supported", snap)
+		}
+
+		status := h.status()
+		if status.Active {
+			t.Fatalf("status = %+v, want an inactive turn while the steering turn has not opened", status)
+		}
+		if !status.Supported {
+			t.Fatalf("status = %+v, want Supported (the handler is registered)", status)
+		}
+		if status.TurnID == slot.id {
+			t.Fatalf("status turnId = %q, want anything but the slot's opaque identity (empty on this fresh fixture)", slot.id)
+		}
+
+		// Consistency: a delivery:"now" request built against this turn —
+		// whatever identity a buggy status reports, here the slot id — is
+		// refused exactly the way sendNow refuses a non-active turn. The
+		// client is never told to steer a turn that will be rejected.
+		_, err := h.steerNow(slot.id, "r-before-open", "stop")
+		if err == nil {
+			t.Fatal("a now request against a not-yet-open steering turn was accepted")
+		}
+		if !strings.Contains(err.Error(), "no active turn to steer") {
+			t.Fatalf("steerNow error = %v, want the no-active-turn refusal", err)
+		}
+		if q := h.state.SteeringQueue(); len(q) != 0 {
+			t.Fatalf("queue = %v, want empty after a rejected request", q)
+		}
+		h.cancel()
+		if err := h.awaitTurn(done); err != nil {
+			t.Fatalf("PromptTurn: %v", err)
+		}
+	})
+}
+
+// Acceptance precedes settled output, delivery happens only at a submitted
+// model request, and the same turn stays active afterwards.
+func TestACPSendNowOrderingAndActualReceipts(t *testing.T) {
+	h := newSendNowHarness(t, true)
+	ready := make(chan session.OperationRef, 1)
+	apply := make(chan struct{})
+	submit := make(chan struct{})
+	delivered := make(chan struct{})
+	h.run = RunnerFunc(func(ctx context.Context, prompt string) error {
+		turnID, err := h.state.BeginSteeringTurn(ctx)
+		if err != nil {
+			return err
+		}
+		defer h.state.EndSteeringTurn(turnID, "test complete")
+		_, ref, err := h.state.BeginSteeringOperation(ctx, turnID, session.OperationModel)
+		if err != nil {
+			return err
+		}
+		ready <- ref
+		select {
+		case <-apply:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		h.state.FinishSteeringOperation(ref, nil)
+		select {
+		case <-submit:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		// The next model request stages and submits the accepted message.
+		batch, err := h.state.StageSteering(turnID)
+		if err != nil {
+			return err
+		}
+		var ids []string
+		for _, m := range batch.Messages {
+			ids = append(ids, m.ID)
+		}
+		for _, n := range batch.Notes {
+			ids = append(ids, n.ID)
+		}
+		h.state.MarkSteeringSubmitted(turnID, ids)
+		close(delivered)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	done := h.start()
+	ref := recvOpRef(t, ready, "the model operation to open")
+	turnID := h.status().TurnID
+
+	receipt, err := h.steerNow(turnID, "r1", "stop this")
+	if err != nil {
+		t.Fatalf("steerNow: %v", err)
+	}
+	if receipt.Status != string(session.SteeringAccepted) {
+		t.Fatalf("receipt status = %q, want accepted", receipt.Status)
+	}
+	if receipt.TurnID != turnID || receipt.RequestID != "r1" || receipt.Version != 1 {
+		t.Fatalf("receipt = %+v, want the accepted identity and first revision", receipt)
+	}
+	if receipt.OperationID != ref.ID {
+		t.Fatalf("receipt operationId = %q, want the captured operation %q", receipt.OperationID, ref.ID)
+	}
+	// The accepted response precedes any settled output: the operation is
+	// still open and the snapshot still names it.
+	snap := h.state.SteeringSnapshot()
+	if !snap.Active || snap.OperationID != ref.ID {
+		t.Fatalf("snapshot = %+v, want the operation still open", snap)
+	}
+	waitFor(t, "the accepted receipt to be forwarded", func() bool {
+		got := h.receiptStatuses("r1")
+		return len(got) > 0 && got[0][1] == string(session.SteeringAccepted)
+	})
+
+	// Settle the interrupted operation. Nothing may report delivery yet: no
+	// model request has submitted the message.
+	close(apply)
+	time.Sleep(50 * time.Millisecond)
+	if got := h.latestReceiptStatus("r1"); got == string(session.SteeringDelivered) {
+		t.Fatal("a receipt reported delivery before any model request submitted the message")
+	}
+
+	// Deliver at the submitted model request.
+	close(submit)
+	select {
+	case <-delivered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the model request never submitted the steering message")
+	}
+	waitFor(t, "the delivered receipt", func() bool {
+		return h.latestReceiptStatus("r1") == string(session.SteeringDelivered)
+	})
+	// The same turn remains active after delivery.
+	after := h.status()
+	if !after.Active || after.TurnID != turnID {
+		t.Fatalf("status after delivery = %+v, want the same active turn", after)
+	}
+	h.cancel()
+	if err := h.awaitTurn(done); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+}
+
+// A request ID is one message and one stop: a retry is idempotent, a reused ID
+// with different text is refused, and an old turn identity cannot steer a later
+// turn.
+func TestACPSendNowRetryAndStaleTurnCannotTargetLaterWork(t *testing.T) {
+	h := newSendNowHarness(t, true)
+	ready := make(chan session.OperationRef, 1)
+	h.run = sendNowSteerRunner(h.state, true, ready)
+	done := h.start()
+	recvOpRef(t, ready, "the first turn's operation")
+	turn1 := h.status().TurnID
+
+	first, err := h.steerNow(turn1, "r1", "stop")
+	if err != nil {
+		t.Fatalf("steerNow: %v", err)
+	}
+	if q := h.state.SteeringQueue(); len(q) != 1 || q[0] != "stop" {
+		t.Fatalf("queue after the first request = %v, want one message", q)
+	}
+	// Retrying the same ID and text is idempotent: the retained receipt (at
+	// whatever revision it has reached) is returned, and no new message is
+	// queued.
+	retry, err := h.steerNow(turn1, "r1", "stop")
+	if err != nil {
+		t.Fatalf("steerNow retry: %v", err)
+	}
+	if retry.RequestID != first.RequestID || retry.TurnID != first.TurnID || retry.OperationID != first.OperationID {
+		t.Fatalf("retry receipt = %+v, want the retained request %+v", retry, first)
+	}
+	if q := h.state.SteeringQueue(); len(q) != 1 {
+		t.Fatalf("queue after the retry = %v, want exactly one message", q)
+	}
+	// Reusing the ID for different work is refused and changes nothing.
+	if _, err := h.steerNow(turn1, "r1", "different"); err == nil {
+		t.Fatal("a reused request ID with different text was accepted")
+	}
+	if q := h.state.SteeringQueue(); len(q) != 1 {
+		t.Fatalf("queue after the conflict = %v, want it unchanged", q)
+	}
+	// A distinct request in the same turn is accepted.
+	if _, err := h.steerNow(turn1, "r2", "also"); err != nil {
+		t.Fatalf("steerNow r2: %v", err)
+	}
+	if q := h.state.SteeringQueue(); len(q) != 2 {
+		t.Fatalf("queue = %v, want two accepted messages", q)
+	}
+
+	h.cancel()
+	if err := h.awaitTurn(done); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+
+	// A later turn gets a fresh identity; the old one is rejected.
+	ready2 := make(chan session.OperationRef, 1)
+	h.run = sendNowSteerRunner(h.state, true, ready2)
+	done2 := h.start()
+	recvOpRef(t, ready2, "the second turn's operation")
+	turn2 := h.status().TurnID
+	if turn2 == turn1 || turn2 == "" {
+		t.Fatalf("replacement turn id = %q, want a fresh nonempty identity distinct from %q", turn2, turn1)
+	}
+	if _, err := h.steerNow(turn1, "r3", "old turn"); err == nil {
+		t.Fatal("an old turn identity steered a later turn")
+	}
+	if _, err := h.steerNow(turn2, "r4", "new turn"); err != nil {
+		t.Fatalf("steerNow on the later turn: %v", err)
+	}
+	h.cancel()
+	if err := h.awaitTurn(done2); err != nil {
+		t.Fatalf("PromptTurn (second turn): %v", err)
+	}
+}
+
+// Every rejected Send now request preserves state, and none falls back to
+// queued delivery.
+func TestACPSendNowFlushValidationAndUnsupportedNoFallback(t *testing.T) {
+	assertEmpty := func(t *testing.T, h *sendNowHarness, what string) {
+		t.Helper()
+		if q := h.state.SteeringQueue(); len(q) != 0 {
+			t.Fatalf("%s: queue = %v, want empty (no silent queued fallback)", what, q)
+		}
+		if snap := h.state.SteeringSnapshot(); snap.PendingCount != 0 {
+			t.Fatalf("%s: pendingCount = %d, want 0", what, snap.PendingCount)
+		}
+	}
+
+	t.Run("active supported turn", func(t *testing.T) {
+		h := newSendNowHarness(t, true)
+		ready := make(chan session.OperationRef, 1)
+		h.run = sendNowSteerRunner(h.state, false, ready)
+		done := h.start()
+		recvOpRef(t, ready, "the steering turn to open")
+		turnID := h.status().TurnID
+
+		// An empty flush has nothing to flush.
+		if _, err := h.steerNow(turnID, "r-empty", ""); err == nil {
+			t.Fatal("an empty flush on an empty queue was accepted")
+		}
+		assertEmpty(t, h, "empty flush")
+
+		// An unknown delivery mode is invalid params.
+		if _, err := h.steerRaw(fmt.Sprintf(`{"sessionId":%q,"delivery":"later","turnId":%q,"requestId":"r-x","text":"x"}`, h.session, turnID)); err == nil {
+			t.Fatal("an unknown delivery mode was accepted")
+		}
+		assertEmpty(t, h, "unknown delivery")
+
+		// The turn and request identities are required for now.
+		if _, err := h.steerRaw(fmt.Sprintf(`{"sessionId":%q,"delivery":"now","requestId":"r-x","text":"x"}`, h.session)); err == nil {
+			t.Fatal("a now request without a turnId was accepted")
+		}
+		if _, err := h.steerRaw(fmt.Sprintf(`{"sessionId":%q,"delivery":"now","turnId":%q,"text":"x"}`, h.session, turnID)); err == nil {
+			t.Fatal("a now request without a requestId was accepted")
+		}
+		assertEmpty(t, h, "missing identities")
+
+		// A closing turn rejects the request before it can mutate anything.
+		if !h.state.TryFinishSteeringTurn(turnID) {
+			t.Fatal("TryFinishSteeringTurn refused a turn with no outstanding steering")
+		}
+		if _, err := h.steerNow(turnID, "r-closing", "x"); err == nil {
+			t.Fatal("a closing turn accepted a send now request")
+		}
+		assertEmpty(t, h, "closing turn")
+
+		h.cancel()
+		_ = h.awaitTurn(done)
+	})
+
+	t.Run("idle session", func(t *testing.T) {
+		h := newSendNowHarness(t, true)
+		// No turn is running: the snapshot is inactive and the request fails
+		// closed rather than queuing.
+		if _, err := h.steerNow("any-turn", "r-idle", "x"); err == nil {
+			t.Fatal("an idle session accepted a send now request")
+		}
+		assertEmpty(t, h, "idle session")
+	})
+
+	t.Run("unsupported controller", func(t *testing.T) {
+		h := newSendNowHarness(t, false)
+		started := make(chan struct{})
+		h.run = RunnerFunc(func(ctx context.Context, prompt string) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		done := h.start()
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the turn never started")
+		}
+		if _, err := h.steerNow(h.status().TurnID, "r-unsupported", "x"); err == nil {
+			t.Fatal("an unsupported controller accepted a send now request")
+		}
+		assertEmpty(t, h, "unsupported controller")
+		h.cancel()
+		_ = h.awaitTurn(done)
+	})
+}
+
+// The final delivered or undelivered receipt is observable as a
+// session/update before the turn's prompt call returns, per-request versions
+// increase, and the projected outcome slice is a copy.
+func TestACPSendNowFinalReceiptBeforeTurnStreamCloses(t *testing.T) {
+	t.Run("undelivered before the turn ends", func(t *testing.T) {
+		h := newSendNowHarness(t, true)
+		ready := make(chan session.OperationRef, 1)
+		accepted := make(chan struct{})
+		h.run = RunnerFunc(func(ctx context.Context, prompt string) error {
+			turnID, err := h.state.BeginSteeringTurn(ctx)
+			if err != nil {
+				return err
+			}
+			defer h.state.EndSteeringTurn(turnID, "test complete")
+			_, ref, err := h.state.BeginSteeringOperation(ctx, turnID, session.OperationModel)
+			if err != nil {
+				return err
+			}
+			ready <- ref
+			// The test accepts a request while this turn is live; the turn then
+			// ends normally without any model request submitting the message.
+			<-accepted
+			h.state.FinishSteeringOperation(ref, nil)
+			return nil
+		})
+		done := h.start()
+		recvOpRef(t, ready, "the operation to open")
+		turnID := h.status().TurnID
+
+		if _, err := h.steerNow(turnID, "r1", "stop"); err != nil {
+			t.Fatalf("steerNow: %v", err)
+		}
+		close(accepted)
+		if err := h.awaitTurn(done); err != nil {
+			t.Fatalf("PromptTurn: %v", err)
+		}
+
+		// The turn has returned: its final receipt must already be observable,
+		// and it must be undelivered (no model request ever submitted the text).
+		observed := h.receiptStatuses("r1")
+		if len(observed) == 0 {
+			t.Fatal("no receipt was observed before the turn's stream closed")
+		}
+		if got := observed[len(observed)-1][1]; got != string(session.SteeringUndelivered) {
+			t.Fatalf("final receipt status = %q, want undelivered", got)
+		}
+		assertIncreasingVersions(t, observed)
+	})
+
+	t.Run("delivered before the turn ends", func(t *testing.T) {
+		h := newSendNowHarness(t, true)
+		ready := make(chan session.OperationRef, 1)
+		submitted := make(chan struct{})
+		h.run = RunnerFunc(func(ctx context.Context, prompt string) error {
+			turnID, err := h.state.BeginSteeringTurn(ctx)
+			if err != nil {
+				return err
+			}
+			defer h.state.EndSteeringTurn(turnID, "test complete")
+			_, ref, err := h.state.BeginSteeringOperation(ctx, turnID, session.OperationModel)
+			if err != nil {
+				return err
+			}
+			ready <- ref
+			<-submitted
+			h.state.FinishSteeringOperation(ref, nil)
+			batch, err := h.state.StageSteering(turnID)
+			if err != nil {
+				return err
+			}
+			var ids []string
+			for _, m := range batch.Messages {
+				ids = append(ids, m.ID)
+			}
+			for _, n := range batch.Notes {
+				ids = append(ids, n.ID)
+			}
+			h.state.MarkSteeringSubmitted(turnID, ids)
+			return nil
+		})
+		done := h.start()
+		recvOpRef(t, ready, "the operation to open")
+		turnID := h.status().TurnID
+
+		if _, err := h.steerNow(turnID, "r1", "stop"); err != nil {
+			t.Fatalf("steerNow: %v", err)
+		}
+		close(submitted)
+		waitFor(t, "the delivered receipt", func() bool {
+			return h.latestReceiptStatus("r1") == string(session.SteeringDelivered)
+		})
+		if err := h.awaitTurn(done); err != nil {
+			t.Fatalf("PromptTurn: %v", err)
+		}
+		observed := h.receiptStatuses("r1")
+		if len(observed) == 0 || observed[len(observed)-1][1] != string(session.SteeringDelivered) {
+			t.Fatalf("final receipts = %v, want the last to be delivered", observed)
+		}
+		assertIncreasingVersions(t, observed)
+	})
+}
+
+// assertIncreasingVersions checks one request's observed receipt revisions are
+// non-decreasing in arrival order.
+func assertIncreasingVersions(t *testing.T, observed [][2]string) {
+	t.Helper()
+	prev := 0
+	for i, o := range observed {
+		var v int
+		if _, err := fmt.Sscanf(o[0], "%d", &v); err != nil {
+			t.Fatalf("receipt %d version %q is not a number", i, o[0])
+		}
+		if v < prev {
+			t.Fatalf("receipt versions went backwards at %d: %v", i, observed)
+		}
+		prev = v
+	}
+}
+
+// A steering cancellation ends the prompt RPC it interrupts without cancelling
+// the turn, and a late client response cannot settle a newer prompt.
+func TestACPSendNowCancelsPromptRPCWithoutCancelingTurn(t *testing.T) {
+	t.Run("approval", testSendNowCancelsApprovalRPC)
+	t.Run("question", testSendNowCancelsQuestionRPC)
+}
+
 // TestSetEffortWithoutHookIsServerError pins that a runtime which cannot take
 // effort changes answers with a server error, not invalid params: the request
 // was well formed, the session simply has no effort control.

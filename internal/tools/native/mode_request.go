@@ -119,6 +119,13 @@ func (t *toolSet) modeRequestTool() registry.Tool {
 		case session.AccessGranted, session.AccessDenied, session.AccessAvailable:
 			return accessToolResult(result)
 		case session.AccessCanceled:
+			// User steering is the distinct cause here: the operation was
+			// interrupted, so reporting a plain turn cancellation would blame the
+			// turn for a deliberate steer and reporting a denial would claim the
+			// user refused a request that was never answered.
+			if session.IsSteeringCancellation(ctx, ctx.Err()) {
+				return registry.ToolResult{}, session.ErrSendNow
+			}
 			if ctx.Err() != nil {
 				return registry.ToolResult{}, ctx.Err()
 			}

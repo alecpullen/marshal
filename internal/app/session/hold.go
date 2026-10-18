@@ -20,6 +20,9 @@ func (s *State) SetHold(on bool) {
 	}
 	s.mu.Unlock()
 	s.publishEvent(EventHoldChanged, Event{Held: on})
+	// A held session cannot deliver steering at the checkpoint, so the
+	// snapshot's Held/status must follow the authoritative flag.
+	s.publishSteeringState(nil)
 }
 
 // Held reports whether the session is currently held.

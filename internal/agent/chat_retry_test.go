@@ -2,11 +2,13 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/url"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -443,5 +445,490 @@ func TestChatWithRetryParentCancelNotReconnectEligible(t *testing.T) {
 	}
 	if p.calls != 1 {
 		t.Fatalf("expected 1 call, got %d", p.calls)
+	}
+}
+
+// --- Task 8: cancel logical model calls without retry or salvage ----------
+
+// steeringModelFixture opens one eligible steering turn on a fresh state and
+// returns the state with the runner's steeringTurnID set, which is what makes
+// a model call interruptible. It is the seam Task 9 wires in production: the
+// turn entry point that opens the eligible turn registers its ID here.
+type steeringModelFixture struct {
+	state  *session.State
+	turnID string
+}
+
+func newSteeringModelFixture(t *testing.T) *steeringModelFixture {
+	t.Helper()
+	state := newTestState(t)
+	state.SetOperationInterrupt(func(context.Context, session.OperationRef) (session.OperationStop, error) {
+		return session.OperationStop{Wait: func(context.Context) ([]session.SteeringOutcome, error) { return nil, nil }}, nil
+	})
+	turnID, err := state.BeginSteeringTurn(context.Background())
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn: %v", err)
+	}
+	return &steeringModelFixture{state: state, turnID: turnID}
+}
+
+// runner builds a runner whose model calls belong to the eligible turn.
+func (f *steeringModelFixture) runner(t *testing.T, p provider.Provider) *Runner {
+	t.Helper()
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), f.state, "test-model")
+	r.steeringTurnID = f.turnID
+	return r
+}
+
+// interrupt accepts one Send now request against the runner's open operation.
+// The operation's interruption worker cancels the operation context, exactly
+// as the production handler does.
+func (f *steeringModelFixture) interrupt(t *testing.T) {
+	t.Helper()
+	if _, err := f.state.SubmitSendNow(session.SendNowRequest{
+		TurnID:    f.turnID,
+		RequestID: "r1",
+		Text:      "stop this call",
+	}); err != nil {
+		t.Fatalf("SubmitSendNow: %v", err)
+	}
+}
+
+// TestSteeringCancelsModelStreamWithoutRetryOrSalvage pins the model-operation
+// interruption contract end to end: a request whose stream ends on the
+// operation context terminates the turn's own signal immediately, with no
+// retry and nothing salvaged. The partial text and tool call the stream had
+// already produced must not reach the caller — it was never accepted by the
+// turn — while the usage the provider reported is real and is kept.
+func TestSteeringCancelsModelStreamWithoutRetryOrSalvage(t *testing.T) {
+	f := newSteeringModelFixture(t)
+
+	// A test-owned stream that ends the way a real cancelled request does: it
+	// waits for its request context and reports the cancellation as a stream
+	// error, the shape a body read failing mid-decode produces. It also proves
+	// the drain contract — two trailing sends on an unbuffered channel, which a
+	// break would leave blocked forever.
+	p := &steeringStreamProvider{
+		partial:   `{"rationale":"r","action":{"type":"tool_call","tool":"file.read","args":{"path":"a.go"}}}`,
+		usage:     &schema.TokenUsage{PromptTokens: 120, CompletionTokens: 7},
+		toolCalls: []schema.ToolCall{{ID: "tc1", Name: "file.read", Args: json.RawMessage(`{"path":"a.go"}`)}},
+		ready:     make(chan struct{}, 1),
+		trailing:  make(chan struct{}, 1),
+	}
+	r := f.runner(t, p)
+	r.MaxRetries = 3
+	var observed *schema.TokenUsage
+	r.UsageObserver = func(u schema.TokenUsage) { observed = &u }
+
+	type outcome struct {
+		res   chatResult
+		err   error
+		calls int
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := r.chatWithRetry(context.Background(), p, "test-model",
+			[]schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+		done <- outcome{res: res, err: err, calls: p.calls()}
+	}()
+
+	// Interrupt once the operation is open and its dispatch has begun.
+	p.awaitDispatch(t)
+	f.interrupt(t)
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("chatWithRetry never returned: the cancelled stream was not drained")
+	}
+	if !errors.Is(got.err, session.ErrSendNow) {
+		t.Fatalf("err = %v, want ErrSendNow", got.err)
+	}
+	if got.calls != 1 {
+		t.Fatalf("provider calls = %d, want exactly 1 — an interrupted request is never resent", got.calls)
+	}
+	if got.res.Text != "" || len(got.res.ToolCalls) != 0 {
+		t.Fatalf("interrupted call returned executable output: text=%q tools=%v", got.res.Text, got.res.ToolCalls)
+	}
+	// The trailing-event signal fired, so the range drained rather than broke
+	// and the provider's sender goroutine was not leaked.
+	select {
+	case <-p.trailing:
+	case <-time.After(time.Second):
+		t.Fatal("trailing events never consumed: the range broke instead of draining")
+	}
+	// Known usage stays recorded even though the response was discarded.
+	if observed == nil || observed.PromptTokens != 120 {
+		t.Fatalf("UsageObserver saw %+v, want the provider-reported 120 prompt tokens", observed)
+	}
+}
+
+// steeringStreamProvider is the provider shape a real backend presents: a
+// test-owned stream that reports a partial response, then ends on its request
+// context the way a cancelled body read does — a stream error for the
+// cancellation, followed by two trailing events that a broken range would
+// never consume.
+type steeringStreamProvider struct {
+	partial   string
+	usage     *schema.TokenUsage
+	toolCalls []schema.ToolCall
+	// err is injected as the stream's error before the request waits, so a test
+	// can prove a genuine provider failure racing an interruption keeps its own
+	// classification.
+	err error
+	// cleanEnd makes the stream report its response and finish without error,
+	// the shape a provider that answered a request the turn had already
+	// abandoned presents.
+	cleanEnd bool
+
+	mu       sync.Mutex
+	count    int
+	ready    chan struct{}
+	trailing chan struct{}
+}
+
+func (p *steeringStreamProvider) Name() string { return "steering-stream" }
+
+func (p *steeringStreamProvider) Models(context.Context) ([]schema.ModelInfo, error) { return nil, nil }
+
+func (p *steeringStreamProvider) Capabilities(context.Context) schema.ProviderCapabilities {
+	return schema.ProviderCapabilities{}
+}
+
+func (p *steeringStreamProvider) calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.count
+}
+
+func (p *steeringStreamProvider) awaitDispatch(t *testing.T) {
+	t.Helper()
+	select {
+	case <-p.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the model request never reached the provider")
+	}
+}
+
+func (p *steeringStreamProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	p.mu.Lock()
+	p.count++
+	p.mu.Unlock()
+	if p.ready != nil {
+		select {
+		case p.ready <- struct{}{}:
+		default:
+		}
+	}
+
+	events := make(chan schema.ChatEvent)
+	go func() {
+		defer close(events)
+		events <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: p.partial}
+		if p.err != nil {
+			// A genuine failure raised before the interruption was even
+			// submitted: the stream ends here rather than at ctx.Done().
+			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: p.err}
+			if p.trailing != nil {
+				select {
+				case p.trailing <- struct{}{}:
+				default:
+				}
+			}
+			return
+		}
+		<-ctx.Done()
+		if p.cleanEnd {
+			// The request the turn already abandoned still got an answer: a
+			// complete response with no error on the end at all. It reaches
+			// chatOnce after the interruption, which is exactly the race this
+			// case is here to pin.
+			events <- schema.ChatEvent{Type: schema.ChatEventDone, Usage: p.usage, ToolCalls: p.toolCalls}
+		} else {
+			events <- schema.ChatEvent{Type: schema.ChatEventError, Err: ctx.Err()}
+			events <- schema.ChatEvent{Type: schema.ChatEventDone, Usage: p.usage, ToolCalls: p.toolCalls}
+		}
+		// Two trailing sends: the second is what distinguishes a drained range
+		// from a broken one (see chat_thinkloop_test.go's ctxClosingProvider).
+		events <- schema.ChatEvent{Type: schema.ChatEventDone}
+		events <- schema.ChatEvent{Type: schema.ChatEventDone}
+		if p.trailing != nil {
+			select {
+			case p.trailing <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	return events, nil
+}
+
+// TestSteeringStopsConnectivityAndFallbackRetries pins that an explicit
+// interruption ends the transport ladder wherever it stands: the retry
+// backoff, the wait-for-connectivity loop, and the tool-less fallback all stop
+// without sending another request. The fallback case matters most — a provider
+// latched to tool-less calls because the user typed would lose the loop's
+// prompt cache for the rest of the session.
+func TestSteeringStopsConnectivityAndFallbackRetries(t *testing.T) {
+	// interruptOnSleep is the shared stub: the first backoff of the transport
+	// ladder accepts the user's steering and then waits for the operation to be
+	// cancelled, exactly as the interruption worker's cancel does.
+	interruptOnSleep := func(t *testing.T, f *steeringModelFixture) func(context.Context, time.Duration) error {
+		t.Helper()
+		return func(ctx context.Context, d time.Duration) error {
+			f.interrupt(t)
+			select {
+			case <-ctx.Done():
+			case <-time.After(2 * time.Second):
+				t.Error("the operation context was never cancelled by the interruption worker")
+			}
+			return ctx.Err()
+		}
+	}
+	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}
+
+	t.Run("retry ladder stops", func(t *testing.T) {
+		f := newSteeringModelFixture(t)
+		p := &agenttest.ScriptedProvider{Errs: []error{errors.New("connection reset by peer")}}
+		r := f.runner(t, p)
+		r.MaxRetries = 3
+		r.Sleep = interruptOnSleep(t, f)
+
+		if _, err := r.chatWithRetry(context.Background(), p, "test-model", msgs, nil); !errors.Is(err, session.ErrSendNow) {
+			t.Fatalf("err = %v, want ErrSendNow", err)
+		}
+		if p.Calls != 1 {
+			t.Fatalf("provider calls = %d, want 1 — no retry after an explicit interception", p.Calls)
+		}
+	})
+
+	t.Run("reconnect loop stops", func(t *testing.T) {
+		f := newSteeringModelFixture(t)
+		drop := &url.Error{Op: "Post", URL: "http://provider", Err: syscall.ECONNRESET}
+		p := &agenttest.ScriptedProvider{Errs: []error{drop}}
+		r := f.runner(t, p)
+		r.MaxRetries = 0
+		r.Sleep = interruptOnSleep(t, f)
+
+		if _, err := r.chatWithRetry(context.Background(), p, "test-model", msgs, nil); !errors.Is(err, session.ErrSendNow) {
+			t.Fatalf("err = %v, want ErrSendNow", err)
+		}
+		if p.Calls != 1 {
+			t.Fatalf("provider calls = %d, want 1 — no reconnect storm after an explicit interception", p.Calls)
+		}
+	})
+
+	t.Run("tools-disabled fallback is not latched", func(t *testing.T) {
+		f := newSteeringModelFixture(t)
+		p := &steeringStreamProvider{
+			ready:    make(chan struct{}, 1),
+			trailing: make(chan struct{}, 1),
+		}
+		r := f.runner(t, p)
+		r.NativeTools = true
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := r.chatWithRetryNoNativeTools(context.Background(), p, "test-model", msgs, nil)
+			done <- err
+		}()
+		p.awaitDispatch(t)
+		f.interrupt(t)
+
+		select {
+		case err := <-done:
+			if !errors.Is(err, session.ErrSendNow) {
+				t.Fatalf("err = %v, want ErrSendNow", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("chatWithRetryNoNativeTools never returned")
+		}
+		if p.calls() != 1 {
+			t.Fatalf("provider calls = %d, want 1 — the fallback must not resend", p.calls())
+		}
+		if r.toolChoiceNoneRejected(p.Name()) {
+			t.Fatal("a user interruption latched the provider to tool-less calls; the fallback must not treat it as a tool_choice failure")
+		}
+	})
+}
+
+// TestSteeringModelUsageAndInspectionAreRetained pins that the interruption
+// discards the response without destroying the evidence around it: a stream
+// that ended cleanly because the turn was already abandoned still contributes
+// its provider-reported usage, and the inspection snapshot records the attempt
+// as cancelled rather than as a completed request the user never saw.
+func TestSteeringModelUsageAndInspectionAreRetained(t *testing.T) {
+	f := newSteeringModelFixture(t)
+	p := &steeringStreamProvider{
+		partial:   `{"rationale":"r","action":{"type":"answer","content":"never seen"}}`,
+		usage:     &schema.TokenUsage{PromptTokens: 321, CompletionTokens: 9},
+		toolCalls: []schema.ToolCall{{ID: "tc1", Name: "file.read", Args: json.RawMessage(`{}`)}},
+		cleanEnd:  true,
+		ready:     make(chan struct{}, 1),
+	}
+	r := f.runner(t, p)
+	var observed *schema.TokenUsage
+	r.UsageObserver = func(u schema.TokenUsage) { observed = &u }
+
+	type outcome struct {
+		res chatResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := r.chatWithRetry(context.Background(), p, "test-model",
+			[]schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+		done <- outcome{res: res, err: err}
+	}()
+	p.awaitDispatch(t)
+	f.interrupt(t)
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("chatWithRetry never returned")
+	}
+	if !errors.Is(got.err, session.ErrSendNow) {
+		t.Fatalf("err = %v, want ErrSendNow", got.err)
+	}
+	if got.res.Text != "" || len(got.res.ToolCalls) != 0 {
+		t.Fatalf("an abandoned response was handed back: text=%q tools=%v", got.res.Text, got.res.ToolCalls)
+	}
+	if observed == nil || observed.PromptTokens != 321 {
+		t.Fatalf("UsageObserver saw %+v, want the provider-reported 321 prompt tokens", observed)
+	}
+	snap, ok := f.state.RequestInspection()
+	if !ok {
+		t.Fatal("no request inspection snapshot recorded")
+	}
+	if snap.Outcome.Status != session.InspectionCancelled {
+		t.Fatalf("inspection status = %q, want %q", snap.Outcome.Status, session.InspectionCancelled)
+	}
+}
+
+// TestSteeringSubmissionPersistsAndAcknowledgesOnce pins the acceptance /
+// submission split at the only instant delivery is true: the real chat
+// dispatch. Staging writes nothing — otherwise the text would sit in replay
+// history while still waiting in the follow-up queue — and the retry that
+// follows finds no unsubmitted IDs, so the transcript keeps exactly one copy.
+func TestSteeringSubmissionPersistsAndAcknowledgesOnce(t *testing.T) {
+	f := newSteeringModelFixture(t)
+	if _, err := f.state.SubmitSendNow(session.SendNowRequest{
+		TurnID:    f.turnID,
+		RequestID: "r1",
+		Text:      "also update the README",
+	}); err != nil {
+		t.Fatalf("SubmitSendNow: %v", err)
+	}
+	batch, err := f.state.StageSteering(f.turnID)
+	if err != nil {
+		t.Fatalf("StageSteering: %v", err)
+	}
+	if len(batch.Messages) != 1 {
+		t.Fatalf("staged batch = %+v, want the queued message", batch)
+	}
+	// Staging is not delivery: nothing is in the transcript yet.
+	if n := countSteeringMessages(f.state); n != 0 {
+		t.Fatalf("staging persisted %d steering messages; an undelivered entry would then exist twice", n)
+	}
+
+	p := &agenttest.ScriptedProvider{Responses: []string{okAnswer}}
+	r := f.runner(t, p)
+	msgs := []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}
+	if _, err := r.chatWithRetry(context.Background(), p, "test-model", msgs, nil); err != nil {
+		t.Fatalf("chatWithRetry: %v", err)
+	}
+
+	if n := countSteeringMessages(f.state); n != 1 {
+		t.Fatalf("persisted steering messages = %d, want exactly 1", n)
+	}
+	for _, m := range f.state.Messages() {
+		if m.ContentType == session.ContentTypeSteering && m.Content != "[user steering, mid-turn]: also update the README" {
+			t.Fatalf("persisted steering content = %q, want the enveloped wire form", m.Content)
+		}
+	}
+	// Submission is what makes the receipt truthful.
+	receipt, err := f.state.SubmitSendNow(session.SendNowRequest{
+		TurnID:    f.turnID,
+		RequestID: "r1",
+		Text:      "also update the README",
+	})
+	if err != nil {
+		t.Fatalf("retry SubmitSendNow: %v", err)
+	}
+	if receipt.Status != session.SteeringDelivered {
+		t.Fatalf("receipt status = %q, want delivered once the model request carried the text", receipt.Status)
+	}
+
+	// A retry finds nothing unsubmitted and writes nothing twice.
+	if _, err := r.chatWithRetry(context.Background(), p, "test-model", msgs, nil); err != nil {
+		t.Fatalf("retry chatWithRetry: %v", err)
+	}
+	if n := countSteeringMessages(f.state); n != 1 {
+		t.Fatalf("persisted steering messages after the retry = %d, want still 1", n)
+	}
+}
+
+// countSteeringMessages counts the persisted mid-turn steering copies, which is
+// the transcript's side of the "delivered exactly once" contract.
+func countSteeringMessages(state *session.State) int {
+	n := 0
+	for _, m := range state.Messages() {
+		if m.Role == session.RoleUser && m.ContentType == session.ContentTypeSteering {
+			n++
+		}
+	}
+	return n
+}
+
+// TestSteeringRealProviderFailureKeepsItsCause pins the other half: a real
+// provider failure that arrives around the interruption is still that failure.
+// Relabelling it as the user's doing would hide an HTTP error or a decoding
+// defect behind their keystroke, and the coaching the turn owes them for it
+// would never be emitted.
+func TestSteeringRealProviderFailureKeepsItsCause(t *testing.T) {
+	f := newSteeringModelFixture(t)
+	http400 := &provider.ProviderError{Provider: "test", StatusCode: 400, Body: "bad request"}
+	// The failure is injected the moment the request is dispatched — before the
+	// interruption is even submitted — and the stream then waits, so the user's
+	// cancellation races it rather than causing it.
+	p := &steeringStreamProvider{
+		partial: `{"rationale":"r","action":{"type":"answer","content":"partial but real"}}`,
+		err:     http400,
+		ready:   make(chan struct{}, 1),
+	}
+	r := f.runner(t, p)
+
+	type outcome struct {
+		res chatResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := r.chatWithRetry(context.Background(), p, "test-model",
+			[]schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+		done <- outcome{res: res, err: err}
+	}()
+	p.awaitDispatch(t)
+	f.interrupt(t)
+
+	var got outcome
+	select {
+	case got = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("chatWithRetry never returned")
+	}
+	if errors.Is(got.err, session.ErrSendNow) {
+		t.Fatalf("a genuine provider failure was relabelled as the user's interruption: %v", got.err)
+	}
+	var pe *provider.ProviderError
+	if !errors.As(got.err, &pe) || pe.StatusCode != 400 {
+		t.Fatalf("err = %v, want the injected HTTP 400", got.err)
+	}
+	// The partial response is real model output this attempt produced before
+	// failing; the interruption did not invalidate it.
+	if got.res.Text == "" {
+		t.Fatal("salvageable text from the failed attempt was discarded")
 	}
 }

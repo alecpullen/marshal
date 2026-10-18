@@ -140,6 +140,19 @@ type WriteGate interface {
 	Acquire() (release func())
 }
 
+// ContextWriteGate is the cancelable form of WriteGate. A gate that implements
+// it lets a waiting tool admission wake when user steering interrupts the
+// operation it belongs to, instead of blocking until whatever holds the token
+// finishes. The legacy Acquire is still honoured for gates that do not: those
+// calls stay waiting-safe, since a fake gate in a test cannot honestly report
+// that it stopped waiting.
+type ContextWriteGate interface {
+	// AcquireContext blocks until the gate is free or ctx ends. A canceled
+	// acquisition returns a nil release and ctx's error, and must not consume
+	// the token.
+	AcquireContext(ctx context.Context) (release func(), err error)
+}
+
 // WatchTransferrer re-parents a subagent's once watches to the parent and
 // stops its repeat watches when the subagent ends. It is a small interface
 // so the runner can reach the watch manager without importing internal/watch
@@ -446,6 +459,15 @@ type Runner struct {
 	stats        *turnStats
 	statsMu      sync.Mutex
 
+	// steeringOutcomeMu guards steeringOutcomes, the per-operation ledger of
+	// what the user's steering actually settled while a tool batch ran. It is
+	// keyed by the COMPLETE OperationRef, so two sessions (or two turns) that
+	// happen to share an operation ID can never merge their outcomes, and it is
+	// per-turn state — deliberately not part of CopyFrom, which must not carry
+	// one turn's interrupted-call evidence into the next.
+	steeringOutcomeMu sync.Mutex
+	steeringOutcomes  map[session.OperationRef][]session.SteeringOutcome
+
 	// todoClock measures how long the todo list has gone unmaintained and
 	// todoNudged records that this list version has already been nudged about
 	// it. Both are per-turn state, reset by startTodoClock (todonudge.go).
@@ -496,6 +518,24 @@ type Runner struct {
 	// known. Guarded by finishReasonMu for concurrent access from tool
 	// execution goroutines.
 	turnFinishReason string
+	// EnableSteering opts this runner into Send now. An enabled runner whose
+	// turn is eligible opens the steering turn at entry, and every model call
+	// and tool batch beneath it runs as an interruptible operation. Off by
+	// default: the control is only meaningful for a conversation the runtime
+	// has installed an interruption handler on, and a runner used directly (a
+	// test, an embedded caller) has none — registering controls there would
+	// advertise an interruption nothing can serve. Opting in is necessary but
+	// not sufficient; the role/depth predicate in RunTask stays authoritative,
+	// so an enabled runner later used as a child still registers nothing.
+	EnableSteering bool
+	// steeringTurnID is the eligible turn this runner's model calls and tool
+	// batches belong to, empty when steering is not in play. It is set by the
+	// turn entry point that opened the eligible turn and read by every
+	// operation scope below it (see withModelOperation). Per-runner state,
+	// deliberately NOT copied by CopyFrom: a reload must not repoint an
+	// in-flight invocation at the rebuilt runner's empty field.
+	steeringTurnID string
+
 	// turnRequestOptions carries the resolved max-token and context-window
 	// limits for the current turn, derived from the resolved route. Per-turn
 	// state: populated after resolveRoute in RunTask, reset before the turn
@@ -679,6 +719,12 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.rosterMu.Lock()
 	r.discoveredModels = nil
 	r.rosterMu.Unlock()
+
+	// steeringTurnID is deliberately not copied. A reload rebuilds the runner
+	// and CopyFrom folds it back into the live one, which may be mid-call:
+	// taking the rebuilt runner's (empty) field would detach an in-flight model
+	// call from the turn the user can still steer, and the source has no turn
+	// of its own to offer. The destination's live ID is the only correct value.
 }
 
 // beginTurnStop registers this turn's explicit-stop group through the injected
@@ -786,7 +832,7 @@ func (r *Runner) recordInterruptMarker(task *Task, goal string, cause error) {
 	} else {
 		fmt.Fprintf(&b, "Tools completed this turn: none recorded\n")
 	}
-	for _, msg := range r.State.DrainSteering() {
+	for _, msg := range r.State.DrainSteeringForInterrupt() {
 		fmt.Fprintf(&b, "Undelivered user feedback: %s\n", msg)
 	}
 	b.WriteString("The current request continues from this state.")
@@ -805,6 +851,186 @@ func (r *Runner) failTurn(task *Task, err error) error {
 	return r.fail(task, err)
 }
 
+// steeringCheckpoint is the single place a running turn admits user steering.
+// It waits out an explicit hold on the real turn context, stages everything the
+// user has queued plus the notes the settled operations produced, and appends
+// each as a user message AFTER the tool results already on the wire — the model
+// must see what actually happened before it sees the user's reaction to it.
+//
+// It is deliberately not a turn boundary: no goal is republished, no budget is
+// reset, no turn index is incremented and no full-turn interrupt marker is
+// emitted. What it also does NOT do is persist: an accepted entry reaches the
+// transcript only when a model request actually carries it (Task 8's
+// commitSteeringSubmission), so a request that never reaches the provider
+// cannot leave the transcript claiming the model saw text it never received.
+//
+// The bool reports whether genuine USER steering arrived. The caller uses it to
+// stand down the doom-loop stall finalize — an interruption note produced by the
+// runtime is not a user intervention, and must not read as one.
+func (r *Runner) steeringCheckpoint(ctx context.Context, messages []schema.ChatMessage) ([]schema.ChatMessage, bool, error) {
+	if r.State == nil {
+		return messages, false, nil
+	}
+	if r.steeringTurnID == "" {
+		// No eligible turn, so there is nothing to stage: this is the legacy
+		// mid-turn drain. Steering typed into a runner with no Send now control —
+		// a direct caller, a child, an embedded test — still reaches the model
+		// exactly as it always has, and is persisted here as it always was.
+		if err := r.State.WaitUnheld(ctx); err != nil {
+			return messages, false, err
+		}
+		steeringArrived := false
+		var pins []contextpack.FileSnippet
+		for _, msg := range r.State.DrainSteering() {
+			pins = append(pins, extractPinnedFiles(msg, r, r.ProjectID)...)
+			enveloped := steeringEnvelope(msg)
+			r.State.AddMessage(session.RoleUser, enveloped, session.ContentTypeSteering)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: enveloped})
+			steeringArrived = true
+		}
+		if len(pins) > 0 {
+			r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+				return contextpack.PinFiles(pack, pins)
+			})
+		}
+		return messages, steeringArrived, nil
+	}
+	if err := r.State.WaitUnheld(ctx); err != nil {
+		return messages, false, err
+	}
+	batch, err := r.State.StageSteering(r.steeringTurnID)
+	if err != nil {
+		// The turn closed under us — a full-turn stop, a replacement. There is
+		// no longer anything to deliver into, and EndSteeringTurn has already
+		// retained the text for the next turn, so the loop simply continues.
+		return messages, false, nil
+	}
+	var pins []contextpack.FileSnippet
+	for _, note := range batch.Notes {
+		messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: note.Text})
+	}
+	steeringArrived := false
+	for _, msg := range batch.Messages {
+		// @file pins come from the RAW text, so the user's "@path" keeps
+		// working. The enveloped form is what the model reads AND what
+		// commitSteeringSubmission persists, so restart replay matches the wire
+		// byte-for-byte.
+		pins = append(pins, extractPinnedFiles(msg.Text, r, r.ProjectID)...)
+		messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: steeringEnvelope(msg.Text)})
+		steeringArrived = true
+	}
+	if len(pins) > 0 {
+		r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
+			return contextpack.PinFiles(pack, pins)
+		})
+	}
+	return messages, steeringArrived, nil
+}
+
+// withToolOperation runs one tool dispatch batch — the native calls, one
+// envelope tool_call, or one patched call — under the turn's tool operation, so
+// an interruption stops exactly the commands this batch launched rather than
+// whichever one the keystroke happened to catch. Every call in the batch
+// derives from the same context, so the batch shares one operation identity.
+//
+// The batch is ALWAYS joined. An operation left open would refuse the next one
+// and strand the user's steering at the checkpoint, and its evidence would leak
+// into a later batch. FinishSteeringOperation merges the interruption worker's
+// real terminal results over the runner's own recorded evidence; the complete
+// set is what a receipt reports.
+func (r *Runner) withToolOperation(ctx context.Context, run func(context.Context) ([]schema.ChatMessage, error)) ([]schema.ChatMessage, error) {
+	opCtx, finish := r.withToolOperationScope(ctx)
+	defer finish()
+	return run(opCtx)
+}
+
+// withToolOperationScope opens the turn's tool operation for one dispatch and
+// returns the derived context plus an idempotent finish. Callers whose result
+// is not a message batch — the envelope ask_user/question.ask waits — use this
+// directly; withToolOperation is the message-returning convenience wrapper.
+//
+// The operation is ALWAYS joined. An operation left open would refuse the next
+// one and strand the user's steering at the checkpoint, and its evidence would
+// leak into a later batch.
+func (r *Runner) withToolOperationScope(ctx context.Context) (context.Context, func()) {
+	if r.steeringTurnID == "" || r.State == nil {
+		return ctx, func() {}
+	}
+	if ref, ok := session.OperationFromContext(ctx); ok && ref.TurnID == r.steeringTurnID {
+		return ctx, func() {}
+	}
+	opCtx, ref, err := r.State.BeginSteeringOperation(ctx, r.steeringTurnID, session.OperationTools)
+	if err != nil {
+		// Bookkeeping must never fail the work. A batch that cannot open an
+		// operation runs exactly as it did before steering existed, merely
+		// uninterruptible — which is precisely the case of an accepted message
+		// waiting to be delivered: this batch is what delivers it.
+		r.State.Logger().Debug("tool batch ran without a steering operation", "error", err)
+		return ctx, func() {}
+	}
+	return opCtx, func() {
+		r.State.FinishSteeringOperation(ref, r.takeSteeringOutcomes(ref))
+	}
+}
+
+// withSetupOperation runs one short, optional piece of turn-start work under a
+// setup scope, so an interruption during titling, classification or the
+// turn-start capture stops that call rather than the entire turn. It never
+// fails the turn: every caller has a fallback (the current title, the local
+// classification), and initialization must continue exactly once either way —
+// no goal is republished and the turn index is not advanced twice.
+func (r *Runner) withSetupOperation(ctx context.Context, run func(context.Context)) {
+	if r.steeringTurnID == "" || r.State == nil {
+		run(ctx)
+		return
+	}
+	if ref, ok := session.OperationFromContext(ctx); ok && ref.TurnID == r.steeringTurnID {
+		run(ctx)
+		return
+	}
+	opCtx, ref, err := r.State.BeginSteeringOperation(ctx, r.steeringTurnID, session.OperationSetup)
+	if err != nil {
+		// Pending immediate steering, or a closing turn: the optional work is
+		// skipped in favour of delivering the user's text. Running it unscoped
+		// would make it uninterruptible, which is worse than not running it.
+		r.State.Logger().Debug("optional setup work skipped for steering", "error", err)
+		return
+	}
+	defer r.State.FinishSteeringOperation(ref, r.takeSteeringOutcomes(ref))
+	run(opCtx)
+}
+
+// resetForSteering undoes the provisional completion a refused publication
+// would have carried. Without it the continued turn would keep reporting a
+// status, summary or salvage reason for an answer it never published — and a
+// later, genuinely published answer would inherit the stale flags.
+func resetForSteering(task *Task) {
+	task.Status = TaskStatusExecuting
+	task.Summary = ""
+	task.SalvagedReason = ""
+}
+
+// commitSteeringFinal publishes a final answer only while the turn can still
+// admit it. With no eligible turn the publication is exactly what it always
+// was. With one, TryFinishSteeringTurn is the atomic final-admission check, and
+// it fails when accepted steering is still owed to the model — so a stale answer
+// is never published over text the user is waiting to see delivered.
+//
+// The caller owns what a refusal means (reset the provisional status, then
+// continue through the checkpoint); this helper only reports it, and runs the
+// publication outside every state lock.
+func (r *Runner) commitSteeringFinal(publish func()) bool {
+	if r.steeringTurnID == "" || r.State == nil {
+		publish()
+		return true
+	}
+	if !r.State.TryFinishSteeringTurn(r.steeringTurnID) {
+		return false
+	}
+	publish()
+	return true
+}
+
 // RunTask is Run plus access to the finished Task, so orchestrators (the
 // swarm) can read a role's final summary and status without re-parsing
 // the session transcript.
@@ -814,6 +1040,31 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// before the defer so a nil State on the test runner does not panic.
 	if r.RunTaskFunc != nil {
 		return r.RunTaskFunc(ctx, goal)
+	}
+
+	// Send now: an enabled root/general conversation opens the one eligible
+	// turn every operation beneath it belongs to. The predicate is deliberately
+	// narrower than the flag — a child, SDD or swarm runner never registers
+	// parent control, and reusing an inherited operation would let an outer
+	// turn's requests steer this nested one. Registering first also makes this
+	// the outermost defer, so the turn stays eligible for the whole of its own
+	// cleanup (the interruption a final answer races must still be able to land)
+	// and is closed exactly once, after everything else has run.
+	if r.EnableSteering && r.role() == RoleGeneral && r.State != nil && r.State.SubagentDepth() == 0 {
+		if _, inherited := session.OperationFromContext(ctx); !inherited {
+			if turnID, err := r.State.BeginSteeringTurn(ctx); err == nil {
+				r.steeringTurnID = turnID
+				defer func() {
+					r.steeringTurnID = ""
+					r.State.EndSteeringTurn(turnID, "turn complete")
+				}()
+			} else {
+				// A second eligible turn, or a quiescing session, is not a
+				// reason to fail the work: this turn simply runs unsteerable,
+				// exactly as it did before the feature existed.
+				r.State.Logger().Debug("send now unavailable for this turn", "error", err)
+			}
+		}
 	}
 
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
@@ -885,7 +1136,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// by design (single-model safe); failures and timeouts keep the current
 	// title. Top-level sessions only.
 	if r.TitleManager != nil && r.State.SubagentDepth() == 0 {
-		r.TitleManager.OnUserTurn(ctx, goal)
+		// Optional old-intent work: an interruption during titling must cancel
+		// the title call, not the turn. A title that never arrives simply leaves
+		// the current one in place.
+		r.withSetupOperation(ctx, func(setupCtx context.Context) {
+			r.TitleManager.OnUserTurn(setupCtx, goal)
+		})
 	}
 	// If the previous turn was interrupted (Esc), surface a one-line note in
 	// the user's transcript so they know where things stopped. The model
@@ -899,7 +1155,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// where rows have always been written, and it carries the changed files);
 	// what it guarantees is that a skipped or failed capture at the top of the
 	// turn is VISIBLE rather than only logged. Continuation is unchanged.
-	r.snapshotCapture(ctx, SnapshotPhaseTurnStart, nil)
+	r.withSetupOperation(ctx, func(setupCtx context.Context) {
+		r.snapshotCapture(setupCtx, SnapshotPhaseTurnStart, nil)
+	})
 
 	r.trackerMu.Lock()
 	r.tracker = newProgressTracker()
@@ -940,11 +1198,19 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	} else {
 		task.Class = Classify(goal)
 		if task.Class == ClassQuestion && r.Classifier != nil {
-			if class, err := r.Classifier(ctx, goal); err == nil {
-				switch class {
-				case ClassEdit, ClassCommand, ClassQuestion:
-					task.Class = class
+			// The classifier is optional old-intent work. Running it under a
+			// setup scope means an interruption cancels the classification
+			// rather than the turn; the local Classify result stands when it
+			// cannot answer, so initialization continues exactly once.
+			var class TaskClass
+			r.withSetupOperation(ctx, func(setupCtx context.Context) {
+				if c, err := r.Classifier(setupCtx, goal); err == nil {
+					class = c
 				}
+			})
+			switch class {
+			case ClassEdit, ClassCommand, ClassQuestion:
+				task.Class = class
 			}
 		}
 	}
@@ -1063,9 +1329,30 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	if r.PlanFirst && task.Class != ClassQuestion {
 		task.Status = TaskStatusPlanning
 		planMessages := append(append([]schema.ChatMessage{}, messages...), BuildPlanningPrompt(goal))
-		planRes, err := r.chatWithRetryNoNativeTools(ctx, turnProvider, turnModel, planMessages, effectiveRF)
-		if err != nil {
-			return task, r.failTurn(task, err)
+		// The planning slice is append-only, so steering that lands while the
+		// plan is being written extends it IN PLACE and planning is retried with
+		// those messages — no second goal, no republished prompt. The appended
+		// tail is carried into the main wire once, below, so the model holds one
+		// copy of the user's text rather than the plan and the request each
+		// keeping their own.
+		var planRes chatResult
+		var steeringTail []schema.ChatMessage
+		for {
+			var perr error
+			planRes, perr = r.chatWithRetryNoNativeTools(ctx, turnProvider, turnModel, planMessages, effectiveRF)
+			if perr == nil {
+				break
+			}
+			if !errors.Is(perr, session.ErrSendNow) {
+				return task, r.failTurn(task, perr)
+			}
+			before := len(planMessages)
+			staged, _, cerr := r.steeringCheckpoint(ctx, planMessages)
+			if cerr != nil {
+				return task, r.failTurn(task, cerr)
+			}
+			planMessages = staged
+			steeringTail = append(steeringTail, planMessages[before:]...)
 		}
 		planText := planRes.Text
 		task.Plan = splitPlanLines(planText)
@@ -1099,6 +1386,11 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			markCacheAnchor(messages)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
 		}
+		// The steering the planning retry already carried is appended to the
+		// main wire once here. It is NOT persisted again: the planning request
+		// it rode on submitted it, so the transcript already holds exactly one
+		// copy of the user's text.
+		messages = append(messages, steeringTail...)
 		r.State.AddMessage(session.RoleAssistant, planText, session.ContentTypePlan)
 		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: "Plan:\n" + planText})
 	}
@@ -1168,32 +1460,24 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 		r.State.SetToolBudget(session.ToolBudget{Used: budget.tools, Max: budget.maxTools})
 
-		// F16: drain steering messages typed mid-turn and inject them as
-		// user messages before the next model call. Runs before the
+		// F16 → Send now: admit user steering at the one checkpoint inside the
+		// turn. It waits out an explicit hold, stages everything the user has
+		// queued plus the notes the settled operations produced, and appends
+		// them after the existing tool results. It runs before the
 		// context-pressure/summarize check so steering is part of the live
 		// context rather than getting compacted away. steeringArrived also
 		// guards the doom-loop stall finalize below — if the user just
 		// intervened, the loop is no longer auto-iterating.
-		if err := r.State.WaitUnheld(ctx); err != nil {
-			return task, r.failTurn(task, err)
-		}
 		steeringArrived := false
-		var steeringPins []contextpack.FileSnippet
+		// The mid-turn effort override for this route lands at the loop top,
+		// ahead of the provider call this step is about to make; the steering
+		// checkpoint below then stages anything the user queued, in the same
+		// turn, after the tool results already on the wire.
 		r.applySessionEffortAtStep(route.Preset.Thinking, route.Preset.Provider, route.Preset.Model, budget.total()+1, &effortDeferredNotice)
-		for _, msg := range r.State.DrainSteering() {
-			steeringPins = append(steeringPins, extractPinnedFiles(msg, r, r.ProjectID)...)
-			// Envelope the wire content so the model can tell a mid-turn
-			// steering message apart from a fresh user goal. extractPinnedFiles
-			// still runs on the RAW msg above so @file pins keep working.
-			// The enveloped form is ALSO what gets persisted (RoleUser,
-			// ContentTypeSteering) so restart replay via buildHistoryMessages
-			// matches the live wire byte-for-byte — before this, drained
-			// steering lived only in the in-memory slice and vanished from
-			// the transcript.
-			enveloped := "[user steering, mid-turn]: " + msg
-			r.State.AddMessage(session.RoleUser, enveloped, session.ContentTypeSteering)
-			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: enveloped})
-			steeringArrived = true
+		var checkpointErr error
+		messages, steeringArrived, checkpointErr = r.steeringCheckpoint(ctx, messages)
+		if checkpointErr != nil {
+			return task, r.failTurn(task, checkpointErr)
 		}
 		// Drain background subagent completion reports alongside steering.
 		// These are machine-generated (never user-typed), so they do not
@@ -1220,11 +1504,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		for _, rep := range r.State.DrainWatchReports() {
 			r.State.AddMessage(session.RoleUser, rep.Text, session.ContentTypeWatchReport)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: rep.Text})
-		}
-		if len(steeringPins) > 0 {
-			r.State.UpdateContextPack(func(pack contextpack.Pack) contextpack.Pack {
-				return contextpack.PinFiles(pack, steeringPins)
-			})
 		}
 
 		if !pressureMessageSent && budget.remainingTools() <= finalizePressureThreshold {
@@ -1372,7 +1651,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					r.trackerMu.Unlock()
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: "Call a tool or give a final answer."})
 					if consecutiveEmpty >= 2 {
-						return r.finalize(ctx, turnProvider, turnModel, messages, task, reasonEmpty, effectiveRF)
+						res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonEmpty, effectiveRF)
+						if ferr == nil {
+							return res, nil
+						}
+						if errors.Is(ferr, session.ErrSendNow) {
+							// Accepted steering is owed a delivery; go back
+							// through the checkpoint instead of ending the turn.
+							continue
+						}
+						return res, ferr
 					}
 					var finalized *Task
 					messages, finalized, err = r.checkStall(ctx, turnProvider, turnModel, messages, task, effectiveRF, steeringArrived)
@@ -1443,7 +1731,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					// trusted completion, and exclude it from future history
 					// replay (see buildHistoryMessages).
 					task.SalvagedReason = string(reasonUnverified)
-					r.State.AddMessageSalvaged(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, string(reasonUnverified))
+					if !r.commitSteeringFinal(func() {
+						r.State.AddMessageSalvaged(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, string(reasonUnverified))
+					}) {
+						// Accepted steering outran this answer, so this is not
+						// the turn's ending. Undo the provisional completion and
+						// go back through the checkpoint to deliver the user's
+						// text inside the same turn.
+						resetForSteering(task)
+						continue
+					}
 					return task, nil
 				}
 				// needsVerification may still be true here: the model was
@@ -1451,7 +1748,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				// the nudge is the whole enforcement; salvaging the final
 				// punished models that used the nudge's own escape hatch and
 				// added transcript noise without changing behavior.
-				r.State.AddMessageFinalWithUsage(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, toolCallCountThisTurn, r.turnUsageLine())
+				if !r.commitSteeringFinal(func() {
+					r.State.AddMessageFinalWithUsage(session.RoleAssistant, res.Text, session.ContentTypeMarkdown, toolCallCountThisTurn, r.turnUsageLine())
+				}) {
+					resetForSteering(task)
+					continue
+				}
 				return task, nil
 			}
 
@@ -1506,7 +1808,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			producedValidAction = true
 			toolCallCountThisTurn += len(res.ToolCalls)
 
-			resultMsgs, execErr := r.executeNativeToolCalls(ctx, res.ToolCalls)
+			resultMsgs, execErr := r.withToolOperation(ctx, func(opCtx context.Context) ([]schema.ChatMessage, error) {
+				return r.executeNativeToolCalls(opCtx, res.ToolCalls)
+			})
 			if execErr != nil {
 				return task, r.failTurn(task, execErr)
 			}
@@ -1654,7 +1958,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			narrate()
 			r.assignEnvelopeCallIDs(action.Actions)
-			resultMsgs, execErr := r.executeActions(ctx, action.Actions)
+			resultMsgs, execErr := r.withToolOperation(ctx, func(opCtx context.Context) ([]schema.ChatMessage, error) {
+				return r.executeActions(opCtx, action.Actions)
+			})
 			if execErr != nil {
 				return task, r.failTurn(task, execErr)
 			}
@@ -1709,17 +2015,32 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				// Zero-tool-call grounding only; an unverified-after-nudge
 				// final is accepted normally, same as the native path.
 				task.SalvagedReason = string(reasonUnverified)
-				r.State.AddMessageSalvaged(session.RoleAssistant, action.Content, session.ContentTypeMarkdown, string(reasonUnverified))
+				if !r.commitSteeringFinal(func() {
+					r.State.AddMessageSalvaged(session.RoleAssistant, action.Content, session.ContentTypeMarkdown, string(reasonUnverified))
+				}) {
+					resetForSteering(task)
+					continue
+				}
 				return task, nil
 			}
-			r.State.AddMessageFinalWithUsage(session.RoleAssistant, action.Content, session.ContentTypeMarkdown, toolCallCountThisTurn, r.turnUsageLine())
+			if !r.commitSteeringFinal(func() {
+				r.State.AddMessageFinalWithUsage(session.RoleAssistant, action.Content, session.ContentTypeMarkdown, toolCallCountThisTurn, r.turnUsageLine())
+			}) {
+				// Accepted steering outran this answer; deliver it in this same
+				// turn rather than publishing an answer the user has already
+				// moved past.
+				resetForSteering(task)
+				continue
+			}
 			return task, nil
 		case ActionToolCall, ActionPatch:
 			toolCallCountThisTurn++
 			if action.ToolCallID == "" {
 				action.ToolCallID = r.envelopeCallID(0)
 			}
-			resultMsgs, err := r.executeToolCall(ctx, action)
+			resultMsgs, err := r.withToolOperation(ctx, func(opCtx context.Context) ([]schema.ChatMessage, error) {
+				return r.executeToolCall(opCtx, action)
+			})
 			if err != nil {
 				return task, r.failTurn(task, err)
 			}
@@ -1738,8 +2059,17 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available in auto mode; proceed with your best judgment and state the assumption you made")))
 				continue
 			}
-			answer, waitErr := r.requestAnswer(ctx, action.Content)
+			opCtx, finish := r.withToolOperationScope(ctx)
+			answer, waitErr := r.requestAnswer(opCtx, action.Content)
+			finish()
 			if waitErr != nil {
+				// A canceled question is settled here rather than failing the
+				// turn: the steering signal must reach the checkpoint, which
+				// delivers the user's text in this same turn.
+				if steeringStopped(ctx, waitErr) {
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The question was canceled: user steering interrupted the operation before it was answered. No answer was given; do not assume one."})
+					continue
+				}
 				return task, r.failTurn(task, waitErr)
 			}
 			// An ask_user round-trip consumes an overhead turn: a model that
@@ -1779,8 +2109,17 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask requires a non-empty questions array")))
 				continue
 			}
-			answers, waitErr := r.requestQuestions(ctx, action.Questions)
+			opCtx, finish := r.withToolOperationScope(ctx)
+			answers, waitErr := r.requestQuestions(opCtx, action.Questions)
+			finish()
 			if waitErr != nil {
+				// Same rule as ask_user: a canceled question round-trip is
+				// settled, not turned into a failed turn, so the checkpoint can
+				// deliver the steering that canceled it.
+				if steeringStopped(ctx, waitErr) {
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The questions were canceled: user steering interrupted the operation before they were answered. No answers were given; do not assume any."})
+					continue
+				}
 				return task, r.failTurn(task, waitErr)
 			}
 			budget.overhead++
@@ -1818,8 +2157,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 	if consecutiveParseFailures >= maxConsecutiveParseFailures {
 		if producedValidAction {
-			if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonMalformed, effectiveRF); ferr == nil {
+			res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, reasonMalformed, effectiveRF)
+			if ferr == nil {
 				return res, nil
+			}
+			if errors.Is(ferr, session.ErrSendNow) {
+				// Accepted steering still owes the model a delivery this answer
+				// never saw. The turn loop is already past its last checkpoint,
+				// so surface the signal rather than publishing a stale answer:
+				// the turn's steering is retained for the next one.
+				return res, ferr
 			}
 		}
 		task.Status = TaskStatusFailed
@@ -1831,8 +2178,15 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		if exhaustionReason == "" {
 			exhaustionReason = reasonExhausted
 		}
-		if res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, exhaustionReason, effectiveRF); ferr == nil {
+		res, ferr := r.finalize(ctx, turnProvider, turnModel, messages, task, exhaustionReason, effectiveRF)
+		if ferr == nil {
 			return res, nil
+		}
+		if errors.Is(ferr, session.ErrSendNow) {
+			// Same as above: the hard limit ended the turn, so the request the
+			// user steered cannot be afforded. The undelivered text is retained
+			// by the turn's close, and the stale answer is not published.
+			return res, ferr
 		}
 	}
 	task.Status = TaskStatusFailed
@@ -1901,6 +2255,15 @@ func (r *Runner) checkStall(ctx context.Context, p provider.Provider, model stri
 	}
 	finalized, res, ferr, nudge := r.maybeFinalizeOnStall(ctx, p, model, messages, task, rf)
 	if finalized {
+		if errors.Is(ferr, session.ErrSendNow) {
+			// The finalize refused to publish because accepted steering was
+			// still owed to the model. That is not this turn's ending, so
+			// report "not finalized": the caller's loop goes back through its
+			// checkpoint, delivers the user's text, and keeps running the same
+			// turn. Reporting the completion instead would end the turn on an
+			// answer the user has already moved past.
+			return messages, nil, nil
+		}
 		return messages, res, ferr
 	}
 	if nudge != "" {

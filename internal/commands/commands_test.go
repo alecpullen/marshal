@@ -484,6 +484,43 @@ func TestRegisterAllIncludesSwarmCommand(t *testing.T) {
 	}
 }
 
+func TestSendNowCommandIsTUIOnlyAndDiscoverable(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	cmd, ok := cmdReg.Lookup("send-now")
+	if !ok {
+		t.Fatal("/send-now not registered")
+	}
+	if cmd.Description != "Interrupt the current operation and steer the same conversation turn" {
+		t.Errorf("send-now Description = %q", cmd.Description)
+	}
+	if cmd.Args != "[message]" {
+		t.Errorf("send-now Args = %q, want [message]", cmd.Args)
+	}
+	if cmd.Group != "Chat" {
+		t.Errorf("send-now Group = %q, want Chat", cmd.Group)
+	}
+	if !cmd.TUIOnly {
+		t.Error("send-now should be TUIOnly")
+	}
+	if cmd.Handler != nil {
+		t.Error("send-now should have no Handler")
+	}
+
+	// Discoverable through the existing listing/completion surfaces.
+	var found bool
+	for _, c := range cmdReg.List() {
+		if c.Name == "send-now" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("List() must include /send-now")
+	}
+}
+
 func TestSessionCommands(t *testing.T) {
 	cmdReg := New()
 	if err := RegisterAll(cmdReg, registry.New()); err != nil {

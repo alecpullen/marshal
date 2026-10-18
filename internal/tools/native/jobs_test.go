@@ -3212,3 +3212,493 @@ func TestTurnStopOfAParallelBatchStopsOnlyItsStillAttachedMembers(t *testing.T) 
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Send now interruption (InterruptOperation)
+// ---------------------------------------------------------------------------
+
+// steeringRef builds a complete operation ref for interruption tests. The
+// complete ref — session, turn and operation — is the key the closed-operation
+// set uses, so a partial or zero ref is deliberately never a target.
+func steeringRef(id string) session.OperationRef {
+	return session.OperationRef{SessionID: "sess-1", TurnID: "turn-1", ID: id}
+}
+
+// steeringState finds one execution's outcome in a receipt, by full execution
+// identity.
+func steeringState(t *testing.T, outcomes []session.SteeringOutcome, executionID string) session.SteeringOutcome {
+	t.Helper()
+	for _, o := range outcomes {
+		if o.ExecutionID == executionID {
+			return o
+		}
+	}
+	t.Fatalf("no outcome for execution %q in %+v", executionID, outcomes)
+	return session.SteeringOutcome{}
+}
+
+// TestInterruptOperationStopsAttachedAndPreservesDetached pins the exact scope
+// of a steering interruption: only the interrupted operation's still-attached
+// commands are stopped. A detached command of the same operation keeps running,
+// a sibling child's command is untouched, and a command with no operation is
+// never a target.
+func TestInterruptOperationStopsAttachedAndPreservesDetached(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	runner := newFakeRunner(withRelease(release), withResult(CommandResult{ExitCode: -1}))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+	jm.stopSettleTimeout = 2 * time.Second
+
+	op := steeringRef("op-target")
+	attached, err := jm.Launch(ctx, LaunchSpec{
+		Command:   "attached",
+		Operation: op,
+		Origin:    CommandOrigin{TurnID: "turn-1", ToolCallID: "call-attached"},
+	})
+	if err != nil {
+		t.Fatalf("Launch attached: %v", err)
+	}
+	detached, err := jm.Launch(ctx, LaunchSpec{
+		Command:   "detached",
+		Detached:  true,
+		Operation: op,
+		Origin:    CommandOrigin{TurnID: "turn-1", ToolCallID: "call-detached"},
+	})
+	if err != nil {
+		t.Fatalf("Launch detached: %v", err)
+	}
+	// A sibling child's own operation, and an operation-less command: neither is
+	// the interruption's target.
+	sibling, err := jm.Launch(ctx, LaunchSpec{
+		Command:   "sibling",
+		Operation: steeringRef("op-sibling"),
+		Origin:    CommandOrigin{TurnID: "turn-1", ToolCallID: "call-sibling"},
+	})
+	if err != nil {
+		t.Fatalf("Launch sibling: %v", err)
+	}
+	plain, err := jm.Launch(ctx, LaunchSpec{
+		Command: "plain",
+		Origin:  CommandOrigin{TurnID: "turn-1"},
+	})
+	if err != nil {
+		t.Fatalf("Launch plain: %v", err)
+	}
+
+	stop, err := jm.InterruptOperation(ctx, op)
+	if err != nil {
+		t.Fatalf("InterruptOperation: %v", err)
+	}
+	if stop.Wait == nil {
+		t.Fatal("InterruptOperation returned a nil Wait")
+	}
+
+	stopping, _, err := jm.Output(attached.ID, 0)
+	if err != nil {
+		t.Fatalf("Output attached: %v", err)
+	}
+	if stopping.Status != StatusStopping || stopping.StopCause != steeringStopCause {
+		t.Fatalf("attached = %q/%q, want stopping with the steering cause", stopping.Status, stopping.StopCause)
+	}
+
+	// The detached command and every out-of-scope command keep running untouched.
+	for _, job := range []JobInfo{detached, sibling, plain} {
+		info, _, err := jm.Output(job.ID, 0)
+		if err != nil {
+			t.Fatalf("Output(%s): %v", job.ID, err)
+		}
+		if info.Status != StatusRunning || info.StopCause != "" {
+			t.Fatalf("job %s = %q/%q, want running with no stop cause", job.ID, info.Status, info.StopCause)
+		}
+	}
+
+	close(release)
+	outcomes, err := stop.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if len(outcomes) != 1 {
+		t.Fatalf("outcomes = %+v, want exactly the one stopped command", outcomes)
+	}
+	got := outcomes[0]
+	if got.Kind != "command" || got.State != "interrupted" {
+		t.Fatalf("outcome = %+v, want command/interrupted", got)
+	}
+	if got.ExecutionID != attached.ExecutionID {
+		t.Fatalf("ExecutionID = %q, want %q", got.ExecutionID, attached.ExecutionID)
+	}
+	if got.ToolCallID != "call-attached" {
+		t.Fatalf("ToolCallID = %q, want call-attached", got.ToolCallID)
+	}
+
+	if _, err := jm.Wait(ctx, detached.ID); err != nil {
+		t.Fatalf("Wait detached: %v", err)
+	}
+}
+
+// TestInterruptOperationAllowsNextOperationSameTurn pins the boundary a steering
+// interruption draws: it closes the interrupted operation's admission without
+// closing the turn, so the replacement operation (and operation-less work) in
+// the same turn still launches.
+func TestInterruptOperationAllowsNextOperationSameTurn(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	runner := newFakeRunner(withRelease(release), withResult(CommandResult{ExitCode: -1}))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+	jm.stopSettleTimeout = 2 * time.Second
+
+	old := steeringRef("op-old")
+	oldJob, err := jm.Launch(ctx, LaunchSpec{Command: "old", Operation: old, Origin: CommandOrigin{TurnID: "turn-1"}})
+	if err != nil {
+		t.Fatalf("Launch old: %v", err)
+	}
+
+	stop, err := jm.InterruptOperation(ctx, old)
+	if err != nil {
+		t.Fatalf("InterruptOperation: %v", err)
+	}
+
+	// The closed operation rejects admission even though its turn is open.
+	if _, err := jm.Launch(ctx, LaunchSpec{Command: "late old", Operation: old, Origin: CommandOrigin{TurnID: "turn-1"}}); !errors.Is(err, errOperationClosed) {
+		t.Fatalf("Launch on a closed operation = %v, want errOperationClosed", err)
+	}
+	if _, err := jm.Launch(ctx, LaunchSpec{Command: "late old", Operation: old, Origin: CommandOrigin{TurnID: "turn-1"}}); errors.Is(err, ErrTurnStopped) {
+		t.Fatalf("a closed operation must not report a stopped turn: %v", err)
+	}
+
+	// The replacement operation in the same turn launches normally, as does
+	// operation-less work.
+	next := steeringRef("op-new")
+	fresh, err := jm.Launch(ctx, LaunchSpec{Command: "new", Operation: next, Origin: CommandOrigin{TurnID: "turn-1"}})
+	if err != nil {
+		t.Fatalf("Launch replacement operation: %v", err)
+	}
+	if _, err := jm.Launch(ctx, LaunchSpec{Command: "plain", Origin: CommandOrigin{TurnID: "turn-1"}}); err != nil {
+		t.Fatalf("Launch operation-less work: %v", err)
+	}
+
+	// The turn-stop flag is not what refused the late launch.
+	jm.mu.Lock()
+	_, turnStopped := jm.turnStops["turn-1"]
+	_, opClosed := jm.closedOps[old]
+	_, nextClosed := jm.closedOps[next]
+	jm.mu.Unlock()
+	if turnStopped {
+		t.Fatal("a steering interruption marked the turn stopped")
+	}
+	if !opClosed || nextClosed {
+		t.Fatalf("closed operations = old:%v new:%v, want only the interrupted operation", opClosed, nextClosed)
+	}
+
+	close(release)
+	if _, err := stop.Wait(ctx); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	for _, id := range []string{oldJob.ID, fresh.ID} {
+		if _, err := jm.Wait(ctx, id); err != nil {
+			t.Fatalf("Wait(%s): %v", id, err)
+		}
+	}
+}
+
+// TestInterruptOperationHandoffAndCompletionRace pins the handoff-versus-stop
+// race at the interruption boundary: whichever decision the manager's lock
+// serializes first wins, the command runs exactly once, and the caller sees one
+// truthful outcome — the stopped result if the stop won, or a continuation of
+// the same running command if the detach won.
+func TestInterruptOperationHandoffAndCompletionRace(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	runner := newFakeRunner(withRelease(release), withResult(CommandResult{ExitCode: -1}))
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+	jm.stopSettleTimeout = 2 * time.Second
+
+	completions := make(chan JobInfo, 4)
+	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) error {
+		completions <- info
+		return nil
+	})
+
+	op := steeringRef("op-race")
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "racy", Operation: op, Origin: CommandOrigin{TurnID: "turn-1"}})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
+	type waitResult struct {
+		res ForegroundResult
+		err error
+	}
+	waitCh := make(chan waitResult, 1)
+	stopCh := make(chan session.OperationStop, 1)
+	stopErrCh := make(chan error, 1)
+	start := make(chan struct{})
+	go func() {
+		<-start
+		res, err := jm.WaitForeground(ctx, info.ID, 5*time.Millisecond)
+		waitCh <- waitResult{res: res, err: err}
+	}()
+	go func() {
+		<-start
+		stop, err := jm.InterruptOperation(ctx, op)
+		stopErrCh <- err
+		stopCh <- stop
+	}()
+	close(start)
+
+	// The interruption's arbitration has happened by the time it returns; the
+	// wait's arbitration either happened before it (the detach won) or will
+	// resolve against the accepted stop (the stop won). Release the command so
+	// both sides settle, then read both decisions.
+	if err := <-stopErrCh; err != nil {
+		t.Fatalf("InterruptOperation: %v", err)
+	}
+	stop := <-stopCh
+	close(release)
+
+	got := <-waitCh
+	if got.err != nil {
+		t.Fatalf("WaitForeground: %v", got.err)
+	}
+	outcomes, waitErr := stop.Wait(ctx)
+
+	if got.res.Terminal {
+		// The stop was accepted while the command was attached: the waiting
+		// caller gets the actual terminated outcome, and the interruption reports
+		// the same execution as interrupted.
+		if got.res.Info.Outcome != OutcomeStopped || got.res.Info.StopCause != steeringStopCause {
+			t.Fatalf("terminal result = %q/%q, want stopped with the steering cause", got.res.Info.Outcome, got.res.Info.StopCause)
+		}
+		if waitErr != nil {
+			t.Fatalf("Wait error = %v, want a confirmed settlement", waitErr)
+		}
+		outcome := steeringState(t, outcomes, info.ExecutionID)
+		if outcome.State != "interrupted" {
+			t.Fatalf("outcome = %+v, want interrupted", outcome)
+		}
+	} else {
+		// The detach was accepted first: the command continues in the background
+		// and the interruption never targeted it.
+		if got.res.Info.Attachment != AttachmentBackground {
+			t.Fatalf("continuation attachment = %q, want background", got.res.Info.Attachment)
+		}
+		if waitErr != nil {
+			t.Fatalf("Wait error = %v, want none: nothing was selected", waitErr)
+		}
+		if len(outcomes) != 0 {
+			t.Fatalf("outcomes = %+v, want none: the command detached before the stop", outcomes)
+		}
+	}
+
+	// One supervisor, one launch, one settlement.
+	if runs := runner.countRuns(); runs != 1 {
+		t.Fatalf("runner runs = %d, want exactly 1 through the race", runs)
+	}
+	if tracked := len(jm.List()); tracked != 1 {
+		t.Fatalf("tracked executions = %d, want 1", tracked)
+	}
+	if _, err := jm.Wait(ctx, info.ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	settlements := 0
+	for {
+		select {
+		case <-completions:
+			settlements++
+			continue
+		case <-time.After(200 * time.Millisecond):
+		}
+		break
+	}
+	if settlements > 1 {
+		t.Fatalf("completions = %d, want at most one for one settlement", settlements)
+	}
+}
+
+// stubbornRunner ignores cancellation entirely until a test releases it, so it
+// models a backend that has not yet acted on a stop request: the interruption
+// must report the outcome unknown rather than claim the process stopped.
+type stubbornRunner struct {
+	release chan struct{}
+	once    sync.Once
+	runs    atomic.Int32
+}
+
+func (r *stubbornRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	r.runs.Add(1)
+	if req.OnStart != nil {
+		req.OnStart(4242)
+	}
+	<-r.release
+	return CommandResult{ExitCode: -1}, nil
+}
+
+func (r *stubbornRunner) countRuns() int { return int(r.runs.Load()) }
+
+// release lets the runner return. It is idempotent so a test and its cleanup can
+// both end the process without a double close.
+func (r *stubbornRunner) releaseNow() {
+	r.once.Do(func() { close(r.release) })
+}
+
+// TestInterruptOperationRepeatedStopAndBackendFailure pins the unknown result: a
+// backend that has not settled yet stays unknown with a non-nil error, a repeated
+// interruption issues no second stop, and the same join reports the actual
+// outcome once the process really exits.
+func TestInterruptOperationRepeatedStopAndBackendFailure(t *testing.T) {
+	ctx := context.Background()
+	runner := &stubbornRunner{release: make(chan struct{})}
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() {
+		runner.releaseNow()
+		_ = jm.Shutdown(context.Background())
+	})
+	jm.stopSettleTimeout = 40 * time.Millisecond
+
+	op := steeringRef("op-stubborn")
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "stubborn", Operation: op, Origin: CommandOrigin{TurnID: "turn-1", ToolCallID: "call-x"}})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	waitForRunCount2(t, runner, 1, time.Second)
+
+	stop, err := jm.InterruptOperation(ctx, op)
+	if err != nil {
+		t.Fatalf("InterruptOperation: %v", err)
+	}
+	outcomes, waitErr := stop.Wait(ctx)
+	if waitErr == nil {
+		t.Fatal("Wait = nil error, want unknown while the command has not settled")
+	}
+	got := steeringState(t, outcomes, info.ExecutionID)
+	if got.State != "unknown" {
+		t.Fatalf("outcome = %+v, want unknown", got)
+	}
+	if got.ToolCallID != "call-x" {
+		t.Fatalf("ToolCallID = %q, want call-x", got.ToolCallID)
+	}
+
+	// A repeated interruption finds the first request already issued and selects
+	// nothing: the stop is not sent twice.
+	again, err := jm.InterruptOperation(ctx, op)
+	if err != nil {
+		t.Fatalf("InterruptOperation (repeat): %v", err)
+	}
+	againOutcomes, againErr := again.Wait(ctx)
+	if againErr != nil {
+		t.Fatalf("repeat Wait = %v, want none", againErr)
+	}
+	if len(againOutcomes) != 0 {
+		t.Fatalf("repeat outcomes = %+v, want none: the stop was already issued", againOutcomes)
+	}
+	if got := runner.countRuns(); got != 1 {
+		t.Fatalf("runner runs = %d, want 1", got)
+	}
+
+	// The original join reports the actual outcome once the process exits.
+	runner.releaseNow()
+	settled, err := stop.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait after exit = %v, want a confirmed settlement", err)
+	}
+	got = steeringState(t, settled, info.ExecutionID)
+	if got.State != "interrupted" {
+		t.Fatalf("outcome after exit = %+v, want interrupted", got)
+	}
+}
+
+// waitForRunCount2 polls a stubbornRunner until it reports the expected run
+// count.
+func waitForRunCount2(t *testing.T, runner *stubbornRunner, count int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		if runner.countRuns() >= count {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d runner calls", count)
+		default:
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+}
+
+// TestInterruptOperationRealProcessTreeAndOutput drives a real shell through the
+// production runner: the command prints a marker then blocks with a child, and a
+// steering stop terminates and joins the whole process group while the marker
+// survives in the retained output.
+func TestInterruptOperationRealProcessTreeAndOutput(t *testing.T) {
+	ctx := context.Background()
+	jm := NewCommandService(ctx, LaunchPolicy{
+		Runner:         execRunner{},
+		Dir:            t.TempDir(),
+		MaxOutputBytes: 1 << 20,
+	})
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = jm.Shutdown(shutCtx)
+	})
+	jm.stopSettleTimeout = 5 * time.Second
+
+	const marker = "STEER-MARKER-3f9a"
+	op := steeringRef("op-real")
+	info, err := jm.Launch(ctx, LaunchSpec{
+		Command:   "printf '" + marker + "\\n'; sleep 30",
+		Operation: op,
+		Origin:    CommandOrigin{TurnID: "turn-1", ToolCallID: "call-real"},
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+
+	// Wait until the process has really started and produced its marker.
+	deadline := time.After(10 * time.Second)
+	for {
+		_, output, err := jm.Output(info.ID, 0)
+		if err != nil {
+			t.Fatalf("Output: %v", err)
+		}
+		if strings.Contains(output, marker) {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("the real command never printed its marker (output %q)", output)
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	stop, err := jm.InterruptOperation(ctx, op)
+	if err != nil {
+		t.Fatalf("InterruptOperation: %v", err)
+	}
+	outcomes, err := stop.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	got := steeringState(t, outcomes, info.ExecutionID)
+	if got.State != "interrupted" {
+		t.Fatalf("outcome = %+v, want interrupted", got)
+	}
+
+	settled, output, err := jm.Output(info.ID, 0)
+	if err != nil {
+		t.Fatalf("Output after stop: %v", err)
+	}
+	if settled.Status != StatusKilled || settled.Outcome != OutcomeStopped {
+		t.Fatalf("settled = %q/%q, want killed/stopped", settled.Status, settled.Outcome)
+	}
+	if settled.StopCause != steeringStopCause {
+		t.Fatalf("StopCause = %q, want %q", settled.StopCause, steeringStopCause)
+	}
+	if !strings.Contains(output, marker) {
+		t.Fatalf("output %q lost the pre-stop marker", output)
+	}
+}

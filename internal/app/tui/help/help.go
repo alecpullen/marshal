@@ -54,6 +54,13 @@ type FooterHints struct {
 	SkillGatePending bool
 	// Browsing is true in browse mode (Esc): the footer shows its keys.
 	Browsing bool
+	// SendNowAvailable is true when the runtime reports a supported, active
+	// turn the user can interrupt. It is what separates the two actions the
+	// busy footer offers: Enter queues without interrupting, and Alt+Enter
+	// interrupts the current operation and steers the same turn. Advertising
+	// the second action when the runtime cannot honour it would promise an
+	// interruption that never happens, so the hint is gated on it.
+	SendNowAvailable bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -82,8 +89,14 @@ func Footer(h FooterHints) string {
 		return strings.Join(segs, sep.Render(""))
 	} else if h.QuestionPending {
 		segs = append(segs, pair("Enter", "answer"), pair("Esc", "skip"))
+		if h.SendNowAvailable {
+			segs = append(segs, pair("Alt+Enter", "send now"))
+		}
 	} else if h.SkillGatePending {
 		segs = append(segs, pair("↑↓", "choose"), pair("1-4", "jump"), pair("Enter", "confirm"))
+		if h.SendNowAvailable {
+			segs = append(segs, pair("Alt+Enter", "send now"))
+		}
 	} else if h.ApprovalPending && !h.EditingCommand {
 		// One hint per key: this used to emit Enter twice, labelled "arm" and
 		// "submit", in the same row.
@@ -92,17 +105,26 @@ func Footer(h FooterHints) string {
 			pair("Enter", "confirm"),
 			pair("Esc", "deny"),
 		)
+		if h.SendNowAvailable {
+			segs = append(segs, pair("Alt+Enter", "send now"))
+		}
 	} else if h.EditingCommand {
 		segs = append(segs, pair("Enter", "save"), pair("Esc", "cancel edit"))
 	} else if h.PopupOpen {
 		segs = append(segs, pair("↑↓", "choose"), pair("Tab/Enter", "accept"), pair("Esc", "dismiss"))
 	} else if h.Busy {
+		// Enter queues; Alt+Enter interrupts. The two are different promises,
+		// so the labels must be too: "send" for Enter would read as the
+		// interruption the second key exists to perform.
 		segs = append(segs,
-			pair("Enter", "send"),
+			pair("Enter", "queue"),
 			pair("Shift+Enter", "newline"),
 			pair("Ctrl+C", "stop"),
 			pair("Ctrl+X", "clear queue"),
 		)
+		if h.SendNowAvailable {
+			segs = append(segs, pair("Alt+Enter", "send now"))
+		}
 		if h.RunActive {
 			segs = append(segs, pair("Ctrl+F", "inspect agent"))
 		}

@@ -135,7 +135,12 @@ func (b *PermissionBridge) Request(ctx context.Context, sessionID string, pendin
 	if pending.Access != nil {
 		return session.UserApprovalDecision{}, errors.New("acp: access requests require CollectAccess and runtime resolution")
 	}
-	if pending.ResponseChan == nil {
+	// A registered prompt (Key.ID set) settles through the session's canonical
+	// registry: its event/display copy carries no channel of its own, and
+	// nothing here may send to or close a copied one. Only an unregistered
+	// legacy fixture keeps the direct-channel behavior.
+	registered := pending.Key.ID != ""
+	if !registered && pending.ResponseChan == nil {
 		return session.UserApprovalDecision{}, ErrPendingMissingResponseChan
 	}
 	req := PermissionRequest{
@@ -154,6 +159,13 @@ func (b *PermissionBridge) Request(ctx context.Context, sessionID string, pendin
 	out := session.UserApprovalDecision{
 		Approved: decision.Approved,
 		Edited:   decision.Edited,
+	}
+	if registered {
+		// Respond routes a registered prompt to the canonical record, which
+		// arbitrates this answer against an accepted steering cancellation; a
+		// canceled or superseded request can neither grant nor clear anything.
+		pending.Respond(out)
+		return out, nil
 	}
 	select {
 	case pending.ResponseChan <- out:
@@ -176,7 +188,11 @@ func (b *PermissionBridge) RequestSkillGate(ctx context.Context, sessionID strin
 	if pending == nil {
 		return 0, ErrNilPending
 	}
-	if pending.ResponseChan == nil {
+	// A registered gate settles through the canonical registry; its event copy
+	// carries no channel of its own. Only an unregistered legacy fixture keeps
+	// the direct-channel behavior.
+	registered := pending.Key.ID != ""
+	if !registered && pending.ResponseChan == nil {
 		return 0, ErrPendingMissingResponseChan
 	}
 	req := PermissionRequest{
@@ -195,6 +211,13 @@ func (b *PermissionBridge) RequestSkillGate(ctx context.Context, sessionID strin
 	out := session.SkillGateDeny
 	if decision.Approved {
 		out = session.SkillGateAllowOnce
+	}
+	if registered {
+		// Respond routes a registered gate to the canonical record: a canceled
+		// gate is settled as interrupted (never a sticky denial) and a
+		// superseded one cannot be answered here.
+		pending.Respond(out)
+		return out, nil
 	}
 	select {
 	case pending.ResponseChan <- out:

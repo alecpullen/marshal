@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"marshal/internal/app/session"
@@ -130,11 +132,17 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 				err   error
 			}
 			waitCtx, cancel := context.WithCancel(ctx)
-			defer cancel()
 			arrivals := make(chan awaitArrival, p.count())
+			// Every fan-out goroutine is joined before this call returns: the
+			// waiter lifetime is the await's to end, and a goroutine still parked
+			// in WaitSubagent after the handler returned would outlive the batch
+			// that owns it. cancel() is what releases them, so it runs first.
+			var waiters sync.WaitGroup
+			waiters.Add(p.count())
 			for _, id := range p.subIDs {
 				id := id
 				go func() {
+					defer waiters.Done()
 					v, err := state.WaitSubagent(waitCtx, id)
 					arrivals <- awaitArrival{class: "subagent", sub: v, err: err}
 				}()
@@ -142,13 +150,27 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 			for _, job := range p.jobs {
 				job := job
 				go func() {
+					defer waiters.Done()
 					info, err := cfg.jobs.AwaitJob(waitCtx, job.ID)
 					arrivals <- awaitArrival{class: "job", job: info, err: err}
 				}()
 			}
+			defer func() {
+				cancel()
+				waiters.Wait()
+			}()
 			select {
 			case arr := <-arrivals:
 				if arr.err != nil {
+					// The any-mode waiter itself was interrupted: cancel and
+					// join the remaining waiter goroutines through their waiter
+					// context, then report the surviving targets. The targets
+					// themselves are never stopped.
+					cancel()
+					waiters.Wait()
+					if session.IsSteeringCancellation(ctx, arr.err) || errors.Is(arr.err, session.ErrSendNow) {
+						return cfg.awaitSteeringResult(ctx, state, registry.ToolResult{})
+					}
 					return registry.ToolResult{}, arr.err
 				}
 				var line, content string
@@ -161,9 +183,17 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 				}
 				return registry.ToolResult{Summary: line, Content: content}, nil
 			case <-ctx.Done():
+				// Join the fan-out before returning: cancel() is deferred, but
+				// a goroutine blocked on a send into the buffered arrivals
+				// channel would otherwise outlive this call.
+				cancel()
+				waiters.Wait()
 				err := ctx.Err()
 				if errors.Is(err, context.DeadlineExceeded) {
 					return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, nil), nil
+				}
+				if session.IsSteeringCancellation(ctx, err) || errors.Is(err, session.ErrSendNow) {
+					return cfg.awaitSteeringResult(ctx, state, registry.ToolResult{})
 				}
 				return registry.ToolResult{}, err
 			}
@@ -176,6 +206,9 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, nil), nil
+				}
+				if session.IsSteeringCancellation(ctx, err) || errors.Is(err, session.ErrSendNow) {
+					return cfg.awaitSteeringResult(ctx, state, registry.ToolResult{})
 				}
 				return registry.ToolResult{}, err
 			}
@@ -204,6 +237,9 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 			if err != nil {
 				if errors.Is(err, context.DeadlineExceeded) {
 					return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, nil), nil
+				}
+				if session.IsSteeringCancellation(ctx, err) || errors.Is(err, session.ErrSendNow) {
+					return cfg.awaitSteeringResult(ctx, state, registry.ToolResult{})
 				}
 				return registry.ToolResult{}, err
 			}
@@ -262,11 +298,15 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 					if errors.Is(err, context.DeadlineExceeded) {
 						return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, lines), nil
 					}
+					partial := registry.ToolResult{
+						Summary: strings.Join(lines, "\n"),
+						Content: strings.Join(bodies, "\n\n"),
+					}
+					if session.IsSteeringCancellation(ctx, err) || errors.Is(err, session.ErrSendNow) {
+						return cfg.awaitSteeringResult(ctx, state, partial)
+					}
 					if len(lines) > 0 {
-						return registry.ToolResult{
-							Summary: strings.Join(lines, "\n"),
-							Content: strings.Join(bodies, "\n\n"),
-						}, err
+						return partial, err
 					}
 					return registry.ToolResult{}, err
 				}
@@ -282,11 +322,15 @@ func NewSubagentAwaitTool(state *session.State, opts ...AwaitOption) registry.To
 					if errors.Is(err, context.DeadlineExceeded) {
 						return cfg.awaitTimeoutResult(state, args.TimeoutSeconds, lines), nil
 					}
+					partial := registry.ToolResult{
+						Summary: strings.Join(lines, "\n"),
+						Content: strings.Join(bodies, "\n\n"),
+					}
+					if session.IsSteeringCancellation(ctx, err) || errors.Is(err, session.ErrSendNow) {
+						return cfg.awaitSteeringResult(ctx, state, partial)
+					}
 					if len(lines) > 0 {
-						return registry.ToolResult{
-							Summary: strings.Join(lines, "\n"),
-							Content: strings.Join(bodies, "\n\n"),
-						}, err
+						return partial, err
 					}
 					return registry.ToolResult{}, err
 				}
@@ -363,9 +407,75 @@ func noOutstandingResult() registry.ToolResult {
 	}
 }
 
-// awaitTimeoutResult renders the normal (non-error) result for an await that
-// expired via timeout_seconds. It rescans pending so the "still running"
-// count is current; partial lines collected by an all-wait are appended.
+// awaitSteeringResult settles an await whose waiter was interrupted by user
+// steering. The waiter is interrupted, never the targets: nothing here calls
+// KillJob, CancelSubagent or a turn stop, and every surviving target is
+// reported with its identity and current status so the parent knows what is
+// still running and can await it again. Completed partial results collected
+// before the interruption are preserved verbatim, and a steering_interruption
+// notice carries the surviving targets as structured outcomes.
+func (a awaitOptions) awaitSteeringResult(ctx context.Context, state *session.State, partial registry.ToolResult) (registry.ToolResult, error) {
+	pending := a.scanPending(state)
+	lines := make([]string, 0, pending.count())
+	outcomes := make([]session.SteeringOutcome, 0, pending.count())
+	for _, id := range pending.subIDs {
+		status := "running"
+		label := ""
+		if v, ok := state.Subagent(id); ok {
+			label = v.Label
+			switch v.Status {
+			case session.SubagentDone:
+				status = "completed"
+			case session.SubagentFailed:
+				status = "failed"
+			}
+		}
+		line := fmt.Sprintf("subagent %d: %s", id, status)
+		if label != "" {
+			line = fmt.Sprintf("subagent %d (%s): %s", id, label, status)
+		}
+		lines = append(lines, line)
+		outcomes = append(outcomes, session.SteeringOutcome{
+			Kind:    "tool",
+			State:   "continues",
+			AgentID: strconv.FormatInt(id, 10),
+		})
+	}
+	for _, job := range pending.jobs {
+		status := job.Status
+		if status == "" {
+			status = "running"
+		}
+		lines = append(lines, fmt.Sprintf("job %s: %s", job.ID, status))
+		outcomes = append(outcomes, session.SteeringOutcome{
+			Kind:        "command",
+			State:       "continues",
+			ExecutionID: job.ID,
+		})
+	}
+
+	summary := "interrupted by user steering"
+	content := summary
+	if partial.Summary != "" {
+		summary = partial.Summary
+		content = partial.Summary
+		if partial.Content != "" {
+			content += "\n\n" + partial.Content
+		}
+	}
+	if len(lines) > 0 {
+		content += "\n\nstill running after the interruption:\n" + strings.Join(lines, "\n")
+	} else {
+		content += "\n\nno background target remains outstanding"
+	}
+
+	notice := &registry.ToolNotice{
+		Kind: steeringNoticeKind,
+		Text: "User steering interrupted this wait. The targets were not stopped.",
+		Data: map[string]any{"outcomes": outcomes},
+	}
+	return registry.ToolResult{Summary: summary, Content: content, Notice: notice}, session.ErrSendNow
+}
 func (a awaitOptions) awaitTimeoutResult(state *session.State, timeoutSeconds int, partial []string) registry.ToolResult {
 	p := a.scanPending(state)
 	summary := fmt.Sprintf("timed out after %ds; %d target(s) still running", timeoutSeconds, p.count())

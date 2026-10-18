@@ -100,6 +100,61 @@ func publishJobAndRunCmd(t *testing.T, b *pubsub.Broker[native.JobEvent], cmd te
 	return msg
 }
 
+// TestPumpSteeringEventsCarriesSnapshotAndReceipt pins the additive Send now
+// channels: the same pump keeps the QueueLen compatibility fields and forwards
+// the snapshot and receipt the event carried.
+func TestPumpSteeringEventsCarriesSnapshotAndReceipt(t *testing.T) {
+	b := pubsub.NewBroker[session.SteeringEvent]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := b.Subscribe(ctx)
+
+	snap := session.SteeringSnapshot{Version: 7, TurnID: "turn", Active: true, Supported: true, PendingCount: 2}
+	receipt := session.SteeringReceipt{Version: 3, RequestID: "req-1", TurnID: "turn", Status: session.SteeringInterrupting}
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		b.Publish("steering", session.SteeringEvent{QueueLen: 2, Message: "queued", Snapshot: &snap, Receipt: &receipt})
+	}()
+
+	msg := runCmdOnce(pumpSteeringEvents(ch), time.Second)
+	got, ok := msg.(steeringMsg)
+	if !ok {
+		t.Fatalf("got %T, want steeringMsg", msg)
+	}
+	if got.queueLen != 2 || got.message != "queued" {
+		t.Fatalf("compatibility fields = %d/%q, want 2/queued", got.queueLen, got.message)
+	}
+	if got.snapshot == nil || *got.snapshot != snap {
+		t.Fatalf("snapshot = %+v, want %+v", got.snapshot, snap)
+	}
+	if got.receipt == nil || got.receipt.RequestID != receipt.RequestID || got.receipt.Status != receipt.Status {
+		t.Fatalf("receipt = %+v, want %+v", got.receipt, receipt)
+	}
+}
+
+// TestModelSteeringMsgWithoutBrokerCachesState is the no-broker counterpart: a
+// model with no steering broker re-arms nothing and still caches what a
+// directly-delivered message carried.
+func TestModelSteeringMsgWithoutBrokerCachesState(t *testing.T) {
+	m := newTestModel(t)
+	snap := session.SteeringSnapshot{Version: 4, TurnID: "turn", Active: true, Supported: true}
+	receipt := session.SteeringReceipt{Version: 2, RequestID: "req", TurnID: "turn", Status: session.SteeringWaitingResume}
+	updated, cmd := m.Update(steeringMsg{queueLen: 3, snapshot: &snap, receipt: &receipt})
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("a broker-less model returned a cmd (%T), want nil", cmd)
+	}
+	if m.queuedCount != 3 {
+		t.Fatalf("queuedCount = %d, want 3", m.queuedCount)
+	}
+	if m.steeringSnapshot != snap {
+		t.Fatalf("cached snapshot = %+v, want %+v", m.steeringSnapshot, snap)
+	}
+	if got := m.steeringReceipts["req"].Status; got != session.SteeringWaitingResume {
+		t.Fatalf("cached receipt status = %q, want waiting_for_resume", got)
+	}
+}
+
 // runCmdOnce runs the cmd once with a hard timeout. Returns the produced
 // msg, or nil if the cmd blocked past the timeout (the cmd is then left
 // to finish in the background — acceptable for blocking-pump tests).

@@ -95,6 +95,10 @@ type UserApprovalDecision struct {
 	Approved bool
 	Edited   string
 	Access   *AccessResult
+	// Canceled marks a decision the session settled because the request was
+	// interrupted by user steering rather than answered. It is never a grant:
+	// a canceled approval carries Approved=false and no edited text.
+	Canceled bool
 }
 
 // QuestionOption is one selectable answer to a Question. Plain strings
@@ -177,6 +181,13 @@ type PendingQuestion struct {
 	Questions    []Question
 	ResponseChan chan []Answer
 	responded    sync.Once
+	// Key identifies this prompt in the session's canonical registry; it is
+	// the zero value for an unregistered legacy fixture, which keeps its own
+	// channel-based Respond. canonical is the shared responder every display
+	// or event copy carries — it owns no once and no channel, so a copy can
+	// never settle a request on its own.
+	Key       PromptKey
+	canonical *promptRef
 }
 
 // Respond sends answers to the response channel exactly once (guarded by
@@ -184,8 +195,17 @@ type PendingQuestion struct {
 // produces a send. The send is non-blocking so unbuffered channels with no
 // receiver don't deadlock. The channel is closed after the send so the
 // runner can detect that no more responses are coming.
+//
+// A registered prompt settles through the session's canonical registry, which
+// arbitrates the answer against an accepted steering cancellation. A display
+// or event copy that carries only the canonical reference routes there too,
+// so a copy can never answer a request it does not own.
 func (p *PendingQuestion) Respond(a []Answer) {
 	if p == nil {
+		return
+	}
+	if p.canonical != nil {
+		p.canonical.resolveQuestionCopy(a)
 		return
 	}
 	p.responded.Do(func() {
@@ -218,6 +238,11 @@ type PendingToolCall struct {
 	// helper so a grant can never be acknowledged before it was applied.
 	Access    *AccessRequest
 	responded sync.Once
+	// Key/canonical mirror PendingQuestion: a registered prompt settles
+	// through the session's canonical registry, an unregistered legacy
+	// fixture through its own channel.
+	Key       PromptKey
+	canonical *promptRef
 }
 
 // Respond sends a UserApprovalDecision to the response channel exactly once
@@ -229,12 +254,18 @@ type PendingToolCall struct {
 // A typed access request is settled only by the session's private settlement
 // helper (finishAccessLocked), which is the single point that may acknowledge
 // an applied grant; Respond is a no-op for it so an untyped or stale
-// responder cannot report success.
+// responder cannot report success. An ordinary registered prompt settles
+// through the canonical registry, so an event copy can never answer a request
+// it does not own.
 func (p *PendingToolCall) Respond(d UserApprovalDecision) {
 	if p == nil {
 		return
 	}
 	if p.Access != nil {
+		return
+	}
+	if p.canonical != nil {
+		p.canonical.resolveApprovalCopy(d)
 		return
 	}
 	p.responded.Do(func() {
@@ -288,6 +319,7 @@ func (s *State) SetPendingApproval(tc *PendingToolCall) {
 		}
 		return
 	}
+	previous := s.pendingApproval
 	s.pendingApproval = tc
 	var snap *PendingToolCall
 	if tc != nil {
@@ -309,6 +341,11 @@ func (s *State) SetPendingApproval(tc *PendingToolCall) {
 	}
 	s.mu.Unlock()
 	s.accessMu.Unlock()
+	// A registered prompt this generic setter just cleared or replaced is
+	// settled canonically: its waiter is released with a real cause instead of
+	// hanging on an abandoned channel, and a later answer on its retained copy
+	// finds a settled record. A legacy fixture keeps its own channel semantics.
+	s.settleSupersededPrompt(previous, errPromptSuperseded)
 	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: snap})
 }
 
@@ -331,6 +368,7 @@ func (s *State) PendingApproval() *PendingToolCall {
 
 func (s *State) SetPendingQuestion(q *PendingQuestion) {
 	s.mu.Lock()
+	previous := s.pendingQuestion
 	s.pendingQuestion = q
 	var snap *PendingQuestion
 	if q != nil {
@@ -340,6 +378,9 @@ func (s *State) SetPendingQuestion(q *PendingQuestion) {
 		}
 	}
 	s.mu.Unlock()
+	// A registered prompt this generic setter replaced is settled canonically
+	// so its waiter is released rather than left on an abandoned channel.
+	s.settleSupersededPrompt(previous, errPromptSuperseded)
 	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: snap})
 }
 
@@ -493,6 +534,9 @@ type PendingSkillGate struct {
 	Reason       string
 	ResponseChan chan SkillGateChoice
 	responded    sync.Once
+	// Key/canonical mirror PendingQuestion; see its comment.
+	Key       PromptKey
+	canonical *promptRef
 }
 
 // Respond sends a choice to the response channel exactly once (guarded by
@@ -502,6 +546,10 @@ type PendingSkillGate struct {
 // runner can detect that no more responses are coming.
 func (p *PendingSkillGate) Respond(c SkillGateChoice) {
 	if p == nil {
+		return
+	}
+	if p.canonical != nil {
+		p.canonical.resolveSkillCopy(c)
 		return
 	}
 	p.responded.Do(func() {
@@ -517,6 +565,7 @@ func (p *PendingSkillGate) Respond(c SkillGateChoice) {
 
 func (s *State) SetPendingSkillGate(sg *PendingSkillGate) {
 	s.mu.Lock()
+	previous := s.pendingSkillGate
 	s.pendingSkillGate = sg
 	var snap *PendingSkillGate
 	if sg != nil {
@@ -528,6 +577,9 @@ func (s *State) SetPendingSkillGate(sg *PendingSkillGate) {
 		}
 	}
 	s.mu.Unlock()
+	// A registered prompt this generic setter replaced is settled canonically
+	// so its waiter is released rather than left on an abandoned channel.
+	s.settleSupersededPrompt(previous, errPromptSuperseded)
 	s.publishEvent(EventPendingSkillGateChanged, Event{PendingSkillGate: snap})
 }
 
@@ -569,6 +621,10 @@ type PendingSudoAuth struct {
 	Error        string
 	ResponseChan chan SudoAuthDecision
 	responded    sync.Once
+	// Key/canonical mirror PendingQuestion; see its comment. A canceled sudo
+	// prompt delivers an empty decision: no password bytes are ever retained.
+	Key       PromptKey
+	canonical *promptRef
 }
 
 // Respond sends a decision to the response channel exactly once (guarded by
@@ -578,6 +634,10 @@ type PendingSudoAuth struct {
 // detect that no more responses are coming.
 func (p *PendingSudoAuth) Respond(d SudoAuthDecision) {
 	if p == nil {
+		return
+	}
+	if p.canonical != nil {
+		p.canonical.resolveSudoCopy(d)
 		return
 	}
 	p.responded.Do(func() {
@@ -596,6 +656,7 @@ func (p *PendingSudoAuth) Respond(d SudoAuthDecision) {
 // subscriber can observe a credential.
 func (s *State) SetPendingSudoAuth(sa *PendingSudoAuth) {
 	s.mu.Lock()
+	previous := s.pendingSudoAuth
 	s.pendingSudoAuth = sa
 	var snap *PendingSudoAuth
 	if sa != nil {
@@ -610,6 +671,10 @@ func (s *State) SetPendingSudoAuth(sa *PendingSudoAuth) {
 		}
 	}
 	s.mu.Unlock()
+	// A registered prompt this generic setter replaced is settled canonically
+	// so its waiter is released rather than left on an abandoned channel. The
+	// empty decision carries no password bytes.
+	s.settleSupersededPrompt(previous, errPromptSuperseded)
 	s.publishEvent(EventPendingSudoAuthChanged, Event{PendingSudoAuth: snap})
 }
 

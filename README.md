@@ -191,6 +191,13 @@ finished tasks fold to one line. Three density levels (`Ctrl+G`, and per-node
 with `Enter`) and a keyboard browse mode (`Esc`) give detail on demand, with a
 full inspector (`i`) for any single step.
 
+During a normal conversation turn, `Enter` queues steering and `Alt+Enter`
+sends it now. Send now interrupts the current operation: it stops attached
+foreground commands, ends waits without stopping their targets, and cancels
+unanswered prompts without granting permission. Background jobs and independent
+subagents continue. Use `/send-now` as the command alternative. SDD/swarm
+controller steering is not supported.
+
 Ownership is visible: each step shows who did it — orchestrator, a named
 subagent, or a pipeline role — and approvals show the requesting step's
 narration as their reason.

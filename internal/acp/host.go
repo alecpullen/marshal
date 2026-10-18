@@ -227,15 +227,17 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 				// The runtime owns mode validation and the session override, so
 				// the manual RPC path goes through the same operation the TUI
 				// uses rather than mutating the runner directly.
-				SetMode:         rt.SetSessionMode,
-				SetEffort:       rt.SetSessionEffort,
-				SetSystemAccess: rt.State.SetSystemAccess,
-				AccessRequest:   rt.AccessRequest,
-				ResolveAccess:   rt.ResolveAccess,
-				Steer:           rt.State.PushSteering,
-				State:           rt.State,
-				SwarmRunner:     swarmRunner,
-				PipelineFactory: pipelineFactory,
+				SetMode:          rt.SetSessionMode,
+				SetEffort:        rt.SetSessionEffort,
+				SetSystemAccess:  rt.State.SetSystemAccess,
+				AccessRequest:    rt.AccessRequest,
+				ResolveAccess:    rt.ResolveAccess,
+				Steer:            rt.State.PushSteering,
+				SteeringSnapshot: rt.State.SteeringSnapshot,
+				SendNow:          rt.State.SubmitSendNow,
+				State:            rt.State,
+				SwarmRunner:      swarmRunner,
+				PipelineFactory:  pipelineFactory,
 			}
 			crt.WatchResumeEnabled = func() bool { return rt.State != nil && rt.State.Config.Watch.ResumeEnabled }
 			crt.WatchResumeGatePending = func() bool { return rt.State != nil && rt.State.SDDGate().Question != "" }
@@ -351,6 +353,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 	srv.Handle("session/set_mode", turns.SetMode)
 	srv.Handle("session/set_effort", turns.SetEffort)
 	srv.Handle("session/steer", turns.Steer)
+	srv.Handle("session/steering_status", turns.SteeringStatus)
 	srv.Handle("session/stack", turns.Stack)
 	srv.Handle("session/stack_node", turns.StackNode)
 	srv.Handle("session/last_request", turns.LastRequest)

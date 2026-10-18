@@ -374,9 +374,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		}
 		// F16 R3: clear the steering queue while the agent is
 		// working. Out-of-band so /clear semantics don't collide.
+		// An accepted, undelivered Send now request keeps its covered entry:
+		// Ctrl+X clears ordinary queued text, it cannot revoke a request the
+		// runtime already accepted. The surviving depth is re-read.
 		if m.busy {
 			m.state.ClearSteering()
-			m.queuedCount = 0
+			m.queuedCount = len(m.state.SteeringQueue())
 			m.refreshViewport()
 			return *m, nil, true
 		}

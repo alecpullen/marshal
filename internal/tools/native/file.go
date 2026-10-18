@@ -635,113 +635,188 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 		}
 	}
 
-	// Apply for real
-	for _, fp := range patches {
-		path, err := t.resolveToolPath(fp.Path, false)
-		if err != nil {
-			return registry.ToolResult{}, err
+	// finalize stores the backups of the files that actually committed and
+	// builds the tool result. interrupted is nil for a complete attempt; when it
+	// is non-nil the result is the truthful partial outcome — the files already
+	// written, their diffs and backups — and the interrupting cause is returned
+	// with it, so a caller between commit units never loses committed evidence
+	// and never claims the unwritten files were applied.
+	finalize := func(interrupted error) (registry.ToolResult, error) {
+		if ws := t.wsState(); ws != nil {
+			ws.StoreBackup(backups)
 		}
-		data, err := os.ReadFile(path)
-		var original string
-		fileExists := err == nil
-		if err != nil {
-			if !os.IsNotExist(err) {
-				return registry.ToolResult{}, err
-			}
-			// New file creation: verify SEARCH block is empty.
-			for _, chunk := range fp.Chunks {
-				if chunk.Search != "" {
-					return registry.ToolResult{}, fmt.Errorf("file %s does not exist; %s", fp.Path, createHint)
-				}
-			}
-		} else {
-			original = string(data)
+		committed := committedPaths(backups)
+		var warning strings.Builder
+		// Surface healed format mistakes so the model corrects its next
+		// proposal instead of relying on the repair. The patch applied, so
+		// this is a notice appended to a result, not an error.
+		if len(repairs) > 0 {
+			warning.WriteString("Note — the proposal's format was repaired before applying:\n- " +
+				strings.Join(repairs, "\n- ") +
+				"\nClose every REPLACE block with \">>>>>>> REPLACE\".")
 		}
-
-		info, err := os.Stat(path)
-		var mode os.FileMode = 0644
-		if err == nil {
-			mode = info.Mode()
+		// Diagnostics are checked against the files that committed: reporting a
+		// language-server verdict on a file this attempt never wrote would
+		// describe work that did not happen.
+		var diag string
+		if finishDiag != nil {
+			diag = finishDiag(ctx)
+		} else if t.diagnostics != nil && len(committed) > 0 {
+			diag, _ = t.diagnostics.Check(t.activeRoot(), committed, languageOf(committed))
 		}
-
-		diff, err := patch.GenerateDiff(fp.Path, original, fp)
-		if err == nil {
-			diffs = append(diffs, diff)
-		}
-
-		backups = append(backups, session.BackupFile{
-			Path:    fp.Path,
-			Content: original,
-			Mode:    mode,
-			Exists:  fileExists,
-		})
-
-		patched := patch.ApplyPatch(original, fp)
-		if diff != "" {
-			symbols = append(symbols, symbolsForEdit(ctx, fp.Path, patched, diff)...)
-		}
-		if strings.Contains(original, "\r\n") {
-			// Normalize safely: collapse existing CRLF to LF first so a
-			// naive LF->CRLF conversion does not turn CRLF into CRCRLF.
-			patched = strings.ReplaceAll(patched, "\r\n", "\n")
-			patched = strings.ReplaceAll(patched, "\n", "\r\n")
-		}
-
-		// TOCTOU re-check — verify file hasn't been modified
-		// between the validate loop and this write. This closes the window
-		// between the fileTracker check in the validate loop and the actual
-		// write. When fileTracker is nil (e.g. no session active) the check
-		// is skipped, which is a known gap.
-		if t.fileTracker != nil {
-			lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
-			if lrErr == nil && hasRead {
-				writeStat, statErr := os.Stat(path)
-				if statErr == nil && writeStat.ModTime().After(lastRead) {
-					return registry.ToolResult{}, changedOnDiskError(path, fp)
-				}
-			}
-		} else {
-			slog.Warn("file.write_patch TOCTOU re-check skipped: nil fileTracker",
-				"path", fp.Path)
-		}
-
-		if err := os.WriteFile(path, []byte(patched), mode); err != nil {
-			return registry.ToolResult{}, fmt.Errorf("write file %s: %w", fp.Path, err)
-		}
-
-		if t.fileTracker != nil {
-			_ = t.fileTracker.RecordWrite(path, time.Now())
-			_ = t.fileTracker.RecordRead(path, time.Now())
-		}
-	}
-
-	if ws := t.wsState(); ws != nil {
-		ws.StoreBackup(backups)
-	}
-
-	content := strings.Join(diffs, "\n\n")
-	// Surface healed format mistakes so the model corrects its next
-	// proposal instead of relying on the repair. The patch applied, so
-	// this is a notice appended to a success, not an error.
-	if len(repairs) > 0 {
-		content += "\n\nNote — the proposal's format was repaired before applying:\n- " +
-			strings.Join(repairs, "\n- ") +
-			"\nClose every REPLACE block with \">>>>>>> REPLACE\"."
-	}
-	if finishDiag != nil {
-		content += "\n\n" + finishDiag(ctx)
-	} else if t.diagnostics != nil {
-		diag, _ := t.diagnostics.Check(t.activeRoot(), paths, languageOf(paths))
 		if diag != "" {
-			content += "\n\n" + diag
+			if warning.Len() > 0 {
+				warning.WriteString("\n\n")
+			}
+			warning.WriteString(diag)
 		}
+		if interrupted != nil {
+			if warning.Len() > 0 {
+				warning.WriteString("\n\n")
+			}
+			warning.WriteString(fmt.Sprintf(
+				"Interrupted by user steering: %d of %d file(s) were committed and are on disk; the remaining files were not written.",
+				len(backups), len(patches)))
+		}
+		return t.patchResult(diffs, backups, symbols, warning.String()), interrupted
+	}
+
+	// Apply for real. Each file is one atomic commit unit: admission is checked
+	// before the unit starts, and once admitted the write, its backup/diff
+	// recording and its symbol capture all finish. An interruption between units
+	// therefore keeps every committed file and returns ErrSendNow; a unit that
+	// never started is not written, and no speculative backup is stored for it.
+	for _, fp := range patches {
+		release, err := session.BeginSteeringMutation(ctx)
+		if err != nil {
+			return finalize(err)
+		}
+		writeErr := func() error {
+			defer release()
+			path, err := t.resolveToolPath(fp.Path, false)
+			if err != nil {
+				return err
+			}
+			data, err := os.ReadFile(path)
+			var original string
+			fileExists := err == nil
+			if err != nil {
+				if !os.IsNotExist(err) {
+					return err
+				}
+				// New file creation: verify SEARCH block is empty.
+				for _, chunk := range fp.Chunks {
+					if chunk.Search != "" {
+						return fmt.Errorf("file %s does not exist; %s", fp.Path, createHint)
+					}
+				}
+			} else {
+				original = string(data)
+			}
+
+			info, err := os.Stat(path)
+			var mode os.FileMode = 0644
+			if err == nil {
+				mode = info.Mode()
+			}
+
+			diff, err := patch.GenerateDiff(fp.Path, original, fp)
+			if err != nil {
+				diff = ""
+			}
+
+			patched := patch.ApplyPatch(original, fp)
+			if strings.Contains(original, "\r\n") {
+				// Normalize safely: collapse existing CRLF to LF first so a
+				// naive LF->CRLF conversion does not turn CRLF into CRCRLF.
+				patched = strings.ReplaceAll(patched, "\r\n", "\n")
+				patched = strings.ReplaceAll(patched, "\n", "\r\n")
+			}
+
+			// TOCTOU re-check — verify file hasn't been modified
+			// between the validate loop and this write. This closes the window
+			// between the fileTracker check in the validate loop and the actual
+			// write. When fileTracker is nil (e.g. no session active) the check
+			// is skipped, which is a known gap.
+			if t.fileTracker != nil {
+				lastRead, hasRead, lrErr := t.fileTracker.LastReadTime(path)
+				if lrErr == nil && hasRead {
+					writeStat, statErr := os.Stat(path)
+					if statErr == nil && writeStat.ModTime().After(lastRead) {
+						return changedOnDiskError(path, fp)
+					}
+				}
+			} else {
+				slog.Warn("file.write_patch TOCTOU re-check skipped: nil fileTracker",
+					"path", fp.Path)
+			}
+
+			if err := os.WriteFile(path, []byte(patched), mode); err != nil {
+				return fmt.Errorf("write file %s: %w", fp.Path, err)
+			}
+
+			if t.fileTracker != nil {
+				_ = t.fileTracker.RecordWrite(path, time.Now())
+				_ = t.fileTracker.RecordRead(path, time.Now())
+			}
+
+			// Evidence is recorded only for a file that actually committed, so
+			// the result names exactly the files on disk.
+			if diff != "" {
+				diffs = append(diffs, diff)
+				symbols = append(symbols, symbolsForEdit(ctx, fp.Path, patched, diff)...)
+			}
+			backups = append(backups, session.BackupFile{
+				Path:    fp.Path,
+				Content: original,
+				Mode:    mode,
+				Exists:  fileExists,
+			})
+			return nil
+		}()
+		if writeErr != nil {
+			return registry.ToolResult{}, writeErr
+		}
+	}
+
+	return finalize(nil)
+}
+
+// committedPaths returns the on-disk paths a patch attempt actually wrote, so
+// the result reports the files that exist rather than the files requested.
+func committedPaths(backups []session.BackupFile) []string {
+	out := make([]string, 0, len(backups))
+	for _, b := range backups {
+		out = append(out, b.Path)
+	}
+	return out
+}
+
+// patchResult renders a patch attempt's tool result from its evidence: the
+// diffs, the backups of the files committed, the captured symbols and an
+// optional warning tail (repairs, diagnostics, an interruption note). Both the
+// complete and the interrupted path build their result here, so a partial
+// outcome is shaped exactly like a full one and no caller can report committed
+// work with a different summary, file list or symbol set.
+func (t *toolSet) patchResult(diffs []string, backups []session.BackupFile, symbols []registry.SymbolRef, warning string) registry.ToolResult {
+	paths := committedPaths(backups)
+	content := strings.Join(diffs, "\n\n")
+	if warning != "" {
+		if content != "" {
+			content += "\n\n"
+		}
+		content += warning
+	}
+	summary := "Applied patches to: " + strings.Join(paths, ", ")
+	if len(paths) == 0 {
+		summary = "No files were written"
 	}
 	return registry.ToolResult{
-		Summary:      fmt.Sprintf("Applied patches to: %s", strings.Join(paths, ", ")),
+		Summary:      summary,
 		Content:      content,
-		FilesChanged: append([]string(nil), paths...),
+		FilesChanged: paths,
 		Symbols:      symbols,
-	}, nil
+	}
 }
 
 type fileWriteArgs struct {
@@ -868,6 +943,18 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 				finishDiag = f
 			}
 		}
+
+		// The whole-file write is one atomic commit unit: admission is checked
+		// before it starts, so a write that has not begun when the operation is
+		// interrupted is not started, and a write that was admitted finishes along
+		// with its tracker/backup recording. A single unit cannot leave a
+		// half-written file, so the release is deferred rather than threaded.
+		release, err := session.BeginSteeringMutation(ctx)
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+		defer release()
+
 		if err := os.WriteFile(path, []byte(content), mode); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("write file %s: %w", args.Path, err)
 		}

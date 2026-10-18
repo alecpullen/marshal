@@ -1,21 +1,43 @@
-// internal/agent/swarm/lock.go
 package swarm
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
-// WriteLock is the swarm's single write path: one shared instance is set
-// as the WriteGate on every role runner, so at most one agent executes a
-// non-read-only tool at a time (docs/07 swarm safety rules). Read-only
-// tools never touch it, so parallel scouts are unaffected.
 type WriteLock struct {
-	mu sync.Mutex
+	init  sync.Once
+	token chan struct{}
 }
 
-// Acquire blocks until the lock is free and returns the release func.
-// The returned release func is idempotent: calling it more than once is a
-// no-op after the first call. It implements agent.WriteGate.
-func (l *WriteLock) Acquire() (release func()) {
-	l.mu.Lock()
+func (l *WriteLock) initialize() {
+	l.init.Do(func() {
+		l.token = make(chan struct{}, 1)
+		l.token <- struct{}{}
+	})
+}
+func (l *WriteLock) Acquire() func() {
+	release, _ := l.AcquireContext(context.Background())
+	return release
+}
+func (l *WriteLock) AcquireContext(ctx context.Context) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	l.initialize()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-l.token:
+	}
 	var once sync.Once
-	return func() { once.Do(l.mu.Unlock) }
+	release := func() { once.Do(func() { l.token <- struct{}{} }) }
+	if err := ctx.Err(); err != nil {
+		release()
+		return nil, err
+	}
+	return release, nil
 }

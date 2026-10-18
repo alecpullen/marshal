@@ -191,6 +191,17 @@ func (m Model) renderInputArea() string {
 	inputInnerWidth := max(m.leftWidth-4, 1)
 	rows := make([]string, 0, 4)
 
+	// While the Send now composer owns the input, the base editor renders no
+	// cursor and none of its ordinary prompt controls: the completion popup, the
+	// approval/question/gate/privileged prompts and the base draft are all
+	// suspended, and showing a second live input would lie about where typing
+	// goes. The transcript and the background panels keep rendering above.
+	if m.steeringComposer != nil {
+		rows = append(rows, mutedStyle().Render("Send now owns the input — Esc returns to the previous surface."))
+		out := lipgloss.JoinVertical(lipgloss.Left, rows...)
+		return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
+	}
+
 	if sa := m.state.PendingSudoAuth(); sa != nil {
 		if m.sudoAuthModel != nil {
 			rows = append(rows, m.sudoAuthModel.View())
@@ -304,6 +315,11 @@ func (m *Model) gutteredInput() string {
 // renderGhost, which needs the first rune on its own.
 func (m Model) suggestionGhost() string {
 	if m.suggestion == "" || m.suggestionDismissed || m.busy {
+		return ""
+	}
+	// The composer owns the input: a ghost overlaying the base editor would
+	// suggest text that Enter would not submit.
+	if m.steeringComposer != nil {
 		return ""
 	}
 	// The completion popup, approval, question, and skill-gate panels all

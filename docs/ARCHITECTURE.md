@@ -110,6 +110,14 @@ Results streamed back to TUI transcript
 State persisted to SQLite
 ```
 
+Send now is a runtime operation beneath the active conversation turn. Session
+state owns ordered steering, operation identities, canonical human-request
+settlement and receipts. The existing command service arbitrates interruption
+against completion/detachment; it does not close future turn admission.
+Complete tool results precede interruption context and steering in the
+append-only model history. TUI and ACP use the same runtime facade; transports
+do not implement process/policy control.
+
 ## Prompt layout and caching
 
 Every request is laid out so that provider prompt caches can reuse

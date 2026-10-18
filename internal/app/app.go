@@ -1143,6 +1143,23 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.WriteGate = writeLock
+	// Send now: this is the conversation's ROOT/general runner, the one turn
+	// every operation beneath it belongs to, so it is the only runner built
+	// here that opts in. The depth/role predicate inside RunTask stays
+	// authoritative — a child, SDD or swarm runner never enables the flag, so
+	// enabling it on the root cannot make nested work steerable.
+	runner.EnableSteering = true
+	// The interruption handler is the conversation-owned manager captured BY
+	// VALUE here. An OWNER build (a fresh conversation: the startup build, a
+	// replacement session) installs it, so the State's handler always names the
+	// manager that was built for the same conversation. A rebuild borrows the
+	// existing service instead, so it leaves the binding exactly as it was and
+	// a reload can never repoint a live turn's handler. Capturing the pointer
+	// rather than a closure over runtime.State is what guarantees an old bound
+	// handler can never address a replacement conversation's work.
+	if owned && jobManager != nil {
+		state.SetOperationInterrupt(jobManager.InterruptOperation)
+	}
 	// The execution-control seam is what gives an explicit turn stop a precise
 	// target: the session owns the conversation's command service and the stop
 	// registration, so the parent runner and every synthetic worker share the
@@ -2714,6 +2731,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// operations the TUI invokes, and both must keep working after a
 		// session swap.
 		tuiOpts = append(tuiOpts, accessTUIOptions(rt)...)
+		// Send now: the same rule as the access seam. The bound runtime methods
+		// read the conversation's current State under the pointer mutex, so a
+		// successful NewSession keeps the facade working against the replacement
+		// while an explicit SessionID/TurnID on the request stops a stale one
+		// from targeting it.
+		tuiOpts = append(tuiOpts, tui.WithSendNow(rt.SteeringSnapshot, rt.SubmitSendNow))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
 		// The TUI's auth-backed surfaces (provider probes, the connect

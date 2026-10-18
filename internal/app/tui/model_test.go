@@ -24,6 +24,7 @@ import (
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/connect"
+	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
@@ -36,6 +37,7 @@ import (
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/steerpanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
@@ -10038,5 +10040,569 @@ func TestExitQuestionIsAskedOnce(t *testing.T) {
 	}
 	if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
 		t.Fatal("the answered question must not be re-opened")
+	}
+}
+
+// ── Send now ────────────────────────────────────────────────────────────
+
+// sendNowOwnedMsg is the async result the sendNowTestPanel claims, standing in
+// for a settings save, a provider probe or an install completing while an
+// unrelated panel is suspended.
+type sendNowOwnedMsg struct{}
+
+// sendNowTestPanel is a minimal dock panel that records how many messages it
+// received and how many of its own async results it claimed, so a test can
+// prove a suspended panel's result lands exactly once.
+type sendNowTestPanel struct {
+	id      string
+	updates int
+	owned   int
+}
+
+func (p *sendNowTestPanel) Update(msg tea.Msg) tea.Cmd {
+	p.updates++
+	if _, ok := msg.(sendNowOwnedMsg); ok {
+		p.owned++
+	}
+	return nil
+}
+func (p *sendNowTestPanel) View(int, int) string { return "suspended panel" }
+func (p *sendNowTestPanel) Sizing() dock.Sizing  { return dock.Docked }
+func (p *sendNowTestPanel) OwnsMsg(msg tea.Msg) bool {
+	_, ok := msg.(sendNowOwnedMsg)
+	return ok
+}
+
+var _ dock.Panel = (*sendNowTestPanel)(nil)
+
+// sendNowFixture drives the TUI's Send now seam against a real session with an
+// eligible steering turn, recording every request the model hands the runtime.
+type sendNowFixture struct {
+	t       *testing.T
+	state   *session.State
+	m       Model
+	turnID  string
+	submits []session.SendNowRequest
+}
+
+// newSendNowFixture builds the fixture. supported controls whether an operation
+// interruption handler is installed, which is what makes the runtime's
+// snapshot report the turn as eligible.
+func newSendNowFixture(t *testing.T, width, height int, supported bool) *sendNowFixture {
+	t.Helper()
+	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	if supported {
+		state.SetOperationInterrupt(func(context.Context, session.OperationRef) (session.OperationStop, error) {
+			return session.OperationStop{}, nil
+		})
+	}
+	turnID, err := state.BeginSteeringTurn(context.Background())
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn: %v", err)
+	}
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	f := &sendNowFixture{t: t, state: state, turnID: turnID}
+	m := New(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()),
+		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }),
+		WithSendNow(state.SteeringSnapshot, func(req session.SendNowRequest) (session.SteeringReceipt, error) {
+			f.submits = append(f.submits, req)
+			return state.SubmitSendNow(req)
+		}))
+	m.resize(width, height)
+	m.busy = true
+	m.refreshSteeringSnapshot()
+	m.refreshViewport()
+	f.m = m
+	return f
+}
+
+// send drives one message through Update, drains the resulting command chain
+// (the composer replies through commands, exactly as Bubble Tea delivers them)
+// and normalises the model.
+func (f *sendNowFixture) send(msg tea.Msg) tea.Cmd {
+	f.t.Helper()
+	updated, cmd := f.m.Update(msg)
+	f.m = drainCmds(asModel(f.t, updated), cmd)
+	return cmd
+}
+
+// sendNowKey is the global Alt+Enter press.
+func sendNowKey() tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt}
+}
+
+// composer opens the composer through Alt+Enter and returns it.
+func (f *sendNowFixture) composer() *steerpanel.Panel {
+	f.t.Helper()
+	f.send(sendNowKey())
+	p := f.m.steeringComposer
+	if p == nil {
+		f.t.Fatalf("composer did not open; dock panel = %T", f.m.dock.Panel())
+	}
+	return p
+}
+
+// TestSendNowAltEnterAcceptsOnlyActiveParentDraft pins the direct-submission
+// path: the exact parent binding is used, an accepted draft clears, a rejected
+// draft survives, and being drilled into a child never retargets the request.
+func TestSendNowAltEnterAcceptsOnlyActiveParentDraft(t *testing.T) {
+	f := newSendNowFixture(t, 120, 40, true)
+	f.m.input.SetValue("steer this")
+	f.m.input.MoveToEnd()
+
+	f.send(sendNowKey())
+	if len(f.submits) != 1 {
+		t.Fatalf("submits = %d, want 1", len(f.submits))
+	}
+	got := f.submits[0]
+	if got.SessionID != f.state.SessionID() || got.TurnID != f.turnID {
+		t.Fatalf("request bound to %s/%s, want %s/%s", got.SessionID, got.TurnID, f.state.SessionID(), f.turnID)
+	}
+	if got.Text != "steer this" {
+		t.Fatalf("request text = %q", got.Text)
+	}
+	if f.m.input.Value() != "" {
+		t.Fatalf("accepted draft not cleared: %q", f.m.input.Value())
+	}
+	if q := f.state.SteeringQueue(); len(q) != 1 || q[0] != "steer this" {
+		t.Fatalf("queue = %v, want the accepted text", q)
+	}
+
+	// A rejected draft must survive untouched.
+	r := newSendNowFixture(t, 120, 40, false)
+	r.m.input.SetValue("keep me")
+	r.send(sendNowKey())
+	if len(r.submits) != 0 {
+		t.Fatalf("unsupported runtime accepted %d requests", len(r.submits))
+	}
+	if r.m.input.Value() != "keep me" {
+		t.Fatalf("rejected draft lost: %q", r.m.input.Value())
+	}
+
+	// Drilled into a running child, the request still targets the parent turn.
+	f.m.input.SetValue("parent only")
+	child := newChildState(t)
+	f.state.RegisterSubagent("child", child)
+	f.m.viewStack = append(f.m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: child, Label: "child"})
+	f.send(sendNowKey())
+	if len(f.submits) != 2 {
+		t.Fatalf("submits = %d, want 2", len(f.submits))
+	}
+	if f.submits[1].TurnID != f.turnID {
+		t.Fatalf("child drill retargeted the request to %q", f.submits[1].TurnID)
+	}
+}
+
+// TestSendNowComposerDoesNotCopyPromptOrSecretInput pins that opening the
+// composer from another surface never reads that surface's value: an approval
+// command edit, a question answer, a privileged password and a settings filter
+// all stay where they are.
+func TestSendNowComposerDoesNotCopyPromptOrSecretInput(t *testing.T) {
+	const secret = "s3cr3t-value-must-not-leak"
+
+	cases := []struct {
+		name string
+		prep func(f *sendNowFixture)
+	}{
+		{"approval edit", func(f *sendNowFixture) {
+			f.m.editingCommand = true
+			f.m.input.Placeholder = "Edit command..."
+			f.m.input.SetValue(secret)
+		}},
+		{"question", func(f *sendNowFixture) {
+			f.state.SetPendingQuestion(&session.PendingQuestion{
+				Questions:    []session.Question{{Question: "answer " + secret}},
+				ResponseChan: make(chan []session.Answer, 1),
+			})
+		}},
+		{"privileged prompt", func(f *sendNowFixture) {
+			f.state.SetPendingSudoAuth(&session.PendingSudoAuth{
+				Command:      "run " + secret,
+				ResponseChan: make(chan session.SudoAuthDecision, 1),
+			})
+		}},
+		{"settings filter", func(f *sendNowFixture) {
+			f.m.openSettingsBrowser(secret)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSendNowFixture(t, 120, 40, true)
+			tc.prep(f)
+			p := f.composer()
+			if p.Text() != "" {
+				t.Fatalf("composer copied the displaced surface's value: %q", p.Text())
+			}
+			if strings.Contains(p.View(80, 9), secret) {
+				t.Fatal("composer rendered the displaced surface's value")
+			}
+		})
+	}
+}
+
+// TestSendNowComposerEscRestoresSurfaceWithoutInterruption pins that Esc only
+// closes the composer: the displaced panel, the base draft and the focus come
+// back, and nothing is submitted.
+func TestSendNowComposerEscRestoresSurfaceWithoutInterruption(t *testing.T) {
+	f := newSendNowFixture(t, 120, 40, true)
+	panel := &sendNowTestPanel{id: "settings"}
+	f.m.dock.Open(panel)
+	f.m.input.SetValue("my chat draft")
+	f.m.input.MoveToEnd()
+
+	p := f.composer()
+	if f.m.composerDisplaced != dock.Panel(panel) {
+		t.Fatalf("composer displaced %T, want the settings panel", f.m.composerDisplaced)
+	}
+	f.send(tea.PasteMsg{Content: "abandoned steering"})
+	if p.Text() != "abandoned steering" {
+		t.Fatalf("composer text = %q", p.Text())
+	}
+	f.send(tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	if len(f.submits) != 0 {
+		t.Fatalf("Esc submitted %d requests", len(f.submits))
+	}
+	if len(f.state.SteeringQueue()) != 0 {
+		t.Fatalf("Esc mutated the queue: %v", f.state.SteeringQueue())
+	}
+	if f.m.steeringComposer != nil {
+		t.Fatal("composer still active after Esc")
+	}
+	if f.m.dock.Panel() != dock.Panel(panel) {
+		t.Fatalf("dock panel = %T, want the displaced panel", f.m.dock.Panel())
+	}
+	if f.m.input.Value() != "my chat draft" {
+		t.Fatalf("base draft = %q, want it preserved", f.m.input.Value())
+	}
+	if !f.m.input.Focused() {
+		t.Fatal("base input did not regain focus")
+	}
+}
+
+// TestSendNowComposerRoutesSuspendedAsyncResultsOnce pins the single routing
+// pass: a suspended panel's async result reaches it exactly once while parent
+// runtime events keep flowing, and a prompt that expired while the composer was
+// up is retired rather than resurrected.
+func TestSendNowComposerRoutesSuspendedAsyncResultsOnce(t *testing.T) {
+	f := newSendNowFixture(t, 120, 40, true)
+	panel := &sendNowTestPanel{id: "installer"}
+	f.m.dock.Open(panel)
+	f.composer()
+
+	f.send(sendNowOwnedMsg{})
+	if panel.owned != 1 {
+		t.Fatalf("suspended panel claimed %d results, want exactly 1", panel.owned)
+	}
+	if _, ok := f.m.dock.Panel().(*steerpanel.Panel); !ok {
+		t.Fatalf("composer was not restored; dock panel = %T", f.m.dock.Panel())
+	}
+	// Parent runtime events still reach the model while the composer is up.
+	before := f.m.busy
+	f.send(agentTickMsg{})
+	if f.m.busy != before {
+		t.Fatal("a runtime tick changed the turn state under the composer")
+	}
+
+	// Esc restores the panel the result belonged to.
+	f.send(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if f.m.dock.Panel() != dock.Panel(panel) {
+		t.Fatalf("dock panel = %T, want the retained panel", f.m.dock.Panel())
+	}
+
+	// Expiry: an access request cancelled while the composer was up must not be
+	// resurrected on close.
+	g := newSendNowFixture(t, 120, 40, true)
+	g.m.accessRequest = func() (session.AccessRequest, bool) { return g.state.AccessRequest() }
+	g.m.resolveAccess = func(session.AccessChoice) (session.AccessResult, error) {
+		return session.AccessResult{}, nil
+	}
+	call := &session.PendingToolCall{
+		ID:           "call-1",
+		Name:         "mode.request",
+		Reason:       "needs access",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	req, waiting, err := g.state.RegisterAccess(context.Background(), call, session.AccessIntent{System: true})
+	if err != nil || !waiting {
+		t.Fatalf("RegisterAccess: %v waiting=%t", err, waiting)
+	}
+	g.send(agentTickMsg{}) // reconcile opens the access panel
+	if !g.m.accessPanelOwnsDock() {
+		t.Fatalf("access panel did not open; dock panel = %T", g.m.dock.Panel())
+	}
+	g.composer()
+	g.state.CancelAccess(req.RequestID, session.AccessCanceled, "interrupted")
+	g.send(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if g.m.dock.IsOpen() {
+		t.Fatalf("expired access request resurrected as %T", g.m.dock.Panel())
+	}
+}
+
+// TestSendNowLateComposerMessageCannotTargetNewTurn pins the composer identity
+// binding: a message from a replaced composer, or one whose turn has ended,
+// has no effect at all.
+func TestSendNowLateComposerMessageCannotTargetNewTurn(t *testing.T) {
+	f := newSendNowFixture(t, 120, 40, true)
+	panel := &sendNowTestPanel{id: "panel"}
+	f.m.dock.Open(panel)
+	p := f.composer()
+	stale := steerpanel.SubmitMsg{ComposerID: p.ID(), SessionID: f.state.SessionID(), TurnID: f.turnID, Text: "late"}
+	// Esc, then open a fresh composer: the old message can no longer act.
+	f.send(tea.KeyPressMsg{Code: tea.KeyEscape})
+	f.composer()
+	f.send(stale)
+	if len(f.submits) != 0 {
+		t.Fatalf("a stale composer message submitted %d requests", len(f.submits))
+	}
+	if len(f.state.SteeringQueue()) != 0 {
+		t.Fatalf("a stale composer message queued %v", f.state.SteeringQueue())
+	}
+
+	// The current composer, but a turn that is no longer current.
+	fresh := f.m.steeringComposer
+	f.send(steerpanel.SubmitMsg{ComposerID: fresh.ID(), SessionID: f.state.SessionID(), TurnID: "turn-from-another-life", Text: "late"})
+	if len(f.submits) != 0 {
+		t.Fatalf("a stale turn submitted %d requests", len(f.submits))
+	}
+	if len(f.state.SteeringQueue()) != 0 {
+		t.Fatalf("a stale turn queued %v", f.state.SteeringQueue())
+	}
+}
+
+// TestSendNowSizeGateResizeAndNoColor pins the size gate: supported sizes open
+// and render the composer, a resize preserves its text, a hidden frame refuses
+// the key, and a monochrome theme still renders.
+func TestSendNowSizeGateResizeAndNoColor(t *testing.T) {
+	previous := theme.Current()
+	t.Cleanup(func() { theme.Reload(previous) })
+
+	for _, size := range []struct{ w, h int }{{80, 24}, {120, 40}, {200, 60}} {
+		t.Run(fmt.Sprintf("%dx%d", size.w, size.h), func(t *testing.T) {
+			f := newSendNowFixture(t, size.w, size.h, true)
+			// Something else owns the input, so Alt+Enter opens the composer
+			// instead of submitting the (empty) chat draft.
+			f.m.dock.Open(&sendNowTestPanel{id: "settings"})
+			p := f.composer()
+			f.send(tea.PasteMsg{Content: "long steering text"})
+			f.send(tea.WindowSizeMsg{Width: size.w, Height: size.h})
+			if p.Text() != "long steering text" {
+				t.Fatalf("resize changed the draft: %q", p.Text())
+			}
+			out := stripANSI(f.m.View().Content)
+			for _, label := range []string{"Send now", "parent conversation", "Esc back"} {
+				if !strings.Contains(out, label) {
+					t.Fatalf("frame missing %q:\n%s", label, out)
+				}
+			}
+			theme.Reload(theme.LoadFor(true, "xterm-256color"))
+			if plain := stripANSI(f.m.View().Content); !strings.Contains(plain, "Send now") {
+				t.Fatal("monochrome frame lost the composer")
+			}
+			theme.Reload(previous)
+		})
+	}
+
+	// Below the supported minimum the frame is hidden: a submission must be
+	// impossible and the draft must survive.
+	f := newSendNowFixture(t, 120, 40, true)
+	f.m.input.SetValue("hidden draft")
+	f.send(tea.WindowSizeMsg{Width: 40, Height: 10})
+	f.send(sendNowKey())
+	if len(f.submits) != 0 {
+		t.Fatalf("a hidden frame submitted %d requests", len(f.submits))
+	}
+	if f.m.input.Value() != "hidden draft" {
+		t.Fatalf("hidden submission lost the draft: %q", f.m.input.Value())
+	}
+}
+
+// TestSendNowReceiptVersionsAndSlowStopRemainTruthful pins the status
+// reporting: a slow stop reads as interrupting or waiting, never as stopped or
+// delivered, and one request's final outcome is never discarded by another
+// request's older revision.
+func TestSendNowReceiptVersionsAndSlowStopRemainTruthful(t *testing.T) {
+	f := newSendNowFixture(t, 160, 40, true)
+	snap := f.state.SteeringSnapshot()
+	interrupting := session.SteeringReceipt{
+		Version: 2, RequestID: "req-a", TurnID: f.turnID, Status: session.SteeringInterrupting,
+	}
+	f.send(steeringMsg{queueLen: 1, snapshot: &snap, receipt: &interrupting})
+	line := stripANSI(f.m.renderStatusLine(200))
+	if !strings.Contains(line, "interrupting") {
+		t.Fatalf("status line missing the interrupting state:\n%s", line)
+	}
+	if strings.Contains(line, "stopped") || strings.Contains(line, "delivered") {
+		t.Fatalf("status line claimed a settled outcome during a slow stop:\n%s", line)
+	}
+
+	// A later revision of the same request settles it as delivered.
+	delivered := interrupting
+	delivered.Version = 3
+	delivered.Status = session.SteeringDelivered
+	f.send(steeringMsg{snapshot: &snap, receipt: &delivered})
+	if got := f.m.steeringReceipts["req-a"].Status; got != session.SteeringDelivered {
+		t.Fatalf("receipt status = %q, want delivered", got)
+	}
+	// An older revision of the same request must not roll it back.
+	stale := interrupting
+	f.send(steeringMsg{snapshot: &snap, receipt: &stale})
+	if got := f.m.steeringReceipts["req-a"].Status; got != session.SteeringDelivered {
+		t.Fatalf("stale receipt rolled the outcome back to %q", got)
+	}
+	// Another request's lower revision must not discard this one's outcome.
+	f.send(steeringMsg{snapshot: &snap, receipt: &session.SteeringReceipt{
+		Version: 1, RequestID: "req-b", TurnID: f.turnID, Status: session.SteeringAccepted,
+	}})
+	if got := f.m.steeringReceipts["req-a"].Status; got != session.SteeringDelivered {
+		t.Fatalf("another request's revision discarded req-a: %q", got)
+	}
+	if got := f.m.steeringReceipts["req-b"].Status; got != session.SteeringAccepted {
+		t.Fatalf("req-b = %q, want accepted", got)
+	}
+}
+
+// TestSendNowCommandLiteralFlushAndRejectionDraft pins /send-now: the payload is
+// literal steering text, an empty argument flushes or opens the composer, and a
+// refused submission restores the raw command line.
+func TestSendNowCommandLiteralFlushAndRejectionDraft(t *testing.T) {
+	f := newSendNowFixture(t, 120, 40, true)
+	literal := `/send-now "quoted" &&  spaced
+second line`
+	if updated, _ := f.m.dispatchCommand(literal); updated != nil {
+		f.m = asModel(t, updated)
+	}
+	if len(f.submits) != 1 {
+		t.Fatalf("submits = %d, want 1", len(f.submits))
+	}
+	want := `"quoted" &&  spaced
+second line`
+	if f.submits[0].Text != want {
+		t.Fatalf("literal text = %q, want %q", f.submits[0].Text, want)
+	}
+
+	// No argument and nothing queued: the composer opens instead of submitting.
+	g := newSendNowFixture(t, 120, 40, true)
+	if updated, _ := g.m.dispatchCommand("/send-now"); updated != nil {
+		g.m = asModel(t, updated)
+	}
+	if len(g.submits) != 0 {
+		t.Fatalf("an empty /send-now submitted %d requests", len(g.submits))
+	}
+	if _, ok := g.m.dock.Panel().(*steerpanel.Panel); !ok {
+		t.Fatalf("an empty /send-now did not open the composer; dock panel = %T", g.m.dock.Panel())
+	}
+
+	// No argument with queued steering: flush it without adding an entry.
+	h := newSendNowFixture(t, 120, 40, true)
+	h.state.PushSteering("queued")
+	if updated, _ := h.m.dispatchCommand("/send-now"); updated != nil {
+		h.m = asModel(t, updated)
+	}
+	if len(h.submits) != 1 || h.submits[0].Text != "" {
+		t.Fatalf("flush request = %+v, want an empty-text flush", h.submits)
+	}
+	if q := h.state.SteeringQueue(); len(q) != 1 || q[0] != "queued" {
+		t.Fatalf("flush mutated the queue: %v", q)
+	}
+
+	// A refused command restores the raw draft the Enter handler cleared.
+	r := newSendNowFixture(t, 120, 40, false)
+	r.m.resetInput()
+	if updated, _ := r.m.dispatchCommand("/send-now keep this line"); updated != nil {
+		r.m = asModel(t, updated)
+	}
+	if r.m.input.Value() != "/send-now keep this line" {
+		t.Fatalf("refused command draft = %q, want it restored", r.m.input.Value())
+	}
+}
+
+// TestSendNowPromptAnswerRaceHasNoLateGrant pins the canonical claim boundary:
+// once the interruption owns a prompt's settlement, a later answer neither
+// grants the tool nor persists a rule.
+func TestSendNowPromptAnswerRaceHasNoLateGrant(t *testing.T) {
+	f := newSendNowFixture(t, 120, 40, true)
+	opCtx, _, err := f.state.BeginSteeringOperation(context.Background(), f.turnID, session.OperationTools)
+	if err != nil {
+		t.Fatalf("BeginSteeringOperation: %v", err)
+	}
+	ch := make(chan session.UserApprovalDecision, 1)
+	tc := &session.PendingToolCall{
+		ID: "call-1", Name: "shell.run", Command: "go test ./...",
+		Reason: "run tests", ResponseChan: ch,
+	}
+	key, err := f.state.RegisterApproval(opCtx, tc)
+	if err != nil {
+		t.Fatalf("RegisterApproval: %v", err)
+	}
+	// The interruption wins the settlement before the user's answer arrives.
+	if !f.state.CancelPrompt(key, session.ErrSendNow) {
+		t.Fatal("CancelPrompt lost the claim")
+	}
+
+	// The form reaches "Always allow" and confirms: the decision must lose.
+	f.m.state.SetPendingApproval(tc)
+	for range 3 {
+		f.send(tea.KeyPressMsg{Code: tea.KeyRight})
+	}
+	f.send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	f.send(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if rules := f.state.SessionRules(); len(rules) != 0 {
+		t.Fatalf("a losing decision persisted rules: %v", rules)
+	}
+	select {
+	case dec := <-ch:
+		if dec.Approved || !dec.Canceled {
+			t.Fatalf("decision = %+v, want a canceled non-grant", dec)
+		}
+	default:
+		t.Fatal("the winning cancellation delivered nothing")
+	}
+	// A second resolution cannot grant after the first settlement won.
+	if ok, _ := f.state.ResolveApproval(key, session.UserApprovalDecision{Approved: true}, func() error {
+		t.Fatal("apply ran after the settlement was already won")
+		return nil
+	}); ok {
+		t.Fatal("a late answer won a settled prompt")
+	}
+	if rules := f.state.SessionRules(); len(rules) != 0 {
+		t.Fatalf("a late answer persisted rules: %v", rules)
+	}
+}
+
+// TestSendNowFinishDoesNotDropAcceptedFeedback pins the cleanup boundary: a
+// turn that ends or was hard-stopped must not erase the text an accepted Send
+// now request is still responsible for.
+func TestSendNowFinishDoesNotDropAcceptedFeedback(t *testing.T) {
+	f := newSendNowFixture(t, 120, 40, true)
+	f.m.input.SetValue("please deliver this")
+	f.send(sendNowKey())
+	if len(f.state.SteeringQueue()) != 1 {
+		t.Fatalf("queue = %v, want the accepted entry", f.state.SteeringQueue())
+	}
+
+	// A hard stop: the ordinary Ctrl+X clear runs first, then the turn ends.
+	f.send(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	if q := f.state.SteeringQueue(); len(q) != 1 {
+		t.Fatalf("Ctrl+X revoked an accepted request: %v", q)
+	}
+
+	f.m.cancelling = true
+	f.send(agentFinishedMsg{err: context.Canceled})
+	if q := f.state.SteeringQueue(); len(q) != 1 || q[0] != "please deliver this" {
+		t.Fatalf("turn completion dropped accepted feedback: %v", q)
+	}
+	if f.m.queuedCount != 1 {
+		t.Fatalf("queuedCount = %d, want the surviving depth", f.m.queuedCount)
+	}
+	if r, ok := f.m.steeringReceipts[f.submits[0].RequestID]; ok && r.Status == session.SteeringDelivered {
+		t.Fatal("the cleanup falsely marked the request delivered")
 	}
 }

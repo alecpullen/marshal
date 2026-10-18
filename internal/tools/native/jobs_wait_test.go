@@ -2,9 +2,14 @@ package native
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
+
+	"marshal/internal/app/config"
+	"marshal/internal/app/session"
+	"marshal/internal/tools/registry"
 )
 
 // waitTestRunner finishes jobs after a configurable delay so Wait tests get
@@ -19,6 +24,148 @@ func (r *waitTestRunner) Run(ctx context.Context, req CommandRequest) (CommandRe
 		return CommandResult{ExitCode: 0, Stdout: "done"}, nil
 	case <-ctx.Done():
 		return CommandResult{}, ctx.Err()
+	}
+}
+
+// blockingTestRunner streams a marker, then blocks until its release channel
+// closes or its context is cancelled. It records the process through OnStart so
+// an accepted stop is evidence-backed, and reports a terminated process (no
+// natural exit code) once cancelled. It models a long foreground command whose
+// outcome the service owns.
+type blockingTestRunner struct {
+	release chan struct{}
+	live    string
+}
+
+func (r *blockingTestRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	if req.OnStart != nil {
+		req.OnStart(7001)
+	}
+	// Output the command produced before it was interrupted is part of the
+	// result, so it must reach the observer the way it would live.
+	if r.live != "" && req.Stdout != nil {
+		_, _ = io.WriteString(req.Stdout, r.live)
+	}
+	select {
+	case <-r.release:
+		return CommandResult{ExitCode: 0}, nil
+	case <-ctx.Done():
+		return CommandResult{ExitCode: -1}, nil
+	}
+}
+
+// TestShellSteeringWaitReturnsActualStoppedOutput pins the wait an interrupted
+// shell.run call uses. The wait must be tied to the turn, not to the operation
+// context a steering interruption cancels, so when the service's stop settles
+// the process the handler reports that real outcome — the actual killed status,
+// the steering stop cause and the output captured before the process died —
+// rather than mislabelling the command as a detached job that is still running.
+func TestShellSteeringWaitReturnsActualStoppedOutput(t *testing.T) {
+	root := t.TempDir()
+	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
+	runner := &blockingTestRunner{
+		release: make(chan struct{}),
+		live:    "partial output\n",
+	}
+	manager := NewCommandService(context.Background(), LaunchPolicy{
+		Runner:         runner,
+		Dir:            root,
+		MaxOutputBytes: 1 << 20,
+	})
+	t.Cleanup(func() {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = manager.Shutdown(shutCtx)
+	})
+	manager.stopSettleTimeout = 5 * time.Second
+	manager.SetOnChange(state.SetRunningJobsCount)
+
+	// The interruption reaches the command service exactly as a conversation's
+	// wiring does: the operation handler stops what is still attached to it.
+	stopped := make(chan struct{}, 1)
+	opCtx, turn, ref := steeringToolContext(t, state, func(ctx context.Context, ref session.OperationRef) (session.OperationStop, error) {
+		select {
+		case stopped <- struct{}{}:
+		default:
+		}
+		return manager.InterruptOperation(ctx, ref)
+	})
+
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot:  root,
+		CommandRunner:  runner,
+		SessionState:   state,
+		JobManager:     manager,
+		Guardrail:      func(string, bool) error { return nil },
+		MaxOutputBytes: 1 << 20,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	tool, ok := reg.Lookup("shell.run")
+	if !ok {
+		t.Fatal("shell.run not registered")
+	}
+
+	// Launch the command with a long wait: it stays attached and running until
+	// the interruption stops it.
+	done := make(chan toolOutcome, 1)
+	go func() {
+		res, err := tool.Handler(opCtx, registry.ToolCall{ID: "call-shell", Name: "shell.run",
+			Args: []byte(`{"command":"sleep 30","timeout_seconds":300}`)})
+		done <- toolOutcome{res: res, err: err}
+	}()
+
+	// The command is really running before the interruption is submitted.
+	deadline := time.Now().Add(5 * time.Second)
+	for manager.ActiveCount() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("shell.run never launched its command")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	steerNow(t, state, turn, "r1")
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the interruption never reached the command service")
+	}
+
+	out := awaitOutcome(t, done)
+	if out.err == nil {
+		t.Fatal("an interrupted command was reported as a successful result")
+	}
+	if strings.Contains(out.res.Content, "still running in the background") ||
+		strings.Contains(out.res.Summary, "still running in the background") {
+		t.Fatalf("an interrupted command was mislabelled as detached work: %+v", out.res)
+	}
+	if !strings.Contains(out.res.Summary, "stopped") {
+		t.Fatalf("summary = %q, want the command's actual stopped outcome", out.res.Summary)
+	}
+	if !strings.Contains(out.res.Content, "partial output") {
+		t.Fatalf("content = %q, want the output captured before the process died", out.res.Content)
+	}
+	if out.res.CommandExitCode == nil || *out.res.CommandExitCode != -1 {
+		t.Fatalf("exit code = %v, want the observed -1", out.res.CommandExitCode)
+	}
+
+	// The execution settled with the steering stop cause and is nobody's
+	// outstanding background work.
+	executions := manager.List()
+	if len(executions) != 1 {
+		t.Fatalf("executions = %+v, want exactly the one command", executions)
+	}
+	if executions[0].Outcome != OutcomeStopped || executions[0].StopCause != steeringStopCause {
+		t.Fatalf("settled execution = %q/%q, want stopped with the %q cause [op %s]",
+			executions[0].Outcome, executions[0].StopCause, steeringStopCause, ref.ID)
+	}
+	if got := manager.Outstanding(); len(got) != 0 {
+		t.Fatalf("Outstanding = %+v, want none: the stopped command is not background work", got)
+	}
+	select {
+	case <-runner.release:
+		t.Fatal("the runner was released: the command was not actually stopped")
+	default:
 	}
 }
 

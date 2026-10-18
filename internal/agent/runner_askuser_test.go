@@ -221,13 +221,14 @@ func TestRunAskUserDeclinedCountsAgainstBudget(t *testing.T) {
 	r.MaxToolIterations = 3
 	r.MaxRetries = 0
 
-	// Drain every pending question with an empty (declined) answer.
+	// Drain every pending question with an empty (declined) answer. Respond
+	// settles canonically, so no separate slot clear (which would supersede
+	// the registered request) is needed or wanted.
 	go func() {
 		for {
 			if q := state.PendingQuestion(); q != nil && len(q.Questions) > 0 {
 				canonical := q.Questions[0].Question
-				q.ResponseChan <- []session.Answer{{Question: canonical, Answer: ""}}
-				state.SetPendingQuestion(nil)
+				q.Respond([]session.Answer{{Question: canonical, Answer: ""}})
 			} else {
 				time.Sleep(time.Millisecond)
 			}

@@ -58,7 +58,14 @@ func pumpSteeringEvents(ch <-chan pubsub.Event[session.SteeringEvent]) tea.Cmd {
 		if !ok {
 			return nil
 		}
-		return steeringMsg{queueLen: ev.Payload.QueueLen, message: ev.Payload.Message}
+		return steeringMsg{
+			queueLen: ev.Payload.QueueLen,
+			message:  ev.Payload.Message,
+			// The payload's snapshot and receipt are deep copies the publisher
+			// made, so caching them here cannot reach session state.
+			snapshot: ev.Payload.Snapshot,
+			receipt:  ev.Payload.Receipt,
+		}
 	}
 }
 

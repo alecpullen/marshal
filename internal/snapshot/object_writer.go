@@ -453,18 +453,55 @@ type objectWriter struct {
 	objectsDir string
 	budget     *objectBudget
 
-	// gitHashObject computes the canonical hash Git would give an object of the
-	// given type and content. It is a field so a test can inject a disagreement
-	// and prove that a mismatch aborts instead of installing an object.
-	gitHashObject func(ctx context.Context, objType string, content io.Reader) (string, error)
+	// gitHashObjects computes the canonical hash Git gives each file in paths,
+	// read as an object of the given type, in order. It is a field so a test can
+	// inject a disagreement and prove that a mismatch aborts instead of
+	// installing an object, and count how many Git processes a write costs.
+	gitHashObjects func(ctx context.Context, objType string, paths []string) ([]string, error)
 
 	// temps tracks partially written object files so a failed capture removes
 	// them instead of leaving unaccounted bytes behind.
 	temps []string
 
+	// deferGit batches Git agreement. A new object is fully written and checked
+	// in process, then queued in pending instead of being verified by Git and
+	// published one at a time; flushPending verifies the queue with one Git
+	// process per object type and bounded chunk, and only then publishes. A
+	// capture of thousands of new objects otherwise starts thousands of Git
+	// processes, which dominated capture time. Off by default, so a caller that
+	// expects every write to be published on return keeps that behaviour.
+	deferGit      bool
+	pending       []pendingObject
+	pendingByHash map[string]bool
+
 	hashVerified int
 	deduped      int
 }
+
+// pendingObject is a written, in-process-verified object awaiting Git
+// agreement and publication.
+type pendingObject struct {
+	tmp        string
+	dst        string
+	objType    string
+	header     []byte
+	contentLen int64
+	hash       string
+}
+
+const (
+	// maxBufferedBlobBytes bounds the blobs read into memory so their hash is
+	// known BEFORE anything is written. That is what lets an unchanged file —
+	// the overwhelming majority in a repeat capture — be recognised as an
+	// existing object without writing, syncing, or verifying a temp copy. A
+	// larger blob takes the streaming path, which hashes while it writes.
+	maxBufferedBlobBytes = 8 << 20
+	// verifyBatchMaxObjects and verifyBatchMaxBytes bound one Git agreement
+	// batch: the scratch copies it needs on disk and the work one Git process
+	// does inside its command deadline.
+	verifyBatchMaxObjects = 256
+	verifyBatchMaxBytes   = 64 << 20
+)
 
 // newObjectWriter builds a writer for one generation repository.
 func newObjectWriter(ctx context.Context, m *Manager, gitDir string, budget *objectBudget) (*objectWriter, error) {
@@ -487,8 +524,37 @@ func newObjectWriter(ctx context.Context, m *Manager, gitDir string, budget *obj
 		objectsDir: filepath.Join(gitDir, "objects"),
 		budget:     budget,
 	}
-	w.gitHashObject = w.hashObjectViaGit
+	w.gitHashObjects = w.hashObjectsViaGit
 	return w, nil
+}
+
+// knownObject reports whether an object with this hash already exists, either
+// installed in the store or queued in this writer. An installed object counts
+// only after it has been VERIFIED to hold exactly these bytes: the name is
+// derived from the content, so a hit must be proven rather than assumed. A
+// present-but-different object is corruption and is returned as an error.
+func (w *objectWriter) knownObject(hash, dst string, header []byte, contentLen int64) (bool, error) {
+	if w.pendingByHash[hash] {
+		w.deduped++
+		return true, nil
+	}
+	existing, err := storedObjectMatches(dst, hash, header, contentLen)
+	if err != nil {
+		return false, err
+	}
+	if existing {
+		w.deduped++
+	}
+	return existing, nil
+}
+
+// queue records a written object for the next flushPending.
+func (w *objectWriter) queue(obj pendingObject) {
+	if w.pendingByHash == nil {
+		w.pendingByHash = make(map[string]bool)
+	}
+	w.pending = append(w.pending, obj)
+	w.pendingByHash[obj.hash] = true
 }
 
 // Stats reports how many objects Git confirmed and how many already existed.
@@ -570,6 +636,12 @@ func (w *objectWriter) installObject(obj gitObject) (bool, error) {
 	header := objectHeader(obj.Type, int64(len(obj.Content)))
 	raw := objectBytes(obj)
 
+	// Identical subtrees inside one capture share a name; the queued copy will
+	// be verified and published like any other.
+	if w.pendingByHash[obj.Hash] {
+		w.deduped++
+		return true, nil
+	}
 	existing, err := verifyExistingObject(dst, raw)
 	if err != nil {
 		return false, err
@@ -595,7 +667,15 @@ func (w *objectWriter) installObject(obj gitObject) (bool, error) {
 		_ = os.Remove(installed)
 		return false, err
 	}
-	if err := w.verifyWithGit(installed, obj.Type, header, int64(len(obj.Content)), obj.Hash); err != nil {
+	pending := pendingObject{
+		tmp: installed, dst: dst, objType: obj.Type,
+		header: header, contentLen: int64(len(obj.Content)), hash: obj.Hash,
+	}
+	if w.deferGit {
+		w.queue(pending)
+		return false, nil
+	}
+	if err := w.verifyWithGit(obj.Type, []pendingObject{pending}); err != nil {
 		_ = os.Remove(installed)
 		return false, err
 	}
@@ -613,6 +693,12 @@ func (w *objectWriter) installObject(obj gitObject) (bool, error) {
 // growth even when it would still fit under the per-file size cap, because the
 // cap is not the point: a snapshot that records different bytes than it hashed
 // claims a rollback point it does not have.
+//
+// A blob small enough to buffer is read and hashed FIRST. If that object is
+// already installed (and verified to hold these bytes) or queued, nothing is
+// written: no temp copy, no sync, no Git process. The buffered bytes are what a
+// new object is then written from, so the source is read exactly once either
+// way and every source check above still applies to that one read.
 func (w *objectWriter) writeBlob(src blobSource) (string, error) {
 	if err := w.ctx.Err(); err != nil {
 		return "", interruptedCapture(err)
@@ -623,6 +709,24 @@ func (w *objectWriter) writeBlob(src blobSource) (string, error) {
 			"negative blob length %d", size)
 	}
 	header := objectHeader(objTypeBlob, size)
+	if size <= maxBufferedBlobBytes {
+		data, hash, err := w.readBlob(src, header)
+		if err != nil {
+			return "", err
+		}
+		dst, err := w.objectPath(hash)
+		if err != nil {
+			return "", err
+		}
+		known, err := w.knownObject(hash, dst, header, size)
+		if err != nil {
+			return "", err
+		}
+		if known {
+			return hash, nil
+		}
+		src = &bytesBlobSource{desc: src.Description(), data: data}
+	}
 	rawLen, err := addInt64(int64(len(header)), size)
 	if err != nil {
 		return "", err
@@ -658,14 +762,9 @@ func (w *objectWriter) writeBlob(src blobSource) (string, error) {
 		_ = os.Remove(installed)
 		return "", err
 	}
-	if err := w.verifyWithGit(installed, objTypeBlob, header, size, hash); err != nil {
-		_ = os.Remove(installed)
-		return "", err
-	}
-	// A blob whose content already exists is deduplicated, and only after the
-	// existing object has been VERIFIED to hold these exact bytes: the name is
-	// derived from the content, so a hit must be proven rather than assumed.
-	existing, err := storedObjectMatches(dst, hash, header, size)
+	// Checked again after the write: a streamed blob's name was unknown until
+	// now, and another writer may have installed this object meanwhile.
+	existing, err := w.knownObject(hash, dst, header, size)
 	if err != nil {
 		_ = os.Remove(installed)
 		return "", err
@@ -673,13 +772,64 @@ func (w *objectWriter) writeBlob(src blobSource) (string, error) {
 	if existing {
 		_ = os.Remove(installed)
 		w.forgetTemp(installed)
-		w.deduped++
 		return hash, nil
+	}
+	pending := pendingObject{
+		tmp: installed, dst: dst, objType: objTypeBlob,
+		header: header, contentLen: size, hash: hash,
+	}
+	if w.deferGit {
+		w.queue(pending)
+		return hash, nil
+	}
+	if err := w.verifyWithGit(objTypeBlob, []pendingObject{pending}); err != nil {
+		_ = os.Remove(installed)
+		return "", err
 	}
 	if err := w.publishObject(installed, dst); err != nil {
 		return "", err
 	}
 	return hash, nil
+}
+
+// readBlob reads a source's declared length into memory through the same
+// exact-read protocol the streaming path uses — short reads, growth past the
+// declared length, and an identity change each abort — and returns the bytes
+// and their object hash.
+func (w *objectWriter) readBlob(src blobSource, header []byte) ([]byte, string, error) {
+	declared := src.Size()
+	data := make([]byte, declared)
+	var read int64
+	for read < declared {
+		if err := w.ctx.Err(); err != nil {
+			return nil, "", interruptedCapture(err)
+		}
+		chunk := data[read:min64(declared, read+64*1024)]
+		n, err := src.ReadChunk(chunk)
+		if n > 0 {
+			read += int64(n)
+			continue
+		}
+		if err := w.shortRead(src, read, declared, err); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := w.probeEOF(src, declared); err != nil {
+		return nil, "", err
+	}
+	if fin, ok := src.(finalizable); ok {
+		if err := fin.Finalize(); err != nil {
+			return nil, "", err
+		}
+	}
+	hasher := sha1.New()
+	if _, err := hasher.Write(header); err != nil {
+		return nil, "", storeError(ReasonInternal, err)
+	}
+	if _, err := hasher.Write(data); err != nil {
+		return nil, "", storeError(ReasonInternal, err)
+	}
+	return data, hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // writeBlobStream streams the declared-length content through the hasher and
@@ -928,58 +1078,212 @@ func (w *objectWriter) publishObject(tmpName, dst string) error {
 // Hash verification (Git agreement)
 // ---------------------------------------------------------------------------
 
-// hashObjectViaGit asks Git for the canonical hash of an object. The invocation
-// is read-only — no -w — so Git cannot write the object it hashes, and
-// --no-filters plus the sanitized environment means a project's clean filter is
-// never executed on the way in.
-func (w *objectWriter) hashObjectViaGit(ctx context.Context, objType string, content io.Reader) (string, error) {
-	out, _, _, err := w.manager.gitRunEnv(ctx, w.gitDir, "", content, nil, defaultMaxCommandOutput,
-		"hash-object", "-t", objType, "--stdin", "--no-filters")
+// hashObjectsViaGit asks one Git process for the canonical hash of each file in
+// paths, read as an object of objType. The invocation is read-only — no -w — so
+// Git cannot write the objects it hashes, and --no-filters plus the sanitized
+// environment means a project's clean filter is never executed on the way in.
+func (w *objectWriter) hashObjectsViaGit(ctx context.Context, objType string, paths []string) ([]string, error) {
+	var stdin strings.Builder
+	for _, p := range paths {
+		// --stdin-paths is newline-delimited, so a path that contains one
+		// would be read as two.
+		if strings.ContainsAny(p, "\n\r") {
+			return nil, w.manager.storeErrorf(ReasonInternal, p,
+				"verification path contains a line break")
+		}
+		stdin.WriteString(p)
+		stdin.WriteByte('\n')
+	}
+	// One hex object name and a newline per path; SHA-256 names are the longest.
+	maxOut := len(paths)*65 + 1024
+	out, _, truncated, err := w.manager.gitRunEnv(ctx, w.gitDir, "", strings.NewReader(stdin.String()), nil, maxOut,
+		"hash-object", "-t", objType, "--no-filters", "--stdin-paths")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	hash := strings.ToLower(strings.TrimSpace(string(out)))
-	if !validObjectHash(hash) {
-		return "", w.manager.storeErrorf(ReasonUnverifiedObject, w.gitDir,
-			"git hash-object returned an unusable object name %q", strings.TrimSpace(string(out)))
+	if truncated {
+		return nil, w.manager.storeErrorf(ReasonUnverifiedObject, w.gitDir,
+			"git hash-object output exceeded %d bytes for %d objects", maxOut, len(paths))
 	}
-	return hash, nil
+	lines := strings.Fields(string(out))
+	hashes := make([]string, 0, len(lines))
+	for _, line := range lines {
+		hash := strings.ToLower(line)
+		if !validObjectHash(hash) {
+			return nil, w.manager.storeErrorf(ReasonUnverifiedObject, w.gitDir,
+				"git hash-object returned an unusable object name %q", line)
+		}
+		hashes = append(hashes, hash)
+	}
+	return hashes, nil
 }
 
-// verifyWithGit requires Git's own hash of the STORED bytes to agree with the
-// hash this process computed for the object it intended to write. Because the
-// stored bytes are decompressed on the way to Git, agreement proves that what
-// is on disk is what was named — a length-prefixed object describing different
-// bytes is corruption, and it is refused here rather than surviving as a
-// snapshot nobody can restore.
-func (w *objectWriter) verifyWithGit(path, objType string, header []byte, contentLen int64, wantHash string) error {
+// verifyWithGit requires Git's own hash of the STORED bytes of every object in
+// objs, all of type objType, to agree with the hash this process computed for
+// the object it intended to write. Because the stored bytes are decompressed on
+// the way to Git, agreement proves that what is on disk is what was named — a
+// length-prefixed object describing different bytes is corruption, and it is
+// refused here rather than surviving as a snapshot nobody can restore.
+//
+// The decompressed content of each object goes to a scratch file outside the
+// store (Git hashes files by path in a batch), and one Git process hashes the
+// whole batch. Scratch files are removed before return and are never part of
+// the store or its allowance.
+func (w *objectWriter) verifyWithGit(objType string, objs []pendingObject) error {
+	if len(objs) == 0 {
+		return nil
+	}
+	scratch, err := os.MkdirTemp("", "marshal-snapshot-verify-")
+	if err != nil {
+		return storeErrorf(ReasonUnreadableFile, "create verification scratch directory: %v", err)
+	}
+	defer os.RemoveAll(scratch)
+
+	paths := make([]string, len(objs))
+	for i, obj := range objs {
+		p := filepath.Join(scratch, strconv.Itoa(i))
+		storedHash, n, err := extractStoredContent(obj.tmp, obj.header, obj.contentLen, p)
+		if err != nil {
+			return err
+		}
+		if n != obj.contentLen {
+			return w.manager.storeErrorf(ReasonUnverifiedObject, obj.tmp,
+				"object content is %d bytes, not the declared %d", n, obj.contentLen)
+		}
+		if storedHash != obj.hash {
+			return w.manager.storeErrorf(ReasonUnverifiedObject, obj.tmp,
+				"stored bytes hash to %s but the object was named %s", storedHash, obj.hash)
+		}
+		paths[i] = p
+	}
+	gitHashes, err := w.gitHashObjects(w.ctx, objType, paths)
+	if err != nil {
+		return err
+	}
+	if len(gitHashes) != len(objs) {
+		return w.manager.storeErrorf(ReasonUnverifiedObject, w.gitDir,
+			"git hashed %d objects but %d were submitted", len(gitHashes), len(objs))
+	}
+	for i, obj := range objs {
+		if gitHashes[i] != obj.hash {
+			return w.manager.storeErrorf(ReasonUnverifiedObject, obj.tmp,
+				"git computed object %s for the stored bytes but this process hashed them as %s", gitHashes[i], obj.hash)
+		}
+	}
+	w.hashVerified += len(objs)
+	return nil
+}
+
+// extractStoredContent copies a stored object's content (after proving its
+// header) to dst, returning the hash of the stored object and the content bytes
+// copied.
+func extractStoredContent(path string, header []byte, contentLen int64, dst string) (string, int64, error) {
 	r, err := contentReader(path, header, contentLen)
 	if err != nil {
-		return err
+		return "", 0, err
 	}
 	defer r.Close()
-	counter := &countingReader{r: r}
-	gitHash, err := w.gitHashObject(w.ctx, objType, counter)
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return err
+		return "", 0, storeErrorf(ReasonUnreadableFile, "create verification copy %s: %v", dst, err)
 	}
-	if counter.n != contentLen {
-		return w.manager.storeErrorf(ReasonUnverifiedObject, path,
-			"object content is %d bytes, not the declared %d", counter.n, contentLen)
+	h := sha1.New()
+	if _, err := h.Write(header); err != nil {
+		_ = out.Close()
+		return "", 0, storeError(ReasonInternal, err)
 	}
-	storedHash, err := hashStoredContent(path, header, contentLen)
-	if err != nil {
-		return err
+	n, copyErr := io.Copy(io.MultiWriter(out, h), r)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return "", 0, storeErrorf(ReasonUnreadableFile, "read object %s: %v", path, copyErr)
 	}
-	if storedHash != wantHash {
-		return w.manager.storeErrorf(ReasonUnverifiedObject, path,
-			"stored bytes hash to %s but the object was named %s", storedHash, wantHash)
+	if closeErr != nil {
+		return "", 0, storeErrorf(ReasonUnreadableFile, "write verification copy %s: %v", dst, closeErr)
 	}
-	if gitHash != wantHash {
-		return w.manager.storeErrorf(ReasonUnverifiedObject, path,
-			"git computed object %s for the stored bytes but this process hashed them as %s", gitHash, wantHash)
+	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+// flushPending verifies every queued object with Git, in bounded batches per
+// object type, and only when ALL agree publishes them, syncing each object
+// directory once. A failure publishes nothing; the queued temps are removed by
+// cleanup like any other partial write. It must run before anything that
+// relies on the objects being durable (the snapshot ref).
+func (w *objectWriter) flushPending() error {
+	if len(w.pending) == 0 {
+		return nil
 	}
-	w.hashVerified++
+	// Verification below runs per known type; an object of any other type
+	// would be published unverified, so it fails closed instead.
+	for _, obj := range w.pending {
+		switch obj.objType {
+		case objTypeBlob, objTypeTree, objTypeCommit:
+		default:
+			return w.manager.storeErrorf(ReasonInternal, obj.tmp,
+				"queued object has unsupported type %q", obj.objType)
+		}
+	}
+	for _, objType := range []string{objTypeBlob, objTypeTree, objTypeCommit} {
+		var batch []pendingObject
+		var batchBytes int64
+		flush := func() error {
+			if err := w.ctx.Err(); err != nil {
+				return interruptedCapture(err)
+			}
+			err := w.verifyWithGit(objType, batch)
+			batch, batchBytes = nil, 0
+			return err
+		}
+		for _, obj := range w.pending {
+			if obj.objType != objType {
+				continue
+			}
+			batch = append(batch, obj)
+			batchBytes += obj.contentLen
+			if len(batch) >= verifyBatchMaxObjects || batchBytes >= verifyBatchMaxBytes {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+		}
+		if err := flush(); err != nil {
+			return err
+		}
+	}
+
+	// Every object agrees. Publish in queue order (blobs, then the trees that
+	// name them, then the commit) and make each directory durable once.
+	dirs := make(map[string]bool)
+	var dirOrder []string
+	for _, obj := range w.pending {
+		dir := filepath.Dir(obj.dst)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return w.manager.storeError(ReasonUnreadableFile, dir, err)
+		}
+		if err := os.Rename(obj.tmp, obj.dst); err != nil {
+			return w.manager.storeError(ReasonUnreadableFile, obj.dst, err)
+		}
+		w.forgetTemp(obj.tmp)
+		if !dirs[dir] {
+			dirs[dir] = true
+			dirOrder = append(dirOrder, dir)
+		}
+	}
+	for _, dir := range dirOrder {
+		if err := syncDir(dir); err != nil {
+			return w.manager.storeError(ReasonUnreadableFile, dir, err)
+		}
+	}
+	// Write boundary: each loose object is now durable at its content-addressed
+	// path, and each was charged before it was written.
+	for _, obj := range w.pending {
+		w.manager.observeWrite(WriteEvent{
+			Kind:      "object",
+			Path:      obj.dst,
+			Allowance: w.budget.Allowance(),
+		})
+	}
+	w.pending = nil
+	w.pendingByHash = nil
 	return nil
 }
 
@@ -1038,24 +1342,6 @@ func (rc *readerCloser) Close() error {
 		errs = append(errs, c.Close())
 	}
 	return errors.Join(errs...)
-}
-
-// hashStoredContent recomputes the canonical hash of a stored object from the
-// bytes on disk.
-func hashStoredContent(path string, header []byte, contentLen int64) (string, error) {
-	r, err := contentReader(path, header, contentLen)
-	if err != nil {
-		return "", err
-	}
-	defer r.Close()
-	h := sha1.New()
-	if _, err := h.Write(header); err != nil {
-		return "", storeError(ReasonInternal, err)
-	}
-	if _, err := io.Copy(h, r); err != nil {
-		return "", storeErrorf(ReasonUnreadableFile, "hash stored object %s: %v", path, err)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // verifyStoredObject proves a stored object decompresses to exactly the header

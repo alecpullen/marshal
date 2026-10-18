@@ -410,6 +410,9 @@ func (m *Manager) captureToGeneration(ctx context.Context, cat *Catalog, generat
 		return nil, err
 	}
 	defer writer.cleanup()
+	// Git agreement is batched for the whole capture and completed by
+	// flushPending below, before the crash boundary.
+	writer.deferGit = true
 
 	result := &captureResult{Allowance: req.Allowance, Entries: len(plan.Entries)}
 
@@ -447,6 +450,18 @@ func (m *Manager) captureToGeneration(ctx context.Context, cat *Catalog, generat
 	commitHash, err := writer.writeCommit(rootTree, req, m.Now())
 	if err != nil {
 		return nil, err
+	}
+	// Verify every new object with Git and publish them all. Nothing below
+	// may run until this has succeeded: the ref must only ever name durable,
+	// Git-verified objects.
+	if err := writer.flushPending(); err != nil {
+		return nil, err
+	}
+	// A cancellation that arrived while the batch was being published must
+	// still stop the capture short of its ref. Per-object writes used to
+	// notice it at the next object; the batch has no next object.
+	if err := ctx.Err(); err != nil {
+		return nil, interruptedCapture(err)
 	}
 
 	// Crash boundary: every object is durable and nothing is published yet.

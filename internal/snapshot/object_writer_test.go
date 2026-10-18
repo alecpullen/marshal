@@ -325,8 +325,12 @@ func treePayloadFor(t *testing.T, blobHash, mode, name string) []byte {
 func TestObjectWriterAbortsOnHashDisagreement(t *testing.T) {
 	requireGit(t)
 	_, _, _, w, _ := testObjectWriterEnv(t, 1<<20)
-	w.gitHashObject = func(context.Context, string, io.Reader) (string, error) {
-		return strings.Repeat("0", 40), nil
+	w.gitHashObjects = func(_ context.Context, _ string, paths []string) ([]string, error) {
+		out := make([]string, len(paths))
+		for i := range out {
+			out[i] = strings.Repeat("0", 40)
+		}
+		return out, nil
 	}
 	_, err := w.writeBlob(&bytesBlobSource{desc: "blob", data: []byte("hello\n")})
 	if !errors.Is(err, ErrUnverifiedObject) {
@@ -447,11 +451,19 @@ func measureObjectBytes(m *Manager, genDir, hash string) (objectBytesOnDisk, err
 
 // Writing the same content twice must spend once. It is not "the file exists":
 // the existing object is decompressed and compared, so a truncated or foreign
-// object at that path is not treated as a hit.
+// object at that path is not treated as a hit. A verified hit costs no Git
+// process: Git agreed with that object's stored bytes when it was installed,
+// and the hit re-proves in process that those bytes still hash to its name.
 func TestDeduplicatedObjectIsVerifiedBeforeItIsCounted(t *testing.T) {
 	requireGit(t)
 	_, _, _, w, _ := testObjectWriterEnv(t, 1<<20)
 	src := func() blobSource { return &bytesBlobSource{desc: "dup", data: []byte("the same bytes\n")} }
+	gitCalls := 0
+	realHash := w.gitHashObjects
+	w.gitHashObjects = func(ctx context.Context, objType string, paths []string) ([]string, error) {
+		gitCalls++
+		return realHash(ctx, objType, paths)
+	}
 
 	first, err := w.writeBlob(src())
 	if err != nil {
@@ -466,8 +478,8 @@ func TestDeduplicatedObjectIsVerifiedBeforeItIsCounted(t *testing.T) {
 		t.Fatalf("identical content hashed differently: %s vs %s", first, second)
 	}
 	verified, deduped := w.Stats()
-	if verified < 2 {
-		t.Fatalf("verified = %d, want both writes verified against git", verified)
+	if verified != 1 || gitCalls != 1 {
+		t.Fatalf("verified = %d with %d git calls, want only the first (new) write verified against git", verified, gitCalls)
 	}
 	if deduped != 1 {
 		t.Fatalf("deduped = %d, want exactly the second write", deduped)
@@ -693,5 +705,183 @@ func TestOpenWorkspaceFileRefusesAFinalSymlink(t *testing.T) {
 	}
 	if target != outside {
 		t.Fatalf("symlink target = %q, want %q", target, outside)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Repeat captures and batched Git agreement
+// ---------------------------------------------------------------------------
+
+// countGitBatches wraps the writer's Git agreement seam and counts the Git
+// processes it would start.
+func countGitBatches(w *objectWriter) *int {
+	calls := 0
+	real := w.gitHashObjects
+	w.gitHashObjects = func(ctx context.Context, objType string, paths []string) ([]string, error) {
+		calls++
+		return real(ctx, objType, paths)
+	}
+	return &calls
+}
+
+// An unchanged file is the common case in a repeat capture. Recognising it must
+// write nothing, charge nothing, and start no Git process.
+func TestUnchangedBlobWritesAndChargesNothing(t *testing.T) {
+	requireGit(t)
+	_, _, _, w, _ := testObjectWriterEnv(t, 1<<20)
+	calls := countGitBatches(w)
+	src := func() blobSource { return &bytesBlobSource{desc: "same", data: []byte("unchanged\n")} }
+	if _, err := w.writeBlob(src()); err != nil {
+		t.Fatalf("first writeBlob: %v", err)
+	}
+	spent, before := w.budget.Spent(), *calls
+	if _, err := w.writeBlob(src()); err != nil {
+		t.Fatalf("second writeBlob: %v", err)
+	}
+	if delta := w.budget.Spent() - spent; delta != 0 {
+		t.Fatalf("an unchanged blob charged %d bytes, want 0", delta)
+	}
+	if *calls != before {
+		t.Fatalf("an unchanged blob started %d git processes, want 0", *calls-before)
+	}
+	if len(w.temps) != 0 {
+		t.Fatalf("an unchanged blob left temp objects: %v", w.temps)
+	}
+	incoming, _ := os.ReadDir(filepath.Join(w.objectsDir, incomingDirName))
+	if len(incoming) != 0 {
+		t.Fatalf("an unchanged blob wrote into incoming: %d entries", len(incoming))
+	}
+}
+
+// With Git agreement deferred, new objects are not published until the batch is
+// verified, identical content is queued once, and the whole batch costs one Git
+// process per object type.
+func TestDeferredObjectsAreVerifiedInOneBatchBeforePublication(t *testing.T) {
+	requireGit(t)
+	_, _, _, w, _ := testObjectWriterEnv(t, 1<<20)
+	w.deferGit = true
+	calls := countGitBatches(w)
+
+	var hashes []string
+	for _, content := range []string{"one\n", "two\n", "three\n", "two\n"} {
+		hash, err := w.writeBlob(&bytesBlobSource{desc: content, data: []byte(content)})
+		if err != nil {
+			t.Fatalf("writeBlob(%q): %v", content, err)
+		}
+		hashes = append(hashes, hash)
+	}
+	tree, err := newGitObject(objTypeTree, treePayloadFor(t, hashes[0], "100644", "one"))
+	if err != nil {
+		t.Fatalf("newGitObject: %v", err)
+	}
+	if _, err := w.installObject(tree); err != nil {
+		t.Fatalf("installObject: %v", err)
+	}
+	if hashes[1] != hashes[3] {
+		t.Fatalf("identical content hashed differently: %s vs %s", hashes[1], hashes[3])
+	}
+	if len(w.pending) != 4 {
+		t.Fatalf("pending = %d objects, want 3 distinct blobs and 1 tree", len(w.pending))
+	}
+	if _, deduped := w.Stats(); deduped != 1 {
+		t.Fatalf("deduped = %d, want the repeated blob only", deduped)
+	}
+	if *calls != 0 {
+		t.Fatalf("git ran %d times before the flush", *calls)
+	}
+	for _, obj := range w.pending {
+		if _, err := os.Lstat(obj.dst); err == nil {
+			t.Fatalf("object %s was published before it was verified", obj.hash)
+		}
+	}
+
+	if err := w.flushPending(); err != nil {
+		t.Fatalf("flushPending: %v", err)
+	}
+	if *calls != 2 {
+		t.Fatalf("flush started %d git processes, want one for blobs and one for trees", *calls)
+	}
+	for _, hash := range append(hashes[:3], tree.Hash) {
+		dst, _ := w.objectPath(hash)
+		if _, err := os.Lstat(dst); err != nil {
+			t.Fatalf("object %s was not published: %v", hash, err)
+		}
+	}
+	if verified, _ := w.Stats(); verified != 4 {
+		t.Fatalf("verified = %d, want all 4 new objects", verified)
+	}
+	if len(w.temps) != 0 || len(w.pending) != 0 {
+		t.Fatalf("flush left temps %v or pending %d", w.temps, len(w.pending))
+	}
+}
+
+// One disagreement in a batch publishes nothing from that batch.
+func TestDeferredBatchDisagreementPublishesNothing(t *testing.T) {
+	requireGit(t)
+	_, _, _, w, _ := testObjectWriterEnv(t, 1<<20)
+	w.deferGit = true
+	real := w.gitHashObjects
+	w.gitHashObjects = func(ctx context.Context, objType string, paths []string) ([]string, error) {
+		out, err := real(ctx, objType, paths)
+		if err == nil && len(out) > 1 {
+			out[1] = strings.Repeat("0", 40)
+		}
+		return out, err
+	}
+	var hashes []string
+	for _, content := range []string{"alpha\n", "beta\n", "gamma\n"} {
+		hash, err := w.writeBlob(&bytesBlobSource{desc: content, data: []byte(content)})
+		if err != nil {
+			t.Fatalf("writeBlob(%q): %v", content, err)
+		}
+		hashes = append(hashes, hash)
+	}
+	if err := w.flushPending(); !errors.Is(err, ErrUnverifiedObject) {
+		t.Fatalf("flushPending = %v, want ErrUnverifiedObject", err)
+	}
+	for _, hash := range hashes {
+		dst, _ := w.objectPath(hash)
+		if _, err := os.Lstat(dst); err == nil {
+			t.Fatalf("object %s was published from a batch that failed verification", hash)
+		}
+	}
+	w.cleanup()
+	incoming, _ := os.ReadDir(filepath.Join(w.objectsDir, incomingDirName))
+	if len(incoming) != 0 {
+		t.Fatalf("a failed batch left %d temp objects after cleanup", len(incoming))
+	}
+}
+
+// Git's batched hashes are the canonical object names for every type the
+// writer produces.
+func TestHashObjectsViaGitMatchesObjectIDs(t *testing.T) {
+	requireGit(t)
+	_, _, _, w, _ := testObjectWriterEnv(t, 1<<20)
+	blobHash, err := objectID(objTypeBlob, []byte("hello\n"))
+	if err != nil {
+		t.Fatalf("objectID: %v", err)
+	}
+	cases := map[string][]byte{
+		objTypeBlob:   []byte("hello\n"),
+		objTypeTree:   treePayloadFor(t, blobHash, "100644", "hello"),
+		objTypeCommit: []byte("tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor a <a@b> 0 +0000\ncommitter a <a@b> 0 +0000\n\nm\n"),
+	}
+	dir := t.TempDir()
+	for objType, content := range cases {
+		p := filepath.Join(dir, objType)
+		if err := os.WriteFile(p, content, 0o600); err != nil {
+			t.Fatalf("write %s: %v", objType, err)
+		}
+		got, err := w.hashObjectsViaGit(context.Background(), objType, []string{p, p})
+		if err != nil {
+			t.Fatalf("hashObjectsViaGit(%s): %v", objType, err)
+		}
+		want, err := objectID(objType, content)
+		if err != nil {
+			t.Fatalf("objectID(%s): %v", objType, err)
+		}
+		if len(got) != 2 || got[0] != want || got[1] != want {
+			t.Fatalf("%s: git hashes = %v, want [%s %s]", objType, got, want, want)
+		}
 	}
 }

@@ -83,6 +83,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "send-now",
+			Description: "Interrupt the current operation and steer the same conversation turn",
+			Args:        "[message]",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "save",
 			Description: "Confirm the current session is saved (auto-saved throughout)",
 			Group:       groupChat,

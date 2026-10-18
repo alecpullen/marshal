@@ -1370,6 +1370,91 @@ func TestSteeringQueueIsCopy(t *testing.T) {
 	}
 }
 
+// TestSteeringTypedFIFOCompatibility pins that the typed FIFO behind the
+// steering queue keeps the legacy string API's ordering and copy semantics:
+// Push/Queue/Drain/Pop stay first-in-first-out and every returned slice is
+// independent of the queue.
+func TestSteeringTypedFIFOCompatibility(t *testing.T) {
+	state := newTestState()
+	state.PushSteering("first")
+	state.PushSteering("second")
+	state.PushSteering("third")
+
+	queued := state.SteeringQueue()
+	if len(queued) != 3 || queued[0] != "first" || queued[1] != "second" || queued[2] != "third" {
+		t.Fatalf("SteeringQueue = %v, want [first second third]", queued)
+	}
+	// Mutating the returned slice must not reach the queue.
+	queued[0] = "mutated"
+	if got := state.SteeringQueue(); got[0] != "first" {
+		t.Fatalf("SteeringQueue = %v, want the queue unaffected by a caller's mutation", got)
+	}
+
+	// PopSteering removes the oldest entry only.
+	oldest, ok := state.PopSteering()
+	if !ok || oldest != "first" {
+		t.Fatalf("PopSteering = (%q, %v), want (first, true)", oldest, ok)
+	}
+	if got := state.SteeringQueue(); len(got) != 2 || got[0] != "second" {
+		t.Fatalf("SteeringQueue after pop = %v, want [second third]", got)
+	}
+
+	// DrainSteering returns the rest in order and empties the queue.
+	drained := state.DrainSteering()
+	if len(drained) != 2 || drained[0] != "second" || drained[1] != "third" {
+		t.Fatalf("DrainSteering = %v, want [second third]", drained)
+	}
+	drained[0] = "mutated"
+	if got := state.SteeringQueue(); len(got) != 0 {
+		t.Fatalf("SteeringQueue after drain = %v, want empty", got)
+	}
+	if _, ok := state.PopSteering(); ok {
+		t.Fatal("PopSteering on an empty queue returned ok=true")
+	}
+}
+
+// TestSteeringMessageIDsAreUnique pins that two queued messages with equal
+// text still carry distinct internal IDs, so the Send now controller can name
+// exactly which entries one accepted request covers.
+func TestSteeringMessageIDsAreUnique(t *testing.T) {
+	state := newTestState()
+	state.PushSteering("same text")
+	state.PushSteering("same text")
+
+	state.mu.Lock()
+	entries := append([]SteeringMessage(nil), state.steeringQueue...)
+	state.mu.Unlock()
+	if len(entries) != 2 {
+		t.Fatalf("typed queue = %v, want two entries", entries)
+	}
+	if entries[0].ID == "" || entries[1].ID == "" {
+		t.Fatalf("typed queue = %+v, want non-empty IDs", entries)
+	}
+	if entries[0].ID == entries[1].ID {
+		t.Fatalf("typed queue = %+v, want distinct IDs for equal text", entries)
+	}
+	if entries[0].Text != "same text" || entries[1].Text != "same text" {
+		t.Fatalf("typed queue = %+v, want the text preserved", entries)
+	}
+}
+
+// TestSteeringClearDoesNotTouchReports pins that the typed steering queue
+// stays independent of the machine-generated report queues: clearing human
+// steering must not drop a background child's completion report.
+func TestSteeringClearDoesNotTouchReports(t *testing.T) {
+	state := newTestState()
+	state.PushSubagentReport("[subagent 1 finished] child report")
+	state.PushSteering("human steering")
+
+	state.ClearSteering()
+	if got := state.SteeringQueue(); len(got) != 0 {
+		t.Fatalf("steering queue = %v, want empty after clear", got)
+	}
+	if got := state.SubagentReports(); len(got) != 1 || got[0] != "[subagent 1 finished] child report" {
+		t.Fatalf("subagent report queue = %v, want the report preserved", got)
+	}
+}
+
 func TestStatePublishesMessageEvent(t *testing.T) {
 	state := newTestState()
 	broker := pubsub.NewBroker[Event]()

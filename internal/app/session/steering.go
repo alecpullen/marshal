@@ -1,6 +1,10 @@
 package session
 
-import "marshal/internal/pubsub"
+import (
+	"crypto/rand"
+
+	"marshal/internal/pubsub"
+)
 
 // SteeringEvent is the broker payload published when a message is pushed
 // to the steering queue. The session package owns the event type: event
@@ -14,9 +18,13 @@ type SteeringEvent struct {
 // steering message (consumed at the next loop-top) if a turn is running,
 // or the next follow-up turn if the turn has already ended. Publishing
 // to the broker lets the TUI re-render the queued marker without polling.
+//
+// Every entry gets a stable internal ID so the Send now controller can
+// name exactly which queued messages one accepted request covers; two
+// identical texts must stay distinguishable.
 func (s *State) PushSteering(msg string) {
 	s.mu.Lock()
-	s.steeringQueue = append(s.steeringQueue, msg)
+	s.steeringQueue = append(s.steeringQueue, SteeringMessage{ID: rand.Text(), Text: msg})
 	broker := s.steeringBroker
 	queueLen := len(s.steeringQueue)
 	s.mu.Unlock()
@@ -29,7 +37,7 @@ func (s *State) PushSteering(msg string) {
 func (s *State) SteeringQueue() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.steeringQueue...)
+	return steeringTexts(s.steeringQueue)
 }
 
 // DrainSteering returns and clears the queue atomically. The runner
@@ -37,7 +45,7 @@ func (s *State) SteeringQueue() []string {
 // model context.
 func (s *State) DrainSteering() []string {
 	s.mu.Lock()
-	out := s.steeringQueue
+	out := steeringTexts(s.steeringQueue)
 	s.steeringQueue = nil
 	broker := s.steeringBroker
 	queueLen := len(s.steeringQueue)
@@ -65,7 +73,7 @@ func (s *State) PopSteering() (string, bool) {
 	if broker != nil {
 		broker.Publish("steering", SteeringEvent{QueueLen: queueLen})
 	}
-	return oldest, true
+	return oldest.Text, true
 }
 
 // ClearSteering drops all queued messages without returning them. Used
@@ -89,4 +97,15 @@ func (s *State) SetSteeringBroker(b *pubsub.Broker[SteeringEvent]) {
 	s.mu.Lock()
 	s.steeringBroker = b
 	s.mu.Unlock()
+}
+
+// steeringTexts projects typed queue entries onto the plain-text view the
+// existing string APIs expose. It always returns a fresh slice, so a caller
+// mutating the result cannot reach the queue.
+func steeringTexts(entries []SteeringMessage) []string {
+	out := make([]string, len(entries))
+	for i, e := range entries {
+		out[i] = e.Text
+	}
+	return out
 }

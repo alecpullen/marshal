@@ -438,8 +438,11 @@ type State struct {
 	layers config.Layers
 
 	// F16: steering queue (mid-turn user messages). Published to the broker
-	// so the TUI transcript and status line update without polling.
-	steeringQueue  []string
+	// so the TUI transcript and status line update without polling. Entries
+	// are typed so every queued message has a stable internal ID: the
+	// Send now controller tracks which entries one accepted request covers,
+	// and a string-only queue could not tell two identical texts apart.
+	steeringQueue  []SteeringMessage
 	steeringBroker *pubsub.Broker[SteeringEvent]
 
 	// subagentReports is the machine-generated completion queue for

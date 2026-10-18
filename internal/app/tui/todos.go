@@ -659,8 +659,14 @@ func (p *tasksPanelModel) headerField(id, title string) *listpanel.Field {
 	return &listpanel.Field{ID: id, Title: title, Kind: listpanel.KindHeader}
 }
 
+// scalarField is a read-only notice row: the title carries the whole message,
+// so the value cell stays empty. KindScalar requires a GetStr closure —
+// valueCell calls it unconditionally — and a nil one panics on render.
 func (p *tasksPanelModel) scalarField(id, title string) *listpanel.Field {
-	return &listpanel.Field{ID: id, Title: title, Kind: listpanel.KindScalar}
+	return &listpanel.Field{
+		ID: id, Title: title, Kind: listpanel.KindScalar,
+		GetStr: func() string { return "" },
+	}
 }
 
 func (p *tasksPanelModel) actionField(id, title string, act func() tea.Cmd) *listpanel.Field {

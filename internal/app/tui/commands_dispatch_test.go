@@ -250,3 +250,23 @@ func TestResumeCommandReachesTheWarning(t *testing.T) {
 		t.Fatal("/resume accepted an ending before the user decided")
 	}
 }
+
+// TestSendNowCommandTokenBoundary pins the raw-line recognition: only the exact
+// /send-now token is intercepted, so a longer command name is dispatched
+// normally instead of having its argument swallowed as steering text.
+func TestSendNowCommandTokenBoundary(t *testing.T) {
+	m := newTestModel(t)
+	// "/send-nowhere" is not /send-now: it must fall through to the ordinary
+	// command path and be reported as an unknown command.
+	if m.isSendNowCommand("/send-nowhere steer") {
+		t.Fatal("a longer command name was mistaken for /send-now")
+	}
+	if !m.isSendNowCommand("/send-now") || !m.isSendNowCommand("/send-now text") {
+		t.Fatal("/send-now was not recognized")
+	}
+	// A registry without the entry refuses the recognition too.
+	bare := New(newTestState(t), WithCommandRegistry(commands.New()))
+	if bare.isSendNowCommand("/send-now text") {
+		t.Fatal("recognized /send-now without the registry entry")
+	}
+}

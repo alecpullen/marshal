@@ -58,6 +58,98 @@ func parseReviewArgs(args []string) (model, base, reviewRange string, remaining 
 	return model, base, reviewRange, out
 }
 
+// isSendNowCommand reports whether raw is the /send-now command, matching the
+// command token exactly. The suffix is left for sendNowCommand to take verbatim
+// rather than being re-split: the payload is steering text, and shlex would
+// strip its quotes and collapse its newlines.
+func (m *Model) isSendNowCommand(raw string) bool {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(raw), "/send-now")
+	if !ok {
+		return false
+	}
+	// The token boundary is exact: "/send-now-extra" names a different command.
+	if len(rest) > 0 && rest[0] != ' ' && rest[0] != '\t' && rest[0] != '\n' {
+		return false
+	}
+	if m.cmdRegistry == nil {
+		return false
+	}
+	_, ok = m.cmdRegistry.Lookup("send-now")
+	return ok
+}
+
+// sendNowCommand is the /send-now effect, kept beside the other interactive
+// command effects. It receives the raw line, not parsed args: the payload is
+// literal steering text, so quotes, newlines and interior whitespace must
+// survive exactly as typed. With text it submits that text; with no argument it
+// flushes the existing queue, or opens the composer when there is nothing
+// queued. Its failure path restores the raw draft the Enter handler cleared, so
+// a rejected submission never costs the user their line.
+func (m *Model) sendNowCommand(raw string) (tea.Model, tea.Cmd) {
+	text := ""
+	if rest, ok := strings.CutPrefix(strings.TrimSpace(raw), "/send-now"); ok {
+		// Only the separating whitespace is dropped: whatever the user typed
+		// after it is literal steering text, quotes and newlines included.
+		text = strings.TrimLeft(rest, " \t\r\n")
+	}
+	if strings.TrimSpace(text) == "" {
+		return m.sendNowFlushOrOpen(raw)
+	}
+	snap, ok := m.sendNowTarget()
+	if !ok {
+		m.restoreSendNowDraft(raw)
+		m.rejectSendNow(sendNowUnavailable + " The command text was kept.")
+		return m, nil
+	}
+	// The Enter handler cleared the draft before dispatching, so a refused
+	// request has to put it back: the user's line is theirs until the runtime
+	// actually accepts it.
+	if !m.submitSendNow(session.SendNowRequest{
+		SessionID: m.state.SessionID(),
+		TurnID:    snap.TurnID,
+		Text:      text,
+	}, nil) {
+		m.restoreSendNowDraft(raw)
+	}
+	return m, nil
+}
+
+// sendNowFlushOrOpen implements the no-argument form: flush the queue when a
+// supported active turn has steering waiting, otherwise open the composer. A
+// turn that cannot accept the action keeps the raw draft and says why.
+func (m *Model) sendNowFlushOrOpen(raw string) (tea.Model, tea.Cmd) {
+	snap, ok := m.sendNowTarget()
+	if !ok {
+		m.restoreSendNowDraft(raw)
+		m.rejectSendNow(sendNowUnavailable + " The command text was kept.")
+		return m, nil
+	}
+	if len(m.state.SteeringQueue()) == 0 {
+		// Nothing to flush: the composer is the remaining way to write one.
+		m.openSteeringComposer()
+		return m, nil
+	}
+	if !m.submitSendNow(session.SendNowRequest{
+		SessionID: m.state.SessionID(),
+		TurnID:    snap.TurnID,
+		Text:      "",
+	}, nil) {
+		m.restoreSendNowDraft(raw)
+	}
+	return m, nil
+}
+
+// restoreSendNowDraft puts the raw command line back into the chat editor after
+// a rejected /send-now, so the user can edit and retry rather than retype.
+func (m *Model) restoreSendNowDraft(raw string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return
+	}
+	m.input.SetValue(raw)
+	m.input.MoveToEnd()
+}
+
 // newSessionEffect is the shared /new and /clear handler. It records a pending
 // REPLACEMENT whose target (the new session's name) is applied only after the
 // runtime accepts the work membership an end would stop: the current

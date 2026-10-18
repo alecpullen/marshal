@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,6 +50,7 @@ import (
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/steerpanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
@@ -500,6 +502,48 @@ type Model struct {
 	steeringEvents <-chan pubsub.Event[session.SteeringEvent]
 	queuedCount    int
 	cancelling     bool
+
+	// Send now (Alt+Enter / /send-now). steeringSnapshot is the cached
+	// runtime snapshot the status line and the footer gate read; it is
+	// refreshed from broker events and, in a build with no broker (tests,
+	// fallback), read directly from the callback on every tick.
+	steeringSnapshot session.SteeringSnapshot
+	// steeringReceipts caches the latest receipt per request ID. Receipt
+	// revisions advance per request, so a comparison must be per key: one
+	// global revision would let one request's final outcome discard another
+	// request's.
+	steeringReceipts map[string]session.SteeringReceipt
+	// steeringSnapshotFn / submitSendNowFn are the runtime-facing seam
+	// (WithSendNow). Either nil makes the action unavailable: a fail-closed
+	// Alt+Enter is better than one that pretends to interrupt nothing.
+	steeringSnapshotFn func() session.SteeringSnapshot
+	submitSendNowFn    func(session.SendNowRequest) (session.SteeringReceipt, error)
+	// steeringComposer is the temporary composer currently holding the dock,
+	// or nil. It is identified by its ComposerID so a late message from a
+	// replaced composer can never act on the new one.
+	steeringComposer *steerpanel.Panel
+	// composerID is the active composer's ID; composerSessionID/composerTurnID
+	// are the conversation and turn it was bound to at open time. A
+	// submission whose binding no longer matches is stale and rejected.
+	composerID        string
+	composerSessionID string
+	composerTurnID    string
+	// composerDisplaced is the one panel the composer displaced. It is not a
+	// general panel stack: the composer is the only surface that suspends
+	// another, so a single retained slot is enough.
+	composerDisplaced dock.Panel
+	// composerDisplacedAccess is the canonical access-request ID that panel
+	// represented, and composerDisplacedPrompt the canonical prompt key when a
+	// pending prompt (approval/question/skill/sudo) was displaced. Restoring
+	// requires the same identity: a request cancelled by interruption, or a
+	// prompt that settled while the composer was up, must retire rather than
+	// resurrect.
+	composerDisplacedAccess string
+	composerDisplacedPrompt session.PromptKey
+	// composerInputFocused is the base textarea's focus state before the
+	// composer took over, restored on close so Esc puts the user back where
+	// they were rather than stealing or leaving focus arbitrarily.
+	composerInputFocused bool
 
 	// endAnalyzing is set when the exit flow dispatched the scoped exit-analysis
 	// pass through the end controller. The pass reports back through
@@ -1062,6 +1106,22 @@ func WithSteeringBroker(ctx context.Context, broker *pubsub.Broker[session.Steer
 	return func(m *Model) {
 		m.ctx = ctx
 		m.steeringBroker = broker
+	}
+}
+
+// WithSendNow wires the runtime-facing Send now seam: snapshot reads the
+// active-turn steering state, submit accepts one request and returns its
+// receipt. Both are bounded, memory-only calls — the TUI must never await a
+// process or a model call inside an update handler. Omitting either makes the
+// action unavailable (fail closed): Alt+Enter then never submits and the
+// footer never advertises it.
+func WithSendNow(
+	snapshot func() session.SteeringSnapshot,
+	submit func(session.SendNowRequest) (session.SteeringReceipt, error),
+) Option {
+	return func(m *Model) {
+		m.steeringSnapshotFn = snapshot
+		m.submitSendNowFn = submit
 	}
 }
 
@@ -2055,6 +2115,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconcileAccess()
 		return m, nil
 	}
+
+	// Send now (Alt+Enter) is global, so it is handled here — before the dock
+	// and the pending-prompt routing that would otherwise have the first claim
+	// on the key. Below the supported terminal minimum the whole frame is
+	// hidden: an invisible keypress must interrupt nothing, and neither may a
+	// submission from an invisible composer. While the composer is up the key
+	// belongs to the composer, which the routing below delivers it to.
+	switch sendNow := msg.(type) {
+	case steerpanel.SubmitMsg:
+		if hidden {
+			return m, nil
+		}
+		out, cmd := m.handleComposerSubmit(sendNow)
+		m = reconcileIfModel(out)
+		return m, cmd
+	case steerpanel.CloseMsg:
+		out, cmd := m.handleComposerClose(sendNow)
+		m = reconcileIfModel(out)
+		return m, cmd
+	}
+	if k, ok := msg.(tea.KeyPressMsg); ok && isSendNowKey(k) && !hidden && m.steeringComposer == nil {
+		// Any key other than a second Ctrl+C disarms the pending interrupt, and
+		// Alt+Enter is intercepted before the inner router can apply that rule.
+		m.ctrlCArmedFor = ctrlCNone
+		out, cmd := m.beginSendNow()
+		m = reconcileIfModel(out)
+		return m, cmd
+	}
+
+	// The composer owns the input area. Key and paste messages go only to it;
+	// every other message runs the ordinary routing once against the panel the
+	// composer suspended, so that panel's asynchronous result still lands.
+	//
+	// Ctrl+C is the exception: the composer deliberately declines it, because a
+	// global interrupt must keep working while a steering message is being
+	// written. It falls through to the ordinary routing below.
+	if m.steeringComposer != nil && !composerPassesThrough(msg) {
+		switch msg.(type) {
+		case tea.KeyPressMsg, tea.PasteMsg:
+			m.ctrlCArmedFor = ctrlCNone
+			return m, m.dock.Update(msg)
+		}
+		updated, cmd := m.routeWithSuspendedSurface(msg)
+		switch next := updated.(type) {
+		case Model:
+			next.reconcileAccess()
+			return next, cmd
+		case *Model:
+			next.reconcileAccess()
+			return next, cmd
+		default:
+			return updated, cmd
+		}
+	}
+
 	updated, cmd := m.update(msg)
 	switch next := updated.(type) {
 	case Model:
@@ -2066,6 +2181,69 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	default:
 		return updated, cmd
 	}
+}
+
+// reconcileIfModel applies post-routing access reconciliation to whichever
+// model form a handler returned.
+func reconcileIfModel(updated tea.Model) Model {
+	switch next := updated.(type) {
+	case Model:
+		next.reconcileAccess()
+		return next
+	case *Model:
+		next.reconcileAccess()
+		return *next
+	}
+	return Model{}
+}
+
+// routeWithSuspendedSurface runs the ordinary routing once with the panel the
+// composer suspended temporarily holding the dock, then restores the composer
+// and records whatever the pass left behind. Without it a settings save, a
+// provider probe or an install completion would be offered to the composer —
+// which can never own it — and the suspended panel would never settle. The
+// result reaches exactly one panel: the retained one, never both.
+func (m Model) routeWithSuspendedSurface(msg tea.Msg) (tea.Model, tea.Cmd) {
+	composer := m.dock.Panel()
+	if m.composerDisplaced != nil {
+		m.dock.Open(m.composerDisplaced)
+	} else {
+		m.dock.CloseNow()
+	}
+	updated, cmd := m.update(msg)
+	next, ok := modelOf(updated)
+	if !ok {
+		return updated, cmd
+	}
+	// Whatever the pass left in the dock is the surface to return to when the
+	// composer closes: a panel that closed itself stays closed, and a panel
+	// that re-opened (or one the pass opened) is the new one.
+	next.composerDisplaced = next.dock.Panel()
+	if composer != nil {
+		next.dock.Open(composer)
+	}
+	return next, cmd
+}
+
+// modelOf normalises Update's return. The model is a value type with pointer
+// methods, so a handler may legitimately return either form.
+func modelOf(updated tea.Model) (Model, bool) {
+	switch v := updated.(type) {
+	case Model:
+		return v, true
+	case *Model:
+		return *v, true
+	}
+	return Model{}, false
+}
+
+// composerPassesThrough reports whether a message must bypass the composer and
+// run the ordinary routing. Ctrl+C is the only one: the composer declines it on
+// purpose so the global stop/quit handling keeps working while a steering
+// message is being typed.
+func composerPassesThrough(msg tea.Msg) bool {
+	k, ok := msg.(tea.KeyPressMsg)
+	return ok && k.String() == "ctrl+c"
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -3180,17 +3358,11 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 	m.approvalModel = nil
 	switch choice {
 	case choiceApprove:
-		if owner.PendingApproval() == tc {
-			tc.Respond(session.UserApprovalDecision{Approved: true})
-		}
-		owner.SetPendingApproval(nil)
+		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true}, nil)
 		m.invalidateTranscript()
 		return m, nil
 	case choiceDeny:
-		if owner.PendingApproval() == tc {
-			tc.Respond(session.UserApprovalDecision{Approved: false})
-		}
-		owner.SetPendingApproval(nil)
+		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: false}, nil)
 		m.invalidateTranscript()
 		return m, nil
 	case choiceAlways:
@@ -3199,14 +3371,19 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			Pattern:    permissions.PatternForApproval(tc),
 			Action:     permissions.ActionAllow,
 		}
-		userConfigPath := filepath.Join(userConfigDir(), "config.toml")
-		if err := config.SaveUserConfigRule(userConfigPath, config.PermissionRule{
-			Permission: rule.Permission,
-			Pattern:    rule.Pattern,
-			Action:     string(rule.Action),
-		}); err != nil {
-			m.state.AddSessionRule(tc.Command)
-		} else {
+		// The rule is a policy side effect: it belongs inside the apply
+		// callback so a steering cancellation that already owns the settlement
+		// can never persist a bypass for a prompt it cancelled.
+		apply := func() error {
+			userConfigPath := filepath.Join(userConfigDir(), "config.toml")
+			if err := config.SaveUserConfigRule(userConfigPath, config.PermissionRule{
+				Permission: rule.Permission,
+				Pattern:    rule.Pattern,
+				Action:     string(rule.Action),
+			}); err != nil {
+				m.state.AddSessionRule(tc.Command)
+				return nil
+			}
 			newCfg := m.state.Config
 			newCfg.Permissions.Rules = append(newCfg.Permissions.Rules, config.PermissionRule{
 				Permission: rule.Permission,
@@ -3217,19 +3394,17 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			if m.runner != nil {
 				m.runner.SetPolicyRules(m.state.Config.Permissions.Rules)
 			}
+			return nil
 		}
-		if owner.PendingApproval() == tc {
-			tc.Respond(session.UserApprovalDecision{Approved: true})
-		}
-		owner.SetPendingApproval(nil)
+		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true}, apply)
 		m.invalidateTranscript()
 		return m, nil
 	case choiceSessionAllow:
-		m.state.AddSessionRule(tc.Command)
-		if owner.PendingApproval() == tc {
-			tc.Respond(session.UserApprovalDecision{Approved: true})
+		apply := func() error {
+			m.state.AddSessionRule(tc.Command)
+			return nil
 		}
-		owner.SetPendingApproval(nil)
+		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true}, apply)
 		m.invalidateTranscript()
 		return m, nil
 	case choiceEdit:
@@ -3272,6 +3447,32 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 	}
 }
 
+// settleApproval resolves an approval decision through the owning session's
+// canonical registry when the prompt carries a non-zero key, falling back to
+// the raw Respond path for a legacy unregistered fixture. apply carries policy
+// side effects and runs only for the claim that won: a decision that lost to an
+// accepted steering cancellation persists nothing, grants nothing and clears no
+// current prompt. owner is the state that raised the prompt, so a subagent's
+// approval settles against the child's own registry rather than the parent's.
+func (m *Model) settleApproval(owner *session.State, tc *session.PendingToolCall, decision session.UserApprovalDecision, apply func() error) {
+	if tc.Key.ID != "" && owner != nil {
+		if _, err := owner.ResolveApproval(tc.Key, decision, apply); err != nil {
+			owner.ClearPrompt(tc.Key)
+		}
+		return
+	}
+	// An unregistered legacy fixture owns its own channel, and nothing else can
+	// claim that settlement, so its side effect runs unconditionally — exactly
+	// as it did before the registry existed.
+	if apply != nil {
+		_ = apply()
+	}
+	if owner.PendingApproval() == tc {
+		tc.Respond(decision)
+	}
+	owner.SetPendingApproval(nil)
+}
+
 // handleQuestion routes messages to the inline question form while a
 // clarifying question is pending. On completion it sends the answers (or
 // every question marked "Unanswered" on abort) to the runner's response
@@ -3287,10 +3488,18 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 		return m, cmd
 	}
 
-	if m.state.PendingQuestion() == q {
-		q.Respond(m.questionModel.Answers())
+	answers := m.questionModel.Answers()
+	switch {
+	case q.Key.ID != "" && m.state.PendingQuestion() == q:
+		// Canonical settlement: the registry arbitrates the answer against an
+		// accepted steering cancellation, so a late answer cannot answer a
+		// question the interruption already settled, and only a winning claim
+		// clears the slot.
+		m.state.ResolveQuestion(q.Key, answers)
+	case m.state.PendingQuestion() == q:
+		q.Respond(answers)
+		m.state.SetPendingQuestion(nil)
 	}
-	m.state.SetPendingQuestion(nil)
 	m.questionModel = nil
 	m.resetInput()
 	m.input.Placeholder = "Ask Marshal..."
@@ -3318,12 +3527,26 @@ func (m Model) handleSkillGate(msg tea.Msg, sg *session.PendingSkillGate) (tea.M
 	}
 	choice := gm.Choice()
 	m.skillGateModel = nil
-	switch choice {
-	case session.SkillGateAllowSkill:
-		m.state.SkillGateRecordAllow(sg.Skill, false)
-	case session.SkillGateAllowAll:
-		m.state.SkillGateRecordAllow(sg.Skill, true)
+	// The sticky-skill record is a session side effect: it belongs inside the
+	// apply callback, so a decision that lost to an accepted steering
+	// cancellation never records a bypass for a gate it cancelled.
+	apply := func() error {
+		switch choice {
+		case session.SkillGateAllowSkill:
+			m.state.SkillGateRecordAllow(sg.Skill, false)
+		case session.SkillGateAllowAll:
+			m.state.SkillGateRecordAllow(sg.Skill, true)
+		}
+		return nil
 	}
+	if sg.Key.ID != "" && m.state.PendingSkillGate() == sg {
+		if _, err := m.state.ResolveSkillGate(sg.Key, choice, apply); err != nil {
+			m.state.ClearPrompt(sg.Key)
+		}
+		m.refreshViewport()
+		return m, nil
+	}
+	apply()
 	// Respond only if the slot still holds this prompt: a pending that
 	// was resolved out-from-under the dialog (shutdown race) must not
 	// have its replacement cleared without a response.
@@ -3357,6 +3580,14 @@ func (m Model) handleSudoAuth(msg tea.Msg, sa *session.PendingSudoAuth) (tea.Mod
 	}
 	decision := sm.Decision()
 	m.sudoAuthModel = nil
+	if sa.Key.ID != "" && m.state.PendingSudoAuth() == sa {
+		// Canonical settlement: a canceled prompt delivers an empty decision,
+		// so a password typed into a prompt the interruption already settled
+		// never reaches the privileged runner.
+		m.state.ResolveSudoAuth(sa.Key, decision)
+		m.refreshViewport()
+		return m, nil
+	}
 	// Respond only if the slot still holds this prompt: a pending resolved
 	// out-from-under the form (shutdown race) must not have its replacement
 	// cleared without a response.
@@ -3443,6 +3674,13 @@ func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 // circularity in the MaxHeight budget (available rows must not depend on
 // the textarea's own height).
 func (m Model) inputChromeRows() int {
+	// While the composer owns the input, the base input area renders only its
+	// suspended notice: the pending prompts, the completion popup and the base
+	// textarea belong to the composer now, so reserving rows for them would
+	// over-budget the transcript.
+	if m.steeringComposer != nil {
+		return 1
+	}
 	rows := 0
 	if sd := m.state.SDDProgress(); sd.Active {
 		rows++ // SDD hint row
@@ -3505,6 +3743,11 @@ func (m Model) inputChromeRows() int {
 
 func (m Model) inputAreaRows() int {
 	rows := m.inputChromeRows()
+	if m.steeringComposer != nil {
+		// The composer's own panel height is budgeted by the dock; the base
+		// input area below it renders only its suspended notice row.
+		return rows
+	}
 	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil && m.state.PendingSudoAuth() == nil {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
@@ -5169,8 +5412,13 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// under the transcript until the next successful turn.
 	cancelled := m.cancelling
 	if cancelled {
+		// ClearSteering drops the ordinary queued entries but preserves the
+		// ones an accepted, undelivered Send now request is still responsible
+		// for: the user asked explicitly for those to be delivered, and a UI
+		// cleanup must not silently revoke the request. The surviving depth is
+		// re-read rather than assumed to be zero.
 		m.state.ClearSteering()
-		m.queuedCount = 0
+		m.queuedCount = len(m.state.SteeringQueue())
 		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
 		m.state.ClearNotice(session.NoticeProvider)
 		m.cancelling = false
@@ -5438,12 +5686,421 @@ func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
 	// render without polling, then re-arm the pump. The transcript
 	// re-renders via the viewport dirty hash on the next refresh.
 	m.queuedCount = msg.queueLen
+	m.absorbSteeringEvent(msg.snapshot, msg.receipt)
 	if m.steeringEvents == nil {
 		m.refreshViewport()
 		return m, nil
 	}
 	m.refreshViewport()
 	return m, pumpSteeringEvents(m.steeringEvents)
+}
+
+// absorbSteeringEvent caches the snapshot and receipt a SteeringEvent carried.
+// A snapshot older than the cached one is dropped (the broker preserves order,
+// but a direct message in a test need not), and a receipt is dropped unless its
+// per-request revision is newer: comparing one global revision would let a
+// settled request's final outcome be discarded by another request's older
+// event, or vice versa.
+func (m *Model) absorbSteeringEvent(snapshot *session.SteeringSnapshot, receipt *session.SteeringReceipt) {
+	// Versions are only comparable within one turn: a replacement conversation
+	// restarts its own counter, so a different turn's snapshot is taken as-is
+	// rather than being rejected as "older" than the previous turn's.
+	if snapshot != nil && (snapshot.TurnID != m.steeringSnapshot.TurnID || snapshot.Version >= m.steeringSnapshot.Version) {
+		m.steeringSnapshot = *snapshot
+	}
+	if receipt == nil {
+		return
+	}
+	if m.steeringReceipts == nil {
+		m.steeringReceipts = map[string]session.SteeringReceipt{}
+	}
+	if prev, ok := m.steeringReceipts[receipt.RequestID]; ok && prev.Version >= receipt.Version {
+		return
+	}
+	m.steeringReceipts[receipt.RequestID] = *receipt
+}
+
+// refreshSteeringSnapshot re-reads the cache directly from the runtime seam.
+// A build with a broker is kept current by events; one without (tests, a
+// runtime that never binds a broker) would otherwise render a stale or empty
+// snapshot forever, so ticks read it here. The direct read is authoritative —
+// it names the conversation this model is actually attached to — so it is
+// taken verbatim rather than through the event-order comparison. It is a
+// bounded, memory-only read.
+func (m *Model) refreshSteeringSnapshot() {
+	if m.steeringSnapshotFn == nil {
+		m.steeringSnapshot = session.SteeringSnapshot{}
+		return
+	}
+	m.steeringSnapshot = m.steeringSnapshotFn()
+}
+
+// ── Send now ────────────────────────────────────────────────────────────
+
+// sendNowUnavailable is the explanation a fail-closed Send now renders: the
+// draft is kept, and the user is told which condition is missing rather than
+// being left wondering why the key did nothing.
+const sendNowUnavailable = "Send now is unavailable: the runtime reports no supported, active turn to interrupt."
+
+// isSendNowKey reports whether a keypress is the global Send now action.
+// Bubble Tea v2 reports Alt+Enter as "alt+enter"; the modifier-plus-code form
+// is checked too because a terminal that does not extend the key still
+// delivers the modifier bit.
+func isSendNowKey(k tea.KeyPressMsg) bool {
+	if k.String() == "alt+enter" {
+		return true
+	}
+	return k.Code == tea.KeyEnter && k.Mod.Contains(tea.ModAlt)
+}
+
+// sendNowTarget resolves the turn a Send now action may target. It reports
+// false when the feature is unavailable (no runtime seam), the turn is not
+// eligible (idle, closing, unsupported), or the TUI is not in a turn. The
+// snapshot is refreshed first so a runtime that publishes no broker is still
+// current.
+func (m *Model) sendNowTarget() (session.SteeringSnapshot, bool) {
+	if m.steeringSnapshotFn == nil || m.submitSendNowFn == nil {
+		return session.SteeringSnapshot{}, false
+	}
+	m.refreshSteeringSnapshot()
+	snap := m.steeringSnapshot
+	if !m.busy || !snap.Active || !snap.Supported {
+		return session.SteeringSnapshot{}, false
+	}
+	return snap, true
+}
+
+// rejectSendNow explains a refusal in the transcript and keeps whatever draft
+// produced it. A refusal never mutates the queue, the turn or the operation.
+func (m *Model) rejectSendNow(reason string) {
+	m.state.AddMessage(session.RoleSystem, reason, session.ContentTypePlain)
+	m.refreshViewport()
+}
+
+// submitSendNow performs the bounded, memory-only runtime call for one
+// request. clear runs only after acceptance, which is what makes the accepted
+// text — and only the accepted text — disappear. On rejection the caller's
+// draft survives untouched and the reason is rendered.
+func (m *Model) submitSendNow(request session.SendNowRequest, clear func()) bool {
+	if m.submitSendNowFn == nil {
+		m.rejectSendNow(sendNowUnavailable)
+		return false
+	}
+	if request.RequestID == "" {
+		// The request ID identifies one transport submission; a retry reuses
+		// it, so it is minted here and never reused for different text.
+		request.RequestID = rand.Text()
+	}
+	receipt, err := m.submitSendNowFn(request)
+	if err != nil {
+		m.rejectSendNow("Send now was rejected: " + err.Error() + " Your text was kept.")
+		return false
+	}
+	// Cache the receipt now: the broker event that carries it may not have
+	// arrived when the very next frame renders.
+	m.absorbSteeringEvent(nil, &receipt)
+	m.queuedCount = len(m.state.SteeringQueue())
+	if clear != nil {
+		clear()
+	}
+	m.refreshSteeringSnapshot()
+	m.refreshViewport()
+	return true
+}
+
+// clearChatDraft clears the accepted ordinary-chat draft. It mirrors the
+// Enter handler's reset so an accepted Send now leaves the composer exactly as
+// an accepted Enter would.
+func (m *Model) clearChatDraft() {
+	m.resetInput()
+	m.completionSuppressed = false
+	m.lastInputForPopups = ""
+	m.cmdArgMode = false
+	m.cmdArgPrefix = ""
+	m.clearFinishedRun()
+	m.dismissCompletionPopups()
+	m.updateViewportHeight()
+	m.viewportFollow = true
+}
+
+// surfaceOwnsInput reports whether something other than the plain chat editor
+// owns the keyboard: a dock panel (including the access panel), a pending
+// human prompt, or the command-edit sub-mode. Alt+Enter then opens the
+// temporary composer instead of submitting, and never reads the owner's value.
+func (m *Model) surfaceOwnsInput() bool {
+	if m.dock.IsOpen() || m.editingCommand {
+		return true
+	}
+	return m.hasPendingApproval() ||
+		m.state.PendingQuestion() != nil ||
+		m.state.PendingSkillGate() != nil ||
+		m.state.PendingSudoAuth() != nil
+}
+
+// focusedPromptKey returns the canonical key of the pending prompt that owns
+// the input, in the same order the update routing resolves them. A prompt
+// registered outside this session's registry (a legacy fixture) carries the
+// zero key and reports false.
+func (m *Model) focusedPromptKey() (session.PromptKey, bool) {
+	if sa := m.state.PendingSudoAuth(); sa != nil && sa.Key.ID != "" {
+		return sa.Key, true
+	}
+	if sg := m.state.PendingSkillGate(); sg != nil && sg.Key.ID != "" {
+		return sg.Key, true
+	}
+	if tc, _ := m.pendingApprovalDisplay(); tc != nil && tc.Key.ID != "" {
+		return tc.Key, true
+	}
+	if q := m.state.PendingQuestion(); q != nil && q.Key.ID != "" {
+		return q.Key, true
+	}
+	return session.PromptKey{}, false
+}
+
+// beginSendNow is the global Alt+Enter action. A plain chat editor submits its
+// draft (or flushes the queue) directly — the completion popup and the command
+// parser never get a look at the key, so "/clear" is steering text, not a
+// command. Any other surface owning input opens the blank composer instead,
+// which never reads the value that surface holds. It is only reached when no
+// composer is active (Update guards on that), so there is nothing to close.
+func (m *Model) beginSendNow() (tea.Model, tea.Cmd) {
+	snap, ok := m.sendNowTarget()
+	// The snapshot is the runtime's own view of the turn, so an
+	// unsupported/idle/closing runtime is refused before the draft is touched.
+	if !ok {
+		m.rejectSendNow(sendNowUnavailable)
+		return m, nil
+	}
+	if m.surfaceOwnsInput() {
+		m.openSteeringComposer()
+		return m, nil
+	}
+	text := strings.TrimSpace(m.input.Value())
+	if len(m.pastes) > 0 {
+		text = m.expandPastes(text)
+	}
+	if strings.TrimSpace(text) == "" && len(m.state.SteeringQueue()) == 0 {
+		m.rejectSendNow("Nothing to send now: the input is empty and no steering is queued.")
+		return m, nil
+	}
+	m.submitSendNow(session.SendNowRequest{
+		SessionID: m.state.SessionID(),
+		TurnID:    snap.TurnID,
+		Text:      text,
+	}, func() { m.clearChatDraft() })
+	return m, nil
+}
+
+// openSteeringComposer opens the temporary Send now composer over whatever
+// holds the input. It records the surface it displaced — at most one panel,
+// plus that panel's canonical request identity and the pre-composer focus —
+// so closing the composer can put the user back where they were. Opening it
+// cancels nothing and reads no existing draft.
+func (m *Model) openSteeringComposer() {
+	snap, ok := m.sendNowTarget()
+	if !ok {
+		m.rejectSendNow(sendNowUnavailable)
+		return
+	}
+	m.composerDisplaced = nil
+	m.composerDisplacedAccess = ""
+	m.composerDisplacedPrompt = session.PromptKey{}
+	m.composerInputFocused = m.input.Focused()
+	if panel := m.dock.Panel(); panel != nil {
+		if ap, ok := panel.(*accesspanel.Panel); ok {
+			m.composerDisplacedAccess = ap.Request().RequestID
+		}
+		m.composerDisplaced = panel
+	} else if key, ok := m.focusedPromptKey(); ok {
+		m.composerDisplacedPrompt = key
+	}
+	composer := steerpanel.New(m.state.SessionID(), snap.TurnID)
+	m.steeringComposer = composer
+	m.composerID = composer.ID()
+	m.composerSessionID = m.state.SessionID()
+	m.composerTurnID = snap.TurnID
+	m.dock.Open(composer)
+	// The base editor keeps its text but must not render a cursor while the
+	// composer owns the input.
+	m.input.Blur()
+	m.updateViewportHeight()
+	m.refreshViewport()
+}
+
+// closeSteeringComposer closes the composer identified by id and restores the
+// surface it displaced. Any other id is ignored: a late Esc from a composer
+// that was already replaced must not close the current one.
+func (m *Model) closeSteeringComposer(id string) {
+	if m.steeringComposer == nil || id != m.composerID {
+		return
+	}
+	m.steeringComposer = nil
+	m.composerID = ""
+	m.composerSessionID = ""
+	m.composerTurnID = ""
+	m.restoreComposerSurface()
+	if m.composerInputFocused {
+		m.input.Focus()
+	}
+	m.updateViewportHeight()
+	m.refreshViewport()
+}
+
+// restoreComposerSurface puts back the panel the composer displaced, but only
+// while that surface still exists. A request cancelled by the interruption, or
+// a prompt that settled while the composer was up, retires instead of being
+// resurrected: the user no longer has that decision to make.
+func (m *Model) restoreComposerSurface() {
+	panel := m.composerDisplaced
+	if m.composerDisplacedAccess != "" {
+		if snap, pending := m.accessRequestSnapshot(); !pending || snap.RequestID != m.composerDisplacedAccess {
+			// The request was canceled, satisfied or replaced. Existing
+			// reconciliation re-presents a replacement from scratch.
+			panel = nil
+		}
+	}
+	if key := m.composerDisplacedPrompt; key.ID != "" && !m.promptStillPending(key) {
+		m.retireStalePromptModels(key)
+	}
+	m.composerDisplaced = nil
+	m.composerDisplacedAccess = ""
+	m.composerDisplacedPrompt = session.PromptKey{}
+	if panel != nil {
+		m.dock.Open(panel)
+		return
+	}
+	m.dock.CloseNow()
+}
+
+// promptStillPending reports whether key still names the live pending prompt
+// of its kind.
+func (m *Model) promptStillPending(key session.PromptKey) bool {
+	switch key.Kind {
+	case session.PromptQuestion:
+		if q := m.state.PendingQuestion(); q != nil && q.Key == key {
+			return true
+		}
+	case session.PromptSkill:
+		if sg := m.state.PendingSkillGate(); sg != nil && sg.Key == key {
+			return true
+		}
+	case session.PromptSudo:
+		if sa := m.state.PendingSudoAuth(); sa != nil && sa.Key == key {
+			return true
+		}
+	default:
+		if tc, _ := m.pendingApprovalDisplay(); tc != nil && tc.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// retireStalePromptModels drops a form bound to a prompt that settled while the
+// composer held the input, so a late keypress cannot drive a dead dialog.
+func (m *Model) retireStalePromptModels(key session.PromptKey) {
+	switch key.Kind {
+	case session.PromptQuestion:
+		m.questionModel = nil
+	case session.PromptSkill:
+		m.skillGateModel = nil
+	case session.PromptSudo:
+		m.sudoAuthModel = nil
+	default:
+		m.approvalModel = nil
+	}
+}
+
+// handleComposerSubmit accepts the literal text the composer emitted, but only
+// when the message names the composer that is actually up and that composer's
+// conversation and turn are still current. A stale message retains its text
+// and changes nothing; a stale target never retargets the new turn.
+func (m *Model) handleComposerSubmit(msg steerpanel.SubmitMsg) (tea.Model, tea.Cmd) {
+	if m.steeringComposer == nil || msg.ComposerID != m.composerID {
+		// A message from a composer that was already closed or replaced. It
+		// has no side effect at all.
+		return m, nil
+	}
+	if msg.SessionID != m.composerSessionID || m.state.SessionID() != m.composerSessionID {
+		m.rejectSendNow("Send now targets a different conversation now. The composer text was kept.")
+		return m, nil
+	}
+	snap, ok := m.sendNowTarget()
+	if !ok {
+		m.rejectSendNow(sendNowUnavailable + " The composer text was kept.")
+		return m, nil
+	}
+	if msg.TurnID != m.composerTurnID || snap.TurnID != m.composerTurnID {
+		m.rejectSendNow("The turn this composer targets has ended. The composer text was kept.")
+		return m, nil
+	}
+	if strings.TrimSpace(msg.Text) == "" && len(m.state.SteeringQueue()) == 0 {
+		m.rejectSendNow("Nothing to send now: the composer is empty and no steering is queued.")
+		return m, nil
+	}
+	id := m.composerID
+	m.submitSendNow(session.SendNowRequest{
+		SessionID: msg.SessionID,
+		TurnID:    msg.TurnID,
+		Text:      msg.Text,
+	}, func() { m.closeSteeringComposer(id) })
+	return m, nil
+}
+
+// handleComposerClose restores the displaced surface. Esc closes the composer
+// and nothing else: no interruption, no queue mutation, no submission.
+func (m *Model) handleComposerClose(msg steerpanel.CloseMsg) (tea.Model, tea.Cmd) {
+	m.closeSteeringComposer(msg.ComposerID)
+	return m, nil
+}
+
+// latestSteeringReceipt returns the newest receipt for the cached turn, so the
+// status line reports the current request's progress rather than another
+// request's final state.
+func (m Model) latestSteeringReceipt() (session.SteeringReceipt, bool) {
+	var best session.SteeringReceipt
+	found := false
+	for _, r := range m.steeringReceipts {
+		if m.steeringSnapshot.TurnID != "" && r.TurnID != m.steeringSnapshot.TurnID {
+			continue
+		}
+		if !found || r.Version > best.Version {
+			best, found = r, true
+		}
+	}
+	return best, found
+}
+
+// steeringStatusSegment renders the bounded Send now status beside the queue
+// marker. It is a status segment, not a task card: the action is a property of
+// the running turn, and the transcript keeps rendering through the stop.
+func (m Model) steeringStatusSegment() (string, bool) {
+	receipt, ok := m.latestSteeringReceipt()
+	if !ok {
+		return "", false
+	}
+	if !m.busy && receipt.Status != session.SteeringUndelivered {
+		// A settled turn keeps only the truthful undelivered disclosure: once
+		// the turn is over, "delivered" and "interrupting" describe a request
+		// that no longer has a live operation behind it.
+		return "", false
+	}
+	switch receipt.Status {
+	case session.SteeringInterrupting:
+		return "send now: interrupting", true
+	case session.SteeringWaitingSafe:
+		return "send now: waiting for a safe boundary", true
+	case session.SteeringWaitingResume:
+		return "send now: waiting for resume", true
+	case session.SteeringDelivered:
+		return "send now: delivered", true
+	case session.SteeringUndelivered:
+		return "send now: undelivered", true
+	default:
+		// Accepted: the interruption has not started yet, and claiming more
+		// than that would be a lie about work that is still running.
+		return "send now: accepted", true
+	}
 }
 
 // handleWorkspaceMsg handles a workspaceMsg: the session's active root
@@ -5506,6 +6163,10 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 		m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
 		m.lastGitRead = now
 	}
+	// Read the steering snapshot directly on ticks. A runtime that publishes no
+	// broker (tests, a fallback build) would otherwise render a stale snapshot
+	// forever, and a slow stop's progress is exactly what a tick must surface.
+	m.refreshSteeringSnapshot()
 	if !m.busy && m.successPulse && m.now().Sub(m.successPulseAt) >= successPulseDuration {
 		m.successPulse = false
 	}
@@ -5637,6 +6298,14 @@ func (m Model) handleSuggestionMsg(msg suggestionMsg) (Model, tea.Cmd) {
 
 func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 	m.leaveBrowse() // running a command ends browsing
+	// /send-now is recognized from the raw line before shlex.Split can
+	// reinterpret its payload: the argument is literal steering text, so
+	// quotes, newlines and interior whitespace must survive verbatim. The
+	// token boundary is exact and the command must be registered, so an
+	// unknown /send-now-foo is never swallowed.
+	if m.isSendNowCommand(raw) {
+		return m.sendNowCommand(raw)
+	}
 	parts, err := shlex.Split(raw)
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem, "Invalid command syntax.", session.ContentTypePlain)

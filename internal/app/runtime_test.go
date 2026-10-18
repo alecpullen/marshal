@@ -4287,6 +4287,72 @@ func TestWorkRuntimeReplacementCannotReceiveOldEpoch(t *testing.T) {
 	}
 }
 
+// TestWorkTUIFacadeReplacementUsesNewConversation pins that the single
+// viewmodel.WorkService the TUI is handed (the *Runtime itself, via
+// tui.WithWork) follows an explicit session replacement. The same pointer the
+// TUI holds delegates to the replacement conversation's coordinator, so every
+// facade read the renderer makes switches to the new conversation's identity
+// and epoch, and a read bound to the retired conversation is refused as stale
+// rather than silently served from the old projection.
+func TestWorkTUIFacadeReplacementUsesNewConversation(t *testing.T) {
+	rt := newSendNowTestRuntime(t, nativeToolAgentConfig("work-tui-facade-replacement"))
+
+	// The TUI is handed the runtime pointer itself as its Work service.
+	var svc viewmodel.WorkService = rt
+
+	// Give the old conversation a terminal work item, so a projection that
+	// leaked across the replacement would be observable through the facade.
+	failed := rt.State.RegisterSubagent("old-work", nil)
+	rt.State.FinishSubagent(failed.ID, "boom", errors.New("boom"))
+	waitWorkUntil(t, func() bool { return rt.WorkSnapshot().AttentionCount > 0 }, "the old conversation's work item")
+
+	oldSnap := svc.WorkSnapshot()
+	oldConv := oldSnap.ConversationID
+	oldEpoch := oldSnap.RuntimeEpoch
+	if oldConv == "" || oldEpoch == "" {
+		t.Fatalf("the facade reported no conversation: %+v", oldSnap)
+	}
+
+	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// The SAME facade now names the replacement conversation on a fresh epoch,
+	// with no item carried over from the retired conversation.
+	snap := svc.WorkSnapshot()
+	if snap.ConversationID != newState.SessionID() || snap.ConversationID == oldConv {
+		t.Fatalf("facade conversation after replacement = %q, want %q (not %q)", snap.ConversationID, newState.SessionID(), oldConv)
+	}
+	if snap.RuntimeEpoch == oldEpoch {
+		t.Fatalf("the facade reused the replaced conversation's epoch %q", oldEpoch)
+	}
+	for _, it := range snap.Items {
+		if it.ConversationID != newState.SessionID() {
+			t.Fatalf("the facade exposes an old-conversation item after replacement: %+v", it)
+		}
+	}
+
+	// List through the same facade: a page bound to the retired conversation is
+	// refused as stale, and the replacement's page carries the new epoch.
+	if _, err := svc.ListWork(context.Background(), viewmodel.WorkQuery{
+		ConversationID: oldConv,
+		View:           "attention",
+	}); !errors.Is(err, viewmodel.ErrWorkStaleTarget) {
+		t.Fatalf("ListWork against the replaced conversation = %v, want ErrWorkStaleTarget", err)
+	}
+	page, err := svc.ListWork(context.Background(), viewmodel.WorkQuery{
+		ConversationID: newState.SessionID(),
+		View:           "attention",
+	})
+	if err != nil {
+		t.Fatalf("ListWork against the replacement: %v", err)
+	}
+	if page.RuntimeEpoch != snap.RuntimeEpoch {
+		t.Fatalf("ListWork page epoch = %q, want the replacement epoch %q", page.RuntimeEpoch, snap.RuntimeEpoch)
+	}
+}
+
 // TestWorkRuntimeCloseFlushesBeforeDBClose pins that a terminal watch save whose
 // first durable write failed is retried by the shutdown path and is durable
 // before the database closes.

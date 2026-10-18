@@ -2323,6 +2323,84 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 	}
 }
 
+// TestRunWiresSharedWorkService pins that Run hands the TUI the same Work
+// facade the runtime and ACP use: the runtime pointer itself. With a Work
+// service attached, the now bar's project-owned work lane is active, so Ctrl+T
+// opens the Tasks panel on the Work tab and renders its empty state. A nil
+// service (the pre-change wiring) leaves the work lane inactive and produces a
+// notice instead of the panel, so the "No work yet" assertion is what proves
+// WithWork(rt) reached the model.
+func TestRunWiresSharedWorkService(t *testing.T) {
+	dir := t.TempDir()
+	// Run() resolves the user config and first-run state from the real home
+	// dir. Point HOME at a temp dir and write a user config so first-run
+	// detection does not open the connect panel over the TUI and swallow the
+	// Ctrl+T that opens the Work tab.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(config.UserDir(home), 0o755); err != nil {
+		t.Fatalf("mkdir user config: %v", err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(home), []byte("\n"), 0o644); err != nil {
+		t.Fatalf("write user config: %v", err)
+	}
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	// An active legacy route: the runtime must build a runner, because a
+	// provider-less startup leaves a NoticeProvider notice that suppresses the
+	// whole runner-options block (and with it WithWork). This fixture config
+	// needs no network; it only has to resolve a route.
+	cfg := config.Default()
+	cfg.Profile.Default = "single"
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"ollama/qwen2.5-coder:14b": {
+			Name:      "ollama/qwen2.5-coder:14b",
+			Provider:  "ollama",
+			Model:     "qwen2.5-coder:14b",
+			LocalOnly: true,
+		},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"single": routing.SingleModelProfile("single", "ollama/qwen2.5-coder:14b"),
+	}
+	cfg.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "local"},
+	}
+
+	var view string
+	err = Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return cfg, nil
+		}),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			m := model.(tui.Model)
+			updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			m = updated.(tui.Model)
+			updated, _ = m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+			m = updated.(tui.Model)
+			view = m.View().Content
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if !strings.Contains(view, "No work yet") {
+		t.Fatalf("view did not render the runtime-backed Work tab:\n%s", view)
+	}
+	if strings.Contains(view, "Work is unavailable in this runtime.") {
+		t.Fatalf("the Work tab rendered the nil-service unavailable notice:\n%s", view)
+	}
+}
+
 // TestRunResumesExistingSession verifies that when the program runner asks
 // to resume a different session, Run tears down the current runtime and
 // restarts with the existing session loaded.

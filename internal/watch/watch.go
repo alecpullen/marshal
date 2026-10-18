@@ -30,6 +30,13 @@ const (
 	MaxConsecutiveErrors = 3
 	// SampleTailCap is the byte cap for stored sample tails.
 	SampleTailCap = 2048
+	// MaxRetainedTerminals bounds the terminal facts retained for removed
+	// registrations. Each retained Info embeds a sample ring (up to
+	// MaxSamples points plus a tail-capped LastSample), so the map would grow
+	// with every removed registration and be deep-copied on every Snapshot
+	// poll if left unbounded. The newest entries are kept; the oldest are
+	// evicted by terminal time (EndedAt, ID as tie-break).
+	MaxRetainedTerminals = 128
 )
 
 // Kind identifies the source type.
@@ -896,6 +903,9 @@ func (m *Manager) finalizeTerminal(w *watch, state State, reason string) (Info, 
 		m.settling[w.id] = struct{}{}
 	}
 	delete(m.watches, w.id)
+	// Bound the retained terminal map now that this registration's fact is
+	// recorded (and its settling marker, if any, is set).
+	m.evictTerminalsLocked()
 	w.mu.Unlock()
 	m.mu.Unlock()
 
@@ -934,6 +944,39 @@ func (m *Manager) deliverTerminal(info Info) {
 func (m *Manager) resultRevisionLocked(w *watch, reason string, endedAt time.Time) string {
 	key := progress.WorkKey(m.deps.ConversationID, m.epoch, "watch", w.id)
 	return progress.ResultRevision(key, string(w.state), reason, nil, endedAt)
+}
+
+// evictTerminalsLocked trims m.terminals to MaxRetainedTerminals by dropping
+// the oldest entries, ordered by terminal time (EndedAt, ID as tie-break) so
+// the retained set is deterministic rather than dependent on map iteration
+// order. An entry whose registration is still settling is never evicted: its
+// durable sink is in flight and RetryTerminalSaves needs the retained evidence.
+// Called with m.mu held.
+func (m *Manager) evictTerminalsLocked() {
+	if len(m.terminals) <= MaxRetainedTerminals {
+		return
+	}
+	evictable := make([]string, 0, len(m.terminals))
+	for id := range m.terminals {
+		if _, settling := m.settling[id]; settling {
+			continue
+		}
+		evictable = append(evictable, id)
+	}
+	sort.Slice(evictable, func(i, j int) bool {
+		a := m.terminals[evictable[i]]
+		b := m.terminals[evictable[j]]
+		if !a.EndedAt.Equal(b.EndedAt) {
+			return a.EndedAt.Before(b.EndedAt)
+		}
+		return a.ID < b.ID
+	})
+	for _, id := range evictable {
+		if len(m.terminals) <= MaxRetainedTerminals {
+			break
+		}
+		delete(m.terminals, id)
+	}
 }
 
 // Snapshot is an immutable projection of the watch manager at one moment: the

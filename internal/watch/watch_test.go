@@ -771,6 +771,114 @@ func TestWatchTerminalSaveRetryKeepsMembershipTruthful(t *testing.T) {
 	}
 }
 
+// TestWatchTerminalRetentionIsBounded pins the retention cap: removed
+// registrations stay retained for repair, but the map is bounded so a long
+// session that churns transient watches cannot accumulate unbounded state nor
+// pay an ever-growing deep copy per Snapshot poll. The newest entries survive.
+func TestWatchTerminalRetentionIsBounded(t *testing.T) {
+	rec := &recorder{}
+	m := newTestManager(t, rec.deps())
+	m.setSampler(&fakeSampler{samples: []Sample{{Stdout: "a", ExitCode: 0}}})
+
+	total := MaxRetainedTerminals + 20
+	ids := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		id, _, err := m.Start(Spec{Name: "t", Kind: KindCommand, Condition: "exit_code 0", Mode: ModeOnce, Interval: time.Hour})
+		if err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
+		ids = append(ids, id)
+		m.sampleOnce(m.getWatch(id)) // fires and retires the once watch
+	}
+
+	snap := m.Snapshot()
+	if len(snap.Terminal) != MaxRetainedTerminals {
+		t.Fatalf("retained terminals = %d, want %d", len(snap.Terminal), MaxRetainedTerminals)
+	}
+	present := activeIDs(snap.Terminal)
+	// The oldest overflow entries are evicted; the newest survive.
+	for i, id := range ids {
+		_, got := present[id]
+		want := i >= total-MaxRetainedTerminals
+		if got != want {
+			t.Fatalf("terminal %s (index %d) present = %v, want %v", id, i, got, want)
+		}
+	}
+}
+
+// TestWatchTerminalRetentionKeepsSettling pins that eviction never drops an
+// entry whose registration is still settling: its durable sink is in flight
+// and RetryTerminalSaves needs the retained evidence. The protected entry is
+// the oldest, so without the guard it would be the first evicted.
+func TestWatchTerminalRetentionKeepsSettling(t *testing.T) {
+	entered := make(chan struct{})
+	gate := make(chan struct{})
+	var firstID string
+
+	deps := (&recorder{}).deps()
+	deps.OnTerminal = func(in Info) error {
+		// Block only the oldest registration's initial sink, leaving it
+		// settling while newer terminals churn through the map.
+		if firstID != "" && in.ID == firstID {
+			close(entered)
+			<-gate
+		}
+		return nil
+	}
+	m := newTestManager(t, deps)
+	m.setSampler(&fakeSampler{samples: []Sample{{Stdout: "a", ExitCode: 0}}})
+
+	id, _, err := m.Start(Spec{Name: "t0", Kind: KindCommand, Condition: "exit_code 0", Mode: ModeOnce, Interval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID = id
+
+	done := make(chan struct{})
+	go func() {
+		m.sampleOnce(m.getWatch(id))
+		close(done)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnTerminal for the settling watch was not called")
+	}
+
+	total := MaxRetainedTerminals + 10
+	ids := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		nid, _, err := m.Start(Spec{Name: "t", Kind: KindCommand, Condition: "exit_code 0", Mode: ModeOnce, Interval: time.Hour})
+		if err != nil {
+			t.Fatalf("start %d: %v", i, err)
+		}
+		ids = append(ids, nid)
+		m.sampleOnce(m.getWatch(nid)) // fires and retires the once watch
+	}
+
+	snap := m.Snapshot()
+	if !containsString(snap.Settling, id) {
+		t.Fatalf("Settling = %v, want %s while its sink is in flight", snap.Settling, id)
+	}
+	if _, ok := findInfo(snap.Terminal, id); !ok {
+		t.Fatalf("settling terminal %s was evicted despite an in-flight sink", id)
+	}
+	if len(snap.Terminal) != MaxRetainedTerminals {
+		t.Fatalf("retained terminals = %d, want %d", len(snap.Terminal), MaxRetainedTerminals)
+	}
+	if _, ok := findInfo(snap.Terminal, ids[len(ids)-1]); !ok {
+		t.Fatalf("newest terminal %s was evicted", ids[len(ids)-1])
+	}
+
+	// Release the blocked sink so the goroutine and its cleanup can finish.
+	close(gate)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sampleOnce for the settling watch did not return")
+	}
+}
+
 // TestWatchLateSampleCannotResurrectRemovedRegistration pins that a sample
 // already in flight for a removed registration cannot recreate membership,
 // re-report, or add a second terminal record.

@@ -1896,3 +1896,160 @@ func TestSetActiveToolCallArgsNoActiveCallIsNoop(t *testing.T) {
 		t.Error("an args update must not create an active call")
 	}
 }
+
+// ── Effective session access state (system-access approval) ────────────
+
+// The approval and mode machinery reads the mode and the system flag as one
+// pair: a reader must never see the mode from one commit and the flag from
+// another, and a fresh session reports its configured mode with system
+// access off. The reported mode is the normalized configured one, so blank
+// and unrecognized values seed the read-only default — the same mapping the
+// TUI's seeded-mode label relies on — instead of failing the session.
+func TestAccessStateReadsModeAndSystemTogether(t *testing.T) {
+	s := newTestState()
+	if got := s.AccessState(); got.Mode != "default" || got.System {
+		t.Fatalf("fresh AccessState() = %+v, want {Mode: default, System: false}", got)
+	}
+	for _, tc := range []struct{ configured, want string }{
+		{"copilot", "copilot"},
+		{" Plan ", "plan"},
+		{"", "default"},
+		{"nonsense", "default"},
+	} {
+		cfg := config.Default()
+		cfg.Agent.ApprovalMode = tc.configured
+		seeded := New(cfg, t.TempDir(), time.Unix(100, 0), Persistence{})
+		if got := seeded.AccessState(); got.Mode != tc.want || got.System {
+			t.Errorf("configured %q: AccessState() = %+v, want {Mode: %s, System: false}", tc.configured, got, tc.want)
+		}
+	}
+
+	if err := s.SetSessionMode("auto", func() {}); err != nil {
+		t.Fatalf("SetSessionMode(auto) = %v, want nil", err)
+	}
+	s.SetSystemAccess(true)
+	if got := s.AccessState(); got.Mode != "auto" || !got.System {
+		t.Fatalf("AccessState() = %+v, want {Mode: auto, System: true}", got)
+	}
+	if got := s.Config.Agent.ApprovalMode; got != "auto" {
+		t.Fatalf("State.Config.Agent.ApprovalMode = %q, want the effective mode", got)
+	}
+}
+
+// A user's mode selection belongs to the conversation. Reloading a config
+// file that does not itself change approval_mode must keep it, or editing any
+// unrelated setting would silently drop the session back to the configured
+// mode mid-conversation.
+func TestSessionModeOverrideSurvivesUnrelatedConfig(t *testing.T) {
+	s := newTestState()
+	if err := s.SetSessionMode("auto", func() {}); err != nil {
+		t.Fatalf("SetSessionMode(auto) = %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.Agent.NarrationPrompt = !cfg.Agent.NarrationPrompt // unrelated change
+	if got := s.ModeForConfig(cfg); got != "auto" {
+		t.Fatalf("ModeForConfig(unchanged configured mode) = %q, want the auto override", got)
+	}
+	s.RebaseSessionConfig(cfg)
+
+	if got := s.AccessState().Mode; got != "auto" {
+		t.Fatalf("mode after an unrelated reload = %q, want auto (override lost)", got)
+	}
+	if got := s.Config.Agent.NarrationPrompt; got != cfg.Agent.NarrationPrompt {
+		t.Fatalf("the unrelated setting was not installed: NarrationPrompt = %v, want %v", got, cfg.Agent.NarrationPrompt)
+	}
+}
+
+// An explicit change to the configured mode is newer intent than the session
+// override: it replaces the user's selection, and a later unrelated reload
+// keeps the newly configured mode instead of reviving the old one.
+func TestExplicitConfiguredModeChangeClearsOverride(t *testing.T) {
+	s := newTestState()
+	if err := s.SetSessionMode("auto", func() {}); err != nil {
+		t.Fatalf("SetSessionMode(auto) = %v", err)
+	}
+
+	changed := config.Default()
+	changed.Agent.ApprovalMode = "copilot"
+	s.RebaseSessionConfig(changed)
+
+	if got := s.AccessState().Mode; got != "copilot" {
+		t.Fatalf("mode after an explicit configured change = %q, want copilot", got)
+	}
+	// The stale auto override is gone: with it still set, ModeForConfig
+	// compares the unchanged configured value and would return auto.
+	if got := s.ModeForConfig(changed); got != "copilot" {
+		t.Fatalf("ModeForConfig(%q) = %q, want copilot — the auto override survived an explicit change", changed.Agent.ApprovalMode, got)
+	}
+
+	later := changed
+	later.Agent.NarrationPrompt = !later.Agent.NarrationPrompt
+	s.RebaseSessionConfig(later)
+	if got := s.AccessState().Mode; got != "copilot" {
+		t.Fatalf("mode after a later unrelated reload = %q, want copilot", got)
+	}
+}
+
+// A rejected selection must be inert: unknown or blank modes, a missing
+// applier and a quiescing session all fail before any mutation, and none of
+// them may reach the runner's setter or leave a session override behind.
+func TestSessionModeFailureDoesNotMutate(t *testing.T) {
+	s := newTestState()
+	before := s.AccessState()
+	called := false
+	apply := func() { called = true }
+
+	for _, mode := range []string{"", "bogus", "Auto", " auto"} {
+		if err := s.SetSessionMode(mode, apply); err == nil {
+			t.Errorf("SetSessionMode(%q) = nil, want an error", mode)
+		}
+	}
+	if err := s.SetSessionMode("auto", nil); err == nil {
+		t.Error("SetSessionMode(auto, nil) = nil, want an error for a missing applier")
+	}
+	if called {
+		t.Fatal("a rejected selection reached the runner setter")
+	}
+	if got := s.AccessState(); got != before {
+		t.Fatalf("AccessState() = %+v after rejected selections, want %+v", got, before)
+	}
+	if got := s.ModeForConfig(config.Default()); got != "default" {
+		t.Fatalf("ModeForConfig() = %q after rejected selections, want default (no override)", got)
+	}
+
+	s.BeginQuiesce()
+	if err := s.SetSessionMode("auto", apply); !errors.Is(err, ErrSessionQuiescing) {
+		t.Fatalf("SetSessionMode while quiescing = %v, want ErrSessionQuiescing", err)
+	}
+	if called {
+		t.Fatal("a mode change reached the runner setter after quiesce")
+	}
+	if got := s.AccessState(); got != before {
+		t.Fatalf("AccessState() = %+v after a quiescing rejection, want %+v", got, before)
+	}
+}
+
+// A new conversation starts from configuration, not from whatever a prior
+// conversation was granted or selected — and the config value it is built from
+// is not aliased into the session, so one session's mode change cannot seed
+// the next one.
+func TestNewStateDoesNotInheritAccessOverrides(t *testing.T) {
+	cfg := config.Default()
+	first := New(cfg, t.TempDir(), time.Unix(100, 0), Persistence{})
+	if err := first.SetSessionMode("auto", func() {}); err != nil {
+		t.Fatalf("SetSessionMode(auto) = %v", err)
+	}
+	first.SetSystemAccess(true)
+
+	second := New(cfg, t.TempDir(), time.Unix(200, 0), Persistence{})
+	if got := second.AccessState(); got.Mode != "default" || got.System {
+		t.Fatalf("second state AccessState() = %+v, want {Mode: default, System: false}", got)
+	}
+	if got := second.ModeForConfig(cfg); got != "default" {
+		t.Fatalf("second state ModeForConfig() = %q, want default", got)
+	}
+	if got := cfg.Agent.ApprovalMode; got != "default" {
+		t.Fatalf("the shared config fixture was mutated to %q", got)
+	}
+}

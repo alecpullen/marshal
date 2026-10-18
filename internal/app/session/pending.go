@@ -9,6 +9,15 @@ import (
 	"time"
 )
 
+// AccessState is the effective access tuple for one session: the interaction
+// mode governing approval decisions plus whether the conversation holds the
+// system-access modifier. It is a value snapshot (see State.AccessState), so a
+// reader cannot observe a half-applied pair.
+type AccessState struct {
+	Mode   string `json:"mode"`
+	System bool   `json:"system"`
+}
+
 // UserApprovalDecision is the user's response to a pending tool approval
 // request. Approved indicates the user allowed the call; Edited carries the
 // user's modified command text (if any) for tools that support editing.

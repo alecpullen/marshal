@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -309,8 +310,23 @@ type State struct {
 	// shell-editing ban, and catastrophic-floor guardrails. Runtime-only;
 	// never a config default. Sticky until toggled off. Guarded by mu.
 	systemAccess bool
-	turnIndex    int
-	snapshotter  Snapshotter
+	// accessMu serializes access-tuple mutations (session mode changes,
+	// system-access toggles, config rebases) so a reader never observes a
+	// half-applied pair. It guards configuredMode and sessionModeOverride;
+	// the effective pair itself still lives under mu. Lock order is
+	// accessMu → workMu or accessMu → mu, never the reverse.
+	accessMu sync.Mutex
+	// configuredMode is the normalized approval mode the current config
+	// asked for, i.e. the mode a reload keeps unless the user explicitly
+	// changed it. Guarded by accessMu.
+	configuredMode string
+	// sessionModeOverride is the user's session-scoped mode selection. It
+	// outlives an unrelated config reload but is cleared when the configured
+	// mode itself changes. Empty when no manual/approved selection exists.
+	// Guarded by accessMu.
+	sessionModeOverride string
+	turnIndex           int
+	snapshotter         Snapshotter
 
 	// workspace is the session's current project/active-root pair and the
 	// broker rebinds are published on. Guarded by mu like the rest of this
@@ -783,6 +799,12 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 	for _, opt := range opts {
 		opt(s)
 	}
+	// The configured mode is the reload baseline: it is what a later config
+	// reload compares against (see RebaseSessionConfig), while
+	// State.Config.Agent.ApprovalMode carries the effective mode a reader
+	// sees. New conversations start with no override and system access off.
+	s.configuredMode = configuredAccessMode(s.Config.Agent.ApprovalMode)
+	s.Config.Agent.ApprovalMode = s.configuredMode
 	if s.persistenceEnabled() {
 		s.loadFromDB()
 		s.restoreWorkspace()
@@ -830,9 +852,120 @@ func (s *State) SystemAccess() bool {
 
 // SetSystemAccess toggles the per-session system-access modifier.
 func (s *State) SetSystemAccess(on bool) {
+	// accessMu first so a concurrent mode change or config rebase cannot
+	// interleave with this toggle; the flag itself stays under mu.
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.systemAccess = on
+}
+
+// AccessState returns the effective access tuple — the mode governing
+// approval decisions and the system-access flag — as one value read under a
+// single lock, so callers never see a mode from one commit and a flag from
+// another.
+func (s *State) AccessState() AccessState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return AccessState{Mode: s.Config.Agent.ApprovalMode, System: s.systemAccess}
+}
+
+// normalizeAccessMode validates a literal session-mode selection: a mode the
+// user (or an approved request) names explicitly. Unlike a configured value,
+// a selection is never guessed — blank or unrecognized input is an error that
+// must leave the session's authority untouched.
+func normalizeAccessMode(mode string) (string, error) {
+	switch mode {
+	case "plan", "default", "edit", "copilot", "auto":
+		return mode, nil
+	}
+	return "", fmt.Errorf("session: unknown approval mode %q", mode)
+}
+
+// configuredAccessMode normalizes a mode read from configuration, matching
+// how the rest of Marshal parses [agent].approval_mode: case-insensitive, and
+// unknown or blank values fall back to "default" — the safe, read-only mode —
+// rather than failing the session.
+func configuredAccessMode(mode string) string {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	switch normalized {
+	case "plan", "default", "edit", "copilot", "auto":
+		return normalized
+	}
+	return "default"
+}
+
+// SetSessionMode applies an explicit mode selection for this session. The
+// runner setter arrives as apply because the session package does not know
+// about the policy engine; it is infallible, so validation and the quiescing
+// gate happen here, before any mutation, and a rejected selection changes
+// nothing. On success the mode becomes the session override, so it survives a
+// config reload that does not itself change the configured mode (see
+// ModeForConfig).
+func (s *State) SetSessionMode(mode string, apply func()) error {
+	valid, err := normalizeAccessMode(mode)
+	if err != nil {
+		return err
+	}
+	if apply == nil {
+		return fmt.Errorf("session: set mode %q: no apply function", valid)
+	}
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	// The quiescing gate is checked under workMu (never the other way round,
+	// which would invert the documented lock order) so a mode change cannot
+	// land during shutdown.
+	s.workMu.Lock()
+	quiescing := s.quiescing
+	s.workMu.Unlock()
+	if quiescing {
+		return ErrSessionQuiescing
+	}
+	// apply is the runner's setter: call it without State.mu held, then
+	// commit the session-visible pair. The override is deliberately not
+	// touched — a manual change does not redefine the configured baseline.
+	apply()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionModeOverride = valid
+	s.Config.Agent.ApprovalMode = valid
+	return nil
+}
+
+// ModeForConfig reports the mode the session should run with for an incoming
+// configuration: the session override when the configured mode has not
+// changed, otherwise the configured mode itself. It mutates nothing, so a
+// caller can consult it before deciding whether to rebuild anything.
+func (s *State) ModeForConfig(cfg config.Config) string {
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	if cfg.Agent.ApprovalMode == s.configuredMode && s.sessionModeOverride != "" {
+		return s.sessionModeOverride
+	}
+	return cfg.Agent.ApprovalMode
+}
+
+// RebaseSessionConfig installs a reloaded configuration and re-derives the
+// effective mode against it. An unchanged configured mode keeps the session
+// override (an unrelated setting change must not silently revert the user's
+// mode); an explicit change to the configured mode clears the override, since
+// the user's edit is the newer intent. systemAccess is preserved either way —
+// the grant belongs to the conversation, not to the file. Failed reloads must
+// not call this at all.
+func (s *State) RebaseSessionConfig(cfg config.Config) {
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	if configured := configuredAccessMode(cfg.Agent.ApprovalMode); configured != s.configuredMode {
+		s.sessionModeOverride = ""
+		s.configuredMode = configured
+	}
+	if s.sessionModeOverride != "" {
+		cfg.Agent.ApprovalMode = s.sessionModeOverride
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Config = cfg
 }
 
 // SecretPromptCapable reports whether the attached transport can raise a

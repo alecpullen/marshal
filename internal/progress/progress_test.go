@@ -1,8 +1,14 @@
 package progress
 
 import (
+	"bytes"
+	"errors"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestNormalizeConfigCombinations(t *testing.T) {
@@ -58,5 +64,297 @@ func TestProgressCloneOwnsAllNestedValues(t *testing.T) {
 	}
 	if Clone(nil) != nil {
 		t.Fatal("nil clone")
+	}
+}
+
+func TestProgressFramesAcrossChunksAndCRLF(t *testing.T) {
+	payload := `{"version":1,"sequence":1,"primaryMetricId":"bytes","metrics":[{"id":"bytes","label":"Bytes","unit":"bytes","current":5,"total":10}],"rows":[{"id":"step","label":"Step","state":"running"}],"detail":"hello"}`
+	line := Prefix + payload
+	for split := 0; split <= len(line); split++ {
+		obs, err := NewObserver(Config{Profile: "custom", Source: "events-v1"}, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		obs.Write(Stdout, []byte(line[:split]))
+		obs.Write(Stdout, []byte(line[split:]))
+		obs.Write(Stdout, []byte("\n"))
+		snap := obs.Snapshot()
+		if snap == nil || snap.Sequence != 1 || snap.Detail != "hello" ||
+			len(snap.Metrics) != 1 || snap.Metrics[0].Current != 5 {
+			t.Fatalf("split %d: %#v", split, snap)
+		}
+		// Replaying the same frame must not advance or duplicate it.
+		obs.Write(Stdout, []byte(line+"\n"))
+		if again := obs.Snapshot(); again.Sequence != 1 {
+			t.Fatalf("split %d replay: %#v", split, again)
+		}
+	}
+	// Byte-at-a-time framing with a CRLF terminator.
+	obs, err := NewObserver(Config{Profile: "custom", Source: "events-v1"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < len(line); i++ {
+		obs.Write(Stdout, []byte{line[i]})
+	}
+	obs.Write(Stdout, []byte("\r\n"))
+	if snap := obs.Snapshot(); snap == nil || snap.Sequence != 1 {
+		t.Fatalf("bytewise CRLF: %#v", snap)
+	}
+}
+
+func TestProgressInvalidFieldsCannotSetRuntimeFacts(t *testing.T) {
+	longLabel := strings.Repeat("l", 81)
+	longID := strings.Repeat("i", 65)
+	longUnit := strings.Repeat("u", 17)
+	cases := map[string]string{
+		"version0":        `{"version":0,"sequence":1}`,
+		"version2":        `{"version":2,"sequence":1}`,
+		"sequence0":       `{"version":1,"sequence":0}`,
+		"sequenceBig":     `{"version":1,"sequence":9007199254740992}`,
+		"unknownPrimary":  `{"version":1,"sequence":1,"primaryMetricId":"nope","metrics":[{"id":"a","label":"A","unit":"items","current":1}]}`,
+		"duplicateMetric": `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"items","current":1},{"id":"a","label":"B","unit":"items","current":2}]}`,
+		"tooManyMetrics":  `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"items","current":1},{"id":"b","label":"B","unit":"items","current":1},{"id":"c","label":"C","unit":"items","current":1},{"id":"d","label":"D","unit":"items","current":1},{"id":"e","label":"E","unit":"items","current":1}]}`,
+		"tooManyRows":     `{"version":1,"sequence":1,"rows":[{"id":"r1","label":"","state":"done"},{"id":"r2","label":"","state":"done"},{"id":"r3","label":"","state":"done"},{"id":"r4","label":"","state":"done"},{"id":"r5","label":"","state":"done"},{"id":"r6","label":"","state":"done"},{"id":"r7","label":"","state":"done"},{"id":"r8","label":"","state":"done"},{"id":"r9","label":"","state":"done"}]}`,
+		"badRowState":     `{"version":1,"sequence":1,"rows":[{"id":"r","label":"R","state":"finished"}]}`,
+		"negativeCurrent": `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"bytes","current":-1}]}`,
+		"currentTooLarge": `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"items","current":9007199254740992}]}`,
+		"fractionalCount": `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"bytes","current":1.5}]}`,
+		"labelTooLong":    `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"` + longLabel + `","unit":"items","current":1}]}`,
+		"idTooLong":       `{"version":1,"sequence":1,"metrics":[{"id":"` + longID + `","label":"A","unit":"items","current":1}]}`,
+		"unitTooLong":     `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"` + longUnit + `","current":1}]}`,
+		"phaseOutOfRange": `{"version":1,"sequence":1,"phase":{"id":"p","label":"P","index":3,"total":2}}`,
+		"negativeTotal":   `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"items","current":1,"total":-5}]}`,
+		"trailingData":    `{"version":1,"sequence":1} {"version":1,"sequence":2}`,
+	}
+	for name, payload := range cases {
+		if snap, err := DecodeEvent([]byte(Prefix+payload), 0, time.Unix(0, 0)); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("%s: snap=%#v err=%v", name, snap, err)
+		}
+	}
+	// Forged runtime facts in otherwise valid JSON are ignored, not honored.
+	forged := `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"items","current":1}],"rows":[{"id":"r","label":"R","state":"done"}],"executionState":"failed","actions":["kill"],"reportedError":true,"owner":"attacker","capabilities":["shell"],"warning":"forged","partial":true}`
+	snap, err := DecodeEvent([]byte(Prefix+forged), 0, time.Unix(0, 0))
+	if err != nil {
+		t.Fatalf("forged extras rejected: %v", err)
+	}
+	if snap.ReportedError || snap.Partial || snap.Warning != "" || len(snap.Rows) != 1 || snap.Rows[0].State != "done" {
+		t.Fatalf("forged facts leaked: %#v", snap)
+	}
+	// A reported error row is the only source of ReportedError.
+	errRows := `{"version":1,"sequence":1,"rows":[{"id":"r","label":"R","state":"error"}]}`
+	if snap, err := DecodeEvent([]byte(Prefix+errRows), 0, time.Unix(0, 0)); err != nil || !snap.ReportedError {
+		t.Fatalf("error row: %#v %v", snap, err)
+	}
+	// Identities that collide only after sanitization are rejected.
+	collide := `{"version":1,"sequence":1,"metrics":[{"id":"a\u0001","label":"A","unit":"items","current":1},{"id":"a\u0002","label":"B","unit":"items","current":1}]}`
+	if _, err := DecodeEvent([]byte(Prefix+collide), 0, time.Unix(0, 0)); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("collision accepted: %v", err)
+	}
+	// An outdated denominator clears total but keeps the measured current.
+	outdated := `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"bytes","current":50,"total":10}]}`
+	if snap, err := DecodeEvent([]byte(Prefix+outdated), 0, time.Unix(0, 0)); err != nil ||
+		snap.Metrics[0].Total != nil || snap.Metrics[0].Current != 50 || snap.Warning == "" {
+		t.Fatalf("outdated: %#v %v", snap, err)
+	}
+}
+
+func TestProgressOversizeAndMalformedRecoverWithoutGrowth(t *testing.T) {
+	valid := Prefix + `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"items","current":1}]}` + "\n"
+	obs, err := NewObserver(Config{Profile: "custom", Source: "events-v1"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An oversize line is skipped through its newline with no valid snapshot.
+	obs.Write(Stdout, bytes.Repeat([]byte("x"), MaxEventBytes*2))
+	obs.Write(Stdout, []byte("\n"))
+	if snap := obs.Snapshot(); snap != nil {
+		t.Fatalf("oversize accepted: %#v", snap)
+	}
+	obs.Write(Stdout, []byte(valid))
+	if snap := obs.Snapshot(); snap == nil || snap.Sequence != 1 {
+		t.Fatalf("no recovery after oversize: %#v", snap)
+	}
+	// A malformed control record surfaces output plus one bounded diagnostic.
+	mal, err := NewObserver(Config{Profile: "custom", Source: "events-v1"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mal.Write(Stdout, []byte(Prefix+"{not json}\n"))
+	snap := mal.Snapshot()
+	if snap == nil || snap.Sequence != 0 || !snap.Partial || snap.Warning == "" || len(snap.Metrics) != 0 {
+		t.Fatalf("partial diagnostic: %#v", snap)
+	}
+	if !strings.Contains(mal.DisplayTail(), "{not json}") {
+		t.Fatalf("malformed record missing from tail: %q", mal.DisplayTail())
+	}
+	mal.Write(Stdout, []byte(valid))
+	snap = mal.Snapshot()
+	if snap == nil || snap.Sequence != 1 || snap.Warning != "" {
+		t.Fatalf("no recovery after malformed: %#v", snap)
+	}
+	// Buffers and tail stay bounded under sustained output.
+	for i := 0; i < 2000; i++ {
+		mal.Write(Stderr, []byte("ordinary output line\n"))
+	}
+	if got := len(mal.DisplayTail()); got > MaxDisplayBytes {
+		t.Fatalf("tail grew to %d", got)
+	}
+	// An unterminated control record is diagnostic/output, not a snapshot.
+	unterminated, err := NewObserver(Config{Profile: "custom", Source: "events-v1"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unterminated.Write(Stdout, []byte(Prefix+`{"version":1,"sequence":1`))
+	unterminated.Close()
+	if snap := unterminated.Snapshot(); snap != nil && snap.Sequence != 0 {
+		t.Fatalf("unterminated accepted: %#v", snap)
+	}
+}
+
+func TestProgressSequenceAndReplacement(t *testing.T) {
+	obs, err := NewObserver(Config{Profile: "custom", Source: "events-v1"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := Prefix + `{"version":1,"sequence":1,"phase":{"id":"p","label":"P","index":1,"total":2},"primaryMetricId":"a","metrics":[{"id":"a","label":"A","unit":"items","current":3,"total":9}],"rows":[{"id":"r","label":"R","state":"running"}],"detail":"one"}` + "\n"
+	obs.Write(Stdout, []byte(first))
+	s1 := obs.Snapshot()
+	if s1 == nil || s1.Sequence != 1 || s1.Detail != "one" || s1.Phase == nil || len(s1.Rows) != 1 {
+		t.Fatalf("first: %#v", s1)
+	}
+	// A complete frame replaces the previous one; omitted fields clear.
+	second := Prefix + `{"version":1,"sequence":2,"metrics":[{"id":"a","label":"A","unit":"items","current":4}]}` + "\n"
+	obs.Write(Stdout, []byte(second))
+	s2 := obs.Snapshot()
+	if s2 == nil || s2.Sequence != 2 || s2.Phase != nil || s2.Rows != nil || s2.Detail != "" {
+		t.Fatalf("partial merge: %#v", s2)
+	}
+	// A replay of an older sequence is ignored.
+	obs.Write(Stdout, []byte(first))
+	s3 := obs.Snapshot()
+	if s3 == nil || s3.Sequence != 2 || s3.Metrics[0].Current != 4 {
+		t.Fatalf("replay advanced: %#v", s3)
+	}
+	if _, err := DecodeEvent([]byte(strings.TrimSuffix(first, "\n")), 2, time.Unix(0, 0)); !errors.Is(err, ErrSequence) {
+		t.Fatalf("want ErrSequence, got %v", err)
+	}
+	// Snapshot returns a copy.
+	s3.Metrics[0].Current = 999
+	if obs.Snapshot().Metrics[0].Current != 4 {
+		t.Fatal("snapshot aliases internal state")
+	}
+}
+
+func TestProgressEstimateUnknownChangedAndStale(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	ptr := func(v float64) *float64 { return &v }
+	mk := func(seq uint64, at time.Time, phase, unit string, cur float64, tot, rate *float64) *Snapshot {
+		s := &Snapshot{ObservedAt: at, Frame: Frame{Version: 1, Sequence: seq,
+			Metrics: []Metric{{ID: "m", Label: "M", Unit: unit, Current: cur, Total: tot, Rate: rate}}}}
+		if phase != "" {
+			s.Phase = &Phase{ID: phase, Label: phase, Index: 1, Total: 1}
+		}
+		return s
+	}
+	if est := EstimateFor(nil, mk(1, now, "p", "items", 5, nil, nil), "m", now, false); est.Fraction != nil || est.ETA != nil {
+		t.Fatalf("no denominator: %#v", est)
+	}
+	if est := EstimateFor(nil, mk(1, now, "p", "items", 25, ptr(100), nil), "m", now, false); est.Fraction == nil || *est.Fraction != 0.25 || est.ETA != nil {
+		t.Fatalf("fraction: %#v", est)
+	}
+	if est := EstimateFor(nil, mk(1, now, "p", "items", 0, ptr(100), ptr(2)), "m", now, false); est.Rate == nil || *est.Rate != 2 || est.ETA == nil || *est.ETA != 50*time.Second {
+		t.Fatalf("supplied rate: %#v", est)
+	}
+	if est := EstimateFor(mk(1, now.Add(-2*time.Second), "p", "items", 0, ptr(100), nil), mk(2, now, "p", "items", 10, ptr(100), nil), "m", now, false); est.Rate == nil || *est.Rate != 5 || est.ETA == nil || *est.ETA != 18*time.Second {
+		t.Fatalf("delta rate: %#v", est)
+	}
+	if est := EstimateFor(mk(1, now.Add(-time.Second), "p", "items", 80, ptr(100), nil), mk(2, now, "p", "items", 10, ptr(100), nil), "m", now, false); est.Rate != nil || est.ETA != nil || est.Fraction == nil {
+		t.Fatalf("counter reset: %#v", est)
+	}
+	if est := EstimateFor(mk(1, now.Add(-time.Second), "p", "items", 0, ptr(100), nil), mk(2, now, "q", "items", 10, ptr(100), nil), "m", now, false); est.Rate != nil || est.ETA != nil {
+		t.Fatalf("phase reset: %#v", est)
+	}
+	if est := EstimateFor(mk(1, now.Add(-time.Second), "p", "items", 0, ptr(100), nil), mk(2, now, "p", "bytes", 10, ptr(100), nil), "m", now, false); est.Rate != nil || est.ETA != nil {
+		t.Fatalf("unit reset: %#v", est)
+	}
+	if est := EstimateFor(nil, mk(1, now.Add(-time.Minute), "p", "items", 5, ptr(100), ptr(1)), "m", now, false); !est.Stale || est.Rate != nil || est.ETA != nil || est.Fraction == nil {
+		t.Fatalf("stale: %#v", est)
+	}
+	if est := EstimateFor(nil, mk(1, now, "p", "items", 5, ptr(100), ptr(1)), "m", now, true); est.Rate != nil || est.ETA != nil || est.Fraction == nil {
+		t.Fatalf("stopping: %#v", est)
+	}
+	tiny := 1e-9
+	if est := EstimateFor(nil, mk(1, now, "p", "items", 0, ptr(1e6), &tiny), "m", now, false); est.Rate == nil || est.ETA != nil {
+		t.Fatalf("tiny rate: %#v", est)
+	}
+	if est := EstimateFor(nil, mk(1, now, "p", "items", 1, ptr(100), ptr(1)), "other", now, false); est.Fraction != nil || est.Rate != nil {
+		t.Fatalf("unknown metric: %#v", est)
+	}
+}
+
+func TestProgressObserverCloseAndConcurrentStreams(t *testing.T) {
+	var obs *Observer
+	var dirtyCalls int64
+	var underLock, probed int32
+	dirty := func() {
+		atomic.AddInt64(&dirtyCalls, 1)
+		if obs != nil && atomic.CompareAndSwapInt32(&probed, 0, 1) {
+			done := make(chan struct{})
+			go func() { _ = obs.Snapshot(); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				atomic.StoreInt32(&underLock, 1)
+			}
+		}
+	}
+	var err error
+	obs, err = NewObserver(Config{Profile: "custom", Source: "events-v1"}, nil, dirty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// go-test-json is not supported until Task 3's adapter lands.
+	if _, err := NewObserver(Config{Profile: "tests", Source: "go-test-json"}, nil, nil); err == nil {
+		t.Fatal("go-test-json construction accepted before adapter")
+	}
+	var wg sync.WaitGroup
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				obs.Write(Stderr, []byte("ordinary stderr line\n"))
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			line := Prefix + `{"version":1,"sequence":` + strconv.Itoa(i+1) +
+				`,"metrics":[{"id":"a","label":"A","unit":"items","current":` + strconv.Itoa(i) + `}]}` + "\n"
+			obs.Write(Stdout, []byte(line))
+		}
+	}()
+	wg.Wait()
+	if atomic.LoadInt32(&underLock) != 0 {
+		t.Fatal("dirty ran while the observer mutex was held")
+	}
+	if snap := obs.Snapshot(); snap == nil || snap.Sequence != 200 {
+		t.Fatalf("final snapshot: %#v", snap)
+	}
+	if len(obs.DisplayTail()) > MaxDisplayBytes {
+		t.Fatal("tail grew")
+	}
+	obs.Close()
+	obs.Close() // idempotent
+	before := atomic.LoadInt64(&dirtyCalls)
+	obs.Write(Stdout, []byte(Prefix+`{"version":1,"sequence":999,"metrics":[{"id":"a","label":"A","unit":"items","current":1}]}`+"\n"))
+	if atomic.LoadInt64(&dirtyCalls) != before {
+		t.Fatal("dirty fired after Close")
+	}
+	if snap := obs.Snapshot(); snap == nil || snap.Sequence != 200 {
+		t.Fatalf("Close mutated snapshot: %#v", snap)
 	}
 }

@@ -559,6 +559,8 @@ func metricsRecorder(database *db.DB, projectID int64, sessionID string, logger 
 			FailedRepeatStreak:      m.FailedRepeatStreak,
 			HighestFailedRepeatTier: m.HighestFailedRepeatTier,
 			IntentNudges:            m.IntentNudges,
+			ReasoningReplayedChars:  m.ReasoningReplayedChars,
+			ReasoningTrimmed:        m.ReasoningTrimmed,
 			Outcome:                 m.Outcome,
 			SalvageReason:           m.SalvageReason,
 			PromptTokens:            m.PromptTokens,

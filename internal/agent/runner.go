@@ -1023,7 +1023,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		// the user's explicit override (or 0); the rest is derived
 		// from the resolved model window via historyBudget.
 		budget := historyBudget(route.Window, r.HistoryBudgetTokens)
-		messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
+		messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger, route.Preset.ReasoningHistory)...)
 	}
 	markCacheAnchor(messages)
 	messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
@@ -1082,7 +1082,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					}
 				}
 				budget := historyBudget(route.Window, r.HistoryBudgetTokens)
-				messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger)...)
+				messages = append(messages, buildHistoryMessages(priorTranscript, budget, r.State.Generation(), ledger, route.Preset.ReasoningHistory)...)
 			}
 			markCacheAnchor(messages)
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: goal})
@@ -1236,50 +1236,59 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		messages = r.appendSkillBodies(messages)
 
 		if turnThreshold > 0 && r.calibratedEstimate(r.withWorkingState(messages)) > turnThreshold {
-			// D2: prune superseded tool outputs first. Most overflows are
-			// 2-3 huge tool results, especially re-reads of the same
-			// file. Pruning before summarizing is cheaper, preserves the
-			// most recent copy, and often drops us back below the
-			// threshold without needing the LLM at all.
-			if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && r.calibratedEstimate(r.withWorkingState(prunedMsgs)) <= turnThreshold {
-				messages = prunedMsgs
-				r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n)
-				// Pruning drops stale tool output to stay under the
-				// budget. Say so: dropped context that leaves no trace
-				// reads to the user as the model losing track.
-				r.State.AddMessage(session.RoleSystem,
-					fmt.Sprintf("pruned %d stale tool result(s) to stay within the context budget", n),
-					session.ContentTypeCompaction)
-				continue
-			} else if n > 0 {
-				// Pruning helped but not enough — keep the pruned wire
-				// and proceed to compaction. The freshest reads survive.
-				messages = prunedMsgs
+			over := func(m []schema.ChatMessage) bool {
+				return r.calibratedEstimate(r.withWorkingState(m)) > turnThreshold
 			}
-
-			// T13: unified intra-turn compaction — rollover when enabled,
-			// fall back to summarizeAndContinue when disabled.
-			beforeMsgs, beforeTokens := len(messages), r.calibratedEstimate(messages)
-			if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold); cerr == nil {
-				// Recorded after the call: rolloverAndContinue is what
-				// advances the generation, so Generation().Seq is only
-				// correct once it has returned.
-				r.State.RecordCompaction(session.CompactionInfo{
-					MessagesBefore: beforeMsgs,
-					MessagesAfter:  len(fresh),
-					TokensBefore:   beforeTokens,
-					TokensAfter:    r.calibratedEstimate(fresh),
-					Generation:     r.State.Generation().Seq,
-				})
-				messages = fresh
-				r.resetTokenRatio()
-				if r.CompactionObserver != nil {
-					r.CompactionObserver()
+			if trimmedMsgs, n := trimReplayedReasoning(messages, over); n > 0 {
+				messages = trimmedMsgs
+				r.withStats(func(s *turnStats) { s.m.ReasoningTrimmed += n })
+			}
+			if over(messages) {
+				// D2: prune superseded tool outputs first. Most overflows are
+				// 2-3 huge tool results, especially re-reads of the same
+				// file. Pruning before summarizing is cheaper, preserves the
+				// most recent copy, and often drops us back below the
+				// threshold without needing the LLM at all.
+				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 && r.calibratedEstimate(r.withWorkingState(prunedMsgs)) <= turnThreshold {
+					messages = prunedMsgs
+					r.State.Logger().Info("context pruning recovered window", "pruned_outputs", n)
+					// Pruning drops stale tool output to stay under the
+					// budget. Say so: dropped context that leaves no trace
+					// reads to the user as the model losing track.
+					r.State.AddMessage(session.RoleSystem,
+						fmt.Sprintf("pruned %d stale tool result(s) to stay within the context budget", n),
+						session.ContentTypeCompaction)
+					continue
+				} else if n > 0 {
+					// Pruning helped but not enough — keep the pruned wire
+					// and proceed to compaction. The freshest reads survive.
+					messages = prunedMsgs
 				}
-				pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
-			} else {
-				r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and compaction failed: %s. The turn is being terminated to prevent transcript corruption.", cerr), session.ContentTypePlain)
-				return task, r.failTurn(task, fmt.Errorf("context overflow and compaction failed: %w", cerr))
+
+				// T13: unified intra-turn compaction — rollover when enabled,
+				// fall back to summarizeAndContinue when disabled.
+				beforeMsgs, beforeTokens := len(messages), r.calibratedEstimate(messages)
+				if fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold); cerr == nil {
+					// Recorded after the call: rolloverAndContinue is what
+					// advances the generation, so Generation().Seq is only
+					// correct once it has returned.
+					r.State.RecordCompaction(session.CompactionInfo{
+						MessagesBefore: beforeMsgs,
+						MessagesAfter:  len(fresh),
+						TokensBefore:   beforeTokens,
+						TokensAfter:    r.calibratedEstimate(fresh),
+						Generation:     r.State.Generation().Seq,
+					})
+					messages = fresh
+					r.resetTokenRatio()
+					if r.CompactionObserver != nil {
+						r.CompactionObserver()
+					}
+					pressureMessageSent = false // the fresh transcript may legitimately approach the budget again
+				} else {
+					r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Context window exceeded and compaction failed: %s. The turn is being terminated to prevent transcript corruption.", cerr), session.ContentTypePlain)
+					return task, r.failTurn(task, fmt.Errorf("context overflow and compaction failed: %w", cerr))
+				}
 			}
 		}
 
@@ -1381,7 +1390,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					// in the transcript with nothing before it.
 					r.State.AddNarration(r.curStep, strings.TrimSpace(res.Text))
 					r.State.AddMessage(session.RoleSystem, intentNudgeMessage, session.ContentTypePlain)
-					messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text})
+					r.noteReplayedReasoning(res.Reasoning)
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, Reasoning: res.Reasoning})
 					messages = append(messages, schema.ChatMessage{Role: schema.RoleSystem, Content: intentNudgeMessage})
 					continue
 				}
@@ -1436,6 +1446,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				// usable, so nothing ran: overhead, not work.
 				budget.overhead++
 				countIterations()
+				// Reasoning from a truncated step is not replayed.
 				messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
 				for _, call := range res.ToolCalls {
 					messages = append(messages, schema.ChatMessage{
@@ -1476,7 +1487,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				r.State.AddNarration(r.curStep, narration)
 			}
 
-			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls})
+			r.noteReplayedReasoning(res.Reasoning)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: res.Text, ToolCalls: res.ToolCalls, Reasoning: res.Reasoning})
 			producedValidAction = true
 			toolCallCountThisTurn += len(res.ToolCalls)
 
@@ -1533,7 +1545,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if strings.TrimSpace(assistantContent) == "" {
 				assistantContent = emptyModelResponsePlaceholder
 			}
-			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: assistantContent})
+			r.noteReplayedReasoning(res.Reasoning)
+			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: assistantContent, Reasoning: res.Reasoning})
 			messages = append(messages, BuildCorrectionMessage(parseErr))
 			r.withStats(func(s *turnStats) { s.noteParseFailure("envelope", raw) })
 			if consecutiveParseFailures == 2 {
@@ -1566,6 +1579,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			if strings.TrimSpace(assistantContent) == "" {
 				assistantContent = emptyModelResponsePlaceholder
 			}
+			// Reasoning from a truncated step is not replayed.
 			messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: assistantContent})
 			messages = append(messages, BuildTruncationMessage(actionToolNames(action)))
 			// Same consecutive-parse-failure ladder as the parseErr branch above.
@@ -1578,7 +1592,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		consecutiveEmpty = 0
 		budget.tools++
 		countIterations()
-		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw})
+		r.noteReplayedReasoning(res.Reasoning)
+		messages = append(messages, schema.ChatMessage{Role: schema.RoleAssistant, Content: raw, Reasoning: res.Reasoning})
 		if pendingRepairNote != nil {
 			messages = append(messages, *pendingRepairNote)
 			pendingRepairNote = nil

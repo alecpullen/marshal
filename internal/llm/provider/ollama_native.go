@@ -28,6 +28,7 @@ type OllamaNative struct {
 	capabilities   schema.ProviderCapabilities
 	keepAlive      string
 	limitsTable    *limits.Table
+	replayThinking bool
 
 	capsMu    sync.Mutex
 	capsCache map[string]ollamaModelCaps
@@ -71,6 +72,7 @@ func NewOllamaNative(opts Options) (*OllamaNative, error) {
 		capabilities:   caps,
 		keepAlive:      opts.KeepAlive,
 		limitsTable:    opts.LimitsTable,
+		replayThinking: opts.ReasoningField != ReasoningFieldOff,
 		capsCache:      make(map[string]ollamaModelCaps),
 	}, nil
 }
@@ -139,6 +141,7 @@ type ollamaOptions struct {
 type ollamaMessage struct {
 	Role      string           `json:"role"`
 	Content   string           `json:"content"`
+	Thinking  string           `json:"thinking,omitempty"`
 	ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -192,6 +195,9 @@ func (p *OllamaNative) buildChatRequestBody(req schema.ChatRequest) ([]byte, err
 	messages := make([]ollamaMessage, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		om := ollamaMessage{Role: string(m.Role), Content: m.Content}
+		if p.replayThinking && m.Role == schema.RoleAssistant && m.Reasoning != nil {
+			om.Thinking = m.Reasoning.Text
+		}
 		for _, call := range m.ToolCalls {
 			args := call.Args
 			if len(args) == 0 || !json.Valid(args) {

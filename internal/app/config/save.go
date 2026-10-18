@@ -748,6 +748,7 @@ func SaveUserConfigProviderAPIKey(path, providerName string, pc ProviderConfig) 
 		merged.KeepAlive = in.KeepAlive
 		merged.ThinkingBudget = in.ThinkingBudget
 		merged.ReasoningSummary = in.ReasoningSummary
+		merged.ReasoningField = in.ReasoningField
 	} else {
 		// Credential-only update of an existing entry: preserve its
 		// non-credential metadata.
@@ -762,6 +763,9 @@ func SaveUserConfigProviderAPIKey(path, providerName string, pc ProviderConfig) 
 		}
 		if in.ReasoningSummary {
 			merged.ReasoningSummary = true
+		}
+		if in.ReasoningField != "" {
+			merged.ReasoningField = in.ReasoningField
 		}
 	}
 	merged.APIKey = in.APIKey

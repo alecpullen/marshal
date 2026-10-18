@@ -61,7 +61,13 @@ type TurnMetrics struct {
 	FailedRepeatStreak      int
 	HighestFailedRepeatTier int
 	// IntentNudges counts intent-only-final nudges sent this turn (0 or 1).
-	IntentNudges     int
+	IntentNudges int
+	// ReasoningReplayedChars is the reasoning text attached for replay this
+	// turn, counted once per attached step.
+	ReasoningReplayedChars int
+	// ReasoningTrimmed counts assistant messages whose replayed reasoning
+	// was trimmed for the context budget.
+	ReasoningTrimmed int
 	PromptTokens     int
 	CompletionTokens int
 	ReasoningTokens  int
@@ -173,6 +179,15 @@ func (r *Runner) withStats(f func(*turnStats)) {
 	if r.stats != nil {
 		f(r.stats)
 	}
+}
+
+// noteReplayedReasoning records reasoning attached to an assistant message
+// for replay this turn, once per attached step. A nil reasoning is a no-op.
+func (r *Runner) noteReplayedReasoning(rs *schema.Reasoning) {
+	if rs == nil {
+		return
+	}
+	r.withStats(func(s *turnStats) { s.m.ReasoningReplayedChars += len(rs.Text) })
 }
 
 // turnUsageLine formats the provider-reported token usage accumulated this

@@ -56,6 +56,11 @@ type ChatEvent struct {
 	// reported subscription quota state (OAuth-backed providers). nil for
 	// every provider that does not report it.
 	Quota *QuotaInfo
+
+	// ReasoningItems is populated only when Type == ChatEventDone, by
+	// adapters with opaque reasoning (Responses). Provider and Model are left
+	// empty; the agent stamps them.
+	ReasoningItems []ReasoningItem
 }
 
 // QuotaInfo carries subscription quota state from OAuth-backed providers.

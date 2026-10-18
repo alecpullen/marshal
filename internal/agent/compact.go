@@ -21,6 +21,12 @@ func estimateTokens(messages []schema.ChatMessage) int {
 			runes += utf8.RuneCountInString(tc.Name)
 			runes += len(tc.Args)
 		}
+		if m.Reasoning != nil {
+			runes += utf8.RuneCountInString(m.Reasoning.Text)
+			for _, it := range m.Reasoning.Items {
+				runes += len(it.Data)
+			}
+		}
 	}
 	return runes / 4
 }

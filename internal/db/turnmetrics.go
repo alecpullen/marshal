@@ -91,6 +91,12 @@ type TurnMetricsRow struct {
 	QuotaPlanType       string
 	// IntentNudges counts the intent-only-final nudges sent this turn (0 or 1).
 	IntentNudges int
+	// ReasoningReplayedChars is the reasoning text attached for replay this
+	// turn, counted once per attached step.
+	ReasoningReplayedChars int
+	// ReasoningTrimmed counts assistant messages whose replayed reasoning
+	// was trimmed for the context budget.
+	ReasoningTrimmed int
 }
 
 func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
@@ -108,8 +114,8 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 			parse_fail_kind, parse_fail_sample, parse_repairs,
 			failed_repeat_streak, highest_failed_repeat_tier,
 			quota_used_percent, quota_reset_after_secs, quota_plan_type,
-			intent_nudges
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			intent_nudges, reasoning_replayed_chars, reasoning_trimmed
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.ProjectID,
 		sessionID,
 		row.StartedAt.UTC().Format(time.RFC3339),
@@ -144,6 +150,8 @@ func (db *DB) InsertTurnMetrics(row TurnMetricsRow) (int64, error) {
 		row.QuotaResetAfterSecs,
 		row.QuotaPlanType,
 		row.IntentNudges,
+		row.ReasoningReplayedChars,
+		row.ReasoningTrimmed,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert turn metrics: %w", err)

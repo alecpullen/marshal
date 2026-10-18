@@ -711,7 +711,7 @@ func TestBuildChatRequestBodyIncludesResponseFormat(t *testing.T) {
 		Model:          "test-model",
 		Messages:       []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 		ResponseFormat: &schema.ResponseFormat{Type: "json_object"},
-	}, false)
+	}, false, "")
 	if err != nil {
 		t.Fatalf("buildChatRequestBody returned error: %v", err)
 	}
@@ -742,7 +742,7 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 	// varies by backend and the panel now gates visibility on resolved
 	// support, so the wire layer does not second-guess it.
 	for _, effort := range []string{"low", "medium", "high", "minimal", "xhigh"} {
-		body, err := buildChatRequestBody(newReq(effort), false)
+		body, err := buildChatRequestBody(newReq(effort), false, "")
 		if err != nil {
 			t.Fatalf("buildChatRequestBody(%q): %v", effort, err)
 		}
@@ -752,7 +752,7 @@ func TestBuildChatRequestBodyReasoningEffort(t *testing.T) {
 	}
 	// Explicit off requests none; default and empty omit the control.
 	for _, effort := range []string{"off", "default", ""} {
-		body, err := buildChatRequestBody(newReq(effort), false)
+		body, err := buildChatRequestBody(newReq(effort), false, "")
 		if err != nil {
 			t.Fatalf("buildChatRequestBody(%q): %v", effort, err)
 		}
@@ -770,7 +770,7 @@ func TestBuildChatRequestBodyOmitsResponseFormatWhenNil(t *testing.T) {
 	body, err := buildChatRequestBody(schema.ChatRequest{
 		Model:    "test-model",
 		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
-	}, false)
+	}, false, "")
 	if err != nil {
 		t.Fatalf("buildChatRequestBody returned error: %v", err)
 	}
@@ -790,7 +790,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 		body, err := buildChatRequestBody(schema.ChatRequest{
 			Model:    "test-model",
 			Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
-		}, false)
+		}, false, "")
 		if err != nil {
 			t.Fatalf("buildChatRequestBody returned error: %v", err)
 		}
@@ -807,7 +807,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 			Model:     "test-model",
 			Messages:  []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 			MaxTokens: &maxTok,
-		}, false)
+		}, false, "")
 		if err != nil {
 			t.Fatalf("buildChatRequestBody returned error: %v", err)
 		}
@@ -833,7 +833,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 				Description: "Read a file",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
 			}},
-		}, false)
+		}, false, "")
 		if err != nil {
 			t.Fatalf("buildChatRequestBody returned error: %v", err)
 		}
@@ -864,7 +864,7 @@ func TestBuildChatRequestBodyToolWireShapes(t *testing.T) {
 				},
 				{Role: schema.RoleTool, ToolCallID: "call_1", Content: "contents"},
 			},
-		}, false)
+		}, false, "")
 		if err != nil {
 			t.Fatalf("buildChatRequestBody returned error: %v", err)
 		}
@@ -1326,7 +1326,7 @@ func TestBuildChatRequestBodyReasoningSummary(t *testing.T) {
 		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}},
 	}
 
-	body, err := buildChatRequestBody(req, true)
+	body, err := buildChatRequestBody(req, true, "")
 	if err != nil {
 		t.Fatalf("buildChatRequestBody: %v", err)
 	}
@@ -1334,7 +1334,7 @@ func TestBuildChatRequestBodyReasoningSummary(t *testing.T) {
 		t.Fatalf("reasoning summary not requested: %s", body)
 	}
 
-	body, err = buildChatRequestBody(req, false)
+	body, err = buildChatRequestBody(req, false, "")
 	if err != nil {
 		t.Fatalf("buildChatRequestBody: %v", err)
 	}
@@ -2748,5 +2748,326 @@ func TestTokenUsageFromReadsFlatCachedTokens(t *testing.T) {
 		if got := tokenUsageFrom(&u).CacheReadTokens; got != tc.want {
 			t.Errorf("%s: CacheReadTokens = %d, want %d", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestBuildChatRequestBodyReplaysReasoningContent(t *testing.T) {
+	body, err := buildChatRequestBody(schema.ChatRequest{
+		Model: "test-model",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleUser, Content: "hi"},
+			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "plan"}},
+			{Role: schema.RoleTool, ToolCallID: "call_1", Content: "contents"},
+		},
+	}, false, ReasoningFieldContent)
+	if err != nil {
+		t.Fatalf("buildChatRequestBody returned error: %v", err)
+	}
+
+	var parsed struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("failed to parse request body: %v", err)
+	}
+	if len(parsed.Messages) != 3 {
+		t.Fatalf("len(messages) = %d, want 3", len(parsed.Messages))
+	}
+	if !strings.Contains(string(parsed.Messages[1]), `"reasoning_content":"plan"`) {
+		t.Fatalf("assistant message missing reasoning_content: %s", parsed.Messages[1])
+	}
+	for i, m := range []json.RawMessage{parsed.Messages[0], parsed.Messages[2]} {
+		if strings.Contains(string(m), "reasoning") {
+			t.Fatalf("message %d carries a reasoning key: %s", i, m)
+		}
+	}
+}
+
+func TestBuildChatRequestBodyReplaysReasoningField(t *testing.T) {
+	body, err := buildChatRequestBody(schema.ChatRequest{
+		Model: "test-model",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "plan"}},
+		},
+	}, false, ReasoningFieldReasoning)
+	if err != nil {
+		t.Fatalf("buildChatRequestBody returned error: %v", err)
+	}
+	if !strings.Contains(string(body), `"reasoning":"plan"`) {
+		t.Fatalf("assistant message missing reasoning: %s", body)
+	}
+	if strings.Contains(string(body), "reasoning_content") {
+		t.Fatalf("body must not carry reasoning_content: %s", body)
+	}
+}
+
+func TestBuildChatRequestBodyNoReplayWhenOff(t *testing.T) {
+	body, err := buildChatRequestBody(schema.ChatRequest{
+		Model: "test-model",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "plan"}},
+		},
+	}, false, "")
+	if err != nil {
+		t.Fatalf("buildChatRequestBody returned error: %v", err)
+	}
+	if strings.Contains(string(body), "reasoning") {
+		t.Fatalf("body must carry no reasoning when replay is off: %s", body)
+	}
+}
+
+// An endpoint that rejects reasoning_content must be retried once without it,
+// and must never be sent the field again in this process.
+func TestOpenAICompatibleRetriesWithoutRejectedReplayField(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		requests = append(requests, string(raw))
+		if strings.Contains(string(raw), "reasoning_content") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"unknown field reasoning_content"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	req := schema.ChatRequest{
+		Model: "test-model",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleUser, Content: "hi"},
+			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "plan"}},
+		},
+	}
+
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+	ev, ok := recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDelta || ev.Delta != "hi" {
+		t.Fatalf("event = %+v ok=%v, want Delta %q", ev, ok, "hi")
+	}
+	drainEvents(t, events)
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	if !strings.Contains(requests[0], "reasoning_content") {
+		t.Fatalf("first request must carry reasoning_content: %s", requests[0])
+	}
+
+	events, err = p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("second Chat returned error: %v", err)
+	}
+	ev, ok = recvEvent(t, events)
+	if !ok || ev.Type != schema.ChatEventDelta || ev.Delta != "hi" {
+		t.Fatalf("second Chat event = %+v ok=%v, want Delta %q", ev, ok, "hi")
+	}
+	drainEvents(t, events)
+	if len(requests) != 3 {
+		t.Fatalf("requests = %d, want 3", len(requests))
+	}
+	if strings.Contains(requests[2], "reasoning_content") {
+		t.Fatalf("second Chat must not send reasoning_content: %s", requests[2])
+	}
+}
+
+func TestOpenAICompatibleSurfacesUnrelatedBadRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"bad reasoning_effort"}}`))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	_, err := p.Chat(t.Context(), schema.ChatRequest{
+		Model: "test-model",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleUser, Content: "hi"},
+			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "plan"}},
+		},
+	})
+	if err == nil {
+		t.Fatal("Chat() err = nil, want an error")
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1", requests)
+	}
+}
+
+func TestReplayFieldRejectedWholeWord(t *testing.T) {
+	if !replayFieldRejected([]byte("field reasoning is unknown"), ReasoningFieldReasoning) {
+		t.Fatal("whole-word match not detected")
+	}
+	if replayFieldRejected([]byte("bad reasoning_effort value"), ReasoningFieldReasoning) {
+		t.Fatal("reasoning must not match inside reasoning_effort")
+	}
+}
+
+// --- reasoning item capture and replay (Responses path) ---
+
+// reasoningSSE is a Responses stream whose reasoning item carries the id and
+// encrypted_content needed for stateless replay.
+const reasoningSSE = `event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_abc","summary":[{"type":"summary_text","text":"pondering"}],"encrypted_content":"ENC-123"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hi"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed"}}
+
+`
+
+func TestResponsesStreamCapturesReasoningItems(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(reasoningSSE))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "grok-4.7"
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+
+	var done schema.ChatEvent
+	for ev := range events {
+		if ev.Type == schema.ChatEventDone {
+			done = ev
+		}
+	}
+	if len(done.ReasoningItems) != 1 {
+		t.Fatalf("ReasoningItems = %+v, want exactly one captured item", done.ReasoningItems)
+	}
+	item := done.ReasoningItems[0]
+	if item.Kind != schema.ReasoningKindOpenAI {
+		t.Errorf("Kind = %q, want %q", item.Kind, schema.ReasoningKindOpenAI)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(item.Data, &payload); err != nil {
+		t.Fatalf("item Data is not JSON: %v (%s)", err, item.Data)
+	}
+	if payload["type"] != "reasoning" || payload["id"] != "rs_abc" || payload["encrypted_content"] != "ENC-123" {
+		t.Errorf("item Data = %s, want the opaque reasoning item verbatim", item.Data)
+	}
+}
+
+func TestResponsesStreamSkipsReasoningWithoutEncryptedContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_abc","summary":[{"type":"summary_text","text":"pondering"}]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hi"}
+
+event: response.completed
+data: {"type":"response.completed","response":{"status":"completed"}}
+
+`))
+	}))
+	defer server.Close()
+
+	p, err := NewOpenAICompatible(Options{Name: "opencode-go", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible returned error: %v", err)
+	}
+	req := chatReq(true)
+	req.Model = "grok-4.7"
+	events, err := p.responsesChat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("responsesChat returned error: %v", err)
+	}
+
+	var done schema.ChatEvent
+	for ev := range events {
+		if ev.Type == schema.ChatEventDone {
+			done = ev
+		}
+	}
+	if len(done.ReasoningItems) != 0 {
+		t.Fatalf("ReasoningItems = %+v, want none without encrypted_content", done.ReasoningItems)
+	}
+}
+
+func TestBuildResponsesInputPlacesReasoningBeforeFunctionCall(t *testing.T) {
+	msgs := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "hi"},
+		{
+			Role: schema.RoleAssistant,
+			ToolCalls: []schema.ToolCall{
+				{ID: "call_1", Name: "shell", Args: json.RawMessage(`{"cmd":"ls"}`)},
+			},
+			Reasoning: &schema.Reasoning{Items: []schema.ReasoningItem{{
+				Kind: schema.ReasoningKindOpenAI,
+				Data: json.RawMessage(`{"type":"reasoning","id":"rs_abc","encrypted_content":"ENC-123"}`),
+			}}},
+		},
+		{Role: schema.RoleTool, ToolCallID: "call_1", Content: "ok"},
+	}
+	_, items := buildResponsesInput(msgs)
+
+	var gotTypes []string
+	for _, item := range items {
+		if len(item.RawItem) > 0 {
+			var payload struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(item.RawItem, &payload); err != nil {
+				t.Fatalf("raw item is not JSON: %v (%s)", err, item.RawItem)
+			}
+			gotTypes = append(gotTypes, payload.Type)
+			continue
+		}
+		gotTypes = append(gotTypes, item.Type)
+	}
+	want := []string{"message", "reasoning", "function_call", "function_call_output"}
+	if len(gotTypes) != len(want) {
+		t.Fatalf("input types = %v, want %v", gotTypes, want)
+	}
+	for i := range want {
+		if gotTypes[i] != want[i] {
+			t.Fatalf("input types = %v, want %v", gotTypes, want)
+		}
+	}
+
+	// The replayed item must reach the wire as the opaque object, not a
+	// "message" item with empty fields.
+	req := chatReq(false)
+	req.Model = "grok-4.7"
+	req.Messages = msgs
+	body, err := buildResponsesRequestBody(req, false)
+	if err != nil {
+		t.Fatalf("buildResponsesRequestBody returned error: %v", err)
+	}
+	var parsed struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
+	if len(parsed.Input) != 4 {
+		t.Fatalf("input = %+v, want four items", parsed.Input)
+	}
+	if parsed.Input[1]["type"] != "reasoning" || parsed.Input[1]["encrypted_content"] != "ENC-123" {
+		t.Errorf("input[1] = %+v, want the reasoning item verbatim", parsed.Input[1])
+	}
+	if _, hasRole := parsed.Input[1]["role"]; hasRole {
+		t.Errorf("input[1] = %+v, want no message role on a reasoning item", parsed.Input[1])
 	}
 }

@@ -99,8 +99,9 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 			// act, not a final answer, even if it also has accompanying text.
 			// Correct the model and retry.
 			if len(res.ToolCalls) > 0 {
+				r.noteReplayedReasoning(res.Reasoning)
 				final = append(final,
-					schema.ChatMessage{Role: schema.RoleAssistant, Content: raw, ToolCalls: res.ToolCalls},
+					schema.ChatMessage{Role: schema.RoleAssistant, Content: raw, ToolCalls: res.ToolCalls, Reasoning: res.Reasoning},
 				)
 				// Providers that enforce tool-result ordering require exactly one
 				// role:tool message per tool_call_id before the next model turn.
@@ -130,8 +131,9 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 
 			// Empty response; ask for prose.
 			if attempt < maxFinalizeAttempts-1 {
+				r.noteReplayedReasoning(res.Reasoning)
 				final = append(final,
-					schema.ChatMessage{Role: schema.RoleAssistant, Content: raw},
+					schema.ChatMessage{Role: schema.RoleAssistant, Content: raw, Reasoning: res.Reasoning},
 					schema.ChatMessage{Role: schema.RoleSystem, Content: nativeFinalizeEmptyResponsePrompt},
 				)
 			}
@@ -150,8 +152,9 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 			if attempt == maxFinalizeAttempts-2 {
 				correction = finalizeFinalWarning
 			}
+			r.noteReplayedReasoning(res.Reasoning)
 			final = append(final,
-				schema.ChatMessage{Role: schema.RoleAssistant, Content: raw},
+				schema.ChatMessage{Role: schema.RoleAssistant, Content: raw, Reasoning: res.Reasoning},
 				schema.ChatMessage{Role: schema.RoleSystem, Content: correction},
 			)
 		}

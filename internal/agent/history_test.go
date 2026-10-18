@@ -2,11 +2,13 @@ package agent
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
 
@@ -24,7 +26,7 @@ func TestBuildHistory_TieredAging(t *testing.T) {
 			session.Message{Role: session.RoleAssistant, Content: big, ContentType: session.ContentTypeMarkdown, Final: true},
 		)
 	}
-	msgs := buildHistoryMessages(prior, 6000, session.GenerationInfo{}, nil)
+	msgs := buildHistoryMessages(prior, 6000, session.GenerationInfo{}, nil, "")
 	// Rule (1): all 10 user messages survive.
 	userCount := 0
 	for _, m := range msgs {
@@ -99,7 +101,7 @@ func TestBuildHistoryMessagesKeepsUserAndFinalAssistantTurns(t *testing.T) {
 		{Role: session.RoleAssistant, Content: "first answer", ContentType: session.ContentTypeMarkdown, Final: true},
 		{Role: session.RoleSystem, Content: "Agent stopped: ...", ContentType: session.ContentTypePlain},
 	}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil, "")
 	if len(msgs) != 2 {
 		t.Fatalf("got %d messages, want 2 (user turn + final answer): %+v", len(msgs), msgs)
 	}
@@ -116,7 +118,7 @@ func TestBuildHistoryMessagesAnnotatesToolBackedAnswers(t *testing.T) {
 		{Role: session.RoleUser, Content: "fix the bug", ContentType: session.ContentTypePlain},
 		{Role: session.RoleAssistant, Content: "Done, fixed it.", ContentType: session.ContentTypeMarkdown, Final: true, ToolCallCount: 3},
 	}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil, "")
 	if len(msgs) != 3 {
 		t.Fatalf("got %d messages, want 3 (user turn + tool-activity note + final answer): %+v", len(msgs), msgs)
 	}
@@ -139,7 +141,7 @@ func TestBuildHistoryMessagesDropsOldestBeyondBudget(t *testing.T) {
 		{Role: session.RoleUser, Content: "recent question", ContentType: session.ContentTypePlain},
 		{Role: session.RoleAssistant, Content: "recent answer", ContentType: session.ContentTypeMarkdown, Final: true},
 	}
-	msgs := buildHistoryMessages(prior, 100, session.GenerationInfo{}, nil) // tiny budget: only the recent pair fits
+	msgs := buildHistoryMessages(prior, 100, session.GenerationInfo{}, nil, "") // tiny budget: only the recent pair fits
 	if len(msgs) != 2 {
 		t.Fatalf("got %d messages, want the 2 most recent: %+v", len(msgs), msgs)
 	}
@@ -158,7 +160,7 @@ func TestBuildHistoryMessagesReplaysAgentRunContent(t *testing.T) {
 			{Seq: 1, Tool: "agent.run", Summary: "review", Ok: true, Tokens: 120, Content: "Looks good."},
 		},
 	}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, audits)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, audits, "")
 	if len(msgs) != 4 {
 		t.Fatalf("got %d messages, want 4 (user + ledger + report + answer): %+v", len(msgs), msgs)
 	}
@@ -186,7 +188,7 @@ func TestBuildHistoryMessagesAgentRunWithoutContentOmitsReport(t *testing.T) {
 			{Seq: 1, Tool: "agent.run", Summary: "review", Ok: true, Tokens: 120},
 		},
 	}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, audits)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, audits, "")
 	if len(msgs) != 3 {
 		t.Fatalf("got %d messages, want 3 (user + ledger + answer): %+v", len(msgs), msgs)
 	}
@@ -200,7 +202,7 @@ func TestBuildHistoryMessagesFiltersByGenerationBoundary(t *testing.T) {
 		{ID: 4, Role: session.RoleAssistant, Content: "post-boundary answer", ContentType: session.ContentTypeMarkdown, Final: true},
 	}
 	genInfo := session.GenerationInfo{ID: "gen-2", Seq: 2, SeedDigest: "summary of gen-1", StartMsgID: 2}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, genInfo, nil)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, genInfo, nil, "")
 	// Expect: seed digest system message + post-boundary user + post-boundary answer = 3
 	if len(msgs) != 3 {
 		t.Fatalf("got %d messages, want 3 (seed digest + post-boundary user + post-boundary answer): %+v", len(msgs), msgs)
@@ -222,7 +224,7 @@ func TestBuildHistoryMessagesBoundaryWithoutDigestSkipsPrepend(t *testing.T) {
 		{ID: 2, Role: session.RoleUser, Content: "post", ContentType: session.ContentTypePlain},
 	}
 	genInfo := session.GenerationInfo{ID: "gen-2", Seq: 2, SeedDigest: "", StartMsgID: 1}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, genInfo, nil)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, genInfo, nil, "")
 	if len(msgs) != 1 {
 		t.Fatalf("got %d messages, want 1 (post-boundary only, no digest prepended): %+v", len(msgs), msgs)
 	}
@@ -236,7 +238,7 @@ func TestBuildHistoryMessagesZeroBoundaryReplaysAll(t *testing.T) {
 		{ID: 1, Role: session.RoleUser, Content: "first", ContentType: session.ContentTypePlain},
 		{ID: 2, Role: session.RoleAssistant, Content: "answer", ContentType: session.ContentTypeMarkdown, Final: true},
 	}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil, "")
 	if len(msgs) != 2 {
 		t.Fatalf("got %d messages, want 2 (all messages replayed): %+v", len(msgs), msgs)
 	}
@@ -252,7 +254,7 @@ func TestBuildHistoryMessagesOffBranchBoundaryFallsBackToFullReplay(t *testing.T
 	// StartMsgID=3 is absent from the branch (IDs jump from 2 to 5).
 	// The boundary must be ignored and all messages replayed.
 	genInfo := session.GenerationInfo{ID: "gen-2", Seq: 2, SeedDigest: "summary of gen-1", StartMsgID: 3}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, genInfo, nil)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, genInfo, nil, "")
 	// Expect all 4 messages replayed (no boundary filtering, no digest prepended).
 	if len(msgs) != 4 {
 		t.Fatalf("got %d messages, want 4 (full replay, off-branch boundary ignored): %+v", len(msgs), msgs)
@@ -270,7 +272,7 @@ func TestBuildHistoryMessagesSkipsSalvagedAnswers(t *testing.T) {
 		{Role: session.RoleUser, Content: "q", ContentType: session.ContentTypePlain},
 		{Role: session.RoleAssistant, Content: "half-baked salvage", ContentType: session.ContentTypeMarkdown, Final: true, Salvaged: true},
 	}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil, "")
 	for _, m := range msgs {
 		if strings.Contains(m.Content, "half-baked salvage") {
 			t.Fatal("salvaged answers must not be replayed as reliable history")
@@ -283,7 +285,7 @@ func TestBuildHistoryMessagesReplaysReviewSummary(t *testing.T) {
 		{Role: session.RoleAssistant, Content: "review summary", ContentType: session.ContentTypeMarkdown, Final: true},
 		{Role: session.RoleUser, Content: "follow-up", ContentType: session.ContentTypePlain},
 	}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil, "")
 	if len(msgs) != 2 {
 		t.Fatalf("got %d messages, want 2 (review summary + follow-up user): %+v", len(msgs), msgs)
 	}
@@ -299,7 +301,7 @@ func TestBuildHistoryMessagesReplaysReviewSummary(t *testing.T) {
 		{Role: session.RoleAssistant, Content: "partial review", ContentType: session.ContentTypeMarkdown, Final: true, Salvaged: true},
 		{Role: session.RoleUser, Content: "follow-up", ContentType: session.ContentTypePlain},
 	}
-	msgs = buildHistoryMessages(salvaged, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil)
+	msgs = buildHistoryMessages(salvaged, defaultHistoryBudgetTokens, session.GenerationInfo{}, nil, "")
 	if len(msgs) != 1 {
 		t.Fatalf("got %d messages, want 1 (only follow-up user): %+v", len(msgs), msgs)
 	}
@@ -323,7 +325,7 @@ func TestBuildHistoryMessagesEmitsLedgerWhenAuditPresent(t *testing.T) {
 			{Tool: "shell.run", Summary: "go vet", Ok: false},
 		},
 	}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, audits)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, audits, "")
 	// Expect: user, ledger system msg, assistant final.
 	if len(msgs) != 3 {
 		t.Fatalf("len(msgs) = %d, want 3: %+v", len(msgs), msgs)
@@ -342,7 +344,7 @@ func TestBuildHistoryMessagesFallsBackToPlaceholderWhenAuditMissing(t *testing.T
 	}
 	// audits map exists but has no entry for DBID 101.
 	audits := map[int64][]db.ToolAuditEntry{999: nil}
-	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, audits)
+	msgs := buildHistoryMessages(prior, defaultHistoryBudgetTokens, session.GenerationInfo{}, audits, "")
 	if len(msgs) != 3 {
 		t.Fatalf("len(msgs) = %d, want 3: %+v", len(msgs), msgs)
 	}
@@ -375,7 +377,7 @@ func TestBuildHistory_NewestAssistantAnswerNeverStubbed(t *testing.T) {
 	// first pass can only afford the two oldest in full and the
 	// pinned-window upgrade pass exhausts its budget, so the newest
 	// answer would be stubbed without rule (5).
-	msgs := buildHistoryMessages(prior, 6000, session.GenerationInfo{}, nil)
+	msgs := buildHistoryMessages(prior, 6000, session.GenerationInfo{}, nil, "")
 
 	joined := make([]string, 0, len(msgs))
 	for _, m := range msgs {
@@ -434,7 +436,7 @@ func TestBuildHistoryMessagesTrailingOrphanUserTurn(t *testing.T) {
 	}
 	prior = append(prior, session.Message{Role: session.RoleUser, Content: "the orphan approval", ContentType: session.ContentTypePlain})
 
-	msgs := buildHistoryMessages(prior, 6000, session.GenerationInfo{}, nil)
+	msgs := buildHistoryMessages(prior, 6000, session.GenerationInfo{}, nil, "")
 
 	found := false
 	for _, m := range msgs {
@@ -444,5 +446,95 @@ func TestBuildHistoryMessagesTrailingOrphanUserTurn(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("trailing orphan user turn was lost: %+v", msgs)
+	}
+}
+
+// reasoningTranscript is a two-turn transcript whose final answers carry
+// stored reasoning text. Used by the reasoning-replay tests.
+func reasoningTranscript() []session.Message {
+	return []session.Message{
+		{Role: session.RoleUser, Content: "q1", ContentType: session.ContentTypePlain},
+		{Role: session.RoleAssistant, Content: "a1", ContentType: session.ContentTypeMarkdown, Final: true, Reasoning: "think-1"},
+		{Role: session.RoleUser, Content: "q2", ContentType: session.ContentTypePlain},
+		{Role: session.RoleAssistant, Content: "a2", ContentType: session.ContentTypeMarkdown, Final: true, Reasoning: "think-2"},
+	}
+}
+
+// TestHistoryReasoningDefaultUnchanged pins the pre-change behaviour: with
+// an empty reasoningHistory the output is exactly the stored history with
+// no reasoning attached anywhere (byte-identical to today).
+func TestHistoryReasoningDefaultUnchanged(t *testing.T) {
+	msgs := buildHistoryMessages(reasoningTranscript(), defaultHistoryBudgetTokens, session.GenerationInfo{}, nil, "")
+
+	want := []schema.ChatMessage{
+		{Role: schema.RoleUser, Content: "q1"},
+		{Role: schema.RoleAssistant, Content: "a1"},
+		{Role: schema.RoleUser, Content: "q2"},
+		{Role: schema.RoleAssistant, Content: "a2"},
+	}
+	if !reflect.DeepEqual(msgs, want) {
+		t.Fatalf("default output changed: got %+v, want %+v", msgs, want)
+	}
+	for _, m := range msgs {
+		if m.Reasoning != nil {
+			t.Fatalf("default mode must not attach reasoning, got %+v", m.Reasoning)
+		}
+	}
+}
+
+// TestHistoryReasoningFinalAnswersCarriesText: with final_answers, each kept
+// full final answer replays its stored reasoning text.
+func TestHistoryReasoningFinalAnswersCarriesText(t *testing.T) {
+	msgs := buildHistoryMessages(reasoningTranscript(), defaultHistoryBudgetTokens, session.GenerationInfo{}, nil, routing.ReasoningHistoryFinalAnswers)
+	if len(msgs) != 4 {
+		t.Fatalf("got %d messages, want 4: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Reasoning != nil || msgs[2].Reasoning != nil {
+		t.Fatalf("user messages must carry no reasoning: %+v", msgs)
+	}
+	if msgs[1].Reasoning == nil || msgs[1].Reasoning.Text != "think-1" {
+		t.Fatalf("msgs[1].Reasoning = %+v, want text think-1", msgs[1].Reasoning)
+	}
+	if msgs[3].Reasoning == nil || msgs[3].Reasoning.Text != "think-2" {
+		t.Fatalf("msgs[3].Reasoning = %+v, want text think-2", msgs[3].Reasoning)
+	}
+}
+
+// TestHistoryReasoningStubbedAnswerCarriesNone: an aged answer collapsed to a
+// stub must not carry reasoning, even in final_answers mode, while the kept
+// full answers do.
+func TestHistoryReasoningStubbedAnswerCarriesNone(t *testing.T) {
+	big := strings.Repeat("x ", 4000) // ~8000 chars ~2000 tokens each
+	prior := make([]session.Message, 0, 20)
+	for i := 0; i < 10; i++ {
+		prior = append(prior,
+			session.Message{Role: session.RoleUser, Content: fmt.Sprintf("user-%d", i), ContentType: session.ContentTypePlain},
+			session.Message{Role: session.RoleAssistant, Content: big, ContentType: session.ContentTypeMarkdown, Final: true, Reasoning: fmt.Sprintf("reason-%d", i)},
+		)
+	}
+	msgs := buildHistoryMessages(prior, 6000, session.GenerationInfo{}, nil, routing.ReasoningHistoryFinalAnswers)
+
+	stubs := 0
+	withReasoning := 0
+	for _, m := range msgs {
+		if m.Role != schema.RoleAssistant {
+			continue
+		}
+		if strings.HasPrefix(m.Content, "[older assistant answer") {
+			stubs++
+			if m.Reasoning != nil {
+				t.Fatalf("stub carried reasoning: %+v", m.Reasoning)
+			}
+			continue
+		}
+		if m.Reasoning != nil {
+			withReasoning++
+		}
+	}
+	if stubs < 1 {
+		t.Fatalf("expected at least one stubbed answer, got %d", stubs)
+	}
+	if withReasoning < 1 {
+		t.Fatalf("expected at least one kept full answer to carry reasoning")
 	}
 }

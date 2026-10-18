@@ -614,3 +614,199 @@ func TestCodexCapabilities(t *testing.T) {
 		t.Fatalf("capabilities = %+v, want tool/structured/reasoning all true", caps)
 	}
 }
+
+// --- reasoning item replay ---
+
+// codexReasoningItem is a captured reasoning item stamped for one model.
+func codexReasoningItem(provider, model string) schema.ReasoningItem {
+	return schema.ReasoningItem{
+		Provider: provider,
+		Model:    model,
+		Kind:     schema.ReasoningKindOpenAI,
+		Data:     json.RawMessage(`{"type":"reasoning","id":"rs_abc","encrypted_content":"ENC-123"}`),
+	}
+}
+
+// codexMessageWithReasoning is one assistant turn carrying a captured item.
+func codexMessageWithReasoning(items ...schema.ReasoningItem) schema.ChatMessage {
+	return schema.ChatMessage{
+		Role:      schema.RoleAssistant,
+		Content:   "answer",
+		Reasoning: &schema.Reasoning{Items: items},
+	}
+}
+
+// codexRequestBody captures the parsed request body of one codex call.
+func codexRequestBody(t *testing.T, r *http.Request) map[string]any {
+	t.Helper()
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read request body: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("parse request body: %v (%s)", err, raw)
+	}
+	return body
+}
+
+func TestCodexDropsItemsFromOtherModel(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody = codexRequestBody(t, r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(codexSSE))
+	}))
+	defer server.Close()
+
+	engine, _ := codexTestEngine(t, codexTestToken("acct-abc"))
+	p := newTestCodex(t, server.URL, engine)
+
+	events, err := p.Chat(t.Context(), schema.ChatRequest{
+		Model: "gpt-x",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleUser, Content: "hi"},
+			codexMessageWithReasoning(codexReasoningItem("codex", "other")),
+			{Role: schema.RoleUser, Content: "next"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	drainEvents(t, events)
+
+	input, _ := gotBody["input"].([]any)
+	for _, raw := range input {
+		item, _ := raw.(map[string]any)
+		if item["type"] == "reasoning" {
+			t.Fatalf("item stamped for another model reached the wire: %+v", item)
+		}
+	}
+}
+
+func TestCodexRetriesWithoutRejectedReasoningItems(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		requests = append(requests, string(raw))
+		// The include list always names reasoning.encrypted_content, so the
+		// rejection keys on the input array carrying a reasoning item.
+		var body struct {
+			Input []struct {
+				Type string `json:"type"`
+			} `json:"input"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		for _, item := range body.Input {
+			if item.Type == "reasoning" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"detail":"invalid reasoning item: encrypted_content is not supported"}`))
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(codexSSE))
+	}))
+	defer server.Close()
+
+	engine, _ := codexTestEngine(t, codexTestToken("acct-abc"))
+	p := newTestCodex(t, server.URL, engine)
+	req := schema.ChatRequest{
+		Model: "gpt-5.6-luna",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleUser, Content: "hi"},
+			codexMessageWithReasoning(codexReasoningItem("codex", "gpt-5.6-luna")),
+		},
+	}
+
+	events, err := p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("Chat should have retried and succeeded: %v", err)
+	}
+	done := false
+	for ev := range events {
+		if ev.Type == schema.ChatEventDone {
+			done = true
+		}
+	}
+	if !done {
+		t.Fatal("retry did not produce a Done event")
+	}
+	if len(requests) != 2 {
+		t.Fatalf("server saw %d requests, want 2 (original + one retry)", len(requests))
+	}
+	// The include list always names encrypted_content, so "carried an item"
+	// is checked against the input array.
+	firstInput := requests[0]
+	if !strings.Contains(firstInput, `"type":"reasoning"`) {
+		t.Fatalf("first request must carry the reasoning item: %s", firstInput)
+	}
+
+	// The rejection latches: the next call sends no reasoning items at all.
+	events, err = p.Chat(t.Context(), req)
+	if err != nil {
+		t.Fatalf("second Chat: %v", err)
+	}
+	done = false
+	for ev := range events {
+		if ev.Type == schema.ChatEventDone {
+			done = true
+		}
+	}
+	if !done {
+		t.Fatal("second Chat produced no Done event")
+	}
+	if len(requests) != 3 {
+		t.Fatalf("server saw %d requests, want 3", len(requests))
+	}
+	if strings.Contains(requests[2], `"type":"reasoning"`) {
+		t.Fatalf("second Chat must not send reasoning items: %s", requests[2])
+	}
+}
+
+func TestCodexNoItemsWhenReplayOff(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody = codexRequestBody(t, r)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(codexSSE))
+	}))
+	defer server.Close()
+
+	engine, _ := codexTestEngine(t, codexTestToken("acct-abc"))
+	caps := schema.ProviderCapabilities{ToolCalling: true, StructuredOutput: true, Reasoning: true}
+	p, err := NewOpenAICodex(CodexOptions{
+		Name:           "codex",
+		BaseURL:        server.URL,
+		Engine:         engine,
+		Capabilities:   &caps,
+		StaticModels:   []string{"gpt-5.6-luna"},
+		ReasoningField: ReasoningFieldOff,
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICodex: %v", err)
+	}
+	if !p.replayOff {
+		t.Fatal("replayOff = false, want true for ReasoningFieldOff")
+	}
+
+	events, err := p.Chat(t.Context(), schema.ChatRequest{
+		Model: "gpt-5.6-luna",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleUser, Content: "hi"},
+			codexMessageWithReasoning(codexReasoningItem("codex", "gpt-5.6-luna")),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	drainEvents(t, events)
+
+	input, _ := gotBody["input"].([]any)
+	for _, raw := range input {
+		item, _ := raw.(map[string]any)
+		if item["type"] == "reasoning" {
+			t.Fatalf("replay is off but a reasoning item reached the wire: %+v", item)
+		}
+	}
+}

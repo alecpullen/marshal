@@ -884,6 +884,52 @@ func TestScratchpadApplyDefaultsReplacesNegativeValues(t *testing.T) {
 	}
 }
 
+func TestReasoningConfigFieldsRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	path := UserConfigPath(home)
+	writeFile(t, path, `
+[providers.ollama]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+reasoning_field = "off"
+
+[models.presets."ollama/qwen2.5-coder:14b"]
+provider = "ollama"
+model = "qwen2.5-coder:14b"
+reasoning_history = "final_answers"
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Providers["ollama"].ReasoningField; got != "off" {
+		t.Fatalf("Loaded ReasoningField = %q, want off", got)
+	}
+	if got := cfg.Models.Presets["ollama/qwen2.5-coder:14b"].ReasoningHistory; got != "final_answers" {
+		t.Fatalf("Loaded ReasoningHistory = %q, want final_answers", got)
+	}
+
+	if err := SaveUserConfigProviders(path, cfg.Providers); err != nil {
+		t.Fatalf("SaveUserConfigProviders: %v", err)
+	}
+	if err := SaveUserConfigPresets(path, cfg.Models.Presets); err != nil {
+		t.Fatalf("SaveUserConfigPresets: %v", err)
+	}
+
+	reloaded, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.Providers["ollama"].ReasoningField; got != "off" {
+		t.Fatalf("reloaded ReasoningField = %q, want off", got)
+	}
+	if got := reloaded.Models.Presets["ollama/qwen2.5-coder:14b"].ReasoningHistory; got != "final_answers" {
+		t.Fatalf("reloaded ReasoningHistory = %q, want final_answers", got)
+	}
+}
+
 func writeFile(t *testing.T, path string, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

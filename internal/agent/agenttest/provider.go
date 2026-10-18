@@ -13,17 +13,18 @@ import (
 // so tests exercising max-iteration limits do not need to script every turn.
 // Safe for concurrent Chat calls.
 type ScriptedProvider struct {
-	mu            sync.Mutex
-	Responses     []string
-	ToolCalls     [][]schema.ToolCall
-	FinishReasons []string
-	Thinking      []string
-	Errs          []error
-	Usages        []*schema.TokenUsage
-	Calls         int
-	Requests      []schema.ChatRequest
-	ProviderCaps  schema.ProviderCapabilities
-	OnChat        func(idx int, req schema.ChatRequest)
+	mu             sync.Mutex
+	Responses      []string
+	ToolCalls      [][]schema.ToolCall
+	FinishReasons  []string
+	Thinking       []string
+	ReasoningItems [][]schema.ReasoningItem
+	Errs           []error
+	Usages         []*schema.TokenUsage
+	Calls          int
+	Requests       []schema.ChatRequest
+	ProviderCaps   schema.ProviderCapabilities
+	OnChat         func(idx int, req schema.ChatRequest)
 }
 
 func (p *ScriptedProvider) Name() string { return "scripted" }
@@ -77,6 +78,9 @@ func (p *ScriptedProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-
 	}
 	if idx < len(p.FinishReasons) {
 		done.FinishReason = p.FinishReasons[idx]
+	}
+	if idx < len(p.ReasoningItems) {
+		done.ReasoningItems = p.ReasoningItems[idx]
 	}
 	ch <- done
 	close(ch)

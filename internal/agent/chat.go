@@ -50,6 +50,19 @@ type chatResult struct {
 	// Quota carries subscription quota state when the provider reported it
 	// (OAuth-backed providers). nil for every other provider.
 	Quota *schema.QuotaInfo
+	// Reasoning is the step's reasoning, carried onto the assistant message
+	// the runner appends so a later request can replay it. nil when the step
+	// produced none.
+	Reasoning *schema.Reasoning
+}
+
+// newReasoning builds the replay value for a completed step; nil when empty.
+func newReasoning(text string, items []schema.ReasoningItem) *schema.Reasoning {
+	r := &schema.Reasoning{Text: text, Items: items}
+	if r.Empty() {
+		return nil
+	}
+	return r
 }
 
 // turnRequestOptions carries the resolved per-turn request limits derived from
@@ -501,6 +514,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 
 	var sb strings.Builder
 	var thinkingBuf strings.Builder
+	var reasoningItems []schema.ReasoningItem
 	var usage *schema.TokenUsage
 	var quota *schema.QuotaInfo
 	var toolCalls []schema.ToolCall
@@ -568,6 +582,14 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			toolCalls = event.ToolCalls
 			finishReason = event.FinishReason
 			quota = event.Quota
+			// The adapter leaves Provider and Model empty: it does not know
+			// which route the call resolved to. Stamp them here so replay can
+			// match items to the request that produced them.
+			for _, it := range event.ReasoningItems {
+				it.Provider = p.Name()
+				it.Model = model
+				reasoningItems = append(reasoningItems, it)
+			}
 		}
 	}
 	if loopSnippet != "" {
@@ -607,7 +629,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			s.m.CacheWriteTokens += usage.CacheWriteTokens
 		})
 	}
-	return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, nil
+	return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason, Reasoning: newReasoning(thinkingBuf.String(), reasoningItems)}, nil
 }
 
 func (r *Runner) buildToolDefinitions() []schema.ToolDefinition {

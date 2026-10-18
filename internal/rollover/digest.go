@@ -50,7 +50,7 @@ func NewLLMSummaryProvider(model chatModel, directive string) *LLMSummaryProvide
 // the trimmed response as the digest. It returns ErrEmptyDigest when the
 // model returns an empty or whitespace-only summary.
 func (p *LLMSummaryProvider) Digest(ctx context.Context, outgoing GenerationHandle) (string, string, error) {
-	outgoing.Wire = append(outgoing.Wire, schema.ChatMessage{
+	outgoing.Wire = append(schema.StripReasoning(outgoing.Wire), schema.ChatMessage{
 		Role:    schema.RoleSystem,
 		Content: p.SummaryDirective,
 	})

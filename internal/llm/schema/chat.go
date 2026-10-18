@@ -34,6 +34,11 @@ type ChatMessage struct {
 	// breakpoints (Anthropic) place one here. The runner sets exactly one
 	// per freshly built wire.
 	CacheAnchor bool
+
+	// Reasoning is the model's reasoning for this assistant message, replayed
+	// to the provider that produced it. Nil on non-assistant messages and on
+	// assistant messages Marshal synthesizes.
+	Reasoning *Reasoning
 }
 
 type ToolCall struct {

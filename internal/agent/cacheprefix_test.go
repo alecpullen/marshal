@@ -139,6 +139,46 @@ func TestPromptPrefixStableAcrossSteps(t *testing.T) {
 	}
 }
 
+func TestPromptPrefixStableAcrossStepsWithReasoning(t *testing.T) {
+	reg := registry.New()
+	registerFakeRead(t, reg, false)
+	clock := time.Unix(1_000, 0)
+	now := func() time.Time { return clock }
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{}, session.WithClock(now))
+	// A stable pack so the run exercises stable + volatile sections together.
+	state.SetContextPack(contextpack.Pack{
+		Sections:   []contextpack.Section{{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal"}},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000},
+	})
+	call := func(id, path string) []schema.ToolCall {
+		return []schema.ToolCall{{ID: id, Name: "file.read", Args: json.RawMessage(`{"path":"` + path + `"}`)}}
+	}
+	statuses := []string{"pending", "in_progress", "completed"}
+	p := &agenttest.ScriptedProvider{
+		Responses:     []string{"", "", "", "Done."},
+		Thinking:      []string{"step one plan", "step two plan", "", ""},
+		ToolCalls:     [][]schema.ToolCall{call("c1", "a.go"), call("c2", "b.go"), call("c3", "c.go")},
+		FinishReasons: []string{"tool_calls", "tool_calls", "tool_calls", "stop"},
+		OnChat: func(idx int, _ schema.ChatRequest) {
+			clock = clock.Add(2 * time.Minute)
+			_ = state.SetTodos([]db.TodoItem{{Content: "read the files", Status: statuses[min(idx, len(statuses)-1)]}})
+		},
+	}
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.NativeTools = true
+	r.Now = now
+	r.SetForceClass(string(ClassEdit))
+
+	if _, err := r.RunTask(context.Background(), "read three files"); err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if len(p.Requests) < 3 {
+		t.Fatalf("got %d requests, want at least 3", len(p.Requests))
+	}
+
+	assertPrefixStable(t, p.Requests)
+}
+
 func TestWithWorkingStateDoesNotMutateInput(t *testing.T) {
 	state := newTestState(t)
 	_ = state.SetTodos([]db.TodoItem{{Content: "x", Status: "pending"}})

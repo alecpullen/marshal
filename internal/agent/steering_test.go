@@ -81,7 +81,7 @@ func TestRunTaskInjectsSteeringBeforeNextModelCall(t *testing.T) {
 	}
 
 	// And it must replay via buildHistoryMessages.
-	replayed := buildHistoryMessages(state.Messages(), 0, state.Generation(), map[int64][]db.ToolAuditEntry{})
+	replayed := buildHistoryMessages(state.Messages(), 0, state.Generation(), map[int64][]db.ToolAuditEntry{}, "")
 	var sawReplay bool
 	for _, m := range replayed {
 		if m.Role == schema.RoleUser && m.Content == "[user steering, mid-turn]: also update the README" {

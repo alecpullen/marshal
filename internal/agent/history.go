@@ -5,6 +5,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
 
@@ -42,7 +43,7 @@ const assistantStubFmt = "[older assistant answer, ~%d chars; fetch it with the 
 //	    wholesale as a last resort
 //
 // Rollover generation boundary behaviour is unchanged.
-func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo session.GenerationInfo, audits map[int64][]db.ToolAuditEntry) []schema.ChatMessage {
+func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo session.GenerationInfo, audits map[int64][]db.ToolAuditEntry, reasoningHistory string) []schema.ChatMessage {
 	if maxTokens <= 0 {
 		maxTokens = defaultHistoryBudgetTokens
 	}
@@ -85,7 +86,7 @@ func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo sessio
 						}
 					}
 				}
-				cands = append(cands, candEntry{role: schema.RoleAssistant, content: m.Content, kind: "assistant-full"})
+				cands = append(cands, candEntry{role: schema.RoleAssistant, content: m.Content, kind: "assistant-full", reasoning: m.Reasoning})
 			}
 		}
 	}
@@ -130,7 +131,13 @@ func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo sessio
 				})
 				continue
 			}
-			out = append(out, schema.ChatMessage{Role: ce.role, Content: ce.content})
+			msg := schema.ChatMessage{Role: ce.role, Content: ce.content}
+			if ce.kind == "assistant-full" &&
+				reasoningHistory == routing.ReasoningHistoryFinalAnswers &&
+				ce.reasoning != "" {
+				msg.Reasoning = &schema.Reasoning{Text: ce.reasoning}
+			}
+			out = append(out, msg)
 		}
 	}
 	return out
@@ -139,9 +146,10 @@ func buildHistoryMessages(prior []session.Message, maxTokens int, genInfo sessio
 // candEntry is one tagged prior-transcript fragment during tiered
 // aging.
 type candEntry struct {
-	role    schema.Role
-	content string
-	kind    string // "user" | "assistant-full" | "ledger" | "seed"
+	role      schema.Role
+	content   string
+	kind      string // "user" | "assistant-full" | "ledger" | "seed"
+	reasoning string // stored reasoning text for a full final answer
 }
 
 // exchange is one continuous group of candEntries — from the start

@@ -10,6 +10,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/progress"
 	"marshal/internal/tools/registry"
 )
 
@@ -672,4 +673,186 @@ func TestShellRunStreamedOutputStopsAtHandoff(t *testing.T) {
 		t.Fatalf("continuation Content = %q, want the retained tail", res.Content)
 	}
 	close(release)
+}
+
+// TestShellProgressConfigRejectedBeforeLaunch pins the ordering of the opt-in:
+// a malformed progress configuration is rejected before the guardrail and
+// before admission, so it never asks for approval and never leaves a process
+// or a reserved slot behind.
+//
+// The rejected value is schema-valid (both enum members exist) but not a
+// consistent configuration: events-v1 is not a generic profile. That is exactly
+// the shape schema validation cannot catch, so the rejection proves the handler
+// normalized the opt-in itself rather than leaning on the schema.
+func TestShellProgressConfigRejectedBeforeLaunch(t *testing.T) {
+	root := t.TempDir()
+	runner := newFakeRunner(withResult(CommandResult{Stdout: "ok\n", ExitCode: 0}))
+	jm := NewJobManager(context.Background(), runner, root, 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	guardrailCalls := 0
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: runner,
+		JobManager:    jm,
+		Guardrail: func(string, bool) error {
+			guardrailCalls++
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	_, err := invokeTool(t, reg, "shell.run", `{"command":"download","progress":{"profile":"generic","source":"events-v1"}}`)
+	if err == nil || !strings.Contains(err.Error(), "progress") {
+		t.Fatalf("err = %v, want a malformed progress opt-in to be rejected", err)
+	}
+	if guardrailCalls != 0 {
+		t.Fatalf("guardrail called %d times, want 0: an invalid opt-in must not reach approval", guardrailCalls)
+	}
+	if got := runner.countRuns(); got != 0 {
+		t.Fatalf("runner runs = %d, want 0 (nothing may be launched)", got)
+	}
+	if got := jm.ActiveCount(); got != 0 {
+		t.Fatalf("ActiveCount = %d, want 0", got)
+	}
+
+	// A rejected opt-in leaves no observer behind on a later ordinary call
+	// either: the same registry still launches commands without one.
+	res, err := invokeTool(t, reg, "shell.run", `{"command":"echo ok"}`)
+	if err != nil {
+		t.Fatalf("shell.run after the rejection: %v", err)
+	}
+	if ex := executionOf(t, res); ex.ProgressConfig != nil {
+		t.Fatalf("a plain call captured a progress config: %#v", ex.ProgressConfig)
+	}
+}
+
+// TestTestRunProgressKeepsCommandOverride pins that the progress opt-in is
+// display configuration only: it never rewrites the command under test. The
+// caller's override still beats the configured default, and the admitted
+// execution carries the opt-in it was given.
+func TestTestRunProgressKeepsCommandOverride(t *testing.T) {
+	root := t.TempDir()
+	// One events-v1 record: the opt-in's own display data, never command output.
+	record := append(progressLine(t, 1, 3, floatPtr(12)), '\n')
+	runner := newFakeRunner(withResult(CommandResult{Stdout: string(record), ExitCode: 0}))
+	jm := newTestCommandService(t, runner, root, nil, nil)
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: runner,
+		JobManager:    jm,
+		TestCommand:   "go test ./pkg",
+		Guardrail:     func(string, bool) error { return nil },
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	res, err := invokeTool(t, reg, "test.run", `{"command":"go test ./internal/tools/native","progress":{"profile":"custom","source":"events-v1","title":"download"}}`)
+	if err != nil {
+		t.Fatalf("test.run returned error: %v", err)
+	}
+	if got := runner.lastRequest(t).Command; got != "go test ./internal/tools/native" {
+		t.Fatalf("command = %q, want the caller's override unchanged", got)
+	}
+
+	ex := executionOf(t, res)
+	if ex.ProgressConfig == nil || ex.ProgressConfig.Profile != "custom" || ex.ProgressConfig.Source != "events-v1" || ex.ProgressConfig.Title != "download" {
+		t.Fatalf("captured config = %#v, want the admitted custom/events-v1 opt-in", ex.ProgressConfig)
+	}
+	if ex.Progress == nil || ex.Progress.Sequence != 1 {
+		t.Fatalf("final progress = %#v, want the observed sequence 1", ex.Progress)
+	}
+	// The control record is filtered out of the command's own output: it is
+	// display data, and the model never sees it as text the command produced.
+	if strings.Contains(res.Content, progress.Prefix) {
+		t.Fatalf("Content leaked a control record: %q", res.Content)
+	}
+}
+
+// TestShellProgressOneExecutionNoticeThroughHandoff pins the card count: a
+// command that outlives its wait hands off with exactly one command-execution
+// notice carrying the progress opt-in and the same single execution, and no
+// second launch.
+func TestShellProgressOneExecutionNoticeThroughHandoff(t *testing.T) {
+	root := t.TempDir()
+	release := make(chan struct{})
+	runner := newFakeRunner(withRelease(release), withPID(7301))
+	jm := NewJobManager(context.Background(), runner, root, 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: runner,
+		JobManager:    jm,
+		Config:        config.Config{Tools: config.ToolsConfig{Shell: config.ShellToolConfig{ForegroundWaitSeconds: 1}}},
+		Guardrail:     func(string, bool) error { return nil },
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	res, err := invokeTool(t, reg, "shell.run", `{"command":"download","progress":{"profile":"custom","source":"events-v1","title":"the download"}}`)
+	if err != nil {
+		t.Fatalf("shell.run returned error: %v", err)
+	}
+	if !strings.Contains(res.Content, "still running in the background") {
+		t.Fatalf("Content = %q, want the handoff shape", res.Content)
+	}
+	if res.Notice == nil || res.Notice.Kind != registry.NoticeCommandExecution {
+		t.Fatalf("notice = %+v, want the one command-execution card", res.Notice)
+	}
+	if len(res.Notice.Data) != 1 {
+		t.Fatalf("notice carries %d payloads, want exactly the execution record", len(res.Notice.Data))
+	}
+	ex := executionOf(t, res)
+	if ex.Attachment != registry.ExecutionAttachmentBackground {
+		t.Fatalf("attachment = %q, want background after the handoff", ex.Attachment)
+	}
+	if ex.ProgressConfig == nil || ex.ProgressConfig.Source != "events-v1" || ex.ProgressConfig.Title != "the download" {
+		t.Fatalf("captured config = %#v, want the admitted opt-in carried through the handoff", ex.ProgressConfig)
+	}
+	// The command has not settled, so there is no measurement to report yet.
+	if ex.Progress != nil {
+		t.Fatalf("a running command reported progress: %#v", ex.Progress)
+	}
+	if got := runner.countRuns(); got != 1 {
+		t.Fatalf("runner runs = %d, want exactly one execution through the handoff", got)
+	}
+	close(release)
+}
+
+// TestShellProgressSourceNoneIsPlainCommand pins the explicit no-source case:
+// source "none" asks to display nothing structured, so the result stays the
+// command's ordinary text. The opt-in is still captured, and no observer
+// measurement is reported.
+func TestShellProgressSourceNoneIsPlainCommand(t *testing.T) {
+	root := t.TempDir()
+	runner := newFakeRunner(withResult(CommandResult{Stdout: "plain output\n", ExitCode: 0}))
+	jm := newTestCommandService(t, runner, root, nil, nil)
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: runner,
+		JobManager:    jm,
+		Guardrail:     func(string, bool) error { return nil },
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	res, err := invokeTool(t, reg, "shell.run", `{"command":"echo plain","progress":{"source":"none"}}`)
+	if err != nil {
+		t.Fatalf("shell.run returned error: %v", err)
+	}
+	if res.Content != "plain output" {
+		t.Fatalf("Content = %q, want the ordinary command text", res.Content)
+	}
+	ex := executionOf(t, res)
+	if ex.ProgressConfig == nil || ex.ProgressConfig.Source != "none" || ex.ProgressConfig.Profile != "generic" {
+		t.Fatalf("captured config = %#v, want the normalized generic/none opt-in", ex.ProgressConfig)
+	}
+	if ex.Progress != nil {
+		t.Fatalf("source none reported a measurement: %#v", ex.Progress)
+	}
 }

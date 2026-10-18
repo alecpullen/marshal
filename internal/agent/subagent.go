@@ -319,6 +319,18 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		meta := session.SubagentMeta{
 			Role: RoleSubtask,
 		}
+		// Task 8: record where this child was dispatched from. The turn and
+		// step come from the runner's stamped execution origin (the actual
+		// originating step, not a provider call id), and the tool-call id is
+		// the handler's own call.ID. It is provenance only: it never mints or
+		// rewrites the child's creation/end work identity.
+		if origin, ok := session.ExecutionOriginFromContext(ctx); ok {
+			meta.Origin = session.SubagentOrigin{
+				TurnID:     origin.TurnID,
+				StepID:     origin.StepID,
+				ToolCallID: call.ID,
+			}
+		}
 		if child.Model != "" {
 			meta.Model = child.Model
 		}
@@ -326,6 +338,13 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			meta.Provider = child.Provider.Name()
 		}
 		view := state.RegisterSubagentWithMetaAndWork(workID, args.Description, childState, meta)
+		// The actual child session id, when the factory returned a child
+		// state: the notice names the same child the card does, never a
+		// provider call id.
+		childSessionID := ""
+		if childState != nil {
+			childSessionID = childState.SessionID()
+		}
 		// The child's context derives from the SESSION, not this tool call:
 		// a background child must survive the parent turn ending normally,
 		// and turn-cancel (Esc) must not kill it. Session Shutdown still
@@ -382,6 +401,14 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 					// panicked child's failure is lost across restart.
 					state.AddMessage(session.RoleSystem, "✗ "+panicSummary, session.ContentTypePlain)
 					state.AddMessage(session.RoleUser, panicReport, session.ContentTypeSubagentReport)
+					// Task 8: bind the report just appended to the retained
+					// work index, before the child's completion is announced
+					// (FinishSubagent closes done). A bind failure is logged
+					// as evidence, never fatal: the durable report was still
+					// appended and the queue delivery below still runs.
+					if bindErr := state.BindSubagentReport(view.ID, panicReport); bindErr != nil {
+						state.Logger().Error("bind subagent panic report failed", "error", bindErr, "subagent_id", view.ID)
+					}
 					state.PushSubagentReport(panicReport)
 					state.ExitSubagentWork(workID)
 					state.FinishSubagent(view.ID, "", fmt.Errorf("subagent %d panicked: %v", view.ID, r))
@@ -435,6 +462,15 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			// double-deliver: the queue is cleared on drain, and
 			// buildHistoryMessages only replays prior-turn messages.
 			state.AddMessage(session.RoleUser, report, session.ContentTypeSubagentReport)
+			// Task 8: point the retained work-index entry at the durable
+			// report message just appended, before anything announces the
+			// child complete. A bind failure is logged as evidence, never
+			// fatal, and never blocks the push/finish order below (a
+			// WaitSubagent caller unblocks on FinishSubagent's done close and
+			// must see the report already queued).
+			if bindErr := state.BindSubagentReport(view.ID, report); bindErr != nil {
+				state.Logger().Error("bind subagent report failed", "error", bindErr, "subagent_id", view.ID)
+			}
 			// C2: push the report and release the concurrency slot BEFORE
 			// FinishSubagent closes the done channel. A WaitSubagent caller
 			// (agent.await) unblocks on that close, so it must observe the
@@ -462,6 +498,23 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			Summary: fmt.Sprintf("started as subagent %d — %s", view.ID, args.Description),
 			Content: fmt.Sprintf("Subagent %d (%s) is running in the background (%d in flight, max %d). Its report will be delivered to you as a [subagent %d finished] message when it completes. To wait for it, call agent.await with \"id\": %d; to peek at progress, call agent.await with \"id\": %d and \"peek\": true. Do not treat the task as complete until its result arrives.",
 				view.ID, args.Description, state.SubagentConcurrency(), state.SubagentMaxConcurrency(), view.ID, view.ID, view.ID),
+			// Task 8: a machine-readable reference to the registered child's
+			// work, so a consumer can pair this dispatch with the report it
+			// later binds. The registered view's canonical key/epoch/id and
+			// the actual child session id; empty Text, so it never touches
+			// Summary/Content, and no second dispatch result is emitted. The
+			// numeric agent.await handle stays in Summary/Content above.
+			Notice: &registry.ToolNotice{
+				Kind: registry.NoticeSubagentWork,
+				Data: map[string]any{
+					registry.NoticeSubagentWork: registry.SubagentWorkReference{
+						TaskKey:        view.WorkKey,
+						RuntimeEpoch:   view.RuntimeEpoch,
+						AgentID:        view.ID,
+						ChildSessionID: childSessionID,
+					},
+				},
+			},
 		}, nil
 	}
 	return tool

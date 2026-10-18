@@ -85,6 +85,7 @@ plans retain the legacy agent strategy.
 | Tools | `internal/tools/registry/`, `internal/tools/native/`, `internal/tools/patch/`, `internal/tools/policy/`, `internal/tools/mcp/` | Tool registration, file/search/shell/git tools, patch apply, risk policy, MCP clients. The model-facing surface is documented family-by-family in [`docs/tools/`](tools/README.md). |
 | Repo intelligence | `internal/repo/`, `internal/index/`, `internal/retrieval/`, `internal/lsp/` | Repo scanning, tree-sitter symbol extraction, embeddings, semantic retrieval, LSP integration. |
 | Knowledge | `internal/contextpack/`, `internal/rollover/` | Curated memory injection, context budget, long-session rollover. |
+| Work projection | `internal/progress/`, `internal/viewmodel/` (work projection), `internal/app/runtime.go` | Bounded progress values and the conversation work projection: one pinned gutter-card surface over the existing command, watch and subagent owners, which stay the sole lifecycle owners. `internal/progress` owns decoding, display safety and estimation only; it never owns execution. |
 | Persistence | `internal/db/`, `internal/snapshot/`, `internal/filetrack/` | SQLite schema, workspace snapshots, file access tracking. |
 | ACP | `internal/acp/` | Headless JSON-RPC server for editor/IDE integration. |
 | Web bridge | `web/bridge/`, `cmd/webbridge/` | Fleet control plane: supervises one `marshal acp` child per project, brokers approvals, serves the REST API and SSE streams, and drives per-agent worktree isolation, diff, merge and discard entirely over ACP. |

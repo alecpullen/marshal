@@ -105,6 +105,91 @@ func TestToolNoticeJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSubagentWorkReferenceNoticeRoundTrip(t *testing.T) {
+	want := SubagentWorkReference{
+		TaskKey:        "work:abc",
+		RuntimeEpoch:   "epoch-1",
+		AgentID:        12,
+		ChildSessionID: "child-9",
+	}
+
+	valueCases := []struct {
+		name  string
+		value any
+	}{
+		{"struct", want},
+		{"pointer", &want},
+		{"map", map[string]any{
+			"taskKey":        "work:abc",
+			"runtimeEpoch":   "epoch-1",
+			"agentId":        float64(12),
+			"childSessionId": "child-9",
+		}},
+	}
+	for _, tc := range valueCases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := &ToolNotice{Kind: NoticeCommandExecution, Data: map[string]any{NoticeSubagentWork: tc.value}}
+			got, ok := n.SubagentWork()
+			if !ok {
+				t.Fatalf("SubagentWork() ok = false for %s form", tc.name)
+			}
+			if got != want {
+				t.Errorf("SubagentWork() = %#v, want %#v", got, want)
+			}
+		})
+	}
+
+	// A persisted notice decodes its reference back through the JSON map path.
+	raw, err := json.Marshal(ToolNotice{
+		Kind: NoticeCommandExecution,
+		Data: map[string]any{NoticeSubagentWork: want},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back ToolNotice
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got, ok := back.SubagentWork()
+	if !ok {
+		t.Fatal("SubagentWork() after JSON round trip ok = false")
+	}
+	if got != want {
+		t.Errorf("SubagentWork() = %#v, want %#v", got, want)
+	}
+
+	// An optional child session is omitted, not fabricated.
+	minimal := SubagentWorkReference{TaskKey: "work:abc", RuntimeEpoch: "epoch-1", AgentID: 1}
+	gotMin, ok := (&ToolNotice{Data: map[string]any{NoticeSubagentWork: minimal}}).SubagentWork()
+	if !ok || gotMin != minimal {
+		t.Errorf("minimal reference = %#v, %v; want %#v, true", gotMin, ok, minimal)
+	}
+
+	bad := []struct {
+		name   string
+		notice *ToolNotice
+	}{
+		{"nil notice", nil},
+		{"empty data", &ToolNotice{Kind: NoticeCommandExecution}},
+		{"missing key", &ToolNotice{Data: map[string]any{"other": 1}}},
+		{"nil value", &ToolNotice{Data: map[string]any{NoticeSubagentWork: nil}}},
+		{"nil pointer", &ToolNotice{Data: map[string]any{NoticeSubagentWork: (*SubagentWorkReference)(nil)}}},
+		{"unrecognised shape", &ToolNotice{Data: map[string]any{NoticeSubagentWork: "nope"}}},
+		{"empty task key", &ToolNotice{Data: map[string]any{NoticeSubagentWork: SubagentWorkReference{RuntimeEpoch: "e", AgentID: 1}}}},
+		{"empty runtime epoch", &ToolNotice{Data: map[string]any{NoticeSubagentWork: SubagentWorkReference{TaskKey: "t", AgentID: 1}}}},
+		{"zero agent id", &ToolNotice{Data: map[string]any{NoticeSubagentWork: SubagentWorkReference{TaskKey: "t", RuntimeEpoch: "e"}}}},
+		{"map without identity", &ToolNotice{Data: map[string]any{NoticeSubagentWork: map[string]any{"taskKey": "", "runtimeEpoch": "e", "agentId": float64(1)}}}},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, ok := tc.notice.SubagentWork(); ok {
+				t.Errorf("SubagentWork() ok = true for %s, want false", tc.name)
+			}
+		})
+	}
+}
+
 func TestToolNoticeNilDataOmitempty(t *testing.T) {
 	raw, err := json.Marshal(ToolNotice{Kind: NoticeZeroMatchCoach, Text: "x"})
 	if err != nil {

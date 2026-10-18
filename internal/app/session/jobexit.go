@@ -1,12 +1,14 @@
 package session
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"marshal/internal/db"
+	"marshal/internal/progress"
 	"marshal/internal/tools/registry"
 )
 
@@ -88,6 +90,19 @@ type JobExit struct {
 	// Truncated reports whether the retained output hit its cap, so a reader
 	// knows the tail is not the whole story.
 	Truncated bool
+
+	// ProgressConfig is the normalized progress configuration captured at
+	// admission and Progress the final bounded progress snapshot, the durable
+	// evidence that survives the process. Both are additive: nil means the
+	// record predates progress or never observed any.
+	ProgressConfig *progress.Config
+	Progress       *progress.Snapshot
+	// ResultRevision is the content revision of this settlement, so a stored
+	// work view can tell an acknowledged result from a re-run; SourceEpoch is
+	// the runtime epoch the evidence belongs to, carried so a lost job keeps
+	// the facts of the launch it belongs to.
+	ResultRevision string
+	SourceEpoch    string
 }
 
 // Identity returns the key that pairs this exit with the call that started its
@@ -379,6 +394,13 @@ func jobExitRecord(e JobExit) db.JobExitRecord {
 		code := *e.Exit
 		r.ActualExitCode = &code
 	}
+	if e.ProgressConfig != nil {
+		cfg := *e.ProgressConfig
+		r.ProgressConfig = &cfg
+	}
+	r.Progress = progress.Clone(e.Progress)
+	r.ResultRevision = e.ResultRevision
+	r.SourceEpoch = e.SourceEpoch
 	return r
 }
 
@@ -409,11 +431,18 @@ func jobExitFromRecord(r db.JobExitRecord) JobExit {
 		StopCause:       r.StopCause,
 		StopRequestedAt: r.StopRequestedAt,
 		Truncated:       r.Truncated,
+		ResultRevision:  r.ResultRevision,
+		SourceEpoch:     r.SourceEpoch,
 	}
 	if r.ActualExitCode != nil {
 		code := *r.ActualExitCode
 		e.Exit = &code
 	}
+	if r.ProgressConfig != nil {
+		cfg := *r.ProgressConfig
+		e.ProgressConfig = &cfg
+	}
+	e.Progress = progress.Clone(r.Progress)
 	return e
 }
 
@@ -454,8 +483,15 @@ func JobExitFromExecution(ex registry.CommandExecution, command, output string, 
 		StopCause:       ex.StopCause,
 		StopRequestedAt: ex.StopRequestedAt,
 		Truncated:       ex.Truncated,
+		ResultRevision:  ex.ResultRevision,
+		SourceEpoch:     ex.SourceEpoch,
 		ExitCode:        -1,
 	}
+	if ex.ProgressConfig != nil {
+		cfg := *ex.ProgressConfig
+		e.ProgressConfig = &cfg
+	}
+	e.Progress = progress.Clone(ex.Progress)
 	if e.ID == "" {
 		e.ID = ex.ExecutionID
 	}
@@ -585,6 +621,322 @@ func lostExit(start registry.AuditEvent) JobExit {
 		e.DetachedAt = ex.DetachedAt
 		e.StopCause = ex.StopCause
 		e.StopRequestedAt = ex.StopRequestedAt
+		// The launch notice's stable facts, including its source epoch and
+		// progress configuration, survive to the lost record. The result
+		// revision is left exactly as the start recorded it (unknown), never
+		// synthesized from the restart time: a lost job's own revision was
+		// never observed.
+		e.SourceEpoch = ex.SourceEpoch
+		e.ResultRevision = ex.ResultRevision
+		if ex.ProgressConfig != nil {
+			cfg := *ex.ProgressConfig
+			e.ProgressConfig = &cfg
+		}
+		e.Progress = progress.Clone(ex.Progress)
 	}
 	return e
+}
+
+// JobExitSnapshot returns a deep copy of the session's job exits, so a caller
+// can hold or publish them without the session mutating them underneath. Every
+// nested pointer — the observed exit code, the progress configuration and the
+// progress snapshot — is copied too.
+func (s *State) JobExitSnapshot() []JobExit {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]JobExit, len(s.jobExits))
+	for i, e := range s.jobExits {
+		out[i] = e
+		if e.Exit != nil {
+			code := *e.Exit
+			out[i].Exit = &code
+		}
+		if e.ProgressConfig != nil {
+			cfg := *e.ProgressConfig
+			out[i].ProgressConfig = &cfg
+		}
+		out[i].Progress = progress.Clone(e.Progress)
+	}
+	return out
+}
+
+// The work-view index is the session's cross-resume record of settled work:
+// which watch results have arrived, at what revision, and which of them the
+// caller has acknowledged. It is persisted whole in session_state, so every
+// mutation goes through the same serialized snapshot-and-write sequence job
+// exits use — snapshot under mu, write outside it, commit only on success.
+//
+// safeWorkResult bounds the free text a work result carries before it is ever
+// stored or shown. Identity, origin and reference keys are copied exactly: they
+// are structured keys, not terminal text, and truncating one would break the
+// pairing it exists to provide.
+func safeWorkResult(record db.WorkResultRecord) db.WorkResultRecord {
+	record.Label = progress.Clean(record.Label, 80, false)
+	record.Owner = progress.Clean(record.Owner, 80, false)
+	record.Detail = cleanWorkDetail(record.Detail)
+	return record
+}
+
+// cleanWorkDetail strips control sequences and redacts secrets, then cuts the
+// residue to 1,024 UTF-8 bytes at a rune boundary.
+func cleanWorkDetail(detail string) string {
+	detail = progress.Clean(detail, 0, false)
+	const maxDetailBytes = 1024
+	if len(detail) <= maxDetailBytes {
+		return detail
+	}
+	cut := maxDetailBytes
+	for cut > 0 && !utf8.RuneStart(detail[cut]) {
+		cut--
+	}
+	return detail[:cut]
+}
+
+// copyWorkView deep-copies a work view, including every nested slice. A work
+// result has no pointer fields, so copying each element is a complete copy.
+func copyWorkView(v db.WorkViewRecord) db.WorkViewRecord {
+	return db.WorkViewRecord{
+		Version:      v.Version,
+		WatchResults: append([]db.WorkResultRecord(nil), v.WatchResults...),
+		AgentResults: append([]db.WorkResultRecord(nil), v.AgentResults...),
+		Acknowledged: append([]db.WorkAcknowledgment(nil), v.Acknowledged...),
+	}
+}
+
+// upsertAcknowledgment adds an acknowledgment, replacing any earlier one for the
+// same task key: a task carries at most its newest terminal acknowledgment, so a
+// re-run's revision supersedes the one before it.
+func upsertAcknowledgment(list []db.WorkAcknowledgment, ack db.WorkAcknowledgment) []db.WorkAcknowledgment {
+	for i := range list {
+		if list[i].TaskKey == ack.TaskKey {
+			list[i] = ack
+			return list
+		}
+	}
+	return append(list, ack)
+}
+
+// loadWorkView copies the session's stored work view into memory at startup,
+// beside the job-exit restoration. An unknown stored version or corrupt JSON is
+// a diagnostic: the in-memory view stays empty and every later save refuses, so
+// the session never overwrites data it cannot understand.
+func (s *State) loadWorkView() {
+	record, err := s.db.LoadWorkView(s.sessionID)
+	if err != nil {
+		s.logger.Warn("failed to load work view", "error", err, "session_id", s.sessionID)
+		s.workViewSaveMu.Lock()
+		s.workViewLoadErr = fmt.Errorf("work view unavailable: %w", err)
+		s.workViewSaveMu.Unlock()
+		return
+	}
+	s.mu.Lock()
+	s.workView = copyWorkView(record)
+	s.mu.Unlock()
+}
+
+// WorkView returns a deep copy of the session's work-view index, so a caller
+// cannot mutate the session's state through it.
+func (s *State) WorkView() db.WorkViewRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return copyWorkView(s.workView)
+}
+
+// SaveWatchWorkResult stores one settled watch result and persists the work
+// view. The result upserts by its canonical task key, so a re-run — a new result
+// revision for the same key — supersedes the earlier result rather than
+// accumulating beside it, and an acknowledgment of the old revision can no
+// longer hide the new one.
+//
+// A failed write retains the in-memory result and its attention and marks the
+// view dirty for a later RetryWorkViewSave; it returns the write error rather
+// than pretending the result is durable.
+func (s *State) SaveWatchWorkResult(record db.WorkResultRecord) error {
+	record = safeWorkResult(record)
+	s.workViewSaveMu.Lock()
+	defer s.workViewSaveMu.Unlock()
+	s.mu.Lock()
+	for i := range s.workView.WatchResults {
+		if s.workView.WatchResults[i].TaskKey == record.TaskKey {
+			s.workView.WatchResults[i] = record
+			s.mu.Unlock()
+			return s.persistWorkViewLocked()
+		}
+	}
+	s.workView.WatchResults = append(s.workView.WatchResults, record)
+	s.mu.Unlock()
+	return s.persistWorkViewLocked()
+}
+
+// AcknowledgeWork records that the caller has seen a task's result at a
+// specific revision. The pair is validated against the live view *before* it is
+// stored: the task key must name a stored result and the revision must be that
+// result's current revision, so a display job ID never validates and a stale
+// acknowledgment of an earlier revision cannot acknowledge a re-run's newer one.
+//
+// The acknowledgment is committed only once its serialized save succeeds. On
+// failure it stays pending — the result's attention remains visible — and the
+// error is returned; RetryWorkViewSave re-applies it to the newest snapshot.
+func (s *State) AcknowledgeWork(taskKey, resultRevision string) error {
+	taskKey = strings.TrimSpace(taskKey)
+	resultRevision = strings.TrimSpace(resultRevision)
+	if taskKey == "" || resultRevision == "" {
+		return fmt.Errorf("work acknowledgment requires a task key and a result revision")
+	}
+	s.workViewSaveMu.Lock()
+	defer s.workViewSaveMu.Unlock()
+	if err := s.validateWorkAck(taskKey, resultRevision); err != nil {
+		return err
+	}
+	s.workViewPendingAcks = upsertAcknowledgment(s.workViewPendingAcks,
+		db.WorkAcknowledgment{TaskKey: taskKey, ResultRevision: resultRevision})
+	return s.persistWorkViewLocked()
+}
+
+// RetryWorkViewSave re-attempts the durable write of a work view that could not
+// be stored. It reports the failure again when the retry fails, and a session
+// with nothing pending returns nil without touching the database.
+func (s *State) RetryWorkViewSave() error {
+	s.workViewSaveMu.Lock()
+	defer s.workViewSaveMu.Unlock()
+	if !s.workViewDirty && len(s.workViewPendingAcks) == 0 {
+		return nil
+	}
+	return s.persistWorkViewLocked()
+}
+
+// validateWorkAck checks an acknowledgment pair against the live work view: the
+// key must match a stored result — a display ID is not a task key — and the
+// revision must be that result's current one, so an old acknowledgment cannot
+// acknowledge a newer terminal revision. It never edits the source result.
+func (s *State) validateWorkAck(taskKey, resultRevision string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.workView.WatchResults {
+		if r.TaskKey == taskKey {
+			if r.ResultRevision != resultRevision {
+				return fmt.Errorf("work result %q is at revision %q, not %q", taskKey, r.ResultRevision, resultRevision)
+			}
+			return nil
+		}
+	}
+	for _, r := range s.workView.AgentResults {
+		if r.TaskKey == taskKey {
+			if r.ResultRevision != resultRevision {
+				return fmt.Errorf("work result %q is at revision %q, not %q", taskKey, r.ResultRevision, resultRevision)
+			}
+			return nil
+		}
+	}
+	// A command's result is never stored in the work view; its canonical key is
+	// derived from the durable exit instead, so a failed or unknown command
+	// result can still be acknowledged. Only a key matching the exit's own
+	// identity and revision validates — an old revision cannot acknowledge a
+	// re-run's newer one.
+	for _, e := range s.jobExits {
+		if progress.WorkKey(s.sessionID, e.SourceEpoch, "command", e.ExecutionID) != taskKey {
+			continue
+		}
+		if e.ResultRevision != resultRevision {
+			return fmt.Errorf("command result %q is at revision %q, not %q", taskKey, e.ResultRevision, resultRevision)
+		}
+		return nil
+	}
+	return fmt.Errorf("no work result for task key %q", taskKey)
+}
+
+// persistWorkViewLocked snapshots the in-memory work view, writes it durably,
+// and only then commits the pending acknowledgments and clears the dirty flag,
+// so a failed write leaves no acknowledgment claiming a result the next resume
+// cannot restore. The snapshot is taken under mu; the database round trip runs
+// with mu released. Callers must hold workViewSaveMu.
+func (s *State) persistWorkViewLocked() error {
+	if s.workViewLoadErr != nil {
+		return s.workViewLoadErr
+	}
+	s.mu.Lock()
+	record := copyWorkView(s.workView)
+	s.mu.Unlock()
+	record.Version = 1
+	// Revalidate every pending acknowledgment against the current view before
+	// folding it into the durable record. A failed save leaves an acknowledgment
+	// pending, and the result it named may have been superseded by a re-run by
+	// the time this save runs; committing the stale pair here would let an old
+	// acknowledgment durably hide a newer terminal revision. Only the survivors
+	// are written and committed to memory.
+	acks := s.revalidatedPendingAcks()
+	for _, ack := range acks {
+		record.Acknowledged = upsertAcknowledgment(record.Acknowledged, ack)
+	}
+	if s.persistenceEnabled() {
+		if err := s.db.SaveWorkView(s.sessionID, record); err != nil {
+			s.workViewDirty = true
+			s.logger.Error("save work view failed", "error", err, "session_id", s.sessionID)
+			return err
+		}
+	}
+	// The write is durable (or there is none): commit the acknowledgments into
+	// memory, where a reader now sees the result as acknowledged.
+	if len(acks) > 0 {
+		s.mu.Lock()
+		for _, ack := range acks {
+			s.workView.Acknowledged = upsertAcknowledgment(s.workView.Acknowledged, ack)
+		}
+		s.mu.Unlock()
+	}
+	s.workViewPendingAcks = nil
+	// The whole view is durable now, so every recorded subagent save failure is
+	// covered by this write: drop it and wake the sources so a later unrelated
+	// failure cannot resurface an error the save already resolved.
+	s.clearCoveredSubagentSaveErrors()
+	s.workViewDirty = false
+	return nil
+}
+
+// revalidatedPendingAcks returns the pending acknowledgments that still name a
+// result's current revision, dropping — with evidence — any whose result a
+// re-run superseded while the acknowledgment waited on a failed save. Callers
+// must hold workViewSaveMu.
+func (s *State) revalidatedPendingAcks() []db.WorkAcknowledgment {
+	pending := s.workViewPendingAcks
+	if len(pending) == 0 {
+		return nil
+	}
+	surviving := make([]db.WorkAcknowledgment, 0, len(pending))
+	for _, ack := range pending {
+		if err := s.validateWorkAck(ack.TaskKey, ack.ResultRevision); err != nil {
+			s.logger.Warn("dropping stale work acknowledgment",
+				"task_key", ack.TaskKey, "result_revision", ack.ResultRevision, "error", err)
+			continue
+		}
+		surviving = append(surviving, ack)
+	}
+	return surviving
+}
+
+// clearCoveredSubagentSaveErrors drops the per-id subagent save failures a
+// successful whole-view save covers, then wakes each affected source so
+// subscribers re-read the work projection without the stale error. Callers must
+// hold workViewSaveMu, so no concurrent save can add a failure between the read
+// and the clear.
+func (s *State) clearCoveredSubagentSaveErrors() {
+	s.mu.Lock()
+	covered := make([]int64, 0, len(s.subagentSaveErrors))
+	var revision uint64
+	for id, f := range s.subagentSaveErrors {
+		covered = append(covered, id)
+		if f.Revision > revision {
+			revision = f.Revision
+		}
+	}
+	s.mu.Unlock()
+	if len(covered) == 0 {
+		return
+	}
+	if !s.clearSubagentSaveErrors(revision) {
+		return
+	}
+	for _, id := range covered {
+		s.wakeSubagentSource(id)
+	}
 }

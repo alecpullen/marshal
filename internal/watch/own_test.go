@@ -3,6 +3,7 @@ package watch
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestTransferFromSubagent verifies that TransferFromSubagent re-parents a
@@ -100,6 +101,71 @@ func TestTransferFromSubagentIgnoresOtherOwners(t *testing.T) {
 	}
 	if info.State != StateWatching {
 		t.Fatalf("state = %v, want watching (other owner's watch must survive)", info.State)
+	}
+}
+
+// TestWatchSnapshotReparentPreservesIdentityAndRevisions pins that re-parenting
+// a subagent's once watch to the parent preserves its identity, advances the
+// source membership revision, and publishes a copied reparenting wake.
+func TestWatchSnapshotReparentPreservesIdentityAndRevisions(t *testing.T) {
+	var mu sync.Mutex
+	var events []Event
+	m := newTestManager(t, Deps{OnEvent: func(e Event) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	}})
+	id, _, err := m.Start(Spec{Name: "mine", Kind: KindCommand, Condition: "change", Mode: ModeOnce, Owner: "subagent-7", Interval: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before := m.Snapshot()
+	orig, ok := findInfo(before.Active, id)
+	if !ok {
+		t.Fatalf("watch %s missing before transfer", id)
+	}
+	if orig.Owner != "subagent-7" {
+		t.Fatalf("owner before transfer = %q, want subagent-7", orig.Owner)
+	}
+
+	m.TransferFromSubagent("subagent-7")
+
+	after := m.Snapshot()
+	moved, ok := findInfo(after.Active, id)
+	if !ok {
+		t.Fatalf("watch %s disappeared on reparent", id)
+	}
+	if moved.Owner != "" {
+		t.Fatalf("owner after transfer = %q, want parent", moved.Owner)
+	}
+	if moved.ID != orig.ID || moved.Name != orig.Name || !moved.CreatedAt.Equal(orig.CreatedAt) {
+		t.Fatalf("identity changed on reparent: %+v -> %+v", orig, moved)
+	}
+	if after.Epoch != before.Epoch {
+		t.Fatalf("epoch changed on reparent: %q -> %q", before.Epoch, after.Epoch)
+	}
+	if after.Revision <= before.Revision {
+		t.Fatalf("revision did not advance on reparent: %d -> %d", before.Revision, after.Revision)
+	}
+
+	// The reparenting wake is a copy carrying the new parent owner.
+	mu.Lock()
+	defer mu.Unlock()
+	var wake *Event
+	for i := range events {
+		if events[i].WatchID == id && events[i].Owner == "" {
+			wake = &events[i]
+		}
+	}
+	if wake == nil {
+		t.Fatalf("no reparenting wake published for %s", id)
+	}
+	if wake.Info == nil || wake.Info.Owner != "" || !wake.Info.Active {
+		t.Fatalf("wake Info = %+v, want a copied active parent-owned snapshot", wake.Info)
+	}
+	if wake.Epoch != after.Epoch {
+		t.Fatalf("wake epoch = %q, want %q", wake.Epoch, after.Epoch)
 	}
 }
 

@@ -1,0 +1,1094 @@
+// Package progress holds bounded display data. It never owns execution.
+package progress
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/charmbracelet/x/ansi"
+	"marshal/internal/redact"
+)
+
+const (
+	Version         = 1
+	Prefix          = "@@marshal-progress/v1 "
+	MaxNumber       = float64(1<<53 - 1)
+	MaxEventBytes   = 16 << 10
+	MaxGoLineBytes  = 64 << 10
+	MaxDisplayBytes = 8 << 10
+	MaxCases        = 20000
+	FreshFor        = 30 * time.Second
+)
+
+var ErrInvalid = errors.New("invalid progress data")
+var ErrSequence = errors.New("stale progress sequence")
+
+type Config struct {
+	Profile string `json:"profile,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Title   string `json:"title,omitempty"`
+}
+type Phase struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Index int    `json:"index,omitempty"`
+	Total int    `json:"total,omitempty"`
+}
+type Metric struct {
+	ID      string   `json:"id"`
+	Label   string   `json:"label"`
+	Unit    string   `json:"unit"`
+	Current float64  `json:"current"`
+	Total   *float64 `json:"total,omitempty"`
+	Rate    *float64 `json:"rate,omitempty"`
+}
+type Row struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	State string `json:"state"`
+}
+
+// Frame is the producer's complete snapshot. Runtime facts are excluded.
+type Frame struct {
+	Version         int      `json:"version"`
+	Sequence        uint64   `json:"sequence"`
+	Phase           *Phase   `json:"phase,omitempty"`
+	PrimaryMetricID string   `json:"primaryMetricId,omitempty"`
+	Metrics         []Metric `json:"metrics,omitempty"`
+	Rows            []Row    `json:"rows,omitempty"`
+	Detail          string   `json:"detail,omitempty"`
+}
+type Snapshot struct {
+	Frame
+	ObservedAt    time.Time `json:"observedAt"`
+	MeasuredAt    time.Time `json:"measuredAt,omitempty"`
+	Partial       bool      `json:"partial,omitempty"`
+	Warning       string    `json:"warning,omitempty"`
+	ReportedError bool      `json:"reportedError,omitempty"`
+}
+type Estimate struct {
+	Fraction *float64
+	Rate     *float64
+	ETA      *time.Duration
+	Stale    bool
+}
+
+// Clean is the common display/persistence boundary; callers keep raw identity.
+func Clean(s string, limit int, multiline bool) string {
+	s = ansi.Strip(s)
+	s = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' {
+			if multiline {
+				return r
+			}
+			return ' '
+		}
+		if r == '\r' {
+			return -1
+		}
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, strings.ToValidUTF8(s, ""))
+	s = redact.Secrets(s)
+	if limit > 0 && utf8.RuneCountInString(s) > limit {
+		s = string([]rune(s)[:limit])
+	}
+	return s
+}
+func NormalizeConfig(c Config) (Config, error) {
+	if c.Profile == "" {
+		c.Profile = "generic"
+	}
+	if c.Source == "" {
+		c.Source = "none"
+	}
+	switch c.Profile {
+	case "generic", "tests", "download", "transfer", "custom":
+	default:
+		return Config{}, fmt.Errorf("%w: profile", ErrInvalid)
+	}
+	switch c.Source {
+	case "none":
+	case "events-v1":
+		if c.Profile == "generic" {
+			return Config{}, fmt.Errorf("%w: events profile", ErrInvalid)
+		}
+	case "go-test-json":
+		if c.Profile != "tests" {
+			return Config{}, fmt.Errorf("%w: test source/profile", ErrInvalid)
+		}
+	default:
+		return Config{}, fmt.Errorf("%w: source", ErrInvalid)
+	}
+	if !utf8.ValidString(c.Title) || utf8.RuneCountInString(c.Title) > 80 {
+		return Config{}, fmt.Errorf("%w: title", ErrInvalid)
+	}
+	c.Title = Clean(c.Title, 80, false)
+	return c, nil
+}
+func Clone(s *Snapshot) *Snapshot {
+	if s == nil {
+		return nil
+	}
+	out := *s
+	if s.Phase != nil {
+		p := *s.Phase
+		out.Phase = &p
+	}
+	out.Metrics = append([]Metric(nil), s.Metrics...)
+	for i := range out.Metrics {
+		if p := s.Metrics[i].Total; p != nil {
+			v := *p
+			out.Metrics[i].Total = &v
+		}
+		if p := s.Metrics[i].Rate; p != nil {
+			v := *p
+			out.Metrics[i].Rate = &v
+		}
+	}
+	out.Rows = append([]Row(nil), s.Rows...)
+	return &out
+}
+func WorkKey(conversation, epoch, kind, sourceID string) string {
+	b, _ := json.Marshal([4]string{conversation, epoch, kind, sourceID})
+	return "work:" + base64.RawURLEncoding.EncodeToString(b)
+}
+func ResultRevision(key, state, outcome string, exitCode *int, endedAt time.Time) string {
+	b, _ := json.Marshal([]any{key, state, outcome, exitCode, endedAt.UTC().Format(time.RFC3339Nano)})
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+// Stream identifies which child output stream a Write belongs to.
+type Stream uint8
+
+const (
+	// Stdout carries ordinary output plus events-v1 control records.
+	Stdout Stream = iota
+	// Stderr carries ordinary text only.
+	Stderr
+)
+
+const (
+	maxMetricIDRunes = 64
+	maxLabelRunes    = 80
+	maxUnitRunes     = 16
+	maxDetailBytes   = 1024
+	maxMetrics       = 4
+	maxRows          = 8
+	maxETA           = 365 * 24 * time.Hour
+
+	diagInvalid   = "invalid progress record"
+	diagDenominat = "outdated denominator"
+)
+
+func finite(f float64) bool { return !math.IsNaN(f) && !math.IsInf(f, 0) }
+
+// countUnit reports whether unit carries integer current/total values.
+func countUnit(unit string) bool {
+	switch unit {
+	case "bytes", "files", "tests", "packages", "items":
+		return true
+	}
+	return false
+}
+
+// DecodeEvent parses one complete events-v1 record. Only Frame fields are
+// decoded; runtime identity and lifecycle are never read from the producer.
+func DecodeEvent(line []byte, previous uint64, observed time.Time) (*Snapshot, error) {
+	if !bytes.HasPrefix(line, []byte(Prefix)) {
+		return nil, fmt.Errorf("%w: prefix", ErrInvalid)
+	}
+	payload := line[len(Prefix):]
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	var f Frame
+	if err := dec.Decode(&f); err != nil {
+		return nil, fmt.Errorf("%w: json", ErrInvalid)
+	}
+	if dec.More() {
+		return nil, fmt.Errorf("%w: trailing data", ErrInvalid)
+	}
+	if f.Sequence < 1 || f.Sequence > uint64(MaxNumber) {
+		return nil, fmt.Errorf("%w: sequence", ErrInvalid)
+	}
+	if f.Sequence <= previous {
+		return nil, ErrSequence
+	}
+	if err := validateFrame(&f); err != nil {
+		return nil, err
+	}
+	outdated := false
+	for i := range f.Metrics {
+		if t := f.Metrics[i].Total; t != nil && f.Metrics[i].Current > *t {
+			f.Metrics[i].Total = nil
+			outdated = true
+		}
+	}
+	out := &Frame{
+		Version:         f.Version,
+		Sequence:        f.Sequence,
+		PrimaryMetricID: Clean(f.PrimaryMetricID, maxMetricIDRunes, false),
+		Detail:          cleanDetail(f.Detail),
+	}
+	if f.Phase != nil {
+		out.Phase = &Phase{
+			ID:    Clean(f.Phase.ID, maxMetricIDRunes, false),
+			Label: Clean(f.Phase.Label, maxLabelRunes, false),
+			Index: f.Phase.Index,
+			Total: f.Phase.Total,
+		}
+	}
+	if f.Metrics != nil {
+		out.Metrics = make([]Metric, len(f.Metrics))
+		for i, m := range f.Metrics {
+			out.Metrics[i] = Metric{
+				ID:      Clean(m.ID, maxMetricIDRunes, false),
+				Label:   Clean(m.Label, maxLabelRunes, false),
+				Unit:    Clean(m.Unit, maxUnitRunes, false),
+				Current: m.Current,
+			}
+			if m.Total != nil {
+				v := *m.Total
+				out.Metrics[i].Total = &v
+			}
+			if m.Rate != nil {
+				v := *m.Rate
+				out.Metrics[i].Rate = &v
+			}
+		}
+	}
+	if f.Rows != nil {
+		out.Rows = make([]Row, len(f.Rows))
+		for i, r := range f.Rows {
+			out.Rows[i] = Row{
+				ID:    Clean(r.ID, maxMetricIDRunes, false),
+				Label: Clean(r.Label, maxLabelRunes, false),
+				State: r.State,
+			}
+		}
+	}
+	// Sanitization can collapse distinct producer IDs (redaction, escapes).
+	// Reject a rendered snapshot that would carry colliding or empty identity.
+	seen := make(map[string]bool, len(out.Metrics))
+	for _, m := range out.Metrics {
+		if m.ID == "" || m.Unit == "" || seen[m.ID] {
+			return nil, fmt.Errorf("%w: metric identity", ErrInvalid)
+		}
+		seen[m.ID] = true
+	}
+	if out.PrimaryMetricID != "" && !seen[out.PrimaryMetricID] {
+		return nil, fmt.Errorf("%w: primary metric", ErrInvalid)
+	}
+	rowIDs := make(map[string]bool, len(out.Rows))
+	for _, r := range out.Rows {
+		if r.ID == "" || rowIDs[r.ID] {
+			return nil, fmt.Errorf("%w: row identity", ErrInvalid)
+		}
+		rowIDs[r.ID] = true
+	}
+	snap := &Snapshot{Frame: *out, ObservedAt: observed, MeasuredAt: observed}
+	if outdated {
+		snap.Warning = diagDenominat
+	}
+	for _, r := range snap.Rows {
+		if r.State == "error" {
+			snap.ReportedError = true
+			break
+		}
+	}
+	return snap, nil
+}
+
+// validateFrame enforces every events-v1 structural and numeric limit before
+// any text is sanitized. Unknown JSON fields have already been dropped.
+func validateFrame(f *Frame) error {
+	if f.Version != Version {
+		return fmt.Errorf("%w: version", ErrInvalid)
+	}
+	if len(f.Metrics) > maxMetrics {
+		return fmt.Errorf("%w: metrics", ErrInvalid)
+	}
+	ids := make(map[string]bool, len(f.Metrics))
+	for i := range f.Metrics {
+		m := &f.Metrics[i]
+		if m.ID == "" || utf8.RuneCountInString(m.ID) > maxMetricIDRunes {
+			return fmt.Errorf("%w: metric id", ErrInvalid)
+		}
+		if ids[m.ID] {
+			return fmt.Errorf("%w: duplicate metric", ErrInvalid)
+		}
+		ids[m.ID] = true
+		if utf8.RuneCountInString(m.Label) > maxLabelRunes {
+			return fmt.Errorf("%w: metric label", ErrInvalid)
+		}
+		if u := utf8.RuneCountInString(m.Unit); u == 0 || u > maxUnitRunes {
+			return fmt.Errorf("%w: unit", ErrInvalid)
+		}
+		if !finite(m.Current) || m.Current < 0 || m.Current > MaxNumber {
+			return fmt.Errorf("%w: current", ErrInvalid)
+		}
+		if countUnit(m.Unit) && m.Current != math.Trunc(m.Current) {
+			return fmt.Errorf("%w: non-integer count", ErrInvalid)
+		}
+		if m.Total != nil {
+			if !finite(*m.Total) || *m.Total <= 0 || *m.Total > MaxNumber {
+				return fmt.Errorf("%w: total", ErrInvalid)
+			}
+			if countUnit(m.Unit) && *m.Total != math.Trunc(*m.Total) {
+				return fmt.Errorf("%w: non-integer total", ErrInvalid)
+			}
+		}
+		if m.Rate != nil {
+			if !finite(*m.Rate) || *m.Rate < 0 || *m.Rate > MaxNumber {
+				return fmt.Errorf("%w: rate", ErrInvalid)
+			}
+		}
+	}
+	if f.PrimaryMetricID != "" && !ids[f.PrimaryMetricID] {
+		return fmt.Errorf("%w: primary metric", ErrInvalid)
+	}
+	if len(f.Rows) > maxRows {
+		return fmt.Errorf("%w: rows", ErrInvalid)
+	}
+	rowIDs := make(map[string]bool, len(f.Rows))
+	for _, r := range f.Rows {
+		if r.ID == "" || utf8.RuneCountInString(r.ID) > maxMetricIDRunes {
+			return fmt.Errorf("%w: row id", ErrInvalid)
+		}
+		if rowIDs[r.ID] {
+			return fmt.Errorf("%w: duplicate row", ErrInvalid)
+		}
+		rowIDs[r.ID] = true
+		if utf8.RuneCountInString(r.Label) > maxLabelRunes {
+			return fmt.Errorf("%w: row label", ErrInvalid)
+		}
+		switch r.State {
+		case "pending", "running", "done", "error":
+		default:
+			return fmt.Errorf("%w: row state", ErrInvalid)
+		}
+	}
+	if p := f.Phase; p != nil {
+		if p.ID == "" || utf8.RuneCountInString(p.ID) > maxMetricIDRunes {
+			return fmt.Errorf("%w: phase id", ErrInvalid)
+		}
+		if utf8.RuneCountInString(p.Label) > maxLabelRunes {
+			return fmt.Errorf("%w: phase label", ErrInvalid)
+		}
+		if p.Index < 0 || p.Total < 0 {
+			return fmt.Errorf("%w: phase bounds", ErrInvalid)
+		}
+		if p.Total > 0 && (p.Index < 1 || p.Index > p.Total) {
+			return fmt.Errorf("%w: phase bounds", ErrInvalid)
+		}
+	}
+	return nil
+}
+
+// cleanDetail sanitizes redaction-sensitive text then caps it on a UTF-8 byte
+// boundary at maxDetailBytes.
+func cleanDetail(s string) string {
+	s = Clean(s, 0, false)
+	if len(s) <= maxDetailBytes {
+		return s
+	}
+	s = s[:maxDetailBytes]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
+// EstimateFor derives fraction/rate/ETA for a metric by its stable ID. It uses
+// only observation times stamped by Marshal and never producer timestamps.
+func EstimateFor(previous, current *Snapshot, metricID string, now time.Time, stopping bool) Estimate {
+	var est Estimate
+	if current == nil {
+		return est
+	}
+	cur, ok := findMetric(current, metricID)
+	if !ok {
+		return est
+	}
+	if cur.Total != nil && *cur.Total > 0 && finite(cur.Current) && finite(*cur.Total) {
+		frac := cur.Current / *cur.Total
+		if frac < 0 {
+			frac = 0
+		}
+		if frac > 1 {
+			frac = 1
+		}
+		est.Fraction = &frac
+	}
+	est.Stale = current.ObservedAt.IsZero() || now.Sub(current.ObservedAt) > FreshFor
+	if stopping || est.Stale {
+		return est
+	}
+	rate, ok := estimateRate(previous, current, cur)
+	if !ok || !finite(rate) || rate < 0 {
+		return est
+	}
+	est.Rate = &rate
+	if cur.Total != nil && *cur.Total > 0 && rate > 0 {
+		remaining := *cur.Total - cur.Current
+		if remaining > 0 {
+			seconds := remaining / rate
+			if finite(seconds) && seconds >= 0 && seconds <= maxETA.Seconds() {
+				d := time.Duration(seconds * float64(time.Second))
+				if d >= 0 {
+					est.ETA = &d
+				}
+			}
+		}
+	}
+	return est
+}
+
+// estimateRate prefers a producer-supplied rate and otherwise derives one from
+// the positive delta between consecutive observations of the same phase, unit
+// and metric. A counter reset, phase change or unit change yields no delta rate.
+func estimateRate(previous, current *Snapshot, cur Metric) (float64, bool) {
+	if cur.Rate != nil && finite(*cur.Rate) && *cur.Rate >= 0 {
+		return *cur.Rate, true
+	}
+	if previous == nil {
+		return 0, false
+	}
+	prev, ok := findMetric(previous, cur.ID)
+	if !ok || prev.Unit != cur.Unit || phaseID(previous) != phaseID(current) {
+		return 0, false
+	}
+	if !previous.ObservedAt.Before(current.ObservedAt) {
+		return 0, false
+	}
+	delta := cur.Current - prev.Current
+	if !(delta > 0) {
+		return 0, false
+	}
+	dt := current.ObservedAt.Sub(previous.ObservedAt).Seconds()
+	if dt <= 0 {
+		return 0, false
+	}
+	rate := delta / dt
+	if !finite(rate) {
+		return 0, false
+	}
+	return rate, true
+}
+
+func findMetric(s *Snapshot, id string) (Metric, bool) {
+	if s == nil {
+		return Metric{}, false
+	}
+	if id == "" {
+		id = s.PrimaryMetricID
+	}
+	if id == "" {
+		if len(s.Metrics) == 0 {
+			return Metric{}, false
+		}
+		return s.Metrics[0], true
+	}
+	for _, m := range s.Metrics {
+		if m.ID == id {
+			return m, true
+		}
+	}
+	return Metric{}, false
+}
+
+func phaseID(s *Snapshot) string {
+	if s != nil && s.Phase != nil {
+		return s.Phase.ID
+	}
+	return ""
+}
+
+// Observer consumes one command's stdout/stderr, keeps a bounded display tail
+// and exposes the newest valid snapshot. It owns no execution. For a
+// go-test-json source it aggregates the installed toolchain's TestEvent
+// records; the adapter state below is private and never a second goroutine.
+type Observer struct {
+	mu       sync.Mutex
+	config   Config
+	now      func() time.Time
+	dirty    func()
+	stdout   *framer
+	stderr   *framer
+	latest   *Snapshot
+	previous *Snapshot
+	tail     []byte
+	lastSeq  uint64
+	warning  string
+	changed  bool
+	closed   bool
+
+	goad  *goTest
+	goSeq uint64
+	goErr bool
+}
+
+// NewObserver normalizes config once and builds an idle observer. The dirty
+// callback must be a nonblocking wake; it runs outside the observer mutex and
+// only when semantic data changed.
+func NewObserver(config Config, now func() time.Time, dirty func()) (*Observer, error) {
+	cfg, err := NormalizeConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	if now == nil {
+		now = time.Now
+	}
+	o := &Observer{
+		config: cfg,
+		now:    now,
+		dirty:  dirty,
+		stdout: &framer{limit: MaxEventBytes},
+		stderr: &framer{limit: MaxEventBytes},
+	}
+	if cfg.Source == "go-test-json" {
+		// go test -json records are large but one JSON value per line; the
+		// events-v1 16 KiB cap would discard legitimate records.
+		o.stdout = &framer{limit: MaxGoLineBytes}
+		o.goad = newGoTest()
+	}
+	return o, nil
+}
+
+// Write feeds raw child output to the observer. It serializes framing,
+// decoding and display updates, then wakes the caller outside the lock.
+func (o *Observer) Write(stream Stream, p []byte) {
+	o.mu.Lock()
+	if o.closed {
+		o.mu.Unlock()
+		return
+	}
+	o.changed = false
+	if stream == Stderr {
+		o.stderr.write(p, func(line []byte, oversized bool) { o.feedLine(Stderr, line, oversized) })
+	} else {
+		o.stdout.write(p, func(line []byte, oversized bool) { o.feedLine(Stdout, line, oversized) })
+	}
+	changed, dirty := o.changed, o.dirty
+	o.mu.Unlock()
+	if changed && dirty != nil {
+		dirty()
+	}
+}
+
+// feedLine handles one complete output line. It runs with the mutex held.
+func (o *Observer) feedLine(stream Stream, line []byte, oversized bool) {
+	if oversized {
+		// Bytes were discarded at the framer; the record is diagnostic only.
+		switch {
+		case stream == Stdout && o.goad != nil:
+			o.goad.partial = true
+			o.goad.invalid = true
+			o.changed = true
+		case stream == Stdout && o.config.Source == "events-v1":
+			// An oversized custom record is a dropped candidate: retain the
+			// last valid snapshot and surface one bounded diagnostic (the
+			// bytes are gone, so there is no tail entry to add).
+			o.setWarning(diagInvalid)
+		}
+		return
+	}
+	line = bytes.TrimSuffix(line, []byte("\r"))
+	if o.goad != nil && stream == Stdout {
+		o.feedGoLine(line)
+		return
+	}
+	if o.config.Source == "events-v1" && stream == Stdout && bytes.HasPrefix(line, []byte(Prefix)) {
+		snap, err := DecodeEvent(line, o.lastSeq, o.now())
+		switch {
+		case err == nil:
+			o.previous = o.latest
+			o.latest = snap
+			o.lastSeq = snap.Sequence
+			o.warning = ""
+			o.changed = true
+		case errors.Is(err, ErrSequence):
+			// A replay is ignored: no tail entry, no observation, no warning.
+		default:
+			o.setWarning(diagInvalid)
+			o.appendTail(line)
+		}
+		return
+	}
+	o.appendTail(line)
+}
+
+func (o *Observer) setWarning(msg string) {
+	if o.warning != "" {
+		return
+	}
+	o.warning = msg
+	o.changed = true
+}
+
+func (o *Observer) appendTail(line []byte) {
+	text := Clean(string(line), 0, true)
+	if text == "" {
+		return
+	}
+	o.tail = append(o.tail, text...)
+	o.tail = append(o.tail, '\n')
+	if len(o.tail) > MaxDisplayBytes {
+		o.tail = o.tail[len(o.tail)-MaxDisplayBytes:]
+		for len(o.tail) > 0 && !utf8.RuneStart(o.tail[0]) {
+			o.tail = o.tail[1:]
+		}
+	}
+	o.changed = true
+}
+
+// Snapshot returns a copy of the newest valid snapshot, tagged with any pending
+// diagnostic. With no valid snapshot it returns a bounded partial snapshot with
+// Sequence=0 and no invented measurements.
+func (o *Observer) Snapshot() *Snapshot {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.goad != nil {
+		return o.goSnapshot()
+	}
+	if o.latest != nil {
+		s := Clone(o.latest)
+		if o.warning != "" {
+			s.Warning = o.warning
+		}
+		return s
+	}
+	if o.warning != "" {
+		return &Snapshot{
+			Frame:      Frame{Version: Version},
+			ObservedAt: o.now(),
+			Partial:    true,
+			Warning:    o.warning,
+		}
+	}
+	return nil
+}
+
+// DisplayTail returns the bounded ordinary-output tail. Valid control records
+// are excluded; malformed candidates remain as output.
+func (o *Observer) DisplayTail() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return string(o.tail)
+}
+
+// Close is idempotent. It flushes buffered text/diagnostics and refuses further
+// updates. It never invokes process control.
+func (o *Observer) Close() {
+	o.mu.Lock()
+	if o.closed {
+		o.mu.Unlock()
+		return
+	}
+	o.closed = true
+	o.changed = false
+	o.stdout.flush(func(line []byte, oversized bool) { o.feedLine(Stdout, line, oversized) })
+	o.stderr.flush(func(line []byte, oversized bool) { o.feedLine(Stderr, line, oversized) })
+	changed, dirty := o.changed, o.dirty
+	o.mu.Unlock()
+	if changed && dirty != nil {
+		dirty()
+	}
+}
+
+// framer splits a byte stream into LF-terminated lines with a hard per-line
+// cap. Oversized content is discarded through its newline without unbounded
+// buffering; a multi-byte rune split across writes is assembled before use.
+type framer struct {
+	buf       []byte
+	limit     int
+	oversized bool
+}
+
+func (f *framer) write(p []byte, emit func(line []byte, oversized bool)) {
+	for {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			f.append(p)
+			return
+		}
+		f.append(p[:i])
+		if f.oversized {
+			emit(nil, true)
+		} else {
+			emit(f.buf, false)
+		}
+		f.reset()
+		p = p[i+1:]
+	}
+}
+
+func (f *framer) append(p []byte) {
+	if f.oversized || len(p) == 0 {
+		return
+	}
+	if len(f.buf)+len(p) > f.limit {
+		f.oversized = true
+		f.buf = nil
+		return
+	}
+	f.buf = append(f.buf, p...)
+}
+
+func (f *framer) reset() {
+	f.buf = nil
+	f.oversized = false
+}
+
+func (f *framer) flush(emit func(line []byte, oversized bool)) {
+	if f.oversized {
+		emit(nil, true)
+	} else if len(f.buf) > 0 {
+		emit(f.buf, false)
+	}
+	f.reset()
+}
+
+// --- go test -json adapter -------------------------------------------------
+//
+// The adapter aggregates the installed toolchain's TestEvent records. State is
+// private to Observer and updated in-line while the observer mutex is held; it
+// never starts a goroutine, queues actions, or keeps an unbounded event log.
+
+// goTest is the bounded case/package state for a go-test-json source. Case
+// counts are cumulative across invocations: a settled case is counted once and
+// never re-counted, while a re-run counts again as a new invocation.
+type goTest struct {
+	cases    map[goCase]*goInvocation
+	packages map[string]*goPackageState
+	lastPkg  string
+	lastTest string
+	partial  bool
+	invalid  bool
+
+	// lastEventAt is the observation time of the last accepted Go event. It is
+	// stamped once at decode time so a read never restamps it; freshness then
+	// lapses for a finished burst instead of staying forever fresh.
+	lastEventAt time.Time
+
+	pass    int
+	fail    int
+	skip    int
+	running int
+}
+
+// goCase identifies one test within a package; an empty Test is package state.
+type goCase struct {
+	pkg  string
+	test string
+}
+
+// goInvocation is the current invocation of one test identity. It stores only
+// timestamp high-water marks; every other event is settled or ignored in place.
+type goInvocation struct {
+	running  bool
+	runTime  time.Time
+	settled  string
+	termTime time.Time
+}
+
+type goPackageState struct {
+	running bool
+	runTime time.Time
+	state   string
+}
+
+// goEvent mirrors the TestEvent fields the toolchain emits for `go test -json`.
+type goEvent struct {
+	Time        time.Time `json:"Time"`
+	Action      string    `json:"Action"`
+	Package     string    `json:"Package"`
+	Test        string    `json:"Test"`
+	Elapsed     float64   `json:"Elapsed"`
+	Output      string    `json:"Output"`
+	FailedBuild string    `json:"FailedBuild"`
+}
+
+func newGoTest() *goTest {
+	return &goTest{cases: make(map[goCase]*goInvocation), packages: make(map[string]*goPackageState)}
+}
+
+// feedGoLine handles one stdout record. It runs with the observer mutex held.
+func (o *Observer) feedGoLine(line []byte) {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return
+	}
+	var e goEvent
+	if err := json.Unmarshal(line, &e); err != nil {
+		// Non-JSON and oversized records are diagnostic output, never counts.
+		o.goad.partial = true
+		o.appendTail(line)
+		return
+	}
+	o.goEvent(e)
+}
+
+// goEvent applies one decoded record. Identities are keyed by package/test, so
+// an empty Test is package state and never an extra case.
+func (o *Observer) goEvent(e goEvent) {
+	g := o.goad
+	g.lastEventAt = o.now()
+	pkg := Clean(e.Package, maxLabelRunes, false)
+	if e.Test != "" {
+		pkg = e.Package
+	}
+	if pkg != "" {
+		g.lastPkg = pkg
+	}
+	changed := false
+	switch {
+	case e.FailedBuild != "" && e.Test == "":
+		// A build failure fails the package and reports an error.
+		if p, ok := g.packages[pkg]; ok {
+			if p.running || p.state != "failed" {
+				p.running = false
+				p.state = "failed"
+				changed = true
+			}
+		} else {
+			g.packages[pkg] = &goPackageState{state: "failed"}
+			changed = true
+		}
+		o.goErr = true
+	case e.Test == "":
+		changed = g.applyPackage(pkg, e)
+	default:
+		changed = g.applyTest(pkg, e)
+	}
+	if e.Output != "" {
+		if o.appendGoOutput(e.Output) {
+			changed = true
+		}
+	}
+	if changed {
+		o.goSeq++
+		o.changed = true
+	}
+}
+
+// applyPackage advances package-level state. Package counts are never added to
+// the test metrics; a package failure only marks ReportedError.
+func (g *goTest) applyPackage(pkg string, e goEvent) bool {
+	if pkg == "" {
+		g.partial = true
+		return false
+	}
+	p, ok := g.packages[pkg]
+	if !ok {
+		p = &goPackageState{}
+		g.packages[pkg] = p
+	}
+	switch e.Action {
+	case "run":
+		if p.running || (!e.Time.IsZero() && !p.runTime.IsZero() && !e.Time.After(p.runTime)) {
+			return false
+		}
+		p.running = true
+		if e.Time.After(p.runTime) {
+			p.runTime = e.Time
+		}
+		return true
+	case "pass":
+		p.state = "passed"
+		p.running = false
+		return true
+	case "fail":
+		p.state = "failed"
+		p.running = false
+		return true
+	case "skip":
+		p.state = "skipped"
+		p.running = false
+		return true
+	case "pause", "cont", "output", "start":
+		return false
+	default:
+		g.partial = true
+		return false
+	}
+}
+
+// applyTest advances one test identity. State transitions settle exactly once:
+// a run opens an invocation, a terminal records its own timestamp high-water
+// mark and settles, and a terminal without Time settles once until a new run
+// explicitly opens the next invocation.
+func (g *goTest) applyTest(pkg string, e goEvent) bool {
+	key := goCase{pkg: pkg, test: e.Test}
+	c, ok := g.cases[key]
+	if !ok {
+		if len(g.cases) >= MaxCases {
+			// Capacity is exhausted: preserve known counts, mark partial and
+			// stop claiming complete coverage rather than evicting live state.
+			g.partial = true
+			g.invalid = true
+			return false
+		}
+		c = &goInvocation{}
+		g.cases[key] = c
+	}
+	g.lastTest = e.Test
+	switch e.Action {
+	case "run":
+		if c.running {
+			// A repeated run for the live invocation is a duplicate.
+			if e.Time.IsZero() || c.runTime.IsZero() || !e.Time.Before(c.runTime) {
+				return false
+			}
+			// An older timestamp cannot reopen a later invocation.
+			g.partial = true
+			return false
+		}
+		if !e.Time.IsZero() && !c.runTime.IsZero() && !e.Time.After(c.runTime) {
+			// A stale run that cannot safely start a new invocation.
+			g.partial = true
+			return false
+		}
+		if !e.Time.IsZero() {
+			c.runTime = e.Time
+		}
+		c.running = true
+		c.settled = ""
+		c.termTime = time.Time{}
+		g.running++
+		return true
+	case "pass", "fail", "skip":
+		if !c.running {
+			// A terminal without an open invocation settles once. Repeated
+			// terminals (cached records, replays) are ignored.
+			if c.settled != "" {
+				return false
+			}
+			if !e.Time.IsZero() && !e.Time.After(c.termTime) && !c.termTime.IsZero() {
+				return false
+			}
+		} else {
+			// The live invocation settles once; a later run opens the next.
+			c.running = false
+			if g.running > 0 {
+				g.running--
+			}
+		}
+		c.settled = e.Action
+		if e.Time.After(c.termTime) {
+			c.termTime = e.Time
+		}
+		switch e.Action {
+		case "pass":
+			g.pass++
+		case "fail":
+			g.fail++
+		case "skip":
+			g.skip++
+		}
+		return true
+	case "pause", "cont", "output", "start":
+		return true
+	default:
+		// An action that cannot be assigned safely is partial, not a new run.
+		g.partial = true
+		return false
+	}
+}
+
+// goCounts returns the cumulative pass/fail/skip counts plus the current
+// running gauge. Package state is deliberately excluded from the case metrics.
+func (g *goTest) goCounts() (pass, fail, skip, running int) {
+	return g.pass, g.fail, g.skip, g.running
+}
+
+// appendGoOutput feeds one valid Output value to the filtered display tail.
+// Empty lines and the per-test PASS/FAIL/SKIP markers are not display text.
+func (o *Observer) appendGoOutput(out string) bool {
+	before := len(o.tail)
+	start := 0
+	for i := 0; i <= len(out); i++ {
+		if i != len(out) && out[i] != '\n' {
+			continue
+		}
+		line := out[start:i]
+		start = i + 1
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		switch strings.TrimSpace(line) {
+		case "PASS", "FAIL", "SKIP":
+			continue
+		}
+		o.appendTail([]byte(line))
+	}
+	return len(o.tail) != before
+}
+
+// goIdentityCount reports how many case identities are held.
+func (o *Observer) goIdentityCount() int { return len(o.goad.cases) }
+
+// goSnapshot renders the aggregate frame. Counts come only from observed
+// identities; no denominator or total is fabricated for plain Go JSON.
+func (o *Observer) goSnapshot() *Snapshot {
+	g := o.goad
+	if len(g.cases) == 0 && len(g.packages) == 0 {
+		if !g.invalid {
+			return nil
+		}
+	}
+	pass, fail, skip, running := g.goCounts()
+	// ObservedAt is the last accepted event's decode time, not the read time:
+	// a read must not restart the freshness window. Before any accepted event
+	// the snapshot keeps its previous behaviour of stamping the current time.
+	observed := g.lastEventAt
+	if observed.IsZero() {
+		observed = o.now()
+	}
+	s := &Snapshot{
+		Frame: Frame{
+			Version:         Version,
+			Sequence:        o.goSeq,
+			PrimaryMetricID: goMetricPassed,
+			Metrics: []Metric{
+				{ID: goMetricPassed, Label: "Passed", Unit: goMetricUnit, Current: float64(pass)},
+				{ID: goMetricFailed, Label: "Failed", Unit: goMetricUnit, Current: float64(fail)},
+				{ID: goMetricSkipped, Label: "Skipped", Unit: goMetricUnit, Current: float64(skip)},
+				{ID: goMetricRunning, Label: "Running", Unit: goMetricUnit, Current: float64(running)},
+			},
+			Detail: "go test",
+		},
+		ObservedAt:    observed,
+		MeasuredAt:    observed,
+		Partial:       g.partial,
+		ReportedError: o.goErr || fail > 0,
+	}
+	if g.lastPkg != "" || g.lastTest != "" {
+		s.Phase = &Phase{ID: Clean(g.lastPkg, maxMetricIDRunes, false), Label: Clean(g.lastTest, maxLabelRunes, false)}
+	}
+	if g.invalid {
+		s.Warning = diagInvalid
+	}
+	return s
+}
+
+const (
+	goMetricPassed  = "passed"
+	goMetricFailed  = "failed"
+	goMetricSkipped = "skipped"
+	goMetricRunning = "running"
+	goMetricUnit    = "cases"
+)

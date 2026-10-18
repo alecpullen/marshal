@@ -1000,6 +1000,14 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 				watchBroker.Publish("watch", ev)
 			}
 		},
+		// The durable-result sink: a terminal watch fact is stored in the owning
+		// conversation's work view. The session identity is captured here, from
+		// the State this build was handed, so the sink never dereferences a later
+		// runtime State (a reload, a replacement, or a closed conversation).
+		ConversationID: state.SessionID(),
+		OnTerminal: func(info watch.Info) error {
+			return state.SaveWatchWorkResult(watchWorkResult(state.SessionID(), info))
+		},
 	})
 	// Shut the watch manager down BEFORE the job manager (watches may depend
 	// on jobs). The cleanup slice runs in reverse order, so appending the
@@ -2779,6 +2787,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
 			tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
 			tuiOpts = append(tuiOpts, tui.WithWatchBroker(ctx, watchBroker))
+			tuiOpts = append(tuiOpts, tui.WithWork(rt))
 			tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
@@ -3196,6 +3205,18 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		if err := oldWatchMgr.Close(sc); err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
+		// Reconcile the joined manager's terminal snapshot into durable history
+		// before its pointer is dropped, so no settled registration is lost.
+		if err := oldWatchMgr.RetryTerminalSaves(); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	// Bind the replacement watch manager to the projection only after the old
+	// one has been joined and reconciled. The replacement mints its own epoch,
+	// so a reused numeric registration ID is never mistaken for one of the old
+	// conversation's: those results stay history under their own epoch.
+	if wc := rt.currentWork(); wc != nil {
+		wc.rebindWatchManager(rt.WatchManager)
 	}
 	if oldDesktopCloser != nil {
 		oldDesktopCloser()

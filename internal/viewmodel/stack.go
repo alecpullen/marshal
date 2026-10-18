@@ -55,6 +55,14 @@ type Node struct {
 	Live     bool   // re-render on every spinner tick
 	Version  uint64 // hash of every payload field the renderer reads
 
+	// WorkKey is the stable conversation-work identity of the execution this
+	// row dispatched, when the record carries one. It is empty for a legacy
+	// record and for every row that dispatched no work; it exists so a client
+	// can pair the retained dispatch row with the pinned Work view without
+	// sharing an identity through the transcript. It is read only through the
+	// structured metadata a notice carries, never parsed from summary text.
+	WorkKey string
+
 	// Payload: exactly one is set, by Kind.
 	Item    *session.TranscriptItem
 	Step    *StepInfo
@@ -106,6 +114,12 @@ type Snapshot struct {
 	// agent.run audits render normally; otherwise the subagent card replaces
 	// them.
 	Drilled bool
+	// LiveWork is true while a pinned live-work surface owns presentation of
+	// running work. Then the transcript keeps each actual dispatch/result row
+	// once — its agent.run audits are not suppressed — and the subagent child
+	// boxes are omitted, because the pinned surface shows the live card. False
+	// retains the legacy projection exactly.
+	LiveWork bool
 	// RunningSubagent is true when a subagent card is rendering a running
 	// child, so the parent's in-flight agent.run row is suppressed.
 	RunningSubagent bool
@@ -173,6 +187,12 @@ func Mergeable(ev *registry.AuditEvent) bool {
 	if ev == nil {
 		return false
 	}
+	// An agent.run dispatch is one chronological row per call: it is never
+	// folded into a same-tool run, so a restored dispatch stays individually
+	// reachable and pairable with its pinned card by WorkKey.
+	if ev.ToolName == "agent.run" {
+		return false
+	}
 	return !isDiffTool(ev.ToolName) && ev.Error == "" && len(ev.Hooks) == 0 && len(ev.Symbols) == 0 &&
 		JobStartID(*ev) == ""
 }
@@ -183,12 +203,29 @@ func isDiffTool(name string) bool {
 	return name == "file.write_patch" || name == "file.edit" || name == "patch.apply"
 }
 
+// dispatchWorkKey returns the stable conversation-work identity an audit's
+// notice carries for the execution it dispatched, or "" when the record has
+// none. It is read only through the structured subagent-work reference a notice
+// carries — never parsed from the summary text a legacy record falls back to —
+// so a dispatch row pairs with its pinned card by identity rather than by
+// display text.
+func dispatchWorkKey(ev *registry.AuditEvent) string {
+	if ev == nil || ev.Notice == nil {
+		return ""
+	}
+	ref, ok := ev.Notice.SubagentWork()
+	if !ok {
+		return ""
+	}
+	return ref.TaskKey
+}
+
 // Build groups a snapshot into turn nodes, plus a preamble turn for items
 // before the first user turn.
 func Build(s Snapshot) []*Node {
 	items := make([]session.TranscriptItem, 0, len(s.Items))
 	for _, it := range s.Items {
-		if !s.Drilled && it.Kind == session.KindAudit && it.Audit != nil && it.Audit.ToolName == "agent.run" {
+		if !s.LiveWork && !s.Drilled && it.Kind == session.KindAudit && it.Audit != nil && it.Audit.ToolName == "agent.run" {
 			continue
 		}
 		items = append(items, it)
@@ -431,32 +468,36 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	}
 
 	// Subagent cards go inside the orchestrator step that was running when
-	// the card began; otherwise they stand at turn level.
-	for i := range cards {
-		it := cards[i]
-		node := passthrough(&cards[i])
-		var home *stepAcc
-		for _, id := range stepOrder {
-			a := steps[id]
-			rec := a.info.Step
-			if rec.ID == 0 || rec.Actor.Role != "" {
-				continue
-			}
-			end := rec.EndedAt
-			if end.IsZero() {
-				end = s.Now
+	// the card began; otherwise they stand at turn level. Under LiveWork the
+	// pinned surface owns the live card, so the transcript omits the parent
+	// child boxes and keeps only the dispatch/result rows.
+	if !s.LiveWork {
+		for i := range cards {
+			it := cards[i]
+			node := passthrough(&cards[i])
+			var home *stepAcc
+			for _, id := range stepOrder {
+				a := steps[id]
+				rec := a.info.Step
+				if rec.ID == 0 || rec.Actor.Role != "" {
+					continue
+				}
+				end := rec.EndedAt
 				if end.IsZero() {
-					end = time.Now()
+					end = s.Now
+					if end.IsZero() {
+						end = time.Now()
+					}
+				}
+				if !it.Timestamp.Before(rec.StartedAt) && !it.Timestamp.After(end) {
+					home = a
 				}
 			}
-			if !it.Timestamp.Before(rec.StartedAt) && !it.Timestamp.After(end) {
-				home = a
+			if home != nil {
+				home.cards = append(home.cards, node)
+			} else {
+				blocks = append(blocks, block{it.Timestamp, node})
 			}
-		}
-		if home != nil {
-			home.cards = append(home.cards, node)
-		} else {
-			blocks = append(blocks, block{it.Timestamp, node})
 		}
 	}
 
@@ -488,7 +529,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		if !lastTurn {
 			break
 		}
-		if atc.Name == "agent.run" && !s.Drilled && s.RunningSubagent {
+		if atc.Name == "agent.run" && !s.LiveWork && !s.Drilled && s.RunningSubagent {
 			continue
 		}
 		if atc.StepID > 0 && steps[atc.StepID] != nil {
@@ -637,7 +678,9 @@ func toolRows(audits []registry.AuditEvent, active []session.ActiveToolCall) []*
 			rows[n-1].Tools = append(rows[n-1].Tools, ev)
 			continue
 		}
-		rows = append(rows, &Node{ID: ToolID(ev), Kind: KindTool, Tools: []registry.AuditEvent{ev}})
+		row := &Node{ID: ToolID(ev), Kind: KindTool, Tools: []registry.AuditEvent{ev}}
+		row.WorkKey = dispatchWorkKey(&ev)
+		rows = append(rows, row)
 	}
 	for i := range rows {
 		// A merged run keeps its first call's ID, so a row the user expanded

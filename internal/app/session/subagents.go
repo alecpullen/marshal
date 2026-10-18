@@ -2,11 +2,16 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
 )
@@ -74,6 +79,11 @@ type SubagentView struct {
 	// agent.await can report why the child failed. Empty
 	// for running or successful subagents.
 	Error string
+
+	// SubagentWorkFacts is the child's stable identity and result reference,
+	// embedded so the card carries the same lightweight facts the conversation
+	// work index stores. It never carries the full report body.
+	SubagentWorkFacts
 }
 
 // SubagentMeta is the optional metadata passed to RegisterSubagentWithMeta.
@@ -82,13 +92,70 @@ type SubagentMeta struct {
 	Provider string
 	Model    string
 	Fallback bool
+	// Origin identifies the call that dispatched the subagent: the turn, the
+	// step and the tool call. It is provenance, kept so a restored result can
+	// still name where it came from.
+	Origin SubagentOrigin
+}
+
+// SubagentOrigin identifies the call that dispatched a subagent. It is stored
+// verbatim as provenance and never parsed to reconstruct a child's identity.
+type SubagentOrigin struct {
+	TurnID     string
+	StepID     string
+	ToolCallID string
+}
+
+// SubagentWorkFacts is the lightweight, stable identity and result reference of
+// one subagent's work. It is embedded in SubagentView and copied into the
+// conversation's work-view index; it never carries the full report body, only a
+// reference to the persisted message that does.
+type SubagentWorkFacts struct {
+	// WorkKey is the opaque, stable key of this child's work, minted at
+	// registration. It is never parsed: it exists to pair an acknowledgment with
+	// a result, not to reconstruct the child's identity.
+	WorkKey string
+	// RuntimeEpoch is the conversation epoch the work belongs to.
+	RuntimeEpoch string
+	// Origin is the dispatching call.
+	Origin SubagentOrigin
+	// ResultRevision is the terminal result's content revision, empty while the
+	// child is running. A re-run settles at a new revision, so an old
+	// acknowledgment cannot silently hide it.
+	ResultRevision string
+	// Report references the persisted subagent-report message; a zero MessageID
+	// means the report is explicitly unavailable, never fabricated.
+	Report db.WorkReference
+	// StopRequested records that an explicit stop was accepted for this child. A
+	// request that arrives only after the child settled cannot set it.
+	StopRequested bool
+	// Outcome is the finer terminal cause ("completed", "stopped", "failed"),
+	// empty while running. It complements SubagentStatus rather than replacing
+	// it: the status keeps its existing three-valued meaning.
+	Outcome string
+}
+
+// SubagentSnapshot is an immutable, lock-free projection of the subagent
+// registry at one moment: the conversation epoch, the source revision, the
+// views, the ids still settling their terminal index write, and any bounded
+// save errors. The views carry no Cancel callback and no mutable Child pointer;
+// activity facts are read eagerly under the child's own locks.
+type SubagentSnapshot struct {
+	Epoch      string
+	Revision   uint64
+	Views      []SubagentView
+	Settling   []string
+	SaveErrors map[string]string
 }
 
 // SubagentEvent is published on the subagent broker when a subagent is
 // registered or transitions status, so the TUI re-renders the card without
-// polling.
+// polling. Epoch and Revision identify the source state the View belongs to, so
+// a subscriber can discard a stale projection.
 type SubagentEvent struct {
-	View SubagentView
+	View     SubagentView
+	Epoch    string
+	Revision uint64
 }
 
 // subagentSeq allocates process-unique subagent IDs. IDs only need to be
@@ -155,23 +222,7 @@ func (s *State) ClearSubagentStopGroup(id int64) {
 // finishing the registration via FinishSubagent. Publishing happens after
 // the mutex is released, matching SetWorkspace.
 func (s *State) RegisterSubagent(label string, child *State) SubagentView {
-	v := SubagentView{
-		ID:        subagentSeq.Add(1),
-		Label:     label,
-		Status:    SubagentRunning,
-		Child:     child,
-		StartedAt: time.Now(),
-	}
-	s.mu.Lock()
-	s.subagents = append(s.subagents, v)
-	s.subagentDone[v.ID] = make(chan struct{})
-	broker := s.subagentBroker
-	s.mu.Unlock()
-	s.bindSubagentWork("", v.ID, label)
-	if broker != nil {
-		broker.Publish("subagent", SubagentEvent{View: v})
-	}
-	return v
+	return s.registerSubagent(SubagentMeta{}, "", label, child)
 }
 
 // RegisterSubagentWithMeta records a new running subagent and returns its
@@ -195,6 +246,9 @@ func (s *State) RegisterSubagentWithMetaAndWork(work WorkID, label string, child
 // registerSubagent is the shared body of RegisterSubagent/WithMeta/AndWork. work
 // is the caller's child-creation item, or "" when the caller registered none.
 func (s *State) registerSubagent(meta SubagentMeta, work WorkID, label string, child *State) SubagentView {
+	s.mu.Lock()
+	epoch := s.subagentEpochLocked()
+	rev := s.bumpSubagentRevisionLocked()
 	v := SubagentView{
 		ID:        subagentSeq.Add(1),
 		Label:     label,
@@ -206,7 +260,12 @@ func (s *State) registerSubagent(meta SubagentMeta, work WorkID, label string, c
 		Model:     meta.Model,
 		Fallback:  meta.Fallback,
 	}
-	s.mu.Lock()
+	// The child's stable work identity is minted here, once, and never derived
+	// from a mutable id: the opaque key is what pairs an acknowledgment with a
+	// result across a resume, which a display id cannot.
+	v.WorkKey = rand.Text()
+	v.RuntimeEpoch = epoch
+	v.Origin = meta.Origin
 	s.subagents = append(s.subagents, v)
 	s.subagentDone[v.ID] = make(chan struct{})
 	broker := s.subagentBroker
@@ -216,23 +275,68 @@ func (s *State) registerSubagent(meta SubagentMeta, work WorkID, label string, c
 	// binding happens after the registration above so the view exists before its
 	// work item is named, and it is idempotent per subagent id.
 	s.bindSubagentWork(work, v.ID, label)
-	if broker != nil {
-		broker.Publish("subagent", SubagentEvent{View: v})
+	s.publishSubagentEvent(broker, v, epoch, rev)
+	// The work index upsert is deliberately outside State.mu: it spans a
+	// serialized database round trip, which must never be held while the rest
+	// of the session waits.
+	if err := s.recordSubagentWorkResult(v, rev); err != nil {
+		s.logger.Warn("record subagent work result failed", "error", err, "subagent_id", v.ID)
 	}
 	return v
+}
+
+// subagentEpochLocked returns the conversation's single subagent epoch, minting
+// it on first use so a State built as a literal still gets one. Callers must
+// hold s.mu.
+func (s *State) subagentEpochLocked() string {
+	if s.subagentEpoch == "" {
+		s.subagentEpoch = rand.Text()
+	}
+	return s.subagentEpoch
+}
+
+// bumpSubagentRevisionLocked advances the subagent source revision by one and
+// returns it. Callers must hold s.mu.
+func (s *State) bumpSubagentRevisionLocked() uint64 {
+	s.subagentRevision++
+	return s.subagentRevision
+}
+
+// publishSubagentEvent publishes a copy of a subagent view tagged with the
+// source epoch and revision it belongs to. Publishing happens after the state
+// lock is released, matching SetWorkspace and the rest of the session.
+func (s *State) publishSubagentEvent(broker *pubsub.Broker[SubagentEvent], view SubagentView, epoch string, revision uint64) {
+	if broker == nil {
+		return
+	}
+	broker.Publish("subagent", SubagentEvent{View: view, Epoch: epoch, Revision: revision})
 }
 
 // SetSubagentCancel stores the cancel function for a running subagent
 // so the TUI can interrupt that specific child.
 func (s *State) SetSubagentCancel(id int64, cancel context.CancelFunc) {
 	s.mu.Lock()
+	var updated SubagentView
+	found := false
 	for i := range s.subagents {
 		if s.subagents[i].ID == id {
 			s.subagents[i].Cancel = cancel
+			updated = s.subagents[i]
+			found = true
 			break
 		}
 	}
+	var epoch string
+	var rev uint64
+	if found {
+		rev = s.bumpSubagentRevisionLocked()
+		epoch = s.subagentEpochLocked()
+	}
+	broker := s.subagentBroker
 	s.mu.Unlock()
+	if found {
+		s.publishSubagentEvent(broker, updated, epoch, rev)
+	}
 }
 
 // SetSubagentSalvaged records the reason a subagent was salvaged on its
@@ -240,20 +344,28 @@ func (s *State) SetSubagentCancel(id int64, cancel context.CancelFunc) {
 // card can render a salvage marker.
 func (s *State) SetSubagentSalvaged(id int64, reason string) {
 	s.mu.Lock()
+	var updated SubagentView
+	found := false
 	for i := range s.subagents {
 		if s.subagents[i].ID == id {
 			s.subagents[i].SalvagedReason = reason
+			updated = s.subagents[i]
+			found = true
 			break
 		}
 	}
+	var epoch string
+	var rev uint64
+	if found {
+		rev = s.bumpSubagentRevisionLocked()
+		epoch = s.subagentEpochLocked()
+	}
 	broker := s.subagentBroker
 	s.mu.Unlock()
-	if broker != nil {
-		// Publish a copy so subscribers see the updated reason. The view
-		// is still running until FinishSubagent is called.
-		if v, ok := s.Subagent(id); ok {
-			broker.Publish("subagent", SubagentEvent{View: v})
-		}
+	if found {
+		// Publish a copy so subscribers see the updated reason. The view is
+		// still running until FinishSubagent is called.
+		s.publishSubagentEvent(broker, updated, epoch, rev)
 	}
 }
 
@@ -269,28 +381,44 @@ func (s *State) SetSubagentSalvaged(id int64, reason string) {
 // conversation-owned and keep running.
 func (s *State) CancelSubagent(id int64) bool {
 	s.mu.Lock()
-	var cancel context.CancelFunc
-	found := false
+	idx := -1
 	for i := range s.subagents {
 		if s.subagents[i].ID == id && s.subagents[i].Status == SubagentRunning {
-			cancel = s.subagents[i].Cancel
-			found = true
+			idx = i
 			break
 		}
 	}
-	token := s.subagentStopGroups[id]
-	s.mu.Unlock()
-	if !found || cancel == nil {
+	if idx < 0 {
+		s.mu.Unlock()
 		return false
 	}
+	cancel := s.subagents[idx].Cancel
+	token := s.subagentStopGroups[id]
+	if cancel == nil {
+		s.mu.Unlock()
+		return false
+	}
+	// The exact running child and its cancel handle are located, so the request
+	// is accepted: record it on the view before the child's context is
+	// cancelled, so a settlement that follows can tell an accepted stop from a
+	// spontaneous cancel. A request that arrives only after the child settled
+	// never reaches this branch and cannot relabel the result.
+	s.subagents[idx].StopRequested = true
+	rev := s.bumpSubagentRevisionLocked()
+	epoch := s.subagentEpochLocked()
+	updated := s.subagents[idx]
+	broker := s.subagentBroker
+	s.mu.Unlock()
 	// Service acceptance precedes cancellation: the child's attached commands
 	// are marked stopping (and the child's turn is refused any new admission)
 	// before the child's context is cancelled, so a command the child launched
-	// is never left running with no stop request against it.
+	// is never left running with no stop request against it. Detached
+	// child-owned jobs are conversation-owned and are never stop targets here.
 	if token != nil {
 		_, _ = token.Stop(fmt.Sprintf("subagent %d stopped", id))
 	}
 	cancel()
+	s.publishSubagentEvent(broker, updated, epoch, rev)
 	return true
 }
 
@@ -308,10 +436,16 @@ func (s *State) AddSubagentTokens(id int64, n int) {
 			break
 		}
 	}
+	var epoch string
+	var rev uint64
+	if found {
+		rev = s.bumpSubagentRevisionLocked()
+		epoch = s.subagentEpochLocked()
+	}
 	broker := s.subagentBroker
 	s.mu.Unlock()
-	if found && broker != nil {
-		broker.Publish("subagent", SubagentEvent{View: updated})
+	if found {
+		s.publishSubagentEvent(broker, updated, epoch, rev)
 	}
 }
 
@@ -332,23 +466,45 @@ const maxRetainedChildStates = 10
 // collected. The summary and status are retained for the card display.
 func (s *State) FinishSubagent(id int64, summary string, err error) {
 	s.mu.Lock()
-	var updated SubagentView
-	found := false
+	idx := -1
 	for i := range s.subagents {
 		if s.subagents[i].ID == id {
-			s.subagents[i].EndedAt = time.Now()
-			s.subagents[i].Summary = summary
-			if err != nil {
-				s.subagents[i].Status = SubagentFailed
-				s.subagents[i].Error = err.Error()
-			} else {
-				s.subagents[i].Status = SubagentDone
-			}
-			updated = s.subagents[i]
-			found = true
+			idx = i
 			break
 		}
 	}
+	if idx < 0 {
+		s.mu.Unlock()
+		return
+	}
+	// The settling flag is set before the terminal mutation so a snapshot read
+	// that races the mutation still sees the child as mid-settlement rather
+	// than as a settled view whose final-index write has not even started.
+	if s.subagentSettling == nil {
+		s.subagentSettling = make(map[int64]bool)
+	}
+	s.subagentSettling[id] = true
+
+	s.subagents[idx].EndedAt = time.Now()
+	s.subagents[idx].Summary = summary
+	outcome := "completed"
+	if err != nil {
+		s.subagents[idx].Status = SubagentFailed
+		s.subagents[idx].Error = err.Error()
+		outcome = "failed"
+		// "stopped" is claimed only for an accepted stop request whose cancel
+		// the child actually observed. A request that arrived late, or an
+		// unrelated failure or panic, cannot relabel the result.
+		if s.subagents[idx].StopRequested && errors.Is(err, context.Canceled) {
+			outcome = "stopped"
+		}
+	} else {
+		s.subagents[idx].Status = SubagentDone
+	}
+	s.subagents[idx].Outcome = outcome
+	rev := s.bumpSubagentRevisionLocked()
+	s.subagents[idx].ResultRevision = strconv.FormatUint(rev, 10)
+
 	// M-3: release Child State pointers on older completed subagents.
 	var completed int
 	for i := len(s.subagents) - 1; i >= 0; i-- {
@@ -359,26 +515,30 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 			}
 		}
 	}
-	var done chan struct{}
-	if found {
-		done = s.subagentDone[id]
-		delete(s.subagentDone, id)
-	}
+	updated := s.subagents[idx]
+	done := s.subagentDone[id]
+	delete(s.subagentDone, id)
+	epoch := s.subagentEpochLocked()
 	broker := s.subagentBroker
 	s.mu.Unlock()
 	if done != nil {
 		close(done)
 	}
-	if found {
-		// The child is no longer active work. A child registered by its creation
-		// (EnterSubagent) is released by its paired ExitSubagent; this call
-		// releases the item only when the child's card was its whole
-		// registration, so every item is released exactly once.
-		s.releaseSubagentWork(id)
+	// The child is no longer active work. A child registered by its creation
+	// (EnterSubagent) is released by its paired ExitSubagent; this call
+	// releases the item only when the child's card was its whole registration,
+	// so every item is released exactly once.
+	s.releaseSubagentWork(id)
+	s.publishSubagentEvent(broker, updated, epoch, rev)
+	// The first serialized final-index save attempt. The actual final
+	// state/report and its attention are already on the view; a failed save
+	// leaves them there and records the failure rather than reverting.
+	if saveErr := s.recordSubagentWorkResult(updated, rev); saveErr != nil {
+		s.logger.Error("save final subagent work result failed", "error", saveErr, "subagent_id", id)
 	}
-	if found && broker != nil {
-		broker.Publish("subagent", SubagentEvent{View: updated})
-	}
+	s.mu.Lock()
+	delete(s.subagentSettling, id)
+	s.mu.Unlock()
 }
 
 // Subagents returns a copy of the registered subagent views in registration
@@ -390,6 +550,327 @@ func (s *State) Subagents() []SubagentView {
 	out := make([]SubagentView, len(s.subagents))
 	copy(out, s.subagents)
 	return out
+}
+
+// Constants naming the lightweight work-index entries a subagent produces.
+// They classify the entry, never the child: identity is WorkKey.
+const (
+	subagentWorkKind  = "agent"
+	subagentWorkOwner = "subagent"
+)
+
+// subagentSaveFailure is one recorded subagent work-index save failure and the
+// source revision it belonged to, so a later successful save can clear exactly
+// the failures it covered.
+type subagentSaveFailure struct {
+	Revision uint64
+	Message  string
+}
+
+// decimalAgentID renders an agent id as the decimal source id the work index
+// stores. The id is display data, never a key, so it is copied verbatim rather
+// than parsed.
+func decimalAgentID(id int64) string { return strconv.FormatInt(id, 10) }
+
+// subagentWorkState maps a view's lifecycle status onto the work index's
+// terminal-state vocabulary.
+func subagentWorkState(status SubagentStatus) string {
+	switch status {
+	case SubagentDone:
+		return "completed"
+	case SubagentFailed:
+		return "failed"
+	default:
+		return "running"
+	}
+}
+
+// subagentSummaryPreview bounds a final summary for the work index: the first
+// line, capped, never the full report. safeWorkResult cleans it further.
+func subagentSummaryPreview(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if i := strings.IndexByte(summary, '\n'); i >= 0 {
+		summary = summary[:i]
+	}
+	const maxSummaryPreview = 240
+	if len(summary) > maxSummaryPreview {
+		summary = summary[:maxSummaryPreview]
+	}
+	return summary
+}
+
+// subagentWorkResult builds the lightweight work-index entry for a subagent
+// view: stable key/epoch/origin/timing, a bounded summary preview and the report
+// reference — never a duplicate of the full report body.
+func subagentWorkResult(v SubagentView) db.WorkResultRecord {
+	return db.WorkResultRecord{
+		TaskKey:        v.WorkKey,
+		SourceID:       decimalAgentID(v.ID),
+		RuntimeEpoch:   v.RuntimeEpoch,
+		Kind:           subagentWorkKind,
+		Label:          v.Label,
+		Owner:          subagentWorkOwner,
+		TurnID:         v.Origin.TurnID,
+		StepID:         v.Origin.StepID,
+		ToolCallID:     v.Origin.ToolCallID,
+		State:          subagentWorkState(v.Status),
+		Outcome:        v.Outcome,
+		StartedAt:      v.StartedAt,
+		EndedAt:        v.EndedAt,
+		ResultRevision: v.ResultRevision,
+		Detail:         subagentSummaryPreview(v.Summary),
+		Reference:      v.Report,
+	}
+}
+
+// recordSubagentWorkResult upserts a subagent's lightweight work-index entry and
+// persists the serialized work view. It runs entirely outside State.mu: the
+// write spans a database round trip, which must never be held while the rest of
+// the session waits. A failure is recorded per source id against the revision it
+// belonged to and returned.
+func (s *State) recordSubagentWorkResult(v SubagentView, revision uint64) error {
+	if v.WorkKey == "" {
+		return nil
+	}
+	record := safeWorkResult(subagentWorkResult(v))
+	s.workViewSaveMu.Lock()
+	s.mu.Lock()
+	replaced := false
+	for i := range s.workView.AgentResults {
+		if s.workView.AgentResults[i].TaskKey == record.TaskKey {
+			s.workView.AgentResults[i] = record
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.workView.AgentResults = append(s.workView.AgentResults, record)
+	}
+	s.mu.Unlock()
+	err := s.persistWorkViewLocked()
+	s.workViewSaveMu.Unlock()
+	if err != nil {
+		s.recordSubagentSaveError(v.ID, revision, err.Error())
+		return err
+	}
+	if s.clearSubagentSaveErrors(revision) {
+		// A successful save covered these revisions, so the source moved: wake
+		// subscribers to re-read rather than leaving a stale projection up.
+		s.wakeSubagentSource(v.ID)
+	}
+	return nil
+}
+
+// recordSubagentSaveError records a bounded save failure for a source id against
+// the revision it belonged to.
+func (s *State) recordSubagentSaveError(id int64, revision uint64, msg string) {
+	s.mu.Lock()
+	if s.subagentSaveErrors == nil {
+		s.subagentSaveErrors = make(map[int64]subagentSaveFailure)
+	}
+	s.subagentSaveErrors[id] = subagentSaveFailure{Revision: revision, Message: msg}
+	s.mu.Unlock()
+}
+
+// clearSubagentSaveErrors drops the recorded failures covered by a save that
+// reached revision, and reports whether it cleared any. It never touches a
+// failure from a later revision, which the save did not cover.
+func (s *State) clearSubagentSaveErrors(revision uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cleared := false
+	for id, f := range s.subagentSaveErrors {
+		if f.Revision <= revision {
+			delete(s.subagentSaveErrors, id)
+			cleared = true
+		}
+	}
+	return cleared
+}
+
+// wakeSubagentSource publishes a source wake for one settled child after its
+// index save caught up: it advances the source revision and republishes the
+// view so subscribers re-read the work projection.
+func (s *State) wakeSubagentSource(id int64) {
+	s.mu.Lock()
+	rev := s.bumpSubagentRevisionLocked()
+	epoch := s.subagentEpochLocked()
+	var view SubagentView
+	found := false
+	for i := range s.subagents {
+		if s.subagents[i].ID == id {
+			view = s.subagents[i]
+			found = true
+			break
+		}
+	}
+	broker := s.subagentBroker
+	s.mu.Unlock()
+	if found {
+		s.publishSubagentEvent(broker, view, epoch, rev)
+	}
+}
+
+// SubagentSnapshot returns an immutable projection of the subagent registry:
+// the conversation epoch, the source revision, the views, the ids still settling
+// their final-index save, and any bounded save errors. The views are copied under
+// State.mu, then each live child's activity facts are read under the child's own
+// locks with State.mu released. No Cancel callback and no mutable Child pointer
+// is ever published.
+func (s *State) SubagentSnapshot() SubagentSnapshot {
+	s.mu.Lock()
+	epoch := s.subagentEpochLocked()
+	rev := s.subagentRevision
+	views := make([]SubagentView, len(s.subagents))
+	copy(views, s.subagents)
+	var settlingIDs []int64
+	for id, settling := range s.subagentSettling {
+		if settling {
+			settlingIDs = append(settlingIDs, id)
+		}
+	}
+	s.mu.Unlock()
+
+	// Read each live child's own facts outside the parent lock, then drop the
+	// pointers: the projection must never hand out a Cancel callback or a
+	// mutable Child.
+	for i := range views {
+		if child := views[i].Child; child != nil {
+			views[i].ToolCalls = child.CompletedToolCallCount()
+			views[i].CurrentTool = child.CurrentToolLabel()
+		}
+		views[i].Child = nil
+		views[i].Cancel = nil
+	}
+
+	sort.Slice(settlingIDs, func(i, j int) bool { return settlingIDs[i] < settlingIDs[j] })
+	settling := make([]string, 0, len(settlingIDs))
+	for _, id := range settlingIDs {
+		settling = append(settling, decimalAgentID(id))
+	}
+
+	// A work view that is not dirty has been written successfully, so every
+	// recorded failure is covered by that save and must not be reported. This is
+	// the same reconciliation RetryWorkViewSave reaches through the serialized
+	// save: once it succeeds, the recorded failures are gone.
+	s.workViewSaveMu.Lock()
+	clean := !s.workViewDirty && len(s.workViewPendingAcks) == 0
+	s.workViewSaveMu.Unlock()
+	var saveErrors map[string]string
+	if !clean {
+		s.mu.Lock()
+		if len(s.subagentSaveErrors) > 0 {
+			saveErrors = make(map[string]string, len(s.subagentSaveErrors))
+			for id, f := range s.subagentSaveErrors {
+				saveErrors[decimalAgentID(id)] = f.Message
+			}
+		}
+		s.mu.Unlock()
+	}
+	return SubagentSnapshot{
+		Epoch:      epoch,
+		Revision:   rev,
+		Views:      views,
+		Settling:   settling,
+		SaveErrors: saveErrors,
+	}
+}
+
+// BindSubagentReport links a subagent's already-appended report to its work
+// index. It finds the exact report text, with the subagent-report content type,
+// that was appended for this live id within its registration interval, and
+// records the persisted Message.DBID — never the transient in-memory id. If
+// persistence is enabled but the message was never persisted, the reference
+// stays explicitly unavailable and an error is returned: the session never
+// claims a durable report link it does not have.
+func (s *State) BindSubagentReport(id int64, report string) error {
+	if strings.TrimSpace(report) == "" {
+		return fmt.Errorf("session: subagent %d report is empty", id)
+	}
+	s.mu.Lock()
+	idx := -1
+	for i := range s.subagents {
+		if s.subagents[i].ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("session: unknown subagent id %d", id)
+	}
+	start := s.subagents[idx].StartedAt
+	end := s.subagents[idx].EndedAt
+	var dbid int64
+	for i := len(s.messages) - 1; i >= 0; i-- {
+		m := s.messages[i]
+		if m.ContentType != ContentTypeSubagentReport || m.Content != report {
+			continue
+		}
+		if m.CreatedAt.Before(start) {
+			continue
+		}
+		if !end.IsZero() && m.CreatedAt.After(end) {
+			continue
+		}
+		dbid = m.DBID
+		break
+	}
+	ref := db.WorkReference{MessageID: dbid}
+	if child := s.subagents[idx].Child; child != nil {
+		ref.ChildSessionID = child.SessionID()
+	}
+	if dbid != 0 {
+		// Only a real persisted row id becomes a reference. A failed match
+		// leaves any earlier good link intact rather than overwriting it with
+		// a fabricated zero.
+		s.subagents[idx].Report = ref
+	}
+	rev := s.bumpSubagentRevisionLocked()
+	epoch := s.subagentEpochLocked()
+	updated := s.subagents[idx]
+	persistenceEnabled := s.persistenceEnabled()
+	s.mu.Unlock()
+
+	s.publishSubagentEvent(s.subagentBroker, updated, epoch, rev)
+
+	if persistenceEnabled && dbid == 0 {
+		msg := fmt.Sprintf("subagent %d report is not durably persisted", id)
+		s.recordSubagentSaveError(id, rev, msg)
+		// Persist the index with the unavailable reference as evidence, then
+		// report honestly that no durable link exists.
+		if err := s.recordSubagentWorkResult(updated, rev); err != nil {
+			s.logger.Error("save subagent report index failed", "error", err, "subagent_id", id)
+		}
+		s.logger.Error("bind subagent report: report message not persisted", "subagent_id", id)
+		return errors.New(msg)
+	}
+	if err := s.recordSubagentWorkResult(updated, rev); err != nil {
+		s.logger.Error("save subagent report index failed", "error", err, "subagent_id", id)
+		return err
+	}
+	return nil
+}
+
+// normalizeRestoredAgentWork rewrites the restored agent-work index into history
+// only: a stored entry that was still running when the previous process ended had
+// no terminal result to restore, so it becomes an explicit unknown/owner-gone
+// entry that keeps its ORIGINAL start time. It is never turned into a live
+// SubagentView and grants no stop capability, and it never stamps the current
+// time as if the work had just started. No cross-runtime id is parsed or matched.
+func (s *State) normalizeRestoredAgentWork() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.workView.AgentResults {
+		r := &s.workView.AgentResults[i]
+		if r.State != "running" {
+			continue
+		}
+		r.State = "unknown"
+		if r.Outcome == "" {
+			r.Outcome = "owner-gone"
+		}
+	}
 }
 
 // HasRunningSubagent reports whether any subagent is currently in the

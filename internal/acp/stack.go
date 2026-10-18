@@ -102,6 +102,13 @@ func (p *stackProjector) diff(tree viewmodel.WireTree) (stackPatch, bool) {
 	return patch, true
 }
 
+// stackSnapshotOf builds the projection a stack request reads. LiveWork stays
+// false for ACP: an existing stack request keeps its legacy default projection,
+// so an unmodified client sees exactly the tree it saw before the work view
+// existed — every dispatch row once, the band's running-card entity listings
+// included. A work-aware client treats the work_state stream as the
+// authoritative live surface and ignores those legacy entity listings instead;
+// the ACP layer never switches the stack projection for it.
 func stackSnapshotOf(st *session.State, busy, drilled bool, now time.Time) viewmodel.Snapshot {
 	active := st.ActiveToolCalls()
 	inProgress := st.InProgress()

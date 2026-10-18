@@ -387,6 +387,22 @@ type State struct {
 	// finished subagent's Wait returns the stored view instead of
 	// selecting on a closed channel.
 	subagentDone map[int64]chan struct{}
+	// subagentEpoch is the conversation's single opaque runtime epoch for all
+	// subagent work, minted once with crypto/rand.Text. Every work-index entry
+	// carries it, so a restored entry can be told from one this runtime
+	// produced without parsing any id. Guarded by mu.
+	subagentEpoch string
+	// subagentRevision is the subagent registry's source revision, advanced on
+	// every register/update/finish/cancel change. A snapshot publishes it so a
+	// subscriber can discard a stale projection. Guarded by mu.
+	subagentRevision uint64
+	// subagentSettling marks, by agent id, a terminal settlement whose first
+	// serialized final-index save attempt has not completed yet. Guarded by mu.
+	subagentSettling map[int64]bool
+	// subagentSaveErrors records, by agent id, a subagent work-index save
+	// failure and the source revision it belonged to, so a save that covers
+	// that revision clears exactly the errors it covered. Guarded by mu.
+	subagentSaveErrors map[int64]subagentSaveFailure
 	// runEvents is the plan-run event log: verify failures, review
 	// findings, commits, retries. In-memory only, never persisted.
 	runEvents []RunEvent
@@ -415,7 +431,36 @@ type State struct {
 	// announces nothing. It grows with the session's completions, like
 	// jobExits itself. Guarded by jobExitSaveMu.
 	jobExitsPublished map[string]bool
-	turnUsage         turnUsage
+
+	// workView is the session's versioned work-view index: the settled watch
+	// results and the acknowledgments that hide their attention. The zero
+	// value is the empty version-1 view; a stored view is copied in at
+	// startup. Guarded by mu for reads and mutations; the save sequence takes
+	// workViewSaveMu and snapshots it under mu. See jobexit.go.
+	workView db.WorkViewRecord
+	// workViewSaveMu serializes the work-view snapshot-and-write sequence, for
+	// the same reason jobExitSaveMu does for job exits: the write spans a
+	// database round trip that must not be held under mu, and two saves that
+	// interleaved a snapshot with a write could store an older view over a
+	// newer one. Lock order is workViewSaveMu → mu, never the reverse.
+	workViewSaveMu sync.Mutex
+	// workViewDirty marks a work view that changed in memory but could not be
+	// written durably, so a later caller can retry it rather than leaving a
+	// result the next resume cannot restore. Guarded by workViewSaveMu.
+	workViewDirty bool
+	// workViewPendingAcks holds acknowledgments validated against the live view
+	// but not yet committed durably. A failed save leaves the acknowledgment
+	// here — its result's attention stays visible — and the retry re-applies it
+	// to the newest snapshot. Guarded by workViewSaveMu.
+	workViewPendingAcks []db.WorkAcknowledgment
+	// workViewLoadErr records that the stored view could not be loaded (an
+	// unknown stored version or corrupt JSON). It is a diagnostic: the stored
+	// value is left exactly as it is and never overwritten automatically, so
+	// every further save refuses rather than clobbering data the session cannot
+	// understand. Guarded by workViewSaveMu.
+	workViewLoadErr error
+
+	turnUsage turnUsage
 	// turnQuota is the latest subscription quota reading from an
 	// OAuth-backed provider; nil when the active provider reports none.
 	turnQuota *schema.QuotaInfo
@@ -893,6 +938,8 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		nextStepSeq:            1,
 		workspace:              Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
 		subagentMaxConcurrency: defaultSubagentMaxConcurrency,
+		subagentEpoch:          rand.Text(),
+		workView:               db.WorkViewRecord{Version: 1},
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -905,6 +952,8 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 	s.Config.Agent.ApprovalMode = s.configuredMode
 	if s.persistenceEnabled() {
 		s.loadFromDB()
+		s.loadWorkView()
+		s.normalizeRestoredAgentWork()
 		s.restoreWorkspace()
 		s.restoreTitle()
 	}

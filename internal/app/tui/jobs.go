@@ -5,6 +5,36 @@ import (
 	"marshal/internal/watch"
 )
 
+// workLaneActive reports whether the pinned live-work projection owns the now
+// bar's work rows. It is true once a Work facade is attached or a non-empty
+// snapshot has arrived, and false by default so the legacy job/watch lane is
+// untouched. The bar reads only the immutable snapshot while it is true.
+func (m Model) workLaneActive() bool {
+	return m.workService != nil || len(m.workSnapshot.Items) > 0
+}
+
+// recordWorkPlan stores this frame's work hit targets, keyed by TaskKey and
+// pointing at the first rendered row of each card, from the same plan the rows
+// came from. The map is replaced, never merged, so a card that left the bar
+// leaves no stale target behind.
+func (m *Model) recordWorkPlan(plan nowBarPlan) {
+	if len(plan.workHits) == 0 {
+		m.workHits = nil
+		return
+	}
+	hits := make(map[string]workHit, len(plan.workHits))
+	for _, h := range plan.workHits {
+		if h.TaskKey == "" {
+			continue
+		}
+		if _, ok := hits[h.TaskKey]; ok {
+			continue // keep the card's first row
+		}
+		hits[h.TaskKey] = h
+	}
+	m.workHits = hits
+}
+
 // runningJobs returns the currently running background commands in the order
 // the lane renders them. Detached work only: an attached command is running
 // inside its own tool call, which the transcript already shows as an active

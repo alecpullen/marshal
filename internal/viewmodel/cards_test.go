@@ -368,3 +368,64 @@ func TestJobCardVersionFollowsStatusAndTruncation(t *testing.T) {
 		t.Fatal("a truncation change left the card's version alone")
 	}
 }
+
+// detachedJobStart is a structured launch that has ended up background-attached
+// — the shape a wait that detaches records on the same execution. It carries a
+// SourceEpoch so a viewer can mint the same work key the runtime does.
+func detachedJobStart(step session.StepID, callID string, s int, displayID, execID, epoch string) session.TranscriptItem {
+	it := audit("shell.run", step, callID, s)
+	it.Audit.ResultSummary = session.JobStartPrefix + displayID
+	it.Audit.Args = []byte(`{"command":"pytest -q","background":true}`)
+	it.Audit.Notice = registry.NewCommandExecutionNotice(registry.CommandExecution{
+		ExecutionID: execID, DisplayID: displayID, ConversationID: "conv", SourceEpoch: epoch,
+		Attachment: registry.ExecutionAttachmentBackground, State: "running",
+	})
+	return it
+}
+
+// A detach changes the execution's attachment and the card's placement on the
+// one dispatch row it already had: it can never add a second dispatch. The row's
+// work key is the execution identity the runtime mints, not the summary text.
+func TestLiveWorkDetachedCommandKeepsOneDispatch(t *testing.T) {
+	code := 0
+	start := detachedJobStart(1, "j", 2, "job-1", "exec-1", "epoch-cmd")
+	exit := structuredJobExit(5, "job-1", "exec-1", &code)
+	nodes := Build(Snapshot{
+		Items:    []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start, exit},
+		Steps:    []session.Step{stepOf(1, 1, 1, 3)},
+		LiveWork: true,
+	})
+	want := WorkKey("conv", "epoch-cmd", workKindCommand, "exec-1")
+	if n := countWorkKey(nodes, want); n != 1 {
+		t.Fatalf("dispatch rows for one execution = %d, want exactly one (%s)", n, shape(nodes))
+	}
+	row := findNode(nodes, "tool:1:j")
+	if row == nil || row.WorkKey != want {
+		t.Fatalf("dispatch row = %+v, want the execution-derived work key %q", row, want)
+	}
+	if row.Job == nil || row.Job.Running || row.Job.Exit == nil || *row.Job.Exit != 0 {
+		t.Fatalf("card = %+v, want it settled in place on the same dispatch row", row.Job)
+	}
+}
+
+// A base-era command record carries an execution identity but no source epoch.
+// The dispatch row must key it under the stable legacy epoch the coordinator
+// also projects, or the row's key would never match the projected item's and
+// would drift with the live runtime epoch on every restart.
+func TestBaseEraCommandRowUsesStableWorkKey(t *testing.T) {
+	start := detachedJobStart(1, "j", 2, "job-1", "exec-1", "")
+	exit := structuredJobExit(5, "job-1", "exec-1", nil)
+	nodes := Build(Snapshot{
+		Items:    []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start, exit},
+		Steps:    []session.Step{stepOf(1, 1, 1, 3)},
+		LiveWork: true,
+	})
+	want := WorkKey("conv", legacyWorkEpoch, workKindCommand, "exec-1")
+	if n := countWorkKey(nodes, want); n != 1 {
+		t.Fatalf("dispatch rows for a base-era execution = %d, want exactly one (%s)", n, shape(nodes))
+	}
+	row := findNode(nodes, "tool:1:j")
+	if row == nil || row.WorkKey != want {
+		t.Fatalf("dispatch row = %+v, want the stable work key %q", row, want)
+	}
+}

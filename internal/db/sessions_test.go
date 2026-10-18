@@ -851,3 +851,47 @@ func TestListSessionsPagination(t *testing.T) {
 		t.Fatalf("expected error for invalid cursor")
 	}
 }
+
+// TestWorkReportRequiresExactSessionAndReportType pins the report lookup: only
+// the exact (session_id, id) pair whose message carries the subagent-report
+// content type is returned; a wrong session, wrong id or wrong type is an
+// unavailable error, never a report.
+func TestWorkReportRequiresExactSessionAndReportType(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+	sessionID := createTestSession(t, db)
+
+	now := time.Now().UTC()
+	reportID, err := db.SaveMessage(sessionID, "assistant", "the report body", "subagent_report", now, "", 0, false, 0)
+	if err != nil {
+		t.Fatalf("SaveMessage(report) failed: %v", err)
+	}
+	plainID, err := db.SaveMessage(sessionID, "assistant", "ordinary text", "markdown", now, "", 0, false, 0)
+	if err != nil {
+		t.Fatalf("SaveMessage(plain) failed: %v", err)
+	}
+
+	content, err := db.WorkReport(sessionID, reportID)
+	if err != nil {
+		t.Fatalf("WorkReport(report) failed: %v", err)
+	}
+	if content != "the report body" {
+		t.Fatalf("WorkReport content = %q, want %q", content, "the report body")
+	}
+
+	// The right id under a different session is unavailable.
+	if _, err := db.WorkReport("other-session", reportID); err == nil {
+		t.Fatal("WorkReport with the wrong session returned a report, want an error")
+	}
+	// A message that is not a subagent report is unavailable.
+	if _, err := db.WorkReport(sessionID, plainID); err == nil {
+		t.Fatal("WorkReport on a non-report message returned content, want an error")
+	}
+	// A missing id and an empty session are unavailable.
+	if _, err := db.WorkReport(sessionID, reportID+9999); err == nil {
+		t.Fatal("WorkReport on a missing id returned content, want an error")
+	}
+	if _, err := db.WorkReport("", reportID); err == nil {
+		t.Fatal("WorkReport with an empty session returned content, want an error")
+	}
+}

@@ -1,7 +1,9 @@
 package native
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +17,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 )
@@ -3700,5 +3703,510 @@ func TestInterruptOperationRealProcessTreeAndOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, marker) {
 		t.Fatalf("output %q lost the pre-stop marker", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 9: progress observed inside the existing command service
+// ---------------------------------------------------------------------------
+
+// progressWrite is one scripted write a progressStreamRunner makes to a child
+// stream.
+type progressWrite struct {
+	stream progress.Stream
+	data   []byte
+}
+
+// progressStreamRunner is a fake CommandRunner that writes scripted records to
+// its child streams and then either returns immediately or blocks until it is
+// released or its context is cancelled. It lets a test observe progress across
+// attach/detach, output-cap and settlement/stop races without a real process.
+type progressStreamRunner struct {
+	pid     int
+	started chan struct{}
+	release chan struct{}
+	writes  []progressWrite
+	exit    int
+	runErr  error
+	runs    atomic.Int32
+	once    sync.Once
+}
+
+func (r *progressStreamRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	r.runs.Add(1)
+	if req.OnStart != nil {
+		pid := r.pid
+		if pid == 0 {
+			pid = 4242
+		}
+		req.OnStart(pid)
+	}
+	for _, w := range r.writes {
+		if w.stream == progress.Stderr {
+			if req.Stderr != nil {
+				_, _ = req.Stderr.Write(w.data)
+			}
+			continue
+		}
+		if req.Stdout != nil {
+			_, _ = req.Stdout.Write(w.data)
+		}
+	}
+	if r.started != nil {
+		r.once.Do(func() { close(r.started) })
+	}
+	if r.release != nil {
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return CommandResult{ExitCode: -1, Meta: registry.SandboxMeta{Enabled: true, Backend: "fake"}}, nil
+		}
+	}
+	return CommandResult{ExitCode: r.exit, Meta: registry.SandboxMeta{Enabled: true, Backend: "fake"}}, r.runErr
+}
+
+func (r *progressStreamRunner) countRuns() int { return int(r.runs.Load()) }
+
+// progressLine renders one events-v1 control record without a trailing newline,
+// so a test controls whether the observer sees it live or only at the final
+// flush.
+func progressLine(t *testing.T, seq uint64, current float64, total *float64) []byte {
+	t.Helper()
+	frame := progress.Frame{
+		Version:         progress.Version,
+		Sequence:        seq,
+		PrimaryMetricID: "files",
+		Metrics: []progress.Metric{{
+			ID: "files", Label: "Files", Unit: "files", Current: current, Total: total,
+		}},
+	}
+	body, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatalf("marshal progress frame: %v", err)
+	}
+	return append([]byte(progress.Prefix), body...)
+}
+
+// waitForRuns polls a run counter until it reaches want, so a test can act only
+// after an admission has actually reached its runner.
+func waitForRuns(t *testing.T, runs func() int, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for runs() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("runner entered %d times, want %d", runs(), want)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func floatPtr(f float64) *float64 { return &f }
+
+// eventsProgressConfig is a valid opt-in profile: events-v1 requires a
+// non-generic profile.
+func eventsProgressConfig() *progress.Config {
+	return &progress.Config{Profile: "custom", Source: "events-v1", Title: "download"}
+}
+
+// snapshotJob finds one execution in a source snapshot.
+func snapshotJob(t *testing.T, snap JobSnapshot, id string) JobInfo {
+	t.Helper()
+	for _, j := range snap.Jobs {
+		if j.ID == id {
+			return j
+		}
+	}
+	t.Fatalf("job %q not in snapshot %+v", id, snap.Jobs)
+	return JobInfo{}
+}
+
+// TestCommandProgressSurvivesDetachAndOutputCap pins that one managed execution
+// keeps the same identity and its measured progress across the foreground ->
+// background handoff and past the raw-output cap: the observer is fed
+// independently of attachment and of tail truncation, and a stop through the
+// service keeps the progress in the settled evidence.
+func TestCommandProgressSurvivesDetachAndOutputCap(t *testing.T) {
+	ctx := context.Background()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	record := progressLine(t, 1, 5, floatPtr(10))
+	noise := append([]byte("noise "), bytes.Repeat([]byte("x"), 400)...)
+	noise = append(noise, '\n')
+	runner := &progressStreamRunner{
+		pid:     9101,
+		started: started,
+		release: release,
+		writes: []progressWrite{
+			{stream: progress.Stdout, data: append(record, '\n')},
+			{stream: progress.Stderr, data: noise},
+		},
+	}
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 32)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	info, err := jm.Launch(ctx, LaunchSpec{
+		Command:  "download",
+		Progress: eventsProgressConfig(),
+		Origin:   CommandOrigin{TurnID: "turn-1"},
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-started
+
+	live, _, err := jm.Output(info.ID, 0)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if live.Progress == nil || live.Progress.Sequence != 1 {
+		t.Fatalf("live progress = %#v, want sequence 1", live.Progress)
+	}
+	if !strings.Contains(live.DisplayTail, "noise") {
+		t.Fatalf("display tail = %q, want the ordinary stderr text", live.DisplayTail)
+	}
+
+	// Detach: the wait expires and the command is promoted, with no new process.
+	res, err := jm.WaitForeground(ctx, info.ID, 0)
+	if err != nil {
+		t.Fatalf("WaitForeground: %v", err)
+	}
+	if res.Info.Attachment != AttachmentBackground {
+		t.Fatalf("attachment = %q, want background", res.Info.Attachment)
+	}
+	if got := runner.countRuns(); got != 1 {
+		t.Fatalf("runner runs = %d, want exactly one across the handoff", got)
+	}
+
+	job := snapshotJob(t, jm.Snapshot(), info.ID)
+	if job.ExecutionID != info.ExecutionID || job.PID != 9101 {
+		t.Fatalf("identity after detach = %q/pid %d, want the admitted %q/9101", job.ExecutionID, job.PID, info.ExecutionID)
+	}
+	if job.Progress == nil || job.Progress.Sequence != 1 {
+		t.Fatalf("progress after detach = %#v, want the measured sequence 1", job.Progress)
+	}
+	if job.ProgressConfig == nil || job.ProgressConfig.Source != "events-v1" || job.SourceEpoch == "" {
+		t.Fatalf("captured config/epoch = %#v/%q, want the admitted events profile and a source epoch", job.ProgressConfig, job.SourceEpoch)
+	}
+
+	// The raw-output cap is exhausted, but progress and the display tail survive:
+	// progress is fed independently of tail truncation.
+	peek, raw, err := jm.Output(info.ID, 0)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if len(raw) > 2*32+len("stdout:\n\nstderr:\n")+len(truncationMarker) {
+		t.Fatalf("raw output %q was not bounded by the 32-byte per-stream cap", raw)
+	}
+	if peek.Progress == nil || peek.Progress.Sequence != 1 {
+		t.Fatalf("progress after the output cap = %#v, want sequence 1", peek.Progress)
+	}
+	if !strings.Contains(peek.DisplayTail, "noise") {
+		t.Fatalf("display tail after the output cap = %q, want the ordinary text", peek.DisplayTail)
+	}
+
+	// Stopping through the service keeps progress in the settled evidence.
+	if err := jm.RequestStop(info.ID, "user stopped it"); err != nil {
+		t.Fatalf("RequestStop: %v", err)
+	}
+	close(release)
+	settled, err := jm.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if settled.Outcome != OutcomeStopped {
+		t.Fatalf("outcome = %q, want stopped", settled.Outcome)
+	}
+	if !settled.OutputTruncated {
+		t.Fatal("the settled snapshot must disclose that capture was capped")
+	}
+	if settled.Progress == nil || settled.Progress.Sequence != 1 {
+		t.Fatalf("settled progress = %#v, want the measured sequence retained", settled.Progress)
+	}
+}
+
+// TestCommandProgressFinalFlushPrecedesExitSink pins the flush ordering: a final
+// record the observer has not yet terminated by a newline is decoded by the
+// final drain BEFORE the settled evidence reaches the exit sink, so a completion
+// never loses the last measurement the process wrote.
+func TestCommandProgressFinalFlushPrecedesExitSink(t *testing.T) {
+	ctx := context.Background()
+	// Deliberately no trailing newline: the record stays buffered until Close.
+	record := progressLine(t, 1, 3, floatPtr(4))
+	runner := &progressStreamRunner{pid: 9102, writes: []progressWrite{{stream: progress.Stdout, data: record}}}
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	sink := make(chan JobInfo, 1)
+	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) error {
+		sink <- info
+		return nil
+	})
+
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "download", Detached: true, Progress: eventsProgressConfig()})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	select {
+	case got := <-sink:
+		if got.Progress == nil || got.Progress.Sequence != 1 {
+			t.Fatalf("exit sink saw progress %#v, want the flushed final snapshot", got.Progress)
+		}
+		if got.ResultRevision == "" {
+			t.Fatal("the settled evidence carried no ResultRevision")
+		}
+		if got.SourceEpoch == "" {
+			t.Fatal("the settled evidence carried no SourceEpoch")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the exit sink never ran for the detached completion")
+	}
+
+	settled, err := jm.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if settled.Progress == nil || settled.Progress.Sequence != 1 {
+		t.Fatalf("settled progress = %#v, want the flushed sequence 1", settled.Progress)
+	}
+}
+
+// TestCommandProgressDoesNotCompleteOrStopProcess pins that measured progress is
+// reported independently of the lifecycle: reaching 100% is data only. The job
+// stays running with no outcome and no completion until its process actually
+// exits.
+func TestCommandProgressDoesNotCompleteOrStopProcess(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	runner := &progressStreamRunner{
+		pid:     9103,
+		started: started,
+		release: release,
+		writes:  []progressWrite{{stream: progress.Stdout, data: append(progressLine(t, 1, 10, floatPtr(10)), '\n')}},
+	}
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	completed := make(chan struct{}, 1)
+	jm.SetOnExit(func(JobInfo, time.Duration, string) error {
+		completed <- struct{}{}
+		return nil
+	})
+
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "build", Detached: true, Progress: eventsProgressConfig()})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-started
+
+	deadline := time.Now().Add(2 * time.Second)
+	var measured *progress.Snapshot
+	for {
+		got, _, err := jm.Output(info.ID, 0)
+		if err != nil {
+			t.Fatalf("Output: %v", err)
+		}
+		if got.Progress != nil {
+			measured = got.Progress
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the observer never reported the progress the process wrote")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if len(measured.Metrics) != 1 || measured.Metrics[0].Current != 10 ||
+		measured.Metrics[0].Total == nil || *measured.Metrics[0].Total != 10 {
+		t.Fatalf("measured progress = %#v, want the full 10/10 the process reported", measured.Metrics)
+	}
+
+	// 100% is not a lifecycle fact: the command is still running, has no outcome
+	// and has not been stopped.
+	live, _, err := jm.Output(info.ID, 0)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if live.Status != StatusRunning || live.Status.Terminal() {
+		t.Fatalf("status = %q, want running", live.Status)
+	}
+	if live.Outcome != "" {
+		t.Fatalf("outcome = %q, want none while the process runs", live.Outcome)
+	}
+	if live.StopCause != "" {
+		t.Fatalf("StopCause = %q, want none", live.StopCause)
+	}
+	if !live.EndedAt.IsZero() {
+		t.Fatalf("EndedAt = %v, want zero", live.EndedAt)
+	}
+	select {
+	case <-completed:
+		t.Fatal("reaching 100% announced a completion")
+	default:
+	}
+	if pending := jm.PendingSettlements(); len(pending) != 0 {
+		t.Fatalf("PendingSettlements = %+v, want none", pending)
+	}
+
+	// Only the actual process outcome ends it.
+	close(release)
+	settled, err := jm.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if settled.Status != StatusCompleted || settled.Outcome != OutcomeCompleted {
+		t.Fatalf("settled = %q/%q, want the natural completed outcome", settled.Status, settled.Outcome)
+	}
+}
+
+// TestCommandProgressConcurrentSnapshotOwnsData pins the ownership rule: every
+// source snapshot hands out its own copy of the progress and its config, so a
+// concurrent reader that mutates what it received can never corrupt the
+// observer's or the manager's retained state.
+func TestCommandProgressConcurrentSnapshotOwnsData(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var writes []progressWrite
+	for seq := uint64(1); seq <= 50; seq++ {
+		writes = append(writes, progressWrite{
+			stream: progress.Stdout,
+			data:   append(progressLine(t, seq, float64(seq), floatPtr(50)), '\n'),
+		})
+	}
+	runner := &progressStreamRunner{pid: 9104, started: started, release: release, writes: writes}
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "build", Detached: true, Progress: eventsProgressConfig()})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if _, err := jm.WaitForeground(ctx, info.ID, 0); err != nil {
+		t.Fatalf("WaitForeground: %v", err)
+	}
+	// Every record has reached the observer before the concurrent read begins.
+	<-started
+
+	var (
+		wg       sync.WaitGroup
+		observed atomic.Int32
+	)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for k := 0; k < 100; k++ {
+				snap := jm.Snapshot()
+				for idx := range snap.Jobs {
+					if p := snap.Jobs[idx].Progress; p != nil && len(p.Metrics) > 0 {
+						observed.Add(1)
+						p.Metrics[0].Current = -999
+					}
+					if cfg := snap.Jobs[idx].ProgressConfig; cfg != nil {
+						cfg.Title = "mutated"
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if observed.Load() == 0 {
+		t.Fatal("no snapshot ever carried the execution's progress")
+	}
+	close(release)
+
+	settled, err := jm.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if settled.Progress == nil || len(settled.Progress.Metrics) == 0 {
+		t.Fatalf("settled progress = %#v, want the retained snapshot", settled.Progress)
+	}
+	if settled.Progress.Metrics[0].Current == -999 {
+		t.Fatal("a concurrent reader mutated the manager's retained progress through a shared pointer")
+	}
+	if settled.Progress.Sequence != 50 {
+		t.Fatalf("retained progress sequence = %d, want the newest observed 50", settled.Progress.Sequence)
+	}
+	if settled.ProgressConfig == nil || settled.ProgressConfig.Title == "mutated" {
+		t.Fatalf("captured config = %#v, want the admitted title", settled.ProgressConfig)
+	}
+}
+
+// TestCommandProgressReloadKeepsCapturedProfile pins the capture rule: a config
+// reload commits defaults for future admissions only. An already-running
+// execution keeps the progress profile, the source epoch and the observation its
+// admission captured, and a later launch resolves its own.
+func TestCommandProgressReloadKeepsCapturedProfile(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	runner := &progressStreamRunner{
+		pid:     9105,
+		release: release,
+		writes:  []progressWrite{{stream: progress.Stdout, data: append(progressLine(t, 1, 2, floatPtr(9)), '\n')}},
+	}
+	dir := t.TempDir()
+	jm := NewCommandService(ctx, LaunchPolicy{
+		Generation:     1,
+		Runner:         runner,
+		Dir:            dir,
+		MaxOutputBytes: 1 << 20,
+		Retention:      time.Hour,
+	})
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	info, err := jm.Launch(ctx, LaunchSpec{
+		Command:  "build",
+		Detached: true,
+		Progress: eventsProgressConfig(),
+		Origin:   CommandOrigin{TurnID: "turn-1"},
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	waitForRuns(t, func() int { return runner.countRuns() }, 1, time.Second)
+
+	// A reload commits a new generation with a smaller output cap.
+	jm.CommitLaunchPolicy(LaunchPolicy{
+		Generation:     2,
+		Runner:         runner,
+		Dir:            dir,
+		MaxOutputBytes: 8,
+		Retention:      time.Hour,
+	})
+
+	job := snapshotJob(t, jm.Snapshot(), info.ID)
+	if job.ProgressConfig == nil || job.ProgressConfig.Profile != "custom" || job.ProgressConfig.Source != "events-v1" || job.ProgressConfig.Title != "download" {
+		t.Fatalf("captured config after the reload = %#v, want the admitted custom/events-v1/download", job.ProgressConfig)
+	}
+	if job.SourceEpoch != info.SourceEpoch || job.SourceEpoch == "" {
+		t.Fatalf("source epoch after the reload = %q, want the admitted %q", job.SourceEpoch, info.SourceEpoch)
+	}
+	if job.Progress == nil || job.Progress.Sequence != 1 {
+		t.Fatalf("progress after the reload = %#v, want the observation captured at admission", job.Progress)
+	}
+
+	// A later launch resolves its own profile; it must not redirect the first.
+	other, err := jm.Launch(ctx, LaunchSpec{
+		Command:  "tests",
+		Detached: true,
+		Progress: &progress.Config{Profile: "tests", Source: "go-test-json", Title: "go test"},
+	})
+	if err != nil {
+		t.Fatalf("second Launch: %v", err)
+	}
+	if got := snapshotJob(t, jm.Snapshot(), other.ID); got.ProgressConfig == nil || got.ProgressConfig.Source != "go-test-json" {
+		t.Fatalf("second launch config = %#v, want its own go-test-json profile", got.ProgressConfig)
+	}
+	if got := snapshotJob(t, jm.Snapshot(), info.ID).ProgressConfig.Source; got != "events-v1" {
+		t.Fatalf("first launch config after a sibling launch = %q, want events-v1", got)
+	}
+
+	close(release)
+	if _, err := jm.Wait(ctx, info.ID); err != nil {
+		t.Fatalf("Wait(first): %v", err)
+	}
+	if _, err := jm.Wait(ctx, other.ID); err != nil {
+		t.Fatalf("Wait(second): %v", err)
 	}
 }

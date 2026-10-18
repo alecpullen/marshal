@@ -419,6 +419,29 @@ func (db *DB) GetMessages(sessionID string) ([]Message, error) {
 	return messages, nil
 }
 
+// WorkReport returns the content of one persisted subagent report, identified
+// by its exact session and message id. It loads one row and requires the
+// message to carry the subagent-report content type; a missing row, wrong
+// session or wrong type is an unavailable error, never a fabricated report.
+// It never loads message history or parses narration to locate a report.
+func (db *DB) WorkReport(sessionID string, messageID int64) (string, error) {
+	if sessionID == "" || messageID <= 0 {
+		return "", fmt.Errorf("work report unavailable")
+	}
+	var content string
+	var contentType sql.NullString
+	err := db.sqlDB.QueryRow(
+		`SELECT content, content_type FROM messages WHERE session_id=? AND id=?`,
+		sessionID, messageID).Scan(&content, &contentType)
+	if err != nil {
+		return "", fmt.Errorf("work report unavailable: %w", err)
+	}
+	if !contentType.Valid || contentType.String != "subagent_report" {
+		return "", fmt.Errorf("work report unavailable: message is not a subagent report")
+	}
+	return content, nil
+}
+
 // DeleteSession deletes a session and its messages (via CASCADE). It also
 // removes session-scoped rows in tables that do not declare an FK back to
 // agent_sessions: snapshots, file_reads, file_writes, and session_state.

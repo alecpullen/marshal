@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"marshal/internal/app/config"
+	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 )
@@ -468,5 +469,120 @@ func TestResumeMarksUnfinishedJobsLost(t *testing.T) {
 	}
 	if lost != 1 || settled != 1 {
 		t.Fatalf("exits = %+v, want one lost and one settled", exits)
+	}
+}
+
+// The final progress a job observed is durable before its completion is
+// announced: a client that reacts to the event reads the same progress back,
+// and a retried save still carries it.
+func TestJobExitFinalProgressBeforeAnnouncement(t *testing.T) {
+	d, sid := newStepTestDB(t)
+	s := persistedState(t, d, sid)
+	broker := pubsub.NewBroker[Event]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := broker.Subscribe(ctx)
+	s.SetEventBroker(broker)
+
+	exit := JobExit{
+		ID: "job-1", ExecutionID: "exec-1", Command: "go test", ExitCode: 0,
+		At: time.Unix(500, 0), State: "completed", Outcome: "exit_zero",
+		ResultRevision: "rev-1", SourceEpoch: "epoch-1",
+		ProgressConfig: &progress.Config{Profile: "tests", Source: "none", Title: "go test"},
+		Progress:       &progress.Snapshot{Frame: progress.Frame{Version: 1, Sequence: 9, Detail: "3 passed"}},
+	}
+	if err := s.AddJobExit(exit); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+	select {
+	case ev := <-ch:
+		announced := ev.Payload.JobExit
+		if ev.Type != EventJobExit || announced == nil {
+			t.Fatalf("event = %+v", ev)
+		}
+		if announced.Progress == nil || announced.Progress.Detail != "3 passed" {
+			t.Fatalf("announced exit lost its final progress: %+v", announced.Progress)
+		}
+		// The completion is announced only after it is durable, so the stored
+		// record already carries the same final progress.
+		stored, err := d.LoadJobExits(sid)
+		if err != nil {
+			t.Fatalf("LoadJobExits: %v", err)
+		}
+		if len(stored) != 1 || stored[0].Progress == nil || stored[0].Progress.Detail != "3 passed" {
+			t.Fatalf("stored exit = %+v, want the final progress before the announcement", stored)
+		}
+		if stored[0].ProgressConfig == nil || stored[0].ProgressConfig.Title != "go test" {
+			t.Fatalf("stored exit lost its progress config: %+v", stored[0].ProgressConfig)
+		}
+		if stored[0].ResultRevision != "rev-1" || stored[0].SourceEpoch != "epoch-1" {
+			t.Fatalf("stored exit lost its revision/epoch: %+v", stored[0])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no event for a job exit")
+	}
+
+	// A retried save carries the final progress too, not a stale snapshot.
+	retried := JobExit{
+		ID: "job-2", ExecutionID: "exec-2", Command: "go test", ExitCode: 3,
+		At: time.Unix(600, 0), State: "failed", Outcome: "nonzero_exit",
+		Progress: &progress.Snapshot{Frame: progress.Frame{Version: 1, Sequence: 3, Detail: "1 failed"}},
+	}
+	s.mu.Lock()
+	s.upsertJobExitLocked(retried)
+	s.mu.Unlock()
+	s.jobExitSaveMu.Lock()
+	s.jobExitsPending = true
+	s.jobExitsUnpublished = map[string]JobExit{retried.Identity(): retried}
+	s.jobExitSaveMu.Unlock()
+	if err := s.RetryJobExitSaves(); err != nil {
+		t.Fatalf("RetryJobExitSaves: %v", err)
+	}
+	stored, err := d.LoadJobExits(sid)
+	if err != nil {
+		t.Fatalf("LoadJobExits: %v", err)
+	}
+	for _, r := range stored {
+		if r.ExecutionID == "exec-2" {
+			if r.Progress == nil || r.Progress.Detail != "1 failed" {
+				t.Fatalf("retried exit lost its final progress: %+v", r.Progress)
+			}
+			return
+		}
+	}
+	t.Fatalf("retried exit not stored: %+v", stored)
+}
+
+// A failed or unknown command result is never stored in the work view, so its
+// acknowledgment is validated against the durable exit instead: the canonical
+// command key at the exit's own current revision is accepted.
+func TestWorkAckAcceptsFailedCommandResult(t *testing.T) {
+	d, sid := newStepTestDB(t)
+	s := persistedState(t, d, sid)
+	exit := JobExit{
+		ID: "job-1", ExecutionID: "exec-1", Command: "go test", ExitCode: 2,
+		At: time.Unix(500, 0), State: "failed", Outcome: "nonzero_exit",
+		SourceEpoch: "epoch-1", ResultRevision: "rev-1",
+	}
+	if err := s.AddJobExit(exit); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+
+	key := progress.WorkKey(sid, "epoch-1", "command", "exec-1")
+	if err := s.AcknowledgeWork(key, "rev-1"); err != nil {
+		t.Fatalf("AcknowledgeWork(%q, rev-1): %v", key, err)
+	}
+	view := s.WorkView()
+	if len(view.Acknowledged) != 1 || view.Acknowledged[0].TaskKey != key ||
+		view.Acknowledged[0].ResultRevision != "rev-1" {
+		t.Fatalf("command acknowledgment not stored: %+v", view.Acknowledged)
+	}
+
+	// A display job ID is still no task key, and a stale revision still fails.
+	if err := s.AcknowledgeWork("job-1", "rev-1"); err == nil {
+		t.Fatal("a display job ID was accepted as a task key")
+	}
+	if err := s.AcknowledgeWork(key, "rev-2"); err == nil {
+		t.Fatal("a stale revision acknowledged a command result")
 	}
 }

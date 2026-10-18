@@ -7,6 +7,7 @@ import (
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -100,6 +101,24 @@ func pumpSubagentEvents(ch <-chan pubsub.Event[session.SubagentEvent]) tea.Cmd {
 			return nil
 		}
 		return subagentMsg{view: ev.Payload.View}
+	}
+}
+
+// pumpWorkEvents reads from the model's persistent Work snapshot subscription
+// and returns a tea.Cmd that blocks until the next WorkSnapshot event lands,
+// then returns a workMsg carrying the subscription ID the pump captured.
+// Re-arming reads from the same channel: a terminated pump returns nil and
+// never resubscribes itself, so only an explicit rebind starts a new stream.
+func pumpWorkEvents(ch <-chan pubsub.Event[viewmodel.WorkSnapshot], subscriptionID uint64) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return workMsg{snapshot: ev.Payload, subscriptionID: subscriptionID}
 	}
 }
 

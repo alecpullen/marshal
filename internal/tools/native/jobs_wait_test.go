@@ -2,13 +2,17 @@ package native
 
 import (
 	"context"
+	"errors"
 	"io"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/progress"
 	"marshal/internal/tools/registry"
 )
 
@@ -399,5 +403,179 @@ func TestJobWaitForegroundSettlesWhileAttached(t *testing.T) {
 	// waited for it, so there is nothing to detach.
 	if res.Info.Attachment != AttachmentForeground {
 		t.Fatalf("attachment = %q, want foreground for a completed wait", res.Info.Attachment)
+	}
+}
+
+// TestCommandSnapshotGatesInFlightSettlementAndRetainsSaveError pins the settling
+// boundary: while a detached completion's first durable-result sink attempt is in
+// flight, the source snapshot names the execution as settling and reports no
+// save error yet; once the attempt has returned having failed, the settling flag
+// is cleared and the bounded error is reported by execution identity, with the
+// completion retained as pending rather than lost.
+func TestCommandSnapshotGatesInFlightSettlementAndRetainsSaveError(t *testing.T) {
+	ctx := context.Background()
+	runner := &waitTestRunner{delay: 10 * time.Millisecond}
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	entered := make(chan struct{})
+	releaseSink := make(chan struct{})
+	saveErr := errors.New("store unavailable")
+	var once sync.Once
+	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) error {
+		once.Do(func() { close(entered) })
+		<-releaseSink
+		return saveErr
+	})
+
+	info, err := jm.Launch(ctx, LaunchSpec{Command: "build", Detached: true, Progress: eventsProgressConfig()})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the exit sink was never offered the completion")
+	}
+
+	// The sink is in flight: the terminal fact is held back, and no failure has
+	// been recorded yet.
+	inFlight := jm.Snapshot()
+	if !slices.Contains(inFlight.Settling, info.ExecutionID) {
+		t.Fatalf("Settling = %v, want the in-flight execution %q", inFlight.Settling, info.ExecutionID)
+	}
+	if len(inFlight.SaveErrors) != 0 {
+		t.Fatalf("SaveErrors = %v before the sink returned, want none", inFlight.SaveErrors)
+	}
+
+	close(releaseSink)
+
+	// The attempt failed: settling clears and the bounded error is retained.
+	deadline := time.Now().Add(3 * time.Second)
+	var after JobSnapshot
+	for {
+		after = jm.Snapshot()
+		if len(after.Settling) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Settling never cleared after the sink returned: %v", after.Settling)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := after.SaveErrors[info.ExecutionID]; !strings.Contains(got, "store unavailable") {
+		t.Fatalf("SaveErrors = %v, want the recorded failure for %q", after.SaveErrors, info.ExecutionID)
+	}
+	if pending := jm.PendingSettlements(); len(pending) != 1 || pending[0].Info.ID != info.ID {
+		t.Fatalf("PendingSettlements = %+v, want the failed completion retained", pending)
+	}
+}
+
+// TestCommandProgressCompletionStopRaceKeepsActualOutcome pins that a stop racing
+// a completion cannot corrupt the result: whichever the manager's lock arbitrates
+// first wins, the reported outcome is truthful for that ordering, exactly one
+// detached completion is reported, and the progress the process wrote is retained
+// in every case.
+func TestCommandProgressCompletionStopRaceKeepsActualOutcome(t *testing.T) {
+	ctx := context.Background()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	final := append(progressLine(t, 3, 12, floatPtr(12)), '\n')
+	runner := &progressStreamRunner{
+		pid:     9207,
+		started: started,
+		release: release,
+		writes:  []progressWrite{{stream: progress.Stdout, data: final}},
+	}
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+	jm.stopSettleTimeout = 2 * time.Second
+
+	var (
+		mu          sync.Mutex
+		completions int
+	)
+	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) error {
+		mu.Lock()
+		completions++
+		mu.Unlock()
+		return nil
+	})
+
+	info, err := jm.Launch(ctx, LaunchSpec{
+		Command:  "build",
+		Detached: true,
+		Progress: eventsProgressConfig(),
+		Origin:   CommandOrigin{TurnID: "turn-1"},
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-started
+
+	// Release the stop and the process together: the manager's lock decides which
+	// wins, and the result must be truthful either way.
+	start := make(chan struct{})
+	stopDone := make(chan error, 1)
+	go func() {
+		<-start
+		stopDone <- jm.RequestStop(info.ID, "user stopped it")
+	}()
+	go func() {
+		<-start
+		close(release)
+	}()
+	close(start)
+
+	if err := <-stopDone; err != nil {
+		t.Fatalf("RequestStop: %v", err)
+	}
+
+	settled, err := jm.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if !settled.Status.Terminal() {
+		t.Fatalf("settled status = %q, want a terminal state", settled.Status)
+	}
+	switch settled.Outcome {
+	case OutcomeStopped:
+		if settled.Status != StatusKilled {
+			t.Fatalf("stopped outcome carried status %q, want killed", settled.Status)
+		}
+		if settled.StopCause == "" || settled.StopRequestedAt.IsZero() {
+			t.Fatalf("stopped evidence = %q/%v, want the accepted request recorded", settled.StopCause, settled.StopRequestedAt)
+		}
+	case OutcomeCompleted:
+		if settled.Status != StatusCompleted {
+			t.Fatalf("completed outcome carried status %q, want completed", settled.Status)
+		}
+	default:
+		t.Fatalf("outcome = %q, want the actual completed or stopped outcome", settled.Outcome)
+	}
+	if settled.StopCause != "" && settled.StopRequestedAt.IsZero() {
+		t.Fatalf("StopCause = %q with no request time: evidence must be complete", settled.StopCause)
+	}
+	if settled.Progress == nil || settled.Progress.Sequence != 3 {
+		t.Fatalf("final progress = %#v, want the last record the process wrote", settled.Progress)
+	}
+
+	// Exactly one detached completion is reported, whichever way the race fell.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := completions
+		mu.Unlock()
+		if n > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	mu.Lock()
+	n := completions
+	mu.Unlock()
+	if n != 1 {
+		t.Fatalf("completions = %d, want exactly one for the settled detached execution", n)
 	}
 }

@@ -107,7 +107,31 @@ func (m *Model) handleNowBarClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
 	if !ok || msg.Y < top || msg.Y >= bottom {
 		return nil, false
 	}
-	idx := msg.Y - top - plan.agentRowStart
+	row := msg.Y - top
+	if m.workLaneActive() {
+		// The live-work lane records its click targets in the plan: a card
+		// header toggles that card's expansion, and the overflow row opens the
+		// Work view. A row that hits no target is still consumed, never passed
+		// on to the transcript.
+		for _, h := range plan.workHits {
+			if h.Row != row {
+				continue
+			}
+			switch h.Action {
+			case workActionList:
+				m.openTasks(tasksTabWork)
+			case workActionCollapse:
+				m.workExpanded = ""
+				m.refreshViewport()
+			case workActionExpand:
+				m.workExpanded = h.TaskKey
+				m.refreshViewport()
+			}
+			return nil, true
+		}
+		return nil, true
+	}
+	idx := row - plan.agentRowStart
 	if idx < 0 || idx >= len(plan.agents) {
 		return nil, true
 	}

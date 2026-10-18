@@ -3,10 +3,14 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"marshal/internal/pubsub"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -234,4 +238,344 @@ func (m *WatchManagerACP) ensureForwarder(sessionID string, broker *pubsub.Broke
 			}
 		}
 	}()
+}
+
+// workStopReasonMaxRunes bounds the caller-supplied stop reason so one request
+// cannot carry unbounded text into the runtime facade.
+const workStopReasonMaxRunes = 1024
+
+// workPageMaxLimit mirrors the facade's page bound (viewmodel.PageWork): a
+// paged list request above it is rejected as invalid params before the facade
+// is called.
+const workPageMaxLimit = 100
+
+// WorkManagerACP serves session/work_list, session/work_inspect,
+// session/work_stop and session/work_acknowledge. It is deliberately
+// independent from WatchManagerACP: it shares only the session-lookup shape,
+// not the watch broker, and it holds the runtime's WorkService directly.
+//
+// Its lookup resolves a session's runtime as a viewmodel.WorkService directly
+// from the SessionManager, without the prompt path's requirement for an
+// available Runner: a runner-less session (a session still building its model,
+// or a headless one) can still report and manage shared work.
+type WorkManagerACP struct {
+	lookup func(string) (viewmodel.WorkService, bool)
+	notify NotifyFunc
+
+	mu         sync.Mutex
+	forwarders map[string]*workForwarder
+	closed     bool
+}
+
+// workForwarder tracks one session's work-snapshot subscription. Task 22 owns
+// starting them; Task 21 only pins the shape and never spawns one.
+type workForwarder struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	epoch  string
+}
+
+// NewWorkManagerACP builds the handler set. lookup resolves a session's Work
+// facade; notify is the host-level sink for future work_state updates.
+func NewWorkManagerACP(lookup func(string) (viewmodel.WorkService, bool), notify NotifyFunc) *WorkManagerACP {
+	return &WorkManagerACP{lookup: lookup, notify: notify, forwarders: map[string]*workForwarder{}}
+}
+
+// service resolves the Work facade for a session. A missing session id is
+// invalid params, an unknown session is a server error, and a lookup that
+// reports success with a nil facade fails closed rather than dereferencing it.
+func (m *WorkManagerACP) service(sessionID string) (viewmodel.WorkService, error) {
+	if sessionID == "" {
+		return nil, invalidParamsError("sessionId is required")
+	}
+	svc, ok := m.lookup(sessionID)
+	if !ok {
+		return nil, serverErrorf("unknown session: %s", sessionID)
+	}
+	if svc == nil {
+		return nil, serverErrorf("session %s has no work service", sessionID)
+	}
+	return svc, nil
+}
+
+// workFacadeError maps a facade error onto the JSON-RPC surface without ever
+// reinterpreting a failure as success. A stale cursor or target is an explicit
+// invalid-params error (the caller's page or target no longer applies); an
+// unavailable action and every other failure are server errors.
+func workFacadeError(err error) error {
+	switch {
+	case errors.Is(err, viewmodel.ErrWorkStaleCursor), errors.Is(err, viewmodel.ErrWorkStaleTarget):
+		return invalidParamsError("%v", err)
+	case errors.Is(err, viewmodel.ErrWorkUnsupported):
+		return serverErrorf("%v", err)
+	default:
+		return serverErrorf("%v", err)
+	}
+}
+
+// List handles session/work_list. A missing or "live" view returns the live
+// snapshot; "attention" and "history" delegate to the facade and return one
+// page. The live view rejects history arguments rather than silently ignoring
+// them.
+func (m *WorkManagerACP) List(ctx context.Context, params json.RawMessage) (any, error) {
+	var p workListParams
+	if err := decodeParams(params, &p, "session/work_list"); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	m.ensureWorkForwarder(p.SessionID, svc)
+	switch p.View {
+	case "", "live":
+		if p.Query != "" || p.Cursor != "" || p.Limit != 0 {
+			return nil, invalidParamsError("session/work_list: the live view does not accept query, cursor or limit")
+		}
+		return workWire[WorkSnapshotWire](svc.WorkSnapshot())
+	case "attention", "history":
+		if p.Limit < 0 || p.Limit > workPageMaxLimit {
+			return nil, invalidParamsError("session/work_list: limit must be between 1 and %d", workPageMaxLimit)
+		}
+		page, err := svc.ListWork(ctx, viewmodel.WorkQuery{
+			ConversationID: p.SessionID,
+			View:           p.View,
+			Query:          p.Query,
+			Cursor:         p.Cursor,
+			Limit:          p.Limit,
+		})
+		if err != nil {
+			return nil, workFacadeError(err)
+		}
+		return workWire[WorkPageWire](page)
+	default:
+		return nil, invalidParamsError("session/work_list: unknown view %q", p.View)
+	}
+}
+
+// Inspect handles session/work_inspect. It requires the exact task key and
+// returns the bounded detail for that item.
+func (m *WorkManagerACP) Inspect(ctx context.Context, params json.RawMessage) (any, error) {
+	var p workTargetParams
+	if err := decodeParams(params, &p, "session/work_inspect"); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	m.ensureWorkForwarder(p.SessionID, svc)
+	if p.TaskKey == "" {
+		return nil, invalidParamsError("session/work_inspect requires taskKey")
+	}
+	detail, err := svc.InspectWork(ctx, viewmodel.WorkTarget{ConversationID: p.SessionID, TaskKey: p.TaskKey}, p.Raw)
+	if err != nil {
+		return nil, workFacadeError(err)
+	}
+	return workWire[WorkDetailWire](detail)
+}
+
+// Stop handles session/work_stop. It requires the exact task key and passes the
+// captured conversation plus the bounded reason to the facade; it carries no
+// command or permission payload and cannot grant system or edit access.
+func (m *WorkManagerACP) Stop(ctx context.Context, params json.RawMessage) (any, error) {
+	var p workTargetParams
+	if err := decodeParams(params, &p, "session/work_stop"); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if p.TaskKey == "" {
+		return nil, invalidParamsError("session/work_stop requires taskKey")
+	}
+	if utf8.RuneCountInString(p.Reason) > workStopReasonMaxRunes {
+		return nil, invalidParamsError("session/work_stop: reason must be at most %d runes", workStopReasonMaxRunes)
+	}
+	result, err := svc.StopWork(ctx, viewmodel.WorkTarget{ConversationID: p.SessionID, TaskKey: p.TaskKey}, p.Reason)
+	if err != nil {
+		return nil, workFacadeError(err)
+	}
+	return workWire[WorkStopWire](result)
+}
+
+// Acknowledge handles session/work_acknowledge. It requires the exact task key
+// and the terminal result revision; it reports success only after the facade
+// accepts the acknowledgment.
+func (m *WorkManagerACP) Acknowledge(ctx context.Context, params json.RawMessage) (any, error) {
+	var p workTargetParams
+	if err := decodeParams(params, &p, "session/work_acknowledge"); err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	svc, err := m.service(p.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	if p.TaskKey == "" {
+		return nil, invalidParamsError("session/work_acknowledge requires taskKey")
+	}
+	if p.ResultRevision == "" {
+		return nil, invalidParamsError("session/work_acknowledge requires terminalResultRevision")
+	}
+	if err := svc.AcknowledgeWork(ctx, viewmodel.WorkAck{
+		WorkTarget:     viewmodel.WorkTarget{ConversationID: p.SessionID, TaskKey: p.TaskKey},
+		ResultRevision: p.ResultRevision,
+	}); err != nil {
+		return nil, workFacadeError(err)
+	}
+	return map[string]any{"acknowledged": true}, nil
+}
+
+// workStateEnvelope is the session/update body a work_state update travels in.
+// It is a dedicated struct, not SessionUpdateParams, because the latter's
+// Update is a map[string]any: routing the snapshot through a map would decode
+// every revision integer as a float64 and lose the exact source/revision
+// identity a client recovers by. WorkStateUpdateWire embeds WorkSnapshotWire,
+// so kind and the snapshot's fields share one flat JSON object.
+type workStateEnvelope struct {
+	SessionID string              `json:"sessionId"`
+	Update    WorkStateUpdateWire `json:"update"`
+}
+
+// ensureWorkForwarder starts one work_state subscription for a session and
+// seeds the epoch it will accept. The first valid List/Inspect starts it;
+// additional requests reuse the running forwarder.
+//
+// The subscription is bound to the controller's (connection's) lifetime, never
+// the request context: a work_state stream must outlive the request that first
+// asked for it. It is cancelled by Close when the connection ends, by a
+// rebind when the service epoch is replaced, and by the broker closing when the
+// session goes away. Subscribing here, in the request path, is the opt-in: a
+// client that never asks for work never receives a work_state stream. Nothing
+// in a process-output callback subscribes, and no notification is ever sent
+// under the controller mutex.
+func (m *WorkManagerACP) ensureWorkForwarder(sessionID string, service viewmodel.WorkService) {
+	if service == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	if _, ok := m.forwarders[sessionID]; ok {
+		m.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &workForwarder{cancel: cancel, done: make(chan struct{})}
+	m.forwarders[sessionID] = f
+	m.mu.Unlock()
+
+	// Subscribe before reading the seed so an update published between the two
+	// is queued rather than lost; the seed binds the epoch an accepted event
+	// must carry. The epoch is written once here, before the goroutine that
+	// reads it is started.
+	events := service.SubscribeWork(ctx)
+	f.epoch = service.WorkSnapshot().RuntimeEpoch
+	go m.runWorkForwarder(sessionID, f, ctx, events)
+}
+
+// runWorkForwarder forwards each snapshot the subscription delivers as a
+// session/update work_state, until the connection closes or the channel ends.
+// A snapshot whose epoch is not the one bound is dropped: it is a stray
+// delivery from a replaced service epoch, and a client reconstructs that epoch
+// from work_list rather than from a late delivery.
+func (m *WorkManagerACP) runWorkForwarder(sessionID string, f *workForwarder, ctx context.Context, events <-chan pubsub.Event[viewmodel.WorkSnapshot]) {
+	defer m.retireWorkForwarder(sessionID, f)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			snap := ev.Payload
+			if snap.RuntimeEpoch != f.epoch {
+				// A stray delivery from a replaced service epoch. Drop it; the
+				// client rebinds through work_list rather than trusting a
+				// snapshot it never bound. Retirement is driven by the
+				// subscription ending, below.
+				continue
+			}
+			m.notifyWorkState(sessionID, snap)
+		}
+	}
+}
+
+// notifyWorkState sends one snapshot as a work_state update. Marshalling
+// happens outside the controller mutex, and workWire converts the viewmodel
+// projection into the explicit wire DTO without a map round trip, so revision
+// integers stay integers.
+func (m *WorkManagerACP) notifyWorkState(sessionID string, snap viewmodel.WorkSnapshot) {
+	wire, err := workWire[WorkSnapshotWire](snap)
+	if err != nil {
+		slog.Default().Warn("acp: work_state encode failed", "session_id", sessionID, "error", err)
+		return
+	}
+	envelope := workStateEnvelope{
+		SessionID: sessionID,
+		Update:    WorkStateUpdateWire{Kind: "work_state", WorkSnapshotWire: wire},
+	}
+	if err := m.notify("session/update", envelope); err != nil {
+		slog.Default().Warn("acp: work_state notify failed", "session_id", sessionID, "error", err)
+	}
+}
+
+// retireWorkForwarder runs when a forwarder's subscription ends. It deletes
+// only its own map entry — a rebind may already have installed a newer one —
+// then closes done so Close can join it. Unless the controller is closing it
+// does a fresh lookup and, when the session still exists with a different
+// epoch, rebinds: a replaced runtime keeps streaming without a client having to
+// re-issue work_list.
+func (m *WorkManagerACP) retireWorkForwarder(sessionID string, f *workForwarder) {
+	m.mu.Lock()
+	if m.forwarders[sessionID] == f {
+		delete(m.forwarders, sessionID)
+	}
+	closed := m.closed
+	m.mu.Unlock()
+
+	// Cancel and join this subscription before any rebind installs its
+	// replacement, so the old stream stops notifying first.
+	f.cancel()
+	close(f.done)
+
+	if closed {
+		return
+	}
+	service, ok := m.lookup(sessionID)
+	if !ok || service == nil {
+		return
+	}
+	if service.WorkSnapshot().RuntimeEpoch == f.epoch {
+		return
+	}
+	m.ensureWorkForwarder(sessionID, service)
+}
+
+// Close stops every forwarder and marks the controller closed. It is
+// idempotent, and it cancels and joins the forwarders outside the mutex: each
+// forwarder's cleanup re-enters to delete its own entry, so joining under the
+// lock would deadlock.
+func (m *WorkManagerACP) Close() {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.closed = true
+	pending := make([]*workForwarder, 0, len(m.forwarders))
+	for key, f := range m.forwarders {
+		pending = append(pending, f)
+		delete(m.forwarders, key)
+	}
+	m.mu.Unlock()
+
+	for _, f := range pending {
+		f.cancel()
+		<-f.done
+	}
 }

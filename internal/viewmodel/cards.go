@@ -10,6 +10,12 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+// legacyWorkEpoch is the stable epoch a command record with no source epoch of
+// its own is keyed under, matching the coordinator's projection. The live
+// runtime epoch is minted per process, so a base-era record keyed under it would
+// change its canonical work key on every restart.
+const legacyWorkEpoch = "legacy"
+
 // JobState is a background job's card: the shell.run row that started it,
 // settled in place by the job's exit.
 type JobState struct {
@@ -241,11 +247,22 @@ func (ci cardIndex) settleJob(row *Node) {
 	}
 	// The start's own metadata describes the execution as it was admitted: the
 	// attachment it ended up with, its status and its identity. A card that
-	// never settles (a lost job) still shows them.
+	// never settles (a lost job) still shows them. The same record carries the
+	// stable work key the pinned surface pairs this dispatch row by.
 	if js.Structured {
 		ex := js.Execution
 		card.Attachment = string(ex.Attachment)
 		card.Status, card.StopCause, card.Truncated = ex.State, ex.StopCause, ex.Truncated
+		if ex.ExecutionID != "" {
+			// A base-era record has an execution identity but no source epoch;
+			// key it under the stable legacy epoch the coordinator uses, or the
+			// row's key would never match the projected item's.
+			epoch := ex.SourceEpoch
+			if epoch == "" {
+				epoch = legacyWorkEpoch
+			}
+			row.WorkKey = WorkKey(ex.ConversationID, epoch, workKindCommand, ex.ExecutionID)
+		}
 	}
 	if e, ok := ci.exits[row.ID]; ok {
 		card.Running, card.Lost, card.ExitCode, card.Duration = false, e.Lost, e.ExitCode, e.Duration

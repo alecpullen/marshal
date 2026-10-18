@@ -204,6 +204,69 @@ func TestWaitAnyLeaksNoGoroutines(t *testing.T) {
 
 // --- Task 5: explicit-stop registration for background work --------------
 
+// TestSubagentWorkStopCompletionRace pins the stop/settlement ordering: an
+// accepted stop records StopRequested before the child is cancelled and settles
+// as "stopped" only when the child observed the cancellation; a request that
+// arrives after a successful settlement, an unrelated failure, or a panic cannot
+// relabel the result, and a stopped/finished child is never a stop target.
+func TestSubagentWorkStopCompletionRace(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+
+	// A late stop cannot relabel a successful result.
+	done := s.RegisterSubagent("done", nil)
+	s.SetSubagentCancel(done.ID, func() {})
+	s.FinishSubagent(done.ID, "reported", nil)
+	if s.CancelSubagent(done.ID) {
+		t.Fatal("a settled child was reported as stopped")
+	}
+	got, _ := s.Subagent(done.ID)
+	if got.Outcome != "completed" || got.StopRequested {
+		t.Fatalf("settled view = outcome %q stopRequested %v, want completed/false", got.Outcome, got.StopRequested)
+	}
+
+	// An accepted stop that the child observed settles as "stopped".
+	stopped := s.RegisterSubagent("stopped", nil)
+	cancelled := false
+	s.SetSubagentCancel(stopped.ID, func() { cancelled = true })
+	if !s.CancelSubagent(stopped.ID) {
+		t.Fatal("CancelSubagent did not accept a running child's stop")
+	}
+	if !cancelled {
+		t.Fatal("CancelSubagent did not cancel the child's context")
+	}
+	if mid, _ := s.Subagent(stopped.ID); !mid.StopRequested {
+		t.Fatal("an accepted stop was not recorded on the view")
+	}
+	s.FinishSubagent(stopped.ID, "", context.Canceled)
+	gotStop, _ := s.Subagent(stopped.ID)
+	if gotStop.Outcome != "stopped" {
+		t.Fatalf("stopped child outcome = %q, want stopped", gotStop.Outcome)
+	}
+	// The existing three-valued status stays compatible: a non-nil error is
+	// still a SubagentFailed status.
+	if gotStop.Status != SubagentFailed {
+		t.Fatalf("stopped child status = %v, want SubagentFailed (status compatibility)", gotStop.Status)
+	}
+
+	// Without an accepted stop, an unrelated failure is "failed".
+	failed := s.RegisterSubagent("failed", nil)
+	s.FinishSubagent(failed.ID, "", errors.New("boom"))
+	if gotF, _ := s.Subagent(failed.ID); gotF.Outcome != "failed" {
+		t.Fatalf("unrelated failure outcome = %q, want failed", gotF.Outcome)
+	}
+
+	// A stop accepted before a successful completion cannot relabel it.
+	late := s.RegisterSubagent("late", nil)
+	s.SetSubagentCancel(late.ID, func() {})
+	if !s.CancelSubagent(late.ID) {
+		t.Fatal("CancelSubagent did not accept the running child's stop")
+	}
+	s.FinishSubagent(late.ID, "still fine", nil)
+	if gotL, _ := s.Subagent(late.ID); gotL.Outcome != "completed" {
+		t.Fatalf("late stop relabelled a successful result: %q", gotL.Outcome)
+	}
+}
+
 // fakeTurnStopService records the stop calls the session makes on the
 // conversation's command service.
 type fakeTurnStopService struct {

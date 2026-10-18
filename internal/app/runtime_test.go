@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,6 +30,7 @@ import (
 	"marshal/internal/oauth"
 	"marshal/internal/tools/native"
 	"marshal/internal/trust"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -3594,5 +3596,1134 @@ func TestRuntimeSendNowUnavailableFailsClosed(t *testing.T) {
 	}
 	if len(bare.SteeringQueue()) != 0 {
 		t.Fatalf("a refused unsupported request queued %v", bare.SteeringQueue())
+	}
+}
+
+// ── Task 13: conversation work projection and action facade ─────────────────
+
+// newWorkFixture builds an isolated, persisted conversation whose work index
+// and job-exit evidence can be stored and read back.
+func newWorkFixture(t *testing.T) (*session.State, *db.DB, string) {
+	t.Helper()
+	dir := t.TempDir()
+	database, err := db.Open(filepath.Join(dir, "work.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		database.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(dir, "work-projection")
+	if err != nil {
+		database.Close()
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	const sessionID = "sess_work"
+	if err := database.CreateSession(sessionID, projectID, "", time.Now()); err != nil {
+		database.Close()
+		t.Fatalf("CreateSession: %v", err)
+	}
+	state := session.New(config.Default(), dir, time.Now(), session.Persistence{
+		DB:        database,
+		SessionID: sessionID,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	t.Cleanup(func() { _ = database.Close() })
+	return state, database, sessionID
+}
+
+// workClock is a controllable clock so a test can drive the projection's
+// throttle and receipt windows without sleeping.
+type workClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *workClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *workClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// workTestJobManager builds a command service whose detached completions store
+// their durable exit into state, mirroring the production wiring.
+func workTestJobManager(t *testing.T, state *session.State, runner native.CommandRunner, dir string) *native.JobManager {
+	t.Helper()
+	jm := native.NewCommandService(context.Background(), native.LaunchPolicy{
+		Runner:         runner,
+		Dir:            dir,
+		MaxJobs:        200,
+		Retention:      time.Hour,
+		MaxOutputBytes: 2 << 20,
+	})
+	if state != nil {
+		jm.SetOnExit(func(info native.JobInfo, ran time.Duration, output string) error {
+			return state.AddJobExit(session.JobExitFromExecution(info.Execution(), info.Command, output, ran, info.ExitCode))
+		})
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = jm.Shutdown(ctx)
+	})
+	return jm
+}
+
+func waitWorkUntil(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if cond() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func workItemBySource(snap viewmodel.WorkSnapshot, kind, sourceID string) (viewmodel.WorkItem, bool) {
+	for _, it := range snap.Items {
+		if it.Kind == kind && it.SourceID == sourceID {
+			return it, true
+		}
+	}
+	return viewmodel.WorkItem{}, false
+}
+
+func workItemByKind(snap viewmodel.WorkSnapshot, kind string) (viewmodel.WorkItem, bool) {
+	for _, it := range snap.Items {
+		if it.Kind == kind {
+			return it, true
+		}
+	}
+	return viewmodel.WorkItem{}, false
+}
+
+// TestWorkCoordinatorSeedsAndRepairsDroppedEvents pins that the coordinator
+// seeds from an initial source snapshot even when no event was observed, and
+// that a reconcile on demand repairs a source change no wake announced.
+func TestWorkCoordinatorSeedsAndRepairsDroppedEvents(t *testing.T) {
+	state, _, sessionID := newWorkFixture(t)
+	dir := t.TempDir()
+	clock := &workClock{t: time.Unix(1000, 0)}
+
+	started := make(chan struct{})
+	var once sync.Once
+	runner := &fakeRunner{run: func(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		once.Do(func() { close(started) })
+		<-ctx.Done()
+		return native.CommandResult{}, ctx.Err()
+	}}
+	jm := workTestJobManager(t, state, runner, dir)
+	if _, err := jm.Launch(context.Background(), native.LaunchSpec{Command: "first", Detached: true}); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-started
+
+	// The coordinator subscribes no broker for jobs here, so only the initial
+	// snapshot can seed the first item.
+	wc := newWorkCoordinator(context.Background(), state, workSources{Jobs: jm}, clock.now)
+	t.Cleanup(wc.close)
+
+	snap := wc.snapshotNow()
+	if snap.ConversationID != sessionID {
+		t.Fatalf("ConversationID = %q, want %q", snap.ConversationID, sessionID)
+	}
+	if len(snap.Items) != 1 {
+		t.Fatalf("seeded items = %d, want 1: %+v", len(snap.Items), snap.Items)
+	}
+	if snap.Items[0].Kind != workKindCommand || snap.Items[0].State != workStateRunning {
+		t.Fatalf("seeded item = %+v, want a running command", snap.Items[0])
+	}
+	if !snap.Items[0].Capabilities.Stop {
+		t.Fatal("a live detached command should be stoppable")
+	}
+
+	// A second launch receives no wake; an on-demand reconcile still repairs the
+	// dropped event.
+	if _, err := jm.Launch(context.Background(), native.LaunchSpec{Command: "second", Detached: true}); err != nil {
+		t.Fatalf("Launch second: %v", err)
+	}
+	wc.reconcileWork(clock.now())
+	if got := len(wc.snapshotNow().Items); got != 2 {
+		t.Fatalf("items after repair = %d, want 2", got)
+	}
+}
+
+// TestWorkCoordinatorAllActiveAndBoundedTerminalDetails pins that every active
+// item stays in the snapshot while terminal details are capped, and that the
+// omitted results remain pageable.
+func TestWorkCoordinatorAllActiveAndBoundedTerminalDetails(t *testing.T) {
+	state, _, _ := newWorkFixture(t)
+	dir := t.TempDir()
+	clock := &workClock{t: time.Unix(1500, 0)}
+
+	runner := &fakeRunner{run: func(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		if req.Command == "blocking" {
+			<-ctx.Done()
+			return native.CommandResult{}, ctx.Err()
+		}
+		return native.CommandResult{Stdout: "ok", ExitCode: 0}, nil
+	}}
+	jm := workTestJobManager(t, state, runner, dir)
+	for i := 0; i < 40; i++ {
+		if _, err := jm.Launch(context.Background(), native.LaunchSpec{Command: fmt.Sprintf("job-%d", i), Detached: true}); err != nil {
+			t.Fatalf("Launch %d: %v", i, err)
+		}
+	}
+	waitWorkUntil(t, func() bool { return jm.RunningCount() == 0 }, "the instant jobs to settle")
+	if _, err := jm.Launch(context.Background(), native.LaunchSpec{Command: "blocking", Detached: true}); err != nil {
+		t.Fatalf("Launch blocking: %v", err)
+	}
+	waitWorkUntil(t, func() bool { return jm.RunningCount() == 1 }, "the blocking job to run")
+
+	wc := newWorkCoordinator(context.Background(), state, workSources{Jobs: jm}, clock.now)
+	t.Cleanup(wc.close)
+	wc.reconcileWork(clock.now())
+	snap := wc.snapshotNow()
+
+	active, terminal := 0, 0
+	for _, it := range snap.Items {
+		if viewmodel.WorkActive(it) {
+			active++
+		} else if workItemTerminal(it.State) {
+			terminal++
+		}
+	}
+	if active != 1 {
+		t.Fatalf("active items = %d, want 1 (every active item stays in the snapshot)", active)
+	}
+	if terminal > workTerminalDetails {
+		t.Fatalf("terminal details = %d, want at most %d", terminal, workTerminalDetails)
+	}
+	page, err := wc.page(viewmodel.WorkQuery{View: "history", Limit: 100})
+	if err != nil {
+		t.Fatalf("page: %v", err)
+	}
+	if len(page.Items) != 41 {
+		t.Fatalf("history page = %d items, want 41 (omitted results stay pageable)", len(page.Items))
+	}
+}
+
+// TestWorkCoordinatorProgressThrottleAndUrgentSettlement pins that an idle
+// poll advances no revision, a cosmetic change publishes at most 5 Hz, and a
+// lifecycle change publishes immediately.
+func TestWorkCoordinatorProgressThrottleAndUrgentSettlement(t *testing.T) {
+	state, _, _ := newWorkFixture(t)
+	clock := &workClock{t: time.Unix(2000, 0)}
+
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	v := state.RegisterSubagent("child", child)
+	child.SetActiveToolCall(session.ActiveToolCall{Name: "file.read"})
+
+	wc := newWorkCoordinator(context.Background(), state, workSources{}, clock.now)
+	t.Cleanup(wc.close)
+	rev1 := wc.snapshotNow().Revision
+
+	// An idle identical poll advances no revision.
+	wc.reconcileWork(clock.now())
+	if got := wc.snapshotNow().Revision; got != rev1 {
+		t.Fatalf("idle poll revision = %d, want %d", got, rev1)
+	}
+
+	// A cosmetic change (the child's activity) inside the throttle window is
+	// held back rather than published.
+	child.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run"})
+	clock.advance(10 * time.Millisecond)
+	wc.reconcileWork(clock.now())
+	if got := wc.snapshotNow().Revision; got != rev1 {
+		t.Fatalf("throttled cosmetic revision = %d, want %d", got, rev1)
+	}
+
+	// Once the window passes, the cosmetic change publishes.
+	clock.advance(300 * time.Millisecond)
+	wc.reconcileWork(clock.now())
+	rev2 := wc.snapshotNow().Revision
+	if rev2 <= rev1 {
+		t.Fatalf("cosmetic revision = %d, want > %d", rev2, rev1)
+	}
+
+	// A lifecycle change publishes immediately, even inside the window.
+	state.FinishSubagent(v.ID, "done", nil)
+	wc.reconcileWork(clock.now())
+	rev3 := wc.snapshotNow().Revision
+	if rev3 <= rev2 {
+		t.Fatalf("urgent settlement revision = %d, want > %d", rev3, rev2)
+	}
+	it, ok := workItemBySource(wc.snapshotNow(), workKindAgent, strconv.FormatInt(v.ID, 10))
+	if !ok || it.State != workStateCompleted {
+		t.Fatalf("settled item = %+v, want completed", it)
+	}
+}
+
+// TestWorkCoordinatorLegacyHistoryCannotStopNewJob pins that legacy command
+// history gets no stop capability and cannot reach a live execution that reuses
+// its display ID.
+func TestWorkCoordinatorLegacyHistoryCannotStopNewJob(t *testing.T) {
+	state, _, sessionID := newWorkFixture(t)
+	dir := t.TempDir()
+	clock := &workClock{t: time.Unix(3000, 0)}
+
+	runner := &fakeRunner{run: func(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		<-ctx.Done()
+		return native.CommandResult{}, ctx.Err()
+	}}
+	jm := workTestJobManager(t, state, runner, dir)
+	info, err := jm.Launch(context.Background(), native.LaunchSpec{Command: "live job", Detached: true})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if info.ID != "job-1" {
+		t.Fatalf("display id = %q, want job-1", info.ID)
+	}
+	// A legacy exit shares the display id but carries no execution identity.
+	if err := state.AddJobExit(session.JobExit{ID: "job-1", Command: "old job", State: "failed", ExitCode: 1, At: time.Unix(2900, 0)}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+
+	wc := newWorkCoordinator(context.Background(), state, workSources{Jobs: jm}, clock.now)
+	t.Cleanup(wc.close)
+	wc.reconcileWork(clock.now())
+
+	snap := wc.snapshotNow()
+	var live, legacy *viewmodel.WorkItem
+	for i := range snap.Items {
+		it := snap.Items[i]
+		if it.Kind != workKindCommand {
+			continue
+		}
+		if strings.HasPrefix(it.SourceID, "legacy:") {
+			c := it
+			legacy = &c
+		} else if it.SourceID == info.ExecutionID {
+			c := it
+			live = &c
+		}
+	}
+	if live == nil {
+		t.Fatalf("live job missing from %+v", snap.Items)
+	}
+	if legacy == nil {
+		t.Fatalf("legacy history missing from %+v", snap.Items)
+	}
+	if !live.Capabilities.Stop {
+		t.Fatal("the live job should be stoppable")
+	}
+	if legacy.Capabilities.Stop {
+		t.Fatal("a legacy command must never receive stop capability")
+	}
+	if legacy.RuntimeEpoch != "legacy" {
+		t.Fatalf("legacy epoch = %q, want legacy", legacy.RuntimeEpoch)
+	}
+
+	// A stop aimed at the legacy history key must not reach the live job.
+	res, err := wc.stop(context.Background(), viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: legacy.TaskKey}, "stop")
+	if err != nil {
+		t.Fatalf("stop legacy: %v", err)
+	}
+	if res.Accepted {
+		t.Fatalf("legacy stop was accepted: %+v", res)
+	}
+	now, _, err := jm.Output("job-1", 0)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if now.Status.Terminal() {
+		t.Fatal("the live job was stopped by a legacy-history request")
+	}
+}
+
+// TestWorkFacadeExactChildAndWatchStop pins that the facade routes an exact
+// child stop to that child's cancel and an exact watch stop to that
+// registration, and never falls back to a parent cancel.
+func TestWorkFacadeExactChildAndWatchStop(t *testing.T) {
+	state, _, sessionID := newWorkFixture(t)
+	clock := &workClock{t: time.Unix(4000, 0)}
+
+	v := state.RegisterSubagent("child", nil)
+	canceled := false
+	state.SetSubagentCancel(v.ID, func() { canceled = true })
+
+	wm := watch.NewManager(context.Background(), watch.Deps{
+		ConversationID: sessionID,
+		RunSample:      func(ctx context.Context, command, dir string) (string, int, error) { return "", 1, nil },
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = wm.Close(ctx)
+	})
+	watchID, _, err := wm.Start(watch.Spec{
+		Name: "watcher", Kind: watch.KindCommand, Command: "true",
+		Condition: "exit_code 0", Mode: watch.ModeRepeat, Interval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("Start watch: %v", err)
+	}
+
+	wc := newWorkCoordinator(context.Background(), state, workSources{Watches: wm}, clock.now)
+	t.Cleanup(wc.close)
+	rt := &Runtime{State: state, work: wc}
+
+	snap := wc.snapshotNow()
+	agent, ok := workItemBySource(snap, workKindAgent, strconv.FormatInt(v.ID, 10))
+	if !ok {
+		t.Fatalf("agent item missing from %+v", snap.Items)
+	}
+	watchItem, ok := workItemBySource(snap, workKindWatch, watchID)
+	if !ok {
+		t.Fatalf("watch item missing from %+v", snap.Items)
+	}
+
+	// The exact child stop reaches only that child's cancel.
+	res, err := rt.StopWork(context.Background(), viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: agent.TaskKey}, "stop child")
+	if err != nil {
+		t.Fatalf("StopWork child: %v", err)
+	}
+	if !res.Accepted {
+		t.Fatalf("child stop not accepted: %+v", res)
+	}
+	if !canceled {
+		t.Fatal("the exact child cancel was not invoked")
+	}
+	// The watch is untouched by the child stop.
+	if info, err := wm.Status(watchID); err != nil || !info.Active {
+		t.Fatalf("the watch should still be active after a child stop: %+v err=%v", info, err)
+	}
+
+	// The exact watch stop reaches only that registration.
+	res, err = rt.StopWork(context.Background(), viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: watchItem.TaskKey}, "stop watch")
+	if err != nil {
+		t.Fatalf("StopWork watch: %v", err)
+	}
+	if !res.Accepted {
+		t.Fatalf("watch stop not accepted: %+v", res)
+	}
+	if _, err := wm.Status(watchID); err == nil {
+		t.Fatal("the watch should have been removed after its stop")
+	}
+}
+
+// TestWorkFacadeAckFailureAndRevisionCAS pins the acknowledgment revision
+// compare-and-swap: a stale revision and a running item are refused, the exact
+// revision acknowledges, a repeat is idempotent, and the attention count reacts.
+func TestWorkFacadeAckFailureAndRevisionCAS(t *testing.T) {
+	state, _, sessionID := newWorkFixture(t)
+	clock := &workClock{t: time.Unix(5000, 0)}
+
+	v := state.RegisterSubagent("failing child", nil)
+	state.FinishSubagent(v.ID, "boom", errors.New("boom"))
+	running := state.RegisterSubagent("running child", nil)
+
+	wc := newWorkCoordinator(context.Background(), state, workSources{}, clock.now)
+	t.Cleanup(wc.close)
+	rt := &Runtime{State: state, work: wc}
+
+	snap := wc.snapshotNow()
+	failed, ok := workItemBySource(snap, workKindAgent, strconv.FormatInt(v.ID, 10))
+	if !ok {
+		t.Fatalf("failed agent missing from %+v", snap.Items)
+	}
+	if !viewmodel.WorkNeedsAttention(failed) {
+		t.Fatalf("failed agent should need attention: %+v", failed)
+	}
+	if !failed.Capabilities.Acknowledge {
+		t.Fatal("a failed terminal result should be acknowledgeable")
+	}
+	before := snap.AttentionCount
+	if before == 0 {
+		t.Fatal("attention count should include the failed result")
+	}
+
+	// A revision that names no current terminal result is refused.
+	if err := rt.AcknowledgeWork(context.Background(), viewmodel.WorkAck{
+		WorkTarget:     viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: failed.TaskKey},
+		ResultRevision: "stale-revision",
+	}); err == nil {
+		t.Fatal("acknowledging a stale revision succeeded")
+	}
+
+	// A running item is not acknowledgeable.
+	run, ok := workItemBySource(snap, workKindAgent, strconv.FormatInt(running.ID, 10))
+	if !ok {
+		t.Fatalf("running agent missing from %+v", snap.Items)
+	}
+	if err := rt.AcknowledgeWork(context.Background(), viewmodel.WorkAck{
+		WorkTarget:     viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: run.TaskKey},
+		ResultRevision: viewmodel.WorkResultRevision(run),
+	}); !errors.Is(err, viewmodel.ErrWorkUnsupported) {
+		t.Fatalf("acknowledging a running item err = %v, want ErrWorkUnsupported", err)
+	}
+
+	// The exact revision acknowledges, and the repeat is idempotent.
+	rev := viewmodel.WorkResultRevision(failed)
+	if err := rt.AcknowledgeWork(context.Background(), viewmodel.WorkAck{
+		WorkTarget:     viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: failed.TaskKey},
+		ResultRevision: rev,
+	}); err != nil {
+		t.Fatalf("AcknowledgeWork: %v", err)
+	}
+	if err := rt.AcknowledgeWork(context.Background(), viewmodel.WorkAck{
+		WorkTarget:     viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: failed.TaskKey},
+		ResultRevision: rev,
+	}); err != nil {
+		t.Fatalf("repeat AcknowledgeWork: %v", err)
+	}
+	wc.reconcileWork(clock.now())
+	if after := wc.snapshotNow().AttentionCount; after >= before {
+		t.Fatalf("attention count = %d, want < %d after acknowledgment", after, before)
+	}
+}
+
+// TestWorkInspectUsesExactReportAndBoundedOutput pins that inspection resolves
+// an agent's exact persisted report and returns a bounded, safe command output.
+func TestWorkInspectUsesExactReportAndBoundedOutput(t *testing.T) {
+	state, _, sessionID := newWorkFixture(t)
+	dir := t.TempDir()
+	clock := &workClock{t: time.Unix(6000, 0)}
+
+	v := state.RegisterSubagent("reporter", nil)
+	report := fmt.Sprintf("[subagent %d finished] exact report body", v.ID)
+	state.AddMessage(session.RoleUser, report, session.ContentTypeSubagentReport)
+	if err := state.BindSubagentReport(v.ID, report); err != nil {
+		t.Fatalf("BindSubagentReport: %v", err)
+	}
+	state.FinishSubagent(v.ID, report, nil)
+
+	big := strings.Repeat("abcdefgh", 6000) // 48 KiB
+	runner := &fakeRunner{run: func(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		return native.CommandResult{Stdout: big, ExitCode: 0}, nil
+	}}
+	jm := workTestJobManager(t, state, runner, dir)
+	if _, err := jm.Launch(context.Background(), native.LaunchSpec{Command: "loud", Detached: true}); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	waitWorkUntil(t, func() bool { return jm.RunningCount() == 0 }, "the loud job to settle")
+
+	wc := newWorkCoordinator(context.Background(), state, workSources{Jobs: jm}, clock.now)
+	t.Cleanup(wc.close)
+	rt := &Runtime{State: state, work: wc}
+	wc.reconcileWork(clock.now())
+	snap := wc.snapshotNow()
+
+	agent, ok := workItemBySource(snap, workKindAgent, strconv.FormatInt(v.ID, 10))
+	if !ok {
+		t.Fatalf("agent item missing from %+v", snap.Items)
+	}
+	detail, err := rt.InspectWork(context.Background(), viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: agent.TaskKey}, false)
+	if err != nil {
+		t.Fatalf("InspectWork agent: %v", err)
+	}
+	if detail.Report != report {
+		t.Fatalf("report = %q, want %q", detail.Report, report)
+	}
+	if detail.Unavailable != "" {
+		t.Fatalf("a persisted report must be available, got %q", detail.Unavailable)
+	}
+
+	cmd, ok := workItemByKind(snap, workKindCommand)
+	if !ok {
+		t.Fatalf("command item missing from %+v", snap.Items)
+	}
+	detail, err = rt.InspectWork(context.Background(), viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: cmd.TaskKey}, true)
+	if err != nil {
+		t.Fatalf("InspectWork command raw: %v", err)
+	}
+	if detail.Output == "" {
+		t.Fatal("raw command output is empty")
+	}
+	if len(detail.Output) > workInspectBytes {
+		t.Fatalf("raw output = %d bytes, want <= %d", len(detail.Output), workInspectBytes)
+	}
+	if !detail.Raw {
+		t.Fatal("detail.Raw should echo the raw request")
+	}
+
+	// An unknown key is a stale target, never a fabricated detail.
+	if _, err := rt.InspectWork(context.Background(), viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: "work:nope"}, false); !errors.Is(err, viewmodel.ErrWorkStaleTarget) {
+		t.Fatalf("inspect unknown err = %v, want ErrWorkStaleTarget", err)
+	}
+}
+
+// TestWorkRuntimeReloadRetainsExecutionIdentity pins that a config reload keeps
+// the conversation's projection and its execution identity: the coordinator
+// and its epoch survive, a live child keeps its task key and stop capability,
+// and the replacement watch manager is rebound only after the old one is joined
+// and reconciled, so a registration on the replacement carries its own epoch.
+func TestWorkRuntimeReloadRetainsExecutionIdentity(t *testing.T) {
+	ctx := context.Background()
+	rt := newSendNowTestRuntime(t, nativeToolAgentConfig("work-reload-identity"))
+
+	before := rt.WorkSnapshot()
+	if before.RuntimeEpoch == "" {
+		t.Fatalf("startup snapshot has no projection epoch: %+v", before)
+	}
+	if before.ConversationID != rt.State.SessionID() {
+		t.Fatalf("snapshot conversation = %q, want %q", before.ConversationID, rt.State.SessionID())
+	}
+
+	// A live child is execution identity the projection owns.
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	v := rt.State.RegisterSubagent("worker", child)
+	source := strconv.FormatInt(v.ID, 10)
+	waitWorkUntil(t, func() bool {
+		_, ok := workItemBySource(rt.WorkSnapshot(), workKindAgent, source)
+		return ok
+	}, "the live child to appear in the projection")
+	item, ok := workItemBySource(rt.WorkSnapshot(), workKindAgent, source)
+	if !ok {
+		t.Fatal("child missing before reload")
+	}
+	keyBefore := item.TaskKey
+	oldWatchMgr := rt.WatchManager
+
+	if err := reloadAgentRuntime(ctx, rt.State.Config, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+
+	after := rt.WorkSnapshot()
+	if after.ConversationID != before.ConversationID {
+		t.Fatalf("reload changed the conversation: %q -> %q", before.ConversationID, after.ConversationID)
+	}
+	if after.RuntimeEpoch != before.RuntimeEpoch {
+		t.Fatalf("reload minted a new projection epoch %q -> %q; execution identity was not retained", before.RuntimeEpoch, after.RuntimeEpoch)
+	}
+	item, ok = workItemBySource(after, workKindAgent, source)
+	if !ok {
+		t.Fatalf("the live child left the projection across a reload: %+v", after.Items)
+	}
+	if item.TaskKey != keyBefore {
+		t.Fatalf("child task key changed across reload: %q -> %q", keyBefore, item.TaskKey)
+	}
+	if !item.Capabilities.Stop {
+		t.Fatalf("the live child lost its stop capability across reload: %+v", item)
+	}
+
+	// The watch manager is replaced, and the projection is rebound to the new
+	// pointer: a registration on the replacement is owned under its own epoch.
+	if rt.WatchManager == oldWatchMgr {
+		t.Fatal("reload did not replace the watch manager")
+	}
+	watchID, _, err := rt.WatchManager.Start(watch.Spec{
+		Name: "post-reload", Kind: watch.KindCommand, Command: "true",
+		Condition: "exit_code 0", Mode: watch.ModeRepeat, Interval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("start watch on the replacement: %v", err)
+	}
+	waitWorkUntil(t, func() bool {
+		it, ok := workItemBySource(rt.WorkSnapshot(), workKindWatch, watchID)
+		return ok && it.RuntimeEpoch != before.RuntimeEpoch
+	}, "the replacement's watch to appear under its own epoch")
+	if _, err := rt.WatchManager.Stop(watchID); err != nil {
+		t.Fatalf("stop post-reload watch: %v", err)
+	}
+	// Release the live child so the runtime drains cleanly at cleanup.
+	rt.State.FinishSubagent(v.ID, "done", nil)
+}
+
+// TestWorkRuntimeReplacementCannotReceiveOldEpoch pins that replacing the
+// conversation closes the old projection and starts a fresh one: the
+// replacement never reuses the old epoch, carries none of its items, and starts
+// with no attention or receipt counters. The old coordinator is closed, not
+// repointed at the replacement.
+func TestWorkRuntimeReplacementCannotReceiveOldEpoch(t *testing.T) {
+	rt := newSendNowTestRuntime(t, nativeToolAgentConfig("work-replacement-epoch"))
+
+	// The old conversation carries attention and a completed receipt.
+	failed := rt.State.RegisterSubagent("failed", nil)
+	rt.State.FinishSubagent(failed.ID, "boom", errors.New("boom"))
+	done := rt.State.RegisterSubagent("finished", nil)
+	rt.State.FinishSubagent(done.ID, "ok", nil)
+	waitWorkUntil(t, func() bool {
+		s := rt.WorkSnapshot()
+		return s.AttentionCount > 0 && (s.SuccessReceiptCount > 0 || s.StoppedReceiptCount > 0)
+	}, "the old conversation's attention and receipt counters")
+
+	old := rt.WorkSnapshot()
+	oldEpoch := old.RuntimeEpoch
+	oldConv := old.ConversationID
+	oldWork := rt.currentWork()
+	if oldWork == nil {
+		t.Fatal("startup did not install a work coordinator")
+	}
+
+	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	if rt.currentWork() == oldWork {
+		t.Fatal("the replacement reused the replaced conversation's coordinator")
+	}
+	snap := rt.WorkSnapshot()
+	if snap.ConversationID != newState.SessionID() || snap.ConversationID == oldConv {
+		t.Fatalf("replacement conversation = %q, want %q (not %q)", snap.ConversationID, newState.SessionID(), oldConv)
+	}
+	if snap.RuntimeEpoch == oldEpoch {
+		t.Fatalf("the replacement reused the old projection epoch %q", oldEpoch)
+	}
+	if snap.AttentionCount != 0 || snap.SuccessReceiptCount != 0 || snap.StoppedReceiptCount != 0 {
+		t.Fatalf("replacement counters = attention %d, success %d, stopped %d; want all zero",
+			snap.AttentionCount, snap.SuccessReceiptCount, snap.StoppedReceiptCount)
+	}
+	for _, it := range snap.Items {
+		if it.RuntimeEpoch == oldEpoch {
+			t.Fatalf("the replacement's snapshot carries an item from the old epoch: %+v", it)
+		}
+	}
+	// The replaced projection still holds the old conversation's own facts.
+	if got := oldWork.snapshotNow(); got.ConversationID != oldConv || got.AttentionCount == 0 {
+		t.Fatalf("the replaced coordinator was mutated: %+v", got)
+	}
+}
+
+// TestWorkTUIFacadeReplacementUsesNewConversation pins that the single
+// viewmodel.WorkService the TUI is handed (the *Runtime itself, via
+// tui.WithWork) follows an explicit session replacement. The same pointer the
+// TUI holds delegates to the replacement conversation's coordinator, so every
+// facade read the renderer makes switches to the new conversation's identity
+// and epoch, and a read bound to the retired conversation is refused as stale
+// rather than silently served from the old projection.
+func TestWorkTUIFacadeReplacementUsesNewConversation(t *testing.T) {
+	rt := newSendNowTestRuntime(t, nativeToolAgentConfig("work-tui-facade-replacement"))
+
+	// The TUI is handed the runtime pointer itself as its Work service.
+	var svc viewmodel.WorkService = rt
+
+	// Give the old conversation a terminal work item, so a projection that
+	// leaked across the replacement would be observable through the facade.
+	failed := rt.State.RegisterSubagent("old-work", nil)
+	rt.State.FinishSubagent(failed.ID, "boom", errors.New("boom"))
+	waitWorkUntil(t, func() bool { return rt.WorkSnapshot().AttentionCount > 0 }, "the old conversation's work item")
+
+	oldSnap := svc.WorkSnapshot()
+	oldConv := oldSnap.ConversationID
+	oldEpoch := oldSnap.RuntimeEpoch
+	if oldConv == "" || oldEpoch == "" {
+		t.Fatalf("the facade reported no conversation: %+v", oldSnap)
+	}
+
+	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// The SAME facade now names the replacement conversation on a fresh epoch,
+	// with no item carried over from the retired conversation.
+	snap := svc.WorkSnapshot()
+	if snap.ConversationID != newState.SessionID() || snap.ConversationID == oldConv {
+		t.Fatalf("facade conversation after replacement = %q, want %q (not %q)", snap.ConversationID, newState.SessionID(), oldConv)
+	}
+	if snap.RuntimeEpoch == oldEpoch {
+		t.Fatalf("the facade reused the replaced conversation's epoch %q", oldEpoch)
+	}
+	for _, it := range snap.Items {
+		if it.ConversationID != newState.SessionID() {
+			t.Fatalf("the facade exposes an old-conversation item after replacement: %+v", it)
+		}
+	}
+
+	// List through the same facade: a page bound to the retired conversation is
+	// refused as stale, and the replacement's page carries the new epoch.
+	if _, err := svc.ListWork(context.Background(), viewmodel.WorkQuery{
+		ConversationID: oldConv,
+		View:           "attention",
+	}); !errors.Is(err, viewmodel.ErrWorkStaleTarget) {
+		t.Fatalf("ListWork against the replaced conversation = %v, want ErrWorkStaleTarget", err)
+	}
+	page, err := svc.ListWork(context.Background(), viewmodel.WorkQuery{
+		ConversationID: newState.SessionID(),
+		View:           "attention",
+	})
+	if err != nil {
+		t.Fatalf("ListWork against the replacement: %v", err)
+	}
+	if page.RuntimeEpoch != snap.RuntimeEpoch {
+		t.Fatalf("ListWork page epoch = %q, want the replacement epoch %q", page.RuntimeEpoch, snap.RuntimeEpoch)
+	}
+}
+
+// TestWorkRuntimeCloseFlushesBeforeDBClose pins that a terminal watch save whose
+// first durable write failed is retried by the shutdown path and is durable
+// before the database closes.
+func TestWorkRuntimeCloseFlushesBeforeDBClose(t *testing.T) {
+	state, database, sessionID := newWorkFixture(t)
+
+	var calls atomic.Int32
+	transient := errors.New("transient terminal-sink failure")
+	wm := watch.NewManager(context.Background(), watch.Deps{
+		ConversationID: sessionID,
+		RunSample:      func(context.Context, string, string) (string, int, error) { return "", 0, nil },
+		OnTerminal: func(info watch.Info) error {
+			if calls.Add(1) == 1 {
+				return transient
+			}
+			return state.SaveWatchWorkResult(watchWorkResult(sessionID, info))
+		},
+	})
+	watchID, _, err := wm.Start(watch.Spec{
+		Name: "flush", Kind: watch.KindCommand, Command: "true",
+		Condition: "exit_code 0", Mode: watch.ModeRepeat, Interval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("Start watch: %v", err)
+	}
+	// A deliberate stop is a terminal transition; its first durable save fails.
+	if _, err := wm.Stop(watchID); err != nil {
+		t.Fatalf("Stop watch: %v", err)
+	}
+	if calls.Load() < 1 {
+		t.Fatal("the terminal sink was never invoked")
+	}
+	if got := state.WorkView(); len(got.WatchResults) != 0 {
+		t.Fatalf("the failed first save should leave nothing durable: %+v", got.WatchResults)
+	}
+
+	wc := newWorkCoordinator(context.Background(), state, workSources{Watches: wm}, time.Now)
+	rt := &Runtime{
+		Config:       config.Default(),
+		State:        state,
+		DB:           database,
+		WatchManager: wm,
+		work:         wc,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workCtx:      context.Background(),
+	}
+	if err := rt.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// The retry ran before the database closed: the result is durable, and the
+	// database is now closed.
+	if got := state.WorkView(); len(got.WatchResults) != 1 {
+		t.Fatalf("work view = %+v, want the flushed watch result", got.WatchResults)
+	}
+	if err := database.SaveWorkView(sessionID, db.WorkViewRecord{Version: 1}); err == nil {
+		t.Fatal("the database was still open after Close")
+	}
+}
+
+// TestWorkRuntimeStartupRestoresHistoryWithoutLiveOwners pins that a stored work
+// result is restored at startup even when no live owner exists: it appears as
+// terminal, acknowledgeable history rather than an active registration.
+func TestWorkRuntimeStartupRestoresHistoryWithoutLiveOwners(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	const sessionID = "sess_restore"
+
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	database, err := db.Open(db.Path(dir))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		database.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(dir, "startup-restore")
+	if err != nil {
+		database.Close()
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	started := time.Now().Add(-time.Hour)
+	if err := database.CreateSession(sessionID, projectID, "", started); err != nil {
+		database.Close()
+		t.Fatalf("CreateSession: %v", err)
+	}
+	sourceID := "watch-7"
+	record := db.WorkResultRecord{
+		TaskKey:        viewmodel.WorkKey(sessionID, "epoch-seed", workKindWatch, sourceID),
+		SourceID:       sourceID,
+		RuntimeEpoch:   "epoch-seed",
+		Kind:           workKindWatch,
+		Label:          "seeded watch",
+		State:          workStateCompleted,
+		Outcome:        "completed",
+		StartedAt:      started,
+		EndedAt:        started.Add(time.Minute),
+		ResultRevision: "rev-seed",
+	}
+	if err := database.SaveWorkView(sessionID, db.WorkViewRecord{Version: 1, WatchResults: []db.WorkResultRecord{record}}); err != nil {
+		database.Close()
+		t.Fatalf("SaveWorkView: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	auth, _ := memoryAuthResolver(t)
+	rt, err := StartRuntime(context.Background(),
+		WithWorkingDir(dir),
+		WithHomeDir(home),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return nativeToolAgentConfig("restore"), nil
+		}),
+		WithAuthResolver(auth),
+		WithExistingSession(sessionID),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+
+	snap := rt.WorkSnapshot()
+	if snap.ConversationID != sessionID {
+		t.Fatalf("snapshot conversation = %q, want %q", snap.ConversationID, sessionID)
+	}
+	item, ok := workItemBySource(snap, workKindWatch, sourceID)
+	if !ok {
+		t.Fatalf("the stored result was not restored at startup: %+v", snap.Items)
+	}
+	if item.TaskKey != record.TaskKey || item.ResultRevision != record.ResultRevision {
+		t.Fatalf("restored item lost its identity: %+v", item)
+	}
+	if !workItemTerminal(item.State) {
+		t.Fatalf("restored item state = %q, want a terminal state", item.State)
+	}
+	if !item.Capabilities.Acknowledge {
+		t.Fatalf("a restored terminal result should be acknowledgeable: %+v", item)
+	}
+	if viewmodel.WorkActive(item) {
+		t.Fatalf("a restored result should not be active: %+v", item)
+	}
+}
+
+// TestWorkRuntimeDirtyRetryDoesNotWriteProgressTicks pins that the normal
+// runtime's retry path re-offers only a dirty durable write: a cosmetic progress
+// change, reconciled and retried many times, never turns into a clean-state
+// write.
+func TestWorkRuntimeDirtyRetryDoesNotWriteProgressTicks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	database, err := db.Open(db.Path(dir))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		database.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(dir, "work-retry")
+	if err != nil {
+		database.Close()
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	const sessionID = "sess_retry"
+	if err := database.CreateSession(sessionID, projectID, "", time.Now()); err != nil {
+		database.Close()
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	state := session.New(config.Default(), dir, time.Now(), session.Persistence{
+		DB:        database,
+		SessionID: sessionID,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	// A second connection observes commits the session's own connection makes, so
+	// a clean-state write is detectable even when it rewrites an identical row.
+	probe, err := db.Open(db.Path(dir))
+	if err != nil {
+		t.Fatalf("open probe db: %v", err)
+	}
+	t.Cleanup(func() { _ = probe.Close() })
+	dataVersion := func() int64 {
+		t.Helper()
+		var v int64
+		if err := probe.SQLDB().QueryRow("PRAGMA data_version").Scan(&v); err != nil {
+			t.Fatalf("read data_version: %v", err)
+		}
+		return v
+	}
+
+	clock := &workClock{t: time.Unix(8000, 0)}
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state.RegisterSubagent("progressing", child)
+	wc := newWorkCoordinator(context.Background(), state, workSources{}, clock.now)
+	t.Cleanup(wc.close)
+
+	baseline := dataVersion()
+	for i := 0; i < 5; i++ {
+		child.SetActiveToolCall(session.ActiveToolCall{Name: "file.read"})
+		clock.advance(2 * time.Second)
+		wc.reconcileWork(clock.now())
+		wc.retryPersistence(clock.now())
+	}
+	if got := dataVersion(); got != baseline {
+		t.Fatalf("a progress tick committed a clean-state write: data_version %d -> %d", baseline, got)
+	}
+
+	// A genuine durable save does commit, proving the probe observes writes.
+	if err := state.SaveWatchWorkResult(db.WorkResultRecord{
+		TaskKey:        viewmodel.WorkKey(sessionID, "epoch-1", workKindWatch, "w1"),
+		SourceID:       "w1",
+		RuntimeEpoch:   "epoch-1",
+		Kind:           workKindWatch,
+		Label:          "watch",
+		State:          workStateCompleted,
+		Outcome:        "completed",
+		StartedAt:      clock.now(),
+		EndedAt:        clock.now().Add(time.Second),
+		ResultRevision: "rev-1",
+	}); err != nil {
+		t.Fatalf("SaveWatchWorkResult: %v", err)
+	}
+	if got := dataVersion(); got == baseline {
+		t.Fatal("the probe did not observe a genuine durable save")
+	}
+}
+
+// TestWorkCommandFailureIsAcknowledgeableUntilAcked pins that a terminal
+// failed command result offers acknowledgment at its exact revision, that
+// acknowledging it suppresses the coordinator's attention count and capability,
+// and that the exact result stays projected (acknowledgment never deletes it).
+func TestWorkCommandFailureIsAcknowledgeableUntilAcked(t *testing.T) {
+	state, _, sessionID := newWorkFixture(t)
+	clock := &workClock{t: time.Unix(6100, 0)}
+	if err := state.AddJobExit(session.JobExit{
+		ID: "job-1", Command: "boom", ExecutionID: "exec-boom",
+		SourceEpoch: "epoch-1", ResultRevision: "rev-1",
+		State: "failed", Outcome: "startup_failure", ExitCode: 1,
+		At: time.Unix(6100, 0),
+	}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+	wc := newWorkCoordinator(context.Background(), state, workSources{}, clock.now)
+	t.Cleanup(wc.close)
+	rt := &Runtime{State: state, work: wc}
+
+	snap := wc.snapshotNow()
+	item, ok := workItemBySource(snap, workKindCommand, "exec-boom")
+	if !ok {
+		t.Fatalf("failed command missing from %+v", snap.Items)
+	}
+	if !viewmodel.WorkNeedsAttention(item) {
+		t.Fatalf("a failed command should need attention: %+v", item)
+	}
+	if !item.Capabilities.Acknowledge {
+		t.Fatal("a failed terminal command result should be acknowledgeable")
+	}
+	before := snap.AttentionCount
+	if before == 0 {
+		t.Fatal("attention count should include the failed command")
+	}
+
+	// A revision that names no current terminal result is refused.
+	if err := rt.AcknowledgeWork(context.Background(), viewmodel.WorkAck{
+		WorkTarget:     viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: item.TaskKey},
+		ResultRevision: "stale-revision",
+	}); err == nil {
+		t.Fatal("acknowledging a stale command revision succeeded")
+	}
+
+	// The exact revision acknowledges and suppresses the attention.
+	if err := rt.AcknowledgeWork(context.Background(), viewmodel.WorkAck{
+		WorkTarget:     viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: item.TaskKey},
+		ResultRevision: viewmodel.WorkResultRevision(item),
+	}); err != nil {
+		t.Fatalf("AcknowledgeWork: %v", err)
+	}
+	wc.reconcileWork(clock.now())
+	after := wc.snapshotNow()
+	if after.AttentionCount >= before {
+		t.Fatalf("attention count = %d, want < %d after acknowledgment", after.AttentionCount, before)
+	}
+	acked, ok := workItemBySource(after, workKindCommand, "exec-boom")
+	if !ok {
+		t.Fatalf("the acknowledged command vanished from %+v", after.Items)
+	}
+	if acked.Capabilities.Acknowledge {
+		t.Fatal("an acknowledged command result should not stay acknowledgeable")
+	}
+}
+
+// TestWorkBaseEraCommandExitUsesStableEpoch pins that a durable exit carrying an
+// execution identity but no source epoch is keyed under the stable legacy epoch,
+// not the live manager epoch — which is minted per process and would give the
+// same record a different canonical key on every restart.
+func TestWorkBaseEraCommandExitUsesStableEpoch(t *testing.T) {
+	state, _, sessionID := newWorkFixture(t)
+	dir := t.TempDir()
+	clock := &workClock{t: time.Unix(6200, 0)}
+
+	started := make(chan struct{})
+	var once sync.Once
+	runner := &fakeRunner{run: func(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		once.Do(func() { close(started) })
+		<-ctx.Done()
+		return native.CommandResult{}, ctx.Err()
+	}}
+	jm := workTestJobManager(t, state, runner, dir)
+	if _, err := jm.Launch(context.Background(), native.LaunchSpec{Command: "live", Detached: true}); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-started
+	if jm.Snapshot().Epoch == "" {
+		t.Fatal("the manager epoch should be minted once a job runs")
+	}
+	// A base-era exit has an execution identity but no source epoch.
+	if err := state.AddJobExit(session.JobExit{
+		ID: "job-9", Command: "old", ExecutionID: "exec-old",
+		State: "failed", Outcome: "nonzero_exit", ExitCode: 1,
+		At: time.Unix(6200, 0),
+	}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+
+	wc := newWorkCoordinator(context.Background(), state, workSources{Jobs: jm}, clock.now)
+	t.Cleanup(wc.close)
+	wc.reconcileWork(clock.now())
+
+	item, ok := workItemBySource(wc.snapshotNow(), workKindCommand, "exec-old")
+	if !ok {
+		t.Fatalf("base-era exit missing from the projection")
+	}
+	if item.RuntimeEpoch != legacyWorkEpoch {
+		t.Fatalf("RuntimeEpoch = %q, want %q", item.RuntimeEpoch, legacyWorkEpoch)
+	}
+	if item.RuntimeEpoch == jm.Snapshot().Epoch {
+		t.Fatal("the base-era exit drifted to the live manager epoch")
+	}
+	if want := viewmodel.WorkKey(sessionID, legacyWorkEpoch, workKindCommand, "exec-old"); item.TaskKey != want {
+		t.Fatalf("TaskKey = %q, want %q", item.TaskKey, want)
+	}
+	for _, it := range wc.snapshotNow().Items {
+		if it.Kind == workKindCommand && it.State == workStateRunning && it.Capabilities.Acknowledge {
+			t.Fatal("a running command must not be acknowledgeable")
+		}
+	}
+}
+
+// TestWorkHistoryFingerprintTracksLabelAndOwner pins that a change to a safe
+// label or owner — both fields a work page filters and sorts on — advances the
+// history fingerprint, while identical items stay deterministic.
+func TestWorkHistoryFingerprintTracksLabelAndOwner(t *testing.T) {
+	item := func(label, owner string) []viewmodel.WorkItem {
+		return []viewmodel.WorkItem{{TaskKey: "k", State: workStateCompleted, Label: label, Owner: owner}}
+	}
+	base := historyFingerprint(item("build", "implementer"))
+	if base != historyFingerprint(item("build", "implementer")) {
+		t.Fatal("the history fingerprint is not deterministic")
+	}
+	if base == historyFingerprint(item("deploy", "implementer")) {
+		t.Fatal("a label change left the history fingerprint unchanged")
+	}
+	if base == historyFingerprint(item("build", "reviewer")) {
+		t.Fatal("an owner change left the history fingerprint unchanged")
 	}
 }

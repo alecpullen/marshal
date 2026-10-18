@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/progress"
 	"marshal/internal/tools/registry"
 )
 
@@ -38,13 +39,15 @@ const defaultForegroundWait = 10 * time.Second
 const maxWaitSeconds = int64(math.MaxInt64) / int64(time.Second)
 
 type shellRunArgs struct {
-	Command        string `json:"command"`
-	TimeoutSeconds int    `json:"timeout_seconds"`
-	Background     bool   `json:"background"`
+	Command        string           `json:"command"`
+	TimeoutSeconds int              `json:"timeout_seconds"`
+	Background     bool             `json:"background"`
+	Progress       *progress.Config `json:"progress,omitempty"`
 }
 
 type testRunArgs struct {
-	Command string `json:"command"`
+	Command  string           `json:"command"`
+	Progress *progress.Config `json:"progress,omitempty"`
 }
 
 func (t *toolSet) shellRunTool() registry.Tool {
@@ -58,7 +61,7 @@ func (t *toolSet) shellRunTool() registry.Tool {
 			"The command is not killed by elapsed time: timeout_seconds bounds how long this call waits, and a command still running when the wait ends continues in the background with a job_id for agent.await. " +
 			"Pass background: true to return the job_id immediately without waiting. " +
 			"agent.await (optionally with peek: true) reports the job's status, its actual exit code, its stop cause and recent output; agent.kill stops one named job explicitly.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime and is not capped. Omit or pass 0 to use the configured foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately without waiting"}},"required":["command"],"additionalProperties":false}`),
+		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime and is not capped. Omit or pass 0 to use the configured foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately without waiting"}},"required":["command"],"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -76,13 +79,13 @@ func (t *toolSet) shellRunTool() registry.Tool {
 			// An explicit background launch does not rescan the language
 			// server: the command has not run to completion yet, and this call
 			// is not waiting for it.
-			return t.runManagedCommand(ctx, call.ID, args.Command, wait, true)
+			return t.runManagedCommandWithProgress(ctx, call.ID, args.Command, wait, true, args.Progress)
 		}
 		// A foreground call waited for the command, so whatever it wrote is on
 		// disk by now and open documents must be re-synced — including when
 		// the settled outcome is a tool failure.
 		defer t.rescanLSP()
-		return t.runManagedCommand(ctx, call.ID, args.Command, wait, false)
+		return t.runManagedCommandWithProgress(ctx, call.ID, args.Command, wait, false, args.Progress)
 	}
 	return tool
 }
@@ -95,7 +98,7 @@ func (t *toolSet) testRunTool() registry.Tool {
 			"the override is subject to the same approval policy. " +
 			"The command runs through the same managed execution as shell.run: this call waits for the configured foreground period, " +
 			"and a test command still running when the wait ends continues in the background with a job_id for agent.await instead of being killed.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}},"additionalProperties":false}`),
+		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false}},"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
 		// Internal: the general agent runs tests through shell.run; only the swarm tester (TesterView) gets this constrained tool.
 		Internal: true,
@@ -109,7 +112,7 @@ func (t *toolSet) testRunTool() registry.Tool {
 		if command == "" {
 			command = t.testCommand
 		}
-		res, err := t.runManagedCommand(ctx, call.ID, command, t.foregroundWait(), false)
+		res, err := t.runManagedCommandWithProgress(ctx, call.ID, command, t.foregroundWait(), false, args.Progress)
 		t.rescanLSP()
 		return res, err
 	}
@@ -152,13 +155,28 @@ func resolveShellWait(seconds int, defaultWait time.Duration) (time.Duration, er
 }
 
 // runManagedCommand launches one ordinary command through the conversation's
-// execution service and renders the caller's attachment to it.
+// execution service and renders the caller's attachment to it, without opting
+// into progress observation. It keeps its original signature as a delegating
+// compatibility helper for callers that have no progress configuration to
+// supply.
+func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string, wait time.Duration, background bool) (registry.ToolResult, error) {
+	return t.runManagedCommandWithProgress(ctx, callID, command, wait, background, nil)
+}
+
+// runManagedCommandWithProgress launches one ordinary command through the
+// conversation's execution service and renders the caller's attachment to it.
 //
 // There is exactly one launch path for shell.run and test.run. A foreground
 // call and an explicit background call differ only in the attachment they ask
 // for, so a wait that expires hands the already-approved, already-running
 // process to the background: no second launch, no second approval, no restart.
-func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string, wait time.Duration, background bool) (registry.ToolResult, error) {
+//
+// A non-nil cfg opts this one execution into progress observation. It is
+// normalized and rejected here, BEFORE the guardrail and before admission, so
+// an invalid opt-in never prompts for approval and never reserves a slot; the
+// normalized copy is what the execution captures. A nil cfg stays nil: no
+// observer is allocated and the ordinary tool result is left unfiltered.
+func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, callID, command string, wait time.Duration, background bool, cfg *progress.Config) (registry.ToolResult, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return registry.ToolResult{}, fmt.Errorf("command is required")
@@ -171,6 +189,19 @@ func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string,
 	// settle.
 	if t.jobManager == nil {
 		return registry.ToolResult{}, fmt.Errorf("shell execution is unavailable: this registry has no conversation command service")
+	}
+	// The optional progress profile is validated before the guardrail: a
+	// rejected opt-in is a malformed call, not a command to approve, so it must
+	// not reach the approval boundary or reserve an execution nothing can
+	// observe. The normalized copy is what the execution keeps for its whole
+	// life.
+	var progressCfg *progress.Config
+	if cfg != nil {
+		normalized, err := progress.NormalizeConfig(*cfg)
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+		progressCfg = &normalized
 	}
 	// Guardrails are validated before admission, so a denied command never
 	// reaches the service.
@@ -204,6 +235,7 @@ func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string,
 		Operation:      operation,
 		Detached:       background,
 		Wait:           wait,
+		Progress:       progressCfg,
 	})
 	if err != nil {
 		return registry.ToolResult{}, err
@@ -353,7 +385,19 @@ func (t *toolSet) settledCommandResult(command string, res ForegroundResult) (re
 		summary = fmt.Sprintf("command %q exited with code %d", command, *info.ExitCode)
 	}
 
+	// A terminal result keeps the command's ordinary output. An execution that
+	// opted into progress observation reports the observer's filtered diagnostics
+	// instead — the same text with valid control records removed, so a display
+	// protocol line never reaches the model as command output. The final
+	// measurement rides in the existing execution notice, and a capture that hit
+	// its cap still discloses the truncation.
 	content := limitOutput(res.Output, t.maxOutputBytes)
+	if cfg := info.ProgressConfig; cfg != nil && cfg.Source != "none" {
+		content = limitOutput(info.DisplayTail, t.maxOutputBytes)
+		if info.OutputTruncated && !strings.Contains(content, truncationMarker) {
+			content += truncationMarker
+		}
+	}
 	if note := gitHygieneNote(command); note != "" {
 		content += "\n\n" + note
 	}

@@ -751,8 +751,19 @@ type Model struct {
 	now            func() time.Time
 
 	// tasksPanel is the open Ctrl+T Tasks panel, kept so a second Ctrl+T
-	// can tell it apart from other docked panels.
-	tasksPanel *docpanel.Panel
+	// can tell it apart from other docked panels. It hosts the Plan and Work
+	// tabs; the zero value (nil) means the panel is closed.
+	tasksPanel *tasksPanelModel
+	// tasksPanelTab remembers the tab the reader last left the Tasks panel on.
+	// The first open defaults to Plan when there are todos, otherwise Work;
+	// later opens restore this tab. tasksPanelUsed distinguishes the zero
+	// value (never opened) from a remembered Plan tab.
+	tasksPanelTab  workTab
+	tasksPanelUsed bool
+	// panelSeq is the monotonic source of dock panel IDs. A new panel takes
+	// the next value; IDs are never derived from a label and never reused, so
+	// a result from a closed panel can be told apart from its replacement.
+	panelSeq uint64
 	// nowBarMemo is the plan viewString computed for the frame in flight; nil
 	// outside viewString. It lives only on that call's model copy.
 	nowBarMemo *nowBarPlan

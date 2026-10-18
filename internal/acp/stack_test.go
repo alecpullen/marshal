@@ -220,6 +220,78 @@ func TestStackSnapshotJSONEmptyArrays(t *testing.T) {
 	}
 }
 
+// The stack patch is the transport a live client actually sees, so the new
+// detail must survive it: a client that receives the card through a patch can
+// still ask for the node's typed execution evidence and get the same record a
+// snapshot returns.
+func TestStackPatchAndDetailAgreeOnExecutionEvidence(t *testing.T) {
+	m, st, notices := newStackTestManager(t)
+	st.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	// Activate the session first, so the call below arrives as a patch rather
+	// than being folded into the initial snapshot.
+	takeStack(t, m)
+
+	step := st.BeginStep(session.Actor{})
+	st.LogToolCall(registry.AuditEvent{
+		ToolName: "shell.run", StepID: int64(step), ToolCallID: "c1",
+		Args: json.RawMessage(`{"command":"sleep 600","timeout_seconds":10}`),
+		Notice: registry.NewCommandExecutionNotice(registry.CommandExecution{
+			ExecutionID: "exec-patch", DisplayID: "job-1", ConversationID: "conv-1",
+			State: "running", Attachment: registry.ExecutionAttachmentBackground,
+			Wait: "10s", DetachReason: "wait expired",
+		}),
+	})
+	m.flushStack("s1", st, false)
+	if len(*notices) == 0 {
+		t.Fatal("no patch was emitted")
+	}
+	patch := stackPatchFromNotice(t, (*notices)[len(*notices)-1])
+	if len(patch.Upsert) == 0 {
+		t.Fatalf("patch = %+v, want upserts", patch)
+	}
+
+	// The patch itself carries the card; the detail endpoint carries the
+	// evidence for the same node.
+	var toolID string
+	for _, n := range patch.Upsert {
+		if n.Tool != nil && n.Tool.Job != nil {
+			toolID = n.ID
+			if n.Tool.Job.ExecutionID != "exec-patch" {
+				t.Fatalf("patch card = %+v, want the execution identity", n.Tool.Job)
+			}
+			if n.Tool.Job.Wait != "10s" || n.Tool.Job.DetachReason != "wait expired" {
+				t.Fatalf("patch card = %+v, want the wait/handoff evidence", n.Tool.Job)
+			}
+		}
+	}
+	if toolID == "" {
+		t.Fatalf("no job card in the patch: %+v", patch.Upsert)
+	}
+
+	got, err := callNodeID(t, m, toolID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ex := got["detail"].(NodeDetail).Calls[0].Execution
+	if ex == nil || ex.ExecutionID != "exec-patch" {
+		t.Fatalf("detail execution = %+v, want the same identity the patch carried", ex)
+	}
+	if ex.Attachment != "background" || ex.Wait != "10s" {
+		t.Fatalf("detail execution = %+v", ex)
+	}
+}
+
+// callNodeID is callNode for an already-resolved node ID rather than a tool key.
+func callNodeID(t *testing.T, m *TurnManager, nodeID string) (map[string]any, error) {
+	t.Helper()
+	params, _ := json.Marshal(StackNodeParams{SessionID: "s1", NodeID: nodeID})
+	v, err := m.StackNode(context.Background(), params)
+	if err != nil {
+		return nil, err
+	}
+	return v.(map[string]any), nil
+}
+
 func TestStackSnapshotFlushesThenAnswers(t *testing.T) {
 	m, st, notices := newStackTestManager(t)
 	first := takeStack(t, m)

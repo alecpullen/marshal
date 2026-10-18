@@ -3,6 +3,10 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
 )
 
 type RiskLevel string
@@ -92,7 +96,337 @@ const (
 	// silently coerced it into range. Distinct from NoticeCappedResults,
 	// which marks result-set truncation, so consumers can switch cleanly.
 	NoticeContextClamped = "context_clamped"
+	// NoticeCommandExecution marks a structured command-execution record: a
+	// managed launch or wait continuation carries its execution identity,
+	// origin call, attachment and (once settled) outcome in Data rather than
+	// in prose. Its Text is deliberately empty — this is metadata, not
+	// coaching — so no footer is appended to the model's tool result.
+	NoticeCommandExecution = "command_execution"
 )
+
+// CommandExecutionKey is the ToolNotice.Data key holding the structured
+// command-execution payload. One key keeps the data map forward-compatible:
+// a consumer that does not know the key ignores the payload rather than
+// misreading it.
+const CommandExecutionKey = "execution"
+
+// CommandExecutionVersion is the schema version written into every
+// CommandExecution payload, so a later shape can be recognized rather than
+// guessed at.
+const CommandExecutionVersion = 1
+
+// ExecutionAttachment is how the launching caller related to a command
+// execution when its record was written. It mirrors native.Attachment — this
+// package cannot import native, which imports it — and the values are the
+// stable strings the payload and its consumers switch on.
+type ExecutionAttachment string
+
+const (
+	// ExecutionAttachmentForeground means the launching caller was still
+	// waiting for the command's outcome.
+	ExecutionAttachmentForeground ExecutionAttachment = "foreground"
+	// ExecutionAttachmentBackground means the caller stopped waiting and the
+	// command continues as a detached job owned by the conversation service.
+	ExecutionAttachmentBackground ExecutionAttachment = "background"
+)
+
+// CommandExecution is the structured, machine-readable record of one managed
+// command execution: what was launched, who launched it and how it ended. It
+// rides in ToolNotice.Data under CommandExecutionKey, which is what lets a
+// continuation, its eventual completion, and a persisted audit row be paired
+// by identity rather than by timestamp order — display job IDs alone repeat
+// across resumes.
+//
+// Every field is optional except the identity ones. An empty StartedAt or
+// ExitCode means "not known", never a zero-valued fact: a start-up failure has
+// no exit code, and a running command has no end.
+type CommandExecution struct {
+	// Version is the payload schema version (CommandExecutionVersion).
+	Version int `json:"version"`
+	// ExecutionID is the manager's execution identity, stable across a
+	// foreground wait that hands off to the background.
+	ExecutionID string `json:"execution_id,omitempty"`
+	// DisplayID is the user-facing job ID ("job-4"). It is not an identity:
+	// it repeats in every process, so it is display and legacy-fallback only.
+	DisplayID string `json:"display_id,omitempty"`
+	// ConversationID is the owning conversation, which outlives the turn.
+	ConversationID string `json:"conversation_id,omitempty"`
+	// Actor is the parent agent, a named subagent, or a pipeline worker.
+	Actor string `json:"actor,omitempty"`
+	// TurnID, StepID and ToolCallID identify the originating call.
+	TurnID     string `json:"turn_id,omitempty"`
+	StepID     string `json:"step_id,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	// Cwd and Generation are the captured working directory and runtime
+	// config generation at admission.
+	Cwd        string `json:"cwd,omitempty"`
+	Generation int    `json:"generation,omitempty"`
+	// PID is the process identity, published when the process starts.
+	PID int `json:"pid,omitempty"`
+	// StartedAt is the admission time; EndedAt is the settlement time.
+	StartedAt time.Time `json:"started_at,omitempty"`
+	EndedAt   time.Time `json:"ended_at,omitempty"`
+	// State is the lifecycle status ("running", "stopping", "completed",
+	// "failed", "killed", "timed_out"); Outcome is the finer cause
+	// ("nonzero_exit", "startup_failure", "stopped", "resource_limit", …).
+	State   string `json:"state,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
+	Wait    string `json:"wait,omitempty"`
+	// Attachment is "foreground" while the caller waits, "background" once
+	// it detached.
+	Attachment ExecutionAttachment `json:"attachment,omitempty"`
+	// DetachReason and DetachedAt record why and when a wait handed off.
+	DetachReason string    `json:"detach_reason,omitempty"`
+	DetachedAt   time.Time `json:"detached_at,omitempty"`
+	// StopCause and StopRequestedAt record an accepted explicit stop
+	// request, separately from the outcome it produced.
+	StopCause       string    `json:"stop_cause,omitempty"`
+	StopRequestedAt time.Time `json:"stop_requested_at,omitempty"`
+	// ExitCode is the actual exit code when one is meaningful. Nil means the
+	// command never produced one (a start-up failure) or has not settled.
+	ExitCode *int `json:"exit_code,omitempty"`
+	// Truncated reports whether retained output hit its cap.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// NewCommandExecutionNotice builds the notice that carries a structured
+// execution record. Its Text is empty by construction: an execution record is
+// metadata, and the summariser only appends a coaching footer for a non-empty
+// Text.
+func NewCommandExecutionNotice(ex CommandExecution) *ToolNotice {
+	ex.Version = CommandExecutionVersion
+	return &ToolNotice{
+		Kind: NoticeCommandExecution,
+		Data: map[string]any{CommandExecutionKey: ex},
+	}
+}
+
+// WithExecution attaches (or replaces) the structured execution record on a
+// notice, preserving the notice's own Kind and Text.
+func (n *ToolNotice) WithExecution(ex CommandExecution) *ToolNotice {
+	if n == nil {
+		return NewCommandExecutionNotice(ex)
+	}
+	ex.Version = CommandExecutionVersion
+	if n.Data == nil {
+		n.Data = make(map[string]any, 1)
+	}
+	n.Data[CommandExecutionKey] = ex
+	return n
+}
+
+// Execution decodes the structured execution record a notice carries, if any.
+// It is the read side of WithExecution and tolerates every form the payload
+// takes: the in-memory struct, a pointer to it, and the map (with JSON
+// numbers as float64) a persisted notice decodes to.
+func (n *ToolNotice) Execution() (CommandExecution, bool) {
+	return DecodeCommandExecution(n)
+}
+
+// DecodeCommandExecution reads the structured execution record from a notice.
+// A nil notice, a missing key, an unrecognised shape or a payload claiming a
+// version this build does not know returns ok=false so callers fall back to
+// their legacy path instead of misreading the data.
+func DecodeCommandExecution(n *ToolNotice) (CommandExecution, bool) {
+	if n == nil || len(n.Data) == 0 {
+		return CommandExecution{}, false
+	}
+	return commandExecutionFromValue(n.Data[CommandExecutionKey])
+}
+
+// commandExecutionFromValue decodes one stored payload value in any of its
+// forms: the in-memory struct (what EncodeExecution writes), a pointer to it,
+// or the map form a JSON round trip produces.
+func commandExecutionFromValue(v any) (CommandExecution, bool) {
+	switch t := v.(type) {
+	case nil:
+		return CommandExecution{}, false
+	case CommandExecution:
+		return t, t.Version == CommandExecutionVersion || t.Version == 0
+	case *CommandExecution:
+		if t == nil {
+			return CommandExecution{}, false
+		}
+		return *t, t.Version == CommandExecutionVersion || t.Version == 0
+	case map[string]any:
+		ex := CommandExecution{
+			Version:         noticeInt(t, "version"),
+			ExecutionID:     noticeString(t, "execution_id"),
+			DisplayID:       noticeString(t, "display_id"),
+			ConversationID:  noticeString(t, "conversation_id"),
+			Actor:           noticeString(t, "actor"),
+			TurnID:          noticeString(t, "turn_id"),
+			StepID:          noticeString(t, "step_id"),
+			ToolCallID:      noticeString(t, "tool_call_id"),
+			Cwd:             noticeString(t, "cwd"),
+			Generation:      noticeInt(t, "generation"),
+			PID:             noticeInt(t, "pid"),
+			StartedAt:       noticeTime(t, "started_at"),
+			EndedAt:         noticeTime(t, "ended_at"),
+			State:           noticeString(t, "state"),
+			Outcome:         noticeString(t, "outcome"),
+			Wait:            noticeString(t, "wait"),
+			Attachment:      ExecutionAttachment(noticeString(t, "attachment")),
+			DetachReason:    noticeString(t, "detach_reason"),
+			DetachedAt:      noticeTime(t, "detached_at"),
+			StopCause:       noticeString(t, "stop_cause"),
+			StopRequestedAt: noticeTime(t, "stop_requested_at"),
+			Truncated:       noticeBool(t, "truncated"),
+		}
+		if code, ok := noticeOptionalInt(t, "exit_code"); ok {
+			ex.ExitCode = &code
+		}
+		if ex.Version != CommandExecutionVersion && ex.Version != 0 {
+			return CommandExecution{}, false
+		}
+		return ex, true
+	default:
+		return CommandExecution{}, false
+	}
+}
+
+// noticeString reads a string field from a decoded payload map.
+func noticeString(m map[string]any, key string) string {
+	s, _ := m[key].(string)
+	return s
+}
+
+// noticeInt reads an integer field from a decoded payload map. JSON numbers
+// arrive as float64, and an in-memory writer may have stored any int width, so
+// all numeric forms are accepted.
+func noticeInt(m map[string]any, key string) int {
+	n, _ := noticeOptionalInt(m, key)
+	return n
+}
+
+func noticeOptionalInt(m map[string]any, key string) (int, bool) {
+	switch v := m[key].(type) {
+	case nil:
+		return 0, false
+	case float64:
+		return int(v), true
+	case float32:
+		return int(v), true
+	case int:
+		return v, true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(n), true
+	case string:
+		// A persisted payload may carry a numeric string (a JSON writer
+		// configured for strings); it is still a number, not a fact we
+		// should guess at.
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	default:
+		return 0, false
+	}
+}
+
+// noticeBool reads a boolean field from a decoded payload map.
+func noticeBool(m map[string]any, key string) bool {
+	switch v := m[key].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	case float64:
+		return v != 0
+	default:
+		return false
+	}
+}
+
+// noticeTime reads a timestamp field, accepting the timestamp itself, its
+// RFC3339 text form (what this package's JSON tags write), and unix seconds or
+// milliseconds as numbers.
+func noticeTime(m map[string]any, key string) time.Time {
+	switch v := m[key].(type) {
+	case nil:
+		return time.Time{}
+	case time.Time:
+		return v
+	case *time.Time:
+		if v == nil {
+			return time.Time{}
+		}
+		return *v
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return time.Time{}
+		}
+		if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			return t
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t
+		}
+		return time.Time{}
+	default:
+		n, ok := noticeOptionalInt(m, key)
+		if !ok || n == 0 {
+			return time.Time{}
+		}
+		return unixTime(n)
+	}
+}
+
+// unixTime converts a numeric timestamp to a time, guessing the unit the way a
+// reader must: a value that fits in 1e11 is seconds (year 5138 is still
+// seconds), anything larger is milliseconds.
+func unixTime(n int) time.Time {
+	if n < 1e11 {
+		return time.Unix(int64(n), 0).UTC()
+	}
+	return time.UnixMilli(int64(n)).UTC()
+}
+
+// encodeExecutionPayload validates and copies a payload for storage. It exists
+// so an execution record is only ever written through one path, which stamps
+// the current version and reports rather than stores an unusable identity.
+func encodeExecutionPayload(ex CommandExecution) (CommandExecution, error) {
+	if strings.TrimSpace(ex.ExecutionID) == "" && strings.TrimSpace(ex.DisplayID) == "" {
+		return CommandExecution{}, fmt.Errorf("command execution payload needs an execution or display id")
+	}
+	ex.Version = CommandExecutionVersion
+	if ex.ExitCode != nil {
+		code := *ex.ExitCode
+		ex.ExitCode = &code
+	}
+	return ex, nil
+}
+
+// EncodeCommandExecution validates a structured execution record and returns
+// the ToolNotice.Data map that carries it. It is the one write path for the
+// payload: the version is stamped here, and a payload with no identity at all
+// is rejected rather than stored as an unpairable record.
+func EncodeCommandExecution(ex CommandExecution) (map[string]any, error) {
+	encoded, err := encodeExecutionPayload(ex)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{CommandExecutionKey: encoded}, nil
+}
+
+// CommandExecutionNotice encodes ex and wraps it in a notice in one step.
+func CommandExecutionNotice(ex CommandExecution) (*ToolNotice, error) {
+	data, err := EncodeCommandExecution(ex)
+	if err != nil {
+		return nil, err
+	}
+	return &ToolNotice{Kind: NoticeCommandExecution, Data: data}, nil
+}
 
 type ToolResult struct {
 	Summary         string

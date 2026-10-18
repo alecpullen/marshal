@@ -53,6 +53,7 @@ func TestGuardrailClosureCarriesSystemFlag(t *testing.T) {
 		WorkspaceRoot: root,
 		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
 		SessionState:  state,
+		JobManager:    newTestCommandService(t, &fakeRunner{result: CommandResult{ExitCode: 0}}, root, state, nil),
 		Guardrail: func(command string, system bool) error {
 			got = append(got, system)
 			return nil

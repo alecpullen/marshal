@@ -21,9 +21,112 @@ func TestJobCardIsOneLineAndSettles(t *testing.T) {
 		t.Fatalf("running card = %q", out)
 	}
 	row.Job.Running, row.Job.ExitCode, row.Job.Duration = false, 1, 122*time.Second
+	exit := 1
+	row.Job.Exit = &exit
 	out = ansi.Strip(renderJobCard(row, "", time.Now(), false, 60, ""))
 	if !strings.Contains(out, "exit 1") || !strings.Contains(out, "2m") {
 		t.Fatalf("settled card = %q", out)
+	}
+}
+
+// A card's tail must say what is actually known about the execution: an
+// accepted stop that has not settled yet, a lost job, a failure with no exit
+// code, and a completion. Reading "exit 0" for an outcome nobody observed is
+// the failure this distinction exists to prevent.
+func TestJobCardDistinguishesOutcomeStates(t *testing.T) {
+	zero, three := 0, 3
+	tests := []struct {
+		name  string
+		job   viewmodel.JobState
+		words []string
+		gone  []string
+	}{
+		{
+			name:  "running",
+			job:   viewmodel.JobState{ID: "job-1", Running: true, Status: "running"},
+			words: []string{"running"},
+		},
+		{
+			name:  "stopping",
+			job:   viewmodel.JobState{ID: "job-1", Running: true, Status: "stopping", StopCause: "turn stop"},
+			words: []string{"stopping"},
+			gone:  []string{"running", "exit ", "outcome unknown"},
+		},
+		{
+			name:  "lost",
+			job:   viewmodel.JobState{ID: "job-1", Lost: true, ExitCode: -1},
+			words: []string{"ended with session"},
+			gone:  []string{"exit ", "outcome unknown"},
+		},
+		{
+			name:  "completed",
+			job:   viewmodel.JobState{ID: "job-1", ExitCode: 0, Exit: &zero, Status: "completed"},
+			words: []string{"exit 0"},
+		},
+		{
+			name:  "failed with an exit",
+			job:   viewmodel.JobState{ID: "job-1", ExitCode: 3, Exit: &three, Status: "failed"},
+			words: []string{"exit 3"},
+		},
+		{
+			name:  "failed without an exit",
+			job:   viewmodel.JobState{ID: "job-1", Status: "failed", ExitCode: -1},
+			words: []string{"failed"},
+			gone:  []string{"exit -1", "exit 0"},
+		},
+		{
+			name:  "stopped without an exit",
+			job:   viewmodel.JobState{ID: "job-1", Status: "killed", StopCause: "turn stop", ExitCode: -1},
+			words: []string{"stopped"},
+			gone:  []string{"exit -1"},
+		},
+		{
+			name:  "legacy record",
+			job:   viewmodel.JobState{ID: "job-1", Status: "completed", ExitCode: 0},
+			words: []string{"exit 0"},
+		},
+		{
+			name:  "unknown exit",
+			job:   viewmodel.JobState{ID: "job-1", ExitCode: -1},
+			words: []string{"outcome unknown"},
+			gone:  []string{"exit -1", "exit 0"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			job := tt.job
+			row := &viewmodel.Node{Kind: viewmodel.KindTool, Job: &job}
+			out := ansi.Strip(renderJobCard(row, "⠋", time.Now(), false, 80, ""))
+			if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
+				t.Fatalf("card is not one line:\n%s", out)
+			}
+			for _, want := range tt.words {
+				if !strings.Contains(out, want) {
+					t.Errorf("card %q missing %q", out, want)
+				}
+			}
+			for _, unwanted := range tt.gone {
+				if strings.Contains(out, unwanted) {
+					t.Errorf("card %q must not say %q", out, unwanted)
+				}
+			}
+		})
+	}
+}
+
+// A capped tail is called out, so a reader knows the output is not the whole
+// story; the plain case stays quiet.
+func TestJobCardFlagsTruncatedOutput(t *testing.T) {
+	zero := 0
+	job := viewmodel.JobState{ID: "job-1", ExitCode: 0, Exit: &zero, Status: "completed", Truncated: true}
+	row := &viewmodel.Node{Kind: viewmodel.KindTool, Job: &job}
+	if out := ansi.Strip(renderJobCard(row, "", time.Now(), false, 80, "")); !strings.Contains(out, "truncated") {
+		t.Fatalf("card = %q, want the cap called out", out)
+	}
+	job.Truncated = false
+	row.Job = &job
+	if out := ansi.Strip(renderJobCard(row, "", time.Now(), false, 80, "")); strings.Contains(out, "truncated") {
+		t.Fatalf("card = %q, want no cap note without one", out)
 	}
 }
 

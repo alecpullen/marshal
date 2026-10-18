@@ -98,9 +98,14 @@ func NewAuditEvent(now time.Time, tool Tool, call ToolCall, result ToolResult, a
 	return event
 }
 
-// cloneToolNotice returns an independent copy of n, including its Data map, so
-// the audit event does not alias the tool result the caller still holds. Nil is
-// returned for a nil notice so the happy path keeps a nil Notice on the event.
+// cloneToolNotice returns an independent copy of n, including its Data map and
+// every nested value inside it, so the audit event does not alias the tool
+// result the caller still holds. Nil is returned for a nil notice so the happy
+// path keeps a nil Notice on the event.
+//
+// The copy is deep because a structured execution record is mutable in place:
+// a continuation updates its state and attachment on the same payload a logged
+// audit already holds, and a shallow copy would retroactively rewrite history.
 func cloneToolNotice(n *ToolNotice) *ToolNotice {
 	if n == nil {
 		return nil
@@ -109,8 +114,54 @@ func cloneToolNotice(n *ToolNotice) *ToolNotice {
 	if len(n.Data) > 0 {
 		clone.Data = make(map[string]any, len(n.Data))
 		for k, v := range n.Data {
-			clone.Data[k] = v
+			clone.Data[k] = cloneNoticeValue(v)
 		}
 	}
 	return clone
+}
+
+// cloneNoticeValue deep-copies one notice payload value. It covers the shapes
+// this package writes (a CommandExecution, a pointer to one, and the map a JSON
+// round trip produces) plus plain nested maps and slices, and passes anything
+// else through by value: an unknown type is better preserved verbatim than
+// dropped.
+func cloneNoticeValue(v any) any {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case CommandExecution:
+		return cloneCommandExecution(t)
+	case *CommandExecution:
+		if t == nil {
+			return (*CommandExecution)(nil)
+		}
+		clone := cloneCommandExecution(*t)
+		return &clone
+	case map[string]any:
+		clone := make(map[string]any, len(t))
+		for k, v := range t {
+			clone[k] = cloneNoticeValue(v)
+		}
+		return clone
+	case []any:
+		clone := make([]any, len(t))
+		for i, v := range t {
+			clone[i] = cloneNoticeValue(v)
+		}
+		return clone
+	case []string:
+		return append([]string(nil), t...)
+	default:
+		return v
+	}
+}
+
+// cloneCommandExecution copies a payload, including the pointer it may carry,
+// so a caller mutating either one cannot reach the other's data.
+func cloneCommandExecution(ex CommandExecution) CommandExecution {
+	if ex.ExitCode != nil {
+		code := *ex.ExitCode
+		ex.ExitCode = &code
+	}
+	return ex
 }

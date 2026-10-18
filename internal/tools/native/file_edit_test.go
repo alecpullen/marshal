@@ -134,8 +134,10 @@ func TestFileEditReportsLSPDiagnostics(t *testing.T) {
 
 func TestShellRunRescansLSP(t *testing.T) {
 	sync := &fakeSync{}
+	root := t.TempDir()
+	runner := &fakeRunner{}
 	reg := registry.New()
-	if err := RegisterAll(reg, Options{WorkspaceRoot: t.TempDir(), CommandRunner: &fakeRunner{}, LSPSync: sync}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, JobManager: newTestCommandService(t, runner, root, nil, nil), LSPSync: sync}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := invokeTool(t, reg, "shell.run", `{"command":"true"}`); err != nil {

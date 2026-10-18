@@ -255,6 +255,7 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	}
 	shell := &fileShell{}
 	putKey(&shell.DefaultTimeoutSeconds, fileField[int](file.Tools.Shell, "DefaultTimeoutSeconds"), cfg.Tools.Shell.DefaultTimeoutSeconds, def.Tools.Shell.DefaultTimeoutSeconds)
+	putKey(&shell.ForegroundWaitSeconds, fileField[int](file.Tools.Shell, "ForegroundWaitSeconds"), cfg.Tools.Shell.ForegroundWaitSeconds, def.Tools.Shell.ForegroundWaitSeconds)
 	putKey(&shell.MaxOutputBytes, fileField[int](file.Tools.Shell, "MaxOutputBytes"), cfg.Tools.Shell.MaxOutputBytes, def.Tools.Shell.MaxOutputBytes)
 	putKey(&shell.MaxBackgroundJobs, fileField[int](file.Tools.Shell, "MaxBackgroundJobs"), cfg.Tools.Shell.MaxBackgroundJobs, def.Tools.Shell.MaxBackgroundJobs)
 	putKey(&shell.BackgroundRetention, fileField[string](file.Tools.Shell, "BackgroundRetention"), cfg.Tools.Shell.BackgroundRetention.String(), def.Tools.Shell.BackgroundRetention.String())

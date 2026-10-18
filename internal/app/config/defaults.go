@@ -60,6 +60,7 @@ func Default() Config {
 		Tools: ToolsConfig{
 			Shell: ShellToolConfig{
 				DefaultTimeoutSeconds: 120,
+				ForegroundWaitSeconds: 10,
 				MaxOutputBytes:        200000,
 				MaxBackgroundJobs:     25,
 				BackgroundRetention:   8 * time.Hour,

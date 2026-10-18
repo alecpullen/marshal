@@ -55,6 +55,21 @@ const (
 // of an error string.
 const turnMetricsParseDetail = "turn_metrics"
 
+// Execution-outcome vocabulary the report classifies on. The values are the
+// ones the command service records (internal/tools/native); naming them here
+// keeps the classification a closed set rather than a string comparison buried
+// in a loop.
+const (
+	// execOutcomeNonZeroExit: a natural exit with a non-zero code.
+	execOutcomeNonZeroExit = "nonzero_exit"
+	// execOutcomeStartupFailure: the runner never started a process.
+	execOutcomeStartupFailure = "startup_failure"
+	// execOutcomeStopped: an accepted explicit stop request terminated it.
+	execOutcomeStopped = "stopped"
+	// execOutcomeResourceLimit: a backend enforced and named a resource limit.
+	execOutcomeResourceLimit = "resource_limit"
+)
+
 // repairNoteMarker is the header file.write_patch appends to a successful
 // result when its parser healed a malformed proposal in place. It is the only
 // observable trace of a repaired tool envelope in the audit log (the agent's
@@ -84,6 +99,12 @@ type Report struct {
 	TokenWaste      TokenWaste       `json:"token_waste"`
 	TurnOutcomes    []TurnOutcome    `json:"turn_outcomes"`
 	RunEvents       []RunEventEntry  `json:"run_events"`
+	// ExecutionEvidence explains managed command execution: who owned each
+	// command, how long the caller effectively waited, whether it handed off
+	// to the background, whether a stop was requested and how it actually
+	// ended. Additive: the schema version stays put, and an aggregator that
+	// ignores this field still sees the failure evidence above.
+	ExecutionEvidence []ExecutionEvidence `json:"execution_evidence,omitempty"`
 	// AgentObservations is nil until the optional agent pass appends semantic
 	// observations. Extraction never fabricates it.
 	AgentObservations *string  `json:"agent_observations"`
@@ -166,6 +187,75 @@ type TurnOutcome struct {
 	Count         int    `json:"count"`
 }
 
+// ExecutionEvidence is one deduplicated managed command execution: the
+// ownership, effective wait, handoff, stop request and observed outcome that
+// explain why a command ran, waited, handed off or stopped.
+//
+// It is deliberately evidence rather than a verdict. A continuation or an await
+// expiry is NOT a failed command — the same process keeps running — so the
+// report states the lifecycle the service recorded and leaves the judgement to
+// its reader. An absent Exit means no exit code was ever observed (a start-up
+// failure, a still-running command, a lost record) and must never be read as
+// success; Outcome "startup_failure" and Lost are the cases where that matters
+// most.
+type ExecutionEvidence struct {
+	// Identity pairs this entry with the call and the completion it came
+	// from, across resumes where a display job ID repeats. It is the
+	// execution id when the record has one, else a legacy identity.
+	Identity string `json:"identity"`
+	// ExecutionID is empty on a legacy record, which is exactly why it has a
+	// separate legacy identity rather than a fabricated execution id.
+	ExecutionID string `json:"execution_id,omitempty"`
+	DisplayID   string `json:"display_id,omitempty"`
+	// ConversationID, Actor, TurnID, StepID and ToolCallID are the ownership
+	// the command recorded: which conversation owned it, which actor and turn
+	// launched it, and which call it belonged to.
+	ConversationID string `json:"conversation_id,omitempty"`
+	Actor          string `json:"actor,omitempty"`
+	TurnID         string `json:"turn_id,omitempty"`
+	StepID         string `json:"step_id,omitempty"`
+	ToolCallID     string `json:"tool_call_id,omitempty"`
+	Cwd            string `json:"cwd,omitempty"`
+	Generation     int    `json:"generation,omitempty"`
+	PID            int    `json:"pid,omitempty"`
+	// Tool names the tool that launched the command ("shell.run").
+	Tool string `json:"tool,omitempty"`
+	// State is the lifecycle status ("running", "stopping", "completed",
+	// "failed", "killed", "timed_out"); Outcome is the finer cause
+	// ("nonzero_exit", "startup_failure", "stopped", "resource_limit", …).
+	State   string `json:"state,omitempty"`
+	Outcome string `json:"outcome,omitempty"`
+	// Attachment is how the launching caller related to the execution:
+	// "foreground" while it waited, "background" once it detached.
+	Attachment string `json:"attachment,omitempty"`
+	// Wait is the effective foreground wait the launch used ("10s"). It is
+	// evidence about the WAIT, not the command's lifetime: a short wait is
+	// what hands a command off, not what ends it.
+	Wait string `json:"wait,omitempty"`
+	// DetachReason and DetachedAt record why and when a wait handed off.
+	DetachReason string    `json:"detach_reason,omitempty"`
+	DetachedAt   time.Time `json:"detached_at,omitempty"`
+	// StopCause and StopRequestedAt record an accepted explicit stop request,
+	// separately from the outcome it produced.
+	StopCause       string    `json:"stop_cause,omitempty"`
+	StopRequestedAt time.Time `json:"stop_requested_at,omitempty"`
+	// Exit is the observed exit code; absent means none was observed and the
+	// reader must treat it as unknown, never as zero.
+	Exit *int `json:"exit_code,omitempty"`
+	// Truncated reports whether the retained output hit its cap.
+	Truncated bool `json:"truncated,omitempty"`
+	// Lost marks a command whose owning process ended before its outcome was
+	// recorded. Its Outcome is unknown — the session died with the process —
+	// so it is reported as lost rather than as a failure or a success.
+	Lost bool `json:"lost,omitempty"`
+	// Failed reports whether this settlement is failure evidence: a settled
+	// nonzero exit, start-up failure, resource limit or stop. A continuation,
+	// an await expiry, a natural success and a lost record are all false.
+	Failed    bool      `json:"failed"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+	EndedAt   time.Time `json:"ended_at,omitempty"`
+}
+
 // RunEventEntry is one deduplicated plan-run event. Run events are in-memory
 // only, so this field is the only durable record of them.
 type RunEventEntry struct {
@@ -235,6 +325,7 @@ func Build(state *session.State, database *db.DB) (Report, error) {
 	denialIdx := make(map[string]int)
 	truncIdx := make(map[string]int)
 	parseIdx := make(map[string]int)
+	execIdx := make(map[string]int)
 
 	// addFailure groups on (tool, first line of the error, truncated).
 	addFailure := func(tool, args, errText string, at time.Time, exit *int) {
@@ -280,9 +371,35 @@ func Build(state *session.State, database *db.DB) (Report, error) {
 		report.ParseIssues = append(report.ParseIssues, ParseIssue{Kind: kind, Detail: detail, Count: n})
 	}
 
+	// addExecution records one command execution's evidence, deduplicated by
+	// execution identity. The identity is what pairs a foreground call with
+	// the detached final record of the same command — display IDs repeat in
+	// every process, and a completion can reach the transcript before the
+	// audit row of the call that started it — so a record already present is
+	// filled in rather than appended a second time.
+	addExecution := func(e ExecutionEvidence) {
+		e.Cwd = clean(firstLine(e.Cwd))
+		e.DetachReason = clean(firstLine(e.DetachReason))
+		e.StopCause = clean(firstLine(e.StopCause))
+		if i, ok := execIdx[e.Identity]; ok {
+			report.ExecutionEvidence[i] = mergeExecutionEvidence(report.ExecutionEvidence[i], e)
+			return
+		}
+		execIdx[e.Identity] = len(report.ExecutionEvidence)
+		report.ExecutionEvidence = append(report.ExecutionEvidence, e)
+	}
+
 	for _, ev := range state.AuditLog() {
 		if ev.Model != "" {
 			models[ev.Model] = true
+		}
+
+		// Execution evidence rides in the call's notice, so it is read from the
+		// same audit pass: a foreground command's own record is its final
+		// record, which is why a settled foreground call needs no second
+		// source.
+		if ex, ok := ev.Notice.Execution(); ok {
+			addExecution(executionEvidenceFromNotice(ev.ToolName, ex))
 		}
 
 		switch {
@@ -328,6 +445,19 @@ func Build(state *session.State, database *db.DB) (Report, error) {
 		for _, note := range patchRepairNotes(ev) {
 			addParse(repairKind, clean(note), 1)
 		}
+	}
+
+	// Detached final records: a background completion is the only record of a
+	// command that outlived the call that launched it, so it is read from the
+	// session's transcript — the same exported projection a card's completion
+	// is built from. Deduplication is by identity, so a command whose call
+	// already contributed a notice is filled in rather than duplicated — and a
+	// lost record stays lost rather than becoming a failure.
+	for _, item := range state.Transcript() {
+		if item.JobExit == nil {
+			continue
+		}
+		addExecution(executionEvidenceFromJobExit(*item.JobExit))
 	}
 
 	runIdx := make(map[string]int)
@@ -460,6 +590,193 @@ func collectTurnMetrics(
 			Count:         1,
 		})
 	}
+}
+
+// executionEvidenceFromNotice builds the evidence for one structured execution
+// notice. The tool name is the call's, so a reader can tell which tool launched
+// the command.
+func executionEvidenceFromNotice(tool string, ex registry.CommandExecution) ExecutionEvidence {
+	return ExecutionEvidence{
+		Identity:        executionIdentity(ex.ExecutionID, ex.DisplayID, ex.StartedAt),
+		ExecutionID:     ex.ExecutionID,
+		DisplayID:       ex.DisplayID,
+		ConversationID:  ex.ConversationID,
+		Actor:           ex.Actor,
+		TurnID:          ex.TurnID,
+		StepID:          ex.StepID,
+		ToolCallID:      ex.ToolCallID,
+		Cwd:             ex.Cwd,
+		Generation:      ex.Generation,
+		PID:             ex.PID,
+		Tool:            tool,
+		State:           ex.State,
+		Outcome:         ex.Outcome,
+		Attachment:      string(ex.Attachment),
+		Wait:            ex.Wait,
+		DetachReason:    ex.DetachReason,
+		DetachedAt:      ex.DetachedAt,
+		StopCause:       ex.StopCause,
+		StopRequestedAt: ex.StopRequestedAt,
+		Exit:            copyIntPtr(ex.ExitCode),
+		Truncated:       ex.Truncated,
+		Failed:          executionFailed(ex.State, ex.Outcome, ex.ExitCode, false),
+		StartedAt:       ex.StartedAt,
+		EndedAt:         ex.EndedAt,
+	}
+}
+
+// executionEvidenceFromJobExit builds the evidence for one detached final
+// record. A lost record's outcome is unknown — the process that would have
+// recorded it is gone — so it is reported as lost and never as a failure or a
+// success.
+func executionEvidenceFromJobExit(e session.JobExit) ExecutionEvidence {
+	return ExecutionEvidence{
+		Identity:        e.Identity(),
+		ExecutionID:     e.ExecutionID,
+		DisplayID:       e.ID,
+		ConversationID:  e.ConversationID,
+		Actor:           e.Actor,
+		TurnID:          e.TurnID,
+		StepID:          e.StepID,
+		ToolCallID:      e.ToolCallID,
+		Cwd:             e.Cwd,
+		Generation:      e.Generation,
+		PID:             e.PID,
+		State:           e.State,
+		Outcome:         e.Outcome,
+		Attachment:      e.Attachment,
+		Wait:            e.Wait,
+		DetachReason:    e.DetachReason,
+		DetachedAt:      e.DetachedAt,
+		StopCause:       e.StopCause,
+		StopRequestedAt: e.StopRequestedAt,
+		Exit:            copyIntPtr(e.Exit),
+		Truncated:       e.Truncated,
+		Lost:            e.Lost,
+		// A lost record is never failure evidence: nothing was observed. This
+		// also keeps a lost record from reading as success, because Failed is
+		// false and Exit is nil, so a reader sees "unknown" either way.
+		Failed:    !e.Lost && executionFailed(e.State, e.Outcome, e.Exit, false),
+		StartedAt: e.StartedAt,
+		EndedAt:   e.EndedAt,
+	}
+}
+
+// executionIdentity is the key an execution's evidence is deduplicated by. A
+// structured record has a cross-resume execution id; a legacy record has none,
+// so its display ID and start time stand in — the same fallback pairing a card
+// uses, which is the point: an identity that does not match across the two
+// sources would duplicate one command instead of merging it.
+func executionIdentity(executionID, displayID string, startedAt time.Time) string {
+	if id := strings.TrimSpace(executionID); id != "" {
+		return "exec:" + id
+	}
+	if startedAt.IsZero() {
+		return "legacy:" + displayID
+	}
+	return "legacy:" + displayID + "@" + startedAt.UTC().Format(time.RFC3339Nano)
+}
+
+// executionSettled reports whether a lifecycle status is terminal, i.e. the
+// execution will not change state again. The set is the command service's
+// ("completed", "failed", "killed", "timed_out"); "running" and "stopping" are
+// deliberately not settled, which is what lets a settled record supersede a
+// running one during a merge.
+func executionSettled(state string) bool {
+	switch state {
+	case "completed", "failed", "killed", "timed_out":
+		return true
+	}
+	return false
+}
+
+// executionFailed classifies whether a settlement is failure evidence.
+//
+// It is deliberately narrow, because mislabelling a wait as a failure is
+// exactly the confusion this section exists to remove: a continuation — the
+// caller stopped waiting while the command kept running — is not a failed
+// command, an await expiry is not a failed command, and a natural success is
+// not a failure. Only a settlement the service actually observed to fail
+// counts: a nonzero exit, a start-up failure, an enforced resource limit, or an
+// explicit stop.
+func executionFailed(state, outcome string, exit *int, lost bool) bool {
+	if lost {
+		return false
+	}
+	switch outcome {
+	case execOutcomeNonZeroExit, execOutcomeStartupFailure,
+		execOutcomeStopped, execOutcomeResourceLimit:
+		return true
+	}
+	// A record with no structured outcome falls back to the lifecycle state
+	// plus the observed exit: "failed"/"killed" settled as a failure, and a
+	// nonzero exit is one whether or not the state was recorded. A "running" or
+	// "stopping" record has not settled, so it is not failure evidence yet.
+	switch state {
+	case "failed", "killed":
+		return true
+	case "running", "stopping", "":
+		return exit != nil && *exit != 0
+	}
+	return exit != nil && *exit != 0
+}
+
+// mergeExecutionEvidence folds a freshly extracted record into one already in
+// the report. Both sources describe the same execution — a call's notice and
+// the job's final record — so the merge prefers whichever side observed a fact
+// and keeps the identity, which is the same on both by construction.
+func mergeExecutionEvidence(base, next ExecutionEvidence) ExecutionEvidence {
+	base.Identity = firstNonEmpty(base.Identity, next.Identity)
+	base.ExecutionID = firstNonEmpty(base.ExecutionID, next.ExecutionID)
+	base.DisplayID = firstNonEmpty(base.DisplayID, next.DisplayID)
+	base.ConversationID = firstNonEmpty(base.ConversationID, next.ConversationID)
+	base.Actor = firstNonEmpty(base.Actor, next.Actor)
+	base.TurnID = firstNonEmpty(base.TurnID, next.TurnID)
+	base.StepID = firstNonEmpty(base.StepID, next.StepID)
+	base.ToolCallID = firstNonEmpty(base.ToolCallID, next.ToolCallID)
+	base.Cwd = firstNonEmpty(base.Cwd, next.Cwd)
+	base.Tool = firstNonEmpty(base.Tool, next.Tool)
+	// State and Outcome describe one lifecycle, so they are taken together: a
+	// settled record supersedes an unsettled one, because the earlier source can
+	// only have observed the execution while it was still running.
+	if executionSettled(next.State) && !executionSettled(base.State) {
+		base.State, base.Outcome = next.State, next.Outcome
+	} else {
+		base.State = firstNonEmpty(base.State, next.State)
+		base.Outcome = firstNonEmpty(base.Outcome, next.Outcome)
+	}
+	base.Attachment = firstNonEmpty(base.Attachment, next.Attachment)
+	base.Wait = firstNonEmpty(base.Wait, next.Wait)
+	base.DetachReason = firstNonEmpty(base.DetachReason, next.DetachReason)
+	base.StopCause = firstNonEmpty(base.StopCause, next.StopCause)
+	if base.Generation == 0 {
+		base.Generation = next.Generation
+	}
+	if base.PID == 0 {
+		base.PID = next.PID
+	}
+	if base.DetachedAt.IsZero() {
+		base.DetachedAt = next.DetachedAt
+	}
+	if base.StopRequestedAt.IsZero() {
+		base.StopRequestedAt = next.StopRequestedAt
+	}
+	if base.StartedAt.IsZero() {
+		base.StartedAt = next.StartedAt
+	}
+	if base.EndedAt.IsZero() {
+		base.EndedAt = next.EndedAt
+	}
+	if base.Exit == nil {
+		base.Exit = next.Exit
+	}
+	base.Truncated = base.Truncated || next.Truncated
+	base.Lost = base.Lost || next.Lost
+	// Failure is recomputed from the merged facts rather than OR-ed: a
+	// not-yet-settled notice merged with a settled record must classify on what
+	// is now known, and a lost record must not inherit a failure flag.
+	base.Failed = !base.Lost && executionFailed(base.State, base.Outcome, base.Exit, base.Lost)
+	return base
 }
 
 // patchRepairNotes returns the format mistakes file.write_patch healed in

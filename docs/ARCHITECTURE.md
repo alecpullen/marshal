@@ -156,6 +156,66 @@ one cache miss, because tools head every provider's prefix. Design:
   `index.html` so `webbridge` still serves a useful landing page before the
   SPA is built.
 
+## Background command execution
+
+`shell.run` (and every ordinary shell-capable tool) launches through the
+**conversation-owned command service** (`internal/tools/native`'s `JobManager`,
+built by `internal/app` and installed on the session with
+`State.SetTurnStopService`). One service per conversation owns process
+lifetime; the tool call only *waits* for it. Design:
+`docs/background-execution/feature-spec.md`.
+
+- **Wait-only arguments.** `timeout_seconds` bounds how long the call waits,
+  never how long the command may run. Omitted or zero uses
+  `tools.shell.foreground_wait_seconds` (default 10); a positive value is
+  honoured exactly; a negative value is rejected before anything launches.
+  Elapsed wall-clock time never terminates a process.
+- **Attachment, not two implementations.** A foreground command that outlives
+  its wait transitions to background attachment on the same process, PID and
+  execution identity — no relaunch, no second approval, no working-directory
+  change. `background: true` is the immediate-return form of the same launch.
+- **Deprecated config key.** `tools.shell.default_timeout_seconds` still loads
+  and saves for compatibility but drives nothing: it cannot override the
+  foreground wait and is not an editable `/settings` row.
+- **Broadened capacity.** `tools.shell.max_background_jobs` now means max
+  concurrent *running commands*, counting foreground-attached and detached
+  alike (`/settings` labels it `Max running commands`). Capacity is reserved at
+  admission, so a handoff never needs a new slot and a lowered limit never
+  evicts a running command.
+- **Stop ownership.** An explicit stop names a *group*: an
+  `agent`/TUI/ACP parent operation registers one with
+  `State.BeginTurnStop`, and every command it launches records that turn as its
+  `TurnID`. Stopping it is `State.RequestTurnStop(cause)`, which asks the
+  service to stop the still-attached commands **before** the agent's waits and
+  provider calls are cancelled. A command that already detached is
+  conversation-owned and survives. Ordinary cleanup
+  (`State.EndTurnStop(token)`) only unregisters, and only its own token.
+  ACP applies the same rules headlessly: `session/cancel` stops the turn
+  (`turn stop requested`), close/close-all/replacement stop the conversation
+  (`conversation ended`), a request deadline ends only the wait, and no headless
+  path consults a prompt.
+- **Evidence.** The service writes a versioned `registry.CommandExecution`
+  record into the tool notice: execution identity, conversation/actor/turn/call,
+  cwd and config generation, PID, state vs attachment, effective wait, detach
+  reason, accepted stop cause, optional exit code (nil means never observed —
+  never success) and truncation. Detached completions are stored as
+  `session.JobExit` records and persisted before their completion is announced,
+  so a resume shows the outcome rather than a card that runs forever; a job
+  whose owner is gone is shown *lost*, not running or completed. The record
+  reaches clients through the ACP stack-detail (`CallDetail.execution`) and wire
+  (`WireJob`) projections, and the postmortem report's additive
+  `execution_evidence` section.
+- **Exit phases.** Ending a conversation is a state machine on the session
+  (`ExitPhase`: `open` → `stopping_work` → `postmortem` → `closing` →
+  `closed`) with the runtime exposing `ActiveWork()`, `AcceptEnd`,
+  `WaitForEnd` and `EndPhase()`. Accepting an end freezes ordinary admission at
+  the work gate and the command service, then stops and joins exactly the
+  membership the user was shown while the database is still open. Stopping work
+  and tearing down infrastructure are separate steps, so the optional
+  postmortem pass can still run — and it cannot reopen ordinary work. The
+  noninteractive path (`Runtime.Quiesce`/`Close`) runs the same stop/join pass
+  with `RequireDisplayed:false`, so a headless shutdown prompts nobody.
+
 ## Design principles
 
 - **Local-friendly** — defaults assume no built-in providers; remote providers are opt-in.

@@ -689,3 +689,316 @@ func TestBuildCleanCapsDetailAtFieldCap(t *testing.T) {
 		t.Errorf("detail = %q, want a trailing ellipsis", detail)
 	}
 }
+
+// executionNotice builds the audit a managed command records when it settles.
+func executionNotice(tool string, ex registry.CommandExecution) registry.AuditEvent {
+	return registry.AuditEvent{ToolName: tool, Notice: registry.NewCommandExecutionNotice(ex)}
+}
+
+// A foreground command's own record is its final record, so one audit yields
+// one evidence entry carrying the ownership and the observed outcome.
+func TestBuildExtractsForegroundExecutionEvidence(t *testing.T) {
+	state := testState(t, testConfig(), nil)
+	code := 0
+	state.LogToolCall(executionNotice("shell.run", registry.CommandExecution{
+		ExecutionID: "exec-1", DisplayID: "job-1", ConversationID: "conv-1", Actor: "implementer",
+		TurnID: "turn-1", StepID: "2", ToolCallID: "call-1", Cwd: "/repo", Generation: 4, PID: 99,
+		State: "completed", Outcome: "completed", Attachment: registry.ExecutionAttachmentForeground,
+		Wait: "10s", ExitCode: &code,
+	}))
+
+	report, err := Build(state, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ExecutionEvidence) != 1 {
+		t.Fatalf("execution_evidence = %+v, want one entry", report.ExecutionEvidence)
+	}
+	e := report.ExecutionEvidence[0]
+	if e.Identity != "exec:exec-1" || e.ExecutionID != "exec-1" || e.DisplayID != "job-1" {
+		t.Fatalf("identity = %+v", e)
+	}
+	if e.ConversationID != "conv-1" || e.Actor != "implementer" || e.TurnID != "turn-1" ||
+		e.StepID != "2" || e.ToolCallID != "call-1" || e.Cwd != "/repo" || e.Generation != 4 || e.PID != 99 {
+		t.Fatalf("ownership = %+v", e)
+	}
+	if e.Attachment != "foreground" || e.Wait != "10s" || e.Tool != "shell.run" {
+		t.Fatalf("attachment/wait/tool = %+v", e)
+	}
+	if e.Exit == nil || *e.Exit != 0 {
+		t.Fatalf("exit = %v, want the observed 0", e.Exit)
+	}
+	if e.Failed {
+		t.Fatalf("a natural success was recorded as failure evidence: %+v", e)
+	}
+}
+
+// The cases the section exists for: each settled failure cause is failure
+// evidence with its own name, and a continuation — a wait that ended while the
+// command kept running — is not a failure at all.
+func TestBuildClassifiesExecutionOutcomes(t *testing.T) {
+	nonzero := 3
+	stopped := -1
+	cases := []struct {
+		name       string
+		ex         registry.CommandExecution
+		wantFailed bool
+	}{
+		{
+			name: "nonzero exit",
+			ex: registry.CommandExecution{ExecutionID: "e1", State: "failed", Outcome: "nonzero_exit",
+				Attachment: registry.ExecutionAttachmentForeground, ExitCode: &nonzero},
+			wantFailed: true,
+		},
+		{
+			name: "startup failure with no exit",
+			ex: registry.CommandExecution{ExecutionID: "e2", State: "failed", Outcome: "startup_failure",
+				Attachment: registry.ExecutionAttachmentForeground},
+			wantFailed: true,
+		},
+		{
+			name: "resource limit",
+			ex: registry.CommandExecution{ExecutionID: "e3", State: "killed", Outcome: "resource_limit",
+				Attachment: registry.ExecutionAttachmentForeground, ExitCode: &stopped},
+			wantFailed: true,
+		},
+		{
+			name: "explicit stop",
+			ex: registry.CommandExecution{ExecutionID: "e4", State: "killed", Outcome: "stopped",
+				Attachment: registry.ExecutionAttachmentForeground, StopCause: "turn stop requested"},
+			wantFailed: true,
+		},
+		{
+			name: "continuation after a wait expired",
+			ex: registry.CommandExecution{ExecutionID: "e5", State: "running",
+				Attachment: registry.ExecutionAttachmentBackground, Wait: "10s",
+				DetachReason: "wait expired"},
+			wantFailed: false,
+		},
+	}
+	state := testState(t, testConfig(), nil)
+	for _, c := range cases {
+		state.LogToolCall(executionNotice("shell.run", c.ex))
+	}
+
+	report, err := Build(state, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ExecutionEvidence) != len(cases) {
+		t.Fatalf("execution_evidence = %d entries, want %d", len(report.ExecutionEvidence), len(cases))
+	}
+	byID := map[string]ExecutionEvidence{}
+	for _, e := range report.ExecutionEvidence {
+		byID[e.ExecutionID] = e
+	}
+	for _, c := range cases {
+		e, ok := byID[c.ex.ExecutionID]
+		if !ok {
+			t.Fatalf("%s: no evidence entry", c.name)
+		}
+		if e.Failed != c.wantFailed {
+			t.Errorf("%s: Failed = %v, want %v (%+v)", c.name, e.Failed, c.wantFailed, e)
+		}
+		// A start-up failure has no exit; the report must say so by omission
+		// rather than by a zero a reader would take for success.
+		if c.ex.Outcome == "startup_failure" && e.Exit != nil {
+			t.Errorf("%s: Exit = %v, want unknown", c.name, *e.Exit)
+		}
+	}
+}
+
+// A detached final record is the only trace of a command that outlived its
+// call, and a lost one is unknown: it is reported as lost, never as a failure
+// or a success.
+func TestBuildExtractsDetachedAndLostRecords(t *testing.T) {
+	state := testState(t, testConfig(), nil)
+	code := 1
+	if err := state.AddJobExit(session.JobExit{
+		ID: "job-7", ExecutionID: "exec-7", ConversationID: "conv-1", Actor: "implementer",
+		TurnID: "turn-2", ToolCallID: "call-7", Cwd: "/repo", Generation: 2, PID: 1234,
+		State: "failed", Outcome: "nonzero_exit", Attachment: "background", Wait: "10s",
+		DetachReason: "wait expired", DetachedAt: time.Unix(50, 0).UTC(),
+		StopCause: "conversation ended", StopRequestedAt: time.Unix(60, 0).UTC(),
+		Exit: &code, Truncated: true, At: time.Unix(70, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+	if err := state.AddJobExit(session.JobExit{
+		ID: "job-8", ExecutionID: "exec-8", Lost: true, State: "", Outcome: "",
+		ExitCode: -1, Attachment: "background", At: time.Unix(80, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("AddJobExit (lost): %v", err)
+	}
+
+	report, err := Build(state, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	byID := map[string]ExecutionEvidence{}
+	for _, e := range report.ExecutionEvidence {
+		byID[e.ExecutionID] = e
+	}
+	settled, ok := byID["exec-7"]
+	if !ok {
+		t.Fatalf("the detached completion is missing: %+v", report.ExecutionEvidence)
+	}
+	if settled.Attachment != "background" || settled.Wait != "10s" || settled.DetachReason != "wait expired" {
+		t.Fatalf("handoff evidence = %+v", settled)
+	}
+	if settled.StopCause != "conversation ended" || settled.StopRequestedAt.IsZero() {
+		t.Fatalf("stop evidence = %+v", settled)
+	}
+	if !settled.Failed || settled.Exit == nil || *settled.Exit != 1 || !settled.Truncated {
+		t.Fatalf("outcome evidence = %+v", settled)
+	}
+
+	lost, ok := byID["exec-8"]
+	if !ok {
+		t.Fatalf("the lost record is missing: %+v", report.ExecutionEvidence)
+	}
+	if !lost.Lost {
+		t.Fatalf("lost = %+v, want it marked lost", lost)
+	}
+	if lost.Failed {
+		t.Fatalf("a lost record was reported as failure evidence: %+v", lost)
+	}
+	if lost.Exit != nil {
+		t.Fatalf("a lost record carried an exit %v; its outcome is unknown, not zero", lost.Exit)
+	}
+}
+
+// One command must produce one entry: the call's own record and the job's final
+// record are the same execution, and identity is what proves it.
+func TestBuildDeduplicatesExecutionEvidenceByIdentity(t *testing.T) {
+	state := testState(t, testConfig(), nil)
+	code := 0
+	ex := registry.CommandExecution{
+		ExecutionID: "exec-9", DisplayID: "job-9", ConversationID: "conv-1", Actor: "implementer",
+		State: "running", Attachment: registry.ExecutionAttachmentBackground, Wait: "10s",
+	}
+	state.LogToolCall(executionNotice("shell.run", ex))
+	// The completion reaches the transcript with the same identity and the
+	// settled facts the notice could not know.
+	if err := state.AddJobExit(session.JobExit{
+		ID: "job-9", ExecutionID: "exec-9", ConversationID: "conv-1", Actor: "implementer",
+		State: "completed", Outcome: "completed", Attachment: "background", Wait: "10s",
+		Exit: &code, At: time.Unix(90, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+
+	report, err := Build(state, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ExecutionEvidence) != 1 {
+		t.Fatalf("execution_evidence = %+v, want one entry for one execution", report.ExecutionEvidence)
+	}
+	e := report.ExecutionEvidence[0]
+	if e.ExecutionID != "exec-9" || e.Identity != "exec:exec-9" {
+		t.Fatalf("identity = %+v", e)
+	}
+	// The settled facts win; the earlier record supplies what it had.
+	if e.State != "completed" || e.Outcome != "completed" {
+		t.Fatalf("state/outcome = %+v, want the settled completion", e)
+	}
+	if e.Exit == nil || *e.Exit != 0 || e.Failed {
+		t.Fatalf("exit/failed = %+v", e)
+	}
+	if e.Wait != "10s" || e.Attachment != "background" {
+		t.Fatalf("wait/attachment = %+v", e)
+	}
+}
+
+// A legacy record has no execution identity at all. It is still evidence, and
+// it is reported with the legacy identity so a reader can tell it apart from a
+// structured record — never silently upgraded into one.
+func TestBuildKeepsLegacyRecords(t *testing.T) {
+	state := testState(t, testConfig(), nil)
+	if err := state.AddJobExit(session.JobExit{
+		ID: "job-legacy", ExitCode: 0, At: time.Unix(100, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+
+	report, err := Build(state, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ExecutionEvidence) != 1 {
+		t.Fatalf("execution_evidence = %+v, want one entry", report.ExecutionEvidence)
+	}
+	e := report.ExecutionEvidence[0]
+	if e.ExecutionID != "" {
+		t.Fatalf("ExecutionID = %q, want empty for a legacy record", e.ExecutionID)
+	}
+	if !strings.HasPrefix(e.Identity, "legacy:") || !strings.Contains(e.Identity, "job-legacy") {
+		t.Fatalf("Identity = %q, want a legacy identity naming the display id", e.Identity)
+	}
+	if e.State != "" || e.Outcome != "" {
+		t.Fatalf("state/outcome = %+v, want them empty on a legacy record", e)
+	}
+	if e.Failed {
+		t.Fatalf("a legacy record with unknown status was called failure evidence: %+v", e)
+	}
+}
+
+// The section is additive: the schema version stays put, an empty report omits
+// the field entirely, and the failure evidence that already existed is still
+// produced from the same audit.
+func TestExecutionEvidenceIsAdditive(t *testing.T) {
+	state := testState(t, testConfig(), nil)
+	state.LogToolCall(registry.AuditEvent{ToolName: "file.read", Error: "too large to read"})
+
+	report, err := Build(state, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if report.SchemaVersion != SchemaVersion {
+		t.Fatalf("schema_version = %d, want %d", report.SchemaVersion, SchemaVersion)
+	}
+	if len(report.ExecutionEvidence) != 0 {
+		t.Fatalf("execution_evidence = %+v, want none for a session with no managed commands", report.ExecutionEvidence)
+	}
+	raw, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "execution_evidence") {
+		t.Fatalf("an empty section was written: %s", raw)
+	}
+	if len(report.ToolFailures) != 1 {
+		t.Fatalf("tool_failures = %+v, want the existing failure evidence preserved", report.ToolFailures)
+	}
+}
+
+// Execution evidence is display data a run produced, so it travels through the
+// same redaction path as every other report string.
+func TestBuildRedactsExecutionEvidence(t *testing.T) {
+	const secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+	cfg := testConfig()
+	cfg.Privacy.RedactSecrets = true
+	state := testState(t, cfg, nil)
+	state.LogToolCall(executionNotice("shell.run", registry.CommandExecution{
+		ExecutionID: "exec-secret", State: "killed", Outcome: "stopped",
+		Attachment: registry.ExecutionAttachmentForeground,
+		Cwd:        "/repo",
+		StopCause:  "turn stop requested with TOKEN=" + secret,
+	}))
+
+	report, err := Build(state, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(report.ExecutionEvidence) != 1 {
+		t.Fatalf("execution_evidence = %+v, want one entry", report.ExecutionEvidence)
+	}
+	cause := report.ExecutionEvidence[0].StopCause
+	if strings.Contains(cause, secret) {
+		t.Errorf("stop_cause not redacted: %q", cause)
+	}
+	if !strings.Contains(cause, redact.MaskToken) {
+		t.Errorf("stop_cause = %q, want the redaction mask", cause)
+	}
+}

@@ -852,3 +852,76 @@ func TestRepeatedToolCallGetsReminderInResult(t *testing.T) {
 		t.Fatal("third identical tool result did not carry the repeat reminder")
 	}
 }
+
+// TestParentTurnStopPreservesIndependentChildren pins the boundary contract 3
+// draws: stopping the parent turn reaches the commands ATTACHED to that turn,
+// but an agent.run child runs on its own stop group and survives — as do the
+// child's own detached jobs. Stopping a specific child is a separate action.
+func TestParentTurnStopPreservesIndependentChildren(t *testing.T) {
+	state := newTestState(t)
+	svc := &fakeStopService{}
+	state.SetTurnStopService(svc)
+
+	// The child's group is a different target from the parent's.
+	parentStop, _ := state.BeginTurnStop("")
+	childStop := session.NewTurnStopToken(svc, "subagent-1")
+	if parentStop.TurnID() == childStop.TurnID() {
+		t.Fatal("a child's stop group reuses the parent's turn identity")
+	}
+
+	if _, err := state.RequestTurnStop("stop the parent turn"); err != nil {
+		t.Fatalf("RequestTurnStop: %v", err)
+	}
+	stops, _, _ := svc.snapshot()
+	if len(stops) != 1 {
+		t.Fatalf("parent stop reached the service %d time(s), want 1", len(stops))
+	}
+	if stops[0] != parentStop.TurnID() {
+		t.Fatalf("parent stop targeted %q, want %q", stops[0], parentStop.TurnID())
+	}
+	if childStop.Stopped() {
+		t.Fatal("a parent turn stop marked an independent child's group stopped")
+	}
+}
+
+// TestStopAttachedOrderingLeavesDetachedWorkAlone pins the detach-versus-stop
+// arbitration from the caller's side: StopAttached's answer is what the caller
+// cancels on, and an execution that detached first is absent from that answer —
+// so a stop can never silently kill background work that outlived its turn.
+func TestStopAttachedOrderingLeavesDetachedWorkAlone(t *testing.T) {
+	state := newTestState(t)
+	svc := &onlyAttachedStop{attached: []string{"job-attached"}}
+	state.SetTurnStopService(svc)
+
+	token, _ := state.BeginTurnStop("")
+	ids, err := state.RequestTurnStop("stop the turn")
+	if err != nil {
+		t.Fatalf("RequestTurnStop: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "job-attached" {
+		t.Fatalf("stopped ids = %v, want only the attached execution", ids)
+	}
+	if token.StoppedExecutionIDs()[0] != "job-attached" {
+		t.Fatalf("token recorded %v as stopped", token.StoppedExecutionIDs())
+	}
+	if svc.detachedStopped {
+		t.Fatal("a detached execution was stopped by a turn stop")
+	}
+}
+
+// onlyAttachedStop models a service that stops only the executions still
+// attached to the turn and leaves detached ones running, so a test can assert
+// the caller acted on exactly that answer.
+type onlyAttachedStop struct {
+	attached        []string
+	detachedStopped bool
+}
+
+func (s *onlyAttachedStop) StopAttached(turnID, cause string) ([]string, error) {
+	return append([]string(nil), s.attached...), nil
+}
+
+func (s *onlyAttachedStop) RequestStop(executionID, cause string) error {
+	s.detachedStopped = true
+	return nil
+}

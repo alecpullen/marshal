@@ -192,6 +192,10 @@ func merge(cfg *Config, file configFile) error {
 	if file.Tools != nil && file.Tools.Shell != nil {
 		s := file.Tools.Shell
 		set(&cfg.Tools.Shell.DefaultTimeoutSeconds, s.DefaultTimeoutSeconds)
+		set(&cfg.Tools.Shell.ForegroundWaitSeconds, s.ForegroundWaitSeconds)
+		if cfg.Tools.Shell.ForegroundWaitSeconds <= 0 {
+			return fmt.Errorf("tools.shell.foreground_wait_seconds must be positive")
+		}
 		set(&cfg.Tools.Shell.MaxOutputBytes, s.MaxOutputBytes)
 		set(&cfg.Tools.Shell.MaxBackgroundJobs, s.MaxBackgroundJobs)
 		if s.BackgroundRetention != nil && *s.BackgroundRetention != "" {

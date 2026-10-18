@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"marshal/internal/app/session"
+	"marshal/internal/tools/registry"
 )
 
 func TestSubagentNoticeIsNotARow(t *testing.T) {
@@ -198,5 +199,172 @@ func TestOrphanJobExitsOfReusedIDGetDistinctMarkers(t *testing.T) {
 	walk(nodes)
 	if len(seen) != 2 {
 		t.Fatalf("markers = %v, want 2", seen)
+	}
+}
+
+// structuredJobStart is the audit a managed background launch records: the
+// summary text a legacy reader uses, plus the structured execution record that
+// carries the identity a completion is paired by.
+func structuredJobStart(step session.StepID, callID string, s int, displayID, execID string) session.TranscriptItem {
+	it := audit("shell.run", step, callID, s)
+	it.Audit.ResultSummary = session.JobStartPrefix + displayID
+	it.Audit.Args = []byte(`{"command":"pytest -q","background":true}`)
+	it.Audit.Notice = registry.NewCommandExecutionNotice(registry.CommandExecution{
+		ExecutionID: execID, DisplayID: displayID, ConversationID: "conv",
+		Actor: "implementer", TurnID: "turn-1", StepID: "1", ToolCallID: callID,
+		Cwd: "/repo", Generation: 3, PID: 4242, StartedAt: at(s),
+		State: "running", Attachment: registry.ExecutionAttachmentBackground,
+	})
+	return it
+}
+
+// structuredJobExit is a stored completion carrying the same identity. An
+// observed exit mirrors into the legacy field the way session.JobExitFromExecution
+// writes it, so the fixture is the record the production path actually stores.
+func structuredJobExit(s int, displayID, execID string, exit *int) session.TranscriptItem {
+	e := &session.JobExit{ID: displayID, ExecutionID: execID, Command: "pytest -q",
+		ExitCode: -1, Exit: exit, Duration: 60e9, At: at(s),
+		State: "failed", Outcome: "nonzero_exit", Attachment: "background"}
+	if exit != nil {
+		e.ExitCode = *exit
+	}
+	return session.TranscriptItem{Timestamp: at(s), Kind: session.KindJobExit, JobExit: e}
+}
+
+// A completion can reach the transcript before the audit row of the call that
+// started it — the two are written from different goroutines. Pairing by
+// execution identity settles the card anyway; ordering by timestamp would leave
+// it running forever.
+func TestStructuredExitSettlesItsCardRegardlessOfOrder(t *testing.T) {
+	code := 0
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Launch."),
+			structuredJobExit(2, "job-1", "exec-1", &code),
+			structuredJobStart(1, "j", 4, "job-1", "exec-1"),
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 5)},
+	})
+	card := findNode(nodes, "tool:1:j")
+	if card == nil || card.Job == nil {
+		t.Fatalf("card = %+v, want a job card", card)
+	}
+	if card.Job.Running || card.Job.Exit == nil || *card.Job.Exit != 0 {
+		t.Fatalf("card = %+v, want it settled with its observed exit", card.Job)
+	}
+	if card.Live {
+		t.Fatal("a settled card must not stay live")
+	}
+	if got := shape(nodes); !strings.Contains(got, "marker:tool:1:j") {
+		t.Fatalf("the completion still marks the card:\n%s", got)
+	}
+}
+
+// A command the caller is still waiting on has its own tool row. Its audit
+// carries the same structured record, and the record's attachment is what keeps
+// it from becoming a second — and wrongly background-styled — card.
+func TestForegroundExecutionMetadataIsNotABackgroundCard(t *testing.T) {
+	zero := 0
+	it := audit("shell.run", 1, "j", 2)
+	it.Audit.ResultSummary = "ran pytest -q"
+	it.Audit.Notice = registry.NewCommandExecutionNotice(registry.CommandExecution{
+		ExecutionID: "exec-1", DisplayID: "job-1", ConversationID: "conv",
+		Attachment: registry.ExecutionAttachmentForeground, State: "completed", ExitCode: &zero,
+	})
+	if id := JobStartID(*it.Audit); id != "" {
+		t.Fatalf("JobStartID = %q, want no card for a foreground command", id)
+	}
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Run."), it},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+	})
+	row := findNode(nodes, "tool:1:j")
+	if row == nil {
+		t.Fatalf("the call lost its own row:\n%s", shape(nodes))
+	}
+	if row.Job != nil {
+		t.Fatalf("foreground metadata became a background card: %+v", row.Job)
+	}
+	if row.Live {
+		t.Fatal("a settled foreground row must not be live")
+	}
+}
+
+// A background card that never settles still shows what was captured for it, and
+// an exit that was never observed never reads as success.
+func TestCardCarriesExecutionEvidenceAndUnknownExit(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0), narration(2, 1, 1, "Launch."),
+			structuredJobStart(1, "j", 2, "job-2", "exec-2"),
+			session.TranscriptItem{Timestamp: at(5), Kind: session.KindJobExit,
+				JobExit: &session.JobExit{ID: "job-2", ExecutionID: "exec-2", ExitCode: -1,
+					State: "killed", Outcome: "stopped", Attachment: "background",
+					StopCause: "turn stop", Truncated: true, At: at(5)}},
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+	})
+	card := findNode(nodes, "tool:1:j")
+	if card == nil || card.Job == nil {
+		t.Fatalf("card = %+v", card)
+	}
+	j := card.Job
+	if j.Running || j.Lost {
+		t.Fatalf("card = %+v, want it settled and not lost", j)
+	}
+	if j.Exit != nil {
+		t.Fatalf("Exit = %v, want nil for an unobserved exit rather than a guessed zero", *j.Exit)
+	}
+	if j.ExitCode != -1 {
+		t.Fatalf("ExitCode = %d, want the legacy -1 the record carried", j.ExitCode)
+	}
+	if j.Status != "killed" || j.Attachment != "background" || j.StopCause != "turn stop" || !j.Truncated {
+		t.Fatalf("card lost its evidence: %+v", j)
+	}
+
+	// A lost job keeps the metadata its start carried, and gains nothing else.
+	lost := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0), narration(2, 1, 1, "Launch."), structuredJobStart(1, "j", 2, "job-9", "exec-9"),
+			session.TranscriptItem{Timestamp: at(2), Kind: session.KindJobExit,
+				JobExit: &session.JobExit{ID: "job-9", ExecutionID: "exec-9", ExitCode: -1, Lost: true, At: at(2)}},
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+	})
+	lostCard := findNode(lost, "tool:1:j")
+	if lostCard == nil || lostCard.Job == nil || !lostCard.Job.Lost || lostCard.Job.Running {
+		t.Fatalf("lost card = %+v", lostCard)
+	}
+	if lostCard.Job.Exit != nil || lostCard.Job.Attachment != "background" {
+		t.Fatalf("lost card = %+v, want its captured attachment and no exit", lostCard.Job)
+	}
+}
+
+// The card's version covers every field the renderer reads: a status or
+// truncation change that leaves the exit alone must still rebuild the row.
+func TestJobCardVersionFollowsStatusAndTruncation(t *testing.T) {
+	build := func(state, outcome, stopCause string, truncated bool) uint64 {
+		code := 0
+		start := structuredJobStart(1, "j", 2, "job-3", "exec-3")
+		exit := structuredJobExit(5, "job-3", "exec-3", &code)
+		exit.JobExit.State, exit.JobExit.Outcome = state, outcome
+		exit.JobExit.StopCause, exit.JobExit.Truncated = stopCause, truncated
+		nodes := Build(Snapshot{
+			Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start, exit},
+			Steps: []session.Step{stepOf(1, 1, 1, 3)},
+		})
+		card := findNode(nodes, "tool:1:j")
+		if card == nil {
+			t.Fatal("no card")
+		}
+		return card.Version
+	}
+	base := build("completed", "completed", "", false)
+	if base == build("stopping", "stopped", "turn stop", false) {
+		t.Fatal("a status/stop-cause change left the card's version alone")
+	}
+	if base == build("completed", "completed", "", true) {
+		t.Fatal("a truncation change left the card's version alone")
 	}
 }

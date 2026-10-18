@@ -63,8 +63,10 @@ func shellCommand(command string) *exec.Cmd {
 // entire tree (including grandchildren), not just the direct child
 // (TOOLS-MOD-F8).
 func runCmd(ctx context.Context, cmd *exec.Cmd, req CommandRequest) (CommandResult, error) {
-	stdout := NewBoundedOutput(OutputLimit(req.MaxOutputBytes), req.Stdout)
-	stderr := NewBoundedOutput(OutputLimit(req.MaxOutputBytes), req.Stderr)
+	// Managed commands retain a bounded tail and keep forwarding every chunk
+	// to the observer; other callers keep prefix capture.
+	stdout := NewCommandOutput(OutputLimit(req.MaxOutputBytes), req.Stdout, req.RetainOutputTail)
+	stderr := NewCommandOutput(OutputLimit(req.MaxOutputBytes), req.Stderr, req.RetainOutputTail)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if req.Stdin != nil {

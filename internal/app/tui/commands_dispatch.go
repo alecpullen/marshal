@@ -58,10 +58,14 @@ func parseReviewArgs(args []string) (model, base, reviewRange string, remaining 
 	return model, base, reviewRange, out
 }
 
-// newSessionEffect is the shared /new and /clear handler. It asks the
-// runtime to build a brand-new session, then re-points every model field
-// that depends on the current session and drops per-message UI state that
-// belonged to the old one.
+// newSessionEffect is the shared /new and /clear handler. It records a pending
+// REPLACEMENT whose target (the new session's name) is applied only after the
+// runtime accepts the work membership an end would stop: the current
+// conversation's live work is settled first, and nothing about the new session
+// is built until then.
+//
+// The existing busy refusal is preserved: a turn in flight still refuses a
+// replacement outright rather than warning about it.
 func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
@@ -71,14 +75,22 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
-
 	name := strings.TrimSpace(strings.Join(args, " "))
+	return m, m.beginEnd(&endIntent{kind: EndIntentReplace, name: name})
+}
+
+// startNewSession builds the replacement session and re-points every model
+// field that depends on the current session, dropping per-message UI state that
+// belonged to the old one. It runs only after an accepted replacement: the
+// runtime froze the old conversation at acceptance, so the swap acts on a
+// settled membership and no old work is transferred or reopened.
+func startNewSession(m *Model, name string) tea.Cmd {
 	oldCount := len(m.state.Messages())
 	snap, err := m.sessionSwapper.NewSession(name)
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to start new session: %v", err), session.ContentTypePlain)
 		m.refreshViewport()
-		return m, nil
+		return nil
 	}
 
 	m.state = snap.State
@@ -123,18 +135,16 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	}
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
-	return m, sheetBaseRefCmd(m.state.Workspace().ActiveRoot)
+	return sheetBaseRefCmd(m.state.Workspace().ActiveRoot)
 }
 
 func init() {
 	tuiCommandEffects = map[string]func(m *Model, args []string) (tea.Model, tea.Cmd){
 		"exit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.state.AddMessage(session.RoleSystem, "Goodbye!", session.ContentTypePlain)
-			return m, m.beginShutdown(true)
+			return m, m.beginEnd(&endIntent{kind: EndIntentExit})
 		},
 		"quit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.state.AddMessage(session.RoleSystem, "Goodbye!", session.ContentTypePlain)
-			return m, m.beginShutdown(true)
+			return m, m.beginEnd(&endIntent{kind: EndIntentExit})
 		},
 		"set": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			m.handleSetCommand(args)
@@ -351,6 +361,11 @@ func init() {
 				m.refreshViewport()
 				return m, nil
 			}
+			// Register the review operation's stop group before dispatch: the
+			// review subagent runs synchronously under this operation and may
+			// launch commands, so the same stop must reach them. A registration
+			// is set before m.busy so the very first keypress has a target.
+			m.beginTurnStopRegistration()
 			m.busy = true
 			m.turnStartedAt = m.now()
 			agentCtx, cancel := context.WithCancel(m.ctx)
@@ -359,6 +374,10 @@ func init() {
 			if base != "" && reviewRange != "" {
 				m.state.EndWork()
 				m.busy = false
+				// The review never started, so its registration is cleared here:
+				// leaving it behind would let the next stop keystroke name an
+				// operation that already refused to run.
+				m.releaseTurnStop()
 				m.state.AddMessage(session.RoleSystem, "review: --base and an explicit range are mutually exclusive", session.ContentTypePlain)
 				m.refreshViewport()
 				return *m, nil

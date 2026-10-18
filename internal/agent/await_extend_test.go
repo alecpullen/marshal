@@ -199,6 +199,79 @@ func TestAgentAwaitJobResultFormat(t *testing.T) {
 	}
 }
 
+// TestAgentAwaitJobResultCarriesStatusExitAndStopCause pins the evidence a job
+// result must carry: the status says what the execution is doing, the exit code
+// is the one that was observed (or absent), and a stop cause explains a stop the
+// exit code cannot.
+func TestAgentAwaitJobResultCarriesStatusExitAndStopCause(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+
+	// A stopped job: no observed exit, but a recorded cause.
+	stopped := &fakeJobSource{}
+	stopped.wait = func(context.Context, string) (AwaitJobInfo, error) {
+		return AwaitJobInfo{ID: "job-2", Command: "sleep 30", Status: "killed", StopCause: "user stopped the turn"}, nil
+	}
+	await := newAwaitTool(state, WithAwaitJobs(stopped))
+	res, err := await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"job_id": "job-2"}`)})
+	if err != nil {
+		t.Fatalf("await job: %v", err)
+	}
+	if !strings.Contains(res.Summary, "job job-2 killed (exit n/a): sleep 30") {
+		t.Fatalf("summary = %q, want the status with no observed exit", res.Summary)
+	}
+	if !strings.Contains(res.Content, "stopped: user stopped the turn") {
+		t.Fatalf("content = %q, want the stop cause", res.Content)
+	}
+
+	// A still-running job: the status is the continuation, and no exit is
+	// invented for it.
+	running := &fakeJobSource{}
+	running.wait = func(context.Context, string) (AwaitJobInfo, error) {
+		return AwaitJobInfo{ID: "job-3", Command: "download", Status: "running"}, nil
+	}
+	await = newAwaitTool(state, WithAwaitJobs(running))
+	res, err = await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"job_id": "job-3"}`)})
+	if err != nil {
+		t.Fatalf("await running job: %v", err)
+	}
+	if !strings.Contains(res.Summary, "job job-3 running (exit n/a): download") {
+		t.Fatalf("summary = %q, want the running status", res.Summary)
+	}
+}
+
+// TestAgentAwaitPeekReportsStopCause pins that peek explains a stopped job the
+// same way a wait does.
+func TestAgentAwaitPeekReportsStopCause(t *testing.T) {
+	jobs := &fakeJobSource{peek: func(id string, _ int) (AwaitJobInfo, string, error) {
+		return AwaitJobInfo{ID: id, Command: "sleep 30", Status: "killed", StopCause: "stopped by the user"}, "tail line", nil
+	}}
+	tool := newAwaitTool(newTestState(t), WithAwaitJobs(jobs))
+	res, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"job_id":"job-4","peek":true}`)})
+	if err != nil {
+		t.Fatalf("peek: %v", err)
+	}
+	for _, want := range []string{"status: killed", "stopped: stopped by the user", "tail line"} {
+		if !strings.Contains(res.Content, want) {
+			t.Fatalf("peek content missing %q: %q", want, res.Content)
+		}
+	}
+}
+
+// TestAgentAwaitPeekValidatesNegativeTimeout pins that the wait-budget
+// validation applies to peek too: a negative timeout is a caller mistake
+// whichever mode reads it.
+func TestAgentAwaitPeekValidatesNegativeTimeout(t *testing.T) {
+	jobs := &fakeJobSource{peek: func(id string, _ int) (AwaitJobInfo, string, error) {
+		t.Fatal("peek must not reach the job source with an invalid timeout")
+		return AwaitJobInfo{}, "", nil
+	}}
+	tool := newAwaitTool(newTestState(t), WithAwaitJobs(jobs))
+	_, err := tool.Handler(context.Background(), registry.ToolCall{Args: []byte(`{"job_id":"job-4","peek":true,"timeout_seconds":-1}`)})
+	if err == nil || !strings.Contains(err.Error(), ">= 0") {
+		t.Fatalf("err = %v, want a negative-timeout rejection on peek", err)
+	}
+}
+
 func TestAgentAwaitAllNoOutstanding(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	await := newAwaitTool(state)
@@ -208,5 +281,75 @@ func TestAgentAwaitAllNoOutstanding(t *testing.T) {
 	}
 	if !strings.Contains(res.Summary, "no outstanding background work") {
 		t.Fatalf("summary = %q", res.Summary)
+	}
+}
+
+// TestAgentAwaitAnyLeavesUnfinishedLosersRunning pins the cleanup rule an any
+// race must obey: the losers' waiters are cancelled, and nothing about the
+// losers themselves changes. A loser that stopped or was killed by the race
+// would be exactly the bug this feature exists to remove.
+func TestAgentAwaitAnyLeavesUnfinishedLosersRunning(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	exit := 0
+	jobs := &fakeJobSource{
+		outstanding: []AwaitJobInfo{
+			{ID: "job-1", Command: "winner", Status: "running"},
+			{ID: "job-2", Command: "loser", Status: "running"},
+		},
+	}
+	jobs.wait = func(ctx context.Context, id string) (AwaitJobInfo, error) {
+		if id == "job-1" {
+			return AwaitJobInfo{ID: id, Command: "winner", Status: "completed", ExitCode: &exit}, nil
+		}
+		// The loser blocks until its waiter is cancelled by the any cleanup.
+		<-ctx.Done()
+		return AwaitJobInfo{}, ctx.Err()
+	}
+	await := newAwaitTool(state, WithAwaitJobs(jobs))
+	res, err := await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"any": true}`)})
+	if err != nil {
+		t.Fatalf("await any: %v", err)
+	}
+	if !strings.Contains(res.Summary, "job job-1 completed") {
+		t.Fatalf("summary = %q, want the winner", res.Summary)
+	}
+	// Nothing was killed: the loser's lifetime was never the await's to end.
+	if jobs.killed != "" {
+		t.Fatalf("killed %q, want nothing: an any cleanup must cancel waiters only", jobs.killed)
+	}
+}
+
+// TestAgentAwaitAllKeepsUnfinishedTargetsAfterTimeout pins that an expired all
+// wait reports the remaining work as still running and stops nothing: the
+// timeout bounds the wait, never the targets.
+func TestAgentAwaitAllKeepsUnfinishedTargetsAfterTimeout(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	jobs := &fakeJobSource{
+		outstanding: []AwaitJobInfo{{ID: "job-1", Command: "slow", Status: "running"}},
+	}
+	jobs.wait = func(ctx context.Context, id string) (AwaitJobInfo, error) {
+		<-ctx.Done()
+		return AwaitJobInfo{}, ctx.Err()
+	}
+	await := newAwaitTool(state, WithAwaitJobs(jobs))
+	res, err := await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(`{"all": true, "timeout_seconds": 1}`)})
+	if err != nil {
+		t.Fatalf("await all: %v", err)
+	}
+	if !strings.Contains(res.Summary, "still running") {
+		t.Fatalf("summary = %q, want the remaining work named", res.Summary)
+	}
+	if jobs.killed != "" {
+		t.Fatalf("killed %q, want nothing: a timeout must not stop a target", jobs.killed)
+	}
+}
+
+// TestAgentAwaitStaysReadOnly pins that await keeps its read-only risk: a
+// blocking handler that held the write gate would deadlock the very target it
+// waits for.
+func TestAgentAwaitStaysReadOnly(t *testing.T) {
+	tool := newAwaitTool(newTestState(t))
+	if tool.Risk != registry.RiskReadOnly {
+		t.Fatalf("agent.await risk = %v, want RiskReadOnly", tool.Risk)
 	}
 }

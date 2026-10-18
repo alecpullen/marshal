@@ -162,6 +162,29 @@ type WireJob struct {
 	// Lost: the session ended while the job ran; ExitCode means nothing.
 	Lost     bool `json:"lost,omitempty"`
 	ExitCode int  `json:"exitCode"`
+	// Exit is the observed exit code, omitted when none was observed (a lost
+	// job, a start-up failure, a legacy record). A client must render an
+	// absent exit as unknown, never as success: ExitCode's -1 is the legacy
+	// spelling of the same "unknown".
+	Exit *int `json:"exit,omitempty"`
+	// ExecutionID is the execution's cross-resume identity. A display job ID
+	// repeats in every process, so this is what a client pairs a job with its
+	// own history by; omitted on a legacy record, which has none.
+	ExecutionID string `json:"executionId,omitempty"`
+	// Status is the execution's lifecycle status; Attachment is how the
+	// launching caller related to it. Both are omitted on a legacy record.
+	Status     string `json:"status,omitempty"`
+	Attachment string `json:"attachment,omitempty"`
+	// StopCause is an accepted explicit stop request's cause, when one was
+	// recorded.
+	StopCause string `json:"stopCause,omitempty"`
+	// Wait is the effective foreground wait the launch asked for ("10s") —
+	// evidence about the WAIT, not the command's lifetime. DetachReason and
+	// DetachedAt record why and when a wait handed the job to the background,
+	// which is what explains a short Wait on a job that ran far longer.
+	Wait         string `json:"wait,omitempty"`
+	DetachReason string `json:"detachReason,omitempty"`
+	DetachedAt   int64  `json:"detachedAt,omitempty"`
 	// StartedAt is when the job was dispatched (unix ms), so a client can
 	// show a running card's elapsed time; 0 when unknown.
 	StartedAt  int64  `json:"startedAt,omitempty"`
@@ -338,13 +361,30 @@ func wireNode(n *Node) WireNode {
 		w.Tool = wireTools(n.Tools)
 		if j := n.Job; j != nil {
 			wj := &WireJob{ID: j.ID, Command: ScrubText(j.Command), Running: j.Running, Lost: j.Lost, ExitCode: j.ExitCode,
+				Status: j.Status, Attachment: j.Attachment, StopCause: j.StopCause,
 				StartedAt: ms(n.JobStart()), DurationMs: j.Duration.Milliseconds()}
+			if j.Exit != nil {
+				code := *j.Exit
+				wj.Exit = &code
+			}
+			// The launch's own execution record carries what a card's state
+			// does not: the identity a client pairs the job by, and the wait it
+			// was launched with. It is read from the call that started the job
+			// (which is what this row is), so it stays available on a job whose
+			// exit record predates the structured fields.
+			if ex, ok := JobStartOf(n.Tools[0]); ok && ex.Structured {
+				wj.ExecutionID = ex.Execution.ExecutionID
+				wj.Wait = ex.Execution.Wait
+				wj.DetachReason = ScrubText(ex.Execution.DetachReason)
+				wj.DetachedAt = ms(ex.Execution.DetachedAt)
+			}
 			wj.Output, wj.Truncated = capTail(j.Output)
 			if s := ScrubBlock(wj.Output); s != wj.Output {
 				// A scrub that changed the text is itself a reason for a
 				// client to ask for the full payload.
 				wj.Output, wj.Truncated = s, true
 			}
+			wj.Truncated = wj.Truncated || j.Truncated
 			w.Tool.Job = wj
 		}
 	case n.Item != nil:

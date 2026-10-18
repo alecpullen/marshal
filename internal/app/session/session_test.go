@@ -1536,6 +1536,382 @@ func TestUnansweredAnswers(t *testing.T) {
 	}
 }
 
+// ── Task 8: the shared conversation-end gate ──────────────────────────────
+
+// TestWorkMembershipTracksParentChildAndCommand pins the shared gate's
+// membership: one item per registered unit of conversation work, each with its
+// own stable ID, and each released by exactly the call that pairs with its
+// registration.
+func TestWorkMembershipTracksParentChildAndCommand(t *testing.T) {
+	s := newTestState()
+	if err := s.BeginWork(); err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+	if err := s.EnterSubagent(); err != nil {
+		t.Fatalf("EnterSubagent: %v", err)
+	}
+	release, err := s.AdmitWork(WorkAdmissionRequest{ExecutionID: "exec-1", DisplayID: "job-1", Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("AdmitWork: %v", err)
+	}
+
+	snap := s.WorkMembership()
+	if len(snap.Items) != 3 {
+		t.Fatalf("membership = %+v, want parent, child and command", snap.Items)
+	}
+	seen := map[WorkID]WorkKind{}
+	for _, item := range snap.Items {
+		if item.ID == "" {
+			t.Fatalf("item %+v has no stable ID", item)
+		}
+		if _, dup := seen[item.ID]; dup {
+			t.Fatalf("duplicate work ID %q", item.ID)
+		}
+		seen[item.ID] = item.Kind
+	}
+	if seen[snap.Items[0].ID] != WorkKindParent {
+		t.Fatalf("first item = %+v, want the parent operation", snap.Items[0])
+	}
+
+	// Every release pairs with exactly one registration.
+	s.ExitSubagent()
+	release.Release()
+	release.Release() // idempotent
+	s.EndWork()
+	if snap := s.WorkMembership(); len(snap.Items) != 0 {
+		t.Fatalf("membership after all work finished = %+v, want empty", snap.Items)
+	}
+	if got := s.OutstandingWork(); len(got) != 0 {
+		t.Fatalf("OutstandingWork = %+v, want none", got)
+	}
+}
+
+// TestAcceptWorkDisplayedRejectsSubsetWithoutFreezing pins contract 7: a
+// displayed set that misses a currently active ID is refused, changes nothing and
+// stops nothing — including not freezing admission.
+func TestAcceptWorkDisplayedRejectsSubsetWithoutFreezing(t *testing.T) {
+	s := newTestState()
+	if err := s.BeginWork(); err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+	first := s.WorkMembership().Items[0].ID
+
+	// New work arrives after the displayed snapshot was taken.
+	if err := s.EnterSubagent(); err != nil {
+		t.Fatalf("EnterSubagent: %v", err)
+	}
+
+	snap, expanded, frozen := s.AcceptWorkDisplayed([]string{string(first)}, true)
+	if len(expanded) != 1 {
+		t.Fatalf("expanded = %v, want the undisplayed child", expanded)
+	}
+	if frozen {
+		t.Fatal("a refused acceptance must not freeze ordinary admission")
+	}
+	if s.WorkPhase() != ExitPhaseOpen {
+		t.Fatalf("phase after a refused acceptance = %q, want open", s.WorkPhase())
+	}
+	if len(snap.Items) != 2 {
+		t.Fatalf("snapshot = %+v, want both items", snap.Items)
+	}
+	// Ordinary admission is untouched: a parent operation still starts.
+	if err := s.BeginWork(); err != nil {
+		t.Fatalf("BeginWork after a refused acceptance = %v, want nil", err)
+	}
+	s.EndWork()
+	s.ExitSubagent()
+	s.EndWork()
+}
+
+// TestAcceptWorkDisplayedAcceptsWithoutReconfirmingFinishedIDs pins the other
+// half of contract 7: IDs that are no longer active need no reconfirmation.
+func TestAcceptWorkDisplayedAcceptsWithoutReconfirmingFinishedIDs(t *testing.T) {
+	s := newTestState()
+	if err := s.BeginWork(); err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+	parent := s.WorkMembership().Items[0].ID
+	if err := s.EnterSubagent(); err != nil {
+		t.Fatalf("EnterSubagent: %v", err)
+	}
+	child := s.WorkMembership().Items[1].ID
+	s.ExitSubagent()
+
+	// The displayed set names BOTH, including the child that has since finished.
+	_, expanded, frozen := s.AcceptWorkDisplayed([]string{string(parent), string(child)}, true)
+	if len(expanded) != 0 {
+		t.Fatalf("expanded = %v, want none: a finished ID needs no reconfirmation", expanded)
+	}
+	if !frozen {
+		t.Fatal("a covering displayed set must freeze admission")
+	}
+	if s.WorkPhase() != ExitPhaseStopping {
+		t.Fatalf("phase = %q, want stopping", s.WorkPhase())
+	}
+	s.EndWork()
+}
+
+// TestWorkGateFreezesRegistrationAtomically pins the synchronization boundary: a
+// registration that wins the race is in the membership the acceptance reports, and
+// one that loses the race is refused. There is no window in which work is both
+// admitted and invisible to an accepted end.
+func TestWorkGateFreezesRegistrationAtomically(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		s := newTestState()
+		ready := make(chan struct{})
+		accepted := make(chan WorkSnapshot, 1)
+		var admitErr error
+		var wg sync.WaitGroup
+
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-ready
+			_, admitErr = s.AdmitWork(WorkAdmissionRequest{ExecutionID: "exec", DisplayID: "job"})
+		}()
+		go func() {
+			defer wg.Done()
+			<-ready
+			snap, _, _ := s.AcceptWorkDisplayed(nil, false)
+			accepted <- snap
+		}()
+		close(ready)
+		wg.Wait()
+
+		snap := <-accepted
+		if admitErr == nil {
+			// The registration won: it is part of the membership the acceptance
+			// observed, so nothing was admitted invisibly.
+			if len(snap.Items) != 1 {
+				t.Fatalf("iteration %d: registration succeeded but the accepted membership is %+v", i, snap.Items)
+			}
+		} else if !errors.Is(admitErr, ErrConversationEnding) {
+			t.Fatalf("iteration %d: AdmitWork = %v, want nil or ErrConversationEnding", i, admitErr)
+		}
+	}
+}
+
+// TestNestedChildRegistrationCannotHideFromAnAcceptedEnd pins contract 7 for the
+// nested case: work a DELEGATE launches is registered in the conversation's gate
+// (the command service carries the conversation's admission seam), so a grandchild's
+// command is an item of the parent's membership with its own ID — it can never hide
+// behind the child that launched it.
+func TestNestedChildRegistrationCannotHideFromAnAcceptedEnd(t *testing.T) {
+	parent := newTestState()
+	// The delegate's own session: depth 1, exactly as an agent.run child has, with
+	// its own transcript and no gate of its own.
+	child := New(config.Default(), t.TempDir(), time.Unix(100, 0), Persistence{}, WithDepth(subagentMaxDepth))
+
+	if err := parent.BeginWork(); err != nil {
+		t.Fatalf("parent BeginWork: %v", err)
+	}
+	if err := parent.EnterSubagent(); err != nil {
+		t.Fatalf("parent EnterSubagent: %v", err)
+	}
+	// A nested delegate is refused by the depth guard: the delegation tree stops
+	// one level down, so the parent's membership names every unit that exists.
+	if err := child.EnterSubagent(); !errors.Is(err, ErrSubagentDepthLimit) {
+		t.Fatalf("nested EnterSubagent = %v, want ErrSubagentDepthLimit", err)
+	}
+
+	// The delegate's own command still lands in the CONVERSATION's membership: the
+	// shared service's admission seam is the conversation's gate, so a child cannot
+	// launch work the warning would not show.
+	childTurn, _ := child.BeginTurnStop("delegate")
+	lease, err := parent.AdmitWork(WorkAdmissionRequest{
+		ExecutionID: "grandchild-exec",
+		DisplayID:   "job-1",
+		Command:     "sleep 30",
+		Actor:       "delegate",
+		TurnID:      childTurn.TurnID(),
+	})
+	if err != nil {
+		t.Fatalf("delegate command admission: %v", err)
+	}
+
+	snap := parent.WorkMembership()
+	if len(snap.Items) != 3 {
+		t.Fatalf("membership = %+v, want the parent, the delegate and its command", snap.Items)
+	}
+	var commandItem *WorkItem
+	for i := range snap.Items {
+		if snap.Items[i].Kind == WorkKindCommand {
+			commandItem = &snap.Items[i]
+		}
+	}
+	if commandItem == nil {
+		t.Fatalf("membership = %+v, want the delegate's command", snap.Items)
+	}
+	if commandItem.TurnID != childTurn.TurnID() {
+		t.Fatalf("command turn = %q, want the delegate's turn %q", commandItem.TurnID, childTurn.TurnID())
+	}
+	// A displayed subset that omits the delegate's command is refused.
+	ids := []string{}
+	for _, item := range snap.Items {
+		if item.Kind != WorkKindCommand {
+			ids = append(ids, string(item.ID))
+		}
+	}
+	_, expanded, frozen := parent.AcceptWorkDisplayed(ids, true)
+	if len(expanded) != 1 {
+		t.Fatalf("expanded = %v, want the delegate's command", expanded)
+	}
+	if frozen {
+		t.Fatal("a refused acceptance must not freeze")
+	}
+	lease.Release()
+	child.EndTurnStop(childTurn)
+	parent.ExitSubagent()
+	parent.EndWork()
+}
+
+// TestExitAnalysisEpochIsSeparateAndScoped pins step 5's boundary: only scoped
+// work may start during the postmortem phase, and the epoch's membership is
+// reported separately from the ordinary one.
+func TestExitAnalysisEpochIsSeparateAndScoped(t *testing.T) {
+	s := newTestState()
+	if err := s.BeginWork(); err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+	s.EndWork()
+	s.AcceptWorkDisplayed(nil, false)
+
+	// Before the postmortem phase no epoch can open at all.
+	if _, err := s.OpenExitAnalysis(); !errors.Is(err, ErrNotPostmortemPhase) {
+		t.Fatalf("OpenExitAnalysis before postmortem = %v, want ErrNotPostmortemPhase", err)
+	}
+	s.SetWorkPhase(ExitPhasePostmortem)
+	scope, err := s.OpenExitAnalysis()
+	if err != nil {
+		t.Fatalf("OpenExitAnalysis: %v", err)
+	}
+	if _, err := s.OpenExitAnalysis(); !errors.Is(err, ErrExitAnalysisAlreadyOpen) {
+		t.Fatalf("second OpenExitAnalysis = %v, want ErrExitAnalysisAlreadyOpen", err)
+	}
+
+	// Ordinary work is still refused during the postmortem phase.
+	if err := s.BeginWork(); !errors.Is(err, ErrConversationEnding) {
+		t.Fatalf("BeginWork during postmortem = %v, want ErrConversationEnding", err)
+	}
+	// Scoped work is admitted, and only under the open epoch.
+	if _, err := s.AdmitWork(WorkAdmissionRequest{ExecutionID: "e", DisplayID: "j", Scope: "not-the-open-epoch"}); !errors.Is(err, ErrNotPostmortemPhase) {
+		t.Fatalf("scoped admission under a stale epoch = %v, want ErrNotPostmortemPhase", err)
+	}
+	lease, err := s.AdmitWork(WorkAdmissionRequest{ExecutionID: "e", DisplayID: "j", Scope: scope.ID()})
+	if err != nil {
+		t.Fatalf("scoped admission: %v", err)
+	}
+	snap := s.WorkMembership()
+	if len(snap.Items) != 0 {
+		t.Fatalf("ordinary membership = %+v, want empty while only analysis runs", snap.Items)
+	}
+	if len(snap.Analysis) != 1 {
+		t.Fatalf("analysis membership = %+v, want the scoped command", snap.Analysis)
+	}
+
+	// Closing the epoch refuses further scoped work.
+	s.CloseExitAnalysis(scope)
+	if _, err := s.AdmitWork(WorkAdmissionRequest{ExecutionID: "e2", DisplayID: "j2", Scope: scope.ID()}); !errors.Is(err, ErrNotPostmortemPhase) {
+		t.Fatalf("scoped admission after the epoch closed = %v, want ErrNotPostmortemPhase", err)
+	}
+	if got := s.OutstandingScopedWork(scope); len(got) != 1 {
+		t.Fatalf("OutstandingScopedWork = %+v, want the still-running scoped command", got)
+	}
+	lease.Release()
+	if got := s.OutstandingScopedWork(scope); len(got) != 0 {
+		t.Fatalf("OutstandingScopedWork after release = %+v, want empty", got)
+	}
+}
+
+// TestWaitForWorkDrainReportsOutstandingRatherThanLatching pins the join
+// contract: a wait that misses its deadline reports the outstanding work and
+// permits a retry.
+func TestWaitForWorkDrainReportsOutstandingRatherThanLatching(t *testing.T) {
+	s := newTestState()
+	if err := s.BeginWork(); err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+	shortCtx, cancelShort := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	err := s.WaitForWorkDrain(shortCtx)
+	cancelShort()
+	if err == nil {
+		t.Fatal("WaitForWorkDrain with outstanding work must fail")
+	}
+	result := s.OutstandingWork()
+	if len(result) != 1 || result[0].Kind != WorkKindParent {
+		t.Fatalf("OutstandingWork = %+v, want the unsettled parent", result)
+	}
+	s.EndWork()
+	if err := s.WaitForWorkDrain(context.Background()); err != nil {
+		t.Fatalf("retry WaitForWorkDrain: %v", err)
+	}
+}
+
+// TestWorkLabelsAreBoundedAndScrubbed pins step 2's label rule: a label is display
+// data, so it is single-line, bounded and carries no secret material.
+func TestWorkLabelsAreBoundedAndScrubbed(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	if got := boundWorkLabel(long); len([]rune(got)) > maxWorkLabelRunes+1 {
+		t.Fatalf("label length = %d runes, want it bounded", len([]rune(got)))
+	}
+	if got := boundWorkLabel("first line\nsecond line"); got != "first line" {
+		t.Fatalf("multi-line label = %q, want the first line only", got)
+	}
+	if got := boundWorkLabel("API_KEY=supersecretvalue123 curl https://example.com"); strings.Contains(got, "supersecretvalue123") {
+		t.Fatalf("label leaked a secret: %q", got)
+	}
+	if got := boundWorkLabel("   "); got != "" {
+		t.Fatalf("blank label = %q, want empty", got)
+	}
+}
+
+// TestParentWorkItemGroupsItsAttachedCommands pins step 2's grouping rule: a
+// command admitted under an operation is shown under that operation, but keeps its
+// own distinct ID in the membership so new work cannot hide behind the parent.
+func TestParentWorkItemGroupsItsAttachedCommands(t *testing.T) {
+	s := newTestState()
+	if err := s.BeginWork(); err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+	token, _ := s.BeginTurnStop("")
+	if err := s.EnterSubagent(); err != nil {
+		t.Fatalf("EnterSubagent: %v", err)
+	}
+
+	lease, err := s.AdmitWork(WorkAdmissionRequest{ExecutionID: "e", DisplayID: "j", TurnID: token.TurnID()})
+	if err != nil {
+		t.Fatalf("AdmitWork: %v", err)
+	}
+	snap := s.WorkMembership()
+	var parentID WorkID
+	var commandItem *WorkItem
+	for i := range snap.Items {
+		switch snap.Items[i].Kind {
+		case WorkKindParent:
+			parentID = snap.Items[i].ID
+		case WorkKindCommand:
+			commandItem = &snap.Items[i]
+		}
+	}
+	if parentID == "" || commandItem == nil {
+		t.Fatalf("membership = %+v, want a parent and a command", snap.Items)
+	}
+	if commandItem.Group != parentID {
+		t.Fatalf("command group = %q, want the parent %q", commandItem.Group, parentID)
+	}
+	if commandItem.ID == parentID {
+		t.Fatal("the command must keep its own ID, not the parent's")
+	}
+	// The distinct stoppable targets fold the command into its parent.
+	if targets := snap.Targets(); len(targets) != 2 {
+		t.Fatalf("targets = %v, want the parent (covering its command) and the child", targets)
+	}
+	lease.Release()
+	s.EndTurnStop(token)
+	s.ExitSubagent()
+	s.EndWork()
+}
+
 func TestAppendActiveToolCallOutput(t *testing.T) {
 	s := New(config.Default(), t.TempDir(), time.Now(), Persistence{})
 	s.SetActiveToolCall(ActiveToolCall{Name: "shell.run", Args: "echo hi", StartedAt: time.Now()})

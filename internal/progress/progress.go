@@ -518,7 +518,9 @@ func phaseID(s *Snapshot) string {
 }
 
 // Observer consumes one command's stdout/stderr, keeps a bounded display tail
-// and exposes the newest valid events-v1 snapshot. It owns no execution.
+// and exposes the newest valid snapshot. It owns no execution. For a
+// go-test-json source it aggregates the installed toolchain's TestEvent
+// records; the adapter state below is private and never a second goroutine.
 type Observer struct {
 	mu       sync.Mutex
 	config   Config
@@ -533,6 +535,10 @@ type Observer struct {
 	warning  string
 	changed  bool
 	closed   bool
+
+	goad  *goTest
+	goSeq uint64
+	goErr bool
 }
 
 // NewObserver normalizes config once and builds an idle observer. The dirty
@@ -543,20 +549,23 @@ func NewObserver(config Config, now func() time.Time, dirty func()) (*Observer, 
 	if err != nil {
 		return nil, err
 	}
-	// Task 3 supplies the go-test-json adapter; until then it is unsupported.
-	if cfg.Source == "go-test-json" {
-		return nil, fmt.Errorf("%w: source unsupported", ErrInvalid)
-	}
 	if now == nil {
 		now = time.Now
 	}
-	return &Observer{
+	o := &Observer{
 		config: cfg,
 		now:    now,
 		dirty:  dirty,
 		stdout: &framer{limit: MaxEventBytes},
 		stderr: &framer{limit: MaxEventBytes},
-	}, nil
+	}
+	if cfg.Source == "go-test-json" {
+		// go test -json records are large but one JSON value per line; the
+		// events-v1 16 KiB cap would discard legitimate records.
+		o.stdout = &framer{limit: MaxGoLineBytes}
+		o.goad = newGoTest()
+	}
+	return o, nil
 }
 
 // Write feeds raw child output to the observer. It serializes framing,
@@ -583,10 +592,19 @@ func (o *Observer) Write(stream Stream, p []byte) {
 // feedLine handles one complete output line. It runs with the mutex held.
 func (o *Observer) feedLine(stream Stream, line []byte, oversized bool) {
 	if oversized {
-		// Bytes were discarded at the framer; skip through the newline.
+		// Bytes were discarded at the framer; the record is diagnostic only.
+		if stream == Stdout && o.goad != nil {
+			o.goad.partial = true
+			o.goad.invalid = true
+			o.changed = true
+		}
 		return
 	}
 	line = bytes.TrimSuffix(line, []byte("\r"))
+	if o.goad != nil && stream == Stdout {
+		o.feedGoLine(line)
+		return
+	}
 	if o.config.Source == "events-v1" && stream == Stdout && bytes.HasPrefix(line, []byte(Prefix)) {
 		snap, err := DecodeEvent(line, o.lastSeq, o.now())
 		switch {
@@ -637,6 +655,9 @@ func (o *Observer) appendTail(line []byte) {
 func (o *Observer) Snapshot() *Snapshot {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.goad != nil {
+		return o.goSnapshot()
+	}
 	if o.latest != nil {
 		s := Clone(o.latest)
 		if o.warning != "" {
@@ -734,3 +755,322 @@ func (f *framer) flush(emit func(line []byte, oversized bool)) {
 	}
 	f.reset()
 }
+
+// --- go test -json adapter -------------------------------------------------
+//
+// The adapter aggregates the installed toolchain's TestEvent records. State is
+// private to Observer and updated in-line while the observer mutex is held; it
+// never starts a goroutine, queues actions, or keeps an unbounded event log.
+
+// goTest is the bounded case/package state for a go-test-json source. Case
+// counts are cumulative across invocations: a settled case is counted once and
+// never re-counted, while a re-run counts again as a new invocation.
+type goTest struct {
+	cases    map[goCase]*goInvocation
+	packages map[string]*goPackageState
+	lastPkg  string
+	lastTest string
+	partial  bool
+	invalid  bool
+
+	pass    int
+	fail    int
+	skip    int
+	running int
+}
+
+// goCase identifies one test within a package; an empty Test is package state.
+type goCase struct {
+	pkg  string
+	test string
+}
+
+// goInvocation is the current invocation of one test identity. It stores only
+// timestamp high-water marks; every other event is settled or ignored in place.
+type goInvocation struct {
+	running  bool
+	runTime  time.Time
+	settled  string
+	termTime time.Time
+}
+
+type goPackageState struct {
+	running bool
+	runTime time.Time
+	state   string
+}
+
+// goEvent mirrors the TestEvent fields the toolchain emits for `go test -json`.
+type goEvent struct {
+	Time        time.Time `json:"Time"`
+	Action      string    `json:"Action"`
+	Package     string    `json:"Package"`
+	Test        string    `json:"Test"`
+	Elapsed     float64   `json:"Elapsed"`
+	Output      string    `json:"Output"`
+	FailedBuild string    `json:"FailedBuild"`
+}
+
+func newGoTest() *goTest {
+	return &goTest{cases: make(map[goCase]*goInvocation), packages: make(map[string]*goPackageState)}
+}
+
+// feedGoLine handles one stdout record. It runs with the observer mutex held.
+func (o *Observer) feedGoLine(line []byte) {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return
+	}
+	var e goEvent
+	if err := json.Unmarshal(line, &e); err != nil {
+		// Non-JSON and oversized records are diagnostic output, never counts.
+		o.goad.partial = true
+		o.appendTail(line)
+		return
+	}
+	o.goEvent(e)
+}
+
+// goEvent applies one decoded record. Identities are keyed by package/test, so
+// an empty Test is package state and never an extra case.
+func (o *Observer) goEvent(e goEvent) {
+	g := o.goad
+	pkg := Clean(e.Package, maxLabelRunes, false)
+	if e.Test != "" {
+		pkg = e.Package
+	}
+	if pkg != "" {
+		g.lastPkg = pkg
+	}
+	changed := false
+	switch {
+	case e.FailedBuild != "" && e.Test == "":
+		// A build failure fails the package and reports an error.
+		if p, ok := g.packages[pkg]; ok {
+			if p.running || p.state != "failed" {
+				p.running = false
+				p.state = "failed"
+				changed = true
+			}
+		} else {
+			g.packages[pkg] = &goPackageState{state: "failed"}
+			changed = true
+		}
+		o.goErr = true
+	case e.Test == "":
+		changed = g.applyPackage(pkg, e)
+	default:
+		changed = g.applyTest(pkg, e)
+	}
+	if e.Output != "" {
+		if o.appendGoOutput(e.Output) {
+			changed = true
+		}
+	}
+	if changed {
+		o.goSeq++
+		o.changed = true
+	}
+}
+
+// applyPackage advances package-level state. Package counts are never added to
+// the test metrics; a package failure only marks ReportedError.
+func (g *goTest) applyPackage(pkg string, e goEvent) bool {
+	if pkg == "" {
+		g.partial = true
+		return false
+	}
+	p, ok := g.packages[pkg]
+	if !ok {
+		p = &goPackageState{}
+		g.packages[pkg] = p
+	}
+	switch e.Action {
+	case "run":
+		if p.running || (!e.Time.IsZero() && !p.runTime.IsZero() && !e.Time.After(p.runTime)) {
+			return false
+		}
+		p.running = true
+		if e.Time.After(p.runTime) {
+			p.runTime = e.Time
+		}
+		return true
+	case "pass":
+		p.state = "passed"
+		p.running = false
+		return true
+	case "fail":
+		p.state = "failed"
+		p.running = false
+		return true
+	case "skip":
+		p.state = "skipped"
+		p.running = false
+		return true
+	case "pause", "cont", "output", "start":
+		return false
+	default:
+		g.partial = true
+		return false
+	}
+}
+
+// applyTest advances one test identity. State transitions settle exactly once:
+// a run opens an invocation, a terminal records its own timestamp high-water
+// mark and settles, and a terminal without Time settles once until a new run
+// explicitly opens the next invocation.
+func (g *goTest) applyTest(pkg string, e goEvent) bool {
+	key := goCase{pkg: pkg, test: e.Test}
+	c, ok := g.cases[key]
+	if !ok {
+		if len(g.cases) >= MaxCases {
+			// Capacity is exhausted: preserve known counts, mark partial and
+			// stop claiming complete coverage rather than evicting live state.
+			g.partial = true
+			g.invalid = true
+			return false
+		}
+		c = &goInvocation{}
+		g.cases[key] = c
+	}
+	g.lastTest = e.Test
+	switch e.Action {
+	case "run":
+		if c.running {
+			// A repeated run for the live invocation is a duplicate.
+			if e.Time.IsZero() || c.runTime.IsZero() || !e.Time.Before(c.runTime) {
+				return false
+			}
+			// An older timestamp cannot reopen a later invocation.
+			g.partial = true
+			return false
+		}
+		if !e.Time.IsZero() && !c.runTime.IsZero() && !e.Time.After(c.runTime) {
+			// A stale run that cannot safely start a new invocation.
+			g.partial = true
+			return false
+		}
+		if !e.Time.IsZero() {
+			c.runTime = e.Time
+		}
+		c.running = true
+		c.settled = ""
+		c.termTime = time.Time{}
+		g.running++
+		return true
+	case "pass", "fail", "skip":
+		if !c.running {
+			// A terminal without an open invocation settles once. Repeated
+			// terminals (cached records, replays) are ignored.
+			if c.settled != "" {
+				return false
+			}
+			if !e.Time.IsZero() && !e.Time.After(c.termTime) && !c.termTime.IsZero() {
+				return false
+			}
+		} else {
+			// The live invocation settles once; a later run opens the next.
+			c.running = false
+			if g.running > 0 {
+				g.running--
+			}
+		}
+		c.settled = e.Action
+		if e.Time.After(c.termTime) {
+			c.termTime = e.Time
+		}
+		switch e.Action {
+		case "pass":
+			g.pass++
+		case "fail":
+			g.fail++
+		case "skip":
+			g.skip++
+		}
+		return true
+	case "pause", "cont", "output", "start":
+		return true
+	default:
+		// An action that cannot be assigned safely is partial, not a new run.
+		g.partial = true
+		return false
+	}
+}
+
+// goCounts returns the cumulative pass/fail/skip counts plus the current
+// running gauge. Package state is deliberately excluded from the case metrics.
+func (g *goTest) goCounts() (pass, fail, skip, running int) {
+	return g.pass, g.fail, g.skip, g.running
+}
+
+// appendGoOutput feeds one valid Output value to the filtered display tail.
+// Empty lines and the per-test PASS/FAIL/SKIP markers are not display text.
+func (o *Observer) appendGoOutput(out string) bool {
+	before := len(o.tail)
+	start := 0
+	for i := 0; i <= len(out); i++ {
+		if i != len(out) && out[i] != '\n' {
+			continue
+		}
+		line := out[start:i]
+		start = i + 1
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		switch strings.TrimSpace(line) {
+		case "PASS", "FAIL", "SKIP":
+			continue
+		}
+		o.appendTail([]byte(line))
+	}
+	return len(o.tail) != before
+}
+
+// goIdentityCount reports how many case identities are held.
+func (o *Observer) goIdentityCount() int { return len(o.goad.cases) }
+
+// goSnapshot renders the aggregate frame. Counts come only from observed
+// identities; no denominator or total is fabricated for plain Go JSON.
+func (o *Observer) goSnapshot() *Snapshot {
+	g := o.goad
+	if len(g.cases) == 0 && len(g.packages) == 0 {
+		if !g.invalid {
+			return nil
+		}
+	}
+	pass, fail, skip, running := g.goCounts()
+	now := o.now()
+	s := &Snapshot{
+		Frame: Frame{
+			Version:         Version,
+			Sequence:        o.goSeq,
+			PrimaryMetricID: goMetricPassed,
+			Metrics: []Metric{
+				{ID: goMetricPassed, Label: "Passed", Unit: goMetricUnit, Current: float64(pass)},
+				{ID: goMetricFailed, Label: "Failed", Unit: goMetricUnit, Current: float64(fail)},
+				{ID: goMetricSkipped, Label: "Skipped", Unit: goMetricUnit, Current: float64(skip)},
+				{ID: goMetricRunning, Label: "Running", Unit: goMetricUnit, Current: float64(running)},
+			},
+			Detail: "go test",
+		},
+		ObservedAt:    now,
+		MeasuredAt:    now,
+		Partial:       g.partial,
+		ReportedError: o.goErr || fail > 0,
+	}
+	if g.lastPkg != "" || g.lastTest != "" {
+		s.Phase = &Phase{ID: Clean(g.lastPkg, maxMetricIDRunes, false), Label: Clean(g.lastTest, maxLabelRunes, false)}
+	}
+	if g.invalid {
+		s.Warning = diagInvalid
+	}
+	return s
+}
+
+const (
+	goMetricPassed  = "passed"
+	goMetricFailed  = "failed"
+	goMetricSkipped = "skipped"
+	goMetricRunning = "running"
+	goMetricUnit    = "cases"
+)

@@ -92,25 +92,25 @@ and fail in a batch.
 
 ## mode.request
 
-**For:** asking the user to switch from default mode to an editing mode.
+**For:** asking the user for missing editing capability, system access, or both, for the current conversation.
 
-**Surface** (`internal/tools/native/mode_request.go:33`), risk `read_only`:
+**Surface:** native tool, risk `read_only`. Read-only classification does not auto-approve an access request, including in Auto mode.
 
 | Arg | Required | Notes |
 |---|---|---|
-| `mode` | yes | |
-| `system` | no | also request system access |
+| `mode` | conditional | Editing hint: `edit`, `copilot` or `auto`. The user chooses the actual editing variant. |
+| `system` | conditional | `true` requests system access. Defaults false. |
+| `reason` | no | Plain-language purpose, at most 400 Unicode characters. |
 
-The handler posts a pending approval with a `mode-elevation:` reason prefix
-(`mode_request.go:52-54`) so the TUI and the ACP permission bridge can
-distinguish it from a normal approval, then blocks.
+Supply a valid mode or `system:true`. An explicitly supplied empty/unknown mode is invalid. For system access alone, use `{"system":true,"reason":"Read the requested files outside the workspace."}`.
 
-**It does not apply the switch itself.** The transport that responds — TUI or
-ACP — owns calling `SetApprovalMode` and persisting the change
-(`mode_request.go:29-31`). That keeps the tool side-effect-free at the policy
-level, which is why it can stay `read_only`.
+The request displays only missing capabilities. Already in Edit/Copilot/Auto, a mode hint does not switch variants; a system-only grant preserves the mode, including Plan/Default. Already-satisfied requests return without a prompt.
 
-**Failure mode:** `mode is required` (`mode_request.go:46`).
+The app runtime validates and applies the session grant before the canonical tool waiter receives a typed result. The TUI and ACP collect decisions; they do not persist grants or rebuild the runtime. Results carry the actual effective mode/system state and distinguish grant, denial, failure, cancellation and already-available access. Ordinary Edited command text is not an internal access grant.
+
+System access permits filesystem scope outside the workspace and relaxes workspace shell guardrails, subject to interaction mode, per-tool policy and sandbox. It does not grant sudo. New/resumed conversations start without the grant; unrelated in-conversation config reload preserves a temporary mode override, while an explicit configured-mode change replaces it.
+
+Only the top-level conversation can request escalation. A child must ask its parent. Denial preserves capabilities already held; cancel/shutdown and stale responses cannot grant a later request.
 
 ## tools.select
 

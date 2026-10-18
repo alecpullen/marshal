@@ -1026,6 +1026,12 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		TestCommand:    cfg.Commands.Test,
 		MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
 		SessionState:   state,
+		// The root runtime is the one transport-attached registration: the TUI
+		// and ACP both supply an access resolver, so mode.request may publish a
+		// capability request here. Child registrations below deliberately leave
+		// this false — a subagent must ask its parent, and the handler and the
+		// session both reject depth > 0 as well.
+		AccessRequests: true,
 		DB:             database,
 		ProjectID:      projectID,
 		FileTracker:    fileTracker,
@@ -1950,6 +1956,17 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 	return policy.ParseApprovalMode(s)
 }
 
+// accessTUIOptions wires the TUI's access seam to this runtime. The bound
+// methods read the runtime's current State and Runner under the runtime gate,
+// so a successful NewSession does not leave the TUI holding a closure over the
+// session it replaced: the same options keep working against the new one.
+func accessTUIOptions(rt *Runtime) []tui.Option {
+	return []tui.Option{
+		tui.WithAccessRequests(rt.AccessRequest, rt.ResolveAccess),
+		tui.WithSessionModeSetter(rt.SetSessionMode),
+	}
+}
+
 // buildSubagentFactory is the test-facing form: children serialize on a
 // private lock. Production uses buildSubagentFactoryWithLock so the parent
 // runner and every agent.run child share one gate. (Keeping this wrapper
@@ -2690,6 +2707,10 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// successful reload rebuilds the runtime in place, and the runner
 		// source lets the TUI adopt the rebuilt runner (see tui.adoptRunner).
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
+		// The access seam is wired alongside the reloader: both are runtime
+		// operations the TUI invokes, and both must keep working after a
+		// session swap.
+		tuiOpts = append(tuiOpts, accessTUIOptions(rt)...)
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
 		// The TUI's auth-backed surfaces (provider probes, the connect
@@ -2993,6 +3014,17 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		cfg.SessionRouting = rt.State.Config.SessionRouting
 	}
 
+	// The incoming config is the new *configured* baseline; the mode the
+	// session actually runs with may differ, because a manual selection or an
+	// approved grant is a session-scoped override that an unrelated reload
+	// must not silently revert. Build from the effective mode so the rebuilt
+	// policy engine agrees with what the session reports, and keep the
+	// configured value for the baseline update below.
+	effectiveCfg := cfg
+	if rt.State != nil {
+		effectiveCfg.Agent.ApprovalMode = rt.State.ModeForConfig(cfg)
+	}
+
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 	// Reuse the runtime's stable WriteLock: in-flight background children
@@ -3019,8 +3051,13 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		service = &conversationCommandService{manager: rt.JobManager, generation: 1}
 		rt.CommandService = service
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service, rt.AuthResolver)
+	// The build uses effectiveCfg, not cfg: a session mode override must
+	// survive the reload, so the rebuilt policy engine has to agree with what
+	// the session reports.
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, effectiveCfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service, rt.AuthResolver)
 	if err != nil {
+		// A failed dry run leaves the configured baseline, the override, the
+		// system flag and the existing runner exactly as they were.
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
 		rt.State.AddMessage(session.RoleSystem,
@@ -3032,8 +3069,14 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// Capture old values for cleanup under the pointer mutex.
 	rt.mu.Lock()
 	// Config validated — install it under both the reload gate (one writer
-	// at a time) and the pointer mutex.
-	rt.State.Config = cfg
+	// at a time) and the pointer mutex. The session rebases against the
+	// configured value: an unchanged configured mode keeps the session
+	// override, an explicit change to it clears the override, and the system
+	// flag survives either way.
+	rt.State.RebaseSessionConfig(cfg)
+	// Runtime.Config stays the configured baseline, never the effective mode:
+	// it is what a later reload and a new session start from.
+	rt.Config = cfg
 	oldMCP := rt.MCPManager
 	oldWatchMgr := rt.WatchManager
 	oldDesktopCloser := rt.DesktopCloser
@@ -3058,6 +3101,16 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// suppressed it.
 	if rt.SnapshotWarnings != nil {
 		rt.Runner.SetSnapshotWarningState(rt.SnapshotWarnings)
+	}
+	// The rebuilt policy engine was constructed from the effective mode, but
+	// CopyFrom may have carried over the pre-reload engine's state; re-assert
+	// the session's effective access pair so the runner and the session agree
+	// after the swap. This is presentation of already-decided state, not a new
+	// grant: it applies the mode the session already reports.
+	if rt.Runner != nil {
+		effective := rt.State.AccessState()
+		rt.Runner.SetForceClass(forceClassForMode(effective.Mode))
+		rt.Runner.SetApprovalMode(policy.ApprovalMode(effective.Mode))
 	}
 	if rt.SwarmRunner == nil {
 		rt.SwarmRunner = newSwarmRunner

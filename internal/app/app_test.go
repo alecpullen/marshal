@@ -29,6 +29,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
+	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
 	"marshal/internal/credentials"
@@ -6329,6 +6330,199 @@ func TestAgentRunnerPassesRuntimeOpenerToMCPManager(t *testing.T) {
 	}
 	if opens[0] != "marshal" {
 		t.Fatalf("resolver OpenStore service = %q, want %q", opens[0], "marshal")
+	}
+}
+
+// ---- system-access approval: production TUI wiring ----
+
+// accessTUIRequest publishes a typed request on state and returns it with the
+// canonical decision channel.
+func accessTUIRequest(t *testing.T, state *session.State, intent session.AccessIntent) (session.AccessRequest, chan session.UserApprovalDecision) {
+	t.Helper()
+	call := &session.PendingToolCall{
+		ID:           "call-1",
+		Name:         "mode.request",
+		Reason:       intent.Reason,
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	req, waiting, err := state.RegisterAccess(context.Background(), call, intent)
+	if err != nil {
+		t.Fatalf("RegisterAccess: %v", err)
+	}
+	if !waiting {
+		t.Fatalf("RegisterAccess published no request for intent %+v", intent)
+	}
+	return req, call.ResponseChan
+}
+
+// accessTUIChoice builds the exported message the access panel emits.
+func accessTUIChoice(req session.AccessRequest, approved bool, mode string) accesspanel.ChoiceMsg {
+	return accesspanel.ChoiceMsg{Choice: session.AccessChoice{
+		RequestID: req.RequestID,
+		SessionID: req.SessionID,
+		Current:   req.Current,
+		Approved:  approved,
+		Mode:      mode,
+	}}
+}
+
+// TestAccessTUIOptionsResolveWithoutConfigReload pins the production wiring:
+// the options accessTUIOptions hands the TUI resolve a typed request through
+// the runtime, in memory, without touching the config reloader.
+func TestAccessTUIOptionsResolveWithoutConfigReload(t *testing.T) {
+	cfg := nativeToolAgentConfig("access-tui-options")
+	rt, state := newAccessTestRuntime(t, cfg)
+
+	var reloads atomic.Int64
+	rt.ConfigReloader = func(config.Config) error {
+		reloads.Add(1)
+		return nil
+	}
+
+	m := tui.New(state, accessTUIOptions(rt)...)
+
+	// The size gate needs a real frame first, exactly as the production
+	// program gets one at startup.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(tui.Model)
+
+	req, decisions := accessTUIRequest(t, state, session.AccessIntent{
+		System: true, Reason: "The agent requests system access.",
+	})
+
+	// The request must surface on a runtime update that is neither a keypress
+	// nor a resize; a focus change stands in for the tick that drives it in
+	// production. A regression back to needing a keypress fails here.
+	updated, _ = m.Update(tea.FocusMsg{})
+	m = updated.(tui.Model)
+
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Allow system access?") {
+		t.Fatalf("view does not show the system-access panel:\n%s", view)
+	}
+
+	updated, _ = m.Update(accessTUIChoice(req, true, ""))
+	m = updated.(tui.Model)
+
+	select {
+	case d := <-decisions:
+		if !d.Approved || d.Access == nil || d.Access.Status != session.AccessGranted {
+			t.Fatalf("delivered decision = %+v, want an approved typed grant", d)
+		}
+		if want := (session.AccessState{Mode: "default", System: true}); d.Access.Effective != want {
+			t.Fatalf("effective = %+v, want %+v", d.Access.Effective, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request was never settled")
+	}
+	if !state.SystemAccess() {
+		t.Fatal("the grant did not reach the session")
+	}
+	if n := reloads.Load(); n != 0 {
+		t.Fatalf("the grant triggered %d config reloads, want 0", n)
+	}
+}
+
+// TestAccessTUIOptionsFollowNewSession pins that the same options keep working
+// after a session swap: the bound methods read the runtime's current state, so
+// a decision for the retired conversation cannot reach the replacement.
+func TestAccessTUIOptionsFollowNewSession(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("access-tui-follow")
+	// The default autoload injects a skill body into a fresh session; opt out
+	// so the fixture stays about the access seam.
+	cfg.Skills.Autoload = nil
+
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(t.TempDir()),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return cfg, nil }),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(ctx)
+	if rt.Runner == nil {
+		t.Fatal("the fixture provider was not built")
+	}
+
+	// The options are captured once, before the swap: production builds them
+	// once and keeps them for the life of the program.
+	opts := accessTUIOptions(rt)
+
+	oldState := rt.State
+	oldReq, oldDecisions := accessTUIRequest(t, oldState, session.AccessIntent{
+		System: true, Reason: "The agent requests system access.",
+	})
+	oldModel := tui.New(oldState, opts...)
+	updated, _ := oldModel.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	oldModel = updated.(tui.Model)
+	if view := ansi.Strip(oldModel.View().Content); !strings.Contains(view, "Allow system access?") {
+		t.Fatalf("the pre-swap model does not show the panel:\n%s", view)
+	}
+
+	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if newState == oldState {
+		t.Fatal("NewSession did not replace the session")
+	}
+
+	// The retired conversation's request is settled exactly once, as a
+	// cancellation, so its tool cannot block on a session that is gone. The
+	// channel is then closed: a further receive yields the zero value with
+	// ok=false, which is what distinguishes "settled once" from a second
+	// settlement.
+	select {
+	case d := <-oldDecisions:
+		if d.Access == nil || d.Access.Status != session.AccessCanceled {
+			t.Fatalf("pre-swap decision = %+v, want a typed cancellation", d)
+		}
+		if d.Approved {
+			t.Fatal("the retired request was acknowledged as approved")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pre-swap request was never settled")
+	}
+	if _, ok := <-oldDecisions; ok {
+		t.Fatal("the retired request's channel is still open; it must be closed after one settlement")
+	}
+
+	// The same options now drive the replacement session.
+	newModel := tui.New(newState, opts...)
+	newReq, newDecisions := accessTUIRequest(t, newState, session.AccessIntent{
+		System: true, Reason: "The agent requests system access.",
+	})
+	updated, _ = newModel.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	newModel = updated.(tui.Model)
+	if view := ansi.Strip(newModel.View().Content); !strings.Contains(view, "Allow system access?") {
+		t.Fatalf("the replacement model does not show the panel:\n%s", view)
+	}
+
+	// A decision for the retired conversation must not reach the replacement.
+	updated, _ = newModel.Update(accessTUIChoice(oldReq, true, ""))
+	newModel = updated.(tui.Model)
+	if newState.SystemAccess() {
+		t.Fatal("a retired choice granted access on the replacement session")
+	}
+	if _, pending := newState.AccessRequest(); !pending {
+		t.Fatal("a retired choice settled the replacement's request")
+	}
+
+	// The replacement's own request still resolves.
+	updated, _ = newModel.Update(accessTUIChoice(newReq, true, ""))
+	newModel = updated.(tui.Model)
+	select {
+	case d := <-newDecisions:
+		if !d.Approved || d.Access == nil || d.Access.Status != session.AccessGranted {
+			t.Fatalf("replacement decision = %+v, want an approved typed grant", d)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement request was never settled")
+	}
+	if !newState.SystemAccess() {
+		t.Fatal("the replacement grant did not reach the new session")
 	}
 }
 

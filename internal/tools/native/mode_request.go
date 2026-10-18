@@ -5,36 +5,37 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
+	"unicode/utf8"
 
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
 
 type modeRequestArgs struct {
-	Mode string `json:"mode"`
-	// System asks for the system-access modifier alongside the mode switch.
-	System bool `json:"system,omitempty"`
+	Mode   *string `json:"mode,omitempty"`
+	System bool    `json:"system,omitempty"`
+	Reason string  `json:"reason,omitempty"`
 }
 
-// modeRequestTool builds the mode.request native tool. The agent calls it
-// (from default mode) to ask the user to switch to an editing mode. The
-// handler posts a PendingToolCall with a "mode-elevation:" reason prefix
-// so the TUI and ACP PermissionBridge can distinguish it from a normal
-// approval. It blocks on the response channel. When approved, the user's
-// chosen mode name arrives in UserApprovalDecision.Edited; the handler
-// returns a result telling the agent which mode was granted. When denied,
-// the result tells the agent to describe its changes instead.
-//
-// The handler does NOT apply the mode switch itself — the transport (TUI
-// or ACP) that responds is responsible for calling SetApprovalMode and
-// persisting the change. This keeps the tool side-effect-free at the
-// policy level (RiskReadOnly) and lets the transport own the UX.
+func accessToolResult(result session.AccessResult) (registry.ToolResult, error) {
+	body, err := json.Marshal(result)
+	if err != nil {
+		return registry.ToolResult{}, err
+	}
+	return registry.ToolResult{
+		Summary: fmt.Sprintf("%s — mode %s, system access %t",
+			result.Status, result.Effective.Mode, result.Effective.System),
+		Content: string(body),
+	}, nil
+}
+
+// The runtime commits access before delivering a typed result. This tool
+// never treats an untyped Approved/Edited response as a capability grant.
 func (t *toolSet) modeRequestTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "mode.request",
-		Description: "Request the user to switch from default mode to an editing mode (edit, copilot, or auto). Use this when you need to modify files but are in default mode.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","description":"The editing intent, e.g. \"edit\""},"system":{"type":"boolean","description":"Also request system access (full filesystem read/write) for this session."}},"required":["mode"],"additionalProperties":false}`),
+		Description: "Request missing editing capability and/or system access. A mode hint does not choose the user's mode. System access is subject to mode, policy and sandbox; no sudo.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","enum":["edit","copilot","auto"]},"system":{"type":"boolean"},"reason":{"type":"string","maxLength":400}},"anyOf":[{"required":["mode"]},{"required":["system"],"properties":{"system":{"const":true}}}],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -42,55 +43,88 @@ func (t *toolSet) modeRequestTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
-		if strings.TrimSpace(args.Mode) == "" {
-			return registry.ToolResult{}, fmt.Errorf("mode is required")
+		if args.Mode != nil && *args.Mode != "edit" && *args.Mode != "copilot" && *args.Mode != "auto" {
+			return registry.ToolResult{}, fmt.Errorf("mode must be edit, copilot, or auto")
+		}
+		if args.Mode == nil && !args.System {
+			return registry.ToolResult{}, fmt.Errorf("request an editing mode or system access")
+		}
+		if utf8.RuneCountInString(args.Reason) > 400 {
+			return registry.ToolResult{}, fmt.Errorf("reason exceeds 400 characters")
 		}
 		if t.sessionState == nil {
 			return registry.ToolResult{}, fmt.Errorf("session state not available")
 		}
-
-		reason := "mode-elevation: agent requests an editing mode"
-		if args.System {
-			reason = "mode-elevation: agent requests system access"
+		if t.sessionState.SubagentDepth() > 0 {
+			return registry.ToolResult{}, fmt.Errorf("mode.request is top-level only; ask the parent agent to request access")
 		}
-
+		if !t.accessRequests {
+			return registry.ToolResult{}, fmt.Errorf("access request resolver is not available")
+		}
+		reason := strings.TrimSpace(args.Reason)
+		if reason == "" {
+			switch {
+			case args.Mode != nil && args.System:
+				reason = "The agent requests editing capability and system access."
+			case args.System:
+				reason = "The agent requests system access."
+			default:
+				reason = "The agent requests editing capability."
+			}
+		}
 		ch := make(chan session.UserApprovalDecision, 1)
 		pending := &session.PendingToolCall{
-			ID:           fmt.Sprintf("mode_req_%d", time.Now().UnixNano()),
-			Name:         "mode.request",
-			Args:         string(call.Args),
-			Reason:       reason,
-			Schema:       tool.Description,
-			ResponseChan: ch,
+			ID: call.ID, Name: tool.Name, Args: string(call.Args),
+			Reason: reason, Schema: tool.Description, ResponseChan: ch,
 		}
-		t.sessionState.SetPendingApproval(pending)
-
-		select {
-		case decision := <-ch:
-			t.sessionState.SetPendingApproval(nil)
-			if decision.Approved {
-				chosen := decision.Edited
-				if chosen == "" {
-					chosen = "edit"
-				}
-				if args.System {
-					return registry.ToolResult{
-						Summary: fmt.Sprintf("approved — switched to %s mode with system access", chosen),
-						Content: fmt.Sprintf("mode.request result: approved — switched to %s mode and granted system access for this session. File and search tools now accept absolute paths anywhere on the filesystem; shell file editing is permitted; guardrails shrink to a catastrophic floor.", chosen),
-					}, nil
-				}
-				return registry.ToolResult{
-					Summary: fmt.Sprintf("approved — switched to %s mode", chosen),
-					Content: fmt.Sprintf("mode.request result: approved — switched to %s mode. You may now make file changes.", chosen),
-				}, nil
+		for _, active := range t.sessionState.ActiveToolCalls() {
+			if active.ToolCallID == call.ID && active.Name == tool.Name {
+				pending.StepID = active.StepID
+				break
 			}
-			return registry.ToolResult{
-				Summary: "denied — staying in default mode",
-				Content: "mode.request result: denied — staying in default mode; describe your proposed changes instead.",
-			}, nil
+		}
+		request, waiting, err := t.sessionState.RegisterAccess(ctx, pending, session.AccessIntent{
+			Editing: args.Mode != nil, System: args.System, Reason: reason,
+		})
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+		if !waiting {
+			return accessToolResult(session.AccessResult{
+				SessionID: request.SessionID, Status: session.AccessAvailable,
+				Effective: request.Current,
+			})
+		}
+		var decision session.UserApprovalDecision
+		var ok bool
+		select {
+		case decision, ok = <-ch:
 		case <-ctx.Done():
-			t.sessionState.SetPendingApproval(nil)
-			return registry.ToolResult{}, ctx.Err()
+			// If a grant already crossed its acceptance point, CancelAccess
+			// waits for that commit; the queued applied result wins.
+			t.sessionState.CancelAccess(request.RequestID, session.AccessCanceled, ctx.Err().Error())
+			decision, ok = <-ch
+		}
+		if !ok || decision.Access == nil {
+			return registry.ToolResult{}, fmt.Errorf("access request ended without a committed result")
+		}
+		result := *decision.Access
+		if result.RequestID != request.RequestID || result.SessionID != request.SessionID {
+			return registry.ToolResult{}, fmt.Errorf("access result identity mismatch")
+		}
+		if decision.Approved != (result.Status == session.AccessGranted) {
+			return registry.ToolResult{}, fmt.Errorf("access result was not committed")
+		}
+		switch result.Status {
+		case session.AccessGranted, session.AccessDenied, session.AccessAvailable:
+			return accessToolResult(result)
+		case session.AccessCanceled:
+			if ctx.Err() != nil {
+				return registry.ToolResult{}, ctx.Err()
+			}
+			return registry.ToolResult{}, fmt.Errorf("access request canceled: %s", result.Message)
+		default:
+			return registry.ToolResult{}, fmt.Errorf("access request failed: %s", result.Message)
 		}
 	}
 	return tool

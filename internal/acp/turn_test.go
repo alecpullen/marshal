@@ -1766,88 +1766,33 @@ func TestSteerRejectsEmptyText(t *testing.T) {
 	}
 }
 
+// TestPromptTurnAppliesModeElevation pins the ACP elevation path end to end: a
+// typed request is collected from the client, applied by the runtime, and
+// announced with the state that was actually committed.
 func TestPromptTurnAppliesModeElevation(t *testing.T) {
-	broker := pubsub.NewBroker[session.Event]()
-	pendingCh := make(chan session.UserApprovalDecision, 1)
-	var applied string
-	var mu sync.Mutex
-	var updates []map[string]any
-	setModeDone := make(chan struct{})
-	modeChangedDone := make(chan struct{})
-	var setModeOnce sync.Once
-	var modeChangedOnce sync.Once
-
-	permClient := &fakePermissionClient{decision: PermissionDecision{Approved: true, Edited: "copilot"}}
-	manager := NewTurnManager(TurnManagerConfig{
-		Lookup: func(sessionID string) (*TurnRuntime, bool) {
-			return &TurnRuntime{
-				SessionID: sessionID,
-				BeginWork: identityBeginWork,
-				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
-					pending := &session.PendingToolCall{
-						ID:           "mode_req_1",
-						Name:         "mode.request",
-						Reason:       "mode-elevation: agent requests an editing mode",
-						ResponseChan: pendingCh,
-					}
-					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: pending})
-					select {
-					case <-pendingCh:
-						return nil
-					case <-ctx.Done():
-						return ctx.Err()
-					case <-time.After(5 * time.Second):
-						return errors.New("timed out waiting for decision")
-					}
-				}),
-				Events: broker,
-				SetMode: func(mode string) error {
-					applied = mode
-					setModeOnce.Do(func() { close(setModeDone) })
-					return nil
-				},
-			}, true
-		},
-		Notify: func(method string, params any) error {
-			mu.Lock()
-			defer mu.Unlock()
-			if p, ok := params.(SessionUpdateParams); ok {
-				updates = append(updates, p.Update)
-				if p.Update["kind"] == "mode_changed" && p.Update["mode"] == "copilot" {
-					modeChangedOnce.Do(func() { close(modeChangedDone) })
-				}
-			}
-			return nil
-		},
-		Perms: permClient,
+	f := newAccessTurnFixture(t, config.Default(), []session.AccessIntent{
+		{Editing: true, Reason: "The agent requests editing capability."},
 	})
-	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_elev","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
-		t.Fatalf("PromptTurn() error = %v", err)
+	// A legacy client: no modeAccess, just approved + edited.
+	f.client.decide = legacyApproval("copilot")
+
+	if err := f.awaitTurn(t, f.start()); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
 	}
 
-	waitFor := func(ch <-chan struct{}, label string) {
-		select {
-		case <-ch:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("timed out waiting for %s", label)
-		}
+	if got := f.state.AccessState().Mode; got != "copilot" {
+		t.Fatalf("mode = %q, want copilot — the elevation was not applied", got)
 	}
-	waitFor(setModeDone, "SetMode")
-	waitFor(modeChangedDone, "mode_changed update")
-
-	if applied != "copilot" {
-		t.Fatalf("applied mode = %q, want copilot — mode.request elevation was not applied", applied)
+	d, ok := f.decision(0)
+	if !ok {
+		t.Fatal("the tool was never acknowledged")
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	found := false
-	for _, u := range updates {
-		if u["kind"] == "mode_changed" && u["mode"] == "copilot" {
-			found = true
-		}
+	if !d.Approved || d.Access == nil || d.Access.Status != session.AccessGranted {
+		t.Fatalf("delivered decision = %+v, want an approved typed grant", d)
 	}
-	if !found {
-		t.Fatalf("no mode_changed update emitted: %#v", updates)
+	updates := f.modeChangedUpdates()
+	if len(updates) != 1 || updates[0]["mode"] != "copilot" {
+		t.Fatalf("mode_changed updates = %#v, want exactly one for copilot", updates)
 	}
 }
 
@@ -2874,91 +2819,34 @@ func TestSetModeInvalidModeDoesNotApplySystem(t *testing.T) {
 // TestModeRequestSystemElevationApplied pins the mode.request elevation
 // path: an approved call whose args carry system:true turns the session
 // flag on and the mode_changed broadcast reports it.
+// TestModeRequestSystemElevationApplied pins the system-only path: the grant
+// reaches the session and the announcement carries the committed state.
 func TestModeRequestSystemElevationApplied(t *testing.T) {
-	broker := pubsub.NewBroker[session.Event]()
-	state := &session.State{}
-	pendingCh := make(chan session.UserApprovalDecision, 1)
-	var mu sync.Mutex
-	var updates []map[string]any
-	setModeDone := make(chan struct{})
-	modeChangedDone := make(chan struct{})
-	var setModeOnce sync.Once
-	var modeChangedOnce sync.Once
-
-	permClient := &fakePermissionClient{decision: PermissionDecision{Approved: true, Edited: "edit"}}
-	manager := NewTurnManager(TurnManagerConfig{
-		Lookup: func(sessionID string) (*TurnRuntime, bool) {
-			return &TurnRuntime{
-				SessionID: sessionID,
-				State:     state,
-				BeginWork: identityBeginWork,
-				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
-					pending := &session.PendingToolCall{
-						ID:           "mode_req_sys_1",
-						Name:         "mode.request",
-						Args:         `{"mode":"edit","system":true}`,
-						Reason:       "mode-elevation: agent requests system access",
-						ResponseChan: pendingCh,
-					}
-					broker.Publish(session.EventPendingApprovalChanged, session.Event{PendingApproval: pending})
-					select {
-					case <-pendingCh:
-						return nil
-					case <-ctx.Done():
-						return ctx.Err()
-					case <-time.After(5 * time.Second):
-						return errors.New("timed out waiting for decision")
-					}
-				}),
-				Events: broker,
-				SetMode: func(mode string) error {
-					setModeOnce.Do(func() { close(setModeDone) })
-					return nil
-				},
-			}, true
-		},
-		Notify: func(method string, params any) error {
-			mu.Lock()
-			defer mu.Unlock()
-			if p, ok := params.(SessionUpdateParams); ok {
-				updates = append(updates, p.Update)
-				if p.Update["kind"] == "mode_changed" && p.Update["mode"] == "edit" {
-					modeChangedOnce.Do(func() { close(modeChangedDone) })
-				}
-			}
-			return nil
-		},
-		Perms: permClient,
+	f := newAccessTurnFixture(t, config.Default(), []session.AccessIntent{
+		{System: true, Reason: "The agent requests system access."},
 	})
-	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_sys_elev","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
-		t.Fatalf("PromptTurn() error = %v", err)
+	f.client.decide = legacyApproval("edit")
+
+	if err := f.awaitTurn(t, f.start()); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
 	}
 
-	waitFor := func(ch <-chan struct{}, label string) {
-		select {
-		case <-ch:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("timed out waiting for %s", label)
-		}
+	if !f.state.SystemAccess() {
+		t.Fatal("SystemAccess() = false after an approved system request, want true")
 	}
-	waitFor(setModeDone, "SetMode")
-	waitFor(modeChangedDone, "mode_changed update")
-
-	if !state.SystemAccess() {
-		t.Fatal("SystemAccess() = false after an approved mode.request with system:true, want true")
+	// A system-only grant preserves the mode it was made in.
+	if got := f.state.AccessState().Mode; got != "default" {
+		t.Fatalf("mode = %q, want the configured default preserved", got)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	found := false
-	for _, u := range updates {
-		if u["kind"] == "mode_changed" && u["mode"] == "edit" {
-			if got, ok := u["system_access"].(bool); ok && got {
-				found = true
-			}
-		}
+	updates := f.modeChangedUpdates()
+	if len(updates) != 1 {
+		t.Fatalf("mode_changed updates = %#v, want exactly one", updates)
 	}
-	if !found {
-		t.Fatalf("no mode_changed update carrying system_access=true: %#v", updates)
+	if got, ok := updates[0]["system_access"].(bool); !ok || !got {
+		t.Fatalf("mode_changed update = %#v, want system_access=true", updates[0])
+	}
+	if updates[0]["mode"] != "default" {
+		t.Fatalf("mode_changed mode = %v, want the actual default", updates[0]["mode"])
 	}
 }
 
@@ -3227,6 +3115,729 @@ func TestToolCallIDsAreUniqueAcrossSteps(t *testing.T) {
 	}
 	if updates[1]["toolCallId"] != updates[0]["toolCallId"] {
 		t.Fatalf("an update must carry its call's scoped id: %v vs %v", updates[1]["toolCallId"], updates[0]["toolCallId"])
+	}
+}
+
+// ---- typed access resolution over ACP ----
+
+// accessTestSessionID is the ACP session ID the access fixtures use. The
+// session's own ID must match it: the resolver compares the two, and a
+// mismatch is exactly what a foreign request looks like.
+const accessTestSessionID = "sess_access"
+
+// accessTurnOpts tweaks the fixture for the fail-closed and duplicate cases.
+type accessTurnOpts struct {
+	// noBridge builds the manager without a permission client, so no bridge
+	// exists to collect a choice.
+	noBridge bool
+	// noResolver omits the runtime's ResolveAccess callback.
+	noResolver bool
+	// duplicate re-publishes each request's pending event, so the forwarder
+	// sees the same request twice.
+	duplicate bool
+	// countReads, when non-nil, ticks once per read of the runtime's own
+	// AccessRequest seam, proving the turn loop consults it when supplied.
+	countReads *atomic.Int64
+}
+
+// accessTurnFixture drives a real turn against a real session, with a
+// deterministic resolver standing in for the app runtime. The runner registers
+// typed requests and blocks on the canonical channel, exactly as the
+// mode.request tool does.
+type accessTurnFixture struct {
+	t       *testing.T
+	state   *session.State
+	broker  *pubsub.Broker[session.Event]
+	client  *fakePermissionClient
+	manager *TurnManager
+	session string
+	opts    accessTurnOpts
+
+	// barrier, when set, runs inside Apply so a test can hold the commit open
+	// and prove the acknowledgment waits for it.
+	barrier func()
+	// prepareErr, when set, makes the resolver refuse the choice.
+	prepareErr error
+
+	mu      sync.Mutex
+	calls   []*accessCall
+	updates []map[string]any
+}
+
+// accessCall is one typed request the fixture's runner published, together
+// with the decision the runner observed on the canonical channel. The runner
+// consumes that channel, so the fixture records what it saw rather than
+// letting a test read an already-drained channel.
+type accessCall struct {
+	pending  *session.PendingToolCall
+	request  session.AccessRequest
+	decision chan session.UserApprovalDecision
+	settled  atomic.Bool
+}
+
+func newAccessTurnFixture(t *testing.T, cfg config.Config, intents []session.AccessIntent) *accessTurnFixture {
+	t.Helper()
+	return newAccessTurnFixtureWith(t, cfg, intents, accessTurnOpts{})
+}
+
+func newAccessTurnFixtureWith(t *testing.T, cfg config.Config, intents []session.AccessIntent, opts accessTurnOpts) *accessTurnFixture {
+	t.Helper()
+	// The session's own ID must match the ACP session ID: the resolver
+	// compares them, and a mismatch is what a foreign request looks like.
+	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{SessionID: accessTestSessionID})
+	broker := pubsub.NewBroker[session.Event]()
+	state.SetEventBroker(broker)
+	f := &accessTurnFixture{
+		t: t, state: state, broker: broker,
+		client: &fakePermissionClient{}, session: accessTestSessionID, opts: opts,
+	}
+	cfgMgr := TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			readAccess := state.AccessRequest
+			if opts.countReads != nil {
+				// Count reads of the runtime seam, not of State: a turn loop
+				// that bypassed the seam would leave this at zero.
+				readAccess = func() (session.AccessRequest, bool) {
+					opts.countReads.Add(1)
+					return state.AccessRequest()
+				}
+			}
+			rt := &TurnRuntime{
+				SessionID:     sessionID,
+				State:         state,
+				BeginWork:     identityBeginWork,
+				Events:        broker,
+				AccessRequest: readAccess,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					return f.runIntents(ctx, intents)
+				}),
+			}
+			if !opts.noResolver {
+				rt.ResolveAccess = func(choice session.AccessChoice) (session.AccessResult, error) {
+					return state.ResolveAccess(choice, f.prepare())
+				}
+			}
+			return rt, true
+		},
+		Notify: func(method string, params any) error {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if p, ok := params.(SessionUpdateParams); ok {
+				f.updates = append(f.updates, p.Update)
+			}
+			return nil
+		},
+	}
+	if !opts.noBridge {
+		cfgMgr.Perms = f.client
+	}
+	f.manager = NewTurnManager(cfgMgr)
+	return f
+}
+
+// prepare is the deterministic resolver: it commits the target implied by the
+// request's missing flags and the chosen mode.
+func (f *accessTurnFixture) prepare() session.AccessPrepare {
+	return func(req session.AccessRequest, choice session.AccessChoice) (session.AccessCommit, error) {
+		if f.prepareErr != nil {
+			return session.AccessCommit{}, f.prepareErr
+		}
+		target := req.Current
+		if req.MissingEditing {
+			target.Mode = choice.Mode
+		}
+		if req.MissingSystem {
+			target.System = true
+		}
+		apply := func() {}
+		if f.barrier != nil {
+			apply = f.barrier
+		}
+		return session.AccessCommit{Effective: target, Apply: apply}, nil
+	}
+}
+
+// runIntents registers each intent as a typed request and blocks on the
+// canonical channel, mirroring the mode.request tool. Every call reuses the
+// same provider call ID, which is what a provider does across steps.
+//
+// The runner is the channel's consumer, so it records the decision it observed
+// on the call record; a test reads that record rather than racing the runner
+// for an already-drained channel.
+func (f *accessTurnFixture) runIntents(ctx context.Context, intents []session.AccessIntent) error {
+	for _, intent := range intents {
+		pending := &session.PendingToolCall{
+			ID:           "call-0",
+			Name:         "mode.request",
+			Reason:       intent.Reason,
+			ResponseChan: make(chan session.UserApprovalDecision, 1),
+		}
+		req, waiting, err := f.state.RegisterAccess(ctx, pending, intent)
+		if err != nil {
+			return err
+		}
+		if !waiting {
+			continue
+		}
+		rec := &accessCall{
+			pending:  pending,
+			request:  req,
+			decision: make(chan session.UserApprovalDecision, 1),
+		}
+		f.mu.Lock()
+		f.calls = append(f.calls, rec)
+		f.mu.Unlock()
+		if f.opts.duplicate {
+			// Re-publish the same request's pending event: the forwarder must
+			// not ask the client twice for one request.
+			dup := req
+			f.broker.Publish(session.EventPendingApprovalChanged, session.Event{
+				PendingApproval: &session.PendingToolCall{ID: pending.ID, Name: pending.Name, Access: &dup},
+			})
+		}
+		select {
+		case d := <-pending.ResponseChan:
+			rec.settled.Store(true)
+			rec.decision <- d
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+			return errors.New("timed out waiting for the access decision")
+		}
+	}
+	return nil
+}
+
+// start runs the turn in the background and returns its outcome.
+func (f *accessTurnFixture) start() <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.manager.PromptTurn(context.Background(), json.RawMessage(
+			fmt.Sprintf(`{"sessionId":%q,"prompt":[{"type":"text","text":"hi"}]}`, f.session)))
+		done <- err
+	}()
+	return done
+}
+
+func (f *accessTurnFixture) awaitTurn(t *testing.T, done <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("the turn did not finish")
+		return nil
+	}
+}
+
+// decision reads the decision the runner observed for the i-th request.
+func (f *accessTurnFixture) decision(i int) (session.UserApprovalDecision, bool) {
+	f.t.Helper()
+	f.mu.Lock()
+	if i >= len(f.calls) {
+		f.mu.Unlock()
+		return session.UserApprovalDecision{}, false
+	}
+	rec := f.calls[i]
+	f.mu.Unlock()
+	select {
+	case d := <-rec.decision:
+		return d, true
+	case <-time.After(5 * time.Second):
+		return session.UserApprovalDecision{}, false
+	}
+}
+
+// noDecision reports whether the i-th request is still unanswered.
+func (f *accessTurnFixture) noDecision(i int) bool {
+	f.mu.Lock()
+	if i >= len(f.calls) {
+		f.mu.Unlock()
+		return true
+	}
+	rec := f.calls[i]
+	f.mu.Unlock()
+	return !rec.settled.Load()
+}
+
+// request returns the i-th published request.
+func (f *accessTurnFixture) request(i int) session.AccessRequest {
+	f.t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i >= len(f.calls) {
+		f.t.Fatalf("no request %d was published", i)
+	}
+	return f.calls[i].request
+}
+
+// modeChangedUpdates returns every mode_changed announcement, in order.
+func (f *accessTurnFixture) modeChangedUpdates() []map[string]any {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []map[string]any
+	for _, u := range f.updates {
+		if u["kind"] == "mode_changed" {
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+// legacyApproval answers like a client that predates the typed payload: the
+// outer Approved plus an Edited variant.
+func legacyApproval(mode string) func(PermissionRequest) PermissionDecision {
+	return func(PermissionRequest) PermissionDecision {
+		return PermissionDecision{Approved: true, Edited: mode}
+	}
+}
+
+// typedApproval answers like a client that understands modeAccess, echoing the
+// request's identity and selecting a variant. The variant is sent only when the
+// request actually presented an editing selector — a system-only request has no
+// mode to choose, and sending one would be an invalid choice.
+func typedApproval(mode string) func(PermissionRequest) PermissionDecision {
+	return func(req PermissionRequest) PermissionDecision {
+		d := PermissionDecision{Approved: true}
+		if req.ModeAccess != nil {
+			choice := &ModeAccessChoice{
+				RequestID: req.ModeAccess.RequestID,
+				SessionID: req.ModeAccess.SessionID,
+				Current:   req.ModeAccess.Current,
+			}
+			if req.ModeAccess.MissingEditing {
+				choice.Mode = mode
+			}
+			d.ModeAccess = choice
+		}
+		return d
+	}
+}
+
+// The grant is applied before the tool can observe it, and only then is the
+// committed state announced.
+func TestACPAccessCommitsBeforeToolAcknowledgment(t *testing.T) {
+	f := newAccessTurnFixture(t, config.Default(), []session.AccessIntent{
+		{Editing: true, System: true, Reason: "edit and read outside"},
+	})
+	f.client.decide = typedApproval("copilot")
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	f.barrier = func() {
+		close(entered)
+		<-release
+	}
+
+	done := f.start()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the resolver never reached Apply")
+	}
+
+	// Apply is inside the resolver: the tool must still be empty-handed and
+	// the session must not yet report the new pair.
+	if !f.noDecision(0) {
+		t.Fatal("the grant was acknowledged before it was applied")
+	}
+	if got := f.state.AccessState(); got != (session.AccessState{Mode: "default"}) {
+		t.Fatalf("session pair = %+v, want it unchanged while Apply is blocked", got)
+	}
+
+	close(release)
+	if err := f.awaitTurn(t, done); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+
+	d, ok := f.decision(0)
+	if !ok {
+		t.Fatal("the tool was never acknowledged")
+	}
+	if !d.Approved || d.Access == nil || d.Access.Status != session.AccessGranted {
+		t.Fatalf("delivered decision = %+v, want an approved typed grant", d)
+	}
+	want := session.AccessState{Mode: "copilot", System: true}
+	if got := f.state.AccessState(); got != want {
+		t.Fatalf("session pair = %+v, want %+v", got, want)
+	}
+	updates := f.modeChangedUpdates()
+	if len(updates) != 1 || updates[0]["mode"] != "copilot" {
+		t.Fatalf("mode_changed updates = %#v, want exactly one for copilot", updates)
+	}
+}
+
+// A legacy client's Edited text never switches a system-only request, in any
+// mode.
+func TestACPAccessLegacySystemOnlyPreservesEveryMode(t *testing.T) {
+	for _, mode := range []string{"plan", "default", "edit", "copilot", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := config.Default()
+			cfg.Agent.ApprovalMode = mode
+			f := newAccessTurnFixture(t, cfg, []session.AccessIntent{
+				{System: true, Reason: "read outside the workspace"},
+			})
+			// An arbitrary Edited value: it must be ignored, because no
+			// editing selector was presented.
+			f.client.decide = legacyApproval("auto")
+
+			if err := f.awaitTurn(t, f.start()); err != nil {
+				t.Fatalf("PromptTurn: %v", err)
+			}
+
+			want := session.AccessState{Mode: mode, System: true}
+			if got := f.state.AccessState(); got != want {
+				t.Fatalf("session pair = %+v, want %+v", got, want)
+			}
+			d, ok := f.decision(0)
+			if !ok || !d.Approved || d.Access == nil {
+				t.Fatalf("delivered decision = %+v, want an approved typed grant", d)
+			}
+			if d.Access.Effective != want {
+				t.Fatalf("effective = %+v, want %+v", d.Access.Effective, want)
+			}
+		})
+	}
+}
+
+// Both client styles select an editing variant only when editing was actually
+// displayed, and a combined approval grants the whole bundle.
+func TestACPAccessCombinedLegacyAndTypedVariants(t *testing.T) {
+	styles := []struct {
+		name   string
+		decide func(string) func(PermissionRequest) PermissionDecision
+	}{
+		{name: "legacy", decide: legacyApproval},
+		{name: "typed", decide: typedApproval},
+	}
+	for _, style := range styles {
+		for _, variant := range []string{"edit", "copilot", "auto"} {
+			t.Run(style.name+"/"+variant, func(t *testing.T) {
+				f := newAccessTurnFixture(t, config.Default(), []session.AccessIntent{
+					{Editing: true, System: true, Reason: "edit and read outside"},
+				})
+				f.client.decide = style.decide(variant)
+
+				if err := f.awaitTurn(t, f.start()); err != nil {
+					t.Fatalf("PromptTurn: %v", err)
+				}
+
+				want := session.AccessState{Mode: variant, System: true}
+				if got := f.state.AccessState(); got != want {
+					t.Fatalf("session pair = %+v, want the full bundle %+v", got, want)
+				}
+				updates := f.modeChangedUpdates()
+				if len(updates) != 1 || updates[0]["mode"] != variant {
+					t.Fatalf("mode_changed updates = %#v, want exactly one for %s", updates, variant)
+				}
+			})
+		}
+	}
+}
+
+// A permission change while the client is deciding re-asks against fresh state
+// instead of applying the stale answer.
+func TestACPAccessChangedTupleReasksFreshQuestion(t *testing.T) {
+	f := newAccessTurnFixture(t, config.Default(), []session.AccessIntent{
+		{Editing: true, System: true, Reason: "edit and read outside"},
+	})
+
+	var calls int
+	f.client.decide = func(req PermissionRequest) PermissionDecision {
+		calls++
+		if calls == 1 {
+			// The user switches mode by hand while the client is deciding.
+			// The answer the client is about to give describes the old tuple.
+			if err := f.state.SetSessionMode("copilot", func() {}); err != nil {
+				t.Errorf("SetSessionMode: %v", err)
+			}
+			return PermissionDecision{Approved: true, Edited: "edit"}
+		}
+		// The second question carries the fresh tuple: editing is satisfied,
+		// so only system access is still missing and no variant is selected.
+		return PermissionDecision{Approved: true}
+	}
+
+	if err := f.awaitTurn(t, f.start()); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+
+	if calls != 2 {
+		t.Fatalf("client calls = %d, want 2 (one refresh)", calls)
+	}
+	// The first question described the original tuple; the second the fresh one.
+	if got := f.client.gotReq.ModeAccess; got == nil || got.Current.Mode != "copilot" || got.MissingEditing {
+		t.Fatalf("second question = %+v, want the fresh tuple with editing satisfied", got)
+	}
+	if !f.client.gotReq.ModeAccess.MissingSystem {
+		t.Fatal("the second question should still ask for system access")
+	}
+	// The stale answer applied nothing; the fresh one granted the remainder.
+	want := session.AccessState{Mode: "copilot", System: true}
+	if got := f.state.AccessState(); got != want {
+		t.Fatalf("session pair = %+v, want %+v", got, want)
+	}
+	updates := f.modeChangedUpdates()
+	if len(updates) != 1 || updates[0]["mode"] != "copilot" {
+		t.Fatalf("mode_changed updates = %#v, want exactly one", updates)
+	}
+}
+
+// A duplicate pending event asks the client once, and a reused provider call
+// ID with a fresh request ID stays safe.
+func TestACPAccessDuplicateEventsAndLateResponses(t *testing.T) {
+	t.Run("duplicate event asks once", func(t *testing.T) {
+		f := newAccessTurnFixtureWith(t, config.Default(), []session.AccessIntent{
+			{System: true, Reason: "read outside the workspace"},
+		}, accessTurnOpts{duplicate: true})
+		f.client.decide = typedApproval("")
+
+		if err := f.awaitTurn(t, f.start()); err != nil {
+			t.Fatalf("PromptTurn: %v", err)
+		}
+		if f.client.calls != 1 {
+			t.Fatalf("client calls = %d, want exactly 1 for one request", f.client.calls)
+		}
+		if got := f.state.AccessState(); got != (session.AccessState{Mode: "default", System: true}) {
+			t.Fatalf("session pair = %+v, want one commit", got)
+		}
+		if updates := f.modeChangedUpdates(); len(updates) != 1 {
+			t.Fatalf("mode_changed updates = %#v, want exactly one commit", updates)
+		}
+	})
+
+	t.Run("reused call id with fresh request id", func(t *testing.T) {
+		f := newAccessTurnFixture(t, config.Default(), []session.AccessIntent{
+			{System: true, Reason: "read outside the workspace"},
+			{Editing: true, Reason: "edit a file"},
+		})
+		f.client.decide = typedApproval("edit")
+
+		if err := f.awaitTurn(t, f.start()); err != nil {
+			t.Fatalf("PromptTurn: %v", err)
+		}
+		if f.client.calls != 2 {
+			t.Fatalf("client calls = %d, want one per request", f.client.calls)
+		}
+		// Both calls reused the provider's call ID; the requests are still
+		// distinct and both settled.
+		if f.request(0).RequestID == f.request(1).RequestID {
+			t.Fatal("two requests shared a request ID")
+		}
+		for i := 0; i < 2; i++ {
+			d, ok := f.decision(i)
+			if !ok || !d.Approved || d.Access == nil || d.Access.Status != session.AccessGranted {
+				t.Fatalf("decision %d = %+v, want an approved typed grant", i, d)
+			}
+		}
+		want := session.AccessState{Mode: "edit", System: true}
+		if got := f.state.AccessState(); got != want {
+			t.Fatalf("session pair = %+v, want %+v", got, want)
+		}
+	})
+}
+
+// Without a bridge or a resolver the request fails closed: the tool unblocks
+// non-approved and no capability moves.
+func TestACPAccessMissingBridgeOrResolverFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts accessTurnOpts
+	}{
+		{name: "no bridge", opts: accessTurnOpts{noBridge: true}},
+		{name: "no resolver", opts: accessTurnOpts{noResolver: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAccessTurnFixtureWith(t, config.Default(), []session.AccessIntent{
+				{Editing: true, System: true, Reason: "edit and read outside"},
+			}, tc.opts)
+
+			if err := f.awaitTurn(t, f.start()); err != nil {
+				t.Fatalf("PromptTurn: %v", err)
+			}
+
+			d, ok := f.decision(0)
+			if !ok {
+				t.Fatal("the tool was never unblocked")
+			}
+			if d.Approved {
+				t.Fatalf("a resolver-less runtime reported success: %+v", d)
+			}
+			if d.Access == nil || d.Access.Status != session.AccessFailed {
+				t.Fatalf("delivered result = %+v, want a typed failure", d.Access)
+			}
+			if got := f.state.AccessState(); got != (session.AccessState{Mode: "default"}) {
+				t.Fatalf("session pair = %+v, want both capabilities unchanged", got)
+			}
+			if updates := f.modeChangedUpdates(); len(updates) != 0 {
+				t.Fatalf("a failed request announced %#v", updates)
+			}
+		})
+	}
+}
+
+// A client failure settles the canonical request once and leaves a later
+// request alone.
+func TestACPAccessClientFailureAndCancellationSettleCanonical(t *testing.T) {
+	f := newAccessTurnFixture(t, config.Default(), []session.AccessIntent{
+		{System: true, Reason: "read outside the workspace"},
+	})
+	f.client.err = errors.New("transport down")
+
+	// A transport failure is fatal to the turn, exactly as an ordinary bridge
+	// failure is — but it is reported to the waiting tool first, so the turn
+	// itself either completes (the runner returns once it is settled) or
+	// surfaces the cancellation the failure triggered. Anything else — a
+	// grant, a hang, a different error shape — is a bug.
+	if err := f.awaitTurn(t, f.start()); err != nil &&
+		!errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("PromptTurn = %v, want nil or the cancellation the failure triggers", err)
+	}
+
+	d, ok := f.decision(0)
+	if !ok {
+		t.Fatal("the tool was never unblocked")
+	}
+	if d.Approved {
+		t.Fatalf("a client failure reported success: %+v", d)
+	}
+	if d.Access == nil || d.Access.Status != session.AccessFailed {
+		t.Fatalf("delivered result = %+v, want a typed failure", d.Access)
+	}
+	if d.Access.Message != "transport down" {
+		t.Fatalf("failure message = %q, want the transport error", d.Access.Message)
+	}
+	if got := f.state.AccessState(); got != (session.AccessState{Mode: "default"}) {
+		t.Fatalf("session pair = %+v, want it unchanged", got)
+	}
+	// The canonical channel was settled exactly once: the runner consumed its
+	// single value and the record shows it.
+	if !f.calls[0].settled.Load() {
+		t.Fatal("the canonical request was never settled")
+	}
+
+	// A later request is untouched by the earlier failure.
+	later, waiting, err := f.state.RegisterAccess(context.Background(), &session.PendingToolCall{
+		ID:           "call-1",
+		Name:         "mode.request",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}, session.AccessIntent{System: true, Reason: "read outside"})
+	if err != nil || !waiting {
+		t.Fatalf("RegisterAccess = (%v, %v), want a published request", waiting, err)
+	}
+	if got, pending := f.state.AccessRequest(); !pending || got.RequestID != later.RequestID {
+		t.Fatalf("later request = (%+v, %v), want it still pending", got, pending)
+	}
+}
+
+// The turn loop reads the pending request through the runtime's own seam, not
+// around it. The seam is what lets a runtime settle a request that was
+// satisfied while the client was deciding, so a loop that read State directly
+// would both ignore that settlement and leave the seam dead.
+func TestACPAccessReadsRequestThroughRuntimeSeam(t *testing.T) {
+	var reads atomic.Int64
+	f := newAccessTurnFixtureWith(t, config.Default(), []session.AccessIntent{
+		{System: true, Reason: "read outside the workspace"},
+	}, accessTurnOpts{countReads: &reads})
+	f.client.decide = typedApproval("")
+
+	if err := f.awaitTurn(t, f.start()); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+	if reads.Load() == 0 {
+		t.Fatal("the turn loop never read the runtime's AccessRequest seam")
+	}
+	if !f.state.SystemAccess() {
+		t.Fatal("the grant did not reach the session")
+	}
+}
+
+// A malformed editing variant cannot partially grant the system half of a
+// combined request.
+func TestACPAccessInvalidEditingVariantCannotPartiallyGrantSystem(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		decide func(PermissionRequest) PermissionDecision
+	}{
+		{name: "legacy", decide: legacyApproval("bogus")},
+		{name: "typed", decide: typedApproval("bogus")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAccessTurnFixture(t, config.Default(), []session.AccessIntent{
+				{Editing: true, System: true, Reason: "edit and read outside"},
+			})
+			f.client.decide = tc.decide
+
+			if err := f.awaitTurn(t, f.start()); err != nil {
+				t.Fatalf("PromptTurn: %v", err)
+			}
+
+			d, ok := f.decision(0)
+			if !ok {
+				t.Fatal("the tool was never unblocked")
+			}
+			if d.Approved {
+				t.Fatalf("an invalid variant reported success: %+v", d)
+			}
+			if d.Access == nil || d.Access.Status != session.AccessFailed {
+				t.Fatalf("delivered result = %+v, want a typed failure", d.Access)
+			}
+			// Neither half was granted.
+			if got := f.state.AccessState(); got != (session.AccessState{Mode: "default"}) {
+				t.Fatalf("session pair = %+v, want both capabilities unchanged", got)
+			}
+			if updates := f.modeChangedUpdates(); len(updates) != 0 {
+				t.Fatalf("a failed request announced %#v", updates)
+			}
+		})
+	}
+}
+
+// A manual mode change through the ACP RPC uses the session override: an
+// unrelated reload keeps it, an explicit configured change replaces it.
+func TestACPManualModeUsesSessionOverride(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	broker := pubsub.NewBroker[session.Event]()
+	state.SetEventBroker(broker)
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				State:     state,
+				BeginWork: identityBeginWork,
+				Events:    broker,
+				// The runtime's SetMode is the session's own setter with the
+				// runner callback supplied by app; here the callback is a
+				// no-op, which is what an inactive runtime does.
+				SetMode: func(mode string) error {
+					return state.SetSessionMode(mode, func() {})
+				},
+			}, true
+		},
+		Notify: func(string, any) error { return nil },
+	})
+
+	if _, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"s1","mode":"copilot"}`)); err != nil {
+		t.Fatalf("SetMode: %v", err)
+	}
+	if got := state.AccessState().Mode; got != "copilot" {
+		t.Fatalf("mode = %q, want copilot", got)
+	}
+
+	// An unrelated config change must not revert the manual selection.
+	unrelated := config.Default()
+	unrelated.Agent.MaxToolIterations++
+	state.RebaseSessionConfig(unrelated)
+	if got := state.AccessState().Mode; got != "copilot" {
+		t.Fatalf("mode after an unrelated reload = %q, want the override copilot", got)
+	}
+
+	// An explicit configured-mode change replaces it.
+	explicit := config.Default()
+	explicit.Agent.ApprovalMode = "edit"
+	state.RebaseSessionConfig(explicit)
+	if got := state.AccessState().Mode; got != "edit" {
+		t.Fatalf("mode after an explicit change = %q, want edit", got)
 	}
 }
 

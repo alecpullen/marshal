@@ -9,12 +9,92 @@ import (
 	"time"
 )
 
+// AccessState is the effective access tuple for one session: the interaction
+// mode governing approval decisions plus whether the conversation holds the
+// system-access modifier. It is a value snapshot (see State.AccessState), so a
+// reader cannot observe a half-applied pair.
+type AccessState struct {
+	Mode   string `json:"mode"`
+	System bool   `json:"system"`
+}
+
+// AccessIntent is what a caller asked for before the session decided whether
+// anything is actually missing: which capabilities the call needs and why.
+// The session, not the caller, derives the request's missing flags from the
+// live access pair.
+type AccessIntent struct {
+	Editing bool
+	System  bool
+	Reason  string
+}
+
+// AccessRequest is the displayable, immutable metadata for one outstanding
+// access grant request. It carries no channel: the canonical
+// PendingToolCall owns settlement (see State.RegisterAccess).
+type AccessRequest struct {
+	RequestID      string      `json:"requestId"`
+	SessionID      string      `json:"sessionId"`
+	Actor          string      `json:"actor,omitempty"`
+	StepID         StepID      `json:"stepId,omitempty"`
+	Reason         string      `json:"reason"`
+	Current        AccessState `json:"current"`
+	MissingEditing bool        `json:"missingEditing"`
+	MissingSystem  bool        `json:"missingSystem"`
+}
+
+// AccessChoice is the user's answer to an AccessRequest. Current is the pair
+// the chooser displayed; a mismatch with the live pair means the request is
+// stale and must be refreshed rather than applied.
+type AccessChoice struct {
+	RequestID string      `json:"requestId"`
+	SessionID string      `json:"sessionId"`
+	Current   AccessState `json:"current"`
+	Approved  bool        `json:"approved"`
+	Mode      string      `json:"mode,omitempty"`
+}
+
+// AccessStatus classifies how one access request settled.
+type AccessStatus string
+
+const (
+	AccessAvailable AccessStatus = "already_available"
+	AccessGranted   AccessStatus = "granted"
+	AccessDenied    AccessStatus = "denied"
+	AccessCanceled  AccessStatus = "canceled"
+	AccessFailed    AccessStatus = "failed"
+	AccessRefresh   AccessStatus = "refresh_required"
+	AccessExpired   AccessStatus = "expired"
+)
+
+// AccessResult is the outcome of an access request. Effective is the access
+// pair in force when the request settled, so a caller never has to re-read
+// the session to know what it is operating under.
+type AccessResult struct {
+	RequestID string       `json:"requestId,omitempty"`
+	SessionID string       `json:"sessionId"`
+	Status    AccessStatus `json:"status"`
+	Effective AccessState  `json:"effective"`
+	Message   string       `json:"message,omitempty"`
+}
+
+// Prepare validates everything, returning an infallible, bounded memory-only
+// policy commit. It must not mutate State, acquire the access gate, do I/O,
+// reload, or call a provider. A nil Apply is invalid.
+type AccessCommit struct {
+	Effective AccessState
+	Apply     func()
+}
+type AccessPrepare func(AccessRequest, AccessChoice) (AccessCommit, error)
+
 // UserApprovalDecision is the user's response to a pending tool approval
 // request. Approved indicates the user allowed the call; Edited carries the
 // user's modified command text (if any) for tools that support editing.
+// Access carries the settled access result for a typed access request; it is
+// nil for ordinary approvals.
 type UserApprovalDecision struct {
 	Approved bool
 	Edited   string
+	Access   *AccessResult
 }
 
 // QuestionOption is one selectable answer to a Question. Plain strings
@@ -132,7 +212,12 @@ type PendingToolCall struct {
 	// approval panel can show that step's narration as the reason. 0 = none.
 	StepID       StepID
 	ResponseChan chan UserApprovalDecision
-	responded    sync.Once
+	// Access, when non-nil, marks this as a typed capability request rather
+	// than an ordinary tool approval. The metadata is display-only (it
+	// carries no channel); settlement goes through the session's private
+	// helper so a grant can never be acknowledged before it was applied.
+	Access    *AccessRequest
+	responded sync.Once
 }
 
 // Respond sends a UserApprovalDecision to the response channel exactly once
@@ -140,8 +225,16 @@ type PendingToolCall struct {
 // call produces a send. The send is non-blocking so unbuffered channels with
 // no receiver don't deadlock. The channel is closed after the send so the
 // runner can detect that no more responses are coming.
+//
+// A typed access request is settled only by the session's private settlement
+// helper (finishAccessLocked), which is the single point that may acknowledge
+// an applied grant; Respond is a no-op for it so an untyped or stale
+// responder cannot report success.
 func (p *PendingToolCall) Respond(d UserApprovalDecision) {
 	if p == nil {
+		return
+	}
+	if p.Access != nil {
 		return
 	}
 	p.responded.Do(func() {
@@ -168,8 +261,33 @@ type ActiveToolCall struct {
 	ToolCallID string
 }
 
+// SetPendingApproval installs the pending tool approval and publishes an
+// event-safe snapshot, or clears the slot when tc is nil.
+//
+// The access gate is taken first so an ordinary call and a capability request
+// cannot race for the single slot. While a typed access request occupies it,
+// a generic nil clear is ignored (the session's own settlement helper is the
+// only thing that may clear it) and a replacement ordinary approval is denied
+// rather than silently shown in place of the request the user is answering.
+// When no access request occupies the slot, existing behavior is unchanged —
+// including an ordinary P1→P2 replacement.
 func (s *State) SetPendingApproval(tc *PendingToolCall) {
+	s.accessMu.Lock()
 	s.mu.Lock()
+	occupiedAccess := s.pendingApproval != nil && s.pendingApproval.Access != nil
+	if occupiedAccess {
+		// The user is answering a typed access request: only the session's
+		// own settlement helper may clear it, and nothing may take its
+		// place. A generic nil clear is ignored; a competing ordinary
+		// approval is denied on its own channel after the locks are
+		// released, so the denial never runs under the access gate.
+		s.mu.Unlock()
+		s.accessMu.Unlock()
+		if tc != nil {
+			tc.Respond(UserApprovalDecision{Approved: false})
+		}
+		return
+	}
 	s.pendingApproval = tc
 	var snap *PendingToolCall
 	if tc != nil {
@@ -184,10 +302,25 @@ func (s *State) SetPendingApproval(tc *PendingToolCall) {
 			Schema:       tc.Schema,
 			StepID:       tc.StepID,
 			ResponseChan: tc.ResponseChan,
+			// Access metadata travels with a typed display copy, but never a
+			// channel: only the session's private helper may settle one.
+			Access: copyAccessRequest(tc.Access),
 		}
 	}
 	s.mu.Unlock()
+	s.accessMu.Unlock()
 	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: snap})
+}
+
+// copyAccessRequest returns a private copy of displayable request metadata, so
+// a published or stored snapshot cannot be mutated through the canonical
+// request. Nil stays nil.
+func copyAccessRequest(req *AccessRequest) *AccessRequest {
+	if req == nil {
+		return nil
+	}
+	copied := *req
+	return &copied
 }
 
 func (s *State) PendingApproval() *PendingToolCall {

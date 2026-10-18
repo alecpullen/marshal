@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/help"
@@ -366,6 +367,16 @@ func (m Model) statusRightSegment() string {
 	case ctrlCQuit:
 		return warningStyle().Render("Ctrl+C again to quit")
 	}
+	// A typed access request queued behind another dock panel is disclosed
+	// here too, so a FullFrame panel that hides the input area cannot make the
+	// request invisible. It is checked before the generic approval indicator
+	// because a typed request *is* the pending approval — the generic one would
+	// always shadow it — and before the notice indicator, because a decision
+	// waiting on the user is the more actionable state. The interrupt
+	// indicator is checked above both.
+	if m.accessRequestQueued() {
+		return warningStyle().Render(glyph.Warning + " Access waiting")
+	}
 	if m.hasPendingApproval() {
 		return warningStyle().Render(glyph.Warning + " approval")
 	}
@@ -379,6 +390,19 @@ func (m Model) statusRightSegment() string {
 		return dimStyle().Render(m.flash)
 	}
 	return help.Footer(m.footerHints())
+}
+
+// accessRequestQueued reports whether a typed access request is waiting while
+// another panel holds the dock. When the accesspanel itself owns the dock its
+// own footer supplies the keys, so this indicator is only for the queued case.
+func (m Model) accessRequestQueued() bool {
+	if _, pending := m.state.AccessRequest(); !pending {
+		return false
+	}
+	if _, isAccessPanel := m.dock.Panel().(*accesspanel.Panel); isAccessPanel {
+		return false
+	}
+	return m.dock.IsOpen()
 }
 
 // noticeVisible reports whether a session notice is currently up. The

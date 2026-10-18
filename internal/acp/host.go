@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,7 +18,6 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
-	"marshal/internal/tools/policy"
 	"marshal/internal/watch"
 )
 
@@ -226,17 +224,13 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 				BeginWork: rt.BeginWork,
 				Run:       run,
 				Events:    evBroker,
-				SetMode: func(mode string) error {
-					m := policy.ParseApprovalMode(mode)
-					// Reject unknown modes explicitly instead of silently falling
-					// back to the default read-only mode.
-					if string(m) != strings.ToLower(mode) {
-						return fmt.Errorf("invalid approval mode %q", mode)
-					}
-					rt.Runner.SetApprovalMode(m)
-					return nil
-				},
+				// The runtime owns mode validation and the session override, so
+				// the manual RPC path goes through the same operation the TUI
+				// uses rather than mutating the runner directly.
+				SetMode:         rt.SetSessionMode,
 				SetSystemAccess: rt.State.SetSystemAccess,
+				AccessRequest:   rt.AccessRequest,
+				ResolveAccess:   rt.ResolveAccess,
 				Steer:           rt.State.PushSteering,
 				State:           rt.State,
 				SwarmRunner:     swarmRunner,

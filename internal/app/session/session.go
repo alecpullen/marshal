@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -237,6 +238,12 @@ type State struct {
 	// prompt. Single-valued: sudoMu serializes shell.sudo session-wide so a
 	// second concurrent call cannot clobber it.
 	pendingSudoAuth *PendingSudoAuth
+	// pendingAccessCtx and pendingAccessIntent are the original request
+	// context and the full intent behind the canonical typed pending
+	// approval. They are guarded by accessMu: the pending pointer itself
+	// also lives under mu, but only the access gate may settle it.
+	pendingAccessCtx    context.Context
+	pendingAccessIntent AccessIntent
 	// secretPromptCapable reports whether the attached transport can raise a
 	// masked secret prompt. Defaults false (fail closed): an ACP/web client
 	// has no secret channel, so shell.sudo refuses rather than blocking on a
@@ -312,8 +319,23 @@ type State struct {
 	// shell-editing ban, and catastrophic-floor guardrails. Runtime-only;
 	// never a config default. Sticky until toggled off. Guarded by mu.
 	systemAccess bool
-	turnIndex    int
-	snapshotter  Snapshotter
+	// accessMu serializes access-tuple mutations (session mode changes,
+	// system-access toggles, config rebases) so a reader never observes a
+	// half-applied pair. It guards configuredMode and sessionModeOverride;
+	// the effective pair itself still lives under mu. Lock order is
+	// accessMu → workMu or accessMu → mu, never the reverse.
+	accessMu sync.Mutex
+	// configuredMode is the normalized approval mode the current config
+	// asked for, i.e. the mode a reload keeps unless the user explicitly
+	// changed it. Guarded by accessMu.
+	configuredMode string
+	// sessionModeOverride is the user's session-scoped mode selection. It
+	// outlives an unrelated config reload but is cleared when the configured
+	// mode itself changes. Empty when no manual/approved selection exists.
+	// Guarded by accessMu.
+	sessionModeOverride string
+	turnIndex           int
+	snapshotter         Snapshotter
 
 	// workspace is the session's current project/active-root pair and the
 	// broker rebinds are published on. Guarded by mu like the rest of this
@@ -835,6 +857,12 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 	for _, opt := range opts {
 		opt(s)
 	}
+	// The configured mode is the reload baseline: it is what a later config
+	// reload compares against (see RebaseSessionConfig), while
+	// State.Config.Agent.ApprovalMode carries the effective mode a reader
+	// sees. New conversations start with no override and system access off.
+	s.configuredMode = configuredAccessMode(s.Config.Agent.ApprovalMode)
+	s.Config.Agent.ApprovalMode = s.configuredMode
 	if s.persistenceEnabled() {
 		s.loadFromDB()
 		s.restoreWorkspace()
@@ -882,9 +910,594 @@ func (s *State) SystemAccess() bool {
 
 // SetSystemAccess toggles the per-session system-access modifier.
 func (s *State) SetSystemAccess(on bool) {
+	// accessMu first so a concurrent mode change or config rebase cannot
+	// interleave with this toggle; the flag itself stays under mu.
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.systemAccess = on
+}
+
+// AccessState returns the effective access tuple — the mode governing
+// approval decisions and the system-access flag — as one value read under a
+// single lock, so callers never see a mode from one commit and a flag from
+// another.
+func (s *State) AccessState() AccessState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return AccessState{Mode: s.Config.Agent.ApprovalMode, System: s.systemAccess}
+}
+
+// normalizeAccessMode validates a literal session-mode selection: a mode the
+// user (or an approved request) names explicitly. Unlike a configured value,
+// a selection is never guessed — blank or unrecognized input is an error that
+// must leave the session's authority untouched.
+func normalizeAccessMode(mode string) (string, error) {
+	switch mode {
+	case "plan", "default", "edit", "copilot", "auto":
+		return mode, nil
+	}
+	return "", fmt.Errorf("session: unknown approval mode %q", mode)
+}
+
+// configuredAccessMode normalizes a mode read from configuration, matching
+// how the rest of Marshal parses [agent].approval_mode: case-insensitive, and
+// unknown or blank values fall back to "default" — the safe, read-only mode —
+// rather than failing the session.
+func configuredAccessMode(mode string) string {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	switch normalized {
+	case "plan", "default", "edit", "copilot", "auto":
+		return normalized
+	}
+	return "default"
+}
+
+// SetSessionMode applies an explicit mode selection for this session. The
+// runner setter arrives as apply because the session package does not know
+// about the policy engine; it is infallible, so validation and the quiescing
+// gate happen here, before any mutation, and a rejected selection changes
+// nothing. On success the mode becomes the session override, so it survives a
+// config reload that does not itself change the configured mode (see
+// ModeForConfig).
+func (s *State) SetSessionMode(mode string, apply func()) error {
+	valid, err := normalizeAccessMode(mode)
+	if err != nil {
+		return err
+	}
+	if apply == nil {
+		return fmt.Errorf("session: set mode %q: no apply function", valid)
+	}
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	// The quiescing gate is checked under workMu (never the other way round,
+	// which would invert the documented lock order) so a mode change cannot
+	// land during shutdown.
+	s.workMu.Lock()
+	quiescing := s.quiescing
+	s.workMu.Unlock()
+	if quiescing {
+		return ErrSessionQuiescing
+	}
+	// apply is the runner's setter: call it without State.mu held, then
+	// commit the session-visible pair. The override is deliberately not
+	// touched — a manual change does not redefine the configured baseline.
+	apply()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessionModeOverride = valid
+	s.Config.Agent.ApprovalMode = valid
+	return nil
+}
+
+// ModeForConfig reports the mode the session should run with for an incoming
+// configuration: the session override when the configured mode has not
+// changed, otherwise the configured mode itself. It mutates nothing, so a
+// caller can consult it before deciding whether to rebuild anything.
+func (s *State) ModeForConfig(cfg config.Config) string {
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	if cfg.Agent.ApprovalMode == s.configuredMode && s.sessionModeOverride != "" {
+		return s.sessionModeOverride
+	}
+	return cfg.Agent.ApprovalMode
+}
+
+// RebaseSessionConfig installs a reloaded configuration and re-derives the
+// effective mode against it. An unchanged configured mode keeps the session
+// override (an unrelated setting change must not silently revert the user's
+// mode); an explicit change to the configured mode clears the override, since
+// the user's edit is the newer intent. systemAccess is preserved either way —
+// the grant belongs to the conversation, not to the file. Failed reloads must
+// not call this at all.
+func (s *State) RebaseSessionConfig(cfg config.Config) {
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	if configured := configuredAccessMode(cfg.Agent.ApprovalMode); configured != s.configuredMode {
+		s.sessionModeOverride = ""
+		s.configuredMode = configured
+	}
+	if s.sessionModeOverride != "" {
+		cfg.Agent.ApprovalMode = s.sessionModeOverride
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Config = cfg
+}
+
+// ── Capability access requests ────────────────────────────────────────
+//
+// A request for editing and/or system access is a typed pending approval: it
+// occupies the same single slot as an ordinary tool approval, so the human is
+// never asked two things at once, and it carries Access metadata instead of
+// only a description. Settlement is deliberately centralized here: every
+// outcome — approval, denial, cancellation, shutdown — funnels through
+// finishAccessLocked under accessMu, which is what lets a grant be applied
+// before it is acknowledged and a cancellation that is already visible win.
+
+// modeHasEditing reports whether a mode already carries full editing
+// authority — the three modes that approve edits without a separate
+// selector. A blank or unrecognized mode is read-only, so it never counts.
+func modeHasEditing(mode string) bool {
+	switch mode {
+	case "edit", "copilot", "auto":
+		return true
+	}
+	return false
+}
+
+// accessMissingFlags recomputes a request's missing-capability flags from the
+// intent and the pair the request carries. Editing is missing only when it
+// was asked for and the mode still lacks it (Plan/Default); system access is
+// missing only when it was asked for and not yet held. Already being in
+// Edit/Copilot/Auto means no editing capability can be missing, regardless of
+// the hint.
+func accessMissingFlags(req *AccessRequest, intent AccessIntent) {
+	req.MissingEditing = intent.Editing && !modeHasEditing(req.Current.Mode)
+	req.MissingSystem = intent.System && !req.Current.System
+}
+
+// accessRequestLocked returns the displayable form of the request currently
+// occupying the pending-approval slot. It re-reads the live pair and
+// recomputes the missing flags from the saved intent, so a reader refreshing
+// a stale panel learns what is still missing now. It is a value snapshot:
+// neither the canonical request nor a previously published copy is mutated.
+// Callers must hold accessMu.
+func (s *State) accessRequestLocked() (AccessRequest, bool) {
+	s.mu.Lock()
+	pending := s.pendingApproval
+	intent := s.pendingAccessIntent
+	if pending == nil || pending.Access == nil {
+		s.mu.Unlock()
+		return AccessRequest{}, false
+	}
+	req := *pending.Access
+	req.Current = AccessState{Mode: s.Config.Agent.ApprovalMode, System: s.systemAccess}
+	s.mu.Unlock()
+
+	accessMissingFlags(&req, intent)
+	return req, true
+}
+
+// AccessRequest returns the access request waiting for a decision, if any.
+func (s *State) AccessRequest() (AccessRequest, bool) {
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	return s.accessRequestLocked()
+}
+
+// finishAccessLocked is the one settlement point for a typed access request.
+// The caller holds accessMu and has already committed whatever state the
+// result describes; this function only clears the slot, publishes, and
+// delivers — it never mutates authority, and it must never touch a transport
+// mutex, config, the model layer or background jobs.
+//
+// A result whose request ID does not name the canonical request does nothing:
+// a late or duplicate outcome cannot settle a newer request. Otherwise the
+// canonical typed request (and only that one) is cleared, the cleared slot is
+// announced, and exactly one decision is delivered on the canonical buffered
+// channel, which is then closed so the waiter unblocks. Ordinary approvals
+// keep their own Respond path and are untouched.
+func (s *State) finishAccessLocked(result AccessResult) {
+	s.mu.Lock()
+	pending := s.pendingApproval
+	if pending == nil || pending.Access == nil || pending.Access.RequestID != result.RequestID {
+		s.mu.Unlock()
+		return
+	}
+	s.pendingApproval = nil
+	s.pendingAccessCtx = nil
+	s.pendingAccessIntent = AccessIntent{}
+	s.mu.Unlock()
+
+	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: nil})
+
+	// Deliberately bypass PendingToolCall.Respond: its guard makes Respond a
+	// no-op for a typed request precisely so that this helper is the only way
+	// one can be acknowledged. The decision carries a copy of the result, so
+	// its recipient can retain it without aliasing session state.
+	decision := UserApprovalDecision{Access: &result}
+	decision.Approved = result.Status == AccessGranted
+	pending.responded.Do(func() {
+		if pending.ResponseChan != nil {
+			select {
+			case pending.ResponseChan <- decision:
+			default:
+			}
+			close(pending.ResponseChan)
+		}
+	})
+}
+
+// RegisterAccess asks for the capabilities named by intent, publishing a
+// request on the pending-approval slot when one is actually needed.
+//
+// waiting=false means the session already has everything asked for: no
+// request ID was generated and no pending event was published. Every refusal
+// (a done context, an unusable response channel, an empty intent, a child
+// session, a quiescing session, an occupied slot) leaves any existing
+// approval exactly as it was — a request never displaces one already shown.
+func (s *State) RegisterAccess(ctx context.Context, pending *PendingToolCall, intent AccessIntent) (AccessRequest, bool, error) {
+	// Validate everything the caller controls before touching the gate: a
+	// malformed request must not even briefly hold the session's access lock.
+	if ctx == nil {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: no context")
+	}
+	if err := ctx.Err(); err != nil {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: context already done: %w", err)
+	}
+	if pending == nil {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: no pending call")
+	}
+	if pending.ResponseChan == nil {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: pending call has no response channel")
+	}
+	// The canonical channel is buffered so settlement can never block on a
+	// waiter that has gone away, and it must be empty so a stale decision
+	// cannot be mistaken for this request's answer.
+	if cap(pending.ResponseChan) < 1 {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: response channel is unbuffered")
+	}
+	if len(pending.ResponseChan) != 0 {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: response channel is not empty")
+	}
+	if !intent.Editing && !intent.System {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: intent requests no capability")
+	}
+
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+
+	if depth := s.SubagentDepth(); depth > 0 {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: child session (depth %d) cannot request access", depth)
+	}
+	s.workMu.Lock()
+	quiescing := s.quiescing
+	s.workMu.Unlock()
+	if quiescing {
+		return AccessRequest{}, false, ErrSessionQuiescing
+	}
+
+	s.mu.Lock()
+	occupied := s.pendingApproval != nil
+	s.mu.Unlock()
+	if occupied {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: a pending approval already occupies the slot")
+	}
+
+	// One read of the effective pair decides whether anything is missing at
+	// all; the flags are computed from the intent, never trusted from it.
+	current := s.AccessState()
+	missing := AccessRequest{Current: current}
+	accessMissingFlags(&missing, intent)
+	if !missing.MissingEditing && !missing.MissingSystem {
+		return AccessRequest{
+			SessionID: s.sessionID,
+			Reason:    intent.Reason,
+			Current:   current,
+		}, false, nil
+	}
+
+	// The request ID is independent of the provider's tool-call ID: the
+	// caller may reuse that ID, and two sequential requests must never be
+	// confusable.
+	req := AccessRequest{
+		RequestID:      rand.Text(),
+		SessionID:      s.sessionID,
+		Actor:          s.accessActorLocked(pending.StepID),
+		StepID:         pending.StepID,
+		Reason:         intent.Reason,
+		Current:        current,
+		MissingEditing: missing.MissingEditing,
+		MissingSystem:  missing.MissingSystem,
+	}
+	// The canonical call gets its own allocation: the value returned to the
+	// caller and the one published on the event are copies, so a later
+	// refresh cannot rewrite metadata someone already displayed.
+	canonical := req
+	pending.Access = &canonical
+
+	s.mu.Lock()
+	s.pendingApproval = pending
+	s.pendingAccessCtx = ctx
+	s.pendingAccessIntent = intent
+	s.mu.Unlock()
+
+	// Published after State.mu is released (subscribers may call back into
+	// State). The event copy carries the request metadata but no
+	// ResponseChan: a typed request is settled only by the session's private
+	// helper, and an event subscriber must not be able to answer one — or to
+	// close a channel it does not own.
+	eventReq := req
+	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: &PendingToolCall{
+		ID:      pending.ID,
+		Name:    pending.Name,
+		Args:    pending.Args,
+		Command: pending.Command,
+		Risk:    pending.Risk,
+		Reason:  pending.Reason,
+		Diff:    pending.Diff,
+		Schema:  pending.Schema,
+		StepID:  pending.StepID,
+		Access:  &eventReq,
+	}})
+	return req, true, nil
+}
+
+// accessActorLocked resolves the label to show for the requesting step.
+// State.Step takes State.mu itself, so this must never be called with State.mu
+// held — it is called with only accessMu held.
+func (s *State) accessActorLocked(stepID StepID) string {
+	if stepID == 0 {
+		return "Marshal"
+	}
+	step, ok := s.Step(stepID)
+	if !ok {
+		return "Marshal"
+	}
+	switch {
+	case step.Actor.Label != "":
+		return step.Actor.Label
+	case step.Actor.Role != "":
+		return step.Actor.Role
+	default:
+		return "Marshal"
+	}
+}
+
+// ResolveAccess settles the outstanding access request with the user's
+// choice. prepare validates the choice and returns the state it wants
+// committed; it runs under accessMu but must be memory-only.
+//
+// The result always describes the access pair in force when it returns. A
+// success is only reported after the commit has been applied, so an
+// acknowledgment can never arrive before the capability does.
+func (s *State) ResolveAccess(choice AccessChoice, prepare AccessPrepare) (AccessResult, error) {
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+
+	// The pair and the pending request are read together: a choice is judged
+	// against the state the session is actually in when it arrives.
+	req, ok := s.accessRequestLocked()
+	actual := s.AccessState()
+	expire := func(message string) (AccessResult, error) {
+		// The current approval (if any) is deliberately left in place: a
+		// choice for a request this session does not know must not disturb
+		// the one the user is actually looking at.
+		err := errors.New("session: resolve access: " + message)
+		return AccessResult{
+			SessionID: s.sessionID,
+			Status:    AccessExpired,
+			Effective: actual,
+			Message:   err.Error(),
+		}, err
+	}
+	// A request is missing when no typed approval occupies the slot, and
+	// foreign when the choice names a different request or session. Either
+	// way it is not this session's to settle.
+	if !ok {
+		return expire("no access request is pending")
+	}
+	if choice.RequestID != req.RequestID || choice.SessionID != req.SessionID {
+		return expire("choice does not name the pending request")
+	}
+	// Every registration saves the original context privately, so its absence
+	// means the request is not one this session published — and a child
+	// session can never own the parent's slot.
+	if s.pendingAccessCtx == nil {
+		return expire("request has no original context")
+	}
+	if s.SubagentDepth() > 0 {
+		return expire("child session cannot settle an access request")
+	}
+
+	// The gate is taken before anything is committed, so a cancellation or a
+	// shutdown that is already visible wins the race outright.
+	if err := s.pendingAccessCtx.Err(); err != nil {
+		return s.finishAccessCanceledLocked(req, actual, "request context canceled"), nil
+	}
+	if s.quiescingLocked() {
+		return s.finishAccessCanceledLocked(req, actual, "session is quiescing"), nil
+	}
+
+	// The chooser answered against the pair it was shown. If the session has
+	// moved on, applying the choice would grant a capability the user never
+	// saw requested: ask for a refresh, keep the request, and invoke nothing.
+	if choice.Current != actual {
+		return AccessResult{
+			RequestID: req.RequestID,
+			SessionID: req.SessionID,
+			Status:    AccessRefresh,
+			Effective: actual,
+			Message:   "access state changed since the request was shown",
+		}, nil
+	}
+
+	// A matching denial settles here and revokes nothing: authority only ever
+	// moves forward.
+	if !choice.Approved {
+		result := AccessResult{
+			RequestID: req.RequestID,
+			SessionID: req.SessionID,
+			Status:    AccessDenied,
+			Effective: actual,
+			Message:   "access denied",
+		}
+		s.finishAccessLocked(result)
+		return result, nil
+	}
+
+	// The pair to commit against is the actual one, and the capabilities that
+	// still need granting are recomputed from it.
+	target := actual
+	needed := req
+	needed.Current = actual
+	accessMissingFlags(&needed, s.pendingAccessIntent)
+	if !needed.MissingEditing && !needed.MissingSystem {
+		result := AccessResult{
+			RequestID: req.RequestID,
+			SessionID: req.SessionID,
+			Status:    AccessAvailable,
+			Effective: actual,
+			Message:   "requested access is already available",
+		}
+		s.finishAccessLocked(result)
+		return result, nil
+	}
+
+	// Validate the choice against what is actually missing before looking for
+	// a resolver: only an editing-capable variant may fill an editing gap, and
+	// a system-only request must not name a mode at all.
+	if needed.MissingEditing {
+		if !modeHasEditing(choice.Mode) {
+			return s.finishAccessFailedLocked(req, actual, fmt.Errorf("invalid editing mode %q", choice.Mode))
+		}
+		target.Mode = choice.Mode
+	} else if choice.Mode != "" {
+		return s.finishAccessFailedLocked(req, actual, fmt.Errorf("unexpected editing mode %q for a system-only request", choice.Mode))
+	}
+	if needed.MissingSystem {
+		target.System = true
+	}
+
+	if prepare == nil {
+		return s.finishAccessFailedLocked(req, actual, errors.New("no access resolver configured"))
+	}
+	commit, err := prepare(req, choice)
+	if err != nil {
+		return s.finishAccessFailedLocked(req, actual, fmt.Errorf("access resolver rejected the request: %w", err))
+	}
+	// A commit without an applier would report success with nothing applied,
+	// and one that targets a different pair than the request implies would
+	// grant something the user never saw. Both fail closed.
+	if commit.Apply == nil {
+		return s.finishAccessFailedLocked(req, actual, errors.New("access resolver returned no apply function"))
+	}
+	if commit.Effective != target {
+		return s.finishAccessFailedLocked(req, actual, fmt.Errorf("resolver proposed %+v, expected %+v", commit.Effective, target))
+	}
+
+	// Recheck immediately before applying: this is the line that linearizes
+	// the grant. Cancellation or quiescing already visible here wins; either
+	// arriving later waits for this application and its acknowledgment.
+	if err := s.pendingAccessCtx.Err(); err != nil {
+		return s.finishAccessCanceledLocked(req, actual, "request context canceled"), nil
+	}
+	if s.quiescingLocked() {
+		return s.finishAccessCanceledLocked(req, actual, "session is quiescing"), nil
+	}
+
+	// Only now is authority moved: apply (the resolver's setter) runs with
+	// accessMu held but State.mu released, then the session records exactly
+	// the capabilities that were missing and nothing else. The public mode
+	// and system setters are deliberately not called — they take accessMu.
+	commit.Apply()
+	s.mu.Lock()
+	if needed.MissingEditing {
+		s.sessionModeOverride = target.Mode
+		s.Config.Agent.ApprovalMode = target.Mode
+	}
+	if needed.MissingSystem {
+		s.systemAccess = true
+	}
+	s.mu.Unlock()
+
+	result := AccessResult{
+		RequestID: req.RequestID,
+		SessionID: req.SessionID,
+		Status:    AccessGranted,
+		Effective: target,
+		Message:   "access granted",
+	}
+	s.finishAccessLocked(result)
+	return result, nil
+}
+
+// finishAccessCanceledLocked settles a request the gate found already
+// unwinnable. It reports the actual pair, which is unchanged, and the
+// acknowledgment is a cancellation rather than a grant.
+func (s *State) finishAccessCanceledLocked(req AccessRequest, actual AccessState, message string) AccessResult {
+	result := AccessResult{
+		RequestID: req.RequestID,
+		SessionID: req.SessionID,
+		Status:    AccessCanceled,
+		Effective: actual,
+		Message:   message,
+	}
+	s.finishAccessLocked(result)
+	return result
+}
+
+// finishAccessFailedLocked settles a request that cannot be applied and
+// reports the concrete reason. It is always paired with a non-nil error at
+// the call site, so a caller cannot mistake a refusal for a grant.
+func (s *State) finishAccessFailedLocked(req AccessRequest, actual AccessState, cause error) (AccessResult, error) {
+	result := AccessResult{
+		RequestID: req.RequestID,
+		SessionID: req.SessionID,
+		Status:    AccessFailed,
+		Effective: actual,
+		Message:   cause.Error(),
+	}
+	s.finishAccessLocked(result)
+	return result, cause
+}
+
+// quiescingLocked reports whether the shutdown gate has closed. Callers must
+// not hold workMu: accessMu precedes workMu in the lock order, so taking it
+// here (while holding accessMu) is the documented direction.
+func (s *State) quiescingLocked() bool {
+	s.workMu.Lock()
+	defer s.workMu.Unlock()
+	return s.quiescing
+}
+
+// CancelAccess settles the outstanding request as canceled or failed. It
+// accepts only those two statuses: this is the cancellation path, not a
+// second way to approve or deny. A request ID that does not name the
+// canonical request changes nothing and returns false.
+func (s *State) CancelAccess(requestID string, status AccessStatus, message string) bool {
+	if status != AccessCanceled && status != AccessFailed {
+		return false
+	}
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+
+	req, ok := s.accessRequestLocked()
+	if !ok || requestID == "" || req.RequestID != requestID {
+		return false
+	}
+	actual := s.AccessState()
+	result := AccessResult{
+		RequestID: req.RequestID,
+		SessionID: req.SessionID,
+		Status:    status,
+		Effective: actual,
+		Message:   message,
+	}
+	s.finishAccessLocked(result)
+	return true
 }
 
 // SecretPromptCapable reports whether the attached transport can raise a
@@ -2701,7 +3314,14 @@ func ExecutionOriginFromContext(ctx context.Context) (ExecutionOrigin, bool) {
 // BeginQuiesce sets the quiescing gate so subsequent BeginWork calls
 // are rejected. Callers should call BeginQuiesce before WaitForWork to
 // ensure no new work can register between the gate and the wait.
+//
+// The access gate is taken first so the transition linearizes against an
+// in-flight grant: a grant that already passed its final quiesce check runs
+// to completion (with its acknowledgment) before the gate closes, and one
+// that has not yet reached the check sees the closed gate.
 func (s *State) BeginQuiesce() {
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
 	s.workMu.Lock()
 	s.quiescing = true
 	s.workMu.Unlock()
@@ -2737,7 +3357,33 @@ func (s *State) WaitForWork(ctx context.Context) error {
 //
 // After this call, PendingApproval(), PendingQuestion() and
 // PendingSudoAuth() return nil and SteeringQueue() is empty.
+//
+// The access gate is held for the whole function: settlement of a typed access
+// request and the ordinary cleanup happen under it, so a grant cannot be
+// applied after shutdown has decided the session is over, and shutdown cannot
+// clear a request a registration is still publishing.
 func (s *State) ResolvePendingForShutdown() {
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+
+	// A typed access request is settled first and through the private helper,
+	// while its canonical pointer is still in place: the helper is what
+	// clears the session's private access state, publishes the cleared slot,
+	// and delivers exactly one cancellation on the canonical channel. Respond
+	// is a no-op for it, so going through the ordinary path below would
+	// strand the waiter.
+	s.mu.Lock()
+	typed := s.pendingApproval != nil && s.pendingApproval.Access != nil
+	var typedReq AccessRequest
+	if typed {
+		typedReq = *s.pendingApproval.Access
+	}
+	actual := AccessState{Mode: s.Config.Agent.ApprovalMode, System: s.systemAccess}
+	s.mu.Unlock()
+	if typed {
+		s.finishAccessCanceledLocked(typedReq, actual, "session is shutting down")
+	}
+
 	s.mu.Lock()
 	approval := s.pendingApproval
 	s.pendingApproval = nil
@@ -2752,8 +3398,13 @@ func (s *State) ResolvePendingForShutdown() {
 
 	// Publish cleared-state events regardless of whether there was a
 	// pending item — subscribers that never received the "set" event
-	// are unaffected, and those that did get the cleared value.
-	s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: nil})
+	// are unaffected, and those that did get the cleared value. The one
+	// exception is the approval slot when a typed request was settled above:
+	// finishAccessLocked already announced that clear, and republishing it
+	// would be a second nil for one transition.
+	if !typed {
+		s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: nil})
+	}
 	s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: nil})
 	s.publishEvent(EventPendingSkillGateChanged, Event{PendingSkillGate: nil})
 	s.publishEvent(EventPendingSudoAuthChanged, Event{PendingSudoAuth: nil})
@@ -2766,9 +3417,9 @@ func (s *State) ResolvePendingForShutdown() {
 		broker.Publish("steering", SteeringEvent{QueueLen: 0})
 	}
 
-	// Deny any pending approval (Respond handles nil channel and
-	// once-only guarantee).
-	if approval != nil {
+	// Deny any pending ordinary approval (Respond handles nil channel and
+	// once-only guarantee). A typed request was already settled above.
+	if approval != nil && approval.Access == nil {
 		approval.Respond(UserApprovalDecision{Approved: false})
 	}
 

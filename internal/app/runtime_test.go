@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/oauthworker"
+	"marshal/internal/llm/routing"
 	"marshal/internal/oauth"
 	"marshal/internal/tools/native"
 	"marshal/internal/trust"
@@ -1161,6 +1163,650 @@ trust = "unrestricted"
 	}
 	if opens := fixtureAuth.openedStores(); len(opens) != 0 {
 		t.Fatalf("isolated startup requested credential stores: %v", opens)
+	}
+}
+
+// ---- system-access approval: the runtime resolver ----
+
+// accessPendingCall builds the canonical pending call an access request needs:
+// a buffered, empty response channel and a stable provider call ID.
+func accessPendingCall(id string) *session.PendingToolCall {
+	return &session.PendingToolCall{
+		ID:           id,
+		Name:         "mode.request",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+}
+
+// newAccessTestRuntime builds a Runtime with a real runner/policy pair and a
+// session state, without starting the full runtime: no database, no brokers,
+// no background managers. That is enough for the access resolver, which is
+// memory-only by contract, and for reloadAgentRuntime, which tolerates nil
+// database and broker handles.
+func newAccessTestRuntime(t *testing.T, cfg config.Config) (*Runtime, *session.State) {
+	t.Helper()
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(
+		context.Background(), cfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	workCtx, workCancel := context.WithCancel(context.Background())
+	rt := &Runtime{
+		Config:       cfg,
+		State:        state,
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		JobManager:   jobMgr,
+		workCtx:      workCtx,
+		workCancel:   workCancel,
+	}
+	t.Cleanup(func() {
+		workCancel()
+		if jobMgr != nil {
+			sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = jobMgr.Shutdown(sc)
+		}
+	})
+	return rt, state
+}
+
+// registerAccess publishes a request on state and fails the test if the
+// session refused it.
+func registerAccess(t *testing.T, state *session.State, id string, intent session.AccessIntent) session.AccessRequest {
+	t.Helper()
+	req, _ := registerAccessCh(t, state, id, intent)
+	return req
+}
+
+// registerAccessCh is registerAccess for tests that must observe the canonical
+// decision. The channel is captured at registration because settlement clears
+// the pending slot, so it cannot be read afterwards.
+func registerAccessCh(t *testing.T, state *session.State, id string, intent session.AccessIntent) (session.AccessRequest, chan session.UserApprovalDecision) {
+	t.Helper()
+	call := accessPendingCall(id)
+	req, waiting, err := state.RegisterAccess(context.Background(), call, intent)
+	if err != nil {
+		t.Fatalf("RegisterAccess: %v", err)
+	}
+	if !waiting {
+		t.Fatalf("RegisterAccess published no request for intent %+v", intent)
+	}
+	return req, call.ResponseChan
+}
+
+// approve builds the choice a transport sends when the user accepts req.
+func approve(req session.AccessRequest, mode string) session.AccessChoice {
+	return session.AccessChoice{
+		RequestID: req.RequestID,
+		SessionID: req.SessionID,
+		Current:   req.Current,
+		Approved:  true,
+		Mode:      mode,
+	}
+}
+
+// A system-only grant preserves whichever mode the session is in, including
+// when the request also carried an editing hint the session had already
+// satisfied.
+func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
+	for _, mode := range []string{"plan", "default", "edit", "copilot", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := nativeToolAgentConfig("access-system-only")
+			cfg.Agent.ApprovalMode = mode
+			rt, state := newAccessTestRuntime(t, cfg)
+
+			req := registerAccess(t, state, "call-1", session.AccessIntent{System: true, Reason: "read outside the workspace"})
+			if req.MissingEditing || !req.MissingSystem {
+				t.Fatalf("system-only request flags = editing %t / system %t, want false/true", req.MissingEditing, req.MissingSystem)
+			}
+			result, err := rt.ResolveAccess(approve(req, ""))
+			if err != nil {
+				t.Fatalf("ResolveAccess: %v", err)
+			}
+			if result.Status != session.AccessGranted {
+				t.Fatalf("status = %q, want %q", result.Status, session.AccessGranted)
+			}
+			if want := (session.AccessState{Mode: mode, System: true}); result.Effective != want {
+				t.Fatalf("effective = %+v, want %+v", result.Effective, want)
+			}
+			if got := state.AccessState(); got != (session.AccessState{Mode: mode, System: true}) {
+				t.Fatalf("session pair = %+v, want the mode preserved with system access on", got)
+			}
+			if got := string(rt.Runner.Policy.ApprovalMode()); got != mode {
+				t.Fatalf("policy mode = %q, want %q (a system-only grant must not switch modes)", got, mode)
+			}
+		})
+	}
+
+	// A legacy editing hint alongside system access is still system-only once
+	// the session already has editing authority.
+	for _, mode := range []string{"edit", "copilot", "auto"} {
+		t.Run(mode+"/legacy-hint", func(t *testing.T) {
+			cfg := nativeToolAgentConfig("access-system-only")
+			cfg.Agent.ApprovalMode = mode
+			rt, state := newAccessTestRuntime(t, cfg)
+
+			req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+			if req.MissingEditing {
+				t.Fatalf("editing reported missing in %s mode; the hint must not create a selector", mode)
+			}
+			if !req.MissingSystem {
+				t.Fatal("system access should still be missing")
+			}
+			result, err := rt.ResolveAccess(approve(req, ""))
+			if err != nil {
+				t.Fatalf("ResolveAccess: %v", err)
+			}
+			if want := (session.AccessState{Mode: mode, System: true}); result.Effective != want {
+				t.Fatalf("effective = %+v, want %+v", result.Effective, want)
+			}
+		})
+	}
+}
+
+// A manual mode change that satisfies a waiting request settles it as
+// already-available: the waiter unblocks, nothing is applied again, and the
+// request stops being presented.
+func TestRuntimeAccessSatisfiedWhilePendingSettlesAvailable(t *testing.T) {
+	cfg := nativeToolAgentConfig("access-satisfied")
+	rt, state := newAccessTestRuntime(t, cfg)
+
+	req, decisions := registerAccessCh(t, state, "call-1", session.AccessIntent{Editing: true, Reason: "edit a file"})
+	if !req.MissingEditing {
+		t.Fatal("editing should be missing from the configured default mode")
+	}
+
+	// The user switches mode by hand while the request is still waiting.
+	if err := rt.SetSessionMode("copilot"); err != nil {
+		t.Fatalf("SetSessionMode: %v", err)
+	}
+	before := rt.Runner.Policy.ApprovalMode()
+
+	got, pending := rt.AccessRequest()
+	if pending {
+		t.Fatalf("AccessRequest still presents a satisfied request: %+v", got)
+	}
+
+	// The waiter was settled as already-available, not granted again.
+	decision := <-decisions
+	if decision.Access == nil {
+		t.Fatal("the waiter received no typed result")
+	}
+	if decision.Access.Status != session.AccessAvailable {
+		t.Fatalf("status = %q, want %q", decision.Access.Status, session.AccessAvailable)
+	}
+	if decision.Approved {
+		t.Fatal("an already-available result must not report approval")
+	}
+	if want := (session.AccessState{Mode: "copilot"}); decision.Access.Effective != want {
+		t.Fatalf("effective = %+v, want %+v", decision.Access.Effective, want)
+	}
+	if after := rt.Runner.Policy.ApprovalMode(); after != before {
+		t.Fatalf("policy mode moved from %q to %q while settling an already-available request", before, after)
+	}
+}
+
+// A combined grant commits the policy engine, the force class and the session
+// pair before the waiting tool can observe the typed result.
+func TestRuntimeAccessCombinedCommitsSelectedBundle(t *testing.T) {
+	for _, current := range []string{"default", "plan"} {
+		for _, selected := range []string{"edit", "copilot", "auto"} {
+			t.Run(current+"->"+selected, func(t *testing.T) {
+				cfg := nativeToolAgentConfig("access-combined")
+				cfg.Agent.ApprovalMode = current
+				rt, state := newAccessTestRuntime(t, cfg)
+
+				req, decisions := registerAccessCh(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+				if !req.MissingEditing || !req.MissingSystem {
+					t.Fatalf("combined request flags = editing %t / system %t, want true/true", req.MissingEditing, req.MissingSystem)
+				}
+				result, err := rt.ResolveAccess(approve(req, selected))
+				if err != nil {
+					t.Fatalf("ResolveAccess: %v", err)
+				}
+				if result.Status != session.AccessGranted {
+					t.Fatalf("status = %q, want %q", result.Status, session.AccessGranted)
+				}
+				want := session.AccessState{Mode: selected, System: true}
+				if result.Effective != want {
+					t.Fatalf("effective = %+v, want %+v", result.Effective, want)
+				}
+
+				// The typed result is already queued; everything it claims must
+				// already be true at the moment it becomes observable.
+				decision := <-decisions
+				if !decision.Approved || decision.Access == nil {
+					t.Fatalf("decision = %+v, want an approved typed grant", decision)
+				}
+				if decision.Access.Status != session.AccessGranted {
+					t.Fatalf("delivered status = %q, want %q", decision.Access.Status, session.AccessGranted)
+				}
+				if got := state.AccessState(); got != want {
+					t.Fatalf("session pair at acknowledgment = %+v, want %+v", got, want)
+				}
+				if got := string(rt.Runner.Policy.ApprovalMode()); got != selected {
+					t.Fatalf("policy mode at acknowledgment = %q, want %q", got, selected)
+				}
+				if got := rt.Runner.ForceClass; got != "edit" {
+					t.Fatalf("force class at acknowledgment = %q, want %q", got, "edit")
+				}
+			})
+		}
+	}
+}
+
+// A combined request cannot be applied without a policy engine, and the
+// refusal leaves both capabilities untouched; a system-only request needs no
+// editing setter and still succeeds.
+func TestRuntimeAccessUnavailablePolicyFailsBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		detach func(rt *Runtime)
+	}{
+		{name: "no runner", detach: func(rt *Runtime) { rt.Runner = nil }},
+		{name: "no policy engine", detach: func(rt *Runtime) { rt.Runner.Policy = nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := nativeToolAgentConfig("access-no-policy")
+			rt, state := newAccessTestRuntime(t, cfg)
+			tc.detach(rt)
+
+			req, decisions := registerAccessCh(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+			result, err := rt.ResolveAccess(approve(req, "edit"))
+			if err == nil {
+				t.Fatal("a combined grant succeeded without a policy engine")
+			}
+			if result.Status != session.AccessFailed {
+				t.Fatalf("status = %q, want %q", result.Status, session.AccessFailed)
+			}
+			if want := (session.AccessState{Mode: "default"}); result.Effective != want {
+				t.Fatalf("effective = %+v, want the unchanged %+v", result.Effective, want)
+			}
+			if got := state.AccessState(); got != (session.AccessState{Mode: "default"}) {
+				t.Fatalf("session pair = %+v, want both capabilities unchanged", got)
+			}
+			decision := <-decisions
+			if decision.Approved {
+				t.Fatal("a failed grant was acknowledged as approved")
+			}
+			if decision.Access == nil || decision.Access.Status != session.AccessFailed {
+				t.Fatalf("delivered result = %+v, want a typed failure", decision.Access)
+			}
+
+			// System-only needs no editing setter, so it still works.
+			sysReq := registerAccess(t, state, "call-2", session.AccessIntent{System: true, Reason: "read outside"})
+			sysResult, err := rt.ResolveAccess(approve(sysReq, ""))
+			if err != nil {
+				t.Fatalf("system-only ResolveAccess: %v", err)
+			}
+			if sysResult.Status != session.AccessGranted {
+				t.Fatalf("system-only status = %q, want %q", sysResult.Status, session.AccessGranted)
+			}
+			if got := state.AccessState(); got != (session.AccessState{Mode: "default", System: true}) {
+				t.Fatalf("session pair = %+v, want system access on with the mode preserved", got)
+			}
+		})
+	}
+}
+
+// A grant is a session-scoped permission change: it must not save a config
+// file, reload the runtime, or replace the managers a running job depends on.
+func TestRuntimeAccessDoesNotSaveReloadOrReplaceJobs(t *testing.T) {
+	cfg := nativeToolAgentConfig("access-no-reload")
+	rt, state := newAccessTestRuntime(t, cfg)
+
+	// A save-visible fixture: bytes of a config file the runtime could
+	// plausibly rewrite. A grant must leave them byte-identical.
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(cfgPath, []byte("[agent]\napproval_mode = \"default\"\n"), 0644); err != nil {
+		t.Fatalf("write fixture config: %v", err)
+	}
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read fixture config: %v", err)
+	}
+
+	var reloads atomic.Int64
+	rt.ConfigReloader = func(config.Config) error {
+		reloads.Add(1)
+		return nil
+	}
+	runner, jobMgr, watchMgr := rt.Runner, rt.JobManager, rt.WatchManager
+
+	req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+	if _, err := rt.ResolveAccess(approve(req, "copilot")); err != nil {
+		t.Fatalf("ResolveAccess: %v", err)
+	}
+
+	if n := reloads.Load(); n != 0 {
+		t.Fatalf("grant triggered %d config reloads, want 0", n)
+	}
+	if rt.Runner != runner {
+		t.Fatal("grant replaced the runner")
+	}
+	if rt.JobManager != jobMgr {
+		t.Fatal("grant replaced the job manager")
+	}
+	if rt.WatchManager != watchMgr {
+		t.Fatal("grant replaced the watch manager")
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("re-read fixture config: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("grant rewrote the config file:\nbefore %q\nafter  %q", before, after)
+	}
+}
+
+// A grant must not disturb an already-running background command: same
+// manager, same job identity, same captured execution settings.
+func TestRuntimeAccessKeepsRunningCommandIdentity(t *testing.T) {
+	cfg := nativeToolAgentConfig("access-running-job")
+	rt, state := newAccessTestRuntime(t, cfg)
+
+	ctx := context.Background()
+	started := make(chan native.CommandRequest, 1)
+	release := make(chan struct{})
+	fr := &fakeRunner{run: func(runCtx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		started <- req
+		select {
+		case <-release:
+			return native.CommandResult{Stdout: "done"}, nil
+		case <-runCtx.Done():
+			return native.CommandResult{}, runCtx.Err()
+		}
+	}}
+	jobMgr := native.NewJobManager(ctx, fr, state.WorkingDir, 2, time.Minute, 4096)
+	rt.JobManager = jobMgr
+	t.Cleanup(func() {
+		sc, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = jobMgr.Shutdown(sc)
+	})
+
+	// Managed commands go through Launch: there is no execution deadline to
+	// pass, because no wall-clock budget ends a managed process.
+	info, err := jobMgr.Launch(ctx, native.LaunchSpec{Command: "fixture download", Detached: true})
+	if err != nil {
+		t.Fatalf("JobManager.Launch: %v", err)
+	}
+	id := info.ID
+	var captured native.CommandRequest
+	select {
+	case captured = <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the fixture command never started")
+	}
+
+	req := registerAccess(t, state, "call-1", session.AccessIntent{System: true, Reason: "read outside the workspace"})
+	if _, err := rt.ResolveAccess(approve(req, "")); err != nil {
+		t.Fatalf("ResolveAccess: %v", err)
+	}
+
+	if rt.JobManager != jobMgr {
+		t.Fatal("grant replaced the job manager")
+	}
+	found := false
+	for _, info := range jobMgr.List() {
+		if info.ID == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("job %s is no longer listed after the grant", id)
+	}
+	if _, _, err := jobMgr.Output(id, 10); err != nil {
+		t.Fatalf("job %s is no longer readable after the grant: %v", id, err)
+	}
+	// The captured execution settings are the ones the job launched with.
+	if captured.Command != "fixture download" {
+		t.Fatalf("captured command = %q, want %q", captured.Command, "fixture download")
+	}
+	if captured.Dir != state.WorkingDir {
+		t.Fatalf("captured dir = %q, want %q", captured.Dir, state.WorkingDir)
+	}
+	if captured.MaxOutputBytes != 4096 {
+		t.Fatalf("captured max output bytes = %d, want 4096", captured.MaxOutputBytes)
+	}
+	if captured.Timeout != 0 {
+		t.Fatalf("captured timeout = %v, want the launched value 0", captured.Timeout)
+	}
+
+	close(release)
+	if _, err := jobMgr.Wait(ctx, id); err != nil {
+		t.Fatalf("job %s did not complete normally: %v", id, err)
+	}
+}
+
+// A session-scoped mode override survives a reload that changes an unrelated
+// setting, and the runtime's configured baseline stays the configured value.
+func TestRuntimeAccessOverrideSurvivesReload(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("access-override")
+	rt, state := newAccessTestRuntime(t, cfg)
+
+	req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+	if _, err := rt.ResolveAccess(approve(req, "copilot")); err != nil {
+		t.Fatalf("ResolveAccess: %v", err)
+	}
+
+	// An unrelated setting changes; the configured mode does not.
+	reloaded := nativeToolAgentConfig("access-override")
+	reloaded.Agent.MaxToolIterations = cfg.Agent.MaxToolIterations + 7
+	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+
+	if got, want := state.AccessState(), (session.AccessState{Mode: "copilot", System: true}); got != want {
+		t.Fatalf("session pair after reload = %+v, want %+v", got, want)
+	}
+	if got := string(rt.Runner.Policy.ApprovalMode()); got != "copilot" {
+		t.Fatalf("policy mode after reload = %q, want %q", got, "copilot")
+	}
+	if got := rt.Config.Agent.ApprovalMode; got != "default" {
+		t.Fatalf("Runtime.Config mode = %q, want the configured %q", got, "default")
+	}
+}
+
+// An explicit change to the configured mode replaces the session override,
+// while the system grant survives.
+func TestRuntimeExplicitConfiguredModeReplacesOverride(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("access-explicit")
+	rt, state := newAccessTestRuntime(t, cfg)
+
+	req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+	if _, err := rt.ResolveAccess(approve(req, "copilot")); err != nil {
+		t.Fatalf("ResolveAccess: %v", err)
+	}
+
+	reloaded := nativeToolAgentConfig("access-explicit")
+	reloaded.Agent.ApprovalMode = "edit"
+	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+
+	if got, want := state.AccessState(), (session.AccessState{Mode: "edit", System: true}); got != want {
+		t.Fatalf("session pair after an explicit configured change = %+v, want %+v", got, want)
+	}
+	if got := string(rt.Runner.Policy.ApprovalMode()); got != "edit" {
+		t.Fatalf("policy mode = %q, want %q", got, "edit")
+	}
+	if got := rt.Config.Agent.ApprovalMode; got != "edit" {
+		t.Fatalf("Runtime.Config mode = %q, want %q", got, "edit")
+	}
+}
+
+// A reload that cannot build leaves the access pair, the runner and the
+// override exactly as they were.
+func TestRuntimeFailedReloadKeepsAccessState(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("access-failed-reload")
+	rt, state := newAccessTestRuntime(t, cfg)
+
+	req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+	if _, err := rt.ResolveAccess(approve(req, "copilot")); err != nil {
+		t.Fatalf("ResolveAccess: %v", err)
+	}
+	runner := rt.Runner
+
+	// A config that cannot build: the preset names a provider that is not
+	// configured, so resolution fails before any credential is touched.
+	bad := config.Default()
+	bad.Privacy.RemoteProvidersAllowed = true
+	bad.Profile.Default = "p"
+	bad.Models.Presets = map[string]routing.ModelPreset{
+		"missing/m": {Provider: "missing", Model: "m", LocalOnly: true},
+	}
+	bad.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "missing/m"},
+		}},
+	}
+
+	if err := reloadAgentRuntime(ctx, bad, rt); err == nil {
+		t.Fatal("expected the reload to fail")
+	}
+	if rt.Runner != runner {
+		t.Fatal("a failed reload replaced the runner")
+	}
+	if got, want := state.AccessState(), (session.AccessState{Mode: "copilot", System: true}); got != want {
+		t.Fatalf("session pair after a failed reload = %+v, want %+v", got, want)
+	}
+	if got := string(rt.Runner.Policy.ApprovalMode()); got != "copilot" {
+		t.Fatalf("policy mode after a failed reload = %q, want %q", got, "copilot")
+	}
+	if got := rt.Config.Agent.ApprovalMode; got != "default" {
+		t.Fatalf("Runtime.Config mode after a failed reload = %q, want the configured %q", got, "default")
+	}
+}
+
+// A new conversation and a resumed one both start from the configured mode
+// with system access off, and a retired request cannot reach either.
+func TestRuntimeNewAndResumedSessionResetAccess(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("access-reset")
+	cfg.Skills.Autoload = nil
+	work := t.TempDir()
+	home := t.TempDir()
+
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(work),
+		WithHomeDir(home),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return cfg, nil }),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(ctx)
+	if rt.Runner == nil {
+		t.Fatal("the fixture provider was not built")
+	}
+
+	req := registerAccess(t, rt.State, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+	if _, err := rt.ResolveAccess(approve(req, "copilot")); err != nil {
+		t.Fatalf("ResolveAccess: %v", err)
+	}
+	if got, want := rt.State.AccessState(), (session.AccessState{Mode: "copilot", System: true}); got != want {
+		t.Fatalf("granted pair = %+v, want %+v", got, want)
+	}
+
+	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	want := session.AccessState{Mode: cfg.Agent.ApprovalMode, System: false}
+	if got := newState.AccessState(); got != want {
+		t.Fatalf("new session pair = %+v, want %+v", got, want)
+	}
+	if _, err := rt.ResolveAccess(approve(req, "copilot")); err == nil {
+		t.Fatal("a retired request ID resolved against the replacement session")
+	}
+	if got := newState.AccessState(); got != want {
+		t.Fatalf("a retired request changed the new session: %+v", got)
+	}
+
+	resumed, err := StartRuntime(ctx,
+		WithWorkingDir(work),
+		WithHomeDir(home),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return cfg, nil }),
+		WithExistingSession(rt.SessionID),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime (resumed): %v", err)
+	}
+	defer resumed.Close(ctx)
+	if got := resumed.State.AccessState(); got != want {
+		t.Fatalf("resumed session pair = %+v, want %+v", got, want)
+	}
+}
+
+// Resolution takes the reload gate, so it cannot apply to a runner or state
+// that a reload or session swap is replacing, and a grant racing a reload
+// still leaves the runner and the session agreeing.
+func TestRuntimeAccessSerializesWithReloadAndQuiesce(t *testing.T) {
+	cfg := nativeToolAgentConfig("access-serialize")
+	rt, state := newAccessTestRuntime(t, cfg)
+
+	req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+
+	// Hold the reload gate: a resolution must not proceed past it.
+	rt.reloadMu.Lock()
+	done := make(chan session.AccessResult, 1)
+	go func() {
+		result, _ := rt.ResolveAccess(approve(req, "copilot"))
+		done <- result
+	}()
+	select {
+	case result := <-done:
+		rt.reloadMu.Unlock()
+		t.Fatalf("ResolveAccess completed while the reload gate was held: %+v", result)
+	case <-time.After(150 * time.Millisecond):
+		// Expected: parked on the gate.
+	}
+	rt.reloadMu.Unlock()
+	select {
+	case result := <-done:
+		if result.Status != session.AccessGranted {
+			t.Fatalf("status = %q, want %q", result.Status, session.AccessGranted)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ResolveAccess did not complete after the gate was released")
+	}
+	if got, want := state.AccessState(), (session.AccessState{Mode: "copilot", System: true}); got != want {
+		t.Fatalf("session pair = %+v, want %+v", got, want)
+	}
+
+	// A grant and a reload racing each other must leave the runner and the
+	// session agreeing, whichever order they land in.
+	raceCfg := nativeToolAgentConfig("access-serialize")
+	raceRT, raceState := newAccessTestRuntime(t, raceCfg)
+	raceReq := registerAccess(t, raceState, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = raceRT.ResolveAccess(approve(raceReq, "copilot"))
+	}()
+	go func() {
+		defer wg.Done()
+		_ = reloadAgentRuntime(context.Background(), raceCfg, raceRT)
+	}()
+	wg.Wait()
+
+	effective := raceState.AccessState()
+	if got := string(raceRT.Runner.Policy.ApprovalMode()); got != effective.Mode {
+		t.Fatalf("runner policy mode %q disagrees with the session mode %q after a concurrent reload", got, effective.Mode)
+	}
+	if got := raceRT.Runner.ForceClass; got != forceClassForMode(effective.Mode) {
+		t.Fatalf("runner force class %q disagrees with the session mode %q after a concurrent reload", got, effective.Mode)
 	}
 }
 

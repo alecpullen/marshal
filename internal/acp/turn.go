@@ -88,6 +88,13 @@ type TurnRuntime struct {
 	// means the runtime falls back to State.SetSystemAccess; when State is
 	// also nil the runtime does not support system access.
 	SetSystemAccess func(on bool)
+	// AccessRequest returns the typed capability request waiting for a
+	// decision, if any. Nil means the runtime cannot present one.
+	AccessRequest func() (session.AccessRequest, bool)
+	// ResolveAccess validates and settles a capability choice, applying it
+	// before the waiting tool is acknowledged. Nil means the runtime cannot
+	// apply one, so a request fails closed.
+	ResolveAccess func(session.AccessChoice) (session.AccessResult, error)
 	// Steer enqueues a mid-turn steering message, consumed by the runner
 	// at its next loop-top. Nil means the runtime does not support steering.
 	Steer func(text string)
@@ -141,21 +148,6 @@ func (rt *TurnRuntime) applySystemAccess(on bool) bool {
 		return true
 	}
 	return false
-}
-
-// modeRequestWantsSystem reports whether a mode.request tool call's args
-// carry a system-access elevation request.
-func modeRequestWantsSystem(args string) bool {
-	if strings.TrimSpace(args) == "" {
-		return false
-	}
-	var a struct {
-		System bool `json:"system"`
-	}
-	if err := json.Unmarshal([]byte(args), &a); err != nil {
-		return false
-	}
-	return a.System
 }
 
 // Lookup returns the runtime registered for an ACP session id.
@@ -703,6 +695,12 @@ func (m *TurnManager) runTurn(
 	// identity pattern as turnAnswered).
 	var turnGateAnswered sync.Map
 
+	// accessAsked guards the typed capability requests so a duplicate pending
+	// publish cannot ask the client twice for one request. Keyed by the
+	// request's own opaque ID, which the session mints per request — a
+	// provider call ID is reused across steps and would collide.
+	var accessAsked sync.Map
+
 	// forward dispatches one session event to the ACP client. Defined
 	// once and used in both the main loop and the post-run drain.
 	forward := func(ev pubsub.Event[session.Event]) {
@@ -725,7 +723,25 @@ func (m *TurnManager) runTurn(
 		if ev.Type == session.EventPendingApprovalChanged &&
 			ev.Payload.PendingApproval != nil {
 			pa := ev.Payload.PendingApproval
-			if m.bridge == nil {
+			// A typed capability request takes the runtime resolution path
+			// instead of the ordinary bridge: the runtime validates and
+			// applies the grant, and only the session's own settlement helper
+			// may acknowledge it. This is checked before the bridge-nil branch
+			// because a typed request is never answered by delivering an
+			// ordinary decision on the event copy.
+			if pa.Access != nil {
+				requestID := pa.Access.RequestID
+				if _, loaded := accessAsked.LoadOrStore(requestID, true); !loaded {
+					go func() {
+						if err := m.resolveAccessRequest(turnCtx, sessionID, rt, requestID, pa.ID); err != nil {
+							// A transport/client failure is fatal to the turn,
+							// exactly as an ordinary bridge failure is.
+							slotCancel()
+							subCancel()
+						}
+					}()
+				}
+			} else if m.bridge == nil {
 				// F-SEC-13: without a bridge, the runner is blocked on
 				// ResponseChan. Send a deny so the runner unblocks and the
 				// turn proceeds. Log so operators can see the misconfig.
@@ -740,42 +756,7 @@ func (m *TurnManager) runTurn(
 						subCancel()
 						return
 					}
-					// mode.request elevation: the tool contract makes the
-					// responding transport responsible for applying the mode
-					// (internal/tools/native/mode_request.go). Apply it and
-					// broadcast mode_changed so every attached client stays
-					// in sync. An empty Edited defaults to "edit", matching
-					// the tool handler.
-					if pa.Name == "mode.request" && decision.Approved {
-						chosen := decision.Edited
-						if chosen == "" {
-							chosen = "edit"
-						}
-						// A mode.request may also carry a system-access
-						// elevation (internal/tools/native/mode_request.go).
-						// Apply it alongside the mode so the grant and the
-						// mode land together.
-						if modeRequestWantsSystem(pa.Args) {
-							if !rt.applySystemAccess(true) {
-								// The tool contract already told the model the grant
-								// succeeded, so a silent failure would send it into
-								// writes that cannot work. Surface it.
-								slog.Default().Warn("acp: mode.request system elevation not applied: runtime has no system-access setter",
-									"session", sessionID, "approval", pa.ID)
-							}
-						}
-						if rt.SetMode != nil {
-							if err := rt.SetMode(chosen); err != nil {
-								slog.Default().Warn("acp: apply mode elevation",
-									"session", sessionID, "mode", chosen, "err", err)
-							} else {
-								_ = m.notify("session/update", SessionUpdateParams{
-									SessionID: sessionID,
-									Update:    map[string]any{"kind": "mode_changed", "mode": chosen, "system_access": rt.systemAccess()},
-								})
-							}
-						}
-					}
+					_ = decision
 				}()
 			}
 		}
@@ -881,6 +862,99 @@ func (m *TurnManager) runTurn(
 			forward(ev)
 		default:
 			return m.finishTurn(sessionID, rt, runErrVal, slot, resultOf)
+		}
+	}
+}
+
+// resolveAccessRequest collects a decision for one typed capability request
+// and hands it to the runtime resolver. It is the ACP twin of the TUI's access
+// panel: the transport gathers the choice, the runtime validates and applies
+// it, and only the session's own settlement path acknowledges the waiting
+// tool. Nothing here writes to the pending call's channel.
+//
+// It returns an error only for a transport/client failure, which the caller
+// treats as fatal to the turn, matching the ordinary bridge's behavior. A
+// request the runtime refuses is already settled non-approved, so it returns
+// nil: the tool has its answer.
+func (m *TurnManager) resolveAccessRequest(ctx context.Context, sessionID string, rt *TurnRuntime, requestID, toolCallID string) error {
+	if rt == nil || rt.State == nil {
+		// Without state there is nothing to settle, so the caller must cancel
+		// the turn: the tool's own context is the only thing that can unblock
+		// it, and returning nil would leave it waiting.
+		return errors.New("acp: access request has no session state")
+	}
+	if m.bridge == nil || rt.ResolveAccess == nil {
+		// Nothing can answer or apply it. Settle this exact request as a
+		// failure so the tool unblocks rather than waiting forever; never
+		// synthesize a grant.
+		rt.State.CancelAccess(requestID, session.AccessFailed, "access resolver unavailable")
+		return nil
+	}
+	for {
+		// Read the request fresh on every iteration: the permission tuple can
+		// move while the client is deciding, and the choice must be judged
+		// against what is true now. The runtime's own reader is preferred —
+		// it is the access seam the host binds, and it settles a request that
+		// was satisfied while the client was deciding. State is the fallback
+		// for a runtime that supplied no reader.
+		readRequest := rt.AccessRequest
+		if readRequest == nil {
+			readRequest = rt.State.AccessRequest
+		}
+		request, pending := readRequest()
+		if !pending || request.RequestID != requestID || request.SessionID != sessionID {
+			// Settled, canceled or replaced. Nothing of ours is left to
+			// answer, and a newer request is not ours to touch.
+			return nil
+		}
+		if !request.MissingEditing && !request.MissingSystem {
+			// Satisfied while the client was deciding — a manual mode change,
+			// or a grant from elsewhere. Settle it as already-available
+			// without asking again: no setter runs and no grant is announced.
+			_, _ = rt.ResolveAccess(session.AccessChoice{
+				RequestID: request.RequestID,
+				SessionID: request.SessionID,
+				Current:   request.Current,
+				Approved:  true,
+			})
+			return nil
+		}
+		choice, err := m.bridge.CollectAccess(ctx, sessionID, toolCallID, request)
+		if err != nil {
+			// A client or transport failure, including an invalid typed
+			// identity. Cancel this exact request so the tool unblocks, then
+			// report the failure so the turn cancels.
+			rt.State.CancelAccess(requestID, session.AccessFailed, err.Error())
+			return err
+		}
+		result, err := rt.ResolveAccess(choice)
+		if err != nil {
+			// The runtime already settled the request non-approved (an
+			// expired or invalid choice). There is nothing to announce and
+			// nothing to retry.
+			return nil
+		}
+		switch result.Status {
+		case session.AccessRefresh:
+			// The tuple moved under the client's answer. Ask again against
+			// fresh state rather than replaying the stale choice.
+			continue
+		case session.AccessGranted:
+			// Only a grant is announced, and it carries the state the runtime
+			// actually committed.
+			_ = m.notify("session/update", SessionUpdateParams{
+				SessionID: sessionID,
+				Update: map[string]any{
+					"kind":          "mode_changed",
+					"mode":          result.Effective.Mode,
+					"system_access": result.Effective.System,
+				},
+			})
+			return nil
+		default:
+			// Denied, already-available, canceled, failed or expired: the
+			// tool has its answer and no capability moved.
+			return nil
 		}
 	}
 }

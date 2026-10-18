@@ -1273,10 +1273,18 @@ func TestShellRunBackgroundUsesWorkspaceRoot(t *testing.T) {
 	if _, err := invokeTool(t, reg, "shell.run", `{"command":"touch bg-file.txt","background":true,"timeout_seconds":5}`); err != nil {
 		t.Fatalf("shell.run background returned error: %v", err)
 	}
-	time.Sleep(200 * time.Millisecond)
-
-	if _, err := os.Stat(filepath.Join(root, "bg-file.txt")); err != nil {
-		t.Fatalf("expected file in workspace: %v", err)
+	// Bounded poll rather than a fixed sleep: the background command must land
+	// in the workspace root, and how long its shell takes to start is not a
+	// fact this test may assume.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(root, "bg-file.txt")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected file in workspace: the background command did not write it in time")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1365,9 +1373,8 @@ func TestJobEventPublishesAttachmentChangeWithEqualCount(t *testing.T) {
 
 	release := make(chan struct{})
 	runner := newFakeRunner(withRelease(release))
-	jm.runner = runner
 
-	info, err := jm.Launch(context.Background(), LaunchSpec{Command: "handoff"})
+	info, err := jm.Launch(context.Background(), LaunchSpec{Command: "handoff", Runner: runner})
 	if err != nil {
 		t.Fatalf("Launch: %v", err)
 	}
@@ -1967,9 +1974,7 @@ func TestTurnStopWinsAgainstPendingWait(t *testing.T) {
 	runner := newFakeRunner(withRelease(release), withResult(CommandResult{ExitCode: -1}))
 	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
 	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
-	oldSettle := foregroundStopSettleTimeout
-	foregroundStopSettleTimeout = time.Second
-	t.Cleanup(func() { foregroundStopSettleTimeout = oldSettle })
+	jm.stopSettleTimeout = time.Second
 
 	info, err := jm.Launch(ctx, LaunchSpec{Command: "sleep 30", Origin: CommandOrigin{TurnID: "turn-1"}})
 	if err != nil {

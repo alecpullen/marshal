@@ -8731,7 +8731,7 @@ func runEndCmd(t *testing.T, m Model, cmd tea.Cmd) (Model, tea.Cmd) {
 		switch msg.(type) {
 		case nil:
 			return m, nil
-		case endSettledMsg, endAnalysisFinishedMsg:
+		case endSettledMsg, endAnalysisFinishedMsg, postmortemWrittenMsg:
 			updated, next := m.Update(msg)
 			m = asModel(t, updated)
 			cmd = next
@@ -8743,6 +8743,27 @@ func runEndCmd(t *testing.T, m Model, cmd tea.Cmd) (Model, tea.Cmd) {
 		}
 	}
 	return m, cmd
+}
+
+// answerPostmortem delivers a postmortem panel answer and runs the extraction
+// command it returns, so the model reaches the state that follows the report
+// being written. Extraction runs off the render loop (plan step 6), so a caller
+// that asserts on the report or on the analysis pass must drive that command.
+// It returns the model and the command the end flow produced afterwards: the
+// scoped analysis pass, the quit, or nil.
+func answerPostmortem(t *testing.T, m Model, result postmortempanel.Result) (Model, tea.Cmd) {
+	t.Helper()
+	updated, cmd := m.Update(postmortempanel.DoneMsg{Result: result})
+	m = asModel(t, updated)
+	if cmd == nil {
+		return m, nil
+	}
+	msg := cmd()
+	if _, ok := msg.(postmortemWrittenMsg); !ok {
+		return m, func() tea.Msg { return msg }
+	}
+	updated, next := m.Update(msg)
+	return asModel(t, updated), next
 }
 
 // exitWithWork drives one exit request through the model and returns the
@@ -9555,8 +9576,7 @@ func TestAnalysisCannotRetriggerTheWarning(t *testing.T) {
 		t.Fatalf("dock panel = %T, want the postmortem question after settlement", m.dock.Panel())
 	}
 
-	updated, _ = m.Update(postmortempanel.DoneMsg{Result: postmortempanel.ResultWithAgent})
-	m = asModel(t, updated)
+	m, _ = answerPostmortem(t, m, postmortempanel.ResultWithAgent)
 	if !m.endAnalyzing {
 		t.Fatal("the analysis pass was not started")
 	}
@@ -9793,8 +9813,7 @@ func TestPostmortemPanelDoneWithAgentRunsScopedAnalysis(t *testing.T) {
 		t.Fatalf("dock panel = %T, want *postmortempanel.Panel", m.dock.Panel())
 	}
 
-	updated, cmd := m.Update(postmortempanel.DoneMsg{Result: postmortempanel.ResultWithAgent})
-	m = asModel(t, updated)
+	m, cmd = answerPostmortem(t, m, postmortempanel.ResultWithAgent)
 
 	if m.dock.IsOpen() {
 		t.Fatalf("dock still open after the panel answered (%T)", m.dock.Panel())

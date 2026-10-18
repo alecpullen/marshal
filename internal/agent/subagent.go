@@ -285,7 +285,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		if cfg.resolver != nil {
 			preview, err := cfg.resolver(SubagentRequest{Agent: args.Agent, Model: args.Model})
 			if err != nil {
-				state.ExitSubagent()
+				state.ExitSubagentWork(workID)
 				return registry.ToolResult{}, fmt.Errorf("agent.run: resolve model: %w", err)
 			}
 			if modelChangeNeedsConsent(cfg.parentModel, cfg.parentProvider, preview.Model, preview.Provider, cfg.parentPricing, preview.Pricing) {
@@ -297,7 +297,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 				approved, denied := requestSubagentConsent(ctx, state, fmt.Sprintf("Subagent will use %s @ %s (different model/provider/cost than parent %s @ %s). Approve?", preview.Model, preview.Provider, cfg.parentModel, cfg.parentProvider))
 				cfg.consentMu.Unlock()
 				if !approved {
-					state.ExitSubagent()
+					state.ExitSubagentWork(workID)
 					if denied {
 						return registry.ToolResult{}, fmt.Errorf("agent.run: user denied subagent model change to %s @ %s", preview.Model, preview.Provider)
 					}
@@ -308,7 +308,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 
 		child, childState, err := factory(SubagentRequest{Agent: args.Agent, Model: args.Model, Temperature: args.Temperature, Thinking: args.Thinking, System: args.System})
 		if err != nil {
-			state.ExitSubagent()
+			state.ExitSubagentWork(workID)
 			return registry.ToolResult{}, fmt.Errorf("agent.run: build child: %w", err)
 		}
 		// Register a summary card in the parent transcript in place of the
@@ -383,7 +383,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 					state.AddMessage(session.RoleSystem, "✗ "+panicSummary, session.ContentTypePlain)
 					state.AddMessage(session.RoleUser, panicReport, session.ContentTypeSubagentReport)
 					state.PushSubagentReport(panicReport)
-					state.ExitSubagent()
+					state.ExitSubagentWork(workID)
 					state.FinishSubagent(view.ID, "", fmt.Errorf("subagent %d panicked: %v", view.ID, r))
 					// Re-parent the panicked child's once watches and stop its
 					// repeat watches, mirroring the normal completion path.
@@ -442,7 +442,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			// there is no happens-before edge and the caller can race the
 			// report push / ExitSubagent.
 			state.PushSubagentReport(report)
-			state.ExitSubagent()
+			state.ExitSubagentWork(workID)
 			state.FinishSubagent(view.ID, summary, runErr)
 			// The child finished on its own, so its explicit-stop group is done:
 			// dropping the registration here is what keeps a later card that

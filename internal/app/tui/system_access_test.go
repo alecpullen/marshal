@@ -161,8 +161,7 @@ func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("prompt path returned a cmd (%T), want nil", cmd)
 	}
-	updated, analysisCmd := m.Update(postmortempanel.DoneMsg{Result: postmortempanel.ResultWithAgent})
-	m = asModel(t, updated)
+	m, analysisCmd := answerPostmortem(t, m, postmortempanel.ResultWithAgent)
 	if analysisCmd == nil {
 		t.Fatal("ResultWithAgent should return the analysis cmd")
 	}

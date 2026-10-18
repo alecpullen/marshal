@@ -775,7 +775,7 @@ func mergeExecutionEvidence(base, next ExecutionEvidence) ExecutionEvidence {
 	// Failure is recomputed from the merged facts rather than OR-ed: a
 	// not-yet-settled notice merged with a settled record must classify on what
 	// is now known, and a lost record must not inherit a failure flag.
-	base.Failed = base.Lost == false && executionFailed(base.State, base.Outcome, base.Exit, base.Lost)
+	base.Failed = !base.Lost && executionFailed(base.State, base.Outcome, base.Exit, base.Lost)
 	return base
 }
 

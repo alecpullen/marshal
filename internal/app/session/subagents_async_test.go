@@ -411,3 +411,48 @@ func TestEnterSubagentPairsItsWorkItemWithTheCard(t *testing.T) {
 		t.Fatalf("membership after ExitSubagent = %+v, want empty", got)
 	}
 }
+
+// TestExitSubagentWorkReleasesTheNamedChild pins the identity-keyed release: with
+// two children in flight, exiting the FIRST must release that child's own item.
+// A FIFO release would drop the most recently registered item — the child that is
+// still running — and leave the exited child's item looking active, so the
+// membership an end warns about would name the wrong child.
+func TestExitSubagentWorkReleasesTheNamedChild(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+
+	first, err := s.EnterSubagentWork()
+	if err != nil {
+		t.Fatalf("EnterSubagentWork (first): %v", err)
+	}
+	second, err := s.EnterSubagentWork()
+	if err != nil {
+		t.Fatalf("EnterSubagentWork (second): %v", err)
+	}
+	if first == second {
+		t.Fatal("two children registered the same work item id")
+	}
+	firstView := s.RegisterSubagentWithMetaAndWork(first, "first", nil, SubagentMeta{})
+	secondView := s.RegisterSubagentWithMetaAndWork(second, "second", nil, SubagentMeta{})
+
+	// The first child finishes while the second is still running.
+	s.ExitSubagentWork(first)
+
+	items := s.WorkMembership().Items
+	if len(items) != 1 {
+		t.Fatalf("membership after the first child exited = %+v, want only the second child", items)
+	}
+	if items[0].ID != second || items[0].SubagentID != secondView.ID {
+		t.Fatalf("surviving item = %+v, want the still-running child %q (card %d)", items[0], second, secondView.ID)
+	}
+	for _, item := range items {
+		if item.ID == first || item.SubagentID == firstView.ID {
+			t.Fatalf("the exited child is still in the membership: %+v", item)
+		}
+	}
+
+	// The second child's own exit releases its item, leaving nothing behind.
+	s.ExitSubagentWork(second)
+	if got := s.WorkMembership().Items; len(got) != 0 {
+		t.Fatalf("membership after both children exited = %+v, want empty", got)
+	}
+}

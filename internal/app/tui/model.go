@@ -256,6 +256,17 @@ type endSettledMsg struct{ err error }
 // elevated ordinary prompt.
 type endAnalysisFinishedMsg struct{ err error }
 
+// postmortemWrittenMsg reports the exit postmortem's extraction+write step back
+// to the model. Extraction is real I/O (it walks the audit log and writes a
+// file), so it runs in a tea.Cmd rather than on the render loop; analysis
+// reports whether the scoped exit-analysis pass is to follow once the report
+// landed.
+type postmortemWrittenMsg struct {
+	path     string
+	err      error
+	analysis bool
+}
+
 // CustomAgentRunnerFactory builds a one-shot AgentRunner for a named custom
 // agent. It is wired from app.go via WithCustomAgentRunnerFactory and used
 // by buildCustomAgentRunner to dispatch Run-now. Returns nil when the agent
@@ -489,6 +500,11 @@ type Model struct {
 	// endAnalysisFinishedMsg, which always quits: analysis can never return the
 	// user to an ordinary prompt.
 	endAnalyzing bool
+	// endExtracting is set while the exit postmortem's extraction+write step is
+	// running off the render loop. A repeated quit request during it must not
+	// quit ahead of the report: the extraction is best-effort, but it is the one
+	// chance to record the session, so it is allowed to finish first.
+	endExtracting bool
 
 	// workspaceBroker, when non-nil, delivers WorkspaceEvents so the
 	// status line's git info follows the session's active root without
@@ -2163,6 +2179,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleActiveWorkDone(msg)
 	case endSettledMsg:
 		return m.handleEndSettled(msg)
+	case postmortemWrittenMsg:
+		return m.handlePostmortemWritten(msg)
 	case endAnalysisFinishedMsg:
 		return m.handleEndAnalysisFinished(msg)
 	case postmortempanel.DoneMsg:
@@ -4327,6 +4345,12 @@ func (m *Model) beginEnd(intent *endIntent) tea.Cmd {
 		if m.endAnalyzing {
 			return nil
 		}
+		// Likewise while the extraction that precedes it is still running: the
+		// report is written by that command, and quitting ahead of it would
+		// discard the session's only chance to record itself.
+		if m.endExtracting {
+			return nil
+		}
 		// The postmortem question was answered already: a repeated quit must not
 		// ask it again.
 		if m.endAnswered {
@@ -4390,27 +4414,19 @@ func (m *Model) handleActiveWorkDone(msg activeworkpanel.DoneMsg) (tea.Model, te
 	return *m, m.acceptEnd(msg.IDs)
 }
 
-// handlePostmortemDone applies the exit-postmortem answer. Extraction happens
-// here, on the settled membership, so the report sees the final command and
-// child evidence.
+// handlePostmortemDone applies the exit-postmortem answer. Extraction is
+// dispatched here as a command — never run inline — and the report is built from
+// the settled membership, so it sees the final command and child evidence.
 func (m *Model) handlePostmortemDone(msg postmortempanel.DoneMsg) (tea.Model, tea.Cmd) {
 	m.endAnswered = true
 	switch msg.Result {
 	case postmortempanel.ResultWithAgent:
-		path := m.reportPostmortem()
-		if path == "" || m.endController == nil {
-			// Extraction failed, or there is no scoped-analysis runtime to run
-			// the pass: quit rather than leave the session hanging.
-			m.refreshViewport()
-			return *m, m.finishQuit()
-		}
-		m.endAnalyzing = true
-		m.refreshViewport()
-		return *m, m.runExitAnalysis(path)
+		// Extraction runs first, off the render loop; the scoped analysis pass
+		// follows it in handlePostmortemWritten. A model with no scoped-analysis
+		// runtime extracts and quits.
+		return *m, m.extractPostmortemCmd(m.endController != nil)
 	case postmortempanel.ResultExtractOnly:
-		m.reportPostmortem()
-		m.refreshViewport()
-		return *m, m.finishQuit()
+		return *m, m.extractPostmortemCmd(false)
 	default: // ResultDeclined
 		m.refreshViewport()
 		return *m, m.finishQuit()
@@ -4473,7 +4489,14 @@ func (m *Model) declineEnd() (tea.Model, tea.Cmd) {
 // pending intent and the stopping stage are kept — the next quit request retries
 // the pass — and the error is reported as it is, never as if the work had
 // settled.
+//
+// Only the FIRST settled pass advances the end: a retry that lands after the
+// ending has moved on (a repeated quit enqueued a second claim while the first
+// was still joining) must not run the postmortem policy twice.
 func (m *Model) handleEndSettled(msg endSettledMsg) (tea.Model, tea.Cmd) {
+	if m.endStage != endStopping {
+		return *m, nil
+	}
 	if msg.err != nil {
 		m.endStage = endStopping
 		m.state.AddMessage(session.RoleSystem,
@@ -4651,8 +4674,10 @@ func (m *Model) renderEndWarning() {
 
 // afterSettlement applies the configured postmortem policy and finishes the
 // end. It runs only after the accepted end's work has settled, so extraction
-// sees the final command and child evidence.
+// sees the final command and child evidence. It is entered exactly once per
+// accepted end: the settled handler refuses to run it again.
 func (m *Model) afterSettlement() tea.Cmd {
+	m.endStage = endPostmortem
 	if m.end == nil || m.end.kind != EndIntentExit {
 		// A replacement never runs an exit postmortem; it goes straight to its
 		// new/resume behavior.
@@ -4664,15 +4689,14 @@ func (m *Model) afterSettlement() tea.Cmd {
 		return m.finishQuit()
 	case "always":
 		m.endAnswered = true
-		m.reportPostmortem()
-		return m.finishQuit()
+		// Extraction runs off the render loop, then the end finishes.
+		return m.extractPostmortemCmd(false)
 	default: // "prompt"
 		// A session the user never typed into has nothing to postmortem.
 		if !m.sessionHasUserTurn() {
 			m.endAnswered = true
 			return m.finishQuit()
 		}
-		m.endStage = endPostmortem
 		m.openPostmortemPrompt()
 		return nil
 	}
@@ -4704,9 +4728,10 @@ func (m *Model) finishReplacement() tea.Cmd {
 		return m.finishQuit()
 	}
 	m.endStage = endFinishing
-	// A new session is built by the runtime and swapped into the model. The
-	// accepted replacement is what authorizes the swap: the runtime refuses a
-	// replacement after a different intent was accepted.
+	// A new session is built by the runtime and swapped into the model. The swap
+	// runs only after an accepted replacement: the runtime froze the old
+	// conversation at acceptance, so the new session is built on a settled
+	// membership and no old work is transferred.
 	return m.newSessionEffect(newArgs)
 }
 
@@ -4761,11 +4786,15 @@ func (m *Model) sessionHasUserTurn() bool {
 	return false
 }
 
-// writePostmortem extracts a report from the live session and writes it to the
-// user config dir, returning the path written. Extraction at exit is
-// best-effort: the caller reports the error and exits anyway.
-func (m *Model) writePostmortem() (string, error) {
-	report, err := postmortem.Build(m.state, m.state.DB())
+// writePostmortemFor extracts a report from state and writes it to the user
+// config dir, returning the path written. Extraction at exit is best-effort:
+// the caller reports the error and exits anyway.
+//
+// It is a free function over an explicit state so the command that runs it can
+// keep the extraction I/O off the render loop without reaching into the live
+// model.
+func writePostmortemFor(state *session.State) (string, error) {
+	report, err := postmortem.Build(state, state.DB())
 	if err != nil {
 		return "", err
 	}
@@ -4773,21 +4802,52 @@ func (m *Model) writePostmortem() (string, error) {
 	if err != nil || home == "" {
 		return "", fmt.Errorf("locate home directory: %w", err)
 	}
-	slug := postmortem.ProjectSlug(m.state.WorkingDir)
-	return postmortem.Write(report, home, slug, m.state.SessionID())
+	slug := postmortem.ProjectSlug(state.WorkingDir)
+	return postmortem.Write(report, home, slug, state.SessionID())
 }
 
-// reportPostmortem runs the extraction+write step and reports the outcome as a
-// transcript line, swallowing the error so a postmortem failure can never
-// block exit. It returns the path written, or "" on failure.
-func (m *Model) reportPostmortem() string {
-	path, err := m.writePostmortem()
-	if err != nil {
-		m.state.AddMessage(session.RoleSystem, "Postmortem failed: "+err.Error(), session.ContentTypePlain)
-		return ""
+// extractPostmortemCmd runs the exit postmortem's extraction+write step and
+// reports the outcome back through postmortemWrittenMsg. Extraction walks the
+// audit log and writes a file, so it belongs in a command rather than on the
+// render loop; only the settled state it reads is captured here, and the exit
+// flow admits no session swap while it runs.
+//
+// analysis requests the scoped exit-analysis pass once the report has landed.
+func (m *Model) extractPostmortemCmd(analysis bool) tea.Cmd {
+	state := m.state
+	// Latch the extraction so a repeated quit request during it neither quits
+	// ahead of the report nor starts a second one.
+	m.endExtracting = true
+	return func() tea.Msg {
+		path, err := writePostmortemFor(state)
+		return postmortemWrittenMsg{path: path, err: err, analysis: analysis}
 	}
-	m.state.AddMessage(session.RoleSystem, "Postmortem written to "+path, session.ContentTypePlain)
-	return path
+}
+
+// handlePostmortemWritten applies the outcome of the extraction that ran off the
+// render loop. A failure is reported as a transcript line and never blocks the
+// exit; on success the requested scoped analysis pass follows, and otherwise the
+// end finishes.
+func (m *Model) handlePostmortemWritten(msg postmortemWrittenMsg) (tea.Model, tea.Cmd) {
+	m.endExtracting = false
+	if msg.err != nil {
+		m.endAnalyzing = false
+		m.state.AddMessage(session.RoleSystem, "Postmortem failed: "+msg.err.Error(), session.ContentTypePlain)
+		m.refreshViewport()
+		return *m, m.finishQuit()
+	}
+	m.state.AddMessage(session.RoleSystem, "Postmortem written to "+msg.path, session.ContentTypePlain)
+	if !msg.analysis || m.endController == nil {
+		// Extraction failed to produce a path, there is no scoped-analysis
+		// runtime, or the user asked for extraction only: quit rather than leave
+		// the session hanging.
+		m.endAnalyzing = false
+		m.refreshViewport()
+		return *m, m.finishQuit()
+	}
+	m.endAnalyzing = true
+	m.refreshViewport()
+	return *m, m.runExitAnalysis(msg.path)
 }
 
 // postmortemAgentGoal mirrors the AgentGoal the /postmortem --agent command

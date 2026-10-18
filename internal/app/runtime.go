@@ -414,8 +414,13 @@ func (rt *Runtime) AcceptEnd(req EndAcceptRequest) (EndDecision, error) {
 		}
 		return decision, nil
 	}
-	rt.endIntended = string(intent)
+	// Only the acceptance that actually froze admission records the intent. A
+	// second, idempotent acceptance must not RELABEL an end the user already
+	// accepted: a replacement followed by a repeated exit request would
+	// otherwise advance into the postmortem phase for a conversation the user
+	// chose to replace.
 	if frozen {
+		rt.endIntended = string(intent)
 		rt.endAccepted = true
 	}
 	rt.endPhase = EndPhaseStopping
@@ -533,12 +538,11 @@ func (rt *Runtime) WaitForEnd(ctx context.Context) error {
 	if err == nil {
 		if rt.endIntended == string(EndIntentExit) {
 			rt.endPhase = EndPhasePostmortem
+			rt.State.SetWorkPhase(session.ExitPhasePostmortem)
 		} else {
-			// A replacement omits postmortem entirely.
+			// A replacement omits postmortem entirely: the session never enters
+			// the phase, so no concurrent reader can observe one mid-replacement.
 			rt.endPhase = EndPhaseClosing
-		}
-		rt.State.SetWorkPhase(session.ExitPhasePostmortem)
-		if rt.endIntended != string(EndIntentExit) {
 			rt.State.SetWorkPhase(session.ExitPhaseClosing)
 		}
 	}
@@ -662,7 +666,11 @@ func (rt *Runtime) joinEndWork(ctx context.Context, analysis *session.ExitAnalys
 		errs = append(errs, fmt.Errorf("persist job exits: %w", err))
 	}
 	if jm := rt.commandManager(); jm != nil {
-		if pending := jm.PendingSettlements(); len(pending) > 0 {
+		// One retry before reporting: the database is still open, so a
+		// completion whose first durable write failed gets a second chance
+		// here. A retry updates that execution's existing record rather than
+		// producing a second completion.
+		if pending := jm.RetrySettlements(); len(pending) > 0 {
 			errs = append(errs, fmt.Errorf("job completions still pending: %d", len(pending)))
 		}
 	}

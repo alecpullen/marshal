@@ -39,11 +39,12 @@ const (
 	defaultRetention = 8 * time.Hour
 )
 
-// foregroundStopSettleTimeout bounds how long WaitForeground waits for an
-// execution to settle after an explicit stop was accepted for it. It is a join
-// timeout for the caller, never a process lifetime: the stop request already
-// asked for termination, and the runner escalates from its own grace period.
-var foregroundStopSettleTimeout = 10 * time.Second
+// defaultStopSettleTimeout bounds how long a caller waits for an execution to
+// settle after an explicit stop was accepted for it (WaitForeground, Kill). It
+// is a join timeout for the caller, never a process lifetime: the stop request
+// already asked for termination, and the runner escalates from its own grace
+// period.
+const defaultStopSettleTimeout = 10 * time.Second
 
 // resourceLimitCauses is the vocabulary a sandbox backend uses to name a
 // resource limit it enforced. Marshal reports a resource-limit outcome only
@@ -382,7 +383,10 @@ type ForegroundResult struct {
 // (OnChange, OnExit, the broker) is invoked with either lock held, so a
 // callback may query the manager.
 type JobManager struct {
-	runner CommandRunner
+	// stopSettleTimeout bounds a caller's join after an accepted stop. It is a
+	// field rather than a package variable so a test can shorten it without
+	// racing a concurrent reader.
+	stopSettleTimeout time.Duration
 	// policy is the committed launch policy. Every field it names is a default
 	// for future admissions only: an admitted execution keeps the snapshot it
 	// captured, so committing a new policy never re-times, redirects or
@@ -1111,13 +1115,24 @@ func (m *JobManager) reportSettlement(info JobInfo, ran time.Duration, output st
 		if m.settlements == nil {
 			m.settlements = make(map[string]settlement)
 		}
-		m.settlements[info.ID] = settlement{info: info, ran: ran, output: output, err: err}
+		m.settlements[settlementKey(info)] = settlement{info: info, ran: ran, output: output, err: err}
 		m.mu.Unlock()
 		return
 	}
 	m.mu.Lock()
-	delete(m.settlements, info.ID)
+	delete(m.settlements, settlementKey(info))
 	m.mu.Unlock()
+}
+
+// settlementKey identifies a completion for the pending-settlement ledger. It
+// is the cross-resume execution identity when the record has one, so a retry
+// updates that execution's entry rather than creating a second one; a legacy
+// record with no identity falls back to its display ID.
+func settlementKey(info JobInfo) string {
+	if info.ExecutionID != "" {
+		return info.ExecutionID
+	}
+	return info.ID
 }
 
 // PendingSettlements reports the detached completions whose durable record the
@@ -1194,6 +1209,12 @@ func classifySettlement(j *job, ctx context.Context, result CommandResult, runEr
 			code = &c
 		}
 		return StatusKilled, OutcomeStopped, code
+	}
+	if !j.processStarted && ctx.Err() != nil {
+		// A launch admitted just before the conversation ended and terminated
+		// before its process started: the termination cause is the shutdown, not
+		// a start-up failure, so it is reported as such.
+		return StatusFailed, OutcomeShutdown, nil
 	}
 	if runErr != nil && !j.processStarted {
 		return StatusFailed, OutcomeStartupFailure, nil
@@ -1321,15 +1342,15 @@ func (m *JobManager) arbitrateWait(j *job) waitDecision {
 	return waitContinue
 }
 
-// awaitSettlement waits for a stopped execution to settle, bounded by
-// foregroundStopSettleTimeout. A join timeout returns the continuation as-is:
+// awaitSettlement waits for a stopped execution to settle, bounded by the
+// manager's stop-settle timeout. A join timeout returns the continuation as-is:
 // the stop request still stands and the execution stays service-owned.
 func (m *JobManager) awaitSettlement(j *job) ForegroundResult {
 	j.mu.Lock()
 	done := j.done
 	j.mu.Unlock()
 
-	timer := time.NewTimer(foregroundStopSettleTimeout)
+	timer := time.NewTimer(m.stopSettleTimeoutValue())
 	defer timer.Stop()
 	select {
 	case <-done:
@@ -1547,8 +1568,15 @@ func (m *JobManager) Output(id string, tailLines int) (JobInfo, string, error) {
 	return info, combined, nil
 }
 
-// Kill terminates a running execution and waits for its process to settle.
-// Repeated kills are harmless; a settled execution is left untouched.
+// Kill terminates a running execution and waits for its process to settle,
+// bounded by the manager's stop-settle timeout. Repeated kills are harmless; a
+// settled execution is left untouched.
+//
+// The join is bounded for the same reason WaitForeground's is: the stop request
+// has already asked for termination and the runner escalates from its own grace
+// period, so a runner wedged outside context cancellation must not block the
+// caller — an agent turn — forever. A timeout leaves the execution
+// service-owned and still stopping.
 func (m *JobManager) Kill(id string) error {
 	m.evictCompleted()
 
@@ -1563,9 +1591,23 @@ func (m *JobManager) Kill(id string) error {
 	done := j.done
 	j.mu.Unlock()
 
-	<-done // Wait for the runner goroutine to finish.
+	timer := time.NewTimer(m.stopSettleTimeoutValue())
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 	m.notifyChange()
 	return nil
+}
+
+// stopSettleTimeoutValue is the join bound a caller waits after an accepted
+// stop, falling back to the default when the manager names none.
+func (m *JobManager) stopSettleTimeoutValue() time.Duration {
+	if m.stopSettleTimeout > 0 {
+		return m.stopSettleTimeout
+	}
+	return defaultStopSettleTimeout
 }
 
 // List returns a snapshot of all tracked executions, both attachments,

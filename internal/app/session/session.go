@@ -1133,6 +1133,11 @@ func (s *State) subagentWorkLabelLocked() string {
 // successful EnterSubagent. Calling ExitSubagent without a matching
 // EnterSubagent is a programming error and would emit a negative counter;
 // callers must always pair the calls. Depth is unaffected.
+//
+// It releases the most recently registered child-creation item. A caller that
+// holds the item id its EnterSubagentWork returned must use ExitSubagentWork
+// instead: with several children in flight, a FIFO pop can release a sibling's
+// registration and leave this child's item looking active.
 func (s *State) ExitSubagent() {
 	s.mu.Lock()
 	if s.subagentConcurr > 0 {
@@ -1150,6 +1155,30 @@ func (s *State) ExitSubagent() {
 	// here) is released by FinishSubagent instead.
 	if item != "" {
 		s.end.release(item)
+	}
+}
+
+// ExitSubagentWork is ExitSubagent for a caller that holds the item id its
+// EnterSubagentWork returned. The release is keyed by that identity rather than
+// by registration order, so concurrent children stay paired exactly: a FIFO pop
+// could release a sibling's registration while this child was still running,
+// which would hide that child from the work membership an end warns about.
+func (s *State) ExitSubagentWork(id WorkID) {
+	s.mu.Lock()
+	if s.subagentConcurr > 0 {
+		s.subagentConcurr--
+	}
+	released := false
+	for i, item := range s.subagentWorkItems {
+		if item == id {
+			s.subagentWorkItems = append(s.subagentWorkItems[:i], s.subagentWorkItems[i+1:]...)
+			released = true
+			break
+		}
+	}
+	s.mu.Unlock()
+	if released {
+		s.end.release(id)
 	}
 }
 

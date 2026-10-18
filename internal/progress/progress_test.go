@@ -165,14 +165,15 @@ func TestProgressOversizeAndMalformedRecoverWithoutGrowth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// An oversize line is skipped through its newline with no valid snapshot.
+	// An oversize line is skipped through its newline with no valid snapshot,
+	// but it surfaces one bounded diagnostic until recovery.
 	obs.Write(Stdout, bytes.Repeat([]byte("x"), MaxEventBytes*2))
 	obs.Write(Stdout, []byte("\n"))
-	if snap := obs.Snapshot(); snap != nil {
-		t.Fatalf("oversize accepted: %#v", snap)
+	if snap := obs.Snapshot(); snap == nil || snap.Sequence != 0 || !snap.Partial || snap.Warning == "" || len(snap.Metrics) != 0 {
+		t.Fatalf("oversize diagnostic: %#v", snap)
 	}
 	obs.Write(Stdout, []byte(valid))
-	if snap := obs.Snapshot(); snap == nil || snap.Sequence != 1 {
+	if snap := obs.Snapshot(); snap == nil || snap.Sequence != 1 || snap.Warning != "" {
 		t.Fatalf("no recovery after oversize: %#v", snap)
 	}
 	// A malformed control record surfaces output plus one bounded diagnostic.
@@ -209,6 +210,31 @@ func TestProgressOversizeAndMalformedRecoverWithoutGrowth(t *testing.T) {
 	unterminated.Close()
 	if snap := unterminated.Snapshot(); snap != nil && snap.Sequence != 0 {
 		t.Fatalf("unterminated accepted: %#v", snap)
+	}
+}
+
+func TestProgressOversizeCustomLineSetsDiagnostic(t *testing.T) {
+	obs, err := NewObserver(Config{Profile: "custom", Source: "events-v1"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obs.Write(Stdout, bytes.Repeat([]byte("x"), MaxEventBytes*2))
+	obs.Write(Stdout, []byte("\n"))
+	snap := obs.Snapshot()
+	if snap == nil || snap.Sequence != 0 || !snap.Partial || snap.Warning == "" || len(snap.Metrics) != 0 {
+		t.Fatalf("oversize produced no diagnostic: %#v", snap)
+	}
+	// The diagnostic is bounded to one until recovery.
+	obs.Write(Stdout, bytes.Repeat([]byte("y"), MaxEventBytes*2))
+	obs.Write(Stdout, []byte("\n"))
+	if again := obs.Snapshot(); again == nil || again.Warning != snap.Warning {
+		t.Fatalf("second oversize changed diagnostic: %#v", again)
+	}
+	// A valid record recovers the last valid progress and clears the warning.
+	valid := Prefix + `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"items","current":1}]}` + "\n"
+	obs.Write(Stdout, []byte(valid))
+	if got := obs.Snapshot(); got == nil || got.Sequence != 1 || got.Warning != "" {
+		t.Fatalf("no recovery after oversize: %#v", got)
 	}
 }
 
@@ -607,5 +633,28 @@ func TestGoProgressBurstCountsBeforeCoalescing(t *testing.T) {
 		if m.Total != nil {
 			t.Fatalf("fabricated denominator on %s", m.ID)
 		}
+	}
+}
+
+func TestGoProgressObservationTimeDoesNotAdvanceOnRead(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	o, err := NewObserver(Config{Profile: "tests", Source: "go-test-json"}, func() time.Time { return now }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeGo(t, o, `{"Action":"run","Package":"p","Test":"TestOne"}`)
+	first := o.Snapshot()
+	if first == nil || first.ObservedAt != now {
+		t.Fatalf("observation: %#v", first)
+	}
+	// A read must not restamp the observation time.
+	now = now.Add(FreshFor + time.Second)
+	second := o.Snapshot()
+	if second == nil || !second.ObservedAt.Equal(first.ObservedAt) {
+		t.Fatalf("read advanced observation: %v -> %#v", first.ObservedAt, second)
+	}
+	// A finished burst therefore lapses instead of staying forever fresh.
+	if est := EstimateFor(nil, second, "passed", now, false); !est.Stale {
+		t.Fatalf("stale measurement not reported: %#v", est)
 	}
 }

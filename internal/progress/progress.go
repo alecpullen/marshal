@@ -593,10 +593,16 @@ func (o *Observer) Write(stream Stream, p []byte) {
 func (o *Observer) feedLine(stream Stream, line []byte, oversized bool) {
 	if oversized {
 		// Bytes were discarded at the framer; the record is diagnostic only.
-		if stream == Stdout && o.goad != nil {
+		switch {
+		case stream == Stdout && o.goad != nil:
 			o.goad.partial = true
 			o.goad.invalid = true
 			o.changed = true
+		case stream == Stdout && o.config.Source == "events-v1":
+			// An oversized custom record is a dropped candidate: retain the
+			// last valid snapshot and surface one bounded diagnostic (the
+			// bytes are gone, so there is no tail entry to add).
+			o.setWarning(diagInvalid)
 		}
 		return
 	}
@@ -773,6 +779,11 @@ type goTest struct {
 	partial  bool
 	invalid  bool
 
+	// lastEventAt is the observation time of the last accepted Go event. It is
+	// stamped once at decode time so a read never restamps it; freshness then
+	// lapses for a finished burst instead of staying forever fresh.
+	lastEventAt time.Time
+
 	pass    int
 	fail    int
 	skip    int
@@ -834,6 +845,7 @@ func (o *Observer) feedGoLine(line []byte) {
 // an empty Test is package state and never an extra case.
 func (o *Observer) goEvent(e goEvent) {
 	g := o.goad
+	g.lastEventAt = o.now()
 	pkg := Clean(e.Package, maxLabelRunes, false)
 	if e.Test != "" {
 		pkg = e.Package
@@ -1039,7 +1051,13 @@ func (o *Observer) goSnapshot() *Snapshot {
 		}
 	}
 	pass, fail, skip, running := g.goCounts()
-	now := o.now()
+	// ObservedAt is the last accepted event's decode time, not the read time:
+	// a read must not restart the freshness window. Before any accepted event
+	// the snapshot keeps its previous behaviour of stamping the current time.
+	observed := g.lastEventAt
+	if observed.IsZero() {
+		observed = o.now()
+	}
 	s := &Snapshot{
 		Frame: Frame{
 			Version:         Version,
@@ -1053,8 +1071,8 @@ func (o *Observer) goSnapshot() *Snapshot {
 			},
 			Detail: "go test",
 		},
-		ObservedAt:    now,
-		MeasuredAt:    now,
+		ObservedAt:    observed,
+		MeasuredAt:    observed,
 		Partial:       g.partial,
 		ReportedError: o.goErr || fail > 0,
 	}

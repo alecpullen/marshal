@@ -33,8 +33,15 @@ human — executes task-by-task.
 5. Keep tasks independently verifiable and committable: the executor runs
    one task's verification and commits it before starting the next
    (`<plan-slug>: task N — <task title>`). A task is one reviewable unit.
+   Tasks run sequentially by default. Mark a task `Parallel-safe with: Task
+   N` only when the two share no files and neither consumes the other's
+   output.
 6. Header the plan with the goal, non-goals, assumptions, the base branch
-   or commit it was authored against, and a link to the spec file.
+   or commit it was authored against, and a link to the spec file. Put every
+   new type, interface, and exported function that more than one task uses
+   in a **Contracts** section as real Go declarations (signatures, struct
+   fields, constants), not prose. Each task can then be briefed with only
+   its own section plus the contracts it uses.
 7. Tail the plan with a final full-suite verification (`go test ./...`,
    `gofmt`, `go vet` per AGENTS.md) and integration notes.
 8. Write the plan to the plan location named in the repo instructions, defaulting to `docs/plans/YYYY-MM-DD-<topic>-plan.md`. By default,
@@ -62,6 +69,29 @@ change:
 The executor applies embedded code verbatim; prose+anchor steps may be
 adapted to the actual file contents.
 
+### Prose steps are instructions, not design
+
+The executor — often a subagent with a cold context, sometimes on a less
+capable model — implements prose steps; it does not decide them. A judgment
+step still states the decision:
+
+- **Name the change.** Say which function changes, what it does after the
+  change, and which new helpers it gains, with their signatures. "Replace the
+  separate paths with one managed launch" is design. "In `runShellCommand`,
+  call `JobManager.Launch(ctx, spec)` and return
+  `continuationResult(info)` when `WaitForeground` reports `WaitEndExpired`"
+  is an instruction.
+- **Name the tests.** List each new test function and the one behavior it
+  asserts. "Cover startup, reload and resume" is not a test list.
+- **Keep it small.** A judgment task touches one package and its tests, plus
+  at most a wiring line elsewhere. Split anything larger. The executor stops
+  for user input whenever a prose task spans packages without pinned
+  decisions.
+- **Audits are not implementation.** Steps such as "audit…", "ensure…",
+  "inspect and document…", or "record evidence…" have no concrete output.
+  Do the audit while authoring and write its result into the plan as
+  concrete edits, or move it to the final verification task.
+
 This is the difference from `marshal-sdd-plan-authoring`, which encodes
 exact `marshal.patch` / `marshal.run` operations for the `/sdd` pipeline.
 Choose the pipeline up-front: if the whole plan is exact-patch mechanical,
@@ -73,6 +103,12 @@ steps are the point.
 Before presenting the plan, run this checklist:
 
 - Every task self-contained and independently verifiable?
+- Cold-executor test: could an agent given only this task's section, the
+  Contracts section, and the repository finish it without making a design
+  decision? If not, make the decision in the plan.
+- Every cross-task type and signature declared in Contracts?
+- Every `Parallel-safe with` marker true (no shared files, no consumed
+  output)? Unmarked tasks run sequentially.
 - Every anchor verified to exist?
 - Code blocks complete and compilable in isolation?
 - Verification commands correct per AGENTS.md?
@@ -91,6 +127,12 @@ later or manually. Never start executing before the plan is approved.
 
 - "Task 3: implement the feature" — steps must be concrete enough that a
   fresh context could execute them without re-deriving the design.
+- A task with 10+ files and two lines of code. That is a design summary;
+  split it and pin its decisions.
+- Steps that tell the executor what to consider, audit, or ensure rather
+  than what to write.
+- Later tasks that depend on "the API Task 2 introduces" without
+  Contracts spelling it out.
 - Invented symbols, test names, or commands. Verify or cut.
 - Tasks that cannot be verified alone ("builds on task 2's untested state").
 - One giant task — that is not a plan, it is a todo list with extra steps.

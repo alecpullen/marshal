@@ -200,16 +200,29 @@ func TestBuiltInSkillWorkflowContracts(t *testing.T) {
 		"verbatim",
 		"anchor",
 		"approval",
+		"contracts section",
+		"cold-executor test",
 	} {
 		if !strings.Contains(writingPlans, want) {
 			t.Errorf("marshal-writing-plans body missing %q", want)
 		}
 	}
 
-	// marshal-executing-plans: verbatim application rule.
+	// marshal-executing-plans: verbatim application, one up-front question
+	// round, a single baseline, and subagents that stop rather than decide.
 	executingPlans := body("marshal-executing-plans")
-	if !strings.Contains(executingPlans, "verbatim") {
-		t.Error("marshal-executing-plans body missing \"verbatim\"")
+	for _, want := range []string{
+		"verbatim",
+		"question.ask",
+		"baseline",
+		"inline",
+		"delegate",
+		"blocked",
+		"do not tell the subagent to read the plan",
+	} {
+		if !strings.Contains(executingPlans, want) {
+			t.Errorf("marshal-executing-plans body missing %q", want)
+		}
 	}
 
 	// using-skills: chain description references the artifacts and encoding.

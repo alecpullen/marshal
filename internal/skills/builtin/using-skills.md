@@ -25,7 +25,8 @@ task but is never loaded might as well not exist.
   (consumes the approved spec, plan at the repo's plan location, default `docs/plans/`, with verbatim code for
   mechanical edits and prose + verified anchors for judgment edits, then
   self-reviews and waits for user approval) → marshal-executing-plans
-  (executes the approved plan task-by-task, applying embedded code verbatim).
+  (settles gaps and asks inline-vs-delegated once up front, then executes
+  the approved plan task-by-task, applying embedded code verbatim).
 - Anything misbehaving: systematic-debugging before any fix, even for
   open-ended investigations with no fix requested.
 - Code changes: test-driven-development, then verification-before-completion

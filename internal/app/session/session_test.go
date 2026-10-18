@@ -2053,3 +2053,775 @@ func TestNewStateDoesNotInheritAccessOverrides(t *testing.T) {
 		t.Fatalf("the shared config fixture was mutated to %q", got)
 	}
 }
+
+// ── Capability access requests settle once ────────────────────────────
+
+// accessFixture bundles the parts every access test needs: a session with a
+// live event broker, a pending call, and the events the broker delivered.
+type accessFixture struct {
+	t      *testing.T
+	state  *State
+	events <-chan pubsub.Event[Event]
+	call   *PendingToolCall
+}
+
+func newAccessFixture(t *testing.T) *accessFixture {
+	t.Helper()
+	state := newTestState()
+	broker := pubsub.NewBroker[Event]()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	state.SetEventBroker(broker)
+	return &accessFixture{
+		t:      t,
+		state:  state,
+		events: broker.Subscribe(ctx),
+		call:   &PendingToolCall{ID: "call-1", Name: "file.edit", ResponseChan: make(chan UserApprovalDecision, 1)},
+	}
+}
+
+// register publishes an access request for a fresh pending call. Each call
+// owns a single-use channel and once, so a second request always gets its own
+// call — exactly as the runner would build one.
+func (f *accessFixture) register(intent AccessIntent) AccessRequest {
+	f.t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	f.t.Cleanup(cancel)
+	f.call = &PendingToolCall{ID: "call-1", Name: "file.edit", ResponseChan: make(chan UserApprovalDecision, 1)}
+	req, waiting, err := f.state.RegisterAccess(ctx, f.call, intent)
+	if err != nil {
+		f.t.Fatalf("RegisterAccess(%+v) = %v, want nil", intent, err)
+	}
+	if !waiting {
+		f.t.Fatalf("RegisterAccess(%+v) did not publish a request: %+v", intent, req)
+	}
+	return req
+}
+
+// nextEvent returns the next published event, failing rather than hanging.
+func (f *accessFixture) nextEvent() pubsub.Event[Event] {
+	f.t.Helper()
+	select {
+	case ev := <-f.events:
+		return ev
+	case <-time.After(5 * time.Second):
+		f.t.Fatal("timed out waiting for a session event")
+		return pubsub.Event[Event]{}
+	}
+}
+
+// choiceFor builds an approval choice for req that claims the given pair, and
+// picks mode as the editing variant the user selected.
+func choiceFor(req AccessRequest, current AccessState, mode string) AccessChoice {
+	return AccessChoice{RequestID: req.RequestID, SessionID: req.SessionID, Current: current, Approved: true, Mode: mode}
+}
+
+// A child session and an occupied slot are the two ways a request could take
+// over somebody else's place in the UI. Both must be refused without
+// replacing whatever is displayed and without publishing anything.
+func TestAccessRegistrationRejectsChildAndOccupiedSlot(t *testing.T) {
+	ctx := context.Background()
+
+	child := New(config.Default(), "/repo", time.Unix(100, 0), Persistence{}, WithDepth(1))
+	childBroker := pubsub.NewBroker[Event]()
+	childCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	child.SetEventBroker(childBroker)
+	childEvents := childBroker.Subscribe(childCtx)
+	childCall := &PendingToolCall{ID: "child", ResponseChan: make(chan UserApprovalDecision, 1)}
+	if _, waiting, err := child.RegisterAccess(ctx, childCall, AccessIntent{Editing: true}); err == nil || waiting {
+		t.Fatalf("child RegisterAccess = (waiting %v, err %v), want a refusal", waiting, err)
+	}
+	if child.PendingApproval() != nil || childCall.Access != nil {
+		t.Fatal("a child session published an access request")
+	}
+	select {
+	case ev := <-childEvents:
+		t.Fatalf("child session published %q", ev.Type)
+	default:
+	}
+
+	// A generic ordinary approval already waiting for the user is not
+	// displaceable either: the request must fail rather than take its slot.
+	s := newTestState()
+	ordinary := &PendingToolCall{ID: "ordinary", Name: "shell.run", ResponseChan: make(chan UserApprovalDecision, 1)}
+	s.SetPendingApproval(ordinary)
+	blocked := &PendingToolCall{ID: "access", ResponseChan: make(chan UserApprovalDecision, 1)}
+	if _, waiting, err := s.RegisterAccess(ctx, blocked, AccessIntent{System: true}); err == nil || waiting {
+		t.Fatalf("RegisterAccess over an occupied slot = (waiting %v, err %v), want a refusal", waiting, err)
+	}
+	if got := s.PendingApproval(); got != ordinary {
+		t.Fatalf("the occupied slot was replaced: %+v", got)
+	}
+	if blocked.Access != nil {
+		t.Fatal("a rejected request still stamped its pending call")
+	}
+	select {
+	case d := <-blocked.ResponseChan:
+		t.Fatalf("a rejected request was answered: %+v", d)
+	default:
+	}
+
+	// The refusal must not have disturbed the ordinary approval: it can still
+	// be answered normally.
+	ordinary.Respond(UserApprovalDecision{Approved: true})
+	if d := <-ordinary.ResponseChan; !d.Approved {
+		t.Fatalf("the ordinary approval lost its answer: %+v", d)
+	}
+}
+
+// A request's identity is the session's, not the provider's: two registrations
+// that reuse the same tool-call ID get distinct request IDs, and the copies
+// handed to subscribers carry metadata but no way to answer.
+func TestAccessRequestIdentityAndSnapshotIsolation(t *testing.T) {
+	f := newAccessFixture(t)
+	first := f.register(AccessIntent{System: true})
+	if first.RequestID == "" {
+		t.Fatal("RegisterAccess returned an empty request ID")
+	}
+	ev := f.nextEvent()
+	if ev.Type != EventPendingApprovalChanged {
+		t.Fatalf("registration published %q, want %q", ev.Type, EventPendingApprovalChanged)
+	}
+	if ev.Payload.PendingApproval == nil || ev.Payload.PendingApproval.Access == nil {
+		t.Fatalf("the registration event carried no access metadata: %+v", ev.Payload.PendingApproval)
+	}
+	if ev.Payload.PendingApproval.Access.RequestID != first.RequestID {
+		t.Fatalf("event request ID = %q, want %q", ev.Payload.PendingApproval.Access.RequestID, first.RequestID)
+	}
+	if ev.Payload.PendingApproval.Access.StepID != f.call.StepID {
+		t.Fatalf("event step ID = %d, want %d", ev.Payload.PendingApproval.Access.StepID, f.call.StepID)
+	}
+	if ev.Payload.PendingApproval.Access.Actor != "Marshal" {
+		t.Fatalf("event actor = %q, want Marshal for a stepless call", ev.Payload.PendingApproval.Access.Actor)
+	}
+
+	// The event copy must not be able to settle the request: no channel, and
+	// Respond is inert for a typed request even when one is forged.
+	if env := ev.Payload.PendingApproval.ResponseChan; env != nil {
+		t.Fatalf("the event copy carried a response channel: %v", env)
+	}
+	ev.Payload.PendingApproval.Respond(UserApprovalDecision{Approved: true, Access: &AccessResult{Status: AccessGranted}})
+	select {
+	case d := <-f.call.ResponseChan:
+		t.Fatalf("an event copy settled the canonical request: %+v", d)
+	default:
+	}
+
+	// Cancelling through the canonical request frees the slot, and a second
+	// request that reuses the same provider ID must not reuse the request ID.
+	if !f.state.CancelAccess(first.RequestID, AccessCanceled, "test") {
+		t.Fatal("CancelAccess(canonical request) = false, want true")
+	}
+	<-f.call.ResponseChan
+	second := f.register(AccessIntent{System: true})
+	if second.RequestID == first.RequestID {
+		t.Fatalf("two requests shared the request ID %q", second.RequestID)
+	}
+}
+
+// The acknowledgment is the contract: a caller must not be told the
+// capability is available until the resolver's setter has actually run.
+func TestAccessResolveAppliesBeforeAcknowledgment(t *testing.T) {
+	f := newAccessFixture(t)
+	req := f.register(AccessIntent{Editing: true, Reason: "edit a file"})
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	prepared := false
+	prepare := func(AccessRequest, AccessChoice) (AccessCommit, error) {
+		prepared = true
+		return AccessCommit{Effective: AccessState{Mode: "edit"}, Apply: func() {
+			close(entered)
+			<-release
+		}}, nil
+	}
+	done := make(chan AccessResult, 1)
+	go func() {
+		result, _ := f.state.ResolveAccess(choiceFor(req, req.Current, "edit"), prepare)
+		done <- result
+	}()
+
+	<-entered
+	// Apply is inside the resolver: the waiter must still be empty-handed and
+	// the session must not yet report the new mode.
+	select {
+	case d := <-f.call.ResponseChan:
+		t.Fatalf("the grant was acknowledged before it was applied: %+v", d)
+	default:
+	}
+	if got := f.state.AccessState(); got.Mode == "edit" {
+		t.Fatal("the mode moved before Apply returned")
+	}
+	if !prepared {
+		t.Fatal("prepare was never consulted")
+	}
+
+	close(release)
+	result := <-done
+
+	if result.Status != AccessGranted {
+		t.Fatalf("ResolveAccess = %+v, want a grant", result)
+	}
+	if got, want := result.Effective, (AccessState{Mode: "edit"}); got != want {
+		t.Fatalf("result effective = %+v, want %+v", got, want)
+	}
+	if got := f.state.AccessState(); got != (AccessState{Mode: "edit"}) {
+		t.Fatalf("AccessState() = %+v after the grant, want {edit false}", got)
+	}
+
+	d := <-f.call.ResponseChan
+	if !d.Approved || d.Access == nil {
+		t.Fatalf("delivered decision = %+v, want an approved typed grant", d)
+	}
+	if d.Access.Status != AccessGranted {
+		t.Fatalf("delivered access status = %q, want %q", d.Access.Status, AccessGranted)
+	}
+	if d.Access.Effective != result.Effective {
+		t.Fatalf("delivered effective = %+v, want %+v", d.Access.Effective, result.Effective)
+	}
+	if f.state.PendingApproval() != nil {
+		t.Fatal("the settled request still occupies the slot")
+	}
+}
+
+// Cancellation that is already visible when the gate is taken beats the
+// choice: nothing is prepared, nothing is applied, and the waiter learns it
+// was cancelled.
+func TestAccessCancelWinsBeforeAcceptance(t *testing.T) {
+	f := newAccessFixture(t)
+
+	// The registration's own context is cancelled, the way a turn being
+	// interrupted cancels the request it made.
+	callCtx, cancelCall := context.WithCancel(context.Background())
+	defer cancelCall()
+	req, waiting, err := f.state.RegisterAccess(callCtx, f.call, AccessIntent{Editing: true})
+	if err != nil || !waiting {
+		t.Fatalf("RegisterAccess = (%+v, %v, %v), want a published request", req, waiting, err)
+	}
+	cancelCall()
+
+	called := false
+	result, err := f.state.ResolveAccess(choiceFor(req, req.Current, "edit"), func(AccessRequest, AccessChoice) (AccessCommit, error) {
+		called = true
+		return AccessCommit{Effective: AccessState{Mode: "edit"}, Apply: func() { called = true }}, nil
+	})
+	if err != nil {
+		t.Fatalf("ResolveAccess on a canceled request = %v, want nil (a typed cancellation)", err)
+	}
+	if result.Status != AccessCanceled {
+		t.Fatalf("ResolveAccess = %+v, want AccessCanceled", result)
+	}
+	if called {
+		t.Fatal("a canceled request reached prepare or apply")
+	}
+	if got := f.state.AccessState(); got != (AccessState{Mode: "default"}) {
+		t.Fatalf("AccessState() = %+v after cancellation, want default/false", got)
+	}
+	if d := <-f.call.ResponseChan; d.Approved || d.Access == nil || d.Access.Status != AccessCanceled {
+		t.Fatalf("delivered decision = %+v, want an unapproved typed cancellation", d)
+	}
+}
+
+// Once the grant has passed its final cancellation check the application wins
+// even if the requester is cancelled mid-Apply: the acknowledgment arrives
+// afterwards, and a late cancellation cannot revoke what was granted.
+func TestAccessAcceptedCommitWinsLaterCancellation(t *testing.T) {
+	f := newAccessFixture(t)
+	callCtx, cancelCall := context.WithCancel(context.Background())
+	defer cancelCall()
+	req, waiting, err := f.state.RegisterAccess(callCtx, f.call, AccessIntent{System: true})
+	if err != nil || !waiting {
+		t.Fatalf("RegisterAccess = (%+v, %v, %v), want a published request", req, waiting, err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan AccessResult, 1)
+	go func() {
+		result, _ := f.state.ResolveAccess(choiceFor(req, req.Current, ""), func(AccessRequest, AccessChoice) (AccessCommit, error) {
+			return AccessCommit{Effective: AccessState{Mode: "default", System: true}, Apply: func() {
+				close(entered)
+				<-release
+			}}, nil
+		})
+		done <- result
+	}()
+
+	<-entered
+	// Cancel while Apply is in flight: the request is past its last check, so
+	// this cannot stop the application.
+	cancelCall()
+	select {
+	case d := <-f.call.ResponseChan:
+		t.Fatalf("a result was delivered during Apply: %+v", d)
+	default:
+	}
+	select {
+	case result := <-done:
+		t.Fatalf("ResolveAccess returned during Apply: %+v", result)
+	default:
+	}
+
+	close(release)
+	result := <-done
+	if result.Status != AccessGranted {
+		t.Fatalf("ResolveAccess = %+v, want the accepted grant", result)
+	}
+	d := <-f.call.ResponseChan
+	if !d.Approved || d.Access == nil || d.Access.Status != AccessGranted {
+		t.Fatalf("delivered decision = %+v, want one typed grant", d)
+	}
+	// Exactly one result, and the late cancellation cannot undo the grant.
+	f.call.Respond(UserApprovalDecision{Approved: false})
+	if extra := <-f.call.ResponseChan; extra.Approved || extra.Access != nil {
+		t.Fatalf("a second decision was delivered: %+v", extra)
+	}
+	if f.state.CancelAccess(req.RequestID, AccessCanceled, "too late") {
+		t.Fatal("CancelAccess settled an already-settled request")
+	}
+	if got := f.state.AccessState(); got != (AccessState{Mode: "default", System: true}) {
+		t.Fatalf("AccessState() = %+v after the late cancellation, want the granted pair", got)
+	}
+}
+
+// A choice made against a pair the session has already left must not apply:
+// the request survives, nothing is prepared, and the refreshed choice for the
+// current pair then resolves normally.
+func TestAccessRefreshRetainsPendingAndResetsNoAuthority(t *testing.T) {
+	f := newAccessFixture(t)
+	req := f.register(AccessIntent{Editing: true})
+	shown := req.Current
+
+	// Something else grants system access while the panel is on screen, so the
+	// pair the user was shown is no longer the live one.
+	f.state.SetSystemAccess(true)
+
+	prepared := false
+	prepare := func(AccessRequest, AccessChoice) (AccessCommit, error) {
+		prepared = true
+		return AccessCommit{Effective: AccessState{Mode: "edit"}, Apply: func() {}}, nil
+	}
+	result, err := f.state.ResolveAccess(choiceFor(req, shown, "edit"), prepare)
+	if err != nil {
+		t.Fatalf("ResolveAccess(stale pair) = %v, want nil", err)
+	}
+	if result.Status != AccessRefresh {
+		t.Fatalf("ResolveAccess(stale pair) = %+v, want AccessRefresh", result)
+	}
+	if result.Effective != (AccessState{Mode: "default", System: true}) {
+		t.Fatalf("refresh effective = %+v, want the current pair", result.Effective)
+	}
+	if prepared {
+		t.Fatal("a stale choice reached prepare")
+	}
+	select {
+	case d := <-f.call.ResponseChan:
+		t.Fatalf("a refresh settled the request: %+v", d)
+	default:
+	}
+	if got := f.state.AccessState(); got != (AccessState{Mode: "default", System: true}) {
+		t.Fatalf("AccessState() = %+v after a refresh, want the unrelated grant only", got)
+	}
+
+	// The refreshed request reports the live pair and still needs editing, so
+	// a choice made against it resolves and grants.
+	refreshed, ok := f.state.AccessRequest()
+	if !ok {
+		t.Fatal("the request was dropped by a refresh")
+	}
+	if refreshed.Current != result.Effective {
+		t.Fatalf("refreshed request Current = %+v, want %+v", refreshed.Current, result.Effective)
+	}
+	if refreshed.RequestID != req.RequestID {
+		t.Fatalf("refresh changed the request ID: %q → %q", req.RequestID, refreshed.RequestID)
+	}
+	if !refreshed.MissingEditing || refreshed.MissingSystem {
+		t.Fatalf("refreshed request flags = %+v, want editing missing only", refreshed)
+	}
+	result, err = f.state.ResolveAccess(choiceFor(refreshed, refreshed.Current, "edit"), func(AccessRequest, AccessChoice) (AccessCommit, error) {
+		return AccessCommit{Effective: AccessState{Mode: "edit", System: true}, Apply: func() {}}, nil
+	})
+	if err != nil || result.Status != AccessGranted {
+		t.Fatalf("ResolveAccess(refreshed) = (%+v, %v), want a grant", result, err)
+	}
+}
+
+// Every invalid commit must fail closed: the waiter is unblocked with an
+// unapproved, failed result, no setter runs, and the pair does not move.
+func TestAccessInvalidCommitFailsWithoutPartialGrant(t *testing.T) {
+	cases := []struct {
+		name    string
+		intent  AccessIntent
+		choice  func(AccessRequest) AccessChoice
+		prepare AccessPrepare
+	}{
+		{
+			name:   "invalid editing variant",
+			intent: AccessIntent{Editing: true},
+			// A blank mode may not fill an editing gap.
+			choice:  func(req AccessRequest) AccessChoice { return choiceFor(req, req.Current, "") },
+			prepare: func(AccessRequest, AccessChoice) (AccessCommit, error) { return AccessCommit{Apply: func() {}}, nil },
+		},
+		{
+			name:   "unexpected target",
+			intent: AccessIntent{System: true},
+			choice: func(req AccessRequest) AccessChoice { return choiceFor(req, req.Current, "") },
+			prepare: func(AccessRequest, AccessChoice) (AccessCommit, error) {
+				return AccessCommit{Effective: AccessState{Mode: "auto"}, Apply: func() {}}, nil
+			},
+		},
+		{
+			name:   "nil apply",
+			intent: AccessIntent{System: true},
+			choice: func(req AccessRequest) AccessChoice { return choiceFor(req, req.Current, "") },
+			prepare: func(AccessRequest, AccessChoice) (AccessCommit, error) {
+				return AccessCommit{Effective: AccessState{Mode: "default", System: true}}, nil
+			},
+		},
+		{
+			name:    "nil prepare",
+			intent:  AccessIntent{System: true},
+			choice:  func(req AccessRequest) AccessChoice { return choiceFor(req, req.Current, "") },
+			prepare: nil,
+		},
+		{
+			name:   "prepare error",
+			intent: AccessIntent{System: true},
+			choice: func(req AccessRequest) AccessChoice { return choiceFor(req, req.Current, "") },
+			prepare: func(AccessRequest, AccessChoice) (AccessCommit, error) {
+				return AccessCommit{}, errors.New("policy says no")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAccessFixture(t)
+			req := f.register(tc.intent)
+			before := f.state.AccessState()
+
+			result, err := f.state.ResolveAccess(tc.choice(req), tc.prepare)
+			if err == nil {
+				t.Fatalf("ResolveAccess = %+v, want a non-nil error", result)
+			}
+			if result.Status != AccessFailed {
+				t.Fatalf("ResolveAccess = %+v, want AccessFailed", result)
+			}
+			if result.Message == "" {
+				t.Fatal("a failure carried no message")
+			}
+			if result.Effective != before {
+				t.Fatalf("failure effective = %+v, want the unchanged pair %+v", result.Effective, before)
+			}
+			if got := f.state.AccessState(); got != before {
+				t.Fatalf("AccessState() = %+v after a failure, want %+v", got, before)
+			}
+			d := <-f.call.ResponseChan
+			if d.Approved {
+				t.Fatalf("a failed request was approved: %+v", d)
+			}
+			if d.Access == nil || d.Access.Status != AccessFailed || d.Access.Message == "" {
+				t.Fatalf("delivered decision = %+v, want a typed failure with a message", d)
+			}
+			if f.state.PendingApproval() != nil {
+				t.Fatal("a failed request still occupies the slot")
+			}
+		})
+	}
+}
+
+// Duplicate, foreign and late answers must be inert: they cannot grant, cannot
+// erase the request that is actually pending, and cannot leak into whatever
+// request comes next.
+func TestAccessDuplicateForeignAndLateChoicesCannotSettleNewRequest(t *testing.T) {
+	f := newAccessFixture(t)
+	applied := 0
+	prepare := func(req AccessRequest, choice AccessChoice) (AccessCommit, error) {
+		target := req.Current
+		if req.MissingEditing {
+			target.Mode = choice.Mode
+		}
+		if req.MissingSystem {
+			target.System = true
+		}
+		return AccessCommit{Effective: target, Apply: func() { applied++ }}, nil
+	}
+
+	first := f.register(AccessIntent{System: true})
+	if result, err := f.state.ResolveAccess(choiceFor(first, first.Current, ""), prepare); err != nil || result.Status != AccessGranted {
+		t.Fatalf("first ResolveAccess = (%+v, %v), want a grant", result, err)
+	}
+	<-f.call.ResponseChan
+	if applied != 1 {
+		t.Fatalf("apply ran %d times for one grant", applied)
+	}
+
+	// A duplicate of the settled choice is expired, and the late cancellation
+	// of the settled request cannot reach a later one.
+	if result, err := f.state.ResolveAccess(choiceFor(first, first.Current, ""), prepare); err == nil || result.Status != AccessExpired {
+		t.Fatalf("duplicate ResolveAccess = (%+v, %v), want AccessExpired", result, err)
+	}
+	if f.state.CancelAccess(first.RequestID, AccessCanceled, "late") {
+		t.Fatal("CancelAccess settled an already-settled request")
+	}
+	// A choice naming a request that never existed is expired too.
+	ghost := AccessChoice{RequestID: "not-a-request", SessionID: first.SessionID, Current: first.Current, Approved: true}
+	if result, err := f.state.ResolveAccess(ghost, prepare); err == nil || result.Status != AccessExpired {
+		t.Fatalf("foreign ResolveAccess = (%+v, %v), want AccessExpired", result, err)
+	}
+	if applied != 1 {
+		t.Fatalf("an inert choice reached apply: %d applications", applied)
+	}
+
+	// The next request is untouched by the stale IDs above.
+	second := f.register(AccessIntent{Editing: true})
+	if second.RequestID == first.RequestID {
+		t.Fatal("the second request reused the first request ID")
+	}
+	if result, err := f.state.ResolveAccess(choiceFor(first, first.Current, ""), prepare); err == nil || result.Status != AccessExpired {
+		t.Fatalf("stale choice against a live request = (%+v, %v), want AccessExpired", result, err)
+	}
+	if got := f.state.PendingApproval(); got == nil || got.Access == nil || got.Access.RequestID != second.RequestID {
+		t.Fatalf("the live request was disturbed: %+v", got)
+	}
+
+	// The generic teardown path must not silently withdraw it either.
+	f.state.SetPendingApproval(nil)
+	if got := f.state.PendingApproval(); got == nil || got.Access == nil || got.Access.RequestID != second.RequestID {
+		t.Fatalf("SetPendingApproval(nil) withdrew a live access request: %+v", got)
+	}
+
+	// An ordinary approval arriving while the request waits is denied, and
+	// the request survives to be answered normally.
+	interloper := &PendingToolCall{ID: "interloper", Name: "shell.run", ResponseChan: make(chan UserApprovalDecision, 1)}
+	f.state.SetPendingApproval(interloper)
+	if d := <-interloper.ResponseChan; d.Approved {
+		t.Fatalf("an interloper was approved: %+v", d)
+	}
+	if got := f.state.PendingApproval(); got == nil || got.Access == nil || got.Access.RequestID != second.RequestID {
+		t.Fatalf("an interloper displaced the access request: %+v", got)
+	}
+
+	result, err := f.state.ResolveAccess(choiceFor(second, second.Current, "edit"), prepare)
+	if err != nil || result.Status != AccessGranted {
+		t.Fatalf("ResolveAccess(second) = (%+v, %v), want a grant", result, err)
+	}
+	if applied != 2 {
+		t.Fatalf("apply ran %d times, want one per grant", applied)
+	}
+	if d := <-f.call.ResponseChan; !d.Approved {
+		t.Fatalf("the second grant decision = %+v, want approved", d)
+	}
+
+	// With the slot free again, ordinary approvals behave as before,
+	// including an ordinary P1→P2 replacement.
+	p1 := &PendingToolCall{ID: "p1", Name: "shell.run", ResponseChan: make(chan UserApprovalDecision, 1)}
+	p2 := &PendingToolCall{ID: "p2", Name: "shell.run", ResponseChan: make(chan UserApprovalDecision, 1)}
+	f.state.SetPendingApproval(p1)
+	f.state.SetPendingApproval(p2)
+	if got := f.state.PendingApproval(); got != p2 {
+		t.Fatalf("ordinary replacement = %+v, want %+v", got, p2)
+	}
+	p2.Respond(UserApprovalDecision{Approved: true})
+	if d := <-p2.ResponseChan; !d.Approved {
+		t.Fatalf("the replacement could not be answered: %+v", d)
+	}
+}
+
+// Denial and "already available" both report the pair that is actually in
+// force, and neither is a reason to move authority.
+func TestAccessDeniedAndAvailableReturnActualState(t *testing.T) {
+	// A session already holding everything it is asked for answers
+	// immediately: the satisfied registration takes no slot and publishes
+	// nothing, and a denial reports the actual pair.
+	s := newTestState()
+	if err := s.SetSessionMode("auto", func() {}); err != nil {
+		t.Fatalf("SetSessionMode(auto) = %v", err)
+	}
+	s.SetSystemAccess(true)
+	satisfied := &PendingToolCall{ID: "satisfied", ResponseChan: make(chan UserApprovalDecision, 1)}
+	immediate, waiting, err := s.RegisterAccess(context.Background(), satisfied, AccessIntent{Editing: true, System: true})
+	if err != nil || waiting {
+		t.Fatalf("RegisterAccess on a satisfied session = (%+v, waiting %v, err %v), want an immediate answer", immediate, waiting, err)
+	}
+	if immediate.RequestID != "" {
+		t.Fatalf("a satisfied registration allocated a request ID: %q", immediate.RequestID)
+	}
+	if immediate.Current != (AccessState{Mode: "auto", System: true}) {
+		t.Fatalf("satisfied registration Current = %+v, want {auto true}", immediate.Current)
+	}
+	if immediate.MissingEditing || immediate.MissingSystem {
+		t.Fatalf("satisfied registration reported missing capabilities: %+v", immediate)
+	}
+	if s.PendingApproval() != nil {
+		t.Fatal("a satisfied registration took the pending slot")
+	}
+	if _, ok := s.AccessRequest(); ok {
+		t.Fatal("a satisfied registration published a request")
+	}
+
+	// A denial needs a request, so start from a session that lacks something.
+	f := newAccessFixture(t)
+	req := f.register(AccessIntent{System: true})
+	denial := choiceFor(req, req.Current, "")
+	denial.Approved = false
+	prepared := false
+	result, err := f.state.ResolveAccess(denial, func(AccessRequest, AccessChoice) (AccessCommit, error) {
+		prepared = true
+		return AccessCommit{Effective: AccessState{System: true}, Apply: func() {}}, nil
+	})
+	if err != nil {
+		t.Fatalf("ResolveAccess(denied) = %v, want nil", err)
+	}
+	if result.Status != AccessDenied {
+		t.Fatalf("ResolveAccess(denied) = %+v, want AccessDenied", result)
+	}
+	if result.Effective != req.Current || result.Effective != f.state.AccessState() {
+		t.Fatalf("denial effective = %+v, want the actual pair %+v", result.Effective, req.Current)
+	}
+	if prepared {
+		t.Fatal("a denial consulted the resolver")
+	}
+	if d := <-f.call.ResponseChan; d.Approved || d.Access == nil || d.Access.Status != AccessDenied {
+		t.Fatalf("delivered decision = %+v, want an unapproved denial", d)
+	}
+	if got := f.state.AccessState(); got != req.Current {
+		t.Fatalf("AccessState() = %+v after a denial, want %+v", got, req.Current)
+	}
+
+	// A request whose capability arrives while it waits resolves as available
+	// without invoking the resolver's setter. The panel refreshes first, so the
+	// choice carries the live pair (as it must) and still settles as available.
+	f2 := newAccessFixture(t)
+	f2.register(AccessIntent{System: true})
+	f2.state.SetSystemAccess(true)
+	live, ok := f2.state.AccessRequest()
+	if !ok {
+		t.Fatal("the request was dropped when its capability arrived")
+	}
+	if live.MissingEditing || live.MissingSystem {
+		t.Fatalf("the request still reports missing capabilities: %+v", live)
+	}
+	settled := false
+	result, err = f2.state.ResolveAccess(choiceFor(live, live.Current, ""), func(AccessRequest, AccessChoice) (AccessCommit, error) {
+		settled = true
+		return AccessCommit{Effective: AccessState{Mode: "default", System: true}, Apply: func() { settled = true }}, nil
+	})
+	if err != nil {
+		t.Fatalf("ResolveAccess(satisfied later) = %v, want nil", err)
+	}
+	if result.Status != AccessAvailable {
+		t.Fatalf("ResolveAccess(satisfied later) = %+v, want AccessAvailable", result)
+	}
+	if settled {
+		t.Fatal("an already-available request reached the resolver")
+	}
+	if result.Effective != (AccessState{Mode: "default", System: true}) {
+		t.Fatalf("available effective = %+v, want the actual pair", result.Effective)
+	}
+	if d := <-f2.call.ResponseChan; d.Approved || d.Access == nil || d.Access.Status != AccessAvailable {
+		t.Fatalf("delivered decision = %+v, want an unapproved available result", d)
+	}
+}
+
+// Shutdown and a concurrent approval settle the same request exactly once:
+// the waiter always gets one canonical result, and no post-shutdown grant
+// slips through.
+func TestAccessShutdownSettlesOnce(t *testing.T) {
+	t.Run("shutdown settles a waiting request", func(t *testing.T) {
+		f := newAccessFixture(t)
+		req := f.register(AccessIntent{System: true})
+		if _, ok := f.state.AccessRequest(); !ok {
+			t.Fatal("the request was not visible before shutdown")
+		}
+		f.state.ResolvePendingForShutdown()
+
+		d := <-f.call.ResponseChan
+		if d.Approved {
+			t.Fatalf("shutdown delivered an approval: %+v", d)
+		}
+		if d.Access == nil || d.Access.RequestID != req.RequestID || d.Access.Status != AccessCanceled {
+			t.Fatalf("shutdown decision = %+v, want a typed cancellation of %q", d, req.RequestID)
+		}
+		if f.state.PendingApproval() != nil {
+			t.Fatal("shutdown left the request pending")
+		}
+		if _, ok := f.state.AccessRequest(); ok {
+			t.Fatal("shutdown left the request readable")
+		}
+		if f.state.CancelAccess(req.RequestID, AccessCanceled, "after shutdown") {
+			t.Fatal("a settled request was settled again")
+		}
+		// The channel is closed and carries nothing further.
+		if d, ok := <-f.call.ResponseChan; ok || d.Access != nil || d.Approved {
+			t.Fatalf("the canonical channel carried a second result: (%+v, %v)", d, ok)
+		}
+	})
+
+	t.Run("no post-shutdown grant", func(t *testing.T) {
+		f := newAccessFixture(t)
+		req := f.register(AccessIntent{System: true})
+
+		// Hold the gate inside a grant's Apply and quiesce from another
+		// goroutine: the grant has passed its last check, so it must finish
+		// and be acknowledged, and the shutdown must not produce a second
+		// result for it.
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		done := make(chan AccessResult, 1)
+		go func() {
+			result, _ := f.state.ResolveAccess(choiceFor(req, req.Current, ""), func(AccessRequest, AccessChoice) (AccessCommit, error) {
+				return AccessCommit{Effective: AccessState{Mode: "default", System: true}, Apply: func() {
+					close(entered)
+					<-release
+				}}, nil
+			})
+			done <- result
+		}()
+		<-entered
+
+		quiesced := make(chan struct{})
+		go func() {
+			f.state.BeginQuiesce()
+			f.state.ResolvePendingForShutdown()
+			close(quiesced)
+		}()
+
+		// The grant holds the access gate: shutdown cannot proceed past it.
+		select {
+		case <-quiesced:
+			t.Fatal("shutdown completed while a grant was being applied")
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		close(release)
+		if result := <-done; result.Status != AccessGranted {
+			t.Fatalf("the accepted grant = %+v, want AccessGranted", result)
+		}
+		<-quiesced
+
+		d := <-f.call.ResponseChan
+		if !d.Approved || d.Access == nil || d.Access.Status != AccessGranted {
+			t.Fatalf("delivered decision = %+v, want one typed grant", d)
+		}
+		if _, ok := <-f.call.ResponseChan; ok {
+			t.Fatal("the channel carried a second result")
+		}
+		if got := f.state.AccessState(); got != (AccessState{Mode: "default", System: true}) {
+			t.Fatalf("AccessState() = %+v, want the granted pair", got)
+		}
+	})
+
+	t.Run("a quiescing session refuses new requests", func(t *testing.T) {
+		f := newAccessFixture(t)
+		f.state.BeginQuiesce()
+		call := &PendingToolCall{ID: "late", ResponseChan: make(chan UserApprovalDecision, 1)}
+		if _, waiting, err := f.state.RegisterAccess(context.Background(), call, AccessIntent{System: true}); !errors.Is(err, ErrSessionQuiescing) || waiting {
+			t.Fatalf("RegisterAccess while quiescing = (waiting %v, err %v), want ErrSessionQuiescing", waiting, err)
+		}
+		if call.Access != nil || f.state.PendingApproval() != nil {
+			t.Fatal("a quiescing session published a request")
+		}
+	})
+}

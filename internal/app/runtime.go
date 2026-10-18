@@ -961,6 +961,45 @@ func (rt *Runtime) SetSessionMode(mode string) error {
 	return rt.State.SetSessionMode(mode, apply)
 }
 
+// SetSessionEffort sets (level != "") or clears (level == "") the session's
+// unsaved effort override for the active route, and reports when it takes
+// effect: from the next step of a running turn, or from the next turn when
+// no turn runs or the change crosses the off boundary.
+func (rt *Runtime) SetSessionEffort(level string) (string, error) {
+	if rt.State == nil {
+		return "", errors.New("no session state available to change the effort")
+	}
+	active := rt.State.ActiveRoute()
+	if active.Model == "" {
+		return "", errors.New("no active model")
+	}
+	if !active.ReasoningCapable {
+		return "", fmt.Errorf("%s has no effort control", active.Model)
+	}
+	cfg := rt.State.Config
+	preset := cfg.Models.Presets[active.Preset]
+	opts := provider.ThinkingOptionsFor(rt.DataDir, active.Provider, cfg.Providers[active.Provider], active.Model, preset.ThinkingOptions)
+	if !provider.ValidEffortLevel(opts, level) {
+		return "", fmt.Errorf("effort %q is not supported by %s (valid: %s)", level, active.Model, strings.Join(opts.Levels, ", "))
+	}
+	rt.State.SetEffortOverride(session.EffortOverride{Level: level, Provider: active.Provider, Model: active.Model})
+
+	applies := session.EffortAppliesNextTurn
+	effective := level
+	if level == "" {
+		effective = preset.Thinking
+	}
+	current := effective
+	if turn, running := rt.State.TurnRoute(); running {
+		current = turn.Thinking
+		if (current == "off") == (effective == "off") {
+			applies = session.EffortAppliesNextStep
+		}
+	}
+	rt.State.PublishEffortChange(session.EffortChange{Effective: current, Pending: effective, AppliesFrom: applies})
+	return applies, nil
+}
+
 // WatchResumeHook is invoked by the watch manager's OnFire closure after
 // a fired report is pushed to the session queue, for runtimes that want to
 // auto-resume an idle session (ACP). It receives the report so the sink

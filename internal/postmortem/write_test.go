@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"marshal/internal/tools/registry"
 )
 
 // setConfigDir points the user-global config dir (and therefore the
@@ -128,6 +130,58 @@ func TestWriteSanitizesTraversalSessionID(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("report not created: %v", err)
+	}
+}
+
+// The execution-evidence section is part of the written document: it survives
+// the JSON round trip a stored report is read back through, and the schema
+// version is unchanged by it — an aggregator merging reports from different
+// releases must not have to know about the field.
+func TestWriteRoundTripsExecutionEvidence(t *testing.T) {
+	setConfigDir(t)
+
+	state := testState(t, testConfig(), nil)
+	code := 2
+	state.LogToolCall(executionNotice("shell.run", registry.CommandExecution{
+		ExecutionID: "exec-rt", DisplayID: "job-rt", ConversationID: "conv-1", Actor: "implementer",
+		TurnID: "turn-1", ToolCallID: "call-rt", Cwd: "/repo", State: "failed", Outcome: "nonzero_exit",
+		Attachment: registry.ExecutionAttachmentForeground, Wait: "10s", ExitCode: &code,
+	}))
+	report, err := Build(state, nil)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	path, err := Write(report, "", "repo", testSessionID)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var decoded struct {
+		SchemaVersion int                 `json:"schema_version"`
+		Evidence      []ExecutionEvidence `json:"execution_evidence"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if decoded.SchemaVersion != SchemaVersion {
+		t.Errorf("schema_version = %d, want %d (the field is additive)", decoded.SchemaVersion, SchemaVersion)
+	}
+	if len(decoded.Evidence) != 1 {
+		t.Fatalf("execution_evidence = %+v, want one entry", decoded.Evidence)
+	}
+	e := decoded.Evidence[0]
+	if e.ExecutionID != "exec-rt" || e.Outcome != "nonzero_exit" || !e.Failed {
+		t.Errorf("evidence = %+v, want the settled failure", e)
+	}
+	if e.Exit == nil || *e.Exit != 2 {
+		t.Errorf("exit = %v, want the observed 2", e.Exit)
+	}
+	if e.Wait != "10s" || e.Attachment != "foreground" || e.Actor != "implementer" {
+		t.Errorf("ownership/wait = %+v", e)
 	}
 }
 

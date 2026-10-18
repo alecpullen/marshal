@@ -1,9 +1,10 @@
 # Reliable background execution
 
-Status: draft for design review.
+Status: implemented (contracts below are the shipped behavior).
 Date: 2026-10-17.
 Source baseline: `f25afa3f`.
-Implementation: not started.
+Implementation: complete on the `reliable-background-execution` branch; this
+document is the contract the code implements.
 
 ## Purpose
 
@@ -22,7 +23,7 @@ The following decisions were agreed during brainstorming:
 - Background jobs survive normal configuration reloads and ordinary turn completion.
 - Ending Marshal stops its jobs. If active work would be stopped, warn the user first, independently of postmortem settings and before any postmortem prompt.
 
-This draft proposes a **10-second foreground wait default**, configurable and overridable per call. That value is a design proposal, not a requirement already selected by the user.
+This feature uses a **10-second foreground wait default** (`tools.shell.foreground_wait_seconds`, constrained to a positive integer), configurable and overridable per call. The default is selected, not proposed: `config.Default()` ships it, and `resolveShellWait` uses it for an omitted or zero `timeout_seconds`.
 
 ## Evidence and current behavior
 
@@ -57,6 +58,12 @@ Separate follow-up features:
 - The pinned task-card redesign, custom progress widgets and new job-management panels.
 - Broad latency optimization, editing/worktree recovery changes and test keychain isolation.
 - Automatic background continuation for `shell.sudo`; its password handling and privileged execution path remain separate.
+
+Not claimed by this feature, and deliberately so:
+
+- **No Send now.** There is no way to deliver a message into a still-running turn; steering is a follow-up.
+- **No restart persistence.** Job handles and outputs restore for display, but a job never restarts and its process is not recovered after Marshal exits.
+- **No whole-process write coordination.** Commands that hand off keep the coordination rules they already had; Marshal does not serialize workspace writes across concurrent commands or processes.
 
 ## Architecture
 
@@ -101,7 +108,7 @@ Keep `command`, `background` and `timeout_seconds` for compatibility. Change the
 | Arguments or event | Required result |
 |---|---|
 | `background: true` | Start the command and return a job handle immediately. No execution deadline is derived from `timeout_seconds`. |
-| Foreground; timeout omitted or zero | Wait for the configured foreground period, proposed default 10 seconds. |
+| Foreground; timeout omitted or zero | Wait for the configured foreground period (default 10 seconds). |
 | Foreground; positive `timeout_seconds` | Wait for that duration. Do not inherit the previous execution-time cap or silently clamp the requested wait. |
 | Negative `timeout_seconds` | Reject before starting a process. |
 | Process exits while attached | Return the actual exit code and captured output as the shell result. |
@@ -193,6 +200,16 @@ Conversation replacement stops the old conversation after confirmation and then 
 
 No interactive confirmation is possible after a forced OS kill or lost terminal. Graceful noninteractive shutdown still stops owned processes and records the available reason; no prompt may block a headless ACP client indefinitely. An explicit ACP session stop remains that client's stop request.
 
+### Headless (ACP) ownership
+
+The ACP transport applies the same ownership rules, and it never prompts:
+
+- `session/cancel` is an explicit turn stop. It asks the conversation's command service to stop the commands still attached to the turn *before* cancelling the agent's waits and provider calls (cause `turn stop requested`), so a foreground command is terminated while a command that already detached keeps running. A cancel that lands while the turn is still starting is retained by the session and adopted by the registration, so it cannot be lost.
+- Session close, close-all, and the load/resume/delete replacement path are explicit session-level stops: they stop the old conversation's attached commands (cause `conversation ended`) and only then tear down the runtime, which stops everything the conversation still owns. These paths call no prompt, no permission bridge and no postmortem UI — a headless shutdown that asked a question would block indefinitely with nobody attached to answer.
+- An ordinary turn finish (including an ACP prompt returning) never requests a stop. Its cleanup only unregisters the turn's own stop group, and it clears only that registration, so a newer operation's target is never unregistered by an older one finishing.
+- A transport deadline or a caller's cancelled request context ends only the *wait*. It does not stop the conversation, and the turn's detached commands remain conversation-owned.
+- A session with no command service still cancels its agent; the unavailable stop is reported by the session, never as a transport error, and response codes are unchanged.
+
 ## Capacity, policy and output
 
 - Reserve execution capacity before launching, including commands initially attached in the foreground. Handoff never needs a new slot and never kills an existing job to make room.
@@ -218,6 +235,14 @@ Record:
 - Output truncation and a bounded final output tail.
 
 Persist final detached-job outcomes before reporting them complete. Report termination reason and effective wait/handoff behavior in structured diagnostics and postmortem evidence. Timers for grace periods after an explicit stop may escalate process-tree termination; they must not become independent lifetime deadlines.
+
+The evidence reaches clients as typed data, on the existing transports:
+
+- The stack-detail transport (`session/stack_node`) carries a `CallDetail.execution` object for every call with a managed-command record: identity, ownership (`conversationId`, `actor`, `turnId`, `stepId`, `toolCallId`), `cwd`/`generation`/`pid`, state/outcome/attachment, the effective `wait`, `detachReason`/`detachedAt`, `stopCause`/`stopRequestedAt`, an optional `exit`, and `truncated`. It is additive and omitted when there is no record: the coaching text a notice may carry stays in `notice.text`, so a client explains a wait, a handoff or a stop without parsing a sentence. An absent `exit` means no exit was ever observed and must never be rendered as success.
+- The wire projection carries a card's `executionId`, `wait`, `detachReason` and `detachedAt` alongside the `status`, `attachment`, `stopCause`, optional `exit` and `truncated` it already carried.
+- `postmortem.Report` gains an additive `execution_evidence` section — one entry per execution identity, from foreground call records and detached final records — stating ownership, effective wait, handoff, stop request, observed outcome and whether the settlement is failure evidence. A continuation (a wait that ended while the command kept running), an await expiry, a natural success and a lost record are not failures. The schema version is unchanged by the addition.
+
+Command, working directory and output text travel through the existing redaction/scrubbing paths before they reach any of these.
 
 Resume restores historical job outcomes. A previously active job whose process owner no longer exists is shown as lost, not running or successfully completed. This feature does not restart the process.
 
@@ -257,10 +282,10 @@ Required checks:
 
 During implementation, run focused package tests first, then the full Go suite and build with cgo. Make app/runtime tests hermetic through existing injection seams and in-memory credentials; do not require a real keychain or external provider.
 
-## Proposed delivery boundaries
+## Delivery boundaries
 
 1. Conversation-owned command execution, bounded waiting and automatic handoff, including stop-turn semantics.
 2. Reload/child/pipeline ownership integration, output settlement and termination evidence.
 3. Interactive end-of-conversation warning and postmortem ordering.
 
-Each delivery needs an independently testable result. Precise code decomposition and migration steps belong in the subsequent implementation plan; no implementation is authorized by this draft alone.
+Each delivery has an independently testable result. The executable decomposition and migration steps live in `docs/background-execution/plans/2026-10-17-reliable-background-execution-plan.md`; this document is the behavior those steps implemented.

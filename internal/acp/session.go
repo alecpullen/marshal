@@ -179,6 +179,15 @@ func NewSessionManager(cfg SessionManagerConfig, opts ...SessionManagerOption) *
 // regardless of which lifecycle path races to tear rt down. Concurrent
 // callers block on the sync.Once; the winning caller performs the close
 // and everyone else returns its error.
+//
+// The close is the noninteractive end path, and that is load-bearing: every
+// caller here is headless (an ACP session close, close-all, or a
+// load/resume/delete replacement), so there is no user to ask. rt.Close runs
+// its terminal closure through the runtime's own end controller — freeze
+// ordinary admission, then the shared stop/join pass — and that controller
+// consults no UI: it freezes exactly the work it found, so no approval prompt,
+// warning panel or postmortem question can block a shutdown that has nobody
+// attached to answer it.
 func (m *SessionManager) closeRuntimeOnce(ctx context.Context, rt *app.Runtime) error {
 	if rt == nil {
 		return nil
@@ -488,6 +497,12 @@ func (m *SessionManager) Resume(ctx context.Context, params json.RawMessage) (an
 // Close tears down the runtime for id. The runtime is removed from the
 // map before any canceller or closer is invoked, so concurrent Get calls
 // return false during teardown.
+//
+// The turn canceller is the explicit one (CancelAndWait): it stops the
+// session's still-attached commands before cancelling the agent, then waits for
+// the turn to settle within the canceller's own bound. Cancel and close errors
+// are joined rather than short-circuited, so a failed stop still gets its
+// runtime closed and the caller sees both.
 func (m *SessionManager) Close(ctx context.Context, id string) error {
 	turnCancel, err := m.requireReady()
 	if err != nil {
@@ -630,6 +645,11 @@ func (m *SessionManager) List(ctx context.Context, params json.RawMessage) (any,
 // map, sorts the captured ids for deterministic logging, and then
 // attempts cancel + close for each id using the caller context. The
 // returned error is the joined result of every per-id cancel and close.
+//
+// Each per-id step is bounded by its own shutdown context, so one slow session
+// cannot consume the whole shutdown budget, and a failing session is joined
+// rather than aborting the rest — a headless shutdown must close every runtime
+// it owns even when one of them refuses to settle.
 func (m *SessionManager) CloseAll(ctx context.Context) error {
 	turnCancel, err := m.requireReady()
 	if err != nil {
@@ -702,6 +722,11 @@ func (m *SessionManager) detach(id string) (*app.Runtime, bool) {
 // turn, and closes it. If id has no prior runtime, both calls are
 // skipped and the returned error is nil. Any error from cancel or close
 // is returned; the manager does not start a replacement.
+//
+// This is an explicit replacement, so the cancel is the explicit one: the
+// old conversation's still-attached commands are stopped, while commands that
+// already detached stay conversation-owned and are stopped by the runtime's own
+// terminal closure. Nothing is transferred to the replacement.
 func (m *SessionManager) replaceExisting(ctx context.Context, id string, cancel TurnCanceller) error {
 	old, ok := m.detach(id)
 	if !ok {

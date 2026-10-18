@@ -3228,3 +3228,355 @@ func TestToolCallIDsAreUniqueAcrossSteps(t *testing.T) {
 		t.Fatalf("an update must carry its call's scoped id: %v vs %v", updates[1]["toolCallId"], updates[0]["toolCallId"])
 	}
 }
+
+// recordingTurnStopService is the conversation's command service as these tests
+// see it: it records what an explicit turn stop asked for, and when it was
+// asked, so a test can assert that service acceptance happened BEFORE the agent
+// was cancelled.
+type recordingTurnStopService struct {
+	mu        sync.Mutex
+	turnIDs   []string
+	causes    []string
+	requested []string
+	accepted  atomic.Bool
+}
+
+func (s *recordingTurnStopService) StopAttached(turnID, cause string) ([]string, error) {
+	s.mu.Lock()
+	s.turnIDs = append(s.turnIDs, turnID)
+	s.causes = append(s.causes, cause)
+	s.mu.Unlock()
+	// Published last, so an observer that sees this flag is guaranteed to find
+	// the recorded turn id and cause in place.
+	s.accepted.Store(true)
+	return []string{"exec-1"}, nil
+}
+
+func (s *recordingTurnStopService) RequestStop(executionID, cause string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requested = append(s.requested, executionID)
+	return nil
+}
+
+func (s *recordingTurnStopService) stops() (turnIDs, causes []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.turnIDs...), append([]string(nil), s.causes...)
+}
+
+// newCancelTestSession builds a session with a stop service installed, which is
+// what makes an explicit cancel reach the command service.
+func newCancelTestSession(t *testing.T) (*session.State, *recordingTurnStopService) {
+	t.Helper()
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	svc := &recordingTurnStopService{}
+	st.SetTurnStopService(svc)
+	return st, svc
+}
+
+// blockingRunner waits for its context to be cancelled and then reports the
+// service's acceptance, so a test can assert the stop landed before the agent
+// was cancelled rather than merely sometime afterwards.
+func blockingRunner(svc *recordingTurnStopService) (RunnerFunc, chan bool) {
+	observed := make(chan bool, 1)
+	return RunnerFunc(func(ctx context.Context, prompt string) error {
+		<-ctx.Done()
+		observed <- svc.accepted.Load()
+		return ctx.Err()
+	}), observed
+}
+
+// TestCancelStopsAttachedTurnWorkBeforeCancellingAgent pins the ownership rule:
+// session/cancel asks the command service to stop the turn's still-attached
+// commands, and only then cancels the agent's waits. The acceptance flag the
+// runner observes on cancellation is the ordering proof.
+func TestCancelStopsAttachedTurnWorkBeforeCancellingAgent(t *testing.T) {
+	st, svc := newCancelTestSession(t)
+	run, observed := blockingRunner(svc)
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, BeginWork: identityBeginWork, Run: run,
+				Events: pubsub.NewBroker[session.Event](), State: st}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_stop","prompt":[{"type":"text","text":"hi"}]}`))
+		done <- err
+	}()
+	waitForRegistration(t, st)
+
+	if _, err := manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"sess_stop"}`)); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	select {
+	case accepted := <-observed:
+		if !accepted {
+			t.Fatal("the agent was cancelled before the service accepted the stop")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner never observed cancellation")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("PromptTurn returned %v, want nil (a cancel is a normal stop)", err)
+	}
+
+	turnIDs, causes := svc.stops()
+	if len(turnIDs) != 1 || turnIDs[0] == "" {
+		t.Fatalf("StopAttached turn ids = %v, want one non-empty turn", turnIDs)
+	}
+	if len(causes) != 1 || causes[0] != cancelCause {
+		t.Fatalf("StopAttached causes = %v, want [%q]", causes, cancelCause)
+	}
+	if len(svc.requested) != 0 {
+		t.Fatalf("RequestStop targets = %v; a turn stop must target the turn, not individual executions", svc.requested)
+	}
+}
+
+// TestCancelAndWaitStopsAttachedTurnWork covers the headless lifecycle path: a
+// session close or replacement is an explicit session-level stop, so it stops
+// the turn's attached commands with the same precedence an interactive cancel
+// has, and still returns only once the runner has settled.
+func TestCancelAndWaitStopsAttachedTurnWork(t *testing.T) {
+	st, svc := newCancelTestSession(t)
+	gate := make(chan struct{})
+	// The runner honours its context, so the lifecycle stop both reaches the
+	// service and lets the wait return rather than sitting out its bound.
+	run := RunnerFunc(func(ctx context.Context, prompt string) error {
+		<-ctx.Done()
+		<-gate
+		return ctx.Err()
+	})
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, BeginWork: identityBeginWork, Run: run,
+				Events: pubsub.NewBroker[session.Event](), State: st}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	manager.cancelTimeout = 5 * time.Second
+
+	go func() {
+		manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_close","prompt":[{"type":"text","text":"hi"}]}`))
+	}()
+	waitForRegistration(t, st)
+
+	// CancelAndWait must not return while the runner is still live.
+	waited := make(chan error, 1)
+	go func() { waited <- manager.CancelAndWait(context.Background(), "sess_close") }()
+	select {
+	case err := <-waited:
+		t.Fatalf("CancelAndWait returned %v before the runner settled", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(gate)
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("CancelAndWait = %v, want nil once the runner settled", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("CancelAndWait never returned after the runner settled")
+	}
+
+	_, causes := svc.stops()
+	if len(causes) != 1 || causes[0] != cancelAndWaitCause {
+		t.Fatalf("StopAttached causes = %v, want [%q]", causes, cancelAndWaitCause)
+	}
+}
+
+// TestOrdinaryTurnCleanupDoesNotStopWork is the other half of the ownership
+// rule: a turn that finishes never asks for a stop, and it clears only its own
+// registration so a later operation starts from a clean target.
+func TestOrdinaryTurnCleanupDoesNotStopWork(t *testing.T) {
+	st, svc := newCancelTestSession(t)
+	var sawRegistration atomic.Bool
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					sawRegistration.Store(st.CurrentTurnStop() != nil)
+					return nil
+				}),
+				Events: pubsub.NewBroker[session.Event](), State: st}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	if _, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_done","prompt":[{"type":"text","text":"hi"}]}`)); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+	if !sawRegistration.Load() {
+		t.Fatal("the turn registered no stop group, so a cancel during the turn would have had no target")
+	}
+	if turnIDs, causes := svc.stops(); len(turnIDs) != 0 || len(causes) != 0 {
+		t.Fatalf("a normal turn end stopped work: turnIDs=%v causes=%v", turnIDs, causes)
+	}
+	if token := st.CurrentTurnStop(); token != nil {
+		t.Fatalf("turn cleanup left a registration behind: %v", token.TurnID())
+	}
+}
+
+// TestRequestDeadlineEndsWaitingWithoutStoppingWork pins that a transport or
+// request deadline is not a conversation stop: the caller's context ending ends
+// the wait, and the turn's work is left alone with its registration released.
+func TestRequestDeadlineEndsWaitingWithoutStoppingWork(t *testing.T) {
+	st, svc := newCancelTestSession(t)
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					<-ctx.Done()
+					return ctx.Err()
+				}),
+				Events: pubsub.NewBroker[session.Event](), State: st}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		manager.PromptTurn(ctx, json.RawMessage(`{"sessionId":"sess_deadline","prompt":[{"type":"text","text":"hi"}]}`))
+		close(done)
+	}()
+	waitForRegistration(t, st)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("PromptTurn did not return after the request context ended")
+	}
+
+	if turnIDs, causes := svc.stops(); len(turnIDs) != 0 || len(causes) != 0 {
+		t.Fatalf("a request deadline stopped the conversation: turnIDs=%v causes=%v", turnIDs, causes)
+	}
+	if token := st.CurrentTurnStop(); token != nil {
+		t.Fatalf("the registration survived the turn: %v", token.TurnID())
+	}
+}
+
+// A session with no command service — a fixture, a scoped child — must still
+// cancel its agent. Requesting a stop it cannot satisfy is reported by the
+// session, never by the transport, so a cancel notification cannot become an
+// error response.
+func TestCancelWithoutCommandServiceStillCancelsTurn(t *testing.T) {
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+					<-ctx.Done()
+					return ctx.Err()
+				}),
+				Events: pubsub.NewBroker[session.Event](), State: st}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_nostop","prompt":[{"type":"text","text":"hi"}]}`))
+		done <- err
+	}()
+	waitForRegistration(t, st)
+
+	if _, err := manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"sess_nostop"}`)); err != nil {
+		t.Fatalf("Cancel with no command service: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("PromptTurn returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the turn was not cancelled")
+	}
+}
+
+// A cancel that lands before the turn registers its stop group must not be
+// lost: the session retains the request, the registration adopts it, and the
+// turn is handed an already-cancelled context so it cannot do work the client
+// already stopped.
+func TestCancelBeforeRegistrationIsRetained(t *testing.T) {
+	st, svc := newCancelTestSession(t)
+	var sawCancelled atomic.Bool
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return nil, false
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	// Reserve the slot by starting a turn whose admission blocks, so the cancel
+	// arrives while the slot exists but the group does not.
+	admitted := make(chan struct{})
+	release := make(chan struct{})
+	manager.lookup = func(sessionID string) (*TurnRuntime, bool) {
+		return &TurnRuntime{SessionID: sessionID, State: st,
+			BeginWork: func(ctx context.Context) (context.Context, func(), error) {
+				close(admitted)
+				<-release
+				return ctx, func() {}, nil
+			},
+			Run: RunnerFunc(func(ctx context.Context, prompt string) error {
+				// The adopted stop is what makes this context already done.
+				sawCancelled.Store(ctx.Err() != nil)
+				return ctx.Err()
+			}),
+			Events: pubsub.NewBroker[session.Event]()}, true
+	}
+
+	type promptResult struct {
+		result any
+		err    error
+	}
+	done := make(chan promptResult, 1)
+	go func() {
+		res, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_early","prompt":[{"type":"text","text":"hi"}]}`))
+		done <- promptResult{res, err}
+	}()
+	<-admitted
+
+	// The slot is reserved; the turn has not registered its group yet, so this
+	// cancel has no token to stop and must be retained instead.
+	if _, err := manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"sess_early"}`)); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	close(release)
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("PromptTurn returned %v, want nil", got.err)
+		}
+		if ptr, ok := got.result.(PromptTurnResult); !ok || ptr.StopReason != "cancelled" {
+			t.Fatalf("result = %#v, want stopReason cancelled for the retained stop", got.result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the early cancel did not end the turn")
+	}
+	if !sawCancelled.Load() {
+		t.Fatal("the runner was handed a live context after a cancel that arrived before registration")
+	}
+	if _, causes := svc.stops(); len(causes) != 1 || causes[0] != cancelCause {
+		t.Fatalf("StopAttached causes = %v, want the adopted early cancel", causes)
+	}
+}
+
+// waitForRegistration blocks until the session has a stop group registered,
+// which is how a test knows the turn has actually started.
+func waitForRegistration(t *testing.T, st *session.State) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if st.CurrentTurnStop() != nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the turn never registered a stop group")
+}

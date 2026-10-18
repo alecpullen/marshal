@@ -1297,8 +1297,21 @@ func truncateUTF8(text string, limit int) string {
 		budget = 0
 	}
 	cut := text[:budget]
-	for len(cut) > 0 && !utf8.RuneStart(cut[len(cut)-1]) {
-		cut = cut[:len(cut)-1]
+	// Trim back to a rune boundary. DecodeLastRuneInString reports
+	// (RuneError, 1) for a trailing byte that is not a complete rune — a
+	// dangling leading byte, or a stray continuation byte — so dropping one
+	// byte at a time lands exactly on the last complete rune. A genuine U+FFFD
+	// in the text decodes as (RuneError, 3) and is kept.
+	//
+	// Trimming on !utf8.RuneStart instead would stop AT the dangling leading
+	// byte rather than past it, and would also strip a complete trailing rune
+	// whose last byte happens to be a continuation byte.
+	for len(cut) > 0 {
+		if r, size := utf8.DecodeLastRuneInString(cut); r == utf8.RuneError && size == 1 {
+			cut = cut[:len(cut)-1]
+			continue
+		}
+		break
 	}
 	return cut + suffix
 }

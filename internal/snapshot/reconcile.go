@@ -326,6 +326,70 @@ func (m *Manager) Discover(ctx context.Context) (*StoreDiscovery, error) {
 	return out, nil
 }
 
+// discoverWorkspace returns what Discover would report for one workspace —
+// Discover(ctx).Workspace(workspace) — without inspecting any other store.
+// Reconciliation runs before every capture and concerns only the capturing
+// workspace; a full Discover walked every store under the root, including
+// every legacy store byte by byte, which on a long-lived machine cost seconds
+// per capture.
+//
+// It mirrors Discover's classification exactly: only a real (non-symlink)
+// directory with a valid workspace ID is a workspace, and a legacy store takes
+// precedence over a versioned store with the same ID, because Discover lists
+// legacy entries first and Workspace returns the first match.
+func (m *Manager) discoverWorkspace(ctx context.Context, workspace string) (*DiscoveredWorkspace, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := m.checkReady(); err != nil {
+		return nil, err
+	}
+	if !validWorkspaceID(workspace) {
+		return nil, nil
+	}
+	rootInfo, err := os.Lstat(m.root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, m.storeError(ReasonUnreadableFile, m.root, err)
+	}
+	if !rootInfo.IsDir() {
+		return nil, m.storeErrorf(ReasonInternal, m.root, "snapshots root is not a directory")
+	}
+
+	legacyPath := filepath.Join(m.root, workspace)
+	if info, err := os.Lstat(legacyPath); err == nil {
+		if info.IsDir() {
+			return m.discoverLegacyWorkspace(ctx, workspace, legacyPath, info)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return nil, m.storeError(ReasonUnreadableFile, legacyPath, err)
+	}
+
+	v2Root := filepath.Join(m.root, v2DirName)
+	if info, err := os.Lstat(v2Root); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, m.storeError(ReasonUnreadableFile, v2Root, err)
+	} else if !info.IsDir() {
+		return nil, nil
+	}
+	v2Path := filepath.Join(v2Root, workspace)
+	info, err := os.Lstat(v2Path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, m.storeError(ReasonUnreadableFile, v2Path, err)
+	}
+	if !info.IsDir() {
+		return nil, nil
+	}
+	return m.discoverV2Workspace(ctx, workspace, v2Path, info)
+}
+
 // discoverV2Root enumerates the versioned store root's workspaces.
 func (m *Manager) discoverV2Root(ctx context.Context, v2Root string, out *StoreDiscovery) error {
 	entries, err := readDirNoFollow(v2Root)
@@ -1270,11 +1334,10 @@ func (m *Manager) ReconcileWorkspace(ctx context.Context, workspace string) (*Wo
 	if !m.Owned() {
 		return nil, storeErrorf(ReasonNotOwned, "reconciliation requires exclusive ownership of the snapshot store")
 	}
-	discovery, err := m.Discover(ctx)
+	ws, err := m.discoverWorkspace(ctx, workspace)
 	if err != nil {
 		return nil, err
 	}
-	ws := discovery.Workspace(workspace)
 	if ws == nil {
 		return &WorkspaceReconcile{Workspace: workspace}, nil
 	}

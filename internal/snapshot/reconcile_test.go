@@ -1527,3 +1527,61 @@ func TestLastPublishedTimestampIsPersistedAndOrdered(t *testing.T) {
 	}
 	_ = hash
 }
+
+// discoverWorkspace must report exactly what a full Discover reports for that
+// workspace, so reconciliation sees the same store without walking every other
+// one.
+func TestDiscoverWorkspaceMatchesFullDiscovery(t *testing.T) {
+	m, cat, ctx := testCatalog(t)
+	genID, _ := newTestGeneration(t, ctx, cat)
+	publishSnapshot(t, ctx, cat, genID)
+	root := m.Root()
+
+	const legacyOnly, both, fileOnly, linked = "aaaaaaaaaaaa", "bbbbbbbbbbbb", "cccccccccccc", "dddddddddddd"
+	mkLegacy := func(id string) {
+		dir := filepath.Join(root, id, "objects", "ab")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir legacy %s: %v", id, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "cdef"), []byte("legacy object"), 0o644); err != nil {
+			t.Fatalf("write legacy %s: %v", id, err)
+		}
+	}
+	mkLegacy(legacyOnly)
+	mkLegacy(both)
+	if err := os.MkdirAll(filepath.Join(root, v2DirName, both), 0o755); err != nil {
+		t.Fatalf("mkdir v2 %s: %v", both, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, fileOnly), []byte("stray"), 0o644); err != nil {
+		t.Fatalf("write stray: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(root, legacyOnly), filepath.Join(root, linked)); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	full, err := m.Discover(ctx)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	ids := []string{cat.Workspace(), legacyOnly, both, fileOnly, linked, "eeeeeeeeeeee", "not-an-id"}
+	for _, id := range ids {
+		want := full.Workspace(id)
+		got, err := m.discoverWorkspace(ctx, id)
+		if err != nil {
+			t.Fatalf("discoverWorkspace(%s): %v", id, err)
+		}
+		if (got == nil) != (want == nil) {
+			t.Fatalf("discoverWorkspace(%s) = %+v, full discovery has %+v", id, got, want)
+		}
+		if got == nil {
+			continue
+		}
+		if got.Layout != want.Layout || got.Path != want.Path || got.Bytes != want.Bytes ||
+			len(got.Warnings) != len(want.Warnings) || got.UnpublishedBytes != want.UnpublishedBytes {
+			t.Fatalf("discoverWorkspace(%s) = %+v, full discovery has %+v", id, got, want)
+		}
+	}
+	if ws, _ := m.discoverWorkspace(ctx, both); ws == nil || ws.Layout != LayoutLegacy {
+		t.Fatalf("a workspace with both layouts must resolve to legacy, got %+v", ws)
+	}
+}

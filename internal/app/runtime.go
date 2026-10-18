@@ -35,6 +35,7 @@ import (
 	"marshal/internal/repo"
 	"marshal/internal/sddauthor"
 	"marshal/internal/skills"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -2271,6 +2272,14 @@ const (
 // agent waiting on a canonical pending request.
 const workBlockedSourceID = "prompt"
 
+// legacyWorkEpoch is the stable epoch stamped on a command record that carries
+// an execution identity but no source epoch of its own — a record written
+// before the epoch was recorded. The live manager epoch is minted per process,
+// so falling back to it would give the same durable record a different
+// canonical key on every restart. A record with no execution identity uses the
+// same epoch, sharing the "legacy" naming.
+const legacyWorkEpoch = "legacy"
+
 // workEpochSeq mints process-unique coordinator epochs. An epoch is opaque and
 // never sortable; it binds a client's cursor and a source identity.
 var workEpochSeq atomic.Uint64
@@ -2684,7 +2693,7 @@ func (wc *workCoordinator) commandCandidates(conv string, jobs *native.JobSnapsh
 			// the next resume synthesizes it again.
 			continue
 		}
-		add(workCandidate{item: commandExitItem(conv, jobs, e)})
+		add(workCandidate{item: commandExitItem(conv, e)})
 	}
 	if jobs != nil {
 		for _, j := range jobs.Jobs {
@@ -2748,27 +2757,33 @@ func commandItem(conv, epoch, key string, j native.JobInfo, saveErrors map[strin
 		Stop:    !workItemTerminal(state) && j.Attachment != native.AttachmentForeground && j.ExecutionID != "",
 	}
 	if msg := saveErrors[settlementKeyOf(j)]; msg != "" {
+		// A result whose first durable save is still in flight is not
+		// acknowledgeable: acknowledging it would claim a durability the next
+		// resume cannot restore.
 		it.Attention = cleanWorkWarning(msg)
+	} else if viewmodel.WorkNeedsAttention(it) {
+		// A terminal command that needs attention is the one result a caller
+		// collapses to compact attention by acknowledging; a running command is
+		// never acknowledgeable.
+		it.Capabilities.Acknowledge = true
 	}
 	return it
 }
 
 // commandExitItem projects one durable command exit. A record with no execution
 // identity is legacy history: it uses the "legacy" epoch and its order-based
-// identity as source ID, and it never receives stop capability.
-func commandExitItem(conv string, jobs *native.JobSnapshot, e session.JobExit) viewmodel.WorkItem {
+// identity as source ID, and it never receives stop capability. A record with an
+// identity but no source epoch predates the epoch's recording and takes the same
+// stable epoch — never the live manager epoch, which changes every process.
+func commandExitItem(conv string, e session.JobExit) viewmodel.WorkItem {
 	epoch := e.SourceEpoch
 	sourceID := e.ExecutionID
 	if sourceID == "" {
-		epoch = "legacy"
+		epoch = legacyWorkEpoch
 		sourceID = e.Identity()
 	}
 	if epoch == "" {
-		if jobs != nil && jobs.Epoch != "" {
-			epoch = jobs.Epoch
-		} else {
-			epoch = "legacy"
-		}
+		epoch = legacyWorkEpoch
 	}
 	key := viewmodel.WorkKey(conv, epoch, workKindCommand, sourceID)
 	state := jobExitWorkState(e)
@@ -2804,6 +2819,11 @@ func commandExitItem(conv string, jobs *native.JobSnapshot, e session.JobExit) v
 		it.EndedAt = e.At
 	}
 	it.Capabilities = viewmodel.WorkCapabilities{Inspect: true}
+	if viewmodel.WorkNeedsAttention(it) {
+		// A terminal command exit that needs attention is acknowledged by its
+		// exact result revision; the durable exit carries no live save error.
+		it.Capabilities.Acknowledge = true
+	}
 	return it
 }
 
@@ -3520,8 +3540,10 @@ func lifecycleFingerprint(items []viewmodel.WorkItem) string {
 	return b.String()
 }
 
-// historyFingerprint captures ordering, membership and attention: the facts
-// whose change advances HistoryRevision and invalidates a reader's cursor.
+// historyFingerprint captures ordering, membership, the safe display fields a
+// page filters and sorts on, and attention: the facts whose change advances
+// HistoryRevision and invalidates a reader's cursor. Label and owner enter
+// bounded so the hash stays cheap.
 func historyFingerprint(items []viewmodel.WorkItem) string {
 	var b strings.Builder
 	b.WriteString("h1")
@@ -3530,6 +3552,10 @@ func historyFingerprint(items []viewmodel.WorkItem) string {
 		b.WriteString(it.TaskKey)
 		b.WriteByte(1)
 		b.WriteString(it.State)
+		b.WriteByte(1)
+		b.WriteString(strutil.Truncate(it.Label, 64, false))
+		b.WriteByte(1)
+		b.WriteString(strutil.Truncate(it.Owner, 64, false))
 		if viewmodel.WorkNeedsAttention(it) {
 			b.WriteString("\x02a")
 		}

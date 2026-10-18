@@ -407,3 +407,25 @@ func TestLiveWorkDetachedCommandKeepsOneDispatch(t *testing.T) {
 		t.Fatalf("card = %+v, want it settled in place on the same dispatch row", row.Job)
 	}
 }
+
+// A base-era command record carries an execution identity but no source epoch.
+// The dispatch row must key it under the stable legacy epoch the coordinator
+// also projects, or the row's key would never match the projected item's and
+// would drift with the live runtime epoch on every restart.
+func TestBaseEraCommandRowUsesStableWorkKey(t *testing.T) {
+	start := detachedJobStart(1, "j", 2, "job-1", "exec-1", "")
+	exit := structuredJobExit(5, "job-1", "exec-1", nil)
+	nodes := Build(Snapshot{
+		Items:    []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start, exit},
+		Steps:    []session.Step{stepOf(1, 1, 1, 3)},
+		LiveWork: true,
+	})
+	want := WorkKey("conv", legacyWorkEpoch, workKindCommand, "exec-1")
+	if n := countWorkKey(nodes, want); n != 1 {
+		t.Fatalf("dispatch rows for a base-era execution = %d, want exactly one (%s)", n, shape(nodes))
+	}
+	row := findNode(nodes, "tool:1:j")
+	if row == nil || row.WorkKey != want {
+		t.Fatalf("dispatch row = %+v, want the stable work key %q", row, want)
+	}
+}

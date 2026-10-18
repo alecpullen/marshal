@@ -4587,3 +4587,143 @@ func TestWorkRuntimeDirtyRetryDoesNotWriteProgressTicks(t *testing.T) {
 		t.Fatal("the probe did not observe a genuine durable save")
 	}
 }
+
+// TestWorkCommandFailureIsAcknowledgeableUntilAcked pins that a terminal
+// failed command result offers acknowledgment at its exact revision, that
+// acknowledging it suppresses the coordinator's attention count and capability,
+// and that the exact result stays projected (acknowledgment never deletes it).
+func TestWorkCommandFailureIsAcknowledgeableUntilAcked(t *testing.T) {
+	state, _, sessionID := newWorkFixture(t)
+	clock := &workClock{t: time.Unix(6100, 0)}
+	if err := state.AddJobExit(session.JobExit{
+		ID: "job-1", Command: "boom", ExecutionID: "exec-boom",
+		SourceEpoch: "epoch-1", ResultRevision: "rev-1",
+		State: "failed", Outcome: "startup_failure", ExitCode: 1,
+		At: time.Unix(6100, 0),
+	}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+	wc := newWorkCoordinator(context.Background(), state, workSources{}, clock.now)
+	t.Cleanup(wc.close)
+	rt := &Runtime{State: state, work: wc}
+
+	snap := wc.snapshotNow()
+	item, ok := workItemBySource(snap, workKindCommand, "exec-boom")
+	if !ok {
+		t.Fatalf("failed command missing from %+v", snap.Items)
+	}
+	if !viewmodel.WorkNeedsAttention(item) {
+		t.Fatalf("a failed command should need attention: %+v", item)
+	}
+	if !item.Capabilities.Acknowledge {
+		t.Fatal("a failed terminal command result should be acknowledgeable")
+	}
+	before := snap.AttentionCount
+	if before == 0 {
+		t.Fatal("attention count should include the failed command")
+	}
+
+	// A revision that names no current terminal result is refused.
+	if err := rt.AcknowledgeWork(context.Background(), viewmodel.WorkAck{
+		WorkTarget:     viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: item.TaskKey},
+		ResultRevision: "stale-revision",
+	}); err == nil {
+		t.Fatal("acknowledging a stale command revision succeeded")
+	}
+
+	// The exact revision acknowledges and suppresses the attention.
+	if err := rt.AcknowledgeWork(context.Background(), viewmodel.WorkAck{
+		WorkTarget:     viewmodel.WorkTarget{ConversationID: sessionID, TaskKey: item.TaskKey},
+		ResultRevision: viewmodel.WorkResultRevision(item),
+	}); err != nil {
+		t.Fatalf("AcknowledgeWork: %v", err)
+	}
+	wc.reconcileWork(clock.now())
+	after := wc.snapshotNow()
+	if after.AttentionCount >= before {
+		t.Fatalf("attention count = %d, want < %d after acknowledgment", after.AttentionCount, before)
+	}
+	acked, ok := workItemBySource(after, workKindCommand, "exec-boom")
+	if !ok {
+		t.Fatalf("the acknowledged command vanished from %+v", after.Items)
+	}
+	if acked.Capabilities.Acknowledge {
+		t.Fatal("an acknowledged command result should not stay acknowledgeable")
+	}
+}
+
+// TestWorkBaseEraCommandExitUsesStableEpoch pins that a durable exit carrying an
+// execution identity but no source epoch is keyed under the stable legacy epoch,
+// not the live manager epoch — which is minted per process and would give the
+// same record a different canonical key on every restart.
+func TestWorkBaseEraCommandExitUsesStableEpoch(t *testing.T) {
+	state, _, sessionID := newWorkFixture(t)
+	dir := t.TempDir()
+	clock := &workClock{t: time.Unix(6200, 0)}
+
+	started := make(chan struct{})
+	var once sync.Once
+	runner := &fakeRunner{run: func(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		once.Do(func() { close(started) })
+		<-ctx.Done()
+		return native.CommandResult{}, ctx.Err()
+	}}
+	jm := workTestJobManager(t, state, runner, dir)
+	if _, err := jm.Launch(context.Background(), native.LaunchSpec{Command: "live", Detached: true}); err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-started
+	if jm.Snapshot().Epoch == "" {
+		t.Fatal("the manager epoch should be minted once a job runs")
+	}
+	// A base-era exit has an execution identity but no source epoch.
+	if err := state.AddJobExit(session.JobExit{
+		ID: "job-9", Command: "old", ExecutionID: "exec-old",
+		State: "failed", Outcome: "nonzero_exit", ExitCode: 1,
+		At: time.Unix(6200, 0),
+	}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+
+	wc := newWorkCoordinator(context.Background(), state, workSources{Jobs: jm}, clock.now)
+	t.Cleanup(wc.close)
+	wc.reconcileWork(clock.now())
+
+	item, ok := workItemBySource(wc.snapshotNow(), workKindCommand, "exec-old")
+	if !ok {
+		t.Fatalf("base-era exit missing from the projection")
+	}
+	if item.RuntimeEpoch != legacyWorkEpoch {
+		t.Fatalf("RuntimeEpoch = %q, want %q", item.RuntimeEpoch, legacyWorkEpoch)
+	}
+	if item.RuntimeEpoch == jm.Snapshot().Epoch {
+		t.Fatal("the base-era exit drifted to the live manager epoch")
+	}
+	if want := viewmodel.WorkKey(sessionID, legacyWorkEpoch, workKindCommand, "exec-old"); item.TaskKey != want {
+		t.Fatalf("TaskKey = %q, want %q", item.TaskKey, want)
+	}
+	for _, it := range wc.snapshotNow().Items {
+		if it.Kind == workKindCommand && it.State == workStateRunning && it.Capabilities.Acknowledge {
+			t.Fatal("a running command must not be acknowledgeable")
+		}
+	}
+}
+
+// TestWorkHistoryFingerprintTracksLabelAndOwner pins that a change to a safe
+// label or owner — both fields a work page filters and sorts on — advances the
+// history fingerprint, while identical items stay deterministic.
+func TestWorkHistoryFingerprintTracksLabelAndOwner(t *testing.T) {
+	item := func(label, owner string) []viewmodel.WorkItem {
+		return []viewmodel.WorkItem{{TaskKey: "k", State: workStateCompleted, Label: label, Owner: owner}}
+	}
+	base := historyFingerprint(item("build", "implementer"))
+	if base != historyFingerprint(item("build", "implementer")) {
+		t.Fatal("the history fingerprint is not deterministic")
+	}
+	if base == historyFingerprint(item("deploy", "implementer")) {
+		t.Fatal("a label change left the history fingerprint unchanged")
+	}
+	if base == historyFingerprint(item("build", "reviewer")) {
+		t.Fatal("an owner change left the history fingerprint unchanged")
+	}
+}

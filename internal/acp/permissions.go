@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"marshal/internal/app/session"
 )
@@ -53,6 +54,41 @@ type PermissionRequest struct {
 	// permission), so client UIs can label it. Approve = allow once;
 	// deny = sticky session deny.
 	SkillGate bool `json:"skillGate,omitempty"`
+	// ModeAccess carries the typed capability-request presentation for a
+	// mode.request. It is additive: a client that ignores it still receives
+	// the full disclosure in Reason.
+	ModeAccess *ModeAccessRequest `json:"modeAccess,omitempty"`
+}
+
+// ModeAccessState is the effective access tuple as it appears on the wire.
+// It deliberately duplicates the session type rather than aliasing it: the
+// JSON contract is the integration boundary, and web/ must never import an
+// internal Go type.
+type ModeAccessState struct {
+	Mode   string `json:"mode"`
+	System bool   `json:"system"`
+}
+
+// ModeAccessRequest is the typed presentation of one capability request.
+type ModeAccessRequest struct {
+	RequestID      string          `json:"requestId"`
+	SessionID      string          `json:"sessionId"`
+	Actor          string          `json:"actor,omitempty"`
+	StepID         int64           `json:"stepId,omitempty"`
+	Reason         string          `json:"reason"`
+	Current        ModeAccessState `json:"current"`
+	MissingEditing bool            `json:"missingEditing"`
+	MissingSystem  bool            `json:"missingSystem"`
+}
+
+// ModeAccessChoice is the typed answer to a ModeAccessRequest. The outer
+// PermissionDecision.Approved remains the decision; this carries identity,
+// the presented tuple and the selected editing variant only.
+type ModeAccessChoice struct {
+	RequestID string          `json:"requestId"`
+	SessionID string          `json:"sessionId"`
+	Current   ModeAccessState `json:"current"`
+	Mode      string          `json:"mode,omitempty"`
 }
 
 // PermissionDecision is the JSON-RPC result for `session/request_permission`.
@@ -62,6 +98,8 @@ type PermissionRequest struct {
 type PermissionDecision struct {
 	Approved bool   `json:"approved"`
 	Edited   string `json:"edited,omitempty"`
+	// ModeAccess is the typed capability choice, when the client supports it.
+	ModeAccess *ModeAccessChoice `json:"modeAccess,omitempty"`
 }
 
 // PermissionBridge translates session.PendingToolCall into a
@@ -90,6 +128,12 @@ func NewPermissionBridge(client PermissionClient) *PermissionBridge {
 func (b *PermissionBridge) Request(ctx context.Context, sessionID string, pending *session.PendingToolCall) (session.UserApprovalDecision, error) {
 	if pending == nil {
 		return session.UserApprovalDecision{}, ErrNilPending
+	}
+	// A typed access request is collected by CollectAccess and settled by the
+	// runtime resolver. Delivering an ordinary approval on its channel would
+	// acknowledge a capability nothing validated or applied.
+	if pending.Access != nil {
+		return session.UserApprovalDecision{}, errors.New("acp: access requests require CollectAccess and runtime resolution")
 	}
 	if pending.ResponseChan == nil {
 		return session.UserApprovalDecision{}, ErrPendingMissingResponseChan
@@ -158,4 +202,68 @@ func (b *PermissionBridge) RequestSkillGate(ctx context.Context, sessionID strin
 		return 0, ctx.Err()
 	}
 	return out, nil
+}
+
+// CollectAccess asks the client for a decision on a typed capability request
+// and returns the choice. It is deliberately collect-only: it never writes to
+// the pending tool call's channel, because the runtime resolver is what
+// validates and applies the grant, and only the session's own settlement path
+// may acknowledge one. The caller (the turn loop) hands the choice to the
+// runtime and lets it settle the canonical request.
+//
+// The request carries both the typed modeAccess payload and a full textual
+// disclosure in Reason, so a client that ignores the new field still shows the
+// user what is being asked: the scope, the lifetime, and that sudo is not
+// included.
+func (b *PermissionBridge) CollectAccess(ctx context.Context, sessionID, toolCallID string, request session.AccessRequest) (session.AccessChoice, error) {
+	if sessionID != request.SessionID || request.RequestID == "" {
+		return session.AccessChoice{}, errors.New("acp: invalid access request identity")
+	}
+	scope := "System access; interaction mode stays unchanged."
+	if request.MissingEditing {
+		scope = "Editing capability."
+		if request.MissingSystem {
+			scope = "Editing capability and system access, as one bundle."
+		}
+	}
+	disclosure := "This conversation only. Interaction mode, policy and sandbox still apply."
+	if request.MissingSystem {
+		disclosure += " Filesystem access outside the workspace and relaxed workspace shell guardrails; no sudo."
+	}
+	wire := &ModeAccessRequest{
+		RequestID: request.RequestID, SessionID: request.SessionID,
+		Actor: request.Actor, StepID: request.StepID, Reason: request.Reason,
+		Current:        ModeAccessState{Mode: request.Current.Mode, System: request.Current.System},
+		MissingEditing: request.MissingEditing, MissingSystem: request.MissingSystem,
+	}
+	decision, err := b.client.RequestPermission(ctx, PermissionRequest{
+		SessionID: sessionID, ToolCallID: toolCallID, ToolName: "mode.request",
+		Risk: "read_only",
+		Reason: fmt.Sprintf("%s\nCurrent mode: %s; system access: %t.\n%s\n%s",
+			request.Reason, request.Current.Mode, request.Current.System, scope, disclosure),
+		ModeAccess: wire,
+	})
+	if err != nil {
+		return session.AccessChoice{}, err
+	}
+	choice := session.AccessChoice{
+		RequestID: request.RequestID, SessionID: request.SessionID,
+		Current: request.Current, Approved: decision.Approved,
+	}
+	if decision.ModeAccess != nil {
+		echoed := decision.ModeAccess
+		if echoed.RequestID != request.RequestID || echoed.SessionID != request.SessionID {
+			return session.AccessChoice{}, errors.New("acp: access choice identity mismatch")
+		}
+		choice.Current = session.AccessState{Mode: echoed.Current.Mode, System: echoed.Current.System}
+		choice.Mode = echoed.Mode
+	} else if choice.Approved && request.MissingEditing {
+		choice.Mode = decision.Edited
+		if choice.Mode == "" {
+			choice.Mode = "edit"
+		}
+	}
+	// Legacy Edited is ignored when no editing selector was presented.
+	// Validation/application and canonical channel delivery belong to runtime.
+	return choice, nil
 }

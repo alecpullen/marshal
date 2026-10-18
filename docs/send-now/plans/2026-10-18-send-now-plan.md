@@ -1,6 +1,6 @@
 # Send now — implementation plan
 
-Date: 2026-10-18. Status: executed; implementation complete on branch `send-now` (see the [feature-spec implementation record](../feature-spec.md#implementation-record)).
+Date: 2026-10-18. Status: executed; implementation complete on branch `send-now`, including the post-review hardening recorded in the [feature-spec implementation record](../feature-spec.md#implementation-record).
 Base: `de5e47bdc5e695d4e422e99059d27354a84dce14`.
 Approved design: [feature-spec.md](../feature-spec.md).
 Authoring workflow: [marshal-writing-plans](../../../internal/skills/builtin/marshal-writing-plans.md) and [work-decomposition](../../../internal/skills/builtin/work-decomposition.md).

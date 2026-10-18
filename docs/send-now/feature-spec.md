@@ -315,3 +315,22 @@ Checks at `737c4241`:
 - `CGO_ENABLED=1 go build ./cmd/marshal` — succeeds.
 - Scripted usability suite (`./test/usability/... -run TestScripted`) — passes.
 - `go test ./...` still fails only in four pre-existing, environmental packages unrelated to this feature: `internal/app`, `internal/snapshot`, `internal/tools/desktop/browser` and `internal/worktree`. A clean `git archive HEAD` export of the committed tree fails in exactly those same four packages (macOS `/tmp` versus `/private/tmp` symlink paths, a network fetch to `example.com`, and a git-identity fixture), so they are the known baseline and not regressions. Every package this feature touches passes, including under `-race`.
+
+### Post-review hardening
+
+A code review of the finished branch (range `320c7a8f..5a2631a5` — the branch's own commits above the merged prerequisite) and a second pass over the fixes raised the issues below. None changed the wire contract, the TUI boundary, or the plan's task structure.
+
+| Commit | Purpose |
+| --- | --- |
+| `7d7b32ee` | The confirmed review findings. Teardown preserves accepted-but-undelivered steering and reports it undelivered instead of erasing it; a late interruption worker can no longer rewrite a finalised receipt; the legacy drains refuse to consume an entry an accepted request still owns while the turn is active; access registration rejects an already steering-cancelled context; `SubmitSendNow` requires an exact session id; the envelope `actions[]` batch and the envelope `ask_user`/`question.ask` waits run inside a tool operation, so an accepted request always captures one; a steering-cancelled privileged-auth prompt reports the recorded cause instead of a denial; `recordSteeringOutcomes` ignores a zero operation ref; the ACP steering status reports a supported runner whose turn has not yet opened as inactive rather than handing out an unsteerable turn identity. |
+| `4598514a` | The Task 9 tests the plan names but the branch was missing, regression tests for the session fixes, and a `truncateUTF8` correction: the previous loop left a dangling leading byte whenever the budget landed mid-rune, emitting invalid UTF-8, and also discarded a complete trailing rune. |
+| `50e4eebc` | `TestRuntimeSendNowReplacementRejectsOldBinding` asserted that retiring a conversation cleared its queue — the pre-fix behaviour, which the lifecycle paragraph above and plan Task 3 step 7 both contradict. The test now asserts the preserved entry and pending count while still pinning the property that matters: the retired conversation's work never reappears on the replacement. |
+| `0899c855` | Assertions for three fixes that no test could fail. An envelope `actions[]` batch handler now observes its operation ref; the cancelled privileged-auth prompt is asserted to carry the steering cause rather than merely `err != nil`, which the pre-fix denial string also satisfied; and a steering-cancelled envelope `question.ask` is asserted to continue the turn. |
+| `59e2bccf` | The `ask_user` twin of that last branch. Mutation testing showed the whole `internal/agent` package stayed green with the branch's settle-and-continue removed, so `question.ask` had been pinned but `ask_user` had not. |
+
+Every test added by these commits was mutation-checked by temporarily reverting the fix it covers; each fails with the fix removed and passes with it restored. The late-worker guard is now also pinned by its real scenario rather than a white-box replay: an interruption worker parked in its wait across `EndSteeringTurn`, then joined.
+
+Two reported issues were deliberately left alone:
+
+- An ACP prompt settled by another transport can in principle fail the whole turn, because only the access path re-checks that a prompt is still its own to fail. No reachable interleaving could be exhibited from the current wiring — ACP sessions are per-process, so a transport cannot answer a prompt before it sent it — and changing turn-cancellation behaviour on speculation was judged the worse trade.
+- A reported race between the legacy steering drains and `SubmitSendNow` was refuted on re-derivation: both drains hold `steeringMu` across the snapshot and the queue mutation, and `SubmitSendNow` requires `steeringMu`, so the two cannot interleave, and a request's covered set is read from the queue under that same lock.

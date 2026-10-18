@@ -88,7 +88,13 @@ func reportStartupSnapshotMaintenance(runner *agent.Runner, state *session.State
 		}
 	}
 	if sweepErr != nil {
-		logger.Warn("snapshot startup maintenance failed", "error", sweepErr)
+		if cancelled && errors.Is(sweepErr, context.Canceled) {
+			// The runtime closed (exit or a session switch) while the
+			// background sweep ran; the next runtime sweeps again.
+			logger.Debug("snapshot startup maintenance stopped by shutdown", "error", sweepErr)
+		} else {
+			logger.Warn("snapshot startup maintenance failed", "error", sweepErr)
+		}
 	} else if report != nil && len(report.Warnings) > 0 {
 		sweepErr = maintenanceWarningError(report.Warnings[0])
 	}

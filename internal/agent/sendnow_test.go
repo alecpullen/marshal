@@ -1391,3 +1391,105 @@ func TestSendNowCancelledQuestionSettlesAndTurnContinues(t *testing.T) {
 		t.Fatalf("task status = %v summary = %q, want the post-steering answer published", got.task.Status, got.task.Summary)
 	}
 }
+
+// TestSendNowCancelledAskUserSettlesAndTurnContinues pins the same settle-then-
+// continue contract as TestSendNowCancelledQuestionSettlesAndTurnContinues, but
+// through the envelope ask_user action instead of question.ask. When an
+// accepted Send now cancels the ask_user wait, the cancel surfaces as the
+// distinct steering cause (not a turn failure), the canceled prompt is settled
+// rather than left hanging, and the loop continues to the checkpoint, which
+// delivers the user's text in the SAME turn. Removing the steeringStopped
+// branch from the ask_user case in the turn loop makes RunTask fail here.
+func TestSendNowCancelledAskUserSettlesAndTurnContinues(t *testing.T) {
+	state := newTestState(t)
+	state.SetOperationInterrupt(nilSteeringHandler)
+
+	const steerText = "never mind, just ship"
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"confirm","action":{"type":"ask_user","content":"Ship it?"}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Continued after the canceled ask_user."}}`,
+	}}
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.EnableSteering = true
+	runner.MaxToolIterations = 5
+
+	type runResult struct {
+		task *Task
+		err  error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		task, err := runner.RunTask(context.Background(), "ask me, then steer")
+		done <- runResult{task, err}
+	}()
+
+	// The ask_user round-trip is running under its tool operation; accept the
+	// Send now against it. The interruption worker settles the prompt
+	// canonically and cancels the wait's context with the steering cause.
+	deadline := time.Now().Add(5 * time.Second)
+	for state.PendingQuestion() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the envelope ask_user never registered its prompt")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	turnID := state.SteeringSnapshot().TurnID
+	if turnID == "" {
+		t.Fatal("no eligible steering turn was open for the ask_user wait")
+	}
+	submitNow(t, state, turnID, "req-askuser-steer", steerText)
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("RunTask err = %v, want the turn to continue past the canceled ask_user", got.err)
+	}
+
+	// The turn was NOT failed, and the steering reached the model in the same
+	// turn: the post-cancel request carries the canceled-question note
+	// followed by exactly one steering envelope.
+	if len(p.Requests) != 2 {
+		t.Fatalf("provider saw %d requests, want 2 (ask_user step, post-steering step)", len(p.Requests))
+	}
+	wire := p.Requests[1].Messages
+	noteIdx := -1
+	for i, m := range wire {
+		if strings.Contains(m.Content, "The question was canceled") {
+			noteIdx = i
+		}
+	}
+	if noteIdx < 0 {
+		t.Fatalf("the wire never recorded that the question was canceled: %v", wire)
+	}
+	steerIdxs := steeringEnvelopeIndexes(wire, steerText)
+	if len(steerIdxs) != 1 {
+		t.Fatalf("wire carries the steering %d times, want exactly 1: %v", len(steerIdxs), wire)
+	}
+	if steerIdxs[0] < noteIdx {
+		t.Fatalf("steering (index %d) preceded the canceled-question note (index %d)", steerIdxs[0], noteIdx)
+	}
+	assertPrefixStable(t, p.Requests)
+
+	// The canceled prompt is settled: nothing left hanging for a late answer.
+	if state.PendingQuestion() != nil {
+		t.Fatal("the canceled ask_user prompt was left pending")
+	}
+	// Same turn, exactly once: one goal, one steering copy, one answer.
+	if got := state.TurnIndex(); got != 1 {
+		t.Fatalf("turn index = %d, want 1", got)
+	}
+	if n := countPersistedUserMessages(state, "ask me, then steer"); n != 1 {
+		t.Fatalf("goal persisted %d times, want exactly 1", n)
+	}
+	if n := countSteeringMessages(state); n != 1 {
+		t.Fatalf("persisted steering messages = %d, want exactly 1", n)
+	}
+	if q := state.SteeringQueue(); len(q) != 0 {
+		t.Fatalf("queue not empty after delivery: %v", q)
+	}
+	// The loop-top finalize ran: the answer produced after the steering was
+	// delivered is what the turn published.
+	if got.task == nil || got.task.Status != TaskStatusCompleted ||
+		!strings.Contains(got.task.Summary, "Continued after the canceled ask_user.") {
+		t.Fatalf("task status = %v summary = %q, want the post-steering answer published", got.task.Status, got.task.Summary)
+	}
+}

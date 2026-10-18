@@ -46,11 +46,10 @@ func skillLoadCall(name string) []schema.ToolCall {
 }
 
 // answerPendingSkillGate answers the next n pending skill-gate prompts with
-// choice, in order, from a single goroutine. It claims the pending slot
-// (SetPendingSkillGate(nil)) before sending on ResponseChan — the same
-// claim-before-send pattern answerPendingQuestions uses to avoid a
-// double-send deadlock. The channel reports each prompt's skill name so
-// tests can assert how many prompts fired and for which skills.
+// choice, in order, from a single goroutine. It uses the pending prompt's
+// Respond, which settles canonically through the session registry, and the
+// channel reports each prompt's skill name so tests can assert how many
+// prompts fired and for which skills.
 func answerPendingSkillGate(state *session.State, n int, choice session.SkillGateChoice) <-chan string {
 	choices := make([]session.SkillGateChoice, n)
 	for i := range choices {
@@ -72,9 +71,11 @@ func answerPendingSkillGateChoices(state *session.State, choices []session.Skill
 					continue
 				}
 				name := sg.Skill
-				state.SetPendingSkillGate(nil) // claim before answering
+				// Respond claims the registered prompt before delivering, so
+				// this answer and a concurrent cancellation arbitrate on the
+				// canonical record rather than racing two channel writes.
+				sg.Respond(choice)
 				promptCh <- name
-				sg.ResponseChan <- choice
 				break
 			}
 		}

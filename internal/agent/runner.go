@@ -140,6 +140,19 @@ type WriteGate interface {
 	Acquire() (release func())
 }
 
+// ContextWriteGate is the cancelable form of WriteGate. A gate that implements
+// it lets a waiting tool admission wake when user steering interrupts the
+// operation it belongs to, instead of blocking until whatever holds the token
+// finishes. The legacy Acquire is still honoured for gates that do not: those
+// calls stay waiting-safe, since a fake gate in a test cannot honestly report
+// that it stopped waiting.
+type ContextWriteGate interface {
+	// AcquireContext blocks until the gate is free or ctx ends. A canceled
+	// acquisition returns a nil release and ctx's error, and must not consume
+	// the token.
+	AcquireContext(ctx context.Context) (release func(), err error)
+}
+
 // WatchTransferrer re-parents a subagent's once watches to the parent and
 // stops its repeat watches when the subagent ends. It is a small interface
 // so the runner can reach the watch manager without importing internal/watch
@@ -445,6 +458,15 @@ type Runner struct {
 	trackerMu    sync.Mutex
 	stats        *turnStats
 	statsMu      sync.Mutex
+
+	// steeringOutcomeMu guards steeringOutcomes, the per-operation ledger of
+	// what the user's steering actually settled while a tool batch ran. It is
+	// keyed by the COMPLETE OperationRef, so two sessions (or two turns) that
+	// happen to share an operation ID can never merge their outcomes, and it is
+	// per-turn state — deliberately not part of CopyFrom, which must not carry
+	// one turn's interrupted-call evidence into the next.
+	steeringOutcomeMu sync.Mutex
+	steeringOutcomes  map[session.OperationRef][]session.SteeringOutcome
 
 	// todoClock measures how long the todo list has gone unmaintained and
 	// todoNudged records that this list version has already been nudged about

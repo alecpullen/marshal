@@ -125,7 +125,7 @@ func TestRequestApprovalWaitsForDecision(t *testing.T) {
 	default:
 	}
 
-	state.PendingApproval().ResponseChan <- session.UserApprovalDecision{Approved: true, Edited: "edited"}
+	state.PendingApproval().Respond(session.UserApprovalDecision{Approved: true, Edited: "edited"})
 	select {
 	case res := <-resCh:
 		if res.err != nil {
@@ -345,7 +345,7 @@ func TestRunRequiresApprovalForShellRunAndRespectsApproval(t *testing.T) {
 	if tc.Name != "shell.run" || tc.Command != "echo hi" {
 		t.Fatalf("pending approval = %#v", tc)
 	}
-	tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+	tc.Respond(session.UserApprovalDecision{Approved: true})
 
 	select {
 	case err := <-runErr:
@@ -389,10 +389,10 @@ func TestRunnerShellEditNormalizesSuccessfully(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		tc := state.PendingApproval()
-		tc.ResponseChan <- session.UserApprovalDecision{
+		tc.Respond(session.UserApprovalDecision{
 			Approved: true,
 			Edited:   "echo edited",
-		}
+		})
 	}()
 
 	if err := runner.Run(context.Background(), "run"); err != nil {
@@ -456,10 +456,10 @@ func TestRunnerReevaluatesPolicyAfterEditedArgs(t *testing.T) {
 	}
 
 	// Send a syntactically invalid JSON edit — the runner must reject it.
-	tc.ResponseChan <- session.UserApprovalDecision{
+	tc.Respond(session.UserApprovalDecision{
 		Approved: true,
 		Edited:   "not json",
-	}
+	})
 
 	select {
 	case err := <-runErr:
@@ -538,10 +538,10 @@ func TestRunnerReevaluatesDenyAfterValidEdit(t *testing.T) {
 	})
 
 	// Send a valid JSON edit — the re-evaluation must deny it.
-	tc.ResponseChan <- session.UserApprovalDecision{
+	tc.Respond(session.UserApprovalDecision{
 		Approved: true,
 		Edited:   `{"url":"https://evil.example/path"}`,
-	}
+	})
 
 	select {
 	case err := <-runErr:
@@ -612,10 +612,10 @@ func TestRunnerNonShellToolApprovalAndJSONEditing(t *testing.T) {
 		if tc.Schema != "creates a github issue" {
 			t.Errorf("tc.Schema = %q, want 'creates a github issue'", tc.Schema)
 		}
-		tc.ResponseChan <- session.UserApprovalDecision{
+		tc.Respond(session.UserApprovalDecision{
 			Approved: true,
 			Edited:   `{"title":"new title","body":"new body"}`,
-		}
+		})
 	}()
 
 	if err := runner.Run(context.Background(), "create issue"); err != nil {
@@ -676,7 +676,7 @@ func TestAuditEventRecordsOriginalArgs(t *testing.T) {
 			tc = state.PendingApproval()
 		}
 	}
-	tc.ResponseChan <- session.UserApprovalDecision{Approved: true}
+	tc.Respond(session.UserApprovalDecision{Approved: true})
 
 	select {
 	case err := <-runErr:

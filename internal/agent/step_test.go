@@ -223,7 +223,7 @@ func TestApprovalRequestCarriesStep(t *testing.T) {
 	if pending.StepID != 7 {
 		t.Fatalf("pending StepID = %d, want 7", pending.StepID)
 	}
-	pending.ResponseChan <- session.UserApprovalDecision{}
+	pending.Respond(session.UserApprovalDecision{})
 }
 
 func TestLooksLikeIntentOnly(t *testing.T) {

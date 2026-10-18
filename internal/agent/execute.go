@@ -179,15 +179,325 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 // schema.ChatMessages to feed the result (or failure reason) back to the
 // model. Loop-detection/stall handling is done by the caller (RunTask), not
 // here — this only records the call into the progress tracker.
+
+// toolArgsFor returns the arguments an audit event should record for an
+// action: a patch action carries its payload in Content, every other action in
+// Args.
+func toolArgsFor(action ModelAction) json.RawMessage {
+	if action.Type != ActionPatch {
+		return action.Args
+	}
+	encoded, err := json.Marshal(map[string]string{"patch": action.Content})
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
+// actionToolName resolves the registered tool name for an action; a patch
+// action is the envelope spelling of file.write_patch.
+func actionToolName(action ModelAction) string {
+	if action.Type == ActionPatch {
+		return "file.write_patch"
+	}
+	return action.Tool
+}
+
+// newCallID mints the per-call identity used when the provider supplied none.
+func (r *Runner) newCallID() string {
+	return fmt.Sprintf("call_%d", r.Now().UnixNano())
+}
+
+// steeringNoticeKind is the ToolNotice kind marking a settled tool result the
+// user's steering interrupted, rather than a tool failure.
+const steeringNoticeKind = "steering_interruption"
+
+// steeringInterruption wraps a steering cancellation with the operation
+// identity it belongs to. The settled-result builder is reached from four
+// different admission stages and from the question path, each of which has the
+// operation on its context but not in its parameters; wrapping the cause is how
+// the identity and the settled state reach the builder without widening a
+// signature the batch machinery shares.
+type steeringInterruption struct {
+	ref   session.OperationRef
+	state string
+	cause error
+}
+
+func (e *steeringInterruption) Error() string { return e.cause.Error() }
+func (e *steeringInterruption) Unwrap() error { return e.cause }
+
+// steeringCause tags a cancellation with the state it settled in. An empty
+// state derives from whether the call started and what it left behind.
+func steeringCause(ctx context.Context, state string, cause error) error {
+	if cause == nil {
+		cause = session.ErrSendNow
+	}
+	ref, _ := session.OperationFromContext(ctx)
+	return &steeringInterruption{ref: ref, state: state, cause: cause}
+}
+
+// steeringStopped reports whether err is this operation's own steering
+// cancellation. A full-turn cancel, a shutdown, or a genuine command or
+// provider failure is not: those keep their existing error handling, so a real
+// failure that won the race is never relabelled as a user interruption.
+func steeringStopped(ctx context.Context, err error) bool {
+	return err != nil && (errors.Is(err, session.ErrSendNow) || session.IsSteeringCancellation(ctx, err))
+}
+
+// steeringStateFor classifies a settled interrupted call. A call that never
+// started is not_started; a call that ran and left observable evidence is
+// interrupted. A call that ran and left nothing behind is unknown — whether
+// its remote side effects landed is exactly what this runner cannot say, and
+// the spec forbids claiming termination we did not confirm.
+func steeringStateFor(started bool, result registry.ToolResult) string {
+	if !started {
+		return "not_started"
+	}
+	if partialResultEvidence(result) != "" {
+		return "interrupted"
+	}
+	return "unknown"
+}
+
+// admitToolCall is the admission gate every stage of executeToolCall passes
+// through. It reports stop=true with the call's settled messages when steering
+// already owns this operation, so an unadmitted call is skipped instead of
+// validated, prompted or launched. Any other error — a full-turn cancel, a
+// shutdown — is not steering and is left to the stage's normal handling.
+func (r *Runner) admitToolCall(ctx context.Context, action ModelAction) ([]schema.ChatMessage, bool) {
+	err := session.CheckSteering(ctx)
+	if !steeringStopped(ctx, err) {
+		return nil, false
+	}
+	return r.settleSteeringCall(ctx, action, "", registry.ToolResult{}, false, steeringCause(ctx, "", err)), true
+}
+
+// settleSteeringCall settles one steering-interrupted call: it builds the
+// model-facing message, records this operation's outcome entry, and counts the
+// call as a tool call — deliberately NOT as an error, because an intentional
+// interruption must not feed the repetitive-failure ladder or the todo-failure
+// nudge (see steeringToolResult).
+func (r *Runner) settleSteeringCall(ctx context.Context, action ModelAction, callID string, result registry.ToolResult, started bool, cause error) []schema.ChatMessage {
+	msgs := r.steeringToolResult(action, result, started, cause)
+	if callID == "" {
+		callID = action.ToolCallID
+	}
+	r.recordSteeringOutcomes(ctx, callID, steeringOutcomesFor(action, result, started, cause))
+	return msgs
+}
+
+// toolCallOutcomes builds the ledger entries for one settled call: the call
+// itself in the given state, plus every target identity a structured result
+// notice names (a managed command's execution identity, for instance). Targets
+// travel separately so a receipt can report what the batch's interrupted work
+// was doing without conflating it with the call row.
+func toolCallOutcomes(action ModelAction, result registry.ToolResult, state string) []session.SteeringOutcome {
+	outcomes := []session.SteeringOutcome{{
+		Kind:    "tool",
+		State:   state,
+		Summary: SummarizeToolArgs(actionToolName(action), toolArgsFor(action)),
+	}}
+	if ex, ok := registry.DecodeCommandExecution(result.Notice); ok && ex.ExecutionID != "" {
+		outcomes = append(outcomes, session.SteeringOutcome{
+			Kind:        "command",
+			State:       steeringStateForExecution(ex.State),
+			ExecutionID: ex.ExecutionID,
+			Summary:     ex.DisplayID,
+		})
+	}
+	return outcomes
+}
+
+// steeringOutcomesFor is toolCallOutcomes for an interrupted call, where the
+// state is derived from whether the call started and what it left behind (or
+// from the interruption's own settled state when it has one). A result whose
+// own notice already names structured target outcomes (agent.await's surviving
+// children and jobs) contributes them alongside the call-level entry.
+func steeringOutcomesFor(action ModelAction, result registry.ToolResult, started bool, cause error) []session.SteeringOutcome {
+	state := steeringStateFor(started, result)
+	if si, ok := cause.(*steeringInterruption); ok && si.state != "" {
+		state = si.state
+	}
+	outcomes := toolCallOutcomes(action, result, state)
+	return append(outcomes, steeringTargetOutcomes(result.Notice)...)
+}
+
+// steeringTargetOutcomes reads the structured target outcomes a settled
+// interruption notice carries under Data["outcomes"]. Empty for every other
+// notice: target identities are the await path's contribution only.
+func steeringTargetOutcomes(notice *registry.ToolNotice) []session.SteeringOutcome {
+	if notice == nil || notice.Kind != steeringNoticeKind || len(notice.Data) == 0 {
+		return nil
+	}
+	targets, _ := notice.Data["outcomes"].([]session.SteeringOutcome)
+	if len(targets) == 0 {
+		return nil
+	}
+	return append([]session.SteeringOutcome(nil), targets...)
+}
+
+// steeringStateForExecution maps a managed execution's lifecycle state onto the
+// outcome vocabulary. A running or stopping execution continues — the
+// interruption ended the wait, not the command.
+func steeringStateForExecution(state string) string {
+	switch state {
+	case "running", "stopping":
+		return "continues"
+	case "completed":
+		return "completed"
+	case "", "unknown":
+		return "unknown"
+	default:
+		return "interrupted"
+	}
+}
+
+// steeringToolResult builds the settled result for a call the user's steering
+// interrupted. It is a RESULT, never a failure: the evidence a partially
+// executed call produced is preserved verbatim (output, exit code, sandbox and
+// stop evidence, files changed and the handler's own structured notice), a
+// single bounded sentence explains the interruption, and one audit event
+// records the call. It caches nothing — a partial result served from cache in a
+// later turn would present interrupted output as current — and it never feeds
+// the failed-repeat tracker, so an intentional interruption cannot escalate
+// into repetitive-tool-failure coaching or mark the todo list failed.
+func (r *Runner) steeringToolResult(action ModelAction, result registry.ToolResult, started bool, cause error) []schema.ChatMessage {
+	toolName := actionToolName(action)
+	toolCallID := action.ToolCallID
+	state := steeringStateFor(started, result)
+	ref := session.OperationRef{}
+	summary := "interrupted by user steering (state: " + state + ")"
+	if si, ok := cause.(*steeringInterruption); ok {
+		ref = si.ref
+		if si.state != "" {
+			state = si.state
+			summary = "interrupted by user steering (state: " + state + ")"
+		}
+	}
+	if !started {
+		summary = "not started: the operation was interrupted by user steering"
+	}
+
+	operation := ref.ID
+	if operation == "" {
+		operation = "the current operation"
+	}
+	// One short sentence: it names the operation and the state it settled in.
+	// It deliberately does NOT repeat the tool's output — that output already
+	// travels in the preserved evidence below, and duplicating raw output is
+	// what the interruption-note budget exists to prevent.
+	explanation := fmt.Sprintf("User steering interrupted %s before this call completed (state: %s).", operation, state)
+
+	body := partialResultEvidence(result)
+	if body != "" {
+		body += "\n\n"
+	}
+	body += explanation
+
+	// The notice rides on the audited result and on the message's tool result
+	// so a consumer can switch on Kind and read the operation identity and
+	// settled state as data instead of parsing the sentence.
+	notice := &registry.ToolNotice{
+		Kind: steeringNoticeKind,
+		Text: explanation,
+		Data: map[string]any{"operationId": ref.ID, "state": state},
+	}
+	carried := result
+	carried.Summary = summary
+	carried.Content = body
+	carried.Notice = notice
+
+	tool, _ := r.Registry.Lookup(toolName)
+	call := registry.ToolCall{ID: toolCallID, Name: toolName, Args: toolArgsFor(action)}
+	event := registry.NewAuditEvent(r.Now(), tool, call, carried, registry.ApprovalNotRequired, cause)
+	event.Notice = notice
+	r.logToolCall(toolCallID, event)
+	// Counted as a tool call — one settled reply per declared call — and not as
+	// an error: the run did not fail, it was steered.
+	r.countToolCall(false, false)
+	return []schema.ChatMessage{r.buildToolResultMessage(toolName, carried, toolCallID)}
+}
+
+// recordSteeringOutcomes appends this operation's settled outcomes to the
+// per-operation ledger, stamping the call ID onto entries that carry none. The
+// ledger is keyed by the COMPLETE OperationRef and initialized lazily so a
+// Runner assembled as a bare struct literal still records.
+func (r *Runner) recordSteeringOutcomes(ctx context.Context, toolCallID string, outcomes []session.SteeringOutcome) {
+	if len(outcomes) == 0 {
+		return
+	}
+	ref, _ := session.OperationFromContext(ctx)
+	stamped := make([]session.SteeringOutcome, 0, len(outcomes))
+	for _, o := range outcomes {
+		if o.ToolCallID == "" {
+			o.ToolCallID = toolCallID
+		}
+		stamped = append(stamped, o)
+	}
+	r.steeringOutcomeMu.Lock()
+	if r.steeringOutcomes == nil {
+		r.steeringOutcomes = make(map[session.OperationRef][]session.SteeringOutcome)
+	}
+	r.steeringOutcomes[ref] = append(r.steeringOutcomes[ref], stamped...)
+	r.steeringOutcomeMu.Unlock()
+}
+
+// takeSteeringOutcomes removes and returns one operation's recorded outcomes.
+// It removes only that operation's copied slice, after the batch's workers have
+// joined, so a later batch for a different operation never reads another
+// operation's evidence.
+func (r *Runner) takeSteeringOutcomes(ref session.OperationRef) []session.SteeringOutcome {
+	r.steeringOutcomeMu.Lock()
+	defer r.steeringOutcomeMu.Unlock()
+	stored := r.steeringOutcomes[ref]
+	if len(stored) == 0 {
+		return nil
+	}
+	delete(r.steeringOutcomes, ref)
+	return append([]session.SteeringOutcome(nil), stored...)
+}
+
+// acquireToolGate admits one non-read-only call through the shared write gate.
+// A gate that implements ContextWriteGate wakes on cancellation and reports why
+// it did not acquire. A legacy gate cannot, so the runner rechecks steering as
+// soon as the token is held and releases it immediately rather than launching a
+// call the user already interrupted — the wait itself stays waiting-safe, which
+// is the honest behaviour for a fake gate that cannot be woken.
+func (r *Runner) acquireToolGate(ctx context.Context) (func(), error) {
+	if r.WriteGate == nil {
+		return func() {}, nil
+	}
+	if gate, ok := r.WriteGate.(ContextWriteGate); ok {
+		return gate.AcquireContext(ctx)
+	}
+	release := r.WriteGate.Acquire()
+	if err := session.CheckSteering(ctx); steeringStopped(ctx, err) {
+		release()
+		return nil, err
+	}
+	return release, nil
+}
+
 func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]schema.ChatMessage, error) {
 	if err := r.State.WaitUnheld(ctx); err != nil {
 		return nil, err
 	}
-	toolName := action.Tool
-	if action.Type == ActionPatch {
-		toolName = "file.write_patch"
-	}
+	toolName := actionToolName(action)
 	toolCallID := action.ToolCallID
+	callID := toolCallID
+	if callID == "" {
+		callID = r.newCallID()
+	}
+
+	// First admission gate: steering accepted for this operation outranks a
+	// call the model already queued. Nothing is validated, prompted or
+	// executed, and the call still gets a settled not-started result so its
+	// tool_call has a pairing. A full-turn or session cancellation is not
+	// steering: it keeps its existing error path.
+	if msgs, stop := r.admitToolCall(ctx, action); stop {
+		return msgs, nil
+	}
 
 	tool, ok := r.Registry.Lookup(toolName)
 	if !ok {
@@ -340,15 +650,19 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		break
 	}
 
+	// Admission gate after approval and hooks: a rewrite (or an approval the
+	// user granted just before steering was accepted) must not launch under
+	// stale intent. The call is still admitted-or-not before any mutation, so
+	// an interrupted call is reported as not started rather than as a failure.
+	if msgs, stop := r.admitToolCall(ctx, action); stop {
+		return msgs, nil
+	}
+
 	label := toolName
 	if command, ok := argsMap["command"].(string); ok && command != "" {
 		label = fmt.Sprintf("%s: %s", toolName, command)
 	} else if summary := SummarizeToolArgs(toolName, args); toolName == "agent.await" && summary != "" {
 		label = fmt.Sprintf("%s: %s", toolName, summary)
-	}
-	callID := toolCallID
-	if callID == "" {
-		callID = fmt.Sprintf("call_%d", r.Now().UnixNano())
 	}
 	r.State.SetActivity(session.Activity{Kind: session.ActivityTool, Label: label, StartedAt: r.Now()})
 	r.State.SetActiveToolCall(session.ActiveToolCall{
@@ -362,6 +676,15 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 	defer r.State.ClearActiveToolCallID(callID)
 
+	// Admission gate immediately before the mutation/launch. Between the gate
+	// above and here the call may have captured a pre-write snapshot, which is
+	// the last moment an unadmitted mutation can still be skipped: the
+	// snapshot is protection for a write that actually launches, so a call
+	// cancelled now leaves no side effect behind either.
+	if msgs, stop := r.admitToolCall(ctx, action); stop {
+		return msgs, nil
+	}
+
 	// Pre-write capture, non-read-only tools only. A capture that fails or is
 	// SKIPPED now produces a user-visible warning through the shared helper;
 	// a session DB row is written only for a capture that PUBLISHED a hash.
@@ -371,8 +694,17 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		r.snapshotCapture(ctx, SnapshotPhasePreWrite, changedFilesForTool(toolName, argsMap))
 	}
 
-	if r.WriteGate != nil && tool.Risk != registry.RiskReadOnly {
-		release := r.WriteGate.Acquire()
+	// The write gate serialises non-read-only execution across runners, so a
+	// call can wait here for an unbounded time. A cancelable gate wakes when
+	// this operation is interrupted; a legacy gate cannot, so the runner
+	// rechecks admission as soon as it acquires and releases the token rather
+	// than launching a call the user already interrupted.
+	if tool.Risk != registry.RiskReadOnly {
+		release, gateErr := r.acquireToolGate(ctx)
+		if gateErr != nil {
+			return r.settleSteeringCall(ctx, action, callID, registry.ToolResult{}, false,
+				steeringCause(ctx, "", gateErr)), nil
+		}
 		defer release()
 	}
 
@@ -387,6 +719,15 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	handlerCtx := session.WithExecutionOrigin(ctx, r.executionOrigin(r.curStep, callID))
 	result, execErr := tool.Handler(handlerCtx, call)
 	if execErr != nil {
+		// Steering that interrupted an admitted call is not a tool failure:
+		// the call genuinely started, so its partial result is preserved as
+		// evidence and settled as an interrupted call. It never enters the
+		// failed-repeat ladder (an intentional interruption is not a model
+		// mistake to coach) and never counts as a tool error.
+		if steeringStopped(ctx, execErr) {
+			return r.settleSteeringCall(ctx, action, callID, result, true,
+				steeringCause(ctx, steeringStateFor(true, result), execErr)), nil
+		}
 		// The handler failed, but it may still have returned a partial result:
 		// a command that started and then failed has real output, an actual
 		// exit code and possibly a stop cause, and discarding them left the
@@ -445,6 +786,12 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if r.semTracker != nil {
 		r.semTracker.note(referencedPathsForTool(toolName, argsMap))
 	}
+
+	// The call completed. Intent that arrives immediately afterwards does not
+	// rewrite that: the work is done and its result is truthful, so it settles
+	// as completed and the interruption is reported beside it rather than
+	// instead of it.
+	r.recordSteeringOutcomes(ctx, callID, toolCallOutcomes(action, result, "completed"))
 
 	summarized := SummarizeToolResult(toolName, result, 0) // per-tool line limits only; 0 keeps the default char cap out of play here
 	summarized = spillToolResult(r.State.WorkingDir, toolName, summarized, r.toolResultChars())
@@ -592,11 +939,52 @@ func normalizeToolName(reg *registry.Registry, name string) string {
 	return name
 }
 
+// actionForCall converts a native tool call into the action shape the
+// executor works in.
+func actionForCall(call schema.ToolCall) ModelAction {
+	return ModelAction{Type: ActionToolCall, Tool: call.Name, Args: call.Args, ToolCallID: call.ID}
+}
+
+// unlaunchedCallResult settles one call whose dispatch never produced a result.
+// Steering settles it as not started (nothing was validated, prompted or
+// launched), with one audit entry and one outcome; any other dispatch error —
+// a full-turn cancel, a hook halt, a policy error — keeps the existing failure
+// text, so a real error is never relabelled as a user interruption.
+func (r *Runner) unlaunchedCallResult(ctx context.Context, action ModelAction, cause error) []schema.ChatMessage {
+	if cause == nil {
+		cause = ctx.Err()
+	}
+	if cause == nil {
+		cause = errors.New("the call was not dispatched")
+	}
+	if steeringStopped(ctx, cause) {
+		return r.settleSteeringCall(ctx, action, "", registry.ToolResult{}, false, steeringCause(ctx, "", cause))
+	}
+	return []schema.ChatMessage{r.toolCallOutcomeMessage(schema.ToolCall{ID: action.ToolCallID, Name: actionToolName(action)}, cause)}
+}
+
+// settleDispatch converts one call's dispatch outcome into its settled slot
+// messages. A call the executor settled itself (steering mid-flight) passes its
+// messages through unchanged; a call whose dispatch returned an error with no
+// result is settled here so its slot is never left empty.
+func (r *Runner) settleDispatch(ctx context.Context, action ModelAction, msgs []schema.ChatMessage, err error) []schema.ChatMessage {
+	if err == nil || len(msgs) > 0 {
+		return msgs
+	}
+	return r.unlaunchedCallResult(ctx, action, err)
+}
+
 func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.ToolCall) ([]schema.ChatMessage, error) {
 	r.trackerMu.Lock()
 	r.invalidArgsThisRound = 0
 	r.trackerMu.Unlock()
-	msgs := make([]schema.ChatMessage, 0, len(calls))
+
+	// One ordered result slot per declared call. Every path below fills its
+	// slot — including a call the interruption skipped — so an interrupted batch
+	// still returns exactly one settled message per tool_call, in declared
+	// order. That pairing is what the provider requires of the next request; a
+	// batch that dropped its unlaunched calls would leave dangling tool_calls.
+	slots := make([][]schema.ChatMessage, len(calls))
 
 	// agent.run calls are dispatched concurrently when a batch contains
 	// consecutive runs. ask_user / question.ask stay sequential because
@@ -607,100 +995,87 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 		call schema.ToolCall
 	}
 	var runBatch []runSlot
-	flushRunBatch := func() error {
+	flushRunBatch := func() {
 		if len(runBatch) == 0 {
-			return nil
+			return
 		}
 		if len(runBatch) == 1 {
-			call := runBatch[0].call
-			resultMsgs, err := r.executeToolCall(ctx, ModelAction{
-				Type:       ActionToolCall,
-				Tool:       call.Name,
-				Args:       call.Args,
-				ToolCallID: call.ID,
-			})
-			if err != nil {
-				msgs = append(msgs, r.toolCallOutcomeMessage(call, err))
-				runBatch = runBatch[:0]
-				return nil
-			}
-			msgs = append(msgs, resultMsgs...)
+			slot := runBatch[0]
+			action := actionForCall(slot.call)
+			resultMsgs, err := r.executeToolCall(ctx, action)
+			slots[slot.idx] = r.settleDispatch(ctx, action, resultMsgs, err)
 			runBatch = runBatch[:0]
-			return nil
+			return
 		}
-		results := make([][]schema.ChatMessage, len(runBatch))
-		errs := make([]error, len(runBatch))
+		batch := append([]runSlot(nil), runBatch...)
+		runBatch = runBatch[:0]
+		results := make([][]schema.ChatMessage, len(batch))
+		errs := make([]error, len(batch))
 		var wg sync.WaitGroup
-		wg.Add(len(runBatch))
-		for _, slot := range runBatch {
-			slot := slot
+		wg.Add(len(batch))
+		for i, slot := range batch {
+			i, slot := i, slot
+			// A dispatch that never got to start (steering accepted between the
+			// batch decision and this goroutine) is settled in place rather than
+			// spawning work the user already interrupted.
+			if msgs, stop := r.admitToolCall(ctx, actionForCall(slot.call)); stop {
+				results[i] = msgs
+				wg.Done()
+				continue
+			}
 			go func() {
 				defer wg.Done()
-				res, err := r.executeToolCall(ctx, ModelAction{
-					Type:       ActionToolCall,
-					Tool:       slot.call.Name,
-					Args:       slot.call.Args,
-					ToolCallID: slot.call.ID,
-				})
-				results[slot.idx] = res
-				errs[slot.idx] = err
+				results[i], errs[i] = r.executeToolCall(ctx, actionForCall(slot.call))
 			}()
 		}
 		wg.Wait()
 		// One call failing must not discard its siblings' results: every call
 		// in the batch gets exactly one settled message, so the tool-call/result
-		// pairing stays valid no matter which call was interrupted.
-		for i := range runBatch {
-			if errs[i] != nil {
-				msgs = append(msgs, r.toolCallOutcomeMessage(runBatch[i].call, errs[i]))
-				continue
-			}
-			msgs = append(msgs, results[i]...)
+		// pairing stays valid no matter which call was interrupted. Children a
+		// sibling already dispatched keep their handles — the interruption
+		// cancels this batch's waits, never an independent child.
+		for i, slot := range batch {
+			slots[slot.idx] = r.settleDispatch(ctx, actionForCall(slot.call), results[i], errs[i])
 		}
-		runBatch = runBatch[:0]
-		return nil
 	}
 
-	for _, call := range calls {
+	for i, call := range calls {
 		call.Name = normalizeToolName(r.Registry, call.Name)
+		action := actionForCall(call)
 		if call.Name == "question.ask" {
-			if err := flushRunBatch(); err != nil {
-				return nil, err
+			flushRunBatch()
+			if msgs, stop := r.admitToolCall(ctx, action); stop {
+				slots[i] = msgs
+				continue
 			}
 			msg, err := r.executeNativeQuestionAsk(ctx, call)
 			if err != nil {
 				// A cancelled question is not a failed batch: the call was
 				// admitted and then interrupted, so it gets a settled
 				// not-completed result and the remaining calls continue.
-				msgs = append(msgs, r.toolCallOutcomeMessage(call, err))
+				slots[i] = r.settleDispatch(ctx, action, nil, err)
 				continue
 			}
-			msgs = append(msgs, msg)
+			slots[i] = []schema.ChatMessage{msg}
 			continue
 		}
 		if call.Name == "agent.run" {
-			runBatch = append(runBatch, runSlot{idx: len(runBatch), call: call})
+			runBatch = append(runBatch, runSlot{idx: i, call: call})
 			continue
 		}
-		if err := flushRunBatch(); err != nil {
-			return nil, err
-		}
-		resultMsgs, err := r.executeToolCall(ctx, ModelAction{
-			Type:       ActionToolCall,
-			Tool:       call.Name,
-			Args:       call.Args,
-			ToolCallID: call.ID,
-		})
-		if err != nil {
-			// Interrupted mid-batch: this call gets a settled result and the
-			// loop continues, so the calls after it are not silently dropped.
-			msgs = append(msgs, r.toolCallOutcomeMessage(call, err))
+		flushRunBatch()
+		if msgs, stop := r.admitToolCall(ctx, action); stop {
+			slots[i] = msgs
 			continue
 		}
-		msgs = append(msgs, resultMsgs...)
+		resultMsgs, err := r.executeToolCall(ctx, action)
+		slots[i] = r.settleDispatch(ctx, action, resultMsgs, err)
 	}
-	if err := flushRunBatch(); err != nil {
-		return nil, err
+	flushRunBatch()
+
+	var msgs []schema.ChatMessage
+	for _, slotMsgs := range slots {
+		msgs = append(msgs, slotMsgs...)
 	}
 	return msgs, nil
 }
@@ -746,6 +1121,19 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 	}
 	answers, waitErr := r.requestQuestions(ctx, payload.Questions)
 	if waitErr != nil {
+		// A canceled question is settled here rather than returned as a batch
+		// failure: the call has a pairing to fill, and the settled result says
+		// the question was interrupted instead of presenting a fabricated human
+		// answer. A real error (a malformed payload, a policy failure) has
+		// already returned above with its own message.
+		if steeringStopped(ctx, waitErr) {
+			r.countToolCall(false, false)
+			return schema.ChatMessage{
+				Role:       schema.RoleTool,
+				ToolCallID: call.ID,
+				Content:    "Question canceled: user steering interrupted the operation before the questions were answered. No answer was given; do not assume one.",
+			}, nil
+		}
 		return schema.ChatMessage{}, waitErr
 	}
 	r.countToolCall(false, false)
@@ -853,12 +1241,19 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 			parallelIdx = append(parallelIdx, i)
 			continue
 		}
+		// Intent is checked before every serial launch: once steering owns this
+		// operation, the serial calls that have not started are skipped (and
+		// their slots filled) rather than launched under stale intent.
+		if msgs, stop := r.admitToolCall(ctx, a); stop {
+			results[i] = msgs
+			continue
+		}
 		msgs, err := r.executeToolCall(ctx, a)
 		if err != nil {
 			// A serial tool that was interrupted still gets a settled result for
 			// its own call ID, and the remaining serial tools keep running
 			// rather than being dropped with the failure.
-			results[i] = []schema.ChatMessage{r.toolCallOutcomeMessage(schema.ToolCall{ID: a.ToolCallID, Name: a.Tool}, err)}
+			results[i] = r.settleDispatch(ctx, a, msgs, err)
 			continue
 		}
 		results[i] = msgs
@@ -871,8 +1266,27 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 		var wg sync.WaitGroup
 		sem := make(chan struct{}, r.MaxParallelActions)
 		for _, idx := range parallelIdx {
+			act := actions[idx]
+			if msgs, stop := r.admitToolCall(ctx, act); stop {
+				results[idx] = msgs
+				continue
+			}
+			// The semaphore wait is itself cancelable: a worker that would
+			// otherwise park here until a slot frees must wake when the
+			// operation is interrupted, and it must not launch after acquiring
+			// a slot the interruption already invalidated.
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				results[idx] = r.unlaunchedCallResult(ctx, act, session.CheckSteering(ctx))
+				continue
+			}
+			if msgs, stop := r.admitToolCall(ctx, act); stop {
+				<-sem
+				results[idx] = msgs
+				continue
+			}
 			wg.Add(1)
-			sem <- struct{}{}
 			go func(i int, act ModelAction) {
 				defer wg.Done()
 				defer func() { <-sem }()
@@ -881,11 +1295,11 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 					// Interruption is per call, never per batch: a sibling that
 					// already ran keeps its results and a cancelled one still has
 					// a settled outcome to pair with its call.
-					results[i] = []schema.ChatMessage{r.toolCallOutcomeMessage(schema.ToolCall{ID: act.ToolCallID, Name: act.Tool}, err)}
+					results[i] = r.settleDispatch(ctx, act, msgs, err)
 					return
 				}
 				results[i] = msgs
-			}(idx, actions[idx])
+			}(idx, act)
 		}
 		wg.Wait()
 	}
@@ -958,10 +1372,24 @@ func (r *Runner) skillLoadGate(ctx context.Context, tool registry.Tool, args jso
 	choice, waitErr := r.requestSkillGate(ctx, name)
 	r.approvalMu.Unlock()
 	if waitErr != nil {
+		// Steering outranks the ordinary denial and Unanswered handling below:
+		// the call is settled as interrupted, records NO sticky skill denial and
+		// does not present a prompt cancellation as a user decision.
+		if steeringStopped(ctx, waitErr) {
+			return r.settleSteeringCall(ctx, ModelAction{Type: ActionToolCall, Tool: "skill.load", Args: args, ToolCallID: toolCallID},
+				toolCallID, registry.ToolResult{}, false, steeringCause(ctx, "", waitErr)), true
+		}
 		return []schema.ChatMessage{r.buildToolErrorMessage("skill.load", "skill load was not approved (prompt cancelled)", toolCallID)}, true
 	}
 	switch choice {
 	case session.SkillGateAllowOnce:
+		if err := session.CheckSteering(ctx); steeringStopped(ctx, err) {
+			// Approved, but the operation was interrupted between the grant and
+			// the load: recheck admission so an approval cannot launch a load
+			// under stale intent.
+			return r.settleSteeringCall(ctx, ModelAction{Type: ActionToolCall, Tool: "skill.load", Args: args, ToolCallID: toolCallID},
+				toolCallID, registry.ToolResult{}, false, steeringCause(ctx, "", err)), true
+		}
 		return nil, false
 	case session.SkillGateAllowSkill:
 		r.State.SkillGateRecordAllow(name, false)

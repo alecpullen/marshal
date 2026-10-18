@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -351,5 +352,124 @@ func TestAgentAwaitStaysReadOnly(t *testing.T) {
 	tool := newAwaitTool(newTestState(t))
 	if tool.Risk != registry.RiskReadOnly {
 		t.Fatalf("agent.await risk = %v, want RiskReadOnly", tool.Risk)
+	}
+}
+
+// steeringAwaitTargets builds a job source with two running jobs that block
+// until their waiter context ends, and records every kill.
+func steeringAwaitTargets() *fakeJobSource {
+	jobs := &fakeJobSource{
+		outstanding: []AwaitJobInfo{
+			{ID: "job-1", Command: "slow one", Status: "running"},
+			{ID: "job-2", Command: "slow two", Status: "running"},
+		},
+	}
+	jobs.wait = func(ctx context.Context, id string) (AwaitJobInfo, error) {
+		<-ctx.Done()
+		return AwaitJobInfo{}, ctx.Err()
+	}
+	return jobs
+}
+
+// TestSteeringAwaitModesPreserveTargetsAndPartialResults pins the await
+// contract under interruption: every mode's waiter ends with the distinct
+// steering cause, surviving targets are reported by identity with a continues
+// state, completed partial results are preserved, and NOTHING stops a target —
+// no KillJob, no CancelSubagent, no turn stop.
+func TestSteeringAwaitModesPreserveTargetsAndPartialResults(t *testing.T) {
+	state := newTestState(t)
+	jobs := steeringAwaitTargets()
+	// A child that never finishes on its own: the interruption must end the
+	// wait without ending the child.
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	view := state.RegisterSubagent("background child", child)
+	await := newAwaitTool(state, WithAwaitJobs(jobs))
+
+	run := func(t *testing.T, args string) (registry.ToolResult, error) {
+		t.Helper()
+		state.SetOperationInterrupt(func(context.Context, session.OperationRef) (session.OperationStop, error) {
+			return session.OperationStop{Wait: func(context.Context) ([]session.SteeringOutcome, error) { return nil, nil }}, nil
+		})
+		turnID, err := state.BeginSteeringTurn(context.Background())
+		if err != nil {
+			t.Fatalf("BeginSteeringTurn: %v", err)
+		}
+		ctx, ref, err := state.BeginSteeringOperation(context.Background(), turnID, session.OperationTools)
+		if err != nil {
+			t.Fatalf("BeginSteeringOperation: %v", err)
+		}
+		_ = ref
+
+		type outcome struct {
+			res registry.ToolResult
+			err error
+		}
+		done := make(chan outcome, 1)
+		go func() {
+			res, err := await.Handler(ctx, registry.ToolCall{ID: "await-1", Args: json.RawMessage(args)})
+			done <- outcome{res, err}
+		}()
+		time.Sleep(50 * time.Millisecond) // let the waiter park
+		if _, err := state.SubmitSendNow(session.SendNowRequest{TurnID: turnID, RequestID: "r-" + args, Text: "interrupt the wait"}); err != nil {
+			t.Fatalf("SubmitSendNow: %v", err)
+		}
+		select {
+		case got := <-done:
+			state.FinishSteeringOperation(ref, nil)
+			// Close the eligible turn so the next subtest can open its own:
+			// a session admits exactly one active steering turn.
+			state.EndSteeringTurn(turnID, "test finished")
+			return got.res, got.err
+		case <-time.After(5 * time.Second):
+			t.Fatal("the await handler never returned after the interruption")
+			return registry.ToolResult{}, nil
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		args string
+	}{
+		{"single-child", `{"id":0}`},
+		{"single-job", `{"job_id":"job-1"}`},
+		{"any", `{"any":true}`},
+		{"all", `{"all":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := tc.args
+			if tc.name == "single-child" {
+				args = fmt.Sprintf(`{"id":%d}`, view.ID)
+			}
+			res, err := run(t, args)
+			if !errors.Is(err, session.ErrSendNow) {
+				t.Fatalf("await err = %v, want ErrSendNow", err)
+			}
+			notice := res.Notice
+			if notice == nil || notice.Kind != steeringNoticeKind {
+				t.Fatalf("notice = %+v, want a steering_interruption notice", notice)
+			}
+			outcomes, _ := notice.Data["outcomes"].([]session.SteeringOutcome)
+			if len(outcomes) == 0 {
+				t.Fatal("no surviving targets reported")
+			}
+			for _, o := range outcomes {
+				if o.State != "continues" {
+					t.Fatalf("outcome %+v: state = %q, want continues (the waiter was interrupted, not the target)", o, o.State)
+				}
+				if o.AgentID == "" && o.ExecutionID == "" {
+					t.Fatalf("outcome %+v names no target identity", o)
+				}
+			}
+			// Nothing stopped a target.
+			jobs.mu.Lock()
+			killed := jobs.killed
+			jobs.mu.Unlock()
+			if killed != "" {
+				t.Fatalf("killed %q, want nothing: steering cancels the waiter, never the target", killed)
+			}
+			if v, ok := state.Subagent(view.ID); !ok || v.Status != session.SubagentRunning {
+				t.Fatalf("child status = %+v, want it still running", v)
+			}
+		})
 	}
 }

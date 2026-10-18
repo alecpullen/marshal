@@ -885,7 +885,7 @@ func TestRunnerSetsActivityDuringApproval(t *testing.T) {
 		t.Fatalf("expected pending approval")
 	}
 
-	tc.ResponseChan <- session.UserApprovalDecision{Approved: false}
+	tc.Respond(session.UserApprovalDecision{Approved: false})
 
 	time.Sleep(100 * time.Millisecond)
 

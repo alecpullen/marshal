@@ -385,6 +385,15 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	// straight from the manager. Unlike the prompt lookup above, this does not
 	// require an available Runner: a runner-less session can still report and
 	// manage shared work over explicit wire DTOs. One controller per connection.
+	//
+	// Compatibility: this is the connection's opt-in surface for live work. Its
+	// first session/work_list or session/work_inspect starts one work_state
+	// forwarder per session, cancelled by the returned cleanup when the
+	// connection ends. The existing stack, watch and job notifications are
+	// unchanged, and an ACP stack request keeps its legacy default projection:
+	// a work-aware client renders work_state as the authoritative live surface
+	// and ignores the stack band's duplicated entity listings. There is no
+	// fleet SPA change here.
 	works := NewWorkManagerACP(func(sessionID string) (viewmodel.WorkService, bool) {
 		rt, ok := manager.Get(sessionID)
 		if !ok || rt == nil {

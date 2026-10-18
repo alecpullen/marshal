@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -325,6 +326,7 @@ func (m *WorkManagerACP) List(ctx context.Context, params json.RawMessage) (any,
 	if err != nil {
 		return nil, err
 	}
+	m.ensureWorkForwarder(p.SessionID, svc)
 	switch p.View {
 	case "", "live":
 		if p.Query != "" || p.Cursor != "" || p.Limit != 0 {
@@ -362,6 +364,7 @@ func (m *WorkManagerACP) Inspect(ctx context.Context, params json.RawMessage) (a
 	if err != nil {
 		return nil, err
 	}
+	m.ensureWorkForwarder(p.SessionID, svc)
 	if p.TaskKey == "" {
 		return nil, invalidParamsError("session/work_inspect requires taskKey")
 	}
@@ -424,18 +427,155 @@ func (m *WorkManagerACP) Acknowledge(ctx context.Context, params json.RawMessage
 	return map[string]any{"acknowledged": true}, nil
 }
 
+// workStateEnvelope is the session/update body a work_state update travels in.
+// It is a dedicated struct, not SessionUpdateParams, because the latter's
+// Update is a map[string]any: routing the snapshot through a map would decode
+// every revision integer as a float64 and lose the exact source/revision
+// identity a client recovers by. WorkStateUpdateWire embeds WorkSnapshotWire,
+// so kind and the snapshot's fields share one flat JSON object.
+type workStateEnvelope struct {
+	SessionID string              `json:"sessionId"`
+	Update    WorkStateUpdateWire `json:"update"`
+}
+
+// ensureWorkForwarder starts one work_state subscription for a session and
+// seeds the epoch it will accept. The first valid List/Inspect starts it;
+// additional requests reuse the running forwarder.
+//
+// The subscription is bound to the controller's (connection's) lifetime, never
+// the request context: a work_state stream must outlive the request that first
+// asked for it. It is cancelled by Close when the connection ends, by a
+// rebind when the service epoch is replaced, and by the broker closing when the
+// session goes away. Subscribing here, in the request path, is the opt-in: a
+// client that never asks for work never receives a work_state stream. Nothing
+// in a process-output callback subscribes, and no notification is ever sent
+// under the controller mutex.
+func (m *WorkManagerACP) ensureWorkForwarder(sessionID string, service viewmodel.WorkService) {
+	if service == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	if _, ok := m.forwarders[sessionID]; ok {
+		m.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &workForwarder{cancel: cancel, done: make(chan struct{})}
+	m.forwarders[sessionID] = f
+	m.mu.Unlock()
+
+	// Subscribe before reading the seed so an update published between the two
+	// is queued rather than lost; the seed binds the epoch an accepted event
+	// must carry. The epoch is written once here, before the goroutine that
+	// reads it is started.
+	events := service.SubscribeWork(ctx)
+	f.epoch = service.WorkSnapshot().RuntimeEpoch
+	go m.runWorkForwarder(sessionID, f, ctx, events)
+}
+
+// runWorkForwarder forwards each snapshot the subscription delivers as a
+// session/update work_state, until the connection closes or the channel ends.
+// A snapshot whose epoch is not the one bound is dropped: it is a stray
+// delivery from a replaced service epoch, and a client reconstructs that epoch
+// from work_list rather than from a late delivery.
+func (m *WorkManagerACP) runWorkForwarder(sessionID string, f *workForwarder, ctx context.Context, events <-chan pubsub.Event[viewmodel.WorkSnapshot]) {
+	defer m.retireWorkForwarder(sessionID, f)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			snap := ev.Payload
+			if snap.RuntimeEpoch != f.epoch {
+				// A stray delivery from a replaced service epoch. Drop it; the
+				// client rebinds through work_list rather than trusting a
+				// snapshot it never bound. Retirement is driven by the
+				// subscription ending, below.
+				continue
+			}
+			m.notifyWorkState(sessionID, snap)
+		}
+	}
+}
+
+// notifyWorkState sends one snapshot as a work_state update. Marshalling
+// happens outside the controller mutex, and workWire converts the viewmodel
+// projection into the explicit wire DTO without a map round trip, so revision
+// integers stay integers.
+func (m *WorkManagerACP) notifyWorkState(sessionID string, snap viewmodel.WorkSnapshot) {
+	wire, err := workWire[WorkSnapshotWire](snap)
+	if err != nil {
+		slog.Default().Warn("acp: work_state encode failed", "session_id", sessionID, "error", err)
+		return
+	}
+	envelope := workStateEnvelope{
+		SessionID: sessionID,
+		Update:    WorkStateUpdateWire{Kind: "work_state", WorkSnapshotWire: wire},
+	}
+	if err := m.notify("session/update", envelope); err != nil {
+		slog.Default().Warn("acp: work_state notify failed", "session_id", sessionID, "error", err)
+	}
+}
+
+// retireWorkForwarder runs when a forwarder's subscription ends. It deletes
+// only its own map entry — a rebind may already have installed a newer one —
+// then closes done so Close can join it. Unless the controller is closing it
+// does a fresh lookup and, when the session still exists with a different
+// epoch, rebinds: a replaced runtime keeps streaming without a client having to
+// re-issue work_list.
+func (m *WorkManagerACP) retireWorkForwarder(sessionID string, f *workForwarder) {
+	m.mu.Lock()
+	if m.forwarders[sessionID] == f {
+		delete(m.forwarders, sessionID)
+	}
+	closed := m.closed
+	m.mu.Unlock()
+
+	// Cancel and join this subscription before any rebind installs its
+	// replacement, so the old stream stops notifying first.
+	f.cancel()
+	close(f.done)
+
+	if closed {
+		return
+	}
+	service, ok := m.lookup(sessionID)
+	if !ok || service == nil {
+		return
+	}
+	if service.WorkSnapshot().RuntimeEpoch == f.epoch {
+		return
+	}
+	m.ensureWorkForwarder(sessionID, service)
+}
+
 // Close stops every forwarder and marks the controller closed. It is
-// idempotent: a second call is a no-op, and with no forwarders started (Task
-// 21) it only sets the flag.
+// idempotent, and it cancels and joins the forwarders outside the mutex: each
+// forwarder's cleanup re-enters to delete its own entry, so joining under the
+// lock would deadlock.
 func (m *WorkManagerACP) Close() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closed {
+		m.mu.Unlock()
 		return
 	}
 	m.closed = true
+	pending := make([]*workForwarder, 0, len(m.forwarders))
 	for key, f := range m.forwarders {
-		f.cancel()
+		pending = append(pending, f)
 		delete(m.forwarders, key)
+	}
+	m.mu.Unlock()
+
+	for _, f := range pending {
+		f.cancel()
+		<-f.done
 	}
 }

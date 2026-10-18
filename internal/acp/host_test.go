@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"marshal/internal/app"
 	"marshal/internal/app/config"
@@ -19,6 +20,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/oauth"
 	"marshal/internal/trust"
+	"marshal/internal/viewmodel"
 )
 
 func TestNotifySinkDropsWhenDetached(t *testing.T) {
@@ -304,4 +306,49 @@ func TestWorkACPAvailableWithoutModelRunner(t *testing.T) {
 
 	// cleanup is idempotent: a second call is a no-op.
 	cleanup()
+}
+
+// TestWorkACPFinalUpdateBeforeClose pins the connection-close ordering: the
+// coordinator's final settlement snapshot is published while the transport is
+// still up, the forwarder carries it out, and Close then cancels and joins the
+// forwarder outside the controller mutex. Nothing is inferred from a transport
+// that has already closed, and Close stays idempotent.
+func TestWorkACPFinalUpdateBeforeClose(t *testing.T) {
+	svc := newScriptedWorkService("e1")
+	notices := &workNotices{}
+	m := NewWorkManagerACP(func(id string) (viewmodel.WorkService, bool) {
+		if id != "s1" {
+			return nil, false
+		}
+		return svc, true
+	}, notices.notify)
+	t.Cleanup(svc.broker.Close)
+
+	if _, err := m.List(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	svc.publish(viewmodel.WorkSnapshot{ConversationID: "s1", RuntimeEpoch: "e1", Revision: 12, StoppedReceiptCount: 1})
+	waitFor(t, "the final work_state before close", func() bool { return notices.count() == 1 })
+
+	joined := make(chan struct{})
+	go func() {
+		m.Close()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not join the forwarder")
+	}
+
+	// The transport is gone: a later publish reaches no reader, so no delivery
+	// is inferred from it.
+	svc.publish(viewmodel.WorkSnapshot{ConversationID: "s1", RuntimeEpoch: "e1", Revision: 13})
+	if got := notices.count(); got != 1 {
+		t.Fatalf("updates after close = %d, want only the final one", got)
+	}
+	if got := notices.all()[0]; got.Revision != 12 || got.StoppedReceiptCount != 1 {
+		t.Fatalf("final delivery = %+v", got)
+	}
+	m.Close()
 }

@@ -547,3 +547,255 @@ func TestWorkACPWireRoundTripKeepsProgressAndRevision(t *testing.T) {
 		t.Fatalf("startedAt = %q, want an RFC3339 timestamp", started)
 	}
 }
+
+// --- work_state forwarders --------------------------------------------------
+
+// scriptedWorkService is a WorkService whose live stream a test drives: it
+// counts every SubscribeWork, publishes the snapshots the test hands it and
+// reports whatever runtime epoch the test has bound. Only the stream matters
+// here; the request methods are inert.
+type scriptedWorkService struct {
+	mu       sync.Mutex
+	subs     int
+	epoch    string
+	snapshot viewmodel.WorkSnapshot
+	broker   *pubsub.Broker[viewmodel.WorkSnapshot]
+}
+
+func newScriptedWorkService(epoch string) *scriptedWorkService {
+	return &scriptedWorkService{epoch: epoch, broker: pubsub.NewBroker[viewmodel.WorkSnapshot]()}
+}
+
+func (s *scriptedWorkService) WorkSnapshot() viewmodel.WorkSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := s.snapshot
+	snap.RuntimeEpoch = s.epoch
+	return snap
+}
+
+func (s *scriptedWorkService) SubscribeWork(ctx context.Context) <-chan pubsub.Event[viewmodel.WorkSnapshot] {
+	s.mu.Lock()
+	s.subs++
+	s.mu.Unlock()
+	return s.broker.Subscribe(ctx)
+}
+
+func (s *scriptedWorkService) ListWork(context.Context, viewmodel.WorkQuery) (viewmodel.WorkPage, error) {
+	return viewmodel.WorkPage{}, nil
+}
+
+func (s *scriptedWorkService) InspectWork(context.Context, viewmodel.WorkTarget, bool) (viewmodel.WorkDetail, error) {
+	return viewmodel.WorkDetail{}, nil
+}
+
+func (s *scriptedWorkService) StopWork(context.Context, viewmodel.WorkTarget, string) (viewmodel.WorkStopResult, error) {
+	return viewmodel.WorkStopResult{}, nil
+}
+
+func (s *scriptedWorkService) AcknowledgeWork(context.Context, viewmodel.WorkAck) error { return nil }
+
+func (s *scriptedWorkService) subscriptions() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subs
+}
+
+func (s *scriptedWorkService) setSnapshot(snap viewmodel.WorkSnapshot) {
+	s.mu.Lock()
+	s.snapshot = snap
+	s.mu.Unlock()
+}
+
+func (s *scriptedWorkService) publish(snap viewmodel.WorkSnapshot) {
+	s.broker.Publish("work", snap)
+}
+
+// workNotices records every work_state update decoded from the notify sink.
+// Decoding the raw params (not the originating Go value) is deliberate: a
+// revision is a uint64 on the wire, so it can only decode cleanly if the
+// envelope never routed the snapshot through a map[string]any, which would
+// have turned it into a float64.
+type workNotices struct {
+	mu        sync.Mutex
+	snapshots []WorkSnapshotWire
+}
+
+func (n *workNotices) notify(method string, params any) error {
+	if method != "session/update" {
+		return nil
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	var envelope struct {
+		SessionID string          `json:"sessionId"`
+		Update    json.RawMessage `json:"update"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return err
+	}
+	if envelope.SessionID == "" {
+		return nil
+	}
+	var tag struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(envelope.Update, &tag); err != nil || tag.Kind != "work_state" {
+		return nil
+	}
+	var snap WorkSnapshotWire
+	if err := json.Unmarshal(envelope.Update, &snap); err != nil {
+		return err
+	}
+	n.mu.Lock()
+	n.snapshots = append(n.snapshots, snap)
+	n.mu.Unlock()
+	return nil
+}
+
+func (n *workNotices) count() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return len(n.snapshots)
+}
+
+func (n *workNotices) all() []WorkSnapshotWire {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]WorkSnapshotWire(nil), n.snapshots...)
+}
+
+func newScriptedWorkACP(t *testing.T, svc *scriptedWorkService, notices *workNotices) *WorkManagerACP {
+	t.Helper()
+	m := NewWorkManagerACP(func(id string) (viewmodel.WorkService, bool) {
+		if id != "s1" {
+			return nil, false
+		}
+		return svc, true
+	}, notices.notify)
+	t.Cleanup(m.Close)
+	t.Cleanup(svc.broker.Close)
+	return m
+}
+
+func TestWorkACPForwarderSingleSubscriptionAndRecovery(t *testing.T) {
+	svc := newScriptedWorkService("e1")
+	notices := &workNotices{}
+	m := newScriptedWorkACP(t, svc, notices)
+
+	// The first valid List/Inspect opts the session into the stream and starts
+	// exactly one subscription; every later request reuses it.
+	requests := []func() error{
+		func() error { _, e := m.List(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); return e },
+		func() error {
+			_, e := m.List(context.Background(), json.RawMessage(`{"sessionId":"s1","view":"attention"}`))
+			return e
+		},
+		func() error {
+			_, e := m.Inspect(context.Background(), json.RawMessage(`{"sessionId":"s1","taskKey":"work:cmd:1"}`))
+			return e
+		},
+	}
+	for i, call := range requests {
+		if err := call(); err != nil {
+			t.Fatalf("request %d: %v", i, err)
+		}
+	}
+	if got := svc.subscriptions(); got != 1 {
+		t.Fatalf("SubscribeWork calls = %d, want exactly 1", got)
+	}
+
+	// The stream carries the exact snapshot, revision included (a uint64 the
+	// wire decode above would have rejected had it travelled as a float).
+	svc.publish(viewmodel.WorkSnapshot{
+		ConversationID: "s1", RuntimeEpoch: "e1", Revision: 42, HistoryRevision: 7,
+		Items: []viewmodel.WorkItem{{TaskKey: "work:cmd:1", ConversationID: "s1", RuntimeEpoch: "e1", Kind: "command"}},
+	})
+	waitFor(t, "the forwarded work_state", func() bool { return notices.count() == 1 })
+	if got := notices.all(); len(got) != 1 || got[0].Revision != 42 || got[0].HistoryRevision != 7 || got[0].RuntimeEpoch != "e1" {
+		t.Fatalf("forwarded snapshot = %+v", got)
+	}
+
+	// Reconciliation through work_list is the recovery path: the live view
+	// returns the newest snapshot, and reading it does not open a second stream.
+	svc.setSnapshot(viewmodel.WorkSnapshot{ConversationID: "s1", RuntimeEpoch: "e1", Revision: 99})
+	live, err := m.List(context.Background(), json.RawMessage(`{"sessionId":"s1"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := live.(WorkSnapshotWire).Revision; got != 99 {
+		t.Fatalf("recovered revision = %d, want 99", got)
+	}
+	if got := svc.subscriptions(); got != 1 {
+		t.Fatalf("recovery opened a second subscription: %d", got)
+	}
+}
+
+// switchWorkLookup is a session lookup a test can rebind, standing in for a
+// runtime that replaced the coordinator behind a session.
+type switchWorkLookup struct {
+	mu sync.Mutex
+	m  map[string]viewmodel.WorkService
+}
+
+func (l *switchWorkLookup) lookup(id string) (viewmodel.WorkService, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s, ok := l.m[id]
+	return s, ok
+}
+
+func (l *switchWorkLookup) set(id string, s viewmodel.WorkService) {
+	l.mu.Lock()
+	if l.m == nil {
+		l.m = map[string]viewmodel.WorkService{}
+	}
+	l.m[id] = s
+	l.mu.Unlock()
+}
+
+func TestWorkACPEpochReplacementRejectsLateUpdate(t *testing.T) {
+	// The session starts on one coordinator epoch; the runtime later replaces
+	// it and the old broker closes. The forwarder retires on that close,
+	// rebinds to the new epoch, and a straggler from the old epoch is dropped.
+	old := newScriptedWorkService("e1")
+	next := newScriptedWorkService("e2")
+	lookup := &switchWorkLookup{}
+	lookup.set("s1", old)
+	notices := &workNotices{}
+	m := NewWorkManagerACP(lookup.lookup, notices.notify)
+	t.Cleanup(m.Close)
+	t.Cleanup(old.broker.Close)
+	t.Cleanup(next.broker.Close)
+
+	if _, err := m.List(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	old.publish(viewmodel.WorkSnapshot{ConversationID: "s1", RuntimeEpoch: "e1", Revision: 1})
+	waitFor(t, "the first-epoch update", func() bool { return notices.count() == 1 })
+
+	lookup.set("s1", next)
+	old.broker.Close()
+	waitFor(t, "the rebound subscription", func() bool { return next.subscriptions() == 1 })
+
+	// A straggler still carrying the retired epoch must not be delivered; the
+	// next delivery on the bound epoch is.
+	next.publish(viewmodel.WorkSnapshot{ConversationID: "s1", RuntimeEpoch: "e1", Revision: 2})
+	next.publish(viewmodel.WorkSnapshot{ConversationID: "s1", RuntimeEpoch: "e2", Revision: 3})
+	waitFor(t, "the post-rebind e2 update", func() bool { return notices.count() == 2 })
+
+	got := notices.all()
+	if got[0].RuntimeEpoch != "e1" || got[0].Revision != 1 {
+		t.Fatalf("first delivery = %+v, want the e1 rev 1", got[0])
+	}
+	if got[1].RuntimeEpoch != "e2" || got[1].Revision != 3 {
+		t.Fatalf("second delivery = %+v, want the e2 rev 3 (straggler dropped)", got[1])
+	}
+	for _, s := range got {
+		if s.RuntimeEpoch == "e1" && s.Revision == 2 {
+			t.Fatal("a late update from the retired epoch was delivered")
+		}
+	}
+}

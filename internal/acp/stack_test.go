@@ -2,7 +2,10 @@ package acp
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -10,9 +13,11 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
+	"marshal/internal/watch"
 )
 
 type stackNotice struct {
@@ -643,5 +648,216 @@ func TestStackDirtyFlushRunsWhenBandWakeIsDue(t *testing.T) {
 	m.flushDirtyStack("s1", st)
 	if len(*notices) != 1 {
 		t.Fatalf("wake due: notifications = %d, want 1", len(*notices))
+	}
+}
+
+// --- Task 22: legacy compatibility and work-hash independence ---------------
+
+// kindRecorder records the update kind of every notification it sees, for both
+// the map-shaped SessionUpdateParams (stack/watch) and the typed
+// workStateEnvelope (work_state), so one connection sink can host all three.
+type kindRecorder struct {
+	mu    sync.Mutex
+	kinds map[string]int
+}
+
+func (r *kindRecorder) notify(_ string, params any) error {
+	data, err := json.Marshal(params)
+	if err != nil {
+		return err
+	}
+	var env struct {
+		Update struct {
+			Kind string `json:"kind"`
+		} `json:"update"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	if env.Update.Kind != "" {
+		if r.kinds == nil {
+			r.kinds = map[string]int{}
+		}
+		r.kinds[env.Update.Kind]++
+	}
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *kindRecorder) has(kind string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.kinds[kind] > 0
+}
+
+// runningJobSession builds a session whose latest call started a background job
+// that is still running: the legacy stack projection carries it as a job card
+// and the band lists it as a running entity.
+func runningJobSession(t *testing.T) *session.State {
+	t.Helper()
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	st.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	step := st.BeginStep(session.Actor{})
+	st.LogToolCall(registry.AuditEvent{
+		ToolName: "shell.run", StepID: int64(step), ToolCallID: "c1",
+		Args: json.RawMessage(`{"command":"sleep 600"}`),
+		Notice: registry.NewCommandExecutionNotice(registry.CommandExecution{
+			ExecutionID: "exec-1", DisplayID: "job-1", ConversationID: "conv-1",
+			State: "running", Attachment: registry.ExecutionAttachmentBackground,
+		}),
+	})
+	return st
+}
+
+func bandNode(t *testing.T, snap StackSnapshot) viewmodel.WireNode {
+	t.Helper()
+	for _, n := range snap.Nodes {
+		if n.Kind == "band" {
+			return n
+		}
+	}
+	t.Fatalf("no band node in %+v", snap.Nodes)
+	return viewmodel.WireNode{}
+}
+
+// stackFingerprint is the tuple a client's incremental render depends on: the
+// root ordering and, per node, the hash of its wire bytes.
+func stackFingerprint(t *testing.T, snap StackSnapshot) ([]string, map[string][32]byte) {
+	t.Helper()
+	hashes := map[string][32]byte{}
+	for _, n := range snap.Nodes {
+		b, err := json.Marshal(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hashes[n.ID] = sha256.Sum256(b)
+	}
+	return append([]string(nil), snap.Roots...), hashes
+}
+
+func newWorkStackTurnManager(t *testing.T, st *session.State, rec *kindRecorder) *TurnManager {
+	t.Helper()
+	return NewTurnManager(TurnManagerConfig{
+		Lookup: func(id string) (*TurnRuntime, bool) { return &TurnRuntime{State: st}, id == "s1" },
+		Notify: rec.notify,
+	})
+}
+
+// TestWorkACPLegacyStackAndWatchRemainCompatible is the compatibility contract
+// for unmodified clients: opting into the work stream does not switch the ACP
+// stack projection, so the band keeps its running-card entity listings, and a
+// legacy watch stream on the same connection still forwards.
+func TestWorkACPLegacyStackAndWatchRemainCompatible(t *testing.T) {
+	st := runningJobSession(t)
+	rec := &kindRecorder{}
+	tm := newWorkStackTurnManager(t, st, rec)
+
+	first := takeStack(t, tm)
+	if len(bandNode(t, first).Band.Entities) == 0 {
+		t.Fatalf("legacy band lost its entity listing: %+v", bandNode(t, first).Band)
+	}
+	legacyRoots := append([]string(nil), first.Roots...)
+
+	svc := newScriptedWorkService("e1")
+	works := NewWorkManagerACP(func(id string) (viewmodel.WorkService, bool) {
+		if id != "s1" {
+			return nil, false
+		}
+		return svc, true
+	}, rec.notify)
+	t.Cleanup(works.Close)
+	t.Cleanup(svc.broker.Close)
+
+	// A work-aware client opts in through work_list; a work_state update and a
+	// legacy watch update both reach the same connection sink.
+	if _, err := works.List(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	svc.publish(viewmodel.WorkSnapshot{ConversationID: "s1", RuntimeEpoch: "e1", Revision: 1})
+	waitFor(t, "a work_state update", func() bool { return rec.has("work_state") })
+
+	second := takeStack(t, tm)
+	if len(bandNode(t, second).Band.Entities) == 0 {
+		t.Fatal("opting into work changed the legacy stack band")
+	}
+	if strings.Join(second.Roots, ",") != strings.Join(legacyRoots, ",") {
+		t.Fatalf("root ordering changed: %v -> %v", legacyRoots, second.Roots)
+	}
+
+	broker := pubsub.NewBroker[watch.Event]()
+	wm := watch.NewManager(context.Background(), watch.Deps{
+		OnEvent: func(ev watch.Event) { broker.Publish("watch", ev) },
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = wm.Close(ctx)
+		broker.Close()
+	})
+	watches := NewWatchManagerACP(func(id string) (*watch.Manager, *pubsub.Broker[watch.Event], bool) {
+		return wm, broker, id == "s1"
+	}, rec.notify)
+	target := filepath.Join(t.TempDir(), "f.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec, _ := json.Marshal(map[string]any{
+		"sessionId": "s1",
+		"spec": map[string]any{
+			"name": "w", "kind": "file", "path": target,
+			"condition": "exit_code 0", "mode": "repeat", "intervalMs": 100,
+		},
+	})
+	if _, err := watches.Start(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	waitForWithin(t, 8*time.Second, "a watch update beside the work stream", func() bool { return rec.has("watch") })
+}
+
+// TestWorkACPProgressDoesNotChurnStackHashes pins the cross-stream invariant: a
+// work snapshot whose only change is progress/observation time neither emits a
+// stack patch nor changes the stack's root ordering or node hashes.
+func TestWorkACPProgressDoesNotChurnStackHashes(t *testing.T) {
+	st := runningJobSession(t)
+	rec := &kindRecorder{}
+	tm := newWorkStackTurnManager(t, st, rec)
+	first := takeStack(t, tm)
+	roots, hashes := stackFingerprint(t, first)
+
+	svc := newScriptedWorkService("e1")
+	works := NewWorkManagerACP(func(id string) (viewmodel.WorkService, bool) {
+		if id != "s1" {
+			return nil, false
+		}
+		return svc, true
+	}, rec.notify)
+	t.Cleanup(works.Close)
+	t.Cleanup(svc.broker.Close)
+
+	if _, err := works.List(context.Background(), json.RawMessage(`{"sessionId":"s1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	svc.publish(viewmodel.WorkSnapshot{
+		ConversationID: "s1", RuntimeEpoch: "e1", Revision: 5, ObservedAt: time.Now(),
+		Items: []viewmodel.WorkItem{{
+			TaskKey: "work:cmd:1", ConversationID: "s1", RuntimeEpoch: "e1", Kind: "command",
+			Progress: &progress.Snapshot{Frame: progress.Frame{Version: 1, Sequence: 9}},
+		}},
+	})
+	waitFor(t, "the work_state update", func() bool { return rec.has("work_state") })
+	if rec.has("stack_patch") {
+		t.Fatal("a progress-only work snapshot produced a stack patch")
+	}
+
+	second := takeStack(t, tm)
+	roots2, hashes2 := stackFingerprint(t, second)
+	if strings.Join(roots, ",") != strings.Join(roots2, ",") {
+		t.Fatalf("root ordering changed: %v -> %v", roots, roots2)
+	}
+	for id, h := range hashes {
+		if hashes2[id] != h {
+			t.Fatalf("node %s hash changed on a progress-only tick", id)
+		}
 	}
 }

@@ -121,6 +121,12 @@ func isCancellation(err error) bool {
 func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat) (chatResult, error) {
 	sentTools := r.NativeTools && !r.toolChoiceNoneRejected(p.Name())
 	res, err := r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, false)
+	if errors.Is(err, session.ErrSendNow) {
+		// A user interruption says nothing about tool_choice. Latching the
+		// provider to tool-less calls because the user typed mid-call would
+		// turn their keystroke into a permanent prompt-cache regression.
+		return chatResult{}, session.ErrSendNow
+	}
 	// Failures that say nothing about tool_choice return unchanged, with no
 	// retry and no latch: cancellation, a network outage that outlasted the
 	// reconnect wait (retrying would start a second wait), and a thinking loop.
@@ -143,7 +149,23 @@ func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Prov
 	return r.chatWithRetryWithNativeTools(ctx, p, model, messages, responseFormat, false)
 }
 
+// chatWithRetryWithNativeTools runs one logical model call — every transport
+// attempt, the reconnect wait and the backoff between them — under a single
+// steering operation, so an interruption cancels the call the user sees rather
+// than one attempt of it. Without an eligible turn the call runs exactly as it
+// did before steering existed.
 func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
+	return r.withModelOperation(ctx, func(opCtx context.Context) (chatResult, error) {
+		return r.chatRetryLadder(opCtx, p, model, messages, responseFormat, includeNativeTools)
+	})
+}
+
+// chatRetryLadder is the transport half of one logical model call: up to
+// MaxRetries+1 attempts plus the reconnect wait for a dropped connection. A
+// steering interruption ends the ladder wherever it surfaces — a request the
+// user interrupted is never resent, and the fragment it returned never reaches
+// the caller's salvage path.
+func (r *Runner) chatRetryLadder(ctx context.Context, p provider.Provider, model string, messages []schema.ChatMessage, responseFormat *schema.ResponseFormat, includeNativeTools bool) (chatResult, error) {
 	attempts := r.MaxRetries + 1
 	var lastErr error
 	// best keeps the most substantial partial response seen across attempts,
@@ -154,6 +176,9 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 		res, err := r.chatOnce(ctx, p, model, messages, responseFormat, includeNativeTools)
 		if err == nil {
 			return res, nil
+		}
+		if steeringAbortedAttempt(ctx, err) {
+			return chatResult{}, session.ErrSendNow
 		}
 		if len(res.Text) > len(best.Text) {
 			best = res
@@ -172,6 +197,9 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 			if err == nil {
 				return res, nil
 			}
+			if session.IsSteeringCancellation(ctx, err) {
+				return chatResult{}, session.ErrSendNow
+			}
 			if isNetworkError(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return best, err
 			}
@@ -179,6 +207,18 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 			// decoding error — handle it like any first-attempt failure.
 		}
 		if !isRetryableChatError(err) {
+			// A provider answer, a thinking loop, a malformed stream: what
+			// ended this attempt is its own failure, so it keeps that
+			// classification even while an interruption is pending. Relabelling
+			// it as the user's doing would hide a real defect behind their
+			// keystroke.
+			return best, err
+		}
+		// The operation is being interrupted: a resend would be refused at
+		// admission before it ever reached the provider, so skip the pointless
+		// backoff. The failure that actually ended the attempt is still the
+		// answer — the interruption did not cause it.
+		if errors.Is(session.CheckSteering(ctx), session.ErrSendNow) {
 			return best, err
 		}
 		lastErr = err
@@ -187,11 +227,111 @@ func (r *Runner) chatWithRetryWithNativeTools(ctx context.Context, p provider.Pr
 			// not become a tight retry loop. Base 50ms gives 50ms/100ms/200ms.
 			// Ctx-aware so Esc during the wait stops the turn immediately.
 			if serr := r.sleepCtx(ctx, time.Duration(1<<i)*50*time.Millisecond); serr != nil {
+				if session.IsSteeringCancellation(ctx, serr) {
+					return chatResult{}, session.ErrSendNow
+				}
 				return best, serr
 			}
 		}
 	}
 	return best, lastErr
+}
+
+// withModelOperation runs one logical model call under the steering operation
+// of the turn it belongs to, so an interruption cancels the call the user is
+// waiting on rather than one transport attempt of it. With no eligible turn it
+// calls run unchanged, which is every caller until a runner opts in.
+//
+// A context that already carries this turn's operation is reused, not
+// duplicated: a nested logical call (plan-first, finalize, handoff) and a
+// caller that opened a setup scope for optional old-intent work both run their
+// request beneath the operation already open. The state refuses a second
+// simultaneous operation anyway, and the operation's owner — not the nested
+// call — is the one that joins it.
+//
+// The operation is registered once for the whole logical call. Retries,
+// backoff and the reconnect wait all run inside it; replacing it per attempt
+// would make an interruption land on an attempt whose siblings kept going.
+func (r *Runner) withModelOperation(ctx context.Context, run func(context.Context) (chatResult, error)) (chatResult, error) {
+	if r.steeringTurnID == "" || r.State == nil {
+		return run(ctx)
+	}
+	if ref, ok := session.OperationFromContext(ctx); ok && ref.TurnID == r.steeringTurnID {
+		return run(ctx)
+	}
+	opCtx, ref, err := r.State.BeginSteeringOperation(ctx, r.steeringTurnID, session.OperationModel)
+	if err != nil {
+		// No operation could be opened, so run the call exactly as it ran
+		// before steering existed rather than failing on bookkeeping. That
+		// covers the one case that must not be refused: an accepted message
+		// waiting to be delivered, where the request about to be submitted IS
+		// the delivery — refusing it would strand the user's text forever. A
+		// request with no open operation is documented to wait for the next
+		// checkpoint instead, so this call is simply not interruptible.
+		r.State.Logger().Debug("model call ran without a steering operation", "error", err)
+		return run(ctx)
+	}
+	defer r.State.FinishSteeringOperation(ref, nil)
+	return run(opCtx)
+}
+
+// steeringEnvelope is the wire form of a mid-turn steering message, so the
+// model can tell one apart from a fresh goal. The copy persisted for replay
+// uses the same string, so restart replay matches the wire byte-for-byte.
+func steeringEnvelope(msg string) string {
+	return "[user steering, mid-turn]: " + msg
+}
+
+// steeringAbortedAttempt reports whether this attempt ended because the user
+// interrupted the operation it belonged to, which is what makes its result
+// unusable. Steering intent alone is not enough: a request whose interruption
+// worker has not cancelled yet has ended nothing. What actually ended it
+// decides — the turn's own signal, a context cancellation, or a transport
+// failure raised while the interruption is pending (a cancelled request body
+// surfaces as exactly that, whatever errno the OS reports). A nil err is the
+// clean end of a request the turn already abandoned, which is no more
+// acceptable than a cancelled one.
+//
+// A genuine provider answer that won the race — an HTTP status, a thinking
+// loop, a malformed stream — is none of those. It keeps its own classification
+// and the coaching that goes with it, because relabelling a real defect as the
+// user's doing would hide it behind their keystroke.
+func steeringAbortedAttempt(ctx context.Context, err error) bool {
+	if err == nil {
+		return errors.Is(session.CheckSteering(ctx), session.ErrSendNow)
+	}
+	if errors.Is(err, session.ErrSendNow) || session.IsSteeringCancellation(ctx, err) {
+		return true
+	}
+	return errors.Is(session.CheckSteering(ctx), session.ErrSendNow) && isNetworkError(err)
+}
+
+// commitSteeringSubmission persists the steering the next request is about to
+// carry and acknowledges it as submitted, which is what lets its receipt move
+// to delivered. It runs at the last possible moment before the adapter call:
+// persisting at staging time instead would put an entry in replay history
+// while the same entry was still waiting in the follow-up queue, and a request
+// that never reached the provider would leave the transcript claiming the model
+// saw text it never received. Submission is idempotent, so a retry — which
+// finds no unsubmitted IDs — writes nothing a second time.
+func (r *Runner) commitSteeringSubmission() {
+	if r.steeringTurnID == "" || r.State == nil {
+		return
+	}
+	batch := r.State.SteeringToSubmit(r.steeringTurnID)
+	if len(batch.Messages) == 0 && len(batch.Notes) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(batch.Messages)+len(batch.Notes))
+	for _, note := range batch.Notes {
+		r.State.AddMessage(session.RoleUser, note.Text, session.ContentTypeSubagentReport)
+		ids = append(ids, note.ID)
+	}
+	for _, msg := range batch.Messages {
+		r.State.AddMessage(session.RoleUser, steeringEnvelope(msg.Text), session.ContentTypeSteering)
+		ids = append(ids, msg.ID)
+	}
+	r.State.MarkSteeringSubmitted(r.steeringTurnID, ids)
 }
 
 // waitForConnectivity resends the same chat request while the provider is
@@ -217,10 +357,20 @@ func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, m
 			})
 		}
 		if err := r.sleepCtx(ctx, delay); err != nil {
+			if errors.Is(session.CheckSteering(ctx), session.ErrSendNow) {
+				// The user interrupted while this loop was waiting out an
+				// outage. Resending now would be exactly the retry storm
+				// steering exists to stop, and the outage error is not what
+				// ended the call.
+				return chatResult{}, session.ErrSendNow
+			}
 			return *best, err
 		}
 		res, err := r.chatOnce(ctx, p, model, messages, responseFormat, includeNativeTools)
 		if err == nil {
+			// chatOnce reports an interrupted attempt as ErrSendNow, never as
+			// a success, so a nil error here was accepted by the turn before
+			// any interruption reached it.
 			if r.State != nil {
 				r.State.Logger().Info("provider connection restored", "waited", r.Now().Sub(started).Round(time.Second), "attempts", attempt+1)
 			}
@@ -228,6 +378,9 @@ func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, m
 		}
 		if len(res.Text) > len(best.Text) {
 			*best = res
+		}
+		if steeringAbortedAttempt(ctx, err) {
+			return chatResult{}, session.ErrSendNow
 		}
 		if !isReconnectEligible(ctx, err) {
 			// The network is back; this is a provider answer, not a drop. A
@@ -407,6 +560,16 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	ctx, cancel = context.WithTimeout(ctx, r.effectiveChatTimeout())
 	defer cancel()
 
+	// Admission: an operation the user already interrupted must not reach the
+	// provider at all. The intent is visible before the interruption worker
+	// cancels the context (session_test.go's intent-precedes-signal test pins
+	// that ordering), so checking here is what keeps a stale request off the
+	// wire instead of racing the cancellation. A request that starts and is
+	// cancelled mid-flight is handled by the stream loop's drain below.
+	if err := session.CheckSteering(ctx); errors.Is(err, session.ErrSendNow) {
+		return chatResult{}, session.ErrSendNow
+	}
+
 	// A fresh detector per attempt: the first attempt's verdict says nothing
 	// about whether the nudge worked.
 	det := newLoopDetector()
@@ -475,6 +638,12 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	}
 	attemptID := r.captureRequestInspection(p, model, req)
 
+	// The submission point. Everything staged is persisted and acknowledged
+	// here, immediately before the request goes out: this is the only instant
+	// at which "the model has been given this text" is true. A cancellation
+	// that lands after this leaves the entry submitted, so the retry writes
+	// nothing twice.
+	r.commitSteeringSubmission()
 	events, err := p.Chat(ctx, req)
 	if err != nil {
 		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
@@ -505,6 +674,13 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	var quota *schema.QuotaInfo
 	var toolCalls []schema.ToolCall
 	var finishReason string
+	// steeringAbort marks a stream the user's interruption ended. Once set the
+	// loop only drains: the provider's own goroutine still has to be allowed to
+	// finish its last send and close the channel, and the usage it reported on
+	// the way out is real evidence worth keeping. The partial text and tool
+	// calls are NOT: a response the user cancelled must contribute nothing
+	// executable to the turn.
+	steeringAbort := false
 	for event := range events {
 		if loopSnippet != "" {
 			// Drain rather than break. No backend selects on ctx.Done() in
@@ -517,6 +693,21 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			// (openai_compatible.go:266, ollama_native.go:355,
 			// anthropic.go:365) before its deferred close(events) runs.
 			// Breaking instead would leave it blocked on that send forever.
+			continue
+		}
+		if steeringAbort {
+			// Same drain rule as above, for the same reason: a break here
+			// leaks the sender. Usage is still accepted — the provider really
+			// reported those tokens — but a later event must not wipe what an
+			// earlier one already reported.
+			if event.Type == schema.ChatEventDone {
+				if event.Usage != nil {
+					usage = event.Usage
+				}
+				if event.Quota != nil {
+					quota = event.Quota
+				}
+			}
 			continue
 		}
 		switch event.Type {
@@ -554,16 +745,39 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 				sb.WriteString(event.Delta)
 			}
 		case schema.ChatEventError:
-			// Return what the stream already delivered. A single undecodable
-			// SSE chunk aborts the stream (openai_compatible.go:338), and the
-			// deltas before it can amount to a complete, parseable action.
-			// Discarding them turns a recoverable hiccup into a failed turn.
 			r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
 				Status: inspectionStatusFor(ctx, event.Err),
 				Err:    event.Err.Error(),
 			})
+			if steeringAbortedAttempt(ctx, event.Err) {
+				// The user's interruption is what ended this stream, so it
+				// carries the turn's distinct signal instead of the transport
+				// error the cancelled request produced.
+				steeringAbort = true
+				continue
+			}
+			// Return what the stream already delivered. A single undecodable
+			// SSE chunk aborts the stream (openai_compatible.go:338), and the
+			// deltas before it can amount to a complete, parseable action.
+			// Discarding them turns a recoverable hiccup into a failed turn.
 			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, event.Err
+
 		case schema.ChatEventDone:
+			// A completion that arrives after the user's interruption is the
+			// response of a request the turn has already abandoned: it is not
+			// this turn's to take. Switch to draining instead, keeping the
+			// usage it reported — those tokens were really spent — and
+			// dropping the tool calls and text that came with them.
+			if errors.Is(session.CheckSteering(ctx), session.ErrSendNow) {
+				steeringAbort = true
+				if event.Usage != nil {
+					usage = event.Usage
+				}
+				if event.Quota != nil {
+					quota = event.Quota
+				}
+				continue
+			}
 			usage = event.Usage
 			toolCalls = event.ToolCalls
 			finishReason = event.FinishReason
@@ -580,9 +794,28 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	// The stream ended: completion as far as the adapter is concerned, not an
 	// acknowledgement from a server. A cancelled context still wins, so a
 	// provider that finishes a request the user stopped is not shown as done.
-	r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
-		Status: inspectionStatusFor(ctx, nil),
-	})
+	//
+	// A clean end after the user interrupted is exactly that case: the server
+	// answered a request the turn has already abandoned. It is still a steering
+	// end, and its response is discarded for the same reason an errored one is —
+	// it was never accepted by the turn, so it must not become an executable
+	// answer or tool call. The usage it reported, by contrast, is real and is
+	// kept below.
+	steering := steeringAbort || errors.Is(session.CheckSteering(ctx), session.ErrSendNow)
+	if steering {
+		// The attempt's outcome is cancellation by steering, whatever shape
+		// the stream's ending took — an error, an error then a completion, or
+		// just a completion. Recorded here rather than at each branch so the
+		// snapshot cannot disagree with the signal the caller receives.
+		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+			Status: session.InspectionCancelled,
+			Err:    session.ErrSendNow.Error(),
+		})
+	} else {
+		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
+			Status: inspectionStatusFor(ctx, nil),
+		})
+	}
 	if r.UsageObserver != nil && usage != nil {
 		r.UsageObserver(*usage)
 	}
@@ -606,6 +839,13 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			s.m.CacheReadTokens += usage.CacheReadTokens
 			s.m.CacheWriteTokens += usage.CacheWriteTokens
 		})
+	}
+	if steering {
+		// Usage and quota above are already recorded; only the response is
+		// discarded. The caller sees the turn's distinct signal, with nothing
+		// salvageable in it, so its partial-response recovery ladder cannot
+		// resurrect an answer the user stopped.
+		return chatResult{}, session.ErrSendNow
 	}
 	return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, nil
 }

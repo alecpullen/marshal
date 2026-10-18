@@ -518,6 +518,14 @@ type Runner struct {
 	// known. Guarded by finishReasonMu for concurrent access from tool
 	// execution goroutines.
 	turnFinishReason string
+	// steeringTurnID is the eligible turn this runner's model calls and tool
+	// batches belong to, empty when steering is not in play. It is set by the
+	// turn entry point that opened the eligible turn and read by every
+	// operation scope below it (see withModelOperation). Per-runner state,
+	// deliberately NOT copied by CopyFrom: a reload must not repoint an
+	// in-flight invocation at the rebuilt runner's empty field.
+	steeringTurnID string
+
 	// turnRequestOptions carries the resolved max-token and context-window
 	// limits for the current turn, derived from the resolved route. Per-turn
 	// state: populated after resolveRoute in RunTask, reset before the turn
@@ -701,6 +709,12 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.rosterMu.Lock()
 	r.discoveredModels = nil
 	r.rosterMu.Unlock()
+
+	// steeringTurnID is deliberately not copied. A reload rebuilds the runner
+	// and CopyFrom folds it back into the live one, which may be mid-call:
+	// taking the rebuilt runner's (empty) field would detach an in-flight model
+	// call from the turn the user can still steer, and the source has no turn
+	// of its own to offer. The destination's live ID is the only correct value.
 }
 
 // beginTurnStop registers this turn's explicit-stop group through the injected

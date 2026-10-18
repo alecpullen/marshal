@@ -126,6 +126,32 @@ func TestErrThinkingLoopIsNotRetryable(t *testing.T) {
 	}
 }
 
+// TestThinkingLoopAbortIsNotSteering pins the discrimination the model-call
+// ladder now makes: an eligible turn with an open model operation is not by
+// itself an interruption. A model that loops inside its thinking block while
+// the user has said nothing still ends the turn as a loop, with exactly the two
+// provider calls (abort + one nudge) it made before the operation scope existed.
+// Classifying it as steering would hide a broken model behind a keystroke the
+// user never typed.
+func TestThinkingLoopAbortIsNotSteering(t *testing.T) {
+	f := newSteeringModelFixture(t)
+	p := &agenttest.ScriptedProvider{
+		Thinking:  []string{loopThinking(), loopThinking()},
+		Responses: []string{"", ""},
+	}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), f.state, "test-model")
+	r.steeringTurnID = f.turnID
+
+	_, err := r.chatWithRetry(context.Background(), p, "test-model",
+		[]schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil)
+	if !errors.Is(err, errThinkingLoop) {
+		t.Fatalf("err = %v, want errThinkingLoop — an open operation is not an interruption", err)
+	}
+	if p.Calls != 2 {
+		t.Fatalf("provider calls = %d, want 2 (abort + nudge), unchanged by the operation scope", p.Calls)
+	}
+}
+
 // TestThinkingLoopEscalatesOnceAtThirdAbort pins the escalation latch: two
 // aborts are silent, the third logs exactly one escalation line, and further
 // aborts do not repeat it.

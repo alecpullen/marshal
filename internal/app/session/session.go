@@ -48,6 +48,7 @@ const (
 	EventBrowserChanged          = "browser_changed"
 	EventStepChanged             = "step_changed"
 	EventHoldChanged             = "hold_changed"
+	EventEffortChanged           = "effort_changed"
 	EventJobExit                 = "job_exit"
 )
 
@@ -79,6 +80,8 @@ type Event struct {
 	Held bool
 	// JobExit carries a background job's exit (EventJobExit).
 	JobExit *JobExit
+	// Effort carries an effort override or application (EventEffortChanged).
+	Effort *EffortChange
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
@@ -319,6 +322,13 @@ type State struct {
 	// shell-editing ban, and catastrophic-floor guardrails. Runtime-only;
 	// never a config default. Sticky until toggled off. Guarded by mu.
 	systemAccess bool
+	// effortOverride is the session's unsaved reasoning-effort override,
+	// guarded by mu.
+	effortOverride EffortOverride
+	// turnRoute is the route the running turn uses (Thinking = effective
+	// effort); turnRouteSet is false between turns. Guarded by mu.
+	turnRoute    RouteInfo
+	turnRouteSet bool
 	// accessMu serializes access-tuple mutations (session mode changes,
 	// system-access toggles, config rebases) so a reader never observes a
 	// half-applied pair. It guards configuredMode and sessionModeOverride;

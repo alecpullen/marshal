@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/progress"
 	"marshal/internal/tools/registry"
 )
 
@@ -1007,5 +1008,145 @@ func TestLoadJobExitsLegacyRowStaysLegacy(t *testing.T) {
 		r.Attachment != "" || r.Wait != "" || r.StopCause != "" || r.Truncated ||
 		r.PID != 0 || r.Generation != 0 || !r.StartedAt.IsZero() || !r.EndedAt.IsZero() {
 		t.Fatalf("a legacy row invented structured facts: %+v", r)
+	}
+}
+
+// TestWorkViewRoundTripVersionAndIsolation pins the work-view index: the whole
+// versioned record round-trips through session_state's JSON, and one session's
+// view never leaks into another's.
+func TestWorkViewRoundTripVersionAndIsolation(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	started := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	record := WorkViewRecord{
+		Version: 1,
+		WatchResults: []WorkResultRecord{{
+			TaskKey: "work:watch", SourceID: "src-1", RuntimeEpoch: "epoch-1",
+			Kind: "watch", Label: "build", Owner: "watch", TurnID: "turn-1",
+			StepID: "step-1", ToolCallID: "call-1", State: "done", Outcome: "exit_zero",
+			StartedAt: started, EndedAt: started.Add(2 * time.Second),
+			ResultRevision: "rev-1", Detail: "3 passed",
+			Reference: WorkReference{MessageID: 42, NodeKey: "node-1", ChildSessionID: "child-1"},
+		}},
+		AgentResults: []WorkResultRecord{{
+			TaskKey: "work:agent", SourceID: "agent-1", RuntimeEpoch: "epoch-1",
+			Kind: "agent", Label: "reviewer", State: "done",
+			StartedAt: started, EndedAt: started.Add(time.Minute),
+			ResultRevision: "rev-2", Reference: WorkReference{MessageID: 7},
+		}},
+		Acknowledged: []WorkAcknowledgment{{TaskKey: "work:watch", ResultRevision: "rev-1"}},
+	}
+	if err := db.SaveWorkView("sess-a", record); err != nil {
+		t.Fatalf("SaveWorkView failed: %v", err)
+	}
+	got, err := db.LoadWorkView("sess-a")
+	if err != nil {
+		t.Fatalf("LoadWorkView failed: %v", err)
+	}
+	if !reflect.DeepEqual(got, record) {
+		t.Fatalf("round trip:\n got %+v\nwant %+v", got, record)
+	}
+
+	// A different session must not see sess-a's stored view.
+	other, err := db.LoadWorkView("sess-b")
+	if err != nil {
+		t.Fatalf("LoadWorkView(sess-b) failed: %v", err)
+	}
+	if !reflect.DeepEqual(other, WorkViewRecord{Version: 1}) {
+		t.Fatalf("sess-b view = %+v, want empty version-1 record", other)
+	}
+}
+
+// TestWorkViewMissingAndFutureVersion pins the two read edges: an absent row
+// is an empty version-1 record with no error, while an unknown stored version
+// is an explicit error that leaves the stored data untouched.
+func TestWorkViewMissingAndFutureVersion(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	missing, err := db.LoadWorkView("never-written")
+	if err != nil {
+		t.Fatalf("LoadWorkView(missing) failed: %v", err)
+	}
+	if !reflect.DeepEqual(missing, WorkViewRecord{Version: 1}) {
+		t.Fatalf("missing view = %+v, want empty version-1 record", missing)
+	}
+
+	const future = `{"version":2,"watchResults":[]}`
+	if _, err := db.sqlDB.Exec(
+		`INSERT INTO session_state (session_id, key, value) VALUES (?, 'work_view_v1', ?)`,
+		"future-sess", future,
+	); err != nil {
+		t.Fatalf("insert future work view: %v", err)
+	}
+	if _, err := db.LoadWorkView("future-sess"); err == nil {
+		t.Fatal("LoadWorkView on a future version returned a blank success, want an error")
+	}
+	// The failed read must not have overwritten the stored data.
+	var raw string
+	if err := db.sqlDB.QueryRow(
+		`SELECT value FROM session_state WHERE session_id=? AND key='work_view_v1'`,
+		"future-sess").Scan(&raw); err != nil {
+		t.Fatalf("read stored work view: %v", err)
+	}
+	if raw != future {
+		t.Fatalf("stored work view changed:\n got %s\nwant %s", raw, future)
+	}
+
+	// Saving a non-1 version is refused, never silently coerced.
+	if err := db.SaveWorkView("future-sess", WorkViewRecord{Version: 2}); err == nil {
+		t.Fatal("SaveWorkView(version 2) succeeded, want an error")
+	}
+}
+
+// TestJobExitProgressRoundTripLegacy pins the additive progress evidence on
+// the job-exit record: the captured config and final snapshot round-trip, and
+// a record written before these fields existed still decodes with them absent.
+func TestJobExitProgressRoundTripLegacy(t *testing.T) {
+	db := newTestDB(t)
+	defer db.Close()
+
+	started := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	full := JobExitRecord{
+		ID: "job-1", Command: "go test", ExitCode: 0, At: started.Add(time.Minute),
+		State: "completed", Outcome: "exit_zero",
+		ProgressConfig: &progress.Config{Profile: "tests", Source: "go-test-json", Title: "go test"},
+		Progress: &progress.Snapshot{
+			Frame:      progress.Frame{Version: 1, Sequence: 4, Detail: "go test"},
+			ObservedAt: started,
+			MeasuredAt: started,
+		},
+		ResultRevision: "rev-9", SourceEpoch: "epoch-9",
+	}
+	if err := db.SaveJobExits("progress-sess", []JobExitRecord{full}); err != nil {
+		t.Fatalf("SaveJobExits failed: %v", err)
+	}
+	got, err := db.LoadJobExits("progress-sess")
+	if err != nil {
+		t.Fatalf("LoadJobExits failed: %v", err)
+	}
+	if len(got) != 1 || !reflect.DeepEqual(got[0], full) {
+		t.Fatalf("progress round trip:\n got %+v\nwant %+v", got, full)
+	}
+
+	// A pre-progress record still decodes with the additive fields empty.
+	const legacy = `[{"id":"job-legacy","command":"go build","exit_code":0,"at":"2026-01-02T03:04:05Z"}]`
+	if _, err := db.sqlDB.Exec(
+		`INSERT INTO session_state (session_id, key, value) VALUES (?, 'job_exits', ?)`,
+		"legacy-progress-sess", legacy,
+	); err != nil {
+		t.Fatalf("insert legacy job exits: %v", err)
+	}
+	legacyGot, err := db.LoadJobExits("legacy-progress-sess")
+	if err != nil {
+		t.Fatalf("LoadJobExits(legacy) failed: %v", err)
+	}
+	if len(legacyGot) != 1 {
+		t.Fatalf("legacy records = %d, want 1", len(legacyGot))
+	}
+	lr := legacyGot[0]
+	if lr.ProgressConfig != nil || lr.Progress != nil || lr.ResultRevision != "" || lr.SourceEpoch != "" {
+		t.Fatalf("a legacy row invented progress evidence: %+v", lr)
 	}
 }

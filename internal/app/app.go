@@ -1966,6 +1966,7 @@ func accessTUIOptions(rt *Runtime) []tui.Option {
 	return []tui.Option{
 		tui.WithAccessRequests(rt.AccessRequest, rt.ResolveAccess),
 		tui.WithSessionModeSetter(rt.SetSessionMode),
+		tui.WithSessionEffortSetter(rt.SetSessionEffort),
 	}
 }
 

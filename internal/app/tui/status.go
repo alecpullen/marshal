@@ -197,11 +197,21 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: untrustedStyle().Render("untrusted"), priority: 0})
 	}
 
-	route := m.state.ActiveRoute()
+	active := m.state.ActiveRoute()
+	route := active
+	turn, running := m.state.TurnRoute()
+	if running {
+		route = turn
+	}
 	if route.Active {
 		segs = append(segs, statusSeg{text: identityStyle().Render(fmt.Sprintf("%s @ %s", route.Model, route.Provider)), priority: 1})
 		if route.LocalOnly {
 			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 2})
+		}
+		// The active route has moved on while a turn still runs: show where
+		// it will land next, without hiding the turn's own model above.
+		if running && (active.Preset != turn.Preset || active.Model != turn.Model) {
+			segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("→ %s (next turn)", active.Model)), priority: 4})
 		}
 		// The thinking-effort flag rides next to the model identity: it is
 		// route-shaped config (like local/remote), not a consumable counter,
@@ -212,13 +222,36 @@ func (m Model) statusLeftSegments() []statusSeg {
 		// cannot accept an effort control (e.g. native Ollama, whose think
 		// toggle is a separate wire mechanism), the chat path drops the field
 		// (chat.go gates on Capabilities().Reasoning) and the segment is
-		// omitted rather than advertising a value that is never sent.
+		// omitted rather than advertising a value that is never sent. While a
+		// turn runs it shows the turn's level and, when the override retargets
+		// it, the pending level and when it takes effect.
 		if route.ReasoningCapable {
 			effort := route.Thinking
 			if effort == "" {
 				effort = "default"
 			}
-			segs = append(segs, statusSeg{text: dimStyle().Render("think " + effort), priority: 4})
+			text := "think " + effort
+			if running {
+				target := m.state.EffortOverride().Level
+				if target == "" {
+					target = m.state.Config.Models.Presets[active.Preset].Thinking
+				}
+				if target != turn.Thinking {
+					label := target
+					if label == "" {
+						label = "default"
+					}
+					text = fmt.Sprintf("think %s → %s", effort, label)
+					if (turn.Thinking == "off") != (target == "off") {
+						text += " (next turn)"
+					} else {
+						text += " (next step)"
+					}
+				}
+			} else if lvl := m.state.EffortOverride().Level; lvl != "" {
+				text = "think " + lvl
+			}
+			segs = append(segs, statusSeg{text: dimStyle().Render(text), priority: 4})
 		}
 	} else {
 		segs = append(segs, statusSeg{text: identityStyle().Render("no model"), priority: 1})

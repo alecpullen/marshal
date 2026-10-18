@@ -146,6 +146,16 @@ func init() {
 		"quit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
 			return m, m.beginEnd(&endIntent{kind: EndIntentExit})
 		},
+		"effort": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			if len(args) == 0 {
+				m.openEffortPicker()
+				m.refreshViewport()
+				return m, nil
+			}
+			m.applyEffort(strings.TrimSpace(args[0]))
+			m.refreshViewport()
+			return m, nil
+		},
 		"set": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			m.handleSetCommand(args)
 			m.refreshViewport()

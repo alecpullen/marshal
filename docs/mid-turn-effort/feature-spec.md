@@ -135,6 +135,8 @@ reasoning replay merged). One commit per plan task:
 | 4 | `e85cc228` | Runner applies the override |
 | 5 | `45a43e2c` | TUI `/effort`, `alt+e` and an honest status bar |
 | 6 | `a4ef7236` | ACP `session/set_effort` and `effort_changed` |
+| 7 | `886ca5df` | Record the implementation in this spec |
+| — | `4a177c20` | Address branch review findings |
 
 Notes:
 
@@ -148,3 +150,9 @@ Notes:
   case is reached. `applyEffort` maps `"default"` back to `""`.
 - No system-prompt text was added; the effort notes are transcript `RoleSystem`
   messages, so the cache-stable prompt prefix is unaffected.
+- **Review follow-up.** The override is recorded against the *active* route but
+  applied against the *running turn's* route, so a route that moves mid-turn
+  made two surfaces lie: `SetSessionEffort` reported `next_step` for a change
+  the runner would not make, and the footer advertised a pending effort the
+  turn would never apply. Both now account for the provider/model match, and
+  tests pin the picker's clearing row and the ACP no-hook server error.

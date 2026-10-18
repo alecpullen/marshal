@@ -144,6 +144,30 @@ func providersFrame(s *state) *frame {
 						Desc:     "request readable reasoning summaries for thinking display (Codex / Responses API)",
 						GetBool:  func() bool { return s.cfg.Providers[k].ReasoningSummary },
 						SetBool:  func(v bool) { mut(func(p *config.ProviderConfig) { p.ReasoningSummary = v }) }},
+					func() *field {
+						f := NewField("providers."+k+".reasoning_field", "Reasoning replay", KindEnum)
+						SetFieldDesc(f, "send prior reasoning back on later steps (auto picks the provider's field)")
+						f.TomlPath = "providers." + k + ".reasoning_field"
+						SetFieldGetStr(f, func() string {
+							if v := s.cfg.Providers[k].ReasoningField; v != "" {
+								return v
+							}
+							return "auto"
+						})
+						SetFieldOptions(f, func() []string {
+							return []string{"auto", "reasoning_content", "reasoning", "off"}
+						})
+						SetFieldSetStr(f, func(v string) error {
+							if v == "auto" {
+								v = ""
+							}
+							mut(func(p *config.ProviderConfig) { p.ReasoningField = v })
+							invalidate()
+							return nil
+						})
+						SetFieldWriteGlobal(f, true)
+						return f
+					}(),
 					testConnectionField(s, k),
 					{ID: "providers." + k + ".options", Title: "Model options", Kind: kindAction,
 						Desc: "edit context window / max output / tool calling for each model pair using this provider",

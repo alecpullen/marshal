@@ -81,7 +81,7 @@ plans retain the legacy agent strategy.
 | TUI | `internal/app/tui/` | Bubble Tea model, panels, settings, chrome, themes, help footer. |
 | Agent | `internal/agent/`, `internal/agent/swarm/` | Single-agent loop and multi-agent swarm orchestration. |
 | Pipeline | `internal/pipeline/` | Plan execution with implementer/reviewer subagents. |
-| LLM | `internal/llm/`, `internal/llm/routing/` | Provider abstraction, model presets, role-based routing. |
+| LLM | `internal/llm/`, `internal/llm/routing/` | Provider abstraction, model presets, role-based routing. Assistant messages carry provider-bound reasoning (`schema.ChatMessage.Reasoning`) that each adapter replays in its own wire format. |
 | Tools | `internal/tools/registry/`, `internal/tools/native/`, `internal/tools/patch/`, `internal/tools/policy/`, `internal/tools/mcp/` | Tool registration, file/search/shell/git tools, patch apply, risk policy, MCP clients. The model-facing surface is documented family-by-family in [`docs/tools/`](tools/README.md). |
 | Repo intelligence | `internal/repo/`, `internal/index/`, `internal/retrieval/`, `internal/lsp/` | Repo scanning, tree-sitter symbol extraction, embeddings, semantic retrieval, LSP integration. |
 | Knowledge | `internal/contextpack/`, `internal/rollover/` | Curated memory injection, context budget, long-session rollover. |

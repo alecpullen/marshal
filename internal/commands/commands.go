@@ -109,6 +109,13 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "effort",
+			Description: "Set this session's reasoning effort (applies from the next step)",
+			Args:        "[level|default]",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "help",
 			Description: "Show available commands",
 			Args:        "[command]",
@@ -150,7 +157,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					}
 				}
 				res := Panel("Help", false, rows)
-				res.Doc.Footer = "⏎ send · esc close/dismiss · tab/shift+tab mode · alt+m /models\n" +
+				res.Doc.Footer = "⏎ send · esc close/dismiss · tab/shift+tab mode · alt+m /models · alt+e  cycle reasoning effort\n" +
 					"ctrl+c ctrl+c stop the turn (quit when idle) · ctrl+x clear queue\n" +
 					"ctrl+o settings · ctrl+p models · ctrl+k memory · ctrl+g cycle detail (outline/steps/full) · ctrl+t tasks · ctrl+r rollback\n" +
 					"ctrl+b session sheet · pgup/pgdn scroll · ctrl+u/ctrl+d half-page · end bottom\n" +

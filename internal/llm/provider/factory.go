@@ -79,6 +79,7 @@ func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string
 			Capabilities:     &caps,
 			LimitsTable:      table,
 			ReasoningSummary: pc.ReasoningSummary,
+			ReasoningField:   pc.ReasoningField,
 			SessionID:        sessionID,
 		})
 	case "ollama":
@@ -112,6 +113,7 @@ func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string
 			Capabilities:   &caps,
 			KeepAlive:      keepAlive,
 			LimitsTable:    table,
+			ReasoningField: pc.ReasoningField,
 		})
 	case "anthropic":
 		apiKey, err := ResolveAPIKey(pc)
@@ -163,6 +165,7 @@ func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string
 			DataDir:          dataDir,
 			ProviderConfig:   pc,
 			SessionID:        sessionID,
+			ReasoningField:   pc.ReasoningField,
 		})
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported type %q", name, pc.Type)

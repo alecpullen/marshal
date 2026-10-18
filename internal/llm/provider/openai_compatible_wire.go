@@ -18,9 +18,10 @@ type chatMessageBody struct {
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	// Reasoning fields for non-streaming responses, mirroring the streaming
 	// delta conventions: reasoning_content (DeepSeek/vLLM), a plain reasoning
-	// string, or structured reasoning_details entries (OpenRouter).
-	// omitempty keeps them out of outgoing request messages, which reuse this
-	// type; they are only ever populated when decoding a response.
+	// string, or structured reasoning_details entries (OpenRouter), which is
+	// decoded only when reading a response. The reasoning fields are also
+	// written on outgoing assistant messages when reasoning replay is on;
+	// omitempty keeps them out of everything else.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 	Reasoning        string `json:"reasoning,omitempty"`
 	ReasoningDetails []struct {

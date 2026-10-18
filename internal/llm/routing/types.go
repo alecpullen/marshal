@@ -130,6 +130,10 @@ type ModelPreset struct {
 	Thinking string `toml:"thinking,omitempty"`
 	// ThinkingOptions overrides discovered controls for this provider/model pair.
 	ThinkingOptions *schema.ThinkingOptions `toml:"thinking_options,omitempty"`
+	// ReasoningHistory controls cross-turn reasoning replay: "" or "turn"
+	// replays reasoning only within a turn; "final_answers" also carries the
+	// reasoning behind earlier turns' final answers (text only).
+	ReasoningHistory string `toml:"reasoning_history,omitempty"`
 	// Temperature optionally overrides the provider's default sampling
 	// temperature for this preset. Nil sends nothing on the wire — the
 	// provider default applies.
@@ -150,6 +154,12 @@ type ModelPreset struct {
 	// around. pricing.Lookup type-asserts this back to *pricing.ModelPricing.
 	Pricing any `toml:"pricing,omitempty"`
 }
+
+// ModelPreset.ReasoningHistory values.
+const (
+	ReasoningHistoryTurn         = "turn"
+	ReasoningHistoryFinalAnswers = "final_answers"
+)
 
 // RoleBinding is a oneOf: exactly one of Preset or CustomAgent is set.
 // A bare TOML string ("reasoning") decodes as Preset (see UnmarshalTOML).

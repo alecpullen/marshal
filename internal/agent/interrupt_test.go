@@ -84,7 +84,7 @@ func TestInterruptedTurnPersistsMarkerAndClearsAudit(t *testing.T) {
 	}
 
 	// The marker replays via buildHistoryMessages.
-	replayed := buildHistoryMessages(state.Messages(), 0, state.Generation(), map[int64][]db.ToolAuditEntry{})
+	replayed := buildHistoryMessages(state.Messages(), 0, state.Generation(), map[int64][]db.ToolAuditEntry{}, "")
 	found := false
 	for _, m := range replayed {
 		if m.Role == schema.RoleUser && strings.Contains(m.Content, "[turn interrupted]") {

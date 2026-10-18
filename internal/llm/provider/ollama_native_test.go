@@ -758,3 +758,64 @@ func TestOllamaChatRetriesOnEmbeddedStrictTemplateError(t *testing.T) {
 		t.Fatalf("leading system message must stay system, got role %q", requests[1][0].Role)
 	}
 }
+
+func TestOllamaNativeReplaysThinking(t *testing.T) {
+	p, err := NewOllamaNative(Options{Name: "test-ollama", BaseURL: "http://localhost:11434"})
+	if err != nil {
+		t.Fatalf("NewOllamaNative: %v", err)
+	}
+	body, err := p.buildChatRequestBody(schema.ChatRequest{
+		Model: "qwen3:8b",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleUser, Content: "hi"},
+			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "because"}},
+			{Role: schema.RoleTool, Content: "result", Reasoning: &schema.Reasoning{Text: "ignored"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildChatRequestBody: %v", err)
+	}
+	var req struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(req.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3", len(req.Messages))
+	}
+	if got := req.Messages[1]["thinking"]; got != "because" {
+		t.Fatalf("assistant thinking = %v, want %q", got, "because")
+	}
+	if _, present := req.Messages[0]["thinking"]; present {
+		t.Fatalf("user message carries thinking: %v", req.Messages[0])
+	}
+	if _, present := req.Messages[2]["thinking"]; present {
+		t.Fatalf("tool message carries thinking: %v", req.Messages[2])
+	}
+}
+
+func TestOllamaNativeNoThinkingWhenOff(t *testing.T) {
+	p, err := NewOllamaNative(Options{Name: "test-ollama", BaseURL: "http://localhost:11434", ReasoningField: ReasoningFieldOff})
+	if err != nil {
+		t.Fatalf("NewOllamaNative: %v", err)
+	}
+	body, err := p.buildChatRequestBody(schema.ChatRequest{
+		Model: "qwen3:8b",
+		Messages: []schema.ChatMessage{
+			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "because"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildChatRequestBody: %v", err)
+	}
+	var req struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := req.Messages[0]["thinking"]; present {
+		t.Fatalf("thinking replayed despite reasoning_field=off: %v", req.Messages[0])
+	}
+}

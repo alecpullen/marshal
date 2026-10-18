@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -84,6 +85,11 @@ type OpenAICodex struct {
 	// prompt_cache_key. Acceptance of the field is not live-verified, so a
 	// rejection degrades to uncached requests instead of failing every call.
 	cacheKeyRejected atomic.Bool
+	// replayOff disables reasoning-item replay entirely (ReasoningFieldOff).
+	replayOff bool
+	// itemsRejected latches once the endpoint answers 400 naming a replayed
+	// reasoning item, disabling replay for the rest of the process.
+	itemsRejected atomic.Bool
 }
 
 // CodexOptions configures NewOpenAICodex.
@@ -105,6 +111,9 @@ type CodexOptions struct {
 	// SessionID is the stable per-conversation identifier; it seeds
 	// prompt_cache_key so a session's requests reach a warm cache.
 	SessionID string
+	// ReasoningField chooses how prior reasoning is replayed. ReasoningFieldOff
+	// disables replay entirely.
+	ReasoningField string
 }
 
 // NewOpenAICodex constructs the codex backend. The engine must be non-nil:
@@ -147,6 +156,7 @@ func NewOpenAICodex(opts CodexOptions) (*OpenAICodex, error) {
 		dataDir:          opts.DataDir,
 		provCfg:          opts.ProviderConfig,
 		sessionID:        opts.SessionID,
+		replayOff:        opts.ReasoningField == ReasoningFieldOff,
 	}, nil
 }
 
@@ -171,7 +181,17 @@ func (p *OpenAICodex) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 // channel close. A 401 is retried once through a forced token refresh before
 // being surfaced as *oauth.ErrAuthRequired. A 400 naming prompt_cache_key is
 // retried once without the key, and the key is dropped for later requests.
+// A 400 naming a replayed reasoning item latches item replay off and retries
+// once without them.
 func (p *OpenAICodex) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	// Filter once, at the top: every retry below re-posts the same req, so
+	// this keeps them consistent. Reasoning items are replayed only to the
+	// provider and model that produced them, and not at all when replay is
+	// off or the endpoint has rejected them.
+	req.Messages = schema.ReasoningItemsFor(req.Messages, p.name, req.Model)
+	if p.replayOff || p.itemsRejected.Load() {
+		req.Messages = schema.WithoutReasoningItems(req.Messages)
+	}
 	token, err := p.engine.TokenSource(ctx)
 	if err != nil {
 		return nil, err
@@ -214,6 +234,35 @@ func (p *OpenAICodex) Chat(ctx context.Context, req schema.ChatRequest) (<-chan 
 		}
 	}
 
+	// Same shape for replayed reasoning items: a 400 that names one means
+	// this endpoint will not take them, so drop them for the process and
+	// retry the request once without them.
+	sentItems := false
+	for _, m := range req.Messages {
+		if m.Reasoning != nil && len(m.Reasoning.Items) > 0 {
+			sentItems = true
+			break
+		}
+	}
+	if resp.StatusCode == http.StatusBadRequest && sentItems && !p.itemsRejected.Load() {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if isReasoningItemRejection(body) {
+			if p.itemsRejected.CompareAndSwap(false, true) {
+				slog.Default().Warn("provider rejected reasoning item replay; disabling it for this session",
+					"provider", p.name)
+			}
+			req.Messages = schema.WithoutReasoningItems(req.Messages)
+			resp, err = p.post(ctx, req, token)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// Not ours: hand the body back so mapError reports it.
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+		}
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		return nil, p.mapError(resp)
@@ -224,6 +273,17 @@ func (p *OpenAICodex) Chat(ctx context.Context, req schema.ChatRequest) (<-chan 
 	capture := newWireCapture(p.name)
 	go p.stream(capture.wrap(resp.Body), capture, events, quota)
 	return events, nil
+}
+
+// isReasoningItemRejection reports whether a 400 body names a replayed
+// reasoning item. The accepted field names are not live-verified, so the
+// match is deliberately broad: the opaque payload marker, a plain-language
+// mention, and the reasoning-item id prefix all count.
+func isReasoningItemRejection(body []byte) bool {
+	s := string(body)
+	return strings.Contains(s, "encrypted_content") ||
+		strings.Contains(s, "reasoning item") ||
+		strings.Contains(s, "rs_")
 }
 
 // post builds and sends one request. The body is rebuilt per attempt so the

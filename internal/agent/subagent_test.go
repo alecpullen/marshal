@@ -1067,7 +1067,7 @@ func TestSubagentReportStillReplaysIntoHistory(t *testing.T) {
 	s.AddMessage(session.RoleUser, "do the thing", session.ContentTypePlain)
 	s.AddMessage(session.RoleUser, "[subagent 1 finished] found two issues", session.ContentTypeSubagentReport)
 
-	msgs := buildHistoryMessages(s.Messages(), 8000, s.Generation(), map[int64][]db.ToolAuditEntry{})
+	msgs := buildHistoryMessages(s.Messages(), 8000, s.Generation(), map[int64][]db.ToolAuditEntry{}, "")
 	var found bool
 	for _, m := range msgs {
 		if strings.Contains(m.Content, "[subagent 1 finished]") {

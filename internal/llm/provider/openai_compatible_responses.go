@@ -38,6 +38,21 @@ type responsesInputItem struct {
 	Arguments string `json:"arguments,omitempty"`
 	// function_call_output fields
 	Output string `json:"output,omitempty"`
+	// RawItem, when non-empty, is emitted verbatim instead of the struct
+	// fields. It carries replayed reasoning items, whose wire shape is
+	// preserved opaquely from the originating response.
+	RawItem json.RawMessage `json:"-"`
+}
+
+// MarshalJSON emits RawItem verbatim when it is set, and otherwise falls
+// back to the ordinary struct encoding via a local alias type (naming the
+// alias avoids recursing into this method).
+func (it responsesInputItem) MarshalJSON() ([]byte, error) {
+	if len(it.RawItem) > 0 {
+		return it.RawItem, nil
+	}
+	type alias responsesInputItem
+	return json.Marshal(alias(it))
 }
 
 // responsesTool is FLAT — {type, name, description, parameters} — not
@@ -125,6 +140,7 @@ func responsesUsageFrom(u *responsesUsage) *schema.TokenUsage {
 // (and the item field of output_item stream events).
 type responsesOutputItem struct {
 	Type    string `json:"type"` // message | function_call | reasoning
+	ID      string `json:"id,omitempty"`
 	Role    string `json:"role,omitempty"`
 	Content []struct {
 		Type string `json:"type"`
@@ -138,6 +154,8 @@ type responsesOutputItem struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"summary,omitempty"`
+	// EncryptedContent carries the opaque, replayable reasoning payload.
+	EncryptedContent string `json:"encrypted_content,omitempty"`
 }
 
 type responsesResponse struct {
@@ -168,6 +186,27 @@ func responsesFinishReason(resp *responsesResponse) string {
 		}
 	}
 	return "stop"
+}
+
+// reasoningItemFrom captures a completed reasoning output item for replay.
+// Items without encrypted content cannot be replayed statelessly and are
+// skipped.
+func reasoningItemFrom(item *responsesOutputItem) (schema.ReasoningItem, bool) {
+	if item == nil || item.Type != "reasoning" || item.ID == "" || item.EncryptedContent == "" {
+		return schema.ReasoningItem{}, false
+	}
+	summary := make([]map[string]string, 0, len(item.Summary))
+	for _, s := range item.Summary {
+		summary = append(summary, map[string]string{"type": "summary_text", "text": s.Text})
+	}
+	data, err := json.Marshal(map[string]any{
+		"type": "reasoning", "id": item.ID,
+		"encrypted_content": item.EncryptedContent, "summary": summary,
+	})
+	if err != nil {
+		return schema.ReasoningItem{}, false
+	}
+	return schema.ReasoningItem{Kind: schema.ReasoningKindOpenAI, Data: data}, true
 }
 
 // --- request building ---
@@ -208,6 +247,15 @@ func buildResponsesInputWithSystemRole(msgs []schema.ChatMessage, systemRole str
 				Content: []responsesContentPart{{Type: "input_text", Text: m.Content}},
 			})
 		case schema.RoleAssistant:
+			// Replayed reasoning items precede the turn's message and
+			// calls, mirroring the order the provider originally emitted.
+			if m.Reasoning != nil {
+				for _, it := range m.Reasoning.Items {
+					if it.Kind == schema.ReasoningKindOpenAI {
+						items = append(items, responsesInputItem{RawItem: it.Data})
+					}
+				}
+			}
 			// The message item is emitted only when there is text: an
 			// assistant turn that is purely tool calls is represented by
 			// its function_call items alone.
@@ -321,6 +369,13 @@ func buildResponsesRequestBodyWithSystemRole(req schema.ChatRequest, reasoningSu
 // followed by channel close. The strict-template demote/retry never
 // applies here (that is llama.cpp/LM Studio behavior).
 func (p *OpenAICompatible) responsesChat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	// Reasoning items are replayed only to the provider and model that
+	// produced them, and not at all when replay is configured off or the
+	// endpoint has rejected it.
+	req.Messages = schema.ReasoningItemsFor(req.Messages, p.name, req.Model)
+	if p.replayField == "" || p.replayRejected.Load() {
+		req.Messages = schema.WithoutReasoningItems(req.Messages)
+	}
 	body, err := buildResponsesRequestBody(req, p.reasoningSummary)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
@@ -369,9 +424,13 @@ func readResponsesResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
 
 	var thinking, answer strings.Builder
 	var toolCalls []schema.ToolCall
+	var reasoningItems []schema.ReasoningItem
 	for _, item := range parsed.Output {
 		switch item.Type {
 		case "reasoning":
+			if it, ok := reasoningItemFrom(&item); ok {
+				reasoningItems = append(reasoningItems, it)
+			}
 			for _, s := range item.Summary {
 				thinking.WriteString(s.Text)
 			}
@@ -404,10 +463,11 @@ func readResponsesResponse(body io.ReadCloser, events chan<- schema.ChatEvent) {
 		return
 	}
 	events <- schema.ChatEvent{
-		Type:         schema.ChatEventDone,
-		FinishReason: responsesFinishReason(&parsed),
-		Usage:        responsesUsageFrom(parsed.Usage),
-		ToolCalls:    toolCalls,
+		Type:           schema.ChatEventDone,
+		FinishReason:   responsesFinishReason(&parsed),
+		Usage:          responsesUsageFrom(parsed.Usage),
+		ToolCalls:      toolCalls,
+		ReasoningItems: reasoningItems,
 	}
 }
 
@@ -446,6 +506,7 @@ func streamResponsesEvents(body io.ReadCloser, capture *wireCapture, events chan
 	var finishReason string
 	var incompleteReason string
 	var hasContent bool
+	var reasoningItems []schema.ReasoningItem
 
 	for dec.Next() {
 		data := strings.TrimSpace(dec.Event().Data)
@@ -493,6 +554,11 @@ func streamResponsesEvents(body io.ReadCloser, capture *wireCapture, events chan
 				buf.arguments.WriteString(ev.Delta)
 			}
 		case "response.output_item.done":
+			if ev.Item != nil && ev.Item.Type == "reasoning" {
+				if it, ok := reasoningItemFrom(ev.Item); ok {
+					reasoningItems = append(reasoningItems, it)
+				}
+			}
 			if ev.Item != nil && ev.Item.Type == "function_call" {
 				buf := buffers[ev.OutputIndex]
 				if buf == nil {
@@ -585,9 +651,10 @@ func streamResponsesEvents(body io.ReadCloser, capture *wireCapture, events chan
 		finishReason = "tool_calls"
 	}
 	events <- schema.ChatEvent{
-		Type:         schema.ChatEventDone,
-		FinishReason: finishReason,
-		Usage:        usage,
-		ToolCalls:    toolCalls,
+		Type:           schema.ChatEventDone,
+		FinishReason:   finishReason,
+		Usage:          usage,
+		ToolCalls:      toolCalls,
+		ReasoningItems: reasoningItems,
 	}
 }

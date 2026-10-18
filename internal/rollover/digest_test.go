@@ -57,6 +57,29 @@ func TestLLMSummaryProvider_Digest_AppendsDirective(t *testing.T) {
 	}
 }
 
+func TestLLMSummaryProvider_Digest_StripsReasoning(t *testing.T) {
+	var captured []schema.ChatMessage
+	model := &capturingModel{capture: func(msgs []schema.ChatMessage) {
+		captured = msgs
+	}}
+	p := NewLLMSummaryProvider(model, "summarise this")
+	handle := GenerationHandle{
+		Wire: []schema.ChatMessage{
+			{Role: schema.RoleUser, Content: "hello"},
+			{Role: schema.RoleAssistant, Content: "answer", Reasoning: &schema.Reasoning{Text: "secret plan"}},
+		},
+	}
+	_, _, err := p.Digest(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("Digest returned error: %v", err)
+	}
+	for i, m := range captured {
+		if m.Reasoning != nil {
+			t.Errorf("message %d still carries reasoning: %+v", i, m.Reasoning)
+		}
+	}
+}
+
 func TestLLMSummaryProvider_Digest_ReturnsTrimmedSummary(t *testing.T) {
 	model := &fakeChatModel{
 		response: schema.ChatMessage{Content: "  this is a summary  "},

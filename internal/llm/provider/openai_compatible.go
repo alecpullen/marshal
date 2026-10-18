@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
@@ -44,6 +46,9 @@ type Options struct {
 	// ReasoningSummary requests reasoning summaries on the wire
 	// (reasoning.summary). Off by default.
 	ReasoningSummary bool
+	// ReasoningField chooses how prior reasoning is replayed (see
+	// ReasoningField* constants). "" behaves as auto.
+	ReasoningField string
 	// SessionID is the stable per-conversation identifier sent as
 	// x-opencode-session on OpenCode Zen endpoints, which require it for
 	// efficient routing and prompt caching. Empty means no session
@@ -60,6 +65,8 @@ type OpenAICompatible struct {
 	capabilities     schema.ProviderCapabilities
 	limitsTable      *limits.Table
 	reasoningSummary bool
+	replayField      string
+	replayRejected   atomic.Bool
 	sessionID        string
 }
 
@@ -86,6 +93,7 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 		capabilities:     caps,
 		limitsTable:      opts.LimitsTable,
 		reasoningSummary: opts.ReasoningSummary,
+		replayField:      resolveReplayField(opts.ReasoningField),
 		thinkingLookup:   opts.ThinkingLookup,
 		sessionID:        opts.SessionID,
 	}, nil
@@ -310,11 +318,25 @@ func demoteTrailingSystemMessages(msgs []schema.ChatMessage) []schema.ChatMessag
 }
 
 func (p *OpenAICompatible) chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
-	body, err := buildChatRequestBody(req, p.reasoningSummary)
+	field := p.replayField
+	if p.replayRejected.Load() {
+		field = ""
+	}
+	body, err := buildChatRequestBody(req, p.reasoningSummary, field)
 	if err != nil {
 		return nil, fmt.Errorf("provider %q: %w", p.name, err)
 	}
 	writeRequestCapture(p.name, body)
+
+	sentReplay := false
+	if field != "" {
+		for _, m := range req.Messages {
+			if m.Role == schema.RoleAssistant && m.Reasoning != nil && m.Reasoning.Text != "" {
+				sentReplay = true
+				break
+			}
+		}
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -326,6 +348,18 @@ func (p *OpenAICompatible) chat(ctx context.Context, req schema.ChatRequest) (<-
 	resp, err := p.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, &RequestError{Provider: p.name, Op: "chat request failed", Err: err}
+	}
+	if resp.StatusCode == http.StatusBadRequest && sentReplay {
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if replayFieldRejected(errBody, field) {
+			if p.replayRejected.CompareAndSwap(false, true) {
+				slog.Default().Warn("provider rejected reasoning replay; disabling it for this session",
+					"provider", p.name, "field", field)
+			}
+			return p.chat(ctx, req)
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(errBody))
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
@@ -342,7 +376,7 @@ func (p *OpenAICompatible) chat(ctx context.Context, req schema.ChatRequest) (<-
 	return events, nil
 }
 
-func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool) ([]byte, error) {
+func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool, replayField string) ([]byte, error) {
 	if req.Model == "" {
 		return nil, errors.New("chat request: model is required")
 	}
@@ -351,7 +385,7 @@ func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool) ([]byte
 	}
 	messages := make([]chatMessageBody, 0, len(req.Messages))
 	for _, m := range req.Messages {
-		messages = append(messages, chatMessageToBody(m))
+		messages = append(messages, chatMessageToBody(m, replayField))
 	}
 	tools := make([]toolDefinitionBody, 0, len(req.Tools))
 	for _, tool := range req.Tools {
@@ -398,11 +432,19 @@ func buildChatRequestBody(req schema.ChatRequest, reasoningSummary bool) ([]byte
 	})
 }
 
-func chatMessageToBody(m schema.ChatMessage) chatMessageBody {
+func chatMessageToBody(m schema.ChatMessage, replayField string) chatMessageBody {
 	body := chatMessageBody{
 		Role:       string(m.Role),
 		Content:    m.Content,
 		ToolCallID: m.ToolCallID,
+	}
+	if replayField != "" && m.Role == schema.RoleAssistant && m.Reasoning != nil && m.Reasoning.Text != "" {
+		switch replayField {
+		case ReasoningFieldReasoning:
+			body.Reasoning = m.Reasoning.Text
+		default:
+			body.ReasoningContent = m.Reasoning.Text
+		}
 	}
 	if len(m.ToolCalls) > 0 {
 		body.ToolCalls = make([]toolCallBody, 0, len(m.ToolCalls))

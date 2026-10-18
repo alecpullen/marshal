@@ -85,6 +85,10 @@ type TurnRuntime struct {
 	// SetMode applies a session-level approval mode (plan, default, edit,
 	// copilot, auto). Nil means the runtime does not support mode switching.
 	SetMode func(mode string) error
+	// SetEffort applies a session-level reasoning-effort override (an empty
+	// level clears it) and reports when it takes effect. Nil means the
+	// runtime does not support effort changes.
+	SetEffort func(level string) (string, error)
 	// SetSystemAccess applies the per-session system-access modifier. Nil
 	// means the runtime falls back to State.SetSystemAccess; when State is
 	// also nil the runtime does not support system access.
@@ -460,6 +464,16 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 				"output":     capToolText(output),
 			}, true
 		}
+	case session.EventEffortChanged:
+		if ev.Payload.Effort == nil {
+			return nil, false
+		}
+		return map[string]any{
+			"kind":        "effort_changed",
+			"effort":      ev.Payload.Effort.Effective,
+			"pending":     ev.Payload.Effort.Pending,
+			"appliesFrom": ev.Payload.Effort.AppliesFrom,
+		}, true
 	case session.EventHoldChanged:
 		return map[string]any{"kind": "hold", "held": ev.Payload.Held}, true
 	case session.EventSteeringState:
@@ -1665,6 +1679,41 @@ func (m *TurnManager) SetMode(ctx context.Context, params json.RawMessage) (any,
 		return nil, err
 	}
 	return map[string]any{"mode": p.Mode}, nil
+}
+
+// SetEffortParams is the JSON-RPC body for session/set_effort. An empty
+// Effort clears the session override.
+type SetEffortParams struct {
+	SessionID string `json:"sessionId"`
+	Effort    string `json:"effort"`
+}
+
+// SetEffort handles session/set_effort: it applies the requested reasoning
+// effort to the session's runtime, which validates the level and broadcasts
+// an effort_changed session/update so every attached client stays in sync.
+// The response reports when the change takes effect.
+func (m *TurnManager) SetEffort(ctx context.Context, params json.RawMessage) (any, error) {
+	var p SetEffortParams
+	if len(params) > 0 {
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, fmt.Errorf("acp: parse session/set_effort params: %w", err)
+		}
+	}
+	if p.SessionID == "" {
+		return nil, fmt.Errorf("acp: session/set_effort requires sessionId")
+	}
+	rt, ok := m.lookup(p.SessionID)
+	if !ok {
+		return nil, serverErrorf("unknown session: %s", p.SessionID)
+	}
+	if rt.SetEffort == nil {
+		return nil, serverErrorf("session %s does not support effort changes", p.SessionID)
+	}
+	applies, err := rt.SetEffort(p.Effort)
+	if err != nil {
+		return nil, invalidParamsError("%v", err)
+	}
+	return map[string]any{"effort": p.Effort, "appliesFrom": applies}, nil
 }
 
 // SteerParams is the JSON-RPC body for session/steer.

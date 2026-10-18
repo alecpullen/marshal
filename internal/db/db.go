@@ -91,6 +91,8 @@ var migrationColumns = []columnAdd{
 	{"tool_calls", "step_seq", "INTEGER"},
 	{"tool_calls", "tool_call_id", "TEXT"},
 	{"turn_metrics", "intent_nudges", "INTEGER NOT NULL DEFAULT 0"},
+	{"turn_metrics", "reasoning_replayed_chars", "INTEGER NOT NULL DEFAULT 0"},
+	{"turn_metrics", "reasoning_trimmed", "INTEGER NOT NULL DEFAULT 0"},
 }
 
 func (db *DB) Migrate() error {

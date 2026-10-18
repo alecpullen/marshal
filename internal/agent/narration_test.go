@@ -25,7 +25,7 @@ func TestNarrationIsNotReplayedIntoHistory(t *testing.T) {
 	s.AddMessage(session.RoleAssistant, "Checking the guard first.", session.ContentTypeNarration)
 	s.AddMessageFinalWithUsage(session.RoleAssistant, "Done.", session.ContentTypeMarkdown, 1, "")
 
-	msgs := buildHistoryMessages(s.Messages(), 8000, s.Generation(), map[int64][]db.ToolAuditEntry{})
+	msgs := buildHistoryMessages(s.Messages(), 8000, s.Generation(), map[int64][]db.ToolAuditEntry{}, "")
 	for _, m := range msgs {
 		if strings.Contains(m.Content, "Checking the guard first.") {
 			t.Fatalf("narration must never be replayed into model context; found in %+v", m)
@@ -39,7 +39,7 @@ func TestFinalAnswerStillReplayed(t *testing.T) {
 	s.AddMessage(session.RoleUser, "do the thing", session.ContentTypePlain)
 	s.AddMessageFinalWithUsage(session.RoleAssistant, "Done.", session.ContentTypeMarkdown, 0, "")
 
-	msgs := buildHistoryMessages(s.Messages(), 8000, s.Generation(), map[int64][]db.ToolAuditEntry{})
+	msgs := buildHistoryMessages(s.Messages(), 8000, s.Generation(), map[int64][]db.ToolAuditEntry{}, "")
 	var found bool
 	for _, m := range msgs {
 		if m.Role == schema.RoleAssistant && strings.Contains(m.Content, "Done.") {

@@ -714,6 +714,11 @@ type ProviderConfig struct {
 	// request fields are ignored by compatible servers, so enabling this
 	// against a backend that does not support it fails open.
 	ReasoningSummary bool `toml:"reasoning_summary"`
+	// ReasoningField chooses how prior reasoning is replayed to this
+	// provider: "" or "auto" (the adapter's default: reasoning_content for
+	// openai_compatible, thinking for ollama, items for openai_codex),
+	// "reasoning_content", "reasoning" (openai_compatible only), or "off".
+	ReasoningField string `toml:"reasoning_field,omitempty"`
 	// StructuredOutput opts this provider in to JSON-schema/JSON-mode
 	// response constraints (response_format / format on the wire). Default
 	// false: ollama.com cloud silently ignores format and response_format

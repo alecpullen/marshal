@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"marshal/internal/app/config"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/schema"
 )
 
@@ -210,4 +213,27 @@ func openAIThinkingEffort(req schema.ChatRequest) string {
 		return "high"
 	}
 	return effort
+}
+
+// ThinkingOptionsFor resolves the effort options for one provider/model
+// pair from the model cache, the same source the model panel uses.
+func ThinkingOptionsFor(dataDir, providerName string, pc config.ProviderConfig, model string, override *schema.ThinkingOptions) *schema.ThinkingOptions {
+	var models []schema.ModelInfo
+	if dataDir != "" {
+		if cached, ok := modelcache.Load(dataDir).Lookup(providerName, pc, modelcache.DefaultTTL, time.Now()); ok {
+			models = cached
+		}
+	}
+	return ResolveThinkingOptions(pc.Type, model, override, models)
+}
+
+// ValidEffortLevel reports whether level may be requested for a model with
+// opts. "" (clear) is always valid. Unknown options (nil) accept any level,
+// matching preset thinking today; otherwise the level must be listed,
+// including "off".
+func ValidEffortLevel(opts *schema.ThinkingOptions, level string) bool {
+	if level == "" || opts == nil {
+		return true
+	}
+	return slices.Contains(opts.Levels, level)
 }

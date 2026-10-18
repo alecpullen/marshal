@@ -113,6 +113,8 @@ func TestMigrateUpgradesPreStepSchema(t *testing.T) {
 		`ALTER TABLE tool_calls DROP COLUMN step_seq`,
 		`ALTER TABLE tool_calls DROP COLUMN tool_call_id`,
 		`ALTER TABLE turn_metrics DROP COLUMN intent_nudges`,
+		`ALTER TABLE turn_metrics DROP COLUMN reasoning_replayed_chars`,
+		`ALTER TABLE turn_metrics DROP COLUMN reasoning_trimmed`,
 	} {
 		if _, err := d.sqlDB.Exec(stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -133,7 +135,7 @@ func TestMigrateUpgradesPreStepSchema(t *testing.T) {
 	if err := d.SaveToolCall(sid, registry.AuditEvent{Timestamp: time.Now(), ToolName: "t", StepID: 1, ToolCallID: "c"}); err != nil {
 		t.Fatalf("tool_calls columns missing after upgrade: %v", err)
 	}
-	if _, err := d.InsertTurnMetrics(TurnMetricsRow{ProjectID: 1, SessionID: sid, StartedAt: time.Now(), IntentNudges: 1}); err != nil {
-		t.Fatalf("turn_metrics.intent_nudges missing after upgrade: %v", err)
+	if _, err := d.InsertTurnMetrics(TurnMetricsRow{ProjectID: 1, SessionID: sid, StartedAt: time.Now(), IntentNudges: 1, ReasoningReplayedChars: 7, ReasoningTrimmed: 2}); err != nil {
+		t.Fatalf("turn_metrics.intent_nudges/reasoning columns missing after upgrade: %v", err)
 	}
 }

@@ -80,6 +80,7 @@ type providerWire struct {
 	KeepAlive         string `json:"keepAlive,omitempty"`
 	ThinkingBudget    int    `json:"thinkingBudget,omitempty"`
 	ReasoningSummary  bool   `json:"reasoningSummary,omitempty"`
+	ReasoningField    string `json:"reasoningField,omitempty"`
 	StructuredOutput  bool   `json:"structuredOutput,omitempty"`
 	TemperatureLocked bool   `json:"temperatureLocked,omitempty"`
 }
@@ -96,7 +97,8 @@ func providerToWire(pc config.ProviderConfig) providerWire {
 		Type: pc.Type, BaseURL: pc.BaseURL, APIKeyEnv: pc.APIKeyEnv,
 		ToolCalling: pc.ToolCalling, Template: pc.Template, Auth: pc.Auth,
 		KeepAlive: pc.KeepAlive, ThinkingBudget: pc.ThinkingBudget,
-		ReasoningSummary: pc.ReasoningSummary, StructuredOutput: pc.StructuredOutput,
+		ReasoningSummary: pc.ReasoningSummary, ReasoningField: pc.ReasoningField,
+		StructuredOutput:  pc.StructuredOutput,
 		TemperatureLocked: pc.TemperatureLocked,
 	}
 }
@@ -108,6 +110,7 @@ func (w providerWire) applyTo(pc config.ProviderConfig) config.ProviderConfig {
 	pc.ToolCalling, pc.Template, pc.Auth = w.ToolCalling, w.Template, w.Auth
 	pc.KeepAlive, pc.ThinkingBudget = w.KeepAlive, w.ThinkingBudget
 	pc.ReasoningSummary, pc.StructuredOutput = w.ReasoningSummary, w.StructuredOutput
+	pc.ReasoningField = w.ReasoningField
 	pc.TemperatureLocked = w.TemperatureLocked
 	return pc
 }

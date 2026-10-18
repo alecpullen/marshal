@@ -959,16 +959,19 @@ func (s *State) heldNow() bool {
 }
 
 // cancelOperationPromptsForInterrupt is the interruption worker's hook into
-// the canonical prompt registry: it settles every pending human/gate prompt
-// owned by ref, granting no authority and fabricating no answer.
+// the canonical prompt registry: it settles every prompt owned by exactly ref,
+// granting no authority, fabricating no answer and leaving any independent
+// child's prompts alone. An access request is settled through its existing
+// canonical resolver, so the grant boundary stays single.
 //
-// Task 3 owns the registry (State.CancelOperationPrompts). Until it lands this
-// seam is intentionally inert, so the worker's ordering — handler Begin,
-// prompt cancellation, context cancel, join — is already fixed.
+// It runs outside every session lock (the worker calls it after the handler's
+// Begin returned), so each cancellation may take the access gate to arbitrate
+// against a response that already claimed the request.
 func (s *State) cancelOperationPromptsForInterrupt(ref OperationRef) {
 	if ref.ID == "" {
 		return
 	}
+	s.CancelOperationPrompts(ref)
 }
 
 // rejectSendNowLocked publishes the refusal reason and releases both locks.

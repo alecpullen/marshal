@@ -3286,3 +3286,664 @@ func TestAccessShutdownSettlesOnce(t *testing.T) {
 		}
 	})
 }
+
+// sendNowFixture is a session with one active eligible turn, one open
+// operation and a scripted interruption handler. It lets the Send now
+// arbitration tests drive acceptance without a real process or provider.
+type sendNowFixture struct {
+	t     *testing.T
+	state *State
+	turn  string
+	ref   OperationRef
+	opCtx context.Context
+
+	mu    sync.Mutex
+	calls []OperationRef
+	begin func(ref OperationRef)
+	stop  OperationStop
+	err   error
+}
+
+func newSendNowFixture(t *testing.T) *sendNowFixture {
+	t.Helper()
+	f := &sendNowFixture{t: t, state: newTestState()}
+	f.state.SetOperationInterrupt(f.interrupt)
+	turn, err := f.state.BeginSteeringTurn(context.Background())
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn = %v, want nil", err)
+	}
+	f.turn = turn
+	opCtx, ref, err := f.state.BeginSteeringOperation(context.Background(), turn, OperationTools)
+	if err != nil {
+		t.Fatalf("BeginSteeringOperation = %v, want nil", err)
+	}
+	f.opCtx, f.ref = opCtx, ref
+	return f
+}
+
+func (f *sendNowFixture) interrupt(_ context.Context, ref OperationRef) (OperationStop, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, ref)
+	begin := f.begin
+	f.mu.Unlock()
+	if begin != nil {
+		begin(ref)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stop, f.err
+}
+
+func (f *sendNowFixture) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+func (f *sendNowFixture) request(id, text string) SendNowRequest {
+	return SendNowRequest{TurnID: f.turn, RequestID: id, Text: text}
+}
+
+// beginOperation opens a second operation on the fixture's turn.
+func (f *sendNowFixture) beginOperation() (context.Context, OperationRef) {
+	f.t.Helper()
+	ctx, ref, err := f.state.BeginSteeringOperation(context.Background(), f.turn, OperationModel)
+	if err != nil {
+		f.t.Fatalf("BeginSteeringOperation = %v, want nil", err)
+	}
+	return ctx, ref
+}
+
+// TestSendNowAcceptanceFIFOAndDuplicateIDs pins the one-entry-per-submission
+// rule: queue order is stable, a duplicate request ID returns its existing
+// receipt without appending or stopping again even after a flush drained its
+// queue, conflicting reuse is refused, and a post-closure retry rejects.
+func TestSendNowAcceptanceFIFOAndDuplicateIDs(t *testing.T) {
+	f := newSendNowFixture(t)
+	f.state.PushSteering("queued")
+	f.stop = OperationStop{Wait: func(context.Context) ([]SteeringOutcome, error) { return nil, nil }}
+
+	first, err := f.state.SubmitSendNow(f.request("r1", "steer one"))
+	if err != nil {
+		t.Fatalf("SubmitSendNow = %v, want nil", err)
+	}
+	if first.Status != SteeringAccepted {
+		t.Fatalf("receipt status = %q, want accepted", first.Status)
+	}
+	if got := f.state.SteeringQueue(); len(got) != 2 || got[0] != "queued" || got[1] != "steer one" {
+		t.Fatalf("queue = %v, want [queued steer one]", got)
+	}
+
+	// A retry of the same ID and text is idempotent and returns the latest
+	// receipt for that ID, without appending a second entry.
+	retry, err := f.state.SubmitSendNow(f.request("r1", "steer one"))
+	if err != nil {
+		t.Fatalf("duplicate SubmitSendNow = %v, want nil", err)
+	}
+	if retry.RequestID != "r1" {
+		t.Fatalf("duplicate receipt = %+v, want the request r1", retry)
+	}
+	if got := f.state.SteeringQueue(); len(got) != 2 {
+		t.Fatalf("queue after duplicate = %v, want the two entries unchanged", got)
+	}
+
+	// Reusing the ID with different text is a conflict, never a second entry.
+	if _, err := f.state.SubmitSendNow(f.request("r1", "steer two")); !errors.Is(err, errSteeringConflict) {
+		t.Fatalf("conflicting reuse = %v, want errSteeringConflict", err)
+	}
+
+	second, err := f.state.SubmitSendNow(f.request("r2", "steer three"))
+	if err != nil {
+		t.Fatalf("second SubmitSendNow = %v, want nil", err)
+	}
+	if second.RequestID != "r2" {
+		t.Fatalf("second receipt = %+v, want r2", second)
+	}
+	if got := f.state.SteeringQueue(); len(got) != 3 || got[2] != "steer three" {
+		t.Fatalf("queue = %v, want three entries in acceptance order", got)
+	}
+
+	// The flush consumed its queue; a retried flush stays idempotent.
+	batch, err := f.state.StageSteering(f.turn)
+	if err != nil {
+		t.Fatalf("StageSteering = %v, want nil", err)
+	}
+	ids := make([]string, 0, len(batch.Messages))
+	for _, m := range batch.Messages {
+		ids = append(ids, m.ID)
+	}
+	f.state.MarkSteeringSubmitted(f.turn, ids)
+
+	afterFlush, err := f.state.SubmitSendNow(f.request("r1", "steer one"))
+	if err != nil {
+		t.Fatalf("retry after flush = %v, want nil", err)
+	}
+	if afterFlush.RequestID != "r1" {
+		t.Fatalf("retry after flush = %+v, want the same request", afterFlush)
+	}
+	if afterFlush.Version < first.Version {
+		t.Fatalf("retry version = %d, want at least the accepted version %d", afterFlush.Version, first.Version)
+	}
+
+	// A retry must not stop the operation a second time.
+	f.state.FinishSteeringOperation(f.ref, nil)
+	if got := f.callCount(); got != 1 {
+		t.Fatalf("interruption handler calls = %d, want exactly 1", got)
+	}
+
+	// After closure an old turn ID rejects even for a previously accepted ID.
+	f.state.EndSteeringTurn(f.turn, "turn finished")
+	if _, err := f.state.SubmitSendNow(f.request("r1", "steer one")); !errors.Is(err, errSteeringInactive) {
+		t.Fatalf("post-closure retry = %v, want errSteeringInactive", err)
+	}
+}
+
+// TestSendNowIntentPrecedesCancellationSignal pins that acceptance marks the
+// captured operation as requested before any cancellation signal is sent, so
+// an admission check that races with the request already sees the intent.
+func TestSendNowIntentPrecedesCancellationSignal(t *testing.T) {
+	f := newSendNowFixture(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	f.begin = func(OperationRef) {
+		close(entered)
+		<-release
+	}
+
+	if _, err := f.state.SubmitSendNow(f.request("r1", "stop now")); err != nil {
+		t.Fatalf("SubmitSendNow = %v, want nil", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the interruption handler never ran")
+	}
+
+	// The operation is still inside Begin (no cancellation signal yet), but
+	// the intent is already visible and admission is already refused.
+	if !SteeringRequested(f.opCtx) {
+		t.Fatal("SteeringRequested = false while the interruption worker is still in Begin")
+	}
+	if _, _, err := f.state.BeginSteeringOperation(context.Background(), f.turn, OperationTools); !errors.Is(err, ErrSendNow) {
+		t.Fatalf("BeginSteeringOperation during steering = %v, want ErrSendNow", err)
+	}
+	if err := CheckSteering(f.opCtx); !errors.Is(err, ErrSendNow) {
+		t.Fatalf("CheckSteering = %v, want ErrSendNow", err)
+	}
+	select {
+	case <-f.opCtx.Done():
+		t.Fatal("the operation context was cancelled before the handler's Begin returned")
+	default:
+	}
+
+	close(release)
+	f.state.FinishSteeringOperation(f.ref, nil)
+	select {
+	case <-f.opCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the operation context was never cancelled")
+	}
+}
+
+// TestSendNowCoalescesCapturedOperationOnly pins that several requests for one
+// operation share its single stop, and that a late completion of an old
+// operation cannot cancel the replacement that already took its place.
+func TestSendNowCoalescesCapturedOperationOnly(t *testing.T) {
+	f := newSendNowFixture(t)
+	f.stop = OperationStop{Wait: func(context.Context) ([]SteeringOutcome, error) {
+		return []SteeringOutcome{{Kind: "command", State: "interrupted", ExecutionID: "exec-1"}}, nil
+	}}
+
+	if _, err := f.state.SubmitSendNow(f.request("r1", "one")); err != nil {
+		t.Fatalf("SubmitSendNow r1 = %v, want nil", err)
+	}
+	if _, err := f.state.SubmitSendNow(f.request("r2", "two")); err != nil {
+		t.Fatalf("SubmitSendNow r2 = %v, want nil", err)
+	}
+
+	// Finishing joins the worker, so the call count is settled, not sampled.
+	outcomes := f.state.FinishSteeringOperation(f.ref, nil)
+	if got := f.callCount(); got != 1 {
+		t.Fatalf("interruption handler calls = %d, want 1 shared stop for both requests", got)
+	}
+	if len(outcomes) != 1 || outcomes[0].ExecutionID != "exec-1" {
+		t.Fatalf("outcomes = %+v, want the worker's real result merged in", outcomes)
+	}
+
+	// Deliver the accepted steering, as the checkpoint would, so a new
+	// operation is admitted. A replacement is running now; the old
+	// operation's delayed cleanup must not clear or cancel it.
+	delivered, err := f.state.StageSteering(f.turn)
+	if err != nil {
+		t.Fatalf("StageSteering = %v, want nil", err)
+	}
+	ids := make([]string, 0, len(delivered.Messages))
+	for _, m := range delivered.Messages {
+		ids = append(ids, m.ID)
+	}
+	f.state.MarkSteeringSubmitted(f.turn, ids)
+
+	nextCtx, nextRef := f.beginOperation()
+	if snap := f.state.SteeringSnapshot(); snap.OperationID != nextRef.ID {
+		t.Fatalf("snapshot operation = %q, want the replacement %q", snap.OperationID, nextRef.ID)
+	}
+	f.state.FinishSteeringOperation(f.ref, nil)
+	if snap := f.state.SteeringSnapshot(); snap.OperationID != nextRef.ID {
+		t.Fatalf("snapshot operation after late cleanup = %q, want %q", snap.OperationID, nextRef.ID)
+	}
+	select {
+	case <-nextCtx.Done():
+		t.Fatalf("the replacement operation was cancelled by the old operation's late completion: %v", context.Cause(nextCtx))
+	default:
+	}
+}
+
+// TestSendNowStageSubmitAndRetryExactlyOnce pins the acceptance/submission
+// split: staged text stays undelivered until the model request acknowledges it,
+// and a retry neither re-stages nor re-persists it.
+func TestSendNowStageSubmitAndRetryExactlyOnce(t *testing.T) {
+	f := newSendNowFixture(t)
+	f.stop = OperationStop{Wait: func(context.Context) ([]SteeringOutcome, error) { return nil, nil }}
+	f.state.PushSteering("while busy")
+
+	if _, err := f.state.SubmitSendNow(f.request("r1", "steer me")); err != nil {
+		t.Fatalf("SubmitSendNow = %v, want nil", err)
+	}
+
+	batch, err := f.state.StageSteering(f.turn)
+	if err != nil {
+		t.Fatalf("StageSteering = %v, want nil", err)
+	}
+	if len(batch.Messages) != 2 || batch.Messages[0].Text != "while busy" || batch.Messages[1].Text != "steer me" {
+		t.Fatalf("staged batch = %+v, want both entries in order", batch.Messages)
+	}
+
+	// Staging is not delivery: the request is still undelivered.
+	if !f.state.HasImmediateSteering(f.turn) {
+		t.Fatal("HasImmediateSteering = false after staging, want true until submission")
+	}
+	// A second stage returns nothing: the ledger hands each entry out once.
+	again, err := f.state.StageSteering(f.turn)
+	if err != nil {
+		t.Fatalf("second StageSteering = %v, want nil", err)
+	}
+	if len(again.Messages) != 0 || len(again.Notes) != 0 {
+		t.Fatalf("second StageSteering = %+v, want an empty batch", again)
+	}
+
+	toSubmit := f.state.SteeringToSubmit(f.turn)
+	if len(toSubmit.Messages) != 2 {
+		t.Fatalf("SteeringToSubmit = %+v, want both staged entries", toSubmit.Messages)
+	}
+	ids := []string{toSubmit.Messages[0].ID, toSubmit.Messages[1].ID}
+	f.state.MarkSteeringSubmitted(f.turn, ids)
+	f.state.MarkSteeringSubmitted(f.turn, ids)
+
+	if f.state.HasImmediateSteering(f.turn) {
+		t.Fatal("HasImmediateSteering = true after every covered ID was submitted")
+	}
+	if retry := f.state.SteeringToSubmit(f.turn); len(retry.Messages) != 0 {
+		t.Fatalf("SteeringToSubmit after submission = %+v, want nothing to re-persist", retry.Messages)
+	}
+
+	receipt, err := f.state.SubmitSendNow(f.request("r1", "steer me"))
+	if err != nil {
+		t.Fatalf("retry = %v, want nil", err)
+	}
+	if receipt.Status != SteeringDelivered {
+		t.Fatalf("receipt status after submission = %q, want delivered", receipt.Status)
+	}
+}
+
+// TestSendNowClosureRetainsUnsubmittedWithoutMarkerDuplicate pins that text the
+// interruption marker already reported is not requeued by turn closure, while
+// otherwise-unsubmitted text survives as ordinary follow-up content.
+func TestSendNowClosureRetainsUnsubmittedWithoutMarkerDuplicate(t *testing.T) {
+	f := newSendNowFixture(t)
+	f.stop = OperationStop{Wait: func(context.Context) ([]SteeringOutcome, error) { return nil, nil }}
+
+	if _, err := f.state.SubmitSendNow(f.request("r1", "reported by the marker")); err != nil {
+		t.Fatalf("SubmitSendNow = %v, want nil", err)
+	}
+	if _, err := f.state.StageSteering(f.turn); err != nil {
+		t.Fatalf("StageSteering = %v, want nil", err)
+	}
+
+	archived := f.state.DrainSteeringForInterrupt()
+	if len(archived) != 1 || archived[0] != "reported by the marker" {
+		t.Fatalf("DrainSteeringForInterrupt = %v, want the pending text once", archived)
+	}
+	if again := f.state.DrainSteeringForInterrupt(); len(again) != 0 {
+		t.Fatalf("second DrainSteeringForInterrupt = %v, want nothing twice", again)
+	}
+
+	// The marker reported the text, but no model request ever submitted it, so
+	// the receipt stays truthfully undelivered rather than claiming delivery.
+	receipt, err := f.state.SubmitSendNow(f.request("r1", "reported by the marker"))
+	if err != nil {
+		t.Fatalf("retry after drain = %v, want nil", err)
+	}
+	if receipt.Status == SteeringDelivered {
+		t.Fatal("receipt claims delivered after only the interruption marker reported the text")
+	}
+
+	f.state.EndSteeringTurn(f.turn, "hard stop")
+	if got := f.state.SteeringQueue(); len(got) != 0 {
+		t.Fatalf("queue after closure = %v, want the archived text not requeued", got)
+	}
+	if f.state.HasImmediateSteering(f.turn) {
+		t.Fatal("the closed turn still owes the transcript text the marker already reported")
+	}
+
+	// Ordinary unsubmitted text, by contrast, becomes follow-up content.
+	f2 := newSendNowFixture(t)
+	if _, err := f2.state.SubmitSendNow(f2.request("r1", "keep me")); err != nil {
+		t.Fatalf("SubmitSendNow = %v, want nil", err)
+	}
+	f2.state.EndSteeringTurn(f2.turn, "hard stop")
+	if got := f2.state.SteeringQueue(); len(got) != 1 || got[0] != "keep me" {
+		t.Fatalf("queue after closure = %v, want the undelivered text retained", got)
+	}
+	if f2.state.SteeringSnapshot().Active {
+		t.Fatal("snapshot still reports an active turn after EndSteeringTurn")
+	}
+}
+
+// TestSendNowCompletionAdmissionRace pins that final publication and an
+// accepted deliverable message cannot both win: accepted work refuses
+// finalization, and a closing turn refuses a new request.
+func TestSendNowCompletionAdmissionRace(t *testing.T) {
+	t.Run("accepted work prevents finalization", func(t *testing.T) {
+		f := newSendNowFixture(t)
+		f.stop = OperationStop{Wait: func(context.Context) ([]SteeringOutcome, error) { return nil, nil }}
+		if _, err := f.state.SubmitSendNow(f.request("r1", "do not finish yet")); err != nil {
+			t.Fatalf("SubmitSendNow = %v, want nil", err)
+		}
+		if f.state.TryFinishSteeringTurn(f.turn) {
+			t.Fatal("TryFinishSteeringTurn = true with an accepted, undelivered message")
+		}
+		// Deliver it, then finalization is admitted exactly once.
+		batch, err := f.state.StageSteering(f.turn)
+		if err != nil {
+			t.Fatalf("StageSteering = %v, want nil", err)
+		}
+		ids := []string{batch.Messages[0].ID}
+		f.state.MarkSteeringSubmitted(f.turn, ids)
+		if !f.state.TryFinishSteeringTurn(f.turn) {
+			t.Fatal("TryFinishSteeringTurn = false after the message was delivered")
+		}
+		if f.state.TryFinishSteeringTurn(f.turn) {
+			t.Fatal("TryFinishSteeringTurn succeeded twice for one turn")
+		}
+	})
+
+	t.Run("a closing turn refuses a new request", func(t *testing.T) {
+		f := newSendNowFixture(t)
+		if !f.state.TryFinishSteeringTurn(f.turn) {
+			t.Fatal("TryFinishSteeringTurn = false with no outstanding work")
+		}
+		f.state.PushSteering("queued before the race")
+		if _, err := f.state.SubmitSendNow(f.request("late", "too late")); !errors.Is(err, errSteeringClosing) {
+			t.Fatalf("SubmitSendNow on a closing turn = %v, want errSteeringClosing", err)
+		}
+		if got := f.state.SteeringQueue(); len(got) != 1 || got[0] != "queued before the race" {
+			t.Fatalf("queue = %v, want the pre-existing entry preserved", got)
+		}
+	})
+}
+
+// TestSendNowHoldAndCommitBoundary pins that Send now never silently unholds
+// the session, that an admitted commit unit finishes, that a later unit is
+// refused, and that the release is idempotent.
+func TestSendNowHoldAndCommitBoundary(t *testing.T) {
+	f := newSendNowFixture(t)
+	f.stop = OperationStop{Wait: func(context.Context) ([]SteeringOutcome, error) { return nil, nil }}
+	f.state.SetHold(true)
+
+	release, err := BeginSteeringMutation(f.opCtx)
+	if err != nil {
+		t.Fatalf("BeginSteeringMutation = %v, want nil", err)
+	}
+	if _, err := f.state.SubmitSendNow(f.request("r1", "interrupt")); err != nil {
+		t.Fatalf("SubmitSendNow = %v, want nil", err)
+	}
+	// The admitted unit still finishes.
+	release()
+
+	if !f.state.Held() {
+		t.Fatal("SetHold lost the hold: Send now must not silently resume the session")
+	}
+	snap := f.state.SteeringSnapshot()
+	if !snap.Held {
+		t.Fatal("snapshot Held = false while the session is held")
+	}
+	// A unit that starts after the interruption is refused.
+	if _, err := BeginSteeringMutation(f.opCtx); !errors.Is(err, ErrSendNow) {
+		t.Fatalf("BeginSteeringMutation after interruption = %v, want ErrSendNow", err)
+	}
+	// Releasing twice is harmless.
+	release()
+
+	f.state.FinishSteeringOperation(f.ref, nil)
+	f.state.SetHold(false)
+}
+
+// TestSendNowContextCausePreservesRealErrors pins that only a genuine steering
+// cancellation is relabelled: a root cancel and a real operation failure keep
+// their own cause.
+func TestSendNowContextCausePreservesRealErrors(t *testing.T) {
+	f := newSendNowFixture(t)
+	f.stop = OperationStop{Wait: func(context.Context) ([]SteeringOutcome, error) { return nil, nil }}
+
+	network := errors.New("dial tcp: connection refused")
+	if IsSteeringCancellation(f.opCtx, network) {
+		t.Fatal("IsSteeringCancellation = true for a real command/network failure")
+	}
+	if IsSteeringCancellation(f.opCtx, context.Canceled) {
+		t.Fatal("IsSteeringCancellation = true before any steering was requested")
+	}
+	if err := CheckSteering(f.opCtx); err != nil {
+		t.Fatalf("CheckSteering = %v, want nil while nothing was requested", err)
+	}
+
+	if _, err := f.state.SubmitSendNow(f.request("r1", "steer")); err != nil {
+		t.Fatalf("SubmitSendNow = %v, want nil", err)
+	}
+	if !IsSteeringCancellation(f.opCtx, ErrSendNow) {
+		t.Fatal("IsSteeringCancellation = false for ErrSendNow after acceptance")
+	}
+	select {
+	case <-f.opCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the operation context was never cancelled after acceptance")
+	}
+	if !errors.Is(context.Cause(f.opCtx), ErrSendNow) {
+		t.Fatalf("operation cause = %v, want ErrSendNow", context.Cause(f.opCtx))
+	}
+
+	// A genuine cancellation of the whole session is not steering.
+	root := newTestState()
+	rootTurn, err := root.BeginSteeringTurn(context.Background())
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn = %v, want nil", err)
+	}
+	rootCtx, _, err := root.BeginSteeringOperation(context.Background(), rootTurn, OperationTools)
+	if err != nil {
+		t.Fatalf("BeginSteeringOperation = %v, want nil", err)
+	}
+	root.Shutdown()
+	f.state.FinishSteeringOperation(f.ref, nil)
+	if IsSteeringCancellation(rootCtx, rootCtx.Err()) {
+		t.Fatal("IsSteeringCancellation = true for a session shutdown")
+	}
+}
+
+// TestSendNowInvalidTargetAndUnsupportedAreNoOps pins that every rejection
+// leaves the queue, the turn and the running operation untouched.
+func TestSendNowInvalidTargetAndUnsupportedAreNoOps(t *testing.T) {
+	t.Run("no active turn", func(t *testing.T) {
+		s := newTestState()
+		s.PushSteering("keep me")
+		if _, err := s.SubmitSendNow(SendNowRequest{TurnID: "t1", RequestID: "r1", Text: "x"}); !errors.Is(err, errSteeringInactive) {
+			t.Fatalf("SubmitSendNow with no turn = %v, want errSteeringInactive", err)
+		}
+		if got := s.SteeringQueue(); len(got) != 1 || got[0] != "keep me" {
+			t.Fatalf("queue = %v, want it unchanged", got)
+		}
+	})
+
+	t.Run("no handler installed", func(t *testing.T) {
+		s := newTestState()
+		turn, err := s.BeginSteeringTurn(context.Background())
+		if err != nil {
+			t.Fatalf("BeginSteeringTurn = %v, want nil", err)
+		}
+		if snap := s.SteeringSnapshot(); snap.Supported {
+			t.Fatal("snapshot Supported = true with no interruption handler")
+		}
+		if _, err := s.SubmitSendNow(SendNowRequest{TurnID: turn, RequestID: "r1", Text: "x"}); !errors.Is(err, errSteeringUnsupported) {
+			t.Fatalf("SubmitSendNow without a handler = %v, want errSteeringUnsupported", err)
+		}
+		if got := s.SteeringQueue(); len(got) != 0 {
+			t.Fatalf("queue = %v, want nothing appended", got)
+		}
+	})
+
+	t.Run("stale and malformed targets", func(t *testing.T) {
+		f := newSendNowFixture(t)
+		f.state.PushSteering("keep me")
+
+		if _, err := f.state.SubmitSendNow(SendNowRequest{TurnID: "not-this-turn", RequestID: "r1", Text: "x"}); !errors.Is(err, errSteeringTarget) {
+			t.Fatalf("wrong turn = %v, want errSteeringTarget", err)
+		}
+		if _, err := f.state.SubmitSendNow(SendNowRequest{SessionID: "other-session", TurnID: f.turn, RequestID: "r1", Text: "x"}); !errors.Is(err, errSteeringTarget) {
+			t.Fatalf("wrong session = %v, want errSteeringTarget", err)
+		}
+		if _, err := f.state.SubmitSendNow(SendNowRequest{TurnID: f.turn, RequestID: "", Text: "x"}); !errors.Is(err, errSteeringRequestID) {
+			t.Fatalf("missing request ID = %v, want errSteeringRequestID", err)
+		}
+		if got := f.state.SteeringQueue(); len(got) != 1 || got[0] != "keep me" {
+			t.Fatalf("queue after rejections = %v, want it unchanged", got)
+		}
+		if f.state.HasImmediateSteering(f.turn) {
+			t.Fatal("a rejected request registered immediate work")
+		}
+		if f.callCount() != 0 {
+			t.Fatalf("interruption handler calls = %d, want 0 after rejections", f.callCount())
+		}
+	})
+
+	t.Run("whitespace-only text with an empty queue is rejected", func(t *testing.T) {
+		f := newSendNowFixture(t)
+		if _, err := f.state.SubmitSendNow(f.request("r1", "   ")); !errors.Is(err, errSteeringEmptyFlush) {
+			t.Fatalf("whitespace-only text with an empty queue = %v, want errSteeringEmptyFlush", err)
+		}
+		if f.state.HasImmediateSteering(f.turn) {
+			t.Fatal("an empty flush registered immediate work")
+		}
+		if f.callCount() != 0 {
+			t.Fatalf("interruption handler calls = %d, want 0 after a rejected flush", f.callCount())
+		}
+	})
+
+	t.Run("a whitespace-only request flushes an existing queue", func(t *testing.T) {
+		f := newSendNowFixture(t)
+		f.state.PushSteering("queued")
+		receipt, err := f.state.SubmitSendNow(f.request("r1", "  "))
+		if err != nil {
+			t.Fatalf("flush = %v, want nil", err)
+		}
+		if receipt.Status != SteeringAccepted {
+			t.Fatalf("flush receipt = %+v, want accepted", receipt)
+		}
+		if got := f.state.SteeringQueue(); len(got) != 1 {
+			t.Fatalf("flush appended an empty entry: queue = %v", got)
+		}
+	})
+}
+
+// TestSendNowEventsAreIndependentSnapshots pins that published snapshots and
+// receipts are deep copies with their own revisions, and that a receipt never
+// carries raw output text.
+func TestSendNowEventsAreIndependentSnapshots(t *testing.T) {
+	f := newSendNowFixture(t)
+	broker := pubsub.NewBroker[SteeringEvent]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := broker.Subscribe(ctx)
+	f.state.SetSteeringBroker(broker)
+
+	f.stop = OperationStop{Wait: func(context.Context) ([]SteeringOutcome, error) {
+		return []SteeringOutcome{{
+			Kind:        "command",
+			State:       "interrupted",
+			ExecutionID: "exec-7",
+			Summary:     "stopped by user steering",
+		}}, nil
+	}}
+	if _, err := f.state.SubmitSendNow(f.request("r1", "steer")); err != nil {
+		t.Fatalf("SubmitSendNow = %v, want nil", err)
+	}
+	f.state.FinishSteeringOperation(f.ref, nil)
+
+	var accepted, settled *SteeringReceipt
+	deadline := time.After(2 * time.Second)
+	for settled == nil {
+		select {
+		case ev := <-events:
+			if ev.Payload.Receipt == nil {
+				continue
+			}
+			r := ev.Payload.Receipt
+			if r.Status == SteeringAccepted {
+				accepted = r
+				continue
+			}
+			// The settled receipt is the one carrying the worker's real
+			// outcomes; an earlier interrupting update carries none.
+			if len(r.Outcomes) > 0 {
+				settled = r
+			}
+		case <-deadline:
+			t.Fatalf("timed out: accepted = %+v, settled = %+v", accepted, settled)
+		}
+	}
+	if accepted == nil {
+		t.Fatal("the accepted receipt was never published")
+	}
+
+	if settled.Version <= accepted.Version {
+		t.Fatalf("settled receipt version = %d, want it above the accepted version %d", settled.Version, accepted.Version)
+	}
+	if len(settled.Outcomes) != 1 || settled.Outcomes[0].ExecutionID != "exec-7" {
+		t.Fatalf("settled outcomes = %+v, want the worker's real target identity", settled.Outcomes)
+	}
+	for _, o := range settled.Outcomes {
+		if strings.Contains(o.Summary, "stdout") || len(o.Summary) > 512 {
+			t.Fatalf("receipt outcome carries unbounded or raw output: %+v", o)
+		}
+	}
+
+	// Mutating a received copy must not reach session state.
+	settled.Outcomes[0].ExecutionID = "tampered"
+	settled.Status = SteeringUndelivered
+	again, err := f.state.SubmitSendNow(f.request("r1", "steer"))
+	if err != nil {
+		t.Fatalf("retry = %v, want nil", err)
+	}
+	if len(again.Outcomes) != 1 || again.Outcomes[0].ExecutionID != "exec-7" {
+		t.Fatalf("state changed through a received receipt copy: %+v", again.Outcomes)
+	}
+	if again.Status == SteeringUndelivered {
+		t.Fatal("a subscriber's mutation of a receipt reached session state")
+	}
+
+	snap := f.state.SteeringSnapshot()
+	if snap.Version == 0 {
+		t.Fatal("snapshot version did not advance")
+	}
+	snap.TurnID = "tampered"
+	if f.state.SteeringSnapshot().TurnID == "tampered" {
+		t.Fatal("a subscriber's mutation of a snapshot reached session state")
+	}
+}

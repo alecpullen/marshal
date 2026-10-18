@@ -23,12 +23,12 @@ const (
 type SteeringStatus string
 
 const (
-	SteeringAccepted        SteeringStatus = "accepted"
-	SteeringInterrupting    SteeringStatus = "interrupting"
-	SteeringWaitingSafe     SteeringStatus = "waiting_safe_boundary"
-	SteeringWaitingResume   SteeringStatus = "waiting_for_resume"
-	SteeringDelivered       SteeringStatus = "delivered"
-	SteeringUndelivered     SteeringStatus = "undelivered"
+	SteeringAccepted      SteeringStatus = "accepted"
+	SteeringInterrupting  SteeringStatus = "interrupting"
+	SteeringWaitingSafe   SteeringStatus = "waiting_safe_boundary"
+	SteeringWaitingResume SteeringStatus = "waiting_for_resume"
+	SteeringDelivered     SteeringStatus = "delivered"
+	SteeringUndelivered   SteeringStatus = "undelivered"
 )
 
 type SteeringMessage struct {

@@ -49,6 +49,12 @@ const (
 	EventStepChanged             = "step_changed"
 	EventHoldChanged             = "hold_changed"
 	EventJobExit                 = "job_exit"
+	// EventSteeringState carries a steering snapshot (queue depth, active
+	// turn, current operation, pending count). EventSteeringReceipt carries
+	// one request's settled receipt. Both are additive: a client that does
+	// not know them ignores them.
+	EventSteeringState   = "steering_state"
+	EventSteeringReceipt = "steering_receipt"
 )
 
 // Event is the union payload published on the session event broker
@@ -79,6 +85,13 @@ type Event struct {
 	Held bool
 	// JobExit carries a background job's exit (EventJobExit).
 	JobExit *JobExit
+	// Steering carries a steering snapshot (EventSteeringState): queue
+	// depth, the active turn, the current operation and the pending count.
+	// SteeringReceipt carries one request's settled receipt
+	// (EventSteeringReceipt). Both are deep copies, so a subscriber cannot
+	// mutate session state through them.
+	Steering        *SteeringSnapshot
+	SteeringReceipt *SteeringReceipt
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot
@@ -444,6 +457,13 @@ type State struct {
 	// and a string-only queue could not tell two identical texts apart.
 	steeringQueue  []SteeringMessage
 	steeringBroker *pubsub.Broker[SteeringEvent]
+
+	// steeringMu guards the Send now controller below. Lock order is
+	// accessMu → steeringMu → State.mu, with no inverse acquisition; the
+	// controller's snapshot/event publication and its callbacks all run
+	// outside these locks.
+	steeringMu sync.Mutex
+	steering   steeringControl
 
 	// subagentReports is the machine-generated completion queue for
 	// background agent.run children. It is deliberately separate from the

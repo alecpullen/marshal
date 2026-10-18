@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"marshal/internal/progress"
 )
 
 type RiskLevel string
@@ -187,6 +189,17 @@ type CommandExecution struct {
 	ExitCode *int `json:"exit_code,omitempty"`
 	// Truncated reports whether retained output hit its cap.
 	Truncated bool `json:"truncated,omitempty"`
+	// ProgressConfig and Progress carry the immutable launch progress
+	// configuration and the newest observed display snapshot. Both are
+	// optional and additive: an execution record without them is unchanged,
+	// and the outer Version stays 1 because nothing existing moved.
+	ProgressConfig *progress.Config   `json:"progress_config,omitempty"`
+	Progress       *progress.Snapshot `json:"progress,omitempty"`
+	// ResultRevision identifies the settled result revision, SourceEpoch the
+	// runtime epoch it was produced under, so a work view can pair a result
+	// with the work it belongs to.
+	ResultRevision string `json:"result_revision,omitempty"`
+	SourceEpoch    string `json:"source_epoch,omitempty"`
 }
 
 // NewCommandExecutionNotice builds the notice that carries a structured
@@ -194,11 +207,30 @@ type CommandExecution struct {
 // metadata, and the summariser only appends a coaching footer for a non-empty
 // Text.
 func NewCommandExecutionNotice(ex CommandExecution) *ToolNotice {
+	ex = cloneExecution(ex)
 	ex.Version = CommandExecutionVersion
 	return &ToolNotice{
 		Kind: NoticeCommandExecution,
 		Data: map[string]any{CommandExecutionKey: ex},
 	}
+}
+
+// cloneExecution deep-copies an execution record's nested optional values so a
+// notice owns its own payload. A caller that later mutates its exit code,
+// progress config or snapshot can neither reach into a stored notice nor have
+// a stored notice reach back into it.
+func cloneExecution(ex CommandExecution) CommandExecution {
+	out := ex
+	if ex.ExitCode != nil {
+		code := *ex.ExitCode
+		out.ExitCode = &code
+	}
+	if ex.ProgressConfig != nil {
+		cfg := *ex.ProgressConfig
+		out.ProgressConfig = &cfg
+	}
+	out.Progress = progress.Clone(ex.Progress)
+	return out
 }
 
 // WithExecution attaches (or replaces) the structured execution record on a
@@ -207,6 +239,7 @@ func (n *ToolNotice) WithExecution(ex CommandExecution) *ToolNotice {
 	if n == nil {
 		return NewCommandExecutionNotice(ex)
 	}
+	ex = cloneExecution(ex)
 	ex.Version = CommandExecutionVersion
 	if n.Data == nil {
 		n.Data = make(map[string]any, 1)
@@ -242,12 +275,12 @@ func commandExecutionFromValue(v any) (CommandExecution, bool) {
 	case nil:
 		return CommandExecution{}, false
 	case CommandExecution:
-		return t, t.Version == CommandExecutionVersion || t.Version == 0
+		return cloneExecution(t), t.Version == CommandExecutionVersion || t.Version == 0
 	case *CommandExecution:
 		if t == nil {
 			return CommandExecution{}, false
 		}
-		return *t, t.Version == CommandExecutionVersion || t.Version == 0
+		return cloneExecution(*t), t.Version == CommandExecutionVersion || t.Version == 0
 	case map[string]any:
 		ex := CommandExecution{
 			Version:         noticeInt(t, "version"),
@@ -276,13 +309,198 @@ func commandExecutionFromValue(v any) (CommandExecution, bool) {
 		if code, ok := noticeOptionalInt(t, "exit_code"); ok {
 			ex.ExitCode = &code
 		}
+		ex.ProgressConfig = progressConfigFromValue(t["progress_config"])
+		ex.Progress = progressSnapshotFromValue(t["progress"])
+		ex.ResultRevision = noticeString(t, "result_revision")
+		ex.SourceEpoch = noticeString(t, "source_epoch")
 		if ex.Version != CommandExecutionVersion && ex.Version != 0 {
 			return CommandExecution{}, false
 		}
-		return ex, true
+		return cloneExecution(ex), true
 	default:
 		return CommandExecution{}, false
 	}
+}
+
+// progressVersionDiagnostic is the bounded diagnostic retained when a stored
+// progress payload claims a version this build does not recognise. The payload
+// is omitted rather than guessed at, but the execution record it rode on stays
+// valid — an unknown inner version never invalidates an otherwise readable
+// outer record.
+const progressVersionDiagnostic = "invalid progress record"
+
+// progressConfigFromValue decodes the optional launch progress configuration in
+// any of its stored forms: the in-memory struct, a pointer, or the JSON map a
+// round trip produces. A missing or unrecognised value is absent, not zeroed.
+func progressConfigFromValue(v any) *progress.Config {
+	switch t := v.(type) {
+	case progress.Config:
+		cfg := t
+		return &cfg
+	case *progress.Config:
+		if t == nil {
+			return nil
+		}
+		cfg := *t
+		return &cfg
+	case map[string]any:
+		return &progress.Config{
+			Profile: noticeString(t, "profile"),
+			Source:  noticeString(t, "source"),
+			Title:   noticeString(t, "title"),
+		}
+	default:
+		return nil
+	}
+}
+
+// progressSnapshotFromValue decodes the optional display snapshot in any of its
+// stored forms. A snapshot claiming a future progress version is not decoded or
+// rejected wholesale: its measurements are omitted and only a bounded partial
+// diagnostic survives, so a real execution record is never discarded because of
+// it.
+func progressSnapshotFromValue(v any) *progress.Snapshot {
+	switch t := v.(type) {
+	case progress.Snapshot:
+		s := t
+		return progress.Clone(&s)
+	case *progress.Snapshot:
+		return progress.Clone(t)
+	case map[string]any:
+		return progressSnapshotFromMap(t)
+	default:
+		return nil
+	}
+}
+
+// progressSnapshotFromMap rebuilds a display snapshot from the map form a JSON
+// round trip produces.
+func progressSnapshotFromMap(m map[string]any) *progress.Snapshot {
+	version := noticeInt(m, "version")
+	if version != progress.Version && version != 0 {
+		return &progress.Snapshot{
+			Frame:   progress.Frame{Version: progress.Version},
+			Partial: true,
+			Warning: progressVersionDiagnostic,
+		}
+	}
+	s := &progress.Snapshot{
+		Frame: progress.Frame{
+			Version:         version,
+			Sequence:        noticeUint64(m, "sequence"),
+			PrimaryMetricID: noticeString(m, "primaryMetricId"),
+			Detail:          noticeString(m, "detail"),
+		},
+		ObservedAt:    noticeTime(m, "observedAt"),
+		MeasuredAt:    noticeTime(m, "measuredAt"),
+		Partial:       noticeBool(m, "partial"),
+		Warning:       noticeString(m, "warning"),
+		ReportedError: noticeBool(m, "reportedError"),
+	}
+	if p, ok := m["phase"].(map[string]any); ok {
+		s.Phase = &progress.Phase{
+			ID:    noticeString(p, "id"),
+			Label: noticeString(p, "label"),
+			Index: noticeInt(p, "index"),
+			Total: noticeInt(p, "total"),
+		}
+	}
+	if raw, ok := m["metrics"].([]any); ok {
+		for _, item := range raw {
+			mi, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			metric := progress.Metric{
+				ID:      noticeString(mi, "id"),
+				Label:   noticeString(mi, "label"),
+				Unit:    noticeString(mi, "unit"),
+				Current: noticeFloat(mi, "current"),
+			}
+			if total, ok := noticeOptionalFloat(mi, "total"); ok {
+				metric.Total = &total
+			}
+			if rate, ok := noticeOptionalFloat(mi, "rate"); ok {
+				metric.Rate = &rate
+			}
+			s.Metrics = append(s.Metrics, metric)
+		}
+	}
+	if raw, ok := m["rows"].([]any); ok {
+		for _, item := range raw {
+			ri, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			s.Rows = append(s.Rows, progress.Row{
+				ID:    noticeString(ri, "id"),
+				Label: noticeString(ri, "label"),
+				State: noticeString(ri, "state"),
+			})
+		}
+	}
+	return s
+}
+
+// SubagentWorkReference identifies the work a subagent's command execution
+// belongs to, so a settled execution can be paired with the work view entry
+// that acknowledged it. TaskKey and RuntimeEpoch name the work; AgentID is the
+// live subagent the reference was written for.
+type SubagentWorkReference struct {
+	TaskKey        string `json:"taskKey"`
+	RuntimeEpoch   string `json:"runtimeEpoch"`
+	AgentID        int64  `json:"agentId"`
+	ChildSessionID string `json:"childSessionId,omitempty"`
+}
+
+// NoticeSubagentWork is the ToolNotice.Data key holding a subagent work
+// reference. One stable key keeps the map forward-compatible: a consumer that
+// does not know it ignores the value rather than misreading it.
+const NoticeSubagentWork = "subagent_work"
+
+// SubagentWork decodes the subagent work reference a notice carries, if any. It
+// tolerates every stored form — the in-memory struct, a pointer, and the JSON
+// map a persisted notice decodes to — and returns false for a nil notice, a
+// missing key, an unrecognised shape, or a reference missing its required
+// identity (nonempty TaskKey and RuntimeEpoch, a positive AgentID).
+func (n *ToolNotice) SubagentWork() (SubagentWorkReference, bool) {
+	if n == nil || len(n.Data) == 0 {
+		return SubagentWorkReference{}, false
+	}
+	return subagentWorkFromValue(n.Data[NoticeSubagentWork])
+}
+
+func subagentWorkFromValue(v any) (SubagentWorkReference, bool) {
+	switch t := v.(type) {
+	case nil:
+		return SubagentWorkReference{}, false
+	case SubagentWorkReference:
+		return t, validSubagentWork(t)
+	case *SubagentWorkReference:
+		if t == nil {
+			return SubagentWorkReference{}, false
+		}
+		return *t, validSubagentWork(*t)
+	case map[string]any:
+		ref := SubagentWorkReference{
+			TaskKey:        noticeString(t, "taskKey"),
+			RuntimeEpoch:   noticeString(t, "runtimeEpoch"),
+			AgentID:        int64(noticeInt(t, "agentId")),
+			ChildSessionID: noticeString(t, "childSessionId"),
+		}
+		return ref, validSubagentWork(ref)
+	default:
+		return SubagentWorkReference{}, false
+	}
+}
+
+// validSubagentWork reports whether a reference carries the identity a consumer
+// needs to pair it with work: it must name the task and epoch and point at a
+// live subagent.
+func validSubagentWork(ref SubagentWorkReference) bool {
+	return strings.TrimSpace(ref.TaskKey) != "" &&
+		strings.TrimSpace(ref.RuntimeEpoch) != "" &&
+		ref.AgentID > 0
 }
 
 // noticeString reads a string field from a decoded payload map.
@@ -328,6 +546,55 @@ func noticeOptionalInt(m map[string]any, key string) (int, bool) {
 			return 0, false
 		}
 		return n, true
+	default:
+		return 0, false
+	}
+}
+
+// noticeUint64 reads an unsigned field from a decoded payload map. A negative
+// or absent value is zero, which is the progress package's "no sequence yet".
+func noticeUint64(m map[string]any, key string) uint64 {
+	n, ok := noticeOptionalInt(m, key)
+	if !ok || n < 0 {
+		return 0
+	}
+	return uint64(n)
+}
+
+// noticeFloat reads a real-number field from a decoded payload map.
+func noticeFloat(m map[string]any, key string) float64 {
+	f, _ := noticeOptionalFloat(m, key)
+	return f
+}
+
+// noticeOptionalFloat reads a real-number field, reporting whether it was
+// present. JSON numbers arrive as float64, but any numeric form is accepted.
+func noticeOptionalFloat(m map[string]any, key string) (float64, bool) {
+	switch v := m[key].(type) {
+	case nil:
+		return 0, false
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0, false
+		}
+		return f, true
 	default:
 		return 0, false
 	}

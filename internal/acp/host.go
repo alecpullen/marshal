@@ -228,6 +228,7 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 				// the manual RPC path goes through the same operation the TUI
 				// uses rather than mutating the runner directly.
 				SetMode:         rt.SetSessionMode,
+				SetEffort:       rt.SetSessionEffort,
 				SetSystemAccess: rt.State.SetSystemAccess,
 				AccessRequest:   rt.AccessRequest,
 				ResolveAccess:   rt.ResolveAccess,
@@ -348,6 +349,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 
 	srv.Handle("session/prompt", turns.PromptTurn)
 	srv.Handle("session/set_mode", turns.SetMode)
+	srv.Handle("session/set_effort", turns.SetEffort)
 	srv.Handle("session/steer", turns.Steer)
 	srv.Handle("session/stack", turns.Stack)
 	srv.Handle("session/stack_node", turns.StackNode)

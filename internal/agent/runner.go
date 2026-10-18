@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -353,6 +354,22 @@ type Runner struct {
 	// cached pre-write reads.
 	CacheInvalidator func()
 
+	// ExecutionControl, when set, is the conversation's command service seam:
+	// the runner registers an operation stop group before its turn dispatches
+	// any provider or tool work, so an explicit turn stop has a precise target
+	// (the commands still attached to this turn) instead of only a cancelled
+	// context. Nil disables registration; the turn then stops only its own
+	// waits, exactly as before this feature.
+	ExecutionControl ExecutionControl
+
+	// stopGroup is the stop group the current turn's tool calls belong to, and
+	// ownStopGroup records whether THIS runner created it (direct use with no
+	// parent registration) so ordinary cleanup clears only its own. Both are
+	// per-turn state, written by RunTask on its single goroutine and read by
+	// tool execution on the same turn.
+	stopGroup    *session.TurnStopToken
+	ownStopGroup bool
+
 	UsageObserver UsageObserver
 
 	// QuotaObserver, when set, receives subscription quota state after each
@@ -633,6 +650,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.IntentNudge = other.IntentNudge
 	r.WriteGate = other.WriteGate
 	r.WatchTransferrer = other.WatchTransferrer
+	r.ExecutionControl = other.ExecutionControl
 	r.UsageObserver = other.UsageObserver
 	r.QuotaObserver = other.QuotaObserver
 	r.CalibrationObserver = other.CalibrationObserver
@@ -661,6 +679,74 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.rosterMu.Lock()
 	r.discoveredModels = nil
 	r.rosterMu.Unlock()
+}
+
+// beginTurnStop registers this turn's explicit-stop group through the injected
+// execution-control seam. A parent entry point that already registered the
+// operation's group is reused (the runner must not orphan the target a user's
+// stop names); with no registration present — a runner used directly, an
+// embedded caller, a test — the runner allocates its own so the turn still has
+// a stop target. Returns nil when no seam is wired at all.
+func (r *Runner) beginTurnStop() (*session.TurnStopToken, string) {
+	if r.ExecutionControl == nil {
+		return nil, ""
+	}
+	token, owned := r.ExecutionControl.BeginOperation(r.actorRole())
+	if token == nil {
+		return nil, ""
+	}
+	r.stopGroup, r.ownStopGroup = token, owned
+	// A stop the service accepted before this registration is reported as the
+	// group's pending cause; adopting it here means the turn stops before it
+	// does any work. Only a newly allocated group can carry one: a reused
+	// parent registration was itself created before the stop landed.
+	if owned && token.Stopped() {
+		return token, token.StopCause()
+	}
+	return token, ""
+}
+
+// finishTurnStop clears the registration this turn OWNS. It never requests
+// execution stop: a turn that ends normally leaves its detached commands
+// running, and the stop decision (if any) was already taken by the service.
+//
+// A turn that reused a parent operation's registration owns nothing and clears
+// nothing: the parent is still running, and unregistering its target mid-flight
+// would make the user's next keystroke stop the wrong operation.
+func (r *Runner) finishTurnStop(token *session.TurnStopToken) {
+	owned := r.ownStopGroup
+	r.stopGroup, r.ownStopGroup = nil, false
+	if !owned || r.ExecutionControl == nil || token == nil {
+		return
+	}
+	r.ExecutionControl.ReleaseOperation(token)
+}
+
+// executionOrigin composes the origin a managed command records for one tool
+// call: the conversation, the actor that requested it, the turn whose explicit
+// stop targets it, and the call's step/tool-call identity. It is stamping the
+// origin AFTER approval/hook validation that matters — a call that never
+// reaches a handler must not leave an admission record.
+func (r *Runner) executionOrigin(stepID session.StepID, toolCallID string) session.ExecutionOrigin {
+	conversation := ""
+	if r.State != nil {
+		conversation = r.State.SessionID()
+	}
+	turn := ""
+	if r.stopGroup != nil {
+		turn = r.stopGroup.TurnID()
+	}
+	step := ""
+	if stepID != 0 {
+		step = strconv.FormatInt(int64(stepID), 10)
+	}
+	return session.ExecutionOrigin{
+		ConversationID: conversation,
+		Actor:          r.actorRole(),
+		TurnID:         turn,
+		StepID:         step,
+		ToolCallID:     toolCallID,
+	}
 }
 
 func (r *Runner) role() AgentRole {
@@ -774,6 +860,26 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	// can show it while title generation is still running. Keep the history
 	// snapshot above this insertion to avoid replaying the goal twice.
 	r.State.AddMessage(session.RoleUser, goal, session.ContentTypePlain)
+	// Register this turn's stop group before ANY work that can block. Title
+	// generation, provider resolution and the classify call can each sit for a
+	// long time, and a user who stops the turn during any of them must have a
+	// target. The actor is stamped here — the runner knows its role, the
+	// session knows the conversation, and both ride the origin of every command
+	// the turn launches. A parent entry point (TUI turn, review, SDD, pipeline)
+	// registers first, and this call reuses that registration rather than
+	// replacing it, so the stop the user's keystroke names stays the one the
+	// running turn actually owns.
+	task := NewTask(goal, r.Now())
+	defer func() { r.emitMetrics(task) }()
+	stopGroup, stopPendingCause := r.beginTurnStop()
+	if stopGroup != nil {
+		defer r.finishTurnStop(stopGroup)
+	}
+	// A stop accepted before this registration is adopted now: the turn was
+	// stopped while it was still starting, so it does no work at all.
+	if stopPendingCause != "" {
+		return task, r.failTurn(task, context.Canceled)
+	}
 	// Turn-start titling: initial title on the first turn; later turns
 	// re-title only when the user explicitly starts a new task. Synchronous
 	// by design (single-model safe); failures and timeouts keep the current
@@ -826,8 +932,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.State.TickSkillBodyAges()
 	r.turnToolResultChars = 0
 
-	task := NewTask(goal, r.Now())
-	defer func() { r.emitMetrics(task) }()
 	r.forceClassMu.Lock()
 	fc := r.ForceClass
 	r.forceClassMu.Unlock()

@@ -13,10 +13,16 @@ import (
 	"marshal/internal/tools/native"
 )
 
+// runningJob models a job as the job lane receives it: a live snapshot from the
+// JobManager's broker, where a background job is attached to no waiting caller.
+// An attached command never reaches the lane — its own tool row is its display
+// (see Model.runningJobs) — so a fixture without the background attachment
+// stands for something the lane is not given.
 func runningJob(id int, cmd string, ago time.Duration) native.JobInfo {
 	return native.JobInfo{
 		ID: fmt.Sprintf("job-%d", id), Command: cmd, Status: native.StatusRunning,
-		StartedAt: time.Now().Add(-ago),
+		Attachment: native.AttachmentBackground,
+		StartedAt:  time.Now().Add(-ago),
 	}
 }
 
@@ -48,5 +54,35 @@ func TestJobCountRepaintsViewport(t *testing.T) {
 
 	if after := ansi.Strip(mm.viewport.GetContent()); !strings.Contains(after, notice) {
 		t.Fatalf("handleJobCount did not repaint the viewport:\n%s", after)
+	}
+}
+
+// The lane lists detached work only. An attached command is running inside the
+// tool call that is waiting for it, which already has its own active row, so
+// listing it here would show one command twice; a stopping execution is still
+// work, so it stays until it settles.
+func TestRunningJobsKeepsDetachedRunningAndStoppingOnly(t *testing.T) {
+	m := newTestModel(t)
+	now := time.Now()
+	m.jobs = []native.JobInfo{
+		{ID: "job-1", Command: "attached running", Status: native.StatusRunning,
+			Attachment: native.AttachmentForeground, StartedAt: now},
+		{ID: "job-2", Command: "detached running", Status: native.StatusRunning,
+			Attachment: native.AttachmentBackground, StartedAt: now},
+		{ID: "job-3", Command: "detached stopping", Status: native.StatusStopping,
+			Attachment: native.AttachmentBackground, StartedAt: now},
+		{ID: "job-4", Command: "settled", Status: native.StatusCompleted,
+			Attachment: native.AttachmentBackground, StartedAt: now},
+		{ID: "job-5", Command: "detached failed", Status: native.StatusFailed,
+			Attachment: native.AttachmentBackground, StartedAt: now},
+	}
+
+	got := m.runningJobs()
+	var ids []string
+	for _, j := range got {
+		ids = append(ids, j.ID)
+	}
+	if strings.Join(ids, ",") != "job-2,job-3" {
+		t.Fatalf("runningJobs = %v, want the detached running and stopping jobs only", ids)
 	}
 }

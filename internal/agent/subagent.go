@@ -15,6 +15,33 @@ import (
 	"marshal/internal/watch/watchctx"
 )
 
+// ownedExecutionControl is the ExecutionControl a synthetic child owns when it
+// has a stop group of its own rather than inheriting a parent operation's: an
+// agent.run child, a review/pipeline worker whose commands belong to that one
+// child. It never touches a parent's registration, so a targeted child stop
+// cannot stop the parent's work and a parent turn stop cannot stop the child's
+// (the child outlives its parent's turn by design).
+type ownedExecutionControl struct {
+	stop *session.TurnStopToken
+}
+
+func (c ownedExecutionControl) BeginOperation(string) (*session.TurnStopToken, bool) {
+	return c.stop, true
+}
+
+func (c ownedExecutionControl) StopOperation(token *session.TurnStopToken, cause string) ([]string, error) {
+	return token.Stop(cause)
+}
+
+// ReleaseOperation reports false on purpose: a child's group is released by the
+// child's own completion path (ClearSubagentStopGroup), not by each turn inside
+// it, so a later turn of the same child still has a stop target.
+func (c ownedExecutionControl) ReleaseOperation(*session.TurnStopToken) bool { return false }
+
+func (c ownedExecutionControl) StopExecution(executionID, cause string) error {
+	return c.stop.StopTarget(executionID, cause)
+}
+
 // SubagentRequest carries the caller's explicit choices for one agent.run
 // child. Agent is "" for an ad-hoc subtask or the name of a configured
 // custom agent. Model is an optional "provider/model" pair; "" means use
@@ -236,10 +263,13 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			return registry.ToolResult{}, errors.New("agent.run: system access requested but this session does not have it")
 		}
 		// Admission stays synchronous so cap/depth violations fail the tool
-		// call directly. The pairing ExitSubagent moves to the completion
-		// goroutine below: the slot must stay held for the child's whole
-		// background life, not just the dispatch.
-		if err := state.EnterSubagent(); err != nil {
+		// call directly. EnterSubagentWork also registers the child's creation
+		// with the conversation's end gate and returns that item's id, so the
+		// card below names exactly this child. The pairing ExitSubagent moves to
+		// the completion goroutine below: the slot must stay held for the child's
+		// whole background life, not just the dispatch.
+		workID, err := state.EnterSubagentWork()
+		if err != nil {
 			return registry.ToolResult{}, err
 		}
 
@@ -255,7 +285,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		if cfg.resolver != nil {
 			preview, err := cfg.resolver(SubagentRequest{Agent: args.Agent, Model: args.Model})
 			if err != nil {
-				state.ExitSubagent()
+				state.ExitSubagentWork(workID)
 				return registry.ToolResult{}, fmt.Errorf("agent.run: resolve model: %w", err)
 			}
 			if modelChangeNeedsConsent(cfg.parentModel, cfg.parentProvider, preview.Model, preview.Provider, cfg.parentPricing, preview.Pricing) {
@@ -267,7 +297,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 				approved, denied := requestSubagentConsent(ctx, state, fmt.Sprintf("Subagent will use %s @ %s (different model/provider/cost than parent %s @ %s). Approve?", preview.Model, preview.Provider, cfg.parentModel, cfg.parentProvider))
 				cfg.consentMu.Unlock()
 				if !approved {
-					state.ExitSubagent()
+					state.ExitSubagentWork(workID)
 					if denied {
 						return registry.ToolResult{}, fmt.Errorf("agent.run: user denied subagent model change to %s @ %s", preview.Model, preview.Provider)
 					}
@@ -278,7 +308,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 
 		child, childState, err := factory(SubagentRequest{Agent: args.Agent, Model: args.Model, Temperature: args.Temperature, Thinking: args.Thinking, System: args.System})
 		if err != nil {
-			state.ExitSubagent()
+			state.ExitSubagentWork(workID)
 			return registry.ToolResult{}, fmt.Errorf("agent.run: build child: %w", err)
 		}
 		// Register a summary card in the parent transcript in place of the
@@ -295,18 +325,38 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		if child.Provider != nil {
 			meta.Provider = child.Provider.Name()
 		}
-		view := state.RegisterSubagentWithMeta(args.Description, childState, meta)
+		view := state.RegisterSubagentWithMetaAndWork(workID, args.Description, childState, meta)
 		// The child's context derives from the SESSION, not this tool call:
 		// a background child must survive the parent turn ending normally,
 		// and turn-cancel (Esc) must not kill it. Session Shutdown still
 		// cancels it (State.Context is cancelled by Shutdown).
 		childCtx, cancel := context.WithCancel(state.Context())
+		// A child launched by scoped exit analysis inherits the analysis epoch's
+		// authorization, so its own commands are registered in that epoch and are
+		// stopped and joined with it — the analysis cannot leave work behind, and
+		// its work can never be mistaken for the conversation's ordinary work.
+		if scope, ok := session.ExitAnalysisScopeFromContext(ctx); ok {
+			childCtx = session.WithExitAnalysisScope(childCtx, scope)
+		}
+		// Give the child its own stop group so a TARGETED stop of this child
+		// reaches only this child's attached commands. The parent's turn stop
+		// never touches it (a child outlives its parent's turn), which is why
+		// the group is allocated separately instead of inherited.
+		childStop := session.NewTurnStopToken(state.GetTurnStopService(), fmt.Sprintf("subagent-%d", view.ID))
+		child.ExecutionControl = ownedExecutionControl{stop: childStop}
+		// Register the child's stop group BEFORE its cancel handle, so a
+		// targeted stop can never find the handle without the group it must
+		// stop first. CancelSubagent (session/subagents.go) is the wrapper that
+		// stops the group's attached commands and only then calls this cancel;
+		// the child's normal completion below calls the same handle, which is
+		// correct because finishing is not being stopped.
+		state.RegisterSubagentStopGroup(view.ID, childStop)
+		state.SetSubagentCancel(view.ID, cancel)
 		// Stamp the subagent owner tag on the child's context so any
 		// watch.start call the child makes is attributed to it (the
 		// watch.start handler reads it via watch.OwnerFromContext). The
 		// tag is "subagent-<id>" matching the view ID assigned above.
 		childCtx = watchctx.WithOwner(childCtx, fmt.Sprintf("subagent-%d", view.ID))
-		state.SetSubagentCancel(view.ID, cancel)
 		prev := child.UsageObserver
 		child.UsageObserver = func(u schema.TokenUsage) {
 			if prev != nil {
@@ -333,7 +383,7 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 					state.AddMessage(session.RoleSystem, "✗ "+panicSummary, session.ContentTypePlain)
 					state.AddMessage(session.RoleUser, panicReport, session.ContentTypeSubagentReport)
 					state.PushSubagentReport(panicReport)
-					state.ExitSubagent()
+					state.ExitSubagentWork(workID)
 					state.FinishSubagent(view.ID, "", fmt.Errorf("subagent %d panicked: %v", view.ID, r))
 					// Re-parent the panicked child's once watches and stop its
 					// repeat watches, mirroring the normal completion path.
@@ -392,8 +442,13 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			// there is no happens-before edge and the caller can race the
 			// report push / ExitSubagent.
 			state.PushSubagentReport(report)
-			state.ExitSubagent()
+			state.ExitSubagentWork(workID)
 			state.FinishSubagent(view.ID, summary, runErr)
+			// The child finished on its own, so its explicit-stop group is done:
+			// dropping the registration here is what keeps a later card that
+			// reuses the id from inheriting it. Nothing is stopped — normal
+			// completion never invokes the explicit-stop wrapper.
+			state.ClearSubagentStopGroup(view.ID)
 			// Re-parent the child's once watches to the parent and stop its
 			// repeat watches now that the subagent has ended. The child's
 			// runner carries the WatchTransferrer (wired in app.go to the

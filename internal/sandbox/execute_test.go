@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,5 +140,73 @@ func TestExecuteCommandTimeoutReason(t *testing.T) {
 	}
 	if result.Meta.KilledReason != "timeout" {
 		t.Fatalf("KilledReason = %q, want %q", result.Meta.KilledReason, "timeout")
+	}
+}
+
+func TestExecuteCommandRetainOutputTailKeepsLateMarkers(t *testing.T) {
+	const limit = 16
+	const filler = "aaaaaaaaaaaaaaaaaaaaaaaa" // 24 bytes, past the cap on its own
+	var stdoutObs, stderrObs bytes.Buffer
+
+	cmd := exec.Command("/bin/sh", "-lc",
+		`printf '`+filler+`'; printf 'late-marker'; `+
+			`printf 'bbbbbbbbbbbbbbbbbbbbbbbb' >&2; printf 'late-stderr' >&2`)
+
+	req := native.CommandRequest{
+		MaxOutputBytes:   limit,
+		RetainOutputTail: true,
+		Stdout:           &stdoutObs,
+		Stderr:           &stderrObs,
+	}
+
+	result, err := executeCommand(context.Background(), cmd, req, registry.SandboxMeta{})
+	if err != nil {
+		t.Fatalf("executeCommand: %v", err)
+	}
+	if len(result.Stdout) != limit {
+		t.Fatalf("stdout len = %d, want %d", len(result.Stdout), limit)
+	}
+	if len(result.Stderr) != limit {
+		t.Fatalf("stderr len = %d, want %d", len(result.Stderr), limit)
+	}
+	if !strings.HasSuffix(result.Stdout, "late-marker") {
+		t.Fatalf("stdout = %q, want the late marker retained", result.Stdout)
+	}
+	if !strings.HasSuffix(result.Stderr, "late-stderr") {
+		t.Fatalf("stderr = %q, want the late marker retained", result.Stderr)
+	}
+	if !result.Meta.OutputTruncated {
+		t.Fatal("OutputTruncated should be true")
+	}
+	// Observers keep receiving bytes after the capture cap.
+	if !strings.Contains(stdoutObs.String(), filler+"late-marker") {
+		t.Fatalf("stdout observer = %q, want every byte forwarded", stdoutObs.String())
+	}
+	if !strings.Contains(stderrObs.String(), "bbbbbbbbbbbbbbbbbbbbbbbb"+"late-stderr") {
+		t.Fatalf("stderr observer = %q, want every byte forwarded", stderrObs.String())
+	}
+}
+
+// TestExecuteCommandPrefixModeUnchanged pins the default for callers that do
+// not opt into tail mode: observers stay bounded to the prefix.
+func TestExecuteCommandPrefixModeUnchanged(t *testing.T) {
+	var stdoutObs bytes.Buffer
+
+	cmd := exec.Command("/bin/sh", "-lc", `printf 'aaaa'; printf 'cccclate-marker'`)
+
+	req := native.CommandRequest{
+		MaxOutputBytes: 8,
+		Stdout:         &stdoutObs,
+	}
+
+	result, err := executeCommand(context.Background(), cmd, req, registry.SandboxMeta{})
+	if err != nil {
+		t.Fatalf("executeCommand: %v", err)
+	}
+	if strings.Contains(result.Stdout, "late-marker") {
+		t.Fatalf("stdout = %q, want prefix-only capture by default", result.Stdout)
+	}
+	if stdoutObs.Len() > 8 {
+		t.Fatalf("stdout observer len = %d, want <= 8", stdoutObs.Len())
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
@@ -272,7 +273,25 @@ func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded 
 	g, style := glyph.Job, statusOkStyle()
 	gutterColor := theme.Current().FGMuted
 	var tail string
-	if j.Running {
+	switch {
+	case j.Lost:
+		// The session ended while the job ran: there is no exit code to
+		// report, and the card must not claim one.
+		g, style = glyph.Warning, warningStyle()
+		gutterColor = theme.Current().StatusWarning
+		tail = "ended with session"
+	case j.Status == string(native.StatusStopping):
+		// The stop was accepted and the process is still going. Checked before
+		// running: a stopping execution has no outcome yet, so it is still
+		// "running" as far as a card is concerned, and its tail must say what is
+		// happening to it rather than repeat that it runs.
+		g, style = glyph.Warning, warningStyle()
+		gutterColor = theme.Current().StatusWarning
+		tail = "stopping"
+		if j.Duration > 0 {
+			tail += dimSeparator + formatElapsed(j.Duration)
+		}
+	case j.Running:
 		g = spinner
 		if g == "" {
 			g = glyph.Running
@@ -284,21 +303,33 @@ func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded 
 		if started := row.JobStart(); !started.IsZero() {
 			tail += dimSeparator + formatElapsed(max(now.Sub(started), 0))
 		}
-	} else if j.Lost {
-		// The session ended while the job ran: there is no exit code to
-		// report, and the card must not claim one.
-		g, style = glyph.Warning, warningStyle()
-		gutterColor = theme.Current().StatusWarning
-		tail = "ended with session"
-	} else {
-		if j.ExitCode != 0 {
+	default:
+		// Settled. An exit that was never observed is never success: a start-up
+		// failure produces no code at all, and a legacy record spells "unknown"
+		// as -1, so both render as unknown rather than as a clean exit.
+		code := j.Exit
+		if code == nil && j.ExitCode >= 0 {
+			// The legacy field carries a real code; the -1 convention is what
+			// marks it unknown.
+			legacy := j.ExitCode
+			code = &legacy
+		}
+		failed := jobFailedStatus(j.Status) || (code != nil && *code != 0)
+		switch {
+		case failed:
 			g, style = glyph.Error, errorStyle()
 			gutterColor = theme.Current().StatusError
+		case code == nil:
+			g, style = glyph.Warning, warningStyle()
+			gutterColor = theme.Current().StatusWarning
 		}
-		tail = fmt.Sprintf("exit %d", j.ExitCode)
+		tail = jobOutcomeWord(j, code)
 		if j.Duration > 0 {
 			tail += dimSeparator + formatElapsed(j.Duration)
 		}
+	}
+	if j.Truncated {
+		tail += dimSeparator + "truncated"
 	}
 	head := viewmodel.ScrubText(j.ID)
 	// The command is model-authored shell text and this renderer prints it
@@ -330,6 +361,33 @@ func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded 
 		}
 	}
 	return b.String()
+}
+
+// jobOutcomeWord is a settled card's right-hand outcome: the actual exit code
+// when one was observed, or the reason there is none. A stopped process whose
+// runner reported no code and a start-up failure both land here, and neither
+// may read as a clean exit.
+func jobOutcomeWord(j *viewmodel.JobState, code *int) string {
+	switch {
+	case code != nil:
+		return fmt.Sprintf("exit %d", *code)
+	case j.StopCause != "":
+		return "stopped"
+	case j.Status == string(native.StatusFailed):
+		return "failed"
+	default:
+		return "outcome unknown"
+	}
+}
+
+// jobFailedStatus reports whether a terminal status is a failure that must not
+// render as a clean exit.
+func jobFailedStatus(status string) bool {
+	switch native.JobStatus(status) {
+	case native.StatusFailed, native.StatusKilled, native.StatusTimedOut:
+		return true
+	}
+	return false
 }
 
 // renderMarker is a completion marker: one dim row at the moment the work it

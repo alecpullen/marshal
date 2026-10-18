@@ -201,3 +201,258 @@ func TestWaitAnyLeaksNoGoroutines(t *testing.T) {
 		t.Errorf("goroutines: before %d, after %d — fan-in leaked", before, got)
 	}
 }
+
+// --- Task 5: explicit-stop registration for background work --------------
+
+// fakeTurnStopService records the stop calls the session makes on the
+// conversation's command service.
+type fakeTurnStopService struct {
+	turnIDs []string
+	causes  []string
+	targets []string
+}
+
+func (f *fakeTurnStopService) StopAttached(turnID, cause string) ([]string, error) {
+	f.turnIDs = append(f.turnIDs, turnID)
+	f.causes = append(f.causes, cause)
+	return []string{"job-1"}, nil
+}
+
+func (f *fakeTurnStopService) RequestStop(executionID, cause string) error {
+	f.targets = append(f.targets, executionID)
+	return nil
+}
+
+// TestTurnStopRegistrationRetainsEarlyStop pins the retained-stop behavior: a
+// stop that lands before the turn registers is not dropped. The registration
+// adopts it, marks the group stopped, and asks the service — so a turn cannot
+// start doing work the user already asked to stop.
+func TestTurnStopRegistrationRetainsEarlyStop(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+	svc := &fakeTurnStopService{}
+	s.SetTurnStopService(svc)
+
+	// No registration yet: the request is retained.
+	if ids, err := s.RequestTurnStop("stop before start"); err != nil || ids != nil {
+		t.Fatalf("early RequestTurnStop = (%v, %v), want (nil, nil)", ids, err)
+	}
+
+	token, pending := s.BeginTurnStop("")
+	if pending != "stop before start" {
+		t.Fatalf("pending cause = %q, want the retained stop", pending)
+	}
+	if !token.Stopped() {
+		t.Fatal("the registration did not adopt the retained stop")
+	}
+	if len(svc.turnIDs) != 1 || svc.turnIDs[0] != token.TurnID() {
+		t.Fatalf("service stops = %v, want the adopted registration %q", svc.turnIDs, token.TurnID())
+	}
+	if token.StopCause() != "stop before start" {
+		t.Fatalf("stop cause = %q", token.StopCause())
+	}
+	// The retained cause is consumed: the next registration starts clean.
+	next, pending := s.BeginTurnStop("")
+	if pending != "" {
+		t.Fatalf("retained cause leaked into the next registration: %q", pending)
+	}
+	if next.Stopped() {
+		t.Fatal("a fresh registration inherited the previous stop")
+	}
+}
+
+// TestOrdinaryCleanupDoesNotRequestExecutionStop pins the other direction:
+// unregistering a turn that simply finished must not ask the service to stop
+// anything, because a turn ending is not a command being stopped.
+func TestOrdinaryCleanupDoesNotRequestExecutionStop(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+	svc := &fakeTurnStopService{}
+	s.SetTurnStopService(svc)
+
+	token, _ := s.BeginTurnStop("")
+	if !s.EndTurnStop(token) {
+		t.Fatal("EndTurnStop did not clear its own registration")
+	}
+	if len(svc.turnIDs) != 0 || len(svc.targets) != 0 {
+		t.Fatalf("ordinary cleanup requested a stop: turns=%v targets=%v", svc.turnIDs, svc.targets)
+	}
+	if s.CurrentTurnStop() != nil {
+		t.Fatal("registration survived ordinary cleanup")
+	}
+}
+
+// TestCancelSubagentTargetsOnlyTheChild pins parent/child targeting: stopping one
+// child asks the service to stop THAT child's group, leaves the parent's turn
+// alone, and never marks the parent's group stopped.
+func TestCancelSubagentTargetsOnlyTheChild(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+	svc := &fakeTurnStopService{}
+	s.SetTurnStopService(svc)
+
+	parent, _ := s.BeginTurnStop("")
+	child := NewTurnStopToken(svc, "subagent-1")
+
+	view := s.RegisterSubagent("child", nil)
+	s.RegisterSubagentStopGroup(view.ID, child)
+	cancelled := false
+	s.SetSubagentCancel(view.ID, func() { cancelled = true })
+
+	if !s.CancelSubagent(view.ID) {
+		t.Fatal("CancelSubagent did not stop a running child")
+	}
+	if !cancelled {
+		t.Fatal("CancelSubagent did not cancel the child's context")
+	}
+	if len(svc.turnIDs) != 1 || svc.turnIDs[0] != child.TurnID() {
+		t.Fatalf("targeted stop reached %v, want the child's group %q", svc.turnIDs, child.TurnID())
+	}
+	if parent.Stopped() {
+		t.Fatal("a targeted child stop marked the parent's turn stopped")
+	}
+	if s.CurrentTurnStop() != parent {
+		t.Fatal("a targeted child stop replaced the parent's registration")
+	}
+}
+
+// TestCancelSubagentIgnoresFinishedChild pins that normal completion is never an
+// explicit stop: a finished child's group is cleared and a stop request for it
+// does nothing.
+func TestCancelSubagentIgnoresFinishedChild(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+	svc := &fakeTurnStopService{}
+	s.SetTurnStopService(svc)
+
+	child := NewTurnStopToken(svc, "subagent-1")
+	view := s.RegisterSubagent("child", nil)
+	s.RegisterSubagentStopGroup(view.ID, child)
+	s.FinishSubagent(view.ID, "done", nil)
+	s.ClearSubagentStopGroup(view.ID)
+
+	if s.CancelSubagent(view.ID) {
+		t.Fatal("CancelSubagent reported stopping an already-finished child")
+	}
+	if len(svc.turnIDs) != 0 {
+		t.Fatalf("a finished child's stop reached the service: %v", svc.turnIDs)
+	}
+	if child.Stopped() {
+		t.Fatal("a finished child's group was marked stopped")
+	}
+}
+
+// TestRequestTurnStopWithoutServiceReportsRatherThanPretending pins the
+// no-service case: a session with no command service reports that nothing was
+// stopped instead of reporting a successful stop.
+func TestRequestTurnStopWithoutServiceReportsRatherThanPretending(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+	token, _ := s.BeginTurnStop("")
+	if _, err := s.RequestTurnStop("stop"); !errors.Is(err, ErrNoTurnStopService) {
+		t.Fatalf("RequestTurnStop without a service = %v, want ErrNoTurnStopService", err)
+	}
+	if !token.Stopped() {
+		t.Fatal("the group did not record the (refused) stop decision")
+	}
+	if token.StopCause() != "stop" {
+		t.Fatalf("stop cause = %q, want the requested cause recorded for diagnosis", token.StopCause())
+	}
+}
+
+// TestChildLifecycleKeepsOneWorkItemPerChild pins Task 8's child registration for
+// the card path: a registered child is exactly one item of the conversation's
+// membership, its card does not add a second, and finishing it releases exactly
+// that item.
+func TestChildLifecycleKeepsOneWorkItemPerChild(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+
+	view := s.RegisterSubagent("child", nil)
+	if got := s.WorkMembership().Items; len(got) != 1 || got[0].Kind != WorkKindChild {
+		t.Fatalf("membership after registration = %+v, want one child item", got)
+	}
+	if got := s.WorkMembership().Items[0].SubagentID; got != view.ID {
+		t.Fatalf("child item subagent id = %d, want the card's %d", got, view.ID)
+	}
+
+	s.FinishSubagent(view.ID, "done", nil)
+	if got := s.WorkMembership().Items; len(got) != 0 {
+		t.Fatalf("membership after the child finished = %+v, want empty", got)
+	}
+}
+
+// TestEnterSubagentPairsItsWorkItemWithTheCard pins the identity binding: the
+// creation's item is the card's item — one child, one ID — and the paired exit
+// releases it even though the card appeared after it.
+func TestEnterSubagentPairsItsWorkItemWithTheCard(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+
+	work, err := s.EnterSubagentWork()
+	if err != nil {
+		t.Fatalf("EnterSubagentWork: %v", err)
+	}
+	if work == "" {
+		t.Fatal("EnterSubagentWork returned no work item id")
+	}
+	// The card names the SAME item, so the child is not registered twice.
+	view := s.RegisterSubagentWithMetaAndWork(work, "delegate", nil, SubagentMeta{})
+	items := s.WorkMembership().Items
+	if len(items) != 1 {
+		t.Fatalf("membership = %+v, want exactly one item for one child", items)
+	}
+	if items[0].ID != work || items[0].SubagentID != view.ID {
+		t.Fatalf("child item = %+v, want id %q bound to card %d", items[0], work, view.ID)
+	}
+
+	// The card finishing does not release the creation's item: the child is still
+	// live until its own exit.
+	s.FinishSubagent(view.ID, "done", nil)
+	if got := s.WorkMembership().Items; len(got) != 1 {
+		t.Fatalf("membership after the card finished = %+v, want the creation's item still open", got)
+	}
+	// The paired exit releases the creation's item, and nothing else.
+	s.ExitSubagent()
+	if got := s.WorkMembership().Items; len(got) != 0 {
+		t.Fatalf("membership after ExitSubagent = %+v, want empty", got)
+	}
+}
+
+// TestExitSubagentWorkReleasesTheNamedChild pins the identity-keyed release: with
+// two children in flight, exiting the FIRST must release that child's own item.
+// A FIFO release would drop the most recently registered item — the child that is
+// still running — and leave the exited child's item looking active, so the
+// membership an end warns about would name the wrong child.
+func TestExitSubagentWorkReleasesTheNamedChild(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+
+	first, err := s.EnterSubagentWork()
+	if err != nil {
+		t.Fatalf("EnterSubagentWork (first): %v", err)
+	}
+	second, err := s.EnterSubagentWork()
+	if err != nil {
+		t.Fatalf("EnterSubagentWork (second): %v", err)
+	}
+	if first == second {
+		t.Fatal("two children registered the same work item id")
+	}
+	firstView := s.RegisterSubagentWithMetaAndWork(first, "first", nil, SubagentMeta{})
+	secondView := s.RegisterSubagentWithMetaAndWork(second, "second", nil, SubagentMeta{})
+
+	// The first child finishes while the second is still running.
+	s.ExitSubagentWork(first)
+
+	items := s.WorkMembership().Items
+	if len(items) != 1 {
+		t.Fatalf("membership after the first child exited = %+v, want only the second child", items)
+	}
+	if items[0].ID != second || items[0].SubagentID != secondView.ID {
+		t.Fatalf("surviving item = %+v, want the still-running child %q (card %d)", items[0], second, secondView.ID)
+	}
+	for _, item := range items {
+		if item.ID == first || item.SubagentID == firstView.ID {
+			t.Fatalf("the exited child is still in the membership: %+v", item)
+		}
+	}
+
+	// The second child's own exit releases its item, leaving nothing behind.
+	s.ExitSubagentWork(second)
+	if got := s.WorkMembership().Items; len(got) != 0 {
+		t.Fatalf("membership after both children exited = %+v, want empty", got)
+	}
+}

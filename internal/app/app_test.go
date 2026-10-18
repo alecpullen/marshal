@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -92,7 +93,7 @@ func TestPipelineRegistryFactoryExcludesWebTools(t *testing.T) {
 		}
 	}
 
-	factory := makePipelineRegistryFactory(cfg, state, nil, nil, nil, 0, nil, nil)
+	factory := makePipelineRegistryFactory(cfg, state, nil, nil, nil, 0, nil, nil, nil)
 	ctx := pipeline.ExecutionContext{
 		RepoRoot:      dir,
 		WorkspaceRoot: dir,
@@ -582,13 +583,10 @@ func TestBuildAgentRunnerBackgroundShellUsesConfiguredSandbox(t *testing.T) {
 	_ = runner
 	_ = reg
 
-	id, err := jobMgr.Start(ctx, "echo $MARSHAL_TEST_SECRET", 5*time.Second)
-	if err != nil {
-		t.Fatalf("jobMgr.Start: %v", err)
-	}
+	id := launchDetachedJob(t, ctx, jobMgr, "echo $MARSHAL_TEST_SECRET")
 
 	// Wait for the short-lived job to complete.
-	time.Sleep(500 * time.Millisecond)
+	waitForJobStatus(t, jobMgr, id, native.StatusCompleted, 5*time.Second)
 
 	info, output, err := jobMgr.Output(id, 0)
 	if err != nil {
@@ -617,12 +615,8 @@ func TestBuildAgentRunnerUsesConfiguredOutputLimit(t *testing.T) {
 	_ = reg
 
 	// Start a background job that produces more than 8 bytes of output.
-	id, err := jobMgr.Start(ctx, "echo aaaaaaaa bbbbbbbb cccccccc dddddddd", 5*time.Second)
-	if err != nil {
-		t.Fatalf("jobMgr.Start: %v", err)
-	}
-
-	time.Sleep(500 * time.Millisecond)
+	id := launchDetachedJob(t, ctx, jobMgr, "echo aaaaaaaa bbbbbbbb cccccccc dddddddd")
+	waitForJobStatus(t, jobMgr, id, native.StatusCompleted, 5*time.Second)
 
 	info, output, err := jobMgr.Output(id, 0)
 	if err != nil {
@@ -689,10 +683,7 @@ reviewer = "mock/mock-model"
 	}
 
 	// Prove the manager works: start a job and list it.
-	id, err := rt.JobManager.Start(ctx, "echo job-manager-test", 5*time.Second)
-	if err != nil {
-		t.Fatalf("JobManager.Start: %v", err)
-	}
+	id := launchDetachedJob(t, ctx, rt.JobManager, "echo job-manager-test")
 
 	// The model-facing job.* tools were retired in the context-diet Tier 2a
 	// cut: agent.await/agent.kill reach the same manager through the
@@ -783,17 +774,30 @@ reviewer = "mock/mock-model"
 	}
 }
 
-func TestReloadAgentRuntimeReplacesReachableManagerWhenIdle(t *testing.T) {
+// TestReloadAgentRuntimePreservesCommandServiceWhileIdle pins the ownership
+// rule for a config reload: the conversation's command service SURVIVES it.
+//
+// A reload changes future launches only. The same supervisor keeps its handle,
+// its ids and its admission record across the reload, so an old command keeps
+// running, the transcript's handles stay resolvable, and an explicit turn stop
+// still reaches the service it always did. Before service reuse, a reload built
+// a second manager and shut the first one down — killing running commands and
+// orphaning every handle a client already held.
+func TestReloadAgentRuntimePreservesCommandServiceWhileIdle(t *testing.T) {
 	ctx := context.Background()
 
 	initialCfg := nativeToolAgentConfig("test-provider")
 	reloadedCfg := nativeToolAgentConfig("test-provider")
+	// A reload must be observable as a NEW generation even though the service
+	// is preserved: the capacity change below is recorded against it.
+	reloadedCfg.Tools.Shell.MaxBackgroundJobs = 7
 
 	state := session.New(initialCfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("initial buildAgentRunner: %v", err)
 	}
+	t.Cleanup(func() { _ = jobMgr.Shutdown(context.Background()) })
 
 	rt := &Runtime{
 		Runner:       runner,
@@ -809,41 +813,561 @@ func TestReloadAgentRuntimeReplacesReachableManagerWhenIdle(t *testing.T) {
 	if rt.JobManager == nil {
 		t.Fatal("initial JobManager is nil")
 	}
-
-	// Capture the old manager pointer before reload.
 	oldMgr := rt.JobManager
+	genBefore := oldMgr.Generation()
 
-	// Reload — must build a new manager and swap it in.
+	// Reload — the SAME service must still be installed afterwards.
 	if err := reloadAgentRuntime(ctx, reloadedCfg, rt); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 
-	// The runtime pointer must change.
-	if rt.JobManager == oldMgr {
-		t.Fatal("JobManager pointer did not change after reload")
+	if rt.JobManager != oldMgr {
+		t.Fatal("reload replaced the command service; a reload must preserve it")
+	}
+	if got := rt.State.GetTurnStopService(); got != session.TurnStopService(oldMgr) {
+		t.Fatalf("turn-stop service after reload = %#v, want the preserved service", got)
+	}
+	if got := oldMgr.Generation(); got <= genBefore {
+		t.Fatalf("generation after reload = %d, want a newer generation than %d", got, genBefore)
+	}
+	// A reload commits new defaults for future launches only.
+	if got := oldMgr.CurrentLaunchPolicy().MaxJobs; got != 7 {
+		t.Fatalf("MaxJobs after reload = %d, want the reloaded config's 7", got)
 	}
 
-	// The old manager must reject new starts (it was shut down).
-	_, err = oldMgr.Start(ctx, "echo should-fail", time.Second)
-	if err == nil {
-		t.Fatal("expected old JobManager to reject Start after shutdown")
+	// The preserved service still admits: it was never closed.
+	id := launchDetachedJob(t, ctx, rt.JobManager, "echo hello-preserved-manager")
+	_ = id
+	waitForJobStatus(t, rt.JobManager, id, native.StatusCompleted, 5*time.Second)
+}
+
+// blockingRunner is a CommandRunner that publishes a PID, blocks until
+// released, and then reports a clean exit. It stands in for a long ordinary
+// command whose execution must survive a reload.
+type blockingRunner struct {
+	release chan struct{}
+	pid     int
+	calls   int32
+}
+
+func (r *blockingRunner) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+	atomic.AddInt32(&r.calls, 1)
+	if req.OnStart != nil {
+		rp := r.pid
+		if rp == 0 {
+			rp = 4242
+		}
+		req.OnStart(rp)
 	}
-	if !errors.Is(err, native.ErrJobManagerClosed) {
-		t.Fatalf("old JobManager error = %v, want ErrJobManagerClosed", err)
+	if req.Stdout != nil {
+		_, _ = req.Stdout.Write([]byte("started\n"))
+	}
+	select {
+	case <-r.release:
+	case <-ctx.Done():
+		return native.CommandResult{}, ctx.Err()
+	}
+	result := native.CommandResult{Stdout: "finished\n", ExitCode: 0}
+	if req.Stdout != nil {
+		_, _ = req.Stdout.Write([]byte("finished\n"))
+	}
+	return result, nil
+}
+
+// TestReloadAgentRuntimeKeepsRunningCommandsAndHandles pins the strongest form
+// of the ownership rule: a command admitted BEFORE a reload keeps running
+// through it, keeps its identity and PID, and settles afterwards through the
+// preserved service's exit sink.
+//
+// This is what "reload changes future launches only" buys: the transcript's
+// handle, the TUI's job lane and agent.await all keep resolving the same
+// execution, and the reload neither kills the command nor orphans its record.
+func TestReloadAgentRuntimeKeepsRunningCommandsAndHandles(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initialCfg := nativeToolAgentConfig("test-provider")
+	reloadedCfg := nativeToolAgentConfig("test-provider")
+	// A changed output policy makes the "old command keeps what it captured"
+	// claim falsifiable: the reloaded toolset would use a different cap.
+	reloadedCfg.Tools.Shell.MaxOutputBytes = 8
+	reloadedCfg.Tools.Shell.ForegroundWaitSeconds = 30
+
+	state := session.New(initialCfg, dir, time.Unix(100, 0), session.Persistence{})
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("initial buildAgentRunner: %v", err)
+	}
+	_ = runner
+	t.Cleanup(func() { _ = jobMgr.Shutdown(context.Background()) })
+
+	// Give the service a controlled runner: the real sandbox runner is fine
+	// for a short command, but a blocking one makes the reload window exact.
+	long := &blockingRunner{release: make(chan struct{}), pid: 909}
+	jobMgr.CommitLaunchPolicy(native.LaunchPolicy{
+		Generation:     jobMgr.Generation(),
+		Runner:         long,
+		Dir:            dir,
+		MaxOutputBytes: 4096,
+		MaxJobs:        25,
+		Retention:      time.Hour,
+	})
+
+	rt := &Runtime{
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		JobManager:   jobMgr,
+		State:        state,
+		workCtx:      ctx,
 	}
 
-	// The new manager must execute jobs.
-	id, err := rt.JobManager.Start(ctx, "echo hello-new-manager", 5*time.Second)
+	info, err := jobMgr.Launch(ctx, native.LaunchSpec{
+		Command:  "long-running",
+		Detached: true,
+		Origin:   native.CommandOrigin{ConversationID: state.SessionID(), TurnID: "turn-1"},
+	})
 	if err != nil {
-		t.Fatalf("new JobManager.Start: %v", err)
+		t.Fatalf("Launch: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
-	info, _, err := rt.JobManager.Output(id, 0)
+	// Wait for the PID so the reload happens while the process is alive.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		live, _, oerr := jobMgr.Output(info.ID, 0)
+		if oerr != nil {
+			t.Fatalf("Output: %v", oerr)
+		}
+		if live.PID == 909 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job never published a PID; status %q", live.Status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// The reload succeeds and preserves the service.
+	if err := reloadAgentRuntime(ctx, reloadedCfg, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+	if rt.JobManager != jobMgr {
+		t.Fatal("reload replaced the service that owns the running command")
+	}
+
+	// The running command is untouched: same handle, same identity, same PID,
+	// still running, with the output policy it captured at admission.
+	live, _, err := jobMgr.Output(info.ID, 0)
 	if err != nil {
-		t.Fatalf("new JobManager.Output: %v", err)
+		t.Fatalf("Output after reload: %v", err)
 	}
-	if info.Status != native.StatusCompleted {
-		t.Fatalf("new job status = %s, want completed", info.Status)
+	if live.Status != native.StatusRunning {
+		t.Fatalf("status after reload = %q, want running (a reload must not end a command)", live.Status)
+	}
+	if live.ExecutionID != info.ExecutionID || live.PID != 909 {
+		t.Fatalf("identity after reload = %q/pid %d, want %q/pid 909", live.ExecutionID, live.PID, info.ExecutionID)
+	}
+	if got := atomic.LoadInt32(&long.calls); got != 1 {
+		t.Fatalf("runner calls after reload = %d, want exactly 1 (no relaunch)", got)
+	}
+	// The service keeps the defaults the command was admitted under; only the
+	// committed policy (used by future launches) reflects the new config.
+	if got := jobMgr.CurrentLaunchPolicy().MaxOutputBytes; got != 8 {
+		t.Fatalf("committed output cap after reload = %d, want the reloaded 8", got)
+	}
+
+	// Release it: the preserved service settles it through its exit sink, so
+	// the parent transcript gains exactly one durable completion.
+	close(long.release)
+	settled, err := jobMgr.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if settled.Status != native.StatusCompleted {
+		t.Fatalf("status = %q, want completed", settled.Status)
+	}
+	var exits []session.JobExit
+	for _, item := range state.Transcript() {
+		if item.JobExit != nil {
+			exits = append(exits, *item.JobExit)
+		}
+	}
+	if len(exits) != 1 {
+		t.Fatalf("job exits after the reload completion = %d, want exactly 1", len(exits))
+	}
+	if exits[0].ExecutionID != info.ExecutionID {
+		t.Fatalf("settled record identity = %q, want the admitted %q", exits[0].ExecutionID, info.ExecutionID)
+	}
+	if exits[0].ConversationID != state.SessionID() || exits[0].TurnID != "turn-1" {
+		t.Fatalf("settled record lost its origin: %+v", exits[0])
+	}
+}
+
+// TestReloadAgentRuntimeFailureLeavesServiceUntouched pins the rollback side of
+// the same contract: a candidate that fails validation neither mutates the
+// running service's defaults nor closes it.
+func TestReloadAgentRuntimeFailureLeavesServiceUntouched(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initialCfg := nativeToolAgentConfig("test-provider")
+
+	state := session.New(initialCfg, dir, time.Unix(100, 0), session.Persistence{})
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("initial buildAgentRunner: %v", err)
+	}
+	t.Cleanup(func() { _ = jobMgr.Shutdown(context.Background()) })
+
+	rt := &Runtime{
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		JobManager:   jobMgr,
+		State:        state,
+		workCtx:      ctx,
+	}
+
+	before := jobMgr.CurrentLaunchPolicy()
+	genBefore := jobMgr.Generation()
+
+	// A preset naming an unconfigured provider fails provider resolution
+	// inside the candidate build.
+	bad := nativeToolAgentConfig("test-provider")
+	bad.Models.Presets["native-coder"] = routing.ModelPreset{
+		Name: "native-coder", Provider: "not-configured", Model: "test-model",
+	}
+	// Keep only the good provider, so the preset's provider is unknown.
+	bad.Providers = map[string]config.ProviderConfig{
+		"test-provider": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "k", ToolCalling: true},
+	}
+
+	if err := reloadAgentRuntime(ctx, bad, rt); err == nil {
+		t.Fatal("expected the reload to fail")
+	}
+	if rt.JobManager != jobMgr {
+		t.Fatal("a failed reload replaced the service")
+	}
+	if got := jobMgr.CurrentLaunchPolicy(); got.MaxOutputBytes != before.MaxOutputBytes ||
+		got.Runner != before.Runner {
+		t.Fatalf("a failed reload mutated the service policy: %+v (was %+v)", got, before)
+	}
+	if got := jobMgr.Generation(); got != genBefore {
+		t.Fatalf("generation after a failed reload = %d, want the unchanged %d", got, genBefore)
+	}
+
+	// The service still admits: nothing closed it on the failure path.
+	id := launchDetachedJob(t, ctx, jobMgr, "echo reload-failed")
+	waitForJobStatus(t, jobMgr, id, native.StatusCompleted, 5*time.Second)
+}
+
+// TestSubagentChildRegistryBorrowsConversationService pins the child ownership
+// rule: an agent.run child gets its own native toolset (so its output stays
+// child-local) but BORROWS the conversation's command service, so its commands
+// are counted, settled and stopped exactly like the parent's.
+func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	cfg := nativeToolAgentConfig("test-provider")
+	cfg.Tools.Shell.Sandbox.Backend = "passthrough"
+	cfg.Tools.Shell.Sandbox.UnsafePassthrough = true
+
+	parentState := session.New(cfg, dir, time.Unix(100, 0), session.Persistence{})
+	runner, _, _, _, _, jobMgr, _, childFactory, _, _, _, _, err := buildAgentRunner(ctx, cfg, parentState, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("buildAgentRunner: %v", err)
+	}
+	_ = runner
+	t.Cleanup(func() { _ = jobMgr.Shutdown(context.Background()) })
+
+	child, childState, err := childFactory(agent.SubagentRequest{})
+	if err != nil {
+		t.Fatalf("child factory: %v", err)
+	}
+	if childState == nil || childState == parentState {
+		t.Fatal("a child must get its own session state")
+	}
+	tool, ok := child.Registry.Lookup("shell.run")
+	if !ok {
+		t.Fatal("child registry should expose shell.run")
+	}
+
+	// Run a background command through the child's registry.
+	res, err := tool.Handler(session.WithExecutionOrigin(ctx, session.ExecutionOrigin{
+		ConversationID: parentState.SessionID(),
+		Actor:          "subtask",
+		TurnID:         "turn-child",
+		ToolCallID:     "call-child",
+	}), registry.ToolCall{Name: "shell.run", Args: []byte(`{"command":"echo child-command","background":true}`)})
+	if err != nil {
+		t.Fatalf("child shell.run: %v", err)
+	}
+	jobID := ""
+	for _, field := range strings.Fields(res.Content) {
+		if strings.HasPrefix(field, "job-") {
+			jobID = field
+		}
+	}
+	if jobID == "" {
+		t.Fatalf("child result has no job id: %q", res.Content)
+	}
+
+	// The PARENT's service knows the execution: it was borrowed, not owned by
+	// the child's registry.
+	info, _, err := jobMgr.Output(jobID, 0)
+	if err != nil {
+		t.Fatalf("parent service does not own the child's command: %v", err)
+	}
+	if info.Origin.Actor != "subtask" || info.Origin.TurnID != "turn-child" {
+		t.Fatalf("child command origin = %+v, want the child's actor/turn", info.Origin)
+	}
+	// The count callback is the parent's (installed at owner construction).
+	if got := parentState.RunningJobsCount(); got != 1 {
+		t.Fatalf("parent running count = %d, want 1", got)
+	}
+
+	// Waiting on it settles it through the parent's sink, so the parent's
+	// transcript gains the durable completion.
+	waitForJobStatus(t, jobMgr, jobID, native.StatusCompleted, 10*time.Second)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		found := false
+		for _, item := range parentState.Transcript() {
+			if item.JobExit != nil && item.JobExit.ID == jobID {
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the child's completion never reached the parent's transcript")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := parentState.RunningJobsCount(); got != 0 {
+		t.Fatalf("parent running count after settlement = %d, want 0", got)
+	}
+}
+
+// TestPipelineRegistryCommandsCaptureDispatchWorktree pins the pipeline cwd
+// rule: a dispatch's commands capture THAT dispatch's worktree, so a later
+// workspace change (or a sibling dispatch) cannot redirect a command that has
+// already started.
+func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"local": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "k", ToolCalling: true},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "local", Model: "m", ToolCalling: "native"},
+	}
+
+	sessionRoot := t.TempDir() // the parent session's active root
+	worktree := t.TempDir()    // the per-dispatch worktree
+	repoRoot := t.TempDir()
+
+	state := session.New(cfg, sessionRoot, time.Unix(100, 0), session.Persistence{})
+
+	var mu sync.Mutex
+	var dirs []string
+	// The runner blocks until released, so the execution is still ACTIVE when
+	// the assertions below inspect the service. A command that settled
+	// immediately would only prove the record survived, not that the service
+	// holds it while it runs.
+	release := make(chan struct{})
+	runner := &fakeRunner{run: func(c context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		mu.Lock()
+		dirs = append(dirs, req.Dir)
+		mu.Unlock()
+		if req.OnStart != nil {
+			req.OnStart(4321)
+		}
+		if req.Stdout != nil {
+			_, _ = req.Stdout.Write([]byte("pipeline-out\n"))
+		}
+		select {
+		case <-release:
+		case <-c.Done():
+			return native.CommandResult{}, c.Err()
+		}
+		return native.CommandResult{Stdout: "pipeline-out\n", ExitCode: 0}, nil
+	}}
+	service := newConversationCommandService(ctx, cfg, state, nil)
+	service.manager.CommitLaunchPolicy(native.LaunchPolicy{
+		Generation:     service.manager.Generation(),
+		Runner:         runner,
+		MaxOutputBytes: 1 << 20,
+		MaxJobs:        25,
+		Retention:      time.Hour,
+	})
+	t.Cleanup(func() { _ = service.manager.Shutdown(context.Background()) })
+
+	childState := session.New(cfg, worktree, time.Unix(100, 0), session.Persistence{})
+	factory := makePipelineRegistryFactory(cfg, state, runner, nil, nil, 0, nil, nil, service)
+	reg, err := factory(pipeline.ExecutionContext{
+		RepoRoot:      repoRoot,
+		WorkspaceRoot: worktree,
+		ArtifactRoot:  filepath.Join(repoRoot, "run"),
+		ArtifactAlias: "@run",
+	}, pipeline.ScopeFull, childState)
+	if err != nil {
+		t.Fatalf("factory: %v", err)
+	}
+	tool, ok := reg.Lookup("shell.run")
+	if !ok {
+		t.Fatal("ScopeFull pipeline registry must expose shell.run")
+	}
+	if _, err := tool.Handler(ctx, registry.ToolCall{Name: "shell.run", Args: []byte(`{"command":"echo pipeline-out"}`)}); err != nil {
+		t.Fatalf("pipeline shell.run: %v", err)
+	}
+
+	mu.Lock()
+	got := append([]string(nil), dirs...)
+	mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("runner calls = %d, want 1", len(got))
+	}
+	if got[0] != worktree {
+		t.Fatalf("pipeline command dir = %q, want the per-dispatch worktree %q (not the session root %q)", got[0], worktree, sessionRoot)
+	}
+
+	// The dispatch's commands belong to the conversation's service, and the
+	// child state's output stayed child-local.
+	active := service.manager.ActiveExecutions()
+	if len(active) != 1 {
+		t.Fatalf("ActiveExecutions = %d, want the pipeline command in the conversation's service", len(active))
+	}
+	if active[0].Dir != worktree {
+		t.Fatalf("recorded cwd = %q, want %q", active[0].Dir, worktree)
+	}
+	if active[0].PID != 4321 {
+		t.Fatalf("recorded PID = %d, want the published 4321", active[0].PID)
+	}
+	if len(childState.Transcript()) == 0 && childState.RunningJobsCount() == 0 {
+		// Nothing to assert on the child beyond "no leak into the parent":
+		// the parent's transcript must not gain the pipeline command's row.
+		for _, item := range state.Transcript() {
+			if item.JobExit != nil {
+				t.Fatal("a foreground pipeline command must not post a job exit to the parent")
+			}
+		}
+	}
+
+	// Let it finish so the test leaves no live execution behind.
+	close(release)
+	if _, err := service.manager.Wait(ctx, active[0].ID); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+}
+
+// TestReloadAgentRuntimeDoesNotOwnShutdownAndCloseDoes pins the other half of
+// the ownership rule: because a reload only borrows, the CONVERSATION's own
+// teardown is the one place the service ends. A reload must leave it running;
+// Quiesce (which Close calls) must end it, including every generation resource
+// it retained across the reload.
+func TestReloadAgentRuntimeDoesNotOwnShutdownAndCloseDoes(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	initialCfg := nativeToolAgentConfig("test-provider")
+	reloadedCfg := nativeToolAgentConfig("test-provider")
+
+	state := session.New(initialCfg, dir, time.Unix(100, 0), session.Persistence{})
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, _, _, _, err := buildAgentRunner(ctx, initialCfg, state, nil, 0, nil, "", nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("initial buildAgentRunner: %v", err)
+	}
+	_ = runner
+
+	rt := &Runtime{
+		Runner:       runner,
+		ToolRegistry: reg,
+		SwarmRunner:  swarmRunner,
+		JobManager:   jobMgr,
+		State:        state,
+		workCtx:      ctx,
+	}
+
+	if err := reloadAgentRuntime(ctx, reloadedCfg, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+	// A reload never closes the service: it still admits.
+	afterReload := launchDetachedJob(t, ctx, jobMgr, "echo still-open")
+	waitForJobStatus(t, jobMgr, afterReload, native.StatusCompleted, 5*time.Second)
+
+	// The runtime's own teardown is the one that ends it.
+	if err := rt.Quiesce(ctx); err != nil {
+		t.Fatalf("Quiesce: %v", err)
+	}
+	if _, err := jobMgr.Launch(ctx, native.LaunchSpec{Command: "echo after-quiesce", Detached: true}); !errors.Is(err, native.ErrJobManagerClosed) {
+		t.Fatalf("launch after Quiesce = %v, want ErrJobManagerClosed", err)
+	}
+}
+
+// newOwnedCommandService builds a test-OWNED conversation command service. A
+// fixture that exposes shell.run/test.run injects one explicitly: the native
+// toolset no longer creates a supervisor implicitly, so a dispatch through an
+// ownerless registry fails rather than running commands nothing can count,
+// settle or stop.
+//
+// countingState, when non-nil, receives the same running-count callback the
+// production owner installs; sinkState, when non-nil, receives the detached
+// completion sink. Cleanup shuts the service down so no test leaks a process.
+func newOwnedCommandService(t *testing.T, runner native.CommandRunner, dir string, countingState, sinkState *session.State) *native.JobManager {
+	t.Helper()
+	jm := native.NewCommandService(context.Background(), native.LaunchPolicy{
+		Runner:         runner,
+		Dir:            dir,
+		MaxOutputBytes: 1 << 20,
+	})
+	if countingState != nil {
+		jm.SetOnChange(countingState.SetRunningJobsCount)
+	}
+	if sinkState != nil {
+		jm.SetOnExit(func(info native.JobInfo, ran time.Duration, output string) error {
+			return sinkState.AddJobExit(session.JobExitFromExecution(info.Execution(), info.Command, output, ran, info.ExitCode))
+		})
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = jm.Shutdown(ctx)
+	})
+	return jm
+}
+
+// launchDetachedJob admits command as a detached execution through the launch
+// API and returns its display id. Start — the removed wrapper whose timeout
+// argument was ignored — is replaced everywhere by this: a managed command has
+// no execution deadline, so there is no duration to pass.
+func launchDetachedJob(t *testing.T, ctx context.Context, jm *native.JobManager, command string) string {
+	t.Helper()
+	info, err := jm.Launch(ctx, native.LaunchSpec{Command: command, Detached: true})
+	if err != nil {
+		t.Fatalf("Launch(%q): %v", command, err)
+	}
+	return info.ID
+}
+
+// waitForJobStatus polls until the execution reaches want, failing the test on
+// timeout. A terminal status is the settled snapshot, so no fixed sleep is
+// needed.
+func waitForJobStatus(t *testing.T, jm *native.JobManager, id string, want native.JobStatus, timeout time.Duration) native.JobInfo {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last native.JobInfo
+	for {
+		info, _, err := jm.Output(id, 0)
+		if err != nil {
+			t.Fatalf("Output(%s): %v", id, err)
+		}
+		last = info
+		if info.Status == want {
+			return info
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job %s status = %q, want %q", id, last.Status, want)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -1324,7 +1848,7 @@ func TestBuildPipelineControllerReturnsAdapter(t *testing.T) {
 	reg := registry.New()
 	pol := policy.NewEngine(&cfg, nil)
 	resolver := newRoutedProviderResolver(cfg, t.TempDir())
-	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath, nil, nil)
+	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath, nil, nil, nil)
 	if adapter == nil {
 		t.Fatal("buildPipelineController returned nil")
 	}
@@ -4631,13 +5155,26 @@ func TestSubagentShellOutputDoesNotReachParent(t *testing.T) {
 	cfg := config.Default()
 	parentState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	childReg := registry.New()
-	// Build a minimal native toolset for the child.
+	// Build a minimal native toolset for the child. Its commands belong to the
+	// conversation, so the child registry borrows an explicit owner: the
+	// parent's running-count callback is the one this fixture is separating
+	// OUTPUT from, and output follows SessionState, not the service.
 	childState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	dir := t.TempDir()
+	childRunner := &fakeRunner{run: func(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		if req.Stdout != nil {
+			_, _ = req.Stdout.Write([]byte("marshal-scope-probe\n"))
+		}
+		return native.CommandResult{Stdout: "marshal-scope-probe\n", ExitCode: 0}, nil
+	}}
+	jm := newOwnedCommandService(t, childRunner, dir, childState, nil)
 	nativeOpts := native.Options{
-		WorkspaceRoot:  t.TempDir(),
+		WorkspaceRoot:  dir,
+		CommandRunner:  childRunner,
 		SessionState:   childState,
 		WorkspaceState: parentState,
 		Config:         cfg,
+		JobManager:     jm,
 	}
 	if err := native.RegisterAll(childReg, nativeOpts); err != nil {
 		t.Fatalf("register: %v", err)
@@ -4700,7 +5237,7 @@ func TestSubagentChildRegistryKeepsSymbolsTool(t *testing.T) {
 	factory, _ := buildSubagentFactoryWithLock(cfg, parentState, nil, reg, nil, "m", nil, nil, nil, 0, pricing.ModelPricing{}, &swarm.WriteLock{}, native.Options{
 		WorkspaceRoot: t.TempDir(),
 		Symbols:       lsp.NewSymbolQuery(nil, nil, 0),
-	}, nil)
+	}, nil, nil)
 	child, _, err := factory(agent.SubagentRequest{})
 	if err != nil {
 		t.Fatalf("factory: %v", err)
@@ -5792,5 +6329,395 @@ func TestAgentRunnerPassesRuntimeOpenerToMCPManager(t *testing.T) {
 	}
 	if opens[0] != "marshal" {
 		t.Fatalf("resolver OpenStore service = %q, want %q", opens[0], "marshal")
+	}
+}
+
+// ── Task 10: the TUI's end adapter ──────────────────────────────────────
+
+// startEndRuntime builds a runtime with a resolvable provider, so the runner
+// exists and the exit-analysis pass has something to run on. The provider is
+// never called: these tests inspect elevation and membership, not model output.
+func startEndRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[project]
+name = "end-controller-test"
+
+[profile]
+default = "mock_profile"
+
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+
+[models.presets."mock/mock-model"]
+local_only = true
+
+[agent_profiles.mock_profile]
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	rt, err := StartRuntime(context.Background(),
+		WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+	return rt
+}
+
+// TestTUIEndControllerAdapterRoundTrips pins the structural seam between the TUI
+// and the runtime: the adapter converts the runtime's shapes into the neutral
+// mirrors the model uses, and every decision still lands on the runtime.
+func TestTUIEndControllerAdapterRoundTrips(t *testing.T) {
+	rt := startEndRuntime(t)
+	ctrl := &tuiEndController{rt: rt}
+
+	if got := ctrl.ActiveWork(); len(got.Items) != 0 {
+		t.Fatalf("ActiveWork() = %+v, want an empty membership on a fresh runtime", got)
+	}
+
+	// Register real conversation work, so the adapter reports a real membership
+	// rather than a synthesised one.
+	_, finish, err := rt.BeginWork(context.Background())
+	if err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+	defer finish()
+
+	work := ctrl.ActiveWork()
+	if len(work.Items) != 1 {
+		t.Fatalf("ActiveWork() items = %d, want the registered operation", len(work.Items))
+	}
+	if work.Items[0].ID == "" || !work.Items[0].Parent {
+		t.Fatalf("work item = %+v, want a parent operation with an opaque ID", work.Items[0])
+	}
+	if work.Phase != rt.EndPhase() {
+		t.Fatalf("phase = %q, want the runtime's own phase %q", work.Phase, rt.EndPhase())
+	}
+	if ctrl.EndAccepted() {
+		t.Fatal("EndAccepted() = true before any acceptance")
+	}
+
+	// An acceptance requiring a displayed set must refuse when the membership
+	// was not displayed — and the adapter must relay the refusal faithfully.
+	refused, err := ctrl.AcceptEnd(tui.EndAcceptRequest{
+		Intent:           tui.EndIntentExit,
+		DisplayedIDs:     []string{"something-else"},
+		RequireDisplayed: true,
+	})
+	if err != nil {
+		t.Fatalf("AcceptEnd: %v", err)
+	}
+	if refused.Accepted {
+		t.Fatal("the adapter reported an acceptance of an undisplayed membership")
+	}
+	if len(refused.Expanded) != 1 || refused.Expanded[0] != work.Items[0].ID {
+		t.Fatalf("Expanded = %v, want the undisplayed ID %q", refused.Expanded, work.Items[0].ID)
+	}
+	if rt.EndAccepted() {
+		t.Fatal("a refused acceptance froze the runtime")
+	}
+
+	// The real acceptance succeeds and reports the membership it stopped.
+	accepted, err := ctrl.AcceptEnd(tui.EndAcceptRequest{
+		Intent:           tui.EndIntentExit,
+		DisplayedIDs:     []string{work.Items[0].ID},
+		RequireDisplayed: true,
+	})
+	if err != nil {
+		t.Fatalf("AcceptEnd: %v", err)
+	}
+	if !accepted.Accepted {
+		t.Fatalf("accepted = false, want true (expanded: %v)", accepted.Expanded)
+	}
+	if len(accepted.Work.Items) != 1 {
+		t.Fatalf("accepted membership = %d items, want 1", len(accepted.Work.Items))
+	}
+	if !ctrl.EndAccepted() {
+		t.Fatal("EndAccepted() = false after an acceptance")
+	}
+}
+
+// TestExitAnalysisElevationIsRestored pins the app-side ownership of the exit
+// analysis' temporary elevation: it is in place while the pass runs and is
+// undone whatever the outcome, so a failed pass can never leave an ordinary
+// prompt elevated.
+func TestExitAnalysisElevationIsRestored(t *testing.T) {
+	rt := startEndRuntime(t)
+	if rt.Runner == nil {
+		t.Fatal("rt.Runner = nil")
+	}
+
+	// Seed a read-only posture: the pass must not have it, and must get it back.
+	rt.State.SetSystemAccess(false)
+	rt.Runner.SetApprovalMode(policy.ModePlan)
+	rt.Config.Agent.ApprovalMode = string(policy.ModePlan)
+
+	seenSystem, seenMode := false, policy.ModePlan
+	err := runWithExitAnalysisElevation(rt, func() error {
+		seenSystem = rt.State.SystemAccess()
+		if rt.Runner.Policy != nil {
+			seenMode = rt.Runner.Policy.ApprovalMode()
+		}
+		return errors.New("the pass failed")
+	})
+	if err == nil {
+		t.Fatal("runWithExitAnalysisElevation swallowed the pass error")
+	}
+	if !seenSystem {
+		t.Fatal("the pass ran WITHOUT system access; the elevation was not applied")
+	}
+	if seenMode != policy.ModeEdit {
+		t.Fatalf("the pass ran in mode %q, want edit so its write is not mode-denied", seenMode)
+	}
+	if rt.State.SystemAccess() {
+		t.Fatal("a failed pass left system access granted")
+	}
+	if rt.Runner.Policy != nil && rt.Runner.Policy.ApprovalMode() != policy.ModePlan {
+		t.Fatalf("a failed pass left the mode at %q, want the prior plan", rt.Runner.Policy.ApprovalMode())
+	}
+}
+
+// TestTUIEndControllerIsTheOnlyEndSeam pins that app.Run wires the adapter, so
+// the TUI never decides policy or reaches the runtime directly. It runs the
+// program runner just far enough to inspect the model's end seam.
+func TestTUIEndControllerIsTheOnlyEndSeam(t *testing.T) {
+	tmp := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+		value := reflect.ValueOf(model)
+		field := value.FieldByName("endController")
+		if !field.IsValid() {
+			t.Fatal("the model has no endController field")
+		}
+		if field.IsNil() {
+			t.Fatal("app.Run did not wire the TUI's end controller")
+		}
+		// The field is an unexported interface, so Interface() is unavailable.
+		// Elem() reads the value inside it without that restriction.
+		if got, want := field.Elem().Type(), reflect.TypeOf(&tuiEndController{}); got != want {
+			t.Fatalf("endController = %v, want the runtime adapter %v", got, want)
+		}
+		return ProgramResult{}
+	}
+
+	if err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithProgramRunner(programRunner),
+	); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+// ── Task 12: the composed lifecycle through the real runtime ─────────────
+
+// startLifecycleRuntime starts a runtime whose conversation owns a working
+// command service, using only the production seams (a project config, an
+// explicit home dir and a trust resolver) so no ambient user configuration is
+// consulted.
+func startLifecycleRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[project]
+name = "lifecycle-runtime"
+
+[profile]
+default = "mock_profile"
+
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+tool_calling = true
+
+[models.presets."mock/mock-model"]
+local_only = true
+
+[agent_profiles.mock_profile]
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	rt, err := StartRuntime(context.Background(),
+		WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+	if rt.JobManager == nil {
+		t.Fatal("the runtime owns no command service, so the lifecycle assertions would be vacuous")
+	}
+	return rt
+}
+
+// TestRuntimeCommandLifecycleSurvivesReloadAndSettlesOnce is Task 12's
+// app-level composition regression: a command admitted through the runtime's own
+// service is awaited repeatedly, survives a real config reload with its identity
+// and membership intact, and then finishes naturally — one launch, one process
+// identity, one durable completion the parent transcript can show.
+func TestRuntimeCommandLifecycleSurvivesReloadAndSettlesOnce(t *testing.T) {
+	ctx := context.Background()
+	rt := startLifecycleRuntime(t)
+	service := rt.JobManager
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	runner := &fakeRunner{run: func(runCtx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		if req.OnStart != nil {
+			req.OnStart(7100)
+		}
+		if req.Stdout != nil {
+			_, _ = req.Stdout.Write([]byte("lifecycle-progress\n"))
+		}
+		once.Do(func() { close(started) })
+		select {
+		case <-release:
+			// A real process streams its last line before exiting; the fake does
+			// the same so the completion carries the command's final output.
+			if req.Stdout != nil {
+				_, _ = req.Stdout.Write([]byte("lifecycle-final\n"))
+			}
+			return native.CommandResult{Stdout: "lifecycle-final\n", ExitCode: 0}, nil
+		case <-runCtx.Done():
+			return native.CommandResult{}, runCtx.Err()
+		}
+	}}
+	// The committed policy's runner is the one future admissions use; the
+	// command below is admitted after this commit, exactly as a command admitted
+	// during a turn is.
+	policy := service.CurrentLaunchPolicy()
+	policy.Runner = runner
+	service.CommitLaunchPolicy(policy)
+
+	info, err := service.Launch(ctx, native.LaunchSpec{
+		Command:  "long lifecycle command",
+		Detached: true,
+		Origin: native.CommandOrigin{
+			ConversationID: rt.SessionID,
+			Actor:          "parent",
+			TurnID:         "turn-lifecycle",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the command never started")
+	}
+
+	// Repeated awaits: each ends the caller's wait and leaves the command alone.
+	for i := 0; i < 3; i++ {
+		res, err := service.WaitForeground(ctx, info.ID, 10*time.Millisecond)
+		if err != nil {
+			t.Fatalf("await %d: %v", i, err)
+		}
+		if res.Terminal {
+			t.Fatalf("await %d = %+v, want a continuation", i, res)
+		}
+		if res.Info.PID != 7100 || res.Info.ExecutionID != info.ExecutionID {
+			t.Fatalf("await %d identity = pid %d/%q, want 7100/%q", i, res.Info.PID, res.Info.ExecutionID, info.ExecutionID)
+		}
+	}
+
+	// A real reload through the runtime's own entry point. The reload must not
+	// touch the running command, its handle or its identity.
+	if err := reloadAgentRuntime(ctx, rt.Config, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+	if rt.JobManager != service {
+		t.Fatal("a reload replaced the service that owns the running command")
+	}
+	live, _, err := service.Output(info.ID, 0)
+	if err != nil {
+		t.Fatalf("Output after the reload: %v", err)
+	}
+	if live.Status != native.StatusRunning || live.PID != 7100 {
+		t.Fatalf("live after the reload = %q/pid %d, want running/7100", live.Status, live.PID)
+	}
+	if live.StopCause != "" {
+		t.Fatalf("StopCause after the reload = %q, want none", live.StopCause)
+	}
+	// The user-visible work membership still names the command, so an end would
+	// still warn about it.
+	var sawCommand bool
+	for _, item := range rt.ActiveWork().Items {
+		if item.Label == "long lifecycle command" {
+			sawCommand = true
+		}
+	}
+	if !sawCommand {
+		t.Fatalf("membership after the reload = %+v, want the running command", rt.ActiveWork().Items)
+	}
+
+	// Natural completion: the transcript gains exactly one completion for this
+	// execution, with the command's own exit code and its final output.
+	close(release)
+	settled, err := service.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if settled.Status != native.StatusCompleted || settled.ExitCode == nil || *settled.ExitCode != 0 {
+		t.Fatalf("settled = %q/%v, want completed with exit 0", settled.Status, settled.ExitCode)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var exits []session.JobExit
+	for {
+		exits = nil
+		for _, item := range rt.State.Transcript() {
+			if item.JobExit != nil && item.JobExit.ExecutionID == info.ExecutionID {
+				exits = append(exits, *item.JobExit)
+			}
+		}
+		if len(exits) == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(exits) != 1 {
+		t.Fatalf("durable completions for the execution = %d, want exactly 1", len(exits))
+	}
+	if exits[0].Outcome != string(native.OutcomeCompleted) {
+		t.Fatalf("stored outcome = %q, want completed", exits[0].Outcome)
+	}
+	if !strings.Contains(exits[0].Output, "lifecycle-final") {
+		t.Fatalf("stored output = %q, want the command's final output", exits[0].Output)
+	}
+	// The count the status line reads is back to zero: no phantom running work.
+	if got := rt.State.RunningJobsCount(); got != 0 {
+		t.Fatalf("running jobs after settlement = %d, want 0", got)
 	}
 }

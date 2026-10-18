@@ -378,9 +378,22 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 
 	call := registry.ToolCall{ID: callID, Name: toolName, Args: args}
 	start := time.Now()
-	result, execErr := tool.Handler(ctx, call)
+	// Stamp the execution origin on the handler's context only now: policy,
+	// approval and pre_tool_use validation have all passed, so a command this
+	// handler launches is genuinely this turn's work. A call rejected before
+	// this point must not leave an admission record naming a turn that never
+	// dispatched it. The step/`callID` pair is the identity a persisted
+	// execution record pairs back to this row.
+	handlerCtx := session.WithExecutionOrigin(ctx, r.executionOrigin(r.curStep, callID))
+	result, execErr := tool.Handler(handlerCtx, call)
 	if execErr != nil {
-		event := registry.NewAuditEvent(r.Now(), tool, call, registry.ToolResult{}, approval, execErr)
+		// The handler failed, but it may still have returned a partial result:
+		// a command that started and then failed has real output, an actual
+		// exit code and possibly a stop cause, and discarding them left the
+		// transcript with an empty failure row and the model with nothing to
+		// reason about. Audit the partial result and carry its evidence into
+		// the model-facing error.
+		event := registry.NewAuditEvent(r.Now(), tool, call, result, approval, execErr)
 		event.Duration = time.Since(start)
 		event.Hooks = hookAuditMetadata(lastHookOut)
 		event.OriginalArgs = originalApprovedArgs
@@ -398,7 +411,7 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		r.trackerMu.Unlock()
 		r.noteFailedRepeatTelemetry(tier, streak)
 		r.countToolCall(true, false)
-		msg := r.buildToolErrorMessage(toolName, execErr.Error(), toolCallID)
+		msg := r.buildToolErrorResultMessage(toolName, result, execErr, toolCallID)
 		// repeatReminder tells the model the repeated call produced IDENTICAL
 		// OUTPUT. On the failure path that is precisely what is NOT true of the
 		// spiral this ladder exists to catch: the args repeat while the error
@@ -494,6 +507,56 @@ func (r *Runner) buildToolErrorMessage(name, reason, toolCallID string) schema.C
 	return BuildToolErrorMessage(name, reason)
 }
 
+// buildToolErrorResultMessage builds the model-facing failure message for a
+// tool whose handler returned BOTH a partial result and an error. The reason
+// is the handler's error; the partial result's evidence is appended so the
+// model sees what actually happened — the output a command produced before it
+// failed, its real exit code, its stop cause and sandbox limits — instead of an
+// error string alone. A handler that returned nothing keeps the plain error
+// message, so nothing changes for the ordinary failure path.
+func (r *Runner) buildToolErrorResultMessage(name string, result registry.ToolResult, err error, toolCallID string) schema.ChatMessage {
+	reason := err.Error()
+	if evidence := partialResultEvidence(result); evidence != "" {
+		reason += "\n\n" + evidence
+	}
+	return r.buildToolErrorMessage(name, reason, toolCallID)
+}
+
+// partialResultEvidence renders the evidence a failed tool handler still
+// produced. Empty when the handler returned nothing worth reporting, which is
+// the common case for a rejection that never started any work.
+func partialResultEvidence(result registry.ToolResult) string {
+	var b strings.Builder
+	if summary := strings.TrimSpace(result.Summary); summary != "" {
+		fmt.Fprintf(&b, "partial result: %s", summary)
+	}
+	if content := strings.TrimSpace(result.Content); content != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(content)
+	}
+	if result.CommandExitCode != nil {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "exit code: %d", *result.CommandExitCode)
+	}
+	if reason := strings.TrimSpace(result.Sandbox.KilledReason); reason != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "stop/kill evidence: %s", reason)
+	}
+	if result.Error != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "tool error field: %s", result.Error)
+	}
+	return b.String()
+}
+
 // normalizeToolName resolves truncated provider tool names (e.g. "read"
 // for "file.read") to their fully-qualified registered name. If the name
 // is already registered, it passes through unchanged. If the name is not
@@ -557,7 +620,7 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 				ToolCallID: call.ID,
 			})
 			if err != nil {
-				msgs = append(msgs, r.buildToolErrorMessage(call.Name, err.Error(), call.ID))
+				msgs = append(msgs, r.toolCallOutcomeMessage(call, err))
 				runBatch = runBatch[:0]
 				return nil
 			}
@@ -584,9 +647,12 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			}()
 		}
 		wg.Wait()
+		// One call failing must not discard its siblings' results: every call
+		// in the batch gets exactly one settled message, so the tool-call/result
+		// pairing stays valid no matter which call was interrupted.
 		for i := range runBatch {
 			if errs[i] != nil {
-				msgs = append(msgs, r.buildToolErrorMessage(runBatch[i].call.Name, errs[i].Error(), runBatch[i].call.ID))
+				msgs = append(msgs, r.toolCallOutcomeMessage(runBatch[i].call, errs[i]))
 				continue
 			}
 			msgs = append(msgs, results[i]...)
@@ -603,7 +669,11 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			}
 			msg, err := r.executeNativeQuestionAsk(ctx, call)
 			if err != nil {
-				return nil, err
+				// A cancelled question is not a failed batch: the call was
+				// admitted and then interrupted, so it gets a settled
+				// not-completed result and the remaining calls continue.
+				msgs = append(msgs, r.toolCallOutcomeMessage(call, err))
+				continue
 			}
 			msgs = append(msgs, msg)
 			continue
@@ -622,7 +692,10 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 			ToolCallID: call.ID,
 		})
 		if err != nil {
-			return nil, err
+			// Interrupted mid-batch: this call gets a settled result and the
+			// loop continues, so the calls after it are not silently dropped.
+			msgs = append(msgs, r.toolCallOutcomeMessage(call, err))
+			continue
 		}
 		msgs = append(msgs, resultMsgs...)
 	}
@@ -630,6 +703,19 @@ func (r *Runner) executeNativeToolCalls(ctx context.Context, calls []schema.Tool
 		return nil, err
 	}
 	return msgs, nil
+}
+
+// toolCallOutcomeMessage builds the settled result for one tool call whose
+// dispatch returned an error, so an interrupted call still has a result that
+// pairs with its call. A cancellation that never admitted the call is reported
+// as not started; anything else keeps the runner's error text. The message is
+// always a tool-role reply for the call's own ID, never a batch-level failure.
+func (r *Runner) toolCallOutcomeMessage(call schema.ToolCall, err error) schema.ChatMessage {
+	reason := err.Error()
+	if errors.Is(err, context.Canceled) {
+		reason = "not started: the turn was stopped before this call completed (" + reason + ")"
+	}
+	return r.buildToolErrorMessage(call.Name, reason, call.ID)
 }
 
 // executeNativeQuestionAsk handles the new structured question.ask tool,
@@ -769,7 +855,10 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 		}
 		msgs, err := r.executeToolCall(ctx, a)
 		if err != nil {
-			results[i] = []schema.ChatMessage{BuildToolErrorMessage(a.Tool, err.Error())}
+			// A serial tool that was interrupted still gets a settled result for
+			// its own call ID, and the remaining serial tools keep running
+			// rather than being dropped with the failure.
+			results[i] = []schema.ChatMessage{r.toolCallOutcomeMessage(schema.ToolCall{ID: a.ToolCallID, Name: a.Tool}, err)}
 			continue
 		}
 		results[i] = msgs
@@ -789,7 +878,10 @@ func (r *Runner) executeActions(ctx context.Context, actions []ModelAction) ([]s
 				defer func() { <-sem }()
 				msgs, err := r.executeToolCall(ctx, act)
 				if err != nil {
-					results[i] = []schema.ChatMessage{BuildToolErrorMessage(act.Tool, err.Error())}
+					// Interruption is per call, never per batch: a sibling that
+					// already ran keeps its results and a cancelled one still has
+					// a settled outcome to pair with its call.
+					results[i] = []schema.ChatMessage{r.toolCallOutcomeMessage(schema.ToolCall{ID: act.ToolCallID, Name: act.Tool}, err)}
 					return
 				}
 				results[i] = msgs

@@ -1285,6 +1285,150 @@ background_retention = "30m"
 	}
 }
 
+func TestDefaultForegroundWaitIsTenSeconds(t *testing.T) {
+	cfg := Default()
+	if cfg.Tools.Shell.ForegroundWaitSeconds != 10 {
+		t.Fatalf("ForegroundWaitSeconds = %d, want 10", cfg.Tools.Shell.ForegroundWaitSeconds)
+	}
+}
+
+// A config that carries the deprecated timeout key only (the shape every
+// existing user file has) must still land on the new wait default: the
+// legacy key is compatibility data, not a wait value.
+func TestLegacyTimeoutKeyKeepsForegroundWaitDefault(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[tools.shell]
+default_timeout_seconds = 45
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Tools.Shell.ForegroundWaitSeconds != 10 {
+		t.Fatalf("ForegroundWaitSeconds = %d, want the default 10 alongside a legacy timeout key", cfg.Tools.Shell.ForegroundWaitSeconds)
+	}
+	// The legacy value still loads, so existing config files keep working.
+	if cfg.Tools.Shell.DefaultTimeoutSeconds != 45 {
+		t.Fatalf("DefaultTimeoutSeconds = %d, want the legacy 45 preserved", cfg.Tools.Shell.DefaultTimeoutSeconds)
+	}
+}
+
+func TestLoadParsesPositiveForegroundWait(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, work+"/.marshal/config.toml", `
+[tools.shell]
+foreground_wait_seconds = 25
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Tools.Shell.ForegroundWaitSeconds != 25 {
+		t.Fatalf("ForegroundWaitSeconds = %d, want 25", cfg.Tools.Shell.ForegroundWaitSeconds)
+	}
+}
+
+// The project layer wins over the user layer for the wait, like every other
+// scalar, and a user-layer value survives when the project omits the key.
+func TestForegroundWaitUserProjectPrecedence(t *testing.T) {
+	home := t.TempDir()
+	work := t.TempDir()
+	writeFile(t, home+"/.config/marshal/config.toml", `
+[tools.shell]
+foreground_wait_seconds = 20
+`)
+	writeFile(t, work+"/.marshal/config.toml", `
+[tools.shell]
+foreground_wait_seconds = 30
+`)
+
+	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Tools.Shell.ForegroundWaitSeconds != 30 {
+		t.Fatalf("ForegroundWaitSeconds = %d, want the project-layer 30", cfg.Tools.Shell.ForegroundWaitSeconds)
+	}
+
+	// Project omits the key: the user-layer value survives the merge.
+	work2 := t.TempDir()
+	writeFile(t, work2+"/.marshal/config.toml", "[tools.shell]\nmax_background_jobs = 4\n")
+	cfg2, err := Load(LoadOptions{HomeDir: home, WorkingDir: work2})
+	if err != nil {
+		t.Fatalf("Load (project omits key) returned error: %v", err)
+	}
+	if cfg2.Tools.Shell.ForegroundWaitSeconds != 20 {
+		t.Fatalf("ForegroundWaitSeconds = %d, want the user-layer 20", cfg2.Tools.Shell.ForegroundWaitSeconds)
+	}
+}
+
+// An invalid wait must fail before any runtime is constructed, from either
+// file layer, rather than silently falling back to a deadline.
+func TestForegroundWaitRejectsNonPositive(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"zero", "[tools.shell]\nforeground_wait_seconds = 0\n"},
+		{"negative", "[tools.shell]\nforeground_wait_seconds = -5\n"},
+	} {
+		t.Run("user-config-"+tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			work := t.TempDir()
+			writeFile(t, home+"/.config/marshal/config.toml", tc.body)
+			_, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+			if err == nil {
+				t.Fatal("Load accepted a non-positive foreground wait")
+			}
+			if !strings.Contains(err.Error(), "tools.shell.foreground_wait_seconds must be positive") {
+				t.Fatalf("error = %v, want it to name tools.shell.foreground_wait_seconds", err)
+			}
+		})
+		t.Run("project-config-"+tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			work := t.TempDir()
+			writeFile(t, work+"/.marshal/config.toml", tc.body)
+			_, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+			if err == nil {
+				t.Fatal("Load accepted a non-positive foreground wait")
+			}
+			if !strings.Contains(err.Error(), "tools.shell.foreground_wait_seconds must be positive") {
+				t.Fatalf("error = %v, want it to name tools.shell.foreground_wait_seconds", err)
+			}
+		})
+		t.Run("merge-"+tc.name, func(t *testing.T) {
+			cfg := Default()
+			zero := 0
+			if tc.name == "negative" {
+				zero = -5
+			}
+			err := merge(&cfg, configFile{Tools: &fileTools{Shell: &fileShell{ForegroundWaitSeconds: &zero}}})
+			if err == nil {
+				t.Fatal("merge accepted a non-positive foreground wait")
+			}
+			if !strings.Contains(err.Error(), "tools.shell.foreground_wait_seconds must be positive") {
+				t.Fatalf("error = %v, want it to name tools.shell.foreground_wait_seconds", err)
+			}
+		})
+	}
+}
+
+func TestForegroundWaitMergeAssignsFileValue(t *testing.T) {
+	cfg := Default()
+	value := 45
+	if err := merge(&cfg, configFile{Tools: &fileTools{Shell: &fileShell{ForegroundWaitSeconds: &value}}}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	if cfg.Tools.Shell.ForegroundWaitSeconds != 45 {
+		t.Fatalf("ForegroundWaitSeconds = %d, want 45", cfg.Tools.Shell.ForegroundWaitSeconds)
+	}
+}
+
 func TestLoadHooksConfig(t *testing.T) {
 	tmp := t.TempDir()
 	writeFile(t, filepath.Join(tmp, ".marshal", "config.toml"), `

@@ -1,15 +1,19 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/native"
 )
@@ -85,6 +89,62 @@ func TestFrameInvariants(t *testing.T) {
 			items = append(items, native.TodoItem{Content: "current", Status: native.TodoInProgress})
 			mustSetTodos(t, m, items...)
 		}},
+		// Task 10: the ending surfaces are stacked panels like any other, so
+		// they must obey the same rail and width invariants while live work is
+		// described beneath them.
+		{"ending+warning", func(t *testing.T, m *Model) {
+			ctrl := &endTestController{work: longWorkSnapshot(12)}
+			m.endController = ctrl
+			m.state.Config.Postmortem.OnExit = "never"
+			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+			}
+		}},
+		{"ending+warning+replacement", func(t *testing.T, m *Model) {
+			ctrl := &endTestController{work: longWorkSnapshot(12)}
+			m.endController = ctrl
+			m.sessionSwapper = &fakeSessionSwapper{}
+			if cmd := m.beginEnd(&endIntent{kind: EndIntentReplace}); cmd != nil {
+				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+			}
+		}},
+		{"ending+postmortem-question", func(t *testing.T, m *Model) {
+			m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+			m.state.Config.Postmortem.OnExit = "prompt"
+			m.endController = &endTestController{}
+			m.end = &endIntent{kind: EndIntentExit}
+			m.endAnswered = false
+			m.endStage = endPostmortem
+			m.openPostmortemPrompt()
+		}},
+		{"ending+postmortem-agent-question", func(t *testing.T, m *Model) {
+			m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+			m.state.Config.Postmortem.OnExit = "prompt"
+			m.endController = &endTestController{}
+			m.end = &endIntent{kind: EndIntentExit}
+			m.endStage = endPostmortem
+			m.openPostmortemPrompt()
+			// Advance to the agent question, whose disclosure paragraph is the
+			// longest content either panel renders.
+			if panel, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
+				panel.Update(tea.KeyPressMsg{Code: 'y'})
+			}
+		}},
+		{"ending+stopping", func(t *testing.T, m *Model) {
+			ctrl := &endTestController{work: longWorkSnapshot(12)}
+			ctrl.acceptFn = func(EndAcceptRequest) (EndDecision, error) {
+				return EndDecision{Accepted: true, Work: longWorkSnapshot(12)}, nil
+			}
+			m.endController = ctrl
+			m.state.Config.Postmortem.OnExit = "never"
+			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+			}
+			// Accept without running the settlement command, so the frame is
+			// rendered in the stopping stage.
+			accepted, _ := m.handleActiveWorkDone(activeworkpanel.DoneMsg{Stop: true, IDs: workIDs(12)})
+			*m = accepted.(Model)
+		}},
 	}
 
 	prev := theme.Current()
@@ -129,6 +189,27 @@ func TestFrameInvariants(t *testing.T) {
 			}
 		}
 	}
+}
+
+// longWorkSnapshot builds an n-item membership, so the ending panels are
+// rendered with content long enough to exercise the height budget.
+func longWorkSnapshot(n int) EndWorkSnapshot {
+	snap := EndWorkSnapshot{Phase: "open"}
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("job-%d", i)
+		snap.Items = append(snap.Items, EndWorkItem{ID: id, Kind: "command", Label: fmt.Sprintf("a rather long running command label %d", i)})
+		snap.Targets = append(snap.Targets, id)
+	}
+	return snap
+}
+
+// workIDs returns the IDs of longWorkSnapshot's membership.
+func workIDs(n int) []string {
+	out := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, fmt.Sprintf("job-%d", i))
+	}
+	return out
 }
 
 func mustSetTodos(t *testing.T, m *Model, items ...native.TodoItem) {

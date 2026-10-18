@@ -1279,6 +1279,103 @@ func TestSessionManagerLogsCloseTeardown(t *testing.T) {
 	}
 }
 
+// A headless close is deliberately noninteractive: it bounds each step with a
+// shutdown context and joins the cancel and close errors rather than
+// short-circuiting, so a session whose stop fails is still torn down and the
+// caller sees both. This pins the context the canceller is handed.
+func TestSessionCloseBoundsStepsAndJoinsErrors(t *testing.T) {
+	cancelErr := errors.New("turn stop refused")
+	var gotCancelDeadline, gotCloseDeadline bool
+	canceller := func(ctx context.Context, id string) error {
+		_, gotCancelDeadline = ctx.Deadline()
+		return cancelErr
+	}
+	closer := func(ctx context.Context, rt *app.Runtime) error {
+		_, gotCloseDeadline = ctx.Deadline()
+		return errors.New("close failed")
+	}
+
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+			return &app.Runtime{SessionID: "sess_headless"}, nil
+		},
+		CloseRuntime: closer,
+		Notify:       func(method string, params any) error { return nil },
+	})
+	m.SetTurnCanceller(canceller)
+
+	if _, err := m.Create(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","mcpServers":[]}`)); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	err := m.Close(context.Background(), "sess_headless")
+	if err == nil {
+		t.Fatal("Close returned nil, want both failures joined")
+	}
+	if !strings.Contains(err.Error(), cancelErr.Error()) || !strings.Contains(err.Error(), "close failed") {
+		t.Fatalf("joined error = %v, want both the stop and the close failure", err)
+	}
+	if !gotCancelDeadline || !gotCloseDeadline {
+		t.Fatalf("canceller bound=%v closer bound=%v, want both bounded so one stuck step cannot hang shutdown",
+			gotCancelDeadline, gotCloseDeadline)
+	}
+	// The runtime must be gone even though its stop failed: a failed stop is
+	// not a reason to leak the session.
+	if _, ok := m.Get("sess_headless"); ok {
+		t.Fatal("the runtime is still published after a failed close")
+	}
+}
+
+// CloseAll joins every session's failure instead of aborting on the first, so
+// one session that refuses to settle cannot leave the others running.
+func TestSessionCloseAllClosesEveryRuntimeDespiteFailures(t *testing.T) {
+	var idSeq atomic.Int64
+	var closed []string
+	var mu sync.Mutex
+	starter := func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+		id := idSeq.Add(1)
+		return &app.Runtime{SessionID: "sess_" + strconv.FormatInt(id, 10)}, nil
+	}
+	m := NewSessionManager(SessionManagerConfig{
+		StartRuntime: starter,
+		CloseRuntime: func(ctx context.Context, rt *app.Runtime) error {
+			mu.Lock()
+			closed = append(closed, rt.SessionID)
+			mu.Unlock()
+			return nil
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	m.SetTurnCanceller(func(ctx context.Context, id string) error {
+		// Every stop fails; the closes must still happen.
+		return errors.New("stop refused for " + id)
+	})
+
+	tmp := t.TempDir()
+	absCwd, _ := filepath.Abs(tmp)
+	for i := 0; i < 3; i++ {
+		if _, err := m.Create(context.Background(), json.RawMessage(`{"cwd":"`+absCwd+`","mcpServers":[]}`)); err != nil {
+			t.Fatalf("Create %d: %v", i, err)
+		}
+	}
+
+	err := m.CloseAll(context.Background())
+	if err == nil {
+		t.Fatal("CloseAll returned nil, want the joined stop failures")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(closed) != 3 {
+		t.Fatalf("closed = %v, want every runtime closed", closed)
+	}
+	for _, id := range closed {
+		if !strings.Contains(err.Error(), id) {
+			t.Errorf("CloseAll error does not name %s: %v", id, err)
+		}
+	}
+}
+
 // TestValidateWorkingPathsRejectsEtc verifies that validateWorkingPaths
 // rejects paths outside the trusted-roots allow-list (F-SEC-33).
 func TestValidateWorkingPathsRejectsEtc(t *testing.T) {

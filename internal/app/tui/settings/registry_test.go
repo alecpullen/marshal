@@ -205,7 +205,7 @@ func TestTomlPathAliasesResolve(t *testing.T) {
 		TomlPath string
 	}{
 		{"shell.allow_network", "tools.shell.allow_network"},
-		{"shell.timeout", "tools.shell.default_timeout_seconds"},
+		{"shell.foreground_wait", "tools.shell.foreground_wait_seconds"},
 		{"sandbox.backend", "tools.shell.sandbox.backend"},
 		{"privacy.remote_providers", "privacy.remote_providers_allowed"},
 		{"privacy.include_gitignored", "privacy.include_gitignored_files"},
@@ -233,17 +233,17 @@ func TestTomlPathAliasesResolve(t *testing.T) {
 
 func TestApplyViaTomlAlias(t *testing.T) {
 	// Verify that Apply resolves TOML path aliases, not just stable ids.
-	// /set tools.shell.default_timeout_seconds 90 must work.
+	// /set tools.shell.foreground_wait_seconds 90 must work.
 	registry := BuildRegistry(config.Default())
 
 	// Confirm the TOML alias resolves via Lookup.
-	_, ok := registry.Lookup("tools.shell.default_timeout_seconds")
+	_, ok := registry.Lookup("tools.shell.foreground_wait_seconds")
 	if !ok {
-		t.Fatal("toml alias tools.shell.default_timeout_seconds must be resolvable")
+		t.Fatal("toml alias tools.shell.foreground_wait_seconds must be resolvable")
 	}
 
 	// Apply via the TOML alias.
-	change, err := registry.Apply("tools.shell.default_timeout_seconds", "90")
+	change, err := registry.Apply("tools.shell.foreground_wait_seconds", "90")
 	if err != nil {
 		t.Fatalf("Apply via toml alias: %v", err)
 	}
@@ -256,12 +256,12 @@ func TestApplyViaTomlAlias(t *testing.T) {
 
 	// Verify the underlying config was mutated.
 	cfg := registry.Config()
-	if cfg.Tools.Shell.DefaultTimeoutSeconds != 90 {
-		t.Errorf("DefaultTimeoutSeconds = %d, want 90", cfg.Tools.Shell.DefaultTimeoutSeconds)
+	if cfg.Tools.Shell.ForegroundWaitSeconds != 90 {
+		t.Errorf("ForegroundWaitSeconds = %d, want 90", cfg.Tools.Shell.ForegroundWaitSeconds)
 	}
 
 	// Describe via the TOML alias must also work.
-	kind, current, _, err := registry.Describe("tools.shell.default_timeout_seconds")
+	kind, current, _, err := registry.Describe("tools.shell.foreground_wait_seconds")
 	if err != nil {
 		t.Fatalf("Describe via toml alias: %v", err)
 	}
@@ -270,6 +270,70 @@ func TestApplyViaTomlAlias(t *testing.T) {
 	}
 	if current != "90" {
 		t.Errorf("current = %q, want 90", current)
+	}
+}
+
+// The foreground wait is positive-only: the settings row clamps zero and
+// negative input to 1 rather than letting an invalid value reach the loader.
+func TestRegistryForegroundWaitPathAndMinimum(t *testing.T) {
+	registry := BuildRegistry(config.Default())
+
+	field, ok := registry.Lookup("shell.foreground_wait")
+	if !ok {
+		t.Fatal("shell.foreground_wait missing from registry")
+	}
+	if field.TomlPath != "tools.shell.foreground_wait_seconds" {
+		t.Fatalf("toml path = %q, want tools.shell.foreground_wait_seconds", field.TomlPath)
+	}
+	if got := field.GetStr(); got != "10" {
+		t.Fatalf("default foreground wait row = %q, want 10", got)
+	}
+
+	change, err := registry.Apply("shell.foreground_wait", "0")
+	if err != nil {
+		t.Fatalf("Apply zero: %v", err)
+	}
+	if change.NewValue != "1" {
+		t.Fatalf("zero clamped to %q, want 1 (the row minimum)", change.NewValue)
+	}
+	if got := registry.Config().Tools.Shell.ForegroundWaitSeconds; got != 1 {
+		t.Fatalf("ForegroundWaitSeconds = %d, want the clamped 1", got)
+	}
+
+	change, err = registry.Apply("shell.foreground_wait", "-4")
+	if err != nil {
+		t.Fatalf("Apply negative: %v", err)
+	}
+	if change.NewValue != "1" {
+		t.Fatalf("negative clamped to %q, want 1", change.NewValue)
+	}
+	if got := registry.Config().Tools.Shell.ForegroundWaitSeconds; got != 1 {
+		t.Fatalf("ForegroundWaitSeconds = %d, want the clamped 1", got)
+	}
+
+	// A positive value is honored unchanged, and the registry reports it as
+	// modified relative to the default baseline.
+	change, err = registry.Apply("shell.foreground_wait", "45")
+	if err != nil {
+		t.Fatalf("Apply positive: %v", err)
+	}
+	if change.NewValue != "45" {
+		t.Fatalf("NewValue = %q, want 45", change.NewValue)
+	}
+	if !slices.Contains(registry.Modified(), "shell.foreground_wait") {
+		t.Errorf("Modified() = %v, want shell.foreground_wait", registry.Modified())
+	}
+}
+
+// The legacy timeout key is no longer an editable row: it is deprecated
+// compatibility data, so /set must not resolve it.
+func TestRegistryDropsLegacyShellTimeoutRow(t *testing.T) {
+	registry := BuildRegistry(config.Default())
+	if _, ok := registry.Lookup("shell.timeout"); ok {
+		t.Error("shell.timeout should not be an editable settings row")
+	}
+	if _, ok := registry.Lookup("tools.shell.default_timeout_seconds"); ok {
+		t.Error("tools.shell.default_timeout_seconds should not be an editable settings row")
 	}
 }
 

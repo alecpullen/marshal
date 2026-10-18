@@ -172,6 +172,20 @@ type TurnManagerConfig struct {
 	Questions QuestionClient
 }
 
+// Turn-stop causes. An explicit cancellation is a request to stop the
+// conversation work the turn still owns, and the cause string is the evidence a
+// stopped execution and a postmortem report explain it with — so it is fixed
+// here rather than composed per call site.
+const (
+	// cancelCause is what session/cancel records: this turn specifically.
+	cancelCause = "turn stop requested"
+	// cancelAndWaitCause is what CancelAndWait records. Its only production
+	// caller is the session lifecycle (close, close-all, and the
+	// load/resume/delete replacement path), and the runtime's own
+	// end-of-conversation stop records the same words.
+	cancelAndWaitCause = "conversation ended"
+)
+
 // activeTurn tracks a single in-flight turn for one session. At most one
 // activeTurn may exist per session ID; the slot is reserved atomically
 // when PromptTurn starts and deleted when the Turn completes.
@@ -180,6 +194,18 @@ type activeTurn struct {
 	done            chan struct{}
 	clientCancelled atomic.Bool
 	settled         atomic.Bool // runner finished; slot remains reserved through cleanup
+
+	// state is the session whose stop group this turn registers. It is
+	// captured before the slot is published so an explicit cancel can still
+	// reach the command service after the runtime has been detached from the
+	// session manager, which is exactly what close and replacement do: they
+	// detach first, then cancel.
+	state *session.State
+	// stopGroup is the turn's registered stop group, published once the turn
+	// actually starts. Nil until then (and forever when the runtime has no
+	// state), which is how a cancel tells "nothing to target yet" apart from
+	// "target this turn".
+	stopGroup atomic.Pointer[session.TurnStopToken]
 }
 
 // TurnManager dispatches session/prompt and session/cancel. At most one
@@ -559,9 +585,18 @@ func (m *TurnManager) runTurn(
 	// Create a slot context before making the slot visible so that
 	// CancelAndWait never observes a slot without a cancel function.
 	slotCtx, slotCancel := context.WithCancel(ctx)
+	var slotState *session.State
+	if rt != nil {
+		// Captured now, not read through the runtime later: close and
+		// replacement detach the runtime from the session manager first and
+		// cancel second, so a cancel that looked the runtime up would find
+		// nothing to stop the turn's commands with.
+		slotState = rt.State
+	}
 	slot := &activeTurn{
 		cancel: slotCancel,
 		done:   make(chan struct{}),
+		state:  slotState,
 	}
 
 	// Reserve the per-session slot.
@@ -575,6 +610,12 @@ func (m *TurnManager) runTurn(
 	m.activeTurnsMu.Unlock()
 
 	// Cleanup: cancel slot, remove from map, close done channel.
+	//
+	// This is ordinary slot cleanup, not an explicit stop: the turn's stop
+	// group is unregistered (only its own token, so a newer operation's
+	// registration survives) and nothing is stopped. A command that outlived
+	// the wait that launched it is conversation-owned and keeps running, and a
+	// turn that ends normally must not turn its completion into a stop.
 	defer func() {
 		slotCancel()
 		m.activeTurnsMu.Lock()
@@ -582,6 +623,9 @@ func (m *TurnManager) runTurn(
 			delete(m.activeTurns, sessionID)
 		}
 		m.activeTurnsMu.Unlock()
+		if token := slot.stopGroup.Load(); token != nil && slotState != nil {
+			slotState.EndTurnStop(token)
+		}
 		close(slot.done)
 	}()
 
@@ -615,6 +659,30 @@ func (m *TurnManager) runTurn(
 	subCtx, subCancel := context.WithCancel(turnCtx)
 	defer subCancel()
 	sub := rt.Events.Subscribe(subCtx, pubsub.WithTerminal[session.Event]())
+
+	// Register the turn's stop group now that the turn actually starts —
+	// after admission succeeded, before any work is dispatched. A stop that
+	// arrives while the turn is still starting must have a target, and the
+	// token is the single group an explicit cancel reaches. Registering it
+	// here (rather than at slot reservation) keeps a rejected duplicate turn
+	// from unregistering the running turn's group.
+	//
+	// The actor is empty: an ACP turn is the conversation's own work, and the
+	// turn identity supplies the rest.
+	if slotState != nil {
+		if token, pending := slotState.BeginTurnStop(""); token != nil {
+			slot.stopGroup.Store(token)
+			if pending != "" {
+				// A stop landed before this registration existed and named
+				// this operation. BeginTurnStop already adopted it, so report
+				// the same decision a late cancel reports and end the turn
+				// instead of doing work the client already stopped.
+				slot.clientCancelled.Store(true)
+				slotCancel()
+				subCancel()
+			}
+		}
+	}
 
 	runErr := make(chan error, 1)
 	go func() {
@@ -1531,9 +1599,56 @@ func (m *TurnManager) SDDStatus(ctx context.Context, params json.RawMessage) (an
 	return result, nil
 }
 
+// slotFor returns the active turn slot for a session, if any.
+func (m *TurnManager) slotFor(sessionID string) *activeTurn {
+	m.activeTurnsMu.Lock()
+	defer m.activeTurnsMu.Unlock()
+	return m.activeTurns[sessionID]
+}
+
+// stopTurnWork asks the session's command service to stop this turn's attached
+// commands BEFORE the caller cancels the agent's waits and provider calls.
+// Order is the contract: service acceptance precedes cancellation, so a
+// command still attached to the turn is marked stopping rather than being
+// killed out from under a service that never heard about the stop.
+//
+// A command that already handed off to the background is untouched — the
+// service arbitrates that race at its own admission/detachment boundary — and
+// an ordinary turn finish never calls this: only an explicit cancel does.
+//
+// A session with no command service (a fixture, a scoped child) reports
+// ErrNoTurnStopService; the caller still cancels its own context, so a turn
+// with no commands behaves exactly as before this feature. Every other failure
+// is logged, never surfaced: a cancel notification cannot answer with an error,
+// and a stop the service refused must still end the wait.
+func (m *TurnManager) stopTurnWork(slot *activeTurn, cause string) {
+	if slot == nil || slot.state == nil {
+		return
+	}
+	token := slot.stopGroup.Load()
+	if token == nil {
+		// The turn reserved its slot but has not started, so it registered no
+		// group yet. RequestTurnStop retains the request and the registration
+		// adopts it, which is what keeps a cancel landing mid-start from being
+		// lost.
+		_, err := slot.state.RequestTurnStop(cause)
+		if err != nil && !errors.Is(err, session.ErrNoTurnStopService) {
+			slog.Default().Warn("acp: turn stop was not accepted by the command service", "error", err, "cause", cause)
+		}
+		return
+	}
+	// Stop the group directly rather than through RequestTurnStop: the group
+	// this turn registered is exactly the target, and a newer operation's
+	// registration must not be stopped by a cancel that names this turn.
+	if _, err := token.Stop(cause); err != nil && !errors.Is(err, session.ErrNoTurnStopService) {
+		slog.Default().Warn("acp: turn stop was not accepted by the command service", "error", err, "cause", cause)
+	}
+}
+
 // Cancel is the notification handler for session/cancel. It marks the
-// active turn for the named session as client-cancelled, cancels its
-// context, and returns immediately without waiting for the runner.
+// active turn for the named session as client-cancelled, stops the commands
+// still attached to that turn, cancels its context, and returns immediately
+// without waiting for the runner.
 //
 // Returns nil, nil. The caller dispatches this as a JSON-RPC notification;
 // the return value is discarded and no response is sent to the client.
@@ -1550,10 +1665,11 @@ func (m *TurnManager) Cancel(ctx context.Context, params json.RawMessage) (any, 
 		return nil, fmt.Errorf("acp: session/cancel requires sessionId")
 	}
 
-	m.activeTurnsMu.Lock()
-	slot, ok := m.activeTurns[p.SessionID]
-	m.activeTurnsMu.Unlock()
-	if ok && slot != nil {
+	if slot := m.slotFor(p.SessionID); slot != nil {
+		// Service acceptance first, then agent cancellation: a foreground
+		// command still attached to this turn is terminated, while a job that
+		// already detached keeps running.
+		m.stopTurnWork(slot, cancelCause)
 		slot.clientCancelled.Store(true)
 		slot.cancel()
 	}
@@ -1568,14 +1684,20 @@ const cancelWait = 30 * time.Second
 // until the runner has fully completed. Returns nil if no turn is active
 // (benign double-cancel). The wait is bounded by cancelWait even when the
 // caller's context never cancels (F-BUG-50).
+//
+// Unlike a caller's own context deadline — which ends only the wait — this is
+// an explicit session-level stop, so the turn's attached commands are stopped
+// before the agent is cancelled. It runs no prompt and consults no UI: every
+// caller of this method is a headless lifecycle path (session close,
+// close-all, and the load/resume/delete replacement), and a stop that asked a
+// question would block a shutdown that has no one to ask.
 func (m *TurnManager) CancelAndWait(ctx context.Context, sessionID string) error {
-	m.activeTurnsMu.Lock()
-	slot, ok := m.activeTurns[sessionID]
-	m.activeTurnsMu.Unlock()
-	if !ok || slot == nil {
+	slot := m.slotFor(sessionID)
+	if slot == nil {
 		return nil
 	}
 
+	m.stopTurnWork(slot, cancelAndWaitCause)
 	slot.clientCancelled.Store(true)
 	slot.cancel()
 

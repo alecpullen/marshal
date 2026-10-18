@@ -6,8 +6,11 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
@@ -144,5 +147,106 @@ func TestTrustCommandTrustedDoesNothingExtra(t *testing.T) {
 	m.dispatchCommand("/trust")
 	if _, ok := m.dock.Panel().(*trustpanel.Panel); ok {
 		t.Fatal("expected no trustpanel when already trusted")
+	}
+}
+
+// ── Task 10: command entry points reach the warning ─────────────────────
+
+// TestExitCommandsReachTheWarning pins that /exit and /quit go through the same
+// ending path as Ctrl+C: with live work they warn instead of exiting, and the
+// goodbye line is not written until the user has decided.
+func TestExitCommandsReachTheWarning(t *testing.T) {
+	for _, name := range []string{"/exit", "/quit"} {
+		t.Run(name, func(t *testing.T) {
+			m, ctrl, _ := newSessionWarningModel(t, workSnapshot("job-1"))
+
+			updated, cmd := m.dispatchCommand(name)
+			m = asModel(t, updated)
+
+			if cmd != nil {
+				t.Fatalf("%s returned a cmd (%T), want nil so the warning can be answered", name, cmd)
+			}
+			if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+				t.Fatalf("%s: dock panel = %T, want the active-work warning", name, m.dock.Panel())
+			}
+			if len(ctrl.accepted) != 0 {
+				t.Fatalf("%s accepted the ending before the user decided", name)
+			}
+			for _, msg := range m.state.Messages() {
+				if strings.Contains(msg.Content, "Goodbye") {
+					t.Fatalf("%s wrote the farewell before the user decided", name)
+				}
+			}
+		})
+	}
+}
+
+// TestExitCommandsWithoutWorkExitDirectly pins that the warning is not added to
+// a conversation with nothing to stop — the existing direct behavior remains.
+func TestExitCommandsWithoutWorkExitDirectly(t *testing.T) {
+	state := postmortemTestState(t, "sess-quit-no-work")
+	state.Config.Postmortem.OnExit = "never"
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	m := New(state, WithCommandRegistry(reg), WithEndController(&endTestController{}))
+	m.resize(80, 24)
+
+	updated, cmd := m.dispatchCommand("/quit")
+	m = asModel(t, updated)
+
+	m, cmd = runEndCmd(t, m, cmd)
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); ok {
+		t.Fatal("/quit with no live work must not warn")
+	}
+	if cmd == nil {
+		t.Fatal("/quit with no live work must quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// TestClearAliasWarnsLikeNew pins that /clear shares /new's replacement path,
+// including the warning.
+func TestClearAliasWarnsLikeNew(t *testing.T) {
+	m, ctrl, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+
+	updated, cmd := m.dispatchCommand("/clear")
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatalf("/clear returned a cmd (%T), want nil", cmd)
+	}
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want the replacement warning", m.dock.Panel())
+	}
+	if swapper.called {
+		t.Fatal("/clear built a session before the user decided")
+	}
+	if len(ctrl.accepted) != 0 {
+		t.Fatal("/clear accepted an ending before the user decided")
+	}
+}
+
+// TestResumeCommandReachesTheWarning pins the /resume <id> entry point.
+func TestResumeCommandReachesTheWarning(t *testing.T) {
+	m, ctrl, _ := newSessionWarningModel(t, workSnapshot("job-1"))
+
+	updated, cmd := m.dispatchCommand("/resume sess-other")
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatalf("/resume returned a cmd (%T), want nil", cmd)
+	}
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want the replacement warning", m.dock.Panel())
+	}
+	if m.ResumeSession() != "" {
+		t.Fatal("/resume recorded the target before acceptance")
+	}
+	if len(ctrl.accepted) != 0 {
+		t.Fatal("/resume accepted an ending before the user decided")
 	}
 }

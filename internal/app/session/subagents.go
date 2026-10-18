@@ -96,6 +96,60 @@ type SubagentEvent struct {
 // State.mu-held increment and keeps registration cheap.
 var subagentSeq atomic.Int64
 
+// RegisterSubagentStopGroup associates a child's own explicit-stop group with
+// its subagent view id, so a targeted child stop reaches exactly that child's
+// attached commands and nothing else. The group is allocated separately from the
+// parent operation's because a background child outlives its parent's turn.
+func (s *State) RegisterSubagentStopGroup(id int64, token *TurnStopToken) {
+	if s == nil || token == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.subagentStopGroups == nil {
+		s.subagentStopGroups = make(map[int64]*TurnStopToken)
+	}
+	s.subagentStopGroups[id] = token
+	s.mu.Unlock()
+}
+
+// bindSubagentWork binds a child's subagent card to its work item in this
+// conversation's end gate (Task 8), so the child is part of the membership an
+// end acceptance checks — with its own distinct ID even when it is shown under
+// a parent — and so a stop pass can target it. When work is a creation item the
+// caller registered (EnterSubagentWork), that item is the child's: the card names
+// it instead of allocating a second one. An empty work registers the card's own
+// item, which its finish releases — the path a pipeline or review worker takes,
+// since those never enter through EnterSubagent.
+func (s *State) bindSubagentWork(work WorkID, id int64, label string) {
+	if s == nil {
+		return
+	}
+	s.end.bindChildCard(work, id, label)
+}
+
+// releaseSubagentWork drops a finished child's work item, so a completed child
+// stops being active work. A child that entered through EnterSubagent is
+// released by its paired ExitSubagent instead; this path covers the workers
+// whose card is their whole registration (pipeline and review children).
+func (s *State) releaseSubagentWork(id int64) {
+	if s == nil {
+		return
+	}
+	s.end.releaseChildCard(id)
+}
+
+// ClearSubagentStopGroup drops a finished child's stop group so a later card
+// reusing the id cannot inherit it. Called on normal completion: a child that
+// finished on its own is never stopped by its explicit-stop wrapper.
+func (s *State) ClearSubagentStopGroup(id int64) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	delete(s.subagentStopGroups, id)
+	s.mu.Unlock()
+}
+
 // RegisterSubagent records a new running subagent and returns its view. The
 // returned view's Child pointer is the live child state; the caller owns
 // finishing the registration via FinishSubagent. Publishing happens after
@@ -113,6 +167,7 @@ func (s *State) RegisterSubagent(label string, child *State) SubagentView {
 	s.subagentDone[v.ID] = make(chan struct{})
 	broker := s.subagentBroker
 	s.mu.Unlock()
+	s.bindSubagentWork("", v.ID, label)
 	if broker != nil {
 		broker.Publish("subagent", SubagentEvent{View: v})
 	}
@@ -125,6 +180,21 @@ func (s *State) RegisterSubagent(label string, child *State) SubagentView {
 // Fallback so the TUI can display what model is actually running (or ran)
 // the subagent.
 func (s *State) RegisterSubagentWithMeta(label string, child *State, meta SubagentMeta) SubagentView {
+	return s.registerSubagent(meta, "", label, child)
+}
+
+// RegisterSubagentWithMetaAndWork records a new running subagent whose creation
+// work item the caller already registered (EnterSubagentWork), so the card names
+// that child's own item: a targeted stop reaches the child the user pointed at,
+// and one child is never registered as two units of work. It mirrors
+// RegisterSubagentWithMeta in every other respect.
+func (s *State) RegisterSubagentWithMetaAndWork(work WorkID, label string, child *State, meta SubagentMeta) SubagentView {
+	return s.registerSubagent(meta, work, label, child)
+}
+
+// registerSubagent is the shared body of RegisterSubagent/WithMeta/AndWork. work
+// is the caller's child-creation item, or "" when the caller registered none.
+func (s *State) registerSubagent(meta SubagentMeta, work WorkID, label string, child *State) SubagentView {
 	v := SubagentView{
 		ID:        subagentSeq.Add(1),
 		Label:     label,
@@ -141,6 +211,11 @@ func (s *State) RegisterSubagentWithMeta(label string, child *State, meta Subage
 	s.subagentDone[v.ID] = make(chan struct{})
 	broker := s.subagentBroker
 	s.mu.Unlock()
+	// Register the child with the conversation's end gate: a live child is work
+	// an end must be able to see and stop, and its card is what names it. The
+	// binding happens after the registration above so the view exists before its
+	// work item is named, and it is idempotent per subagent id.
+	s.bindSubagentWork(work, v.ID, label)
 	if broker != nil {
 		broker.Publish("subagent", SubagentEvent{View: v})
 	}
@@ -182,10 +257,16 @@ func (s *State) SetSubagentSalvaged(id int64, reason string) {
 	}
 }
 
-// CancelSubagent cancels the context of a running subagent with the
-// given view ID. It returns true if a running subagent was found and a
-// cancel function existed. The subagent handler is responsible for
-// finishing the view when the child returns.
+// CancelSubagent performs a TARGETED stop of a running subagent: it asks the
+// conversation's command service to stop that child's own attached commands
+// FIRST, then cancels the child's context. It returns true if a running
+// subagent was found and a cancel function existed. The subagent handler is
+// responsible for finishing the view when the child returns.
+//
+// This is the explicit-stop path only. A child that finishes on its own never
+// reaches it: its completion goroutine calls the plain context cancel, so normal
+// completion terminates nothing. A child's previously detached jobs are
+// conversation-owned and keep running.
 func (s *State) CancelSubagent(id int64) bool {
 	s.mu.Lock()
 	var cancel context.CancelFunc
@@ -197,12 +278,20 @@ func (s *State) CancelSubagent(id int64) bool {
 			break
 		}
 	}
+	token := s.subagentStopGroups[id]
 	s.mu.Unlock()
-	if found && cancel != nil {
-		cancel()
-		return true
+	if !found || cancel == nil {
+		return false
 	}
-	return false
+	// Service acceptance precedes cancellation: the child's attached commands
+	// are marked stopping (and the child's turn is refused any new admission)
+	// before the child's context is cancelled, so a command the child launched
+	// is never left running with no stop request against it.
+	if token != nil {
+		_, _ = token.Stop(fmt.Sprintf("subagent %d stopped", id))
+	}
+	cancel()
+	return true
 }
 
 // AddSubagentTokens increments the token counter for a running subagent
@@ -279,6 +368,13 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 	s.mu.Unlock()
 	if done != nil {
 		close(done)
+	}
+	if found {
+		// The child is no longer active work. A child registered by its creation
+		// (EnterSubagent) is released by its paired ExitSubagent; this call
+		// releases the item only when the child's card was its whole
+		// registration, so every item is released exactly once.
+		s.releaseSubagentWork(id)
 	}
 	if found && broker != nil {
 		broker.Publish("subagent", SubagentEvent{View: updated})

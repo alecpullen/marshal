@@ -61,7 +61,22 @@ type Options struct {
 	ProjectID      int64
 	FileTracker    FileTracker
 	Config         config.Config
-	JobManager     *JobManager
+	// JobManager is the conversation's command service: the owner every
+	// ordinary shell.run/test.run admission goes through, and the target an
+	// explicit turn stop reaches. It is injected, never created here, so a
+	// rebuild (config reload, child registry, pipeline dispatch) borrows the
+	// conversation's one supervisor instead of quietly owning a second one.
+	//
+	// A filtered read-only registration may omit it, but then those command
+	// tools are not registered at all; a registry that does expose them must
+	// inject a service, or dispatch fails before launching anything.
+	JobManager *JobManager
+	// CommandDir, when non-empty, is the working directory a managed command
+	// captures at admission, in preference to the session's active root. A
+	// pipeline dispatch sets it to its own worktree so its commands run there
+	// instead of following a parent-global root that the next dispatch or
+	// workspace change would have moved.
+	CommandDir string
 	// JobBroker, when non-nil, is wired into the JobManager so every change
 	// in the running-job count publishes a JobEvent. F19 broker wiring.
 	JobBroker *pubsub.Broker[JobEvent]
@@ -120,9 +135,12 @@ type CommandRequest struct {
 	Dir            string
 	Timeout        time.Duration
 	MaxOutputBytes int
-	Stdout         io.Writer
-	Stderr         io.Writer
-	OnStart        func(pid int)
+	// RetainOutputTail keeps recent output and forwards all observer bytes.
+	// The default preserves prefix capture for existing non-managed callers.
+	RetainOutputTail bool
+	Stdout           io.Writer
+	Stderr           io.Writer
+	OnStart          func(pid int)
 	// Stdin, when non-nil, is written to the child's stdin. The privileged
 	// runner uses it to deliver the sudo password over a pipe — never
 	// os.Stdin, never a PTY, so the secret cannot be echoed or captured. The
@@ -152,9 +170,18 @@ type toolSet struct {
 	db              *db.DB
 	projectID       int64
 	fileTracker     FileTracker
-	jobManager      *JobManager
-	diagnostics     *diagnostics.Checker
-	registry        *registry.Registry
+	// jobManager is the conversation's command service, injected through
+	// Options. nil for a registry that exposes no ordinary command execution
+	// (a filtered read-only scope); such a registry reports a clear owner error
+	// on dispatch rather than quietly creating a second supervisor.
+	jobManager *JobManager
+	// commandDir, when non-empty, is the working directory a managed command
+	// captures at admission in preference to the session's active root. A
+	// pipeline dispatch names its own worktree so its commands do not follow a
+	// parent-global root.
+	commandDir  string
+	diagnostics *diagnostics.Checker
+	registry    *registry.Registry
 
 	webEnabled      bool
 	webFetchTimeout time.Duration
@@ -286,6 +313,33 @@ func (t *toolSet) activeRoot() string {
 	return t.root
 }
 
+// commandRoot returns the working directory a managed command captures at
+// admission. A registry given an explicit CommandDir (a pipeline dispatch bound
+// to its own worktree) uses it; everything else follows the session's active
+// root. The value is read at admission and recorded on the execution, so a
+// later workspace change or a sibling dispatch cannot redirect a command that
+// already started.
+func (t *toolSet) commandRoot() string {
+	if t.commandDir != "" {
+		return t.commandDir
+	}
+	return t.activeRoot()
+}
+
+// foregroundWait is how long an ordinary shell.run/test.run call waits for its
+// command before the command continues in the background. It comes from the
+// config this toolset was built with — a reload builds a new toolset — so a
+// settings change applies to future calls and never re-times a wait already in
+// flight. Config validation rejects a non-positive
+// tools.shell.foreground_wait_seconds, so the fallback only covers a toolset
+// built without a config (tests, embedded callers).
+func (t *toolSet) foregroundWait() time.Duration {
+	if seconds := t.config.Tools.Shell.ForegroundWaitSeconds; seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return defaultForegroundWait
+}
+
 // systemAccess reports whether this toolset's session has the
 // system-access modifier. Nil-safe: no session state means no system
 // access — containment is enforced as today.
@@ -340,24 +394,14 @@ func newToolSet(opts Options) (*toolSet, error) {
 		maxOutputBytes = defaultMaxOutputBytes
 	}
 
+	// The command service is the conversation's, and only the conversation's
+	// owner creates it (app.buildAgentRunnerWithLock, once). A toolset that
+	// borrowed one must not replace its count/broker/exit sinks either: those
+	// belong to the owner, and a reload or child registry that re-installed them
+	// would repoint the parent's evidence at a rebuilding toolset. A nil service
+	// is allowed here and reported by the command dispatch itself, before
+	// anything is launched.
 	jobManager := opts.JobManager
-	if jobManager == nil {
-		maxBg := opts.Config.Tools.Shell.MaxBackgroundJobs
-		retention := opts.Config.Tools.Shell.BackgroundRetention
-		if maxBg <= 0 {
-			maxBg = 25
-		}
-		if retention <= 0 {
-			retention = 8 * time.Hour
-		}
-		jobManager = NewJobManager(context.Background(), runner, root, maxBg, retention, maxOutputBytes)
-	}
-	if opts.SessionState != nil {
-		jobManager.SetOnChange(opts.SessionState.SetRunningJobsCount)
-	}
-	if opts.JobBroker != nil {
-		jobManager.SetBroker(opts.JobBroker)
-	}
 
 	ts := &toolSet{
 		root:            root,
@@ -372,6 +416,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		projectID:       opts.ProjectID,
 		fileTracker:     opts.FileTracker,
 		jobManager:      jobManager,
+		commandDir:      opts.CommandDir,
 		diagnostics:     newDiagnosticsChecker(opts),
 
 		guardrail:              opts.Guardrail,

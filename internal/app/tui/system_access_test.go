@@ -4,7 +4,7 @@
 package tui
 
 import (
-	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -141,58 +141,70 @@ func TestModeElevationPlainRequestDoesNotGrantSystem(t *testing.T) {
 	}
 }
 
-// TestPostmortemAgentPassGrantsSystemAccess pins the motivating case: the
-// exit postmortem's agent pass writes a report at an absolute path outside
-// the workspace, so the grant must be in place before the turn starts — and
-// plan/default must be elevated so the pass is not mode-denied.
-func TestPostmortemAgentPassGrantsSystemAccess(t *testing.T) {
+// TestPostmortemAgentPassScopedElevation pins the motivating case: the exit
+// postmortem's agent pass writes a report at an absolute path outside the
+// workspace, so the elevation must be in place for the duration of the pass —
+// and it belongs to the RUNTIME's scoped operation, not to the model. The
+// model therefore performs no elevation of its own.
+func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	state := postmortemTestState(t, "sess-sysgrant")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
-	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := New(state, WithRunner(context.Background(), runner))
+	ctrl := &endTestController{}
+	m := New(state, WithEndController(ctrl))
 	m.resize(80, 24)
 	m.approvalMode = policy.ModeDefault
 
-	if cmd := m.beginShutdown(true); cmd != nil {
+	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
+	if cmd != nil {
 		t.Fatalf("prompt path returned a cmd (%T), want nil", cmd)
 	}
-	updated, _ := m.Update(postmortempanel.DoneMsg{Result: postmortempanel.ResultWithAgent})
-	m = asModel(t, updated)
-
-	if !state.SystemAccess() {
-		t.Fatal("system access not granted for the postmortem agent pass")
+	m, analysisCmd := answerPostmortem(t, m, postmortempanel.ResultWithAgent)
+	if analysisCmd == nil {
+		t.Fatal("ResultWithAgent should return the analysis cmd")
 	}
-	if m.approvalMode != policy.ModeEdit {
-		t.Fatalf("approvalMode = %q, want edit so the pass is not mode-denied", m.approvalMode)
+	// Running the command performs the scoped pass; the runtime owns the
+	// elevation, so the model itself never grants one.
+	if msg := analysisCmd(); msg == nil {
+		t.Fatal("analysis cmd returned no message")
+	}
+
+	if state.SystemAccess() {
+		t.Fatal("the model granted system access itself; the elevation belongs to the runtime's scoped pass")
+	}
+	if m.approvalMode != policy.ModeDefault {
+		t.Fatalf("approvalMode = %q, want the user's own mode preserved", m.approvalMode)
+	}
+	if len(ctrl.analysisGoals) != 1 {
+		t.Fatalf("analysis goals = %d, want the pass requested through the end controller", len(ctrl.analysisGoals))
 	}
 }
 
-// TestPostmortemAgentPassRefusedStartClearsSystemAccess pins the cleanup
-// half: a refused start must not leave the grant behind.
-func TestPostmortemAgentPassRefusedStartClearsSystemAccess(t *testing.T) {
+// TestEndAnalysisFailureLeavesNoElevation pins the cleanup half. The model
+// never grants the elevation, so a failure or refusal cannot leave one behind;
+// the runtime's own operation restores it whatever the outcome.
+func TestEndAnalysisFailureLeavesNoElevation(t *testing.T) {
 	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	state := postmortemTestState(t, "sess-sysrefused")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	state.Config.Postmortem.OnExit = "prompt"
-	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := New(state, WithRunner(context.Background(), runner))
+	ctrl := &endTestController{analysisErr: errors.New("refused")}
+	m := New(state, WithEndController(ctrl))
 	m.resize(80, 24)
+	m.endAnalyzing = true
 
-	if cmd := m.beginShutdown(true); cmd != nil {
-		t.Fatalf("prompt path returned a cmd (%T), want nil", cmd)
-	}
-	state.BeginQuiesce() // BeginWork now refuses, so the start fails.
-	updated, _ := m.Update(postmortempanel.DoneMsg{Result: postmortempanel.ResultWithAgent})
+	updated, cmd := m.Update(endAnalysisFinishedMsg{err: ctrl.analysisErr})
 	m = asModel(t, updated)
 
 	if state.SystemAccess() {
-		t.Fatal("system access survived a refused postmortem agent start")
+		t.Fatal("system access survived a failed analysis pass")
 	}
-	if m.postmortemAgentPending {
-		t.Fatal("postmortemAgentPending survived a refused start")
+	if m.endAnalyzing {
+		t.Fatal("endAnalyzing survived a failed analysis pass")
+	}
+	if cmd == nil {
+		t.Fatal("a failed analysis must still quit")
 	}
 }

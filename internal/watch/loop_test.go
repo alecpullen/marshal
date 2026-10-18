@@ -478,12 +478,23 @@ func newJobManager(t *testing.T, runner *fakeJobRunner) (*native.JobManager, *pu
 	return jm, broker
 }
 
+// launchDetachedJob admits command as a detached execution through the launch
+// API and returns its display id. The job source under test watches the
+// manager's broker, so only a real admission produces the events it needs.
+func launchDetachedJob(jm *native.JobManager, command string) (string, error) {
+	info, err := jm.Launch(context.Background(), native.LaunchSpec{Command: command, Detached: true})
+	if err != nil {
+		return "", err
+	}
+	return info.ID, nil
+}
+
 func TestJobSourceAlreadyFinishedFiresImmediately(t *testing.T) {
 	runner := &fakeJobRunner{result: native.CommandResult{ExitCode: 0}}
 	jm, broker := newJobManager(t, runner)
 
 	// Start a job that completes immediately.
-	jobID, err := jm.Start(context.Background(), "echo done", time.Second)
+	jobID, err := launchDetachedJob(jm, "echo done")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +553,7 @@ func TestJobSourceRunningFiresOnCompletion(t *testing.T) {
 	jm, broker := newJobManager(t, runner)
 
 	// Start a job that blocks.
-	jobID, err := jm.Start(context.Background(), "sleep 30", 5*time.Second)
+	jobID, err := launchDetachedJob(jm, "sleep 30")
 	if err != nil {
 		t.Fatal(err)
 	}

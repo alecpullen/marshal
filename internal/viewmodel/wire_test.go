@@ -178,6 +178,180 @@ func TestWireMarkerAndJobCard(t *testing.T) {
 	}
 }
 
+// A client outside the process needs the same execution evidence the card
+// renders, plus the two facts only the launch's own record carries: the identity
+// the job is paired by across resumes, and the wait it was launched with.
+func TestWireJobCarriesWaitAndDetachEvidence(t *testing.T) {
+	start := structuredJobStart(1, "j", 2, "job-w", "exec-w")
+	start.Audit.Notice = registry.NewCommandExecutionNotice(registry.CommandExecution{
+		ExecutionID: "exec-w", DisplayID: "job-w", ConversationID: "conv",
+		Attachment: registry.ExecutionAttachmentBackground, Wait: "10s",
+		DetachReason: "wait expired", DetachedAt: at(3),
+	})
+	exit := structuredJobExit(5, "job-w", "exec-w", nil)
+	exit.JobExit.State, exit.JobExit.Outcome = "killed", "stopped"
+	exit.JobExit.StopCause = "turn stop requested"
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start, exit},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+	})
+	var job *WireJob
+	for _, n := range Project(nodes).Nodes {
+		if n.Tool != nil && n.Tool.Job != nil {
+			job = n.Tool.Job
+		}
+	}
+	if job == nil {
+		t.Fatal("no job card in the projection")
+	}
+	if job.ExecutionID != "exec-w" {
+		t.Fatalf("ExecutionID = %q, want the execution identity", job.ExecutionID)
+	}
+	if job.Wait != "10s" || job.DetachReason != "wait expired" || job.DetachedAt == 0 {
+		t.Fatalf("job = %+v, want the handoff evidence", job)
+	}
+	if job.Status != "killed" || job.StopCause != "turn stop requested" {
+		t.Fatalf("job = %+v, want the stop evidence", job)
+	}
+	if job.Exit != nil {
+		t.Fatalf("Exit = %v, want it omitted for an unobserved exit", *job.Exit)
+	}
+	raw, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"executionId":"exec-w"`) {
+		t.Fatalf("the identity is not on the wire: %s", raw)
+	}
+}
+
+// The new fields are additive: a legacy card with no structured launch record
+// projects none of them, and marshals exactly as before.
+func TestWireJobOmitsEvidenceForLegacyCard(t *testing.T) {
+	nodes := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-legacy"), jobExit(5, "job-legacy", 0),
+	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
+	for _, n := range Project(nodes).Nodes {
+		if n.Tool == nil || n.Tool.Job == nil {
+			continue
+		}
+		job := n.Tool.Job
+		if job.ExecutionID != "" || job.Wait != "" || job.DetachReason != "" || job.DetachedAt != 0 {
+			t.Fatalf("job = %+v, want no structured evidence", job)
+		}
+		raw, err := json.Marshal(job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"executionId", "wait", "detachReason", "detachedAt"} {
+			if strings.Contains(string(raw), `"`+key+`"`) {
+				t.Fatalf("legacy card carries %s: %s", key, raw)
+			}
+		}
+		return
+	}
+	t.Fatal("no job card in the projection")
+}
+
+// Display text in the new fields is scrubbed like every other wire field: a
+// detach reason is actor-supplied, and a client renders it.
+func TestWireJobScrubsDetachEvidence(t *testing.T) {
+	start := structuredJobStart(1, "j", 2, "job-s", "exec-s")
+	start.Audit.Notice = registry.NewCommandExecutionNotice(registry.CommandExecution{
+		ExecutionID: "exec-s", DisplayID: "job-s", Attachment: registry.ExecutionAttachmentBackground,
+		Wait: "10s", DetachReason: "wait\x1b]0;pwned\x07 expired",
+	})
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+	})
+	for _, n := range Project(nodes).Nodes {
+		if n.Tool == nil || n.Tool.Job == nil {
+			continue
+		}
+		if strings.ContainsAny(n.Tool.Job.DetachReason, "\x1b\x07") {
+			t.Fatalf("detachReason = %q, still carries a control sequence", n.Tool.Job.DetachReason)
+		}
+		if !strings.Contains(n.Tool.Job.DetachReason, "wait") {
+			t.Fatalf("detachReason = %q, want the text preserved", n.Tool.Job.DetachReason)
+		}
+		return
+	}
+	t.Fatal("no job card in the projection")
+}
+
+// A client outside the process needs the same execution evidence the card
+// renders: the observed exit (distinct from the legacy -1 spelling of unknown),
+// the lifecycle state, the attachment, an accepted stop's cause and whether the
+// retained output was capped.
+func TestWireJobCarriesExecutionEvidence(t *testing.T) {
+	code := 3
+	start := structuredJobStart(1, "j", 2, "job-5", "exec-5")
+	exit := structuredJobExit(5, "job-5", "exec-5", &code)
+	exit.JobExit.State, exit.JobExit.StopCause, exit.JobExit.Truncated = "killed", "turn stop", true
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start, exit},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+	})
+	var job *WireJob
+	for _, n := range Project(nodes).Nodes {
+		if n.Tool != nil && n.Tool.Job != nil {
+			job = n.Tool.Job
+		}
+	}
+	if job == nil {
+		t.Fatal("no job card in the projection")
+	}
+	if job.Exit == nil || *job.Exit != 3 || job.ExitCode != 3 {
+		t.Fatalf("exit = %v / %d, want the observed 3", job.Exit, job.ExitCode)
+	}
+	if job.Status != "killed" || job.Attachment != "background" || job.StopCause != "turn stop" || !job.Truncated {
+		t.Fatalf("job = %+v, want its evidence projected", job)
+	}
+	if job.Running || job.Lost {
+		t.Fatalf("job = %+v, want a settled card", job)
+	}
+	if _, err := json.Marshal(job); err != nil {
+		t.Fatalf("a card with evidence must marshal: %v", err)
+	}
+}
+
+// An exit that was never observed is projected as absent, not as a zero a client
+// would render as success; the legacy -1 field stays for older clients.
+func TestWireJobOmitsUnobservedExit(t *testing.T) {
+	nodes := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0), narration(2, 1, 1, "Go."),
+		structuredJobStart(1, "j", 2, "job-6", "exec-6"),
+		session.TranscriptItem{Timestamp: at(5), Kind: session.KindJobExit,
+			JobExit: &session.JobExit{ID: "job-6", ExecutionID: "exec-6", ExitCode: -1,
+				State: "failed", Outcome: "startup_failure", At: at(5)}},
+	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
+	for _, n := range Project(nodes).Nodes {
+		if n.Tool == nil || n.Tool.Job == nil {
+			continue
+		}
+		job := n.Tool.Job
+		if job.Exit != nil {
+			t.Fatalf("Exit = %v, want it omitted for an unobserved exit", *job.Exit)
+		}
+		if job.ExitCode != -1 {
+			t.Fatalf("ExitCode = %d, want the legacy -1", job.ExitCode)
+		}
+		raw, err := json.Marshal(job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), `"exit"`) {
+			t.Fatalf("the wire omitted nothing: %s", raw)
+		}
+		if !strings.Contains(string(raw), `"status":"failed"`) {
+			t.Fatalf("the wire lost the lifecycle status: %s", raw)
+		}
+		return
+	}
+	t.Fatal("no job card in the projection")
+}
+
 func TestElideWorkdir(t *testing.T) {
 	root := "/home/a/proj/.marshal/worktrees/x"
 	if got := ElideWorkdir("cd "+root+" && pytest -q", root); got != "⌂ pytest -q" {

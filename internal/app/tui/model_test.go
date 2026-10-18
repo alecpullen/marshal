@@ -20,6 +20,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/connect"
@@ -5241,13 +5242,6 @@ func TestSetCommandDoesNotMutateWhileSettingsSaveIsBlocked(t *testing.T) {
 			reason: settingsBusyMessage,
 		},
 		{
-			name: "background job active",
-			block: func(m *Model) {
-				m.state.SetRunningJobsCount(1)
-			},
-			reason: settingsBusyMessage,
-		},
-		{
 			name: "tool approval pending",
 			block: func(m *Model) {
 				m.state.SetPendingApproval(&session.PendingToolCall{
@@ -6762,11 +6756,14 @@ func TestSettingsBlockReason(t *testing.T) {
 		}
 	})
 
-	t.Run("running jobs", func(t *testing.T) {
+	t.Run("running background command", func(t *testing.T) {
+		// A background command no longer blocks a settings write: the
+		// conversation's command service survives the reload, so the save
+		// changes only what FUTURE launches resolve.
 		m := New(state)
 		state.SetRunningJobsCount(1)
-		if got := m.settingsBlockReason(); got != settingsBusyMessage {
-			t.Fatalf("settingsBlockReason = %q, want %q", got, settingsBusyMessage)
+		if got := m.settingsBlockReason(); got != "" {
+			t.Fatalf("settingsBlockReason = %q, want no block while a command runs in the background", got)
 		}
 		state.SetRunningJobsCount(0)
 	})
@@ -8766,13 +8763,131 @@ func postmortemTestState(t *testing.T, sessionID string) *session.State {
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: sessionID})
 }
 
+// endTestController is a scriptable tui.EndController. It records what the
+// model submitted, returns a configured membership/decision, and reports a
+// configurable settlement error — the whole runtime contract in one fake.
+type endTestController struct {
+	work      EndWorkSnapshot
+	activeErr error
+	// acceptFn overrides the acceptance decision. Without it every non-empty
+	// request is accepted and nothing is frozen.
+	acceptFn func(EndAcceptRequest) (EndDecision, error)
+	// accepted records the requests the model submitted, in order.
+	accepted []EndAcceptRequest
+	// waitErr is returned by WaitForEnd. The pass is retried on the next
+	// request, so a test can fail once and then let it succeed.
+	waitErr error
+	// waitCalls counts the settlement attempts.
+	waitCalls int
+	// analysisErr is returned by RunExitAnalysis.
+	analysisErr error
+	// analysisGoals records the analysis goals the model requested.
+	analysisGoals []string
+	// analysisGate, when non-nil, blocks RunExitAnalysis until it is closed.
+	analysisGate chan struct{}
+}
+
+func (c *endTestController) ActiveWork() EndWorkSnapshot { return c.work }
+
+func (c *endTestController) AcceptEnd(req EndAcceptRequest) (EndDecision, error) {
+	c.accepted = append(c.accepted, req)
+	if c.acceptFn != nil {
+		return c.acceptFn(req)
+	}
+	return EndDecision{Accepted: true, Work: c.work}, nil
+}
+
+func (c *endTestController) EndAccepted() bool { return len(c.accepted) > 0 }
+
+func (c *endTestController) WaitForEnd(context.Context) error {
+	c.waitCalls++
+	if c.analysisGate != nil {
+		<-c.analysisGate
+	}
+	return c.waitErr
+}
+
+func (c *endTestController) RunExitAnalysis(_ context.Context, goal string) error {
+	c.analysisGoals = append(c.analysisGoals, goal)
+	if c.analysisGate != nil {
+		<-c.analysisGate
+	}
+	return c.analysisErr
+}
+
+// workSnapshot builds a one-item membership for the warning tests.
+func workSnapshot(ids ...string) EndWorkSnapshot {
+	snap := EndWorkSnapshot{Phase: "open"}
+	for _, id := range ids {
+		snap.Items = append(snap.Items, EndWorkItem{ID: id, Kind: "command", Label: "job " + id, Parent: true})
+		snap.Targets = append(snap.Targets, id)
+	}
+	return snap
+}
+
+// runEndCmd runs one ending command until the end reaches a state the caller
+// can assert on: it executes the command, feeds the settlement/analysis hops
+// back through Update, and returns the model plus the command the end produced
+// (the quit, the replacement's swap, or nil while the user is still deciding).
+func runEndCmd(t *testing.T, m Model, cmd tea.Cmd) (Model, tea.Cmd) {
+	t.Helper()
+	for i := 0; i < 8 && cmd != nil; i++ {
+		msg := cmd()
+		switch msg.(type) {
+		case nil:
+			return m, nil
+		case endSettledMsg, endAnalysisFinishedMsg, postmortemWrittenMsg:
+			updated, next := m.Update(msg)
+			m = asModel(t, updated)
+			cmd = next
+		default:
+			// The end's own command (a quit, the replacement's swap, a sheet
+			// refresh): this is what the caller asserts on. It is handed back
+			// un-processed, exactly as the live program would deliver it.
+			return m, func() tea.Msg { return msg }
+		}
+	}
+	return m, cmd
+}
+
+// answerPostmortem delivers a postmortem panel answer and runs the extraction
+// command it returns, so the model reaches the state that follows the report
+// being written. Extraction runs off the render loop (plan step 6), so a caller
+// that asserts on the report or on the analysis pass must drive that command.
+// It returns the model and the command the end flow produced afterwards: the
+// scoped analysis pass, the quit, or nil.
+func answerPostmortem(t *testing.T, m Model, result postmortempanel.Result) (Model, tea.Cmd) {
+	t.Helper()
+	updated, cmd := m.Update(postmortempanel.DoneMsg{Result: result})
+	m = asModel(t, updated)
+	if cmd == nil {
+		return m, nil
+	}
+	msg := cmd()
+	if _, ok := msg.(postmortemWrittenMsg); !ok {
+		return m, func() tea.Msg { return msg }
+	}
+	updated, next := m.Update(msg)
+	return asModel(t, updated), next
+}
+
+// exitWithWork drives one exit request through the model and returns the
+// resulting model plus the pending command. It is the shared entry point for
+// the ending tests: every ending path reaches the same helper.
+func exitWithWork(t *testing.T, m Model, ctrl EndController) (Model, tea.Cmd) {
+	t.Helper()
+	return m, m.beginEnd(&endIntent{kind: EndIntentExit})
+}
+
 func TestExitPromptsPostmortemPerConfig(t *testing.T) {
 	state := postmortemTestState(t, "sess-prompt")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
-	m := New(state)
+	// A controller with no active work: the warning is skipped (nothing would
+	// be stopped) and the postmortem policy applies directly.
+	m := New(state, WithEndController(&endTestController{}))
 
-	cmd := m.beginShutdown(true)
+	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
 	if cmd != nil {
 		t.Fatalf("prompt path returned a cmd (%T), want nil so the program stays open", cmd)
@@ -8793,9 +8908,9 @@ func TestExitAlwaysRunsPostmortem(t *testing.T) {
 	state := postmortemTestState(t, "sess-always")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "always"
-	m := New(state)
+	m := New(state, WithEndController(&endTestController{}))
 
-	cmd := m.beginShutdown(true)
+	_, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
 	if cmd == nil {
 		t.Fatal("always path must quit")
@@ -8818,9 +8933,9 @@ func TestExitNeverSkipsPostmortem(t *testing.T) {
 	state := postmortemTestState(t, "sess-never")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "never"
-	m := New(state)
+	m := New(state, WithEndController(&endTestController{}))
 
-	cmd := m.beginShutdown(true)
+	_, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
 	if cmd == nil {
 		t.Fatal("never path must quit")
@@ -8839,9 +8954,9 @@ func TestExitNeverSkipsPostmortem(t *testing.T) {
 func TestExitSkipsPromptOnEmptySession(t *testing.T) {
 	state := postmortemTestState(t, "sess-empty")
 	state.Config.Postmortem.OnExit = "prompt"
-	m := New(state)
+	m := New(state, WithEndController(&endTestController{}))
 
-	cmd := m.beginShutdown(true)
+	_, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
 	if cmd == nil {
 		t.Fatal("empty session must quit, not prompt")
@@ -8858,9 +8973,12 @@ func TestResumeShutdownDoesNotPrompt(t *testing.T) {
 	state := postmortemTestState(t, "sess-resume")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
-	m := New(state)
+	swapper := &fakeSessionSwapper{newState: session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{})}
+	m := New(state, WithEndController(&endTestController{}), WithSessionSwapper(swapper))
 
-	cmd := m.beginShutdown(false)
+	updated, cmd := m.beginResume("sess-target")
+	m = asModel(t, updated)
+	m, cmd = runEndCmd(t, m, cmd)
 
 	if cmd == nil {
 		t.Fatal("session swap must quit")
@@ -8870,6 +8988,836 @@ func TestResumeShutdownDoesNotPrompt(t *testing.T) {
 	}
 	if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
 		t.Fatal("session-swap exit must never open the exit panel")
+	}
+	if m.ResumeSession() != "sess-target" {
+		t.Fatalf("ResumeSession() = %q, want the accepted target", m.ResumeSession())
+	}
+}
+
+// ── Task 10: the active-work warning ────────────────────────────────────
+
+// warningModel builds a model whose end controller reports live work, so an
+// exit request opens the active-work warning.
+func warningModel(t *testing.T, work EndWorkSnapshot) (Model, *endTestController) {
+	t.Helper()
+	state := postmortemTestState(t, "sess-warning")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "never"
+	ctrl := &endTestController{work: work}
+	m := New(state, WithEndController(ctrl))
+	m.resize(80, 24)
+	return m, ctrl
+}
+
+// TestExitWarnsBeforeStoppingWork is the central contract: with live work, an
+// exit request must show the warning and stop NOTHING until the user accepts.
+func TestExitWarnsBeforeStoppingWork(t *testing.T) {
+	m, ctrl := warningModel(t, workSnapshot("job-1"))
+
+	cmd := m.beginEnd(&endIntent{kind: EndIntentExit})
+
+	if cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil while the user decides", cmd)
+	}
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want *activeworkpanel.Panel", m.dock.Panel())
+	}
+	if len(ctrl.accepted) != 0 {
+		t.Fatalf("acceptance ran before the user decided: %+v", ctrl.accepted)
+	}
+	if ctrl.waitCalls != 0 {
+		t.Fatal("the stop/join pass ran before the user decided")
+	}
+	select {
+	case <-m.state.Done():
+		t.Fatal("state must not be shut down while the warning is open")
+	default:
+	}
+}
+
+// TestWarningDeclinePreservesWork pins the safe choice: Esc/keep discards the
+// intent, stops nothing, and leaves the conversation live.
+func TestWarningDeclinePreservesWork(t *testing.T) {
+	m, ctrl := warningModel(t, workSnapshot("job-1"))
+
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: false, IDs: []string{"job-1"}})
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatalf("declining returned a cmd (%T), want nil", cmd)
+	}
+	if len(ctrl.accepted) != 0 || ctrl.waitCalls != 0 {
+		t.Fatal("declining stopped or submitted work")
+	}
+	if m.end != nil {
+		t.Fatal("the pending intent survived a decline")
+	}
+	if m.endStage != endIdle {
+		t.Fatalf("endStage = %v, want idle after a decline", m.endStage)
+	}
+	select {
+	case <-m.state.Done():
+		t.Fatal("declining shut the session down")
+	default:
+	}
+}
+
+// TestWarningConfirmationSubmitsDisplayedIDs pins step 4: the confirmation
+// submits exactly the IDs the panel displayed, and acceptance is what runs the
+// stop/join pass.
+func TestWarningConfirmationSubmitsDisplayedIDs(t *testing.T) {
+	snap := workSnapshot("job-1", "job-2")
+	m, ctrl := warningModel(t, snap)
+
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1", "job-2"}})
+	m = asModel(t, updated)
+
+	if len(ctrl.accepted) != 1 {
+		t.Fatalf("acceptance requests = %d, want 1", len(ctrl.accepted))
+	}
+	got := ctrl.accepted[0]
+	if got.Intent != EndIntentExit {
+		t.Fatalf("intent = %q, want %q", got.Intent, EndIntentExit)
+	}
+	if !got.RequireDisplayed {
+		t.Fatal("RequireDisplayed = false, want true so an expanded membership cannot be stopped unseen")
+	}
+	if !reflect.DeepEqual(got.DisplayedIDs, []string{"job-1", "job-2"}) {
+		t.Fatalf("displayed IDs = %v, want the panel's own list", got.DisplayedIDs)
+	}
+	// The settlement pass runs off the render loop.
+	if cmd == nil {
+		t.Fatal("acceptance should return the settlement command")
+	}
+	m, cmd = runEndCmd(t, m, cmd)
+	if ctrl.waitCalls != 1 {
+		t.Fatalf("stop/join passes = %d, want 1", ctrl.waitCalls)
+	}
+	if cmd == nil {
+		t.Fatal("a settled exit with on_exit=never must quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// TestWarningRefusalRefreshesAndKeepsTheSafeChoice pins the expanded-membership
+// race: a refusal stops nothing, refreshes the warning with the refusal's own
+// membership, and leaves the safe choice selected.
+func TestWarningRefusalRefreshesAndKeepsTheSafeChoice(t *testing.T) {
+	grown := workSnapshot("job-1", "job-2")
+	ctrl := &endTestController{work: workSnapshot("job-1")}
+	ctrl.acceptFn = func(req EndAcceptRequest) (EndDecision, error) {
+		// New work appeared while the user was deciding.
+		return EndDecision{Accepted: false, Expanded: []string{"job-2"}, Work: grown}, nil
+	}
+	state := postmortemTestState(t, "sess-refusal")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	m := New(state, WithEndController(ctrl))
+	m.resize(80, 24)
+
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatalf("a refusal returned a cmd (%T), want nil so the user decides again", cmd)
+	}
+	panel, ok := m.dock.Panel().(*activeworkpanel.Panel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want the warning still up", m.dock.Panel())
+	}
+	view := stripANSI(panel.View(80, 20))
+	if !strings.Contains(view, "job-2") {
+		t.Fatalf("refreshed warning does not show the new work:\n%s", view)
+	}
+	// The safe choice is selected again: a bare Enter keeps the work.
+	if done := panel.Update(tea.KeyPressMsg{Code: tea.KeyEnter})().(activeworkpanel.DoneMsg); done.Stop {
+		t.Fatal("the refreshed warning did not restore keep as the default")
+	}
+	if ctrl.waitCalls != 0 {
+		t.Fatal("a refusal ran the stop/join pass")
+	}
+}
+
+// TestRepeatedQuitDoesNotStackWarnings pins step 3 for both quit entry points:
+// a repeated request while the warning is up must not open a second warning and
+// must not bypass the first.
+func TestRepeatedQuitDoesNotStackWarnings(t *testing.T) {
+	m, ctrl := warningModel(t, workSnapshot("job-1"))
+
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("first request returned a cmd (%T), want nil", cmd)
+	}
+	first, ok := m.dock.Panel().(*activeworkpanel.Panel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want *activeworkpanel.Panel", m.dock.Panel())
+	}
+
+	for i := 0; i < 3; i++ {
+		if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+			t.Fatalf("repeated request %d returned a cmd (%T), want nil", i, cmd)
+		}
+	}
+	if again, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok || again != first {
+		t.Fatalf("repeated requests replaced the warning (%T)", m.dock.Panel())
+	}
+	if len(ctrl.accepted) != 0 || ctrl.waitCalls != 0 {
+		t.Fatal("a repeated request accepted or stopped work without a decision")
+	}
+}
+
+// TestCtrlCReachesTheWarningAndRetriesSettlement pins the keyboard entry
+// point: a second Ctrl+C opens the warning, and while an ending is in progress
+// Ctrl+C retries the settlement instead of stopping a turn.
+func TestCtrlCReachesTheWarningAndRetriesSettlement(t *testing.T) {
+	m, _ := warningModel(t, workSnapshot("job-1"))
+	m.now = func() time.Time { return time.Unix(1000, 0) }
+	m.agentCancel = nil
+
+	// First press arms, second fires.
+	m, _ = press(m, ctrlC)
+	m, _ = press(m, ctrlC)
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want the warning from a double Ctrl+C", m.dock.Panel())
+	}
+
+	// A failed settlement keeps the stopping stage, and Ctrl+C retries it.
+	ctrl := m.endController.(*endTestController)
+	ctrl.waitErr = errors.New("join timed out")
+	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
+	m = asModel(t, updated)
+	m, cmd = runEndCmd(t, m, cmd)
+	if cmd != nil {
+		t.Fatalf("a failed join returned a cmd (%T), want nil so the user can retry", cmd)
+	}
+	if m.endStage != endStopping {
+		t.Fatalf("endStage = %v, want stopping after a failed join", m.endStage)
+	}
+	if ctrl.waitCalls != 1 {
+		t.Fatalf("stop/join passes = %d, want 1", ctrl.waitCalls)
+	}
+	got := lastMessageContent(m.state.Messages())
+	if !strings.Contains(got, "Could not stop all work") || !strings.Contains(got, "retry") {
+		t.Fatalf("transcript = %q, want an accurate failure and a retry hint", got)
+	}
+
+	// The retry succeeds on the second attempt.
+	ctrl.waitErr = nil
+	m, _ = press(m, ctrlC)
+	m, cmd = runEndCmd(t, m, m.beginEnd(nil))
+	if ctrl.waitCalls != 2 {
+		t.Fatalf("stop/join passes after the retry = %d, want 2", ctrl.waitCalls)
+	}
+	if cmd == nil {
+		t.Fatal("the retried settlement must finish the exit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// TestFailedJoinNeverAdvancesAsSettled pins that a failed join does not extract
+// a postmortem or shut the session down: the work it could not stop is still
+// live, and the user must be able to retry.
+func TestFailedJoinNeverAdvancesAsSettled(t *testing.T) {
+	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	state := postmortemTestState(t, "sess-failed-join")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "always"
+	ctrl := &endTestController{work: workSnapshot("job-1"), waitErr: errors.New("outstanding: job-1")}
+	m := New(state, WithEndController(ctrl))
+	m.resize(80, 24)
+
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
+	m = asModel(t, updated)
+	_, cmd = runEndCmd(t, m, cmd)
+
+	if cmd != nil {
+		t.Fatalf("a failed join returned a terminal cmd (%T), want nil", cmd)
+	}
+	if _, err := os.Stat(postmortemReportPath(t, state)); !os.IsNotExist(err) {
+		t.Fatalf("a failed join extracted a postmortem (stat err = %v)", err)
+	}
+	select {
+	case <-state.Done():
+		t.Fatal("a failed join shut the session down")
+	default:
+	}
+}
+
+// TestWarningDisplacedSurfaceIsRestoredOnDecline pins step 3's restoration: a
+// child parked behind an approval or gate surface must not be stranded by an
+// ending the user declined.
+func TestWarningDisplacedSurfaceIsRestoredOnDecline(t *testing.T) {
+	m, _ := warningModel(t, workSnapshot("job-1"))
+	displaced := gatepanel.New(session.SDDGate{TaskN: 1, Question: "Ship it?"})
+	m.dock.Open(displaced)
+
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want the warning", m.dock.Panel())
+	}
+
+	updated, _ := m.Update(activeworkpanel.DoneMsg{Stop: false})
+	m = asModel(t, updated)
+
+	if got, ok := m.dock.Panel().(*gatepanel.Panel); !ok || got != displaced {
+		t.Fatalf("dock panel = %T, want the displaced gate restored", m.dock.Panel())
+	}
+}
+
+// TestWarningSurvivesLateApprovalEvents pins step 4: while the warning is up, a
+// late approval or gate event must not replace it — the user's decision is
+// about the work as it was displayed.
+func TestWarningSurvivesLateApprovalEvents(t *testing.T) {
+	m, _ := warningModel(t, workSnapshot("job-1"))
+
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	warning, ok := m.dock.Panel().(*activeworkpanel.Panel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want the warning", m.dock.Panel())
+	}
+
+	// A gate event arrives while the warning is up.
+	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "Ship it?"})
+	updated, _ := m.Update(agentFinishedMsg{err: pipeline.ErrHumanGateRequired})
+	m = asModel(t, updated)
+
+	if got, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok || got != warning {
+		t.Fatalf("dock panel = %T, want the warning to survive a late gate event", m.dock.Panel())
+	}
+}
+
+// TestWarningRefreshesFromRuntimeEvents pins the live half of step 4: work that
+// starts or finishes while the warning is open is shown as it now is.
+func TestWarningRefreshesFromRuntimeEvents(t *testing.T) {
+	m, ctrl := warningModel(t, workSnapshot("job-1"))
+
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	// Work finishes and other work starts while the prompt is open.
+	ctrl.work = workSnapshot("job-2")
+
+	updated, _ := m.Update(jobCountMsg{count: 1})
+	m = asModel(t, updated)
+
+	panel, ok := m.dock.Panel().(*activeworkpanel.Panel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want the warning still up", m.dock.Panel())
+	}
+	view := stripANSI(panel.View(80, 20))
+	if !strings.Contains(view, "job-2") {
+		t.Fatalf("warning did not pick up the changed membership:\n%s", view)
+	}
+}
+
+// TestNoWorkSkipsTheWarning pins the other side: with no runtime work there is
+// nothing to warn about, so the exit proceeds without a panel.
+func TestNoWorkSkipsTheWarning(t *testing.T) {
+	m, ctrl := warningModel(t, EndWorkSnapshot{})
+
+	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
+
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); ok {
+		t.Fatal("an empty membership must not open the warning")
+	}
+	if cmd == nil {
+		t.Fatal("an empty membership must settle and quit")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
+	}
+	if len(ctrl.accepted) != 1 || ctrl.accepted[0].DisplayedIDs != nil {
+		t.Fatalf("acceptance = %+v, want one acceptance of an empty displayed set", ctrl.accepted)
+	}
+}
+
+// TestWarningIsIndependentOfPostmortemPolicy pins that the warning is not a
+// postmortem feature: it appears for every on_exit policy, and it appears
+// before the postmortem question.
+func TestWarningIsIndependentOfPostmortemPolicy(t *testing.T) {
+	for _, policy := range []string{"never", "always", "prompt", "bogus"} {
+		t.Run(policy, func(t *testing.T) {
+			m, _ := warningModel(t, workSnapshot("job-1"))
+			m.state.Config.Postmortem.OnExit = policy
+
+			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+			}
+			if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+				t.Fatalf("dock panel = %T, want the warning before any postmortem question", m.dock.Panel())
+			}
+		})
+	}
+}
+
+// TestWarningIsIndependentOfApprovalMode pins that neither Auto mode nor any
+// other approval mode disables the warning.
+func TestWarningIsIndependentOfApprovalMode(t *testing.T) {
+	for _, mode := range []string{"plan", "default", "edit", "copilot", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			m, _ := warningModel(t, workSnapshot("job-1"))
+			m.approvalMode = policy.ApprovalMode(mode)
+
+			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+			}
+			if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+				t.Fatalf("dock panel = %T, want the warning in %s mode", m.dock.Panel(), mode)
+			}
+		})
+	}
+}
+
+// TestWarningShowsParentChildAndJobWork pins that the warning lists the whole
+// membership the runtime reported: parent operations, delegated children and
+// detached jobs alike.
+func TestWarningShowsParentChildAndJobWork(t *testing.T) {
+	snap := EndWorkSnapshot{
+		Phase: "open",
+		Items: []EndWorkItem{
+			{ID: "op-1", Kind: "parent", Label: "thinking", Parent: true},
+			{ID: "child-1", Kind: "child", Label: "reviewer", SubagentID: 7},
+			{ID: "job-1", Kind: "command", Label: "go test ./...", Group: "op-1"},
+		},
+		Targets: []string{"op-1", "child-1"},
+	}
+	m, _ := warningModel(t, snap)
+
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	view := stripANSI(m.dock.Panel().View(80, 20))
+	for _, want := range []string{"thinking", "reviewer", "go test ./..."} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("warning does not show %q:\n%s", want, view)
+		}
+	}
+	if !strings.Contains(view, "Keep Marshal open") || !strings.Contains(view, "Stop work and continue exiting") {
+		t.Fatalf("warning must keep both choices visible:\n%s", view)
+	}
+}
+
+// newSessionWarningModel builds a model for the replacement tests, with a live
+// membership and a wired swapper.
+func newSessionWarningModel(t *testing.T, work EndWorkSnapshot) (Model, *endTestController, *fakeSessionSwapper) {
+	t.Helper()
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
+	oldState.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	swapper := &fakeSessionSwapper{newState: session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{})}
+	ctrl := &endTestController{work: work}
+	m := New(oldState, WithCommandRegistry(setupCmdReg(t)), WithEndController(ctrl), WithSessionSwapper(swapper))
+	m.resize(80, 24)
+	return m, ctrl, swapper
+}
+
+// TestNewSessionWarnsBeforeReplacing pins step 2 for /new: the replacement
+// warns, and nothing is built until the user accepts.
+func TestNewSessionWarnsBeforeReplacing(t *testing.T) {
+	m, ctrl, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+
+	updated, cmd := m.dispatchCommand("/new fix-auth")
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatalf("replacement warning returned a cmd (%T), want nil", cmd)
+	}
+	if swapper.called {
+		t.Fatal("the new session was built before the user accepted the replacement")
+	}
+	view := stripANSI(m.dock.Panel().View(80, 20))
+	if !strings.Contains(view, "Keep current conversation") {
+		t.Fatalf("replacement warning must offer keeping the current conversation:\n%s", view)
+	}
+	if len(ctrl.accepted) != 0 {
+		t.Fatal("the replacement was accepted before the user decided")
+	}
+}
+
+// TestNewSessionDeclineKeepsTheConversation pins the no-mutation rule: a
+// declined replacement leaves the current session, the resume target and the
+// swapper untouched.
+func TestNewSessionDeclineKeepsTheConversation(t *testing.T) {
+	m, _, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+	oldState := m.state
+
+	updated, _ := m.dispatchCommand("/new fix-auth")
+	m = asModel(t, updated)
+	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: false})
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatalf("declining returned a cmd (%T), want nil", cmd)
+	}
+	if swapper.called {
+		t.Fatal("declining still built a new session")
+	}
+	if m.state != oldState {
+		t.Fatal("declining replaced the model's session state")
+	}
+	if m.ResumeSession() != "" {
+		t.Fatalf("ResumeSession() = %q, want untouched", m.ResumeSession())
+	}
+}
+
+// TestNewSessionAcceptanceBuildsTheReplacement pins the accepted path: the
+// runtime settles the old work first, then the existing swap behavior runs.
+func TestNewSessionAcceptanceBuildsTheReplacement(t *testing.T) {
+	m, ctrl, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+
+	updated, _ := m.dispatchCommand("/new fix-auth")
+	m = asModel(t, updated)
+	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
+	m = asModel(t, updated)
+
+	if len(ctrl.accepted) != 1 {
+		t.Fatalf("acceptance requests = %d, want 1", len(ctrl.accepted))
+	}
+	if got := ctrl.accepted[0].Intent; got != EndIntentReplace {
+		t.Fatalf("intent = %q, want %q", got, EndIntentReplace)
+	}
+	m, cmd = runEndCmd(t, m, cmd)
+	if !swapper.called {
+		t.Fatal("the accepted replacement did not build the new session")
+	}
+	if swapper.lastName != "fix-auth" {
+		t.Fatalf("new session name = %q, want %q", swapper.lastName, "fix-auth")
+	}
+	if cmd == nil {
+		t.Fatal("the replacement must return the sheet-base-ref command")
+	}
+	if _, ok := cmd().(sheetBaseRefMsg); !ok {
+		t.Fatalf("cmd() = %T, want sheetBaseRefMsg", cmd())
+	}
+}
+
+// TestResumeDeclineLeavesTheResumeTargetUntouched pins step 2's mutation rule
+// for resume: neither the resume ID nor the announcement is applied before
+// acceptance.
+func TestResumeDeclineLeavesTheResumeTargetUntouched(t *testing.T) {
+	state := postmortemTestState(t, "sess-resume-decline")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	ctrl := &endTestController{work: workSnapshot("job-1")}
+	m := New(state, WithEndController(ctrl))
+	m.resize(80, 24)
+
+	updated, cmd := m.beginResume("sess-other")
+	m = asModel(t, updated)
+	if cmd != nil {
+		t.Fatalf("resume warning returned a cmd (%T), want nil", cmd)
+	}
+	if m.ResumeSession() != "" {
+		t.Fatalf("ResumeSession() = %q before acceptance, want empty", m.ResumeSession())
+	}
+	for _, msg := range state.Messages() {
+		if strings.Contains(msg.Content, "Resuming session") {
+			t.Fatal("the resumption was announced before acceptance")
+		}
+	}
+
+	updated, _ = m.Update(activeworkpanel.DoneMsg{Stop: false})
+	m = asModel(t, updated)
+
+	if m.ResumeSession() != "" {
+		t.Fatalf("ResumeSession() = %q after a decline, want untouched", m.ResumeSession())
+	}
+	if m.state != state {
+		t.Fatal("a declined resume replaced the model's session state")
+	}
+}
+
+// TestRepeatedRequestsCannotBypassTheWarning covers the entry points that could
+// otherwise race: a quit request while a replacement's warning is up must not
+// open a second warning, and Ctrl+C must not become a way past it.
+func TestRepeatedRequestsCannotBypassTheWarning(t *testing.T) {
+	m, ctrl, _ := newSessionWarningModel(t, workSnapshot("job-1"))
+	m.now = func() time.Time { return time.Unix(1000, 0) }
+
+	updated, _ := m.dispatchCommand("/new")
+	m = asModel(t, updated)
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want the replacement warning", m.dock.Panel())
+	}
+
+	// A quit while the replacement warning is up must not accept anything.
+	m, _ = press(m, ctrlC)
+	m, _ = press(m, ctrlC)
+	if len(ctrl.accepted) != 0 || ctrl.waitCalls != 0 {
+		t.Fatal("a quit bypassed the replacement warning and accepted the ending")
+	}
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want the warning still up", m.dock.Panel())
+	}
+}
+
+// TestPostAcceptedPromptCannotReopenWork pins step 5's admission side: once an
+// ending is accepted, an ordinary prompt — a user submit, a watch auto-resume
+// or a settings-driven start — must not start a new turn into the frozen
+// membership.
+func TestPostAcceptedPromptCannotReopenWork(t *testing.T) {
+	m, _, _ := newSessionWarningModel(t, workSnapshot("job-1"))
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	updated, _ := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
+	m = asModel(t, updated)
+
+	// The stop/join pass is running: an ordinary prompt must be refused.
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m.runner = runner
+	_, cmd, started := m.startAgentRun(runner, "do more work")
+
+	if started {
+		t.Fatal("a prompt started into an accepted ending")
+	}
+	if cmd != nil {
+		t.Fatalf("a refused start returned a cmd (%T), want nil", cmd)
+	}
+	select {
+	case goal := <-runner.called:
+		t.Fatalf("the runner was invoked with %q after the ending was accepted", goal)
+	default:
+	}
+	// Watch auto-resume is refused by the same guard.
+	if cmd := m.startWatchResumeRun("tests", false); cmd != nil {
+		t.Fatal("a watch auto-resume started work after the ending was accepted")
+	}
+}
+
+// TestNewSessionStillRefusedWhileBusy pins that this feature does not relax the
+// existing busy refusal for /new and /clear.
+func TestNewSessionStillRefusedWhileBusy(t *testing.T) {
+	m, ctrl, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+	m.busy = true
+
+	updated, cmd := m.dispatchCommand("/new")
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatalf("a busy /new returned a cmd (%T), want nil", cmd)
+	}
+	if swapper.called {
+		t.Fatal("a busy /new built a session")
+	}
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); ok {
+		t.Fatal("a busy /new opened the warning; the busy refusal must come first")
+	}
+	if len(ctrl.accepted) != 0 {
+		t.Fatal("a busy /new accepted an ending")
+	}
+}
+
+// TestReplacementNeverRunsExitPostmortem pins step 8: an accepted replacement
+// goes from settlement to the existing new/resume behavior, with no postmortem
+// and no transferred handles.
+func TestReplacementNeverRunsExitPostmortem(t *testing.T) {
+	for _, onExit := range []string{"never", "always", "prompt"} {
+		t.Run(onExit, func(t *testing.T) {
+			t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
+			t.Setenv("XDG_CONFIG_HOME", "")
+			m, _, swapper := newSessionWarningModel(t, workSnapshot("job-1"))
+			m.state.Config.Postmortem.OnExit = onExit
+
+			updated, _ := m.dispatchCommand("/new")
+			m = asModel(t, updated)
+			updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
+			m = asModel(t, updated)
+			m, cmd = runEndCmd(t, m, cmd)
+
+			if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
+				t.Fatal("a replacement must never open the exit postmortem question")
+			}
+			if !swapper.called {
+				t.Fatal("the replacement did not run")
+			}
+			if _, err := os.Stat(postmortemReportPath(t, m.state)); !os.IsNotExist(err) {
+				t.Fatalf("a replacement wrote a postmortem (stat err = %v)", err)
+			}
+			if cmd == nil {
+				t.Fatal("the replacement must return its command")
+			}
+		})
+	}
+}
+
+// TestAnalysisCannotRetriggerTheWarning pins step 7's recursion guard: the
+// scoped pass reports through endAnalysisFinishedMsg, and a quit request while
+// it runs must not open a second warning or a second question.
+func TestAnalysisCannotRetriggerTheWarning(t *testing.T) {
+	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	state := postmortemTestState(t, "sess-analysis-recursion")
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.Config.Postmortem.OnExit = "prompt"
+	ctrl := &endTestController{work: workSnapshot("job-1")}
+	m := New(state, WithEndController(ctrl))
+	m.resize(80, 24)
+
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
+	m = asModel(t, updated)
+	m, _ = runEndCmd(t, m, cmd)
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want the postmortem question after settlement", m.dock.Panel())
+	}
+
+	m, _ = answerPostmortem(t, m, postmortempanel.ResultWithAgent)
+	if !m.endAnalyzing {
+		t.Fatal("the analysis pass was not started")
+	}
+
+	// The pass itself cannot ask about active work: its membership is a
+	// separate epoch, and the model's ending stage stays where it is.
+	if cmd := m.beginEnd(nil); cmd != nil {
+		t.Fatalf("a quit during the analysis returned a cmd (%T), want nil", cmd)
+	}
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); ok {
+		t.Fatal("the analysis reopened the active-work warning")
+	}
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
+		t.Fatal("the analysis re-opened the postmortem question")
+	}
+	if len(ctrl.accepted) != 1 {
+		t.Fatalf("acceptance requests = %d, want the original one only", len(ctrl.accepted))
+	}
+}
+
+// TestEndSettledFailureIsReportedAccurately pins that the runtime's own error
+// text reaches the transcript rather than being flattened into a generic
+// failure.
+func TestEndSettledFailureIsReportedAccurately(t *testing.T) {
+	m, _ := warningModel(t, workSnapshot("job-1"))
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	updated, _ := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
+	m = asModel(t, updated)
+
+	const detail = "join active work: context deadline exceeded (outstanding: job-1)"
+	updated, cmd := m.Update(endSettledMsg{err: errors.New(detail)})
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatalf("a failed settlement returned a cmd (%T), want nil", cmd)
+	}
+	if got := lastMessageContent(m.state.Messages()); !strings.Contains(got, detail) {
+		t.Fatalf("transcript = %q, want the runtime's own failure text", got)
+	}
+	if m.endStage != endStopping {
+		t.Fatalf("endStage = %v, want stopping so the request can be retried", m.endStage)
+	}
+}
+
+// TestStoppingWarningIgnoresDoneMsg pins step 5's idempotence: a DoneMsg
+// arriving while the stop/join pass runs must not be treated as a second
+// destructive decision.
+func TestStoppingWarningIgnoresDoneMsg(t *testing.T) {
+	m, ctrl := warningModel(t, workSnapshot("job-1"))
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	updated, _ := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
+	m = asModel(t, updated)
+	if m.endStage != endStopping {
+		t.Fatalf("endStage = %v, want stopping", m.endStage)
+	}
+
+	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: false})
+	m = asModel(t, updated)
+
+	if cmd != nil {
+		t.Fatalf("a DoneMsg while stopping returned a cmd (%T), want nil", cmd)
+	}
+	if m.endStage != endStopping {
+		t.Fatalf("endStage = %v, want stopping: a late answer must not cancel the settlement", m.endStage)
+	}
+	if len(ctrl.accepted) != 1 {
+		t.Fatalf("acceptance requests = %d, want 1", len(ctrl.accepted))
+	}
+}
+
+// TestWarningPanelRendersBothChoicesAtRealSizes pins the frame requirement:
+// both choices stay visible and keyboard-accessible at the sizes the frame
+// tests use, including the narrow case and NO_COLOR.
+func TestWarningPanelRendersBothChoicesAtRealSizes(t *testing.T) {
+	prev := theme.Current()
+	t.Cleanup(func() { theme.Reload(prev) })
+
+	for _, noColor := range []bool{false, true} {
+		th := theme.LoadFor(noColor, "xterm-256color")
+		theme.Reload(th)
+
+		for _, size := range [][2]int{{80, 24}, {120, 40}, {200, 60}} {
+			work := make([]EndWorkItem, 0, 12)
+			for i := 0; i < 12; i++ {
+				work = append(work, EndWorkItem{ID: fmt.Sprintf("job-%d", i), Kind: "command", Label: fmt.Sprintf("a rather long running command label %d", i)})
+			}
+			m, _ := warningModel(t, EndWorkSnapshot{Phase: "open", Items: work})
+			m.resize(size[0], size[1])
+			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+			}
+			view := stripANSI(m.viewString())
+			for _, want := range []string{"Keep Marshal open", "Stop work and continue exiting"} {
+				if !strings.Contains(view, want) {
+					t.Fatalf("noColor=%v size=%v: warning is missing %q\n%s", noColor, size, want, view)
+				}
+			}
+			if got := lipgloss.Height(view); got != size[1] {
+				t.Fatalf("noColor=%v size=%v: frame is %d rows, want %d", noColor, size, got, size[1])
+			}
+		}
+
+		// Narrow resize: the frame must still be exactly terminal-height even
+		// though the warning is gated behind the existing minimum-size screen.
+		m, _ := warningModel(t, workSnapshot("job-1"))
+		m.resize(40, 12)
+		if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+			t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+		}
+		if got := lipgloss.Height(stripANSI(m.viewString())); got != 12 {
+			t.Fatalf("noColor=%v narrow: frame is %d rows, want 12", noColor, got)
+		}
+	}
+}
+
+// TestEndStagesKeepFrameGeometryStable pins that the warning and the postmortem
+// question keep the existing frame invariants at the swept sizes.
+func TestEndStagesKeepFrameGeometryStable(t *testing.T) {
+	m, _ := warningModel(t, workSnapshot("job-1", "job-2", "job-3"))
+	m.resize(80, 24)
+	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+	}
+	for _, size := range []struct{ w, h int }{{80, 24}, {120, 40}, {200, 60}} {
+		m.resize(size.w, size.h)
+		rows, widest := frameRows(&m)
+		if rows != size.h {
+			t.Errorf("warning at %dx%d: frame rows = %d, want %d", size.w, size.h, rows, size.h)
+		}
+		if widest > size.w {
+			t.Errorf("warning at %dx%d: widest line = %d", size.w, size.h, widest)
+		}
 	}
 }
 
@@ -8917,28 +9865,25 @@ func TestAgentGoalDispatchStartsRun(t *testing.T) {
 	}
 }
 
-// TestPostmortemAgentTurnQuitsOnFinish pins the flag-storage decision for the
-// exit postmortem's agent pass: the flag lives on the Model, and the
-// value-receiver Update round-trip preserves it because the done-case sets it
-// before startAgentRun returns the mutated model. When the turn finishes,
-// handleAgentFinished must clear it and quit.
-func TestPostmortemAgentTurnQuitsOnFinish(t *testing.T) {
+// TestEndAnalysisFinishedQuitsOnSuccess pins the scoped exit-analysis result
+// path: endAnalysisFinishedMsg always quits, and the report the pass annotates
+// is the extracted one.
+func TestEndAnalysisFinishedQuitsOnSuccess(t *testing.T) {
 	state := postmortemTestState(t, "sess-agentpass")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	m := New(state)
+	ctrl := &endTestController{}
+	m := New(state, WithEndController(ctrl))
 	m.resize(80, 24)
-	m.postmortemAgentPending = true
+	m.endAnalyzing = true
 
-	// Route the finish through Update (the value-receiver path the live
-	// program uses) rather than calling handleAgentFinished directly.
-	updated, cmd := m.Update(agentFinishedMsg{err: nil})
+	updated, cmd := m.Update(endAnalysisFinishedMsg{err: nil})
 	m = asModel(t, updated)
 
-	if m.postmortemAgentPending {
-		t.Fatal("postmortemAgentPending should be cleared once the turn finishes")
+	if m.endAnalyzing {
+		t.Fatal("endAnalyzing should be cleared once the pass finishes")
 	}
 	if cmd == nil {
-		t.Fatal("expected a quit cmd after the postmortem agent turn")
+		t.Fatal("expected a quit cmd after the exit-analysis pass")
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
@@ -8946,105 +9891,92 @@ func TestPostmortemAgentTurnQuitsOnFinish(t *testing.T) {
 	select {
 	case <-state.Done():
 	case <-time.After(time.Second):
-		t.Fatal("state was not closed after the postmortem agent turn")
+		t.Fatal("state was not closed after the exit-analysis pass")
 	}
 }
 
-// TestPostmortemPanelDoneWithAgentStartsRun pins the WRITE half of the
-// postmortem agent-pass flag: a ResultWithAgent DoneMsg through Update must
-// close the panel, write the report, set postmortemAgentPending on the model
-// it returns, and start the pass on the wired runner.
-func TestPostmortemPanelDoneWithAgentStartsRun(t *testing.T) {
+// TestPostmortemPanelDoneWithAgentRunsScopedAnalysis pins the WRITE half: a
+// ResultWithAgent DoneMsg must close the panel, write the report, and run the
+// analysis through the end controller's SCOPED operation — never through an
+// ordinary agent turn.
+func TestPostmortemPanelDoneWithAgentRunsScopedAnalysis(t *testing.T) {
 	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	state := postmortemTestState(t, "sess-write-path")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
-	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := New(state, WithRunner(context.Background(), runner))
+	ctrl := &endTestController{}
+	m := New(state, WithEndController(ctrl))
 	m.resize(80, 24)
 
-	if cmd := m.beginShutdown(true); cmd != nil {
+	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
+
+	if cmd != nil {
 		t.Fatalf("prompt path returned a cmd (%T), want nil", cmd)
 	}
 	if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
 		t.Fatalf("dock panel = %T, want *postmortempanel.Panel", m.dock.Panel())
 	}
 
-	updated, cmd := m.Update(postmortempanel.DoneMsg{Result: postmortempanel.ResultWithAgent})
-	m = asModel(t, updated)
+	m, cmd = answerPostmortem(t, m, postmortempanel.ResultWithAgent)
 
 	if m.dock.IsOpen() {
 		t.Fatalf("dock still open after the panel answered (%T)", m.dock.Panel())
 	}
-	if !m.postmortemAgentPending {
-		t.Fatal("postmortemAgentPending = false on the returned model, want true")
-	}
-	if !m.busy {
-		t.Fatal("busy = false after starting the postmortem agent pass, want true")
+	if !m.endAnalyzing {
+		t.Fatal("endAnalyzing = false on the returned model, want true")
 	}
 	if _, err := os.Stat(postmortemReportPath(t, state)); err != nil {
 		t.Fatalf("postmortem report not written: %v", err)
 	}
 	if cmd == nil {
-		t.Fatal("ResultWithAgent should return the agent-turn cmd")
+		t.Fatal("ResultWithAgent should return the analysis cmd")
 	}
-	batch, ok := cmd().(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("cmd() = %T, want tea.BatchMsg", cmd())
+	// Running the command performs the scoped pass and reports it back.
+	if _, ok := cmd().(endAnalysisFinishedMsg); !ok {
+		t.Fatalf("analysis cmd returned %T, want endAnalysisFinishedMsg", cmd())
 	}
-	for _, sub := range batch {
-		sub()
+	if len(ctrl.analysisGoals) != 1 {
+		t.Fatalf("analysis goals = %d, want 1", len(ctrl.analysisGoals))
 	}
-	select {
-	case goal := <-runner.called:
-		if !strings.Contains(goal, postmortemReportPath(t, state)) {
-			t.Fatalf("runner goal = %q, want it to name the report path", goal)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("runner was not invoked for the postmortem agent pass")
+	if !strings.Contains(ctrl.analysisGoals[0], postmortemReportPath(t, state)) {
+		t.Fatalf("analysis goal = %q, want it to name the report path", ctrl.analysisGoals[0])
 	}
 }
 
-// TestPostmortemAgentStartRefusedQuits: when BeginWork is refused there is no
-// turn in flight and no agentFinishedMsg will ever arrive. The exit flow must
-// quit itself instead of hanging at the prompt with the flag set.
-func TestPostmortemAgentStartRefusedQuits(t *testing.T) {
+// TestEndAnalysisFailureStillQuits: a failed or refused scoped pass reports the
+// failure and finishes the exit. It must never return the user to an ordinary
+// prompt — and, because the elevation belongs to the runtime's operation, the
+// model never holds one to leak.
+func TestEndAnalysisFailureStillQuits(t *testing.T) {
 	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	state := postmortemTestState(t, "sess-refused")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
-	state.Config.Postmortem.OnExit = "prompt"
-	runner := &fakeAgentRunner{called: make(chan string, 1)}
-	m := New(state, WithRunner(context.Background(), runner))
+	ctrl := &endTestController{analysisErr: errors.New("the conversation is ending")}
+	m := New(state, WithEndController(ctrl))
 	m.resize(80, 24)
+	m.endAnalyzing = true
 
-	if cmd := m.beginShutdown(true); cmd != nil {
-		t.Fatalf("prompt path returned a cmd (%T), want nil", cmd)
-	}
-	// Refuse any work registration from here on, so startAgentRun fails the
-	// way it does during a session quiesce.
-	state.BeginQuiesce()
-
-	updated, cmd := m.Update(postmortempanel.DoneMsg{Result: postmortempanel.ResultWithAgent})
+	updated, cmd := m.Update(endAnalysisFinishedMsg{err: ctrl.analysisErr})
 	m = asModel(t, updated)
 
-	if m.postmortemAgentPending {
-		t.Fatal("postmortemAgentPending = true after a refused start, want false")
-	}
-	if m.busy {
-		t.Fatal("busy = true after a refused start, want false")
+	if m.endAnalyzing {
+		t.Fatal("endAnalyzing = true after a failed pass, want false")
 	}
 	if cmd == nil {
-		t.Fatal("a refused agent-pass start must still quit")
+		t.Fatal("a failed analysis must still quit")
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatalf("cmd() = %T, want tea.QuitMsg", cmd())
 	}
+	if got := lastMessageContent(state.Messages()); !strings.Contains(got, "analysis failed") {
+		t.Fatalf("transcript = %q, want an accurate analysis failure", got)
+	}
 	select {
 	case <-state.Done():
 	case <-time.After(time.Second):
-		t.Fatal("state was not closed after the refused postmortem agent pass")
+		t.Fatal("state was not closed after the failed exit analysis")
 	}
 }
 
@@ -9055,9 +9987,9 @@ func TestExitPostmortemUnknownPolicyPrompts(t *testing.T) {
 	state := postmortemTestState(t, "sess-bogus-policy")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "bogus"
-	m := New(state)
+	m := New(state, WithEndController(&endTestController{}))
 
-	cmd := m.beginShutdown(true)
+	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 
 	if cmd != nil {
 		t.Fatalf("unknown on_exit returned a cmd (%T), want nil so the prompt stays open", cmd)
@@ -9072,39 +10004,39 @@ func TestExitPostmortemUnknownPolicyPrompts(t *testing.T) {
 	}
 }
 
-// TestExitPromptGuardFollowsThePanel: the repeated-quit guard must key off the
-// dock's current panel, not a latch. When another panel replaces the
-// postmortem prompt (here the SDD human gate), the next quit request must open
-// a fresh prompt instead of becoming a silent no-op.
-func TestExitPromptGuardFollowsThePanel(t *testing.T) {
-	state := postmortemTestState(t, "sess-replaced-panel")
+// TestExitQuestionIsAskedOnce: once the postmortem question has been answered,
+// a repeated quit request must not ask it again or re-run the extraction. The
+// guard keys off the model's own ending stage, not the dock's current panel: a
+// panel swapped in over the question must not become a way to be asked twice.
+func TestExitQuestionIsAskedOnce(t *testing.T) {
+	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	state := postmortemTestState(t, "sess-asked-once")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
-	m := New(state)
+	m := New(state, WithEndController(&endTestController{}))
 	m.resize(80, 24)
 
-	if cmd := m.beginShutdown(true); cmd != nil {
+	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
+	if cmd != nil {
 		t.Fatalf("prompt path returned a cmd (%T), want nil", cmd)
 	}
-	// A repeated request while the prompt is up must not stack a panel.
-	if cmd := m.beginShutdown(true); cmd != nil {
-		t.Fatalf("repeated prompt request returned a cmd (%T), want nil", cmd)
-	}
-
-	// The human gate takes the dock, replacing the prompt.
-	state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "Ship it?"})
-	updated, _ := m.Update(agentFinishedMsg{err: pipeline.ErrHumanGateRequired})
+	// The user declines the postmortem: the exit is now finishing.
+	updated, cmd := m.Update(postmortempanel.DoneMsg{Result: postmortempanel.ResultDeclined})
 	m = asModel(t, updated)
-	if _, ok := m.dock.Panel().(*gatepanel.Panel); !ok {
-		t.Fatalf("dock panel = %T, want *gatepanel.Panel", m.dock.Panel())
+	if cmd == nil {
+		t.Fatal("declining the postmortem must quit")
 	}
 
-	// Quitting must still work: the guard no longer latches on the old panel.
-	cmd := m.beginShutdown(true)
-	if cmd != nil {
-		t.Fatalf("quit after the prompt was replaced returned a cmd (%T), want nil so a fresh prompt opens", cmd)
+	// A repeated quit request must go straight to the exit, not ask again.
+	again := m.beginEnd(&endIntent{kind: EndIntentExit})
+	if again == nil {
+		t.Fatal("a repeated quit after the question was answered must still quit")
 	}
-	if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
-		t.Fatalf("dock panel = %T, want a fresh *postmortempanel.Panel", m.dock.Panel())
+	if _, ok := again().(tea.QuitMsg); !ok {
+		t.Fatalf("cmd() = %T, want tea.QuitMsg", again())
+	}
+	if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
+		t.Fatal("the answered question must not be re-opened")
 	}
 }

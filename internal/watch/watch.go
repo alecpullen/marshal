@@ -689,7 +689,9 @@ func (m *Manager) List() []Info {
 	defer m.mu.Unlock()
 	out := make([]Info, 0, len(m.watches))
 	for _, w := range m.watches {
-		out = append(out, w.snapshotLockedWith(m.epoch, m.revision))
+		// snapshotWith takes w.mu: the watch's sample ring is written by its
+		// own goroutine under that lock, so reading it under m.mu alone races.
+		out = append(out, w.snapshotWith(m.epoch, m.revision))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return infoLess(out[i], out[j])
@@ -965,7 +967,9 @@ func (m *Manager) Snapshot() Snapshot {
 		Active:   make([]Info, 0, len(m.watches)),
 	}
 	for _, w := range m.watches {
-		snap.Active = append(snap.Active, w.snapshotLockedWith(m.epoch, m.revision))
+		// snapshotWith takes w.mu, matching the manager -> watch lock order
+		// used by finalizeTerminal and TransferFromSubagent.
+		snap.Active = append(snap.Active, w.snapshotWith(m.epoch, m.revision))
 	}
 	for _, info := range m.terminals {
 		snap.Terminal = append(snap.Terminal, info.clone())

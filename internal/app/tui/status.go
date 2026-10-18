@@ -203,6 +203,13 @@ func (m Model) statusLeftSegments() []statusSeg {
 	if running {
 		route = turn
 	}
+	// The runner only applies an override whose provider and model match the
+	// running turn's route (agent/effort.go sessionEffortTarget); anything
+	// else is dropped at the next turn's start. Rendering such an override as
+	// pending would advertise a change this turn will not make.
+	override := m.state.EffortOverride()
+	overrideApplies := override.Level != "" &&
+		override.Provider == route.Provider && override.Model == route.Model
 	if route.Active {
 		segs = append(segs, statusSeg{text: identityStyle().Render(fmt.Sprintf("%s @ %s", route.Model, route.Provider)), priority: 1})
 		if route.LocalOnly {
@@ -231,25 +238,16 @@ func (m Model) statusLeftSegments() []statusSeg {
 				effort = "default"
 			}
 			text := "think " + effort
-			if running {
-				target := m.state.EffortOverride().Level
-				if target == "" {
-					target = m.state.Config.Models.Presets[active.Preset].Thinking
+			switch {
+			case running && overrideApplies && override.Level != turn.Thinking:
+				text = fmt.Sprintf("think %s → %s", effort, override.Level)
+				if (turn.Thinking == "off") != (override.Level == "off") {
+					text += " (next turn)"
+				} else {
+					text += " (next step)"
 				}
-				if target != turn.Thinking {
-					label := target
-					if label == "" {
-						label = "default"
-					}
-					text = fmt.Sprintf("think %s → %s", effort, label)
-					if (turn.Thinking == "off") != (target == "off") {
-						text += " (next turn)"
-					} else {
-						text += " (next step)"
-					}
-				}
-			} else if lvl := m.state.EffortOverride().Level; lvl != "" {
-				text = "think " + lvl
+			case !running && overrideApplies:
+				text = "think " + override.Level
 			}
 			segs = append(segs, statusSeg{text: dimStyle().Render(text), priority: 4})
 		}

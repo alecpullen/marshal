@@ -992,7 +992,12 @@ func (rt *Runtime) SetSessionEffort(level string) (string, error) {
 	current := effective
 	if turn, running := rt.State.TurnRoute(); running {
 		current = turn.Thinking
-		if (current == "off") == (effective == "off") {
+		// The runner only applies an override whose provider and model match
+		// the running turn's route (agent/effort.go sessionEffortTarget). A
+		// route that moved mid-turn therefore lands at the next turn, not at
+		// the next step, however the off boundary falls.
+		if turn.Provider == active.Provider && turn.Model == active.Model &&
+			(current == "off") == (effective == "off") {
 			applies = session.EffortAppliesNextStep
 		}
 	}

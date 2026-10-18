@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/picker"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
@@ -128,5 +129,63 @@ func TestStatusShowsPendingEffort(t *testing.T) {
 	line := m.renderStatusLine(160)
 	if want := "think high → low (next step)"; !strings.Contains(line, want) {
 		t.Fatalf("status line missing %q:\n%s", want, line)
+	}
+}
+
+// TestStatusIgnoresStaleOverride pins that an override recorded for a route
+// the running turn is not on is never advertised as pending: the runner drops
+// it at the next turn's start (agent/effort.go sessionEffortTarget), so this
+// turn will not apply it.
+func TestStatusIgnoresStaleOverride(t *testing.T) {
+	m := newStatusTestModel(t)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Preset: "b", Model: "model-b", Provider: "prov-b", ReasoningCapable: true, Thinking: "high"})
+	m.state.SetTurnRoute(session.RouteInfo{Active: true, Preset: "a", Model: "model-a", Provider: "prov-a", ReasoningCapable: true, Thinking: "high"})
+	m.state.SetEffortOverride(session.EffortOverride{Level: "low", Provider: "prov-b", Model: "model-b"})
+
+	line := m.renderStatusLine(160)
+	if strings.Contains(line, "→ low") {
+		t.Fatalf("status line advertises a pending effort the turn will not apply:\n%s", line)
+	}
+	if !strings.Contains(line, "think high") {
+		t.Fatalf("status line should still show the turn's effort:\n%s", line)
+	}
+}
+
+// TestEffortPickerMarksCurrentAndClears pins the picker's rows. The clearing
+// row must carry the literal "default": the picker routing switch drops an
+// empty Value before the effort case is reached, so an empty Value would make
+// clearing from the picker a silent no-op.
+func TestEffortPickerMarksCurrentAndClears(t *testing.T) {
+	m := newTestModel(t)
+	m.state.Config.Models.Presets["test"] = routing.ModelPreset{
+		Provider:        "p",
+		Model:           "m",
+		ThinkingOptions: &schema.ThinkingOptions{Levels: []string{"low", "high"}},
+	}
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Preset: "test", Model: "m", Provider: "p", ReasoningCapable: true})
+	m.state.SetEffortOverride(session.EffortOverride{Level: "low", Provider: "p", Model: "m"})
+
+	m.openEffortPicker()
+
+	p, ok := m.dock.Panel().(*picker.Model)
+	if !ok {
+		t.Fatal("openEffortPicker should open a picker")
+	}
+	if m.pickerCommand != "effort" {
+		t.Fatalf("pickerCommand = %q, want %q", m.pickerCommand, "effort")
+	}
+	want := []picker.Item{
+		{Label: "default", Value: "default"},
+		{Label: "low", Value: "low", Badge: "●"},
+		{Label: "high", Value: "high"},
+	}
+	items := p.Items()
+	if len(items) != len(want) {
+		t.Fatalf("picker items = %+v, want %+v", items, want)
+	}
+	for i := range want {
+		if items[i].Label != want[i].Label || items[i].Value != want[i].Value || items[i].Badge != want[i].Badge {
+			t.Fatalf("item %d = %+v, want %+v", i, items[i], want[i])
+		}
 	}
 }

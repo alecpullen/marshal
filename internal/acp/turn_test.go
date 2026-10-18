@@ -4457,3 +4457,22 @@ func TestSessionCancelStopsOnlyTheTurnsAttachedCommand(t *testing.T) {
 		t.Fatalf("ActiveExecutions = %+v, want only the surviving detached job %s", surviving, detachedID)
 	}
 }
+
+// TestSetEffortWithoutHookIsServerError pins that a runtime which cannot take
+// effort changes answers with a server error, not invalid params: the request
+// was well formed, the session simply has no effort control.
+func TestSetEffortWithoutHookIsServerError(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID}, true
+		},
+		Notify: func(string, any) error { return nil },
+	})
+	_, err := manager.SetEffort(context.Background(), json.RawMessage(`{"sessionId":"sess_e","effort":"low"}`))
+	if err == nil {
+		t.Fatal("SetEffort() with no hook should fail")
+	}
+	if got := codeFor(err); got != serverError {
+		t.Fatalf("error code = %d, want serverError (%d): %v", got, serverError, err)
+	}
+}

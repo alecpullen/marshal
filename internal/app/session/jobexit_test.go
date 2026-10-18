@@ -552,3 +552,37 @@ func TestJobExitFinalProgressBeforeAnnouncement(t *testing.T) {
 	}
 	t.Fatalf("retried exit not stored: %+v", stored)
 }
+
+// A failed or unknown command result is never stored in the work view, so its
+// acknowledgment is validated against the durable exit instead: the canonical
+// command key at the exit's own current revision is accepted.
+func TestWorkAckAcceptsFailedCommandResult(t *testing.T) {
+	d, sid := newStepTestDB(t)
+	s := persistedState(t, d, sid)
+	exit := JobExit{
+		ID: "job-1", ExecutionID: "exec-1", Command: "go test", ExitCode: 2,
+		At: time.Unix(500, 0), State: "failed", Outcome: "nonzero_exit",
+		SourceEpoch: "epoch-1", ResultRevision: "rev-1",
+	}
+	if err := s.AddJobExit(exit); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+
+	key := progress.WorkKey(sid, "epoch-1", "command", "exec-1")
+	if err := s.AcknowledgeWork(key, "rev-1"); err != nil {
+		t.Fatalf("AcknowledgeWork(%q, rev-1): %v", key, err)
+	}
+	view := s.WorkView()
+	if len(view.Acknowledged) != 1 || view.Acknowledged[0].TaskKey != key ||
+		view.Acknowledged[0].ResultRevision != "rev-1" {
+		t.Fatalf("command acknowledgment not stored: %+v", view.Acknowledged)
+	}
+
+	// A display job ID is still no task key, and a stale revision still fails.
+	if err := s.AcknowledgeWork("job-1", "rev-1"); err == nil {
+		t.Fatal("a display job ID was accepted as a task key")
+	}
+	if err := s.AcknowledgeWork(key, "rev-2"); err == nil {
+		t.Fatal("a stale revision acknowledged a command result")
+	}
+}

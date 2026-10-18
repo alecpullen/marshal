@@ -4049,6 +4049,99 @@ func TestWorkAckTargetsTerminalRevision(t *testing.T) {
 	}
 }
 
+// A pending acknowledgment left by a failed save is revalidated before it is
+// committed: if a re-run superseded the result while the acknowledgment waited,
+// the stale pair is dropped rather than durably hiding the newer revision.
+func TestWorkAckRetryDropsStaleRevision(t *testing.T) {
+	d, sid := newStepTestDB(t)
+	s := persistedState(t, d, sid)
+	if err := s.SaveWatchWorkResult(watchWorkResult("work:watch", "rev-1")); err != nil {
+		t.Fatalf("SaveWatchWorkResult: %v", err)
+	}
+
+	// Stand in for the state a failed AcknowledgeWork leaves behind: the rev-1
+	// pair is pending and the view is dirty.
+	s.workViewSaveMu.Lock()
+	s.workViewPendingAcks = []db.WorkAcknowledgment{{TaskKey: "work:watch", ResultRevision: "rev-1"}}
+	s.workViewDirty = true
+	s.workViewSaveMu.Unlock()
+
+	// A re-run settles the same key at a newer revision and saves durably.
+	if err := s.SaveWatchWorkResult(watchWorkResult("work:watch", "rev-2")); err != nil {
+		t.Fatalf("SaveWatchWorkResult(rerun): %v", err)
+	}
+
+	// The stale acknowledgment was neither committed to memory nor written.
+	if view := s.WorkView(); len(view.Acknowledged) != 0 {
+		t.Fatalf("a stale acknowledgment was committed: %+v", view.Acknowledged)
+	}
+	stored, err := d.LoadWorkView(sid)
+	if err != nil {
+		t.Fatalf("LoadWorkView: %v", err)
+	}
+	if len(stored.Acknowledged) != 0 {
+		t.Fatalf("a stale acknowledgment was persisted: %+v", stored.Acknowledged)
+	}
+	// It no longer blocks anything: the re-run is still acknowledgable.
+	if err := s.AcknowledgeWork("work:watch", "rev-2"); err != nil {
+		t.Fatalf("AcknowledgeWork(rev-2): %v", err)
+	}
+}
+
+// A successful whole-view save covers any recorded subagent save failure: the
+// per-id error is cleared and its source woken, so a later unrelated failure
+// cannot resurface an error the save already resolved.
+func TestWorkViewSaveClearsCoveredSubagentError(t *testing.T) {
+	d, sid := newStepTestDB(t)
+	s := persistedState(t, d, sid)
+	v := s.RegisterSubagent("worker", nil)
+
+	// A failed work-index save for this child recorded its error.
+	s.recordSubagentSaveError(v.ID, 1, "save failed")
+
+	// While the view is dirty, the failure is visible to a snapshot.
+	s.workViewSaveMu.Lock()
+	s.workViewDirty = true
+	s.workViewSaveMu.Unlock()
+	if got := s.SubagentSnapshot().SaveErrors; got == nil || got[decimalAgentID(v.ID)] == "" {
+		t.Fatalf("a recorded save failure was not exposed: %+v", got)
+	}
+
+	broker := pubsub.NewBroker[SubagentEvent]()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := broker.Subscribe(ctx)
+	s.SetSubagentBroker(broker)
+
+	// A successful save covers the failure: it is cleared and the source woken.
+	if err := s.SaveWatchWorkResult(watchWorkResult("work:watch", "rev-1")); err != nil {
+		t.Fatalf("SaveWatchWorkResult: %v", err)
+	}
+	select {
+	case ev := <-ch:
+		if ev.Payload.View.ID != v.ID {
+			t.Fatalf("woke the wrong source: %+v", ev.Payload.View)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a successful save did not wake the covered source")
+	}
+	s.mu.Lock()
+	remaining := len(s.subagentSaveErrors)
+	s.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("a covered save failure survived the successful save: %d", remaining)
+	}
+
+	// A later unrelated failure makes the view dirty again; the resolved error
+	// must not resurface.
+	s.workViewSaveMu.Lock()
+	s.workViewDirty = true
+	s.workViewSaveMu.Unlock()
+	if got := s.SubagentSnapshot().SaveErrors; got != nil {
+		t.Fatalf("a resolved save failure resurfaced: %+v", got)
+	}
+}
+
 // Resuming copies the stored work view, and a view the session cannot read — an
 // unknown future version — is a diagnostic that is never overwritten.
 func TestWorkViewResumeCopiesAndDoesNotOverwriteFutureData(t *testing.T) {

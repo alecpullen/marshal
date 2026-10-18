@@ -828,6 +828,20 @@ func (s *State) validateWorkAck(taskKey, resultRevision string) error {
 			return nil
 		}
 	}
+	// A command's result is never stored in the work view; its canonical key is
+	// derived from the durable exit instead, so a failed or unknown command
+	// result can still be acknowledged. Only a key matching the exit's own
+	// identity and revision validates — an old revision cannot acknowledge a
+	// re-run's newer one.
+	for _, e := range s.jobExits {
+		if progress.WorkKey(s.sessionID, e.SourceEpoch, "command", e.ExecutionID) != taskKey {
+			continue
+		}
+		if e.ResultRevision != resultRevision {
+			return fmt.Errorf("command result %q is at revision %q, not %q", taskKey, e.ResultRevision, resultRevision)
+		}
+		return nil
+	}
 	return fmt.Errorf("no work result for task key %q", taskKey)
 }
 
@@ -844,7 +858,14 @@ func (s *State) persistWorkViewLocked() error {
 	record := copyWorkView(s.workView)
 	s.mu.Unlock()
 	record.Version = 1
-	for _, ack := range s.workViewPendingAcks {
+	// Revalidate every pending acknowledgment against the current view before
+	// folding it into the durable record. A failed save leaves an acknowledgment
+	// pending, and the result it named may have been superseded by a re-run by
+	// the time this save runs; committing the stale pair here would let an old
+	// acknowledgment durably hide a newer terminal revision. Only the survivors
+	// are written and committed to memory.
+	acks := s.revalidatedPendingAcks()
+	for _, ack := range acks {
 		record.Acknowledged = upsertAcknowledgment(record.Acknowledged, ack)
 	}
 	if s.persistenceEnabled() {
@@ -856,14 +877,66 @@ func (s *State) persistWorkViewLocked() error {
 	}
 	// The write is durable (or there is none): commit the acknowledgments into
 	// memory, where a reader now sees the result as acknowledged.
-	if len(s.workViewPendingAcks) > 0 {
+	if len(acks) > 0 {
 		s.mu.Lock()
-		for _, ack := range s.workViewPendingAcks {
+		for _, ack := range acks {
 			s.workView.Acknowledged = upsertAcknowledgment(s.workView.Acknowledged, ack)
 		}
 		s.mu.Unlock()
-		s.workViewPendingAcks = nil
 	}
+	s.workViewPendingAcks = nil
+	// The whole view is durable now, so every recorded subagent save failure is
+	// covered by this write: drop it and wake the sources so a later unrelated
+	// failure cannot resurface an error the save already resolved.
+	s.clearCoveredSubagentSaveErrors()
 	s.workViewDirty = false
 	return nil
+}
+
+// revalidatedPendingAcks returns the pending acknowledgments that still name a
+// result's current revision, dropping — with evidence — any whose result a
+// re-run superseded while the acknowledgment waited on a failed save. Callers
+// must hold workViewSaveMu.
+func (s *State) revalidatedPendingAcks() []db.WorkAcknowledgment {
+	pending := s.workViewPendingAcks
+	if len(pending) == 0 {
+		return nil
+	}
+	surviving := make([]db.WorkAcknowledgment, 0, len(pending))
+	for _, ack := range pending {
+		if err := s.validateWorkAck(ack.TaskKey, ack.ResultRevision); err != nil {
+			s.logger.Warn("dropping stale work acknowledgment",
+				"task_key", ack.TaskKey, "result_revision", ack.ResultRevision, "error", err)
+			continue
+		}
+		surviving = append(surviving, ack)
+	}
+	return surviving
+}
+
+// clearCoveredSubagentSaveErrors drops the per-id subagent save failures a
+// successful whole-view save covers, then wakes each affected source so
+// subscribers re-read the work projection without the stale error. Callers must
+// hold workViewSaveMu, so no concurrent save can add a failure between the read
+// and the clear.
+func (s *State) clearCoveredSubagentSaveErrors() {
+	s.mu.Lock()
+	covered := make([]int64, 0, len(s.subagentSaveErrors))
+	var revision uint64
+	for id, f := range s.subagentSaveErrors {
+		covered = append(covered, id)
+		if f.Revision > revision {
+			revision = f.Revision
+		}
+	}
+	s.mu.Unlock()
+	if len(covered) == 0 {
+		return
+	}
+	if !s.clearSubagentSaveErrors(revision) {
+		return
+	}
+	for _, id := range covered {
+		s.wakeSubagentSource(id)
+	}
 }

@@ -8,9 +8,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
@@ -26,6 +30,7 @@ import (
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/lsp"
+	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/repo"
 	"marshal/internal/sddauthor"
@@ -34,6 +39,7 @@ import (
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -240,6 +246,11 @@ type Runtime struct {
 	// concurrently.
 	WriteLock      *swarm.WriteLock
 	additionalDirs []string
+
+	// work is this conversation's private work projection and action facade.
+	// It is captured under mu for the duration of one call and never read
+	// dynamically from the collectors. nil until a runtime wires it.
+	work *workCoordinator
 
 	workCtx    context.Context
 	workCancel context.CancelFunc
@@ -2098,4 +2109,1572 @@ func resolveWorkingDir(override string) (string, error) {
 		return root, nil
 	}
 	return dir, nil
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Conversation work projection and action facade (Task 13)
+//
+// The workCoordinator is one conversation's recoverable view over its existing
+// owners (the command service, the subagent registry and the watch manager)
+// plus the exact actions a client may request for one item. It supervises no
+// execution of its own: it holds no process handles, runs no timer and starts
+// no second stop registry. Every action delegates to the owner that already
+// owns the work.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const (
+	// Display-string caps applied at the projection boundary. Canonical
+	// identities stay exact opaque data and are never passed through these.
+	workLabelRunes    = 80
+	workOwnerRunes    = 80
+	workActivityRunes = 160
+	workWarningRunes  = 256
+	// workTailBytes and workInspectBytes bound a retained tail and an
+	// inspected report/output respectively.
+	workTailBytes    = 8 << 10
+	workInspectBytes = 32 << 10
+	// workTerminalDetails is how many newest settled items the live snapshot
+	// carries; the full history index keeps the rest for paging.
+	workTerminalDetails = 32
+	// workReconcileEvery is the idle reconciliation cadence and
+	// workPublishInterval the cosmetic publish throttle.
+	workReconcileEvery  = 200 * time.Millisecond
+	workPublishInterval = 200 * time.Millisecond
+
+	// workSnapshotVersion is the projection's wire version.
+	workSnapshotVersion = 1
+)
+
+// The normalized work-state vocabulary. The strings are the values the
+// viewmodel helpers switch on.
+const (
+	workStateRunning   = "running"
+	workStateStopping  = "stopping"
+	workStateWatching  = "watching"
+	workStateBlocked   = "blocked"
+	workStateCompleted = "completed"
+	workStateStopped   = "stopped"
+	workStateFailed    = "failed"
+	workStateLost      = "lost"
+	workStateUnknown   = "unknown"
+)
+
+// Work kinds. The agent/watch kinds match the session work-index kinds so a
+// saved result and a live source normalize onto the same identity.
+const (
+	workKindCommand = "command"
+	workKindAgent   = "agent"
+	workKindWatch   = "watch"
+)
+
+// workBlockedSourceID names the projection's single blocked-agent slot: a live
+// agent waiting on a canonical pending request.
+const workBlockedSourceID = "prompt"
+
+// workEpochSeq mints process-unique coordinator epochs. An epoch is opaque and
+// never sortable; it binds a client's cursor and a source identity.
+var workEpochSeq atomic.Uint64
+
+// workSources are the nonterminal source brokers and managers a coordinator
+// reconciles. Any field may be nil.
+type workSources struct {
+	Jobs           *native.JobManager
+	Watches        *watch.Manager
+	JobEvents      *pubsub.Broker[native.JobEvent]
+	WatchEvents    *pubsub.Broker[watch.Event]
+	SubagentEvents *pubsub.Broker[session.SubagentEvent]
+	SessionEvents  *pubsub.Broker[session.Event]
+}
+
+// workCandidate is one normalized item plus whether its terminal fact is still
+// settling its first durable save.
+type workCandidate struct {
+	item     viewmodel.WorkItem
+	settling bool
+}
+
+// workCoordinator is one conversation's private projection and action facade.
+type workCoordinator struct {
+	mu sync.Mutex
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
+	state   *session.State
+	jobs    *native.JobManager
+	watches *watch.Manager
+	now     func() time.Time
+
+	epoch  string
+	broker *pubsub.Broker[viewmodel.WorkSnapshot]
+
+	snapshot viewmodel.WorkSnapshot
+	history  []viewmodel.WorkItem
+	acks     map[string]string
+
+	sourceEpochs    map[string]string
+	sourceRevisions map[string]uint64
+
+	historyRevision      uint64
+	revision             uint64
+	publishedFingerprint string
+	historyFingerprint   string
+	lastLifecycle        string
+	lastPublish          time.Time
+
+	dirty chan struct{}
+}
+
+// newWorkCoordinator captures immutable conversation ownership and a new
+// coordinator epoch. It subscribes the nonterminal source brokers BEFORE the
+// initial source snapshots so no change between subscription and the first
+// read is lost, reconciles once synchronously, then reconciles on every wake
+// and at least every 200 ms. Callers stop it with close.
+func newWorkCoordinator(ctx context.Context, state *session.State, sources workSources, now func() time.Time) *workCoordinator {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if now == nil {
+		now = time.Now
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	wc := &workCoordinator{
+		ctx:             cctx,
+		cancel:          cancel,
+		state:           state,
+		jobs:            sources.Jobs,
+		watches:         sources.Watches,
+		now:             now,
+		epoch:           "work-" + strconv.FormatUint(workEpochSeq.Add(1), 36),
+		broker:          pubsub.NewBroker[viewmodel.WorkSnapshot](),
+		acks:            map[string]string{},
+		sourceEpochs:    map[string]string{},
+		sourceRevisions: map[string]uint64{},
+		dirty:           make(chan struct{}, 1),
+	}
+	wc.subscribeSources(sources)
+	wc.reconcileWork(now())
+	wc.wg.Add(1)
+	go wc.loop()
+	return wc
+}
+
+// subscribeSources subscribes every configured broker before the initial
+// snapshot read. Each subscription is only a wake: a late event never replaces
+// authoritative state, so a dropped event is repaired by the next reconcile.
+func (wc *workCoordinator) subscribeSources(s workSources) {
+	if s.JobEvents != nil {
+		ch := s.JobEvents.Subscribe(wc.ctx)
+		wc.wg.Add(1)
+		go func() {
+			defer wc.wg.Done()
+			for range ch {
+				wc.wake()
+			}
+		}()
+	}
+	if s.WatchEvents != nil {
+		ch := s.WatchEvents.Subscribe(wc.ctx)
+		wc.wg.Add(1)
+		go func() {
+			defer wc.wg.Done()
+			for range ch {
+				wc.wake()
+			}
+		}()
+	}
+	if s.SubagentEvents != nil {
+		ch := s.SubagentEvents.Subscribe(wc.ctx)
+		wc.wg.Add(1)
+		go func() {
+			defer wc.wg.Done()
+			for range ch {
+				wc.wake()
+			}
+		}()
+	}
+	if s.SessionEvents != nil {
+		ch := s.SessionEvents.Subscribe(wc.ctx)
+		wc.wg.Add(1)
+		go func() {
+			defer wc.wg.Done()
+			for range ch {
+				wc.wake()
+			}
+		}()
+	}
+}
+
+// wake is a nonblocking signal that a source moved. A dropped wake is harmless:
+// the 200 ms cadence reconciles anyway.
+func (wc *workCoordinator) wake() {
+	select {
+	case wc.dirty <- struct{}{}:
+	default:
+	}
+}
+
+// loop reconciles on every wake and at least every workReconcileEvery, so an
+// idle conversation still reflects a change that no broker announced.
+func (wc *workCoordinator) loop() {
+	defer wc.wg.Done()
+	ticker := time.NewTicker(workReconcileEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-wc.ctx.Done():
+			return
+		case <-wc.dirty:
+		case <-ticker.C:
+		}
+		wc.reconcileWork(wc.now())
+	}
+}
+
+// close cancels and joins the coordinator's goroutines and closes its broker.
+func (wc *workCoordinator) close() {
+	if wc == nil {
+		return
+	}
+	wc.cancel()
+	wc.wg.Wait()
+	wc.broker.Close()
+}
+
+// readJobs reads the command service snapshot without the coordinator mutex.
+func (wc *workCoordinator) readJobs() *native.JobSnapshot {
+	if wc.jobs == nil {
+		return nil
+	}
+	s := wc.jobs.Snapshot()
+	return &s
+}
+
+// readWatches reads the watch manager snapshot without the coordinator mutex.
+func (wc *workCoordinator) readWatches() *watch.Snapshot {
+	if wc.watches == nil {
+		return nil
+	}
+	s := wc.watches.Snapshot()
+	return &s
+}
+
+// reconcileWork rebuilds the projection from the current sources. Source
+// snapshots are read outside the coordinator mutex, a new item map is built,
+// and only then is it swapped in atomically. The source lifecycle fingerprints
+// are re-read after the memory indices; a changed epoch/revision, status,
+// attachment, settling set or save-error set retries up to twice, then defers
+// to the next wake/tick. Progress-sequence changes never force a retry.
+func (wc *workCoordinator) reconcileWork(now time.Time) {
+	state := wc.state
+	if state == nil {
+		return
+	}
+	conv := state.SessionID()
+
+	var candidates []workCandidate
+	var workView = state.WorkView()
+	for attempt := 0; ; attempt++ {
+		jobs := wc.readJobs()
+		subs := state.SubagentSnapshot()
+		watchSnap := wc.readWatches()
+		workView = state.WorkView()
+		exits := state.JobExitSnapshot()
+
+		candidates = wc.buildCandidates(conv, jobs, subs, watchSnap, exits, workView)
+
+		if attempt < 2 {
+			jobs2 := wc.readJobs()
+			subs2 := state.SubagentSnapshot()
+			watchSnap2 := wc.readWatches()
+			if sourceFingerprintChanged(jobs, jobs2, subs, subs2, watchSnap, watchSnap2) {
+				continue
+			}
+		}
+		wc.recordSourceFingerprints(jobs, subs, watchSnap)
+		break
+	}
+
+	// The acknowledgment index is the durable view of which terminal results a
+	// caller has already seen, keyed by task key and revision.
+	acks := make(map[string]string, len(workView.Acknowledged))
+	for _, a := range workView.Acknowledged {
+		if a.TaskKey != "" {
+			acks[a.TaskKey] = a.ResultRevision
+		}
+	}
+
+	wc.mu.Lock()
+	prior := make(map[string]viewmodel.WorkItem, len(wc.history))
+	for _, it := range wc.history {
+		prior[it.TaskKey] = it
+	}
+	seen := make(map[string]bool, len(candidates))
+	merged := make([]viewmodel.WorkItem, 0, len(candidates)+1)
+	for _, c := range candidates {
+		if seen[c.item.TaskKey] {
+			continue
+		}
+		seen[c.item.TaskKey] = true
+		if c.settling && workItemTerminal(c.item.State) {
+			// A terminal fact whose first durable save is in flight: retain the
+			// prior published item rather than announce an outcome the next
+			// resume could not restore. With no prior item, defer the new fact.
+			if prev, ok := prior[c.item.TaskKey]; ok {
+				merged = append(merged, prev)
+			}
+			continue
+		}
+		merged = append(merged, c.item)
+	}
+	if p := blockedPromptOf(state); p != nil {
+		it := viewmodel.WorkItem{
+			TaskKey:        viewmodel.WorkKey(conv, wc.epoch, workKindAgent, workBlockedSourceID),
+			DisplayID:      workKindAgent,
+			ConversationID: conv,
+			RuntimeEpoch:   wc.epoch,
+			SourceID:       workBlockedSourceID,
+			Kind:           workKindAgent,
+			Label:          blockedPromptLabel(p.Kind),
+			Owner:          "",
+			State:          workStateBlocked,
+			StartedAt:      now,
+			Prompt:         p,
+		}
+		if prev, ok := prior[it.TaskKey]; ok {
+			it.StartedAt = prev.StartedAt
+		}
+		it.Capabilities = viewmodel.WorkCapabilities{Inspect: true, ResolvePrompt: true}
+		merged = append(merged, it)
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		if !merged[i].StartedAt.Equal(merged[j].StartedAt) {
+			return merged[i].StartedAt.Before(merged[j].StartedAt)
+		}
+		return merged[i].TaskKey < merged[j].TaskKey
+	})
+	// Apply the acknowledgment index to the membership: an acknowledged result
+	// keeps its evidence but loses its acknowledgment capability, so the change
+	// is part of the published semantic snapshot.
+	for i := range merged {
+		if rev, ok := acks[merged[i].TaskKey]; ok && rev == viewmodel.WorkResultRevision(merged[i]) {
+			merged[i].Capabilities.Acknowledge = false
+		}
+	}
+	lifecycle := lifecycleFingerprint(merged)
+	urgent := lifecycle != wc.lastLifecycle
+	wc.lastLifecycle = lifecycle
+	wc.history = merged
+	wc.acks = acks
+	wc.mu.Unlock()
+
+	wc.publishWork(urgent)
+}
+
+// buildCandidates normalizes every source into work items. It is pure with
+// respect to the coordinator: it reads only the snapshots handed to it.
+func (wc *workCoordinator) buildCandidates(conv string, jobs *native.JobSnapshot, subs session.SubagentSnapshot, watchSnap *watch.Snapshot, exits []session.JobExit, workView db.WorkViewRecord) []workCandidate {
+	var out []workCandidate
+	out = append(out, wc.commandCandidates(conv, jobs, exits)...)
+	out = append(out, wc.subagentCandidates(conv, subs)...)
+	if watchSnap != nil {
+		out = append(out, watchCandidates(conv, *watchSnap)...)
+	}
+	out = append(out, resultCandidates(conv, workView, out)...)
+	return out
+}
+
+// commandCandidates normalizes the command service's live executions and the
+// conversation's durable exits. A durable terminal record wins over a live one
+// for the same identity; a live running execution always supersedes.
+func (wc *workCoordinator) commandCandidates(conv string, jobs *native.JobSnapshot, exits []session.JobExit) []workCandidate {
+	var out []workCandidate
+	byKey := make(map[string]int)
+	add := func(c workCandidate) {
+		if i, ok := byKey[c.item.TaskKey]; ok {
+			if workItemTerminal(out[i].item.State) && !workItemTerminal(c.item.State) {
+				out[i] = c
+			}
+			return
+		}
+		byKey[c.item.TaskKey] = len(out)
+		out = append(out, c)
+	}
+	for _, e := range exits {
+		if e.Lost {
+			// A lost exit is synthesized history: it is not a completion, and
+			// the next resume synthesizes it again.
+			continue
+		}
+		add(workCandidate{item: commandExitItem(conv, jobs, e)})
+	}
+	if jobs != nil {
+		for _, j := range jobs.Jobs {
+			if j.ExecutionID == "" {
+				continue
+			}
+			epoch := j.SourceEpoch
+			if epoch == "" {
+				epoch = jobs.Epoch
+			}
+			key := viewmodel.WorkKey(conv, epoch, workKindCommand, j.ExecutionID)
+			settling := containsString(jobs.Settling, settlementKeyOf(j))
+			it := commandItem(conv, epoch, key, j, jobs.SaveErrors)
+			if i, ok := byKey[key]; ok {
+				if workItemTerminal(out[i].item.State) {
+					continue
+				}
+				out[i] = workCandidate{item: it, settling: settling}
+				continue
+			}
+			byKey[key] = len(out)
+			out = append(out, workCandidate{item: it, settling: settling})
+		}
+	}
+	return out
+}
+
+// commandItem projects one live execution.
+func commandItem(conv, epoch, key string, j native.JobInfo, saveErrors map[string]string) viewmodel.WorkItem {
+	state := jobWorkState(j)
+	it := viewmodel.WorkItem{
+		TaskKey:        key,
+		DisplayID:      j.ID,
+		ConversationID: conv,
+		RuntimeEpoch:   epoch,
+		SourceID:       j.ExecutionID,
+		Kind:           workKindCommand,
+		Label:          cleanWorkLabel(j.Command),
+		Owner:          cleanWorkOwner(j.Origin.Actor),
+		Origin: viewmodel.WorkOrigin{
+			TurnID:     j.Origin.TurnID,
+			StepID:     j.Origin.StepID,
+			ToolCallID: j.Origin.ToolCallID,
+		},
+		State:          state,
+		Outcome:        string(j.Outcome),
+		ExitCode:       cloneInt(j.ExitCode),
+		Attachment:     string(j.Attachment),
+		StartedAt:      j.StartedAt,
+		EndedAt:        j.EndedAt,
+		ResultRevision: j.ResultRevision,
+		Activity:       cleanWorkActivity(lastLine(j.DisplayTail)),
+		OutputTail:     cleanWorkTail(j.OutputTail),
+		ProgressConfig: j.ProgressConfig,
+		Progress:       j.Progress,
+	}
+	// An attached foreground command belongs to the tool call waiting for it:
+	// it is inspectable history but not a stop target until it detaches.
+	it.Capabilities = viewmodel.WorkCapabilities{
+		Inspect: true,
+		Stop:    !workItemTerminal(state) && j.Attachment != native.AttachmentForeground && j.ExecutionID != "",
+	}
+	if msg := saveErrors[settlementKeyOf(j)]; msg != "" {
+		it.Attention = cleanWorkWarning(msg)
+	}
+	return it
+}
+
+// commandExitItem projects one durable command exit. A record with no execution
+// identity is legacy history: it uses the "legacy" epoch and its order-based
+// identity as source ID, and it never receives stop capability.
+func commandExitItem(conv string, jobs *native.JobSnapshot, e session.JobExit) viewmodel.WorkItem {
+	epoch := e.SourceEpoch
+	sourceID := e.ExecutionID
+	if sourceID == "" {
+		epoch = "legacy"
+		sourceID = e.Identity()
+	}
+	if epoch == "" {
+		if jobs != nil && jobs.Epoch != "" {
+			epoch = jobs.Epoch
+		} else {
+			epoch = "legacy"
+		}
+	}
+	key := viewmodel.WorkKey(conv, epoch, workKindCommand, sourceID)
+	state := jobExitWorkState(e)
+	it := viewmodel.WorkItem{
+		TaskKey:        key,
+		DisplayID:      e.ID,
+		ConversationID: conv,
+		RuntimeEpoch:   epoch,
+		SourceID:       sourceID,
+		Kind:           workKindCommand,
+		Label:          cleanWorkLabel(e.Command),
+		Owner:          cleanWorkOwner(e.Actor),
+		Origin: viewmodel.WorkOrigin{
+			TurnID:     e.TurnID,
+			StepID:     e.StepID,
+			ToolCallID: e.ToolCallID,
+		},
+		State:          state,
+		Outcome:        e.Outcome,
+		ExitCode:       cloneInt(e.Exit),
+		Attachment:     e.Attachment,
+		StartedAt:      e.StartedAt,
+		EndedAt:        e.EndedAt,
+		ResultRevision: e.ResultRevision,
+		OutputTail:     cleanWorkTail(e.Output),
+		ProgressConfig: e.ProgressConfig,
+		Progress:       e.Progress,
+	}
+	if it.StartedAt.IsZero() {
+		it.StartedAt = e.At
+	}
+	if it.EndedAt.IsZero() {
+		it.EndedAt = e.At
+	}
+	it.Capabilities = viewmodel.WorkCapabilities{Inspect: true}
+	return it
+}
+
+// subagentCandidates projects the subagent registry. Each view carries its
+// saved work key; the child's activity facts were read by the snapshot under
+// the child's own locks, outside every parent and coordinator lock.
+func (wc *workCoordinator) subagentCandidates(conv string, subs session.SubagentSnapshot) []workCandidate {
+	var out []workCandidate
+	for _, v := range subs.Views {
+		if v.WorkKey == "" {
+			continue
+		}
+		epoch := v.RuntimeEpoch
+		if epoch == "" {
+			epoch = subs.Epoch
+		}
+		sourceID := strconv.FormatInt(v.ID, 10)
+		state := subagentWorkState(v)
+		it := viewmodel.WorkItem{
+			TaskKey:        v.WorkKey,
+			DisplayID:      sourceID,
+			ConversationID: conv,
+			RuntimeEpoch:   epoch,
+			SourceID:       sourceID,
+			Kind:           workKindAgent,
+			Label:          cleanWorkLabel(v.Label),
+			Owner:          "subagent",
+			Origin: viewmodel.WorkOrigin{
+				TurnID:     v.Origin.TurnID,
+				StepID:     v.Origin.StepID,
+				ToolCallID: v.Origin.ToolCallID,
+			},
+			State:          state,
+			Outcome:        v.Outcome,
+			StartedAt:      v.StartedAt,
+			EndedAt:        v.EndedAt,
+			ResultRevision: v.ResultRevision,
+			Activity:       cleanWorkActivity(v.CurrentTool),
+			Reference: viewmodel.WorkReference{
+				MessageID:      v.Report.MessageID,
+				NodeKey:        v.Report.NodeKey,
+				ChildSessionID: v.Report.ChildSessionID,
+			},
+		}
+		it.Capabilities = viewmodel.WorkCapabilities{
+			Inspect:     true,
+			Stop:        v.Status == session.SubagentRunning,
+			Acknowledge: workItemTerminal(state),
+		}
+		if msg := subs.SaveErrors[sourceID]; msg != "" {
+			it.Attention = cleanWorkWarning(msg)
+			it.Capabilities.Acknowledge = false
+		}
+		out = append(out, workCandidate{item: it, settling: containsString(subs.Settling, sourceID)})
+	}
+	return out
+}
+
+// watchCandidates projects the watch manager's active registrations and its
+// retained terminal facts, keyed by registration ID and epoch.
+func watchCandidates(conv string, snap watch.Snapshot) []workCandidate {
+	var out []workCandidate
+	seen := make(map[string]bool)
+	add := func(info watch.Info, active bool) {
+		epoch := info.Epoch
+		if epoch == "" {
+			epoch = snap.Epoch
+		}
+		key := viewmodel.WorkKey(conv, epoch, workKindWatch, info.ID)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, workCandidate{
+			item:     watchItem(conv, epoch, key, info, active, snap.SaveErrors),
+			settling: containsString(snap.Settling, info.ID),
+		})
+	}
+	for _, info := range snap.Active {
+		add(info, true)
+	}
+	for _, info := range snap.Terminal {
+		add(info, false)
+	}
+	return out
+}
+
+// watchItem projects one watch registration.
+func watchItem(conv, epoch, key string, info watch.Info, active bool, saveErrors map[string]string) viewmodel.WorkItem {
+	state, outcome, warning := watchWorkState(info, active)
+	it := viewmodel.WorkItem{
+		TaskKey:        key,
+		DisplayID:      info.Name,
+		ConversationID: conv,
+		RuntimeEpoch:   epoch,
+		SourceID:       info.ID,
+		Kind:           workKindWatch,
+		Label:          cleanWorkLabel(info.Name),
+		Owner:          cleanWorkOwner(info.Owner),
+		State:          state,
+		Outcome:        outcome,
+		StartedAt:      info.CreatedAt,
+		EndedAt:        info.EndedAt,
+		ResultRevision: info.ResultRevision,
+		Activity:       cleanWorkActivity(lastLine(info.LastSample)),
+		Warning:        warning,
+	}
+	it.Capabilities = viewmodel.WorkCapabilities{
+		Inspect:     true,
+		Stop:        active && info.Active,
+		Acknowledge: !active && workItemTerminal(state),
+	}
+	if msg := saveErrors[info.ID]; msg != "" {
+		it.Attention = cleanWorkWarning(msg)
+		it.Capabilities.Acknowledge = false
+	}
+	return it
+}
+
+// resultCandidates adds durable work-index results whose live source is gone,
+// so history, receipts and paging survive a swept registration.
+func resultCandidates(conv string, workView db.WorkViewRecord, existing []workCandidate) []workCandidate {
+	var out []workCandidate
+	have := make(map[string]bool, len(existing))
+	for _, c := range existing {
+		have[c.item.TaskKey] = true
+	}
+	add := func(r db.WorkResultRecord) {
+		if r.TaskKey == "" || have[r.TaskKey] {
+			return
+		}
+		have[r.TaskKey] = true
+		out = append(out, workCandidate{item: resultItem(conv, r)})
+	}
+	for _, r := range workView.AgentResults {
+		add(r)
+	}
+	for _, r := range workView.WatchResults {
+		add(r)
+	}
+	return out
+}
+
+// resultItem projects one durable work-index result.
+func resultItem(conv string, r db.WorkResultRecord) viewmodel.WorkItem {
+	state := normalizeStoredState(r.State)
+	it := viewmodel.WorkItem{
+		TaskKey:        r.TaskKey,
+		DisplayID:      r.SourceID,
+		ConversationID: conv,
+		RuntimeEpoch:   r.RuntimeEpoch,
+		SourceID:       r.SourceID,
+		Kind:           r.Kind,
+		Label:          cleanWorkLabel(r.Label),
+		Owner:          cleanWorkOwner(r.Owner),
+		Origin: viewmodel.WorkOrigin{
+			TurnID:     r.TurnID,
+			StepID:     r.StepID,
+			ToolCallID: r.ToolCallID,
+		},
+		State:          state,
+		Outcome:        r.Outcome,
+		StartedAt:      r.StartedAt,
+		EndedAt:        r.EndedAt,
+		ResultRevision: r.ResultRevision,
+		Reference: viewmodel.WorkReference{
+			MessageID:      r.Reference.MessageID,
+			NodeKey:        r.Reference.NodeKey,
+			ChildSessionID: r.Reference.ChildSessionID,
+		},
+	}
+	it.Capabilities = viewmodel.WorkCapabilities{Inspect: true, Acknowledge: workItemTerminal(state)}
+	return it
+}
+
+// publishWork publishes the current projection. Lifecycle, membership and
+// blocked-prompt changes publish immediately; a purely cosmetic change
+// publishes at most 5 Hz. An idle, identical poll advances no revision.
+func (wc *workCoordinator) publishWork(urgent bool) {
+	now := wc.now()
+	wc.mu.Lock()
+
+	history := make([]viewmodel.WorkItem, len(wc.history))
+	copy(history, wc.history)
+
+	if fp := historyFingerprint(history); fp != wc.historyFingerprint {
+		wc.historyRevision++
+		wc.historyFingerprint = fp
+	}
+
+	items := selectPublished(history)
+	fp := fullFingerprint(items)
+	if fp == wc.publishedFingerprint && wc.revision > 0 {
+		wc.mu.Unlock()
+		return
+	}
+	if !urgent && wc.revision > 0 && !wc.lastPublish.IsZero() && now.Sub(wc.lastPublish) < workPublishInterval {
+		// Cosmetic but too soon: leave the current snapshot in place and let the
+		// next tick or wake publish it. The fingerprint is unchanged, so a later
+		// identical poll still detects the pending cosmetic change.
+		wc.mu.Unlock()
+		return
+	}
+	wc.revision++
+	snap := wc.buildSnapshot(history, items, now)
+	wc.snapshot = snap
+	wc.publishedFingerprint = fp
+	wc.lastPublish = now
+	broker := wc.broker
+	wc.mu.Unlock()
+	if broker != nil {
+		broker.Publish("work", snap)
+	}
+}
+
+// buildSnapshot selects the published items and independently computes every
+// receipt and attention count from the full conversation history. Caller holds
+// wc.mu.
+func (wc *workCoordinator) buildSnapshot(history, items []viewmodel.WorkItem, now time.Time) viewmodel.WorkSnapshot {
+	conv := ""
+	if wc.state != nil {
+		conv = wc.state.SessionID()
+	}
+	snap := viewmodel.WorkSnapshot{
+		Version:         workSnapshotVersion,
+		ConversationID:  conv,
+		RuntimeEpoch:    wc.epoch,
+		Revision:        wc.revision,
+		HistoryRevision: wc.historyRevision,
+		ObservedAt:      now,
+	}
+	snap.Items = make([]viewmodel.WorkItem, 0, len(items))
+	for i := range items {
+		it := viewmodel.CloneWorkItem(items[i])
+		if rev, ok := wc.acks[it.TaskKey]; ok && rev == viewmodel.WorkResultRevision(it) {
+			it.Capabilities.Acknowledge = false
+		}
+		// Strip prompt identity from acknowledged/published terminal items: a
+		// blocked prompt is the only prompt the projection carries.
+		snap.Items = append(snap.Items, it)
+		if viewmodel.WorkActive(it) {
+			snap.ActiveCount++
+		}
+	}
+	for _, it := range history {
+		if rev, ok := wc.acks[it.TaskKey]; ok && rev == viewmodel.WorkResultRevision(it) {
+			continue
+		}
+		if viewmodel.WorkNeedsAttention(it) {
+			snap.AttentionCount++
+			continue
+		}
+		if success, stopped := viewmodel.WorkReceipts(it, now); success {
+			snap.SuccessReceiptCount++
+		} else if stopped {
+			snap.StoppedReceiptCount++
+		}
+	}
+	return snap
+}
+
+// selectPublished returns all active items plus the at-most-32 newest terminal
+// details. The full history index keeps every omitted result for paging.
+func selectPublished(history []viewmodel.WorkItem) []viewmodel.WorkItem {
+	var active, terminal []viewmodel.WorkItem
+	for _, it := range history {
+		switch {
+		case viewmodel.WorkActive(it):
+			active = append(active, it)
+		case workItemTerminal(it.State):
+			terminal = append(terminal, it)
+		}
+	}
+	sort.SliceStable(active, func(i, j int) bool {
+		if !active[i].StartedAt.Equal(active[j].StartedAt) {
+			return active[i].StartedAt.Before(active[j].StartedAt)
+		}
+		return active[i].TaskKey < active[j].TaskKey
+	})
+	sort.SliceStable(terminal, func(i, j int) bool {
+		if !terminal[i].StartedAt.Equal(terminal[j].StartedAt) {
+			return terminal[i].StartedAt.After(terminal[j].StartedAt)
+		}
+		return terminal[i].TaskKey < terminal[j].TaskKey
+	})
+	if len(terminal) > workTerminalDetails {
+		terminal = terminal[:workTerminalDetails]
+	}
+	out := make([]viewmodel.WorkItem, 0, len(active)+len(terminal))
+	out = append(out, active...)
+	out = append(out, terminal...)
+	return out
+}
+
+// snapshotNow returns a deep copy of the newest published snapshot.
+func (wc *workCoordinator) snapshotNow() viewmodel.WorkSnapshot {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	return viewmodel.CloneWorkSnapshot(wc.snapshot)
+}
+
+// subscribe returns a receive channel for published snapshots. A caller binds
+// the epoch from a fresh snapshot or list before accepting events.
+func (wc *workCoordinator) subscribe(ctx context.Context) <-chan pubsub.Event[viewmodel.WorkSnapshot] {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return wc.broker.Subscribe(ctx)
+}
+
+// conversationID is the captured conversation's identity.
+func (wc *workCoordinator) conversationID() string {
+	if wc.state == nil {
+		return ""
+	}
+	return wc.state.SessionID()
+}
+
+// database is the session's persistence handle, or nil.
+func (wc *workCoordinator) database() *db.DB {
+	if wc.state == nil {
+		return nil
+	}
+	return wc.state.DB()
+}
+
+// page lists one page of captured history.
+func (wc *workCoordinator) page(query viewmodel.WorkQuery) (viewmodel.WorkPage, error) {
+	conv := wc.conversationID()
+	if query.ConversationID != "" && query.ConversationID != conv {
+		return viewmodel.WorkPage{}, viewmodel.ErrWorkStaleTarget
+	}
+	query.ConversationID = conv
+	wc.mu.Lock()
+	items := make([]viewmodel.WorkItem, len(wc.history))
+	copy(items, wc.history)
+	epoch := wc.epoch
+	revision := wc.historyRevision
+	wc.mu.Unlock()
+	return viewmodel.PageWork(items, epoch, revision, query)
+}
+
+// itemByKey resolves one canonical task key in the captured history.
+func (wc *workCoordinator) itemByKey(key string) (viewmodel.WorkItem, bool) {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	for i := range wc.history {
+		if wc.history[i].TaskKey == key {
+			return viewmodel.CloneWorkItem(wc.history[i]), true
+		}
+	}
+	return viewmodel.WorkItem{}, false
+}
+
+// inspect returns the read-only detail for one item: bounded, redacted output
+// and, for an agent, its exact persisted report.
+func (wc *workCoordinator) inspect(ctx context.Context, target viewmodel.WorkTarget, raw bool) (viewmodel.WorkDetail, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return viewmodel.WorkDetail{}, err
+		}
+	}
+	conv := wc.conversationID()
+	if target.ConversationID != "" && target.ConversationID != conv {
+		return viewmodel.WorkDetail{}, viewmodel.ErrWorkStaleTarget
+	}
+	item, ok := wc.itemByKey(target.TaskKey)
+	if !ok {
+		return viewmodel.WorkDetail{}, viewmodel.ErrWorkStaleTarget
+	}
+	detail := viewmodel.WorkDetail{Item: item, Raw: raw}
+	switch item.Kind {
+	case workKindCommand:
+		wc.fillCommandOutput(&detail, raw)
+	case workKindAgent:
+		wc.fillAgentReport(&detail)
+	case workKindWatch:
+		detail.Output = boundInspect(item.Activity)
+		if detail.Output == "" {
+			detail.Output = boundInspect(item.Warning)
+		}
+	default:
+		detail.Unavailable = "no retained evidence for this work item"
+	}
+	return detail, nil
+}
+
+// fillCommandOutput resolves a command's retained output. The execution ID is
+// validated against the current source before a display ID is used to call
+// Output; a reused job-N alone is never trusted.
+func (wc *workCoordinator) fillCommandOutput(detail *viewmodel.WorkDetail, raw bool) {
+	item := detail.Item
+	if wc.jobs != nil && item.SourceID != "" {
+		snap := wc.jobs.Snapshot()
+		var display string
+		for _, j := range snap.Jobs {
+			if j.ExecutionID != "" && j.ExecutionID == item.SourceID {
+				display = j.ID
+				break
+			}
+		}
+		if display != "" && raw {
+			if _, out, err := wc.jobs.Output(display, 0); err == nil {
+				detail.Output = boundInspect(out)
+				return
+			}
+		}
+	}
+	if item.OutputTail != "" {
+		detail.Output = item.OutputTail
+		return
+	}
+	detail.Unavailable = "command output is no longer retained"
+}
+
+// fillAgentReport resolves an agent's exact persisted report by its reference.
+func (wc *workCoordinator) fillAgentReport(detail *viewmodel.WorkDetail) {
+	item := detail.Item
+	detail.Output = boundInspect(item.Activity)
+	if item.Reference.MessageID <= 0 {
+		detail.Unavailable = "the agent report is not durably available"
+		return
+	}
+	database := wc.database()
+	if database == nil {
+		detail.Unavailable = "the agent report is unavailable without a database"
+		return
+	}
+	content, err := database.WorkReport(wc.conversationID(), item.Reference.MessageID)
+	if err != nil {
+		detail.Unavailable = "the agent report is no longer available"
+		return
+	}
+	detail.Report = boundInspect(content)
+}
+
+// stop routes one exact stop request to the owner that owns the work, outside
+// every coordinator lock. It never falls back to cancelling a parent, and it
+// never touches a process handle.
+func (wc *workCoordinator) stop(ctx context.Context, target viewmodel.WorkTarget, summary string) (viewmodel.WorkStopResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return viewmodel.WorkStopResult{TaskKey: target.TaskKey, State: workStateUnknown, Summary: err.Error()}, err
+	}
+	conv := wc.conversationID()
+	if target.ConversationID != "" && target.ConversationID != conv {
+		return viewmodel.WorkStopResult{TaskKey: target.TaskKey, State: workStateUnknown, Summary: "the work belongs to another conversation"}, viewmodel.ErrWorkStaleTarget
+	}
+	item, ok := wc.itemByKey(target.TaskKey)
+	if !ok {
+		return viewmodel.WorkStopResult{TaskKey: target.TaskKey, State: workStateUnknown, Summary: "work target is unavailable"}, viewmodel.ErrWorkStaleTarget
+	}
+	if !item.Capabilities.Stop {
+		return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: "work is no longer running", Accepted: false}, nil
+	}
+	switch item.Kind {
+	case workKindCommand:
+		return wc.stopCommand(item, summary)
+	case workKindAgent:
+		return wc.stopAgent(item, summary)
+	case workKindWatch:
+		return wc.stopWatch(item, summary)
+	}
+	return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: "work cannot be stopped"}, viewmodel.ErrWorkUnsupported
+}
+
+func (wc *workCoordinator) stopCommand(item viewmodel.WorkItem, summary string) (viewmodel.WorkStopResult, error) {
+	if wc.jobs == nil {
+		return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: "the command service is unavailable"}, viewmodel.ErrWorkUnsupported
+	}
+	snap := wc.jobs.Snapshot()
+	var live *native.JobInfo
+	for _, j := range snap.Jobs {
+		if j.ExecutionID != "" && j.ExecutionID == item.SourceID && !j.Status.Terminal() {
+			jj := j
+			live = &jj
+			break
+		}
+	}
+	if live == nil || live.SourceEpoch != item.RuntimeEpoch {
+		return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: "work is no longer running", Accepted: false}, nil
+	}
+	cause := summary
+	if cause == "" {
+		cause = "stopped from the work list"
+	}
+	if err := wc.jobs.RequestStop(item.SourceID, cause); err != nil {
+		return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: err.Error()}, err
+	}
+	return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: workStateStopping, Summary: cause, Accepted: true}, nil
+}
+
+func (wc *workCoordinator) stopAgent(item viewmodel.WorkItem, summary string) (viewmodel.WorkStopResult, error) {
+	if wc.state == nil {
+		return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: "no session is available"}, viewmodel.ErrWorkUnsupported
+	}
+	id, err := strconv.ParseInt(item.SourceID, 10, 64)
+	if err != nil {
+		return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: "the child identity is malformed"}, viewmodel.ErrWorkStaleTarget
+	}
+	if !wc.state.CancelSubagent(id) {
+		return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: "work is no longer running", Accepted: false}, nil
+	}
+	return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: workStateStopping, Summary: stopSummary(summary), Accepted: true}, nil
+}
+
+func (wc *workCoordinator) stopWatch(item viewmodel.WorkItem, summary string) (viewmodel.WorkStopResult, error) {
+	if wc.watches == nil {
+		return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: "the watch manager is unavailable"}, viewmodel.ErrWorkUnsupported
+	}
+	snap := wc.watches.Snapshot()
+	active := false
+	for _, info := range snap.Active {
+		if info.ID == item.SourceID && info.Active && info.Epoch == item.RuntimeEpoch {
+			active = true
+			break
+		}
+	}
+	if !active {
+		return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: "work is no longer running", Accepted: false}, nil
+	}
+	if _, err := wc.watches.Stop(item.SourceID); err != nil {
+		return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: item.State, Summary: err.Error()}, err
+	}
+	return viewmodel.WorkStopResult{TaskKey: item.TaskKey, State: workStateStopped, Summary: stopSummary(summary), Accepted: true}, nil
+}
+
+// acknowledge records that a terminal result at its exact revision has been
+// seen. It serializes through the session's durable store and publishes only
+// after that success. A repeated identical acknowledgment is idempotent.
+func (wc *workCoordinator) acknowledge(ctx context.Context, ack viewmodel.WorkAck) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	conv := wc.conversationID()
+	if ack.ConversationID != "" && ack.ConversationID != conv {
+		return viewmodel.ErrWorkStaleTarget
+	}
+	if ack.TaskKey == "" || ack.ResultRevision == "" {
+		return fmt.Errorf("work acknowledgment requires a task key and a result revision")
+	}
+	wc.mu.Lock()
+	if wc.acks[ack.TaskKey] == ack.ResultRevision {
+		wc.mu.Unlock()
+		return nil
+	}
+	wc.mu.Unlock()
+	item, ok := wc.itemByKey(ack.TaskKey)
+	if !ok {
+		return viewmodel.ErrWorkStaleTarget
+	}
+	if !workItemTerminal(item.State) {
+		return viewmodel.ErrWorkUnsupported
+	}
+	if viewmodel.WorkResultRevision(item) != ack.ResultRevision {
+		return fmt.Errorf("work result %q has moved to a newer revision", ack.TaskKey)
+	}
+	if wc.state == nil {
+		return viewmodel.ErrWorkUnsupported
+	}
+	if err := wc.state.AcknowledgeWork(ack.TaskKey, ack.ResultRevision); err != nil {
+		return err
+	}
+	wc.mu.Lock()
+	wc.acks[ack.TaskKey] = ack.ResultRevision
+	wc.mu.Unlock()
+	// Rebuild the projection so the acknowledgment is reflected in the published
+	// snapshot; the durable commit already happened above.
+	wc.reconcileWork(wc.now())
+	return nil
+}
+
+// recordSourceFingerprints records each source's lifecycle fingerprint so an
+// epoch or revision move is observable.
+func (wc *workCoordinator) recordSourceFingerprints(jobs *native.JobSnapshot, subs session.SubagentSnapshot, watches *watch.Snapshot) {
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	if jobs != nil {
+		wc.sourceEpochs["jobs"] = jobs.Epoch
+		wc.sourceRevisions["jobs"] = jobs.Revision
+	}
+	wc.sourceEpochs["subagents"] = subs.Epoch
+	wc.sourceRevisions["subagents"] = subs.Revision
+	if watches != nil {
+		wc.sourceEpochs["watches"] = watches.Epoch
+		wc.sourceRevisions["watches"] = watches.Revision
+	}
+}
+
+// ── Runtime facade ──────────────────────────────────────────────────────────
+
+// currentWork captures the private coordinator under the pointer mutex. Callers
+// hold the returned pointer only for the duration of one facade call and always
+// delegate outside Runtime.mu.
+func (rt *Runtime) currentWork() *workCoordinator {
+	if rt == nil {
+		return nil
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.work
+}
+
+// WorkSnapshot returns the newest immutable projection for this conversation.
+func (rt *Runtime) WorkSnapshot() viewmodel.WorkSnapshot {
+	wc := rt.currentWork()
+	if wc == nil {
+		return viewmodel.WorkSnapshot{}
+	}
+	return wc.snapshotNow()
+}
+
+// ListWork returns one page of the captured conversation history.
+func (rt *Runtime) ListWork(ctx context.Context, query viewmodel.WorkQuery) (viewmodel.WorkPage, error) {
+	wc := rt.currentWork()
+	if wc == nil {
+		return viewmodel.WorkPage{}, viewmodel.ErrWorkUnsupported
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return viewmodel.WorkPage{}, err
+		}
+	}
+	return wc.page(query)
+}
+
+// InspectWork returns the bounded, safe detail for one work item.
+func (rt *Runtime) InspectWork(ctx context.Context, target viewmodel.WorkTarget, raw bool) (viewmodel.WorkDetail, error) {
+	wc := rt.currentWork()
+	if wc == nil {
+		return viewmodel.WorkDetail{}, viewmodel.ErrWorkUnsupported
+	}
+	return wc.inspect(ctx, target, raw)
+}
+
+// StopWork routes one exact stop request to the owner of the work.
+func (rt *Runtime) StopWork(ctx context.Context, target viewmodel.WorkTarget, summary string) (viewmodel.WorkStopResult, error) {
+	wc := rt.currentWork()
+	if wc == nil {
+		return viewmodel.WorkStopResult{}, viewmodel.ErrWorkUnsupported
+	}
+	return wc.stop(ctx, target, summary)
+}
+
+// AcknowledgeWork records that a terminal result at its exact revision has been
+// seen.
+func (rt *Runtime) AcknowledgeWork(ctx context.Context, ack viewmodel.WorkAck) error {
+	wc := rt.currentWork()
+	if wc == nil {
+		return viewmodel.ErrWorkUnsupported
+	}
+	return wc.acknowledge(ctx, ack)
+}
+
+// SubscribeWork subscribes to published snapshots. A caller binds the epoch from
+// a fresh snapshot or list before accepting events.
+func (rt *Runtime) SubscribeWork(ctx context.Context) <-chan pubsub.Event[viewmodel.WorkSnapshot] {
+	wc := rt.currentWork()
+	if wc == nil {
+		ch := make(chan pubsub.Event[viewmodel.WorkSnapshot])
+		close(ch)
+		return ch
+	}
+	return wc.subscribe(ctx)
+}
+
+// ── Projection helpers ──────────────────────────────────────────────────────
+
+// lifecycleFingerprint captures membership, lifecycle, attachment and blocked
+// prompt identity: the facts whose change publishes immediately.
+func lifecycleFingerprint(items []viewmodel.WorkItem) string {
+	var b strings.Builder
+	b.WriteString("l1")
+	for _, it := range items {
+		b.WriteByte(0)
+		b.WriteString(it.TaskKey)
+		b.WriteByte(1)
+		b.WriteString(it.State)
+		b.WriteByte(1)
+		b.WriteString(it.Attachment)
+		b.WriteByte(1)
+		b.WriteString(promptID(it.Prompt))
+		b.WriteByte(1)
+		fmt.Fprintf(&b, "%v", it.Capabilities)
+	}
+	return b.String()
+}
+
+// historyFingerprint captures ordering, membership and attention: the facts
+// whose change advances HistoryRevision and invalidates a reader's cursor.
+func historyFingerprint(items []viewmodel.WorkItem) string {
+	var b strings.Builder
+	b.WriteString("h1")
+	for _, it := range items {
+		b.WriteByte(0)
+		b.WriteString(it.TaskKey)
+		b.WriteByte(1)
+		b.WriteString(it.State)
+		if viewmodel.WorkNeedsAttention(it) {
+			b.WriteString("\x02a")
+		}
+	}
+	return b.String()
+}
+
+// fullFingerprint captures every published semantic field, excluding the
+// observation time, the publication revision and the derived counts.
+func fullFingerprint(items []viewmodel.WorkItem) string {
+	var b strings.Builder
+	b.WriteString("f1")
+	for _, it := range items {
+		b.WriteByte(0)
+		b.WriteString(it.TaskKey)
+		b.WriteByte(1)
+		fmt.Fprintf(&b, "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%v|%v|%d",
+			it.State, it.Outcome, it.Attachment, it.Label, it.Owner, it.Activity,
+			it.OutputTail, it.Warning, it.Attention, promptID(it.Prompt),
+			it.Capabilities, exitCodeString(it.ExitCode), progressSequence(it.Progress))
+	}
+	return b.String()
+}
+
+func promptID(p *viewmodel.WorkPrompt) string {
+	if p == nil {
+		return ""
+	}
+	return p.Kind + ":" + p.RequestID
+}
+
+func exitCodeString(code *int) string {
+	if code == nil {
+		return ""
+	}
+	return strconv.Itoa(*code)
+}
+
+func progressSequence(p *progress.Snapshot) uint64 {
+	if p == nil {
+		return 0
+	}
+	return p.Sequence
+}
+
+// sourceFingerprintChanged compares the lifecycle fingerprints of two reads of
+// each source. It deliberately ignores progress sequence changes.
+func sourceFingerprintChanged(jobs, jobs2 *native.JobSnapshot, subs, subs2 session.SubagentSnapshot, watches, watches2 *watch.Snapshot) bool {
+	if jobFingerprint(jobs) != jobFingerprint(jobs2) {
+		return true
+	}
+	if subagentFingerprint(subs) != subagentFingerprint(subs2) {
+		return true
+	}
+	if watchFingerprint(watches) != watchFingerprint(watches2) {
+		return true
+	}
+	return false
+}
+
+func jobFingerprint(s *native.JobSnapshot) string {
+	if s == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s|%d|%v|%s", s.Epoch, s.Revision, s.Settling, sortedSaveErrors(s.SaveErrors))
+	for _, j := range s.Jobs {
+		b.WriteByte(0)
+		fmt.Fprintf(&b, "%s|%s|%s", j.ExecutionID, j.Status, j.Attachment)
+	}
+	return b.String()
+}
+
+func subagentFingerprint(s session.SubagentSnapshot) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s|%d|%v|%s", s.Epoch, s.Revision, s.Settling, sortedSaveErrors(s.SaveErrors))
+	for _, v := range s.Views {
+		b.WriteByte(0)
+		fmt.Fprintf(&b, "%d|%d", v.ID, v.Status)
+	}
+	return b.String()
+}
+
+func watchFingerprint(s *watch.Snapshot) string {
+	if s == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s|%d|%v|%s", s.Epoch, s.Revision, s.Settling, sortedSaveErrors(s.SaveErrors))
+	for _, info := range s.Active {
+		b.WriteByte(0)
+		fmt.Fprintf(&b, "%s|%s|%v", info.ID, info.State, info.Active)
+	}
+	for _, info := range s.Terminal {
+		b.WriteByte(1)
+		fmt.Fprintf(&b, "%s|%s", info.ID, info.TerminalReason)
+	}
+	return b.String()
+}
+
+func sortedSaveErrors(m map[string]string) string {
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(m[k])
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
+// blockedPromptOf reads the canonical pending-request APIs and returns the one
+// prompt a live agent is waiting on, if any. It decides no permission and
+// resolves nothing: the request ID is only ever carried to a client.
+func blockedPromptOf(state *session.State) *viewmodel.WorkPrompt {
+	if state == nil {
+		return nil
+	}
+	if req, ok := state.AccessRequest(); ok && req.RequestID != "" {
+		return &viewmodel.WorkPrompt{Kind: "access", RequestID: req.RequestID}
+	}
+	if p := state.PendingApproval(); p != nil && p.Key.ID != "" {
+		return &viewmodel.WorkPrompt{Kind: "approval", RequestID: p.Key.ID}
+	}
+	if p := state.PendingQuestion(); p != nil && p.Key.ID != "" {
+		return &viewmodel.WorkPrompt{Kind: "question", RequestID: p.Key.ID}
+	}
+	if p := state.PendingSkillGate(); p != nil && p.Key.ID != "" {
+		return &viewmodel.WorkPrompt{Kind: "skill", RequestID: p.Key.ID}
+	}
+	if p := state.PendingSudoAuth(); p != nil && p.Key.ID != "" {
+		return &viewmodel.WorkPrompt{Kind: "sudo", RequestID: p.Key.ID}
+	}
+	return nil
+}
+
+// blockedPromptLabel names the blocked item's display label. It carries no
+// prompt text: only the kind, the request ID and the agent ID are exposed.
+func blockedPromptLabel(kind string) string {
+	switch kind {
+	case "approval":
+		return "awaiting tool approval"
+	case "question":
+		return "awaiting an answer"
+	case "skill":
+		return "awaiting a skill decision"
+	case "sudo":
+		return "awaiting privileged authentication"
+	case "access":
+		return "awaiting an access decision"
+	}
+	return "awaiting a decision"
+}
+
+// jobWorkState maps a native lifecycle status onto the normalized vocabulary.
+// A killed execution that was explicitly stopped maps stopped; a failed or
+// historical timed-out execution maps failed while its actual outcome and exit
+// code are retained separately.
+func jobWorkState(j native.JobInfo) string {
+	switch j.Status {
+	case native.StatusRunning:
+		return workStateRunning
+	case native.StatusStopping:
+		return workStateStopping
+	case native.StatusCompleted:
+		return workStateCompleted
+	case native.StatusKilled:
+		return workStateStopped
+	case native.StatusFailed, native.StatusTimedOut:
+		return workStateFailed
+	}
+	return workStateUnknown
+}
+
+// jobExitWorkState maps a durable command exit onto the normalized vocabulary.
+func jobExitWorkState(e session.JobExit) string {
+	if e.Lost {
+		return workStateLost
+	}
+	switch e.State {
+	case "completed":
+		if e.ExitCode == 0 || (e.Exit != nil && *e.Exit == 0) {
+			return workStateCompleted
+		}
+		if e.ExitCode == -1 && e.Exit == nil {
+			return workStateUnknown
+		}
+		return workStateFailed
+	case "failed", "timed_out":
+		return workStateFailed
+	case "killed":
+		return workStateStopped
+	case "":
+		return workStateUnknown
+	}
+	return workStateUnknown
+}
+
+// subagentWorkState maps a subagent view onto the normalized vocabulary. The
+// C2 outcome distinguishes an explicit cancellation, which is a stop rather
+// than a failure.
+func subagentWorkState(v session.SubagentView) string {
+	switch v.Status {
+	case session.SubagentDone:
+		if v.Outcome == "stopped" {
+			return workStateStopped
+		}
+		return workStateCompleted
+	case session.SubagentFailed:
+		if v.Outcome == "stopped" {
+			return workStateStopped
+		}
+		return workStateFailed
+	}
+	return workStateRunning
+}
+
+// watchWorkState maps a watch registration onto the normalized vocabulary. A
+// watch still receiving samples stays watching; a live recoverable error keeps
+// it watching with a warning. A terminal registration maps its reason onto a
+// distinct state and preserves that reason in the outcome.
+func watchWorkState(info watch.Info, active bool) (state, outcome, warning string) {
+	if active {
+		if info.State == watch.StateError {
+			return workStateWatching, "", cleanWorkWarning(info.LastError)
+		}
+		return workStateWatching, "", ""
+	}
+	switch info.TerminalReason {
+	case "completed":
+		return workStateCompleted, "completed", ""
+	case "stopped":
+		return workStateStopped, "stopped", ""
+	case "failed":
+		return workStateFailed, "failed", cleanWorkWarning(info.LastError)
+	case "shutdown":
+		return workStateStopped, "shutdown", ""
+	}
+	return workStateUnknown, info.TerminalReason, ""
+}
+
+// normalizeStoredState maps a persisted state onto the normalized vocabulary.
+func normalizeStoredState(s string) string {
+	switch s {
+	case workStateRunning, workStateStopping, workStateWatching, workStateBlocked,
+		workStateCompleted, workStateStopped, workStateFailed, workStateLost, workStateUnknown:
+		return s
+	}
+	return workStateUnknown
+}
+
+// workItemTerminal reports whether a normalized state is settled.
+func workItemTerminal(state string) bool {
+	switch state {
+	case workStateCompleted, workStateFailed, workStateStopped, workStateLost, workStateUnknown:
+		return true
+	}
+	return false
+}
+
+// stopSummary supplies a truthful default cause for an accepted stop.
+func stopSummary(summary string) string {
+	if summary == "" {
+		return "stopped from the work list"
+	}
+	return summary
+}
+
+// settlementKeyOf mirrors the command service's execution identity for a
+// settling snapshot: the execution ID, or the display ID for a legacy record.
+func settlementKeyOf(j native.JobInfo) string {
+	if j.ExecutionID != "" {
+		return j.ExecutionID
+	}
+	return j.ID
+}
+
+func cloneInt(code *int) *int {
+	if code == nil {
+		return nil
+	}
+	v := *code
+	return &v
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// lastLine returns the final line of s, so a multi-line tail can label one
+// activity.
+func lastLine(s string) string {
+	s = strings.TrimRight(s, "\n")
+	if s == "" {
+		return ""
+	}
+	if i := strings.LastIndexByte(s, '\n'); i >= 0 {
+		return s[i+1:]
+	}
+	return s
+}
+
+// ── Bounded display boundaries ──────────────────────────────────────────────
+
+func cleanWorkLabel(s string) string    { return progress.Clean(s, workLabelRunes, false) }
+func cleanWorkOwner(s string) string    { return progress.Clean(s, workOwnerRunes, false) }
+func cleanWorkActivity(s string) string { return progress.Clean(s, workActivityRunes, false) }
+func cleanWorkWarning(s string) string  { return progress.Clean(s, workWarningRunes, false) }
+
+// cleanWorkTail bounds a retained output tail to workTailBytes at a UTF-8
+// boundary, preserving multi-line structure.
+func cleanWorkTail(s string) string {
+	s = progress.Clean(s, 0, true)
+	if len(s) <= workTailBytes {
+		return s
+	}
+	s = s[len(s)-workTailBytes:]
+	for len(s) > 0 && !utf8.RuneStart(s[0]) {
+		s = s[1:]
+	}
+	return s
+}
+
+// boundInspect bounds an inspected output or report to workInspectBytes at a
+// UTF-8 boundary.
+func boundInspect(s string) string {
+	s = progress.Clean(s, 0, true)
+	if len(s) <= workInspectBytes {
+		return s
+	}
+	cut := workInspectBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

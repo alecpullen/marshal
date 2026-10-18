@@ -1725,6 +1725,36 @@ Execute in order; each task remains independently buildable. Tasks 1–11 establ
 
 If Send now or other concurrent work changes an anchor, rebase and adapt only the equivalent integration call while preserving the pinned contracts. Do not copy its controller into this feature. Production implementation and task commits begin only after this written plan is approved.
 
+## Execution handoff
+
+Executed on branch `live-work` from base `7c031784` (the Send now merge), in an isolated worktree. All 24 tasks landed, one verified commit each, plus three defect-fix commits returned to their owning tasks.
+
+Commands run and results (all from the worktree root):
+
+- `git diff --check` — clean.
+- `gofmt -l` over every touched package — no output.
+- `go vet ./...` — clean.
+- `go build -o /private/tmp/marshal-live-work ./cmd/marshal` — built; the developer's root binary was not replaced.
+- `go test ./...` — passes except the pre-existing failures listed below.
+- `go test -race` over `internal/progress`, `internal/app/session`, `internal/tools/native`, `internal/tools/registry`, `internal/watch`, `internal/viewmodel`, `internal/app`, `internal/acp` — passes except the same pre-existing `internal/app` failures.
+- `USABILITY_MARSHAL_BINARY=/private/tmp/marshal-live-work go test ./test/usability/... -run TestScripted -v -timeout 5m` — passes.
+- `go test ./web/bridge -run '^TestWebIsStdlibOnly$'` — passes; the `web/` boundary is intact.
+
+Pre-existing failures, reproduced at the base commit and unrelated to this feature:
+
+- `internal/app`: `TestRuntimeCloseRunsNoGitGC`, `TestStartupSnapshotMaintenanceIsBoundedAndSkipsStorelessWorkspaces`.
+- `internal/snapshot`: a flaky, environment-dependent set (`TestService_*`, `TestLookup*`, `TestRooted*`, `TestTrackSucceedsWithNestedGitignoredLargeFile`, and intermittently `TestIntegrationOwnershipReleaseDrainsWritersBeforeUnlock` / `TestRunManagedCancellationKillsTree`). The package is byte-identical to the base commit (`git diff --stat 7c031784..HEAD -- internal/snapshot/` is empty) and the failing set varies between runs, so no failure there can be attributed to this branch.
+- `internal/tools/desktop/browser`: `TestStandaloneBackendNavigateAndRead` (reaches the network).
+- `internal/worktree`: `TestCLIGitOpsCommitAllWithoutARepoIdentity` (the fixture host has a git identity).
+
+Defects found during execution and fixed in their owning task:
+
+- Task 10: the pinned `progress` schema on `shell.run` pushed the tool-schema budget from 14997 to 15247 bytes against the 15000 ceiling in `internal/app/prompt_budget_test.go`. Resolved by trimming `shell.run`'s model-facing prose (tool description and the `timeout_seconds`/`background` parameter descriptions) by 261 bytes, per the user's decision and Task 10 step 5's "keep schema prose short rather than relaxing a budget". The ceiling was not raised.
+- Task 11: `Manager.List` and `Manager.Snapshot` read each watch's sample ring via `snapshotLockedWith` while holding only `m.mu`, racing the watch goroutine's write under `w.mu`. Both now use the locking `snapshotWith`, matching the established manager → watch lock order.
+- Task 17: `tasksPanelModel.scalarField` built a `KindScalar` field with no `GetStr`, which `listpanel.valueCell` calls unconditionally — a nil-func panic on rendering any Work notice row. It now supplies `GetStr`, matching `doctorpanel`'s notice-row pattern.
+
+Deviations from the plan's letter, all recorded above or in the task reports: Task 23 ran in parallel with Task 1 (documentation-only, disjoint files); Task 18 also edited `todos.go` to move `workRequestMsg` as its step 1 requires; Task 14's tests live in `runtime_test.go` rather than `app_test.go`; Task 22's `stack.go`/`host.go` changes are documentation-only, since switching the stack projection would require editing `turn.go`, which step 3 forbids.
+
 ## Plan-authoring validation
 
 Validated against the base commit above:

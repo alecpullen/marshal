@@ -1,9 +1,9 @@
 # Live work: pinned gutter cards and structured progress
 
-Status: written specification approved; implementation plan prepared for review.
+Status: implemented; all 24 plan tasks landed and verified on branch `live-work`.
 Date: 2026-10-18.
 Source baseline: `320c7a8f2cac87af57499086a63f1f6ee22fa1be`.
-Implementation: not started.
+Implementation: complete. Executed from the [implementation plan](plans/2026-10-18-live-work-plan.md) on base `7c031784` (after the Send now plan merged). Runnable measured producers live in [examples/](examples/README.md).
 Workflow: [Marshal brainstorming](../../internal/skills/builtin/brainstorming.md); [implementation plan](plans/2026-10-18-live-work-plan.md) authored with Marshal's internal plan-writing skill.
 
 ## Context and approved decisions

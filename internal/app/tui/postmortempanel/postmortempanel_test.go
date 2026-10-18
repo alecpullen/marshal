@@ -1,6 +1,7 @@
 package postmortempanel
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -155,5 +156,54 @@ func TestNonKeyMessagesAreIgnored(t *testing.T) {
 	}
 	if p.stage != 0 || p.cursor != 0 {
 		t.Fatalf("non-key message changed state: stage %d cursor %d", p.stage, p.cursor)
+	}
+}
+
+// TestBothChoicesVisibleAndKeyboardReachableAtRealSizes pins the exit question's
+// contract: at the sizes the frame tests sweep, both answers stay visible and
+// each is reachable by keyboard at BOTH stages — including the agent stage,
+// whose disclosure paragraph is the longest content the panel renders.
+func TestBothChoicesVisibleAndKeyboardReachableAtRealSizes(t *testing.T) {
+	// answer drives the panel to a terminal result, choosing Yes (forward
+	// false) or No (forward true) at whatever stage it starts from.
+	answer := func(t *testing.T, startStage int, yes bool) Result {
+		t.Helper()
+		p := New()
+		for p.stage < startStage {
+			press(t, p, tea.KeyPressMsg{Code: 'y'})
+		}
+		if !yes {
+			press(t, p, tea.KeyPressMsg{Code: 'j'})
+		}
+		for {
+			got := press(t, p, tea.KeyPressMsg{Code: tea.KeyEnter})
+			if got != nil {
+				return got.Result
+			}
+			// Stage 0: the panel advanced rather than answered.
+			if !yes {
+				press(t, p, tea.KeyPressMsg{Code: 'j'})
+			}
+		}
+	}
+
+	for _, maxHeight := range []int{6, 9, 16, 24} {
+		for stage := 0; stage < 2; stage++ {
+			p := New()
+			if stage == 1 {
+				press(t, p, tea.KeyPressMsg{Code: 'y'})
+			}
+			view := p.View(80, maxHeight)
+			for _, want := range []string{"Yes", "No"} {
+				if !strings.Contains(view, want) {
+					t.Fatalf("stage %d at maxHeight %d: %q missing:\n%s", stage, maxHeight, want, view)
+				}
+			}
+
+			yes, no := answer(t, stage, true), answer(t, stage, false)
+			if yes == no {
+				t.Fatalf("stage %d: both answers produced %v; the choices are not distinct", stage, yes)
+			}
+		}
 	}
 }

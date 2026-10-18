@@ -58,10 +58,14 @@ func parseReviewArgs(args []string) (model, base, reviewRange string, remaining 
 	return model, base, reviewRange, out
 }
 
-// newSessionEffect is the shared /new and /clear handler. It asks the
-// runtime to build a brand-new session, then re-points every model field
-// that depends on the current session and drops per-message UI state that
-// belonged to the old one.
+// newSessionEffect is the shared /new and /clear handler. It records a pending
+// REPLACEMENT whose target (the new session's name) is applied only after the
+// runtime accepts the work membership an end would stop: the current
+// conversation's live work is settled first, and nothing about the new session
+// is built until then.
+//
+// The existing busy refusal is preserved: a turn in flight still refuses a
+// replacement outright rather than warning about it.
 func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	if m.busy {
 		return m, nil
@@ -71,14 +75,22 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
-
 	name := strings.TrimSpace(strings.Join(args, " "))
+	return m, m.beginEnd(&endIntent{kind: EndIntentReplace, name: name})
+}
+
+// startNewSession builds the replacement session and re-points every model
+// field that depends on the current session, dropping per-message UI state that
+// belonged to the old one. It runs only after an accepted replacement: the
+// runtime froze the old conversation at acceptance, so the swap acts on a
+// settled membership and no old work is transferred or reopened.
+func startNewSession(m *Model, name string) tea.Cmd {
 	oldCount := len(m.state.Messages())
 	snap, err := m.sessionSwapper.NewSession(name)
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Failed to start new session: %v", err), session.ContentTypePlain)
 		m.refreshViewport()
-		return m, nil
+		return nil
 	}
 
 	m.state = snap.State
@@ -123,18 +135,16 @@ func newSessionEffect(m *Model, args []string) (tea.Model, tea.Cmd) {
 	}
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
-	return m, sheetBaseRefCmd(m.state.Workspace().ActiveRoot)
+	return sheetBaseRefCmd(m.state.Workspace().ActiveRoot)
 }
 
 func init() {
 	tuiCommandEffects = map[string]func(m *Model, args []string) (tea.Model, tea.Cmd){
 		"exit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.state.AddMessage(session.RoleSystem, "Goodbye!", session.ContentTypePlain)
-			return m, m.beginShutdown(true)
+			return m, m.beginEnd(&endIntent{kind: EndIntentExit})
 		},
 		"quit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.state.AddMessage(session.RoleSystem, "Goodbye!", session.ContentTypePlain)
-			return m, m.beginShutdown(true)
+			return m, m.beginEnd(&endIntent{kind: EndIntentExit})
 		},
 		"set": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			m.handleSetCommand(args)

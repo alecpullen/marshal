@@ -98,6 +98,12 @@ func done(result Result) tea.Cmd {
 func (p *Panel) Sizing() dock.Sizing { return dock.Docked }
 
 // View renders the current question.
+//
+// Both answers are part of the question, so they are the LAST content the panel
+// gives up: when the dock's height budget is tight the explanatory lines are
+// dropped first and the choices stay visible and reachable. A question whose
+// answers scrolled off the bottom would be a dead end — the user could not
+// exit or decline from the keyboard.
 func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 3 {
 		return ""
@@ -107,11 +113,8 @@ func (p *Panel) View(width, maxHeight int) string {
 	if p.stage == 1 {
 		question = "Include agent analysis?"
 	}
-	var b strings.Builder
-	b.WriteString(question + "\n\n")
-	if p.stage == 1 {
-		b.WriteString("The agent pass runs with system access and editing approval: it may edit this file at an absolute path outside the workspace.\n\n")
-	}
+	// answers is the part that must survive: two rows, always.
+	answers := make([]string, 0, 2)
 	for i, label := range []string{"Yes", "No"} {
 		marker := "  "
 		style := lipgloss.NewStyle().Foreground(theme.Current().FGDefault)
@@ -119,8 +122,29 @@ func (p *Panel) View(width, maxHeight int) string {
 			marker = "▸ "
 			style = style.Bold(true)
 		}
-		b.WriteString(marker + style.Render(label) + "\n")
+		answers = append(answers, marker+style.Render(label))
 	}
+	explain := ""
+	if p.stage == 1 {
+		explain = "The agent pass runs with system access and editing approval: it may edit this file at an absolute path outside the workspace."
+	}
+	// The chrome header takes one row, so the content must fit in maxHeight-1.
+	// The question and the two answers are mandatory; the explanatory paragraph
+	// and its blank separators are the only optional rows, and they are dropped
+	// before an answer is.
+	contentBudget := maxHeight - 1
+	full := []string{question, "", explain, "", answers[0], answers[1]}
+	compact := []string{question, "", answers[0], answers[1]}
+	rows := compact
+	if explain != "" && len(full) <= contentBudget {
+		rows = full
+	} else if len(compact) > contentBudget {
+		// Even the compact form does not fit — the dock's floor should make
+		// this unreachable — so keep the answers and the question, in that
+		// order of importance.
+		rows = []string{answers[0], answers[1]}
+	}
+	content := strings.Join(rows, "\n")
 	return chrome.PanelWithHints("Exit postmortem", "y/n or ↑↓/←→ choose · ↵ confirm · esc no",
-		strings.TrimRight(b.String(), "\n"), pw, min(lipgloss.Height(b.String())+1, maxHeight), true, theme.Current())
+		content, pw, min(lipgloss.Height(content)+1, maxHeight), true, theme.Current())
 }

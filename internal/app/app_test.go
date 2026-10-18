@@ -5576,3 +5576,201 @@ reviewer = "mock/m"
 		t.Error("agent.steer must be registered")
 	}
 }
+
+// ── Task 10: the TUI's end adapter ──────────────────────────────────────
+
+// startEndRuntime builds a runtime with a resolvable provider, so the runner
+// exists and the exit-analysis pass has something to run on. The provider is
+// never called: these tests inspect elevation and membership, not model output.
+func startEndRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[project]
+name = "end-controller-test"
+
+[profile]
+default = "mock_profile"
+
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+
+[models.presets."mock/mock-model"]
+local_only = true
+
+[agent_profiles.mock_profile]
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	rt, err := StartRuntime(context.Background(),
+		WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+	return rt
+}
+
+// TestTUIEndControllerAdapterRoundTrips pins the structural seam between the TUI
+// and the runtime: the adapter converts the runtime's shapes into the neutral
+// mirrors the model uses, and every decision still lands on the runtime.
+func TestTUIEndControllerAdapterRoundTrips(t *testing.T) {
+	rt := startEndRuntime(t)
+	ctrl := &tuiEndController{rt: rt}
+
+	if got := ctrl.ActiveWork(); len(got.Items) != 0 {
+		t.Fatalf("ActiveWork() = %+v, want an empty membership on a fresh runtime", got)
+	}
+
+	// Register real conversation work, so the adapter reports a real membership
+	// rather than a synthesised one.
+	_, finish, err := rt.BeginWork(context.Background())
+	if err != nil {
+		t.Fatalf("BeginWork: %v", err)
+	}
+	defer finish()
+
+	work := ctrl.ActiveWork()
+	if len(work.Items) != 1 {
+		t.Fatalf("ActiveWork() items = %d, want the registered operation", len(work.Items))
+	}
+	if work.Items[0].ID == "" || !work.Items[0].Parent {
+		t.Fatalf("work item = %+v, want a parent operation with an opaque ID", work.Items[0])
+	}
+	if work.Phase != rt.EndPhase() {
+		t.Fatalf("phase = %q, want the runtime's own phase %q", work.Phase, rt.EndPhase())
+	}
+	if ctrl.EndAccepted() {
+		t.Fatal("EndAccepted() = true before any acceptance")
+	}
+
+	// An acceptance requiring a displayed set must refuse when the membership
+	// was not displayed — and the adapter must relay the refusal faithfully.
+	refused, err := ctrl.AcceptEnd(tui.EndAcceptRequest{
+		Intent:           tui.EndIntentExit,
+		DisplayedIDs:     []string{"something-else"},
+		RequireDisplayed: true,
+	})
+	if err != nil {
+		t.Fatalf("AcceptEnd: %v", err)
+	}
+	if refused.Accepted {
+		t.Fatal("the adapter reported an acceptance of an undisplayed membership")
+	}
+	if len(refused.Expanded) != 1 || refused.Expanded[0] != work.Items[0].ID {
+		t.Fatalf("Expanded = %v, want the undisplayed ID %q", refused.Expanded, work.Items[0].ID)
+	}
+	if rt.EndAccepted() {
+		t.Fatal("a refused acceptance froze the runtime")
+	}
+
+	// The real acceptance succeeds and reports the membership it stopped.
+	accepted, err := ctrl.AcceptEnd(tui.EndAcceptRequest{
+		Intent:           tui.EndIntentExit,
+		DisplayedIDs:     []string{work.Items[0].ID},
+		RequireDisplayed: true,
+	})
+	if err != nil {
+		t.Fatalf("AcceptEnd: %v", err)
+	}
+	if !accepted.Accepted {
+		t.Fatalf("accepted = false, want true (expanded: %v)", accepted.Expanded)
+	}
+	if len(accepted.Work.Items) != 1 {
+		t.Fatalf("accepted membership = %d items, want 1", len(accepted.Work.Items))
+	}
+	if !ctrl.EndAccepted() {
+		t.Fatal("EndAccepted() = false after an acceptance")
+	}
+}
+
+// TestExitAnalysisElevationIsRestored pins the app-side ownership of the exit
+// analysis' temporary elevation: it is in place while the pass runs and is
+// undone whatever the outcome, so a failed pass can never leave an ordinary
+// prompt elevated.
+func TestExitAnalysisElevationIsRestored(t *testing.T) {
+	rt := startEndRuntime(t)
+	if rt.Runner == nil {
+		t.Fatal("rt.Runner = nil")
+	}
+
+	// Seed a read-only posture: the pass must not have it, and must get it back.
+	rt.State.SetSystemAccess(false)
+	rt.Runner.SetApprovalMode(policy.ModePlan)
+	rt.Config.Agent.ApprovalMode = string(policy.ModePlan)
+
+	seenSystem, seenMode := false, policy.ModePlan
+	err := runWithExitAnalysisElevation(rt, func() error {
+		seenSystem = rt.State.SystemAccess()
+		if rt.Runner.Policy != nil {
+			seenMode = rt.Runner.Policy.ApprovalMode()
+		}
+		return errors.New("the pass failed")
+	})
+	if err == nil {
+		t.Fatal("runWithExitAnalysisElevation swallowed the pass error")
+	}
+	if !seenSystem {
+		t.Fatal("the pass ran WITHOUT system access; the elevation was not applied")
+	}
+	if seenMode != policy.ModeEdit {
+		t.Fatalf("the pass ran in mode %q, want edit so its write is not mode-denied", seenMode)
+	}
+	if rt.State.SystemAccess() {
+		t.Fatal("a failed pass left system access granted")
+	}
+	if rt.Runner.Policy != nil && rt.Runner.Policy.ApprovalMode() != policy.ModePlan {
+		t.Fatalf("a failed pass left the mode at %q, want the prior plan", rt.Runner.Policy.ApprovalMode())
+	}
+}
+
+// TestTUIEndControllerIsTheOnlyEndSeam pins that app.Run wires the adapter, so
+// the TUI never decides policy or reaches the runtime directly. It runs the
+// program runner just far enough to inspect the model's end seam.
+func TestTUIEndControllerIsTheOnlyEndSeam(t *testing.T) {
+	tmp := t.TempDir()
+	origWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer os.Chdir(origWd)
+
+	programRunner := func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+		value := reflect.ValueOf(model)
+		field := value.FieldByName("endController")
+		if !field.IsValid() {
+			t.Fatal("the model has no endController field")
+		}
+		if field.IsNil() {
+			t.Fatal("app.Run did not wire the TUI's end controller")
+		}
+		// The field is an unexported interface, so Interface() is unavailable.
+		// Elem() reads the value inside it without that restriction.
+		if got, want := field.Elem().Type(), reflect.TypeOf(&tuiEndController{}); got != want {
+			t.Fatalf("endController = %v, want the runtime adapter %v", got, want)
+		}
+		return ProgramResult{}
+	}
+
+	if err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithProgramRunner(programRunner),
+	); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}

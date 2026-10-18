@@ -27,6 +27,7 @@ import (
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/changedfiles"
@@ -134,6 +135,127 @@ type SessionSwapperFunc func(name string) (SessionSwapResult, error)
 
 func (f SessionSwapperFunc) NewSession(name string) (SessionSwapResult, error) { return f(name) }
 
+// EndIntent names what the user accepted: closing the conversation (an exit) or
+// replacing it (/new, /clear, resume). The strings match the runtime's own
+// constants; a replacement never runs an exit postmortem.
+const (
+	EndIntentExit    = "exit"
+	EndIntentReplace = "replace"
+)
+
+// EndWorkItem mirrors one runtime work item in neutral data, so the TUI can
+// render the membership an end would stop without importing the app package.
+// Nothing downstream may pair work by Label: ID is the identity.
+type EndWorkItem struct {
+	ID         string
+	Kind       string
+	Label      string
+	Group      string
+	Parent     bool
+	SubagentID int64
+}
+
+// EndWorkSnapshot is the runtime's active conversation work at one moment: the
+// membership a warning must show before anything is stopped, with the exit
+// phase it was taken in.
+type EndWorkSnapshot struct {
+	Phase   string
+	Items   []EndWorkItem
+	Targets []string
+}
+
+// EndAcceptRequest is one end acceptance request. DisplayedIDs are the opaque
+// work IDs the user was actually shown; RequireDisplayed is true when the
+// caller insists nothing may be stopped that was not displayed.
+type EndAcceptRequest struct {
+	Intent           string
+	DisplayedIDs     []string
+	RequireDisplayed bool
+}
+
+// EndDecision is the outcome of an end acceptance. A non-empty Expanded with
+// Accepted false means nothing was frozen or stopped: the caller refreshes its
+// warning with Work and asks again.
+type EndDecision struct {
+	Accepted bool
+	Expanded []string
+	Work     EndWorkSnapshot
+}
+
+// EndController is the runtime-facing end seam the TUI uses to warn about live
+// work, submit the user's decision, settle it and run the scoped exit
+// analysis. It is satisfied structurally by app.go's adapter, which delegates
+// to the runtime, so the TUI never imports internal/app and never decides
+// policy.
+type EndController interface {
+	// ActiveWork returns the authoritative membership a warning renders.
+	ActiveWork() EndWorkSnapshot
+	// AcceptEnd freezes ordinary admission atomically after checking the
+	// displayed IDs. A refusal must stop nothing.
+	AcceptEnd(req EndAcceptRequest) (EndDecision, error)
+	// EndAccepted reports whether an end has been accepted.
+	EndAccepted() bool
+	// WaitForEnd stops and joins the accepted end's work. It accepts first, is
+	// idempotent, and never latches success: a failed join may be retried.
+	WaitForEnd(ctx context.Context) error
+	// RunExitAnalysis runs the scoped exit-analysis pass during the postmortem
+	// phase. It joins its own epoch before returning.
+	RunExitAnalysis(ctx context.Context, goal string) error
+}
+
+// WithEndController wires the runtime-facing end seam. Nil (the default) means
+// no runtime is attached: an end then has no work membership to consult and
+// nothing to settle, so it proceeds directly.
+func WithEndController(c EndController) Option {
+	return func(m *Model) { m.endController = c }
+}
+
+// endIntent is one pending interactive end request: what the user asked for,
+// held until the runtime accepts the work membership it would stop.
+type endIntent struct {
+	// kind is EndIntentExit or EndIntentReplace.
+	kind string
+	// name is the new-session name for a /new or /clear replacement.
+	name string
+	// resumeID is the session to resume for a replacement of that kind. It is
+	// applied only after acceptance: a declined request must leave the resume
+	// target untouched.
+	resumeID string
+}
+
+// endStage is how far an interactive end has got.
+type endStage int
+
+const (
+	// endIdle: no end is in progress.
+	endIdle endStage = iota
+	// endAwaitingDecision: the active-work warning is up, awaiting the user.
+	endAwaitingDecision
+	// endStopping: the end was accepted and its stop/join pass is running (or
+	// last failed and is waiting for a retry).
+	endStopping
+	// endPostmortem: the work settled and the exit postmortem policy applies.
+	endPostmortem
+	// endFinishing: the postmortem question is answered; the exit is settling.
+	endFinishing
+)
+
+// endSettlementTimeout bounds the interactive stop/join pass. It bounds the
+// JOIN, never any process's lifetime: a join that times out reports the
+// remaining work and offers a retry.
+const endSettlementTimeout = 30 * time.Second
+
+// endSettledMsg reports the outcome of one stop/join pass back to the model,
+// off the render loop. The pass itself runs in a tea.Cmd so the input stays
+// responsive while work is stopping.
+type endSettledMsg struct{ err error }
+
+// endAnalysisFinishedMsg reports the outcome of the scoped exit-analysis pass.
+// It always quits, whatever the outcome: the analysis runs after the extraction
+// has already landed, so a failed annotation must never strand the user at an
+// elevated ordinary prompt.
+type endAnalysisFinishedMsg struct{ err error }
+
 // CustomAgentRunnerFactory builds a one-shot AgentRunner for a named custom
 // agent. It is wired from app.go via WithCustomAgentRunnerFactory and used
 // by buildCustomAgentRunner to dispatch Run-now. Returns nil when the agent
@@ -215,8 +337,36 @@ type Model struct {
 	// reload. Used to recover from a startup provider-build failure, where
 	// the TUI was constructed without a runner: the first successful reload
 	// rebuilds one, and adoptRunner installs it here.
-	runnerSource       func() (context.Context, AgentRunner)
-	sessionSwapper     SessionSwapper
+	runnerSource   func() (context.Context, AgentRunner)
+	sessionSwapper SessionSwapper
+	// endController is the runtime-facing end seam (WithEndController). Nil in
+	// a build without a runtime: an end then consults no work membership and
+	// has nothing to settle.
+	endController EndController
+	// end is the pending interactive end intent, non-nil from the moment the
+	// user asks to exit or replace the conversation until the warning is
+	// declined. It holds the target (a new-session name or a resume ID) so
+	// nothing about that target is mutated or announced before acceptance.
+	end *endIntent
+	// endStage is how far the end has got (see endStage).
+	endStage endStage
+	// endSnapshot is the most recent membership the warning rendered, used to
+	// refresh the panel from runtime events and as the displayed set a
+	// confirmation submits.
+	endSnapshot EndWorkSnapshot
+	// endDisplaced remembers the dock panel the warning displaced, so declining
+	// re-opens exactly the surface the user was working in. A panel the runtime
+	// resolved during settlement is never restored: acceptance clears it.
+	endDisplaced dock.Panel
+	// endWarning is the warning panel this end opened. Holding the instance is
+	// what lets a refresh keep the same surface — and the same key routing —
+	// instead of substituting a second panel the user never opened.
+	endWarning dock.Panel
+	// endAnswered is set once the user has answered the exit postmortem
+	// question. It is the latch that keeps a repeated quit request from
+	// re-opening a question that was already answered, and it keeps an
+	// in-flight analysis pass from being interrupted by a fresh prompt.
+	endAnswered        bool
 	openConnectOnStart bool
 	trustPromptDir     string
 	trustDecide        func(trust.Decision)
@@ -334,10 +484,11 @@ type Model struct {
 	queuedCount    int
 	cancelling     bool
 
-	// postmortemAgentPending is set when the exit flow starts the agent
-	// analysis pass as a real turn; handleAgentFinished reads it to quit once
-	// that turn completes.
-	postmortemAgentPending bool
+	// endAnalyzing is set when the exit flow dispatched the scoped exit-analysis
+	// pass through the end controller. The pass reports back through
+	// endAnalysisFinishedMsg, which always quits: analysis can never return the
+	// user to an ordinary prompt.
+	endAnalyzing bool
 
 	// workspaceBroker, when non-nil, delivers WorkspaceEvents so the
 	// status line's git info follows the session's active root without
@@ -1771,6 +1922,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// turning a stop into a quit).
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		if k.String() == "ctrl+c" {
+			// Once an ending is in progress, Ctrl+C belongs to that ending: it
+			// retries a failed stop/join (or is an idempotent no-op while the
+			// warning is up). It must never reach the turn-stop path below —
+			// cancelling a turn would stop work the user has not yet agreed to
+			// stop — and it must never stack a second warning.
+			if m.endStage != endIdle {
+				m.ctrlCArmedFor = ctrlCNone
+				return m, m.beginEnd(nil)
+			}
 			// Stop only a turn that has not been cancelled yet: cancelTurn
 			// leaves busy set until agentFinishedMsg, so a turn that ignores
 			// cancellation would otherwise make Ctrl+C unable to quit.
@@ -1787,7 +1947,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.refreshViewport()
 					return m, nil
 				}
-				return m, m.beginShutdown(true)
+				return m, m.beginEnd(nil)
 			}
 			m.ctrlCArmedFor = want
 			m.ctrlCArmedAt = m.now()
@@ -1999,56 +2159,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Placeholder = "Enter API key for " + msg.Provider
 		m.refreshViewport()
 		return m, nil
+	case activeworkpanel.DoneMsg:
+		return m.handleActiveWorkDone(msg)
+	case endSettledMsg:
+		return m.handleEndSettled(msg)
+	case endAnalysisFinishedMsg:
+		return m.handleEndAnalysisFinished(msg)
 	case postmortempanel.DoneMsg:
 		m.dock.CloseNow()
-		switch msg.Result {
-		case postmortempanel.ResultDeclined:
-			m.refreshViewport()
-			return m, m.finishQuit()
-		case postmortempanel.ResultExtractOnly:
-			m.reportPostmortem()
-			m.refreshViewport()
-			return m, m.finishQuit()
-		default: // ResultWithAgent
-			path := m.reportPostmortem()
-			if path == "" || m.runner == nil {
-				// Extraction failed, or there is no runner to run the pass:
-				// quit rather than leave the session hanging at the prompt.
-				m.refreshViewport()
-				return m, m.finishQuit()
-			}
-			// Set the flag before the start so the model startAgentRun hands
-			// back carries it; clear it again if the start was refused.
-			m.postmortemAgentPending = true
-			// The agent pass writes the report at an absolute path outside the
-			// workspace, so it needs system access. Plan/default would
-			// mode-deny that write and bounce a mode.request back at a user who
-			// is trying to exit, so the grant also elevates to edit for the
-			// pass. handleAgentFinished clears the flag and quits, so the
-			// elevation never outlives the exit.
-			m.state.SetSystemAccess(true)
-			// Record the pre-grant mode so a refused start can restore it
-			// instead of leaving the session elevated.
-			priorMode := m.approvalMode
-			if priorMode == policy.ModePlan || priorMode == policy.ModeDefault || priorMode == "" {
-				m.setMode("edit")
-			}
-			mm, agentCmd, started := m.startAgentRun(m.runner, postmortemAgentGoal(path))
-			if !started {
-				// BeginWork was refused, so no turn is in flight and no
-				// agentFinishedMsg will ever arrive to quit. Undo the grant and
-				// the elevation, then quit rather than strand the exit at the
-				// prompt with a mode the user never chose.
-				m.postmortemAgentPending = false
-				m.state.SetSystemAccess(false)
-				if priorMode != "" && priorMode != m.approvalMode {
-					m.setMode(string(priorMode))
-				}
-				return m, m.finishQuit()
-			}
-			m.refreshViewport()
-			return mm, agentCmd
-		}
+		return m.handlePostmortemDone(msg)
 	}
 
 	// Runtime messages always stay with the parent model so background state
@@ -3774,6 +3893,17 @@ func verifyGateRow(cfg config.Config, repoRoot string) castlist.Row {
 // no run is in flight and no agentFinishedMsg will arrive, which the exit
 // postmortem's agent pass has to tell apart from a live turn.
 func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.Cmd, bool) {
+	// An accepted ending owns the conversation: no ordinary turn may start
+	// into a frozen membership. A queued prompt, a watch auto-resume or a
+	// settings mutation that lands after acceptance is refused here rather
+	// than reopening work the runtime is stopping.
+	if m.endStage != endIdle {
+		m.state.AddMessage(session.RoleSystem,
+			"The conversation is ending; this request was not started.", session.ContentTypePlain)
+		m.busy = false
+		m.refreshViewport()
+		return *m, nil, false
+	}
 	if err := m.state.BeginWork(); err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot start work: %v", err), session.ContentTypePlain)
 		m.busy = false
@@ -3844,6 +3974,16 @@ func (m *Model) lastAssistantText() string {
 // async command. On success the completion handler opens the review panel;
 // it never starts an SDD run.
 func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
+	if m.endStage != endIdle {
+		// An accepted ending owns the conversation. Plan authoring is an
+		// ordinary operation and registers its own work, so it must not start
+		// into a frozen membership; reporting it here keeps the user's
+		// feedback immediate and specific.
+		m.state.AddMessage(session.RoleSystem,
+			"The conversation is ending; plan authoring was not started.", session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
 	if m.planAuthorFactory == nil {
 		m.state.AddMessage(session.RoleSystem, "Plan authoring is not available (agent failed to initialise).", session.ContentTypePlain)
 		m.refreshViewport()
@@ -4154,46 +4294,436 @@ func (m *Model) releaseTurnStop() {
 	m.endPendingStop = nil
 }
 
-// beginShutdown cancels the in-flight turn, clears pending state, and
-// returns tea.Quit. Used by Ctrl+C, /quit, and /exit.
+// beginEnd accepts one interactive end request. It is the single entry point
+// for every ending path — /exit, /quit, Ctrl+C, /new, /clear and a resume —
+// and it warns before anything is stopped.
 //
-// m.busy is intentionally not reset here — tea.Quit is returned immediately
-// and the program is exiting, so the agentFinishedMsg path that normally
-// clears busy via state.EndWork() will not run.
-func (m *Model) beginShutdown(promptPostmortem bool) tea.Cmd {
-	if promptPostmortem {
-		switch m.postmortemOnExit() {
-		case "always":
-			m.reportPostmortem()
-			return m.finishQuit()
-		case "prompt":
-			// Already asking: a repeated quit request must not stack a second
-			// panel. Ctrl+C bypasses the dock, so it can land here while the
-			// prompt is open. The dock's current panel is the latch, so a
-			// prompt replaced by another panel (human gate, review cancel)
-			// cannot make quitting impossible.
-			if _, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
-				return nil
-			}
-			// A session the user never typed into has nothing to postmortem.
-			if m.sessionHasUserTurn() {
-				m.dock.Open(postmortempanel.New())
-				m.refreshViewport()
-				return nil
-			}
+// The request is a PENDING INTENT: nothing about the target (a resume ID, a new
+// session, the announcement) is mutated or announced until the runtime accepts
+// the membership the user was shown.
+func (m *Model) beginEnd(intent *endIntent) tea.Cmd {
+	// Already ending: a repeated quit/Ctrl+C is a retry of the settlement (or
+	// an idempotent no-op while the warning is up), never a second warning and
+	// never a bypass of the one on screen.
+	switch m.endStage {
+	case endAwaitingDecision:
+		// Refresh the pending intent so a later acceptance acts on the latest
+		// request (e.g. a resume picked after a first quit press), then leave
+		// the warning on screen. Only the exit question is latched: a
+		// replacement keeps its own target.
+		if intent != nil && (m.end == nil || m.end.kind == intent.kind) {
+			m.applyEndIntent(intent)
 		}
+		return nil
+	case endStopping:
+		// The stop/join pass already ran and failed, or is still running: retry
+		// it. WaitForEnd is idempotent and never latches success, so this
+		// either settles the remaining work or reports the failure again.
+		return m.settleEnd()
+	case endPostmortem:
+		// An in-flight analysis pass owns the exit: it reports through
+		// endAnalysisFinishedMsg, so a repeated quit request must not race it
+		// with a second question or a second extraction.
+		if m.endAnalyzing {
+			return nil
+		}
+		// The postmortem question was answered already: a repeated quit must not
+		// ask it again.
+		if m.endAnswered {
+			return m.finishQuit()
+		}
+		return m.afterSettlement()
+	case endFinishing:
+		return m.finishQuit()
 	}
-	return m.finishQuit()
+
+	m.applyEndIntent(intent)
+	// A surface the warning will displace is remembered first, so the user's
+	// Esc/keep choice returns them to it: a child parked behind an approval or a
+	// gate must not be stranded by an ending they declined.
+	if m.dock.IsOpen() {
+		m.endDisplaced = m.dock.Panel()
+	}
+	// The runtime's live membership is authoritative: what a warning renders
+	// and what an accepted end stops cannot drift apart. Cached counts and
+	// m.busy are deliberately not consulted — a detached job the TUI never
+	// tracked would otherwise be destroyed without ever being shown.
+	var snap EndWorkSnapshot
+	if m.endController != nil {
+		snap = m.endController.ActiveWork()
+	}
+	if snapEmpty(snap) {
+		// Nothing to stop. No warning is warranted, and the runtime freezes
+		// admission for the rest of this pass.
+		return m.acceptEnd(nil)
+	}
+	m.endSnapshot = snap
+	m.endStage = endAwaitingDecision
+	m.openActiveWorkWarning()
+	return nil
 }
 
-// finishQuit is the shared terminal shutdown body: cancel the in-flight turn,
-// clear pending state, and return tea.Quit. Both the direct exit paths and the
-// exit-postmortem panel resolve here.
+// handleActiveWorkDone handles the warning panel's answer. "Stop" submits the
+// displayed IDs to the runtime's atomic acceptance; "Keep" discards the intent
+// and preserves every piece of work exactly as it was. A DoneMsg that arrives
+// once the end has moved on (e.g. repeated Enter on a settled warning) is
+// ignored, so no panel can bypass or stack the warning.
+func (m *Model) handleActiveWorkDone(msg activeworkpanel.DoneMsg) (tea.Model, tea.Cmd) {
+	if m.endStage == endPostmortem || m.endStage == endFinishing {
+		// The warning already did its job: this is the settled path, and a
+		// stray answer must not re-open anything.
+		return *m, nil
+	}
+	if m.endStage == endStopping {
+		// The stop/join pass is running: a second answer is idempotent, not a
+		// second destructive decision.
+		return *m, nil
+	}
+	if !msg.Stop {
+		m.dock.CloseNow()
+		return m.declineEnd()
+	}
+	// The warning STAYS OPEN while work stops, showing what remains: the user
+	// asked to stop this set and must be able to see it settle. The stage moves
+	// before submission so a repeated answer cannot be a second decision.
+	m.endStage = endStopping
+	return *m, m.acceptEnd(msg.IDs)
+}
+
+// handlePostmortemDone applies the exit-postmortem answer. Extraction happens
+// here, on the settled membership, so the report sees the final command and
+// child evidence.
+func (m *Model) handlePostmortemDone(msg postmortempanel.DoneMsg) (tea.Model, tea.Cmd) {
+	m.endAnswered = true
+	switch msg.Result {
+	case postmortempanel.ResultWithAgent:
+		path := m.reportPostmortem()
+		if path == "" || m.endController == nil {
+			// Extraction failed, or there is no scoped-analysis runtime to run
+			// the pass: quit rather than leave the session hanging.
+			m.refreshViewport()
+			return *m, m.finishQuit()
+		}
+		m.endAnalyzing = true
+		m.refreshViewport()
+		return *m, m.runExitAnalysis(path)
+	case postmortempanel.ResultExtractOnly:
+		m.reportPostmortem()
+		m.refreshViewport()
+		return *m, m.finishQuit()
+	default: // ResultDeclined
+		m.refreshViewport()
+		return *m, m.finishQuit()
+	}
+}
+
+// runExitAnalysis runs the postmortem's agent pass as a SCOPED exit-analysis
+// operation through the end controller. The runtime owns the operation's
+// temporary elevation (system access and editing approval) and its cleanup, so
+// the model never elevates and a failure can never leave an elevated ordinary
+// prompt behind. The detached work the pass launches is joined during the
+// operation's own phase cleanup, and it cannot recursively trigger the
+// active-work warning: analysis work is a separate epoch, not ordinary work.
+func (m *Model) runExitAnalysis(path string) tea.Cmd {
+	ctrl := m.endController
+	goal := postmortemAgentGoal(path)
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg {
+		return endAnalysisFinishedMsg{err: ctrl.RunExitAnalysis(ctx, goal)}
+	}
+}
+
+// handleEndAnalysisFinished reports the exit-analysis outcome and quits. It
+// NEVER returns the user to an ordinary prompt: the analysis runs after the
+// extraction landed, so even a refused or failed pass finishes the exit.
+func (m *Model) handleEndAnalysisFinished(msg endAnalysisFinishedMsg) (tea.Model, tea.Cmd) {
+	m.endAnalyzing = false
+	if msg.err != nil {
+		m.state.AddMessage(session.RoleSystem,
+			"Postmortem analysis failed: "+firstLine(msg.err.Error()), session.ContentTypePlain)
+	}
+	m.refreshViewport()
+	return *m, m.finishQuit()
+}
+
+// declineEnd discards the pending intent and preserves the work unchanged. A
+// surface the warning displaced is restored, so a child parked behind an
+// approval or a gate is never stranded by an ending the user declined.
+func (m *Model) declineEnd() (tea.Model, tea.Cmd) {
+	displaced := m.endDisplaced
+	m.endDisplaced = nil
+	m.endWarning = nil
+	m.end = nil
+	m.endSnapshot = EndWorkSnapshot{}
+	m.endStage = endIdle
+	if displaced != nil {
+		// Nothing was stopped, so a pending approval or gate is still pending
+		// and its surface is still meaningful.
+		m.dock.Open(displaced)
+	}
+	m.state.AddMessage(session.RoleSystem, "Kept open. Active work continues.", session.ContentTypePlain)
+	m.refreshViewport()
+	return *m, nil
+}
+
+// handleEndSettled applies the outcome of one stop/join pass. On failure the
+// pending intent and the stopping stage are kept — the next quit request retries
+// the pass — and the error is reported as it is, never as if the work had
+// settled.
+func (m *Model) handleEndSettled(msg endSettledMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.endStage = endStopping
+		m.state.AddMessage(session.RoleSystem,
+			fmt.Sprintf("Could not stop all work: %v · press Ctrl+C again to retry.", firstLine(msg.err.Error())),
+			session.ContentTypePlain)
+		m.refreshEndWarning()
+		return *m, nil
+	}
+	// The work settled, so the warning has nothing left to report: close it
+	// before the postmortem question or the exit takes the dock.
+	if panel, ok := m.dock.Panel().(*activeworkpanel.Panel); ok && panel == m.endWarning {
+		m.dock.CloseNow()
+	}
+	m.endWarning = nil
+	m.endStage = endPostmortem
+	return *m, m.afterSettlement()
+}
+
+// openActiveWorkWarning shows the active-work warning. It is independent of
+// approval mode and of postmortem settings: neither Auto mode nor
+// postmortem.on_exit = never disables it.
+func (m *Model) openActiveWorkWarning() {
+	warning, ok := m.endWarning.(*activeworkpanel.Panel)
+	if !ok {
+		replacing := m.end != nil && m.end.kind == EndIntentReplace
+		warning = activeworkpanel.New(replacing, endWorkItems(m.endSnapshot))
+		m.endWarning = warning
+	} else {
+		warning.Replace(endWorkItems(m.endSnapshot))
+	}
+	m.dock.Open(warning)
+	m.refreshViewport()
+}
+
+// endWorkItems renders a snapshot's membership as warning rows. An attached
+// command is indented under the operation it belongs to (its Group), so the
+// list shows one stoppable thing per line where the runtime reports one.
+func endWorkItems(snap EndWorkSnapshot) []activeworkpanel.Item {
+	items := make([]activeworkpanel.Item, 0, len(snap.Items))
+	for _, item := range snap.Items {
+		label := item.Label
+		if label == "" {
+			label = item.ID
+		}
+		if item.Group != "" {
+			label = "  " + label
+		}
+		items = append(items, activeworkpanel.Item{ID: item.ID, Label: label})
+	}
+	return items
+}
+
+// applyEndIntent stores the pending intent, keeping the target only while the
+// request is still unaccepted. A nil intent (a plain exit) is stored as an
+// exit with no target.
+func (m *Model) applyEndIntent(intent *endIntent) {
+	if intent == nil {
+		intent = &endIntent{kind: EndIntentExit}
+	}
+	if m.end != nil && m.end.kind == intent.kind {
+		// Keep the first press's target only when the new request names none.
+		if intent.name == "" && intent.resumeID == "" {
+			return
+		}
+	}
+	m.end = intent
+}
+
+// snapshotEmpty reports whether a membership holds no ordinary work. A nil
+// controller reports an empty membership: there is no runtime work to warn
+// about.
+func snapEmpty(snap EndWorkSnapshot) bool { return len(snap.Items) == 0 }
+
+// acceptEnd submits the decision to freeze ordinary admission and stop the
+// displayed work. displayedIDs are the opaque IDs the user was actually shown
+// (nil means "warn about nothing", which is the no-work path). A refusal — the
+// membership grew while the warning was up — refreshes the warning and asks
+// again with the safe choice selected.
+func (m *Model) acceptEnd(displayedIDs []string) tea.Cmd {
+	intent := EndIntentExit
+	if m.end != nil && m.end.kind != "" {
+		intent = m.end.kind
+	}
+	if m.endController == nil {
+		// No runtime seam: nothing to freeze or settle. Go straight to the
+		// existing end behavior.
+		m.endStage = endPostmortem
+		m.endDisplaced = nil
+		return m.afterSettlement()
+	}
+	decision, err := m.endController.AcceptEnd(EndAcceptRequest{
+		Intent:           intent,
+		DisplayedIDs:     displayedIDs,
+		RequireDisplayed: true,
+	})
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem,
+			fmt.Sprintf("Cannot end the conversation: %v", err), session.ContentTypePlain)
+		m.refreshViewport()
+		return nil
+	}
+	if !decision.Accepted {
+		// The membership expanded beyond what the user saw. Nothing was
+		// stopped and nothing was frozen: refresh the warning from the
+		// membership the refusal reported — with the safe choice selected —
+		// and ask again.
+		m.endSnapshot = decision.Work
+		m.endStage = endAwaitingDecision
+		m.renderEndWarning()
+		return nil
+	}
+	m.endSnapshot = decision.Work
+	// The displaced surface is deliberately NOT restored: the runtime is
+	// settling this conversation, and a panel that outlived it would be a
+	// handle into work that is being stopped.
+	m.endDisplaced = nil
+	return m.settleEnd()
+}
+
+// settleEnd runs the stop/join pass outside the render loop, keeping the
+// warning up (refreshed from the runtime) while it runs. A failure keeps the
+// pending intent and the stopping stage, reports the error honestly, and
+// treats the next quit request as a retry — it never advances as if the work
+// had settled.
+func (m *Model) settleEnd() tea.Cmd {
+	m.endStage = endStopping
+	m.refreshEndWarning()
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctrl := m.endController
+	return func() tea.Msg {
+		if ctrl == nil {
+			return endSettledMsg{}
+		}
+		ctx, cancel := context.WithTimeout(ctx, endSettlementTimeout)
+		defer cancel()
+		if err := ctrl.WaitForEnd(ctx); err != nil {
+			return endSettledMsg{err: err}
+		}
+		return endSettledMsg{}
+	}
+}
+
+// refreshEndWarning rewrites the open warning from the runtime's current
+// membership, so work that started or finished while the prompt was up is
+// shown as it now is. It re-opens the warning if another surface took the dock
+// while the user was deciding — the warning is the question being answered, so
+// nothing may quietly replace it — and it is a no-op once the end has moved on.
+func (m *Model) refreshEndWarning() {
+	if m.endWarning == nil || (m.endStage != endAwaitingDecision && m.endStage != endStopping) {
+		return
+	}
+	if m.endController != nil {
+		m.endSnapshot = m.endController.ActiveWork()
+	}
+	m.renderEndWarning()
+}
+
+// renderEndWarning writes the current snapshot into the warning panel, creating
+// it if this end does not hold one and re-asserting it over any surface that
+// took the dock. It does not re-query the runtime: a caller that already has an
+// authoritative membership (a refused acceptance) renders exactly that.
+func (m *Model) renderEndWarning() {
+	if panel, ok := m.dock.Panel().(*activeworkpanel.Panel); ok && panel == m.endWarning {
+		panel.Replace(endWorkItems(m.endSnapshot))
+		m.refreshViewport()
+		return
+	}
+	// The warning is the question being answered, so nothing else may hold the
+	// dock while it is up.
+	m.openActiveWorkWarning()
+}
+
+// afterSettlement applies the configured postmortem policy and finishes the
+// end. It runs only after the accepted end's work has settled, so extraction
+// sees the final command and child evidence.
+func (m *Model) afterSettlement() tea.Cmd {
+	if m.end == nil || m.end.kind != EndIntentExit {
+		// A replacement never runs an exit postmortem; it goes straight to its
+		// new/resume behavior.
+		return m.finishReplacement()
+	}
+	switch m.postmortemOnExit() {
+	case "never":
+		m.endAnswered = true
+		return m.finishQuit()
+	case "always":
+		m.endAnswered = true
+		m.reportPostmortem()
+		return m.finishQuit()
+	default: // "prompt"
+		// A session the user never typed into has nothing to postmortem.
+		if !m.sessionHasUserTurn() {
+			m.endAnswered = true
+			return m.finishQuit()
+		}
+		m.endStage = endPostmortem
+		m.openPostmortemPrompt()
+		return nil
+	}
+}
+
+// openPostmortemPrompt shows the exit-postmortem question. The prompt is the
+// first point a postmortem question may appear: the active-work warning has
+// already been answered.
+func (m *Model) openPostmortemPrompt() {
+	m.dock.Open(postmortempanel.New())
+	m.refreshViewport()
+}
+
+// finishReplacement completes an accepted replacement: a new session or a
+// resume. The old work has settled and no postmortem runs, and nothing from the
+// old conversation is transferred.
+func (m *Model) finishReplacement() tea.Cmd {
+	intent := m.end
+	newArgs := m.endNewArgs()
+	m.end = nil
+	m.endSnapshot = EndWorkSnapshot{}
+	if intent != nil && intent.resumeID != "" {
+		// Resume restarts the process with the requested session; the resume ID
+		// is recorded only now that the replacement is accepted.
+		m.resumeSession = intent.resumeID
+		m.endStage = endFinishing
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Resuming session %s...", intent.resumeID), session.ContentTypePlain)
+		m.refreshViewport()
+		return m.finishQuit()
+	}
+	m.endStage = endFinishing
+	// A new session is built by the runtime and swapped into the model. The
+	// accepted replacement is what authorizes the swap: the runtime refuses a
+	// replacement after a different intent was accepted.
+	return m.newSessionEffect(newArgs)
+}
+
+// finishQuit is the shared terminal shutdown body: stop the in-flight turn and
+// LSP lookups, clear pending state, and return tea.Quit. Every ending path
+// resolves here once its work has settled and its postmortem decision is made.
+//
+// It deliberately does NOT stop the conversation's work: that is the runtime's
+// settlement step (WaitForEnd), which persists each outcome while the database
+// is still open. Cancelling here would race it and would discard the evidence
+// the postmortem extraction needs.
 //
 // m.busy is intentionally not reset here — tea.Quit is returned immediately
 // and the program is exiting, so the agentFinishedMsg path that normally
 // clears busy via state.EndWork() will not run.
 func (m *Model) finishQuit() tea.Cmd {
+	m.endStage = endFinishing
 	if m.agentCancel != nil {
 		m.agentCancel()
 		m.agentCancel = nil
@@ -4299,13 +4829,10 @@ func (m Model) settingsBlockReason() string {
 // handleAgentFinished handles an agentFinishedMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
-	// The exit postmortem's agent pass runs as a real turn; quit when it ends,
-	// whatever the outcome — the extraction already landed before the turn
-	// started, so a failed annotation must not strand the user at the prompt.
-	if m.postmortemAgentPending {
-		m.postmortemAgentPending = false
-		return m, m.finishQuit()
-	}
+	// The exit postmortem's agent pass no longer runs here: it is a scoped
+	// exit-analysis operation owned by the end controller (runExitAnalysis),
+	// so it reports through endAnalysisFinishedMsg and never re-enters the
+	// ordinary transcript path.
 	// suggestionCmd is the Phase 2 LLM fallback returned by computeSuggestion
 	// on the success path; nil otherwise.
 	var suggestionCmd tea.Cmd
@@ -4701,6 +5228,42 @@ func (m Model) handleSpinnerTick(msg spinnerTickMsg) (Model, tea.Cmd) {
 // parent state (busy, job count, steering, activity) current while the
 // overlay remains visible.
 func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// While an ending is awaiting the user's decision (or stopping), live work
+	// events keep flowing: the warning reflects the runtime's current
+	// membership, so work that started or finished while the prompt was open is
+	// shown as it now is. The warning is never replaced by another surface
+	// here, and a late approval/gate event cannot take the dock from it.
+	if m.endStage == endAwaitingDecision || m.endStage == endStopping {
+		switch msg.(type) {
+		case jobCountMsg, agentTickMsg, subagentMsg, watchMsg, workspaceMsg, agentFinishedMsg, steeringMsg:
+			refreshed := m
+			refreshed.refreshEndWarning()
+			out, cmd := refreshed.dispatchRuntimeMessage(msg)
+			mm, ok := out.(Model)
+			if !ok {
+				return out, cmd
+			}
+			// A handler may have opened a surface of its own — a human gate, a
+			// review cancel, an approval. The warning is the surface the user is
+			// answering, so it comes back; the new surface is remembered as the
+			// one to restore if the user declines, so a child parked behind it
+			// is not stranded.
+			if mm.endStage == endAwaitingDecision || mm.endStage == endStopping {
+				if _, isWarning := mm.dock.Panel().(*activeworkpanel.Panel); !isWarning && mm.dock.IsOpen() {
+					mm.endDisplaced = mm.dock.Panel()
+				}
+				mm.refreshEndWarning()
+			}
+			return mm, cmd
+		}
+	}
+	return m.dispatchRuntimeMessage(msg)
+}
+
+// dispatchRuntimeMessage routes the parent-model runtime messages to their
+// handlers. It is separate from handleRuntimeMessage so the ending path can
+// refresh its warning around the same routing.
+func (m Model) dispatchRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case agentFinishedMsg:
 		return m.handleAgentFinished(msg)
@@ -4977,22 +5540,40 @@ func (m *Model) openPicker(cmdName, title, footer string, items []picker.Item, p
 	m.pickerCommand = cmdName
 }
 
+// endNewArgs returns the /new arguments the pending replacement carries. It
+// rebuilds the argv form the command effect received so the replacement runs
+// through exactly one path.
+func (m *Model) endNewArgs() []string {
+	if m.end == nil || m.end.name == "" {
+		return nil
+	}
+	return strings.Fields(m.end.name)
+}
+
+// newSessionEffect runs the replacement's session-swap half after acceptance.
+// It exists on the model so the accepted-end path and the /new command effect
+// share one implementation without either owning the other's lifecycle.
+func (m *Model) newSessionEffect(args []string) tea.Cmd {
+	name := strings.TrimSpace(strings.Join(args, " "))
+	return startNewSession(m, name)
+}
+
 // ResumeSession returns the session ID the user chose to resume, or "" if
 // the program ended normally. It is read by the app.Run program runner.
 func (m Model) ResumeSession() string { return m.resumeSession }
 
-// beginResume starts a controlled shutdown so app.Run can restart this
-// process with the requested existing session.
+// beginResume records a pending REPLACEMENT for the requested session. The
+// resume ID is applied and announced only after the runtime accepts the work
+// membership an end would stop, so a declined resume leaves both the current
+// conversation and the resume target untouched.
 func (m *Model) beginResume(id string) (tea.Model, tea.Cmd) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		m.refreshViewport()
 		return m, nil
 	}
-	m.resumeSession = id
-	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Resuming session %s...", id), session.ContentTypePlain)
 	// A session swap is not a quit: never offer the exit postmortem here.
-	return m, m.beginShutdown(false)
+	return m, m.beginEnd(&endIntent{kind: EndIntentReplace, resumeID: id})
 }
 
 // openSessionPicker opens a picker listing previous sessions for this

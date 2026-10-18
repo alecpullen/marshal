@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -9,6 +10,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
+	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/tools/native"
 )
 
@@ -129,6 +131,42 @@ func TestFollowingFrameFitsTerminal(t *testing.T) {
 	m.refreshViewport()
 	if rows, widest := frameRows(&m); rows != 30 || widest > 140 {
 		t.Errorf("rows = %d (want 30), widest = %d (want <= 140)", rows, widest)
+	}
+}
+
+// TestEndingSurfacesFitTheTerminal pins the ending stack against the frame
+// budget: the active-work warning (with a long membership) and the exit
+// postmortem question, at every swept size, must render a frame exactly as tall
+// as the terminal and no wider — over a full transcript, so the panels are
+// competing for the same rows the transcript wants.
+func TestEndingSurfacesFitTheTerminal(t *testing.T) {
+	for _, size := range []struct{ w, h int }{{80, 24}, {120, 40}, {200, 60}} {
+		t.Run(fmt.Sprintf("%dx%d", size.w, size.h), func(t *testing.T) {
+			// A long membership: the warning must window rather than overflow.
+			m := scrolledModel(t, size.w, size.h)
+			m.state.Config.Postmortem.OnExit = "prompt"
+			m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+			m.endController = &endTestController{work: longWorkSnapshot(16)}
+			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
+				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
+			}
+			if rows, widest := frameRows(m); rows != size.h || widest > size.w {
+				t.Errorf("warning frame: rows = %d (want %d), widest = %d (want <= %d)",
+					rows, size.h, widest, size.w)
+			}
+
+			// The postmortem question over the same transcript, at its agent
+			// stage (the longest content).
+			m.endStage = endPostmortem
+			m.openPostmortemPrompt()
+			if panel, ok := m.dock.Panel().(*postmortempanel.Panel); ok {
+				panel.Update(tea.KeyPressMsg{Code: 'y'})
+			}
+			if rows, widest := frameRows(m); rows != size.h || widest > size.w {
+				t.Errorf("postmortem frame: rows = %d (want %d), widest = %d (want <= %d)",
+					rows, size.h, widest, size.w)
+			}
+		})
 	}
 }
 

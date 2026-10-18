@@ -2202,6 +2202,123 @@ func (s *staticRouteResolver) Resolve(string) (routing.Route, provider.Provider,
 	return s.route, s.provider, nil
 }
 
+// tuiEndController is the runtime adapter behind tui.EndController. It converts
+// the runtime's own shapes into the TUI's neutral mirrors and delegates every
+// decision back to the runtime, so the model never sees a session, a policy
+// engine or a process.
+type tuiEndController struct {
+	rt *Runtime
+}
+
+// ActiveWork reports the runtime's current conversation work.
+func (c *tuiEndController) ActiveWork() tui.EndWorkSnapshot {
+	return tuiEndWorkSnapshot(c.rt.ActiveWork())
+}
+
+// AcceptEnd submits one end acceptance and reports it in the TUI's shape.
+func (c *tuiEndController) AcceptEnd(req tui.EndAcceptRequest) (tui.EndDecision, error) {
+	decision, err := c.rt.AcceptEnd(EndAcceptRequest{
+		Intent:           EndIntent(req.Intent),
+		DisplayedIDs:     req.DisplayedIDs,
+		RequireDisplayed: req.RequireDisplayed,
+	})
+	if err != nil {
+		return tui.EndDecision{}, err
+	}
+	return tui.EndDecision{
+		Accepted: decision.Accepted,
+		Expanded: decision.Expanded,
+		Work:     tuiEndWorkSnapshot(decision.Work),
+	}, nil
+}
+
+// EndAccepted reports whether an end has been accepted.
+func (c *tuiEndController) EndAccepted() bool { return c.rt.EndAccepted() }
+
+// WaitForEnd stops and joins the accepted end's work. It accepts first and is
+// safe to retry: a failed join reports the outstanding work and never latches
+// success.
+func (c *tuiEndController) WaitForEnd(ctx context.Context) error { return c.rt.WaitForEnd(ctx) }
+
+// RunExitAnalysis runs the scoped exit-analysis pass during the postmortem
+// phase. The runtime owns the pass's elevation and joins its epoch before
+// returning.
+func (c *tuiEndController) RunExitAnalysis(ctx context.Context, goal string) error {
+	return c.rt.RunExitAnalysis(ctx, goal)
+}
+
+// tuiEndWorkSnapshot converts a runtime work snapshot to the TUI's neutral
+// mirror.
+func tuiEndWorkSnapshot(work ActiveWork) tui.EndWorkSnapshot {
+	out := tui.EndWorkSnapshot{Phase: work.Phase, Targets: work.Targets}
+	for _, item := range work.Items {
+		out.Items = append(out.Items, tui.EndWorkItem{
+			ID:         item.ID,
+			Kind:       item.Kind,
+			Label:      item.Label,
+			Group:      item.Group,
+			Parent:     item.Parent,
+			SubagentID: item.SubagentID,
+		})
+	}
+	return out
+}
+
+// runWithExitAnalysisElevation runs fn with the temporary elevation the exit
+// postmortem's agent pass needs, and restores the previous values whatever the
+// outcome.
+//
+// The pass writes the report at an absolute path outside the workspace, so it
+// needs system access and an editing approval mode/force class; without them
+// plan/default mode would deny the write and bounce a mode.request at someone
+// who is trying to exit. The grant is SCOPED to this call: it is undone here
+// (including on failure), so a refused or failed pass can never leave an
+// ordinary prompt elevated.
+func runWithExitAnalysisElevation(rt *Runtime, fn func() error) error {
+	if rt == nil {
+		return fmt.Errorf("exit analysis: no runtime")
+	}
+	priorSystem := false
+	if rt.State != nil {
+		priorSystem = rt.State.SystemAccess()
+		rt.State.SetSystemAccess(true)
+	}
+	// Save and restore the runner's own posture. The approval mode lives on the
+	// policy engine; the TUI mirrors it into state.Config.Agent.ApprovalMode, so
+	// the prior mode is read from the engine when one exists and from the config
+	// otherwise. The force class has no accessor (the field is mutex-guarded for
+	// writers only), so it is restored from the same source the TUI derives it
+	// from — the configured mode.
+	priorMode := policy.ParseApprovalMode(rt.Config.Agent.ApprovalMode)
+	runner := rt.Runner
+	if runner != nil {
+		if runner.Policy != nil {
+			priorMode = runner.Policy.ApprovalMode()
+		}
+		runner.SetApprovalMode(policy.ModeEdit)
+		runner.SetForceClass(string(agent.ClassEdit))
+	}
+	defer func() {
+		if runner != nil {
+			runner.SetApprovalMode(priorMode)
+			runner.SetForceClass(classForApprovalMode(priorMode))
+		}
+		if rt.State != nil {
+			rt.State.SetSystemAccess(priorSystem)
+		}
+	}()
+	return fn()
+}
+
+// classForApprovalMode maps an approval mode to the task class the TUI forces
+// for it: plan and default ask before acting, every other mode edits.
+func classForApprovalMode(mode policy.ApprovalMode) string {
+	if mode == policy.ModePlan || mode == policy.ModeDefault {
+		return string(agent.ClassQuestion)
+	}
+	return string(agent.ClassEdit)
+}
+
 type actionDecodingConfig struct {
 	Native         bool
 	ResponseFormat *schema.ResponseFormat
@@ -2634,12 +2751,26 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// stopped and joined before closure whatever the outcome. It never
 		// reopens ordinary conversation work, and it cannot recursively trigger
 		// the active-work warning.
+		//
+		// The TEMPORARY ELEVATION the pass needs lives here, not in the TUI. The
+		// pass writes the report at an absolute path outside the workspace, so
+		// it needs system access and an editing approval mode; granting either
+		// from the model would leave an ordinary prompt elevated if the pass
+		// failed. Both are saved before the run and restored after it, whatever
+		// the outcome.
 		rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
 			if rt.Runner == nil {
 				return fmt.Errorf("exit analysis: no agent runner")
 			}
-			return rt.Runner.Run(analysisCtx, goal)
+			return runWithExitAnalysisElevation(rt, func() error {
+				return rt.Runner.Run(analysisCtx, goal)
+			})
 		})
+
+		// The TUI's structural end seam: acceptance, settlement and the scoped
+		// exit analysis are reached through neutral data, so the model decides
+		// nothing about policy or processes.
+		tuiOpts = append(tuiOpts, tui.WithEndController(&tuiEndController{rt: rt}))
 
 		progResult := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
 

@@ -7,7 +7,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/activeworkpanel"
 )
 
 var ctrlC = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
@@ -200,4 +202,70 @@ func TestCtrlCArmReturnsRepaintTick(t *testing.T) {
 	if _, cmd := press(m, ctrlC); cmd == nil {
 		t.Fatal("arming must schedule a repaint for when the window lapses")
 	}
+}
+
+// ── Task 10: Ctrl+C during an ending ────────────────────────────────────
+
+// TestCtrlCQuitsOnlyAfterTheWarningIsAnswered pins the interaction between the
+// double-press quit and the active-work warning: the second press opens the
+// warning instead of exiting, and the program does not quit until the user has
+// answered it.
+func TestCtrlCQuitsOnlyAfterTheWarningIsAnswered(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(1000, 0), session.Persistence{})
+	state.Config.Postmortem.OnExit = "never"
+	ctrl := &endTestController{work: workSnapshot("job-1")}
+	m := New(state, WithEndController(ctrl))
+	m.resize(80, 24)
+	m.now = func() time.Time { return time.Unix(1000, 0) }
+
+	m, _ = press(m, ctrlC)
+	m, cmd := press(m, ctrlC)
+
+	if cmd != nil {
+		t.Fatalf("the firing press returned a cmd (%T), want nil while the warning is up", cmd)
+	}
+	if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
+		t.Fatalf("dock panel = %T, want the warning", m.dock.Panel())
+	}
+	assertNotShutDown(t, m)
+
+	// Ctrl+C while the warning is up must not exit either: it is the same
+	// ending, which has not been decided.
+	m, cmd = press(m, ctrlC)
+	if cmd != nil {
+		t.Fatalf("Ctrl+C with the warning up returned a cmd (%T), want nil", cmd)
+	}
+	assertNotShutDown(t, m)
+	if len(ctrl.accepted) != 0 {
+		t.Fatal("Ctrl+C accepted the ending without a decision")
+	}
+}
+
+// TestCtrlCStopsTheRightThingBeforeTheWarning pins that a busy turn is still
+// stopped by the first firing Ctrl+C, and only the second firing reaches the
+// warning: the ending path must not swallow the turn stop.
+func TestCtrlCStopsTheRightThingBeforeTheWarning(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(1000, 0), session.Persistence{})
+	state.Config.Postmortem.OnExit = "never"
+	ctrl := &endTestController{work: workSnapshot("job-1")}
+	m := New(state, WithEndController(ctrl))
+	m.resize(80, 24)
+	m.now = func() time.Time { return time.Unix(1000, 0) }
+	cancelled := false
+	m.busy = true
+	m.agentCancel = func() { cancelled = true }
+
+	m, _ = press(m, ctrlC)
+	m, _ = press(m, ctrlC)
+
+	if !cancelled {
+		t.Fatal("the firing Ctrl+C did not stop the busy turn")
+	}
+	if m.dock.IsOpen() {
+		t.Fatal("a busy Ctrl+C opened the ending warning instead of stopping the turn")
+	}
+	if len(ctrl.accepted) != 0 {
+		t.Fatal("a busy Ctrl+C accepted an ending")
+	}
+	assertNotShutDown(t, m)
 }

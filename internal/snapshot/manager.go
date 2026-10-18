@@ -67,6 +67,14 @@ type Manager struct {
 	// files. Production uses DefaultLiveWriterWindow.
 	liveWriterWindow time.Duration
 
+	// legacyUsage caches the measured size of each legacy (pre-v2) store for
+	// the usage pass admission runs before every capture. This binary never
+	// writes a legacy store, and measuring them meant walking every file of
+	// every one on each tool call. See measureLegacyStore for the bounds on
+	// how stale an entry may be.
+	legacyMu    sync.Mutex
+	legacyUsage map[string]legacyUsageEntry
+
 	// writeObserver, when installed, is called after every managed write
 	// boundary (an object installed, a ref published, a manifest replaced, a
 	// staging directory created) with the store's measured usage and the

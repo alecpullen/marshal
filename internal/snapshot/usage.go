@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // StoreKind classifies one entry discovered under the snapshots root.
@@ -432,7 +433,11 @@ func (m *Manager) usageWith(ctx context.Context, o usageOptions) (*StoreUsage, e
 				return nil, err
 			}
 		case entryInfo.IsDir():
-			u, err := m.measureTree(p, entryInfo, StoreKindWorkspace, name, o.allocationUnit)
+			measure := m.measureTree
+			if validWorkspaceID(name) {
+				measure = m.measureLegacyStore
+			}
+			u, err := measure(p, entryInfo, StoreKindWorkspace, name, o.allocationUnit)
 			if err != nil {
 				return nil, err
 			}
@@ -512,6 +517,60 @@ func (u *Usage) DirsAllocated() int64 {
 
 // measureTree measures a directory and everything below it without following
 // symlinks. Unknown accounting errors are returned, never counted as zero.
+// legacyUsageTTL bounds how long a legacy store's measured size is reused.
+const legacyUsageTTL = 5 * time.Minute
+
+type legacyUsageEntry struct {
+	usage      Usage
+	unit       int64
+	info       os.FileInfo
+	measuredAt time.Time
+}
+
+// measureLegacyStore is measureTree for a legacy (pre-v2) store, reusing a
+// recent measurement instead of walking every file again.
+//
+// No current binary writes a legacy store: they are reported and preserved,
+// and only the explicit recovery commands change them (Cleanup,
+// MigrateWorkspace and ResetWorkspace clear this cache). A pre-v2 binary still
+// running could grow one, so an entry is reused only while it is younger than
+// legacyUsageTTL and the store directory is the same directory with the same
+// modification time. A global ceiling may therefore see a legacy store's size
+// up to legacyUsageTTL stale — growth no admission decision of this binary
+// could have prevented anyway.
+func (m *Manager) measureLegacyStore(root string, info os.FileInfo, kind StoreKind, workspace string, unit int64) (*Usage, error) {
+	now := m.now()
+	m.legacyMu.Lock()
+	cached, ok := m.legacyUsage[root]
+	m.legacyMu.Unlock()
+	if ok && cached.unit == unit && cached.usage.Kind == kind &&
+		!now.Before(cached.measuredAt) && now.Sub(cached.measuredAt) < legacyUsageTTL &&
+		os.SameFile(cached.info, info) && cached.info.ModTime().Equal(info.ModTime()) {
+		u := cached.usage
+		return &u, nil
+	}
+	u, err := m.measureTree(root, info, kind, workspace, unit)
+	if err != nil {
+		return nil, err
+	}
+	m.legacyMu.Lock()
+	if m.legacyUsage == nil {
+		m.legacyUsage = make(map[string]legacyUsageEntry)
+	}
+	m.legacyUsage[root] = legacyUsageEntry{usage: *u, unit: unit, info: info, measuredAt: now}
+	m.legacyMu.Unlock()
+	return u, nil
+}
+
+// forgetLegacyUsage drops every cached legacy measurement. The recovery
+// commands that change legacy stores call it so the next usage pass measures
+// them afresh.
+func (m *Manager) forgetLegacyUsage() {
+	m.legacyMu.Lock()
+	m.legacyUsage = nil
+	m.legacyMu.Unlock()
+}
+
 func (m *Manager) measureTree(root string, info os.FileInfo, kind StoreKind, workspace string, unit int64) (*Usage, error) {
 	u := &Usage{Path: root, Kind: kind, Workspace: workspace}
 	dirAllocated, err := m.allocatedBytes(root, info, unit)

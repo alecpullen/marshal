@@ -815,6 +815,9 @@ type CleanupOptions struct {
 // A cleanup with no terminal is therefore still USEFUL: it reconciles v2 and
 // reports what legacy work is outstanding. It simply does not touch legacy.
 func (m *Manager) Cleanup(ctx context.Context, opts CleanupOptions) (*CleanupReport, error) {
+	// This changes legacy stores; cached legacy sizes must not outlive it.
+	m.forgetLegacyUsage()
+	defer m.forgetLegacyUsage()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -1254,6 +1257,9 @@ type MigrationReport struct {
 //  7. Verify every preserved hash resolves to a non-legacy location, then rename
 //     the original store into the accounted deleting state and remove it.
 func (m *Manager) MigrateWorkspace(ctx context.Context, workspace string, opts RecoveryOptions) (*MigrationReport, error) {
+	// This changes legacy stores; cached legacy sizes must not outlive it.
+	m.forgetLegacyUsage()
+	defer m.forgetLegacyUsage()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -1891,6 +1897,9 @@ type ResetReport struct {
 // the validated identifier inside the manager's own root — a user-supplied
 // filesystem path is never resolved for deletion.
 func (m *Manager) ResetWorkspace(ctx context.Context, workspace string, opts RecoveryOptions) (*ResetReport, error) {
+	// This changes legacy stores; cached legacy sizes must not outlive it.
+	m.forgetLegacyUsage()
+	defer m.forgetLegacyUsage()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

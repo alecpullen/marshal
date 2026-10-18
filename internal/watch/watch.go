@@ -412,6 +412,11 @@ func (m *Manager) Start(spec Spec) (string, string, error) {
 		mode = ModeOnce
 	}
 	if spec.Kind == KindJob && mode == ModeRepeat {
+		// Unlock first: this rejection sits inside the locked region, and a
+		// bare return would hold m.mu for the rest of the process, wedging
+		// every later Start/List/Snapshot/Stop/Close and the coordinator's
+		// poll. Every other early return here pairs its Unlock.
+		m.mu.Unlock()
 		return "", "", fmt.Errorf("job watch %q: repeat mode not allowed (job source is terminal-once)", spec.Name)
 	}
 	notify := true
@@ -546,6 +551,16 @@ func (w *watch) recordSample(p SamplePoint) {
 // the consecutive-error budget is exceeded.
 func (m *Manager) handleSampleError(w *watch, err error) {
 	w.mu.Lock()
+	// State guard, mirroring fire and autoStop: the sampler samples under the
+	// manager context, so a sample in flight when Stop (or auto-stop) retires
+	// the watch can return its error after the removal. Mutating state and
+	// publishing here would resurrect a terminal watch and announce a removed
+	// registration as active again, contradicting the removal event the lane
+	// already received.
+	if w.state == StateStopped || w.state == StateFired {
+		w.mu.Unlock()
+		return
+	}
 	w.consecutiveErrors++
 	w.lastError = err.Error()
 	w.state = StateError

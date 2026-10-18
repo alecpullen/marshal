@@ -6348,10 +6348,22 @@ func (m Model) handleWorkRequest(msg workRequestMsg) (Model, tea.Cmd) {
 	}
 	switch msg.kind {
 	case workReqExpand:
-		m.workExpanded = msg.taskKey
+		// Fire-and-forget kinds are serviced in this step, so release the
+		// panel's booking here: every booked request must be reconciled by
+		// request ID, or the pending map only ever grows.
+		delete(m.tasksPanel.pending, msg.requestID)
+		// Space toggles (spec: "Space expands/collapses the selected live
+		// card"): the card that is already expanded collapses on the second
+		// press, matching the now bar's card-header gesture.
+		if m.workExpanded == msg.taskKey {
+			m.workExpanded = ""
+		} else {
+			m.workExpanded = msg.taskKey
+		}
 		m.refreshViewport()
 		return m, nil
 	case workReqOrigin:
+		delete(m.tasksPanel.pending, msg.requestID)
 		return m.jumpToWorkOrigin(msg.taskKey)
 	case workReqPrompt:
 		return m.navigateToWorkPrompt(msg)

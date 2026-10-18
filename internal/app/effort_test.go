@@ -119,3 +119,33 @@ func TestSetSessionEffortPublishesEvent(t *testing.T) {
 		t.Fatal("no effort_changed event published")
 	}
 }
+
+// TestSetSessionEffortIsSafeAgainstAConfigRebase pins that the effort path reads
+// the installed configuration through the session's locked snapshot. A reload
+// replaces State.Config wholesale under the session mutex from a background
+// goroutine, so a bare field read races it (run with -race).
+func TestSetSessionEffortIsSafeAgainstAConfigRebase(t *testing.T) {
+	rt, state := effortRuntime(t, []string{"low", "medium", "high"})
+	reload := config.Default()
+	reload.Providers = map[string]config.ProviderConfig{
+		"p": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+	reload.Models.Presets = map[string]routing.ModelPreset{
+		"m": {Provider: "p", Model: "m", Thinking: "high",
+			ThinkingOptions: &schema.ThinkingOptions{Levels: []string{"low", "medium", "high"}}},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			state.RebaseSessionConfig(reload)
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		if _, err := rt.SetSessionEffort("low"); err != nil {
+			t.Fatalf("SetSessionEffort: %v", err)
+		}
+	}
+	<-done
+}

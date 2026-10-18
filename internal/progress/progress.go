@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strings"
 	"sync"
@@ -218,7 +219,12 @@ func DecodeEvent(line []byte, previous uint64, observed time.Time) (*Snapshot, e
 	if err := dec.Decode(&f); err != nil {
 		return nil, fmt.Errorf("%w: json", ErrInvalid)
 	}
-	if dec.More() {
+	// Trailing-data check. More() is only defined at an array/object element
+	// position and reports false for a stray '}' or ']' at the top level, so a
+	// frame with appended braces would pass as a clean record. A second Decode
+	// has no such quirk: it reports io.EOF exactly when the payload is spent.
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%w: trailing data", ErrInvalid)
 	}
 	if f.Sequence < 1 || f.Sequence > uint64(MaxNumber) {
@@ -857,15 +863,12 @@ func (o *Observer) goEvent(e goEvent) {
 	switch {
 	case e.FailedBuild != "" && e.Test == "":
 		// A build failure fails the package and reports an error.
-		if p, ok := g.packages[pkg]; ok {
-			if p.running || p.state != "failed" {
+		if p, created, ok := g.packageState(pkg); ok {
+			if created || p.running || p.state != "failed" {
 				p.running = false
 				p.state = "failed"
 				changed = true
 			}
-		} else {
-			g.packages[pkg] = &goPackageState{state: "failed"}
-			changed = true
 		}
 		o.goErr = true
 	case e.Test == "":
@@ -884,6 +887,25 @@ func (o *Observer) goEvent(e goEvent) {
 	}
 }
 
+// packageState returns the state for pkg, creating it while identity capacity
+// remains. Package identities are capped exactly like case identities: a
+// hostile — or merely novel-per-line — Package value must not grow the
+// adapter's state without bound, and refusing a new identity is what keeps the
+// report honest about its now-partial coverage rather than evicting live state.
+func (g *goTest) packageState(pkg string) (p *goPackageState, created, ok bool) {
+	if p, ok := g.packages[pkg]; ok {
+		return p, false, true
+	}
+	if len(g.packages) >= MaxCases {
+		g.partial = true
+		g.invalid = true
+		return nil, false, false
+	}
+	p = &goPackageState{}
+	g.packages[pkg] = p
+	return p, true, true
+}
+
 // applyPackage advances package-level state. Package counts are never added to
 // the test metrics; a package failure only marks ReportedError.
 func (g *goTest) applyPackage(pkg string, e goEvent) bool {
@@ -891,10 +913,9 @@ func (g *goTest) applyPackage(pkg string, e goEvent) bool {
 		g.partial = true
 		return false
 	}
-	p, ok := g.packages[pkg]
+	p, _, ok := g.packageState(pkg)
 	if !ok {
-		p = &goPackageState{}
-		g.packages[pkg] = p
+		return false
 	}
 	switch e.Action {
 	case "run":
@@ -1040,6 +1061,9 @@ func (o *Observer) appendGoOutput(out string) bool {
 
 // goIdentityCount reports how many case identities are held.
 func (o *Observer) goIdentityCount() int { return len(o.goad.cases) }
+
+// goPackageCount reports how many package identities are held.
+func (o *Observer) goPackageCount() int { return len(o.goad.packages) }
 
 // goSnapshot renders the aggregate frame. Counts come only from observed
 // identities; no denominator or total is fabricated for plain Go JSON.

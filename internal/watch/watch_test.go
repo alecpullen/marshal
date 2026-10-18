@@ -1071,3 +1071,83 @@ func TestWatchSnapshotCloseFinalizesOnlyJoinedRegistrations(t *testing.T) {
 		t.Fatalf("OnTerminal calls = %d after repeated close, want 1", got)
 	}
 }
+
+// TestStartRejectsJobRepeatModeWithoutRetainingTheLock pins that the job+repeat
+// rejection releases the manager mutex. The rejection sits inside the locked
+// region, so a bare return would hold m.mu for the rest of the process and wedge
+// every later Start/List/Snapshot/Stop/Close plus the coordinator's poll.
+func TestStartRejectsJobRepeatModeWithoutRetainingTheLock(t *testing.T) {
+	m := newTestManager(t, Deps{JobLookup: func(id string) (native.JobInfo, bool) {
+		return native.JobInfo{ID: id}, true
+	}})
+	if _, _, err := m.Start(Spec{Name: "x", Kind: KindJob, JobID: "job-1", Mode: ModeRepeat}); err == nil ||
+		!strings.Contains(err.Error(), "repeat mode not allowed") {
+		t.Fatalf("expected a repeat-mode rejection, got %v", err)
+	}
+	// Everything that takes the manager lock must still return.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, _, err := m.Start(Spec{Name: "ok", Kind: KindJob, JobID: "job-1"}); err != nil {
+			t.Errorf("start after a rejected repeat watch: %v", err)
+		}
+		_ = m.List()
+		_ = m.Snapshot()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the manager stayed locked after a rejected job repeat watch")
+	}
+}
+
+// TestSampleErrorAfterStopNeverResurrectsTheWatch pins that a sample error
+// arriving after the watch was retired can neither mutate its state nor publish
+// a state change. The sampler samples under the manager context, so a sample in
+// flight when Stop retires the watch returns afterwards; without the terminal
+// guard the removed watch flips to StateError and announces itself active again,
+// contradicting the removal event the lane already received.
+func TestSampleErrorAfterStopNeverResurrectsTheWatch(t *testing.T) {
+	var mu sync.Mutex
+	var events []Event
+	m := newTestManager(t, Deps{
+		// A non-terminal job watch is inert: its loop never samples, so the only
+		// error delivered here is the one this test calls in directly.
+		JobLookup: func(id string) (native.JobInfo, bool) { return native.JobInfo{ID: id}, true },
+		OnEvent: func(e Event) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, e)
+		},
+	})
+	id, _, err := m.Start(Spec{Name: "job", Kind: KindJob, JobID: "job-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := m.getWatch(id)
+	if w == nil {
+		t.Fatal("the watch was not registered")
+	}
+	if _, err := m.Stop(id); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	w.mu.Lock()
+	stopped := w.state
+	w.mu.Unlock()
+
+	m.handleSampleError(w, errors.New("late sample failure"))
+
+	w.mu.Lock()
+	got := w.state
+	w.mu.Unlock()
+	if got != stopped {
+		t.Fatalf("state = %v, want it left at %v", got, stopped)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, e := range events {
+		if e.State == StateError {
+			t.Fatalf("a retired watch republished %s: %+v", e.State, e)
+		}
+	}
+}

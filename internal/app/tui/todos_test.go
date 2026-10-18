@@ -84,6 +84,14 @@ func panelKeyCmd(m Model, k tea.KeyPressMsg) (Model, tea.Cmd) {
 	return mm.(Model), cmd
 }
 
+// applyWorkRequest services one work request the way the model does in
+// production (the panel's own requests are handled inside Update, never by
+// calling the service directly).
+func applyWorkRequest(m Model, msg workRequestMsg) Model {
+	mm, _ := m.Update(msg)
+	return mm.(Model)
+}
+
 // panelAction finds a Work row by ID and runs its action, returning the
 // command (and therefore the request message) it emits. It is the direct
 // entry point for rows a keypress would have to scroll the cursor onto.
@@ -354,6 +362,79 @@ func TestWorkTasksKeyboardEmitsExactTargets(t *testing.T) {
 	req = cmd().(workRequestMsg)
 	if req.kind != workReqExpand || req.taskKey != "work:a" {
 		t.Fatalf("Space = %s/%s, want expand/work:a", req.kind, req.taskKey)
+	}
+}
+
+// TestWorkTasksSpaceTogglesAndReleasesTheBooking pins the Tasks panel's Space
+// gesture against the spec ("Space expands/collapses the selected live card")
+// and pins that its fire-and-forget requests leave no booking behind: every
+// request the panel books must be reconciled by request ID, or the pending map
+// only ever grows.
+func TestWorkTasksSpaceTogglesAndReleasesTheBooking(t *testing.T) {
+	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1}}
+	m := newWorkModel(t, svc)
+	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1,
+		Items: []viewmodel.WorkItem{workTask("work:a", "Alpha"), workTask("work:b", "Beta")}}
+	m = ctrlT(m)
+	p := m.tasksPanel
+
+	// Space expands the selected live card and books exactly one request.
+	m, cmd := panelKeyCmd(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	if cmd == nil {
+		t.Fatal("Space on a live item emitted no request")
+	}
+	expand := cmd().(workRequestMsg)
+	if expand.kind != workReqExpand || expand.taskKey != "work:a" {
+		t.Fatalf("Space = %s/%s, want expand/work:a", expand.kind, expand.taskKey)
+	}
+	if len(p.pending) == 0 {
+		t.Fatal("Space did not book its request")
+	}
+	m = applyWorkRequest(m, expand)
+	if m.workExpanded != "work:a" {
+		t.Fatalf("workExpanded = %q, want work:a", m.workExpanded)
+	}
+	if len(p.pending) != 0 {
+		t.Fatalf("pending = %v, want it released once the panel serviced its own request", p.pending)
+	}
+
+	// A second press collapses the same card.
+	m, cmd = panelKeyCmd(m, tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	if cmd == nil {
+		t.Fatal("the second Space emitted no request")
+	}
+	m = applyWorkRequest(m, cmd().(workRequestMsg))
+	if m.workExpanded != "" {
+		t.Fatalf("workExpanded = %q, want the card collapsed", m.workExpanded)
+	}
+	if len(p.pending) != 0 {
+		t.Fatalf("pending = %v, want empty", p.pending)
+	}
+
+	// The detail's Jump-to-origin is fire-and-forget too, and must release its
+	// booking the same way.
+	m, cmd = panelKeyCmd(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	inspect := cmd().(workRequestMsg)
+	if !p.applyDetail(inspect.requestID, viewmodel.WorkDetail{Item: viewmodel.WorkItem{
+		TaskKey: "work:a", State: "failed",
+		Capabilities: viewmodel.WorkCapabilities{Inspect: true},
+	}}, nil) {
+		t.Fatal("the inspect result was not applied")
+	}
+	origin := panelAction(p, "d-origin")
+	if origin == nil {
+		t.Fatal("an inspected item must offer Jump to origin")
+	}
+	oreq := origin().(workRequestMsg)
+	if oreq.kind != workReqOrigin || oreq.taskKey != "work:a" {
+		t.Fatalf("origin = %s/%s, want origin/work:a", oreq.kind, oreq.taskKey)
+	}
+	if len(p.pending) == 0 {
+		t.Fatal("Jump to origin did not book its request")
+	}
+	m = applyWorkRequest(m, oreq)
+	if len(p.pending) != 0 {
+		t.Fatalf("pending = %v, want the origin booking released", p.pending)
 	}
 }
 

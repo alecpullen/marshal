@@ -1093,6 +1093,17 @@ func (s *State) ModeForConfig(cfg config.Config) string {
 	return cfg.Agent.ApprovalMode
 }
 
+// ConfigSnapshot returns a copy of the installed configuration, read under the
+// session mutex. RebaseSessionConfig replaces Config wholesale on every reload
+// — including reloads driven from a background goroutine — so a bare read of
+// State.Config races the swap. A caller that needs more than one field
+// consistently must take one snapshot rather than reading the field per use.
+func (s *State) ConfigSnapshot() config.Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Config
+}
+
 // RebaseSessionConfig installs a reloaded configuration and re-derives the
 // effective mode against it. An unchanged configured mode keeps the session
 // override (an unrelated setting change must not silently revert the user's

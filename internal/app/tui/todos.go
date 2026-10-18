@@ -849,7 +849,7 @@ func (p *tasksPanelModel) View(width, maxHeight int) string {
 	if p.mode == workModeHistory && p.query != "" {
 		title = "Work · history"
 	}
-	hints := "←→ tabs · ↑↓ move · ↵ inspect · space expand · / search · esc close"
+	hints := "←→ tabs · ↑↓ move · ↵ inspect · space expand/collapse · / search · esc close"
 	ph := min(lipgloss.Height(body)+1, maxHeight)
 	return chrome.PanelWithHints(title, hints, body, pw, ph, true, theme.Current())
 }

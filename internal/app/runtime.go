@@ -1059,7 +1059,7 @@ func (rt *Runtime) SetSessionEffort(level string) (string, error) {
 	if !active.ReasoningCapable {
 		return "", fmt.Errorf("%s has no effort control", active.Model)
 	}
-	cfg := rt.State.Config
+	cfg := rt.State.ConfigSnapshot()
 	preset := cfg.Models.Presets[active.Preset]
 	opts := provider.ThinkingOptionsFor(rt.DataDir, active.Provider, cfg.Providers[active.Provider], active.Model, preset.ThinkingOptions)
 	if !provider.ValidEffortLevel(opts, level) {

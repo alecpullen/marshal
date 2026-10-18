@@ -126,6 +126,11 @@ func TestProgressInvalidFieldsCannotSetRuntimeFacts(t *testing.T) {
 		"phaseOutOfRange": `{"version":1,"sequence":1,"phase":{"id":"p","label":"P","index":3,"total":2}}`,
 		"negativeTotal":   `{"version":1,"sequence":1,"metrics":[{"id":"a","label":"A","unit":"items","current":1,"total":-5}]}`,
 		"trailingData":    `{"version":1,"sequence":1} {"version":1,"sequence":2}`,
+		// A stray closing brace after a complete frame is trailing data too:
+		// Decoder.More() reports false for '}' at the top level, so the check
+		// cannot be built on it.
+		"trailingBrace":   `{"version":1,"sequence":1}}`,
+		"trailingBracket": `{"version":1,"sequence":1}]`,
 	}
 	for name, payload := range cases {
 		if snap, err := DecodeEvent([]byte(Prefix+payload), 0, time.Unix(0, 0)); !errors.Is(err, ErrInvalid) {
@@ -598,6 +603,32 @@ func TestGoProgressInvalidAndIdentityCapIsPartial(t *testing.T) {
 	}
 	if !capO.Snapshot().Partial {
 		t.Fatal("excess identities must mark coverage partial")
+	}
+}
+
+// TestGoProgressPackageIdentitiesAreBounded pins that package identities are
+// capped like case identities: a hostile stream of novel-per-line Package values
+// must not grow the adapter's state without bound.
+func TestGoProgressPackageIdentitiesAreBounded(t *testing.T) {
+	o := newGoObserver(t)
+	for i := 0; i < MaxCases+5; i++ {
+		writeGo(t, o, `{"Action":"run","Package":"p/`+strconv.Itoa(i)+`"}`)
+	}
+	if got := o.goPackageCount(); got != MaxCases {
+		t.Fatalf("packages=%d want %d", got, MaxCases)
+	}
+	if !o.Snapshot().Partial {
+		t.Fatal("excess package identities must mark coverage partial")
+	}
+	// A build failure for a package identity that no longer fits is refused
+	// too, rather than opening a fresh entry.
+	o2 := newGoObserver(t)
+	for i := 0; i < MaxCases; i++ {
+		writeGo(t, o2, `{"Action":"run","Package":"q/`+strconv.Itoa(i)+`"}`)
+	}
+	writeGo(t, o2, `{"Action":"fail","Package":"q/overflow","FailedBuild":"build failed"}`)
+	if got := o2.goPackageCount(); got != MaxCases {
+		t.Fatalf("packages=%d want %d after an over-cap build failure", got, MaxCases)
 	}
 }
 

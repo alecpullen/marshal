@@ -412,6 +412,11 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 					state.PushSubagentReport(panicReport)
 					state.ExitSubagentWork(workID)
 					state.FinishSubagent(view.ID, "", fmt.Errorf("subagent %d panicked: %v", view.ID, r))
+					// Mirror the normal completion path: the panicked child's
+					// explicit-stop group is done, so dropping the registration
+					// keeps a later card that reuses the id from inheriting it
+					// (and releases its turn-stop token).
+					state.ClearSubagentStopGroup(view.ID)
 					// Re-parent the panicked child's once watches and stop its
 					// repeat watches, mirroring the normal completion path.
 					if child != nil && child.WatchTransferrer != nil {

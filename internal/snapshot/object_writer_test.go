@@ -885,3 +885,90 @@ func TestHashObjectsViaGitMatchesObjectIDs(t *testing.T) {
 		}
 	}
 }
+
+// Batched durability: queued objects get writeout-only syncs, and one full
+// barrier runs after every object is published and before any is reported
+// durable.
+func TestDeferredFlushIssuesOneBarrierBeforeObjectsAreReportedDurable(t *testing.T) {
+	requireGit(t)
+	m, _, _, w, _ := testObjectWriterEnv(t, 1<<20)
+	w.deferGit = true
+	var writeouts, dirWriteouts, barriers, reported int
+	w.writeout = func(f *os.File) error { writeouts++; return writeoutSync(f) }
+	w.writeoutDir = func(dir string) error { dirWriteouts++; return writeoutSyncDir(dir) }
+	m.writeObserver = func(ev WriteEvent) {
+		if ev.Kind == "object" {
+			reported++
+		}
+	}
+	var hashes []string
+	w.barrier = func(path string) error {
+		barriers++
+		if reported != 0 {
+			t.Errorf("the barrier ran after %d objects were already reported durable", reported)
+		}
+		for _, hash := range hashes {
+			dst, _ := w.objectPath(hash)
+			if _, err := os.Lstat(dst); err != nil {
+				t.Errorf("the barrier ran before object %s was published: %v", hash, err)
+			}
+		}
+		return fullBarrier(path)
+	}
+	for _, content := range []string{"red\n", "green\n", "blue\n"} {
+		hash, err := w.writeBlob(&bytesBlobSource{desc: content, data: []byte(content)})
+		if err != nil {
+			t.Fatalf("writeBlob(%q): %v", content, err)
+		}
+		hashes = append(hashes, hash)
+	}
+	if err := w.flushPending(); err != nil {
+		t.Fatalf("flushPending: %v", err)
+	}
+	if writeouts != 3 || barriers != 1 || dirWriteouts == 0 {
+		t.Fatalf("writeouts=%d dirWriteouts=%d barriers=%d, want 3 object writeouts, at least one directory writeout, and exactly one barrier",
+			writeouts, dirWriteouts, barriers)
+	}
+	if reported != 3 {
+		t.Fatalf("reported %d durable objects, want 3", reported)
+	}
+}
+
+// A failed barrier means nothing was proven durable: the flush fails and no
+// object is reported.
+func TestDeferredFlushBarrierFailureReportsNothing(t *testing.T) {
+	requireGit(t)
+	m, _, _, w, _ := testObjectWriterEnv(t, 1<<20)
+	w.deferGit = true
+	reported := 0
+	m.writeObserver = func(ev WriteEvent) {
+		if ev.Kind == "object" {
+			reported++
+		}
+	}
+	w.barrier = func(string) error { return errors.New("injected barrier failure") }
+	if _, err := w.writeBlob(&bytesBlobSource{desc: "x", data: []byte("x\n")}); err != nil {
+		t.Fatalf("writeBlob: %v", err)
+	}
+	if err := w.flushPending(); err == nil {
+		t.Fatal("flushPending succeeded although the durability barrier failed")
+	}
+	if reported != 0 {
+		t.Fatalf("%d objects were reported durable after a failed barrier", reported)
+	}
+}
+
+// Outside a batch, every object keeps a full sync of its own.
+func TestImmediateWritesKeepFullSyncs(t *testing.T) {
+	requireGit(t)
+	_, _, _, w, _ := testObjectWriterEnv(t, 1<<20)
+	var writeouts, barriers int
+	w.writeout = func(f *os.File) error { writeouts++; return writeoutSync(f) }
+	w.barrier = func(path string) error { barriers++; return fullBarrier(path) }
+	if _, err := w.writeBlob(&bytesBlobSource{desc: "now", data: []byte("now\n")}); err != nil {
+		t.Fatalf("writeBlob: %v", err)
+	}
+	if writeouts != 0 || barriers != 0 {
+		t.Fatalf("an immediate write used batched durability (writeouts=%d barriers=%d)", writeouts, barriers)
+	}
+}

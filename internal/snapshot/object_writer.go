@@ -474,6 +474,14 @@ type objectWriter struct {
 	pending       []pendingObject
 	pendingByHash map[string]bool
 
+	// In deferGit mode durability is batched too: queued temps and object
+	// directories get a writeout-only sync, and flushPending issues one full
+	// barrier after publishing them and before reporting them durable (see
+	// sync_darwin.go). Fields so a test can count and order them.
+	writeout    func(*os.File) error
+	writeoutDir func(string) error
+	barrier     func(string) error
+
 	hashVerified int
 	deduped      int
 }
@@ -525,6 +533,9 @@ func newObjectWriter(ctx context.Context, m *Manager, gitDir string, budget *obj
 		budget:     budget,
 	}
 	w.gitHashObjects = w.hashObjectsViaGit
+	w.writeout = writeoutSync
+	w.writeoutDir = writeoutSyncDir
+	w.barrier = fullBarrier
 	return w, nil
 }
 
@@ -905,7 +916,7 @@ func (w *objectWriter) writeBlobStream(src blobSource, header []byte, hasher io.
 		discard()
 		return "", w.manager.storeError(ReasonUnreadableFile, tmpName, err)
 	}
-	written, err := flushTemp(tmp)
+	written, err := w.flushTemp(tmp)
 	if err != nil {
 		discard()
 		return "", err
@@ -1018,7 +1029,7 @@ func (w *objectWriter) writeLooseObject(raw []byte, reservation int64, dst strin
 		w.forgetTemp(tmpName)
 		return "", w.manager.storeError(ReasonUnreadableFile, tmpName, err)
 	}
-	written, err := flushTemp(tmp)
+	written, err := w.flushTemp(tmp)
 	if err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
@@ -1040,9 +1051,15 @@ func (w *objectWriter) writeLooseObject(raw []byte, reservation int64, dst strin
 	return tmpName, nil
 }
 
-// flushTemp flushes a partially written object and returns its size.
-func flushTemp(f *os.File) (int64, error) {
-	if err := f.Sync(); err != nil {
+// flushTemp flushes a partially written object and returns its size. A queued
+// object (deferGit) gets a writeout-only sync; flushPending's barrier makes it
+// durable before anything relies on it. Otherwise the sync is full.
+func (w *objectWriter) flushTemp(f *os.File) (int64, error) {
+	sync := f.Sync
+	if w.deferGit {
+		sync = func() error { return w.writeout(f) }
+	}
+	if err := sync(); err != nil {
 		return 0, storeError(ReasonUnreadableFile, err)
 	}
 	return f.Seek(0, io.SeekEnd)
@@ -1269,9 +1286,15 @@ func (w *objectWriter) flushPending() error {
 		}
 	}
 	for _, dir := range dirOrder {
-		if err := syncDir(dir); err != nil {
+		if err := w.writeoutDir(dir); err != nil {
 			return w.manager.storeError(ReasonUnreadableFile, dir, err)
 		}
+	}
+	// One full flush makes every object and directory synced above durable.
+	// It flushes the drive's cache as a whole, so any published object will do.
+	last := w.pending[len(w.pending)-1].dst
+	if err := w.barrier(last); err != nil {
+		return w.manager.storeError(ReasonUnreadableFile, last, err)
 	}
 	// Write boundary: each loose object is now durable at its content-addressed
 	// path, and each was charged before it was written.

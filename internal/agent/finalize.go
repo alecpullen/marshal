@@ -163,7 +163,16 @@ func (r *Runner) finalize(ctx context.Context, p provider.Provider, model string
 	task.Summary = content
 	task.Status = TaskStatusCompleted
 	task.SalvagedReason = string(reason)
-	r.State.AddMessageSalvaged(session.RoleAssistant, content, session.ContentTypeMarkdown, string(reason))
+	if !r.commitSteeringFinal(func() {
+		r.State.AddMessageSalvaged(session.RoleAssistant, content, session.ContentTypeMarkdown, string(reason))
+	}) {
+		// Accepted steering is still owed a delivery this finalize answer never
+		// saw. The turn loop is already past its last checkpoint, so hand the
+		// signal back to the RunTask caller instead of publishing an answer the
+		// user has moved past; the undelivered text is retained for the next turn.
+		resetForSteering(task)
+		return task, session.ErrSendNow
+	}
 	return task, nil
 }
 

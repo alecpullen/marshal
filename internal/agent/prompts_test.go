@@ -89,8 +89,10 @@ func TestBuildSystemPromptContainsBaseSections(t *testing.T) {
 }
 
 func TestBaseRulesGuideQuestionToolUsage(t *testing.T) {
-	if !strings.Contains(baseRules, "ask the user with question.ask") {
-		t.Errorf("baseRules should mention question.ask:\n%s", baseRules)
+	for _, want := range []string{"question.ask", "Decide and act", "state the assumption"} {
+		if !strings.Contains(baseRules, want) {
+			t.Errorf("baseRules ask rule missing %q:\n%s", want, baseRules)
+		}
 	}
 }
 
@@ -115,7 +117,7 @@ func TestBaseRulesOmitSummariseRule(t *testing.T) {
 func TestBaseRulesKeepShellWriteRule(t *testing.T) {
 	for _, want := range []string{
 		"file.write or file.edit",
-		"never via shell redirection, heredocs, or tee",
+		"not shell redirection, heredocs, or tee",
 	} {
 		if !strings.Contains(baseRules, want) {
 			t.Errorf("baseRules must keep the shell-write rule %q:\n%s", want, baseRules)
@@ -128,7 +130,7 @@ func TestBaseRulesCondensedAskUserRule(t *testing.T) {
 	if strings.Contains(baseRules, "Prefer question.ask when you have multiple related questions") {
 		t.Errorf("baseRules ask_user rule should be condensed (no longer includes the options/multi-select guidance):\n%s", baseRules)
 	}
-	if !strings.Contains(baseRules, "ask the user with question.ask") {
+	if !strings.Contains(baseRules, "question.ask") {
 		t.Errorf("baseRules must still mention question.ask:\n%s", baseRules)
 	}
 }
@@ -143,7 +145,7 @@ func TestBaseRulesMergedReadBeforeEdit(t *testing.T) {
 	if strings.Contains(baseRules, "\n- Do not read a guessed path") {
 		t.Errorf("baseRules should merge the read-before-edit and guessed-path rules (guessed-path should not be a separate bullet):\n%s", baseRules)
 	}
-	if !strings.Contains(baseRules, "Never invent file contents; read before editing. Do not read a guessed path") {
+	if !strings.Contains(baseRules, "Never invent file contents; read before editing. If you are not sure a path exists") {
 		t.Errorf("baseRules should contain the merged rule:\n%s", baseRules)
 	}
 }
@@ -151,7 +153,7 @@ func TestBaseRulesMergedReadBeforeEdit(t *testing.T) {
 func TestBaseRulesForbidShellFileWrites(t *testing.T) {
 	for _, want := range []string{
 		"file.write or file.edit",
-		"never via shell redirection, heredocs, or tee",
+		"not shell redirection, heredocs, or tee",
 	} {
 		if !strings.Contains(baseRules, want) {
 			t.Errorf("baseRules missing shell-write rule %q", want)
@@ -173,7 +175,7 @@ func TestBuildSystemPromptSystemVariant(t *testing.T) {
 	if !strings.Contains(content, "- Write files with the file.write or file.edit tools whenever practical") {
 		t.Errorf("system variant missing amended file-tools rule:\n%s", content)
 	}
-	if strings.Contains(content, "never via shell redirection, heredocs, or tee") {
+	if strings.Contains(content, "not shell redirection, heredocs, or tee") {
 		t.Errorf("system variant should not contain the original file-tools rule:\n%s", content)
 	}
 
@@ -182,7 +184,7 @@ func TestBuildSystemPromptSystemVariant(t *testing.T) {
 	if strings.Contains(content, systemAccessDirective) {
 		t.Errorf("default variant should not contain systemAccessDirective:\n%s", content)
 	}
-	if !strings.Contains(content, "never via shell redirection, heredocs, or tee") {
+	if !strings.Contains(content, "not shell redirection, heredocs, or tee") {
 		t.Errorf("default variant missing original file-tools rule:\n%s", content)
 	}
 	if !strings.Contains(content, baseRules) {
@@ -1740,5 +1742,27 @@ func TestRosterDropsNoiseAndEmbeddingPreset(t *testing.T) {
 	}
 	if !strings.Contains(got, "p/chat") {
 		t.Errorf("roster lost the chat preset:\n%s", got)
+	}
+}
+
+// The decisiveness rules: a scoped file-write rule that does not cover
+// commands whose job is writing files, a commit-to-approach rule, a git exit
+// when no tool covers an operation, and an ask criterion in copilot mode.
+func TestBaseRulesFavourDecisiveAction(t *testing.T) {
+	for _, want := range []string{
+		"Commands whose job is writing files",
+		"Once you choose an approach, carry it out",
+		"Do not re-derive facts already established",
+		"When no tool covers a git operation you need, run git with shell.run",
+	} {
+		if !strings.Contains(baseRules, want) {
+			t.Errorf("baseRules missing %q:\n%s", want, baseRules)
+		}
+	}
+	if !strings.Contains(baseRulesSystem, "Once you choose an approach, carry it out") {
+		t.Errorf("system-access rules must carry the same commit-to-approach rule:\n%s", baseRulesSystem)
+	}
+	if d := modeDirective(policy.ModeCopilot); !strings.Contains(d, "only when the answer would change what you build") {
+		t.Errorf("copilot directive lacks the ask criterion: %q", d)
 	}
 }

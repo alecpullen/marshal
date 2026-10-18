@@ -5774,3 +5774,195 @@ func TestTUIEndControllerIsTheOnlyEndSeam(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 }
+
+// ── Task 12: the composed lifecycle through the real runtime ─────────────
+
+// startLifecycleRuntime starts a runtime whose conversation owns a working
+// command service, using only the production seams (a project config, an
+// explicit home dir and a trust resolver) so no ambient user configuration is
+// consulted.
+func startLifecycleRuntime(t *testing.T) *Runtime {
+	t.Helper()
+	tmp := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".marshal", "config.toml"), []byte(`[project]
+name = "lifecycle-runtime"
+
+[profile]
+default = "mock_profile"
+
+[providers.mock]
+type = "openai_compatible"
+base_url = "http://localhost:11434/v1"
+api_key = "mock-key"
+tool_calling = true
+
+[models.presets."mock/mock-model"]
+local_only = true
+
+[agent_profiles.mock_profile]
+implementer = "mock/mock-model"
+planner = "mock/mock-model"
+repo_scout = "mock/mock-model"
+tester = "mock/mock-model"
+reviewer = "mock/mock-model"
+`), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	rt, err := StartRuntime(context.Background(),
+		WithWorkingDir(tmp),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+	if rt.JobManager == nil {
+		t.Fatal("the runtime owns no command service, so the lifecycle assertions would be vacuous")
+	}
+	return rt
+}
+
+// TestRuntimeCommandLifecycleSurvivesReloadAndSettlesOnce is Task 12's
+// app-level composition regression: a command admitted through the runtime's own
+// service is awaited repeatedly, survives a real config reload with its identity
+// and membership intact, and then finishes naturally — one launch, one process
+// identity, one durable completion the parent transcript can show.
+func TestRuntimeCommandLifecycleSurvivesReloadAndSettlesOnce(t *testing.T) {
+	ctx := context.Background()
+	rt := startLifecycleRuntime(t)
+	service := rt.JobManager
+
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	runner := &fakeRunner{run: func(runCtx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		if req.OnStart != nil {
+			req.OnStart(7100)
+		}
+		if req.Stdout != nil {
+			_, _ = req.Stdout.Write([]byte("lifecycle-progress\n"))
+		}
+		once.Do(func() { close(started) })
+		select {
+		case <-release:
+			// A real process streams its last line before exiting; the fake does
+			// the same so the completion carries the command's final output.
+			if req.Stdout != nil {
+				_, _ = req.Stdout.Write([]byte("lifecycle-final\n"))
+			}
+			return native.CommandResult{Stdout: "lifecycle-final\n", ExitCode: 0}, nil
+		case <-runCtx.Done():
+			return native.CommandResult{}, runCtx.Err()
+		}
+	}}
+	// The committed policy's runner is the one future admissions use; the
+	// command below is admitted after this commit, exactly as a command admitted
+	// during a turn is.
+	policy := service.CurrentLaunchPolicy()
+	policy.Runner = runner
+	service.CommitLaunchPolicy(policy)
+
+	info, err := service.Launch(ctx, native.LaunchSpec{
+		Command:  "long lifecycle command",
+		Detached: true,
+		Origin: native.CommandOrigin{
+			ConversationID: rt.SessionID,
+			Actor:          "parent",
+			TurnID:         "turn-lifecycle",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the command never started")
+	}
+
+	// Repeated awaits: each ends the caller's wait and leaves the command alone.
+	for i := 0; i < 3; i++ {
+		res, err := service.WaitForeground(ctx, info.ID, 10*time.Millisecond)
+		if err != nil {
+			t.Fatalf("await %d: %v", i, err)
+		}
+		if res.Terminal {
+			t.Fatalf("await %d = %+v, want a continuation", i, res)
+		}
+		if res.Info.PID != 7100 || res.Info.ExecutionID != info.ExecutionID {
+			t.Fatalf("await %d identity = pid %d/%q, want 7100/%q", i, res.Info.PID, res.Info.ExecutionID, info.ExecutionID)
+		}
+	}
+
+	// A real reload through the runtime's own entry point. The reload must not
+	// touch the running command, its handle or its identity.
+	if err := reloadAgentRuntime(ctx, rt.Config, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+	if rt.JobManager != service {
+		t.Fatal("a reload replaced the service that owns the running command")
+	}
+	live, _, err := service.Output(info.ID, 0)
+	if err != nil {
+		t.Fatalf("Output after the reload: %v", err)
+	}
+	if live.Status != native.StatusRunning || live.PID != 7100 {
+		t.Fatalf("live after the reload = %q/pid %d, want running/7100", live.Status, live.PID)
+	}
+	if live.StopCause != "" {
+		t.Fatalf("StopCause after the reload = %q, want none", live.StopCause)
+	}
+	// The user-visible work membership still names the command, so an end would
+	// still warn about it.
+	var sawCommand bool
+	for _, item := range rt.ActiveWork().Items {
+		if item.Label == "long lifecycle command" {
+			sawCommand = true
+		}
+	}
+	if !sawCommand {
+		t.Fatalf("membership after the reload = %+v, want the running command", rt.ActiveWork().Items)
+	}
+
+	// Natural completion: the transcript gains exactly one completion for this
+	// execution, with the command's own exit code and its final output.
+	close(release)
+	settled, err := service.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if settled.Status != native.StatusCompleted || settled.ExitCode == nil || *settled.ExitCode != 0 {
+		t.Fatalf("settled = %q/%v, want completed with exit 0", settled.Status, settled.ExitCode)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var exits []session.JobExit
+	for {
+		exits = nil
+		for _, item := range rt.State.Transcript() {
+			if item.JobExit != nil && item.JobExit.ExecutionID == info.ExecutionID {
+				exits = append(exits, *item.JobExit)
+			}
+		}
+		if len(exits) == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(exits) != 1 {
+		t.Fatalf("durable completions for the execution = %d, want exactly 1", len(exits))
+	}
+	if exits[0].Outcome != string(native.OutcomeCompleted) {
+		t.Fatalf("stored outcome = %q, want completed", exits[0].Outcome)
+	}
+	if !strings.Contains(exits[0].Output, "lifecycle-final") {
+		t.Fatalf("stored output = %q, want the command's final output", exits[0].Output)
+	}
+	// The count the status line reads is back to zero: no phantom running work.
+	if got := rt.State.RunningJobsCount(); got != 0 {
+		t.Fatalf("running jobs after settlement = %d, want 0", got)
+	}
+}

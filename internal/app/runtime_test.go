@@ -1497,3 +1497,531 @@ func TestEndSettlementStoresDurableOutputBeforeClose(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 }
+
+// ── Task 12: lifecycle composition regressions ───────────────────────────
+
+// lifecycleRuntimeFixture builds a runtime over a real database and a real
+// command service for the composition tests: a session with durable job exits, a
+// managed execution service whose completions are stored through the session,
+// and a runtime whose end phases drive all of it.
+//
+// It composes the production pieces (session → service → runtime) directly
+// rather than through StartRuntime, because these tests are about the lifecycle
+// those pieces agree on, not about startup configuration.
+type lifecycleRuntimeFixture struct {
+	rt       *Runtime
+	state    *session.State
+	service  *native.JobManager
+	database *db.DB
+	dir      string
+	// sessionID is the conversation the fixture's state and service own.
+	sessionID string
+	// releases are the runners' release channels, closed exactly once at cleanup
+	// so no test leaks a blocked goroutine — including a test that released one
+	// itself.
+	releases []chan struct{}
+	// closed tracks the release channels already closed, so cleanup never closes
+	// one twice.
+	closedMu sync.Mutex
+	closed   map[chan struct{}]bool
+}
+
+// release closes a release channel exactly once.
+func (f *lifecycleRuntimeFixture) release(ch chan struct{}) {
+	f.closedMu.Lock()
+	defer f.closedMu.Unlock()
+	if f.closed == nil {
+		f.closed = make(map[chan struct{}]bool)
+	}
+	if f.closed[ch] {
+		return
+	}
+	f.closed[ch] = true
+	close(ch)
+}
+
+func newLifecycleRuntimeFixture(t *testing.T, runner native.CommandRunner, maxOutputBytes int) *lifecycleRuntimeFixture {
+	t.Helper()
+	ctx := context.Background()
+	dir := t.TempDir()
+	database, err := db.Open(filepath.Join(dir, "lifecycle.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		database.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(dir, "lifecycle-composition")
+	if err != nil {
+		database.Close()
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	const sessionID = "sess_lifecycle"
+	if err := database.CreateSession(sessionID, projectID, "", time.Now()); err != nil {
+		database.Close()
+		t.Fatalf("CreateSession: %v", err)
+	}
+	state := session.New(config.Default(), dir, time.Now(), session.Persistence{
+		DB:        database,
+		SessionID: sessionID,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	f := &lifecycleRuntimeFixture{state: state, database: database, dir: dir, sessionID: sessionID}
+	t.Cleanup(func() {
+		for _, ch := range f.releases {
+			f.release(ch)
+		}
+		if f.service != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = f.service.Shutdown(shutdownCtx)
+			cancel()
+		}
+		_ = f.rt.Close(context.Background())
+		_ = database.Close()
+	})
+
+	service := native.NewCommandService(ctx, native.LaunchPolicy{
+		Generation:     1,
+		Runner:         runner,
+		Dir:            dir,
+		MaxOutputBytes: maxOutputBytes,
+		Retention:      time.Hour,
+	})
+	service.SetOnExit(func(info native.JobInfo, ran time.Duration, output string) error {
+		return state.AddJobExit(session.JobExitFromExecution(info.Execution(), info.Command, output, ran, info.ExitCode))
+	})
+	service.SetOnChange(state.SetRunningJobsCount)
+	f.service = service
+
+	f.rt = &Runtime{
+		Config:         config.Default(),
+		State:          state,
+		CommandService: &conversationCommandService{manager: service, generation: 1},
+		JobManager:     service,
+		DB:             database,
+		ProjectID:      projectID,
+		SessionID:      sessionID,
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		WorkingDir:     dir,
+		HomeDir:        dir,
+		DataDir:        dir,
+	}
+	workCtx, workCancel := context.WithCancel(ctx)
+	f.rt.workCtx = workCtx
+	f.rt.workCancel = workCancel
+	state.SetTurnStopService(service)
+	service.SetWorkAdmission(state)
+	return f
+}
+
+// blockingLifecycleRunner blocks every execution until its own context is
+// cancelled, publishing a PID so a stopped execution is observable. It is the
+// stand-in for a long command that a stop has to terminate.
+type blockingLifecycleRunner struct {
+	started chan struct{}
+	once    sync.Once
+	pid     int
+	// runs counts executions that reached the runner, so a test can assert one
+	// launch across a handoff and a reload.
+	runs atomic.Int32
+}
+
+func (r *blockingLifecycleRunner) runCount() int { return int(r.runs.Load()) }
+
+func (r *blockingLifecycleRunner) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+	r.runs.Add(1)
+	if req.OnStart != nil {
+		pid := r.pid
+		if pid == 0 {
+			pid = 6100
+		}
+		req.OnStart(pid)
+	}
+	r.once.Do(func() {
+		if r.started != nil {
+			close(r.started)
+		}
+	})
+	<-ctx.Done()
+	return native.CommandResult{}, ctx.Err()
+}
+
+// lifecycleJobExits returns the session's durable detached completions.
+func lifecycleJobExits(state *session.State) []session.JobExit {
+	var out []session.JobExit
+	for _, item := range state.Transcript() {
+		if item.JobExit != nil {
+			out = append(out, *item.JobExit)
+		}
+	}
+	return out
+}
+
+// TestEndSettlementComposesPostmortemEvidenceAndDatabaseClose is Task 12's
+// accepted-warning chain at the runtime boundary: work is warned about and
+// accepted, the settlement stores the stopped command's terminal output durably,
+// the postmortem phase runs with the database still open so extraction sees that
+// evidence, and only then does Close actually close it.
+//
+// It exercises the composition the interactive path relies on (accept → join →
+// postmortem → close) with a real database and a real command service, so a
+// regression in any single step makes one of the assertions below fail.
+func TestEndSettlementComposesPostmortemEvidenceAndDatabaseClose(t *testing.T) {
+	ctx := context.Background()
+	runner := &blockingLifecycleRunner{started: make(chan struct{}), pid: 6200}
+	f := newLifecycleRuntimeFixture(t, runner, 1<<16)
+	rt, state, service := f.rt, f.state, f.service
+
+	// One parent operation, so the warning has something to show besides the
+	// command, and one command the accepted end has to stop. The parent
+	// registers through BeginWorkCancelable with its own stop hook — the runtime's
+	// registration seam — so the accepted end stops exactly this operation instead
+	// of the runtime's infrastructure root, and the join can complete.
+	parentCtx, cancelParent := context.WithCancel(ctx)
+	defer cancelParent()
+	if err := state.BeginWorkCancelable(cancelParent); err != nil {
+		t.Fatalf("BeginWorkCancelable: %v", err)
+	}
+	joined := make(chan struct{})
+	go func() {
+		<-parentCtx.Done()
+		state.EndWork()
+		close(joined)
+	}()
+
+	jobID := launchDetachedJob(t, ctx, service, "sleep 30")
+	select {
+	case <-runner.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the command never started")
+	}
+
+	// The warning's membership covers both, then the user accepts it.
+	snap := rt.ActiveWork()
+	if len(snap.Items) != 2 {
+		t.Fatalf("ActiveWork items = %+v, want the parent operation and the command", snap.Items)
+	}
+	decision, err := rt.AcceptEnd(EndAcceptRequest{
+		Intent:           EndIntentExit,
+		DisplayedIDs:     endWorkIDs(snap),
+		RequireDisplayed: true,
+	})
+	if err != nil {
+		t.Fatalf("AcceptEnd: %v", err)
+	}
+	if !decision.Accepted {
+		t.Fatalf("acceptance refused: %+v", decision)
+	}
+	if phase := rt.EndPhase(); phase != EndPhaseStopping {
+		t.Fatalf("phase after acceptance = %q, want stopping", phase)
+	}
+
+	settleCtx, cancelSettle := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelSettle()
+	if err := rt.WaitForEnd(settleCtx); err != nil {
+		t.Fatalf("WaitForEnd: %v", err)
+	}
+	if phase := rt.EndPhase(); phase != EndPhasePostmortem {
+		t.Fatalf("phase after settlement = %q, want postmortem", phase)
+	}
+	if err := rt.LastEndError(); err != nil {
+		t.Fatalf("LastEndError = %v, want nil after a successful settlement", err)
+	}
+	if active := service.ActiveCount(); active != 0 {
+		t.Fatalf("active executions after settlement = %d, want 0", active)
+	}
+	if got := runner.runCount(); got != 1 {
+		t.Fatalf("runner runs = %d, want exactly 1: the accepted end stops the command, it does not relaunch it", got)
+	}
+
+	// The stopped command's terminal output is durable, and it is stored as a
+	// stopped outcome rather than as a natural completion.
+	exits := lifecycleJobExits(state)
+	if len(exits) != 1 {
+		t.Fatalf("job exits = %d (%+v), want the one stopped completion", len(exits), exits)
+	}
+	if exits[0].ID != jobID {
+		t.Fatalf("stored exit id = %q, want the stopped command %q", exits[0].ID, jobID)
+	}
+	if exits[0].Outcome != string(native.OutcomeStopped) || exits[0].StopCause != "conversation ended" {
+		t.Fatalf("stored exit = %q/%q, want stopped/conversation ended", exits[0].Outcome, exits[0].StopCause)
+	}
+	if stored, err := f.database.LoadJobExits(f.sessionID); err != nil {
+		t.Fatalf("LoadJobExits: %v", err)
+	} else if len(stored) != 1 {
+		t.Fatalf("stored rows = %d, want the settled completion", len(stored))
+	}
+
+	// The postmortem phase runs the scoped analysis with the database still
+	// open: the extraction it performs observes the stored completion above,
+	// which is exactly the evidence a report needs.
+	var sawEvidence bool
+	rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
+		if scope == nil {
+			return errors.New("analysis ran without a scope")
+		}
+		records, err := f.database.LoadJobExits(f.sessionID)
+		if err != nil {
+			return fmt.Errorf("read stored completions during the postmortem: %w", err)
+		}
+		if len(records) == 1 && records[0].Outcome == string(native.OutcomeStopped) {
+			sawEvidence = true
+		}
+		return nil
+	})
+	if err := rt.RunExitAnalysis(ctx, "summarise the session"); err != nil {
+		t.Fatalf("RunExitAnalysis: %v", err)
+	}
+	if !sawEvidence {
+		t.Fatal("the postmortem pass could not read the settlement's durable evidence")
+	}
+
+	// The replacement/closure step closes the database; afterwards its own
+	// connection is unusable, which is how "the DB close followed the durable
+	// write" is observable from outside.
+	if err := rt.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := f.database.LoadJobExits(f.sessionID); err == nil {
+		t.Fatal("the database was still usable after Close: the write must precede the close")
+	}
+	if phase := rt.EndPhase(); phase != EndPhasePostmortem && phase != EndPhaseClosing {
+		t.Fatalf("phase after Close = %q, want the postmortem/closing phase the runtime reached", phase)
+	}
+	select {
+	case <-joined:
+	case <-time.After(time.Second):
+		t.Fatal("the parent operation was never joined")
+	}
+}
+
+// TestReplacementLeavesNoWorkBehind is Task 12's replacement rule: an accepted
+// replacement stops the old conversation's work, advances past the postmortem
+// phase, and the new session owns its own supervisor — no command, callback or
+// execution from the replaced conversation survives into it.
+func TestReplacementLeavesNoWorkBehind(t *testing.T) {
+	ctx := context.Background()
+	runner := &blockingLifecycleRunner{started: make(chan struct{}), pid: 6300}
+	f := newLifecycleRuntimeFixture(t, runner, 1<<16)
+	rt, state, service := f.rt, f.state, f.service
+
+	// The replaced conversation's own operation, registered with its stop hook,
+	// so the accepted replacement is what ends it.
+	parentCtx, cancelParent := context.WithCancel(ctx)
+	defer cancelParent()
+	if err := state.BeginWorkCancelable(cancelParent); err != nil {
+		t.Fatalf("BeginWorkCancelable: %v", err)
+	}
+	stopped := make(chan struct{})
+	go func() {
+		<-parentCtx.Done()
+		state.EndWork()
+		close(stopped)
+	}()
+
+	jobID := launchDetachedJob(t, ctx, service, "old-conversation-command")
+	select {
+	case <-runner.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the command never started")
+	}
+
+	decision, err := rt.AcceptEnd(EndAcceptRequest{
+		Intent:           EndIntentReplace,
+		DisplayedIDs:     endWorkIDs(rt.ActiveWork()),
+		RequireDisplayed: true,
+	})
+	if err != nil {
+		t.Fatalf("AcceptEnd: %v", err)
+	}
+	if !decision.Accepted {
+		t.Fatalf("replacement refused: %+v", decision)
+	}
+
+	joinCtx, cancelJoin := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelJoin()
+	if err := rt.WaitForEnd(joinCtx); err != nil {
+		t.Fatalf("WaitForEnd: %v", err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("the accepted replacement never stopped the old conversation's operation")
+	}
+	if phase := rt.EndPhase(); phase == EndPhasePostmortem {
+		t.Fatal("a replacement must not enter the postmortem phase")
+	}
+	// The old command is gone with its conversation.
+	if active := service.ActiveCount(); active != 0 {
+		t.Fatalf("active executions after the replacement = %d, want 0", active)
+	}
+	if got := runner.runCount(); got != 1 {
+		t.Fatalf("runner runs = %d, want exactly 1: the replacement stops the old command, it does not relaunch it", got)
+	}
+	settled, _, err := service.Output(jobID, 0)
+	if err != nil {
+		t.Fatalf("Output: %v", err)
+	}
+	if !settled.Status.Terminal() {
+		t.Fatalf("old command status = %q, want a settled state", settled.Status)
+	}
+	if settled.Outcome != native.OutcomeStopped {
+		t.Fatalf("old command outcome = %q, want stopped", settled.Outcome)
+	}
+	// The replacement leaves no ordinary work registered behind it.
+	if outstanding := state.OutstandingWork(); len(outstanding) != 0 {
+		t.Fatalf("outstanding work after the replacement = %+v, want none", outstanding)
+	}
+	// A replacement adds no exit postmortem, so scoped analysis cannot start.
+	if err := rt.RunExitAnalysis(ctx, "must not run"); err == nil {
+		t.Fatal("a replacement must not run exit analysis")
+	}
+}
+
+// TestTargetedChildStopKeepsThatChildsDetachedJob is Task 12's targeted-stop
+// rule composed end to end: stopping one delegated child stops the commands that
+// child still has attached, while a job the same child already handed off
+// remains conversation-owned and running.
+func TestTargetedChildStopKeepsThatChildsDetachedJob(t *testing.T) {
+	ctx := context.Background()
+	releaseDetached := make(chan struct{})
+	attachedStarted := make(chan struct{})
+	runner := &childStopRunner{releaseDetached: releaseDetached, attachedStarted: attachedStarted}
+	f := newLifecycleRuntimeFixture(t, runner, 1<<16)
+	f.releases = append(f.releases, releaseDetached)
+	rt, state, service := f.rt, f.state, f.service
+
+	// The child: its creation item, its card, and its own stop group — the same
+	// three registrations the agent.run handler makes.
+	childCtx, cancelChild := context.WithCancel(ctx)
+	work, err := state.EnterSubagentWork()
+	if err != nil {
+		t.Fatalf("EnterSubagentWork: %v", err)
+	}
+	view := state.RegisterSubagentWithMetaAndWork(work, "delegate", nil, session.SubagentMeta{})
+	childStop := session.NewTurnStopToken(service, fmt.Sprintf("subagent-%d", view.ID))
+	state.RegisterSubagentStopGroup(view.ID, childStop)
+	state.SetSubagentCancel(view.ID, cancelChild)
+
+	// The child's detached job: admitted under the child's turn, then handed off.
+	childTurn := childStop.TurnID()
+	detached, err := service.Launch(ctx, native.LaunchSpec{
+		Command:  "child-download",
+		Detached: true,
+		Origin:   native.CommandOrigin{ConversationID: state.SessionID(), Actor: "delegate", TurnID: childTurn},
+	})
+	if err != nil {
+		t.Fatalf("Launch detached: %v", err)
+	}
+	// The child's attached command: what the targeted stop must terminate.
+	attached, err := service.Launch(ctx, native.LaunchSpec{
+		Command: "child-attached",
+		Origin:  native.CommandOrigin{ConversationID: state.SessionID(), Actor: "delegate", TurnID: childTurn},
+	})
+	if err != nil {
+		t.Fatalf("Launch attached: %v", err)
+	}
+	select {
+	case <-attachedStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the child's commands never started")
+	}
+
+	// The user stops that child specifically.
+	if !state.CancelSubagent(view.ID) {
+		t.Fatal("CancelSubagent did not stop the running child")
+	}
+	// The child's own context is cancelled by that stop: the targeted stop ends
+	// the child itself, not only its command.
+	select {
+	case <-childCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the targeted child stop never cancelled the child's context")
+	}
+
+	// The child's attached command is stopped...
+	stopped, _, err := service.Output(attached.ID, 0)
+	if err != nil {
+		t.Fatalf("Output attached: %v", err)
+	}
+	if stopped.Status == native.StatusRunning {
+		t.Fatalf("the child's attached command is still %q, want it stopped", stopped.Status)
+	}
+	if stopped.StopCause == "" {
+		t.Fatal("the stopped command recorded no cause")
+	}
+	// ...while the child's own detached job keeps running: it is
+	// conversation-owned, and a targeted child stop reaches the child's attached
+	// work only.
+	kept, _, err := service.Output(detached.ID, 0)
+	if err != nil {
+		t.Fatalf("Output detached: %v", err)
+	}
+	if kept.Status != native.StatusRunning {
+		t.Fatalf("the child's detached job status = %q, want running", kept.Status)
+	}
+	if kept.StopCause != "" {
+		t.Fatalf("the child's detached job StopCause = %q, want none", kept.StopCause)
+	}
+
+	// The conversation's own work is unaffected: the child's detached job is
+	// still part of the membership an end would stop.
+	snap := rt.ActiveWork()
+	var sawDetached bool
+	for _, item := range snap.Items {
+		if item.Kind == string(session.WorkKindCommand) && item.Label == "child-download" {
+			sawDetached = true
+		}
+	}
+	if !sawDetached {
+		t.Fatalf("membership = %+v, want the child's detached job still tracked", snap.Items)
+	}
+
+	// Finishing the child leaves its detached job running exactly one more step:
+	// an accepted conversation end is what eventually stops it.
+	state.FinishSubagent(view.ID, "done", nil)
+	state.ClearSubagentStopGroup(view.ID)
+	state.ExitSubagent()
+	alive, _, err := service.Output(detached.ID, 0)
+	if err != nil {
+		t.Fatalf("Output detached after the child finished: %v", err)
+	}
+	if alive.Status != native.StatusRunning {
+		t.Fatalf("detached job after the child finished = %q, want running", alive.Status)
+	}
+	f.release(releaseDetached)
+	settled, err := service.Wait(ctx, detached.ID)
+	if err != nil {
+		t.Fatalf("Wait detached: %v", err)
+	}
+	if settled.Status != native.StatusCompleted {
+		t.Fatalf("detached job settled as %q, want completed", settled.Status)
+	}
+}
+
+// childStopRunner models one child's two commands: the detached one blocks until
+// released (so it can outlive the child's stop), the attached one blocks until
+// its context is cancelled (so a stop terminates it) and publishes its start.
+type childStopRunner struct {
+	releaseDetached chan struct{}
+	attachedStarted chan struct{}
+	once            sync.Once
+}
+
+func (r *childStopRunner) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+	if req.OnStart != nil {
+		req.OnStart(6400)
+	}
+	if req.Command == "child-download" {
+		select {
+		case <-r.releaseDetached:
+			return native.CommandResult{Stdout: "download complete\n", ExitCode: 0}, nil
+		case <-ctx.Done():
+			return native.CommandResult{}, ctx.Err()
+		}
+	}
+	r.once.Do(func() { close(r.attachedStarted) })
+	<-ctx.Done()
+	return native.CommandResult{}, ctx.Err()
+}

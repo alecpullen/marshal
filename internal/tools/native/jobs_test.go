@@ -1417,6 +1417,12 @@ func TestCallbacksRunOutsideLocksAndMayReenter(t *testing.T) {
 		ran      []time.Duration
 		outputs  []string
 	)
+	// exitCalled is signalled by the exit sink. The assertion below is about the
+	// callbacks having run, so it must wait for the callback rather than for
+	// Wait's return: a Wait that starts after the execution settled observes the
+	// terminal snapshot immediately (Wait's early-return path) and can therefore
+	// return before the sink has been offered the completion.
+	exitCalled := make(chan struct{}, 1)
 	jm.SetOnChange(func(int) {
 		// Re-enters the manager while a change is being reported.
 		_ = jm.ActiveExecutions()
@@ -1429,6 +1435,10 @@ func TestCallbacksRunOutsideLocksAndMayReenter(t *testing.T) {
 		ran = append(ran, r)
 		outputs = append(outputs, output)
 		mu.Unlock()
+		select {
+		case exitCalled <- struct{}{}:
+		default:
+		}
 		// Re-enters the manager from the exit callback too.
 		_ = jm.List()
 		return nil
@@ -1456,6 +1466,13 @@ func TestCallbacksRunOutsideLocksAndMayReenter(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("a re-entrant callback deadlocked the manager")
+	}
+	// The exit sink runs after the execution settles, which is also when Wait can
+	// already have returned, so the callback is awaited explicitly.
+	select {
+	case <-exitCalled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the exit callback never ran for the settled execution")
 	}
 
 	mu.Lock()
@@ -2770,6 +2787,160 @@ func TestManagedPeekLeavesAnExecutionUntouched(t *testing.T) {
 	}
 }
 
+// TestManagedHandoffSurvivesRepeatedExpiriesAndAReloadThenSettlesOnce is Task
+// 12's composition regression at the service boundary: it chains the whole
+// lifecycle a background command lives through — handoff, repeated await
+// expiries, a committed relaunch policy (the reload's commit) and natural
+// completion — and asserts the user-visible invariants hold across all of it:
+// one launch, one process identity, the settings captured at admission, and
+// exactly one completion record.
+func TestManagedHandoffSurvivesRepeatedExpiriesAndAReloadThenSettlesOnce(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	release := make(chan struct{})
+	started := make(chan struct{})
+	// The output is deliberately longer than the cap the reload commits below:
+	// a running command must keep what it captured at admission.
+	runner := newFakeRunner(withStarted(started), withRelease(release), withPID(7311), withLiveOutput("admitted-output-line\n"))
+	jm := NewCommandService(ctx, LaunchPolicy{
+		Generation:     1,
+		Runner:         runner,
+		Dir:            dir,
+		MaxOutputBytes: 64,
+		Retention:      time.Hour,
+	})
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	settlements := make(chan JobInfo, 4)
+	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) error {
+		settlements <- info
+		return nil
+	})
+
+	info, err := jm.Launch(ctx, LaunchSpec{
+		Command: "long download",
+		Origin:  CommandOrigin{ConversationID: "conv-1", Actor: "parent", TurnID: "turn-1"},
+		Wait:    10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	<-started
+
+	// 1. The foreground wait expires and hands the still-running command off.
+	res, err := jm.WaitForeground(ctx, info.ID, time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitForeground (handoff): %v", err)
+	}
+	if res.Terminal || res.WaitEnd != WaitEndExpired {
+		t.Fatalf("handoff = %+v, want a continuation from an expired wait", res)
+	}
+	if res.Info.Attachment != AttachmentBackground {
+		t.Fatalf("attachment after the handoff = %q, want background", res.Info.Attachment)
+	}
+
+	// 2. Repeated await expiries: each ends only the wait. None of them stops,
+	// relaunches or re-times the command.
+	for i := 0; i < 3; i++ {
+		await, err := jm.WaitForeground(ctx, info.ID, 5*time.Millisecond)
+		if err != nil {
+			t.Fatalf("await %d: %v", i, err)
+		}
+		if await.Terminal || await.WaitEnd != WaitEndExpired {
+			t.Fatalf("await %d = %+v, want a continuation", i, await)
+		}
+		if await.Info.ExecutionID != info.ExecutionID || await.Info.PID != 7311 {
+			t.Fatalf("await %d identity = %q/pid %d, want the admitted %q/7311",
+				i, await.Info.ExecutionID, await.Info.PID, info.ExecutionID)
+		}
+		if await.RunError != nil || await.Info.ExitCode != nil {
+			t.Fatalf("await %d = %+v, want no exit and no error", i, await)
+		}
+	}
+
+	// 3. A reload commits a new launch generation with a smaller output cap.
+	closed := jm.CommitLaunchPolicy(LaunchPolicy{
+		Generation:     2,
+		Runner:         runner,
+		Dir:            dir,
+		MaxOutputBytes: 8,
+		Retention:      time.Hour,
+	})
+	if len(closed) != 0 {
+		t.Fatalf("the reload released %d resources with none referenced", len(closed))
+	}
+	if got := jm.Generation(); got != 2 {
+		t.Fatalf("generation after the reload = %d, want 2", got)
+	}
+
+	// The running command is untouched by the reload: same identity, same PID,
+	// still running, with no stop recorded and still outstanding background work.
+	live, _, err := jm.Output(info.ID, 0)
+	if err != nil {
+		t.Fatalf("Output after the reload: %v", err)
+	}
+	if live.Status != StatusRunning || live.PID != 7311 || live.ExecutionID != info.ExecutionID {
+		t.Fatalf("live after the reload = %q/pid %d/%q, want running/7311/%q", live.Status, live.PID, live.ExecutionID, info.ExecutionID)
+	}
+	if live.StopCause != "" {
+		t.Fatalf("StopCause after the reload = %q, want none", live.StopCause)
+	}
+	if outstanding := jm.Outstanding(); len(outstanding) != 1 || outstanding[0].ID != info.ID {
+		t.Fatalf("Outstanding after the reload = %+v, want the handed-off command", outstanding)
+	}
+	if got := runner.countRuns(); got != 1 {
+		t.Fatalf("runner runs = %d, want exactly 1 across handoff, expiries and reload", got)
+	}
+
+	// 4. Natural completion, once.
+	close(release)
+	final, err := jm.Wait(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if final.Status != StatusCompleted || final.Outcome != OutcomeCompleted {
+		t.Fatalf("settled = %q/%q, want completed/completed", final.Status, final.Outcome)
+	}
+	if final.ExitCode == nil || *final.ExitCode != 0 {
+		t.Fatalf("ExitCode = %v, want the natural 0", final.ExitCode)
+	}
+	if final.ExecutionID != info.ExecutionID || final.PID != 7311 {
+		t.Fatalf("identity changed across the lifecycle: %q/pid %d", final.ExecutionID, final.PID)
+	}
+	// The command kept the output policy it captured at admission, not the one
+	// the reload committed: the retained tail is longer than the new 8-byte cap.
+	if !strings.Contains(final.OutputTail, "admitted-output-line") {
+		t.Fatalf("retained tail = %q, want the output captured under the admission policy", final.OutputTail)
+	}
+	if got := jm.CurrentLaunchPolicy().MaxOutputBytes; got != 8 {
+		t.Fatalf("committed output cap = %d, want the reloaded 8 for future launches", got)
+	}
+	if got := runner.countRuns(); got != 1 {
+		t.Fatalf("runner runs after completion = %d, want exactly 1", got)
+	}
+
+	// Exactly one completion reached the durable sink, for this execution.
+	select {
+	case got := <-settlements:
+		if got.ExecutionID != info.ExecutionID {
+			t.Fatalf("settlement identity = %q, want the admitted %q", got.ExecutionID, info.ExecutionID)
+		}
+		if got.Outcome != OutcomeCompleted || got.Attachment != AttachmentBackground {
+			t.Fatalf("settlement = %q/%q, want completed/background", got.Outcome, got.Attachment)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handed-off completion never reached the exit sink")
+	}
+	select {
+	case extra := <-settlements:
+		t.Fatalf("a second completion was reported for the same execution: %+v", extra)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if pending := jm.PendingSettlements(); len(pending) != 0 {
+		t.Fatalf("PendingSettlements = %+v, want none after a stored completion", pending)
+	}
+}
+
 // TestManagedStopWaitsForTheActualOutcome pins the explicit-stop rule at the
 // service boundary: stopping a still-attached command reports the process's own
 // outcome rather than a continuation, and a detached sibling is untouched.
@@ -2841,5 +3012,198 @@ func TestManagedStopWaitsForTheActualOutcome(t *testing.T) {
 	close(release)
 	if _, err := jm.Wait(ctx, detached.ID); err != nil {
 		t.Fatalf("Wait detached: %v", err)
+	}
+}
+
+// partialBatchRunner lets one admitted command finish naturally and blocks the
+// rest, so a turn's parallel batch has a settled member, an attached member and
+// a member that hands off — all three at once, which is the batch shape a stop
+// has to arbitrate.
+type partialBatchRunner struct {
+	// settled is the command that completes immediately instead of blocking.
+	settled  string
+	finished chan string
+	release  chan struct{}
+	started  chan struct{}
+	once     sync.Once
+	// runs counts how many executions actually reached the runner, so a refused
+	// batch member that never started is visible as one run too few.
+	runs atomic.Int32
+}
+
+func (r *partialBatchRunner) countRuns() int { return int(r.runs.Load()) }
+
+func (r *partialBatchRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, error) {
+	r.runs.Add(1)
+	if req.OnStart != nil {
+		req.OnStart(8080)
+	}
+	r.once.Do(func() { close(r.started) })
+	if req.Command == r.settled {
+		r.finished <- req.Command
+		return CommandResult{Stdout: "already done\n", ExitCode: 0}, nil
+	}
+	select {
+	case <-r.release:
+		return CommandResult{Stdout: "batch sibling finished\n", ExitCode: 0}, nil
+	case <-ctx.Done():
+		return CommandResult{}, ctx.Err()
+	}
+}
+
+// TestTurnStopOfAParallelBatchStopsOnlyItsStillAttachedMembers pins Task 12's
+// partial-batch rule: one turn's stop acts on exactly the members still attached
+// to it. A member that already settled keeps its natural outcome, a member that
+// already handed off keeps running, and only the still-attached member is
+// stopped — each with its own single settlement.
+func TestTurnStopOfAParallelBatchStopsOnlyItsStillAttachedMembers(t *testing.T) {
+	ctx := context.Background()
+	release := make(chan struct{})
+	finished := make(chan string, 1)
+	started := make(chan struct{})
+	runner := &partialBatchRunner{settled: "batch-settled", finished: finished, release: release, started: started}
+	jm := NewJobManager(ctx, runner, t.TempDir(), 25, time.Hour, 1<<20)
+	t.Cleanup(func() { _ = jm.Shutdown(context.Background()) })
+
+	settlements := make(chan JobInfo, 4)
+	jm.SetOnExit(func(info JobInfo, ran time.Duration, output string) error {
+		settlements <- info
+		return nil
+	})
+
+	origin := CommandOrigin{ConversationID: "conv-batch", Actor: "parent", TurnID: "turn-batch"}
+	// Member 1: completes while the batch is still running.
+	settled, err := jm.Launch(ctx, LaunchSpec{Command: "batch-settled", Detached: true, Origin: origin})
+	if err != nil {
+		t.Fatalf("Launch settled: %v", err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first batch member never ran")
+	}
+	if got, err := jm.Wait(ctx, settled.ID); err != nil || got.Status != StatusCompleted {
+		t.Fatalf("first member = %+v (%v), want completed before the stop", got, err)
+	}
+
+	// Member 2: handed off to the background by an expired wait. Member 3 is
+	// launched foreground and detached the same way, so both are background work
+	// while the third admission below remains attached.
+	handed, err := jm.Launch(ctx, LaunchSpec{Command: "batch-handed-off", Origin: origin})
+	if err != nil {
+		t.Fatalf("Launch handed off: %v", err)
+	}
+	alsoHanded, err := jm.Launch(ctx, LaunchSpec{Command: "batch-also-handed-off", Origin: origin})
+	if err != nil {
+		t.Fatalf("Launch also handed off: %v", err)
+	}
+	<-started
+	if res, err := jm.WaitForeground(ctx, handed.ID, time.Millisecond); err != nil || res.Terminal {
+		t.Fatalf("handoff = %+v (%v), want a continuation", res, err)
+	}
+	if res, err := jm.WaitForeground(ctx, alsoHanded.ID, time.Millisecond); err != nil || res.Terminal {
+		t.Fatalf("second handoff = %+v (%v), want a continuation", res, err)
+	}
+	// Member 3: still attached when the stop arrives, with a caller waiting on
+	// it exactly as the tool call that admitted it would be.
+	stillAttached, err := jm.Launch(ctx, LaunchSpec{Command: "batch-still-attached", Origin: origin})
+	if err != nil {
+		t.Fatalf("Launch still-attached: %v", err)
+	}
+	type batchResult struct {
+		res ForegroundResult
+		err error
+	}
+	attachedOutcome := make(chan batchResult, 1)
+	go func() {
+		res, err := jm.WaitForeground(ctx, stillAttached.ID, time.Hour)
+		attachedOutcome <- batchResult{res: res, err: err}
+	}()
+
+	ids, err := jm.StopAttached("turn-batch", "user stopped the turn")
+	if err != nil {
+		t.Fatalf("StopAttached: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != stillAttached.ID {
+		t.Fatalf("stopped = %v, want only the still-attached %s", ids, stillAttached.ID)
+	}
+
+	// The settled member kept its natural outcome: the stop never relabelled it.
+	kept, _, err := jm.Output(settled.ID, 0)
+	if err != nil {
+		t.Fatalf("Output settled: %v", err)
+	}
+	if kept.Status != StatusCompleted || kept.Outcome != OutcomeCompleted {
+		t.Fatalf("settled member = %q/%q, want completed/completed", kept.Status, kept.Outcome)
+	}
+	if kept.StopCause != "" {
+		t.Fatalf("settled member StopCause = %q, want none", kept.StopCause)
+	}
+	// The handed-off members keep running: a detached job survives its turn's
+	// stop, whoever else the stop reached.
+	for _, member := range []JobInfo{handed, alsoHanded} {
+		live, _, err := jm.Output(member.ID, 0)
+		if err != nil {
+			t.Fatalf("Output(%s): %v", member.ID, err)
+		}
+		if live.Status != StatusRunning || live.StopCause != "" {
+			t.Fatalf("handed-off member %s = %q/%q, want running with no stop cause", member.ID, live.Status, live.StopCause)
+		}
+	}
+	// The stopped member's outcome reaches the caller that was waiting on it —
+	// it was never background work, so it produces one tool result, not a second
+	// completion card.
+	select {
+	case got := <-attachedOutcome:
+		if got.err != nil {
+			t.Fatalf("WaitForeground on the stopped member: %v", got.err)
+		}
+		if !got.res.Terminal {
+			t.Fatalf("stopped member result = %+v, want the terminal outcome", got.res)
+		}
+		if got.res.Info.Outcome != OutcomeStopped || got.res.Info.StopCause != "user stopped the turn" {
+			t.Fatalf("stopped member = %q/%q, want stopped with the turn's cause", got.res.Info.Outcome, got.res.Info.StopCause)
+		}
+		if got.res.Info.ExecutionID != stillAttached.ExecutionID {
+			t.Fatalf("stopped member identity = %q, want the admitted %q", got.res.Info.ExecutionID, stillAttached.ExecutionID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stopped member's outcome never reached its waiting caller")
+	}
+	// The stopped turn admits nothing more, so an unlaunched batch member stays
+	// unstarted: exactly the batch's four members were admitted (the refused one
+	// never reached the runner), and none of them is missing from the record.
+	if _, err := jm.Launch(ctx, LaunchSpec{Command: "batch-never-started", Origin: origin}); !errors.Is(err, ErrTurnStopped) {
+		t.Fatalf("late batch admission = %v, want ErrTurnStopped", err)
+	}
+	if got := len(jm.List()); got != 4 {
+		t.Fatalf("admitted executions = %d, want the batch's 4 (the refused member must not start)", got)
+	}
+	if got := runner.countRuns(); got != 4 {
+		t.Fatalf("runner runs = %d, want 4: a refused batch member must not start a process", got)
+	}
+
+	// Exactly one detached completion reaches the durable sink — the member that
+	// finished in the background — and the stopped member is not announced a
+	// second time, because its outcome is its caller's tool result.
+	seen := map[string]int{}
+	for {
+		select {
+		case info := <-settlements:
+			seen[info.ID]++
+			continue
+		case <-time.After(200 * time.Millisecond):
+		}
+		break
+	}
+	if len(seen) != 1 || seen[settled.ID] != 1 {
+		t.Fatalf("detached completions = %v, want exactly one for the settled member %s", seen, settled.ID)
+	}
+
+	close(release)
+	for _, member := range []JobInfo{handed, alsoHanded} {
+		if _, err := jm.Wait(ctx, member.ID); err != nil {
+			t.Fatalf("Wait(%s): %v", member.ID, err)
+		}
 	}
 }

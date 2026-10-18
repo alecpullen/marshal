@@ -24,6 +24,7 @@ import (
 	"marshal/internal/oauth"
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
@@ -3579,4 +3580,172 @@ func waitForRegistration(t *testing.T, st *session.State) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("the turn never registered a stop group")
+}
+
+// ── Task 12: session/cancel against the real command service ─────────────
+
+// acpLifecycleRunner runs one detached command to completion and blocks one
+// attached command until its context is cancelled, so a single cancel exercises
+// both halves of the ownership rule: the attached command is terminated, and the
+// detached job keeps running.
+type acpLifecycleRunner struct {
+	detachedCommand string
+	detachedRun     chan struct{}
+	attachedRun     chan struct{}
+	attachOnce      sync.Once
+}
+
+func (r *acpLifecycleRunner) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+	if req.OnStart != nil {
+		req.OnStart(5150)
+	}
+	if req.Command == r.detachedCommand {
+		// A detached job answers to its own context only, so it survives a turn
+		// stop and finishes when the test releases it.
+		select {
+		case <-r.detachedRun:
+			return native.CommandResult{Stdout: "detached finished\n", ExitCode: 0}, nil
+		case <-ctx.Done():
+			return native.CommandResult{}, ctx.Err()
+		}
+	}
+	r.attachOnce.Do(func() { close(r.attachedRun) })
+	<-ctx.Done()
+	return native.CommandResult{}, ctx.Err()
+}
+
+// TestSessionCancelStopsOnlyTheTurnsAttachedCommand pins Task 11's ownership
+// rule against the REAL command service rather than the recording fake: a
+// session/cancel asks the conversation's service to stop the commands still
+// attached to the turn, so the attached command carries the turn-stop cause
+// while a job that already detached keeps running with no stop recorded.
+func TestSessionCancelStopsOnlyTheTurnsAttachedCommand(t *testing.T) {
+	ctx := context.Background()
+	releaseDetached := make(chan struct{})
+	runner := &acpLifecycleRunner{
+		detachedCommand: "acp-detached",
+		detachedRun:     releaseDetached,
+		attachedRun:     make(chan struct{}),
+	}
+	service := native.NewCommandService(ctx, native.LaunchPolicy{
+		Runner:         runner,
+		MaxOutputBytes: 1 << 16,
+	})
+	t.Cleanup(func() {
+		close(releaseDetached)
+		_ = service.Shutdown(context.Background())
+	})
+
+	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	st.SetTurnStopService(service)
+	service.SetWorkAdmission(st)
+
+	// launched carries the two executions' ids from the turn's runner to the
+	// test goroutine, so the ids are never read and written concurrently.
+	type launchedCommands struct {
+		detached string
+		attached string
+	}
+	launched := make(chan launchedCommands, 1)
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID, BeginWork: identityBeginWork,
+				Run: RunnerFunc(func(runCtx context.Context, prompt string) error {
+					// The turn's own stop group is registered by PromptTurn before
+					// the runner is invoked, so its turn id names the commands
+					// below exactly as the shell tool's origin would.
+					token := st.CurrentTurnStop()
+					if token == nil {
+						t.Error("the turn registered no stop group")
+						return nil
+					}
+					detached, err := service.Launch(ctx, native.LaunchSpec{
+						Command:  "acp-detached",
+						Detached: true,
+						Origin:   native.CommandOrigin{ConversationID: st.SessionID(), TurnID: token.TurnID()},
+					})
+					if err != nil {
+						t.Errorf("launch detached: %v", err)
+						return nil
+					}
+					attached, err := service.Launch(ctx, native.LaunchSpec{
+						Command: "acp-attached",
+						Origin:  native.CommandOrigin{ConversationID: st.SessionID(), TurnID: token.TurnID()},
+					})
+					if err != nil {
+						t.Errorf("launch attached: %v", err)
+						return nil
+					}
+					launched <- launchedCommands{detached: detached.ID, attached: attached.ID}
+					// Wait for the cancel: this turn ends only through it.
+					<-runCtx.Done()
+					return runCtx.Err()
+				}),
+				Events: pubsub.NewBroker[session.Event](), State: st}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.PromptTurn(context.Background(), json.RawMessage(`{"sessionId":"sess_owned","prompt":[{"type":"text","text":"hi"}]}`))
+		done <- err
+	}()
+
+	// Both executions exist, and the attached one's process is running, before
+	// the cancel: the assertion below is about the cancel's decision, not about a
+	// race with admission.
+	var ids launchedCommands
+	select {
+	case ids = <-launched:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn never launched its commands")
+	}
+	select {
+	case <-runner.attachedRun:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the attached command never started")
+	}
+	detachedID, attachedID := ids.detached, ids.attached
+
+	if _, err := manager.Cancel(context.Background(), json.RawMessage(`{"sessionId":"sess_owned"}`)); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("PromptTurn returned %v, want nil (a cancel is a normal stop)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the turn never ended after the cancel")
+	}
+
+	// The attached command was stopped, with the cancel's own cause.
+	attached, _, err := service.Output(attachedID, 0)
+	if err != nil {
+		t.Fatalf("Output attached: %v", err)
+	}
+	if attached.Status == native.StatusRunning {
+		t.Fatalf("the attached command is still %q, want it stopped by the cancel", attached.Status)
+	}
+	if attached.StopCause != cancelCause {
+		t.Fatalf("attached StopCause = %q, want %q", attached.StopCause, cancelCause)
+	}
+	// The detached job survived the cancel: it is conversation-owned, and the
+	// turn stop reaches attached work only.
+	detached, _, err := service.Output(detachedID, 0)
+	if err != nil {
+		t.Fatalf("Output detached: %v", err)
+	}
+	if detached.Status != native.StatusRunning {
+		t.Fatalf("detached status = %q, want running: a detached job survives session/cancel", detached.Status)
+	}
+	if detached.StopCause != "" {
+		t.Fatalf("detached StopCause = %q, want none", detached.StopCause)
+	}
+	// Only the attached execution was touched, so the stop's cause is on exactly
+	// one of the two: the other is still live, conversation-owned work.
+	if surviving := service.ActiveExecutions(); len(surviving) != 1 || surviving[0].ID != detachedID {
+		t.Fatalf("ActiveExecutions = %+v, want only the surviving detached job %s", surviving, detachedID)
+	}
 }

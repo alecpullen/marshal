@@ -3,6 +3,7 @@ package acp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/progress"
 	"marshal/internal/pubsub"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -158,4 +161,389 @@ func waitForWithin(t *testing.T, d time.Duration, what string, ok func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// --- session/work_* ---------------------------------------------------------
+
+// fakeWorkService is a scripted viewmodel.WorkService: it records exactly what
+// the ACP layer passed and returns the configured projection or error, so a
+// test can prove identity/argument fidelity without a real runtime.
+type fakeWorkService struct {
+	mu sync.Mutex
+
+	snapshot viewmodel.WorkSnapshot
+	page     viewmodel.WorkPage
+	detail   viewmodel.WorkDetail
+	stop     viewmodel.WorkStopResult
+
+	listErr    error
+	inspectErr error
+	stopErr    error
+	ackErr     error
+
+	lastQuery  viewmodel.WorkQuery
+	lastTarget viewmodel.WorkTarget
+	lastRaw    bool
+	lastStop   string
+	lastAck    viewmodel.WorkAck
+}
+
+func (f *fakeWorkService) WorkSnapshot() viewmodel.WorkSnapshot {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.snapshot
+}
+
+func (f *fakeWorkService) SubscribeWork(context.Context) <-chan pubsub.Event[viewmodel.WorkSnapshot] {
+	ch := make(chan pubsub.Event[viewmodel.WorkSnapshot])
+	close(ch)
+	return ch
+}
+
+func (f *fakeWorkService) ListWork(ctx context.Context, query viewmodel.WorkQuery) (viewmodel.WorkPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastQuery = query
+	return f.page, f.listErr
+}
+
+func (f *fakeWorkService) InspectWork(ctx context.Context, target viewmodel.WorkTarget, raw bool) (viewmodel.WorkDetail, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastTarget = target
+	f.lastRaw = raw
+	return f.detail, f.inspectErr
+}
+
+func (f *fakeWorkService) StopWork(ctx context.Context, target viewmodel.WorkTarget, reason string) (viewmodel.WorkStopResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastTarget = target
+	f.lastStop = reason
+	return f.stop, f.stopErr
+}
+
+func (f *fakeWorkService) AcknowledgeWork(ctx context.Context, ack viewmodel.WorkAck) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastAck = ack
+	return f.ackErr
+}
+
+func newWorkTestACP(t *testing.T) (*WorkManagerACP, *fakeWorkService) {
+	t.Helper()
+	svc := &fakeWorkService{}
+	m := NewWorkManagerACP(func(id string) (viewmodel.WorkService, bool) {
+		if id != "s1" {
+			return nil, false
+		}
+		return svc, true
+	}, func(string, any) error { return nil })
+	t.Cleanup(m.Close)
+	return m, svc
+}
+
+func assertInvalidParams(t *testing.T, what string, err error) {
+	t.Helper()
+	var rpc *jsonRPCError
+	if !errors.As(err, &rpc) || rpc.Code != invalidParams {
+		t.Fatalf("%s err = %#v, want invalid params (%d)", what, err, invalidParams)
+	}
+}
+
+func TestWorkACPListLiveAndPagedShareRuntime(t *testing.T) {
+	m, svc := newWorkTestACP(t)
+	ctx := context.Background()
+
+	item := viewmodel.WorkItem{
+		TaskKey: "work:cmd:1", ConversationID: "s1", RuntimeEpoch: "e1",
+		Kind: "command", Label: "build", StartedAt: time.Now(),
+	}
+	svc.snapshot = viewmodel.WorkSnapshot{
+		Version: 1, ConversationID: "s1", RuntimeEpoch: "e1", Revision: 7,
+		HistoryRevision: 3, ObservedAt: time.Now(), Items: []viewmodel.WorkItem{item}, ActiveCount: 1,
+	}
+	svc.page = viewmodel.WorkPage{
+		RuntimeEpoch: "e1", Revision: 3, Items: []viewmodel.WorkItem{item}, NextCursor: "next",
+	}
+
+	liveAny, err := m.List(ctx, json.RawMessage(`{"sessionId":"s1"}`))
+	if err != nil {
+		t.Fatalf("live list: %v", err)
+	}
+	live, ok := liveAny.(WorkSnapshotWire)
+	if !ok {
+		t.Fatalf("live result = %T, want WorkSnapshotWire", liveAny)
+	}
+	if live.ConversationID != "s1" || live.RuntimeEpoch != "e1" || live.Revision != 7 || live.HistoryRevision != 3 {
+		t.Fatalf("live snapshot = %+v", live)
+	}
+	if len(live.Items) != 1 || live.Items[0].TaskKey != item.TaskKey {
+		t.Fatalf("live items = %+v", live.Items)
+	}
+
+	// The live view rejects history arguments instead of ignoring them.
+	assertInvalidParams(t, "live with query",
+		func() error { _, e := m.List(ctx, json.RawMessage(`{"sessionId":"s1","query":"x"}`)); return e }())
+	assertInvalidParams(t, "live with cursor",
+		func() error { _, e := m.List(ctx, json.RawMessage(`{"sessionId":"s1","cursor":"c"}`)); return e }())
+	assertInvalidParams(t, "live with limit",
+		func() error { _, e := m.List(ctx, json.RawMessage(`{"sessionId":"s1","limit":5}`)); return e }())
+
+	pagedAny, err := m.List(ctx, json.RawMessage(`{"sessionId":"s1","view":"attention","limit":2}`))
+	if err != nil {
+		t.Fatalf("paged list: %v", err)
+	}
+	paged, ok := pagedAny.(WorkPageWire)
+	if !ok {
+		t.Fatalf("paged result = %T, want WorkPageWire", pagedAny)
+	}
+	if paged.RuntimeEpoch != "e1" || paged.Revision != 3 || paged.NextCursor != "next" || len(paged.Items) != 1 {
+		t.Fatalf("paged page = %+v", paged)
+	}
+	if svc.lastQuery.ConversationID != "s1" || svc.lastQuery.View != "attention" || svc.lastQuery.Limit != 2 {
+		t.Fatalf("facade query = %+v", svc.lastQuery)
+	}
+	if live.RuntimeEpoch != paged.RuntimeEpoch {
+		t.Fatalf("live and paged epochs differ: %q vs %q", live.RuntimeEpoch, paged.RuntimeEpoch)
+	}
+}
+
+func TestWorkACPMethodsRejectMissingStaleAndForeignTargets(t *testing.T) {
+	m, svc := newWorkTestACP(t)
+	ctx := context.Background()
+
+	// A missing session id is invalid params.
+	assertInvalidParams(t, "missing sessionId", func() error {
+		_, e := m.List(ctx, json.RawMessage(`{}`))
+		return e
+	}())
+
+	// An unknown session is a server error, exactly like the watch manager.
+	_, err := m.List(ctx, json.RawMessage(`{"sessionId":"other"}`))
+	var rpc *jsonRPCError
+	if !errors.As(err, &rpc) || rpc.Code != serverError {
+		t.Fatalf("unknown session err = %#v, want server error (%d)", err, serverError)
+	}
+
+	// Unknown view and out-of-range limit are explicit invalid params.
+	assertInvalidParams(t, "unknown view", func() error {
+		_, e := m.List(ctx, json.RawMessage(`{"sessionId":"s1","view":"bogus"}`))
+		return e
+	}())
+	assertInvalidParams(t, "bad limit", func() error {
+		_, e := m.List(ctx, json.RawMessage(`{"sessionId":"s1","view":"history","limit":999}`))
+		return e
+	}())
+
+	// A stale cursor from the facade surfaces as invalid params, never success.
+	svc.listErr = viewmodel.ErrWorkStaleCursor
+	assertInvalidParams(t, "stale cursor", func() error {
+		_, e := m.List(ctx, json.RawMessage(`{"sessionId":"s1","view":"history","cursor":"zzz"}`))
+		return e
+	}())
+	svc.listErr = nil
+
+	// A missing or foreign task key is rejected before the facade is called.
+	assertInvalidParams(t, "inspect without taskKey", func() error {
+		_, e := m.Inspect(ctx, json.RawMessage(`{"sessionId":"s1"}`))
+		return e
+	}())
+	assertInvalidParams(t, "stop without taskKey", func() error {
+		_, e := m.Stop(ctx, json.RawMessage(`{"sessionId":"s1"}`))
+		return e
+	}())
+	assertInvalidParams(t, "ack without revision", func() error {
+		_, e := m.Acknowledge(ctx, json.RawMessage(`{"sessionId":"s1","taskKey":"work:x"}`))
+		return e
+	}())
+
+	// A target the facade no longer knows is invalid params.
+	svc.inspectErr = viewmodel.ErrWorkStaleTarget
+	assertInvalidParams(t, "foreign target", func() error {
+		_, e := m.Inspect(ctx, json.RawMessage(`{"sessionId":"s1","taskKey":"work:foreign"}`))
+		return e
+	}())
+	svc.inspectErr = nil
+
+	// An unavailable action is a server error.
+	svc.ackErr = viewmodel.ErrWorkUnsupported
+	_, err = m.Acknowledge(ctx, json.RawMessage(`{"sessionId":"s1","taskKey":"work:x","terminalResultRevision":"r1"}`))
+	if !errors.As(err, &rpc) || rpc.Code != serverError {
+		t.Fatalf("unsupported ack err = %#v, want server error (%d)", err, serverError)
+	}
+}
+
+func TestWorkACPInspectStopAckPreserveOutcome(t *testing.T) {
+	m, svc := newWorkTestACP(t)
+	ctx := context.Background()
+
+	svc.detail = viewmodel.WorkDetail{
+		Item:   viewmodel.WorkItem{TaskKey: "work:cmd:1", ConversationID: "s1", State: "completed", Outcome: "exit_0", ResultRevision: "r1"},
+		Output: "all good", Raw: true, Report: "report body",
+	}
+	detailAny, err := m.Inspect(ctx, json.RawMessage(`{"sessionId":"s1","taskKey":"work:cmd:1","raw":true}`))
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	detail, ok := detailAny.(WorkDetailWire)
+	if !ok {
+		t.Fatalf("inspect result = %T, want WorkDetailWire", detailAny)
+	}
+	if detail.Item.TaskKey != "work:cmd:1" || detail.Output != "all good" || !detail.Raw || detail.Report != "report body" {
+		t.Fatalf("detail = %+v", detail)
+	}
+	if !svc.lastRaw || svc.lastTarget.TaskKey != "work:cmd:1" || svc.lastTarget.ConversationID != "s1" {
+		t.Fatalf("facade inspect args = %+v raw=%v", svc.lastTarget, svc.lastRaw)
+	}
+
+	svc.stop = viewmodel.WorkStopResult{TaskKey: "work:cmd:1", State: "stopped", Summary: "stopping", Accepted: true}
+	stopAny, err := m.Stop(ctx, json.RawMessage(`{"sessionId":"s1","taskKey":"work:cmd:1","reason":"operator"}`))
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	stop, ok := stopAny.(WorkStopWire)
+	if !ok {
+		t.Fatalf("stop result = %T, want WorkStopWire", stopAny)
+	}
+	if stop.TaskKey != "work:cmd:1" || stop.State != "stopped" || stop.Summary != "stopping" || !stop.Accepted {
+		t.Fatalf("stop = %+v", stop)
+	}
+	if svc.lastStop != "operator" || svc.lastTarget.TaskKey != "work:cmd:1" || svc.lastTarget.ConversationID != "s1" {
+		t.Fatalf("facade stop args = %+v reason=%q", svc.lastTarget, svc.lastStop)
+	}
+
+	// The reason is bounded at 1,024 runes; exactly the bound is accepted.
+	overLong := strings.Repeat("x", 1025)
+	assertInvalidParams(t, "over-long stop reason", func() error {
+		_, e := m.Stop(ctx, json.RawMessage(`{"sessionId":"s1","taskKey":"work:cmd:1","reason":"`+overLong+`"}`))
+		return e
+	}())
+	atBound := strings.Repeat("x", 1024)
+	if _, err := m.Stop(ctx, json.RawMessage(`{"sessionId":"s1","taskKey":"work:cmd:1","reason":"`+atBound+`"}`)); err != nil {
+		t.Fatalf("1024-rune reason must be accepted: %v", err)
+	}
+
+	ackAny, err := m.Acknowledge(ctx, json.RawMessage(`{"sessionId":"s1","taskKey":"work:cmd:1","terminalResultRevision":"r1"}`))
+	if err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+	res, ok := ackAny.(map[string]any)
+	if !ok || res["acknowledged"] != true {
+		t.Fatalf("ack result = %#v, want {acknowledged:true}", ackAny)
+	}
+	if svc.lastAck.TaskKey != "work:cmd:1" || svc.lastAck.ResultRevision != "r1" || svc.lastAck.ConversationID != "s1" {
+		t.Fatalf("facade ack = %+v", svc.lastAck)
+	}
+}
+
+func TestWorkACPWireRoundTripKeepsProgressAndRevision(t *testing.T) {
+	total, rate := 250.0, 3.5
+	exit := 2
+	item := viewmodel.WorkItem{
+		TaskKey: "work:cmd:1", DisplayID: "job-1", ConversationID: "s1", RuntimeEpoch: "e1",
+		SourceID: "job-1", SourceRevision: 4, Kind: "command", Label: "build", Owner: "studio",
+		Origin: viewmodel.WorkOrigin{TurnID: "t1", StepID: "st1", ToolCallID: "tc1"},
+		State:  "completed", Outcome: "exit_2", ExitCode: &exit, Attachment: "foreground",
+		StartedAt: time.Unix(100, 0).UTC(), EndedAt: time.Unix(200, 0).UTC(),
+		ResultRevision: "r9", Activity: "running tests", OutputTail: "tail", Warning: "warn", Attention: "failed",
+		Reference:      viewmodel.WorkReference{MessageID: 42, NodeKey: "n1", ChildSessionID: "child"},
+		Prompt:         &viewmodel.WorkPrompt{Kind: "permission", RequestID: "pr1", AgentID: 3},
+		Capabilities:   viewmodel.WorkCapabilities{Inspect: true, Stop: true, Acknowledge: true},
+		ProgressConfig: &progress.Config{Profile: "tests", Source: "go-test", Title: "Tests"},
+		Progress: &progress.Snapshot{
+			Frame: progress.Frame{
+				Version: 1, Sequence: 5,
+				Phase:           &progress.Phase{ID: "p1", Label: "run", Index: 2, Total: 3},
+				PrimaryMetricID: "m1",
+				Metrics:         []progress.Metric{{ID: "m1", Label: "cases", Unit: "count", Current: 12, Total: &total, Rate: &rate}},
+				Rows:            []progress.Row{{ID: "r1", Label: "case", State: "passed"}},
+				Detail:          "so far",
+			},
+			ObservedAt: time.Unix(300, 0).UTC(), MeasuredAt: time.Unix(299, 0).UTC(),
+			Partial: true, Warning: "slow", ReportedError: true,
+		},
+	}
+	snapshot := viewmodel.WorkSnapshot{
+		Version: 1, ConversationID: "s1", RuntimeEpoch: "e1", Revision: 11, HistoryRevision: 6,
+		ObservedAt: time.Unix(400, 0).UTC(), Items: []viewmodel.WorkItem{item},
+		ActiveCount: 1, AttentionCount: 1, SuccessReceiptCount: 2,
+	}
+
+	wire, err := workWire[WorkSnapshotWire](snapshot)
+	if err != nil {
+		t.Fatalf("workWire snapshot: %v", err)
+	}
+	if wire.Revision != 11 || wire.HistoryRevision != 6 || len(wire.Items) != 1 {
+		t.Fatalf("wire snapshot = %+v", wire)
+	}
+	got := wire.Items[0]
+	if got.ResultRevision != "r9" || got.Progress == nil || got.Progress.Sequence != 5 {
+		t.Fatalf("wire item/progress = %+v %+v", got, got.Progress)
+	}
+	if got.Progress.Phase == nil || got.Progress.Phase.Label != "run" || got.Progress.PrimaryMetricID != "m1" {
+		t.Fatalf("wire phase = %+v", got.Progress.Phase)
+	}
+	if got.ProgressConfig == nil || got.ProgressConfig.Profile != "tests" || got.ProgressConfig.Source != "go-test" {
+		t.Fatalf("wire progress config = %+v", got.ProgressConfig)
+	}
+	if len(got.Progress.Metrics) != 1 || got.Progress.Metrics[0].Total == nil || *got.Progress.Metrics[0].Total != 250 {
+		t.Fatalf("wire metric = %+v", got.Progress.Metrics)
+	}
+	if !got.Progress.Partial || !got.Progress.ReportedError || got.Progress.Warning != "slow" {
+		t.Fatalf("wire progress flags = %+v", got.Progress)
+	}
+	// Nested pointers are copied, not aliased into the wire DTO.
+	if got.ExitCode == nil || *got.ExitCode != 2 || got.ExitCode == item.ExitCode {
+		t.Fatal("exit code was not deep-copied into the wire DTO")
+	}
+	if got.Prompt == nil || got.Prompt.RequestID != "pr1" {
+		t.Fatalf("wire prompt = %+v", got.Prompt)
+	}
+	if got.Origin.ToolCallID != "tc1" || got.Reference.ChildSessionID != "child" || !got.Capabilities.Acknowledge {
+		t.Fatalf("wire origin/reference/capabilities = %+v %+v %+v", got.Origin, got.Reference, got.Capabilities)
+	}
+
+	raw, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatalf("marshal wire: %v", err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		t.Fatalf("unmarshal wire: %v", err)
+	}
+	for _, key := range []string{"version", "conversationId", "runtimeEpoch", "revision", "historyRevision", "observedAt", "items", "activeCount", "attentionCount", "successReceiptCount", "stoppedReceiptCount"} {
+		if _, ok := top[key]; !ok {
+			t.Errorf("snapshot JSON missing %q", key)
+		}
+	}
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(top["items"], &items); err != nil {
+		t.Fatalf("unmarshal items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	for _, key := range []string{"taskKey", "displayId", "conversationId", "runtimeEpoch", "sourceId", "sourceRevision", "kind", "label", "origin", "state", "exitCode", "attachment", "startedAt", "endedAt", "terminalResultRevision", "reference", "prompt", "capabilities", "progressConfig", "progress"} {
+		if _, ok := items[0][key]; !ok {
+			t.Errorf("item JSON missing %q", key)
+		}
+	}
+	var prog map[string]json.RawMessage
+	if err := json.Unmarshal(items[0]["progress"], &prog); err != nil {
+		t.Fatalf("unmarshal progress: %v", err)
+	}
+	for _, key := range []string{"version", "sequence", "phase", "primaryMetricId", "metrics", "rows", "detail", "observedAt", "measuredAt", "partial", "warning", "reportedError"} {
+		if _, ok := prog[key]; !ok {
+			t.Errorf("progress JSON missing %q", key)
+		}
+	}
+	// Times cross as RFC3339 strings, never as structs.
+	var started string
+	if err := json.Unmarshal(items[0]["startedAt"], &started); err != nil {
+		t.Fatalf("startedAt is not a string: %v", err)
+	}
+	if started == "" || started[:4] != "1970" {
+		t.Fatalf("startedAt = %q, want an RFC3339 timestamp", started)
+	}
 }

@@ -18,6 +18,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -269,7 +270,14 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 // registerHandlers registers every JSON-RPC handler on srv, constructing
 // the per-handler managers in the same dependency order as before. The
 // managers are wired to this specific connection's server.
-func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
+//
+// It returns a cleanup func that the caller must run when the connection
+// ends; serveConn is its sole current caller and defers it. Cleanup releases
+// the per-connection work controller, which owns the work-state forwarders
+// (Task 22). Keeping it a returned func, rather than a side effect inside
+// registerHandlers, makes the connection's ownership of those goroutines
+// explicit at the call site.
+func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 	manager := h.manager
 	turns := newTurnManagerFor(manager, h.log, h.sink.Notify,
 		&serverPermissionClient{server: srv},
@@ -372,6 +380,22 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 	srv.Handle("session/watch_list", watches.List)
 	srv.Handle("session/watch_start", watches.Start)
 	srv.Handle("session/watch_stop", watches.Stop)
+
+	// session/work_* resolve a session's runtime as a viewmodel.WorkService
+	// straight from the manager. Unlike the prompt lookup above, this does not
+	// require an available Runner: a runner-less session can still report and
+	// manage shared work over explicit wire DTOs. One controller per connection.
+	works := NewWorkManagerACP(func(sessionID string) (viewmodel.WorkService, bool) {
+		rt, ok := manager.Get(sessionID)
+		if !ok || rt == nil {
+			return nil, false
+		}
+		return rt, true
+	}, h.sink.Notify)
+	srv.Handle("session/work_list", works.List)
+	srv.Handle("session/work_inspect", works.Inspect)
+	srv.Handle("session/work_stop", works.Stop)
+	srv.Handle("session/work_acknowledge", works.Acknowledge)
 
 	home, _ := os.UserHomeDir()
 	cfgMgr := NewConfigManager(home, nil, nil)
@@ -522,6 +546,10 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) {
 		pluginsMgr.CloseSession(sessionID)
 		return err
 	})
+
+	// The work controller is per-connection: its forwarders (Task 22) push
+	// work_state updates to this connection's sink and must stop with it.
+	return works.Close
 }
 
 // commandRuntimeFor projects a live runtime onto the per-session slice the
@@ -559,7 +587,8 @@ func (h *agentHost) serveConn(ctx context.Context, stdin io.Reader, stdout io.Wr
 	// binding on the Runtime cannot start a turn.
 	alive := &atomic.Bool{}
 	alive.Store(true)
-	h.registerHandlers(srv, alive)
+	cleanup := h.registerHandlers(srv, alive)
+	defer cleanup()
 	h.sink.Set(srv.Notify)
 	defer h.sink.Clear()
 	defer alive.Store(false)

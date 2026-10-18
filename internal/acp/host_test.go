@@ -7,7 +7,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"marshal/internal/app"
@@ -247,4 +249,59 @@ test = "fixture-test-cmd"
 	if opens := auth.opened(); len(opens) != 1 {
 		t.Fatalf("resolver OpenStore calls = %v, want exactly the explicit one", opens)
 	}
+}
+
+// TestWorkACPAvailableWithoutModelRunner pins Task 21's lookup shape: the
+// session/work_* methods resolve a session's runtime as a viewmodel.WorkService
+// straight from the SessionManager, without the prompt path's requirement for
+// an available Runner. A session whose runtime has no Runner (its model is
+// still building, or it is headless) must still serve work list/inspect/stop/
+// acknowledge, and the prompt path must stay independently gated.
+func TestWorkACPAvailableWithoutModelRunner(t *testing.T) {
+	h, err := newAgentHost(runConfig{
+		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
+			return nil, errors.New("no runtime in tests")
+		},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("newAgentHost: %v", err)
+	}
+
+	// A runner-less runtime: no Runner, and no work coordinator either, so the
+	// live snapshot is the empty projection rather than a rejection.
+	h.manager.sessions["s1"] = &app.Runtime{}
+
+	srv := NewServer(strings.NewReader(""), io.Discard)
+	var alive atomic.Bool
+	alive.Store(true)
+	cleanup := h.registerHandlers(srv, &alive)
+	defer cleanup()
+
+	for _, method := range []string{"session/work_list", "session/work_inspect", "session/work_stop", "session/work_acknowledge"} {
+		if _, ok := srv.handlers[method]; !ok {
+			t.Errorf("%s is not registered", method)
+		}
+	}
+
+	handler, ok := srv.handlers["session/work_list"]
+	if !ok {
+		t.Fatal("session/work_list is not registered")
+	}
+	res, err := handler(context.Background(), json.RawMessage(`{"sessionId":"s1"}`))
+	if err != nil {
+		t.Fatalf("work_list for a runner-less session: %v", err)
+	}
+	if _, ok := res.(WorkSnapshotWire); !ok {
+		t.Fatalf("work_list result = %T, want WorkSnapshotWire", res)
+	}
+
+	// The prompt path is still registered independently; the point is only that
+	// work availability does not depend on it.
+	if _, ok := srv.handlers["session/prompt"]; !ok {
+		t.Fatal("session/prompt must stay registered")
+	}
+
+	// cleanup is idempotent: a second call is a no-op.
+	cleanup()
 }

@@ -27,6 +27,20 @@ var ErrJobManagerClosed = errors.New("job manager is closed")
 // must not retry with the same origin.
 var ErrTurnStopped = errors.New("turn has been stopped")
 
+// errOperationClosed is returned by Launch when a steering interruption has
+// already closed the launching operation's admission. It is deliberately not
+// an exported sentinel: unlike a stopped turn, the turn itself stays open, so
+// the caller's remedy is to launch under the replacement operation rather than
+// to give up on the turn.
+var errOperationClosed = errors.New("steering operation admission is closed")
+
+// steeringStopCause is the stop cause a Send now interruption records on the
+// commands it terminates. It is distinct from a turn stop's cause because the
+// two are arbitrated separately: a turn stop closes the whole turn, while a
+// steering stop closes one operation and leaves the turn able to admit its
+// replacement.
+const steeringStopCause = "user steering"
+
 // maxStoppedTurns bounds the manager's memory of stopped turns. Turn ids are
 // unique and a stopped turn cannot admit new commands anyway, so only the most
 // recent decisions are retained.
@@ -310,6 +324,11 @@ type LaunchSpec struct {
 	// Origin is the captured conversation/actor/turn/step/tool-call identity and
 	// config generation.
 	Origin CommandOrigin
+	// Operation is the steering operation this command belongs to, captured
+	// from the handler's context at launch. A zero ref means the command has no
+	// Send now target: it belongs to no interruptible operation and a closed
+	// operation set never rejects it.
+	Operation session.OperationRef
 	// Detached requests background attachment from the start: Launch returns as
 	// soon as the command is admitted and the caller does not wait for it.
 	Detached bool
@@ -410,6 +429,14 @@ type JobManager struct {
 	// commands. Bounded by maxStoppedTurns, most recent first.
 	turnStops     map[string]string
 	turnStopOrder []string
+	// closedOps remembers the operations a steering interruption has closed,
+	// keyed by the complete operation ref, so a launch that still names the
+	// interrupted operation is refused even though its turn remains open. It is
+	// bounded and evicted most-recent-first by the same limit as turnStops: an
+	// operation's scope is retired from here only after no launch, wait or
+	// receipt can still reference it.
+	closedOps     map[session.OperationRef]string
+	closedOpOrder []session.OperationRef
 	onChange      func(int)
 	onExit        func(JobInfo, time.Duration, string) error
 	// settlements holds completions the exit sink has not acknowledged, keyed
@@ -501,6 +528,10 @@ type job struct {
 	// open past the policy commit that replaced it, and are what
 	// referencedResourcesLocked consults.
 	resources []io.Closer
+	// operation is the steering operation this execution was launched under,
+	// captured from the handler's context at admission. A zero ref means the
+	// execution has no Send now target and no interruption can select it.
+	operation session.OperationRef
 }
 
 // jobSink retains a bounded tail of one command stream and forwards bytes to
@@ -602,6 +633,7 @@ func NewCommandService(ctx context.Context, policy LaunchPolicy) *JobManager {
 		policy:        policy,
 		jobs:          make(map[string]*job),
 		turnStops:     make(map[string]string),
+		closedOps:     make(map[session.OperationRef]string),
 		managerCtx:    managerCtx,
 		managerCancel: managerCancel,
 	}
@@ -844,7 +876,8 @@ func (m *JobManager) SetDirFunc(fn func() string) {
 //
 // It rejects a blank command, a runner-less manager, a cancelled call context,
 // a closed manager, a turn whose explicit stop has already been accepted
-// (ErrTurnStopped) and admission beyond the configured capacity, which counts
+// (ErrTurnStopped), a launch naming an operation a steering interruption has
+// already closed, and admission beyond the configured capacity, which counts
 // attached and detached executions alike.
 func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, error) {
 	command := strings.TrimSpace(spec.Command)
@@ -873,6 +906,18 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 		if _, stopped := m.turnStops[turnID]; stopped {
 			m.mu.Unlock()
 			return JobInfo{}, fmt.Errorf("%w: %s", ErrTurnStopped, turnID)
+		}
+	}
+	// A steering interruption has closed the launching operation even though
+	// its turn stays open, so a command that still names the interrupted
+	// operation is refused here: admitting it would run work whose result the
+	// interruption already told the model not to expect. A zero ref names no
+	// operation and is never refused. A NEW operation in the same turn has a
+	// different ref and launches normally.
+	if ref := spec.Operation; ref.ID != "" {
+		if _, closed := m.closedOps[ref]; closed {
+			m.mu.Unlock()
+			return JobInfo{}, fmt.Errorf("%w: %s", errOperationClosed, ref.ID)
 		}
 	}
 	if m.active >= m.policy.MaxJobs {
@@ -937,6 +982,7 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 		stderr:     NewBoundedOutputTail(limit, nil),
 		admittedAt: now,
 		resources:  resources,
+		operation:  spec.Operation,
 	}
 	if spec.Detached {
 		j.info.Attachment = AttachmentBackground
@@ -1442,6 +1488,192 @@ func (m *JobManager) RequestStop(executionID, cause string) error {
 		m.notifyChange()
 	}
 	return nil
+}
+
+// InterruptOperation is a Send now interruption's handle on the command
+// service. Under the manager's admission/detachment boundary it closes the
+// operation's admission and targets exactly the executions still attached to
+// that operation: an execution that already detached is never stopped, because
+// the user's interruption ends the work the turn is waiting on, not the
+// background work the turn already handed off.
+//
+// It returns before any process has settled. Begin has already requested every
+// selected stop by the time this returns, and the returned OperationStop joins
+// exactly those executions outside the manager locks. The Wait is always
+// non-nil — a zero-selection interruption still has to return an empty outcome
+// set — and reports each execution's actual result, so no backend stop error
+// and no join timeout can turn a running command into a "stopped" claim.
+func (m *JobManager) InterruptOperation(ctx context.Context, ref session.OperationRef) (session.OperationStop, error) {
+	if ref.ID == "" {
+		return session.OperationStop{}, fmt.Errorf("operation id is required")
+	}
+
+	m.evictCompleted()
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return session.OperationStop{}, ErrJobManagerClosed
+	}
+	// Close admission for this operation before selecting anything: a command
+	// admitted after the interruption told the model not to expect its result
+	// would be work nothing can report on.
+	m.rememberClosedOperationLocked(ref)
+
+	now := time.Now()
+	var selected []*job
+	var cancels []context.CancelFunc
+	for _, j := range m.jobs {
+		j.mu.Lock()
+		// A settled execution keeps its natural outcome, and a detached one is
+		// already background work the interruption does not own.
+		match := !j.terminal && j.info.Attachment == AttachmentForeground && j.operation == ref
+		j.mu.Unlock()
+		if !match {
+			continue
+		}
+		cancel, changed := m.requestStopLocked(j, steeringStopCause, now)
+		if !changed {
+			continue
+		}
+		selected = append(selected, j)
+		if cancel != nil {
+			cancels = append(cancels, cancel)
+		}
+	}
+	m.mu.Unlock()
+
+	// Backend cancellation runs outside every lock: a runner that only observes
+	// cancellation through its own context must not stall admission behind it.
+	for _, cancel := range cancels {
+		cancel()
+	}
+	if len(selected) > 0 {
+		m.notifyChange()
+	}
+
+	return session.OperationStop{Wait: m.operationStopWait(selected)}, nil
+}
+
+// rememberClosedOperationLocked records that a steering interruption has closed
+// admission for ref, so a later Launch naming that same operation is refused.
+// The manager lock must be held. Like turnStops it is bounded most-recent-first:
+// a new operation in the same turn is a different ref and launches normally.
+func (m *JobManager) rememberClosedOperationLocked(ref session.OperationRef) {
+	if m.closedOps == nil {
+		m.closedOps = make(map[session.OperationRef]string)
+	}
+	if _, seen := m.closedOps[ref]; !seen {
+		m.closedOpOrder = append(m.closedOpOrder, ref)
+	}
+	m.closedOps[ref] = steeringStopCause
+	for len(m.closedOpOrder) > maxStoppedTurns {
+		oldest := m.closedOpOrder[0]
+		m.closedOpOrder = m.closedOpOrder[1:]
+		delete(m.closedOps, oldest)
+	}
+}
+
+// operationStopWait builds the join an interruption's OperationStop returns. It
+// joins exactly the captured executions — never by looking them up again, which
+// would race a replacement operation — under the caller's context, so a root
+// turn cancellation ends the join while each process stays service-owned.
+//
+// The stop is a request, not a result: a captured execution that is still
+// running when the join bound expires is reported unknown and the whole join
+// reports a non-nil error, so the session reports waiting rather than lying
+// that remote work it could not confirm was stopped. An execution that already
+// settled keeps its actual outcome, and one that detached keeps running and is
+// reported as continuing.
+func (m *JobManager) operationStopWait(captured []*job) func(context.Context) ([]session.SteeringOutcome, error) {
+	return func(waitCtx context.Context) ([]session.SteeringOutcome, error) {
+		if waitCtx == nil {
+			waitCtx = m.managerCtx
+		}
+		bound := m.stopSettleTimeoutValue()
+
+		outcomes := make([]session.SteeringOutcome, 0, len(captured))
+		unknown := false
+		for _, j := range captured {
+			// Read the snapshot first: an execution that already detached or
+			// settled is decided, and waiting on it would hold the join for work
+			// the interruption never owned.
+			info := commandSnapshot(j)
+			switch {
+			case info.Attachment == AttachmentBackground:
+				outcomes = append(outcomes, commandOutcome(info, "continues", "detached before the stop; it keeps running"))
+				continue
+			case info.Status.Terminal():
+				outcomes = append(outcomes, commandOutcome(info, settledCommandState(info), ""))
+				continue
+			}
+
+			done := commandDone(j)
+			timer := time.NewTimer(bound)
+			settled := false
+			select {
+			case <-done:
+				settled = true
+			case <-waitCtx.Done():
+			case <-timer.C:
+			}
+			timer.Stop()
+
+			info = commandSnapshot(j)
+			switch {
+			case settled || info.Status.Terminal():
+				outcomes = append(outcomes, commandOutcome(info, settledCommandState(info), ""))
+			case info.Attachment == AttachmentBackground:
+				outcomes = append(outcomes, commandOutcome(info, "continues", "detached while the stop settled; it keeps running"))
+			default:
+				unknown = true
+				outcomes = append(outcomes, commandOutcome(info, "unknown", "the interrupted command did not settle within the join bound"))
+			}
+		}
+		if unknown {
+			return outcomes, fmt.Errorf("interrupted operation did not confirm settlement within %s", bound)
+		}
+		return outcomes, nil
+	}
+}
+
+// commandSnapshot reads one execution's metadata snapshot under its own lock.
+func commandSnapshot(j *job) JobInfo {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.info
+}
+
+// commandDone reads one execution's settlement channel. The channel is created
+// at admission and closed once, after the final snapshot is stored, so joining
+// it is joining the actual settlement.
+func commandDone(j *job) <-chan struct{} {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.done
+}
+
+// settledCommandState names a settled execution's steering outcome. An accepted
+// stop request owns the outcome — whether it was this interruption's steering
+// stop or another — so the execution was terminated, not completed naturally.
+func settledCommandState(info JobInfo) string {
+	if info.Outcome == OutcomeStopped || info.StopCause == steeringStopCause {
+		return "interrupted"
+	}
+	return "completed"
+}
+
+// commandOutcome renders one captured execution's receipt entry. It always
+// carries the full execution identity, so a receipt names the exact command it
+// reports on rather than a display id that repeats in every process.
+func commandOutcome(info JobInfo, state, summary string) session.SteeringOutcome {
+	return session.SteeringOutcome{
+		Kind:        "command",
+		State:       state,
+		ToolCallID:  info.Origin.ToolCallID,
+		ExecutionID: info.ExecutionID,
+		Summary:     summary,
+	}
 }
 
 // StopAttached requests termination of every execution still attached to turnID

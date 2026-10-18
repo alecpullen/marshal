@@ -18,6 +18,10 @@ type fakePermissionClient struct {
 	err      error
 	calls    int
 	gotReq   PermissionRequest
+	// decide, when set, computes the decision from the request instead of
+	// returning the fixed decision. It lets a test answer with the typed
+	// shape (echoing the request's identity) or change state mid-decision.
+	decide func(PermissionRequest) PermissionDecision
 }
 
 func (f *fakePermissionClient) RequestPermission(ctx context.Context, req PermissionRequest) (PermissionDecision, error) {
@@ -25,6 +29,9 @@ func (f *fakePermissionClient) RequestPermission(ctx context.Context, req Permis
 	f.gotReq = req
 	if f.err != nil {
 		return PermissionDecision{}, f.err
+	}
+	if f.decide != nil {
+		return f.decide(req), nil
 	}
 	return f.decision, f.err
 }

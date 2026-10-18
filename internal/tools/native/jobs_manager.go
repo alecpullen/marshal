@@ -2,6 +2,7 @@ package native
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 )
@@ -84,6 +86,11 @@ type JobEvent struct {
 	// belong to the tool call waiting for them.
 	Count int
 	Delta int
+	// Epoch identifies the command service's lifetime and Revision versions its
+	// lifecycle/membership state, so a subscriber can discard a projection that a
+	// later one has superseded. Progress.Sequence versions progress independently.
+	Epoch    string
+	Revision uint64
 	// Jobs is a snapshot of every tracked job at publish time, both
 	// attachments. The TUI's job lane needs per-job detail (command, status,
 	// elapsed), which a bare count cannot supply. Published by value; consumers
@@ -223,6 +230,21 @@ type JobInfo struct {
 	// OutputTail is a bounded recent tail of the command's output, kept for
 	// the exit evidence a completion carries. Empty while the execution runs.
 	OutputTail string
+	// ProgressConfig is the immutable progress profile captured at admission. It
+	// is non-nil only for an opted-in execution, and it never changes: a later
+	// config reload cannot redirect an observer that is already running.
+	ProgressConfig *progress.Config
+	// Progress is the newest observed progress snapshot for this execution, and
+	// DisplayTail a bounded ordinary-output tail with valid control records
+	// excluded. Both are copies: a reader never shares mutable state with the
+	// observer or with the manager's retained snapshot.
+	Progress    *progress.Snapshot
+	DisplayTail string
+	// ResultRevision identifies the settled result, and SourceEpoch names the
+	// command service lifetime the execution was admitted under. Both are empty
+	// for an execution still running.
+	ResultRevision string
+	SourceEpoch    string
 	// Origin carries the conversation/actor/turn/step/tool-call identity and
 	// config generation captured at admission.
 	Origin CommandOrigin
@@ -266,6 +288,15 @@ func (i JobInfo) Execution() registry.CommandExecution {
 		code := *i.ExitCode
 		ex.ExitCode = &code
 	}
+	// The optional progress evidence is copied, never shared: a stored payload
+	// must not alias the manager's or the observer's mutable state.
+	ex.SourceEpoch = i.SourceEpoch
+	ex.ResultRevision = i.ResultRevision
+	if i.ProgressConfig != nil {
+		cfg := *i.ProgressConfig
+		ex.ProgressConfig = &cfg
+	}
+	ex.Progress = progress.Clone(i.Progress)
 	return ex
 }
 
@@ -336,6 +367,11 @@ type LaunchSpec struct {
 	// recorded for evidence only. The manager never uses it as an execution
 	// deadline: no wall-clock budget ends a process.
 	Wait time.Duration
+	// Progress opts this execution into progress observation. It is validated
+	// and copied before admission, so a captured profile is immutable for the
+	// execution's life and a later config reload cannot redirect it. Nil means no
+	// observer: the execution retains raw output only.
+	Progress *progress.Config
 }
 
 // WaitEndReason explains why a foreground wait stopped waiting. It never
@@ -406,6 +442,18 @@ type JobManager struct {
 	// field rather than a package variable so a test can shorten it without
 	// racing a concurrent reader.
 	stopSettleTimeout time.Duration
+	// epoch is the command service's lifetime identity, minted once at
+	// construction and copied onto every admission's execution evidence, so a
+	// recorded result names the exact source generation that produced it.
+	epoch string
+	// revision versions the tracked lifecycle/membership state; it advances under
+	// mu whenever the published snapshot moves. Progress is versioned separately
+	// by Progress.Sequence, which changes without touching the lifecycle.
+	revision uint64
+	// now is the clock an execution's progress observer stamps observations with.
+	// Nil means the observer's default (time.Now). It is a field so a test can pin
+	// observation times without racing a concurrent reader.
+	now func() time.Time
 	// policy is the committed launch policy. Every field it names is a default
 	// for future admissions only: an admitted execution keeps the snapshot it
 	// captured, so committing a new policy never re-times, redirects or
@@ -509,6 +557,18 @@ type job struct {
 	// stdoutSink and stderrSink are the writers passed to the runner.
 	stdoutSink *jobSink
 	stderrSink *jobSink
+	// observer is the execution's progress observer, or nil when the launch did
+	// not opt in. It is created before admission and never replaced, so a reload
+	// cannot redirect a running execution's progress. It owns no execution: it
+	// only decodes and retains display data.
+	observer *progress.Observer
+	// settling reports whether a detached completion's initial durable-result
+	// sink is still in flight. It is set before the terminal state becomes
+	// observable and cleared once the first sink attempt has returned and its
+	// pending-settlement ledger is updated, so a source snapshot holds the new
+	// terminal fact back until its sink has been attempted. A foreground
+	// completion reaches its caller directly and never sets it.
+	settling atomic.Bool
 	// attached reports whether the execution is still attached to a foreground
 	// caller. The sinks consult it without taking the job lock, so detachment
 	// stops display forwarding promptly while the tail keeps filling.
@@ -534,17 +594,32 @@ type job struct {
 	operation session.OperationRef
 }
 
-// jobSink retains a bounded tail of one command stream and forwards bytes to
-// the attached foreground observer while the execution is attached. It is the
-// writer handed to the command runner, so display ownership follows attachment
-// and never affects capture.
+// jobSink retains a bounded tail of one command stream, feeds the execution's
+// progress observer, and forwards bytes to the attached foreground observer
+// while the execution is attached. It is the writer handed to the command
+// runner, so display ownership follows attachment and never affects capture.
 type jobSink struct {
 	tail   *BoundedOutput
 	stream io.Writer
 	live   *atomic.Bool
+	// kind is which child stream this sink carries, so a progress record is only
+	// decoded from the stream that legitimately carries it.
+	kind progress.Stream
+	// observer decodes progress from this stream. Nil when the launch did not opt
+	// in. Feeding it is independent of attachment and of tail truncation: raw
+	// capture and live progress are neither lost nor gated by either.
+	observer *progress.Observer
 }
 
 func (s *jobSink) Write(p []byte) (int, error) {
+	// The observer is fed first and unconditionally: progress survives detachment
+	// and an exhausted raw-output cap, and it never touches the broker, the
+	// database or any blocking callback, so a chatty command cannot stall a
+	// subscriber. A collector re-reads the current snapshot rather than being
+	// pushed a copy.
+	if s.observer != nil {
+		s.observer.Write(s.kind, p)
+	}
 	if s.stream != nil && s.live.Load() {
 		// A failing display observer must not fail the command: the retained
 		// tail is the durable record.
@@ -630,6 +705,7 @@ func NewCommandService(ctx context.Context, policy LaunchPolicy) *JobManager {
 	policy = launchPolicyDefaults(policy)
 	managerCtx, managerCancel := context.WithCancel(ctx)
 	return &JobManager{
+		epoch:         rand.Text(),
 		policy:        policy,
 		jobs:          make(map[string]*job),
 		turnStops:     make(map[string]string),
@@ -885,6 +961,27 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 		return JobInfo{}, fmt.Errorf("command is required")
 	}
 
+	// Validate and copy the optional progress config BEFORE reserving admission:
+	// an invalid opt-in must fail the launch rather than reserve a slot for an
+	// execution nothing can observe, and the copied profile is what the
+	// execution's observer is built from and keeps for its whole life. The
+	// observer itself is created here too; it owns no execution and starts no
+	// goroutine.
+	var progressCfg *progress.Config
+	var observer *progress.Observer
+	if spec.Progress != nil {
+		normalized, err := progress.NormalizeConfig(*spec.Progress)
+		if err != nil {
+			return JobInfo{}, err
+		}
+		obs, err := progress.NewObserver(normalized, m.now, nil)
+		if err != nil {
+			return JobInfo{}, err
+		}
+		progressCfg = &normalized
+		observer = obs
+	}
+
 	m.evictCompleted()
 
 	m.mu.Lock()
@@ -967,14 +1064,16 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	now := time.Now()
 	j := &job{
 		info: JobInfo{
-			ID:          id,
-			ExecutionID: ExecutionIdentity(id, origin),
-			Command:     command,
-			Status:      StatusRunning,
-			Attachment:  AttachmentForeground,
-			StartedAt:   now,
-			Wait:        spec.Wait,
-			Origin:      origin,
+			ID:             id,
+			ExecutionID:    ExecutionIdentity(id, origin),
+			Command:        command,
+			Status:         StatusRunning,
+			Attachment:     AttachmentForeground,
+			StartedAt:      now,
+			Wait:           spec.Wait,
+			Origin:         origin,
+			SourceEpoch:    m.epoch,
+			ProgressConfig: progressCfg,
 		},
 		cancel:     jobCancel,
 		done:       make(chan struct{}),
@@ -983,14 +1082,15 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 		admittedAt: now,
 		resources:  resources,
 		operation:  spec.Operation,
+		observer:   observer,
 	}
 	if spec.Detached {
 		j.info.Attachment = AttachmentBackground
 	} else {
 		j.attached.Store(true)
 	}
-	j.stdoutSink = &jobSink{tail: j.stdout, stream: spec.Stdout, live: &j.attached}
-	j.stderrSink = &jobSink{tail: j.stderr, stream: spec.Stderr, live: &j.attached}
+	j.stdoutSink = &jobSink{tail: j.stdout, stream: spec.Stdout, live: &j.attached, kind: progress.Stdout, observer: observer}
+	j.stderrSink = &jobSink{tail: j.stderr, stream: spec.Stderr, live: &j.attached, kind: progress.Stderr, observer: observer}
 
 	// Register this execution with the conversation end gate while the manager's
 	// admission lock is still held. That is what makes acceptance atomic: work
@@ -1084,6 +1184,14 @@ func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, ru
 	j.result = result
 	j.err = runErr
 	j.completedAt = time.Now()
+	// Drain the observer's buffered records now, under the job -> observer lock
+	// order, so a final partial line is part of the settled evidence. Decoding
+	// happens strictly after the process-exit evidence above: a stop that
+	// arrives late must not relabel a natural exit. The observer owns no
+	// execution and invokes no callback, so this cannot end or stall the process.
+	if j.observer != nil {
+		j.observer.Close()
+	}
 	j.recordCapturedOutputLocked(result)
 	j.info.Sandbox = result.Meta
 	j.info.OutputTruncated = result.Meta.OutputTruncated || j.stdout.Truncated() || j.stderr.Truncated()
@@ -1097,8 +1205,24 @@ func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, ru
 	// notifyChange) so a finished job never re-ships its output on every later
 	// change.
 	j.info.OutputTail = j.tailedOutputLocked()
+	// The final progress and display tail are copied BEFORE the terminal state
+	// becomes observable and before any sink attempt, so a completion's evidence
+	// includes everything the process wrote. Reaching 100% is only data: it is
+	// reported independently of the lifecycle, and only the actual process
+	// outcome ends the command.
+	j.info.Progress = j.progressSnapshotLocked()
+	j.info.DisplayTail = j.displayTailLocked()
+	j.info.ResultRevision = progress.ResultRevision(j.info.ExecutionID, string(status), string(outcome), exitCode, j.completedAt)
+	// A detached completion's durable sink is about to be attempted: mark it
+	// settling before the terminal state is observable, so a source snapshot that
+	// races the mutation holds the new terminal fact back until its sink has been
+	// attempted. A foreground completion reaches its waiting caller directly and
+	// sets no flag.
+	if j.info.Attachment == AttachmentBackground {
+		j.settling.Store(true)
+	}
 	j.terminal = true
-	info := j.info
+	info := j.sourceSnapshotLocked()
 	ran := j.completedAt.Sub(info.StartedAt)
 	j.mu.Unlock()
 
@@ -1111,6 +1235,11 @@ func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, ru
 	// as well would settle one execution twice.
 	if info.Attachment == AttachmentBackground {
 		m.reportSettlement(info, ran, output)
+		// The first sink attempt has returned and the pending-settlement ledger is
+		// updated, so this completion is no longer in flight: the source snapshot
+		// may now expose it (with its durable record, or with the recorded failure
+		// RetrySettlements can offer again). No source lock spans the sink write.
+		j.settling.Store(false)
 	}
 
 	m.mu.Lock()
@@ -1435,7 +1564,7 @@ func foregroundResultLocked(j *job) ForegroundResult {
 	return ForegroundResult{
 		Terminal: true,
 		WaitEnd:  WaitEndTerminal,
-		Info:     j.info,
+		Info:     j.sourceSnapshotLocked(),
 		Result:   j.result,
 		Output:   j.tailedOutputLocked(),
 		RunError: j.err,
@@ -1445,7 +1574,7 @@ func foregroundResultLocked(j *job) ForegroundResult {
 // continuation snapshots a still-running execution for the caller.
 func (m *JobManager) continuation(j *job, waitEnd WaitEndReason) ForegroundResult {
 	j.mu.Lock()
-	info := j.info
+	info := j.sourceSnapshotLocked()
 	output := j.tailedOutputLocked()
 	j.mu.Unlock()
 	return ForegroundResult{WaitEnd: waitEnd, Info: info, Output: output}
@@ -1459,6 +1588,48 @@ func (j *job) tailedOutputLocked() string {
 		output += truncationMarker
 	}
 	return output
+}
+
+// progressSnapshotLocked returns a copy of the execution's newest observed
+// progress, or nil when it opted into none. The job lock must be held; the
+// observer lock is taken after it.
+func (j *job) progressSnapshotLocked() *progress.Snapshot {
+	if j.observer == nil {
+		return nil
+	}
+	return j.observer.Snapshot()
+}
+
+// displayTailLocked returns the observer's bounded ordinary-output tail, empty
+// when the execution opted into no progress. The job lock must be held; the
+// observer lock is taken after it.
+func (j *job) displayTailLocked() string {
+	if j.observer == nil {
+		return ""
+	}
+	return j.observer.DisplayTail()
+}
+
+// sourceSnapshotLocked returns a deep copy of the execution's snapshot for a
+// source read, with its live progress and display tail attached. Every returned
+// pointer is owned by the caller: a source path never shares mutable progress
+// state with the observer or with the manager's retained snapshot. Reading the
+// observer is the newest observation, so a later read can never replace a newer
+// progress copy with an older one. The job lock must be held; the observer lock
+// is taken after it.
+func (j *job) sourceSnapshotLocked() JobInfo {
+	info := j.info
+	if info.ProgressConfig != nil {
+		cfg := *info.ProgressConfig
+		info.ProgressConfig = &cfg
+	}
+	if j.observer != nil {
+		info.Progress = j.observer.Snapshot()
+		info.DisplayTail = j.observer.DisplayTail()
+	} else {
+		info.Progress = progress.Clone(info.Progress)
+	}
+	return info
 }
 
 // RequestStop requests termination of one execution and records the request's
@@ -1785,7 +1956,7 @@ func (m *JobManager) Output(id string, tailLines int) (JobInfo, string, error) {
 	}
 
 	j.mu.Lock()
-	info := j.info
+	info := j.sourceSnapshotLocked()
 	stdoutStr := j.stdout.String()
 	stderrStr := j.stderr.String()
 	truncated := j.info.OutputTruncated
@@ -1853,7 +2024,7 @@ func (m *JobManager) List() []JobInfo {
 	out := make([]JobInfo, 0, len(m.jobs))
 	for _, j := range m.jobs {
 		j.mu.Lock()
-		out = append(out, j.info)
+		out = append(out, j.sourceSnapshotLocked())
 		j.mu.Unlock()
 	}
 	return out
@@ -1870,7 +2041,7 @@ func (m *JobManager) ActiveExecutions() []JobInfo {
 	for _, j := range m.jobs {
 		j.mu.Lock()
 		if !j.info.Status.Terminal() {
-			out = append(out, j.info)
+			out = append(out, j.sourceSnapshotLocked())
 		}
 		j.mu.Unlock()
 	}
@@ -1921,7 +2092,7 @@ func (m *JobManager) Outstanding() []JobInfo {
 	for _, j := range m.jobs {
 		j.mu.Lock()
 		if !j.info.Status.Terminal() && j.info.Attachment == AttachmentBackground {
-			out = append(out, j.info)
+			out = append(out, j.sourceSnapshotLocked())
 		}
 		j.mu.Unlock()
 	}
@@ -1946,7 +2117,7 @@ func (m *JobManager) Wait(ctx context.Context, id string) (JobInfo, error) {
 	}
 
 	j.mu.Lock()
-	info := j.info
+	info := j.sourceSnapshotLocked()
 	done := j.done
 	j.mu.Unlock()
 	if info.Status.Terminal() || done == nil {
@@ -1958,7 +2129,7 @@ func (m *JobManager) Wait(ctx context.Context, id string) (JobInfo, error) {
 		// runJob stores the final info under j.mu before closing done, so
 		// the snapshot is now immutable. The job pointer outlives the map.
 		j.mu.Lock()
-		info = j.info
+		info = j.sourceSnapshotLocked()
 		j.mu.Unlock()
 		return info, nil
 	case <-ctx.Done():
@@ -2040,11 +2211,22 @@ func (m *JobManager) Shutdown(ctx context.Context) error {
 
 // notifyChange reports the current detached-execution count to the OnChange
 // callback and publishes a JobEvent snapshot. It is called on admission, PID,
-// attachment and state changes — including changes that leave the count equal —
-// so a client always sees the execution snapshot move. Callbacks run outside
-// the manager locks.
+// attachment, stop and settlement changes — including changes that leave the
+// count equal — so a client always sees the execution snapshot move. Callbacks
+// run outside the manager locks.
+//
+// It advances the lifecycle/membership revision under the manager lock and
+// stamps it, with the source epoch, onto the event, so a subscriber can discard
+// a projection a newer one has superseded. It still omits the heavy output: a
+// subscribed terminal may block, so the event is a wake that carries bounded
+// state, and a collector re-reads Snapshot for the full picture. Progress-only
+// output never reaches here at all, so a chatty command cannot stall a
+// subscriber.
 func (m *JobManager) notifyChange() {
 	m.mu.Lock()
+	m.revision++
+	revision := m.revision
+	epoch := m.epoch
 	count := 0
 	snapshot := make([]JobInfo, 0, len(m.jobs))
 	for _, j := range m.jobs {
@@ -2052,13 +2234,15 @@ func (m *JobManager) notifyChange() {
 		if !j.info.Status.Terminal() && j.info.Attachment == AttachmentBackground {
 			count++
 		}
-		info := j.info
+		info := j.sourceSnapshotLocked()
 		// A settled job keeps its retained tail for the exit evidence, but the
-		// change event does not re-ship it: the card that settles from it is
-		// built from the completion record, and a session that launches many
+		// change event does not re-ship heavy output: the card that settles from
+		// it is built from the completion record, and a session that launches many
 		// jobs would otherwise pay for every finished job's output on every
-		// later count change.
+		// later count change. The bounded progress snapshot is not heavy output
+		// and travels so a lane can render without waiting for its next poll.
 		info.OutputTail = ""
+		info.DisplayTail = ""
 		snapshot = append(snapshot, info)
 		j.mu.Unlock()
 	}
@@ -2072,8 +2256,68 @@ func (m *JobManager) notifyChange() {
 		onChange(count)
 	}
 	if broker != nil {
-		broker.Publish("jobs", JobEvent{Count: count, Delta: delta, Jobs: snapshot})
+		broker.Publish("jobs", JobEvent{Count: count, Delta: delta, Epoch: epoch, Revision: revision, Jobs: snapshot})
 	}
+}
+
+// JobSnapshot is an immutable projection of the command service at one moment:
+// the manager epoch, the lifecycle/membership revision, every tracked execution
+// with its live progress and display tail, the executions still settling their
+// initial durable-result sink, and any bounded save errors a failed attempt
+// recorded. Every job is a deep copy, so a consumer never shares mutable state
+// with the manager or with an observer. A broker event is only a wake: this is
+// where a collector reads the current state rather than applying a possibly late
+// event copy.
+type JobSnapshot struct {
+	Epoch      string
+	Revision   uint64
+	Jobs       []JobInfo
+	Settling   []string
+	SaveErrors map[string]string
+}
+
+// Snapshot returns an immutable projection of every tracked execution, both
+// attachments, including settled ones still inside the retention window. The
+// epoch and lifecycle/membership revision are read under the manager lock; each
+// job's facts are copied under the manager -> job -> observer lock order. A
+// detached completion whose durable-result sink is still in flight is named in
+// Settling, so the caller holds its terminal fact back until the sink has been
+// attempted; a failed attempt is reported in SaveErrors by execution identity.
+func (m *JobManager) Snapshot() JobSnapshot {
+	m.evictCompleted()
+
+	m.mu.Lock()
+	snap := JobSnapshot{
+		Epoch:    m.epoch,
+		Revision: m.revision,
+		Jobs:     make([]JobInfo, 0, len(m.jobs)),
+	}
+	var settling []string
+	for _, j := range m.jobs {
+		j.mu.Lock()
+		info := j.sourceSnapshotLocked()
+		inFlight := j.settling.Load()
+		j.mu.Unlock()
+		snap.Jobs = append(snap.Jobs, info)
+		if inFlight {
+			settling = append(settling, settlementKey(info))
+		}
+	}
+	for key, s := range m.settlements {
+		if s.err == nil {
+			continue
+		}
+		if snap.SaveErrors == nil {
+			snap.SaveErrors = make(map[string]string, len(m.settlements))
+		}
+		snap.SaveErrors[key] = s.err.Error()
+	}
+	m.mu.Unlock()
+
+	sortJobs(snap.Jobs)
+	sort.Strings(settling)
+	snap.Settling = settling
+	return snap
 }
 
 // sortJobs orders snapshots oldest-first, ID as tie-break, so a lane built from

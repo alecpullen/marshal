@@ -3059,3 +3059,534 @@ func (r *childStopRunner) Run(ctx context.Context, req native.CommandRequest) (n
 	<-ctx.Done()
 	return native.CommandResult{}, ctx.Err()
 }
+
+// ── Send now: runtime ownership, reload and replacement ──────────────────
+
+// sendNowHeldRunner is a CommandRunner whose execution reports a PID, prints a
+// marker and then blocks until it is released (a natural completion) or its
+// context is cancelled (a stop). It stands in for a long ordinary command
+// without spawning a real process, so a Send now interruption test is exact and
+// hermetic. It satisfies native.CommandRunner.
+type sendNowHeldRunner struct {
+	release chan struct{}
+}
+
+func (r *sendNowHeldRunner) Run(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+	if req.OnStart != nil {
+		req.OnStart(4242)
+	}
+	if req.Stdout != nil {
+		_, _ = req.Stdout.Write([]byte("send-now-marker\n"))
+	}
+	select {
+	case <-r.release:
+		return native.CommandResult{Stdout: "released\n", ExitCode: 0}, nil
+	case <-ctx.Done():
+		return native.CommandResult{}, ctx.Err()
+	}
+}
+
+// commitHeldRunner installs a controlled blocking runner as the conversation
+// manager's launch defaults, so every command this test admits runs the fake
+// process rather than a real one. It mirrors the fixture the reload tests use.
+func commitHeldRunner(t *testing.T, jm *native.JobManager, held *sendNowHeldRunner) {
+	t.Helper()
+	jm.CommitLaunchPolicy(native.LaunchPolicy{
+		Generation:     jm.Generation(),
+		Runner:         held,
+		Dir:            t.TempDir(),
+		MaxOutputBytes: 1 << 20,
+		MaxJobs:        25,
+		Retention:      time.Hour,
+	})
+}
+
+// waitForJobOutput polls until the execution has printed marker, failing the
+// test on timeout. A marker means the process really started, so the assertion
+// that follows is about a running command rather than a launch race.
+func waitForJobOutput(t *testing.T, jm *native.JobManager, id, marker string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, out, err := jm.Output(id, 0)
+		if err != nil {
+			t.Fatalf("Output(%s): %v", id, err)
+		}
+		if strings.Contains(out, marker) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job %s never printed %q (output %q)", id, marker, out)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// newSendNowTestRuntime starts a full runtime whose conversation has the
+// production Send now wiring: the owning build installs the interruption
+// handler on the state and binds it to the conversation-owned command manager.
+// The provider is a scripted local fixture, the auth resolver is memory-backed,
+// and every directory is a temp dir, so nothing reaches the developer's config,
+// keychain or model.
+func newSendNowTestRuntime(t *testing.T, cfg config.Config) *Runtime {
+	t.Helper()
+	cfg.Skills.Autoload = nil
+	auth, _ := memoryAuthResolver(t)
+	rt, err := StartRuntime(context.Background(),
+		WithWorkingDir(t.TempDir()),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return cfg, nil }),
+		WithAuthResolver(auth),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+	if rt.Runner == nil {
+		t.Fatal("the fixture provider was not built")
+	}
+	if rt.JobManager == nil {
+		t.Fatal("the conversation command manager was not built")
+	}
+	return rt
+}
+
+// TestRuntimeSendNowUsesCapturedConversationManager pins the ownership of the
+// interruption handler: the state's handler is bound to the conversation's own
+// manager, so the operation a Send now request captures reaches exactly that
+// manager's attached execution and nothing else. The same turn keeps admitting
+// the NEXT operation, because only the interrupted operation's admission
+// closes.
+func TestRuntimeSendNowUsesCapturedConversationManager(t *testing.T) {
+	ctx := context.Background()
+	rt := newSendNowTestRuntime(t, nativeToolAgentConfig("send-now-captured-manager"))
+	state := rt.State
+	mgr := rt.JobManager
+
+	// The owning build installed the conversation's interruption handler; no
+	// turn is active yet, so the snapshot reports supported but inactive.
+	if snap := state.SteeringSnapshot(); !snap.Supported || snap.Active {
+		t.Fatalf("startup snapshot = %+v, want supported and inactive", snap)
+	}
+
+	held := &sendNowHeldRunner{release: make(chan struct{})}
+	commitHeldRunner(t, mgr, held)
+
+	turnID, err := state.BeginSteeringTurn(ctx)
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn: %v", err)
+	}
+	opCtx, ref, err := state.BeginSteeringOperation(ctx, turnID, session.OperationTools)
+	if err != nil {
+		t.Fatalf("BeginSteeringOperation: %v", err)
+	}
+	info, err := mgr.Launch(opCtx, native.LaunchSpec{
+		Command:   "held-attached",
+		Operation: ref,
+		Origin:    native.CommandOrigin{TurnID: turnID, ToolCallID: "call-1"},
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	waitForJobOutput(t, mgr, info.ID, "send-now-marker")
+
+	receipt, err := rt.SubmitSendNow(session.SendNowRequest{
+		SessionID: state.SessionID(),
+		TurnID:    turnID,
+		RequestID: "req-1",
+		Text:      "stop this",
+	})
+	if err != nil {
+		t.Fatalf("SubmitSendNow: %v", err)
+	}
+	if receipt.Status != session.SteeringAccepted || receipt.OperationID != ref.ID || receipt.TurnID != turnID {
+		t.Fatalf("receipt = %+v, want accepted for operation %s on turn %s", receipt, ref.ID, turnID)
+	}
+
+	// The exact manager receives the operation: its attached execution settles
+	// as an explicit stop, never as a natural completion.
+	settled := waitForJobStatus(t, mgr, info.ID, native.StatusKilled, 10*time.Second)
+	if settled.Outcome != native.OutcomeStopped || settled.StopCause == "" {
+		t.Fatalf("settled = %q/%q, want an explicit stop", settled.Outcome, settled.StopCause)
+	}
+
+	// The interrupted operation is joined, then the SAME turn admits its next
+	// operation and command.
+	state.FinishSteeringOperation(ref, nil)
+	batch, err := state.StageSteering(turnID)
+	if err != nil {
+		t.Fatalf("StageSteering: %v", err)
+	}
+	ids := make([]string, 0, len(batch.Messages))
+	for _, m := range batch.Messages {
+		ids = append(ids, m.ID)
+	}
+	state.MarkSteeringSubmitted(turnID, ids)
+
+	_, nextRef, err := state.BeginSteeringOperation(ctx, turnID, session.OperationTools)
+	if err != nil {
+		t.Fatalf("BeginSteeringOperation (next): %v", err)
+	}
+	if nextRef.ID == ref.ID {
+		t.Fatal("the replacement operation reused the interrupted operation's ID")
+	}
+	next, err := mgr.Launch(ctx, native.LaunchSpec{
+		Command:   "same-turn-next",
+		Operation: nextRef,
+		Origin:    native.CommandOrigin{TurnID: turnID},
+	})
+	if err != nil {
+		t.Fatalf("Launch (next operation in the same turn): %v", err)
+	}
+	close(held.release)
+	if got := waitForJobStatus(t, mgr, next.ID, native.StatusCompleted, 10*time.Second); got.Outcome != native.OutcomeCompleted {
+		t.Fatalf("next command outcome = %q, want completed", got.Outcome)
+	}
+
+	state.EndSteeringTurn(turnID, "test complete")
+}
+
+// TestRuntimeSendNowDoesNotSaveReloadOrReplaceManagers pins the boundary of the
+// runtime delegation: accepting a request and reading a snapshot are
+// memory-only. Neither invokes the config reloader, saves config, replaces the
+// service pointers, moves the launch generation nor touches the session.
+func TestRuntimeSendNowDoesNotSaveReloadOrReplaceManagers(t *testing.T) {
+	ctx := context.Background()
+	rt := newSendNowTestRuntime(t, nativeToolAgentConfig("send-now-no-rebuild"))
+	state := rt.State
+
+	var reloads atomic.Int64
+	rt.ConfigReloader = func(config.Config) error {
+		reloads.Add(1)
+		return nil
+	}
+
+	svcBefore := rt.CommandService
+	mgrBefore := rt.JobManager
+	runnerBefore := rt.Runner
+	stateBefore := rt.State
+	sessionBefore := rt.SessionID
+	maxJobsBefore := rt.Config.Tools.Shell.MaxBackgroundJobs
+	genBefore := mgrBefore.Generation()
+
+	turnID, err := state.BeginSteeringTurn(ctx)
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn: %v", err)
+	}
+	if _, err := rt.SubmitSendNow(session.SendNowRequest{
+		SessionID: state.SessionID(),
+		TurnID:    turnID,
+		RequestID: "req-1",
+		Text:      "boundary",
+	}); err != nil {
+		t.Fatalf("SubmitSendNow: %v", err)
+	}
+	if snap := rt.SteeringSnapshot(); !snap.Active || !snap.Supported || snap.TurnID != turnID {
+		t.Fatalf("snapshot = %+v, want the live supported turn", snap)
+	}
+
+	if n := reloads.Load(); n != 0 {
+		t.Fatalf("send now invoked the config reloader %d times", n)
+	}
+	if rt.CommandService != svcBefore {
+		t.Fatal("send now replaced the command service")
+	}
+	if rt.JobManager != mgrBefore {
+		t.Fatal("send now replaced the command manager")
+	}
+	if rt.Runner != runnerBefore {
+		t.Fatal("send now replaced the runner")
+	}
+	if rt.State != stateBefore {
+		t.Fatal("send now replaced the session state")
+	}
+	if rt.SessionID != sessionBefore {
+		t.Fatal("send now changed the session id")
+	}
+	if rt.Config.Tools.Shell.MaxBackgroundJobs != maxJobsBefore {
+		t.Fatal("send now mutated the runtime config")
+	}
+	if got := mgrBefore.Generation(); got != genBefore {
+		t.Fatalf("send now moved the launch generation: %d -> %d", genBefore, got)
+	}
+
+	state.EndSteeringTurn(turnID, "test complete")
+}
+
+// TestRuntimeSendNowReloadRetainsOperationAndReceipts pins that a config reload
+// inside one conversation borrows what the conversation already owns: the
+// state, the eligible turn, the open operation token, the interruption handler
+// and the command manager all survive, so the post-reload Send now still
+// reaches the pre-reload manager's attached command and the request ledger
+// stays consistent.
+func TestRuntimeSendNowReloadRetainsOperationAndReceipts(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("send-now-reload")
+	rt := newSendNowTestRuntime(t, cfg)
+	state := rt.State
+
+	held := &sendNowHeldRunner{release: make(chan struct{})}
+	commitHeldRunner(t, rt.JobManager, held)
+
+	turnID, err := state.BeginSteeringTurn(ctx)
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn: %v", err)
+	}
+	_, ref, err := state.BeginSteeringOperation(ctx, turnID, session.OperationTools)
+	if err != nil {
+		t.Fatalf("BeginSteeringOperation: %v", err)
+	}
+	info, err := rt.JobManager.Launch(ctx, native.LaunchSpec{
+		Command:   "held-across-reload",
+		Operation: ref,
+		Origin:    native.CommandOrigin{TurnID: turnID},
+	})
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	waitForJobOutput(t, rt.JobManager, info.ID, "send-now-marker")
+
+	mgr := rt.JobManager
+	genBefore := mgr.Generation()
+
+	reloaded := cfg
+	reloaded.Tools.Shell.MaxBackgroundJobs = cfg.Tools.Shell.MaxBackgroundJobs + 3
+	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+
+	if rt.JobManager != mgr {
+		t.Fatal("the reload replaced the conversation manager")
+	}
+	if got := mgr.Generation(); got <= genBefore {
+		t.Fatalf("generation after reload = %d, want a newer one than %d", got, genBefore)
+	}
+	snap := state.SteeringSnapshot()
+	if !snap.Active || !snap.Supported || snap.TurnID != turnID || snap.OperationID != ref.ID {
+		t.Fatalf("snapshot after reload = %+v, want turn %s, operation %s and a handler preserved", snap, turnID, ref.ID)
+	}
+
+	// The post-reload request still captures the preserved operation and the
+	// preserved handler still reaches the pre-reload manager's command.
+	receipt, err := rt.SubmitSendNow(session.SendNowRequest{
+		SessionID: state.SessionID(),
+		TurnID:    turnID,
+		RequestID: "req-keep",
+		Text:      "across the reload",
+	})
+	if err != nil {
+		t.Fatalf("SubmitSendNow after reload: %v", err)
+	}
+	if receipt.OperationID != ref.ID || receipt.TurnID != turnID {
+		t.Fatalf("receipt after reload = %+v, want the preserved operation %s", receipt, ref.ID)
+	}
+	settled := waitForJobStatus(t, mgr, info.ID, native.StatusKilled, 10*time.Second)
+	if settled.Outcome != native.OutcomeStopped {
+		t.Fatalf("command across the reload settled as %q, want an explicit stop", settled.Outcome)
+	}
+
+	// The request ledger survived: retrying the same request ID does not add a
+	// second queue entry, and it names the same turn and operation.
+	again, err := rt.SubmitSendNow(session.SendNowRequest{
+		SessionID: state.SessionID(),
+		TurnID:    turnID,
+		RequestID: "req-keep",
+		Text:      "across the reload",
+	})
+	if err != nil {
+		t.Fatalf("retry after reload: %v", err)
+	}
+	if again.RequestID != "req-keep" || again.TurnID != turnID {
+		t.Fatalf("retry receipt = %+v, want the retained request", again)
+	}
+	if q := state.SteeringQueue(); len(q) != 1 || q[0] != "across the reload" {
+		t.Fatalf("queue after the retry = %v, want exactly the one accepted entry", q)
+	}
+
+	state.EndSteeringTurn(turnID, "test complete")
+}
+
+// TestRuntimeSendNowReplacementRejectsOldBinding pins the replacement boundary:
+// NewSession retires the old conversation (its handler's manager is closed and
+// the conversation is frozen), so an old request can never stop or seed the
+// replacement, while the replacement's own state carries its own handler bound
+// to its own manager.
+func TestRuntimeSendNowReplacementRejectsOldBinding(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("send-now-replacement")
+	cfg.Skills.Autoload = nil
+	rt := newSendNowTestRuntime(t, cfg)
+
+	oldState := rt.State
+	oldMgr := rt.JobManager
+
+	oldTurn, err := oldState.BeginSteeringTurn(ctx)
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn: %v", err)
+	}
+	if _, err := rt.SubmitSendNow(session.SendNowRequest{
+		SessionID: oldState.SessionID(),
+		TurnID:    oldTurn,
+		RequestID: "old-1",
+		Text:      "old work",
+	}); err != nil {
+		t.Fatalf("pre-replacement SubmitSendNow: %v", err)
+	}
+
+	newState, _, _, _, _, _, _, err := rt.NewSession("replacement")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if newState == oldState {
+		t.Fatal("NewSession did not replace the session")
+	}
+	if rt.JobManager == oldMgr {
+		t.Fatal("the replacement did not get its own command manager")
+	}
+	if !newState.SteeringSnapshot().Supported {
+		t.Fatal("the replacement state carries no interruption handler")
+	}
+
+	// The retired conversation's binding cannot reach new work: its manager is
+	// closed, and the conversation is frozen against new registrations.
+	if _, err := oldMgr.Launch(ctx, native.LaunchSpec{Command: "echo after-replacement"}); !errors.Is(err, native.ErrJobManagerClosed) {
+		t.Fatalf("the old conversation's manager still admits work: %v", err)
+	}
+	if err := oldState.BeginWork(); !errors.Is(err, session.ErrSessionQuiescing) {
+		t.Fatalf("old BeginWork = %v, want ErrSessionQuiescing", err)
+	}
+
+	// An old request routed through the runtime names the NEW conversation's
+	// state, whose turn identity differs, so it is refused and mutates nothing.
+	if _, err := rt.SubmitSendNow(session.SendNowRequest{
+		SessionID: oldState.SessionID(),
+		TurnID:    oldTurn,
+		RequestID: "old-2",
+		Text:      "late",
+	}); err == nil {
+		t.Fatal("an old request was accepted against the replacement conversation")
+	}
+	if q := newState.SteeringQueue(); len(q) != 0 {
+		t.Fatalf("an old request mutated the replacement's queue: %v", q)
+	}
+	if snap := newState.SteeringSnapshot(); snap.Active {
+		t.Fatalf("an old request opened a turn on the replacement: %+v", snap)
+	}
+
+	// The replacement's own handler serves a fresh turn normally.
+	newTurn, err := newState.BeginSteeringTurn(ctx)
+	if err != nil {
+		t.Fatalf("replacement BeginSteeringTurn: %v", err)
+	}
+	receipt, err := rt.SubmitSendNow(session.SendNowRequest{
+		SessionID: newState.SessionID(),
+		TurnID:    newTurn,
+		RequestID: "new-1",
+		Text:      "new work",
+	})
+	if err != nil {
+		t.Fatalf("replacement SubmitSendNow: %v", err)
+	}
+	if receipt.Status != session.SteeringAccepted || receipt.TurnID != newTurn {
+		t.Fatalf("replacement receipt = %+v, want accepted on the new turn", receipt)
+	}
+	if q := newState.SteeringQueue(); len(q) != 1 || q[0] != "new work" {
+		t.Fatalf("replacement queue = %v, want the new work only", q)
+	}
+	// The old conversation's queued steering is retired with it (shutdown
+	// clears the queue) and never reappears on the replacement.
+	if q := oldState.SteeringQueue(); len(q) != 0 {
+		t.Fatalf("the retired conversation kept queued steering: %v", q)
+	}
+
+	newState.EndSteeringTurn(newTurn, "test complete")
+}
+
+// TestRuntimeSendNowUnavailableFailsClosed pins the refusal side of the seam:
+// a missing state, a missing handler, an idle or mismatched turn all refuse
+// before anything is queued or stopped. A refusal leaves the queue exactly as
+// it was and never invokes an installed handler.
+func TestRuntimeSendNowUnavailableFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	cfg := nativeToolAgentConfig("send-now-fail-closed")
+
+	// No session at all: the zero snapshot and a refusal, never a panic.
+	empty := &Runtime{}
+	if snap := empty.SteeringSnapshot(); snap.Active || snap.Supported || snap.Version != 0 {
+		t.Fatalf("nil-state snapshot = %+v, want the zero value", snap)
+	}
+	if _, err := empty.SubmitSendNow(session.SendNowRequest{RequestID: "r", TurnID: "t"}); err == nil {
+		t.Fatal("SubmitSendNow with no session returned no error")
+	}
+
+	// A conversation with an installed handler that must never be invoked
+	// while the request is ineligible.
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	var interrupts atomic.Int64
+	state.SetOperationInterrupt(func(context.Context, session.OperationRef) (session.OperationStop, error) {
+		interrupts.Add(1)
+		return session.OperationStop{Wait: func(context.Context) ([]session.SteeringOutcome, error) { return nil, nil }}, nil
+	})
+	rt := &Runtime{State: state}
+
+	state.PushSteering("already queued")
+
+	// No active turn: refused before the handler is reached.
+	if _, err := rt.SubmitSendNow(session.SendNowRequest{
+		SessionID: state.SessionID(),
+		TurnID:    "turn-1",
+		RequestID: "r1",
+		Text:      "never",
+	}); err == nil {
+		t.Fatal("a request with no active turn was accepted")
+	}
+	if q := state.SteeringQueue(); len(q) != 1 || q[0] != "already queued" {
+		t.Fatalf("a refused request mutated the queue: %v", q)
+	}
+
+	// Active turn, but the request names a different session or turn: refused.
+	turnID, err := state.BeginSteeringTurn(ctx)
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn: %v", err)
+	}
+	for _, req := range []session.SendNowRequest{
+		{SessionID: "sess-other", TurnID: turnID, RequestID: "r2", Text: "never"},
+		{SessionID: state.SessionID(), TurnID: "turn-other", RequestID: "r3", Text: "never"},
+		{SessionID: state.SessionID(), TurnID: turnID, RequestID: "", Text: "never"},
+	} {
+		if _, err := rt.SubmitSendNow(req); err == nil {
+			t.Fatalf("SubmitSendNow(%+v) was accepted", req)
+		}
+	}
+	if q := state.SteeringQueue(); len(q) != 1 || q[0] != "already queued" {
+		t.Fatalf("a mismatched request mutated the queue: %v", q)
+	}
+	if n := interrupts.Load(); n != 0 {
+		t.Fatalf("an ineligible request invoked the handler %d times", n)
+	}
+	state.EndSteeringTurn(turnID, "test complete")
+
+	// Active turn and no handler installed: unsupported, refused, and the
+	// snapshot reports it as unsupported.
+	bare := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	bareTurn, err := bare.BeginSteeringTurn(ctx)
+	if err != nil {
+		t.Fatalf("bare BeginSteeringTurn: %v", err)
+	}
+	bareRT := &Runtime{State: bare}
+	if _, err := bareRT.SubmitSendNow(session.SendNowRequest{
+		SessionID: bare.SessionID(),
+		TurnID:    bareTurn,
+		RequestID: "r4",
+		Text:      "never",
+	}); err == nil {
+		t.Fatal("SubmitSendNow accepted a request with no interruption handler")
+	}
+	if snap := bare.SteeringSnapshot(); snap.Supported {
+		t.Fatalf("snapshot = %+v, want unsupported with no handler", snap)
+	}
+	if len(bare.SteeringQueue()) != 0 {
+		t.Fatalf("a refused unsupported request queued %v", bare.SteeringQueue())
+	}
+}

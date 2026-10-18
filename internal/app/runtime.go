@@ -961,6 +961,41 @@ func (rt *Runtime) SetSessionMode(mode string) error {
 	return rt.State.SetSessionMode(mode, apply)
 }
 
+// SteeringSnapshot returns the current conversation's Send now snapshot through
+// the runtime seam. It takes the pointer mutex only long enough to read the
+// conversation's State, then releases it and delegates: the snapshot itself is
+// a bounded, memory-only read that never takes the reload gate, waits for a
+// process, builds a provider or commits a config. A runtime with no session (a
+// failed build) reports the zero snapshot — inactive, unsupported — rather than
+// panicking.
+func (rt *Runtime) SteeringSnapshot() session.SteeringSnapshot {
+	rt.mu.Lock()
+	state := rt.State
+	rt.mu.Unlock()
+	if state == nil {
+		return session.SteeringSnapshot{}
+	}
+	return state.SteeringSnapshot()
+}
+
+// SubmitSendNow accepts one Send now request against the current conversation.
+// Like SteeringSnapshot it reads the current State under the pointer mutex and
+// releases it before delegating, so the bounded, memory-only acceptance — never
+// a process wait, a provider build, a config save or a manager replacement —
+// runs against the conversation it targeted. The request's own SessionID/TurnID
+// still name the turn, so a request built for a replaced conversation is
+// refused by the session rather than retargeted onto its replacement. A
+// runtime with no session fails closed.
+func (rt *Runtime) SubmitSendNow(request session.SendNowRequest) (session.SteeringReceipt, error) {
+	rt.mu.Lock()
+	state := rt.State
+	rt.mu.Unlock()
+	if state == nil {
+		return session.SteeringReceipt{}, errors.New("app: no session state available for send now")
+	}
+	return state.SubmitSendNow(request)
+}
+
 // WatchResumeHook is invoked by the watch manager's OnFire closure after
 // a fired report is pushed to the session queue, for runtimes that want to
 // auto-resume an idle session (ACP). It receives the report so the sink

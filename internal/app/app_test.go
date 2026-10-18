@@ -6526,6 +6526,124 @@ func TestAccessTUIOptionsFollowNewSession(t *testing.T) {
 	}
 }
 
+// facadeTurnRunner stands in for the agent process in the Send now facade
+// test. It opens the conversation's one eligible turn exactly as RunTask does,
+// reports the turn ID it opened, and then blocks until its context is
+// cancelled — keeping the turn busy and steerable for the whole frame without a
+// provider call or a real child process. It satisfies tui.AgentRunner.
+type facadeTurnRunner struct {
+	state   *session.State
+	started chan string
+}
+
+func (r *facadeTurnRunner) Run(ctx context.Context, goal string) error {
+	turnID, err := r.state.BeginSteeringTurn(ctx)
+	if err != nil {
+		return err
+	}
+	select {
+	case r.started <- turnID:
+	default:
+	}
+	<-ctx.Done()
+	r.state.EndSteeringTurn(turnID, "turn complete")
+	return ctx.Err()
+}
+
+func (r *facadeTurnRunner) SetForceClass(string)                   {}
+func (r *facadeTurnRunner) SetPolicyRules([]config.PermissionRule) {}
+func (r *facadeTurnRunner) SetApprovalMode(policy.ApprovalMode)    {}
+func (r *facadeTurnRunner) AnswerGate(string)                      {}
+
+// TestRuntimeSendNowTUIOptionsExerciseRealFacade drives the production TUI
+// facade end to end: the runtime's own snapshot and submit callbacks are wired
+// into a real tui.Model, and the public Send now key is pressed during a live
+// turn. The accepted receipt is observable in the session queue, and the model
+// delivers it back as the accepted state on the status line — with no reload,
+// provider call or real process.
+//
+// The composer variant of the same key (a panel owning the input) is covered by
+// the tui package's own Send now tests: the composer's identity is not exposed
+// outside that package, so it cannot be addressed from here.
+func TestRuntimeSendNowTUIOptionsExerciseRealFacade(t *testing.T) {
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
+	cfg := nativeToolAgentConfig("send-now-tui-facade")
+	cfg.Skills.Autoload = nil
+	auth, _ := memoryAuthResolver(t)
+	rt, err := StartRuntime(runCtx,
+		WithWorkingDir(t.TempDir()),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return cfg, nil }),
+		WithAuthResolver(auth),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+
+	state := rt.State
+	agentProcess := &facadeTurnRunner{state: state, started: make(chan string, 1)}
+
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	model := tui.New(state,
+		tui.WithCommandRegistry(reg),
+		tui.WithRunner(runCtx, agentProcess),
+		tui.WithSendNow(rt.SteeringSnapshot, rt.SubmitSendNow),
+	)
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	model = updated.(tui.Model)
+
+	// Start the turn through the public prompt path. The fake process blocks, so
+	// the turn stays in flight while the frame is exercised.
+	updated, _ = model.Update(tea.PasteMsg{Content: "do the thing"})
+	model = updated.(tui.Model)
+	updated, runCmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	model = updated.(tui.Model)
+	if runCmd == nil {
+		t.Fatal("the prompt produced no command; the turn never started")
+	}
+	// A Bubble Tea batch returns its sub-commands without running them; execute
+	// the agent run (the first) in a goroutine so it blocks for the whole frame.
+	batch, ok := runCmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("the prompt command returned %T, want a tea.BatchMsg", runCmd())
+	}
+	if len(batch) == 0 {
+		t.Fatal("the prompt batch carried no commands")
+	}
+	go func() { _ = batch[0]() }()
+
+	var turnID string
+	select {
+	case turnID = <-agentProcess.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the facade turn never started")
+	}
+
+	// Type steering text and press the public Send now key.
+	updated, _ = model.Update(tea.PasteMsg{Content: "steer this"})
+	model = updated.(tui.Model)
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt})
+	model = updated.(tui.Model)
+
+	// Accepted by the runtime against the live turn.
+	if q := state.SteeringQueue(); len(q) != 1 || q[0] != "steer this" {
+		t.Fatalf("queue = %v, want the one accepted steering entry on turn %s", q, turnID)
+	}
+	// Delivered back to the model: the cached receipt and the refreshed runtime
+	// snapshot drive the status line.
+	if frame := ansi.Strip(model.View().Content); !strings.Contains(frame, "send now: accepted") {
+		t.Fatalf("the model did not render the accepted receipt:\n%s", frame)
+	}
+}
+
 // ── Task 10: the TUI's end adapter ──────────────────────────────────────
 
 // startEndRuntime builds a runtime with a resolvable provider, so the runner

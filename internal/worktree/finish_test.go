@@ -307,3 +307,54 @@ func TestOwnedByAgentDirRejectsSymlinkEscape(t *testing.T) {
 		t.Error("a symlink escaping the agent dir must not be owned")
 	}
 }
+
+// The project guard reads tracked changes, not "anything in git status": a
+// project whose only noise is untracked files merges.
+func TestFinishIgnoresUntrackedOnlyProject(t *testing.T) {
+	g := newFinishFake()
+	g.DirtyDirs["/repo"] = true     // git status is non-empty...
+	g.Tracked["/repo"] = []string{} // ...but only with untracked files
+
+	res, err := FinishBranch(g, "/repo", "sha-target", finishWT, FinishOptions{Squash: true})
+	if err != nil {
+		t.Fatalf("FinishBranch: %v", err)
+	}
+	if !res.Merged {
+		t.Fatalf("res = %+v, want merged", res)
+	}
+	if len(g.IndexCommits) != 1 {
+		t.Fatalf("IndexCommits = %v, want the squash committed from the index only", g.IndexCommits)
+	}
+}
+
+func TestFinishRefusalNamesTrackedChanges(t *testing.T) {
+	g := newFinishFake()
+	g.Tracked["/repo"] = []string{"a.go", "b.go"}
+
+	res, err := FinishBranch(g, "/repo", "sha-target", finishWT, FinishOptions{})
+	if err != nil {
+		t.Fatalf("FinishBranch: %v", err)
+	}
+	if res.Reason != ReasonDirtyProject || len(res.Blocking) != 2 {
+		t.Fatalf("res = %+v, want project_dirty naming a.go and b.go", res)
+	}
+}
+
+func TestFinishClassifiesUntrackedOverwriteAsBlocking(t *testing.T) {
+	msg := "worktree git: merge --squash feat/x: exit status 1: error: The following untracked working tree files would be overwritten by merge:\n\tdocs/new.md\n\tnew.txt\nPlease move or remove them before you merge.\nAborting"
+	for _, squash := range []bool{true, false} {
+		g := newFinishFake()
+		if squash {
+			g.SquashMergeErr = errors.New(msg)
+		} else {
+			g.MergeErr = errors.New(msg)
+		}
+		res, err := FinishBranch(g, "/repo", "sha-target", finishWT, FinishOptions{Squash: squash})
+		if err != nil {
+			t.Fatalf("FinishBranch: %v", err)
+		}
+		if res.Reason != ReasonDirtyProject || len(res.Blocking) != 2 || res.Blocking[0] != "docs/new.md" || len(res.Conflicted) != 0 {
+			t.Fatalf("squash=%v res = %+v, want project_dirty blocked by docs/new.md and new.txt", squash, res)
+		}
+	}
+}

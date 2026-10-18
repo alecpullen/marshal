@@ -27,9 +27,13 @@ type FinishOptions struct {
 // that fired, using the same strings the ACP session/merge result maps
 // back onto (see internal/acp/worktree.go).
 type FinishResult struct {
-	Merged       bool
-	Reason       string
-	Conflicted   []string
+	Merged     bool
+	Reason     string
+	Conflicted []string
+	// Blocking names the project paths behind a ReasonDirtyProject refusal:
+	// tracked files with uncommitted changes, or untracked files the merge
+	// would have overwritten.
+	Blocking     []string
 	Commit       string // commit created on the target
 	SquashCommit bool
 }
@@ -43,6 +47,32 @@ const (
 	ReasonTargetMoved   = "target_moved"
 	ReasonConflicts     = "conflicts"
 )
+
+// untrackedOverwrites pulls the paths out of git's refusal to merge over
+// untracked files ("The following untracked working tree files would be
+// overwritten by merge:" followed by one indented path per line). git refuses
+// before changing anything, so the project is untouched.
+func untrackedOverwrites(msg string) []string {
+	var out []string
+	listing := false
+	for _, line := range strings.Split(msg, "\n") {
+		if strings.Contains(line, "untracked working tree files would be") {
+			listing = true
+			continue
+		}
+		if !listing {
+			continue
+		}
+		if line == "" || (line[0] != '\t' && line[0] != ' ') {
+			listing = false
+			continue
+		}
+		if p := strings.TrimSpace(line); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // conflictFiles pulls file names out of git's CONFLICT lines. Best-effort:
 // the reason is what drives the UI, the list is detail.
@@ -86,13 +116,18 @@ func FinishBranch(git GitOps, repoRoot, target string, wt Worktree, opts FinishO
 		}
 	}
 
-	// 2. Never merge into a dirty project checkout.
-	projectDirty, err := git.IsDirty(repoRoot)
+	// 2. Never merge into a project checkout with uncommitted changes to
+	// tracked files: they are the operator's work in progress, and a merge
+	// (or the undo of a failed one) must not mix with or discard them.
+	// Untracked files do not block: no commit below stages them, reset
+	// --merge leaves them alone, and git itself refuses a merge that would
+	// overwrite one (reported below as ReasonDirtyProject with its paths).
+	tracked, err := git.TrackedChanges(repoRoot)
 	if err != nil {
 		return FinishResult{}, fmt.Errorf("worktree: check project: %w", err)
 	}
-	if projectDirty {
-		return FinishResult{Reason: ReasonDirtyProject}, nil
+	if len(tracked) > 0 {
+		return FinishResult{Reason: ReasonDirtyProject, Blocking: tracked}, nil
 	}
 
 	// 3. The project must still be where it was when the worktree was
@@ -113,20 +148,24 @@ func FinishBranch(git GitOps, repoRoot, target string, wt Worktree, opts FinishO
 			// merge --abort does not apply here: --squash never writes
 			// MERGE_HEAD, so --abort fails and leaves the conflicted index
 			// and SQUASH_MSG behind. reset --merge is the correct undo, and
-			// is safe because guard 2 verified the project was clean.
+			// is safe because guard 2 verified no tracked file has
+			// uncommitted changes; it leaves untracked files alone.
 			_ = git.ResetMerge(repoRoot)
-			return FinishResult{Reason: ReasonConflicts, Conflicted: conflictFiles(merr.Error())}, nil
+			return mergeRefusal(merr), nil
 		}
 		msg := opts.CommitMessage
 		if msg == "" {
 			msg = "squash: " + wt.Branch
 		}
-		if _, cerr := git.CommitAll(repoRoot, msg); cerr != nil {
+		// Commit exactly what the squash staged. CommitAll would run
+		// `git add -A` in the operator's checkout and sweep their untracked
+		// files into the commit.
+		if _, cerr := git.CommitIndex(repoRoot, msg); cerr != nil {
 			return FinishResult{}, fmt.Errorf("worktree: commit squash: %w", cerr)
 		}
 	} else if merr := git.Merge(repoRoot, wt.Branch); merr != nil {
 		_ = git.MergeAbort(repoRoot)
-		return FinishResult{Reason: ReasonConflicts, Conflicted: conflictFiles(merr.Error())}, nil
+		return mergeRefusal(merr), nil
 	}
 
 	// 5. Cleanup is best-effort: the merge is done, and a failure here
@@ -159,4 +198,13 @@ func OwnedByAgentDir(repoRoot, wtPath string) bool {
 		return false
 	}
 	return true
+}
+
+// mergeRefusal classifies a failed merge. A refusal to overwrite untracked
+// files is the project blocking the merge, not a conflict between branches.
+func mergeRefusal(merr error) FinishResult {
+	if paths := untrackedOverwrites(merr.Error()); len(paths) > 0 {
+		return FinishResult{Reason: ReasonDirtyProject, Blocking: paths}
+	}
+	return FinishResult{Reason: ReasonConflicts, Conflicted: conflictFiles(merr.Error())}
 }

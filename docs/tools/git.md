@@ -56,7 +56,8 @@ pointer (`workspace_finish.go:31`):
 
 So the division is: `git.*` reads repository state, `workspace.finish` changes
 it. Hand-merging through `shell.run` bypasses the guards `workspace.finish`
-enforces — it refuses when the project checkout is dirty or its HEAD moved — and
+enforces — it refuses over uncommitted tracked changes, untracked files the merge
+would overwrite, or a moved HEAD — and
 leaves the worktree and branch behind. See `workspace-interaction.md` for that
 tool's full surface.
 

@@ -105,6 +105,14 @@ type FakeGitOps struct {
 	// Dirty. CommitAll clears the entry for the committed dir, so a committed
 	// worktree reads as clean while the project root can stay dirty.
 	DirtyDirs map[string]bool
+	// Tracked maps a directory to the paths TrackedChanges reports for it.
+	// When a dir is absent, a dirty dir (DirtyDirs/Dirty) reports one
+	// placeholder path, so existing "dirty project" fixtures keep meaning
+	// "the project has tracked changes".
+	Tracked map[string][]string
+	// IndexCommits records CommitIndex messages (they are also appended to
+	// Commits, so commit-count assertions cover both paths).
+	IndexCommits []string
 	// NextHead, when non-empty, is popped as the SHA of the next CommitAll.
 	NextHead  []string
 	LogOut    string
@@ -168,6 +176,7 @@ func NewFakeGitOps() *FakeGitOps {
 		Branches:         map[string]bool{},
 		Heads:            map[string]string{},
 		DirtyDirs:        map[string]bool{},
+		Tracked:          map[string][]string{},
 		WorktreeBranches: map[string]string{},
 	}
 }
@@ -262,6 +271,26 @@ func (f *FakeGitOps) IsDirty(dir string) (bool, error) {
 		return v, nil
 	}
 	return f.Dirty, nil
+}
+
+func (f *FakeGitOps) TrackedChanges(dir string) ([]string, error) {
+	f.record("TrackedChanges")
+	if paths, ok := f.Tracked[dir]; ok {
+		return paths, nil
+	}
+	dirty := f.Dirty
+	if v, ok := f.DirtyDirs[dir]; ok {
+		dirty = v
+	}
+	if dirty {
+		return []string{"modified.txt"}, nil
+	}
+	return nil, nil
+}
+
+func (f *FakeGitOps) CommitIndex(dir, message string) (string, error) {
+	f.IndexCommits = append(f.IndexCommits, message)
+	return f.CommitAll(dir, message)
 }
 
 func (f *FakeGitOps) CommitAll(dir, message string) (string, error) {

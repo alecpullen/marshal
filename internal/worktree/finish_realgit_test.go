@@ -59,10 +59,9 @@ func realGitCommitAll(t *testing.T, dir, msg string) {
 }
 
 // realWorktree isolates a worktree the way the ACP session path does:
-// AgentDir creates .marshal/worktrees with its self-ignoring .gitignore —
-// without it the fresh worktree would show up as an untracked path and
-// trip FinishBranch's dirty-project guard — then EnsureWorktree branches
-// feat/x off HEAD there.
+// AgentDir creates .marshal/worktrees with its self-ignoring .gitignore (so
+// the fresh worktree is not an untracked path of the project), then
+// EnsureWorktree branches feat/x off HEAD there.
 func realWorktree(t *testing.T, repo string) Worktree {
 	t.Helper()
 	dir, err := AgentDir(repo)
@@ -182,5 +181,126 @@ func TestRealGitConflictingFinishAbortsClean(t *testing.T) {
 	}
 	if dirty, err := (CLIGitOps{}).IsDirty(repo); err != nil || dirty {
 		t.Errorf("project dirty after an aborted merge: %v (%v)", dirty, err)
+	}
+}
+
+// Untracked files in the operator's checkout — notes, drafts, local config —
+// must neither block a finish nor end up in the merge commit.
+func TestRealGitFinishMergesPastUntrackedProjectFiles(t *testing.T) {
+	for _, squash := range []bool{true, false} {
+		repo := initRealRepo(t)
+		wt := realWorktree(t, repo)
+		realWriteFile(t, wt.Path, "new.txt", "from agent\n")
+		realGitCommitAll(t, wt.Path, "agent work")
+		target, _ := CLIGitOps{}.RevParse(repo, "HEAD")
+
+		realWriteFile(t, repo, "notes.md", "operator notes\n")
+		if err := os.MkdirAll(filepath.Join(repo, "drafts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		realWriteFile(t, repo, "drafts/plan.md", "draft\n")
+
+		res, err := FinishBranch(CLIGitOps{}, repo, target, wt, FinishOptions{Squash: squash, CommitMessage: "feature", DeleteBranch: true})
+		if err != nil {
+			t.Fatalf("squash=%v FinishBranch: %v", squash, err)
+		}
+		if !res.Merged {
+			t.Fatalf("squash=%v res = %+v, want merged past untracked files", squash, res)
+		}
+		files := realgit(t, repo, "show", "--name-only", "--format=", "HEAD")
+		if squash && !strings.Contains(files, "new.txt") {
+			t.Errorf("squash commit missing the agent's file:\n%s", files)
+		}
+		if strings.Contains(files, "notes.md") || strings.Contains(files, "plan.md") {
+			t.Errorf("squash=%v: the merge commit swept in untracked operator files:\n%s", squash, files)
+		}
+		status := realgit(t, repo, "status", "--porcelain")
+		if !strings.Contains(status, "?? notes.md") || !strings.Contains(status, "?? drafts/") {
+			t.Errorf("squash=%v: operator files are no longer untracked:\n%s", squash, status)
+		}
+		if got, _ := os.ReadFile(filepath.Join(repo, "notes.md")); string(got) != "operator notes\n" {
+			t.Errorf("squash=%v: notes.md changed: %q", squash, got)
+		}
+	}
+}
+
+// An untracked file at a path the branch adds would be overwritten. git
+// refuses before changing anything; the refusal names the file as blocking
+// rather than reporting an empty conflict.
+func TestRealGitFinishRefusesUntrackedFileTheMergeWouldOverwrite(t *testing.T) {
+	for _, squash := range []bool{true, false} {
+		repo := initRealRepo(t)
+		wt := realWorktree(t, repo)
+		realWriteFile(t, wt.Path, "new.txt", "from agent\n")
+		realGitCommitAll(t, wt.Path, "agent work")
+		target, _ := CLIGitOps{}.RevParse(repo, "HEAD")
+		realWriteFile(t, repo, "new.txt", "operator's own file\n")
+
+		res, err := FinishBranch(CLIGitOps{}, repo, target, wt, FinishOptions{Squash: squash, DeleteBranch: true})
+		if err != nil {
+			t.Fatalf("squash=%v FinishBranch: %v", squash, err)
+		}
+		if res.Merged || res.Reason != ReasonDirtyProject || len(res.Blocking) != 1 || res.Blocking[0] != "new.txt" {
+			t.Fatalf("squash=%v res = %+v, want project_dirty blocked by new.txt", squash, res)
+		}
+		if head, _ := (CLIGitOps{}).RevParse(repo, "HEAD"); head != target {
+			t.Errorf("squash=%v: project HEAD moved to %s", squash, head)
+		}
+		if got, _ := os.ReadFile(filepath.Join(repo, "new.txt")); string(got) != "operator's own file\n" {
+			t.Errorf("squash=%v: the operator's untracked file changed: %q", squash, got)
+		}
+		if tracked, _ := (CLIGitOps{}).TrackedChanges(repo); len(tracked) != 0 {
+			t.Errorf("squash=%v: refused merge left tracked changes: %v", squash, tracked)
+		}
+		if _, err := os.Stat(wt.Path); err != nil {
+			t.Errorf("squash=%v: worktree removed after a refusal: %v", squash, err)
+		}
+	}
+}
+
+// Uncommitted changes to tracked files still block, and are named.
+func TestRealGitFinishRefusesTrackedChangesAndNamesThem(t *testing.T) {
+	repo := initRealRepo(t)
+	wt := realWorktree(t, repo)
+	realWriteFile(t, wt.Path, "new.txt", "from agent\n")
+	realGitCommitAll(t, wt.Path, "agent work")
+	target, _ := CLIGitOps{}.RevParse(repo, "HEAD")
+	realWriteFile(t, repo, "a.txt", "operator edit\n")
+
+	res, err := FinishBranch(CLIGitOps{}, repo, target, wt, FinishOptions{Squash: true, DeleteBranch: true})
+	if err != nil {
+		t.Fatalf("FinishBranch: %v", err)
+	}
+	if res.Merged || res.Reason != ReasonDirtyProject || len(res.Blocking) != 1 || res.Blocking[0] != "a.txt" {
+		t.Fatalf("res = %+v, want project_dirty blocked by a.txt", res)
+	}
+	if got, _ := os.ReadFile(filepath.Join(repo, "a.txt")); string(got) != "operator edit\n" {
+		t.Errorf("the operator's edit changed: %q", got)
+	}
+}
+
+// TrackedChanges reports staged, unstaged and renamed tracked paths and
+// nothing untracked — including a first entry whose status starts with a
+// space, which a trimmed parse would corrupt.
+func TestRealGitTrackedChangesIgnoresUntracked(t *testing.T) {
+	repo := initRealRepo(t)
+	realWriteFile(t, repo, "b.txt", "b\n")
+	realGitCommitAll(t, repo, "add b")
+	realWriteFile(t, repo, "a.txt", "unstaged edit\n")
+	realgit(t, repo, "mv", "b.txt", "c.txt")
+	realWriteFile(t, repo, "untracked.txt", "u\n")
+
+	got, err := CLIGitOps{}.TrackedChanges(repo)
+	if err != nil {
+		t.Fatalf("TrackedChanges: %v", err)
+	}
+	want := map[string]bool{"a.txt": true, "c.txt": true}
+	if len(got) != len(want) {
+		t.Fatalf("TrackedChanges = %q, want a.txt and c.txt only", got)
+	}
+	for _, p := range got {
+		if !want[p] {
+			t.Fatalf("TrackedChanges = %q, want a.txt and c.txt only", got)
+		}
 	}
 }

@@ -32,10 +32,20 @@ type GitOps interface {
 	WorktreeRemove(dir, path string) error
 	WorktreePrune(dir string) error
 	IsDirty(dir string) (bool, error)
+	// TrackedChanges lists the paths of tracked files with staged or
+	// unstaged changes in dir. Untracked files are not reported: they are
+	// not part of any commit and a merge cannot silently change them (git
+	// refuses a merge that would overwrite one).
+	TrackedChanges(dir string) ([]string, error)
 	// CommitAll stages every change (including untracked files) and
 	// commits it, returning the new HEAD SHA. It returns an error when
 	// there is nothing to commit — the caller checks IsDirty first.
 	CommitAll(dir, message string) (string, error)
+	// CommitIndex commits exactly what is staged, without staging anything
+	// else, and returns the new HEAD SHA. It is how a squash merge into the
+	// operator's checkout is committed without sweeping in their untracked
+	// files.
+	CommitIndex(dir, message string) (string, error)
 	LogOneline(dir, rng string) (string, error)
 	DiffStat(dir, rng string) (string, error)
 	Diff(dir, rng string, contextLines int) (string, error)
@@ -103,6 +113,20 @@ func (CLIGitOps) run(dir string, args ...string) (string, error) {
 		return "", fmt.Errorf("worktree git: %s: %w: %s", strings.Join(args, " "), err, s)
 	}
 	return s, nil
+}
+
+// runRaw is run for machine-readable output: stdout is returned untouched
+// (porcelain entries can begin with a space, and -z output is NUL-separated),
+// and stderr is reported only with an error.
+func (CLIGitOps) runRaw(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("worktree git: %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return string(out), nil
 }
 
 func (g CLIGitOps) RevParse(dir, ref string) (string, error) {
@@ -187,6 +211,29 @@ func (g CLIGitOps) WorktreePrune(dir string) error {
 	return err
 }
 
+// TrackedChanges parses `git status --porcelain=v1 -z --untracked-files=no`.
+// Each entry is "XY path"; a rename or copy carries its original path as the
+// next NUL-separated field, which is skipped.
+func (g CLIGitOps) TrackedChanges(dir string) ([]string, error) {
+	out, err := g.runRaw(dir, "status", "--porcelain=v1", "-z", "--untracked-files=no")
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	fields := strings.Split(out, "\x00")
+	for i := 0; i < len(fields); i++ {
+		entry := fields[i]
+		if len(entry) < 4 {
+			continue
+		}
+		paths = append(paths, entry[3:])
+		if entry[0] == 'R' || entry[0] == 'C' {
+			i++ // the original path of a rename or copy
+		}
+	}
+	return paths, nil
+}
+
 func (g CLIGitOps) IsDirty(dir string) (bool, error) {
 	out, err := g.run(dir, "status", "--porcelain")
 	if err != nil {
@@ -215,6 +262,12 @@ func (g CLIGitOps) CommitAll(dir, message string) (string, error) {
 	if _, err := g.run(dir, "add", "-A"); err != nil {
 		return "", err
 	}
+	return g.CommitIndex(dir, message)
+}
+
+// CommitIndex commits the index as it stands, under the repository's own
+// identity or marshal's fallback (see CommitAll).
+func (g CLIGitOps) CommitIndex(dir, message string) (string, error) {
 	args := []string{"commit", "-m", message}
 	if _, err := g.run(dir, "config", "user.email"); err != nil {
 		// No identity in this repository: supply one for this commit only.

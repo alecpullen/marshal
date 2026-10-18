@@ -115,6 +115,15 @@ rulePreferPurposeBuilt = "- Prefer repo.search, symbols, and file.read over shel
 ruleGitAndWorkspace    = "- Use the git.* tools for repository state and the workspace tools for worktree isolation and merging; do not run git merge or git stash through shell.run.\n"
 ```
 
+> **Amended 2026-10-18.** Rule 2's absolute ban ("do not run git merge or git
+> stash through shell.run") left agents spending many steps inventing
+> workarounds for git operations no tool covers. It now reads: "When no tool
+> covers a git operation you need, run git with shell.run and say so; do not
+> hunt for workarounds." The same change scoped `ruleFileToolsWrite` to content
+> the agent authors (commands whose job is writing files are allowed), gave
+> `ruleAskUser` a decision criterion, and added `ruleCommitToApproach`. See
+> `internal/agent/prompts.go`.
+
 Split deliberately, with no overlap:
 
 - Rule 1 owns **finding and reading**.

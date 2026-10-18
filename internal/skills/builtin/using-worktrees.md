@@ -48,8 +48,12 @@ the user to review.
   by default; pass `"squash": false` for a `--no-ff` merge. Commit worktree
   changes first, or pass `message` to commit them.
 - Pop or drop any stash you created before calling it.
-- A refusal is content, not a malfunction. If the project checkout is dirty or
-  its HEAD moved, do not stash, reset, or clean the user's checkout to get past
-  the guard. Report the refusal and let the user decide.
+- A refusal is content, not a malfunction; it says what blocked the merge and
+  what to do next. Untracked files in the project checkout do not block it.
+  Uncommitted changes to tracked files do, and so does an untracked file the
+  merge would overwrite: those are the user's files, so do not stash, reset,
+  move, or clean them to get past the guard, and do not merge with shell git
+  instead. Name the files and let the user decide. If the checkout only has
+  new commits, call it again with `"target": "HEAD"` to merge on top of them.
 - Never delete a worktree or branch by hand. `workspace.finish` removes them
   after a successful merge; an unmerged branch is the user's to keep or drop.

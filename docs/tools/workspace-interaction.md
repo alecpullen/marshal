@@ -46,7 +46,12 @@ removing the worktree and deleting the branch.
 | `squash` | no | default true; `false` for `--no-ff` |
 | `target` | no | |
 
-**Guards:** it refuses when the project checkout is dirty or its HEAD moved.
+**Guards:** it refuses when a tracked file in the project checkout has
+uncommitted changes, when the merge would overwrite an untracked file, or when
+the project's HEAD moved since the worktree was created (`"target": "HEAD"`
+merges on top of the new commits). Other untracked files do not block it: the
+squash commit stages only what the merge produced (`CommitIndex`), never
+`git add -A`. Each refusal names the blocking files and the next step.
 
 **A refusal is content, not an error** (`workspace_finish.go:25-26`) — the agent
 must read it and act, not treat it as a tool malfunction. That is why the

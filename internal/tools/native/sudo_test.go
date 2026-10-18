@@ -4,6 +4,7 @@ package native
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -575,6 +576,13 @@ func TestSudoSteeringCancelBeforeDispatchZerosSecret(t *testing.T) {
 	out := awaitOutcome(t, done)
 	if out.err == nil {
 		t.Fatal("a canceled privileged prompt returned success")
+	}
+	// The interruption must be reported through its DISTINCT cause, not as a
+	// user denial: an empty canceled-prompt denial is channel-wise
+	// indistinguishable from a user decline, and "denied by user" would count
+	// an intentional stop as a tool failure and feed the failed-repeat ladder.
+	if !errors.Is(out.err, session.ErrSendNow) {
+		t.Fatalf("canceled privileged prompt error = %v, want the distinct steering cause (session.ErrSendNow)", out.err)
 	}
 	// Nothing was dispatched and no credential was written anywhere the child
 	// could see it.

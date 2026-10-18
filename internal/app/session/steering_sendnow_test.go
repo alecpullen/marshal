@@ -378,6 +378,106 @@ func TestMarkSteeringInterruptStateNoopAfterTurnClosed(t *testing.T) {
 	}
 }
 
+// steeringLedgerReceipt reads the receipt the ledger actually holds for a
+// request (a test-only white-box read under the steering lock), so the
+// final-state assertion does not depend on subscriber buffering.
+func steeringLedgerReceipt(s *State, requestID string) SteeringReceipt {
+	s.steeringMu.Lock()
+	defer s.steeringMu.Unlock()
+	rec := s.steering.requests[requestID]
+	if rec == nil {
+		return SteeringReceipt{}
+	}
+	return cloneSteeringReceipt(rec.receipt)
+}
+
+// TestSendNowLateInterruptionWorkerCannotRewriteClosedTurn drives the real
+// scenario the white-box guard test only replays: the interruption handler
+// blocks inside its wait, EndSteeringTurn finalises the receipts while the
+// worker is genuinely still in flight, and the worker wakes up afterwards and
+// attempts its final mark.
+//
+// Why this is load-bearing: EndSteeringTurn deliberately does NOT join the
+// interruption worker (only FinishSteeringOperation waits on intr.done), and
+// the worker's last action before closing done is
+// markSteeringInterruptState(ref, status, outcomes). So after the turn has
+// closed, that late mark is the only remaining writer that can touch the
+// accepted request's receipt. The guard
+// `if !ctl.active || ctl.turnID != ref.TurnID { return }` in
+// markSteeringInterruptState is what keeps EndSteeringTurn the final word:
+// without it, this worker flips the already-finalised undelivered receipt
+// back to an in-flight status, bumps its version and republishes it, and the
+// end state stops being truthful. Remove the guard and this test fails
+// because a fresh receipt event for r1 arrives after the turn closed and the
+// live ledger receipt no longer matches the EndSteeringTurn version.
+func TestSendNowLateInterruptionWorkerCannotRewriteClosedTurn(t *testing.T) {
+	f := newSendNowFixture(t)
+	events := attachSteeringBroker(t, f.state)
+
+	// The handler signals entry, then blocks on a channel it controls: the
+	// worker is provably inside its wait before EndSteeringTurn runs.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	releaseNow := func() {
+		if !released {
+			released = true
+			close(release)
+		}
+	}
+	t.Cleanup(releaseNow)
+	f.begin = func(OperationRef) {
+		close(entered)
+		<-release
+	}
+
+	accepted, err := f.state.SubmitSendNow(f.request("r1", "late worker cannot win"))
+	if err != nil {
+		t.Fatalf("SubmitSendNow = %v, want nil", err)
+	}
+	if accepted.Status != SteeringAccepted {
+		t.Fatalf("accepted receipt = %+v, want status accepted", accepted)
+	}
+
+	// The worker is in flight and parked inside its handler.
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the interruption worker never entered the handler")
+	}
+
+	// Close the turn while the worker is still blocked. From the code:
+	// EndSteeringTurn marks the remaining receipts undelivered and never
+	// waits on or clears the worker's done channel, so this returns
+	// immediately and the worker stays in flight.
+	f.state.EndSteeringTurn(f.turn, "the turn finished first")
+
+	undelivered := waitSteeringReceipt(t, events, func(r SteeringReceipt) bool {
+		return r.RequestID == "r1" && r.Status == SteeringUndelivered
+	})
+
+	// Let the handler return and join the worker for real: runSteeringInterrupt
+	// closes intr.done only after its last markSteeringInterruptState attempt,
+	// so once FinishSteeringOperation returns, the late-writer attempt has
+	// already happened.
+	releaseNow()
+	f.state.FinishSteeringOperation(f.ref, nil)
+
+	// No steering receipt event for r1 may be republished after the turn
+	// closed. A late republish was queued before this window opened and is
+	// still buffered on the subscriber, so it is observed here.
+	assertNoSteeringReceiptEvent(t, events, "r1", 250*time.Millisecond)
+
+	// And the live ledger receipt keeps the shape EndSteeringTurn gave it.
+	final := steeringLedgerReceipt(f.state, "r1")
+	if final.Status != SteeringUndelivered {
+		t.Fatalf("receipt after the late worker = %+v, want the EndSteeringTurn status undelivered", final)
+	}
+	if final.Version != undelivered.Version {
+		t.Fatalf("receipt version = %d, want the EndSteeringTurn version %d, unchanged by the late worker", final.Version, undelivered.Version)
+	}
+}
+
 // TestDrainAndPopProtectAcceptedRequestsDuringActiveTurn pins the drain fix:
 // while the turn is ACTIVE, entries an accepted request still owns are left
 // in the queue (so its ledger is not stranded) while ordinary entries drain

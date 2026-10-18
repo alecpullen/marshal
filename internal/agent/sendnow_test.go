@@ -1166,3 +1166,228 @@ func assertWirePairingBeforeSteering(t *testing.T, msgs []schema.ChatMessage, wa
 		}
 	}
 }
+
+// --- envelope actions[] batch operation scope -------------------------------
+
+// TestSendNowEnvelopeBatchCapturesOperation pins the tool operation scope of
+// the envelope actions[] BATCH dispatch: a multi-action batch runs its tool
+// calls under a live steering operation, and a Send now submitted DURING the
+// batch captures that operation, so the batch is interruptible and the text is
+// delivered at the next checkpoint inside the same turn.
+//
+// A batch dispatched on the bare turn context leaves its handlers without an
+// operation ref — the submission misses the running work entirely — and that
+// is the regression this test exists to catch: every other submission lands
+// during a single envelope tool call or a native batch, so those suites stay
+// green through the revert.
+func TestSendNowEnvelopeBatchCapturesOperation(t *testing.T) {
+	const steerText = "steer me mid-batch"
+	state := newTestState(t)
+	state.SetOperationInterrupt(nilSteeringHandler)
+
+	var (
+		mu             sync.Mutex
+		ran            = map[string]bool{}
+		withoutOp      []string
+		batchSubmitErr error
+	)
+	reg := registry.New()
+	for _, name := range []string{"pair.one", "pair.two", "pair.three", "pair.four"} {
+		name := name
+		if err := reg.Register(registry.Tool{
+			Name: name, Description: name, Risk: registry.RiskReadOnly,
+			Schema: json.RawMessage(`{"type":"object"}`),
+			Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+				ref, hasOp := session.OperationFromContext(ctx)
+				mu.Lock()
+				ran[name] = true
+				if !hasOp {
+					withoutOp = append(withoutOp, name)
+				}
+				mu.Unlock()
+				// The Send now is submitted from INSIDE the multi-action batch
+				// — the window no other submission in the suite covers.
+				if name == "pair.two" && hasOp {
+					_, batchSubmitErr = state.SubmitSendNow(session.SendNowRequest{
+						TurnID:    ref.TurnID,
+						RequestID: "req-batch-steer",
+						Text:      steerText,
+					})
+				}
+				return registry.ToolResult{Content: "ran " + name, Summary: name}, nil
+			},
+		}); err != nil {
+			t.Fatalf("Register %s: %v", name, err)
+		}
+	}
+	// The middle step is the only multi-action batch: pair.one and pair.four
+	// are single envelope tool calls, whose own dispatch scope is covered
+	// elsewhere.
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"first","action":{"type":"tool_call","tool":"pair.one","args":{}}}`,
+		`{"rationale":"batch","actions":[{"type":"tool_call","tool":"pair.two","args":{}},{"type":"tool_call","tool":"pair.three","args":{}}]}`,
+		`{"rationale":"follow","action":{"type":"tool_call","tool":"pair.four","args":{}}}`,
+		`{"rationale":"done","action":{"type":"final","content":"After the batch steering."}}`,
+	}}
+	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.EnableSteering = true
+	runner.MaxToolIterations = 6
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.RunTask(context.Background(), "run a batch, then steer it")
+		done <- err
+	}()
+	if err := awaitRunTask(t, done); err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+
+	if batchSubmitErr != nil {
+		t.Fatalf("SubmitSendNow from inside the batch: %v", batchSubmitErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !ran["pair.two"] {
+		t.Fatal("the envelope batch never ran pair.two")
+	}
+	if len(withoutOp) != 0 {
+		t.Fatalf("envelope batch tools ran without a steering operation: %v — the actions[] batch must dispatch under a tool operation scope", withoutOp)
+	}
+
+	// Same turn: the steering was captured during the batch and delivered at
+	// the checkpoint that follows it, before the same-turn follow-up action.
+	if len(p.Requests) != 4 {
+		t.Fatalf("provider saw %d requests, want 4 (tool step, batch step, post-steering step, final)", len(p.Requests))
+	}
+	wire := p.Requests[2].Messages
+	twoIdx := -1
+	for i, m := range wire {
+		if strings.Contains(m.Content, "ran pair.two") {
+			twoIdx = i
+		}
+	}
+	if twoIdx < 0 {
+		t.Fatalf("the batch step's result is missing from the post-steering request: %v", wire)
+	}
+	steerIdxs := steeringEnvelopeIndexes(wire, steerText)
+	if len(steerIdxs) != 1 {
+		t.Fatalf("wire carries the steering %d times, want exactly 1: %v", len(steerIdxs), wire)
+	}
+	if steerIdxs[0] < twoIdx {
+		t.Fatalf("steering (index %d) preceded the batch's result (index %d)", steerIdxs[0], twoIdx)
+	}
+	assertPrefixStable(t, p.Requests)
+	if got := state.TurnIndex(); got != 1 {
+		t.Fatalf("turn index = %d, want 1 — the batch steering must not open a replacement turn", got)
+	}
+	if n := countPersistedUserMessages(state, "run a batch, then steer it"); n != 1 {
+		t.Fatalf("goal persisted %d times, want exactly 1", n)
+	}
+	if n := countSteeringMessages(state); n != 1 {
+		t.Fatalf("persisted steering messages = %d, want exactly 1", n)
+	}
+}
+
+// --- runner-level settle-then-continue for envelope questions ---------------
+
+// TestSendNowCancelledQuestionSettlesAndTurnContinues pins the settle-then-
+// continue contract at the runner level: when an accepted Send now cancels an
+// envelope question.ask wait, the cancel surfaces as the distinct steering
+// cause (not a turn failure), the canceled prompt is settled rather than left
+// hanging, and the loop continues to the checkpoint, which delivers the
+// user's text in the SAME turn. A regression that fails the turn on the
+// canceled wait would surface here as a RunTask error and no delivered
+// steering.
+func TestSendNowCancelledQuestionSettlesAndTurnContinues(t *testing.T) {
+	state := newTestState(t)
+	state.SetOperationInterrupt(nilSteeringHandler)
+
+	const steerText = "never mind, just ship"
+	p := &agenttest.ScriptedProvider{Responses: []string{
+		`{"rationale":"confirm","action":{"type":"question.ask","questions":[{"question":"Ship it?"}]}}`,
+		`{"rationale":"done","action":{"type":"final","content":"Continued after the canceled question."}}`,
+	}}
+	runner := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	runner.EnableSteering = true
+	runner.MaxToolIterations = 5
+
+	type runResult struct {
+		task *Task
+		err  error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		task, err := runner.RunTask(context.Background(), "ask, then steer")
+		done <- runResult{task, err}
+	}()
+
+	// The question round-trip is running under its tool operation; accept the
+	// Send now against it. The interruption worker settles the prompt
+	// canonically and cancels the wait's context with the steering cause.
+	deadline := time.Now().Add(5 * time.Second)
+	for state.PendingQuestion() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the envelope question.ask never registered its prompt")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	turnID := state.SteeringSnapshot().TurnID
+	if turnID == "" {
+		t.Fatal("no eligible steering turn was open for the question wait")
+	}
+	submitNow(t, state, turnID, "req-question-steer", steerText)
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("RunTask err = %v, want the turn to continue past the canceled question", got.err)
+	}
+
+	// The turn was NOT failed, and the steering reached the model in the same
+	// turn: the post-cancel request carries the canceled-question note
+	// followed by exactly one steering envelope.
+	if len(p.Requests) != 2 {
+		t.Fatalf("provider saw %d requests, want 2 (question step, post-steering step)", len(p.Requests))
+	}
+	wire := p.Requests[1].Messages
+	noteIdx := -1
+	for i, m := range wire {
+		if strings.Contains(m.Content, "The questions were canceled") {
+			noteIdx = i
+		}
+	}
+	if noteIdx < 0 {
+		t.Fatalf("the wire never recorded that the question was canceled: %v", wire)
+	}
+	steerIdxs := steeringEnvelopeIndexes(wire, steerText)
+	if len(steerIdxs) != 1 {
+		t.Fatalf("wire carries the steering %d times, want exactly 1: %v", len(steerIdxs), wire)
+	}
+	if steerIdxs[0] < noteIdx {
+		t.Fatalf("steering (index %d) preceded the canceled-question note (index %d)", steerIdxs[0], noteIdx)
+	}
+	assertPrefixStable(t, p.Requests)
+
+	// The canceled prompt is settled: nothing left hanging for a late answer.
+	if state.PendingQuestion() != nil {
+		t.Fatal("the canceled question was left pending")
+	}
+	// Same turn, exactly once: one goal, one steering copy, one answer.
+	if got := state.TurnIndex(); got != 1 {
+		t.Fatalf("turn index = %d, want 1", got)
+	}
+	if n := countPersistedUserMessages(state, "ask, then steer"); n != 1 {
+		t.Fatalf("goal persisted %d times, want exactly 1", n)
+	}
+	if n := countSteeringMessages(state); n != 1 {
+		t.Fatalf("persisted steering messages = %d, want exactly 1", n)
+	}
+	if q := state.SteeringQueue(); len(q) != 0 {
+		t.Fatalf("queue not empty after delivery: %v", q)
+	}
+	// The loop-top finalize ran: the answer produced after the steering was
+	// delivered is what the turn published.
+	if got.task == nil || got.task.Status != TaskStatusCompleted ||
+		!strings.Contains(got.task.Summary, "Continued after the canceled question.") {
+		t.Fatalf("task status = %v summary = %q, want the post-steering answer published", got.task.Status, got.task.Summary)
+	}
+}

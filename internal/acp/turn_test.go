@@ -4751,6 +4751,77 @@ func TestACPSendNowStatusHasAuthoritativeTurnIdentity(t *testing.T) {
 			t.Fatalf("PromptTurn: %v", err)
 		}
 	})
+
+	t.Run("supported runner whose steering turn has not opened stays inactive", func(t *testing.T) {
+		// The interrupt handler is registered at the session level, so the
+		// snapshot already reports Supported before any steering turn opens.
+		// A supported runner that has not yet called BeginSteeringTurn must be
+		// reported as an inactive turn, not synthesised into an active one: the
+		// pre-fix SteeringStatus set Active:true with the slot's opaque id while
+		// keeping Supported:true, so a client following that snapshot sent
+		// delivery:"now" with the slot id and was refused by sendNow ("no
+		// active turn to steer"). If the supported branch of the
+		// `snap.Active || slot == nil || snap.Supported` guard is removed, this
+		// subtest fails on Active and on the slot identity; the now request
+		// below pins the other half of the contract, that no identity this
+		// status hands out is ever accepted for steering while the turn is
+		// closed.
+		h := newSendNowHarness(t, true) // handler installed: the runner is Supported
+		started := make(chan struct{})
+		h.run = RunnerFunc(func(ctx context.Context, prompt string) error {
+			close(started)
+			// Parks without calling BeginSteeringTurn: the ACP slot runs, but
+			// the session has no eligible steering turn yet.
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		done := h.start()
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the supported turn never started")
+		}
+
+		// Fixture check: the slot is live, and the session snapshot is
+		// inactive but supported — the exact shape the fix protects.
+		slot := h.manager.slotFor(h.session)
+		if slot == nil {
+			t.Fatal("no ACP slot was reserved for the running turn")
+		}
+		if snap := h.state.SteeringSnapshot(); snap.Active || !snap.Supported {
+			t.Fatalf("session snapshot = %+v, want inactive but supported", snap)
+		}
+
+		status := h.status()
+		if status.Active {
+			t.Fatalf("status = %+v, want an inactive turn while the steering turn has not opened", status)
+		}
+		if !status.Supported {
+			t.Fatalf("status = %+v, want Supported (the handler is registered)", status)
+		}
+		if status.TurnID == slot.id {
+			t.Fatalf("status turnId = %q, want anything but the slot's opaque identity (empty on this fresh fixture)", slot.id)
+		}
+
+		// Consistency: a delivery:"now" request built against this turn —
+		// whatever identity a buggy status reports, here the slot id — is
+		// refused exactly the way sendNow refuses a non-active turn. The
+		// client is never told to steer a turn that will be rejected.
+		_, err := h.steerNow(slot.id, "r-before-open", "stop")
+		if err == nil {
+			t.Fatal("a now request against a not-yet-open steering turn was accepted")
+		}
+		if !strings.Contains(err.Error(), "no active turn to steer") {
+			t.Fatalf("steerNow error = %v, want the no-active-turn refusal", err)
+		}
+		if q := h.state.SteeringQueue(); len(q) != 0 {
+			t.Fatalf("queue = %v, want empty after a rejected request", q)
+		}
+		h.cancel()
+		if err := h.awaitTurn(done); err != nil {
+			t.Fatalf("PromptTurn: %v", err)
+		}
+	})
 }
 
 // Acceptance precedes settled output, delivery happens only at a submitted

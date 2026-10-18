@@ -3947,3 +3947,148 @@ func TestSendNowEventsAreIndependentSnapshots(t *testing.T) {
 		t.Fatal("a subscriber's mutation of a snapshot reached session state")
 	}
 }
+
+func watchWorkResult(key, revision string) db.WorkResultRecord {
+	return db.WorkResultRecord{
+		TaskKey: key, SourceID: "src", RuntimeEpoch: "epoch-1",
+		Kind: "watch", Label: "build", Owner: "watch", State: "done",
+		StartedAt: time.Unix(500, 0), EndedAt: time.Unix(501, 0),
+		ResultRevision: revision,
+	}
+}
+
+// Concurrent result saves must not lose one another: the snapshot and the write
+// are one serialized sequence, so the last write is the newest view rather than
+// an older snapshot landing over a newer one.
+func TestWorkViewConcurrentSaveKeepsNewest(t *testing.T) {
+	d, sid := newStepTestDB(t)
+	s := persistedState(t, d, sid)
+
+	const n = 16
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := watchWorkResult(fmt.Sprintf("work:watch-%d", i), fmt.Sprintf("rev-%d", i))
+			if err := s.SaveWatchWorkResult(rec); err != nil {
+				t.Errorf("SaveWatchWorkResult %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	stored, err := d.LoadWorkView(sid)
+	if err != nil {
+		t.Fatalf("LoadWorkView: %v", err)
+	}
+	if len(stored.WatchResults) != n {
+		t.Fatalf("stored %d of %d work results: %+v", len(stored.WatchResults), n, stored.WatchResults)
+	}
+	if got := s.WorkView(); len(got.WatchResults) != n {
+		t.Fatalf("in-memory view has %d results, want %d", len(got.WatchResults), n)
+	}
+}
+
+// A failed acknowledgment write is not committed: the result's attention stays
+// visible, the error is returned, and a retry reports the failure again rather
+// than pretending the acknowledgment is durable.
+func TestWorkAckFailureDoesNotHideAttention(t *testing.T) {
+	d, sid := newStepTestDB(t)
+	s := persistedState(t, d, sid)
+	if err := s.SaveWatchWorkResult(watchWorkResult("work:watch", "rev-1")); err != nil {
+		t.Fatalf("SaveWatchWorkResult: %v", err)
+	}
+	// A closed database fails every write.
+	if err := d.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if err := s.AcknowledgeWork("work:watch", "rev-1"); err == nil {
+		t.Fatal("a failed acknowledgment write must be reported")
+	}
+	if view := s.WorkView(); len(view.Acknowledged) != 0 {
+		t.Fatalf("a failed save committed an acknowledgment: %+v", view.Acknowledged)
+	}
+	if err := s.RetryWorkViewSave(); err == nil {
+		t.Fatal("a retry against a broken store must still report the failure")
+	}
+}
+
+// An acknowledgment names a task key and its current terminal revision. A
+// re-run supersedes the result, so the old acknowledgment can no longer
+// acknowledge it, and a display job ID never validates as a task key.
+func TestWorkAckTargetsTerminalRevision(t *testing.T) {
+	d, sid := newStepTestDB(t)
+	s := persistedState(t, d, sid)
+	if err := s.SaveWatchWorkResult(watchWorkResult("work:watch", "rev-1")); err != nil {
+		t.Fatalf("SaveWatchWorkResult: %v", err)
+	}
+	if err := s.AcknowledgeWork("work:watch", "rev-1"); err != nil {
+		t.Fatalf("AcknowledgeWork(rev-1): %v", err)
+	}
+	if view := s.WorkView(); len(view.Acknowledged) != 1 || view.Acknowledged[0].ResultRevision != "rev-1" {
+		t.Fatalf("acknowledgment not stored: %+v", view.Acknowledged)
+	}
+
+	// A re-run supersedes the result with a newer terminal revision.
+	if err := s.SaveWatchWorkResult(watchWorkResult("work:watch", "rev-2")); err != nil {
+		t.Fatalf("SaveWatchWorkResult(rerun): %v", err)
+	}
+	if err := s.AcknowledgeWork("work:watch", "rev-1"); err == nil {
+		t.Fatal("a stale revision acknowledged a newer terminal result")
+	}
+	if err := s.AcknowledgeWork("work:watch", "rev-2"); err != nil {
+		t.Fatalf("AcknowledgeWork(rev-2): %v", err)
+	}
+	if view := s.WorkView(); len(view.Acknowledged) != 1 || view.Acknowledged[0].ResultRevision != "rev-2" {
+		t.Fatalf("acknowledgment = %+v, want rev-2", view.Acknowledged)
+	}
+	if err := s.AcknowledgeWork("job-1", "rev-2"); err == nil {
+		t.Fatal("a display job ID was accepted as a task key")
+	}
+}
+
+// Resuming copies the stored work view, and a view the session cannot read — an
+// unknown future version — is a diagnostic that is never overwritten.
+func TestWorkViewResumeCopiesAndDoesNotOverwriteFutureData(t *testing.T) {
+	d, sid := newStepTestDB(t)
+	first := persistedState(t, d, sid)
+	if err := first.SaveWatchWorkResult(watchWorkResult("work:watch", "rev-1")); err != nil {
+		t.Fatalf("SaveWatchWorkResult: %v", err)
+	}
+
+	// Resuming copies the stored view; mutating the copy leaves the session's.
+	resumed := persistedState(t, d, sid)
+	got := resumed.WorkView()
+	if len(got.WatchResults) != 1 || got.WatchResults[0].ResultRevision != "rev-1" {
+		t.Fatalf("resumed view = %+v, want the stored result", got)
+	}
+	got.WatchResults[0].Label = "mutated"
+	if again := resumed.WorkView(); again.WatchResults[0].Label != "build" {
+		t.Fatalf("WorkView returned a view the caller could mutate: %+v", again.WatchResults[0])
+	}
+
+	// A future stored version is a diagnostic: it is never overwritten.
+	if _, err := d.SQLDB().Exec(
+		`INSERT INTO session_state (session_id, key, value) VALUES (?, 'work_view_v1', ?)
+		 ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value`,
+		sid, `{"version":2,"watchResults":[{"taskKey":"future"}]}`); err != nil {
+		t.Fatalf("seed future view: %v", err)
+	}
+	future := persistedState(t, d, sid)
+	if view := future.WorkView(); view.Version != 1 || len(view.WatchResults) != 0 {
+		t.Fatalf("a future stored view loaded: %+v", view)
+	}
+	if err := future.SaveWatchWorkResult(watchWorkResult("work:watch", "rev-1")); err == nil {
+		t.Fatal("a save overwrote an unreadable future work view")
+	}
+	var raw string
+	if err := d.SQLDB().QueryRow(
+		`SELECT value FROM session_state WHERE session_id=? AND key='work_view_v1'`, sid).Scan(&raw); err != nil {
+		t.Fatalf("read stored view: %v", err)
+	}
+	if !strings.Contains(raw, `"version":2`) {
+		t.Fatalf("stored future view was overwritten: %q", raw)
+	}
+}

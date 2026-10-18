@@ -415,7 +415,36 @@ type State struct {
 	// announces nothing. It grows with the session's completions, like
 	// jobExits itself. Guarded by jobExitSaveMu.
 	jobExitsPublished map[string]bool
-	turnUsage         turnUsage
+
+	// workView is the session's versioned work-view index: the settled watch
+	// results and the acknowledgments that hide their attention. The zero
+	// value is the empty version-1 view; a stored view is copied in at
+	// startup. Guarded by mu for reads and mutations; the save sequence takes
+	// workViewSaveMu and snapshots it under mu. See jobexit.go.
+	workView db.WorkViewRecord
+	// workViewSaveMu serializes the work-view snapshot-and-write sequence, for
+	// the same reason jobExitSaveMu does for job exits: the write spans a
+	// database round trip that must not be held under mu, and two saves that
+	// interleaved a snapshot with a write could store an older view over a
+	// newer one. Lock order is workViewSaveMu → mu, never the reverse.
+	workViewSaveMu sync.Mutex
+	// workViewDirty marks a work view that changed in memory but could not be
+	// written durably, so a later caller can retry it rather than leaving a
+	// result the next resume cannot restore. Guarded by workViewSaveMu.
+	workViewDirty bool
+	// workViewPendingAcks holds acknowledgments validated against the live view
+	// but not yet committed durably. A failed save leaves the acknowledgment
+	// here — its result's attention stays visible — and the retry re-applies it
+	// to the newest snapshot. Guarded by workViewSaveMu.
+	workViewPendingAcks []db.WorkAcknowledgment
+	// workViewLoadErr records that the stored view could not be loaded (an
+	// unknown stored version or corrupt JSON). It is a diagnostic: the stored
+	// value is left exactly as it is and never overwritten automatically, so
+	// every further save refuses rather than clobbering data the session cannot
+	// understand. Guarded by workViewSaveMu.
+	workViewLoadErr error
+
+	turnUsage turnUsage
 	// turnQuota is the latest subscription quota reading from an
 	// OAuth-backed provider; nil when the active provider reports none.
 	turnQuota *schema.QuotaInfo
@@ -893,6 +922,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		nextStepSeq:            1,
 		workspace:              Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
 		subagentMaxConcurrency: defaultSubagentMaxConcurrency,
+		workView:               db.WorkViewRecord{Version: 1},
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -905,6 +935,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 	s.Config.Agent.ApprovalMode = s.configuredMode
 	if s.persistenceEnabled() {
 		s.loadFromDB()
+		s.loadWorkView()
 		s.restoreWorkspace()
 		s.restoreTitle()
 	}

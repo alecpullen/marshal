@@ -219,9 +219,14 @@ func (m Model) renderInputArea() string {
 		// that swallows nothing yet appears typable.
 	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
 		switch {
-		case isModeElevationApproval(tc):
-			// The mode-elevation dock picker owns this decision; rendering
-			// the approve/deny panel here too showed both UIs at once.
+		case tc.Access != nil:
+			// A typed access request is presented by the accesspanel, which
+			// owns the decision. When another panel holds the dock the request
+			// is queued: disclose it without rendering a second approve/deny
+			// form, and leave the main draft untouched.
+			if m.dock.IsOpen() && !m.accessPanelOwnsDock() {
+				rows = append(rows, mutedStyle().Render(accessWaitingRow))
+			}
 		case m.editingCommand:
 			rows = append(rows, m.gutteredInput())
 		case m.approvalModel != nil:

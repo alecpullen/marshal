@@ -27,6 +27,7 @@ import (
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/app/tui/changedfiles"
@@ -220,20 +221,25 @@ type Model struct {
 	// trustRefresh, when set, advances the permanent-trust config hash after
 	// an interactive project-config save succeeds: the user approved the new
 	// config from a trusted session, so the next launch must not re-prompt.
-	trustRefresh   func(workingDir string)
-	memoryDB       *db.DB
-	memoryProject  int64
-	homeDir        string
-	dataDir        string
-	workDir        string
-	skillIndex     *skills.Index
-	cmdRegistry    *commands.Registry
-	agentCancel    context.CancelFunc
-	approvalMode   policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
-	approvalModel  *approvalModel
-	questionModel  *questionModel
-	skillGateModel *skillGateModel
-	sudoAuthModel  *sudoAuthModel
+	trustRefresh  func(workingDir string)
+	memoryDB      *db.DB
+	memoryProject int64
+	homeDir       string
+	dataDir       string
+	workDir       string
+	skillIndex    *skills.Index
+	cmdRegistry   *commands.Registry
+	agentCancel   context.CancelFunc
+	approvalMode  policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
+	// syncedAccessMode is the session mode the last reconciliation adopted.
+	// The sync is edge-triggered on it: a mode the model already reflects is
+	// not re-asserted over a value another path set, while a mode the session
+	// changed underneath the model (a grant, a reload) still propagates.
+	syncedAccessMode string
+	approvalModel    *approvalModel
+	questionModel    *questionModel
+	skillGateModel   *skillGateModel
+	sudoAuthModel    *sudoAuthModel
 
 	// F18: editor completions. cmdPopup is fed by the commands registry
 	// (triggered by `/` at position 0) and filePopup is fed by the repo
@@ -476,6 +482,17 @@ type Model struct {
 	// The picker itself is hosted in m.dock; pickerCommand records which
 	// command opened it so PickedMsg can dispatch correctly.
 	pickerCommand string
+	// accessRequest and resolveAccess are the runtime-facing access seam
+	// (WithAccessRequests). The TUI only presents a request and submits the
+	// user's choice; the runtime validates and applies it. Both nil means no
+	// resolver is attached, which fails closed.
+	accessRequest func() (session.AccessRequest, bool)
+	resolveAccess func(session.AccessChoice) (session.AccessResult, error)
+	// sessionModeSetter is the runtime-facing manual mode seam
+	// (WithSessionModeSetter). When set, manual mode changes go through it so
+	// the session override and the runner policy move together; nil falls back
+	// to the structural runner setters.
+	sessionModeSetter func(string) error
 	// resumeSession is non-empty when the user asked to resume a different
 	// session; the app.Run program runner reads it from the final model.
 	resumeSession string
@@ -627,6 +644,28 @@ func WithRunnerSource(fn func() (context.Context, AgentRunner)) Option {
 // report that a new session is unavailable.
 func WithSessionSwapper(swapper SessionSwapper) Option {
 	return func(m *Model) { m.sessionSwapper = swapper }
+}
+
+// WithAccessRequests wires the runtime-facing access seam: get returns the
+// request waiting for a decision, resolve validates and settles one. The TUI
+// presents the request and submits the choice; it never derives policy or
+// mutates session state itself. Omitting either callback fails closed — a
+// pending request is canceled rather than shown with no way to answer it.
+func WithAccessRequests(
+	get func() (session.AccessRequest, bool),
+	resolve func(session.AccessChoice) (session.AccessResult, error),
+) Option {
+	return func(m *Model) {
+		m.accessRequest = get
+		m.resolveAccess = resolve
+	}
+}
+
+// WithSessionModeSetter wires the runtime-facing manual mode seam. When set,
+// a manual mode change goes through the runtime so the session override and
+// the runner's policy move together; nil keeps the structural runner setters.
+func WithSessionModeSetter(set func(string) error) Option {
+	return func(m *Model) { m.sessionModeSetter = set }
 }
 
 // WithOpenConnectOnStart opens the connect panel as the TUI starts. Used
@@ -956,12 +995,18 @@ func relPath(workingDir, path string) string {
 // runtime reload).
 func (m *Model) applyNewConfig(cfg config.Config) {
 	prevTranscript := m.state.Config.TUI.Transcript
-	m.state.Config = cfg
+	// Rebase rather than assign: the session owns the mode override, so an
+	// unrelated reload must not silently revert a manual selection or an
+	// approved grant. RebaseSessionConfig installs the new config with the
+	// remaining override applied and preserves the system-access flag.
+	m.state.RebaseSessionConfig(cfg)
 	if cfg.TUI.Transcript != prevTranscript {
 		// An edit to [tui.transcript] takes effect in the running session.
 		m.applyTranscriptConfig()
 	}
-	m.approvalMode = policy.ParseApprovalMode(cfg.Agent.ApprovalMode)
+	// Read the effective mode back from the session: it may differ from the
+	// configured value when an override survived the rebase.
+	m.approvalMode = policy.ParseApprovalMode(m.state.AccessState().Mode)
 	m.setReg = nil
 	m.setPopup = nil
 	m.lastInputForPopups = ""
@@ -1417,15 +1462,19 @@ func New(state *session.State, opts ...Option) Model {
 		// policy engine from this same value, so hardcoding here made the
 		// status line claim "default" while the engine was auto-approving
 		// every edit.
-		approvalMode:   policy.ParseApprovalMode(state.Config.Agent.ApprovalMode),
-		ctx:            context.Background(),
-		viewport:       viewport.New(),
-		spinner:        NewSpinner(),
-		now:            time.Now,
-		viewportFollow: true,
-		density:        parseDensity(state.Config.TUI.Transcript.Density),
-		foldTasks:      state.Config.TUI.Transcript.FoldFinishedTasks,
-		discovered:     map[string][]schema.ModelInfo{},
+		approvalMode: policy.ParseApprovalMode(state.Config.Agent.ApprovalMode),
+		// Seed the reconciliation baseline from the same value, so the first
+		// reconcile is a no-op rather than re-asserting the session mode over
+		// whatever the model already shows.
+		syncedAccessMode: state.Config.Agent.ApprovalMode,
+		ctx:              context.Background(),
+		viewport:         viewport.New(),
+		spinner:          NewSpinner(),
+		now:              time.Now,
+		viewportFollow:   true,
+		density:          parseDensity(state.Config.TUI.Transcript.Density),
+		foldTasks:        state.Config.TUI.Transcript.FoldFinishedTasks,
+		discovered:       map[string][]schema.ModelInfo{},
 	}
 	for _, opt := range opts {
 		opt(&m)
@@ -1801,7 +1850,48 @@ func (m Model) ctrlCArmed() ctrlCAction {
 	return m.ctrlCArmedFor
 }
 
+// Update is the Bubble Tea entry point. It reconciles the access panel around
+// the existing message routing rather than inside it: reconciliation before
+// the update covers the runtime early returns that would otherwise skip it,
+// and reconciliation after covers every dock-close branch without patching
+// each one. A value receiver cannot defer, so the two calls are explicit.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	m.reconcileAccess()
+	// Below the supported terminal minimum the size gate hides the frame, so
+	// no approval may be accepted from an invisible panel. Ctrl+C still passes
+	// through: the application's interrupt handling must keep working.
+	hidden := m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight
+	if hidden {
+		if _, pending := m.state.AccessRequest(); pending {
+			switch key := msg.(type) {
+			case tea.KeyPressMsg:
+				if key.String() != "ctrl+c" {
+					return m, nil
+				}
+			case tea.PasteMsg, accesspanel.ChoiceMsg:
+				return m, nil
+			}
+		}
+	}
+	if choice, ok := msg.(accesspanel.ChoiceMsg); ok {
+		m.handleAccessChoice(choice.Choice)
+		m.reconcileAccess()
+		return m, nil
+	}
+	updated, cmd := m.update(msg)
+	switch next := updated.(type) {
+	case Model:
+		next.reconcileAccess()
+		return next, cmd
+	case *Model:
+		next.reconcileAccess()
+		return next, cmd
+	default:
+		return updated, cmd
+	}
+}
+
+func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Ctrl+C never stops a turn or quits on a single press: the first press
 	// arms (shown on the status line), a second within ctrlCWindow fires.
 	// Checked before any overlay routing so it can never be captured by a
@@ -2243,36 +2333,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m.beginResume(pm.Value)
-		case cmdName == "mode-elevation":
-			chosen := pm.Value
-			wantsSystem := modeRequestWantsSystem(m.state.PendingApproval())
-			if tc := m.state.PendingApproval(); tc != nil {
-				tc.Respond(session.UserApprovalDecision{Approved: true, Edited: chosen})
-			}
-			m.state.SetPendingApproval(nil)
-			m.setMode(chosen)
-			if wantsSystem {
-				m.state.SetSystemAccess(true)
-			}
-			newCfg := m.state.Config
-			newCfg.Agent.ApprovalMode = chosen
-			saveErr, reloadErr := m.persistAndReload(newCfg)
-			if saveErr != nil {
-				m.state.AddMessage(session.RoleSystem,
-					fmt.Sprintf("✗ mode elevation saved in session, but config save failed: %v", saveErr),
-					session.ContentTypePlain)
-			} else if reloadErr != nil {
-				m.state.AddMessage(session.RoleSystem,
-					fmt.Sprintf("✗ mode elevation saved, but live reload failed: %v", reloadErr),
-					session.ContentTypePlain)
-			}
-			msg, ok := modeSwitchMessage[chosen]
-			if !ok {
-				msg = fmt.Sprintf("Switched to %s mode.", chosen)
-			}
-			m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
-			m.refreshViewport()
-			return m, nil
 		default:
 			return m.dispatchCommand("/" + cmdName + " " + pm.Value)
 		}
@@ -2282,15 +2342,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case *agents.Panel, connect.Panel, *castlist.Panel:
 			return m, m.dock.Update(pm)
 		}
-		cmdName := m.pickerCommand
 		m.dock.CloseNow()
 		m.pickerCommand = ""
-		if cmdName == "mode-elevation" {
-			if tc := m.state.PendingApproval(); tc != nil {
-				tc.Respond(session.UserApprovalDecision{Approved: false})
-			}
-			m.state.SetPendingApproval(nil)
-		}
 		m.refreshViewport()
 		return m, nil
 	case gatepanel.AnswerMsg:
@@ -2694,27 +2747,191 @@ func (m *Model) pendingApprovalDisplay() (tc *session.PendingToolCall, label str
 	}, label
 }
 
-// isModeElevationApproval reports whether a pending approval is a mode
-// elevation request: its decision UI is the dock picker, so the inline
-// approval chooser/panel must not render for it.
+// isModeElevationApproval reports whether a pending approval is an ordinary
+// forced prompt that must not offer the always/session options: a mode.request
+// call, or a file.write carrying the legacy "mode-elevation:" reason prefix.
+//
+// It classifies the prompt, not dock ownership. A typed access request is
+// presented by the accesspanel through reconciliation and never reaches the
+// generic approval model at all.
 func isModeElevationApproval(tc *session.PendingToolCall) bool {
 	return tc.Name == "mode.request" || strings.HasPrefix(tc.Reason, "mode-elevation:")
 }
 
-// modeRequestWantsSystem reports whether a pending mode.request carried
-// `system: true`. The flag is read from the pending call's own args, never
-// from engine state, so the disclosure and the grant cannot drift apart.
-func modeRequestWantsSystem(tc *session.PendingToolCall) bool {
-	if tc == nil || tc.Name != "mode.request" {
-		return false
+// accessWaitingRow is the muted disclosure shown while a typed access request
+// is queued behind another dock panel. The panel itself is the only decision
+// UI; this row exists so the request is never invisible, and it deliberately
+// renders no approve/deny form of its own.
+const accessWaitingRow = "Access request waiting — close the current panel to review."
+
+// accessPanelOwnsDock reports whether the dock's current panel is the access
+// panel. When it is, that panel is the decision UI and the input area must not
+// also disclose a queued request.
+func (m Model) accessPanelOwnsDock() bool {
+	_, ok := m.dock.Panel().(*accesspanel.Panel)
+	return ok
+}
+
+// accessRequestSnapshot reads the pending access request through the runtime
+// seam. It reports nothing when either callback is missing: without a resolver
+// the TUI cannot present a request it has no way to answer.
+func (m *Model) accessRequestSnapshot() (session.AccessRequest, bool) {
+	if m.accessRequest == nil || m.resolveAccess == nil {
+		return session.AccessRequest{}, false
 	}
-	var args struct {
-		System bool `json:"system"`
+	return m.accessRequest()
+}
+
+// accessOutcomeNote renders one concise line naming the outcome and the actual
+// effective state, so the transcript never claims a capability the session
+// does not hold.
+func accessOutcomeNote(result session.AccessResult) string {
+	state := fmt.Sprintf("mode %s, system access %t", result.Effective.Mode, result.Effective.System)
+	switch result.Status {
+	case session.AccessGranted:
+		return fmt.Sprintf("Access granted — %s.", state)
+	case session.AccessDenied:
+		return fmt.Sprintf("Access denied — %s.", state)
+	case session.AccessAvailable:
+		return fmt.Sprintf("Access already available — %s.", state)
+	case session.AccessCanceled:
+		return fmt.Sprintf("Access request canceled — %s.", state)
+	default:
+		msg := result.Message
+		if msg == "" {
+			msg = "the request could not be applied"
+		}
+		return fmt.Sprintf("Access request failed: %s — %s.", msg, state)
 	}
-	if err := json.Unmarshal([]byte(tc.Args), &args); err != nil {
-		return false
+}
+
+// reconcileAccess brings the dock's access panel in line with the runtime's
+// pending request. It runs on every update, so a request surfaces on the next
+// runtime tick without the user typing anything, and a request that was
+// canceled, replaced or satisfied stops being shown.
+//
+// It is presentation only. It never applies a grant; the one session call it
+// makes is a fail-closed cancellation when no resolver is attached, because a
+// request nothing can answer must not block the tool forever.
+func (m *Model) reconcileAccess() {
+	if m.state == nil {
+		return
 	}
-	return args.System
+	// The displayed permission state is synchronized here rather than in the
+	// message handlers, so a grant the runtime applied (or a reload that
+	// preserved an override) is reflected on the next update. The sync is
+	// edge-triggered on the session's own mode: re-asserting an unchanged
+	// value would clobber a mode another path just set (cycleMode reads
+	// m.approvalMode to compute the next rung).
+	effective := m.state.AccessState()
+	modeChanged := m.syncedAccessMode != effective.Mode
+	if modeChanged {
+		m.syncedAccessMode = effective.Mode
+		m.approvalMode = policy.ParseApprovalMode(effective.Mode)
+	}
+
+	snapshot, pending := m.accessRequestSnapshot()
+	if !pending {
+		// Fail closed: a typed request is waiting but this model has no way to
+		// present or answer it. Settle it as a failure so the tool unblocks
+		// rather than waiting on a panel that can never submit anything.
+		if typed, ok := m.state.AccessRequest(); ok {
+			m.state.CancelAccess(typed.RequestID, session.AccessFailed, "Access resolver unavailable")
+		}
+	}
+	// A snapshot from another conversation must not open here: the session was
+	// replaced underneath this model.
+	if pending && snapshot.SessionID != m.state.SessionID() {
+		pending = false
+	}
+
+	current, isAccessPanel := m.dock.Panel().(*accesspanel.Panel)
+	switch {
+	case isAccessPanel && !pending:
+		// The request this panel was showing is gone — settled, canceled or
+		// replaced. Close only that panel.
+		m.dock.CloseNow()
+		m.refreshViewport()
+	case isAccessPanel:
+		shown := current.Request()
+		changed := shown.RequestID != snapshot.RequestID ||
+			shown.SessionID != snapshot.SessionID ||
+			shown.Current != snapshot.Current ||
+			shown.MissingEditing != snapshot.MissingEditing ||
+			shown.MissingSystem != snapshot.MissingSystem
+		if changed {
+			// A different request owns the slot, or the permission tuple moved
+			// under the same request: re-present from scratch so Deny is
+			// selected again for the state the user can actually see.
+			m.dock.Open(accesspanel.New(snapshot))
+			m.refreshViewport()
+		}
+		// Otherwise the snapshot is unchanged: keep the same panel pointer so
+		// selection and scroll survive ordinary rerenders and resizes.
+	case pending && !m.dock.IsOpen():
+		// The dock is free. Below the supported terminal minimum the size gate
+		// hides the frame, so opening here would present an invisible approval.
+		if m.rawWidth >= minTerminalWidth && m.rawHeight >= minTerminalHeight {
+			m.dock.Open(accesspanel.New(snapshot))
+			m.refreshViewport()
+		}
+	}
+	// A pending request queued behind another panel is disclosed by the input
+	// area and the status line; that panel is deliberately left open.
+	if modeChanged {
+		m.refreshViewport()
+	}
+}
+
+// handleAccessChoice submits the user's decision for the access panel that is
+// actually open. It is deliberately narrow: the choice must name the panel's
+// exact request, session and presented tuple, so a stale message from an
+// earlier request can never answer a newer one.
+func (m *Model) handleAccessChoice(choice session.AccessChoice) {
+	panel, ok := m.dock.Panel().(*accesspanel.Panel)
+	if !ok {
+		return
+	}
+	shown := panel.Request()
+	if choice.RequestID != shown.RequestID ||
+		choice.SessionID != shown.SessionID ||
+		choice.Current != shown.Current {
+		// Stale or foreign: leave whatever is on screen alone.
+		return
+	}
+	if m.resolveAccess == nil {
+		m.state.CancelAccess(shown.RequestID, session.AccessFailed, "Access resolver unavailable")
+		return
+	}
+	// The resolver is a bounded, memory-only operation, so it runs inline: the
+	// panel must not close before the runtime has committed the decision.
+	result, err := m.resolveAccess(choice)
+	if err != nil {
+		m.dock.CloseNow()
+		m.state.AddMessage(session.RoleSystem,
+			fmt.Sprintf("Access request failed: %v", err), session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	if result.Status == session.AccessRefresh {
+		// The permission tuple moved while the user was deciding. The request
+		// stays pending; re-present the fresh state with Deny selected.
+		if fresh, pending := m.accessRequestSnapshot(); pending {
+			m.dock.Open(accesspanel.New(fresh))
+		} else {
+			m.dock.CloseNow()
+		}
+		m.refreshViewport()
+		return
+	}
+	// Final outcome: close only the panel that asked, then report the state the
+	// runtime actually committed.
+	m.dock.CloseNow()
+	if result.SessionID == m.state.SessionID() {
+		m.approvalMode = policy.ApprovalMode(result.Effective.Mode)
+	}
+	m.state.AddMessage(session.RoleSystem, accessOutcomeNote(result), session.ContentTypePlain)
+	m.refreshViewport()
 }
 
 // handleApproval routes messages to the inline approval chooser (or the
@@ -2728,30 +2945,21 @@ func modeRequestWantsSystem(tc *session.PendingToolCall) bool {
 // The decision is always Responded on the original tc; a shallow display copy
 // with a prefixed reason is shown so the dialog names who is asking.
 func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.PendingToolCall, source string) (tea.Model, tea.Cmd) {
-	// mode.request: show the editing-variant picker instead of the normal
-	// approval dialog. The picker opens via the dock; while the dock is
-	// open, keypresses are routed to the picker and non-key messages
-	// return early here. On PickedMsg the main Update switch handles the
-	// response and mode change. This path is parent-only: child runners
-	// never request mode elevation, so a child that somehow pends a
-	// mode.request falls through to the normal chooser.
-	if source == "" && isModeElevationApproval(tc) {
-		if m.dock.IsOpen() {
-			// Picker already open; don't interfere.
+	// A typed access request is presented by the accesspanel through
+	// reconciliation, never here: it must not create a generic approval model
+	// or consume runtime events. A raw untyped mode.request (no Access
+	// metadata) fails closed with an ordinary denial, because nothing has
+	// validated or applied what it asks for.
+	if source == "" && tc.Name == "mode.request" && tc.Access == nil {
+		if k, ok := msg.(tea.KeyPressMsg); ok && k.String() == "enter" {
+			tc.Respond(session.UserApprovalDecision{Approved: false})
+			m.state.SetPendingApproval(nil)
+			m.state.AddMessage(session.RoleSystem,
+				"mode.request was not resolved by the runtime; no capability was granted.",
+				session.ContentTypePlain)
+			m.refreshViewport()
 			return m, nil
 		}
-		items := []picker.Item{
-			{Label: "Edit", Detail: "plan + confirm each", Value: "edit"},
-			{Label: "Copilot", Detail: "auto-approve, may ask", Value: "copilot"},
-			{Label: "Auto", Detail: "fully autonomous", Value: "auto"},
-		}
-		subtitle := "choose an editing mode"
-		if modeRequestWantsSystem(tc) {
-			subtitle = "choose an editing mode — the agent requests system access " +
-				"(full filesystem read/write). Approving grants it for this session."
-		}
-		m.openPicker("mode-elevation", "Elevate to editing mode", subtitle, items, "")
-		m.refreshViewport()
 		return m, nil
 	}
 
@@ -3121,8 +3329,14 @@ func (m Model) inputChromeRows() int {
 		// disagrees with what is on screen.
 		var content string
 		switch {
-		case isModeElevationApproval(tc):
-			// The dock picker owns the decision; nothing renders here.
+		case tc.Access != nil:
+			// A typed access request is presented by the accesspanel, which
+			// owns the decision. When another panel holds the dock the request
+			// is queued: disclose it without rendering a second approve/deny
+			// form, and leave the main draft untouched.
+			if m.dock.IsOpen() && !m.accessPanelOwnsDock() {
+				content = mutedStyle().Render(accessWaitingRow)
+			}
 		case m.editingCommand:
 			// The ❯ prompt is rendered inside the textarea by SetPromptFunc,
 			// so m.input.View() already includes it — do not prepend it again.
@@ -5012,17 +5226,43 @@ func (m *Model) openSessionPicker(prefilter string) {
 // persisted to disk here), but the in-memory session config is kept in
 // sync so the /settings browser — built from m.state.Config — shows the
 // current mode instead of a stale one.
+//
+// When the runtime supplies a mode setter, the change goes through it: the
+// runtime owns the session override and the runner's policy, so a manual
+// selection and an approved grant move the same state. Without one, the
+// structural runner setters are passed to the session as the infallible
+// callback, which keeps the session's own record authoritative either way.
 func (m *Model) setMode(mode string) {
-	class := "edit"
-	if mode == "plan" || mode == "default" {
-		class = "question"
-	}
-	if m.runner != nil {
-		m.runner.SetForceClass(class)
-		m.runner.SetApprovalMode(policy.ApprovalMode(mode))
+	if m.sessionModeSetter != nil {
+		if err := m.sessionModeSetter(mode); err != nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("Could not switch to %s mode: %v", mode, err),
+				session.ContentTypePlain)
+			m.refreshViewport()
+			return
+		}
+	} else {
+		class := "edit"
+		if mode == "plan" || mode == "default" {
+			class = "question"
+		}
+		apply := func() {}
+		if m.runner != nil {
+			runner := m.runner
+			apply = func() {
+				runner.SetForceClass(class)
+				runner.SetApprovalMode(policy.ApprovalMode(mode))
+			}
+		}
+		if err := m.state.SetSessionMode(mode, apply); err != nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("Could not switch to %s mode: %v", mode, err),
+				session.ContentTypePlain)
+			m.refreshViewport()
+			return
+		}
 	}
 	m.approvalMode = policy.ApprovalMode(mode)
-	m.state.Config.Agent.ApprovalMode = mode
 	// Pair Plan mode with the writing-plans skill so inline plans follow
 	// the house format and chain into marshal-executing-plans. Living here
 	// (not in the /plan handler) keeps every entry point consistent:

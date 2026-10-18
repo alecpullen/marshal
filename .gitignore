@@ -30,7 +30,11 @@ coverage.txt
 # Local project state and database; the project config is machine-local
 # and is no longer committed (providers/presets live in the user-global
 # config). See .marshal/.gitignore for the rest of .marshal/'s contents.
-.marshal/
+# This repo's hand-authored project skills are the exception: they are
+# tracked so they are versioned and reviewed (see marshal-skill-authoring).
+.marshal/*
+!.marshal/.gitignore
+!.marshal/skills/
 api.fish
 
 # Relocated Go home (module cache, build cache, telemetry)

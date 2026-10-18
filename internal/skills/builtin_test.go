@@ -126,6 +126,7 @@ func TestBuiltInSkillsAllLoad(t *testing.T) {
 		"systematic-debugging",
 		"test-driven-development",
 		"using-skills",
+		"using-worktrees",
 		"verification-before-completion",
 		"work-decomposition",
 	}
@@ -172,7 +173,7 @@ func TestBuiltInSkillsAreRepoNeutral(t *testing.T) {
 	}
 	for _, sk := range idx.List() {
 		lower := strings.ToLower(sk.Body)
-		for _, banned := range []string{"cmd/marshal", "cgo_enabled=1 go", "this codebase uses"} {
+		for _, banned := range []string{"cmd/marshal", "cgo_enabled=1 go", "this codebase uses", "internal/app", "internal/agent", "web/bridge"} {
 			if strings.Contains(lower, banned) {
 				t.Errorf("built-in %q hard-codes repo-specific text %q", sk.Name, banned)
 			}

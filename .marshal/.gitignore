@@ -6,4 +6,6 @@ pipeline/
 worktrees/
 plugins/
 plugins-lock.json
-skills/
+# skills/ is tracked in this repo (hand-authored project skills). Add a
+# skill installed at project scope from the /skills panel here by path to
+# keep it machine-local.

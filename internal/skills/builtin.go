@@ -38,6 +38,9 @@ var usingSkillsSkill []byte
 //go:embed builtin/postmortem.md
 var postmortemSkill []byte
 
+//go:embed builtin/using-worktrees.md
+var usingWorktreesSkill []byte
+
 // loadBuiltIns registers the skills embedded in the binary. They load before
 // the global and project skill directories (see LoadSkills), and the index is
 // keyed by name — so a user-installed skill of the same name overrides the
@@ -55,6 +58,7 @@ func loadBuiltIns(idx *Index) error {
 		"verification-before-completion": verificationBeforeCompletionSkill,
 		"using-skills":                   usingSkillsSkill,
 		"postmortem":                     postmortemSkill,
+		"using-worktrees":                usingWorktreesSkill,
 	} {
 		skill, err := Parse(string(raw))
 		if err != nil {

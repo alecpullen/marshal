@@ -1132,6 +1132,103 @@ func TestSetModeUnknownSession(t *testing.T) {
 	}
 }
 
+func TestSetEffortRequiresSession(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.SetEffort(context.Background(), json.RawMessage(`{"effort":"high"}`))
+	if err == nil || !strings.Contains(err.Error(), "requires sessionId") {
+		t.Fatalf("err = %v, want requires sessionId error", err)
+	}
+}
+
+func TestSetEffortUnknownSession(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) { return nil, false },
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.SetEffort(context.Background(), json.RawMessage(`{"sessionId":"nope","effort":"low"}`))
+	if err == nil || !strings.Contains(err.Error(), "unknown session") {
+		t.Fatalf("err = %v, want unknown session error", err)
+	}
+}
+
+func TestSetEffortInvalidLevelIsInvalidParams(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				SetEffort: func(level string) (string, error) {
+					return "", fmt.Errorf("effort %q is not supported", level)
+				},
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	_, err := manager.SetEffort(context.Background(), json.RawMessage(`{"sessionId":"sess_m","effort":"max"}`))
+	if err == nil {
+		t.Fatal("want error for unsupported level")
+	}
+	if got := codeFor(err); got != invalidParams {
+		t.Fatalf("expected invalidParams (%d), got code=%d err=%v", invalidParams, got, err)
+	}
+}
+
+func TestSetEffortReturnsAppliesFrom(t *testing.T) {
+	var applied string
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{
+				SessionID: sessionID,
+				SetEffort: func(level string) (string, error) {
+					applied = level
+					return session.EffortAppliesNextTurn, nil
+				},
+			}, true
+		},
+		Notify: func(method string, params any) error { return nil },
+	})
+	got, err := manager.SetEffort(context.Background(), json.RawMessage(`{"sessionId":"sess_m","effort":"low"}`))
+	if err != nil {
+		t.Fatalf("SetEffort() error = %v", err)
+	}
+	result, ok := got.(map[string]any)
+	if !ok || result["effort"] != "low" || result["appliesFrom"] != session.EffortAppliesNextTurn {
+		t.Fatalf("result = %#v, want {effort: low, appliesFrom: next_turn}", got)
+	}
+	if applied != "low" {
+		t.Fatalf("applied effort = %q, want low", applied)
+	}
+}
+
+func TestEffortChangedUpdateShape(t *testing.T) {
+	ev := pubsub.Event[session.Event]{
+		Type: session.EventEffortChanged,
+		Payload: session.Event{Effort: &session.EffortChange{
+			Effective:   "high",
+			Pending:     "low",
+			AppliesFrom: session.EffortAppliesNextStep,
+		}},
+	}
+	u, ok := eventToSessionUpdate(ev, &turnProjection{})
+	if !ok {
+		t.Fatal("want an update for an effort change")
+	}
+	if u["kind"] != "effort_changed" || u["effort"] != "high" || u["pending"] != "low" || u["appliesFrom"] != session.EffortAppliesNextStep {
+		t.Fatalf("update = %#v", u)
+	}
+}
+
+func TestEffortChangedNilPayloadIsDropped(t *testing.T) {
+	ev := pubsub.Event[session.Event]{Type: session.EventEffortChanged, Payload: session.Event{}}
+	if u, ok := eventToSessionUpdate(ev, &turnProjection{}); ok {
+		t.Fatalf("update = %v, want none for a nil effort payload", u)
+	}
+}
+
 func TestPromptTurnAnswersUnsupportedQuestionsAsUnanswered(t *testing.T) {
 	broker := pubsub.NewBroker[session.Event]()
 	questions := []session.Question{
@@ -4358,5 +4455,24 @@ func TestSessionCancelStopsOnlyTheTurnsAttachedCommand(t *testing.T) {
 	// one of the two: the other is still live, conversation-owned work.
 	if surviving := service.ActiveExecutions(); len(surviving) != 1 || surviving[0].ID != detachedID {
 		t.Fatalf("ActiveExecutions = %+v, want only the surviving detached job %s", surviving, detachedID)
+	}
+}
+
+// TestSetEffortWithoutHookIsServerError pins that a runtime which cannot take
+// effort changes answers with a server error, not invalid params: the request
+// was well formed, the session simply has no effort control.
+func TestSetEffortWithoutHookIsServerError(t *testing.T) {
+	manager := NewTurnManager(TurnManagerConfig{
+		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			return &TurnRuntime{SessionID: sessionID}, true
+		},
+		Notify: func(string, any) error { return nil },
+	})
+	_, err := manager.SetEffort(context.Background(), json.RawMessage(`{"sessionId":"sess_e","effort":"low"}`))
+	if err == nil {
+		t.Fatal("SetEffort() with no hook should fail")
+	}
+	if got := codeFor(err); got != serverError {
+		t.Fatalf("error code = %d, want serverError (%d): %v", got, serverError, err)
 	}
 }

@@ -354,6 +354,9 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	case "alt+m":
 		m.cycleModel(true)
 		return *m, nil, true
+	case "alt+e":
+		m.cycleEffort()
+		return *m, nil, true
 	case "alt+shift+m":
 		m.cycleModel(false)
 		return *m, nil, true

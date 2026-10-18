@@ -668,6 +668,11 @@ type Model struct {
 	// the session override and the runner policy move together; nil falls back
 	// to the structural runner setters.
 	sessionModeSetter func(string) error
+	// effortSetter is the runtime-facing effort seam (WithSessionEffortSetter).
+	// When set, effort changes go through it so validation, the session
+	// override and the running turn move together; nil reports that effort
+	// changes are unavailable.
+	effortSetter func(string) (string, error)
 	// resumeSession is non-empty when the user asked to resume a different
 	// session; the app.Run program runner reads it from the final model.
 	resumeSession string
@@ -841,6 +846,14 @@ func WithAccessRequests(
 // the runner's policy move together; nil keeps the structural runner setters.
 func WithSessionModeSetter(set func(string) error) Option {
 	return func(m *Model) { m.sessionModeSetter = set }
+}
+
+// WithSessionEffortSetter wires the runtime-facing effort seam. When set,
+// effort changes go through the runtime so validation, the session override
+// and the running turn move together; nil reports that effort changes are
+// unavailable.
+func WithSessionEffortSetter(set func(string) (string, error)) Option {
+	return func(m *Model) { m.effortSetter = set }
 }
 
 // WithOpenConnectOnStart opens the connect panel as the TUI starts. Used
@@ -2461,6 +2474,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case cmdName == "mode":
 			return m.dispatchCommand("/" + pm.Value)
+		case cmdName == "effort":
+			m.applyEffort(pm.Value)
+			m.refreshViewport()
+			return m, nil
 		case cmdName == "sdd-plan":
 			if pm.Value == sddCustomPlanPathValue {
 				m.openSDDCustomPlanPathPicker()

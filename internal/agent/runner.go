@@ -961,9 +961,20 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	}
 	r.turnRequestOptions.thinking = route.Preset.Thinking
 	r.turnRequestOptions.thinkingOptions = route.Preset.ThinkingOptions
+	if target, ok := r.sessionEffortTarget(route.Preset.Thinking, route.Preset.Provider, route.Preset.Model); ok {
+		r.turnRequestOptions.thinking = target
+	} else if o := r.State.EffortOverride(); o.Level != "" && r.ThinkingOverride == "" {
+		r.State.SetEffortOverride(session.EffortOverride{})
+		r.State.AddMessage(session.RoleSystem, fmt.Sprintf("Effort override %q was for %s and no longer applies to %s.", o.Level, o.Model, route.Preset.Model), session.ContentTypePlain)
+	}
 	if r.ThinkingOverride != "" {
 		r.turnRequestOptions.thinking = r.ThinkingOverride
 	}
+	r.State.SetTurnRoute(session.RouteInfo{
+		Role: route.Role, Profile: route.Profile, Preset: route.Preset.Name,
+		Provider: route.Preset.Provider, Model: route.Preset.Model, LocalOnly: route.Preset.LocalOnly,
+		Thinking: r.turnRequestOptions.thinking, ReasoningCapable: turnProvider.Capabilities(ctx).Reasoning, Active: true,
+	})
 	r.turnRequestOptions.temperature = route.Preset.Temperature
 	if r.TemperatureOverride != nil {
 		r.turnRequestOptions.temperature = r.TemperatureOverride
@@ -971,6 +982,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	defer func() {
 		r.turnRequestOptions = turnRequestOptions{}
 		r.semTracker = nil
+		r.State.ClearTurnRoute()
 	}()
 	r.withStats(func(s *turnStats) {
 		s.m.Provider = turnProvider.Name()
@@ -1114,6 +1126,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	r.turnBudget = budget
 	defer func() { r.turnBudget = nil }()
 	countIterations := func() { r.withStats(func(s *turnStats) { s.m.Iterations = budget.total() }) }
+	effortDeferredNotice := ""
 	turnEndContinued := false
 	runTurnEnd := func(messages []schema.ChatMessage, task *Task) ([]schema.ChatMessage, bool, error) {
 		if r.HookRunner == nil || turnEndContinued {
@@ -1166,6 +1179,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		}
 		steeringArrived := false
 		var steeringPins []contextpack.FileSnippet
+		r.applySessionEffortAtStep(route.Preset.Thinking, route.Preset.Provider, route.Preset.Model, budget.total()+1, &effortDeferredNotice)
 		for _, msg := range r.State.DrainSteering() {
 			steeringPins = append(steeringPins, extractPinnedFiles(msg, r, r.ProjectID)...)
 			// Envelope the wire content so the model can tell a mid-turn

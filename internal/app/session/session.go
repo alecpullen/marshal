@@ -387,6 +387,22 @@ type State struct {
 	// finished subagent's Wait returns the stored view instead of
 	// selecting on a closed channel.
 	subagentDone map[int64]chan struct{}
+	// subagentEpoch is the conversation's single opaque runtime epoch for all
+	// subagent work, minted once with crypto/rand.Text. Every work-index entry
+	// carries it, so a restored entry can be told from one this runtime
+	// produced without parsing any id. Guarded by mu.
+	subagentEpoch string
+	// subagentRevision is the subagent registry's source revision, advanced on
+	// every register/update/finish/cancel change. A snapshot publishes it so a
+	// subscriber can discard a stale projection. Guarded by mu.
+	subagentRevision uint64
+	// subagentSettling marks, by agent id, a terminal settlement whose first
+	// serialized final-index save attempt has not completed yet. Guarded by mu.
+	subagentSettling map[int64]bool
+	// subagentSaveErrors records, by agent id, a subagent work-index save
+	// failure and the source revision it belonged to, so a save that covers
+	// that revision clears exactly the errors it covered. Guarded by mu.
+	subagentSaveErrors map[int64]subagentSaveFailure
 	// runEvents is the plan-run event log: verify failures, review
 	// findings, commits, retries. In-memory only, never persisted.
 	runEvents []RunEvent
@@ -922,6 +938,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 		nextStepSeq:            1,
 		workspace:              Workspace{ProjectRoot: workingDir, ActiveRoot: workingDir},
 		subagentMaxConcurrency: defaultSubagentMaxConcurrency,
+		subagentEpoch:          rand.Text(),
 		workView:               db.WorkViewRecord{Version: 1},
 	}
 	for _, opt := range opts {
@@ -936,6 +953,7 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 	if s.persistenceEnabled() {
 		s.loadFromDB()
 		s.loadWorkView()
+		s.normalizeRestoredAgentWork()
 		s.restoreWorkspace()
 		s.restoreTitle()
 	}

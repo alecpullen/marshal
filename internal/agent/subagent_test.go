@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -1081,3 +1083,198 @@ func TestSubagentReportStillReplaysIntoHistory(t *testing.T) {
 
 // The parent.ask registration tests that lived here were removed with the
 // subagent question channel in the context-diet Tier 2a cut.
+
+// newPersistedState returns a session backed by a fresh on-disk database with a
+// created session row, so message appends receive real persisted DB ids and a
+// subagent report can be bound to a durable reference. It also returns the
+// database so a test can read the report back by id.
+func newPersistedState(t *testing.T, sessionID string) (*session.State, *db.DB) {
+	t.Helper()
+	database := openTestDB(t)
+	dir := t.TempDir()
+	projectID, err := database.GetOrCreateProject(dir, "repo")
+	if err != nil {
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	if err := database.CreateSession(sessionID, projectID, "work", time.Now().UTC()); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	state := session.New(config.Config{}, dir, time.Now(),
+		session.Persistence{DB: database, SessionID: sessionID, Logger: logger})
+	return state, database
+}
+
+// TestAgentWorkReportIndexPrecedesAwaitCompletion pins Task 8's happens-before:
+// the completion path binds the durable report to the retained work index
+// immediately after it appends the report, before FinishSubagent closes the
+// done channel an agent.await caller unblocks on. Once await returns, the
+// view's reference must already name exactly one real persisted report, and the
+// dispatch result must carry the registered view's canonical work notice.
+func TestAgentWorkReportIndexPrecedesAwaitCompletion(t *testing.T) {
+	state, database := newPersistedState(t, "work-await-parent")
+	childState, _ := newPersistedState(t, "work-await-child")
+
+	run := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, childState, nil },
+		nil, registry.New(), state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			return "the indexed report", "", nil
+		}),
+	)
+	await := NewSubagentAwaitTool(state)
+
+	origin := session.ExecutionOrigin{TurnID: "turn-9", StepID: "3", ToolCallID: "origin-call"}
+	res, err := run.Handler(
+		session.WithExecutionOrigin(context.Background(), origin),
+		registry.ToolCall{ID: "call-42", Name: "agent.run", Args: json.RawMessage(`{"prompt":"x","description":"y"}`)},
+	)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	viewID := state.Subagents()[0].ID
+
+	ref, ok := res.Notice.SubagentWork()
+	if !ok {
+		t.Fatalf("dispatch notice = %+v, want a subagent work reference", res.Notice)
+	}
+	if ref.AgentID != viewID || ref.TaskKey == "" || ref.RuntimeEpoch == "" {
+		t.Fatalf("notice ref = %+v, want the registered view's key/epoch/id", ref)
+	}
+	if ref.ChildSessionID != childState.SessionID() || ref.ChildSessionID == "" {
+		t.Fatalf("notice ChildSessionID = %q, want the real child session %q", ref.ChildSessionID, childState.SessionID())
+	}
+
+	if _, err := await.Handler(context.Background(), registry.ToolCall{Args: json.RawMessage(fmt.Sprintf(`{"id": %d}`, viewID))}); err != nil {
+		t.Fatalf("await: %v", err)
+	}
+
+	view, ok := state.Subagent(viewID)
+	if !ok {
+		t.Fatal("subagent view missing after await")
+	}
+	if view.Origin != (session.SubagentOrigin{TurnID: "turn-9", StepID: "3", ToolCallID: "call-42"}) {
+		t.Fatalf("view.Origin = %+v, want turn-9/3/call-42", view.Origin)
+	}
+	if view.Report.MessageID == 0 {
+		t.Fatalf("view.Report = %+v, want a persisted message id (bound before await unblocked)", view.Report)
+	}
+	if view.Report.ChildSessionID != childState.SessionID() {
+		t.Fatalf("view.Report.ChildSessionID = %q, want %q", view.Report.ChildSessionID, childState.SessionID())
+	}
+	body, err := database.WorkReport(state.SessionID(), view.Report.MessageID)
+	if err != nil {
+		t.Fatalf("WorkReport: %v", err)
+	}
+	if !strings.Contains(body, "the indexed report") {
+		t.Fatalf("persisted report = %q, want the subagent report body", body)
+	}
+	var reports int
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeSubagentReport {
+			reports++
+		}
+	}
+	if reports != 1 {
+		t.Fatalf("subagent-report messages = %d, want exactly 1", reports)
+	}
+}
+
+// TestAgentWorkPanicReportHasReference pins Task 8's panic path: a child that
+// panics still binds its durable failure report to the retained index before
+// completion is announced.
+func TestAgentWorkPanicReportHasReference(t *testing.T) {
+	state, database := newPersistedState(t, "work-panic-parent")
+	childState, _ := newPersistedState(t, "work-panic-child")
+
+	run := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, childState, nil },
+		nil, registry.New(), state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			panic("boom in the child")
+		}),
+	)
+	if _, err := run.Handler(context.Background(), registry.ToolCall{
+		ID: "call-panic", Name: "agent.run", Args: json.RawMessage(`{"prompt":"x","description":"y"}`),
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	viewID := state.Subagents()[0].ID
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, viewID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
+	if view.Status != session.SubagentFailed {
+		t.Fatalf("status = %v, want SubagentFailed", view.Status)
+	}
+	if view.Report.MessageID == 0 {
+		t.Fatalf("view.Report = %+v, want a persisted panic-report id", view.Report)
+	}
+	body, err := database.WorkReport(state.SessionID(), view.Report.MessageID)
+	if err != nil {
+		t.Fatalf("WorkReport: %v", err)
+	}
+	if !strings.Contains(body, "panicked") {
+		t.Fatalf("persisted panic report = %q, want the panic text", body)
+	}
+}
+
+// TestAgentWorkBindingFailurePreservesDelivery pins Task 8's failure posture: a
+// bind that cannot find a durable report (here, because the database write
+// fails) records an unavailable reference and is logged as evidence, but the
+// report is still appended to the transcript and pushed to the model queue.
+func TestAgentWorkBindingFailurePreservesDelivery(t *testing.T) {
+	state, database := newPersistedState(t, "work-bindfail-parent")
+	childState, _ := newPersistedState(t, "work-bindfail-child")
+
+	run := NewSubagentTool(
+		func(req SubagentRequest) (*Runner, *session.State, error) { return &Runner{}, childState, nil },
+		nil, registry.New(), state,
+		WithSubagentExec(func(ctx context.Context, child *Runner, prompt string) (string, string, error) {
+			return "the report that cannot be indexed", "", nil
+		}),
+	)
+	// Break persistence: the appended report falls back to a transient id
+	// (DBID 0), so BindSubagentReport finds no durable row and returns an error.
+	if err := database.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	if _, err := run.Handler(context.Background(), registry.ToolCall{
+		ID: "call-bindfail", Name: "agent.run", Args: json.RawMessage(`{"prompt":"x","description":"y"}`),
+	}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	viewID := state.Subagents()[0].ID
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	view, err := state.WaitSubagent(ctx, viewID)
+	if err != nil {
+		t.Fatalf("WaitSubagent: %v", err)
+	}
+	if view.Status != session.SubagentDone {
+		t.Fatalf("status = %v, want SubagentDone", view.Status)
+	}
+	// The reference is explicitly unavailable, never fabricated.
+	if view.Report.MessageID != 0 {
+		t.Fatalf("view.Report.MessageID = %d, want 0 (unavailable)", view.Report.MessageID)
+	}
+	// Delivery is preserved regardless: the report was appended and queued.
+	q := state.SubagentReports()
+	if len(q) != 1 || !strings.Contains(q[0], "the report that cannot be indexed") {
+		t.Fatalf("report queue = %v, want the delivered report", q)
+	}
+	var found bool
+	for _, m := range state.Messages() {
+		if m.ContentType == session.ContentTypeSubagentReport {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the durable report message was not appended to the transcript")
+	}
+}

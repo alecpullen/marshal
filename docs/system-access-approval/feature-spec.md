@@ -233,12 +233,46 @@ Review assertions confirmed on the final diff: no access-grant path calls
 no schema migration and no persisted system-access flag; and the background
 explicit-termination/exit ordering is untouched.
 
+## Integration onto main
+
+`main` moved while this branch was under review. The integration was done in the
+branch rather than by a rebase, so the per-task commits and their verification
+history survive:
+
+| Merge | Integrates |
+|---|---|
+| `bf0e8f7e` | `main` at `90ba0202` — `reliable-background-execution` |
+| `60450b3f` | `main` at `ab22c47b` — the base-rule and `workspace.finish` guard commits |
+| `cb5c5322` | the schema-budget trim below |
+
+Eight files conflicted, all in `internal/{app,acp,tools/native}` where the
+access paths and the background-lifecycle paths overlap. Both features were
+kept: the session's access settlement and quiesce compose with the new launch
+generation rather than replacing it, and the access panel's arrival and
+resolution seams are unchanged. Task 3's job-identity test now launches through
+`native.LaunchSpec` (`JobManager.Launch`), matching the managed-execution API
+that replaced `JobManager.Start`.
+
+The merged tree re-ran the plan's checks: `gofmt -l` clean, `git diff --check`
+clean, `go vet` clean, `go test -race ./internal/app/session ./internal/acp`
+ok, `go test ./...` at the recorded pre-existing baseline, and `TestScripted`
+passing against the merged binary. `TestDefaultPromptBudget` failed on the
+merged tree — 15032 bytes of model-facing tool schemas against its unchanged
+15000-byte ceiling — because the two `main` commits had consumed the headroom.
+The `mode.request` description was trimmed by 55 bytes to 14977 (system prompt
+8886/9000); the ceiling was not raised.
+
 Known limitations:
 
-- The background-execution branch had not landed at the source baseline, so
-  this implementation targets the pre-background lifecycle. The plan's
-  integration note still applies: rebase Task 3's job-identity test onto the
-  managed-execution API if that branch lands first.
+- The background-execution branch landed after this implementation was first
+  verified. That interaction is closed rather than outstanding: see
+  "Integration onto main" above.
+- `internal/snapshot`'s `TestRunManagedCancellationKillsTree`, which arrived
+  with the background-execution work, is environment-sensitive: it failed
+  intermittently in the agent worktree with `operation not permitted` while
+  probing a process group, and passed 5/5 in the main checkout. This branch's
+  diff against `main` for `internal/snapshot` and the managed-process code is
+  empty, so the flake is not a regression from this feature.
 - `internal/snapshot`, `internal/tools/desktop/browser`, `internal/worktree` and
   two snapshot-maintenance tests in `internal/app` carry pre-existing failures
   at the baseline commit. They are unrelated to this feature and were left

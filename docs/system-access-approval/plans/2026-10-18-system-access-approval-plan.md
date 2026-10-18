@@ -1,6 +1,11 @@
 # System-access approval implementation plan
 
-Date: 2026-10-18. Status: executed; all ten tasks implemented and verified.
+Date: 2026-10-18. Status: executed and integrated; all ten tasks implemented and verified.
+Integrated onto `main` (see [feature-spec.md](../feature-spec.md) "Integration onto main"):
+`90ba0202` and `ab22c47b` were merged into this branch, eight overlapping files
+were resolved by composing both features, Task 3's job-identity test was moved
+onto the managed-execution API, and the `mode.request` description was trimmed
+to fit the unchanged tool-schema ceiling.
 Authoring skill: [marshal-writing-plans](../../../internal/skills/builtin/marshal-writing-plans.md).
 Approved design: [feature-spec.md](../feature-spec.md).
 Base: `de5e47bdc5e695d4e422e99059d27354a84dce14` in the Marshal checkout.

@@ -698,6 +698,13 @@ func (rt *Runtime) joinEndWork(ctx context.Context, analysis *session.ExitAnalys
 			errs = append(errs, fmt.Errorf("job completions still pending: %d", len(pending)))
 		}
 	}
+	// The work view and the watch terminal saves are the projection's durable
+	// facts. Retry them in the same pass, while persistence is still open, so a
+	// settled watch result or dirty work view is stored before the database
+	// closes. Neither retry announces a durable acknowledgment when it fails.
+	if err := rt.retryWorkPersistence(); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -793,6 +800,35 @@ func (rt *Runtime) commandManager() *native.JobManager {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return commandServiceManager(rt.CommandService)
+}
+
+// watchManager returns the conversation's watch manager under the pointer mutex,
+// or nil when the build never reached owner construction or a replacement has
+// left the slot empty.
+func (rt *Runtime) watchManager() *watch.Manager {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.WatchManager
+}
+
+// retryWorkPersistence re-offers the conversation's dirty work view and every
+// failed watch terminal save. It runs while persistence is still open, so a
+// completion whose first durable write failed gets a retried chance instead of
+// being lost at close. A failed retry is reported; it never announces a durable
+// acknowledgment of its own.
+func (rt *Runtime) retryWorkPersistence() error {
+	var errs []error
+	if rt.State != nil {
+		if err := rt.State.RetryWorkViewSave(); err != nil {
+			errs = append(errs, fmt.Errorf("persist work view: %w", err))
+		}
+	}
+	if wm := rt.watchManager(); wm != nil {
+		if err := wm.RetryTerminalSaves(); err != nil {
+			errs = append(errs, fmt.Errorf("persist watch results: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // commandServiceManager returns the supervisor's manager handle, or nil when
@@ -1231,7 +1267,23 @@ func (rt *Runtime) Quiesce(ctx context.Context) error {
 		// membership is drained by then, and a deadline here bounds the join, not
 		// any process's lifetime.
 		waitErr := rt.State.WaitForWork(ctx)
-		rt.quiesceErr = errors.Join(workErr, watchErr, jobErr, waitErr)
+
+		// After the owners have finished, drain the last durable facts and retry
+		// the work view and the watch terminal saves one final time, alongside
+		// the job-exit and settlement retries already run above. A failed retry
+		// is reported through quiesceErr; it is never announced as a durable
+		// acknowledgment.
+		retryErr := rt.retryWorkPersistence()
+		// Reconcile the final facts into the projection and then stop and join
+		// its coordinator BEFORE the database closes (Close closes the DB only
+		// after Quiesce returns).
+		if wc := rt.currentWork(); wc != nil {
+			if err := wc.finalize(); err != nil {
+				retryErr = errors.Join(retryErr, err)
+			}
+			wc.close()
+		}
+		rt.quiesceErr = errors.Join(workErr, watchErr, jobErr, waitErr, retryErr)
 	})
 	return rt.quiesceErr
 }
@@ -1834,6 +1886,19 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	if logFile != nil {
 		rt.resourceClosers = append(rt.resourceClosers, func() { _ = logFile.Close() })
 	}
+	// The conversation's work projection. It is created once, after the source
+	// owners and the State exist and before any transport can observe the
+	// Runtime, with its initial snapshot seeded synchronously and one background
+	// collector owned here (stopped and joined by Quiesce/Close). It subscribes
+	// only the already-created brokers; no new source is minted for it.
+	rt.work = newWorkCoordinator(rt.workCtx, state, workSources{
+		Jobs:           rt.JobManager,
+		Watches:        rt.WatchManager,
+		JobEvents:      jobBroker,
+		WatchEvents:    watchBroker,
+		SubagentEvents: subagentBroker,
+		SessionEvents:  eventBroker,
+	}, runOpts.now)
 	return rt, nil
 }
 
@@ -2072,6 +2137,21 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 			rt.lspCancel = rt.runLSPManager(rt.LSPManager.Get())
 		}
 	}
+	// Close the replaced conversation's projection. Its sources are stopped
+	// above, so this reconciles and finalizes the last durable facts while the
+	// old State is still live, then cancels, joins and closes its broker. Doing
+	// it BEFORE the replacement's coordinator is created is what guarantees no
+	// old queued callback or subscription can publish into the new one.
+	rt.mu.Lock()
+	oldWork := rt.work
+	rt.work = nil
+	rt.mu.Unlock()
+	if oldWork != nil {
+		if err := oldWork.finalize(); err != nil && rt.Logger != nil {
+			rt.Logger.Warn("replaced conversation work view finalize failed", "error", err)
+		}
+		oldWork.close()
+	}
 	oldState.Shutdown()
 
 	// The replacement is complete: the old conversation is gone and the new one
@@ -2086,6 +2166,22 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 	rt.analysisScope = nil
 	rt.endMu.Unlock()
 	newState.SetWorkPhase(session.ExitPhaseOpen)
+
+	// The replacement conversation gets its own projection over the same source
+	// brokers and the freshly built owners. It starts from the new State alone,
+	// so it carries no attention or receipt counters from the conversation it
+	// replaced; the old coordinator was closed above, before this one existed.
+	newWork := newWorkCoordinator(rt.workCtx, newState, workSources{
+		Jobs:           newJobMgr.manager,
+		Watches:        newWatchMgr,
+		JobEvents:      jb,
+		WatchEvents:    must[*pubsub.Broker[watch.Event]](rt.WatchBroker),
+		SubagentEvents: must[*pubsub.Broker[session.SubagentEvent]](rt.SubagentBroker),
+		SessionEvents:  must[*pubsub.Broker[session.Event]](rt.EventBroker),
+	}, time.Now)
+	rt.mu.Lock()
+	rt.work = newWork
+	rt.mu.Unlock()
 
 	return newState, newRunner, newSwarmRunner, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, newReg, nil
 }
@@ -2140,6 +2236,10 @@ const (
 	// workPublishInterval the cosmetic publish throttle.
 	workReconcileEvery  = 200 * time.Millisecond
 	workPublishInterval = 200 * time.Millisecond
+	// workRetryEvery bounds how often the normal runtime re-offers a dirty
+	// durable write. A progress tick never forces one: a clean view is left
+	// alone, so only work that actually failed to store is retried.
+	workRetryEvery = time.Second
 
 	// workSnapshotVersion is the projection's wire version.
 	workSnapshotVersion = 1
@@ -2222,6 +2322,7 @@ type workCoordinator struct {
 	historyFingerprint   string
 	lastLifecycle        string
 	lastPublish          time.Time
+	lastRetry            time.Time
 
 	dirty chan struct{}
 }
@@ -2316,7 +2417,9 @@ func (wc *workCoordinator) wake() {
 }
 
 // loop reconciles on every wake and at least every workReconcileEvery, so an
-// idle conversation still reflects a change that no broker announced.
+// idle conversation still reflects a change that no broker announced. It also
+// re-offers a dirty durable write at most once per workRetryEvery, outside
+// every source lock.
 func (wc *workCoordinator) loop() {
 	defer wc.wg.Done()
 	ticker := time.NewTicker(workReconcileEvery)
@@ -2328,8 +2431,77 @@ func (wc *workCoordinator) loop() {
 		case <-wc.dirty:
 		case <-ticker.C:
 		}
-		wc.reconcileWork(wc.now())
+		now := wc.now()
+		wc.reconcileWork(now)
+		wc.retryPersistence(now)
 	}
+}
+
+// retryPersistence re-offers a dirty work view and any failed watch terminal
+// save, at most once per workRetryEvery. It reads the source pointers under the
+// coordinator mutex but calls the (potentially blocking) retries outside every
+// lock. It writes nothing when there is nothing pending, so an idle progress
+// tick can never turn into a clean-state write.
+func (wc *workCoordinator) retryPersistence(now time.Time) {
+	wc.mu.Lock()
+	if !wc.lastRetry.IsZero() && now.Sub(wc.lastRetry) < workRetryEvery {
+		wc.mu.Unlock()
+		return
+	}
+	wc.lastRetry = now
+	watches := wc.watches
+	wc.mu.Unlock()
+
+	if wc.state != nil {
+		_ = wc.state.RetryWorkViewSave()
+	}
+	if watches != nil {
+		_ = watches.RetryTerminalSaves()
+	}
+}
+
+// finalize reconciles the projection one last time from the now-stopped
+// sources and re-offers every durable save that failed, so the final facts are
+// stored while persistence is still open. A failed retry is reported to the
+// caller; it never announces a durable acknowledgment.
+func (wc *workCoordinator) finalize() error {
+	if wc == nil {
+		return nil
+	}
+	wc.reconcileWork(wc.now())
+	var errs []error
+	if wc.state != nil {
+		if err := wc.state.RetryWorkViewSave(); err != nil {
+			errs = append(errs, fmt.Errorf("persist work view: %w", err))
+		}
+	}
+	wc.mu.Lock()
+	watches := wc.watches
+	wc.mu.Unlock()
+	if watches != nil {
+		if err := watches.RetryTerminalSaves(); err != nil {
+			errs = append(errs, fmt.Errorf("persist watch results: %w", err))
+		}
+	}
+	// Reflect whatever the retries changed so a final observer sees the stored
+	// facts and their cleared attention.
+	wc.reconcileWork(wc.now())
+	return errors.Join(errs...)
+}
+
+// rebindWatchManager binds a replacement watch manager after its predecessor
+// has been joined and its terminal snapshot reconciled. The new manager mints
+// its own epoch, so an old registration's numeric ID is never mistaken for one
+// of the replacement's: old results stay history under their own epoch.
+func (wc *workCoordinator) rebindWatchManager(w *watch.Manager) {
+	if wc == nil {
+		return
+	}
+	wc.mu.Lock()
+	wc.watches = w
+	wc.mu.Unlock()
+	wc.reconcileWork(wc.now())
+	wc.wake()
 }
 
 // close cancels and joins the coordinator's goroutines and closes its broker.
@@ -2351,12 +2523,17 @@ func (wc *workCoordinator) readJobs() *native.JobSnapshot {
 	return &s
 }
 
-// readWatches reads the watch manager snapshot without the coordinator mutex.
+// readWatches reads the watch manager snapshot. The manager pointer is read
+// under the coordinator mutex (a reload may rebind it) while the snapshot
+// itself is taken outside it.
 func (wc *workCoordinator) readWatches() *watch.Snapshot {
-	if wc.watches == nil {
+	wc.mu.Lock()
+	w := wc.watches
+	wc.mu.Unlock()
+	if w == nil {
 		return nil
 	}
-	s := wc.watches.Snapshot()
+	s := w.Snapshot()
 	return &s
 }
 
@@ -2744,6 +2921,30 @@ func watchItem(conv, epoch, key string, info watch.Info, active bool, saveErrors
 		it.Capabilities.Acknowledge = false
 	}
 	return it
+}
+
+// watchWorkResult converts a retained terminal watch fact into the durable
+// work-index record the session's work view stores. Its key is derived from the
+// owning conversation, the manager epoch and the registration ID, so a
+// re-registered numeric ID under a new epoch never collides with an old one. A
+// reload or a replacement therefore leaves the old result as history rather
+// than repointing it at the new source.
+func watchWorkResult(conv string, info watch.Info) db.WorkResultRecord {
+	state, outcome, warning := watchWorkState(info, false)
+	return db.WorkResultRecord{
+		TaskKey:        viewmodel.WorkKey(conv, info.Epoch, workKindWatch, info.ID),
+		SourceID:       info.ID,
+		RuntimeEpoch:   info.Epoch,
+		Kind:           workKindWatch,
+		Label:          cleanWorkLabel(info.Name),
+		Owner:          cleanWorkOwner(info.Owner),
+		State:          state,
+		Outcome:        outcome,
+		StartedAt:      info.CreatedAt,
+		EndedAt:        info.EndedAt,
+		ResultRevision: info.ResultRevision,
+		Detail:         warning,
+	}
 }
 
 // resultCandidates adds durable work-index results whose live source is gone,

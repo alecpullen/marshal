@@ -4153,3 +4153,371 @@ func TestWorkInspectUsesExactReportAndBoundedOutput(t *testing.T) {
 		t.Fatalf("inspect unknown err = %v, want ErrWorkStaleTarget", err)
 	}
 }
+
+// TestWorkRuntimeReloadRetainsExecutionIdentity pins that a config reload keeps
+// the conversation's projection and its execution identity: the coordinator
+// and its epoch survive, a live child keeps its task key and stop capability,
+// and the replacement watch manager is rebound only after the old one is joined
+// and reconciled, so a registration on the replacement carries its own epoch.
+func TestWorkRuntimeReloadRetainsExecutionIdentity(t *testing.T) {
+	ctx := context.Background()
+	rt := newSendNowTestRuntime(t, nativeToolAgentConfig("work-reload-identity"))
+
+	before := rt.WorkSnapshot()
+	if before.RuntimeEpoch == "" {
+		t.Fatalf("startup snapshot has no projection epoch: %+v", before)
+	}
+	if before.ConversationID != rt.State.SessionID() {
+		t.Fatalf("snapshot conversation = %q, want %q", before.ConversationID, rt.State.SessionID())
+	}
+
+	// A live child is execution identity the projection owns.
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	v := rt.State.RegisterSubagent("worker", child)
+	source := strconv.FormatInt(v.ID, 10)
+	waitWorkUntil(t, func() bool {
+		_, ok := workItemBySource(rt.WorkSnapshot(), workKindAgent, source)
+		return ok
+	}, "the live child to appear in the projection")
+	item, ok := workItemBySource(rt.WorkSnapshot(), workKindAgent, source)
+	if !ok {
+		t.Fatal("child missing before reload")
+	}
+	keyBefore := item.TaskKey
+	oldWatchMgr := rt.WatchManager
+
+	if err := reloadAgentRuntime(ctx, rt.State.Config, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+
+	after := rt.WorkSnapshot()
+	if after.ConversationID != before.ConversationID {
+		t.Fatalf("reload changed the conversation: %q -> %q", before.ConversationID, after.ConversationID)
+	}
+	if after.RuntimeEpoch != before.RuntimeEpoch {
+		t.Fatalf("reload minted a new projection epoch %q -> %q; execution identity was not retained", before.RuntimeEpoch, after.RuntimeEpoch)
+	}
+	item, ok = workItemBySource(after, workKindAgent, source)
+	if !ok {
+		t.Fatalf("the live child left the projection across a reload: %+v", after.Items)
+	}
+	if item.TaskKey != keyBefore {
+		t.Fatalf("child task key changed across reload: %q -> %q", keyBefore, item.TaskKey)
+	}
+	if !item.Capabilities.Stop {
+		t.Fatalf("the live child lost its stop capability across reload: %+v", item)
+	}
+
+	// The watch manager is replaced, and the projection is rebound to the new
+	// pointer: a registration on the replacement is owned under its own epoch.
+	if rt.WatchManager == oldWatchMgr {
+		t.Fatal("reload did not replace the watch manager")
+	}
+	watchID, _, err := rt.WatchManager.Start(watch.Spec{
+		Name: "post-reload", Kind: watch.KindCommand, Command: "true",
+		Condition: "exit_code 0", Mode: watch.ModeRepeat, Interval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("start watch on the replacement: %v", err)
+	}
+	waitWorkUntil(t, func() bool {
+		it, ok := workItemBySource(rt.WorkSnapshot(), workKindWatch, watchID)
+		return ok && it.RuntimeEpoch != before.RuntimeEpoch
+	}, "the replacement's watch to appear under its own epoch")
+	if _, err := rt.WatchManager.Stop(watchID); err != nil {
+		t.Fatalf("stop post-reload watch: %v", err)
+	}
+	// Release the live child so the runtime drains cleanly at cleanup.
+	rt.State.FinishSubagent(v.ID, "done", nil)
+}
+
+// TestWorkRuntimeReplacementCannotReceiveOldEpoch pins that replacing the
+// conversation closes the old projection and starts a fresh one: the
+// replacement never reuses the old epoch, carries none of its items, and starts
+// with no attention or receipt counters. The old coordinator is closed, not
+// repointed at the replacement.
+func TestWorkRuntimeReplacementCannotReceiveOldEpoch(t *testing.T) {
+	rt := newSendNowTestRuntime(t, nativeToolAgentConfig("work-replacement-epoch"))
+
+	// The old conversation carries attention and a completed receipt.
+	failed := rt.State.RegisterSubagent("failed", nil)
+	rt.State.FinishSubagent(failed.ID, "boom", errors.New("boom"))
+	done := rt.State.RegisterSubagent("finished", nil)
+	rt.State.FinishSubagent(done.ID, "ok", nil)
+	waitWorkUntil(t, func() bool {
+		s := rt.WorkSnapshot()
+		return s.AttentionCount > 0 && (s.SuccessReceiptCount > 0 || s.StoppedReceiptCount > 0)
+	}, "the old conversation's attention and receipt counters")
+
+	old := rt.WorkSnapshot()
+	oldEpoch := old.RuntimeEpoch
+	oldConv := old.ConversationID
+	oldWork := rt.currentWork()
+	if oldWork == nil {
+		t.Fatal("startup did not install a work coordinator")
+	}
+
+	newState, _, _, _, _, _, _, err := rt.NewSession("")
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	if rt.currentWork() == oldWork {
+		t.Fatal("the replacement reused the replaced conversation's coordinator")
+	}
+	snap := rt.WorkSnapshot()
+	if snap.ConversationID != newState.SessionID() || snap.ConversationID == oldConv {
+		t.Fatalf("replacement conversation = %q, want %q (not %q)", snap.ConversationID, newState.SessionID(), oldConv)
+	}
+	if snap.RuntimeEpoch == oldEpoch {
+		t.Fatalf("the replacement reused the old projection epoch %q", oldEpoch)
+	}
+	if snap.AttentionCount != 0 || snap.SuccessReceiptCount != 0 || snap.StoppedReceiptCount != 0 {
+		t.Fatalf("replacement counters = attention %d, success %d, stopped %d; want all zero",
+			snap.AttentionCount, snap.SuccessReceiptCount, snap.StoppedReceiptCount)
+	}
+	for _, it := range snap.Items {
+		if it.RuntimeEpoch == oldEpoch {
+			t.Fatalf("the replacement's snapshot carries an item from the old epoch: %+v", it)
+		}
+	}
+	// The replaced projection still holds the old conversation's own facts.
+	if got := oldWork.snapshotNow(); got.ConversationID != oldConv || got.AttentionCount == 0 {
+		t.Fatalf("the replaced coordinator was mutated: %+v", got)
+	}
+}
+
+// TestWorkRuntimeCloseFlushesBeforeDBClose pins that a terminal watch save whose
+// first durable write failed is retried by the shutdown path and is durable
+// before the database closes.
+func TestWorkRuntimeCloseFlushesBeforeDBClose(t *testing.T) {
+	state, database, sessionID := newWorkFixture(t)
+
+	var calls atomic.Int32
+	transient := errors.New("transient terminal-sink failure")
+	wm := watch.NewManager(context.Background(), watch.Deps{
+		ConversationID: sessionID,
+		RunSample:      func(context.Context, string, string) (string, int, error) { return "", 0, nil },
+		OnTerminal: func(info watch.Info) error {
+			if calls.Add(1) == 1 {
+				return transient
+			}
+			return state.SaveWatchWorkResult(watchWorkResult(sessionID, info))
+		},
+	})
+	watchID, _, err := wm.Start(watch.Spec{
+		Name: "flush", Kind: watch.KindCommand, Command: "true",
+		Condition: "exit_code 0", Mode: watch.ModeRepeat, Interval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("Start watch: %v", err)
+	}
+	// A deliberate stop is a terminal transition; its first durable save fails.
+	if _, err := wm.Stop(watchID); err != nil {
+		t.Fatalf("Stop watch: %v", err)
+	}
+	if calls.Load() < 1 {
+		t.Fatal("the terminal sink was never invoked")
+	}
+	if got := state.WorkView(); len(got.WatchResults) != 0 {
+		t.Fatalf("the failed first save should leave nothing durable: %+v", got.WatchResults)
+	}
+
+	wc := newWorkCoordinator(context.Background(), state, workSources{Watches: wm}, time.Now)
+	rt := &Runtime{
+		Config:       config.Default(),
+		State:        state,
+		DB:           database,
+		WatchManager: wm,
+		work:         wc,
+		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		workCtx:      context.Background(),
+	}
+	if err := rt.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// The retry ran before the database closed: the result is durable, and the
+	// database is now closed.
+	if got := state.WorkView(); len(got.WatchResults) != 1 {
+		t.Fatalf("work view = %+v, want the flushed watch result", got.WatchResults)
+	}
+	if err := database.SaveWorkView(sessionID, db.WorkViewRecord{Version: 1}); err == nil {
+		t.Fatal("the database was still open after Close")
+	}
+}
+
+// TestWorkRuntimeStartupRestoresHistoryWithoutLiveOwners pins that a stored work
+// result is restored at startup even when no live owner exists: it appears as
+// terminal, acknowledgeable history rather than an active registration.
+func TestWorkRuntimeStartupRestoresHistoryWithoutLiveOwners(t *testing.T) {
+	dir := t.TempDir()
+	home := t.TempDir()
+	const sessionID = "sess_restore"
+
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	database, err := db.Open(db.Path(dir))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		database.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(dir, "startup-restore")
+	if err != nil {
+		database.Close()
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	started := time.Now().Add(-time.Hour)
+	if err := database.CreateSession(sessionID, projectID, "", started); err != nil {
+		database.Close()
+		t.Fatalf("CreateSession: %v", err)
+	}
+	sourceID := "watch-7"
+	record := db.WorkResultRecord{
+		TaskKey:        viewmodel.WorkKey(sessionID, "epoch-seed", workKindWatch, sourceID),
+		SourceID:       sourceID,
+		RuntimeEpoch:   "epoch-seed",
+		Kind:           workKindWatch,
+		Label:          "seeded watch",
+		State:          workStateCompleted,
+		Outcome:        "completed",
+		StartedAt:      started,
+		EndedAt:        started.Add(time.Minute),
+		ResultRevision: "rev-seed",
+	}
+	if err := database.SaveWorkView(sessionID, db.WorkViewRecord{Version: 1, WatchResults: []db.WorkResultRecord{record}}); err != nil {
+		database.Close()
+		t.Fatalf("SaveWorkView: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	auth, _ := memoryAuthResolver(t)
+	rt, err := StartRuntime(context.Background(),
+		WithWorkingDir(dir),
+		WithHomeDir(home),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return nativeToolAgentConfig("restore"), nil
+		}),
+		WithAuthResolver(auth),
+		WithExistingSession(sessionID),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = rt.Close(context.Background()) })
+
+	snap := rt.WorkSnapshot()
+	if snap.ConversationID != sessionID {
+		t.Fatalf("snapshot conversation = %q, want %q", snap.ConversationID, sessionID)
+	}
+	item, ok := workItemBySource(snap, workKindWatch, sourceID)
+	if !ok {
+		t.Fatalf("the stored result was not restored at startup: %+v", snap.Items)
+	}
+	if item.TaskKey != record.TaskKey || item.ResultRevision != record.ResultRevision {
+		t.Fatalf("restored item lost its identity: %+v", item)
+	}
+	if !workItemTerminal(item.State) {
+		t.Fatalf("restored item state = %q, want a terminal state", item.State)
+	}
+	if !item.Capabilities.Acknowledge {
+		t.Fatalf("a restored terminal result should be acknowledgeable: %+v", item)
+	}
+	if viewmodel.WorkActive(item) {
+		t.Fatalf("a restored result should not be active: %+v", item)
+	}
+}
+
+// TestWorkRuntimeDirtyRetryDoesNotWriteProgressTicks pins that the normal
+// runtime's retry path re-offers only a dirty durable write: a cosmetic progress
+// change, reconciled and retried many times, never turns into a clean-state
+// write.
+func TestWorkRuntimeDirtyRetryDoesNotWriteProgressTicks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0o755); err != nil {
+		t.Fatalf("mkdir .marshal: %v", err)
+	}
+	database, err := db.Open(db.Path(dir))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := database.Migrate(); err != nil {
+		database.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	projectID, err := database.GetOrCreateProject(dir, "work-retry")
+	if err != nil {
+		database.Close()
+		t.Fatalf("GetOrCreateProject: %v", err)
+	}
+	const sessionID = "sess_retry"
+	if err := database.CreateSession(sessionID, projectID, "", time.Now()); err != nil {
+		database.Close()
+		t.Fatalf("CreateSession: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	state := session.New(config.Default(), dir, time.Now(), session.Persistence{
+		DB:        database,
+		SessionID: sessionID,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+
+	// A second connection observes commits the session's own connection makes, so
+	// a clean-state write is detectable even when it rewrites an identical row.
+	probe, err := db.Open(db.Path(dir))
+	if err != nil {
+		t.Fatalf("open probe db: %v", err)
+	}
+	t.Cleanup(func() { _ = probe.Close() })
+	dataVersion := func() int64 {
+		t.Helper()
+		var v int64
+		if err := probe.SQLDB().QueryRow("PRAGMA data_version").Scan(&v); err != nil {
+			t.Fatalf("read data_version: %v", err)
+		}
+		return v
+	}
+
+	clock := &workClock{t: time.Unix(8000, 0)}
+	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+	state.RegisterSubagent("progressing", child)
+	wc := newWorkCoordinator(context.Background(), state, workSources{}, clock.now)
+	t.Cleanup(wc.close)
+
+	baseline := dataVersion()
+	for i := 0; i < 5; i++ {
+		child.SetActiveToolCall(session.ActiveToolCall{Name: "file.read"})
+		clock.advance(2 * time.Second)
+		wc.reconcileWork(clock.now())
+		wc.retryPersistence(clock.now())
+	}
+	if got := dataVersion(); got != baseline {
+		t.Fatalf("a progress tick committed a clean-state write: data_version %d -> %d", baseline, got)
+	}
+
+	// A genuine durable save does commit, proving the probe observes writes.
+	if err := state.SaveWatchWorkResult(db.WorkResultRecord{
+		TaskKey:        viewmodel.WorkKey(sessionID, "epoch-1", workKindWatch, "w1"),
+		SourceID:       "w1",
+		RuntimeEpoch:   "epoch-1",
+		Kind:           workKindWatch,
+		Label:          "watch",
+		State:          workStateCompleted,
+		Outcome:        "completed",
+		StartedAt:      clock.now(),
+		EndedAt:        clock.now().Add(time.Second),
+		ResultRevision: "rev-1",
+	}); err != nil {
+		t.Fatalf("SaveWatchWorkResult: %v", err)
+	}
+	if got := dataVersion(); got == baseline {
+		t.Fatal("the probe did not observe a genuine durable save")
+	}
+}

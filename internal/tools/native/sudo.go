@@ -305,9 +305,15 @@ func (t *toolSet) runSudoOnce(ctx context.Context, callID string, runner sudoRun
 }
 
 // requestSudoPassword raises the masked prompt and blocks for the decision.
-// Mirrors requestApproval's protocol: set the pending slot, wait on the
-// channel, clear the slot. The wait ends on a decision, on ctx cancellation,
-// or on State.ResolvePendingForShutdown.
+// The prompt is registered through the session's canonical registry, so a
+// steering interruption of the owning operation can settle it once, with a
+// distinct cause, instead of the handler clearing a slot another request may
+// already own.
+//
+// A canceled prompt yields no password bytes: the decision the registry
+// delivers on cancellation is an empty denial, and any buffer this function
+// obtained is zeroed before it returns. The wait ends on a decision, on ctx
+// cancellation, or on State.ResolvePendingForShutdown.
 func (t *toolSet) requestSudoPassword(ctx context.Context, command, reason string, unlock bool, attempt int, prevErr string) (password []byte, denied bool, err error) {
 	sa := &session.PendingSudoAuth{
 		Command:      command,
@@ -317,8 +323,11 @@ func (t *toolSet) requestSudoPassword(ctx context.Context, command, reason strin
 		Error:        prevErr,
 		ResponseChan: make(chan session.SudoAuthDecision, 1),
 	}
-	t.sessionState.SetPendingSudoAuth(sa)
-	defer t.sessionState.SetPendingSudoAuth(nil)
+	key, regErr := t.sessionState.RegisterSudoAuth(ctx, sa)
+	if regErr != nil {
+		return nil, false, regErr
+	}
+	defer t.sessionState.ClearPrompt(key)
 
 	select {
 	case d := <-sa.ResponseChan:
@@ -327,6 +336,17 @@ func (t *toolSet) requestSudoPassword(ctx context.Context, command, reason strin
 		}
 		return d.Password, false, nil
 	case <-ctx.Done():
+		// Settle canonically, then accept whatever the settlement delivered: a
+		// password the user had already submitted (whose claim won) is returned
+		// so the privileged dispatch can proceed, while a cancellation delivers
+		// an empty denial with no bytes.
+		t.sessionState.CancelPrompt(key, session.ErrSendNow)
+		if d, ok := <-sa.ResponseChan; ok && d.OK {
+			return d.Password, false, nil
+		}
+		if cause := t.sessionState.PromptCause(key); cause != nil {
+			return nil, false, cause
+		}
 		return nil, false, ctx.Err()
 	}
 }

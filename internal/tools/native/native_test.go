@@ -218,6 +218,51 @@ func invokeTool(t *testing.T, reg *registry.Registry, name string, args string) 
 	return tool.Handler(context.Background(), registry.ToolCall{Name: name, Args: []byte(args)})
 }
 
+// steeringToolContext opens one steering turn and one open tool operation on
+// state and returns the context a native tool handler must run under for that
+// operation to be interruptible, plus the turn and operation identities a Send
+// now request needs.
+//
+// interrupt, when non-nil, is installed as the session's operation-interruption
+// handler — the seam a conversation uses to reach the command service. A nil
+// interrupt installs a handler that returns immediately: these tests drive
+// cancellation through SubmitSendNow, which marks the captured operation
+// requested (so admission is refused from that instant) and, through the
+// interruption worker, cancels the operation's context with ErrSendNow.
+func steeringToolContext(t *testing.T, state *session.State, interrupt session.OperationInterrupt) (context.Context, string, session.OperationRef) {
+	t.Helper()
+	if interrupt == nil {
+		interrupt = func(context.Context, session.OperationRef) (session.OperationStop, error) {
+			return session.OperationStop{}, nil
+		}
+	}
+	state.SetOperationInterrupt(interrupt)
+	turn, err := state.BeginSteeringTurn(context.Background())
+	if err != nil {
+		t.Fatalf("BeginSteeringTurn: %v", err)
+	}
+	opCtx, ref, err := state.BeginSteeringOperation(context.Background(), turn, session.OperationTools)
+	if err != nil {
+		t.Fatalf("BeginSteeringOperation: %v", err)
+	}
+	return opCtx, turn, ref
+}
+
+// steerNow submits one Send now request for an open turn, failing the test on
+// rejection: acceptance is the precondition every cancellation test here is
+// built on.
+func steerNow(t *testing.T, state *session.State, turn, requestID string) session.SteeringReceipt {
+	t.Helper()
+	receipt, err := state.SubmitSendNow(session.SendNowRequest{TurnID: turn, RequestID: requestID, Text: "steer"})
+	if err != nil {
+		t.Fatalf("SubmitSendNow: %v", err)
+	}
+	if receipt.Status != session.SteeringAccepted {
+		t.Fatalf("receipt status = %q, want accepted", receipt.Status)
+	}
+	return receipt
+}
+
 func assertTimeout(t *testing.T, got time.Duration, want time.Duration) {
 	t.Helper()
 	if got != want {

@@ -179,6 +179,12 @@ func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string,
 			return registry.ToolResult{}, err
 		}
 	}
+	// A command whose operation was already interrupted must not launch: the
+	// interruption has told the model not to expect its result, and admitting it
+	// would start work nothing can report on.
+	if err := session.CheckSteering(ctx); err != nil {
+		return registry.ToolResult{}, err
+	}
 
 	// Everything the execution needs is captured here, before it is admitted:
 	// the service resolves its own defaults later, so a config reload or a
@@ -186,6 +192,7 @@ func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string,
 	// The active-call writer is wired in unconditionally and the service stops
 	// forwarding to it the moment the execution detaches, so display ownership
 	// follows attachment without this path relaunching anything.
+	operation, _ := session.OperationFromContext(ctx)
 	info, err := t.jobManager.Launch(ctx, LaunchSpec{
 		Command:        command,
 		Dir:            t.commandRoot(),
@@ -194,6 +201,7 @@ func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string,
 		Stdout:         t.activeCallWriter(callID),
 		Stderr:         t.activeCallWriter(callID),
 		Origin:         t.executionOrigin(ctx),
+		Operation:      operation,
 		Detached:       background,
 		Wait:           wait,
 	})
@@ -204,8 +212,13 @@ func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string,
 		return t.backgroundCommandResult(info), nil
 	}
 
-	// The manager indexes executions by the handle in this snapshot.
-	res, err := t.jobManager.WaitForeground(ctx, info.ID, wait)
+	// The manager indexes executions by the handle in this snapshot. The wait is
+	// tied to the turn's own context, not the operation's: a steering
+	// interruption cancels the operation context, and a wait built on it would
+	// abandon a command the service is still stopping rather than reporting its
+	// real outcome.
+	waitCtx := session.SteeringTurnContext(ctx)
+	res, err := t.jobManager.WaitForeground(waitCtx, info.ID, wait)
 	if err != nil {
 		return registry.ToolResult{}, err
 	}

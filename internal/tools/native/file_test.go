@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -2293,4 +2294,237 @@ func TestReadToolSchemasDocumentAbsolutePaths(t *testing.T) {
 			t.Fatalf("%s schema is not valid JSON: %v", name, err)
 		}
 	}
+}
+
+// testTrackedRegistry builds a write-capable registry over root with a real
+// file tracker, so the read-before-edit and stale-file guards behave exactly as
+// a session's do. state receives the backups an interrupted write records, so a
+// test can assert on the evidence a partial result claims. An optional tracker
+// wrapper lets a test observe the moment one file's write was recorded.
+func testTrackedRegistry(t *testing.T, root string, state *session.State, wrap func(FileTracker) FileTracker) *registry.Registry {
+	t.Helper()
+	database, err := db.Open(filepath.Join(t.TempDir(), "filetrack.db"))
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+	if err := database.Migrate(); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	var tracker FileTracker = filetrack.New(database.SQLDB(), "test-session")
+	if wrap != nil {
+		tracker = wrap(tracker)
+	}
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{
+		WorkspaceRoot: root,
+		CommandRunner: &fakeRunner{},
+		FileTracker:   tracker,
+		SessionState:  state,
+	}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	return reg
+}
+
+// interruptingTracker wraps a real FileTracker and runs a hook once, after the
+// first write it records. For a one-file commit unit that is the instant the
+// file is already on disk and the handler has not yet finished; for a multi-file
+// patch it is the boundary between the first file's finished unit and the next
+// file's admission, which is exactly where an interruption must be respected.
+type interruptingTracker struct {
+	FileTracker
+	once     sync.Once
+	onRecord func()
+}
+
+func (t *interruptingTracker) RecordWrite(path string, at time.Time) error {
+	err := t.FileTracker.RecordWrite(path, at)
+	t.once.Do(func() {
+		if t.onRecord != nil {
+			t.onRecord()
+		}
+	})
+	return err
+}
+
+// invokeToolCtx dispatches a registered native tool under ctx, rather than the
+// background context invokeTool uses. A handler must run under its operation's
+// context for an interruption to reach it.
+func invokeToolCtx(reg *registry.Registry, ctx context.Context, name, args string) (registry.ToolResult, error) {
+	tool, ok := reg.Lookup(name)
+	if !ok {
+		return registry.ToolResult{}, fmt.Errorf("%s is not registered", name)
+	}
+	return tool.Handler(ctx, registry.ToolCall{ID: "call-" + name, Name: name, Args: []byte(args)})
+}
+
+// TestFilePatchSteeringBetweenUnitsKeepsCommittedEvidence pins the commit unit
+// the file tools use: one admitted file finishes (write, backup, diff, symbols)
+// even when the operation is interrupted, and the next file is never started.
+//
+// An interruption between units therefore produces a truthful partial result —
+// the committed file's diff and its recorded backup, with the unwritten file
+// absent from both — plus the interrupting cause. Nothing is rolled back, and the
+// unwritten file is never reported as applied.
+func TestFilePatchSteeringBetweenUnitsKeepsCommittedEvidence(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "a-v1\n")
+	writeFile(t, filepath.Join(root, "b.txt"), "b-v1\n")
+
+	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
+	// The interruption is accepted once a.txt has committed: interrupting before
+	// admission would prove nothing about evidence recorded after it.
+	interrupted := make(chan struct{}, 1)
+	opCtx, turn, _ := steeringToolContext(t, state, func(context.Context, session.OperationRef) (session.OperationStop, error) {
+		select {
+		case interrupted <- struct{}{}:
+		default:
+		}
+		return session.OperationStop{}, nil
+	})
+	reg := testTrackedRegistry(t, root, state, func(inner FileTracker) FileTracker {
+		return &interruptingTracker{FileTracker: inner, onRecord: func() { steerNow(t, state, turn, "r1") }}
+	})
+
+	// Read both targets so the read-before-edit contract is satisfied for each.
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"a.txt"}`); err != nil {
+		t.Fatalf("file.read a.txt: %v", err)
+	}
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"b.txt"}`); err != nil {
+		t.Fatalf("file.read b.txt: %v", err)
+	}
+
+	patchText := "File: a.txt\n<<<<<<< SEARCH\na-v1\n=======\na-v2\n>>>>>>> REPLACE\n" +
+		"File: b.txt\n<<<<<<< SEARCH\nb-v1\n=======\nb-v2\n>>>>>>> REPLACE\n"
+	args, err := json.Marshal(map[string]string{"patch": patchText})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	tool, ok := reg.Lookup("file.write_patch")
+	if !ok {
+		t.Fatal("file.write_patch not registered")
+	}
+
+	type outcome struct {
+		res registry.ToolResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := tool.Handler(opCtx, registry.ToolCall{ID: "call-patch", Name: "file.write_patch", Args: args})
+		done <- outcome{res: res, err: err}
+	}()
+
+	<-interrupted
+	var out outcome
+	select {
+	case out = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("file.write_patch did not return after the interruption")
+	}
+
+	// The committed file is on disk; the file whose unit never started is not.
+	if got, _ := os.ReadFile(filepath.Join(root, "a.txt")); string(got) != "a-v2\n" {
+		t.Fatalf("a.txt = %q, want the committed write", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(root, "b.txt")); string(got) != "b-v1\n" {
+		t.Fatalf("b.txt = %q, want it left unwritten", got)
+	}
+
+	if !errors.Is(out.err, session.ErrSendNow) {
+		t.Fatalf("err = %v, want the interrupting steering cause", out.err)
+	}
+	// The partial result keeps the committed file's evidence and names only it.
+	if !reflect.DeepEqual(out.res.FilesChanged, []string{"a.txt"}) {
+		t.Fatalf("FilesChanged = %#v, want only the committed file", out.res.FilesChanged)
+	}
+	if !strings.Contains(out.res.Content, "+a-v2") {
+		t.Fatalf("content = %q, want the committed file's diff", out.res.Content)
+	}
+	if strings.Contains(out.res.Content, "+b-v2") {
+		t.Fatalf("content = %q, want no diff for a file that was never written", out.res.Content)
+	}
+	backup := state.Backup()
+	if len(backup) != 1 || backup[0].Path != "a.txt" || backup[0].Content != "a-v1\n" {
+		t.Fatalf("backup = %#v, want exactly the committed file's original content", backup)
+	}
+}
+
+// TestFileWriteSteeringBeforeAndDuringCommit pins the two sides of file.write's
+// single commit unit.
+//
+// An operation whose interruption was already accepted writes nothing at all:
+// the mutation is refused before the write starts and the file does not exist.
+// An interruption that arrives after the write was admitted does not abandon it —
+// the file is on disk, its backup is recorded, and the result describes the
+// completed write.
+func TestFileWriteSteeringBeforeAndDuringCommit(t *testing.T) {
+	t.Run("before admission nothing is written", func(t *testing.T) {
+		root := t.TempDir()
+		state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
+		reg := testTrackedRegistry(t, root, state, nil)
+		opCtx, turn, _ := steeringToolContext(t, state, nil)
+
+		// The interruption is accepted while the operation is open and before
+		// the handler is even called, so admission is already refused.
+		steerNow(t, state, turn, "r1")
+		if !session.SteeringRequested(opCtx) {
+			t.Fatal("acceptance did not mark the operation requested")
+		}
+
+		res, err := invokeToolCtx(reg, opCtx, "file.write", `{"path":"new.txt","content":"hello\n"}`)
+		if !errors.Is(err, session.ErrSendNow) {
+			t.Fatalf("err = %v, want the interrupting steering cause", err)
+		}
+		if res.FilesChanged != nil || res.Content != "" {
+			t.Fatalf("result = %+v, want nothing reported for an unwritten file", res)
+		}
+		if _, statErr := os.Stat(filepath.Join(root, "new.txt")); !os.IsNotExist(statErr) {
+			t.Fatalf("new.txt exists after a refused write (stat err %v)", statErr)
+		}
+		if state.HasBackup() {
+			t.Fatalf("backup = %#v, want none for a write that never started", state.Backup())
+		}
+	})
+
+	t.Run("an admitted write is preserved", func(t *testing.T) {
+		root := t.TempDir()
+		state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
+		interrupted := make(chan struct{}, 1)
+		opCtx, turn, _ := steeringToolContext(t, state, func(context.Context, session.OperationRef) (session.OperationStop, error) {
+			select {
+			case interrupted <- struct{}{}:
+			default:
+			}
+			return session.OperationStop{}, nil
+		})
+		// The hook fires once the file is on disk, before the handler finishes, so
+		// the interruption lands inside the admitted unit rather than before it.
+		reg := testTrackedRegistry(t, root, state, func(inner FileTracker) FileTracker {
+			return &interruptingTracker{FileTracker: inner, onRecord: func() { steerNow(t, state, turn, "r1") }}
+		})
+
+		done := make(chan toolOutcome, 1)
+		go func() {
+			res, err := invokeToolCtx(reg, opCtx, "file.write", `{"path":"new.txt","content":"hello\n"}`)
+			done <- toolOutcome{res: res, err: err}
+		}()
+
+		<-interrupted
+		out := awaitOutcome(t, done)
+		if out.err != nil {
+			t.Fatalf("a write admitted before the interruption failed: %v", out.err)
+		}
+		if got, _ := os.ReadFile(filepath.Join(root, "new.txt")); string(got) != "hello\n" {
+			t.Fatalf("new.txt = %q, want the admitted write preserved", got)
+		}
+		if !reflect.DeepEqual(out.res.FilesChanged, []string{"new.txt"}) {
+			t.Fatalf("FilesChanged = %#v, want the written file", out.res.FilesChanged)
+		}
+		backup := state.Backup()
+		if len(backup) != 1 || backup[0].Path != "new.txt" || backup[0].Exists {
+			t.Fatalf("backup = %#v, want the created file recorded as not previously existing", backup)
+		}
+	})
 }

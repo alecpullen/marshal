@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -45,10 +46,10 @@ func TestQuestionAskBuildsPendingQuestion(t *testing.T) {
 		t.Fatalf("Questions[0].Options = %v", pq.Questions[0].Options)
 	}
 
-	pq.ResponseChan <- []session.Answer{
+	pq.Respond([]session.Answer{
 		{Question: "Which auth?", Answer: "JWT"},
 		{Question: "Keep legacy?", Answer: session.AnswerUnanswered},
-	}
+	})
 
 	res := <-resultCh
 	if res.err != nil {
@@ -118,7 +119,7 @@ func TestQuestionAskAcceptsObjectOptionsEndToEnd(t *testing.T) {
 		t.Fatalf("option = %+v, want {Label:a Description:d}", opts[0])
 	}
 
-	pq.ResponseChan <- []session.Answer{{Question: "Pick", Answer: "a"}}
+	pq.Respond([]session.Answer{{Question: "Pick", Answer: "a"}})
 	if res := <-resultCh; res.err != nil {
 		t.Fatalf("handler error: %v", res.err)
 	}
@@ -228,4 +229,106 @@ func waitPendingQuestion(t *testing.T, state *session.State) *session.PendingQue
 	}
 	t.Fatal("timed out waiting for pending question to be set")
 	return nil
+}
+
+// TestQuestionSteeringCancelAndAnswerRace pins the two settlements of a
+// question owned by an interruptible operation, and that neither leaves a
+// stale clear behind.
+//
+// A human answer that claims the prompt first is the tool's result: the model
+// is told what the user chose, not that the operation was interrupted. A
+// cancellation that claims it first is reported as the distinct steering cause
+// — never as a fabricated answer — and a late answer cannot settle a prompt
+// that no longer exists.
+func TestQuestionSteeringCancelAndAnswerRace(t *testing.T) {
+	args, err := json.Marshal(map[string]any{
+		"questions": []map[string]any{{"question": "Which auth?", "options": []string{"JWT", "OAuth"}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+
+	// startQuestion runs one question.ask under opCtx and returns its outcome
+	// channel. It takes no *testing.T so it is safe inside the goroutine a
+	// blocking handler needs.
+	startQuestion := func(state *session.State, opCtx context.Context) <-chan toolOutcome {
+		tools := &toolSet{sessionState: state}
+		tool := tools.questionAskTool()
+		done := make(chan toolOutcome, 1)
+		go func() {
+			res, err := tool.Handler(opCtx, registry.ToolCall{ID: "call-q", Name: "question.ask", Args: args})
+			done <- toolOutcome{res: res, err: err}
+		}()
+		return done
+	}
+
+	t.Run("a winning answer is the result", func(t *testing.T) {
+		state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		opCtx, turn, _ := steeringToolContext(t, state, nil)
+		done := startQuestion(state, opCtx)
+
+		pq := waitPendingQuestion(t, state)
+		retired := pq.Key
+		answers := []session.Answer{{Question: "Which auth?", Answer: "JWT"}}
+		pq.Respond(answers)
+
+		out := awaitOutcome(t, done)
+		if out.err != nil {
+			t.Fatalf("a winning answer was reported as an interruption: %v", out.err)
+		}
+		if out.res.Summary != "user answered" {
+			t.Fatalf("summary = %q, want the answer result", out.res.Summary)
+		}
+		if !strings.Contains(out.res.Content, `"Which auth?"="JWT"`) {
+			t.Fatalf("content = %q, want the user's actual answer", out.res.Content)
+		}
+
+		// A newer question is now the one on screen. Neither the retired
+		// request's cleanup nor the old operation's cancellation may clear it.
+		newer := &session.PendingQuestion{
+			Questions:    []session.Question{{Question: "Keep legacy?"}},
+			ResponseChan: make(chan []session.Answer, 1),
+		}
+		if _, err := state.RegisterQuestion(context.Background(), newer); err != nil {
+			t.Fatalf("RegisterQuestion: %v", err)
+		}
+		state.ClearPrompt(retired)
+		if got := state.PendingQuestion(); got == nil || got.Key.ID != newer.Key.ID {
+			t.Fatalf("the retired key's cleanup cleared a newer question: %+v", got)
+		}
+		steerNow(t, state, turn, "r1")
+		if got := state.PendingQuestion(); got == nil || got.Key.ID != newer.Key.ID {
+			t.Fatalf("the old operation's cancellation reached an independent request: %+v", got)
+		}
+		// Clean up the newer request so nothing outlives the test.
+		state.CancelPrompt(newer.Key, session.ErrSendNow)
+	})
+
+	t.Run("a winning cancellation is the distinct cause", func(t *testing.T) {
+		state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		opCtx, turn, _ := steeringToolContext(t, state, nil)
+		done := startQuestion(state, opCtx)
+
+		pq := waitPendingQuestion(t, state)
+		canceled := pq.Key
+
+		// The interruption owns the settlement from acceptance onwards.
+		steerNow(t, state, turn, "r1")
+
+		out := awaitOutcome(t, done)
+		if !errors.Is(out.err, session.ErrSendNow) {
+			t.Fatalf("canceled question error = %v, want the distinct steering cause", out.err)
+		}
+		if strings.Contains(out.res.Content, "user answered") || strings.Contains(out.res.Content, "JWT") {
+			t.Fatalf("a canceled question reported a fabricated human answer: %q", out.res.Content)
+		}
+
+		// A late answer on the settled request settles nothing.
+		if state.ResolveQuestion(canceled, []session.Answer{{Question: "Which auth?", Answer: "OAuth"}}) {
+			t.Fatal("a late answer claimed a question the interruption had already settled")
+		}
+		if state.PendingQuestion() != nil {
+			t.Fatal("the canceled question's slot was left pending")
+		}
+	})
 }

@@ -646,8 +646,10 @@ func (s *State) PromptContext(key PromptKey) context.Context {
 	return rec.ctx
 }
 
-// ClearPrompt compare-clears the record for a key. It never touches whichever
-// prompt is now pending: an old copy's cleanup cannot release a newer request.
+// ClearPrompt compare-clears both the record and the prompt slot for a key. It
+// releases nothing — a caller that settles a prompt has already done so — and it
+// never touches whichever prompt is now pending: an old copy's cleanup cannot
+// release a newer request.
 func (s *State) ClearPrompt(key PromptKey) {
 	s.accessMu.Lock()
 	rec := s.prompts[key.ID]
@@ -656,7 +658,44 @@ func (s *State) ClearPrompt(key PromptKey) {
 		return
 	}
 	delete(s.prompts, key.ID)
+	// Compare the slot against this record's own prompt while holding the gate,
+	// so the comparison and the clear cannot interleave with a replacement.
+	var clearedApproval, clearedQuestion, clearedSkill, clearedSudo bool
+	s.mu.Lock()
+	if rec.approval != nil && s.pendingApproval == rec.approval {
+		s.pendingApproval = nil
+		s.pendingAccessCtx = nil
+		s.pendingAccessIntent = AccessIntent{}
+		clearedApproval = true
+	}
+	if rec.question != nil && s.pendingQuestion == rec.question {
+		s.pendingQuestion = nil
+		clearedQuestion = true
+	}
+	if rec.skill != nil && s.pendingSkillGate == rec.skill {
+		s.pendingSkillGate = nil
+		clearedSkill = true
+	}
+	if rec.sudo != nil && s.pendingSudoAuth == rec.sudo {
+		s.pendingSudoAuth = nil
+		clearedSudo = true
+	}
+	s.mu.Unlock()
 	s.accessMu.Unlock()
+
+	// Publish outside the locks: a subscriber may re-enter State.
+	if clearedApproval {
+		s.publishEvent(EventPendingApprovalChanged, Event{PendingApproval: nil})
+	}
+	if clearedQuestion {
+		s.publishEvent(EventPendingQuestionChanged, Event{PendingQuestion: nil})
+	}
+	if clearedSkill {
+		s.publishEvent(EventPendingSkillGateChanged, Event{PendingSkillGate: nil})
+	}
+	if clearedSudo {
+		s.publishEvent(EventPendingSudoAuthChanged, Event{PendingSudoAuth: nil})
+	}
 }
 
 // CancelOperationPrompts settles every prompt owned by exactly ref. It selects

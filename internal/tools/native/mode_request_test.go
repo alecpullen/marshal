@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -599,5 +600,58 @@ func TestModeRequestAcceptedGrantBeatsLaterContextCancel(t *testing.T) {
 	}
 	if got := f.state.AccessState(); got != (session.AccessState{Mode: "edit"}) {
 		t.Fatalf("session pair = %+v, want the accepted grant preserved", got)
+	}
+}
+
+// TestModeRequestSteeringNeverReportsGrant pins what an interrupted capability
+// request may say. A steering interruption of the requesting operation settles
+// the request as canceled at the canonical gate, so the tool reports the
+// interruption and nothing else: no capability, no typed access result the model
+// could read as authority, and no change to the session's actual state — even
+// when the user's approval had already been offered.
+func TestModeRequestSteeringNeverReportsGrant(t *testing.T) {
+	f := newModeRequestFixture(t, config.Default())
+	events := f.subscribe(t)
+
+	// The request runs under a real steering operation so its prompt is owned by
+	// that operation and its cancellation can reach it.
+	opCtx, turn, _ := steeringToolContext(t, f.state, nil)
+	done := startModeRequest(f.reg, opCtx, "call-1", `{"mode":"edit"}`)
+	req := awaitAccessRequest(t, events)
+	if !req.MissingEditing {
+		t.Fatalf("request flags = %+v, want editing missing from the default mode", req)
+	}
+
+	// The interruption is accepted while the request is pending: acceptance
+	// marks the operation requested and the interruption worker settles the
+	// request canonically, so the grant cannot slip through.
+	steerNow(t, f.state, turn, "r1")
+
+	out := awaitOutcome(t, done)
+	if !errors.Is(out.err, session.ErrSendNow) {
+		t.Fatalf("mode.request error = %v, want the distinct steering interruption", out.err)
+	}
+	if strings.Contains(out.res.Content, string(session.AccessGranted)) {
+		t.Fatalf("content = %q, must never report a grant for a canceled request", out.res.Content)
+	}
+	if out.res.Content != "" || out.res.FilesChanged != nil {
+		t.Fatalf("result = %+v, want nothing a caller could read as authority", out.res)
+	}
+
+	// The session's authority is untouched: no mode was committed and system
+	// access is still off.
+	if got := f.state.AccessState(); got != (session.AccessState{Mode: "default"}) {
+		t.Fatalf("session pair = %+v, want it unchanged by a canceled request", got)
+	}
+	if f.state.SystemAccess() {
+		t.Fatal("a canceled request granted system access")
+	}
+	// The request is no longer pending, so a late answer cannot settle it.
+	// A late grant attempt on the retired request is refused outright.
+	if _, pending := f.state.AccessRequest(); pending {
+		t.Fatal("the canceled request was left pending")
+	}
+	if f.state.CancelAccess(req.RequestID, session.AccessCanceled, "late cleanup") {
+		t.Fatal("a retired request ID settled again")
 	}
 }

@@ -11,11 +11,6 @@ import (
 	"marshal/internal/tools/registry"
 )
 
-type questionStore interface {
-	SetPendingQuestion(*session.PendingQuestion)
-	PendingQuestion() *session.PendingQuestion
-}
-
 type questionAskArgs struct {
 	Questions []session.Question `json:"questions"`
 }
@@ -38,14 +33,46 @@ func (t *toolSet) questionAskTool() registry.Tool {
 		if t.sessionState == nil {
 			return registry.ToolResult{}, fmt.Errorf("session state not available")
 		}
-		store := questionStore(t.sessionState)
-		ch := make(chan []session.Answer, 1)
-		store.SetPendingQuestion(&session.PendingQuestion{
+		// Register the prompt through the session's canonical registry rather
+		// than writing the pending slot directly: a registered prompt is
+		// settled by key, so a steering interruption that owns this operation
+		// can claim it once and a late answer on a stale copy cannot.
+		pending := &session.PendingQuestion{
 			Questions:    args.Questions,
-			ResponseChan: ch,
-		})
-		answers := <-ch
-		store.SetPendingQuestion(nil)
+			ResponseChan: make(chan []session.Answer, 1),
+		}
+		key, err := t.sessionState.RegisterQuestion(ctx, pending)
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+
+		var answers []session.Answer
+		select {
+		case answers = <-pending.ResponseChan:
+			// Delivered: either a real answer or the cancellation sentinel. The
+			// recorded cause distinguishes them, and a canceled question must
+			// never be reported to the model as a fabricated human answer.
+			if cause := t.sessionState.PromptCause(key); cause != nil {
+				t.sessionState.ClearPrompt(key)
+				return registry.ToolResult{}, cause
+			}
+			t.sessionState.ClearPrompt(key)
+		case <-ctx.Done():
+			// The operation was interrupted (or the turn stopped): settle the
+			// prompt canonically. CancelPrompt waits outside the state locks for
+			// a response claim that already won, so the channel then carries
+			// either that real answer or the cancellation sentinel.
+			t.sessionState.CancelPrompt(key, session.ErrSendNow)
+			answers = <-pending.ResponseChan
+			cause := t.sessionState.PromptCause(key)
+			t.sessionState.ClearPrompt(key)
+			if cause != nil {
+				return registry.ToolResult{}, cause
+			}
+			if answers == nil {
+				return registry.ToolResult{}, ctx.Err()
+			}
+		}
 		parts := []string{"You can now continue with the user's answers in mind."}
 		for _, a := range answers {
 			parts = append(parts, fmt.Sprintf("%q=%q", a.Question, a.Answer))

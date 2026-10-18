@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -353,5 +354,111 @@ func TestWorkTasksKeyboardEmitsExactTargets(t *testing.T) {
 	req = cmd().(workRequestMsg)
 	if req.kind != workReqExpand || req.taskKey != "work:a" {
 		t.Fatalf("Space = %s/%s, want expand/work:a", req.kind, req.taskKey)
+	}
+}
+
+// TestWorkAsyncReplyCannotReopenClosedPanel pins that a list reply arriving
+// after its panel closed is dropped: it can neither reopen the panel nor mutate
+// the closed one.
+func TestWorkAsyncReplyCannotReopenClosedPanel(t *testing.T) {
+	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1}}
+	m := newWorkModel(t, svc)
+	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{workTask("work:a", "Alpha")}}
+	m = ctrlT(m)
+	if !m.tasksOpen() {
+		t.Fatal("the Tasks panel did not open")
+	}
+	p := m.tasksPanel
+
+	hist := panelAction(p, "work-history")
+	if hist == nil {
+		t.Fatal("no history action on the live view")
+	}
+	req := hist().(workRequestMsg)
+
+	// Servicing happens outside Update: the model returns a cmd and the service
+	// is not touched yet.
+	updated, cmd := m.Update(req)
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("the list request produced no service cmd")
+	}
+	if svc.listCalls != 0 {
+		t.Fatal("the Work service was called inside Update")
+	}
+
+	// The panel closes before the slow reply returns.
+	panelID, conversationID, requestID := p.panelID, req.conversationID, req.requestID
+	m = ctrlT(m)
+	if m.tasksOpen() {
+		t.Fatal("the Tasks panel did not close")
+	}
+	if m.tasksPanel != nil {
+		t.Fatal("closing left a stale panel pointer")
+	}
+
+	// The late page cannot reopen or mutate the closed panel.
+	updated, _ = m.Update(workPageMsg{
+		conversationID: conversationID,
+		panelID:        panelID,
+		requestID:      requestID,
+		page:           viewmodel.WorkPage{Items: []viewmodel.WorkItem{workTask("work:x", "X")}},
+	})
+	m = updated.(Model)
+	if m.tasksPanel != nil || m.dock.IsOpen() {
+		t.Fatal("a late page resurrected the closed Tasks panel")
+	}
+	if p.items != nil {
+		t.Fatal("a late page mutated the closed panel's list")
+	}
+}
+
+// TestWorkScrollAndMouseTargetsSurviveRefresh pins stable scroll anchoring and
+// that the now bar's mouse targets are rebuilt from the planner on every frame,
+// so a departed card leaves no stale target behind.
+func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
+	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1}}
+	m := newWorkModel(t, svc)
+	// Tall enough that the live-work bar expands past its one-row summary.
+	m.resize(120, 40)
+	for i := 0; i < 200; i++ {
+		m.state.AddMessage(session.RoleUser, fmt.Sprintf("line %d", i), session.ContentTypePlain)
+	}
+	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{
+		workTask("work:a", "Alpha"), workTask("work:b", "Beta"),
+	}}
+	m.invalidateTranscript()
+	m.refreshViewport()
+	_ = m.viewString()
+
+	if len(m.workHits) != 2 {
+		t.Fatalf("mouse targets = %d, want 2", len(m.workHits))
+	}
+	if _, ok := m.workHits["work:a"]; !ok {
+		t.Fatal("missing mouse target for work:a")
+	}
+
+	// Anchor the viewport, then deliver a newer snapshot.
+	m.viewport.SetYOffset(3)
+	m.viewportFollow = false
+	anchor := m.viewport.YOffset()
+
+	updated, _ := m.Update(workMsg{
+		snapshot: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 2, Items: []viewmodel.WorkItem{
+			workTask("work:a", "Alpha"), workTask("work:c", "Gamma"),
+		}},
+		subscriptionID: m.workSubscriptionID,
+	})
+	m = updated.(Model)
+	_ = m.viewString()
+
+	if m.viewport.YOffset() != anchor {
+		t.Fatalf("scroll anchor moved on refresh: %d -> %d", anchor, m.viewport.YOffset())
+	}
+	if _, ok := m.workHits["work:b"]; ok {
+		t.Fatal("a departed card left a stale mouse target")
+	}
+	if _, ok := m.workHits["work:c"]; !ok {
+		t.Fatal("the new card has no mouse target")
 	}
 }

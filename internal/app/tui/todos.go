@@ -184,17 +184,6 @@ const (
 	workReqPrompt  = "prompt"
 )
 
-// workRequestMsg is contract C5's UI→pump request. Every Tasks-panel Work
-// action emits one for the model's pump to service; the panel itself never
-// calls the Work service. Task 18 moves this declaration unchanged to
-// events.go — it must not be declared twice.
-type workRequestMsg struct {
-	conversationID, panelID, requestID string
-	kind, taskKey, resultRevision      string
-	query                              viewmodel.WorkQuery
-	raw                                bool
-}
-
 // workPending is one outstanding request the panel has emitted but not yet
 // seen a result for. It carries the query so a page result knows whether it
 // replaces the list or appends to it.

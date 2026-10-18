@@ -67,6 +67,7 @@ func (m *Model) refreshViewport() {
 		Busy:            m.busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
 		Drilled:         drilling,
 		RunningSubagent: m.state.HasRunningSubagent(),
+		LiveWork:        m.workService != nil,
 		Now:             m.now(),
 	}
 	turns := viewmodel.Build(snap)

@@ -220,6 +220,10 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	// The old session's changed-files list must never render in the new
 	// session while the sheetBaseRefMsg round-trips; re-read it below.
 	m.sheetChanged = nil
+	// Rebind the Work stream: the previous conversation's subscription is
+	// cancelled and drained, its cards cleared, and the new epoch seeded and
+	// re-armed so no work from the old session leaks into the new one.
+	workCmd := m.rebindWorkSession()
 
 	msg := fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount)
 	if name != "" {
@@ -227,7 +231,11 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
-	return sheetBaseRefCmd(m.state.Workspace().ActiveRoot)
+	baseCmd := sheetBaseRefCmd(m.state.Workspace().ActiveRoot)
+	if workCmd != nil {
+		return tea.Batch(baseCmd, workCmd)
+	}
+	return baseCmd
 }
 
 func init() {
@@ -447,6 +455,13 @@ func init() {
 			doc := runOutcomeDoc(m.state.SDDProgress(), worktree.CLIGitOps{}, m.state.WorkingDir, m.now(), m.width)
 			m.dock.Open(docpanel.New(doc, m.state))
 			m.refreshViewport()
+			return m, nil
+		},
+		// /work opens the Tasks panel directly on its Work tab. The command's
+		// registry entry lands in Task 19; the effect is wired here so the
+		// surface exists the moment it is registered.
+		"work": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.openTasks(tasksTabWork)
 			return m, nil
 		},
 		"review": func(m *Model, args []string) (tea.Model, tea.Cmd) {

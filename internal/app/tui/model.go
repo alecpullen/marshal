@@ -778,6 +778,20 @@ type Model struct {
 	// the legacy owner rows; nil (the default) leaves the existing now bar
 	// untouched. Task 18 owns the event pump that refreshes workSnapshot.
 	workService viewmodel.WorkService
+	// workEvents is the persistent WorkSnapshot subscription. It is created
+	// once by New (and re-created on a session rebind) with a child cancel
+	// context; workCancel cancels it. workSubscriptionID advances on every
+	// rebind and is captured by each pump, so an event from a superseded
+	// subscription is ignored rather than applied. A terminated pump does not
+	// resubscribe itself.
+	workEvents         <-chan pubsub.Event[viewmodel.WorkSnapshot]
+	workCancel         context.CancelFunc
+	workSubscriptionID uint64
+	// workConversation and workEpoch bind the conversation and runtime epoch
+	// the stream must match. They are taken from the service's own seed
+	// snapshot at subscribe time, never from an arbitrary late event.
+	workConversation string
+	workEpoch        string
 	// workSnapshot is the newest immutable Work projection. The bar only
 	// reads it: it never mutates the snapshot and never fills a gap from the
 	// agent, job or watch owners.
@@ -1833,6 +1847,13 @@ func New(state *session.State, opts ...Option) Model {
 	if m.subagentBroker != nil && m.subagentEvents == nil {
 		m.subagentEvents = m.subagentBroker.Subscribe(m.ctx)
 	}
+	// Subscribe to the Work snapshot stream once. The subscription is created
+	// before the seed snapshot is read so nothing published between the two is
+	// lost; the seed then binds the conversation and epoch the stream must
+	// match.
+	if m.workService != nil {
+		m.startWorkSubscription()
+	}
 
 	// Eagerly build inline approval/question forms if the session already
 	// has a pending request (parent or subagent), so the first render shows
@@ -1914,6 +1935,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.subagentEvents != nil {
 		cmds = append(cmds, pumpSubagentEvents(m.subagentEvents))
+	}
+	if m.workEvents != nil {
+		cmds = append(cmds, pumpWorkEvents(m.workEvents, m.workSubscriptionID))
 	}
 	return tea.Batch(cmds...)
 }
@@ -2377,6 +2401,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case workRequestMsg:
+		return m.handleWorkRequest(msg)
+	case workPageMsg:
+		return m.handleWorkPage(msg)
+	case workDetailMsg:
+		return m.handleWorkDetail(msg)
+	case workActionMsg:
+		return m.handleWorkAction(msg)
 	case ctrlCExpiredMsg:
 		return m, nil
 	case settings.ChangedMsg:
@@ -2565,7 +2597,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Runtime messages always stay with the parent model so background state
-	// remains current while a dock panel is open.
+	// remains current while a dock panel is open. A Work snapshot is the same
+	// kind of background state: it must land even with a panel or prompt up.
+	if wm, ok := msg.(workMsg); ok {
+		return m.handleWorkMsg(wm)
+	}
 	switch msg.(type) {
 	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, sheetBaseRefMsg, suggestionMsg, callersMsg, watchMsg:
 		return m.handleRuntimeMessage(msg)
@@ -6192,6 +6228,461 @@ func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
 	return m, pumpSubagentEvents(m.subagentEvents)
 }
 
+// ── Live work ──────────────────────────────────────────────────────────────
+
+// workReceiptTickWindow mirrors viewmodel's bounded receipt window: a settled
+// item is shown for this long from EndedAt, and the idle tick repaints while one
+// is inside it. It is a repaint bound only — it never extends a receipt.
+const workReceiptTickWindow = 5 * time.Second
+
+// startWorkSubscription (re)establishes the Work snapshot stream. It runs once
+// from New for the initial conversation and again on every session rebind. The
+// subscription is created before the seed snapshot is read, so an event
+// published between the two is never lost; the seed then binds the conversation
+// and runtime epoch the stream must match. workSubscriptionID advances on every
+// rebind, so a pump from the superseded channel is ignored rather than applied.
+func (m *Model) startWorkSubscription() {
+	if m.workService == nil {
+		return
+	}
+	m.cancelWorkSubscription()
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	child, cancel := context.WithCancel(ctx)
+	m.workCancel = cancel
+	m.workSubscriptionID++
+	m.workEvents = m.workService.SubscribeWork(child)
+	snap := m.workService.WorkSnapshot()
+	m.workSnapshot = snap
+	m.workConversation = snap.ConversationID
+	m.workEpoch = snap.RuntimeEpoch
+	m.workExpanded = ""
+	if m.tasksPanel != nil {
+		m.resetTasksPanelWork()
+	}
+}
+
+// cancelWorkSubscription drops the current stream and its child context. A
+// terminated pump does not resubscribe itself: only an explicit rebind starts a
+// new one.
+func (m *Model) cancelWorkSubscription() {
+	if m.workCancel != nil {
+		m.workCancel()
+		m.workCancel = nil
+	}
+	m.workEvents = nil
+}
+
+// rebindWorkSession tears down the old conversation's Work stream, clears the
+// cards and the panel's outstanding requests, seeds the new conversation's epoch
+// and re-arms the pump. It returns the re-armed pump command, or nil when no
+// service is attached.
+func (m *Model) rebindWorkSession() tea.Cmd {
+	if m.workService == nil {
+		return nil
+	}
+	m.startWorkSubscription()
+	if m.workEvents == nil {
+		return nil
+	}
+	return pumpWorkEvents(m.workEvents, m.workSubscriptionID)
+}
+
+// resetTasksPanelWork clears the panel's Work tab after a session rebind: its
+// cards and outstanding requests belonged to the conversation that just ended,
+// so a late reply must not be able to apply to the new one.
+func (m *Model) resetTasksPanelWork() {
+	p := m.tasksPanel
+	if p == nil {
+		return
+	}
+	p.pending = map[string]workPending{}
+	p.items = nil
+	p.nextCursor = ""
+	p.stale = false
+	p.selectedKey = ""
+	p.detail = nil
+	p.detailOpen = false
+	p.err = ""
+	p.setWork(m.workService != nil, m.state.SessionID(), m.workSnapshot)
+}
+
+// handleWorkMsg applies one snapshot event. An event from a superseded
+// subscription, another conversation or an older revision is dropped; either
+// way the same pump is re-armed (unless this subscription was replaced, in
+// which case its pump is dead and the current one re-arms itself).
+func (m Model) handleWorkMsg(msg workMsg) (Model, tea.Cmd) {
+	if msg.subscriptionID != m.workSubscriptionID || m.workEvents == nil {
+		return m, nil
+	}
+	rearm := func() tea.Cmd { return pumpWorkEvents(m.workEvents, msg.subscriptionID) }
+	// Bind strictly: a snapshot from another conversation, or one older than
+	// what is already shown for the same conversation, is ignored.
+	if m.workConversation != "" && msg.snapshot.ConversationID != m.workConversation {
+		return m, rearm()
+	}
+	if msg.snapshot.ConversationID == m.workSnapshot.ConversationID &&
+		msg.snapshot.Revision < m.workSnapshot.Revision {
+		return m, rearm()
+	}
+	m.workSnapshot = msg.snapshot
+	if m.tasksPanel != nil {
+		m.tasksPanel.setWork(m.workService != nil, m.state.SessionID(), msg.snapshot)
+	}
+	m.refreshViewport()
+	return m, rearm()
+}
+
+// handleWorkRequest services one Tasks-panel Work action. Only the currently
+// open panel's request acts: a request from a panel that was closed or replaced
+// is dropped. The service calls are returned as tea.Cmds so they run outside
+// Update and never block input.
+func (m Model) handleWorkRequest(msg workRequestMsg) (Model, tea.Cmd) {
+	if !m.tasksOpen() || msg.panelID != m.tasksPanel.panelID {
+		return m, nil
+	}
+	if msg.conversationID != m.tasksPanel.conversationID {
+		return m, nil
+	}
+	switch msg.kind {
+	case workReqExpand:
+		m.workExpanded = msg.taskKey
+		m.refreshViewport()
+		return m, nil
+	case workReqOrigin:
+		return m.jumpToWorkOrigin(msg.taskKey)
+	case workReqPrompt:
+		return m.navigateToWorkPrompt(msg)
+	case workReqList:
+		return m, m.workListCmd(msg)
+	case workReqInspect:
+		return m, m.workInspectCmd(msg)
+	case workReqStop:
+		return m, m.workStopCmd(msg)
+	case workReqAck:
+		return m, m.workAckCmd(msg)
+	}
+	return m, nil
+}
+
+// workListCmd issues one list request off the Update thread, capturing the
+// exact conversation, panel and request identity so the reply can be validated.
+func (m Model) workListCmd(msg workRequestMsg) tea.Cmd {
+	svc := m.workService
+	if svc == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		page, err := svc.ListWork(context.Background(), msg.query)
+		return workPageMsg{
+			conversationID: msg.conversationID,
+			panelID:        msg.panelID,
+			requestID:      msg.requestID,
+			query:          msg.query,
+			page:           page,
+			err:            err,
+		}
+	}
+}
+
+// workInspectCmd issues one inspect request off the Update thread.
+func (m Model) workInspectCmd(msg workRequestMsg) tea.Cmd {
+	svc := m.workService
+	if svc == nil {
+		return nil
+	}
+	target := viewmodel.WorkTarget{ConversationID: msg.conversationID, TaskKey: msg.taskKey}
+	raw := msg.raw
+	return func() tea.Msg {
+		detail, err := svc.InspectWork(context.Background(), target, raw)
+		return workDetailMsg{
+			conversationID: msg.conversationID,
+			panelID:        msg.panelID,
+			requestID:      msg.requestID,
+			detail:         detail,
+			err:            err,
+		}
+	}
+}
+
+// workStopCmd issues one stop request off the Update thread. The captured
+// revision, key and conversation travel with the reply so a stale acceptance can
+// never describe the wrong item.
+func (m Model) workStopCmd(msg workRequestMsg) tea.Cmd {
+	svc := m.workService
+	if svc == nil {
+		return nil
+	}
+	target := viewmodel.WorkTarget{ConversationID: msg.conversationID, TaskKey: msg.taskKey}
+	return func() tea.Msg {
+		stop, err := svc.StopWork(context.Background(), target, "requested from the Tasks panel")
+		return workActionMsg{
+			conversationID: msg.conversationID,
+			taskKey:        msg.taskKey,
+			resultRevision: msg.resultRevision,
+			requestID:      msg.requestID,
+			kind:           workReqStop,
+			stop:           stop,
+			err:            err,
+		}
+	}
+}
+
+// workAckCmd issues one acknowledgement off the Update thread, carrying the
+// exact result revision that was on screen.
+func (m Model) workAckCmd(msg workRequestMsg) tea.Cmd {
+	svc := m.workService
+	if svc == nil {
+		return nil
+	}
+	ack := viewmodel.WorkAck{
+		WorkTarget:     viewmodel.WorkTarget{ConversationID: msg.conversationID, TaskKey: msg.taskKey},
+		ResultRevision: msg.resultRevision,
+	}
+	return func() tea.Msg {
+		err := svc.AcknowledgeWork(context.Background(), ack)
+		return workActionMsg{
+			conversationID: msg.conversationID,
+			taskKey:        msg.taskKey,
+			resultRevision: msg.resultRevision,
+			requestID:      msg.requestID,
+			kind:           workReqAck,
+			err:            err,
+		}
+	}
+}
+
+// handleWorkPage applies one list reply, but only while the panel and request
+// that asked for it are still current. A reply from a closed or replaced panel
+// is dropped, so it can never reopen or corrupt it.
+func (m Model) handleWorkPage(msg workPageMsg) (Model, tea.Cmd) {
+	if !m.tasksOpen() || msg.panelID != m.tasksPanel.panelID {
+		return m, nil
+	}
+	if msg.conversationID != m.tasksPanel.conversationID {
+		return m, nil
+	}
+	if m.tasksPanel.applyPage(msg.requestID, msg.page, msg.err) {
+		m.refreshViewport()
+	}
+	return m, nil
+}
+
+// handleWorkDetail applies one inspect reply with the same identity checks.
+func (m Model) handleWorkDetail(msg workDetailMsg) (Model, tea.Cmd) {
+	if !m.tasksOpen() || msg.panelID != m.tasksPanel.panelID {
+		return m, nil
+	}
+	if msg.conversationID != m.tasksPanel.conversationID {
+		return m, nil
+	}
+	if m.tasksPanel.applyDetail(msg.requestID, msg.detail, msg.err) {
+		m.refreshViewport()
+	}
+	return m, nil
+}
+
+// handleWorkAction applies one stop or acknowledgement reply. The stop result
+// describes the accepted request only; the item's actual state settles from the
+// next source snapshot. Errors stay visible and never change the item's
+// capability or attention. The reply carries no panel ID (contract C5): the
+// request ID is the panel-scoped identity, so it is validated by its prefix.
+func (m Model) handleWorkAction(msg workActionMsg) (Model, tea.Cmd) {
+	if !m.tasksOpen() || !strings.HasPrefix(msg.requestID, m.tasksPanel.panelID+".") {
+		return m, nil
+	}
+	if msg.conversationID != m.tasksPanel.conversationID {
+		return m, nil
+	}
+	p := m.tasksPanel
+	switch msg.kind {
+	case workReqStop:
+		switch {
+		case msg.err != nil:
+			p.err = msg.err.Error()
+		case !msg.stop.Accepted:
+			p.err = msg.stop.Summary
+		default:
+			p.err = ""
+		}
+	case workReqAck:
+		if msg.err != nil {
+			p.err = msg.err.Error()
+		} else {
+			p.err = ""
+		}
+	}
+	m.refreshViewport()
+	return m, nil
+}
+
+// workLaneAging reports whether the pinned work bar is showing anything whose
+// appearance changes with time: a live card's elapsed age, or a terminal item
+// still inside its bounded receipt window. It keeps the idle tick alive so
+// those repaint, and nothing more.
+func (m Model) workLaneAging() bool {
+	now := m.now()
+	for _, it := range m.workSnapshot.Items {
+		if viewmodel.WorkActive(it) {
+			return true
+		}
+		if !it.EndedAt.IsZero() && now.Sub(it.EndedAt) <= workReceiptTickWindow {
+			return true
+		}
+	}
+	return false
+}
+
+// workItemByKey finds one item in the current projection by TaskKey.
+func (m Model) workItemByKey(taskKey string) (viewmodel.WorkItem, bool) {
+	for _, it := range m.workSnapshot.Items {
+		if it.TaskKey == taskKey {
+			return it, true
+		}
+	}
+	return viewmodel.WorkItem{}, false
+}
+
+// jumpToWorkOrigin resolves a work item's stored reference and navigates to it.
+// A retained transcript node is scrolled to and highlighted; when the node is
+// gone the bounded retained detail is opened with unavailable text instead of a
+// dead jump.
+func (m *Model) jumpToWorkOrigin(taskKey string) (Model, tea.Cmd) {
+	item, ok := m.workItemByKey(taskKey)
+	if !ok {
+		m.state.AddMessage(session.RoleSystem, "That work item is no longer available.", session.ContentTypePlain)
+		m.refreshViewport()
+		return *m, nil
+	}
+	// A retained child session is the most specific reference: drill into the
+	// actual child while it is still registered. This is the same target Ctrl+F
+	// reaches.
+	if childID := item.Reference.ChildSessionID; childID != "" {
+		for _, v := range m.state.Subagents() {
+			if v.Child != nil && v.Child.SessionID() == childID {
+				m.drillIntoSubagent(v)
+				m.invalidateTranscript()
+				m.refreshViewport()
+				return *m, nil
+			}
+		}
+	}
+	if key := item.Reference.NodeKey; key != "" {
+		if id, ok := m.browseNodeForKey(key); ok {
+			m.browsing = true
+			m.cursor = id
+			m.viewportFollow = false
+			m.invalidateTranscript()
+			m.refreshViewport()
+			m.scrollToCursor()
+			return *m, nil
+		}
+	}
+	m.openWorkDetailUnavailable(item)
+	return *m, nil
+}
+
+// browseNodeForKey resolves a stored node key to the navigable node the
+// transcript is currently showing, if any.
+func (m Model) browseNodeForKey(key string) (viewmodel.NodeID, bool) {
+	for _, it := range m.browseItems {
+		if it.id.Key == key {
+			return it.id, true
+		}
+	}
+	return viewmodel.NodeID{}, false
+}
+
+// openWorkDetailUnavailable opens the panel's bounded retained detail for an
+// item whose referenced transcript position is gone, with the unavailable text
+// the reader can act on.
+func (m *Model) openWorkDetailUnavailable(item viewmodel.WorkItem) {
+	p := m.tasksPanel
+	if p == nil {
+		m.state.AddMessage(session.RoleSystem, "The referenced transcript position is no longer available.", session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	d := viewmodel.WorkDetail{
+		Item:        item,
+		Unavailable: "The referenced transcript position is no longer retained.",
+	}
+	p.detail = &d
+	p.detailOpen = true
+	p.previousTab = p.activeTab
+	p.activeTab = tasksTabWork
+	m.dock.Open(p)
+	m.refreshViewport()
+}
+
+// promptKeyByID finds the canonical key of the pending prompt carrying id, in
+// the same order focusedPromptKey resolves them.
+func (m Model) promptKeyByID(id string) (session.PromptKey, bool) {
+	if id == "" {
+		return session.PromptKey{}, false
+	}
+	if sa := m.state.PendingSudoAuth(); sa != nil && sa.Key.ID == id {
+		return sa.Key, true
+	}
+	if sg := m.state.PendingSkillGate(); sg != nil && sg.Key.ID == id {
+		return sg.Key, true
+	}
+	if tc, _ := m.pendingApprovalDisplay(); tc != nil && tc.Key.ID == id {
+		return tc.Key, true
+	}
+	if q := m.state.PendingQuestion(); q != nil && q.Key.ID == id {
+		return q.Key, true
+	}
+	return session.PromptKey{}, false
+}
+
+// navigateToWorkPrompt navigates to the pending request a work item names, by
+// its canonical request ID. It closes the Tasks panel so the inline prompt owns
+// the frame, and it never approves or answers the request: that decision stays
+// with the user's own prompt surface.
+func (m *Model) navigateToWorkPrompt(msg workRequestMsg) (Model, tea.Cmd) {
+	if _, ok := m.promptKeyByID(msg.requestID); !ok {
+		m.state.AddMessage(session.RoleSystem, "That request is no longer pending.", session.ContentTypePlain)
+		m.refreshViewport()
+		return *m, nil
+	}
+	if m.tasksPanel != nil {
+		m.tasksPanelTab = m.tasksPanel.activeTab
+		m.tasksPanelUsed = true
+	}
+	m.dock.CloseNow()
+	m.tasksPanel = nil
+	m.reconcileAccess()
+	m.refreshViewport()
+	return *m, nil
+}
+
+// openTasks opens the Tasks panel on the requested tab, switching tabs when it
+// is already the open panel. It refuses to open a panel with neither a todo
+// list nor a Work projection, leaving a notice instead.
+func (m *Model) openTasks(tab workTab) {
+	if m.tasksOpen() {
+		m.tasksPanel.previousTab = m.tasksPanel.activeTab
+		m.tasksPanel.activeTab = tab
+		m.refreshViewport()
+		return
+	}
+	todos := m.viewedTodos()
+	if len(todos) == 0 && !m.workLaneActive() {
+		m.state.AddMessage(session.RoleSystem, "No task list in this session.", session.ContentTypePlain)
+		m.refreshViewport()
+		return
+	}
+	m.tasksPanelTab = tab
+	m.tasksPanelUsed = true
+	m.sheetPanel = nil
+	m.tasksPanel = newTasksPanel(m, todos, m.taskStats, tab)
+	m.dock.Open(m.tasksPanel)
+	m.refreshViewport()
+}
+
 // handleSheetBaseRef handles a sheetBaseRefMsg: a freshly-read HEAD SHA for
 // the changed-files cache. It rebases the base ref and installs the diff the
 // command already read off-thread, so the handler does no git work.
@@ -6243,6 +6734,15 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 		}
 	}
 	if !m.busy && !m.successPulse && !noticePending {
+		// The pinned work bar shows live ages and a bounded receipt window, so
+		// while either is on screen the tick keeps repainting against EndedAt.
+		// It never extends a receipt and never persists anything: the tick only
+		// repaints.
+		if m.workLaneAging() {
+			m.updateViewportHeight()
+			m.refreshViewport()
+			return m, tea.Batch(tickCmd(), m.callerQueryCmds())
+		}
 		// Even when idle, newly-settled edit rows may still need their
 		// blast-radius lookups issued; the query cmds no-op when there is
 		// nothing left to ask.

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
 	"marshal/internal/trust"
+	"marshal/internal/viewmodel"
 )
 
 func TestParseReviewArgs(t *testing.T) {
@@ -268,5 +270,192 @@ func TestSendNowCommandTokenBoundary(t *testing.T) {
 	bare := New(newTestState(t), WithCommandRegistry(commands.New()))
 	if bare.isSendNowCommand("/send-now text") {
 		t.Fatal("recognized /send-now without the registry entry")
+	}
+}
+
+// openWorkDetail drives the panel from open to a detail view for the given
+// item, returning the model and the live panel.
+func openWorkDetail(t *testing.T, m Model, item viewmodel.WorkItem) (Model, *tasksPanelModel) {
+	t.Helper()
+	m = ctrlT(m)
+	if !m.tasksOpen() {
+		t.Fatal("the Tasks panel did not open")
+	}
+	p := m.tasksPanel
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("Enter on the item emitted no inspect request")
+	}
+	req := cmd().(workRequestMsg)
+	updated, _ = m.Update(workDetailMsg{
+		conversationID: req.conversationID,
+		panelID:        req.panelID,
+		requestID:      req.requestID,
+		detail:         viewmodel.WorkDetail{Item: item},
+	})
+	m = updated.(Model)
+	if !p.detailOpen {
+		t.Fatal("the detail did not open")
+	}
+	return m, p
+}
+
+// TestWorkStopAndAckStayAsyncAndExact pins that stop and acknowledge run
+// outside Update, capture the exact target and revision, and that a reply from
+// a different panel is dropped.
+func TestWorkStopAndAckStayAsyncAndExact(t *testing.T) {
+	item := viewmodel.WorkItem{
+		TaskKey: "work:a", Kind: "command", Label: "Alpha", State: "running",
+		Capabilities: viewmodel.WorkCapabilities{Inspect: true, Stop: true, Acknowledge: true},
+	}
+	svc := &fakeWorkService{
+		snap:       viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1},
+		stopResult: viewmodel.WorkStopResult{TaskKey: "work:a", State: "stopping", Accepted: true},
+	}
+	m := newWorkModel(t, svc)
+	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{item}}
+	m, p := openWorkDetail(t, m, item)
+
+	// Stop: the model returns a cmd; the service is untouched until it runs.
+	stop := panelAction(p, "d-stop")
+	if stop == nil {
+		t.Fatal("no stop action on the detail")
+	}
+	sreq := stop().(workRequestMsg)
+	if sreq.kind != workReqStop || sreq.taskKey != "work:a" {
+		t.Fatalf("stop request = %s/%s, want stop/work:a", sreq.kind, sreq.taskKey)
+	}
+	updated, scmd := m.Update(sreq)
+	m = updated.(Model)
+	if scmd == nil {
+		t.Fatal("stop produced no service cmd")
+	}
+	if len(svc.stopCalls) != 0 {
+		t.Fatal("StopWork ran inside Update")
+	}
+	smsg, ok := scmd().(workActionMsg)
+	if !ok {
+		t.Fatal("stop cmd did not produce a workActionMsg")
+	}
+	if len(svc.stopCalls) != 1 || svc.stopCalls[0].TaskKey != "work:a" || svc.stopCalls[0].ConversationID != sreq.conversationID {
+		t.Fatalf("stop call = %+v, want work:a/%s", svc.stopCalls, sreq.conversationID)
+	}
+	if smsg.kind != workReqStop || smsg.requestID != sreq.requestID {
+		t.Fatalf("stop reply = %+v, want the accepted request's identity", smsg)
+	}
+	updated, _ = m.Update(smsg)
+	m = updated.(Model)
+	// The accepted stop does not fabricate state: the item still reads running
+	// until a source snapshot settles it.
+	if m.workSnapshot.Items[0].State != "running" {
+		t.Fatalf("stop reply changed the item state to %q without a snapshot", m.workSnapshot.Items[0].State)
+	}
+	if p.err != "" {
+		t.Fatalf("an accepted stop left an error: %q", p.err)
+	}
+
+	// A reply whose request ID names a different panel is dropped.
+	p.err = "keep"
+	updated, _ = m.Update(workActionMsg{
+		conversationID: sreq.conversationID,
+		taskKey:        "work:a",
+		requestID:      "otherpanel.r9",
+		kind:           workReqStop,
+		stop:           viewmodel.WorkStopResult{TaskKey: "work:a", Accepted: true},
+	})
+	m = updated.(Model)
+	if p.err != "keep" {
+		t.Fatalf("a foreign stop reply mutated the panel: err = %q", p.err)
+	}
+
+	// Acknowledge: exact revision, async, and an error stays visible.
+	ack := panelAction(p, "d-ack")
+	if ack == nil {
+		t.Fatal("no acknowledge action on the detail")
+	}
+	areq := ack().(workRequestMsg)
+	if areq.kind != workReqAck || areq.resultRevision != viewmodel.WorkResultRevision(item) {
+		t.Fatalf("ack = %s/%q, want ack/%q", areq.kind, areq.resultRevision, viewmodel.WorkResultRevision(item))
+	}
+	p.err = ""
+	updated, acmd := m.Update(areq)
+	m = updated.(Model)
+	if acmd == nil {
+		t.Fatal("ack produced no service cmd")
+	}
+	if len(svc.ackCalls) != 0 {
+		t.Fatal("AcknowledgeWork ran inside Update")
+	}
+	amsg := acmd().(workActionMsg)
+	if len(svc.ackCalls) != 1 || svc.ackCalls[0].ResultRevision != areq.resultRevision {
+		t.Fatalf("ack call = %+v, want revision %q", svc.ackCalls, areq.resultRevision)
+	}
+	svc.mu.Lock()
+	svc.ackErr = fmt.Errorf("ack rejected")
+	svc.mu.Unlock()
+	updated, _ = m.Update(amsg)
+	m = updated.(Model)
+	// The first ack reply (err nil) cleared the error; a failing one keeps it
+	// visible.
+	p.err = ""
+	failMsg := workActionMsg{conversationID: areq.conversationID, taskKey: "work:a", requestID: areq.requestID, kind: workReqAck, err: fmt.Errorf("ack rejected")}
+	updated, _ = m.Update(failMsg)
+	m = updated.(Model)
+	if p.err != "ack rejected" {
+		t.Fatalf("a failed acknowledgement is not visible: err = %q", p.err)
+	}
+}
+
+// TestWorkPromptNavigationDoesNotResolveOrStealSteering pins that the prompt
+// action navigates to the pending request but never answers it or takes over
+// steering.
+func TestWorkPromptNavigationDoesNotResolveOrStealSteering(t *testing.T) {
+	item := viewmodel.WorkItem{
+		TaskKey: "work:p", Kind: "agent", Label: "child", State: "blocked",
+		Capabilities: viewmodel.WorkCapabilities{Inspect: true, ResolvePrompt: true},
+		Prompt:       &viewmodel.WorkPrompt{Kind: "question", RequestID: "q-1", AgentID: 2},
+	}
+	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1}}
+	m := newWorkModel(t, svc)
+	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{item}}
+	m, p := openWorkDetail(t, m, item)
+
+	// A question with the canonical request ID is pending.
+	m.state.SetPendingQuestion(&session.PendingQuestion{
+		Key:       session.PromptKey{ID: "q-1", Kind: session.PromptQuestion},
+		Questions: []session.Question{{Question: "what?"}},
+	})
+
+	prompt := panelAction(p, "d-prompt")
+	if prompt == nil {
+		t.Fatal("no prompt action on the detail")
+	}
+	pmt := prompt().(workRequestMsg)
+	if pmt.kind != workReqPrompt || pmt.requestID != "q-1" {
+		t.Fatalf("prompt request = %s/%q, want prompt/q-1", pmt.kind, pmt.requestID)
+	}
+
+	updated, cmd := m.Update(pmt)
+	m = updated.(Model)
+	if cmd != nil {
+		t.Fatalf("prompt navigation produced a cmd (%T); it must not answer anything", cmd)
+	}
+
+	// The prompt is still pending: navigation never resolves it.
+	if m.state.PendingQuestion() == nil {
+		t.Fatal("prompt navigation resolved the request")
+	}
+	// Steering is untouched.
+	if m.steeringComposer != nil {
+		t.Fatal("prompt navigation opened a Send now composer")
+	}
+	// The Tasks panel yielded the frame.
+	if m.tasksOpen() || m.tasksPanel != nil {
+		t.Fatal("prompt navigation left the Tasks panel up")
+	}
+	// No Work action reached the service.
+	if len(svc.stopCalls) != 0 || len(svc.ackCalls) != 0 || len(svc.inspectCalls) != 0 {
+		t.Fatal("prompt navigation performed a work action")
 	}
 }

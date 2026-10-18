@@ -354,3 +354,60 @@ func TestRequestTurnStopWithoutServiceReportsRatherThanPretending(t *testing.T) 
 		t.Fatalf("stop cause = %q, want the requested cause recorded for diagnosis", token.StopCause())
 	}
 }
+
+// TestChildLifecycleKeepsOneWorkItemPerChild pins Task 8's child registration for
+// the card path: a registered child is exactly one item of the conversation's
+// membership, its card does not add a second, and finishing it releases exactly
+// that item.
+func TestChildLifecycleKeepsOneWorkItemPerChild(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+
+	view := s.RegisterSubagent("child", nil)
+	if got := s.WorkMembership().Items; len(got) != 1 || got[0].Kind != WorkKindChild {
+		t.Fatalf("membership after registration = %+v, want one child item", got)
+	}
+	if got := s.WorkMembership().Items[0].SubagentID; got != view.ID {
+		t.Fatalf("child item subagent id = %d, want the card's %d", got, view.ID)
+	}
+
+	s.FinishSubagent(view.ID, "done", nil)
+	if got := s.WorkMembership().Items; len(got) != 0 {
+		t.Fatalf("membership after the child finished = %+v, want empty", got)
+	}
+}
+
+// TestEnterSubagentPairsItsWorkItemWithTheCard pins the identity binding: the
+// creation's item is the card's item — one child, one ID — and the paired exit
+// releases it even though the card appeared after it.
+func TestEnterSubagentPairsItsWorkItemWithTheCard(t *testing.T) {
+	s := New(config.Config{}, t.TempDir(), time.Now(), Persistence{})
+
+	work, err := s.EnterSubagentWork()
+	if err != nil {
+		t.Fatalf("EnterSubagentWork: %v", err)
+	}
+	if work == "" {
+		t.Fatal("EnterSubagentWork returned no work item id")
+	}
+	// The card names the SAME item, so the child is not registered twice.
+	view := s.RegisterSubagentWithMetaAndWork(work, "delegate", nil, SubagentMeta{})
+	items := s.WorkMembership().Items
+	if len(items) != 1 {
+		t.Fatalf("membership = %+v, want exactly one item for one child", items)
+	}
+	if items[0].ID != work || items[0].SubagentID != view.ID {
+		t.Fatalf("child item = %+v, want id %q bound to card %d", items[0], work, view.ID)
+	}
+
+	// The card finishing does not release the creation's item: the child is still
+	// live until its own exit.
+	s.FinishSubagent(view.ID, "done", nil)
+	if got := s.WorkMembership().Items; len(got) != 1 {
+		t.Fatalf("membership after the card finished = %+v, want the creation's item still open", got)
+	}
+	// The paired exit releases the creation's item, and nothing else.
+	s.ExitSubagent()
+	if got := s.WorkMembership().Items; len(got) != 0 {
+		t.Fatalf("membership after ExitSubagent = %+v, want empty", got)
+	}
+}

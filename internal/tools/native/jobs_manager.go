@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 )
@@ -417,6 +418,33 @@ type JobManager struct {
 	wg            sync.WaitGroup
 	managerCtx    context.Context
 	managerCancel context.CancelFunc
+	// workAdmission is the conversation end gate's admission seam, installed at
+	// owner construction. When set, every admitted execution is registered with
+	// the gate atomically with its admission decision, so a frozen conversation
+	// refuses the command here — at the one place every command passes through —
+	// rather than only at the transport that happened to ask for it. It is a
+	// narrow local interface so the manager does not read the gate's concrete
+	// types on the admission path.
+	workAdmission admissionGate
+}
+
+// admissionGate is the end gate's admission seam as this package sees it: register
+// one command with the conversation's work membership, atomically with the
+// decision to admit it. session.State implements it; a manager built without one
+// (a test-owned service, a filtered scope) has no gate to consult.
+type admissionGate interface {
+	AdmitWork(req session.WorkAdmissionRequest) (session.WorkLease, error)
+}
+
+// SetWorkAdmission installs the conversation end gate's admission seam. Owner
+// construction calls it once per conversation; a rebuild must not repoint it,
+// because the gate belongs to the conversation the service was created for and a
+// rebuild that re-installed it would leave an accepted end unable to see, or a
+// frozen conversation unable to refuse, the commands this service admits.
+func (m *JobManager) SetWorkAdmission(gate admissionGate) {
+	m.mu.Lock()
+	m.workAdmission = gate
+	m.mu.Unlock()
 }
 
 // settlement is one unacknowledged completion: everything the exit sink needs
@@ -914,6 +942,29 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	j.stdoutSink = &jobSink{tail: j.stdout, stream: spec.Stdout, live: &j.attached}
 	j.stderrSink = &jobSink{tail: j.stderr, stream: spec.Stderr, live: &j.attached}
 
+	// Register this execution with the conversation end gate while the manager's
+	// admission lock is still held. That is what makes acceptance atomic: work
+	// registered here can never be missed by an accepted end, and a command
+	// admitted after one is refused here rather than starting and hiding. The
+	// gate is a LEAF lock (end.mu) taken above m.mu — never the other way round.
+	var lease session.WorkLease
+	if m.workAdmission != nil {
+		l, err := m.workAdmission.AdmitWork(session.WorkAdmissionRequest{
+			ExecutionID: j.info.ExecutionID,
+			DisplayID:   id,
+			Command:     command,
+			Actor:       origin.Actor,
+			TurnID:      origin.TurnID,
+			Scope:       session.ExitAnalysisScopeID(ctx),
+		})
+		if err != nil {
+			m.mu.Unlock()
+			jobCancel()
+			return JobInfo{}, err
+		}
+		lease = l
+	}
+
 	m.jobs[id] = j
 	m.active++
 	// Increment wg under the lock so Shutdown either sees the counted
@@ -945,12 +996,12 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	// receive a settled snapshot before the admission it settles.
 	m.notifyChange()
 
-	go m.runJob(j, jobCtx, jobDir, command, runner, limit)
+	go m.runJob(j, jobCtx, jobDir, command, runner, limit, lease)
 
 	return admitted, nil
 }
 
-func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, runner CommandRunner, limit int) {
+func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, runner CommandRunner, limit int, lease session.WorkLease) {
 	req := CommandRequest{
 		Command:        command,
 		Dir:            dir,
@@ -1027,6 +1078,13 @@ func (m *JobManager) runJob(j *job, ctx context.Context, dir, command string, ru
 	}
 
 	m.notifyChange()
+	// Settled: this execution is no longer active work. The lease is released
+	// after the completion has been reported and the manager's own bookkeeping is
+	// done, so a join waiting on the membership cannot conclude the work settled
+	// before its completion record exists.
+	if lease != nil {
+		lease.Release()
+	}
 	close(j.done)
 	m.wg.Done()
 }

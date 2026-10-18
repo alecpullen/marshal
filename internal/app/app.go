@@ -648,6 +648,13 @@ func newConversationCommandService(ctx context.Context, cfg config.Config, state
 		// once, at owner construction, is what keeps a child registry or a
 		// reload from silently replacing the stop target.
 		state.SetTurnStopService(svc.manager)
+		// The conversation end gate's admission seam. Every command this service
+		// admits registers with the session's work membership atomically with its
+		// admission decision, so an accepted end can see it (and refuse a launch
+		// after the freeze) at the one place every ordinary command passes
+		// through. Installed here, at owner construction, and deliberately not
+		// re-installed by a rebuild.
+		svc.manager.SetWorkAdmission(state)
 	}
 	if jobBroker != nil {
 		svc.manager.SetBroker(jobBroker)
@@ -2618,6 +2625,21 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// shell.sudo refuses there rather than blocking on a prompt no
 		// transport can answer.
 		state.SetSecretPromptCapable(true)
+
+		// Exit analysis (Task 8, step 5): the closure's optional postmortem pass
+		// runs as a SCOPED exit-analysis operation. The runtime opens a dedicated
+		// work epoch for it and stamps the authorization onto the context it
+		// hands this operation, so the pass may start only during the postmortem
+		// phase, its commands and children inherit the epoch, and the epoch is
+		// stopped and joined before closure whatever the outcome. It never
+		// reopens ordinary conversation work, and it cannot recursively trigger
+		// the active-work warning.
+		rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
+			if rt.Runner == nil {
+				return fmt.Errorf("exit analysis: no agent runner")
+			}
+			return rt.Runner.Run(analysisCtx, goal)
+		})
 
 		progResult := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
 

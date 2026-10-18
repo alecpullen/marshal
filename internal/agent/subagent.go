@@ -263,10 +263,13 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 			return registry.ToolResult{}, errors.New("agent.run: system access requested but this session does not have it")
 		}
 		// Admission stays synchronous so cap/depth violations fail the tool
-		// call directly. The pairing ExitSubagent moves to the completion
-		// goroutine below: the slot must stay held for the child's whole
-		// background life, not just the dispatch.
-		if err := state.EnterSubagent(); err != nil {
+		// call directly. EnterSubagentWork also registers the child's creation
+		// with the conversation's end gate and returns that item's id, so the
+		// card below names exactly this child. The pairing ExitSubagent moves to
+		// the completion goroutine below: the slot must stay held for the child's
+		// whole background life, not just the dispatch.
+		workID, err := state.EnterSubagentWork()
+		if err != nil {
 			return registry.ToolResult{}, err
 		}
 
@@ -322,12 +325,19 @@ func NewSubagentTool(factory SubagentRunnerFactory, resolver SubagentModelResolv
 		if child.Provider != nil {
 			meta.Provider = child.Provider.Name()
 		}
-		view := state.RegisterSubagentWithMeta(args.Description, childState, meta)
+		view := state.RegisterSubagentWithMetaAndWork(workID, args.Description, childState, meta)
 		// The child's context derives from the SESSION, not this tool call:
 		// a background child must survive the parent turn ending normally,
 		// and turn-cancel (Esc) must not kill it. Session Shutdown still
 		// cancels it (State.Context is cancelled by Shutdown).
 		childCtx, cancel := context.WithCancel(state.Context())
+		// A child launched by scoped exit analysis inherits the analysis epoch's
+		// authorization, so its own commands are registered in that epoch and are
+		// stopped and joined with it — the analysis cannot leave work behind, and
+		// its work can never be mistaken for the conversation's ordinary work.
+		if scope, ok := session.ExitAnalysisScopeFromContext(ctx); ok {
+			childCtx = session.WithExitAnalysisScope(childCtx, scope)
+		}
 		// Give the child its own stop group so a TARGETED stop of this child
 		// reaches only this child's attached commands. The parent's turn stop
 		// never touches it (a child outlives its parent's turn), which is why

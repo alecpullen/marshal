@@ -112,6 +112,32 @@ func (s *State) RegisterSubagentStopGroup(id int64, token *TurnStopToken) {
 	s.mu.Unlock()
 }
 
+// bindSubagentWork binds a child's subagent card to its work item in this
+// conversation's end gate (Task 8), so the child is part of the membership an
+// end acceptance checks — with its own distinct ID even when it is shown under
+// a parent — and so a stop pass can target it. When work is a creation item the
+// caller registered (EnterSubagentWork), that item is the child's: the card names
+// it instead of allocating a second one. An empty work registers the card's own
+// item, which its finish releases — the path a pipeline or review worker takes,
+// since those never enter through EnterSubagent.
+func (s *State) bindSubagentWork(work WorkID, id int64, label string) {
+	if s == nil {
+		return
+	}
+	s.end.bindChildCard(work, id, label)
+}
+
+// releaseSubagentWork drops a finished child's work item, so a completed child
+// stops being active work. A child that entered through EnterSubagent is
+// released by its paired ExitSubagent instead; this path covers the workers
+// whose card is their whole registration (pipeline and review children).
+func (s *State) releaseSubagentWork(id int64) {
+	if s == nil {
+		return
+	}
+	s.end.releaseChildCard(id)
+}
+
 // ClearSubagentStopGroup drops a finished child's stop group so a later card
 // reusing the id cannot inherit it. Called on normal completion: a child that
 // finished on its own is never stopped by its explicit-stop wrapper.
@@ -141,6 +167,7 @@ func (s *State) RegisterSubagent(label string, child *State) SubagentView {
 	s.subagentDone[v.ID] = make(chan struct{})
 	broker := s.subagentBroker
 	s.mu.Unlock()
+	s.bindSubagentWork("", v.ID, label)
 	if broker != nil {
 		broker.Publish("subagent", SubagentEvent{View: v})
 	}
@@ -153,6 +180,21 @@ func (s *State) RegisterSubagent(label string, child *State) SubagentView {
 // Fallback so the TUI can display what model is actually running (or ran)
 // the subagent.
 func (s *State) RegisterSubagentWithMeta(label string, child *State, meta SubagentMeta) SubagentView {
+	return s.registerSubagent(meta, "", label, child)
+}
+
+// RegisterSubagentWithMetaAndWork records a new running subagent whose creation
+// work item the caller already registered (EnterSubagentWork), so the card names
+// that child's own item: a targeted stop reaches the child the user pointed at,
+// and one child is never registered as two units of work. It mirrors
+// RegisterSubagentWithMeta in every other respect.
+func (s *State) RegisterSubagentWithMetaAndWork(work WorkID, label string, child *State, meta SubagentMeta) SubagentView {
+	return s.registerSubagent(meta, work, label, child)
+}
+
+// registerSubagent is the shared body of RegisterSubagent/WithMeta/AndWork. work
+// is the caller's child-creation item, or "" when the caller registered none.
+func (s *State) registerSubagent(meta SubagentMeta, work WorkID, label string, child *State) SubagentView {
 	v := SubagentView{
 		ID:        subagentSeq.Add(1),
 		Label:     label,
@@ -169,6 +211,11 @@ func (s *State) RegisterSubagentWithMeta(label string, child *State, meta Subage
 	s.subagentDone[v.ID] = make(chan struct{})
 	broker := s.subagentBroker
 	s.mu.Unlock()
+	// Register the child with the conversation's end gate: a live child is work
+	// an end must be able to see and stop, and its card is what names it. The
+	// binding happens after the registration above so the view exists before its
+	// work item is named, and it is idempotent per subagent id.
+	s.bindSubagentWork(work, v.ID, label)
 	if broker != nil {
 		broker.Publish("subagent", SubagentEvent{View: v})
 	}
@@ -321,6 +368,13 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 	s.mu.Unlock()
 	if done != nil {
 		close(done)
+	}
+	if found {
+		// The child is no longer active work. A child registered by its creation
+		// (EnterSubagent) is released by its paired ExitSubagent; this call
+		// releases the item only when the child's card was its whole
+		// registration, so every item is released exactly once.
+		s.releaseSubagentWork(id)
 	}
 	if found && broker != nil {
 		broker.Publish("subagent", SubagentEvent{View: updated})

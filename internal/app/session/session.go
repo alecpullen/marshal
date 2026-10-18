@@ -18,6 +18,7 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
+	"marshal/internal/redact"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
@@ -390,6 +391,18 @@ type State struct {
 	// stop group, so a targeted stop of one child reaches only that child's
 	// attached commands. Guarded by mu, alongside the subagent registry.
 	subagentStopGroups map[int64]*TurnStopToken
+	// subagentWorkItems is the FIFO of child-creation work items EnterSubagent
+	// registered and ExitSubagent has not released yet. Pairing by count keeps
+	// every registration released exactly once even when several children start
+	// and finish at once: one EnterSubagent, one item, one ExitSubagent.
+	// Guarded by mu.
+	subagentWorkItems []WorkID
+
+	// end is the conversation's end controller: the registry of active work
+	// and the exit phase. It is a value field with a mutex of its own, so a
+	// State built as a literal still has a working controller, and it is the
+	// OUTERMOST conversation lock (see the conversation-end section below).
+	end endController
 
 	// loadErr captures a cold-load error from loadFromDB (Task 3).
 	// Exposed via LoadError() so StartRuntime can abort existing-session
@@ -1056,20 +1069,64 @@ var (
 // here. The caller MUST pair every successful EnterSubagent with an
 // ExitSubagent (typically via defer) so the counter returns to its prior
 // value when the subtask returns.
+//
+// The child's creation is also registered with the conversation's end gate
+// (Task 8), atomically with its admission: a child is work the user must be
+// warned about before an end stops it, and the registration is what makes one
+// child exactly one item — from creation, through its card, to its exit.
 func (s *State) EnterSubagent() error {
+	_, err := s.EnterSubagentWork()
+	return err
+}
+
+// EnterSubagentWork is EnterSubagent plus the child-creation work item it
+// registered with the conversation's end gate. The caller holds the item id and
+// hands it to RegisterSubagentWithWork, so the child's card names THAT child's
+// item — a targeted stop reaches the child the user pointed at, and one child is
+// never registered twice. ExitSubagent releases the item.
+func (s *State) EnterSubagentWork() (WorkID, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.subagentDepth >= subagentMaxDepth {
-		return ErrSubagentDepthLimit
+		s.mu.Unlock()
+		return "", ErrSubagentDepthLimit
 	}
 	if s.subagentConcurr >= s.subagentMaxConcurrency {
 		// The "(max N)" substring is asserted by
 		// TestEnterSubagentDefaultCapIsThree — keep it.
-		return fmt.Errorf("%w (max %d): %d already running. Call agent.await with \"any\": true to wait for the first to finish, then retry",
-			ErrSubagentConcurrencyLimit, s.subagentMaxConcurrency, s.subagentConcurr)
+		max := s.subagentMaxConcurrency
+		running := s.subagentConcurr
+		s.mu.Unlock()
+		return "", fmt.Errorf("%w (max %d): %d already running. Call agent.await with \"any\": true to wait for the first to finish, then retry",
+			ErrSubagentConcurrencyLimit, max, running)
 	}
 	s.subagentConcurr++
-	return nil
+	label := s.subagentWorkLabelLocked()
+	s.mu.Unlock()
+
+	id, err := s.end.beginChildWork(label)
+	if err != nil {
+		s.mu.Lock()
+		if s.subagentConcurr > 0 {
+			s.subagentConcurr--
+		}
+		s.mu.Unlock()
+		return "", err
+	}
+	s.mu.Lock()
+	s.subagentWorkItems = append(s.subagentWorkItems, id)
+	s.mu.Unlock()
+	return id, nil
+}
+
+// subagentWorkLabelLocked renders the label a child's creation registers with:
+// the session's own words for what it is doing, else the operation label, so
+// the warning panel names the work rather than an opaque id. The state lock must
+// be held.
+func (s *State) subagentWorkLabelLocked() string {
+	if s.activity.Kind != "" && s.activity.Kind != ActivityIdle && s.activity.Label != "" {
+		return "subagent: " + s.activity.Label
+	}
+	return "subagent"
 }
 
 // ExitSubagent decrements the in-flight concurrency counter added by a prior
@@ -1078,9 +1135,21 @@ func (s *State) EnterSubagent() error {
 // callers must always pair the calls. Depth is unaffected.
 func (s *State) ExitSubagent() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.subagentConcurr > 0 {
 		s.subagentConcurr--
+	}
+	var item WorkID
+	if n := len(s.subagentWorkItems); n > 0 {
+		item = s.subagentWorkItems[n-1]
+		s.subagentWorkItems = s.subagentWorkItems[:n-1]
+	}
+	s.mu.Unlock()
+	// One child, one item: the creation registration is released here, which is
+	// the registration that covers the child's whole life. A child whose card
+	// registered its own item (a pipeline or review worker, which never enters
+	// here) is released by FinishSubagent instead.
+	if item != "" {
+		s.end.release(item)
 	}
 }
 
@@ -1089,12 +1158,35 @@ func (s *State) ExitSubagent() {
 // called, BeginWork returns ErrSessionQuiescing and the caller must not
 // start the work. Every successful BeginWork must be paired with a
 // matching EndWork call (typically via defer in the command closure).
+//
+// It is also the conversation end gate's parent-operation registration (Task
+// 8): the operation becomes part of the membership an end acceptance checks, so
+// an accepted end can see a turn that is blocked in provider resolution or
+// waiting on an approval — neither of which reports itself as a command or a
+// child — and refuses to start one after an end has been accepted.
 func (s *State) BeginWork() error {
+	return s.BeginWorkCancelable(nil)
+}
+
+// BeginWorkCancelable is BeginWork plus the operation's stop hook: cancel is
+// recorded as the way to stop this operation, so an accepted conversation end
+// can unblock a turn parked in provider resolution or waiting on an approval
+// without cancelling the runtime's whole infrastructure root. A nil cancel is
+// exactly BeginWork.
+//
+// The hook is invoked with no conversation lock held, so a stop pass never
+// deadlocks against a turn that is finishing.
+func (s *State) BeginWorkCancelable(cancel func()) error {
 	s.workMu.Lock()
 	defer s.workMu.Unlock()
 	if s.quiescing {
 		return ErrSessionQuiescing
 	}
+	id, err := s.end.begin(WorkKindParent, s.derivedWorkLabel(), "", "", cancel)
+	if err != nil {
+		return err
+	}
+	s.end.rememberParent(id)
 	s.workWG.Add(1)
 	return nil
 }
@@ -1103,7 +1195,1071 @@ func (s *State) BeginWork() error {
 // completed. Calling EndWork without a matching BeginWork is a
 // programming error that would panic via the WaitGroup.
 func (s *State) EndWork() {
+	s.end.releaseOldestParent()
 	s.workWG.Done()
+}
+
+// ---------------------------------------------------------------------------
+// Conversation end: the shared work gate
+//
+// Shared contract 7: runtime end acceptance checks the displayed opaque work
+// IDs and freezes ordinary admission ATOMICALLY. If any currently active ID
+// was not displayed, refresh and stop nothing. Finished IDs need no
+// reconfirmation.
+//
+// Shared contract 8: exit phases are open → stopping work → postmortem →
+// closing → closed, where a REPLACEMENT omits postmortem, and only scoped
+// exit-analysis work may launch during the postmortem phase.
+//
+// Both halves are served by one registry that every ordinary unit of
+// conversation work registers itself with — a parent operation (BeginWork), a
+// delegated child (EnterSubagent / RegisterSubagent) and a managed command (the
+// command service's admission seam) — and the membership check that accepts an
+// end takes the same lock registration takes. That is what makes acceptance
+// atomic: work that registered first can never be missed by an accepted end,
+// and work that registers after one can never be admitted. Sampling a count
+// and then acting on it would not be: a command admitted between the two would
+// either hide from the warning or be destroyed without ever being shown.
+//
+// Infrastructure deliberately does NOT register. Indexing, LSP, OAuth refresh
+// and watch samplers run under the runtime's infrastructure root and are not
+// conversation work: warning about them would train the user to ignore the
+// warning.
+// ---------------------------------------------------------------------------
+
+// ExitPhase is the conversation's end phase. The order is
+// open → stopping work → postmortem → closing → closed. A replacement omits
+// postmortem: no exit analysis runs when the conversation is replaced.
+type ExitPhase string
+
+const (
+	// ExitPhaseOpen is a live conversation: ordinary work is admitted.
+	ExitPhaseOpen ExitPhase = "open"
+	// ExitPhaseStopping means an end was accepted: ordinary admission is
+	// frozen and the displayed work is being stopped and joined.
+	ExitPhaseStopping ExitPhase = "stopping_work"
+	// ExitPhasePostmortem means the stopped work has settled and the only work
+	// that may still launch is the scoped exit analysis.
+	ExitPhasePostmortem ExitPhase = "postmortem"
+	// ExitPhaseClosing means no work may launch at all: terminal teardown is
+	// running.
+	ExitPhaseClosing ExitPhase = "closing"
+	// ExitPhaseClosed means the conversation and its runtime are closed.
+	ExitPhaseClosed ExitPhase = "closed"
+)
+
+// WorkKind classifies one registered unit of conversation work.
+type WorkKind string
+
+const (
+	// WorkKindParent is a top-level operation: a TUI turn, a /review dispatch,
+	// an SDD run, an ACP prompt.
+	WorkKindParent WorkKind = "parent"
+	// WorkKindChild is one delegated child: an agent.run subagent, a pipeline
+	// role runner, a review worker. A child's creation is registered before its
+	// view exists, so an active parent waiting on provider work or an approval
+	// is visible as work.
+	WorkKindChild WorkKind = "child"
+	// WorkKindCommand is one managed command admitted through the
+	// conversation's command service.
+	WorkKindCommand WorkKind = "command"
+)
+
+// maxWorkLabelRunes bounds every label a snapshot carries. A label is display
+// data, never an identity: a long command line or a pasted prompt must not
+// grow a warning panel without limit, and nothing downstream may parse it.
+const maxWorkLabelRunes = 72
+
+// WorkID is the stable, opaque identity of one registered unit of conversation
+// work. It is stable for the item's whole life — a command keeps the identity
+// the service minted at admission, a child keeps the one its creation
+// registered — so an accepted end can compare the set a transport displayed
+// with the set that exists without depending on labels, ordering or counts.
+type WorkID string
+
+// WorkItem is one registered unit of conversation work. Everything here is
+// display data or a targeting handle; identity is ID.
+type WorkItem struct {
+	ID   WorkID
+	Kind WorkKind
+	// Label is a bounded, secret-scrubbed, single-line description.
+	Label string
+	// Group is the WorkID of the operation a command is attached to, so a
+	// client can show attached commands UNDER their parent without counting
+	// them as separate stoppable targets. It is empty when the command belongs
+	// to no registered operation (a child's command whose child item is gone).
+	Group WorkID
+	// TurnID is the explicit-stop group the work belongs to, when it has one.
+	TurnID string
+	// SubagentID is the child card's id for a delegated child, so a targeted
+	// stop can reach it. Zero for parents and commands.
+	SubagentID int64
+	// Scope is the exit-analysis epoch this work belongs to; empty for ordinary
+	// work. Only scoped work may launch during the postmortem phase.
+	Scope string
+	// StartedAt is when the work registered.
+	StartedAt time.Time
+}
+
+// WorkSnapshot is the membership of a conversation's registered work at one
+// moment, with the exit phase it was taken in.
+type WorkSnapshot struct {
+	// Phase is the conversation's exit phase at snapshot time.
+	Phase ExitPhase
+	// Items is the ordinary membership: parent operations, delegated children
+	// and managed commands. Each item keeps its own distinct ID even when it is
+	// displayed under a parent, so new work can never hide behind an existing
+	// parent's identity.
+	Items []WorkItem
+	// Analysis is the scoped exit-analysis epoch's membership, if one is open.
+	// It is separate on purpose: analysis work is not part of the ordinary work
+	// a user is warned about, and it is joined as its own epoch.
+	Analysis []WorkItem
+}
+
+// IDs returns the ordinary membership's stable IDs, in registration order.
+func (s WorkSnapshot) IDs() []WorkID {
+	out := make([]WorkID, 0, len(s.Items))
+	for _, item := range s.Items {
+		out = append(out, item.ID)
+	}
+	return out
+}
+
+// Contains reports whether id is in the ordinary membership.
+func (s WorkSnapshot) Contains(id WorkID) bool {
+	for _, item := range s.Items {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// Targets returns the distinct stoppable targets in the ordinary membership.
+// A command displayed under its parent's group is folded into that parent: the
+// parent's stop reaches it, and counting both would report a user-facing
+// number larger than the number of things that will actually be stopped.
+func (s WorkSnapshot) Targets() []WorkID {
+	seen := make(map[WorkID]bool, len(s.Items))
+	have := make(map[WorkID]bool, len(s.Items))
+	for _, item := range s.Items {
+		have[item.ID] = true
+	}
+	out := make([]WorkID, 0, len(s.Items))
+	for _, item := range s.Items {
+		target := item.ID
+		if item.Kind == WorkKindCommand && item.Group != "" && have[item.Group] {
+			target = item.Group
+		}
+		if seen[target] {
+			continue
+		}
+		seen[target] = true
+		out = append(out, target)
+	}
+	return out
+}
+
+// ErrConversationEnding reports that an end has been accepted, so ordinary
+// conversation work can no longer start. It wraps ErrSessionQuiescing so every
+// existing caller that checks that sentinel keeps working, in the direction
+// that reads correctly: an accepted end IS a frozen conversation, and the
+// reason it is frozen is the end.
+var ErrConversationEnding = fmt.Errorf("%w: the conversation is ending", ErrSessionQuiescing)
+
+// ErrNotPostmortemPhase reports that scoped exit-analysis work was requested
+// outside the postmortem phase. It cannot reopen a conversation that has been
+// accepted for replacement or closure.
+var ErrNotPostmortemPhase = errors.New("session: exit analysis is admitted only during the postmortem phase")
+
+// ErrExitAnalysisAlreadyOpen reports that a scoped exit-analysis epoch is
+// already open. One epoch at a time keeps its work separable.
+var ErrExitAnalysisAlreadyOpen = errors.New("session: an exit-analysis epoch is already open")
+
+// ExitAnalysisScope authorizes one scoped exit-analysis epoch. Work admitted
+// under it is registered in its own epoch, and the epoch is closed before
+// closure, so a stale scope can never admit work into a conversation that has
+// moved on.
+type ExitAnalysisScope struct {
+	id    string
+	epoch int
+}
+
+// ID is the scope's identity, and the value stamped on the work it admits.
+func (s *ExitAnalysisScope) ID() string {
+	if s == nil {
+		return ""
+	}
+	return s.id
+}
+
+// Epoch is the scope's work epoch.
+func (s *ExitAnalysisScope) Epoch() int {
+	if s == nil {
+		return 0
+	}
+	return s.epoch
+}
+
+// exitAnalysisKey is a private context key so nothing outside this package can
+// forge an exit-analysis authorization.
+type exitAnalysisKey struct{}
+
+// WithExitAnalysisScope stamps a scoped exit-analysis authorization onto ctx.
+// Commands and children launched from that context inherit it, which is what
+// keeps the analysis epoch's work separate from ordinary work — and what makes
+// the epoch's cleanup complete.
+func WithExitAnalysisScope(ctx context.Context, scope *ExitAnalysisScope) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if scope == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, exitAnalysisKey{}, scope)
+}
+
+// ExitAnalysisScopeFromContext reads the exit-analysis authorization a scoped
+// operation stamped onto its context. ok is false for ordinary work.
+func ExitAnalysisScopeFromContext(ctx context.Context) (*ExitAnalysisScope, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	scope, ok := ctx.Value(exitAnalysisKey{}).(*ExitAnalysisScope)
+	return scope, ok && scope != nil
+}
+
+// ExitAnalysisScopeID is the scope's id, or "" when the context carries none.
+// The command service reads it at admission to tell ordinary work from scoped
+// exit-analysis work without importing anything else.
+func ExitAnalysisScopeID(ctx context.Context) string {
+	scope, ok := ExitAnalysisScopeFromContext(ctx)
+	if !ok {
+		return ""
+	}
+	return scope.ID()
+}
+
+// WorkAdmissionRequest is what the command service reports about one command it
+// is about to admit. The service calls this while it holds its own admission
+// lock, so the answer it gets is the answer that applies to the moment of
+// admission.
+type WorkAdmissionRequest struct {
+	ExecutionID string
+	DisplayID   string
+	Command     string
+	Actor       string
+	TurnID      string
+	// Scope is the exit-analysis epoch from the launching context, or "" for
+	// ordinary work.
+	Scope string
+}
+
+// WorkLease releases one admitted unit of work from the end controller.
+// Release is idempotent and safe to call from any goroutine.
+type WorkLease interface {
+	Release()
+}
+
+// WorkAdmission is the end controller's admission seam. The command service
+// holds it and calls AdmitWork for every command, so a frozen conversation
+// rejects admission at the service rather than only at the transport.
+type WorkAdmission interface {
+	// AdmitWork registers one unit of work, atomically with its admission
+	// decision: a non-nil error means the work must not start.
+	AdmitWork(req WorkAdmissionRequest) (WorkLease, error)
+}
+
+// endItem is one registered unit of work inside the controller.
+type endItem struct {
+	item WorkItem
+	// cancel stops this item's owning operation when the item registered one
+	// (a runtime turn's work context). It is invoked with no lock held.
+	cancel func()
+}
+
+// endController is the conversation's end gate: the work registry, the exit
+// phase and the scoped analysis epoch, under one mutex.
+//
+// Lock order: endController.mu is a LEAF with respect to the conversation's
+// other locks — the session mutex and the command service's admission mutex may
+// both be held when it is taken (mu → end.mu), and nothing is ever acquired
+// while it is held. Cancellation and join callbacks therefore always run with
+// the lock released, and the stop pass can call back into the service without
+// inverting the order.
+//
+// It is a value field of State so a State built as a literal (tests, embedded
+// callers) still has a working gate.
+type endController struct {
+	mu    sync.Mutex
+	phase ExitPhase
+	next  int64
+	items map[WorkID]*endItem
+	order []WorkID
+
+	// parents is the FIFO of registered parent operations, so EndWork can
+	// release the one its BeginWork registered. anonymousKids is the stack of
+	// child-creation items whose caller used the argument-less EnterSubagent
+	// pair, so each of those registrations is released exactly once too.
+	parents       []WorkID
+	anonymousKids []WorkID
+	// childCards maps a subagent view id to its child work item. cardOwned
+	// marks the items a CARD registered (a pipeline or review worker, which has
+	// no creation pair): only those are released by the card's finish, while a
+	// creation-registered child is released by the exit that names its own id —
+	// that distinction is what keeps every item released exactly once even when
+	// several children start and finish at once.
+	childCards map[int64]WorkID
+	cardOwned  map[WorkID]bool
+
+	// analysisID is the open exit-analysis epoch's id, "" when none is open;
+	// analysisEpoch counts epochs, so a stale scope cannot re-admit work.
+	analysisID    string
+	analysisEpoch int
+
+	// drained is closed when the ordinary membership becomes empty. It exists
+	// so a join waits on a channel instead of polling.
+	drained chan struct{}
+}
+
+// phaseNow reports the current exit phase.
+func (c *endController) phaseNow() ExitPhase {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.phaseLocked()
+}
+
+func (c *endController) phaseLocked() ExitPhase {
+	if c.phase == "" {
+		return ExitPhaseOpen
+	}
+	return c.phase
+}
+
+// frozenLocked reports whether ordinary admission is closed. The controller's
+// lock must be held.
+func (c *endController) frozenLocked() bool {
+	return c.phaseLocked() != ExitPhaseOpen
+}
+
+// begin registers one unit of work. Ordinary work (scopeID == "") is refused
+// once an end has been accepted; scoped exit-analysis work is admitted only
+// while the postmortem phase is open and only under the open epoch's id.
+func (c *endController) begin(kind WorkKind, label, scopeID, turnID string, cancel func()) (WorkID, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	phase := c.phaseLocked()
+	if scopeID == "" {
+		if phase != ExitPhaseOpen {
+			return "", ErrConversationEnding
+		}
+	} else if phase != ExitPhasePostmortem || scopeID != c.analysisID || c.analysisID == "" {
+		return "", ErrNotPostmortemPhase
+	}
+	return c.reserveLocked(kind, label, scopeID, turnID, cancel), nil
+}
+
+// reserveLocked allocates one stable work id and registers its item. The
+// controller's lock must be held, so admission and the end-membership check that
+// accepts an end are one atomic decision.
+func (c *endController) reserveLocked(kind WorkKind, label, scopeID, turnID string, cancel func()) WorkID {
+	c.next++
+	var id WorkID
+	switch kind {
+	case WorkKindCommand:
+		id = WorkID(fmt.Sprintf("work-command-%d", c.next))
+	case WorkKindChild:
+		id = WorkID(fmt.Sprintf("work-child-%d", c.next))
+	default:
+		id = WorkID(fmt.Sprintf("work-parent-%d", c.next))
+	}
+	if c.items == nil {
+		c.items = make(map[WorkID]*endItem)
+	}
+	if c.drained == nil {
+		c.drained = make(chan struct{})
+	}
+	c.items[id] = &endItem{item: WorkItem{
+		ID:        id,
+		Kind:      kind,
+		Label:     boundWorkLabel(label),
+		TurnID:    turnID,
+		Scope:     scopeID,
+		StartedAt: time.Now(),
+	}, cancel: cancel}
+	c.order = append(c.order, id)
+	return id
+}
+
+// release drops one registered item, notifying a waiting join when the
+// ordinary membership becomes empty. Unknown ids are ignored: a release that
+// lost a race with the terminal teardown must not panic.
+func (c *endController) release(id WorkID) {
+	c.mu.Lock()
+	_, ok := c.items[id]
+	delete(c.items, id)
+	if ok {
+		c.order = removeWorkID(c.order, id)
+		c.parents = removeWorkID(c.parents, id)
+		c.anonymousKids = removeWorkID(c.anonymousKids, id)
+		delete(c.cardOwned, id)
+		for view, item := range c.childCards {
+			if item == id {
+				delete(c.childCards, view)
+			}
+		}
+	}
+	c.signalDrainedLocked()
+	c.mu.Unlock()
+}
+
+// signalDrainedLocked closes the drain channel and clears it when nothing is
+// registered any more, so the next registration starts a fresh wait. The
+// controller's lock must be held.
+func (c *endController) signalDrainedLocked() {
+	if len(c.items) != 0 || c.drained == nil {
+		return
+	}
+	close(c.drained)
+	c.drained = nil
+}
+
+// drainLocked returns the channel to wait on for the ordinary membership to
+// empty. done is true when it is already empty. The controller's lock must be
+// held.
+func (c *endController) drainLocked() (ch chan struct{}, done bool) {
+	if len(c.items) == 0 {
+		return nil, true
+	}
+	if c.drained == nil {
+		c.drained = make(chan struct{})
+	}
+	return c.drained, false
+}
+
+// removeWorkID drops id from a work-id slice.
+func removeWorkID(ids []WorkID, id WorkID) []WorkID {
+	for i, want := range ids {
+		if want == id {
+			return append(ids[:i:i], ids[i+1:]...)
+		}
+	}
+	return ids
+}
+
+// SetWorkCancel publishes the stop hook for the operation that most recently
+// registered work (BeginWorkCancelable). It exists so a caller that allocates
+// its context after registering — the runtime's BeginWork does — can still hand
+// an accepted end a way to stop that exact operation, instead of forcing the
+// stop pass to cancel the whole runtime root.
+//
+// It attaches to the newest registered parent whose hook is still unset, so it
+// can never repoint an operation that already published one.
+func (s *State) SetWorkCancel(cancel func()) {
+	if s == nil || cancel == nil {
+		return
+	}
+	s.end.setParentCancel(cancel)
+}
+
+// setParentCancel binds cancel to the newest open parent item, newest first, so
+// a later registration of the same operation cannot be repointed.
+func (c *endController) setParentCancel(cancel func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := len(c.parents) - 1; i >= 0; i-- {
+		item, ok := c.items[c.parents[i]]
+		if !ok {
+			continue
+		}
+		if item.cancel != nil {
+			// Already published: this call belongs to an older registration that
+			// has not been attached yet, or to a duplicate. Attaching to an older
+			// item is still correct — it is work whose hook is genuinely unset.
+			continue
+		}
+		item.cancel = cancel
+		return
+	}
+}
+
+// rememberParent records a parent operation's id so EndWork releases exactly
+// one registration per BeginWork.
+func (c *endController) rememberParent(id WorkID) {
+	c.mu.Lock()
+	c.parents = append(c.parents, id)
+	c.mu.Unlock()
+}
+
+// releaseOldestParent releases the parent registration EndWork corresponds to.
+func (c *endController) releaseOldestParent() {
+	c.mu.Lock()
+	if len(c.parents) == 0 {
+		c.mu.Unlock()
+		return
+	}
+	id := c.parents[0]
+	c.parents = c.parents[1:]
+	c.mu.Unlock()
+	c.release(id)
+}
+
+// attachTurn stamps the explicit-stop group's turn id onto the newest open
+// parent item, so a command admitted for that turn can be grouped under the
+// operation it belongs to.
+func (c *endController) attachTurn(turnID string) {
+	turnID = strings.TrimSpace(turnID)
+	if turnID == "" {
+		return
+	}
+	c.mu.Lock()
+	for i := len(c.parents) - 1; i >= 0; i-- {
+		item, ok := c.items[c.parents[i]]
+		if !ok {
+			continue
+		}
+		item.item.TurnID = turnID
+		break
+	}
+	c.mu.Unlock()
+}
+
+// beginChildWork registers one delegated child's creation, atomically with its
+// admission decision: a frozen conversation refuses the child rather than
+// admitting work an accepted end could never see. The item covers the child's
+// whole life — from creation, through its card appearing, to its exit — so the
+// membership holds exactly one item per live child. The caller holds the item's
+// id and releases it when the child exits (ExitSubagent), so pairing is exact
+// even when several children start and finish at once.
+func (c *endController) beginChildWork(label string) (WorkID, error) {
+	return c.begin(WorkKindChild, label, "", "", nil)
+}
+
+// bindChildCard binds a delegated child's subagent view id to the child's own
+// creation item, so a targeted stop can name it, and gives the item the label
+// the card shows. The binding is by creation order: the caller that registered
+// the creation passes its item id through, and a card whose caller registered no
+// creation (a pipeline or review worker) gets a card-owned item that its finish
+// releases.
+func (c *endController) bindChildCard(id WorkID, subagentID int64, label string) WorkID {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.childCards == nil {
+		c.childCards = make(map[int64]WorkID)
+	}
+	if id != "" {
+		if item, present := c.items[id]; present {
+			item.item.SubagentID = subagentID
+			if label != "" {
+				item.item.Label = boundWorkLabel(label)
+			}
+			c.childCards[subagentID] = id
+			return id
+		}
+	}
+	if existing, ok := c.childCards[subagentID]; ok {
+		if item, present := c.items[existing]; present {
+			item.item.SubagentID = subagentID
+			if label != "" {
+				item.item.Label = boundWorkLabel(label)
+			}
+			return existing
+		}
+	}
+	card := c.reserveLocked(WorkKindChild, label, "", "", nil)
+	c.items[card].item.SubagentID = subagentID
+	c.childCards[subagentID] = card
+	if c.cardOwned == nil {
+		c.cardOwned = make(map[WorkID]bool)
+	}
+	c.cardOwned[card] = true
+	return card
+}
+
+// endChildWork releases the child-creation item the exiting child registered.
+// Releasing by identity — not by scanning for "some child item" — is what keeps
+// the membership conservation-exact when several children start and finish at
+// once: every registration is released exactly once, by the exit that owns it.
+func (c *endController) endChildWork(id WorkID) {
+	if id == "" {
+		return
+	}
+	c.release(id)
+}
+
+// releaseChildCard drops a child item that a card registered (a pipeline or
+// review worker, which has no creation pair), when that worker reports finished.
+// A creation-registered child is released by its own exit instead: that is the
+// registration which covers the child's whole life, not only the part after its
+// card appeared.
+func (c *endController) releaseChildCard(subagentID int64) {
+	c.mu.Lock()
+	id, ok := c.childCards[subagentID]
+	if !ok {
+		c.mu.Unlock()
+		return
+	}
+	owned := c.cardOwned[id]
+	c.mu.Unlock()
+	if owned {
+		c.release(id)
+	}
+}
+
+// snapshotLocked builds the membership snapshot, in registration order. The
+// controller's lock must be held.
+func (c *endController) snapshotLocked() WorkSnapshot {
+	snap := WorkSnapshot{Phase: c.phaseLocked()}
+	for _, id := range c.order {
+		item, ok := c.items[id]
+		if !ok {
+			continue
+		}
+		if item.item.Scope != "" {
+			snap.Analysis = append(snap.Analysis, item.item)
+			continue
+		}
+		snap.Items = append(snap.Items, item.item)
+	}
+	// Attached commands are grouped under the operation they belong to, matched
+	// by the explicit-stop group they share. Each command keeps its own ID in
+	// the membership; grouping is display only.
+	byTurn := make(map[string]WorkID, len(snap.Items))
+	for _, item := range snap.Items {
+		if item.Kind != WorkKindCommand && item.TurnID != "" {
+			if _, seen := byTurn[item.TurnID]; !seen {
+				byTurn[item.TurnID] = item.ID
+			}
+		}
+	}
+	for i := range snap.Items {
+		if snap.Items[i].Kind != WorkKindCommand || snap.Items[i].Group != "" {
+			continue
+		}
+		if snap.Items[i].TurnID == "" {
+			continue
+		}
+		if group, ok := byTurn[snap.Items[i].TurnID]; ok && group != snap.Items[i].ID {
+			snap.Items[i].Group = group
+		}
+	}
+	return snap
+}
+
+// snapshot returns the current membership.
+func (c *endController) snapshot() WorkSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.snapshotLocked()
+}
+
+// accept freezes ordinary admission. It reports whether THIS call froze the
+// conversation: a second acceptance is a no-op that stops nothing again.
+// requireDisplayed, when true, rejects the acceptance outright if any active
+// ordinary ID is not in displayed — the refresh path, which stops nothing.
+func (c *endController) accept(displayed []string, requireDisplayed bool) (snap WorkSnapshot, expanded []WorkID, frozen bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snap = c.snapshotLocked()
+	if requireDisplayed {
+		seen := make(map[WorkID]bool, len(displayed))
+		for _, id := range displayed {
+			seen[WorkID(id)] = true
+		}
+		for _, item := range snap.Items {
+			if !seen[item.ID] {
+				expanded = append(expanded, item.ID)
+			}
+		}
+	}
+	// A refusal freezes nothing: the caller has not accepted THIS membership, so
+	// it must be able to refresh and ask again with ordinary work still live. Only
+	// an acceptance freezes admission, and only once.
+	if len(expanded) > 0 {
+		return snap, expanded, false
+	}
+	if c.phaseLocked() == ExitPhaseOpen {
+		c.phase = ExitPhaseStopping
+		frozen = true
+	}
+	return snap, expanded, frozen
+}
+
+// stopTargets returns the work ordinary admission's stop pass must act on: the
+// still-active commands and children, with each item's cancel hook. It is
+// taken under the lock so the pass acts on one consistent membership; the
+// callbacks themselves run with no lock held.
+func (c *endController) stopTargets(scope string) []endStopTarget {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]endStopTarget, 0, len(c.order))
+	for _, id := range c.order {
+		item, ok := c.items[id]
+		if !ok || item.item.Scope != scope {
+			continue
+		}
+		out = append(out, endStopTarget{
+			id:         item.item.ID,
+			kind:       item.item.Kind,
+			subagentID: item.item.SubagentID,
+			turnID:     item.item.TurnID,
+			cancel:     item.cancel,
+		})
+	}
+	return out
+}
+
+// endStopTarget is one still-active unit of work the stop pass must stop.
+type endStopTarget struct {
+	id         WorkID
+	kind       WorkKind
+	subagentID int64
+	turnID     string
+	cancel     func()
+}
+
+// outstanding returns the ordinary items still registered, for an honest
+// failed-join report.
+func (c *endController) outstanding() []WorkItem {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []WorkItem
+	for _, id := range c.order {
+		item, ok := c.items[id]
+		if !ok || item.item.Scope != "" {
+			continue
+		}
+		out = append(out, item.item)
+	}
+	return out
+}
+
+// outstandingScoped returns the items still registered under one analysis
+// epoch.
+func (c *endController) outstandingScoped(scope string) []WorkItem {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []WorkItem
+	for _, id := range c.order {
+		item, ok := c.items[id]
+		if !ok || item.item.Scope != scope {
+			continue
+		}
+		out = append(out, item.item)
+	}
+	return out
+}
+
+// setPhase moves the conversation's exit phase, refusing to move backwards.
+func (c *endController) setPhase(phase ExitPhase) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if phaseRank(phase) < phaseRank(c.phaseLocked()) {
+		return
+	}
+	c.phase = phase
+}
+
+// phaseRank orders the phases so a late transition can never reopen an
+// earlier one.
+func phaseRank(phase ExitPhase) int {
+	switch phase {
+	case ExitPhaseOpen:
+		return 0
+	case ExitPhaseStopping:
+		return 1
+	case ExitPhasePostmortem:
+		return 2
+	case ExitPhaseClosing:
+		return 3
+	case ExitPhaseClosed:
+		return 4
+	}
+	return 0
+}
+
+// openAnalysis opens one scoped exit-analysis epoch. It is admitted only while
+// the postmortem phase is open and only one epoch at a time.
+func (c *endController) openAnalysis() (*ExitAnalysisScope, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.phaseLocked() != ExitPhasePostmortem {
+		return nil, ErrNotPostmortemPhase
+	}
+	if c.analysisID != "" {
+		return nil, ErrExitAnalysisAlreadyOpen
+	}
+	c.analysisEpoch++
+	c.analysisID = fmt.Sprintf("analysis-%d", c.analysisEpoch)
+	return &ExitAnalysisScope{id: c.analysisID, epoch: c.analysisEpoch}, nil
+}
+
+// closeAnalysis closes the open epoch, so its authorization cannot admit work
+// into a conversation that has moved past the analysis.
+func (c *endController) closeAnalysis(scope *ExitAnalysisScope) {
+	if scope == nil {
+		return
+	}
+	c.mu.Lock()
+	if c.analysisID == scope.ID() {
+		c.analysisID = ""
+	}
+	c.mu.Unlock()
+}
+
+// hasScope reports whether the given scope is the open epoch's.
+func (c *endController) hasScope(scope *ExitAnalysisScope) bool {
+	if scope == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.analysisID != "" && c.analysisID == scope.ID()
+}
+
+// boundWorkLabel renders one display label: single line, secret-scrubbed and
+// bounded. Labels are display data only — nothing pairs work by label — so
+// bounding them costs no correctness, and scrubbing them keeps a pasted token
+// out of a warning panel and out of any later transcript.
+func boundWorkLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+	if idx := strings.IndexAny(label, "\r\n"); idx >= 0 {
+		label = label[:idx]
+	}
+	label = strings.Join(strings.Fields(label), " ")
+	if len(label) > 0 {
+		label = redact.Secrets(label)
+	}
+	return strutil.Truncate(label, maxWorkLabelRunes, true)
+}
+
+// derivedWorkLabel is the label a parent operation registers with when the
+// caller supplies none: what the session says it is doing, else its title.
+// It is deliberately coarse — the label is for the user's warning panel, and
+// the operator's own words ("thinking", "shell.run") are more useful there
+// than a guess at intent.
+func (s *State) derivedWorkLabel() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	activity := s.activity
+	title := s.title
+	s.mu.Unlock()
+	if activity.Kind != "" && activity.Kind != ActivityIdle && activity.Label != "" {
+		return activity.Label
+	}
+	return title
+}
+
+// WorkAdmission returns the end controller's admission seam for the
+// conversation's command service. A nil State returns nil, so a caller that
+// has no conversation to own cannot install a gate that would refuse every
+// command.
+func (s *State) WorkAdmission() WorkAdmission {
+	if s == nil {
+		return nil
+	}
+	return s
+}
+
+// AdmitWork registers one managed command, atomically with its admission
+// decision: the membership check that accepts an end takes the same lock, so a
+// command admitted here is either part of an accepted end's work or was
+// admitted after the end was accepted (which this call refuses).
+func (s *State) AdmitWork(req WorkAdmissionRequest) (WorkLease, error) {
+	id, err := s.end.begin(WorkKindCommand, req.Command, req.Scope, req.TurnID, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &workLease{s: s, id: id}, nil
+}
+
+// workLease releases one admitted unit of work.
+type workLease struct {
+	s  *State
+	id WorkID
+}
+
+// Release is idempotent and safe from any goroutine.
+func (l *workLease) Release() {
+	if l == nil || l.s == nil {
+		return
+	}
+	l.s.end.release(l.id)
+}
+
+// WorkPhase returns the conversation's exit phase.
+func (s *State) WorkPhase() ExitPhase {
+	if s == nil {
+		return ExitPhaseOpen
+	}
+	return s.end.phaseNow()
+}
+
+// SetWorkPhase moves the conversation's exit phase, refusing to move
+// backwards.
+func (s *State) SetWorkPhase(phase ExitPhase) {
+	if s == nil {
+		return
+	}
+	s.end.setPhase(phase)
+}
+
+// WorkMembership returns the registered work snapshot: the ordinary membership
+// a warning describes and the scoped analysis epoch, if one is open.
+func (s *State) WorkMembership() WorkSnapshot {
+	if s == nil {
+		return WorkSnapshot{Phase: ExitPhaseOpen}
+	}
+	return s.end.snapshot()
+}
+
+// AcceptWorkDisplayed freezes ordinary admission after checking that every
+// currently active ordinary ID was displayed. requireDisplayed rejects the
+// acceptance, changing nothing and stopping nothing, when the active set has
+// expanded; finished IDs need no reconfirmation and are simply absent from
+// expanded. frozen reports whether THIS call froze the conversation.
+func (s *State) AcceptWorkDisplayed(displayed []string, requireDisplayed bool) (WorkSnapshot, []WorkID, bool) {
+	if s == nil {
+		return WorkSnapshot{Phase: ExitPhaseOpen}, nil, false
+	}
+	return s.end.accept(displayed, requireDisplayed)
+}
+
+// WorkStopTargets returns the still-active units of work a stop pass must act
+// on. scope == "" selects the ordinary membership; a scope id selects one
+// exit-analysis epoch.
+func (s *State) WorkStopTargets(scope string) []WorkStopTarget {
+	if s == nil {
+		return nil
+	}
+	targets := s.end.stopTargets(scope)
+	out := make([]WorkStopTarget, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, WorkStopTarget{
+			ID:         t.id,
+			Kind:       t.kind,
+			SubagentID: t.subagentID,
+			TurnID:     t.turnID,
+			cancel:     t.cancel,
+		})
+	}
+	return out
+}
+
+// WorkStopTarget is one still-active unit of work. Cancel stops the operation
+// that registered it (a runtime turn's work context); it is nil for work whose
+// owner cancels it itself.
+type WorkStopTarget struct {
+	ID         WorkID
+	Kind       WorkKind
+	SubagentID int64
+	TurnID     string
+	cancel     func()
+}
+
+// Cancel stops the operation that registered this target, when it registered a
+// cancel hook. It runs with no conversation lock held.
+func (t WorkStopTarget) Cancel() {
+	if t.cancel != nil {
+		t.cancel()
+	}
+}
+
+// OutstandingWork returns the ordinary items still registered, for an honest
+// failed-join report.
+func (s *State) OutstandingWork() []WorkItem {
+	if s == nil {
+		return nil
+	}
+	return s.end.outstanding()
+}
+
+// OutstandingScopedWork returns the items still registered under one
+// exit-analysis epoch.
+func (s *State) OutstandingScopedWork(scope *ExitAnalysisScope) []WorkItem {
+	if s == nil || scope == nil {
+		return nil
+	}
+	return s.end.outstandingScoped(scope.ID())
+}
+
+// WaitForWorkDrain waits for the ordinary membership to empty. It returns
+// ctx.Err() when the caller's deadline ends first, so a failed join is
+// reported and can be retried instead of latching success.
+func (s *State) WaitForWorkDrain(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.end.mu.Lock()
+	ch, done := s.end.drainLocked()
+	s.end.mu.Unlock()
+	if done {
+		return nil
+	}
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// WaitForScopedWorkDrain waits for one exit-analysis epoch's membership to
+// empty, so its work is always joined before closure.
+func (s *State) WaitForScopedWorkDrain(ctx context.Context, scope *ExitAnalysisScope) error {
+	if s == nil || scope == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		if len(s.end.outstandingScoped(scope.ID())) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// OpenExitAnalysis opens one scoped exit-analysis epoch. It is admitted only
+// during the postmortem phase: the analysis cannot reopen ordinary work, and
+// its work is separate from the conversation's ordinary membership.
+func (s *State) OpenExitAnalysis() (*ExitAnalysisScope, error) {
+	if s == nil {
+		return nil, ErrNotPostmortemPhase
+	}
+	return s.end.openAnalysis()
+}
+
+// CloseExitAnalysis closes the open epoch so its authorization can admit
+// nothing more.
+func (s *State) CloseExitAnalysis(scope *ExitAnalysisScope) {
+	if s == nil {
+		return
+	}
+	s.end.closeAnalysis(scope)
+}
+
+// ExitAnalysisOpen reports whether scope is still the open epoch.
+func (s *State) ExitAnalysisOpen(scope *ExitAnalysisScope) bool {
+	if s == nil {
+		return false
+	}
+	return s.end.hasScope(scope)
 }
 
 // ---------------------------------------------------------------------------
@@ -1391,6 +2547,10 @@ func (s *State) BeginTurnStop(actor string) (token *TurnStopToken, pendingCause 
 	s.turnStopPendingCause = ""
 	s.turnStop = token
 	s.turnStopMu.Unlock()
+	// Stamp the group's turn onto this operation's work item, so a command
+	// admitted for this turn is shown under the operation it belongs to rather
+	// than as an unattached stranger.
+	s.end.attachTurn(token.turnID)
 	// A stop that arrived before this registration names THIS operation: the
 	// user asked to stop before the operation announced itself, so the
 	// registration adopts it immediately. Consuming it later would let a turn

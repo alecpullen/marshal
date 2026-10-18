@@ -243,6 +243,524 @@ type Runtime struct {
 	closeOnce   sync.Once
 	quiesceErr  error
 	closeErr    error
+
+	// endMu serializes whole end operations: acceptance, the stop/join pass,
+	// the postmortem window and closure. It is deliberately separate from mu
+	// (which only guards pointer swaps), because an end operation must not hold
+	// the pointer mutex across a join.
+	//
+	// Lock order: endMu is taken ABOVE mu and never below it. It is never held
+	// while a stop, cancel or join callback runs: those are collected under the
+	// session's gate and invoked after this lock is released, so a callback can
+	// re-enter the runtime.
+	endMu sync.Mutex
+	// endAccepted records that a runtime end was accepted, so a second
+	// acceptance neither stops anything again nor re-opens admission. endPhase
+	// is the conversation's exit phase as this runtime last moved it.
+	endAccepted bool
+	endPhase    string
+	// endIntended distinguishes a CLOSURE from a REPLACEMENT: a replacement
+	// omits the postmortem phase entirely (shared contract 8).
+	endIntended string
+	// analysisScope is the open scoped exit-analysis authorization, if any.
+	analysisScope *session.ExitAnalysisScope
+	// scopedAnalysis is the operation RunExitAnalysis invokes. It is set at
+	// startup by the transport that owns the analysis.
+	scopedAnalysis ExitAnalysisFunc
+	// endErr records the last end/join failure so an interactive caller can
+	// offer a retry instead of advancing as if the join had succeeded.
+	endErr error
+}
+
+// End phase names as the runtime spells them. They are the session's ExitPhase
+// values, exposed as plain strings so a transport can carry them without
+// importing the session package.
+const (
+	// EndPhaseOpen is a live conversation.
+	EndPhaseOpen = string(session.ExitPhaseOpen)
+	// EndPhaseStopping means an end was accepted and its work is being stopped
+	// and joined.
+	EndPhaseStopping = string(session.ExitPhaseStopping)
+	// EndPhasePostmortem means the stopped work settled and only scoped exit
+	// analysis may still launch.
+	EndPhasePostmortem = string(session.ExitPhasePostmortem)
+	// EndPhaseClosing means terminal teardown is running and nothing may launch.
+	EndPhaseClosing = string(session.ExitPhaseClosing)
+	// EndPhaseClosed means the runtime is closed.
+	EndPhaseClosed = string(session.ExitPhaseClosed)
+)
+
+// EndIntent names what the user accepted: closing the conversation (an exit) or
+// replacing it (/session new, clear, resume). A replacement omits the postmortem
+// phase; a closure may enter it.
+type EndIntent string
+
+const (
+	// EndIntentExit ends the conversation and the process.
+	EndIntentExit EndIntent = "exit"
+	// EndIntentReplace swaps the conversation for a new one, with no exit
+	// postmortem.
+	EndIntentReplace EndIntent = "replace"
+)
+
+// ActiveWork describes the runtime's currently active conversation work: the
+// membership a warning must show before anything is stopped.
+type ActiveWork struct {
+	// Phase is the conversation's exit phase.
+	Phase string
+	// Items is the membership, oldest first. Each item carries its own distinct
+	// opaque ID even when it is displayed under a parent, so new work can never
+	// hide behind an existing parent's identity.
+	Items []WorkEntry
+	// Targets lists the distinct stoppable targets a stop would act on. Attached
+	// commands shown under their parent are folded into that parent, so this
+	// never counts one stoppable thing twice.
+	Targets []string
+}
+
+// Empty reports whether no ordinary work is active.
+func (a ActiveWork) Empty() bool { return len(a.Items) == 0 }
+
+// WorkEntry is one active item, in the neutral shape a transport can render.
+type WorkEntry struct {
+	ID    string
+	Kind  string
+	Label string
+	// Group is the ID of the operation an attached command belongs to; empty
+	// when the item stands alone.
+	Group string
+	// Parent is true for a top-level operation, so a client can indent its
+	// attached commands under it.
+	Parent bool
+	// SubagentID is the child card's id for a delegated child, or 0.
+	SubagentID int64
+}
+
+// EndDecision is the outcome of an end acceptance.
+type EndDecision struct {
+	// Accepted reports that ordinary admission is now frozen.
+	Accepted bool
+	// Expanded lists the active IDs that were NOT displayed, when the caller
+	// required displayed membership. A non-empty Expanded means nothing was
+	// stopped and the caller must refresh and ask again.
+	Expanded []string
+	// Work is the membership at the moment of acceptance.
+	Work ActiveWork
+}
+
+// EndAcceptRequest is one end acceptance request. DisplayedIDs are the opaque
+// work IDs the user was actually shown; RequireDisplayed is true when the caller
+// insists nothing may be stopped that the user has not seen.
+type EndAcceptRequest struct {
+	Intent           EndIntent
+	DisplayedIDs     []string
+	RequireDisplayed bool
+}
+
+// ActiveWork returns the runtime's currently active conversation work: the
+// authoritative membership a warning panel renders. It reads the session's gate,
+// which registers parent operations, delegated children and managed commands
+// alike, so what it reports and what an accepted end acts on cannot drift apart.
+func (rt *Runtime) ActiveWork() ActiveWork {
+	if rt == nil || rt.State == nil {
+		return ActiveWork{Phase: EndPhaseOpen}
+	}
+	snap := rt.State.WorkMembership()
+	out := ActiveWork{Phase: string(snap.Phase)}
+	for _, item := range snap.Items {
+		out.Items = append(out.Items, WorkEntry{
+			ID:         string(item.ID),
+			Kind:       string(item.Kind),
+			Label:      item.Label,
+			Group:      string(item.Group),
+			Parent:     item.Kind == session.WorkKindParent,
+			SubagentID: item.SubagentID,
+		})
+	}
+	for _, target := range snap.Targets() {
+		out.Targets = append(out.Targets, string(target))
+	}
+	return out
+}
+
+// AcceptEnd accepts an end of the current conversation. It checks the displayed
+// work IDs and freezes ordinary admission ATOMICALLY: if any currently active ID
+// was not displayed, it changes nothing and stops nothing, so the caller can
+// refresh its warning and ask again. Finished IDs need no reconfirmation — work
+// that completed while the prompt was open is simply absent.
+//
+// A second acceptance of an already-accepted end is a no-op: it stops nothing
+// again and reports Accepted with the membership it found.
+func (rt *Runtime) AcceptEnd(req EndAcceptRequest) (EndDecision, error) {
+	if rt == nil || rt.State == nil {
+		return EndDecision{}, fmt.Errorf("runtime: AcceptEnd called with nil State")
+	}
+	intent := req.Intent
+	if intent == "" {
+		intent = EndIntentExit
+	}
+	rt.endMu.Lock()
+	defer rt.endMu.Unlock()
+
+	snap, expanded, frozen := rt.State.AcceptWorkDisplayed(req.DisplayedIDs, req.RequireDisplayed)
+	if len(expanded) > 0 {
+		// The displayed set did not cover what is active: refresh and stop
+		// nothing. Ordinary admission is deliberately NOT frozen here — the
+		// caller has not accepted this membership yet — and the runtime does not
+		// record an intent it never acted on.
+		decision := EndDecision{Accepted: false, Work: activeWorkFrom(snap)}
+		for _, id := range expanded {
+			decision.Expanded = append(decision.Expanded, string(id))
+		}
+		return decision, nil
+	}
+	rt.endIntended = string(intent)
+	if frozen {
+		rt.endAccepted = true
+	}
+	rt.endPhase = EndPhaseStopping
+	rt.State.SetWorkPhase(session.ExitPhaseStopping)
+	return EndDecision{Accepted: true, Work: activeWorkFrom(snap)}, nil
+}
+
+// activeWorkFrom renders a session snapshot in the runtime's neutral shape.
+func activeWorkFrom(snap session.WorkSnapshot) ActiveWork {
+	out := ActiveWork{Phase: string(snap.Phase)}
+	for _, item := range snap.Items {
+		out.Items = append(out.Items, WorkEntry{
+			ID:         string(item.ID),
+			Kind:       string(item.Kind),
+			Label:      item.Label,
+			Group:      string(item.Group),
+			Parent:     item.Kind == session.WorkKindParent,
+			SubagentID: item.SubagentID,
+		})
+	}
+	for _, target := range snap.Targets() {
+		out.Targets = append(out.Targets, string(target))
+	}
+	return out
+}
+
+// EndPhase returns the runtime's current exit phase.
+func (rt *Runtime) EndPhase() string {
+	if rt == nil {
+		return EndPhaseClosed
+	}
+	rt.endMu.Lock()
+	defer rt.endMu.Unlock()
+	if rt.endPhase != "" {
+		return rt.endPhase
+	}
+	if rt.State == nil {
+		return EndPhaseOpen
+	}
+	return string(rt.State.WorkPhase())
+}
+
+// EndAccepted reports whether an end has been accepted and ordinary admission is
+// frozen.
+func (rt *Runtime) EndAccepted() bool {
+	if rt == nil {
+		return false
+	}
+	rt.endMu.Lock()
+	defer rt.endMu.Unlock()
+	return rt.endAccepted
+}
+
+// LastEndError returns the error the most recent stop/join pass reported, so an
+// interactive caller can offer a retry rather than advancing as if the work had
+// settled. A nil return means the last pass succeeded (or none ran).
+func (rt *Runtime) LastEndError() error {
+	if rt == nil {
+		return nil
+	}
+	rt.endMu.Lock()
+	defer rt.endMu.Unlock()
+	return rt.endErr
+}
+
+// WaitForEnd stops and joins the accepted end's work, then reports it settled.
+// It is the interactive caller's settlement step: the caller runs it off the
+// render loop, watches ActiveWork for the stopping set, and retries on failure
+// instead of assuming the work is gone.
+//
+// The pass, in order: settle durable pending job-exit writes, resolve pending
+// user decisions so a turn blocked on an approval can finish, stop every
+// still-active target, and join the memberships the runtime owns. A failed join
+// reports the outstanding work and returns its error, so a caller can retry; it
+// never latches success.
+func (rt *Runtime) WaitForEnd(ctx context.Context) error {
+	if rt == nil || rt.State == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rt.endMu.Lock()
+	accepted := rt.endAccepted
+	analysis := rt.analysisScope
+	rt.endMu.Unlock()
+	if !accepted {
+		return fmt.Errorf("runtime: WaitForEnd called before an end was accepted")
+	}
+
+	// 1. Retry any settled completion whose durable record has not landed yet,
+	//    so a completion recorded during the prompt is stored before the
+	//    database can close.
+	if err := rt.State.RetryJobExitSaves(); err != nil && rt.Logger != nil {
+		rt.Logger.Warn("job exit save retry failed before end settlement", "error", err)
+	}
+
+	// 2. Resolve pending user decisions, so a turn parked on an approval, a
+	//    question, a skill gate or a privileged-auth prompt can observe the
+	//    denial and finish instead of blocking the join.
+	rt.State.ResolvePendingForShutdown()
+
+	// 3. Stop every still-active target. Callbacks run without the runtime's end
+	//    lock, so a stop that re-enters the runtime cannot deadlock.
+	err := rt.stopEndWork(ctx, analysis)
+
+	// 4. Join: the session's work waitgroup (parent operations), the session's
+	//    gate membership (children and commands, which settle through their own
+	//    paths), the command service, and the durable finalization.
+	joinErr := rt.joinEndWork(ctx, analysis)
+	err = errors.Join(err, joinErr)
+
+	rt.endMu.Lock()
+	rt.endErr = err
+	if err == nil {
+		if rt.endIntended == string(EndIntentExit) {
+			rt.endPhase = EndPhasePostmortem
+		} else {
+			// A replacement omits postmortem entirely.
+			rt.endPhase = EndPhaseClosing
+		}
+		rt.State.SetWorkPhase(session.ExitPhasePostmortem)
+		if rt.endIntended != string(EndIntentExit) {
+			rt.State.SetWorkPhase(session.ExitPhaseClosing)
+		}
+	}
+	rt.endMu.Unlock()
+	return err
+}
+
+// stopEndWork stops every still-active unit of work in the membership: attached
+// and detached commands through the conversation's command service, delegated
+// children through the session's subagent registry, and parent operations
+// through the work context their registration carries.
+//
+// It is safe to call repeatedly: an already-stopped target is a no-op, and a
+// target that finished meanwhile is simply gone.
+func (rt *Runtime) stopEndWork(ctx context.Context, analysis *session.ExitAnalysisScope) error {
+	scope := ""
+	if analysis != nil {
+		scope = analysis.ID()
+	} else {
+		// The ordinary membership is stopped by turn groups: a command still
+		// attached to a turn is stopped by that turn's explicit stop, and the
+		// command service refuses that turn any further admission.
+		rt.stopOrdinaryTurnWork()
+	}
+	targets := rt.State.WorkStopTargets(scope)
+	for _, target := range targets {
+		switch target.Kind {
+		case session.WorkKindChild:
+			if target.SubagentID != 0 {
+				rt.State.CancelSubagent(target.SubagentID)
+			} else if target.TurnID != "" {
+				rt.stopAttachedTurn(target.TurnID, "conversation ended")
+			}
+		case session.WorkKindCommand:
+			if target.TurnID != "" {
+				rt.stopAttachedTurn(target.TurnID, "conversation ended")
+			}
+		case session.WorkKindParent:
+			// Cancelling the parent work context is what unblocks a turn parked
+			// in provider work or an approval; it runs with no runtime lock held.
+			target.Cancel()
+		}
+	}
+	// Every execution still owned by the conversation's command service is
+	// stopped through its own admission boundary, so detached jobs the
+	// membership reached are stopped too.
+	if jm := rt.commandManager(); jm != nil {
+		for _, info := range jm.ActiveExecutions() {
+			if err := jm.RequestStop(info.ID, "conversation ended"); err != nil && rt.Logger != nil {
+				rt.Logger.Warn("stop at conversation end failed", "job", info.ID, "error", err)
+			}
+		}
+	}
+	_ = ctx
+	return nil
+}
+
+// stopOrdinaryTurnWork stops every registered turn group's attached commands.
+// Each group is a parent operation's stop target, so stopping them all is what
+// freezes ordinary command admission at the service.
+func (rt *Runtime) stopOrdinaryTurnWork() {
+	targets := rt.State.WorkStopTargets("")
+	seen := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		if target.TurnID == "" || seen[target.TurnID] {
+			continue
+		}
+		seen[target.TurnID] = true
+		rt.stopAttachedTurn(target.TurnID, "conversation ended")
+	}
+	// A turn group with no registered work item of its own (a runner used
+	// directly) is still reachable through the session's current registration.
+	if token := rt.State.CurrentTurnStop(); token != nil && !seen[token.TurnID()] {
+		_, _ = token.Stop("conversation ended")
+	}
+}
+
+// stopAttachedTurn stops one turn group's attached commands at the command
+// service's admission/detachment boundary.
+func (rt *Runtime) stopAttachedTurn(turnID, cause string) {
+	if turnID == "" {
+		return
+	}
+	jm := rt.commandManager()
+	if jm == nil {
+		return
+	}
+	if _, err := jm.StopAttached(turnID, cause); err != nil && rt.Logger != nil {
+		rt.Logger.Warn("turn stop at conversation end not accepted", "turn", turnID, "error", err)
+	}
+}
+
+// joinEndWork waits for the stopped work to settle. Every join is bounded by the
+// caller's context: a deadline bounds the JOIN, never the process lifetime. A
+// failed join reports the outstanding work through the returned error and leaves
+// the runtime's state alone, so the caller can retry.
+func (rt *Runtime) joinEndWork(ctx context.Context, analysis *session.ExitAnalysisScope) error {
+	var errs []error
+	if err := rt.State.WaitForWork(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("join conversation work: %w", err))
+	}
+	if analysis != nil {
+		if err := rt.State.WaitForScopedWorkDrain(ctx, analysis); err != nil {
+			errs = append(errs, fmt.Errorf("join exit analysis: %w", err))
+		}
+	}
+	if err := rt.State.WaitForWorkDrain(ctx); err != nil {
+		outstanding := rt.State.OutstandingWork()
+		names := make([]string, 0, len(outstanding))
+		for _, item := range outstanding {
+			names = append(names, string(item.ID))
+		}
+		errs = append(errs, fmt.Errorf("join active work: %w (outstanding: %s)", err, strings.Join(names, ", ")))
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	// Durable finalization: every detached completion is stored before the
+	// runtime may extract a report or close the database.
+	if err := rt.State.RetryJobExitSaves(); err != nil {
+		errs = append(errs, fmt.Errorf("persist job exits: %w", err))
+	}
+	if jm := rt.commandManager(); jm != nil {
+		if pending := jm.PendingSettlements(); len(pending) > 0 {
+			errs = append(errs, fmt.Errorf("job completions still pending: %d", len(pending)))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// RunExitAnalysis runs one scoped exit-analysis operation. It is admitted only
+// during the postmortem phase, on its own work epoch, with an authorization
+// stamped on the operation's context so its commands and children inherit it.
+//
+// The epoch is always stopped and joined before this returns — on success, on
+// failure and on cancellation — so no analysis work can outlive the phase.
+// Analysis work is separate from the ordinary membership and cannot reopen the
+// conversation's ordinary admission.
+func (rt *Runtime) RunExitAnalysis(ctx context.Context, goal string) error {
+	if rt == nil || rt.State == nil {
+		return fmt.Errorf("runtime: RunExitAnalysis called with nil State")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rt.endMu.Lock()
+	if rt.endPhase != EndPhasePostmortem {
+		// A replacement omits postmortem entirely; a closure that has not
+		// settled its work cannot start analysis either.
+		rt.endMu.Unlock()
+		return fmt.Errorf("%w: runtime exit phase is %q", session.ErrNotPostmortemPhase, rt.endPhase)
+	}
+	if rt.analysisScope != nil {
+		rt.endMu.Unlock()
+		return session.ErrExitAnalysisAlreadyOpen
+	}
+	scope, err := rt.State.OpenExitAnalysis()
+	if err != nil {
+		rt.endMu.Unlock()
+		return err
+	}
+	rt.analysisScope = scope
+	rt.endMu.Unlock()
+
+	rt.State.SetWorkPhase(session.ExitPhasePostmortem)
+	// Stamp the authorization here, in the runtime that owns it: the operation
+	// receives a context whose commands and children are registered in this
+	// epoch no matter which transport supplied the operation, so the epoch's
+	// cleanup is complete and its work can never be mistaken for ordinary work.
+	analysisCtx := session.WithExitAnalysisScope(ctx, scope)
+	runErr := rt.runScopedAnalysis(analysisCtx, scope, goal)
+
+	// Always stop and join this epoch before returning, whatever happened.
+	rt.State.CloseExitAnalysis(scope)
+	rt.stopEndWork(ctx, scope)
+	joinErr := rt.joinEndWork(ctx, scope)
+
+	rt.endMu.Lock()
+	if rt.analysisScope == scope {
+		rt.analysisScope = nil
+	}
+	rt.endMu.Unlock()
+	return errors.Join(runErr, joinErr)
+}
+
+// ExitAnalysisFunc runs one scoped exit-analysis pass. It is a function value so
+// a transport can supply the operation (the TUI's postmortem agent pass) without
+// the runtime importing the transport. The scope is the epoch the runtime opened:
+// the context it receives already carries that authorization, so the commands and
+// children the pass launches are registered in the epoch and are joined with it.
+type ExitAnalysisFunc func(ctx context.Context, scope *session.ExitAnalysisScope, goal string) error
+
+// runScopedAnalysis invokes the installed operation. A runtime with none reports
+// that exit analysis is unavailable rather than silently doing nothing.
+func (rt *Runtime) runScopedAnalysis(ctx context.Context, scope *session.ExitAnalysisScope, goal string) error {
+	rt.endMu.Lock()
+	fn := rt.scopedAnalysis
+	rt.endMu.Unlock()
+	if fn == nil {
+		return fmt.Errorf("runtime: no exit-analysis operation is wired")
+	}
+	return fn(ctx, scope, goal)
+}
+
+// SetExitAnalysisOperation installs the operation RunExitAnalysis invokes. It is
+// a startup-time seam: the transport that owns the analysis (Run, for the TUI's
+// postmortem pass) installs it there.
+func (rt *Runtime) SetExitAnalysisOperation(fn ExitAnalysisFunc) {
+	if rt == nil {
+		return
+	}
+	rt.endMu.Lock()
+	rt.scopedAnalysis = fn
+	rt.endMu.Unlock()
+}
+
+// commandManager returns the conversation's command supervisor under the pointer
+// mutex, or nil when the build never reached owner construction.
+func (rt *Runtime) commandManager() *native.JobManager {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return commandServiceManager(rt.CommandService)
 }
 
 // commandServiceManager returns the supervisor's manager handle, or nil when
@@ -323,11 +841,18 @@ func (r *Runtime) AdditionalDirectories() []string {
 // MUST be called exactly once (typically deferred) to signal work completion
 // to the shutdown gate.
 //
-// If the runtime is already quiescing, BeginWork returns
-// session.ErrSessionQuiescing and does NOT increment the work counter.
-// Nil parent, State, or runtime root context are rejected with a concrete
-// error. If runtime cancellation races with registration, the child context
-// is cancelled immediately; the caller still owns finish.
+// The registration is also the conversation end gate's parent-operation entry
+// (Task 8): the operation is part of the membership ActiveWork reports, and its
+// own cancel is what an accepted conversation end invokes to stop it, so a turn
+// parked in provider work or waiting on an approval can be stopped without
+// cancelling the runtime's infrastructure root.
+//
+// If the runtime is already quiescing, or an end has already been accepted,
+// BeginWork returns an error wrapping session.ErrSessionQuiescing and does NOT
+// increment the work counter. Nil parent, State, or runtime root context are
+// rejected with a concrete error. If runtime cancellation races with
+// registration, the child context is cancelled immediately; the caller still
+// owns finish.
 func (rt *Runtime) BeginWork(parent context.Context) (context.Context, func(), error) {
 	if parent == nil {
 		return nil, nil, fmt.Errorf("runtime: BeginWork parent context is nil")
@@ -339,12 +864,15 @@ func (rt *Runtime) BeginWork(parent context.Context) (context.Context, func(), e
 		return nil, nil, fmt.Errorf("runtime: BeginWork called with nil runtime work context")
 	}
 
-	if err := rt.State.BeginWork(); err != nil {
+	if err := rt.State.BeginWorkCancelable(nil); err != nil {
 		return nil, nil, err
 	}
 
 	workCtx, cancel := context.WithCancel(parent)
 	stopRuntimeCancel := context.AfterFunc(rt.workCtx, cancel)
+	// Publish this operation's stop hook to the conversation gate, so an
+	// accepted end stops exactly this turn rather than the infrastructure root.
+	rt.State.SetWorkCancel(cancel)
 
 	var finishOnce sync.Once
 	finish := func() {
@@ -370,11 +898,23 @@ func (rt *Runtime) Quiesce(ctx context.Context) error {
 			return
 		}
 		rt.State.BeginQuiesce()
+		// Freeze ordinary admission at the conversation gate as well. The work
+		// gate above stops new BeginWork registrations; this stops new commands
+		// and children at the service and the session, which is what makes the
+		// membership below stable while it is being stopped.
+		rt.freezeOrdinaryAdmission()
 		if rt.workCancel != nil {
 			rt.workCancel()
 		}
 		rt.State.ResolvePendingForShutdown()
 		rt.State.Shutdown()
+
+		// Stop and join the conversation's own work while the command service and
+		// the database are still open, so every settled completion is stored
+		// before the service ends. This is the same pass an interactive end runs
+		// (Runtime.WaitForEnd) and it is idempotent, so a headless/signal shutdown
+		// reuses the work already stopped instead of stopping anything twice.
+		workErr := rt.stopAndJoinConversationWork(ctx)
 
 		// Snapshot JobManager and WatchManager under the pointer mutex so a
 		// concurrent reloadAgentRuntime can swap the pointers without a data
@@ -414,10 +954,56 @@ func (rt *Runtime) Quiesce(ctx context.Context) error {
 			jobErr = jm.Shutdown(shutdownCtx)
 		}
 
-		workErr := rt.State.WaitForWork(ctx)
-		rt.quiesceErr = errors.Join(watchErr, jobErr, workErr)
+		// The join after the service's own shutdown is the terminal one: the
+		// membership is drained by then, and a deadline here bounds the join, not
+		// any process's lifetime.
+		waitErr := rt.State.WaitForWork(ctx)
+		rt.quiesceErr = errors.Join(workErr, watchErr, jobErr, waitErr)
 	})
 	return rt.quiesceErr
+}
+
+// freezeOrdinaryAdmission closes ordinary admission at the conversation gate, so
+// no new command, child or parent operation can register. It never reports
+// displayed-membership expansion: this is the noninteractive path, where there is
+// nobody to ask, so it freezes exactly what it found.
+func (rt *Runtime) freezeOrdinaryAdmission() {
+	if rt.State == nil {
+		return
+	}
+	rt.State.AcceptWorkDisplayed(nil, false)
+	rt.endMu.Lock()
+	rt.endAccepted = true
+	if rt.endPhase == "" || rt.endPhase == EndPhaseOpen {
+		rt.endPhase = EndPhaseStopping
+	}
+	rt.endMu.Unlock()
+	rt.State.SetWorkPhase(session.ExitPhaseStopping)
+	// No watcher prompt, no auto-resume: a conversation that is ending must not
+	// start a fresh turn from a fired watch. The hook is cleared here rather than
+	// only in Close so the window between acceptance and closure cannot open one.
+	rt.WatchResume.Set(nil)
+}
+
+// stopAndJoinConversationWork runs the shared stop/join pass on the ordinary
+// membership with the command service and database still open. It is the one
+// implementation both interactive settlement (WaitForEnd) and terminal closure
+// (Quiesce/Close) use, so a failed interactive join that is retried never stops
+// or settles anything a second time.
+func (rt *Runtime) stopAndJoinConversationWork(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if rt.State == nil {
+		return nil
+	}
+	if err := rt.State.RetryJobExitSaves(); err != nil && rt.Logger != nil {
+		rt.Logger.Warn("job exit save retry failed before end settlement", "error", err)
+	}
+	rt.State.ResolvePendingForShutdown()
+	stopErr := rt.stopEndWork(ctx, nil)
+	joinErr := rt.joinEndWork(ctx, nil)
+	return errors.Join(stopErr, joinErr)
 }
 
 // Close tears down resources owned by the runtime in the prescribed order.
@@ -993,7 +1579,32 @@ func autoloadSkills(cfg config.Config, idx *skills.Index, state *session.State, 
 // State) and rebuilds the agent runtime against it. On success it swaps the
 // new state/runner into rt and returns the new pieces; on failure it leaves
 // the current session untouched and returns the error.
+//
+// It is serialized against config reloads and against an end acceptance
+// (Task 8, step 7). A replacement accepted through AcceptEnd freezes the old
+// conversation first, so a NewSession that races an accepted end loses cleanly
+// instead of starting a second conversation beside a stopping one; and nothing
+// here mutates the runtime's state, owner or resume intent until the candidate
+// build has succeeded. A failed build leaves the old conversation frozen, with
+// an explicit error: reopening it implicitly would put a live conversation back
+// beside whatever the replacement was for, and transferring its jobs would give
+// them an owner that never admitted them.
 func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, *registry.Registry, error) {
+	// Serialize the whole replacement against config reloads. A reload rebuilds
+	// the same pointers this function swaps, and both commit launch generations
+	// on the service.
+	rt.reloadMu.Lock()
+	defer rt.reloadMu.Unlock()
+
+	rt.endMu.Lock()
+	replacing := rt.endAccepted && rt.endIntended == string(EndIntentReplace)
+	rt.endMu.Unlock()
+
+	return rt.newSessionLocked(name, replacing)
+}
+
+// newSessionLocked is NewSession's body. It expects reloadMu held.
+func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, *registry.Registry, error) {
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 
@@ -1054,11 +1665,21 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		// Roll back the empty session row so /sessions stays clean.
 		_, _ = db.DeleteSession(context.Background(), sessionID)
 		rt.Logger.Warn("new session: runner build failed; keeping previous session", "error", err)
+		// Nothing about the runtime's state, owner or resume intent has been
+		// mutated: the old conversation is exactly as it was before this call,
+		// except that an accepted replacement has already frozen it. The error is
+		// explicit about the way out — retry the replacement, or exit — because
+		// reopening the old conversation implicitly would put a live conversation
+		// back beside whatever the replacement was for.
+		hint := "The previous session is still active. Fix the provider configuration and try /session new again."
+		if replacing {
+			hint = "The previous conversation stays frozen: retry the replacement once the provider is fixed, or exit Marshal. Its work is not reopened or transferred."
+		}
 		rt.State.SetNotice(session.Notice{
 			Category: session.NoticeProvider,
 			Severity: session.SeverityError,
 			Message:  err.Error(),
-			Hint:     "The previous session is still active. Fix the provider configuration and try /session new again.",
+			Hint:     hint,
 			Source:   "session-new",
 		})
 		return nil, nil, nil, nil, nil, nil, nil, err
@@ -1148,6 +1769,19 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		}
 	}
 	oldState.Shutdown()
+
+	// The replacement is complete: the old conversation is gone and the new one
+	// owns the runtime. A replacement NEVER runs the exit postmortem, so the
+	// runtime's exit phase returns to open for the new conversation rather than
+	// lingering in a stopping state that would refuse the new session's work.
+	rt.endMu.Lock()
+	rt.endAccepted = false
+	rt.endIntended = ""
+	rt.endPhase = EndPhaseOpen
+	rt.endErr = nil
+	rt.analysisScope = nil
+	rt.endMu.Unlock()
+	newState.SetWorkPhase(session.ExitPhaseOpen)
 
 	return newState, newRunner, newSwarmRunner, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, newReg, nil
 }

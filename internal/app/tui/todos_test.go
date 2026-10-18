@@ -462,3 +462,35 @@ func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
 		t.Fatal("the new card has no mouse target")
 	}
 }
+
+// A stop or acknowledgement reply must release the pending entry its request
+// booked, or a slow reply leaks it for the panel's whole lifetime.
+func TestWorkActionReplyClearsPending(t *testing.T) {
+	m := newTestModel(t)
+	m.workSnapshot = workSnapOf(workTask("work:a", "Alpha"))
+	m = ctrlT(m)
+	p := m.tasksPanel
+	if p.activeTab != tasksTabWork {
+		t.Fatalf("want the Work tab, got %v", p.activeTab)
+	}
+
+	for _, kind := range []string{workReqStop, workReqAck} {
+		cmd := p.request(kind, "work:a", "rev-1", viewmodel.WorkQuery{ConversationID: p.conversationID}, false)
+		req := cmd().(workRequestMsg)
+		if _, ok := p.pending[req.requestID]; !ok {
+			t.Fatalf("the %s request was not booked", kind)
+		}
+		updated, _ := m.Update(workActionMsg{
+			conversationID: req.conversationID,
+			taskKey:        req.taskKey,
+			resultRevision: req.resultRevision,
+			requestID:      req.requestID,
+			kind:           req.kind,
+			stop:           viewmodel.WorkStopResult{TaskKey: "work:a", Accepted: true},
+		})
+		m = updated.(Model)
+		if _, ok := m.tasksPanel.pending[req.requestID]; ok {
+			t.Fatalf("the %s reply left its pending entry behind", kind)
+		}
+	}
+}

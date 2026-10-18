@@ -719,3 +719,129 @@ func TestWorkNowBarHitTargetsMatchRenderedRows(t *testing.T) {
 }
 
 func workFloatPtr(v float64) *float64 { return &v }
+
+// Clicking the live-work overflow row opens the Tasks panel on the Work tab.
+// The plan records the hit; without consuming it the row is dead.
+func TestNowBarWorkOverflowClickOpensWork(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 40)
+	many := make([]viewmodel.WorkItem, 0, 12)
+	for i := range 12 {
+		many = append(many, workRunningCard(fmt.Sprintf("work:%02d", i), nowBarT0.Add(-time.Duration(i)*time.Second)))
+	}
+	m.workSnapshot = workSnapOf(many...)
+	m.viewString()
+
+	plan := m.nowBarPlan()
+	listRow := -1
+	for _, h := range plan.workHits {
+		if h.Action == workActionList {
+			listRow = h.Row
+		}
+	}
+	if listRow < 0 {
+		t.Fatal("the plan recorded no overflow hit")
+	}
+	top, _, ok := m.nowBarBand(plan)
+	if !ok {
+		t.Fatal("expected a now bar band")
+	}
+	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + listRow}); !handled {
+		t.Fatal("the overflow row click must be handled")
+	}
+	if !m.tasksOpen() || m.tasksPanel.activeTab != tasksTabWork {
+		t.Fatal("the overflow row must open the Tasks panel on the Work tab")
+	}
+}
+
+// A click on a live card's header toggles that card's expansion; clicking the
+// expanded card again collapses it.
+func TestNowBarWorkCardClickTogglesExpansion(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 40)
+	m.workSnapshot = workSnapOf(
+		workRunningCard("work:a", nowBarT0.Add(-30*time.Second)),
+		workRunningCard("work:b", nowBarT0.Add(-20*time.Second)),
+	)
+	m.viewString()
+
+	// headerHit returns the card's first (header) row hit and the band top.
+	headerHit := func(key string) (workHit, int) {
+		t.Helper()
+		plan := m.nowBarPlan()
+		best := workHit{Row: -1}
+		for _, h := range plan.workHits {
+			if h.TaskKey == key && (best.Row < 0 || h.Row < best.Row) {
+				best = h
+			}
+		}
+		if best.Row < 0 {
+			t.Fatalf("the plan recorded no hit for %q", key)
+		}
+		top, _, ok := m.nowBarBand(plan)
+		if !ok {
+			t.Fatal("expected a now bar band")
+		}
+		return best, top
+	}
+
+	hit, top := headerHit("work:a")
+	if hit.Action != workActionExpand {
+		t.Fatalf("collapsed card action = %v, want expand", hit.Action)
+	}
+	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + hit.Row}); !handled {
+		t.Fatal("the card header click must be handled")
+	}
+	if m.workExpanded != "work:a" {
+		t.Fatalf("workExpanded = %q, want work:a", m.workExpanded)
+	}
+
+	// The next frame records the expanded card's rows as a collapse target.
+	m.viewString()
+	hit, top = headerHit("work:a")
+	if hit.Action != workActionCollapse {
+		t.Fatalf("expanded card action = %v, want collapse", hit.Action)
+	}
+	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + hit.Row}); !handled {
+		t.Fatal("the collapse click must be handled")
+	}
+	if m.workExpanded != "" {
+		t.Fatalf("workExpanded = %q, want cleared", m.workExpanded)
+	}
+}
+
+// When the selected card's full height cannot fit, it is capped to the rows
+// that remain instead of being dropped whole, and the overflow row still
+// accounts for every hidden live item.
+func TestWorkNowBarSelectedCardClampsInsteadOfHiding(t *testing.T) {
+	in := nowBarBase() // width 100, height 40
+	in.Height = 36     // workRowBudget = 9
+	in.LiveHeadline = "compiling"
+	in.Busy, in.TurnStartedAt, in.Spinner = true, nowBarT0.Add(-30*time.Second), "⠋"
+	in.Band = viewmodel.BandInfo{Todos: true, Done: 1, Total: 3, Active: "build", Next: []string{"ship"}}
+
+	live := []viewmodel.WorkItem{
+		workRunningCard("work:selected", nowBarT0.Add(-30*time.Second)),
+		workRunningCard("work:b", nowBarT0.Add(-20*time.Second)),
+		workRunningCard("work:c", nowBarT0.Add(-10*time.Second)),
+	}
+	attention := viewmodel.WorkItem{TaskKey: "work:attn", Kind: "command", Label: "attn",
+		State: "failed", StartedAt: nowBarT0.Add(-40 * time.Second)}
+	receipt := viewmodel.WorkItem{TaskKey: "work:done", Kind: "command", Label: "done",
+		State: "completed", StartedAt: nowBarT0.Add(-50 * time.Second), EndedAt: nowBarT0.Add(-time.Second)}
+	in.Work = workSnapOf(append(live, attention, receipt)...)
+	in.WorkSelected = "work:selected"
+	in.WorkExpanded = "work:selected"
+
+	plan := planNowBar(in)
+	plain := stripANSI(strings.Join(plan.rows, "\n"))
+	if !strings.Contains(plain, "work:selected") {
+		t.Fatalf("the selected card must stay visible when its full height cannot fit:\n%s", plain)
+	}
+	if !strings.Contains(plain, "… 2 more live") {
+		t.Fatalf("the overflow row must still count every hidden live item:\n%s", plain)
+	}
+	if budget := workRowBudget(in); len(plan.rows) > budget {
+		t.Fatalf("rows %d exceed the budget %d:\n%s", len(plan.rows), budget, plain)
+	}
+}

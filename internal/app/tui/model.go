@@ -6497,6 +6497,9 @@ func (m Model) handleWorkAction(msg workActionMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	p := m.tasksPanel
+	// The reply has found its panel; release the booked request so a slow
+	// reply cannot leave a pending entry behind for the panel's lifetime.
+	delete(p.pending, msg.requestID)
 	switch msg.kind {
 	case workReqStop:
 		switch {

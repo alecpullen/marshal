@@ -286,6 +286,19 @@ func planWorkRows(in nowBarInput, budget int) nowBarPlan {
 	for i, it := range live {
 		need[i] = workCardMinRows(it, expanded)
 	}
+	// Keep the explicitly selected card visible when its full height cannot
+	// fit: cap it to the rows that remain so it renders as a header-only card
+	// rather than being dropped whole. When other live cards will be hidden,
+	// one of those rows belongs to the overflow notice, so leave it a row.
+	if sel := workSelectedIndex(live, in.WorkSelected); sel >= 0 {
+		cap := avail
+		if len(live) > 1 {
+			cap = max(avail-1, 1)
+		}
+		if need[sel] > cap {
+			need[sel] = cap
+		}
+	}
 	place := 0
 	if sumInts(need) <= avail {
 		place = len(live)
@@ -426,6 +439,20 @@ func workExpandedLive(live []viewmodel.WorkItem, key string) bool {
 		}
 	}
 	return false
+}
+
+// workSelectedIndex returns the index of the explicitly selected live card, or
+// -1 when the selection names no live item.
+func workSelectedIndex(live []viewmodel.WorkItem, selected string) int {
+	if selected == "" {
+		return -1
+	}
+	for i, it := range live {
+		if it.TaskKey == selected {
+			return i
+		}
+	}
+	return -1
 }
 
 // workCardMinRows is the rows a card is planned to take: two collapsed, up to

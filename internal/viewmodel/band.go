@@ -185,20 +185,25 @@ func BandOf(s Snapshot, turns []*Node) BandInfo {
 			}
 		}
 	}
-	var walk func(ns []*Node)
-	walk = func(ns []*Node) {
-		for _, n := range ns {
-			switch {
-			case n.Kind == KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Status == session.SubagentRunning:
-				v := n.Item.Subagent
-				b.Entities = append(b.Entities, BandEntity{Ref: n.ID, Label: fmt.Sprintf("#%d %s", v.ID, ScrubText(v.Label)), Detail: ScrubText(v.CurrentTool), Started: v.StartedAt})
-			case n.Job != nil && n.Job.Running:
-				b.Entities = append(b.Entities, BandEntity{Ref: n.ID, Label: n.Job.ID, Detail: ScrubText(n.Job.Command), Started: n.JobStart()})
+	// The pinned live-work surface owns the running cards while LiveWork is on:
+	// the band omits the duplicated entity listings then, retaining only the
+	// todo/task summary it is the single source for. Legacy clients keep them.
+	if !s.LiveWork {
+		var walk func(ns []*Node)
+		walk = func(ns []*Node) {
+			for _, n := range ns {
+				switch {
+				case n.Kind == KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Status == session.SubagentRunning:
+					v := n.Item.Subagent
+					b.Entities = append(b.Entities, BandEntity{Ref: n.ID, Label: fmt.Sprintf("#%d %s", v.ID, ScrubText(v.Label)), Detail: ScrubText(v.CurrentTool), Started: v.StartedAt})
+				case n.Job != nil && n.Job.Running:
+					b.Entities = append(b.Entities, BandEntity{Ref: n.ID, Label: n.Job.ID, Detail: ScrubText(n.Job.Command), Started: n.JobStart()})
+				}
+				walk(n.Children)
 			}
-			walk(n.Children)
 		}
+		walk(turns)
 	}
-	walk(turns)
 	return b
 }
 

@@ -145,8 +145,13 @@ type WireThought struct {
 // WireTool is a tool row: one call, a merged run of same-tool calls, or a
 // call still running.
 type WireTool struct {
-	Name    string       `json:"name"`
-	Display string       `json:"display"`
+	Name    string `json:"name"`
+	Display string `json:"display"`
+	// WorkKey is the stable conversation-work identity this row dispatched, so
+	// a client can pair the retained dispatch row with the pinned live card by
+	// identity rather than by display text. Omitted when the record carries
+	// none: a legacy record, or a row that dispatched no work.
+	WorkKey string       `json:"workKey,omitempty"`
 	Calls   []WireCall   `json:"calls,omitempty"`
 	Running *WireRunning `json:"running,omitempty"`
 	// Job is set when this row is a background job's card: the call that
@@ -359,6 +364,7 @@ func wireNode(n *Node) WireNode {
 		w.Tool = wireActive(n.Active)
 	case len(n.Tools) > 0:
 		w.Tool = wireTools(n.Tools)
+		w.Tool.WorkKey = n.WorkKey
 		if j := n.Job; j != nil {
 			wj := &WireJob{ID: j.ID, Command: ScrubText(j.Command), Running: j.Running, Lost: j.Lost, ExitCode: j.ExitCode,
 				Status: j.Status, Attachment: j.Attachment, StopCause: j.StopCause,

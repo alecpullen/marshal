@@ -241,11 +241,15 @@ func (ci cardIndex) settleJob(row *Node) {
 	}
 	// The start's own metadata describes the execution as it was admitted: the
 	// attachment it ended up with, its status and its identity. A card that
-	// never settles (a lost job) still shows them.
+	// never settles (a lost job) still shows them. The same record carries the
+	// stable work key the pinned surface pairs this dispatch row by.
 	if js.Structured {
 		ex := js.Execution
 		card.Attachment = string(ex.Attachment)
 		card.Status, card.StopCause, card.Truncated = ex.State, ex.StopCause, ex.Truncated
+		if ex.ExecutionID != "" {
+			row.WorkKey = WorkKey(ex.ConversationID, ex.SourceEpoch, workKindCommand, ex.ExecutionID)
+		}
 	}
 	if e, ok := ci.exits[row.ID]; ok {
 		card.Running, card.Lost, card.ExitCode, card.Duration = false, e.Lost, e.ExitCode, e.Duration

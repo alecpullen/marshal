@@ -508,3 +508,86 @@ func TestMergedRunKeepsFirstCallsID(t *testing.T) {
 		t.Fatalf("merging changed the row identity: %v -> %v (tools %d)", a.ID, b.ID, len(b.Tools))
 	}
 }
+
+// subagentDispatch is the audit a subagent launch records: the legacy summary
+// text, plus the structured notice that names the child's stable work.
+func subagentDispatch(step session.StepID, callID string, s int, taskKey string, agentID int64) session.TranscriptItem {
+	it := audit("agent.run", step, callID, s)
+	it.Audit.Notice = &registry.ToolNotice{
+		Kind: registry.NoticeSubagentWork,
+		Data: map[string]any{registry.NoticeSubagentWork: registry.SubagentWorkReference{
+			TaskKey: taskKey, RuntimeEpoch: "epoch-1", AgentID: agentID, ChildSessionID: "child",
+		}},
+	}
+	return it
+}
+
+func countWorkKey(nodes []*Node, key string) int {
+	n := 0
+	var walk func([]*Node)
+	walk = func(ns []*Node) {
+		for _, x := range ns {
+			if x.WorkKey == key {
+				n++
+			}
+			walk(x.Children)
+		}
+	}
+	walk(nodes)
+	return n
+}
+
+// Under LiveWork the transcript keeps the actual dispatch once — as its own
+// agent.run row carrying the notice's work key — and drops the parent child box
+// the pinned surface now owns. The legacy projection is unchanged: the card
+// replaces the dispatch.
+func TestLiveWorkDispatchShownOnceWithoutChildBox(t *testing.T) {
+	dispatch := subagentDispatch(1, "r", 2, "work-abc", 3)
+	card := session.TranscriptItem{Timestamp: at(2), Kind: session.KindSubagent,
+		Subagent: &session.SubagentView{ID: 3, Label: "Task 1", StartedAt: at(2), Status: session.SubagentRunning}}
+	items := []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Dispatch."), dispatch, card}
+	steps := []session.Step{stepOf(1, 1, 1, 3)}
+
+	legacy := Build(Snapshot{Items: items, Steps: steps})
+	if findNode(legacy, "sub:3") == nil || findNode(legacy, "tool:1:r") != nil {
+		t.Fatalf("legacy projection must show the card and hide the dispatch:\n%s", shape(legacy))
+	}
+
+	live := Build(Snapshot{Items: items, Steps: steps, LiveWork: true})
+	if findNode(live, "sub:3") != nil {
+		t.Fatalf("LiveWork must omit the parent child box:\n%s", shape(live))
+	}
+	row := findNode(live, "tool:1:r")
+	if row == nil || row.WorkKey != "work-abc" {
+		t.Fatalf("dispatch row = %+v, want exactly one row carrying the notice's work key", row)
+	}
+	if n := countWorkKey(live, "work-abc"); n != 1 {
+		t.Fatalf("dispatch rows with the work key = %d, want exactly one", n)
+	}
+}
+
+// The retained report message stays reachable under LiveWork, and a drilled
+// child's own transcript is untouched: its agent.run rows render exactly as
+// before.
+func TestLiveWorkReportAndDrilledTranscriptRemainReachable(t *testing.T) {
+	dispatch := subagentDispatch(1, "r", 2, "work-abc", 3)
+	report := session.TranscriptItem{Timestamp: at(4), Kind: session.KindMessage,
+		Message: &session.Message{ID: 9, Role: session.RoleUser, ContentType: session.ContentTypeSubagentReport,
+			Content: "[subagent 3 finished] done", CreatedAt: at(4)}}
+	items := []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Dispatch."), dispatch, report}
+	steps := []session.Step{stepOf(1, 1, 1, 5)}
+
+	live := Build(Snapshot{Items: items, Steps: steps, LiveWork: true})
+	if findNode(live, "msg:9") == nil {
+		t.Fatalf("the persisted report message must remain a reachable row:\n%s", shape(live))
+	}
+
+	// Drilling into a child's own transcript is unchanged: its dispatch renders
+	// as it always did, whether or not the parent opted into LiveWork.
+	for _, liveWork := range []bool{false, true} {
+		drilled := Build(Snapshot{Items: items, Steps: steps, Drilled: true, LiveWork: liveWork})
+		if findNode(drilled, "tool:1:r") == nil {
+			t.Fatalf("a drilled child's own dispatch must still render (liveWork=%v):\n%s", liveWork, shape(drilled))
+		}
+	}
+}

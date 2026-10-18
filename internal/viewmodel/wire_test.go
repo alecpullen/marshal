@@ -380,3 +380,38 @@ func TestAwaitSummaryIsJustTheWait(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// The wire band keeps the legacy entity listing for a client that has not opted
+// into the pinned surface, and the LiveWork projection drops the duplicated live
+// cards while the band's own summary data stays whole.
+func TestLiveWorkWireOptInPreservesLegacyBand(t *testing.T) {
+	items := []session.TranscriptItem{
+		userMsg(1, 0), narration(2, 1, 1, "Launch."), jobStart(1, "j", 2, "job-1"),
+	}
+	steps := []session.Step{stepOf(1, 1, 1, 3)}
+	list := todos(db.TodoItem{ID: "p", Content: "Parser", Status: "in_progress"},
+		db.TodoItem{ID: "q", Content: "Q", Status: "pending"})
+
+	legacy := Snapshot{Items: items, Steps: steps, Todos: list, Busy: true}
+	lb := BandOf(legacy, Build(legacy))
+	if len(lb.Entities) != 1 {
+		t.Fatalf("legacy band lost its running-card listing: %+v", lb.Entities)
+	}
+	if wb := ProjectBand(lb); len(wb.Band.Entities) != 1 {
+		t.Fatalf("legacy wire band dropped the optional entities: %+v", wb.Band.Entities)
+	}
+
+	live := legacy
+	live.LiveWork = true
+	ab := BandOf(live, Build(live))
+	if len(ab.Entities) != 0 {
+		t.Fatalf("LiveWork band must omit the duplicated entity listings: %+v", ab.Entities)
+	}
+	// The summary data the band is the single source for is unchanged.
+	if len(ab.Tasks) != len(lb.Tasks) || len(ab.Tasks) != 2 {
+		t.Fatalf("LiveWork band lost its todo/task summary: %d vs %d", len(ab.Tasks), len(lb.Tasks))
+	}
+	if ab.Total != lb.Total || ab.Done != lb.Done {
+		t.Fatalf("LiveWork band changed todo progress: %+v vs %+v", ab, lb)
+	}
+}

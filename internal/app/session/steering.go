@@ -182,12 +182,28 @@ func (s *State) SteeringQueue() []string {
 // calls this at every loop-top to inject queued messages into the live
 // model context.
 func (s *State) DrainSteering() []string {
+	s.steeringMu.Lock()
+	protected := s.steeringDrainProtectedLocked()
 	s.mu.Lock()
-	out := steeringTexts(s.steeringQueue)
-	s.steeringQueue = nil
+	var out []string
+	if len(protected) == 0 {
+		out = steeringTexts(s.steeringQueue)
+		s.steeringQueue = nil
+	} else {
+		kept := s.steeringQueue[:0]
+		for _, e := range s.steeringQueue {
+			if protected[e.ID] {
+				kept = append(kept, e)
+				continue
+			}
+			out = append(out, e.Text)
+		}
+		s.steeringQueue = kept
+	}
 	broker := s.steeringBroker
 	queueLen := len(s.steeringQueue)
 	s.mu.Unlock()
+	s.steeringMu.Unlock()
 	if broker != nil {
 		broker.Publish("steering", SteeringEvent{QueueLen: queueLen})
 	}
@@ -198,16 +214,32 @@ func (s *State) DrainSteering() []string {
 // Used by the TUI's follow-up turn path so each Enter pops one item
 // at a time; DrainSteering handles the rest when the next turn starts.
 func (s *State) PopSteering() (string, bool) {
+	s.steeringMu.Lock()
+	protected := s.steeringDrainProtectedLocked()
 	s.mu.Lock()
-	if len(s.steeringQueue) == 0 {
+	idx := -1
+	for i, e := range s.steeringQueue {
+		if !protected[e.ID] {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		broker := s.steeringBroker
+		queueLen := len(s.steeringQueue)
 		s.mu.Unlock()
+		s.steeringMu.Unlock()
+		if broker != nil {
+			broker.Publish("steering", SteeringEvent{QueueLen: queueLen})
+		}
 		return "", false
 	}
-	oldest := s.steeringQueue[0]
-	s.steeringQueue = s.steeringQueue[1:]
+	oldest := s.steeringQueue[idx]
+	s.steeringQueue = append(s.steeringQueue[:idx], s.steeringQueue[idx+1:]...)
 	broker := s.steeringBroker
 	queueLen := len(s.steeringQueue)
 	s.mu.Unlock()
+	s.steeringMu.Unlock()
 	if broker != nil {
 		broker.Publish("steering", SteeringEvent{QueueLen: queueLen})
 	}
@@ -343,12 +375,11 @@ func (s *State) BeginSteeringOperation(ctx context.Context, turnID string, kind 
 	opCtx, cancel := context.WithCancelCause(parent)
 	ref := OperationRef{SessionID: s.sessionID, TurnID: turnID, ID: rand.Text()}
 	token := &steeringOperation{
-		owner:   s,
-		ref:     ref,
-		kind:    kind,
-		parent:  parent,
-		cancel:  cancel,
-		settled: make(chan struct{}),
+		owner:  s,
+		ref:    ref,
+		kind:   kind,
+		parent: parent,
+		cancel: cancel,
 	}
 	ctl.current = token
 	ctl.version++
@@ -413,7 +444,7 @@ func (s *State) SubmitSendNow(request SendNowRequest) (SteeringReceipt, error) {
 		return SteeringReceipt{}, s.rejectSendNowLocked(errSteeringClosing)
 	case ctl.handler == nil:
 		return SteeringReceipt{}, s.rejectSendNowLocked(errSteeringUnsupported)
-	case request.SessionID != "" && request.SessionID != s.sessionID:
+	case request.SessionID != s.sessionID:
 		return SteeringReceipt{}, s.rejectSendNowLocked(errSteeringTarget)
 	case request.TurnID == "" || request.TurnID != ctl.turnID:
 		return SteeringReceipt{}, s.rejectSendNowLocked(errSteeringTarget)
@@ -822,6 +853,13 @@ func (s *State) startSteeringInterrupt(token *steeringOperation) {
 		turnCtx := s.steering.turnCtx
 		s.steeringMu.Unlock()
 
+		// The token's own parent is the accurate source. The turn context is
+		// read under the lock, but a replaced turn could hand this worker the
+		// successor's context in the unlock→start window.
+		if token.parent != nil {
+			turnCtx = token.parent
+		}
+
 		if handler == nil {
 			close(intr.done)
 			return
@@ -893,6 +931,15 @@ func (s *State) runSteeringInterrupt(turnCtx context.Context, intr *steeringInte
 func (s *State) markSteeringInterruptState(ref OperationRef, status SteeringStatus, outcomes []SteeringOutcome) {
 	s.steeringMu.Lock()
 	ctl := &s.steering
+	// A turn that has already closed owns the final word. EndSteeringTurn
+	// marked its remaining receipts undelivered, and it does not join this
+	// worker (which may still be inside the handler's Wait), so without this
+	// guard a late worker would flip those receipts back to an in-flight
+	// status and republish them — the end state would stop being truthful.
+	if !ctl.active || ctl.turnID != ref.TurnID {
+		s.steeringMu.Unlock()
+		return
+	}
 	var receipts []SteeringReceipt
 	for _, id := range ctl.order {
 		rec := ctl.requests[id]
@@ -1127,6 +1174,19 @@ func intrPending(ctl *steeringControl, opID string) bool {
 	}
 	_, ok := ctl.interrupts[opID]
 	return !ok
+}
+
+// steeringDrainProtectedLocked returns the queued IDs a drain must leave in
+// place. Only an active turn has a delivery path that owns them — the
+// checkpoint — and removing one there would leave its request permanently
+// unsatisfied, which blocks both new operations and turn finalization. Once
+// the turn has closed the entry is ordinary follow-up queue content and may be
+// consumed normally. Caller holds steeringMu.
+func (s *State) steeringDrainProtectedLocked() map[string]bool {
+	if !s.steering.active {
+		return nil
+	}
+	return s.protectedSteeringIDsLocked()
 }
 
 // protectedSteeringIDsLocked returns the queued IDs an accepted, undelivered

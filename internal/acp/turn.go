@@ -1835,15 +1835,19 @@ func (m *TurnManager) SteeringStatus(ctx context.Context, params json.RawMessage
 	}
 
 	snap := rt.SteeringSnapshot()
-	if snap.Active || slot == nil {
+	if snap.Active || slot == nil || snap.Supported {
 		// An eligible turn reports its own identity; an idle session reports
-		// the inactive snapshot unchanged.
+		// the inactive snapshot unchanged. A supported runner whose steering
+		// turn has not opened yet is reported inactive too: synthesizing an
+		// active turn with the slot's opaque id would invite a `now` request
+		// that sendNow must then reject, because the session has no active turn
+		// to steer.
 		return steeringStateWire(snap), nil
 	}
 	// A turn is running on this connection but the session has no eligible
-	// steering turn (its runner is an SDD/swarm controller, or it has not
-	// opened the turn yet). Report it as active, identified by the ACP slot id,
-	// never by a session turn id the client could steer.
+	// steering turn: its runner is an SDD/swarm controller. Report it as
+	// active, identified by the ACP slot id, never by a session turn id the
+	// client could steer.
 	wire := steeringStateWire(snap)
 	wire.TurnID = slot.id
 	wire.Active = true

@@ -17,7 +17,6 @@ type steeringOperation struct {
 	cancel        context.CancelCauseFunc
 	requested     atomic.Bool
 	interruptOnce sync.Once
-	settled       chan struct{}
 }
 
 func OperationFromContext(ctx context.Context) (OperationRef, bool) {

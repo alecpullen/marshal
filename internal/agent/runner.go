@@ -939,11 +939,25 @@ func (r *Runner) steeringCheckpoint(ctx context.Context, messages []schema.ChatM
 // real terminal results over the runner's own recorded evidence; the complete
 // set is what a receipt reports.
 func (r *Runner) withToolOperation(ctx context.Context, run func(context.Context) ([]schema.ChatMessage, error)) ([]schema.ChatMessage, error) {
+	opCtx, finish := r.withToolOperationScope(ctx)
+	defer finish()
+	return run(opCtx)
+}
+
+// withToolOperationScope opens the turn's tool operation for one dispatch and
+// returns the derived context plus an idempotent finish. Callers whose result
+// is not a message batch — the envelope ask_user/question.ask waits — use this
+// directly; withToolOperation is the message-returning convenience wrapper.
+//
+// The operation is ALWAYS joined. An operation left open would refuse the next
+// one and strand the user's steering at the checkpoint, and its evidence would
+// leak into a later batch.
+func (r *Runner) withToolOperationScope(ctx context.Context) (context.Context, func()) {
 	if r.steeringTurnID == "" || r.State == nil {
-		return run(ctx)
+		return ctx, func() {}
 	}
 	if ref, ok := session.OperationFromContext(ctx); ok && ref.TurnID == r.steeringTurnID {
-		return run(ctx)
+		return ctx, func() {}
 	}
 	opCtx, ref, err := r.State.BeginSteeringOperation(ctx, r.steeringTurnID, session.OperationTools)
 	if err != nil {
@@ -952,11 +966,11 @@ func (r *Runner) withToolOperation(ctx context.Context, run func(context.Context
 		// uninterruptible — which is precisely the case of an accepted message
 		// waiting to be delivered: this batch is what delivers it.
 		r.State.Logger().Debug("tool batch ran without a steering operation", "error", err)
-		return run(ctx)
+		return ctx, func() {}
 	}
-	results, runErr := run(opCtx)
-	r.State.FinishSteeringOperation(ref, r.takeSteeringOutcomes(ref))
-	return results, runErr
+	return opCtx, func() {
+		r.State.FinishSteeringOperation(ref, r.takeSteeringOutcomes(ref))
+	}
 }
 
 // withSetupOperation runs one short, optional piece of turn-start work under a
@@ -1911,7 +1925,9 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			}
 			narrate()
 			r.assignEnvelopeCallIDs(action.Actions)
-			resultMsgs, execErr := r.executeActions(ctx, action.Actions)
+			resultMsgs, execErr := r.withToolOperation(ctx, func(opCtx context.Context) ([]schema.ChatMessage, error) {
+				return r.executeActions(opCtx, action.Actions)
+			})
 			if execErr != nil {
 				return task, r.failTurn(task, execErr)
 			}
@@ -2010,8 +2026,17 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available in auto mode; proceed with your best judgment and state the assumption you made")))
 				continue
 			}
-			answer, waitErr := r.requestAnswer(ctx, action.Content)
+			opCtx, finish := r.withToolOperationScope(ctx)
+			answer, waitErr := r.requestAnswer(opCtx, action.Content)
+			finish()
 			if waitErr != nil {
+				// A canceled question is settled here rather than failing the
+				// turn: the steering signal must reach the checkpoint, which
+				// delivers the user's text in this same turn.
+				if steeringStopped(ctx, waitErr) {
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The question was canceled: user steering interrupted the operation before it was answered. No answer was given; do not assume one."})
+					continue
+				}
 				return task, r.failTurn(task, waitErr)
 			}
 			// An ask_user round-trip consumes an overhead turn: a model that
@@ -2051,8 +2076,17 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask requires a non-empty questions array")))
 				continue
 			}
-			answers, waitErr := r.requestQuestions(ctx, action.Questions)
+			opCtx, finish := r.withToolOperationScope(ctx)
+			answers, waitErr := r.requestQuestions(opCtx, action.Questions)
+			finish()
 			if waitErr != nil {
+				// Same rule as ask_user: a canceled question round-trip is
+				// settled, not turned into a failed turn, so the checkpoint can
+				// deliver the steering that canceled it.
+				if steeringStopped(ctx, waitErr) {
+					messages = append(messages, schema.ChatMessage{Role: schema.RoleUser, Content: "The questions were canceled: user steering interrupted the operation before they were answered. No answers were given; do not assume any."})
+					continue
+				}
 				return task, r.failTurn(task, waitErr)
 			}
 			budget.overhead++

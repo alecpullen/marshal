@@ -62,9 +62,11 @@ const (
 // nil. Payloads passed to Publish must be safe copies (no shared pointers
 // to internal state that may be mutated by concurrent writers).
 //
-// PendingApproval and PendingQuestion carry the full pointer (including
-// ResponseChan) for subscribers that need to respond (e.g., the ACP
-// permission bridge).
+// PendingApproval and PendingQuestion carry a display copy of the pending
+// request. A registered prompt's copy carries the canonical key and responder
+// and never a response channel, so a subscriber cannot answer or clear a
+// request on its own; only an unregistered legacy fixture still carries
+// ResponseChan.
 type Event struct {
 	Message          *Message
 	Thinking         *InProgressMessage
@@ -1179,6 +1181,13 @@ func (s *State) RegisterAccess(ctx context.Context, pending *PendingToolCall, in
 	}
 	if err := ctx.Err(); err != nil {
 		return AccessRequest{}, false, fmt.Errorf("session: register access: context already done: %w", err)
+	}
+	// An operation whose steering cancellation was already accepted must not
+	// publish a new prompt. The other four Register* methods reject such a
+	// context through newPromptRecordLocked; without the same check here an
+	// access request would flash on screen only to be canceled immediately.
+	if SteeringRequested(ctx) {
+		return AccessRequest{}, false, fmt.Errorf("session: register access: %w", errPromptRequested)
 	}
 	if pending == nil {
 		return AccessRequest{}, false, fmt.Errorf("session: register access: no pending call")
@@ -3409,7 +3418,9 @@ func (s *State) WaitForWork(ctx context.Context) error {
 // so the waiter can unblock safely.
 //
 // After this call, PendingApproval(), PendingQuestion() and
-// PendingSudoAuth() return nil and SteeringQueue() is empty.
+// PendingSudoAuth() return nil. SteeringQueue() is empty except for entries an
+// accepted Send now request is still responsible for: those survive, and their
+// receipts are marked undelivered rather than erased.
 //
 // The access gate is held for the whole function: settlement of a typed access
 // request and the ordinary cleanup happen under it, so a grant cannot be
@@ -3454,6 +3465,26 @@ func (s *State) ResolvePendingForShutdown() {
 	}
 	s.prompts = nil
 
+	// Accepted-but-undelivered steering survives shutdown. The user asked
+	// explicitly for it to be delivered, and the spec requires it be reported
+	// as undelivered rather than erased: only entries no accepted request is
+	// still responsible for are dropped. The receipts are marked here, under
+	// the same gate, so the final status is observable before the session goes
+	// away. Lock order is accessMu → steeringMu → State.mu, which this holds.
+	s.steeringMu.Lock()
+	protected := s.protectedSteeringIDsLocked()
+	var undelivered []SteeringReceipt
+	for _, id := range s.steering.order {
+		rec := s.steering.requests[id]
+		if rec == nil || rec.delivered {
+			continue
+		}
+		rec.receipt.Status = SteeringUndelivered
+		rec.receipt.Version++
+		undelivered = append(undelivered, cloneSteeringReceipt(rec.receipt))
+	}
+	s.steeringMu.Unlock()
+
 	s.mu.Lock()
 	approval := s.pendingApproval
 	s.pendingApproval = nil
@@ -3463,7 +3494,18 @@ func (s *State) ResolvePendingForShutdown() {
 	s.pendingSkillGate = nil
 	sudoAuth := s.pendingSudoAuth
 	s.pendingSudoAuth = nil
-	s.steeringQueue = nil
+	if len(protected) == 0 {
+		s.steeringQueue = nil
+	} else {
+		kept := s.steeringQueue[:0]
+		for _, e := range s.steeringQueue {
+			if protected[e.ID] {
+				kept = append(kept, e)
+			}
+		}
+		s.steeringQueue = kept
+	}
+	remainingSteering := len(s.steeringQueue)
 	s.mu.Unlock()
 
 	// Publish cleared-state events regardless of whether there was a
@@ -3484,7 +3526,11 @@ func (s *State) ResolvePendingForShutdown() {
 		return s.steeringBroker
 	}()
 	if broker != nil {
-		broker.Publish("steering", SteeringEvent{QueueLen: 0})
+		broker.Publish("steering", SteeringEvent{QueueLen: remainingSteering})
+	}
+	for i := range undelivered {
+		r := undelivered[i]
+		s.publishSteeringState(&r)
 	}
 
 	// Deny any pending ordinary approval. A registered prompt was already

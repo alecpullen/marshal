@@ -332,6 +332,14 @@ func (t *toolSet) requestSudoPassword(ctx context.Context, command, reason strin
 	select {
 	case d := <-sa.ResponseChan:
 		if !d.OK {
+			// A canceled prompt delivers an empty denial that is channel-wise
+			// indistinguishable from a user denial. The recorded cause is what
+			// tells them apart: an interruption must not be reported as
+			// "denied by user", which would count an intentional stop as a tool
+			// failure and feed the failed-repeat ladder.
+			if cause := t.sessionState.PromptCause(key); cause != nil {
+				return nil, false, cause
+			}
 			return nil, true, nil
 		}
 		return d.Password, false, nil

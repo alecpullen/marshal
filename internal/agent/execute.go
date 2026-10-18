@@ -428,6 +428,13 @@ func (r *Runner) recordSteeringOutcomes(ctx context.Context, toolCallID string, 
 		return
 	}
 	ref, _ := session.OperationFromContext(ctx)
+	if ref.ID == "" {
+		// No operation is open on this context, so there is no ledger entry to
+		// attribute the outcome to. Recording under the zero ref would file it
+		// where takeSteeringOutcomes never looks, so it would never reach a
+		// receipt.
+		return
+	}
 	stamped := make([]session.SteeringOutcome, 0, len(outcomes))
 	for _, o := range outcomes {
 		if o.ToolCallID == "" {

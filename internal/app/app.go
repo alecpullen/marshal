@@ -2592,6 +2592,17 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		cfg.SessionRouting = rt.State.Config.SessionRouting
 	}
 
+	// The incoming config is the new *configured* baseline; the mode the
+	// session actually runs with may differ, because a manual selection or an
+	// approved grant is a session-scoped override that an unrelated reload
+	// must not silently revert. Build from the effective mode so the rebuilt
+	// policy engine agrees with what the session reports, and keep the
+	// configured value for the baseline update below.
+	effectiveCfg := cfg
+	if rt.State != nil {
+		effectiveCfg.Agent.ApprovalMode = rt.State.ModeForConfig(cfg)
+	}
+
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 	// Reuse the runtime's stable WriteLock: in-flight background children
@@ -2601,8 +2612,10 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, cfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, rt.AuthResolver)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, effectiveCfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, rt.AuthResolver)
 	if err != nil {
+		// A failed dry run leaves the configured baseline, the override, the
+		// system flag and the existing runner exactly as they were.
 		slog.Default().Warn("reload: dry-run build failed; keeping previous config",
 			"err", err)
 		rt.State.AddMessage(session.RoleSystem,
@@ -2614,8 +2627,14 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// Capture old values for cleanup under the pointer mutex.
 	rt.mu.Lock()
 	// Config validated — install it under both the reload gate (one writer
-	// at a time) and the pointer mutex.
-	rt.State.Config = cfg
+	// at a time) and the pointer mutex. The session rebases against the
+	// configured value: an unchanged configured mode keeps the session
+	// override, an explicit change to it clears the override, and the system
+	// flag survives either way.
+	rt.State.RebaseSessionConfig(cfg)
+	// Runtime.Config stays the configured baseline, never the effective mode:
+	// it is what a later reload and a new session start from.
+	rt.Config = cfg
 	oldMCP := rt.MCPManager
 	oldJobMgr := rt.JobManager
 	oldWatchMgr := rt.WatchManager
@@ -2641,6 +2660,16 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// suppressed it.
 	if rt.SnapshotWarnings != nil {
 		rt.Runner.SetSnapshotWarningState(rt.SnapshotWarnings)
+	}
+	// The rebuilt policy engine was constructed from the effective mode, but
+	// CopyFrom may have carried over the pre-reload engine's state; re-assert
+	// the session's effective access pair so the runner and the session agree
+	// after the swap. This is presentation of already-decided state, not a new
+	// grant: it applies the mode the session already reports.
+	if rt.Runner != nil {
+		effective := rt.State.AccessState()
+		rt.Runner.SetForceClass(forceClassForMode(effective.Mode))
+		rt.Runner.SetApprovalMode(policy.ApprovalMode(effective.Mode))
 	}
 	if rt.SwarmRunner == nil {
 		rt.SwarmRunner = newSwarmRunner

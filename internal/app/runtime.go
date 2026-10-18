@@ -31,6 +31,7 @@ import (
 	"marshal/internal/sddauthor"
 	"marshal/internal/skills"
 	"marshal/internal/tools/native"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/watch"
@@ -252,6 +253,164 @@ func (rt *Runtime) CurrentWatchManager() *watch.Manager {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.WatchManager
+}
+
+// forceClassForMode maps an interaction mode to the runner's force class: the
+// read-only modes force the question class, every editing mode forces edit.
+// Kept next to the access methods so the mode→class mapping has one home.
+func forceClassForMode(mode string) string {
+	if mode == "plan" || mode == "default" {
+		return "question"
+	}
+	return "edit"
+}
+
+// AccessRequest returns the access request waiting for a decision, if any.
+//
+// It takes the reload gate so the snapshot it returns cannot describe a
+// session that a concurrent reload or session swap is replacing. A request
+// whose capabilities were satisfied while it waited — a manual mode change, or
+// a system grant from elsewhere — is settled here as already-available rather
+// than presented: the user must never be asked to approve something they
+// already hold. That branch of ResolveAccess performs no setter and no
+// application, so this is pure bookkeeping.
+func (rt *Runtime) AccessRequest() (session.AccessRequest, bool) {
+	rt.reloadMu.Lock()
+	defer rt.reloadMu.Unlock()
+	if rt.State == nil {
+		return session.AccessRequest{}, false
+	}
+	req, ok := rt.State.AccessRequest()
+	if !ok {
+		return session.AccessRequest{}, false
+	}
+	if !req.MissingEditing && !req.MissingSystem {
+		// Nothing is missing any more: settle it so the waiter unblocks and
+		// the request stops being presented. A concurrent tuple change makes
+		// ResolveAccess return refresh instead, and the re-read below then
+		// hands back a fresh presentation rather than a stale one.
+		_, _ = rt.State.ResolveAccess(session.AccessChoice{
+			RequestID: req.RequestID,
+			SessionID: req.SessionID,
+			Current:   req.Current,
+			Approved:  true,
+		}, nil)
+		return rt.State.AccessRequest()
+	}
+	return req, true
+}
+
+// ResolveAccess validates and settles the outstanding access request. It holds
+// the reload gate for the whole call, so the runner and session it validates
+// against cannot be replaced mid-resolution.
+func (rt *Runtime) ResolveAccess(choice session.AccessChoice) (session.AccessResult, error) {
+	rt.reloadMu.Lock()
+	defer rt.reloadMu.Unlock()
+	if rt.State == nil {
+		err := errors.New("app: no session state available to resolve access")
+		return session.AccessResult{Status: session.AccessExpired, Message: err.Error()}, err
+	}
+	return rt.State.ResolveAccess(choice, rt.accessPrepare())
+}
+
+// accessPrepare builds the resolver the session calls to validate a choice and
+// obtain the commit that applies it. It is the last gate before authority
+// moves, so it revalidates the choice shape and the target pair rather than
+// trusting the session's own checks, and it refuses before any mutation when
+// the runtime cannot actually apply what was selected.
+//
+// The returned Apply is memory-only by contract: it touches the runner's
+// in-memory policy and force class and nothing else. It must never save a
+// config file, reload the runtime, build a provider, replace a manager or take
+// the write gate — a grant is a session-scoped permission change, not a
+// runtime rebuild.
+func (rt *Runtime) accessPrepare() session.AccessPrepare {
+	return func(req session.AccessRequest, choice session.AccessChoice) (session.AccessCommit, error) {
+		if choice.RequestID != req.RequestID || choice.SessionID != req.SessionID {
+			return session.AccessCommit{}, errors.New("access choice does not name the request")
+		}
+		if !choice.Approved {
+			return session.AccessCommit{}, errors.New("access choice is not an approval")
+		}
+		if rt.State == nil {
+			return session.AccessCommit{}, errors.New("no session state available to apply access")
+		}
+		target := req.Current
+		if req.MissingEditing {
+			if !policy.ValidApprovalMode(choice.Mode) {
+				return session.AccessCommit{}, fmt.Errorf("invalid editing mode %q", choice.Mode)
+			}
+			switch policy.ApprovalMode(choice.Mode) {
+			case policy.ModeEdit, policy.ModeCopilot, policy.ModeAuto:
+			default:
+				return session.AccessCommit{}, fmt.Errorf("mode %q does not grant editing", choice.Mode)
+			}
+			// An editing change needs a live policy engine to move; refuse
+			// before mutating anything rather than reporting a grant that
+			// never reached the runner.
+			if rt.Runner == nil || rt.Runner.Policy == nil {
+				return session.AccessCommit{}, errors.New("no policy engine available to change the interaction mode")
+			}
+			target.Mode = choice.Mode
+		} else if choice.Mode != "" {
+			return session.AccessCommit{}, fmt.Errorf("system-only request cannot select mode %q", choice.Mode)
+		}
+		if req.MissingSystem {
+			target.System = true
+		}
+		// A system-only grant needs no runner work: the session flag is the
+		// whole change. Apply stays non-nil so the commit is never mistaken
+		// for an unapplied one.
+		apply := func() {}
+		if req.MissingEditing {
+			runner := rt.Runner
+			mode := policy.ApprovalMode(target.Mode)
+			apply = func() {
+				runner.SetForceClass("edit")
+				runner.SetApprovalMode(mode)
+			}
+		}
+		return session.AccessCommit{Effective: target, Apply: apply}, nil
+	}
+}
+
+// SetSessionMode applies an explicit interaction-mode selection for this
+// session. It is the manual path shared by the TUI and ACP, so it validates
+// the selection and the runtime's ability to apply it before anything moves.
+//
+// The mode is recorded on the session, which owns the override that survives
+// an unrelated config reload, and applied to the live runner's in-memory
+// policy. Runtime.Config is deliberately untouched: a manual selection is a
+// session-scoped choice, not a config edit, so it must not become the next
+// conversation's default.
+func (rt *Runtime) SetSessionMode(mode string) error {
+	rt.reloadMu.Lock()
+	defer rt.reloadMu.Unlock()
+	if rt.State == nil {
+		return errors.New("no session state available to change the interaction mode")
+	}
+	switch mode {
+	case "plan", "default", "edit", "copilot", "auto":
+	default:
+		return fmt.Errorf("invalid approval mode %q", mode)
+	}
+	// An inactive runtime (no provider configured) still records the manual
+	// selection, so the UI reflects the user's choice; there is simply no
+	// runner to move. A runner that exists without a policy engine cannot
+	// apply the change, so that fails rather than silently diverging.
+	apply := func() {}
+	if rt.Runner != nil {
+		if rt.Runner.Policy == nil {
+			return errors.New("no policy engine available to change the interaction mode")
+		}
+		runner := rt.Runner
+		class := forceClassForMode(mode)
+		apply = func() {
+			runner.SetForceClass(class)
+			runner.SetApprovalMode(policy.ApprovalMode(mode))
+		}
+	}
+	return rt.State.SetSessionMode(mode, apply)
 }
 
 // WatchResumeHook is invoked by the watch manager's OnFire closure after
@@ -1000,6 +1159,13 @@ func autoloadSkills(cfg config.Config, idx *skills.Index, state *session.State, 
 // new state/runner into rt and returns the new pieces; on failure it leaves
 // the current session untouched and returns the error.
 func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, *registry.Registry, error) {
+	// Hold the reload gate across the whole build/install transaction: a
+	// concurrent config reload or access resolution must not observe (or
+	// apply to) a half-installed session, and the resolver must never run
+	// against a State that is being replaced underneath it.
+	rt.reloadMu.Lock()
+	defer rt.reloadMu.Unlock()
+
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 
@@ -1072,9 +1238,22 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 		return nil, nil, nil, nil, nil, nil, nil, err
 	}
 
-	// Success — swap under the runtime lock and clean up old resources outside it.
+	// Success — settle the outgoing session's pending prompts before the swap.
+	// A tool blocked on an access request for the old conversation must
+	// unblock with a cancellation rather than wait on managers that are about
+	// to close, and the closed gate rejects any late registration against the
+	// state being retired. Both calls run outside Runtime.mu: they take the
+	// session's own locks and publish events.
 	rt.mu.Lock()
 	oldState := rt.State
+	rt.mu.Unlock()
+	if oldState != nil {
+		oldState.BeginQuiesce()
+		oldState.ResolvePendingForShutdown()
+	}
+
+	// Swap under the runtime lock and clean up old resources outside it.
+	rt.mu.Lock()
 	oldRunner := rt.Runner
 	oldMCP := rt.MCPManager
 	oldJobMgr := rt.JobManager

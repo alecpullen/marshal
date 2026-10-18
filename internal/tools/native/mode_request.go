@@ -34,7 +34,7 @@ func accessToolResult(result session.AccessResult) (registry.ToolResult, error) 
 func (t *toolSet) modeRequestTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "mode.request",
-		Description: "Ask the user for missing editing capability and/or system access for this conversation. An editing hint does not choose the user's mode. System access remains subject to mode, policy and sandbox; it does not grant sudo.",
+		Description: "Request missing editing capability and/or system access. A mode hint does not choose the user's mode. System access is subject to mode, policy and sandbox; no sudo.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","enum":["edit","copilot","auto"]},"system":{"type":"boolean"},"reason":{"type":"string","maxLength":400}},"anyOf":[{"required":["mode"]},{"required":["system"],"properties":{"system":{"const":true}}}],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}

@@ -161,6 +161,25 @@ func TestUserSkillOverridesBuiltIn(t *testing.T) {
 	}
 }
 
+// TestBuiltInSkillsAreRepoNeutral guards against builtin skills hard-coding
+// this repository's own commands. Builtins ship in the binary to every
+// project, so "go build ./cmd/marshal" in verification-before-completion
+// told Python users to build Marshal.
+func TestBuiltInSkillsAreRepoNeutral(t *testing.T) {
+	idx := NewIndex()
+	if err := loadBuiltIns(idx); err != nil {
+		t.Fatalf("loadBuiltIns: %v", err)
+	}
+	for _, sk := range idx.List() {
+		lower := strings.ToLower(sk.Body)
+		for _, banned := range []string{"cmd/marshal", "cgo_enabled=1 go", "this codebase uses"} {
+			if strings.Contains(lower, banned) {
+				t.Errorf("built-in %q hard-codes repo-specific text %q", sk.Name, banned)
+			}
+		}
+	}
+}
+
 // TestBuiltInSkillWorkflowContracts pins the workflow contracts of the
 // rewritten builtin skills so future edits can't silently drop the artifact
 // paths, the interrogation/approval gates, or the verbatim-encoding rule.

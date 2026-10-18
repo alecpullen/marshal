@@ -1,6 +1,6 @@
 ---
 name: dispatching-parallel-agents
-description: Run 2+ already-decomposed, genuinely independent tasks concurrently via agent.run. Use only after the work is split into units with disjoint files and no shared state. Not for a single task, and not for tasks that edit the same files.
+description: Run 2+ already-decomposed, genuinely independent tasks concurrently via agent.run. Use only after the work is split into units with disjoint files, separate build/test units, and no shared state. Not for a single task, not for tasks that edit the same files or package, and not for executing a written plan (marshal-executing-plans owns that) unless the plan marks the tasks parallel-safe.
 risk: workspace_write
 ---
 
@@ -11,7 +11,7 @@ risk: workspace_write
 Confirm all three. If any fails, do the work sequentially instead.
 
 1. **Decomposed** — the units exist and each has one deliverable. If not, use `work-decomposition` first.
-2. **Independent** — disjoint file sets, no unit needing another's output.
+2. **Independent** — disjoint file sets, no unit needing another's output, and no shared build or test unit. Agents share one worktree: if two units compile or test together (the same Go package, the same crate, one test target), one agent's half-finished edit breaks the other's build, and each burns time debugging the other's work.
 3. **Worth it** — 2+ units, each substantial. Parallelising trivial work costs more in coordination than it saves.
 
 ## Dispatching
@@ -23,7 +23,7 @@ Use the `agent.run` tool, one call per unit. Multiple `agent.run` calls in a sin
 - `agent.await` — block until a subagent finishes and collect its report.
 - `agent.await` with `"peek": true` — check progress without blocking.
 
-Writes across agents are serialised by a write lock, so concurrent edits cannot interleave mid-write. That protects file integrity; it does **not** make two agents editing the same file correct. Keep file sets disjoint.
+Writes across agents are serialised by a write lock, so concurrent edits cannot interleave mid-write. That protects file integrity; it does **not** make two agents editing the same file correct, and it does nothing for a build that sees a sibling's partial edits. Keep file sets and build units disjoint.
 
 ## Writing the task brief
 
@@ -32,7 +32,9 @@ Each child starts with a **cold context** — it sees only what you write. Inclu
 - The deliverable, stated concretely.
 - Exact file paths to create or modify.
 - Signatures and types it must consume from other units, spelled out — the child cannot see its siblings' work.
-- How to verify: the exact command and the expected outcome.
+- How to verify: the exact command and the expected outcome. Tell it to run only that command. Without a limit, a child widens verification to whole suites.
+- Tests already known to fail, so the child does not spend its run re-proving them.
+- What to do on an unsettled decision: stop and report it, not assume. The child cannot ask the user.
 - Any constraint from `AGENTS.md` that applies.
 
 A brief that says "implement the parser" produces work you throw away.

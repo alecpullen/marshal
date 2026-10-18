@@ -13,16 +13,13 @@ risk: workspace_write
 3. **Green** — write the minimum implementation that passes, with `file.edit` (or `file.write` for a new file).
 4. **Verify green** — run it again with `shell.run`.
 5. **Refactor** — clean up with the test as your safety net.
-6. **Commit** — test and implementation together.
+6. **Commit** — only if your workflow commits at this point (a plan's per-task commit, or the user asked). Then the test and implementation go in together. Never commit just because a cycle ended.
 
-## In this repo
+## Running tests
 
-```bash
-go test ./internal/<pkg>/ -run TestName -v   # single test
-go test ./...                                # everything
-```
+Use the test commands from the repository instructions (AGENTS.md or equivalent) or the project's own tooling. Run the single test while cycling, for example `go test ./internal/<pkg>/ -run TestName -v` in Go or `pytest path/to/test_file.py::test_name` in Python. Run the package's tests before moving on.
 
-Follow the surrounding package's style. This codebase uses table-driven tests with `t.Fatalf` for setup failures and `t.Errorf` for assertion failures.
+Follow the surrounding tests' style: their structure (table-driven or not), helpers, assertion style and naming.
 
 ## Test design
 

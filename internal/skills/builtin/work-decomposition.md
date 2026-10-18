@@ -22,9 +22,10 @@ A good unit:
 
 For each pair of units, ask what happens if they run at the same time:
 
-- **Independent** — disjoint files, no shared types. Safe to parallelise.
+- **Independent** — disjoint files, no shared types, and separate build/test units. Safe to parallelise.
 - **Interface-coupled** — B needs a signature A defines. Sequence them, or define the interface up front in a shared first unit and then parallelise.
 - **File-coupled** — both edit the same file. Not parallelisable. Merge them into one unit or sequence them.
+- **Build-coupled** — different files in the same package or test target. Concurrent agents share one worktree, so each sees the other's half-finished edits when it builds or tests. Sequence them.
 
 Write the dependency list down. Coupling you did not notice is the usual cause of a failed parallel run.
 

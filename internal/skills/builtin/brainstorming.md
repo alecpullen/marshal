@@ -6,9 +6,9 @@ risk: read_only
 
 # Brainstorming
 
-Turn an idea into an agreed design before any code exists.
-
-MUST use before any creative work.
+Turn an idea into an agreed design before any code exists. Scale the
+process to the work: a spike gets an answer, bounded work gets a short
+design, and only architectural work gets the full sequence.
 
 ## Classify first, and say so out loud
 
@@ -33,6 +33,13 @@ Classify the request as spike, bounded, or architectural (table above).
 
 Explore purpose, constraints, and success criteria with `question.ask` — ONE question per call. Never batch a list of questions; the method depends on follow-ups reacting to answers.
 
+Read the code before asking. Never ask what the repository can answer.
+
+How far to go:
+
+- **Bounded** — ask only what the code cannot tell you. That is usually a handful of questions, often fewer.
+- **Architectural** — continue until no new answer would change the design.
+
 Every question must test something, not just gather:
 
 - Challenge stated assumptions: "you said X — what if that isn't true?"
@@ -40,7 +47,9 @@ Every question must test something, not just gather:
 - Force prioritization: "which matters more here, speed or correctness?"
 - Surface non-goals explicitly: "what are you deliberately not building?"
 
-Continue until no new answer would change the design, then summarize the hardened understanding and proceed.
+Then summarize the hardened understanding and proceed.
+
+**If you cannot ask** (auto mode, or `question.ask` is unavailable), do not stall and do not skip the design. Settle each open point with the most conservative reading of the request and the code. Record each choice in the spec's Assumptions section, write the spec, and stop at the Phase 6 review gate.
 
 ### Phase 3 — Approaches
 
@@ -48,7 +57,7 @@ Propose 2-3 approaches with trade-offs and a stated recommendation. Wait for the
 
 ### Phase 4 — Design presentation
 
-Present the design in sections, pausing for explicit approval after each:
+For **bounded** work, present the whole design in one message and get one approval. For **architectural** work, present it in sections, pausing for explicit approval after each:
 
 1. Scope / architecture
 2. Components & data flow
@@ -65,8 +74,9 @@ Write the approved design to the spec location named in the repo instructions (A
 - Context
 - The approved design sections
 - Decisions & trade-offs
+- Assumptions (choices made without the user's input, if any)
 - Explicit non-goals
-- Open questions
+- Open questions — must be empty before handoff. Resolve each one with the user, or move it to non-goals.
 
 Then run an inline spec self-review:
 
@@ -74,6 +84,7 @@ Then run an inline spec self-review:
 - No internal contradictions
 - No ambiguous requirements
 - Scope matches what was approved
+- Every behaviour, interface, and persisted format a plan would need is decided. A plan cannot be cold-executable if the spec leaves its design open.
 
 Fix any finding before proceeding.
 

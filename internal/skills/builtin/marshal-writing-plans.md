@@ -39,11 +39,12 @@ human — executes task-by-task.
 6. Header the plan with the goal, non-goals, assumptions, the base branch
    or commit it was authored against, and a link to the spec file. Put every
    new type, interface, and exported function that more than one task uses
-   in a **Contracts** section as real Go declarations (signatures, struct
-   fields, constants), not prose. Each task can then be briefed with only
+   in a **Contracts** section as real declarations in the project's
+   language (signatures, struct or class fields, constants), not prose. Each task can then be briefed with only
    its own section plus the contracts it uses.
-7. Tail the plan with a final full-suite verification (`go test ./...`,
-   `gofmt`, `go vet` per AGENTS.md) and integration notes.
+7. Tail the plan with a final full-project verification using the
+   repository's own build, test, lint and format commands (from AGENTS.md
+   or equivalent) and integration notes.
 8. Write the plan to the plan location named in the repo instructions, defaulting to `docs/plans/YYYY-MM-DD-<topic>-plan.md`. By default,
    do NOT commit it — the plan is a durable local artifact. Only commit it
    if the repo's own conventions (AGENTS.md, `.gitignore`) explicitly say
@@ -83,7 +84,7 @@ step still states the decision:
   is an instruction.
 - **Name the tests.** List each new test function and the one behavior it
   asserts. "Cover startup, reload and resume" is not a test list.
-- **Keep it small.** A judgment task touches one package and its tests, plus
+- **Keep it small.** A judgment task touches one package (or module) and its tests, plus
   at most a wiring line elsewhere. Split anything larger. The executor stops
   for user input whenever a prose task spans packages without pinned
   decisions.

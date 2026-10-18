@@ -18,7 +18,10 @@ authoring a plan, not implementing source changes.
 4. Encode exact work with `marshal.*` blocks only when the inspected repository
    proves the preconditions.
 5. Use a narrow `marshal.agent` block when exact deterministic encoding is not
-   safe. State the allowed files and why model work remains.
+   safe. State the allowed files and why model work remains. The task prose
+   around the block must still settle the design: the signatures it adds,
+   the behaviour after the change, and each test by name with what it
+   asserts. The fallback agent implements; it does not design.
 6. Add structural and behavioral assertions for every mutation task.
 7. Write exactly one candidate plan to the provided `@plan/<filename>.md` path.
 8. Return the path and a concise operation summary. Do not edit source files,
@@ -111,7 +114,10 @@ package = "./internal/foo"
 
 Use when the exact change cannot be encoded deterministically. The `scope`
 array restricts the fallback agent's file writes to the listed directories.
-An empty or missing scope is rejected.
+An empty or missing scope is rejected. Keep the scope to one package (or
+module). A fallback that spans packages, or whose task prose says "audit",
+"ensure", or "cover" without naming the concrete edits and tests, is a design
+gap to close in the plan, not work to hand off.
 
 ```marshal.agent
 scope = ["internal/foo"]

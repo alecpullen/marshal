@@ -29,7 +29,7 @@ func (t *toolSet) workspaceFinishTool() registry.Tool {
 		Name: "workspace.finish",
 		Description: "Merge the session's worktree branch into the base branch (squash by default, squash=false for --no-ff), then remove the worktree and delete the branch. " +
 			"Use this instead of shell.run git merge, and pop or drop any stash you created before calling it. " +
-			"Guards: refuses when the project checkout is dirty or its HEAD moved. Commit any worktree changes first, or pass message to commit them.",
+			"Guards: refuses on uncommitted tracked changes in the project (untracked files are fine) or a moved HEAD. Commit worktree changes first, or pass message.",
 		Schema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"},"squash":{"type":"boolean"},"target":{"type":"string"}},"additionalProperties":false}`),
 		Risk:   registry.RiskWorkspaceWrite,
 	}
@@ -86,13 +86,9 @@ func (t *toolSet) workspaceFinishTool() registry.Tool {
 		if !res.Merged {
 			// A refusal is content, not an error: the agent must read the
 			// reason and decide what to do next.
-			content := fmt.Sprintf("Refused to finish: %s.", res.Reason)
-			if len(res.Conflicted) > 0 {
-				content = fmt.Sprintf("Refused to finish: %s. Conflicted files: %s. Resolve the conflicts in the project checkout, commit, and call workspace.finish again.", res.Reason, strings.Join(res.Conflicted, ", "))
-			}
 			return registry.ToolResult{
 				Summary: fmt.Sprintf("refused: %s", res.Reason),
-				Content: content,
+				Content: finishRefusalText(res),
 			}, nil
 		}
 
@@ -110,4 +106,30 @@ func (t *toolSet) workspaceFinishTool() registry.Tool {
 		}, nil
 	}
 	return tool
+}
+
+// finishRefusalText tells the agent what blocked the merge and what to do
+// next. A bare reason token left agents improvising workarounds (often a
+// shell merge into the same checkout) instead of taking the supported next
+// step.
+func finishRefusalText(res worktree.FinishResult) string {
+	head := fmt.Sprintf("Refused to finish (%s). Nothing was merged and no repository was changed.", res.Reason)
+	paths := strings.Join(res.Blocking, ", ")
+	switch res.Reason {
+	case worktree.ReasonDirtyWorktree:
+		return head + ` The worktree has uncommitted changes. Commit them in the worktree, or call workspace.finish again with "message" to commit them as part of finishing.`
+	case worktree.ReasonDirtyProject:
+		// Blocking holds tracked files with uncommitted changes or untracked
+		// files the merge would overwrite; either way they are the user's.
+		return head + " The project checkout has files in the way: " + paths + ". They are the user's: do not commit, stash, discard, move, or delete them, and do not merge with shell git instead. Tell the user which files block the merge and ask them to commit, stash, or move them; then call workspace.finish again."
+	case worktree.ReasonTargetMoved:
+		return head + ` The project checkout has new commits since this worktree was created. If merging on top of them is intended, call workspace.finish again with "target": "HEAD"; the merge still refuses on conflicts.`
+	case worktree.ReasonConflicts:
+		if len(res.Conflicted) > 0 {
+			return head + " The branch conflicts with the target in: " + strings.Join(res.Conflicted, ", ") + ". The merge was undone. Resolve the conflicts in the worktree (merge or rebase the target into the branch there), commit, and call workspace.finish again."
+		}
+		return head + " The branch does not merge cleanly into the target, and the merge was undone. Merge or rebase the target into the branch in the worktree, resolve the result, commit, and call workspace.finish again."
+	default:
+		return head
+	}
 }

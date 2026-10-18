@@ -521,6 +521,40 @@ func TestSendNowCommandIsTUIOnlyAndDiscoverable(t *testing.T) {
 	}
 }
 
+func TestWorkCommandIsTUIOnlyAndListed(t *testing.T) {
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	cmd, ok := cmdReg.Lookup("work")
+	if !ok {
+		t.Fatal("/work not registered")
+	}
+	if cmd.Description != "Open running work, results and attention" {
+		t.Errorf("work Description = %q", cmd.Description)
+	}
+	if cmd.Group != "Chat" {
+		t.Errorf("work Group = %q, want Chat", cmd.Group)
+	}
+	if !cmd.TUIOnly {
+		t.Error("work should be TUIOnly")
+	}
+	if cmd.Handler != nil {
+		t.Error("work should have no Handler")
+	}
+
+	// Discoverable through the existing listing/completion surfaces.
+	var found bool
+	for _, c := range cmdReg.List() {
+		if c.Name == "work" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("List() must include /work")
+	}
+}
+
 func TestSessionCommands(t *testing.T) {
 	cmdReg := New()
 	if err := RegisterAll(cmdReg, registry.New()); err != nil {

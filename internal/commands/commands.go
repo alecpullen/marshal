@@ -116,6 +116,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
+			Name:        "work",
+			Description: "Open running work, results and attention",
+			Group:       groupChat,
+			TUIOnly:     true,
+		},
+		{
 			Name:        "help",
 			Description: "Show available commands",
 			Args:        "[command]",

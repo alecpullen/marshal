@@ -690,6 +690,16 @@ func WithOpenBrowser(open func(url string) error) Option {
 	return func(m *Model) { m.openBrowser = open }
 }
 
+// AuthResolver returns the credential/OAuth dependency this model's
+// auth-backed surfaces use. It is never nil — New selects the production
+// adapter when no option supplied one — which lets a caller verify that the
+// runtime's selected resolver actually reached the TUI. That check matters:
+// the app builders refuse an omitted resolver, but the TUI's own constructors
+// substitute the production adapter, so app.Run's WithAuthResolver wiring is
+// the single seam where an isolated runtime could silently regain the real
+// OS keychain.
+func (m Model) AuthResolver() provider.AuthResolver { return m.auth }
+
 func WithWorkingDir(workDir string) Option {
 	return func(m *Model) {
 		m.workDir = workDir

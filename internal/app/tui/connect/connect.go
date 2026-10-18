@@ -871,10 +871,12 @@ func (m *Model) enterOAuthLogin() (*Model, tea.Cmd) {
 }
 
 // codexOAuthEngine returns the OAuth engine backing this wizard's sign-in,
-// built from the credential dependency the caller supplied. It never falls
-// back to the process-wide engine: under an injected resolver the token
-// store must stay private to whoever supplied it, and a test or embedded
-// caller must not reach the real OS keychain.
+// built from the credential dependency the caller supplied. An injected
+// resolver is authoritative: under it the token store stays private to
+// whoever supplied it, so a test or embedded caller cannot reach the real OS
+// keychain. Only a Model built as a bare literal, bypassing New, keeps the
+// legacy process-wide engine — New always selects a resolver, so no wizard
+// reached through the normal constructor takes that branch.
 func (m *Model) codexOAuthEngine() (*oauth.Engine, error) {
 	if m.auth != nil {
 		return m.auth.CodexOAuthEngine(m.providerName)

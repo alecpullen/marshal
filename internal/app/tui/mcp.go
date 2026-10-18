@@ -64,13 +64,19 @@ func (m *Model) handleMCPCommand(args []string) (tea.Model, tea.Cmd) {
 // method rather than an inline literal so the wiring stays inspectable and
 // executable: the token store comes from the resolver the runtime selected,
 // and the browser launcher is the model's injected opener (tests supply a
-// stub, so an executed flow never opens a real browser).
+// stub, so an executed flow never opens a real browser). A Model built as a
+// bare literal, bypassing New, falls back to the production launcher — the
+// same shape connect.oauthLogin uses.
 func (m *Model) mcpOAuthEngine(srv config.MCPServerConfig, store credentials.Store) *oauth.Engine {
+	open := m.openBrowser
+	if open == nil {
+		open = mcpauth.OpenBrowser
+	}
 	return &oauth.Engine{
 		ServerURL:  srv.URL,
 		ClientName: "marshal",
 		Store:      store,
-		Open:       func(u string) { _ = m.openBrowser(u) },
+		Open:       func(u string) { _ = open(u) },
 		Logger:     m.state.Logger(),
 	}
 }

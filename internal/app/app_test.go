@@ -5310,6 +5310,49 @@ func TestWithAuthResolverRejectsExplicitNil(t *testing.T) {
 	}
 }
 
+// TestRunPassesAuthResolverToTUI closes the one fail-open seam in the
+// isolation design. The app builders refuse an omitted resolver, but the
+// TUI's own constructors substitute provider.DefaultAuthResolver() when no
+// option supplies one — so app.Run's WithAuthResolver wiring is the single
+// place where an isolated runtime could silently regain the real OS keychain,
+// and nothing else in the suite would notice if it were dropped.
+func TestRunPassesAuthResolverToTUI(t *testing.T) {
+	auth := &countingAuthResolver{}
+	var got provider.AuthResolver
+	err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(t.TempDir()),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithAuthResolver(auth),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			got = model.(tui.Model).AuthResolver()
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("the TUI model carries no auth resolver")
+	}
+	if got != provider.AuthResolver(auth) {
+		t.Fatalf("TUI auth resolver = %T, want the runtime's injected resolver", got)
+	}
+	// The wiring must not itself reach a credential path: this fixture
+	// configures no provider, so a correct startup asks for neither a store
+	// nor an engine.
+	if opens := auth.openedStores(); len(opens) != 0 {
+		t.Fatalf("resolver OpenStore calls = %v, want none for a provider-less startup", opens)
+	}
+	if engines := auth.enginesRequested(); len(engines) != 0 {
+		t.Fatalf("resolver CodexOAuthEngine calls = %v, want none for a provider-less startup", engines)
+	}
+}
+
 // TestStartRuntimeRetainsAuthResolverWithoutProvider covers the
 // inactive-provider startup path: a project with no configured provider still
 // gets a Runtime carrying the selected resolver, so a later /connect or config

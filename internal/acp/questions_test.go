@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"marshal/internal/app/session"
@@ -154,5 +155,152 @@ func TestQuestionBridgeClientErrorReturnsError(t *testing.T) {
 
 	if err := bridge.Ask(context.Background(), "sess_1", pending); err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+// gatedQuestionClient is a QuestionClient whose calls park until the test
+// releases them. With ignoreCtx it also ignores context cancellation, so a test
+// can deliver a late answer after an interruption.
+type gatedQuestionClient struct {
+	mu        sync.Mutex
+	ignoreCtx bool
+	ctxs      []context.Context
+	gates     []chan QuestionResponse
+	errCount  int
+}
+
+func (c *gatedQuestionClient) RequestQuestion(ctx context.Context, req QuestionRequest) (QuestionResponse, error) {
+	c.mu.Lock()
+	gate := make(chan QuestionResponse, 1)
+	c.ctxs = append(c.ctxs, ctx)
+	c.gates = append(c.gates, gate)
+	ignore := c.ignoreCtx
+	c.mu.Unlock()
+	if ignore {
+		return <-gate, nil
+	}
+	select {
+	case r := <-gate:
+		return r, nil
+	case <-ctx.Done():
+		c.mu.Lock()
+		c.errCount++
+		c.mu.Unlock()
+		return QuestionResponse{}, ctx.Err()
+	}
+}
+
+func (c *gatedQuestionClient) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.gates)
+}
+
+func (c *gatedQuestionClient) errors() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.errCount
+}
+
+func (c *gatedQuestionClient) ctx(i int) context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ctxs[i]
+}
+
+func (c *gatedQuestionClient) release(i int, r QuestionResponse) {
+	c.mu.Lock()
+	gate := c.gates[i]
+	c.mu.Unlock()
+	gate <- r
+}
+
+// testSendNowCancelsQuestionRPC pins that an interrupted question RPC ends only
+// that request: the outbound call stops on the operation's cancellation, the
+// turn continues, and no answer is fabricated from the interrupted prompt.
+func testSendNowCancelsQuestionRPC(t *testing.T) {
+	gated := &gatedQuestionClient{} // honours ctx: the RPC stops on interruption
+	h := newSendNowHarnessWith(t, true, &fakePermissionClient{}, gated)
+
+	firstCanceled := make(chan struct{})
+	secondPrompt := make(chan struct{})
+	secondAnswered := make(chan struct{})
+	h.run = RunnerFunc(func(ctx context.Context, prompt string) error {
+		turnID, err := h.state.BeginSteeringTurn(ctx)
+		if err != nil {
+			return err
+		}
+		defer h.state.EndSteeringTurn(turnID, "test complete")
+		opCtx, ref, err := h.state.BeginSteeringOperation(ctx, turnID, session.OperationModel)
+		if err != nil {
+			return err
+		}
+		q1 := &session.PendingQuestion{
+			Questions:    []session.Question{{Question: "pick"}},
+			ResponseChan: make(chan []session.Answer, 1),
+		}
+		key1, err := h.state.RegisterQuestion(opCtx, q1)
+		if err != nil {
+			return err
+		}
+		select {
+		case <-q1.ResponseChan:
+			// The canonical settlement identifies the interruption; it is never
+			// a fabricated human answer.
+			if errors.Is(h.state.PromptCause(key1), session.ErrSendNow) {
+				close(firstCanceled)
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		h.state.ClearPrompt(key1)
+		h.state.FinishSteeringOperation(ref, nil)
+
+		// A newer, independent question under the turn itself.
+		q2 := &session.PendingQuestion{
+			Questions:    []session.Question{{Question: "later"}},
+			ResponseChan: make(chan []session.Answer, 1),
+		}
+		key2, err := h.state.RegisterQuestion(ctx, q2)
+		if err != nil {
+			return err
+		}
+		defer h.state.ClearPrompt(key2)
+		close(secondPrompt)
+		select {
+		case <-q2.ResponseChan:
+			close(secondAnswered)
+		case <-ctx.Done():
+		}
+		return ctx.Err()
+	})
+	done := h.start()
+	waitFor(t, "the first question RPC", func() bool { return gated.count() >= 1 })
+	turnID := h.status().TurnID
+
+	if _, err := h.steerNow(turnID, "r-q", "stop"); err != nil {
+		t.Fatalf("steerNow: %v", err)
+	}
+	waitClosed(t, firstCanceled, "the interrupted question to settle")
+	waitClosed(t, secondPrompt, "the newer question")
+
+	// The question bridge returned because the RPC context stopped, which the
+	// turn loop must treat as the end of that one request — not as a fatal
+	// client failure and not as an answer.
+	waitFor(t, "the bridge to observe the cancelled RPC", func() bool { return gated.errors() >= 1 })
+	if !h.manager.HasActiveTurn(h.session) {
+		t.Fatal("a steering cancellation of a question RPC cancelled the whole turn")
+	}
+	if err := gated.ctx(0).Err(); err == nil {
+		t.Fatal("the outbound question RPC context was not cancelled by the interruption")
+	}
+	select {
+	case <-secondAnswered:
+		t.Fatal("the newer question was answered while it was still pending")
+	default:
+	}
+	h.cancel()
+	if err := h.awaitTurn(done); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
 	}
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -674,4 +676,301 @@ func TestPermissionBridgeRejectsTypedAccessDelivery(t *testing.T) {
 	if _, pending := state.AccessRequest(); !pending {
 		t.Fatal("Request cleared the pending access request")
 	}
+}
+
+// ---- Send now: canonical prompt delivery and the access apply race ----
+
+// gatedPermissionClient is a PermissionClient whose calls park until the test
+// releases them. With ignoreCtx it also ignores context cancellation, so a test
+// can deliver a late answer after an interruption.
+type gatedPermissionClient struct {
+	mu        sync.Mutex
+	ignoreCtx bool
+	ctxs      []context.Context
+	gates     []chan PermissionDecision
+}
+
+func (c *gatedPermissionClient) RequestPermission(ctx context.Context, req PermissionRequest) (PermissionDecision, error) {
+	c.mu.Lock()
+	gate := make(chan PermissionDecision, 1)
+	c.ctxs = append(c.ctxs, ctx)
+	c.gates = append(c.gates, gate)
+	ignore := c.ignoreCtx
+	c.mu.Unlock()
+	if ignore {
+		return <-gate, nil
+	}
+	select {
+	case d := <-gate:
+		return d, nil
+	case <-ctx.Done():
+		return PermissionDecision{}, ctx.Err()
+	}
+}
+
+func (c *gatedPermissionClient) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.gates)
+}
+
+func (c *gatedPermissionClient) ctx(i int) context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ctxs[i]
+}
+
+func (c *gatedPermissionClient) release(i int, d PermissionDecision) {
+	c.mu.Lock()
+	gate := c.gates[i]
+	c.mu.Unlock()
+	gate <- d
+}
+
+// testSendNowCancelsApprovalRPC pins that an interrupted approval RPC ends only
+// that request: the turn continues, and a late grant on the settled prompt
+// cannot settle a newer one.
+func testSendNowCancelsApprovalRPC(t *testing.T) {
+	gated := &gatedPermissionClient{ignoreCtx: true}
+	h := newSendNowHarnessWith(t, true, gated, &gatedQuestionClient{})
+
+	firstCanceled := make(chan struct{})
+	secondPrompt := make(chan struct{})
+	secondAnswered := make(chan struct{})
+	h.run = RunnerFunc(func(ctx context.Context, prompt string) error {
+		turnID, err := h.state.BeginSteeringTurn(ctx)
+		if err != nil {
+			return err
+		}
+		defer h.state.EndSteeringTurn(turnID, "test complete")
+		opCtx, ref, err := h.state.BeginSteeringOperation(ctx, turnID, session.OperationModel)
+		if err != nil {
+			return err
+		}
+		tc1 := &session.PendingToolCall{
+			ID: "call-1", Name: "shell.run", Command: "ls",
+			ResponseChan: make(chan session.UserApprovalDecision, 1),
+		}
+		key1, err := h.state.RegisterApproval(opCtx, tc1)
+		if err != nil {
+			return err
+		}
+		select {
+		case d := <-tc1.ResponseChan:
+			if d.Canceled {
+				close(firstCanceled)
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		h.state.ClearPrompt(key1)
+		h.state.FinishSteeringOperation(ref, nil)
+
+		// A newer, independent prompt under the turn itself.
+		tc2 := &session.PendingToolCall{
+			ID: "call-2", Name: "shell.run", Command: "pwd",
+			ResponseChan: make(chan session.UserApprovalDecision, 1),
+		}
+		key2, err := h.state.RegisterApproval(ctx, tc2)
+		if err != nil {
+			return err
+		}
+		defer h.state.ClearPrompt(key2)
+		close(secondPrompt)
+		select {
+		case <-tc2.ResponseChan:
+			close(secondAnswered)
+		case <-ctx.Done():
+		}
+		return ctx.Err()
+	})
+	done := h.start()
+	waitFor(t, "the first approval RPC", func() bool { return gated.count() >= 1 })
+	turnID := h.status().TurnID
+
+	if _, err := h.steerNow(turnID, "r1", "stop"); err != nil {
+		t.Fatalf("steerNow: %v", err)
+	}
+	waitClosed(t, firstCanceled, "the interrupted approval to settle")
+	waitClosed(t, secondPrompt, "the newer prompt")
+
+	// The interruption cancelled the prompt's RPC context but not the turn.
+	if !h.manager.HasActiveTurn(h.session) {
+		t.Fatal("a steering cancellation of an approval RPC cancelled the whole turn")
+	}
+	if err := gated.ctx(0).Err(); err == nil {
+		t.Fatal("the outbound approval RPC context was not cancelled by the interruption")
+	}
+	// A late grant on the settled prompt cannot settle the newer one.
+	gated.release(0, PermissionDecision{Approved: true})
+	select {
+	case <-secondAnswered:
+		t.Fatal("a late grant settled a newer prompt")
+	case <-time.After(100 * time.Millisecond):
+	}
+	gated.release(1, PermissionDecision{Approved: false})
+	h.cancel()
+	if err := h.awaitTurn(done); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+}
+
+// The access apply race has two sides, and both are decided by the one
+// canonical boundary: a grant whose application already started completes and
+// stays committed even when Send now is accepted during it, while a
+// cancellation accepted first prevents the grant outright.
+func TestACPSendNowAccessApplyRaceKeepsCommittedGrant(t *testing.T) {
+	newManager := func(state *session.State) *TurnManager {
+		return NewTurnManager(TurnManagerConfig{
+			Lookup: func(sessionID string) (*TurnRuntime, bool) {
+				return &TurnRuntime{
+					SessionID:        sessionID,
+					State:            state,
+					SteeringSnapshot: state.SteeringSnapshot,
+					SendNow:          state.SubmitSendNow,
+				}, true
+			},
+			Notify: func(string, any) error { return nil },
+		})
+	}
+	newState := func(t *testing.T) *session.State {
+		t.Helper()
+		state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{SessionID: sendNowSessionID})
+		state.SetOperationInterrupt(func(context.Context, session.OperationRef) (session.OperationStop, error) {
+			return session.OperationStop{}, nil
+		})
+		return state
+	}
+	registerAccess := func(t *testing.T, state *session.State, turnID string) (session.AccessRequest, *session.PendingToolCall) {
+		t.Helper()
+		opCtx, _, err := state.BeginSteeringOperation(context.Background(), turnID, session.OperationModel)
+		if err != nil {
+			t.Fatalf("BeginSteeringOperation: %v", err)
+		}
+		call := &session.PendingToolCall{
+			ID: "call-1", Name: "mode.request", Reason: "read outside",
+			ResponseChan: make(chan session.UserApprovalDecision, 1),
+		}
+		req, waiting, err := state.RegisterAccess(opCtx, call, session.AccessIntent{System: true, Reason: "read outside"})
+		if err != nil || !waiting {
+			t.Fatalf("RegisterAccess = (%v, %v), want a published request", waiting, err)
+		}
+		return req, call
+	}
+	steer := func(manager *TurnManager, state *session.State, turnID string) (any, error) {
+		return manager.Steer(context.Background(), json.RawMessage(fmt.Sprintf(
+			`{"sessionId":%q,"delivery":"now","turnId":%q,"requestId":"r1","text":"stop"}`,
+			state.SessionID(), turnID)))
+	}
+
+	t.Run("grant committed first stays committed", func(t *testing.T) {
+		state := newState(t)
+		turnID, err := state.BeginSteeringTurn(context.Background())
+		if err != nil {
+			t.Fatalf("BeginSteeringTurn: %v", err)
+		}
+		req, call := registerAccess(t, state, turnID)
+
+		applying := make(chan struct{})
+		release := make(chan struct{})
+		resolved := make(chan session.AccessResult, 1)
+		go func() {
+			res, _ := state.ResolveAccess(session.AccessChoice{
+				RequestID: req.RequestID, SessionID: req.SessionID,
+				Current: req.Current, Approved: true,
+			}, func(r session.AccessRequest, c session.AccessChoice) (session.AccessCommit, error) {
+				target := r.Current
+				target.System = true
+				return session.AccessCommit{Effective: target, Apply: func() {
+					close(applying)
+					<-release
+				}}, nil
+			})
+			resolved <- res
+		}()
+		<-applying
+
+		manager := newManager(state)
+		type outcome struct {
+			receipt any
+			err     error
+		}
+		steered := make(chan outcome, 1)
+		go func() {
+			r, err := steer(manager, state, turnID)
+			steered <- outcome{receipt: r, err: err}
+		}()
+		// Send now serializes behind the access gate the commit still holds.
+		select {
+		case o := <-steered:
+			t.Fatalf("send now completed while the grant held the access gate: %+v", o)
+		case <-time.After(100 * time.Millisecond):
+		}
+
+		close(release)
+		res := <-resolved
+		if res.Status != session.AccessGranted {
+			t.Fatalf("grant status = %q, want granted", res.Status)
+		}
+		select {
+		case d := <-call.ResponseChan:
+			if !d.Approved || d.Access == nil || d.Access.Status != session.AccessGranted {
+				t.Fatalf("delivered decision = %+v, want the committed grant", d)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the committed grant was never acknowledged")
+		}
+		select {
+		case o := <-steered:
+			if o.err != nil {
+				t.Fatalf("send now after the grant: %v", o.err)
+			}
+			w, ok := o.receipt.(SteeringReceiptWire)
+			if !ok || w.Status != string(session.SteeringAccepted) {
+				t.Fatalf("send now receipt = %#v, want accepted", o.receipt)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("send now never completed after the grant")
+		}
+		if !state.SystemAccess() {
+			t.Fatal("the accepted send now rolled back the committed grant")
+		}
+		state.EndSteeringTurn(turnID, "done")
+	})
+
+	t.Run("steering accepted first prevents the grant", func(t *testing.T) {
+		state := newState(t)
+		turnID, err := state.BeginSteeringTurn(context.Background())
+		if err != nil {
+			t.Fatalf("BeginSteeringTurn: %v", err)
+		}
+		req, call := registerAccess(t, state, turnID)
+
+		manager := newManager(state)
+		if _, err := steer(manager, state, turnID); err != nil {
+			t.Fatalf("send now: %v", err)
+		}
+		// The accepted cancellation reaches the canonical request: the tool is
+		// answered canceled, never granted.
+		select {
+		case d := <-call.ResponseChan:
+			if d.Approved || d.Access == nil || d.Access.Status != session.AccessCanceled {
+				t.Fatalf("delivered decision = %+v, want a typed cancellation", d)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the interrupted access request was never settled")
+		}
+		// A late resolution attempt cannot grant what the cancellation already
+		// settled.
+		if res, err := state.ResolveAccess(session.AccessChoice{
+			RequestID: req.RequestID, SessionID: req.SessionID,
+			Current: req.Current, Approved: true,
+		}, nil); err == nil {
+			t.Fatalf("a late resolution granted after cancellation: %+v", res)
+		}
+		if state.SystemAccess() {
+			t.Fatal("a cancelled access request granted system access")
+		}
+		state.EndSteeringTurn(turnID, "done")
+	})
 }

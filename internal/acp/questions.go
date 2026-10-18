@@ -76,6 +76,12 @@ func NewQuestionBridge(client QuestionClient) *QuestionBridge {
 // sentinel so the runner always receives exactly one Answer per Question, in
 // order. A client/transport error is returned to the caller, which falls
 // back to Unanswered as well.
+//
+// Delivery goes through pending.Respond, the canonical responder: a registered
+// prompt settles through the session's registry (which arbitrates the answer
+// against an accepted steering cancellation), while an unregistered legacy
+// fixture keeps its own channel. A canceled operation therefore never receives
+// a fabricated answer here.
 func (b *QuestionBridge) Ask(ctx context.Context, sessionID string, pending *session.PendingQuestion) error {
 	if pending == nil {
 		return ErrNilPendingQuestion
@@ -86,6 +92,32 @@ func (b *QuestionBridge) Ask(ctx context.Context, sessionID string, pending *ses
 	}
 	pending.Respond(answers)
 	return nil
+}
+
+// promptRPCContext derives the context one outbound prompt RPC runs under. It
+// is a child of parent (the turn context, so a full turn stop still ends the
+// RPC) that is also cancelled as soon as original — the prompt's own owning
+// operation context, as returned by State.PromptContext — is done. That lets a
+// steering interruption end the pending request promptly instead of leaving
+// the permission/question goroutine blocked until a late client answer.
+//
+// The returned function stops the after-function and cancels the derived
+// context; callers must always call it.
+func promptRPCContext(parent context.Context, original context.Context) (context.Context, func()) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancelCause(parent)
+	stop := func() bool { return false }
+	if original != nil {
+		stop = context.AfterFunc(original, func() {
+			cancel(context.Cause(original))
+		})
+	}
+	return ctx, func() {
+		stop()
+		cancel(context.Canceled)
+	}
 }
 
 // ask is the shared translation core for Ask: it sends the questions to the

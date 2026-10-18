@@ -871,6 +871,12 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		TestCommand:    cfg.Commands.Test,
 		MaxOutputBytes: cfg.Tools.Shell.MaxOutputBytes,
 		SessionState:   state,
+		// The root runtime is the one transport-attached registration: the TUI
+		// and ACP both supply an access resolver, so mode.request may publish a
+		// capability request here. Child registrations below deliberately leave
+		// this false — a subagent must ask its parent, and the handler and the
+		// session both reject depth > 0 as well.
+		AccessRequests: true,
 		DB:             database,
 		ProjectID:      projectID,
 		FileTracker:    fileTracker,

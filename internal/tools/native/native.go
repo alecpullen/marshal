@@ -57,6 +57,12 @@ type Options struct {
 	// Unset means "same as SessionState", which is every caller but the
 	// subagent factory.
 	WorkspaceState *session.State
+	// AccessRequests reports that the caller has attached an access resolver
+	// and a transport that can present a capability request (the TUI or ACP).
+	// It gates mode.request: with it false the tool fails closed instead of
+	// publishing a prompt nothing can settle. Defaults false, so a standalone
+	// registration never offers escalation.
+	AccessRequests bool
 	DB             *db.DB
 	ProjectID      int64
 	FileTracker    FileTracker
@@ -149,12 +155,18 @@ type toolSet struct {
 	maxOutputBytes  int
 	sessionState    *session.State
 	workspaceState  *session.State
-	db              *db.DB
-	projectID       int64
-	fileTracker     FileTracker
-	jobManager      *JobManager
-	diagnostics     *diagnostics.Checker
-	registry        *registry.Registry
+	// accessRequests reports whether the caller promised an attached access
+	// resolver/transport. Defaults false: a standalone registration (tests,
+	// embedded registries) has nobody to answer a capability request, so
+	// mode.request fails closed rather than publishing a prompt no transport
+	// can settle.
+	accessRequests bool
+	db             *db.DB
+	projectID      int64
+	fileTracker    FileTracker
+	jobManager     *JobManager
+	diagnostics    *diagnostics.Checker
+	registry       *registry.Registry
 
 	webEnabled      bool
 	webFetchTimeout time.Duration
@@ -368,6 +380,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		maxOutputBytes:  maxOutputBytes,
 		sessionState:    opts.SessionState,
 		workspaceState:  opts.WorkspaceState,
+		accessRequests:  opts.AccessRequests,
 		db:              opts.DB,
 		projectID:       opts.ProjectID,
 		fileTracker:     opts.FileTracker,

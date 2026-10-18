@@ -618,3 +618,284 @@ func TestHeadlessMCPDisplayWaitBlocksUntilCancelled(t *testing.T) {
 		t.Fatal("Wait did not return after cancellation")
 	}
 }
+
+// --- credential-store precedence -----------------------------------------
+
+// newRuntimeStoreManager builds a CommandManager whose only store seam is the
+// session runtime's opener: CommandManagerConfig.OpenStore is deliberately
+// left nil so the runtime opener is the one that must be consulted.
+func newRuntimeStoreManager(t *testing.T, servers map[string]config.MCPServerConfig, open func() (credentials.Store, error)) (*CommandManager, *noticeSink, *CommandRuntime) {
+	t.Helper()
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.MCP.Servers = servers
+	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+
+	rt := &CommandRuntime{State: state, Registry: reg, OpenStore: open}
+	sink := newNoticeSink()
+	mgr := NewCommandManager(CommandManagerConfig{
+		Lookup: func(sessionID string) (*CommandRuntime, bool) {
+			if sessionID != "sess_mcp" {
+				return nil, false
+			}
+			return rt, true
+		},
+		HasActive: func(string) bool { return false },
+		Notify:    sink.notify,
+	})
+	return mgr, sink, rt
+}
+
+// openCredentialStore must apply the documented precedence: the manager-wide
+// config override first, then the session runtime's opener, then the
+// production fallback.
+func TestOpenCredentialStorePrecedence(t *testing.T) {
+	configStore := credentials.NewMemStore()
+	runtimeStore := credentials.NewMemStore()
+
+	t.Run("config override wins over runtime", func(t *testing.T) {
+		mgr := NewCommandManager(CommandManagerConfig{
+			Lookup:    func(string) (*CommandRuntime, bool) { return nil, false },
+			HasActive: func(string) bool { return false },
+			OpenStore: func() (credentials.Store, error) { return configStore, nil },
+		})
+		got, err := mgr.openCredentialStore(&CommandRuntime{OpenStore: func() (credentials.Store, error) { return runtimeStore, nil }})
+		if err != nil {
+			t.Fatalf("openCredentialStore: %v", err)
+		}
+		if got != credentials.Store(configStore) {
+			t.Error("config-level OpenStore did not win over the runtime opener")
+		}
+	})
+
+	t.Run("runtime opener wins over the production fallback", func(t *testing.T) {
+		mgr := NewCommandManager(CommandManagerConfig{
+			Lookup:    func(string) (*CommandRuntime, bool) { return nil, false },
+			HasActive: func(string) bool { return false },
+		})
+		got, err := mgr.openCredentialStore(&CommandRuntime{OpenStore: func() (credentials.Store, error) { return runtimeStore, nil }})
+		if err != nil {
+			t.Fatalf("openCredentialStore: %v", err)
+		}
+		if got != credentials.Store(runtimeStore) {
+			t.Error("runtime opener was not used")
+		}
+	})
+
+	t.Run("runtime opener failure propagates", func(t *testing.T) {
+		sentinel := errors.New("runtime store unavailable")
+		mgr := NewCommandManager(CommandManagerConfig{
+			Lookup:    func(string) (*CommandRuntime, bool) { return nil, false },
+			HasActive: func(string) bool { return false },
+		})
+		var calls int32
+		got, err := mgr.openCredentialStore(&CommandRuntime{OpenStore: func() (credentials.Store, error) {
+			calls++
+			return nil, sentinel
+		}})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("error = %v, want the injected failure", err)
+		}
+		if got != nil {
+			t.Error("a store was returned alongside the failure")
+		}
+		if calls != 1 {
+			t.Errorf("runtime opener calls = %d, want exactly 1 (no retry against the real store)", calls)
+		}
+	})
+
+	t.Run("nil runtime still honours the config override", func(t *testing.T) {
+		// A nil CommandRuntime must not skip the manager-wide override: a
+		// lookup that fails to resolve a runtime must not silently route the
+		// flow to a different store.
+		mgr := NewCommandManager(CommandManagerConfig{
+			Lookup:    func(string) (*CommandRuntime, bool) { return nil, false },
+			HasActive: func(string) bool { return false },
+			OpenStore: func() (credentials.Store, error) { return configStore, nil },
+		})
+		got, err := mgr.openCredentialStore(nil)
+		if err != nil {
+			t.Fatalf("openCredentialStore(nil): %v", err)
+		}
+		if got != credentials.Store(configStore) {
+			t.Error("nil runtime bypassed the config-level opener")
+		}
+	})
+
+	// The third tier — credentials.New("marshal") for legacy embedded callers
+	// with no opener at all — is deliberately NOT exercised here: it may open
+	// the developer's real OS keychain, which the default suite must never do.
+	// It is covered by the production code path itself (see
+	// CommandManagerConfig.OpenStore's doc comment).
+}
+
+// The runtime opener must be the one the headless flow uses: the token set is
+// written into the runtime's store, and never into a manager-level one.
+func TestCommandManagerMCPAuthUsesRuntimeStore(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	mcp.AllowInsecureHTTP(true)
+	t.Cleanup(func() { mcp.AllowInsecureHTTP(false) })
+
+	as := newFakeAuthorizeServer(t)
+	runtimeStore := credentials.NewMemStore()
+	mgr, sink, _ := newRuntimeStoreManager(t, map[string]config.MCPServerConfig{
+		"linear": {URL: as.origin(), Type: "http", Auth: "oauth", Trust: "unrestricted"},
+	}, func() (credentials.Store, error) { return runtimeStore, nil })
+
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_mcp", Name: "mcp", Args: []string{"auth", "linear"}})
+	if _, err := mgr.Command(context.Background(), raw); err != nil {
+		t.Fatalf("Command(mcp auth linear): %v", err)
+	}
+
+	urlNotice := sink.waitForText(t, "Authorize MCP server")
+	as.completeLoopback(t, authorizationURLFromNotice(t, urlNotice))
+	sink.waitForText(t, "Tokens are stored in the OS keychain.")
+
+	stored, err := runtimeStore.Get("marshal:mcp:" + as.origin())
+	if err != nil {
+		t.Fatalf("tokens were not persisted in the runtime's store: %v", err)
+	}
+	if len(stored) == 0 {
+		t.Fatal("persisted token blob is empty")
+	}
+}
+
+// An injected runtime opener that fails must surface its error to the client;
+// the flow must not retry against the real OS keychain.
+func TestCommandManagerMCPAuthRuntimeStoreFailurePropagates(t *testing.T) {
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"linear": {URL: "https://mcp.example.com/mcp", Type: "http", Auth: "oauth", Trust: "unrestricted"},
+	}
+	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+
+	sentinel := errors.New("injected store failure")
+	var calls int32
+	var rt *CommandRuntime
+	mgr := NewCommandManager(CommandManagerConfig{
+		Lookup:    func(string) (*CommandRuntime, bool) { return rt, true },
+		HasActive: func(string) bool { return false },
+		Notify:    newNoticeSink().notify,
+	})
+	rt = &CommandRuntime{
+		State:    state,
+		Registry: reg,
+		OpenStore: func() (credentials.Store, error) {
+			atomic.AddInt32(&calls, 1)
+			return nil, sentinel
+		},
+	}
+
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_mcp", Name: "mcp", Args: []string{"auth", "linear"}})
+	_, err := mgr.Command(context.Background(), raw)
+	if err == nil {
+		t.Fatal("got nil error, want the injected store failure")
+	}
+	if !strings.Contains(err.Error(), sentinel.Error()) {
+		t.Errorf("error = %q, want it to carry the injected cause", err.Error())
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("runtime opener calls = %d, want exactly 1 (no real-store fallback)", got)
+	}
+}
+
+// A keyring-unavailable failure from the runtime opener keeps the actionable
+// keychain sentence, exactly as the manager-level override does.
+func TestCommandManagerMCPAuthRuntimeStoreKeyringUnavailable(t *testing.T) {
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	cfg := config.Default()
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"linear": {URL: "https://mcp.example.com/mcp", Type: "http", Auth: "oauth", Trust: "unrestricted"},
+	}
+	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	rt := &CommandRuntime{State: state, Registry: reg, OpenStore: func() (credentials.Store, error) {
+		return nil, fmt.Errorf("keyring: %w", credentials.ErrKeyringUnavailable)
+	}}
+	mgr := NewCommandManager(CommandManagerConfig{
+		Lookup:    func(string) (*CommandRuntime, bool) { return rt, true },
+		HasActive: func(string) bool { return false },
+		Notify:    newNoticeSink().notify,
+	})
+
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_mcp", Name: "mcp", Args: []string{"auth", "linear"}})
+	_, err := mgr.Command(context.Background(), raw)
+	if err == nil {
+		t.Fatal("got nil error, want a keyring-unavailable error")
+	}
+	if !strings.Contains(err.Error(), "keychain") {
+		t.Errorf("error = %q, want the keychain-unavailable sentence", err.Error())
+	}
+}
+
+// Two sessions with different runtime openers must each write to their own
+// store: session A's authorization cannot land in session B's store.
+func TestCommandManagerMCPAuthSeparateSessionStores(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	mcp.AllowInsecureHTTP(true)
+	t.Cleanup(func() { mcp.AllowInsecureHTTP(false) })
+
+	as := newFakeAuthorizeServer(t)
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	newRuntime := func(store credentials.Store) *CommandRuntime {
+		cfg := config.Default()
+		cfg.MCP.Servers = map[string]config.MCPServerConfig{
+			"linear": {URL: as.origin(), Type: "http", Auth: "oauth", Trust: "unrestricted"},
+		}
+		state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+		return &CommandRuntime{
+			State:    state,
+			Registry: reg,
+			OpenStore: func() (credentials.Store, error) {
+				return store, nil
+			},
+		}
+	}
+
+	storeA := credentials.NewMemStore()
+	storeB := credentials.NewMemStore()
+	runtimes := map[string]*CommandRuntime{
+		"sess_a": newRuntime(storeA),
+		"sess_b": newRuntime(storeB),
+	}
+	sink := newNoticeSink()
+	mgr := NewCommandManager(CommandManagerConfig{
+		Lookup: func(sessionID string) (*CommandRuntime, bool) {
+			rt, ok := runtimes[sessionID]
+			return rt, ok
+		},
+		HasActive: func(string) bool { return false },
+		Notify:    sink.notify,
+	})
+
+	raw, _ := json.Marshal(CommandParams{SessionID: "sess_a", Name: "mcp", Args: []string{"auth", "linear"}})
+	if _, err := mgr.Command(context.Background(), raw); err != nil {
+		t.Fatalf("Command(mcp auth linear): %v", err)
+	}
+	as.completeLoopback(t, authorizationURLFromNotice(t, sink.waitForText(t, "Authorize MCP server")))
+	sink.waitForText(t, "Tokens are stored in the OS keychain.")
+
+	key := "marshal:mcp:" + as.origin()
+	if _, err := storeA.Get(key); err != nil {
+		t.Errorf("session A's store did not receive the tokens: %v", err)
+	}
+	if _, err := storeB.Get(key); !errors.Is(err, credentials.ErrNotFound) {
+		t.Errorf("session B's store saw session A's tokens: err = %v, want ErrNotFound", err)
+	}
+}

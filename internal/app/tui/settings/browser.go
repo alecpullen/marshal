@@ -35,8 +35,8 @@ const probeOnlyLimits = false
 // Capability probing does not need the limit table (the bulk model probe
 // already populated it), so remote limit-table discovery is always
 // disabled to keep the confirmation screen responsive.
-func probeProviderFor(name string, pc config.ProviderConfig, dataDir string, thinkingBudgetMargin int) (provider.Provider, error) {
-	return provider.NewFromConfig(name, pc, dataDir, probeOnlyLimits, thinkingBudgetMargin)
+func probeProviderFor(name string, pc config.ProviderConfig, dataDir string, thinkingBudgetMargin int, auth provider.AuthResolver) (provider.Provider, error) {
+	return provider.NewFromConfigWithAuth(name, pc, dataDir, probeOnlyLimits, thinkingBudgetMargin, "", auth)
 }
 
 // BrowserOption customizes a BrowserPanel.
@@ -60,6 +60,23 @@ func WithUserConfigPath(path string) BrowserOption {
 // and presets created from them save context_window = 0.
 func WithDataDir(dir string) BrowserOption {
 	return func(b *BrowserPanel) { b.reg.st.dataDir = dir }
+}
+
+// WithAuthResolver pins the credential/OAuth dependency every probe this
+// browser launches must use. Without it the browser would build an
+// openai_codex provider through the process-wide keychain — bypassing the
+// isolated dependency an embedding app selected.
+func WithAuthResolver(auth provider.AuthResolver) BrowserOption {
+	return func(b *BrowserPanel) { b.reg.st.auth = auth }
+}
+
+// probeCmd launches a model-list probe through the state's selected
+// credential dependency. It is the single probe entry point for settings
+// frames and for the browser's own discovery paths: routing every call
+// through the state means a rebuilt or cloned frame can never drift back to
+// the production adapter.
+func (s *state) probeCmd(fieldID, name string, pc config.ProviderConfig) tea.Cmd {
+	return probe.ProviderWithAuth(fieldID, name, pc, s.dataDir, s.cfg.Privacy.RemoteLimitDiscovery, s.cfg.Agent.ThinkingBudgetMargin, s.auth)
 }
 
 // BrowserPanel is the docked settings browser. It presents a filterable flat
@@ -150,6 +167,11 @@ func NewBrowser(cfg config.Config, cfgPath, query string, opts ...BrowserOption)
 	}
 	return browser
 }
+
+// AuthResolver returns the credential/OAuth dependency every probe from this
+// browser uses. It is never nil (newState selects the production adapter),
+// which lets callers verify that a rebuilt panel kept its dependency.
+func (b *BrowserPanel) AuthResolver() provider.AuthResolver { return b.reg.st.auth }
 
 // SetLayers supplies the load-time config snapshots used by project-scope
 // saves to avoid baking user-layer values into the project file.
@@ -526,7 +548,7 @@ func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 	// Capability probing only needs the provider client. Limit-table discovery
 	// already happened during model-list discovery and must not block the TUI
 	// while this confirmation screen is opening.
-	prov, err := probeProviderFor(pending.ProviderName, pc, b.reg.st.dataDir, b.reg.st.cfg.Agent.ThinkingBudgetMargin)
+	prov, err := probeProviderFor(pending.ProviderName, pc, b.reg.st.dataDir, b.reg.st.cfg.Agent.ThinkingBudgetMargin, b.reg.st.auth)
 	if err != nil {
 		return nil
 	}

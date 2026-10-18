@@ -39,6 +39,7 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -5738,7 +5739,12 @@ func newTestModel(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()))
+	m := New(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()),
+		// Isolate the auth surfaces by default: no test in this package should
+		// reach the developer's OS keychain or launch a browser just by
+		// constructing or driving the model. Tests that need to observe the
+		// injected dependency replace these directly.
+		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -5754,7 +5760,8 @@ func newTestModelInRepo(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()))
+	m := New(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()),
+		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m
@@ -5884,6 +5891,104 @@ func TestModelsOpensOverlay(t *testing.T) {
 	m = asModel(t, updated)
 	if _, ok := m.dock.Panel().(connect.Panel); !ok {
 		t.Fatalf("/models dock panel = %T, want connect.Panel", m.dock.Panel())
+	}
+}
+
+// ── Auth dependency propagation into panels ──────────────────────────
+
+// TestOpenConnectForwardsAuthAndBrowser: the connect wizard must receive the
+// model's resolver and browser opener, or a sign-in launched from the TUI
+// would use the production keychain/browser.
+func TestOpenConnectForwardsAuthAndBrowser(t *testing.T) {
+	auth := newMemAuth()
+	var opened []string
+	m := newTestModel(t)
+	m.auth = auth
+	m.openBrowser = func(u string) error { opened = append(opened, u); return nil }
+
+	m.openConnect("")
+	if m.connectModel == nil {
+		t.Fatal("openConnect did not build a panel")
+	}
+	if m.connectModel.AuthResolver() != provider.AuthResolver(auth) {
+		t.Fatal("connect panel did not receive the model's auth resolver")
+	}
+	if m.connectModel.OpenBrowserFn() == nil {
+		t.Fatal("connect panel did not receive a browser opener")
+	}
+	_ = opened
+}
+
+// TestOpenModelsForwardsAuth: the /models panel is built through a separate
+// call site, so it needs the same coverage.
+func TestOpenModelsForwardsAuth(t *testing.T) {
+	auth := newMemAuth()
+	m := newTestModel(t)
+	m.auth = auth
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"ollama": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+	}
+
+	_ = m.openModels()
+
+	if m.connectModel == nil {
+		t.Fatal("openModels did not build a panel")
+	}
+	if m.connectModel.AuthResolver() != provider.AuthResolver(auth) {
+		t.Fatal("models panel did not receive the model's auth resolver")
+	}
+}
+
+// TestOpenSettingsBrowserForwardsAuth: the settings browser probes providers,
+// so it must receive the model's resolver too.
+func TestOpenSettingsBrowserForwardsAuth(t *testing.T) {
+	auth := newMemAuth()
+	m := newTestModel(t)
+	m.auth = auth
+
+	m.openSettingsBrowser("")
+
+	browser, ok := m.dock.Panel().(*settings.BrowserPanel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want *settings.BrowserPanel", m.dock.Panel())
+	}
+	if browser.AuthResolver() != provider.AuthResolver(auth) {
+		t.Fatal("settings browser did not receive the model's auth resolver")
+	}
+}
+
+// TestProbeProvidersUsesInjectedResolver: the model's own discovery probe must
+// build the provider through the injected resolver.
+func TestProbeProvidersUsesInjectedResolver(t *testing.T) {
+	auth := newMemAuth()
+	auth.storeErr = errors.New("injected store failure")
+	m := newTestModel(t)
+	m.auth = auth
+	m.state.Config.Privacy.RemoteProvidersAllowed = true
+	m.state.Config.Providers = map[string]config.ProviderConfig{
+		"codex": {Type: "openai_codex", Template: "openai-codex", BaseURL: "https://chatgpt.com/backend-api", Auth: "oauth"},
+	}
+
+	cmd := m.probeProviders([]string{"codex"})
+	if cmd == nil {
+		t.Fatal("expected a probe command")
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		if len(batch) != 1 {
+			t.Fatalf("batch size = %d, want 1", len(batch))
+		}
+		msg = batch[0]()
+	}
+	res, ok := msg.(probe.ResultMsg)
+	if !ok {
+		t.Fatalf("probe produced %T, want probe.ResultMsg", msg)
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "injected store failure") {
+		t.Fatalf("err = %v, want the injected resolver failure", res.Err)
+	}
+	if len(auth.engines) != 1 {
+		t.Fatalf("engine requests = %v, want the injected resolver to be the only source", auth.engines)
 	}
 }
 

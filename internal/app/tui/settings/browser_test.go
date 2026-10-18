@@ -1,6 +1,8 @@
 package settings
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,9 +14,13 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/presetflow"
+	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/credentials"
+	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/oauth"
 )
 
 // stripANSI removes ANSI escape sequences from text so test assertions
@@ -829,4 +835,184 @@ func TestBrowserTwoColumnShowsDescInDetailPaneWhileDrilled(t *testing.T) {
 		}
 	}
 	t.Fatalf("expected desc beside the cursor row in two-column drill, got:\n%s", out)
+}
+
+// ── Auth dependency propagation ──────────────────────────────────────
+//
+// A settings probe must use the credential/OAuth dependency the panel was
+// built with. Otherwise a probe from an isolated app (tests, an embedded
+// runtime) would silently reach the developer's real keychain.
+
+// memAuth is a test AuthResolver. It records every engine request so a test
+// can prove which dependency a probe used.
+type memAuth struct {
+	store   *credentials.MemStore
+	engines []string
+	// engineErr, when set, fails CodexOAuthEngine — standing in for an OS
+	// keychain that cannot be opened.
+	engineErr error
+}
+
+func newMemAuth() *memAuth { return &memAuth{store: credentials.NewMemStore()} }
+
+func (a *memAuth) OpenStore(string) (credentials.Store, error) {
+	if a.store == nil {
+		return nil, credentials.ErrKeyringUnavailable
+	}
+	return a.store, nil
+}
+
+func (a *memAuth) CodexOAuthEngine(name string) (*oauth.Engine, error) {
+	a.engines = append(a.engines, name)
+	if a.engineErr != nil {
+		return nil, a.engineErr
+	}
+	return provider.NewCodexOAuthEngineWithStore(name, a.store)
+}
+
+// probeCmdResult executes cmd and returns the probe result it produced,
+// unwrapping the tea.Batch the frame helpers may wrap it in.
+func probeCmdResult(t *testing.T, cmd tea.Cmd) probe.ResultMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected a probe command")
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		if len(batch) != 1 {
+			t.Fatalf("batch size = %d, want 1", len(batch))
+		}
+		msg = batch[0]()
+	}
+	res, ok := msg.(probe.ResultMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want probe.ResultMsg", msg)
+	}
+	return res
+}
+
+// TestBrowserAuthResolverReachesFrameProbes pins step 4: a probe launched from
+// a settings frame must build its provider through the panel's resolver, not
+// the process-wide one.
+func TestBrowserAuthResolverReachesFrameProbes(t *testing.T) {
+	auth := newMemAuth()
+	auth.engineErr = fmt.Errorf("injected: %w", credentials.ErrKeyringUnavailable)
+
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"codex": {
+			Type:     "openai_codex",
+			Template: "openai-codex",
+			BaseURL:  "https://chatgpt.com/backend-api",
+			Auth:     "oauth",
+		},
+	}
+	b := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithAuthResolver(auth))
+	if b.reg.st.auth != provider.AuthResolver(auth) {
+		t.Fatal("WithAuthResolver must be retained on the browser's state")
+	}
+
+	res := probeCmdResult(t, b.reg.st.probeCmd("test.connection", "codex", cfg.Providers["codex"]))
+	if res.Err == nil {
+		t.Fatal("the injected resolver failure must reach the probe result")
+	}
+	if !errors.Is(res.Err, credentials.ErrKeyringUnavailable) {
+		t.Fatalf("err = %v, want the injected keychain failure", res.Err)
+	}
+	if len(auth.engines) != 1 || auth.engines[0] != "codex" {
+		t.Fatalf("engine requests = %v, want one for codex", auth.engines)
+	}
+}
+
+// TestProbeAllProvidersUsesInjectedResolver: the profiles frame's bulk probe
+// goes through the same state, so the injected dependency must cover it too.
+func TestProbeAllProvidersUsesInjectedResolver(t *testing.T) {
+	auth := newMemAuth()
+	auth.engineErr = fmt.Errorf("injected: %w", credentials.ErrKeyringUnavailable)
+
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"codex": {Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api"},
+	}
+	s := newState(cfg)
+	s.SetDataDir(t.TempDir())
+	s.auth = auth
+
+	probeAllProviders(s, false)
+
+	cmd := s.takePendingCmd()
+	if cmd == nil {
+		t.Fatal("expected a queued probe command")
+	}
+	// Executing the probe is what constructs the provider; only then can the
+	// resolver's engine be observed.
+	res := probeCmdResult(t, cmd)
+	if res.Err == nil {
+		t.Fatal("the injected resolver failure must reach the probe result")
+	}
+	if !errors.Is(res.Err, credentials.ErrKeyringUnavailable) {
+		t.Fatalf("err = %v, want the injected keychain failure", res.Err)
+	}
+	if len(auth.engines) != 1 {
+		t.Fatalf("engine requests = %v, want the profile probe to use the injected resolver", auth.engines)
+	}
+}
+
+// TestProbeProviderForUsesInjectedResolver covers the capability-probe path
+// (startConfirm): the client built through an isolated resolver must stay
+// usable for capability probing, and must not ask for an OAuth engine it does
+// not need.
+func TestProbeProviderForUsesInjectedResolver(t *testing.T) {
+	auth := newMemAuth()
+	pc := config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434"}
+
+	prov, err := probeProviderFor("ollama", pc, t.TempDir(), 0, auth)
+	if err != nil {
+		t.Fatalf("probeProviderFor: %v", err)
+	}
+	if _, ok := prov.(provider.CapabilityProber); !ok {
+		t.Fatalf("provider = %T, want a CapabilityProber", prov)
+	}
+	if len(auth.engines) != 0 {
+		t.Fatalf("a non-codex provider must not ask for an OAuth engine, got %v", auth.engines)
+	}
+}
+
+// TestProbeProviderForNilResolverFailsClosed: without a resolver the provider
+// build must error rather than selecting the production keychain.
+func TestProbeProviderForNilResolverFailsClosed(t *testing.T) {
+	pc := config.ProviderConfig{Type: "openai_codex", BaseURL: "https://chatgpt.com/backend-api"}
+	if _, err := probeProviderFor("codex", pc, "", 0, nil); err == nil {
+		t.Fatal("a nil resolver must fail the build, not fall back to the real keychain")
+	}
+}
+
+// TestRebuiltBrowserRetainsAuthResolver: refreshOpenSettingsBrowser replaces
+// the whole BrowserPanel, so the replacement must be built with the same
+// resolver — otherwise a probe after /set would bypass an isolated dependency.
+func TestRebuiltBrowserRetainsAuthResolver(t *testing.T) {
+	auth := newMemAuth()
+	cfg := config.Default()
+	first := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), "", WithAuthResolver(auth))
+
+	// Stand in for the model's refresh: rebuild the panel the way the model
+	// does, then confirm the dependency survived.
+	second := NewBrowser(cfg, filepath.Join(t.TempDir(), "config.toml"), first.FilterValue(), WithAuthResolver(auth))
+	if second.reg.st.auth != first.reg.st.auth {
+		t.Fatal("a rebuilt browser must carry the same auth dependency")
+	}
+	if second.reg.st.auth != provider.AuthResolver(auth) {
+		t.Fatal("a rebuilt browser must carry the injected resolver, not the production adapter")
+	}
+}
+
+// TestNewBrowserDefaultsToProductionResolver: a panel built without the option
+// keeps the pre-existing production behavior instead of a nil dependency.
+func TestNewBrowserDefaultsToProductionResolver(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	if b.reg.st.auth == nil {
+		t.Fatal("a browser built without an injected resolver must select the production adapter")
+	}
 }

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unsafe"
@@ -29,10 +30,12 @@ import (
 	"marshal/internal/app/tui"
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
+	"marshal/internal/credentials"
 	"marshal/internal/db"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/limits"
+	"marshal/internal/llm/provider/oauthworker"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/lsp"
@@ -1454,22 +1457,19 @@ func TestRunReturnsInjectedConfigLoadError(t *testing.T) {
 }
 
 func TestRunCreatesDatabase(t *testing.T) {
+	// Explicit fixtures: a test-owned working directory carrying its own
+	// project config, plus a test-owned home. The test asserts database
+	// creation, not config loading, so it must never reach the developer's
+	// real config or data directories. No provider is configured, so
+	// startup constructs neither a provider nor an OAuth refresh worker.
 	dir := t.TempDir()
+	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
 		t.Fatalf("mkdir .marshal: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".marshal", "config.toml"), []byte("[project]\nname = \"test\"\n"), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(origWd)
 
 	runnerCalled := false
 	runner := func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
@@ -1480,9 +1480,10 @@ func TestRunCreatesDatabase(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = Run(ctx, bytes.NewBuffer(nil), WithNow(func() time.Time {
+	err := Run(ctx, bytes.NewBuffer(nil), WithNow(func() time.Time {
 		return time.Unix(1000, 0)
-	}), WithProgramRunner(runner), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	}), WithWorkingDir(dir), WithHomeDir(home),
+		WithProgramRunner(runner), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1501,7 +1502,11 @@ func TestRunCreatesDatabase(t *testing.T) {
 // alt-screen: the logger must write to .marshal/marshal.log, never to the
 // stdout/stderr writers the TUI paints to.
 func TestRunLogsToFileNotTerminal(t *testing.T) {
+	// Explicit fixtures: test-owned working directory and home. Logging goes
+	// to <working dir>/.marshal/marshal.log, so the assertion does not need —
+	// and must not touch — the developer's real config or data directories.
 	dir := t.TempDir()
+	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".marshal"), 0755); err != nil {
 		t.Fatalf("mkdir .marshal: %v", err)
 	}
@@ -1509,26 +1514,18 @@ func TestRunLogsToFileNotTerminal(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 
-	origWd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer os.Chdir(origWd)
-
 	stdout := bytes.NewBuffer(nil)
 	stderr := bytes.NewBuffer(nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err = Run(ctx, stdout, WithNow(func() time.Time {
+	err := Run(ctx, stdout, WithNow(func() time.Time {
 		return time.Unix(1000, 0)
-	}), WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
-		return ProgramResult{}
-	}), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
+	}), WithWorkingDir(dir), WithHomeDir(home),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			return ProgramResult{}
+		}), WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}))
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -1544,6 +1541,126 @@ func TestRunLogsToFileNotTerminal(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "marshal started") {
 		t.Fatalf("expected startup log in %s, got %q", logPath, string(data))
+	}
+}
+
+// TestLoaderIsolationIgnoresAmbientUserConfig is the loader-level regression
+// for the isolation contract. The package runs with HOME pointed at a
+// temporary directory (internal/testenv.Run), so a synthetic "developer"
+// config planted at the process-default user path is exactly what an
+// unisolated load would have picked up.
+//
+// The ambient fixture is deliberately credential-shaped — an OAuth Codex
+// provider and an OAuth MCP server with non-routable endpoints — and the
+// control load proves an unisolated load would have merged them. Loading
+// configuration never constructs a provider or opens a credential store
+// (internal/app/config does not depend on either package), so this test
+// stays off the real keychain even if the isolation it asserts were broken.
+func TestLoaderIsolationIgnoresAmbientUserConfig(t *testing.T) {
+	const ambientUserConfig = `[project]
+name = "ambient-project"
+
+[providers.ambient-codex]
+type = "openai_codex"
+base_url = "https://example.invalid/backend-api"
+auth = "oauth"
+
+[mcp.servers.ambient-mcp]
+url = "https://example.invalid/mcp"
+type = "http"
+auth = "oauth"
+`
+
+	const fixtureUserConfig = `[project]
+name = "fixture-project"
+
+[commands]
+test = "fixture-test-cmd"
+`
+
+	// The premise of the regression: the process-default config location is
+	// the isolated temporary home, not a developer override.
+	for _, key := range []string{"MARSHAL_CONFIG_DIR", "MARSHAL_DATA_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
+		if got := os.Getenv(key); got != "" {
+			t.Fatalf("%s = %q, want the isolated empty value", key, got)
+		}
+	}
+	processHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	// Safety guard: the ambient fixture may only be planted in a test-owned
+	// home. If the package isolation (internal/testenv.Run in main_test.go)
+	// is ever dropped, the process-default home is the developer's real home
+	// and this test must fail rather than overwrite their user config.
+	if !strings.HasPrefix(processHome, os.TempDir()) {
+		t.Fatalf("process home %q is not a test-owned temporary directory; refusing to plant an ambient config there", processHome)
+	}
+
+	ambientPath := config.UserConfigPath(processHome)
+	if err := os.MkdirAll(filepath.Dir(ambientPath), 0o755); err != nil {
+		t.Fatalf("mkdir ambient config dir: %v", err)
+	}
+	priorAmbient, priorErr := os.ReadFile(ambientPath)
+	if err := os.WriteFile(ambientPath, []byte(ambientUserConfig), 0o644); err != nil {
+		t.Fatalf("write ambient config: %v", err)
+	}
+	t.Cleanup(func() {
+		// Restore whatever was at the process-default path so the synthetic
+		// ambient config cannot leak into other tests in this package.
+		if priorErr == nil {
+			_ = os.WriteFile(ambientPath, priorAmbient, 0o644)
+			return
+		}
+		_ = os.Remove(ambientPath)
+	})
+
+	// Control: a load that resolves the process-default home sees the
+	// ambient fixture. Without this the regression would be vacuous.
+	control, err := config.Load(config.LoadOptions{HomeDir: processHome, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load ambient config: %v", err)
+	}
+	if got := control.Providers["ambient-codex"].Auth; got != "oauth" {
+		t.Fatalf("control load did not see the ambient OAuth provider: providers=%+v", control.Providers)
+	}
+	if got := control.MCP.Servers["ambient-mcp"].Auth; got != "oauth" {
+		t.Fatalf("control load did not see the ambient OAuth MCP server: servers=%+v", control.MCP.Servers)
+	}
+
+	// Injected fixtures: a separate home and working directory. Only their
+	// own layer may contribute.
+	fixtureHome := t.TempDir()
+	fixtureWork := t.TempDir()
+	fixturePath := config.UserConfigPath(fixtureHome)
+	if err := os.MkdirAll(filepath.Dir(fixturePath), 0o755); err != nil {
+		t.Fatalf("mkdir fixture config dir: %v", err)
+	}
+	if err := os.WriteFile(fixturePath, []byte(fixtureUserConfig), 0o644); err != nil {
+		t.Fatalf("write fixture config: %v", err)
+	}
+
+	cfg, err := config.Load(config.LoadOptions{HomeDir: fixtureHome, WorkingDir: fixtureWork})
+	if err != nil {
+		t.Fatalf("load fixture config: %v", err)
+	}
+	if cfg.Project.Name != "fixture-project" {
+		t.Errorf("Project.Name = %q, want the fixture value", cfg.Project.Name)
+	}
+	if cfg.Commands.Test != "fixture-test-cmd" {
+		t.Errorf("Commands.Test = %q, want the fixture value", cfg.Commands.Test)
+	}
+	if _, ok := cfg.Providers["ambient-codex"]; ok {
+		t.Errorf("injected load inherited the ambient provider: %+v", cfg.Providers)
+	}
+	if _, ok := cfg.MCP.Servers["ambient-mcp"]; ok {
+		t.Errorf("injected load inherited the ambient MCP server: %+v", cfg.MCP.Servers)
+	}
+	if len(cfg.Providers) != 0 {
+		t.Errorf("injected load Providers = %+v, want none declared by the fixture", cfg.Providers)
+	}
+	if len(cfg.MCP.Servers) != 0 {
+		t.Errorf("injected load MCP servers = %+v, want none declared by the fixture", cfg.MCP.Servers)
 	}
 }
 
@@ -5040,5 +5157,640 @@ reviewer = "mock/m"
 	}
 	if _, ok := rt.Runner.Registry.Lookup("agent.steer"); !ok {
 		t.Error("agent.steer must be registered")
+	}
+}
+
+// ── Task 5: auth-resolver threading ───────────────────────────────────
+
+// countingAuthResolver is the isolation boundary for app-level fixtures that
+// are NOT about credentials. Every entry point records the call and then
+// refuses, so a test that unexpectedly reaches a credential path fails with
+// the operation named rather than opening the developer's OS keychain. Its
+// store/engine fields let an auth fixture script real in-memory answers.
+type countingAuthResolver struct {
+	mu         sync.Mutex
+	storeOpens []string
+	engines    []string
+	store      credentials.Store
+	engine     *oauth.Engine
+	storeErr   error
+	engineErr  error
+}
+
+var _ provider.AuthResolver = (*countingAuthResolver)(nil)
+
+func (r *countingAuthResolver) OpenStore(service string) (credentials.Store, error) {
+	r.mu.Lock()
+	r.storeOpens = append(r.storeOpens, service)
+	store, err := r.store, r.storeErr
+	r.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if store == nil {
+		return nil, errors.New("counting auth resolver: no credential store is scripted for this fixture")
+	}
+	return store, nil
+}
+
+func (r *countingAuthResolver) CodexOAuthEngine(name string) (*oauth.Engine, error) {
+	r.mu.Lock()
+	r.engines = append(r.engines, name)
+	engine, err := r.engine, r.engineErr
+	r.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if engine == nil {
+		return nil, errors.New("counting auth resolver: no codex engine is scripted for this fixture")
+	}
+	return engine, nil
+}
+
+func (r *countingAuthResolver) openedStores() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.storeOpens...)
+}
+
+func (r *countingAuthResolver) enginesRequested() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.engines...)
+}
+
+// memoryAuthResolver builds a real resolver over a private in-memory store.
+// This is the shape an auth fixture uses: the engine and token store are real
+// objects with real behavior, but nothing can reach the OS keychain, and the
+// resolver's own cache keeps two runtimes' tokens apart.
+func memoryAuthResolver(t *testing.T) (provider.AuthResolver, *credentials.MemStore) {
+	t.Helper()
+	store := credentials.NewMemStore()
+	resolver, err := provider.NewAuthResolver(func(service string) (credentials.Store, error) {
+		return store, nil
+	})
+	if err != nil {
+		t.Fatalf("NewAuthResolver: %v", err)
+	}
+	return resolver, store
+}
+
+// codexOAuthProviderConfig is a single openai_codex provider whose refresh
+// worker and provider both draw from the runtime's selected resolver.
+func codexOAuthProviderConfig(name, baseURL string) config.Config {
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		name: {
+			Type:    "openai_codex",
+			BaseURL: baseURL,
+			Auth:    "oauth",
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"coder": {
+			Name:      "coder",
+			Provider:  name,
+			Model:     "gpt-5.6-luna",
+			LocalOnly: false,
+		},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		cfg.Profile.Default: {
+			Name: cfg.Profile.Default,
+			Roles: map[routing.AgentRole]routing.RoleBinding{
+				routing.RoleImplementer: {Preset: "coder"},
+				routing.RolePlanner:     {Preset: "coder"},
+				routing.RoleRepoScout:   {Preset: "coder"},
+				routing.RoleTester:      {Preset: "coder"},
+				routing.RoleReviewer:    {Preset: "coder"},
+			},
+		},
+	}
+	return cfg
+}
+
+// TestWithAuthResolverRejectsExplicitNil pins the omitted-vs-injected
+// distinction: an omitted option selects the production default, an explicitly
+// nil resolver is a caller bug and must fail rather than silently pointing an
+// isolated runtime at the real keychain.
+func TestWithAuthResolverRejectsExplicitNil(t *testing.T) {
+	// Omitted: the production adapter. It is not exercised here — only its
+	// type is asserted, so no keychain is opened.
+	omitted := options{}
+	got, err := resolveAuthResolver(omitted)
+	if err != nil {
+		t.Fatalf("resolveAuthResolver with no option: %v", err)
+	}
+	if got == nil {
+		t.Fatal("an omitted resolver must select the production default, not nil")
+	}
+	if got != provider.AuthResolver(provider.DefaultAuthResolver()) {
+		t.Fatalf("omitted resolver = %T, want provider.DefaultAuthResolver()", got)
+	}
+
+	// Explicitly nil injection: rejected.
+	explicit := options{}
+	WithAuthResolver(nil)(&explicit)
+	if _, err := resolveAuthResolver(explicit); !errors.Is(err, ErrAuthResolverRequired) {
+		t.Fatalf("resolveAuthResolver with an explicit nil = %v, want ErrAuthResolverRequired", err)
+	}
+
+	// StartRuntime must surface the same rejection.
+	if _, err := StartRuntime(context.Background(), WithWorkingDir(t.TempDir()), WithHomeDir(t.TempDir()), WithAuthResolver(nil)); !errors.Is(err, ErrAuthResolverRequired) {
+		t.Fatalf("StartRuntime with an explicit nil resolver = %v, want ErrAuthResolverRequired", err)
+	}
+
+	// An injected resolver is carried through unchanged.
+	injected := &countingAuthResolver{}
+	opts := options{}
+	WithAuthResolver(injected)(&opts)
+	got, err = resolveAuthResolver(opts)
+	if err != nil {
+		t.Fatalf("resolveAuthResolver with an injected resolver: %v", err)
+	}
+	if got != provider.AuthResolver(injected) {
+		t.Fatalf("injected resolver = %T, want the injected value", got)
+	}
+}
+
+// TestRunPassesAuthResolverToTUI closes the one fail-open seam in the
+// isolation design. The app builders refuse an omitted resolver, but the
+// TUI's own constructors substitute provider.DefaultAuthResolver() when no
+// option supplies one — so app.Run's WithAuthResolver wiring is the single
+// place where an isolated runtime could silently regain the real OS keychain,
+// and nothing else in the suite would notice if it were dropped.
+func TestRunPassesAuthResolverToTUI(t *testing.T) {
+	auth := &countingAuthResolver{}
+	var got provider.AuthResolver
+	err := Run(context.Background(), bytes.NewBuffer(nil),
+		WithNow(func() time.Time { return time.Unix(100, 0) }),
+		WithWorkingDir(t.TempDir()),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithAuthResolver(auth),
+		WithProgramRunner(func(ctx context.Context, model tea.Model, output io.Writer) ProgramResult {
+			got = model.(tui.Model).AuthResolver()
+			return ProgramResult{}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("the TUI model carries no auth resolver")
+	}
+	if got != provider.AuthResolver(auth) {
+		t.Fatalf("TUI auth resolver = %T, want the runtime's injected resolver", got)
+	}
+	// The wiring must not itself reach a credential path: this fixture
+	// configures no provider, so a correct startup asks for neither a store
+	// nor an engine.
+	if opens := auth.openedStores(); len(opens) != 0 {
+		t.Fatalf("resolver OpenStore calls = %v, want none for a provider-less startup", opens)
+	}
+	if engines := auth.enginesRequested(); len(engines) != 0 {
+		t.Fatalf("resolver CodexOAuthEngine calls = %v, want none for a provider-less startup", engines)
+	}
+}
+
+// TestStartRuntimeRetainsAuthResolverWithoutProvider covers the
+// inactive-provider startup path: a project with no configured provider still
+// gets a Runtime carrying the selected resolver, so a later /connect or config
+// reload cannot fall back to the production default.
+func TestStartRuntimeRetainsAuthResolverWithoutProvider(t *testing.T) {
+	auth := &countingAuthResolver{}
+	rt, err := StartRuntime(context.Background(),
+		WithWorkingDir(t.TempDir()),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) {
+			return config.Default(), nil
+		}),
+		WithAuthResolver(auth),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+
+	if rt.Runner != nil {
+		t.Fatal("no provider is configured; the runner should not have been built")
+	}
+	if rt.AuthResolver == nil {
+		t.Fatal("Runtime.AuthResolver is nil after an injected startup with no provider")
+	}
+	if rt.AuthResolver != provider.AuthResolver(auth) {
+		t.Fatal("Runtime.AuthResolver is not the injected resolver")
+	}
+	if opens := auth.openedStores(); len(opens) != 0 {
+		t.Fatalf("resolver OpenStore calls = %v, want none for a provider-less startup", opens)
+	}
+	if engines := auth.enginesRequested(); len(engines) != 0 {
+		t.Fatalf("resolver CodexOAuthEngine calls = %v, want none for a provider-less startup", engines)
+	}
+}
+
+// TestRuntimeCarriesAuthResolverThroughReloadNewAndResume walks the whole
+// lifecycle with a resolver that fails every entry point: startup, config
+// reload, /session new and a resumed session must all keep the injected
+// resolver, and none of them may reach a credential path this fixture did not
+// script. The provider here is a plain openai_compatible endpoint, so a
+// correctly isolated runtime never asks for an engine or a store at all.
+func TestRuntimeCarriesAuthResolverThroughReloadNewAndResume(t *testing.T) {
+	ctx := context.Background()
+	auth := &countingAuthResolver{}
+	home := t.TempDir()
+
+	initCfg := reloadableAgentConfig("lifecycle-provider")
+	reloadCfg := reloadableAgentConfig("lifecycle-provider")
+	reloadCfg.Privacy.RemoteProvidersAllowed = true
+
+	work := t.TempDir()
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(work),
+		WithHomeDir(home),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return initCfg, nil }),
+		WithAuthResolver(auth),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(ctx)
+
+	if rt.AuthResolver != provider.AuthResolver(auth) {
+		t.Fatal("startup did not retain the injected resolver")
+	}
+
+	if err := reloadAgentRuntime(ctx, reloadCfg, rt); err != nil {
+		t.Fatalf("reloadAgentRuntime: %v", err)
+	}
+	if rt.AuthResolver != provider.AuthResolver(auth) {
+		t.Fatal("config reload replaced the injected resolver")
+	}
+
+	if _, _, _, _, _, _, _, err := rt.NewSession("auth-lifecycle"); err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	if rt.AuthResolver != provider.AuthResolver(auth) {
+		t.Fatal("NewSession replaced the injected resolver")
+	}
+	newSessionID := rt.SessionID
+
+	// Resumed session: a fresh runtime in existing-session mode gets the same
+	// resolver when it is injected again.
+	resumed, err := StartRuntime(ctx,
+		WithWorkingDir(work),
+		WithHomeDir(home),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return reloadCfg, nil }),
+		WithExistingSession(newSessionID),
+		WithAuthResolver(auth),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime (resumed): %v", err)
+	}
+	defer resumed.Close(ctx)
+	if resumed.AuthResolver != provider.AuthResolver(auth) {
+		t.Fatal("a resumed session did not retain the injected resolver")
+	}
+	if resumed.SessionID != newSessionID {
+		t.Fatalf("resumed session id = %q, want %q", resumed.SessionID, newSessionID)
+	}
+
+	// Nothing above declared an OAuth provider or an OAuth MCP server, so a
+	// correctly threaded runtime must never have asked this resolver for a
+	// credential.
+	if opens := auth.openedStores(); len(opens) != 0 {
+		t.Fatalf("resolver OpenStore calls = %v, want none for non-credential fixtures", opens)
+	}
+	if engines := auth.enginesRequested(); len(engines) != 0 {
+		t.Fatalf("resolver CodexOAuthEngine calls = %v, want none for non-credential fixtures", engines)
+	}
+}
+
+// TestFailedRebuildKeepsAuthResolver pins the failure path: a reload whose
+// dry-run build fails must leave the runtime's resolver (and its provider
+// wiring) untouched, so the recovery path through /connect cannot inherit a
+// different credential backend.
+func TestFailedRebuildKeepsAuthResolver(t *testing.T) {
+	ctx := context.Background()
+	auth := &countingAuthResolver{}
+
+	initial := reloadableAgentConfig("good-provider")
+	state := session.New(initial, t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	runner, reg, swarmRunner, _, _, jobMgr, _, _, _, pipelineFactory, _, _, err := buildAgentRunner(ctx, initial, state, nil, 0, nil, "", nil, nil, nil, "", auth)
+	if err != nil {
+		t.Fatalf("buildAgentRunner initial: %v", err)
+	}
+
+	rt := &Runtime{
+		Runner:          runner,
+		ToolRegistry:    reg,
+		SwarmRunner:     swarmRunner,
+		PipelineFactory: pipelineFactory,
+		JobManager:      jobMgr,
+		State:           state,
+		workCtx:         ctx,
+		AuthResolver:    auth,
+	}
+	oldRunner := rt.Runner
+
+	// A config that cannot build: the preset names a provider that is not
+	// configured, so Resolve fails before any credential is touched.
+	bad := config.Default()
+	bad.Privacy.RemoteProvidersAllowed = true
+	bad.Profile.Default = "p"
+	bad.Models.Presets = map[string]routing.ModelPreset{
+		"missing/m": {Provider: "missing", Model: "m", LocalOnly: true},
+	}
+	bad.AgentProfiles = map[string]routing.AgentProfile{
+		"p": {Name: "p", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "missing/m"},
+		}},
+	}
+
+	if err := reloadAgentRuntime(ctx, bad, rt); err == nil {
+		t.Fatal("expected the reload to fail")
+	}
+	if rt.Runner != oldRunner {
+		t.Fatal("a failed reload replaced the runner")
+	}
+	if rt.AuthResolver != provider.AuthResolver(auth) {
+		t.Fatal("a failed reload replaced the auth resolver")
+	}
+	if opens := auth.openedStores(); len(opens) != 0 {
+		t.Fatalf("resolver OpenStore calls = %v, want none", opens)
+	}
+	if engines := auth.enginesRequested(); len(engines) != 0 {
+		t.Fatalf("resolver CodexOAuthEngine calls = %v, want none", engines)
+	}
+}
+
+// TestInactiveRouteRecoveryKeepsAuthResolver covers the recovery path: a
+// runtime that started with no usable provider (inactive route) adopts a
+// rebuilt runner on reload, and that rebuild must use the runtime's injected
+// resolver rather than the production default.
+func TestInactiveRouteRecoveryKeepsAuthResolver(t *testing.T) {
+	ctx := context.Background()
+	auth := &countingAuthResolver{}
+	home := t.TempDir()
+	work := t.TempDir()
+
+	// Startup with an empty config: no provider, inactive route.
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(work),
+		WithHomeDir(home),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return config.Default(), nil }),
+		WithAuthResolver(auth),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(ctx)
+	if rt.Runner != nil {
+		t.Fatal("test premise broken: startup built a runner without a provider")
+	}
+
+	// Recover with a configured (non-OAuth) provider.
+	if err := reloadAgentRuntime(ctx, reloadableAgentConfig("recovered-provider"), rt); err != nil {
+		t.Fatalf("recovery reload: %v", err)
+	}
+	if rt.Runner == nil {
+		t.Fatal("recovery reload did not adopt a runner")
+	}
+	if rt.AuthResolver != provider.AuthResolver(auth) {
+		t.Fatal("recovery reload replaced the injected resolver")
+	}
+
+	// The recovered provider is openai_compatible: no credential was needed.
+	if opens := auth.openedStores(); len(opens) != 0 {
+		t.Fatalf("resolver OpenStore calls = %v, want none", opens)
+	}
+	if engines := auth.enginesRequested(); len(engines) != 0 {
+		t.Fatalf("resolver CodexOAuthEngine calls = %v, want none", engines)
+	}
+}
+
+// TestParallelRuntimesKeepTokensPrivate is the two-runtimes regression: two
+// runtimes in the same process configuring the SAME provider name must not
+// observe each other's tokens or engines. Each runtime gets its own resolver
+// over its own in-memory store, and each provider is asked (through the
+// engine the resolver handed it) for the token only that runtime stored.
+func TestParallelRuntimesKeepTokensPrivate(t *testing.T) {
+	ctx := context.Background()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The catalog endpoint is never reached in this fixture: the engine
+		// fails its read first. Answer defensively anyway.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	defer server.Close()
+
+	const providerName = "shared-name-codex"
+
+	buildRuntime := func(t *testing.T, token string) (*Runtime, *credentials.MemStore) {
+		t.Helper()
+		resolver, store := memoryAuthResolver(t)
+		seedCodexToken(t, store, providerName, token)
+		cfg := codexOAuthProviderConfig(providerName, server.URL)
+		rt, err := StartRuntime(ctx,
+			WithWorkingDir(t.TempDir()),
+			WithHomeDir(t.TempDir()),
+			WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+			WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return cfg, nil }),
+			WithAuthResolver(resolver),
+		)
+		if err != nil {
+			t.Fatalf("StartRuntime: %v", err)
+		}
+		return rt, store
+	}
+
+	rtA, storeA := buildRuntime(t, "token-runtime-a")
+	defer rtA.Close(ctx)
+	rtB, storeB := buildRuntime(t, "token-runtime-b")
+	defer rtB.Close(ctx)
+
+	if storeA == storeB {
+		t.Fatal("test premise broken: both runtimes share one store")
+	}
+	if rtA.AuthResolver == rtB.AuthResolver {
+		t.Fatal("two runtimes with the same provider name share one resolver")
+	}
+
+	// Each runtime's provider must be built over its own runtime's resolver:
+	// reading through the engine that resolver caches yields only that
+	// runtime's token.
+	assertRuntimeToken(t, rtA, providerName, "token-runtime-a")
+	assertRuntimeToken(t, rtB, providerName, "token-runtime-b")
+
+	// And the synthetic tokens must never have been written to the other
+	// runtime's store.
+	if raw, err := storeB.Get("marshal:provider:" + providerName); err != nil {
+		t.Fatalf("runtime B store read: %v", err)
+	} else if strings.Contains(string(raw), "token-runtime-a") {
+		t.Fatal("runtime A's token appeared in runtime B's store")
+	}
+	if raw, err := storeA.Get("marshal:provider:" + providerName); err != nil {
+		t.Fatalf("runtime A store read: %v", err)
+	} else if strings.Contains(string(raw), "token-runtime-b") {
+		t.Fatal("runtime B's token appeared in runtime A's store")
+	}
+
+	// The provider's engine and the worker's engine must be the same object:
+	// that identity is what serializes an inline refresh against a proactive
+	// one on a single mutex.
+	assertProviderWorkerShareEngine(t, rtA, providerName)
+}
+
+// assertRuntimeToken reads the token the runtime's own resolver hands out for
+// provider name and asserts it equals want. It goes through the resolver, not
+// the provider, so the assertion covers the dependency the runtime actually
+// selected (the provider holds the very engine the resolver caches).
+func assertRuntimeToken(t *testing.T, rt *Runtime, name, want string) {
+	t.Helper()
+	engine, err := rt.AuthResolver.CodexOAuthEngine(name)
+	if err != nil {
+		t.Fatalf("resolver CodexOAuthEngine(%q): %v", name, err)
+	}
+	got, err := engine.TokenSource(context.Background())
+	if err != nil {
+		t.Fatalf("TokenSource(%q): %v", name, err)
+	}
+	if got != want {
+		t.Fatalf("runtime token = %q, want %q", got, want)
+	}
+}
+
+// assertProviderWorkerShareEngine proves the provider and its refresh worker
+// hold the exact same *oauth.Engine. Only one worker is built per OAuth
+// provider, so identity is the whole assertion: two engines would mean two
+// mutexes and two racing refreshes.
+func assertProviderWorkerShareEngine(t *testing.T, rt *Runtime, name string) {
+	t.Helper()
+	workers := buildOAuthWorkers(rt.Config, rt.Logger, rt.AuthResolver)
+	var worker *oauthworker.Worker
+	for _, w := range workers {
+		if ow, ok := w.(*oauthworker.Worker); ok && ow.Provider == name {
+			worker = ow
+			break
+		}
+	}
+	if worker == nil {
+		t.Fatalf("no refresh worker was built for provider %q (workers=%d)", name, len(workers))
+	}
+
+	// The provider's engine, reached through the resolver the runtime used.
+	engine, err := rt.AuthResolver.CodexOAuthEngine(name)
+	if err != nil {
+		t.Fatalf("resolver CodexOAuthEngine(%q): %v", name, err)
+	}
+	if worker.Engine != engine {
+		t.Fatal("the provider and its refresh worker do not share one engine")
+	}
+
+	// And the provider built at startup holds that same engine: compare the
+	// token the provider's own engine yields with the worker's.
+	token, err := worker.Engine.TokenSource(context.Background())
+	if err != nil {
+		t.Fatalf("worker engine TokenSource: %v", err)
+	}
+	if token == "" {
+		t.Fatal("the shared engine yielded an empty token")
+	}
+}
+
+// seedCodexToken writes a valid, unexpired synthetic token set into store
+// under the provider-scoped key the codex engine uses.
+func seedCodexToken(t *testing.T, store credentials.Store, name, accessToken string) {
+	t.Helper()
+	raw, err := json.Marshal(oauth.StoredTokens{
+		AccessToken:  accessToken,
+		RefreshToken: "refresh-" + accessToken,
+		ExpiresAt:    time.Now().Add(time.Hour),
+		IssuedAt:     time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("marshal stored tokens: %v", err)
+	}
+	if err := store.Set("marshal:provider:"+name, raw); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+}
+
+// TestAgentRunnerPassesRuntimeOpenerToMCPManager pins step 4's MCP wiring: the
+// manager the runtime builds must reach its OAuth token store through the
+// runtime's selected resolver, not through the production credentials.New.
+//
+// A closed loopback endpoint keeps the fixture hermetic: startup opens the
+// store (which the counting resolver records and then refuses to satisfy
+// beyond its own error) before it can reach the network, so the assertion does
+// not depend on any listening service.
+func TestAgentRunnerPassesRuntimeOpenerToMCPManager(t *testing.T) {
+	ctx := context.Background()
+
+	storeErr := errors.New("injected store failure")
+	auth := &countingAuthResolver{storeErr: storeErr}
+
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Providers = map[string]config.ProviderConfig{
+		"mcp-fixture-provider": {
+			Type:    "openai_compatible",
+			BaseURL: "http://localhost:11434/v1",
+			APIKey:  "test-key",
+		},
+	}
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"coder": {Name: "coder", Provider: "mcp-fixture-provider", Model: "m", LocalOnly: true},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		cfg.Profile.Default: {Name: cfg.Profile.Default, Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "coder"},
+		}},
+	}
+	cfg.MCP.Servers = map[string]config.MCPServerConfig{
+		"oauth-remote": {
+			URL:   "https://127.0.0.1:9/mcp",
+			Type:  "http",
+			Auth:  "oauth",
+			Trust: "unrestricted",
+		},
+	}
+
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	_, _, _, mcpMgr, _, _, _, _, _, _, _, _, err := buildAgentRunner(ctx, cfg, state, nil, 0, nil, "", nil, nil, nil, "", auth)
+	if err != nil {
+		t.Fatalf("an OAuth MCP store failure must be a per-server failure, not a build failure: %v", err)
+	}
+	if mcpMgr != nil {
+		defer func() { _ = mcpMgr.Close() }()
+	}
+	// The failure must be surfaced: the runtime keeps running with a warning
+	// notice naming the server, exactly as it does for any unstartable MCP
+	// entry.
+	n, ok := state.Notice()
+	if !ok {
+		t.Fatal("the MCP failure was not surfaced as a session notice")
+	}
+	if !strings.Contains(n.Message, "oauth-remote") {
+		t.Fatalf("notice = %q, want it to name the failing server", n.Message)
+	}
+
+	// The store was requested through THIS resolver, exactly once, and the
+	// injected error was not retried against any other backend.
+	opens := auth.openedStores()
+	if len(opens) != 1 {
+		t.Fatalf("resolver OpenStore calls = %v, want exactly 1 for the one OAuth server", opens)
+	}
+	if opens[0] != "marshal" {
+		t.Fatalf("resolver OpenStore service = %q, want %q", opens[0], "marshal")
 	}
 }

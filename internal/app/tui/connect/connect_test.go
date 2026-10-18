@@ -2,7 +2,13 @@ package connect
 
 import (
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -18,9 +24,11 @@ import (
 	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/textfield"
+	"marshal/internal/credentials"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/oauth"
 	"marshal/internal/strutil"
 )
 
@@ -998,7 +1006,7 @@ func pickerPicked(value string) tea.Msg { return picker.PickedMsg{Value: value} 
 func TestPickCodexTemplateEntersOAuthLogin(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	if updated.step != stepOAuthLogin {
 		t.Fatalf("codex template should enter the OAuth login step, got %v", updated.step)
@@ -1024,7 +1032,7 @@ func TestPickCodexTemplateEntersOAuthLogin(t *testing.T) {
 func TestOAuthTemplateNeverPromptsForAPIKey(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	if updated.step == stepAPIKey {
 		t.Fatal("an OAuth template must not enter the API-key step")
@@ -1036,7 +1044,7 @@ func TestOAuthTemplateNeverPromptsForAPIKey(t *testing.T) {
 func TestOAuthDoneFailureStaysOnLoginStep(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	name := updated.providerName
 
@@ -1085,7 +1093,7 @@ func TestOAuthCopyWaitsForURL(t *testing.T) {
 func TestOAuthDoneSuccessAdvancesToProbing(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	name := updated.providerName
 
@@ -1100,7 +1108,7 @@ func TestOAuthDoneSuccessAdvancesToProbing(t *testing.T) {
 func TestOAuthDoneStaleResultIgnored(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 
 	updated, _ = updated.Update(OAuthDoneMsg{Provider: "some-other-provider"})
@@ -1115,7 +1123,7 @@ func TestOAuthDoneStaleResultIgnored(t *testing.T) {
 func TestOAuthLoginViewRendersWaitingState(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	view := updated.View(80, 24)
 	if !strings.Contains(view, "signing in") {
@@ -1129,7 +1137,7 @@ func TestOAuthLoginViewRendersWaitingState(t *testing.T) {
 func TestOAuthLoginShowsAuthorizationURL(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	m := New(Opts{Cfg: cfg, Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 
 	// Before the engine reports a URL the panel says it is opening one.
@@ -1153,10 +1161,14 @@ func TestOAuthLoginShowsAuthorizationURL(t *testing.T) {
 func TestOAuthLoginWiresBrowserOpener(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
-	m := New(Opts{Cfg: cfg})
+	auth := newMemAuth()
+	m := New(Opts{Cfg: cfg, Auth: auth, OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 
-	engine, err := provider.CodexOAuthEngine(updated.providerName)
+	// The engine must come from the injected resolver — looking it up through
+	// the process-wide constructor would both touch the real keychain and miss
+	// the instance the wizard actually wired.
+	engine, err := auth.CodexOAuthEngine(updated.providerName)
 	if err != nil {
 		t.Fatalf("CodexOAuthEngine: %v", err)
 	}
@@ -1172,8 +1184,9 @@ func TestOAuthLoginWiresBrowserOpener(t *testing.T) {
 // otherwise the wizard completes unauthenticated and only fails on the first
 // chat.
 func TestRemoteGateRoutesOAuthTemplateToLogin(t *testing.T) {
-	// Default config: remote providers disabled.
-	m := New(Opts{Cfg: config.Default()})
+	// Default config: remote providers disabled. The injected resolver keeps
+	// this from reaching the process-wide OAuth engine (and its real keychain).
+	m := New(Opts{Cfg: config.Default(), Auth: newMemAuth(), OpenBrowser: func(string) error { return nil }})
 	updated, _ := m.Update(pickerPicked("openai-codex"))
 	if updated.step != stepRemoteGate {
 		t.Fatalf("step = %v, want stepRemoteGate with remote providers disabled", updated.step)
@@ -1845,5 +1858,289 @@ func TestDoneNilConfirmDoesNotPanic(t *testing.T) {
 	msg := cmd()
 	if _, ok := msg.(DoneMsg); !ok {
 		t.Fatalf("done() cmd returned %T, want DoneMsg", msg)
+	}
+}
+
+// ── Auth/browser dependency injection ────────────────────────────────
+//
+// Every test below supplies an isolated resolver built on an in-memory
+// store and a stub browser opener, so a default `go test ./...` run opens
+// neither the developer's real OS keychain nor a real browser.
+
+// memAuth is a test AuthResolver: a private in-memory token store plus
+// whatever CodexOAuthEngine behavior the test wants (real-with-store, or a
+// failure that stands in for an unavailable keychain).
+//
+// Engines are cached per provider name, mirroring provider.scopedAuthResolver:
+// the wizard wires Open on the engine it receives, and a caller that asks
+// again must get that same engine for the wiring to be meaningful.
+type memAuth struct {
+	store *credentials.MemStore
+	// engineErr, when set, is returned instead of building an engine.
+	engineErr error
+	// engines records the provider names the wizard asked an engine for.
+	engines []string
+	cache   map[string]*oauth.Engine
+}
+
+func newMemAuth() *memAuth {
+	return &memAuth{store: credentials.NewMemStore(), cache: map[string]*oauth.Engine{}}
+}
+
+func (a *memAuth) OpenStore(string) (credentials.Store, error) {
+	if a.store == nil {
+		return nil, credentials.ErrKeyringUnavailable
+	}
+	return a.store, nil
+}
+
+func (a *memAuth) CodexOAuthEngine(name string) (*oauth.Engine, error) {
+	a.engines = append(a.engines, name)
+	if a.engineErr != nil {
+		return nil, a.engineErr
+	}
+	if a.store == nil {
+		// Return the failure explicitly. Handing a typed-nil *MemStore to the
+		// provider constructor would pass its `store == nil` check (the
+		// interface is non-nil) and produce a store that panics on first use.
+		return nil, fmt.Errorf("openai_codex: OAuth token store is required: %w", credentials.ErrKeyringUnavailable)
+	}
+	if eng, ok := a.cache[name]; ok {
+		return eng, nil
+	}
+	eng, err := provider.NewCodexOAuthEngineWithStore(name, a.store)
+	if err != nil {
+		return nil, err
+	}
+	a.cache[name] = eng
+	return eng, nil
+}
+
+// stubOpener records the URLs a login flow asked to open instead of
+// launching a real browser. The engine calls the opener from its own
+// goroutine while the test polls, so access is mutex-guarded for -race.
+type stubOpener struct {
+	mu   sync.Mutex
+	urls []string
+}
+
+func (o *stubOpener) open(url string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.urls = append(o.urls, url)
+	return nil
+}
+
+func (o *stubOpener) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.urls...)
+}
+
+// oauthTestModel returns a wizard wired to isolated auth/browser dependencies
+// and positioned on the OAuth sign-in step for a codex provider.
+func oauthTestModel(t *testing.T, auth provider.AuthResolver) (*Model, *stubOpener) {
+	t.Helper()
+	if auth == nil {
+		auth = newMemAuth()
+	}
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	opener := &stubOpener{}
+	m := New(Opts{Cfg: cfg, Auth: auth, OpenBrowser: opener.open})
+	updated, _ := m.Update(pickerPicked("openai-codex"))
+	if updated.step != stepOAuthLogin {
+		t.Fatalf("step = %v, want stepOAuthLogin", updated.step)
+	}
+	return updated, opener
+}
+
+// TestNewInjectsAuthDependency pins step 1: a supplied resolver is retained
+// by the wizard, and an omitted one selects the production adapter rather
+// than leaving the field nil (which would panic on first probe).
+func TestNewInjectsAuthDependency(t *testing.T) {
+	auth := newMemAuth()
+	m := New(Opts{Cfg: config.Default(), Auth: auth})
+	if m.auth != provider.AuthResolver(auth) {
+		t.Fatalf("auth = %v, want the injected resolver", m.auth)
+	}
+
+	plain := New(Opts{Cfg: config.Default()})
+	if plain.auth == nil {
+		t.Fatal("an omitted resolver must select the production adapter, not nil")
+	}
+	if plain.openBrowser == nil {
+		t.Fatal("an omitted browser opener must select mcpauth.OpenBrowser, not nil")
+	}
+}
+
+// TestEnterOAuthLoginUsesInjectedResolver: picking the codex template must
+// build the sign-in engine from the supplied resolver. Reaching the
+// process-wide engine instead would touch the developer's real keychain.
+func TestEnterOAuthLoginUsesInjectedResolver(t *testing.T) {
+	auth := newMemAuth()
+	m, _ := oauthTestModel(t, auth)
+	if len(auth.engines) != 1 {
+		t.Fatalf("engine requests = %v, want exactly one for the picked provider", auth.engines)
+	}
+	if auth.engines[0] != m.providerName {
+		t.Fatalf("engine requested for %q, want %q", auth.engines[0], m.providerName)
+	}
+	if m.err != "" {
+		t.Fatalf("injected resolver should succeed, got err %q", m.err)
+	}
+}
+
+// TestEnterOAuthLoginSurfacesResolverError: when the resolver cannot build an
+// engine (its store is unavailable) the failure must surface on the panel —
+// and must not fall back to the process-wide engine.
+func TestEnterOAuthLoginSurfacesResolverError(t *testing.T) {
+	auth := newMemAuth()
+	auth.engineErr = fmt.Errorf("OS keychain unavailable — OAuth tokens cannot be stored: %w", credentials.ErrKeyringUnavailable)
+	m, opener := oauthTestModel(t, auth)
+
+	if m.step != stepOAuthLogin {
+		t.Fatalf("step = %v, want stepOAuthLogin", m.step)
+	}
+	if !strings.Contains(m.err, "keychain unavailable") {
+		t.Fatalf("err = %q, want the resolver failure surfaced", m.err)
+	}
+	if len(auth.engines) != 1 {
+		t.Fatalf("engine requests = %v, want the failing resolver to be the only source", auth.engines)
+	}
+	if got := opener.snapshot(); len(got) != 0 {
+		t.Fatalf("no browser should open when the engine is unavailable, got %v", got)
+	}
+}
+
+// TestOAuthLoginWithUnavailableStoreFailsClosed: a resolver that reports an
+// unavailable store must produce an error, never a silent switch to the
+// production keychain.
+func TestOAuthLoginWithUnavailableStoreFailsClosed(t *testing.T) {
+	auth := &memAuth{store: nil} // OpenStore reports ErrKeyringUnavailable
+	m := New(Opts{Cfg: config.Default(), Auth: auth, OpenBrowser: func(string) error { return nil }})
+	m.providerName = "codex-nil-store"
+	updated, cmd := m.enterOAuthLogin()
+
+	if cmd != nil {
+		t.Fatal("no login command should start when the store is unavailable")
+	}
+	if updated.err == "" {
+		t.Fatal("a failed engine build must surface an error")
+	}
+}
+
+// TestOAuthLoginCommandRunsAgainstTestOwnedServer is the executed-command
+// test the plan asks for: the real login Cmd runs through a test-owned
+// authorization server, and the assertion is on the URL handed to the
+// injected opener — no browser, no real keychain, and no contact with
+// auth.openai.com.
+func TestOAuthLoginCommandRunsAgainstTestOwnedServer(t *testing.T) {
+	var tokenCalls int
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		tokenCalls++
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"access_token":"test-at","refresh_token":"test-rt","expires_in":3600,"token_type":"Bearer"}`)
+	}))
+	defer tokenSrv.Close()
+
+	store := credentials.NewMemStore()
+	engine := &oauth.Engine{
+		ServerURL:  "https://auth.test.invalid",
+		Store:      store,
+		Open:       nil, // oauthLogin wires it
+		StorageKey: "marshal:provider:codex-test",
+		Flow: oauth.FlowConfig{
+			Issuer:        "https://auth.test.invalid",
+			AuthorizeURL:  "https://auth.test.invalid/oauth/authorize",
+			TokenURL:      tokenSrv.URL,
+			ClientID:      "app_test",
+			RedirectPorts: []int{0}, // ephemeral port: no fixed-port collision
+			RedirectPath:  "/auth/callback",
+		},
+		CacheDir: t.TempDir(), // never the repo's .marshal/oauth-metadata
+	}
+	engine.LoopbackTimeout = 10 * time.Second
+
+	opener := &stubOpener{}
+	display := &oauthDisplay{}
+	cmd := oauthLogin(engine, "codex-test", display, opener.open)
+	if engine.Open == nil {
+		t.Fatal("oauthLogin must wire the engine's Open hook")
+	}
+
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+
+	// Drive the loopback callback the way a browser would.
+	var callback string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		callback = display.URL()
+		if callback != "" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if callback == "" {
+		t.Fatal("the flow never produced an authorization URL")
+	}
+
+	u, err := url.Parse(callback)
+	if err != nil {
+		t.Fatalf("authorize URL %q: %v", callback, err)
+	}
+	if state := u.Query().Get("state"); state != "" {
+		redirect := u.Query().Get("redirect_uri")
+		resp, err := http.Get(redirect + "?code=test-code&state=" + url.QueryEscape(state))
+		if err != nil {
+			t.Fatalf("loopback callback: %v", err)
+		}
+		resp.Body.Close()
+	}
+
+	select {
+	case msg := <-done:
+		oauthMsg, ok := msg.(OAuthDoneMsg)
+		if !ok {
+			t.Fatalf("cmd returned %T, want OAuthDoneMsg", msg)
+		}
+		if oauthMsg.Err != nil {
+			t.Fatalf("authorize: %v", oauthMsg.Err)
+		}
+		if oauthMsg.Provider != "codex-test" {
+			t.Fatalf("provider = %q, want codex-test", oauthMsg.Provider)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("login command did not return")
+	}
+
+	// The assertion the plan asks for: the opener saw the authorization URL.
+	urls := opener.snapshot()
+	if len(urls) != 1 {
+		t.Fatalf("opener calls = %v, want exactly one", urls)
+	}
+	if urls[0] != callback {
+		t.Fatalf("opened %q, want %q", urls[0], callback)
+	}
+	// The token store is the test's own, and no real keychain was touched.
+	if tokenCalls != 1 {
+		t.Fatalf("token endpoint calls = %d, want 1", tokenCalls)
+	}
+	if _, err := store.Get("marshal:provider:codex-test"); err != nil {
+		t.Fatalf("tokens should be persisted in the injected store: %v", err)
+	}
+}
+
+// TestOAuthLoginNilOpenerFallsBackToProduction pins the production default:
+// oauthLogin must still wire the real launcher when a caller passes none.
+func TestOAuthLoginNilOpenerFallsBackToProduction(t *testing.T) {
+	engine := &oauth.Engine{ServerURL: "https://auth.test.invalid", Store: credentials.NewMemStore()}
+	cmd := oauthLogin(engine, "codex", &oauthDisplay{}, nil)
+	if cmd == nil {
+		t.Fatal("oauthLogin should return a command")
+	}
+	if engine.Open == nil {
+		t.Fatal("a nil opener must fall back to mcpauth.OpenBrowser, not leave Open unset")
 	}
 }

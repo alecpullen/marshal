@@ -81,11 +81,37 @@ func WithManagerLogger(l *slog.Logger) ManagerOption {
 	return func(m *Manager) { m.Logger = l }
 }
 
+// WithCredentialFactory sets the opener the manager uses to reach the
+// credential store that holds remote MCP servers' OAuth tokens. Production
+// defaults to credentials.New; the owning runtime may supply an explicitly
+// selected opener so a manager exercises the same credential path as the rest
+// of the app.
+//
+// The opener is per-manager, never a package global: two managers started
+// concurrently can hold different stores without racing each other, and a
+// manager constructed without the option cannot observe another manager's
+// store. An explicitly supplied nil opener is recorded as such and fails the
+// OAuth construction path — it never falls back to the OS keychain, which
+// would silently swap a caller's selected store for the real one.
+func WithCredentialFactory(open func(string) (credentials.Store, error)) ManagerOption {
+	return func(m *Manager) {
+		m.credFactory = open
+		m.credFactorySet = true
+	}
+}
+
 type Manager struct {
 	Logger *slog.Logger // nil → slog.Default()
 
 	config  *config.Config
 	clients []caller
+
+	// credFactory opens the credential store used for OAuth tokens of
+	// remote servers. Nil means credentials.New, unless credFactorySet is
+	// true, which records an explicitly supplied (and therefore nil,
+	// invalid) opener.
+	credFactory    func(string) (credentials.Store, error)
+	credFactorySet bool
 }
 
 func NewManager(cfg *config.Config, opts ...ManagerOption) *Manager {
@@ -96,6 +122,20 @@ func NewManager(cfg *config.Config, opts ...ManagerOption) *Manager {
 		opt(m)
 	}
 	return m
+}
+
+// openCredentialStore opens the credential store for OAuth tokens, honouring
+// the instance opener when one was supplied. Production always falls back to
+// credentials.New, which refuses to fall back to plaintext storage when no
+// secure backend exists.
+func (m *Manager) openCredentialStore() (credentials.Store, error) {
+	if m.credFactorySet {
+		if m.credFactory == nil {
+			return nil, errors.New("mcp: credential factory is nil")
+		}
+		return m.credFactory("marshal")
+	}
+	return credentials.New("marshal")
 }
 
 // log returns the manager's logger, defaulting to slog.Default() when the
@@ -223,24 +263,21 @@ func (m *Manager) startRemote(ctx context.Context, name string, srv config.MCPSe
 	return client, nil
 }
 
-// oauthCredentialsNew opens the OS credential store used to persist OAuth
-// tokens for remote MCP servers. It is a var so tests can substitute an
-// in-memory store; production always uses credentials.New, which refuses to
-// fall back to plaintext storage when no secure backend exists.
-var oauthCredentialsNew = credentials.New
-
 // oauthEngine builds the OAuth engine for a remote server whose config opts
 // into auth = "oauth". The credentials store is opened once per startRemote
-// call and is shared by every request the client makes, so a token refreshed
-// on one call is visible to the next. Engine.Open is deliberately left nil:
-// startup only reads stored tokens (TokenSource never launches a browser);
-// the interactive Authorize flow is driven from the UI layer. CacheDir and
-// LoopbackTimeout are left zero so the engine's production defaults apply.
+// call through the manager's own opener (see WithCredentialFactory) and is
+// shared by every request the client makes, so a token refreshed on one call
+// is visible to the next. Engine.Open is deliberately left nil: startup only
+// reads stored tokens (TokenSource never launches a browser); the interactive
+// Authorize flow is driven from the UI layer. CacheDir and LoopbackTimeout are
+// left zero so the engine's production defaults apply.
 func (m *Manager) oauthEngine(name string, srv config.MCPServerConfig) (*oauth.Engine, error) {
-	store, err := oauthCredentialsNew("marshal")
+	store, err := m.openCredentialStore()
 	if err != nil {
-		// Never fall back to plaintext. Surface the keychain problem as a
-		// per-server failure so the rest of the agent stays usable.
+		// Never fall back to plaintext and never retry against the OS
+		// keychain: the manager's opener is the only store this engine may
+		// use. Surface the problem as a per-server failure so the rest of
+		// the agent stays usable.
 		return nil, fmt.Errorf("mcp server %q: OS keychain unavailable \u2014 OAuth tokens cannot be stored: %w", name, err)
 	}
 	return &oauth.Engine{

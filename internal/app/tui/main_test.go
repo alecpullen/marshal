@@ -8,8 +8,8 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Blank MARSHAL_*/XDG_* overrides so user-config writes resolve from
-	// the injected home dir (Model.userHome), not the process environment.
-	testenv.SanitizeXDG()
-	os.Exit(m.Run())
+	// Default the package to a temporary home so user-config writes
+	// resolve from the injected home dir (Model.userHome) rather than the
+	// developer's real environment.
+	os.Exit(testenv.Run(m))
 }

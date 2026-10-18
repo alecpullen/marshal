@@ -8,8 +8,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Blank MARSHAL_*/XDG_* overrides so panel paths resolve from the
-	// injected home dir, not the ambient environment.
-	testenv.SanitizeXDG()
-	os.Exit(m.Run())
+	// Default the package to a temporary home so panel paths resolve from
+	// the injected home dir, not the ambient environment.
+	os.Exit(testenv.Run(m))
 }

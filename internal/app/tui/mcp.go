@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/commands"
@@ -32,7 +33,7 @@ func (m *Model) handleMCPCommand(args []string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	store, err := credentials.New("marshal")
+	store, err := m.auth.OpenStore("marshal")
 	if err != nil {
 		if errors.Is(err, credentials.ErrKeyringUnavailable) {
 			m.state.AddMessage(session.RoleSystem,
@@ -52,17 +53,32 @@ func (m *Model) handleMCPCommand(args []string) (tea.Model, tea.Cmd) {
 	panel.SetCancel(cancel)
 	m.mcpAuthServer = name
 
-	eng := &oauth.Engine{
-		ServerURL:  srv.URL,
-		ClientName: "marshal",
-		Store:      store,
-		Open:       func(u string) { _ = mcpauth.OpenBrowser(u) },
-		Logger:     m.state.Logger(),
-	}
+	eng := m.mcpOAuthEngine(srv, store)
 
 	m.dock.Open(panel)
 	m.refreshViewport()
 	return m, tea.Batch(mcpauth.Tick(), authorizeMCPCmd(ctx, eng, disp, cancel))
+}
+
+// mcpOAuthEngine builds the authorization engine for one MCP server. It is a
+// method rather than an inline literal so the wiring stays inspectable and
+// executable: the token store comes from the resolver the runtime selected,
+// and the browser launcher is the model's injected opener (tests supply a
+// stub, so an executed flow never opens a real browser). A Model built as a
+// bare literal, bypassing New, falls back to the production launcher — the
+// same shape connect.oauthLogin uses.
+func (m *Model) mcpOAuthEngine(srv config.MCPServerConfig, store credentials.Store) *oauth.Engine {
+	open := m.openBrowser
+	if open == nil {
+		open = mcpauth.OpenBrowser
+	}
+	return &oauth.Engine{
+		ServerURL:  srv.URL,
+		ClientName: "marshal",
+		Store:      store,
+		Open:       func(u string) { _ = open(u) },
+		Logger:     m.state.Logger(),
+	}
 }
 
 // reconnectMCPServer rebuilds the runtime so a server that failed to start

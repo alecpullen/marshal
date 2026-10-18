@@ -76,11 +76,18 @@ var _ Store = (*keyringStore)(nil)
 // If no secure backend can be opened, New returns (nil, err) where err wraps
 // ErrKeyringUnavailable. New never returns (nil, nil).
 func New(service string) (Store, error) {
+	return newWithOpener(service, keyring.Open)
+}
+
+// newWithOpener implements New with an injectable backend opener. Production
+// code always passes keyring.Open; tests pass fakes so the default suite never
+// touches the OS credential store.
+func newWithOpener(service string, open func(keyring.Config) (keyring.Keyring, error)) (Store, error) {
 	if service == "" {
 		return nil, errors.New("credentials: service name must not be empty")
 	}
 
-	ring, err := keyring.Open(keyring.Config{
+	ring, err := open(keyring.Config{
 		ServiceName:     service,
 		AllowedBackends: secureBackends,
 	})

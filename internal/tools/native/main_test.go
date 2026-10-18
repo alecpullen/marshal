@@ -8,9 +8,8 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	// Blank MARSHAL_*/XDG_* overrides so config-tool writes and on-disk
-	// assertions resolve from the paths the tests pass in, not the
+	// Default the package to a temporary home so config-tool writes and
+	// on-disk assertions resolve from the paths the tests pass in, not the
 	// ambient environment.
-	testenv.SanitizeXDG()
-	os.Exit(m.Run())
+	os.Exit(testenv.Run(m))
 }

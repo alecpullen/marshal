@@ -3,8 +3,11 @@ package credentials
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/99designs/keyring"
 )
@@ -178,25 +181,97 @@ func TestKeyringStoreDeletePropagatesOtherErrors(t *testing.T) {
 }
 
 // TestNewNeverReturnsNilStore is the core constructor contract: on every
-// platform, New either hands back a usable Store or a non-nil error wrapping
-// ErrKeyringUnavailable. It must never panic and never return (nil, nil).
+// platform, the constructor either hands back a usable Store or a non-nil error
+// wrapping ErrKeyringUnavailable. It must never panic and never return
+// (nil, nil).
 //
-// It deliberately does not touch the OS credential store, so it stays hermetic
-// and cannot hang on a locked or headless keychain.
+// Every case drives the constructor through a fake opener, so the default suite
+// never touches the OS credential store and cannot hang on a locked or headless
+// keychain.
 func TestNewNeverReturnsNilStore(t *testing.T) {
-	store, err := New("marshal-test")
-
-	switch {
-	case err == nil && store == nil:
-		t.Fatal("New returned (nil, nil)")
-	case err == nil:
-		// A backend is available: the contract is satisfied as long as the
-		// Store is non-nil. No value is written to the real credential store.
+	t.Run("successful fake backend", func(t *testing.T) {
+		var got keyring.Config
+		ring := &errRing{}
+		store, err := newWithOpener("marshal-test", func(cfg keyring.Config) (keyring.Keyring, error) {
+			got = cfg
+			return ring, nil
+		})
+		if err != nil {
+			t.Fatalf("newWithOpener: %v", err)
+		}
+		if store == nil {
+			t.Fatal("newWithOpener returned (nil, nil)")
+		}
+		// The contract is satisfied as long as the Store is non-nil.
 		var _ Store = store
-	case !errors.Is(err, ErrKeyringUnavailable):
-		t.Fatalf("New error = %v, want errors.Is(err, ErrKeyringUnavailable)", err)
-	}
+
+		// The Store must be the adapter around the ring the opener returned:
+		// nothing else, and no real backend, can be in play.
+		adapter, ok := store.(*keyringStore)
+		if !ok {
+			t.Fatalf("newWithOpener returned %T, want *keyringStore", store)
+		}
+		if adapter.ring != keyring.Keyring(ring) {
+			t.Fatalf("adapter ring = %v, want the ring returned by the opener", adapter.ring)
+		}
+		if got.ServiceName != "marshal-test" {
+			t.Fatalf("opener service = %q, want %q", got.ServiceName, "marshal-test")
+		}
+		if len(got.AllowedBackends) != len(secureBackends) {
+			t.Fatalf("opener allowed backends = %v, want %v", got.AllowedBackends, secureBackends)
+		}
+	})
+
+	t.Run("opener failure", func(t *testing.T) {
+		boom := errors.New("boom")
+		store, err := newWithOpener("marshal-test", func(keyring.Config) (keyring.Keyring, error) {
+			return nil, boom
+		})
+		if store != nil {
+			t.Fatalf("newWithOpener returned a non-nil Store alongside an error: %v", store)
+		}
+		if !errors.Is(err, ErrKeyringUnavailable) {
+			t.Fatalf("newWithOpener error = %v, want errors.Is(err, ErrKeyringUnavailable)", err)
+		}
+	})
+
+	t.Run("nil backend without error", func(t *testing.T) {
+		store, err := newWithOpener("marshal-test", func(keyring.Config) (keyring.Keyring, error) {
+			return nil, nil
+		})
+		if err == nil {
+			t.Fatal("newWithOpener returned (nil, nil)")
+		}
+		if store != nil {
+			t.Fatalf("newWithOpener returned a non-nil Store alongside an error: %v", store)
+		}
+		if !errors.Is(err, ErrKeyringUnavailable) {
+			t.Fatalf("newWithOpener error = %v, want errors.Is(err, ErrKeyringUnavailable)", err)
+		}
+	})
+
+	t.Run("empty service never invokes the opener", func(t *testing.T) {
+		called := false
+		store, err := newWithOpener("", func(keyring.Config) (keyring.Keyring, error) {
+			called = true
+			return &errRing{}, nil
+		})
+		if called {
+			t.Fatal("opener was invoked for an empty service name")
+		}
+		if err == nil {
+			t.Fatal(`newWithOpener("") returned nil error`)
+		}
+		if store != nil {
+			t.Fatalf(`newWithOpener("") returned a non-nil Store alongside an error: %v`, store)
+		}
+	})
 }
+
+// liveService is the dedicated OS credential service used by the opt-in live
+// test. Keeping it separate from any service the product opens means an enabled
+// live run cannot touch, or clean up, a developer's real Marshal entries.
+const liveService = "marshal-credentials-selftest"
 
 // TestLiveKeyringRoundTrip exercises a real OS credential store end to end. It
 // is opt-in because it writes to the developer's keychain and would otherwise
@@ -204,11 +279,13 @@ func TestNewNeverReturnsNilStore(t *testing.T) {
 //
 //	MARSHAL_CREDENTIALS_LIVE_TEST=1 go test ./internal/credentials/...
 func TestLiveKeyringRoundTrip(t *testing.T) {
-	if os.Getenv("MARSHAL_CREDENTIALS_LIVE_TEST") == "" {
+	if os.Getenv("MARSHAL_CREDENTIALS_LIVE_TEST") != "1" {
 		t.Skip("set MARSHAL_CREDENTIALS_LIVE_TEST=1 to exercise the real OS keyring")
 	}
 
-	store, err := New("marshal-test")
+	// This is the only place the production constructor is exercised: the
+	// default suite always goes through newWithOpener with a fake.
+	store, err := New(liveService)
 	if errors.Is(err, ErrKeyringUnavailable) {
 		t.Skipf("no OS keyring backend available: %v", err)
 	}
@@ -216,7 +293,9 @@ func TestLiveKeyringRoundTrip(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
-	key := "marshal:credentials:selftest"
+	// A unique per-invocation key keeps concurrent or repeated runs from
+	// colliding, and cleanup removes exactly this run's entry.
+	key := fmt.Sprintf("marshal:credentials:selftest:%d", time.Now().UnixNano())
 	value := []byte(`{"token":"value"}`)
 	t.Cleanup(func() { _ = store.Delete(key) })
 
@@ -245,6 +324,56 @@ func TestNewRejectsEmptyService(t *testing.T) {
 	}
 	if store != nil {
 		t.Fatal("New(\"\") returned a non-nil Store alongside an error")
+	}
+}
+
+// TestNewWithOpenerUnavailableBackend pins how the constructor reports a backend
+// the OS cannot provide (keyring.Open's ErrNoAvailImpl on a headless box), the
+// commonest real-world failure. The opener is a fake, so nothing real is opened.
+func TestNewWithOpenerUnavailableBackend(t *testing.T) {
+	store, err := newWithOpener("marshal-test", func(keyring.Config) (keyring.Keyring, error) {
+		return nil, keyring.ErrNoAvailImpl
+	})
+	if store != nil {
+		t.Fatalf("newWithOpener returned a non-nil Store alongside an error: %v", store)
+	}
+	if !errors.Is(err, ErrKeyringUnavailable) {
+		t.Fatalf("newWithOpener error = %v, want errors.Is(err, ErrKeyringUnavailable)", err)
+	}
+	// The constructor intentionally reports only the sentinel: the caller's
+	// decision is "degrade gracefully", and the backend error stays hidden so
+	// no backend-specific detail leaks into the message.
+	if errors.Is(err, keyring.ErrNoAvailImpl) {
+		t.Fatalf("newWithOpener error = %v, want it not to expose the backend error", err)
+	}
+}
+
+// TestNewWithOpenerSelectsSecureBackendsOnly asserts the constructor hands the
+// opener the secure whitelist and nothing else, so a fake -- or a real run --
+// can never be pointed at keyring's plaintext or command-backed stores.
+func TestNewWithOpenerSelectsSecureBackendsOnly(t *testing.T) {
+	var got keyring.Config
+	if _, err := newWithOpener("marshal-test", func(cfg keyring.Config) (keyring.Keyring, error) {
+		got = cfg
+		return &errRing{}, nil
+	}); err != nil {
+		t.Fatalf("newWithOpener: %v", err)
+	}
+
+	want := []keyring.BackendType{
+		keyring.KeychainBackend,
+		keyring.WinCredBackend,
+		keyring.SecretServiceBackend,
+	}
+	if !slices.Equal(got.AllowedBackends, want) {
+		t.Fatalf("opener allowed backends = %v, want %v", got.AllowedBackends, want)
+	}
+	for _, b := range got.AllowedBackends {
+		switch b {
+		case keyring.KeychainBackend, keyring.WinCredBackend, keyring.SecretServiceBackend:
+		default:
+			t.Fatalf("insecure backend %q reached the opener", b)
+		}
 	}
 }
 

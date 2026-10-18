@@ -44,6 +44,21 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 // and prompt caching). Callers without a conversation — model listing,
 // capability probing — should use NewFromConfig instead.
 func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool, thinkingBudgetMargin int, sessionID string) (Provider, error) {
+	return NewFromConfigWithAuth(name, pc, dataDir, remoteLimitDiscovery, thinkingBudgetMargin, sessionID, DefaultAuthResolver())
+}
+
+// NewFromConfigWithAuth is NewFromConfigWithSession with an explicit auth
+// resolver: every credential-backed decision — today, the OAuth engine behind
+// an openai_codex provider — comes from auth instead of the process-wide
+// default. That lets a caller hold a private engine cache, so two callers
+// cannot observe each other's tokens.
+//
+// Passing a nil auth is an error; callers that want production behavior pass
+// DefaultAuthResolver() explicitly.
+func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool, thinkingBudgetMargin int, sessionID string, auth AuthResolver) (Provider, error) {
+	if auth == nil {
+		return nil, fmt.Errorf("provider %q: auth resolver is required", name)
+	}
 	switch pc.Type {
 	case "", "openai_compatible":
 		apiKey, err := ResolveAPIKey(pc)
@@ -118,9 +133,11 @@ func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir str
 			ThinkingBudgetMargin: thinkingBudgetMargin,
 		})
 	case "openai_codex":
-		// The shared engine: the refresh worker holds the same instance, so
-		// their refreshes serialize on one mutex.
-		engine, err := CodexOAuthEngine(name)
+		// The resolver's engine: under the default adapter that is the
+		// process-wide shared instance the refresh worker also holds, so
+		// their refreshes serialize on one mutex. An injected resolver
+		// hands back an engine from its own private cache instead.
+		engine, err := auth.CodexOAuthEngine(name)
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", name, err)
 		}

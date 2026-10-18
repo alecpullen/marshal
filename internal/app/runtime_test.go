@@ -2,11 +2,15 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,7 +19,11 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/credentials"
 	"marshal/internal/db"
+	"marshal/internal/llm/provider"
+	"marshal/internal/llm/provider/oauthworker"
+	"marshal/internal/oauth"
 	"marshal/internal/tools/native"
 	"marshal/internal/trust"
 )
@@ -772,5 +780,386 @@ func TestRuntimeSeedsNoRepoOrientation(t *testing.T) {
 		case contextpack.SectionRepoCard, contextpack.SectionRepoMap, contextpack.SectionSessionSummaries:
 			t.Fatalf("context pack carries %s section %q", s.Kind, s.Title)
 		}
+	}
+}
+
+// ── Task 5: credential composition over the real wiring ───────────────
+
+// TestOAuthWorkerSharesEngineAndRefreshesAgainstOwnedServer is the
+// composition regression for step 7. It builds the provider and the refresh
+// worker the way startup does — both through the runtime's selected resolver —
+// and then proves, against a test-owned token endpoint, that:
+//
+//  1. the worker's engine is the SAME object the provider holds, so a
+//     proactive refresh and an inline one serialize on one mutex; and
+//  2. a synthetic token read and a real refresh both flow through the
+//     injected in-memory store, never the OS keychain.
+//
+// The worker is driven with its injectable clock/sleep seams, so nothing waits
+// on a production retry interval.
+func TestOAuthWorkerSharesEngineAndRefreshesAgainstOwnedServer(t *testing.T) {
+	ctx := context.Background()
+
+	// Test-owned token endpoint. It hands back a rotated token set and counts
+	// how many refreshes it served.
+	var (
+		mu        sync.Mutex
+		refreshes int
+	)
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		refreshes++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "rotated-access",
+			"refresh_token": "rotated-refresh",
+			"expires_in":    3600,
+			"token_type":    "Bearer",
+		})
+	}))
+	defer tokenServer.Close()
+
+	const providerName = "compose-codex"
+
+	resolver, store := memoryAuthResolver(t)
+	seedCodexToken(t, store, providerName, "initial-access")
+
+	// The runtime builds the provider through this resolver.
+	cfg := codexOAuthProviderConfig(providerName, "https://chatgpt.com/backend-api")
+	rt, err := StartRuntime(ctx,
+		WithWorkingDir(t.TempDir()),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return cfg, nil }),
+		WithAuthResolver(resolver),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(ctx)
+
+	if rt.Runner == nil {
+		t.Fatal("the OAuth provider was not built")
+	}
+	if got := rt.Runner.Provider.Name(); got != providerName {
+		t.Fatalf("runner provider = %q, want %q", got, providerName)
+	}
+
+	workers := buildOAuthWorkers(cfg, rt.Logger, resolver)
+	var worker *oauthworker.Worker
+	for _, w := range workers {
+		if ow, ok := w.(*oauthworker.Worker); ok && ow.Provider == providerName {
+			worker = ow
+			break
+		}
+	}
+	if worker == nil {
+		t.Fatalf("no refresh worker for %q (workers=%d)", providerName, len(workers))
+	}
+
+	// (1) Provider/worker engine identity. The provider reached through the
+	// resolver is the same engine the worker was given — one mutex, one store.
+	engine, err := resolver.CodexOAuthEngine(providerName)
+	if err != nil {
+		t.Fatalf("resolver CodexOAuthEngine: %v", err)
+	}
+	if worker.Engine != engine {
+		t.Fatal("the refresh worker and the provider do not share one engine")
+	}
+
+	// (2a) Synthetic token read through the shared engine.
+	token, err := worker.Engine.TokenSource(ctx)
+	if err != nil {
+		t.Fatalf("TokenSource: %v", err)
+	}
+	if token != "initial-access" {
+		t.Fatalf("token = %q, want the token seeded in the injected store", token)
+	}
+
+	// Point the shared engine at the owned token endpoint and drive a real
+	// refresh through the worker. The worker's own engine object is mutated,
+	// so this is the identity under test, not a copy.
+	worker.Engine.Flow.Issuer = "https://auth.example.invalid"
+	worker.Engine.Flow.AuthorizeURL = "https://auth.example.invalid/authorize"
+	worker.Engine.Flow.TokenURL = tokenServer.URL
+	worker.Engine.Flow.ClientID = "test-client"
+
+	// The stored token records the issuing endpoint; a refresh is refused if
+	// the advertised one differs, so align it with the owned server.
+	raw, err := store.Get("marshal:provider:" + providerName)
+	if err != nil {
+		t.Fatalf("store read: %v", err)
+	}
+	var stored oauth.StoredTokens
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatalf("decode stored tokens: %v", err)
+	}
+	stored.TokenEndpoint = tokenServer.URL
+	// Expire the stored token so the schedule is the 1s floor, and the
+	// refresh happens on the worker's first due cycle.
+	stored.ExpiresAt = time.Now().Add(-time.Hour)
+	stored.IssuedAt = time.Now().Add(-2 * time.Hour)
+	updated, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatalf("marshal stored tokens: %v", err)
+	}
+	if err := store.Set("marshal:provider:"+providerName, updated); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+
+	// Barrier-based shutdown: the sleeper stops the loop after the refresh has
+	// been observed, so the test never waits for an interval.
+	refreshed := make(chan struct{})
+	var stopOnce sync.Once
+	worker.Sleep = func(ctx context.Context, d time.Duration) bool {
+		mu.Lock()
+		served := refreshes
+		mu.Unlock()
+		if served > 0 {
+			stopOnce.Do(func() { close(refreshed) })
+			return false // stop the loop
+		}
+		// The loop is asking to wait for its next due cycle; let it proceed
+		// without actually sleeping.
+		return true
+	}
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- worker.Run(ctx) }()
+
+	select {
+	case <-refreshed:
+	case err := <-runDone:
+		t.Fatalf("worker exited before refreshing (err=%v)", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker never refreshed against the owned token endpoint")
+	}
+	if err := <-runDone; err != nil {
+		t.Fatalf("worker Run: %v", err)
+	}
+
+	// The rotated token must have been persisted to the injected store, and
+	// an inline read must now see it: the worker and the provider share both
+	// the engine and its storage.
+	rotated, err := worker.Engine.TokenSource(ctx)
+	if err != nil {
+		t.Fatalf("TokenSource after refresh: %v", err)
+	}
+	if rotated != "rotated-access" {
+		t.Fatalf("token after refresh = %q, want %q", rotated, "rotated-access")
+	}
+
+	// The refresh went to the test-owned server exactly once and nothing else
+	// was contacted.
+	mu.Lock()
+	served := refreshes
+	mu.Unlock()
+	if served != 1 {
+		t.Fatalf("owned token endpoint served %d refreshes, want exactly 1", served)
+	}
+}
+
+// TestFixtureStartupDoesNotTouchAmbientCredentialConfig turns the diagnostic
+// ambient-config probe into durable regression coverage. The package runs with
+// HOME pointed at a temporary directory (internal/testenv.Run), so a synthetic
+// "developer" config planted at the process-default user path is exactly what
+// an unisolated startup would have loaded.
+//
+// Control first: the ambient fixture declares an OAuth Codex provider and an
+// OAuth MCP server, so an unisolated startup would have REQUESTED credentials
+// for both. The resolver used as the control records those requests instead of
+// opening anything real, proving the fixture is credential-shaped rather than
+// inert. Then the isolated case: startup with an injected home, an injected
+// config loader and an injected resolver never even loads the ambient layers,
+// let alone asks for a credential.
+//
+// No real developer data is touched: the ambient file is written only after a
+// guard proves the process home is a test-owned temp dir, and both cases use
+// in-memory stores and non-routable endpoints.
+func TestFixtureStartupDoesNotTouchAmbientCredentialConfig(t *testing.T) {
+	const ambientUserConfig = `[project]
+name = "ambient-project"
+
+[privacy]
+remote_providers_allowed = true
+
+[profile]
+default = "ambient_profile"
+
+[providers.ambient-codex]
+type = "openai_codex"
+base_url = "https://example.invalid/backend-api"
+auth = "oauth"
+
+[models.presets.ambient]
+provider = "ambient-codex"
+model = "gpt-5.6-luna"
+
+[agent_profiles.ambient_profile]
+implementer = "ambient"
+planner = "ambient"
+repo_scout = "ambient"
+tester = "ambient"
+reviewer = "ambient"
+
+[mcp.servers.ambient-mcp]
+url = "https://127.0.0.1:9/mcp"
+type = "http"
+auth = "oauth"
+trust = "unrestricted"
+`
+	for _, key := range []string{"MARSHAL_CONFIG_DIR", "MARSHAL_DATA_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
+		if got := os.Getenv(key); got != "" {
+			t.Fatalf("%s = %q, want the isolated empty value", key, got)
+		}
+	}
+	processHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+	// Safety guard: the ambient fixture may only be planted in a test-owned
+	// home. If package isolation is ever dropped, this must fail rather than
+	// overwrite a developer's real config.
+	if !strings.HasPrefix(processHome, os.TempDir()) {
+		t.Fatalf("process home %q is not a test-owned temporary directory; refusing to plant an ambient config there", processHome)
+	}
+
+	ambientPath := config.UserConfigPath(processHome)
+	if err := os.MkdirAll(filepath.Dir(ambientPath), 0o755); err != nil {
+		t.Fatalf("mkdir ambient config dir: %v", err)
+	}
+	priorAmbient, priorErr := os.ReadFile(ambientPath)
+	if err := os.WriteFile(ambientPath, []byte(ambientUserConfig), 0o644); err != nil {
+		t.Fatalf("write ambient config: %v", err)
+	}
+	t.Cleanup(func() {
+		if priorErr == nil {
+			_ = os.WriteFile(ambientPath, priorAmbient, 0o644)
+			return
+		}
+		_ = os.Remove(ambientPath)
+	})
+
+	// Control: the ambient configuration, read from the process-default home,
+	// genuinely asks for credentials. This is the "unisolated synthetic config
+	// would request credentials" half of the regression — recorded by the fake
+	// resolver rather than opened against a real backend. The fixture is
+	// fully hermetic: every endpoint is closed (port 9) or non-routable, and
+	// the resolver never opens a real store.
+	control, err := config.Load(config.LoadOptions{HomeDir: processHome, WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load ambient config: %v", err)
+	}
+	if got := control.Providers["ambient-codex"].Auth; got != "oauth" {
+		t.Fatalf("control load did not see the ambient OAuth provider: providers=%+v", control.Providers)
+	}
+	if got := control.MCP.Servers["ambient-mcp"].Auth; got != "oauth" {
+		t.Fatalf("control load did not see the ambient OAuth MCP server: servers=%+v", control.MCP.Servers)
+	}
+
+	// Startup over that ambient configuration requests the ambient provider's
+	// OAuth engine. It does not reach a real keychain — the resolver hands back
+	// a memory-backed engine and store — but the *requests* are the dependency
+	// this regression exists to make visible. The MCP endpoint is a closed
+	// loopback port, so the connect attempt fails fast and the manager reports
+	// a per-server failure rather than aborting the runtime.
+	controlStore := credentials.NewMemStore()
+	controlEngine, err := provider.NewCodexOAuthEngineWithStore("ambient-codex", controlStore)
+	if err != nil {
+		t.Fatalf("NewCodexOAuthEngineWithStore: %v", err)
+	}
+	controlAuth := &countingAuthResolver{store: controlStore, engine: controlEngine}
+	controlCtx, controlCancel := context.WithCancel(context.Background())
+	controlRuntime, controlErr := StartRuntime(controlCtx,
+		WithWorkingDir(t.TempDir()),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return control, nil }),
+		WithAuthResolver(controlAuth),
+	)
+	controlCancel()
+	if controlErr == nil {
+		_ = controlRuntime.Close(context.Background())
+	}
+	if engines := controlAuth.enginesRequested(); len(engines) == 0 {
+		t.Fatalf("control startup never requested the ambient provider's OAuth engine; the fixture is not credential-shaped (err=%v)", controlErr)
+	} else if engines[0] != "ambient-codex" {
+		t.Fatalf("control resolver engine requests = %v, want the ambient provider", engines)
+	}
+	// The ambient MCP server is credential-shaped too: startup opens a store
+	// for it (through the injected opener) before it can fail to connect.
+	if opens := controlAuth.openedStores(); len(opens) == 0 {
+		t.Fatal("control startup never requested a credential store for the ambient OAuth MCP server")
+	}
+
+	// Isolated case: a test-owned home, an injected loader and an injected
+	// resolver. The ambient provider must never appear and no credential entry
+	// point may be reached.
+	fixtureHome := t.TempDir()
+	fixtureWork := t.TempDir()
+	fixtureAuth := &countingAuthResolver{}
+
+	fixtureCfg := config.Default()
+	fixtureCfg.Project.Name = "fixture-project"
+
+	rt, err := StartRuntime(context.Background(),
+		WithWorkingDir(fixtureWork),
+		WithHomeDir(fixtureHome),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return fixtureCfg, nil }),
+		WithAuthResolver(fixtureAuth),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime: %v", err)
+	}
+	defer rt.Close(context.Background())
+
+	if rt.Config.Project.Name != "fixture-project" {
+		t.Fatalf("Project.Name = %q, want the fixture value", rt.Config.Project.Name)
+	}
+	if _, ok := rt.Config.Providers["ambient-codex"]; ok {
+		t.Fatalf("isolated startup inherited the ambient provider: %+v", rt.Config.Providers)
+	}
+	if _, ok := rt.Config.MCP.Servers["ambient-mcp"]; ok {
+		t.Fatalf("isolated startup inherited the ambient MCP server: %+v", rt.Config.MCP.Servers)
+	}
+	if opens := fixtureAuth.openedStores(); len(opens) != 0 {
+		t.Fatalf("isolated startup requested credential stores: %v", opens)
+	}
+	if engines := fixtureAuth.enginesRequested(); len(engines) != 0 {
+		t.Fatalf("isolated startup requested OAuth engines: %v", engines)
+	}
+	// The fixture's own (provider-less) startup built no runner, so the
+	// engine-request assertion above cannot pass vacuously for a built
+	// provider: assert the same thing where a provider IS built.
+	providerCfg := nativeToolAgentConfig("fixture-provider")
+	providerCfg.Project.Name = "fixture-provider-project"
+	rt2, err := StartRuntime(context.Background(),
+		WithWorkingDir(t.TempDir()),
+		WithHomeDir(t.TempDir()),
+		WithTrustResolver(&fakeTrustResolver{decision: trust.DecisionTrustPermanent}),
+		WithConfigLoader(func(config.LoadOptions) (config.Config, error) { return providerCfg, nil }),
+		WithAuthResolver(fixtureAuth),
+	)
+	if err != nil {
+		t.Fatalf("StartRuntime with a provider: %v", err)
+	}
+	defer rt2.Close(context.Background())
+	if rt2.Runner == nil {
+		t.Fatal("the fixture provider was not built; the isolation assertion would be vacuous")
+	}
+	if _, ok := rt2.Config.Providers["ambient-codex"]; ok {
+		t.Fatalf("isolated startup with a provider inherited the ambient provider: %+v", rt2.Config.Providers)
+	}
+	if engines := fixtureAuth.enginesRequested(); len(engines) != 0 {
+		t.Fatalf("isolated startup requested OAuth engines: %v", engines)
+	}
+	if opens := fixtureAuth.openedStores(); len(opens) != 0 {
+		t.Fatalf("isolated startup requested credential stores: %v", opens)
 	}
 }

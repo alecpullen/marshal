@@ -10,11 +10,20 @@ import (
 	"marshal/internal/app/config"
 )
 
+// newConfigTestManager builds a manager over a temp home, exercising the real
+// load path (nil load) but never the production probe: NewConfigManager's
+// default probe constructs a real provider and asks it for its model list, so
+// a fixture provider pointed at a localhost endpoint would reach whatever the
+// developer happens to have listening there. Tests install their own probe.
 func newConfigTestManager(t *testing.T) *ConfigManager {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", home+"/xdg")
-	return NewConfigManager(home, nil, nil)
+	m := NewConfigManager(home, nil, nil)
+	m.probe = func(context.Context, string, config.ProviderConfig) ([]ModelEntry, error) {
+		return nil, errors.New("test-owned probe: no endpoint fixture was installed")
+	}
+	return m
 }
 
 func cfgCall(t *testing.T, fn func(context.Context, json.RawMessage) (any, error), params string) any {

@@ -198,12 +198,47 @@ project.
   instead of starting a real TUI — `WithConfigLoader`, `WithProgramRunner`,
   `WithNow`, and nine others. `app_test.go` uses this pattern exclusively;
   prefer it over driving a real program.
-- `internal/testenv.SanitizeXDG` neutralises ambient `XDG_*` vars in
-  `TestMain`. Any new test that injects a temp home into config resolution must
-  live in a package that calls it, or GitHub runners will silently redirect it.
+- `internal/testenv.Run(m)` is the package entry point: it points `HOME`,
+  `USERPROFILE`, the Marshal/XDG config and data dirs and the provider API-key
+  variables at a temporary directory, and restores them on return. Use it in
+  `TestMain` instead of `os.Exit(m.Run())`. `SanitizeXDG` still exists for
+  tests that only need the path overrides blanked. Any new test that injects a
+  temp home into config resolution must live in a package that calls one of
+  them, or GitHub runners will silently redirect it.
 - Tests that need a specific context window must inject it through the
   production path (a scripted `routing.RouteResolver`); `RunTask` overwrites
   the window from the resolved route.
+
+### Test isolation and credentials
+
+The default suite must not read the developer's config, credentials or running
+services. `docs/test-isolation/feature-spec.md` is the contract; these are the
+seams that implement it.
+
+- **Isolate the environment.** `testenv.Run` in `TestMain` covers the package
+  default. Tests that assert database, logging or unrelated runtime behavior
+  pass explicit fixtures (`WithWorkingDir`, `WithHomeDir`, `WithConfigLoader`)
+  rather than relying on the ambient environment.
+- **Inject auth explicitly.** `provider.AuthResolver` is the credential/OAuth
+  dependency. `app.WithAuthResolver` pins it for a runtime; it reaches provider
+  construction, the OAuth refresh workers, the MCP managers and the TUI's
+  probe/login surfaces. `provider.NewAuthResolver(open)` builds an isolated one
+  over in-memory stores. An explicitly nil resolver is rejected; an *omitted*
+  one in the internal builders fails closed rather than selecting the real
+  keychain, so a missed thread surfaces as a test failure.
+- **Never mutate a package-global factory** for a path that can run
+  concurrently — pass the dependency instead. `mcp.WithCredentialFactory` and
+  `acp.CommandRuntime.OpenStore` are the instance-scoped forms.
+- **Own your endpoints.** Networked tests use `httptest` servers or in-process
+  transports. A loopback service the developer happens to be running is not a
+  fixture, and a real-shaped URL in a construction-only fixture must never be
+  requested.
+- **Live tests are opt-in and explicit.** `MARSHAL_CREDENTIALS_LIVE_TEST=1`
+  (exactly `1`) enables the real keyring round trip in
+  `internal/credentials`; it uses a dedicated service and key and cleans up
+  only its own entry. Provider integration tests carry the `integration` build
+  tag and are excluded from ordinary builds. Do not enable either to make a
+  unit test pass.
 - CI: `usability.yml` runs only `./test/usability/...`; the full `go test ./...`
   suite runs in `release.yaml` on tag pushes. Full-suite regressions therefore
   surface at release time — run the suite locally before assuming a change is

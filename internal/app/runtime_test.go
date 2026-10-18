@@ -3494,10 +3494,16 @@ func TestRuntimeSendNowReplacementRejectsOldBinding(t *testing.T) {
 	if q := newState.SteeringQueue(); len(q) != 1 || q[0] != "new work" {
 		t.Fatalf("replacement queue = %v, want the new work only", q)
 	}
-	// The old conversation's queued steering is retired with it (shutdown
-	// clears the queue) and never reappears on the replacement.
-	if q := oldState.SteeringQueue(); len(q) != 0 {
-		t.Fatalf("the retired conversation kept queued steering: %v", q)
+	// The old conversation's accepted-but-undelivered steering is preserved on
+	// its own state and reported undelivered: teardown never erases work the
+	// user explicitly asked to deliver (spec §lifecycle, plan Task 3 step 7).
+	// What matters for the replacement boundary is that it never reappears on
+	// the replacement — asserted above.
+	if q := oldState.SteeringQueue(); len(q) != 1 || q[0] != "old work" {
+		t.Fatalf("the retired conversation's accepted steering = %v, want it preserved", q)
+	}
+	if got := oldState.SteeringSnapshot().PendingCount; got != 1 {
+		t.Fatalf("retired conversation pending count = %d, want 1", got)
 	}
 
 	newState.EndSteeringTurn(newTurn, "test complete")

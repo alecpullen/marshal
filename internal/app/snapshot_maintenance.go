@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -106,4 +107,53 @@ func maintenanceWarningError(w snapshot.MaintenanceWarning) error {
 		return errors.New(string(w.Reason))
 	}
 	return fmt.Errorf("%s: %s", w.Reason, w.Message)
+}
+
+// startSnapshotMaintenance runs the bounded startup maintenance sweep once per
+// runtime, in the background: reconcile interrupted work across every store and
+// reclaim whole expired generations, then surface whatever the store still
+// needs. It never repacks and never runs on the shutdown path. A failure is a
+// warning, never a reason to fail the session: the store's own admission
+// enforces the budgets either way, and a capture that starts while the sweep
+// still holds the store lock waits for it.
+//
+// It used to run synchronously while building every runner, so it delayed the
+// first frame at startup and every new/resumed session and config reload, by
+// up to startupSnapshotMaintenanceTimeout each.
+//
+// It is SKIPPED for a workspace that has never captured anything, in either
+// layout. A whole-root sweep for a session with no store of its own would pay
+// to measure every OTHER store on the machine and would fabricate store
+// metadata for a workspace that asked for none. The check is two Lstats.
+func (rt *Runtime) startSnapshotMaintenance(svc *snapshot.Rooted, runner *agent.Runner, state *session.State, retentionDays int) {
+	if rt == nil || svc == nil || rt.workCtx == nil || !svc.HasActiveStore() {
+		return
+	}
+	done := make(chan struct{})
+	rt.snapshotMaintenanceDone = done
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(rt.workCtx, startupSnapshotMaintenanceTimeout)
+		defer cancel()
+		report, err := svc.Maintain(ctx, retentionDays)
+		reportStartupSnapshotMaintenance(runner, state, report, err, ctx.Err() != nil)
+	}()
+}
+
+// waitSnapshotMaintenance waits up to timeout for a started startup sweep to
+// finish, reporting whether it did. The sweep stops promptly once the runtime's
+// work context is cancelled.
+func (rt *Runtime) waitSnapshotMaintenance(timeout time.Duration) bool {
+	if rt == nil || rt.snapshotMaintenanceDone == nil {
+		return true
+	}
+	select {
+	case <-rt.snapshotMaintenanceDone:
+		return true
+	case <-time.After(timeout):
+		if rt.Logger != nil {
+			rt.Logger.Warn("snapshot startup maintenance did not stop before shutdown", "timeout", timeout)
+		}
+		return false
+	}
 }

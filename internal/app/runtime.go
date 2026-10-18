@@ -231,7 +231,10 @@ type Runtime struct {
 
 	workCtx    context.Context
 	workCancel context.CancelFunc
-	mu         sync.Mutex
+	// snapshotMaintenanceDone is closed when the startup snapshot sweep
+	// finishes; nil when none was started. Quiesce waits on it.
+	snapshotMaintenanceDone chan struct{}
+	mu                      sync.Mutex
 	// resourceClosers holds cleanup functions (log file, DB handle, open file
 	// descriptors) appended in setup order. They are invoked in reverse during
 	// Close, so the most recently opened resource is released first.
@@ -360,6 +363,10 @@ func (rt *Runtime) Quiesce(ctx context.Context) error {
 		if rt.workCancel != nil {
 			rt.workCancel()
 		}
+		// The startup snapshot sweep holds the store lock and may run Git;
+		// it stops on the cancellation above and must be gone before
+		// persistence closes.
+		rt.waitSnapshotMaintenance(jobShutdownTimeout)
 		rt.State.ResolvePendingForShutdown()
 		rt.State.Shutdown()
 
@@ -917,6 +924,9 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	rt.SnapshotWarnings = agent.NewSnapshotWarningState()
 	if rt.Runner != nil {
 		rt.Runner.SetSnapshotWarningState(rt.SnapshotWarnings)
+	}
+	if err == nil {
+		rt.startSnapshotMaintenance(snapSvc, runner, state, cfg.Snapshots.RetentionDays)
 	}
 	// Start the LSP manager's worker loop here so both Run (TUI) and
 	// StartRuntime (ACP/headless) get it, and restart the manager against

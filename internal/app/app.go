@@ -1151,26 +1151,10 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		// implying the snapshot exists.
 		runner.SnapshotRecorder = database
 
-		// Bounded STARTUP maintenance: reconcile interrupted work across every
-		// store and reclaim whole expired generations, then surface whatever
-		// the store still needs. It never repacks and never runs on the
-		// shutdown path. A failure here is a warning, never a reason to fail
-		// the session: the store's own admission continues to enforce the
-		// budgets either way.
-		//
-		// It is SKIPPED for a workspace that has never captured anything, in
-		// either layout. A whole-root sweep for a session with no store of its
-		// own would pay to measure every OTHER store on the machine (real,
-		// repeated latency on a store holding hundreds of gigabytes of legacy
-		// history) and would fabricate store metadata for a workspace that
-		// asked for none. The check is two Lstats.
-		if snapSvc.HasActiveStore() {
-			maintenanceCtx, maintenanceCancel := context.WithTimeout(ctx, startupSnapshotMaintenanceTimeout)
-			report, maintenanceErr := snapSvc.Maintain(maintenanceCtx, cfg.Snapshots.RetentionDays)
-			timedOut := maintenanceCtx.Err() != nil
-			maintenanceCancel()
-			reportStartupSnapshotMaintenance(runner, state, report, maintenanceErr, timedOut)
-		}
+		// Startup maintenance is NOT run here: this builder also runs for every
+		// new/resumed session and config reload, and a sweep blocked each of
+		// them. startRuntime runs it once per runtime, in the background (see
+		// Runtime.startSnapshotMaintenance).
 	}
 
 	state.SetActiveRoute(session.RouteInfo{

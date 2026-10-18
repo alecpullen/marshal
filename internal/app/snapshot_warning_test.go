@@ -635,6 +635,10 @@ func TestStartupSnapshotMaintenanceIsBoundedAndSkipsStorelessWorkspaces(t *testi
 		t.Fatalf("StartRuntime (with store): %v", err)
 	}
 	defer rt2.Close(context.Background())
+	// The sweep runs in the background so it cannot delay startup.
+	if !rt2.waitSnapshotMaintenance(30 * time.Second) {
+		t.Fatal("startup maintenance did not finish")
+	}
 	warnings := snapshotWarningMessages(rt2.State)
 	if len(warnings) == 0 {
 		t.Fatal("startup maintenance over an over-budget store produced no visible warning")

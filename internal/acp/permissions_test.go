@@ -614,6 +614,39 @@ func TestCollectAccessRejectsForeignIdentityAndClientError(t *testing.T) {
 	})
 }
 
+// A typed echo that misdescribes the presented tuple is ignored: the choice
+// keeps the snapshot the server actually showed. Trusting the echo would let a
+// client report a tuple that was never displayed, which the session reads as
+// "the state moved" and answers with a refresh — re-asking a client that keeps
+// misdescribing it, and never settling what the user decided.
+func TestCollectAccessIgnoresMisdescribedEchoedTuple(t *testing.T) {
+	_, req, decisions := accessRequestFixture(t, session.AccessIntent{
+		System: true, Reason: "read outside the workspace",
+	})
+	bridge := NewPermissionBridge(&fakePermissionClient{decision: PermissionDecision{
+		Approved: true,
+		ModeAccess: &ModeAccessChoice{
+			RequestID: req.RequestID, SessionID: req.SessionID,
+			Current: ModeAccessState{Mode: "auto", System: true},
+		},
+	}})
+	choice, err := bridge.CollectAccess(context.Background(), req.SessionID, "call-1", req)
+	if err != nil {
+		t.Fatalf("CollectAccess: %v", err)
+	}
+	if choice.Current != req.Current {
+		t.Fatalf("choice current = %+v, want the presented %+v", choice.Current, req.Current)
+	}
+	if !choice.Approved {
+		t.Fatal("the approval was dropped along with the echoed tuple")
+	}
+	select {
+	case d := <-decisions:
+		t.Fatalf("collection acknowledged the tool: %+v", d)
+	default:
+	}
+}
+
 // The ordinary Request path cannot acknowledge a typed access request, even
 // when the pending call carries a usable response channel.
 func TestPermissionBridgeRejectsTypedAccessDelivery(t *testing.T) {

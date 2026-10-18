@@ -825,8 +825,15 @@ func (m *TurnManager) resolveAccessRequest(ctx context.Context, sessionID string
 	for {
 		// Read the request fresh on every iteration: the permission tuple can
 		// move while the client is deciding, and the choice must be judged
-		// against what is true now.
-		request, pending := rt.State.AccessRequest()
+		// against what is true now. The runtime's own reader is preferred —
+		// it is the access seam the host binds, and it settles a request that
+		// was satisfied while the client was deciding. State is the fallback
+		// for a runtime that supplied no reader.
+		readRequest := rt.AccessRequest
+		if readRequest == nil {
+			readRequest = rt.State.AccessRequest
+		}
+		request, pending := readRequest()
 		if !pending || request.RequestID != requestID || request.SessionID != sessionID {
 			// Settled, canceled or replaced. Nothing of ours is left to
 			// answer, and a newer request is not ours to touch.

@@ -1463,10 +1463,12 @@ func New(state *session.State, opts ...Option) Model {
 		// status line claim "default" while the engine was auto-approving
 		// every edit.
 		approvalMode: policy.ParseApprovalMode(state.Config.Agent.ApprovalMode),
-		// Seed the reconciliation baseline from the same value, so the first
-		// reconcile is a no-op rather than re-asserting the session mode over
+		// Seed the reconciliation baseline from the session's effective mode.
+		// session.New normalizes the configured value, so a blank or
+		// non-canonical config does not make the first reconcile flip the
+		// model: it stays a no-op rather than re-asserting the mode over
 		// whatever the model already shows.
-		syncedAccessMode: state.Config.Agent.ApprovalMode,
+		syncedAccessMode: state.AccessState().Mode,
 		ctx:              context.Background(),
 		viewport:         viewport.New(),
 		spinner:          NewSpinner(),

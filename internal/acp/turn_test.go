@@ -3134,6 +3134,9 @@ type accessTurnOpts struct {
 	// duplicate re-publishes each request's pending event, so the forwarder
 	// sees the same request twice.
 	duplicate bool
+	// countReads, when non-nil, ticks once per read of the runtime's own
+	// AccessRequest seam, proving the turn loop consults it when supplied.
+	countReads *atomic.Int64
 }
 
 // accessTurnFixture drives a real turn against a real session, with a
@@ -3189,12 +3192,21 @@ func newAccessTurnFixtureWith(t *testing.T, cfg config.Config, intents []session
 	}
 	cfgMgr := TurnManagerConfig{
 		Lookup: func(sessionID string) (*TurnRuntime, bool) {
+			readAccess := state.AccessRequest
+			if opts.countReads != nil {
+				// Count reads of the runtime seam, not of State: a turn loop
+				// that bypassed the seam would leave this at zero.
+				readAccess = func() (session.AccessRequest, bool) {
+					opts.countReads.Add(1)
+					return state.AccessRequest()
+				}
+			}
 			rt := &TurnRuntime{
 				SessionID:     sessionID,
 				State:         state,
 				BeginWork:     identityBeginWork,
 				Events:        broker,
-				AccessRequest: state.AccessRequest,
+				AccessRequest: readAccess,
 				Run: RunnerFunc(func(ctx context.Context, prompt string) error {
 					return f.runIntents(ctx, intents)
 				}),
@@ -3671,11 +3683,14 @@ func TestACPAccessClientFailureAndCancellationSettleCanonical(t *testing.T) {
 	})
 	f.client.err = errors.New("transport down")
 
-	if err := f.awaitTurn(t, f.start()); err != nil {
-		// A transport failure is fatal to the turn, exactly as an ordinary
-		// bridge failure is; either outcome is acceptable as long as the tool
-		// was settled.
-		t.Logf("turn ended with %v (expected for a transport failure)", err)
+	// A transport failure is fatal to the turn, exactly as an ordinary bridge
+	// failure is — but it is reported to the waiting tool first, so the turn
+	// itself either completes (the runner returns once it is settled) or
+	// surfaces the cancellation the failure triggered. Anything else — a
+	// grant, a hang, a different error shape — is a bug.
+	if err := f.awaitTurn(t, f.start()); err != nil &&
+		!errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("PromptTurn = %v, want nil or the cancellation the failure triggers", err)
 	}
 
 	d, ok := f.decision(0)
@@ -3687,6 +3702,9 @@ func TestACPAccessClientFailureAndCancellationSettleCanonical(t *testing.T) {
 	}
 	if d.Access == nil || d.Access.Status != session.AccessFailed {
 		t.Fatalf("delivered result = %+v, want a typed failure", d.Access)
+	}
+	if d.Access.Message != "transport down" {
+		t.Fatalf("failure message = %q, want the transport error", d.Access.Message)
 	}
 	if got := f.state.AccessState(); got != (session.AccessState{Mode: "default"}) {
 		t.Fatalf("session pair = %+v, want it unchanged", got)
@@ -3708,6 +3726,28 @@ func TestACPAccessClientFailureAndCancellationSettleCanonical(t *testing.T) {
 	}
 	if got, pending := f.state.AccessRequest(); !pending || got.RequestID != later.RequestID {
 		t.Fatalf("later request = (%+v, %v), want it still pending", got, pending)
+	}
+}
+
+// The turn loop reads the pending request through the runtime's own seam, not
+// around it. The seam is what lets a runtime settle a request that was
+// satisfied while the client was deciding, so a loop that read State directly
+// would both ignore that settlement and leave the seam dead.
+func TestACPAccessReadsRequestThroughRuntimeSeam(t *testing.T) {
+	var reads atomic.Int64
+	f := newAccessTurnFixtureWith(t, config.Default(), []session.AccessIntent{
+		{System: true, Reason: "read outside the workspace"},
+	}, accessTurnOpts{countReads: &reads})
+	f.client.decide = typedApproval("")
+
+	if err := f.awaitTurn(t, f.start()); err != nil {
+		t.Fatalf("PromptTurn: %v", err)
+	}
+	if reads.Load() == 0 {
+		t.Fatal("the turn loop never read the runtime's AccessRequest seam")
+	}
+	if !f.state.SystemAccess() {
+		t.Fatal("the grant did not reach the session")
 	}
 }
 

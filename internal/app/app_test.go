@@ -5845,13 +5845,19 @@ func TestAccessTUIOptionsResolveWithoutConfigReload(t *testing.T) {
 
 	m := tui.New(state, accessTUIOptions(rt)...)
 
+	// The size gate needs a real frame first, exactly as the production
+	// program gets one at startup.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(tui.Model)
+
 	req, decisions := accessTUIRequest(t, state, session.AccessIntent{
 		System: true, Reason: "The agent requests system access.",
 	})
 
-	// A window-size update is an ordinary runtime update: the panel must
-	// surface without any keypress.
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	// The request must surface on a runtime update that is neither a keypress
+	// nor a resize; a focus change stands in for the tick that drives it in
+	// production. A regression back to needing a keypress fails here.
+	updated, _ = m.Update(tea.FocusMsg{})
 	m = updated.(tui.Model)
 
 	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "Allow system access?") {

@@ -255,7 +255,14 @@ func (b *PermissionBridge) CollectAccess(ctx context.Context, sessionID, toolCal
 		if echoed.RequestID != request.RequestID || echoed.SessionID != request.SessionID {
 			return session.AccessChoice{}, errors.New("acp: access choice identity mismatch")
 		}
-		choice.Current = session.AccessState{Mode: echoed.Current.Mode, System: echoed.Current.System}
+		// The choice is judged against the tuple the server actually
+		// presented, never the client's echo of it. Trusting the echo would
+		// let a client — buggy or hostile — report a tuple that was never
+		// shown, which the session reads as "the state moved": a refresh
+		// that re-asks against a state the client misdescribes again, and
+		// so on without the user ever settling anything. choice.Current
+		// keeps the presented snapshot; only the variant comes from the
+		// echo.
 		choice.Mode = echoed.Mode
 	} else if choice.Approved && request.MissingEditing {
 		choice.Mode = decision.Edited

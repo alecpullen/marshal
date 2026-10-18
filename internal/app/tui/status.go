@@ -371,7 +371,9 @@ func (m Model) statusRightSegment() string {
 	// here too, so a FullFrame panel that hides the input area cannot make the
 	// request invisible. It is checked before the generic approval indicator
 	// because a typed request *is* the pending approval — the generic one would
-	// always shadow it. The interrupt and notice indicators keep priority.
+	// always shadow it — and before the notice indicator, because a decision
+	// waiting on the user is the more actionable state. The interrupt
+	// indicator is checked above both.
 	if m.accessRequestQueued() {
 		return warningStyle().Render(glyph.Warning + " Access waiting")
 	}

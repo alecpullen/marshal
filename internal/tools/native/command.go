@@ -58,10 +58,9 @@ func (t *toolSet) shellRunTool() registry.Tool {
 			"(e.g. find /, ls -R /, grep -r /). Commands are subject to conservative guardrails. " +
 			"Never use shell.run to create or modify files (no redirection, heredocs, or tee) — use file.write or file.edit instead. " +
 			"Use git.* for repository state and the workspace tools for worktree isolation and merging. " +
-			"The command is not killed by elapsed time: timeout_seconds bounds how long this call waits, and a command still running when the wait ends continues in the background with a job_id for agent.await. " +
-			"Pass background: true to return the job_id immediately without waiting. " +
-			"agent.await (optionally with peek: true) reports the job's status, its actual exit code, its stop cause and recent output; agent.kill stops one named job explicitly.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime and is not capped. Omit or pass 0 to use the configured foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately without waiting"}},"required":["command"],"additionalProperties":false}`),
+			"The command is not killed by elapsed time: one still running when the wait ends continues in the background with a job_id. " +
+			"agent.await reports its status, exit code, stop cause and recent output; agent.kill stops one named job.",
+		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime. Omit or pass 0 for the foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately"}},"required":["command"],"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

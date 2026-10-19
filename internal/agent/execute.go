@@ -203,6 +203,23 @@ func actionToolName(action ModelAction) string {
 	return action.Tool
 }
 
+// internalToolRedirect explains why a directly-named internal tool was refused
+// and names the public tool that does the job. Internal tools are never
+// offered to the model — no definition, no prompt listing, no deferred
+// announcement — so a model naming one is reaching for a tool it was never
+// shown. The envelope patch action is the one legitimate path and is exempted
+// by the caller.
+func internalToolRedirect(name string) string {
+	switch name {
+	case "file.write_patch":
+		return "file.write_patch is not available to you; edit files with file.edit (exact old_string/new_string) or file.write (whole file)."
+	case "test.run":
+		return "test.run is not available to you; run tests with shell.run."
+	default:
+		return fmt.Sprintf("%s is an internal tool and is not available to you.", name)
+	}
+}
+
 // newCallID mints the per-call identity used when the provider supplied none.
 func (r *Runner) newCallID() string {
 	return fmt.Sprintf("call_%d", r.Now().UnixNano())
@@ -510,6 +527,18 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	if !ok {
 		r.countToolCall(true, false)
 		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "unknown tool", toolCallID)}, nil
+	}
+
+	// Internal tools are never offered to the model, so a model naming one
+	// directly is reaching for a tool it was never shown. The envelope patch
+	// action is the runtime's own spelling of file.write_patch and is the one
+	// legitimate path; every other direct call is refused with a redirect to
+	// the public tool that does the job. Without this guard the flag only
+	// suppressed advertisement — the handler still ran, so a model that
+	// guessed the name got a tool it was never told about.
+	if tool.Internal && action.Type != ActionPatch {
+		r.countToolCall(true, false)
+		return []schema.ChatMessage{r.buildToolErrorMessage(toolName, internalToolRedirect(toolName), toolCallID)}, nil
 	}
 
 	args := action.Args

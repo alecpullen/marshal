@@ -133,7 +133,10 @@ func TestDefaultModeBlocksFileWritePatch(t *testing.T) {
 	state := newTestState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{
-			`{"rationale":"edit","action":{"type":"tool_call","tool":"file.write_patch","args":{"patch":"*** Begin Patch\nFile: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n*** End Patch"}}}`,
+			// The envelope patch action is the legitimate path to the internal
+			// file.write_patch; a direct tool_call naming it is refused by the
+			// internal-tool guard before policy ever sees it.
+			`{"rationale":"edit","action":{"type":"patch","content":"*** Begin Patch\nFile: a.go\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n*** End Patch"}}`,
 			`{"rationale":"done","action":{"type":"final","content":"I was blocked."}}`,
 		},
 	}

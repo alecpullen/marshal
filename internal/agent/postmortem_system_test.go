@@ -72,7 +72,10 @@ func TestPostmortemSystemAccessWritePath(t *testing.T) {
 	patchText := "File: " + report + "\n<<<<<<< SEARCH\n  \"agent_observations\": []\n=======\n  \"agent_observations\": [\"observed\"]\n>>>>>>> REPLACE"
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		fmt.Sprintf(`{"rationale":"read the report","action":{"type":"tool_call","tool":"file.read","args":{"path":%q}}}`, report),
-		fmt.Sprintf(`{"rationale":"annotate","action":{"type":"tool_call","tool":"file.write_patch","args":{"patch":%q}}}`, patchText),
+		// The envelope patch action is the legitimate path to the internal
+		// file.write_patch; a direct tool_call naming it is refused by the
+		// internal-tool guard.
+		fmt.Sprintf(`{"rationale":"annotate","action":{"type":"patch","content":%q}}`, patchText),
 		`{"rationale":"done","action":{"type":"final","content":"Annotated the report."}}`,
 	}}
 

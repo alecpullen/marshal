@@ -157,7 +157,9 @@ func TestToolsDisabledCallDoesNotRetryNetworkError(t *testing.T) {
 	drop := &url.Error{Op: "Post", URL: "http://provider", Err: syscall.ECONNRESET}
 	p := &partialThenErrorProvider{err: drop}
 	r := toolsDisabledRunner(t, p, true)
-	r.ReconnectMaxWait = time.Millisecond
+	// The budget must outlast the first reconnect backoff (1s), or the
+	// pre-attempt budget check gives up before the probe this test counts.
+	r.ReconnectMaxWait = 2 * time.Second
 	now := time.Unix(1000, 0)
 	r.Now = func() time.Time { return now }
 	r.Sleep = func(ctx context.Context, d time.Duration) error {

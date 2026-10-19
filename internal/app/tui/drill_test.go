@@ -46,7 +46,7 @@ func TestClickRunningCardDrillsInAndBack(t *testing.T) {
 
 	top := m.scrollHintRows()
 	y := top + region.startLine - m.viewport.YOffset()
-	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	updated := clickAt(t, m, 1, y)
 	mm := asModel(t, updated)
 	if len(mm.viewStack) != 1 {
 		t.Fatalf("click should drill into the subagent, viewStack len = %d", len(mm.viewStack))
@@ -448,7 +448,7 @@ func TestClickThinkingBlockWhileDrilledIntoSubagent(t *testing.T) {
 	y := top + region.startLine - m.viewport.YOffset()
 
 	// The click must land on the correct region and expand it.
-	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	updated := clickAt(t, m, 1, y)
 	mm := asModel(t, updated)
 	if !mm.isExpanded(key) {
 		t.Fatal("expected the click to expand the child's thinking block while drilled in (off-by-one fix)")

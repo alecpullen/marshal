@@ -95,7 +95,7 @@ func (m *Model) nowBarBand(plan nowBarPlan) (top, bottom int, ok bool) {
 // The bar is often the only handle on a running child: its transcript card
 // can scroll far out of view while the parent keeps working. Clicks on other
 // bar rows are consumed so they do not fall through to the transcript.
-func (m *Model) handleNowBarClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
+func (m *Model) handleNowBarClick(msg tea.Mouse) (tea.Cmd, bool) {
 	if msg.Button != tea.MouseLeft {
 		return nil, false
 	}
@@ -187,7 +187,7 @@ func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
 // region (regardless of whether that region was already at its target state
 // — a click always consumes the event once it's inside the viewport bounds,
 // matching the wheel-scroll handling right above it in Update).
-func (m *Model) handleTranscriptClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
+func (m *Model) handleTranscriptClick(msg tea.Mouse) (tea.Cmd, bool) {
 	if msg.Button != tea.MouseLeft {
 		return nil, false
 	}

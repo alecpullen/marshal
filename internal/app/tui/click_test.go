@@ -88,6 +88,15 @@ func TestRegionAtFindsContainingRegion(t *testing.T) {
 	}
 }
 
+// clickAt sends a left press and its release on one cell: a click. Clicks
+// act on release, so a press alone can still become a drag.
+func clickAt(t *testing.T, m tea.Model, x, y int) tea.Model {
+	t.Helper()
+	updated, _ := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	updated, _ = updated.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: tea.MouseLeft})
+	return updated
+}
+
 func TestMouseClickTogglesThinkingBlock(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
@@ -104,7 +113,7 @@ func TestMouseClickTogglesThinkingBlock(t *testing.T) {
 
 	top := m.scrollHintRows()
 	y := top + region.startLine - m.viewport.YOffset()
-	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	updated := clickAt(t, m, 1, y)
 	mm := asModel(t, updated)
 
 	if !mm.isExpanded(key) {
@@ -131,7 +140,7 @@ func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
 
 	top := m.scrollHintRows()
 	y := top + region.startLine - m.viewport.YOffset()
-	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	updated := clickAt(t, m, 1, y)
 	mm := asModel(t, updated)
 
 	if !mm.isToolExpanded(key, true) {
@@ -159,7 +168,7 @@ func TestMouseClickOutsideViewportIsNoop(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	updated, _ := m.Update(tea.MouseClickMsg{X: m.leftWidth + 10, Y: 0, Button: tea.MouseLeft})
+	updated := clickAt(t, m, m.leftWidth+10, 0)
 	mm := asModel(t, updated)
 
 	key := thinkID(ts)
@@ -189,7 +198,7 @@ func TestMouseClickExpandsFailedToolCall(t *testing.T) {
 
 	top := m.scrollHintRows()
 	y := top + region.startLine - m.viewport.YOffset()
-	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	updated := clickAt(t, m, 1, y)
 	mm := asModel(t, updated)
 
 	if !mm.isExpanded(key) {
@@ -212,7 +221,7 @@ func TestNowBarClickDrillsIntoAgent(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a now bar band")
 	}
-	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + plan.agentRowStart}); !handled {
+	if _, handled := m.handleNowBarClick(tea.Mouse{Button: tea.MouseLeft, X: 1, Y: top + plan.agentRowStart}); !handled {
 		t.Fatal("a click on an agent row must be handled")
 	}
 	if len(m.viewStack) != 1 {
@@ -236,7 +245,7 @@ func TestNowBarClickOnProgressRowDoesNothing(t *testing.T) {
 		t.Fatalf("agentRowStart = %d, want 1 under a turn row", plan.agentRowStart)
 	}
 	top, _, _ := m.nowBarBand(plan)
-	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top}); !handled {
+	if _, handled := m.handleNowBarClick(tea.Mouse{Button: tea.MouseLeft, X: 1, Y: top}); !handled {
 		t.Fatal("a click inside the bar must be consumed")
 	}
 	if len(m.viewStack) != 0 {
@@ -305,7 +314,7 @@ func TestMarkerClickOpensTheBeatHidingItsCard(t *testing.T) {
 	}
 
 	top := m.scrollHintRows()
-	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: top + marker.startLine - m.viewport.YOffset(), Button: tea.MouseLeft})
+	updated := clickAt(t, m, 1, top+marker.startLine-m.viewport.YOffset())
 	mm := asModel(t, updated)
 	r, ok := mm.regionFor(card)
 	if !ok {

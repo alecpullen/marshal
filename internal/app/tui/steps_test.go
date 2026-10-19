@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
@@ -277,7 +276,7 @@ func TestClickOnToolRowTogglesThatRowOnly(t *testing.T) {
 		t.Fatalf("row region %+v should sit inside the step region %+v", region, stepRegion)
 	}
 	y := m.scrollHintRows() + region.startLine - m.viewport.YOffset()
-	updated, _ := m.Update(tea.MouseClickMsg{X: 2, Y: y, Button: tea.MouseLeft})
+	updated := clickAt(t, m, 2, y)
 	mm := asModel(t, updated)
 	if !mm.isExpanded(row) {
 		t.Fatal("click on the row did not expand it")

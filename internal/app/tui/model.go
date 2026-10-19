@@ -2550,6 +2550,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionsheet.RunCommandMsg:
 		m.closeSessionSheet()
 		return m.dispatchCommand("/" + msg.Command)
+	case selScrollTickMsg:
+		return m, m.handleSelScrollTick(msg)
 	case copyDoneMsg:
 		cmd := m.handleCopyDone(msg)
 		return m, cmd
@@ -3027,41 +3029,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
-	case tea.MouseWheelMsg:
-		// Vertical-only transcript: sideways trackpad pans and diagonal
-		// scrolls must not shift the view horizontally.
-		if msg.Button == tea.MouseWheelLeft || msg.Button == tea.MouseWheelRight {
-			return m, nil
-		}
-		// A bounded live region under the cursor scrolls its own body
-		// instead of the transcript. This must stay below the horizontal
-		// guard: above it, a sideways pan would be consumed here and the
-		// vertical-only invariant would be lost.
-		if m.scrollLiveRegionAt(msg) {
-			return m, nil
-		}
-		// Only delivered when tui.mouse_capture is on (see View). AltScreen
-		// leaves no terminal scrollback, so without this the wheel does
-		// nothing at all.
-		var vpCmd tea.Cmd
-		m.viewport, vpCmd = m.viewport.Update(msg)
-		switch msg.Button {
-		case tea.MouseWheelUp:
-			m.viewportFollow = false
-		case tea.MouseWheelDown:
-			if m.viewport.AtBottom() {
-				m.viewportFollow = true
-			}
-		}
-		return m, vpCmd
-	case tea.MouseClickMsg:
-		if cmd, handled := m.handleTranscriptClick(msg); handled {
-			return m, cmd
-		}
-		if cmd, handled := m.handleNowBarClick(msg); handled {
-			return m, cmd
-		}
-		return m, nil
+	case tea.MouseWheelMsg, tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
+		// Wheel, click and drag all go to the transcript (selection_input.go).
+		cmd, _ := m.handleTranscriptMouse(msg)
+		return m, cmd
 	case tea.PasteMsg:
 		if shouldCondensePaste(msg.Content) {
 			m.addPaste(msg.Content)
@@ -3710,37 +3681,10 @@ func (m Model) handleSudoAuth(msg tea.Msg, sa *session.PendingSudoAuth) (tea.Mod
 // viewport so the user can review history while an approval or question
 // panel is open. It returns (model, cmd, true) when the message was handled.
 func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
-	switch msg := msg.(type) {
-	case tea.MouseWheelMsg:
-		// Vertical-only transcript: swallow horizontal wheel pans so they
-		// never shift the view sideways.
-		if msg.Button == tea.MouseWheelLeft || msg.Button == tea.MouseWheelRight {
-			return *m, nil, true
-		}
-		// A bounded live region under the cursor scrolls its own body
-		// instead of the transcript. Must stay below the horizontal guard.
-		if m.scrollLiveRegionAt(msg) {
-			return *m, nil, true
-		}
-		var vpCmd tea.Cmd
-		m.viewport, vpCmd = m.viewport.Update(msg)
-		switch msg.Button {
-		case tea.MouseWheelUp:
-			m.viewportFollow = false
-		case tea.MouseWheelDown:
-			if m.viewport.AtBottom() {
-				m.viewportFollow = true
-			}
-		}
-		return *m, vpCmd, true
-	case tea.MouseClickMsg:
-		if cmd, handled := m.handleTranscriptClick(msg); handled {
-			return *m, cmd, true
-		}
-		if cmd, handled := m.handleNowBarClick(msg); handled {
-			return *m, cmd, true
-		}
-		return *m, nil, false
+	switch msg.(type) {
+	case tea.MouseWheelMsg, tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
+		cmd, handled := m.handleTranscriptMouse(msg)
+		return *m, cmd, handled
 	}
 	if k, ok := msg.(tea.KeyPressMsg); ok {
 		switch k.String() {

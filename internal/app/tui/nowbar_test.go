@@ -746,7 +746,7 @@ func TestNowBarWorkOverflowClickOpensWork(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a now bar band")
 	}
-	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + listRow}); !handled {
+	if _, handled := m.handleNowBarClick(tea.Mouse{Button: tea.MouseLeft, X: 1, Y: top + listRow}); !handled {
 		t.Fatal("the overflow row click must be handled")
 	}
 	if !m.tasksOpen() || m.tasksPanel.activeTab != tasksTabWork {
@@ -789,7 +789,7 @@ func TestNowBarWorkCardClickTogglesExpansion(t *testing.T) {
 	if hit.Action != workActionExpand {
 		t.Fatalf("collapsed card action = %v, want expand", hit.Action)
 	}
-	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + hit.Row}); !handled {
+	if _, handled := m.handleNowBarClick(tea.Mouse{Button: tea.MouseLeft, X: 1, Y: top + hit.Row}); !handled {
 		t.Fatal("the card header click must be handled")
 	}
 	if m.workExpanded != "work:a" {
@@ -802,7 +802,7 @@ func TestNowBarWorkCardClickTogglesExpansion(t *testing.T) {
 	if hit.Action != workActionCollapse {
 		t.Fatalf("expanded card action = %v, want collapse", hit.Action)
 	}
-	if _, handled := m.handleNowBarClick(tea.MouseClickMsg{Button: tea.MouseLeft, X: 1, Y: top + hit.Row}); !handled {
+	if _, handled := m.handleNowBarClick(tea.Mouse{Button: tea.MouseLeft, X: 1, Y: top + hit.Row}); !handled {
 		t.Fatal("the collapse click must be handled")
 	}
 	if m.workExpanded != "" {

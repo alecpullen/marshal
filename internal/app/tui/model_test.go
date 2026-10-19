@@ -7923,7 +7923,7 @@ func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
 
 	top := m.scrollHintRows() + m.breadcrumbRows()
 	y := top + region.startLine - m.viewport.YOffset()
-	updated, _ := m.Update(tea.MouseClickMsg{X: 1, Y: y, Button: tea.MouseLeft})
+	updated := clickAt(t, m, 1, y)
 	mm := asModel(t, updated)
 
 	if !mm.isToolExpanded(key, true) {

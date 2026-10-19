@@ -2701,9 +2701,11 @@ func TestAccessResolveAppliesBeforeAcknowledgment(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	prepared := false
-	prepare := func(AccessRequest, AccessChoice) (AccessCommit, error) {
+	prepare := func(req AccessRequest, _ AccessChoice) (AccessCommit, error) {
 		prepared = true
-		return AccessCommit{Effective: AccessState{Mode: "edit"}, Apply: func() {
+		target := req.Current
+		target.Mode = "edit"
+		return AccessCommit{Effective: target, Apply: func() {
 			close(entered)
 			<-release
 		}}, nil
@@ -2735,11 +2737,15 @@ func TestAccessResolveAppliesBeforeAcknowledgment(t *testing.T) {
 	if result.Status != AccessGranted {
 		t.Fatalf("ResolveAccess = %+v, want a grant", result)
 	}
-	if got, want := result.Effective, (AccessState{Mode: "edit"}); got != want {
+	want := req.Current
+	want.Mode = "copilot"
+	want.Auto = false
+	want.Revision = req.Current.Revision + 1
+	if got := result.Effective; got != want {
 		t.Fatalf("result effective = %+v, want %+v", got, want)
 	}
-	if got := f.state.AccessState(); got != (AccessState{Mode: "copilot"}) {
-		t.Fatalf("AccessState() = %+v after the grant, want {copilot false}", got)
+	if got := f.state.AccessState(); got != want {
+		t.Fatalf("AccessState() = %+v after the grant, want %+v", got, want)
 	}
 
 	d := <-f.call.ResponseChan
@@ -2787,7 +2793,7 @@ func TestAccessCancelWinsBeforeAcceptance(t *testing.T) {
 	if called {
 		t.Fatal("a canceled request reached prepare or apply")
 	}
-	if got := f.state.AccessState(); got != (AccessState{Mode: "default"}) {
+	if got := f.state.AccessState(); got.Mode != "default" || got.System {
 		t.Fatalf("AccessState() = %+v after cancellation, want default/false", got)
 	}
 	if d := <-f.call.ResponseChan; d.Approved || d.Access == nil || d.Access.Status != AccessCanceled {
@@ -2811,8 +2817,10 @@ func TestAccessAcceptedCommitWinsLaterCancellation(t *testing.T) {
 	release := make(chan struct{})
 	done := make(chan AccessResult, 1)
 	go func() {
-		result, _ := f.state.ResolveAccess(choiceFor(req, req.Current, ""), func(AccessRequest, AccessChoice) (AccessCommit, error) {
-			return AccessCommit{Effective: AccessState{Mode: "default", System: true}, Apply: func() {
+		result, _ := f.state.ResolveAccess(choiceFor(req, req.Current, ""), func(req AccessRequest, _ AccessChoice) (AccessCommit, error) {
+			target := req.Current
+			target.System = true
+			return AccessCommit{Effective: target, Apply: func() {
 				close(entered)
 				<-release
 			}}, nil
@@ -2852,7 +2860,7 @@ func TestAccessAcceptedCommitWinsLaterCancellation(t *testing.T) {
 	if f.state.CancelAccess(req.RequestID, AccessCanceled, "too late") {
 		t.Fatal("CancelAccess settled an already-settled request")
 	}
-	if got := f.state.AccessState(); got != (AccessState{Mode: "default", System: true}) {
+	if got := f.state.AccessState(); got.Mode != "default" || !got.System {
 		t.Fatalf("AccessState() = %+v after the late cancellation, want the granted pair", got)
 	}
 }
@@ -2870,9 +2878,11 @@ func TestAccessRefreshRetainsPendingAndResetsNoAuthority(t *testing.T) {
 	f.state.SetSystemAccess(true)
 
 	prepared := false
-	prepare := func(AccessRequest, AccessChoice) (AccessCommit, error) {
+	prepare := func(req AccessRequest, _ AccessChoice) (AccessCommit, error) {
 		prepared = true
-		return AccessCommit{Effective: AccessState{Mode: "edit"}, Apply: func() {}}, nil
+		target := req.Current
+		target.Mode = "edit"
+		return AccessCommit{Effective: target, Apply: func() {}}, nil
 	}
 	result, err := f.state.ResolveAccess(choiceFor(req, shown, "edit"), prepare)
 	if err != nil {
@@ -2881,7 +2891,7 @@ func TestAccessRefreshRetainsPendingAndResetsNoAuthority(t *testing.T) {
 	if result.Status != AccessRefresh {
 		t.Fatalf("ResolveAccess(stale pair) = %+v, want AccessRefresh", result)
 	}
-	if result.Effective != (AccessState{Mode: "default", System: true}) {
+	if result.Effective.Mode != "default" || !result.Effective.System {
 		t.Fatalf("refresh effective = %+v, want the current pair", result.Effective)
 	}
 	if prepared {
@@ -2892,7 +2902,7 @@ func TestAccessRefreshRetainsPendingAndResetsNoAuthority(t *testing.T) {
 		t.Fatalf("a refresh settled the request: %+v", d)
 	default:
 	}
-	if got := f.state.AccessState(); got != (AccessState{Mode: "default", System: true}) {
+	if got := f.state.AccessState(); got.Mode != "default" || !got.System {
 		t.Fatalf("AccessState() = %+v after a refresh, want the unrelated grant only", got)
 	}
 
@@ -2911,8 +2921,10 @@ func TestAccessRefreshRetainsPendingAndResetsNoAuthority(t *testing.T) {
 	if !refreshed.MissingEditing || refreshed.MissingSystem {
 		t.Fatalf("refreshed request flags = %+v, want editing missing only", refreshed)
 	}
-	result, err = f.state.ResolveAccess(choiceFor(refreshed, refreshed.Current, "edit"), func(AccessRequest, AccessChoice) (AccessCommit, error) {
-		return AccessCommit{Effective: AccessState{Mode: "edit", System: true}, Apply: func() {}}, nil
+	result, err = f.state.ResolveAccess(choiceFor(refreshed, refreshed.Current, "edit"), func(req AccessRequest, _ AccessChoice) (AccessCommit, error) {
+		target := req.Current
+		target.Mode = "edit"
+		return AccessCommit{Effective: target, Apply: func() {}}, nil
 	})
 	if err != nil || result.Status != AccessGranted {
 		t.Fatalf("ResolveAccess(refreshed) = (%+v, %v), want a grant", result, err)
@@ -3120,7 +3132,7 @@ func TestAccessDeniedAndAvailableReturnActualState(t *testing.T) {
 	if immediate.RequestID != "" {
 		t.Fatalf("a satisfied registration allocated a request ID: %q", immediate.RequestID)
 	}
-	if immediate.Current != (AccessState{Mode: "auto", System: true}) {
+	if immediate.Current.Mode != "auto" || !immediate.Current.Auto || !immediate.Current.System {
 		t.Fatalf("satisfied registration Current = %+v, want {auto true}", immediate.Current)
 	}
 	if immediate.MissingEditing || immediate.MissingSystem {
@@ -3189,7 +3201,7 @@ func TestAccessDeniedAndAvailableReturnActualState(t *testing.T) {
 	if settled {
 		t.Fatal("an already-available request reached the resolver")
 	}
-	if result.Effective != (AccessState{Mode: "default", System: true}) {
+	if result.Effective.Mode != "default" || !result.Effective.System {
 		t.Fatalf("available effective = %+v, want the actual pair", result.Effective)
 	}
 	if d := <-f2.call.ResponseChan; d.Approved || d.Access == nil || d.Access.Status != AccessAvailable {
@@ -3243,8 +3255,10 @@ func TestAccessShutdownSettlesOnce(t *testing.T) {
 		release := make(chan struct{})
 		done := make(chan AccessResult, 1)
 		go func() {
-			result, _ := f.state.ResolveAccess(choiceFor(req, req.Current, ""), func(AccessRequest, AccessChoice) (AccessCommit, error) {
-				return AccessCommit{Effective: AccessState{Mode: "default", System: true}, Apply: func() {
+			result, _ := f.state.ResolveAccess(choiceFor(req, req.Current, ""), func(req AccessRequest, _ AccessChoice) (AccessCommit, error) {
+				target := req.Current
+				target.System = true
+				return AccessCommit{Effective: target, Apply: func() {
 					close(entered)
 					<-release
 				}}, nil
@@ -3280,7 +3294,7 @@ func TestAccessShutdownSettlesOnce(t *testing.T) {
 		if _, ok := <-f.call.ResponseChan; ok {
 			t.Fatal("the channel carried a second result")
 		}
-		if got := f.state.AccessState(); got != (AccessState{Mode: "default", System: true}) {
+		if got := f.state.AccessState(); got.Mode != "default" || !got.System {
 			t.Fatalf("AccessState() = %+v, want the granted pair", got)
 		}
 	})

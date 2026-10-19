@@ -1175,9 +1175,9 @@ func (s *State) accessRequestLocked() (AccessRequest, bool) {
 		return AccessRequest{}, false
 	}
 	req := *pending.Access
-	req.Current = AccessState{Mode: legacyApprovalMode(s.access.Mode, s.access.Auto), System: s.access.System}
 	s.mu.Unlock()
 
+	req.Current = s.accessStateLocked()
 	accessMissingFlags(&req, intent)
 	return req, true
 }
@@ -1563,7 +1563,7 @@ func (s *State) ResolveAccess(choice AccessChoice, prepare AccessPrepare) (Acces
 		RequestID: req.RequestID,
 		SessionID: req.SessionID,
 		Status:    AccessGranted,
-		Effective: target,
+		Effective: s.accessStateLocked(),
 		Message:   "access granted",
 	}
 	s.finishAccessLocked(result)

@@ -33,7 +33,12 @@ func (s *State) InteractionState() interaction.State {
 // Callers must hold accessMu; it exists so the access gate can read the pair
 // without re-entering the non-reentrant mutex.
 func (s *State) accessStateLocked() AccessState {
-	return AccessState{Mode: legacyApprovalMode(s.access.Mode, s.access.Auto), System: s.access.System}
+	return AccessState{
+		Mode:     legacyApprovalMode(s.access.Mode, s.access.Auto),
+		Auto:     s.access.Auto,
+		System:   s.access.System,
+		Revision: s.access.Revision,
+	}
 }
 
 // ApplyInteraction applies one validated patch atomically and returns the

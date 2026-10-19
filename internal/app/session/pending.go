@@ -10,12 +10,16 @@ import (
 )
 
 // AccessState is the effective access tuple for one session: the interaction
-// mode governing approval decisions plus whether the conversation holds the
-// system-access modifier. It is a value snapshot (see State.AccessState), so a
-// reader cannot observe a half-applied pair.
+// mode governing approval decisions, the Auto modifier, whether the
+// conversation holds the system-access modifier, and the access revision. It
+// is a value snapshot (see State.AccessState), so a reader cannot observe a
+// half-applied tuple. Mode keeps the retired string spelling during caller
+// migration; Auto carries the canonical modifier.
 type AccessState struct {
-	Mode   string `json:"mode"`
-	System bool   `json:"system"`
+	Mode     string `json:"mode"`
+	Auto     bool   `json:"auto"`
+	System   bool   `json:"system"`
+	Revision uint64 `json:"access_revision"`
 }
 
 // AccessIntent is what a caller asked for before the session decided whether

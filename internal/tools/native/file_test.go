@@ -1244,10 +1244,7 @@ func TestFileReadLineClip(t *testing.T) {
 // where specs live is the repository's decision, not the tool's.
 func TestFileWriteDocsSpecHasNoLocationNote(t *testing.T) {
 	root := t.TempDir()
-	// file.write does not create parent directories.
-	if err := os.MkdirAll(filepath.Join(root, "docs", "feature"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	// file.write creates the parent directories a new file needs.
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
 		t.Fatalf("register: %v", err)
@@ -1258,6 +1255,48 @@ func TestFileWriteDocsSpecHasNoLocationNote(t *testing.T) {
 	}
 	if strings.Contains(res.Content, ".docs-archive") {
 		t.Fatalf("file.write appended a location note: %q", res.Content)
+	}
+}
+
+// A new file's parent directories are created rather than refused: the
+// postmortem corpus showed the same write/mkdir/retry round trip across
+// sessions, and the intent to create the file is unambiguous.
+func TestFileWriteCreatesParentDirectories(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if _, err := invokeTool(t, reg, "file.write", `{"path":"docs/feature/nested/design.md","content":"# design\n"}`); err != nil {
+		t.Fatalf("file.write: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "docs", "feature", "nested", "design.md"))
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != "# design\n" {
+		t.Fatalf("content = %q", got)
+	}
+}
+
+// The patch path follows the same rule: a patch that creates a file under a
+// directory that does not exist yet must not fail on the missing parent.
+func TestFileWritePatchCreatesParentDirectories(t *testing.T) {
+	root := t.TempDir()
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	args := `{"patch": "File: docs/new/nested.txt\n<<<<<<< SEARCH\n=======\nhello\n>>>>>>> REPLACE"}`
+	if _, err := invokeTool(t, reg, "file.write_patch", args); err != nil {
+		t.Fatalf("file.write_patch: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "docs", "new", "nested.txt"))
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("content = %q", got)
 	}
 }
 

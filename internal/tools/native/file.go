@@ -786,6 +786,15 @@ func (t *toolSet) applyFilePatches(ctx context.Context, patches []patch.FilePatc
 					"path", fp.Path)
 			}
 
+			// Same rule as file.write: creating a new file creates the
+			// directories it needs, so a patch that adds a file under a new
+			// directory does not fail on the missing parent.
+			if !fileExists {
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					return fmt.Errorf("create parent directory for %s: %w", fp.Path, err)
+				}
+			}
+
 			if err := os.WriteFile(path, []byte(patched), mode); err != nil {
 				return fmt.Errorf("write file %s: %w", fp.Path, err)
 			}
@@ -989,6 +998,16 @@ func (t *toolSet) fileWriteTool() registry.Tool {
 			return registry.ToolResult{}, err
 		}
 		defer release()
+
+		// A new file's parent directories are created rather than refused.
+		// Postmortems showed the same write/mkdir/retry round trip across
+		// sessions: the intent to create the file is unambiguous, so the
+		// directory tree it needs is part of the same request.
+		if !exists {
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return registry.ToolResult{}, fmt.Errorf("create parent directory for %s: %w", args.Path, err)
+			}
+		}
 
 		if err := os.WriteFile(path, []byte(content), mode); err != nil {
 			return registry.ToolResult{}, fmt.Errorf("write file %s: %w", args.Path, err)

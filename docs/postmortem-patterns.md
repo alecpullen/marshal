@@ -259,9 +259,31 @@ which put two diffuse buckets ahead of a bug that loses data.
    `TestFileReadReversedRangeKeepsContentNotice`. The shell-over-native
    observations are therefore not a `file.read` limit problem; they belong with
    item 7's context-growth work.
-4. **Worktree path & merge ergonomics** (71 obs). Doubled prefixes, missing
-   parent dirs, `.git`-as-file, gitignored archives absent in worktrees, merge
-   blocked by benign dirty files.
+4. **Worktree path & merge ergonomics** (71 obs). **Resolved 2026-10-19 — four
+   of the five sub-themes were already fixed; one was live.** Dating the
+   observations against the commits settles it:
+   - *Merge blocked by benign dirty files*: fixed by `ab22c47b` (2026-10-18).
+     The guard now blocks only tracked changes (`TrackedChanges`); untracked
+     files no longer block, and git itself refuses only a merge that would
+     overwrite one. `.marshal/config.toml` is gitignored (`.gitignore:35`), so
+     the session's own settings writes can no longer self-block a merge — the
+     stash/relocate workaround in the 2026-09-25…10-18 observations is obsolete.
+     The 2026-10-18 observation that still saw the block was a stale binary, as
+     the user noted at the time.
+   - *Gitignored archives absent in worktrees*: fixed 2026-09-25 by seeding
+     `.docs-archive` (`34379ecf`, `cd4ffa4a`). The later observations are about
+     *untracked* docs generally, which a git checkout does not carry by design.
+   - *Doubled `.marshal/worktrees/<branch>/` prefixes*: fixed 2026-09-25 by
+     `doubledWorktreeError` (`4aea661d8`, `helpers.go:251`), which names the
+     suggestion instead of returning a bare not-found.
+   - *`.git`-as-file*: inherent to linked worktrees, not a harness defect.
+   - *Missing parent directories*: the one live defect. `file.write` and the
+     patch path both called `os.WriteFile` with no `MkdirAll`, so creating a
+     file under a new directory cost a write/mkdir/retry round trip (the
+     2026-10-13 observation). Both now create the parent directories a new
+     file needs; an existing file's tree is untouched. Pinned by
+     `TestFileWriteCreatesParentDirectories` and
+     `TestFileWritePatchCreatesParentDirectories`.
 5. **Subagent wait policy** (74 obs). Bounded waits, no repeated identical
    retry, no narration-as-activity during timeouts.
 6. **Transcript / history correctness** (20 obs). The 111 harness

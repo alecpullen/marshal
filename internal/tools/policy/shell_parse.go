@@ -29,6 +29,7 @@ func AnalyzeShell(in ShellInput) (ShellAnalysis, error) {
 	}
 	a.walkFile(f)
 	a.resolveShellScopes()
+	classifyShellOperations(a.ops)
 	return ShellAnalysis{Input: in, Operations: a.ops}, nil
 }
 
@@ -54,7 +55,25 @@ func (a *shellAnalyzer) walkStmt(stmt *syntax.Stmt, depth int) {
 		return
 	}
 	a.walkRedirects(stmt.Redirs, depth)
+	before := len(a.ops)
 	a.walkCommand(stmt.Cmd, depth)
+	if hasWriteRedirect(stmt.Redirs) && len(a.ops) > before {
+		a.ops[len(a.ops)-1].Effects |= ShellWrite
+	}
+}
+
+// hasWriteRedirect reports whether a statement redirects output to a file.
+func hasWriteRedirect(redirs []*syntax.Redirect) bool {
+	for _, r := range redirs {
+		if r == nil {
+			continue
+		}
+		switch r.Op {
+		case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll:
+			return true
+		}
+	}
+	return false
 }
 
 func (a *shellAnalyzer) walkRedirects(redirs []*syntax.Redirect, depth int) {

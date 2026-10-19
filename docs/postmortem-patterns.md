@@ -344,8 +344,31 @@ which put two diffuse buckets ahead of a bug that loses data.
    Pinned by `TestUnknownActionTypeNamesTheValidSet`,
    `TestMissingToolNamesTheToolField` (`agent`) and the strengthened
    `TestSearchArchivedTurnsNoMatches` (`native`).
-7. **Token / context growth** (~3.7B prompt across 46 sessions). Cache-stable
-   prefix audit, stop re-reading large files through shell, trim tool output.
+7. **Token / context growth** (~3.7B prompt across 46 sessions). **Dated
+   2026-10-19; two of three sub-themes were already handled, one live defect
+   fixed.**
+   - *Cache-stable prefix audit*: the contract holds —
+     `TestPromptPrefixStableAcrossSteps` passes. The zero-cache sessions are
+     **provider-side, not a harness defect**: no session reports a cache read
+     before 2026-10-10, and from 2026-10-12 the same model
+     (`deepseek-v4.1-flash`) reports 96–98% cache reads. No harness prefix fix
+     landed in that window, so the provider simply did not report cached
+     tokens earlier. Corpus-wide: 6.44B prompt, 2.03B cache reads, 0 cache
+     writes (OpenAI-compatible providers report no cache-write count).
+   - *Trim tool output*: already handled — `limitOutput`/`maxOutputBytes`
+     truncation markers in `shell.run` and `file.read`, plus
+     `pruneStaleToolOutputs` and intra-turn compaction in the runner.
+   - *Stop re-reading large files through shell*: the `rulePreferPurposeBuilt`
+     rule landed 2026-10-17, but shell-over-native observations continue
+     through 10-19. Most are model preference, not a harness defect — except
+     one concrete case: `repo.search` in regex mode for
+     `func (m Model) Update` returned zero matches (the parentheses are regex
+     groups), and the generic "try mode:substring" footer sent the model to
+     shell grep instead. The zero-match regex footer now probes the literal
+     text and names the hit count, so the retry is verified rather than
+     suggested. Pinned by
+     `TestRepoSearchZeroMatchRegexNamesTheLiteralHits` and
+     `TestRepoSearchZeroMatchRegexKeepsGenericFooterWhenLiteralAlsoMisses`.
 
 Run the 218-observation bucketing pass alongside steps 0–1, not after step 7.
 

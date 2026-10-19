@@ -159,6 +159,22 @@ func (t *toolSet) repoSearchTool() registry.Tool {
 				footer = `no matches; query looks like a regex — retry with mode:"regex"`
 			case actualMode == "regex":
 				footer = `no matches; regex matched nothing — check escaping or try mode:"substring"`
+				// A query like `func (m Model) Update` is a valid regex whose
+				// parentheses are groups, so it matches nothing even though the
+				// literal line exists. Probe the literal text and name the hit
+				// count: a vague "try substring" is what the model ignored
+				// before it fled to shell grep.
+				if args.Query != "" {
+					literal := args.Query
+					litMatch := func(line string) bool { return strings.Contains(line, literal) }
+					if litHits, litCapped, _, _, lerr := t.searchFiles(ctx, start, litMatch, args.Include, 0, hardSearchMaxResults); lerr == nil && len(litHits) > 0 {
+						if litCapped {
+							footer = fmt.Sprintf(`no matches; regex matched nothing, but the literal text matches at least %d line(s) — retry with mode:"substring"`, len(litHits))
+						} else {
+							footer = fmt.Sprintf(`no matches; regex matched nothing, but the literal text matches %d line(s) — retry with mode:"substring"`, len(litHits))
+						}
+					}
+				}
 			}
 			// A subtree made of symlinks (a worktree's seeded .docs-archive is a
 			// real directory holding one link per entry) yields zero matches

@@ -19,14 +19,12 @@ import (
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
-	"marshal/internal/app/dbmigrate"
 	"marshal/internal/app/logging"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui"
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
-	"marshal/internal/index"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/lsp"
@@ -138,7 +136,6 @@ type Runtime struct {
 	EventBroker       BrokerCloser
 	WorkspaceBroker   BrokerCloser
 	SubagentBroker    BrokerCloser
-	IndexBroker       BrokerCloser
 	MCPManager        MCPCloser
 	Snapshot          SnapshotCloser
 	Logger            *slog.Logger
@@ -187,15 +184,22 @@ type Runtime struct {
 	// applied because the trust question was deferred to the TUI.
 	TrustPromptPending bool
 
-	// LSPManager is the optional LSP server manager handle. When non-nil,
-	// the current manager's worker loop is started in startRuntime (shared
-	// by Run and StartRuntime) and the manager is restarted against the
-	// active root on every WorkspaceEvent.
+	// LSPManager is the runtime's one LSP handle, created in startRuntime
+	// and kept for the runtime's whole life. bindLSP points it at the host's
+	// pooled manager for the session's active root and server set (nil when
+	// none applies), so tools, the diagnostics checker and the TUI's
+	// reference finder never need rewiring.
 	LSPManager *lsp.Handle
-	// lspCancel stops the current LSP manager's Run loop. It is managed by
-	// startRuntime and reloadAgentRuntime so the manager can be hot-swapped
-	// when config reload changes the LSP server set.
-	lspCancel context.CancelFunc
+	// Host is the project host this runtime's session runs on: the
+	// project's database setup, index and pooled language servers, shared
+	// with the process's other sessions on the same root (see Hosts).
+	Host *ProjectHost
+	// lspMu serializes bindLSP; lspLease is the pooled manager LSPManager
+	// points at, released on the next bind or at Close. lspClosed is set by
+	// Close, so a WorkspaceEvent bind still in flight cannot rebind after it.
+	lspMu     sync.Mutex
+	lspLease  *lspLease
+	lspClosed bool
 
 	// reloadMu serializes whole-runtime config reloads. A reload rebuilds the
 	// runner, the MCP manager, the registries, and the cleanup generation;
@@ -1122,17 +1126,37 @@ func (h *WatchResumeHook) Invoke(r watch.Report) {
 	}
 }
 
-// runLSPManager starts m's Run loop under a child of rt.workCtx and returns a
-// cancel function that stops it. It mirrors the inline runManager closure in
-// startRuntime but can be reused during config reload.
-func (rt *Runtime) runLSPManager(m *lsp.Manager) context.CancelFunc {
-	mctx, cancel := context.WithCancel(rt.workCtx)
-	go func() {
-		if err := m.Run(mctx); err != nil {
-			rt.Logger.Warn("worker exited", "worker", m.Name(), "err", err)
-		}
-	}()
-	return cancel
+// bindLSP points the runtime's LSP handle at the host's pooled manager for
+// root and cfg's server set, then releases the manager it pointed at before.
+// The pool hands back the same manager when neither changed, so a reload that
+// keeps the server set keeps its running servers.
+func (rt *Runtime) bindLSP(cfg config.Config, root string) {
+	if rt.LSPManager == nil || rt.Host == nil {
+		return
+	}
+	rt.lspMu.Lock()
+	defer rt.lspMu.Unlock()
+	if rt.lspClosed {
+		return
+	}
+	lease := rt.Host.lsp.acquire(root, lspServersFor(cfg, root))
+	old := rt.lspLease
+	rt.lspLease = lease
+	rt.LSPManager.Set(lease.manager())
+	old.release()
+}
+
+// unbindLSP clears the runtime's LSP handle, releases its pooled manager and
+// refuses later binds.
+func (rt *Runtime) unbindLSP() {
+	rt.lspMu.Lock()
+	defer rt.lspMu.Unlock()
+	rt.lspClosed = true
+	if rt.LSPManager != nil {
+		rt.LSPManager.Set(nil)
+	}
+	rt.lspLease.release()
+	rt.lspLease = nil
 }
 
 // AdditionalDirectories returns the list of extra workspace roots registered
@@ -1347,6 +1371,8 @@ func (rt *Runtime) stopAndJoinConversationWork(ctx context.Context) error {
 //  7. database
 //  8. reverse-order resourceClosers
 //  9. idempotent state shutdown
+//  10. the LSP binding and the project host, which outlive this session's
+//     own database connection
 func (rt *Runtime) Close(ctx context.Context) error {
 	_ = rt.Quiesce(ctx)
 
@@ -1395,11 +1421,6 @@ func (rt *Runtime) Close(ctx context.Context) error {
 		// 5.6. subagent broker.
 		if rt.SubagentBroker != nil {
 			rt.SubagentBroker.Close()
-		}
-
-		// 5.7. index broker.
-		if rt.IndexBroker != nil {
-			rt.IndexBroker.Close()
 		}
 
 		// 5b. rollover close — end the live generation with session_end.
@@ -1488,6 +1509,15 @@ func (rt *Runtime) Close(ctx context.Context) error {
 		// 9. idempotent state shutdown.
 		if rt.State != nil {
 			rt.State.Shutdown()
+		}
+
+		// 10. release the pooled language servers and the project host. The
+		// last session on a host leaves it lingering (or closes it, for a
+		// private registry).
+		rt.unbindLSP()
+		if rt.Host != nil {
+			rt.Host.detach(rt.State)
+			rt.Host.release()
 		}
 
 		rt.closeErr = errors.Join(errs...)
@@ -1623,24 +1653,29 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		slog.Warn("could not write .marshal/.gitignore", "error", err)
 	}
 
-	if err := dbmigrate.AdoptStrayProjectDB(workingDir, slog.Default()); err != nil {
-		slog.Warn("stray .marshal migration", "error", err)
+	// The project host sets the database up once for every session in this
+	// process (stray-database adoption, migration, and reconciling the
+	// generations a crashed process left open); this session then opens its
+	// own connection. Without WithHosts the runtime gets a private registry
+	// whose host does not index and closes with the runtime.
+	hosts := runOpts.hosts
+	if hosts == nil {
+		hosts = newHosts(false, 0)
 	}
+	host, err := hosts.acquire(workingDir, runOpts.now())
+	if err != nil {
+		return nil, err
+	}
+	started := false
+	defer func() {
+		if !started {
+			host.release()
+		}
+	}()
 
 	database, err := db.Open(db.Path(workingDir))
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
-	}
-
-	if err := database.Migrate(); err != nil {
-		_ = database.Close()
-		return nil, fmt.Errorf("migrate database: %w", err)
-	}
-
-	// Reconcile any generations left open by a crashed process.
-	if _, err := database.ReconcileOpenGenerations(runOpts.now()); err != nil {
-		_ = database.Close()
-		return nil, fmt.Errorf("reconcile open generations: %w", err)
 	}
 
 	var projectID int64
@@ -1743,7 +1778,6 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	eventBroker := pubsub.NewBroker[session.Event]()
 	workspaceBroker := pubsub.NewBroker[session.WorkspaceEvent]()
 	subagentBroker := pubsub.NewBroker[session.SubagentEvent]()
-	indexBroker := pubsub.NewBroker[index.Report]()
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 	state.SetWorkspaceBroker(workspaceBroker)
@@ -1757,7 +1791,10 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	// closure built inside it captures the cell, and the OnFire closure is
 	// built before the Runtime exists.
 	watchResumeCell := &WatchResumeHook{}
-	runner, toolReg, swarmRunner, mcpMgr, snapSvc, commandService, watchMgr, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock, nil, authResolver)
+	// The runtime's one LSP handle. It starts empty; bindLSP points it at
+	// the host's pooled servers once the runtime exists.
+	lspHandle := lsp.NewHandle(nil, nil, logger)
+	runner, toolReg, swarmRunner, mcpMgr, snapSvc, commandService, watchMgr, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(workCtx, cfg, state, database, projectID, skillIndex, dataDir, runOpts.additionalDirs, jobBroker, watchBroker, watchResumeCell, runOpts.configReloader, homeDir, writeLock, nil, lspHandle, authResolver)
 	if err == nil && state.Trusted() && len(cfg.Hooks.Entries) > 0 {
 		runner.HookRunner = hooks.NewRunnerFromConfig(cfg.Hooks)
 	}
@@ -1810,7 +1847,6 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		EventBroker:          eventBroker,
 		WorkspaceBroker:      workspaceBroker,
 		SubagentBroker:       subagentBroker,
-		IndexBroker:          indexBroker,
 		CommandService:       commandService,
 		JobManager:           commandServiceManager(commandService),
 		WatchManager:         watchMgr,
@@ -1827,6 +1863,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		CommandRegistry:      cmdReg,
 		TrustPromptPending:   trustPromptPending,
 		LSPManager:           lspHandle,
+		Host:                 host,
 		ConfigReloader:       runOpts.configReloader,
 		AuthResolver:         authResolver,
 		additionalDirs:       runOpts.additionalDirs,
@@ -1847,31 +1884,24 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	if err == nil {
 		rt.startSnapshotMaintenance(snapSvc, runner, state, cfg.Snapshots.RetentionDays)
 	}
-	// Start the LSP manager's worker loop here so both Run (TUI) and
-	// StartRuntime (ACP/headless) get it, and restart the manager against
-	// the session's active root on every WorkspaceEvent so hover /
-	// references / definition keep working inside a worktree. Each manager
-	// generation gets its own child context: a restart cancels the old
-	// generation (Run shuts its servers down cleanly) and starts the new
-	// one. workCancel (from Quiesce) ends the subscription and the current
-	// generation. The closure references rt.LSPManager (not the local
-	// lspHandle) so config reload can swap in a new handle and have the
-	// next restart use it.
-	if rt.LSPManager != nil {
-		rt.lspCancel = rt.runLSPManager(rt.LSPManager.Get())
-		go func() {
-			ch := workspaceBroker.Subscribe(rt.workCtx)
-			for {
-				ev, ok := <-ch
-				if !ok {
-					return
-				}
-				rt.lspCancel()
-				newM, _ := rt.LSPManager.Restart(ev.Payload.Workspace.ActiveRoot)
-				rt.lspCancel = rt.runLSPManager(newM)
-			}
-		}()
-	}
+	// Attach the session to its host (index progress, the host's current
+	// config; the first session starts the index) and point the LSP handle
+	// at the host's pooled servers for the session's active root. Re-point it
+	// on every WorkspaceEvent, so hover / references / definition follow the
+	// session into and out of a worktree, sharing servers with any other
+	// session on the same root. workCancel (from Quiesce) ends the
+	// subscription; Close releases the last binding.
+	host.attach(state, cfg, projectID)
+	rt.bindLSP(cfg, state.Workspace().ActiveRoot)
+	go func() {
+		ch := workspaceBroker.Subscribe(rt.workCtx)
+		for ev := range ch {
+			rt.mu.Lock()
+			current := rt.Config
+			rt.mu.Unlock()
+			rt.bindLSP(current, ev.Payload.Workspace.ActiveRoot)
+		}
+	}()
 	// Assign MCP and snapshot only on success AND only when the underlying
 	// concrete pointer is non-nil. A nil *mcp.Manager assigned to an MCPCloser
 	// interface would create a non-nil interface wrapping nil — causing the
@@ -1900,6 +1930,7 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		SubagentEvents: subagentBroker,
 		SessionEvents:  eventBroker,
 	}, runOpts.now)
+	started = true
 	return rt, nil
 }
 
@@ -2015,8 +2046,8 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 	if lock == nil {
 		lock = &swarm.WriteLock{}
 	}
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
-		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, nil, rt.AuthResolver,
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(
+		rt.workCtx, rt.Config, newState, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, nil, rt.LSPManager, rt.AuthResolver,
 	)
 	if err != nil {
 		// Roll back the empty session row so /sessions stays clean.
@@ -2071,7 +2102,6 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 	}
 	oldWatchMgr := rt.WatchManager
 	oldDesktopCloser := rt.DesktopCloser
-	oldLSP := rt.LSPManager
 
 	rt.State = newState
 	rt.SessionID = sessionID
@@ -2106,9 +2136,6 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 	} else {
 		rt.Snapshot = nil
 	}
-	if newLSPHandle != nil {
-		rt.LSPManager = newLSPHandle
-	}
 	rt.mu.Unlock()
 
 	if oldMCP != nil {
@@ -2130,14 +2157,13 @@ func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State
 	if oldRunner != nil && oldRunner.Rollover != nil {
 		_ = oldRunner.Rollover.Close(context.Background())
 	}
-	if oldLSP != nil && oldLSP != newLSPHandle {
-		// Restart the LSP worker against the new handle, matching the
-		// reloadAgentRuntime cleanup pattern.
-		rt.lspCancel()
-		if newLSPHandle != nil {
-			rt.lspCancel = rt.runLSPManager(rt.LSPManager.Get())
-		}
+	// The replacement session starts at the project root: move the host's
+	// progress to it and point the LSP handle at the root's pooled servers.
+	if rt.Host != nil {
+		rt.Host.detach(oldState)
+		rt.Host.attach(newState, rt.Config, rt.ProjectID)
 	}
+	rt.bindLSP(rt.Config, newState.Workspace().ActiveRoot)
 	// Close the replaced conversation's projection. Its sources are stopped
 	// above, so this reconciles and finalizes the last durable facts while the
 	// old State is still live, then cancels, joins and closes its broker. Doing

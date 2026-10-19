@@ -78,13 +78,25 @@ func Run(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) error {
 		return fmt.Errorf("acp: find home directory: %w", err)
 	}
 	trustStore := trust.NewStore(config.DataDir(home))
-	return runWithConfig(ctx, stdin, stdout, runConfig{
+	// One project-host registry for the process: sessions on one project
+	// share its database setup, index and language servers. It closes after
+	// every session has.
+	hosts := app.NewHosts()
+	err = runWithConfig(ctx, stdin, stdout, runConfig{
 		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
-			opts = append(opts, app.WithTrustResolver(trust.NewHeadlessResolver(trustStore, log)))
+			opts = append(opts, app.WithTrustResolver(trust.NewHeadlessResolver(trustStore, log)), app.WithHosts(hosts))
 			return app.StartRuntime(ctx, opts...)
 		},
 		lister:   newPerCwdLister(),
 		shutdown: connectionShutdownTimeout,
 		logger:   log,
 	})
+	return errors.Join(err, closeHosts(hosts))
+}
+
+// closeHosts closes the process's project hosts within the shutdown bound.
+func closeHosts(hosts *app.Hosts) error {
+	ctx, cancel := context.WithTimeout(context.Background(), connectionShutdownTimeout)
+	defer cancel()
+	return hosts.Close(ctx)
 }

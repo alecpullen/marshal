@@ -29,7 +29,6 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
 	"marshal/internal/hooks"
-	"marshal/internal/index"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
@@ -105,6 +104,9 @@ type options struct {
 	workers           []worker.Worker
 	configReloader    func(config.Config) error
 	sessionRouting    config.SessionRouting
+	// hosts is the process's project-host registry (WithHosts). Nil gives the
+	// runtime a private one.
+	hosts *Hosts
 	// authResolver is the credential/OAuth dependency the runtime hands to
 	// every credential-backed consumer it builds: provider construction, the
 	// OAuth refresh workers and the MCP managers. authResolverSet records an
@@ -248,20 +250,9 @@ func startWorker(ctx context.Context, wg *sync.WaitGroup, w worker.Worker, log *
 	}()
 }
 
-// indexEventCompleted is published on Runtime.IndexBroker after every
-// successful index pass (startup scan or watcher rerun).
+// indexEventCompleted is published on a project host's report broker after
+// every successful index pass (startup scan or watcher rerun).
 const indexEventCompleted = "index.completed"
-
-// namedWorker adapts a function to the worker.Worker contract for production
-// background workers. (app_test.go defines its own workerFunc for the test
-// seam; the names must not collide.)
-type namedWorker struct {
-	name string
-	run  func(ctx context.Context) error
-}
-
-func (w namedWorker) Name() string                  { return w.name }
-func (w namedWorker) Run(ctx context.Context) error { return w.run(ctx) }
 
 // WithHomeDir overrides the home directory used to resolve the user config
 // and data directories. When empty, the process's real home directory is
@@ -823,8 +814,11 @@ func (s *conversationCommandService) commitLaunchPolicy(policy native.LaunchPoli
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	// The watch manager is owned by the runtime (via buildAgentRunnerWithLock);
 	// this wrapper discards it so the ~25 test call sites that use
-	// buildAgentRunner directly do not need to change.
-	runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{}, nil, auth...)
+	// buildAgentRunner directly do not need to change. The LSP handle is the
+	// runtime's too: the wrapper wires the tools to an empty one and returns
+	// it.
+	lspHandle := lsp.NewHandle(nil, nil, state.Logger())
+	runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, _, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{}, nil, lspHandle, auth...)
 	var jobMgr *native.JobManager
 	if commandService != nil {
 		jobMgr = commandService.manager
@@ -855,12 +849,17 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // service's defaults for future launches. That commit is the last thing the
 // function does, so a candidate that fails validation leaves the previous
 // generation — and the service — exactly as they were.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
+//
+// lspHandle is the runtime's LSP handle, which the tools, the symbol query
+// and the diagnostics checker are wired to. The build never creates or
+// starts a language server: the runtime points the handle at the project
+// host's pooled servers (Runtime.bindLSP). A nil handle wires no LSP.
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, lspHandle *lsp.Handle, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	authResolver := effectiveAuthResolver(firstAuthResolver(auth))
 	resolver := newRoutedProviderResolver(cfg, dataDir, authResolver).withSessionID(state.SessionID())
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	// Resolve rollover enablement against the route once, up front: when
@@ -889,7 +888,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -1054,15 +1053,8 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
 	}
-	// Build LSP manager and wire adapters BEFORE RegisterAll so the
-	// toolSet and diagnostics checker receive non-nil LSP fields.
-	var lspHandle *lsp.Handle
-	if lspEnabled(cfg.LSP) {
-		servers := lsp.DetectServers(toServerSpecs(cfg.LSP.Servers), disabledLangs(cfg.LSP.Servers))
-		if len(servers) > 0 {
-			lspHandle = lsp.NewHandle(lsp.NewManager(state.Workspace().ActiveRoot, lsp.ServersForRoot(servers, state.Workspace().ActiveRoot), state.Logger()), servers, state.Logger())
-		}
-	}
+	// Wire the LSP adapters BEFORE RegisterAll so the toolSet and
+	// diagnostics checker receive non-nil LSP fields.
 	// symbols answers through the language servers and falls back to the
 	// symbol index, so it is wired unconditionally; lspHandle may be nil.
 	nativeOpts.Symbols = lsp.NewSymbolQuery(lspHandle, database, projectID)
@@ -1074,7 +1066,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 	skills.RegisterTool(reg, skillIndex, state, skills.SkillsToolOptions{
 		HomeDir:    homeDir,
@@ -1106,7 +1098,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -1126,7 +1118,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		agent.WithSubagentParentProvider(resolvedProvider.Name()),
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	// agent.await and agent.kill both cover the same two classes of
 	// background work: subagents and shell jobs. Both take the job adapter so
@@ -1135,19 +1127,19 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		agent.WithAwaitJobs(jobAwaitAdapter{m: jobManager}),
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
 	}
 	if err := reg.Register(agent.NewSubagentKillTool(state,
 		agent.WithAwaitJobs(jobAwaitAdapter{m: jobManager}),
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.kill: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.kill: %w", err)
 	}
 	// agent.steer sends an instruction into a running subagent. Main agent
 	// only: SubtaskScopeView excludes it, so a child cannot steer a sibling.
 	if err := reg.Register(agent.NewSubagentSteerTool(state)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.steer: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.steer: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.WriteGate = writeLock
@@ -1310,7 +1302,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, route.Preset.LocalOnly, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {
 		runner.Rollover = &agent.Rollover{
 			Controller: rolloverCtrl,
@@ -1319,7 +1311,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		// Start generation 0.
 		if err := rolloverCtrl.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
 		}
 		// Record generation 0 in session state.
 		genID, genSeq, genSeed := rolloverCtrl.Current()
@@ -1427,7 +1419,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
 		}
 		desktopCloser = closer
 	}
@@ -1444,7 +1436,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// launches only. A failure returned earlier leaves the service, its
 	// callbacks and the previous generation exactly as they were.
 	commandService.commitLaunchPolicy(commandLaunchPolicy(cfg, state, commandService.nextGeneration(), commandRunner, native.ResourcesOf(commandRunner)), lspSync)
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, watchManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, watchManager, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
 }
 
 // beginSessionStop registers the conversation-level stop group for one parent
@@ -2503,58 +2495,6 @@ func fallbackResponseFormat(caps schema.ProviderCapabilities) *schema.ResponseFo
 	return nil
 }
 
-// buildIndexWorkers assembles the indexing background workers: the
-// fsnotify watcher (only when config.WatchEnabled allows) and the one-shot
-// startup scan (AI-02 — always; hashes+symbols even without embeddings so
-// repo.map/symbols work on a fresh project). Every successful pass
-// publishes indexEventCompleted on indexBroker, which triggers the
-// context-pack re-seed in startRuntime.
-func buildIndexWorkers(cfg config.Config, state *session.State, database *db.DB, projectID int64, workingDir string, lspAdapter index.LSPSymbols, indexBroker *pubsub.Broker[index.Report], logger *slog.Logger) []worker.Worker {
-	runPass := func(c context.Context) error {
-		cfg := state.Config
-
-		embedder := resolveEmbedderFromConfig(cfg)
-		if embedder != nil {
-			probeCtx, cancel := context.WithTimeout(c, 30*time.Second)
-			defer cancel()
-			if _, err := embedding.Probe(probeCtx, embedder); err != nil {
-				return fmt.Errorf("embedding probe failed: %w", err)
-			}
-		}
-
-		passCtx, cancel := context.WithTimeout(c, 10*time.Minute)
-		defer cancel()
-		rep, err := index.Run(passCtx, index.Deps{
-			DB:       database,
-			Root:     workingDir,
-			Ignore:   cfg.Indexing.Ignore,
-			MaxBytes: cfg.Indexing.MaxIndexableFileBytes,
-			Embedder: embedder,
-			LSP:      lspAdapter,
-			OnProgress: func(msg string) {
-				state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: msg})
-			},
-		}, projectID)
-		if err == nil {
-			indexBroker.Publish(indexEventCompleted, rep)
-		}
-		return err
-	}
-
-	var workers []worker.Worker
-	embeddingConfigured := false
-	embedRouter := routing.NewStaticRouter(cfg.RoutingConfig())
-	if _, err := embedRouter.ResolveEmbedding(); err == nil {
-		embeddingConfigured = true
-	}
-	if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
-		debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
-		workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
-	}
-	workers = append(workers, namedWorker{name: "startup-index-scan", run: runPass})
-	return workers
-}
-
 // buildOAuthWorkers returns one token-refresh worker per provider entry that
 // authenticates with OAuth. Both the worker and the provider backend get their
 // engine from the same auth resolver, so a proactive refresh and an inline
@@ -2683,6 +2623,23 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			return
 		}
 		_ = trust.NewStore(trustStoreDir).RefreshConfigHash(abs, hash)
+	}
+
+	// One project-host registry for the TUI process. A resume or a trust
+	// reload closes the runtime and starts the next one on the same host
+	// inside its linger, so the database, index and language servers carry
+	// over. Injected workers (WithWorker) replace the host's index work. The
+	// registry closes after the last runtime (deferred below, so it runs
+	// first).
+	if runOpts.hosts == nil {
+		hosts := NewHosts()
+		hosts.workers = runOpts.workers
+		runOpts.hosts = hosts
+		defer func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), hostCloseTimeout)
+			defer cancel()
+			_ = hosts.Close(closeCtx)
+		}()
 	}
 
 	defer func() {
@@ -2878,10 +2835,10 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 
 		// ── Worker lifecycle ──────────────────────────────────────────────
-		// Start injected workers (test seam) or construct the index watcher
-		// when embeddings are configured and the watcher is enabled.
-		workers := runOpts.workers
-		if len(workers) == 0 {
+		// The index work runs on the project host, which startRuntime
+		// attached this session to; the language servers are the host's too.
+		// Only the OAuth refresh workers stay per runtime.
+		if len(runOpts.workers) == 0 {
 			// Surface a hint when embedding indexing is enabled but the
 			// embedding route cannot resolve — semantic search reports
 			// "unavailable" until it does. embeddingStartupWarning
@@ -2892,21 +2849,9 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				logger.Warn("embedding route not resolvable while use_embeddings is enabled")
 				state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 			}
-
-			// Build the LSP symbol adapter for the index pass.
-			var lspAdapter index.LSPSymbols
-			if rt.LSPManager != nil {
-				lspAdapter = lsp.NewSymbolAdapter(rt.LSPManager)
-			}
-
-			workers = buildIndexWorkers(cfg, state, database, projectID, workingDir, lspAdapter,
-				must[*pubsub.Broker[index.Report]](rt.IndexBroker), logger)
 		}
-		workers = append(workers, buildOAuthWorkers(cfg, logger, rt.AuthResolver)...)
-		// LSPManager is started inside startRuntime (shared by Run and
-		// StartRuntime) — see runtime.go. Do not start it again here.
 		var workerWG sync.WaitGroup
-		for _, w := range workers {
+		for _, w := range buildOAuthWorkers(cfg, logger, rt.AuthResolver) {
 			startWorker(rt.workCtx, &workerWG, w, logger)
 		}
 		// ── End worker lifecycle ──────────────────────────────────────────
@@ -3089,7 +3034,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// The build uses effectiveCfg, not cfg: a session mode override must
 	// survive the reload, so the rebuilt policy engine has to agree with what
 	// the session reports.
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, effectiveCfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service, rt.AuthResolver)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, effectiveCfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service, rt.LSPManager, rt.AuthResolver)
 	if err != nil {
 		// A failed dry run leaves the configured baseline, the override, the
 		// system flag and the existing runner exactly as they were.
@@ -3115,7 +3060,6 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	oldMCP := rt.MCPManager
 	oldWatchMgr := rt.WatchManager
 	oldDesktopCloser := rt.DesktopCloser
-	oldLSP := rt.LSPManager
 
 	// Copy in-place fields. When the startup provider build failed there is
 	// no live runner to mutate — adopt the rebuilt one wholesale (mirroring
@@ -3174,11 +3118,6 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	} else {
 		rt.Snapshot = nil
 	}
-	if newLSPHandle != nil {
-		rt.LSPManager = newLSPHandle
-	} else {
-		rt.LSPManager = nil
-	}
 	rt.JobManager = newJobMgr.manager
 	rt.CommandService = newJobMgr
 	rt.WatchManager = newWatchMgr
@@ -3221,14 +3160,11 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if oldDesktopCloser != nil {
 		oldDesktopCloser()
 	}
-	if oldLSP != nil && oldLSP != newLSPHandle {
-		// Stop the old LSP manager generation. Start a new one if the reload
-		// produced a handle, otherwise leave the slot empty.
-		rt.lspCancel()
-		if newLSPHandle != nil {
-			rt.lspCancel = rt.runLSPManager(rt.LSPManager.Get())
-		}
-	}
+	// The server set may have changed: re-point the LSP handle (the pool
+	// keeps the running manager when it did not), and give the host the new
+	// config for its index passes.
+	rt.bindLSP(cfg, rt.State.Workspace().ActiveRoot)
+	rt.Host.noteConfig(cfg)
 
 	// Update the active route so the status bar reflects the new model
 	// immediately, without waiting for the next turn to call resolveRoute.

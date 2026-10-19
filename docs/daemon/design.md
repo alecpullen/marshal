@@ -1,8 +1,10 @@
 # Marshal daemon and detached TUI — design
 
 Status: direction agreed 2026-10-19. P0 is specified and implemented (§5,
-§7); later phase specs and plans are not yet written. The decision to keep
-the TUI in Go depends on P0 (text selection, §5) working.
+§7). P1 is specified ([`p1-project-host.md`](p1-project-host.md)) and
+implemented (see its implementation record). Later phases have no spec
+yet. The decision to keep the TUI in Go depends on P0 (text selection, §5)
+working.
 
 ## 1. Goal and scope
 
@@ -126,22 +128,36 @@ containers.
 
 ### 4.2 Project host and session split
 
+Spec: [`p1-project-host.md`](p1-project-host.md). Where this sketch and
+the spec differ, the spec wins.
+
 `app.Runtime` splits into two parts:
 
-- **ProjectHost**, one per working tree (the root from `repo.FindRoot`, so
-  a git worktree is its own project). It owns the database handle, the
-  index watcher and embedder, the LSP manager, the snapshot store and the
-  skill index. It also runs the OAuth refresh workers (or the daemon runs
-  them once).
-- **Session**, many per ProjectHost. It owns `session.State`, the runners,
-  the job manager and command service, and the event brokers. MCP stays
-  per session at first, because some MCP servers keep per-session state.
+- **ProjectHost**, one per project root in a process (the root from
+  `repo.FindRoot`, so a git worktree opened directly is its own project).
+  It sets up the database once (migrate, reconcile), owns the index
+  workers and the embedder, and pools language servers by active root, so
+  sessions in the same worktree share them too. A lock file in
+  `.marshal/` lets one process at a time index a tree.
+- **Session**, many per ProjectHost. It owns `session.State`, its own
+  database connection, the runners, the job manager and command service,
+  the event brokers, MCP, the snapshot service and the skill index. MCP
+  stays per session because some MCP servers keep per-session state. The
+  snapshot service follows the session's active root, and skills are
+  cheap to load.
+
+The index stays one per project root: an isolated session searches the
+root's index, and worktree indexes are a later phase. OAuth refresh
+workers stay in the TUI until the daemon runs them once (P4): every fleet
+agent is its own process, and refreshing in each would race token
+rotation on one grant.
 
 `StartRuntime` becomes "get or create the ProjectHost, then start a
-Session on it". Background workers start from the ProjectHost on every
-path, so headless sessions get indexing too. One `marshal acp` process
-serves one working tree's sessions. Process isolation per project stays,
-so a panic in one project does not stop the others.
+Session on it". Index workers start from the ProjectHost on every
+production path, so headless sessions index too. A `marshal acp` process
+may host several projects, each with its own ProjectHost. Keeping one
+project per process, so a panic in one project does not stop the others,
+is a bridge routing choice (P4).
 
 The bridge stays the only client of a project host. `listen.go`'s limit
 of one connection is fine, because fan-out to many viewers already happens
@@ -316,10 +332,10 @@ state, not corruption.
 | Phase | Goal | Done when |
 |---|---|---|
 | P0 | Selection handled by the app (§5) — implemented; manual terminal check pending (see the spec's implementation record) | The P0 check in §5 passes in the current TUI |
-| P1 | ProjectHost/Session split and headless workers (§4.2) | Two ACP sessions on one repo share one LSP and one watcher, and a fleet agent's embeddings refresh after an edit |
+| P1 | ProjectHost/Session split and headless indexing (§4.2) — implemented; see the spec's implementation record | Two ACP sessions on one repo in one process share one host, one set of language servers and one watcher. With `indexing.watch = true`, a headless session's edit refreshes its embeddings. Two processes on one tree run one indexer |
 | P2 | TUI client seam with the in-process adapter (§4.5) | The TUI calls no `session.State` method directly. Also settles the transcript-shape question (§8) |
 | P3 | ACP client transports; embedded mode over the pipe | Embedded mode runs entirely over ACP and the adapter is deleted |
-| P4 | Bridge local profile: user service, unix listener, RPC passthrough, `request_secret`, pinning, environment resolution | A TUI can quit and reattach to a running turn on the local daemon |
+| P4 | Bridge local profile: user service, unix listener, RPC passthrough, `request_secret`, pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents | A TUI can quit and reattach to a running turn on the local daemon |
 | P5 | Fleet screen in the Go TUI, shared types, server-computed views | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |
 
 P0 and P1 are independent of each other and of the later phases, and each

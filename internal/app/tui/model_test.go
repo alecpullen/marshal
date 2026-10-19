@@ -9205,15 +9205,20 @@ func TestWarningConfirmationSubmitsDisplayedIDs(t *testing.T) {
 	}
 }
 
-// TestWarningRefusalRefreshesAndKeepsTheSafeChoice pins the expanded-membership
-// race: a refusal stops nothing, refreshes the warning with the refusal's own
-// membership, and leaves the safe choice selected.
-func TestWarningRefusalRefreshesAndKeepsTheSafeChoice(t *testing.T) {
+// TestWarningRefusalPreservesTheChoiceAndExplainsTheGrowth pins the
+// exit-reachability fix: a refusal stops nothing, refreshes the warning with the
+// refusal's own membership, keeps the user's stop choice selected, and says what
+// appeared — so the next Enter is an explicit re-confirmation of the set now on
+// screen rather than a silent keep.
+func TestWarningRefusalPreservesTheChoiceAndExplainsTheGrowth(t *testing.T) {
 	grown := workSnapshot("job-1", "job-2")
 	ctrl := &endTestController{work: workSnapshot("job-1")}
 	ctrl.acceptFn = func(req EndAcceptRequest) (EndDecision, error) {
-		// New work appeared while the user was deciding.
-		return EndDecision{Accepted: false, Expanded: []string{"job-2"}, Work: grown}, nil
+		if len(req.DisplayedIDs) < 2 {
+			// New work appeared while the user was deciding.
+			return EndDecision{Accepted: false, Expanded: []string{"job-2"}, Work: grown}, nil
+		}
+		return EndDecision{Accepted: true, Work: grown}, nil
 	}
 	state := postmortemTestState(t, "sess-refusal")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
@@ -9223,13 +9228,19 @@ func TestWarningRefusalRefreshesAndKeepsTheSafeChoice(t *testing.T) {
 	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 		t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
 	}
-	updated, cmd := m.Update(activeworkpanel.DoneMsg{Stop: true, IDs: []string{"job-1"}})
+	// The user chooses stop.
+	panel, ok := m.dock.Panel().(*activeworkpanel.Panel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want the warning", m.dock.Panel())
+	}
+	panel.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	updated, cmd := m.Update(panel.Update(tea.KeyPressMsg{Code: tea.KeyEnter})().(activeworkpanel.DoneMsg))
 	m = asModel(t, updated)
 
 	if cmd != nil {
 		t.Fatalf("a refusal returned a cmd (%T), want nil so the user decides again", cmd)
 	}
-	panel, ok := m.dock.Panel().(*activeworkpanel.Panel)
+	panel, ok = m.dock.Panel().(*activeworkpanel.Panel)
 	if !ok {
 		t.Fatalf("dock panel = %T, want the warning still up", m.dock.Panel())
 	}
@@ -9237,12 +9248,30 @@ func TestWarningRefusalRefreshesAndKeepsTheSafeChoice(t *testing.T) {
 	if !strings.Contains(view, "job-2") {
 		t.Fatalf("refreshed warning does not show the new work:\n%s", view)
 	}
-	// The safe choice is selected again: a bare Enter keeps the work.
-	if done := panel.Update(tea.KeyPressMsg{Code: tea.KeyEnter})().(activeworkpanel.DoneMsg); done.Stop {
-		t.Fatal("the refreshed warning did not restore keep as the default")
+	if !strings.Contains(view, "appeared after you chose") {
+		t.Fatalf("refreshed warning does not explain the growth:\n%s", view)
 	}
-	if ctrl.waitCalls != 0 {
-		t.Fatal("a refusal ran the stop/join pass")
+	// The user's stop choice survives the refresh: a bare Enter re-confirms the
+	// set now on screen instead of silently keeping the work.
+	done := panel.Update(tea.KeyPressMsg{Code: tea.KeyEnter})().(activeworkpanel.DoneMsg)
+	if !done.Stop {
+		t.Fatal("the refreshed warning re-seated the user's stop choice on keep")
+	}
+	if !reflect.DeepEqual(done.IDs, []string{"job-1", "job-2"}) {
+		t.Fatalf("re-confirmation IDs = %v, want the refreshed membership", done.IDs)
+	}
+	// Re-confirming the expanded set is accepted, so the exit is reachable.
+	updated, cmd = m.Update(done)
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("re-confirming the expanded set must settle the end")
+	}
+	m, _ = runEndCmd(t, m, cmd)
+	if ctrl.waitCalls != 1 {
+		t.Fatalf("stop/join passes = %d, want 1", ctrl.waitCalls)
+	}
+	if m.endStage == endAwaitingDecision {
+		t.Fatal("the end is still asking after an accepted re-confirmation")
 	}
 }
 

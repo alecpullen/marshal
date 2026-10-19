@@ -26,6 +26,7 @@ type Panel struct {
 	replacing bool
 	items     []Item
 	cursor    int
+	notice    string
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -36,10 +37,23 @@ func New(replacing bool, items []Item) *Panel {
 	return p
 }
 
+// Replace swaps the membership the panel renders. A refresh must not move the
+// user's selection: the cursor is preserved so a destructive choice the user
+// already made is never silently re-seated on the safe one. Re-seating it makes
+// an exit unreachable whenever the membership keeps growing — the user presses
+// stop, the panel quietly selects keep, and the next Enter keeps the work. A
+// fresh panel still starts on the safe choice.
 func (p *Panel) Replace(items []Item) {
 	p.items = append([]Item(nil), items...)
-	p.cursor = 0
+	if p.cursor != 0 && p.cursor != 1 {
+		p.cursor = 0
+	}
 }
+
+// SetNotice sets a line rendered above the choices, explaining why the panel is
+// asking again (for example, work appeared after the user chose). An empty
+// notice clears it.
+func (p *Panel) SetNotice(text string) { p.notice = text }
 
 func (p *Panel) Sizing() dock.Sizing { return dock.Docked }
 
@@ -79,7 +93,11 @@ func (p *Panel) View(width, maxHeight int) string {
 		keep, stop = "Keep current conversation", "Stop work and replace conversation"
 	}
 	rows := []string{fmt.Sprintf("Active work (%d) will be stopped:", len(p.items))}
-	available := max(0, maxHeight-5)
+	reserved := 5
+	if p.notice != "" {
+		reserved++
+	}
+	available := max(0, maxHeight-reserved)
 	shown := min(len(p.items), available)
 	if shown < len(p.items) && available > 0 {
 		shown = max(0, available-1)
@@ -90,6 +108,9 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 	if shown < len(p.items) && available > 0 {
 		rows = append(rows, fmt.Sprintf("  +%d more active items", len(p.items)-shown))
+	}
+	if p.notice != "" {
+		rows = append(rows, line.Render("  "+p.notice))
 	}
 	if maxHeight >= 5 {
 		rows = append(rows, "")

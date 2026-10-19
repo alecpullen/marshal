@@ -5122,6 +5122,9 @@ func (m *Model) openActiveWorkWarning() {
 	} else {
 		warning.Replace(endWorkItems(m.endSnapshot))
 	}
+	// A notice explains a previous refusal; a freshly opened warning has nothing
+	// to explain, and a caller that wants one sets it after this returns.
+	warning.SetNotice("")
 	m.dock.Open(warning)
 	m.refreshViewport()
 }
@@ -5169,7 +5172,7 @@ func snapEmpty(snap EndWorkSnapshot) bool { return len(snap.Items) == 0 }
 // displayed work. displayedIDs are the opaque IDs the user was actually shown
 // (nil means "warn about nothing", which is the no-work path). A refusal — the
 // membership grew while the warning was up — refreshes the warning and asks
-// again with the safe choice selected.
+// again, keeping the user's selection and saying what appeared.
 func (m *Model) acceptEnd(displayedIDs []string) tea.Cmd {
 	intent := EndIntentExit
 	if m.end != nil && m.end.kind != "" {
@@ -5196,11 +5199,14 @@ func (m *Model) acceptEnd(displayedIDs []string) tea.Cmd {
 	if !decision.Accepted {
 		// The membership expanded beyond what the user saw. Nothing was
 		// stopped and nothing was frozen: refresh the warning from the
-		// membership the refusal reported — with the safe choice selected —
-		// and ask again.
+		// membership the refusal reported and ask again. The user's own
+		// selection is preserved — re-seating it on the safe choice would make
+		// the exit unreachable for a membership that keeps growing — and the
+		// panel says what changed, so the next Enter is an explicit
+		// re-confirmation of the set now on screen.
 		m.endSnapshot = decision.Work
 		m.endStage = endAwaitingDecision
-		m.renderEndWarning()
+		m.renderEndWarningNotice(expansionNotice(len(decision.Expanded)))
 		return nil
 	}
 	m.endSnapshot = decision.Work
@@ -5256,15 +5262,35 @@ func (m *Model) refreshEndWarning() {
 // it if this end does not hold one and re-asserting it over any surface that
 // took the dock. It does not re-query the runtime: a caller that already has an
 // authoritative membership (a refused acceptance) renders exactly that.
-func (m *Model) renderEndWarning() {
+func (m *Model) renderEndWarning() { m.renderEndWarningNotice("") }
+
+// renderEndWarningNotice is renderEndWarning with an explanatory line above the
+// choices. A refusal uses it to say what appeared, so the re-ask is explicit
+// rather than a silent re-seat of the user's selection.
+func (m *Model) renderEndWarningNotice(notice string) {
 	if panel, ok := m.dock.Panel().(*activeworkpanel.Panel); ok && panel == m.endWarning {
 		panel.Replace(endWorkItems(m.endSnapshot))
+		panel.SetNotice(notice)
 		m.refreshViewport()
 		return
 	}
 	// The warning is the question being answered, so nothing else may hold the
 	// dock while it is up.
 	m.openActiveWorkWarning()
+	if panel, ok := m.endWarning.(*activeworkpanel.Panel); ok {
+		panel.SetNotice(notice)
+		m.refreshViewport()
+	}
+}
+
+// expansionNotice explains a refused acceptance: the membership grew after the
+// user chose, so the panel is asking again about a set that now includes the
+// new work.
+func expansionNotice(n int) string {
+	if n == 1 {
+		return "1 new item appeared after you chose — review and confirm again"
+	}
+	return fmt.Sprintf("%d new items appeared after you chose — review and confirm again", n)
 }
 
 // afterSettlement applies the configured postmortem policy and finishes the

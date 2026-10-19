@@ -105,6 +105,9 @@ type options struct {
 	workers           []worker.Worker
 	configReloader    func(config.Config) error
 	sessionRouting    config.SessionRouting
+	// hosts is the process's project-host registry (WithHosts). Nil gives the
+	// runtime a private one.
+	hosts *Hosts
 	// authResolver is the credential/OAuth dependency the runtime hands to
 	// every credential-backed consumer it builds: provider construction, the
 	// OAuth refresh workers and the MCP managers. authResolverSet records an

@@ -114,6 +114,7 @@ type PolicyEngine struct {
 	logger       *slog.Logger
 	approvalMode ApprovalMode
 	registry     *registry.Registry
+	configSource ConfigSource
 }
 
 func NewEngine(cfg *config.Config, sessionRules []string) *PolicyEngine {
@@ -207,7 +208,17 @@ func (pe *PolicyEngine) Clone() *PolicyEngine {
 		logger:       pe.logger,
 		approvalMode: pe.approvalMode,
 		registry:     pe.registry,
+		configSource: pe.configSource,
 	}
+}
+
+// SetConfigSource installs the live configuration source. Every engine and
+// clone reads the same source, so a reload is visible without rebuilding the
+// engine.
+func (pe *PolicyEngine) SetConfigSource(src ConfigSource) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	pe.configSource = src
 }
 
 // WithRegistry sets the tool registry the policy engine consults to look

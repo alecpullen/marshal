@@ -102,3 +102,26 @@ func TestRequestCeilingIsNotReconnectEligible(t *testing.T) {
 		t.Fatal("errRequestCeiling must not be reconnect-eligible")
 	}
 }
+
+func TestWaitForConnectivityRespectsCapBeforeAttempt(t *testing.T) {
+	state := newTestState(t)
+	p := &blockingProvider{}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.IdleTimeout = 400 * time.Millisecond
+	r.ReconnectMaxWait = 150 * time.Millisecond
+	r.Sleep = func(ctx context.Context, d time.Duration) error { return ctx.Err() }
+
+	var best chatResult
+	start := time.Now()
+	_, err := r.waitForConnectivity(context.Background(), p, "test-model",
+		[]schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false,
+		context.DeadlineExceeded, &best)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected failure when the reconnect budget is exhausted")
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Fatalf("waitForConnectivity %v exceeded its 150ms cap plus one bounded attempt", elapsed)
+	}
+}

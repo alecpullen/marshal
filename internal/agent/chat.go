@@ -372,6 +372,8 @@ func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, m
 	if r.State != nil {
 		r.State.Logger().Warn("provider connection lost; waiting for connectivity", "error", firstErr, "max_wait", r.effectiveReconnectMaxWait())
 	}
+	var res chatResult
+	err := firstErr
 	for attempt := 0; ; attempt++ {
 		delay := reconnectBackoff(attempt)
 		if r.State != nil {
@@ -391,7 +393,22 @@ func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, m
 			}
 			return *best, err
 		}
-		res, err := r.chatOnce(ctx, p, model, messages, responseFormat, includeNativeTools)
+		// Check the budget before spending an attempt, not after: a single
+		// attempt can consume the whole idle timeout, so a post-attempt check
+		// lets a 2-minute cap become five minutes (observed: waited=5m1s
+		// against max_wait=2m0s). Bounding the attempt by what remains makes
+		// the cap the real ceiling on the total wait.
+		remaining := r.effectiveReconnectMaxWait() - r.Now().Sub(started)
+		if remaining <= 0 {
+			if r.State != nil {
+				r.State.Logger().Warn("provider connection did not recover; failing turn", "waited", r.Now().Sub(started).Round(time.Second), "error", err)
+			}
+			return *best, fmt.Errorf("no stream activity from %s for %s; reconnect budget of %s exhausted: %w",
+				model, r.effectiveIdleTimeout(), r.effectiveReconnectMaxWait(), err)
+		}
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, remaining)
+		res, err = r.chatOnce(attemptCtx, p, model, messages, responseFormat, includeNativeTools)
+		cancelAttempt()
 		if err == nil {
 			// chatOnce reports an interrupted attempt as ErrSendNow, never as
 			// a success, so a nil error here was accepted by the turn before
@@ -412,12 +429,6 @@ func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, m
 			// DeadlineExceeded here means a fresh per-request timeout fired
 			// during this retry — still down, so keep waiting.
 			return res, err
-		}
-		if r.Now().Sub(started)+reconnectBackoff(attempt+1) > r.effectiveReconnectMaxWait() {
-			if r.State != nil {
-				r.State.Logger().Warn("provider connection did not recover; failing turn", "waited", r.Now().Sub(started).Round(time.Second), "error", err)
-			}
-			return *best, err
 		}
 	}
 }

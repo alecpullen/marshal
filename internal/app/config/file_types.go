@@ -53,6 +53,8 @@ type fileAgent struct {
 	MaxRetries               *int    `toml:"max_retries"`
 	MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
 	ReconnectMaxWaitSeconds  *int    `toml:"reconnect_max_wait_seconds"`
+	IdleTimeoutSeconds       *int    `toml:"idle_timeout_seconds"`
+	RequestCeilingSeconds    *int    `toml:"request_ceiling_seconds"`
 	MaxToolResultChars       *int    `toml:"max_tool_result_chars"`
 	MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
 	PlanFirst                *bool   `toml:"plan_first"`

@@ -546,6 +546,14 @@ type AgentConfig struct {
 	// is retried before the turn fails. 0 = built-in default (2 minutes).
 	// Raise this for sleep/wake-heavy environments.
 	ReconnectMaxWaitSeconds int `toml:"reconnect_max_wait_seconds"`
+	// IdleTimeoutSeconds bounds how long a request may go without any
+	// streamed bytes before it is treated as a stalled connection. 0 =
+	// built-in default (2 minutes). Any delta — content, reasoning, or
+	// tool-call — resets it.
+	IdleTimeoutSeconds int `toml:"idle_timeout_seconds"`
+	// RequestCeilingSeconds bounds a single request's total wall-clock
+	// time, regardless of activity. 0 = built-in default (15 minutes).
+	RequestCeilingSeconds int `toml:"request_ceiling_seconds"`
 	// MaxToolResultChars caps a single tool result's characters before it
 	// reaches the model. 0 = derive from the turn's context threshold
 	// (~5% of the token budget), which is what large-window models want.

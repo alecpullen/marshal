@@ -1266,6 +1266,12 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if cfg.Agent.ReconnectMaxWaitSeconds > 0 {
 		runner.ReconnectMaxWait = time.Duration(cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
 	}
+	if cfg.Agent.IdleTimeoutSeconds > 0 {
+		runner.IdleTimeout = time.Duration(cfg.Agent.IdleTimeoutSeconds) * time.Second
+	}
+	if cfg.Agent.RequestCeilingSeconds > 0 {
+		runner.RequestCeiling = time.Duration(cfg.Agent.RequestCeilingSeconds) * time.Second
+	}
 
 	// T17: wire rollover controller into the runner when enabled.
 	// Pass the model's full context window so context_percent fires against
@@ -1590,6 +1596,12 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	if s.cfg.Agent.ReconnectMaxWaitSeconds > 0 {
 		r.ReconnectMaxWait = time.Duration(s.cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
 	}
+	if s.cfg.Agent.IdleTimeoutSeconds > 0 {
+		r.IdleTimeout = time.Duration(s.cfg.Agent.IdleTimeoutSeconds) * time.Second
+	}
+	if s.cfg.Agent.RequestCeilingSeconds > 0 {
+		r.RequestCeiling = time.Duration(s.cfg.Agent.RequestCeilingSeconds) * time.Second
+	}
 	// Role prompts embed the shared plan, so skip the per-turn
 	// classify/plan pass (class "question" bypasses planning).
 	r.SetForceClass("question")
@@ -1852,6 +1864,12 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		childRunner.ProjectID = projectID
 		if cfg.Agent.ReconnectMaxWaitSeconds > 0 {
 			childRunner.ReconnectMaxWait = time.Duration(cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
+		}
+		if cfg.Agent.IdleTimeoutSeconds > 0 {
+			childRunner.IdleTimeout = time.Duration(cfg.Agent.IdleTimeoutSeconds) * time.Second
+		}
+		if cfg.Agent.RequestCeilingSeconds > 0 {
+			childRunner.RequestCeiling = time.Duration(cfg.Agent.RequestCeilingSeconds) * time.Second
 		}
 		childRunner.VerificationGate = cfg.Agent.VerificationGateEnabled()
 		childRunner.SetForceClass("question")

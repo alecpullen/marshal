@@ -212,6 +212,30 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigRoundTripsAgentTimeoutKnobs(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.Agent.IdleTimeoutSeconds = 90
+	cfg.Agent.RequestCeilingSeconds = 600
+
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.Agent.IdleTimeoutSeconds != 90 {
+		t.Fatalf("IdleTimeoutSeconds = %d, want 90", loaded.Agent.IdleTimeoutSeconds)
+	}
+	if loaded.Agent.RequestCeilingSeconds != 600 {
+		t.Fatalf("RequestCeilingSeconds = %d, want 600", loaded.Agent.RequestCeilingSeconds)
+	}
+}
+
 // The wait round-trips through a project save, including an explicit value
 // that differs from the default, and the deprecated timeout key keeps its
 // own round trip for compatibility.

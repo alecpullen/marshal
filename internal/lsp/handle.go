@@ -7,16 +7,15 @@ import (
 )
 
 // Handle is a swappable reference to the active Manager. Tool and index
-// adapters hold a Handle so the manager can be restarted against a new
-// root (when the session enters or leaves a worktree) without rewiring
+// adapters hold a Handle so the manager can be replaced (when the session
+// enters or leaves a worktree, or its server set changes) without rewiring
 // them.
 //
-// Handle has a single consumer at a time (the startRuntime restarter
-// goroutine, which serializes on the workspace broker's Subscribe
-// channel). Restart therefore builds newM outside the write lock for
-// latency: two concurrent Restarts would each construct a manager, and
-// the loser would discard its newM silently. If Handle ever fans out
-// to multiple consumers, move the NewManager call inside the write lock.
+// Set swaps in a manager someone else owns, such as one shared between
+// sessions. Restart builds its own: it constructs newM outside the write
+// lock for latency, so two concurrent Restarts would each construct a
+// manager and the loser would discard its newM silently. If Restart ever
+// gains concurrent callers, move the NewManager call inside the write lock.
 type Handle struct {
 	mu      sync.RWMutex
 	m       *Manager
@@ -55,6 +54,16 @@ func (h *Handle) Root() string {
 		return ""
 	}
 	return m.Root()
+}
+
+// Set points the handle at m, which may be nil, and returns the manager it
+// pointed at before. It neither runs m nor stops old: the caller owns both.
+func (h *Handle) Set(m *Manager) (old *Manager) {
+	h.mu.Lock()
+	old = h.m
+	h.m = m
+	h.mu.Unlock()
+	return old
 }
 
 // Restart builds a new Manager rooted at root, swaps it in, and returns

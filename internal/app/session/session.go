@@ -362,8 +362,14 @@ type State struct {
 	// pair itself changes. Nil when no manual/approved selection exists.
 	// Guarded by accessMu.
 	accessOverride *interaction.Defaults
-	turnIndex      int
-	snapshotter    Snapshotter
+	// interactionOwner is the ultimate owning State for a child actor. Nil
+	// for a root state (it owns itself). Immutable after construction.
+	interactionOwner *State
+	// interactionCeiling is the immutable intersected ceiling for a child
+	// actor. Immutable after construction.
+	interactionCeiling interaction.Ceiling
+	turnIndex          int
+	snapshotter        Snapshotter
 
 	// workspace is the session's current project/active-root pair and the
 	// broker rebinds are published on. Guarded by mu like the rest of this

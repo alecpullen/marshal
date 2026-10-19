@@ -59,10 +59,10 @@ func newTodoWriteTool(state *session.State) registry.Tool {
 			return registry.ToolResult{}, err
 		}
 		for i, item := range args.Todos {
-			// registry.ValidateArgs only checks that the arguments are a
-			// JSON object — the declared schema's "required" is not
-			// enforced — so content has to be checked here, the same way
-			// status already is.
+			// The schema's "required" only demands the key be present, not
+			// that it carry text, so an empty content string still has to be
+			// rejected here. (The status enum is enforced by the schema; the
+			// switch below only exists to give a friendlier message.)
 			if strings.TrimSpace(item.Content) == "" {
 				return registry.ToolResult{}, fmt.Errorf("todo %d has empty content; each item needs a non-empty %q string describing the task", i+1, "content")
 			}

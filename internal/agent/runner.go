@@ -67,10 +67,19 @@ var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations w
 
 var ErrModelOutputMalformed = errors.New("agent: model output could not be parsed after consecutive attempts")
 
-// defaultChatTimeout is the fallback used when ChatTimeout is unset —
-// notably by the ad-hoc agent.run subagent path, which never sets either
-// timeout field explicitly.
-const defaultChatTimeout = 5 * time.Minute
+// defaultIdleTimeout is how long a request may go without any streamed
+// bytes before it is treated as a stalled connection. Any delta — content,
+// reasoning, or tool-call — resets it, so a model that is thinking hard is
+// working, not stalled. Two minutes is generous for a first token even on a
+// slow reasoning model, and short enough that a dead socket is noticed while
+// the user is still watching.
+const defaultIdleTimeout = 2 * time.Minute
+
+// defaultRequestCeiling bounds a single request's total wall-clock time,
+// regardless of activity. It is the backstop for a model that streams
+// forever without finishing: a request that has not completed in fifteen
+// minutes is stuck, not slow.
+const defaultRequestCeiling = 15 * time.Minute
 
 // isLengthFinish reports whether the provider cut the response off at the
 // output-token limit ("length" for OpenAI-compatible providers, "max_tokens"
@@ -200,8 +209,9 @@ type MemoryProvider interface {
 //   - A *Runner IS safe for sequential re-use: after one RunTask returns,
 //     the next call starts from a clean per-turn state. Fields that persist
 //     across calls (Provider, Registry, Policy, State, Model, RouteResolver,
-//     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, ChatTimeout,
-//     ReconnectMaxWait, ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
+//     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, IdleTimeout,
+//     RequestCeiling, ReconnectMaxWait, ResponseFormat (seed), NativeTools,
+//     MaxParallelActions, MaxToolResultChars,
 //     ForceClass, SkillIndex, Role, WriteGate, UsageObserver,
 //     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleManager,
 //     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID,
@@ -268,12 +278,15 @@ type Runner struct {
 	// persisted, so a fresh session starts counting from zero.
 	thinkingLoopCounts map[string]int
 	thinkingLoopMu     sync.Mutex
-	// ChatTimeout bounds chatOnce's per-request context deadline for the
-	// model call itself. It is deliberately separate from approvals and
-	// questions, which carry no wall-clock timeout: a short chat ceiling
-	// must never cut off a slower-but-working completion from a
-	// large-context cloud model.
-	ChatTimeout time.Duration
+	// IdleTimeout bounds how long a request may go without any streamed
+	// bytes before it is treated as a stalled connection. Any delta —
+	// content, reasoning, or tool-call — resets it. Zero uses
+	// defaultIdleTimeout.
+	IdleTimeout time.Duration
+	// RequestCeiling bounds a single request's total wall-clock time,
+	// regardless of activity. It is the backstop for a model that streams
+	// forever without finishing. Zero uses defaultRequestCeiling.
+	RequestCeiling time.Duration
 	// ReconnectMaxWait bounds the total time waitForConnectivity will
 	// spend resending a dropped chat request before failing the turn.
 	// Zero uses defaultReconnectMaxWait.
@@ -676,7 +689,8 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.MaxToolIterations = other.MaxToolIterations
 	r.MaxRetries = other.MaxRetries
 	r.MaxTurnContextTokens = other.MaxTurnContextTokens
-	r.ChatTimeout = other.ChatTimeout
+	r.IdleTimeout = other.IdleTimeout
+	r.RequestCeiling = other.RequestCeiling
 	r.ReconnectMaxWait = other.ReconnectMaxWait
 	r.ResponseFormat = other.ResponseFormat
 	r.NativeTools = other.NativeTools

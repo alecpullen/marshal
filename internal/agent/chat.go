@@ -516,16 +516,26 @@ func isRetryableChatError(err error) bool {
 	return true
 }
 
-// effectiveChatTimeout returns the per-request timeout for the model call
-// itself, falling back to a sensible default if r.ChatTimeout is zero. It
-// is deliberately independent of approvals and questions, which carry no
-// wall-clock timeout — a runner must not have its chat completion silently
-// truncated by a separate approval ceiling.
-func (r *Runner) effectiveChatTimeout() time.Duration {
-	if r.ChatTimeout > 0 {
-		return r.ChatTimeout
+// effectiveIdleTimeout returns how long a request may go without any
+// streamed bytes before it is treated as a stalled connection, falling back
+// to defaultIdleTimeout when IdleTimeout is zero.
+func (r *Runner) effectiveIdleTimeout() time.Duration {
+	if r.IdleTimeout > 0 {
+		return r.IdleTimeout
 	}
-	return defaultChatTimeout
+	return defaultIdleTimeout
+}
+
+// effectiveRequestCeiling returns the total wall-clock bound for a single
+// request, falling back to defaultRequestCeiling when RequestCeiling is
+// zero. It is deliberately independent of approvals and questions, which
+// carry no wall-clock timeout — a runner must not have its chat completion
+// silently truncated by a separate approval ceiling.
+func (r *Runner) effectiveRequestCeiling() time.Duration {
+	if r.RequestCeiling > 0 {
+		return r.RequestCeiling
+	}
+	return defaultRequestCeiling
 }
 
 // effectiveReconnectMaxWait returns the reconnect cap to use, falling back
@@ -570,7 +580,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	messages = r.withWorkingState(messages)
 
 	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, r.effectiveChatTimeout())
+	ctx, cancel = context.WithTimeout(ctx, r.effectiveRequestCeiling())
 	defer cancel()
 
 	// Admission: an operation the user already interrupted must not reach the

@@ -689,7 +689,7 @@ func TestChatOnceTimesOutPerRequest(t *testing.T) {
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
 	runner := NewRunner(&blockingProvider{}, reg, pol, state, "test-model")
-	runner.ChatTimeout = 50 * time.Millisecond
+	runner.RequestCeiling = 50 * time.Millisecond
 
 	start := time.Now()
 	_, err := runner.chatOnce(context.Background(), &blockingProvider{}, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false)
@@ -703,36 +703,36 @@ func TestChatOnceTimesOutPerRequest(t *testing.T) {
 	}
 }
 
-// TestChatOnceBoundedByChatTimeout is the regression test for the timeout
+// TestChatOnceBoundedByRequestCeiling is the regression test for the timeout
 // conflation bug: a short approval/question wait ceiling must never cut off
-// a slower-but-working chat completion. ChatTimeout is the only field that
+// a slower-but-working chat completion. RequestCeiling is the only field that
 // should bound chatOnce.
-func TestChatOnceBoundedByChatTimeout(t *testing.T) {
+func TestChatOnceBoundedByRequestCeiling(t *testing.T) {
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
 	prov := &delayedProvider{delay: 100 * time.Millisecond}
 	runner := NewRunner(prov, reg, pol, state, "test-model")
-	runner.ChatTimeout = 500 * time.Millisecond
+	runner.RequestCeiling = 500 * time.Millisecond
 
 	_, err := runner.chatOnce(context.Background(), prov, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false)
 	if err != nil {
-		t.Fatalf("chatOnce err = %v, want success within ChatTimeout", err)
+		t.Fatalf("chatOnce err = %v, want success within RequestCeiling", err)
 	}
 }
 
-// TestChatOnceDefaultsChatTimeoutWhenUnset covers the ad-hoc subagent path
+// TestChatOnceDefaultsRequestCeilingWhenUnset covers the ad-hoc subagent path
 // (internal/app/app.go's agent.run child runner), which never sets a timeout
 // at all. chatOnce must still apply a bounded default rather than blocking
 // forever on a stuck connection.
-func TestChatOnceDefaultsChatTimeoutWhenUnset(t *testing.T) {
+func TestChatOnceDefaultsRequestCeilingWhenUnset(t *testing.T) {
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
 	runner := NewRunner(&blockingProvider{}, reg, pol, state, "test-model")
 
-	if got := runner.effectiveChatTimeout(); got <= 0 {
-		t.Fatalf("effectiveChatTimeout() = %v, want a positive default when ChatTimeout is unset", got)
+	if got := runner.effectiveRequestCeiling(); got <= 0 {
+		t.Fatalf("effectiveRequestCeiling() = %v, want a positive default when RequestCeiling is unset", got)
 	}
 }
 

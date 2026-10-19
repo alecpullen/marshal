@@ -17,6 +17,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/progress"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -372,6 +373,9 @@ type LaunchSpec struct {
 	// execution's life and a later config reload cannot redirect it. Nil means no
 	// observer: the execution retains raw output only.
 	Progress *progress.Config
+	// Admit, when non-nil, acquires the admission for this exact attempt
+	// before the manager lock and commits it immediately before insertion.
+	Admit func(context.Context) (*policy.Admission, error)
 }
 
 // WaitEndReason explains why a foreground wait stopped waiting. It never
@@ -984,6 +988,15 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 
 	m.evictCompleted()
 
+	var admission *policy.Admission
+	if spec.Admit != nil {
+		a, err := spec.Admit(ctx)
+		if err != nil {
+			return JobInfo{}, err
+		}
+		admission = a
+	}
+
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -1115,12 +1128,24 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 		lease = l
 	}
 
+	if admission != nil {
+		if err := admission.Commit(); err != nil {
+			m.mu.Unlock()
+			jobCancel()
+			return JobInfo{}, err
+		}
+	}
+
 	m.jobs[id] = j
 	m.active++
 	// Increment wg under the lock so Shutdown either sees the counted
 	// goroutine or rejects the Launch outright.
 	m.wg.Add(1)
 	m.mu.Unlock()
+
+	if admission != nil {
+		admission.Release()
+	}
 
 	// Resolve the working directory before the goroutine starts: a later
 	// workspace or config change must not redirect an admitted command. dirFn

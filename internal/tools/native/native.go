@@ -18,6 +18,7 @@ import (
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/worktree"
 )
@@ -108,6 +109,10 @@ type Options struct {
 	// guardrail check is performed (the policy engine already ran
 	// Evaluate upstream in the agent loop).
 	Guardrail func(command string, system bool) error
+
+	// CommandAdmission admits one managed-command attempt. Required on the
+	// final execution path; a nil callback fails closed.
+	CommandAdmission func(context.Context, policy.CommandAttempt) (*policy.Admission, error)
 
 	// SudoPolicy validates a bare command submitted to shell.sudo. Wired to
 	// (*policy.PolicyEngine).CheckPrivileged in app.go. Optional; when nil,

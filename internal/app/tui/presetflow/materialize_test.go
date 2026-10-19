@@ -70,6 +70,30 @@ func TestMaterializeNeverErasesSavedLimitsWithUnknownZeros(t *testing.T) {
 	}
 }
 
+func TestMaterializeNeverShrinksSavedLimitsWithSmallerDiscovery(t *testing.T) {
+	cfg := config.Default()
+	mustMaterialize(t, &cfg, "ollama-cloud", "glm-5.3", "https://ollama.example/v1",
+		Limits{ContextWindow: 1000000, MaxOutputTokens: 128000})
+
+	// Re-picking the model when discovery reports a smaller default (a
+	// stale cache, a provider reporting its base limits) must not clobber
+	// the hand-set figures.
+	name := mustMaterialize(t, &cfg, "ollama-cloud", "glm-5.3", "https://ollama.example/v1",
+		Limits{ContextWindow: 200000, MaxOutputTokens: 64000})
+	preset := cfg.Models.Presets[name]
+	if preset.ContextWindow != 1000000 || preset.MaxOutputTokens != 128000 {
+		t.Errorf("preset limits = %+v, want unchanged 1000000/128000", preset)
+	}
+
+	// A larger discovered value is an upgrade and is adopted.
+	name = mustMaterialize(t, &cfg, "ollama-cloud", "glm-5.3", "https://ollama.example/v1",
+		Limits{ContextWindow: 2000000, MaxOutputTokens: 256000})
+	preset = cfg.Models.Presets[name]
+	if preset.ContextWindow != 2000000 || preset.MaxOutputTokens != 256000 {
+		t.Errorf("preset limits = %+v, want upgraded 2000000/256000", preset)
+	}
+}
+
 func TestMaterializeIsIdempotentOnName(t *testing.T) {
 	cfg := config.Default()
 	mustMaterialize(t, &cfg, "ollama", "qwen3-coder", "http://localhost:11434/v1", Limits{ContextWindow: 1000})

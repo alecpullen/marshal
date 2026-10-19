@@ -15,7 +15,10 @@ import (
 //
 // Zero fields in lim never overwrite a previously-saved non-zero preset
 // field — re-materializing a model whose limits came back unknown this
-// time must not erase figures confirmed earlier.
+// time must not erase figures confirmed earlier. A smaller discovered
+// value never shrinks an explicit preset figure either: re-picking a
+// model whose provider reports a smaller default (or whose discovered
+// cache is stale) must not clobber a hand-set context window.
 func Materialize(cfg *config.Config, providerName, modelID, baseURL string, lim Limits) (string, error) {
 	name := providerName + "/" + modelID
 	if cfg.Models.Presets == nil {
@@ -36,10 +39,13 @@ func Materialize(cfg *config.Config, providerName, modelID, baseURL string, lim 
 			LocalOnly: probe.IsLocalhost(baseURL),
 		}
 	}
-	if lim.ContextWindow != 0 {
+	// Fill an empty field, adopt an upgrade, never shrink: discovery can
+	// report a smaller window than an explicit preset (stale cache,
+	// provider default), and overwriting it made hand-set values revert.
+	if lim.ContextWindow > preset.ContextWindow {
 		preset.ContextWindow = lim.ContextWindow
 	}
-	if lim.MaxOutputTokens != 0 {
+	if lim.MaxOutputTokens > preset.MaxOutputTokens {
 		preset.MaxOutputTokens = lim.MaxOutputTokens
 	}
 	if lim.ToolCalling != nil {

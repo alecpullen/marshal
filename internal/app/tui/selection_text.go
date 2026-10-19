@@ -53,6 +53,10 @@ type rowSpan struct {
 	bare bool
 }
 
+// spinnerFrames is the spinner's frame set, hoisted so isGutterGlyph does
+// not rebuild it for every row it scans during a drag.
+var spinnerFrames = NewSpinner().frames
+
 // isGutterGlyph reports whether s is a glyph the transcript draws in a
 // gutter, including the spinner's frames.
 func isGutterGlyph(s string) bool {
@@ -63,7 +67,7 @@ func isGutterGlyph(s string) bool {
 		glyph.Brand, glyph.CustomAgent, glyph.Job, glyph.Watch:
 		return true
 	}
-	return slices.Contains(NewSpinner().frames, s)
+	return slices.Contains(spinnerFrames, s)
 }
 
 // spanOf finds the copyable span of one row rendered at width.
@@ -168,6 +172,14 @@ func selectionText(rows []selRow, from, to selPos, width int) string {
 			if t, ok := trimRules(p.text); ok {
 				p.text, p.drop = t, t == ""
 			}
+		} else if !p.drop && !p.gap {
+			// The selection's columns do not reach this row's copyable
+			// span — a drag endpoint past a short row's end, or a
+			// rail-only continuation row. No text in it is copied, but
+			// the screen still shows a line break there, so it counts
+			// as layout, like a blank row: one break, collapsed when
+			// the neighbouring lines are already blank.
+			p.gap = true
 		}
 		pieces = append(pieces, p)
 	}

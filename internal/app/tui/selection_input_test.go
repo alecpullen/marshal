@@ -197,3 +197,108 @@ func TestNoSelectionWithoutMouseCapture(t *testing.T) {
 		t.Fatalf("with mouse capture off: sel=%v writes=%q, want nothing", m.sel, clip.writes)
 	}
 }
+
+func TestCaptureTurnedOffMidDragEndsTheDrag(t *testing.T) {
+	m, _ := selectionFixture(t)
+	y := screenY(&m, lineOf(t, &m, "Model switched"))
+	next, _ := m.Update(tea.MouseClickMsg{X: 3, Y: y, Button: tea.MouseLeft})
+	next, _ = next.Update(tea.MouseMotionMsg{X: 10, Y: y, Button: tea.MouseLeft})
+	mm := asModel(t, next)
+	if !mm.dragging() {
+		t.Fatal("setup: the drag did not start")
+	}
+	// A config reload can turn capture off mid-drag without any content
+	// change. The refresh must end the drag outright: the terminal that
+	// took the mouse back never delivers the release that would.
+	mm.state.Config.TUI.MouseCapture = false
+	mm.refreshViewport()
+	if mm.sel != nil || mm.press != nil || mm.drag.ticking {
+		t.Fatalf("capture off mid-drag left state behind: sel=%v press=%v ticking=%v",
+			mm.sel != nil, mm.press != nil, mm.drag.ticking)
+	}
+}
+
+func TestReleaseStopsEdgeAutoScroll(t *testing.T) {
+	m, _ := selectionFixture(t)
+	m.resize(80, 30)
+	m.viewportFollow = false
+	m.invalidateTranscript()
+	m.refreshViewport()
+	m.viewport.GotoTop()
+	top := m.scrollHintRows() + m.breadcrumbRows()
+	next, _ := m.Update(tea.MouseClickMsg{X: 3, Y: top, Button: tea.MouseLeft})
+	below := top + m.viewport.Height() + 1
+	next, cmd := next.Update(tea.MouseMotionMsg{X: 3, Y: below, Button: tea.MouseLeft})
+	if cmd == nil {
+		t.Fatal("setup: dragging past the bottom armed no auto-scroll tick")
+	}
+	next, _ = next.Update(tea.MouseReleaseMsg{X: 3, Y: below, Button: tea.MouseLeft})
+	mm := asModel(t, next)
+	if mm.dragging() {
+		t.Fatal("setup: the release did not end the drag")
+	}
+	offset := mm.viewport.YOffset()
+	if cmd := mm.handleSelScrollTick(selScrollTickMsg{gen: mm.drag.gen}); cmd != nil {
+		t.Fatal("a tick arriving after the release re-armed auto-scroll")
+	}
+	if mm.viewport.YOffset() != offset {
+		t.Fatalf("a tick arriving after the release scrolled the view: %d→%d", offset, mm.viewport.YOffset())
+	}
+}
+
+func TestReleaseOutsideTheViewportEndsTheDragWithoutClicking(t *testing.T) {
+	m, clip := selectionFixture(t)
+	y := screenY(&m, lineOf(t, &m, "thought for 2s"))
+	next, _ := m.Update(tea.MouseClickMsg{X: 8, Y: y, Button: tea.MouseLeft})
+	next, _ = next.Update(tea.MouseMotionMsg{X: 10, Y: y + 1, Button: tea.MouseLeft})
+	mm := asModel(t, next)
+	if !mm.dragging() {
+		t.Fatal("setup: the drag did not start")
+	}
+	below := mm.scrollHintRows() + mm.breadcrumbRows() + mm.viewport.Height() + 2
+	next, cmd := next.Update(tea.MouseReleaseMsg{X: 10, Y: below, Button: tea.MouseLeft})
+	mm = asModel(t, next)
+	for _, msg := range flattenCmd(cmd) {
+		next, _ := mm.Update(msg)
+		mm = asModel(t, next)
+	}
+	if mm.dragging() || mm.press != nil {
+		t.Fatal("the release outside the viewport must end the drag")
+	}
+	if len(clip.writes) != 1 {
+		t.Fatalf("clipboard writes = %d, want the drag's copy on release", len(clip.writes))
+	}
+	// A click on this row would have expanded the thinking row; a drag's
+	// release must not act as one.
+	if strings.Contains(stripANSI(strings.Join(mm.contentLines, "\n")), "private reasoning text") {
+		t.Fatal("the release outside the viewport acted as a click on the press row")
+	}
+}
+
+func TestClickRoutesThroughScrollTranscriptToo(t *testing.T) {
+	// While an approval, question, sudo or skill-gate panel is open,
+	// update routes the four mouse message types through
+	// scrollTranscript. The press and release there share the same drag
+	// state as the direct path, so a click must still act on release.
+	m, _ := selectionFixture(t)
+	y := screenY(&m, lineOf(t, &m, "thought for 2s"))
+	next, cmd, handled := m.scrollTranscript(tea.MouseClickMsg{X: 8, Y: y, Button: tea.MouseLeft})
+	if !handled || cmd != nil {
+		t.Fatalf("press through scrollTranscript: handled=%v cmd=%v", handled, cmd)
+	}
+	mm := asModel(t, next)
+	if mm.press == nil {
+		t.Fatal("the press was not recorded through scrollTranscript")
+	}
+	next, _, handled = mm.scrollTranscript(tea.MouseReleaseMsg{X: 8, Y: y, Button: tea.MouseLeft})
+	if !handled {
+		t.Fatal("the release was not handled")
+	}
+	mm = asModel(t, next)
+	if !strings.Contains(stripANSI(strings.Join(mm.contentLines, "\n")), "private reasoning text") {
+		t.Fatal("a click through scrollTranscript did not toggle the row")
+	}
+	if mm.sel != nil || mm.press != nil {
+		t.Fatal("the click left selection state behind")
+	}
+}

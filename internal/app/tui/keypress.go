@@ -235,6 +235,11 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// block of output previously meant editing [tui].mouse_capture and
 		// restarting, or knowing the terminal's override modifier.
 		m.mouseReleased = !m.mouseReleased
+		// The handover drops any selection and pending press outright:
+		// the side that just lost the mouse never delivers the release
+		// that would end them, and the refresh below revalidates a
+		// selection only when the notice changes the content signature.
+		m.clearSelection()
 		verb := "released to the terminal — click-drag to select, keys to scroll (PgUp/PgDn/Ctrl+U/Ctrl+D/End)"
 		if !m.mouseReleased {
 			verb = "captured — wheel scrolls, drag selects and copies"

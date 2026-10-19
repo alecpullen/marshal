@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func TestEscClearsTheSelectionBeforeBrowsing(t *testing.T) {
@@ -46,5 +48,22 @@ func TestCtrlSClearsTheSelectionAndNamesDragToCopy(t *testing.T) {
 	msgs := m.state.Messages()
 	if last := msgs[len(msgs)-1].Content; !strings.Contains(last, "drag selects and copies") {
 		t.Fatalf("re-capture notice = %q, want it to say drag selects and copies", last)
+	}
+}
+
+func TestCtrlSDropsAPendingPress(t *testing.T) {
+	m, _ := selectionFixture(t)
+	y := screenY(&m, lineOf(t, &m, "Model switched"))
+	next, _ := m.Update(tea.MouseClickMsg{X: 3, Y: y, Button: tea.MouseLeft})
+	mm := asModel(t, next)
+	if mm.press == nil {
+		t.Fatal("setup: the press was not recorded")
+	}
+	// The side that just lost the mouse never delivers the release, so
+	// the toggle must drop the press outright rather than wait for a
+	// rebuild that may short-circuit.
+	mm = pressKeys(mm, "ctrl+s")
+	if mm.press != nil || mm.sel != nil {
+		t.Fatal("Ctrl+S must drop a pending press and any selection with it")
 	}
 }

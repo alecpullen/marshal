@@ -161,6 +161,76 @@ func TestSelectionTextOrdersReversedEndpoints(t *testing.T) {
 	}
 }
 
+func TestSelectionTextCollapsesRowsTheColumnsDoNotReach(t *testing.T) {
+	// A rail-only continuation row has nothing after its glyph, so the
+	// selection's columns never reach its copyable span. No text in it is
+	// copied, but the screen shows a line break there: it counts as
+	// layout, like a blank row — one break, and consecutive ones
+	// collapse instead of stacking blank lines.
+	rows := rowsOf(0,
+		" ❯ alpha",
+		" ▍",
+		" ▍",
+		"   beta",
+	)
+	if got, want := all(rows, 80), "alpha\n\nbeta"; got != want {
+		t.Fatalf("copied %q, want %q", got, want)
+	}
+}
+
+func TestSelectionTextOfASingleCell(t *testing.T) {
+	rows := rowsOf(0, " ❯ copy me")
+	if got := selectionText(rows, selPos{0, 3}, selPos{0, 3}, 80); got != "c" {
+		t.Fatalf("a single content cell copied %q, want %q", got, "c")
+	}
+	// The gutter glyph, the spaces around it and the empty area past the
+	// text are never highlighted, and copy as nothing.
+	for _, col := range []int{0, 1, 2, 30} {
+		if got := selectionText(rows, selPos{0, col}, selPos{0, col}, 80); got != "" {
+			t.Fatalf("cell %d copied %q, want nothing", col, got)
+		}
+	}
+}
+
+func TestSpanOfBoundsTheGutterScan(t *testing.T) {
+	// A glyph-looking character at or beyond maxGutterCols is content
+	// wrapped deep in a block, not a gutter.
+	deep := strings.Repeat(" ", 12) + "✓ done"
+	if sp := spanOf(selRow{text: deep}, 80); !sp.bare || sp.start != 0 || sp.text != 12 {
+		t.Fatalf("span = %+v, want a bare row whose text starts at column %d", sp, maxGutterCols)
+	}
+	// Within the scan depth the same character reads as a gutter glyph
+	// and is stripped with its space.
+	shallow := strings.Repeat(" ", 11) + "✓ done"
+	if sp := spanOf(selRow{text: shallow}, 80); sp.bare || sp.start != 13 {
+		t.Fatalf("span = %+v, want the glyph and its space stripped at column %d", sp, maxGutterCols)
+	}
+}
+
+func TestSpanOfMetaCutTakesTheLastTwoSpaceGap(t *testing.T) {
+	// The meta cut takes everything after the last run of two spaces as
+	// right-aligned meta. A headline holding a double space survives when
+	// real meta follows — the meta gap is the later run — and is cut at
+	// its own double space when nothing follows: the accepted failure
+	// mode of the one-gap heuristic.
+	withMeta := " ✓ review the  change" + strings.Repeat(" ", 48) + "reviewer #1"
+	if w := len([]rune(withMeta)); w != 80 {
+		t.Fatalf("fixture width %d, want 80", w)
+	}
+	row := selRow{text: withMeta, metaHead: true, segment: 0}
+	if got := all([]selRow{row}, 80); got != "review the  change" {
+		t.Fatalf("copied %q, want the headline with its double space kept", got)
+	}
+	alone := " ✓ review the  change" + strings.Repeat("x", 59)
+	if w := len([]rune(alone)); w != 80 {
+		t.Fatalf("fixture width %d, want 80", w)
+	}
+	row = selRow{text: alone, metaHead: true, segment: 0}
+	if got := all([]selRow{row}, 80); got != "review the" {
+		t.Fatalf("copied %q, want the cut at the headline's own double space", got)
+	}
+}
+
 // cutCols returns display columns [lo, hi) of s.
 func cutCols(s string, lo, hi int) string {
 	r := []rune(s)

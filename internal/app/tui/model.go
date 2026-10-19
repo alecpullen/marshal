@@ -2551,7 +2551,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.closeSessionSheet()
 		return m.dispatchCommand("/" + msg.Command)
 	case selScrollTickMsg:
-		return m, m.handleSelScrollTick(msg)
+		cmd := m.handleSelScrollTick(msg)
+		return m, cmd
 	case copyDoneMsg:
 		cmd := m.handleCopyDone(msg)
 		return m, cmd

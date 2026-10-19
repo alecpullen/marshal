@@ -108,6 +108,10 @@ func (m *Model) handleTranscriptMouse(msg tea.Msg) (tea.Cmd, bool) {
 			return m.finishSelection(), true
 		}
 		m.sel = nil
+		// A rebuild can clear a selection mid-drag (its block vanished),
+		// so this release can find a press with no selection and falls
+		// through to the click path, toggling the row the drag started
+		// on. Rare, and simpler than stranding the press.
 		if cmd, handled := m.handleTranscriptClick(press); handled {
 			return cmd, true
 		}

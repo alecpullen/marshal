@@ -21,10 +21,17 @@ const bulletIndent = 4
 // path it read, the command it ran, the query it searched for.
 func toolTarget(event registry.AuditEvent) string { return viewmodel.ToolTarget(event) }
 
-// toolGroupHead is a collapsed group's head before truncation: the plural
-// tool name, the count and every target.
+// toolGroupHeadLine is a group's heading before truncation: the plural
+// tool name and the count. Collapsed and expanded heads both start from
+// it; only the collapsed head appends the targets.
+func toolGroupHeadLine(events []registry.AuditEvent) string {
+	return fmt.Sprintf("%s: ×%d", pluralizeToolName(events[0].ToolName), len(events))
+}
+
+// toolGroupHead is a collapsed group's head before truncation: the head
+// line and every target.
 func toolGroupHead(events []registry.AuditEvent) string {
-	head := fmt.Sprintf("%s: ×%d", pluralizeToolName(events[0].ToolName), len(events))
+	head := toolGroupHeadLine(events)
 	targets := make([]string, 0, len(events))
 	for _, ev := range events {
 		if t := toolTarget(ev); t != "" {
@@ -43,7 +50,7 @@ func toolGroupHead(events []registry.AuditEvent) string {
 // adding a bullet per call. Expanded it is a heading line followed by bullet
 // points, one per call, showing each target and result summary.
 func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) string {
-	head := fmt.Sprintf("%s: ×%d", pluralizeToolName(events[0].ToolName), len(events))
+	head := toolGroupHeadLine(events)
 	gutter := gutterPrefix(toolCategoryGlyph(events[0].ToolName), dimColor)
 	var b strings.Builder
 

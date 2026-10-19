@@ -52,7 +52,6 @@ Summary:
 1. raised the timeout
   • nested item
 
-
   func g() {
           if x {
                   return
@@ -182,5 +181,18 @@ func TestSelectionClearsWhenMouseCaptureTurnsOff(t *testing.T) {
 	m.refreshViewport()
 	if m.sel != nil {
 		t.Fatal("a selection must not outlive mouse capture")
+	}
+}
+
+func TestSelectionClearsWhenCaptureTurnsOffWithoutAContentChange(t *testing.T) {
+	m, _ := selectionFixture(t)
+	l := lineOf(t, &m, "Model switched")
+	selectRows(t, &m, selPos{l, 0}, selPos{l, 79})
+	// No invalidate: the content signature still matches, so the rebuild
+	// in refreshViewport short-circuits before its revalidation runs.
+	m.state.Config.TUI.MouseCapture = false
+	m.refreshViewport()
+	if m.sel != nil {
+		t.Fatal("capture turning off without a content change must clear the selection")
 	}
 }

@@ -31,9 +31,10 @@ type FooterHints struct {
 	// MouseReleased reports that the mouse currently belongs to the terminal
 	// (Ctrl+S). The hint's label flips on it: a user who has released the
 	// mouse needs to be told how to get wheel scrolling back, and a user who
-	// has not needs to be told selection is one key away.
+	// has not needs to be told copying is a drag away.
 	MouseReleased bool
-	// SuppressMouseHint drops the Ctrl+S hint. The status line renders the
+	// SuppressMouseHint drops the mouse hint (drag copy while captured,
+	// Ctrl+S scroll while released). The status line renders the
 	// hint cluster all-or-nothing — it is one right-aligned string, dropped
 	// whole when it will not fit — so an unconditional extra hint pushes the
 	// entire cluster (including "clear queue") off a narrow terminal. The

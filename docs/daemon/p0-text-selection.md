@@ -55,6 +55,14 @@ P0 is the gate for keeping the TUI in Go (`design.md` §3).
 - **F5.** Anchoring by node ID plus text offset, so a selection survives
   re-layout (B2 clears it today).
 - **F6.** Extending the selection from the keyboard.
+- **F7.** A drag-start jiggle threshold. Any motion to a different cell
+  starts a drag, so a one- or two-cell trackpad wiggle over a row turns
+  a click into a tiny copy that clobbers the clipboard. A threshold
+  needs deciding against real trackpads.
+- **F8.** Telling a release whose selection a mid-drag rebuild cleared
+  (its block vanished) apart from a click. Today it falls through to
+  the click path and can toggle the row the drag started on. Rare,
+  accepted, and commented at the release handler.
 
 `tui.mouse_capture` and Ctrl+S are unchanged.
 
@@ -205,6 +213,11 @@ Known limits, left for follow-ups:
 - Glamour's padding around inline code copies as double spaces.
 - A content row inside a bare run that starts with a gutter glyph (such as
   `✓ ok` in test output) loses that glyph.
+- The meta cut takes everything after the last run of two spaces, so a
+  meta-head headline that fills the frame and contains a double space is
+  cut at its own gap.
+- Code lines in tool bodies render truncated and copy as shown; only
+  collapsed tool and tool-group heads recover their full text (rule 8).
 
 **A partly selected row** starts at the selection's start column. A start
 column inside decoration is moved to the row's copy start.
@@ -227,9 +240,13 @@ copied in full.
   the mouse is captured, in place of `Ctrl+S select`; released, it still
   shows `Ctrl+S scroll`. There is no key cheatsheet to update: `/help` lists
   commands only.
-- **Ctrl+S needs no explicit clear.** Its notice rebuilds the transcript,
-  and the rebuild clears any selection once the mouse is no longer
-  captured (B2).
+- **Ctrl+S clears directly.** The toggle drops any selection and any
+  press awaiting its release before the notice rebuilds: the side that
+  just lost the mouse never delivers the release that would end them.
+  `refreshViewport` also clears that state ahead of its
+  content-signature early return, so capture lost without a content
+  change (a config reload turning `tui.mouse_capture` off) cannot strand
+  a selection or a half-finished drag either (B2).
 
 ## Design
 
@@ -320,7 +337,8 @@ one commit per task on top of base `907c67ff` (`main`):
   auto-scroll
 - `74ea9fff` — task 5, Esc, Ctrl+S and drill
 - `a8fc4393` — task 6, footer hint
-- this commit — task 7, verification and docs
+- `f22b8f64` — task 7, verification and docs
+- this commit — branch review follow-ups
 
 **Automated verification.** `CGO_ENABLED=1 go build ./cmd/marshal`,
 `go vet ./...` and the whole `./internal/app/tui/...` tree pass, and
@@ -356,8 +374,41 @@ when" stays open.
 - `design.md`'s status line no longer says "Phase specs and plans are not
   yet written" (committing the P0 spec and plan made it false), and §7's
   P0 row is marked implemented with the manual check pending.
-- Checked during execution, no code change: `return m,
-  m.handleSelScrollTick(msg)` in the value-receiver `update` returns the
-  mutated model on this toolchain (the call is evaluated before the first
-  return operand is copied), so edge auto-scroll through the real event
-  loop behaves as the plan intends.
+- Checked during execution: `return m, m.handleSelScrollTick(msg)` in
+  the value-receiver `update` returned the mutated model on this
+  toolchain (the call is evaluated before the first return operand is
+  copied), so edge auto-scroll through the real event loop behaved as
+  the plan intends. The review follow-ups pass below rewrote it as two
+  statements, so the code no longer relies on that.
+
+**Branch review follow-ups (2026-10-19).** Three reviewers — the copier,
+the selection state and input, and the help/docs layer — each returned
+approve-with-nits. One pass addressed them:
+
+- The copier no longer stacks blank lines for rows the selection's
+  columns do not reach (rail-only continuation rows, a drag endpoint
+  past a short row's end): such a row now counts as layout and collapses
+  like a blank row (rule 9), so the whole-transcript fixture pins one
+  blank line around the answer's code block instead of two. Meta rows
+  still copy as no line at all (rule 5).
+- Ctrl+S clears the selection and any pending press directly, and
+  `refreshViewport` clears the same state ahead of its
+  content-signature early return, so capture lost without a content
+  change (a config reload turning `tui.mouse_capture` off) can no
+  longer strand a selection or a half-finished drag. B7 above now
+  describes the direct clear.
+- The stale `drag copy` comments (help.go, status.go) were reworded;
+  the spinner's frames were hoisted out of the per-row gutter scan;
+  `toolGroupHeadLine` was split out of `toolGroupHead` so the expanded
+  group head shares one expression.
+- The review's named test gaps were filled: single-cell copies, the
+  maxGutterCols scan boundary, the meta-cut double-space case, release
+  stopping edge auto-scroll, a click routed through `scrollTranscript`,
+  a release outside the viewport ending a drag without clicking,
+  capture turned off mid-drag, and Ctrl+S dropping a pending press.
+
+Deferred as F7 and F8: the drag-start jiggle threshold, and the
+mid-drag-clear release fallthrough (commented in code). Also noted by
+review, pre-existing and unchanged: with `tui.mouse_capture = false` in
+config the footer still shows `Ctrl+S scroll`, which toggles nothing
+useful in that state.

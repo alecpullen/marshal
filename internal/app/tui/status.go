@@ -97,7 +97,7 @@ func (m Model) renderStatusLine(width int) string {
 		fits := func(s string) bool {
 			return visibleRunes(left)+visibleRunes(s)+statusHorizontalPadding+statusMinGap <= width
 		}
-		// Shed the optional Ctrl+S mouse hint before sacrificing the whole
+		// Shed the optional mouse hint before sacrificing the whole
 		// cluster: dropping "clear queue" to keep a mouse-mode reminder is
 		// the wrong trade, and the cluster is one string that goes as a unit.
 		if !fits(right) {

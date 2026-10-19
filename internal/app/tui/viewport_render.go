@@ -52,6 +52,14 @@ func (m *Model) transcriptSource() (state *session.State, drilling bool) {
 // A spinner tick therefore costs rendering the live nodes, not the whole
 // history.
 func (m *Model) refreshViewport() {
+	// A selection cannot outlive the mouse that paints it, and neither
+	// can a press waiting for its release. The signature check below can
+	// short-circuit the rebuild — and with it the revalidation at the
+	// end — so capture lost without a content change (Ctrl+S, or a
+	// config reload turning tui.mouse_capture off) is cleared here.
+	if (m.sel != nil || m.press != nil) && !m.selectionEnabled() {
+		m.clearSelection()
+	}
 	m.updateViewportHeight()
 	transcriptState, drilling := m.transcriptSource()
 

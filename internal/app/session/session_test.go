@@ -17,6 +17,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
@@ -2368,20 +2369,24 @@ func TestSetActiveToolCallArgsNoActiveCallIsNoop(t *testing.T) {
 // TUI's seeded-mode label relies on — instead of failing the session.
 func TestAccessStateReadsModeAndSystemTogether(t *testing.T) {
 	s := newTestState()
-	if got := s.AccessState(); got.Mode != "default" || got.System {
-		t.Fatalf("fresh AccessState() = %+v, want {Mode: default, System: false}", got)
+	if got := s.AccessState(); got.Mode != "copilot" || got.System {
+		t.Fatalf("fresh AccessState() = %+v, want {Mode: copilot, System: false}", got)
 	}
-	for _, tc := range []struct{ configured, want string }{
-		{"copilot", "copilot"},
-		{" Plan ", "plan"},
-		{"", "default"},
-		{"nonsense", "default"},
+	for _, tc := range []struct {
+		mode interaction.Mode
+		auto bool
+		want string
+	}{
+		{interaction.ModeAct, false, "copilot"},
+		{interaction.ModeAct, true, "auto"},
+		{interaction.ModeAsk, false, "default"},
 	} {
 		cfg := config.Default()
-		cfg.Agent.ApprovalMode = tc.configured
+		cfg.Agent.Mode = tc.mode
+		cfg.Agent.Auto = tc.auto
 		seeded := New(cfg, t.TempDir(), time.Unix(100, 0), Persistence{})
 		if got := seeded.AccessState(); got.Mode != tc.want || got.System {
-			t.Errorf("configured %q: AccessState() = %+v, want {Mode: %s, System: false}", tc.configured, got, tc.want)
+			t.Errorf("configured %q/%v: AccessState() = %+v, want {Mode: %s, System: false}", tc.mode, tc.auto, got, tc.want)
 		}
 	}
 
@@ -2392,8 +2397,10 @@ func TestAccessStateReadsModeAndSystemTogether(t *testing.T) {
 	if got := s.AccessState(); got.Mode != "auto" || !got.System {
 		t.Fatalf("AccessState() = %+v, want {Mode: auto, System: true}", got)
 	}
-	if got := s.Config.Agent.ApprovalMode; got != "auto" {
-		t.Fatalf("State.Config.Agent.ApprovalMode = %q, want the effective mode", got)
+	// The effective tuple is no longer mirrored into Config; the configured
+	// projection stays Act.
+	if got := s.Config.Agent.Mode; got != interaction.ModeAct {
+		t.Fatalf("State.Config.Agent.Mode = %q, want the configured act", got)
 	}
 }
 
@@ -2432,23 +2439,23 @@ func TestExplicitConfiguredModeChangeClearsOverride(t *testing.T) {
 	}
 
 	changed := config.Default()
-	changed.Agent.ApprovalMode = "copilot"
+	changed.Agent.Mode = interaction.ModeAsk
 	s.RebaseSessionConfig(changed)
 
-	if got := s.AccessState().Mode; got != "copilot" {
-		t.Fatalf("mode after an explicit configured change = %q, want copilot", got)
+	if got := s.AccessState().Mode; got != "default" {
+		t.Fatalf("mode after an explicit configured change = %q, want default", got)
 	}
 	// The stale auto override is gone: with it still set, ModeForConfig
-	// compares the unchanged configured value and would return auto.
-	if got := s.ModeForConfig(changed); got != "copilot" {
-		t.Fatalf("ModeForConfig(%q) = %q, want copilot — the auto override survived an explicit change", changed.Agent.ApprovalMode, got)
+	// compares the unchanged configured pair and would return auto.
+	if got := s.ModeForConfig(changed); got != "default" {
+		t.Fatalf("ModeForConfig(%q) = %q, want default — the auto override survived an explicit change", changed.Agent.Mode, got)
 	}
 
 	later := changed
 	later.Agent.NarrationPrompt = !later.Agent.NarrationPrompt
 	s.RebaseSessionConfig(later)
-	if got := s.AccessState().Mode; got != "copilot" {
-		t.Fatalf("mode after a later unrelated reload = %q, want copilot", got)
+	if got := s.AccessState().Mode; got != "default" {
+		t.Fatalf("mode after a later unrelated reload = %q, want default", got)
 	}
 }
 
@@ -2475,8 +2482,8 @@ func TestSessionModeFailureDoesNotMutate(t *testing.T) {
 	if got := s.AccessState(); got != before {
 		t.Fatalf("AccessState() = %+v after rejected selections, want %+v", got, before)
 	}
-	if got := s.ModeForConfig(config.Default()); got != "default" {
-		t.Fatalf("ModeForConfig() = %q after rejected selections, want default (no override)", got)
+	if got := s.ModeForConfig(config.Default()); got != "copilot" {
+		t.Fatalf("ModeForConfig() = %q after rejected selections, want copilot (configured default, no override)", got)
 	}
 
 	s.BeginQuiesce()
@@ -2504,13 +2511,13 @@ func TestNewStateDoesNotInheritAccessOverrides(t *testing.T) {
 	first.SetSystemAccess(true)
 
 	second := New(cfg, t.TempDir(), time.Unix(200, 0), Persistence{})
-	if got := second.AccessState(); got.Mode != "default" || got.System {
-		t.Fatalf("second state AccessState() = %+v, want {Mode: default, System: false}", got)
+	if got := second.AccessState(); got.Mode != "copilot" || got.System {
+		t.Fatalf("second state AccessState() = %+v, want {Mode: copilot, System: false}", got)
 	}
-	if got := second.ModeForConfig(cfg); got != "default" {
-		t.Fatalf("second state ModeForConfig() = %q, want default", got)
+	if got := second.ModeForConfig(cfg); got != "copilot" {
+		t.Fatalf("second state ModeForConfig() = %q, want copilot", got)
 	}
-	if got := cfg.Agent.ApprovalMode; got != "default" {
+	if got := cfg.Agent.Mode; got != interaction.ModeAct {
 		t.Fatalf("the shared config fixture was mutated to %q", got)
 	}
 }
@@ -2528,7 +2535,11 @@ type accessFixture struct {
 
 func newAccessFixture(t *testing.T) *accessFixture {
 	t.Helper()
-	state := newTestState()
+	// Ask is the configured default so editing and system access are both
+	// genuinely missing; an Act default would make editing already available.
+	cfg := config.Default()
+	cfg.Agent.Mode = interaction.ModeAsk
+	state := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
 	broker := pubsub.NewBroker[Event]()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -2711,8 +2722,8 @@ func TestAccessResolveAppliesBeforeAcknowledgment(t *testing.T) {
 		t.Fatalf("the grant was acknowledged before it was applied: %+v", d)
 	default:
 	}
-	if got := f.state.AccessState(); got.Mode == "edit" {
-		t.Fatal("the mode moved before Apply returned")
+	if got := f.state.PendingApproval(); got == nil {
+		t.Fatal("the request was settled before Apply returned")
 	}
 	if !prepared {
 		t.Fatal("prepare was never consulted")
@@ -2727,8 +2738,8 @@ func TestAccessResolveAppliesBeforeAcknowledgment(t *testing.T) {
 	if got, want := result.Effective, (AccessState{Mode: "edit"}); got != want {
 		t.Fatalf("result effective = %+v, want %+v", got, want)
 	}
-	if got := f.state.AccessState(); got != (AccessState{Mode: "edit"}) {
-		t.Fatalf("AccessState() = %+v after the grant, want {edit false}", got)
+	if got := f.state.AccessState(); got != (AccessState{Mode: "copilot"}) {
+		t.Fatalf("AccessState() = %+v after the grant, want {copilot false}", got)
 	}
 
 	d := <-f.call.ResponseChan

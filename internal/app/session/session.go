@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
@@ -337,11 +338,6 @@ type State struct {
 	sandbox            SandboxInfo
 	browser            BrowserInfo
 	trusted            bool
-	// systemAccess is the per-session system-access modifier (spec §2):
-	// full-filesystem read/write via file tools, lifted prompt-level
-	// shell-editing ban, and catastrophic-floor guardrails. Runtime-only;
-	// never a config default. Sticky until toggled off. Guarded by mu.
-	systemAccess bool
 	// effortOverride is the session's unsaved reasoning-effort override,
 	// guarded by mu.
 	effortOverride EffortOverride
@@ -351,21 +347,23 @@ type State struct {
 	turnRouteSet bool
 	// accessMu serializes access-tuple mutations (session mode changes,
 	// system-access toggles, config rebases) so a reader never observes a
-	// half-applied pair. It guards configuredMode and sessionModeOverride;
-	// the effective pair itself still lives under mu. Lock order is
-	// accessMu → workMu or accessMu → mu, never the reverse.
+	// half-applied pair. It guards access, configuredAccess and
+	// accessOverride. Lock order is accessMu → workMu or accessMu → mu,
+	// never the reverse.
 	accessMu sync.Mutex
-	// configuredMode is the normalized approval mode the current config
-	// asked for, i.e. the mode a reload keeps unless the user explicitly
-	// changed it. Guarded by accessMu.
-	configuredMode string
-	// sessionModeOverride is the user's session-scoped mode selection. It
+	// access is the canonical effective interaction tuple (mode, Auto,
+	// System, revision). Guarded by accessMu.
+	access interaction.State
+	// configuredAccess is the configured starting tuple a reload keeps
+	// unless the user explicitly changed it. Guarded by accessMu.
+	configuredAccess interaction.Defaults
+	// accessOverride is the user's session-scoped mode/Auto selection. It
 	// outlives an unrelated config reload but is cleared when the configured
-	// mode itself changes. Empty when no manual/approved selection exists.
+	// pair itself changes. Nil when no manual/approved selection exists.
 	// Guarded by accessMu.
-	sessionModeOverride string
-	turnIndex           int
-	snapshotter         Snapshotter
+	accessOverride *interaction.Defaults
+	turnIndex      int
+	snapshotter    Snapshotter
 
 	// workspace is the session's current project/active-root pair and the
 	// broker rebinds are published on. Guarded by mu like the rest of this
@@ -944,12 +942,17 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 	for _, opt := range opts {
 		opt(s)
 	}
-	// The configured mode is the reload baseline: it is what a later config
-	// reload compares against (see RebaseSessionConfig), while
-	// State.Config.Agent.ApprovalMode carries the effective mode a reader
-	// sees. New conversations start with no override and system access off.
-	s.configuredMode = configuredAccessMode(s.Config.Agent.ApprovalMode)
-	s.Config.Agent.ApprovalMode = s.configuredMode
+	// The configured tuple is the reload baseline: it is what a later config
+	// reload compares against (see RebaseInteractionConfig). New
+	// conversations start with no override and system access off. A
+	// malformed standalone fixture cannot authorize work: fall back to Ask.
+	if d, err := s.Config.InteractionDefaults(); err == nil {
+		s.configuredAccess = d
+		s.access = interaction.State{Mode: d.Mode, Auto: d.Auto, Revision: 1}
+	} else {
+		s.configuredAccess = interaction.Defaults{Mode: interaction.ModeAsk}
+		s.access = interaction.State{Mode: interaction.ModeAsk, Revision: 1}
+	}
 	if s.persistenceEnabled() {
 		s.loadFromDB()
 		s.loadWorkView()
@@ -992,30 +995,28 @@ func (s *State) Trusted() bool {
 
 // SystemAccess reports whether the session has system access enabled.
 func (s *State) SystemAccess() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.systemAccess
+	return s.InteractionState().System
 }
 
 // SetSystemAccess toggles the per-session system-access modifier.
 func (s *State) SetSystemAccess(on bool) {
-	// accessMu first so a concurrent mode change or config rebase cannot
-	// interleave with this toggle; the flag itself stays under mu.
 	s.accessMu.Lock()
 	defer s.accessMu.Unlock()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.systemAccess = on
+	if s.access.System == on {
+		return
+	}
+	s.access.System = on
+	s.access.Revision++
 }
 
 // AccessState returns the effective access tuple — the mode governing
 // approval decisions and the system-access flag — as one value read under a
 // single lock, so callers never see a mode from one commit and a flag from
-// another.
+// another. It is a compatibility projection of InteractionState.
 func (s *State) AccessState() AccessState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return AccessState{Mode: s.Config.Agent.ApprovalMode, System: s.systemAccess}
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	return s.accessStateLocked()
 }
 
 // normalizeAccessMode validates a literal session-mode selection: a mode the
@@ -1055,6 +1056,10 @@ func (s *State) SetSessionMode(mode string, apply func()) error {
 	if err != nil {
 		return err
 	}
+	d, _, err := interaction.LegacyDefaults(valid)
+	if err != nil {
+		return fmt.Errorf("session: unknown approval mode %q", mode)
+	}
 	if apply == nil {
 		return fmt.Errorf("session: set mode %q: no apply function", valid)
 	}
@@ -1070,27 +1075,29 @@ func (s *State) SetSessionMode(mode string, apply func()) error {
 		return ErrSessionQuiescing
 	}
 	// apply is the runner's setter: call it without State.mu held, then
-	// commit the session-visible pair. The override is deliberately not
-	// touched — a manual change does not redefine the configured baseline.
+	// commit the session-visible tuple. The override records the whole pair.
 	apply()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessionModeOverride = valid
-	s.Config.Agent.ApprovalMode = valid
+	next, err := interaction.Apply(s.access, interaction.Patch{Mode: &d.Mode, Auto: &d.Auto})
+	if err != nil {
+		return err
+	}
+	next.Revision = s.access.Revision + 1
+	s.access = next
+	ov := interaction.Defaults{Mode: next.Mode, Auto: next.Auto}
+	s.accessOverride = &ov
 	return nil
 }
 
 // ModeForConfig reports the mode the session should run with for an incoming
-// configuration: the session override when the configured mode has not
-// changed, otherwise the configured mode itself. It mutates nothing, so a
+// configuration: the session override when the configured pair has not
+// changed, otherwise the configured pair itself. It mutates nothing, so a
 // caller can consult it before deciding whether to rebuild anything.
 func (s *State) ModeForConfig(cfg config.Config) string {
-	s.accessMu.Lock()
-	defer s.accessMu.Unlock()
-	if cfg.Agent.ApprovalMode == s.configuredMode && s.sessionModeOverride != "" {
-		return s.sessionModeOverride
+	st, err := s.InteractionForConfig(cfg)
+	if err != nil {
+		return legacyApprovalMode(interaction.ModeAsk, false)
 	}
-	return cfg.Agent.ApprovalMode
+	return legacyApprovalMode(st.Mode, st.Auto)
 }
 
 // ConfigSnapshot returns a copy of the installed configuration, read under the
@@ -1112,18 +1119,7 @@ func (s *State) ConfigSnapshot() config.Config {
 // the grant belongs to the conversation, not to the file. Failed reloads must
 // not call this at all.
 func (s *State) RebaseSessionConfig(cfg config.Config) {
-	s.accessMu.Lock()
-	defer s.accessMu.Unlock()
-	if configured := configuredAccessMode(cfg.Agent.ApprovalMode); configured != s.configuredMode {
-		s.sessionModeOverride = ""
-		s.configuredMode = configured
-	}
-	if s.sessionModeOverride != "" {
-		cfg.Agent.ApprovalMode = s.sessionModeOverride
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Config = cfg
+	_, _ = s.RebaseInteractionConfig(cfg)
 }
 
 // ── Capability access requests ────────────────────────────────────────
@@ -1173,7 +1169,7 @@ func (s *State) accessRequestLocked() (AccessRequest, bool) {
 		return AccessRequest{}, false
 	}
 	req := *pending.Access
-	req.Current = AccessState{Mode: s.Config.Agent.ApprovalMode, System: s.systemAccess}
+	req.Current = AccessState{Mode: legacyApprovalMode(s.access.Mode, s.access.Auto), System: s.access.System}
 	s.mu.Unlock()
 
 	accessMissingFlags(&req, intent)
@@ -1300,7 +1296,7 @@ func (s *State) RegisterAccess(ctx context.Context, pending *PendingToolCall, in
 
 	// One read of the effective pair decides whether anything is missing at
 	// all; the flags are computed from the intent, never trusted from it.
-	current := s.AccessState()
+	current := s.accessStateLocked()
 	missing := AccessRequest{Current: current}
 	accessMissingFlags(&missing, intent)
 	if !missing.MissingEditing && !missing.MissingSystem {
@@ -1400,7 +1396,7 @@ func (s *State) ResolveAccess(choice AccessChoice, prepare AccessPrepare) (Acces
 	// The pair and the pending request are read together: a choice is judged
 	// against the state the session is actually in when it arrives.
 	req, ok := s.accessRequestLocked()
-	actual := s.AccessState()
+	actual := s.accessStateLocked()
 	expire := func(message string) (AccessResult, error) {
 		// The current approval (if any) is deliberately left in place: a
 		// choice for a request this session does not know must not disturb
@@ -1545,15 +1541,17 @@ func (s *State) ResolveAccess(choice AccessChoice, prepare AccessPrepare) (Acces
 	// the capabilities that were missing and nothing else. The public mode
 	// and system setters are deliberately not called — they take accessMu.
 	commit.Apply()
-	s.mu.Lock()
 	if needed.MissingEditing {
-		s.sessionModeOverride = target.Mode
-		s.Config.Agent.ApprovalMode = target.Mode
+		// Editing grants normal Act with Auto off; it never grants Auto.
+		s.access.Mode = interaction.ModeAct
+		s.access.Auto = false
+		ov := interaction.Defaults{Mode: s.access.Mode, Auto: s.access.Auto}
+		s.accessOverride = &ov
 	}
 	if needed.MissingSystem {
-		s.systemAccess = true
+		s.access.System = true
 	}
-	s.mu.Unlock()
+	s.access.Revision++
 
 	result := AccessResult{
 		RequestID: req.RequestID,
@@ -1620,7 +1618,7 @@ func (s *State) CancelAccess(requestID string, status AccessStatus, message stri
 	if !ok || requestID == "" || req.RequestID != requestID {
 		return false
 	}
-	actual := s.AccessState()
+	actual := s.accessStateLocked()
 	result := AccessResult{
 		RequestID: req.RequestID,
 		SessionID: req.SessionID,
@@ -3512,7 +3510,7 @@ func (s *State) ResolvePendingForShutdown() {
 	if typed {
 		typedReq = *s.pendingApproval.Access
 	}
-	actual := AccessState{Mode: s.Config.Agent.ApprovalMode, System: s.systemAccess}
+	actual := AccessState{Mode: legacyApprovalMode(s.access.Mode, s.access.Auto), System: s.access.System}
 	s.mu.Unlock()
 	if typed {
 		s.finishAccessCanceledLocked(typedReq, actual, "session is shutting down")
@@ -3868,9 +3866,14 @@ func (s *State) Todos() []db.TodoItem {
 }
 
 func (s *State) AddSessionRule(prefix string) {
+	// The owner transaction: rules and the access revision move together so
+	// a stale admission cannot cross a rule change.
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.sessionRules = append(s.sessionRules, prefix)
+	s.mu.Unlock()
+	s.access.Revision++
 }
 
 func (s *State) SessionRules() []string {

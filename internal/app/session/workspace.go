@@ -47,6 +47,10 @@ func (s *State) Workspace() Workspace {
 // the project root"; Branch is forced empty whenever ActiveRoot ==
 // ProjectRoot. (Task 3 adds persistence here.)
 func (s *State) SetWorkspace(w Workspace) {
+	// accessMu first: an active-root change invalidates the access revision,
+	// and the documented lock order is accessMu → mu.
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
 	s.mu.Lock()
 	if w.ProjectRoot == "" {
 		w.ProjectRoot = s.workspace.ProjectRoot
@@ -60,10 +64,14 @@ func (s *State) SetWorkspace(w Workspace) {
 		w.TargetBranch = ""
 	}
 	changed := s.workspace != w
+	rootChanged := s.workspace.ActiveRoot != w.ActiveRoot
 	s.workspace = w
 	broker := s.workspaceBroker
 	s.mu.Unlock()
 
+	if rootChanged {
+		s.access.Revision++
+	}
 	if !changed {
 		return
 	}

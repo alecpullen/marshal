@@ -534,7 +534,7 @@ func TestAccessSteeringClaimSharesCanonicalGate(t *testing.T) {
 
 	applied := false
 	prepare := func(AccessRequest, AccessChoice) (AccessCommit, error) {
-		return AccessCommit{Effective: AccessState{Mode: "default", System: true}, Apply: func() { applied = true }}, nil
+		return AccessCommit{Effective: AccessState{Mode: req.Current.Mode, System: true}, Apply: func() { applied = true }}, nil
 	}
 
 	// (a) Cancellation intent wins first. Recording it exactly as SubmitSendNow
@@ -575,7 +575,7 @@ func TestAccessSteeringClaimSharesCanonicalGate(t *testing.T) {
 	granted := make(chan AccessResult, 1)
 	go func() {
 		res, _ := s.ResolveAccess(choiceFor(req2, req2.Current, ""), func(AccessRequest, AccessChoice) (AccessCommit, error) {
-			return AccessCommit{Effective: AccessState{Mode: "default", System: true}, Apply: func() {
+			return AccessCommit{Effective: AccessState{Mode: req2.Current.Mode, System: true}, Apply: func() {
 				close(entered)
 				<-release
 			}}, nil

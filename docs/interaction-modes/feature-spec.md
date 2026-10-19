@@ -1,6 +1,6 @@
 # Ask/Act interaction model and shell policy
 
-Status: design sections approved; written spec awaiting user review.
+Status: written spec approved; implementation planning.
 Date: 2026-10-19.
 Source baseline: `f637b8edd42b6529b0334c0ffae37ebe100966c2`.
 Implementation: not started.
@@ -675,12 +675,11 @@ Explicit non-goals:
   building an implementation plan before written-spec review.
 - Changes to the unrelated work already present in the working tree.
 
-Open questions: none. The four design sections were explicitly approved in
-conversation. The written artifact remains subject to the user's review.
+Open questions: none. The four design sections and this written spec were
+explicitly approved in conversation on 2026-10-19.
 
 ## Handoff
 
-Review this written spec and revise any decisions before planning. After
-written-spec approval, use the built-in `marshal-writing-plans` workflow for
-the implementation plan unless the user requests the `/sdd` authoring path.
-No product implementation is authorized by this document's creation alone.
+Written-spec approval authorizes the built-in `marshal-writing-plans` workflow
+for the implementation plan. Product implementation follows the plan's separate
+review gate; the spec's approval does not authorize executing an unwritten plan.

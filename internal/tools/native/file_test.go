@@ -578,17 +578,57 @@ func TestFileReadRejectsSymlinkEscapingAbsolutePath(t *testing.T) {
 	}
 }
 
-func TestFileReadRejectsInvalidRange(t *testing.T) {
+func TestFileReadSwapsReversedRange(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\n")
+	writeFile(t, filepath.Join(root, "notes.txt"), "one\ntwo\nthree\nfour\n")
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	_, err := invokeTool(t, reg, "file.read", `{"path":"notes.txt","start_line":3,"end_line":2}`)
-	if err == nil {
-		t.Fatal("file.read invalid range returned nil error")
+	res, err := invokeTool(t, reg, "file.read", `{"path":"notes.txt","start_line":3,"end_line":2}`)
+	if err != nil {
+		t.Fatalf("file.read reversed range should be swapped, not rejected: %v", err)
+	}
+	if !strings.Contains(res.Content, "two") || !strings.Contains(res.Content, "three") {
+		t.Fatalf("swapped range should read lines 2-3, got: %q", res.Content)
+	}
+	if res.Notice == nil || res.Notice.Kind != registry.NoticeRangeSwapped {
+		t.Fatalf("expected range_swapped notice, got: %+v", res.Notice)
+	}
+	if !strings.Contains(res.Notice.Text, "requested 3-2") {
+		t.Fatalf("notice should name the requested range, got: %q", res.Notice.Text)
+	}
+	if got := res.Notice.Data["requested_start_line"]; got != 3 {
+		t.Fatalf("notice data requested_start_line = %v, want 3", got)
+	}
+}
+
+// TestFileReadReversedRangeKeepsContentNotice pins the precedence rule: a
+// notice describing the content actually returned (truncation, oversize) wins
+// over the advisory range-swap notice, so the model is never told the range was
+// swapped at the cost of losing why the output was cut.
+func TestFileReadReversedRangeKeepsContentNotice(t *testing.T) {
+	root := t.TempDir()
+	var sb strings.Builder
+	for i := 0; i < 20000; i++ {
+		fmt.Fprintf(&sb, "line %05d\n", i)
+	}
+	writeFile(t, filepath.Join(root, "big.txt"), sb.String())
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	res, err := invokeTool(t, reg, "file.read", `{"path":"big.txt","start_line":9000,"end_line":10}`)
+	if err != nil {
+		t.Fatalf("file.read reversed range on oversized file: %v", err)
+	}
+	if res.Notice == nil {
+		t.Fatal("expected a notice on an oversized ranged read")
+	}
+	if res.Notice.Kind == registry.NoticeRangeSwapped {
+		t.Fatalf("content notice should win over range_swapped, got %q", res.Notice.Kind)
 	}
 }
 

@@ -240,10 +240,25 @@ which put two diffuse buckets ahead of a bug that loses data.
    legacy, de-advertising it collapses most of those 172 failures for almost no
    risk; parse hardening is the expensive branch.
 3. **`file.read` limits → shell fallback** (42 `file.read` failures, 26
-   shell-over-native obs). The shell fallback is a symptom: `file.read` rejects
-   large and out-of-workspace files, so the model reaches for `grep`/`sed`.
-   Fixing paging and limits removes the incentive; prompt guidance alone does
-   not.
+   shell-over-native obs). **Resolved 2026-10-19 — the premise was stale on two
+   of its three halves.** The corpus dates settle it:
+   - *Large files*: the head fallback landed 2026-09-25 (`11304bbfe`). All 42
+     "too large to read" failures predate it; **zero** after. Already fixed.
+   - *Out-of-workspace*: the `~/.config/marshal` read allowlist landed the same
+     day (`60b14165d`). The two post-allowlist escapes are both correct
+     rejections — `/tmp/rbe-merge/...` is genuinely outside every root, and
+     `config.toml` is deliberately excluded because it can carry literal
+     `api_key` values (the error already names the readable alternatives).
+   - *Reversed range*: the one live defect. `start_line > end_line` returned a
+     hard error and was still firing 2026-10-18, 19 times across three months.
+     Now swapped with a `range_swapped` notice, matching the
+     `NoticeContextClamped` precedent: the intent is unambiguous, and a hard
+     error costs a round trip the model repeats verbatim. A content notice
+     (truncation/oversize) still wins over the advisory swap notice.
+   Pinned by `TestFileReadSwapsReversedRange` and
+   `TestFileReadReversedRangeKeepsContentNotice`. The shell-over-native
+   observations are therefore not a `file.read` limit problem; they belong with
+   item 7's context-growth work.
 4. **Worktree path & merge ergonomics** (71 obs). Doubled prefixes, missing
    parent dirs, `.git`-as-file, gitignored archives absent in worktrees, merge
    blocked by benign dirty files.

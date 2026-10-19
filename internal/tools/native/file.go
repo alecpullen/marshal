@@ -98,42 +98,77 @@ func (t *toolSet) fileReadTool() registry.Tool {
 		if args.Path == "" {
 			return registry.ToolResult{}, fmt.Errorf("file.read path is required")
 		}
+		// A reversed range is swapped rather than rejected. Postmortems showed
+		// the same start_line > end_line call repeated across sessions months
+		// apart; the intent is unambiguous, so the call now succeeds and a
+		// range_swapped notice carries the correction instead of a hard error
+		// the model has to remember not to repeat.
+		var rangeNotice *registry.ToolNotice
 		if args.StartLine > 0 && args.EndLine > 0 && args.StartLine > args.EndLine {
-			return registry.ToolResult{}, fmt.Errorf("file.read start_line must be <= end_line")
+			requestedStart, requestedEnd := args.StartLine, args.EndLine
+			args.StartLine, args.EndLine = requestedEnd, requestedStart
+			footer := fmt.Sprintf("start_line/end_line swapped (requested %d-%d, read %d-%d)",
+				requestedStart, requestedEnd, args.StartLine, args.EndLine)
+			rangeNotice = &registry.ToolNotice{
+				Kind: registry.NoticeRangeSwapped,
+				Text: footer,
+				Data: map[string]any{
+					"requested_start_line": requestedStart,
+					"requested_end_line":   requestedEnd,
+				},
+			}
 		}
 
-		data, err := t.readWorkspaceFile(args.Path, int64(t.maxOutputBytes))
+		result, err := t.readForTool(args)
 		if err != nil {
-			if errors.Is(err, errFileTooLarge) {
-				// A ranged read of an oversized file streams the requested
-				// window; only an unbounded read falls back to the head. This
-				// is what makes the head fallback's advertised continuation
-				// (file.read start_line=N+1) actually advance.
-				if args.StartLine > 0 || args.EndLine > 0 {
-					return t.fileReadOversizedRange(args.Path, args.StartLine, args.EndLine)
-				}
-				return t.fileReadOversizedHead(args.Path)
-			}
 			return registry.ToolResult{}, err
 		}
-
-		content, start, end := selectLines(string(data), args.StartLine, args.EndLine)
-		content, _ = clipLines(content)
-		preLimit := len(content)
-		content = limitOutput(content, t.maxOutputBytes)
-
-		result := registry.ToolResult{
-			Summary: fmt.Sprintf("read %s lines %d-%d", args.Path, start, end),
-			Content: content,
+		// The range notice is advisory: a truncation or oversize notice
+		// describes the content actually returned, so it wins when both apply.
+		if rangeNotice != nil && result.Notice == nil {
+			result.Notice = rangeNotice
+			result.Content += "\n" + rangeNotice.Text
 		}
-		// Detect truncation by comparing the content length around
-		// limitOutput rather than testing for the marker suffix: a file whose
-		// own content ends with the literal marker would otherwise look
-		// truncated when it was not.
-		t.applySliceTruncationFooter(&result, preLimit, len(content))
 		return result, nil
 	}
 	return tool
+}
+
+// readForTool performs the read for an already-validated argument set and
+// returns the result with any content-shape notice attached. Split out of the
+// handler so the range-swap notice can be applied uniformly to the in-budget,
+// oversized-head and oversized-range paths.
+func (t *toolSet) readForTool(args fileReadArgs) (registry.ToolResult, error) {
+	data, err := t.readWorkspaceFile(args.Path, int64(t.maxOutputBytes))
+	if err != nil {
+		if errors.Is(err, errFileTooLarge) {
+			// A ranged read of an oversized file streams the requested
+			// window; only an unbounded read falls back to the head. This
+			// is what makes the head fallback's advertised continuation
+			// (file.read start_line=N+1) actually advance.
+			if args.StartLine > 0 || args.EndLine > 0 {
+				return t.fileReadOversizedRange(args.Path, args.StartLine, args.EndLine)
+			}
+			return t.fileReadOversizedHead(args.Path)
+		}
+		return registry.ToolResult{}, err
+	}
+
+	content, start, end := selectLines(string(data), args.StartLine, args.EndLine)
+	content, _ = clipLines(content)
+	preLimit := len(content)
+	content = limitOutput(content, t.maxOutputBytes)
+
+	result := registry.ToolResult{
+		Summary: fmt.Sprintf("read %s lines %d-%d", args.Path, start, end),
+		Content: content,
+	}
+	// Detect truncation by comparing the content length around
+	// limitOutput rather than testing for the marker suffix: a file whose
+	// own content ends with the literal marker would otherwise look
+	// truncated when it was not.
+	t.applySliceTruncationFooter(&result, preLimit, len(content))
+	return result, nil
 }
 
 // applySliceTruncationFooter appends the output-budget truncation footer and

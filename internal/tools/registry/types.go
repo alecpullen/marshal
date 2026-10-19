@@ -98,6 +98,11 @@ const (
 	// silently coerced it into range. Distinct from NoticeCappedResults,
 	// which marks result-set truncation, so consumers can switch cleanly.
 	NoticeContextClamped = "context_clamped"
+	// NoticeRangeSwapped marks a parameter-validation swap: the caller passed
+	// start_line > end_line and the tool exchanged them instead of erroring.
+	// Same rationale as NoticeContextClamped — the intent is unambiguous, and a
+	// hard error costs a round trip the model tends to repeat verbatim.
+	NoticeRangeSwapped = "range_swapped"
 	// NoticeCommandExecution marks a structured command-execution record: a
 	// managed launch or wait continuation carries its execution identity,
 	// origin call, attachment and (once settled) outcome in Data rather than

@@ -54,15 +54,19 @@ func ListenAndServe(ctx context.Context, network, addr string, stderr io.Writer)
 		}
 	}
 
-	return listenAndServeWithConfig(ctx, ln, runConfig{
+	// One project-host registry for the process, shared by every
+	// connection's sessions and closed after all of them (see Run).
+	hosts := app.NewHosts()
+	err = listenAndServeWithConfig(ctx, ln, runConfig{
 		startRuntime: func(ctx context.Context, opts ...app.Option) (*app.Runtime, error) {
-			opts = append(opts, app.WithTrustResolver(trust.NewHeadlessResolver(trustStore, log)))
+			opts = append(opts, app.WithTrustResolver(trust.NewHeadlessResolver(trustStore, log)), app.WithHosts(hosts))
 			return app.StartRuntime(ctx, opts...)
 		},
 		lister:   newPerCwdLister(),
 		shutdown: connectionShutdownTimeout,
 		logger:   log,
 	})
+	return errors.Join(err, closeHosts(hosts))
 }
 
 // listenAndServeWithConfig owns the accept loop. Exactly one connection

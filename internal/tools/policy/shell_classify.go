@@ -65,6 +65,7 @@ func classifyShellOperation(op *ShellOperation) {
 	default:
 		op.Effects |= ShellUnknown
 	}
+	classifyDestructive(op)
 }
 
 func classifyGit(op *ShellOperation) {

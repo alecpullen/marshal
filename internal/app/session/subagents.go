@@ -276,6 +276,10 @@ func (s *State) registerSubagent(meta SubagentMeta, work WorkID, label string, c
 	// work item is named, and it is idempotent per subagent id.
 	s.bindSubagentWork(work, v.ID, label)
 	s.publishSubagentEvent(broker, v, epoch, rev)
+	// Forward the child's ordinary approvals to the root broker, tagged with
+	// the child as owner. The child keeps its own registry and settlement
+	// path; this only makes the prompt observable to a root collector.
+	s.forwardChildApprovals(child)
 	// The work index upsert is deliberately outside State.mu: it spans a
 	// serialized database round trip, which must never be held while the rest
 	// of the session waits.

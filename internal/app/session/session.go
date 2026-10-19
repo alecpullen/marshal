@@ -98,6 +98,10 @@ type Event struct {
 	SteeringReceipt *SteeringReceipt
 	// Effort carries an effort override or application (EventEffortChanged).
 	Effort *EffortChange
+	// ApprovalSource tags an approval event forwarded from a child actor.
+	// Root turn collectors skip these; a child-only collector settles them
+	// through the owning registry.
+	ApprovalSource *ApprovalSource
 }
 
 // Snapshotter lets the TUI/commands undo/redo via the shadow-git snapshot

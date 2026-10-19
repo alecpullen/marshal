@@ -3551,6 +3551,102 @@ func TestCancelTurnDoesNotClearSteeringWhenAgentAlreadyFinished(t *testing.T) {
 	}
 }
 
+// A turn that ends with steering still queued must deliver it as the next
+// turn. The runner drains the queue at every loop-top, so anything left when
+// the turn ends was typed during the final answer; without this flush it sat
+// in the queue until the user pressed Enter on an empty composer.
+func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
+	m := newTestModel(t)
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m.runner = runner
+	m.busy = true
+	m.state.PushSteering("deliver me after the turn")
+	m.queuedCount = 1
+
+	updated, cmd := m.Update(agentFinishedMsg{err: nil})
+	m = updated.(Model)
+
+	if q := m.state.SteeringQueue(); len(q) != 0 {
+		t.Fatalf("queue = %v, want the entry delivered", q)
+	}
+	if m.queuedCount != 0 {
+		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	}
+	if !m.busy {
+		t.Fatal("busy = false, want the follow-up turn to have started")
+	}
+	if cmd == nil {
+		t.Fatal("expected a cmd starting the follow-up turn")
+	}
+}
+
+// The flushed entry is the goal the runner actually receives, not just a
+// queue-depth change.
+func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
+	m := newTestModel(t)
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m.runner = runner
+	m.state.PushSteering("deliver me after the turn")
+	m.queuedCount = 1
+
+	cmd := m.flushQueuedSteering()
+	if cmd == nil {
+		t.Fatal("flushQueuedSteering returned nil with an entry queued")
+	}
+	if !m.busy {
+		t.Fatal("busy = false, want the follow-up turn to have started")
+	}
+	if q := m.state.SteeringQueue(); len(q) != 0 {
+		t.Fatalf("queue = %v, want the entry popped", q)
+	}
+
+	// Drive the batch and find the agent run, so the assertion is about the
+	// text the runner receives rather than the queue depth alone.
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("flush cmd did not return a tea.BatchMsg")
+	}
+	for _, c := range batch {
+		if c == nil {
+			continue
+		}
+		if _, isRun := c().(agentFinishedMsg); !isRun {
+			continue
+		}
+		select {
+		case goal := <-runner.called:
+			if goal != "deliver me after the turn" {
+				t.Fatalf("runner goal = %q, want the queued text", goal)
+			}
+		default:
+			t.Fatal("the runner was never invoked")
+		}
+		return
+	}
+	t.Fatal("the batch carried no agent run")
+}
+
+// A failed turn keeps its queued text so the user can retry deliberately; it
+// must not auto-start a turn against a provider that just failed.
+func TestAgentFinishedKeepsQueueOnFailure(t *testing.T) {
+	m := newTestModel(t)
+	runner := &fakeAgentRunner{called: make(chan string, 1)}
+	m.runner = runner
+	m.busy = true
+	m.state.PushSteering("retry me")
+	m.queuedCount = 1
+
+	updated, _ := m.Update(agentFinishedMsg{err: errors.New("boom")})
+	m = updated.(Model)
+
+	if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "retry me" {
+		t.Fatalf("queue = %v, want the entry kept for a deliberate retry", q)
+	}
+	if m.busy {
+		t.Fatal("busy = true, want the failed turn to leave the session idle")
+	}
+}
+
 // F-BUG-150: successPulse must clear when the agent finishes with an
 // error (not context.Canceled). If the previous turn succeeded, the
 // input border should not flash teal during the error state.

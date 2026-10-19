@@ -4578,6 +4578,38 @@ func (m *Model) startWatchResumeRun(name string, repeat bool) tea.Cmd {
 	return cmd
 }
 
+// flushQueuedSteering delivers text the user queued while a turn was running.
+// The runner drains the queue at every loop-top, so anything still queued when
+// the turn ends was typed after that final drain — during the final answer —
+// and would otherwise sit in the queue until the user pressed Enter on an
+// empty composer. One entry is popped and started as the next turn; the
+// runner's loop-top drain delivers any remainder, exactly as the Enter
+// follow-up path does.
+//
+// It returns nil when there is nothing to deliver or the turn cannot start (no
+// runner, an ending in progress, a quiescing session). A refused start puts the
+// text back so it is never silently lost.
+func (m *Model) flushQueuedSteering() tea.Cmd {
+	if m.runner == nil || m.busy || m.endStage != endIdle {
+		return nil
+	}
+	followUp, ok := m.popOldestSteering()
+	if !ok {
+		return nil
+	}
+	model, cmd, started := m.startAgentRun(m.runner, followUp)
+	if !started {
+		// The turn could not start, so the text goes back on the queue rather
+		// than disappearing. It lands at the tail, which only reorders entries
+		// in the rare refused-start case.
+		m.state.PushSteering(followUp)
+		m.queuedCount = len(m.state.SteeringQueue())
+		return nil
+	}
+	*m = model.(Model)
+	return cmd
+}
+
 // lastAssistantText returns the last RoleAssistant message's content
 // (empty when there is none). Idle means the transcript is frozen, so
 // the backward scan is race-free (same pattern as computeSuggestion and
@@ -5593,6 +5625,18 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// tea.Batch drops nil entries, so this is a no-op with no finder or no
 	// newly-seen resolved symbols.
 	cmds = append(cmds, m.callerQueryCmds())
+	// A turn that ends with steering still queued was typed during the final
+	// answer, after the runner's last loop-top drain. Deliver it now as the
+	// next turn instead of leaving it stranded in the queue: the only other
+	// consumer is the blank-Enter follow-up, which the user has no reason to
+	// press once the turn is visibly over. A cancelled turn already cleared
+	// the queue above, and a failed turn keeps its text queued so the user can
+	// retry deliberately.
+	if msg.err == nil && !cancelled {
+		if cmd := m.flushQueuedSteering(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
 	// Auto-resume latch (spec §4): a resume fire landed in the
 	// final-answer window of the turn that just ended — the model never
 	// saw the report, and the turn-end residual drain armed the latch.

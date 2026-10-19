@@ -155,7 +155,7 @@ func Footer(h FooterHints) string {
 		if h.MouseReleased {
 			segs = append(segs, pair("Ctrl+S", "scroll"))
 		} else {
-			segs = append(segs, pair("Ctrl+S", "select"))
+			segs = append(segs, pair("drag", "copy"))
 		}
 	}
 	if showHelpHint {

@@ -136,3 +136,14 @@ func TestFooterShowsTodoToggleWhenTodosActive(t *testing.T) {
 		t.Fatalf("busy footer must keep its cancel-focused hints:\n%s", busy)
 	}
 }
+
+func TestFooterMouseHintNamesDragWhileCaptured(t *testing.T) {
+	captured := stripANSI(Footer(FooterHints{}))
+	if !strings.Contains(captured, "drag copy") || strings.Contains(captured, "Ctrl+S select") {
+		t.Fatalf("captured footer should offer drag-to-copy: %q", captured)
+	}
+	released := stripANSI(Footer(FooterHints{MouseReleased: true}))
+	if !strings.Contains(released, "Ctrl+S scroll") {
+		t.Fatalf("released footer should offer Ctrl+S to scroll: %q", released)
+	}
+}

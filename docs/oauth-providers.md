@@ -77,9 +77,11 @@ If you need a supported, contractually-backed integration, use the
 - **Model list.** The provider prefers the live catalog, falls back to a disk
   cache, then to a static list. Only models the endpoint will actually serve
   are offered — a model outside your catalog is rejected with a 400.
-  Catalog discovery sends the supported Codex client version `0.160.0`.
-  Sending `0.0.0` succeeds but returns a legacy catalog without newer models;
-  review this version when updating the integration.
+  Catalog discovery sends the supported Codex client version `0.163.0`. Too
+  old a version still succeeds but returns a legacy catalog without newer
+  models (`0.160.0` did so within two weeks of being verified current), so
+  when Codex models go missing, re-check this against the latest codex CLI
+  release; a legacy-shaped fetch logs a warning.
 - **Token material never reaches logs, wire captures, or exports.** The
   redaction chain is pinned by `internal/llm/provider/leak_audit_test.go`.
 

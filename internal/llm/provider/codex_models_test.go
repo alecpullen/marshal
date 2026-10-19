@@ -1,9 +1,12 @@
 package provider
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,7 +107,7 @@ func TestFilterCodexModelsFallsBackToMaxContextWindow(t *testing.T) {
 func TestCodexModelsLiveFetch(t *testing.T) {
 	// Do not derive the expected version from the implementation constant:
 	// the endpoint accepts 0.0.0 but silently hides current models.
-	const wantCatalogVersion = "0.160.0"
+	const wantCatalogVersion = "0.163.0"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != codexModelsPath {
 			t.Errorf("path = %q, want %q", r.URL.Path, codexModelsPath)
@@ -136,6 +139,65 @@ func TestCodexModelsLiveFetch(t *testing.T) {
 	}
 	if models[0].ID != "gpt-6-astra" {
 		t.Errorf("first model = %q, want gpt-6-astra", models[0].ID)
+	}
+}
+
+// captureWarnLogs swaps the default logger for one recording Warn-and-above
+// output, the same pattern as leak_audit_test.go.
+func captureWarnLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+func TestCodexModelsWarnsOnLegacyCatalog(t *testing.T) {
+	// Observed live 2026-10-19: too old a client_version still gets HTTP 200,
+	// but with a legacy catalog — older models only, no context windows, no
+	// reasoning levels. The fetch "succeeds", so without this warning the
+	// missing models are silent.
+	buf := captureWarnLogs(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-5.6-luna","visibility":"list","supported_in_api":true,"priority":1}]}`))
+	}))
+	defer server.Close()
+
+	engine, _ := codexTestEngine(t, codexTestToken("acct-abc"))
+	p := newTestCodex(t, server.URL, engine)
+
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	// The legacy list is still served — those models work — but it must be
+	// flagged.
+	if len(models) != 1 || models[0].ID != "gpt-5.6-luna" {
+		t.Fatalf("got %v, want the legacy list still served", modelIDs(models))
+	}
+	if !strings.Contains(buf.String(), "legacy") {
+		t.Errorf("expected a legacy-catalog warning, got log %q", buf.String())
+	}
+}
+
+func TestCodexModelsNoLegacyWarningOnCurrentCatalog(t *testing.T) {
+	buf := captureWarnLogs(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(codexCatalogJSON))
+	}))
+	defer server.Close()
+
+	engine, _ := codexTestEngine(t, codexTestToken("acct-abc"))
+	p := newTestCodex(t, server.URL, engine)
+
+	if _, err := p.Models(t.Context()); err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if strings.Contains(buf.String(), "legacy") {
+		t.Errorf("unexpected legacy warning for a current catalog, got log %q", buf.String())
 	}
 }
 

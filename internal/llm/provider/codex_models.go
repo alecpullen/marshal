@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sort"
@@ -16,11 +17,14 @@ import (
 const codexModelsPath = "/codex/models"
 
 // codexModelsClientVersion is sent as the client_version query parameter.
-// This pins the catalog protocol version Marshal supports. The server accepts
-// 0.0.0 but returns a legacy catalog without newer models. A live comparison
-// confirmed that 0.160.0 includes the current models with the same credentials.
-// Review this pin when updating the Codex integration.
-const codexModelsClientVersion = "0.160.0"
+// The server gates the catalog on it: too old a version still gets HTTP 200
+// but a legacy catalog — older models only, without context windows or
+// reasoning levels. 0.160.0 was verified current on 2026-10-04 and already
+// returned the legacy catalog by 2026-10-19, so the cutoff moves within weeks
+// of a release. 0.163.0 is the current codex CLI release (2026-10-15). When
+// Codex models go missing, bump this to the latest CLI release and watch for
+// the legacy-catalog warning fetchLiveModels logs.
+const codexModelsClientVersion = "0.163.0"
 
 // codexModelEntry is one entry in the catalog's models array. Only the
 // fields marshal consumes are decoded; the catalog carries much more
@@ -68,16 +72,23 @@ func (p *OpenAICodex) resolveModels(ctx context.Context) []schema.ModelInfo {
 // fetchLiveModels performs the catalog GET. It returns the filtered list and
 // the X-Models-Etag header (for future conditional requests). Any failure —
 // no token, transport error, non-2xx, malformed body — yields an empty list
-// so the caller falls through to the cache.
+// so the caller falls through to the cache. Failures are logged: Debug for
+// the auth cases the picker deliberately ignores, Warn for the rest. A
+// successful fetch of a legacy-shaped catalog also warns — the server serves
+// it to too-old client versions, and without the warning the missing models
+// are silent.
 func (p *OpenAICodex) fetchLiveModels(ctx context.Context) ([]schema.ModelInfo, string) {
 	token, err := p.engine.TokenSource(ctx)
 	if err != nil {
+		// Expected while logged out; chat surfaces the missing login.
+		slog.Default().Debug("codex model catalog: no token available", "provider", p.name)
 		return nil, ""
 	}
 
 	u := p.baseURL + codexModelsPath + "?client_version=" + url.QueryEscape(codexModelsClientVersion)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
+		slog.Default().Warn("codex model catalog: build request", "provider", p.name, "error", err)
 		return nil, ""
 	}
 	req.Header.Set("Accept", "application/json")
@@ -89,22 +100,50 @@ func (p *OpenAICodex) fetchLiveModels(ctx context.Context) ([]schema.ModelInfo, 
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		slog.Default().Warn("codex model catalog: request failed", "provider", p.name, "error", err)
 		return nil, ""
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusUnauthorized {
+			// Token expired or revoked: the refresh worker or the next chat
+			// handles re-auth; the picker stays quiet by design.
+			slog.Default().Debug("codex model catalog: unauthorized", "provider", p.name, "status", resp.StatusCode)
+		} else {
+			slog.Default().Warn("codex model catalog: unexpected status", "provider", p.name, "status", resp.StatusCode)
+		}
 		return nil, ""
 	}
 
 	var parsed codexModelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		slog.Default().Warn("codex model catalog: malformed body", "provider", p.name, "error", err)
 		return nil, ""
 	}
 	models := filterCodexModels(parsed.Models)
 	if len(models) == 0 {
+		slog.Default().Warn("codex model catalog: no selectable models", "provider", p.name, "entries", len(parsed.Models))
 		return nil, ""
 	}
+	if catalogLooksLegacy(parsed.Models) {
+		slog.Default().Warn("codex model catalog looks legacy: no context windows; newer models may be hidden from this client_version — bump codexModelsClientVersion",
+			"provider", p.name, "client_version", codexModelsClientVersion, "models", len(models))
+	}
 	return models, resp.Header.Get("X-Models-Etag")
+}
+
+// catalogLooksLegacy reports whether a fetched catalog carries no context
+// windows at all. The current catalog sets context_window on every model
+// (docs/codex-spike-findings-2026-09-14.md §4); the legacy catalog served to
+// too-old client versions omits it (observed live 2026-10-19). That fetch
+// still succeeds, so this signature is what makes the degradation visible.
+func catalogLooksLegacy(entries []codexModelEntry) bool {
+	for _, e := range entries {
+		if e.ContextWindow > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // filterCodexModels keeps only the models a user may select, sorted by the

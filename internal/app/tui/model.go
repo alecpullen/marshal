@@ -4283,6 +4283,7 @@ func (m *Model) drillIntoSubagent(v session.SubagentView) {
 		return
 	}
 	m.viewStack = append(m.viewStack, v)
+	m.clearSelection()
 	m.invalidateTranscript()
 	m.viewportFollow = true
 }
@@ -4308,6 +4309,7 @@ func (m *Model) popDrill() bool {
 		return false
 	}
 	m.viewStack = m.viewStack[:len(m.viewStack)-1]
+	m.clearSelection()
 	m.invalidateTranscript()
 	return true
 }

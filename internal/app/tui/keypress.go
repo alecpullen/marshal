@@ -156,6 +156,12 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			m.completionSuppressed = true
 			return *m, nil, true
 		}
+		// A text selection is the last thing the user made: Esc clears it
+		// and does nothing else.
+		if m.sel != nil {
+			m.clearSelection()
+			return *m, nil, true
+		}
 		// While drilled into a subagent, Esc pops back to the parent
 		// transcript. Ctrl+X while drilled into a running subagent stops
 		// that subagent; Ctrl+C (twice) stops the whole turn.
@@ -231,7 +237,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.mouseReleased = !m.mouseReleased
 		verb := "released to the terminal — click-drag to select, keys to scroll (PgUp/PgDn/Ctrl+U/Ctrl+D/End)"
 		if !m.mouseReleased {
-			verb = "captured — wheel scrolls the transcript"
+			verb = "captured — wheel scrolls, drag selects and copies"
 		}
 		m.state.AddMessage(session.RoleSystem, "Mouse "+verb+". Ctrl+S to toggle.", session.ContentTypePlain)
 		m.refreshViewport()

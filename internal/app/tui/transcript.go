@@ -974,22 +974,11 @@ func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers [
 	return renderCompletedToolCallIn(event, expanded, callers, width, "")
 }
 
-// renderCompletedToolCallIn is renderCompletedToolCall with the session's
-// active root, which elides a leading cd into it from shell rows.
-func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers []string, width int, workdir string) string {
-	g := toolCategoryGlyph(event.ToolName)
-	style := statusOkStyle()
-	if event.Error != "" {
-		g = glyph.Error
-		style = errorStyle()
-	}
-	// Glyph and label share the state colour in both directions; success used
-	// to pair a muted glyph with a green label while errors made both red.
-	gutterColor := theme.Current().FGMuted
-	if event.Error != "" {
-		gutterColor = theme.Current().StatusError
-	}
-	gutter := gutterPrefix(g, gutterColor)
+// toolRowHead is a completed call's head without its disclosure marker: the
+// text a collapsed row shows before it is truncated to the row. Copying a
+// fully selected truncated row uses it, so the clipboard gets the whole
+// command or path rather than the row's ellipsis.
+func toolRowHead(event registry.AuditEvent, workdir string) string {
 	head := DisplayToolName(event.ToolName)
 	shellRow := viewmodel.IsShellFamily(event.ToolName)
 	// summaryDupesCommand tracks whether the head already carries the
@@ -1038,6 +1027,26 @@ func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers
 	} else if s := viewmodel.DisplaySummary(event); s != "" && !summaryDupesCommand {
 		head += dimSeparator + s
 	}
+	return head
+}
+
+// renderCompletedToolCallIn is renderCompletedToolCall with the session's
+// active root, which elides a leading cd into it from shell rows.
+func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers []string, width int, workdir string) string {
+	g := toolCategoryGlyph(event.ToolName)
+	style := statusOkStyle()
+	if event.Error != "" {
+		g = glyph.Error
+		style = errorStyle()
+	}
+	// Glyph and label share the state colour in both directions; success used
+	// to pair a muted glyph with a green label while errors made both red.
+	gutterColor := theme.Current().FGMuted
+	if event.Error != "" {
+		gutterColor = theme.Current().StatusError
+	}
+	gutter := gutterPrefix(g, gutterColor)
+	head := toolRowHead(event, workdir)
 	if event.ResultContent != "" || event.Error != "" {
 		if expanded {
 			head += " " + glyph.DisclosureExpanded

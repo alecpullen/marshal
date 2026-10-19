@@ -21,6 +21,22 @@ const bulletIndent = 4
 // path it read, the command it ran, the query it searched for.
 func toolTarget(event registry.AuditEvent) string { return viewmodel.ToolTarget(event) }
 
+// toolGroupHead is a collapsed group's head before truncation: the plural
+// tool name, the count and every target.
+func toolGroupHead(events []registry.AuditEvent) string {
+	head := fmt.Sprintf("%s: ×%d", pluralizeToolName(events[0].ToolName), len(events))
+	targets := make([]string, 0, len(events))
+	for _, ev := range events {
+		if t := toolTarget(ev); t != "" {
+			targets = append(targets, t)
+		}
+	}
+	if len(targets) > 0 {
+		head += dimSeparator + strings.Join(targets, ", ")
+	}
+	return head
+}
+
 // renderToolGroup renders a run of same-tool audit events. Collapsed it is
 // one line, the plural tool name, the count and as many targets as fit: a run
 // that grows while a step is live then only ever changes one row, instead of
@@ -32,17 +48,8 @@ func renderToolGroup(events []registry.AuditEvent, expanded bool, width int) str
 	var b strings.Builder
 
 	if !expanded {
-		targets := make([]string, 0, len(events))
-		for _, ev := range events {
-			if t := toolTarget(ev); t != "" {
-				targets = append(targets, t)
-			}
-		}
-		if len(targets) > 0 {
-			head += dimSeparator + strings.Join(targets, ", ")
-		}
 		b.WriteString(gutter)
-		b.WriteString(statusOkStyle().Render(ansi.Truncate(head, max(width-gutterWidth, 1), "…")))
+		b.WriteString(statusOkStyle().Render(ansi.Truncate(toolGroupHead(events), max(width-gutterWidth, 1), "…")))
 		b.WriteString("\n")
 		return b.String()
 	}

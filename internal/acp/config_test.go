@@ -55,6 +55,27 @@ func seedProviderAndPreset(t *testing.T, m *ConfigManager) {
 	cfgCall(t, m.SetPresets, `{"presets":{"local/qwen":{"provider":"local","model":"qwen","contextWindow":32000}}}`)
 }
 
+// TestSetPresetsKeepsExplicitLimitsWhenWireOmitsThem pins the web-UI save
+// path: limits are omitempty on the wire, so a client that leaves a limit
+// blank sends 0, and that must not zero-fill an explicit preset value.
+func TestSetPresetsKeepsExplicitLimitsWhenWireOmitsThem(t *testing.T) {
+	m := newConfigTestManager(t)
+	seedProviderAndPreset(t, m)
+	cfgCall(t, m.SetPresets, `{"presets":{"local/qwen":{"provider":"local","model":"qwen","contextWindow":1000000,"maxOutputTokens":128000}}}`)
+
+	// Re-save with the limit fields omitted (wire value 0).
+	cfgCall(t, m.SetPresets, `{"presets":{"local/qwen":{"provider":"local","model":"qwen"}}}`)
+	if pr := cfgGet(t, m).Presets["local/qwen"]; pr.ContextWindow != 1000000 || pr.MaxOutputTokens != 128000 {
+		t.Fatalf("omitted wire limits zero-filled the preset: %+v", pr)
+	}
+
+	// An explicit non-zero wire value still applies.
+	cfgCall(t, m.SetPresets, `{"presets":{"local/qwen":{"provider":"local","model":"qwen","contextWindow":2000000}}}`)
+	if pr := cfgGet(t, m).Presets["local/qwen"]; pr.ContextWindow != 2000000 || pr.MaxOutputTokens != 128000 {
+		t.Fatalf("explicit wire limit not applied: %+v", pr)
+	}
+}
+
 func TestConfigGetSetRoundTrip(t *testing.T) {
 	m := newConfigTestManager(t)
 	seedProviderAndPreset(t, m)

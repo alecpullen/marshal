@@ -148,7 +148,15 @@ func presetToWire(p routing.ModelPreset) presetWire {
 }
 
 func (w presetWire) applyTo(p routing.ModelPreset) routing.ModelPreset {
-	p.Provider, p.Model, p.ContextWindow, p.MaxOutputTokens = w.Provider, w.Model, w.ContextWindow, w.MaxOutputTokens
+	p.Provider, p.Model = w.Provider, w.Model
+	// Limits are omitempty on the wire, so a client that leaves a limit
+	// blank sends 0; that must not zero-fill an explicit preset value.
+	if w.ContextWindow != 0 {
+		p.ContextWindow = w.ContextWindow
+	}
+	if w.MaxOutputTokens != 0 {
+		p.MaxOutputTokens = w.MaxOutputTokens
+	}
 	p.ToolCalling, p.LocalOnly, p.Thinking = w.ToolCalling, w.LocalOnly, w.Thinking
 	p.Temperature, p.VerificationGate = w.Temperature, w.VerificationGate
 	return p

@@ -826,8 +826,11 @@ func (s *conversationCommandService) commitLaunchPolicy(policy native.LaunchPoli
 func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], configReloader func(config.Config) error, homeDir string, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *native.JobManager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	// The watch manager is owned by the runtime (via buildAgentRunnerWithLock);
 	// this wrapper discards it so the ~25 test call sites that use
-	// buildAgentRunner directly do not need to change.
-	runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, _, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{}, nil, auth...)
+	// buildAgentRunner directly do not need to change. The LSP handle is the
+	// runtime's too: the wrapper wires the tools to an empty one and returns
+	// it.
+	lspHandle := lsp.NewHandle(nil, nil, state.Logger())
+	runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, _, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, err := buildAgentRunnerWithLock(ctx, cfg, state, database, projectID, skillIndex, dataDir, additionalDirs, jobBroker, nil, nil, configReloader, homeDir, &swarm.WriteLock{}, nil, lspHandle, auth...)
 	var jobMgr *native.JobManager
 	if commandService != nil {
 		jobMgr = commandService.manager
@@ -858,12 +861,17 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 // service's defaults for future launches. That commit is the last thing the
 // function does, so a candidate that fails validation leaves the previous
 // generation — and the service — exactly as they were.
-func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, *lsp.Handle, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
+//
+// lspHandle is the runtime's LSP handle, which the tools, the symbol query
+// and the diagnostics checker are wired to. The build never creates or
+// starts a language server: the runtime points the handle at the project
+// host's pooled servers (Runtime.bindLSP). A nil handle wires no LSP.
+func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, lspHandle *lsp.Handle, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	authResolver := effectiveAuthResolver(firstAuthResolver(auth))
 	resolver := newRoutedProviderResolver(cfg, dataDir, authResolver).withSessionID(state.SessionID())
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 
 	// Resolve rollover enablement against the route once, up front: when
@@ -892,7 +900,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if sbErr != nil {
 		// Unknown backend string: surface as a startup error rather than
 		// silently downgrading — the user should fix their config.
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("build sandbox: %w", sbErr)
 	}
 	caps := commandRunner.Capabilities()
 	state.SetSandboxInfo(session.SandboxInfo{
@@ -1057,15 +1065,8 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
 	}
-	// Build LSP manager and wire adapters BEFORE RegisterAll so the
-	// toolSet and diagnostics checker receive non-nil LSP fields.
-	var lspHandle *lsp.Handle
-	if lspEnabled(cfg.LSP) {
-		servers := lsp.DetectServers(toServerSpecs(cfg.LSP.Servers), disabledLangs(cfg.LSP.Servers))
-		if len(servers) > 0 {
-			lspHandle = lsp.NewHandle(lsp.NewManager(state.Workspace().ActiveRoot, lsp.ServersForRoot(servers, state.Workspace().ActiveRoot), state.Logger()), servers, state.Logger())
-		}
-	}
+	// Wire the LSP adapters BEFORE RegisterAll so the toolSet and
+	// diagnostics checker receive non-nil LSP fields.
 	// symbols answers through the language servers and falls back to the
 	// symbol index, so it is wired unconditionally; lspHandle may be nil.
 	nativeOpts.Symbols = lsp.NewSymbolQuery(lspHandle, database, projectID)
@@ -1077,7 +1078,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	if err := native.RegisterAll(reg, nativeOpts); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
 	skills.RegisterTool(reg, skillIndex, state, skills.SkillsToolOptions{
 		HomeDir:    homeDir,
@@ -1109,7 +1110,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		cleanup = append(cleanup, func() { _ = mcpMgr.Close() })
 		if err := mcpMgr.RegisterTools(reg); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
 		}
 	}
 	router := routing.NewStaticRouter(cfg.RoutingConfig())
@@ -1129,7 +1130,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		agent.WithSubagentParentProvider(resolvedProvider.Name()),
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.run: %w", err)
 	}
 	// agent.await and agent.kill both cover the same two classes of
 	// background work: subagents and shell jobs. Both take the job adapter so
@@ -1138,19 +1139,19 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		agent.WithAwaitJobs(jobAwaitAdapter{m: jobManager}),
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.await: %w", err)
 	}
 	if err := reg.Register(agent.NewSubagentKillTool(state,
 		agent.WithAwaitJobs(jobAwaitAdapter{m: jobManager}),
 	)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.kill: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.kill: %w", err)
 	}
 	// agent.steer sends an instruction into a running subagent. Main agent
 	// only: SubtaskScopeView excludes it, so a child cannot steer a sibling.
 	if err := reg.Register(agent.NewSubagentSteerTool(state)); err != nil {
 		buildErr = err
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.steer: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register agent.steer: %w", err)
 	}
 	runner := agent.NewRunner(resolvedProvider, reg, pol, state, route.Preset.Model)
 	runner.WriteGate = writeLock
@@ -1313,7 +1314,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	if rolloverCtrl, rerr := NewRolloverController(state.SessionID(), cfg.Session.Rollover, database, route.Preset.LocalOnly, modelCtxWindow, digestProvider, usageCounter); rerr != nil {
 		buildErr = rerr
-		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
+		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("new rollover controller: %w", rerr)
 	} else if rolloverCtrl != nil {
 		runner.Rollover = &agent.Rollover{
 			Controller: rolloverCtrl,
@@ -1322,7 +1323,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		// Start generation 0.
 		if err := rolloverCtrl.Start(ctx); err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("rollover start: %w", err)
 		}
 		// Record generation 0 in session state.
 		genID, genSeq, genSeed := rolloverCtrl.Current()
@@ -1430,7 +1431,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		closer, err := desktop.RegisterAll(reg, desktopOpts)
 		if err != nil {
 			buildErr = err
-			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register desktop tools: %w", err)
 		}
 		desktopCloser = closer
 	}
@@ -1447,7 +1448,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// launches only. A failure returned earlier leaves the service, its
 	// callbacks and the previous generation exactly as they were.
 	commandService.commitLaunchPolicy(commandLaunchPolicy(cfg, state, commandService.nextGeneration(), commandRunner, native.ResourcesOf(commandRunner)), lspSync)
-	return runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, watchManager, desktopCloser, subagentFactory, lspHandle, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
+	return runner, reg, swarmRunner, mcpMgr, snapSvc, commandService, watchManager, desktopCloser, subagentFactory, pipelineFactory, planAuthorFactory, swarmOverrideFactory, nil
 }
 
 // beginSessionStop registers the conversation-level stop group for one parent
@@ -3092,7 +3093,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// The build uses effectiveCfg, not cfg: a session mode override must
 	// survive the reload, so the rebuilt policy engine has to agree with what
 	// the session reports.
-	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newLSPHandle, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, effectiveCfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service, rt.AuthResolver)
+	newRunner, newReg, newSwarmRunner, newMCP, newSnap, newJobMgr, newWatchMgr, newDesktopCloser, newSubagentFactory, newPipelineFactory, newPlanAuthorFactory, newSwarmOverrideFactory, err := buildAgentRunnerWithLock(rt.workCtx, effectiveCfg, rt.State, db, rt.ProjectID, rt.SkillIndex, rt.DataDir, rt.additionalDirs, jb, must[*pubsub.Broker[watch.Event]](rt.WatchBroker), rt.WatchResume, rt.ConfigReloader, rt.HomeDir, lock, service, rt.LSPManager, rt.AuthResolver)
 	if err != nil {
 		// A failed dry run leaves the configured baseline, the override, the
 		// system flag and the existing runner exactly as they were.
@@ -3118,7 +3119,6 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	oldMCP := rt.MCPManager
 	oldWatchMgr := rt.WatchManager
 	oldDesktopCloser := rt.DesktopCloser
-	oldLSP := rt.LSPManager
 
 	// Copy in-place fields. When the startup provider build failed there is
 	// no live runner to mutate — adopt the rebuilt one wholesale (mirroring
@@ -3177,11 +3177,6 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	} else {
 		rt.Snapshot = nil
 	}
-	if newLSPHandle != nil {
-		rt.LSPManager = newLSPHandle
-	} else {
-		rt.LSPManager = nil
-	}
 	rt.JobManager = newJobMgr.manager
 	rt.CommandService = newJobMgr
 	rt.WatchManager = newWatchMgr
@@ -3224,14 +3219,11 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if oldDesktopCloser != nil {
 		oldDesktopCloser()
 	}
-	if oldLSP != nil && oldLSP != newLSPHandle {
-		// Stop the old LSP manager generation. Start a new one if the reload
-		// produced a handle, otherwise leave the slot empty.
-		rt.lspCancel()
-		if newLSPHandle != nil {
-			rt.lspCancel = rt.runLSPManager(rt.LSPManager.Get())
-		}
-	}
+	// The server set may have changed: re-point the LSP handle (the pool
+	// keeps the running manager when it did not), and give the host the new
+	// config for its index passes.
+	rt.bindLSP(cfg, rt.State.Workspace().ActiveRoot)
+	rt.Host.noteConfig(cfg)
 
 	// Update the active route so the status bar reflects the new model
 	// immediately, without waiting for the next turn to call resolveRoute.

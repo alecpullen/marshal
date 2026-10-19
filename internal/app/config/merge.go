@@ -43,7 +43,8 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.NarrationPrompt, file.Agent.NarrationPrompt)
 		set(&cfg.Agent.IntentNudge, file.Agent.IntentNudge)
 		set(&cfg.Agent.SubtaskIterations, file.Agent.SubtaskIterations)
-		set(&cfg.Agent.ApprovalMode, file.Agent.ApprovalMode)
+		set(&cfg.Agent.Mode, file.Agent.Mode)
+		set(&cfg.Agent.Auto, file.Agent.Auto)
 		set(&cfg.Agent.HistoryBudgetTokens, file.Agent.HistoryBudgetTokens)
 		if file.Agent.ParseRepairFeedback != nil {
 			cfg.Agent.ParseRepairFeedback = file.Agent.ParseRepairFeedback
@@ -54,6 +55,8 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.MaxTouchedFileBytes, file.Agent.MaxTouchedFileBytes)
 		set(&cfg.Agent.ThinkingBudgetMargin, file.Agent.ThinkingBudgetMargin)
 		set(&cfg.Agent.MaxConcurrentSubagents, file.Agent.MaxConcurrentSubagents)
+		// ApprovalMode is a derived compatibility projection, never input.
+		cfg.Agent.ApprovalMode = legacyApprovalMode(cfg.Agent.Mode, cfg.Agent.Auto)
 	}
 	if file.Privacy != nil {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)
@@ -171,8 +174,7 @@ func merge(cfg *Config, file configFile) error {
 			cfg.CustomAgents = map[string]routing.CustomAgent{}
 		}
 		for name, a := range file.CustomAgents {
-			a.Name = name
-			cfg.CustomAgents[name] = a
+			cfg.CustomAgents[name] = a.runtime(name)
 		}
 	}
 	// Rewrite references to renamed presets in agent profiles and custom

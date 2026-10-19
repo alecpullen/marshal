@@ -344,6 +344,10 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		})
 	}
 
+	// Interaction migration notices are source-specific and already carry
+	// their layer; append them before the sort so they order with the rest.
+	ds = append(ds, layers.InteractionNotices...)
+
 	// Sort: errors before warnings, then by Path within each group.
 	sort.SliceStable(ds, func(i, j int) bool {
 		if ds[i].Severity != ds[j].Severity {

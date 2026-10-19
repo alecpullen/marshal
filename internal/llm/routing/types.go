@@ -203,10 +203,10 @@ type AgentProfile struct {
 // referenced ModelPreset. It can fill a role slot (via RoleBinding) or be
 // dispatched ad-hoc by name (agent.run / /agents Run now).
 type CustomAgent struct {
-	Name                   string        `toml:"name"`
-	Preset                 string        `toml:"preset"`
-	SystemPrompt           string        `toml:"system_prompt,omitempty"`
-	ToolDenylist           []string      `toml:"tool_denylist,omitempty"`
+	Name         string   `toml:"name"`
+	Preset       string   `toml:"preset"`
+	SystemPrompt string   `toml:"system_prompt,omitempty"`
+	ToolDenylist []string `toml:"tool_denylist,omitempty"`
 	// ApprovalMode is the retired five-mode spelling. It survives only as
 	// input conversion for unmigrated files; it never grants authority.
 	ApprovalMode string `toml:"approval_mode,omitempty"`
@@ -216,8 +216,8 @@ type CustomAgent struct {
 	Mode                   *interaction.Mode `toml:"mode,omitempty"`
 	Auto                   *bool             `toml:"auto,omitempty"`
 	MaxIterations          int               `toml:"max_iterations,omitempty"`
-	MaxIterationsUnlimited bool          `toml:"max_iterations_unlimited,omitempty"`
-	Context                ContextBudget `toml:"context,omitempty"`
+	MaxIterationsUnlimited bool              `toml:"max_iterations_unlimited,omitempty"`
+	Context                ContextBudget     `toml:"context,omitempty"`
 	// Temperature optionally overrides the resolved preset's sampling
 	// temperature for every run of this agent. Nil keeps the preset's
 	// value (or the role default when the preset sets none).

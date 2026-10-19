@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/strutil"
 	"marshal/internal/trust"
@@ -1619,8 +1620,13 @@ approval_mode = "copilot"
 
 func TestApprovalModeDefault(t *testing.T) {
 	cfg := Default()
-	if cfg.Agent.ApprovalMode != "default" {
-		t.Fatalf("default ApprovalMode = %q, want %q", cfg.Agent.ApprovalMode, "default")
+	// The fresh default is Act, whose retired-spelling projection is
+	// "copilot". ApprovalMode is a compatibility projection, not authority.
+	if cfg.Agent.ApprovalMode != "copilot" {
+		t.Fatalf("default ApprovalMode = %q, want %q", cfg.Agent.ApprovalMode, "copilot")
+	}
+	if cfg.Agent.Mode != interaction.ModeAct || cfg.Agent.Auto {
+		t.Fatalf("default tuple = %q/%v, want act/false", cfg.Agent.Mode, cfg.Agent.Auto)
 	}
 }
 

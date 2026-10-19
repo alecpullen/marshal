@@ -3,6 +3,7 @@ package config
 import (
 	"time"
 
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 )
 
@@ -23,7 +24,9 @@ func Default() Config {
 		Agent: AgentConfig{
 			NarrationPrompt:        true,
 			IntentNudge:            true,
-			ApprovalMode:           "default",
+			Mode:                   interaction.ModeAct,
+			Auto:                   false,
+			ApprovalMode:           "copilot",
 			MaxTouchedFileBytes:    65536, // 64 KiB
 			MaxConcurrentSubagents: 3,
 			// Preserve the long-standing fixed +4096 Anthropic thinking

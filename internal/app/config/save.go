@@ -457,11 +457,9 @@ func writeSections(file *configFile, cfg Config, def Config) {
 		}
 	}
 	if file.CustomAgents != nil || len(cfg.CustomAgents) > 0 {
-		file.CustomAgents = map[string]routing.CustomAgent{}
+		file.CustomAgents = map[string]fileCustomAgent{}
 		for name, a := range cfg.CustomAgents {
-			ca := a
-			ca.Name = name
-			file.CustomAgents[name] = ca
+			file.CustomAgents[name] = customAgentFile(a)
 		}
 	}
 	// Sections below were previously merged on load but never written

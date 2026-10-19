@@ -388,7 +388,7 @@ func TestChatWithRetryReconnectOnPerRequestDeadline(t *testing.T) {
 	state := newTestState(t)
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.MaxRetries = 0
-	r.RequestCeiling = 50 * time.Millisecond
+	r.IdleTimeout = 50 * time.Millisecond
 
 	seen := make(chan session.Activity, 4)
 	r.Sleep = func(ctx context.Context, d time.Duration) error {
@@ -426,7 +426,7 @@ func TestChatWithRetryParentCancelNotReconnectEligible(t *testing.T) {
 	state := newTestState(t)
 	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.MaxRetries = 0
-	r.RequestCeiling = 50 * time.Millisecond
+	r.IdleTimeout = 50 * time.Millisecond
 
 	// A Sleep that would record a reconnect attempt, proving none happens.
 	slept := false

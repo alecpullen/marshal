@@ -689,7 +689,7 @@ func TestChatOnceTimesOutPerRequest(t *testing.T) {
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
 	runner := NewRunner(&blockingProvider{}, reg, pol, state, "test-model")
-	runner.RequestCeiling = 50 * time.Millisecond
+	runner.IdleTimeout = 50 * time.Millisecond
 
 	start := time.Now()
 	_, err := runner.chatOnce(context.Background(), &blockingProvider{}, "test-model", []schema.ChatMessage{{Role: schema.RoleUser, Content: "hi"}}, nil, false)

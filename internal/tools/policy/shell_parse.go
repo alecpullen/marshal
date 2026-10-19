@@ -23,12 +23,18 @@ func AnalyzeShell(in ShellInput) (ShellAnalysis, error) {
 		return ShellAnalysis{}, fmt.Errorf("parse shell command: %w", err)
 	}
 	a := &shellAnalyzer{in: in}
+	a.cwd = in.Dir
+	if a.cwd == "" {
+		a.cwd = in.WorkspaceRoot
+	}
 	a.walkFile(f)
+	a.resolveShellScopes()
 	return ShellAnalysis{Input: in, Operations: a.ops}, nil
 }
 
 type shellAnalyzer struct {
 	in     ShellInput
+	cwd    string
 	ops    []ShellOperation
 	nextID int
 }
@@ -70,16 +76,30 @@ func (a *shellAnalyzer) walkCommand(cmd syntax.Command, depth int) {
 	case *syntax.CallExpr:
 		a.addCall(c, depth)
 	case *syntax.BinaryCmd:
+		saved := a.cwd
 		a.walkStmt(c.X, depth)
+		afterX := a.cwd
+		if c.Op == syntax.OrStmt {
+			// The right side runs only when the left failed, so it starts
+			// from the cwd the left started from.
+			a.cwd = saved
+		}
 		a.walkStmt(c.Y, depth)
+		if c.Op == syntax.OrStmt {
+			// After the alternative, the cwd is the left's success path or
+			// the right's path; keep the right's as the conservative choice.
+			_ = afterX
+		}
 	case *syntax.Block:
 		for _, s := range c.Stmts {
 			a.walkStmt(s, depth)
 		}
 	case *syntax.Subshell:
+		saved := a.cwd
 		for _, s := range c.Stmts {
 			a.walkStmt(s, depth)
 		}
+		a.cwd = saved
 	case *syntax.IfClause:
 		for _, s := range c.Then {
 			a.walkStmt(s, depth)
@@ -131,13 +151,17 @@ func (a *shellAnalyzer) walkPartExecutables(part syntax.WordPart, depth int) {
 			a.walkPartExecutables(dp, depth)
 		}
 	case *syntax.CmdSubst:
+		saved := a.cwd
 		for _, s := range p.Stmts {
 			a.walkStmt(s, depth+1)
 		}
+		a.cwd = saved
 	case *syntax.ProcSubst:
+		saved := a.cwd
 		for _, s := range p.Stmts {
 			a.walkStmt(s, depth+1)
 		}
+		a.cwd = saved
 	}
 }
 
@@ -195,13 +219,19 @@ func (a *shellAnalyzer) addOperation(argv []ShellWord, depth int) {
 	}
 
 	op := ShellOperation{
-		ID:         a.nextID,
-		Executable: exe,
-		Argv:       argv,
+		ID:          a.nextID,
+		Executable:  exe,
+		Argv:        argv,
+		Directories: []string{a.cwd},
 	}
 	a.nextID++
 	op.Flags, op.Operands = splitFlags(argv[1:])
 	a.ops = append(a.ops, op)
+	if base == "cd" {
+		if next, ok := cdTarget(&op, a.cwd); ok {
+			a.cwd = next
+		}
+	}
 }
 
 // wrapperPayload returns the argv a transparent shell wrapper executes.

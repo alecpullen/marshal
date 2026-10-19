@@ -392,7 +392,11 @@ func SaveUserConfigValue(path, dottedPath string, value any) error {
 	if err := setPath(&file, dottedPath, value); err != nil {
 		return fmt.Errorf("set %s: %w", dottedPath, err)
 	}
-	data, err := toml.Marshal(&file)
+	canonical, err := canonicalFileForSave(file, "user config")
+	if err != nil {
+		return err
+	}
+	data, err := toml.Marshal(&canonical)
 	if err != nil {
 		return fmt.Errorf("marshal user config: %w", err)
 	}

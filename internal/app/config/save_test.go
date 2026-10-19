@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/routing"
 	"marshal/internal/strutil"
@@ -154,7 +155,6 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	cfg.Tools.Shell.DefaultTimeoutSeconds = 45
 	cfg.Tools.Shell.MaxOutputBytes = 98765
 	cfg.Tools.Shell.AllowNetwork = true
-	cfg.Tools.Shell.AutoApprove = true
 	cfg.Tools.Shell.Sandbox.Backend = "container"
 	cfg.Tools.Shell.Sandbox.MemoryLimitMB = 512
 	cfg.Tools.Shell.Sandbox.CPUSeconds = 4
@@ -192,7 +192,7 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	}
 	shell := loaded.Tools.Shell
 	if shell.DefaultTimeoutSeconds != 45 || shell.MaxOutputBytes != 98765 ||
-		!shell.AllowNetwork || !shell.AutoApprove {
+		!shell.AllowNetwork {
 		t.Fatalf("shell settings = %+v", shell)
 	}
 	sb := shell.Sandbox
@@ -1001,13 +1001,17 @@ func TestApprovalModeRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	path := tmp + "/.marshal/config.toml"
 	cfg := Default()
-	cfg.Agent.ApprovalMode = "auto"
+	cfg.Agent.Mode = interaction.ModeAct
+	cfg.Agent.Auto = true
 	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
 		t.Fatalf("SaveProjectConfig: %v", err)
 	}
 	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Agent.Mode != interaction.ModeAct || !loaded.Agent.Auto {
+		t.Fatalf("round-trip tuple = %q/%v, want act/true", loaded.Agent.Mode, loaded.Agent.Auto)
 	}
 	if loaded.Agent.ApprovalMode != "auto" {
 		t.Fatalf("round-trip ApprovalMode = %q, want %q", loaded.Agent.ApprovalMode, "auto")

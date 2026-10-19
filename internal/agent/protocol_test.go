@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -78,6 +79,35 @@ func TestParseActionRejectsToolCallMissingTool(t *testing.T) {
 	_, err := ParseAction(`{"rationale":"r","action":{"type":"tool_call","args":{}}}`)
 	if !errors.Is(err, ErrMissingTool) {
 		t.Fatalf("err = %v, want ErrMissingTool", err)
+	}
+}
+
+// TestMissingToolNamesTheToolField pins the self-correcting half of the
+// rejection: the recorded failures keyed the tool name directly
+// ("file.read": null) or omitted it, and a bare "missing tool name" left the
+// model to guess which field to add.
+func TestMissingToolNamesTheToolField(t *testing.T) {
+	_, err := ParseAction(`{"rationale":"r","action":{"type":"tool_call","args":{}}}`)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), `"tool"`) {
+		t.Fatalf("err = %q, want it to name the \"tool\" field", err.Error())
+	}
+}
+
+// TestUnknownActionTypeNamesTheValidSet pins the other self-correcting half:
+// one session emitted "tool_run" 71 times, each rejected without saying what
+// the accepted types are.
+func TestUnknownActionTypeNamesTheValidSet(t *testing.T) {
+	_, err := ParseAction(`{"rationale":"r","action":{"type":"tool_run"}}`)
+	if !errors.Is(err, ErrUnknownActionType) {
+		t.Fatalf("err = %v, want ErrUnknownActionType", err)
+	}
+	for _, want := range []string{`"tool_call"`, `"answer"`, `"final"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to name %s", err.Error(), want)
+		}
 	}
 }
 

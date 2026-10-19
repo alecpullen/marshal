@@ -25,7 +25,6 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
-	"marshal/internal/index"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/lsp"
@@ -137,7 +136,6 @@ type Runtime struct {
 	EventBroker       BrokerCloser
 	WorkspaceBroker   BrokerCloser
 	SubagentBroker    BrokerCloser
-	IndexBroker       BrokerCloser
 	MCPManager        MCPCloser
 	Snapshot          SnapshotCloser
 	Logger            *slog.Logger
@@ -1425,11 +1423,6 @@ func (rt *Runtime) Close(ctx context.Context) error {
 			rt.SubagentBroker.Close()
 		}
 
-		// 5.7. index broker.
-		if rt.IndexBroker != nil {
-			rt.IndexBroker.Close()
-		}
-
 		// 5b. rollover close — end the live generation with session_end.
 		if rt.Runner != nil && rt.Runner.Rollover != nil {
 			if err := rt.Runner.Rollover.Close(ctx); err != nil {
@@ -1785,7 +1778,6 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 	eventBroker := pubsub.NewBroker[session.Event]()
 	workspaceBroker := pubsub.NewBroker[session.WorkspaceEvent]()
 	subagentBroker := pubsub.NewBroker[session.SubagentEvent]()
-	indexBroker := pubsub.NewBroker[index.Report]()
 	state.SetSteeringBroker(steeringBroker)
 	state.SetEventBroker(eventBroker)
 	state.SetWorkspaceBroker(workspaceBroker)
@@ -1855,7 +1847,6 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		EventBroker:          eventBroker,
 		WorkspaceBroker:      workspaceBroker,
 		SubagentBroker:       subagentBroker,
-		IndexBroker:          indexBroker,
 		CommandService:       commandService,
 		JobManager:           commandServiceManager(commandService),
 		WatchManager:         watchMgr,

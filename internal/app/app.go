@@ -29,7 +29,6 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
 	"marshal/internal/hooks"
-	"marshal/internal/index"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
@@ -251,20 +250,9 @@ func startWorker(ctx context.Context, wg *sync.WaitGroup, w worker.Worker, log *
 	}()
 }
 
-// indexEventCompleted is published on Runtime.IndexBroker after every
-// successful index pass (startup scan or watcher rerun).
+// indexEventCompleted is published on a project host's report broker after
+// every successful index pass (startup scan or watcher rerun).
 const indexEventCompleted = "index.completed"
-
-// namedWorker adapts a function to the worker.Worker contract for production
-// background workers. (app_test.go defines its own workerFunc for the test
-// seam; the names must not collide.)
-type namedWorker struct {
-	name string
-	run  func(ctx context.Context) error
-}
-
-func (w namedWorker) Name() string                  { return w.name }
-func (w namedWorker) Run(ctx context.Context) error { return w.run(ctx) }
 
 // WithHomeDir overrides the home directory used to resolve the user config
 // and data directories. When empty, the process's real home directory is
@@ -2507,58 +2495,6 @@ func fallbackResponseFormat(caps schema.ProviderCapabilities) *schema.ResponseFo
 	return nil
 }
 
-// buildIndexWorkers assembles the indexing background workers: the
-// fsnotify watcher (only when config.WatchEnabled allows) and the one-shot
-// startup scan (AI-02 — always; hashes+symbols even without embeddings so
-// repo.map/symbols work on a fresh project). Every successful pass
-// publishes indexEventCompleted on indexBroker, which triggers the
-// context-pack re-seed in startRuntime.
-func buildIndexWorkers(cfg config.Config, state *session.State, database *db.DB, projectID int64, workingDir string, lspAdapter index.LSPSymbols, indexBroker *pubsub.Broker[index.Report], logger *slog.Logger) []worker.Worker {
-	runPass := func(c context.Context) error {
-		cfg := state.Config
-
-		embedder := resolveEmbedderFromConfig(cfg)
-		if embedder != nil {
-			probeCtx, cancel := context.WithTimeout(c, 30*time.Second)
-			defer cancel()
-			if _, err := embedding.Probe(probeCtx, embedder); err != nil {
-				return fmt.Errorf("embedding probe failed: %w", err)
-			}
-		}
-
-		passCtx, cancel := context.WithTimeout(c, 10*time.Minute)
-		defer cancel()
-		rep, err := index.Run(passCtx, index.Deps{
-			DB:       database,
-			Root:     workingDir,
-			Ignore:   cfg.Indexing.Ignore,
-			MaxBytes: cfg.Indexing.MaxIndexableFileBytes,
-			Embedder: embedder,
-			LSP:      lspAdapter,
-			OnProgress: func(msg string) {
-				state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: msg})
-			},
-		}, projectID)
-		if err == nil {
-			indexBroker.Publish(indexEventCompleted, rep)
-		}
-		return err
-	}
-
-	var workers []worker.Worker
-	embeddingConfigured := false
-	embedRouter := routing.NewStaticRouter(cfg.RoutingConfig())
-	if _, err := embedRouter.ResolveEmbedding(); err == nil {
-		embeddingConfigured = true
-	}
-	if config.WatchEnabled(cfg.Indexing.Watch, embeddingConfigured) {
-		debounce := time.Duration(cfg.Indexing.WatchDebounceMs) * time.Millisecond
-		workers = append(workers, index.NewWatcher(workingDir, debounce, runPass, logger))
-	}
-	workers = append(workers, namedWorker{name: "startup-index-scan", run: runPass})
-	return workers
-}
-
 // buildOAuthWorkers returns one token-refresh worker per provider entry that
 // authenticates with OAuth. Both the worker and the provider backend get their
 // engine from the same auth resolver, so a proactive refresh and an inline
@@ -2687,6 +2623,23 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			return
 		}
 		_ = trust.NewStore(trustStoreDir).RefreshConfigHash(abs, hash)
+	}
+
+	// One project-host registry for the TUI process. A resume or a trust
+	// reload closes the runtime and starts the next one on the same host
+	// inside its linger, so the database, index and language servers carry
+	// over. Injected workers (WithWorker) replace the host's index work. The
+	// registry closes after the last runtime (deferred below, so it runs
+	// first).
+	if runOpts.hosts == nil {
+		hosts := NewHosts()
+		hosts.workers = runOpts.workers
+		runOpts.hosts = hosts
+		defer func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), hostCloseTimeout)
+			defer cancel()
+			_ = hosts.Close(closeCtx)
+		}()
 	}
 
 	defer func() {
@@ -2882,10 +2835,10 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		logger.Info("marshal started", "project", cfg.Project.Name, "working_dir", workingDir)
 
 		// ── Worker lifecycle ──────────────────────────────────────────────
-		// Start injected workers (test seam) or construct the index watcher
-		// when embeddings are configured and the watcher is enabled.
-		workers := runOpts.workers
-		if len(workers) == 0 {
+		// The index work runs on the project host, which startRuntime
+		// attached this session to; the language servers are the host's too.
+		// Only the OAuth refresh workers stay per runtime.
+		if len(runOpts.workers) == 0 {
 			// Surface a hint when embedding indexing is enabled but the
 			// embedding route cannot resolve — semantic search reports
 			// "unavailable" until it does. embeddingStartupWarning
@@ -2896,21 +2849,9 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				logger.Warn("embedding route not resolvable while use_embeddings is enabled")
 				state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 			}
-
-			// Build the LSP symbol adapter for the index pass.
-			var lspAdapter index.LSPSymbols
-			if rt.LSPManager != nil {
-				lspAdapter = lsp.NewSymbolAdapter(rt.LSPManager)
-			}
-
-			workers = buildIndexWorkers(cfg, state, database, projectID, workingDir, lspAdapter,
-				must[*pubsub.Broker[index.Report]](rt.IndexBroker), logger)
 		}
-		workers = append(workers, buildOAuthWorkers(cfg, logger, rt.AuthResolver)...)
-		// LSPManager is started inside startRuntime (shared by Run and
-		// StartRuntime) — see runtime.go. Do not start it again here.
 		var workerWG sync.WaitGroup
-		for _, w := range workers {
+		for _, w := range buildOAuthWorkers(cfg, logger, rt.AuthResolver) {
 			startWorker(rt.workCtx, &workerWG, w, logger)
 		}
 		// ── End worker lifecycle ──────────────────────────────────────────

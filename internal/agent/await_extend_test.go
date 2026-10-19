@@ -345,6 +345,55 @@ func TestAgentAwaitAllKeepsUnfinishedTargetsAfterTimeout(t *testing.T) {
 	}
 }
 
+// TestAgentAwaitTimeoutNamesWhatIsStillRunning pins that an expired wait
+// reports the real state of each target instead of a bare "timed out". A model
+// with no facts invents a progress narrative — the recorded friction is a
+// fabricated activity tail drafted while a reviewer subagent was timing out.
+func TestAgentAwaitTimeoutNamesWhatIsStillRunning(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view := state.RegisterSubagent("branch review", child)
+	await := newAwaitTool(state)
+	res, err := await.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d, "timeout_seconds": 1}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("await with timeout: %v", err)
+	}
+	if !strings.Contains(res.Content, "still running:") {
+		t.Fatalf("content = %q, want the remaining work named", res.Content)
+	}
+	if !strings.Contains(res.Content, fmt.Sprintf("subagent %d (branch review): running", view.ID)) {
+		t.Fatalf("content = %q, want the running subagent named", res.Content)
+	}
+}
+
+// TestAgentAwaitTimeoutTellsTheModelNotToRepeat pins the self-correcting half:
+// the recorded friction is two 40-minute timeouts in a row with the same wait
+// strategy, so an expired wait must say that repeating it will expire again and
+// name the moves that change the outcome.
+func TestAgentAwaitTimeoutTellsTheModelNotToRepeat(t *testing.T) {
+	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	child := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
+	view := state.RegisterSubagent("branch review", child)
+	await := newAwaitTool(state)
+	res, err := await.Handler(context.Background(), registry.ToolCall{
+		Args: json.RawMessage(fmt.Sprintf(`{"id": %d, "timeout_seconds": 1}`, view.ID)),
+	})
+	if err != nil {
+		t.Fatalf("await with timeout: %v", err)
+	}
+	if !strings.Contains(res.Content, "Repeating the same wait will time out again") {
+		t.Fatalf("content = %q, want the repeat warning", res.Content)
+	}
+	if !strings.Contains(res.Content, `"peek": true`) {
+		t.Fatalf("content = %q, want peek named as the non-blocking alternative", res.Content)
+	}
+	if !strings.Contains(res.Content, "Nothing was stopped") {
+		t.Fatalf("content = %q, want the no-stop guarantee stated", res.Content)
+	}
+}
+
 // TestAgentAwaitStaysReadOnly pins that await keeps its read-only risk: a
 // blocking handler that held the write gate would deadlock the very target it
 // waits for.

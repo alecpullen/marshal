@@ -284,8 +284,31 @@ which put two diffuse buckets ahead of a bug that loses data.
      file needs; an existing file's tree is untouched. Pinned by
      `TestFileWriteCreatesParentDirectories` and
      `TestFileWritePatchCreatesParentDirectories`.
-5. **Subagent wait policy** (74 obs). Bounded waits, no repeated identical
-   retry, no narration-as-activity during timeouts.
+5. **Subagent wait policy** (74 obs). **Resolved 2026-10-19 — the live
+   defects were both in the timeout result, not in the wait itself.** Dating
+   the observations against the await code settles it:
+   - *Braces/quotes breaking JSON parsing*: `decodeAgentRunArgs` unmarshals the
+     raw args and rejects malformed JSON with a clear error. The model produced
+     malformed JSON; the harness correctly refused it. Not a harness defect.
+   - *`agent.await` with only `timeout_seconds`* (2026-10-13) and *with both
+     `peek` and `all`* (2026-10-18): both already rejected with a clear error.
+     Handled.
+   - *Waits far past useful bounds*: the model passes `timeout_seconds` when it
+     wants to bound a wait (the 40-minute observations prove it), and an
+     omitted timeout is bounded by the turn context. The 2.5-hour reviewer was
+     polled with non-blocking `peek`, not a blocked await. Not a harness defect.
+   - *Repeated identical retry* and *invented activity narration*: the two live
+     defects, both in `awaitTimeoutResult`. It returned a bare "timed out after
+     Ns; M target(s) still running" — no facts and no guidance. A model with no
+     facts invents a progress narrative (the fabricated activity tail drafted
+     while a reviewer timed out), and with no guidance it repeats the identical
+     wait (two 40-minute timeouts in a row). The result now names each
+     still-running target with its real recent activity — the same tail `peek`
+     reads — and states that repeating the same wait will time out again,
+     naming `peek` and continuing other work as the moves that change the
+     outcome. Nothing is stopped.
+   Pinned by `TestAgentAwaitTimeoutNamesWhatIsStillRunning` and
+   `TestAgentAwaitTimeoutTellsTheModelNotToRepeat`.
 6. **Transcript / history correctness** (20 obs). The 111 harness
    `turn_metrics` parse failures in one session are a harness bug that corrupts
    the metrics this document is built from; `recall_history` exactness second.

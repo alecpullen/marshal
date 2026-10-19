@@ -479,11 +479,45 @@ func (a awaitOptions) awaitSteeringResult(ctx context.Context, state *session.St
 func (a awaitOptions) awaitTimeoutResult(state *session.State, timeoutSeconds int, partial []string) registry.ToolResult {
 	p := a.scanPending(state)
 	summary := fmt.Sprintf("timed out after %ds; %d target(s) still running", timeoutSeconds, p.count())
-	content := summary
+	var b strings.Builder
+	b.WriteString(summary)
 	if len(partial) > 0 {
-		content += "\n\n" + strings.Join(partial, "\n")
+		b.WriteString("\n\n" + strings.Join(partial, "\n"))
 	}
-	return registry.ToolResult{Summary: summary, Content: content}
+	// Name what is still running and show its real recent activity. A bare
+	// "timed out" leaves the model with no facts, and a model with no facts
+	// invents a progress narrative — the recorded friction is a fabricated
+	// activity tail drafted while a reviewer subagent was timing out. The
+	// tail here is the same source peek reads, so the model never has to
+	// guess what the child is doing.
+	var running []string
+	for _, id := range p.subIDs {
+		v, ok := state.Subagent(id)
+		if !ok {
+			continue
+		}
+		line := fmt.Sprintf("subagent %d (%s): running", v.ID, v.Label)
+		if tail := subagentActivityTail(v.Child, 3); len(tail) > 0 {
+			line += "\n  recent activity:\n  " + strings.Join(tail, "\n  ")
+		}
+		running = append(running, line)
+	}
+	for _, job := range p.jobs {
+		status := job.Status
+		if status == "" {
+			status = "running"
+		}
+		running = append(running, fmt.Sprintf("job %s: %s", job.ID, status))
+	}
+	if len(running) > 0 {
+		b.WriteString("\n\nstill running:\n" + strings.Join(running, "\n"))
+	}
+	// Repeating the identical wait is the other recorded friction: two
+	// 40-minute timeouts in a row with the same strategy. Say plainly that
+	// the same call will expire again, and name the two moves that change
+	// the outcome.
+	b.WriteString("\n\nRepeating the same wait will time out again. Use \"peek\": true to check progress without blocking, or continue other work and await later. Nothing was stopped.")
+	return registry.ToolResult{Summary: summary, Content: b.String()}
 }
 
 // jobAwaitTailLines bounds the output tail included in job await results.

@@ -67,6 +67,13 @@ func TestFrameInvariants(t *testing.T) {
 			m.busy = true
 			m.turnStartedAt = time.Now()
 		}},
+		{"selection", func(t *testing.T, m *Model) {
+			stepFixture(t, m, session.Actor{}, "Reading the parser to find the guard.", readEvent("a.go"), readEvent("b.go"))
+			m.state.AddMessageFinal(session.RoleAssistant, "Done. The guard is in the lexer.", session.ContentTypeMarkdown)
+			m.invalidateTranscript()
+			m.refreshViewport()
+			selectRows(t, m, selPos{0, 0}, selPos{len(m.contentLines) - 1, m.viewport.Width()})
+		}},
 		{"tasks+browsing", func(t *testing.T, m *Model) {
 			scriptedTasks(t, m, 3, 2, false)
 			m.refreshViewport()

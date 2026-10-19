@@ -123,13 +123,14 @@ func (m *Model) refreshViewport() {
 	var tight []bool
 	nextTight := false
 	var regions []nodeRegion
+	var spans []blockSpan
 	lineCursor := 0
 	// addBlock appends s to blocks (if non-empty) and records the
 	// content-line range it occupies so a later click can find it (see
 	// click.go). strings.Count is exact regardless of a block's internal
 	// formatting, because it counts the same "\n" characters strings.Join
 	// below will actually lay out on screen.
-	addBlock := func(s string, target *clickTarget, subs []subRegion) {
+	addBlock := func(key blockKey, s string, target *clickTarget, subs []subRegion) {
 		if s == "" {
 			return
 		}
@@ -137,6 +138,7 @@ func (m *Model) refreshViewport() {
 		tight = append(tight, nextTight)
 		nextTight = false
 		n := strings.Count(s, "\n")
+		spans = append(spans, blockSpan{key: key, start: lineCursor, end: lineCursor + n})
 		if target != nil {
 			regions = append(regions, nodeRegion{startLine: lineCursor, endLine: lineCursor + n, target: *target})
 		}
@@ -151,7 +153,7 @@ func (m *Model) refreshViewport() {
 	}
 
 	if !hasConversationTurns(items) {
-		addBlock(renderWelcomeBanner(width), nil, nil)
+		addBlock(blockKey{name: "banner"}, renderWelcomeBanner(width), nil, nil)
 	}
 	seen := map[viewmodel.NodeID]bool{}
 	tree := map[viewmodel.NodeID]*viewmodel.Node{}
@@ -162,7 +164,7 @@ func (m *Model) refreshViewport() {
 		// always reads as "a new turn starts here" rather than as a header.
 		if turn.ID.Key != "turn:pre" {
 			if !firstTurn {
-				addBlock(renderTurnSeparator(width), nil, nil)
+				addBlock(blockKey{name: "sep:" + turn.ID.Key}, renderTurnSeparator(width), nil, nil)
 			}
 			firstTurn = false
 		}
@@ -184,22 +186,23 @@ func (m *Model) refreshViewport() {
 				bitems = collectBrowse(bitems, node, out, subs, lineCursor, turnFirst)
 				turnFirst = false
 			}
-			addBlock(out, m.blockTarget(node), subs)
+			addBlock(blockKey{node: node.ID}, out, m.blockTarget(node), subs)
 			nextTight = false // never leaks onto a later block, even if this one was empty
 		}
 	}
 	if reconnect != "" {
-		addBlock(renderReconnectNotice(reconnect, m.activeSpinnerFrame(session.ActivityReconnecting), width), nil, nil)
+		addBlock(blockKey{name: "reconnect"}, renderReconnectNotice(reconnect, m.activeSpinnerFrame(session.ActivityReconnecting), width), nil, nil)
 	}
 	if noticeUp {
-		addBlock(renderNotice(notice, width), nil, nil)
+		addBlock(blockKey{name: "notice"}, renderNotice(notice, width), nil, nil)
 	}
 	if len(queued) > 0 {
-		addBlock(renderQueuedMessages(queued, width), nil, nil)
+		addBlock(blockKey{name: "queued"}, renderQueuedMessages(queued, width), nil, nil)
 	}
 
 	m.pruneRenderState(seen)
 	m.nodeRegions = regions
+	m.blockSpans = spans
 	m.setBrowseItems(bitems, tree)
 	m.taskStats = viewmodel.TaskStats(turns)
 	// Every block ends with exactly one newline; separation between blocks
@@ -216,9 +219,13 @@ func (m *Model) refreshViewport() {
 		content = m.paintCursor(content)
 	}
 	m.viewport.SetContent(content)
-	if m.viewportFollow {
+	m.contentLines = strings.Split(content, "\n")
+	// A drag holds the view still: following new output would move the
+	// text under the pointer.
+	if m.viewportFollow && !m.dragging() {
 		m.viewport.GotoBottom()
 	}
+	m.revalidateSelection()
 }
 
 // narrationOnly is a step that said something and ran nothing: the next step

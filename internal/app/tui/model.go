@@ -666,6 +666,17 @@ type Model struct {
 	// blocks. Rows inside a step record their own narrower ranges. See
 	// click.go.
 	nodeRegions []nodeRegion
+	// blockSpans are the content-line ranges of every transcript block, in
+	// order, under the keys a text selection anchors to. contentLines is the
+	// same content split into lines. Both are rebuilt with nodeRegions.
+	blockSpans   []blockSpan
+	contentLines []string
+	// sel is the transcript text selection, nil when there is none; press
+	// is a left press waiting for its release, and drag the pointer state
+	// of a drag in progress. See selection.go.
+	sel   *selection
+	press *tea.Mouse
+	drag  dragState
 	// viewStack is the subagent drill-down stack: when non-empty, the
 	// transcript viewport renders the top subagent's child session instead
 	// of the orchestrator's. Pushed by clicking a subagent card (see

@@ -176,7 +176,7 @@ func clipLeftColumn(s string, maxRows int) string {
 func (m Model) renderTranscriptFrame() string {
 	vpWidth := max(m.leftWidth, 1)
 	vpHeight := max(m.viewport.Height(), 1)
-	content := lipgloss.NewStyle().Width(vpWidth).Height(vpHeight).Render(m.viewport.View())
+	content := lipgloss.NewStyle().Width(vpWidth).Height(vpHeight).Render(m.paintSelection(m.viewport.View()))
 	if m.scrollHintRows() > 0 {
 		hint := mutedStyle().Render("↑ scrolled — End to follow")
 		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)

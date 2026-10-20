@@ -1044,6 +1044,71 @@ func TestBuildSystemPromptNativeModeIncludesAskUserExample(t *testing.T) {
 	}
 }
 
+// TestBuildWorkingStateIncludesBudgetLine pins the live budget line the
+// model reads each request. Without it the model has no way to tell how
+// much room is left, which is what drove the improvised "my context is
+// nearly exhausted" narration.
+func TestBuildWorkingStateIncludesBudgetLine(t *testing.T) {
+	pack := contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionToolOutput, Title: "Tool Output", Content: "package main", EstimatedTokens: 3},
+		},
+	}
+	msg, ok := BuildWorkingStateMessage(pack, WorkingStateBudget{Used: 485000, Window: 65536, Threshold: 47513})
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if !msg.Volatile {
+		t.Fatalf("budget line must ride the volatile tail, got %+v", msg)
+	}
+	for _, want := range []string{"485000", "65536", "47513", "Context budget"} {
+		if !strings.Contains(msg.Content, want) {
+			t.Errorf("budget line missing %q:\n%s", want, msg.Content)
+		}
+	}
+	if !strings.HasPrefix(msg.Content, "Context budget:") {
+		t.Errorf("budget line must lead the tail:\n%s", msg.Content)
+	}
+}
+
+// TestBuildWorkingStateOmitsBudgetWhenUnknown guards the unknown-window
+// path: no window means no line, never a row of zeros that reads as a
+// real budget of nothing.
+func TestBuildWorkingStateOmitsBudgetWhenUnknown(t *testing.T) {
+	pack := contextpack.Pack{
+		Sections: []contextpack.Section{
+			{Kind: contextpack.SectionToolOutput, Title: "Tool Output", Content: "package main", EstimatedTokens: 3},
+		},
+	}
+	msg, ok := BuildWorkingStateMessage(pack, WorkingStateBudget{})
+	if !ok {
+		t.Fatal("ok = false, want true (the pack still renders)")
+	}
+	if strings.Contains(msg.Content, "Context budget") {
+		t.Errorf("unknown window must omit the budget line:\n%s", msg.Content)
+	}
+	if strings.Contains(msg.Content, "0 window") {
+		t.Errorf("unknown window must not render zeros:\n%s", msg.Content)
+	}
+}
+
+// TestBuildWorkingStateBudgetLineAloneStillRenders covers the tail being
+// nothing but the budget line: an empty volatile pack with a known window
+// must still produce a message, or the model loses the only budget signal
+// on turns with no todos, snippets or tool output.
+func TestBuildWorkingStateBudgetLineAloneStillRenders(t *testing.T) {
+	msg, ok := BuildWorkingStateMessage(contextpack.Pack{}, WorkingStateBudget{Used: 10, Window: 65536, Threshold: 47513})
+	if !ok {
+		t.Fatal("ok = false, want true: the budget line alone is a valid tail")
+	}
+	if strings.TrimSpace(msg.Content) == "" {
+		t.Fatal("budget line rendered empty content")
+	}
+	if !msg.Volatile {
+		t.Fatal("tail not marked Volatile")
+	}
+}
+
 // RoleSubtask's prompt used to claim "You MUST NOT attempt to write, modify,
 // patch, or run arbitrary commands" — but SubtaskScopeView deliberately keeps
 // shell.run and file.write_patch available (see

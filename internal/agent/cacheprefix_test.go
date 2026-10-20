@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
 	"marshal/internal/tools/policy"
@@ -357,6 +358,69 @@ func TestCrossTurnStableRegionIsAppendOnly(t *testing.T) {
 				t.Fatalf("tool definition %d changed between turns %d and %d", i, k, k+1)
 			}
 		}
+	}
+}
+
+// TestBudgetLineDoesNotBreakPrefixStability is the guard on where the live
+// budget numbers live. The line changes every request; if it sat in the
+// system prompt it would rewrite the prefix and kill the provider prompt
+// cache. Here the used count genuinely differs between requests (each tool
+// round trip adds messages) and the prefix must not move.
+func TestBudgetLineDoesNotBreakPrefixStability(t *testing.T) {
+	reg := registry.New()
+	registerFakeRead(t, reg, false)
+	state := newTestState(t)
+	state.SetContextPack(contextpack.Pack{
+		Sections:   []contextpack.Section{{Kind: contextpack.SectionRepoCard, Title: "Repo Card", Content: "Project: marshal", EstimatedTokens: 4}},
+		TokenUsage: contextpack.TokenUsage{MaxTokens: 12000},
+	})
+	// A known window is what makes the line render at all. It comes from the
+	// route, not from SetTurnBudget: RunTask recomputes the budget from the
+	// resolved route and would overwrite anything set beforehand.
+	call := func(id, path string) []schema.ToolCall {
+		return []schema.ToolCall{{ID: id, Name: "file.read", Args: json.RawMessage(`{"path":"` + path + `"}`)}}
+	}
+	p := &agenttest.ScriptedProvider{
+		Responses:     []string{"", "", "Done."},
+		ToolCalls:     [][]schema.ToolCall{call("c1", "a.go"), call("c2", "b.go")},
+		FinishReasons: []string{"tool_calls", "tool_calls", "stop"},
+	}
+	r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "test-model", ContextWindow: 65536, MaxOutputTokens: 8192},
+	}}
+	r.NativeTools = true
+	r.SetForceClass(string(ClassEdit))
+
+	if _, err := r.RunTask(context.Background(), "read two files"); err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if len(p.Requests) < 2 {
+		t.Fatalf("got %d requests, want at least 2", len(p.Requests))
+	}
+
+	assertPrefixStable(t, p.Requests)
+
+	// The line must actually be present and must actually change: a test
+	// that passes because the feature is inert proves nothing.
+	var lines []string
+	for i, req := range p.Requests {
+		msgs := req.Messages
+		tail := msgs[len(msgs)-1]
+		if !tail.Volatile || !strings.HasPrefix(tail.Content, "Context budget:") {
+			t.Fatalf("request %d must open its volatile tail with the budget line, got %+v", i, tail)
+		}
+		if !strings.Contains(tail.Content, "65536 window") || !strings.Contains(tail.Content, "compaction at 47513") {
+			t.Fatalf("request %d budget line carries the wrong window/threshold: %q", i, tail.Content)
+		}
+		lines = append(lines, strings.SplitN(tail.Content, "\n", 2)[0])
+	}
+	distinct := map[string]bool{}
+	for _, l := range lines {
+		distinct[l] = true
+	}
+	if len(distinct) < 2 {
+		t.Fatalf("used count never moved across requests, so the test proves nothing about prefix stability: %v", lines)
 	}
 }
 

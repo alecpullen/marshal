@@ -543,12 +543,18 @@ func (r *Runner) setContextPackMessage(messages []schema.ChatMessage, pack conte
 // tail. The tail is rebuilt for every request and never stored in the
 // runner's message slice, so it cannot leak into compaction, pruning,
 // archives or history replay, and a retry never stacks a second copy.
-// The input is not modified.
+// The input is not modified. Used excludes the tail itself, so the budget
+// line is not recursive.
 func (r *Runner) withWorkingState(messages []schema.ChatMessage) []schema.ChatMessage {
 	if r.State == nil {
 		return messages
 	}
-	msg, ok := BuildWorkingStateMessage(r.State.ContextPack())
+	window, threshold, _ := r.State.TurnBudget()
+	msg, ok := BuildWorkingStateMessage(r.State.ContextPack(), WorkingStateBudget{
+		Used:      r.calibratedEstimate(messages),
+		Window:    window,
+		Threshold: threshold,
+	})
 	if !ok {
 		return messages
 	}

@@ -938,16 +938,40 @@ func BuildContextPackMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
 	return schema.ChatMessage{Role: schema.RoleUser, Content: rendered}, true
 }
 
+// WorkingStateBudget is the live per-turn budget shown to the model.
+// Used excludes the working-state tail itself.
+type WorkingStateBudget struct {
+	Used, Window, Threshold int
+}
+
 // BuildWorkingStateMessage renders the turn-volatile part of the context
-// pack (todos, semantic snippets, tool output) as the per-request tail.
-// It is marked Volatile so providers keep cache breakpoints in front of
-// it.
-func BuildWorkingStateMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
+// pack (todos, semantic snippets, tool output) as the per-request tail,
+// prefixed by the live context budget. It is marked Volatile so providers
+// keep cache breakpoints in front of it.
+func BuildWorkingStateMessage(pack contextpack.Pack, budget WorkingStateBudget) (schema.ChatMessage, bool) {
 	rendered := contextpack.RenderVolatile(pack)
-	if rendered == "" {
+	line := budgetLine(budget)
+	if rendered == "" && line == "" {
 		return schema.ChatMessage{}, false
 	}
-	return schema.ChatMessage{Role: schema.RoleUser, Content: rendered, Volatile: true}, true
+	content := rendered
+	if line != "" {
+		if content == "" {
+			content = line
+		} else {
+			content = line + "\n" + content
+		}
+	}
+	return schema.ChatMessage{Role: schema.RoleUser, Content: content, Volatile: true}, true
+}
+
+// budgetLine renders the live context budget, or "" when the window is
+// unknown. It must never print zeros.
+func budgetLine(b WorkingStateBudget) string {
+	if b.Window <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("Context budget: ~%d tokens in this request, %d window, compaction at %d.", b.Used, b.Window, b.Threshold)
 }
 
 // BuildToolResultMessage formats a tool result for the model. The

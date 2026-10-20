@@ -1424,6 +1424,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	lastRenderedLoadedTools := r.State.LoadedToolNames()
 	lastRenderedSystemAccess := r.State.SystemAccess()
 	pressureMessageSent := false
+	// overflowRetried bounds context-overflow recovery to one compaction and
+	// one retry per turn, so a provider that rejects even a compacted prompt
+	// cannot loop.
+	overflowRetried := false
 	producedValidAction := false
 	consecutiveParseFailures := 0
 	// pendingRepairNote carries a "your envelope was malformed but I fixed
@@ -1615,6 +1619,53 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages, effectiveRF)
 		r.setTurnFinishReason(res.FinishReason)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return task, r.failTurn(task, err)
+			}
+			err = classifyContextOverflow(err)
+			if errors.Is(err, errContextOverflow) {
+				// Prune first: compaction resends the transcript, so an
+				// oversize wire must shrink before summarisation can succeed.
+				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 {
+					messages = prunedMsgs
+					if r.calibratedEstimate(r.withWorkingState(messages)) <= turnThreshold {
+						r.State.AddMessage(session.RoleSystem,
+							fmt.Sprintf("Pruned %d stale tool result(s) after the provider rejected the prompt as too long.", n),
+							session.ContentTypeCompaction)
+						continue
+					}
+				}
+				if !overflowRetried {
+					overflowRetried = true
+					beforeMsgs, beforeTokens := len(messages), r.calibratedEstimate(messages)
+					fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold)
+					if cerr == nil {
+						r.State.RecordCompaction(session.CompactionInfo{
+							MessagesBefore: beforeMsgs,
+							MessagesAfter:  len(fresh),
+							TokensBefore:   beforeTokens,
+							TokensAfter:    r.calibratedEstimate(fresh),
+							Generation:     r.State.Generation().Seq,
+						})
+						messages = fresh
+						r.resetTokenRatio()
+						if r.CompactionObserver != nil {
+							r.CompactionObserver()
+						}
+						pressureMessageSent = false
+						continue
+					}
+					// The user's stop outranks the overflow: it explains why
+					// the turn ended, and retrying a cancelled recovery would
+					// ignore their keystroke.
+					if errors.Is(cerr, context.Canceled) {
+						return task, r.failTurn(task, cerr)
+					}
+				}
+				return task, r.failTurn(task, fmt.Errorf(
+					"model %s rejected the prompt as too long (window in use: %d, compaction threshold: %d). Raise agent.max_turn_context_tokens or lower the preset's context_window: %w",
+					turnModel, route.Window, turnThreshold, err))
+			}
 			// A stream that failed part-way may still have delivered a usable
 			// response — a malformed SSE chunk aborts the stream without
 			// invalidating the deltas already received. Salvage it and let the
@@ -1622,12 +1673,12 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			// it does not, the parse-failure ladder handles it. Failing here
 			// instead threw away work the model had already done.
 			//
-			// Cancellation is never salvaged: the user asked to stop. A
+			// Cancellation is never salvaged (handled above). A
 			// deadline-exhausted stream (sleep/wake, reconnect cap reached)
 			// IS salvage-eligible: the partial text is real model output
 			// the user paid for, so only user-initiated cancellation
 			// discards it.
-			if strings.TrimSpace(res.Text) == "" || errors.Is(err, context.Canceled) {
+			if strings.TrimSpace(res.Text) == "" {
 				return task, r.failTurn(task, err)
 			}
 			r.withStats(func(s *turnStats) { s.m.StreamRecoveries++ })

@@ -154,8 +154,10 @@ func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Prov
 	}
 	// Failures that say nothing about tool_choice return unchanged, with no
 	// retry and no latch: cancellation, a network outage that outlasted the
-	// reconnect wait (retrying would start a second wait), and a thinking loop.
-	if !sentTools || isCancellation(err) || isNetworkError(err) || errors.Is(err, errThinkingLoop) || (err == nil && len(res.ToolCalls) == 0) {
+	// reconnect wait (retrying would start a second wait), a thinking loop,
+	// and a prompt the provider rejected as too long — resending that
+	// identical wire cannot succeed, and the runner compacts instead.
+	if !sentTools || isCancellation(err) || isNetworkError(err) || errors.Is(err, errThinkingLoop) || errors.Is(err, errContextOverflow) || (err == nil && len(res.ToolCalls) == 0) {
 		return res, err
 	}
 	// The provider failed the request, or the model called a tool
@@ -199,6 +201,12 @@ func (r *Runner) chatRetryLadder(ctx context.Context, p provider.Provider, model
 	var best chatResult
 	for i := 0; i < attempts; i++ {
 		res, err := r.chatOnce(ctx, p, model, messages, responseFormat, includeNativeTools)
+		// Classify here, at the one place every chat call funnels through, so
+		// no caller has to re-derive "was this an oversize prompt?" from a
+		// raw provider body. Classification is idempotent and preserves the
+		// *provider.ProviderError in the chain, so the retry and latch
+		// decisions below still see the 4xx.
+		err = classifyContextOverflow(err)
 		if err == nil {
 			return res, nil
 		}
@@ -580,6 +588,9 @@ var contextOverflowPatterns = []string{
 func classifyContextOverflow(err error) error {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, errContextOverflow) {
+		return err
 	}
 	var pe *provider.ProviderError
 	if !errors.As(err, &pe) {

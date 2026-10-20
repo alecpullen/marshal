@@ -55,7 +55,7 @@ func TestHandleKeyEditContextThenEnterCommitsAndStaysPending(t *testing.T) {
 }
 
 func TestHandleKeyEditThenEscCancelsOnlyTheEditNotTheScreen(t *testing.T) {
-	s := NewConfirmState(Limits{ContextWindow: 32768, ContextSource: SourceCatalog})
+	s := NewConfirmState(Limits{ContextWindow: 32768, ContextSource: SourceDefault})
 	s.HandleKey(tea.KeyPressMsg{Text: "c", Code: 'c'})
 	result, _ := s.HandleKey(tea.KeyPressMsg{Code: 27})
 	if result != ConfirmPending {
@@ -72,7 +72,7 @@ func TestHandleKeyEditThenEscCancelsOnlyTheEditNotTheScreen(t *testing.T) {
 func TestHandleKeyEditZeroClearsToUnknown(t *testing.T) {
 	// Pre-filled edit of 32768; clearing via typing is covered by the
 	// unknown-start case above, so here drive the text field directly.
-	s := NewConfirmState(Limits{ContextWindow: 32768, ContextSource: SourceCatalog})
+	s := NewConfirmState(Limits{ContextWindow: 32768, ContextSource: SourceDefault})
 	s.HandleKey(tea.KeyPressMsg{Text: "c", Code: 'c'})
 	s.input.SetValue("0")
 	s.HandleKey(tea.KeyPressMsg{Code: 13})
@@ -83,8 +83,8 @@ func TestHandleKeyEditZeroClearsToUnknown(t *testing.T) {
 
 func TestRenderShowsToolCallingRowWhenKnown(t *testing.T) {
 	toolCalling := true
-	s := NewConfirmState(Limits{ContextWindow: 32768, ContextSource: SourceCatalog,
-		MaxOutputTokens: 8192, OutputSource: SourceCatalog,
+	s := NewConfirmState(Limits{ContextWindow: 32768, ContextSource: SourceDefault,
+		MaxOutputTokens: 8192, OutputSource: SourceDefault,
 		ToolCalling: &toolCalling, ToolSource: SourceProbed})
 	out := s.Render(60)
 	if !strings.Contains(out, "native") || !strings.Contains(out, string(SourceProbed)) {
@@ -93,7 +93,7 @@ func TestRenderShowsToolCallingRowWhenKnown(t *testing.T) {
 }
 
 func TestRenderOmitsToolCallingRowWhenUnknown(t *testing.T) {
-	s := NewConfirmState(Limits{ContextWindow: 32768, ContextSource: SourceCatalog})
+	s := NewConfirmState(Limits{ContextWindow: 32768, ContextSource: SourceDefault})
 	out := s.Render(60)
 	if strings.Contains(out, "tool calling") {
 		t.Errorf("Render output should omit the tool-calling row when nothing was detected: %q", out)

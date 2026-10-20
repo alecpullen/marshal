@@ -15,7 +15,6 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/credentials"
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/oauth"
 )
 
@@ -36,7 +35,7 @@ func TestNewFromConfigUsesLiteralAPIKey(t *testing.T) {
 		BaseURL: server.URL,
 		APIKey:  "literal-key",
 	}
-	p, err := NewFromConfig("test", pc, "", false, 0)
+	p, err := NewFromConfig("test", pc, "", 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -71,7 +70,7 @@ func TestNewFromConfigResolvesAPIKeyEnv(t *testing.T) {
 		BaseURL:   server.URL,
 		APIKeyEnv: "SOME_ENV_VAR",
 	}
-	p, err := NewFromConfig("test", pc, "", false, 0)
+	p, err := NewFromConfig("test", pc, "", 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -107,7 +106,7 @@ func TestNewFromConfigPrefersLiteralAPIKeyOverAPIKeyEnv(t *testing.T) {
 		APIKey:    "literal-key",
 		APIKeyEnv: "SOME_ENV_VAR",
 	}
-	p, err := NewFromConfig("test", pc, "", false, 0)
+	p, err := NewFromConfig("test", pc, "", 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -129,7 +128,7 @@ func TestNewFromConfigErrorsWhenAPIKeyEnvUnset(t *testing.T) {
 		BaseURL:   "http://example.invalid",
 		APIKeyEnv: "DEFINITELY_NOT_SET_ENV_VAR",
 	}
-	_, err := NewFromConfig("test", pc, "", false, 0)
+	_, err := NewFromConfig("test", pc, "", 0)
 	if err == nil {
 		t.Fatal("expected NewFromConfig to return an error when api_key_env is unset")
 	}
@@ -152,7 +151,7 @@ func TestNewFromConfigPropagatesToolCallingCapability(t *testing.T) {
 		APIKey:      "literal-key",
 		ToolCalling: true,
 	}
-	p, err := NewFromConfig("test", pc, "", false, 0)
+	p, err := NewFromConfig("test", pc, "", 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -173,7 +172,7 @@ func TestNewFromConfigToolCallingDefaultsToFalse(t *testing.T) {
 		Type:    "openai_compatible",
 		BaseURL: server.URL,
 	}
-	p, err := NewFromConfig("test", pc, "", false, 0)
+	p, err := NewFromConfig("test", pc, "", 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig returned error: %v", err)
 	}
@@ -187,7 +186,7 @@ func TestNewFromConfigErrorsOnUnsupportedProviderType(t *testing.T) {
 		Type:    "native_anthropic",
 		BaseURL: "https://api.anthropic.com",
 	}
-	_, err := NewFromConfig("test", pc, "", false, 0)
+	_, err := NewFromConfig("test", pc, "", 0)
 	if err == nil {
 		t.Fatal("expected NewFromConfig to return an error for unsupported provider type")
 	}
@@ -200,7 +199,8 @@ func TestNewFromConfigOllamaNative(t *testing.T) {
 	p, err := NewFromConfig("local", config.ProviderConfig{
 		Type:    "ollama",
 		BaseURL: "http://localhost:11434",
-	}, "", false, 0)
+	}, "", 0)
+
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -218,7 +218,8 @@ func TestNewFromConfigOllamaNativeExplicitKeepAlive(t *testing.T) {
 		Type:      "ollama",
 		BaseURL:   "http://localhost:11434",
 		KeepAlive: "-1",
-	}, "", false, 0)
+	}, "", 0)
+
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -236,7 +237,8 @@ func TestNewFromConfigOllamaNativeDisclaimsStructuredOutput(t *testing.T) {
 	p, err := NewFromConfig("cloud", config.ProviderConfig{
 		Type:    "ollama",
 		BaseURL: "https://ollama.com",
-	}, "", false, 0)
+	}, "", 0)
+
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -255,7 +257,8 @@ func TestNewFromConfigOllamaNativeOptInStructuredOutput(t *testing.T) {
 		BaseURL:          "http://localhost:11434",
 		ToolCalling:      true,
 		StructuredOutput: true,
-	}, "", false, 0)
+	}, "", 0)
+
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -272,7 +275,8 @@ func TestNewFromConfigAnthropic(t *testing.T) {
 		BaseURL:        "https://api.anthropic.com",
 		APIKeyEnv:      "MARSHAL_TEST_FACTORY_ANTHROPIC_KEY",
 		ThinkingBudget: 4096,
-	}, "", false, 8192)
+	}, "", 8192)
+
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -295,80 +299,10 @@ func TestNewFromConfigAnthropicRequiresKey(t *testing.T) {
 	_, err := NewFromConfig("claude", config.ProviderConfig{
 		Type:    "anthropic",
 		BaseURL: "https://api.anthropic.com",
-	}, "", false, 0)
+	}, "", 0)
+
 	if err == nil {
 		t.Fatal("expected error for missing API key, got nil")
-	}
-}
-
-func TestNewFromConfigReadsLimitsCacheWithoutRemoteDiscovery(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o","owned_by":"openai"}]}`))
-	}))
-	defer server.Close()
-
-	// Remote discovery is off, but a warm on-disk cache must still be read —
-	// reading it makes no network requests.
-	dataDir := t.TempDir()
-	if err := limits.Save(dataDir, limits.Cache{
-		Table:     map[string]limits.Limit{"gpt-4o": {ContextWindow: 128000, MaxOutputTokens: 16384}},
-		FetchedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("seed limits cache: %v", err)
-	}
-
-	p, err := NewFromConfig("test", config.ProviderConfig{Type: "openai_compatible", BaseURL: server.URL}, dataDir, false, 0)
-	if err != nil {
-		t.Fatalf("NewFromConfig returned error: %v", err)
-	}
-	models, err := p.Models(t.Context())
-	if err != nil {
-		t.Fatalf("Models returned error: %v", err)
-	}
-	if len(models) != 1 {
-		t.Fatalf("got %d models, want 1", len(models))
-	}
-	if models[0].ContextWindow != 128000 || models[0].MaxOutputTokens != 16384 {
-		t.Fatalf("limits = %d/%d, want 128000/16384 from the on-disk cache",
-			models[0].ContextWindow, models[0].MaxOutputTokens)
-	}
-}
-
-func TestNewFromConfigOllamaReadsLimitsCacheWithoutRemoteDiscovery(t *testing.T) {
-	dataDir := t.TempDir()
-	if err := limits.Save(dataDir, limits.Cache{
-		Table: map[string]limits.Limit{
-			"qwen2.5-coder:7b": {ContextWindow: 32768, MaxOutputTokens: 8192},
-		},
-		FetchedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("seed limits cache: %v", err)
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:7b"}]}`))
-	}))
-	defer server.Close()
-
-	p, err := NewFromConfig("ollama", config.ProviderConfig{
-		Type:    "ollama",
-		BaseURL: server.URL,
-	}, dataDir, false, 0)
-	if err != nil {
-		t.Fatalf("NewFromConfig returned error: %v", err)
-	}
-	models, err := p.Models(t.Context())
-	if err != nil {
-		t.Fatalf("Models returned error: %v", err)
-	}
-	if len(models) != 1 {
-		t.Fatalf("got %d models, want 1", len(models))
-	}
-	if models[0].ContextWindow != 32768 || models[0].MaxOutputTokens != 8192 {
-		t.Fatalf("limits = %d/%d, want 32768/8192 from the on-disk cache",
-			models[0].ContextWindow, models[0].MaxOutputTokens)
 	}
 }
 
@@ -377,7 +311,8 @@ func TestNewFromConfigAnthropicReportsReasoning(t *testing.T) {
 		Type:    "anthropic",
 		BaseURL: "https://api.anthropic.com",
 		APIKey:  "test-key",
-	}, "", false, 0)
+	}, "", 0)
+
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -395,7 +330,7 @@ func TestNewFromConfigPropagatesTemperatureLockedCapability(t *testing.T) {
 	defer server.Close()
 
 	openaiPC := config.ProviderConfig{Type: "openai_compatible", BaseURL: server.URL, APIKey: "literal-key", TemperatureLocked: true}
-	p, err := NewFromConfig("test", openaiPC, "", false, 0)
+	p, err := NewFromConfig("test", openaiPC, "", 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -404,7 +339,7 @@ func TestNewFromConfigPropagatesTemperatureLockedCapability(t *testing.T) {
 	}
 
 	ollamaPC := config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434", TemperatureLocked: true}
-	p, err = NewFromConfig("test", ollamaPC, "", false, 0)
+	p, err = NewFromConfig("test", ollamaPC, "", 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -413,7 +348,7 @@ func TestNewFromConfigPropagatesTemperatureLockedCapability(t *testing.T) {
 	}
 
 	anthropicPC := config.ProviderConfig{Type: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: "literal-key", TemperatureLocked: true}
-	p, err = NewFromConfig("test", anthropicPC, "", false, 0)
+	p, err = NewFromConfig("test", anthropicPC, "", 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -423,7 +358,7 @@ func TestNewFromConfigPropagatesTemperatureLockedCapability(t *testing.T) {
 
 	// Without the flag the capability stays false (no template/default leak).
 	plainPC := config.ProviderConfig{Type: "openai_compatible", BaseURL: server.URL, APIKey: "literal-key"}
-	p, err = NewFromConfig("test", plainPC, "", false, 0)
+	p, err = NewFromConfig("test", plainPC, "", 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -967,7 +902,10 @@ func TestNewFromConfigWithAuthRejectsNilResolver(t *testing.T) {
 	_, err := NewFromConfigWithAuth("codex", config.ProviderConfig{
 		Type:    "openai_codex",
 		BaseURL: "https://chatgpt.com/backend-api",
-	}, "", false, 0, "", nil)
+	}, "", 0,
+
+		"", nil)
+
 	if err == nil {
 		t.Fatal("expected a nil auth resolver to be rejected")
 	}
@@ -988,7 +926,10 @@ func TestNewFromConfigWithAuthUsesInjectedCodexEngine(t *testing.T) {
 	p, err := NewFromConfigWithAuth("codex", config.ProviderConfig{
 		Type:    "openai_codex",
 		BaseURL: "https://chatgpt.com/backend-api",
-	}, "", false, 0, "", fake)
+	}, "", 0,
+
+		"", fake)
+
 	if err != nil {
 		t.Fatalf("NewFromConfigWithAuth: %v", err)
 	}
@@ -1019,7 +960,7 @@ func TestNewFromConfigWithAuthPropagatesResolverError(t *testing.T) {
 
 	errBoom := errors.New("resolver exploded")
 	fake := &fakeAuthResolver{engineErr: errBoom}
-	_, err := NewFromConfigWithAuth("codex", pc, "", false, 0, "", fake)
+	_, err := NewFromConfigWithAuth("codex", pc, "", 0, "", fake)
 	if err == nil {
 		t.Fatal("expected the resolver error to fail provider construction")
 	}
@@ -1032,7 +973,7 @@ func TestNewFromConfigWithAuthPropagatesResolverError(t *testing.T) {
 
 	// An unscripted resolver must not fall through to the production engine:
 	// construction has to fail rather than quietly claim the shared cache.
-	if _, err := NewFromConfigWithAuth("codex", pc, "", false, 0, "", &fakeAuthResolver{}); err == nil {
+	if _, err := NewFromConfigWithAuth("codex", pc, "", 0, "", &fakeAuthResolver{}); err == nil {
 		t.Fatal("expected construction to fail when the resolver yields no engine")
 	}
 }
@@ -1044,7 +985,10 @@ func TestNewFromConfigWithAuthLeavesNonOAuthTypesAuthFree(t *testing.T) {
 		Type:    "openai_compatible",
 		BaseURL: "https://example.invalid",
 		APIKey:  "literal-key",
-	}, "", false, 0, "sess-1", deny)
+	}, "", 0,
+
+		"sess-1", deny)
+
 	if err != nil {
 		t.Fatalf("openai_compatible: %v", err)
 	}
@@ -1059,7 +1003,10 @@ func TestNewFromConfigWithAuthLeavesNonOAuthTypesAuthFree(t *testing.T) {
 	p, err = NewFromConfigWithAuth("local", config.ProviderConfig{
 		Type:    "ollama",
 		BaseURL: "http://localhost:11434",
-	}, "", false, 0, "", deny)
+	}, "", 0,
+
+		"", deny)
+
 	if err != nil {
 		t.Fatalf("ollama: %v", err)
 	}
@@ -1072,7 +1019,10 @@ func TestNewFromConfigWithAuthLeavesNonOAuthTypesAuthFree(t *testing.T) {
 		BaseURL:        "https://api.anthropic.com",
 		APIKey:         "literal-key",
 		ThinkingBudget: 4096,
-	}, "", false, 0, "", deny)
+	}, "", 0,
+
+		"", deny)
+
 	if err != nil {
 		t.Fatalf("anthropic: %v", err)
 	}
@@ -1090,7 +1040,7 @@ func TestNewFromConfigWrappersKeepNonOAuthBehavior(t *testing.T) {
 
 	// NewFromConfig keeps its signature and produces a provider with no
 	// session id.
-	p, err := NewFromConfig("plain", pc, "", false, 0)
+	p, err := NewFromConfig("plain", pc, "", 0)
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -1100,7 +1050,7 @@ func TestNewFromConfigWrappersKeepNonOAuthBehavior(t *testing.T) {
 
 	// NewFromConfigWithSession still threads the session id through to the
 	// OpenAI-compatible backend.
-	p, err = NewFromConfigWithSession("plain", pc, "", false, 0, "sess-42")
+	p, err = NewFromConfigWithSession("plain", pc, "", 0, "sess-42")
 	if err != nil {
 		t.Fatalf("NewFromConfigWithSession: %v", err)
 	}

@@ -39,6 +39,19 @@ func Materialize(cfg *config.Config, providerName, modelID, baseURL string, lim 
 			LocalOnly: probe.IsLocalhost(baseURL),
 		}
 	}
+	// Seed a first-time preset with Marshal's documented defaults when no
+	// source reported a figure. Remote models start at 1M context / 128K
+	// output; local endpoints get the conservative pair. The user can edit
+	// either value afterwards from Settings or config.toml.
+	if lim.ContextWindow == 0 || lim.MaxOutputTokens == 0 {
+		defCtx, defOut := routing.DefaultModelLimits(probe.IsLocalhost(baseURL))
+		if lim.ContextWindow == 0 {
+			lim.ContextWindow = defCtx
+		}
+		if lim.MaxOutputTokens == 0 {
+			lim.MaxOutputTokens = defOut
+		}
+	}
 	// Fill an empty field, adopt an upgrade, never shrink: discovery can
 	// report a smaller window than an explicit preset (stale cache,
 	// provider default), and overwriting it made hand-set values revert.

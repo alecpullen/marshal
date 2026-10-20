@@ -41,12 +41,12 @@ func TestModelProbeUsesProviderReportedLimits(t *testing.T) {
 	}
 }
 
-// TestModelProbeIgnoresTableDerivedLimits is the manual-test regression: an
-// openai_compatible /models response carries no limits, so discovered.json's
-// ContextWindow came from limits.Table. Treating it as a provider statement
+// TestModelProbeIgnoresUnreportedLimits is the manual-test regression: a
+// cache entry can carry a ContextWindow that no provider reported (the old
+// table enrichment did exactly that). Treating it as a provider statement
 // clamped a user's explicit 1M preset to 64k, which the UI displayed and the
 // runner then compacted against.
-func TestModelProbeIgnoresTableDerivedLimits(t *testing.T) {
+func TestModelProbeIgnoresUnreportedLimits(t *testing.T) {
 	dir := t.TempDir()
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://ollama-cloud.test/v1"}
 	cfg := config.Config{Providers: map[string]config.ProviderConfig{"ollama-cloud": pc}}

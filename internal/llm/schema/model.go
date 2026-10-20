@@ -11,9 +11,9 @@ type ModelInfo struct {
 	ContextWindow   int // 0 when unknown
 	MaxOutputTokens int // 0 when unknown
 	// ProviderReported marks ContextWindow/MaxOutputTokens as coming from the
-	// provider's own model metadata rather than an external limits table.
-	// Most /models endpoints report no limits at all, so their values are
-	// filled from limits.Table (OpenRouter/LiteLLM); those must never clamp an
+	// provider's own model metadata rather than a default or an enrichment
+	// pass. Most /models endpoints report no limits at all, so their values
+	// stay zero and the preset defaults apply; those must never clamp an
 	// explicit preset. Only provider-reported limits may.
 	ProviderReported bool
 	// ToolCalling reports whether the model supports tool/function calling,

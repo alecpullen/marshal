@@ -6,21 +6,21 @@
 package presetflow
 
 import (
-	"marshal/internal/llm/catalog"
+	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
 
 // Source labels where a limit or capability figure came from, so the user
-// can tell a fetched number from a guess.
+// can tell a provider-reported number from a default.
 type Source string
 
 const (
-	SourceFetched Source = "fetched limits table"
-	SourceCatalog Source = "local catalog"
-	SourcePreset  Source = "saved preset"
-	SourceEdited  Source = "edited"
-	SourceProbed  Source = "detected via /api/show"
-	SourceUnknown Source = "unknown"
+	SourceReported Source = "provider-reported"
+	SourceDefault  Source = "model default"
+	SourcePreset   Source = "saved preset"
+	SourceEdited   Source = "edited"
+	SourceProbed   Source = "detected via /api/show"
+	SourceUnknown  Source = "unknown"
 )
 
 // Limits is a model's context/output caps and tool-calling support, each
@@ -36,14 +36,17 @@ type Limits struct {
 	ToolSource      Source
 }
 
-// Resolve finds modelID's limits from what discovery already resolved
-// (bulk fetched-limits-table enrichment already folded into ModelInfo by
-// the provider layer) and, failing that, the local catalog for the numeric
-// fields. ToolCalling comes only from discovered (the catalog has no
-// tool-calling column) and is left nil/SourceUnknown if unreported — a
-// later per-model capability probe (see probe.go) may fill it in via
-// WithProbed.
-func Resolve(discovered []schema.ModelInfo, modelID string) Limits {
+// Resolve finds modelID's limits from what discovery already resolved. Most
+// /models endpoints report no context metadata, so when a field is absent the
+// locality-appropriate default applies: 1M context / 128K output for remote
+// models, the conservative 8K / 4K pair for local endpoints (Ollama's
+// /api/show probe can then supply the pulled model's real window). The
+// confirm screen lets the user edit either figure before the preset is saved.
+//
+// ToolCalling comes only from discovered and is left nil/SourceUnknown if
+// unreported — a later per-model capability probe (see probe.go) may fill it
+// in via WithProbed.
+func Resolve(discovered []schema.ModelInfo, modelID string, local bool) Limits {
 	var ctx, out int
 	var toolCalling *bool
 	for _, mi := range discovered {
@@ -53,17 +56,18 @@ func Resolve(discovered []schema.ModelInfo, modelID string) Limits {
 		}
 	}
 
-	lim := Limits{ContextWindow: ctx, MaxOutputTokens: out}
-	lim.ContextSource, lim.OutputSource = SourceFetched, SourceFetched
-
-	if ctx == 0 || out == 0 {
-		catCtx, catOut := catalog.Lookup(modelID, nil)
-		if ctx == 0 {
-			lim.ContextWindow, lim.ContextSource = catCtx, SourceCatalog
-		}
-		if out == 0 {
-			lim.MaxOutputTokens, lim.OutputSource = catOut, SourceCatalog
-		}
+	defCtx, defOut := routing.DefaultModelLimits(local)
+	lim := Limits{
+		ContextWindow:   ctx,
+		MaxOutputTokens: out,
+		ContextSource:   SourceReported,
+		OutputSource:    SourceReported,
+	}
+	if lim.ContextWindow == 0 {
+		lim.ContextWindow, lim.ContextSource = defCtx, SourceDefault
+	}
+	if lim.MaxOutputTokens == 0 {
+		lim.MaxOutputTokens, lim.OutputSource = defOut, SourceDefault
 	}
 	if lim.ContextWindow == 0 {
 		lim.ContextSource = SourceUnknown
@@ -74,7 +78,7 @@ func Resolve(discovered []schema.ModelInfo, modelID string) Limits {
 
 	lim.ToolCalling = toolCalling
 	if toolCalling != nil {
-		lim.ToolSource = SourceFetched
+		lim.ToolSource = SourceReported
 	} else {
 		lim.ToolSource = SourceUnknown
 	}
@@ -82,16 +86,16 @@ func Resolve(discovered []schema.ModelInfo, modelID string) Limits {
 }
 
 // WithPreset prefers context/output figures already saved for the same
-// provider+model over a catalog guess or unknown, so re-picking a model
-// whose limits came back unknown does not show a guessed default (or
-// "unknown") when a prior confirmation already set them. A non-zero
-// fetched/probed/edited figure is authoritative and is not overwritten.
-// Fields resolve independently.
+// provider+model over a fresh default, so re-picking a model does not show
+// a guessed number when a prior confirmation already set the user's choice.
+// A figure the provider actually reported, or one the user already edited or
+// probed, is newer and more authoritative, so it is not overwritten. Fields
+// resolve independently.
 func (l Limits) WithPreset(presetContext, presetMaxOutput int) Limits {
-	if presetContext != 0 && (l.ContextWindow == 0 || l.ContextSource == SourceCatalog) {
+	if presetContext != 0 && (l.ContextWindow == 0 || l.ContextSource == SourceDefault || l.ContextSource == SourceUnknown) {
 		l.ContextWindow, l.ContextSource = presetContext, SourcePreset
 	}
-	if presetMaxOutput != 0 && (l.MaxOutputTokens == 0 || l.OutputSource == SourceCatalog) {
+	if presetMaxOutput != 0 && (l.MaxOutputTokens == 0 || l.OutputSource == SourceDefault || l.OutputSource == SourceUnknown) {
 		l.MaxOutputTokens, l.OutputSource = presetMaxOutput, SourcePreset
 	}
 	return l
@@ -104,9 +108,9 @@ func (l Limits) WithPreset(presetContext, presetMaxOutput int) Limits {
 // budget the user chose, so it must never overwrite a saved-preset or
 // user-edited figure (SourcePreset/SourceEdited) — those are deliberate
 // choices that survive re-probing /connect. A positive probed value does
-// still overwrite catalog/fetched/unknown figures so a wrong catalog
-// default can be corrected by re-probing. A zero probed window is ignored
-// to avoid erasing an already-known cap.
+// still overwrite default/provider-reported figures so a wrong default can
+// be corrected by re-probing. A zero probed window is ignored to avoid
+// erasing an already-known cap.
 func (l Limits) WithProbed(toolCalling *bool, contextWindow int) Limits {
 	if toolCalling != nil {
 		l.ToolCalling, l.ToolSource = toolCalling, SourceProbed

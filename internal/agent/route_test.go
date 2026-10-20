@@ -9,7 +9,6 @@ import (
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
@@ -311,51 +310,32 @@ func TestResolveModelLimitsPrefersPreset(t *testing.T) {
 	}
 }
 
-func TestResolveModelLimitsUsesProvidedTable(t *testing.T) {
-	tbl := limits.NewTable(map[string]limits.Limit{
-		"test-provider/model-with-cache-limits": {ContextWindow: 128000, MaxOutputTokens: 8192},
-	})
+// TestResolveModelLimitsUsesRemoteDefaults pins the new first-time behavior:
+// a preset with no explicit limits gets the documented 1M/128K remote pair
+// instead of a third-party table lookup. This is the manual-test regression:
+// a 1M model must not be resolved to a 64k table figure.
+func TestResolveModelLimitsUsesRemoteDefaults(t *testing.T) {
 	lim := ResolveModelLimits(routing.ModelPreset{
-		Provider: "test-provider",
-		Model:    "model-with-cache-limits",
-	}, &tbl, ModelProbe{}, nil)
-	if lim.Window != 128000 || lim.MaxOutput != 8192 {
-		t.Fatalf("ResolveModelLimits() = (%d, %d), want (128000, 8192)", lim.Window, lim.MaxOutput)
-	}
-}
-
-func TestResolveModelLimitsUsesTable(t *testing.T) {
-	tbl := limits.NewTable(map[string]limits.Limit{
-		"anthropic/claude-sonnet-4.5": {ContextWindow: 200000, MaxOutputTokens: 64000},
-	})
-	r := &Runner{LimitsTable: &tbl}
-	lim := r.resolveModelLimits(routing.ModelPreset{
-		Provider: "anthropic", Model: "claude-sonnet-4-5-20250929",
-	})
-	if lim.Window != 200000 || lim.MaxOutput != 64000 {
-		t.Fatalf("got (%d, %d), want (200000, 64000) via the variant match", lim.Window, lim.MaxOutput)
-	}
-}
-
-func TestResolveModelLimitsFallsBackToCatalog(t *testing.T) {
-	tbl := limits.NewTable(map[string]limits.Limit{})
-	r := &Runner{LimitsTable: &tbl}
-	lim := r.resolveModelLimits(routing.ModelPreset{
-		Provider: "ollama", Model: "qwen2.5-coder:7b",
-	})
-	if lim.Window != 32768 {
-		t.Fatalf("window = %d, want 32768 from the local catalog", lim.Window)
-	}
-}
-
-func TestResolveModelLimitsNilTableDoesNotPanic(t *testing.T) {
-	r := &Runner{}
-	lim := r.resolveModelLimits(routing.ModelPreset{
 		Provider: "openai", Model: "totally-made-up-xyz",
-	})
-	// Unknown models fall back to the catalog's conservative defaults.
-	if lim.Window != 8192 || lim.MaxOutput != 4096 {
-		t.Fatalf("got (%d, %d), want (8192, 4096) for an unknown model", lim.Window, lim.MaxOutput)
+	}, ModelProbe{})
+	if lim.Window != routing.DefaultRemoteContextWindow || lim.MaxOutput != routing.DefaultRemoteMaxOutputTokens {
+		t.Fatalf("got (%d, %d), want the remote defaults (%d, %d)",
+			lim.Window, lim.MaxOutput, routing.DefaultRemoteContextWindow, routing.DefaultRemoteMaxOutputTokens)
+	}
+	if lim.Clamped {
+		t.Fatal("Clamped = true, want false when no provider reported limits")
+	}
+}
+
+// TestResolveModelLimitsUsesLocalDefaults keeps local endpoints conservative:
+// a pulled model's real window comes from the /api/show probe, not a default.
+func TestResolveModelLimitsUsesLocalDefaults(t *testing.T) {
+	lim := ResolveModelLimits(routing.ModelPreset{
+		Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true,
+	}, ModelProbe{})
+	if lim.Window != routing.DefaultLocalContextWindow || lim.MaxOutput != routing.DefaultLocalMaxOutputTokens {
+		t.Fatalf("got (%d, %d), want the local defaults (%d, %d)",
+			lim.Window, lim.MaxOutput, routing.DefaultLocalContextWindow, routing.DefaultLocalMaxOutputTokens)
 	}
 }
 
@@ -368,7 +348,7 @@ func TestResolveModelLimitsClampsPresetToProbe(t *testing.T) {
 		Model:           "deepseek-v4.1-flash:1017",
 		ContextWindow:   1048576,
 		MaxOutputTokens: 131062,
-	}, nil, ModelProbe{Window: 65536, MaxOutput: 8192, OK: true}, nil)
+	}, ModelProbe{Window: 65536, MaxOutput: 8192, OK: true})
 
 	if lim.Window != 65536 {
 		t.Fatalf("Window = %d, want 65536 (the provider's report)", lim.Window)
@@ -399,7 +379,7 @@ func TestResolveModelLimitsNeverExpandsBeyondPreset(t *testing.T) {
 		Model:           "m",
 		ContextWindow:   65536,
 		MaxOutputTokens: 8192,
-	}, nil, ModelProbe{Window: 1048576, MaxOutput: 131062, OK: true}, nil)
+	}, ModelProbe{Window: 1048576, MaxOutput: 131062, OK: true})
 
 	if lim.Window != 65536 || lim.MaxOutput != 8192 {
 		t.Fatalf("got (%d, %d), want the preset's (65536, 8192)", lim.Window, lim.MaxOutput)
@@ -417,7 +397,7 @@ func TestResolveModelLimitsProbeMissDoesNotClamp(t *testing.T) {
 		Provider:      "p",
 		Model:         "m",
 		ContextWindow: 1048576,
-	}, nil, ModelProbe{}, nil)
+	}, ModelProbe{})
 
 	if lim.Window != 1048576 {
 		t.Fatalf("Window = %d, want the preset's 1048576", lim.Window)
@@ -427,90 +407,26 @@ func TestResolveModelLimitsProbeMissDoesNotClamp(t *testing.T) {
 	}
 }
 
-// TestResolveModelLimitsProbeBeatsTable pins the source ranking: the probe is
-// a statement by the party enforcing the limit, the table is a cross-provider
-// inference.
-func TestResolveModelLimitsProbeBeatsTable(t *testing.T) {
-	tbl := limits.NewTable(map[string]limits.Limit{
-		"p/m": {ContextWindow: 1048576, MaxOutputTokens: 131062},
-	})
+// TestResolveModelLimitsProbeBeatsDefaults pins the source ranking: a
+// provider-reported limit lowers the default pair, because the provider is
+// the party that enforces it.
+func TestResolveModelLimitsProbeBeatsDefaults(t *testing.T) {
 	lim := ResolveModelLimits(routing.ModelPreset{
-		Provider:      "p",
-		Model:         "m",
-		ContextWindow: 1048576,
-	}, &tbl, ModelProbe{Window: 65536, MaxOutput: 8192, OK: true}, nil)
+		Provider: "p",
+		Model:    "m",
+	}, ModelProbe{Window: 65536, MaxOutput: 8192, OK: true})
 
 	if lim.Window != 65536 {
 		t.Fatalf("Window = %d, want 65536 from the probe", lim.Window)
 	}
+	if lim.MaxOutput != 8192 {
+		t.Fatalf("MaxOutput = %d, want 8192 from the probe", lim.MaxOutput)
+	}
+	if !lim.Clamped {
+		t.Fatal("Clamped = false, want true for a provider clamp")
+	}
 	if lim.ClampSource != "probe" {
 		t.Fatalf("ClampSource = %q, want probe", lim.ClampSource)
-	}
-}
-
-// TestResolveModelLimitsTableDoesNotOverrideExplicitPreset is the reported
-// regression: a user who sets a preset to 1M must keep 1M even when the
-// third-party limits table names the same model at 64k. The table is not the
-// provider, and a wrong 64k figure in the UI also drives compaction at ~47k.
-func TestResolveModelLimitsTableDoesNotOverrideExplicitPreset(t *testing.T) {
-	tbl := limits.NewTable(map[string]limits.Limit{
-		"ollama-cloud/glm-5.3": {ContextWindow: 65536, MaxOutputTokens: 8192},
-	})
-	lim := ResolveModelLimits(routing.ModelPreset{
-		Provider:        "ollama-cloud",
-		Model:           "glm-5.3",
-		ContextWindow:   1048576,
-		MaxOutputTokens: 131062,
-	}, &tbl, ModelProbe{}, nil)
-
-	if lim.Window != 1048576 {
-		t.Fatalf("Window = %d, want the preset's 1048576; the third-party table must not clamp", lim.Window)
-	}
-	if lim.MaxOutput != 131062 {
-		t.Fatalf("MaxOutput = %d, want the preset's 131062", lim.MaxOutput)
-	}
-	if lim.Clamped {
-		t.Fatalf("Clamped = true (source %q), want false: the table never overrides an explicit preset", lim.ClampSource)
-	}
-}
-
-// TestResolveModelLimitsVariantMatchDoesNotOverridePreset keeps the
-// cross-provider inference from overruling config: a MatchVariant hit is a
-// guess at which differently-named entry applies, so it may fill a zero but
-// never lower an explicit value.
-func TestResolveModelLimitsVariantMatchDoesNotOverridePreset(t *testing.T) {
-	tbl := limits.NewTable(map[string]limits.Limit{
-		"anthropic/claude-sonnet-4.5": {ContextWindow: 200000},
-	})
-	lim := ResolveModelLimits(routing.ModelPreset{
-		Provider:      "anthropic",
-		Model:         "claude-sonnet-4-5-20250929",
-		ContextWindow: 400000,
-	}, &tbl, ModelProbe{}, nil)
-
-	if lim.Window != 400000 {
-		t.Fatalf("Window = %d, want the preset's 400000", lim.Window)
-	}
-	if lim.Clamped {
-		t.Fatal("Clamped = true, want false for a variant inference")
-	}
-}
-
-// TestResolveModelLimitsCatalogIsNeverClamped guards the failure mode that
-// would cripple every unlisted model: catalog.Lookup returns conservative
-// defaults (8192/4096) for unknown models, and clamping to a guess is wrong.
-func TestResolveModelLimitsCatalogIsNeverClamped(t *testing.T) {
-	tbl := limits.NewTable(map[string]limits.Limit{})
-	lim := ResolveModelLimits(routing.ModelPreset{
-		Provider: "ollama",
-		Model:    "qwen2.5-coder:7b",
-	}, &tbl, ModelProbe{}, nil)
-
-	if lim.Window != 32768 {
-		t.Fatalf("Window = %d, want 32768 from the local catalog", lim.Window)
-	}
-	if lim.Clamped {
-		t.Fatal("Clamped = true, want false: the catalog is never a clamp source")
 	}
 }
 
@@ -544,9 +460,10 @@ func TestResolveModelLimitsFillsUnsetFieldsIndependently(t *testing.T) {
 				Provider:      "ollama",
 				Model:         "qwen2.5-coder:7b",
 				ContextWindow: 64000,
+				LocalOnly:     true,
 			},
 			wantWindow: 64000,
-			wantOutput: 8192,
+			wantOutput: routing.DefaultLocalMaxOutputTokens,
 		},
 		{
 			name: "explicit output keeps automatic context resolvable",
@@ -554,8 +471,9 @@ func TestResolveModelLimitsFillsUnsetFieldsIndependently(t *testing.T) {
 				Provider:        "ollama",
 				Model:           "qwen2.5-coder:7b",
 				MaxOutputTokens: 4096,
+				LocalOnly:       true,
 			},
-			wantWindow: 32768,
+			wantWindow: routing.DefaultLocalContextWindow,
 			wantOutput: 4096,
 		},
 	}
@@ -570,18 +488,19 @@ func TestResolveModelLimitsFillsUnsetFieldsIndependently(t *testing.T) {
 }
 
 func TestCopyFromPreservesModelLimitResolution(t *testing.T) {
-	tbl := limits.NewTable(map[string]limits.Limit{
-		"test-provider/model-with-cache-limits": {ContextWindow: 128000, MaxOutputTokens: 8192},
-	})
-	source := &Runner{LimitsTable: &tbl}
+	source := &Runner{
+		ModelProbe: func(provider, model string) ModelProbe {
+			return ModelProbe{Window: 128000, MaxOutput: 8192, OK: true}
+		},
+	}
 	target := &Runner{}
 	target.CopyFrom(source)
 
 	lim := target.resolveModelLimits(routing.ModelPreset{
 		Provider: "test-provider",
-		Model:    "model-with-cache-limits",
+		Model:    "model-with-probe-limits",
 	})
 	if lim.Window != 128000 || lim.MaxOutput != 8192 {
-		t.Fatalf("resolveModelLimits after CopyFrom = (%d, %d), want (128000, 8192)", lim.Window, lim.MaxOutput)
+		t.Fatalf("resolveModelLimits after CopyFrom = (%d, %d), want (128000, 8192) via the copied probe", lim.Window, lim.MaxOutput)
 	}
 }

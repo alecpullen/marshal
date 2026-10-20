@@ -8,7 +8,6 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
-	"marshal/internal/llm/catalog"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
@@ -240,28 +239,11 @@ func pricingNote(p routing.ModelPreset) string {
 }
 
 // presetFactNote renders the objective per-preset facts as " · "-joined
-// fragments: context window (from the preset, else the catalog for
-// plain-model IDs), local-only, thinking effort, price class. The
-// catalog fallback below renders only for catalog-listed models — never
-// catalog.Lookup's 8192/4096 default pair (catalog.go:39-40), which would
-// turn "unknown" into a fake claim. Only configured/known facts appear;
-// an unannotated preset renders "".
+// fragments: context window, local-only, thinking effort, price class. Only
+// configured facts appear; an unannotated preset renders "".
 func presetFactNote(p routing.ModelPreset) string {
 	var frag []string
-	if p.ContextWindow <= 0 {
-		model := p.Model
-		if _, m, ok := strings.Cut(p.Model, "/"); ok { // openrouter-style ids: strip provider
-			model = m
-		}
-		// catalog.Lookup answers 8192/4096 for models it does not know
-		// (catalog.go:39-40); rendering that would print a guessed "8k
-		// ctx", so the exact default pair is treated as unknown. A
-		// catalog-listed model gets its real window; unknown models
-		// render nothing.
-		if ctx, out := catalog.Lookup(model, nil); ctx > 0 && !(ctx == 8192 && out == 4096) {
-			frag = append(frag, fmtCtxTokens(ctx)+" ctx")
-		}
-	} else {
+	if p.ContextWindow > 0 {
 		frag = append(frag, fmtCtxTokens(p.ContextWindow)+" ctx")
 	}
 	if p.LocalOnly {

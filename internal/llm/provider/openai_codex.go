@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 
 	"marshal/internal/app/config"
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
 	"marshal/internal/oauth"
 	"marshal/internal/redact"
@@ -68,7 +67,6 @@ type OpenAICodex struct {
 	engine           *oauth.Engine
 	httpClient       *http.Client
 	capabilities     schema.ProviderCapabilities
-	limitsTable      *limits.Table
 	reasoningSummary bool
 	// staticModels is the template's fallback list. Models() prefers the
 	// live catalog, then the disk cache, then this.
@@ -99,7 +97,6 @@ type CodexOptions struct {
 	Engine           *oauth.Engine
 	HTTPClient       *http.Client
 	Capabilities     *schema.ProviderCapabilities
-	LimitsTable      *limits.Table
 	ReasoningSummary bool
 	StaticModels     []string
 	// DataDir is the shared data directory for the model cache. Empty
@@ -150,7 +147,6 @@ func NewOpenAICodex(opts CodexOptions) (*OpenAICodex, error) {
 		engine:           opts.Engine,
 		httpClient:       hc,
 		capabilities:     caps,
-		limitsTable:      opts.LimitsTable,
 		reasoningSummary: opts.ReasoningSummary,
 		staticModels:     models,
 		dataDir:          opts.DataDir,

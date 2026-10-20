@@ -1736,37 +1736,6 @@ func TestMergeSidePanel(t *testing.T) {
 	}
 }
 
-func TestRemoteLimitDiscoveryDefaultsToRemoteProvidersAllowed(t *testing.T) {
-	cfg := Default()
-	if cfg.Privacy.RemoteLimitDiscovery != cfg.Privacy.RemoteProvidersAllowed {
-		t.Errorf("RemoteLimitDiscovery = %v, want %v", cfg.Privacy.RemoteLimitDiscovery, cfg.Privacy.RemoteProvidersAllowed)
-	}
-}
-
-func TestRemoteLimitDiscoveryLoadable(t *testing.T) {
-	home := t.TempDir()
-	work := t.TempDir()
-	dir := filepath.Join(home, ".config", "marshal")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	contents := `[privacy]
-remote_providers_allowed = true
-remote_limit_discovery = false
-`
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(contents), 0644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
-	if err != nil {
-		t.Fatalf("Load returned error: %v", err)
-	}
-	if cfg.Privacy.RemoteLimitDiscovery {
-		t.Errorf("RemoteLimitDiscovery = true, want false (explicitly set)")
-	}
-}
-
 func TestHistoryDefaults(t *testing.T) {
 	cfg := Default()
 	if !cfg.History.Enabled {

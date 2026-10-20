@@ -623,13 +623,13 @@ func TestResolveRouteRaisesBudgetFromKnownWindow(t *testing.T) {
 	pol := policy.NewEngine(&config.Config{}, nil)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "qwen2.5-coder:14b")
-	// A resolver that returns a route whose preset has no explicit window —
-	// forces the catalog lookup path.
+	// A resolver that returns a route whose preset supplies an explicit
+	// window — no limits table or catalog lookup is involved any more.
 	runner.RouteResolver = &staticResolver{
 		route: routing.Route{
 			Role:    routing.RoleImplementer,
 			Profile: "p",
-			Preset:  routing.ModelPreset{Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true},
+			Preset:  routing.ModelPreset{Name: "fast", Provider: "ollama", Model: "qwen2.5-coder:14b", LocalOnly: true, ContextWindow: 32768},
 		},
 		provider: p,
 	}
@@ -640,9 +640,9 @@ func TestResolveRouteRaisesBudgetFromKnownWindow(t *testing.T) {
 	}
 	// 0.85 * 32768 - 8192 = ~19698; must be > the 60000 default floor? No — effective
 	// is ~19698 which is LESS than the 60000 default floor, so the floor wins.
-	// Assert the catalog path ran by checking the window was recorded on state.
+	// Assert the resolved window was recorded on state.
 	if _, window := state.TurnUsage(); window != 32768 {
-		t.Fatalf("state window = %d, want 32768 (catalog resolved)", window)
+		t.Fatalf("state window = %d, want 32768 (preset resolved)", window)
 	}
 }
 
@@ -724,7 +724,7 @@ func TestRunPropagatesResolvedLimitsToRequests(t *testing.T) {
 	}
 }
 
-func TestRunFallsBackToCatalogDefaultsWhenUnknown(t *testing.T) {
+func TestRunFallsBackToLocalDefaultsWhenUnknown(t *testing.T) {
 	p := &agenttest.ScriptedProvider{Responses: []string{
 		`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
 	}}
@@ -736,7 +736,7 @@ func TestRunFallsBackToCatalogDefaultsWhenUnknown(t *testing.T) {
 		route: routing.Route{
 			Role:    routing.RoleImplementer,
 			Profile: "p",
-			Preset:  routing.ModelPreset{Name: "coder", Provider: "ollama", Model: "totally-made-up-xyz"},
+			Preset:  routing.ModelPreset{Name: "coder", Provider: "ollama", Model: "totally-made-up-xyz", LocalOnly: true},
 		},
 		provider: p,
 	}
@@ -749,11 +749,11 @@ func TestRunFallsBackToCatalogDefaultsWhenUnknown(t *testing.T) {
 		t.Fatal("no requests captured")
 	}
 	req := p.Requests[0]
-	// Unknown models fall back to the catalog's conservative defaults.
+	// Unknown local models fall back to the conservative local defaults.
 	if req.MaxTokens == nil || *req.MaxTokens != 4096 {
-		t.Fatalf("MaxTokens = %v, want 4096 (catalog default)", req.MaxTokens)
+		t.Fatalf("MaxTokens = %v, want 4096 (local default)", req.MaxTokens)
 	}
 	if req.ContextWindow == nil || *req.ContextWindow != 8192 {
-		t.Fatalf("ContextWindow = %v, want 8192 (catalog default)", req.ContextWindow)
+		t.Fatalf("ContextWindow = %v, want 8192 (local default)", req.ContextWindow)
 	}
 }

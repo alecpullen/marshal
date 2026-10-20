@@ -1,10 +1,6 @@
 package provider
 
-import (
-	"context"
-
-	"marshal/internal/llm/provider/limits"
-)
+import "context"
 
 // ResolveReasoningSupport reports whether the model behind prov is known to
 // accept a reasoning/effort control, consulting every signal marshal has:
@@ -13,9 +9,8 @@ import (
 //     chat path (internal/agent/chat.go) gates the wire field on exactly
 //     this bit, so a provider-level "no" is authoritative even when a
 //     per-model probe disagrees.
-//  2. limits table entry with Reasoning != nil → that value.
-//  3. CapabilityProber result with Reasoning != nil → that value.
-//  4. provider-wide default → (caps.Reasoning, false): a baseline
+//  2. CapabilityProber result with Reasoning != nil → that value.
+//  3. provider-wide default → (caps.Reasoning, false): a baseline
 //     assumption, not knowledge about this model.
 //
 // known=false means no source reported either way; callers should keep the
@@ -23,15 +18,10 @@ import (
 //
 // This boolean resolver is retained for callers needing support only.
 // ResolveThinkingOptions supplies model-specific values to the options panel.
-func ResolveReasoningSupport(ctx context.Context, prov Provider, providerName, modelID string, table *limits.Table) (supported, known bool) {
+func ResolveReasoningSupport(ctx context.Context, prov Provider, modelID string) (supported, known bool) {
 	caps := prov.Capabilities(ctx)
 	if !caps.Reasoning {
 		return false, true
-	}
-	if table != nil {
-		if lim, kind := table.Lookup(providerName, modelID); kind != limits.MatchNone && lim.Reasoning != nil {
-			return *lim.Reasoning, true
-		}
 	}
 	if prober, ok := prov.(CapabilityProber); ok {
 		if mc := prober.ProbeCapabilities(ctx, modelID); mc.Reasoning != nil {

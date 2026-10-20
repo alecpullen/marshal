@@ -36,7 +36,6 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/provider/oauthworker"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -1849,54 +1848,12 @@ func TestBuildPipelineControllerReturnsAdapter(t *testing.T) {
 	reg := registry.New()
 	pol := policy.NewEngine(&cfg, nil)
 	resolver := newRoutedProviderResolver(cfg, t.TempDir())
-	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath, nil, nil, nil, nil)
+	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath, nil, nil, nil)
 	if adapter == nil {
 		t.Fatal("buildPipelineController returned nil")
 	}
 }
 
-func TestRoutedProviderResolverPassesLimitCacheDir(t *testing.T) {
-	dataDir := t.TempDir()
-	if err := limits.Save(dataDir, limits.Cache{
-		Table: map[string]limits.Limit{
-			"cached-model": {ContextWindow: 128000, MaxOutputTokens: 8192},
-		},
-		FetchedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("save limits cache: %v", err)
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"cached-model"}]}`))
-	}))
-	defer server.Close()
-
-	cfg := config.Config{
-		Providers: map[string]config.ProviderConfig{
-			"test": {Type: "openai_compatible", BaseURL: server.URL},
-		},
-	}
-	resolver := newRoutedProviderResolver(cfg, dataDir)
-	p, err := resolver.providerFor(routing.Route{Preset: routing.ModelPreset{Provider: "test"}})
-	if err != nil {
-		t.Fatalf("providerFor: %v", err)
-	}
-	models, err := p.Models(t.Context())
-	if err != nil {
-		t.Fatalf("Models: %v", err)
-	}
-	if len(models) != 1 {
-		t.Fatalf("got %d models, want 1", len(models))
-	}
-	if models[0].ContextWindow != 128000 || models[0].MaxOutputTokens != 8192 {
-		t.Fatalf("model limits = %d/%d, want 128000/8192", models[0].ContextWindow, models[0].MaxOutputTokens)
-	}
-}
-
-// The resolver must thread the session's stable ID into OpenCode-compatible
-// providers as Options.SessionID so chat requests carry x-opencode-session
-// (required by OpenCode Zen; see provider package).
 func TestRoutedProviderResolverThreadsSessionID(t *testing.T) {
 	cfg := config.Config{
 		Providers: map[string]config.ProviderConfig{
@@ -5036,16 +4993,14 @@ func TestRoleRunnerWiredWithResolverAndLimits(t *testing.T) {
 	defer database.Close()
 
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	lt := limits.NewTable(nil)
 	spec := roleRunnerSpec{
-		cfg:         cfg,
-		state:       state,
-		pol:         policy.NewEngine(&cfg, nil),
-		resolver:    newRoutedProviderResolver(cfg, ""),
-		reg:         registry.New(),
-		memory:      &dbMemoryProvider{db: database},
-		projectID:   1,
-		limitsTable: &lt,
+		cfg:       cfg,
+		state:     state,
+		pol:       policy.NewEngine(&cfg, nil),
+		resolver:  newRoutedProviderResolver(cfg, ""),
+		reg:       registry.New(),
+		memory:    &dbMemoryProvider{db: database},
+		projectID: 1,
 		modelProbe: func(provider, model string) agent.ModelProbe {
 			return agent.ModelProbe{Window: 16384, MaxOutput: 4096, OK: true}
 		},
@@ -5070,16 +5025,13 @@ func TestRoleRunnerWiredWithResolverAndLimits(t *testing.T) {
 	if !probe.OK || probe.Window != 16384 {
 		t.Fatalf("role runner probe = %+v, want the provider-reported 16384", probe)
 	}
-	if got := agent.ResolveModelLimits(route.Preset, r.LimitsTable, probe, nil).Window; got != 16384 {
+	if got := agent.ResolveModelLimits(route.Preset, probe).Window; got != 16384 {
 		t.Fatalf("role runner window = %d, want the provider-reported 16384", got)
 	}
 	if route.Preset.Model != "impl" {
 		t.Fatalf("model = %q, want impl", route.Preset.Model)
 	}
-	if r.LimitsTable != &lt {
-		t.Fatal("LimitsTable not wired on role runner")
-	}
-	window := agent.ResolveModelLimits(route.Preset, r.LimitsTable, agent.ModelProbe{}, nil).Window
+	window := agent.ResolveModelLimits(route.Preset, agent.ModelProbe{}).Window
 	if window != 32768 {
 		t.Fatalf("window = %d, want 32768 from preset config", window)
 	}

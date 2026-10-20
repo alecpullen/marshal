@@ -17,7 +17,6 @@ import (
 	"marshal/internal/hooks"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/permissions"
@@ -317,15 +316,9 @@ type Runner struct {
 	// the gate is opt-in.
 	VerificationGate bool
 
-	// LimitsTable is the merged OpenRouter/LiteLLM limit table used to
-	// resolve a preset's context window and max output when the preset does
-	// not state them. Nil means "not loaded" — resolution degrades to the
-	// local catalog. Set by app.go from the on-disk cache.
-	LimitsTable *limits.Table
-
 	// ModelProbe reports the provider's own cached limits for a model.
-	// Nil means "no probe available" — resolution degrades to the limits
-	// table and the catalog, and nothing clamps.
+	// Nil means "no probe available" — resolution falls back to Marshal's
+	// documented defaults, and nothing clamps.
 	ModelProbe func(provider, model string) ModelProbe
 
 	// clampNoticeKey identifies the clamp currently bannered, so a changed
@@ -708,7 +701,6 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.MaxToolResultChars = other.MaxToolResultChars
 	r.ForceClass = other.ForceClass
 	r.SkillIndex = other.SkillIndex
-	r.LimitsTable = other.LimitsTable
 	r.ModelProbe = other.ModelProbe
 	r.Role = other.Role
 	r.NarrationPrompt = other.NarrationPrompt

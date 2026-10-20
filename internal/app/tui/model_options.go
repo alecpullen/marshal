@@ -203,5 +203,5 @@ func (m *Model) probeThinkingOptions(presetName string) tea.Cmd {
 	if !ok || (!probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed) {
 		return nil
 	}
-	return probe.ProviderWithAuth("thinking-options", preset.Provider, pc, m.modelCacheDir, m.state.Config.Privacy.RemoteLimitDiscovery, m.state.Config.Agent.ThinkingBudgetMargin, m.auth)
+	return probe.ProviderWithAuth("thinking-options", preset.Provider, pc, m.modelCacheDir, m.state.Config.Agent.ThinkingBudgetMargin, m.auth)
 }

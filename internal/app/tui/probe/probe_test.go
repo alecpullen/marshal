@@ -13,7 +13,6 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/credentials"
 	"marshal/internal/llm/provider"
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/oauth"
 )
 
@@ -50,7 +49,7 @@ func TestProviderSuccess(t *testing.T) {
 	defer srv.Close()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc, "", false, 0)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", 0)().(ResultMsg)
 
 	if msg.Err != nil {
 		t.Fatalf("Provider err = %v", msg.Err)
@@ -70,7 +69,7 @@ func TestProviderNon200(t *testing.T) {
 	defer srv.Close()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc, "", false, 0)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", 0)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected error for 403 response")
 	}
@@ -78,7 +77,7 @@ func TestProviderNon200(t *testing.T) {
 
 func TestProviderConnectionRefused(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://127.0.0.1:1/v1"}
-	msg := Provider("test.field", "testprov", pc, "", false, 0)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", 0)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected error for connection refused")
 	}
@@ -95,7 +94,7 @@ func TestProviderTimeout(t *testing.T) {
 	defer func() { Timeout = old }()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL + "/v1"}
-	msg := Provider("test.field", "testprov", pc, "", false, 0)().(ResultMsg)
+	msg := Provider("test.field", "testprov", pc, "", 0)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -110,7 +109,7 @@ func TestProviderPreservesModelLimits(t *testing.T) {
 
 	msg := Provider("f", "openai", config.ProviderConfig{
 		Type: "openai_compatible", BaseURL: srv.URL,
-	}, "", false, 0)().(ResultMsg)
+	}, "", 0)().(ResultMsg)
 
 	if msg.Err != nil {
 		t.Fatalf("probe: %v", msg.Err)
@@ -122,42 +121,10 @@ func TestProviderPreservesModelLimits(t *testing.T) {
 		t.Errorf("ID = %q, want gpt-4o", msg.Models[0].ID)
 	}
 	// The field must exist and be addressable — its value depends on
-	// whether a limits table was wired in, which this test does not do.
+	// The field must exist and be addressable: /models reports no limits, so
+	// the discovery layer leaves them for the preset defaults.
 	_ = msg.Models[0].ContextWindow
 	_ = msg.Models[0].MaxOutputTokens
-}
-
-func TestProviderFillsLimitsFromOnDiskCache(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"data":[{"id":"gpt-4o","owned_by":"openai"}]}`)
-	}))
-	defer srv.Close()
-
-	// A warm limits cache must be read even when remote limit discovery is
-	// off — reading it makes no network requests.
-	dataDir := t.TempDir()
-	if err := limits.Save(dataDir, limits.Cache{
-		Table:     map[string]limits.Limit{"gpt-4o": {ContextWindow: 128000, MaxOutputTokens: 16384}},
-		FetchedAt: time.Now(),
-	}); err != nil {
-		t.Fatalf("seed limits cache: %v", err)
-	}
-
-	msg := Provider("f", "openai", config.ProviderConfig{
-		Type: "openai_compatible", BaseURL: srv.URL,
-	}, dataDir, false, 0)().(ResultMsg)
-
-	if msg.Err != nil {
-		t.Fatalf("probe: %v", msg.Err)
-	}
-	if len(msg.Models) != 1 {
-		t.Fatalf("got %d models, want 1", len(msg.Models))
-	}
-	if msg.Models[0].ContextWindow != 128000 || msg.Models[0].MaxOutputTokens != 16384 {
-		t.Errorf("limits = %d/%d, want 128000/16384 from the on-disk cache",
-			msg.Models[0].ContextWindow, msg.Models[0].MaxOutputTokens)
-	}
 }
 
 // ── Explicit-auth probe entry point ──────────────────────────────────
@@ -205,7 +172,7 @@ func TestProviderWithAuthUsesInjectedResolver(t *testing.T) {
 		BaseURL:  "https://chatgpt.com/backend-api",
 		Auth:     "oauth",
 	}
-	msg := ProviderWithAuth("f", "codex", pc, "", false, 0, auth)().(ResultMsg)
+	msg := ProviderWithAuth("f", "codex", pc, "", 0, auth)().(ResultMsg)
 
 	if len(auth.engines) != 1 || auth.engines[0] != "codex" {
 		t.Fatalf("engine requests = %v, want one for \"codex\"", auth.engines)
@@ -222,7 +189,7 @@ func TestProviderWithAuthUsesInjectedResolver(t *testing.T) {
 // than silently selecting the production keychain.
 func TestProviderWithAuthNilResolverFailsClosed(t *testing.T) {
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://127.0.0.1:1/v1"}
-	msg := ProviderWithAuth("f", "p", pc, "", false, 0, nil)().(ResultMsg)
+	msg := ProviderWithAuth("f", "p", pc, "", 0, nil)().(ResultMsg)
 	if msg.Err == nil {
 		t.Fatal("a nil resolver must fail the probe, not fall back to the real keychain")
 	}
@@ -242,7 +209,7 @@ func TestProviderWrapperSelectsProductionAdapter(t *testing.T) {
 	defer srv.Close()
 
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: srv.URL}
-	msg := Provider("f", "p", pc, "", false, 0)().(ResultMsg)
+	msg := Provider("f", "p", pc, "", 0)().(ResultMsg)
 	if msg.Err != nil {
 		t.Fatalf("provider: %v", msg.Err)
 	}

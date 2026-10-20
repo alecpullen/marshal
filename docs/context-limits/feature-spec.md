@@ -318,6 +318,18 @@ The branch review's non-blocking findings are folded in:
 - **Probe cache reads are memoized.** `modelProbeFunc` reuses the parsed `discovered.json` until its mtime or size moves, instead of re-reading and unmarshalling every turn.
 - **Salvage survives a later overflow.** The retry ladder keeps the largest partial response across attempts; if a later attempt is rejected as too long, the runner continues with that partial instead of discarding it and compacting. Prune notices now share sentence casing.
 
+## Revision: third-party limits table removed
+
+The OpenRouter/LiteLLM limits table and the curated local catalog were removed outright. They caused more grief than benefit: the table's cross-provider inferences repeatedly overrode explicit user intent, and modern model datasheets have converged enough that a documented default is more accurate than a stale match.
+
+The resolution rule is now:
+
+1. An explicit `context_window` / `max_output_tokens` on the preset wins.
+2. Otherwise `routing.DefaultModelLimits(local)` applies: **1M context / 128K output for remote models**, **8K / 4K for local endpoints**. New presets are seeded with these figures at creation (`defaultPreset`), and the confirm-limits screen lets the user edit them before saving.
+3. A **provider-reported** probe may still lower either figure; it never raises one. Providers that report nothing leave the default in place, and an oversize request is caught by the prune → compact → retry path above.
+
+`internal/llm/provider/limits` and `internal/llm/catalog` are deleted. `schema.ModelInfo.ProviderReported` remains only to distinguish genuine provider metadata from an enrichment pass, so no fabricated figure can clamp a preset. The `remote_limit_discovery` setting is gone; there is no table to fetch. `agent.max_turn_context_tokens` still caps the compaction threshold independently.
+
 ## Open questions
 
 None.

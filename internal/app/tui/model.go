@@ -7072,7 +7072,7 @@ func (m *Model) probeProviders(names []string) tea.Cmd {
 		if !probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed {
 			continue
 		}
-		cmds = append(cmds, probe.ProviderWithAuth("models", n, pc, m.modelCacheDir, m.state.Config.Privacy.RemoteLimitDiscovery, m.state.Config.Agent.ThinkingBudgetMargin, m.auth))
+		cmds = append(cmds, probe.ProviderWithAuth("models", n, pc, m.modelCacheDir, m.state.Config.Agent.ThinkingBudgetMargin, m.auth))
 	}
 	return tea.Batch(cmds...)
 }

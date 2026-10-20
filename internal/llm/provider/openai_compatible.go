@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
 	"marshal/internal/llm/streaming"
 )
@@ -29,9 +28,6 @@ type Options struct {
 	// Capabilities overrides the default capability set. Leave nil to use
 	// defaultCapabilities().
 	Capabilities *schema.ProviderCapabilities
-	// LimitsTable is an optional merged limit table used to enrich model
-	// listings. When nil, model limits are left unknown.
-	LimitsTable *limits.Table
 	// KeepAlive is honored only by the native Ollama backend: how long the
 	// model stays loaded after each request. Passed verbatim to the wire.
 	KeepAlive string
@@ -63,7 +59,6 @@ type OpenAICompatible struct {
 	apiKey           string
 	httpClient       *http.Client
 	capabilities     schema.ProviderCapabilities
-	limitsTable      *limits.Table
 	reasoningSummary bool
 	replayField      string
 	replayRejected   atomic.Bool
@@ -91,7 +86,6 @@ func NewOpenAICompatible(opts Options) (*OpenAICompatible, error) {
 		apiKey:           opts.APIKey,
 		httpClient:       client,
 		capabilities:     caps,
-		limitsTable:      opts.LimitsTable,
 		reasoningSummary: opts.ReasoningSummary,
 		replayField:      resolveReplayField(opts.ReasoningField),
 		thinkingLookup:   opts.ThinkingLookup,
@@ -180,15 +174,7 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 	}
 	models := make([]schema.ModelInfo, 0, len(parsed.Data))
 	for _, m := range parsed.Data {
-		info := schema.ModelInfo{ID: m.ID, OwnedBy: m.OwnedBy, Thinking: m.Thinking}
-		if p.limitsTable != nil {
-			if lim, kind := p.limitsTable.Lookup(p.name, m.ID); kind != limits.MatchNone {
-				info.ContextWindow = lim.ContextWindow
-				info.MaxOutputTokens = lim.MaxOutputTokens
-				info.ToolCalling = lim.ToolCalling
-			}
-		}
-		models = append(models, info)
+		models = append(models, schema.ModelInfo{ID: m.ID, OwnedBy: m.OwnedBy, Thinking: m.Thinking})
 	}
 	if isOllamaEndpoint(p.baseURL) {
 		enrichThinkingOptions(ctx, models, p.ollamaThinkingOptions)

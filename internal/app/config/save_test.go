@@ -541,29 +541,6 @@ func TestSaveProjectConfigRoundTripsVerificationGate(t *testing.T) {
 	}
 }
 
-func TestRemoteLimitDiscoveryConfigurable(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, ".marshal", "config.toml")
-
-	cfg := Default()
-	// Differs from the derived default: remote_providers_allowed=false but
-	// remote_limit_discovery=true must be persisted and reloaded independently.
-	cfg.Privacy.RemoteProvidersAllowed = false
-	cfg.Privacy.RemoteLimitDiscovery = true
-
-	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
-		t.Fatalf("SaveProjectConfig failed: %v", err)
-	}
-
-	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
-	if !loaded.Privacy.RemoteLimitDiscovery {
-		t.Errorf("RemoteLimitDiscovery = false, want true (persisted)")
-	}
-}
-
 func TestSDDDispatchRetriesRoundTrip(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, ".marshal", "config.toml")

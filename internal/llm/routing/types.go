@@ -229,15 +229,15 @@ type Route struct {
 	Preset        ModelPreset
 	ContextBudget ContextBudget
 	CustomAgent   *CustomAgent // nil unless resolved from a RoleBinding.CustomAgent
-	// Window is the resolved model context window for this route (from
-	// preset or catalog). Set per-turn by resolveRoute so the per-turn
-	// threshold derivation tracks the model actually in use. 0 means the
-	// model ID was empty and no source resolved a window; the caller
-	// falls back to its configured budget.
+	// Window is the resolved model context window for this route: the
+	// preset's explicit value, else the locality default, lowered by a
+	// provider-reported limit. Set per-turn by resolveRoute so the per-turn
+	// threshold derivation tracks the model actually in use. 0 only when
+	// resolution failed; the caller falls back to its configured budget.
 	Window int
-	// MaxOutput is the resolved max output tokens for this route (from
-	// preset or catalog). 0 means the model ID was empty and no source
-	// resolved a value.
+	// MaxOutput is the resolved max output tokens for this route: the
+	// preset's explicit value, else the locality default, lowered by a
+	// provider-reported limit. 0 only when resolution failed.
 	MaxOutput int
 }
 

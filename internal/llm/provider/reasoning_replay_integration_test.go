@@ -176,7 +176,7 @@ func TestLiveCodexReasoningItemsAccepted(t *testing.T) {
 		ToolCalling: true,
 		Template:    "openai-codex",
 	}
-	p, err := NewFromConfigWithAuth("codex", pc, "", false, "reasoning-replay-live", DefaultAuthResolver())
+	p, err := NewFromConfigWithAuth("codex", pc, "", 0, "reasoning-replay-live", DefaultAuthResolver())
 	if err != nil {
 		t.Fatalf("NewFromConfigWithAuth: %v", err)
 	}

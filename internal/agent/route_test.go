@@ -318,9 +318,11 @@ func TestResolveModelLimitsUsesRemoteDefaults(t *testing.T) {
 	lim := ResolveModelLimits(routing.ModelPreset{
 		Provider: "openai", Model: "totally-made-up-xyz",
 	}, ModelProbe{})
-	if lim.Window != routing.DefaultRemoteContextWindow || lim.MaxOutput != routing.DefaultRemoteMaxOutputTokens {
-		t.Fatalf("got (%d, %d), want the remote defaults (%d, %d)",
-			lim.Window, lim.MaxOutput, routing.DefaultRemoteContextWindow, routing.DefaultRemoteMaxOutputTokens)
+	// Literal, not the routing constants: 1M/128K is documented policy, so a
+	// silent change to the constant must fail here too.
+	if lim.Window != 1_000_000 || lim.MaxOutput != 128_000 {
+		t.Fatalf("got (%d, %d), want the documented remote defaults (1000000, 128000)",
+			lim.Window, lim.MaxOutput)
 	}
 	if lim.Clamped {
 		t.Fatal("Clamped = true, want false when no provider reported limits")
@@ -333,9 +335,9 @@ func TestResolveModelLimitsUsesLocalDefaults(t *testing.T) {
 	lim := ResolveModelLimits(routing.ModelPreset{
 		Provider: "ollama", Model: "qwen2.5-coder:7b", LocalOnly: true,
 	}, ModelProbe{})
-	if lim.Window != routing.DefaultLocalContextWindow || lim.MaxOutput != routing.DefaultLocalMaxOutputTokens {
-		t.Fatalf("got (%d, %d), want the local defaults (%d, %d)",
-			lim.Window, lim.MaxOutput, routing.DefaultLocalContextWindow, routing.DefaultLocalMaxOutputTokens)
+	if lim.Window != 8_192 || lim.MaxOutput != 4_096 {
+		t.Fatalf("got (%d, %d), want the documented local defaults (8192, 4096)",
+			lim.Window, lim.MaxOutput)
 	}
 }
 

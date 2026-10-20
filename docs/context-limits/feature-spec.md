@@ -325,7 +325,7 @@ The OpenRouter/LiteLLM limits table and the curated local catalog were removed o
 The resolution rule is now:
 
 1. An explicit `context_window` / `max_output_tokens` on the preset wins.
-2. Otherwise `routing.DefaultModelLimits(local)` applies: **1M context / 128K output for remote models**, **8K / 4K for local endpoints**. New presets are seeded with these figures at creation (`defaultPreset`), and the confirm-limits screen lets the user edit them before saving.
+2. Otherwise `routing.DefaultModelLimits(local)` applies: **1M context / 128K output for remote models**, **8K / 4K for local endpoints**. Presets created through the connect wizard persist these figures at creation (`presetflow.Materialize`), `routing.defaultPreset` applies the same pair in memory when a preset is resolved, and the confirm-limits screen lets the user edit them before saving.
 3. A **provider-reported** probe may still lower either figure; it never raises one. Providers that report nothing leave the default in place, and an oversize request is caught by the prune → compact → retry path above.
 
 `internal/llm/provider/limits` and `internal/llm/catalog` are deleted. `schema.ModelInfo.ProviderReported` remains only to distinguish genuine provider metadata from an enrichment pass, so no fabricated figure can clamp a preset. The `remote_limit_discovery` setting is gone; there is no table to fetch. `agent.max_turn_context_tokens` still caps the compaction threshold independently.

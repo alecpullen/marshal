@@ -77,8 +77,8 @@ type Opts struct {
 	ScopedProvider   string
 	CfgPath          string
 	AllProviders     bool
-	// DataDir enables the on-disk limit table during probing (read from
-	// cache; refreshed remotely only per privacy.remote_limit_discovery).
+	// DataDir is the provider data directory used for the probe cache and
+	// discovered model metadata.
 	DataDir string
 	// Auth is the credential/OAuth dependency every provider this wizard
 	// constructs must use — capability/model probes and the sign-in engine.

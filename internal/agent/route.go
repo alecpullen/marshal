@@ -274,9 +274,9 @@ type ModelLimits struct {
 // ResolveModelLimits resolves a preset's context window and max output tokens.
 // Each field falls back independently: an explicit preset value always wins;
 // otherwise Marshal's documented default pair applies (1M context / 128K output
-// for remote models, 8K / 4K for local ones). A zero return is only possible
-// when the preset's model ID is empty; in that case the caller keeps its
-// configured budget rather than guessing.
+// for remote models, 8K / 4K for local ones). Both figures are therefore
+// always nonzero; the zero-window handling downstream belongs to the
+// resolver-error path, not to this function.
 //
 // After resolution, a known provider-reported limit (probe) clamps the result
 // down. The clamp only ever lowers: a deliberately conservative preset is never

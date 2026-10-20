@@ -387,11 +387,12 @@ const SmallWindowRolloverMaxTokens = 32768
 // off. When unset, rollover defaults on for local routes with small
 // windows (≤ SmallWindowRolloverMaxTokens) and off otherwise.
 //
-// The default-on is gated on locality, not just window size: an unknown
-// remote model resolves to the 8192 catalog fallback, and defaulting
-// rollover on there would roll a 128k-context model at a fraction of its
-// real window. localOnly comes from the preset, so only models the user
-// declared (or the TUI detected) as local get the survival default.
+// The default-on is gated on locality, not just window size: a remote
+// route whose window resolves small (an explicit preset, or a
+// provider-reported limit) would otherwise roll at a fraction of the
+// context the user expects from a large model. localOnly comes from the
+// preset, so only models the user declared (or the TUI detected) as local
+// get the survival default.
 func (c RolloverConfig) EffectiveEnabled(localOnly bool, modelContextWindow int) bool {
 	if c.Enabled {
 		return true

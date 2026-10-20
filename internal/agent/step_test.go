@@ -350,7 +350,7 @@ func TestIntentNudgeDoesNotFire(t *testing.T) {
 func TestNarrationDirectiveInPrompt(t *testing.T) {
 	build := func(native, narration bool) string {
 		return BuildSystemPromptWithSystem(SystemPromptOptions{
-			Role: RoleGeneral, NativeTools: native, Narration: narration, Mode: policy.ModeEdit,
+			Role: RoleGeneral, NativeTools: native, Narration: narration, Access: defaultInteractionAccess(),
 		}).Content
 	}
 	if !strings.Contains(build(true, true), "begin that same response with one short sentence") {

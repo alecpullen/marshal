@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
 	"marshal/internal/tools/policy"
@@ -122,18 +124,25 @@ func TestPromptPrefixStableAcrossSteps(t *testing.T) {
 	}
 
 	last := p.Requests[len(p.Requests)-1].Messages
-	tail := last[len(last)-1]
-	if !tail.Volatile || !strings.Contains(tail.Content, "Current Todos") {
-		t.Fatalf("last message must be the volatile working state with todos, got %+v", tail)
+	if len(last) < 2 {
+		t.Fatalf("last request has %d messages, want a working-state tail and an interaction tail", len(last))
 	}
-	for i, m := range last[:len(last)-1] {
+	interaction := last[len(last)-1]
+	if !interaction.Volatile || !strings.Contains(interaction.Content, "Current interaction state:") {
+		t.Fatalf("last message must be the volatile interaction tail, got %+v", interaction)
+	}
+	tail := last[len(last)-2]
+	if !tail.Volatile || !strings.Contains(tail.Content, "Current Todos") {
+		t.Fatalf("second-to-last message must be the volatile working state with todos, got %+v", tail)
+	}
+	for i, m := range last[:len(last)-2] {
 		if m.Volatile || strings.Contains(m.Content, "Current working state") {
 			t.Fatalf("message %d is a stale working-state copy; exactly one tail is allowed", i)
 		}
 	}
 	// Review focus 2: the tail is wire-only and never reaches the transcript.
 	for _, m := range state.Messages() {
-		if strings.Contains(m.Content, "Current working state") {
+		if strings.Contains(m.Content, "Current working state") || strings.Contains(m.Content, "Current interaction state:") {
 			t.Fatalf("working-state tail leaked into the session transcript: %q", m.Content)
 		}
 	}
@@ -189,14 +198,64 @@ func TestWithWorkingStateDoesNotMutateInput(t *testing.T) {
 	in[0] = schema.ChatMessage{Role: schema.RoleSystem, Content: "sys"}
 	out := r.withWorkingState(in)
 
-	if len(in) != 1 || len(out) != 2 {
-		t.Fatalf("len(in)=%d len(out)=%d, want 1 and 2", len(in), len(out))
+	if len(in) != 1 || len(out) != 3 {
+		t.Fatalf("len(in)=%d len(out)=%d, want 1 and 3 (working state + interaction tail)", len(in), len(out))
 	}
 	if spare := in[:2][1]; spare.Volatile || spare.Content != "" {
 		t.Fatalf("withWorkingState wrote into the caller's backing array: %+v", spare)
 	}
-	if !out[1].Volatile {
-		t.Fatalf("tail not marked Volatile: %+v", out[1])
+	for i, msg := range out[1:] {
+		if !msg.Volatile {
+			t.Fatalf("tail message %d not marked Volatile: %+v", i, msg)
+		}
+	}
+	if !strings.Contains(out[2].Content, "Current interaction state:") {
+		t.Fatalf("last tail message is not the interaction tuple: %+v", out[2])
+	}
+}
+
+// TestInteractionChangeAppearsOnlyInWorkingTail pins the turn boundary: a
+// mid-turn Ask/Act change must show up in the volatile tail while the
+// turn-start system prompt and the transcript ahead of the tail stay
+// byte-identical.
+func TestInteractionChangeAppearsOnlyInWorkingTail(t *testing.T) {
+	state := newTestState(t)
+	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	r.pinPromptAccess()
+
+	messages := []schema.ChatMessage{
+		r.systemPromptMessage(),
+		{Role: schema.RoleUser, Content: "goal"},
+		{Role: schema.RoleAssistant, Content: "first step"},
+	}
+	beforeSystem := messages[0].Content
+	actRequest := r.withWorkingState(messages)
+
+	before, err := state.ApplyInteraction(interaction.Patch{Mode: modePtr(interaction.ModeAsk)})
+	if err != nil {
+		t.Fatalf("ApplyInteraction(ask): %v", err)
+	}
+	askRequest := r.withWorkingState(messages)
+
+	if len(messages) != 3 || messages[0].Content != beforeSystem {
+		t.Fatalf("withWorkingState mutated the input messages: %+v", messages)
+	}
+	// The system prompt and every message ahead of the tail are unchanged.
+	if len(askRequest) != len(actRequest) {
+		t.Fatalf("tail length changed: act=%d ask=%d", len(actRequest), len(askRequest))
+	}
+	for i := 0; i < len(messages); i++ {
+		if !sameMessage(actRequest[i], askRequest[i]) {
+			t.Fatalf("message %d changed on a mid-turn interaction patch:\nact: %.300q\nask: %.300q", i, actRequest[i].Content, askRequest[i].Content)
+		}
+	}
+	// The fresh authoritative tuple is the last, volatile message.
+	tail := askRequest[len(askRequest)-1]
+	if !tail.Volatile || !strings.Contains(tail.Content, "mode=Ask") {
+		t.Fatalf("tail does not carry the fresh Ask tuple: %+v", tail)
+	}
+	if !strings.Contains(tail.Content, "revision="+strconv.FormatUint(before.Revision, 10)) {
+		t.Fatalf("tail does not carry the revision %d: %q", before.Revision, tail.Content)
 	}
 }
 

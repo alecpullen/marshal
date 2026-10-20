@@ -146,6 +146,7 @@ func rolloverAndContinue(ctx context.Context, r *Runner, wire []schema.ChatMessa
 	r.contextPackMsgIndex = -1
 	r.emittedSkills = nil
 	r.State.ResetAllSkillBodyAges()
+	r.pinPromptAccess()
 	fresh := []schema.ChatMessage{r.systemPromptMessage()}
 	fresh = r.setContextPackMessage(fresh, r.State.ContextPack())
 	fresh = r.appendSkillBodies(fresh)

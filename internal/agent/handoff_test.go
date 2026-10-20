@@ -30,11 +30,19 @@ func TestSummarizeAndContinueRebuildsMessages(t *testing.T) {
 		t.Fatalf("summarizeAndContinue: %v", err)
 	}
 
-	// The summarization request must have carried the handoff directive.
+	// The summarization request must have carried the handoff directive. The
+	// live interaction tuple rides after it in the volatile tail, so search
+	// the request rather than assuming the directive is last.
 	req := p.Requests[0]
-	lastMsg := req.Messages[len(req.Messages)-1]
-	if !strings.Contains(lastMsg.Content, "ONLY context available") {
-		t.Fatalf("summary request missing handoff directive, got: %.120s", lastMsg.Content)
+	foundDirective := false
+	for _, m := range req.Messages {
+		if strings.Contains(m.Content, "ONLY context available") {
+			foundDirective = true
+			break
+		}
+	}
+	if !foundDirective {
+		t.Fatalf("summary request missing handoff directive, got: %+v", req.Messages)
 	}
 
 	var joined strings.Builder

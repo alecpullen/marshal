@@ -58,7 +58,7 @@ enabled = false
 		SkillIndex:   r.SkillIndex,
 		ActiveSkills: rt.State.ActiveSkills(),
 		NativeTools:  true,
-		Mode:         r.Policy.ApprovalMode(),
+		Access:       rt.State.InteractionState(),
 		Addendum:     r.SystemPromptAddendum,
 		WorkingDir:   rt.State.WorkingDir,
 		Roster:       agent.RenderAgentRoster(rt.State.Config),

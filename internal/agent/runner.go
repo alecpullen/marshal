@@ -460,12 +460,14 @@ type Runner struct {
 	// RunTaskFunc overrides RunTask for testing (see the named type below).
 	RunTaskFunc RunTaskFunc
 
-	forceClassMu sync.Mutex
-	approvalMu   sync.Mutex
-	tracker      *progressTracker
-	trackerMu    sync.Mutex
-	stats        *turnStats
-	statsMu      sync.Mutex
+	forceClassMu   sync.Mutex
+	promptAccessMu sync.Mutex
+	promptAccess   interaction.State
+	approvalMu     sync.Mutex
+	tracker        *progressTracker
+	trackerMu      sync.Mutex
+	stats          *turnStats
+	statsMu        sync.Mutex
 
 	// steeringOutcomeMu guards steeringOutcomes, the per-operation ledger of
 	// what the user's steering actually settled while a tool batch ran. It is
@@ -1317,6 +1319,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		})
 	}
 
+	r.pinPromptAccess()
 	messages := []schema.ChatMessage{r.systemPromptMessage()}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
 	messages = r.appendSkillBodies(messages)
@@ -1433,7 +1436,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	task.Status = TaskStatusExecuting
 	lastRenderedSkills := r.State.ActiveSkills()
 	lastRenderedLoadedTools := r.State.LoadedToolNames()
-	lastRenderedSystemAccess := r.State.SystemAccess()
 	pressureMessageSent := false
 	producedValidAction := false
 	consecutiveParseFailures := 0
@@ -1549,12 +1551,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		currentSkills := r.State.ActiveSkills()
 		currentLoadedTools := r.State.LoadedToolNames()
-		currentSystemAccess := r.State.SystemAccess()
-		if skillsChanged(lastRenderedSkills, currentSkills) || loadedToolsChanged(lastRenderedLoadedTools, currentLoadedTools) || currentSystemAccess != lastRenderedSystemAccess {
+		if skillsChanged(lastRenderedSkills, currentSkills) || loadedToolsChanged(lastRenderedLoadedTools, currentLoadedTools) {
 			messages[0] = r.systemPromptMessage()
 			lastRenderedSkills = currentSkills
 			lastRenderedLoadedTools = currentLoadedTools
-			lastRenderedSystemAccess = currentSystemAccess
 		}
 
 		r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
@@ -2090,7 +2090,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available for the %s role; proceed with your best judgment or report findings", r.role())))
 				continue
 			}
-			if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+			if r.State != nil && r.State.InteractionState().Auto {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available in auto mode; proceed with your best judgment and state the assumption you made")))
 				continue
 			}
@@ -2136,7 +2136,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask is not available for the %s role; proceed with your best judgment or report findings", r.role())))
 				continue
 			}
-			if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+			if r.State != nil && r.State.InteractionState().Auto {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask is not available in auto mode; proceed with your best judgment and state the assumption you made")))
 				continue
 			}

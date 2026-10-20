@@ -56,8 +56,8 @@ func accessToolResult(result session.AccessResult) (registry.ToolResult, error) 
 func (t *toolSet) modeRequestTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "mode.request",
-		Description: "Request editable access (Act) and/or system access. A mode hint does not choose the user's mode, and Auto can never be requested. System access is subject to mode, policy and sandbox; no sudo.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","enum":["act","edit","copilot","auto"],"description":"\"act\" requests editable access; \"edit\" and \"copilot\" are legacy spellings of the same request; \"auto\" is refused."},"system":{"type":"boolean"},"reason":{"type":"string","maxLength":400}},"anyOf":[{"required":["mode"]},{"required":["system"],"properties":{"system":{"const":true}}}],"additionalProperties":false}`),
+		Description: "Request Act and/or system access. A mode hint does not choose the user's mode; Auto cannot be requested. System access is subject to mode, policy and sandbox; no sudo.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","enum":["act","edit","copilot","auto"],"description":"\"act\" requests Act; \"edit\" and \"copilot\" are legacy aliases; \"auto\" is refused."},"system":{"type":"boolean"},"reason":{"type":"string","maxLength":400}},"anyOf":[{"required":["mode"]},{"required":["system"],"properties":{"system":{"const":true}}}],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {

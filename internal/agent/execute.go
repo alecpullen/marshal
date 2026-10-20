@@ -1350,7 +1350,7 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 	if r.role() != RoleGeneral {
 		return BuildNativeToolErrorMessage(call.Name, fmt.Sprintf("%s is not available for the %s role", call.Name, r.role()), call.ID), nil
 	}
-	if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+	if r.State != nil && r.State.InteractionState().Auto {
 		return BuildNativeToolErrorMessage(call.Name, "question.ask is not available in auto mode; proceed with your best judgment and state the assumption you made", call.ID), nil
 	}
 	// executeNativeToolCalls short-circuits on tool name before the agent

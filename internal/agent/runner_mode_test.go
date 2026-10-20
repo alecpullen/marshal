@@ -30,8 +30,11 @@ func TestAutoModeBlocksAskUser(t *testing.T) {
 	}}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
-	pol.SetApprovalMode(policy.ModeAuto)
 	state := newTestState(t)
+	auto := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("ApplyInteraction(auto): %v", err)
+	}
 	runner := NewRunner(p, reg, pol, state, "test-model")
 	runner.SetForceClass(string(ClassQuestion))
 
@@ -66,8 +69,11 @@ func TestAutoModeBlocksQuestionAsk(t *testing.T) {
 	}}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
-	pol.SetApprovalMode(policy.ModeAuto)
 	state := newTestState(t)
+	auto := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("ApplyInteraction(auto): %v", err)
+	}
 	runner := NewRunner(p, reg, pol, state, "test-model")
 	runner.SetForceClass(string(ClassQuestion))
 

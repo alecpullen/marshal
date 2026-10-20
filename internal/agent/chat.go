@@ -542,6 +542,77 @@ func isRetryableChatError(err error) bool {
 	return true
 }
 
+// errContextOverflow marks a provider rejection caused by an oversized
+// prompt, so the runner can compact and retry instead of failing the turn.
+var errContextOverflow = errors.New("agent: provider rejected the prompt as too long")
+
+// contextOverflowError carries a classified oversize-prompt rejection. It
+// unwraps to BOTH the sentinel and the original provider error. The sentinel
+// is what the runner matches on to take the recovery path; keeping the
+// *provider.ProviderError in the chain is what preserves
+// isRetryableChatError's 4xx verdict, so the retry ladder still refuses to
+// resend an oversized prompt. Dropping it would make the classified error
+// look retryable and resend the identical too-large request.
+type contextOverflowError struct {
+	detail string
+	err    error
+}
+
+func (e *contextOverflowError) Error() string { return e.detail }
+func (e *contextOverflowError) Unwrap() []error {
+	return []error{errContextOverflow, e.err}
+}
+
+// contextOverflowPatterns are the provider wordings that mean "prompt too
+// large". Matching requires both a 400/413 status and one of these, so an
+// unrelated 400 is never misread as an overflow.
+var contextOverflowPatterns = []string{
+	"context_length_exceeded",
+	"maximum context length",
+	"too many tokens",
+	"prompt is too long",
+	"input is too long",
+}
+
+// classifyContextOverflow wraps err with errContextOverflow when it is a
+// provider 400/413 whose body matches a known oversize-prompt wording.
+// Any other error is returned unchanged.
+func classifyContextOverflow(err error) error {
+	if err == nil {
+		return nil
+	}
+	var pe *provider.ProviderError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	if pe.StatusCode != 400 && pe.StatusCode != 413 {
+		return err
+	}
+	body := strings.ToLower(pe.Body)
+	for _, p := range contextOverflowPatterns {
+		if strings.Contains(body, p) {
+			return &contextOverflowError{
+				detail: fmt.Sprintf("%s: %s", errContextOverflow, overflowFirstLine(pe.Body)),
+				err:    err,
+			}
+		}
+	}
+	return err
+}
+
+// overflowFirstLine returns the first line of s, bounded, for an error
+// message.
+func overflowFirstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
+}
+
 // classifyStreamError maps a stream failure onto the bound that caused it.
 // The adapter reports a cancelled body read as a generic stream error, so
 // the cause — not the error text — is what distinguishes silence from an

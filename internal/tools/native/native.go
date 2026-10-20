@@ -114,6 +114,14 @@ type Options struct {
 	// final execution path; a nil callback fails closed.
 	CommandAdmission func(context.Context, policy.CommandAttempt) (*policy.Admission, error)
 
+	// CommandAuthorizer evaluates and approves one privileged attempt. The
+	// shell.sudo tool needs it because its own combined prompt collects the
+	// command consent, so the tool evaluates the bare payload, binds that
+	// prompt's identity to the exact proof, and admits the attempt itself. A
+	// nil authorizer keeps the legacy SudoPolicy path for app wiring that has
+	// not migrated yet.
+	CommandAuthorizer CommandAuthorizer
+
 	// SudoPolicy validates a bare command submitted to shell.sudo. Wired to
 	// (*policy.PolicyEngine).CheckPrivileged in app.go. Optional; when nil,
 	// shell.sudo refuses every command (fail closed).
@@ -139,6 +147,19 @@ type Options struct {
 
 type CommandRunner interface {
 	Run(ctx context.Context, req CommandRequest) (CommandResult, error)
+}
+
+// CommandAuthorizer is the policy seam for a tool whose own prompt collects the
+// command approval. It is the evaluator contract this package can rely on
+// without depending on how the engine is built; *policy.Authorizer satisfies it.
+type CommandAuthorizer interface {
+	// Evaluate captures a fresh authority snapshot and evaluates the call.
+	Evaluate(ctx context.Context, call policy.Call) (*policy.Authorization, policy.Evaluation, error)
+	// ApproveExact binds one settled prompt's identity to the captured proof.
+	ApproveExact(auth *policy.Authorization, requestID string) (*policy.Authorization, error)
+	// BeginCommand revalidates the proof against live facts and takes the
+	// owner's admission lease.
+	BeginCommand(ctx context.Context, attempt policy.CommandAttempt) (*policy.Admission, error)
 }
 
 type CommandRequest struct {
@@ -216,6 +237,11 @@ type toolSet struct {
 	// migrated to an authorizer yet; that fallback is temporary and disappears
 	// once every app runner wires CommandAdmission.
 	commandAdmission func(context.Context, policy.CommandAttempt) (*policy.Admission, error)
+
+	// commandAuthorizer evaluates and approves one privileged attempt, because
+	// shell.sudo's combined password prompt collects the command consent. nil
+	// keeps the legacy SudoPolicy path for app wiring that has not migrated.
+	commandAuthorizer CommandAuthorizer
 
 	// sudoPolicy validates a bare command submitted to shell.sudo. nil means
 	// shell.sudo refuses every command (fail closed).
@@ -445,6 +471,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 
 		guardrail:              opts.Guardrail,
 		commandAdmission:       opts.CommandAdmission,
+		commandAuthorizer:      opts.CommandAuthorizer,
 		sudoPolicy:             opts.SudoPolicy,
 		webEnabled:             opts.Config.Web.Enabled,
 		webFetchTimeout:        opts.Config.Web.FetchTimeout,

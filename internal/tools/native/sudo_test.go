@@ -296,10 +296,11 @@ func TestSudoToolAppliesTheCatastrophicFloor(t *testing.T) {
 	}
 }
 
-// waitForSudoPrompt blocks until the pending privileged-auth prompt appears.
-func waitForSudoPrompt(t *testing.T, state *session.State) {
+// waitForSudoPrompt blocks until the pending privileged-auth prompt appears and
+// returns it, so a test can inspect what the prompt discloses.
+func waitForSudoPrompt(t *testing.T, state *session.State) *session.PendingSudoAuth {
 	t.Helper()
-	waitForNewSudoPrompt(t, state, nil)
+	return waitForNewSudoPrompt(t, state, nil)
 }
 
 // waitForNewSudoPrompt blocks until a pending prompt other than prev appears.

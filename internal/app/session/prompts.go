@@ -288,14 +288,15 @@ func skillGateSnapshot(sg *PendingSkillGate) *PendingSkillGate {
 
 func sudoAuthSnapshot(sa *PendingSudoAuth) *PendingSudoAuth {
 	return &PendingSudoAuth{
-		Command:     sa.Command,
-		Reason:      sa.Reason,
-		StepID:      sa.StepID,
-		AllowUnlock: sa.AllowUnlock,
-		Attempt:     sa.Attempt,
-		Error:       sa.Error,
-		Key:         sa.Key,
-		canonical:   sa.canonical,
+		Command:         sa.Command,
+		Reason:          sa.Reason,
+		StepID:          sa.StepID,
+		AllowUnlock:     sa.AllowUnlock,
+		Attempt:         sa.Attempt,
+		Error:           sa.Error,
+		CommandApproval: sa.CommandApproval,
+		Key:             sa.Key,
+		canonical:       sa.canonical,
 	}
 }
 

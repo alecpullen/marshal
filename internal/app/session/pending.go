@@ -622,9 +622,14 @@ type PendingSudoAuth struct {
 	// rejected.
 	Attempt int
 	// Error is the message from the previous failed attempt ("" on the first).
-	Error        string
-	ResponseChan chan SudoAuthDecision
-	responded    sync.Once
+	Error string
+	// CommandApproval marks this prompt as also collecting the specific
+	// approval of the exact command shown. It is the combined privileged
+	// prompt: one dialog approves the command and reads the password, so the
+	// TUI presents it as a command decision instead of opening a second one.
+	CommandApproval bool
+	ResponseChan    chan SudoAuthDecision
+	responded       sync.Once
 	// Key/canonical mirror PendingQuestion; see its comment. A canceled sudo
 	// prompt delivers an empty decision: no password bytes are ever retained.
 	Key       PromptKey
@@ -665,13 +670,14 @@ func (s *State) SetPendingSudoAuth(sa *PendingSudoAuth) {
 	var snap *PendingSudoAuth
 	if sa != nil {
 		snap = &PendingSudoAuth{
-			Command:      sa.Command,
-			Reason:       sa.Reason,
-			StepID:       sa.StepID,
-			AllowUnlock:  sa.AllowUnlock,
-			Attempt:      sa.Attempt,
-			Error:        sa.Error,
-			ResponseChan: sa.ResponseChan,
+			Command:         sa.Command,
+			Reason:          sa.Reason,
+			StepID:          sa.StepID,
+			AllowUnlock:     sa.AllowUnlock,
+			Attempt:         sa.Attempt,
+			Error:           sa.Error,
+			CommandApproval: sa.CommandApproval,
+			ResponseChan:    sa.ResponseChan,
 		}
 	}
 	s.mu.Unlock()

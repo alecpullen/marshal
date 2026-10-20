@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/registry"
 )
@@ -27,6 +28,19 @@ type modeRequestFixture struct {
 }
 
 func newModeRequestFixture(t *testing.T, cfg config.Config) *modeRequestFixture {
+	t.Helper()
+	// These tests exercise the request path, which only exists while editable
+	// access is actually missing: start read-only, so an editable request is a
+	// real request instead of an already-satisfied no-op. A test asserting what
+	// an already-editable session does uses newEditableModeRequestFixture.
+	cfg.Agent.Mode = interaction.ModeAsk
+	cfg.Agent.Auto = false
+	return newModeRequestFixtureWithState(t, cfg, nil)
+}
+
+// newEditableModeRequestFixture builds a fixture from the tuple the caller
+// named, without the read-only start above.
+func newEditableModeRequestFixture(t *testing.T, cfg config.Config) *modeRequestFixture {
 	t.Helper()
 	return newModeRequestFixtureWithState(t, cfg, nil)
 }
@@ -159,6 +173,13 @@ func resolveAccess(t *testing.T, state *session.State, req session.AccessRequest
 	return result
 }
 
+// sameAccessState compares two effective-pair projections, ignoring the
+// revision: the revision is a monotonic counter that proves a change happened,
+// not part of the pair these tests assert on.
+func sameAccessState(a, b session.AccessState) bool {
+	return a.Mode == b.Mode && a.Auto == b.Auto && a.System == b.System
+}
+
 // decodeAccessResult parses the typed payload the tool returns.
 func decodeAccessResult(t *testing.T, res registry.ToolResult) session.AccessResult {
 	t.Helper()
@@ -197,7 +218,7 @@ func TestModeRequestApprovedReportsCommittedState(t *testing.T) {
 	if got.Status != session.AccessGranted {
 		t.Fatalf("reported status = %q, want %q", got.Status, session.AccessGranted)
 	}
-	if want := (session.AccessState{Mode: "copilot"}); got.Effective != want {
+	if want := (session.AccessState{Mode: "copilot"}); !sameAccessState(got.Effective, want) {
 		t.Fatalf("reported effective = %+v, want the committed %+v", got.Effective, want)
 	}
 	if !strings.Contains(out.res.Summary, "copilot") {
@@ -209,12 +230,12 @@ func TestModeRequestApprovedReportsCommittedState(t *testing.T) {
 // "default".
 func TestModeRequestDeniedReportsActualState(t *testing.T) {
 	cfg := config.Default()
-	cfg.Agent.ApprovalMode = "copilot"
-	f := newModeRequestFixture(t, cfg)
+	cfg.Agent.Mode = interaction.ModeAct
+	f := newEditableModeRequestFixture(t, cfg)
 	events := f.subscribe(t)
 
-	// System access is the only thing missing in Copilot, so that is what the
-	// request asks for.
+	// System access is the only thing missing in the editable tuple, so that is
+	// what the request asks for.
 	done := startModeRequest(f.reg, context.Background(), "call-1", `{"system":true}`)
 	req := awaitAccessRequest(t, events)
 	if req.MissingEditing || !req.MissingSystem {
@@ -234,7 +255,7 @@ func TestModeRequestDeniedReportsActualState(t *testing.T) {
 	if got.Status != session.AccessDenied {
 		t.Fatalf("reported status = %q, want %q", got.Status, session.AccessDenied)
 	}
-	if want := (session.AccessState{Mode: "copilot"}); got.Effective != want {
+	if want := (session.AccessState{Mode: "copilot"}); !sameAccessState(got.Effective, want) {
 		t.Fatalf("reported effective = %+v, want the actual %+v (denial must not claim a mode change)", got.Effective, want)
 	}
 	if got.Effective.System {
@@ -266,7 +287,7 @@ func TestModeRequestSystemReasonAndGrant(t *testing.T) {
 		t.Fatalf("mode.request error: %v", out.err)
 	}
 	got := decodeAccessResult(t, out.res)
-	if want := (session.AccessState{Mode: "edit", System: true}); got.Effective != want {
+	if want := (session.AccessState{Mode: "copilot", System: true}); !sameAccessState(got.Effective, want) {
 		t.Fatalf("reported effective = %+v, want %+v", got.Effective, want)
 	}
 	if !strings.Contains(out.res.Summary, "system access true") {
@@ -340,8 +361,19 @@ func TestModeRequestCapabilityMatrix(t *testing.T) {
 				name := fmt.Sprintf("%s/system=%t/%s", mode, systemOn, kind)
 				t.Run(name, func(t *testing.T) {
 					cfg := config.Default()
-					cfg.Agent.ApprovalMode = mode
-					f := newModeRequestFixture(t, cfg)
+					// The retired five-mode spelling maps onto the canonical
+					// tuple: plan/default are read-only, edit/copilot are
+					// editable, auto is editable plus the Auto modifier.
+					switch mode {
+					case "plan", "default":
+						cfg.Agent.Mode = interaction.ModeAsk
+					case "auto":
+						cfg.Agent.Mode = interaction.ModeAct
+						cfg.Agent.Auto = true
+					default: // edit, copilot
+						cfg.Agent.Mode = interaction.ModeAct
+					}
+					f := newEditableModeRequestFixture(t, cfg)
 					if systemOn {
 						f.state.SetSystemAccess(true)
 					}
@@ -402,14 +434,15 @@ func TestModeRequestCapabilityMatrix(t *testing.T) {
 // waits for an explicit decision.
 func TestModeRequestAutoStillWaitsForSystemDecision(t *testing.T) {
 	cfg := config.Default()
-	cfg.Agent.ApprovalMode = "auto"
-	f := newModeRequestFixture(t, cfg)
+	cfg.Agent.Mode = interaction.ModeAct
+	cfg.Agent.Auto = true
+	f := newEditableModeRequestFixture(t, cfg)
 	events := f.subscribe(t)
 
 	done := startModeRequest(f.reg, context.Background(), "call-1", `{"system":true}`)
 	req := awaitAccessRequest(t, events)
 	if !req.MissingSystem {
-		t.Fatalf("request flags = %+v, want system access missing in Auto", req)
+		t.Fatalf("request flags = %+v, want system access missing under Auto", req)
 	}
 
 	// The handler is still blocked: nothing has been granted yet.
@@ -492,7 +525,7 @@ func TestModeRequestUntypedApprovalCannotReportGrant(t *testing.T) {
 	if out.err == nil {
 		t.Fatal("an untyped approval produced a successful result")
 	}
-	if got := f.state.AccessState(); got != (session.AccessState{Mode: "default"}) {
+	if got := f.state.AccessState(); !sameAccessState(got, session.AccessState{Mode: "default"}) {
 		t.Fatalf("session pair = %+v, want it unchanged by an untyped approval", got)
 	}
 
@@ -595,10 +628,10 @@ func TestModeRequestAcceptedGrantBeatsLaterContextCancel(t *testing.T) {
 	if got.Status != session.AccessGranted {
 		t.Fatalf("reported status = %q, want the committed %q", got.Status, session.AccessGranted)
 	}
-	if want := (session.AccessState{Mode: "edit"}); got.Effective != want {
+	if want := (session.AccessState{Mode: "copilot"}); !sameAccessState(got.Effective, want) {
 		t.Fatalf("reported effective = %+v, want %+v", got.Effective, want)
 	}
-	if got := f.state.AccessState(); got != (session.AccessState{Mode: "edit"}) {
+	if got := f.state.AccessState(); !sameAccessState(got, session.AccessState{Mode: "copilot"}) {
 		t.Fatalf("session pair = %+v, want the accepted grant preserved", got)
 	}
 }
@@ -640,7 +673,7 @@ func TestModeRequestSteeringNeverReportsGrant(t *testing.T) {
 
 	// The session's authority is untouched: no mode was committed and system
 	// access is still off.
-	if got := f.state.AccessState(); got != (session.AccessState{Mode: "default"}) {
+	if got := f.state.AccessState(); !sameAccessState(got, session.AccessState{Mode: "default"}) {
 		t.Fatalf("session pair = %+v, want it unchanged by a canceled request", got)
 	}
 	if f.state.SystemAccess() {

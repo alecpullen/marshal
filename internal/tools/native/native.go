@@ -211,6 +211,12 @@ type toolSet struct {
 
 	guardrail func(command string, system bool) error
 
+	// commandAdmission admits one managed-command attempt at accepted launch.
+	// nil keeps the legacy guardrail-only path for app wiring that has not
+	// migrated to an authorizer yet; that fallback is temporary and disappears
+	// once every app runner wires CommandAdmission.
+	commandAdmission func(context.Context, policy.CommandAttempt) (*policy.Admission, error)
+
 	// sudoPolicy validates a bare command submitted to shell.sudo. nil means
 	// shell.sudo refuses every command (fail closed).
 	sudoPolicy func(command string) error
@@ -438,6 +444,7 @@ func newToolSet(opts Options) (*toolSet, error) {
 		diagnostics:     newDiagnosticsChecker(opts),
 
 		guardrail:              opts.Guardrail,
+		commandAdmission:       opts.CommandAdmission,
 		sudoPolicy:             opts.SudoPolicy,
 		webEnabled:             opts.Config.Web.Enabled,
 		webFetchTimeout:        opts.Config.Web.FetchTimeout,

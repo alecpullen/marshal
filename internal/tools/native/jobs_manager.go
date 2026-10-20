@@ -964,6 +964,13 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	if command == "" {
 		return JobInfo{}, fmt.Errorf("command is required")
 	}
+	// An admitted command must already name the directory its admission bound:
+	// the attempt the authorizer approved captured that exact cwd, so a launch
+	// that would resolve one later could run an approved command somewhere it
+	// was never approved for.
+	if spec.Admit != nil && strings.TrimSpace(spec.Dir) == "" {
+		return JobInfo{}, fmt.Errorf("an admitted command must capture its working directory before admission")
+	}
 
 	// Validate and copy the optional progress config BEFORE reserving admission:
 	// an invalid opt-in must fail the launch rather than reserve a slot for an
@@ -995,6 +1002,11 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 			return JobInfo{}, err
 		}
 		admission = a
+		// Every path that fails before insertion must release the lease it took:
+		// it holds the owner's admission gate, so leaking it would block every
+		// later admission in the conversation. Release is idempotent, so the
+		// explicit release after the insertion still runs first on success.
+		defer admission.Release()
 	}
 
 	m.mu.Lock()
@@ -1062,6 +1074,15 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 	jobDir := spec.Dir
 	dirFn := m.policy.DirFunc
 	defaultDir := m.policy.Dir
+	if spec.Admit != nil {
+		// An admitted launch captured its working directory with the attempt the
+		// admission bound, so neither a late resolver nor a committed default may
+		// choose it now: that would move an approved command. The admitted path
+		// requires a captured directory, so one of these fallbacks would only
+		// ever fire if a caller bypassed that check.
+		dirFn = nil
+		defaultDir = ""
+	}
 	// Capture the resources this admission actually depends on, before the
 	// goroutine starts: they are what keeps a replaced backend open until this
 	// command releases it.
@@ -1147,10 +1168,11 @@ func (m *JobManager) Launch(ctx context.Context, spec LaunchSpec) (JobInfo, erro
 		admission.Release()
 	}
 
-	// Resolve the working directory before the goroutine starts: a later
+	// Resolve a legacy launch's directory before the goroutine starts: a later
 	// workspace or config change must not redirect an admitted command. dirFn
 	// runs outside the manager lock so session state can never invert the lock
-	// order here.
+	// order here. An admitted launch already carries the directory it was
+	// approved for, so it never resolves one now.
 	if jobDir == "" {
 		if dirFn != nil {
 			jobDir = dirFn()

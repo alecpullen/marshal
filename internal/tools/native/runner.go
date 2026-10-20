@@ -5,12 +5,8 @@ import (
 	"context"
 	"errors"
 	"os/exec"
-	"strings"
 	"time"
 
-	"github.com/google/shlex"
-
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -26,20 +22,11 @@ func (execRunner) Run(ctx context.Context, req CommandRequest) (CommandResult, e
 		defer cancel()
 	}
 
-	// Attempt argv path for shell-free, non-destructive commands.
-	// This avoids shell-wrapping overhead and shell-injection surface.
-	argv, splitErr := shlex.Split(req.Command)
-	cls, clsErr := policy.ClassifyCommand(req.Command)
-
-	if splitErr == nil && clsErr == nil && len(argv) > 0 &&
-		cls.Risk != registry.RiskDestructive && isShellFree(req.Command) {
-		cmd := exec.Command(argv[0], argv[1:]...)
-		cmd.Dir = req.Dir
-		return runCmd(ctx, cmd, req)
-	}
-
-	// Fall through to shell path: commands with shell metacharacters,
-	// destructive commands, or commands that failed to parse.
+	// There is exactly one execution form: the shell path. A second, argv-based
+	// path classified the command string and then ran a differently-interpreted
+	// argv, so one string could be approved as one thing and execute as another.
+	// pipefail, output capture, cancellation and OnStart all live in runCmd and
+	// are unchanged.
 	cmd := shellCommand(req.Command)
 	cmd.Dir = req.Dir
 	return runCmd(ctx, cmd, req)
@@ -115,12 +102,4 @@ func runCmd(ctx context.Context, cmd *exec.Cmd, req CommandRequest) (CommandResu
 		result.ExitCode = cmd.ProcessState.ExitCode()
 	}
 	return result, waitErr
-}
-
-// isShellFree reports whether command s contains shell metacharacters.
-// Shell-free commands can be invoked as argv directly rather than wrapped
-// in /bin/sh -lc, reducing overhead and shell-injection surface area.
-func isShellFree(s string) bool {
-	shellMetas := "|&;`$<>(){}*?\n"
-	return !strings.ContainsAny(s, shellMetas)
 }

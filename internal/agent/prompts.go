@@ -477,12 +477,12 @@ const (
 	// no tool covers.
 	ruleGitAndWorkspace = "- Use the git.* tools for repository state and the workspace tools for worktree isolation and merging. When no tool covers a git operation you need, run git with shell.run and say so; do not hunt for workarounds."
 	// ruleContextBudget counters self-finalisation on a false belief that
-	// context is exhausted. The runner compacts automatically and reports
-	// the live budget on every request, so the model has no basis for that
-	// inference — and ending a turn on it abandons work. Scoped to context
-	// only: the tool-iteration pressure message is a real signal and must
-	// still be obeyed.
-	ruleContextBudget = "- The runner compacts automatically as the context budget fills and reports the live budget on every request. Never end a turn because you believe your context is nearly exhausted. If you are genuinely blocked, say what is blocked, not that context is short.\n"
+	// context is exhausted. The runner compacts automatically, so the model
+	// has no basis for that inference — and ending a turn on it abandons
+	// work. Kept terse: TestDefaultPromptBudget caps the system prompt at
+	// 9000 bytes. Scoped to context only: the tool-iteration pressure
+	// message is a real signal and must still be obeyed.
+	ruleContextBudget = "- The runner compacts automatically. Never end a turn because you believe your context is nearly exhausted.\n"
 )
 
 const baseRules = "Rules:\n" +

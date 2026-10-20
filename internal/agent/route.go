@@ -224,10 +224,10 @@ type ModelProbe struct {
 // needs to report a clamp. Probe*/Table* are 0 when that source had
 // nothing to say.
 type ModelLimits struct {
-	Window, MaxOutput          int    // in use
-	PresetWindow, PresetOutput int    // as declared in config
-	ProbeWindow, ProbeOutput   int    // provider-reported, 0 = unknown
-	TableWindow, TableOutput   int    // third-party limits table, 0 = unknown
+	Window, MaxOutput          int // in use
+	PresetWindow, PresetOutput int // as declared in config
+	ProbeWindow, ProbeOutput   int // provider-reported, 0 = unknown
+	TableWindow, TableOutput   int // third-party limits table, 0 = unknown
 	Clamped                    bool
 	ClampSource                string // "", "probe", "table", "table-variant"
 }

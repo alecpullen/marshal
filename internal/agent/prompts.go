@@ -476,6 +476,13 @@ const (
 	// one, models spent many steps inventing workarounds for git operations
 	// no tool covers.
 	ruleGitAndWorkspace = "- Use the git.* tools for repository state and the workspace tools for worktree isolation and merging. When no tool covers a git operation you need, run git with shell.run and say so; do not hunt for workarounds."
+	// ruleContextBudget counters self-finalisation on a false belief that
+	// context is exhausted. The runner compacts automatically and reports
+	// the live budget on every request, so the model has no basis for that
+	// inference — and ending a turn on it abandons work. Scoped to context
+	// only: the tool-iteration pressure message is a real signal and must
+	// still be obeyed.
+	ruleContextBudget = "- The runner compacts automatically as the context budget fills and reports the live budget on every request. Never end a turn because you believe your context is nearly exhausted. If you are genuinely blocked, say what is blocked, not that context is short.\n"
 )
 
 const baseRules = "Rules:\n" +
@@ -491,7 +498,8 @@ const baseRules = "Rules:\n" +
 	ruleFinalAnswer +
 	ruleStopAfterValidation +
 	rulePreferPurposeBuilt +
-	ruleGitAndWorkspace
+	ruleGitAndWorkspace + "\n" +
+	ruleContextBudget
 
 // baseRulesSystem is the system-access composition: identical to baseRules
 // except the file-tools rule is swapped for its system variant.
@@ -508,7 +516,8 @@ const baseRulesSystem = "Rules:\n" +
 	ruleFinalAnswer +
 	ruleStopAfterValidation +
 	rulePreferPurposeBuilt +
-	ruleGitAndWorkspace
+	ruleGitAndWorkspace + "\n" +
+	ruleContextBudget
 
 // baseRulesFor selects the rule block for the session's access mode.
 func baseRulesFor(systemAccess bool) string {

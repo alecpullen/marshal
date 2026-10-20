@@ -985,6 +985,31 @@ func TestBaseRulesCarryNoRepoSpecificWorkflow(t *testing.T) {
 	}
 }
 
+// TestBaseRulesForbidsContextExhaustionFinalize pins the rule that stops the
+// model ending a turn on a false belief that its context is exhausted. Both
+// compositions, because the system-access variant drifts independently.
+func TestBaseRulesForbidsContextExhaustionFinalize(t *testing.T) {
+	for _, rules := range []string{baseRules, baseRulesSystem} {
+		if !strings.Contains(rules, "Never end a turn because you believe your context is nearly exhausted") {
+			t.Errorf("rules missing the context-exhaustion rule:\n%s", rules)
+		}
+	}
+}
+
+// TestContextRuleIsScopedToContext is the collision guard against
+// finalizePressureMessage: the tool-iteration pressure message is a real
+// signal, so the new rule must not teach the model to ignore it.
+func TestContextRuleIsScopedToContext(t *testing.T) {
+	if !strings.Contains(ruleContextBudget, "context") {
+		t.Fatalf("ruleContextBudget must mention context:\n%s", ruleContextBudget)
+	}
+	for _, banned := range []string{"tool", "iteration"} {
+		if strings.Contains(ruleContextBudget, banned) {
+			t.Errorf("ruleContextBudget must not mention %q — it would collide with the tool-iteration pressure message:\n%s", banned, ruleContextBudget)
+		}
+	}
+}
+
 // The existing ask_user example ("archive or delete") is a narrow binary
 // fork. Live testing (Kimi's kimi-for-coding, "improve the retry behavior
 // in the provider layer") showed a model treating a broad, open-ended

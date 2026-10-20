@@ -337,10 +337,37 @@ func TestResolveModelLimitsProbeBeatsTable(t *testing.T) {
 	}
 }
 
-// TestResolveModelLimitsVariantMatchIsSilent pins the label that suppresses
-// the user-facing banner: a MatchVariant hit is an inference across
-// differently-named entries, not a provider statement.
-func TestResolveModelLimitsVariantMatchIsSilent(t *testing.T) {
+// TestResolveModelLimitsTableDoesNotOverrideExplicitPreset is the reported
+// regression: a user who sets a preset to 1M must keep 1M even when the
+// third-party limits table names the same model at 64k. The table is not the
+// provider, and a wrong 64k figure in the UI also drives compaction at ~47k.
+func TestResolveModelLimitsTableDoesNotOverrideExplicitPreset(t *testing.T) {
+	tbl := limits.NewTable(map[string]limits.Limit{
+		"ollama-cloud/glm-5.3": {ContextWindow: 65536, MaxOutputTokens: 8192},
+	})
+	lim := ResolveModelLimits(routing.ModelPreset{
+		Provider:        "ollama-cloud",
+		Model:           "glm-5.3",
+		ContextWindow:   1048576,
+		MaxOutputTokens: 131062,
+	}, &tbl, ModelProbe{}, nil)
+
+	if lim.Window != 1048576 {
+		t.Fatalf("Window = %d, want the preset's 1048576; the third-party table must not clamp", lim.Window)
+	}
+	if lim.MaxOutput != 131062 {
+		t.Fatalf("MaxOutput = %d, want the preset's 131062", lim.MaxOutput)
+	}
+	if lim.Clamped {
+		t.Fatalf("Clamped = true (source %q), want false: the table never overrides an explicit preset", lim.ClampSource)
+	}
+}
+
+// TestResolveModelLimitsVariantMatchDoesNotOverridePreset keeps the
+// cross-provider inference from overruling config: a MatchVariant hit is a
+// guess at which differently-named entry applies, so it may fill a zero but
+// never lower an explicit value.
+func TestResolveModelLimitsVariantMatchDoesNotOverridePreset(t *testing.T) {
 	tbl := limits.NewTable(map[string]limits.Limit{
 		"anthropic/claude-sonnet-4.5": {ContextWindow: 200000},
 	})
@@ -350,11 +377,11 @@ func TestResolveModelLimitsVariantMatchIsSilent(t *testing.T) {
 		ContextWindow: 400000,
 	}, &tbl, ModelProbe{}, nil)
 
-	if lim.Window != 200000 {
-		t.Fatalf("Window = %d, want 200000 via the variant match", lim.Window)
+	if lim.Window != 400000 {
+		t.Fatalf("Window = %d, want the preset's 400000", lim.Window)
 	}
-	if lim.ClampSource != "table-variant" {
-		t.Fatalf("ClampSource = %q, want table-variant", lim.ClampSource)
+	if lim.Clamped {
+		t.Fatal("Clamped = true, want false for a variant inference")
 	}
 }
 

@@ -30,7 +30,7 @@ This is a **bounded** change: three surgical patches, each in the file that alre
 **The two limits stores are not the same store.** This is the correction that shapes Patch 1:
 
 - `limits.Table` is **third-party**. `loadLimitsTable` → `limits.LoadTable` → `Refresh` → `Fetch(ctx, "openrouter")` + `Fetch(ctx, "litellm")`. It never asks the configured provider anything, and its merge rule prefers the **larger** window between sources.
-- `modelcache` is **provider-reported**. `internal/llm/provider/modelcache/modelcache.go` writes `discovered.json` from the provider's own `/models` probe, keyed by provider config hash with a 24h TTL.
+- `modelcache` **mirrors whatever `/models` returned**, and most `/models` endpoints report no limits. For `openai_compatible` (`internal/llm/provider/openai_compatible.go:161`) and `ollama_native` (`ollama_native.go:609`) the `ContextWindow`/`MaxOutputTokens` fields in `discovered.json` are filled from `limits.Table`, so they are third-party data wearing a provider-shaped cache. Only Anthropic (`max_input_tokens`/`max_tokens`) and the Codex catalog report limits themselves. The cache is keyed by provider config hash with a 24h TTL.
 - `ResolveModelLimits(preset, table, logger)` (`internal/agent/route.go:206`) can only see the table. Clamping against it alone would not have fixed the reported case, because OpenRouter/LiteLLM likely either lack a `:1017`-suffixed entry or report the same 1M.
 
 **A rollover did fire once, cleanly.** `session_generations` for the session has two rows: seq 0 ended with `digest_source='rollover'`, seq 1 with `end_reason='error'`. The compaction path is not broken; it simply did not trip on the offending turn, and the model finalised before it could.
@@ -80,19 +80,17 @@ Resolution order is unchanged — preset, then table fills zeros, then `catalog.
 for each of {window, maxOutput}:
     if probe.OK and probeValue > 0 and resolved > probeValue:
         resolved = probeValue; Clamped = true; ClampSource = "probe"
-    else if table hit and tableValue > 0 and resolved > tableValue:
-        resolved = tableValue; Clamped = true; ClampSource = "table" or "table-variant"
 ```
 
 Three properties are load-bearing:
 
 - **`min` semantics.** A preset of 65536 against a provider reporting 1048576 keeps 65536. The clamp never expands a deliberately conservative config.
-- **`catalog.Lookup` is structurally exempt.** It fills only zeros, and the clamp compares only against a probe hit or table-hit value. An unlisted model is never clamped to the catalog's conservative 8192/4096 guess — the failure mode that would cripple every unknown model.
-- **Priority is probe → table → catalog.** `MatchExact` banners; `MatchVariant` (`limits/lookup.go:18`, an inference across differently-named entries) clamps but logs at debug and stays silent; `MatchNone` means nothing is known and nothing clamps.
+- **`catalog.Lookup` is structurally exempt.** It fills only zeros, and the clamp compares only against a provider-reported probe value. An unlisted model is never clamped to the catalog's conservative 8192/4096 guess — the failure mode that would cripple every unknown model.
+- **Only provider-reported limits clamp.** `limits.Table` is third-party (OpenRouter/LiteLLM) and may name a smaller, differently-provided variant of the same model. It fills zeros but never lowers an explicit preset. A cache entry carries `ProviderReported` provenance, and the app's probe refuses table-derived entries. When the provider reports nothing, an oversize prompt is caught by Patch 2's overflow recovery instead.
 
 Threading: `Runner` gains `ModelProbe func(provider, model string) ModelProbe`, injected at `internal/app/app.go:1182` beside `loadLimitsTable` where `dataDir` and `cfg.Providers` already live. This mirrors the existing `cachedThinkingOptions` shape and keeps `internal/agent` free of a `dataDir` dependency. `Clone` (`runner.go:701`) copies it alongside `LimitsTable`.
 
-**Propagation is free.** `resolveRoute` assigns the resolved pair to `route.Window` / `route.MaxOutput`, so `effectiveTurnThreshold`, `historyBudget`, `contextpack.BudgetForWindow`, and `State.SetTurnBudget` all inherit the clamped numbers with no further edits. For the reported case the threshold becomes `int(0.85 * 65536) - min(8192, 8192) = 47513`, and the UI denominator becomes 64k.
+**Propagation is free.** `resolveRoute` assigns the resolved pair to `route.Window` / `route.MaxOutput`, so `effectiveTurnThreshold`, `historyBudget`, `contextpack.BudgetForWindow`, and `State.SetTurnBudget` all inherit the clamped numbers with no further edits. Where the provider genuinely reports a smaller window (Anthropic/Codex), the threshold becomes `int(0.85 * 65536) - min(8192, 8192) = 47513` and the UI denominator becomes 64k. Where it reports nothing (the reported `ollama-cloud` case), the preset's 1M stands and the UI shows 1M.
 
 **Reporting.** `resolveRoute` sets `session.Notice{Category: NoticeProvider, Severity: SeverityWarn, Source: "route"}` naming both figures and the value in use. `resolveRoute` runs every turn and `SetNotice` replaces unconditionally (`internal/app/session/notice.go:53`), so a `clampNoticed bool` on the runner is required — otherwise the banner is re-stamped each turn and never dismissable.
 
@@ -298,6 +296,17 @@ CGO_ENABLED=1 go build ./cmd/marshal
 - TUI work beyond the clamp's natural effect on the displayed window.
 - Changes to the compaction algorithm itself.
 - Overflow recovery inside pipeline subagents or the rollover digest call.
+
+## Revision after manual testing (2026-10-20)
+
+The first implementation treated every `discovered.json` limit as provider-reported. It is not: `openai_compatible` and `ollama_native` fill `ModelInfo.ContextWindow` from `limits.Table`, and the table separately clamped the preset too. A manual test with an explicit 1M preset therefore still displayed 64k and compacted at ~47k — the exact failure this feature set out to remove, inverted.
+
+Two corrections are now part of the design, and supersede the `table`/`table-variant` clamp branches and `ClampSource` values in Patch 1:
+
+1. `schema.ModelInfo` carries `ProviderReported`. Anthropic and the Codex catalog set it; table-enriched `openai_compatible`/`ollama_native` entries do not, and `modelProbeFunc` refuses them.
+2. `ResolveModelLimits` clamps only against a provider-reported probe. `limits.Table` fills zeros and never overrides an explicit preset.
+
+`agent.max_turn_context_tokens` remains available to cap the threshold separately. When a provider reports no limits, a genuinely oversize request is handled by Patch 2's prune → compact → retry path, which produces an actionable failure rather than silently shrinking the window.
 
 ## Open questions
 

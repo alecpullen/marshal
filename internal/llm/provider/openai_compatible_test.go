@@ -1285,6 +1285,9 @@ func TestModelsEnrichesLimitsFromTable(t *testing.T) {
 	if models[0].MaxOutputTokens != 384000 {
 		t.Errorf("MaxOutputTokens = %d, want 384000", models[0].MaxOutputTokens)
 	}
+	if models[0].ProviderReported {
+		t.Error("table-enriched limits must not be marked provider-reported; they may not clamp a preset")
+	}
 }
 
 func TestModelsPropagatesToolCallingFromLimitsTable(t *testing.T) {

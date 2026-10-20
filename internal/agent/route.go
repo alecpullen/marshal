@@ -172,19 +172,15 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 	route.MaxOutput = maxOut
 	r.State.SetTurnContextWindow(window)
 
-	if lim.Clamped && lim.ClampSource != "table-variant" && !r.clampNoticed {
+	if lim.Clamped && lim.ClampSource == "probe" && !r.clampNoticed {
 		r.clampNoticed = true
-		reported := lim.ProbeWindow
-		if lim.ClampSource != "probe" {
-			reported = lim.TableWindow
-		}
 		r.State.SetNotice(session.Notice{
 			Category: session.NoticeProvider,
 			Severity: session.SeverityWarn,
 			Message: fmt.Sprintf(
-				"Preset %s declares a %d-token context window, but the %s reports %d. Using %d.",
-				route.Preset.Name, lim.PresetWindow, clampSourceLabel(lim.ClampSource), reported, lim.Window),
-			Hint:   "Set context_window on the preset to match, or raise agent.max_turn_context_tokens to override.",
+				"Preset %s declares a %d-token context window, but the provider reports %d. Using %d.",
+				route.Preset.Name, lim.PresetWindow, lim.ProbeWindow, lim.Window),
+			Hint:   "Set context_window on the preset to match, or raise agent.max_turn_context_tokens to cap the threshold separately.",
 			Source: "route",
 		})
 	}
@@ -229,7 +225,7 @@ type ModelLimits struct {
 	ProbeWindow, ProbeOutput   int // provider-reported, 0 = unknown
 	TableWindow, TableOutput   int // third-party limits table, 0 = unknown
 	Clamped                    bool
-	ClampSource                string // "", "probe", "table", "table-variant"
+	ClampSource                string // "", "probe"
 }
 
 // ResolveModelLimits resolves a preset's context window and max output tokens.
@@ -288,15 +284,16 @@ func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table, probe M
 		lim.ProbeOutput = probe.MaxOutput
 	}
 
-	// Post-pass clamp. The probe outranks the table per field; the table is
-	// consulted only for a field the probe did not report.
+	// Post-pass clamp. Only a provider-reported probe may override an
+	// explicit preset. limits.Table is third-party (OpenRouter/LiteLLM) and
+	// can name a smaller, differently-provided variant of the same model, so
+	// it fills zeros above and never clamps: a preset the user set to 1M must
+	// not silently collapse to whichever entry the table matched. When the
+	// provider does not report limits at all, an oversize prompt is caught by
+	// the runner's context-overflow recovery instead.
 	if probe.OK && probe.Window > 0 {
 		if clampField(&lim.Window, probe.Window) {
 			lim.Clamped, lim.ClampSource = true, "probe"
-		}
-	} else if tableKind != limits.MatchNone {
-		if clampField(&lim.Window, tableLim.ContextWindow) {
-			lim.Clamped, lim.ClampSource = true, tableClampSource(tableKind)
 		}
 	}
 	if probe.OK && probe.MaxOutput > 0 {
@@ -304,13 +301,6 @@ func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table, probe M
 			lim.Clamped = true
 			if lim.ClampSource == "" {
 				lim.ClampSource = "probe"
-			}
-		}
-	} else if tableKind != limits.MatchNone {
-		if clampField(&lim.MaxOutput, tableLim.MaxOutputTokens) {
-			lim.Clamped = true
-			if lim.ClampSource == "" {
-				lim.ClampSource = tableClampSource(tableKind)
 			}
 		}
 	}
@@ -325,24 +315,6 @@ func clampField(cur *int, limit int) bool {
 		return true
 	}
 	return false
-}
-
-// tableClampSource labels a table-sourced clamp. MatchVariant is an
-// inference across differently-named entries, so it is reported separately
-// and never banners.
-func tableClampSource(kind limits.MatchKind) string {
-	if kind == limits.MatchVariant {
-		return "table-variant"
-	}
-	return "table"
-}
-
-// clampSourceLabel names the source of a clamp for the user-facing notice.
-func clampSourceLabel(source string) string {
-	if source == "probe" {
-		return "provider"
-	}
-	return "limits table"
 }
 
 func (r *Runner) resolveModelLimits(preset routing.ModelPreset) *ModelLimits {

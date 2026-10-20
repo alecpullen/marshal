@@ -1517,6 +1517,13 @@ func loadLimitsTable(ctx context.Context, cfg config.Config, dataDir string) *li
 // serves. It reads the same discovered.json that /models populates; a
 // missing, stale, or hash-invalidated entry reports OK=false and nothing
 // clamps. Nil when dataDir is empty.
+//
+// Only entries whose limits the provider itself reported are usable. Most
+// /models endpoints return no limits, and their ModelInfo.ContextWindow is
+// filled from limits.Table (OpenRouter/LiteLLM) instead — a cross-provider
+// inference that must never override an explicit preset, or a user who sets
+// a 1M window would silently drop to whichever entry the table happened to
+// match.
 func modelProbeFunc(cfg config.Config, dataDir string) func(provider, model string) agent.ModelProbe {
 	if dataDir == "" {
 		return nil
@@ -1534,7 +1541,7 @@ func modelProbeFunc(cfg config.Config, dataDir string) func(provider, model stri
 			if m.ID != modelID {
 				continue
 			}
-			if m.ContextWindow == 0 && m.MaxOutputTokens == 0 {
+			if !m.ProviderReported || (m.ContextWindow == 0 && m.MaxOutputTokens == 0) {
 				return agent.ModelProbe{}
 			}
 			return agent.ModelProbe{Window: m.ContextWindow, MaxOutput: m.MaxOutputTokens, OK: true}

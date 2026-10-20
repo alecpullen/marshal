@@ -318,6 +318,17 @@ The branch review's non-blocking findings are folded in:
 - **Probe cache reads are memoized.** `modelProbeFunc` reuses the parsed `discovered.json` until its mtime or size moves, instead of re-reading and unmarshalling every turn.
 - **Salvage survives a later overflow.** The retry ladder keeps the largest partial response across attempts; if a later attempt is rejected as too long, the runner continues with that partial instead of discarding it and compacting. Prune notices now share sentence casing.
 
+### Review follow-ups after the table removal (2026-10-20)
+
+The review of the table removal raised these, now folded in:
+
+- **Tool-calling propagation restored.** Deleting the table also deleted the only source of `ModelInfo.ToolCalling` for `openai_compatible` endpoints, so new presets saved `tool_calling = ""` and the runner silently fell back to JSON-envelope decoding. `Models()` now carries the provider-level capability (and, for Ollama-native, the cached `/api/show` verdict) into `ModelInfo`, so a preset again records `native` or `none` deliberately.
+- **An output-cap rejection is explained.** A model that accepts less than the seeded 128K output cap returns a 400 that matches no overflow pattern. `classifyOutputTokenLimit` recognises the common `max_tokens`/`max_completion_tokens` wordings and appends a hint naming `max_output_tokens`, while keeping the provider error in the chain so the ladder still refuses to resend it. Context-overflow rejections keep their own classification.
+- **Seeding is uniform.** A preset created by `switchModelPreset` is seeded with the same documented pair `presetflow.Materialize` persists, so both creation paths produce identical explicit figures.
+- **The banner does not blame the user for Marshal's seed.** When a clamped value equals the documented locality default, the notice says "uses Marshal's default …" instead of "declares".
+- **Both previously silent config cases now warn.** `privacy.remote_limit_discovery` is reported once per load (then dropped on save, like the dead `tui.side_panel` keys), and a preset targeting a localhost `base_url` without `local_only` or an explicit `context_window` is flagged, because it resolves the remote 1M pair on an endpoint that may serve 8K.
+- Test and comment hygiene: the misnamed `TestMaterializeStoresOnlyOverrides` became `TestMaterializeRecordsIdentityAndLocality`, the dead `SourceUnknown` fallbacks in `presetflow.Resolve` are gone, and the stray blank lines plus the dropped `TestRoutedProviderResolverThreadsSessionID` comment were repaired.
+
 ## Revision: third-party limits table removed
 
 The OpenRouter/LiteLLM limits table and the curated local catalog were removed outright. They caused more grief than benefit: the table's cross-provider inferences repeatedly overrode explicit user intent, and modern model datasheets have converged enough that a documented default is more accurate than a stale match.

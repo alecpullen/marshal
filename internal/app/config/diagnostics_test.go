@@ -440,3 +440,99 @@ func TestDiagnoseQuietForDefaultsAndHiddenOnly(t *testing.T) {
 		t.Fatalf("hidden not honoured: %+v", l.Merged.TUI.SidePanel)
 	}
 }
+
+func hasDiagPath(ds []Diagnostic, want string) bool {
+	for _, d := range ds {
+		if d.Path == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDiagnoseWarnsForRemovedRemoteLimitDiscovery keeps an explicit opt-out
+// from vanishing without a word when its feature is deleted. The key is still
+// parsed, never applied, and dropped on the next save.
+func TestDiagnoseWarnsForRemovedRemoteLimitDiscovery(t *testing.T) {
+	home, work, userPath, _ := hoistPaths(t)
+	writeFile(t, userPath, "[privacy]\nremote_limit_discovery = false\n")
+
+	l, err := LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	ds := Diagnose(l.Merged, l)
+	if !hasDiagPath(ds, "privacy.remote_limit_discovery") {
+		t.Fatalf("no diagnostic for the removed key: %+v", diagPaths(ds))
+	}
+	for _, d := range ds {
+		if d.Path != "privacy.remote_limit_discovery" {
+			continue
+		}
+		if d.Severity != SeverityWarning {
+			t.Errorf("severity = %v, want warning", d.Severity)
+		}
+		if !strings.Contains(d.Message, "ignored") {
+			t.Errorf("message = %q, want it to say the key is ignored", d.Message)
+		}
+		if !strings.Contains(d.Source, "user config") {
+			t.Errorf("source = %q, want the user layer named", d.Source)
+		}
+	}
+
+	// Absent key stays silent.
+	writeFile(t, userPath, "[privacy]\nredact_secrets = true\n")
+	l, err = LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if got := Diagnose(l.Merged, l); hasDiagPath(got, "privacy.remote_limit_discovery") {
+		t.Fatalf("diagnostic emitted without the key: %+v", diagPaths(got))
+	}
+}
+
+// TestDiagnoseWarnsLocalPresetResolvingRemoteDefaults covers the locality gap:
+// limits default off preset.LocalOnly, which config loading never derives from
+// base_url, so a hand-written local preset silently gets the remote 1M pair.
+func TestDiagnoseWarnsLocalPresetResolvingRemoteDefaults(t *testing.T) {
+	const path = "models.presets.llama/qwen.local_only"
+	base := func() Config {
+		cfg := Default()
+		cfg.Providers = map[string]ProviderConfig{
+			"llama": {Type: "openai_compatible", BaseURL: "http://127.0.0.1:8080/v1"},
+		}
+		cfg.Models.Presets = map[string]routing.ModelPreset{
+			"llama/qwen": {Name: "llama/qwen", Provider: "llama", Model: "qwen"},
+		}
+		return cfg
+	}
+
+	if got := Diagnose(base(), Layers{}); !hasDiagPath(got, path) {
+		t.Fatalf("no locality diagnostic: %+v", diagPaths(got))
+	}
+
+	// An explicit window is the user's own decision, so silent.
+	withWindow := base()
+	p := withWindow.Models.Presets["llama/qwen"]
+	p.ContextWindow = 8192
+	withWindow.Models.Presets["llama/qwen"] = p
+	if got := Diagnose(withWindow, Layers{}); hasDiagPath(got, path) {
+		t.Fatalf("diagnostic despite an explicit window: %+v", diagPaths(got))
+	}
+
+	// Declared local_only is silent too.
+	local := base()
+	p = local.Models.Presets["llama/qwen"]
+	p.LocalOnly = true
+	local.Models.Presets["llama/qwen"] = p
+	if got := Diagnose(local, Layers{}); hasDiagPath(got, path) {
+		t.Fatalf("diagnostic despite local_only: %+v", diagPaths(got))
+	}
+
+	// A remote endpoint is the normal case.
+	remote := base()
+	remote.Providers["llama"] = ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.example.com/v1"}
+	if got := Diagnose(remote, Layers{}); hasDiagPath(got, path) {
+		t.Fatalf("diagnostic for a remote endpoint: %+v", diagPaths(got))
+	}
+}

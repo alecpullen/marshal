@@ -200,7 +200,6 @@ func TestNewFromConfigOllamaNative(t *testing.T) {
 		Type:    "ollama",
 		BaseURL: "http://localhost:11434",
 	}, "", 0)
-
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -219,7 +218,6 @@ func TestNewFromConfigOllamaNativeExplicitKeepAlive(t *testing.T) {
 		BaseURL:   "http://localhost:11434",
 		KeepAlive: "-1",
 	}, "", 0)
-
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -238,7 +236,6 @@ func TestNewFromConfigOllamaNativeDisclaimsStructuredOutput(t *testing.T) {
 		Type:    "ollama",
 		BaseURL: "https://ollama.com",
 	}, "", 0)
-
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -258,7 +255,6 @@ func TestNewFromConfigOllamaNativeOptInStructuredOutput(t *testing.T) {
 		ToolCalling:      true,
 		StructuredOutput: true,
 	}, "", 0)
-
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -276,7 +272,6 @@ func TestNewFromConfigAnthropic(t *testing.T) {
 		APIKeyEnv:      "MARSHAL_TEST_FACTORY_ANTHROPIC_KEY",
 		ThinkingBudget: 4096,
 	}, "", 8192)
-
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}
@@ -300,7 +295,6 @@ func TestNewFromConfigAnthropicRequiresKey(t *testing.T) {
 		Type:    "anthropic",
 		BaseURL: "https://api.anthropic.com",
 	}, "", 0)
-
 	if err == nil {
 		t.Fatal("expected error for missing API key, got nil")
 	}
@@ -312,7 +306,6 @@ func TestNewFromConfigAnthropicReportsReasoning(t *testing.T) {
 		BaseURL: "https://api.anthropic.com",
 		APIKey:  "test-key",
 	}, "", 0)
-
 	if err != nil {
 		t.Fatalf("NewFromConfig: %v", err)
 	}

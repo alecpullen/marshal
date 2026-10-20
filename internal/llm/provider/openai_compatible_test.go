@@ -474,6 +474,54 @@ func TestModelsParsesResponse(t *testing.T) {
 	}
 }
 
+// TestModelsReportsProviderToolCalling pins that /models carries the
+// provider-level tool-calling capability through to ModelInfo. The deleted
+// limits table used to populate this per model; without a replacement a
+// preset was saved with tool_calling = "" and the runner fell back to
+// JSON-envelope decoding instead of native tools.
+func TestModelsReportsProviderToolCalling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o","owned_by":"openai"}]}`))
+	}))
+	defer server.Close()
+
+	caps := DefaultCapabilities()
+	caps.ToolCalling = true
+	p, err := NewOpenAICompatible(Options{Name: "test", BaseURL: server.URL, Capabilities: &caps})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible: %v", err)
+	}
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 1 || models[0].ToolCalling == nil || !*models[0].ToolCalling {
+		t.Fatalf("models = %+v, want ToolCalling true", models)
+	}
+}
+
+// TestModelsOmitsToolCallingWhenProviderDisclaimsIt is the other half: a
+// provider that did not opt into native tools must not claim per-model
+// support, or a new preset would save tool_calling = "native" for a model
+// that cannot call tools.
+func TestModelsOmitsToolCallingWhenProviderDisclaimsIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"plain-model"}]}`))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 1 || models[0].ToolCalling != nil {
+		t.Fatalf("models = %+v, want ToolCalling nil", models)
+	}
+}
+
 func TestModelsNonOKReturnsProviderError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

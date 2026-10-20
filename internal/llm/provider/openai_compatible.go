@@ -176,6 +176,17 @@ func (p *OpenAICompatible) Models(ctx context.Context) ([]schema.ModelInfo, erro
 	for _, m := range parsed.Data {
 		models = append(models, schema.ModelInfo{ID: m.ID, OwnedBy: m.OwnedBy, Thinking: m.Thinking})
 	}
+	if p.capabilities.ToolCalling {
+		// /models reports no per-model tool support. The provider-level
+		// capability is the only source available, and passing it through
+		// keeps a new preset from saving tool_calling = "" (which the
+		// runner reads as "fall back to provider caps" and then decodes
+		// with the JSON envelope instead of native tools).
+		yes := true
+		for i := range models {
+			models[i].ToolCalling = &yes
+		}
+	}
 	if isOllamaEndpoint(p.baseURL) {
 		enrichThinkingOptions(ctx, models, p.ollamaThinkingOptions)
 	}

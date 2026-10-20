@@ -236,19 +236,32 @@ func clampNoticeFor(preset routing.ModelPreset, lim *ModelLimits) (key, message 
 	key = fmt.Sprintf("%s|%s|%s|%d|%d|%d|%d",
 		preset.Name, preset.Provider, preset.Model,
 		lim.PresetWindow, lim.PresetOutput, lim.Window, lim.MaxOutput)
+	// A value equal to the documented locality default came from Marshal's
+	// seeding (Materialize, switchModelPreset, or a config migration), not
+	// from a user decision. Saying "declares" would blame the user for a
+	// number this program wrote.
+	defCtx, defOut := routing.DefaultModelLimits(preset.LocalOnly)
+	windowPhrase := fmt.Sprintf("declares a %d-token context window", lim.PresetWindow)
+	if lim.PresetWindow == defCtx {
+		windowPhrase = fmt.Sprintf("uses Marshal's default %d-token context window", lim.PresetWindow)
+	}
+	outputPhrase := fmt.Sprintf("declares %d output tokens", lim.PresetOutput)
+	if lim.PresetOutput == defOut {
+		outputPhrase = fmt.Sprintf("uses Marshal's default %d output tokens", lim.PresetOutput)
+	}
 	switch {
 	case windowClamped && outputClamped:
 		message = fmt.Sprintf(
-			"Preset %s declares a %d-token context window and %d output tokens, but the provider reports %d and %d. Using %d and %d.",
-			preset.Name, lim.PresetWindow, lim.PresetOutput, lim.ProbeWindow, lim.ProbeOutput, lim.Window, lim.MaxOutput)
+			"Preset %s %s and %s, but the provider reports %d and %d. Using %d and %d.",
+			preset.Name, windowPhrase, outputPhrase, lim.ProbeWindow, lim.ProbeOutput, lim.Window, lim.MaxOutput)
 	case windowClamped:
 		message = fmt.Sprintf(
-			"Preset %s declares a %d-token context window, but the provider reports %d. Using %d.",
-			preset.Name, lim.PresetWindow, lim.ProbeWindow, lim.Window)
+			"Preset %s %s, but the provider reports %d. Using %d.",
+			preset.Name, windowPhrase, lim.ProbeWindow, lim.Window)
 	default:
 		message = fmt.Sprintf(
-			"Preset %s declares %d output tokens, but the provider reports %d. Using %d.",
-			preset.Name, lim.PresetOutput, lim.ProbeOutput, lim.MaxOutput)
+			"Preset %s %s, but the provider reports %d. Using %d.",
+			preset.Name, outputPhrase, lim.ProbeOutput, lim.MaxOutput)
 	}
 	return key, message, true
 }

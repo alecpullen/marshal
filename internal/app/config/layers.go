@@ -59,6 +59,12 @@ type Layers struct {
 	// do nothing; presence is read from the raw file mirrors because a
 	// value equal to its default is indistinguishable in the merged config.
 	SidePanelIgnoredBy []LayerID
+	// RemoteLimitDiscoverySetBy lists the file layers that still set the
+	// removed privacy.remote_limit_discovery key. Presence is read from the
+	// raw file mirrors because the merged config no longer has the field;
+	// the key is dropped on the next save, so a silent disappearance would
+	// leave an explicit opt-out unaccounted for.
+	RemoteLimitDiscoverySetBy []LayerID
 }
 
 // LoadLayers loads config and exposes the cumulative snapshots used for
@@ -187,12 +193,13 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 		ProjectSnapshotGlobalIgnored: projectSnapshotGlobalIgnored,
 		BudgetFixes:                  budgetFixes,
 		Default:                      def, User: user, Merged: cfg, Migrated: migrated,
-		SubtaskIterationsSet: subtaskSet,
-		SidePanelIgnoredBy:   sidePanelIgnoredBy(userFile, projectFile),
-		HoistedProviders:     hoistedProviders,
-		HoistedPresets:       hoistedPresets,
-		HoistConflicts:       hoistConflicts,
-		HoistError:           hoistError,
+		SubtaskIterationsSet:      subtaskSet,
+		SidePanelIgnoredBy:        sidePanelIgnoredBy(userFile, projectFile),
+		RemoteLimitDiscoverySetBy: remoteLimitDiscoverySetBy(userFile, projectFile),
+		HoistedProviders:          hoistedProviders,
+		HoistedPresets:            hoistedPresets,
+		HoistConflicts:            hoistConflicts,
+		HoistError:                hoistError,
 	}, nil
 }
 
@@ -212,6 +219,22 @@ func sidePanelIgnoredBy(user, project configFile) []LayerID {
 		out = append(out, LayerUser)
 	}
 	if dead(project) {
+		out = append(out, LayerProject)
+	}
+	return out
+}
+
+// remoteLimitDiscoverySetBy reports which file layers still set the removed
+// privacy.remote_limit_discovery key.
+func remoteLimitDiscoverySetBy(user, project configFile) []LayerID {
+	set := func(f configFile) bool {
+		return f.Privacy != nil && f.Privacy.RemoteLimitDiscovery != nil
+	}
+	var out []LayerID
+	if set(user) {
+		out = append(out, LayerUser)
+	}
+	if set(project) {
 		out = append(out, LayerProject)
 	}
 	return out

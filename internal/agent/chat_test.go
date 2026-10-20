@@ -110,3 +110,59 @@ func TestChatWithRetryDoesNotRetryOverflow(t *testing.T) {
 		t.Fatalf("classified error lost the provider detail: %v", err)
 	}
 }
+
+// TestClassifyOutputTokenLimit pins the guidance added for the rejection a
+// seeded 128K output cap can provoke: some models accept far less. The hint
+// must name the setting, the provider error must stay in the chain (so the
+// ladder still refuses to resend a 4xx), and an ordinary 400 must not be
+// rewritten.
+func TestClassifyOutputTokenLimit(t *testing.T) {
+	for _, status := range []int{400, 413} {
+		for _, pattern := range outputTokenLimitPatterns {
+			raw := &provider.ProviderError{
+				Provider:   "test",
+				StatusCode: status,
+				Body:       `{"error":{"message":"` + pattern + `: 128000 > 8192"}}`,
+			}
+			got := classifyOutputTokenLimit(raw)
+			if got == raw {
+				t.Errorf("status %d pattern %q: error was not annotated", status, pattern)
+				continue
+			}
+			if !strings.Contains(got.Error(), "max_output_tokens") {
+				t.Errorf("status %d pattern %q: hint does not name max_output_tokens: %v", status, pattern, got)
+			}
+			var pe *provider.ProviderError
+			if !errors.As(got, &pe) || pe.StatusCode != status {
+				t.Errorf("status %d pattern %q: provider error dropped from the chain", status, pattern)
+			}
+			if isRetryableChatError(got) {
+				t.Errorf("status %d pattern %q: annotated 4xx must stay non-retryable", status, pattern)
+			}
+		}
+	}
+
+	untouched := []struct {
+		name string
+		err  error
+	}{
+		{"same wording at 500", &provider.ProviderError{StatusCode: 500, Body: "max_tokens is too large"}},
+		{"unrelated 400", &provider.ProviderError{StatusCode: 400, Body: "invalid api key"}},
+		{"non-provider error", errors.New("max_tokens is too large")},
+		{"nil", nil},
+	}
+	for _, tc := range untouched {
+		if got := classifyOutputTokenLimit(tc.err); got != tc.err {
+			t.Errorf("%s: error was rewritten: %v", tc.name, got)
+		}
+	}
+
+	// A context-overflow rejection keeps its own classification rather than
+	// being re-annotated as an output-cap problem.
+	overflow := classifyContextOverflow(&provider.ProviderError{
+		StatusCode: 400, Body: `{"error":{"message":"maximum context length exceeded"}}`,
+	})
+	if got := classifyOutputTokenLimit(overflow); !errors.Is(got, errContextOverflow) {
+		t.Errorf("overflow error lost its sentinel: %v", got)
+	}
+}

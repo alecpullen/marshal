@@ -778,3 +778,59 @@ func TestOllamaNativeNoThinkingWhenOff(t *testing.T) {
 		t.Fatalf("thinking replayed despite reasoning_field=off: %v", req.Messages[0])
 	}
 }
+
+// TestOllamaModelsReportsProbedToolCalling pins that /api/tags results carry
+// the per-model tool verdict the /api/show probe already fetched. The deleted
+// limits table used to supply this; without it a new preset saved
+// tool_calling = "" and the runner fell back to JSON-envelope decoding.
+func TestOllamaModelsReportsProbedToolCalling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/show":
+			_, _ = w.Write([]byte(`{"capabilities":["completion","tools"]}`))
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:7b"}]}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	if models[0].ToolCalling == nil || !*models[0].ToolCalling {
+		t.Fatalf("ToolCalling = %v, want true from the probe", models[0].ToolCalling)
+	}
+}
+
+// TestOllamaModelsReportsProbedNoToolCalling is the negative half: a pulled
+// model whose file lacks the tools capability must report false, so the preset
+// records tool_calling = "none" instead of silently claiming native tools.
+func TestOllamaModelsReportsProbedNoToolCalling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/show":
+			_, _ = w.Write([]byte(`{"capabilities":["completion"]}`))
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[{"name":"llama3.1:8b"}]}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 1 || models[0].ToolCalling == nil || *models[0].ToolCalling {
+		t.Fatalf("ToolCalling = %v, want false from the probe", models[0].ToolCalling)
+	}
+}

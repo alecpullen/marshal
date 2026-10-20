@@ -635,5 +635,26 @@ func (p *OllamaNative) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 		}
 		return nil
 	})
+	// /api/tags reports no tool support either, but the capability probe
+	// above already fetched /api/show for every model, so reuse the cached
+	// verdict instead of leaving ToolCalling nil. Without it a new preset
+	// saves tool_calling = "" and the runner decodes with the JSON envelope
+	// rather than native tools.
+	for i := range models {
+		if caps, ok := p.cachedCapabilities(models[i].ID); ok && caps.known {
+			tools := caps.tools
+			models[i].ToolCalling = &tools
+		}
+	}
 	return models, nil
+}
+
+// cachedCapabilities returns caps only when a probe has already run, so
+// Models can reuse the enrichment pass's /api/show results without issuing
+// a second round of probes.
+func (p *OllamaNative) cachedCapabilities(model string) (ollamaModelCaps, bool) {
+	p.capsMu.Lock()
+	defer p.capsMu.Unlock()
+	caps, ok := p.capsCache[model]
+	return caps, ok
 }

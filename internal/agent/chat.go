@@ -207,6 +207,7 @@ func (r *Runner) chatRetryLadder(ctx context.Context, p provider.Provider, model
 		// *provider.ProviderError in the chain, so the retry and latch
 		// decisions below still see the 4xx.
 		err = classifyContextOverflow(err)
+		err = classifyOutputTokenLimit(err)
 		if err == nil {
 			return res, nil
 		}
@@ -606,6 +607,43 @@ func classifyContextOverflow(err error) error {
 				detail: fmt.Sprintf("%s: %s", errContextOverflow, overflowFirstLine(pe.Body)),
 				err:    err,
 			}
+		}
+	}
+	return err
+}
+
+// outputTokenLimitPatterns are the provider wordings that mean "the requested
+// max_tokens/max_completion_tokens is larger than this model allows". Marshal
+// seeds remote presets with a 128K output cap, and some models accept far
+// less, so this rejection is expected rather than a defect — it needs a hint
+// naming the setting, not a bare 400.
+var outputTokenLimitPatterns = []string{
+	"max_tokens is too large",
+	"max_tokens too large",
+	"max_completion_tokens is too large",
+	"max_completion_tokens too large",
+	"maximum output tokens",
+	"output token limit",
+}
+
+// classifyOutputTokenLimit adds an actionable hint to a 400/413 that rejects
+// the request's output-token cap. The provider error stays in the chain, so
+// the retry ladder still sees a non-retryable 4xx and refuses to resend it.
+func classifyOutputTokenLimit(err error) error {
+	if err == nil || errors.Is(err, errContextOverflow) {
+		return err
+	}
+	var pe *provider.ProviderError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	if pe.StatusCode != 400 && pe.StatusCode != 413 {
+		return err
+	}
+	body := strings.ToLower(pe.Body)
+	for _, p := range outputTokenLimitPatterns {
+		if strings.Contains(body, p) {
+			return fmt.Errorf("%w (lower max_output_tokens on the model preset, or clear it to use Marshal's default)", err)
 		}
 	}
 	return err

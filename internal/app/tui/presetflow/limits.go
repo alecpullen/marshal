@@ -63,17 +63,13 @@ func Resolve(discovered []schema.ModelInfo, modelID string, local bool) Limits {
 		ContextSource:   SourceReported,
 		OutputSource:    SourceReported,
 	}
+	// The documented defaults are always nonzero, so a limit can no longer
+	// resolve to SourceUnknown: every field has a figure and a provenance.
 	if lim.ContextWindow == 0 {
 		lim.ContextWindow, lim.ContextSource = defCtx, SourceDefault
 	}
 	if lim.MaxOutputTokens == 0 {
 		lim.MaxOutputTokens, lim.OutputSource = defOut, SourceDefault
-	}
-	if lim.ContextWindow == 0 {
-		lim.ContextSource = SourceUnknown
-	}
-	if lim.MaxOutputTokens == 0 {
-		lim.OutputSource = SourceUnknown
 	}
 
 	lim.ToolCalling = toolCalling

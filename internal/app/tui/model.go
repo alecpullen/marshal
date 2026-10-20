@@ -7538,11 +7538,18 @@ func (m *Model) switchModelPreset(presetName string) {
 		if newCfg.Models.Presets == nil {
 			newCfg.Models.Presets = map[string]routing.ModelPreset{}
 		}
+		local := routing.IsLocalProvider(newCfg.Providers[provider].BaseURL)
+		// Seed the same documented pair presetflow.Materialize persists, so
+		// a preset created here and one created by /connect carry identical
+		// explicit figures instead of one relying on resolution-time defaults.
+		defCtx, defOut := routing.DefaultModelLimits(local)
 		newCfg.Models.Presets[presetName] = routing.ModelPreset{
-			Name:      presetName,
-			Provider:  provider,
-			Model:     model,
-			LocalOnly: routing.IsLocalProvider(newCfg.Providers[provider].BaseURL),
+			Name:            presetName,
+			Provider:        provider,
+			Model:           model,
+			ContextWindow:   defCtx,
+			MaxOutputTokens: defOut,
+			LocalOnly:       local,
 		}
 		presetCreated = true
 	}

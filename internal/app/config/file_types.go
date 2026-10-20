@@ -74,6 +74,12 @@ type filePrivacy struct {
 	RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
 	RedactSecrets          *bool `toml:"redact_secrets"`
 	IncludeGitignoredFiles *bool `toml:"include_gitignored_files"`
+	// RemoteLimitDiscovery is only observed, never applied: the third-party
+	// limits table it controlled was removed. Keeping the field lets the
+	// loader warn about it instead of dropping a user's explicit opt-out in
+	// silence. Save writes a fresh filePrivacy without it, so the dead key
+	// disappears on the next save.
+	RemoteLimitDiscovery *bool `toml:"remote_limit_discovery"`
 }
 
 type fileIndexing struct {

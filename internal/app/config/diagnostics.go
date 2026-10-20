@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"marshal/internal/llm/routing"
 )
 
 // Severity ranks a diagnostic. SeverityError < SeverityWarning < SeverityInfo
@@ -342,6 +344,46 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 			Message:  "sandbox env allowlist is explicitly empty — the child gets almost no environment, stripping HOME (and with it GOPATH/GOMODCACHE) so toolchain commands such as `go build` fail; restore the defaults or list the variables you need",
 			Source:   layers.ProvenanceOf(path).SetBy.String(),
 		})
+	}
+
+	// 14: removed privacy.remote_limit_discovery. The third-party limits
+	// table it gated is gone, so the key is dropped on the next save. Report
+	// it once per load rather than letting an explicit opt-out vanish
+	// silently — the same treatment as the dead tui.side_panel keys above.
+	if len(layers.RemoteLimitDiscoverySetBy) > 0 {
+		sources := make([]string, len(layers.RemoteLimitDiscoverySetBy))
+		for i, l := range layers.RemoteLimitDiscoverySetBy {
+			sources[i] = l.String()
+		}
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     "privacy.remote_limit_discovery",
+			Message:  "privacy.remote_limit_discovery is ignored — the third-party limits table was removed; context and output limits now come from the preset and a provider-reported probe only",
+			Source:   strings.Join(sources, ", "),
+		})
+	}
+
+	// 15: preset pointing at a local endpoint without local_only and without
+	// an explicit window. Limits default off preset.LocalOnly, which config
+	// loading never derives from the provider's base_url, so a hand-written
+	// local preset silently resolves the remote 1M/128K pair: compaction then
+	// effectively never fires on a model that serves 8k. Materialize and the
+	// TUI set LocalOnly correctly, so this only catches configs written by
+	// hand or by an older version.
+	for name, preset := range cfg.Models.Presets {
+		pc, ok := cfg.Providers[preset.Provider]
+		if !ok || preset.ContextWindow != 0 || preset.LocalOnly {
+			continue
+		}
+		if pc.BaseURL != "" && routing.IsLocalProvider(pc.BaseURL) {
+			path := "models.presets." + name + ".local_only"
+			ds = append(ds, Diagnostic{
+				Severity: SeverityWarning,
+				Path:     path,
+				Message:  "preset " + name + " targets the local endpoint " + pc.BaseURL + " but does not set local_only or context_window, so it resolves the remote 1M-token default; set local_only = true or an explicit context_window",
+				Source:   layers.ProvenanceOf(path).SetBy.String(),
+			})
+		}
 	}
 
 	// Sort: errors before warnings, then by Path within each group.

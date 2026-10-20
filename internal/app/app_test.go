@@ -1854,6 +1854,9 @@ func TestBuildPipelineControllerReturnsAdapter(t *testing.T) {
 	}
 }
 
+// The resolver must thread the session's stable ID into OpenCode-compatible
+// providers as Options.SessionID so chat requests carry x-opencode-session
+// (required by OpenCode Zen; see provider package).
 func TestRoutedProviderResolverThreadsSessionID(t *testing.T) {
 	cfg := config.Config{
 		Providers: map[string]config.ProviderConfig{

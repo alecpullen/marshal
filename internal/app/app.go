@@ -33,6 +33,7 @@ import (
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/limits"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/provider/oauthworker"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -1181,6 +1182,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 
 	limitsTable := loadLimitsTable(ctx, cfg, dataDir)
 	runner.LimitsTable = limitsTable
+	runner.ModelProbe = modelProbeFunc(cfg, dataDir)
 
 	// Defensive: align runner mode with policy engine in case the runner
 	// ever copies the engine instead of sharing it.
@@ -1508,6 +1510,37 @@ func loadLimitsTable(ctx context.Context, cfg config.Config, dataDir string) *li
 		return &t
 	}
 	return nil
+}
+
+// modelProbeFunc returns a lookup over the provider's own cached /models
+// probe, so the runner can clamp a preset that claims more than the provider
+// serves. It reads the same discovered.json that /models populates; a
+// missing, stale, or hash-invalidated entry reports OK=false and nothing
+// clamps. Nil when dataDir is empty.
+func modelProbeFunc(cfg config.Config, dataDir string) func(provider, model string) agent.ModelProbe {
+	if dataDir == "" {
+		return nil
+	}
+	return func(providerName, modelID string) agent.ModelProbe {
+		pc, ok := cfg.Providers[providerName]
+		if !ok {
+			return agent.ModelProbe{}
+		}
+		models, ok := modelcache.Load(dataDir).Lookup(providerName, pc, modelcache.DefaultTTL, time.Now())
+		if !ok {
+			return agent.ModelProbe{}
+		}
+		for _, m := range models {
+			if m.ID != modelID {
+				continue
+			}
+			if m.ContextWindow == 0 && m.MaxOutputTokens == 0 {
+				return agent.ModelProbe{}
+			}
+			return agent.ModelProbe{Window: m.ContextWindow, MaxOutput: m.MaxOutputTokens, OK: true}
+		}
+		return agent.ModelProbe{}
+	}
 }
 
 // roleRunnerSpec holds the dependencies shared by the swarm and SDD

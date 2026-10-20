@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"marshal/internal/agent/agenttest"
+	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
@@ -95,6 +96,96 @@ func TestResolveRouteRebuildsPackBudgetToWindow(t *testing.T) {
 	if want := contextpack.BudgetForWindow(200000); got != want {
 		t.Fatalf("pack budget after resolveRoute = %d, want %d (BudgetForWindow(200000)); still at DefaultMaxTokens=%d",
 			got, want, contextpack.DefaultMaxTokens)
+	}
+}
+
+// TestResolveRoutePropagatesClampedWindow proves the clamp reaches every
+// consumer for free: resolveRoute assigns the clamped pair to route.Window,
+// so the pack budget, the turn threshold and the UI denominator all inherit
+// it with no further edits.
+func TestResolveRoutePropagatesClampedWindow(t *testing.T) {
+	state := newTestState(t)
+	state.UpdateContextPack(func(p contextpack.Pack) contextpack.Pack {
+		p.Sections = append(p.Sections, contextpack.Section{
+			Kind:    contextpack.SectionRepoCard,
+			Title:   "card",
+			Content: "a repo card",
+		})
+		p.TokenUsage.MaxTokens = contextpack.DefaultMaxTokens
+		return p
+	})
+
+	r := &Runner{
+		State: state,
+		Now:   func() time.Time { return time.Unix(100, 0) },
+		RouteResolver: &staticResolver{
+			route: routing.Route{
+				Preset: routing.ModelPreset{
+					Name:            "ollama-cloud/deepseek-v4.1-flash:1017",
+					Provider:        "ollama-cloud",
+					Model:           "deepseek-v4.1-flash:1017",
+					ContextWindow:   1048576,
+					MaxOutputTokens: 131062,
+				},
+			},
+		},
+		ModelProbe: func(provider, model string) ModelProbe {
+			return ModelProbe{Window: 65536, MaxOutput: 8192, OK: true}
+		},
+	}
+
+	_, _, route := r.resolveRoute(context.Background(), NewTask("understand this repo", time.Now()))
+
+	if route.Window != 65536 {
+		t.Fatalf("route.Window = %d, want the clamped 65536", route.Window)
+	}
+	got := state.ContextPack().TokenUsage.MaxTokens
+	if want := contextpack.BudgetForWindow(65536); got != want {
+		t.Fatalf("pack budget after clamped resolveRoute = %d, want %d (BudgetForWindow(65536))", got, want)
+	}
+}
+
+// TestResolveRouteBannersClampOncePerSession pins the guard: resolveRoute runs
+// every turn and SetNotice replaces unconditionally, so an unguarded emit
+// would re-stamp the banner each turn and make it undismissable.
+func TestResolveRouteBannersClampOncePerSession(t *testing.T) {
+	state := newTestState(t)
+	r := &Runner{
+		State: state,
+		Now:   func() time.Time { return time.Unix(100, 0) },
+		RouteResolver: &staticResolver{
+			route: routing.Route{
+				Preset: routing.ModelPreset{
+					Name:            "ollama-cloud/deepseek-v4.1-flash:1017",
+					Provider:        "ollama-cloud",
+					Model:           "deepseek-v4.1-flash:1017",
+					ContextWindow:   1048576,
+					MaxOutputTokens: 131062,
+				},
+			},
+		},
+		ModelProbe: func(provider, model string) ModelProbe {
+			return ModelProbe{Window: 65536, MaxOutput: 8192, OK: true}
+		},
+	}
+
+	r.resolveRoute(context.Background(), NewTask("first", time.Now()))
+	first, ok := state.Notice()
+	if !ok {
+		t.Fatal("no notice after a clamping resolveRoute")
+	}
+	if first.Category != session.NoticeProvider {
+		t.Fatalf("notice category = %v, want NoticeProvider", first.Category)
+	}
+
+	r.resolveRoute(context.Background(), NewTask("second", time.Now()))
+	second, ok := state.Notice()
+	if !ok {
+		t.Fatal("notice disappeared on the second resolveRoute")
+	}
+	if !second.SetAt.Equal(first.SetAt) {
+		t.Fatalf("notice re-stamped on the second turn (SetAt %v → %v); the clampNoticed guard is missing",
+			first.SetAt, second.SetAt)
 	}
 }
 

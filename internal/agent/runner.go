@@ -708,6 +708,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.ForceClass = other.ForceClass
 	r.SkillIndex = other.SkillIndex
 	r.LimitsTable = other.LimitsTable
+	r.ModelProbe = other.ModelProbe
 	r.Role = other.Role
 	r.NarrationPrompt = other.NarrationPrompt
 	r.IntentNudge = other.IntentNudge

@@ -5066,7 +5066,7 @@ func TestRoleRunnerWiredWithResolverAndLimits(t *testing.T) {
 	if r.LimitsTable != &lt {
 		t.Fatal("LimitsTable not wired on role runner")
 	}
-	window, _ := agent.ResolveModelLimits(route.Preset, r.LimitsTable, nil)
+	window := agent.ResolveModelLimits(route.Preset, r.LimitsTable, agent.ModelProbe{}, nil).Window
 	if window != 32768 {
 		t.Fatalf("window = %d, want 32768 from preset config", window)
 	}

@@ -172,6 +172,23 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 	route.MaxOutput = maxOut
 	r.State.SetTurnContextWindow(window)
 
+	if lim.Clamped && lim.ClampSource != "table-variant" && !r.clampNoticed {
+		r.clampNoticed = true
+		reported := lim.ProbeWindow
+		if lim.ClampSource != "probe" {
+			reported = lim.TableWindow
+		}
+		r.State.SetNotice(session.Notice{
+			Category: session.NoticeProvider,
+			Severity: session.SeverityWarn,
+			Message: fmt.Sprintf(
+				"Preset %s declares a %d-token context window, but the %s reports %d. Using %d.",
+				route.Preset.Name, lim.PresetWindow, clampSourceLabel(lim.ClampSource), reported, lim.Window),
+			Hint:   "Set context_window on the preset to match, or raise agent.max_turn_context_tokens to override.",
+			Source: "route",
+		})
+	}
+
 	// Rebudget the pack now that the window is known. Explicit per-role
 	// config still wins; otherwise the budget scales with the model
 	// rather than sitting at the flat default. This runs after the
@@ -318,6 +335,14 @@ func tableClampSource(kind limits.MatchKind) string {
 		return "table-variant"
 	}
 	return "table"
+}
+
+// clampSourceLabel names the source of a clamp for the user-facing notice.
+func clampSourceLabel(source string) string {
+	if source == "probe" {
+		return "provider"
+	}
+	return "limits table"
 }
 
 func (r *Runner) resolveModelLimits(preset routing.ModelPreset) *ModelLimits {

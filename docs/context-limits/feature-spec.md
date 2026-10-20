@@ -268,7 +268,7 @@ Coverage is verified by mutation, not inspection:
 
 1. Point the clamp's comparison at the catalog instead of probe/table → `TestResolveModelLimitsClampsPresetToProbe` must fail.
 2. Move the overflow branch after the `res.Text == ""` guard → `TestRunnerOverflowBranchIsReachableOnEmptyText` must fail.
-3. Move the budget line from `RenderVolatile` into `RenderStable` → `TestPromptPrefixStableAcrossSteps` must fail.
+3. Move the budget line from `RenderVolatile` into `RenderStable` → `TestBudgetLineDoesNotBreakPrefixStability` must fail. (Moving the *whole* working-state tail is a coarser mutation that also fails `TestPromptPrefixStableAcrossSteps`; the budget line alone does not, because that test runs without a resolved route and therefore without a budget line.)
 
 ### Commands
 

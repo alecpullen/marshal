@@ -184,7 +184,22 @@ func (t *toolSet) configuredTestCommand() string {
 // and the environment the analysis reads. Everything is resolved here, before
 // the authorizer evaluates the command, so a workspace or config change after
 // admission cannot redirect work that was already approved.
-func (t *toolSet) commandAttempt(toolName, invocationID, command string) policy.CommandAttempt {
+func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, command string) policy.CommandAttempt {
+	// A proof attached by dispatch already captured the shell facts it
+	// evaluated: admit exactly those, under that proof's logical identity,
+	// rather than re-deriving a second description of the same command. The
+	// captured command bytes are the ones that were approved.
+	if input, ok := policy.ShellInputFromContext(ctx); ok {
+		attempt := policy.CommandAttempt{
+			InvocationID: policy.InvocationID(ctx),
+			ToolName:     toolName,
+			Input:        input,
+		}
+		if attempt.InvocationID == "" {
+			attempt.InvocationID = invocationID
+		}
+		return attempt
+	}
 	dir := t.commandRoot()
 	if dir == "" {
 		// A managed command always runs somewhere: the construction root is
@@ -298,7 +313,7 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, c
 	// wired authorizer the launch keeps the legacy guardrail-only path.
 	var admit func(context.Context) (*policy.Admission, error)
 	if t.commandAdmission != nil {
-		attempt := t.commandAttempt(toolName, callID, command)
+		attempt := t.commandAttempt(ctx, toolName, callID, command)
 		admit = func(admitCtx context.Context) (*policy.Admission, error) {
 			return t.commandAdmission(admitCtx, attempt)
 		}

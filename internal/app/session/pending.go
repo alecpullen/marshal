@@ -234,8 +234,12 @@ type PendingToolCall struct {
 	Schema  string // Details / schema / description of the tool
 	// StepID is the step (model response) that requested the call, so the
 	// approval panel can show that step's narration as the reason. 0 = none.
-	StepID       StepID
-	ResponseChan chan UserApprovalDecision
+	StepID StepID
+	// ExactCommandApproval marks an approval only the exact command may answer:
+	// a standing or session-wide choice cannot be accepted for it, so the UI
+	// offers exact decisions only.
+	ExactCommandApproval bool
+	ResponseChan         chan UserApprovalDecision
 	// Access, when non-nil, marks this as a typed capability request rather
 	// than an ordinary tool approval. The metadata is display-only (it
 	// carries no channel); settlement goes through the session's private

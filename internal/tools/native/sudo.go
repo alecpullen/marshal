@@ -386,7 +386,7 @@ func (t *toolSet) runSudoAdmitted(ctx context.Context, callID, command string, a
 	// Capture the attempt once: the exact command, the directory it will run in
 	// and the workspace it belongs to. Every attempt below is admitted against
 	// this identity, so nothing can retarget the command after approval.
-	attempt := t.commandAttempt("shell.sudo", callID, command)
+	attempt := t.commandAttempt(ctx, "shell.sudo", callID, command)
 	dir := attempt.Input.Dir
 	if dir == "" {
 		return registry.ToolResult{}, errors.New("privileged execution has no working directory")

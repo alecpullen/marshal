@@ -218,6 +218,20 @@ func InvocationID(ctx context.Context) string {
 	return auth.call.InvocationID
 }
 
+// ShellInputFromContext returns the shell facts the attached proof captured.
+//
+// A tool that admits an execution must admit exactly the facts dispatch
+// evaluated: re-deriving the command, directory, workspace or environment can
+// silently describe a different command than the one that was approved. When a
+// proof is attached, its captured input is that authority.
+func ShellInputFromContext(ctx context.Context) (ShellInput, bool) {
+	auth, ok := authorizationFromContext(ctx)
+	if !ok || auth.call.Shell == nil {
+		return ShellInput{}, false
+	}
+	return *auth.call.Shell, true
+}
+
 // fingerprintCall hashes the exact invocation facts. Raw command bytes are
 // retained; they are never shell-normalized.
 func fingerprintCall(call Call) [32]byte {

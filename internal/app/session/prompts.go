@@ -253,18 +253,19 @@ func (s *State) RegisterSudoAuth(ctx context.Context, pending *PendingSudoAuth) 
 
 func approvalSnapshot(tc *PendingToolCall) *PendingToolCall {
 	return &PendingToolCall{
-		ID:        tc.ID,
-		Name:      tc.Name,
-		Args:      tc.Args,
-		Command:   tc.Command,
-		Risk:      tc.Risk,
-		Reason:    tc.Reason,
-		Diff:      tc.Diff,
-		Schema:    tc.Schema,
-		StepID:    tc.StepID,
-		Access:    copyAccessRequest(tc.Access),
-		Key:       tc.Key,
-		canonical: tc.canonical,
+		ID:                   tc.ID,
+		Name:                 tc.Name,
+		Args:                 tc.Args,
+		Command:              tc.Command,
+		Risk:                 tc.Risk,
+		Reason:               tc.Reason,
+		Diff:                 tc.Diff,
+		Schema:               tc.Schema,
+		StepID:               tc.StepID,
+		ExactCommandApproval: tc.ExactCommandApproval,
+		Access:               copyAccessRequest(tc.Access),
+		Key:                  tc.Key,
+		canonical:            tc.canonical,
 	}
 }
 

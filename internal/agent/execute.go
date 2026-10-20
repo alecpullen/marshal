@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -84,8 +84,89 @@ func hookAuditMetadata(out hooks.Output) []registry.HookMetadata {
 type policyLoopResult struct {
 	Args           json.RawMessage
 	NormalizedArgs json.RawMessage
-	Approval       registry.ApprovalState
-	Messages       []schema.ChatMessage
+	// ArgsMap is the argument map this iteration settled on. A user edit
+	// reassigns it inside handlePolicyDecision, so the caller must take the
+	// returned map rather than keep its own copy: the launch admission
+	// fingerprints exactly these facts.
+	ArgsMap  map[string]interface{}
+	Approval registry.ApprovalState
+	// Proof is the authorization this iteration settled on. It is carried out
+	// of the loop so the launch admits exactly the facts that were evaluated
+	// and approved, not a re-derived description of them.
+	Proof    *policy.Authorization
+	Messages []schema.ChatMessage
+}
+
+// evaluationReason renders the human-facing reason for an evaluation. The
+// structured reasons are the authority; the message is presentation only.
+func evaluationReason(ev policy.Evaluation) string {
+	if len(ev.Reasons) == 0 {
+		return "requires approval"
+	}
+	parts := make([]string, 0, len(ev.Reasons))
+	for _, r := range ev.Reasons {
+		if r.Message != "" {
+			parts = append(parts, r.Message)
+		}
+	}
+	if len(parts) == 0 {
+		return "requires approval"
+	}
+	return strings.Join(parts, "; ")
+}
+
+// isShellTool reports whether a tool runs its "command" argument through a
+// shell, so the dispatch evaluates the parsed command rather than the raw
+// argument map.
+func isShellTool(name string) bool {
+	switch name {
+	case "shell.run", "test.run", "shell.sudo":
+		return true
+	}
+	return false
+}
+
+// shellInputFor captures the shell facts one command is evaluated against.
+// The native tool admits exactly these facts (see policy.ShellInputFromContext),
+// so the directory, workspace and home resolved here are the ones the command
+// runs with.
+func (r *Runner) shellInputFor(toolName string, argsMap map[string]interface{}) (policy.ShellInput, bool) {
+	if !isShellTool(toolName) {
+		return policy.ShellInput{}, false
+	}
+	command, _ := argsMap["command"].(string)
+	if command == "" {
+		return policy.ShellInput{}, false
+	}
+	dir := r.State.WorkingDir
+	workspace := r.State.Workspace().ActiveRoot
+	if workspace == "" {
+		workspace = dir
+	}
+	home := ""
+	if h, err := os.UserHomeDir(); err == nil {
+		home = h
+	}
+	return policy.ShellInput{
+		Command:       command,
+		Dir:           dir,
+		WorkspaceRoot: workspace,
+		HomeDir:       home,
+	}, true
+}
+
+// policyCall builds the evaluation input for one invocation. A shell tool
+// carries its parsed command facts and NOT the raw argument map: the native
+// command service admits the attempt through BeginCommand, which fingerprints
+// the same shell facts, so the two descriptions must be identical.
+func (r *Runner) policyCall(invocationID, toolName string, argsMap map[string]interface{}) policy.Call {
+	call := policy.Call{InvocationID: invocationID, ToolName: toolName}
+	if input, ok := r.shellInputFor(toolName, argsMap); ok {
+		call.Shell = &input
+		return call
+	}
+	call.Args = argsMap
+	return call
 }
 
 // handlePolicyDecision runs one iteration of policy + approval for the
@@ -93,9 +174,10 @@ type policyLoopResult struct {
 // user-declined) are returned as Messages so the caller can short-circuit.
 // On an error from approval (context cancel, etc.) it is returned to the
 // caller. When the decision is allow, Approval is set to ApprovalNotRequired.
-func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, toolName string, args json.RawMessage, argsMap map[string]interface{}, normalizedArgs json.RawMessage, decision policy.Decision, reason, toolCallID string) (policyLoopResult, error) {
+func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, toolName string, args json.RawMessage, argsMap map[string]interface{}, normalizedArgs json.RawMessage, evaluation policy.Evaluation, proof *policy.Authorization, invocationID, toolCallID string) (policyLoopResult, error) {
 	approval := registry.ApprovalNotRequired
-	switch decision {
+	reason := evaluationReason(evaluation)
+	switch evaluation.Decision {
 	case policy.DecisionDeny:
 		event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
 		r.logToolCall(toolCallID, event)
@@ -107,7 +189,7 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		// all approval requests on this runner, including those launched
 		// from the parallel read-only batch in executeActions.
 		r.approvalMu.Lock()
-		approved, edited, waitErr := r.requestApproval(ctx, tool, toolName, args, argsMap, reason)
+		approved, edited, key, waitErr := r.requestApproval(ctx, tool, toolName, args, argsMap, reason, evaluation.ExactCommandApproval)
 		r.approvalMu.Unlock()
 		if waitErr != nil {
 			return policyLoopResult{}, waitErr
@@ -118,19 +200,32 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 			r.countToolCall(true, false)
 			return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by user", toolCallID)}}, nil
 		}
+		// Canonical settlement alone approves the exact proof. The prompt's
+		// identity is what binds the grant to this one invocation, so a
+		// standing or session-wide choice cannot answer an exact-only request.
+		approvedProof, approveErr := r.Authorizer.ApproveExact(proof, key.ID)
+		if approveErr != nil {
+			return policyLoopResult{}, approveErr
+		}
+		proof = approvedProof
 		approval = registry.ApprovalApproved
 		if edited != "" {
+			// A user edit is a NEW invocation: the proof described the
+			// original command, so it is discarded and the edited facts are
+			// evaluated again. A shell edit is not implicitly approved by the
+			// decision that approved the original command.
+			proof = nil
 			var nerr error
-			if toolName == "shell.run" {
+			if isShellTool(toolName) {
 				argsMap["command"] = edited
-				if remarshalled, merr := json.Marshal(argsMap); merr == nil {
-					args = remarshalled
-					normalizedArgs, nerr = normalizeArgs(args)
-					if nerr != nil {
-						slog.Default().Warn("tool-arg-edit normalize failed", "tool", toolName, "error", nerr)
-					}
-				} else {
-					slog.Default().Warn("tool-arg-edit marshal failed", "tool", toolName, "error", merr)
+				remarshalled, merr := json.Marshal(argsMap)
+				if merr != nil {
+					return policyLoopResult{}, fmt.Errorf("marshal edited %s args: %w", toolName, merr)
+				}
+				args = remarshalled
+				normalizedArgs, nerr = normalizeArgs(args)
+				if nerr != nil {
+					return policyLoopResult{}, fmt.Errorf("normalize edited %s args: %w", toolName, nerr)
 				}
 			} else {
 				if !json.Valid([]byte(edited)) {
@@ -146,23 +241,50 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 					return policyLoopResult{}, fmt.Errorf("decode edited %s args: %w", toolName, uerr)
 				}
 				argsMap = updated
-				// Re-evaluate policy against the new args. The user has
-				// already approved this call, so only a DecisionDeny from
-				// the edited args should block execution. DecisionConfirm
-				// is treated as "proceed" because the user has already
-				// provided consent.
-				newDecision, newReason, perr := r.Policy.Evaluate(toolName, argsMap, policy.WithSystem(r.State.SystemAccess()))
-				if perr != nil {
-					return policyLoopResult{}, fmt.Errorf("policy re-evaluate after edit: %w", perr)
-				}
-				if newDecision == policy.DecisionDeny {
-					return policyLoopResult{Messages: []schema.ChatMessage{
-						r.buildToolErrorMessage(toolName, "denied by policy after edit: "+newReason, toolCallID),
-					}}, nil
-				}
-				// DecisionAllow and DecisionConfirm: proceed — the user
-				// already confirmed in the approval dialog.
 			}
+			editedCall := r.policyCall(invocationID, toolName, argsMap)
+			editedProof, editedEval, perr := r.Authorizer.Evaluate(ctx, editedCall)
+			if perr != nil {
+				return policyLoopResult{}, fmt.Errorf("policy re-evaluate after edit: %w", perr)
+			}
+			if editedEval.Decision == policy.DecisionDeny {
+				return policyLoopResult{Messages: []schema.ChatMessage{
+					r.buildToolErrorMessage(toolName, "denied by policy after edit: "+evaluationReason(editedEval), toolCallID),
+				}}, nil
+			}
+			if editedEval.Decision == policy.DecisionConfirm {
+				if isShellTool(toolName) {
+					// A shell edit is not implicitly approved by its old
+					// decision: the edited command needs its own consent.
+					r.approvalMu.Lock()
+					approvedEdit, _, editKey, editErr := r.requestApproval(ctx, tool, toolName, args, argsMap, evaluationReason(editedEval), editedEval.ExactCommandApproval)
+					r.approvalMu.Unlock()
+					if editErr != nil {
+						return policyLoopResult{}, editErr
+					}
+					if !approvedEdit {
+						event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, errors.New("denied by user"))
+						r.logToolCall(toolCallID, event)
+						r.countToolCall(true, false)
+						return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by user", toolCallID)}}, nil
+					}
+					approvedEditProof, editApproveErr := r.Authorizer.ApproveExact(editedProof, editKey.ID)
+					if editApproveErr != nil {
+						return policyLoopResult{}, editApproveErr
+					}
+					editedProof = approvedEditProof
+				} else {
+					// A non-shell edit IS the consent: the user typed the new
+					// arguments in the approval dialog, so bind that prompt's
+					// identity to the edited proof rather than asking again.
+					approvedEditProof, editApproveErr := r.Authorizer.ApproveExact(editedProof, key.ID)
+					if editApproveErr != nil {
+						return policyLoopResult{}, editApproveErr
+					}
+					editedProof = approvedEditProof
+				}
+			}
+			proof = editedProof
 		}
 	case policy.DecisionAllow:
 		approval = registry.ApprovalNotRequired
@@ -170,8 +292,51 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 	return policyLoopResult{
 		Args:           args,
 		NormalizedArgs: normalizedArgs,
+		ArgsMap:        argsMap,
 		Approval:       approval,
+		Proof:          proof,
 	}, nil
+}
+
+// admitOrdinaryTool takes the owner's admission lease for one ordinary tool.
+// A stale snapshot means the authority moved between evaluation and admission;
+// the retry is bounded and happens only BEFORE the lease is taken, so a
+// refusal never leaves a lease behind. A live Deny or an unapproved Confirm is
+// not stale and is never retried: a mode change between prompt and launch must
+// refuse rather than silently re-approve.
+func (r *Runner) admitOrdinaryTool(ctx context.Context, invocationID, toolName string, argsMap map[string]interface{}, proof *policy.Authorization) (*policy.Admission, error) {
+	const maxStaleRetries = 3
+	for attempt := 0; ; attempt++ {
+		admission, err := r.Authorizer.BeginTool(policy.WithAuthorization(ctx, proof), r.policyCall(invocationID, toolName, argsMap))
+		if err == nil {
+			return admission, nil
+		}
+		if attempt >= maxStaleRetries || !errors.Is(err, session.ErrAdmissionStale) {
+			return nil, err
+		}
+		// The snapshot moved under us. Re-evaluate against the live authority
+		// and retry; a Confirm is not re-approved here, because the approval
+		// was bound to the old snapshot and a mode change must refuse.
+		newProof, evaluation, evalErr := r.Authorizer.Evaluate(ctx, r.policyCall(invocationID, toolName, argsMap))
+		if evalErr != nil {
+			return nil, evalErr
+		}
+		if evaluation.Decision != policy.DecisionAllow {
+			return nil, policy.ErrApprovalRequired
+		}
+		proof = newProof
+	}
+}
+
+// settleAdmissionFailure settles a call whose launch admission refused it. A
+// steering interruption is reported as not started; any other refusal (a mode
+// change to Ask, a stale proof, a missing authority) is a policy refusal the
+// model must see, never a silent launch.
+func (r *Runner) settleAdmissionFailure(ctx context.Context, action ModelAction, cause error) []schema.ChatMessage {
+	if steeringStopped(ctx, cause) {
+		return r.settleSteeringCall(ctx, action, "", registry.ToolResult{}, false, steeringCause(ctx, "", cause))
+	}
+	return []schema.ChatMessage{r.buildToolErrorMessage(actionToolName(action), "not started: "+cause.Error(), action.ToolCallID)}
 }
 
 // executeToolCall evaluates policy, blocks for user approval if required,
@@ -587,22 +752,41 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		}
 	}
 
-	// Cacheable read-only cache lookup.
+	// Cacheable read-only cache lookup. The capability/scope check runs FIRST:
+	// a cached result must not bypass the current authority, so a read that is
+	// no longer admitted is refused instead of served from cache, and a read
+	// that now requires confirmation runs the normal approval path rather than
+	// being answered from a previous session's grant.
 	if tool.Cacheable {
-		if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
-			r.trackerMu.Lock()
-			count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(cached.Content), true)
-			r.trackerMu.Unlock()
-			logged := cached
-			logged.Summary = "(cached) " + logged.Summary
-			call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
-			event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
+		preCall := r.policyCall(callID, toolName, argsMap)
+		_, preEval, preErr := r.Authorizer.Evaluate(ctx, preCall)
+		if preErr != nil {
+			r.countToolCall(true, false)
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, preErr.Error(), toolCallID)}, nil
+		}
+		if preEval.Decision == policy.DecisionDeny {
+			reason := evaluationReason(preEval)
+			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, fmt.Errorf("denied: %s", reason))
 			r.logToolCall(toolCallID, event)
-			r.countToolCall(false, true)
-			msg := r.buildCachedToolResultMessage(toolName, cached, toolCallID)
-			msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
-			msg.Content += r.todoNudge()
-			return []schema.ChatMessage{msg}, nil
+			r.countToolCall(true, false)
+			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}, nil
+		}
+		if preEval.Decision == policy.DecisionAllow {
+			if cached, hit := r.State.GetTurnToolResult(toolName, normalizedArgs); hit {
+				r.trackerMu.Lock()
+				count := r.tracker.record(toolName, string(normalizedArgs), hashToolResult(cached.Content), true)
+				r.trackerMu.Unlock()
+				logged := cached
+				logged.Summary = "(cached) " + logged.Summary
+				call := registry.ToolCall{ID: fmt.Sprintf("call_%d", r.Now().UnixNano()), Name: toolName, Args: args}
+				event := registry.NewAuditEvent(r.Now(), tool, call, logged, registry.ApprovalNotRequired, nil)
+				r.logToolCall(toolCallID, event)
+				r.countToolCall(false, true)
+				msg := r.buildCachedToolResultMessage(toolName, cached, toolCallID)
+				msg.Content += repeatReminder(count, toolName, string(normalizedArgs))
+				msg.Content += r.todoNudge()
+				return []schema.ChatMessage{msg}, nil
+			}
 		}
 	}
 
@@ -616,13 +800,19 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	var lastHookOut hooks.Output
 	var originalApprovedArgs json.RawMessage
 	var toolWasRewritten bool
+	// One invocation identity per logical tool attempt (the model's tool
+	// call). A rewrite or an edit discards the proof and re-evaluates, so it
+	// can never ride on the earlier decision.
+	invocationID := callID
+	var proof *policy.Authorization
 	for rewriteCount := 0; ; rewriteCount++ {
 		if rewriteCount > 1 {
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, "pre_tool_use hook rewrote arguments more than once", toolCallID)}, nil
 		}
 
-		argsMap, normalizedArgs, parseErr := parseToolArgs(args)
+		var parseErr error
+		argsMap, normalizedArgs, parseErr = parseToolArgs(args)
 		if parseErr != nil {
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, parseErr.Error(), toolCallID)}, nil
@@ -636,14 +826,18 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, err.Error(), toolCallID)}, nil
 		}
 
-		r.Policy.SetSessionRules(r.State.SessionRules())
-		decision, reason, evalErr := r.Policy.Evaluate(toolName, argsMap, policy.WithSystem(r.State.SystemAccess()))
+		// Evaluate through the authorizer, which reads the session's live
+		// authority. The proof it returns binds the exact facts this
+		// iteration settled on, so the launch admits what was evaluated.
+		policyCall := r.policyCall(invocationID, toolName, argsMap)
+		iterationProof, evaluation, evalErr := r.Authorizer.Evaluate(ctx, policyCall)
 		if evalErr != nil {
 			r.countToolCall(true, false)
 			return []schema.ChatMessage{r.buildToolErrorMessage(toolName, evalErr.Error(), toolCallID)}, nil
 		}
+		proof = iterationProof
 
-		policyResult, err := r.handlePolicyDecision(ctx, tool, toolName, args, argsMap, normalizedArgs, decision, reason, toolCallID)
+		policyResult, err := r.handlePolicyDecision(ctx, tool, toolName, args, argsMap, normalizedArgs, evaluation, proof, invocationID, toolCallID)
 		if err != nil {
 			return nil, err
 		}
@@ -652,7 +846,9 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 		}
 		args = policyResult.Args
 		normalizedArgs = policyResult.NormalizedArgs
+		argsMap = policyResult.ArgsMap
 		approval = policyResult.Approval
+		proof = policyResult.Proof
 
 		// Capture the user-approved args before any hook rewrite so the
 		// audit event can record what the user approved vs what was
@@ -753,6 +949,25 @@ func (r *Runner) executeToolCall(ctx context.Context, action ModelAction) ([]sch
 	// dispatched it. The step/`callID` pair is the identity a persisted
 	// execution record pairs back to this row.
 	handlerCtx := session.WithExecutionOrigin(ctx, r.executionOrigin(r.curStep, callID))
+	// Admission at the launch boundary. An ordinary tool takes the owner's
+	// admission lease, commits the proof exactly once and releases before the
+	// handler runs. A shell/test/sudo tool instead carries the proof into the
+	// handler, where the native command service admits the exact attempt at
+	// the accepted launch — the one place the process actually starts.
+	if proof != nil {
+		handlerCtx = policy.WithAuthorization(handlerCtx, proof)
+	}
+	if !isShellTool(toolName) {
+		admission, admErr := r.admitOrdinaryTool(handlerCtx, invocationID, toolName, argsMap, proof)
+		if admErr != nil {
+			return r.settleAdmissionFailure(ctx, action, admErr), nil
+		}
+		if commitErr := admission.Commit(); commitErr != nil {
+			admission.Release()
+			return r.settleAdmissionFailure(ctx, action, commitErr), nil
+		}
+		admission.Release()
+	}
 	result, execErr := tool.Handler(handlerCtx, call)
 	if execErr != nil {
 		// Steering that interrupted an admitted call is not a tool failure:
@@ -1400,7 +1615,7 @@ func (r *Runner) skillLoadGate(ctx context.Context, tool registry.Tool, args jso
 		r.State.SkillGateRecordDeny(name)
 		return r.skillGateDenyMessages(name, args, toolCallID), true
 	}
-	if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+	if r.State != nil && r.State.InteractionState().Auto {
 		r.State.SkillGateRecordAllow(name, false)
 		return nil, false
 	}

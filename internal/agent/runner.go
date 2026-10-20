@@ -15,6 +15,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/limits"
@@ -229,9 +230,16 @@ type UsageObserver func(usage schema.TokenUsage)
 type QuotaObserver func(quota schema.QuotaInfo)
 
 type Runner struct {
-	Provider       provider.Provider
-	Registry       *registry.Registry
-	Policy         *policy.PolicyEngine
+	Provider provider.Provider
+	Registry *registry.Registry
+	Policy   *policy.PolicyEngine
+	// Authorizer binds the policy engine to this runner's live interaction
+	// authority. Every dispatch evaluates through it, so a cached result, a
+	// hook rewrite or an edited approval is re-checked against the authority
+	// that is live now rather than the one that was live when the call was
+	// queued. Constructed from Policy and State in NewRunner and copied by
+	// CopyFrom; nil only for a bare struct literal, which fails closed.
+	Authorizer     *policy.Authorizer
 	State          *session.State
 	Model          string
 	RouteResolver  RouteResolver
@@ -577,7 +585,7 @@ type Runner struct {
 type RunTaskFunc func(ctx context.Context, prompt string) (*Task, error)
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
-	return &Runner{
+	r := &Runner{
 		Provider:           p,
 		Registry:           reg,
 		Policy:             pol,
@@ -599,6 +607,14 @@ func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEn
 		// NewRunner, which is every production construction path.
 		snapshotWarnings: NewSnapshotWarningState(),
 	}
+	// The authorizer is the one place a dispatch asks "may this run now?".
+	// It reads the session's live authority, so a mode change, a ceiling or a
+	// workspace switch between queueing and launch is visible to the decision
+	// instead of being frozen into the engine at construction.
+	if state != nil && pol != nil {
+		r.Authorizer = policy.NewAuthorizer(pol, state.InteractionAuthority())
+	}
+	return r
 }
 
 // toolResultChars resolves the character cap for a single tool result:
@@ -634,13 +650,31 @@ func (r *Runner) getTurnFinishReason() string {
 	return r.turnFinishReason
 }
 
-// SetApprovalMode sets the active approval mode on the policy engine.
-// Called by the TUI on mode switch and by app.StartRuntime to seed from
-// config. Satisfies the AgentRunner interface's SetApprovalMode method.
+// SetApprovalMode is retained for the AgentRunner interface until the TUI
+// migrates to the runtime interaction patch. It cannot mutate authority: the
+// canonical tuple belongs to the session, and a mode switch goes through
+// State.ApplyInteraction. The engine's legacy approval mode is DERIVED from
+// the live tuple so the remaining compatibility readers (the question and
+// skill gates) agree with the authority instead of overriding it.
 func (r *Runner) SetApprovalMode(m policy.ApprovalMode) {
-	if r.Policy != nil {
-		r.Policy.SetApprovalMode(m)
+	if r.Policy == nil || r.State == nil {
+		return
 	}
+	r.Policy.SetApprovalMode(derivedApprovalMode(r.State.InteractionState()))
+}
+
+// derivedApprovalMode projects the canonical interaction tuple onto the legacy
+// approval-mode vocabulary the remaining compatibility readers still speak.
+// Ask denies writes (the plan/default transform), Act confirms each write
+// (edit), and Act+Auto preauthorizes them (auto).
+func derivedApprovalMode(st interaction.State) policy.ApprovalMode {
+	if st.Mode == interaction.ModeAsk {
+		return policy.ModePlan
+	}
+	if st.Auto {
+		return policy.ModeAuto
+	}
+	return policy.ModeEdit
 }
 
 // AnswerGate satisfies tui.AgentRunner. The interactive runner has no
@@ -666,6 +700,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.Provider = other.Provider
 	r.Registry = other.Registry
 	r.Policy = other.Policy
+	r.Authorizer = other.Authorizer
 	r.State = other.State
 	r.Model = other.Model
 	r.RouteResolver = other.RouteResolver

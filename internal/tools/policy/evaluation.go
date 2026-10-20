@@ -5,6 +5,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/interaction"
+	"marshal/internal/permissions"
 )
 
 // snapshot returns the live config, session rules and revision. A configured
@@ -33,33 +34,75 @@ func (pe *PolicyEngine) EvaluateInput(in Input) (Evaluation, error) {
 		return Evaluation{}, ErrStalePolicy
 	}
 	if in.Shell == nil {
-		return pe.evaluateNonShell(in), nil
+		return pe.evaluateNonShell(in, cfg), nil
 	}
-	return pe.evaluateShellInput(in, cfg, sessionRules), nil
+	pe.mu.RLock()
+	rules := pe.rules
+	pe.mu.RUnlock()
+	return pe.evaluateShellInput(in, cfg, sessionRules, rules), nil
 }
 
-// evaluateNonShell classifies a non-shell tool from its registry risk.
-func (pe *PolicyEngine) evaluateNonShell(in Input) Evaluation {
+// evaluateNonShell classifies a non-shell tool from its registry risk and the
+// configured permission rules. The rules are consulted before the risk
+// fallback so an explicit ask/deny rule still prompts (or refuses) a tool the
+// registry would otherwise allow, and an explicit allow rule can preauthorize
+// a write the registry would otherwise confirm.
+func (pe *PolicyEngine) evaluateNonShell(in Input, cfg config.Config) Evaluation {
+	pe.mu.RLock()
+	rules := pe.rules
+	pe.mu.RUnlock()
+
 	risk := pe.toolRisk(in.ToolName)
+
+	// Ask admits only positively read-only operations. A rule cannot widen the
+	// capability: an Ask actor is denied a write tool even if a rule allows it.
+	// This gate runs before every other branch, including MCP, so no explicit
+	// classification can lift the Ask ceiling.
+	if in.ActorState.Mode == interaction.ModeAsk && risk != "read_only" {
+		return Evaluation{
+			Decision: DecisionDeny,
+			Required: CapabilityRequirement{Act: true},
+			Reasons:  []PolicyReason{{Code: ReasonRequiresAct, Message: "this tool requires Act"}},
+		}
+	}
+
+	// MCP tools are workspace-write unless explicitly classified: an
+	// unconfigured MCP tool is a secure-default confirm, never a read. The
+	// MCP policy and the F4 rules are both consulted here, so an explicit
+	// allow/deny still wins over the secure default.
+	if strings.HasPrefix(in.ToolName, "mcp.") {
+		decision, reason := evaluateMCP(&cfg, rules, in.ToolName, in.Args)
+		code := ReasonExplicitConfirm
+		if decision == DecisionDeny {
+			code = ReasonExplicitDeny
+		}
+		return Evaluation{Decision: decision, Reasons: []PolicyReason{{Code: code, Message: reason}}}
+	}
+
+	// Explicit deny/confirm rules are collected before any allow so a later
+	// allow cannot mask them.
+	subjects := subjectsForTool(in.ToolName, in.Args, "")
+	if len(subjects) > 0 {
+		if decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(in.ToolName), subjects); matched {
+			code := ReasonExplicitConfirm
+			if decision == DecisionDeny {
+				code = ReasonExplicitDeny
+			}
+			return Evaluation{Decision: decision, Reasons: []PolicyReason{{Code: code, Message: "resolved by permission rule"}}}
+		}
+	}
+
 	switch risk {
 	case "read_only":
 		return Evaluation{Decision: DecisionAllow}
 	case "network":
-		if in.ActorState.Mode == interaction.ModeAsk {
-			return Evaluation{
-				Decision: DecisionDeny,
-				Required: CapabilityRequirement{Act: true},
-				Reasons:  []PolicyReason{{Code: ReasonRequiresAct, Message: "network access requires Act"}},
-			}
-		}
 		return Evaluation{Decision: DecisionConfirm, Required: CapabilityRequirement{Act: true}}
 	default:
-		if in.ActorState.Mode == interaction.ModeAsk {
-			return Evaluation{
-				Decision: DecisionDeny,
-				Required: CapabilityRequirement{Act: true},
-				Reasons:  []PolicyReason{{Code: ReasonRequiresAct, Message: "this tool requires Act"}},
-			}
+		// Auto preauthorizes a fully known workspace write. A network or
+		// destructive tool is not "fully known workspace", so it still
+		// confirms.
+		if in.ActorState.Auto && risk == "workspace_write" {
+			return Evaluation{Decision: DecisionAllow}
 		}
 		return Evaluation{Decision: DecisionConfirm, Required: CapabilityRequirement{Act: true}}
 	}
@@ -81,12 +124,26 @@ func (pe *PolicyEngine) toolRisk(name string) string {
 }
 
 // evaluateShell applies the decision matrix to a parsed command.
-func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionRules []string) Evaluation {
+func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionRules []string, rules []permissions.Rule) Evaluation {
 	var effects ShellEffect
 	var reasons []PolicyReason
 	for _, op := range in.Shell.Operations {
 		effects |= op.Effects
 		reasons = append(reasons, op.Reasons...)
+	}
+
+	// Explicit F4 rules are collected before any allow so a later allow cannot
+	// mask them. A deny rule refuses the operation outright; an ask rule
+	// requires approval.
+	subjects := subjectsForTool(in.ToolName, in.Args, normalizeCommand(in.Shell.Input.Command))
+	if len(subjects) > 0 {
+		if decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(in.ToolName), subjects); matched {
+			code := ReasonExplicitConfirm
+			if decision == DecisionDeny {
+				code = ReasonExplicitDeny
+			}
+			return Evaluation{Decision: decision, Reasons: append(reasons, PolicyReason{Code: code, Message: "resolved by permission rule"})}
+		}
 	}
 
 	// Explicit deny/confirm rules are collected before any allow so a later

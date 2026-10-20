@@ -857,7 +857,12 @@ func TestRunnerSetsActivityDuringApproval(t *testing.T) {
 			return registry.ToolResult{Summary: "ok"}, nil
 		},
 	})
-	pol := policy.NewEngine(&config.Config{}, nil)
+	// The new classifier allows a routine build like `go test` outright, so
+	// pin a confirm rule to keep this test exercising the approval activity.
+	// The pattern matches the executable, so `go` covers `go test`.
+	cfg := config.Config{}
+	cfg.Tools.Shell.Confirm.Commands = []string{"go"}
+	pol := policy.NewEngine(&cfg, nil)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 	runner.MaxToolIterations = 2

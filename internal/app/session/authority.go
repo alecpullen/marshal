@@ -92,7 +92,11 @@ func (a *stateAuthority) Snapshot() interaction.Snapshot {
 // snapshotLocked builds the bounded snapshot. Callers must hold the owner's
 // accessMu.
 func (a *stateAuthority) snapshotLocked(owner *State, actorSystem bool) interaction.Snapshot {
-	access := interaction.Bound(owner.access, a.actor.interactionCeiling)
+	// The ceiling is the actor's EFFECTIVE ceiling: a root's immutable ceiling
+	// is all-true, and only a child's is the intersected restriction. Reading
+	// the raw field would report the zero ceiling for every root and make its
+	// snapshot claim Ask, which under-reports the access it actually has.
+	access := interaction.Bound(owner.access, a.actor.effectiveCeiling())
 	// System in a ceiling is permission to request, not a grant: the actor
 	// must also have asked for it explicitly.
 	if !actorSystem {

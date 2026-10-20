@@ -1203,7 +1203,7 @@ func TestSteeringApprovalWinnerStillCannotLaunchStaleTool(t *testing.T) {
 		}
 	}()
 
-	approved, _, err := r.requestApproval(ctx, registry.Tool{Name: "stale.tool", Risk: registry.RiskReadOnly}, "stale.tool", json.RawMessage(`{}`), map[string]interface{}{}, "why")
+	approved, _, _, err := r.requestApproval(ctx, registry.Tool{Name: "stale.tool", Risk: registry.RiskReadOnly}, "stale.tool", json.RawMessage(`{}`), map[string]interface{}{}, "why", false)
 	if err != nil {
 		t.Fatalf("requestApproval: %v", err)
 	}

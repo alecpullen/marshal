@@ -102,7 +102,7 @@ func TestRequestApprovalWaitsForDecision(t *testing.T) {
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		approved, edited, err := r.requestApproval(context.Background(), registry.Tool{Name: "test", Risk: registry.RiskReadOnly, Description: "test"}, "test", nil, map[string]interface{}{}, "test reason")
+		approved, edited, _, err := r.requestApproval(context.Background(), registry.Tool{Name: "test", Risk: registry.RiskReadOnly, Description: "test"}, "test", nil, map[string]interface{}{}, "test reason", false)
 		resCh <- result{approved, edited, err}
 	}()
 
@@ -149,7 +149,7 @@ func TestRequestApprovalContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	resCh := make(chan error, 1)
 	go func() {
-		_, _, err := r.requestApproval(ctx, registry.Tool{Name: "test", Risk: registry.RiskReadOnly, Description: "test"}, "test", nil, map[string]interface{}{}, "test reason")
+		_, _, _, err := r.requestApproval(ctx, registry.Tool{Name: "test", Risk: registry.RiskReadOnly, Description: "test"}, "test", nil, map[string]interface{}{}, "test reason", false)
 		resCh <- err
 	}()
 
@@ -323,6 +323,9 @@ func TestRunRequiresApprovalForShellRunAndRespectsApproval(t *testing.T) {
 		`{"rationale":"done","action":{"type":"final","content":"Command ran."}}`,
 	}}
 	cfg := config.Default()
+	// The new classifier allows a routine read like `echo hi` outright, so
+	// pin a confirm rule to keep this test exercising the approval path.
+	cfg.Tools.Shell.Confirm.Commands = append(cfg.Tools.Shell.Confirm.Commands, "echo")
 	pol := policy.NewEngine(&cfg, nil)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
@@ -380,19 +383,17 @@ func TestRunnerShellEditNormalizesSuccessfully(t *testing.T) {
 		`{"rationale":"done","action":{"type":"final","content":"done"}}`,
 	}}
 	state := newTestState(t)
-	pol := policy.NewEngine(&config.Config{}, nil)
+	// The new classifier allows a routine read like `echo hello` outright, so
+	// pin a confirm rule to keep this test exercising the edit path.
+	cfg := config.Config{}
+	cfg.Tools.Shell.Confirm.Commands = []string{"echo"}
+	pol := policy.NewEngine(&cfg, nil)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 	runner.SetForceClass(string(ClassQuestion))
 
 	go func() {
-		for state.PendingApproval() == nil {
-			time.Sleep(10 * time.Millisecond)
-		}
-		tc := state.PendingApproval()
-		tc.Respond(session.UserApprovalDecision{
-			Approved: true,
-			Edited:   "echo edited",
-		})
+		answerApproval(t, state, session.UserApprovalDecision{Approved: true, Edited: "echo edited"})
+		answerApproval(t, state, session.UserApprovalDecision{Approved: true})
 	}()
 
 	if err := runner.Run(context.Background(), "run"); err != nil {
@@ -436,6 +437,7 @@ func TestRunnerReevaluatesPolicyAfterEditedArgs(t *testing.T) {
 	}}
 	cfg := config.Default()
 	pol := policy.NewEngine(&cfg, nil)
+	pol.WithRegistry(reg)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
@@ -512,6 +514,7 @@ func TestRunnerReevaluatesDenyAfterValidEdit(t *testing.T) {
 	}}
 	cfg := config.Default()
 	pol := policy.NewEngine(&cfg, nil)
+	pol.WithRegistry(reg)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
@@ -652,6 +655,10 @@ func TestAuditEventRecordsOriginalArgs(t *testing.T) {
 		`{"rationale":"r","action":{"type":"answer","content":"done"}}`,
 	}}
 	cfg := config.Default()
+	// The original command is a routine read and auto-allowed; the rewrite
+	// must still require consent, so pin a confirm rule that matches only the
+	// rewritten command.
+	cfg.Tools.Shell.Confirm.Commands = []string{"*--no-pager*"}
 	pol := policy.NewEngine(&cfg, nil)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")

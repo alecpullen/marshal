@@ -89,7 +89,7 @@ func renderPart(pack Pack, header string, volatile bool) string {
 	var b strings.Builder
 	b.WriteString(header + "\n")
 	if note {
-		fmt.Fprintf(&b, "Context pack truncated (~%d/%d tokens).\n", pack.TokenUsage.EstimatedTokens, pack.TokenUsage.MaxTokens)
+		fmt.Fprintf(&b, "Context pack truncated to its %d-token budget (~%d tokens selected). This limits what is included in this request, not the model's context window.\n", pack.TokenUsage.MaxTokens, pack.TokenUsage.EstimatedTokens)
 	}
 	b.WriteString(body.String())
 	return strings.TrimRight(b.String(), "\n")

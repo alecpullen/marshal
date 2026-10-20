@@ -95,3 +95,43 @@ func TestRenderStableUnaffectedByVolatileChanges(t *testing.T) {
 		t.Errorf("truncation note must not render in the stable part:\n%s", RenderStable(b))
 	}
 }
+
+// TestRenderVolatileTruncationNoteNamesPackBudget pins the wording that stops
+// the model reading a truncated *pack* as a truncated *context window* — the
+// misleading signal behind the self-finalisation this change fixes. The note
+// must keep "Context pack truncated" as its leading words so the existing
+// assertions above still hold.
+func TestRenderVolatileTruncationNoteNamesPackBudget(t *testing.T) {
+	clock := time.Unix(10_000, 0)
+	now := func() time.Time { return clock }
+	const budget = 400
+	bigMap := strings.Repeat("internal/some/dir/\n", 400) // forces truncation
+	pack := MergeRepoSections(Pack{}, "Project: marshal", bigMap, budget, now)
+	pack = MergeTodos(pack, []TodoItem{{Content: "read a", Status: "in_progress"}}, budget, now)
+
+	if !pack.TokenUsage.Truncated {
+		t.Fatal("fixture must truncate the pack")
+	}
+
+	volatile := RenderVolatile(pack)
+	for _, want := range []string{
+		"Context pack truncated",
+		"400-token budget",
+		"not the model's context window",
+	} {
+		if !strings.Contains(volatile, want) {
+			t.Errorf("volatile render missing %q:\n%s", want, volatile)
+		}
+	}
+
+	stable := RenderStable(pack)
+	for _, unwanted := range []string{
+		"Context pack truncated",
+		"400-token budget",
+		"not the model's context window",
+	} {
+		if strings.Contains(stable, unwanted) {
+			t.Errorf("stable render must not contain %q:\n%s", unwanted, stable)
+		}
+	}
+}

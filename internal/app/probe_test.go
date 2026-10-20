@@ -61,3 +61,38 @@ func TestModelProbeIgnoresTableDerivedLimits(t *testing.T) {
 		t.Fatalf("probe = %+v, want OK=false: a table-derived window must not clamp a preset", got)
 	}
 }
+
+// TestModelProbeRefreshesAfterCacheRewrite guards the mtime/size memo: /models
+// rewrites discovered.json in place, and the next turn must see the new
+// provider-reported limits without a restart.
+func TestModelProbeRefreshesAfterCacheRewrite(t *testing.T) {
+	dir := t.TempDir()
+	pc := config.ProviderConfig{Type: "anthropic", BaseURL: "https://api.anthropic.test"}
+	cfg := config.Config{Providers: map[string]config.ProviderConfig{"anthropic": pc}}
+	saveProbeCache(t, dir, "anthropic", pc, []schema.ModelInfo{{
+		ID:               "claude-x",
+		ContextWindow:    200000,
+		MaxOutputTokens:  64000,
+		ProviderReported: true,
+	}})
+	probe := modelProbeFunc(cfg, dir)
+	if got := probe("anthropic", "claude-x"); got.Window != 200000 {
+		t.Fatalf("probe before rewrite = %+v, want 200000", got)
+	}
+
+	// The extra entry changes the file size as well as its mtime, so the
+	// refresh is observed even on a filesystem with coarse timestamps.
+	saveProbeCache(t, dir, "anthropic", pc, []schema.ModelInfo{{
+		ID:               "claude-x",
+		ContextWindow:    250000,
+		MaxOutputTokens:  64000,
+		ProviderReported: true,
+	}, {
+		ID:               "claude-y",
+		ContextWindow:    1000,
+		ProviderReported: true,
+	}})
+	if got := probe("anthropic", "claude-x"); got.Window != 250000 {
+		t.Fatalf("probe after rewrite = %+v, want the refreshed 250000", got)
+	}
+}

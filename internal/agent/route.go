@@ -132,6 +132,10 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 			Source:   "route",
 		})
 		r.State.SetActiveRoute(session.RouteInfo{})
+		// The error notice replaced any clamp banner. Clearing the key makes
+		// the next successful turn re-banner the clamp instead of assuming the
+		// user still sees it.
+		r.clampNoticeKey = ""
 		return turnProvider, turnModel, routing.Route{}
 	}
 	if resolvedProvider != nil {
@@ -172,17 +176,25 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 	route.MaxOutput = maxOut
 	r.State.SetTurnContextWindow(window)
 
-	if lim.Clamped && lim.ClampSource == "probe" && !r.clampNoticed {
-		r.clampNoticed = true
-		r.State.SetNotice(session.Notice{
-			Category: session.NoticeProvider,
-			Severity: session.SeverityWarn,
-			Message: fmt.Sprintf(
-				"Preset %s declares a %d-token context window, but the provider reports %d. Using %d.",
-				route.Preset.Name, lim.PresetWindow, lim.ProbeWindow, lim.Window),
-			Hint:   "Set context_window on the preset to match, or raise agent.max_turn_context_tokens to cap the threshold separately.",
-			Source: "route",
-		})
+	if key, message, ok := clampNoticeFor(route.Preset, lim); ok {
+		if key != r.clampNoticeKey {
+			r.clampNoticeKey = key
+			r.State.SetNotice(session.Notice{
+				Category: session.NoticeProvider,
+				Severity: session.SeverityWarn,
+				Message:  message,
+				Hint:     "Set context_window or max_output_tokens on the preset to match, or raise agent.max_turn_context_tokens to cap the threshold separately.",
+				Source:   "route-limits",
+			})
+		}
+	} else if r.clampNoticeKey != "" {
+		// The route no longer clamps (or no longer lowers an explicit
+		// declaration). Clear only our banner; a provider error that replaced
+		// it must survive.
+		r.clampNoticeKey = ""
+		if n, ok := r.State.Notice(); ok && n.Source == "route-limits" {
+			r.State.DismissNotice()
+		}
 	}
 
 	// Rebudget the pack now that the window is known. Explicit per-role
@@ -206,6 +218,42 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 	})
 
 	return turnProvider, turnModel, route
+}
+
+// clampNoticeFor builds the banner for a provider clamp that lowered a value
+// the preset explicitly declared. It returns a stable key so resolveRoute
+// re-notices when the clamp changes but never re-stamps an unchanged one.
+//
+// A clamp of a value the preset did not declare (a table or catalog fallback
+// that the provider then corrected) is silent: there is no user declaration
+// to report, and the resolved value already reaches every consumer.
+func clampNoticeFor(preset routing.ModelPreset, lim *ModelLimits) (key, message string, ok bool) {
+	if lim == nil || !lim.Clamped || lim.ClampSource != "probe" {
+		return "", "", false
+	}
+	windowClamped := lim.PresetWindow > 0 && lim.ProbeWindow > 0 && lim.Window < lim.PresetWindow
+	outputClamped := lim.PresetOutput > 0 && lim.ProbeOutput > 0 && lim.MaxOutput < lim.PresetOutput
+	if !windowClamped && !outputClamped {
+		return "", "", false
+	}
+	key = fmt.Sprintf("%s|%s|%s|%d|%d|%d|%d",
+		preset.Name, preset.Provider, preset.Model,
+		lim.PresetWindow, lim.PresetOutput, lim.Window, lim.MaxOutput)
+	switch {
+	case windowClamped && outputClamped:
+		message = fmt.Sprintf(
+			"Preset %s declares a %d-token context window and %d output tokens, but the provider reports %d and %d. Using %d and %d.",
+			preset.Name, lim.PresetWindow, lim.PresetOutput, lim.ProbeWindow, lim.ProbeOutput, lim.Window, lim.MaxOutput)
+	case windowClamped:
+		message = fmt.Sprintf(
+			"Preset %s declares a %d-token context window, but the provider reports %d. Using %d.",
+			preset.Name, lim.PresetWindow, lim.ProbeWindow, lim.Window)
+	default:
+		message = fmt.Sprintf(
+			"Preset %s declares %d output tokens, but the provider reports %d. Using %d.",
+			preset.Name, lim.PresetOutput, lim.ProbeOutput, lim.MaxOutput)
+	}
+	return key, message, true
 }
 
 // ModelProbe is the provider's own reported limits for one model, as
@@ -260,6 +308,12 @@ func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table, probe M
 		if tableKind != limits.MatchNone {
 			lim.TableWindow = tableLim.ContextWindow
 			lim.TableOutput = tableLim.MaxOutputTokens
+			if logger != nil {
+				logger.Debug("model limits table matched",
+					"provider", preset.Provider, "model", preset.Model,
+					"match", tableKind,
+					"window", lim.TableWindow, "max_output", lim.TableOutput)
+			}
 			if lim.Window == 0 {
 				lim.Window = tableLim.ContextWindow
 			}

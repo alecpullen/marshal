@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,6 +187,116 @@ func TestResolveRouteBannersClampOncePerSession(t *testing.T) {
 	if !second.SetAt.Equal(first.SetAt) {
 		t.Fatalf("notice re-stamped on the second turn (SetAt %v → %v); the clampNoticed guard is missing",
 			first.SetAt, second.SetAt)
+	}
+}
+
+func TestResolveRouteRebannersWhenClampChanges(t *testing.T) {
+	state := newTestState(t)
+	probeWindow := 65536
+	r := &Runner{
+		State: state,
+		Now:   func() time.Time { return time.Unix(100, 0) },
+		RouteResolver: &staticResolver{
+			route: routing.Route{
+				Preset: routing.ModelPreset{
+					Name:            "ollama-cloud/deepseek-v4.1-flash:1017",
+					Provider:        "ollama-cloud",
+					Model:           "deepseek-v4.1-flash:1017",
+					ContextWindow:   1048576,
+					MaxOutputTokens: 131062,
+				},
+			},
+		},
+		ModelProbe: func(provider, model string) ModelProbe {
+			return ModelProbe{Window: probeWindow, MaxOutput: 8192, OK: probeWindow > 0}
+		},
+	}
+
+	r.resolveRoute(context.Background(), NewTask("first", time.Now()))
+	first, ok := state.Notice()
+	if !ok {
+		t.Fatal("no notice after the first clamping resolveRoute")
+	}
+
+	probeWindow = 32768
+	r.resolveRoute(context.Background(), NewTask("second", time.Now()))
+	second, ok := state.Notice()
+	if !ok {
+		t.Fatal("clamp notice disappeared after the clamp changed")
+	}
+	if !strings.Contains(second.Message, "32768") {
+		t.Fatalf("notice did not re-banner for the new clamp: %q", second.Message)
+	}
+	if second.SetAt.Equal(first.SetAt) {
+		t.Fatal("notice was not re-stamped when the clamp changed")
+	}
+}
+
+func TestResolveRouteClearsStaleClampNotice(t *testing.T) {
+	state := newTestState(t)
+	probeWindow := 65536
+	r := &Runner{
+		State: state,
+		Now:   func() time.Time { return time.Unix(100, 0) },
+		RouteResolver: &staticResolver{
+			route: routing.Route{
+				Preset: routing.ModelPreset{
+					Name:            "ollama-cloud/deepseek-v4.1-flash:1017",
+					Provider:        "ollama-cloud",
+					Model:           "deepseek-v4.1-flash:1017",
+					ContextWindow:   1048576,
+					MaxOutputTokens: 131062,
+				},
+			},
+		},
+		ModelProbe: func(provider, model string) ModelProbe {
+			return ModelProbe{Window: probeWindow, MaxOutput: 8192, OK: probeWindow > 0}
+		},
+	}
+
+	r.resolveRoute(context.Background(), NewTask("first", time.Now()))
+	if _, ok := state.Notice(); !ok {
+		t.Fatal("expected a clamp notice before the probe disappears")
+	}
+
+	probeWindow = 0
+	r.resolveRoute(context.Background(), NewTask("second", time.Now()))
+	if n, ok := state.Notice(); ok {
+		t.Fatalf("stale clamp notice survived an unclamped route: %+v", n)
+	}
+}
+
+func TestResolveRouteBannersOutputOnlyClamp(t *testing.T) {
+	state := newTestState(t)
+	r := &Runner{
+		State: state,
+		Now:   func() time.Time { return time.Unix(100, 0) },
+		RouteResolver: &staticResolver{
+			route: routing.Route{
+				Preset: routing.ModelPreset{
+					Name:            "provider/model",
+					Provider:        "provider",
+					Model:           "model",
+					ContextWindow:   1048576,
+					MaxOutputTokens: 131062,
+				},
+			},
+		},
+		ModelProbe: func(provider, model string) ModelProbe {
+			return ModelProbe{Window: 1048576, MaxOutput: 8192, OK: true}
+		},
+	}
+
+	r.resolveRoute(context.Background(), NewTask("first", time.Now()))
+	n, ok := state.Notice()
+	if !ok {
+		t.Fatal("no notice for an output-only clamp")
+	}
+	if !strings.Contains(n.Message, "output tokens") {
+		t.Fatalf("notice does not describe the output clamp: %q", n.Message)
+	}
+	if strings.Contains(n.Message, "context window") {
+		t.Fatalf("output-only clamp notice claims a window change: %q", n.Message)
 	}
 }
 

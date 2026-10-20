@@ -211,7 +211,7 @@ func TestRunnerOverflowCompactionFailureIsActionable(t *testing.T) {
 	if p.Calls != 2 {
 		t.Fatalf("expected 2 calls (the rejection, then the failed summarisation) and no retry loop, got %d", p.Calls)
 	}
-	for _, want := range []string{"too long", "agent.max_turn_context_tokens"} {
+	for _, want := range []string{"too long", "agent.max_turn_context_tokens", "compaction also failed", errEmptyHandoffSummary.Error()} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error missing %q:\n%v", want, err)
 		}
@@ -234,6 +234,59 @@ func TestRunnerOverflowRespectsCancellation(t *testing.T) {
 	if errors.Is(err, errContextOverflow) {
 		t.Fatalf("cancellation must not be reported as a context overflow: %v", err)
 	}
+}
+
+// TestRunnerOverflowSalvagesEarlierPartial: the retry ladder keeps the
+// largest partial response seen across attempts. A later attempt rejecting
+// the prompt as too long must not discard that work and compact instead.
+func TestRunnerOverflowSalvagesEarlierPartial(t *testing.T) {
+	p := &partialThenOverflowProvider{}
+	r := NewRunner(p, registry.New(), policy.NewEngine(&config.Config{}, nil), newTestState(t), "test-model")
+	r.RouteResolver = &staticResolver{route: routing.Route{
+		Preset: routing.ModelPreset{Name: "test", Model: "test-model", ContextWindow: 65536, MaxOutputTokens: 8192},
+	}}
+	r.NativeTools = true
+	r.MaxRetries = 1
+	r.SetForceClass(string(ClassQuestion))
+
+	if _, err := r.RunTask(context.Background(), "do the thing"); err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if p.calls != 2 {
+		t.Fatalf("calls = %d, want 2 (partial+500, then overflow)", p.calls)
+	}
+	if hasCompactionNotice(r.State) {
+		t.Fatalf("salvaged partial should not compact: %v", compactionNotices(r.State))
+	}
+}
+
+// partialThenOverflowProvider returns usable text with a retryable provider
+// error, then rejects the retried prompt as too long.
+type partialThenOverflowProvider struct {
+	calls int
+}
+
+func (p *partialThenOverflowProvider) Name() string { return "partial-then-overflow" }
+
+func (p *partialThenOverflowProvider) Models(context.Context) ([]schema.ModelInfo, error) {
+	return nil, nil
+}
+
+func (p *partialThenOverflowProvider) Capabilities(context.Context) schema.ProviderCapabilities {
+	return schema.ProviderCapabilities{}
+}
+
+func (p *partialThenOverflowProvider) Chat(ctx context.Context, req schema.ChatRequest) (<-chan schema.ChatEvent, error) {
+	ch := make(chan schema.ChatEvent, 3)
+	if p.calls == 0 {
+		ch <- schema.ChatEvent{Type: schema.ChatEventDelta, Delta: "Partial answer"}
+		ch <- schema.ChatEvent{Type: schema.ChatEventError, Err: &provider.ProviderError{Provider: "test", StatusCode: 500, Body: "temporary"}}
+	} else {
+		ch <- schema.ChatEvent{Type: schema.ChatEventError, Err: overflowProviderError()}
+	}
+	p.calls++
+	close(ch)
+	return ch, nil
 }
 
 func hasCompactionNotice(state *session.State) bool {

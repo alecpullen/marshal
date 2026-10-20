@@ -120,3 +120,7 @@ func (c Cache) Lookup(name string, pc config.ProviderConfig, ttl time.Duration, 
 func cachePath(dataDir string) string {
 	return filepath.Join(dataDir, cacheDir, cacheFile)
 }
+
+// Path returns the cache file's on-disk location, so callers that re-read it
+// frequently can detect changes cheaply (mtime/size) before parsing.
+func Path(dataDir string) string { return cachePath(dataDir) }

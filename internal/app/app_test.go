@@ -1849,7 +1849,7 @@ func TestBuildPipelineControllerReturnsAdapter(t *testing.T) {
 	reg := registry.New()
 	pol := policy.NewEngine(&cfg, nil)
 	resolver := newRoutedProviderResolver(cfg, t.TempDir())
-	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath, nil, nil, nil)
+	adapter := buildPipelineController(cfg, state, reg, pol, resolver, nil, 1, nil, &fakeRunner{}, planPath, nil, nil, nil, nil)
 	if adapter == nil {
 		t.Fatal("buildPipelineController returned nil")
 	}
@@ -5046,7 +5046,10 @@ func TestRoleRunnerWiredWithResolverAndLimits(t *testing.T) {
 		memory:      &dbMemoryProvider{db: database},
 		projectID:   1,
 		limitsTable: &lt,
-		database:    database,
+		modelProbe: func(provider, model string) agent.ModelProbe {
+			return agent.ModelProbe{Window: 16384, MaxOutput: 4096, OK: true}
+		},
+		database: database,
 	}
 
 	r, err := spec.newRunner(agent.RoleImplementer, swarm.ScopeFull)
@@ -5056,9 +5059,19 @@ func TestRoleRunnerWiredWithResolverAndLimits(t *testing.T) {
 	if r.RouteResolver == nil {
 		t.Fatal("RouteResolver not wired on role runner")
 	}
+	if r.ModelProbe == nil {
+		t.Fatal("ModelProbe not wired on role runner")
+	}
 	route, _, err := r.RouteResolver.Resolve("edit")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
+	}
+	probe := r.ModelProbe(route.Preset.Provider, route.Preset.Model)
+	if !probe.OK || probe.Window != 16384 {
+		t.Fatalf("role runner probe = %+v, want the provider-reported 16384", probe)
+	}
+	if got := agent.ResolveModelLimits(route.Preset, r.LimitsTable, probe, nil).Window; got != 16384 {
+		t.Fatalf("role runner window = %d, want the provider-reported 16384", got)
 	}
 	if route.Preset.Model != "impl" {
 		t.Fatalf("model = %q, want impl", route.Preset.Model)

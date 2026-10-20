@@ -92,7 +92,7 @@ Threading: `Runner` gains `ModelProbe func(provider, model string) ModelProbe`, 
 
 **Propagation is free.** `resolveRoute` assigns the resolved pair to `route.Window` / `route.MaxOutput`, so `effectiveTurnThreshold`, `historyBudget`, `contextpack.BudgetForWindow`, and `State.SetTurnBudget` all inherit the clamped numbers with no further edits. Where the provider genuinely reports a smaller window (Anthropic/Codex), the threshold becomes `int(0.85 * 65536) - min(8192, 8192) = 47513` and the UI denominator becomes 64k. Where it reports nothing (the reported `ollama-cloud` case), the preset's 1M stands and the UI shows 1M.
 
-**Reporting.** `resolveRoute` sets `session.Notice{Category: NoticeProvider, Severity: SeverityWarn, Source: "route"}` naming both figures and the value in use. `resolveRoute` runs every turn and `SetNotice` replaces unconditionally (`internal/app/session/notice.go:53`), so a `clampNoticed bool` on the runner is required — otherwise the banner is re-stamped each turn and never dismissable.
+**Reporting.** `resolveRoute` sets `session.Notice{Category: NoticeProvider, Severity: SeverityWarn, Source: "route-limits"}` naming the declared and provider figures and the value in use. `resolveRoute` runs every turn and `SetNotice` replaces unconditionally (`internal/app/session/notice.go:53`), so the runner keys the banner to the clamp identity (`Runner.clampNoticeKey`): an unchanged clamp is not re-stamped, a different clamp re-notices, and a route that stops clamping clears only its own banner. Output-only clips get output-token wording; a clip of a table/catalog fallback the preset did not declare is silent.
 
 `agent.max_turn_context_tokens`, when set, still wins over the derived threshold (`effectiveTurnThreshold` returns `configured` immediately). That remains the override of last resort for a user who knows their model better than the probe does.
 
@@ -307,6 +307,16 @@ Two corrections are now part of the design, and supersede the `table`/`table-var
 2. `ResolveModelLimits` clamps only against a provider-reported probe. `limits.Table` fills zeros and never overrides an explicit preset.
 
 `agent.max_turn_context_tokens` remains available to cap the threshold separately. When a provider reports no limits, a genuinely oversize request is handled by Patch 2's prune → compact → retry path, which produces an actionable failure rather than silently shrinking the window.
+
+### Review follow-ups (2026-10-20)
+
+The branch review's non-blocking findings are folded in:
+
+- **Clamp banner identity, not a session bool.** `Runner.clampNoticeKey` re-notices when a different preset, provider figure, or resolved value clamps, and clears the `route-limits` banner when the route stops clamping. Output-only clips get output-token wording; a clip of a table/catalog fallback the preset never declared is silent.
+- **Role runners share the probe.** Swarm and SDD role runners now receive the same `ModelProbe` as the main runner, and the rollover-window calculation uses it. They no longer clamp against the third-party table alone.
+- **Compaction failure stays actionable.** The overflow failure names the compaction error (`compaction also failed: …`) before wrapping the original overflow, so `errEmptyHandoffSummary` and friends are visible.
+- **Probe cache reads are memoized.** `modelProbeFunc` reuses the parsed `discovered.json` until its mtime or size moves, instead of re-reading and unmarshalling every turn.
+- **Salvage survives a later overflow.** The retry ladder keeps the largest partial response across attempts; if a later attempt is rejected as too long, the runner continues with that partial instead of discarding it and compacting. Prune notices now share sentence casing.
 
 ## Open questions
 

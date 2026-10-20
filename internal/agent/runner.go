@@ -328,9 +328,10 @@ type Runner struct {
 	// table and the catalog, and nothing clamps.
 	ModelProbe func(provider, model string) ModelProbe
 
-	// clampNoticed guards the one-per-session clamp notice: resolveRoute
-	// runs every turn and SetNotice replaces unconditionally.
-	clampNoticed bool
+	// clampNoticeKey identifies the clamp currently bannered, so a changed
+	// route or a different clamp re-notices while an unchanged clamp does not
+	// re-stamp the notice on every turn. Empty means no clamp banner is owed.
+	clampNoticeKey string
 
 	// PlanFirst enables the legacy pre-loop planning round-trip. Default
 	// false: planning happens inside the loop like every mainstream agent
@@ -1577,7 +1578,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					// budget. Say so: dropped context that leaves no trace
 					// reads to the user as the model losing track.
 					r.State.AddMessage(session.RoleSystem,
-						fmt.Sprintf("pruned %d stale tool result(s) to stay within the context budget", n),
+						fmt.Sprintf("Pruned %d stale tool result(s) to stay within the context budget.", n),
 						session.ContentTypeCompaction)
 					continue
 				} else if n > 0 {
@@ -1623,7 +1624,8 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				return task, r.failTurn(task, err)
 			}
 			err = classifyContextOverflow(err)
-			if errors.Is(err, errContextOverflow) {
+			if errors.Is(err, errContextOverflow) && strings.TrimSpace(res.Text) == "" {
+				var compactErr error
 				// Prune first: compaction resends the transcript, so an
 				// oversize wire must shrink before summarisation can succeed.
 				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 {
@@ -1661,10 +1663,18 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					if errors.Is(cerr, context.Canceled) {
 						return task, r.failTurn(task, cerr)
 					}
+					// Keep the compaction failure so the final message says
+					// why recovery could not run. The overflow remains the
+					// wrapped error; the compaction reason is explanatory.
+					compactErr = cerr
 				}
-				return task, r.failTurn(task, fmt.Errorf(
-					"model %s rejected the prompt as too long (window in use: %d, compaction threshold: %d). Raise agent.max_turn_context_tokens or lower the preset's context_window: %w",
-					turnModel, route.Window, turnThreshold, err))
+				msg := fmt.Sprintf(
+					"model %s rejected the prompt as too long (window in use: %d, compaction threshold: %d). Raise agent.max_turn_context_tokens or lower the preset's context_window",
+					turnModel, route.Window, turnThreshold)
+				if compactErr != nil {
+					msg += fmt.Sprintf("; compaction also failed: %v", compactErr)
+				}
+				return task, r.failTurn(task, fmt.Errorf("%s: %w", msg, err))
 			}
 			// A stream that failed part-way may still have delivered a usable
 			// response — a malformed SSE chunk aborts the stream without
@@ -1682,11 +1692,16 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				return task, r.failTurn(task, err)
 			}
 			r.withStats(func(s *turnStats) { s.m.StreamRecoveries++ })
-			r.State.Logger().Warn("recovered from mid-stream provider error",
+			r.State.Logger().Warn("recovered from a mid-turn provider error",
 				"error", err, "salvaged_bytes", len(res.Text))
-			r.State.AddMessage(session.RoleSystem,
-				fmt.Sprintf("Recovered from a provider stream error mid-turn (%v); continuing with the response received so far.", err),
-				session.ContentTypePlain)
+			message := fmt.Sprintf("Recovered from a provider stream error mid-turn (%v); continuing with the response received so far.", err)
+			if errors.Is(err, errContextOverflow) {
+				// The ladder keeps the largest partial from an earlier
+				// attempt. A later attempt rejecting the prompt as too long
+				// must not throw that work away.
+				message = fmt.Sprintf("Recovered the partial response received before the provider rejected a later attempt as too long (%v); continuing with it.", err)
+			}
+			r.State.AddMessage(session.RoleSystem, message, session.ContentTypePlain)
 		}
 		raw := res.Text
 

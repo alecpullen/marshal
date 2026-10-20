@@ -872,7 +872,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// a database: the controller archives generations to the DB, so rollover
 	// cannot function (and must not start) without one.
 	if !cfg.Session.Rollover.EnabledSet && database != nil {
-		window, _ := agent.ResolveModelLimits(route.Preset, nil, state.Logger())
+		window := agent.ResolveModelLimits(route.Preset, nil, agent.ModelProbe{}, state.Logger()).Window
 		cfg.Session.Rollover.Enabled = cfg.Session.Rollover.EffectiveEnabled(route.Preset.LocalOnly, window)
 	}
 
@@ -1279,7 +1279,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// Use LLMSummaryProvider as the primary digest provider, falling back to
 	// minimalDigestProvider only when the runner's provider is not available
 	// (branch review finding #1).
-	modelCtxWindow, _ := agent.ResolveModelLimits(route.Preset, runner.LimitsTable, state.Logger())
+	modelCtxWindow := agent.ResolveModelLimits(route.Preset, runner.LimitsTable, agent.ModelProbe{}, state.Logger()).Window
 	// Allocate the usage counter (declared above) once enablement can be
 	// resolved against the model window.
 	if cfg.Session.Rollover.EffectiveEnabled(route.Preset.LocalOnly, modelCtxWindow) && cfg.Session.Rollover.TokenCounter == "usage" {
@@ -1640,7 +1640,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	// via the RouteResolver above). Digests use minimalDigestProvider:
 	// ephemeral subagent generations are not worth an LLM call.
 	if s.childSession && s.database != nil {
-		window, _ := agent.ResolveModelLimits(route.Preset, s.limitsTable, s.state.Logger())
+		window := agent.ResolveModelLimits(route.Preset, s.limitsTable, agent.ModelProbe{}, s.state.Logger()).Window
 		if s.cfg.Session.Rollover.EffectiveEnabled(route.Preset.LocalOnly, window) {
 			childSessionID := "sess_sub_" + uuid.New().String()
 			if err := s.database.CreateSession(childSessionID, s.projectID, "sdd:"+string(role), time.Now()); err != nil {

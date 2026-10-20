@@ -323,6 +323,15 @@ type Runner struct {
 	// local catalog. Set by app.go from the on-disk cache.
 	LimitsTable *limits.Table
 
+	// ModelProbe reports the provider's own cached limits for a model.
+	// Nil means "no probe available" — resolution degrades to the limits
+	// table and the catalog, and nothing clamps.
+	ModelProbe func(provider, model string) ModelProbe
+
+	// clampNoticed guards the one-per-session clamp notice: resolveRoute
+	// runs every turn and SetNotice replaces unconditionally.
+	clampNoticed bool
+
 	// PlanFirst enables the legacy pre-loop planning round-trip. Default
 	// false: planning happens inside the loop like every mainstream agent
 	// (crush/kimi/opencode/pi), saving a model call and avoiding a pinned

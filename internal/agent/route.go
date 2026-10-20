@@ -164,7 +164,8 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 	// effectiveTurnThreshold call below — resolveRoute no longer mutates
 	// r.MaxTurnContextTokens, so one small-model turn cannot poison later
 	// big-model turns.
-	window, maxOut := r.resolveModelLimits(route.Preset)
+	lim := r.resolveModelLimits(route.Preset)
+	window, maxOut := lim.Window, lim.MaxOutput
 	// Bound the per-turn local (carried by the caller) so the state
 	// continues to reflect the known window for dashboards and rollovers.
 	route.Window = window
@@ -194,6 +195,26 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 	return turnProvider, turnModel, route
 }
 
+// ModelProbe is the provider's own reported limits for one model, as
+// recorded by the provider's /models probe. OK=false means the probe is
+// absent, stale, or hash-invalidated — never clamp on a guess.
+type ModelProbe struct {
+	Window, MaxOutput int
+	OK                bool
+}
+
+// ModelLimits is a preset's resolved budget plus the provenance a caller
+// needs to report a clamp. Probe*/Table* are 0 when that source had
+// nothing to say.
+type ModelLimits struct {
+	Window, MaxOutput          int    // in use
+	PresetWindow, PresetOutput int    // as declared in config
+	ProbeWindow, ProbeOutput   int    // provider-reported, 0 = unknown
+	TableWindow, TableOutput   int    // third-party limits table, 0 = unknown
+	Clamped                    bool
+	ClampSource                string // "", "probe", "table", "table-variant"
+}
+
 // ResolveModelLimits resolves a preset's context window and max output tokens.
 // Each field falls back independently: explicit config always wins; then the
 // fetched limits table, which matches across provider naming variance; then
@@ -201,41 +222,114 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 // models. A zero return is only possible when the preset's model ID is empty;
 // in that case the caller keeps its configured budget rather than guessing.
 //
+// After resolution, a known provider-reported limit (probe) or a known
+// third-party table limit clamps the result down. The clamp only ever lowers:
+// a deliberately conservative preset is never expanded. The probe outranks
+// the table per field, because the probe is a statement by the party that
+// enforces the limit. catalog.Lookup is never a clamp source — it fills only
+// zeros, and clamping an unlisted model to its conservative guess would
+// cripple it.
+//
 // logger is threaded through to catalog.Lookup so the "unknown model" warning
 // lands in the log file rather than stderr; pass nil to suppress it.
-func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table, logger *slog.Logger) (window, maxOutput int) {
-	window = preset.ContextWindow
-	maxOutput = preset.MaxOutputTokens
+func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table, probe ModelProbe, logger *slog.Logger) *ModelLimits {
+	lim := &ModelLimits{
+		Window:       preset.ContextWindow,
+		MaxOutput:    preset.MaxOutputTokens,
+		PresetWindow: preset.ContextWindow,
+		PresetOutput: preset.MaxOutputTokens,
+	}
 
+	var tableLim limits.Limit
+	var tableKind limits.MatchKind
 	if table != nil {
-		if lim, kind := table.Lookup(preset.Provider, preset.Model); kind != limits.MatchNone {
-			if window == 0 {
-				window = lim.ContextWindow
+		tableLim, tableKind = table.Lookup(preset.Provider, preset.Model)
+		if tableKind != limits.MatchNone {
+			lim.TableWindow = tableLim.ContextWindow
+			lim.TableOutput = tableLim.MaxOutputTokens
+			if lim.Window == 0 {
+				lim.Window = tableLim.ContextWindow
 			}
-			if maxOutput == 0 {
-				maxOutput = lim.MaxOutputTokens
+			if lim.MaxOutput == 0 {
+				lim.MaxOutput = tableLim.MaxOutputTokens
 			}
 		}
 	}
 
-	if window == 0 || maxOutput == 0 {
+	if lim.Window == 0 || lim.MaxOutput == 0 {
 		catWindow, catOutput := catalog.Lookup(preset.Model, logger)
-		if window == 0 {
-			window = catWindow
+		if lim.Window == 0 {
+			lim.Window = catWindow
 		}
-		if maxOutput == 0 {
-			maxOutput = catOutput
+		if lim.MaxOutput == 0 {
+			lim.MaxOutput = catOutput
 		}
 	}
-	return window, maxOutput
+
+	if probe.OK {
+		lim.ProbeWindow = probe.Window
+		lim.ProbeOutput = probe.MaxOutput
+	}
+
+	// Post-pass clamp. The probe outranks the table per field; the table is
+	// consulted only for a field the probe did not report.
+	if probe.OK && probe.Window > 0 {
+		if clampField(&lim.Window, probe.Window) {
+			lim.Clamped, lim.ClampSource = true, "probe"
+		}
+	} else if tableKind != limits.MatchNone {
+		if clampField(&lim.Window, tableLim.ContextWindow) {
+			lim.Clamped, lim.ClampSource = true, tableClampSource(tableKind)
+		}
+	}
+	if probe.OK && probe.MaxOutput > 0 {
+		if clampField(&lim.MaxOutput, probe.MaxOutput) {
+			lim.Clamped = true
+			if lim.ClampSource == "" {
+				lim.ClampSource = "probe"
+			}
+		}
+	} else if tableKind != limits.MatchNone {
+		if clampField(&lim.MaxOutput, tableLim.MaxOutputTokens) {
+			lim.Clamped = true
+			if lim.ClampSource == "" {
+				lim.ClampSource = tableClampSource(tableKind)
+			}
+		}
+	}
+	return lim
 }
 
-func (r *Runner) resolveModelLimits(preset routing.ModelPreset) (window, maxOutput int) {
+// clampField lowers *cur to limit when limit is known and smaller. It
+// reports whether it clamped.
+func clampField(cur *int, limit int) bool {
+	if limit > 0 && *cur > limit {
+		*cur = limit
+		return true
+	}
+	return false
+}
+
+// tableClampSource labels a table-sourced clamp. MatchVariant is an
+// inference across differently-named entries, so it is reported separately
+// and never banners.
+func tableClampSource(kind limits.MatchKind) string {
+	if kind == limits.MatchVariant {
+		return "table-variant"
+	}
+	return "table"
+}
+
+func (r *Runner) resolveModelLimits(preset routing.ModelPreset) *ModelLimits {
 	var logger *slog.Logger
 	if r.State != nil {
 		logger = r.State.Logger()
 	}
-	return ResolveModelLimits(preset, r.LimitsTable, logger)
+	var probe ModelProbe
+	if r.ModelProbe != nil {
+		probe = r.ModelProbe(preset.Provider, preset.Model)
+	}
+	return ResolveModelLimits(preset, r.LimitsTable, probe, logger)
 }
 
 // mergeMemories injects the project's current durable memories into the

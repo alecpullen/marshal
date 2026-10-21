@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +13,9 @@ import (
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
+	"marshal/internal/tools/registry"
 )
 
 func TestDispatcherImplementParsesReport(t *testing.T) {
@@ -188,5 +192,148 @@ func TestRunExecWithoutParentState(t *testing.T) {
 	}
 	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "", "p"); err != nil {
 		t.Fatalf("Implement: %v", err)
+	}
+}
+
+// TestDispatchActorUsesExecutionWorktree pins the actor workspace to the
+// dispatch's worktree before the registry factory reads the actor's
+// authority, while leaving the actor's project root (and the parent's
+// workspace) alone.
+func TestDispatchActorUsesExecutionWorktree(t *testing.T) {
+	parent := newPipelineTestSession(t, 0)
+	child := newPipelineTestSession(t, 1)
+	projectRoot := child.Workspace().ProjectRoot
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	var registryRoot string
+	d := Dispatcher{
+		State: parent,
+		ExecCtx: ExecutionContext{
+			RepoRoot:      parent.WorkingDir,
+			WorkspaceRoot: worktree,
+		},
+		Factory: func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+			return &agent.Runner{
+				State: child,
+				RunTaskFunc: func(ctx context.Context, goal string) (*agent.Task, error) {
+					return &agent.Task{Summary: "STATUS: DONE\nTESTS: pass\n"}, nil
+				},
+			}, nil
+		},
+		RegistryFactory: func(ctx ExecutionContext, scope RegistryScope, state *session.State) (*registry.Registry, error) {
+			registryRoot = state.InteractionAuthority().Snapshot().WorkspaceRoot
+			return registry.New(), nil
+		},
+	}
+	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "", "p"); err != nil {
+		t.Fatalf("Implement: %v", err)
+	}
+	if registryRoot != worktree {
+		t.Errorf("registry factory saw workspace root %q, want the dispatch worktree %q", registryRoot, worktree)
+	}
+	if got := child.InteractionAuthority().Snapshot().WorkspaceRoot; got != worktree {
+		t.Errorf("actor workspace root = %q, want %q", got, worktree)
+	}
+	if got := child.Workspace().ActiveRoot; got != worktree {
+		t.Errorf("actor active root = %q, want %q", got, worktree)
+	}
+	if got := child.Workspace().ProjectRoot; got != projectRoot {
+		t.Errorf("actor project root = %q, want it unchanged at %q", got, projectRoot)
+	}
+	if got := parent.Workspace().ActiveRoot; got != parent.WorkingDir {
+		t.Errorf("parent active root = %q, want it unchanged at %q", got, parent.WorkingDir)
+	}
+}
+
+// TestDispatchActorDoesNotRetargetParentWorkspace covers the shared-session
+// (swarm-style) runner: it has no actor workspace of its own, so a dispatch
+// must never move the owner's active root onto the pipeline worktree.
+func TestDispatchActorDoesNotRetargetParentWorkspace(t *testing.T) {
+	parent := newPipelineTestSession(t, 0)
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	d := Dispatcher{
+		State: parent,
+		ExecCtx: ExecutionContext{
+			RepoRoot:      parent.WorkingDir,
+			WorkspaceRoot: worktree,
+		},
+		Factory: func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+			return &agent.Runner{
+				State: parent,
+				RunTaskFunc: func(ctx context.Context, goal string) (*agent.Task, error) {
+					return &agent.Task{Summary: "STATUS: DONE\nTESTS: pass\n"}, nil
+				},
+			}, nil
+		},
+	}
+	if _, err := d.Implement(context.Background(), routing.RoleSDDImplementer, "", "p"); err != nil {
+		t.Fatalf("Implement: %v", err)
+	}
+	if got := parent.Workspace().ActiveRoot; got != parent.WorkingDir {
+		t.Errorf("parent active root = %q, want it unchanged at %q", got, parent.WorkingDir)
+	}
+	if got := parent.InteractionAuthority().Snapshot().WorkspaceRoot; got != parent.WorkingDir {
+		t.Errorf("parent authority workspace root = %q, want %q", got, parent.WorkingDir)
+	}
+	if n := len(parent.Subagents()); n != 0 {
+		t.Errorf("subagents = %d, want 0 for a shared-state runner", n)
+	}
+}
+
+// TestDispatchReadOnlyRoleRemainsNarrowerThanAct proves the registry scope,
+// not the actor's interaction tuple, is what enforces a read-only role: an
+// actor in Act still receives a registry without write tools.
+func TestDispatchReadOnlyRoleRemainsNarrowerThanAct(t *testing.T) {
+	parent := newPipelineTestSession(t, 0)
+	child := newPipelineTestSession(t, 1)
+	mode := interaction.ModeAct
+	if _, err := child.ApplyInteraction(interaction.Patch{Mode: &mode}); err != nil {
+		t.Fatalf("ApplyInteraction: %v", err)
+	}
+	worktree := filepath.Join(t.TempDir(), "worktree")
+	handler := func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		return registry.ToolResult{}, nil
+	}
+	schema := json.RawMessage(`{"type":"object"}`)
+	var gotScope RegistryScope
+	d := Dispatcher{
+		State: parent,
+		ExecCtx: ExecutionContext{
+			RepoRoot:      parent.WorkingDir,
+			WorkspaceRoot: worktree,
+		},
+		Factory: func(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
+			return &agent.Runner{
+				State: child,
+				RunTaskFunc: func(ctx context.Context, goal string) (*agent.Task, error) {
+					return &agent.Task{Summary: "STATUS: DONE\nTESTS: pass\n"}, nil
+				},
+			}, nil
+		},
+		RegistryFactory: func(ctx ExecutionContext, scope RegistryScope, state *session.State) (*registry.Registry, error) {
+			gotScope = scope
+			src := registry.New()
+			if err := src.Register(registry.Tool{Name: "repo.read", Risk: registry.RiskReadOnly, Schema: schema, Handler: handler}); err != nil {
+				return nil, err
+			}
+			if err := src.Register(registry.Tool{Name: "file.write", Risk: registry.RiskWorkspaceWrite, Schema: schema, Handler: handler}); err != nil {
+				return nil, err
+			}
+			if scope == ScopeReadOnly {
+				return registry.ReadOnlyView(src), nil
+			}
+			return src, nil
+		},
+	}
+	if _, err := d.run(context.Background(), routing.RoleSDDReviewer, swarm.ScopeReadOnly, "", "p"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if gotScope != ScopeReadOnly {
+		t.Errorf("registry scope = %v, want ScopeReadOnly", gotScope)
+	}
+	if snap := child.InteractionAuthority().Snapshot(); snap.Access.Mode != interaction.ModeAct {
+		t.Fatalf("actor access = %+v, want Act so the test proves scope, not mode, narrows the role", snap.Access)
+	}
+	if got := child.InteractionAuthority().Snapshot().WorkspaceRoot; got != worktree {
+		t.Errorf("actor workspace root = %q, want %q", got, worktree)
 	}
 }

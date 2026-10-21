@@ -24,11 +24,13 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/credentials"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/oauthworker"
 	"marshal/internal/llm/routing"
 	"marshal/internal/oauth"
 	"marshal/internal/tools/native"
+	"marshal/internal/tools/policy"
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
@@ -1254,10 +1256,18 @@ func approve(req session.AccessRequest, mode string) session.AccessChoice {
 // when the request also carried an editing hint the session had already
 // satisfied.
 func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
-	for _, mode := range []string{"plan", "default", "edit", "copilot", "auto"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tuple := range []interaction.Defaults{
+		{Mode: interaction.ModeAsk},
+		{Mode: interaction.ModeAct},
+		{Mode: interaction.ModeAct, Auto: true},
+	} {
+		name := string(tuple.Mode)
+		if tuple.Auto {
+			name += "/auto"
+		}
+		t.Run(name, func(t *testing.T) {
 			cfg := nativeToolAgentConfig("access-system-only")
-			cfg.Agent.ApprovalMode = mode
+			cfg.Agent.Mode, cfg.Agent.Auto = tuple.Mode, tuple.Auto
 			rt, state := newAccessTestRuntime(t, cfg)
 
 			req := registerAccess(t, state, "call-1", session.AccessIntent{System: true, Reason: "read outside the workspace"})
@@ -1271,29 +1281,40 @@ func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
 			if result.Status != session.AccessGranted {
 				t.Fatalf("status = %q, want %q", result.Status, session.AccessGranted)
 			}
-			if want := (session.AccessState{Mode: mode, System: true}); result.Effective != want {
-				t.Fatalf("effective = %+v, want %+v", result.Effective, want)
+			if want := legacyMode(tuple); result.Effective.Mode != want {
+				t.Fatalf("effective mode = %q, want the preserved %q", result.Effective.Mode, want)
 			}
-			if got := state.AccessState(); got != (session.AccessState{Mode: mode, System: true}) {
-				t.Fatalf("session pair = %+v, want the mode preserved with system access on", got)
+			if !result.Effective.System {
+				t.Fatal("effective system access is off after a system-only grant")
 			}
-			if got := string(rt.Runner.Policy.ApprovalMode()); got != mode {
-				t.Fatalf("policy mode = %q, want %q (a system-only grant must not switch modes)", got, mode)
+			got := state.InteractionState()
+			if got.Mode != tuple.Mode || got.Auto != tuple.Auto || !got.System {
+				t.Fatalf("session tuple = %+v, want %+v with system access on", got, tuple)
+			}
+			if engine := rt.Runner.Policy.ApprovalMode(); engine != derivedEngineMode(tuple) {
+				t.Fatalf("policy mode = %q, want %q (a system-only grant must not switch modes)", engine, derivedEngineMode(tuple))
 			}
 		})
 	}
 
 	// A legacy editing hint alongside system access is still system-only once
 	// the session already has editing authority.
-	for _, mode := range []string{"edit", "copilot", "auto"} {
-		t.Run(mode+"/legacy-hint", func(t *testing.T) {
+	for _, tuple := range []interaction.Defaults{
+		{Mode: interaction.ModeAct},
+		{Mode: interaction.ModeAct, Auto: true},
+	} {
+		name := string(tuple.Mode)
+		if tuple.Auto {
+			name += "/auto"
+		}
+		t.Run(name+"/legacy-hint", func(t *testing.T) {
 			cfg := nativeToolAgentConfig("access-system-only")
-			cfg.Agent.ApprovalMode = mode
+			cfg.Agent.Mode, cfg.Agent.Auto = tuple.Mode, tuple.Auto
 			rt, state := newAccessTestRuntime(t, cfg)
 
 			req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
 			if req.MissingEditing {
-				t.Fatalf("editing reported missing in %s mode; the hint must not create a selector", mode)
+				t.Fatal("editing reported missing in an Act session; the hint must not create a selector")
 			}
 			if !req.MissingSystem {
 				t.Fatal("system access should still be missing")
@@ -1302,11 +1323,38 @@ func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ResolveAccess: %v", err)
 			}
-			if want := (session.AccessState{Mode: mode, System: true}); result.Effective != want {
-				t.Fatalf("effective = %+v, want %+v", result.Effective, want)
+			if want := legacyMode(tuple); result.Effective.Mode != want {
+				t.Fatalf("effective mode = %q, want the preserved %q", result.Effective.Mode, want)
+			}
+			if !result.Effective.System {
+				t.Fatal("effective system access is off after a system-only grant")
 			}
 		})
 	}
+}
+
+// legacyMode projects a canonical tuple onto the retired five-mode spelling the
+// session's compatibility fields still carry.
+func legacyMode(tuple interaction.Defaults) string {
+	if tuple.Mode == interaction.ModeAsk {
+		return "default"
+	}
+	if tuple.Auto {
+		return "auto"
+	}
+	return "copilot"
+}
+
+// derivedEngineMode is the legacy approval mode the runner's engine derives
+// from a canonical tuple.
+func derivedEngineMode(tuple interaction.Defaults) policy.ApprovalMode {
+	if tuple.Mode == interaction.ModeAsk {
+		return policy.ModePlan
+	}
+	if tuple.Auto {
+		return policy.ModeAuto
+	}
+	return policy.ModeEdit
 }
 
 // A manual mode change that satisfies a waiting request settles it as
@@ -1314,11 +1362,12 @@ func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
 // request stops being presented.
 func TestRuntimeAccessSatisfiedWhilePendingSettlesAvailable(t *testing.T) {
 	cfg := nativeToolAgentConfig("access-satisfied")
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAsk, false
 	rt, state := newAccessTestRuntime(t, cfg)
 
 	req, decisions := registerAccessCh(t, state, "call-1", session.AccessIntent{Editing: true, Reason: "edit a file"})
 	if !req.MissingEditing {
-		t.Fatal("editing should be missing from the configured default mode")
+		t.Fatal("editing should be missing from an Ask session")
 	}
 
 	// The user switches mode by hand while the request is still waiting.
@@ -1343,8 +1392,8 @@ func TestRuntimeAccessSatisfiedWhilePendingSettlesAvailable(t *testing.T) {
 	if decision.Approved {
 		t.Fatal("an already-available result must not report approval")
 	}
-	if want := (session.AccessState{Mode: "copilot"}); decision.Access.Effective != want {
-		t.Fatalf("effective = %+v, want %+v", decision.Access.Effective, want)
+	if decision.Access.Effective.Mode != "copilot" {
+		t.Fatalf("effective mode = %q, want the manual Act selection", decision.Access.Effective.Mode)
 	}
 	if after := rt.Runner.Policy.ApprovalMode(); after != before {
 		t.Fatalf("policy mode moved from %q to %q while settling an already-available request", before, after)
@@ -1352,58 +1401,59 @@ func TestRuntimeAccessSatisfiedWhilePendingSettlesAvailable(t *testing.T) {
 }
 
 // A combined grant commits the policy engine, the force class and the session
-// pair before the waiting tool can observe the typed result.
+// tuple before the waiting tool can observe the typed result.
 func TestRuntimeAccessCombinedCommitsSelectedBundle(t *testing.T) {
-	for _, current := range []string{"default", "plan"} {
-		for _, selected := range []string{"edit", "copilot", "auto"} {
-			t.Run(current+"->"+selected, func(t *testing.T) {
-				cfg := nativeToolAgentConfig("access-combined")
-				cfg.Agent.ApprovalMode = current
-				rt, state := newAccessTestRuntime(t, cfg)
+	for _, selected := range []string{"edit", "copilot", "auto"} {
+		t.Run("ask->"+selected, func(t *testing.T) {
+			cfg := nativeToolAgentConfig("access-combined")
+			cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAsk, false
+			rt, state := newAccessTestRuntime(t, cfg)
 
-				req, decisions := registerAccessCh(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
-				if !req.MissingEditing || !req.MissingSystem {
-					t.Fatalf("combined request flags = editing %t / system %t, want true/true", req.MissingEditing, req.MissingSystem)
-				}
-				result, err := rt.ResolveAccess(approve(req, selected))
-				if err != nil {
-					t.Fatalf("ResolveAccess: %v", err)
-				}
-				if result.Status != session.AccessGranted {
-					t.Fatalf("status = %q, want %q", result.Status, session.AccessGranted)
-				}
-				want := session.AccessState{Mode: selected, System: true}
-				if result.Effective != want {
-					t.Fatalf("effective = %+v, want %+v", result.Effective, want)
-				}
+			req, decisions := registerAccessCh(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+			if !req.MissingEditing || !req.MissingSystem {
+				t.Fatalf("combined request flags = editing %t / system %t, want true/true", req.MissingEditing, req.MissingSystem)
+			}
+			result, err := rt.ResolveAccess(approve(req, selected))
+			if err != nil {
+				t.Fatalf("ResolveAccess: %v", err)
+			}
+			if result.Status != session.AccessGranted {
+				t.Fatalf("status = %q, want %q", result.Status, session.AccessGranted)
+			}
+			// An access grant always commits normal Act with Auto off: it never
+			// grants Auto, even when the chooser names the retired auto spelling.
+			want := interaction.Defaults{Mode: interaction.ModeAct}
+			if result.Effective.Mode != legacyMode(want) || !result.Effective.System {
+				t.Fatalf("effective = %+v, want the committed %+v with system access on", result.Effective, want)
+			}
 
-				// The typed result is already queued; everything it claims must
-				// already be true at the moment it becomes observable.
-				decision := <-decisions
-				if !decision.Approved || decision.Access == nil {
-					t.Fatalf("decision = %+v, want an approved typed grant", decision)
-				}
-				if decision.Access.Status != session.AccessGranted {
-					t.Fatalf("delivered status = %q, want %q", decision.Access.Status, session.AccessGranted)
-				}
-				if got := state.AccessState(); got != want {
-					t.Fatalf("session pair at acknowledgment = %+v, want %+v", got, want)
-				}
-				if got := string(rt.Runner.Policy.ApprovalMode()); got != selected {
-					t.Fatalf("policy mode at acknowledgment = %q, want %q", got, selected)
-				}
-				if got := rt.Runner.ForceClass; got != "edit" {
-					t.Fatalf("force class at acknowledgment = %q, want %q", got, "edit")
-				}
-			})
-		}
+			// The typed result is already queued; everything it claims must
+			// already be true at the moment it becomes observable.
+			decision := <-decisions
+			if !decision.Approved || decision.Access == nil {
+				t.Fatalf("decision = %+v, want an approved typed grant", decision)
+			}
+			if decision.Access.Status != session.AccessGranted {
+				t.Fatalf("delivered status = %q, want %q", decision.Access.Status, session.AccessGranted)
+			}
+			got := state.InteractionState()
+			if got.Mode != want.Mode || got.Auto != want.Auto || !got.System {
+				t.Fatalf("session tuple at acknowledgment = %+v, want %+v with system access on", got, want)
+			}
+			if engine := rt.Runner.Policy.ApprovalMode(); engine != derivedEngineMode(want) {
+				t.Fatalf("policy mode at acknowledgment = %q, want %q", engine, derivedEngineMode(want))
+			}
+			if got := rt.Runner.ForceClass; got != "edit" {
+				t.Fatalf("force class at acknowledgment = %q, want %q", got, "edit")
+			}
+		})
 	}
 }
 
-// A combined request cannot be applied without a policy engine, and the
-// refusal leaves both capabilities untouched; a system-only request needs no
-// editing setter and still succeeds.
-func TestRuntimeAccessUnavailablePolicyFailsBeforeMutation(t *testing.T) {
+// A grant is a session-scoped permission change: it is committed by the
+// session and needs no live policy engine. With no runner (or no engine) the
+// runtime's projection is simply a no-op, and the session tuple still moves.
+func TestRuntimeAccessNeedsNoPolicyEngine(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		detach func(rt *Runtime)
@@ -1413,42 +1463,28 @@ func TestRuntimeAccessUnavailablePolicyFailsBeforeMutation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := nativeToolAgentConfig("access-no-policy")
+			cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAsk, false
 			rt, state := newAccessTestRuntime(t, cfg)
 			tc.detach(rt)
 
 			req, decisions := registerAccessCh(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
 			result, err := rt.ResolveAccess(approve(req, "edit"))
-			if err == nil {
-				t.Fatal("a combined grant succeeded without a policy engine")
+			if err != nil {
+				t.Fatalf("a grant without a policy engine failed: %v", err)
 			}
-			if result.Status != session.AccessFailed {
-				t.Fatalf("status = %q, want %q", result.Status, session.AccessFailed)
+			if result.Status != session.AccessGranted {
+				t.Fatalf("status = %q, want %q", result.Status, session.AccessGranted)
 			}
-			if want := (session.AccessState{Mode: "default"}); result.Effective != want {
-				t.Fatalf("effective = %+v, want the unchanged %+v", result.Effective, want)
-			}
-			if got := state.AccessState(); got != (session.AccessState{Mode: "default"}) {
-				t.Fatalf("session pair = %+v, want both capabilities unchanged", got)
+			got := state.InteractionState()
+			if got.Mode != interaction.ModeAct || got.Auto || !got.System {
+				t.Fatalf("session tuple = %+v, want act with system access on", got)
 			}
 			decision := <-decisions
-			if decision.Approved {
-				t.Fatal("a failed grant was acknowledged as approved")
+			if !decision.Approved {
+				t.Fatal("an approved grant was not acknowledged as approved")
 			}
-			if decision.Access == nil || decision.Access.Status != session.AccessFailed {
-				t.Fatalf("delivered result = %+v, want a typed failure", decision.Access)
-			}
-
-			// System-only needs no editing setter, so it still works.
-			sysReq := registerAccess(t, state, "call-2", session.AccessIntent{System: true, Reason: "read outside"})
-			sysResult, err := rt.ResolveAccess(approve(sysReq, ""))
-			if err != nil {
-				t.Fatalf("system-only ResolveAccess: %v", err)
-			}
-			if sysResult.Status != session.AccessGranted {
-				t.Fatalf("system-only status = %q, want %q", sysResult.Status, session.AccessGranted)
-			}
-			if got := state.AccessState(); got != (session.AccessState{Mode: "default", System: true}) {
-				t.Fatalf("session pair = %+v, want system access on with the mode preserved", got)
+			if decision.Access == nil || decision.Access.Status != session.AccessGranted {
+				t.Fatalf("delivered result = %+v, want a typed grant", decision.Access)
 			}
 		})
 	}
@@ -1458,6 +1494,7 @@ func TestRuntimeAccessUnavailablePolicyFailsBeforeMutation(t *testing.T) {
 // file, reload the runtime, or replace the managers a running job depends on.
 func TestRuntimeAccessDoesNotSaveReloadOrReplaceJobs(t *testing.T) {
 	cfg := nativeToolAgentConfig("access-no-reload")
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAsk, false
 	rt, state := newAccessTestRuntime(t, cfg)
 
 	// A save-visible fixture: bytes of a config file the runtime could
@@ -1548,6 +1585,9 @@ func TestRuntimeAccessKeepsRunningCommandIdentity(t *testing.T) {
 	if _, err := rt.ResolveAccess(approve(req, "")); err != nil {
 		t.Fatalf("ResolveAccess: %v", err)
 	}
+	if got := state.InteractionState(); !got.System || got.Mode != interaction.ModeAct {
+		t.Fatalf("canonical tuple after the grant = %+v, want act with system access on", got)
+	}
 
 	if rt.JobManager != jobMgr {
 		t.Fatal("grant replaced the job manager")
@@ -1589,6 +1629,7 @@ func TestRuntimeAccessKeepsRunningCommandIdentity(t *testing.T) {
 func TestRuntimeAccessOverrideSurvivesReload(t *testing.T) {
 	ctx := context.Background()
 	cfg := nativeToolAgentConfig("access-override")
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAsk, false
 	rt, state := newAccessTestRuntime(t, cfg)
 
 	req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
@@ -1598,19 +1639,21 @@ func TestRuntimeAccessOverrideSurvivesReload(t *testing.T) {
 
 	// An unrelated setting changes; the configured mode does not.
 	reloaded := nativeToolAgentConfig("access-override")
+	reloaded.Agent.Mode, reloaded.Agent.Auto = interaction.ModeAsk, false
 	reloaded.Agent.MaxToolIterations = cfg.Agent.MaxToolIterations + 7
 	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 
-	if got, want := state.AccessState(), (session.AccessState{Mode: "copilot", System: true}); got != want {
-		t.Fatalf("session pair after reload = %+v, want %+v", got, want)
+	got := state.InteractionState()
+	if got.Mode != interaction.ModeAct || got.Auto || !got.System {
+		t.Fatalf("tuple after reload = %+v, want act with system access on", got)
 	}
-	if got := string(rt.Runner.Policy.ApprovalMode()); got != "copilot" {
-		t.Fatalf("policy mode after reload = %q, want %q", got, "copilot")
+	if engine := rt.Runner.Policy.ApprovalMode(); engine != policy.ModeEdit {
+		t.Fatalf("policy mode after reload = %q, want %q", engine, policy.ModeEdit)
 	}
-	if got := rt.Config.Agent.ApprovalMode; got != "default" {
-		t.Fatalf("Runtime.Config mode = %q, want the configured %q", got, "default")
+	if rt.Config.Agent.Mode != interaction.ModeAsk || rt.Config.Agent.Auto {
+		t.Fatalf("Runtime.Config tuple = %q/%v, want the configured ask", rt.Config.Agent.Mode, rt.Config.Agent.Auto)
 	}
 }
 
@@ -1619,6 +1662,7 @@ func TestRuntimeAccessOverrideSurvivesReload(t *testing.T) {
 func TestRuntimeExplicitConfiguredModeReplacesOverride(t *testing.T) {
 	ctx := context.Background()
 	cfg := nativeToolAgentConfig("access-explicit")
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAsk, false
 	rt, state := newAccessTestRuntime(t, cfg)
 
 	req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
@@ -1627,19 +1671,20 @@ func TestRuntimeExplicitConfiguredModeReplacesOverride(t *testing.T) {
 	}
 
 	reloaded := nativeToolAgentConfig("access-explicit")
-	reloaded.Agent.ApprovalMode = "edit"
+	reloaded.Agent.Mode, reloaded.Agent.Auto = interaction.ModeAct, false
 	if err := reloadAgentRuntime(ctx, reloaded, rt); err != nil {
 		t.Fatalf("reloadAgentRuntime: %v", err)
 	}
 
-	if got, want := state.AccessState(), (session.AccessState{Mode: "edit", System: true}); got != want {
-		t.Fatalf("session pair after an explicit configured change = %+v, want %+v", got, want)
+	got := state.InteractionState()
+	if got.Mode != interaction.ModeAct || got.Auto || !got.System {
+		t.Fatalf("tuple after an explicit configured change = %+v, want act with system access on", got)
 	}
-	if got := string(rt.Runner.Policy.ApprovalMode()); got != "edit" {
-		t.Fatalf("policy mode = %q, want %q", got, "edit")
+	if engine := rt.Runner.Policy.ApprovalMode(); engine != policy.ModeEdit {
+		t.Fatalf("policy mode = %q, want %q", engine, policy.ModeEdit)
 	}
-	if got := rt.Config.Agent.ApprovalMode; got != "edit" {
-		t.Fatalf("Runtime.Config mode = %q, want %q", got, "edit")
+	if rt.Config.Agent.Mode != interaction.ModeAct {
+		t.Fatalf("Runtime.Config mode = %q, want %q", rt.Config.Agent.Mode, interaction.ModeAct)
 	}
 }
 
@@ -1648,6 +1693,7 @@ func TestRuntimeExplicitConfiguredModeReplacesOverride(t *testing.T) {
 func TestRuntimeFailedReloadKeepsAccessState(t *testing.T) {
 	ctx := context.Background()
 	cfg := nativeToolAgentConfig("access-failed-reload")
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAsk, false
 	rt, state := newAccessTestRuntime(t, cfg)
 
 	req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
@@ -1655,6 +1701,7 @@ func TestRuntimeFailedReloadKeepsAccessState(t *testing.T) {
 		t.Fatalf("ResolveAccess: %v", err)
 	}
 	runner := rt.Runner
+	granted := state.InteractionState()
 
 	// A config that cannot build: the preset names a provider that is not
 	// configured, so resolution fails before any credential is touched.
@@ -1676,14 +1723,14 @@ func TestRuntimeFailedReloadKeepsAccessState(t *testing.T) {
 	if rt.Runner != runner {
 		t.Fatal("a failed reload replaced the runner")
 	}
-	if got, want := state.AccessState(), (session.AccessState{Mode: "copilot", System: true}); got != want {
-		t.Fatalf("session pair after a failed reload = %+v, want %+v", got, want)
+	if got := state.InteractionState(); got != granted {
+		t.Fatalf("tuple after a failed reload = %+v, want %+v", got, granted)
 	}
-	if got := string(rt.Runner.Policy.ApprovalMode()); got != "copilot" {
-		t.Fatalf("policy mode after a failed reload = %q, want %q", got, "copilot")
+	if engine := rt.Runner.Policy.ApprovalMode(); engine != policy.ModeEdit {
+		t.Fatalf("policy mode after a failed reload = %q, want %q", engine, policy.ModeEdit)
 	}
-	if got := rt.Config.Agent.ApprovalMode; got != "default" {
-		t.Fatalf("Runtime.Config mode after a failed reload = %q, want the configured %q", got, "default")
+	if rt.Config.Agent.Mode != interaction.ModeAsk || rt.Config.Agent.Auto {
+		t.Fatalf("Runtime.Config tuple after a failed reload = %q/%v, want the configured ask", rt.Config.Agent.Mode, rt.Config.Agent.Auto)
 	}
 }
 
@@ -1756,13 +1803,15 @@ func TestRuntimeAccessSerializesWithReloadAndQuiesce(t *testing.T) {
 	cfg := nativeToolAgentConfig("access-serialize")
 	rt, state := newAccessTestRuntime(t, cfg)
 
-	req := registerAccess(t, state, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+	// The session already holds Act, so the only missing capability this
+	// conversation can request is System access.
+	req := registerAccess(t, state, "call-1", session.AccessIntent{System: true, Reason: "read outside the workspace"})
 
 	// Hold the reload gate: a resolution must not proceed past it.
 	rt.reloadMu.Lock()
 	done := make(chan session.AccessResult, 1)
 	go func() {
-		result, _ := rt.ResolveAccess(approve(req, "copilot"))
+		result, _ := rt.ResolveAccess(approve(req, ""))
 		done <- result
 	}()
 	select {
@@ -1781,21 +1830,21 @@ func TestRuntimeAccessSerializesWithReloadAndQuiesce(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("ResolveAccess did not complete after the gate was released")
 	}
-	if got, want := state.AccessState(), (session.AccessState{Mode: "copilot", System: true}); got != want {
-		t.Fatalf("session pair = %+v, want %+v", got, want)
+	if got := state.InteractionState(); got.Mode != interaction.ModeAct || !got.System {
+		t.Fatalf("tuple = %+v, want act with system access on", got)
 	}
 
 	// A grant and a reload racing each other must leave the runner and the
 	// session agreeing, whichever order they land in.
 	raceCfg := nativeToolAgentConfig("access-serialize")
 	raceRT, raceState := newAccessTestRuntime(t, raceCfg)
-	raceReq := registerAccess(t, raceState, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
+	raceReq := registerAccess(t, raceState, "call-1", session.AccessIntent{System: true, Reason: "read outside the workspace"})
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = raceRT.ResolveAccess(approve(raceReq, "copilot"))
+		_, _ = raceRT.ResolveAccess(approve(raceReq, ""))
 	}()
 	go func() {
 		defer wg.Done()
@@ -1803,12 +1852,15 @@ func TestRuntimeAccessSerializesWithReloadAndQuiesce(t *testing.T) {
 	}()
 	wg.Wait()
 
-	effective := raceState.AccessState()
-	if got := string(raceRT.Runner.Policy.ApprovalMode()); got != effective.Mode {
-		t.Fatalf("runner policy mode %q disagrees with the session mode %q after a concurrent reload", got, effective.Mode)
+	effective := raceState.InteractionState()
+	if effective.Mode != interaction.ModeAct || !effective.System {
+		t.Fatalf("tuple after a concurrent reload = %+v, want act with system access on", effective)
 	}
-	if got := raceRT.Runner.ForceClass; got != forceClassForMode(effective.Mode) {
-		t.Fatalf("runner force class %q disagrees with the session mode %q after a concurrent reload", got, effective.Mode)
+	if got := string(raceRT.Runner.Policy.ApprovalMode()); got != "edit" {
+		t.Fatalf("runner policy mode %q disagrees with the canonical Act tuple after a concurrent reload", got)
+	}
+	if got := raceRT.Runner.ForceClass; got != "edit" {
+		t.Fatalf("runner force class %q disagrees with the canonical Act tuple after a concurrent reload", got)
 	}
 }
 

@@ -6841,46 +6841,6 @@ func TestTUIEndControllerAdapterRoundTrips(t *testing.T) {
 	}
 }
 
-// TestExitAnalysisElevationIsRestored pins the app-side ownership of the exit
-// analysis' temporary elevation: it is in place while the pass runs and is
-// undone whatever the outcome, so a failed pass can never leave an ordinary
-// prompt elevated.
-func TestExitAnalysisElevationIsRestored(t *testing.T) {
-	rt := startEndRuntime(t)
-	if rt.Runner == nil {
-		t.Fatal("rt.Runner = nil")
-	}
-
-	// Seed a read-only posture: the pass must not have it, and must get it back.
-	rt.State.SetSystemAccess(false)
-	rt.Runner.SetApprovalMode(policy.ModePlan)
-	rt.Config.Agent.ApprovalMode = string(policy.ModePlan)
-
-	seenSystem, seenMode := false, policy.ModePlan
-	err := runWithExitAnalysisElevation(rt, func() error {
-		seenSystem = rt.State.SystemAccess()
-		if rt.Runner.Policy != nil {
-			seenMode = rt.Runner.Policy.ApprovalMode()
-		}
-		return errors.New("the pass failed")
-	})
-	if err == nil {
-		t.Fatal("runWithExitAnalysisElevation swallowed the pass error")
-	}
-	if !seenSystem {
-		t.Fatal("the pass ran WITHOUT system access; the elevation was not applied")
-	}
-	if seenMode != policy.ModeEdit {
-		t.Fatalf("the pass ran in mode %q, want edit so its write is not mode-denied", seenMode)
-	}
-	if rt.State.SystemAccess() {
-		t.Fatal("a failed pass left system access granted")
-	}
-	if rt.Runner.Policy != nil && rt.Runner.Policy.ApprovalMode() != policy.ModePlan {
-		t.Fatalf("a failed pass left the mode at %q, want the prior plan", rt.Runner.Policy.ApprovalMode())
-	}
-}
-
 // TestTUIEndControllerIsTheOnlyEndSeam pins that app.Run wires the adapter, so
 // the TUI never decides policy or reaches the runtime directly. It runs the
 // program runner just far enough to inspect the model's end seam.

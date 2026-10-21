@@ -2401,61 +2401,6 @@ func tuiEndWorkSnapshot(work ActiveWork) tui.EndWorkSnapshot {
 	return out
 }
 
-// runWithExitAnalysisElevation runs fn with the temporary elevation the exit
-// postmortem's agent pass needs, and restores the previous values whatever the
-// outcome.
-//
-// The pass writes the report at an absolute path outside the workspace, so it
-// needs system access and an editing approval mode/force class; without them
-// plan/default mode would deny the write and bounce a mode.request at someone
-// who is trying to exit. The grant is SCOPED to this call: it is undone here
-// (including on failure), so a refused or failed pass can never leave an
-// ordinary prompt elevated.
-func runWithExitAnalysisElevation(rt *Runtime, fn func() error) error {
-	if rt == nil {
-		return fmt.Errorf("exit analysis: no runtime")
-	}
-	priorSystem := false
-	if rt.State != nil {
-		priorSystem = rt.State.SystemAccess()
-		rt.State.SetSystemAccess(true)
-	}
-	// Save and restore the runner's own posture. The approval mode lives on the
-	// policy engine; the TUI mirrors it into state.Config.Agent.ApprovalMode, so
-	// the prior mode is read from the engine when one exists and from the config
-	// otherwise. The force class has no accessor (the field is mutex-guarded for
-	// writers only), so it is restored from the same source the TUI derives it
-	// from — the configured mode.
-	priorMode := policy.ParseApprovalMode(rt.Config.Agent.ApprovalMode)
-	runner := rt.Runner
-	if runner != nil {
-		if runner.Policy != nil {
-			priorMode = runner.Policy.ApprovalMode()
-		}
-		runner.SetApprovalMode(policy.ModeEdit)
-		runner.SetForceClass(string(agent.ClassEdit))
-	}
-	defer func() {
-		if runner != nil {
-			runner.SetApprovalMode(priorMode)
-			runner.SetForceClass(classForApprovalMode(priorMode))
-		}
-		if rt.State != nil {
-			rt.State.SetSystemAccess(priorSystem)
-		}
-	}()
-	return fn()
-}
-
-// classForApprovalMode maps an approval mode to the task class the TUI forces
-// for it: plan and default ask before acting, every other mode edits.
-func classForApprovalMode(mode policy.ApprovalMode) string {
-	if mode == policy.ModePlan || mode == policy.ModeDefault {
-		return string(agent.ClassQuestion)
-	}
-	return string(agent.ClassEdit)
-}
-
 type actionDecodingConfig struct {
 	Native         bool
 	ResponseFormat *schema.ResponseFormat
@@ -2886,9 +2831,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			if rt.Runner == nil {
 				return fmt.Errorf("exit analysis: no agent runner")
 			}
-			return runWithExitAnalysisElevation(rt, func() error {
-				return rt.Runner.Run(analysisCtx, goal)
-			})
+			// The pass runs under the conversation's CURRENT authority. The
+			// runtime grants nothing: an Ask actor (or one without System) that
+			// cannot write the report path gets the pass's own non-approved
+			// failure, and the host-managed extraction that already landed stays
+			// in place. Elevating here would silently widen the user's prompt.
+			return rt.Runner.Run(analysisCtx, goal)
 		})
 
 		// The TUI's structural end seam: acceptance, settlement and the scoped
@@ -2993,6 +2941,15 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if cfg.SessionRouting.Empty() && rt.State != nil {
 		cfg.SessionRouting = rt.State.Config.SessionRouting
 	}
+	// Validate the candidate's configured tuple before the build: a reload that
+	// cannot describe a valid starting tuple must change no config, tuple,
+	// access source or revision.
+	if _, err := cfg.InteractionDefaults(); err != nil {
+		if rt.Logger != nil {
+			rt.Logger.Warn("reload: invalid interaction defaults; keeping previous config", "error", err)
+		}
+		return fmt.Errorf("reload: invalid interaction defaults: %w", err)
+	}
 
 	// The incoming config is the new *configured* baseline; the mode the
 	// session actually runs with may differ, because a manual selection or an
@@ -3090,6 +3047,13 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 		effective := rt.State.AccessState()
 		rt.Runner.SetForceClass(forceClassForMode(effective.Mode))
 		rt.Runner.SetApprovalMode(policy.ApprovalMode(effective.Mode))
+	}
+	if rt.Runner != nil && rt.Runner.Policy != nil {
+		// Point the installed engine at the owner's live policy snapshot:
+		// config, session rules and the access revision come from one owner
+		// transaction, so a later grant or reload cannot leave the engine
+		// evaluating an old config under a new revision.
+		rt.Runner.Policy.SetConfigSource(rt.State.PolicySnapshot)
 	}
 	if rt.SwarmRunner == nil {
 		rt.SwarmRunner = newSwarmRunner

@@ -2,6 +2,7 @@ package settings
 
 import (
 	"marshal/internal/app/config"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 )
 
@@ -105,12 +106,35 @@ func agentFrame(s *state) *frame {
 				GetBool:  func() bool { return s.cfg.Agent.IntentNudge },
 				SetBool:  func(v bool) { s.cfg.Agent.IntentNudge = v }},
 			func() *field {
-				f := enumField("agent.approval_mode", "Approval mode",
-					[]string{"plan", "default", "edit", "copilot", "auto"},
-					func() string { return s.cfg.Agent.ApprovalMode },
-					func(v string) { s.cfg.Agent.ApprovalMode = v })
-				f.TomlPath = "agent.approval_mode"
-				f.Desc = "interaction/approval mode for the agent loop"
+				f := enumField("agent.mode", "Mode",
+					[]string{string(interaction.ModeAsk), string(interaction.ModeAct)},
+					func() string { return string(s.cfg.Agent.Mode) },
+					func(v string) {
+						s.cfg.Agent.Mode = interaction.Mode(v)
+						// Ask cannot carry Auto. Selecting it clears the draft's
+						// modifier; the config loader still rejects a malformed
+						// loaded file.
+						if v == string(interaction.ModeAsk) {
+							s.cfg.Agent.Auto = false
+						}
+					})
+				f.TomlPath = "agent.mode"
+				f.Desc = "starting interaction mode: ask or act"
+				SetFieldWriteGlobal(f, true)
+				return f
+			}(),
+			func() *field {
+				f := NewField("agent.auto", "Auto", kindToggle)
+				SetFieldGetBool(f, func() bool { return s.cfg.Agent.Auto })
+				SetFieldSetBool(f, func(v bool) {
+					s.cfg.Agent.Auto = v
+					if v {
+						// Auto is valid only with Act; enabling it enters Act.
+						s.cfg.Agent.Mode = interaction.ModeAct
+					}
+				})
+				f.TomlPath = "agent.auto"
+				f.Desc = "starting Auto modifier: preauthorize destructive workspace commands (enters Act)"
 				SetFieldWriteGlobal(f, true)
 				return f
 			}(),

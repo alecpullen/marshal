@@ -59,6 +59,43 @@ import (
 	"marshal/internal/worktree"
 )
 
+// errWatchSampleNotApproved is the typed non-approved result a background
+// watch sample returns. A watch never opens an unsolicited approval prompt:
+// the next sample that is not currently Allow reports through the watch's
+// existing error handling instead.
+var errWatchSampleNotApproved = errors.New("watch command sample requires interaction approval")
+
+// watchSampleAttempt captures one command watch sample as a fresh logical
+// invocation. The caller re-reads the current workspace before building it, so
+// the next sample always reflects the owner's current root.
+func watchSampleAttempt(command, dir string) policy.CommandAttempt {
+	return policy.CommandAttempt{
+		InvocationID: fmt.Sprintf("watch-sample-%d", time.Now().UnixNano()),
+		ToolName:     "shell.run",
+		Input:        policy.ShellInput{Command: command, Dir: dir, WorkspaceRoot: dir},
+	}
+}
+
+// authorizeWatchSample evaluates one captured sample against the live owner
+// authority and admits exactly that attempt. Only DecisionAllow is admitted;
+// Confirm, missing capability and Deny return the typed non-approved error, so
+// a background watch never becomes an unsolicited approval prompt.
+func authorizeWatchSample(ctx context.Context, az *policy.Authorizer, attempt policy.CommandAttempt) (*policy.Admission, error) {
+	call := policy.Call{InvocationID: attempt.InvocationID, ToolName: attempt.ToolName, Shell: &attempt.Input}
+	proof, evaluation, err := az.Evaluate(ctx, call)
+	if err != nil {
+		return nil, err
+	}
+	if evaluation.Decision != policy.DecisionAllow {
+		return nil, fmt.Errorf("%w: %s", errWatchSampleNotApproved, evaluation.Decision)
+	}
+	admission, err := az.BeginCommand(policy.WithAuthorization(ctx, proof), attempt)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errWatchSampleNotApproved, err)
+	}
+	return admission, nil
+}
+
 // ProgramResult is the value returned by a ProgramRunner. It carries the
 // bubbletea program outcome plus an optional request to resume a different
 // session.
@@ -947,6 +984,18 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		})
 	}
 
+	// The root policy engine and its authorizer are constructed BEFORE any
+	// watch starts: a watch sample is an execution, and every sample must be
+	// authorized against the current owner tuple, workspace, rules and config.
+	pol := policy.NewEngine(&cfg, state.SessionRules())
+	if state.Logger() != nil {
+		pol.SetLogger(state.Logger())
+	}
+	pol.WithRegistry(reg)
+	pol.SetApprovalMode(parseApprovalMode(cfg.Agent.ApprovalMode))
+	pol.SetConfigSource(state.PolicySnapshot)
+	rootAuthorizer := policy.NewAuthorizer(pol, state.InteractionAuthority())
+
 	// Milestone W: construct the watch manager from the sandboxed command
 	// runner and the job broker. Command samples run through the same
 	// sandboxed runner as background jobs; job watches subscribe to the job
@@ -955,6 +1004,23 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// to the TUI lane broker.
 	watchManager := watch.NewManager(ctx, watch.Deps{
 		RunSample: func(c context.Context, command, dir string) (string, int, error) {
+			// Each sample is a fresh logical invocation: mode, root, rules and
+			// config are re-read here, so a watch admitted under Act cannot
+			// keep executing new writes after the owner selects Ask.
+			attempt := watchSampleAttempt(command, dir)
+			admission, err := authorizeWatchSample(c, rootAuthorizer, attempt)
+			if err != nil {
+				return "", 0, err
+			}
+			if commitErr := admission.Commit(); commitErr != nil {
+				admission.Release()
+				return "", 0, commitErr
+			}
+			// Release immediately before the direct runner attempt: the
+			// decision is bound to this exact sample, and holding the owner's
+			// admission gate for the command's whole lifetime would block every
+			// other admission in the conversation.
+			admission.Release()
 			res, err := commandRunner.Run(c, native.CommandRequest{
 				Command:        command,
 				Dir:            dir,
@@ -1022,17 +1088,6 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if database != nil {
 		fileTracker = filetrack.New(database.SQLDB(), state.SessionID())
 	}
-
-	pol := policy.NewEngine(&cfg, state.SessionRules())
-	if state.Logger() != nil {
-		pol.SetLogger(state.Logger())
-	}
-	pol.WithRegistry(reg)
-	pol.SetApprovalMode(parseApprovalMode(cfg.Agent.ApprovalMode))
-	// The root engine reads the owner's live config/rules/revision, so a
-	// reload is visible without rebuilding it or any child clone.
-	pol.SetConfigSource(state.PolicySnapshot)
-	rootAuthorizer := policy.NewAuthorizer(pol, state.InteractionAuthority())
 
 	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,

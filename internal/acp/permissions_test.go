@@ -394,8 +394,8 @@ func TestCollectAccessTypedWireAndChoice(t *testing.T) {
 		Approved: true,
 		ModeAccess: &ModeAccessChoice{
 			RequestID: req.RequestID, SessionID: req.SessionID,
-			Current: ModeAccessState{Mode: req.Current.Mode, System: req.Current.System},
-			Mode:    "copilot",
+			Current: modeAccessStateFrom(req.Current),
+			Mode:    "act",
 		},
 	})
 	if err != nil {
@@ -408,7 +408,7 @@ func TestCollectAccessTypedWireAndChoice(t *testing.T) {
 	if !decodedChoice.Approved {
 		t.Fatal("the outer Approved field did not survive the round trip")
 	}
-	if decodedChoice.ModeAccess == nil || decodedChoice.ModeAccess.Mode != "copilot" {
+	if decodedChoice.ModeAccess == nil || decodedChoice.ModeAccess.Mode != "act" {
 		t.Fatalf("round-tripped modeAccess choice = %+v, want the selected variant", decodedChoice.ModeAccess)
 	}
 
@@ -428,8 +428,8 @@ func TestCollectAccessTypedWireAndChoice(t *testing.T) {
 	if choice.Current != req.Current {
 		t.Fatalf("choice current = %+v, want the presented %+v", choice.Current, req.Current)
 	}
-	if choice.Mode != "copilot" {
-		t.Fatalf("choice mode = %q, want copilot", choice.Mode)
+	if choice.Mode != "act" {
+		t.Fatalf("choice mode = %q, want normal Act", choice.Mode)
 	}
 }
 
@@ -492,8 +492,8 @@ func TestCollectAccessLegacySelectionIsScopeBound(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CollectAccess: %v", err)
 		}
-		if choice.Mode != "edit" {
-			t.Fatalf("mode = %q, want the edit default", choice.Mode)
+		if choice.Mode != "act" {
+			t.Fatalf("mode = %q, want normal Act", choice.Mode)
 		}
 	})
 
@@ -504,8 +504,8 @@ func TestCollectAccessLegacySelectionIsScopeBound(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CollectAccess: %v", err)
 		}
-		if choice.Mode != "auto" {
-			t.Fatalf("mode = %q, want auto", choice.Mode)
+		if choice.Mode != "act" {
+			t.Fatalf("mode = %q, want normal Act", choice.Mode)
 		}
 	})
 
@@ -553,9 +553,9 @@ func TestCollectAccessDisclosureSurvivesLegacyClient(t *testing.T) {
 	}
 	for _, want := range []string{
 		"read outside the workspace",
-		"Current mode: copilot; system access: false.",
-		"interaction mode stays unchanged",
+		"Scope: Filesystem access outside the workspace",
 		"This conversation only",
+		"Interaction mode, policy and sandbox still apply",
 		"no sudo",
 	} {
 		if !strings.Contains(client.gotReq.Reason, want) {

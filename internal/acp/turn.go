@@ -1094,14 +1094,17 @@ func (m *TurnManager) resolveAccessRequest(ctx context.Context, sessionID string
 			// fresh state rather than replaying the stale choice.
 			continue
 		case session.AccessGranted:
-			// Only a grant is announced, and it carries the state the runtime
-			// actually committed.
+			// Only a grant is announced, and it carries the full state the
+			// runtime actually committed.
+			committed := interactionStateFromAccess(result.Effective)
 			_ = m.notify("session/update", SessionUpdateParams{
 				SessionID: sessionID,
 				Update: map[string]any{
-					"kind":          "mode_changed",
-					"mode":          result.Effective.Mode,
-					"system_access": result.Effective.System,
+					"kind":            "mode_changed",
+					"mode":            committed.Mode,
+					"auto":            committed.Auto,
+					"system_access":   committed.System,
+					"access_revision": committed.Revision,
 				},
 			})
 			return nil

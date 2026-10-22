@@ -1883,7 +1883,7 @@ func TestPromptTurnAppliesModeElevation(t *testing.T) {
 	}
 
 	if got := f.state.AccessState().Mode; got != "copilot" {
-		t.Fatalf("mode = %q, want copilot — the elevation was not applied", got)
+		t.Fatalf("mode = %q, want the legacy Act projection", got)
 	}
 	d, ok := f.decision(0)
 	if !ok {
@@ -1893,8 +1893,8 @@ func TestPromptTurnAppliesModeElevation(t *testing.T) {
 		t.Fatalf("delivered decision = %+v, want an approved typed grant", d)
 	}
 	updates := f.modeChangedUpdates()
-	if len(updates) != 1 || updates[0]["mode"] != "copilot" {
-		t.Fatalf("mode_changed updates = %#v, want exactly one for copilot", updates)
+	if len(updates) != 1 || updates[0]["mode"] != "act" {
+		t.Fatalf("mode_changed updates = %#v, want exactly one for act", updates)
 	}
 }
 
@@ -2951,7 +2951,7 @@ func TestModeRequestSystemElevationApplied(t *testing.T) {
 	if got, ok := updates[0]["system_access"].(bool); !ok || !got {
 		t.Fatalf("mode_changed update = %#v, want system_access=true", updates[0])
 	}
-	if updates[0]["mode"] != "copilot" {
+	if updates[0]["mode"] != "act" {
 		t.Fatalf("mode_changed mode = %v, want the actual act projection", updates[0]["mode"])
 	}
 }
@@ -3542,7 +3542,7 @@ func TestACPAccessCommitsBeforeToolAcknowledgment(t *testing.T) {
 	f := newAccessTurnFixture(t, config.Default(), []session.AccessIntent{
 		{Editing: true, System: true, Reason: "edit and read outside"},
 	})
-	f.client.decide = typedApproval("copilot")
+	f.client.decide = typedApproval("act")
 
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -3580,8 +3580,8 @@ func TestACPAccessCommitsBeforeToolAcknowledgment(t *testing.T) {
 	}
 	assertAccessState(t, f.state.AccessState(), session.AccessState{Mode: "copilot", System: true})
 	updates := f.modeChangedUpdates()
-	if len(updates) != 1 || updates[0]["mode"] != "copilot" {
-		t.Fatalf("mode_changed updates = %#v, want exactly one for copilot", updates)
+	if len(updates) != 1 || updates[0]["mode"] != "act" {
+		t.Fatalf("mode_changed updates = %#v, want exactly one for act", updates)
 	}
 }
 
@@ -3636,7 +3636,12 @@ func TestACPAccessCombinedLegacyAndTypedVariants(t *testing.T) {
 				f := newAccessTurnFixture(t, config.Default(), []session.AccessIntent{
 					{Editing: true, System: true, Reason: "edit and read outside"},
 				})
-				f.client.decide = style.decide(variant)
+				if style.name == "typed" {
+					// Typed capability replies accept normal Act only.
+					f.client.decide = typedApproval("act")
+				} else {
+					f.client.decide = style.decide(variant)
+				}
 
 				if err := f.awaitTurn(t, f.start()); err != nil {
 					t.Fatalf("PromptTurn: %v", err)
@@ -3645,7 +3650,7 @@ func TestACPAccessCombinedLegacyAndTypedVariants(t *testing.T) {
 				want := session.AccessState{Mode: "copilot", System: true}
 				assertAccessState(t, f.state.AccessState(), want)
 				updates := f.modeChangedUpdates()
-				if len(updates) != 1 || updates[0]["mode"] != "copilot" {
+				if len(updates) != 1 || updates[0]["mode"] != "act" {
 					t.Fatalf("mode_changed updates = %#v, want exactly one for canonical act", updates)
 				}
 			})
@@ -3684,7 +3689,7 @@ func TestACPAccessChangedTupleReasksFreshQuestion(t *testing.T) {
 		t.Fatalf("client calls = %d, want 2 (one refresh)", calls)
 	}
 	// The first question described the original tuple; the second the fresh one.
-	if got := f.client.gotReq.ModeAccess; got == nil || got.Current.Mode != "copilot" || got.MissingEditing {
+	if got := f.client.gotReq.ModeAccess; got == nil || got.Current.Mode != "act" || got.MissingEditing {
 		t.Fatalf("second question = %+v, want the fresh tuple with editing satisfied", got)
 	}
 	if !f.client.gotReq.ModeAccess.MissingSystem {
@@ -3693,8 +3698,8 @@ func TestACPAccessChangedTupleReasksFreshQuestion(t *testing.T) {
 	// The stale answer applied nothing; the fresh one granted the remainder.
 	assertAccessState(t, f.state.AccessState(), session.AccessState{Mode: "copilot", System: true})
 	updates := f.modeChangedUpdates()
-	if len(updates) != 1 || updates[0]["mode"] != "copilot" {
-		t.Fatalf("mode_changed updates = %#v, want exactly one", updates)
+	if len(updates) != 1 || updates[0]["mode"] != "act" {
+		t.Fatalf("mode_changed updates = %#v, want exactly one for canonical act", updates)
 	}
 }
 
@@ -3726,7 +3731,7 @@ func TestACPAccessDuplicateEventsAndLateResponses(t *testing.T) {
 			{System: true, Reason: "read outside the workspace"},
 			{Editing: true, Reason: "edit a file"},
 		})
-		f.client.decide = typedApproval("edit")
+		f.client.decide = typedApproval("act")
 
 		if err := f.awaitTurn(t, f.start()); err != nil {
 			t.Fatalf("PromptTurn: %v", err)

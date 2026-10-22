@@ -1529,8 +1529,8 @@ func TestSessionNewAppliesPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if resp, ok := got.(SessionResponse); !ok || resp.Mode != "copilot" {
-		t.Fatalf("response = %#v, want mode echoed as copilot", got)
+	if resp, ok := got.(SessionResponse); !ok || resp.Mode != "act" || resp.Auto || resp.System {
+		t.Fatalf("response = %#v, want canonical act with no modifiers", got)
 	}
 	if got := rt.Runner.Policy.ApprovalMode(); got != policy.ModeEdit {
 		t.Fatalf("approval mode = %q, want edit", got)
@@ -1627,7 +1627,7 @@ func TestSessionNewPolicyAllowReachesPolicyEngine(t *testing.T) {
 	}
 }
 
-func TestSessionNewPolicyModeWithoutRunnerFails(t *testing.T) {
+func TestSessionNewPolicyModeWithoutRunnerUsesState(t *testing.T) {
 	var closed atomic.Int64
 	rt := policyTestRuntime()
 	rt.Runner = nil
@@ -1638,18 +1638,21 @@ func TestSessionNewPolicyModeWithoutRunnerFails(t *testing.T) {
 	})
 	m.SetTurnCanceller(noopCancel())
 
-	_, err := m.Create(context.Background(), policyNewParams(t, `{"mode":"plan"}`))
-	var rpcErr *jsonRPCError
-	if !errors.As(err, &rpcErr) || rpcErr.Code != serverError {
-		t.Fatalf("err = %v, want server error", err)
+	got, err := m.Create(context.Background(), policyNewParams(t, `{"mode":"plan"}`))
+	if err != nil {
+		t.Fatalf("Create: %v", err)
 	}
-	if closed.Load() != 1 {
-		t.Fatalf("runtime close count = %d, want 1", closed.Load())
+	resp, ok := got.(SessionResponse)
+	if !ok || resp.Mode != "ask" {
+		t.Fatalf("response = %#v, want canonical ask", got)
 	}
-	if _, ok := m.Get(rt.SessionID); ok {
-		t.Fatal("the failed session must not be published")
+	if closed.Load() != 0 {
+		t.Fatal("a state-backed policy must not close the runtime")
 	}
-	// Allow rules alone need no runner.
+	if _, ok := m.Get(rt.SessionID); !ok {
+		t.Fatal("the session should be published")
+	}
+	// Allow rules alone need no runner either.
 	rt2 := policyTestRuntime()
 	rt2.Runner = nil
 	m2 := policyTestManager(t, rt2)

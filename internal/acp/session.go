@@ -17,6 +17,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/worktree"
 )
@@ -114,10 +115,10 @@ type SessionManager struct {
 type SessionResponse struct {
 	SessionID string         `json:"sessionId"`
 	Workspace *WorkspaceInfo `json:"workspace,omitempty"`
-	// Mode echoes the approval mode applied from the request's policy, so
-	// a client can verify it. No mode_changed notification is sent for it:
-	// the session is not published yet, so nobody is attached to hear one.
-	Mode string `json:"mode,omitempty"`
+	// InteractionState is the full effective tuple committed for the new
+	// session. Every field is always present; a client bootstraps from this
+	// (or session/access_state) rather than inferring grants from defaults.
+	InteractionState
 }
 
 // sessionParams is the subset of ACP session/new and session/load params
@@ -381,9 +382,9 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 	if err != nil {
 		return nil, err
 	}
-	var policyMode string
+	var policyPatch interaction.Patch
 	if p.Policy != nil {
-		if policyMode, err = p.Policy.validate(); err != nil {
+		if policyPatch, err = p.Policy.validate(); err != nil {
 			return nil, err
 		}
 	}
@@ -403,14 +404,14 @@ func (m *SessionManager) Create(ctx context.Context, params json.RawMessage) (an
 		return nil, err
 	}
 	if p.Policy != nil {
-		if perr := applyPolicy(rt, p.Policy, policyMode); perr != nil {
+		if perr := applyPolicy(rt, p.Policy, policyPatch); perr != nil {
 			sCtx, sCancel := shutdownCtx()
 			defer sCancel()
 			_ = m.closeRuntimeOnce(sCtx, rt)
 			return nil, perr
 		}
 	}
-	resp := SessionResponse{SessionID: rt.SessionID, Mode: policyMode}
+	resp := SessionResponse{SessionID: rt.SessionID, InteractionState: sessionInteractionState(rt)}
 	if p.Isolation != nil {
 		// Worktree setup is resolved per session from the session's loaded
 		// config: the ACP host never holds a config.Config (config is per-cwd,

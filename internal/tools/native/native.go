@@ -100,16 +100,6 @@ type Options struct {
 	// worktree without exposing absolute paths.
 	NamedRoots map[string]string
 
-	// Guardrail is invoked by shell.run / test.run after policy
-	// evaluation, as a final pre-flight check. Returning a non-nil
-	// error aborts the command with a tool error. Typically wired to
-	// (*policy.PolicyEngine).GuardrailCheck in app.go. The system flag
-	// is the toolset's own session state, so the pre-flight applies the
-	// same catastrophic floor as the engine. Optional; when nil, no
-	// guardrail check is performed (the policy engine already ran
-	// Evaluate upstream in the agent loop).
-	Guardrail func(command string, system bool) error
-
 	// CommandAdmission admits one managed-command attempt. Required on the
 	// final execution path; a nil callback fails closed.
 	CommandAdmission func(context.Context, policy.CommandAttempt) (*policy.Admission, error)
@@ -118,14 +108,8 @@ type Options struct {
 	// shell.sudo tool needs it because its own combined prompt collects the
 	// command consent, so the tool evaluates the bare payload, binds that
 	// prompt's identity to the exact proof, and admits the attempt itself. A
-	// nil authorizer keeps the legacy SudoPolicy path for app wiring that has
-	// not migrated yet.
+	// nil authorizer fails closed.
 	CommandAuthorizer CommandAuthorizer
-
-	// SudoPolicy validates a bare command submitted to shell.sudo. Wired to
-	// (*policy.PolicyEngine).CheckPrivileged in app.go. Optional; when nil,
-	// shell.sudo refuses every command (fail closed).
-	SudoPolicy func(command string) error
 
 	// Symbols answers symbol-name lookups for the `symbols` tool: through a
 	// language server when one is ready, else through the symbol index. Set
@@ -230,22 +214,14 @@ type toolSet struct {
 	webHTTPClient *http.Client
 	ssrfCheck     func(*url.URL) bool
 
-	guardrail func(command string, system bool) error
-
 	// commandAdmission admits one managed-command attempt at accepted launch.
-	// nil keeps the legacy guardrail-only path for app wiring that has not
-	// migrated to an authorizer yet; that fallback is temporary and disappears
-	// once every app runner wires CommandAdmission.
+	// nil fails closed: there is no unadmitted command execution path.
 	commandAdmission func(context.Context, policy.CommandAttempt) (*policy.Admission, error)
 
 	// commandAuthorizer evaluates and approves one privileged attempt, because
 	// shell.sudo's combined password prompt collects the command consent. nil
-	// keeps the legacy SudoPolicy path for app wiring that has not migrated.
+	// fails closed.
 	commandAuthorizer CommandAuthorizer
-
-	// sudoPolicy validates a bare command submitted to shell.sudo. nil means
-	// shell.sudo refuses every command (fail closed).
-	sudoPolicy func(command string) error
 
 	config config.Config
 
@@ -469,10 +445,8 @@ func newToolSet(opts Options) (*toolSet, error) {
 		commandDir:      opts.CommandDir,
 		diagnostics:     newDiagnosticsChecker(opts),
 
-		guardrail:              opts.Guardrail,
 		commandAdmission:       opts.CommandAdmission,
 		commandAuthorizer:      opts.CommandAuthorizer,
-		sudoPolicy:             opts.SudoPolicy,
 		webEnabled:             opts.Config.Web.Enabled,
 		webFetchTimeout:        opts.Config.Web.FetchTimeout,
 		webSearchURL:           opts.Config.Web.SearchURL,

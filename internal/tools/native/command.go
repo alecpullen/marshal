@@ -266,13 +266,13 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, c
 	// An ordinary command has exactly one owner: the conversation's command
 	// service, injected at construction. A registry built without one (a
 	// filtered read-only scope, a plan-author child, a mis-wired test fixture)
-	// must fail here, before the guardrail and before any launch, rather than
+	// must fail here, before admission and before any launch, rather than
 	// creating a private supervisor whose commands nothing can stop, count or
 	// settle.
 	if t.jobManager == nil {
 		return registry.ToolResult{}, fmt.Errorf("shell execution is unavailable: this registry has no conversation command service")
 	}
-	// The optional progress profile is validated before the guardrail: a
+	// The optional progress profile is validated before admission: a
 	// rejected opt-in is a malformed call, not a command to approve, so it must
 	// not reach the approval boundary or reserve an execution nothing can
 	// observe. The normalized copy is what the execution keeps for its whole
@@ -284,13 +284,6 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, c
 			return registry.ToolResult{}, err
 		}
 		progressCfg = &normalized
-	}
-	// Guardrails are validated before admission, so a denied command never
-	// reaches the service.
-	if t.guardrail != nil {
-		if err := t.guardrail(command, t.systemAccess()); err != nil {
-			return registry.ToolResult{}, err
-		}
 	}
 	// A command whose operation was already interrupted must not launch: the
 	// interruption has told the model not to expect its result, and admitting it
@@ -309,14 +302,14 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, c
 	// evaluates it: the exact command bytes, the directory it will run in and
 	// the workspace it belongs to. Launch hands that closure to the authorizer
 	// at accepted admission, so a workspace or config change between approval
-	// and insertion cannot redirect the command that was approved. Without a
-	// wired authorizer the launch keeps the legacy guardrail-only path.
-	var admit func(context.Context) (*policy.Admission, error)
-	if t.commandAdmission != nil {
-		attempt := t.commandAttempt(ctx, toolName, callID, command)
-		admit = func(admitCtx context.Context) (*policy.Admission, error) {
-			return t.commandAdmission(admitCtx, attempt)
-		}
+	// and insertion cannot redirect the command that was approved. There is no
+	// unadmitted launch path: a toolset without admission fails closed.
+	if t.commandAdmission == nil {
+		return registry.ToolResult{}, fmt.Errorf("shell execution is unavailable: this registry has no command admission")
+	}
+	attempt := t.commandAttempt(ctx, toolName, callID, command)
+	admit := func(admitCtx context.Context) (*policy.Admission, error) {
+		return t.commandAdmission(admitCtx, attempt)
 	}
 
 	operation, _ := session.OperationFromContext(ctx)

@@ -97,12 +97,12 @@ func TestShellSteeringWaitReturnsActualStoppedOutput(t *testing.T) {
 
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{
-		WorkspaceRoot:  root,
-		CommandRunner:  runner,
-		SessionState:   state,
-		JobManager:     manager,
-		Guardrail:      func(string, bool) error { return nil },
-		MaxOutputBytes: 1 << 20,
+		WorkspaceRoot:    root,
+		CommandRunner:    runner,
+		SessionState:     state,
+		JobManager:       manager,
+		CommandAdmission: allowAllAdmission(t),
+		MaxOutputBytes:   1 << 20,
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}

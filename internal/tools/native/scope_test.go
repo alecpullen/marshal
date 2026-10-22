@@ -130,13 +130,13 @@ func TestShellOutputStreamsToSessionStateNotWorkspace(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{
-		WorkspaceRoot:  root,
-		CommandRunner:  runner,
-		JobManager:     newTestCommandService(t, runner, root, child, nil),
-		Guardrail:      func(string, bool) error { return nil },
-		MaxOutputBytes: 100,
-		SessionState:   child,
-		WorkspaceState: parent,
+		WorkspaceRoot:    root,
+		CommandRunner:    runner,
+		JobManager:       newTestCommandService(t, runner, root, child, nil),
+		CommandAdmission: allowAllAdmission(t),
+		MaxOutputBytes:   100,
+		SessionState:     child,
+		WorkspaceState:   parent,
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}

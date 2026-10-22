@@ -132,6 +132,31 @@ func (f *testAdmission) admissionCount() int {
 	return f.admissions
 }
 
+// allowAllAdmission admits any command through the real authorizer over a
+// permissive test authority. Tests that are not about admission itself use
+// this so they still reach the command runner.
+func allowAllAdmission(t *testing.T) func(context.Context, policy.CommandAttempt) (*policy.Admission, error) {
+	t.Helper()
+	return newTestAdmission(t, true).admit
+}
+
+// allowAllAuthorizer is the privileged counterpart of allowAllAdmission: the
+// real authorizer over a permissive test authority, for shell.sudo tests that
+// are not about privileged admission itself.
+func allowAllAuthorizer(t *testing.T) CommandAuthorizer {
+	t.Helper()
+	return newTestAdmission(t, true).authorizer
+}
+
+// policyAuthorizer builds a privileged authorizer over a caller-supplied
+// config with its deny patterns intact. Tests that assert the catastrophic
+// floor use this: the permissive admission fixture intentionally clears deny
+// patterns, so it would reach the password prompt instead of denying.
+func policyAuthorizer(t *testing.T, cfg config.Config) CommandAuthorizer {
+	t.Helper()
+	return policy.NewAuthorizer(policy.NewEngine(&cfg, nil), newTestAuthority())
+}
+
 // registerManagedCommands builds a registry whose shell.run/test.run dispatch
 // through jm with the given admission seam.
 func registerManagedCommands(t *testing.T, root string, runner CommandRunner, jm *JobManager, state *session.State, admit func(context.Context, policy.CommandAttempt) (*policy.Admission, error)) *registry.Registry {
@@ -142,7 +167,6 @@ func registerManagedCommands(t *testing.T, root string, runner CommandRunner, jm
 		CommandRunner:    runner,
 		JobManager:       jm,
 		SessionState:     state,
-		Guardrail:        func(string, bool) error { return nil },
 		CommandAdmission: admit,
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)

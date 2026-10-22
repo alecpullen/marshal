@@ -202,89 +202,10 @@ func (t *toolSet) runSudo(ctx context.Context, callID string, args sudoArgs) (re
 	}
 	defer lockState.UnlockSudo()
 
-	// The admitted path evaluates the bare payload through the shared shell
-	// analysis and admits each attempt itself. The legacy path keeps the
-	// app-wide adapters only until every runner wires a CommandAuthorizer.
-	if t.commandAuthorizer != nil {
-		return t.runSudoAdmitted(ctx, callID, command, args)
+	if t.commandAuthorizer == nil {
+		return registry.ToolResult{}, errors.New("privileged execution is unavailable: this registry has no command authorizer")
 	}
-	if t.sudoPolicy == nil {
-		return registry.ToolResult{}, errors.New("privileged execution is not configured")
-	}
-	if err := t.sudoPolicy(command); err != nil {
-		return registry.ToolResult{}, err
-	}
-	// The catastrophic floor applies INSIDE the payload too. CheckPrivileged
-	// deliberately does not reject floor commands (it only rejects a command
-	// that invokes a privilege wrapper), so without this the tool would be a
-	// way to run `rm -rf /etc` as root past the floor that shell.run obeys.
-	// The two checks are independent and both must pass.
-	if t.guardrail != nil {
-		if err := t.guardrail(command, true); err != nil {
-			return registry.ToolResult{}, err
-		}
-	}
-
-	timeout := clampTimeout(args.TimeoutSeconds, defaultSudoTimeout, maxSudoTimeout)
-	unlock := t.sessionState.SudoUnlockEnabled()
-	runner := sudoRunner{fresh: !unlock}
-
-	// Unlock path: try the command FIRST, with an EMPTY stdin and no prompt.
-	// A warm grant means sudo never reads stdin and the command runs — one
-	// process, no probe, no probe/execute race. A cold grant means sudo reads
-	// EOF and reports that it needed a password; only then do we prompt.
-	// Prompting before this attempt would make the unlock feature a no-op.
-	if unlock {
-		result, runErr := t.runSudoOnce(ctx, callID, runner, command, nil, timeout)
-		if runErr != nil {
-			return registry.ToolResult{}, runErr
-		}
-		switch {
-		case result.ExitCode == 0:
-			return t.sudoResult(command, result), nil
-		case sudoRequiresTTY(result.Stderr):
-			return registry.ToolResult{}, errSudoRequiresTTY
-		case sudoNeedsPassword(result.Stderr):
-			// Cold timestamp: fall through to the prompt loop below. -k stays
-			// absent, so the grant this establishes is reusable.
-		default:
-			// A genuine command failure: the output IS the result.
-			return t.sudoResult(command, result), nil
-		}
-	}
-
-	var lastErr string
-	for attempt := 1; attempt <= maxSudoAttempts; attempt++ {
-		password, _, denied, err := t.requestSudoPassword(ctx, command, args.Reason, unlock, attempt, lastErr, false)
-		if err != nil {
-			return registry.ToolResult{}, err
-		}
-		if denied {
-			return registry.ToolResult{}, errors.New("denied by user")
-		}
-
-		stdin := append(password, '\n')
-		result, runErr := t.runSudoOnce(ctx, callID, runner, command, stdin, timeout)
-		zeroBytes(password)
-		zeroBytes(stdin)
-		if runErr != nil {
-			return registry.ToolResult{}, runErr
-		}
-
-		switch {
-		case result.ExitCode == 0:
-			return t.sudoResult(command, result), nil
-		case sudoWrongPassword(result.Stderr):
-			lastErr = "incorrect password"
-			continue
-		case sudoRequiresTTY(result.Stderr):
-			return registry.ToolResult{}, errSudoRequiresTTY
-		default:
-			// A genuine command failure: the output IS the result.
-			return t.sudoResult(command, result), nil
-		}
-	}
-	return registry.ToolResult{}, fmt.Errorf("authentication failed after %d attempts: %s", maxSudoAttempts, lastErr)
+	return t.runSudoAdmitted(ctx, callID, command, args)
 }
 
 // errSudoRequiresTTY is the requiretty diagnostic. We do NOT work around it by

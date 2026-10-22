@@ -29,6 +29,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
 	"marshal/internal/hooks"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
@@ -1028,6 +1029,10 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	}
 	pol.WithRegistry(reg)
 	pol.SetApprovalMode(parseApprovalMode(cfg.Agent.ApprovalMode))
+	// The root engine reads the owner's live config/rules/revision, so a
+	// reload is visible without rebuilding it or any child clone.
+	pol.SetConfigSource(state.PolicySnapshot)
+	rootAuthorizer := policy.NewAuthorizer(pol, state.InteractionAuthority())
 
 	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,
@@ -1040,15 +1045,15 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		// capability request here. Child registrations below deliberately leave
 		// this false — a subagent must ask its parent, and the handler and the
 		// session both reject depth > 0 as well.
-		AccessRequests: true,
-		DB:             database,
-		ProjectID:      projectID,
-		FileTracker:    fileTracker,
-		Config:         cfg,
-		JobManager:     jobManager,
-		JobBroker:      jobBroker,
-		Guardrail:      func(cmd string, system bool) error { return pol.GuardrailCheck(cmd, system) },
-		SudoPolicy:     pol.CheckPrivileged,
+		AccessRequests:    true,
+		DB:                database,
+		ProjectID:         projectID,
+		FileTracker:       fileTracker,
+		Config:            cfg,
+		JobManager:        jobManager,
+		JobBroker:         jobBroker,
+		CommandAdmission:  rootAuthorizer.BeginCommand,
+		CommandAuthorizer: rootAuthorizer,
 	}
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
@@ -1527,6 +1532,40 @@ type roleRunnerSpec struct {
 	childSession     bool                    // SDD pipeline: each role runner gets a fresh child session
 }
 
+// narrowAgentCeiling applies a custom agent's optional Mode/Auto restrictions
+// to an existing ceiling. They can only narrow: an explicit Mode=Ask removes
+// Act, and Auto=false removes Auto; nothing here grants authority.
+func narrowAgentCeiling(c interaction.Ceiling, ca *routing.CustomAgent) interaction.Ceiling {
+	if ca == nil {
+		return c
+	}
+	if ca.Mode != nil && *ca.Mode == interaction.ModeAsk {
+		c.Act = false
+	}
+	if ca.Auto != nil && !*ca.Auto {
+		c.Auto = false
+	}
+	if !c.Act {
+		c.Auto = false
+	}
+	return c
+}
+
+// pipelineRoleCeiling is the immutable ceiling for a pipeline actor. Read-only
+// roles cannot act at all; artifact writers may write only their artifact, not
+// run Auto shell work; implementer/fixer roles inherit the owner's Act/Auto.
+// No pipeline child carries an explicit System request.
+func pipelineRoleCeiling(scope swarm.RegistryScope, ca *routing.CustomAgent) interaction.Ceiling {
+	c := interaction.Ceiling{Act: true, Auto: true}
+	switch scope {
+	case swarm.ScopeReadOnly:
+		c = interaction.Ceiling{}
+	case swarm.ScopeArtifactWriter:
+		c = interaction.Ceiling{Act: true}
+	}
+	return narrowAgentCeiling(c, ca)
+}
+
 // newRunner builds one role runner. It satisfies swarm.RunnerFactory (and,
 // by alias, pipeline.RunnerFactory).
 func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
@@ -1558,14 +1597,12 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	runnerState := s.state
 	pol := s.pol
 	if s.childSession {
-		runnerState = session.New(s.state.Config, s.state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(s.state.SubagentDepth()+1), session.WithSubagentMaxConcurrency(s.state.Config.Agent.MaxConcurrentSubagents))
-		// No UI watches a child session's pending approvals, so an
-		// unattended runner's approval could sit unanswered indefinitely.
-		// Unattended runners therefore evaluate under an auto-approving
-		// clone of the shared engine (guardrails and the git-push floor
-		// still apply), leaving the parent mode intact.
+		runnerState = session.New(s.state.Config, s.state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(s.state.SubagentDepth()+1), session.WithSubagentMaxConcurrency(s.state.Config.Agent.MaxConcurrentSubagents), session.WithInteractionOwner(s.state, pipelineRoleCeiling(scope, route.CustomAgent)))
+		// Pipeline children share the owner's live policy config and rules, but
+		// their authority is the bounded actor view above. No forced Auto: an
+		// owner who is not in Act/Auto simply cannot run the dispatch.
 		pol = s.pol.Clone()
-		pol.SetApprovalMode(policy.ModeAuto)
+		pol.SetConfigSource(runnerState.PolicySnapshot)
 	}
 	r := agent.NewRunner(p, toolReg, pol, runnerState, route.Preset.Model)
 	r.Role = role
@@ -1666,9 +1703,6 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 		if len(ca.ToolDenylist) > 0 {
 			r.Registry = agent.DenylistView(r.Registry, ca.ToolDenylist)
 		}
-		if ca.ApprovalMode != "" {
-			r.SetApprovalMode(parseApprovalMode(ca.ApprovalMode))
-		}
 		if ca.MaxIterations > 0 {
 			r.MaxToolIterations = ca.MaxIterations
 		}
@@ -1751,7 +1785,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 				// chained OnTokens closure; read the updated value here.
 				state.UpdateSDDTokens(ctl.UsageTokens, cfg.SDD.MaxTotalTokens)
 			},
-			RegistryFactory: makePipelineRegistryFactory(cfg, state, commandRunner, resolver, database, projectID, skillIndex, reg, commandService),
+			RegistryFactory: makePipelineRegistryFactory(cfg, state, pol, commandRunner, resolver, database, projectID, skillIndex, reg, commandService),
 		},
 		Verifier: pipeline.DefaultVerifier(
 			state.WorkingDir,
@@ -1802,9 +1836,9 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		// A fresh child session keeps the authoring turn's tool noise out of
 		// the parent transcript. Depth is parent+1 so any nested subagent
 		// attempt is rejected by the child's own depth guard.
-		childState := session.New(cfg, state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1), session.WithSubagentMaxConcurrency(cfg.Agent.MaxConcurrentSubagents))
+		childState := session.New(cfg, state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1), session.WithSubagentMaxConcurrency(cfg.Agent.MaxConcurrentSubagents), session.WithInteractionOwner(state, interaction.Ceiling{Act: true}))
 		childPol := pol.Clone()
-		childPol.SetApprovalMode(policy.ModeAuto)
+		childPol.SetConfigSource(childState.PolicySnapshot)
 
 		// A fresh native registry rooted at the working directory, with @plan
 		// aliasing the resolved plans directory so the child can write the
@@ -1825,6 +1859,14 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 			Config:         cfg,
 			NamedRoots:     map[string]string{"@plan": plansDir},
 		}
+		// The plan-author's own engine reads the owner's live config/rules and
+		// is bounded by the artifact-only ceiling above. Its command tools are
+		// stripped by PlanWriterView, but wiring admission keeps the contract
+		// explicit: there is no unadmitted execution path.
+		childPol.WithRegistry(childReg)
+		planAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
+		nativeOpts.CommandAdmission = planAuthorizer.BeginCommand
+		nativeOpts.CommandAuthorizer = planAuthorizer
 		if err := native.RegisterAll(childReg, nativeOpts); err != nil {
 			return nil, fmt.Errorf("plan author registry: register: %w", err)
 		}
@@ -1884,7 +1926,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 // it, so its commands belong to the same supervisor: one capacity, one count
 // callback, one exit sink and one stop target. Its output stays child-local
 // because SessionState is the runner's own child state.
-func makePipelineRegistryFactory(cfg config.Config, state *session.State, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry, commandService *conversationCommandService) pipeline.RegistryFactory {
+func makePipelineRegistryFactory(cfg config.Config, state *session.State, pol *policy.PolicyEngine, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry, commandService *conversationCommandService) pipeline.RegistryFactory {
 	return func(ctx pipeline.ExecutionContext, scope pipeline.RegistryScope, childState *session.State) (*registry.Registry, error) {
 		childReg := registry.New()
 		var jobManager *native.JobManager
@@ -1905,6 +1947,18 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, comman
 			// that already started.
 			CommandDir: ctx.WorkspaceRoot,
 			NamedRoots: ctx.NamedRoots(),
+		}
+		// The child's engine reads the captured owner's live config/rules and
+		// checks risk against THIS registry, so a scope-filtered tool is
+		// evaluated as the child will actually dispatch it. The authorizer is
+		// bound to the child actor, not the root.
+		if childState != nil && pol != nil {
+			childPol := pol.Clone()
+			childPol.SetConfigSource(childState.PolicySnapshot)
+			childPol.WithRegistry(childReg)
+			childAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
+			nativeOpts.CommandAdmission = childAuthorizer.BeginCommand
+			nativeOpts.CommandAuthorizer = childAuthorizer
 		}
 		// When the pipeline runs in a worktree (WorkspaceRoot != RepoRoot),
 		// expose the project root as an additional root so workers can read
@@ -2089,7 +2143,15 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 	})
 
 	return func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
-		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1), session.WithSubagentMaxConcurrency(parentState.Config.Agent.MaxConcurrentSubagents))
+		// A named custom agent may narrow the child's immutable ceiling. Its
+		// Mode/Auto are restrictions only; the live owner tuple still decides.
+		childCeiling := interaction.Ceiling{Act: true, Auto: true, System: true}
+		if req.Agent != "" && router != nil {
+			if route, err := router.ResolveCustomAgent(req.Agent, agent.RoleSubtask); err == nil {
+				childCeiling = narrowAgentCeiling(childCeiling, route.CustomAgent)
+			}
+		}
+		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1), session.WithSubagentMaxConcurrency(parentState.Config.Agent.MaxConcurrentSubagents), session.WithInteractionOwner(parentState, childCeiling))
 		// Seed the child with the parent's session context. Layer-aware
 		// project saves (config.SaveProjectConfig) compare against
 		// state.Layers(): a child without the snapshot silently regresses to
@@ -2099,13 +2161,11 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		childState.SetLayers(parentState.Layers())
 		childState.SetHomeDir(parentState.HomeDir())
 		childState.SetTrusted(parentState.Trusted())
-		// System access is inherited only when the parent has it AND the
-		// request explicitly asked for it. The AND lives here, at
-		// construction, so a child can never widen its own scope even if a
-		// future caller bypasses the handler's guard. Set outside the
-		// native-toolset branch below so the flag holds on every factory
-		// path (including the test wrapper with no WorkspaceRoot).
-		childState.SetSystemAccess(req.System && parentState.SystemAccess())
+		// System access needs an explicit request from this child, and the
+		// live owner must also currently hold it; the actor authority
+		// intersects the two. Capture only this child's request here — never a
+		// one-time snapshot of the parent's grant.
+		childState.SetSystemAccess(req.System)
 		// The child needs its own native toolset, not a filtered view of the
 		// parent's. SubtaskScopeView re-registers the parent's existing Tool
 		// values, whose handlers close over the parent's toolSet — so a
@@ -2117,6 +2177,7 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		// so we fall back to the old SubtaskScopeView view there — those tests
 		// only inspect model/pricing/iterations and never execute a tool.
 		var roReg *registry.Registry
+		childPol := pol
 		if baseNativeOpts.WorkspaceRoot != "" {
 			childOpts := baseNativeOpts
 			childOpts.SessionState = childState    // per-agent: active call, output, approvals
@@ -2137,9 +2198,17 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			// the child's SecretPromptCapable defaulting to false — a fragile
 			// gate, since any future change that propagates the flag to child
 			// states would silently hand children a working shell.sudo. Clear
-			// the policy seam here so the documented gate is the real one.
-			childOpts.SudoPolicy = nil
+			// the authorizer here so the documented gate is the real one.
+			childOpts.CommandAuthorizer = nil
 			childReg := registry.New()
+			// The child's engine reads the captured owner's live config/rules,
+			// evaluates against the child registry, and admits through the
+			// child actor rather than the root.
+			childPol = pol.Clone()
+			childPol.SetConfigSource(childState.PolicySnapshot)
+			childPol.WithRegistry(childReg)
+			childAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
+			childOpts.CommandAdmission = childAuthorizer.BeginCommand
 			if err := native.RegisterAll(childReg, childOpts); err != nil {
 				return nil, nil, fmt.Errorf("agent.run: child registry: %w", err)
 			}
@@ -2259,7 +2328,7 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		if err := roReg.Replace(native.TodoWriteTool(childState)); err != nil {
 			parentState.Logger().Warn("subagent: todo rebind failed; child shares parent todos", "error", err)
 		}
-		child := agent.NewRunner(childProvider, roReg, pol, childState, model)
+		child := agent.NewRunner(childProvider, roReg, childPol, childState, model)
 		child.Role = role
 		child.NarrationPrompt = cfg.Agent.NarrationPrompt
 		child.IntentNudge = cfg.Agent.IntentNudge

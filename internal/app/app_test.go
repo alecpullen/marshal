@@ -94,7 +94,7 @@ func TestPipelineRegistryFactoryExcludesWebTools(t *testing.T) {
 		}
 	}
 
-	factory := makePipelineRegistryFactory(cfg, state, nil, nil, nil, 0, nil, nil, nil)
+	factory := makePipelineRegistryFactory(cfg, state, nil, nil, nil, nil, 0, nil, nil, nil)
 	ctx := pipeline.ExecutionContext{
 		RepoRoot:      dir,
 		WorkspaceRoot: dir,
@@ -1204,7 +1204,7 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 	t.Cleanup(func() { _ = service.manager.Shutdown(context.Background()) })
 
 	childState := session.New(cfg, worktree, time.Unix(100, 0), session.Persistence{})
-	factory := makePipelineRegistryFactory(cfg, state, runner, nil, nil, 0, nil, nil, service)
+	factory := makePipelineRegistryFactory(cfg, state, nil, runner, nil, nil, 0, nil, nil, service)
 	reg, err := factory(pipeline.ExecutionContext{
 		RepoRoot:      repoRoot,
 		WorkspaceRoot: worktree,

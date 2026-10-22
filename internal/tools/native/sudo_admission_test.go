@@ -55,6 +55,31 @@ func sudoAdmittedToolForTest(t *testing.T) (*registry.Registry, *session.State, 
 	return sudoRegistry(t, root, state, authorizer), state, authorizer, authority
 }
 
+// TestSudoWithoutCommandAuthorizerFailsClosed pins that a registry with no
+// authorizer refuses a privileged command before any prompt is raised and
+// before any process runs. There is no unadmitted privileged path: the legacy
+// SudoPolicy callback is gone, so a missing authorizer is a refusal rather than
+// a trusted bypass.
+func TestSudoWithoutCommandAuthorizerFailsClosed(t *testing.T) {
+	argvFile, _ := fakeSudo(t, 0, "", true)
+	root := t.TempDir()
+	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
+	state.SetSystemAccess(true)
+	state.SetSecretPromptCapable(true)
+	reg := sudoRegistry(t, root, state, nil)
+
+	_, err := invokeTool(t, reg, "shell.sudo", `{"command":"id"}`)
+	if err == nil || !strings.Contains(err.Error(), "no command authorizer") {
+		t.Fatalf("shell.sudo without an authorizer = %v, want a fail-closed refusal", err)
+	}
+	if state.PendingSudoAuth() != nil {
+		t.Fatal("a refused call must not raise a prompt")
+	}
+	if _, statErr := os.Stat(argvFile); !os.IsNotExist(statErr) {
+		t.Fatal("the privileged runner ran without an authorizer")
+	}
+}
+
 // TestSudoFreshPromptCombinesExactConsent pins the combined prompt: one dialog
 // discloses the exact command and the caller's reason, carries the
 // command-approval role, and its approval is what admits the attempt.

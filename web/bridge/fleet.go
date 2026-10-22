@@ -1668,7 +1668,7 @@ func (f *Fleet) Snapshot() []AgentStatus {
 	for _, a := range f.ws.Agents() {
 		live := f.live.get(a.ID)
 		st := AgentStatus{
-			ID: a.ID, Project: a.Project, Name: a.Name, Mode: a.Mode,
+			ID: a.ID, Project: a.Project, Name: a.Name,
 			OwnerID: a.OwnerID, Origin: a.Origin, ClientID: a.ClientID,
 			Status: "idle", Activity: live.activity, ContextPct: live.contextPct,
 			ChangedFiles: live.changedFiles, Interrupted: a.Interrupted,
@@ -1681,8 +1681,13 @@ func (f *Fleet) Snapshot() []AgentStatus {
 		if !a.PushedAt.IsZero() {
 			st.PushedAt = &a.PushedAt
 		}
-		if live.mode != "" {
-			st.Mode = live.mode
+		// Access is reported only when the agent has told the bridge what it
+		// actually holds. A nil Access is the honest answer for an agent that
+		// has not reported yet, or whose read failed: the persisted starting
+		// mode is history, not a grant, so it is never promoted into one.
+		if live.access != nil {
+			access := *live.access
+			st.Access = &access
 		}
 		if a.CreatedAt.After(st.UpdatedAt) {
 			st.UpdatedAt = a.CreatedAt
@@ -1796,6 +1801,13 @@ func (f *Fleet) restoreSession(ctx context.Context, rt *agentRuntime, a Agent) e
 	rt.sessionID = a.SessionID
 	f.sessionAgent[a.SessionID] = a.ID
 	f.mu.Unlock()
+	// A reattached session reports no mode_changed for the state it already
+	// holds, so ask for it before the fleet claims any privileges. A failed
+	// or unsupported read leaves the state unavailable: the persisted
+	// starting mode is history, not a grant, and is never promoted into one.
+	if st, err := rt.reg.AccessState(ctx, a.SessionID); err == nil {
+		f.live.setAccess(rt.id, a.SessionID, st)
+	}
 	return nil
 }
 

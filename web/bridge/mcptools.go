@@ -175,12 +175,19 @@ func (s *Server) mcpStatus(w http.ResponseWriter, c MCPClient, id json.RawMessag
 		writeRPC(w, id, nil, &rpcError{rpcInvalidParams, "agent not found"})
 		return
 	}
-	writeRPC(w, id, map[string]any{
+	out := map[string]any{
 		"agentId": st.ID,
 		"status":  st.Status,
 		"name":    st.Name,
-		"mode":    st.Mode,
-	}, nil)
+	}
+	// Report the committed state only when the agent has reported it. An
+	// absent access object means the bridge cannot vouch for the agent's
+	// privileges, which is not the same as a grant of nothing.
+	if st.Access != nil {
+		out["mode"] = st.Access.Mode
+		out["access"] = st.Access
+	}
+	writeRPC(w, id, out, nil)
 }
 
 // mcpResult reports an agent's diff and exit readiness.

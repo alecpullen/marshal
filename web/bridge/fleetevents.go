@@ -10,7 +10,16 @@ type fleetDelta struct {
 	Kind      string `json:"kind"`
 	SessionID string `json:"sessionId"`
 	Activity  string `json:"activity,omitempty"`
-	Mode      string `json:"mode,omitempty"`
+	// Access is the session's whole committed interaction state on a "mode"
+	// delta. It is a pointer so every other delta kind omits it and cannot
+	// zero a row, while the state itself always serializes all four fields:
+	// an explicit false (a revoked System grant) must reach the client.
+	Access *AccessState `json:"access,omitempty"`
+	// accessSession is the ACP session the access state belongs to. It is
+	// not on the wire: the fleet keys rows by agent id, but a revision is
+	// only comparable within one session, so liveState needs the identity
+	// the agent reported it under.
+	accessSession string
 	// ContextPct and ChangedFiles are set only on "telemetry" deltas. They
 	// are pointers so a real zero (an emptied context, a clean tree) is
 	// sent, while every other delta kind omits them and cannot zero a row.
@@ -64,7 +73,14 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 		Update    struct {
 			Kind     string `json:"kind"`
 			ToolName string `json:"toolName"`
-			Mode     string `json:"mode"`
+			// Mode, Auto, System and AccessRevision are the full committed
+			// interaction tuple a mode_changed update carries. Every field is
+			// decoded, including an explicit false, so a revocation is never
+			// mistaken for an omission.
+			Mode           string `json:"mode"`
+			Auto           bool   `json:"auto"`
+			System         bool   `json:"system_access"`
+			AccessRevision uint64 `json:"access_revision"`
 			// ChangedFiles holds objects ({path, added, removed}); only the
 			// count is used here, so entries stay undecoded.
 			ChangedFiles []json.RawMessage `json:"changedFiles"`
@@ -88,7 +104,17 @@ func classifyNotification(method string, params json.RawMessage) (fleetDelta, bo
 	case "tool_call":
 		d.Kind, d.Activity = "activity", p.Update.ToolName
 	case "mode_changed":
-		d.Kind, d.Mode = "mode", p.Update.Mode
+		d.Kind = "mode"
+		d.Access = &AccessState{
+			Mode:     p.Update.Mode,
+			Auto:     p.Update.Auto,
+			System:   p.Update.System,
+			Revision: p.Update.AccessRevision,
+		}
+		// The fleet row is keyed by agent id (attachClassifier rewrites
+		// SessionID), but a revision is only comparable within the session
+		// that issued it, so keep the identity the agent reported.
+		d.accessSession = p.SessionID
 	case "session_telemetry":
 		pct := contextPct(p.Update.Context.UsedPct, p.Update.Context.PackTokens, p.Update.Context.PackMaxTokens)
 		changed := len(p.Update.ChangedFiles)
@@ -134,10 +160,18 @@ type observedPending struct {
 }
 
 type agentLive struct {
-	activity, mode           string
+	activity                 string
 	contextPct, changedFiles int
 	updatedAt                time.Time
 	pending                  *observedPending
+	// access is the session's last committed interaction state, and
+	// accessSession the ACP session it belongs to. A nil access means the
+	// bridge cannot vouch for the agent's privileges — it has not reported
+	// them, or the read failed — and the snapshot says so rather than
+	// inferring a grant from the project's defaults or the persisted
+	// starting mode.
+	access        *AccessState
+	accessSession string
 	// run is the latest run_progress payload, kept verbatim. runErr is
 	// the final error of the last run the bridge started, if it failed.
 	run    json.RawMessage
@@ -168,7 +202,7 @@ func (s *liveState) apply(d fleetDelta) {
 	case "activity":
 		a.activity = d.Activity
 	case "mode":
-		a.mode = d.Mode
+		a.applyAccess(d.accessSession, d.Access)
 	case "telemetry":
 		if d.ContextPct != nil {
 			a.contextPct = *d.ContextPct
@@ -179,6 +213,39 @@ func (s *liveState) apply(d fleetDelta) {
 	case "run":
 		a.run, a.runAt = d.Run, time.Now().UTC()
 	}
+	a.updatedAt = time.Now().UTC()
+}
+
+// applyAccess replaces the whole committed state atomically. A report from a
+// replacement session starts its own revision sequence, so the comparison
+// resets instead of treating its first report as stale; within one session an
+// older revision is dropped, so a reordered notification cannot roll a
+// revocation back.
+func (a *agentLive) applyAccess(sessionID string, st *AccessState) {
+	if st == nil {
+		return
+	}
+	if a.accessSession == sessionID && a.access != nil && st.Revision < a.access.Revision {
+		return
+	}
+	committed := *st
+	a.access, a.accessSession = &committed, sessionID
+}
+
+// setAccess records the state the agent reported for a session, replacing
+// whatever was cached. It is the reattach path: the bridge asks the agent what
+// it actually holds instead of reconstructing privileges from the persisted
+// starting mode.
+func (s *liveState) setAccess(id, sessionID string, st AccessState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a := s.agents[id]
+	if a == nil {
+		a = &agentLive{}
+		s.agents[id] = a
+	}
+	committed := st
+	a.access, a.accessSession = &committed, sessionID
 	a.updatedAt = time.Now().UTC()
 }
 
@@ -285,15 +352,20 @@ type AgentStatus struct {
 	Name    string `json:"name,omitempty"`
 	// OwnerID, Origin and ClientID mirror Agent.OwnerID, Agent.Origin and
 	// Agent.ClientID in workspace.go.
-	OwnerID      string `json:"ownerId,omitempty"`
-	Origin       string `json:"origin,omitempty"`
-	ClientID     string `json:"clientId,omitempty"`
-	Mode         string `json:"mode,omitempty"`
-	Status       string `json:"status"`
-	Activity     string `json:"activity,omitempty"`
-	ContextPct   int    `json:"contextPct,omitempty"`
-	ChangedFiles int    `json:"changedFiles,omitempty"`
-	Interrupted  bool   `json:"interrupted,omitempty"`
+	OwnerID  string `json:"ownerId,omitempty"`
+	Origin   string `json:"origin,omitempty"`
+	ClientID string `json:"clientId,omitempty"`
+	// Access is the session's committed interaction state, as the agent last
+	// reported it. Nil means the bridge cannot vouch for it — the agent has
+	// not reported, or the read failed — and a client must present that as
+	// unavailable rather than inferring privileges from the project's
+	// defaults or the agent's persisted starting mode.
+	Access       *AccessState `json:"access,omitempty"`
+	Status       string       `json:"status"`
+	Activity     string       `json:"activity,omitempty"`
+	ContextPct   int          `json:"contextPct,omitempty"`
+	ChangedFiles int          `json:"changedFiles,omitempty"`
+	Interrupted  bool         `json:"interrupted,omitempty"`
 	// Held is true while a terminal is holding the agent (the agent is
 	// paused for someone typing), so a reloaded page shows it without
 	// waiting for the next "hold" delta.

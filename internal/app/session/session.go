@@ -1143,11 +1143,12 @@ func (s *State) RebaseSessionConfig(cfg config.Config) {
 // before it is acknowledged and a cancellation that is already visible win.
 
 // modeHasEditing reports whether a mode already carries full editing
-// authority — the three modes that approve edits without a separate
-// selector. A blank or unrecognized mode is read-only, so it never counts.
+// authority — canonical Act plus the retired editing spellings still accepted
+// at unmigrated boundaries. A blank or unrecognized mode is read-only, so it
+// never counts.
 func modeHasEditing(mode string) bool {
 	switch mode {
-	case "edit", "copilot", "auto":
+	case "act", "edit", "copilot", "auto":
 		return true
 	}
 	return false

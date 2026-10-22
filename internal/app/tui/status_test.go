@@ -35,7 +35,7 @@ func TestStatusLineShowsRouteAndContext(t *testing.T) {
 	m.state.SetTurnUsage(42000)
 
 	line := m.renderStatusLine(100)
-	for _, want := range []string{"default", "qwen2.5-coder:14b @ ollama", "local", "ctx 42k/128k"} {
+	for _, want := range []string{"act", "qwen2.5-coder:14b @ ollama", "local", "ctx 42k/128k"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("status line missing %q:\n%s", want, line)
 		}
@@ -536,7 +536,7 @@ func TestStatusLineModeIsCoralColored(t *testing.T) {
 	if !has256 && !has16 {
 		t.Fatalf("mode segment not coral-colored (expected 38;5;209 or 35m):\n%s", out)
 	}
-	if !strings.Contains(stripANSI(out), "default") {
+	if !strings.Contains(stripANSI(out), "act") {
 		t.Fatalf("mode label text missing:\n%s", out)
 	}
 }

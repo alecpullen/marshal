@@ -2091,7 +2091,7 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 func accessTUIOptions(rt *Runtime) []tui.Option {
 	return []tui.Option{
 		tui.WithAccessRequests(rt.AccessRequest, rt.ResolveAccess),
-		tui.WithSessionModeSetter(rt.SetSessionMode),
+		tui.WithInteractionSetter(rt.SetInteraction),
 		tui.WithSessionEffortSetter(rt.SetSessionEffort),
 	}
 }

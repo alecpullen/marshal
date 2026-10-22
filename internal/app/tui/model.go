@@ -55,6 +55,7 @@ import (
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/commands"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/jsonextract"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/modelcache"
@@ -68,7 +69,6 @@ import (
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
 	"marshal/internal/skills"
-	coreskills "marshal/internal/skills"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -719,11 +719,11 @@ type Model struct {
 	// resolver is attached, which fails closed.
 	accessRequest func() (session.AccessRequest, bool)
 	resolveAccess func(session.AccessChoice) (session.AccessResult, error)
-	// sessionModeSetter is the runtime-facing manual mode seam
-	// (WithSessionModeSetter). When set, manual mode changes go through it so
-	// the session override and the runner policy move together; nil falls back
-	// to the structural runner setters.
-	sessionModeSetter func(string) error
+	// interactionSetter is the runtime-facing interaction seam
+	// (WithInteractionSetter). The TUI submits a patch and renders the
+	// committed state; it never mutates the runner, policy engine, force
+	// class, config or session state itself.
+	interactionSetter func(interaction.Patch) (interaction.State, error)
 	// effortSetter is the runtime-facing effort seam (WithSessionEffortSetter).
 	// When set, effort changes go through it so validation, the session
 	// override and the running turn move together; nil reports that effort
@@ -941,11 +941,11 @@ func WithAccessRequests(
 	}
 }
 
-// WithSessionModeSetter wires the runtime-facing manual mode seam. When set,
-// a manual mode change goes through the runtime so the session override and
-// the runner's policy move together; nil keeps the structural runner setters.
-func WithSessionModeSetter(set func(string) error) Option {
-	return func(m *Model) { m.sessionModeSetter = set }
+// WithInteractionSetter wires the runtime-facing interaction seam. The TUI
+// submits one patch and renders the committed state; a nil seam reports that
+// interaction controls are unavailable rather than mutating anything locally.
+func WithInteractionSetter(set func(interaction.Patch) (interaction.State, error)) Option {
+	return func(m *Model) { m.interactionSetter = set }
 }
 
 // WithSessionEffortSetter wires the runtime-facing effort seam. When set,
@@ -1322,7 +1322,7 @@ func (m *Model) applyNewConfig(cfg config.Config) {
 	}
 	// Read the effective mode back from the session: it may differ from the
 	// configured value when an override survived the rebase.
-	m.approvalMode = policy.ParseApprovalMode(m.state.AccessState().Mode)
+	m.approvalMode = policy.ApprovalMode(string(m.state.InteractionState().Mode))
 	m.setReg = nil
 	m.setPopup = nil
 	m.lastInputForPopups = ""
@@ -1778,13 +1778,13 @@ func New(state *session.State, opts ...Option) Model {
 		// policy engine from this same value, so hardcoding here made the
 		// status line claim "default" while the engine was auto-approving
 		// every edit.
-		approvalMode: policy.ParseApprovalMode(state.Config.Agent.ApprovalMode),
+		approvalMode: policy.ApprovalMode(string(state.InteractionState().Mode)),
 		// Seed the reconciliation baseline from the session's effective mode.
 		// session.New normalizes the configured value, so a blank or
 		// non-canonical config does not make the first reconcile flip the
 		// model: it stays a no-op rather than re-asserting the mode over
 		// whatever the model already shows.
-		syncedAccessMode: state.AccessState().Mode,
+		syncedAccessMode: string(state.InteractionState().Mode),
 		ctx:              context.Background(),
 		viewport:         viewport.New(),
 		spinner:          NewSpinner(),
@@ -3227,11 +3227,12 @@ func (m *Model) reconcileAccess() {
 	// edge-triggered on the session's own mode: re-asserting an unchanged
 	// value would clobber a mode another path just set (cycleMode reads
 	// m.approvalMode to compute the next rung).
-	effective := m.state.AccessState()
-	modeChanged := m.syncedAccessMode != effective.Mode
+	effective := m.state.InteractionState()
+	effectiveMode := string(effective.Mode)
+	modeChanged := m.syncedAccessMode != effectiveMode
 	if modeChanged {
-		m.syncedAccessMode = effective.Mode
-		m.approvalMode = policy.ParseApprovalMode(effective.Mode)
+		m.syncedAccessMode = effectiveMode
+		m.approvalMode = policy.ApprovalMode(effectiveMode)
 	}
 
 	snapshot, pending := m.accessRequestSnapshot()
@@ -4610,12 +4611,12 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 	if parsed.FromLastPlan {
 		last, ok := lastFinalAssistantPlan(m.state)
 		if !ok {
-			m.state.AddMessage(session.RoleSystem, "No approved plan found in the last assistant turn. Run /plan first, then /sdd new --from-last-plan.", session.ContentTypePlain)
+			m.state.AddMessage(session.RoleSystem, "No approved plan found in the last assistant turn. Load the marshal-writing-plans skill, produce an approved plan, then run /sdd new --from-last-plan.", session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
 		}
 		design = last
-		goal = "Convert the approved Plan mode result into an executable SDD plan."
+		goal = "Convert the approved plan into an executable SDD plan."
 	}
 	if strings.TrimSpace(goal) == "" {
 		m.state.AddMessage(session.RoleSystem, "Usage: /sdd new <goal>", session.ContentTypePlain)
@@ -5580,13 +5581,6 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.state.ClearNotice(session.NoticeProvider)
 		m.successPulse = true
 		m.successPulseAt = m.now()
-		// After a successful Plan mode turn, hint that the approved plan can
-		// become an executable SDD artifact. Do not auto-run it.
-		if m.approvalMode == policy.ModePlan {
-			m.state.AddMessage(session.RoleSystem,
-				"To turn this approved plan into an executable SDD artifact, run /sdd new --from-last-plan.",
-				session.ContentTypePlain)
-		}
 		// A completed turn is the single point where the final assistant
 		// message is in the session state — compute the next-prompt
 		// suggestion here. Only on the success path: a failed or cancelled
@@ -6924,6 +6918,14 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		args = parts[1:]
 	}
 
+	// Retired legacy mode commands return an actionable explanation and never
+	// change access: hidden aliases must not survive as a second mode surface.
+	if explanation, ok := retiredInteractionCommands[name]; ok {
+		m.state.AddMessage(session.RoleSystem, explanation, session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	}
+
 	if m.cmdRegistry == nil {
 		m.state.AddMessage(session.RoleSystem, "Command registry not available.", session.ContentTypePlain)
 		m.refreshViewport()
@@ -7216,98 +7218,137 @@ func (m *Model) openSessionPicker(prefilter string) {
 	m.openPicker("sessions", "Resume session", "pick a previous conversation", items, prefilter)
 }
 
-// setMode applies an interaction mode for the next turn. Shared by the
-// /plan, /default, /edit, /copilot, /auto, /mode commands and the
-// Tab/Shift+Tab mode-cycling hotkeys. The change is session-scoped (never
-// persisted to disk here), but the in-memory session config is kept in
-// sync so the /settings browser — built from m.state.Config — shows the
-// current mode instead of a stale one.
-//
-// When the runtime supplies a mode setter, the change goes through it: the
-// runtime owns the session override and the runner's policy, so a manual
-// selection and an approved grant move the same state. Without one, the
-// structural runner setters are passed to the session as the infallible
-// callback, which keeps the session's own record authoritative either way.
-func (m *Model) setMode(mode string) {
-	if m.sessionModeSetter != nil {
-		if err := m.sessionModeSetter(mode); err != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("Could not switch to %s mode: %v", mode, err),
-				session.ContentTypePlain)
+// applyInteraction submits one interaction patch to the runtime and returns
+// the committed state. The TUI only renders that result: it never mutates the
+// runner, policy engine, force class, config or session state itself.
+func (m *Model) applyInteraction(patch interaction.Patch) (interaction.State, bool) {
+	if m.interactionSetter == nil {
+		m.state.AddMessage(session.RoleSystem,
+			"Interaction controls are unavailable: no runtime interaction seam is attached.",
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return interaction.State{}, false
+	}
+	committed, err := m.interactionSetter(patch)
+	if err != nil {
+		m.state.AddMessage(session.RoleSystem,
+			fmt.Sprintf("Could not change interaction state: %v", err),
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return interaction.State{}, false
+	}
+	m.approvalMode = policy.ApprovalMode(string(committed.Mode))
+	m.syncedAccessMode = string(committed.Mode)
+	return committed, true
+}
+
+// modeReceipt reports a committed mode change. Ask explicitly says that work
+// already running continues: changing the mode is forward-looking, not a
+// cancellation or restart.
+func (m *Model) modeReceipt(state interaction.State) {
+	var msg string
+	switch state.Mode {
+	case interaction.ModeAsk:
+		msg = "Switched to Ask mode. New actions need approval."
+		if m.busy || m.state.RunningJobsCount() > 0 {
+			msg += " Work already running continues."
+		}
+	case interaction.ModeAct:
+		msg = "Switched to Act mode. Routine workspace work proceeds without asking."
+	default:
+		msg = fmt.Sprintf("Switched to %s mode.", state.Mode)
+	}
+	if state.Auto {
+		msg += " Auto is on."
+	}
+	if state.System {
+		msg += " System access is on."
+	}
+	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
+	m.refreshViewport()
+}
+
+// setInteractionMode applies one canonical Ask/Act transition. Auto is cleared
+// by interaction.Apply whenever Mode is patched; System is preserved.
+func (m *Model) setInteractionMode(mode interaction.Mode) {
+	if state, ok := m.applyInteraction(interaction.Patch{Mode: &mode}); ok {
+		m.modeReceipt(state)
+	}
+}
+
+// setAuto applies the /auto transition table. An explicit on enters Act even
+// from Ask; off clears Auto and preserves the current mode and System.
+func (m *Model) setAuto(args []string) {
+	on := false
+	if len(args) > 0 {
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "on":
+			on = true
+		case "off":
+			on = false
+		default:
+			m.state.AddMessage(session.RoleSystem, "Usage: /auto [on|off]", session.ContentTypePlain)
 			m.refreshViewport()
 			return
 		}
 	} else {
-		class := "edit"
-		if mode == "plan" || mode == "default" {
-			class = "question"
-		}
-		apply := func() {}
-		if m.runner != nil {
-			runner := m.runner
-			apply = func() {
-				runner.SetForceClass(class)
-				runner.SetApprovalMode(policy.ApprovalMode(mode))
-			}
-		}
-		if err := m.state.SetSessionMode(mode, apply); err != nil {
-			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("Could not switch to %s mode: %v", mode, err),
-				session.ContentTypePlain)
+		on = !m.state.InteractionState().Auto
+	}
+	if _, ok := m.applyInteraction(interaction.Patch{Auto: &on}); !ok {
+		return
+	}
+	if on {
+		m.state.AddMessage(session.RoleSystem,
+			"Auto enabled: Act mode preauthorizes destructive workspace commands.", session.ContentTypePlain)
+	} else {
+		m.state.AddMessage(session.RoleSystem,
+			"Auto disabled; the current mode and System access are unchanged.", session.ContentTypePlain)
+	}
+	m.refreshViewport()
+}
+
+// setSystem applies the /system on|off|toggle transition. Mode and Auto are
+// preserved; /system unlock remains a separate control handled by the caller.
+func (m *Model) setSystem(args []string) {
+	on := false
+	if len(args) > 0 {
+		switch strings.ToLower(strings.TrimSpace(args[0])) {
+		case "on":
+			on = true
+		case "off":
+			on = false
+		default:
+			m.state.AddMessage(session.RoleSystem, "Usage: /system [on|off|unlock]", session.ContentTypePlain)
 			m.refreshViewport()
 			return
 		}
+	} else {
+		on = !m.state.InteractionState().System
 	}
-	m.approvalMode = policy.ApprovalMode(mode)
-	// Pair Plan mode with the writing-plans skill so inline plans follow
-	// the house format and chain into marshal-executing-plans. Living here
-	// (not in the /plan handler) keeps every entry point consistent:
-	// /plan, /mode plan, the mode picker, and Tab/Shift+Tab cycling. A
-	// missing or renamed skill must never block the mode switch, so the
-	// error is ignored. Like any quiet load this counts against
-	// skills.max_active and may evict the oldest non-pinned active skill
-	// when the cap is full.
-	if mode == "plan" && m.skillIndex != nil {
-		_ = coreskills.LoadSkillIntoSessionQuiet(m.skillIndex, m.state, "marshal-writing-plans")
+	if _, ok := m.applyInteraction(interaction.Patch{System: &on}); !ok {
+		return
 	}
-}
-
-// modeOrder is the canonical cycle order used by Tab/Shift+Tab.
-var modeOrder = []policy.ApprovalMode{policy.ModePlan, policy.ModeDefault, policy.ModeEdit, policy.ModeCopilot, policy.ModeAuto}
-
-// modeSwitchMessage maps each mode value to the exact confirmation
-// message used by the /plan, /default, /edit, /copilot, /auto command
-// handlers, so the transcript looks identical whether the user pressed
-// Tab or typed /plan.
-var modeSwitchMessage = map[string]string{
-	"plan":    "Switched to Plan mode. Agent will produce a numbered plan, then stop.",
-	"default": "Switched to Default mode. Agent is read-only; it will request elevation to edit.",
-	"edit":    "Switched to Edit mode. Each file change requires approval.",
-	"copilot": "Switched to Copilot mode. Changes auto-approve; agent may ask on ambiguity.",
-	"auto":    "Switched to Auto mode. Fully autonomous; no questions asked.",
-}
-
-// cycleMode advances (forward=true) or reverses the interaction mode,
-// wrapping around. It applies the result via setMode and emits the same
-// confirmation message the /<mode> commands use.
-func (m *Model) cycleMode(forward bool) {
-	cur := string(m.approvalMode)
-	idx := slices.IndexFunc(modeOrder, func(m policy.ApprovalMode) bool { return string(m) == cur })
-	if idx < 0 {
-		idx = 0
+	if on {
+		m.state.AddMessage(session.RoleSystem, "System access enabled for this session.", session.ContentTypePlain)
+	} else {
+		m.state.AddMessage(session.RoleSystem, "System access disabled.", session.ContentTypePlain)
 	}
-	step := 1
-	if !forward {
-		step = -1
-	}
-	next := string(modeOrder[(idx+step+len(modeOrder))%len(modeOrder)])
-	m.setMode(next)
-	msg, ok := modeSwitchMessage[next]
-	if !ok {
-		msg = fmt.Sprintf("Switched to %s mode.", next)
-	}
-	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
+}
+
+// cycleMode toggles Ask and normal Act. Both Tab directions toggle, and Auto is
+// never restored implicitly because a Mode patch clears it.
+func (m *Model) cycleMode(forward bool) {
+	_ = forward // Tab and Shift+Tab both toggle Ask ↔ Act.
+	current := m.state.InteractionState().Mode
+	if current != interaction.ModeAsk && current != interaction.ModeAct {
+		current = interaction.Mode(m.approvalMode)
+	}
+	next := interaction.ModeAct
+	if current == interaction.ModeAct {
+		next = interaction.ModeAsk
+	}
+	m.setInteractionMode(next)
 }
 
 // cycleModel advances (forward=true) or reverses the active model preset,
@@ -7671,10 +7712,10 @@ func (m *Model) rewindPickerItems() []picker.Item {
 	return items
 }
 
-// modePickerItems builds picker items for the interaction modes.
+// modePickerItems builds picker items for the two canonical interaction modes.
 // The current mode carries a "● now" badge.
 func (m *Model) modePickerItems() []picker.Item {
-	current := string(m.approvalMode)
+	current := string(m.state.InteractionState().Mode)
 	badge := func(v string) string {
 		if v == current {
 			return "● now"
@@ -7682,12 +7723,8 @@ func (m *Model) modePickerItems() []picker.Item {
 		return ""
 	}
 	return []picker.Item{
-		{Label: "Plan", Detail: "read-only, forced plan", Badge: badge("plan"), Value: "plan"},
-		{Label: "Default", Detail: "read-only, request elevation", Badge: badge("default"), Value: "default"},
-		{Label: "Edit", Detail: "plan + confirm each", Badge: badge("edit"), Value: "edit"},
-		{Label: "Copilot", Detail: "auto-approve, may ask", Badge: badge("copilot"), Value: "copilot"},
-		{Label: "Auto", Detail: "fully autonomous", Badge: badge("auto"), Value: "auto"},
-		{Label: "SDD", Detail: "plan-driven multi-task", Badge: badge("sdd"), Value: "sdd"},
+		{Label: "Ask", Detail: "new actions need approval", Badge: badge("ask"), Value: "ask"},
+		{Label: "Act", Detail: "routine workspace work proceeds", Badge: badge("act"), Value: "act"},
 	}
 }
 

@@ -8,34 +8,34 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/settings"
-	"marshal/internal/tools/policy"
+	"marshal/internal/interaction"
 )
 
-// The status line must report the mode the policy engine is actually
-// enforcing. Hardcoding ModeDefault here made the TUI claim "default" while
-// app.Run had wired the engine to auto from the same config value — so file
-// edits were auto-approved while the UI said the agent was read-only.
-func TestApprovalModeSeededFromConfig(t *testing.T) {
+// The status line must report the effective canonical tuple. The model seeds
+// its presentation from the session's committed interaction state, not from a
+// legacy approval-mode string.
+func TestApprovalModeSeededFromCanonicalState(t *testing.T) {
 	for _, tc := range []struct {
-		configured string
-		want       policy.ApprovalMode
-		wantLabel  string
+		name      string
+		mode      interaction.Mode
+		auto      bool
+		want      string
+		wantLabel string
 	}{
-		{"auto", policy.ModeAuto, "auto"},
-		{"copilot", policy.ModeCopilot, "copilot"},
-		{"edit", policy.ModeEdit, "edit"},
-		{"plan", policy.ModePlan, "plan"},
-		{"default", policy.ModeDefault, "default"},
-		{"", policy.ModeDefault, "default"},
-		{"nonsense", policy.ModeDefault, "default"},
+		{"act", interaction.ModeAct, false, "act", "act"},
+		{"ask", interaction.ModeAsk, false, "ask", "ask"},
+		{"act auto", interaction.ModeAct, true, "act", "act"},
+		{"empty falls back ask", "", false, "ask", "ask"},
+		{"invalid falls back ask", "nonsense", false, "ask", "ask"},
 	} {
-		t.Run(tc.configured, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Default()
-			cfg.Agent.ApprovalMode = tc.configured
+			cfg.Agent.Mode = tc.mode
+			cfg.Agent.Auto = tc.auto
 			state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 			m := New(state)
-			if m.approvalMode != tc.want {
-				t.Fatalf("approvalMode = %q, want %q", m.approvalMode, tc.want)
+			if got := string(m.approvalMode); got != tc.want {
+				t.Fatalf("approvalMode = %q, want %q", got, tc.want)
 			}
 			if got := m.modeSegment(); got != tc.wantLabel {
 				t.Fatalf("modeSegment() = %q, want %q", got, tc.wantLabel)
@@ -44,42 +44,25 @@ func TestApprovalModeSeededFromConfig(t *testing.T) {
 	}
 }
 
-// The footer (m.approvalMode / modeSegment) and the /settings browser
-// (m.state.Config.Agent.ApprovalMode) must stay in sync no matter which
-// side changes the mode. Previously each mutation path updated only its
-// own store, so the two disagreed.
+// The footer and the /settings browser must stay in sync no matter which side
+// changes the configured tuple.
 func TestSettingsApprovalModeChangeUpdatesFooter(t *testing.T) {
 	m := newTestModel(t)
 	cfg := m.state.Config
-	cfg.Agent.ApprovalMode = "auto"
+	cfg.Agent.Mode = interaction.ModeAsk
+	cfg.Agent.Auto = false
 
 	updated, _ := m.Update(settings.ChangedMsg{
 		Cfg:      cfg,
-		Receipts: []string{"agent.approval_mode = auto"},
+		Receipts: []string{"agent.mode = ask"},
 	})
 	m = updated.(Model)
 
-	if m.approvalMode != policy.ModeAuto {
-		t.Fatalf("approvalMode = %q, want %q after settings change", m.approvalMode, policy.ModeAuto)
+	if got := string(m.approvalMode); got != "ask" {
+		t.Fatalf("approvalMode = %q, want ask after settings change", got)
 	}
-	if got := m.modeSegment(); got != "auto" {
-		t.Fatalf("modeSegment() = %q, want %q after settings change", got, "auto")
-	}
-}
-
-// setMode (Tab cycling and the /plan /default /edit /copilot /auto
-// commands) is session-scoped, but the settings browser is built from
-// m.state.Config — so the in-memory config must mirror the session mode
-// or /settings shows a stale value.
-func TestSetModeMirrorsSessionConfig(t *testing.T) {
-	m := newTestModel(t)
-	m.setMode("auto")
-
-	if m.approvalMode != policy.ModeAuto {
-		t.Fatalf("approvalMode = %q, want %q", m.approvalMode, policy.ModeAuto)
-	}
-	if got := m.state.Config.Agent.ApprovalMode; got != "auto" {
-		t.Fatalf("state.Config.Agent.ApprovalMode = %q, want %q", got, "auto")
+	if got := m.modeSegment(); got != "ask" {
+		t.Fatalf("modeSegment() = %q, want ask after settings change", got)
 	}
 }
 
@@ -88,7 +71,9 @@ func TestSetModeMirrorsSessionConfig(t *testing.T) {
 // NOT also render the normal approve/deny approval panel — the panel owns the
 // decision UI.
 func TestModeElevationHidesApprovalPanel(t *testing.T) {
-	f := newAccessTestFixture(t, 100, 30, config.Default())
+	cfg := config.Default()
+	cfg.Agent.Mode = interaction.ModeAsk
+	f := newAccessTestFixture(t, 100, 30, cfg)
 	f.register(t, session.AccessIntent{Editing: true, Reason: "The agent requests editing capability."})
 
 	// A runtime tick is enough: no keypress is needed to open the panel.

@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
 	"marshal/internal/app/tui/trustpanel"
+	"marshal/internal/interaction"
 	"marshal/internal/pipeline"
 	"marshal/internal/viewmodel"
 	"marshal/internal/worktree"
@@ -26,6 +27,15 @@ import (
 // (headless-capable) commands carry a registry Handler; interactive
 // commands live here, one entry each, next to the dispatch entry point.
 var tuiCommandEffects map[string]func(m *Model, args []string) (tea.Model, tea.Cmd)
+
+// retiredInteractionCommands explains the removed five-mode commands. They are
+// handled before the unknown-command fallback and never mutate access.
+var retiredInteractionCommands = map[string]string{
+	"plan":    "/plan was removed. Planning remains available through the marshal-writing-plans skill; load it with /skills.",
+	"default": "/default was removed. Use /ask for approval-gated work or /act for routine workspace work.",
+	"edit":    "/edit was removed. Use /act; Auto is controlled with /auto on|off.",
+	"copilot": "/copilot was removed. Use /auto on for Act + Auto, or /act for normal Act.",
+}
 
 // parseReviewArgs extracts /review options: --model <pair> (or
 // --model=<pair>), --base <ref> (or --base=<ref>), and an explicit
@@ -319,46 +329,29 @@ func init() {
 			}
 			return m, nil
 		},
-		"plan": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.setMode("plan")
-			// Pair Plan mode with the writing-plans skill so inline plans
-			// follow the house format; the load itself lives in setMode so
-			// every entry into plan mode behaves identically.
-			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["plan"], session.ContentTypePlain)
-			m.refreshViewport()
+		"ask": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.setInteractionMode(interaction.ModeAsk)
 			return m, nil
 		},
-		"default": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.setMode("default")
-			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["default"], session.ContentTypePlain)
-			m.refreshViewport()
+		"act": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
+			m.setInteractionMode(interaction.ModeAct)
 			return m, nil
 		},
-		"edit": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.setMode("edit")
-			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["edit"], session.ContentTypePlain)
-			m.refreshViewport()
-			return m, nil
-		},
-		"copilot": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.setMode("copilot")
-			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["copilot"], session.ContentTypePlain)
-			m.refreshViewport()
-			return m, nil
-		},
-		"auto": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.setMode("auto")
-			m.state.AddMessage(session.RoleSystem, modeSwitchMessage["auto"], session.ContentTypePlain)
-			m.refreshViewport()
+		"auto": func(m *Model, args []string) (tea.Model, tea.Cmd) {
+			m.setAuto(args)
 			return m, nil
 		},
 		"mode": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			if len(args) > 0 {
 				switch strings.ToLower(args[0]) {
-				case "plan", "default", "edit", "copilot", "auto":
-					return m.dispatchCommand("/" + strings.ToLower(args[0]))
-				case "sdd":
-					m.openSDDPlanPicker()
+				case "ask":
+					m.setInteractionMode(interaction.ModeAsk)
+					return m, nil
+				case "act":
+					m.setInteractionMode(interaction.ModeAct)
+					return m, nil
+				default:
+					m.state.AddMessage(session.RoleSystem, "Usage: /mode [ask|act]", session.ContentTypePlain)
 					m.refreshViewport()
 					return m, nil
 				}
@@ -383,14 +376,7 @@ func init() {
 				m.refreshViewport()
 				return m, nil
 			}
-			on := !m.state.SystemAccess()
-			m.state.SetSystemAccess(on)
-			if on {
-				m.state.AddMessage(session.RoleSystem, "System access enabled for this session.", session.ContentTypePlain)
-			} else {
-				m.state.AddMessage(session.RoleSystem, "System access disabled.", session.ContentTypePlain)
-			}
-			m.refreshViewport()
+			m.setSystem(args)
 			return m, nil
 		},
 		"swarm": func(m *Model, args []string) (tea.Model, tea.Cmd) {

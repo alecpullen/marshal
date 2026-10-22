@@ -328,7 +328,14 @@ func TestRequestSkillGateNilResponseChan(t *testing.T) {
 // accessRequestFixture builds a session with one published typed request.
 func accessRequestFixture(t *testing.T, intent session.AccessIntent) (*session.State, session.AccessRequest, chan session.UserApprovalDecision) {
 	t.Helper()
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	cfg := config.Default()
+	if intent.Editing {
+		// Editing is already available in canonical Act; start Ask so the
+		// fixture actually has a capability to request.
+		cfg.Agent.Mode = "ask"
+		cfg.Agent.Auto = false
+	}
+	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	call := &session.PendingToolCall{
 		ID:           "call-1",
 		Name:         "mode.request",
@@ -546,7 +553,7 @@ func TestCollectAccessDisclosureSurvivesLegacyClient(t *testing.T) {
 	}
 	for _, want := range []string{
 		"read outside the workspace",
-		"Current mode: default; system access: false.",
+		"Current mode: copilot; system access: false.",
 		"interaction mode stays unchanged",
 		"This conversation only",
 		"no sudo",

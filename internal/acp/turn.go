@@ -18,6 +18,7 @@ import (
 	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/oauth"
 	"marshal/internal/pipeline"
@@ -82,17 +83,20 @@ type TurnRuntime struct {
 	BeginWork func(context.Context) (context.Context, func(), error)
 	Run       RunnerFunc
 	Events    *pubsub.Broker[session.Event]
-	// SetMode applies a session-level approval mode (plan, default, edit,
-	// copilot, auto). Nil means the runtime does not support mode switching.
-	SetMode func(mode string) error
+	// SetInteraction applies one validated interaction patch and returns the
+	// committed tuple. It is the only interaction mutation the transport
+	// performs: the runtime validates, commits and projects the patch, so ACP
+	// makes no policy decision and calls no runner setter. Nil means the
+	// runtime does not support interaction changes, so a request fails closed.
+	SetInteraction func(interaction.Patch) (interaction.State, error)
+	// InteractionState reads the session's committed interaction tuple. The
+	// second result is false when the runtime cannot report one, which fails a
+	// read closed rather than inventing a state.
+	InteractionState func() (interaction.State, bool)
 	// SetEffort applies a session-level reasoning-effort override (an empty
 	// level clears it) and reports when it takes effect. Nil means the
 	// runtime does not support effort changes.
 	SetEffort func(level string) (string, error)
-	// SetSystemAccess applies the per-session system-access modifier. Nil
-	// means the runtime falls back to State.SetSystemAccess; when State is
-	// also nil the runtime does not support system access.
-	SetSystemAccess func(on bool)
 	// AccessRequest returns the typed capability request waiting for a
 	// decision, if any. Nil means the runtime cannot present one.
 	AccessRequest func() (session.AccessRequest, bool)
@@ -134,33 +138,6 @@ type TurnRuntime struct {
 	// telemetry usage section. A nil DB omits it.
 	DB        *db.DB
 	ProjectID int64
-}
-
-// systemAccess reports the runtime session's live system-access flag.
-// Nil-safe: a runtime without state reports false.
-func (rt *TurnRuntime) systemAccess() bool {
-	if rt == nil || rt.State == nil {
-		return false
-	}
-	return rt.State.SystemAccess()
-}
-
-// applySystemAccess toggles the runtime session's system-access modifier
-// through the SetSystemAccess seam, falling back to the session state's own
-// setter when the seam is not wired. It reports whether a setter was found.
-func (rt *TurnRuntime) applySystemAccess(on bool) bool {
-	if rt == nil {
-		return false
-	}
-	if rt.SetSystemAccess != nil {
-		rt.SetSystemAccess(on)
-		return true
-	}
-	if rt.State != nil {
-		rt.State.SetSystemAccess(on)
-		return true
-	}
-	return false
 }
 
 // Lookup returns the runtime registered for an ACP session id.
@@ -1594,91 +1571,6 @@ func (m *TurnManager) SDDStart(ctx context.Context, params json.RawMessage) (any
 
 	res, err := m.runTurn(ctx, p.SessionID, rt, RunnerFunc(runner.Run), p.PlanPath, sddResultOf)
 	return m.finishSDDResult(p.SessionID, rt, res, err)
-}
-
-// SetModeParams is the JSON-RPC body for session/set_mode.
-type SetModeParams struct {
-	SessionID string `json:"sessionId"`
-	Mode      string `json:"mode"`
-	// SystemAccess is an overlay field: when true, the session's
-	// system-access modifier is enabled alongside the mode. Absent or
-	// false leaves the current flag untouched.
-	SystemAccess bool `json:"system_access"`
-	// SystemAccessSet records whether the client sent the field at all, so
-	// "revoke to false" is distinguishable from "leave unchanged". It is a
-	// wire-presence flag, not a value.
-	SystemAccessSet bool `json:"-"`
-}
-
-// UnmarshalJSON records the presence of system_access alongside its value so
-// an explicit false revokes and an absent field leaves the flag untouched.
-func (p *SetModeParams) UnmarshalJSON(data []byte) error {
-	type alias SetModeParams
-	var raw struct {
-		alias
-		SystemAccess *bool `json:"system_access"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	*p = SetModeParams(raw.alias)
-	if raw.SystemAccess != nil {
-		p.SystemAccess = *raw.SystemAccess
-		p.SystemAccessSet = true
-	}
-	return nil
-}
-
-// SetMode handles session/set_mode: it applies the requested approval mode
-// to the session's runtime and broadcasts a mode_changed session/update so
-// every attached client stays in sync.
-func (m *TurnManager) SetMode(ctx context.Context, params json.RawMessage) (any, error) {
-	var p SetModeParams
-	if len(params) > 0 {
-		if err := json.Unmarshal(params, &p); err != nil {
-			return nil, fmt.Errorf("acp: parse session/set_mode params: %w", err)
-		}
-	}
-	if p.SessionID == "" {
-		return nil, fmt.Errorf("acp: session/set_mode requires sessionId")
-	}
-	// Normalize case before validation: ValidApprovalMode lowercases, so
-	// "Auto" passes the check but would then be handed to the runtime as-is,
-	// where the passthrough SetMode rejects anything that isn't lowercase.
-	// Canonicalize here so the applied mode, the response, and the
-	// mode_changed notification all carry the same lowercase value.
-	p.Mode = strings.ToLower(p.Mode)
-	if !policy.ValidApprovalMode(p.Mode) {
-		return nil, invalidParamsError("invalid mode %q: want one of plan, default, edit, copilot, auto", p.Mode)
-	}
-	rt, ok := m.lookup(p.SessionID)
-	if !ok {
-		return nil, serverErrorf("unknown session: %s", p.SessionID)
-	}
-	if rt.SetMode == nil {
-		return nil, serverErrorf("session %s does not support mode switching", p.SessionID)
-	}
-	if err := rt.SetMode(p.Mode); err != nil {
-		return nil, serverErrorf("set mode: %v", err)
-	}
-	// system_access is an overlay: true grants, false revokes, and an absent
-	// field leaves the current value untouched (SystemAccessSet records
-	// whether the client actually sent it). A client that granted the flag
-	// must be able to take it back.
-	if p.SystemAccessSet {
-		if !rt.applySystemAccess(p.SystemAccess) {
-			return nil, serverErrorf("session %s does not support system access", p.SessionID)
-		}
-	}
-	// Broadcast the session's live system-access flag, not the request
-	// field, so a plain set_mode call still reports the current value.
-	if err := m.notify("session/update", SessionUpdateParams{
-		SessionID: p.SessionID,
-		Update:    map[string]any{"kind": "mode_changed", "mode": p.Mode, "system_access": rt.systemAccess()},
-	}); err != nil {
-		return nil, err
-	}
-	return map[string]any{"mode": p.Mode}, nil
 }
 
 // SetEffortParams is the JSON-RPC body for session/set_effort. An empty

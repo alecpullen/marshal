@@ -1532,8 +1532,8 @@ func TestSessionNewAppliesPolicy(t *testing.T) {
 	if resp, ok := got.(SessionResponse); !ok || resp.Mode != "copilot" {
 		t.Fatalf("response = %#v, want mode echoed as copilot", got)
 	}
-	if got := rt.Runner.Policy.ApprovalMode(); got != policy.ModeCopilot {
-		t.Fatalf("approval mode = %q, want copilot", got)
+	if got := rt.Runner.Policy.ApprovalMode(); got != policy.ModeEdit {
+		t.Fatalf("approval mode = %q, want edit", got)
 	}
 	want := []string{"go test *", "make lint", "git status"}
 	if got := rt.State.SessionRules(); !reflect.DeepEqual(got, want) {

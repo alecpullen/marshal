@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/credentials"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
 	"marshal/internal/viewmodel"
@@ -225,12 +226,18 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 				BeginWork: rt.BeginWork,
 				Run:       run,
 				Events:    evBroker,
-				// The runtime owns mode validation and the session override, so
-				// the manual RPC path goes through the same operation the TUI
-				// uses rather than mutating the runner directly.
-				SetMode:          rt.SetSessionMode,
+				// The runtime owns interaction validation and the session
+				// override, so the manual RPC path goes through the same
+				// operation the TUI uses rather than mutating the runner
+				// directly. Both seams are bound once, here.
+				SetInteraction: rt.SetInteraction,
+				InteractionState: func() (interaction.State, bool) {
+					if rt.State == nil {
+						return interaction.State{}, false
+					}
+					return rt.State.InteractionState(), true
+				},
 				SetEffort:        rt.SetSessionEffort,
-				SetSystemAccess:  rt.State.SetSystemAccess,
 				AccessRequest:    rt.AccessRequest,
 				ResolveAccess:    rt.ResolveAccess,
 				Steer:            rt.State.PushSteering,
@@ -359,6 +366,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	srv.Handle("session/prompt", turns.PromptTurn)
 	srv.Handle("session/set_mode", turns.SetMode)
+	srv.Handle("session/access_state", turns.AccessState)
 	srv.Handle("session/set_effort", turns.SetEffort)
 	srv.Handle("session/steer", turns.Steer)
 	srv.Handle("session/steering_status", turns.SteeringStatus)

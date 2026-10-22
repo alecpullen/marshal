@@ -3138,16 +3138,17 @@ func (m *Model) pendingApprovalDisplay() (tc *session.PendingToolCall, label str
 		return src, ""
 	}
 	return &session.PendingToolCall{
-		ID:           src.ID,
-		Name:         src.Name,
-		Args:         src.Args,
-		Command:      src.Command,
-		Risk:         src.Risk,
-		StepID:       src.StepID,
-		Reason:       fmt.Sprintf("subagent %q: %s", label, src.Reason),
-		Diff:         src.Diff,
-		Schema:       src.Schema,
-		ResponseChan: src.ResponseChan,
+		ID:                   src.ID,
+		Name:                 src.Name,
+		Args:                 src.Args,
+		Command:              src.Command,
+		Risk:                 src.Risk,
+		StepID:               src.StepID,
+		Reason:               fmt.Sprintf("subagent %q: %s", label, src.Reason),
+		Diff:                 src.Diff,
+		Schema:               src.Schema,
+		ExactCommandApproval: src.ExactCommandApproval,
+		ResponseChan:         src.ResponseChan,
 	}, label
 }
 
@@ -3413,16 +3414,17 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		// Mirror pendingApprovalDisplay so the eager form and the lazily
 		// built one attribute the request identically.
 		displayTC = &session.PendingToolCall{
-			ID:           tc.ID,
-			Name:         tc.Name,
-			Args:         tc.Args,
-			Command:      tc.Command,
-			Risk:         tc.Risk,
-			StepID:       tc.StepID,
-			Reason:       fmt.Sprintf("subagent %q: %s", source, tc.Reason),
-			Diff:         tc.Diff,
-			Schema:       tc.Schema,
-			ResponseChan: tc.ResponseChan,
+			ID:                   tc.ID,
+			Name:                 tc.Name,
+			Args:                 tc.Args,
+			Command:              tc.Command,
+			Risk:                 tc.Risk,
+			StepID:               tc.StepID,
+			Reason:               fmt.Sprintf("subagent %q: %s", source, tc.Reason),
+			Diff:                 tc.Diff,
+			Schema:               tc.Schema,
+			ExactCommandApproval: tc.ExactCommandApproval,
+			ResponseChan:         tc.ResponseChan,
 		}
 	}
 	if m.approvalModel == nil {
@@ -3446,6 +3448,13 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		m.invalidateTranscript()
 		return m, nil
 	case choiceAlways:
+		if forcedPromptClass(tc) {
+			// A forged standing choice must never persist a bypass for a prompt
+			// that only accepts an exact decision.
+			m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: false}, nil)
+			m.invalidateTranscript()
+			return m, nil
+		}
 		rule := permissions.Rule{
 			Permission: permissions.PermissionForTool(tc.Name),
 			Pattern:    permissions.PatternForApproval(tc),
@@ -3471,15 +3480,20 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 				Action:     string(rule.Action),
 			})
 			m.applyNewConfig(newCfg)
-			if m.runner != nil {
-				m.runner.SetPolicyRules(m.state.Config.Permissions.Rules)
-			}
+			// The installed policy engine reads the owner's live config through
+			// State.PolicySnapshot; a runner-local rule mutation would create a
+			// second source of truth.
 			return nil
 		}
 		m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true}, apply)
 		m.invalidateTranscript()
 		return m, nil
 	case choiceSessionAllow:
+		if forcedPromptClass(tc) {
+			m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: false}, nil)
+			m.invalidateTranscript()
+			return m, nil
+		}
 		apply := func() error {
 			m.state.AddSessionRule(tc.Command)
 			return nil

@@ -98,6 +98,7 @@ func forcedPromptClass(tc *session.PendingToolCall) bool {
 	}
 	return tc.Name == "shell.sudo" ||
 		tc.Risk == "model-cost-consent" ||
+		tc.ExactCommandApproval ||
 		isModeElevationApproval(tc)
 }
 

@@ -402,6 +402,34 @@ func TestAccessPanelQueuesBehindOtherDockAndPreservesDraft(t *testing.T) {
 	}
 }
 
+func TestAccessPanelRevisionRefreshResetsDeny(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Mode = interaction.ModeAsk
+	f := newAccessTestFixture(t, 120, 40, cfg)
+	f.register(t, session.AccessIntent{Editing: true, Reason: "The agent requests editing capability."})
+	f.tick()
+
+	first := f.panel()
+	if first == nil {
+		t.Fatal("access panel did not open")
+	}
+	updated, _ := f.m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	f.m = asModel(t, updated)
+	if view := stripANSI(f.panel().View(120, 40)); !strings.Contains(view, "> Act") {
+		t.Fatalf("precondition: Act not selected:\n%s", view)
+	}
+
+	// A revision-only change must re-present the request and reset Deny.
+	f.state.SetSystemAccess(true)
+	f.tick()
+	if f.panel() == first {
+		t.Fatal("a revision change did not re-present the access request")
+	}
+	if view := stripANSI(f.panel().View(120, 40)); !strings.Contains(view, "> Deny") {
+		t.Fatalf("refreshed panel did not reset to Deny:\n%s", view)
+	}
+}
+
 // Ordinary rerenders and resizes keep the same panel and selection; a changed
 // permission tuple re-presents the request with Deny selected again.
 func TestAccessPanelKeepsIdentityUntilPermissionRefresh(t *testing.T) {

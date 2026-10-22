@@ -73,13 +73,13 @@ func TestStatusBadgeSystemSuffix(t *testing.T) {
 	m := newStatusTestModel(t)
 
 	line := stripANSI(m.renderStatusLine(100))
-	if strings.Contains(line, "· system") {
+	if strings.Contains(line, "· System") {
 		t.Fatalf("status line shows the system suffix with the flag off:\n%s", line)
 	}
 
 	m.state.SetSystemAccess(true)
 	line = stripANSI(m.renderStatusLine(100))
-	if !strings.Contains(line, "· system") {
+	if !strings.Contains(line, "· System") {
 		t.Fatalf("status line missing the system suffix with the flag on:\n%s", line)
 	}
 }
@@ -359,6 +359,10 @@ func TestAccessPanelAppearsOnRuntimeTickAtSupportedSizes(t *testing.T) {
 // panel without touching the draft or focus.
 func TestAccessPanelQueuesBehindOtherDockAndPreservesDraft(t *testing.T) {
 	f := newAccessTestFixture(t, 120, 40, config.Default())
+	on := true
+	if _, err := f.state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
+		t.Fatalf("seed Auto: %v", err)
+	}
 
 	// A FullFrame doc panel stands in for any unrelated panel holding the dock.
 	doc := commands.Doc{Title: "Inspector", FullFrame: true, Rows: []commands.Row{{Text: "row"}}}
@@ -371,6 +375,11 @@ func TestAccessPanelQueuesBehindOtherDockAndPreservesDraft(t *testing.T) {
 
 	if _, ok := f.m.dock.Panel().(*docpanel.Panel); !ok {
 		t.Fatalf("the unrelated panel was replaced by %T", f.m.dock.Panel())
+	}
+	// The persistent access label stays visible while a FullFrame panel owns
+	// the dock; the queued request is disclosed on the right instead.
+	if got := f.m.modeSegment(); got != "Act · Auto" {
+		t.Fatalf("mode label while the dock is owned = %q, want Act · Auto", got)
 	}
 	if got := stripANSI(f.m.statusRightSegment()); !strings.Contains(got, "Access waiting") {
 		t.Fatalf("status right segment = %q, want the queued-access disclosure", got)

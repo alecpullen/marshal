@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/contextpack"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
 )
 
@@ -35,7 +36,7 @@ func TestStatusLineShowsRouteAndContext(t *testing.T) {
 	m.state.SetTurnUsage(42000)
 
 	line := m.renderStatusLine(100)
-	for _, want := range []string{"act", "qwen2.5-coder:14b @ ollama", "local", "ctx 42k/128k"} {
+	for _, want := range []string{"Act", "qwen2.5-coder:14b @ ollama", "local", "ctx 42k/128k"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("status line missing %q:\n%s", want, line)
 		}
@@ -296,8 +297,8 @@ func TestStatusLinePreservesModeSegmentUnderCollapse(t *testing.T) {
 	m.now = func() time.Time { return time.Unix(105, 0) }
 	m.spinnerFrame = "⠋"
 	line := stripANSI(m.renderStatusLine(80))
-	if !strings.Contains(line, "edit cmd") {
-		t.Fatalf("status line dropped mode segment under collapse:\n%s", line)
+	if !strings.Contains(line, "Act") {
+		t.Fatalf("status line dropped the access mode segment under collapse:\n%s", line)
 	}
 }
 
@@ -536,7 +537,7 @@ func TestStatusLineModeIsCoralColored(t *testing.T) {
 	if !has256 && !has16 {
 		t.Fatalf("mode segment not coral-colored (expected 38;5;209 or 35m):\n%s", out)
 	}
-	if !strings.Contains(stripANSI(out), "act") {
+	if !strings.Contains(stripANSI(out), "Act") {
 		t.Fatalf("mode label text missing:\n%s", out)
 	}
 }
@@ -857,5 +858,103 @@ func TestChangedFileCountAppearsAfterTurn(t *testing.T) {
 	}
 	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±1 file") {
 		t.Fatalf("status line missing ±1 file after the turn:\n%s", got)
+	}
+}
+
+// newInteractionStatusModel builds a model whose effective tuple has every
+// modifier active, so a status test can prove none of them disappear.
+func newInteractionStatusModel(t *testing.T) Model {
+	t.Helper()
+	t.Setenv("NO_COLOR", "")
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	on := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on, System: &on}); err != nil {
+		t.Fatalf("seed interaction: %v", err)
+	}
+	m := New(state)
+	m.resize(100, 30)
+	return m
+}
+
+// TestInteractionStatusSurvivesTransientSurfaces pins that approval, browsing,
+// answering, command editing and activity move to the right-hand surface and
+// never replace the persistent access label.
+func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
+	const want = "Act · Auto · System"
+
+	t.Run("approval", func(t *testing.T) {
+		m := newInteractionStatusModel(t)
+		m.state.SetPendingApproval(&session.PendingToolCall{
+			ID: "call-1", Name: "shell.run",
+			ResponseChan: make(chan session.UserApprovalDecision, 1),
+		})
+		if got := m.modeSegment(); got != want {
+			t.Fatalf("modeSegment = %q, want %q during approval", got, want)
+		}
+		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "approval") {
+			t.Fatalf("statusRightSegment = %q, want the approval indicator", got)
+		}
+	})
+
+	t.Run("browsing", func(t *testing.T) {
+		m := newInteractionStatusModel(t)
+		m.browsing = true
+		if got := m.modeSegment(); got != want {
+			t.Fatalf("modeSegment = %q, want %q while browsing", got, want)
+		}
+		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "browse") {
+			t.Fatalf("statusRightSegment = %q, want the browse indicator", got)
+		}
+	})
+
+	t.Run("answering", func(t *testing.T) {
+		m := newInteractionStatusModel(t)
+		m.state.SetPendingQuestion(&session.PendingQuestion{
+			Questions:    []session.Question{{Question: "Proceed?"}},
+			ResponseChan: make(chan []session.Answer, 1),
+		})
+		if got := m.modeSegment(); got != want {
+			t.Fatalf("modeSegment = %q, want %q while answering", got, want)
+		}
+		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "answering") {
+			t.Fatalf("statusRightSegment = %q, want the answering indicator", got)
+		}
+	})
+
+	t.Run("editing command", func(t *testing.T) {
+		m := newInteractionStatusModel(t)
+		m.editingCommand = true
+		if got := m.modeSegment(); got != want {
+			t.Fatalf("modeSegment = %q, want %q while editing a command", got, want)
+		}
+		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "edit cmd") {
+			t.Fatalf("statusRightSegment = %q, want the edit-command indicator", got)
+		}
+	})
+
+	t.Run("activity", func(t *testing.T) {
+		m := newInteractionStatusModel(t)
+		m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run", StartedAt: time.Now()})
+		if got := m.modeSegment(); got != want {
+			t.Fatalf("modeSegment = %q, want %q during work", got, want)
+		}
+	})
+}
+
+// TestInteractionStatusRetainsModifiersAtMinimumWidth pins that width pressure
+// and an approval indicator never truncate the persistent access label.
+func TestInteractionStatusRetainsModifiersAtMinimumWidth(t *testing.T) {
+	m := newInteractionStatusModel(t)
+	m.resize(24, 30)
+	if got := stripANSI(m.renderStatusLine(24)); !strings.Contains(got, "Act · Auto · System") {
+		t.Fatalf("minimum-width status line lost the access label:\n%s", got)
+	}
+
+	m.state.SetPendingApproval(&session.PendingToolCall{
+		ID: "call-1", Name: "shell.run",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	})
+	if got := stripANSI(m.renderStatusLine(24)); !strings.Contains(got, "Act · Auto · System") {
+		t.Fatalf("approval at minimum width concealed the access label:\n%s", got)
 	}
 }

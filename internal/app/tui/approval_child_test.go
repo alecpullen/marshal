@@ -141,8 +141,11 @@ func TestChildApprovalRenderedInInputArea(t *testing.T) {
 	if !strings.Contains(rendered, "git commit -m x") {
 		t.Errorf("child approval panel should surface the command; got:\n%s", rendered)
 	}
-	if m.modeSegment() != "approval" {
-		t.Errorf("modeSegment = %q, want %q", m.modeSegment(), "approval")
+	if m.modeSegment() != "Act" {
+		t.Errorf("modeSegment = %q, want Act while approval is pending", m.modeSegment())
+	}
+	if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "approval") {
+		t.Errorf("statusRightSegment = %q, want the approval indicator", got)
 	}
 }
 

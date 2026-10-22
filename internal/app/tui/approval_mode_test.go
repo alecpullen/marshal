@@ -22,11 +22,11 @@ func TestApprovalModeSeededFromCanonicalState(t *testing.T) {
 		want      string
 		wantLabel string
 	}{
-		{"act", interaction.ModeAct, false, "act", "act"},
-		{"ask", interaction.ModeAsk, false, "ask", "ask"},
-		{"act auto", interaction.ModeAct, true, "act", "act"},
-		{"empty falls back ask", "", false, "ask", "ask"},
-		{"invalid falls back ask", "nonsense", false, "ask", "ask"},
+		{"act", interaction.ModeAct, false, "act", "Act"},
+		{"ask", interaction.ModeAsk, false, "ask", "Ask"},
+		{"act auto", interaction.ModeAct, true, "act", "Act · Auto"},
+		{"empty falls back ask", "", false, "ask", "Ask"},
+		{"invalid falls back ask", "nonsense", false, "ask", "Ask"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Default()
@@ -61,8 +61,8 @@ func TestSettingsApprovalModeChangeUpdatesFooter(t *testing.T) {
 	if got := string(m.approvalMode); got != "ask" {
 		t.Fatalf("approvalMode = %q, want ask after settings change", got)
 	}
-	if got := m.modeSegment(); got != "ask" {
-		t.Fatalf("modeSegment() = %q, want ask after settings change", got)
+	if got := m.modeSegment(); got != "Ask" {
+		t.Fatalf("modeSegment() = %q, want Ask after settings change", got)
 	}
 }
 

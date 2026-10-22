@@ -678,6 +678,26 @@ func (r *Runner) classifyStreamError(ctx context.Context, model string, err erro
 	return err
 }
 
+// classifyRequestError maps a failure to establish the request — before any
+// stream event — onto the bound that caused it. The adapter runs the HTTP
+// request inside Chat, so an idle or ceiling abort there surfaces as a generic
+// transport error ("Post ...: context canceled") that the stream loop never
+// sees. Without this mapping the turn failed with a bare cancellation:
+// isRetryableChatError refuses it and isReconnectEligible does not recognise
+// it, so the ladder gave up instead of reconnecting. A caller cancellation
+// (Esc, turn cancel) carries no such cause and falls through unchanged.
+func (r *Runner) classifyRequestError(ctx context.Context, model string, err error) error {
+	switch cause := context.Cause(ctx); {
+	case errors.Is(cause, errIdleTimeout):
+		return fmt.Errorf("no response from %s within %s (no bytes before the first event): %w",
+			model, r.effectiveIdleTimeout(), context.DeadlineExceeded)
+	case errors.Is(cause, errRequestCeiling):
+		return fmt.Errorf("%w: no response from %s within %s; raise agent.request_ceiling_seconds if this model legitimately needs longer",
+			errRequestCeiling, model, r.effectiveRequestCeiling())
+	}
+	return err
+}
+
 // effectiveIdleTimeout returns how long a request may go without any
 // streamed bytes before it is treated as a stalled connection, falling back
 // to defaultIdleTimeout when IdleTimeout is zero.
@@ -884,6 +904,13 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	go r.watchIdle(ctx, cancelIdle, &lastEvent, watchdogDone)
 	events, err := p.Chat(ctx, req)
 	if err != nil {
+		// The adapter runs the HTTP request inside Chat, so a bound that fires
+		// before the first event (time-to-first-byte, or the ceiling) surfaces
+		// here as a generic transport error — "Post ...: context canceled" —
+		// and never reaches the stream loop's classification. Map the cause
+		// here too, or the turn dies with a bare cancellation that the retry
+		// ladder refuses to retry and the reconnect wait does not recognise.
+		err = r.classifyRequestError(ctx, model, err)
 		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
 			Status: inspectionStatusFor(ctx, err),
 			Err:    err.Error(),

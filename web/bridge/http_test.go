@@ -719,3 +719,112 @@ func TestSessionRosterRoute(t *testing.T) {
 		})
 	}
 }
+
+// TestAccessRouteReadsFullState pins the authoritative read: GET /access
+// proxies session/access_state and returns every field, including an explicit
+// false, so a client never has to infer privileges from defaults.
+func TestAccessRouteReadsFullState(t *testing.T) {
+	tr := &captureTransport{results: map[string]json.RawMessage{
+		"session/access_state": json.RawMessage(`{"mode":"act","auto":true,"system_access":false,"access_revision":9}`),
+	}}
+	s, reg, _, _ := newTestServer(t, "", tr)
+	reg.track("s-1", AgentPath("/tmp/work"))
+
+	rec := doReq(t, s, http.MethodGet, "/api/sessions/s-1/access", nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var st AccessState
+	decodeBody(t, rec, &st)
+	if want := (AccessState{Mode: "act", Auto: true, System: false, Revision: 9}); st != want {
+		t.Fatalf("state = %+v, want %+v", st, want)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"mode":"act"`, `"auto":true`, `"system_access":false`, `"access_revision":9`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body %s missing %s", body, want)
+		}
+	}
+
+	// An untracked session is a 404, not an empty state.
+	if rec := doReq(t, s, http.MethodGet, "/api/sessions/nope/access", nil, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown session: status = %d, want 404", rec.Code)
+	}
+}
+
+// TestAccessRouteForwardsPatch pins the write half of the route: a valid
+// atomic patch reaches session/set_mode with its explicit false intact, and
+// the response is the full committed state.
+func TestAccessRouteForwardsPatch(t *testing.T) {
+	tr := &captureTransport{results: map[string]json.RawMessage{
+		"session/set_mode": json.RawMessage(`{"mode":"act","auto":false,"system_access":false,"access_revision":5}`),
+	}}
+	s, reg, _, _ := newTestServer(t, "", tr)
+	reg.track("s-1", AgentPath("/tmp/work"))
+
+	rec := doReq(t, s, http.MethodPatch, "/api/sessions/s-1/access", map[string]any{"auto": false}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var st AccessState
+	decodeBody(t, rec, &st)
+	if want := (AccessState{Mode: "act", Auto: false, System: false, Revision: 5}); st != want {
+		t.Fatalf("state = %+v, want %+v", st, want)
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	var frame capturedFrame
+	for _, f := range tr.seen {
+		if f.method == "session/set_mode" {
+			frame = f
+		}
+	}
+	if frame.method == "" {
+		t.Fatalf("no session/set_mode frame; got %+v", tr.seen)
+	}
+	var params map[string]any
+	if err := json.Unmarshal([]byte(frame.params), &params); err != nil {
+		t.Fatalf("decode set_mode params %s: %v", frame.params, err)
+	}
+	if v, ok := params["auto"]; !ok || v != false {
+		t.Fatalf("auto = %#v (present %v) in %s; an explicit false must be forwarded", v, ok, frame.params)
+	}
+}
+
+// TestAccessRouteRejectsNullPatch pins strict client-side validation: a null,
+// unknown, wrong-typed or empty patch is rejected before it is forwarded, so a
+// client that misspells a field is never told its patch was applied.
+func TestAccessRouteRejectsNullPatch(t *testing.T) {
+	tr := &captureTransport{}
+	s, reg, _, _ := newTestServer(t, "", tr)
+	reg.track("s-1", AgentPath("/tmp/work"))
+
+	for _, tc := range []struct{ name, body string }{
+		{"null", `null`},
+		{"empty object", `{}`},
+		{"unknown field", `{"mode":"act","yolo":true}`},
+		{"null field", `{"auto":null}`},
+		{"wrong type", `{"system_access":"yes"}`},
+		{"unknown mode", `{"mode":"yolo"}`},
+		{"array", `[]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPatch, "/api/sessions/s-1/access", strings.NewReader(tc.body))
+			rec := httptest.NewRecorder()
+			s.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 (body %s)", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	// Nothing was forwarded: a rejected patch must not reach the agent.
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	for _, f := range tr.seen {
+		if f.method == "session/set_mode" {
+			t.Fatalf("rejected patch was forwarded: %s", f.params)
+		}
+	}
+}

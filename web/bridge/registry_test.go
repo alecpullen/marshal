@@ -1206,3 +1206,186 @@ func TestRegistryStackParamsAndProxies(t *testing.T) {
 		}
 	}
 }
+
+// TestSetAccessForwardsOptionalFalseAndReturnsCommittedState pins the two
+// halves of the access transport: an explicit false is a real patch value and
+// must reach the agent (not be dropped as an omission), and the caller gets
+// back the full committed tuple the agent reported.
+func TestSetAccessForwardsOptionalFalseAndReturnsCommittedState(t *testing.T) {
+	tr := &captureTransport{results: map[string]json.RawMessage{
+		"session/set_mode": json.RawMessage(`{"mode":"act","auto":false,"system_access":false,"access_revision":4}`),
+	}}
+	r := newStackTestRegistry(t, tr)
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	off := false
+	st, err := r.SetAccess(ctx, "s-1", AccessPatch{Auto: &off, System: &off})
+	if err != nil {
+		t.Fatalf("SetAccess: %v", err)
+	}
+	if want := (AccessState{Mode: "act", Auto: false, System: false, Revision: 4}); st != want {
+		t.Fatalf("committed state = %+v, want %+v", st, want)
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	var frame capturedFrame
+	for _, f := range tr.seen {
+		if f.method == "session/set_mode" {
+			frame = f
+		}
+	}
+	if frame.method == "" {
+		t.Fatalf("no session/set_mode frame; got %+v", tr.seen)
+	}
+	var params map[string]any
+	if err := json.Unmarshal([]byte(frame.params), &params); err != nil {
+		t.Fatalf("decode set_mode params %s: %v", frame.params, err)
+	}
+	for _, key := range []string{"auto", "system_access"} {
+		v, ok := params[key]
+		if !ok {
+			t.Fatalf("%s dropped from %s; an explicit false must be forwarded", key, frame.params)
+		}
+		if v != false {
+			t.Fatalf("%s = %#v, want false", key, v)
+		}
+	}
+	if _, ok := params["mode"]; ok {
+		t.Fatalf("omitted mode was forwarded: %s", frame.params)
+	}
+}
+
+// TestPermissionDecisionPreservesModeAccess pins the typed capability
+// round trip: the request's modeAccess payload and ordinary metadata reach the
+// client exactly as the agent sent them, the typed choice comes back in the
+// decision result, and an ordinary edited command still works unchanged.
+func TestPermissionDecisionPreservesModeAccess(t *testing.T) {
+	r := NewRegistry(&Child{})
+	r.track("s-1", AgentPath("/tmp/work"))
+
+	events := make(chan map[string]any, 1)
+	r.OnEvent = func(id string, payload any) {
+		if m, ok := payload.(map[string]any); ok {
+			select {
+			case events <- m:
+			default:
+			}
+		}
+	}
+
+	params := json.RawMessage(`{"sessionId":"s-1","toolCallId":"tc-9","toolName":"mode.request","risk":"read_only","reason":"need act","modeAccess":{"requestId":"r-1","sessionId":"s-1","reason":"need act","current":{"mode":"ask","auto":false,"system_access":false,"access_revision":2},"missingEditing":true,"missingSystem":false}}`)
+	resCh := make(chan any, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		res, err := r.awaitPermission(params)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		resCh <- res
+	}()
+	waitFor(t, 2*time.Second, "pending permission", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-9"]
+		return ok
+	})
+
+	// The typed request and the ordinary metadata reach the client verbatim.
+	select {
+	case ev := <-events:
+		raw, ok := ev["params"].(json.RawMessage)
+		if !ok {
+			t.Fatalf("event params = %#v, want the raw request", ev["params"])
+		}
+		var req struct {
+			ToolName   string             `json:"toolName"`
+			Risk       string             `json:"risk"`
+			Reason     string             `json:"reason"`
+			ModeAccess *ModeAccessRequest `json:"modeAccess"`
+		}
+		if err := json.Unmarshal(raw, &req); err != nil {
+			t.Fatalf("decode forwarded request %s: %v", raw, err)
+		}
+		if req.ToolName != "mode.request" || req.Risk != "read_only" || req.Reason != "need act" {
+			t.Fatalf("ordinary metadata changed: %+v", req)
+		}
+		if req.ModeAccess == nil {
+			t.Fatalf("modeAccess request dropped: %s", raw)
+		}
+		if req.ModeAccess.RequestID != "r-1" || req.ModeAccess.SessionID != "s-1" ||
+			!req.ModeAccess.MissingEditing || req.ModeAccess.MissingSystem {
+			t.Fatalf("modeAccess request = %+v", req.ModeAccess)
+		}
+		if want := (AccessState{Mode: "ask", Revision: 2}); req.ModeAccess.Current != want {
+			t.Fatalf("modeAccess current = %+v, want %+v", req.ModeAccess.Current, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("permission_request event not emitted")
+	}
+
+	choice := &ModeAccessChoice{
+		RequestID: "r-1", SessionID: "s-1",
+		Current: AccessState{Mode: "ask", Revision: 2},
+		Mode:    "act",
+	}
+	if err := r.ResolvePermission("tc-9", Decision{Approved: true, ModeAccess: choice}); err != nil {
+		t.Fatalf("ResolvePermission: %v", err)
+	}
+	select {
+	case res := <-resCh:
+		m, ok := res.(map[string]any)
+		if !ok {
+			t.Fatalf("result = %#v, want a map", res)
+		}
+		if m["approved"] != true {
+			t.Fatalf("approved = %#v, want true", m["approved"])
+		}
+		got, ok := m["modeAccess"].(*ModeAccessChoice)
+		if !ok {
+			t.Fatalf("modeAccess choice dropped from result: %#v", m)
+		}
+		if *got != *choice {
+			t.Fatalf("modeAccess choice = %+v, want %+v", *got, *choice)
+		}
+	case err := <-errCh:
+		t.Fatalf("awaitPermission: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("awaitPermission did not return after resolve")
+	}
+
+	// An ordinary decision keeps its exact shape: the edited command is
+	// forwarded and no modeAccess field is invented.
+	plain := json.RawMessage(`{"sessionId":"s-1","toolCallId":"tc-10","toolName":"shell.run","command":"rm -rf /","reason":"destructive"}`)
+	plainCh := make(chan any, 1)
+	go func() {
+		res, _ := r.awaitPermission(plain)
+		plainCh <- res
+	}()
+	waitFor(t, 2*time.Second, "pending ordinary permission", func() bool {
+		r.permMu.Lock()
+		defer r.permMu.Unlock()
+		_, ok := r.permissions["tc-10"]
+		return ok
+	})
+	if err := r.ResolvePermission("tc-10", Decision{Approved: true, Edited: "rm -rf ./build"}); err != nil {
+		t.Fatalf("ResolvePermission: %v", err)
+	}
+	select {
+	case res := <-plainCh:
+		m, ok := res.(map[string]any)
+		if !ok {
+			t.Fatalf("result = %#v, want a map", res)
+		}
+		if m["edited"] != "rm -rf ./build" {
+			t.Fatalf("edited = %#v, want the edited command", m["edited"])
+		}
+		if _, ok := m["modeAccess"]; ok {
+			t.Fatalf("ordinary decision grew a modeAccess field: %#v", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("awaitPermission did not return after resolve")
+	}
+}

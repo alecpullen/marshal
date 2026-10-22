@@ -239,6 +239,13 @@ type TurnManager struct {
 	runHashes map[string]uint64
 	lastSwarm map[string]session.SwarmProgress
 
+	// childMu guards childApprovals, the per-session child-only approval
+	// collectors. Each lives for the captured runtime's lifetime — not a
+	// single turn's — so a pipeline/background child approval stays
+	// answerable after the parent's turn ends.
+	childMu        sync.Mutex
+	childApprovals map[string]*childApprovals
+
 	// cancelTimeout overrides cancelWait for testing; zero means use the
 	// default const. Access is safe without a mutex because it is set
 	// only during construction and read only in CancelAndWait.
@@ -270,6 +277,7 @@ func NewTurnManager(cfg TurnManagerConfig) *TurnManager {
 		runActive:       map[string]bool{},
 		runHashes:       map[string]uint64{},
 		lastSwarm:       map[string]session.SwarmProgress{},
+		childApprovals:  map[string]*childApprovals{},
 	}
 	if cfg.Perms != nil {
 		tm.bridge = NewPermissionBridge(cfg.Perms)
@@ -809,6 +817,13 @@ func (m *TurnManager) runTurn(
 	// forward dispatches one session event to the ACP client. Defined
 	// once and used in both the main loop and the post-run drain.
 	forward := func(ev pubsub.Event[session.Event]) {
+		// A child actor's approval is collected by the session-lifetime
+		// child collector, not by this turn: the root turn must not answer a
+		// request it does not own, and the tagged event carries no root
+		// payload to project.
+		if ev.Payload.ApprovalSource != nil {
+			return
+		}
 		m.markStackDirty(sessionID)
 		update, hasUpdate := eventToSessionUpdate(ev, proj)
 		if hasUpdate {

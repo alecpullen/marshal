@@ -83,9 +83,14 @@ type Resources struct {
 	Timeout string  `json:"timeout" toml:"timeout,omitempty"`
 }
 
-// Policy is the [policy] table (side panel, layer 0).
+// Policy is the [policy] table (side panel, layer 0). Mode is the canonical
+// interaction mode (ask or act); a retired five-mode spelling is translated on
+// parse and reported as a migration notice. Auto is optional: nil means the
+// document does not set it, so a higher layer can still supply one, while an
+// explicit false is preserved as a real value.
 type Policy struct {
 	Mode  string   `json:"mode" toml:"mode,omitempty"`
+	Auto  *bool    `json:"auto,omitempty" toml:"auto,omitempty"`
 	Allow []string `json:"allow" toml:"allow,omitempty"`
 }
 

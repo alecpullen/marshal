@@ -1,6 +1,7 @@
 package workspacecfg
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -44,7 +45,7 @@ disk = "10g"
 timeout = "30m"
 
 [policy]
-mode = "edit"
+mode = "act"
 allow = ["go test *"]
 
 [setup]
@@ -77,7 +78,7 @@ func TestParseFullExample(t *testing.T) {
 	if d.Resources.CPU != 2 || d.Resources.Memory != "4g" || d.Resources.Timeout != "30m" {
 		t.Fatalf("resources = %+v", d.Resources)
 	}
-	if d.Policy.Mode != "edit" || d.Policy.Allow[0] != "go test *" || d.Setup.Run != "go mod download" {
+	if d.Policy.Mode != "act" || d.Policy.Allow[0] != "go test *" || d.Setup.Run != "go mod download" {
 		t.Fatalf("policy/setup = %+v %+v", d.Policy, d.Setup)
 	}
 	layers := map[int]bool{}
@@ -177,5 +178,100 @@ func TestParseEmpty(t *testing.T) {
 	d, secs, diags := Parse([]byte(strings.Repeat("\n", 3)))
 	if len(diags) != 0 || len(secs) != 0 || d.Mounts == nil || d.Files == nil {
 		t.Fatalf("empty parse: %+v %+v %+v", d, secs, diags)
+	}
+}
+
+func TestPolicyLegacyModesNormalizeWithoutRewriting(t *testing.T) {
+	cases := []struct {
+		legacy   string
+		wantMode string
+		wantAuto bool
+		wantNote string
+	}{
+		{"plan", "ask", false, "planning remains a skill workflow"},
+		{"default", "ask", false, "planning remains a skill workflow"},
+		{"edit", "ask", false, "approval for every file change was retired"},
+		{"copilot", "act", false, "replaced with Act"},
+		{"auto", "act", true, "Auto now preauthorizes destructive workspace commands"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.legacy, func(t *testing.T) {
+			src := []byte("[policy]\nmode = \"" + tc.legacy + "\"\nallow = [\"go test *\"]\n")
+			orig := string(src)
+			d, secs, diags := Parse(src)
+			// Parse canonicalizes the Doc and never rewrites its input.
+			if string(src) != orig {
+				t.Fatalf("Parse rewrote its input: %q", src)
+			}
+			if d.Policy.Mode != tc.wantMode {
+				t.Fatalf("mode = %q, want %q", d.Policy.Mode, tc.wantMode)
+			}
+			if d.Policy.Auto == nil || *d.Policy.Auto != tc.wantAuto {
+				t.Fatalf("auto = %v, want %v", d.Policy.Auto, tc.wantAuto)
+			}
+			if len(d.Policy.Allow) != 1 || d.Policy.Allow[0] != "go test *" {
+				t.Fatalf("allow = %v", d.Policy.Allow)
+			}
+			// The migration notice names the source spelling and its note.
+			if len(diags) != 1 || diags[0].Severity != SeverityWarning || diags[0].Line != 1 {
+				t.Fatalf("diags = %+v, want one warning on the [policy] header", diags)
+			}
+			if !strings.Contains(diags[0].Message, tc.legacy) || !strings.Contains(diags[0].Message, tc.wantNote) {
+				t.Fatalf("notice = %q, want it to name %q and %q", diags[0].Message, tc.legacy, tc.wantNote)
+			}
+			// Sections still describe the original text.
+			if len(secs) != 1 || secs[0].Key != "policy" || secs[0].StartLine != 1 || secs[0].EndLine != 3 {
+				t.Fatalf("sections = %+v", secs)
+			}
+		})
+	}
+	// A canonical spelling is not a migration.
+	if _, _, diags := Parse([]byte("[policy]\nmode = \"act\"\n")); len(diags) != 0 {
+		t.Fatalf("canonical mode reported a notice: %+v", diags)
+	}
+}
+
+func TestPolicyAutoPresenceAndAskValidation(t *testing.T) {
+	// Mode alone does not invent Auto: absence stays distinguishable.
+	d, _, diags := Parse([]byte("[policy]\nmode = \"act\"\n"))
+	if len(diags) != 0 || d.Policy.Auto != nil {
+		t.Fatalf("doc = %+v diags = %+v, want absent Auto", d.Policy, diags)
+	}
+	// Explicit false is a real value, not absence.
+	d, _, diags = Parse([]byte("[policy]\nmode = \"act\"\nauto = false\n"))
+	if len(diags) != 0 || d.Policy.Auto == nil || *d.Policy.Auto {
+		t.Fatalf("doc = %+v diags = %+v, want explicit false", d.Policy, diags)
+	}
+	// Explicit true with Act is valid.
+	d, _, diags = Parse([]byte("[policy]\nmode = \"act\"\nauto = true\n"))
+	if len(diags) != 0 || d.Policy.Auto == nil || !*d.Policy.Auto {
+		t.Fatalf("doc = %+v diags = %+v, want explicit true", d.Policy, diags)
+	}
+	// Ask cannot enable Auto.
+	_, _, diags = Parse([]byte("[policy]\nmode = \"ask\"\nauto = true\n"))
+	if errs := errorsOf(diags); len(errs) != 1 || !strings.Contains(errs[0].Message, "ask cannot enable auto") {
+		t.Fatalf("diags = %+v, want one Ask+Auto error", diags)
+	}
+	// Ask with explicit false is fine.
+	d, _, diags = Parse([]byte("[policy]\nmode = \"ask\"\nauto = false\n"))
+	if len(diags) != 0 || d.Policy.Auto == nil || *d.Policy.Auto {
+		t.Fatalf("doc = %+v diags = %+v", d.Policy, diags)
+	}
+	// Mode absence stays distinguishable, and Auto survives it.
+	d, _, diags = Parse([]byte("[policy]\nauto = true\n"))
+	if len(diags) != 0 || d.Policy.Mode != "" || d.Policy.Auto == nil || !*d.Policy.Auto {
+		t.Fatalf("doc = %+v diags = %+v, want absent mode with Auto", d.Policy, diags)
+	}
+	// A higher-layer patch value is validated as a tuple too.
+	if _, err := Patch([]byte("[policy]\nmode = \"act\"\n"), 0, json.RawMessage(`{"mode":"ask","auto":true}`)); err == nil {
+		t.Fatal("patch to Ask+Auto should fail")
+	}
+	// A legacy patch value is canonicalized rather than rejected.
+	out, err := Patch([]byte("[policy]\nmode = \"act\"\n"), 0, json.RawMessage(`{"mode":"edit"}`))
+	if err != nil {
+		t.Fatalf("Patch: %v", err)
+	}
+	if !strings.Contains(string(out), "mode = 'ask'") || strings.Contains(string(out), "edit") {
+		t.Fatalf("patch output not canonical:\n%s", out)
 	}
 }

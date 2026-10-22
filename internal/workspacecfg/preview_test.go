@@ -7,7 +7,7 @@ import (
 )
 
 func TestParsePreview(t *testing.T) {
-	d, secs, diags := Parse([]byte("[policy]\nmode = \"edit\"\n\n[preview]\nports = [3000, 8080]\n"))
+	d, secs, diags := Parse([]byte("[policy]\nmode = \"act\"\n\n[preview]\nports = [3000, 8080]\n"))
 	if len(diags) != 0 {
 		t.Fatalf("diags = %+v", diags)
 	}
@@ -49,13 +49,13 @@ func TestPreviewValidation(t *testing.T) {
 }
 
 func TestPatchLayer0PreviewInsertsSection(t *testing.T) {
-	src := "[policy]\nmode = \"edit\"\n\n[setup]\nrun = \"make\"\n"
+	src := "[policy]\nmode = \"act\"\n\n[setup]\nrun = \"make\"\n"
 	out := mustPatch(t, src, 0, `{"preview":{"ports":[3000]}}`)
 	d, _, diags := Parse([]byte(out))
 	if len(diags) != 0 {
 		t.Fatalf("diags = %+v\n%s", diags, out)
 	}
-	if !reflect.DeepEqual(d.Preview.Ports, []int{3000}) || d.Policy.Mode != "edit" || d.Setup.Run != "make" {
+	if !reflect.DeepEqual(d.Preview.Ports, []int{3000}) || d.Policy.Mode != "act" || d.Setup.Run != "make" {
 		t.Fatalf("doc = %+v\n%s", d, out)
 	}
 	// Canonical order: [preview] right after [policy], before [setup].
@@ -65,35 +65,36 @@ func TestPatchLayer0PreviewInsertsSection(t *testing.T) {
 }
 
 func TestPatchLayer0PolicyKeepsPreview(t *testing.T) {
-	src := "[policy]\nmode = \"edit\"\n\n[preview]\nports = [3000]\n"
-	out := mustPatch(t, src, 0, `{"mode":"plan"}`)
+	src := "[policy]\nmode = \"act\"\n\n[preview]\nports = [3000]\n"
+	out := mustPatch(t, src, 0, `{"mode":"ask"}`)
 	d, _, _ := Parse([]byte(out))
-	if d.Policy.Mode != "plan" || !reflect.DeepEqual(d.Preview.Ports, []int{3000}) {
+	if d.Policy.Mode != "ask" || !reflect.DeepEqual(d.Preview.Ports, []int{3000}) {
 		t.Fatalf("doc = %+v\n%s", d, out)
 	}
 }
 
 func TestPatchLayer0ClearsPreview(t *testing.T) {
-	src := "[policy]\nmode = \"edit\"\n\n[preview]\nports = [3000]\n"
+	src := "[policy]\nmode = \"act\"\n\n[preview]\nports = [3000]\n"
 	out := mustPatch(t, src, 0, `{"preview":{"ports":[]}}`)
 	if strings.Contains(out, "[preview]") {
 		t.Fatalf("preview not removed:\n%s", out)
 	}
-	if d, _, _ := Parse([]byte(out)); d.Policy.Mode != "edit" {
+	if d, _, _ := Parse([]byte(out)); d.Policy.Mode != "act" {
 		t.Fatalf("policy lost:\n%s", out)
 	}
 }
 
 func TestPatchLayer0BothHalves(t *testing.T) {
-	out := mustPatch(t, "[network]\nmode = \"off\"\n", 0, `{"mode":"auto","preview":{"ports":[8080]}}`)
+	out := mustPatch(t, "[network]\nmode = \"off\"\n", 0, `{"mode":"act","auto":true,"preview":{"ports":[8080]}}`)
 	d, _, diags := Parse([]byte(out))
-	if len(diags) != 0 || d.Policy.Mode != "auto" || !reflect.DeepEqual(d.Preview.Ports, []int{8080}) || d.Network.Mode != "off" {
+	if len(diags) != 0 || d.Policy.Mode != "act" || d.Policy.Auto == nil || !*d.Policy.Auto ||
+		!reflect.DeepEqual(d.Preview.Ports, []int{8080}) || d.Network.Mode != "off" {
 		t.Fatalf("doc = %+v diags = %+v\n%s", d, diags, out)
 	}
 }
 
 func TestFormatIncludesPreviewAfterPolicy(t *testing.T) {
-	out := string(Format(Doc{Policy: Policy{Mode: "edit"}, Preview: Preview{Ports: []int{3000}}, Setup: Setup{Run: "x"}}))
+	out := string(Format(Doc{Policy: Policy{Mode: "act"}, Preview: Preview{Ports: []int{3000}}, Setup: Setup{Run: "x"}}))
 	if p, v, s := strings.Index(out, "[policy]"), strings.Index(out, "[preview]"), strings.Index(out, "[setup]"); !(p >= 0 && p < v && v < s) {
 		t.Fatalf("order wrong:\n%s", out)
 	}

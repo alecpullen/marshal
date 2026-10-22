@@ -11,6 +11,8 @@ import (
 
 	toml "github.com/pelletier/go-toml/v2"
 	"github.com/pelletier/go-toml/v2/unstable"
+
+	"marshal/internal/interaction"
 )
 
 var (
@@ -19,7 +21,6 @@ var (
 	headerRe    = regexp.MustCompile(`^\s*\[\[?\s*([^\[\]]+?)\s*\]\]?\s*(#.*)?$`)
 
 	networkModes = map[string]bool{"open": true, "allowlist": true, "off": true}
-	policyModes  = map[string]bool{"plan": true, "default": true, "edit": true, "copilot": true, "auto": true}
 )
 
 // layerKeys maps a section key to the layers it serves.
@@ -102,6 +103,16 @@ func Parse(src []byte) (Doc, []Section, []Diagnostic) {
 		d.Mounts = []Mount{}
 	}
 
+	// Canonicalize the [policy] interaction fields before validation, and
+	// report each translated legacy spelling as a migration notice. The
+	// source text is never rewritten: only the returned Doc is canonical.
+	policyLine := lineOr1(headerLines, "policy")
+	pol, note := normalizePolicy(d.Policy)
+	d.Policy = pol
+	if note != "" {
+		diags = append(diags, Diagnostic{Line: policyLine, Message: note, Severity: SeverityWarning})
+	}
+
 	secretsLine := headerLines["secrets"]
 	if secretsLine == 0 {
 		secretsLine = 1
@@ -145,6 +156,55 @@ func Parse(src []byte) (Doc, []Section, []Diagnostic) {
 	diags = append(diags, validate(d, headerLines)...)
 	sort.SliceStable(diags, func(i, j int) bool { return diags[i].Line < diags[j].Line })
 	return d, sections, diags
+}
+
+// normalizePolicy canonicalizes the [policy] interaction fields. A retired
+// five-mode spelling is translated through interaction.LegacyDefaults, which
+// supplies both fields unless the document set Auto explicitly; a canonical
+// ask/act mode is kept as written, and an absent mode stays absent so a higher
+// layer can still supply one. The returned note is the migration notice for a
+// translated spelling, empty when nothing was translated. Parse reports it as a
+// diagnostic and never rewrites the source.
+func normalizePolicy(p Policy) (Policy, string) {
+	if p.Mode == "" {
+		return p, ""
+	}
+	if m, err := interaction.ParseMode(p.Mode); err == nil {
+		p.Mode = string(m)
+		return p, ""
+	}
+	legacy := p.Mode
+	d, note, err := interaction.LegacyDefaults(legacy)
+	if err != nil {
+		// Unknown values are left for validate to report.
+		return p, ""
+	}
+	p.Mode = string(d.Mode)
+	if p.Auto == nil {
+		auto := d.Auto
+		p.Auto = &auto
+	}
+	return p, fmt.Sprintf("policy mode %q %s", legacy, note)
+}
+
+// policyTupleError reports why p's explicit interaction fields are impossible,
+// or nil. An absent mode is not an error: a higher layer may still supply one.
+// A retired spelling is accepted here because render canonicalizes it.
+func policyTupleError(p Policy) error {
+	if p.Mode == "" {
+		return nil
+	}
+	m, err := interaction.ParseMode(p.Mode)
+	if err != nil {
+		if _, _, legacyErr := interaction.LegacyDefaults(p.Mode); legacyErr != nil {
+			return fmt.Errorf("invalid policy mode %q: want ask or act", p.Mode)
+		}
+		return nil
+	}
+	if m == interaction.ModeAsk && p.Auto != nil && *p.Auto {
+		return errors.New("policy mode ask cannot enable auto")
+	}
+	return nil
 }
 
 func emptyDoc() Doc {
@@ -204,8 +264,8 @@ func validate(d Doc, hl map[string]int) []Diagnostic {
 		}
 	}
 	pl := lineOr1(hl, "policy")
-	if d.Policy.Mode != "" && !policyModes[d.Policy.Mode] {
-		out = append(out, errAt(pl, "invalid policy mode %q", d.Policy.Mode))
+	if err := policyTupleError(d.Policy); err != nil {
+		out = append(out, errAt(pl, "%s", err))
 	}
 	vl := lineOr1(hl, "preview")
 	seenPort := map[int]bool{}

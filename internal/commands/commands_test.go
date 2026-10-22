@@ -422,7 +422,7 @@ func TestModeSwitchCommands(t *testing.T) {
 	toolReg := registry.New()
 	RegisterAll(cmdReg, toolReg)
 
-	for _, name := range []string{"plan", "default", "edit", "copilot", "auto"} {
+	for _, name := range []string{"ask", "act", "auto"} {
 		cmd, ok := cmdReg.Lookup(name)
 		if !ok {
 			t.Fatalf("%s command not registered", name)
@@ -712,8 +712,106 @@ func TestModeCommandRegistered(t *testing.T) {
 	if err := RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	if _, ok := reg.Lookup("mode"); !ok {
+	cmd, ok := reg.Lookup("mode")
+	if !ok {
 		t.Fatal("/mode should be registered")
+	}
+	if cmd.Args != "[ask|act]" {
+		t.Errorf("/mode Args = %q, want [ask|act]", cmd.Args)
+	}
+}
+
+// TestInteractionCommandsExposeAskActAndModifiers pins the canonical command
+// surface: Ask/Act plus the Auto and System modifiers are published in both
+// the /help listing (List) and type-ahead completion (ListAll).
+func TestInteractionCommandsExposeAskActAndModifiers(t *testing.T) {
+	reg := New()
+	if err := RegisterAll(reg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	listed := map[string]Command{}
+	for _, c := range reg.List() {
+		listed[c.Name] = c
+	}
+	all := map[string]Command{}
+	for _, c := range reg.ListAll() {
+		all[c.Name] = c
+	}
+
+	for _, name := range []string{"ask", "act", "auto", "mode", "system"} {
+		if _, ok := listed[name]; !ok {
+			t.Errorf("List() must publish /%s", name)
+		}
+		if _, ok := all[name]; !ok {
+			t.Errorf("ListAll() must publish /%s", name)
+		}
+	}
+
+	// Ask/Act are the two modes; both are plain TUI-dispatched commands.
+	for _, name := range []string{"ask", "act"} {
+		cmd := all[name]
+		if !cmd.TUIOnly {
+			t.Errorf("/%s must be TUIOnly", name)
+		}
+		if cmd.Handler != nil {
+			t.Errorf("/%s must not carry a headless Handler", name)
+		}
+		if cmd.Group != "Workflows" {
+			t.Errorf("/%s Group = %q, want Workflows", name, cmd.Group)
+		}
+	}
+
+	// /auto is a toggle with explicit on/off arguments.
+	if got := all["auto"].Args; got != "[on|off]" {
+		t.Errorf("/auto Args = %q, want [on|off]", got)
+	}
+	// /mode accepts only the canonical modes.
+	if got := all["mode"].Args; got != "[ask|act]" {
+		t.Errorf("/mode Args = %q, want [ask|act]", got)
+	}
+	// /system keeps the separate privileged-unlock control.
+	if got := all["system"].Args; !strings.Contains(got, "unlock") {
+		t.Errorf("/system Args = %q, want it to retain unlock", got)
+	}
+	if !strings.Contains(all["system"].Description, "System access") {
+		t.Errorf("/system Description = %q, want it to describe the scope", all["system"].Description)
+	}
+
+	// /sdd stays its own workflow command rather than a mode entry.
+	sdd, ok := all["sdd"]
+	if !ok {
+		t.Fatal("/sdd must stay registered")
+	}
+	if sdd.Group != "Workflows" {
+		t.Errorf("/sdd Group = %q, want Workflows", sdd.Group)
+	}
+}
+
+// TestRetiredModeCommandsAreNotRegistered pins the removal of the legacy
+// five-mode commands. Hidden commands still reach completion through ListAll,
+// so a retired name must be absent from both listings.
+func TestRetiredModeCommandsAreNotRegistered(t *testing.T) {
+	reg := New()
+	if err := RegisterAll(reg, registry.New()); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	retired := []string{"plan", "default", "edit", "copilot"}
+	for _, name := range retired {
+		if _, ok := reg.Lookup(name); ok {
+			t.Errorf("/%s must not be registered", name)
+		}
+		for _, c := range reg.List() {
+			if c.Name == name {
+				t.Errorf("List() must not publish retired /%s", name)
+			}
+		}
+		for _, c := range reg.ListAll() {
+			if c.Name == name {
+				t.Errorf("ListAll() must not publish retired /%s", name)
+			}
+		}
 	}
 }
 
@@ -739,7 +837,7 @@ func TestHelpListsFlagshipCommands(t *testing.T) {
 	}
 
 	// Flagship commands that were previously hidden must now appear in /help.
-	for _, name := range []string{"connect", "models", "mode", "swarm", "sdd", "settings", "memory"} {
+	for _, name := range []string{"connect", "models", "ask", "act", "auto", "mode", "swarm", "sdd", "settings", "memory"} {
 		found := false
 		for _, n := range names {
 			if strings.HasPrefix(n, "/"+name) {
@@ -752,8 +850,8 @@ func TestHelpListsFlagshipCommands(t *testing.T) {
 		}
 	}
 
-	// Truly hidden commands (plan, default, edit, copilot, auto, stop) must NOT appear.
-	for _, name := range []string{"plan", "default", "edit", "copilot", "auto", "stop"} {
+	// Truly hidden commands (stop) must NOT appear.
+	for _, name := range []string{"stop"} {
 		for _, n := range names {
 			if strings.HasPrefix(n, "/"+name) {
 				t.Errorf("help output should not contain /%s, got names: %v", name, names)
@@ -1033,7 +1131,7 @@ func TestHiddenCommandsStillRunnable(t *testing.T) {
 	RegisterAll(cmdReg, toolReg)
 
 	// Hidden commands must still be findable via Lookup.
-	for _, name := range []string{"stop", "plan", "default", "edit", "copilot", "auto", "mode", "swarm", "sdd", "settings", "memory", "connect", "models"} {
+	for _, name := range []string{"stop", "ask", "act", "auto", "mode", "system", "swarm", "sdd", "settings", "memory", "connect", "models"} {
 		_, ok := cmdReg.Lookup(name)
 		if !ok {
 			t.Errorf("hidden command /%s must still be registered for Lookup", name)
@@ -1543,7 +1641,7 @@ func TestListAllIncludesHiddenCommands(t *testing.T) {
 	}
 	// Hidden commands are excluded from List (/help) but must appear in
 	// ListAll (completion popup).
-	for _, name := range []string{"settings", "models", "memory", "connect", "swarm", "sdd", "mode", "plan", "default", "edit", "copilot", "auto", "stop"} {
+	for _, name := range []string{"settings", "models", "memory", "connect", "swarm", "sdd", "ask", "act", "auto", "mode", "system", "stop"} {
 		if !all[name] {
 			t.Errorf("ListAll() missing hidden command /%s", name)
 		}

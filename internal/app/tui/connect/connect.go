@@ -34,11 +34,6 @@ import (
 // ("anthropic/claude-sonnet-4").
 const modelValueSep = "\x00"
 
-// probeOnlyLimits is passed to provider.NewFromConfig for capability
-// probing; limit-table discovery already happened during model-list probe
-// and must not block the TUI while the confirmation screen is opening.
-const probeOnlyLimits = false
-
 func encodeModelValue(provider, model string) string {
 	return provider + modelValueSep + model
 }
@@ -82,8 +77,8 @@ type Opts struct {
 	ScopedProvider   string
 	CfgPath          string
 	AllProviders     bool
-	// DataDir enables the on-disk limit table during probing (read from
-	// cache; refreshed remotely only per privacy.remote_limit_discovery).
+	// DataDir is the provider data directory used for the probe cache and
+	// discovered model metadata.
 	DataDir string
 	// Auth is the credential/OAuth dependency every provider this wizard
 	// constructs must use — capability/model probes and the sign-in engine.
@@ -537,7 +532,7 @@ func (m *Model) enterConfirmLimits() (*Model, tea.Cmd) {
 	m.err = ""
 	m.picker = nil
 
-	lim := presetflow.Resolve(m.discovered[m.providerName], m.modelChosen)
+	lim := presetflow.Resolve(m.discovered[m.providerName], m.modelChosen, probe.IsLocalhost(m.providerCfg.BaseURL))
 	if preset, ok := m.presetFor(m.providerName, m.modelChosen); ok {
 		lim = lim.WithPreset(preset.ContextWindow, preset.MaxOutputTokens)
 	}
@@ -570,7 +565,7 @@ func (m *Model) probeCapabilities(requestID uint64) (tea.Cmd, context.CancelFunc
 	// Capability probing only needs the provider client. Limit-table discovery
 	// already happened during model-list discovery and must not block the TUI
 	// while this confirmation screen is opening.
-	prov, err := provider.NewFromConfigWithAuth(m.providerName, m.providerCfg, m.dataDir, probeOnlyLimits, m.cfg.Agent.ThinkingBudgetMargin, "", m.auth)
+	prov, err := provider.NewFromConfigWithAuth(m.providerName, m.providerCfg, m.dataDir, m.cfg.Agent.ThinkingBudgetMargin, "", m.auth)
 	if err != nil {
 		return nil, nil
 	}
@@ -1200,7 +1195,7 @@ func (m *Model) advanceToPickModel() (*Model, tea.Cmd) {
 }
 
 func (m *Model) runProbe() tea.Cmd {
-	return probe.ProviderWithAuth("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Privacy.RemoteLimitDiscovery, m.cfg.Agent.ThinkingBudgetMargin, m.auth)
+	return probe.ProviderWithAuth("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Agent.ThinkingBudgetMargin, m.auth)
 }
 
 // refreshCmd emits a RefreshMsg naming the providers whose entries the

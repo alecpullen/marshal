@@ -29,6 +29,22 @@ var (
 	ErrMissingQuestion   = errors.New("agent: ask_user action missing question content")
 )
 
+// validActionTypes is the accepted set, in the order the prompt presents it.
+// It is named in the unknown-type rejection so a model that invents a type
+// ("tool_run") sees what is accepted instead of repeating the same envelope.
+var validActionTypes = []ActionType{
+	ActionAnswer, ActionToolCall, ActionPatch, ActionFinal, ActionAskUser, ActionQuestionAsk,
+}
+
+// actionTypeNames renders validActionTypes for an error message.
+func actionTypeNames() string {
+	names := make([]string, len(validActionTypes))
+	for i, t := range validActionTypes {
+		names[i] = fmt.Sprintf("%q", string(t))
+	}
+	return strings.Join(names, ", ")
+}
+
 // ModelAction is the parsed form of the JSON action-protocol envelope
 // described in docs/07-agent-runtime-and-swarm.md. When Actions is set,
 // the single-action fields are empty and vice-versa.
@@ -127,7 +143,8 @@ func ParseActionRepairing(raw string, knownTool func(string) bool) (ModelAction,
 		key = "action"
 	}
 	if len(payloads) == 0 {
-		return ModelAction{}, nil, fmt.Errorf("%w: %q", ErrUnknownActionType, "")
+		return ModelAction{}, nil, fmt.Errorf("%w: no \"action\" or \"actions\" key in the envelope (valid types: %s)",
+			ErrUnknownActionType, actionTypeNames())
 	}
 	// batch decides which form the action takes. The "actions" array is the
 	// parallel form and carries a read-only restriction (F-SEC-11), so a
@@ -190,10 +207,16 @@ func validatePayload(p actionPayload, knownTool func(string) bool) (ModelAction,
 			p.Type = ActionToolCall
 			break
 		}
-		return ModelAction{}, nil, fmt.Errorf("%w: %q", ErrUnknownActionType, p.Type)
+		return ModelAction{}, nil, fmt.Errorf("%w: %q (valid types: %s)",
+			ErrUnknownActionType, p.Type, actionTypeNames())
 	}
 	if p.Type == ActionToolCall && strings.TrimSpace(p.Tool) == "" {
-		return ModelAction{}, nil, ErrMissingTool
+		// Name the field. The recorded failures keyed the tool name directly
+		// ("file.read": null) or omitted it, and a bare "missing tool name"
+		// left the model to guess which field to add.
+		return ModelAction{}, nil, fmt.Errorf(
+			`%w: put the tool name in the "tool" field, e.g. {"type": "tool_call", "tool": "file.read", "args": {...}}`,
+			ErrMissingTool)
 	}
 	if p.Type == ActionAskUser && strings.TrimSpace(p.Content) == "" {
 		return ModelAction{}, nil, ErrMissingQuestion

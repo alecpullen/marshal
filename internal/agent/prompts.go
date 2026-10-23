@@ -9,7 +9,6 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
 	"marshal/internal/interaction"
-	"marshal/internal/llm/catalog"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
@@ -240,28 +239,11 @@ func pricingNote(p routing.ModelPreset) string {
 }
 
 // presetFactNote renders the objective per-preset facts as " · "-joined
-// fragments: context window (from the preset, else the catalog for
-// plain-model IDs), local-only, thinking effort, price class. The
-// catalog fallback below renders only for catalog-listed models — never
-// catalog.Lookup's 8192/4096 default pair (catalog.go:39-40), which would
-// turn "unknown" into a fake claim. Only configured/known facts appear;
-// an unannotated preset renders "".
+// fragments: context window, local-only, thinking effort, price class. Only
+// configured facts appear; an unannotated preset renders "".
 func presetFactNote(p routing.ModelPreset) string {
 	var frag []string
-	if p.ContextWindow <= 0 {
-		model := p.Model
-		if _, m, ok := strings.Cut(p.Model, "/"); ok { // openrouter-style ids: strip provider
-			model = m
-		}
-		// catalog.Lookup answers 8192/4096 for models it does not know
-		// (catalog.go:39-40); rendering that would print a guessed "8k
-		// ctx", so the exact default pair is treated as unknown. A
-		// catalog-listed model gets its real window; unknown models
-		// render nothing.
-		if ctx, out := catalog.Lookup(model, nil); ctx > 0 && !(ctx == 8192 && out == 4096) {
-			frag = append(frag, fmtCtxTokens(ctx)+" ctx")
-		}
-	} else {
+	if p.ContextWindow > 0 {
 		frag = append(frag, fmtCtxTokens(p.ContextWindow)+" ctx")
 	}
 	if p.LocalOnly {
@@ -476,6 +458,13 @@ const (
 	// one, models spent many steps inventing workarounds for git operations
 	// no tool covers.
 	ruleGitAndWorkspace = "- Use the git.* tools for repository state and the workspace tools for worktree isolation and merging. When no tool covers a git operation you need, run git with shell.run and say so; do not hunt for workarounds."
+	// ruleContextBudget counters self-finalisation on a false belief that
+	// context is exhausted. The runner compacts automatically, so the model
+	// has no basis for that inference — and ending a turn on it abandons
+	// work. Kept terse: TestDefaultPromptBudget caps the system prompt at
+	// 9000 bytes. Scoped to context only: the tool-iteration pressure
+	// message is a real signal and must still be obeyed.
+	ruleContextBudget = "- The runner compacts automatically. Never end a turn because you believe your context is nearly exhausted.\n"
 )
 
 const baseRules = "Rules:\n" +
@@ -491,7 +480,8 @@ const baseRules = "Rules:\n" +
 	ruleFinalAnswer +
 	ruleStopAfterValidation +
 	rulePreferPurposeBuilt +
-	ruleGitAndWorkspace
+	ruleGitAndWorkspace + "\n" +
+	ruleContextBudget
 
 // baseRulesSystem is the system-access composition: identical to baseRules
 // except the file-tools rule is swapped for its system variant.
@@ -508,7 +498,8 @@ const baseRulesSystem = "Rules:\n" +
 	ruleFinalAnswer +
 	ruleStopAfterValidation +
 	rulePreferPurposeBuilt +
-	ruleGitAndWorkspace
+	ruleGitAndWorkspace + "\n" +
+	ruleContextBudget
 
 // baseRulesFor selects the rule block for the session's access mode.
 func baseRulesFor(systemAccess bool) string {
@@ -939,16 +930,40 @@ func BuildContextPackMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
 	return schema.ChatMessage{Role: schema.RoleUser, Content: rendered}, true
 }
 
+// WorkingStateBudget is the live per-turn budget shown to the model.
+// Used excludes the working-state tail itself.
+type WorkingStateBudget struct {
+	Used, Window, Threshold int
+}
+
 // BuildWorkingStateMessage renders the turn-volatile part of the context
-// pack (todos, semantic snippets, tool output) as the per-request tail.
-// It is marked Volatile so providers keep cache breakpoints in front of
-// it.
-func BuildWorkingStateMessage(pack contextpack.Pack) (schema.ChatMessage, bool) {
+// pack (todos, semantic snippets, tool output) as the per-request tail,
+// prefixed by the live context budget. It is marked Volatile so providers
+// keep cache breakpoints in front of it.
+func BuildWorkingStateMessage(pack contextpack.Pack, budget WorkingStateBudget) (schema.ChatMessage, bool) {
 	rendered := contextpack.RenderVolatile(pack)
-	if rendered == "" {
+	line := budgetLine(budget)
+	if rendered == "" && line == "" {
 		return schema.ChatMessage{}, false
 	}
-	return schema.ChatMessage{Role: schema.RoleUser, Content: rendered, Volatile: true}, true
+	content := rendered
+	if line != "" {
+		if content == "" {
+			content = line
+		} else {
+			content = line + "\n" + content
+		}
+	}
+	return schema.ChatMessage{Role: schema.RoleUser, Content: content, Volatile: true}, true
+}
+
+// budgetLine renders the live context budget, or "" when the window is
+// unknown. It must never print zeros.
+func budgetLine(b WorkingStateBudget) string {
+	if b.Window <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("Context budget: ~%d tokens in this request, %d window, compaction at %d.", b.Used, b.Window, b.Threshold)
 }
 
 // BuildInteractionStateMessage renders the live interaction tuple and

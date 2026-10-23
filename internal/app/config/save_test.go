@@ -212,6 +212,30 @@ func TestSaveProjectConfigRoundTripsAgentAndToolSettings(t *testing.T) {
 	}
 }
 
+func TestSaveProjectConfigRoundTripsAgentTimeoutKnobs(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, ".marshal", "config.toml")
+
+	cfg := Default()
+	cfg.Agent.IdleTimeoutSeconds = 90
+	cfg.Agent.RequestCeilingSeconds = 600
+
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatalf("SaveProjectConfig failed: %v", err)
+	}
+
+	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.Agent.IdleTimeoutSeconds != 90 {
+		t.Fatalf("IdleTimeoutSeconds = %d, want 90", loaded.Agent.IdleTimeoutSeconds)
+	}
+	if loaded.Agent.RequestCeilingSeconds != 600 {
+		t.Fatalf("RequestCeilingSeconds = %d, want 600", loaded.Agent.RequestCeilingSeconds)
+	}
+}
+
 // The wait round-trips through a project save, including an explicit value
 // that differs from the default, and the deprecated timeout key keeps its
 // own round trip for compatibility.
@@ -514,29 +538,6 @@ func TestSaveProjectConfigRoundTripsVerificationGate(t *testing.T) {
 	}
 	if loaded2.Agent.VerificationGate == nil || *loaded2.Agent.VerificationGate {
 		t.Fatalf("Agent.VerificationGate = %v, want pointer to false (persisted)", loaded2.Agent.VerificationGate)
-	}
-}
-
-func TestRemoteLimitDiscoveryConfigurable(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, ".marshal", "config.toml")
-
-	cfg := Default()
-	// Differs from the derived default: remote_providers_allowed=false but
-	// remote_limit_discovery=true must be persisted and reloaded independently.
-	cfg.Privacy.RemoteProvidersAllowed = false
-	cfg.Privacy.RemoteLimitDiscovery = true
-
-	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
-		t.Fatalf("SaveProjectConfig failed: %v", err)
-	}
-
-	loaded, err := Load(LoadOptions{HomeDir: tmp, WorkingDir: tmp})
-	if err != nil {
-		t.Fatalf("Load failed: %v", err)
-	}
-	if !loaded.Privacy.RemoteLimitDiscovery {
-		t.Errorf("RemoteLimitDiscovery = false, want true (persisted)")
 	}
 }
 

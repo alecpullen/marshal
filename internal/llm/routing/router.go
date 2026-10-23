@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-
-	"marshal/internal/llm/catalog"
 )
 
 var (
@@ -161,17 +159,18 @@ func IsCanonicalPresetName(name string) bool {
 }
 
 // defaultPreset synthesizes a ModelPreset for providerName/modelID from the
-// catalog and provider base URL. It is used when no explicit
+// provider base URL and Marshal's default limits. It is used when no explicit
 // [models.presets.<provider>/<model>] override exists.
 func defaultPreset(providerName, modelID, baseURL string) ModelPreset {
-	ctx, out := catalog.Lookup(modelID, nil)
+	local := IsLocalProvider(baseURL)
+	ctx, out := DefaultModelLimits(local)
 	return ModelPreset{
 		Name:            providerName + "/" + modelID,
 		Provider:        providerName,
 		Model:           modelID,
 		ContextWindow:   ctx,
 		MaxOutputTokens: out,
-		LocalOnly:       IsLocalProvider(baseURL),
+		LocalOnly:       local,
 	}
 }
 

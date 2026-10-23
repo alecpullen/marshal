@@ -1,13 +1,11 @@
 package provider
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"time"
 
 	"marshal/internal/app/config"
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/schema"
 )
@@ -22,20 +20,15 @@ const defaultOllamaKeepAlive = "30m"
 // already-resolved bearer token string, never an env var name. If both
 // api_key and api_key_env are set, the literal api_key wins.
 //
-// dataDir is the application data directory used for the on-disk limit
-// cache. Pass "" to skip limit table loading.
-//
-// remoteLimitDiscovery controls whether the limit table is fetched from
-// remote sources (OpenRouter, LiteLLM) when no usable cache exists. The
-// on-disk cache itself is read whenever dataDir is set — reading it makes
-// no network requests.
+// dataDir is the application data directory used for the model cache. Pass ""
+// to disable caching.
 //
 // thinkingBudgetMargin is the AgentConfig.ThinkingBudgetMargin value,
 // honored only by the native Anthropic backend. It is threaded separately
 // because NewFromConfig receives a ProviderConfig, which has no access to
 // the [agent] section.
-func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool, thinkingBudgetMargin int) (Provider, error) {
-	return NewFromConfigWithSession(name, pc, dataDir, remoteLimitDiscovery, thinkingBudgetMargin, "")
+func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, thinkingBudgetMargin int) (Provider, error) {
+	return NewFromConfigWithSession(name, pc, dataDir, thinkingBudgetMargin, "")
 }
 
 // NewFromConfigWithSession is NewFromConfig with a stable per-conversation
@@ -43,8 +36,8 @@ func NewFromConfig(name string, pc config.ProviderConfig, dataDir string, remote
 // requests carry x-opencode-session (OpenCode Zen requires it for routing
 // and prompt caching). Callers without a conversation — model listing,
 // capability probing — should use NewFromConfig instead.
-func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool, thinkingBudgetMargin int, sessionID string) (Provider, error) {
-	return NewFromConfigWithAuth(name, pc, dataDir, remoteLimitDiscovery, thinkingBudgetMargin, sessionID, DefaultAuthResolver())
+func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir string, thinkingBudgetMargin int, sessionID string) (Provider, error) {
+	return NewFromConfigWithAuth(name, pc, dataDir, thinkingBudgetMargin, sessionID, DefaultAuthResolver())
 }
 
 // NewFromConfigWithAuth is NewFromConfigWithSession with an explicit auth
@@ -55,7 +48,7 @@ func NewFromConfigWithSession(name string, pc config.ProviderConfig, dataDir str
 //
 // Passing a nil auth is an error; callers that want production behavior pass
 // DefaultAuthResolver() explicitly.
-func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string, remoteLimitDiscovery bool, thinkingBudgetMargin int, sessionID string, auth AuthResolver) (Provider, error) {
+func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string, thinkingBudgetMargin int, sessionID string, auth AuthResolver) (Provider, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("provider %q: auth resolver is required", name)
 	}
@@ -69,15 +62,12 @@ func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string
 		caps.ToolCalling = pc.ToolCalling
 		caps.TemperatureLocked = pc.TemperatureLocked
 
-		table := loadLimitsTable(dataDir, remoteLimitDiscovery)
-
 		return NewOpenAICompatible(Options{
 			ThinkingLookup:   func(model string) *schema.ThinkingOptions { return cachedThinkingOptions(dataDir, name, pc)[model] },
 			Name:             name,
 			BaseURL:          pc.BaseURL,
 			APIKey:           apiKey,
 			Capabilities:     &caps,
-			LimitsTable:      table,
 			ReasoningSummary: pc.ReasoningSummary,
 			ReasoningField:   pc.ReasoningField,
 			SessionID:        sessionID,
@@ -104,7 +94,6 @@ func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string
 		if keepAlive == "" {
 			keepAlive = defaultOllamaKeepAlive
 		}
-		table := loadLimitsTable(dataDir, remoteLimitDiscovery)
 		return NewOllamaNative(Options{
 			ThinkingLookup: func(model string) *schema.ThinkingOptions { return cachedThinkingOptions(dataDir, name, pc)[model] },
 			Name:           name,
@@ -112,7 +101,6 @@ func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string
 			APIKey:         apiKey,
 			Capabilities:   &caps,
 			KeepAlive:      keepAlive,
-			LimitsTable:    table,
 			ReasoningField: pc.ReasoningField,
 		})
 	case "anthropic":
@@ -159,7 +147,6 @@ func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string
 			BaseURL:          pc.BaseURL,
 			Engine:           engine,
 			Capabilities:     &caps,
-			LimitsTable:      loadLimitsTable(dataDir, remoteLimitDiscovery),
 			ReasoningSummary: pc.ReasoningSummary,
 			StaticModels:     codexStaticModels(pc),
 			DataDir:          dataDir,
@@ -170,24 +157,6 @@ func NewFromConfigWithAuth(name string, pc config.ProviderConfig, dataDir string
 	default:
 		return nil, fmt.Errorf("provider %q: unsupported type %q", name, pc.Type)
 	}
-}
-
-func loadLimitsTable(dataDir string, remoteLimitDiscovery bool) *limits.Table {
-	if dataDir == "" {
-		return nil
-	}
-	if remoteLimitDiscovery {
-		if table, err := limits.LoadTable(context.Background(), dataDir, limits.DefaultTTL); err == nil {
-			return &table
-		}
-		return nil
-	}
-	cache, err := limits.Load(dataDir)
-	if err != nil || len(cache.Table) == 0 {
-		return nil
-	}
-	table := limits.NewTable(cache.Table)
-	return &table
 }
 
 // ResolveAPIKey returns the effective API key for a provider config: a

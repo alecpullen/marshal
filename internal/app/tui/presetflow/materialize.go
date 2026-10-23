@@ -38,6 +38,18 @@ func Materialize(cfg *config.Config, providerName, modelID, baseURL string, lim 
 			Model:     modelID,
 			LocalOnly: probe.IsLocalhost(baseURL),
 		}
+		// Seed a first-time preset with Marshal's documented defaults when no
+		// source reported a figure, so the user has a concrete value to edit
+		// in Settings or config.toml. Only new presets are seeded: an existing
+		// preset's saved figures are the user's decision, and re-materializing
+		// the same model must never replace them with a default.
+		defCtx, defOut := routing.DefaultModelLimits(preset.LocalOnly)
+		if lim.ContextWindow == 0 {
+			preset.ContextWindow = defCtx
+		}
+		if lim.MaxOutputTokens == 0 {
+			preset.MaxOutputTokens = defOut
+		}
 	}
 	// Fill an empty field, adopt an upgrade, never shrink: discovery can
 	// report a smaller window than an explicit preset (stale cache,

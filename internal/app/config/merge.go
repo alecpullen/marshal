@@ -37,6 +37,8 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.MaxRetries, file.Agent.MaxRetries)
 		set(&cfg.Agent.MaxTurnContextTokens, file.Agent.MaxTurnContextTokens)
 		set(&cfg.Agent.ReconnectMaxWaitSeconds, file.Agent.ReconnectMaxWaitSeconds)
+		set(&cfg.Agent.IdleTimeoutSeconds, file.Agent.IdleTimeoutSeconds)
+		set(&cfg.Agent.RequestCeilingSeconds, file.Agent.RequestCeilingSeconds)
 		set(&cfg.Agent.MaxToolResultChars, file.Agent.MaxToolResultChars)
 		set(&cfg.Agent.MaxStructuredOutputChars, file.Agent.MaxStructuredOutputChars)
 		set(&cfg.Agent.PlanFirst, file.Agent.PlanFirst)
@@ -58,7 +60,6 @@ func merge(cfg *Config, file configFile) error {
 	}
 	if file.Privacy != nil {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)
-		set(&cfg.Privacy.RemoteLimitDiscovery, file.Privacy.RemoteLimitDiscovery)
 		set(&cfg.Privacy.RedactSecrets, file.Privacy.RedactSecrets)
 		set(&cfg.Privacy.IncludeGitignoredFiles, file.Privacy.IncludeGitignoredFiles)
 	}

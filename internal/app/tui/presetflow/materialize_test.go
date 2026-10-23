@@ -119,7 +119,7 @@ func TestMaterializePreservesMatchingLegacyMetadata(t *testing.T) {
 	}
 }
 
-func TestMaterializeStoresOnlyOverrides(t *testing.T) {
+func TestMaterializeRecordsIdentityAndLocality(t *testing.T) {
 	cfg := config.Default()
 	mustMaterialize(t, &cfg, "ollama", "qwen3-coder", "http://localhost:11434/v1", Limits{})
 	preset := cfg.Models.Presets["ollama/qwen3-coder"]
@@ -128,6 +128,49 @@ func TestMaterializeStoresOnlyOverrides(t *testing.T) {
 	}
 	if !preset.LocalOnly {
 		t.Fatal("localhost preset must be LocalOnly")
+	}
+}
+
+// TestMaterializeSeedsDocumentedDefaults pins the seeding contract: a
+// first-time preset with no reported limits saves the documented pair rather
+// than zeros, so the user can edit a concrete figure. Remote and local
+// endpoints get different pairs, and the literals are asserted rather than
+// the constants they came from so a changed default fails here.
+func TestMaterializeSeedsDocumentedDefaults(t *testing.T) {
+	cases := []struct {
+		name   string
+		base   string
+		wantCW int
+		wantMO int
+	}{
+		{"remote", "https://api.example.com/v1", 1_000_000, 128_000},
+		{"local", "http://localhost:11434/v1", 8_192, 4_096},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Default()
+			name := mustMaterialize(t, &cfg, "p", "m", tc.base, Limits{})
+			preset := cfg.Models.Presets[name]
+			if preset.ContextWindow != tc.wantCW || preset.MaxOutputTokens != tc.wantMO {
+				t.Fatalf("seeded limits = %d/%d, want %d/%d",
+					preset.ContextWindow, preset.MaxOutputTokens, tc.wantCW, tc.wantMO)
+			}
+		})
+	}
+}
+
+// TestMaterializeSeedsOnlyTheMissingField keeps an explicitly reported figure
+// while filling the other from the default.
+func TestMaterializeSeedsOnlyTheMissingField(t *testing.T) {
+	cfg := config.Default()
+	name := mustMaterialize(t, &cfg, "p", "m", "https://api.example.com/v1",
+		Limits{ContextWindow: 200_000})
+	preset := cfg.Models.Presets[name]
+	if preset.ContextWindow != 200_000 {
+		t.Errorf("ContextWindow = %d, want the reported 200000", preset.ContextWindow)
+	}
+	if preset.MaxOutputTokens != 128_000 {
+		t.Errorf("MaxOutputTokens = %d, want the seeded 128000", preset.MaxOutputTokens)
 	}
 }
 

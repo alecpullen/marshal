@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
 )
 
@@ -27,7 +26,6 @@ type OllamaNative struct {
 	httpClient     *http.Client
 	capabilities   schema.ProviderCapabilities
 	keepAlive      string
-	limitsTable    *limits.Table
 	replayThinking bool
 
 	capsMu    sync.Mutex
@@ -71,7 +69,6 @@ func NewOllamaNative(opts Options) (*OllamaNative, error) {
 		httpClient:     client,
 		capabilities:   caps,
 		keepAlive:      opts.KeepAlive,
-		limitsTable:    opts.LimitsTable,
 		replayThinking: opts.ReasoningField != ReasoningFieldOff,
 		capsCache:      make(map[string]ollamaModelCaps),
 	}, nil
@@ -603,9 +600,9 @@ type ollamaTagModel struct {
 	Name string `json:"name"`
 }
 
-// Models lists locally pulled models via GET /api/tags. The endpoint
-// reports no context-window metadata, so limit-table enrichment applies
-// when a table is configured, exactly as in OpenAICompatible.Models.
+// Models lists locally pulled models via GET /api/tags. The endpoint reports
+// no context-window metadata, so limits stay unknown here and are resolved
+// from the preset (or Marshal's defaults) at routing time.
 func (p *OllamaNative) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/api/tags", nil)
 	if err != nil {
@@ -626,15 +623,7 @@ func (p *OllamaNative) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 	}
 	models := make([]schema.ModelInfo, 0, len(parsed.Models))
 	for _, m := range parsed.Models {
-		info := schema.ModelInfo{ID: m.Name, OwnedBy: "ollama"}
-		if p.limitsTable != nil {
-			if lim, kind := p.limitsTable.Lookup(p.name, m.Name); kind != limits.MatchNone {
-				info.ContextWindow = lim.ContextWindow
-				info.MaxOutputTokens = lim.MaxOutputTokens
-				info.ToolCalling = lim.ToolCalling
-			}
-		}
-		models = append(models, info)
+		models = append(models, schema.ModelInfo{ID: m.Name, OwnedBy: "ollama"})
 	}
 	enrichThinkingOptions(ctx, models, func(ctx context.Context, model string) *schema.ThinkingOptions {
 		caps := p.cachedCaps(ctx, model)
@@ -646,5 +635,26 @@ func (p *OllamaNative) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 		}
 		return nil
 	})
+	// /api/tags reports no tool support either, but the capability probe
+	// above already fetched /api/show for every model, so reuse the cached
+	// verdict instead of leaving ToolCalling nil. Without it a new preset
+	// saves tool_calling = "" and the runner decodes with the JSON envelope
+	// rather than native tools.
+	for i := range models {
+		if caps, ok := p.cachedCapabilities(models[i].ID); ok && caps.known {
+			tools := caps.tools
+			models[i].ToolCalling = &tools
+		}
+	}
 	return models, nil
+}
+
+// cachedCapabilities returns caps only when a probe has already run, so
+// Models can reuse the enrichment pass's /api/show results without issuing
+// a second round of probes.
+func (p *OllamaNative) cachedCapabilities(model string) (ollamaModelCaps, bool) {
+	p.capsMu.Lock()
+	defer p.capsMu.Unlock()
+	caps, ok := p.capsCache[model]
+	return caps, ok
 }

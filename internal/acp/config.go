@@ -49,7 +49,7 @@ func NewConfigManager(home string, load func() (config.Config, error), probe fun
 	}
 	if m.probe == nil {
 		m.probe = func(ctx context.Context, name string, pc config.ProviderConfig) ([]ModelEntry, error) {
-			p, err := provider.NewFromConfig(name, pc, config.DataDir(home), false, 0)
+			p, err := provider.NewFromConfig(name, pc, config.DataDir(home), 0)
 			if err != nil {
 				return nil, err
 			}

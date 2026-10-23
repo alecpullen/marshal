@@ -17,7 +17,6 @@ import (
 	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
@@ -66,10 +65,19 @@ var ErrMaxIterationsExceeded = errors.New("agent: exceeded max tool iterations w
 
 var ErrModelOutputMalformed = errors.New("agent: model output could not be parsed after consecutive attempts")
 
-// defaultChatTimeout is the fallback used when ChatTimeout is unset —
-// notably by the ad-hoc agent.run subagent path, which never sets either
-// timeout field explicitly.
-const defaultChatTimeout = 5 * time.Minute
+// defaultIdleTimeout is how long a request may go without any streamed
+// bytes before it is treated as a stalled connection. Any delta — content,
+// reasoning, or tool-call — resets it, so a model that is thinking hard is
+// working, not stalled. Two minutes is generous for a first token even on a
+// slow reasoning model, and short enough that a dead socket is noticed while
+// the user is still watching.
+const defaultIdleTimeout = 2 * time.Minute
+
+// defaultRequestCeiling bounds a single request's total wall-clock time,
+// regardless of activity. It is the backstop for a model that streams
+// forever without finishing: a request that has not completed in fifteen
+// minutes is stuck, not slow.
+const defaultRequestCeiling = 15 * time.Minute
 
 // isLengthFinish reports whether the provider cut the response off at the
 // output-token limit ("length" for OpenAI-compatible providers, "max_tokens"
@@ -199,8 +207,9 @@ type MemoryProvider interface {
 //   - A *Runner IS safe for sequential re-use: after one RunTask returns,
 //     the next call starts from a clean per-turn state. Fields that persist
 //     across calls (Provider, Registry, Policy, State, Model, RouteResolver,
-//     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, ChatTimeout,
-//     ReconnectMaxWait, ResponseFormat (seed), NativeTools, MaxParallelActions, MaxToolResultChars,
+//     Now, MaxToolIterations, MaxRetries, MaxTurnContextTokens, IdleTimeout,
+//     RequestCeiling, ReconnectMaxWait, ResponseFormat (seed), NativeTools,
+//     MaxParallelActions, MaxToolResultChars,
 //     ForceClass, SkillIndex, Role, WriteGate, UsageObserver,
 //     MetricsObserver, Snapshotter, SnapshotRecorder, HookRunner, TitleManager,
 //     RunTaskFunc, PlanFirst, HistoryBudgetTokens, MemoryProvider, ProjectID,
@@ -274,12 +283,15 @@ type Runner struct {
 	// persisted, so a fresh session starts counting from zero.
 	thinkingLoopCounts map[string]int
 	thinkingLoopMu     sync.Mutex
-	// ChatTimeout bounds chatOnce's per-request context deadline for the
-	// model call itself. It is deliberately separate from approvals and
-	// questions, which carry no wall-clock timeout: a short chat ceiling
-	// must never cut off a slower-but-working completion from a
-	// large-context cloud model.
-	ChatTimeout time.Duration
+	// IdleTimeout bounds how long a request may go without any streamed
+	// bytes before it is treated as a stalled connection. Any delta —
+	// content, reasoning, or tool-call — resets it. Zero uses
+	// defaultIdleTimeout.
+	IdleTimeout time.Duration
+	// RequestCeiling bounds a single request's total wall-clock time,
+	// regardless of activity. It is the backstop for a model that streams
+	// forever without finishing. Zero uses defaultRequestCeiling.
+	RequestCeiling time.Duration
 	// ReconnectMaxWait bounds the total time waitForConnectivity will
 	// spend resending a dropped chat request before failing the turn.
 	// Zero uses defaultReconnectMaxWait.
@@ -310,11 +322,15 @@ type Runner struct {
 	// the gate is opt-in.
 	VerificationGate bool
 
-	// LimitsTable is the merged OpenRouter/LiteLLM limit table used to
-	// resolve a preset's context window and max output when the preset does
-	// not state them. Nil means "not loaded" — resolution degrades to the
-	// local catalog. Set by app.go from the on-disk cache.
-	LimitsTable *limits.Table
+	// ModelProbe reports the provider's own cached limits for a model.
+	// Nil means "no probe available" — resolution falls back to Marshal's
+	// documented defaults, and nothing clamps.
+	ModelProbe func(provider, model string) ModelProbe
+
+	// clampNoticeKey identifies the clamp currently bannered, so a changed
+	// route or a different clamp re-notices while an unchanged clamp does not
+	// re-stamp the notice on every turn. Empty means no clamp banner is owed.
+	clampNoticeKey string
 
 	// PlanFirst enables the legacy pre-loop planning round-trip. Default
 	// false: planning happens inside the loop like every mainstream agent
@@ -672,7 +688,8 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.MaxToolIterations = other.MaxToolIterations
 	r.MaxRetries = other.MaxRetries
 	r.MaxTurnContextTokens = other.MaxTurnContextTokens
-	r.ChatTimeout = other.ChatTimeout
+	r.IdleTimeout = other.IdleTimeout
+	r.RequestCeiling = other.RequestCeiling
 	r.ReconnectMaxWait = other.ReconnectMaxWait
 	r.ResponseFormat = other.ResponseFormat
 	r.NativeTools = other.NativeTools
@@ -680,7 +697,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.MaxToolResultChars = other.MaxToolResultChars
 	r.ForceClass = other.ForceClass
 	r.SkillIndex = other.SkillIndex
-	r.LimitsTable = other.LimitsTable
+	r.ModelProbe = other.ModelProbe
 	r.Role = other.Role
 	r.NarrationPrompt = other.NarrationPrompt
 	r.IntentNudge = other.IntentNudge
@@ -1396,6 +1413,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	lastRenderedSkills := r.State.ActiveSkills()
 	lastRenderedLoadedTools := r.State.LoadedToolNames()
 	pressureMessageSent := false
+	// overflowRetried bounds context-overflow recovery to one compaction and
+	// one retry per turn, so a provider that rejects even a compacted prompt
+	// cannot loop.
+	overflowRetried := false
 	producedValidAction := false
 	consecutiveParseFailures := 0
 	// pendingRepairNote carries a "your envelope was malformed but I fixed
@@ -1543,7 +1564,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 					// budget. Say so: dropped context that leaves no trace
 					// reads to the user as the model losing track.
 					r.State.AddMessage(session.RoleSystem,
-						fmt.Sprintf("pruned %d stale tool result(s) to stay within the context budget", n),
+						fmt.Sprintf("Pruned %d stale tool result(s) to stay within the context budget.", n),
 						session.ContentTypeCompaction)
 					continue
 				} else if n > 0 {
@@ -1585,6 +1606,62 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		res, err := r.chatWithRetry(ctx, turnProvider, turnModel, messages, effectiveRF)
 		r.setTurnFinishReason(res.FinishReason)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return task, r.failTurn(task, err)
+			}
+			err = classifyContextOverflow(err)
+			if errors.Is(err, errContextOverflow) && strings.TrimSpace(res.Text) == "" {
+				var compactErr error
+				// Prune first: compaction resends the transcript, so an
+				// oversize wire must shrink before summarisation can succeed.
+				if prunedMsgs, n := pruneStaleToolOutputs(messages, pruneMinSizeDefault); n > 0 {
+					messages = prunedMsgs
+					if r.calibratedEstimate(r.withWorkingState(messages)) <= turnThreshold {
+						r.State.AddMessage(session.RoleSystem,
+							fmt.Sprintf("Pruned %d stale tool result(s) after the provider rejected the prompt as too long.", n),
+							session.ContentTypeCompaction)
+						continue
+					}
+				}
+				if !overflowRetried {
+					overflowRetried = true
+					beforeMsgs, beforeTokens := len(messages), r.calibratedEstimate(messages)
+					fresh, cerr := rolloverAndContinue(ctx, r, messages, goal, turnThreshold)
+					if cerr == nil {
+						r.State.RecordCompaction(session.CompactionInfo{
+							MessagesBefore: beforeMsgs,
+							MessagesAfter:  len(fresh),
+							TokensBefore:   beforeTokens,
+							TokensAfter:    r.calibratedEstimate(fresh),
+							Generation:     r.State.Generation().Seq,
+						})
+						messages = fresh
+						r.resetTokenRatio()
+						if r.CompactionObserver != nil {
+							r.CompactionObserver()
+						}
+						pressureMessageSent = false
+						continue
+					}
+					// The user's stop outranks the overflow: it explains why
+					// the turn ended, and retrying a cancelled recovery would
+					// ignore their keystroke.
+					if errors.Is(cerr, context.Canceled) {
+						return task, r.failTurn(task, cerr)
+					}
+					// Keep the compaction failure so the final message says
+					// why recovery could not run. The overflow remains the
+					// wrapped error; the compaction reason is explanatory.
+					compactErr = cerr
+				}
+				msg := fmt.Sprintf(
+					"model %s rejected the prompt as too long (window in use: %d, compaction threshold: %d). Raise agent.max_turn_context_tokens or lower the preset's context_window",
+					turnModel, route.Window, turnThreshold)
+				if compactErr != nil {
+					msg += fmt.Sprintf("; compaction also failed: %v", compactErr)
+				}
+				return task, r.failTurn(task, fmt.Errorf("%s: %w", msg, err))
+			}
 			// A stream that failed part-way may still have delivered a usable
 			// response — a malformed SSE chunk aborts the stream without
 			// invalidating the deltas already received. Salvage it and let the
@@ -1592,20 +1669,25 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			// it does not, the parse-failure ladder handles it. Failing here
 			// instead threw away work the model had already done.
 			//
-			// Cancellation is never salvaged: the user asked to stop. A
+			// Cancellation is never salvaged (handled above). A
 			// deadline-exhausted stream (sleep/wake, reconnect cap reached)
 			// IS salvage-eligible: the partial text is real model output
 			// the user paid for, so only user-initiated cancellation
 			// discards it.
-			if strings.TrimSpace(res.Text) == "" || errors.Is(err, context.Canceled) {
+			if strings.TrimSpace(res.Text) == "" {
 				return task, r.failTurn(task, err)
 			}
 			r.withStats(func(s *turnStats) { s.m.StreamRecoveries++ })
-			r.State.Logger().Warn("recovered from mid-stream provider error",
+			r.State.Logger().Warn("recovered from a mid-turn provider error",
 				"error", err, "salvaged_bytes", len(res.Text))
-			r.State.AddMessage(session.RoleSystem,
-				fmt.Sprintf("Recovered from a provider stream error mid-turn (%v); continuing with the response received so far.", err),
-				session.ContentTypePlain)
+			message := fmt.Sprintf("Recovered from a provider stream error mid-turn (%v); continuing with the response received so far.", err)
+			if errors.Is(err, errContextOverflow) {
+				// The ladder keeps the largest partial from an earlier
+				// attempt. A later attempt rejecting the prompt as too long
+				// must not throw that work away.
+				message = fmt.Sprintf("Recovered the partial response received before the provider rejected a later attempt as too long (%v); continuing with it.", err)
+			}
+			r.State.AddMessage(session.RoleSystem, message, session.ContentTypePlain)
 		}
 		raw := res.Text
 

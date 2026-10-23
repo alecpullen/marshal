@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app"
 	"marshal/internal/app/config"
 	"marshal/internal/llm/provider"
+	"marshal/internal/procenv"
 	"marshal/internal/repo"
 	"marshal/internal/trust"
 )
@@ -25,6 +26,11 @@ var pluginRunner = runPlugin
 var snapshotsRunner = runSnapshots
 
 func main() {
+	// Drop libmalloc's debugging knobs before anything spawns a child.
+	// Inherited, they make every process marshal runs print a diagnostic
+	// line to stderr — one per tool call — which corrupts the TUI. See
+	// internal/procenv.
+	procenv.ScrubMallocDebugEnv()
 	if err := run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "marshal: %v\n", err)
 		os.Exit(1)

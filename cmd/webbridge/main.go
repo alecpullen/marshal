@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"marshal/internal/procenv"
 	"marshal/web/bridge"
 )
 
@@ -279,6 +280,14 @@ func genToken() (string, error) {
 }
 
 func main() {
+	// Drop libmalloc's debugging knobs before any child is spawned. The
+	// bridge hands os.Environ() to every `marshal acp` child it supervises
+	// (fleet.go, transport.go), so an inherited knob would make each child
+	// print a diagnostic line to stderr — one per agent — and corrupt the
+	// terminal a TUI is drawing on. Scrubbing here covers those children
+	// even when the supervised binary predates the same fix in
+	// cmd/marshal. See internal/procenv.
+	procenv.ScrubMallocDebugEnv()
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "webbridge: %v\n", err)
 		os.Exit(1)

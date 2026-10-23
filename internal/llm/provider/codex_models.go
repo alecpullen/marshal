@@ -187,6 +187,9 @@ func filterCodexModels(entries []codexModelEntry) []schema.ModelInfo {
 		if info.ContextWindow == 0 {
 			info.ContextWindow = e.MaxContextWindow
 		}
+		// The Codex catalog reports these windows itself; they are the
+		// authoritative figures for this account.
+		info.ProviderReported = info.ContextWindow > 0
 		out = append(out, info)
 	}
 	return out

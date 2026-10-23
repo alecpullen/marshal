@@ -71,7 +71,9 @@ func TestSearchArchivedTurnsTruncatesOversizedHits(t *testing.T) {
 	}
 }
 
-// TestSearchArchivedTurnsNoMatches reports the empty case without erroring.
+// TestSearchArchivedTurnsNoMatches reports the empty case without erroring,
+// and names the scope so a query about the current session's own work does not
+// read as "the phrase is absent from the archive".
 func TestSearchArchivedTurnsNoMatches(t *testing.T) {
 	database := newTestRecallDB(t, "nothing relevant here")
 	defer database.Close()
@@ -82,5 +84,8 @@ func TestSearchArchivedTurnsNoMatches(t *testing.T) {
 	}
 	if !strings.Contains(result.Content, "No matching archived turns found.") {
 		t.Fatalf("result = %q, want the no-matches notice", result.Content)
+	}
+	if !strings.Contains(result.Content, "not the current session's live turns") {
+		t.Fatalf("result = %q, want it to name the search scope", result.Content)
 	}
 }

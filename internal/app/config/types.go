@@ -388,11 +388,12 @@ const SmallWindowRolloverMaxTokens = 32768
 // off. When unset, rollover defaults on for local routes with small
 // windows (≤ SmallWindowRolloverMaxTokens) and off otherwise.
 //
-// The default-on is gated on locality, not just window size: an unknown
-// remote model resolves to the 8192 catalog fallback, and defaulting
-// rollover on there would roll a 128k-context model at a fraction of its
-// real window. localOnly comes from the preset, so only models the user
-// declared (or the TUI detected) as local get the survival default.
+// The default-on is gated on locality, not just window size: a remote
+// route whose window resolves small (an explicit preset, or a
+// provider-reported limit) would otherwise roll at a fraction of the
+// context the user expects from a large model. localOnly comes from the
+// preset, so only models the user declared (or the TUI detected) as local
+// get the survival default.
 func (c RolloverConfig) EffectiveEnabled(localOnly bool, modelContextWindow int) bool {
 	if c.Enabled {
 		return true
@@ -545,6 +546,14 @@ type AgentConfig struct {
 	// is retried before the turn fails. 0 = built-in default (2 minutes).
 	// Raise this for sleep/wake-heavy environments.
 	ReconnectMaxWaitSeconds int `toml:"reconnect_max_wait_seconds"`
+	// IdleTimeoutSeconds bounds how long a request may go without any
+	// streamed bytes before it is treated as a stalled connection. 0 =
+	// built-in default (2 minutes). Any delta — content, reasoning, or
+	// tool-call — resets it.
+	IdleTimeoutSeconds int `toml:"idle_timeout_seconds"`
+	// RequestCeilingSeconds bounds a single request's total wall-clock
+	// time, regardless of activity. 0 = built-in default (15 minutes).
+	RequestCeilingSeconds int `toml:"request_ceiling_seconds"`
 	// MaxToolResultChars caps a single tool result's characters before it
 	// reaches the model. 0 = derive from the turn's context threshold
 	// (~5% of the token budget), which is what large-window models want.
@@ -617,7 +626,6 @@ func (a AgentConfig) VerificationGateEnabled() bool {
 
 type PrivacyConfig struct {
 	RemoteProvidersAllowed bool `toml:"remote_providers_allowed"`
-	RemoteLimitDiscovery   bool `toml:"remote_limit_discovery,omitempty"`
 	RedactSecrets          bool `toml:"redact_secrets"`
 	IncludeGitignoredFiles bool `toml:"include_gitignored_files"`
 }

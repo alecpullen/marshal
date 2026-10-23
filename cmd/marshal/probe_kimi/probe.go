@@ -78,7 +78,7 @@ func probeKimiMain() int {
 		return 3
 	}
 
-	p, err := provider.NewFromConfig(route.Preset.Provider, pcfg, "", false, 0)
+	p, err := provider.NewFromConfig(route.Preset.Provider, pcfg, "", 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "new provider: %v\n", err)
 		return 1

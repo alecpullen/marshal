@@ -223,6 +223,8 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&agent.MaxRetries, fileField[int](file.Agent, "MaxRetries"), cfg.Agent.MaxRetries, def.Agent.MaxRetries)
 	putKey(&agent.MaxTurnContextTokens, fileField[int](file.Agent, "MaxTurnContextTokens"), cfg.Agent.MaxTurnContextTokens, def.Agent.MaxTurnContextTokens)
 	putKey(&agent.ReconnectMaxWaitSeconds, fileField[int](file.Agent, "ReconnectMaxWaitSeconds"), cfg.Agent.ReconnectMaxWaitSeconds, def.Agent.ReconnectMaxWaitSeconds)
+	putKey(&agent.IdleTimeoutSeconds, fileField[int](file.Agent, "IdleTimeoutSeconds"), cfg.Agent.IdleTimeoutSeconds, def.Agent.IdleTimeoutSeconds)
+	putKey(&agent.RequestCeilingSeconds, fileField[int](file.Agent, "RequestCeilingSeconds"), cfg.Agent.RequestCeilingSeconds, def.Agent.RequestCeilingSeconds)
 	putKey(&agent.MaxToolResultChars, fileField[int](file.Agent, "MaxToolResultChars"), cfg.Agent.MaxToolResultChars, def.Agent.MaxToolResultChars)
 	putKey(&agent.MaxStructuredOutputChars, fileField[int](file.Agent, "MaxStructuredOutputChars"), cfg.Agent.MaxStructuredOutputChars, def.Agent.MaxStructuredOutputChars)
 	putKey(&agent.PlanFirst, fileField[bool](file.Agent, "PlanFirst"), cfg.Agent.PlanFirst, def.Agent.PlanFirst)
@@ -251,7 +253,6 @@ func writeSections(file *configFile, cfg Config, def Config) {
 
 	privacy := &filePrivacy{}
 	putKey(&privacy.RemoteProvidersAllowed, fileField[bool](file.Privacy, "RemoteProvidersAllowed"), cfg.Privacy.RemoteProvidersAllowed, def.Privacy.RemoteProvidersAllowed)
-	putKey(&privacy.RemoteLimitDiscovery, fileField[bool](file.Privacy, "RemoteLimitDiscovery"), cfg.Privacy.RemoteLimitDiscovery, def.Privacy.RemoteLimitDiscovery)
 	putKey(&privacy.RedactSecrets, fileField[bool](file.Privacy, "RedactSecrets"), cfg.Privacy.RedactSecrets, def.Privacy.RedactSecrets)
 	putKey(&privacy.IncludeGitignoredFiles, fileField[bool](file.Privacy, "IncludeGitignoredFiles"), cfg.Privacy.IncludeGitignoredFiles, def.Privacy.IncludeGitignoredFiles)
 	file.Privacy = privacy

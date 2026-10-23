@@ -33,7 +33,7 @@ import (
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
-	"marshal/internal/llm/provider/limits"
+	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/provider/oauthworker"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -527,7 +527,7 @@ func (r *routedProviderResolver) providerFor(route routing.Route) (provider.Prov
 	// Codex OAuth engine a provider holds must come from the same resolver the
 	// refresh worker and the MCP managers use, so a test runtime cannot reach
 	// the developer's keychain and two runtimes cannot share tokens.
-	p, err := provider.NewFromConfigWithAuth(route.Preset.Provider, providerConfig, r.dataDir, r.cfg.Privacy.RemoteLimitDiscovery, r.cfg.Agent.ThinkingBudgetMargin, r.sessionID, effectiveAuthResolver(r.auth))
+	p, err := provider.NewFromConfigWithAuth(route.Preset.Provider, providerConfig, r.dataDir, r.cfg.Agent.ThinkingBudgetMargin, r.sessionID, effectiveAuthResolver(r.auth))
 	if err != nil {
 		return nil, err
 	}
@@ -895,6 +895,7 @@ func buildAgentRunner(ctx context.Context, cfg config.Config, state *session.Sta
 func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *session.State, database *db.DB, projectID int64, skillIndex *skills.Index, dataDir string, additionalDirs []string, jobBroker *pubsub.Broker[native.JobEvent], watchBroker *pubsub.Broker[watch.Event], watchResumeCell *WatchResumeHook, configReloader func(config.Config) error, homeDir string, writeLock *swarm.WriteLock, service *conversationCommandService, lspHandle *lsp.Handle, auth ...provider.AuthResolver) (*agent.Runner, *registry.Registry, *swarm.Orchestrator, *mcp.Manager, *snapshot.Rooted, *conversationCommandService, *watch.Manager, func(), agent.SubagentRunnerFactory, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, error) {
 	authResolver := effectiveAuthResolver(firstAuthResolver(auth))
 	resolver := newRoutedProviderResolver(cfg, dataDir, authResolver).withSessionID(state.SessionID())
+	modelProbe := modelProbeFunc(cfg, dataDir)
 	route, resolvedProvider, err := resolver.Resolve("edit")
 	if err != nil {
 		return nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, err
@@ -910,7 +911,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// a database: the controller archives generations to the DB, so rollover
 	// cannot function (and must not start) without one.
 	if !cfg.Session.Rollover.EnabledSet && database != nil {
-		window, _ := agent.ResolveModelLimits(route.Preset, nil, state.Logger())
+		window := agent.ResolveModelLimits(route.Preset, modelProbeFor(modelProbe, route.Preset)).Window
 		cfg.Session.Rollover.Enabled = cfg.Session.Rollover.EffectiveEnabled(route.Preset.LocalOnly, window)
 	}
 
@@ -1238,8 +1239,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	runner.MetricsObserver = recorder
 	runner.Pricing = parentPricing
 
-	limitsTable := loadLimitsTable(ctx, cfg, dataDir)
-	runner.LimitsTable = limitsTable
+	runner.ModelProbe = modelProbe
 
 	// T17: wire UsageCounter so the rollover controller can use
 	// provider-reported prompt_tokens as the numerator for context_percent
@@ -1319,6 +1319,12 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	if cfg.Agent.ReconnectMaxWaitSeconds > 0 {
 		runner.ReconnectMaxWait = time.Duration(cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
 	}
+	if cfg.Agent.IdleTimeoutSeconds > 0 {
+		runner.IdleTimeout = time.Duration(cfg.Agent.IdleTimeoutSeconds) * time.Second
+	}
+	if cfg.Agent.RequestCeilingSeconds > 0 {
+		runner.RequestCeiling = time.Duration(cfg.Agent.RequestCeilingSeconds) * time.Second
+	}
 
 	// T17: wire rollover controller into the runner when enabled.
 	// Pass the model's full context window so context_percent fires against
@@ -1326,7 +1332,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// Use LLMSummaryProvider as the primary digest provider, falling back to
 	// minimalDigestProvider only when the runner's provider is not available
 	// (branch review finding #1).
-	modelCtxWindow, _ := agent.ResolveModelLimits(route.Preset, runner.LimitsTable, state.Logger())
+	modelCtxWindow := agent.ResolveModelLimits(route.Preset, modelProbeFor(modelProbe, route.Preset)).Window
 	// Allocate the usage counter (declared above) once enablement can be
 	// resolved against the model window.
 	if cfg.Session.Rollover.EffectiveEnabled(route.Preset.LocalOnly, modelCtxWindow) && cfg.Session.Rollover.TokenCounter == "usage" {
@@ -1432,7 +1438,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			runner.Classifier = agent.NewModelClassifier(routerProvider, routerRoute.Preset.Model)
 		}
 	}
-	swarmRunner := buildSwarmRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex, limitsTable)
+	swarmRunner := buildSwarmRunner(cfg, state, reg, pol, resolver, database, projectID, skillIndex, modelProbe)
 	// swarmOverrideFactory builds a per-run RunnerFactory with role→preset
 	// overrides applied to a copy of the routing config. The provider cache
 	// is shared with the startup resolver so providers are not rebuilt per
@@ -1451,7 +1457,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 			skillIndex:       skillIndex,
 			memory:           newDBMemoryProvider(database),
 			projectID:        projectID,
-			limitsTable:      limitsTable,
+			modelProbe:       modelProbe,
 			database:         database,
 			writeGate:        &swarm.WriteLock{},
 			metricsObserver:  metricsRecorder(database, projectID, state.SessionID(), state.Logger()),
@@ -1479,7 +1485,7 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 
 	subagentFactory, _ = buildSubagentFactoryWithLock(cfg, state, resolvedProvider, reg, pol, route.Preset.Model, router, resolver, database, projectID, pricing.Lookup(route.Preset, state.Logger()), writeLock, nativeOpts, watchManager, commandService)
 	pipelineFactory := func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner {
-		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, limitsTable, overrides, commandService)
+		return buildPipelineController(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, planPath, modelProbe, overrides, commandService)
 	}
 	planAuthorFactory := buildPlanAuthorFactory(cfg, state, reg, pol, resolver, database, projectID, skillIndex, commandRunner, commandService)
 
@@ -1534,27 +1540,77 @@ func mcpFailureMessage(failures []mcp.ServerFailure) string {
 	return fmt.Sprintf("%d MCP server(s) unavailable: %s", len(failures), strings.Join(parts, "; "))
 }
 
-// loadLimitsTable loads the merged model-limits table so presets without an
-// explicit context_window still resolve a real window instead of falling
-// straight through to the local catalog. Cache-only unless remote limit
-// discovery is enabled; nil when dataDir is empty or no table is available —
-// resolution degrades gracefully (agent.ResolveModelLimits falls back to the
-// catalog).
-func loadLimitsTable(ctx context.Context, cfg config.Config, dataDir string) *limits.Table {
+// modelProbeFor resolves a preset against an optional probe closure, returning
+// the zero probe when none is wired.
+func modelProbeFor(probe func(provider, model string) agent.ModelProbe, preset routing.ModelPreset) agent.ModelProbe {
+	if probe == nil {
+		return agent.ModelProbe{}
+	}
+	return probe(preset.Provider, preset.Model)
+}
+
+// modelProbeFunc returns a lookup over the provider's own cached /models
+// probe, so the runner can clamp a preset that claims more than the provider
+// serves. It reads the same discovered.json that /models populates; a
+// missing, stale, or hash-invalidated entry reports OK=false and nothing
+// clamps. Nil when dataDir is empty.
+//
+// Only entries whose limits the provider itself reported are usable. Most
+// /models endpoints return no limits, so their ModelInfo.ContextWindow stays
+// zero and the preset's default pair applies. An enrichment pass must not
+// fabricate a provider report: a stale cross-provider guess must never
+// override an explicit preset, or a user who sets a 1M window would silently
+// drop to whichever figure the guess happened to produce.
+func modelProbeFunc(cfg config.Config, dataDir string) func(provider, model string) agent.ModelProbe {
 	if dataDir == "" {
 		return nil
 	}
-	if cfg.Privacy.RemoteLimitDiscovery {
-		if t, err := limits.LoadTable(ctx, dataDir, limits.DefaultTTL); err == nil {
-			return &t
+	// discovered.json changes only when /models runs. Re-reading and
+	// unmarshalling it on every turn is unnecessary; cache the parsed form
+	// and refresh only when the file's mtime or size moves. The mutex covers
+	// concurrent swarm role runners.
+	var (
+		mu         sync.Mutex
+		cached     modelcache.Cache
+		cachedMod  time.Time
+		cachedSize int64
+		loaded     bool
+	)
+	load := func() modelcache.Cache {
+		mu.Lock()
+		defer mu.Unlock()
+		info, err := os.Stat(modelcache.Path(dataDir))
+		if err != nil {
+			loaded = false
+			return modelcache.Load(dataDir)
 		}
-		return nil
+		if loaded && info.ModTime().Equal(cachedMod) && info.Size() == cachedSize {
+			return cached
+		}
+		cached = modelcache.Load(dataDir)
+		cachedMod, cachedSize, loaded = info.ModTime(), info.Size(), true
+		return cached
 	}
-	if c, err := limits.Load(dataDir); err == nil && len(c.Table) > 0 {
-		t := limits.NewTable(c.Table)
-		return &t
+	return func(providerName, modelID string) agent.ModelProbe {
+		pc, ok := cfg.Providers[providerName]
+		if !ok {
+			return agent.ModelProbe{}
+		}
+		models, ok := load().Lookup(providerName, pc, modelcache.DefaultTTL, time.Now())
+		if !ok {
+			return agent.ModelProbe{}
+		}
+		for _, m := range models {
+			if m.ID != modelID {
+				continue
+			}
+			if !m.ProviderReported || (m.ContextWindow == 0 && m.MaxOutputTokens == 0) {
+				return agent.ModelProbe{}
+			}
+			return agent.ModelProbe{Window: m.ContextWindow, MaxOutput: m.MaxOutputTokens, OK: true}
+		}
+		return agent.ModelProbe{}
 	}
-	return nil
 }
 
 // roleRunnerSpec holds the dependencies shared by the swarm and SDD
@@ -1571,7 +1627,7 @@ type roleRunnerSpec struct {
 	skillIndex  *skills.Index
 	memory      *dbMemoryProvider
 	projectID   int64
-	limitsTable *limits.Table
+	modelProbe  func(provider, model string) agent.ModelProbe
 	database    *db.DB // nil-safe: only used for pipeline child rollover (Task 7)
 
 	writeGate        agent.WriteGate         // swarm only; nil for SDD
@@ -1666,7 +1722,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	// semantic retrieval. The static resolver replays the already-resolved
 	// role route — the same pattern subagent children use (app.go:1287).
 	r.RouteResolver = &staticRouteResolver{route: route, provider: p}
-	r.LimitsTable = s.limitsTable
+	r.ModelProbe = s.modelProbe
 	r.WriteGate = s.writeGate
 	r.SkillIndex = s.skillIndex
 	r.MemoryProvider = s.memory
@@ -1674,6 +1730,12 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	r.MetricsObserver = s.metricsObserver
 	if s.cfg.Agent.ReconnectMaxWaitSeconds > 0 {
 		r.ReconnectMaxWait = time.Duration(s.cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
+	}
+	if s.cfg.Agent.IdleTimeoutSeconds > 0 {
+		r.IdleTimeout = time.Duration(s.cfg.Agent.IdleTimeoutSeconds) * time.Second
+	}
+	if s.cfg.Agent.RequestCeilingSeconds > 0 {
+		r.RequestCeiling = time.Duration(s.cfg.Agent.RequestCeilingSeconds) * time.Second
 	}
 	// Role prompts embed the shared plan, so skip the per-turn
 	// classify/plan pass (class "question" bypasses planning).
@@ -1713,7 +1775,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	// via the RouteResolver above). Digests use minimalDigestProvider:
 	// ephemeral subagent generations are not worth an LLM call.
 	if s.childSession && s.database != nil {
-		window, _ := agent.ResolveModelLimits(route.Preset, s.limitsTable, s.state.Logger())
+		window := agent.ResolveModelLimits(route.Preset, modelProbeFor(s.modelProbe, route.Preset)).Window
 		if s.cfg.Session.Rollover.EffectiveEnabled(route.Preset.LocalOnly, window) {
 			childSessionID := "sess_sub_" + uuid.New().String()
 			if err := s.database.CreateSession(childSessionID, s.projectID, "sdd:"+string(role), time.Now()); err != nil {
@@ -1764,7 +1826,7 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 // the filtered registry view; each role's provider/model comes from the
 // routing profile via ResolveRole (falling back to the implementer preset
 // for unconfigured roles).
-func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, lt *limits.Table) *swarm.Orchestrator {
+func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, modelProbe func(provider, model string) agent.ModelProbe) *swarm.Orchestrator {
 	spec := roleRunnerSpec{
 		cfg:         cfg,
 		state:       state,
@@ -1776,7 +1838,7 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 		skillIndex:  skillIndex,
 		memory:      newDBMemoryProvider(database),
 		projectID:   projectID,
-		limitsTable: lt,
+		modelProbe:  modelProbe,
 		database:    database,
 
 		writeGate:        &swarm.WriteLock{},
@@ -1792,7 +1854,7 @@ func buildSwarmRunner(cfg config.Config, state *session.State, reg *registry.Reg
 // buildPipelineController wires a plan-execution controller for one plan.
 // It is built per run, not at startup: the controller is bound to a single
 // plan file.
-func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string, lt *limits.Table, overrides map[routing.AgentRole]string, commandService *conversationCommandService) *pipeline.ControllerAdapter {
+func buildPipelineController(cfg config.Config, state *session.State, reg *registry.Registry, pol *policy.PolicyEngine, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, commandRunner native.CommandRunner, planPath string, modelProbe func(provider, model string) agent.ModelProbe, overrides map[routing.AgentRole]string, commandService *conversationCommandService) *pipeline.ControllerAdapter {
 	// Apply per-run role overrides to a copy of the routing config. The
 	// provider cache is shared with the startup resolver so providers are
 	// not rebuilt per run. Overrides are never written to disk.
@@ -1807,7 +1869,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		skillIndex:  skillIndex,
 		memory:      newDBMemoryProvider(database),
 		projectID:   projectID,
-		limitsTable: lt,
+		modelProbe:  modelProbe,
 		database:    database,
 
 		childSession: true,
@@ -1942,6 +2004,12 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		childRunner.ProjectID = projectID
 		if cfg.Agent.ReconnectMaxWaitSeconds > 0 {
 			childRunner.ReconnectMaxWait = time.Duration(cfg.Agent.ReconnectMaxWaitSeconds) * time.Second
+		}
+		if cfg.Agent.IdleTimeoutSeconds > 0 {
+			childRunner.IdleTimeout = time.Duration(cfg.Agent.IdleTimeoutSeconds) * time.Second
+		}
+		if cfg.Agent.RequestCeilingSeconds > 0 {
+			childRunner.RequestCeiling = time.Duration(cfg.Agent.RequestCeilingSeconds) * time.Second
 		}
 		childRunner.VerificationGate = cfg.Agent.VerificationGateEnabled()
 		childRunner.SetForceClass("question")

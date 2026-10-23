@@ -902,7 +902,7 @@ func TestConfirmLimitsViewShowsFiguresAndSources(t *testing.T) {
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 
 	view := ansi.Strip(m.View(80, 24))
-	for _, want := range []string{"128000", "context", "max output", string(presetflow.SourceFetched)} {
+	for _, want := range []string{"128000", "context", "max output", string(presetflow.SourceReported)} {
 		if !strings.Contains(strings.ToLower(view), strings.ToLower(want)) {
 			t.Errorf("view missing %q:\n%s", want, view)
 		}
@@ -994,8 +994,8 @@ func TestConfirmLimitsFetchedFiguresBeatSavedPreset(t *testing.T) {
 		t.Errorf("limits = %d/%d, want the fetched 256000/4096",
 			m.confirm.Limits.ContextWindow, m.confirm.Limits.MaxOutputTokens)
 	}
-	if m.confirm.Limits.ContextSource != presetflow.SourceFetched || m.confirm.Limits.OutputSource != presetflow.SourceFetched {
-		t.Errorf("sources = %q/%q, want both %q", m.confirm.Limits.ContextSource, m.confirm.Limits.OutputSource, presetflow.SourceFetched)
+	if m.confirm.Limits.ContextSource != presetflow.SourceReported || m.confirm.Limits.OutputSource != presetflow.SourceReported {
+		t.Errorf("sources = %q/%q, want both %q", m.confirm.Limits.ContextSource, m.confirm.Limits.OutputSource, presetflow.SourceReported)
 	}
 }
 
@@ -1750,12 +1750,12 @@ func TestRejectsNegativeEdit(t *testing.T) {
 func TestEditingAnUnknownFigureResolvesIt(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
-	if m.confirm.Limits.ContextSource != presetflow.SourceCatalog {
-		t.Fatalf("precondition: want catalog default, got %q", m.confirm.Limits.ContextSource)
+	if m.confirm.Limits.ContextSource != presetflow.SourceDefault {
+		t.Fatalf("precondition: want built-in default, got %q", m.confirm.Limits.ContextSource)
 	}
 
 	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear the pre-filled catalog default
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear the pre-filled default
 	for _, r := range "8192" {
 		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
 	}
@@ -1769,8 +1769,8 @@ func TestEditingAnUnknownFigureResolvesIt(t *testing.T) {
 func TestEditingZeroClearsToUnknown(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
-	if m.confirm.Limits.ContextSource != presetflow.SourceFetched {
-		t.Fatalf("precondition: want fetched, got %q", m.confirm.Limits.ContextSource)
+	if m.confirm.Limits.ContextSource != presetflow.SourceReported {
+		t.Fatalf("precondition: want reported, got %q", m.confirm.Limits.ContextSource)
 	}
 
 	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})

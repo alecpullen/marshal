@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
 )
 
@@ -407,46 +406,6 @@ func TestOllamaCapabilityProbeFallbackOnOldServer(t *testing.T) {
 	}
 }
 
-func TestOllamaModelsPropagatesToolCallingFromLimitsTable(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/show" {
-			http.NotFound(w, r)
-			return
-		}
-		if r.URL.Path != "/api/tags" {
-			t.Fatalf("unexpected path %q", r.URL.Path)
-		}
-		_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:7b"}]}`))
-	}))
-	defer server.Close()
-
-	toolCalling := true
-	table := limits.NewTable(map[string]limits.Limit{
-		"qwen2.5-coder:7b": {ContextWindow: 32768, MaxOutputTokens: 8192, ToolCalling: &toolCalling},
-	})
-	caps := DefaultCapabilities()
-	caps.ToolCalling = true
-	p, err := NewOllamaNative(Options{Name: "test-ollama", BaseURL: server.URL, Capabilities: &caps, LimitsTable: &table})
-	if err != nil {
-		t.Fatalf("NewOllamaNative: %v", err)
-	}
-
-	models, err := p.Models(t.Context())
-	if err != nil {
-		t.Fatalf("Models: %v", err)
-	}
-	if len(models) != 1 {
-		t.Fatalf("got %d models, want 1", len(models))
-	}
-	got := models[0]
-	if got.ContextWindow != 32768 || got.MaxOutputTokens != 8192 {
-		t.Errorf("limits = %+v, want context=32768 maxOutput=8192", got)
-	}
-	if got.ToolCalling == nil || !*got.ToolCalling {
-		t.Errorf("ToolCalling = %v, want true", got.ToolCalling)
-	}
-}
-
 func TestOllamaProbeCapabilitiesParsesToolsAndContextLength(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/show" {
@@ -817,5 +776,61 @@ func TestOllamaNativeNoThinkingWhenOff(t *testing.T) {
 	}
 	if _, present := req.Messages[0]["thinking"]; present {
 		t.Fatalf("thinking replayed despite reasoning_field=off: %v", req.Messages[0])
+	}
+}
+
+// TestOllamaModelsReportsProbedToolCalling pins that /api/tags results carry
+// the per-model tool verdict the /api/show probe already fetched. The deleted
+// limits table used to supply this; without it a new preset saved
+// tool_calling = "" and the runner fell back to JSON-envelope decoding.
+func TestOllamaModelsReportsProbedToolCalling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/show":
+			_, _ = w.Write([]byte(`{"capabilities":["completion","tools"]}`))
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[{"name":"qwen2.5-coder:7b"}]}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("got %d models, want 1", len(models))
+	}
+	if models[0].ToolCalling == nil || !*models[0].ToolCalling {
+		t.Fatalf("ToolCalling = %v, want true from the probe", models[0].ToolCalling)
+	}
+}
+
+// TestOllamaModelsReportsProbedNoToolCalling is the negative half: a pulled
+// model whose file lacks the tools capability must report false, so the preset
+// records tool_calling = "none" instead of silently claiming native tools.
+func TestOllamaModelsReportsProbedNoToolCalling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/show":
+			_, _ = w.Write([]byte(`{"capabilities":["completion"]}`))
+		case "/api/tags":
+			_, _ = w.Write([]byte(`{"models":[{"name":"llama3.1:8b"}]}`))
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	p := newTestOllama(t, server.URL)
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 1 || models[0].ToolCalling == nil || *models[0].ToolCalling {
+		t.Fatalf("ToolCalling = %v, want false from the probe", models[0].ToolCalling)
 	}
 }

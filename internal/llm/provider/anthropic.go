@@ -733,7 +733,14 @@ func (p *Anthropic) Models(ctx context.Context) ([]schema.ModelInfo, error) {
 			return nil, err
 		}
 		for _, model := range page.Data {
-			info := schema.ModelInfo{ID: model.ID, OwnedBy: "anthropic", ContextWindow: model.MaxInputTokens, MaxOutputTokens: model.MaxTokens, Thinking: model.thinkingOptions()}
+			info := schema.ModelInfo{
+				ID:               model.ID,
+				OwnedBy:          "anthropic",
+				ContextWindow:    model.MaxInputTokens,
+				MaxOutputTokens:  model.MaxTokens,
+				ProviderReported: model.MaxInputTokens > 0 || model.MaxTokens > 0,
+				Thinking:         model.thinkingOptions(),
+			}
 			models = append(models, info)
 			if info.Thinking != nil {
 				p.thinkingMu.Lock()

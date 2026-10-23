@@ -400,6 +400,54 @@ func TestRepoSearchZeroMatchRegexCoach(t *testing.T) {
 	}
 }
 
+func TestRepoSearchZeroMatchRegexNamesTheLiteralHits(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.go"), "func (m Model) Update() {}\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// The parentheses are regex groups, so this valid regex matches nothing
+	// even though the literal line exists. The footer must name the literal
+	// hit count rather than leaving the model to guess and flee to shell grep.
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"func (m Model) Update","mode":"regex"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	if !strings.Contains(result.Content, "the literal text matches 1 line(s)") {
+		t.Fatalf("Content missing literal-hit coaching footer:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, `retry with mode:"substring"`) {
+		t.Fatalf("Content missing substring retry:\n%s", result.Content)
+	}
+	if result.Notice == nil || result.Notice.Kind != registry.NoticeZeroMatchCoach {
+		t.Fatalf("Notice = %+v, want kind %q", result.Notice, registry.NoticeZeroMatchCoach)
+	}
+}
+
+func TestRepoSearchZeroMatchRegexKeepsGenericFooterWhenLiteralAlsoMisses(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "alpha\nbeta\n")
+	reg := registry.New()
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}}); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+
+	// Neither the regex nor the literal text matches: keep the generic footer
+	// rather than claiming a literal hit that does not exist.
+	result, err := invokeTool(t, reg, "repo.search", `{"query":"needle","mode":"regex"}`)
+	if err != nil {
+		t.Fatalf("repo.search returned error: %v", err)
+	}
+	if strings.Contains(result.Content, "the literal text matches") {
+		t.Fatalf("Content claims a literal hit that does not exist:\n%s", result.Content)
+	}
+	if !strings.Contains(result.Content, `try mode:"substring"`) {
+		t.Fatalf("Content missing substring-mode coaching footer:\n%s", result.Content)
+	}
+}
+
 func TestRepoSearchCappedNotice(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "a.txt"), "needle 1\nneedle 2\nneedle 3\nneedle 4\n")

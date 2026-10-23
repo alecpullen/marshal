@@ -343,7 +343,7 @@ func TestAnthropicModels(t *testing.T) {
 		if got := r.Header.Get("x-api-key"); got != "sk-test" {
 			t.Fatalf("x-api-key = %q, want sk-test", got)
 		}
-		_, _ = w.Write([]byte(`{"data":[{"type":"model","id":"claude-sonnet-4-5","display_name":"Claude Sonnet 4.5"},{"type":"model","id":"claude-haiku-4-5","display_name":"Claude Haiku 4.5"}],"has_more":false}`))
+		_, _ = w.Write([]byte(`{"data":[{"type":"model","id":"claude-sonnet-4-5","display_name":"Claude Sonnet 4.5","max_input_tokens":200000,"max_tokens":64000},{"type":"model","id":"claude-haiku-4-5","display_name":"Claude Haiku 4.5"}],"has_more":false}`))
 	}))
 	defer server.Close()
 
@@ -357,6 +357,14 @@ func TestAnthropicModels(t *testing.T) {
 	}
 	if models[0].ID != "claude-sonnet-4-5" || models[0].OwnedBy != "anthropic" {
 		t.Fatalf("models[0] = %+v", models[0])
+	}
+	// Anthropic reports limits in its own model list, so they may clamp a
+	// preset. A model that omits them must not be treated as authoritative.
+	if !models[0].ProviderReported || models[0].ContextWindow != 200000 || models[0].MaxOutputTokens != 64000 {
+		t.Fatalf("models[0] = %+v, want provider-reported 200000/64000", models[0])
+	}
+	if models[1].ProviderReported {
+		t.Fatalf("models[1] = %+v, want ProviderReported=false when the list omits limits", models[1])
 	}
 }
 

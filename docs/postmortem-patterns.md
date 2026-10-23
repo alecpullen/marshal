@@ -13,7 +13,7 @@ It is a triage input, not a change plan.
 - Turn outcomes: 419 answered, 83 failed, 5 salvaged (malformed/exhausted/empty/repeat_failure)
 - Tool failures: 360 (rolled-up count)
 - Approval denials: 62
-- Parse issues: 106
+- Parse issues: 106 grouped entries (1,115 occurrences)
 - Agent observations: 499
 - Execution evidence: 859 shell jobs — 759 completed, 100 nonzero exits (mostly expected test failures, not infra crashes)
 
@@ -309,11 +309,66 @@ which put two diffuse buckets ahead of a bug that loses data.
      outcome. Nothing is stopped.
    Pinned by `TestAgentAwaitTimeoutNamesWhatIsStillRunning` and
    `TestAgentAwaitTimeoutTellsTheModelNotToRepeat`.
-6. **Transcript / history correctness** (20 obs). The 111 harness
-   `turn_metrics` parse failures in one session are a harness bug that corrupts
-   the metrics this document is built from; `recall_history` exactness second.
-7. **Token / context growth** (~3.7B prompt across 46 sessions). Cache-stable
-   prefix audit, stop re-reading large files through shell, trim tool output.
+6. **Transcript / history correctness** (20 obs). **Resolved 2026-10-19 — the
+   "harness bug" framing was wrong; the live defects were two non-self-correcting
+   messages.** Dating the observations settles it:
+   - *`recall_history` queries returning zero results*: `recall_history` is
+     retired — it was folded into `transcript_read`'s `query` in the
+     context-diet Tier 2a cut (`recall.go` keeps only `searchArchivedTurns`).
+     All four observations are queries about the **current session's own
+     work**, and `SearchArchivedTurns` reads only `generation_turns_fts`
+     (archived generations), never the live `messages` table. The search was
+     correct; the empty result said only "No matching archived turns found.",
+     which reads as "the phrase is absent" rather than "this corpus was never
+     searched". One session even concluded "the archive had not yet ingested
+     the session". The empty result now names the scope and points at
+     `transcript_read` without a query (or `turn_seq`) for live turns.
+   - *"111 harness `turn_metrics` parse failures in one session"*: **not a
+     harness bug.** The observation is from `sess_1790259244533818000`
+     ("the harness recorded 111 turn_metrics parse failures"); the DB shows 112
+     for that session. Those are the model emitting malformed JSON envelopes,
+     counted correctly — the metrics are accurate, not corrupted. The Scale
+     figure "Parse issues: 106" is the number of *grouped entries*; the sum of
+     their counts is 1,115. That was a labelling ambiguity in this document,
+     now stated explicitly.
+   - *54 envelope parse failures (missing tool/args)*: the model's error,
+     correctly rejected — but the rejection was not self-correcting.
+     `ErrUnknownActionType` did not name the accepted types (one session
+     emitted `"tool_run"` **71 times**), and `ErrMissingTool` did not name the
+     field (92 failures keyed `"file.read": null` instead of
+     `"tool": "file.read"`). Both now name what is expected: the valid action
+     types, and the `"tool"` field with a worked example.
+   - *`transcript_read` without `generation_seq`*: already handled (item 1) —
+     the error distinguishes invalid, no-database, and
+     `session_id`-requires-`generation_seq`.
+   Pinned by `TestUnknownActionTypeNamesTheValidSet`,
+   `TestMissingToolNamesTheToolField` (`agent`) and the strengthened
+   `TestSearchArchivedTurnsNoMatches` (`native`).
+7. **Token / context growth** (~3.7B prompt across 46 sessions). **Dated
+   2026-10-19; two of three sub-themes were already handled, one live defect
+   fixed.**
+   - *Cache-stable prefix audit*: the contract holds —
+     `TestPromptPrefixStableAcrossSteps` passes. The zero-cache sessions are
+     **provider-side, not a harness defect**: no session reports a cache read
+     before 2026-10-10, and from 2026-10-12 the same model
+     (`deepseek-v4.1-flash`) reports 96–98% cache reads. No harness prefix fix
+     landed in that window, so the provider simply did not report cached
+     tokens earlier. Corpus-wide: 6.44B prompt, 2.03B cache reads, 0 cache
+     writes (OpenAI-compatible providers report no cache-write count).
+   - *Trim tool output*: already handled — `limitOutput`/`maxOutputBytes`
+     truncation markers in `shell.run` and `file.read`, plus
+     `pruneStaleToolOutputs` and intra-turn compaction in the runner.
+   - *Stop re-reading large files through shell*: the `rulePreferPurposeBuilt`
+     rule landed 2026-10-17, but shell-over-native observations continue
+     through 10-19. Most are model preference, not a harness defect — except
+     one concrete case: `repo.search` in regex mode for
+     `func (m Model) Update` returned zero matches (the parentheses are regex
+     groups), and the generic "try mode:substring" footer sent the model to
+     shell grep instead. The zero-match regex footer now probes the literal
+     text and names the hit count, so the retry is verified rather than
+     suggested. Pinned by
+     `TestRepoSearchZeroMatchRegexNamesTheLiteralHits` and
+     `TestRepoSearchZeroMatchRegexKeepsGenericFooterWhenLiteralAlsoMisses`.
 
 Run the 218-observation bucketing pass alongside steps 0–1, not after step 7.
 

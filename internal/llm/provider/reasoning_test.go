@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
 )
 
@@ -34,26 +33,11 @@ func (f reasoningFakeProber) ProbeCapabilities(context.Context, string) ModelCap
 
 func boolPtr(b bool) *bool { return &b }
 
-func reasoningTable(entries map[string]limits.Limit) *limits.Table {
-	t := limits.NewTable(entries)
-	return &t
-}
-
 func TestResolveReasoningSupportProviderWideNoWins(t *testing.T) {
 	prov := reasoningFakeProvider{caps: schema.ProviderCapabilities{Reasoning: false}}
-	table := reasoningTable(map[string]limits.Limit{"fake/m": {Reasoning: boolPtr(true)}})
-	supported, known := ResolveReasoningSupport(context.Background(), prov, "fake", "m", table)
+	supported, known := ResolveReasoningSupport(context.Background(), prov, "m")
 	if supported || !known {
 		t.Fatalf("= (%v, %v), want (false, true): provider-wide no is authoritative", supported, known)
-	}
-}
-
-func TestResolveReasoningSupportLimitsTable(t *testing.T) {
-	prov := reasoningFakeProvider{caps: schema.ProviderCapabilities{Reasoning: true}}
-	table := reasoningTable(map[string]limits.Limit{"fake/m": {Reasoning: boolPtr(false)}})
-	supported, known := ResolveReasoningSupport(context.Background(), prov, "fake", "m", table)
-	if supported || !known {
-		t.Fatalf("= (%v, %v), want (false, true)", supported, known)
 	}
 }
 
@@ -62,7 +46,7 @@ func TestResolveReasoningSupportProbe(t *testing.T) {
 		reasoningFakeProvider: reasoningFakeProvider{caps: schema.ProviderCapabilities{Reasoning: true}},
 		mc:                    ModelCapabilities{Reasoning: boolPtr(true)},
 	}
-	supported, known := ResolveReasoningSupport(context.Background(), prov, "fake", "m", nil)
+	supported, known := ResolveReasoningSupport(context.Background(), prov, "m")
 	if !supported || !known {
 		t.Fatalf("= (%v, %v), want (true, true)", supported, known)
 	}
@@ -70,7 +54,7 @@ func TestResolveReasoningSupportProbe(t *testing.T) {
 
 func TestResolveReasoningSupportDefaultIsUnknown(t *testing.T) {
 	prov := reasoningFakeProvider{caps: schema.ProviderCapabilities{Reasoning: true}}
-	supported, known := ResolveReasoningSupport(context.Background(), prov, "fake", "m", nil)
+	supported, known := ResolveReasoningSupport(context.Background(), prov, "m")
 	if !supported || known {
 		t.Fatalf("= (%v, %v), want (true, false): baseline default, not knowledge", supported, known)
 	}

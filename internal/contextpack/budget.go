@@ -23,7 +23,7 @@ const maxPackTokens = 64000
 // directly (16384 → 2048, 8192 → 1024).
 //
 // A window of 0 means the model is unknown — ResolveModelLimits could not
-// find it in config, the limits table, or the catalog. In that case we
+// find it in config and had no preset default to apply. In that case we
 // keep the long-standing flat default rather than guessing.
 func BudgetForWindow(window int) int {
 	if window <= 0 {

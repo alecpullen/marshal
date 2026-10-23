@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/schema"
 )
 
@@ -472,6 +471,54 @@ func TestModelsParsesResponse(t *testing.T) {
 	want := []schema.ModelInfo{{ID: "llama3", OwnedBy: "local"}}
 	if len(models) != 1 || models[0] != want[0] {
 		t.Fatalf("Models() = %+v, want %+v", models, want)
+	}
+}
+
+// TestModelsReportsProviderToolCalling pins that /models carries the
+// provider-level tool-calling capability through to ModelInfo. The deleted
+// limits table used to populate this per model; without a replacement a
+// preset was saved with tool_calling = "" and the runner fell back to
+// JSON-envelope decoding instead of native tools.
+func TestModelsReportsProviderToolCalling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o","owned_by":"openai"}]}`))
+	}))
+	defer server.Close()
+
+	caps := DefaultCapabilities()
+	caps.ToolCalling = true
+	p, err := NewOpenAICompatible(Options{Name: "test", BaseURL: server.URL, Capabilities: &caps})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible: %v", err)
+	}
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 1 || models[0].ToolCalling == nil || !*models[0].ToolCalling {
+		t.Fatalf("models = %+v, want ToolCalling true", models)
+	}
+}
+
+// TestModelsOmitsToolCallingWhenProviderDisclaimsIt is the other half: a
+// provider that did not opt into native tools must not claim per-model
+// support, or a new preset would save tool_calling = "native" for a model
+// that cannot call tools.
+func TestModelsOmitsToolCallingWhenProviderDisclaimsIt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"plain-model"}]}`))
+	}))
+	defer server.Close()
+
+	p := newTestProvider(t, server.URL)
+	models, err := p.Models(t.Context())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+	if len(models) != 1 || models[0].ToolCalling != nil {
+		t.Fatalf("models = %+v, want ToolCalling nil", models)
 	}
 }
 
@@ -1255,68 +1302,6 @@ func TestChatTokenUsageNoCacheFieldsZero(t *testing.T) {
 	}
 	if done.Usage.ReasoningTokens != 0 || done.Usage.CacheReadTokens != 0 || done.Usage.CacheWriteTokens != 0 {
 		t.Errorf("provider without cache/reasoning fields should be zero: %+v", done.Usage)
-	}
-}
-
-func TestModelsEnrichesLimitsFromTable(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"deepseek-v4-flash","owned_by":"ollama"}]}`))
-	}))
-	defer server.Close()
-
-	p := newTestProvider(t, server.URL)
-	// Inject a fake limit table.
-	tbl := limits.NewTable(map[string]limits.Limit{
-		"deepseek-v4-flash": {ContextWindow: 1048576, MaxOutputTokens: 384000},
-	})
-	p.limitsTable = &tbl
-
-	models, err := p.Models(t.Context())
-	if err != nil {
-		t.Fatalf("Models: %v", err)
-	}
-	if len(models) != 1 {
-		t.Fatalf("got %d models, want 1", len(models))
-	}
-	if models[0].ContextWindow != 1048576 {
-		t.Errorf("ContextWindow = %d, want 1048576", models[0].ContextWindow)
-	}
-	if models[0].MaxOutputTokens != 384000 {
-		t.Errorf("MaxOutputTokens = %d, want 384000", models[0].MaxOutputTokens)
-	}
-}
-
-func TestModelsPropagatesToolCallingFromLimitsTable(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4o","owned_by":"openai"}]}`))
-	}))
-	defer server.Close()
-
-	toolCalling := true
-	table := limits.NewTable(map[string]limits.Limit{
-		"openrouter/gpt-4o": {ContextWindow: 128000, MaxOutputTokens: 16384, ToolCalling: &toolCalling},
-	})
-	p, err := NewOpenAICompatible(Options{Name: "openrouter", BaseURL: server.URL, LimitsTable: &table})
-	if err != nil {
-		t.Fatalf("NewOpenAICompatible returned error: %v", err)
-	}
-
-	models, err := p.Models(t.Context())
-	if err != nil {
-		t.Fatalf("Models returned error: %v", err)
-	}
-	if len(models) != 1 {
-		t.Fatalf("Models() returned %d models, want 1", len(models))
-	}
-	got := models[0]
-	if got.ContextWindow != 128000 || got.MaxOutputTokens != 16384 {
-		t.Errorf("Models()[0] limits = %+v, want context=128000 maxOutput=16384", got)
-	}
-	if got.ToolCalling == nil || !*got.ToolCalling {
-		t.Errorf("Models()[0].ToolCalling = %v, want true", got.ToolCalling)
 	}
 }
 

@@ -62,6 +62,9 @@ func TestFilterCodexModels(t *testing.T) {
 	if got[0].ContextWindow != 272000 {
 		t.Errorf("context window = %d, want 272000", got[0].ContextWindow)
 	}
+	if !got[0].ProviderReported {
+		t.Error("catalog window must be marked provider-reported so it can clamp a preset")
+	}
 }
 
 func TestFilterCodexModelsExcludesUnsupportedInAPI(t *testing.T) {
@@ -99,6 +102,9 @@ func TestFilterCodexModelsFallsBackToMaxContextWindow(t *testing.T) {
 	got := filterCodexModels(entries)
 	if got[0].ContextWindow != 872000 {
 		t.Fatalf("context window = %d, want the max fallback 872000", got[0].ContextWindow)
+	}
+	if !got[0].ProviderReported {
+		t.Error("max-context fallback must still count as provider-reported")
 	}
 }
 

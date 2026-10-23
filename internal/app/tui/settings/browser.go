@@ -26,17 +26,10 @@ import (
 	"marshal/internal/strutil"
 )
 
-// probeOnlyLimits is passed to provider.NewFromConfig for capability
-// probing; limit-table discovery already happened during model-list probe
-// and must not block the TUI while the confirmation screen is opening.
-const probeOnlyLimits = false
-
 // probeProviderFor builds a provider client for capability probing only.
-// Capability probing does not need the limit table (the bulk model probe
-// already populated it), so remote limit-table discovery is always
-// disabled to keep the confirmation screen responsive.
+// Capability probing does not need the model-list cache.
 func probeProviderFor(name string, pc config.ProviderConfig, dataDir string, thinkingBudgetMargin int, auth provider.AuthResolver) (provider.Provider, error) {
-	return provider.NewFromConfigWithAuth(name, pc, dataDir, probeOnlyLimits, thinkingBudgetMargin, "", auth)
+	return provider.NewFromConfigWithAuth(name, pc, dataDir, thinkingBudgetMargin, "", auth)
 }
 
 // BrowserOption customizes a BrowserPanel.
@@ -76,7 +69,7 @@ func WithAuthResolver(auth provider.AuthResolver) BrowserOption {
 // through the state means a rebuilt or cloned frame can never drift back to
 // the production adapter.
 func (s *state) probeCmd(fieldID, name string, pc config.ProviderConfig) tea.Cmd {
-	return probe.ProviderWithAuth(fieldID, name, pc, s.dataDir, s.cfg.Privacy.RemoteLimitDiscovery, s.cfg.Agent.ThinkingBudgetMargin, s.auth)
+	return probe.ProviderWithAuth(fieldID, name, pc, s.dataDir, s.cfg.Agent.ThinkingBudgetMargin, s.auth)
 }
 
 // BrowserPanel is the docked settings browser. It presents a filterable flat
@@ -537,14 +530,14 @@ func (b *BrowserPanel) closePicker() {
 // can't report anything beyond their bulk model list.
 func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 	b.cancelCapabilityProbe()
-	lim := presetflow.Resolve(b.reg.st.discovered[pending.ProviderName], pending.ModelID)
+	pc := b.reg.st.cfg.Providers[pending.ProviderName]
+	lim := presetflow.Resolve(b.reg.st.discovered[pending.ProviderName], pending.ModelID, probe.IsLocalhost(pc.BaseURL))
 	if preset, ok := findPresetFor(b.reg.st, pending.ProviderName, pending.ModelID); ok {
 		lim = lim.WithPreset(preset.ContextWindow, preset.MaxOutputTokens)
 	}
 	b.confirm = presetflow.NewConfirmState(lim)
 	b.confirmTarget = &pending
 
-	pc := b.reg.st.cfg.Providers[pending.ProviderName]
 	// Capability probing only needs the provider client. Limit-table discovery
 	// already happened during model-list discovery and must not block the TUI
 	// while this confirmation screen is opening.

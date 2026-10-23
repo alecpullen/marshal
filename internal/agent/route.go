@@ -3,16 +3,13 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/interaction"
-	"marshal/internal/llm/catalog"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/provider"
-	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/retrieval"
@@ -133,6 +130,10 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 			Source:   "route",
 		})
 		r.State.SetActiveRoute(session.RouteInfo{})
+		// The error notice replaced any clamp banner. Clearing the key makes
+		// the next successful turn re-banner the clamp instead of assuming the
+		// user still sees it.
+		r.clampNoticeKey = ""
 		return turnProvider, turnModel, routing.Route{}
 	}
 	if resolvedProvider != nil {
@@ -160,17 +161,39 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 		Active:           true,
 	})
 	// F12: resolve the model's context window, preferring explicit config on
-	// the preset, then the fetched limits table, then the curated local
-	// catalog. The window is recorded on the state and consumed by the per-turn
-	// effectiveTurnThreshold call below — resolveRoute no longer mutates
-	// r.MaxTurnContextTokens, so one small-model turn cannot poison later
-	// big-model turns.
-	window, maxOut := r.resolveModelLimits(route.Preset)
+	// the preset, then the documented default pair for the preset's locality.
+	// A provider-reported probe may lower it, never raise it. The window is
+	// recorded on the state and consumed by the per-turn effectiveTurnThreshold
+	// call below — resolveRoute no longer mutates r.MaxTurnContextTokens, so
+	// one small-model turn cannot poison later big-model turns.
+	lim := r.resolveModelLimits(route.Preset)
+	window, maxOut := lim.Window, lim.MaxOutput
 	// Bound the per-turn local (carried by the caller) so the state
 	// continues to reflect the known window for dashboards and rollovers.
 	route.Window = window
 	route.MaxOutput = maxOut
 	r.State.SetTurnContextWindow(window)
+
+	if key, message, ok := clampNoticeFor(route.Preset, lim); ok {
+		if key != r.clampNoticeKey {
+			r.clampNoticeKey = key
+			r.State.SetNotice(session.Notice{
+				Category: session.NoticeProvider,
+				Severity: session.SeverityWarn,
+				Message:  message,
+				Hint:     "Set context_window or max_output_tokens on the preset to match, or raise agent.max_turn_context_tokens to cap the threshold separately.",
+				Source:   "route-limits",
+			})
+		}
+	} else if r.clampNoticeKey != "" {
+		// The route no longer clamps (or no longer lowers an explicit
+		// declaration). Clear only our banner; a provider error that replaced
+		// it must survive.
+		r.clampNoticeKey = ""
+		if n, ok := r.State.Notice(); ok && n.Source == "route-limits" {
+			r.State.DismissNotice()
+		}
+	}
 
 	// Rebudget the pack now that the window is known. Explicit per-role
 	// config still wins; otherwise the budget scales with the model
@@ -195,48 +218,144 @@ func (r *Runner) resolveRoute(ctx context.Context, task *Task) (provider.Provide
 	return turnProvider, turnModel, route
 }
 
-// ResolveModelLimits resolves a preset's context window and max output tokens.
-// Each field falls back independently: explicit config always wins; then the
-// fetched limits table, which matches across provider naming variance; then
-// the curated local catalog, which returns conservative defaults for unknown
-// models. A zero return is only possible when the preset's model ID is empty;
-// in that case the caller keeps its configured budget rather than guessing.
+// clampNoticeFor builds the banner for a provider clamp that lowered a value
+// the preset explicitly declared. It returns a stable key so resolveRoute
+// re-notices when the clamp changes but never re-stamps an unchanged one.
 //
-// logger is threaded through to catalog.Lookup so the "unknown model" warning
-// lands in the log file rather than stderr; pass nil to suppress it.
-func ResolveModelLimits(preset routing.ModelPreset, table *limits.Table, logger *slog.Logger) (window, maxOutput int) {
-	window = preset.ContextWindow
-	maxOutput = preset.MaxOutputTokens
-
-	if table != nil {
-		if lim, kind := table.Lookup(preset.Provider, preset.Model); kind != limits.MatchNone {
-			if window == 0 {
-				window = lim.ContextWindow
-			}
-			if maxOutput == 0 {
-				maxOutput = lim.MaxOutputTokens
-			}
-		}
+// A clamp of a value the preset did not declare (a default pair that the
+// provider then corrected) is silent: there is no user declaration to report,
+// and the resolved value already reaches every consumer.
+func clampNoticeFor(preset routing.ModelPreset, lim *ModelLimits) (key, message string, ok bool) {
+	if lim == nil || !lim.Clamped || lim.ClampSource != "probe" {
+		return "", "", false
 	}
-
-	if window == 0 || maxOutput == 0 {
-		catWindow, catOutput := catalog.Lookup(preset.Model, logger)
-		if window == 0 {
-			window = catWindow
-		}
-		if maxOutput == 0 {
-			maxOutput = catOutput
-		}
+	windowClamped := lim.PresetWindow > 0 && lim.ProbeWindow > 0 && lim.Window < lim.PresetWindow
+	outputClamped := lim.PresetOutput > 0 && lim.ProbeOutput > 0 && lim.MaxOutput < lim.PresetOutput
+	if !windowClamped && !outputClamped {
+		return "", "", false
 	}
-	return window, maxOutput
+	key = fmt.Sprintf("%s|%s|%s|%d|%d|%d|%d",
+		preset.Name, preset.Provider, preset.Model,
+		lim.PresetWindow, lim.PresetOutput, lim.Window, lim.MaxOutput)
+	// A value equal to the documented locality default came from Marshal's
+	// seeding (Materialize, switchModelPreset, or a config migration), not
+	// from a user decision. Saying "declares" would blame the user for a
+	// number this program wrote.
+	defCtx, defOut := routing.DefaultModelLimits(preset.LocalOnly)
+	windowPhrase := fmt.Sprintf("declares a %d-token context window", lim.PresetWindow)
+	if lim.PresetWindow == defCtx {
+		windowPhrase = fmt.Sprintf("uses Marshal's default %d-token context window", lim.PresetWindow)
+	}
+	outputPhrase := fmt.Sprintf("declares %d output tokens", lim.PresetOutput)
+	if lim.PresetOutput == defOut {
+		outputPhrase = fmt.Sprintf("uses Marshal's default %d output tokens", lim.PresetOutput)
+	}
+	switch {
+	case windowClamped && outputClamped:
+		message = fmt.Sprintf(
+			"Preset %s %s and %s, but the provider reports %d and %d. Using %d and %d.",
+			preset.Name, windowPhrase, outputPhrase, lim.ProbeWindow, lim.ProbeOutput, lim.Window, lim.MaxOutput)
+	case windowClamped:
+		message = fmt.Sprintf(
+			"Preset %s %s, but the provider reports %d. Using %d.",
+			preset.Name, windowPhrase, lim.ProbeWindow, lim.Window)
+	default:
+		message = fmt.Sprintf(
+			"Preset %s %s, but the provider reports %d. Using %d.",
+			preset.Name, outputPhrase, lim.ProbeOutput, lim.MaxOutput)
+	}
+	return key, message, true
 }
 
-func (r *Runner) resolveModelLimits(preset routing.ModelPreset) (window, maxOutput int) {
-	var logger *slog.Logger
-	if r.State != nil {
-		logger = r.State.Logger()
+// ModelProbe is the provider's own reported limits for one model, as
+// recorded by the provider's /models probe. OK=false means the probe is
+// absent, stale, or hash-invalidated — never clamp on a guess.
+type ModelProbe struct {
+	Window, MaxOutput int
+	OK                bool
+}
+
+// ModelLimits is a preset's resolved budget plus the provenance a caller
+// needs to report a clamp. Probe* is 0 when the provider had nothing to say.
+type ModelLimits struct {
+	Window, MaxOutput          int // in use
+	PresetWindow, PresetOutput int // as declared in config
+	ProbeWindow, ProbeOutput   int // provider-reported, 0 = unknown
+	Clamped                    bool
+	ClampSource                string // "", "probe"
+}
+
+// ResolveModelLimits resolves a preset's context window and max output tokens.
+// Each field falls back independently: an explicit preset value always wins;
+// otherwise Marshal's documented default pair applies (1M context / 128K output
+// for remote models, 8K / 4K for local ones). Both figures are therefore
+// always nonzero; the zero-window handling downstream belongs to the
+// resolver-error path, not to this function.
+//
+// After resolution, a known provider-reported limit (probe) clamps the result
+// down. The clamp only ever lowers: a deliberately conservative preset is never
+// expanded. The probe is the only clamp source, because it is a statement by
+// the party that enforces the limit; when a provider reports nothing, an
+// oversize prompt is caught by the runner's context-overflow recovery instead.
+func ResolveModelLimits(preset routing.ModelPreset, probe ModelProbe) *ModelLimits {
+	lim := &ModelLimits{
+		Window:       preset.ContextWindow,
+		MaxOutput:    preset.MaxOutputTokens,
+		PresetWindow: preset.ContextWindow,
+		PresetOutput: preset.MaxOutputTokens,
 	}
-	return ResolveModelLimits(preset, r.LimitsTable, logger)
+
+	if lim.Window == 0 || lim.MaxOutput == 0 {
+		defWindow, defOutput := routing.DefaultModelLimits(preset.LocalOnly)
+		if lim.Window == 0 {
+			lim.Window = defWindow
+		}
+		if lim.MaxOutput == 0 {
+			lim.MaxOutput = defOutput
+		}
+	}
+
+	if probe.OK {
+		lim.ProbeWindow = probe.Window
+		lim.ProbeOutput = probe.MaxOutput
+	}
+
+	// Post-pass clamp. Only a provider-reported probe may override an
+	// explicit preset. When the provider does not report limits at all, an
+	// oversize prompt is caught by the runner's context-overflow recovery
+	// instead.
+	if probe.OK && probe.Window > 0 {
+		if clampField(&lim.Window, probe.Window) {
+			lim.Clamped, lim.ClampSource = true, "probe"
+		}
+	}
+	if probe.OK && probe.MaxOutput > 0 {
+		if clampField(&lim.MaxOutput, probe.MaxOutput) {
+			lim.Clamped = true
+			if lim.ClampSource == "" {
+				lim.ClampSource = "probe"
+			}
+		}
+	}
+	return lim
+}
+
+// clampField lowers *cur to limit when limit is known and smaller. It
+// reports whether it clamped.
+func clampField(cur *int, limit int) bool {
+	if limit > 0 && *cur > limit {
+		*cur = limit
+		return true
+	}
+	return false
+}
+
+func (r *Runner) resolveModelLimits(preset routing.ModelPreset) *ModelLimits {
+	var probe ModelProbe
+	if r.ModelProbe != nil {
+		probe = r.ModelProbe(preset.Provider, preset.Model)
+	}
+	return ResolveModelLimits(preset, probe)
 }
 
 // mergeMemories injects the project's current durable memories into the
@@ -425,7 +544,8 @@ func (r *Runner) setContextPackMessage(messages []schema.ChatMessage, pack conte
 // tail. The tail is rebuilt for every request and never stored in the
 // runner's message slice, so it cannot leak into compaction, pruning,
 // archives or history replay, and a retry never stacks a second copy.
-// The input is not modified.
+// The input is not modified. Used excludes the tail itself, so the budget
+// line is not recursive.
 //
 // The live interaction tuple is always part of the tail, even when the
 // context pack has no volatile sections: a mode change mid-turn must reach
@@ -435,7 +555,12 @@ func (r *Runner) withWorkingState(messages []schema.ChatMessage) []schema.ChatMe
 		return messages
 	}
 	extra := make([]schema.ChatMessage, 0, 2)
-	if msg, ok := BuildWorkingStateMessage(r.State.ContextPack()); ok {
+	window, threshold, _ := r.State.TurnBudget()
+	if msg, ok := BuildWorkingStateMessage(r.State.ContextPack(), WorkingStateBudget{
+		Used:      r.calibratedEstimate(messages),
+		Window:    window,
+		Threshold: threshold,
+	}); ok {
 		extra = append(extra, msg)
 	}
 	extra = append(extra, BuildInteractionStateMessage(r.State.InteractionState()))

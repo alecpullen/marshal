@@ -94,9 +94,9 @@ TUI (rendering only)
 
 Models
   internal/llm/            provider abstraction (OpenAI-compatible, Anthropic, Ollama-native, Codex)
-  internal/llm/provider/{limits,modelcache,oauthworker}   limit discovery, model-list cache, token refresh
-  internal/llm/routing/    route resolver, model presets, role profiles
-  internal/llm/{schema,streaming,embedding,pricing,catalog}
+  internal/llm/provider/{modelcache,oauthworker}   model-list cache, token refresh
+  internal/llm/routing/    route resolver, model presets, role profiles, default limits
+  internal/llm/{schema,streaming,embedding,pricing}
 
 Repo intelligence
   internal/repo/           scanner, hashing, gitignore, repo map/card, tree-sitter symbols

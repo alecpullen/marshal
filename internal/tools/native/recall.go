@@ -45,7 +45,15 @@ func searchArchivedTurns(database *db.DB, query string, limit int) (registry.Too
 		return registry.ToolResult{}, fmt.Errorf("search failed: %w", err)
 	}
 	if len(hits) == 0 {
-		return registry.ToolResult{Content: "No matching archived turns found."}, nil
+		// Name the scope on the empty result. The search covers only archived
+		// (rolled-over) generations, so a query about the current session's own
+		// work legitimately finds nothing — and a bare "no matches" reads as
+		// "the phrase is absent" rather than "this corpus was never searched".
+		// Recorded friction: four sessions queried their own recent turns and
+		// concluded the archive had not ingested the session.
+		return registry.ToolResult{Content: "No matching archived turns found. " +
+			"This search covers only archived (rolled-over) generations, not the current session's live turns. " +
+			"For the live transcript, call transcript_read without a query; for one turn, pass turn_seq."}, nil
 	}
 	var b strings.Builder
 	for i, hit := range hits {

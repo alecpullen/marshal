@@ -300,7 +300,7 @@ func TestChatOnceDrainEndsWhenProviderHonorsCancel(t *testing.T) {
 	r := newThinkLoopRunner(t, &logBuf, p)
 	// Deliberately longer than the watchdog below, so a missing cancel()
 	// surfaces as a hang rather than being masked by the request deadline.
-	r.ChatTimeout = 10 * time.Second
+	r.RequestCeiling = 10 * time.Second
 
 	type outcome struct {
 		res chatResult

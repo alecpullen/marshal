@@ -26,6 +26,18 @@ import (
 // Runner overrides it.
 const defaultReconnectMaxWait = 2 * time.Minute
 
+// errIdleTimeout is the cancel cause when the watchdog decides the stream
+// has gone silent. It is deliberately distinct from the ceiling so the
+// caller can tell "nothing arrived" (a connectivity signal) from "too much
+// arrived for too long" (a model signal).
+var errIdleTimeout = errors.New("stream idle timeout")
+
+// errRequestCeiling is the cancel cause when a request exceeds its total
+// wall-clock budget. It is never retried and never treated as a
+// connectivity failure: resending the same request reproduces the same
+// overrun.
+var errRequestCeiling = errors.New("request ceiling exceeded")
+
 // reconnectBackoff returns the delay before the i-th reconnect attempt
 // (0-based): 1s, 2s, 5s, then 10s capped. Long enough to ride out a
 // network blip, short enough that the first retry lands while the
@@ -142,8 +154,10 @@ func (r *Runner) chatWithRetryNoNativeTools(ctx context.Context, p provider.Prov
 	}
 	// Failures that say nothing about tool_choice return unchanged, with no
 	// retry and no latch: cancellation, a network outage that outlasted the
-	// reconnect wait (retrying would start a second wait), and a thinking loop.
-	if !sentTools || isCancellation(err) || isNetworkError(err) || errors.Is(err, errThinkingLoop) || (err == nil && len(res.ToolCalls) == 0) {
+	// reconnect wait (retrying would start a second wait), a thinking loop,
+	// and a prompt the provider rejected as too long — resending that
+	// identical wire cannot succeed, and the runner compacts instead.
+	if !sentTools || isCancellation(err) || isNetworkError(err) || errors.Is(err, errThinkingLoop) || errors.Is(err, errContextOverflow) || (err == nil && len(res.ToolCalls) == 0) {
 		return res, err
 	}
 	// The provider failed the request, or the model called a tool
@@ -187,6 +201,13 @@ func (r *Runner) chatRetryLadder(ctx context.Context, p provider.Provider, model
 	var best chatResult
 	for i := 0; i < attempts; i++ {
 		res, err := r.chatOnce(ctx, p, model, messages, responseFormat, includeNativeTools)
+		// Classify here, at the one place every chat call funnels through, so
+		// no caller has to re-derive "was this an oversize prompt?" from a
+		// raw provider body. Classification is idempotent and preserves the
+		// *provider.ProviderError in the chain, so the retry and latch
+		// decisions below still see the 4xx.
+		err = classifyContextOverflow(err)
+		err = classifyOutputTokenLimit(err)
 		if err == nil {
 			return res, nil
 		}
@@ -360,6 +381,8 @@ func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, m
 	if r.State != nil {
 		r.State.Logger().Warn("provider connection lost; waiting for connectivity", "error", firstErr, "max_wait", r.effectiveReconnectMaxWait())
 	}
+	var res chatResult
+	err := firstErr
 	for attempt := 0; ; attempt++ {
 		delay := reconnectBackoff(attempt)
 		if r.State != nil {
@@ -379,7 +402,22 @@ func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, m
 			}
 			return *best, err
 		}
-		res, err := r.chatOnce(ctx, p, model, messages, responseFormat, includeNativeTools)
+		// Check the budget before spending an attempt, not after: a single
+		// attempt can consume the whole idle timeout, so a post-attempt check
+		// lets a 2-minute cap become five minutes (observed: waited=5m1s
+		// against max_wait=2m0s). Bounding the attempt by what remains makes
+		// the cap the real ceiling on the total wait.
+		remaining := r.effectiveReconnectMaxWait() - r.Now().Sub(started)
+		if remaining <= 0 {
+			if r.State != nil {
+				r.State.Logger().Warn("provider connection did not recover; failing turn", "waited", r.Now().Sub(started).Round(time.Second), "error", err)
+			}
+			return *best, fmt.Errorf("no stream activity from %s for %s; reconnect budget of %s exhausted: %w",
+				model, r.effectiveIdleTimeout(), r.effectiveReconnectMaxWait(), err)
+		}
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, remaining)
+		res, err = r.chatOnce(attemptCtx, p, model, messages, responseFormat, includeNativeTools)
+		cancelAttempt()
 		if err == nil {
 			// chatOnce reports an interrupted attempt as ErrSendNow, never as
 			// a success, so a nil error here was accepted by the turn before
@@ -400,12 +438,6 @@ func (r *Runner) waitForConnectivity(ctx context.Context, p provider.Provider, m
 			// DeadlineExceeded here means a fresh per-request timeout fired
 			// during this retry — still down, so keep waiting.
 			return res, err
-		}
-		if r.Now().Sub(started)+reconnectBackoff(attempt+1) > r.effectiveReconnectMaxWait() {
-			if r.State != nil {
-				r.State.Logger().Warn("provider connection did not recover; failing turn", "waited", r.Now().Sub(started).Round(time.Second), "error", err)
-			}
-			return *best, err
 		}
 	}
 }
@@ -484,6 +516,9 @@ func isNetworkError(err error) bool {
 // cancel). A DeadlineExceeded with a done parent ctx is a turn/esc cancel
 // and is not reconnect-eligible.
 func isReconnectEligible(ctx context.Context, err error) bool {
+	if errors.Is(err, errRequestCeiling) {
+		return false
+	}
 	if isNetworkError(err) {
 		return true
 	}
@@ -504,7 +539,7 @@ func isRetryableChatError(err error) bool {
 	if errors.Is(err, errThinkingLoop) {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errRequestCeiling) {
 		return false
 	}
 	var pe *provider.ProviderError
@@ -516,16 +551,173 @@ func isRetryableChatError(err error) bool {
 	return true
 }
 
-// effectiveChatTimeout returns the per-request timeout for the model call
-// itself, falling back to a sensible default if r.ChatTimeout is zero. It
-// is deliberately independent of approvals and questions, which carry no
-// wall-clock timeout — a runner must not have its chat completion silently
-// truncated by a separate approval ceiling.
-func (r *Runner) effectiveChatTimeout() time.Duration {
-	if r.ChatTimeout > 0 {
-		return r.ChatTimeout
+// errContextOverflow marks a provider rejection caused by an oversized
+// prompt, so the runner can compact and retry instead of failing the turn.
+var errContextOverflow = errors.New("agent: provider rejected the prompt as too long")
+
+// contextOverflowError carries a classified oversize-prompt rejection. It
+// unwraps to BOTH the sentinel and the original provider error. The sentinel
+// is what the runner matches on to take the recovery path; keeping the
+// *provider.ProviderError in the chain is what preserves
+// isRetryableChatError's 4xx verdict, so the retry ladder still refuses to
+// resend an oversized prompt. Dropping it would make the classified error
+// look retryable and resend the identical too-large request.
+type contextOverflowError struct {
+	detail string
+	err    error
+}
+
+func (e *contextOverflowError) Error() string { return e.detail }
+func (e *contextOverflowError) Unwrap() []error {
+	return []error{errContextOverflow, e.err}
+}
+
+// contextOverflowPatterns are the provider wordings that mean "prompt too
+// large". Matching requires both a 400/413 status and one of these, so an
+// unrelated 400 is never misread as an overflow.
+var contextOverflowPatterns = []string{
+	"context_length_exceeded",
+	"maximum context length",
+	"too many tokens",
+	"prompt is too long",
+	"input is too long",
+}
+
+// classifyContextOverflow wraps err with errContextOverflow when it is a
+// provider 400/413 whose body matches a known oversize-prompt wording.
+// Any other error is returned unchanged.
+func classifyContextOverflow(err error) error {
+	if err == nil {
+		return nil
 	}
-	return defaultChatTimeout
+	if errors.Is(err, errContextOverflow) {
+		return err
+	}
+	var pe *provider.ProviderError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	if pe.StatusCode != 400 && pe.StatusCode != 413 {
+		return err
+	}
+	body := strings.ToLower(pe.Body)
+	for _, p := range contextOverflowPatterns {
+		if strings.Contains(body, p) {
+			return &contextOverflowError{
+				detail: fmt.Sprintf("%s: %s", errContextOverflow, overflowFirstLine(pe.Body)),
+				err:    err,
+			}
+		}
+	}
+	return err
+}
+
+// outputTokenLimitPatterns are the provider wordings that mean "the requested
+// max_tokens/max_completion_tokens is larger than this model allows". Marshal
+// seeds remote presets with a 128K output cap, and some models accept far
+// less, so this rejection is expected rather than a defect — it needs a hint
+// naming the setting, not a bare 400.
+var outputTokenLimitPatterns = []string{
+	"max_tokens is too large",
+	"max_tokens too large",
+	"max_completion_tokens is too large",
+	"max_completion_tokens too large",
+	"maximum output tokens",
+	"output token limit",
+}
+
+// classifyOutputTokenLimit adds an actionable hint to a 400/413 that rejects
+// the request's output-token cap. The provider error stays in the chain, so
+// the retry ladder still sees a non-retryable 4xx and refuses to resend it.
+func classifyOutputTokenLimit(err error) error {
+	if err == nil || errors.Is(err, errContextOverflow) {
+		return err
+	}
+	var pe *provider.ProviderError
+	if !errors.As(err, &pe) {
+		return err
+	}
+	if pe.StatusCode != 400 && pe.StatusCode != 413 {
+		return err
+	}
+	body := strings.ToLower(pe.Body)
+	for _, p := range outputTokenLimitPatterns {
+		if strings.Contains(body, p) {
+			return fmt.Errorf("%w (lower max_output_tokens on the model preset, or clear it to use Marshal's default)", err)
+		}
+	}
+	return err
+}
+
+// overflowFirstLine returns the first line of s, bounded, for an error
+// message.
+func overflowFirstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
+}
+
+// classifyStreamError maps a stream failure onto the bound that caused it.
+// The adapter reports a cancelled body read as a generic stream error, so
+// the cause — not the error text — is what distinguishes silence from an
+// overrun. An outer deadline (the reconnect budget) falls through unchanged
+// and stays reconnect-eligible.
+func (r *Runner) classifyStreamError(ctx context.Context, model string, err error) error {
+	switch cause := context.Cause(ctx); {
+	case errors.Is(cause, errIdleTimeout):
+		return fmt.Errorf("read stream: %w", context.DeadlineExceeded)
+	case errors.Is(cause, errRequestCeiling):
+		return fmt.Errorf("%w: no completion from %s within %s (stream was active); raise agent.request_ceiling_seconds if this model legitimately needs longer",
+			errRequestCeiling, model, r.effectiveRequestCeiling())
+	}
+	return err
+}
+
+// classifyRequestError maps a failure to establish the request — before any
+// stream event — onto the bound that caused it. The adapter runs the HTTP
+// request inside Chat, so an idle or ceiling abort there surfaces as a generic
+// transport error ("Post ...: context canceled") that the stream loop never
+// sees. Without this mapping the turn failed with a bare cancellation:
+// isRetryableChatError refuses it and isReconnectEligible does not recognise
+// it, so the ladder gave up instead of reconnecting. A caller cancellation
+// (Esc, turn cancel) carries no such cause and falls through unchanged.
+func (r *Runner) classifyRequestError(ctx context.Context, model string, err error) error {
+	switch cause := context.Cause(ctx); {
+	case errors.Is(cause, errIdleTimeout):
+		return fmt.Errorf("no response from %s within %s (no bytes before the first event): %w",
+			model, r.effectiveIdleTimeout(), context.DeadlineExceeded)
+	case errors.Is(cause, errRequestCeiling):
+		return fmt.Errorf("%w: no response from %s within %s; raise agent.request_ceiling_seconds if this model legitimately needs longer",
+			errRequestCeiling, model, r.effectiveRequestCeiling())
+	}
+	return err
+}
+
+// effectiveIdleTimeout returns how long a request may go without any
+// streamed bytes before it is treated as a stalled connection, falling back
+// to defaultIdleTimeout when IdleTimeout is zero.
+func (r *Runner) effectiveIdleTimeout() time.Duration {
+	if r.IdleTimeout > 0 {
+		return r.IdleTimeout
+	}
+	return defaultIdleTimeout
+}
+
+// effectiveRequestCeiling returns the total wall-clock bound for a single
+// request, falling back to defaultRequestCeiling when RequestCeiling is
+// zero. It is deliberately independent of approvals and questions, which
+// carry no wall-clock timeout — a runner must not have its chat completion
+// silently truncated by a separate approval ceiling.
+func (r *Runner) effectiveRequestCeiling() time.Duration {
+	if r.RequestCeiling > 0 {
+		return r.RequestCeiling
+	}
+	return defaultRequestCeiling
 }
 
 // effectiveReconnectMaxWait returns the reconnect cap to use, falling back
@@ -535,6 +727,43 @@ func (r *Runner) effectiveReconnectMaxWait() time.Duration {
 		return r.ReconnectMaxWait
 	}
 	return defaultReconnectMaxWait
+}
+
+// watchIdle cancels the attempt when no stream event has arrived for
+// effectiveIdleTimeout. It samples a stamp the stream loop updates on every
+// event, so any delta — content, reasoning, or tool-call — counts as
+// activity. It exits when the attempt ends or the context is done.
+func (r *Runner) watchIdle(ctx context.Context, cancel context.CancelCauseFunc, lastEvent *atomic.Int64, done <-chan struct{}) {
+	idle := r.effectiveIdleTimeout()
+	ticker := time.NewTicker(idleCheckInterval(idle))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if r.Now().Sub(time.Unix(0, lastEvent.Load())) >= idle {
+				cancel(errIdleTimeout)
+				return
+			}
+		}
+	}
+}
+
+// idleCheckInterval samples often enough that the idle bound fires within a
+// fraction of its threshold, and never faster than 10ms so a short test
+// timeout does not spin.
+func idleCheckInterval(idle time.Duration) time.Duration {
+	d := idle / 4
+	if d > time.Second {
+		d = time.Second
+	}
+	if d < 10*time.Millisecond {
+		d = 10 * time.Millisecond
+	}
+	return d
 }
 
 // chatOnce runs one request, and — when that request was aborted because the
@@ -569,9 +798,17 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	// request-inspection snapshot below records it as sent.
 	messages = r.withWorkingState(messages)
 
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, r.effectiveChatTimeout())
-	defer cancel()
+	// Two independent bounds. The idle cause fires when the stream goes
+	// silent; the ceiling fires regardless of activity. Both carry an
+	// explicit cause so context.Cause distinguishes them from an outer
+	// deadline — notably the reconnect budget waitForConnectivity places
+	// around each attempt.
+	ctx, cancelIdle := context.WithCancelCause(ctx)
+	defer cancelIdle(nil)
+	ctx, cancelCeiling := context.WithCancelCause(ctx)
+	defer cancelCeiling(nil)
+	ceilingTimer := time.AfterFunc(r.effectiveRequestCeiling(), func() { cancelCeiling(errRequestCeiling) })
+	defer ceilingTimer.Stop()
 
 	// Admission: an operation the user already interrupted must not reach the
 	// provider at all. The intent is visible before the interruption worker
@@ -657,8 +894,23 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	// that lands after this leaves the entry submitted, so the retry writes
 	// nothing twice.
 	r.commitSteeringSubmission()
+	// The watchdog starts before the request goes out so it covers
+	// time-to-first-byte, not only streaming. The stream loop stamps
+	// lastEvent on every event, so any delta counts as activity.
+	var lastEvent atomic.Int64
+	lastEvent.Store(r.Now().UnixNano())
+	watchdogDone := make(chan struct{})
+	defer close(watchdogDone)
+	go r.watchIdle(ctx, cancelIdle, &lastEvent, watchdogDone)
 	events, err := p.Chat(ctx, req)
 	if err != nil {
+		// The adapter runs the HTTP request inside Chat, so a bound that fires
+		// before the first event (time-to-first-byte, or the ceiling) surfaces
+		// here as a generic transport error — "Post ...: context canceled" —
+		// and never reaches the stream loop's classification. Map the cause
+		// here too, or the turn dies with a bare cancellation that the retry
+		// ladder refuses to retry and the reconnect wait does not recognise.
+		err = r.classifyRequestError(ctx, model, err)
 		r.State.SetRequestInspectionOutcome(attemptID, session.InspectionOutcome{
 			Status: inspectionStatusFor(ctx, err),
 			Err:    err.Error(),
@@ -696,6 +948,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 	// executable to the turn.
 	steeringAbort := false
 	for event := range events {
+		lastEvent.Store(r.Now().UnixNano())
 		if loopSnippet != "" {
 			// Drain rather than break. No backend selects on ctx.Done() in
 			// its stream loop, so the channel closes transitively instead:
@@ -742,8 +995,10 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 						// not reach the stream loop directly — see the drain
 						// comment below for the real chain — but the ctx-bound
 						// request body fails on the next read, which closes the
-						// channel and ends the range.
-						cancel()
+						// channel and ends the range. The cause is the loop
+						// sentinel so the post-loop check cannot mistake this for
+						// an idle or ceiling abort.
+						cancelIdle(errThinkingLoop)
 					}
 				}
 				// Update the status label only at newline boundaries: a
@@ -774,7 +1029,7 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			// SSE chunk aborts the stream (openai_compatible.go:338), and the
 			// deltas before it can amount to a complete, parseable action.
 			// Discarding them turns a recoverable hiccup into a failed turn.
-			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, event.Err
+			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, r.classifyStreamError(ctx, model, event.Err)
 
 		case schema.ChatEventDone:
 			// A completion that arrives after the user's interruption is the
@@ -812,6 +1067,14 @@ func (r *Runner) chatOnceAttempt(ctx context.Context, p provider.Provider, model
 			Err:    errThinkingLoop.Error(),
 		})
 		return chatResult{}, fmt.Errorf("%w: %q", errThinkingLoop, truncateForLog(loopSnippet))
+	}
+	// A bound fired and the channel closed without an error event: report
+	// which one rather than a clean completion. Steering is excluded so a
+	// user interruption is never relabelled.
+	if !steeringAbort && !errors.Is(session.CheckSteering(ctx), session.ErrSendNow) {
+		if cause := context.Cause(ctx); errors.Is(cause, errIdleTimeout) || errors.Is(cause, errRequestCeiling) {
+			return chatResult{Text: sb.String(), ToolCalls: toolCalls, FinishReason: finishReason}, r.classifyStreamError(ctx, model, cause)
+		}
 	}
 	// The stream ended: completion as far as the adapter is concerned, not an
 	// acknowledgement from a server. A cancelled context still wins, so a

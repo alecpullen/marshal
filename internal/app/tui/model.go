@@ -7074,7 +7074,7 @@ func (m *Model) probeProviders(names []string) tea.Cmd {
 		if !probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed {
 			continue
 		}
-		cmds = append(cmds, probe.ProviderWithAuth("models", n, pc, m.modelCacheDir, m.state.Config.Privacy.RemoteLimitDiscovery, m.state.Config.Agent.ThinkingBudgetMargin, m.auth))
+		cmds = append(cmds, probe.ProviderWithAuth("models", n, pc, m.modelCacheDir, m.state.Config.Agent.ThinkingBudgetMargin, m.auth))
 	}
 	return tea.Batch(cmds...)
 }
@@ -7575,11 +7575,18 @@ func (m *Model) switchModelPreset(presetName string) {
 		if newCfg.Models.Presets == nil {
 			newCfg.Models.Presets = map[string]routing.ModelPreset{}
 		}
+		local := routing.IsLocalProvider(newCfg.Providers[provider].BaseURL)
+		// Seed the same documented pair presetflow.Materialize persists, so
+		// a preset created here and one created by /connect carry identical
+		// explicit figures instead of one relying on resolution-time defaults.
+		defCtx, defOut := routing.DefaultModelLimits(local)
 		newCfg.Models.Presets[presetName] = routing.ModelPreset{
-			Name:      presetName,
-			Provider:  provider,
-			Model:     model,
-			LocalOnly: routing.IsLocalProvider(newCfg.Providers[provider].BaseURL),
+			Name:            presetName,
+			Provider:        provider,
+			Model:           model,
+			ContextWindow:   defCtx,
+			MaxOutputTokens: defOut,
+			LocalOnly:       local,
 		}
 		presetCreated = true
 	}

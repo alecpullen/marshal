@@ -1,5 +1,5 @@
 import type { AuditEvent } from './audit'
-import { accessPatchBody, type AccessPatch, type AccessStateWire } from './interaction'
+import { accessPatchBody, type AccessPatch, type AccessStateWire, type ModeAccessChoice } from './interaction'
 
 const TOKEN_KEY = 'marshal:token'
 
@@ -526,6 +526,11 @@ export async function patchAccess(sessionId: string, patch: AccessPatch): Promis
 export interface Decision {
   approved: boolean
   edited?: string
+  /**
+   * The typed capability choice. It carries the presented identity and
+   * committed tuple; the agent validates them before applying anything.
+   */
+  modeAccess?: ModeAccessChoice
 }
 
 export async function resolvePermission(toolCallId: string, decision: Decision): Promise<void> {

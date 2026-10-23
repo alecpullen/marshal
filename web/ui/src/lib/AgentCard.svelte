@@ -2,6 +2,7 @@
   import Card from './ui/Card.svelte'
   import Badge from './ui/Badge.svelte'
   import { describePending, type AgentRow } from './fleet'
+  import { accessLabel } from './interaction.js'
 
   let { agent, onOpen }: { agent: AgentRow; onOpen: (id: string) => void } = $props()
 
@@ -46,7 +47,7 @@
     {/if}
 
     <div class="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
-      {#if agent.mode}<span>mode {agent.mode}</span>{/if}
+      {#if agent.access}<span>{accessLabel(agent.access)}</span>{/if}
       {#if agent.isolated && agent.branch}<span class="font-mono">{agent.branch}</span>{/if}
       {#if agent.contextPct > 0}<span>ctx {agent.contextPct}%</span>{/if}
       {#if agent.changedFiles > 0}<span>{agent.changedFiles} changed</span>{/if}

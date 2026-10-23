@@ -241,25 +241,6 @@ func unescapeLit(s string) string {
 	return b.String()
 }
 
-// stageLiteralArgv returns the stage's argv with argv0 and each argument
-// decoded to its literal value where the parser can prove one. The floor uses
-// this so quoting and escaping cannot hide a command: the printed form of
-// `sh -c 'sh -c '\”git push'\”'` is not valid shell on its own, but its
-// decoded literal is.
-//
-// argv0 is decoded too, and that matters: the printer re-emits quoting, so a
-// quoted wrapper name arrives as the literal string `'sudo'` and
-// lastSegment("'sudo'") is not "sudo". Decoding here is what stops
-// `'sudo' id`, `"sudo" id`, `\sudo id` and `s'u'd'o' id` from evading every
-// argv0-based check in this file. A word that expands (a variable, a command
-// substitution) decodes to "" and falls back to the printed form; such a
-// stage is flagged dynamic and denied separately.
-// isShellCommandTool reports whether toolName runs its "command" argument
-// through a shell.
-func isShellCommandTool(toolName string) bool {
-	return toolName == "shell.run" || toolName == "test.run" || toolName == "shell.sudo"
-}
-
 // checkCommandControls rejects a command holding a character a terminal or
 // a bidi-aware renderer acts on instead of showing (strutil.IsDisplayControl).
 // A shell never needs the raw byte: $'\e' and printf '\033' produce it at
@@ -278,12 +259,10 @@ func normalizeCommand(s string) string {
 	return strings.Join(words, " ")
 }
 
-// isGitPushFloor reports whether cmd is a `git push` invocation (any
-// variant: --force, -f, --tags, --force-with-lease, with a remote, etc.).
-// It is the non-bypassable floor: no mode downgrades a git-push Confirm.
-// It uses the AST parser to distinguish `git push` from `git pushd` and
-// to handle pipes/subshells; on parse failure it falls back to a trimmed
-// prefix check.
+// matchRule reports whether command matches a plain rule. An explicit regex
+// (wrapped in slashes) keeps its semantics; otherwise the whole normalized
+// command must equal the normalized rule, so a prefix never inherits a match
+// and `git push` does not cover `git push --force`.
 func matchRule(command, prefix string) bool {
 	if regexMatch(prefix, command) {
 		return true
@@ -302,18 +281,6 @@ func regexMatch(pattern, subject string) bool {
 		}
 	}
 	return false
-}
-
-func matchPattern(pattern, command string) bool {
-	if regexMatch(pattern, command) {
-		return true
-	}
-	command = normalizeCommand(command)
-	pattern = normalizeCommand(pattern)
-	if !strings.Contains(pattern, "*") {
-		return strings.Contains(command, pattern)
-	}
-	return globMatch(pattern, command)
 }
 
 func matchMCPPolicy(pattern, toolName string) bool {

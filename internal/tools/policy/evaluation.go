@@ -178,17 +178,20 @@ func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionR
 		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: append(reasons, PolicyReason{Code: ReasonPublishing, Message: match + " requires approval (configured floor)"})}
 	}
 
-	// Explicit F4 rules are collected before any allow so a later allow cannot
-	// mask them. A deny rule refuses the operation outright; an ask rule
-	// requires approval.
+	// An explicit F4 deny refuses the operation outright and must do so before
+	// any gate that could ask instead: a rule that refuses a destructive
+	// command must not turn into an approval prompt. The allow/ask half of F4
+	// is applied after the destructive gate, so a user allow rule can never
+	// preauthorize destruction.
 	subjects := subjectsForTool(in.ToolName, in.Args, normalizeCommand(in.Shell.Input.Command))
+	var f4Decision Decision
+	var f4Matched bool
 	if len(subjects) > 0 {
 		if decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(in.ToolName), subjects); matched {
-			code := ReasonExplicitConfirm
 			if decision == DecisionDeny {
-				code = ReasonExplicitDeny
+				return Evaluation{Decision: DecisionDeny, Reasons: append(reasons, PolicyReason{Code: ReasonExplicitDeny, Message: "resolved by permission rule"})}
 			}
-			return Evaluation{Decision: decision, Reasons: append(reasons, PolicyReason{Code: code, Message: "resolved by permission rule"})}
+			f4Decision, f4Matched = decision, true
 		}
 	}
 
@@ -213,6 +216,11 @@ func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionR
 			ev.Reasons = append(ev.Reasons, PolicyReason{Code: ReasonRequiresSystem, Message: "destructive operations outside the workspace require System"})
 		}
 		return ev
+	}
+
+	// The allow/ask half of F4, now that the destructive gate has had its say.
+	if f4Matched {
+		return Evaluation{Decision: f4Decision, Reasons: append(reasons, PolicyReason{Code: ReasonExplicitConfirm, Message: "resolved by permission rule"})}
 	}
 
 	// Explicit session approvals are authored rules: they win over the

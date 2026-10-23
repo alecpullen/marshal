@@ -94,6 +94,16 @@ func (f *Fleet) Submit(ctx context.Context, req SpawnRequest) (SubmitResult, err
 	// background timer.
 	f.ws.SweepExpired(time.Now().UTC())
 
+	// Validate the requested starting tuple before anything is queued or
+	// spawned, and canonicalize it in place: a spelling the bridge cannot read
+	// must fail the submission where the client sends it, not surface later
+	// when a pending entry is approved.
+	mode, auto, _, err := canonicalModeTuple(req.Mode, req.Auto)
+	if err != nil {
+		return SubmitResult{}, err
+	}
+	req.Mode, req.Auto = mode, auto
+
 	if req.Origin != OriginUI && !client.Autonomous {
 		now := time.Now().UTC()
 		p := PendingSpawn{

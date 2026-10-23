@@ -32,6 +32,9 @@ func TestInteractionPolicyMatrix(t *testing.T) {
 		want  Decision
 	}{
 		{"ask read", interaction.State{Mode: interaction.ModeAsk, Revision: 1}, "cat x", DecisionAllow},
+		{"ask single-file removal", interaction.State{Mode: interaction.ModeAsk, Revision: 1}, "rm notes.txt", DecisionDeny},
+		{"ask disk utility", interaction.State{Mode: interaction.ModeAsk, Revision: 1}, "diskutil list", DecisionDeny},
+		{"ask redirect write", interaction.State{Mode: interaction.ModeAsk, Revision: 1}, "cat x > out.txt", DecisionDeny},
 		{"ask write", interaction.State{Mode: interaction.ModeAsk, Revision: 1}, "git reset --hard", DecisionDeny},
 		{"act read", interaction.State{Mode: interaction.ModeAct, Revision: 1}, "cat x", DecisionAllow},
 		{"act destructive", interaction.State{Mode: interaction.ModeAct, Revision: 1}, "git reset --hard", DecisionConfirm},
@@ -43,6 +46,32 @@ func TestInteractionPolicyMatrix(t *testing.T) {
 		if got := evalShell(t, pe, tc.state, tc.cmd).Decision; got != tc.want {
 			t.Fatalf("%s: decision = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestF4AllowCannotPreauthorizeDestructive(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	cfg.Permissions.Rules = []config.PermissionRule{
+		{Permission: "shell", Pattern: "*", Action: "allow"},
+	}
+	pe := NewEngine(&cfg, []string{})
+
+	// A destructive operation outside the workspace keeps its System
+	// requirement even when an F4 allow rule matches it.
+	ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Revision: 1}, "rm -rf /tmp/x")
+	if ev.Decision != DecisionConfirm {
+		t.Fatalf("decision = %q, want confirm despite F4 allow", ev.Decision)
+	}
+	if !ev.Required.System {
+		t.Fatal("F4 allow rule lifted the outside-workspace System requirement")
+	}
+
+	// The same rule still preauthorizes a non-destructive operation, so the
+	// gate moved but the rule was not disabled.
+	ev = evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Revision: 1}, "touch x")
+	if ev.Decision != DecisionAllow {
+		t.Fatalf("touch decision = %q, want allow by F4 rule", ev.Decision)
 	}
 }
 

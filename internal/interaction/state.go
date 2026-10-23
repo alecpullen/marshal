@@ -65,6 +65,22 @@ func ParseMode(raw string) (Mode, error) {
 	}
 }
 
+// ModeHasEditing reports whether a mode carries editing authority. Canonical
+// Act does; the retired editing spellings still count where an unmigrated
+// boundary has not translated them yet. A blank or unrecognized mode is
+// read-only, so it never counts.
+//
+// This is the single definition of "this mode can edit": the session's
+// capability bookkeeping and the runtime's access-commit validation both ask
+// it rather than keeping their own lists, which would silently diverge.
+func ModeHasEditing(mode string) bool {
+	switch Mode(strings.ToLower(strings.TrimSpace(mode))) {
+	case ModeAct, "edit", "copilot", "auto":
+		return true
+	}
+	return false
+}
+
 func ValidateDefaults(d Defaults) error {
 	if d.Mode != ModeAsk && d.Mode != ModeAct {
 		return fmt.Errorf("invalid interaction mode %q", d.Mode)

@@ -244,6 +244,12 @@ func (s *liveState) setAccess(id, sessionID string, st AccessState) {
 		a = &agentLive{}
 		s.agents[id] = a
 	}
+	// The reattach read can race a mode change that committed after the agent
+	// answered. Never replace a newer committed revision with the older one it
+	// reported, matching applyAccess.
+	if a.accessSession == sessionID && a.access != nil && st.Revision < a.access.Revision {
+		return
+	}
 	committed := st
 	a.access, a.accessSession = &committed, sessionID
 	a.updatedAt = time.Now().UTC()

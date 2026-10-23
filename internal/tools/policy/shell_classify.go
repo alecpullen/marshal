@@ -50,7 +50,17 @@ func classifyShellOperation(op *ShellOperation) {
 		classifyGit(op)
 	case "tee", "cp", "mv", "touch", "mkdir", "rmdir", "ln", "chmod", "chown":
 		op.Effects |= ShellWrite
-	case "rm", "truncate", "shred", "dd", "mkfs", "mke2fs", "newfs", "diskutil",
+	case "rm":
+		// A single-file removal is an ordinary workspace write; a recursive
+		// one is additionally destructive (classifyDestructive). It is never
+		// effect-free: an unclassified removal would clear the Ask ceiling and
+		// fall through to Allow.
+		op.Effects |= ShellWrite
+	case "diskutil":
+		// A disk erase is catastrophic (classifyDestructive); every other
+		// diskutil subcommand mutates state outside the workspace.
+		op.Effects |= ShellEnvironment
+	case "truncate", "shred", "dd", "mkfs", "mke2fs", "newfs",
 		"shutdown", "reboot", "halt", "poweroff",
 		"sudo", "sudoedit", "doas", "pkexec", "su", "run0":
 		// Effects are assigned by classifyDestructive.

@@ -556,6 +556,11 @@ func mergeWS(base, overlay WSDoc) (WSDoc, error) {
 		return WSDoc{}, ErrWorkspaceMerge{Field: "policy.mode", Reason: err.Error()}
 	}
 	out.Policy.Mode = baseMode
+	// Carry the base's canonicalized Auto. `out := base` copied the raw value,
+	// which for a legacy `mode = "auto"` base is nil even though that mode
+	// implies Auto; assigning baseAuto is what keeps the merged document
+	// agreeing with every other migration site.
+	out.Policy.Auto = baseAuto
 	if overlayMode != "" {
 		if baseMode != "" && baseMode != overlayMode {
 			return WSDoc{}, ErrWorkspaceMerge{Field: "policy.mode", Reason: "a repo template cannot change the template's mode"}

@@ -38,9 +38,9 @@ func newLiveAgentRunner(t *testing.T) (*agent.Runner, *session.State, context.Co
 		t.Fatalf("load config: %v", err)
 	}
 
-	// Auto-approve shell commands so integration tests can exercise shell.run
-	// and test.run without an interactive approval loop.
-	cfg.Tools.Shell.AutoApprove = true
+	// Act + Auto so integration tests can exercise shell.run and test.run
+	// without an interactive approval loop.
+	cfg.Agent.Auto = true
 
 	database, err := db.Open(":memory:")
 	if err != nil {

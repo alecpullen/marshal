@@ -181,7 +181,6 @@ func (adm *Admission) Commit() error {
 		return ErrStaleAdmission
 	}
 	adm.authorization.consumed = true
-	adm.committed = true
 	return nil
 }
 
@@ -234,24 +233,25 @@ func ShellInputFromContext(ctx context.Context) (ShellInput, bool) {
 
 // fingerprintCall hashes the exact invocation facts. Raw command bytes are
 // retained; they are never shell-normalized.
+//
+// Every fact the analyzer reads is bound, not just the command: the home
+// directory, read roots and environment steer effect and scope classification,
+// so a proof that omitted them would describe a different command than the one
+// that was approved. encoding/json orders map keys deterministically, which is
+// what makes the shell environment and tool arguments hashable.
 func fingerprintCall(call Call) [32]byte {
-	h := sha256.New()
-	h.Write([]byte(call.InvocationID))
-	h.Write([]byte{0})
-	h.Write([]byte(call.ToolName))
-	h.Write([]byte{0})
-	if call.Shell != nil {
-		h.Write([]byte(call.Shell.Command))
-		h.Write([]byte{0})
-		h.Write([]byte(call.Shell.Dir))
-		h.Write([]byte{0})
-		h.Write([]byte(call.Shell.WorkspaceRoot))
-		h.Write([]byte{0})
+	payload := struct {
+		InvocationID string
+		ToolName     string
+		Shell        *ShellInput
+		Args         map[string]any
+	}{call.InvocationID, call.ToolName, call.Shell, call.Args}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		// Unmarshalable arguments must not silently collapse two distinct
+		// invocations: fall back to the identity fields, which are always
+		// compared, and let the live re-evaluation decide.
+		b = []byte(call.InvocationID + "\x00" + call.ToolName)
 	}
-	if b, err := json.Marshal(call.Args); err == nil {
-		h.Write(b)
-	}
-	var out [32]byte
-	copy(out[:], h.Sum(nil))
-	return out
+	return sha256.Sum256(b)
 }

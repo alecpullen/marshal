@@ -136,7 +136,20 @@ func (r *Runner) shellInputFor(toolName string, argsMap map[string]interface{}) 
 	}
 	command, _ := argsMap["command"].(string)
 	if command == "" {
-		return policy.ShellInput{}, false
+		if toolName != "test.run" {
+			return policy.ShellInput{}, false
+		}
+		// test.run with no override runs the configured test command. Analyze
+		// the bytes that will actually run, resolved from the same live
+		// snapshot the tool uses, instead of admitting nothing.
+		if r.State == nil {
+			return policy.ShellInput{}, false
+		}
+		cfg, _, _ := r.State.PolicySnapshot()
+		command = strings.TrimSpace(cfg.Commands.Test)
+		if command == "" {
+			return policy.ShellInput{}, false
+		}
 	}
 	dir := r.State.WorkingDir
 	workspace := r.State.Workspace().ActiveRoot

@@ -1050,26 +1050,13 @@ func (s *State) ConfigSnapshot() config.Config {
 // finishAccessLocked under accessMu, which is what lets a grant be applied
 // before it is acknowledged and a cancellation that is already visible win.
 
-// modeHasEditing reports whether a mode already carries full editing
-// authority — canonical Act plus the retired editing spellings still accepted
-// at unmigrated boundaries. A blank or unrecognized mode is read-only, so it
-// never counts.
-func modeHasEditing(mode string) bool {
-	switch mode {
-	case "act", "edit", "copilot", "auto":
-		return true
-	}
-	return false
-}
-
 // accessMissingFlags recomputes a request's missing-capability flags from the
 // intent and the pair the request carries. Editing is missing only when it
-// was asked for and the mode still lacks it (Plan/Default); system access is
-// missing only when it was asked for and not yet held. Already being in
-// Edit/Copilot/Auto means no editing capability can be missing, regardless of
-// the hint.
+// was asked for and the mode still lacks it (Ask); system access is missing
+// only when it was asked for and not yet held. Already being in an editing
+// mode means no editing capability can be missing, regardless of the hint.
 func accessMissingFlags(req *AccessRequest, intent AccessIntent) {
-	req.MissingEditing = intent.Editing && !modeHasEditing(req.Current.Mode)
+	req.MissingEditing = intent.Editing && !interaction.ModeHasEditing(req.Current.Mode)
 	req.MissingSystem = intent.System && !req.Current.System
 }
 
@@ -1411,7 +1398,7 @@ func (s *State) ResolveAccess(choice AccessChoice, prepare AccessPrepare) (Acces
 	// a resolver: only an editing-capable variant may fill an editing gap, and
 	// a system-only request must not name a mode at all.
 	if needed.MissingEditing {
-		if !modeHasEditing(choice.Mode) {
+		if !interaction.ModeHasEditing(choice.Mode) {
 			return s.finishAccessFailedLocked(req, actual, fmt.Errorf("invalid editing mode %q", choice.Mode))
 		}
 		target.Mode = choice.Mode

@@ -1632,6 +1632,13 @@ func TestSessionNewPolicyAllowReachesPolicyEngine(t *testing.T) {
 			t.Errorf("%q = allow, want confirm or deny", cmd)
 		}
 	}
+	// A redirect is not covered by the wildcard rule either: a file redirect
+	// is refused at rule level (sessionrule_test.go) and classified as a
+	// write (shell_parse.go), so it is never read-only. It is deliberately
+	// not asserted here as must-not-allow, because Act allows a routine
+	// workspace write regardless of any rule; the decision that makes a
+	// redirect matter is pinned by the Ask rows in
+	// TestInteractionPolicyMatrix ("ask redirect write").
 }
 
 func TestSessionNewPolicyModeWithoutRunnerUsesState(t *testing.T) {

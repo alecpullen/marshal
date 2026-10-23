@@ -4724,6 +4724,24 @@ func TestWorkBaseEraCommandExitUsesStableEpoch(t *testing.T) {
 	}
 }
 
+// TestForceClassFollowsCanonicalMode pins the mode→force-class projection to
+// the canonical vocabulary. It previously keyed on the retired spellings, so
+// Ask fell through to the edit class and armed edit-task verification in a
+// read-only session.
+func TestForceClassFollowsCanonicalMode(t *testing.T) {
+	if got := forceClassForMode(string(interaction.ModeAsk)); got != "question" {
+		t.Fatalf("Ask force class = %q, want question", got)
+	}
+	if got := forceClassForMode(string(interaction.ModeAct)); got != "edit" {
+		t.Fatalf("Act force class = %q, want edit", got)
+	}
+	// An unrecognized mode must never be read as read-only: the permissive
+	// direction is already gated by policy.
+	if got := forceClassForMode(""); got != "edit" {
+		t.Fatalf("blank force class = %q, want edit", got)
+	}
+}
+
 // TestWorkHistoryFingerprintTracksLabelAndOwner pins that a change to a safe
 // label or owner — both fields a work page filters and sorts on — advances the
 // history fingerprint, while identical items stay deterministic.

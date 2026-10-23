@@ -207,6 +207,7 @@ func TestWorkspacePolicyMergePreservesAutoPresence(t *testing.T) {
 		{name: "explicit false survives", overlay: WSPolicy{Auto: boolPtr(false)}, wantAuto: boolPtr(false)},
 		{name: "base auto kept", base: WSPolicy{Mode: "act", Auto: boolPtr(true)}, wantMode: "act", wantAuto: boolPtr(true)},
 		{name: "legacy base canonicalized", base: WSPolicy{Mode: "copilot"}, wantMode: "act"},
+		{name: "legacy auto base canonicalized", base: WSPolicy{Mode: "auto"}, wantMode: "act", wantAuto: boolPtr(true)},
 		{name: "conflicting auto refused", base: WSPolicy{Mode: "act", Auto: boolPtr(true)}, overlay: WSPolicy{Auto: boolPtr(false)}, wantErrAt: "policy.auto"},
 	}
 	for _, tc := range cases {

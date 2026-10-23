@@ -730,7 +730,11 @@ func (s *Server) newSession(w http.ResponseWriter, r *http.Request) {
 	var id string
 	var err error
 	if s.fleet != nil {
-		id, err = s.fleet.Spawn(r.Context(), body.Cwd, SpawnOptions{})
+		// This is a spawn origin like any other, so it takes the project's
+		// starting tuple: without it a session created here fell back to the
+		// engine default and silently ignored the project's choice.
+		defaults := s.fleet.ws.ProjectSettingsFor(body.Cwd)
+		id, err = s.fleet.Spawn(r.Context(), body.Cwd, SpawnOptions{Mode: defaults.Mode, Auto: defaults.Auto})
 	} else {
 		id, err = s.reg.New(r.Context(), AgentPath(body.Cwd), body.SessionID)
 	}

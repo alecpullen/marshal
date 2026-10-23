@@ -529,6 +529,15 @@ custom-agent interaction settings, bounded by the parent at runtime.
 | `auto` | Act, Auto true |
 | `edit` | Ask, Auto false, with a notice that per-change approval was retired |
 
+**Operator impact of `edit`.** A stored recipe or automation whose interaction
+policy was `edit` migrates to Ask, and the retired unattended promotion no
+longer upgrades such a run to an editing mode. A scheduled run of that recipe
+therefore stops at its first unapproved action instead of doing the work.
+Re-save it as Act — with Auto if it should run unattended — before relying on
+the schedule. The migration is deliberate and pinned by
+`TestUnattendedOriginNeverPromotesLegacyEdit`; it is called out here because
+the failure mode is a silently idle schedule rather than a diagnostic.
+
 Legacy Auto deliberately adopts the new workspace preauthorization contract;
 the migration diagnostic explains that change. Legacy Plan does not load a
 planning skill or impose a planning response. Stored web `read` preferences

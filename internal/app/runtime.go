@@ -855,11 +855,16 @@ func (rt *Runtime) CurrentWatchManager() *watch.Manager {
 	return rt.WatchManager
 }
 
-// forceClassForMode maps an interaction mode to the runner's force class: the
-// read-only modes force the question class, every editing mode forces edit.
-// Kept next to the access methods so the mode→class mapping has one home.
+// forceClassForMode maps an interaction mode to the runner's force class: Ask
+// forces the question class, Act forces edit. Kept next to the access methods
+// so the mode→class mapping has one home.
+//
+// The mode is always the canonical AccessState().Mode value. Anything that is
+// not positively Ask is treated as an editing mode, because that is the
+// permissive direction policy already gates; a read-only session must never be
+// mistaken for an editing one.
 func forceClassForMode(mode string) string {
-	if mode == "plan" || mode == "default" {
+	if mode == string(interaction.ModeAsk) {
 		return "question"
 	}
 	return "edit"
@@ -944,11 +949,9 @@ func (rt *Runtime) accessPrepare() session.AccessPrepare {
 		}
 		target := req.Current
 		if req.MissingEditing {
-			// Only a normal Act selection can fill an editing gap: Ask never
-			// grants a write, and the retired spellings project onto Act.
-			switch choice.Mode {
-			case string(interaction.ModeAct), "edit", "copilot", "auto":
-			default:
+			// Only an editing-capable selection can fill an editing gap: Ask
+			// never grants a write, and the retired spellings project onto Act.
+			if !interaction.ModeHasEditing(choice.Mode) {
 				return session.AccessCommit{}, fmt.Errorf("mode %q does not grant editing", choice.Mode)
 			}
 			target.Mode = choice.Mode

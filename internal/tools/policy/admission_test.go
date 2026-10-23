@@ -143,6 +143,36 @@ func TestAdmissionMissingAuthorityFailsClosed(t *testing.T) {
 	}
 }
 
+func TestFingerprintBindsEveryAnalysisInput(t *testing.T) {
+	newBase := func() Call {
+		return Call{InvocationID: "inv-1", ToolName: "shell.run", Shell: &ShellInput{
+			Command:       "cat x",
+			Dir:           "/repo",
+			WorkspaceRoot: "/repo",
+			HomeDir:       "/home/u",
+			ReadRoots:     []string{"/docs"},
+			Env:           map[string]string{"A": "1"},
+		}}
+	}
+	want := fingerprintCall(newBase())
+	if fingerprintCall(newBase()) != want {
+		t.Fatal("fingerprint is not deterministic")
+	}
+
+	mutations := map[string]func() Call{
+		"home dir":  func() Call { c := newBase(); c.Shell.HomeDir = "/home/other"; return c },
+		"read root": func() Call { c := newBase(); c.Shell.ReadRoots = []string{"/elsewhere"}; return c },
+		"env value": func() Call { c := newBase(); c.Shell.Env = map[string]string{"A": "2"}; return c },
+		"env key":   func() Call { c := newBase(); c.Shell.Env = map[string]string{"B": "1"}; return c },
+		"args":      func() Call { c := newBase(); c.Args = map[string]any{"command": "cat x"}; return c },
+	}
+	for name, build := range mutations {
+		if fingerprintCall(build()) == want {
+			t.Fatalf("%s is not bound by the fingerprint", name)
+		}
+	}
+}
+
 func TestAdmissionBackgroundAllowNeverManufacturesApproval(t *testing.T) {
 	az, _ := admissionFixture(t)
 	call := Call{InvocationID: "inv-1", ToolName: "shell.run", Shell: &ShellInput{Command: "git reset --hard", Dir: "/repo", WorkspaceRoot: "/repo"}}

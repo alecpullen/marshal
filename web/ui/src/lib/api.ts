@@ -235,8 +235,6 @@ export interface AgentStatus {
   name?: string
   /** The agent's committed interaction tuple. Absent means the bridge cannot vouch for it. */
   access?: AccessStateWire
-  /** The starting mode, for lists that have no committed state yet. */
-  mode?: string
   status: 'idle' | 'running' | 'awaiting-approval' | 'awaiting-question' | 'error'
   activity?: string
   contextPct?: number

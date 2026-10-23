@@ -76,7 +76,7 @@ func (m *Model) setBrowseItems(items []browseItem, tree map[viewmodel.NodeID]*vi
 		// out of view while the view moves on.
 		m.cursor = items[len(items)-1].id
 	case m.cursorIndex() < 0:
-		// The node is gone (a fold, a rewind): stay near where it was
+		// The node is gone (a rewind): stay near where it was
 		// rather than jumping to the end of the transcript.
 		m.cursor = items[max(0, min(prev, len(items)-1))].id
 	}
@@ -261,17 +261,6 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 			m.leaveBrowse()
 		}
 		return *m, nil, true
-	case "z":
-		m.foldTasks = !m.foldTasks
-		word := "off"
-		if m.foldTasks {
-			word = "on"
-		}
-		cmd := m.setFlash("Fold finished beats: " + word)
-		m.invalidateTranscript()
-		m.refreshViewport()
-		m.scrollToCursor()
-		return *m, cmd, true
 	case "?":
 		return m.openBrowseHelp()
 	default:

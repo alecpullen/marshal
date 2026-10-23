@@ -132,7 +132,7 @@ func TestProjectCapsLargeText(t *testing.T) {
 	}
 }
 
-func TestWireStepCarriesTodoLabelAndFold(t *testing.T) {
+func TestWireStepCarriesTodoLabel(t *testing.T) {
 	nodes := Build(Snapshot{
 		Items: []session.TranscriptItem{
 			userMsg(1, 0), narration(2, 1, 1, "Old."), audit("file.read", 1, "a", 2), final(3, 3),
@@ -143,7 +143,7 @@ func TestWireStepCarriesTodoLabelAndFold(t *testing.T) {
 	})
 	for _, n := range Project(nodes).Nodes {
 		if n.ID == "step:1" {
-			if n.Step.Todo == nil || n.Step.Todo.Content != "Parser" || !n.Step.Folded {
+			if n.Step.Todo == nil || n.Step.Todo.Content != "Parser" {
 				t.Fatalf("step:1 = %+v", n.Step)
 			}
 			return

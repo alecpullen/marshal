@@ -129,43 +129,6 @@ func TestLabelResetsPerTurn(t *testing.T) {
 	}
 }
 
-func TestFoldKeepsNewestThreeAndRunningCards(t *testing.T) {
-	items := []session.TranscriptItem{userMsg(1, 0)}
-	var steps []session.Step
-	for i := 1; i <= 6; i++ {
-		id := session.StepID(i)
-		items = append(items, narration(int64(10+i), id, i*10, "Beat."), audit("file.read", id, "r", i*10+1))
-		steps = append(steps, stepOf(id, 1, i*10, i*10+2))
-	}
-	running := session.TranscriptItem{Timestamp: at(11), Kind: session.KindSubagent,
-		Subagent: &session.SubagentView{ID: 3, Label: "child", Status: session.SubagentRunning, StartedAt: at(11)}}
-	items = append(items, running)
-	nodes := Build(Snapshot{Items: items, Steps: steps, Busy: true, Now: at(100)})
-	var folded []string
-	for _, n := range nodes[0].Children {
-		if n.Step != nil && n.Step.Folded {
-			folded = append(folded, n.ID.Key)
-		}
-	}
-	// step:1 holds the running card; 4..6 are the newest three.
-	if strings.Join(folded, ",") != "step:2,step:3" {
-		t.Fatalf("folded = %v\n%s", folded, shape(nodes))
-	}
-}
-
-func TestEarlierTurnsFoldEveryFinishedBeat(t *testing.T) {
-	nodes := Build(Snapshot{
-		Items: []session.TranscriptItem{
-			userMsg(1, 0), narration(2, 1, 1, "Old."), audit("file.read", 1, "a", 2), final(3, 3),
-			userMsg(5, 10), narration(6, 2, 11, "New."), audit("file.read", 2, "b", 12),
-		},
-		Steps: []session.Step{stepOf(1, 1, 1, 2), stepOf(2, 5, 11, 12)},
-	})
-	if !nodes[0].Children[1].Step.Folded || nodes[1].Children[1].Step.Folded {
-		t.Fatalf("old turn folds, newest-3 of last turn do not:\n%s", shape(nodes))
-	}
-}
-
 // DrivenByTodos is settled by the brief's code block, not its prose:
 // n.Step.Todo != nil || n.Step.TodoID != "", so any beat bound to a non-empty
 // TodoID drives the turn even when the todo is gone from the current list.

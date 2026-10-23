@@ -122,7 +122,6 @@ type WireStep struct {
 	Provider     string         `json:"provider,omitempty"`
 	TodoID       string         `json:"todoId,omitempty"`
 	Todo         *WireTodoLabel `json:"todo,omitempty"`
-	Folded       bool           `json:"folded,omitempty"`
 	StartedAt    int64          `json:"startedAt,omitempty"`
 	EndedAt      int64          `json:"endedAt,omitempty"`
 	Thoughts     []WireThought  `json:"thoughts,omitempty"`
@@ -433,7 +432,6 @@ func wireStep(n *Node) *WireStep {
 	for _, t := range si.Thinking {
 		ws.Thoughts = append(ws.Thoughts, WireThought{Text: ScrubBlock(t.Text), DurationMs: t.Duration.Milliseconds()})
 	}
-	ws.Folded = si.Folded
 	if l := si.Todo; l != nil {
 		ws.Todo = &WireTodoLabel{ID: l.ID, Index: l.Index, Total: l.Total, Content: ScrubText(l.Content)}
 	}

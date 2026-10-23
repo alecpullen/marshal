@@ -194,26 +194,6 @@ func TestEscLeavesBrowseAndFollowResumesOnlyAtBottom(t *testing.T) {
 	}
 }
 
-func TestZTogglesBeatFolding(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(120, 60)
-	scriptedTasks(t, &m, 3, 2, true)
-	m.refreshViewport()
-	// One tool row per beat, and every beat folded but the newest
-	// viewmodel.FoldKeep: folding hides a beat's rows, never its narration.
-	if got := strings.Count(viewText(&m), "Read file"); got != viewmodel.FoldKeep {
-		t.Fatalf("Read file rendered %d times, want %d at rest:\n%s", got, viewmodel.FoldKeep, viewText(&m))
-	}
-	m = pressKeys(m, "esc", "z")
-	if got := strings.Count(viewText(&m), "Read file"); got != 6 {
-		t.Fatalf("z must unfold every finished beat, saw %d tool rows:\n%s", got, viewText(&m))
-	}
-	m = pressKeys(m, "z")
-	if got := strings.Count(viewText(&m), "Read file"); got != viewmodel.FoldKeep {
-		t.Fatalf("z again refolds them, saw %d tool rows:\n%s", got, viewText(&m))
-	}
-}
-
 func TestCursorMovesDoNotInvalidateTheRenderCache(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc")
@@ -409,14 +389,12 @@ func TestOpenIgnoresDirectoriesAndPathsOutsideTheWorkspace(t *testing.T) {
 
 func TestTranscriptConfigChangeReappliesToTheRunningSession(t *testing.T) {
 	m := browseFixture(t)
-	m.foldTasks = false
 	m.density = densityFull
 	cfg := m.state.Config
 	cfg.TUI.Transcript.Density = "outline"
-	cfg.TUI.Transcript.FoldFinishedTasks = true
 	m.applyNewConfig(cfg)
-	if m.density != densityOutline || !m.foldTasks {
-		t.Fatalf("density %v foldTasks %v after the config changed", m.density, m.foldTasks)
+	if m.density != densityOutline {
+		t.Fatalf("density %v after the config changed", m.density)
 	}
 	// An unrelated reload leaves the user's Ctrl+G choice alone.
 	m.density = densityFull
@@ -492,7 +470,7 @@ func TestCursorStaysNearWhereItWasWhenItsNodeVanishes(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc", "g", "j")
 	idx := m.cursorIndex()
-	m.cursor = viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:gone"} // as if it had folded away
+	m.cursor = viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:gone"} // as if it had been rewound away
 	m.invalidateTranscript()
 	m.browseItems = append([]browseItem(nil), m.browseItems...)
 	m.setBrowseItems(m.browseItems, m.browseTree)

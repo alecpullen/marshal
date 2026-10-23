@@ -328,7 +328,6 @@ func (m *Model) openBrowseHelp() (tea.Model, tea.Cmd, bool) {
 			row("y", "copy its text (OSC 52)"),
 			row("o", "open its file in $EDITOR"),
 			row("f", "drill into the subagent"),
-			row("z", "fold / unfold finished tasks"),
 			{Header: "Leave"},
 			row("Esc", "back to the input"),
 			row("any other key", "back to the input, and type it"),

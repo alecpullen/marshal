@@ -106,8 +106,6 @@ func (m *Model) refreshViewport() {
 	rctx := &stepRenderCtx{
 		density:       m.densityOf,
 		record:        m.recordDensity,
-		foldTasks:     m.foldTasks,
-		hasOverride:   func(id viewmodel.NodeID) bool { _, ok := m.override(id); return ok },
 		liveExpanded:  func(id viewmodel.NodeID) bool { return m.isToolExpanded(id, true) },
 		region:        m.regionView,
 		noteRows:      m.noteRegionRows,
@@ -125,9 +123,8 @@ func (m *Model) refreshViewport() {
 	}
 
 	blocks := make([]string, 0, len(items)+4)
-	// tight[i] joins block i to the one before it with no blank line: the
-	// folded rows of a todo stack read as one list, and back-to-back
-	// narration reads as one text.
+	// tight[i] joins block i to the one before it with no blank line:
+	// back-to-back narration reads as one text.
 	var tight []bool
 	nextTight := false
 	var regions []nodeRegion
@@ -177,20 +174,18 @@ func (m *Model) refreshViewport() {
 			firstTurn = false
 		}
 		turnFirst := true
-		prevFolded, prevNarrationOnly := false, false
+		prevNarrationOnly := false
 		for _, node := range turn.Children {
 			collectSeen(node, seen)
 			indexTree(node, tree)
 			out, subs := m.renderNode(node, rctx, width, themeSig)
 			if out != "" {
-				folded := node.Kind == viewmodel.KindStep && node.Step != nil && node.Step.Folded && rctx.foldTasks && !rctx.hasOverride(node.ID)
-				isTight := (prevFolded && folded) ||
-					(prevNarrationOnly && node.Kind == viewmodel.KindStep && (node.Step == nil || node.Step.Todo == nil))
+				isTight := prevNarrationOnly && node.Kind == viewmodel.KindStep && (node.Step == nil || node.Step.Todo == nil)
 				if isTight && len(blocks) > 0 {
 					lineCursor-- // no blank line before a tight block
 					nextTight = true
 				}
-				prevFolded, prevNarrationOnly = folded, narrationOnly(node)
+				prevNarrationOnly = narrationOnly(node)
 				bitems = collectBrowse(bitems, node, out, subs, lineCursor, turnFirst)
 				turnFirst = false
 			}
@@ -415,7 +410,7 @@ func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
 	fmt.Fprintf(h, "%s|%v|%d|%d|%d|", n.ID.Key, hasOv, ov, m.regionOffset[n.ID], m.regionRows[n.ID])
 	fmt.Fprintf(h, "d%d|", m.density)
 	if n.Kind == viewmodel.KindStep {
-		fmt.Fprintf(h, "%s|%s|%v|", c.routeModel, c.routeProvider, m.foldTasks)
+		fmt.Fprintf(h, "%s|%s|", c.routeModel, c.routeProvider)
 	}
 	if lines, ok := m.callers[n.ID]; ok {
 		fmt.Fprintf(h, "c%q|", lines)
@@ -437,7 +432,7 @@ func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
 // not.
 func (m *Model) contentSignature(turns []*viewmodel.Node, width int, themeSig uint64, queued []string, notice session.Notice, noticeUp bool, reconnect string, hasTurns bool) uint64 {
 	h := fnv.New64a()
-	fmt.Fprintf(h, "w%d|t%d|g%d|f%v|", width, themeSig, m.density, m.foldTasks)
+	fmt.Fprintf(h, "w%d|t%d|g%d|", width, themeSig, m.density)
 	fmt.Fprintf(h, "turns%v|", hasTurns)
 	c := &stepRenderCtx{}
 	if st, _ := m.transcriptSource(); st != nil {

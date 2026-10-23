@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +17,6 @@ import (
 
 func TestClickRegionsCoverThinkingAndAuditBlocks(t *testing.T) {
 	m := newTestModel(t)
-	// The reasoning belongs to the newest turn: an earlier turn's beat folds
-	// to an outline row, which hides the thinking row it contains.
 	m.state.AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
 	ts1 := time.Now()
 	m.state.LogThinking(session.ThinkingEntry{Text: "why I did this", Duration: time.Second, StartedAt: ts1})
@@ -278,17 +277,23 @@ func TestNoNowBarNoBand(t *testing.T) {
 }
 
 // A completion marker in a later turn points at a job card inside an earlier
-// turn's folded beat. The card has no region while folded; clicking the
-// marker opens the beat and lands on the card rather than doing nothing.
+// turn's beat, past the beat's row cap. The card has no region while capped;
+// clicking the marker opens the beat and lands on the card rather than doing
+// nothing.
 func TestMarkerClickOpensTheBeatHidingItsCard(t *testing.T) {
 	m := newTestModel(t)
-	m.resize(100, 40)
-	m.foldTasks = true
+	m.resize(100, 60)
 	m.state.AddMessage(session.RoleUser, "run the gate", session.ContentTypePlain)
 	s1 := m.state.BeginStep(session.Actor{})
 	m.state.AddNarration(s1, "Starting the gate.")
 	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "shell.run", StepID: s1, ToolCallID: "j",
 		Args: []byte(`{"command":"pytest -q","background":true}`), ResultSummary: session.JobStartPrefix + "job-1"})
+	// Edits never merge into a run, so each is its own row and the card is
+	// pushed past the cap.
+	for i := 0; i < viewmodel.BeatRowCap; i++ {
+		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.edit", StepID: s1, ToolCallID: fmt.Sprintf("e%d", i),
+			Args: []byte(fmt.Sprintf(`{"path":"f%d.go"}`, i)), ResultSummary: "edited"})
+	}
 	m.state.EndStep(s1)
 	m.state.AddMessageFinal(session.RoleAssistant, "started", session.ContentTypePlain)
 	m.state.AddMessage(session.RoleUser, "anything else?", session.ContentTypePlain)
@@ -310,7 +315,7 @@ func TestMarkerClickOpensTheBeatHidingItsCard(t *testing.T) {
 		t.Fatal("no completion marker region")
 	}
 	if _, ok := m.regionFor(card); ok {
-		t.Fatal("precondition: the card's beat must be folded, leaving the card no region")
+		t.Fatal("precondition: the card must sit past its beat's row cap, leaving it no region")
 	}
 
 	top := m.scrollHintRows()

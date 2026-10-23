@@ -99,9 +99,6 @@ type StepInfo struct {
 
 	// Todo is set on the beat where work moves to a different todo.
 	Todo *TodoLabel
-	// Folded is true for a finished beat the transcript collapses to one
-	// line (see foldBeats).
-	Folded bool
 }
 
 // Snapshot is everything Build reads.
@@ -645,10 +642,8 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	}
 	out = coalesceMarkers(out)
 	labelTransitions(out, s.Todos)
-	foldBeats(out, lastTurn)
-	// keepLastPlanRow, foldBeats and labelTransitions run after finish/absorb
-	// computed each beat's version, so recompute it now that the payload is
-	// final.
+	// keepLastPlanRow and labelTransitions run after finish/absorb computed
+	// each beat's version, so recompute it now that the payload is final.
 	for _, n := range out {
 		if n.Kind == KindStep {
 			n.Version = versionOfStep(n)
@@ -882,7 +877,6 @@ func versionOfStep(n *Node) uint64 {
 	if st.Todo != nil {
 		b.f("lbl|%s|%d|%d|%s|", st.Todo.ID, st.Todo.Index, st.Todo.Total, st.Todo.Content)
 	}
-	b.f("fold|%v|", st.Folded)
 	b.f("st|%d|%d|%s|%s|%s|%s|%d|%d|%d|%d|", r.ID, r.TurnMsgID, r.Actor.Role, r.Actor.Label, r.Actor.Model, r.Actor.Provider,
 		r.StartedAt.UnixNano(), r.EndedAt.UnixNano(), len(st.StepIDs), len(st.LiveThinking))
 	for _, id := range st.StepIDs {

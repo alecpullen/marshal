@@ -42,10 +42,6 @@ type stepRenderCtx struct {
 	density func(id viewmodel.NodeID, inherited density) density
 	// record is told the level each node is drawn at.
 	record func(id viewmodel.NodeID, d density)
-	// foldTasks is the session fold toggle; hasOverride says a user override
-	// exists for a node (which unfolds it).
-	foldTasks   bool
-	hasOverride func(viewmodel.NodeID) bool
 	// liveExpanded is expanded for an in-flight call, which stays collapsed
 	// until clicked whatever the global default says.
 	liveExpanded func(viewmodel.NodeID) bool
@@ -100,11 +96,6 @@ func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
 func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited density) (string, []subRegion) {
 	si := n.Step
 	rows := n.Children
-	// A folded beat draws at outline unless the user opened it; folding
-	// itself is decided in viewmodel, the z toggle only switches it off.
-	if si.Folded && c.foldTasks && (c.hasOverride == nil || !c.hasOverride(n.ID)) {
-		inherited = densityOutline
-	}
 	sd := c.level(n.ID, inherited)
 	var b strings.Builder
 	var subs []subRegion

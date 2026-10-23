@@ -54,7 +54,7 @@ func scriptedTasks(t *testing.T, m *Model, n, stepsPer int, finish bool) {
 
 func viewText(m *Model) string { return strings.Join(transcriptLines(m), "\n") }
 
-func TestFinishedTasksFoldAndTheReceiptSummarisesTheTurn(t *testing.T) {
+func TestFinishedTasksStayOpenAndTheReceiptSummarisesTheTurn(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 60)
 	scriptedTasks(t, &m, 3, 2, true)
@@ -64,31 +64,25 @@ func TestFinishedTasksFoldAndTheReceiptSummarisesTheTurn(t *testing.T) {
 			t.Errorf("missing %q:\n%s", want, text)
 		}
 	}
-	// Six beats, all finished: all but the newest viewmodel.FoldKeep fold to
-	// outline rows, which keep the narration headline and its call count but
-	// hide the tool rows themselves.
-	if got := strings.Count(text, "Read file"); got != viewmodel.FoldKeep {
-		t.Errorf("Read file rendered %d times, want %d: a folded beat hides its tool rows:\n%s", got, viewmodel.FoldKeep, text)
+	// Six beats, all finished: nothing folds, so every beat keeps its row.
+	if got := strings.Count(text, "Read file"); got != 6 {
+		t.Errorf("Read file rendered %d times, want 6: history never folds:\n%s", got, text)
 	}
-	for _, want := range []string{"Working on task 1 part 1. Details follow.", "1 tool"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("a folded beat still renders %q:\n%s", want, text)
-		}
+	if !strings.Contains(text, "Working on task 1 part 1. Details follow.") {
+		t.Errorf("the first beat keeps its narration:\n%s", text)
 	}
 }
 
-func TestRunningTurnFoldsDoneTasksAndKeepsTheLiveOneOpen(t *testing.T) {
+func TestRunningTurnKeepsEveryBeatOpen(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 60)
 	scriptedTasks(t, &m, 3, 2, false)
 	text := viewText(&m)
-	if strings.Contains(text, "Working on task 1 part 1. Details follow.                                    1 tool") {
-		t.Errorf("want a folded outline row, not a full one:\n%s", text)
+	if got := strings.Count(text, "Read file"); got != 6 {
+		t.Errorf("Read file rendered %d times, want 6: done tasks keep their rows:\n%s", got, text)
 	}
-	// The turn's newest beats stay open, and they are the ones carrying the
-	// task-3 narration the model is working on.
 	if !strings.Contains(text, "Working on task 3 part 1") || !strings.Contains(text, "Working on task 3 part 2") {
-		t.Errorf("the newest beats of a running turn stay open:\n%s", text)
+		t.Errorf("the task the model is working on is shown:\n%s", text)
 	}
 	if strings.Contains(text, "done ·") {
 		t.Errorf("no receipt before the turn ends:\n%s", text)
@@ -108,8 +102,6 @@ func TestFailedBeatStaysOpen(t *testing.T) {
 	m.state.EndStep(id)
 	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Make tests pass", Status: "completed", StartedAt: time.Now(), CompletedAt: time.Now()}})
 	text := viewText(&m)
-	// The failing beat is the newest of its turn, so it stays unfolded: a
-	// beat only folds once the model has moved past it.
 	if !strings.Contains(text, "Running the suite") || !strings.Contains(text, "exit 1") {
 		t.Fatalf("the failed beat must stay open:\n%s", text)
 	}
@@ -411,9 +403,7 @@ func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
 		t.Fatalf("missing %q:\n%s", sub, text)
 		return -1
 	}
-	// Each todo's work sits under the divider naming it, in list order. Both
-	// beats are finished, but they are the newest of the turn, so they stay
-	// open; a beat only folds once the model has moved past it.
+	// Each todo's work sits under the divider naming it, in list order.
 	read, first, write, second := at("1/4 Read"), at("Reading it."), at("2/4 Write"), at("Writing it.")
 	if !(read < first && first < write && write < second) {
 		t.Fatalf("order must be divider, work, next divider, next work:\n%s", text)

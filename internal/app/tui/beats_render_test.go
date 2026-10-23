@@ -69,18 +69,3 @@ func TestRenderDividerOnLabelledBeat(t *testing.T) {
 		t.Fatalf("divider = %q", first)
 	}
 }
-
-func TestFoldedBeatRendersAtOutline(t *testing.T) {
-	n := beatNode("Read the parser.", 4)
-	n.Step.Folded = true
-	c := &stepRenderCtx{foldTasks: true, hasOverride: func(viewmodel.NodeID) bool { return false }}
-	out, _ := renderStep(n, c, 100, densitySteps)
-	plain := strings.TrimRight(ansi.Strip(out), "\n")
-	if strings.Count(plain, "\n") != 0 || !strings.Contains(plain, "4 tools") {
-		t.Fatalf("folded beat = %q", plain)
-	}
-	c.hasOverride = func(viewmodel.NodeID) bool { return true }
-	if out, _ := renderStep(n, c, 100, densitySteps); strings.Count(ansi.Strip(out), "\n") < 2 {
-		t.Fatalf("an override unfolds the beat")
-	}
-}

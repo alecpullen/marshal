@@ -2,9 +2,6 @@ package viewmodel
 
 import "marshal/internal/db"
 
-// FoldKeep is how many of the live turn's newest finished beats stay open.
-const FoldKeep = 3
-
 // TodoLabel marks the beat where work moves to a different todo. It is shown
 // once per transition, never repeated for later beats of the same todo, so a
 // todo the model forgets to advance costs one line rather than one header
@@ -36,28 +33,6 @@ func labelTransitions(nodes []*Node, todos []db.TodoItem) {
 			}
 		}
 		prev = id
-	}
-}
-
-// foldBeats marks finished beats folded. In the live (last) turn the newest
-// FoldKeep finished beats stay open; earlier turns fold every finished beat.
-// A beat that is live or holds anything live (a running subagent card, an
-// in-flight call) never folds.
-func foldBeats(nodes []*Node, lastTurn bool) {
-	keep := 0
-	if lastTurn {
-		keep = FoldKeep
-	}
-	for i := len(nodes) - 1; i >= 0; i-- {
-		n := nodes[i]
-		if n.Kind != KindStep || n.Step == nil || n.AnyLive() {
-			continue
-		}
-		if keep > 0 {
-			keep--
-			continue
-		}
-		n.Step.Folded = true
 	}
 }
 

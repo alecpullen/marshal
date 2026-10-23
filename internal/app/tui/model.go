@@ -615,8 +615,6 @@ type Model struct {
 	// effDensity records the level each node was last drawn at, so a click
 	// cycles from what the user sees rather than from the global default.
 	effDensity map[viewmodel.NodeID]density
-	// foldTasks is the session toggle for folding finished tasks (z).
-	foldTasks bool
 	// Browse mode (Esc): a cursor over the rendered nodes. browseItems is
 	// rebuilt on every full refresh; browseTree indexes the nodes for copy,
 	// open and inspect.
@@ -813,8 +811,8 @@ type Model struct {
 	// viewString from the same plan the rows came from.
 	workHits map[string]workHit
 	// rowBeat maps each row of a beat to the beat, from the last build, so
-	// a completion marker can open the beat that hides its card (folded, or
-	// past the row cap) before jumping to it.
+	// a completion marker can open the beat that hides its card past the row
+	// cap before jumping to it.
 	rowBeat map[viewmodel.NodeID]viewmodel.NodeID
 	// sheetPanel is the open Ctrl+B session sheet, kept for the same reason.
 	sheetPanel *sessionsheet.Panel
@@ -1781,7 +1779,6 @@ func New(state *session.State, opts ...Option) Model {
 		now:              time.Now,
 		viewportFollow:   true,
 		density:          parseDensity(state.Config.TUI.Transcript.Density),
-		foldTasks:        state.Config.TUI.Transcript.FoldFinishedTasks,
 		discovered:       map[string][]schema.ModelInfo{},
 	}
 	for _, opt := range opts {

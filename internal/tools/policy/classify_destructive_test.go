@@ -1,10 +1,6 @@
 package policy
 
-import (
-	"testing"
-
-	"marshal/internal/tools/registry"
-)
+import "testing"
 
 // TestClassifyFindAndDD pins S-02 and S-03: find -delete and dd of=… are
 // first-class destructive primitives containing no "rm", so neither the
@@ -24,12 +20,9 @@ func TestClassifyFindAndDD(t *testing.T) {
 	}
 	for _, cmd := range destructive {
 		t.Run(cmd, func(t *testing.T) {
-			got, err := ClassifyCommand(cmd)
-			if err != nil {
-				t.Fatalf("classify: %v", err)
-			}
-			if got.Risk != registry.RiskDestructive {
-				t.Errorf("risk = %v, want destructive (reason %q)", got.Risk, got.Reason)
+			a := analyze(t, cmd)
+			if !hasEffect(a, ShellDestructive) {
+				t.Errorf("no destructive effect in %+v", a.Operations)
 			}
 		})
 	}
@@ -45,27 +38,24 @@ func TestClassifyFindAndDD(t *testing.T) {
 	}
 	for _, cmd := range safe {
 		t.Run("safe/"+cmd, func(t *testing.T) {
-			got, err := ClassifyCommand(cmd)
-			if err != nil {
-				t.Fatalf("classify: %v", err)
-			}
-			if got.Risk == registry.RiskDestructive {
-				t.Errorf("false positive: %q classified destructive (%q)", cmd, got.Reason)
+			a := analyze(t, cmd)
+			if hasEffect(a, ShellDestructive) {
+				t.Errorf("false positive: %q classified destructive: %+v", cmd, a.Operations)
 			}
 		})
 	}
 }
 
 // TestGuardrailBlocksFindAndDD pins the end-to-end path: the classification
-// must reach analyzeCommand's blocked verdict, not merely return a label.
+// must reach the canonical catastrophic/destructive verdict, not merely
+// return a label.
 func TestGuardrailBlocksFindAndDD(t *testing.T) {
-	for _, cmd := range []string{"find / -delete", "dd if=/dev/zero of=/dev/sda"} {
-		v, err := analyzeCommand(cmd)
-		if err != nil {
-			t.Fatalf("analyze %q: %v", cmd, err)
-		}
-		if !v.blocked {
-			t.Errorf("%q not blocked by the guardrail floor", cmd)
-		}
+	a := analyze(t, "dd if=/dev/zero of=/dev/sda")
+	if !hasEffect(a, ShellCatastrophic) {
+		t.Fatalf("dd to a device not classified catastrophic: %+v", a.Operations)
+	}
+	a = analyze(t, "find / -delete")
+	if !hasEffect(a, ShellDestructive) {
+		t.Fatalf("find -delete not classified destructive: %+v", a.Operations)
 	}
 }

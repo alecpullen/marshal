@@ -263,8 +263,14 @@ func wrapperPayload(base string, args []ShellWord) ([]ShellWord, bool) {
 				return nil, false
 			}
 			if v == "-c" || (strings.HasPrefix(v, "-") && strings.Contains(v, "c")) {
-				if i+1 < len(args) {
-					return splitCommandWord(args[i+1]), true
+				// Shells accept further option words between the flag and the
+				// command string (`bash -c -l 'cmd'`, `bash -c -- 'cmd'`).
+				j := i + 1
+				for j < len(args) && len(args[j].Value) > 1 && strings.HasPrefix(args[j].Value, "-") {
+					j++
+				}
+				if j < len(args) {
+					return splitCommandWord(args[j]), true
 				}
 				return nil, false
 			}
@@ -282,6 +288,102 @@ func wrapperPayload(base string, args []ShellWord) ([]ShellWord, bool) {
 			parts = append(parts, a.Value)
 		}
 		return splitCommandWord(ShellWord{Text: strings.Join(parts, " "), Value: strings.Join(parts, " "), Known: true, SingleField: true}), true
+	case "env":
+		i := 0
+		for i < len(args) {
+			v := args[i].Value
+			if !args[i].Known {
+				return nil, false
+			}
+			// Environment assignments: FOO=bar
+			if strings.Contains(v, "=") && !strings.HasPrefix(v, "-") {
+				i++
+				continue
+			}
+			if v == "-i" || v == "--ignore-environment" {
+				i++
+				continue
+			}
+			if v == "-u" || v == "--unset" {
+				i += 2
+				continue
+			}
+			if strings.HasPrefix(v, "--unset=") {
+				i++
+				continue
+			}
+			break
+		}
+		if i >= len(args) {
+			return nil, false
+		}
+		return args[i:], true
+	case "nice":
+		i := 0
+		if i < len(args) && (args[i].Value == "-n" || args[i].Value == "--adjustment") {
+			i += 2
+		} else if i < len(args) && strings.HasPrefix(args[i].Value, "--adjustment=") {
+			i++
+		}
+		if i >= len(args) {
+			return nil, false
+		}
+		return args[i:], true
+	case "exec", "builtin", "nohup", "setsid", "busybox":
+		if len(args) == 0 {
+			return nil, false
+		}
+		return args, true
+	case "command":
+		// `command -v`/`-V` is a lookup, not a wrapper around a command.
+		if len(args) == 0 || args[0].Value == "-v" || args[0].Value == "-V" {
+			return nil, false
+		}
+		return args, true
+	case "time":
+		i := 0
+		for i < len(args) && strings.HasPrefix(args[i].Value, "-") {
+			i++
+		}
+		if i >= len(args) {
+			return nil, false
+		}
+		return args[i:], true
+	case "timeout":
+		i := 0
+		for i < len(args) && strings.HasPrefix(args[i].Value, "-") {
+			switch args[i].Value {
+			case "-k", "-s", "--kill-after", "--signal":
+				i += 2
+			default:
+				i++
+			}
+		}
+		if i < len(args) {
+			i++ // the duration operand
+		}
+		if i >= len(args) {
+			return nil, false
+		}
+		return args[i:], true
+	case "watch":
+		i := 0
+		for i < len(args) {
+			v := args[i].Value
+			if v == "-n" || v == "--interval" {
+				i += 2
+				continue
+			}
+			if strings.HasPrefix(v, "-") {
+				i++
+				continue
+			}
+			break
+		}
+		if i >= len(args) {
+			return nil, false
+		}
+		return args[i:], true
 	}
 	return nil, false
 }
@@ -341,7 +443,9 @@ func xargsCommandPayload(args []ShellWord) ([]ShellWord, bool) {
 
 func xargsFlagConsumesValue(flag string) bool {
 	switch flag {
-	case "-n", "-I", "-P", "-L", "-s", "-d", "-E", "-a":
+	case "-n", "-I", "-P", "-L", "-s", "-d", "-E", "-a",
+		"--arg-file", "--delimiter", "--eof", "--max-args", "--max-chars",
+		"--max-lines", "--max-procs", "--process-slot-var", "--replace":
 		return true
 	}
 	return false

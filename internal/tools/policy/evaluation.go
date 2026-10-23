@@ -54,6 +54,13 @@ func (pe *PolicyEngine) evaluateNonShell(in Input, cfg config.Config) Evaluation
 
 	risk := pe.toolRisk(in.ToolName)
 
+	// Session-state tools manage pure in-memory session state (the todo
+	// list). They should not prompt the user even though they declare
+	// RiskWorkspaceWrite, because they do not modify files on disk.
+	if in.ToolName == "todo.write" {
+		return Evaluation{Decision: DecisionAllow}
+	}
+
 	// Ask admits only positively read-only operations. A rule cannot widen the
 	// capability: an Ask actor is denied a write tool even if a rule allows it.
 	// This gate runs before every other branch, including MCP, so no explicit
@@ -104,7 +111,17 @@ func (pe *PolicyEngine) evaluateNonShell(in Input, cfg config.Config) Evaluation
 		if in.ActorState.Auto && risk == "workspace_write" {
 			return Evaluation{Decision: DecisionAllow}
 		}
-		return Evaluation{Decision: DecisionConfirm, Required: CapabilityRequirement{Act: true}}
+		reason := "this tool requires Act"
+		// System access widens the write surface beyond the workspace; say so
+		// in the reason so the confirmation discloses the scope it grants.
+		if in.ActorState.System && hasAbsoluteSubject(in.ToolName, in.Args, "") {
+			reason = "system mode: " + reason
+		}
+		return Evaluation{
+			Decision: DecisionConfirm,
+			Required: CapabilityRequirement{Act: true},
+			Reasons:  []PolicyReason{{Code: ReasonExplicitConfirm, Message: reason}},
+		}
 	}
 }
 
@@ -132,6 +149,35 @@ func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionR
 		reasons = append(reasons, op.Reasons...)
 	}
 
+	// Catastrophic and privilege operations are never allowed, whatever the
+	// rules say.
+	if effects&ShellCatastrophic != 0 {
+		return Evaluation{Decision: DecisionDeny, Reasons: reasons}
+	}
+	if effects&ShellPrivilege != 0 {
+		return Evaluation{Decision: DecisionDeny, Reasons: reasons}
+	}
+
+	// Ask admits only positively read-only operations. This ceiling runs
+	// before every allow rule so no explicit classification can lift it.
+	if in.ActorState.Mode == interaction.ModeAsk && effects&^ShellRead != 0 {
+		return Evaluation{
+			Decision: DecisionDeny,
+			Required: CapabilityRequirement{Act: true},
+			Reasons:  append(reasons, PolicyReason{Code: ReasonRequiresAct, Message: "Ask admits only read-only operations"}),
+		}
+	}
+
+	// Publishing always retains exact approval.
+	if effects&ShellPublish != 0 {
+		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: reasons}
+	}
+
+	// Configured publishing/floor prefixes are exact approvals, like git push.
+	if match := configuredFloorMatch(cfg, in.Shell); match != "" {
+		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: append(reasons, PolicyReason{Code: ReasonPublishing, Message: match + " requires approval (configured floor)"})}
+	}
+
 	// Explicit F4 rules are collected before any allow so a later allow cannot
 	// mask them. A deny rule refuses the operation outright; an ask rule
 	// requires approval.
@@ -153,35 +199,34 @@ func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionR
 	}
 	confirmRule, hasConfirm := matchShellConfirm(cfg, in.Shell)
 
-	// Ask admits only positively read-only operations.
-	if in.ActorState.Mode == interaction.ModeAsk && effects&^ShellRead != 0 {
-		return Evaluation{
-			Decision: DecisionDeny,
-			Required: CapabilityRequirement{Act: true},
-			Reasons:  append(reasons, PolicyReason{Code: ReasonRequiresAct, Message: "Ask admits only read-only operations"}),
-		}
-	}
-
-	// Catastrophic and privilege operations are never allowed.
-	if effects&ShellCatastrophic != 0 {
-		return Evaluation{Decision: DecisionDeny, Reasons: reasons}
-	}
-	if effects&ShellPrivilege != 0 {
-		return Evaluation{Decision: DecisionDeny, Reasons: reasons}
-	}
-
-	// Publishing always retains exact approval.
-	if effects&ShellPublish != 0 {
-		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: reasons}
-	}
-
 	// Destructive workspace operations are preauthorized only by Auto and
-	// only when fully known.
+	// only when fully known. A destructive operation whose target is outside
+	// the workspace (or cannot be resolved) additionally requires System.
 	if effects&ShellDestructive != 0 {
-		if in.ActorState.Auto && effects&(ShellEnvironment|ShellUnknown) == 0 {
+		outside := destructiveOutsideWorkspace(in.Shell)
+		if in.ActorState.Auto && effects&(ShellEnvironment|ShellUnknown) == 0 && !outside {
 			return Evaluation{Decision: DecisionAllow, Reasons: reasons}
 		}
-		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: reasons}
+		ev := Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: reasons}
+		if outside && !in.ActorState.System {
+			ev.Required.System = true
+			ev.Reasons = append(ev.Reasons, PolicyReason{Code: ReasonRequiresSystem, Message: "destructive operations outside the workspace require System"})
+		}
+		return ev
+	}
+
+	// Explicit session approvals are authored rules: they win over the
+	// environment and uncertainty fallbacks, but never over the catastrophic,
+	// privilege, publishing or destructive gates above.
+	for _, rule := range sessionRules {
+		if matchSessionRule(normalizeCommand(in.Shell.Input.Command), in.Shell.Input.Command, rule) {
+			return Evaluation{Decision: DecisionAllow, Reasons: append(reasons, PolicyReason{Code: ReasonExplicitAllow, Message: "allowed by session-approved command: " + rule})}
+		}
+	}
+
+	// Configured allow rules are authored rules too.
+	if rule, allowed := matchShellAllow(cfg, in.Shell); allowed {
+		return Evaluation{Decision: DecisionAllow, Reasons: append(reasons, PolicyReason{Code: ReasonExplicitAllow, Rule: rule, Message: "allowed by config allow rule: " + rule})}
 	}
 
 	// Environment effects require System.
@@ -207,11 +252,66 @@ func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionR
 	return Evaluation{Decision: DecisionAllow, Reasons: reasons}
 }
 
+// configuredFloorMatch reports the configured floor prefix an operation
+// invokes, or "". Prefixes match token-wise, so `npm publish` does not floor
+// `npm publishd`.
+func configuredFloorMatch(cfg config.Config, a *ShellAnalysis) string {
+	if a == nil {
+		return ""
+	}
+	for _, raw := range cfg.Tools.Shell.FloorCommands {
+		prefix := strings.Fields(raw)
+		if len(prefix) == 0 {
+			continue
+		}
+		for _, op := range a.Operations {
+			argv := make([]string, 0, len(op.Argv))
+			for _, w := range op.Argv {
+				argv = append(argv, w.Value)
+			}
+			if len(argv) < len(prefix) {
+				continue
+			}
+			matched := true
+			for i, p := range prefix {
+				if argv[i] != p {
+					matched = false
+					break
+				}
+			}
+			if matched {
+				return strings.Join(prefix, " ")
+			}
+		}
+	}
+	return ""
+}
+
+// destructiveOutsideWorkspace reports whether any destructive operation has a
+// target that is not provably inside the workspace. An unresolved target
+// counts as outside: the caller must not preauthorize what it cannot place.
+func destructiveOutsideWorkspace(a *ShellAnalysis) bool {
+	if a == nil {
+		return false
+	}
+	for _, op := range a.Operations {
+		if op.Effects&ShellDestructive == 0 {
+			continue
+		}
+		for _, t := range op.Targets {
+			if t.Scope != ShellScopeWorkspace && t.Scope != ShellScopeReadRoot {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // matchShellDeny reports whether any operation matches a configured deny rule.
 func matchShellDeny(cfg config.Config, a *ShellAnalysis) (PolicyReason, bool) {
 	for _, pattern := range cfg.Tools.Shell.Deny.Patterns {
 		for _, op := range a.Operations {
-			if shellPatternMatches(pattern, &op) {
+			if shellDenyMatches(pattern, &op) {
 				return PolicyReason{Code: ReasonExplicitDeny, OperationID: op.ID, Rule: pattern, Message: "denied by rule"}, true
 			}
 		}
@@ -219,37 +319,71 @@ func matchShellDeny(cfg config.Config, a *ShellAnalysis) (PolicyReason, bool) {
 	return PolicyReason{}, false
 }
 
-// matchShellConfirm reports whether any operation matches a confirm rule.
+// matchShellConfirm reports whether the command matches a confirm rule.
 func matchShellConfirm(cfg config.Config, a *ShellAnalysis) (PolicyReason, bool) {
 	for _, pattern := range cfg.Tools.Shell.Confirm.Commands {
-		for _, op := range a.Operations {
-			if shellPatternMatches(pattern, &op) {
-				return PolicyReason{Code: ReasonExplicitConfirm, OperationID: op.ID, Rule: pattern, Message: "confirmed by rule"}, true
-			}
+		if shellRuleMatches(pattern, a) {
+			return PolicyReason{Code: ReasonExplicitConfirm, Rule: pattern, Message: "confirmed by rule"}, true
 		}
 	}
 	return PolicyReason{}, false
 }
 
-// shellPatternMatches matches a rule pattern against an operation's executable
-// and argv. A plain prefix matches the executable; a glob/regex pattern keeps
-// its explicit semantics.
-func shellPatternMatches(pattern string, op *ShellOperation) bool {
+// matchShellAllow reports whether the command matches a configured allow
+// rule, returning the matched rule.
+func matchShellAllow(cfg config.Config, a *ShellAnalysis) (string, bool) {
+	for _, pattern := range cfg.Tools.Shell.Allow.Commands {
+		if shellRuleMatches(pattern, a) {
+			return pattern, true
+		}
+	}
+	return "", false
+}
+
+// joinedArgv returns an operation's executable and arguments as one string.
+func joinedArgv(op *ShellOperation) string {
+	joined := op.Executable.Value
+	for _, a := range op.Argv[1:] {
+		joined += " " + a.Value
+	}
+	return joined
+}
+
+// shellDenyMatches matches a deny pattern against an operation. A regex or
+// glob keeps its explicit semantics; a plain pattern is a substring match, so
+// `*destructive*` and `kill -9 *` behave as before.
+func shellDenyMatches(pattern string, op *ShellOperation) bool {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" {
 		return false
 	}
-	exe := op.Executable.Value
-	if !strings.ContainsAny(pattern, "*?[]") {
-		return exe == pattern || strings.HasPrefix(exe, pattern+" ")
-	}
-	// Glob: match against the executable and the joined argv.
-	joined := exe
-	for _, a := range op.Argv[1:] {
-		joined += " " + a.Value
-	}
-	if globMatch(pattern, exe) {
+	joined := joinedArgv(op)
+	if regexMatch(pattern, joined) {
 		return true
 	}
+	pattern = normalizeCommand(pattern)
+	joined = normalizeCommand(joined)
+	if !strings.Contains(pattern, "*") {
+		return strings.Contains(joined, pattern)
+	}
 	return globMatch(pattern, joined)
+}
+
+// shellRuleMatches matches an allow/confirm rule against the whole command. A
+// regex or glob keeps its explicit semantics; a plain pattern must equal the
+// whole normalized command, so `go test` does not match `go test ./...` and a
+// suffix cannot inherit an approval.
+func shellRuleMatches(pattern string, a *ShellAnalysis) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" || a == nil {
+		return false
+	}
+	command := normalizeCommand(a.Input.Command)
+	if regexMatch(pattern, command) {
+		return true
+	}
+	if strings.ContainsAny(pattern, "*?[]") {
+		return globMatch(pattern, command)
+	}
+	return command == normalizeCommand(pattern)
 }

@@ -94,6 +94,7 @@ const (
 	ReasonUnknownPayload      ReasonCode = "shell.unknown_payload"
 	ReasonDepthLimit          ReasonCode = "shell.depth_limit"
 	ReasonExplicitDeny        ReasonCode = "rule.deny"
+	ReasonExplicitAllow       ReasonCode = "rule.allow"
 	ReasonExplicitConfirm     ReasonCode = "rule.confirm"
 	ReasonRequiresAct         ReasonCode = "access.requires_act"
 	ReasonRequiresSystem      ReasonCode = "access.requires_system"

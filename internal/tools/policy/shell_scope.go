@@ -58,7 +58,8 @@ func (a *shellAnalyzer) resolveTargets(op *ShellOperation, dir string) {
 }
 
 // classifyShellPath resolves a path and classifies it against the workspace
-// and read roots. A dangling symlink or unresolvable path is unknown.
+// and read roots. A dangling symlink is unknown; a path that does not exist
+// yet is still classifiable lexically against the workspace root.
 func classifyShellPath(path string, in ShellInput) (ShellScope, string) {
 	// A symlink whose target does not exist cannot be classified safely.
 	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
@@ -68,10 +69,16 @@ func classifyShellPath(path string, in ShellInput) (ShellScope, string) {
 	}
 	resolved, err := pathutil.ResolveAbsolute(path)
 	if err != nil {
-		return ShellScopeUnknown, path
+		// The path does not exist yet (a file about to be created, or a
+		// fixture root): classify it lexically rather than as unknown.
+		resolved = filepath.Clean(path)
 	}
 	if in.WorkspaceRoot != "" {
-		if root, err := pathutil.ResolveAbsolute(in.WorkspaceRoot); err == nil && isWithinRoot(resolved, root) {
+		root, rerr := pathutil.ResolveAbsolute(in.WorkspaceRoot)
+		if rerr != nil {
+			root = filepath.Clean(in.WorkspaceRoot)
+		}
+		if isWithinRoot(resolved, root) {
 			return ShellScopeWorkspace, resolved
 		}
 	}
@@ -79,7 +86,11 @@ func classifyShellPath(path string, in ShellInput) (ShellScope, string) {
 		if r == "" {
 			continue
 		}
-		if root, err := pathutil.ResolveAbsolute(r); err == nil && isWithinRoot(resolved, root) {
+		root, rerr := pathutil.ResolveAbsolute(r)
+		if rerr != nil {
+			root = filepath.Clean(r)
+		}
+		if isWithinRoot(resolved, root) {
 			return ShellScopeReadRoot, resolved
 		}
 	}

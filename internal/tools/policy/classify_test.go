@@ -1,33 +1,24 @@
 package policy
 
-import (
-	"strings"
-	"testing"
+import "testing"
 
-	"marshal/internal/tools/registry"
-)
-
+// TestClassifyCommand_Destructive pins the canonical destructive
+// classification for the equivalent spellings of a recursive force-delete
+// and the other destructive workspace operations.
 func TestClassifyCommand_Destructive(t *testing.T) {
-	cases := []struct {
-		cmd  string
-		want registry.RiskLevel
-	}{
-		{"rm -rf /tmp/x", registry.RiskDestructive},
-		{"rm -r -f /tmp/x", registry.RiskDestructive},
-		{"rm -fr /tmp/x", registry.RiskDestructive},
-		{"git clean -fdx", registry.RiskDestructive},
-		{"chmod -R 777 /tmp/x", registry.RiskDestructive},
-		{"chmod --recursive 777 /tmp/x", registry.RiskDestructive},
-		{"git reset --hard", registry.RiskDestructive},
+	cases := []string{
+		"rm -rf /tmp/x",
+		"rm -r -f /tmp/x",
+		"rm -fr /tmp/x",
+		"git clean -fdx",
+		"chmod -R 777 /tmp/x",
+		"chmod --recursive 777 /tmp/x",
+		"git reset --hard",
 	}
-	for _, c := range cases {
-		got, err := ClassifyCommand(c.cmd)
-		if err != nil {
-			t.Errorf("%q: %v", c.cmd, err)
-			continue
-		}
-		if got.Risk != c.want {
-			t.Errorf("%q: got %v, want %v", c.cmd, got.Risk, c.want)
+	for _, cmd := range cases {
+		a := analyze(t, cmd)
+		if !hasEffect(a, ShellDestructive) {
+			t.Errorf("%q: no destructive effect in %+v", cmd, a.Operations)
 		}
 	}
 }
@@ -40,65 +31,52 @@ func TestClassifyCommand_Benign(t *testing.T) {
 		"git diff",
 		"echo hello",
 	}
-	for _, c := range cases {
-		got, err := ClassifyCommand(c)
-		if err != nil {
-			t.Errorf("%q: %v", c, err)
-			continue
-		}
-		if got.Risk == registry.RiskDestructive {
-			t.Errorf("%q: got %v, want anything but %v", c, got.Risk, registry.RiskDestructive)
+	for _, cmd := range cases {
+		a := analyze(t, cmd)
+		if hasEffect(a, ShellDestructive) {
+			t.Errorf("%q: classified destructive: %+v", cmd, a.Operations)
 		}
 	}
 }
 
 func TestClassifyCommand_QuotedArgs(t *testing.T) {
-	got, err := ClassifyCommand(`echo "hello world"`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got.Risk == registry.RiskDestructive {
-		t.Errorf("quoted echo: got %v, want anything but %v", got.Risk, registry.RiskDestructive)
+	a := analyze(t, `echo "hello world"`)
+	if hasEffect(a, ShellDestructive) {
+		t.Errorf("quoted echo: classified destructive: %+v", a.Operations)
 	}
 }
 
+// TestClassifyEnvironmentCommands pins the environment tier: cache wipes,
+// global configuration and machine package managers mutate state outside the
+// workspace, while project-local installs stay routine writes.
 func TestClassifyEnvironmentCommands(t *testing.T) {
-	env := []struct{ cmd, reasonPart string }{
-		{"go clean -cache", "go clean"},
-		{"go clean -modcache", "go clean"},
-		{"go install golang.org/x/tools/cmd/stringer@latest", "go install"},
-		{"npm cache clean", "npm cache clean"},
-		{"npm install", "npm install"},
-		{"npm install -g typescript", "npm install"},
-		{"pip cache purge", "pip cache"},
-		{"pip cache remove requests", "pip cache"},
-		{"pip install requests", "pip install"},
-		{"pip3 install --user black", "pip3 install"},
-		{"yarn cache clean", "yarn cache clean"},
-		{"yarn add lodash", "yarn add"},
-		{"yarn install", "yarn install"},
-		{"yarn install --frozen-lockfile", "yarn install"},
-		{"git config --global user.name x", "git config --global"},
-		{"brew uninstall wget", "brew uninstall"},
-		{"brew cleanup", "brew cleanup"},
-		{"brew install ripgrep", "brew install"},
-		{"apt remove nginx", "apt"},
-		{"apt install curl", "apt"},
-		{"apt-get install curl", "apt-get"},
-		{"dnf install vim", "dnf"},
-		{"yum remove httpd", "yum"},
-		{"yum install vim", "yum"},
+	env := []string{
+		"go clean -cache",
+		"go clean -modcache",
+		"go install golang.org/x/tools/cmd/stringer@latest",
+		"npm cache clean",
+		"npm install -g typescript",
+		"pip cache purge",
+		"pip cache remove requests",
+		"pip install requests",
+		"pip3 install --user black",
+		"yarn cache clean",
+		"yarn add lodash",
+		"git config --global user.name x",
+		"brew uninstall wget",
+		"brew cleanup",
+		"brew install ripgrep",
+		"apt remove nginx",
+		"apt install curl",
+		"apt-get install curl",
+		"dnf install vim",
+		"yum remove httpd",
+		"yum install vim",
 	}
-	for _, tc := range env {
-		cls, err := ClassifyCommand(tc.cmd)
-		if err != nil {
-			t.Fatalf("%s: %v", tc.cmd, err)
-		}
-		if cls.Risk != registry.RiskEnvironment {
-			t.Errorf("%s: risk = %s, want environment", tc.cmd, cls.Risk)
-		}
-		if !strings.Contains(cls.Reason, tc.reasonPart) {
-			t.Errorf("%s: reason = %q, want it to contain %q", tc.cmd, cls.Reason, tc.reasonPart)
+	for _, cmd := range env {
+		a := analyze(t, cmd)
+		if !hasEffect(a, ShellEnvironment) {
+			t.Errorf("%s: no environment effect in %+v", cmd, a.Operations)
 		}
 	}
 
@@ -108,16 +86,15 @@ func TestClassifyEnvironmentCommands(t *testing.T) {
 		"git config --local user.name x",
 		"git config user.name x",
 		"npm cache ls",
+		"npm install",
+		"yarn install",
 		"brew list",
 		"apt list --installed",
 	}
 	for _, cmd := range ordinary {
-		cls, err := ClassifyCommand(cmd)
-		if err != nil {
-			t.Fatalf("%s: %v", cmd, err)
-		}
-		if cls.Risk == registry.RiskEnvironment {
-			t.Errorf("%s: misclassified as environment", cmd)
+		a := analyze(t, cmd)
+		if hasEffect(a, ShellEnvironment) {
+			t.Errorf("%s: misclassified as environment: %+v", cmd, a.Operations)
 		}
 	}
 }

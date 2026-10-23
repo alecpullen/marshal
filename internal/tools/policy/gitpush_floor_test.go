@@ -1,10 +1,10 @@
 package policy
 
 import (
-	"strings"
 	"testing"
 
 	"marshal/internal/app/config"
+	"marshal/internal/interaction"
 )
 
 // TestIsGitPushFloor_Variants pins S-05: the non-bypassable git-push floor
@@ -52,15 +52,15 @@ func TestIsGitPushFloor_Variants(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		got := isGitPushFloor(tc.cmd)
-		if got != tc.want {
-			t.Errorf("isGitPushFloor(%q) = %v, want %v", tc.cmd, got, tc.want)
+		a := analyze(t, tc.cmd)
+		if got := hasEffect(a, ShellPublish); got != tc.want {
+			t.Errorf("publish effect for %q = %v, want %v", tc.cmd, got, tc.want)
 		}
 	}
 }
 
 // TestGitPushFloorAlwaysConfirms_Variants pins S-05 end-to-end: even in auto
-// and copilot modes, every recognized git push variant must require approval.
+// mode, every recognized git push variant must require approval.
 func TestGitPushFloorAlwaysConfirms_Variants(t *testing.T) {
 	variants := []string{
 		"git push origin main",
@@ -70,19 +70,15 @@ func TestGitPushFloorAlwaysConfirms_Variants(t *testing.T) {
 		"nice -n 10 git push",
 	}
 
-	for _, mode := range []ApprovalMode{ModeEdit, ModeCopilot, ModeAuto} {
+	for _, auto := range []bool{false, true} {
 		for _, cmd := range variants {
 			pe := NewEngine(&config.Config{}, nil)
-			pe.SetApprovalMode(mode)
-			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd})
-			if err != nil {
-				t.Fatalf("mode %s cmd %q: Evaluate error: %v", mode, cmd, err)
+			ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: auto, Revision: 1}, cmd)
+			if ev.Decision != DecisionConfirm {
+				t.Errorf("auto=%v cmd %q: got %v, want Confirm", auto, cmd, ev.Decision)
 			}
-			if dec != DecisionConfirm {
-				t.Errorf("mode %s cmd %q: got %v, want Confirm; reason=%q", mode, cmd, dec, reason)
-			}
-			if !strings.Contains(reason, "git push") {
-				t.Errorf("mode %s cmd %q: reason %q should mention git push", mode, cmd, reason)
+			if !ev.ExactCommandApproval {
+				t.Errorf("auto=%v cmd %q: publishing did not require exact approval", auto, cmd)
 			}
 		}
 	}

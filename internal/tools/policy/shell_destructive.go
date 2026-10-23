@@ -31,6 +31,17 @@ func classifyDestructive(op *ShellOperation) {
 		if hasFlag(op, "-delete") {
 			op.Effects |= ShellDestructive
 		}
+		// find's -exec/-execdir/-ok payload is a deletion primitive even when
+		// the payload itself carries no recursive flag (`find . -ok rm {} ;`).
+		for _, payload := range findPayloads(op.Argv[1:]) {
+			if len(payload) == 0 {
+				continue
+			}
+			switch lastPathSegment(payload[0].Value) {
+			case "rm", "rmdir", "shred", "truncate", "unlink", "dd", "mkfs":
+				op.Effects |= ShellDestructive
+			}
+		}
 	case "chmod", "chown":
 		if hasRecursiveShellFlag(op) {
 			op.Effects |= ShellDestructive
@@ -50,7 +61,7 @@ func classifyDestructive(op *ShellOperation) {
 	case "shutdown", "reboot", "halt", "poweroff":
 		op.Effects |= ShellCatastrophic
 		op.Reasons = append(op.Reasons, PolicyReason{Code: ReasonFloorShutdown, OperationID: op.ID, Message: "system shutdown"})
-	case "sudo", "doas", "pkexec", "su":
+	case "sudo", "sudoedit", "doas", "pkexec", "su", "run0":
 		op.Effects |= ShellPrivilege
 		op.Reasons = append(op.Reasons, PolicyReason{Code: ReasonPrivilegeWrapper, OperationID: op.ID, Message: "privilege wrapper"})
 	}
@@ -66,7 +77,7 @@ func classifyGitDestructive(op *ShellOperation) {
 			op.Effects |= ShellDestructive
 		}
 	case "clean":
-		if !isDryRun(op) && (hasFlag(op, "-f") || hasFlag(op, "--force")) {
+		if !isDryRun(op) && (hasFlag(op, "-f") || hasFlag(op, "--force") || hasShortFlag(op, 'f')) {
 			op.Effects |= ShellDestructive
 		}
 	case "restore", "checkout", "switch":

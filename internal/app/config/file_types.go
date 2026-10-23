@@ -257,8 +257,8 @@ type fileTUI struct {
 	Transcript   *fileTranscript   `toml:"transcript"`
 }
 
-// fileTranscript mirrors [tui.transcript]; FoldFinishedTasks folds finished
-// beats to one row (the z toggle).
+// fileTranscript mirrors the retired [tui.transcript] table. Its keys still
+// parse so existing files load; they do nothing, and Diagnose says so.
 type fileTranscript struct {
 	Density           *string `toml:"density"`
 	FoldFinishedTasks *bool   `toml:"fold_finished_tasks"`

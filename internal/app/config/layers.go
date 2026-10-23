@@ -59,6 +59,10 @@ type Layers struct {
 	// do nothing; presence is read from the raw file mirrors because a
 	// value equal to its default is indistinguishable in the merged config.
 	SidePanelIgnoredBy []LayerID
+	// TranscriptIgnoredBy lists the file layers that set a key of the retired
+	// [tui.transcript] table, read from the raw file mirrors like
+	// SidePanelIgnoredBy.
+	TranscriptIgnoredBy []LayerID
 	// InteractionNotices records source-specific interaction migration
 	// notices (retired approval_mode spellings, ignored legacy fields).
 	// Diagnose appends them to its result.
@@ -217,6 +221,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 		Default:                      def, User: user, Merged: cfg, Migrated: migrated,
 		SubtaskIterationsSet:      subtaskSet,
 		SidePanelIgnoredBy:        sidePanelIgnoredBy(userFile, projectFile),
+		TranscriptIgnoredBy:       transcriptIgnoredBy(userFile, projectFile),
 		RemoteLimitDiscoverySetBy: remoteLimitDiscoverySetBy(userFile, projectFile),
 		HoistedProviders:          hoistedProviders,
 		HoistedPresets:            hoistedPresets,
@@ -242,6 +247,25 @@ func sidePanelIgnoredBy(user, project configFile) []LayerID {
 		out = append(out, LayerUser)
 	}
 	if dead(project) {
+		out = append(out, LayerProject)
+	}
+	return out
+}
+
+// transcriptIgnoredBy reports which file layers set a key of the retired
+// [tui.transcript] table.
+func transcriptIgnoredBy(user, project configFile) []LayerID {
+	set := func(f configFile) bool {
+		if f.TUI == nil || f.TUI.Transcript == nil {
+			return false
+		}
+		return f.TUI.Transcript.Density != nil || f.TUI.Transcript.FoldFinishedTasks != nil
+	}
+	var out []LayerID
+	if set(user) {
+		out = append(out, LayerUser)
+	}
+	if set(project) {
 		out = append(out, LayerProject)
 	}
 	return out

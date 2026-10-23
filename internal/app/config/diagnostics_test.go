@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -414,6 +415,50 @@ func TestDiagnoseWarnsOnceForDeadSidePanelKeys(t *testing.T) {
 	}
 	if !strings.Contains(d.Source, "user config") || !strings.Contains(d.Source, "project config") {
 		t.Errorf("source = %q, want both layers named", d.Source)
+	}
+}
+
+// The retired [tui.transcript] keys still load, warn once whichever layers set
+// them, and are gone from the next save.
+func TestDiagnoseWarnsOnceForRetiredTranscriptKeys(t *testing.T) {
+	home, work, userPath, projectPath := hoistPaths(t)
+	writeFile(t, userPath, "[tui.transcript]\ndensity = \"full\"\n")
+	writeFile(t, projectPath, "[tui.transcript]\nfold_finished_tasks = false\n")
+
+	l, err := LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work, TrustResolver: trust.FixedResolver{Decision: trust.DecisionTrustSession}})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	var got []Diagnostic
+	for _, d := range Diagnose(l.Merged, l) {
+		if d.Path == "tui.transcript" {
+			got = append(got, d)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("tui.transcript diagnostics = %d, want exactly 1: %+v", len(got), got)
+	}
+	if d := got[0]; d.Severity != SeverityWarning || !strings.Contains(d.Message, "one level of detail") ||
+		!strings.Contains(d.Source, "user config") || !strings.Contains(d.Source, "project config") {
+		t.Fatalf("diagnostic = %+v", d)
+	}
+
+	out := filepath.Join(t.TempDir(), ".marshal", "config.toml")
+	if err := SaveProjectConfig(out, l.Merged, l); err != nil {
+		t.Fatal(err)
+	}
+	if data := readFile(t, out); strings.Contains(data, "transcript") {
+		t.Fatalf("a save must not write the retired table:\n%s", data)
+	}
+
+	quiet, err := LoadLayers(LoadOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	for _, d := range Diagnose(quiet.Merged, quiet) {
+		if d.Path == "tui.transcript" {
+			t.Fatalf("defaults produced a transcript diagnostic: %+v", d)
+		}
 	}
 }
 

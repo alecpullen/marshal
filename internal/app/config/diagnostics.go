@@ -295,15 +295,20 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		})
 	}
 
-	// 11: [tui.transcript] density. An unknown level is read as "steps".
-	switch cfg.TUI.Transcript.Density {
-	case "", "outline", "steps", "full":
-	default:
+	// 11: [tui.transcript]. The density ladder and beat folding were removed:
+	// the transcript has one level of detail. density and fold_finished_tasks
+	// still parse (existing files must keep loading) but do nothing. One
+	// diagnostic however many layers set them.
+	if len(layers.TranscriptIgnoredBy) > 0 {
+		sources := make([]string, len(layers.TranscriptIgnoredBy))
+		for i, l := range layers.TranscriptIgnoredBy {
+			sources[i] = l.String()
+		}
 		ds = append(ds, Diagnostic{
 			Severity: SeverityWarning,
-			Path:     "tui.transcript.density",
-			Message:  "unknown density " + strconv.Quote(cfg.TUI.Transcript.Density) + " (accepted: \"outline\", \"steps\", \"full\"); using \"steps\"",
-			Source:   layers.ProvenanceOf("tui.transcript.density").SetBy.String(),
+			Path:     "tui.transcript",
+			Message:  "tui.transcript.density and fold_finished_tasks are ignored — the transcript has one level of detail; Enter or a click expands a row, Ctrl+G expands everything",
+			Source:   strings.Join(sources, ", "),
 		})
 	}
 

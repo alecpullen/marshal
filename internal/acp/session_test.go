@@ -1599,7 +1599,6 @@ func TestSessionNewWithoutPolicyChangesNothing(t *testing.T) {
 // and nothing chained to it.
 func TestSessionNewPolicyAllowReachesPolicyEngine(t *testing.T) {
 	rt := policyTestRuntime()
-	rt.State.Config.Tools.Shell.AutoApprove = false
 	m := policyTestManager(t, rt)
 	if _, err := m.Create(context.Background(), policyNewParams(t, `{"allow":["go test *","make lint"]}`)); err != nil {
 		t.Fatalf("Create: %v", err)

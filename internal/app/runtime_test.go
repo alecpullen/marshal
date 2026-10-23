@@ -1280,7 +1280,7 @@ func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
 			if result.Status != session.AccessGranted {
 				t.Fatalf("status = %q, want %q", result.Status, session.AccessGranted)
 			}
-			if want := legacyMode(tuple); result.Effective.Mode != want {
+			if want := canonicalMode(tuple); result.Effective.Mode != want {
 				t.Fatalf("effective mode = %q, want the preserved %q", result.Effective.Mode, want)
 			}
 			if !result.Effective.System {
@@ -1319,7 +1319,7 @@ func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ResolveAccess: %v", err)
 			}
-			if want := legacyMode(tuple); result.Effective.Mode != want {
+			if want := canonicalMode(tuple); result.Effective.Mode != want {
 				t.Fatalf("effective mode = %q, want the preserved %q", result.Effective.Mode, want)
 			}
 			if !result.Effective.System {
@@ -1329,16 +1329,9 @@ func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
 	}
 }
 
-// legacyMode projects a canonical tuple onto the retired five-mode spelling the
-// session's compatibility fields still carry.
-func legacyMode(tuple interaction.Defaults) string {
-	if tuple.Mode == interaction.ModeAsk {
-		return "default"
-	}
-	if tuple.Auto {
-		return "auto"
-	}
-	return "copilot"
+// canonicalMode returns the canonical mode string for a tuple.
+func canonicalMode(tuple interaction.Defaults) string {
+	return string(tuple.Mode)
 }
 
 // A manual mode change that satisfies a waiting request settles it as
@@ -1355,8 +1348,9 @@ func TestRuntimeAccessSatisfiedWhilePendingSettlesAvailable(t *testing.T) {
 	}
 
 	// The user switches mode by hand while the request is still waiting.
-	if err := rt.SetSessionMode("copilot"); err != nil {
-		t.Fatalf("SetSessionMode: %v", err)
+	act := interaction.ModeAct
+	if _, err := rt.SetInteraction(interaction.Patch{Mode: &act}); err != nil {
+		t.Fatalf("SetInteraction: %v", err)
 	}
 	before := rt.State.InteractionState().Mode
 
@@ -1376,7 +1370,7 @@ func TestRuntimeAccessSatisfiedWhilePendingSettlesAvailable(t *testing.T) {
 	if decision.Approved {
 		t.Fatal("an already-available result must not report approval")
 	}
-	if decision.Access.Effective.Mode != "copilot" {
+	if decision.Access.Effective.Mode != "act" {
 		t.Fatalf("effective mode = %q, want the manual Act selection", decision.Access.Effective.Mode)
 	}
 	if after := rt.State.InteractionState().Mode; after != before {
@@ -1407,7 +1401,7 @@ func TestRuntimeAccessCombinedCommitsSelectedBundle(t *testing.T) {
 			// An access grant always commits normal Act with Auto off: it never
 			// grants Auto, even when the chooser names the retired auto spelling.
 			want := interaction.Defaults{Mode: interaction.ModeAct}
-			if result.Effective.Mode != legacyMode(want) || !result.Effective.System {
+			if result.Effective.Mode != canonicalMode(want) || !result.Effective.System {
 				t.Fatalf("effective = %+v, want the committed %+v with system access on", result.Effective, want)
 			}
 
@@ -1741,7 +1735,7 @@ func TestRuntimeNewAndResumedSessionResetAccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	want := session.AccessState{Mode: cfg.Agent.ApprovalMode, System: false}
+	want := session.AccessState{Mode: string(cfg.Agent.Mode), System: false}
 	if got := newState.AccessState(); got != want {
 		t.Fatalf("new session pair = %+v, want %+v", got, want)
 	}

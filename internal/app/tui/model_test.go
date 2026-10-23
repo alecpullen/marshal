@@ -4392,7 +4392,10 @@ func TestTabIgnoredDuringApproval(t *testing.T) {
 	state.SetPendingApproval(tc)
 	m := New(state)
 	m.resize(80, 24)
-	state.SetSessionMode("act", func() {})
+	act := interaction.ModeAct
+	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
+		t.Fatalf("seed Act: %v", err)
+	}
 
 	sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
 

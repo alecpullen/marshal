@@ -1029,107 +1029,15 @@ func (s *State) AccessState() AccessState {
 	return s.accessStateLocked()
 }
 
-// normalizeAccessMode validates a literal session-mode selection: a mode the
-// user (or an approved request) names explicitly. Unlike a configured value,
-// a selection is never guessed — blank or unrecognized input is an error that
-// must leave the session's authority untouched.
-func normalizeAccessMode(mode string) (string, error) {
-	switch mode {
-	case "plan", "default", "edit", "copilot", "auto":
-		return mode, nil
-	}
-	return "", fmt.Errorf("session: unknown approval mode %q", mode)
-}
-
-// configuredAccessMode normalizes a mode read from configuration, matching
-// how the rest of Marshal parses [agent].approval_mode: case-insensitive, and
-// unknown or blank values fall back to "default" — the safe, read-only mode —
-// rather than failing the session.
-func configuredAccessMode(mode string) string {
-	normalized := strings.ToLower(strings.TrimSpace(mode))
-	switch normalized {
-	case "plan", "default", "edit", "copilot", "auto":
-		return normalized
-	}
-	return "default"
-}
-
-// SetSessionMode applies an explicit mode selection for this session. The
-// runner setter arrives as apply because the session package does not know
-// about the policy engine; it is infallible, so validation and the quiescing
-// gate happen here, before any mutation, and a rejected selection changes
-// nothing. On success the mode becomes the session override, so it survives a
-// config reload that does not itself change the configured mode (see
-// ModeForConfig).
-func (s *State) SetSessionMode(mode string, apply func()) error {
-	valid, err := normalizeAccessMode(mode)
-	if err != nil {
-		return err
-	}
-	d, _, err := interaction.LegacyDefaults(valid)
-	if err != nil {
-		return fmt.Errorf("session: unknown approval mode %q", mode)
-	}
-	if apply == nil {
-		return fmt.Errorf("session: set mode %q: no apply function", valid)
-	}
-	s.accessMu.Lock()
-	defer s.accessMu.Unlock()
-	// The quiescing gate is checked under workMu (never the other way round,
-	// which would invert the documented lock order) so a mode change cannot
-	// land during shutdown.
-	s.workMu.Lock()
-	quiescing := s.quiescing
-	s.workMu.Unlock()
-	if quiescing {
-		return ErrSessionQuiescing
-	}
-	// apply is the runner's setter: call it without State.mu held, then
-	// commit the session-visible tuple. The override records the whole pair.
-	apply()
-	next, err := interaction.Apply(s.access, interaction.Patch{Mode: &d.Mode, Auto: &d.Auto})
-	if err != nil {
-		return err
-	}
-	next.Revision = s.access.Revision + 1
-	s.access = next
-	ov := interaction.Defaults{Mode: next.Mode, Auto: next.Auto}
-	s.accessOverride = &ov
-	return nil
-}
-
-// ModeForConfig reports the mode the session should run with for an incoming
-// configuration: the session override when the configured pair has not
-// changed, otherwise the configured pair itself. It mutates nothing, so a
-// caller can consult it before deciding whether to rebuild anything.
-func (s *State) ModeForConfig(cfg config.Config) string {
-	st, err := s.InteractionForConfig(cfg)
-	if err != nil {
-		return legacyApprovalMode(interaction.ModeAsk, false)
-	}
-	return legacyApprovalMode(st.Mode, st.Auto)
-}
-
 // ConfigSnapshot returns a copy of the installed configuration, read under the
-// session mutex. RebaseSessionConfig replaces Config wholesale on every reload
-// — including reloads driven from a background goroutine — so a bare read of
-// State.Config races the swap. A caller that needs more than one field
+// session mutex. RebaseInteractionConfig replaces Config wholesale on every
+// reload — including reloads driven from a background goroutine — so a bare
+// read of State.Config races the swap. A caller that needs more than one field
 // consistently must take one snapshot rather than reading the field per use.
 func (s *State) ConfigSnapshot() config.Config {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.Config
-}
-
-// RebaseSessionConfig installs a reloaded configuration and re-derives the
-// effective mode against it. An unchanged configured mode keeps the session
-// override (an unrelated setting change must not silently revert the user's
-// mode); an explicit change to the configured mode clears the override, since
-// the user's edit is the newer intent. systemAccess is preserved either way —
-// the grant belongs to the conversation, not to the file. Failed reloads must
-// not call this at all.
-func (s *State) RebaseSessionConfig(cfg config.Config) {
-	_, _ = s.RebaseInteractionConfig(cfg)
 }
 
 // ── Capability access requests ────────────────────────────────────────
@@ -3521,7 +3429,7 @@ func (s *State) ResolvePendingForShutdown() {
 	if typed {
 		typedReq = *s.pendingApproval.Access
 	}
-	actual := AccessState{Mode: legacyApprovalMode(s.access.Mode, s.access.Auto), System: s.access.System}
+	actual := AccessState{Mode: string(s.access.Mode), System: s.access.System}
 	s.mu.Unlock()
 	if typed {
 		s.finishAccessCanceledLocked(typedReq, actual, "session is shutting down")

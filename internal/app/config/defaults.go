@@ -26,7 +26,6 @@ func Default() Config {
 			IntentNudge:            true,
 			Mode:                   interaction.ModeAct,
 			Auto:                   false,
-			ApprovalMode:           "copilot",
 			MaxTouchedFileBytes:    65536, // 64 KiB
 			MaxConcurrentSubagents: 3,
 			// Preserve the long-standing fixed +4096 Anthropic thinking
@@ -68,12 +67,8 @@ func Default() Config {
 				MaxBackgroundJobs:     25,
 				BackgroundRetention:   8 * time.Hour,
 				AllowNetwork:          false,
-				AutoApprove:           false,
-				GuardrailDynamicArgv0: "deny",
 				FloorCommands:         []string{"git push"},
 				Allow:                 CommandRules{Commands: []string{"go test", "git status", "git diff"}},
-				Confirm:               CommandRules{Commands: []string{"go get", "npm install"}},
-				Deny:                  PatternRules{Patterns: []string{"rm -rf", "sudo", "curl * | sh"}},
 				Sandbox: SandboxConfig{
 					Backend: "restricted",
 					// Memory, CPU, and file-size caps stay opt-in: a build or

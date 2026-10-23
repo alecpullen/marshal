@@ -1309,9 +1309,9 @@ func (m *Model) applyNewConfig(cfg config.Config) {
 	prevTranscript := m.state.Config.TUI.Transcript
 	// Rebase rather than assign: the session owns the mode override, so an
 	// unrelated reload must not silently revert a manual selection or an
-	// approved grant. RebaseSessionConfig installs the new config with the
+	// approved grant. RebaseInteractionConfig installs the new config with the
 	// remaining override applied and preserves the system-access flag.
-	m.state.RebaseSessionConfig(cfg)
+	m.state.RebaseInteractionConfig(cfg)
 	if cfg.TUI.Transcript != prevTranscript {
 		// An edit to [tui.transcript] takes effect in the running session.
 		m.applyTranscriptConfig()

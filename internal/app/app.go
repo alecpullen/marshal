@@ -3073,7 +3073,10 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// configured value for the baseline update below.
 	effectiveCfg := cfg
 	if rt.State != nil {
-		effectiveCfg.Agent.ApprovalMode = rt.State.ModeForConfig(cfg)
+		if st, err := rt.State.InteractionForConfig(cfg); err == nil {
+			effectiveCfg.Agent.Mode = st.Mode
+			effectiveCfg.Agent.Auto = st.Auto
+		}
 	}
 
 	db := must[*db.DB](rt.DB)
@@ -3124,7 +3127,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// configured value: an unchanged configured mode keeps the session
 	// override, an explicit change to it clears the override, and the system
 	// flag survives either way.
-	rt.State.RebaseSessionConfig(cfg)
+	rt.State.RebaseInteractionConfig(cfg)
 	// Runtime.Config stays the configured baseline, never the effective mode:
 	// it is what a later reload and a new session start from.
 	rt.Config = cfg

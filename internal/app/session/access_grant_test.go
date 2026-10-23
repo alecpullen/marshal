@@ -22,7 +22,7 @@ func TestAccessActGrantNeverEnablesAuto(t *testing.T) {
 		t.Fatalf("ResolveAccess = (%+v, %v), want a grant", result, err)
 	}
 	got := f.state.AccessState()
-	if got.Mode != "copilot" || got.Auto {
+	if got.Mode != "act" || got.Auto {
 		t.Fatalf("granted tuple = %+v, want Act with Auto off", got)
 	}
 }
@@ -47,7 +47,7 @@ func TestAccessSystemOnlyPreservesModeAndAuto(t *testing.T) {
 		t.Fatalf("ResolveAccess = (%+v, %v), want a grant", result, err)
 	}
 	got := s.AccessState()
-	if got.Mode != "auto" || !got.Auto || !got.System {
+	if got.Mode != "act" || !got.Auto || !got.System {
 		t.Fatalf("granted tuple = %+v, want Act+Auto+System preserved", got)
 	}
 }
@@ -67,7 +67,7 @@ func TestAccessCombinedGrantCommitsOneRevision(t *testing.T) {
 		t.Fatalf("ResolveAccess = (%+v, %v), want a grant", result, err)
 	}
 	got := f.state.AccessState()
-	if got.Mode != "copilot" || got.Auto || !got.System {
+	if got.Mode != "act" || got.Auto || !got.System {
 		t.Fatalf("granted tuple = %+v, want Act/Auto-off/System", got)
 	}
 	if got.Revision != before+1 {

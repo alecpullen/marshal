@@ -4012,7 +4012,7 @@ func TestRoleRunnerAppliesCustomAgentOverrides(t *testing.T) {
 		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
 	}
 	cfg.CustomAgents = map[string]routing.CustomAgent{
-		"strict": {Name: "strict", Preset: "ollama/gpt-4o-mini", SystemPrompt: "be strict", ToolDenylist: []string{"file.write_patch"}, ApprovalMode: "plan", MaxIterations: 5},
+		"strict": {Name: "strict", Preset: "ollama/gpt-4o-mini", SystemPrompt: "be strict", ToolDenylist: []string{"file.write_patch"}, MaxIterations: 5},
 	}
 	resolver := newRoutedProviderResolver(cfg, "")
 	reg := registry.New()

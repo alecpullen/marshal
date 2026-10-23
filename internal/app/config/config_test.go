@@ -976,9 +976,6 @@ patterns = ["rm -rf"]
 	}
 
 	s := cfg.Tools.Shell
-	if !s.AutoApprove {
-		t.Fatal("AutoApprove not merged, want true")
-	}
 	if !reflect.DeepEqual(s.Allow.Commands, []string{"go test", "git status"}) {
 		t.Errorf("Allow.Commands = %#v", s.Allow.Commands)
 	}
@@ -987,9 +984,6 @@ patterns = ["rm -rf"]
 	}
 	if !reflect.DeepEqual(s.Deny.Patterns, []string{"rm -rf"}) {
 		t.Errorf("Deny.Patterns = %#v", s.Deny.Patterns)
-	}
-	if s.GuardrailDynamicArgv0 != "off" {
-		t.Fatalf("GuardrailDynamicArgv0 not merged, want off, got %q", s.GuardrailDynamicArgv0)
 	}
 }
 
@@ -1028,9 +1022,6 @@ func TestDefaultSandboxBackendIsRestricted(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sb.EnvAllowlist, []string{"PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "TERM", "TMPDIR", "GOPATH", "GOCACHE", "GOMODCACHE"}) {
 		t.Errorf("default env allowlist = %#v", sb.EnvAllowlist)
-	}
-	if cfg.Tools.Shell.GuardrailDynamicArgv0 != "deny" {
-		t.Fatalf("default guardrail_dynamic_argv0 = %q, want deny", cfg.Tools.Shell.GuardrailDynamicArgv0)
 	}
 }
 
@@ -1613,18 +1604,13 @@ approval_mode = "copilot"
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Agent.ApprovalMode != "copilot" {
-		t.Fatalf("ApprovalMode = %q, want %q (project wins)", cfg.Agent.ApprovalMode, "copilot")
+	if cfg.Agent.Mode != interaction.ModeAct || cfg.Agent.Auto {
+		t.Fatalf("tuple = %q/%v, want act/false (project approval_mode translates to Act)", cfg.Agent.Mode, cfg.Agent.Auto)
 	}
 }
 
 func TestApprovalModeDefault(t *testing.T) {
 	cfg := Default()
-	// The fresh default is Act, whose retired-spelling projection is
-	// "copilot". ApprovalMode is a compatibility projection, not authority.
-	if cfg.Agent.ApprovalMode != "copilot" {
-		t.Fatalf("default ApprovalMode = %q, want %q", cfg.Agent.ApprovalMode, "copilot")
-	}
 	if cfg.Agent.Mode != interaction.ModeAct || cfg.Agent.Auto {
 		t.Fatalf("default tuple = %q/%v, want act/false", cfg.Agent.Mode, cfg.Agent.Auto)
 	}

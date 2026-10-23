@@ -139,7 +139,7 @@ func TestSetSessionEffortIsSafeAgainstAConfigRebase(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 200; i++ {
-			state.RebaseSessionConfig(reload)
+			state.RebaseInteractionConfig(reload)
 		}
 	}()
 	for i := 0; i < 200; i++ {

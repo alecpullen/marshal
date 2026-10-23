@@ -2369,17 +2369,17 @@ func TestSetActiveToolCallArgsNoActiveCallIsNoop(t *testing.T) {
 // TUI's seeded-mode label relies on — instead of failing the session.
 func TestAccessStateReadsModeAndSystemTogether(t *testing.T) {
 	s := newTestState()
-	if got := s.AccessState(); got.Mode != "copilot" || got.System {
-		t.Fatalf("fresh AccessState() = %+v, want {Mode: copilot, System: false}", got)
+	if got := s.AccessState(); got.Mode != "act" || got.System {
+		t.Fatalf("fresh AccessState() = %+v, want {Mode: act, System: false}", got)
 	}
 	for _, tc := range []struct {
 		mode interaction.Mode
 		auto bool
 		want string
 	}{
-		{interaction.ModeAct, false, "copilot"},
-		{interaction.ModeAct, true, "auto"},
-		{interaction.ModeAsk, false, "default"},
+		{interaction.ModeAct, false, "act"},
+		{interaction.ModeAct, true, "act"},
+		{interaction.ModeAsk, false, "ask"},
 	} {
 		cfg := config.Default()
 		cfg.Agent.Mode = tc.mode
@@ -2390,12 +2390,13 @@ func TestAccessStateReadsModeAndSystemTogether(t *testing.T) {
 		}
 	}
 
-	if err := s.SetSessionMode("auto", func() {}); err != nil {
-		t.Fatalf("SetSessionMode(auto) = %v, want nil", err)
+	auto := true
+	if _, err := s.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("ApplyInteraction(auto) = %v, want nil", err)
 	}
 	s.SetSystemAccess(true)
-	if got := s.AccessState(); got.Mode != "auto" || !got.System {
-		t.Fatalf("AccessState() = %+v, want {Mode: auto, System: true}", got)
+	if got := s.AccessState(); got.Mode != "act" || !got.Auto || !got.System {
+		t.Fatalf("AccessState() = %+v, want {Mode: act, Auto: true, System: true}", got)
 	}
 	// The effective tuple is no longer mirrored into Config; the configured
 	// projection stays Act.
@@ -2410,19 +2411,20 @@ func TestAccessStateReadsModeAndSystemTogether(t *testing.T) {
 // mode mid-conversation.
 func TestSessionModeOverrideSurvivesUnrelatedConfig(t *testing.T) {
 	s := newTestState()
-	if err := s.SetSessionMode("auto", func() {}); err != nil {
-		t.Fatalf("SetSessionMode(auto) = %v", err)
+	ask := interaction.ModeAsk
+	if _, err := s.ApplyInteraction(interaction.Patch{Mode: &ask}); err != nil {
+		t.Fatalf("ApplyInteraction(ask) = %v", err)
 	}
 
 	cfg := config.Default()
 	cfg.Agent.NarrationPrompt = !cfg.Agent.NarrationPrompt // unrelated change
-	if got := s.ModeForConfig(cfg); got != "auto" {
-		t.Fatalf("ModeForConfig(unchanged configured mode) = %q, want the auto override", got)
+	if got, err := s.InteractionForConfig(cfg); err != nil || got.Mode != interaction.ModeAsk {
+		t.Fatalf("InteractionForConfig(unchanged configured mode) = %+v, %v, want the ask override", got, err)
 	}
-	s.RebaseSessionConfig(cfg)
+	s.RebaseInteractionConfig(cfg)
 
-	if got := s.AccessState().Mode; got != "auto" {
-		t.Fatalf("mode after an unrelated reload = %q, want auto (override lost)", got)
+	if got := s.AccessState().Mode; got != "ask" {
+		t.Fatalf("mode after an unrelated reload = %q, want ask (override lost)", got)
 	}
 	if got := s.Config.Agent.NarrationPrompt; got != cfg.Agent.NarrationPrompt {
 		t.Fatalf("the unrelated setting was not installed: NarrationPrompt = %v, want %v", got, cfg.Agent.NarrationPrompt)
@@ -2433,29 +2435,32 @@ func TestSessionModeOverrideSurvivesUnrelatedConfig(t *testing.T) {
 // override: it replaces the user's selection, and a later unrelated reload
 // keeps the newly configured mode instead of reviving the old one.
 func TestExplicitConfiguredModeChangeClearsOverride(t *testing.T) {
-	s := newTestState()
-	if err := s.SetSessionMode("auto", func() {}); err != nil {
-		t.Fatalf("SetSessionMode(auto) = %v", err)
+	cfg := config.Default()
+	cfg.Agent.Mode = interaction.ModeAsk
+	s := New(cfg, t.TempDir(), time.Unix(100, 0), Persistence{})
+	act := interaction.ModeAct
+	if _, err := s.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
+		t.Fatalf("ApplyInteraction(act) = %v", err)
 	}
 
 	changed := config.Default()
-	changed.Agent.Mode = interaction.ModeAsk
-	s.RebaseSessionConfig(changed)
+	changed.Agent.Mode = interaction.ModeAct
+	s.RebaseInteractionConfig(changed)
 
-	if got := s.AccessState().Mode; got != "default" {
-		t.Fatalf("mode after an explicit configured change = %q, want default", got)
+	if got := s.AccessState().Mode; got != "act" {
+		t.Fatalf("mode after an explicit configured change = %q, want act", got)
 	}
-	// The stale auto override is gone: with it still set, ModeForConfig
-	// compares the unchanged configured pair and would return auto.
-	if got := s.ModeForConfig(changed); got != "default" {
-		t.Fatalf("ModeForConfig(%q) = %q, want default — the auto override survived an explicit change", changed.Agent.Mode, got)
+	// The stale act override is gone: with it still set, InteractionForConfig
+	// compares the unchanged configured pair and would return act.
+	if got, err := s.InteractionForConfig(changed); err != nil || got.Mode != interaction.ModeAct {
+		t.Fatalf("InteractionForConfig(%q) = %+v, %v, want act — the act override survived an explicit change", changed.Agent.Mode, got, err)
 	}
 
 	later := changed
 	later.Agent.NarrationPrompt = !later.Agent.NarrationPrompt
-	s.RebaseSessionConfig(later)
-	if got := s.AccessState().Mode; got != "default" {
-		t.Fatalf("mode after a later unrelated reload = %q, want default", got)
+	s.RebaseInteractionConfig(later)
+	if got := s.AccessState().Mode; got != "act" {
+		t.Fatalf("mode after a later unrelated reload = %q, want act", got)
 	}
 }
 
@@ -2465,33 +2470,24 @@ func TestExplicitConfiguredModeChangeClearsOverride(t *testing.T) {
 func TestSessionModeFailureDoesNotMutate(t *testing.T) {
 	s := newTestState()
 	before := s.AccessState()
-	called := false
-	apply := func() { called = true }
 
-	for _, mode := range []string{"", "bogus", "Auto", " auto"} {
-		if err := s.SetSessionMode(mode, apply); err == nil {
-			t.Errorf("SetSessionMode(%q) = nil, want an error", mode)
+	for _, mode := range []interaction.Mode{"", "bogus", "Auto", " auto"} {
+		m := mode
+		if _, err := s.ApplyInteraction(interaction.Patch{Mode: &m}); err == nil {
+			t.Errorf("ApplyInteraction(%q) = nil, want an error", mode)
 		}
-	}
-	if err := s.SetSessionMode("auto", nil); err == nil {
-		t.Error("SetSessionMode(auto, nil) = nil, want an error for a missing applier")
-	}
-	if called {
-		t.Fatal("a rejected selection reached the runner setter")
 	}
 	if got := s.AccessState(); got != before {
 		t.Fatalf("AccessState() = %+v after rejected selections, want %+v", got, before)
 	}
-	if got := s.ModeForConfig(config.Default()); got != "copilot" {
-		t.Fatalf("ModeForConfig() = %q after rejected selections, want copilot (configured default, no override)", got)
+	if got, err := s.InteractionForConfig(config.Default()); err != nil || got.Mode != interaction.ModeAct {
+		t.Fatalf("InteractionForConfig() = %+v, %v after rejected selections, want act (configured default, no override)", got, err)
 	}
 
 	s.BeginQuiesce()
-	if err := s.SetSessionMode("auto", apply); !errors.Is(err, ErrSessionQuiescing) {
-		t.Fatalf("SetSessionMode while quiescing = %v, want ErrSessionQuiescing", err)
-	}
-	if called {
-		t.Fatal("a mode change reached the runner setter after quiesce")
+	ask := interaction.ModeAsk
+	if _, err := s.ApplyInteraction(interaction.Patch{Mode: &ask}); !errors.Is(err, ErrSessionQuiescing) {
+		t.Fatalf("ApplyInteraction while quiescing = %v, want ErrSessionQuiescing", err)
 	}
 	if got := s.AccessState(); got != before {
 		t.Fatalf("AccessState() = %+v after a quiescing rejection, want %+v", got, before)
@@ -2505,17 +2501,18 @@ func TestSessionModeFailureDoesNotMutate(t *testing.T) {
 func TestNewStateDoesNotInheritAccessOverrides(t *testing.T) {
 	cfg := config.Default()
 	first := New(cfg, t.TempDir(), time.Unix(100, 0), Persistence{})
-	if err := first.SetSessionMode("auto", func() {}); err != nil {
-		t.Fatalf("SetSessionMode(auto) = %v", err)
+	ask := interaction.ModeAsk
+	if _, err := first.ApplyInteraction(interaction.Patch{Mode: &ask}); err != nil {
+		t.Fatalf("ApplyInteraction(ask) = %v", err)
 	}
 	first.SetSystemAccess(true)
 
 	second := New(cfg, t.TempDir(), time.Unix(200, 0), Persistence{})
-	if got := second.AccessState(); got.Mode != "copilot" || got.System {
-		t.Fatalf("second state AccessState() = %+v, want {Mode: copilot, System: false}", got)
+	if got := second.AccessState(); got.Mode != "act" || got.System {
+		t.Fatalf("second state AccessState() = %+v, want {Mode: act, System: false}", got)
 	}
-	if got := second.ModeForConfig(cfg); got != "copilot" {
-		t.Fatalf("second state ModeForConfig() = %q, want copilot", got)
+	if got, err := second.InteractionForConfig(cfg); err != nil || got.Mode != interaction.ModeAct {
+		t.Fatalf("second state InteractionForConfig() = %+v, %v, want act", got, err)
 	}
 	if got := cfg.Agent.Mode; got != interaction.ModeAct {
 		t.Fatalf("the shared config fixture was mutated to %q", got)
@@ -2738,7 +2735,7 @@ func TestAccessResolveAppliesBeforeAcknowledgment(t *testing.T) {
 		t.Fatalf("ResolveAccess = %+v, want a grant", result)
 	}
 	want := req.Current
-	want.Mode = "copilot"
+	want.Mode = "act"
 	want.Auto = false
 	want.Revision = req.Current.Revision + 1
 	if got := result.Effective; got != want {
@@ -2793,8 +2790,8 @@ func TestAccessCancelWinsBeforeAcceptance(t *testing.T) {
 	if called {
 		t.Fatal("a canceled request reached prepare or apply")
 	}
-	if got := f.state.AccessState(); got.Mode != "default" || got.System {
-		t.Fatalf("AccessState() = %+v after cancellation, want default/false", got)
+	if got := f.state.AccessState(); got.Mode != "ask" || got.System {
+		t.Fatalf("AccessState() = %+v after cancellation, want ask/false", got)
 	}
 	if d := <-f.call.ResponseChan; d.Approved || d.Access == nil || d.Access.Status != AccessCanceled {
 		t.Fatalf("delivered decision = %+v, want an unapproved typed cancellation", d)
@@ -2860,7 +2857,7 @@ func TestAccessAcceptedCommitWinsLaterCancellation(t *testing.T) {
 	if f.state.CancelAccess(req.RequestID, AccessCanceled, "too late") {
 		t.Fatal("CancelAccess settled an already-settled request")
 	}
-	if got := f.state.AccessState(); got.Mode != "default" || !got.System {
+	if got := f.state.AccessState(); got.Mode != "ask" || !got.System {
 		t.Fatalf("AccessState() = %+v after the late cancellation, want the granted pair", got)
 	}
 }
@@ -2891,7 +2888,7 @@ func TestAccessRefreshRetainsPendingAndResetsNoAuthority(t *testing.T) {
 	if result.Status != AccessRefresh {
 		t.Fatalf("ResolveAccess(stale pair) = %+v, want AccessRefresh", result)
 	}
-	if result.Effective.Mode != "default" || !result.Effective.System {
+	if result.Effective.Mode != "ask" || !result.Effective.System {
 		t.Fatalf("refresh effective = %+v, want the current pair", result.Effective)
 	}
 	if prepared {
@@ -2902,7 +2899,7 @@ func TestAccessRefreshRetainsPendingAndResetsNoAuthority(t *testing.T) {
 		t.Fatalf("a refresh settled the request: %+v", d)
 	default:
 	}
-	if got := f.state.AccessState(); got.Mode != "default" || !got.System {
+	if got := f.state.AccessState(); got.Mode != "ask" || !got.System {
 		t.Fatalf("AccessState() = %+v after a refresh, want the unrelated grant only", got)
 	}
 
@@ -3120,8 +3117,9 @@ func TestAccessDeniedAndAvailableReturnActualState(t *testing.T) {
 	// immediately: the satisfied registration takes no slot and publishes
 	// nothing, and a denial reports the actual pair.
 	s := newTestState()
-	if err := s.SetSessionMode("auto", func() {}); err != nil {
-		t.Fatalf("SetSessionMode(auto) = %v", err)
+	auto := true
+	if _, err := s.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("ApplyInteraction(auto) = %v", err)
 	}
 	s.SetSystemAccess(true)
 	satisfied := &PendingToolCall{ID: "satisfied", ResponseChan: make(chan UserApprovalDecision, 1)}
@@ -3132,8 +3130,8 @@ func TestAccessDeniedAndAvailableReturnActualState(t *testing.T) {
 	if immediate.RequestID != "" {
 		t.Fatalf("a satisfied registration allocated a request ID: %q", immediate.RequestID)
 	}
-	if immediate.Current.Mode != "auto" || !immediate.Current.Auto || !immediate.Current.System {
-		t.Fatalf("satisfied registration Current = %+v, want {auto true}", immediate.Current)
+	if immediate.Current.Mode != "act" || !immediate.Current.Auto || !immediate.Current.System {
+		t.Fatalf("satisfied registration Current = %+v, want {act auto true}", immediate.Current)
 	}
 	if immediate.MissingEditing || immediate.MissingSystem {
 		t.Fatalf("satisfied registration reported missing capabilities: %+v", immediate)
@@ -3190,7 +3188,7 @@ func TestAccessDeniedAndAvailableReturnActualState(t *testing.T) {
 	settled := false
 	result, err = f2.state.ResolveAccess(choiceFor(live, live.Current, ""), func(AccessRequest, AccessChoice) (AccessCommit, error) {
 		settled = true
-		return AccessCommit{Effective: AccessState{Mode: "default", System: true}, Apply: func() { settled = true }}, nil
+		return AccessCommit{Effective: AccessState{Mode: "ask", System: true}, Apply: func() { settled = true }}, nil
 	})
 	if err != nil {
 		t.Fatalf("ResolveAccess(satisfied later) = %v, want nil", err)
@@ -3201,7 +3199,7 @@ func TestAccessDeniedAndAvailableReturnActualState(t *testing.T) {
 	if settled {
 		t.Fatal("an already-available request reached the resolver")
 	}
-	if result.Effective.Mode != "default" || !result.Effective.System {
+	if result.Effective.Mode != "ask" || !result.Effective.System {
 		t.Fatalf("available effective = %+v, want the actual pair", result.Effective)
 	}
 	if d := <-f2.call.ResponseChan; d.Approved || d.Access == nil || d.Access.Status != AccessAvailable {
@@ -3294,7 +3292,7 @@ func TestAccessShutdownSettlesOnce(t *testing.T) {
 		if _, ok := <-f.call.ResponseChan; ok {
 			t.Fatal("the channel carried a second result")
 		}
-		if got := f.state.AccessState(); got.Mode != "default" || !got.System {
+		if got := f.state.AccessState(); got.Mode != "ask" || !got.System {
 			t.Fatalf("AccessState() = %+v, want the granted pair", got)
 		}
 	})

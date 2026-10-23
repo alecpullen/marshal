@@ -468,11 +468,9 @@ type ShellToolConfig struct {
 	MaxBackgroundJobs     int           `toml:"max_background_jobs"`
 	BackgroundRetention   time.Duration `toml:"background_retention"`
 	AllowNetwork          bool          `toml:"allow_network"`
-	AutoApprove           bool          `toml:"auto_approve"`
 	Allow                 CommandRules  `toml:"allow"`
 	Confirm               CommandRules  `toml:"confirm"`
 	Deny                  PatternRules  `toml:"deny"`
-	GuardrailDynamicArgv0 string        `toml:"guardrail_dynamic_argv0"`
 	FloorCommands         []string      `toml:"floor_commands"`
 	Sandbox               SandboxConfig `toml:"sandbox"`
 }
@@ -577,9 +575,6 @@ type AgentConfig struct {
 	// 0 (or negative) = built-in default (3, aligned with the default swarm
 	// scout count); values above 8 clamp to 8 at the session seam.
 	MaxConcurrentSubagents int `toml:"max_concurrent_subagents"`
-	// ApprovalMode is the retired five-mode spelling. It is derived from
-	// Mode/Auto for unmigrated callers and never grants authority.
-	ApprovalMode string `toml:"approval_mode"`
 	// Mode is the canonical interaction mode: "ask" or "act".
 	Mode interaction.Mode `toml:"mode"`
 	// Auto is the Act modifier that preauthorizes destructive workspace

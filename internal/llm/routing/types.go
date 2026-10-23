@@ -207,9 +207,6 @@ type CustomAgent struct {
 	Preset       string   `toml:"preset"`
 	SystemPrompt string   `toml:"system_prompt,omitempty"`
 	ToolDenylist []string `toml:"tool_denylist,omitempty"`
-	// ApprovalMode is the retired five-mode spelling. It survives only as
-	// input conversion for unmigrated files; it never grants authority.
-	ApprovalMode string `toml:"approval_mode,omitempty"`
 	// Mode and Auto optionally narrow the interaction tuple this agent may
 	// run with. Absence inherits the parent's value; they are restrictions,
 	// never an independent grant.

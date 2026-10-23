@@ -1879,8 +1879,8 @@ func TestPromptTurnAppliesModeElevation(t *testing.T) {
 		t.Fatalf("PromptTurn: %v", err)
 	}
 
-	if got := f.state.AccessState().Mode; got != "copilot" {
-		t.Fatalf("mode = %q, want the legacy Act projection", got)
+	if got := f.state.AccessState().Mode; got != "act" {
+		t.Fatalf("mode = %q, want the canonical Act projection", got)
 	}
 	d, ok := f.decision(0)
 	if !ok {
@@ -2936,9 +2936,8 @@ func TestModeRequestSystemElevationApplied(t *testing.T) {
 	if !f.state.SystemAccess() {
 		t.Fatal("SystemAccess() = false after an approved system request, want true")
 	}
-	// A system-only grant preserves the mode it was made in. Canonical Act
-	// projects to the legacy "copilot" spelling on this compatibility field.
-	if got := f.state.AccessState().Mode; got != "copilot" {
+	// A system-only grant preserves the mode it was made in.
+	if got := f.state.AccessState().Mode; got != "act" {
 		t.Fatalf("mode = %q, want the configured act preserved", got)
 	}
 	updates := f.modeChangedUpdates()
@@ -3575,7 +3574,7 @@ func TestACPAccessCommitsBeforeToolAcknowledgment(t *testing.T) {
 	if !d.Approved || d.Access == nil || d.Access.Status != session.AccessGranted {
 		t.Fatalf("delivered decision = %+v, want an approved typed grant", d)
 	}
-	assertAccessState(t, f.state.AccessState(), session.AccessState{Mode: "copilot", System: true})
+	assertAccessState(t, f.state.AccessState(), session.AccessState{Mode: "act", System: true})
 	updates := f.modeChangedUpdates()
 	if len(updates) != 1 || updates[0]["mode"] != "act" {
 		t.Fatalf("mode_changed updates = %#v, want exactly one for act", updates)
@@ -3589,8 +3588,8 @@ func TestACPAccessLegacySystemOnlyPreservesEveryMode(t *testing.T) {
 	for _, tc := range []struct {
 		configured, want string
 	}{
-		{"ask", "default"},
-		{"act", "copilot"},
+		{"ask", "ask"},
+		{"act", "act"},
 	} {
 		t.Run(tc.configured, func(t *testing.T) {
 			cfg := config.Default()
@@ -3644,7 +3643,7 @@ func TestACPAccessCombinedLegacyAndTypedVariants(t *testing.T) {
 					t.Fatalf("PromptTurn: %v", err)
 				}
 
-				want := session.AccessState{Mode: "copilot", System: true}
+				want := session.AccessState{Mode: "act", System: true}
 				assertAccessState(t, f.state.AccessState(), want)
 				updates := f.modeChangedUpdates()
 				if len(updates) != 1 || updates[0]["mode"] != "act" {
@@ -3668,8 +3667,9 @@ func TestACPAccessChangedTupleReasksFreshQuestion(t *testing.T) {
 		if calls == 1 {
 			// The user switches mode by hand while the client is deciding.
 			// The answer the client is about to give describes the old tuple.
-			if err := f.state.SetSessionMode("copilot", func() {}); err != nil {
-				t.Errorf("SetSessionMode: %v", err)
+			act := interaction.ModeAct
+			if _, err := f.state.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
+				t.Errorf("ApplyInteraction: %v", err)
 			}
 			return PermissionDecision{Approved: true, Edited: "edit"}
 		}
@@ -3693,7 +3693,7 @@ func TestACPAccessChangedTupleReasksFreshQuestion(t *testing.T) {
 		t.Fatal("the second question should still ask for system access")
 	}
 	// The stale answer applied nothing; the fresh one granted the remainder.
-	assertAccessState(t, f.state.AccessState(), session.AccessState{Mode: "copilot", System: true})
+	assertAccessState(t, f.state.AccessState(), session.AccessState{Mode: "act", System: true})
 	updates := f.modeChangedUpdates()
 	if len(updates) != 1 || updates[0]["mode"] != "act" {
 		t.Fatalf("mode_changed updates = %#v, want exactly one for canonical act", updates)
@@ -3715,8 +3715,8 @@ func TestACPAccessDuplicateEventsAndLateResponses(t *testing.T) {
 		if f.client.calls != 1 {
 			t.Fatalf("client calls = %d, want exactly 1 for one request", f.client.calls)
 		}
-		if got := f.state.AccessState(); got != (session.AccessState{Mode: "copilot", System: true}) {
-			assertAccessState(t, got, session.AccessState{Mode: "copilot", System: true})
+		if got := f.state.AccessState(); got != (session.AccessState{Mode: "act", System: true}) {
+			assertAccessState(t, got, session.AccessState{Mode: "act", System: true})
 		}
 		if updates := f.modeChangedUpdates(); len(updates) != 1 {
 			t.Fatalf("mode_changed updates = %#v, want exactly one commit", updates)
@@ -3747,7 +3747,7 @@ func TestACPAccessDuplicateEventsAndLateResponses(t *testing.T) {
 				t.Fatalf("decision %d = %+v, want an approved typed grant", i, d)
 			}
 		}
-		want := session.AccessState{Mode: "copilot", System: true}
+		want := session.AccessState{Mode: "act", System: true}
 		assertAccessState(t, f.state.AccessState(), want)
 	})
 }
@@ -3781,8 +3781,8 @@ func TestACPAccessMissingBridgeOrResolverFailsClosed(t *testing.T) {
 			if d.Access == nil || d.Access.Status != session.AccessFailed {
 				t.Fatalf("delivered result = %+v, want a typed failure", d.Access)
 			}
-			if got := f.state.AccessState(); got != (session.AccessState{Mode: "default"}) {
-				assertAccessState(t, got, session.AccessState{Mode: "default"})
+			if got := f.state.AccessState(); got != (session.AccessState{Mode: "ask"}) {
+				assertAccessState(t, got, session.AccessState{Mode: "ask"})
 			}
 			if updates := f.modeChangedUpdates(); len(updates) != 0 {
 				t.Fatalf("a failed request announced %#v", updates)
@@ -3822,8 +3822,8 @@ func TestACPAccessClientFailureAndCancellationSettleCanonical(t *testing.T) {
 	if d.Access.Message != "transport down" {
 		t.Fatalf("failure message = %q, want the transport error", d.Access.Message)
 	}
-	if got := f.state.AccessState(); got != (session.AccessState{Mode: "copilot"}) {
-		assertAccessState(t, got, session.AccessState{Mode: "copilot"})
+	if got := f.state.AccessState(); got != (session.AccessState{Mode: "act"}) {
+		assertAccessState(t, got, session.AccessState{Mode: "act"})
 	}
 	// The canonical channel was settled exactly once: the runner consumed its
 	// single value and the record shows it.
@@ -3898,8 +3898,8 @@ func TestACPAccessInvalidEditingVariantCannotPartiallyGrantSystem(t *testing.T) 
 				t.Fatalf("delivered result = %+v, want a typed failure", d.Access)
 			}
 			// Neither half was granted.
-			if got := f.state.AccessState(); got != (session.AccessState{Mode: "default"}) {
-				assertAccessState(t, got, session.AccessState{Mode: "default"})
+			if got := f.state.AccessState(); got != (session.AccessState{Mode: "ask"}) {
+				assertAccessState(t, got, session.AccessState{Mode: "ask"})
 			}
 			if updates := f.modeChangedUpdates(); len(updates) != 0 {
 				t.Fatalf("a failed request announced %#v", updates)
@@ -3935,23 +3935,23 @@ func TestACPManualModeUsesSessionOverride(t *testing.T) {
 	if _, err := manager.SetMode(context.Background(), json.RawMessage(`{"sessionId":"s1","mode":"copilot"}`)); err != nil {
 		t.Fatalf("SetMode: %v", err)
 	}
-	if got := state.AccessState().Mode; got != "copilot" {
-		t.Fatalf("mode = %q, want copilot", got)
+	if got := state.AccessState().Mode; got != "act" {
+		t.Fatalf("mode = %q, want act", got)
 	}
 
 	// An unrelated config change must not revert the manual selection.
 	unrelated := config.Default()
 	unrelated.Agent.MaxToolIterations++
-	state.RebaseSessionConfig(unrelated)
-	if got := state.AccessState().Mode; got != "copilot" {
-		t.Fatalf("mode after an unrelated reload = %q, want the override copilot", got)
+	state.RebaseInteractionConfig(unrelated)
+	if got := state.AccessState().Mode; got != "act" {
+		t.Fatalf("mode after an unrelated reload = %q, want the override act", got)
 	}
 
 	// An explicit configured-mode change replaces it.
 	explicit := config.Default()
 	explicit.Agent.Mode = interaction.ModeAsk
-	state.RebaseSessionConfig(explicit)
-	if got := state.AccessState().Mode; got != "default" {
+	state.RebaseInteractionConfig(explicit)
+	if got := state.AccessState().Mode; got != "ask" {
 		t.Fatalf("mode after an explicit change = %q, want the configured ask projection", got)
 	}
 }

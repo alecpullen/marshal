@@ -1013,9 +1013,6 @@ func TestApprovalModeRoundTrip(t *testing.T) {
 	if loaded.Agent.Mode != interaction.ModeAct || !loaded.Agent.Auto {
 		t.Fatalf("round-trip tuple = %q/%v, want act/true", loaded.Agent.Mode, loaded.Agent.Auto)
 	}
-	if loaded.Agent.ApprovalMode != "auto" {
-		t.Fatalf("round-trip ApprovalMode = %q, want %q", loaded.Agent.ApprovalMode, "auto")
-	}
 }
 
 // TestSaveProjectConfigDoesNotResurrectDeletedKeys pins the Phase 5 fix:

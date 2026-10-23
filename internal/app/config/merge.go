@@ -55,8 +55,6 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.MaxTouchedFileBytes, file.Agent.MaxTouchedFileBytes)
 		set(&cfg.Agent.ThinkingBudgetMargin, file.Agent.ThinkingBudgetMargin)
 		set(&cfg.Agent.MaxConcurrentSubagents, file.Agent.MaxConcurrentSubagents)
-		// ApprovalMode is a derived compatibility projection, never input.
-		cfg.Agent.ApprovalMode = legacyApprovalMode(cfg.Agent.Mode, cfg.Agent.Auto)
 	}
 	if file.Privacy != nil {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)
@@ -208,10 +206,6 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Tools.Shell.BackgroundRetention = d
 		}
 		set(&cfg.Tools.Shell.AllowNetwork, s.AllowNetwork)
-		set(&cfg.Tools.Shell.AutoApprove, s.AutoApprove)
-		if s.GuardrailDynamicArgv0 != nil {
-			cfg.Tools.Shell.GuardrailDynamicArgv0 = *s.GuardrailDynamicArgv0
-		}
 		if s.FloorCommands != nil {
 			cfg.Tools.Shell.FloorCommands = *s.FloorCommands
 		}

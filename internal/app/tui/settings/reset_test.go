@@ -21,7 +21,6 @@ func TestResetSectionProviders(t *testing.T) {
 func TestResetSectionShell(t *testing.T) {
 	cfg := config.Default()
 	cfg.Tools.Shell.AllowNetwork = true
-	cfg.Tools.Shell.AutoApprove = true
 	resetSection(&cfg, "shell")
 	def := config.Default()
 	if cfg.Tools.Shell.AllowNetwork != def.Tools.Shell.AllowNetwork {

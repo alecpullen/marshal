@@ -22,22 +22,6 @@ func (cfg Config) InteractionDefaults() (interaction.Defaults, error) {
 // aliasing maps or slices.
 func Clone(cfg Config) Config { return deepCopyConfig(cfg) }
 
-// legacyApprovalMode projects the canonical tuple onto the retired five-mode
-// spelling for unmigrated callers. It is a compatibility projection only.
-func legacyApprovalMode(mode interaction.Mode, auto bool) string {
-	switch mode {
-	case interaction.ModeAsk:
-		return "default"
-	case interaction.ModeAct:
-		if auto {
-			return "auto"
-		}
-		return "copilot"
-	default:
-		return "default"
-	}
-}
-
 // normalizeInteractionFields canonicalizes one layer's interaction fields.
 // It returns the canonical mode/auto pointers (nil means absent) plus any
 // source-specific notices. The precedence table is:
@@ -183,9 +167,6 @@ func (a fileCustomAgent) runtime(name string) routing.CustomAgent {
 		Context:                a.Context,
 		Temperature:            a.Temperature,
 		Thinking:               a.Thinking,
-	}
-	if a.ApprovalMode != nil {
-		ca.ApprovalMode = *a.ApprovalMode
 	}
 	return ca
 }

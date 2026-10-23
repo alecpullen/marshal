@@ -5,22 +5,6 @@ import (
 	"marshal/internal/interaction"
 )
 
-// legacyApprovalMode projects the canonical tuple onto the retired five-mode
-// spelling for unmigrated callers. It is a compatibility projection only.
-func legacyApprovalMode(mode interaction.Mode, auto bool) string {
-	switch mode {
-	case interaction.ModeAsk:
-		return "default"
-	case interaction.ModeAct:
-		if auto {
-			return "auto"
-		}
-		return "copilot"
-	default:
-		return "default"
-	}
-}
-
 // InteractionState returns the canonical effective tuple as one value read
 // under a single lock, so a reader never sees a half-applied pair.
 func (s *State) InteractionState() interaction.State {
@@ -29,12 +13,12 @@ func (s *State) InteractionState() interaction.State {
 	return s.access
 }
 
-// accessStateLocked returns the legacy projection of the effective tuple.
-// Callers must hold accessMu; it exists so the access gate can read the pair
-// without re-entering the non-reentrant mutex.
+// accessStateLocked returns the effective tuple as an AccessState. Callers
+// must hold accessMu; it exists so the access gate can read the pair without
+// re-entering the non-reentrant mutex. Mode carries the canonical value.
 func (s *State) accessStateLocked() AccessState {
 	return AccessState{
-		Mode:     legacyApprovalMode(s.access.Mode, s.access.Auto),
+		Mode:     string(s.access.Mode),
 		Auto:     s.access.Auto,
 		System:   s.access.System,
 		Revision: s.access.Revision,

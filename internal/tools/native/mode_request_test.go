@@ -218,10 +218,10 @@ func TestModeRequestApprovedReportsCommittedState(t *testing.T) {
 	if got.Status != session.AccessGranted {
 		t.Fatalf("reported status = %q, want %q", got.Status, session.AccessGranted)
 	}
-	if want := (session.AccessState{Mode: "copilot"}); !sameAccessState(got.Effective, want) {
+	if want := (session.AccessState{Mode: "act"}); !sameAccessState(got.Effective, want) {
 		t.Fatalf("reported effective = %+v, want the committed %+v", got.Effective, want)
 	}
-	if !strings.Contains(out.res.Summary, "copilot") {
+	if !strings.Contains(out.res.Summary, "act") {
 		t.Fatalf("summary %q should name the committed mode", out.res.Summary)
 	}
 }
@@ -255,7 +255,7 @@ func TestModeRequestDeniedReportsActualState(t *testing.T) {
 	if got.Status != session.AccessDenied {
 		t.Fatalf("reported status = %q, want %q", got.Status, session.AccessDenied)
 	}
-	if want := (session.AccessState{Mode: "copilot"}); !sameAccessState(got.Effective, want) {
+	if want := (session.AccessState{Mode: "act"}); !sameAccessState(got.Effective, want) {
 		t.Fatalf("reported effective = %+v, want the actual %+v (denial must not claim a mode change)", got.Effective, want)
 	}
 	if got.Effective.System {
@@ -287,7 +287,7 @@ func TestModeRequestSystemReasonAndGrant(t *testing.T) {
 		t.Fatalf("mode.request error: %v", out.err)
 	}
 	got := decodeAccessResult(t, out.res)
-	if want := (session.AccessState{Mode: "copilot", System: true}); !sameAccessState(got.Effective, want) {
+	if want := (session.AccessState{Mode: "act", System: true}); !sameAccessState(got.Effective, want) {
 		t.Fatalf("reported effective = %+v, want %+v", got.Effective, want)
 	}
 	if !strings.Contains(out.res.Summary, "system access true") {
@@ -525,7 +525,7 @@ func TestModeRequestUntypedApprovalCannotReportGrant(t *testing.T) {
 	if out.err == nil {
 		t.Fatal("an untyped approval produced a successful result")
 	}
-	if got := f.state.AccessState(); !sameAccessState(got, session.AccessState{Mode: "default"}) {
+	if got := f.state.AccessState(); !sameAccessState(got, session.AccessState{Mode: "ask"}) {
 		t.Fatalf("session pair = %+v, want it unchanged by an untyped approval", got)
 	}
 
@@ -628,10 +628,10 @@ func TestModeRequestAcceptedGrantBeatsLaterContextCancel(t *testing.T) {
 	if got.Status != session.AccessGranted {
 		t.Fatalf("reported status = %q, want the committed %q", got.Status, session.AccessGranted)
 	}
-	if want := (session.AccessState{Mode: "copilot"}); !sameAccessState(got.Effective, want) {
+	if want := (session.AccessState{Mode: "act"}); !sameAccessState(got.Effective, want) {
 		t.Fatalf("reported effective = %+v, want %+v", got.Effective, want)
 	}
-	if got := f.state.AccessState(); !sameAccessState(got, session.AccessState{Mode: "copilot"}) {
+	if got := f.state.AccessState(); !sameAccessState(got, session.AccessState{Mode: "act"}) {
 		t.Fatalf("session pair = %+v, want the accepted grant preserved", got)
 	}
 }
@@ -673,7 +673,7 @@ func TestModeRequestSteeringNeverReportsGrant(t *testing.T) {
 
 	// The session's authority is untouched: no mode was committed and system
 	// access is still off.
-	if got := f.state.AccessState(); !sameAccessState(got, session.AccessState{Mode: "default"}) {
+	if got := f.state.AccessState(); !sameAccessState(got, session.AccessState{Mode: "ask"}) {
 		t.Fatalf("session pair = %+v, want it unchanged by a canceled request", got)
 	}
 	if f.state.SystemAccess() {

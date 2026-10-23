@@ -998,44 +998,6 @@ func (rt *Runtime) projectInteraction() {
 	rt.Runner.SetForceClass(forceClassForMode(effective.Mode))
 }
 
-// SetSessionMode applies an explicit interaction-mode selection for this
-// session. It is the manual path shared by the TUI and ACP, so it validates
-// the selection and the runtime's ability to apply it before anything moves.
-//
-// The mode is recorded on the session, which owns the override that survives
-// an unrelated config reload, and applied to the live runner's in-memory
-// policy. Runtime.Config is deliberately untouched: a manual selection is a
-// session-scoped choice, not a config edit, so it must not become the next
-// conversation's default.
-func (rt *Runtime) SetSessionMode(mode string) error {
-	rt.reloadMu.Lock()
-	defer rt.reloadMu.Unlock()
-	if rt.State == nil {
-		return errors.New("no session state available to change the interaction mode")
-	}
-	switch mode {
-	case "plan", "default", "edit", "copilot", "auto":
-	default:
-		return fmt.Errorf("invalid approval mode %q", mode)
-	}
-	// An inactive runtime (no provider configured) still records the manual
-	// selection, so the UI reflects the user's choice; there is simply no
-	// runner to move. A runner that exists without a policy engine cannot
-	// apply the change, so that fails rather than silently diverging.
-	apply := func() {}
-	if rt.Runner != nil {
-		if rt.Runner.Policy == nil {
-			return errors.New("no policy engine available to change the interaction mode")
-		}
-		runner := rt.Runner
-		class := forceClassForMode(mode)
-		apply = func() {
-			runner.SetForceClass(class)
-		}
-	}
-	return rt.State.SetSessionMode(mode, apply)
-}
-
 // SteeringSnapshot returns the current conversation's Send now snapshot through
 // the runtime seam. It takes the pointer mutex only long enough to read the
 // conversation's State, then releases it and delegates: the snapshot itself is

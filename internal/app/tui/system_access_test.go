@@ -157,7 +157,10 @@ func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	ctrl := &endTestController{}
 	m := New(state, WithEndController(ctrl))
 	m.resize(80, 24)
-	state.SetSessionMode("act", func() {})
+	act := interaction.ModeAct
+	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
+		t.Fatalf("seed Act: %v", err)
+	}
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 	if cmd != nil {
@@ -609,7 +612,7 @@ func TestAccessPanelEscDeniesWithoutStoppingTurn(t *testing.T) {
 // decision path performs no persistence.
 func TestAccessPanelGrantOrderingAndNoPersistence(t *testing.T) {
 	cfg := config.Default()
-	cfg.Agent.ApprovalMode = "copilot"
+	cfg.Agent.Mode = interaction.ModeAct
 	f := newAccessTestFixture(t, 120, 40, cfg)
 
 	entered := make(chan struct{})
@@ -658,10 +661,10 @@ func TestAccessPanelGrantOrderingAndNoPersistence(t *testing.T) {
 		t.Fatal("the grant did not reach the session")
 	}
 	// A system-only grant preserves the mode it was made in.
-	if got := f.state.AccessState().Mode; got != "copilot" {
-		t.Fatalf("mode = %q, want the actual copilot preserved", got)
+	if got := f.state.AccessState().Mode; got != "act" {
+		t.Fatalf("mode = %q, want the actual act preserved", got)
 	}
-	if got := lastMessageContent(f.state.Messages()); !strings.Contains(got, "copilot") {
+	if got := lastMessageContent(f.state.Messages()); !strings.Contains(got, "act") {
 		t.Fatalf("transcript note = %q, want it to name the actual mode", got)
 	}
 }

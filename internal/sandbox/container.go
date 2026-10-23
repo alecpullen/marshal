@@ -9,12 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/shlex"
-
 	"marshal/internal/sandbox/envutil"
 	"marshal/internal/tools/native"
-	"marshal/internal/tools/policy"
-	"marshal/internal/tools/registry"
 )
 
 // defaultContainerImage is the fallback image when [tools.shell.sandbox].
@@ -228,38 +224,20 @@ func (c *Container) buildArgs(command, image, workdir string) ([]string, error) 
 	// `--cpus` is a CPU core-count quota without any wall-time guarantee,
 	// which misrepresents the `cpu_seconds` field.
 	//
-	// For shell-free commands (no pipes, redirects, variable expansion, etc.)
-	// we invoke the command directly as argv to avoid shell-wrapping overhead
-	// and potential shell-injection surface. Commands containing shell
-	// metacharacters still go through /bin/sh -lc.
+	// Every admitted command runs through one shell path. buildArgs is
+	// transport construction, not a second policy evaluator: the command's
+	// syntax and effect were already validated by policy/native admission
+	// before launch, and re-splitting it here would re-decide what to run and
+	// could change the bytes the person approved. The shell also keeps
+	// globbing and expansion available for an explicitly approved destructive
+	// operation.
 	//
-	// Destructive commands (e.g. rm -rf, git clean -f) always go through
-	// /bin/sh -lc so that shell features (globbing, variable expansion) are
-	// available when the user has explicitly approved a destructive operation.
-	// This is enforced via ClassifyCommand, not just isShellFree.
+	// Best-effort pipefail: container images may ship dash or busybox sh
+	// without pipefail support, so a failed `set` is swallowed and the
+	// pipeline runs with last-stage semantics (same as before). On bash/ash
+	// it makes failures early in a pipeline surface a non-zero exit code.
 	args = append(args, image)
-	shellFree := isShellFree(command)
-	if shellFree {
-		cls, _ := policy.ClassifyCommand(command)
-		if cls.Risk == registry.RiskDestructive {
-			shellFree = false
-		}
-	}
-	var inner []string
-	if shellFree {
-		parsed, err := shlex.Split(command)
-		if err != nil {
-			return nil, fmt.Errorf("parse command %q: %w", command, err)
-		}
-		inner = parsed
-	} else {
-		// Best-effort pipefail: container images may ship dash or
-		// busybox sh without pipefail support, so a failed `set` is
-		// swallowed and the pipeline runs with last-stage semantics
-		// (same as before). On bash/ash it makes failures early in a
-		// pipeline surface a non-zero exit code.
-		inner = []string{"/bin/sh", "-lc", "set -o pipefail 2>/dev/null || true; " + command}
-	}
+	inner := []string{"/bin/sh", "-lc", "set -o pipefail 2>/dev/null || true; " + command}
 	if c.cfg.CPUSeconds > 0 {
 		args = append(args,
 			"timeout", "--preserve-status", "-s", "KILL",
@@ -268,15 +246,4 @@ func (c *Container) buildArgs(command, image, workdir string) ([]string, error) 
 	}
 	args = append(args, inner...)
 	return args, nil
-}
-
-// isShellFree reports whether command s contains no shell metacharacters.
-// Shell-free commands can be invoked as argv directly rather than wrapped
-// in /bin/sh -lc, reducing overhead and shell-injection surface area.
-//
-// Metacharacters that trigger shell wrapping:
-//   - | & ; ` $ ( ) { } < > * ? \n
-func isShellFree(s string) bool {
-	shellMetas := "|&;`$<>(){}*?\n"
-	return !strings.ContainsAny(s, shellMetas)
 }

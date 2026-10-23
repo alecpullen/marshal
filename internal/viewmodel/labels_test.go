@@ -83,22 +83,34 @@ func TestLabelOnEachTransition(t *testing.T) {
 	}
 }
 
-func TestNoLabelForDroppedTodoOrShortList(t *testing.T) {
+func TestNoLabelForDroppedTodo(t *testing.T) {
 	dropped := Build(Snapshot{
 		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Old work."), audit("file.read", 1, "a", 2)},
 		Steps: []session.Step{stepFor(1, "gone", 1, 2)},
 		Todos: todos(db.TodoItem{ID: "x", Content: "X", Status: "pending"}, db.TodoItem{ID: "y", Content: "Y", Status: "pending"}),
 	})
-	short := Build(Snapshot{
-		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Only item."), audit("file.read", 1, "a", 2)},
-		Steps: []session.Step{stepFor(1, "x", 1, 2)},
-		Todos: todos(db.TodoItem{ID: "x", Content: "X", Status: "in_progress"}),
-	})
 	if got := labelsOf(dropped); len(got) != 0 {
 		t.Fatalf("dropped todo labelled: %v", got)
 	}
-	if got := labelsOf(short); len(got) != 0 {
-		t.Fatalf("one-item list labelled: %v", got)
+}
+
+// A one-item list is a plan like any other: its beat carries the 1/1 tag,
+// once, however many beats work on it.
+func TestOneItemListLabelsItsFirstBeat(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Only item."), audit("file.read", 1, "a", 2),
+			narration(3, 2, 3, "Still on it."), audit("file.read", 2, "b", 4),
+		},
+		Steps: []session.Step{stepFor(1, "x", 1, 2), stepFor(2, "x", 3, 4)},
+		Todos: todos(db.TodoItem{ID: "x", Content: "X", Status: "in_progress"}),
+	})
+	if got := labelsOf(nodes); strings.Join(got, ",") != "step:1=x" {
+		t.Fatalf("labels = %v\n%s", got, shape(nodes))
+	}
+	if l := nodes[0].Children[1].Step.Todo; l.Index != 1 || l.Total != 1 {
+		t.Fatalf("label = %+v", l)
 	}
 }
 
@@ -156,9 +168,9 @@ func TestEarlierTurnsFoldEveryFinishedBeat(t *testing.T) {
 
 // DrivenByTodos is settled by the brief's code block, not its prose:
 // n.Step.Todo != nil || n.Step.TodoID != "", so any beat bound to a non-empty
-// TodoID drives the turn even when the todo is gone from the current list or
-// the list is a one-item one. This test pins that ruling so the divergence
-// from the prose cannot creep back in silently.
+// TodoID drives the turn even when the todo is gone from the current list.
+// This test pins that ruling so the divergence from the prose cannot creep
+// back in silently.
 func TestDrivenByTodosFollowsTheCodeBlockNotTheProse(t *testing.T) {
 	cases := []struct {
 		name string
@@ -176,7 +188,6 @@ func TestDrivenByTodosFollowsTheCodeBlockNotTheProse(t *testing.T) {
 			want: true,
 		},
 		{
-			// One item is too short for a label, but the binding still counts.
 			name: "one-item list",
 			snap: Snapshot{
 				Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Only item."), audit("file.read", 1, "a", 2)},
@@ -280,10 +291,10 @@ func TestNoReceiptWhileRunningOrWithoutSteps(t *testing.T) {
 	}
 }
 
-// taskMode gates the transition labels now that task rows are gone: a turn
-// counts as todo-driven from the longest list it wrote, not from the list as
-// it stands, so a later rewrite to one item must not unlabel finished work.
-func TestTaskModeFollowsTheListsATurnWroteNotJustTheCurrentOne(t *testing.T) {
+// Labels do not depend on how long the list is or was: rewriting the list
+// shorter or longer never unlabels finished work, and a turn that only ever
+// saw one item is labelled too.
+func TestLabelsDoNotDependOnListLength(t *testing.T) {
 	steps := []session.Step{stepFor(1, "t1", 1, 3)}
 	items := []session.TranscriptItem{
 		userMsg(1, 0),
@@ -292,19 +303,13 @@ func TestTaskModeFollowsTheListsATurnWroteNotJustTheCurrentOne(t *testing.T) {
 	}
 	one := todos(db.TodoItem{ID: "t1", Content: "A", Status: "completed"})
 	two := todos(db.TodoItem{ID: "t1", Content: "A", Status: "completed"}, db.TodoItem{ID: "t2", Content: "B", Status: "pending"})
-
-	// 2 -> 1: the list shrank after the turn wrote two items. The turn keeps
-	// its label instead of flattening.
-	if got := labelsOf(Build(Snapshot{Items: items, Steps: steps, Todos: one})); len(got) == 0 {
-		t.Fatal("rewriting the list to one item must not flatten a turn that worked from two")
+	for name, list := range map[string][]db.TodoItem{"one": one, "two": two} {
+		if got := labelsOf(Build(Snapshot{Items: items, Steps: steps, Todos: list})); len(got) != 1 {
+			t.Fatalf("%s-item list: labels = %v", name, got)
+		}
 	}
-	// 1 -> 2: and it is the same with the longer list back.
-	if got := labelsOf(Build(Snapshot{Items: items, Steps: steps, Todos: two})); len(got) == 0 {
-		t.Fatal("two items drive the turn")
-	}
-	// A turn that only ever saw one item stays flat whatever the list does later.
 	flat := []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Reading."), audit("file.read", 1, "a", 2)}
-	if got := labelsOf(Build(Snapshot{Items: flat, Steps: steps, Todos: one})); len(got) != 0 {
-		t.Fatalf("one item is not a plan: %v", got)
+	if got := labelsOf(Build(Snapshot{Items: flat, Steps: steps, Todos: one})); len(got) != 1 {
+		t.Fatalf("a turn that saw one item is labelled: %v", got)
 	}
 }

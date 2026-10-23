@@ -27,17 +27,6 @@ func todoListed(todos []db.TodoItem, id string) bool {
 	return false
 }
 
-// todoWriteLen is how many items a todo.write call wrote.
-func todoWriteLen(ev registry.AuditEvent) int {
-	var args struct {
-		Todos []db.TodoItem `json:"todos"`
-	}
-	if json.Unmarshal(ev.Args, &args) != nil {
-		return 0
-	}
-	return len(args.Todos)
-}
-
 func taskMode(todos []db.TodoItem) bool { return len(todos) >= MinTaskTodos }
 
 // ReceiptInfo is the one-line summary closing a finished turn.

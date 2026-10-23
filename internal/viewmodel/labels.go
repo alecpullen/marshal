@@ -18,12 +18,9 @@ type TodoLabel struct {
 
 // labelTransitions sets Todo on each beat whose bound todo differs from the
 // previous bound beat's in this turn. "Previous" survives interruptions
-// (messages, cards, markers) and resets per turn. Lists shorter than
-// MinTaskTodos and todos no longer in the list get no label.
-func labelTransitions(nodes []*Node, todos []db.TodoItem, wroteList bool) {
-	if !wroteList && !taskMode(todos) {
-		return
-	}
+// (messages, cards, markers) and resets per turn. A list of any length labels
+// its transitions; a todo no longer in the list gets no label.
+func labelTransitions(nodes []*Node, todos []db.TodoItem) {
 	prev := ""
 	for _, n := range nodes {
 		if n.Kind != KindStep || n.Step == nil || n.Step.TodoID == "" {

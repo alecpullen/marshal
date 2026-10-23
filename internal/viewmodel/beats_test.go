@@ -175,7 +175,7 @@ func TestBeatEndsAtTodoChange(t *testing.T) {
 	if len(out) != 2 || out[1].Step.TodoID != "second" {
 		t.Fatalf("beats = %+v, want the second todo in its own beat", out)
 	}
-	labelTransitions(out, []db.TodoItem{{ID: "first", Content: "A"}, {ID: "second", Content: "B"}}, true)
+	labelTransitions(out, []db.TodoItem{{ID: "first", Content: "A"}, {ID: "second", Content: "B"}})
 	if out[1].Step.Todo == nil || out[1].Step.Todo.ID != "second" {
 		t.Fatalf("second todo has no divider: %+v", out[1].Step.Todo)
 	}

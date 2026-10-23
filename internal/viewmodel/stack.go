@@ -541,7 +541,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 
-	maxWritten := 0 // the longest list any todo.write in this turn wrote
 	finish := func(id session.StepID, a *stepAcc, isLive bool, active []session.ActiveToolCall) *Node {
 		node := &Node{Kind: KindStep, Step: a.info, Live: isLive}
 		if a.loose {
@@ -555,7 +554,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		for _, ev := range a.audits {
 			if ev.ToolName == todoWriteTool {
 				a.info.TodoWrites = append(a.info.TodoWrites, ev)
-				maxWritten = max(maxWritten, todoWriteLen(ev))
 				continue
 			}
 			audits = append(audits, ev)
@@ -635,10 +633,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	}
 	out = mergeBeats(out)
 	out = coalesceMarkers(out)
-	// Whether the turn is task-driven is settled by the lists it wrote, not
-	// only by the list as it stands now: a later rewrite to one item must not
-	// flatten a finished turn after the fact.
-	labelTransitions(out, s.Todos, maxWritten >= MinTaskTodos)
+	labelTransitions(out, s.Todos)
 	foldBeats(out, lastTurn)
 	// foldBeats and labelTransitions run after finish/absorb computed each
 	// beat's version, so recompute it now that the payload is final.

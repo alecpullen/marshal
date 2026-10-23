@@ -2,9 +2,11 @@
 
 Status: direction agreed 2026-10-19. P0 is specified and implemented (§5,
 §7). P1 is specified ([`p1-project-host.md`](p1-project-host.md)) and
-implemented (see its implementation record). Later phases have no spec
-yet. The decision to keep the TUI in Go depends on P0 (text selection, §5)
-working.
+implemented (see its implementation record). P2 is specified
+([`p2-client-seam.md`](p2-client-seam.md)) and awaiting review; its scope
+widened to the whole agent side, and it settles §8's transcript question.
+Later phases have no spec yet. The decision to keep the TUI in Go depends
+on P0 (text selection, §5) working.
 
 ## 1. Goal and scope
 
@@ -197,6 +199,11 @@ project.
 
 ### 4.5 TUI client seam
 
+Spec: [`p2-client-seam.md`](p2-client-seam.md). Where this sketch and
+the spec differ, the spec wins. It covers every agent-side dependency,
+not only `session.State`, and gives the interface typed methods with
+synchronous reads and a change signal.
+
 The TUI talks to one ACP client interface: call a method, receive
 notifications, answer agent requests. It has two transports:
 
@@ -333,7 +340,7 @@ state, not corruption.
 |---|---|---|
 | P0 | Selection handled by the app (§5) — implemented; manual terminal check pending (see the spec's implementation record) | The P0 check in §5 passes in the current TUI |
 | P1 | ProjectHost/Session split and headless indexing (§4.2) — implemented; see the spec's implementation record | Two ACP sessions on one repo in one process share one host, one set of language servers and one watcher. With `indexing.watch = true`, a headless session's edit refreshes its embeddings. Two processes on one tree run one indexer |
-| P2 | TUI client seam with the in-process adapter (§4.5) | The TUI calls no `session.State` method directly. Also settles the transcript-shape question (§8) |
+| P2 | TUI client seam with the in-process adapter (§4.5) — specified, nine plans | The TUI reaches the agent side only through the client interface: it imports no agent-side package, holds no `session.State`, and does no project, config or keychain I/O (enforced by a boundary test). The transcript renders from the wire projection (§8 settled) |
 | P3 | ACP client transports; embedded mode over the pipe | Embedded mode runs entirely over ACP and the adapter is deleted |
 | P4 | Bridge local profile: user service, unix listener, RPC passthrough, `request_secret`, pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents | A TUI can quit and reattach to a running turn on the local daemon |
 | P5 | Fleet screen in the Go TUI, shared types, server-computed views | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |
@@ -343,13 +350,11 @@ is useful on its own.
 
 ## 8. Open questions
 
-- **Transcript shape on the wire.** Option one: send the
-  `viewmodel.Snapshot` inputs, so `Build` runs in the client and the
-  renderer is unchanged, at the cost of a second wire format next to the
-  web UI's. Option two: send the `WireTree`, one format for both clients,
-  but the renderer moves from `Node` to `WireNode`, and large nodes arrive
-  truncated and are fetched when expanded. The lean is `WireTree`. A spike
-  in P2 checks whether the projection drops anything the TUI renders.
+- **Transcript shape on the wire — settled (P2).** `WireTree`, one
+  format for both clients. The P2 spike found the projection drops some
+  fields collapsed rows read; all are closed with additive fields, and
+  expanded rows use `session/stack_node`
+  ([`p2-client-seam.md`](p2-client-seam.md), C6).
 - **MCP scope.** Should MCP servers stay per session, or move to the
   ProjectHost behind an opt-in for servers known to be stateless?
 - **Headless credentials.** Where do provider credentials and OAuth

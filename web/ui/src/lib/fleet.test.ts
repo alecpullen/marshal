@@ -9,7 +9,8 @@ const row = (x: Partial<AgentRow>): AgentRow => ({
   status: 'idle',
   updatedAt: '',
   name: 'n',
-  mode: 'edit',
+  mode: '',
+  access: null,
   activity: '',
   contextPct: 0,
   changedFiles: 0,
@@ -59,9 +60,30 @@ describe('applyDeltaTo', () => {
     expect(got[0].changedFiles).toBe(4)
   })
 
-  it('applies a mode change', () => {
-    const got = applyDeltaTo([row({ id: 'a', mode: 'default' })], { kind: 'mode', sessionId: 'a', mode: 'auto' })
-    expect(got[0].mode).toBe('auto')
+  it('applies a full access report and keeps explicit revocations', () => {
+    const got = applyDeltaTo([row({ id: 'a' })], {
+      kind: 'mode',
+      sessionId: 'a',
+      access: { mode: 'act', auto: false, system_access: false, access_revision: 2 },
+    })
+    expect(got[0].mode).toBe('act')
+    expect(got[0].access).toEqual({ mode: 'act', auto: false, system: false, revision: 2 })
+  })
+
+  it('ignores a stale or malformed mode report', () => {
+    const current = row({ id: 'a', mode: 'act', access: { mode: 'act', auto: false, system: false, revision: 4 } })
+    const stale = applyDeltaTo([current], {
+      kind: 'mode',
+      sessionId: 'a',
+      access: { mode: 'act', auto: true, system: true, access_revision: 2 },
+    })
+    expect(stale[0]).toBe(current)
+    const malformed = applyDeltaTo([current], {
+      kind: 'mode',
+      sessionId: 'a',
+      access: { mode: 'auto', auto: true, system_access: true, access_revision: 9 },
+    })
+    expect(malformed[0]).toBe(current)
   })
 
   it('stores a gate record on the row', () => {
@@ -162,7 +184,7 @@ describe('toPendingPermission', () => {
       id: 'tc1',
       params: { toolName: 'shell.run', command: 'ls -la', diff: '--- a\n+++ b' },
     })
-    expect(got).toEqual({ toolCallId: 'tc1', toolName: 'shell.run', command: 'ls -la', diff: '--- a\n+++ b' })
+    expect(got).toEqual({ toolCallId: 'tc1', toolName: 'shell.run', command: 'ls -la', diff: '--- a\n+++ b', exactOnly: true })
   })
 
   it('omits absent optional fields rather than passing empty strings', () => {
@@ -172,7 +194,37 @@ describe('toPendingPermission', () => {
   })
 
   it('survives missing params', () => {
-    expect(toPendingPermission({ kind: 'approval', id: 'tc1' })).toEqual({ toolCallId: 'tc1', toolName: '' })
+    expect(toPendingPermission({ kind: 'approval', id: 'tc1' })).toEqual({ toolCallId: 'tc1', toolName: '', exactOnly: true })
+  })
+
+  it('preserves typed permission scope', () => {
+    const got = toPendingPermission({
+      kind: 'approval',
+      id: 'tc1',
+      params: {
+        toolName: 'mode.request',
+        reason: 'need act',
+        modeAccess: {
+          requestId: 'r-1',
+          sessionId: 's-1',
+          reason: 'need act',
+          current: { mode: 'ask', auto: false, system_access: false, access_revision: 2 },
+          missingEditing: true,
+          missingSystem: false,
+        },
+      },
+    })
+    // A typed capability bundle is not an exact-only approval, and its whole
+    // presentation survives the adapter instead of being dropped.
+    expect(got.exactOnly).toBe(false)
+    expect(got.reason).toBe('need act')
+    expect(got.modeAccess).toMatchObject({
+      requestId: 'r-1',
+      sessionId: 's-1',
+      missingEditing: true,
+      missingSystem: false,
+      current: { mode: 'ask', auto: false, system_access: false, access_revision: 2 },
+    })
   })
 })
 

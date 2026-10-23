@@ -1,4 +1,5 @@
 import type { AuditEvent } from './audit'
+import { accessPatchBody, type AccessPatch, type AccessStateWire } from './interaction'
 
 const TOKEN_KEY = 'marshal:token'
 
@@ -232,6 +233,9 @@ export interface AgentStatus {
   id: string
   project: string
   name?: string
+  /** The agent's committed interaction tuple. Absent means the bridge cannot vouch for it. */
+  access?: AccessStateWire
+  /** The starting mode, for lists that have no committed state yet. */
   mode?: string
   status: 'idle' | 'running' | 'awaiting-approval' | 'awaiting-question' | 'error'
   activity?: string
@@ -268,7 +272,7 @@ export interface ProjectStatus {
 
 /** A spawn's model choice: a routing profile, per-role preset overrides, or both (session/new `routing`). */
 export interface RoutingChoice { profile?: string; overrides?: Record<string, string> }
-export interface SpawnRequest { project: string; name?: string; mode?: string; prompt?: string; isolated?: boolean; branch?: string; baseRef?: string; routing?: RoutingChoice; workspace?: string }
+export interface SpawnRequest { project: string; name?: string; mode?: string; auto?: boolean; prompt?: string; isolated?: boolean; branch?: string; baseRef?: string; routing?: RoutingChoice; workspace?: string }
 export async function listAgents(): Promise<AgentStatus[]> { return request('GET', '/api/agents') }
 export async function listProjects(): Promise<ProjectStatus[]> { return request('GET', '/api/projects') }
 export async function addProject(root: string): Promise<ProjectStatus[]> { return request('POST', '/api/projects', { root }) }
@@ -500,6 +504,23 @@ export async function cancelSession(id: string): Promise<void> {
 
 export async function setMode(id: string, mode: string): Promise<void> {
   await request('POST', `/api/sessions/${encodeURIComponent(id)}/mode`, { mode })
+}
+
+/**
+ * The session's committed interaction state (session/access_state). This is
+ * the authoritative read a client bootstraps from after a replay or a
+ * reconnect, instead of inferring privileges from defaults or a transcript.
+ */
+export async function getAccess(sessionId: string): Promise<AccessStateWire> {
+  return request('GET', `/api/sessions/${encodeURIComponent(sessionId)}/access`)
+}
+
+/**
+ * One atomic access patch; resolves with the full committed state. Absent
+ * fields are left alone and an explicit false is sent as a value.
+ */
+export async function patchAccess(sessionId: string, patch: AccessPatch): Promise<AccessStateWire> {
+  return request('PATCH', `/api/sessions/${encodeURIComponent(sessionId)}/access`, accessPatchBody(patch))
 }
 
 export interface Decision {
@@ -1143,6 +1164,8 @@ export interface ProjectSettings {
   workspace?: string
   routing?: RoutingChoice
   mode?: string
+  /** Optional starting Auto. Absent means the project does not set one. */
+  auto?: boolean
   isolated?: boolean
   shipTarget?: 'merge' | 'push' | 'patch' | ''
   intake: { repoId?: string; labels?: string[]; clients?: string[] }
@@ -1300,6 +1323,8 @@ export interface Recipe {
   description?: string
   kind: RecipeKind | string
   mode?: string
+  /** Optional starting Auto. Absent means the recipe does not set one. */
+  auto?: boolean
   workspace?: string
   routing?: RoutingChoice
   inputs?: RecipeInput[]
@@ -1307,6 +1332,8 @@ export interface Recipe {
   limits?: RecipeLimits
   output?: string
   builtin?: boolean
+  /** Why a stored recipe could not be read or validated; never on a valid one. */
+  diagnostic?: string
 }
 export type RecipeRunRequest = { project?: string; repoId?: string; ref?: string; inputs?: Record<string, string> }
 

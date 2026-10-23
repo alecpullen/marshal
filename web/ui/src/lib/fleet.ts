@@ -1,13 +1,15 @@
 import { writable } from 'svelte/store'
 import { getNetworkPending, listAgents, listProjects, postNetworkDecision, type AgentStatus, type NetDecisionKind, type NetDecisionResult, type GateRecord, type PendingRequest, type ProjectStatus, type RunDetail } from './api'
+import { applyAccessReport, parseAccessState, parseModeAccess, type AccessState, type AccessStateWire } from './interaction'
 import type { PendingPermission, PendingQuestion, Question, QuestionOption } from './store'
 
-export type AgentRow = AgentStatus & { name: string; mode: string; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; heldBy?: string; gate?: GateRecord; run?: RunDetail; runAt?: number }
+export type AgentRow = Omit<AgentStatus, 'access'> & { name: string; mode: string; access: AccessState | null; activity: string; contextPct: number; changedFiles: number; interrupted: boolean; heldBy?: string; gate?: GateRecord; run?: RunDetail; runAt?: number }
 export interface FleetDelta {
   kind: 'activity' | 'telemetry' | 'mode' | 'turn' | 'gate' | 'hold'
   sessionId: string
   activity?: string
-  mode?: string
+  /** A mode delta's whole committed tuple. A missing or malformed one is ignored, never inferred. */
+  access?: AccessStateWire
   contextPct?: number
   changedFiles?: number
   /** A hold delta: whether the agent is held, and by whom (`terminal`). */
@@ -47,7 +49,13 @@ export interface PendingDelta { kind: 'pending'; sessionId: string; pendingKind:
 /** An automation ran (review draft or CI result). `id`/`type` are set for those; the rest feeds notifications. */
 export interface AutomationDelta { kind: 'automation'; type?: string; id?: string; status?: string; sessionId?: string; agentId?: string; title?: string; text?: string }
 export type FleetEvent = AutomationDelta | NetworkBlockDelta | FleetDelta | ProjectRemovedDelta | PendingDelta | RunDelta | BudgetDelta | RerouteDelta | WatchDelta
-export function toRow(a: AgentStatus): AgentRow { return { ...a, name: a.name ?? '', mode: a.mode ?? '', activity: a.activity ?? '', contextPct: a.contextPct ?? 0, changedFiles: a.changedFiles ?? 0, interrupted: a.interrupted ?? false } }
+export function toRow(a: AgentStatus): AgentRow {
+  // Only the committed tuple is advertised. A starting mode with no reported
+  // state is left as unknown rather than shown as if it were current.
+  const { access: wire, ...rest } = a
+  const access = wire ? parseAccessState(wire) : null
+  return { ...rest, name: a.name ?? '', access, mode: access?.mode ?? '', activity: a.activity ?? '', contextPct: a.contextPct ?? 0, changedFiles: a.changedFiles ?? 0, interrupted: a.interrupted ?? false }
+}
 const rank: Record<AgentRow['status'], number> = { 'awaiting-approval': 0, 'awaiting-question': 0, error: 1, running: 2, idle: 3 }
 export function sortAttentionFirst(rows: AgentRow[]): AgentRow[] { return [...rows].sort((a,b) => rank[a.status] - rank[b.status] || a.id.localeCompare(b.id)) }
 export type AgentGroupKey = 'needsYou' | 'running' | 'ready' | 'earlier'
@@ -82,9 +90,17 @@ export function applyDeltaTo(rows: AgentRow[], d: FleetEvent): AgentRow[] {
   let changed = false
   const out = rows.map((r) => {
     if (r.id !== d.sessionId) return r
+    if (d.kind === 'mode') {
+      // One full-state reducer, the same one the chat store uses: an older
+      // revision or a malformed report leaves the row exactly as it was, so a
+      // stale frame can never re-advertise a revoked capability.
+      const holder = applyAccessReport(r.access ? { sessionId: r.id, access: r.access } : null, d.sessionId, d.access)
+      if (!holder) return r
+      changed = true
+      return { ...r, access: holder.access, mode: holder.access.mode }
+    }
     changed = true
     if (d.kind === 'activity') return { ...r, activity: d.activity ?? r.activity }
-    if (d.kind === 'mode') return { ...r, mode: d.mode ?? r.mode }
     if (d.kind === 'gate') return { ...r, gate: d.gate ?? r.gate }
     if (d.kind === 'hold') return { ...r, held: d.held === true, heldBy: d.held === true ? d.by : undefined }
     if (d.kind === 'run') return { ...r, run: d.run, runAt: d.at ?? Date.now() }
@@ -138,7 +154,18 @@ export function describePending(p: PendingRequest): string {
 export function toPendingPermission(p: PendingRequest): PendingPermission {
   const params = (p.params ?? {}) as Record<string, unknown>
   const str = (k: string): string | undefined => (typeof params[k] === 'string' && params[k] !== '' ? (params[k] as string) : undefined)
-  return { toolCallId: p.id, toolName: str('toolName') ?? '', command: str('command'), diff: str('diff') }
+  // The typed capability bundle is kept rather than dropped. Without one, the
+  // approval is exact-only: it covers the presented action and nothing more.
+  const modeAccess = parseModeAccess(params.modeAccess)
+  return {
+    toolCallId: p.id,
+    toolName: str('toolName') ?? '',
+    command: str('command'),
+    diff: str('diff'),
+    reason: str('reason'),
+    exactOnly: modeAccess === null,
+    modeAccess: modeAccess ?? undefined,
+  }
 }
 
 /** Normalise one option, accepting both {label,value} and a bare string. */

@@ -50,10 +50,11 @@ Run `marshal` and the first launch walks you through connecting a provider.
 Nothing is configured for you — Marshal has no built-in accounts and phones
 home to nothing.
 
-Marshal starts in **Default** mode, which is read-only: the agent can read and
-search, but every write is denied until you approve it or switch to `/edit`,
-`/copilot` or `/auto`. Local endpoints connect without ceremony; a non-local
-base URL asks you to enable remote providers first.
+Marshal starts in **Act** mode: the agent can read, search and make routine
+workspace changes, and every destructive or publishing action still asks for
+approval. `/ask` makes it read-only, and `/auto` preauthorizes destructive
+workspace commands. Local endpoints connect without ceremony; a non-local base
+URL asks you to enable remote providers first.
 
 ```bash
 marshal              # start the TUI
@@ -139,23 +140,24 @@ and `passthrough`. Resource caps on memory, CPU, file size and process count
 are deliberately opt-in — a cap that kills legitimate builds just teaches
 people to disable the sandbox.
 
-Guardrails fail closed. `mkfs`, `shutdown`, `reboot` and recursive
-force-deletes are denied outright. System access shrinks the list to that
-catastrophic floor and re-admits a recursive delete only when every operand is
-provably a relative literal. `git push` sits behind its own floor.
+Guardrails fail closed. `mkfs`, `shutdown`, `reboot` and recursive deletes of
+the filesystem root or home are denied outright. Destructive workspace
+operations require exact approval (or Auto), and a destructive operation
+outside the workspace additionally requires System. `git push` sits behind its
+own non-bypassable floor.
 
-### Five modes, from read-only to autonomous
+### Two modes, plus Auto
 
 | Mode | Behaviour |
 |---|---|
-| **Plan** | Read-only; the agent must produce a numbered plan before touching anything |
-| **Default** | Read-only; edits require explicit elevation |
-| **Edit** | Writes, confirming each one |
-| **Copilot** | Auto-approves; may still ask questions |
-| **Auto** | Fully autonomous, no questions |
+| **Ask** | Read-only; the agent investigates and discusses without admitting new mutations |
+| **Act** | Carries out the request; destructive and publishing actions still ask for approval |
+| **Act + Auto** | Preauthorizes destructive workspace commands; publishing, environment changes and uncertainty still ask |
 
-`/system` grants a separate modifier — full-filesystem read/write for the file
-tools — without changing mode friction.
+`/ask` and `/act` switch modes, `/auto` toggles the Auto modifier, and `/mode`
+picks either mode. Planning is a skill workflow, not a separate mode. `/system`
+grants a separate modifier — full-filesystem read/write for the file tools —
+without changing mode friction.
 
 ### Review and shipping
 
@@ -254,7 +256,7 @@ point for editors, IDEs, and the Web Studio bridge.
 | **Session** | `/new` `/save` `/sessions` `/resume` `/rename` `/export` `/quit` |
 | **Model & routing** | `/connect` `/models` `/options` `/profiles` `/route` `/agents` |
 | **Config** | `/settings` `/set` `/config` `/doctor` `/trust` |
-| **Modes** | `/plan` `/default` `/edit` `/copilot` `/auto` `/mode` `/system` |
+| **Modes** | `/ask` `/act` `/auto` `/mode` `/system` |
 | **Plans & multi-agent** | `/swarm` `/sdd` `/run` `/review` |
 | **Changes & history** | `/diff` `/undo` `/redo` `/rollback` `/rewind` `/branches` `/timeline` `/history` `/postmortem` |
 | **Knowledge & tools** | `/memory` `/skills` `/plugins` `/mcp` `/tools` `/context` `/worktrees` `/log` |

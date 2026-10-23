@@ -1,9 +1,10 @@
 # Ask/Act interaction model and shell policy
 
-Status: written spec approved; implementation planning.
+Status: written spec approved; implemented on branch `interaction-modes`.
 Date: 2026-10-19.
 Source baseline: `f637b8edd42b6529b0334c0ffae37ebe100966c2`.
-Implementation: not started.
+Implementation: complete through Task 49; see the execution record in
+[`plans/2026-10-19-interaction-modes-plan.md`](plans/2026-10-19-interaction-modes-plan.md).
 
 ## Intent and success criteria
 

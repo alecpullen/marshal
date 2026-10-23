@@ -36,6 +36,7 @@ const (
 	KindPassthrough
 	KindReceipt
 	KindMarker
+	KindPlanUpdate
 )
 
 // NodeID is a node's identity across rebuilds. The tree is rebuilt from the
@@ -64,13 +65,14 @@ type Node struct {
 	WorkKey string
 
 	// Payload: exactly one is set, by Kind.
-	Item    *session.TranscriptItem
-	Step    *StepInfo
-	Tools   []registry.AuditEvent // len > 1 = merged same-tool run within a step
-	Active  *session.ActiveToolCall
-	Receipt *ReceiptInfo
-	Job     *JobState
-	Marker  *MarkerInfo
+	Item       *session.TranscriptItem
+	Step       *StepInfo
+	Tools      []registry.AuditEvent // len > 1 = merged same-tool run within a step
+	Active     *session.ActiveToolCall
+	Receipt    *ReceiptInfo
+	Job        *JobState
+	Marker     *MarkerInfo
+	PlanUpdate *PlanUpdate
 }
 
 // StepInfo is a beat's payload. A beat is one narrated model response and
@@ -91,7 +93,8 @@ type StepInfo struct {
 	// binding, or for a narrated response whose only call was a todo.write,
 	// the todo that write set in progress. Empty means no task.
 	TodoID string
-	// TodoWrites are the beat's todo.write calls. They are never rows.
+	// TodoWrites are the beat's todo.write calls. They are not tool rows: the
+	// last one that changed the list is the beat's plan row (KindPlanUpdate).
 	TodoWrites []registry.AuditEvent
 
 	// Todo is set on the beat where work moves to a different todo.
@@ -564,6 +567,9 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		for _, r := range node.Children {
 			ci.settleJob(r)
 		}
+		if plan, at := planRow(a.info.TodoWrites); plan != nil {
+			node.Children = insertPlanRow(node.Children, plan, at)
+		}
 		node.Children = append(node.Children, a.cards...)
 		if id != 0 {
 			a.info.StepIDs = []session.StepID{id}
@@ -632,11 +638,17 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		out = append(out, b.node)
 	}
 	out = mergeBeats(out)
+	for _, n := range out {
+		if n.Kind == KindStep {
+			keepLastPlanRow(n)
+		}
+	}
 	out = coalesceMarkers(out)
 	labelTransitions(out, s.Todos)
 	foldBeats(out, lastTurn)
-	// foldBeats and labelTransitions run after finish/absorb computed each
-	// beat's version, so recompute it now that the payload is final.
+	// keepLastPlanRow, foldBeats and labelTransitions run after finish/absorb
+	// computed each beat's version, so recompute it now that the payload is
+	// final.
 	for _, n := range out {
 		if n.Kind == KindStep {
 			n.Version = versionOfStep(n)

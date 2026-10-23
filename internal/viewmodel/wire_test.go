@@ -153,7 +153,7 @@ func TestWireStepCarriesTodoLabelAndFold(t *testing.T) {
 }
 
 func TestKindStringCoversEveryKind(t *testing.T) {
-	for k := KindTurn; k <= KindMarker; k++ {
+	for k := KindTurn; k <= KindPlanUpdate; k++ {
 		if s := k.String(); s == "" || s == "unknown" {
 			t.Fatalf("Kind(%d) has no wire name", k)
 		}

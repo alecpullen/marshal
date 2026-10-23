@@ -43,6 +43,7 @@ type WireNode struct {
 	Subagent *WireSubagent `json:"subagent,omitempty"`
 	RunEvent *WireRunEvent `json:"runEvent,omitempty"`
 	Marker   *WireMarker   `json:"marker,omitempty"`
+	Plan     *WirePlan     `json:"plan,omitempty"`
 	Receipt  *WireReceipt  `json:"receipt,omitempty"`
 	Band     *WireBand     `json:"band,omitempty"`
 }
@@ -207,6 +208,19 @@ type WireMarker struct {
 	DurationMs int64    `json:"durationMs,omitempty"`
 }
 
+// WirePlan is a beat's plan line: the todo list as the beat's last
+// todo.write left it.
+type WirePlan struct {
+	// Status is each item's status in list order: "completed",
+	// "in_progress" or "pending".
+	Status     []string `json:"status,omitempty"`
+	Done       int      `json:"done"`
+	Total      int      `json:"total"`
+	Active     int      `json:"active,omitempty"`
+	ActiveText string   `json:"activeText,omitempty"`
+	Cleared    bool     `json:"cleared,omitempty"`
+}
+
 // WireCall is one finished call.
 type WireCall struct {
 	CallID     string   `json:"callId,omitempty"`
@@ -309,6 +323,7 @@ var kindNames = [...]string{
 	KindPassthrough: "passthrough",
 	KindReceipt:     "receipt",
 	KindMarker:      "marker",
+	KindPlanUpdate:  "planUpdate",
 }
 
 // String is the kind's wire name.
@@ -360,6 +375,10 @@ func wireNode(n *Node) WireNode {
 			wm.Refs = append(wm.Refs, r.Key)
 		}
 		w.Marker = wm
+	case n.PlanUpdate != nil:
+		p := n.PlanUpdate
+		w.Plan = &WirePlan{Status: p.Status, Done: p.Done(), Total: p.Total(), Active: p.Active,
+			ActiveText: ScrubText(p.ActiveText), Cleared: p.Cleared}
 	case n.Active != nil:
 		w.Tool = wireActive(n.Active)
 	case len(n.Tools) > 0:

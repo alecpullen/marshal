@@ -140,6 +140,7 @@ func (s *Server) mcpSpawn(w http.ResponseWriter, r *http.Request, c MCPClient, i
 		Prompt string `json:"prompt"`
 		Plan   string `json:"plan"`
 		Mode   string `json:"mode"`
+		Auto   *bool  `json:"auto"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		writeRPC(w, id, nil, &rpcError{rpcInvalidParams, "parse arguments"})
@@ -147,7 +148,7 @@ func (s *Server) mcpSpawn(w http.ResponseWriter, r *http.Request, c MCPClient, i
 	}
 	res, err := s.fleet.Submit(r.Context(), SpawnRequest{
 		Origin: OriginMCP, ClientID: c.ID, RepoID: a.RepoID, Ref: a.Ref,
-		Title: a.Title, Prompt: a.Prompt, Plan: a.Plan, Mode: a.Mode,
+		Title: a.Title, Prompt: a.Prompt, Plan: a.Plan, Mode: a.Mode, Auto: a.Auto,
 	})
 	if err != nil {
 		writeRPC(w, id, nil, &rpcError{rpcInvalidParams, err.Error()})

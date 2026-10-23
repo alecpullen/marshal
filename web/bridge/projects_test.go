@@ -219,8 +219,13 @@ func TestSpawnPicksUpTheProjectDefaults(t *testing.T) {
 	if len(calls) != 1 || !strings.Contains(calls[0], `"isolation"`) || !strings.Contains(calls[0], `"routing":{"profile":"fast"}`) {
 		t.Fatalf("session/new = %v", calls)
 	}
-	if got := e.agents[out.AgentID].calls("session/set_mode"); len(got) != 1 || !strings.Contains(got[0], `"ask"`) {
-		t.Fatalf("session/set_mode = %v", got)
+	// The project default travels as the session's starting policy; there is
+	// no second implicit set_mode patch.
+	if !strings.Contains(calls[0], `"policy":{"mode":"ask"}`) {
+		t.Fatalf("session/new policy = %v, want the project's ask default", calls[0])
+	}
+	if got := e.agents[out.AgentID].calls("session/set_mode"); len(got) != 0 {
+		t.Fatalf("session/set_mode = %v, want no implicit patch", got)
 	}
 
 	// Explicit request values win over the defaults.
@@ -233,8 +238,13 @@ func TestSpawnPicksUpTheProjectDefaults(t *testing.T) {
 	if strings.Contains(calls[0], `"isolation"`) {
 		t.Fatalf("an explicit isolated:false was overridden: %v", calls)
 	}
-	if got := e.agents[out.AgentID].calls("session/set_mode"); len(got) != 1 || !strings.Contains(got[0], `"auto"`) {
-		t.Fatalf("session/set_mode = %v", got)
+	// The retired "auto" spelling is canonicalized to Act + Auto at the one
+	// policy the spawn sends.
+	if !strings.Contains(calls[0], `"policy":{"auto":true,"mode":"act"}`) {
+		t.Fatalf("session/new policy = %v, want act + auto", calls[0])
+	}
+	if got := e.agents[out.AgentID].calls("session/set_mode"); len(got) != 0 {
+		t.Fatalf("session/set_mode = %v, want no implicit patch", got)
 	}
 }
 

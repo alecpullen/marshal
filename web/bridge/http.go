@@ -432,7 +432,10 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		Project string `json:"project"`
 		Name    string `json:"name"`
 		Mode    string `json:"mode"`
-		Prompt  string `json:"prompt"`
+		// Auto is a pointer so a request that leaves it out takes the
+		// project's default, while an explicit false stays a value.
+		Auto   *bool  `json:"auto"`
+		Prompt string `json:"prompt"`
 		// Isolated is a pointer so a request that leaves it out takes the
 		// project's default.
 		Isolated *bool  `json:"isolated"`
@@ -459,6 +462,9 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	if body.Mode == "" {
 		body.Mode = defaults.Mode
 	}
+	if body.Auto == nil {
+		body.Auto = defaults.Auto
+	}
 	if len(body.Routing) == 0 || string(body.Routing) == "null" {
 		body.Routing = defaults.Routing
 	}
@@ -466,7 +472,7 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		body.Workspace = defaults.Workspace
 	}
 	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
-		Name: body.Name, Mode: body.Mode, Isolated: isolated, Branch: body.Branch, BaseRef: body.BaseRef,
+		Name: body.Name, Mode: body.Mode, Auto: body.Auto, Isolated: isolated, Branch: body.Branch, BaseRef: body.BaseRef,
 		Routing: body.Routing, Workspace: body.Workspace,
 	})
 	if id == "" {
@@ -1200,6 +1206,7 @@ func (s *Server) listPending(w http.ResponseWriter, r *http.Request) {
 			"prompt":    p.Prompt,
 			"plan":      p.Plan,
 			"mode":      p.Mode,
+			"auto":      p.Auto,
 			"createdAt": p.CreatedAt,
 			"expiresAt": p.ExpiresAt,
 		})

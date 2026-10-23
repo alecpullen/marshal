@@ -102,8 +102,13 @@ func TestRecipeRunPromptSpawnsWithModeAndSendsPrompt(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 	fa := agentOf(id)
-	if got := fa.calls("session/set_mode"); len(got) != 1 || !strings.Contains(got[0], `"mode":"ask"`) {
-		t.Errorf("set_mode = %v", got)
+	// The recipe's starting tuple travels as the session's one policy; the
+	// bridge no longer sends a second implicit set_mode.
+	if got := fa.calls("session/new"); len(got) != 1 || !strings.Contains(got[0], `"policy":{"mode":"ask"}`) {
+		t.Errorf("session/new = %v, want the recipe's ask starting policy", got)
+	}
+	if got := fa.calls("session/set_mode"); len(got) != 0 {
+		t.Errorf("set_mode = %v, want none", got)
 	}
 	if got := fa.calls("session/prompt"); len(got) != 1 || !strings.Contains(got[0], "since v1.2") {
 		t.Errorf("prompt = %v", got)

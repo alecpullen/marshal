@@ -637,6 +637,7 @@ func (f *Fleet) spawnFromRequest(ctx context.Context, req SpawnRequest) (string,
 	opts := SpawnOptions{
 		Name:   req.Title,
 		Mode:   req.Mode,
+		Auto:   req.Auto,
 		Prompt: req.Prompt,
 		Origin: req.Origin,
 		RepoID: req.RepoID,
@@ -926,8 +927,12 @@ func (f *Fleet) RegistryForSession(id string) (*Registry, error) {
 // RepoID, URL and Ref select a remote source: a registered repo id, a
 // raw URL (UI-only, read-only), and an optional git ref to check out.
 type SpawnOptions struct {
-	Name     string
-	Mode     string
+	Name string
+	Mode string
+	// Auto is the requested Auto modifier for the starting tuple. Nil means
+	// the spawn did not name one, which lets a lower layer supply it; an
+	// explicit false is a real value and is sent as one.
+	Auto     *bool
 	Prompt   string
 	Isolated bool
 	Branch   string
@@ -997,6 +1002,14 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	if origin == "" {
 		origin = OriginUI
 	}
+	// Canonicalize the requested starting tuple before any resource is
+	// acquired: an unreadable spelling must fail the request rather than
+	// leave a half-configured agent behind.
+	mode, auto, _, merr := canonicalModeTuple(opts.Mode, opts.Auto)
+	if merr != nil {
+		return "", fmt.Errorf("bridge: %w", merr)
+	}
+	opts.Mode, opts.Auto = mode, auto
 	src, err := f.resolveSource(opts, origin)
 	if err != nil {
 		return "", err
@@ -1034,6 +1047,11 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		res, err := f.ResolveWorkspaceIn(ctx, wsRef, templateRoot, trustRoot)
 		if err != nil {
 			return err
+		}
+		// A workspace policy that names a mode the ask/act model cannot read
+		// must fail the spawn, not be forwarded verbatim as a starting grant.
+		if _, _, _, perr := canonicalModeTuple(res.Doc.Policy.Mode, res.Doc.Policy.Auto); perr != nil {
+			return fmt.Errorf("workspace %s: %w", res.Name, perr)
 		}
 		img, err := f.builtImage(res)
 		if err == nil && f.repoOverlayAddsImageLayers(ctx, res) {
@@ -1289,17 +1307,39 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	if len(opts.Routing) > 0 && string(opts.Routing) != "null" {
 		params["routing"] = opts.Routing
 	}
-	if wsRes != nil && (wsRes.Doc.Policy.Mode != "" || wsRes.Doc.Policy.Auto != nil || len(wsRes.Doc.Policy.Allow) > 0) {
-		policy := map[string]any{}
-		if wsRes.Doc.Policy.Mode != "" {
-			policy["mode"] = wsRes.Doc.Policy.Mode
+	// One combined starting policy goes to session/new. The requested tuple
+	// (which the caller already merged over the project's defaults) wins over
+	// the workspace's: a requested mode replaces the pair rather than
+	// inheriting Auto from a lower layer, exactly as a mode patch resets Auto.
+	startMode, startAuto := opts.Mode, opts.Auto
+	if startMode == "" && wsRes != nil {
+		startMode = wsRes.Doc.Policy.Mode
+		if startAuto == nil {
+			startAuto = wsRes.Doc.Policy.Auto
 		}
-		if wsRes.Doc.Policy.Auto != nil {
-			policy["auto"] = *wsRes.Doc.Policy.Auto
+	}
+	// The merged pair is validated and canonicalized once, before it is sent
+	// as the session's single starting policy. A combination the ask/act model
+	// cannot represent fails the spawn rather than being sent half-applied.
+	if startMode != "" || startAuto != nil {
+		m, a2, _, cerr := canonicalModeTuple(startMode, startAuto)
+		if cerr != nil {
+			f.stopAgent(a.ID)
+			return "", fmt.Errorf("bridge: starting policy: %w", cerr)
 		}
-		if len(wsRes.Doc.Policy.Allow) > 0 {
-			policy["allow"] = wsRes.Doc.Policy.Allow
-		}
+		startMode, startAuto = m, a2
+	}
+	policy := map[string]any{}
+	if startMode != "" {
+		policy["mode"] = startMode
+	}
+	if startAuto != nil {
+		policy["auto"] = *startAuto
+	}
+	if wsRes != nil && len(wsRes.Doc.Policy.Allow) > 0 {
+		policy["allow"] = wsRes.Doc.Policy.Allow
+	}
+	if len(policy) > 0 {
 		params["policy"] = policy
 	}
 	raw, err := rt.child.Request(ctx, "session/new", params)
@@ -1313,6 +1353,11 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 			Branch       string `json:"branch"`
 			TargetBranch string `json:"targetBranch"`
 		} `json:"workspace"`
+		// The agent reports the full tuple it committed for the new session.
+		Mode           string `json:"mode"`
+		Auto           *bool  `json:"auto"`
+		SystemAccess   bool   `json:"system_access"`
+		AccessRevision uint64 `json:"access_revision"`
 	}
 	if uerr := json.Unmarshal(raw, &out); uerr != nil || out.SessionID == "" {
 		f.stopAgent(a.ID)
@@ -1338,44 +1383,21 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 		agent.Branch = out.Workspace.Branch
 		agent.TargetBranch = out.Workspace.TargetBranch
 	}
-	mode := effectiveSpawnMode(origin, opts.Mode)
-	if mode != "" {
-		if err := rt.reg.SetMode(ctx, out.SessionID, mode); err != nil {
-			_ = f.ws.PutAgent(agent)
-			return a.ID, fmt.Errorf("agent created but setting mode %q failed: %w", mode, err)
-		}
+	// Record the tuple the agent actually committed. The bridge sends one
+	// combined policy with session/new and never follows it with an implicit
+	// set_mode, so the agent's answer is the only authoritative source; a
+	// response that omits it falls back to what was requested. Only starting
+	// metadata is stored — System and the access revision are live grants and
+	// are never persisted here.
+	agent.Mode, agent.Auto = startMode, startAuto
+	if out.Mode != "" {
+		agent.Mode, agent.Auto = out.Mode, out.Auto
 	}
-	// Persist what the agent actually runs under, not what was requested,
-	// so the exit panel and the agent list do not misreport the mode.
-	agent.Mode = mode
 	if err := f.ws.PutAgent(agent); err != nil {
 		return a.ID, fmt.Errorf("agent created but recording it failed: %w", err)
 	}
 	f.auditf(AuditEvent{Event: AuditSpawn, OwnerID: a.OwnerID, AgentID: a.ID, Origin: origin})
 	return a.ID, nil
-}
-
-// effectiveSpawnMode resolves the approval mode a spawn actually runs under.
-//
-// An agent the bridge starts itself — a due schedule, the review bot, the CI
-// fixer — has nobody attached to answer an approval prompt. Edit mode confirms
-// every command that is neither safe-listed nor covered by an allow rule, and
-// an unanswered confirmation has no timeout: the turn waits until its deadline
-// and the work never happens. So an unattended automation that asked for edit
-// mode runs in auto instead, which answers those confirmations itself.
-//
-// Only edit is promoted. Plan refuses a write outright rather than prompting,
-// so it never stalls, and granting it auto would quietly give the read-only
-// review bot write access it never had.
-func effectiveSpawnMode(origin, requested string) string {
-	if requested != "edit" {
-		return requested
-	}
-	switch origin {
-	case OriginSchedule, OriginReviewBot, OriginCI:
-		return "auto"
-	}
-	return requested
 }
 
 // Diff, Merge and Discard are thin ACP pass-throughs. The bridge holds no

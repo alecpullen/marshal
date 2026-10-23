@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http/httptest"
 	"os"
@@ -189,28 +188,18 @@ func TestSpawnWorkspaceSetupRunsBeforeTheAgentAndFailureAborts(t *testing.T) {
 	}
 }
 
-func TestSpawnWorkspacePassesPolicyToSessionNew(t *testing.T) {
+func TestSpawnWorkspaceRefusesAnInvalidPolicyMode(t *testing.T) {
 	e := newWSSpawnEnv(t)
 	doc := sampleDoc("svc")
+	// "acceptEdits" is the documented invalid case: a retired spelling the
+	// ask/act model does not accept for a workspace policy. It must fail the
+	// spawn rather than being forwarded verbatim as a starting grant.
 	doc.Policy = WSPolicy{Mode: "acceptEdits", Allow: []string{"go test *"}}
 	e.builtTemplate(t, "svc", doc)
-	id, err := e.spawn(t, SpawnOptions{Workspace: "svc"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	calls := e.agents[id].calls("session/new")
-	if len(calls) != 1 {
-		t.Fatalf("session/new calls = %v", calls)
-	}
-	var p struct {
-		Policy struct {
-			Mode  string   `json:"mode"`
-			Allow []string `json:"allow"`
-		} `json:"policy"`
-	}
-	_ = json.Unmarshal([]byte(calls[0]), &p)
-	if p.Policy.Mode != "acceptEdits" || len(p.Policy.Allow) != 1 || p.Policy.Allow[0] != "go test *" {
-		t.Fatalf("policy = %+v in %s", p.Policy, calls[0])
+	if _, err := e.spawn(t, SpawnOptions{Workspace: "svc"}); err == nil {
+		t.Fatal("a workspace with an invalid policy mode started an agent")
+	} else if !strings.Contains(err.Error(), "acceptEdits") {
+		t.Fatalf("err = %v, want the invalid mode named", err)
 	}
 }
 

@@ -40,6 +40,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+**Transcript: beats on a spine**
+
+- Each tool call hangs off the narration that explains it (`├ └`) as one
+  row: a verb, what it acted on, and its result on the right. An edit is one
+  line until it is expanded.
+- The beat that starts a todo carries `▸ N/M` in its head, and a plan line
+  (`✓ ✓ ▸ ·  3/4  <todo>`) sits where the agent updated the list. The todo
+  dividers are gone, and a list of any length is tracked.
+- Thinking time moves into the beat's head (`thought 2s`); expanding the beat
+  shows the reasoning.
+- One level of detail: nothing folds. `Enter` in browse mode or a click
+  expands one row (a beat opens with its rows), and `Ctrl+G` toggles
+  expand-all. The outline, steps and full density levels and the `z` fold
+  toggle are gone.
+- Dragging over a call row copies what it acted on: the command, path or
+  query.
+
 **Tool-usage prompting and tool architecture docs**
 
 - Two rules in the cached system-prompt prefix now name the tool families by
@@ -113,6 +130,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- `[tui.transcript] density` and `fold_finished_tasks`, with the beat folding
+  and density levels they configured. Files that set them still load, with a
+  warning that they are ignored.
 - The background knowledge pass (every 5 turns, at compaction and at exit)
   and the `memory.write` tool. Only curated memories — confirmed, or
   promoted to workspace/global scope — are injected into the prompt.

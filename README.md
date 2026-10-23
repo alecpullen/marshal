@@ -187,11 +187,11 @@ configured with `auth = "oauth"` get a browser login flow.
 ### The TUI
 
 Marshal's terminal UI is a single-column stack designed for terminals covering
-half a screen or less. The transcript is hierarchical — turn → task → step →
-tool call — so narration and the tool calls it explains stay attached, and
-finished tasks fold to one line. Three density levels (`Ctrl+G`, and per-node
-with `Enter`) and a keyboard browse mode (`Esc`) give detail on demand, with a
-full inspector (`i`) for any single step.
+half a screen or less. The transcript reads as beats: each tool call hangs off
+the narration that explains it, as one row naming what it did and what came of
+it, and the beat that starts a todo carries its number. Nothing folds: `Enter`
+or a click opens a row, `Ctrl+G` opens everything, and a keyboard browse mode
+(`Esc`) and a full inspector (`i`) give detail on demand.
 
 During a normal conversation turn, `Enter` queues steering and `Alt+Enter`
 sends it now. Send now interrupts the current operation: it stops attached

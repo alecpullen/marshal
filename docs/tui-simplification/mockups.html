@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Marshal TUI Directions</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+/* Layout: a single reading column; each terminal frame sits beside its notes
+   when the screen is wide enough, and above them when it is not. The terminal
+   frames always show Marshal's dark Warm Sunset theme, whatever the page theme. */
+:root {
+  --bg: #f3f4f6;
+  --surface: #ffffff;
+  --ink: #16181d;
+  --ink-2: #4b5060;
+  --ink-3: #6b7080;
+  --rule: #d8dbe2;
+  --accent: #b9481f;
+  --accent-soft: #fbe7dd;
+  --vio: #8a3fbf;
+  --info: #0b7896;
+  --ok: #0a8468;
+  --warn: #9a5b00;
+  --display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e0f12; --surface: #16181c; --ink: #e9eaee; --ink-2: #b0b4be; --ink-3: #8a8f9b;
+    --rule: #2a2d34; --accent: #ff875f; --accent-soft: #3a2219; --vio: #d787ff; --info: #5fd7ff;
+    --ok: #00d7af; --warn: #ffaf5f; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e0f12; --surface: #16181c; --ink: #e9eaee; --ink-2: #b0b4be; --ink-3: #8a8f9b;
+  --rule: #2a2d34; --accent: #ff875f; --accent-soft: #3a2219; --vio: #d787ff; --info: #5fd7ff;
+  --ok: #00d7af; --warn: #ffaf5f; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1240px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+nav.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); border-bottom: 1px solid var(--rule); }
+nav.top .wrap { display: flex; gap: 4px 18px; flex-wrap: wrap; align-items: center; padding-block: 10px; font-size: 13.5px; }
+nav.top .brand { font-family: var(--display); font-weight: 600; letter-spacing: .02em; margin-right: auto; }
+nav.top a { color: var(--ink-2); text-decoration: none; }
+nav.top a:hover, nav.top a:focus-visible { color: var(--accent); }
+nav.top a.rec { color: var(--accent); font-weight: 600; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+header.intro { padding-block: 44px 8px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+h1 { font-family: var(--display); font-weight: 600; font-size: clamp(30px, 4.4vw, 46px); line-height: 1.08; margin: 10px 0 14px; text-wrap: balance; letter-spacing: -.01em; }
+.lede { font-size: 17px; color: var(--ink-2); max-width: 68ch; margin: 0; }
+.reqs { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin: 28px 0 0; padding: 0; list-style: none; }
+.reqs li { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 14px 16px; }
+.reqs b { display: block; font-family: var(--display); font-weight: 600; font-size: 16px; margin-bottom: 2px; }
+.reqs span { color: var(--ink-2); font-size: 14px; }
+.goal { margin-top: 14px; font-size: 14px; color: var(--ink-2); }
+.goal strong { color: var(--accent); font-weight: 600; }
+
+section { padding-block: 48px 8px; border-top: 1px solid var(--rule); margin-top: 40px; scroll-margin-top: 56px; }
+section:first-of-type { border-top: 0; margin-top: 8px; }
+h2 { font-family: var(--display); font-weight: 600; font-size: 28px; line-height: 1.15; margin: 0 0 6px; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; text-wrap: balance; }
+h2 .tag { font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); background: var(--accent-soft); padding: 3px 8px; border-radius: 4px; }
+h3 { font-family: var(--display); font-weight: 600; font-size: 18px; margin: 26px 0 8px; }
+.principle { font-size: 18px; color: var(--ink); max-width: 64ch; margin: 0 0 24px; font-style: italic; }
+p { max-width: 68ch; }
+.muted { color: var(--ink-2); }
+code { font-family: var(--mono); font-size: .88em; background: var(--surface); border: 1px solid var(--rule); border-radius: 3px; padding: 0 4px; }
+
+.fig { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; margin-block: 8px 20px; }
+@media (min-width: 1180px) { .fig { grid-template-columns: max-content minmax(0, 1fr); gap: 32px; } }
+.fig > * { min-width: 0; }
+.termwrap { overflow-x: auto; max-width: 100%; }
+.termcap { display: flex; justify-content: space-between; gap: 12px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin-bottom: 6px; letter-spacing: .02em; }
+.notes { font-size: 14.5px; }
+.notes h4 { font-family: var(--display); font-weight: 600; font-size: 15px; margin: 18px 0 4px; letter-spacing: .01em; }
+.notes h4:first-child { margin-top: 0; }
+.notes ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.notes li { color: var(--ink-2); }
+.notes li b { color: var(--ink); font-weight: 600; }
+.k-good { color: var(--ok); } .k-cost { color: var(--warn); }
+
+/* ---- terminal frames (fixed dark theme: they depict the TUI itself) ---- */
+.term { --cols: 96; font-family: var(--mono); font-size: 12px; line-height: 1.5; background: #080808; color: #bcbcbc;
+        width: calc(var(--cols) * 1ch + 24px); padding-block: 10px; border-radius: 7px; border: 1px solid #262626;
+        box-shadow: 0 1px 0 rgba(0,0,0,.04), 0 10px 30px -18px rgba(0,0,0,.55); }
+.term .ln { display: flex; white-space: pre; height: 1.5em; padding-inline: 12px; }
+.term .ln .l { flex: 0 1 auto; overflow: hidden; min-width: 0; }
+.term .ln .gap { flex: 1 1 auto; min-width: 1ch; }
+.term .ln .fill { flex: 1 1 0; overflow: hidden; min-width: 0; }
+.term .ln .fill + .r:not(:empty)::before { content: " "; }
+.term .ln .r { flex: 0 0 auto; }
+.term .ln.raw { display: block; }
+.term .ln.row { gap: 0; }
+.term .cell { display: flex; overflow: hidden; white-space: pre; min-width: 0; }
+.term .ln.tight .fill + .r:not(:empty)::before, .term .cell.tight .fill + .r:not(:empty)::before { content: none; }
+.term .tint, .term .cell.tint { background: #303030; }
+.term .stick { background: #262626; }
+.term .inp { background: #1c1c1c; }
+.term .fg { color: #bcbcbc; } .term .em { color: #eeeeee; } .term .mut { color: #9e9e9e; } .term .bord { color: #808080; }
+.term .acc { color: #ff875f; } .term .vio { color: #d787ff; } .term .amb { color: #ffaf00; } .term .err { color: #ff87af; }
+.term .trk { color: #585858; }
+.term .ok { color: #00d7af; } .term .info { color: #5fd7ff; } .term .b { font-weight: 700; }
+.term .cap { color: #ff875f; font-family: var(--body); font-style: italic; font-size: 12.5px; }
+
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+thead th { font-family: var(--display); font-weight: 600; font-size: 14.5px; color: var(--ink); background: var(--bg); }
+tbody th { font-weight: 500; color: var(--ink-2); width: 26%; }
+td.rec, th.rec { background: var(--accent-soft); }
+.glyphs td:first-child { font-family: var(--mono); white-space: nowrap; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 6px; }
+
+ol.decide { padding-left: 22px; display: grid; gap: 12px; max-width: 76ch; }
+ol.decide li::marker { font-family: var(--mono); color: var(--accent); font-weight: 700; }
+ol.decide b { font-weight: 600; }
+.rec-note { color: var(--ink-2); }
+footer { padding-block: 40px 56px; color: var(--ink-3); font-size: 13px; }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+html { scroll-behavior: smooth; }
+</style>
+
+<nav class="top"><div class="wrap">
+  <span class="brand">Marshal TUI directions</span>
+  <a href="#today">Today</a>
+  <a href="#foundation">Foundation</a>
+  <a href="#ledger">A · Ledger</a>
+  <a href="#console" class="rec">B · Console</a>
+  <a href="#sticky">C · Sticky</a>
+  <a href="#compare">Compare</a>
+  <a href="#decide">Decide</a>
+</div></nav>
+
+<div class="wrap">
+<header class="intro">
+  <div class="eyebrow">Proposal · 23 Oct 2026 · nothing decided</div>
+  <h1>Three simpler layouts for Marshal's TUI</h1>
+  <p class="lede">One shared foundation fixes how the transcript reads. Three layouts then decide where the plan and the running work live. Every frame uses the same session: four todos, a reviewer subagent and a background test run.</p>
+  <ul class="reqs">
+    <li><b>A transcript you can follow</b><span>Each call sits visibly under the narration that explains it, and nothing changes shape while you read.</span></li>
+    <li><b>Todos always visible</b><span>The whole plan, busy or idle, at any length.</span></li>
+    <li><b>Running work pinned at the bottom</b><span>Subagents and jobs stay in view while they run, and look like nothing else.</span></li>
+  </ul>
+  <p class="goal"><strong>Goal: simplification.</strong> Each layout is judged by what it removes.</p>
+</header>
+
+<section id="today">
+  <h2>Today</h2>
+  <p class="muted">Rendered through the real <code>Model.View()</code> from a fixture at 100 × 40. Runs of blank rows are trimmed to two.</p>
+  <div class="fig">
+    <div class="termwrap"><div class="termcap"><span>100 × 40 · main @ 31984a86</span><span>busy</span></div><div class="term" style="--cols:100"><div class="ln raw"><span style="color:#ff875f"> ❯ </span><span style="color:#bcbcbc">Add retry with backoff to the provider client and cover it with tests</span>                            </div><div class="ln raw">                                                                                                    </div><div class="ln raw"><span style="color:#9e9e9e"> · </span><span style="color:#d0d0d0">Reading the client to see how requests are sent and where errors</span><span style="color:#d0d0d0"> surface.</span>                 <span style="color:#9e9e9e">2 tools</span></div><div class="ln raw">                                                                                                    </div><div class="ln raw">   <span style="color:#9e9e9e">── 1/4 Add a retry loop with exponential backoff ────────────────────────────────────────────────</span></div><div class="ln raw"><span style="color:#9e9e9e"> · </span><span style="color:#d0d0d0">Planning the</span><span style="color:#d0d0d0"> change.</span>                                                                             </div><div class="ln raw"><span style="color:#9e9e9e"> · </span><span style="color:#d0d0d0">Adding the retry loop around doRequest with jittered</span><span style="color:#d0d0d0"> backoff.</span>                                    </div><div class="ln raw">    <span style="color:#9e9e9e"> ✎ </span><span style="color:#00d7af">Edit file · +38 -6</span>                                                                           </div><div class="ln raw">    <span style="color:#9e9e9e"> › </span><span style="color:#00d7af">go build ./internal/llm/... · exit 0</span>                                                         </div><div class="ln raw">                                                                                                    </div><div class="ln raw">   <span style="color:#9e9e9e">── 3/4 Table tests for the backoff schedule ─────────────────────────────────────────────────────</span></div><div class="ln raw"><span style="color:#9e9e9e"> · </span><span style="color:#d0d0d0">Starting the full suite in the background and asking a reviewer to check the</span><span style="color:#d0d0d0"> change.</span>             </div><div class="ln raw">    <span style="color:#9e9e9e"> › </span><span style="color:#00d7af">go test ./... · started job-1</span>                                                                </div><div class="ln raw">                                                                                                    </div><div class="ln raw"><span style="color:#ff875f;background:#303030"> ▸ </span><span style="color:#ff875f;background:#303030;font-weight:700">review retry change</span><span style="background:#303030">                                                                            </span><span style="color:#9e9e9e;background:#303030">0s</span></div><div class="ln raw"><span style="color:#9e9e9e;background:#303030"> ▍ </span><span style="color:#9e9e9e;background:#303030">Checking that the backoff respects context cancellation.</span><span style="background:#303030">                                         </span></div><div class="ln raw">                                                                                                    </div><div class="ln raw"><span style="color:#ff875f"> ▸ </span><span style="color:#d0d0d0">Writing table tests for the backoff</span><span style="color:#d0d0d0"> schedule.</span>                                                    </div><div class="ln raw">                                                                                                    </div><div class="ln raw">    <span style="color:#ff875f"> ▸ </span><span style="color:#ffaf00">File write · 0s</span>                                                                              </div><div class="ln raw">       <span style="color:#9e9e9e">{&quot;path&quot;:&quot;internal/llm/client_retry_test.go&quot;}</span>                                                 </div><div class="ln raw">                                                                                                    </div><div class="ln raw">                                                                                                    </div><div class="ln raw"><span style="color:#9e9e9e">▍</span> <span style="color:#ff875f">▸</span> <span style="color:#ff875f">▰▰</span><span style="color:#9e9e9e">▱▱</span> 2/4 · Table tests for the backoff schedule                                            <span style="color:#9e9e9e">3m 0s</span></div><div class="ln raw"><span style="color:#9e9e9e">▍</span>  ✓ 2 done · ▸ next: Run the full suite and get a review                                           </div><div class="ln raw"><span style="color:#9e9e9e">▍</span> <span style="color:#ff875f">▸</span> command go test ./...                                                         <span style="color:#9e9e9e">running · 1m 14s</span>  </div><div class="ln raw"><span style="color:#9e9e9e">▍</span><span style="color:#9e9e9e">  ok  marshal/internal/agent 4.1s</span>                                                                  </div><div class="ln raw"><span style="color:#ff875f">▍</span><span style="color:#bcbcbc">❯ </span><span style="color:#080808;background:#ff875f">A</span><span style="color:#9e9e9e">sk Marshal...</span><span style="color:#bcbcbc">                                                                                  </span> </div><div class="ln raw"><span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">default</span> · <span style="color:#ffaf5f;font-weight:700">untrusted</span> · <span style="color:#bcbcbc">no model</span> · <span style="color:#9e9e9e">local</span> · <span style="color:#bcbcbc">001</span>                                                       </div></div></div>
+    <div class="notes">
+      <h4>What the frame shows</h4>
+      <ul>
+        <li><b><code>▸</code> means five things:</b> the running beat, the running tool, the subagent card, the plan head and the job card.</li>
+        <li><b>Running work wears the input's rail.</b> The now bar rows and the composer share <code>▍</code>.</li>
+        <li><b>The first beat has already folded</b> to “2 tools”. Finished beats fold except the newest three, so the calls vanish when you scroll back to read them.</li>
+        <li><b>Todos are two compressed rows,</b> shown only while a turn the list drives is running. The full list is behind Ctrl+T.</li>
+        <li><b>The subagent is drawn twice</b> (an in-transcript card and a pinned card) and leaves a third trace when it ends.</li>
+        <li><b>The running call prints raw JSON</b> arguments.</li>
+        <li><b>Calls hang by indentation only,</b> each with a glyph (<code>✎ ≡ › ◈ ⧉ ┆</code>) to learn.</li>
+      </ul>
+      <h4>What it hides</h4>
+      <ul>
+        <li>The now bar ranges from 0 to 10 rows, with a one-row layout under 30 rows and an open checklist from 44, a mirror row when you scroll away, receipt and attention rows, and in-bar card expansion.</li>
+        <li>Ctrl+G cycles three densities on top of the folding rules.</li>
+      </ul>
+      <h4>One cause</h4>
+      <ul><li>Work in progress is drawn in several places at once, each with its own rules for showing, folding and shrinking. The fix is fewer places.</li></ul>
+    </div>
+  </div>
+</section>
+
+<section id="foundation">
+  <h2>Foundation <span class="tag">all three layouts</span></h2>
+  <p class="principle">A beat is a narration line with its calls hung on a spine. Only running work is tinted. Each glyph means one thing.</p>
+  <div class="fig">
+    <div class="termwrap"><div class="termcap"><span>96 cols</span><span>grammar sheet</span></div><div class="term" style="--cols:96"><div class="ln"><span class="l"><span class="cap">A beat: one narration line, and the calls it explains on a spine beneath it</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Reading the client to see how requests are sent and where errors surface.</span></span><span class="gap"></span><span class="r"><span class="mut">thought 3s</span></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="mut">read    </span><span class="fg">client.go, errors.go, backoff.go</span></span><span class="gap"></span><span class="r"><span class="mut">3 files</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="mut">search  </span><span class="fg">&quot;doRequest&quot;</span></span><span class="gap"></span><span class="r"><span class="mut">4 matches · 2 files</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="err">✗ </span><span class="em">Running the retry tests.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go test ./internal/llm/ -run Retry</span></span><span class="gap"></span><span class="r"><span class="err b">exit 1</span></span></div><div class="ln"><span class="l"><span class="bord">            </span><span class="mut">--- FAIL: TestRetryHonoursContext (0.00s)</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">            </span><span class="mut">    client_retry_test.go:41: waited 2s after cancel</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="cap">A model that rarely narrates still gets one rule: the beat shows its last calls</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Fixing the remaining call sites.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="mut">… 14 earlier calls</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/anthropic.go</span></span><span class="gap"></span><span class="r"><span class="ok">+4 </span><span class="err">−1</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="amb">edit    </span><span class="fg">internal/llm/ollama.go</span></span><span class="gap"></span><span class="r"><span class="ok">+4 </span><span class="err">−1</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="cap">Running work is tinted and edged in its kind&#x27;s colour; nothing else is</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln tint"><span class="l"><span class="edge vio">▌</span><span class="vio b">⧉ </span><span class="vio b">#1     </span><span class="em">review the retry loop   </span><span class="mut">Checking that the backoff respects context cancella…</span></span><span class="gap"></span><span class="r"><span class="fg">1m02s</span><span class="vio">  ⠋</span></span></div><div class="ln tint"><span class="l"><span class="edge info">▌</span><span class="info b">┆ </span><span class="info b">job-1  </span><span class="em">go test ./...           </span><span class="mut">ok  marshal/internal/agent  4.1s</span></span><span class="gap"></span><span class="r"><span class="fg">1m14s</span><span class="info">  ⠋</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="cap">When it finishes, one event lands in the transcript, untinted, at that moment</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="vio b">⧉ </span><span class="vio b">#1 </span><span class="fg">review the retry loop · </span><span class="ok">done</span><span class="mut"> · 14 calls · 1m21s</span></span><span class="gap"></span><span class="r"><span class="mut">▹</span></span></div><div class="ln"><span class="l"><span class="mut">    One nit: cap the jitter so the last wait cannot pass 30 s.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="info b">┆ </span><span class="info b">job-1 </span><span class="fg">go test ./... · </span><span class="err b">exit 1</span><span class="mut"> · 2m02s</span></span><span class="gap"></span><span class="r"><span class="mut">▹</span></span></div><div class="ln"><span class="l"><span class="mut">    --- FAIL: TestRetryHonoursContext (0.00s)</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="ok">✓ </span><span class="mut">done · 6m40s · 9 beats · 23 calls · ±3 files · 41k tokens</span></span><span class="gap"></span><span class="r"></span></div></div></div>
+    <div class="notes">
+      <h4>The beat spine</h4>
+      <ul>
+        <li><b>Head:</b> <code>●</code> and the narration, wrapped in full. Right side: owner, <code>thought Ns</code>, duration from 15 s.</li>
+        <li><b>Calls:</b> one line each on <code>├ └</code>, with a verb, the subject, and the result on the right. Words replace category glyphs.</li>
+        <li><b>Failure:</b> <code>✗</code> on the head and the first three output lines under the call.</li>
+        <li><b>Long beats</b> show their last 8 calls behind <code>… N earlier calls</code>, live or settled.</li>
+        <li><b>Nothing folds on its own.</b> Enter or a click expands one line; Ctrl+G expands all. The density ladder goes.</li>
+      </ul>
+      <h4>Running work, drawn once</h4>
+      <ul>
+        <li><b>Launch:</b> an ordinary call line whose result names it: <code>┆ job-1 started</code>. It states a fact, so it never updates.</li>
+        <li><b>Running:</b> one tinted row with a <code>▌</code> edge in its kind's colour. Under NO_COLOR the edge, glyph and id still mark it.</li>
+        <li><b>Done:</b> the row leaves and one completion event lands in the transcript at that moment, right above the agent's reaction.</li>
+      </ul>
+      <h4>The plan</h4>
+      <ul>
+        <li><b>Shows whenever a list exists,</b> busy or idle, any length. <code>✓</code> done, <code>▸</code> in progress, <code>·</code> waiting.</li>
+        <li>Up to 6 items in full, then a window around the active item. A finished list collapses to one row until your next prompt.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>One glyph, one meaning</h3>
+  <div class="tablewrap">
+  <table class="glyphs">
+    <thead><tr><th>Glyph</th><th>Means</th><th>Colour</th></tr></thead>
+    <tbody>
+      <tr><td>❯</td><td>Your prompt, and the input</td><td><span class="sw" style="background:#ff875f"></span>accent</td></tr>
+      <tr><td>●</td><td>A settled beat</td><td><span class="sw" style="background:#9e9e9e"></span>muted</td></tr>
+      <tr><td>⠋</td><td>Running right now: beat head, call, pinned row</td><td><span class="sw" style="background:#ff875f"></span>accent</td></tr>
+      <tr><td>✗ / ✓</td><td>Failed / done</td><td><span class="sw" style="background:#ff87af"></span>error · <span class="sw" style="background:#00d7af"></span>success</td></tr>
+      <tr><td>├ └</td><td>This call belongs to the beat above</td><td><span class="sw" style="background:#808080"></span>border</td></tr>
+      <tr><td>⧉ #n</td><td>Subagent <i>n</i></td><td><span class="sw" style="background:#d787ff"></span>violet</td></tr>
+      <tr><td>┆ job-n</td><td>Background job <i>n</i></td><td><span class="sw" style="background:#5fd7ff"></span>cyan</td></tr>
+      <tr><td>▸ / ·</td><td>Plan item in progress / not started</td><td><span class="sw" style="background:#ff875f"></span>accent · <span class="sw" style="background:#808080"></span>border</td></tr>
+      <tr><td>▌ + tint</td><td>Running work, pinned. Nothing else has a background.</td><td>kind colour</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="muted">Retired: <code>▸</code> as “running”, <code>·</code> as “settled step”, the call glyphs <code>✎ ≡ › ◈</code>, and the <code>▍</code> rail on now-bar rows. Every colour is already in the Warm Sunset palette.</p>
+</section>
+
+<section id="ledger">
+  <h2>A · Ledger</h2>
+  <p class="principle">The plan sits above the conversation and running work sits below it.</p>
+  <div class="fig">
+    <div class="termwrap"><div class="termcap"><span>96 × 34</span><span>following the live turn</span></div><div class="term" style="--cols:96"><div class="ln"><span class="l"><span class="em b">Plan  </span><span class="acc">▰▰</span><span class="bord">▱▱</span><span class="fg">  2/4</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="fg"> </span><span class="ok">✓ </span><span class="mut">Add a retry loop with exponential backoff</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="fg"> </span><span class="ok">✓ </span><span class="mut">Classify retryable errors (429, 5xx, resets)</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="fg"> </span><span class="acc b">▸ </span><span class="em">Table tests for the backoff schedule</span></span><span class="gap"></span><span class="r"><span class="fg">1m40s</span></span></div><div class="ln"><span class="l"><span class="fg"> </span><span class="bord">· </span><span class="fg">Run the full suite and get a review</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="acc b">❯ </span><span class="em">Add retry with backoff to the provider client and cover it with tests</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Reading the client to see how requests are sent and where errors surface.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="mut">read    </span><span class="fg">internal/llm/client.go</span></span><span class="gap"></span><span class="r"><span class="mut">212 lines</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="mut">search  </span><span class="fg">&quot;doRequest&quot;</span></span><span class="gap"></span><span class="r"><span class="mut">4 matches · 2 files</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">1/4  </span><span class="fg">Add a retry loop with exponential backoff </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Adding the retry loop around doRequest with jittered backoff.</span></span><span class="gap"></span><span class="r"><span class="mut">thought 3s</span></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/client.go</span></span><span class="gap"></span><span class="r"><span class="ok">+38 </span><span class="err">−6</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go build ./internal/llm/...</span></span><span class="gap"></span><span class="r"><span class="mut">exit 0</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">2/4  </span><span class="fg">Classify retryable errors (429, 5xx, resets) </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Splitting provider errors into retryable and final.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/errors.go</span></span><span class="gap"></span><span class="r"><span class="ok">+21 </span><span class="err">−2</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go test ./internal/llm/ -run Classify</span></span><span class="gap"></span><span class="r"><span class="mut">ok · 6 tests</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">3/4  </span><span class="fg">Table tests for the backoff schedule </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Starting the full suite in the background and asking for a review.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="fg">shell   </span><span class="fg">go test ./...</span></span><span class="gap"></span><span class="r"><span class="info b">┆ job-1 </span><span class="mut">started</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="vio">agent   </span><span class="fg">review the retry loop</span></span><span class="gap"></span><span class="r"><span class="vio b">⧉ #1 </span><span class="mut">started</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="acc">⠋ </span><span class="em">Writing table tests for the backoff schedule.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="mut">read    </span><span class="fg">internal/llm/backoff.go</span></span><span class="gap"></span><span class="r"><span class="mut">48 lines</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="amb">write   </span><span class="fg">internal/llm/client_retry_test.go</span></span><span class="gap"></span><span class="r"><span class="acc">⠋ </span><span class="fg">4s</span></span></div><div class="ln tint"><span class="l"><span class="edge vio">▌</span><span class="vio b">⧉ </span><span class="vio b">#1     </span><span class="em">review the retry loop   </span><span class="mut">Checking that the backoff respects context cancella…</span></span><span class="gap"></span><span class="r"><span class="fg">1m02s</span><span class="vio">  ⠋</span></span></div><div class="ln tint"><span class="l"><span class="edge info">▌</span><span class="info b">┆ </span><span class="info b">job-1  </span><span class="em">go test ./...           </span><span class="mut">ok  marshal/internal/agent  4.1s</span></span><span class="gap"></span><span class="r"><span class="fg">1m14s</span><span class="info">  ⠋</span></span></div><div class="ln inp"><span class="l"><span class="acc b">❯ </span><span class="mut">Ask Marshal…</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="acc">⠋ </span><span class="fg">working 3m00s</span><span class="bord"> · </span><span class="acc b">act</span><span class="bord"> · </span><span class="mut">qwen3-coder@ollama</span><span class="bord"> · </span><span class="mut">ctx 34%</span><span class="bord"> · </span><span class="mut">±2 files</span></span><span class="gap"></span><span class="r"><span class="mut">main · ~/projects/marshal</span></span></div></div></div>
+    <div class="notes">
+      <h4>How it behaves</h4>
+      <ul>
+        <li>The plan's height changes only when the list changes, so the transcript does not jump.</li>
+        <li>Scroll up and the live beat leaves the view; the status line's spinner and timer still show the turn working.</li>
+      </ul>
+      <h4 class="k-good">Good</h4>
+      <ul><li>The plan reads like a document header and never competes with running rows for space.</li></ul>
+      <h4 class="k-cost">Costs</h4>
+      <ul>
+        <li>Your eye moves between the top and bottom of the screen.</li>
+        <li>The plan's rows come out of the transcript even while you read old history.</li>
+        <li>A top strip was tried in single-stack P4, then folded into the now bar.</li>
+        <li>The live beat still changes in place.</li>
+      </ul>
+      <h4>Removes</h4>
+      <ul><li>The foundation list, the live mirror row, and the now bar planner down to the running rows.</li></ul>
+    </div>
+  </div>
+</section>
+
+<section id="console">
+  <h2>B · Console <span class="tag">recommended</span></h2>
+  <p class="principle">History never changes. Everything that can still change is in one dock above the input.</p>
+  <div class="fig">
+    <div class="termwrap"><div class="termcap"><span>96 × 34</span><span>following the live turn</span></div><div class="term" style="--cols:96"><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="acc b">❯ </span><span class="em">Add retry with backoff to the provider client and cover it with tests</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Reading the client to see how requests are sent and where errors surface.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="mut">read    </span><span class="fg">internal/llm/client.go</span></span><span class="gap"></span><span class="r"><span class="mut">212 lines</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="mut">search  </span><span class="fg">&quot;doRequest&quot;</span></span><span class="gap"></span><span class="r"><span class="mut">4 matches · 2 files</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">1/4  </span><span class="fg">Add a retry loop with exponential backoff </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Adding the retry loop around doRequest with jittered backoff.</span></span><span class="gap"></span><span class="r"><span class="mut">thought 3s</span></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/client.go</span></span><span class="gap"></span><span class="r"><span class="ok">+38 </span><span class="err">−6</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go build ./internal/llm/...</span></span><span class="gap"></span><span class="r"><span class="mut">exit 0</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">2/4  </span><span class="fg">Classify retryable errors (429, 5xx, resets) </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Splitting provider errors into retryable and final.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/errors.go</span></span><span class="gap"></span><span class="r"><span class="ok">+21 </span><span class="err">−2</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go test ./internal/llm/ -run Classify</span></span><span class="gap"></span><span class="r"><span class="mut">ok · 6 tests</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">3/4  </span><span class="fg">Table tests for the backoff schedule </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Starting the full suite in the background and asking for a review.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="fg">shell   </span><span class="fg">go test ./...</span></span><span class="gap"></span><span class="r"><span class="info b">┆ job-1 </span><span class="mut">started</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="vio">agent   </span><span class="fg">review the retry loop</span></span><span class="gap"></span><span class="r"><span class="vio b">⧉ #1 </span><span class="mut">started</span></span></div><div class="ln"><span class="l"><span class="acc">⠋ </span><span class="fg">working 3m00s </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"><span class="mut"> Ctrl+C ×2 stop</span></span></div><div class="ln"><span class="l"><span class="acc">⠋ </span><span class="em">Writing table tests for the backoff schedule.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="mut">read    </span><span class="fg">internal/llm/backoff.go</span></span><span class="gap"></span><span class="r"><span class="mut">48 lines</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="amb">write   </span><span class="fg">internal/llm/client_retry_test.go</span></span><span class="gap"></span><span class="r"><span class="acc">⠋ </span><span class="fg">4s</span></span></div><div class="ln tint"><span class="l"><span class="edge vio">▌</span><span class="vio b">⧉ </span><span class="vio b">#1     </span><span class="em">review the retry loop   </span><span class="mut">Checking that the backoff respects context cancella…</span></span><span class="gap"></span><span class="r"><span class="fg">1m02s</span><span class="vio">  ⠋</span></span></div><div class="ln tint"><span class="l"><span class="edge info">▌</span><span class="info b">┆ </span><span class="info b">job-1  </span><span class="em">go test ./...           </span><span class="mut">ok  marshal/internal/agent  4.1s</span></span><span class="gap"></span><span class="r"><span class="fg">1m14s</span><span class="info">  ⠋</span></span></div><div class="ln"><span class="l"><span class="em b">Plan  </span><span class="acc">▰▰</span><span class="bord">▱▱</span><span class="fg">  2/4</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="fg"> </span><span class="ok">✓ </span><span class="mut">Add a retry loop with exponential backoff</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="fg"> </span><span class="ok">✓ </span><span class="mut">Classify retryable errors (429, 5xx, resets)</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="fg"> </span><span class="acc b">▸ </span><span class="em">Table tests for the backoff schedule</span></span><span class="gap"></span><span class="r"><span class="fg">1m40s</span></span></div><div class="ln"><span class="l"><span class="fg"> </span><span class="bord">· </span><span class="fg">Run the full suite and get a review</span></span><span class="gap"></span><span class="r"></span></div><div class="ln inp"><span class="l"><span class="acc b">❯ </span><span class="mut">Ask Marshal…</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="acc b">act</span><span class="bord"> · </span><span class="mut">qwen3-coder@ollama</span><span class="bord"> · </span><span class="mut">ctx 34%</span><span class="bord"> · </span><span class="mut">±2 files</span></span><span class="gap"></span><span class="r"><span class="mut">main · ~/projects/marshal</span></span></div></div></div>
+    <div class="notes">
+      <h4>How it behaves</h4>
+      <ul>
+        <li><b>History only grows.</b> A beat moves from the dock into history when it settles. While you follow the bottom you cannot see the move: the beat is already right above the rule.</li>
+        <li><b>The dock is bounded</b> at 40% of the frame and sheds in a fixed order: plan to one row, live beat to its head and current call, running rows to 3 plus <code>+N more</code>.</li>
+        <li><b>Scrolling up leaves the dock in place,</b> so the live beat, running work and plan stay visible. No mirror row.</li>
+        <li><b>A streamed answer commits line by line,</b> so only the line being written lives in the dock.</li>
+      </ul>
+      <h4 class="k-good">Good</h4>
+      <ul>
+        <li>One rule explains the whole screen, and everything live is one glance from where you type.</li>
+        <li>Settled text never reflows: selection stays put and the render cache draws each settled node once.</li>
+        <li>The wire can become append-only history plus one live payload; the <code>band</code> node already ships separately.</li>
+      </ul>
+      <h4 class="k-cost">Costs</h4>
+      <ul>
+        <li>A busy dock can take 10 or more rows, bounded at 40%.</li>
+        <li>When you have scrolled up, settled beats appear as history growing below you.</li>
+        <li>Line-by-line commit of streamed text is new work.</li>
+      </ul>
+      <h4>Removes</h4>
+      <ul><li>The foundation list, plus every now-bar variant (compact and tall layouts, mirror row, in-bar expansion, attention and receipt rows) and the live/settled split in the render cache.</li></ul>
+    </div>
+  </div>
+  <div class="fig">
+    <div class="termwrap"><div class="termcap"><span>80 × 24</span><span>the minimum frame</span></div><div class="term" style="--cols:80"><div class="ln"><span class="l"><span class="bord">  └ </span><span class="mut">search  </span><span class="fg">&quot;doRequest&quot;</span></span><span class="gap"></span><span class="r"><span class="mut">4 matches · 2 files</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">1/4  </span><span class="fg">Add a retry loop with exponential backoff </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Adding the retry loop around doRequest with jittered backoff.</span></span><span class="gap"></span><span class="r"><span class="mut">thought 3s</span></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/client.go</span></span><span class="gap"></span><span class="r"><span class="ok">+38 </span><span class="err">−6</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go build ./internal/llm/...</span></span><span class="gap"></span><span class="r"><span class="mut">exit 0</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">2/4  </span><span class="fg">Classify retryable errors (429, 5xx, resets) </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Splitting provider errors into retryable and final.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/errors.go</span></span><span class="gap"></span><span class="r"><span class="ok">+21 </span><span class="err">−2</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go test ./internal/llm/ -run Classify</span></span><span class="gap"></span><span class="r"><span class="mut">ok · 6 tests</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">3/4  </span><span class="fg">Table tests for the backoff schedule </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Starting the full suite in the background and asking for a review.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="fg">shell   </span><span class="fg">go test ./...</span></span><span class="gap"></span><span class="r"><span class="info b">┆ job-1 </span><span class="mut">started</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="vio">agent   </span><span class="fg">review the retry loop</span></span><span class="gap"></span><span class="r"><span class="vio b">⧉ #1 </span><span class="mut">started</span></span></div><div class="ln"><span class="l"><span class="acc">⠋ </span><span class="fg">working 3m00s </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"><span class="mut"> Ctrl+C ×2 stop</span></span></div><div class="ln"><span class="l"><span class="acc">⠋ </span><span class="em">Writing table tests for the backoff schedule.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="amb">write   </span><span class="fg">internal/llm/client_retry_test.go</span></span><span class="gap"></span><span class="r"><span class="acc">⠋ </span><span class="fg">4s</span></span></div><div class="ln tint"><span class="l"><span class="edge vio">▌</span><span class="vio b">⧉ </span><span class="vio b">#1     </span><span class="em">review the retry loop   </span><span class="mut">Checking that the backoff respects …</span></span><span class="gap"></span><span class="r"><span class="fg">1m02s</span><span class="vio">  ⠋</span></span></div><div class="ln tint"><span class="l"><span class="edge info">▌</span><span class="info b">┆ </span><span class="info b">job-1  </span><span class="em">go test ./...           </span><span class="mut">ok  marshal/internal/agent  4.1s</span></span><span class="gap"></span><span class="r"><span class="fg">1m14s</span><span class="info">  ⠋</span></span></div><div class="ln"><span class="l"><span class="acc">▰▰</span><span class="bord">▱▱</span><span class="fg"> 2/4  </span><span class="acc b">▸ </span><span class="em">Table tests for the backoff schedule</span><span class="mut">   next · </span><span class="fg">Run the full suite and get a review</span></span><span class="gap"></span><span class="r"><span class="fg">1m40s</span></span></div><div class="ln inp"><span class="l"><span class="acc b">❯ </span><span class="mut">Ask Marshal…</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="acc b">act</span><span class="bord"> · </span><span class="mut">qwen3-coder@ollama</span><span class="bord"> · </span><span class="mut">ctx 34%</span><span class="bord"> · </span><span class="mut">±2 files</span></span><span class="gap"></span><span class="r"><span class="mut">main</span></span></div></div></div>
+    <div class="notes">
+      <h4>At the minimum size</h4>
+      <ul>
+        <li>The plan has dropped to one row with the active and next items.</li>
+        <li>The live beat shows its head and the current call.</li>
+        <li>Both running rows still fit; a third and later would collapse to <code>+N more</code>.</li>
+        <li>History keeps 16 rows.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="fig">
+    <div class="termwrap"><div class="termcap"><span>96 × 28</span><span>after the turn</span></div><div class="term" style="--cols:96"><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="fg">shell   </span><span class="fg">go test ./...</span></span><span class="gap"></span><span class="r"><span class="info b">┆ job-1 </span><span class="mut">started</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="vio">agent   </span><span class="fg">review the retry loop</span></span><span class="gap"></span><span class="r"><span class="vio b">⧉ #1 </span><span class="mut">started</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Writing table tests for the backoff schedule.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="mut">read    </span><span class="fg">internal/llm/backoff.go</span></span><span class="gap"></span><span class="r"><span class="mut">48 lines</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="amb">write   </span><span class="fg">internal/llm/client_retry_test.go</span></span><span class="gap"></span><span class="r"><span class="ok">+112</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="info b">┆ </span><span class="info b">job-1 </span><span class="fg">go test ./... · </span><span class="err b">exit 1</span><span class="mut"> · 2m02s</span></span><span class="gap"></span><span class="r"><span class="mut">▹</span></span></div><div class="ln"><span class="l"><span class="mut">    --- FAIL: TestRetryHonoursContext (0.00s)</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">The context test fails because the wait ignores cancellation; fixing that.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/backoff.go</span></span><span class="gap"></span><span class="r"><span class="ok">+6 </span><span class="err">−2</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go test ./internal/llm/ -run Retry</span></span><span class="gap"></span><span class="r"><span class="mut">ok · 9 tests</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">4/4  </span><span class="fg">Run the full suite and get a review </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="vio b">⧉ </span><span class="vio b">#1 </span><span class="fg">review the retry loop · </span><span class="ok">done</span><span class="mut"> · 14 calls · 1m21s</span></span><span class="gap"></span><span class="r"><span class="mut">▹</span></span></div><div class="ln"><span class="l"><span class="mut">    One nit: cap the jitter so the last wait cannot pass 30 s.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Capping the jitter at 30 s as the reviewer suggested, then running everything.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/backoff.go</span></span><span class="gap"></span><span class="r"><span class="ok">+3 </span><span class="err">−1</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go test ./...</span></span><span class="gap"></span><span class="r"><span class="mut">ok · 1,284 tests</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="fg">Every provider call now retries 429s, 5xx responses and connection resets with</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="fg">jittered exponential backoff, capped at 30 s and cancelled with the request context.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="fg">The new table tests pin the schedule; the full suite passes.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="ok">✓ </span><span class="mut">done · 6m40s · 9 beats · 23 calls · ±3 files · 41k tokens</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="ok">✓ </span><span class="mut">Plan  4/4 done</span></span><span class="gap"></span><span class="r"><span class="mut">clears on your next prompt</span></span></div><div class="ln inp"><span class="l"><span class="acc b">❯ </span><span class="mut">Ask Marshal…</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="acc b">act</span><span class="bord"> · </span><span class="mut">qwen3-coder@ollama</span><span class="bord"> · </span><span class="mut">ctx 34%</span><span class="bord"> · </span><span class="mut">±2 files</span></span><span class="gap"></span><span class="r"><span class="mut">main · ~/projects/marshal</span></span></div></div></div>
+    <div class="notes">
+      <h4>After the turn</h4>
+      <ul>
+        <li>The failed job and the finished review landed in history in the order they happened, each right above the agent's reaction.</li>
+        <li>Neither launch line changed. They said <code>started</code> and that is still true.</li>
+        <li>The dock is now one row: the finished plan, until your next prompt.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="sticky">
+  <h2>C · Sticky</h2>
+  <p class="principle">Everything is a transcript object. The plan and running cards stick to the viewport edges while they are out of view.</p>
+  <div class="fig">
+    <div class="termwrap"><div class="termcap"><span>96 × 30</span><span>scrolled to mid-turn</span></div><div class="term" style="--cols:96"><div class="ln stick"><span class="l"><span class="acc">⇡ </span><span class="em b">Plan  </span><span class="acc">▰▰</span><span class="bord">▱▱</span><span class="fg">  2/4</span></span><span class="gap"></span><span class="r"><span class="mut">written 2m ago</span></span></div><div class="ln stick"><span class="l"><span class="fg"> </span><span class="ok">✓ </span><span class="mut">Add a retry loop with exponential backoff</span></span><span class="gap"></span><span class="r"></span></div><div class="ln stick"><span class="l"><span class="fg"> </span><span class="ok">✓ </span><span class="mut">Classify retryable errors (429, 5xx, resets)</span></span><span class="gap"></span><span class="r"></span></div><div class="ln stick"><span class="l"><span class="fg"> </span><span class="acc b">▸ </span><span class="em">Table tests for the backoff schedule</span></span><span class="gap"></span><span class="r"><span class="fg">1m40s</span></span></div><div class="ln stick"><span class="l"><span class="fg"> </span><span class="bord">· </span><span class="fg">Run the full suite and get a review</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">1/4  </span><span class="fg">Add a retry loop with exponential backoff </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Adding the retry loop around doRequest with jittered backoff.</span></span><span class="gap"></span><span class="r"><span class="mut">thought 3s</span></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/client.go</span></span><span class="gap"></span><span class="r"><span class="ok">+38 </span><span class="err">−6</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go build ./internal/llm/...</span></span><span class="gap"></span><span class="r"><span class="mut">exit 0</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Routing the Anthropic and Ollama clients through the same retry path.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/anthropic.go</span></span><span class="gap"></span><span class="r"><span class="ok">+4 </span><span class="err">−1</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="amb">edit    </span><span class="fg">internal/llm/ollama.go</span></span><span class="gap"></span><span class="r"><span class="ok">+4 </span><span class="err">−1</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">2/4  </span><span class="fg">Classify retryable errors (429, 5xx, resets) </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Splitting provider errors into retryable and final.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  ├ </span><span class="amb">edit    </span><span class="fg">internal/llm/errors.go</span></span><span class="gap"></span><span class="r"><span class="ok">+21 </span><span class="err">−2</span></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="fg">shell   </span><span class="fg">go test ./internal/llm/ -run Classify</span></span><span class="gap"></span><span class="r"><span class="mut">ok · 6 tests</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="mut">● </span><span class="em">Checking which errors the Ollama client wraps before they reach us.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">  └ </span><span class="mut">search  </span><span class="fg">&quot;fmt.Errorf&quot; in internal/llm/ollama.go</span></span><span class="gap"></span><span class="r"><span class="mut">7 matches</span></span></div><div class="ln"><span class="l"></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="bord">── </span><span class="mut">3/4  </span><span class="fg">Table tests for the backoff schedule </span></span><span class="fill bord">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</span><span class="r"></span></div><div class="ln tint"><span class="l"><span class="edge vio">▌</span><span class="vio b">⧉ </span><span class="vio b">#1 </span><span class="em">review the retry loop</span></span><span class="gap"></span><span class="r"><span class="fg">qwen3-coder · 14 calls · 1m02s</span><span class="vio">  ⠋</span></span></div><div class="ln tint"><span class="l"><span class="edge vio">▌</span><span class="mut">  Checking that the backoff respects context cancellation.</span></span><span class="gap"></span><span class="r"></span></div><div class="ln tint"><span class="l"><span class="edge info">▌</span><span class="info b">┆ </span><span class="info b">job-1 </span><span class="em">go test ./...</span></span><span class="gap"></span><span class="r"><span class="fg">running 1m14s</span><span class="info">  ⠋</span></span></div><div class="ln tint"><span class="l"><span class="edge info">▌</span><span class="mut">  ok  marshal/internal/agent  4.1s</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="acc">↓ </span><span class="acc">⠋ </span><span class="fg">Writing table tests for the backoff schedule.</span></span><span class="gap"></span><span class="r"><span class="mut">End to follow</span></span></div><div class="ln inp"><span class="l"><span class="acc b">❯ </span><span class="mut">Ask Marshal…</span></span><span class="gap"></span><span class="r"></span></div><div class="ln"><span class="l"><span class="acc">⠋ </span><span class="fg">working 3m00s</span><span class="bord"> · </span><span class="acc b">act</span><span class="bord"> · </span><span class="mut">qwen3-coder@ollama</span><span class="bord"> · </span><span class="mut">ctx 34%</span><span class="bord"> · </span><span class="mut">±2 files</span></span><span class="gap"></span><span class="r"><span class="mut">main · ~/projects/marshal</span></span></div></div></div>
+    <div class="notes">
+      <h4>What you are looking at</h4>
+      <ul>
+        <li>The plan block was born at the <code>todo.write</code> above the view, so it sticks to the top.</li>
+        <li>The two cards were born at their launch lines below the view, so they stick to the bottom.</li>
+        <li>The live beat is out of view, so a mirror row stands in for it.</li>
+      </ul>
+      <h4 class="k-good">Good</h4>
+      <ul><li>Each thing has one home, and the scrollback shows the plan and cards where they happened.</li></ul>
+      <h4 class="k-cost">Costs</h4>
+      <ul>
+        <li>Objects move between their home and an edge as you scroll and as output arrives.</li>
+        <li>A finished card settles back at its launch point, usually out of view, so a completion event is still needed.</li>
+        <li>It needs a mirror row and a new sticky layout pass, and has the most rendering code of the three.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="compare">
+  <h2>Compare</h2>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th></th><th>A · Ledger</th><th class="rec">B · Console</th><th>C · Sticky</th></tr></thead>
+    <tbody>
+      <tr><th>Todos always visible</th><td>Yes, at the top</td><td class="rec">Yes, above the input</td><td>Yes, at the top while out of view</td></tr>
+      <tr><th>Running work at the bottom</th><td>Yes</td><td class="rec">Yes</td><td>Yes, while out of view</td></tr>
+      <tr><th>Transcript holds still</th><td>Mostly; the live beat changes in place</td><td class="rec">Yes; history is append-only</td><td>No; cards and plan move</td></tr>
+      <tr><th>Live beat when scrolled up</th><td>Out of view (status timer)</td><td class="rec">Stays in the dock</td><td>Mirror row</td></tr>
+      <tr><th>Places that change in a turn</th><td>3</td><td class="rec">1</td><td>3</td></tr>
+      <tr><th>New mechanism</th><td>None</td><td class="rec">Line-by-line commit of streamed text</td><td>Sticky layout pass</td></tr>
+      <tr><th>At 80 × 24</th><td>Fits</td><td class="rec">Fits, sheds in a fixed order</td><td>Tight; cards take 2 rows each</td></tr>
+      <tr><th>Risk</th><td>Low</td><td class="rec">Medium</td><td>Medium to high</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3>Considered and rejected</h3>
+  <ul class="muted">
+    <li><b>A side rail from 120 columns.</b> Running work leaves the bottom, it needs a second layout below the breakpoint, and the rail was removed in single-stack P1 for half-width terminals.</li>
+    <li><b>A transcript sectioned by todo.</b> Built in single-stack P3 and P4 and reverted by transcript-beats, because models do not keep todo state reliably and the structure came out wrong.</li>
+    <li><b>A flat stream, one bullet per call.</b> Simple, but calls link to narration only by adjacency.</li>
+  </ul>
+</section>
+
+<section id="decide">
+  <h2>Decisions for you</h2>
+  <ol class="decide">
+    <li><b>Layout:</b> Console, Ledger or Sticky. <span class="rec-note">Recommended: Console.</span></li>
+    <li><b>Remove auto-folding and the density ladder?</b> <span class="rec-note">Recommended: yes; keep per-line expand and Ctrl+G expand-all.</span></li>
+    <li><b>A finished plan:</b> one row until your next prompt, or hidden at once. <span class="rec-note">Recommended: one row.</span></li>
+    <li><b>Failed background work:</b> is the red completion event enough, or keep live work's attention row and acknowledgement? <span class="rec-note">Recommended: the event plus the Work view; drop acknowledgement.</span></li>
+    <li><b>Narration:</b> whole, or a first-sentence headline with a muted continuation. <span class="rec-note">Recommended: whole.</span></li>
+  </ol>
+  <h3>Suggested order</h3>
+  <ol class="decide">
+    <li><b>Renderer foundation:</b> spine, verbs, glyphs, no auto-fold, one level of detail. TUI only, visible on its own.</li>
+    <li><b>Lifecycle in viewmodel:</b> completion events replace in-place cards and tail markers. TUI and web.</li>
+    <li><b>Layout:</b> the chosen layout replaces <code>nowbar.go</code>, plus the plan surface and Ctrl+T.</li>
+    <li><b>Wire:</b> settle the layout before daemon P2's transcript plan, since Console changes what the wire carries.</li>
+  </ol>
+</section>
+
+<footer>Source: <code>docs/tui-simplification/alternatives.md</code>. Frames are generated from one script, so the text and colour versions match.</footer>
+</div>
+
+</html>

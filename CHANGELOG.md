@@ -133,6 +133,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The shell analyzer walked only part of a command's parse tree, so a command
+  hidden in a construct it skipped never became an operation, and a command
+  with no operations fell through to Allow in both Ask and Act. It now walks
+  every executable position: `if`/`elif` and `while`/`until` conditions, `for`
+  loop words and C-style loop expressions, `case` subjects and patterns,
+  `[[ ]]`, `(( ))`, `let`, declaration builtins (`export`, `local`, `declare`,
+  `readonly`), bare assignments (`X=$(cmd)`), and `${X:-…}`/`${X/a/b}`
+  parameter expansions. A redirect-only statement (`> file`) now records a
+  write operation, so Ask denies it and Act allows it. A parsed command that
+  yields no operations fails closed: Confirm with exact approval in Act, Deny
+  in Ask. Unhandled command and word-part node types add a `shell.unknown`
+  operation, so a construct nobody walks requires exact approval instead of
+  running unexamined.
 - The `[diagnostics]` command checker ran in Marshal's launch directory, so a
   worktree session checked the project checkout's copy and reported stale
   errors. It now runs in the session's active root.

@@ -5,6 +5,11 @@ import "strings"
 // classifyShellOperations assigns effects to every parsed operation.
 func classifyShellOperations(ops []ShellOperation) {
 	for i := range ops {
+		if ops[i].Redirect {
+			// A redirect-only operation is a write to its target. It has no
+			// executable to classify, and its effects are already final.
+			continue
+		}
 		classifyShellOperation(&ops[i])
 	}
 }

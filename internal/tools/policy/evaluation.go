@@ -142,6 +142,25 @@ func (pe *PolicyEngine) toolRisk(name string) string {
 
 // evaluateShell applies the decision matrix to a parsed command.
 func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionRules []string, rules []permissions.Rule) Evaluation {
+	// A command with statements but no analyzed operations is not a proven
+	// read: it means the walker missed something. Fail closed instead of
+	// allowing it. A command with nothing to run (empty, comments only) stays a
+	// no-op.
+	if len(in.Shell.Operations) == 0 && !in.Shell.NoStatements {
+		if in.ActorState.Mode == interaction.ModeAsk {
+			return Evaluation{
+				Decision: DecisionDeny,
+				Required: CapabilityRequirement{Act: true},
+				Reasons:  []PolicyReason{{Code: ReasonRequiresAct, Message: "Ask admits only read-only operations"}},
+			}
+		}
+		return Evaluation{
+			Decision:             DecisionConfirm,
+			ExactCommandApproval: true,
+			Reasons:              []PolicyReason{{Code: ReasonUnknownPayload, Message: "the command could not be analyzed into operations"}},
+		}
+	}
+
 	var effects ShellEffect
 	var reasons []PolicyReason
 	for _, op := range in.Shell.Operations {

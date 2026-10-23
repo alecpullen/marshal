@@ -49,6 +49,91 @@ func TestInteractionPolicyMatrix(t *testing.T) {
 	}
 }
 
+// TestShellEvaluationDeniesEveryHiddenCommand covers the forms whose nested
+// command the analyzer used to skip: they must never reach Allow or Confirm.
+func TestShellEvaluationDeniesEveryHiddenCommand(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	pe := NewEngine(&cfg, nil)
+	ask := interaction.State{Mode: interaction.ModeAsk, Revision: 1}
+	act := interaction.State{Mode: interaction.ModeAct, Revision: 1}
+	cmds := []string{
+		`if rm -rf ~; then echo ok; fi`,
+		`for f in $(rm -rf ~); do echo $f; done`,
+		`case $(rm -rf ~) in *) ;; esac`,
+		`[[ $(rm -rf ~) ]]`,
+		`(( $(rm -rf ~) ))`,
+		`let x=$(rm -rf ~)`,
+		`X=$(rm -rf ~)`,
+		`export X=$(rm -rf ~)`,
+		`local X=$(rm -rf ~)`,
+		`declare X=$(rm -rf ~)`,
+		`readonly X=$(rm -rf ~)`,
+		`echo ${X:-$(rm -rf ~)}`,
+		`echo $(( $(rm -rf ~) ))`,
+		`while rm -rf ~; do break; done`,
+		`until rm -rf ~; do break; done`,
+	}
+	for _, cmd := range cmds {
+		for _, state := range []interaction.State{ask, act} {
+			if got := evalShell(t, pe, state, cmd).Decision; got != DecisionDeny {
+				t.Fatalf("%q in %s: decision = %q, want deny", cmd, state.Mode, got)
+			}
+		}
+	}
+
+	if got := evalShell(t, pe, act, `rm -rf ~`).Decision; got != DecisionDeny {
+		t.Fatalf("bare catastrophic: decision = %q, want deny", got)
+	}
+}
+
+// TestShellEvaluationRedirectOnlyWriteIsAWrite covers a statement whose only
+// act is a redirect: Ask denies the write, Act allows it.
+func TestShellEvaluationRedirectOnlyWriteIsAWrite(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	pe := NewEngine(&cfg, nil)
+	ask := interaction.State{Mode: interaction.ModeAsk, Revision: 1}
+	act := interaction.State{Mode: interaction.ModeAct, Revision: 1}
+	for _, cmd := range []string{`> important.txt`, `>> log.txt`} {
+		if got := evalShell(t, pe, ask, cmd).Decision; got != DecisionDeny {
+			t.Fatalf("%q in Ask: decision = %q, want deny", cmd, got)
+		}
+		ev := evalShell(t, pe, act, cmd)
+		if ev.Decision != DecisionAllow {
+			t.Fatalf("%q in Act: decision = %q, want allow", cmd, ev.Decision)
+		}
+	}
+}
+
+// TestShellEvaluationNeverAllowsAnEmptyAnalysis covers fail-closed behavior: a
+// parsed command with zero operations is not a proven read. A command with no
+// statements at all (empty, comments only) stays a no-op.
+func TestShellEvaluationNeverAllowsAnEmptyAnalysis(t *testing.T) {
+	cfg := config.Default()
+	cfg.Tools.Shell.Deny.Patterns = nil
+	pe := NewEngine(&cfg, nil)
+	ask := interaction.State{Mode: interaction.ModeAsk, Revision: 1}
+	act := interaction.State{Mode: interaction.ModeAct, Revision: 1}
+
+	// An input redirect runs no command the analyzer understands.
+	if got := evalShell(t, pe, act, `< important.txt`); got.Decision != DecisionConfirm {
+		t.Fatalf("zero ops in Act: decision = %q, want confirm", got.Decision)
+	} else if !got.ExactCommandApproval {
+		t.Fatal("zero ops in Act: confirmation did not require exact approval")
+	}
+	if got := evalShell(t, pe, ask, `< important.txt`).Decision; got != DecisionDeny {
+		t.Fatalf("zero ops in Ask: decision = %q, want deny", got)
+	}
+
+	// Nothing to run is still nothing to approve.
+	for _, cmd := range []string{"", "# only a comment"} {
+		if got := evalShell(t, pe, act, cmd).Decision; got != DecisionAllow {
+			t.Fatalf("%q: decision = %q, want allow", cmd, got)
+		}
+	}
+}
+
 func TestF4AllowCannotPreauthorizeDestructive(t *testing.T) {
 	cfg := config.Default()
 	cfg.Tools.Shell.Deny.Patterns = nil

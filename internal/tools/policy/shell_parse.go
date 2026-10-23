@@ -30,7 +30,7 @@ func AnalyzeShell(in ShellInput) (ShellAnalysis, error) {
 	a.walkFile(f)
 	a.resolveShellScopes()
 	classifyShellOperations(a.ops)
-	return ShellAnalysis{Input: in, Operations: a.ops}, nil
+	return ShellAnalysis{Input: in, Operations: a.ops, NoStatements: len(f.Stmts) == 0}, nil
 }
 
 type shellAnalyzer struct {
@@ -57,19 +57,55 @@ func (a *shellAnalyzer) walkStmt(stmt *syntax.Stmt, depth int) {
 	a.walkRedirects(stmt.Redirs, depth)
 	before := len(a.ops)
 	a.walkCommand(stmt.Cmd, depth)
-	if hasWriteRedirect(stmt.Redirs) && len(a.ops) > before {
-		a.ops[len(a.ops)-1].Effects |= ShellWrite
+	if !hasWriteRedirect(stmt.Redirs) {
+		return
 	}
+	if len(a.ops) > before {
+		a.ops[len(a.ops)-1].Effects |= ShellWrite
+		return
+	}
+	// The statement is only a redirect. It writes its target, so it must not
+	// analyze to nothing.
+	a.addRedirectWrites(stmt.Redirs)
+}
+
+// addRedirectWrites records a write operation for each write redirect of a
+// statement that runs no command of its own.
+func (a *shellAnalyzer) addRedirectWrites(redirs []*syntax.Redirect) {
+	for _, r := range redirs {
+		if r == nil || r.Word == nil || !isWriteRedirect(r.Op) {
+			continue
+		}
+		target := a.decodeWord(r.Word)
+		op := ShellOperation{
+			ID: a.nextID,
+			// The redirect operator stands in for an executable so rule
+			// matching and floor prefixes see a non-empty argv0.
+			Executable:  ShellWord{Text: ">", Value: ">", Known: true, SingleField: true},
+			Argv:        []ShellWord{{Text: ">", Value: ">", Known: true, SingleField: true}, target},
+			Operands:    []ShellWord{target},
+			Directories: []string{a.cwd},
+			Effects:     ShellWrite,
+			Redirect:    true,
+		}
+		a.nextID++
+		a.ops = append(a.ops, op)
+	}
+}
+
+// isWriteRedirect reports whether one redirect writes a file.
+func isWriteRedirect(op syntax.RedirOperator) bool {
+	switch op {
+	case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll:
+		return true
+	}
+	return false
 }
 
 // hasWriteRedirect reports whether a statement redirects output to a file.
 func hasWriteRedirect(redirs []*syntax.Redirect) bool {
 	for _, r := range redirs {
-		if r == nil {
-			continue
-		}
-		switch r.Op {
-		case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll:
+		if r != nil && isWriteRedirect(r.Op) {
 			return true
 		}
 	}
@@ -91,6 +127,11 @@ func (a *shellAnalyzer) walkRedirects(redirs []*syntax.Redirect, depth int) {
 }
 
 func (a *shellAnalyzer) walkCommand(cmd syntax.Command, depth int) {
+	if cmd == nil {
+		// A statement with no command is a redirect-only statement, handled
+		// by walkStmt.
+		return
+	}
 	switch c := cmd.(type) {
 	case *syntax.CallExpr:
 		a.addCall(c, depth)
@@ -110,35 +151,35 @@ func (a *shellAnalyzer) walkCommand(cmd syntax.Command, depth int) {
 			_ = afterX
 		}
 	case *syntax.Block:
-		for _, s := range c.Stmts {
-			a.walkStmt(s, depth)
-		}
+		a.walkStmts(c.Stmts, depth)
 	case *syntax.Subshell:
 		saved := a.cwd
-		for _, s := range c.Stmts {
-			a.walkStmt(s, depth)
-		}
+		a.walkStmts(c.Stmts, depth)
 		a.cwd = saved
 	case *syntax.IfClause:
-		for _, s := range c.Then {
-			a.walkStmt(s, depth)
-		}
+		// The condition runs before the branch, so it is never data.
+		a.walkStmts(c.Cond, depth)
+		a.walkStmts(c.Then, depth)
 		if c.Else != nil {
 			a.walkCommand(c.Else, depth)
 		}
 	case *syntax.ForClause:
-		for _, s := range c.Do {
-			a.walkStmt(s, depth)
-		}
+		a.walkLoop(c.Loop, depth)
+		a.walkStmts(c.Do, depth)
 	case *syntax.WhileClause:
-		for _, s := range c.Do {
-			a.walkStmt(s, depth)
-		}
+		// The condition runs once per iteration, before the body.
+		a.walkStmts(c.Cond, depth)
+		a.walkStmts(c.Do, depth)
 	case *syntax.CaseClause:
+		a.walkWordExecutables(c.Word, depth)
 		for _, item := range c.Items {
-			for _, s := range item.Stmts {
-				a.walkStmt(s, depth)
+			if item == nil {
+				continue
 			}
+			for _, pattern := range item.Patterns {
+				a.walkWordExecutables(pattern, depth)
+			}
+			a.walkStmts(item.Stmts, depth)
 		}
 	case *syntax.FuncDecl:
 		a.walkStmt(c.Body, depth)
@@ -146,6 +187,106 @@ func (a *shellAnalyzer) walkCommand(cmd syntax.Command, depth int) {
 		a.walkStmt(c.Stmt, depth)
 	case *syntax.CoprocClause:
 		a.walkStmt(c.Stmt, depth)
+	case *syntax.TestClause: // [[ ]]
+		a.walkTest(c.X, depth)
+	case *syntax.ArithmCmd: // (( ))
+		a.walkArithm(c.X, depth)
+	case *syntax.LetClause:
+		for _, expr := range c.Exprs {
+			a.walkArithm(expr, depth)
+		}
+	case *syntax.DeclClause: // export/local/declare/readonly/typeset/nameref
+		for _, as := range c.Args {
+			a.walkAssign(as, depth)
+		}
+	default:
+		// A node type nobody handled could hide an executable. Fail closed
+		// rather than dropping it.
+		a.addUnknown(depth)
+	}
+}
+
+func (a *shellAnalyzer) walkStmts(stmts []*syntax.Stmt, depth int) {
+	for _, s := range stmts {
+		a.walkStmt(s, depth)
+	}
+}
+
+// walkLoop walks a for clause's loop header: the iteration words, or a
+// C-style loop's three arithmetic expressions.
+func (a *shellAnalyzer) walkLoop(loop syntax.Loop, depth int) {
+	switch l := loop.(type) {
+	case nil:
+		return
+	case *syntax.WordIter:
+		for _, item := range l.Items {
+			a.walkWordExecutables(item, depth)
+		}
+	case *syntax.CStyleLoop:
+		a.walkArithm(l.Init, depth)
+		a.walkArithm(l.Cond, depth)
+		a.walkArithm(l.Post, depth)
+	default:
+		a.addUnknown(depth)
+	}
+}
+
+// walkAssign walks an assignment's values for executable substitutions. A
+// bare `X=$(cmd)` runs cmd even though the call has no arguments.
+func (a *shellAnalyzer) walkAssign(as *syntax.Assign, depth int) {
+	if as == nil {
+		return
+	}
+	a.walkArithm(as.Index, depth)
+	if as.Array != nil {
+		for _, elem := range as.Array.Elems {
+			if elem == nil {
+				continue
+			}
+			a.walkArithm(elem.Index, depth)
+			a.walkWordExecutables(elem.Value, depth)
+		}
+	}
+	a.walkWordExecutables(as.Value, depth)
+}
+
+// walkArithm walks one arithmetic expression for executable word parts.
+func (a *shellAnalyzer) walkArithm(expr syntax.ArithmExpr, depth int) {
+	switch e := expr.(type) {
+	case nil:
+		return
+	case *syntax.Word:
+		a.walkWordExecutables(e, depth)
+	case *syntax.BinaryArithm:
+		a.walkArithm(e.X, depth)
+		a.walkArithm(e.Y, depth)
+	case *syntax.UnaryArithm:
+		a.walkArithm(e.X, depth)
+	case *syntax.ParenArithm:
+		a.walkArithm(e.X, depth)
+	case *syntax.FlagsArithm:
+		a.walkArithm(e.X, depth)
+	default:
+		a.addUnknown(depth)
+	}
+}
+
+// walkTest walks one extended-test expression for executable word parts.
+func (a *shellAnalyzer) walkTest(expr syntax.TestExpr, depth int) {
+	switch e := expr.(type) {
+	case nil:
+		return
+	case *syntax.Word:
+		a.walkWordExecutables(e, depth)
+	case *syntax.BinaryTest:
+		a.walkTest(e.X, depth)
+		a.walkTest(e.Y, depth)
+	case *syntax.UnaryTest:
+		a.walkTest(e.X, depth)
+	case *syntax.ParenTest:
+		a.walkTest(e.X, depth)
+	default:
+		a.addUnknown(depth)
 	}
 }
 
@@ -162,8 +303,10 @@ func (a *shellAnalyzer) walkWordExecutables(w *syntax.Word, depth int) {
 
 func (a *shellAnalyzer) walkPartExecutables(part syntax.WordPart, depth int) {
 	switch p := part.(type) {
-	case *syntax.SglQuoted:
-		// Single-quoted data never recurses.
+	case nil:
+		return
+	case *syntax.Lit, *syntax.SglQuoted, *syntax.ExtGlob:
+		// Literal data never recurses. An extglob pattern is a literal.
 		return
 	case *syntax.DblQuoted:
 		for _, dp := range p.Parts {
@@ -171,16 +314,45 @@ func (a *shellAnalyzer) walkPartExecutables(part syntax.WordPart, depth int) {
 		}
 	case *syntax.CmdSubst:
 		saved := a.cwd
-		for _, s := range p.Stmts {
-			a.walkStmt(s, depth+1)
-		}
+		a.walkStmts(p.Stmts, depth+1)
 		a.cwd = saved
 	case *syntax.ProcSubst:
 		saved := a.cwd
-		for _, s := range p.Stmts {
-			a.walkStmt(s, depth+1)
-		}
+		a.walkStmts(p.Stmts, depth+1)
 		a.cwd = saved
+	case *syntax.ParamExp:
+		a.walkParamExp(p, depth)
+	case *syntax.ArithmExp:
+		a.walkArithm(p.X, depth)
+	case *syntax.BraceExp:
+		for _, elem := range p.Elems {
+			a.walkWordExecutables(elem, depth)
+		}
+	default:
+		// A word part nobody handled could hide an executable. Fail closed
+		// rather than dropping it.
+		a.addUnknown(depth)
+	}
+}
+
+// walkParamExp walks the words and expressions a parameter expansion can hold:
+// `${X:-word}`, `${X/word/word}`, `${a[index]}` and `${a:x:y}` all expand them,
+// and a command substitution among them runs.
+func (a *shellAnalyzer) walkParamExp(p *syntax.ParamExp, depth int) {
+	a.walkArithm(p.Index, depth)
+	if p.Slice != nil {
+		a.walkArithm(p.Slice.Offset, depth)
+		a.walkArithm(p.Slice.Length, depth)
+	}
+	if p.Repl != nil {
+		a.walkWordExecutables(p.Repl.Orig, depth)
+		a.walkWordExecutables(p.Repl.With, depth)
+	}
+	if p.Exp != nil {
+		a.walkWordExecutables(p.Exp.Word, depth)
+	}
+	if p.NestedParam != nil {
+		a.walkPartExecutables(p.NestedParam, depth)
 	}
 }
 
@@ -194,7 +366,15 @@ func (a *shellAnalyzer) addUnknown(depth int) {
 }
 
 func (a *shellAnalyzer) addCall(call *syntax.CallExpr, depth int) {
-	if call == nil || len(call.Args) == 0 {
+	if call == nil {
+		return
+	}
+	// Assignments are executable: their values expand before the command runs,
+	// even when no command word follows (`X=$(cmd)`).
+	for _, as := range call.Assigns {
+		a.walkAssign(as, depth)
+	}
+	if len(call.Args) == 0 {
 		return
 	}
 	argv := make([]ShellWord, 0, len(call.Args))

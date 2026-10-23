@@ -121,6 +121,100 @@ func TestShellParseAllFindPayloads(t *testing.T) {
 	}
 }
 
+// hasCatastrophic reports whether the analysis contains a catastrophic
+// operation, whatever else it found.
+func hasCatastrophic(a ShellAnalysis) bool {
+	for _, op := range a.Operations {
+		if op.Effects&ShellCatastrophic != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// TestShellParseWalksEveryExecutablePosition covers the constructs whose
+// commands the analyzer used to skip: conditions, loop words, case subjects and
+// patterns, extended tests, arithmetic, let, declaration builtins and bare
+// assignments. Each of these really runs the nested command.
+func TestShellParseWalksEveryExecutablePosition(t *testing.T) {
+	cmds := []string{
+		`rm -rf ~`,
+		`if rm -rf ~; then echo ok; fi`,
+		`if true; then echo ok; elif rm -rf ~; then :; fi`,
+		`for f in $(rm -rf ~); do echo $f; done`,
+		`for ((i=$(rm -rf ~); i < 1; i++)); do break; done`,
+		`case $(rm -rf ~) in *) ;; esac`,
+		`case x in $(rm -rf ~)) ;; esac`,
+		`[[ $(rm -rf ~) ]]`,
+		`[[ a == b && $(rm -rf ~) ]]`,
+		`(( $(rm -rf ~) ))`,
+		`let x=$(rm -rf ~)`,
+		`X=$(rm -rf ~)`,
+		`X=$(rm -rf ~) echo ok`,
+		`export X=$(rm -rf ~)`,
+		`local X=$(rm -rf ~)`,
+		`declare X=$(rm -rf ~)`,
+		`readonly X=$(rm -rf ~)`,
+		`echo ${X:-$(rm -rf ~)}`,
+		`echo ${X/$(rm -rf ~)/y}`,
+		`echo $(( $(rm -rf ~) ))`,
+		`while rm -rf ~; do break; done`,
+		`until rm -rf ~; do break; done`,
+	}
+	for _, cmd := range cmds {
+		if a := analyze(t, cmd); !hasCatastrophic(a) {
+			t.Fatalf("%q: no catastrophic operation in %+v", cmd, a.Operations)
+		}
+	}
+}
+
+// TestShellParseKeepsWalksThatAlreadyWorked guards the forms that were already
+// analyzed correctly.
+func TestShellParseKeepsWalksThatAlreadyWorked(t *testing.T) {
+	cmds := []string{
+		`! rm -rf ~`,
+		`{ rm -rf ~; }`,
+		`rm -rf ~ &`,
+		`f() { rm -rf ~; }; f`,
+		`echo ok | rm -rf ~`,
+		`bash -c 'rm -rf ~'`,
+		`eval 'rm -rf ~'`,
+		`time rm -rf ~`,
+		`cat <<< $(rm -rf ~)`,
+	}
+	for _, cmd := range cmds {
+		if a := analyze(t, cmd); !hasCatastrophic(a) {
+			t.Fatalf("%q: no catastrophic operation in %+v", cmd, a.Operations)
+		}
+	}
+}
+
+// TestShellParseRedirectOnlyStatementIsAWrite covers a statement whose only
+// act is a redirect: it writes its target, so it must not analyze empty.
+func TestShellParseRedirectOnlyStatementIsAWrite(t *testing.T) {
+	cases := []struct{ cmd, target string }{
+		{`> important.txt`, "important.txt"},
+		{`>> log.txt`, "log.txt"},
+		{`2> errors.txt`, "errors.txt"},
+	}
+	for _, tc := range cases {
+		a := analyze(t, tc.cmd)
+		if len(a.Operations) != 1 {
+			t.Fatalf("%q: operations = %+v, want one write", tc.cmd, a.Operations)
+		}
+		op := a.Operations[0]
+		if op.Effects&ShellWrite == 0 {
+			t.Fatalf("%q: effects = %b, want write", tc.cmd, op.Effects)
+		}
+		if op.Effects&ShellUnknown != 0 {
+			t.Fatalf("%q: effects = %b, want no unknown", tc.cmd, op.Effects)
+		}
+		if len(op.Operands) != 1 || op.Operands[0].Value != tc.target {
+			t.Fatalf("%q: operands = %+v, want target %q", tc.cmd, op.Operands, tc.target)
+		}
+	}
+}
+
 func TestShellParseInvalidSyntaxAndControls(t *testing.T) {
 	if _, err := AnalyzeShell(ShellInput{Command: `echo "unterminated`}); err == nil {
 		t.Fatal("invalid syntax was accepted")

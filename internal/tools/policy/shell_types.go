@@ -122,12 +122,21 @@ type ShellOperation struct {
 	Targets     []ShellTarget
 	Effects     ShellEffect
 	Reasons     []PolicyReason
+	// Redirect marks an operation that is only a write redirect (a statement
+	// with no command word). It has no executable to classify; its Effects are
+	// already ShellWrite and its Operands hold the redirect targets.
+	Redirect bool
 }
 
 // ShellAnalysis is the full parse of one command.
 type ShellAnalysis struct {
 	Input      ShellInput
 	Operations []ShellOperation
+	// NoStatements reports a parsed command with nothing to execute: empty, or
+	// comments only. Every other command must analyze to at least one
+	// operation; an empty Operations list for a command with statements is a
+	// gap in the walker, and evaluation fails closed on it.
+	NoStatements bool
 }
 
 // CapabilityRequirement is the interaction capability an evaluation needs.

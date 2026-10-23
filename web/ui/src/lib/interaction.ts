@@ -158,7 +158,9 @@ export function migrateStoredDefaults(raw: { mode?: unknown; auto?: unknown }): 
   else if (raw.auto === false) auto = false
   else if (raw.auto !== undefined) return null
 
-  const withAuto = (mode: Mode): StoredDefaults => {
+  const withAuto = (mode: Mode): StoredDefaults | null => {
+    // Ask cannot carry Auto; that pair is impossible, not a value to keep.
+    if (mode === 'ask' && auto === true) return null
     const d: StoredDefaults = { mode }
     if (auto !== undefined) d.auto = auto
     return d
@@ -173,6 +175,7 @@ export function migrateStoredDefaults(raw: { mode?: unknown; auto?: unknown }): 
       return withAuto('ask')
     case 'act':
       return withAuto('act')
+    case 'read':
     case 'plan':
     case 'default':
     case 'edit':

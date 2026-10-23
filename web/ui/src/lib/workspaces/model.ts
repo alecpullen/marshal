@@ -1,4 +1,4 @@
-import type { BuildStatus, TemplateVersion, WSDoc, WorkspaceListItem } from '../api'
+import type { BuildStatus, TemplateVersion, WSDoc, WorkspaceListItem, WSPolicy } from '../api'
 
 export const STARTERS = [
   { id: 'go-service', label: 'Go service' },
@@ -10,6 +10,23 @@ export const STARTERS = [
 
 /** The bridge's template-name rule (spec §5.1); checked here so the form can say so before a round trip. */
 export const NAME_RE = /^[a-z0-9][a-z0-9-]{0,40}$/
+
+/**
+ * A policy replacement that changes only the named fields. An explicit
+ * `auto: false` is kept as a value; `auto: undefined` means inherit and drops
+ * the key, so omission never becomes a revocation. Mode and allow rules are
+ * left exactly as they were.
+ */
+export function policyChange(policy: WSPolicy, change: { mode?: string; auto?: boolean; allow?: string[] }): WSPolicy {
+  const next: WSPolicy = { ...policy }
+  if (change.mode !== undefined) next.mode = change.mode
+  if ('auto' in change) {
+    if (change.auto === undefined) delete next.auto
+    else next.auto = change.auto
+  }
+  if (change.allow !== undefined) next.allow = change.allow
+  return next
+}
 
 /** Short content chips for a card: the base image, each toolchain and the package count. */
 export function contentChips(doc: WSDoc | undefined): string[] {

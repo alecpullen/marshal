@@ -1,40 +1,73 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { DEFAULT_MODEL, FAST_ROLES, MODES, canIsolate, defaults, loadRemembered, modelLabel, remember, routingFor, validModel } from './newAgent'
+import { DEFAULT_MODEL, FAST_ROLES, MODES, canIsolate, defaults, loadRemembered, modelLabel, remember, rememberedReset, routingFor, validModel } from './newAgent'
 import type { ProjectStatus } from '../api'
 
 const p = (root: string, over: Partial<ProjectStatus> = {}): ProjectStatus => ({ root, available: true, isolation: 'available', ...over })
 
 describe('defaults', () => {
-  it('picks the first available project in edit mode, isolated when supported', () => {
+  it('picks the first available project in Act with Auto off, isolated when supported', () => {
     const d = defaults([p('/gone', { available: false }), p('/a'), p('/b')])
-    expect(d).toEqual({ project: '/a', mode: 'edit', isolated: true, branch: '', baseRef: '' })
+    expect(d).toEqual({ project: '/a', mode: 'act', auto: false, isolated: true, branch: '', baseRef: '' })
   })
   it('is not isolated when the project cannot isolate', () => {
     expect(defaults([p('/a', { isolation: 'not a git repository' })]).isolated).toBe(false)
   })
-  it('honours a remembered project and mode, and ignores stale ones', () => {
+  it('migrates a remembered tuple and ignores stale projects', () => {
     const projects = [p('/a'), p('/b')]
-    expect(defaults(projects, { project: '/b', mode: 'plan', isolated: false })).toMatchObject({ project: '/b', mode: 'plan', isolated: false })
-    expect(defaults(projects, { project: '/zzz', mode: 'read' })).toMatchObject({ project: '/a', mode: 'edit' })
+    expect(defaults(projects, { project: '/b', mode: 'plan', isolated: false })).toMatchObject({ project: '/b', mode: 'ask', auto: false, isolated: false })
+    expect(defaults(projects, { project: '/zzz', mode: 'read' })).toMatchObject({ project: '/a', mode: 'ask', auto: false })
   })
   it('has no project when none is available', () => {
     expect(defaults([p('/a', { available: false })]).project).toBe('')
+  })
+  it('migrates every remembered legacy mode', () => {
+    const projects = [p('/a')]
+    const cases: Array<[string, string, boolean]> = [
+      ['read', 'ask', false],
+      ['default', 'ask', false],
+      ['plan', 'ask', false],
+      ['edit', 'ask', false],
+      ['copilot', 'act', false],
+      ['auto', 'act', true],
+    ]
+    for (const [legacy, mode, auto] of cases) {
+      expect(defaults(projects, { mode: legacy }), legacy).toMatchObject({ mode, auto })
+    }
+  })
+  it('starts fresh Act without Auto, and rejects an unknown spelling without granting Act', () => {
+    const projects = [p('/a')]
+    const fresh = defaults(projects)
+    expect(fresh).toMatchObject({ mode: 'act', auto: false })
+    expect(rememberedReset({ mode: 'yolo' })).toBe(true)
+    expect(defaults(projects, { mode: 'yolo' })).toMatchObject({ mode: 'act', auto: false })
+  })
+  it('rejects Ask with Auto rather than carrying an impossible pair', () => {
+    expect(defaults([p('/a')], { mode: 'ask', auto: true })).toMatchObject({ mode: 'act', auto: false })
+    expect(rememberedReset({ mode: 'ask', auto: true })).toBe(true)
   })
 })
 
 describe('remembered choice', () => {
   beforeEach(() => localStorage.clear())
-  it('round-trips and survives bad data', () => {
-    remember({ project: '/a', mode: 'auto', isolated: false, branch: 'x', baseRef: 'y' })
-    expect(loadRemembered()).toEqual({ project: '/a', mode: 'auto', isolated: false })
+  it('round-trips starting metadata and survives bad data', () => {
+    remember({ project: '/a', mode: 'act', auto: true, isolated: false, branch: 'x', baseRef: 'y' })
+    expect(loadRemembered()).toEqual({ project: '/a', mode: 'act', auto: true, isolated: false })
     localStorage.setItem('marshal.ui.newagent', '{oops')
     expect(loadRemembered()).toEqual({})
+  })
+  it('never remembers System or the access revision', () => {
+    remember({ project: '/a', mode: 'act', auto: true, isolated: false, branch: '', baseRef: '' })
+    const stored = JSON.parse(localStorage.getItem('marshal.ui.newagent')!)
+    expect(stored).not.toHaveProperty('system')
+    expect(stored).not.toHaveProperty('system_access')
+    expect(stored).not.toHaveProperty('revision')
+    expect(stored).not.toHaveProperty('access_revision')
   })
 })
 
 describe('modes', () => {
-  it('is the ACP set, without read', () => {
-    expect([...MODES]).toEqual(['plan', 'default', 'edit', 'copilot', 'auto'])
+  it('is the two-mode set, with Auto as a modifier', () => {
+    expect([...MODES]).toEqual(['ask', 'act'])
     expect(canIsolate(p('/a'))).toBe(true)
     expect(canIsolate(p('/a', { isolation: 'no git' }))).toBe(false)
   })
@@ -77,7 +110,7 @@ describe('model choice', () => {
 
   it('stores the choice with the other chips', () => {
     localStorage.clear()
-    remember({ project: '/a', mode: 'edit', isolated: true, branch: '', baseRef: '' }, { kind: 'preset', name: 'big' })
+    remember({ project: '/a', mode: 'act', auto: false, isolated: true, branch: '', baseRef: '' }, { kind: 'preset', name: 'big' })
     expect(loadRemembered().model).toEqual({ kind: 'preset', name: 'big' })
   })
 })

@@ -1000,7 +1000,7 @@ export interface WSInject { ref: string; header: string; format: string }
 export type WSNetworkMode = 'open' | 'allowlist' | 'off'
 export interface WSNetwork { mode: WSNetworkMode | ''; egress: string[] }
 export interface WSResources { cpu: number; memory: string; disk: string; timeout: string }
-export interface WSPolicy { mode: string; allow: string[] }
+export interface WSPolicy { mode: string; auto?: boolean; allow: string[] }
 /** The typed workspace file, as `workspace/parse` returns it (spec §4.2). */
 export interface WSDoc {
   workspace: WSWorkspace

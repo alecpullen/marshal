@@ -1,18 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { getModels, listProjects, listRecipes, recentPrompts, runRecipe, spawnAgent, errMessage, type Issue, type ModelsConfig, type ProjectStatus, type Recipe } from '../lib/api'
-  import { MODES as MODE_LIST } from '../lib/newagent/newAgent'
+  import { migrateStoredDefaults } from '../lib/interaction'
   import { limitsLabel, missingRequired } from '../lib/recipes/recipes'
   import IssuePicker from '../lib/IssuePicker.svelte'
   import Chip from '../lib/newagent/Chip.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import { DEFAULT_MODEL, MODES, canIsolate, defaults, loadRemembered, loadWorkspace, modelLabel, overridableRoles, remember, rememberWorkspace, routingFor, validModel, type Choice, type ModelChoice } from '../lib/newagent/newAgent'
+  import { DEFAULT_MODEL, MODES, canIsolate, clearRemembered, defaults, loadRemembered, loadWorkspace, modelLabel, overridableRoles, remember, rememberedReset, rememberWorkspace, routingFor, validModel, type Choice, type ModelChoice } from '../lib/newagent/newAgent'
   import WorkspaceChip from '../lib/workspaces/WorkspaceChip.svelte'
 
   let { onDone }: { onDone: (id: string | null, warning?: string) => void } = $props()
 
   let projects = $state<ProjectStatus[]>([])
-  let choice = $state<Choice>({ project: '', mode: 'edit', isolated: false, branch: '', baseRef: '' })
+  let choice = $state<Choice>({ project: '', mode: 'act', auto: false, isolated: false, branch: '', baseRef: '' })
+  let resetNotice = $state(false)
   let workspace = $state('')
 
   let models = $state<ModelsConfig | null>(null)
@@ -45,6 +46,7 @@
     promptEl?.focus()
     const remembered = loadRemembered()
     storedModel = remembered.model
+    resetNotice = rememberedReset(remembered)
     try {
       projects = await listProjects()
       choice = defaults(projects, remembered)
@@ -88,8 +90,18 @@
     recipe = r
     recipeInputs = {}
     prompt = r.prompt
-    if (r.mode && (MODE_LIST as readonly string[]).includes(r.mode)) choice = { ...choice, mode: r.mode as Choice['mode'] }
+    // The bridge stores canonical defaults now; an older stored spelling is
+    // migrated here rather than becoming a mode this form cannot represent.
+    const d = migrateStoredDefaults({ mode: r.mode, auto: r.auto })
+    if (d) choice = { ...choice, mode: d.mode, auto: d.mode === 'act' ? (d.auto ?? false) : false }
     if (r.workspace) workspace = r.workspace
+  }
+
+  /** Discard unreadable remembered defaults and start from the fresh tuple. */
+  function resetRemembered() {
+    clearRemembered()
+    choice = defaults(projects, {})
+    resetNotice = false
   }
 
   function clearRecipe() {
@@ -124,6 +136,7 @@
         project: choice.project,
         prompt: prompt.trim() || undefined,
         mode: choice.mode,
+        auto: choice.mode === 'act' ? choice.auto : false,
         workspace: workspace || undefined,
         isolated: choice.isolated || undefined,
         branch: choice.isolated && choice.branch.trim() ? choice.branch.trim() : undefined,
@@ -149,6 +162,12 @@
   </header>
 
   {#if error}<div class="rounded border border-danger bg-danger/10 p-3 text-sm" role="alert">{error}</div>{/if}
+  {#if resetNotice}
+    <div class="flex flex-wrap items-center gap-2 rounded border border-border bg-surface p-3 text-sm" role="status">
+      The remembered mode could not be read, so this form started fresh in <strong>Act</strong> with Auto off.
+      <button type="button" class="underline" onclick={resetRemembered}>Reset remembered defaults</button>
+    </div>
+  {/if}
 
   <div class="flex flex-col gap-3 rounded-lg border border-border bg-surface p-3">
     {#if recipe}
@@ -200,12 +219,30 @@
         {#if !choice.isolated}<div class="text-xs text-muted">Branch settings need isolation.</div>{/if}
       </Chip>
 
-      <Chip label="Mode" value={choice.mode}>
+      <Chip label="Mode" value={choice.mode === 'ask' ? 'Ask' : 'Act'}>
         {#each MODES as m (m)}
           <label class="flex items-center gap-2 rounded px-2 py-1 hover:bg-hover">
-            <input type="radio" name="mode" value={m} checked={choice.mode === m} onchange={() => (choice = { ...choice, mode: m })} /> {m}
+            <input
+              type="radio"
+              name="mode"
+              value={m}
+              checked={choice.mode === m}
+              onchange={() => (choice = { ...choice, mode: m, auto: m === 'ask' ? false : choice.auto })}
+            /> {m === 'ask' ? 'Ask' : 'Act'}
           </label>
         {/each}
+      </Chip>
+
+      <Chip label="Auto" value={choice.mode === 'ask' ? 'n/a' : choice.auto ? 'on' : 'off'}>
+        <label class="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={choice.auto}
+            disabled={choice.mode !== 'act'}
+            onchange={(e) => (choice = { ...choice, auto: e.currentTarget.checked })}
+          /> Preauthorize destructive workspace commands
+        </label>
+        {#if choice.mode === 'ask'}<div class="text-xs text-muted">Auto is an Act modifier.</div>{/if}
       </Chip>
 
       <Chip label="Isolation" value={choice.isolated ? 'worktree' : 'off'}>

@@ -20,7 +20,7 @@
     type WorkspaceListItem,
   } from '../lib/api'
   import type { AgentRow, AgentTelemetry } from '../lib/fleet'
-  import { MODES, SHIP_TARGETS, healthChecks, soft, isolatedFrom, isolationOf, latestAgent, parseWorkspaceRef, type Dot, type IsolationChoice } from '../lib/project/model'
+  import { MODES, SHIP_TARGETS, autoFrom, autoOf, healthChecks, soft, isolatedFrom, isolationOf, latestAgent, parseWorkspaceRef, type AutoChoice, type Dot, type IsolationChoice } from '../lib/project/model'
   import { shortName } from '../lib/utils'
   import { formatAutomationRoute, type AutomationPage } from '../lib/routes'
 
@@ -42,6 +42,7 @@
   let workspace = $state('')
   let profile = $state('')
   let mode = $state('')
+  let autoMode = $state<AutoChoice>('default')
   let isolation = $state<IsolationChoice>('default')
   let shipTarget = $state('')
   // Intake card draft.
@@ -56,6 +57,7 @@
     workspace = s.workspace ?? ''
     profile = s.routing?.profile ?? ''
     mode = s.mode ?? ''
+    autoMode = autoOf(s)
     isolation = isolationOf(s)
     shipTarget = s.shipTarget ?? ''
     repoId = s.intake.repoId ?? ''
@@ -108,6 +110,7 @@
         // A profile choice keeps the saved per-role overrides.
         routing: profile || saved.routing?.overrides ? { ...saved.routing, profile: profile || undefined } : undefined,
         mode: mode || undefined,
+        auto: autoFrom(autoMode),
         isolated: isolatedFrom(isolation),
         shipTarget: (shipTarget || undefined) as ProjectSettings['shipTarget'],
       },
@@ -213,7 +216,14 @@
         <label class="flex flex-col gap-1 text-xs">Mode
           <select aria-label="Mode" bind:value={mode} class={field}>
             <option value="">Caller's choice</option>
-            {#each MODES as m (m)}<option value={m}>{m}</option>{/each}
+            {#each MODES as m (m)}<option value={m}>{m === 'ask' ? 'Ask' : 'Act'}</option>{/each}
+          </select>
+        </label>
+        <label class="flex flex-col gap-1 text-xs">Auto
+          <select aria-label="Auto" bind:value={autoMode} class={field}>
+            <option value="default">Caller's choice</option>
+            <option value="on">Preauthorized</option>
+            <option value="off">Explicitly off</option>
           </select>
         </label>
         <label class="flex flex-col gap-1 text-xs">Isolation

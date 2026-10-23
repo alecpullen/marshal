@@ -37,7 +37,7 @@
   }
   onMount(load)
 
-  const blank = (): Recipe => ({ name: '', title: '', kind: 'prompt', mode: 'edit', prompt: '', inputs: [], output: 'none' })
+  const blank = (): Recipe => ({ name: '', title: '', kind: 'prompt', mode: 'act', auto: false, prompt: '', inputs: [], output: 'none' })
 
   function startRun(r: Recipe) {
     running = r

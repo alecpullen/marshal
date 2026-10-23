@@ -1,12 +1,19 @@
 import type { ProjectStatus, RoutingChoice } from '../api'
+import { migrateStoredDefaults, MODES, type Mode } from '../interaction'
 
-/** The ACP mode set. store.ts's MODES also lists `read`, which a new agent cannot start in. */
-export const MODES = ['plan', 'default', 'edit', 'copilot', 'auto'] as const
-export type NewMode = (typeof MODES)[number]
+/**
+ * The two interaction modes. Auto is a modifier, not a third mode, so a
+ * remembered or configured "auto" migrates to Act + Auto rather than lingering
+ * as a mode of its own.
+ */
+export { MODES }
+export type NewMode = Mode
 
 export interface Choice {
   project: string
-  mode: NewMode
+  mode: Mode
+  /** The starting Auto modifier. Valid only with Act; Ask clears it. */
+  auto: boolean
   isolated: boolean
   branch: string
   baseRef: string
@@ -14,22 +21,49 @@ export interface Choice {
 
 const KEY = 'marshal.ui.newagent'
 
-export interface Remembered { project?: string; mode?: string; isolated?: boolean; model?: ModelChoice }
+export interface Remembered { project?: string; mode?: string; auto?: boolean; isolated?: boolean; model?: ModelChoice }
 
 export const canIsolate = (p?: ProjectStatus) => (p?.isolation ?? 'available') === 'available'
 
-/** The starting choice: remembered values where still valid, otherwise the first available project. */
+/**
+ * The starting choice: remembered values where still valid, otherwise a fresh
+ * Act with Auto off. A remembered spelling the ask/act model cannot read is
+ * rejected rather than promoted to Act as if it were a working default;
+ * `rememberedReset` tells the form to offer clearing it.
+ */
 export function defaults(projects: ProjectStatus[], remembered: Remembered = {}): Choice {
   const usable = projects.filter((p) => p.available)
   const project = usable.find((p) => p.root === remembered.project) ?? usable[0]
-  const mode = (MODES as readonly string[]).includes(remembered.mode ?? '') ? (remembered.mode as NewMode) : 'edit'
+  const migrated = migrateStoredDefaults({ mode: remembered.mode, auto: remembered.auto })
+  const mode = migrated?.mode ?? 'act'
+  const auto = mode === 'act' ? migrated?.auto ?? false : false
   const isolated = canIsolate(project) && (remembered.isolated ?? true)
-  return { project: project?.root ?? '', mode, isolated, branch: '', baseRef: '' }
+  return { project: project?.root ?? '', mode, auto, isolated, branch: '', baseRef: '' }
+}
+
+/** Whether the remembered starting tuple was unreadable and was therefore reset. */
+export function rememberedReset(remembered: Remembered): boolean {
+  if (remembered.mode === undefined && remembered.auto === undefined) return false
+  return migrateStoredDefaults({ mode: remembered.mode, auto: remembered.auto }) === null
+}
+
+/** Forget the remembered starting defaults so the next visit starts fresh. */
+export function clearRemembered(): void {
+  try {
+    localStorage.removeItem(KEY)
+  } catch {
+    // Not persisted.
+  }
 }
 
 export function remember(c: Choice, model?: ModelChoice): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify({ project: c.project, mode: c.mode, isolated: c.isolated, ...(model ? { model } : {}) }))
+    // Starting metadata only: the mode and Auto this agent was asked to start
+    // with. System and the access revision are live grants and are never stored.
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ project: c.project, mode: c.mode, auto: c.auto, isolated: c.isolated, ...(model ? { model } : {}) }),
+    )
   } catch {
     // Not persisted; the next visit starts from the defaults.
   }

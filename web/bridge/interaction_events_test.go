@@ -134,9 +134,9 @@ func TestFleetReattachReadsActualAccessInsteadOfStoredMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The record still says the agent was started in edit mode.
-	if a, ok := f.ws.Agent(id); !ok || a.Mode != "edit" {
-		t.Fatalf("persisted agent = %+v, want the stored edit mode", a)
+	// The record stores the canonical mode the legacy "edit" spelling maps to.
+	if a, ok := f.ws.Agent(id); !ok || a.Mode != "ask" {
+		t.Fatalf("persisted agent = %+v, want the stored ask mode", a)
 	}
 	// Before reattach the bridge has no report, so it claims nothing.
 	if got := f.Snapshot()[0].Access; got != nil {

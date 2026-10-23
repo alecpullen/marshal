@@ -465,14 +465,14 @@ type ShellToolConfig struct {
 	// MaxBackgroundJobs is the managed-command capacity: it counts running
 	// commands with either attachment (foreground and background), not
 	// background jobs alone. Lowering it never evicts an admitted command.
-	MaxBackgroundJobs     int           `toml:"max_background_jobs"`
-	BackgroundRetention   time.Duration `toml:"background_retention"`
-	AllowNetwork          bool          `toml:"allow_network"`
-	Allow                 CommandRules  `toml:"allow"`
-	Confirm               CommandRules  `toml:"confirm"`
-	Deny                  PatternRules  `toml:"deny"`
-	FloorCommands         []string      `toml:"floor_commands"`
-	Sandbox               SandboxConfig `toml:"sandbox"`
+	MaxBackgroundJobs   int           `toml:"max_background_jobs"`
+	BackgroundRetention time.Duration `toml:"background_retention"`
+	AllowNetwork        bool          `toml:"allow_network"`
+	Allow               CommandRules  `toml:"allow"`
+	Confirm             CommandRules  `toml:"confirm"`
+	Deny                PatternRules  `toml:"deny"`
+	FloorCommands       []string      `toml:"floor_commands"`
+	Sandbox             SandboxConfig `toml:"sandbox"`
 }
 
 // SandboxConfig selects and tunes the Milestone Q execution backend for

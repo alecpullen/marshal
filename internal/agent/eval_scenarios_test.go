@@ -9,6 +9,8 @@ import (
 
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
+	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -67,12 +69,21 @@ func evalFailingPatchRegistry(t *testing.T) *registry.Registry {
 	return reg
 }
 
-// evalPolicy returns a policy engine that auto-approves shell/test commands
-// so the edit scenario can run test.run as its verification step.
+// evalPolicy returns a policy engine for the eval scenarios.
 func evalPolicy() *policy.PolicyEngine {
-	cfg := &config.Config{}
-	cfg.Tools.Shell.AutoApprove = true
-	return policy.NewEngine(cfg, nil)
+	return policy.NewEngine(&config.Config{}, nil)
+}
+
+// evalState returns a session state in Act + Auto, so the edit scenario's
+// test.run verification step is preauthorized.
+func evalState(t *testing.T) *session.State {
+	t.Helper()
+	state := newTestState(t)
+	auto := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("seed Auto: %v", err)
+	}
+	return state
 }
 
 func evalRead(path string) string {
@@ -231,7 +242,7 @@ func TestEvalScenarios(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			reg := evalRegistry(t)
 			p := &agenttest.ScriptedProvider{Responses: tc.responses}
-			state := newTestState(t)
+			state := evalState(t)
 			r := NewRunner(p, reg, evalPolicy(), state, "test-model")
 			r.SetForceClass(string(tc.forceClass))
 			if tc.role != "" {
@@ -272,7 +283,7 @@ func TestEvalFailingPatchStallScenario(t *testing.T) {
 	responses = append(responses, `{"rationale":"done","action":{"type":"final","content":"Answer."}}`)
 
 	p := &agenttest.ScriptedProvider{Responses: responses}
-	state := newTestState(t)
+	state := evalState(t)
 	r := NewRunner(p, evalFailingPatchRegistry(t), evalPolicy(), state, "test-model")
 	r.Role = RoleRepoScout
 	r.SetForceClass(string(ClassQuestion))

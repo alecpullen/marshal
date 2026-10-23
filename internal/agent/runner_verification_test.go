@@ -34,13 +34,10 @@ func regPatchAndTest(t *testing.T) *registry.Registry {
 	return reg
 }
 
-// gatePolicy returns a policy engine that auto-approves shell/test commands
-// so the gate tests can actually run test.run without an interactive
-// approval prompt.
+// gatePolicy returns a policy engine for the gate tests. The shared test
+// state is Act + Auto, so test.run is preauthorized.
 func gatePolicy() *policy.PolicyEngine {
-	cfg := &config.Config{}
-	cfg.Tools.Shell.AutoApprove = true
-	return policy.NewEngine(cfg, nil)
+	return policy.NewEngine(&config.Config{}, nil)
 }
 
 func transcriptContains(state interface{ Messages() []session.Message }, needle string) bool {
@@ -66,7 +63,7 @@ func transcriptCount(state interface{ Messages() []session.Message }, needle str
 // final punished models that used the nudge's escape hatch and added
 // transcript noise without changing behavior.
 func TestNativeFinalAfterUnverifiedPatchGetsNudgeThenAccepted(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"patched", "Done.", "Still done."},
 		ToolCalls: [][]schema.ToolCall{
@@ -100,7 +97,7 @@ func TestNativeFinalAfterUnverifiedPatchGetsNudgeThenAccepted(t *testing.T) {
 
 // A patch followed by a verification run completes cleanly.
 func TestNativeFinalAfterVerifiedPatchIsClean(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"patched", "tested", "All done, confirmed."},
 		ToolCalls: [][]schema.ToolCall{
@@ -131,7 +128,7 @@ func TestNativeFinalAfterVerifiedPatchIsClean(t *testing.T) {
 
 // Read-only work never trips the gate.
 func TestNativeReadOnlyTurnIsClean(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"looked", "All read, nothing changed."},
 		ToolCalls: [][]schema.ToolCall{
@@ -156,7 +153,7 @@ func TestNativeReadOnlyTurnIsClean(t *testing.T) {
 // The JSON-envelope final path applies the same rule: nudge once, then
 // accept normally.
 func TestJSONFinalAfterUnverifiedPatchGetsNudgeThenAccepted(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{
 			`{"rationale":"edit","action":{"type":"patch","content":"File: a.go\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE"}}`,
@@ -191,7 +188,7 @@ func TestJSONFinalAfterUnverifiedPatchGetsNudgeThenAccepted(t *testing.T) {
 // normally. Re-arming produced repeated transcript noise without changing
 // model behavior.
 func TestNativeSecondMutationAfterNudgeStaysCapped(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"patched", "Done.", "patched again", "Still done."},
 		ToolCalls: [][]schema.ToolCall{
@@ -224,7 +221,7 @@ func TestNativeSecondMutationAfterNudgeStaysCapped(t *testing.T) {
 // The JSON-envelope path also gains zero-tool-call grounding nudge it
 // previously lacked.
 func TestJSONEditTaskRequiresToolCallBeforeCompletion(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{
 			`{"rationale":"fabricated","action":{"type":"final","content":"Fixed it."}}`,
@@ -257,7 +254,7 @@ func TestJSONEditTaskRequiresToolCallBeforeCompletion(t *testing.T) {
 // Edit → test.run → git commit → final is clean: the commit is
 // housekeeping and must not re-arm the gate after verification.
 func TestNativeVerificationThenCommitIsClean(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	reg := regPatchAndTest(t)
 	if err := reg.Register(registry.Tool{Name: "shell.run", Risk: registry.RiskCommand, Handler: nopHandler}); err != nil {
 		t.Fatalf("register shell.run: %v", err)
@@ -296,7 +293,7 @@ func TestNativeVerificationThenCommitIsClean(t *testing.T) {
 // file.write_patch (the existing tests) but also shell mutators that
 // arm through the allowlist.
 func TestNativeMutatingShellRunTriggersNudge(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	reg := regPatchAndTest(t)
 	if err := reg.Register(registry.Tool{Name: "shell.run", Risk: registry.RiskCommand, Handler: nopHandler}); err != nil {
 		t.Fatalf("register shell.run: %v", err)
@@ -332,7 +329,7 @@ func TestNativeMutatingShellRunTriggersNudge(t *testing.T) {
 // Default-off: an unverified mutation followed by a final answer is
 // accepted immediately with no nudge when the gate is not enabled.
 func TestNativeFinalAfterUnverifiedPatchAcceptedSilentlyWhenGateOff(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"patched", "Done."},
 		ToolCalls: [][]schema.ToolCall{
@@ -363,7 +360,7 @@ func TestNativeFinalAfterUnverifiedPatchAcceptedSilentlyWhenGateOff(t *testing.T
 // Per-preset override: an explicit verification_gate on the resolved
 // preset enables the nudge even when the global fallback is off.
 func TestPresetVerificationGateEnablesNudge(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"patched", "Done.", "Still done."},
 		ToolCalls: [][]schema.ToolCall{
@@ -397,7 +394,7 @@ func TestPresetVerificationGateEnablesNudge(t *testing.T) {
 
 // Per-preset explicit false beats a globally-enabled gate.
 func TestPresetVerificationGateFalseOverridesGlobal(t *testing.T) {
-	state := newTestState(t)
+	state := gateState(t)
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{"patched", "Done."},
 		ToolCalls: [][]schema.ToolCall{

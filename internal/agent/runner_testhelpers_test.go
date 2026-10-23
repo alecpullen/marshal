@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/hooks"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -165,6 +166,18 @@ func (r *onceRewriteHookRunner) RunTurnEnd(ctx context.Context, in hooks.TurnEnd
 func newTestState(t *testing.T) *session.State {
 	t.Helper()
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+}
+
+// gateState returns a session state in Act + Auto, so the gate tests'
+// test.run verification step is preauthorized.
+func gateState(t *testing.T) *session.State {
+	t.Helper()
+	state := newTestState(t)
+	auto := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("seed Auto: %v", err)
+	}
+	return state
 }
 
 func scriptRepeats(n int, resp string) []string {

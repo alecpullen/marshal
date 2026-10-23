@@ -651,11 +651,11 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 	if inputRow >= 0 && todoRow > inputRow {
 		t.Fatalf("todo progress row must render above the input row (todo=%d input=%d)", todoRow, inputRow)
 	}
-	// The transcript carries the transition divider — the work's own heading —
-	// while the band carries the counts. Neither duplicates the other.
+	// The transcript tags the beat where the work moved to the todo, while
+	// the band names it and carries the counts.
 	transcript := stripANSI(m.viewport.View())
-	if !strings.Contains(transcript, "2/3 implement parser") {
-		t.Fatalf("the transcript should carry the todo divider:\n%s", transcript)
+	if !strings.Contains(transcript, "▸ 2/3") {
+		t.Fatalf("the transcript should tag the todo's first beat:\n%s", transcript)
 	}
 }
 

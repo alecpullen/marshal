@@ -64,7 +64,8 @@ func isGutterGlyph(s string) bool {
 	case glyph.Rail, glyph.User, glyph.Running, glyph.Ambient, glyph.OK,
 		glyph.Error, glyph.Warning, glyph.Question, glyph.Thinking, glyph.Edit,
 		glyph.File, glyph.Shell, glyph.Search, glyph.Agent, glyph.Web,
-		glyph.Brand, glyph.CustomAgent, glyph.Job, glyph.Watch:
+		glyph.Brand, glyph.CustomAgent, glyph.Job, glyph.Watch,
+		glyph.SpineMid, glyph.SpineEnd, glyph.Spine:
 		return true
 	}
 	return slices.Contains(spinnerFrames, s)
@@ -85,11 +86,31 @@ func spanOf(r selRow, width int) rowSpan {
 	sp := rowSpan{bare: true}
 	if i < len(runes) && col < maxGutterCols && isGutterGlyph(string(runes[i])) &&
 		(i+1 == len(runes) || runes[i+1] == ' ') {
-		col += ansi.StringWidth(string(runes[i]))
+		g := string(runes[i])
+		col += ansi.StringWidth(g)
 		i++
 		if i < len(runes) {
 			i++ // the space after the glyph
 			col++
+		}
+		// A call row's verb is part of its gutter, and so is the verb column
+		// on the spine's continuation rows: copying a row copies what the
+		// call acted on, and its detail lines up under it.
+		switch g {
+		case glyph.SpineMid, glyph.SpineEnd:
+			for i < len(runes) && runes[i] != ' ' {
+				col += ansi.StringWidth(string(runes[i]))
+				i++
+			}
+			for i < len(runes) && runes[i] == ' ' {
+				col++
+				i++
+			}
+		case glyph.Spine:
+			for n := 0; n < verbWidth && i < len(runes) && runes[i] == ' '; n++ {
+				col++
+				i++
+			}
 		}
 		sp.bare = false
 		sp.start = col

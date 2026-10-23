@@ -287,8 +287,7 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 	return "", nil
 }
 
-// rowBeats maps every row inside a beat, thinking rows included, to that
-// beat.
+// rowBeats maps every row inside a beat to that beat.
 func rowBeats(turns []*viewmodel.Node) map[viewmodel.NodeID]viewmodel.NodeID {
 	out := map[viewmodel.NodeID]viewmodel.NodeID{}
 	for _, turn := range turns {
@@ -298,9 +297,6 @@ func rowBeats(turns []*viewmodel.Node) map[viewmodel.NodeID]viewmodel.NodeID {
 			}
 			for _, row := range n.Children {
 				out[row.ID] = n.ID
-			}
-			for _, t := range n.Step.Thinking {
-				out[viewmodel.ThinkingID(t)] = n.ID
 			}
 		}
 	}
@@ -415,12 +411,6 @@ func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
 	}
 	if lines, ok := m.callers[n.ID]; ok {
 		fmt.Fprintf(h, "c%q|", lines)
-	}
-	if n.Step != nil {
-		for _, t := range n.Step.Thinking {
-			tov, thas := m.ownExpanded(viewmodel.ThinkingID(t))
-			fmt.Fprintf(h, "t%v|%v|", thas, tov)
-		}
 	}
 	for _, ch := range n.Children {
 		m.foldNodeSig(h, ch, c)

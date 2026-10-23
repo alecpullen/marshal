@@ -68,15 +68,12 @@ Looking at the failing test. Then:
       return
   }
 
-thought for 2s
-Read file · a.go (5 lines)
-Search texts: ×2 · Timeout, hookTimeout
-
-go test ./internal/hooks/... -run TestPreToolUseBlockDecision -count=20 -v -timeout 30s · exit 1 · exit status 1
+a.go
+Timeout, hookTimeout
+go test ./internal/hooks/... -run TestPreToolUseBlockDecision -count=20 -v -timeout 30s
 --- FAIL: TestX (0.01s)
     hooks_test.go:12: timeout
 FAIL
-
 reviewer
 Tracing the config loader.
 
@@ -109,13 +106,13 @@ func selectRows(t *testing.T, m *Model, from, to selPos) {
 	m.sel.copied = m.selectedText(f, l)
 }
 
-// thinkKeyOf returns the node of the fixture's thinking row.
-func thinkKeyOf(t *testing.T, m *Model) viewmodel.NodeID {
+// readRowOf returns the node of the fixture's file.read row.
+func readRowOf(t *testing.T, m *Model) viewmodel.NodeID {
 	t.Helper()
-	l := lineOf(t, m, "thought for 2s")
+	l := lineOf(t, m, "read    a.go")
 	target, ok := m.regionAt(l)
 	if !ok {
-		t.Fatal("no region on the thinking row")
+		t.Fatal("no region on the read row")
 	}
 	return target.node
 }
@@ -147,8 +144,8 @@ func TestSelectionFollowsItsTextWhenRowsChangeAbove(t *testing.T) {
 	l := lineOf(t, &m, "Model switched")
 	selectRows(t, &m, selPos{l, 0}, selPos{l, 79})
 	copied := m.sel.copied
-	// Expanding the thinking row adds rows above the selection.
-	m.toggleExpanded(thinkKeyOf(t, &m))
+	// Expanding the read row adds rows above the selection.
+	m.toggleExpanded(readRowOf(t, &m))
 	m.invalidateTranscript()
 	m.refreshViewport()
 	if m.sel == nil {
@@ -162,13 +159,15 @@ func TestSelectionFollowsItsTextWhenRowsChangeAbove(t *testing.T) {
 
 func TestSelectionClearsWhenItsTextChanges(t *testing.T) {
 	m, _ := selectionFixture(t)
-	l := lineOf(t, &m, "thought for 2s")
-	selectRows(t, &m, selPos{l, 0}, selPos{l, 79})
-	m.toggleExpanded(thinkKeyOf(t, &m))
+	// The read row and the row after it: expanding the read row puts its
+	// result between them, so the selected text changes.
+	l := lineOf(t, &m, "read    a.go")
+	selectRows(t, &m, selPos{l, 0}, selPos{l + 1, 79})
+	m.toggleExpanded(readRowOf(t, &m))
 	m.invalidateTranscript()
 	m.refreshViewport()
 	if m.sel != nil {
-		t.Fatal("expanding the selected row must clear the selection")
+		t.Fatal("expanding a selected row must clear the selection")
 	}
 }
 

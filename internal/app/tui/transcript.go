@@ -608,7 +608,7 @@ func renderTranscriptItemIn(item session.TranscriptItem, detailExpanded bool, sp
 }
 
 // A finished job is not a row of its own any more: its card is the shell.run
-// that started it, settled in place (steps.go renderJobCard), and the moment
+// that started it, settled in place (spine.go renderJobRow), and the moment
 // it finished is a completion marker. renderJobExit lived here.
 
 // subagentTailBudget is how many logical tail lines to pull from a running

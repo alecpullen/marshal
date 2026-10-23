@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -117,21 +118,27 @@ func TestExpandingABeatOpensItsRows(t *testing.T) {
 	}
 }
 
-func TestRefreshViewportUsesPerItemExpandForThinking(t *testing.T) {
+// A beat's reasoning shows when that beat is expanded, and only that beat's.
+func TestRefreshViewportShowsReasoningPerBeat(t *testing.T) {
 	m := newTestModel(t)
 	ts1 := time.Unix(300, 0)
 	ts2 := time.Unix(301, 0)
-	m.state.LogThinking(session.ThinkingEntry{Text: "reasoning one", Duration: time.Second, StartedAt: ts1})
-	m.state.LogThinking(session.ThinkingEntry{Text: "reasoning two", Duration: time.Second, StartedAt: ts2})
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	for i, ts := range []time.Time{ts1, ts2} {
+		id := m.state.BeginStep(session.Actor{})
+		m.state.AddNarration(id, fmt.Sprintf("Beat %d.", i+1))
+		m.state.LogThinking(session.ThinkingEntry{Text: []string{"reasoning one", "reasoning two"}[i], Duration: time.Second, StartedAt: ts, StepID: id})
+		m.state.EndStep(id)
+	}
 	m.invalidateTranscript()
 	m.refreshViewport()
 
 	content := m.viewport.GetContent()
 	if strings.Contains(content, "reasoning one") || strings.Contains(content, "reasoning two") {
-		t.Fatalf("expected both thinking blocks collapsed by default, got: %s", content)
+		t.Fatalf("expected both beats' reasoning collapsed by default, got: %s", content)
 	}
 
-	m.toggleExpanded(thinkID(ts1))
+	m.toggleExpanded(beatWithThinking(&m, ts1))
 	m.invalidateTranscript()
 	m.refreshViewport()
 

@@ -3154,8 +3154,8 @@ func TestRecentToolCallRendersInlineAfterFastToolCompletes(t *testing.T) {
 	m.refreshViewport()
 	view := stripANSI(m.View().Content)
 
-	if !strings.Contains(view, "Read file") {
-		t.Fatalf("View() does not show recent tool name:\n%s", view)
+	if !strings.Contains(view, "read    ") {
+		t.Fatalf("View() does not show recent tool's verb:\n%s", view)
 	}
 	if !strings.Contains(view, "/repo/main.go") {
 		t.Fatalf("View() does not show recent tool summary:\n%s", view)
@@ -3187,7 +3187,7 @@ func TestCompletedToolCallsRemainInTranscriptLog(t *testing.T) {
 	m.refreshViewport()
 	view := stripANSI(m.View().Content)
 
-	for _, want := range []string{"Read file", "/repo/main.go", "go test ./...", "exit 0"} {
+	for _, want := range []string{"read    ", "/repo/main.go", "go test ./...", "exit 0"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing persistent tool log item %q:\n%s", want, view)
 		}
@@ -3219,7 +3219,7 @@ func TestCompletedToolCallsRenderInMessageTimeline(t *testing.T) {
 	view := stripANSI(m.View().Content)
 
 	userIdx := strings.Index(view, "USER: inspect auth flow")
-	toolIdx := strings.Index(view, "Read file")
+	toolIdx := strings.Index(view, "read    ")
 	assistantIdx := strings.Index(view, "ASSISTANT: auth flow summary")
 	if userIdx == -1 || toolIdx == -1 || assistantIdx == -1 {
 		t.Fatalf("view missing timeline entries:\n%s", view)

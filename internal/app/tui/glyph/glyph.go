@@ -64,6 +64,17 @@ const (
 	// Brand is the startup banner mark, and marks a bound preset or the
 	// currently-selected item in a picker badge.
 	Brand = "●"
+	// Beat marks a settled beat in the transcript: one narrated response and
+	// the calls under it. It shares Brand's shape, which never appears in the
+	// transcript.
+	Beat = Brand
+
+	// SpineMid, SpineEnd and Spine draw a beat's spine: each call row hangs
+	// off it with SpineMid, the last with SpineEnd, and Spine carries it past
+	// an expanded row's detail. They mean "this belongs to the beat above".
+	SpineMid = "├"
+	SpineEnd = "└"
+	Spine    = "│"
 	// CustomAgent marks a cast entry bound to a user-defined agent.
 	CustomAgent = "◆"
 

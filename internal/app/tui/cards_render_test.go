@@ -16,14 +16,14 @@ func TestJobCardIsOneLineAndSettles(t *testing.T) {
 	ev := registry.AuditEvent{ToolName: "shell.run", Args: []byte(`{"command":"cd /w && pytest -q --junitxml=/tmp/a.xml 2>&1 | tail -40"}`), ResultSummary: "started background job job-4"}
 	row := &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{ev},
 		Job: &viewmodel.JobState{ID: "job-4", Command: "pytest -q --junitxml=/tmp/a.xml 2>&1 | tail -40", Running: true}}
-	out := ansi.Strip(renderJobCard(row, "⠋", time.Now(), false, 60, ""))
+	out := ansi.Strip(renderJobRow(row, "⠋", time.Now(), false, 60, ""))
 	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 || !strings.Contains(out, "job-4") || !strings.Contains(out, "running") {
 		t.Fatalf("running card = %q", out)
 	}
 	row.Job.Running, row.Job.ExitCode, row.Job.Duration = false, 1, 122*time.Second
 	exit := 1
 	row.Job.Exit = &exit
-	out = ansi.Strip(renderJobCard(row, "", time.Now(), false, 60, ""))
+	out = ansi.Strip(renderJobRow(row, "", time.Now(), false, 60, ""))
 	if !strings.Contains(out, "exit 1") || !strings.Contains(out, "2m") {
 		t.Fatalf("settled card = %q", out)
 	}
@@ -96,7 +96,7 @@ func TestJobCardDistinguishesOutcomeStates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			job := tt.job
 			row := &viewmodel.Node{Kind: viewmodel.KindTool, Job: &job}
-			out := ansi.Strip(renderJobCard(row, "⠋", time.Now(), false, 80, ""))
+			out := ansi.Strip(renderJobRow(row, "⠋", time.Now(), false, 80, ""))
 			if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
 				t.Fatalf("card is not one line:\n%s", out)
 			}
@@ -120,12 +120,12 @@ func TestJobCardFlagsTruncatedOutput(t *testing.T) {
 	zero := 0
 	job := viewmodel.JobState{ID: "job-1", ExitCode: 0, Exit: &zero, Status: "completed", Truncated: true}
 	row := &viewmodel.Node{Kind: viewmodel.KindTool, Job: &job}
-	if out := ansi.Strip(renderJobCard(row, "", time.Now(), false, 80, "")); !strings.Contains(out, "truncated") {
+	if out := ansi.Strip(renderJobRow(row, "", time.Now(), false, 80, "")); !strings.Contains(out, "truncated") {
 		t.Fatalf("card = %q, want the cap called out", out)
 	}
 	job.Truncated = false
 	row.Job = &job
-	if out := ansi.Strip(renderJobCard(row, "", time.Now(), false, 80, "")); strings.Contains(out, "truncated") {
+	if out := ansi.Strip(renderJobRow(row, "", time.Now(), false, 80, "")); strings.Contains(out, "truncated") {
 		t.Fatalf("card = %q, want no cap note without one", out)
 	}
 }
@@ -182,7 +182,7 @@ func TestJobCardElidesTheWorktree(t *testing.T) {
 		ResultSummary: "started background job job-4"}
 	row := &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{ev},
 		Job: &viewmodel.JobState{ID: "job-4", Command: "cd " + root + " && pytest -q", Running: true}}
-	out := ansi.Strip(renderJobCard(row, "⠋", time.Now(), false, 100, root))
+	out := ansi.Strip(renderJobRow(row, "⠋", time.Now(), false, 100, root))
 	if !strings.Contains(out, "⌂ pytest -q") || strings.Contains(out, root) {
 		t.Fatalf("card = %q", out)
 	}

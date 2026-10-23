@@ -46,17 +46,17 @@ func TestDragCopiesTheRenderedTranscript(t *testing.T) {
 
 func TestPressAloneDoesNotToggle(t *testing.T) {
 	m, _ := selectionFixture(t)
-	y := screenY(&m, lineOf(t, &m, "thought for 2s"))
+	y := screenY(&m, lineOf(t, &m, "Looking at the failing test."))
 	next, _ := m.Update(tea.MouseClickMsg{X: 8, Y: y, Button: tea.MouseLeft})
 	mm := asModel(t, next)
 	if strings.Contains(stripANSI(strings.Join(mm.contentLines, "\n")), "private reasoning text") {
-		t.Fatal("a press alone expanded the thinking row; clicks act on release")
+		t.Fatal("a press alone expanded the beat; clicks act on release")
 	}
 }
 
 func TestClickTogglesOnRelease(t *testing.T) {
 	m, _ := selectionFixture(t)
-	y := screenY(&m, lineOf(t, &m, "thought for 2s"))
+	y := screenY(&m, lineOf(t, &m, "Looking at the failing test."))
 	mm := asModel(t, clickAt(t, m, 8, y))
 	if !strings.Contains(stripANSI(strings.Join(mm.contentLines, "\n")), "private reasoning text") {
 		t.Fatal("press and release on one cell did not toggle the row")
@@ -248,7 +248,7 @@ func TestReleaseStopsEdgeAutoScroll(t *testing.T) {
 
 func TestReleaseOutsideTheViewportEndsTheDragWithoutClicking(t *testing.T) {
 	m, clip := selectionFixture(t)
-	y := screenY(&m, lineOf(t, &m, "thought for 2s"))
+	y := screenY(&m, lineOf(t, &m, "Looking at the failing test."))
 	next, _ := m.Update(tea.MouseClickMsg{X: 8, Y: y, Button: tea.MouseLeft})
 	next, _ = next.Update(tea.MouseMotionMsg{X: 10, Y: y + 1, Button: tea.MouseLeft})
 	mm := asModel(t, next)
@@ -268,8 +268,8 @@ func TestReleaseOutsideTheViewportEndsTheDragWithoutClicking(t *testing.T) {
 	if len(clip.writes) != 1 {
 		t.Fatalf("clipboard writes = %d, want the drag's copy on release", len(clip.writes))
 	}
-	// A click on this row would have expanded the thinking row; a drag's
-	// release must not act as one.
+	// A click on this row would have expanded the beat and shown its
+	// reasoning; a drag's release must not act as one.
 	if strings.Contains(stripANSI(strings.Join(mm.contentLines, "\n")), "private reasoning text") {
 		t.Fatal("the release outside the viewport acted as a click on the press row")
 	}
@@ -281,7 +281,7 @@ func TestClickRoutesThroughScrollTranscriptToo(t *testing.T) {
 	// scrollTranscript. The press and release there share the same drag
 	// state as the direct path, so a click must still act on release.
 	m, _ := selectionFixture(t)
-	y := screenY(&m, lineOf(t, &m, "thought for 2s"))
+	y := screenY(&m, lineOf(t, &m, "Looking at the failing test."))
 	next, cmd, handled := m.scrollTranscript(tea.MouseClickMsg{X: 8, Y: y, Button: tea.MouseLeft})
 	if !handled || cmd != nil {
 		t.Fatalf("press through scrollTranscript: handled=%v cmd=%v", handled, cmd)

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -75,12 +74,10 @@ func TestTranscriptIndentContract(t *testing.T) {
 		}, false, nil, width)},
 		{"thinking summary", renderThinkingSummary("reasoned", time.Second, false, width)},
 		{"agent markdown", renderAgentMarkdown("plain paragraph", width)},
-		{"tool group with wrapped bullets", renderToolGroup([]registry.AuditEvent{
-			{ToolName: "file.read", ResultSummary: "read the entire contents of this very long file to understand the structure",
-				Args: json.RawMessage(`{"path":"internal/app/tui/transcript_render_pipeline_quite_long.go"}`)},
-			{ToolName: "file.read", ResultSummary: "ok",
-				Args: json.RawMessage(`{"path":"internal/app/tui/another_rather_long_runner_implementation_file.go"}`)},
-		}, false, width)},
+		{"beat with calls on its spine", func() string {
+			out, _ := renderStep(beatNode("Reading the parser.", 3), &stepRenderCtx{}, width, false)
+			return out
+		}()},
 	}
 
 	for _, tc := range cases {

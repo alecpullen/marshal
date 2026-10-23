@@ -166,24 +166,27 @@ func (m *Model) selRowAt(l int) selRow {
 	return r
 }
 
-// fullToolHead is the untruncated text of a collapsed tool row whose text
-// ends in the truncation ellipsis, or "".
+// fullToolHead is the untruncated subject of a call row whose subject was
+// truncated, or "": the part of the row a selection copies.
 func (m *Model) fullToolHead(id viewmodel.NodeID, text string) string {
-	if id.Kind != viewmodel.KindTool || !strings.HasSuffix(strings.TrimRight(text, " "), "…") {
+	if id.Kind != viewmodel.KindTool || !strings.Contains(text, "…") {
 		return ""
 	}
 	n := m.browseTree[id]
 	if n == nil {
 		return ""
 	}
-	switch {
-	case len(n.Tools) == 1:
-		state, _ := m.transcriptSource()
-		return oneLine(toolRowHead(n.Tools[0], state.Workspace().ActiveRoot))
-	case len(n.Tools) > 1:
-		return toolGroupHead(n.Tools)
+	if len(n.Tools) == 0 {
+		return ""
 	}
-	return ""
+	state, _ := m.transcriptSource()
+	subjects := make([]string, 0, len(n.Tools))
+	for _, ev := range n.Tools {
+		if s := callSubject(ev, state.Workspace().ActiveRoot); s != "" {
+			subjects = append(subjects, s)
+		}
+	}
+	return strings.Join(subjects, ", ")
 }
 
 // selectedText is the cleaned text between two content positions.

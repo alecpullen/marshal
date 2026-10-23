@@ -15,7 +15,7 @@ import (
 	"marshal/internal/viewmodel"
 )
 
-func TestClickRegionsCoverThinkingAndAuditBlocks(t *testing.T) {
+func TestClickRegionsCoverABeatThatOnlyReasoned(t *testing.T) {
 	m := newTestModel(t)
 	m.state.AddMessage(session.RoleUser, "hi", session.ContentTypePlain)
 	ts1 := time.Now()
@@ -23,15 +23,12 @@ func TestClickRegionsCoverThinkingAndAuditBlocks(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	found := false
-	if r, ok := regionOf(&m, thinkID(ts1)); ok {
-		found = true
-		if r.startLine < 0 || r.endLine <= r.startLine {
-			t.Fatalf("invalid region for thinking block: %+v", r)
-		}
+	r, ok := regionOf(&m, beatWithThinking(&m, ts1))
+	if !ok {
+		t.Fatal("expected a click region for the beat holding the reasoning")
 	}
-	if !found {
-		t.Fatal("expected a click region for the logged thinking item")
+	if r.startLine < 0 || r.endLine <= r.startLine {
+		t.Fatalf("invalid region for the beat: %+v", r)
 	}
 }
 
@@ -96,7 +93,7 @@ func clickAt(t *testing.T, m tea.Model, x, y int) tea.Model {
 	return updated
 }
 
-func TestMouseClickTogglesThinkingBlock(t *testing.T) {
+func TestMouseClickOnABeatShowsItsReasoning(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
 	ts := time.Unix(700, 0)
@@ -104,10 +101,13 @@ func TestMouseClickTogglesThinkingBlock(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	key := thinkID(ts)
+	key := beatWithThinking(&m, ts)
 	region, found := regionOf(&m, key)
 	if !found {
-		t.Fatal("expected a click region for the thinking block")
+		t.Fatal("expected a click region for the beat")
+	}
+	if strings.Contains(m.viewport.GetContent(), "click me") {
+		t.Fatal("a collapsed beat shows its thinking time, not its reasoning")
 	}
 
 	top := m.scrollHintRows()
@@ -116,7 +116,7 @@ func TestMouseClickTogglesThinkingBlock(t *testing.T) {
 	mm := asModel(t, updated)
 
 	if !mm.isExpanded(key) {
-		t.Fatal("expected the click to expand the thinking block")
+		t.Fatal("expected the click to expand the beat")
 	}
 	if !strings.Contains(mm.viewport.GetContent(), "click me") {
 		t.Fatal("expected the reasoning text to be visible after the click")

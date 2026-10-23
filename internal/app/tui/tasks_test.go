@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/db"
@@ -59,14 +61,14 @@ func TestFinishedTasksStayOpenAndTheReceiptSummarisesTheTurn(t *testing.T) {
 	m.resize(120, 60)
 	scriptedTasks(t, &m, 3, 2, true)
 	text := viewText(&m)
-	for _, want := range []string{"1/3 Task number 1", "2/3 Task number 2", "3/3 Task number 3", "All done.", "3 tasks", "6 steps", "6 tools"} {
+	for _, want := range []string{"▸ 1/3", "▸ 2/3", "▸ 3/3", "All done.", "3 tasks", "6 steps", "6 tools"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q:\n%s", want, text)
 		}
 	}
 	// Six beats, all finished: nothing folds, so every beat keeps its row.
-	if got := strings.Count(text, "Read file"); got != 6 {
-		t.Errorf("Read file rendered %d times, want 6: history never folds:\n%s", got, text)
+	if got := strings.Count(text, "read    x.go"); got != 6 {
+		t.Errorf("the read row rendered %d times, want 6: history never folds:\n%s", got, text)
 	}
 	if !strings.Contains(text, "Working on task 1 part 1. Details follow.") {
 		t.Errorf("the first beat keeps its narration:\n%s", text)
@@ -78,8 +80,8 @@ func TestRunningTurnKeepsEveryBeatOpen(t *testing.T) {
 	m.resize(120, 60)
 	scriptedTasks(t, &m, 3, 2, false)
 	text := viewText(&m)
-	if got := strings.Count(text, "Read file"); got != 6 {
-		t.Errorf("Read file rendered %d times, want 6: done tasks keep their rows:\n%s", got, text)
+	if got := strings.Count(text, "read    x.go"); got != 6 {
+		t.Errorf("the read row rendered %d times, want 6: done tasks keep their rows:\n%s", got, text)
 	}
 	if !strings.Contains(text, "Working on task 3 part 1") || !strings.Contains(text, "Working on task 3 part 2") {
 		t.Errorf("the task the model is working on is shown:\n%s", text)
@@ -214,11 +216,15 @@ func TestFailedRowShowsItsLastOutputLinesCollapsed(t *testing.T) {
 	}
 }
 
-// Golden rows for the todo chrome: exact text at 80 and 140 columns. The
-// divider is the only task chrome left; durations are fixed through the todo
-// timestamps so any row that carries one is deterministic.
-func TestTodoDividerGolden(t *testing.T) {
+// Golden rows for a beat: exact text at 80 and 140 columns. The beat that
+// starts a todo carries its tag at the right edge of its head, each call hangs
+// off the spine with its result at the right edge, and the plan line closes
+// the beat where the list was written.
+func TestBeatRowsGolden(t *testing.T) {
 	start := time.Now().Add(-10 * time.Minute)
+	edge := func(left, right string, width int) string {
+		return left + strings.Repeat(" ", width-ansi.StringWidth(left)-ansi.StringWidth(right)) + right
+	}
 	for _, width := range []int{80, 140} {
 		m := newTestModel(t)
 		m.resize(width, 60)
@@ -227,26 +233,31 @@ func TestTodoDividerGolden(t *testing.T) {
 		id := m.state.BeginStep(session.Actor{})
 		m.state.AddNarration(id, "Reading the parser. It is small.")
 		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a", Args: []byte(`{"path":"p.go"}`), ResultSummary: "ok"})
+		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now().Add(time.Millisecond), ToolName: "todo.write", StepID: id, ToolCallID: "w",
+			Args:          []byte(`{"todos":[{"id":"t1","content":"Wire the parser","status":"completed"},{"id":"t2","content":"Test it","status":"in_progress"}]}`),
+			ResultSummary: "tasks updated · 2 items"})
 		m.state.EndStep(id)
-		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "completed", StartedAt: start, CompletedAt: start.Add(3 * time.Minute)}, {ID: "t2", Content: "Test it", Status: "pending"}})
+		_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "Wire the parser", Status: "completed", StartedAt: start, CompletedAt: start.Add(3 * time.Minute)}, {ID: "t2", Content: "Test it", Status: "in_progress", StartedAt: start.Add(3 * time.Minute)}})
 		lines := transcriptLines(&m)
 
-		var divider string
-		for _, l := range lines {
-			if strings.Contains(l, "1/2 Wire the parser") {
-				divider = strings.TrimRight(l, " ")
+		head := -1
+		for i, l := range lines {
+			if strings.Contains(l, "Reading the parser.") {
+				head = i
 			}
 		}
-		if !strings.HasPrefix(divider, "   ── 1/2 Wire the parser ") {
-			t.Errorf("w=%d divider = %q", width, divider)
+		if head < 0 || head+3 > len(lines) {
+			t.Fatalf("w=%d beat missing:\n%s", width, strings.Join(lines, "\n"))
 		}
-		if got := len([]rune(divider)); got != width {
-			t.Errorf("w=%d divider should fill the frame, is %d wide", width, got)
+		want := []string{
+			edge(" ● Reading the parser. It is small.", "▸ 1/2", width),
+			edge("   ├ read    p.go", "ok", width),
+			"   └ plan    ✓ ▸  2/2  Test it",
 		}
-		// The todo is complete and the beat is the turn's newest, so it stays
-		// open: the divider is followed by the beat's own row.
-		if !strings.Contains(strings.Join(lines, "\n"), "Reading the parser.") {
-			t.Errorf("w=%d the beat under the divider still renders:\n%s", width, strings.Join(lines, "\n"))
+		for i, w := range want {
+			if got := strings.TrimRight(lines[head+i], " "); got != w {
+				t.Errorf("w=%d row %d = %q\nwant      %q", width, i, got, w)
+			}
 		}
 	}
 }
@@ -297,7 +308,7 @@ func TestExpandMatrix(t *testing.T) {
 		name, text string
 		want       map[string]bool // substring -> expected present
 	}{
-		{"collapsed", collapsed, map[string]bool{"Reading the config.": true, "Read file": true, "thought for": true, "private reasoning text": false, "var Secret": false}},
+		{"collapsed", collapsed, map[string]bool{"Reading the config.": true, "read    cfg.go": true, "thought 2s": true, "private reasoning text": false, "var Secret": false}},
 		{"expanded", expanded, map[string]bool{"Reading the config.": true, "private reasoning text": true, "var Secret": true}},
 	} {
 		for sub, want := range c.want {
@@ -383,19 +394,20 @@ func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
 		t.Fatalf("missing %q:\n%s", sub, text)
 		return -1
 	}
-	// Each todo's work sits under the divider naming it, in list order.
-	read, first, write, second := at("1/4 Read"), at("Reading it."), at("2/4 Write"), at("Writing it.")
-	if !(read < first && first < write && write < second) {
-		t.Fatalf("order must be divider, work, next divider, next work:\n%s", text)
+	// The first beat of each todo carries its tag, in list order, on the
+	// head of the work itself.
+	first, second := at("Reading it."), at("Writing it.")
+	if !strings.HasSuffix(strings.TrimRight(lines[first], " "), "▸ 1/4") || !strings.HasSuffix(strings.TrimRight(lines[second], " "), "▸ 2/4") || first > second {
+		t.Fatalf("each todo's first beat carries its tag, in order:\n%s", text)
 	}
-	if strings.Contains(text, "3/4 Test") || strings.Contains(text, "4/4 Ship") {
-		t.Errorf("waiting todos live in the band, not the transcript:\n%s", text)
+	if strings.Contains(text, "3/4") || strings.Contains(text, "4/4") || strings.Contains(text, "──") {
+		t.Errorf("waiting todos live in the band, and history has no dividers:\n%s", text)
 	}
 
 	// The band carries the progress: the head row holds the count and the
 	// active item, the checklist what comes next — on this tall frame, one
 	// row per waiting todo. The numbered per-todo rows are gone — the
-	// transcript's dividers cover those.
+	// transcript's tags cover those.
 	if m.height < nowBarTallHeight {
 		t.Fatalf("frame is %d rows; the test expects a tall one", m.height)
 	}
@@ -447,11 +459,11 @@ func TestTransientNarrationFlowsWithoutHeadersWhenThereAreNoTodos(t *testing.T) 
 	lines := transcriptLines(&m)
 	for i, l := range lines {
 		if strings.Contains(l, "First look.") {
-			if !strings.Contains(lines[i+1], "Read file") {
-				t.Errorf("a narration's calls sit directly under it:\n%s", text)
+			if !strings.Contains(lines[i+1], "└ read") {
+				t.Errorf("a narration's calls hang directly under it:\n%s", text)
 			}
-			if !strings.HasPrefix(l, " · ") || regexp.MustCompile(`\d+s$`).MatchString(strings.TrimRight(l, " ")) {
-				t.Errorf("settled steps are a quiet dot with no clock: %q", l)
+			if !strings.HasPrefix(l, " ● ") || regexp.MustCompile(`\d+s$`).MatchString(strings.TrimRight(l, " ")) {
+				t.Errorf("settled beats are a muted ● with no clock: %q", l)
 			}
 		}
 	}
@@ -490,7 +502,7 @@ func TestMergedToolRunStaysOneRowAsItGrows(t *testing.T) {
 	count := func() int {
 		n := 0
 		for _, l := range transcriptLines(&m) {
-			if strings.Contains(l, "Read file") {
+			if strings.Contains(l, "read    f0.go") {
 				n++
 			}
 		}
@@ -531,10 +543,8 @@ func TestTightJoinsKeepClickAndBrowsePositionsOnTheirRows(t *testing.T) {
 	}
 
 	lines := transcriptLines(&m)
-	// A labelled beat's region opens on its divider, so the todo lines count
-	// as that beat's start.
 	wants := map[viewmodel.Kind][]string{
-		viewmodel.KindStep: {"1/3 Read", "2/3 Write", "Writing the first half", "Writing the second half", "One thought", "Another thought"},
+		viewmodel.KindStep: {"Reading it.", "Writing the first half", "Writing the second half", "One thought", "Another thought"},
 	}
 	seen := 0
 	for _, r := range m.nodeRegions {
@@ -554,7 +564,7 @@ func TestTightJoinsKeepClickAndBrowsePositionsOnTheirRows(t *testing.T) {
 		seen++
 	}
 	if seen < 5 {
-		t.Fatalf("expected regions for two labelled beats and three more, saw %d:\n%s", seen, strings.Join(lines, "\n"))
+		t.Fatalf("expected regions for the five beats, saw %d:\n%s", seen, strings.Join(lines, "\n"))
 	}
 	for _, it := range m.browseItems {
 		if it.kind != viewmodel.KindStep {

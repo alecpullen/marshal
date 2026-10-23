@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
-
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
@@ -73,63 +71,6 @@ func TestToolTarget(t *testing.T) {
 	}
 }
 
-func groupEvents() []registry.AuditEvent {
-	return []registry.AuditEvent{
-		{ToolName: "file.read", Args: json.RawMessage(`{"path":"budget.go"}`), ResultSummary: "42 lines"},
-		{ToolName: "file.read", Args: json.RawMessage(`{"path":"runner.go"}`), ResultSummary: "88 lines"},
-		{ToolName: "file.read", Args: json.RawMessage(`{"path":"execute.go"}`), ResultSummary: "12 lines"},
-	}
-}
-
-func TestRenderToolGroupCollapsedIsOneLine(t *testing.T) {
-	out := stripANSI(renderToolGroup(groupEvents(), false, 80))
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("collapsed run should render one line, got %d:\n%s", len(lines), out)
-	}
-	if !strings.Contains(lines[0], "Read files:") || !strings.Contains(lines[0], "×3") {
-		t.Fatalf("line missing plural name or count:\n%s", lines[0])
-	}
-	for _, want := range []string{"budget.go", "runner.go", "execute.go"} {
-		if !strings.Contains(lines[0], want) {
-			t.Fatalf("line missing target %q:\n%s", want, lines[0])
-		}
-	}
-}
-
-func TestRenderToolGroupExpandedOneLinePerCall(t *testing.T) {
-	out := stripANSI(renderToolGroup(groupEvents(), true, 80))
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("expanded run should render header + 3 lines, got %d:\n%s", len(lines), out)
-	}
-	if !strings.Contains(lines[0], "×3") {
-		t.Fatalf("expanded header missing count:\n%s", lines[0])
-	}
-	for i, want := range []string{"budget.go", "runner.go", "execute.go"} {
-		if !strings.Contains(lines[i+1], want) {
-			t.Fatalf("expanded line %d missing %q:\n%s", i+1, want, lines[i+1])
-		}
-	}
-}
-
-// TestRunningToolRendersBelowGroupThenFolds pins the shape spec §4 declares
-// correct: a running call renders on its own row beneath the group it belongs
-// to — it needs the room, since shell.run streams output there — and folds
-// into that group once it completes.
-func TestToolGroupFitsWidthWithWideRunes(t *testing.T) {
-	events := []registry.AuditEvent{
-		{ToolName: "file.read", ResultSummary: "ok", Args: json.RawMessage(`{"path":"内部/非常に長いパス/ファイル一.go"}`)},
-		{ToolName: "file.read", ResultSummary: "ok", Args: json.RawMessage(`{"path":"内部/別のとても長いパス/ファイル二.go"}`)},
-	}
-	out := renderToolGroup(events, false, 40)
-	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		if w := ansi.StringWidth(line); w > 40 {
-			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
-		}
-	}
-}
-
 func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 	readEvent := func(path string, ts time.Time) registry.AuditEvent {
 		args, err := json.Marshal(map[string]string{"path": path})
@@ -157,13 +98,13 @@ func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 	m.refreshViewport()
 
 	running := stripANSI(m.viewport.View())
-	if !strings.Contains(running, "Read files: ×2") {
+	if !strings.Contains(running, "budget.go, runner.go") || !strings.Contains(running, "×2") {
 		t.Errorf("while running, want a ×2 group of completed calls:\n%s", running)
 	}
 	if !strings.Contains(running, "chat.go") {
 		t.Errorf("while running, want the in-flight target on its own row:\n%s", running)
 	}
-	if strings.Contains(running, "Read files: ×3") {
+	if strings.Contains(running, "×3") {
 		t.Errorf("in-flight call must not fold into the group while running:\n%s", running)
 	}
 
@@ -172,66 +113,7 @@ func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 	m.refreshViewport()
 
 	done := stripANSI(m.viewport.View())
-	if !strings.Contains(done, "Read files: ×3") {
+	if !strings.Contains(done, "budget.go, runner.go, chat.go") || !strings.Contains(done, "×3") {
 		t.Errorf("after completion, want the call folded into a ×3 group:\n%s", done)
-	}
-}
-
-func TestToolGroupUsesCategoryGlyph(t *testing.T) {
-	events := []registry.AuditEvent{
-		{ToolName: "file.read", ResultSummary: "ok"},
-		{ToolName: "file.read", ResultSummary: "ok"},
-	}
-	out := stripANSI(renderToolGroup(events, false, 80))
-	if !strings.Contains(out, "≡") {
-		t.Fatalf("file.read group should use the ≡ gutter: %q", out)
-	}
-}
-
-func TestRenderToolGroupContinuationLinesIndented(t *testing.T) {
-	events := []registry.AuditEvent{
-		{ToolName: "file.read", ResultSummary: "read a very long file path that forces the bullet to wrap",
-			Args: json.RawMessage(`{"path":"internal/app/tui/transcript_render_pipeline_quite_long_implementation.go"}`)},
-		{ToolName: "file.read", ResultSummary: "ok",
-			Args: json.RawMessage(`{"path":"internal/app/tui/another_rather_long_runner_implementation_file.go"}`)},
-	}
-	out := stripANSI(renderToolGroup(events, true, 40))
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("expected a wrapped multi-line group, got %d line(s):\n%s", len(lines), out)
-	}
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		if r := []rune(line); r[0] != ' ' {
-			t.Fatalf("line starts with a non-space rune %q: %q", string(r[0]), line)
-		}
-		if w := ansi.StringWidth(line); w > 40 {
-			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
-		}
-	}
-}
-
-func TestCollapsedToolGroupTruncatesOverflowingTargetsOnOneLine(t *testing.T) {
-	var events []registry.AuditEvent
-	for _, p := range []string{"internal/app/tui/steps.go", "internal/app/tui/tasks_render.go", "internal/app/tui/viewport_render.go", "internal/app/tui/model.go"} {
-		events = append(events, registry.AuditEvent{ToolName: "file.read", ResultSummary: "ok", Args: json.RawMessage(`{"path":"` + p + `"}`)})
-	}
-	for _, width := range []int{30, 60} {
-		out := stripANSI(renderToolGroup(events, false, width))
-		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-		if len(lines) != 1 {
-			t.Fatalf("w=%d: collapsed run is one line, got %d:\n%s", width, len(lines), out)
-		}
-		if w := ansi.StringWidth(lines[0]); w > width {
-			t.Fatalf("w=%d: line is %d cells wide: %q", width, w, lines[0])
-		}
-		if !strings.HasSuffix(lines[0], "…") {
-			t.Fatalf("w=%d: an overflowing run ends with an ellipsis: %q", width, lines[0])
-		}
-		if !strings.Contains(lines[0], "×4") {
-			t.Fatalf("w=%d: the count survives truncation: %q", width, lines[0])
-		}
 	}
 }

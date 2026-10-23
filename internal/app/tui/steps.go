@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image/color"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,14 +15,8 @@ import (
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/native"
-	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
-
-// stepRowIndent is how far a row inside a step sits to the right of the same
-// row at top level. A top-level row's glyph is at column 1 (gutterPrefix is
-// " ⌗ "); inside a step it sits at nestedBodyIndent, column 5.
-const stepRowIndent = nestedBodyIndent - 1
 
 // minHeadlineCols is the room the right-aligned meta must leave the headline.
 const minHeadlineCols = 24
@@ -84,10 +79,10 @@ func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
 	return c.callers(id)
 }
 
-// renderStep renders one step: a header (state glyph, headline, right-aligned
-// owner meta), the narration continuation, thinking rows, then tool rows and
-// subagent cards at nested indent. Every piece ends in a newline, so the
-// block's line count is strings.Count(out, "\n").
+// renderStep renders one beat: a head (state glyph, narration, right-aligned
+// meta), its reasoning when the beat is expanded, then tool rows and subagent
+// cards at nested indent. Every piece ends in a newline, so the block's line
+// count is strings.Count(out, "\n").
 func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) (string, []subRegion) {
 	si := n.Step
 	rows := n.Children
@@ -99,46 +94,33 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 		b.WriteString(s)
 		lines += strings.Count(s, "\n")
 	}
-	prevMulti := false
 	row := func(id viewmodel.NodeID, s string, sub subRegion) {
-		if s == "" {
-			return
-		}
-		// Single-line rows sit tight under their narration and each other, so
-		// a step and its calls read as one paragraph. A row that spans lines
-		// (expanded, a failure tail, a card) is set off by a blank line on
-		// both sides. The gap stays out of hit regions.
-		multi := strings.Count(s, "\n") > 1
-		if multi || prevMulti {
-			write("\n")
-		}
-		prevMulti = multi
 		sub.id = id
 		sub.start = lines
 		write(s)
 		sub.end = lines
 		subs = append(subs, sub)
 	}
-	if si.Todo != nil {
-		write(renderTodoDivider(si.Todo, width))
-	}
-
-	head, rest := stepHeadline(si)
+	head, _ := stepHeadline(si)
 	headless := head == ""
 
 	failed := stepFailed(rows)
 
-	// Header. A headless beat (no narration) has none: its rows stand on
-	// their own rather than under an invented title.
 	g, gc := stepGlyph(n, failed, c)
 	meta := metaParts{
 		owner:      stepOwner(si.Step),
 		role:       stepRoleWord(si.Step),
 		model:      stepModel(si.Step.Actor, c.routeModel, c.routeProvider),
+		thought:    thoughtMeta(si.Thinking),
 		dur:        stepDuration(n, c.now),
+		tag:        todoTag(si.Todo),
 		ownerColor: actorColor(si.Step.Actor.Role),
 	}
-	if !headless {
+	if headless {
+		// A beat with no narration gets no invented title: its head counts
+		// its calls, and carries the meta like any other.
+		write(headlessHead(g, gc, countToolCalls(rows), meta, width))
+	} else {
 		// Render narration as a single Markdown document so formatting and
 		// code fences survive sentence boundaries.
 		var texts []string
@@ -169,18 +151,12 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 		if metaW > 0 && !metaFits {
 			write(strings.Repeat(" ", max(width-metaW, gutterWidth)) + metaText + "\n")
 		}
-		rest = "" // The full narration has already been rendered once.
 	}
 
-	// Narration continuation.
-	if rest != "" {
-		write(renderStepContinuation(rest, width))
-	}
-
-	// Thinking rows.
-	for _, t := range si.Thinking {
-		id := viewmodel.ThinkingID(t)
-		row(id, renderNestedThinking(t, c.open(id, open), width), subRegion{})
+	// The reasoning shows when the beat is expanded; collapsed, the head's
+	// "thought Ns" stands for it.
+	if open {
+		write(renderBeatReasoning(si.Thinking, width))
 	}
 	if si.LiveThinking != "" {
 		rv := c.region(viewmodel.LiveThinkingID)
@@ -195,132 +171,65 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 
 	// A long beat shows its newest rows; the rest collapse into one line.
 	// Expanding the beat shows them all.
+	var cards []*viewmodel.Node
+	for _, ch := range rows {
+		if ch.Kind == viewmodel.KindSubagent && ch.Item != nil && ch.Item.Subagent != nil {
+			cards = append(cards, ch)
+		}
+	}
+	rows = slices.DeleteFunc(slices.Clone(rows), func(ch *viewmodel.Node) bool { return !spineRow(ch) })
 	if over := len(rows) - viewmodel.BeatRowCap; over > 0 && !open {
-		write(strings.Repeat(" ", nestedBodyIndent) + mutedStyle().Render(fmt.Sprintf("+%d earlier calls", over)) + "\n")
+		write(spineBlock(mutedStyle().Render(fmt.Sprintf("… %d earlier calls", over))+"\n", false))
 		rows = rows[over:]
 	}
 
-	// Tool rows and subagent cards.
-	for _, ch := range rows {
+	// Calls and the plan line, each hung off the spine.
+	w := max(width-spineWidth, 1)
+	for i, ch := range rows {
+		last := i == len(rows)-1
 		switch {
-		case ch.Kind == viewmodel.KindTool && ch.Active != nil:
-			row(ch.ID, renderActiveToolRow(*ch.Active, c, c.liveToolExpanded(ch.ID), width), subRegion{})
-		case ch.Kind == viewmodel.KindTool && ch.Job != nil:
-			row(ch.ID, renderJobCard(ch, c.toolSpinner, c.now, c.open(ch.ID, open), width, c.workdir), subRegion{live: ch.Job.Running})
-		case ch.Kind == viewmodel.KindTool && len(ch.Tools) > 1:
-			row(ch.ID, renderToolGroupRow(ch.Tools, c.open(ch.ID, open), width), subRegion{})
-		case ch.Kind == viewmodel.KindTool && len(ch.Tools) == 1:
-			row(ch.ID, renderToolRow(ch.Tools[0], c.open(ch.ID, open), c.callersFor(ch.ID), width, c.workdir), subRegion{})
-		case ch.Kind == viewmodel.KindSubagent && ch.Item != nil && ch.Item.Subagent != nil:
-			v := *ch.Item.Subagent
-			rv := c.region(ch.ID)
-			card := renderSubagentCard(v, c.open(ch.ID, open), c.toolSpinner, rv, width-stepRowIndent)
-			sub := subRegion{live: v.Status == session.SubagentRunning}
-			if v.Child != nil {
-				sub.subagent = &v
-			}
-			row(ch.ID, indentLines(card, stepRowIndent), sub)
+		case ch.Kind == viewmodel.KindPlanUpdate:
+			// The plan line is not a target of its own: a click on it opens
+			// the beat.
+			write(spineBlock(renderPlanRow(ch.PlanUpdate, w), last))
+		case ch.Active != nil:
+			row(ch.ID, spineBlock(renderActiveCallRow(*ch.Active, c, c.liveToolExpanded(ch.ID), w), last), subRegion{})
+		case ch.Job != nil:
+			row(ch.ID, spineBlock(renderJobRow(ch, c.toolSpinner, c.now, c.open(ch.ID, open), w, c.workdir), last), subRegion{live: ch.Job.Running})
+		case len(ch.Tools) > 1:
+			row(ch.ID, spineBlock(renderGroupRow(ch.Tools, c.open(ch.ID, open), w, c.workdir), last), subRegion{})
+		default:
+			row(ch.ID, spineBlock(renderCallRow(ch.Tools[0], c.open(ch.ID, open), c.callersFor(ch.ID), w, c.workdir), last), subRegion{})
 		}
+	}
+
+	// Subagent cards in the parent view (the projection without live work)
+	// sit below the spine, at the rows' indent.
+	for _, ch := range cards {
+		v := *ch.Item.Subagent
+		card := renderSubagentCard(v, c.open(ch.ID, open), c.toolSpinner, c.region(ch.ID), width-cardIndent)
+		sub := subRegion{live: v.Status == session.SubagentRunning}
+		if v.Child != nil {
+			sub.subagent = &v
+		}
+		row(ch.ID, indentLines(card, cardIndent), sub)
 	}
 	return b.String(), subs
 }
 
-// renderJobCard renders a background job's card: the shell.run row that
-// started it, settled in place by the job's exit. One row, with the outcome
-// right-aligned so a long command can never push it off the line.
-func renderJobCard(row *viewmodel.Node, spinner string, now time.Time, expanded bool, width int, workdir string) string {
-	j := row.Job
-	g, style := glyph.Job, statusOkStyle()
-	gutterColor := theme.Current().FGMuted
-	var tail string
-	switch {
-	case j.Lost:
-		// The session ended while the job ran: there is no exit code to
-		// report, and the card must not claim one.
-		g, style = glyph.Warning, warningStyle()
-		gutterColor = theme.Current().StatusWarning
-		tail = "ended with session"
-	case j.Status == string(native.StatusStopping):
-		// The stop was accepted and the process is still going. Checked before
-		// running: a stopping execution has no outcome yet, so it is still
-		// "running" as far as a card is concerned, and its tail must say what is
-		// happening to it rather than repeat that it runs.
-		g, style = glyph.Warning, warningStyle()
-		gutterColor = theme.Current().StatusWarning
-		tail = "stopping"
-		if j.Duration > 0 {
-			tail += dimSeparator + formatElapsed(j.Duration)
-		}
-	case j.Running:
-		g = spinner
-		if g == "" {
-			g = glyph.Running
-		}
-		gutterColor = theme.Current().AccentPrimary
-		tail = "running"
-		// JobStart, not Tools[0]: a caller-built tree can hold a running job
-		// whose starting call is not attached, and the row still renders.
-		if started := row.JobStart(); !started.IsZero() {
-			tail += dimSeparator + formatElapsed(max(now.Sub(started), 0))
-		}
-	default:
-		// Settled. An exit that was never observed is never success: a start-up
-		// failure produces no code at all, and a legacy record spells "unknown"
-		// as -1, so both render as unknown rather than as a clean exit.
-		code := j.Exit
-		if code == nil && j.ExitCode >= 0 {
-			// The legacy field carries a real code; the -1 convention is what
-			// marks it unknown.
-			legacy := j.ExitCode
-			code = &legacy
-		}
-		failed := jobFailedStatus(j.Status) || (code != nil && *code != 0)
-		switch {
-		case failed:
-			g, style = glyph.Error, errorStyle()
-			gutterColor = theme.Current().StatusError
-		case code == nil:
-			g, style = glyph.Warning, warningStyle()
-			gutterColor = theme.Current().StatusWarning
-		}
-		tail = jobOutcomeWord(j, code)
-		if j.Duration > 0 {
-			tail += dimSeparator + formatElapsed(j.Duration)
-		}
+// cardIndent is where a subagent card inside a beat starts: its glyph lines
+// up with the spine's verbs.
+const cardIndent = gutterWidth + 1
+
+// spineRow reports whether a beat's child draws as a row on its spine.
+func spineRow(ch *viewmodel.Node) bool {
+	switch ch.Kind {
+	case viewmodel.KindPlanUpdate:
+		return ch.PlanUpdate != nil
+	case viewmodel.KindTool:
+		return ch.Active != nil || len(ch.Tools) > 0
 	}
-	if j.Truncated {
-		tail += dimSeparator + "truncated"
-	}
-	head := viewmodel.ScrubText(j.ID)
-	// The command is model-authored shell text and this renderer prints it
-	// verbatim, so it is scrubbed here as well as at the viewmodel boundary.
-	if cmd := firstLine(viewmodel.ScrubText(viewmodel.ElideWorkdir(j.Command, workdir))); cmd != "" {
-		head += dimSeparator + cmd
-	}
-	if j.Output != "" {
-		if expanded {
-			head += " " + glyph.DisclosureExpanded
-		} else {
-			head += " " + glyph.DisclosureCollapsed
-		}
-	}
-	var b strings.Builder
-	b.WriteString(indentLines(nowBarJustify(gutterPrefix(g, gutterColor)+style.Render(head), tail, width-stepRowIndent), stepRowIndent))
-	b.WriteString("\n")
-	if expanded && j.Output != "" {
-		cw := contentWidth(width)
-		// Scrubbed at the projection and again here, at this renderer's own
-		// boundary; the session caps the output, so the second pass is cheap.
-		out := viewmodel.ScrubBlock(j.Output)
-		for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-			for _, wl := range strings.Split(ansi.Wrap(line, cw, WrapBreakpoints), "\n") {
-				b.WriteString(continuation())
-				b.WriteString(mutedStyle().Render(wl))
-				b.WriteString("\n")
-			}
-		}
-	}
-	return b.String()
+	return false
 }
 
 // jobOutcomeWord is a settled card's right-hand outcome: the actual exit code
@@ -369,16 +278,6 @@ func renderMarker(m *viewmodel.MarkerInfo, width int) string {
 	return gutterPrefix(g, color) + mutedStyle().Render(ansi.Truncate(text, max(width-gutterWidth, 1), "…")) + "\n"
 }
 
-// renderTodoDivider is the dim rule a beat opens with when work moves to a
-// different todo: "── 3/9 AccessibleModal initialFocus ──────".
-func renderTodoDivider(l *viewmodel.TodoLabel, width int) string {
-	text := fmt.Sprintf(" %d/%d %s ", l.Index, l.Total, oneLine(viewmodel.ScrubText(l.Content)))
-	room := max(width-gutterWidth-4, 8)
-	text = ansi.Truncate(text, room, "…")
-	fill := max(width-gutterWidth-2-ansi.StringWidth(text), 2)
-	return strings.Repeat(" ", gutterWidth) + mutedStyle().Render("──"+text+strings.Repeat("─", fill)) + "\n"
-}
-
 // countToolCalls is the number of tool calls a step made, counting each call
 // of a merged run.
 func countToolCalls(rows []*viewmodel.Node) int {
@@ -390,54 +289,6 @@ func countToolCalls(rows []*viewmodel.Node) int {
 		}
 	}
 	return n
-}
-
-// renderToolRow renders a settled tool call inside a step. It is the
-// top-level row, indented: width is reduced by the indent so wrapping stays
-// inside the frame, and every line (continuations included) shifts with it.
-func renderToolRow(ev registry.AuditEvent, expanded bool, callers []string, width int, workdir string) string {
-	out := indentLines(renderCompletedToolCallIn(ev, expanded, callers, width-stepRowIndent, workdir), stepRowIndent)
-	if !expanded && viewmodel.EventFailed(ev) {
-		out += failedTail(ev, width)
-	}
-	return out
-}
-
-// failedTail shows the last few lines of a failed call's output under its
-// collapsed row, so the reason is visible without opening it. The tail is the
-// useful end: a test run prints its failures last.
-func failedTail(ev registry.AuditEvent, width int) string {
-	text := strings.TrimRight(ev.ResultContent, "\n")
-	if text == "" {
-		text = ev.Error
-	}
-	if text == "" {
-		return ""
-	}
-	lines := strings.Split(text, "\n")
-	if len(lines) > failedTailLines {
-		lines = lines[len(lines)-failedTailLines:]
-	}
-	var b strings.Builder
-	room := max(width-stepRowIndent-continuationIndent-2, 8)
-	for _, l := range lines {
-		b.WriteString(strings.Repeat(" ", stepRowIndent+continuationIndent) +
-			mutedStyle().Render(ansi.Truncate(strings.TrimRight(l, " \t\r"), room, "…")) + "\n")
-	}
-	return b.String()
-}
-
-// failedTailLines is how many output lines a failed row shows collapsed.
-const failedTailLines = 3
-
-// renderToolGroupRow is renderToolRow for a merged same-tool run.
-func renderToolGroupRow(evs []registry.AuditEvent, expanded bool, width int) string {
-	return indentLines(renderToolGroup(evs, expanded, width-stepRowIndent), stepRowIndent)
-}
-
-// renderActiveToolRow renders an in-flight tool call inside a step.
-func renderActiveToolRow(atc session.ActiveToolCall, c *stepRenderCtx, expanded bool, width int) string {
-	return indentLines(renderActiveToolCall(atc, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, expanded, width-stepRowIndent), stepRowIndent)
 }
 
 // indentLines prefixes every non-empty line with n spaces.
@@ -458,7 +309,7 @@ func indentLines(s string, n int) string {
 // ---- header ------------------------------------------------------------
 
 // stepGlyph picks the state glyph: ✗ if any row failed, the spinner while
-// live, and a quiet · once settled.
+// live, and a muted ● once settled.
 func stepGlyph(n *viewmodel.Node, failed bool, c *stepRenderCtx) (string, color.Color) {
 	th := theme.Current()
 	switch {
@@ -471,10 +322,10 @@ func stepGlyph(n *viewmodel.Node, failed bool, c *stepRenderCtx) (string, color.
 		}
 		return g, accentColor
 	}
-	// A settled step wears a quiet dot, not a check: a ✓ on every narration
+	// A settled beat wears a muted ●, not a check: a ✓ on every narration
 	// turns the transcript into a column of badges. Only the states that need
 	// attention (running, failed) get a marker with colour.
-	return glyph.Ambient, th.FGMuted
+	return glyph.Beat, th.FGMuted
 }
 
 // stepFailed reports whether any tool row in the step failed: an error, a
@@ -537,39 +388,34 @@ const notableStepDuration = 15 * time.Second
 
 // metaParts are the pieces of a step header's right-aligned meta.
 type metaParts struct {
-	tools      int // outline density: how many calls the collapsed step hides
 	owner      string
 	role       string // owner shortened to the role word
 	model      string
+	thought    string // "thought 2s" when the beat reasoned
 	dur        string
+	tag        string // "▸ 2/4" on the beat that starts a todo
 	ownerColor color.Color
 }
 
-// rightMeta lays out the header's right-aligned meta so the headline keeps at
+// rightMeta lays out the head's right-aligned meta so the headline keeps at
 // least min(headlineWidth, minHeadlineCols) columns. Under pressure it drops
-// the model first, then the duration, then shortens the owner to its role
-// word, and drops the owner only when even that does not fit. It returns the
-// styled text and its visible width.
+// the model first, then the duration, then the thinking time, then shortens
+// the owner to its role word and drops it. The todo tag goes last. It
+// returns the styled text and its visible width.
 func rightMeta(p metaParts, headlineWidth, width int) (string, int) {
 	budget := width - gutterWidth - 2 - min(headlineWidth, minHeadlineCols)
-	type cand struct{ owner, model, tools, dur string }
-	tools := ""
-	switch {
-	case p.tools == 1:
-		tools = "1 tool"
-	case p.tools > 1:
-		tools = fmt.Sprintf("%d tools", p.tools)
-	}
-	cands := []cand{
-		{p.owner, p.model, tools, p.dur},
-		{p.owner, "", tools, p.dur},
-		{p.owner, "", tools, ""},
-		{p.role, "", tools, ""},
-		{"", "", tools, ""},
-		{"", "", "", ""},
+	cands := []metaParts{
+		{owner: p.owner, model: p.model, thought: p.thought, dur: p.dur, tag: p.tag},
+		{owner: p.owner, thought: p.thought, dur: p.dur, tag: p.tag},
+		{owner: p.owner, thought: p.thought, tag: p.tag},
+		{owner: p.owner, tag: p.tag},
+		{owner: p.role, tag: p.tag},
+		{tag: p.tag},
+		{},
 	}
 	for _, cd := range cands {
-		text, w := renderMeta(cd.owner, cd.model, cd.tools, cd.dur, p.ownerColor)
+		cd.ownerColor = p.ownerColor
+		text, w := renderMeta(cd)
 		if w <= budget {
 			return text, w
 		}
@@ -577,7 +423,7 @@ func rightMeta(p metaParts, headlineWidth, width int) (string, int) {
 	return "", 0
 }
 
-func renderMeta(owner, model, tools, dur string, ownerColor color.Color) (string, int) {
+func renderMeta(p metaParts) (string, int) {
 	var plain, styled []string
 	add := func(s string, style lipgloss.Style) {
 		if s == "" {
@@ -587,34 +433,16 @@ func renderMeta(owner, model, tools, dur string, ownerColor color.Color) (string
 		styled = append(styled, style.Render(s))
 	}
 	ownerStyle := mutedStyle()
-	if ownerColor != nil {
-		ownerStyle = lipgloss.NewStyle().Foreground(ownerColor)
+	if p.ownerColor != nil {
+		ownerStyle = lipgloss.NewStyle().Foreground(p.ownerColor)
 	}
-	add(owner, ownerStyle)
-	add(model, mutedStyle())
-	add(tools, mutedStyle())
-	add(dur, mutedStyle())
+	add(p.owner, ownerStyle)
+	add(p.model, mutedStyle())
+	add(p.thought, mutedStyle())
+	add(p.dur, mutedStyle())
+	add(p.tag, lipgloss.NewStyle().Foreground(accentColor))
 	sep := " · "
 	return strings.Join(styled, mutedStyle().Render(sep)), ansi.StringWidth(strings.Join(plain, sep))
-}
-
-// stepHeaderLine assembles " ✓ headline        owner · 12s" to exactly the
-// frame width at most: the headline is truncated to what the meta leaves.
-func stepHeaderLine(g string, gc color.Color, head string, meta metaParts, width int) string {
-	headStyle := lipgloss.NewStyle().Foreground(theme.Current().FGEmphasis)
-	metaText, metaW := rightMeta(meta, ansi.StringWidth(head), width)
-	avail := max(width-gutterWidth, 1)
-	headRoom := avail
-	if metaW > 0 {
-		headRoom = max(avail-metaW-2, 1)
-	}
-	head = ansi.Truncate(head, headRoom, "…")
-	line := gutterPrefix(g, gc) + headStyle.Render(head)
-	if metaW > 0 {
-		pad := max(avail-ansi.StringWidth(head)-metaW, 1)
-		line += strings.Repeat(" ", pad) + metaText
-	}
-	return line
 }
 
 // stepHeadline picks the header text. A narrated beat uses the first sentence
@@ -634,43 +462,56 @@ func firstSentence(s string) (head, rest string) { return viewmodel.FirstSentenc
 // which is rendered as plain text.
 func stripEmphasis(s string) string { return viewmodel.StripEmphasis(s) }
 
-// renderStepContinuation renders the complete narration continuation.
-func renderStepContinuation(rest string, width int) string {
-	cw := nestedContentWidth(width)
-	pad := strings.Repeat(" ", nestedBodyIndent)
-	body, ok := renderMarkdown(rest, cw)
-	if !ok {
-		body = renderPlainProse(rest, cw)
+// thoughtMeta is the head's "thought 2s": how long the beat reasoned, or
+// nothing when it did not.
+func thoughtMeta(ts []*session.ThinkingEntry) string {
+	if len(ts) == 0 {
+		return ""
 	}
-	var b strings.Builder
-	for _, l := range strings.Split(strings.Trim(body, "\n"), "\n") {
-		b.WriteString(pad)
-		b.WriteString(strings.TrimLeft(l, " "))
-		b.WriteString("\n")
+	var d time.Duration
+	for _, t := range ts {
+		d += t.Duration
 	}
-	return b.String()
+	return "thought " + formatThinkDuration(d)
 }
 
-// renderNestedThinking renders a step's reasoning as a row at nested indent:
-// "⚙ thought for 2s ▹", and when expanded the reasoning behind the nested
-// rail.
-func renderNestedThinking(t *session.ThinkingEntry, expanded bool, width int) string {
-	disclosure := ""
-	if strings.TrimSpace(t.Text) != "" {
-		disclosure = glyph.DisclosureCollapsed
-		if expanded {
-			disclosure = glyph.DisclosureExpanded
-		}
+// todoTag is "▸ 2/4" on the beat where work moves to the second of four
+// todos, and nothing on every other beat.
+func todoTag(l *viewmodel.TodoLabel) string {
+	if l == nil {
+		return ""
 	}
-	label := fmt.Sprintf("thought for %s", formatThinkDuration(t.Duration))
-	if disclosure != "" {
-		label += " " + disclosure
+	return fmt.Sprintf("%s %d/%d", glyph.Running, l.Index, l.Total)
+}
+
+// headlessHead is the head of a beat with no narration: the state glyph and a
+// muted call count, with the meta right-aligned.
+func headlessHead(g string, gc color.Color, calls int, meta metaParts, width int) string {
+	text := ""
+	if calls > 0 {
+		text = fmt.Sprintf("%d %s", calls, plural(calls, "call", "calls"))
 	}
+	line := gutterPrefix(g, gc) + mutedStyle().Render(text)
+	if metaText, metaW := rightMeta(meta, ansi.StringWidth(text), width); metaW > 0 {
+		line += strings.Repeat(" ", max(width-gutterWidth-ansi.StringWidth(text)-metaW, 1)) + metaText
+	}
+	return line + "\n"
+}
+
+// renderBeatReasoning is an expanded beat's reasoning, behind the nested rail
+// under its head: every thinking block in order, a blank rail between them.
+func renderBeatReasoning(ts []*session.ThinkingEntry, width int) string {
 	var b strings.Builder
-	b.WriteString(indentLines(gutterPrefix(glyph.Thinking, dimColor)+thinkingLineStyle().Render(label)+"\n", stepRowIndent))
-	if expanded && strings.TrimSpace(t.Text) != "" {
-		cw := nestedContentWidth(width)
-		for _, line := range strings.Split(strings.TrimSpace(t.Text), "\n") {
+	cw := nestedContentWidth(width)
+	for i, t := range ts {
+		text := strings.TrimSpace(t.Text)
+		if text == "" {
+			continue
+		}
+		if i > 0 && b.Len() > 0 {
+			b.WriteString(nestedRail() + "\n")
+		}
+		for _, line := range strings.Split(text, "\n") {
 			for _, wl := range strings.Split(ansi.Wrap(line, cw, WrapBreakpoints), "\n") {
 				b.WriteString(nestedRail())
 				b.WriteString(thinkingLineStyle().Render(wl))

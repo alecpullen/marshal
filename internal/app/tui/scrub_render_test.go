@@ -64,19 +64,16 @@ func TestRenderersDropTerminalControlSequences(t *testing.T) {
 	marker := renderMarker(&viewmodel.MarkerInfo{Labels: []string{"#3 " + esc}}, 80)
 	stray("marker", marker)
 
-	divider := renderTodoDivider(&viewmodel.TodoLabel{Index: 3, Total: 9, Content: esc + "AccessibleModal"}, 80)
-	stray("divider", divider)
-
 	ev := registry.AuditEvent{ToolName: "shell.run", Args: []byte(`{"command":"pytest -q"}`),
 		ResultSummary: "started background job job-4"}
 	row := &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{ev},
 		Job: &viewmodel.JobState{ID: "job-4", Command: "echo " + esc, Running: true}}
-	stray("job card", renderJobCard(row, "⠋", time.Now(), false, 80, ""))
+	stray("job card", renderJobRow(row, "⠋", time.Now(), false, 80, ""))
 
 	// The expanded body is the job's own output: escaping it must not cost it
 	// its lines.
 	row.Job.Running, row.Job.Output = false, "line one\n"+esc+"\nline three"
-	expanded := renderJobCard(row, "", time.Now(), true, 80, "")
+	expanded := renderJobRow(row, "", time.Now(), true, 80, "")
 	stray("expanded job output", expanded)
 	if !strings.Contains(expanded, "line three") {
 		t.Fatalf("the output's own lines must survive scrubbing: %q", expanded)
@@ -95,7 +92,7 @@ func TestRenderersDropTerminalControlSequences(t *testing.T) {
 func TestJobCardToleratesAJobWithNoRunAttached(t *testing.T) {
 	row := &viewmodel.Node{Kind: viewmodel.KindTool,
 		Job: &viewmodel.JobState{ID: "job-9", Command: "pytest -q", Running: true}}
-	out := renderJobCard(row, "⠋", time.Now(), false, 80, "")
+	out := renderJobRow(row, "⠋", time.Now(), false, 80, "")
 	if !strings.Contains(out, "job-9") || !strings.Contains(out, "running") {
 		t.Fatalf("card = %q", out)
 	}

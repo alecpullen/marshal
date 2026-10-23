@@ -70,8 +70,8 @@ func TestNarratedStepRendersHeadlineAndNestedToolRows(t *testing.T) {
 	if header == "" {
 		t.Fatalf("headline missing:\n%s", strings.Join(lines, "\n"))
 	}
-	if !strings.HasPrefix(header, " · ") {
-		t.Errorf("a settled step leads with a quiet dot, got %q", header)
+	if !strings.HasPrefix(header, " ● ") {
+		t.Errorf("a settled beat leads with a muted ●, got %q", header)
 	}
 	if strings.Contains(header, "inferred") {
 		t.Errorf("narrated step must not be tagged inferred: %q", header)
@@ -82,9 +82,10 @@ func TestNarratedStepRendersHeadlineAndNestedToolRows(t *testing.T) {
 	if len(toolRows) == 0 {
 		t.Fatalf("no tool row:\n%s", strings.Join(lines, "\n"))
 	}
+	// The read is the first of the beat's two calls.
 	for _, r := range toolRows {
-		if indent := len(r) - len(strings.TrimLeft(r, " ")); indent < stepRowIndent {
-			t.Errorf("tool row not at nested indent (%d): %q", indent, r)
+		if !strings.HasPrefix(r, strings.Repeat(" ", gutterWidth)+"├ read    parser.go") {
+			t.Errorf("a call hangs off the beat's spine: %q", r)
 		}
 	}
 	// The complete narration is visible without expanding the step.
@@ -226,7 +227,9 @@ func TestNarrationMarkdownRemainsWhole(t *testing.T) {
 	}
 }
 
-func TestThinkingRowLivesInsideTheStep(t *testing.T) {
+// A beat's reasoning is its thinking time in the head; expanding the beat
+// shows the reasoning under the head, before its calls.
+func TestThinkingTimeSitsInTheBeatHead(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 30)
 	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
@@ -237,23 +240,33 @@ func TestThinkingRowLivesInsideTheStep(t *testing.T) {
 	m.state.LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: id, ToolCallID: "c", Timestamp: ts.Add(time.Millisecond), Args: []byte(`{"path":"a.go"}`)})
 	m.state.EndStep(id)
 	lines := transcriptLines(&m)
-	headerAt, thoughtAt := -1, -1
+	head := -1
 	for i, l := range lines {
 		if strings.Contains(l, "Looking at the failing test.") {
-			headerAt = i
-		}
-		if strings.Contains(l, "thought for 2s") {
-			thoughtAt = i
-			if !strings.HasPrefix(l, strings.Repeat(" ", stepRowIndent)) {
-				t.Errorf("thinking row not at nested indent: %q", l)
-			}
+			head = i
 		}
 	}
-	if headerAt < 0 || thoughtAt <= headerAt {
-		t.Fatalf("thinking row should sit under its step header (header %d, thought %d)", headerAt, thoughtAt)
+	if head < 0 || !strings.HasSuffix(strings.TrimRight(lines[head], " "), "thought 2s") {
+		t.Fatalf("the head carries the thinking time:\n%s", strings.Join(lines, "\n"))
 	}
 	if strings.Contains(strings.Join(lines, "\n"), "private reasoning text") {
-		t.Error("collapsed thinking must not show its text")
+		t.Error("a collapsed beat must not show its reasoning")
+	}
+
+	m.toggleExpanded(viewmodel.NodeID{Kind: viewmodel.KindStep, Key: fmt.Sprintf("step:%d", id)})
+	m.invalidateTranscript()
+	lines = transcriptLines(&m)
+	reason, call := -1, -1
+	for i, l := range lines {
+		if strings.Contains(l, "private reasoning text") {
+			reason = i
+		}
+		if strings.Contains(l, "└ read") {
+			call = i
+		}
+	}
+	if !(head < reason && reason < call) {
+		t.Fatalf("an expanded beat shows its reasoning between its head and its calls:\n%s", strings.Join(lines, "\n"))
 	}
 }
 

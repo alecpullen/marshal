@@ -411,12 +411,12 @@ func TestUpArrowRecallsHistoryWhenNotDrilled(t *testing.T) {
 	}
 }
 
-// TestClickThinkingBlockWhileDrilledIntoSubagent verifies the off-by-one
+// TestClickBeatWhileDrilledIntoSubagent verifies the off-by-one
 // fix in contentLineForClick: when drilled into a subagent, a breadcrumb
 // row is prepended above the viewport, so the click offset must include
 // breadcrumbRows() in addition to scrollHintRows(). Without the fix, every
 // click while drilled lands one row too high and fails to hit its region.
-func TestClickThinkingBlockWhileDrilledIntoSubagent(t *testing.T) {
+func TestClickBeatWhileDrilledIntoSubagent(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(80, 24)
 
@@ -436,11 +436,11 @@ func TestClickThinkingBlockWhileDrilledIntoSubagent(t *testing.T) {
 		t.Fatalf("breadcrumbRows = %d, want 1 while drilled in", m.breadcrumbRows())
 	}
 
-	// Find the click region for the child's thinking block.
-	key := thinkID(ts)
+	// Find the click region for the child's beat that reasoned.
+	key := beatWithThinking(&m, ts)
 	region, found := regionOf(&m, key)
 	if !found {
-		t.Fatal("expected a click region for the child's thinking block while drilled in")
+		t.Fatal("expected a click region for the child's beat while drilled in")
 	}
 
 	// Compute the screen Y using the FIXED offset (scrollHintRows + breadcrumbRows).
@@ -451,7 +451,7 @@ func TestClickThinkingBlockWhileDrilledIntoSubagent(t *testing.T) {
 	updated := clickAt(t, m, 1, y)
 	mm := asModel(t, updated)
 	if !mm.isExpanded(key) {
-		t.Fatal("expected the click to expand the child's thinking block while drilled in (off-by-one fix)")
+		t.Fatal("expected the click to expand the child's beat while drilled in (off-by-one fix)")
 	}
 	if !strings.Contains(stripANSI(mm.viewport.GetContent()), "child reasoning") {
 		t.Fatal("expected the reasoning text to be visible after the click")

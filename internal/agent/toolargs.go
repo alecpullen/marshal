@@ -34,7 +34,9 @@ func SummarizeToolArgs(toolName string, args json.RawMessage) string {
 		// The patch body is large and would flood the live tool-call line;
 		// the file path is surfaced separately via ActiveToolCall.Path.
 		return "patch"
-	case "file.edit":
+	case "file.edit", "file.write":
+		// file.write's content is the whole file; the default branch's
+		// "first string value" could pick it over the path.
 		if p, ok := m["path"].(string); ok {
 			return p
 		}
@@ -65,8 +67,9 @@ func SummarizeToolArgs(toolName string, args json.RawMessage) string {
 }
 
 // firstPatchPathFromArgs names the file a write tool is working on: the first
-// "File: <path>" line of a file.write_patch proposal, or file.edit's own path
-// argument. It returns "" for any other tool or when no path is present.
+// "File: <path>" line of a file.write_patch proposal, or the path argument of
+// file.edit and file.write. It returns "" for any other tool or when no path
+// is present.
 func firstPatchPathFromArgs(toolName string, args json.RawMessage) string {
 	if len(args) == 0 {
 		return ""
@@ -75,7 +78,7 @@ func firstPatchPathFromArgs(toolName string, args json.RawMessage) string {
 	if err := json.Unmarshal(args, &m); err != nil {
 		return ""
 	}
-	if toolName == "file.edit" {
+	if toolName == "file.edit" || toolName == "file.write" {
 		p, _ := m["path"].(string)
 		return p
 	}

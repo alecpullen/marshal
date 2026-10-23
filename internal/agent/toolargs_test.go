@@ -29,6 +29,20 @@ func TestSummarizeToolArgsFileRead(t *testing.T) {
 	}
 }
 
+// file.write carries the whole file as content; the running row must name the
+// path, never the first line of the file.
+func TestFileWriteNamesItsPath(t *testing.T) {
+	args := json.RawMessage(`{"content":"package main\n\nfunc main() {}\n","path":"cmd/tool/main.go"}`)
+	for i := 0; i < 20; i++ { // map order is random; the path must win every time
+		if got := SummarizeToolArgs("file.write", args); got != "cmd/tool/main.go" {
+			t.Fatalf("SummarizeToolArgs(file.write) = %q, want the path", got)
+		}
+	}
+	if got := firstPatchPathFromArgs("file.write", args); got != "cmd/tool/main.go" {
+		t.Fatalf("firstPatchPathFromArgs(file.write) = %q, want the path", got)
+	}
+}
+
 func TestSummarizeToolArgsRepoSearch(t *testing.T) {
 	args, _ := json.Marshal(map[string]string{"query": "func main", "pattern": "*.go"})
 	got := SummarizeToolArgs("repo.search", args)

@@ -14,7 +14,8 @@ import (
 
 // TestInteractionContractActPlanningSkillReview pins that Act admits the
 // read-only work the planning, skill and review workflows need without a
-// prompt, while a write still requires approval.
+// prompt, and that a routine workspace edit is admitted too — per-change
+// approval is retired — while a destructive command still asks.
 func TestInteractionContractActPlanningSkillReview(t *testing.T) {
 	cfg := nativeToolAgentConfig("contract-act")
 	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAct, false
@@ -48,8 +49,20 @@ func TestInteractionContractActPlanningSkillReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateInput(file.write): %v", err)
 	}
+	if ev.Decision != policy.DecisionAllow {
+		t.Errorf("file.write in Act = %v, want Allow", ev.Decision)
+	}
+	// A destructive workspace command still needs specific approval.
+	a, err := policy.AnalyzeShell(policy.ShellInput{Command: "rm -rf rel/x", WorkspaceRoot: "/repo", Dir: "/repo"})
+	if err != nil {
+		t.Fatalf("AnalyzeShell: %v", err)
+	}
+	ev, err = rt.Runner.Policy.EvaluateInput(policy.Input{ToolName: "shell.run", ActorState: actor, Shell: &a})
+	if err != nil {
+		t.Fatalf("EvaluateInput(shell.run): %v", err)
+	}
 	if ev.Decision != policy.DecisionConfirm {
-		t.Errorf("file.write in Act = %v, want Confirm", ev.Decision)
+		t.Errorf("destructive shell command in Act = %v, want Confirm", ev.Decision)
 	}
 }
 
@@ -61,10 +74,12 @@ func TestInteractionContractApprovalThenSingleLaunch(t *testing.T) {
 	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAct, false
 	rt, _ := newAccessTestRuntime(t, cfg)
 
+	// A destructive workspace command is the operation that still requires a
+	// specific approval in normal Act, so it is what this proof can settle.
 	call := policy.Call{
 		InvocationID: "inv-1",
-		ToolName:     "file.write",
-		Args:         map[string]any{"path": "a.go", "content": "x"},
+		ToolName:     "shell.run",
+		Shell:        &policy.ShellInput{Command: "rm -rf rel/x", WorkspaceRoot: "/repo", Dir: "/repo"},
 	}
 	proof, ev, err := rt.Runner.Authorizer.Evaluate(context.Background(), call)
 	if err != nil {

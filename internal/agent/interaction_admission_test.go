@@ -229,7 +229,9 @@ func TestDispatchQueuedWriteRechecksAfterWriteGate(t *testing.T) {
 		close(gate.release)
 	}()
 
-	action := ModelAction{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"a.txt","content":"x"}`), ToolCallID: "c1"}
+	// An out-of-workspace write still needs System, so it is the write this
+	// gate fixture can park behind a pending approval in normal Act.
+	action := ModelAction{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"/tmp/outside/a.txt","content":"x"}`), ToolCallID: "c1"}
 	msgs, err := r.executeToolCall(context.Background(), action)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -398,7 +400,9 @@ func TestDispatchStaleApprovalCannotLaunchAfterAsk(t *testing.T) {
 		close(gate.release)
 	}()
 
-	action := ModelAction{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"a.txt","content":"x"}`), ToolCallID: "c1"}
+	// An out-of-workspace write still needs System, so it is the write this
+	// stale-approval fixture can park behind a pending approval in normal Act.
+	action := ModelAction{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"/tmp/outside/a.txt","content":"x"}`), ToolCallID: "c1"}
 	msgs, err := r.executeToolCall(context.Background(), action)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)

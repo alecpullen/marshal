@@ -1,10 +1,12 @@
 package policy
 
 import (
+	"path/filepath"
 	"strings"
 
 	"marshal/internal/app/config"
 	"marshal/internal/interaction"
+	"marshal/internal/pathutil"
 	"marshal/internal/permissions"
 )
 
@@ -99,30 +101,69 @@ func (pe *PolicyEngine) evaluateNonShell(in Input, cfg config.Config) Evaluation
 		}
 	}
 
+	// A routine workspace write is Act's ordinary work: file edits inside the
+	// workspace need no per-change approval, in Auto or not. Scope is what
+	// makes a write routine — a target outside the workspace needs System
+	// first, and one that cannot be placed fails closed onto the same
+	// requirement rather than being assumed inside.
+	if risk == "workspace_write" {
+		if !in.ActorState.System && writesOutsideWorkspace(in) {
+			return Evaluation{
+				Decision: DecisionConfirm,
+				Required: CapabilityRequirement{System: true},
+				Reasons:  []PolicyReason{{Code: ReasonRequiresSystem, Message: "edits outside the workspace require System"}},
+			}
+		}
+		return Evaluation{Decision: DecisionAllow}
+	}
+
 	switch risk {
 	case "read_only":
 		return Evaluation{Decision: DecisionAllow}
 	case "network":
-		return Evaluation{Decision: DecisionConfirm, Required: CapabilityRequirement{Act: true}}
+		return Evaluation{
+			Decision: DecisionConfirm,
+			Reasons:  []PolicyReason{{Code: ReasonExplicitConfirm, Message: "network access requires specific approval"}},
+		}
 	default:
-		// Auto preauthorizes a fully known workspace write. A network or
-		// destructive tool is not "fully known workspace", so it still
-		// confirms.
-		if in.ActorState.Auto && risk == "workspace_write" {
-			return Evaluation{Decision: DecisionAllow}
-		}
-		reason := "this tool requires Act"
-		// System access widens the write surface beyond the workspace; say so
-		// in the reason so the confirmation discloses the scope it grants.
-		if in.ActorState.System && hasAbsoluteSubject(in.ToolName, in.Args, "") {
-			reason = "system mode: " + reason
-		}
+		// A destructive or environment-classified tool (privileged execution,
+		// global install, out-of-workspace state change) is never ordinary
+		// workspace work: Auto does not preauthorize it and Act asks.
 		return Evaluation{
 			Decision: DecisionConfirm,
 			Required: CapabilityRequirement{Act: true},
-			Reasons:  []PolicyReason{{Code: ReasonExplicitConfirm, Message: reason}},
+			Reasons:  []PolicyReason{{Code: ReasonExplicitConfirm, Message: "this tool requires specific approval"}},
 		}
 	}
+}
+
+// writesOutsideWorkspace reports whether a non-shell write targets a path that
+// cannot be proven inside the active workspace. A relative path is resolved by
+// the tool against the workspace root, so it is inside by construction; an
+// absolute one is resolved and compared with the root. An unplaceable target
+// (no root, unresolvable path) counts as outside: routine workspace work must
+// never be inferred from what cannot be located.
+func writesOutsideWorkspace(in Input) bool {
+	for _, subject := range subjectsForTool(in.ToolName, in.Args, "") {
+		if !filepath.IsAbs(subject) {
+			continue
+		}
+		if in.WorkspaceRoot == "" {
+			return true
+		}
+		resolved, err := pathutil.ResolveAbsolute(subject)
+		if err != nil {
+			resolved = filepath.Clean(subject)
+		}
+		root, rerr := pathutil.ResolveAbsolute(in.WorkspaceRoot)
+		if rerr != nil {
+			root = filepath.Clean(in.WorkspaceRoot)
+		}
+		if !isWithinRoot(resolved, root) {
+			return true
+		}
+	}
+	return false
 }
 
 // toolRisk returns the registered risk for a tool, defaulting to

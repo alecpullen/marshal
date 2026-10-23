@@ -163,6 +163,11 @@ type Input struct {
 	ActorState interaction.State
 	Shell      *ShellAnalysis
 	Targets    []ShellTarget
+	// WorkspaceRoot is the active workspace a non-shell tool writes into. It
+	// scopes the Act edit allowance: a routine edit inside the workspace needs
+	// no approval, one outside it needs System first. Empty means the root is
+	// unknown, so an absolute target cannot be placed and fails closed.
+	WorkspaceRoot string
 }
 
 // ErrStalePolicy reports that the policy snapshot changed under an evaluation.

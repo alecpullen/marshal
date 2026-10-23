@@ -8,7 +8,6 @@ import (
 	"marshal/internal/strutil"
 	"marshal/internal/tools/patch"
 	"marshal/internal/tools/registry"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -316,17 +315,6 @@ func globMatch(pattern, subject string) bool {
 		idx += found + len(part)
 	}
 	return true
-}
-
-// hasAbsoluteSubject reports whether any path subject of the tool is an
-// absolute path. Used to disclose system-mode scope in Confirm reasons.
-func hasAbsoluteSubject(toolName string, args map[string]interface{}, normCmd string) bool {
-	for _, s := range subjectsForTool(toolName, args, normCmd) {
-		if filepath.IsAbs(s) {
-			return true
-		}
-	}
-	return false
 }
 
 func subjectsForTool(toolName string, args map[string]interface{}, normCmd string) []string {

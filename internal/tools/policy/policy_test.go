@@ -63,26 +63,32 @@ func TestSystemModeReasonPrefix(t *testing.T) {
 
 	args := map[string]interface{}{"path": "/tmp/out-of-root/report.json", "content": "x"}
 
-	ev, err := pe.EvaluateInput(Input{ToolName: "file.write", Args: args, ActorState: interaction.State{Mode: interaction.ModeAct, System: true, Revision: 1}})
+	// An edit outside the workspace is not routine workspace work: without
+	// System it is a confirmation whose reason discloses the missing grant.
+	ev, err := pe.EvaluateInput(Input{ToolName: "file.write", Args: args, ActorState: interaction.State{Mode: interaction.ModeAct, Revision: 1}, WorkspaceRoot: "/repo"})
 	if err != nil {
 		t.Fatalf("EvaluateInput error: %v", err)
 	}
 	if ev.Decision != DecisionConfirm {
-		t.Fatalf("EvaluateInput(file.write, system) = %v, want Confirm", ev.Decision)
+		t.Fatalf("EvaluateInput(file.write, out of root) = %v, want Confirm", ev.Decision)
 	}
-	if !hasReasonMessage(ev, "system mode:") {
-		t.Fatalf("system-mode reasons = %+v, want the %q prefix", ev.Reasons, "system mode:")
+	missingSystem := false
+	for _, r := range ev.Reasons {
+		if r.Code == ReasonRequiresSystem {
+			missingSystem = true
+		}
+	}
+	if !ev.Required.System || !missingSystem {
+		t.Fatalf("reasons without system access = %+v, want the System requirement disclosed", ev.Reasons)
 	}
 
-	ev, err = pe.EvaluateInput(Input{ToolName: "file.write", Args: args, ActorState: interaction.State{Mode: interaction.ModeAct, Revision: 1}})
+	// With System the same edit is routine again.
+	ev, err = pe.EvaluateInput(Input{ToolName: "file.write", Args: args, ActorState: interaction.State{Mode: interaction.ModeAct, System: true, Revision: 1}, WorkspaceRoot: "/repo"})
 	if err != nil {
 		t.Fatalf("EvaluateInput error: %v", err)
 	}
-	if ev.Decision != DecisionConfirm {
-		t.Fatalf("EvaluateInput(file.write) = %v, want Confirm", ev.Decision)
-	}
-	if hasReasonMessage(ev, "system mode:") {
-		t.Fatalf("reasons without system access = %+v, want no system-mode prefix", ev.Reasons)
+	if ev.Decision != DecisionAllow {
+		t.Fatalf("EvaluateInput(file.write, system) = %v, want Allow", ev.Decision)
 	}
 }
 
@@ -603,18 +609,18 @@ func TestCloneCopiesStateAndStaysIndependent(t *testing.T) {
 	}
 	// State is copied: the clone evaluates identically at birth.
 	ev, err := clone.EvaluateInput(Input{ToolName: "file.write_patch", Args: args, ActorState: state})
-	if err != nil || ev.Decision != DecisionConfirm {
-		t.Fatalf("fresh clone file.write_patch = %v, %v; want Confirm", ev.Decision, err)
+	if err != nil || ev.Decision != DecisionAllow {
+		t.Fatalf("fresh clone file.write_patch = %v, %v; want Allow", ev.Decision, err)
 	}
 	// Mutating the clone does not leak into the original.
-	clone.SetRules([]permissions.Rule{{Permission: "file.write_patch", Pattern: "*", Action: permissions.ActionAllow}})
+	clone.SetRules([]permissions.Rule{{Permission: "file.write_patch", Pattern: "*", Action: permissions.ActionDeny}})
 	ev, err = clone.EvaluateInput(Input{ToolName: "file.write_patch", Args: args, ActorState: state})
-	if err != nil || ev.Decision != DecisionAllow {
-		t.Fatalf("mutated clone file.write_patch = %v, %v; want Allow", ev.Decision, err)
+	if err != nil || ev.Decision != DecisionDeny {
+		t.Fatalf("mutated clone file.write_patch = %v, %v; want Deny", ev.Decision, err)
 	}
 	ev, err = pe.EvaluateInput(Input{ToolName: "file.write_patch", Args: args, ActorState: state})
-	if err != nil || ev.Decision != DecisionConfirm {
-		t.Fatalf("original file.write_patch = %v, %v; want Confirm after clone mutation", ev.Decision, err)
+	if err != nil || ev.Decision != DecisionAllow {
+		t.Fatalf("original file.write_patch = %v, %v; want Allow after clone mutation", ev.Decision, err)
 	}
 }
 
@@ -623,7 +629,7 @@ var dummyHandler = func(ctx context.Context, call registry.ToolCall) (registry.T
 	return registry.ToolResult{}, nil
 }
 
-func TestEvaluate_RiskWorkspaceWriteRequiresConfirmation(t *testing.T) {
+func TestEvaluate_RiskWorkspaceWriteIsRoutineWorkInAct(t *testing.T) {
 	reg := registry.New()
 	if err := reg.Register(registry.Tool{
 		Name:    "file.write_patch",
@@ -635,12 +641,14 @@ func TestEvaluate_RiskWorkspaceWriteRequiresConfirmation(t *testing.T) {
 	pe := NewEngine(nil, nil)
 	pe.WithRegistry(reg)
 
+	// A workspace write is not a per-change approval in Act; only its scope
+	// (outside the workspace) reintroduces one.
 	ev, err := pe.EvaluateInput(Input{ToolName: "file.write_patch", ActorState: interaction.State{Mode: interaction.ModeAct, Revision: 1}})
 	if err != nil {
 		t.Fatalf("EvaluateInput: %v", err)
 	}
-	if ev.Decision != DecisionConfirm {
-		t.Fatalf("expected DecisionConfirm for RiskWorkspaceWrite; got %v", ev.Decision)
+	if ev.Decision != DecisionAllow {
+		t.Fatalf("expected DecisionAllow for a workspace write in Act; got %v", ev.Decision)
 	}
 }
 

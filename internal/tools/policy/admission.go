@@ -82,11 +82,12 @@ func (a *Authorizer) Evaluate(ctx context.Context, call Call) (*Authorization, E
 		analysis = &an
 	}
 	ev, err := a.engine.EvaluateInput(Input{
-		ToolName:   call.ToolName,
-		Args:       call.Args,
-		ActorState: snap.Access,
-		Shell:      analysis,
-		Targets:    call.Targets,
+		ToolName:      call.ToolName,
+		Args:          call.Args,
+		ActorState:    snap.Access,
+		Shell:         analysis,
+		Targets:       call.Targets,
+		WorkspaceRoot: snap.WorkspaceRoot,
 	})
 	if err != nil {
 		return nil, Evaluation{}, err
@@ -142,11 +143,12 @@ func (a *Authorizer) BeginTool(ctx context.Context, call Call) (*Admission, erro
 		analysis = &an
 	}
 	ev, err := a.engine.EvaluateInput(Input{
-		ToolName:   call.ToolName,
-		Args:       call.Args,
-		ActorState: live.Access,
-		Shell:      analysis,
-		Targets:    call.Targets,
+		ToolName:      call.ToolName,
+		Args:          call.Args,
+		ActorState:    live.Access,
+		Shell:         analysis,
+		Targets:       call.Targets,
+		WorkspaceRoot: live.WorkspaceRoot,
 	})
 	if err != nil {
 		return nil, err

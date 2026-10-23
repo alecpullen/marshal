@@ -4050,8 +4050,9 @@ func TestPipelineRoleRunnerUsesBoundedOwnerAuthority(t *testing.T) {
 		t.Fatalf("newRunner: %v", err)
 	}
 	args := map[string]interface{}{"patch": "File: a\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}
-	// The child's authority is the owner's bounded Act tuple: no forced Auto,
-	// so a write still requires approval.
+	// The child's authority is the owner's bounded Act tuple: no forced Auto.
+	// A routine workspace edit is ordinary Act work, so it is allowed — which
+	// is exactly why "no Auto" has to be shown on the operation Auto owns.
 	childEv, err := runner.Policy.EvaluateInput(policy.Input{
 		ToolName:   "file.write_patch",
 		Args:       args,
@@ -4060,13 +4061,30 @@ func TestPipelineRoleRunnerUsesBoundedOwnerAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateInput: %v", err)
 	}
-	if childEv.Decision != policy.DecisionConfirm {
-		t.Fatalf("pipeline role runner file.write_patch = %v, want Confirm (no forced Auto)", childEv.Decision)
+	if childEv.Decision != policy.DecisionAllow {
+		t.Fatalf("pipeline role runner file.write_patch = %v, want Allow", childEv.Decision)
+	}
+	// A destructive workspace command still needs approval: that is the part
+	// Auto preauthorizes, and the child did not receive it.
+	analysis, err := policy.AnalyzeShell(policy.ShellInput{Command: "rm -rf rel/x", WorkspaceRoot: parentState.WorkingDir, Dir: parentState.WorkingDir})
+	if err != nil {
+		t.Fatalf("AnalyzeShell: %v", err)
+	}
+	destructive, err := runner.Policy.EvaluateInput(policy.Input{
+		ToolName:   "shell.run",
+		ActorState: runner.State.InteractionState(),
+		Shell:      &analysis,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateInput(shell.run): %v", err)
+	}
+	if destructive.Decision != policy.DecisionConfirm {
+		t.Fatalf("pipeline role runner destructive command = %v, want Confirm (no forced Auto)", destructive.Decision)
 	}
 	if runner.Policy == pol {
 		t.Fatal("child-session runner shares the parent policy engine; want an independent clone")
 	}
-	// The parent engine is untouched.
+	// The parent engine is untouched by the child's evaluation and rules.
 	parentEv, err := pol.EvaluateInput(policy.Input{
 		ToolName:   "file.write_patch",
 		Args:       args,
@@ -4075,8 +4093,8 @@ func TestPipelineRoleRunnerUsesBoundedOwnerAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateInput: %v", err)
 	}
-	if parentEv.Decision != policy.DecisionConfirm {
-		t.Fatalf("parent engine file.write_patch = %v, want Confirm", parentEv.Decision)
+	if parentEv.Decision != policy.DecisionAllow {
+		t.Fatalf("parent engine file.write_patch = %v, want Allow", parentEv.Decision)
 	}
 }
 

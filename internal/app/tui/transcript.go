@@ -1075,28 +1075,51 @@ func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers
 			b.WriteString("\n")
 		}
 	}
-	// Blast radius: a continuation line naming what references the symbol
-	// this row changed. It is a settled one-time addition to a settled row,
-	// so the height change it causes is acceptable and it is not part of any
-	// live-region body. Nothing renders when there is no cached result — a
-	// no-server negative, an empty reference set, or a language without LSP
-	// all leave the row exactly as it would be without this feature.
-	if len(callers) > 0 {
-		shown, extra := callers, 0
-		if len(shown) > maxCallersShown {
-			extra = len(shown) - maxCallersShown
-			shown = shown[:maxCallersShown]
-		}
-		line := fmt.Sprintf("↳ %d callers: %s", len(callers), strings.Join(shown, ", "))
-		if extra > 0 {
-			line += fmt.Sprintf(" +%d", extra)
-		}
-		for _, wl := range strings.Split(ansi.Wrap(line, contentWidth(width), WrapBreakpoints), "\n") {
-			b.WriteString(continuation())
-			b.WriteString(mutedStyle().Render(wl))
-			b.WriteString("\n")
-		}
+	for _, l := range callersDetail(callers, contentWidth(width)) {
+		b.WriteString(continuation())
+		b.WriteString(l)
+		b.WriteString("\n")
 	}
+	for _, l := range toolBody(event, expanded, nestedContentWidth(width)) {
+		b.WriteString(nestedRail())
+		b.WriteString(l)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// callersDetail is the blast-radius line under a row that changed a symbol,
+// wrapped to w and styled: what references the symbol. It is a settled
+// one-time addition to a settled row, so the height change it causes is
+// acceptable and it is not part of any live-region body. Nothing renders when
+// there is no cached result — a no-server negative, an empty reference set,
+// or a language without LSP all leave the row exactly as it would be without
+// this feature.
+func callersDetail(callers []string, w int) []string {
+	if len(callers) == 0 {
+		return nil
+	}
+	shown, extra := callers, 0
+	if len(shown) > maxCallersShown {
+		extra = len(shown) - maxCallersShown
+		shown = shown[:maxCallersShown]
+	}
+	line := fmt.Sprintf("↳ %d callers: %s", len(callers), strings.Join(shown, ", "))
+	if extra > 0 {
+		line += fmt.Sprintf(" +%d", extra)
+	}
+	var out []string
+	for _, wl := range strings.Split(ansi.Wrap(line, w, WrapBreakpoints), "\n") {
+		out = append(out, mutedStyle().Render(wl))
+	}
+	return out
+}
+
+// toolBody is a settled call's body under its head, styled and fitted to w:
+// an edit's diff (capped while collapsed), and when expanded any other call's
+// result and a failed call's error and arguments.
+func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
+	var out []string
 	if isDiffTool(event.ToolName) && event.ResultContent != "" {
 		files := splitDiffFiles(event.ResultContent)
 		shown := len(files)
@@ -1109,11 +1132,9 @@ func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers
 			if f.path != "" {
 				stat = f.path + " " + stat
 			}
-			b.WriteString(nestedRail())
-			b.WriteString(dimStyle().Render(stat))
-			b.WriteString("\n")
+			out = append(out, dimStyle().Render(stat))
 			rendered := diffview.Render(f.raw, diffview.Options{
-				Width:     nestedContentWidth(width),
+				Width:     w,
 				Mode:      diffview.ModeAuto,
 				Highlight: true,
 			})
@@ -1127,29 +1148,23 @@ func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers
 				if line == "" {
 					continue
 				}
-				b.WriteString(nestedRail())
 				// Clip rather than wrap: diffview does not hard-clamp to the
 				// width it is given, and a wrapped continuation carries no
-				// nested rail, so an over-wide line breaks the chrome.
-				b.WriteString(ansi.Truncate(line, nestedContentWidth(width), "…"))
-				b.WriteString("\n")
+				// rail, so an over-wide line breaks the chrome.
+				out = append(out, ansi.Truncate(line, w, "…"))
 			}
 			if elided > 0 {
-				b.WriteString(nestedRail())
-				b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
-				b.WriteString("\n")
+				out = append(out, dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
 			}
 		}
 		if !expanded && len(files) > shown {
-			b.WriteString(nestedRail())
-			b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more files", len(files)-shown)))
-			b.WriteString("\n")
+			out = append(out, dimStyle().Render(fmt.Sprintf("… %d more files", len(files)-shown)))
 		}
 	}
 	// Non-diff tools with captured output (agent.run is the motivating
-	// case — its ResultContent holds the subagent's report) render it on
-	// ctrl+g, with the same gutter indentation as diffs but using Wrap
-	// instead of Truncate since the content is prose, not code lines.
+	// case — its ResultContent holds the subagent's report) render it when
+	// expanded, wrapped rather than clipped since the content is prose, not
+	// code lines.
 	if expanded && !isDiffTool(event.ToolName) && event.ResultContent != "" {
 		lines := strings.Split(strings.TrimRight(event.ResultContent, "\n"), "\n")
 		elided := 0
@@ -1158,23 +1173,18 @@ func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers
 			lines = lines[:maxExpandedResultLines]
 		}
 		for _, line := range lines {
-			wrapped := ansi.Wrap(line, nestedContentWidth(width), WrapBreakpoints)
-			for _, wl := range strings.Split(wrapped, "\n") {
-				b.WriteString(nestedRail())
-				b.WriteString(dimStyle().Render(wl))
-				b.WriteString("\n")
+			for _, wl := range strings.Split(ansi.Wrap(line, w, WrapBreakpoints), "\n") {
+				out = append(out, dimStyle().Render(wl))
 			}
 		}
 		if elided > 0 {
-			b.WriteString(nestedRail())
-			b.WriteString(dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
-			b.WriteString("\n")
+			out = append(out, dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
 		}
 	}
 	// Failed calls carry no ResultContent; expanding one shows the full
 	// error, the exit code when the tool reported one, and the call args.
-	// Each detail line wraps at the nested content width — the raw args JSON
-	// used to run straight off the terminal edge.
+	// Each detail line wraps at w — the raw args JSON used to run straight
+	// off the terminal edge.
 	if expanded && event.Error != "" {
 		detail := "error: " + event.Error
 		if event.CommandExitCode != nil {
@@ -1185,15 +1195,12 @@ func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers
 			lines = append(lines, "args: "+string(event.Args))
 		}
 		for _, line := range lines {
-			wrapped := ansi.Wrap(line, nestedContentWidth(width), WrapBreakpoints)
-			for _, wl := range strings.Split(wrapped, "\n") {
-				b.WriteString(nestedRail())
-				b.WriteString(dimStyle().Render(wl))
-				b.WriteString("\n")
+			for _, wl := range strings.Split(ansi.Wrap(line, w, WrapBreakpoints), "\n") {
+				out = append(out, dimStyle().Render(wl))
 			}
 		}
 	}
-	return b.String()
+	return out
 }
 
 const (

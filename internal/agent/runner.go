@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
@@ -21,7 +20,6 @@ import (
 	"marshal/internal/llm/provider/limits"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/permissions"
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/patch"
@@ -652,48 +650,9 @@ func (r *Runner) getTurnFinishReason() string {
 	return r.turnFinishReason
 }
 
-// SetApprovalMode is retained for the AgentRunner interface until the TUI
-// migrates to the runtime interaction patch. It cannot mutate authority: the
-// canonical tuple belongs to the session, and a mode switch goes through
-// State.ApplyInteraction. The engine's legacy approval mode is DERIVED from
-// the live tuple so the remaining compatibility readers (the question and
-// skill gates) agree with the authority instead of overriding it.
-func (r *Runner) SetApprovalMode(m policy.ApprovalMode) {
-	if r.Policy == nil || r.State == nil {
-		return
-	}
-	r.Policy.SetApprovalMode(derivedApprovalMode(r.State.InteractionState()))
-}
-
-// derivedApprovalMode projects the canonical interaction tuple onto the legacy
-// approval-mode vocabulary the remaining compatibility readers still speak.
-// Ask denies writes (the plan/default transform), Act confirms each write
-// (edit), and Act+Auto preauthorizes them (auto).
-func derivedApprovalMode(st interaction.State) policy.ApprovalMode {
-	if st.Mode == interaction.ModeAsk {
-		return policy.ModePlan
-	}
-	if st.Auto {
-		return policy.ModeAuto
-	}
-	return policy.ModeEdit
-}
-
 // AnswerGate satisfies tui.AgentRunner. The interactive runner has no
 // human gates; this is a no-op.
 func (r *Runner) AnswerGate(string) {}
-
-func (r *Runner) SetPolicyRules(rules []config.PermissionRule) {
-	prules := make([]permissions.Rule, 0, len(rules))
-	for _, rl := range rules {
-		prules = append(prules, permissions.Rule{
-			Permission: rl.Permission,
-			Pattern:    rl.Pattern,
-			Action:     permissions.Action(rl.Action),
-		})
-	}
-	r.Policy.SetRules(prules)
-}
 
 func (r *Runner) CopyFrom(other *Runner) {
 	if other == nil {

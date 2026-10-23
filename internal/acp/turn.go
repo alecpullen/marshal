@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/gitinfo"
@@ -24,7 +23,6 @@ import (
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/strutil"
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/watch"
 )
@@ -72,8 +70,6 @@ type RunnerFunc func(ctx context.Context, prompt string) error
 type AgentRunner interface {
 	Run(ctx context.Context, goal string) error
 	SetForceClass(class string)
-	SetPolicyRules(rules []config.PermissionRule)
-	SetApprovalMode(mode policy.ApprovalMode)
 	AnswerGate(answer string)
 }
 

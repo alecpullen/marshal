@@ -30,7 +30,6 @@ import (
 	"marshal/internal/llm/routing"
 	"marshal/internal/oauth"
 	"marshal/internal/tools/native"
-	"marshal/internal/tools/policy"
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
@@ -1291,9 +1290,6 @@ func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
 			if got.Mode != tuple.Mode || got.Auto != tuple.Auto || !got.System {
 				t.Fatalf("session tuple = %+v, want %+v with system access on", got, tuple)
 			}
-			if engine := rt.Runner.Policy.ApprovalMode(); engine != derivedEngineMode(tuple) {
-				t.Fatalf("policy mode = %q, want %q (a system-only grant must not switch modes)", engine, derivedEngineMode(tuple))
-			}
 		})
 	}
 
@@ -1345,18 +1341,6 @@ func legacyMode(tuple interaction.Defaults) string {
 	return "copilot"
 }
 
-// derivedEngineMode is the legacy approval mode the runner's engine derives
-// from a canonical tuple.
-func derivedEngineMode(tuple interaction.Defaults) policy.ApprovalMode {
-	if tuple.Mode == interaction.ModeAsk {
-		return policy.ModePlan
-	}
-	if tuple.Auto {
-		return policy.ModeAuto
-	}
-	return policy.ModeEdit
-}
-
 // A manual mode change that satisfies a waiting request settles it as
 // already-available: the waiter unblocks, nothing is applied again, and the
 // request stops being presented.
@@ -1374,7 +1358,7 @@ func TestRuntimeAccessSatisfiedWhilePendingSettlesAvailable(t *testing.T) {
 	if err := rt.SetSessionMode("copilot"); err != nil {
 		t.Fatalf("SetSessionMode: %v", err)
 	}
-	before := rt.Runner.Policy.ApprovalMode()
+	before := rt.State.InteractionState().Mode
 
 	got, pending := rt.AccessRequest()
 	if pending {
@@ -1395,7 +1379,7 @@ func TestRuntimeAccessSatisfiedWhilePendingSettlesAvailable(t *testing.T) {
 	if decision.Access.Effective.Mode != "copilot" {
 		t.Fatalf("effective mode = %q, want the manual Act selection", decision.Access.Effective.Mode)
 	}
-	if after := rt.Runner.Policy.ApprovalMode(); after != before {
+	if after := rt.State.InteractionState().Mode; after != before {
 		t.Fatalf("policy mode moved from %q to %q while settling an already-available request", before, after)
 	}
 }
@@ -1439,9 +1423,6 @@ func TestRuntimeAccessCombinedCommitsSelectedBundle(t *testing.T) {
 			got := state.InteractionState()
 			if got.Mode != want.Mode || got.Auto != want.Auto || !got.System {
 				t.Fatalf("session tuple at acknowledgment = %+v, want %+v with system access on", got, want)
-			}
-			if engine := rt.Runner.Policy.ApprovalMode(); engine != derivedEngineMode(want) {
-				t.Fatalf("policy mode at acknowledgment = %q, want %q", engine, derivedEngineMode(want))
 			}
 			if got := rt.Runner.ForceClass; got != "edit" {
 				t.Fatalf("force class at acknowledgment = %q, want %q", got, "edit")
@@ -1649,9 +1630,6 @@ func TestRuntimeAccessOverrideSurvivesReload(t *testing.T) {
 	if got.Mode != interaction.ModeAct || got.Auto || !got.System {
 		t.Fatalf("tuple after reload = %+v, want act with system access on", got)
 	}
-	if engine := rt.Runner.Policy.ApprovalMode(); engine != policy.ModeEdit {
-		t.Fatalf("policy mode after reload = %q, want %q", engine, policy.ModeEdit)
-	}
 	if rt.Config.Agent.Mode != interaction.ModeAsk || rt.Config.Agent.Auto {
 		t.Fatalf("Runtime.Config tuple = %q/%v, want the configured ask", rt.Config.Agent.Mode, rt.Config.Agent.Auto)
 	}
@@ -1679,9 +1657,6 @@ func TestRuntimeExplicitConfiguredModeReplacesOverride(t *testing.T) {
 	got := state.InteractionState()
 	if got.Mode != interaction.ModeAct || got.Auto || !got.System {
 		t.Fatalf("tuple after an explicit configured change = %+v, want act with system access on", got)
-	}
-	if engine := rt.Runner.Policy.ApprovalMode(); engine != policy.ModeEdit {
-		t.Fatalf("policy mode = %q, want %q", engine, policy.ModeEdit)
 	}
 	if rt.Config.Agent.Mode != interaction.ModeAct {
 		t.Fatalf("Runtime.Config mode = %q, want %q", rt.Config.Agent.Mode, interaction.ModeAct)
@@ -1725,9 +1700,6 @@ func TestRuntimeFailedReloadKeepsAccessState(t *testing.T) {
 	}
 	if got := state.InteractionState(); got != granted {
 		t.Fatalf("tuple after a failed reload = %+v, want %+v", got, granted)
-	}
-	if engine := rt.Runner.Policy.ApprovalMode(); engine != policy.ModeEdit {
-		t.Fatalf("policy mode after a failed reload = %q, want %q", engine, policy.ModeEdit)
 	}
 	if rt.Config.Agent.Mode != interaction.ModeAsk || rt.Config.Agent.Auto {
 		t.Fatalf("Runtime.Config tuple after a failed reload = %q/%v, want the configured ask", rt.Config.Agent.Mode, rt.Config.Agent.Auto)
@@ -1855,9 +1827,6 @@ func TestRuntimeAccessSerializesWithReloadAndQuiesce(t *testing.T) {
 	effective := raceState.InteractionState()
 	if effective.Mode != interaction.ModeAct || !effective.System {
 		t.Fatalf("tuple after a concurrent reload = %+v, want act with system access on", effective)
-	}
-	if got := string(raceRT.Runner.Policy.ApprovalMode()); got != "edit" {
-		t.Fatalf("runner policy mode %q disagrees with the canonical Act tuple after a concurrent reload", got)
 	}
 	if got := raceRT.Runner.ForceClass; got != "edit" {
 		t.Fatalf("runner force class %q disagrees with the canonical Act tuple after a concurrent reload", got)

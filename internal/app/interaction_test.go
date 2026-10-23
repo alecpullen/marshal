@@ -73,9 +73,6 @@ func TestRuntimeInteractionPatchDoesNotSaveReloadOrReplaceManagers(t *testing.T)
 	if runner.Policy == nil {
 		t.Fatal("the runner has no policy engine")
 	}
-	if got := runner.Policy.ApprovalMode(); got != policy.ModeAuto {
-		t.Fatalf("engine approval mode = %q, want %q", got, policy.ModeAuto)
-	}
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatalf("re-read fixture config: %v", err)
@@ -93,7 +90,6 @@ func TestRuntimeInteractionPatchFailureIsAtomic(t *testing.T) {
 	runner := rt.Runner
 
 	before := state.InteractionState()
-	beforeMode := runner.Policy.ApprovalMode()
 	bad := interaction.Mode("bogus")
 	if _, err := rt.SetInteraction(interaction.Patch{Mode: &bad}); err == nil {
 		t.Fatal("SetInteraction accepted an invalid mode")
@@ -103,9 +99,6 @@ func TestRuntimeInteractionPatchFailureIsAtomic(t *testing.T) {
 	}
 	if rt.Runner != runner {
 		t.Fatal("a rejected patch replaced the runner")
-	}
-	if got := runner.Policy.ApprovalMode(); got != beforeMode {
-		t.Fatalf("engine mode after a rejected patch = %q, want %q", got, beforeMode)
 	}
 }
 
@@ -290,9 +283,6 @@ func TestRuntimeInteractionGrantRevisionSerializesWithReload(t *testing.T) {
 	if rt.Runner == nil || rt.Runner.Policy == nil {
 		t.Fatal("the runtime has no policy engine")
 	}
-	if engine := rt.Runner.Policy.ApprovalMode(); engine != derivedEngineMode(want) {
-		t.Fatalf("engine mode = %q, want %q for %+v", engine, derivedEngineMode(want), want)
-	}
 }
 
 // The optional exit-analysis pass runs under the conversation's current
@@ -314,7 +304,6 @@ func TestExitAnalysisNeverElevatesConversationPermissions(t *testing.T) {
 				t.Fatalf("SetInteraction: %v", err)
 			}
 			before := rt.State.InteractionState()
-			beforeMode := rt.Runner.Policy.ApprovalMode()
 
 			// The host-managed extraction landed before the optional agent pass
 			// starts.
@@ -348,9 +337,6 @@ func TestExitAnalysisNeverElevatesConversationPermissions(t *testing.T) {
 				}
 				if rt.State.SystemAccess() {
 					t.Error("the analysis pass ran with system access it was never granted")
-				}
-				if got := rt.Runner.Policy.ApprovalMode(); got != beforeMode {
-					t.Errorf("the analysis pass moved the engine mode to %q, want %q", got, beforeMode)
 				}
 				// The optional agent write: evaluate the report write under the
 				// conversation's live authority. It must not be preauthorized.

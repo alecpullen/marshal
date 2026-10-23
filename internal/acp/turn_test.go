@@ -26,7 +26,6 @@ import (
 	"marshal/internal/pipeline"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -50,9 +49,7 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 	}
 	return f.run(ctx, goal)
 }
-func (f *fakeAgentRunner) SetForceClass(string)                   {}
-func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
-func (f *fakeAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
+func (f *fakeAgentRunner) SetForceClass(string) {}
 func (f *fakeAgentRunner) AnswerGate(answer string) {
 	if f.answerGate != nil {
 		f.answerGate(answer)

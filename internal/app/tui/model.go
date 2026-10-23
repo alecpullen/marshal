@@ -71,7 +71,6 @@ import (
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
@@ -87,8 +86,6 @@ import (
 type AgentRunner interface {
 	Run(ctx context.Context, goal string) error
 	SetForceClass(class string)
-	SetPolicyRules(rules []config.PermissionRule)
-	SetApprovalMode(mode policy.ApprovalMode)
 	// AnswerGate delivers the human's typed answer to a pipeline
 	// subagent's question. Only the pipeline runner (ControllerAdapter)
 	// acts on it; the regular and swarm runners are no-ops.
@@ -402,7 +399,6 @@ type Model struct {
 	// unregisters without ever requesting execution stop — the difference
 	// between finishing and being stopped. Nil when no turn registered one.
 	endPendingStop func()
-	approvalMode   policy.ApprovalMode // current interaction mode: plan/default/edit/copilot/auto
 	// syncedAccessMode is the session mode the last reconciliation adopted.
 	// The sync is edge-triggered on it: a mode the model already reflects is
 	// not re-asserted over a value another path set, while a mode the session
@@ -1322,7 +1318,6 @@ func (m *Model) applyNewConfig(cfg config.Config) {
 	}
 	// Read the effective mode back from the session: it may differ from the
 	// configured value when an override survived the rebase.
-	m.approvalMode = policy.ApprovalMode(string(m.state.InteractionState().Mode))
 	m.setReg = nil
 	m.setPopup = nil
 	m.lastInputForPopups = ""
@@ -1774,11 +1769,6 @@ func New(state *session.State, opts ...Option) Model {
 		state:          state,
 		input:          input,
 		editingCommand: false,
-		// Seed from config, not a hardcoded ModeDefault. app.Run wires the
-		// policy engine from this same value, so hardcoding here made the
-		// status line claim "default" while the engine was auto-approving
-		// every edit.
-		approvalMode: policy.ApprovalMode(string(state.InteractionState().Mode)),
 		// Seed the reconciliation baseline from the session's effective mode.
 		// session.New normalizes the configured value, so a blank or
 		// non-canonical config does not make the first reconcile flip the
@@ -3233,7 +3223,6 @@ func (m *Model) reconcileAccess() {
 	modeChanged := m.syncedAccessMode != effectiveMode
 	if modeChanged {
 		m.syncedAccessMode = effectiveMode
-		m.approvalMode = policy.ApprovalMode(effectiveMode)
 	}
 
 	snapshot, pending := m.accessRequestSnapshot()
@@ -3333,9 +3322,6 @@ func (m *Model) handleAccessChoice(choice session.AccessChoice) {
 	// Final outcome: close only the panel that asked, then report the state the
 	// runtime actually committed.
 	m.dock.CloseNow()
-	if result.SessionID == m.state.SessionID() {
-		m.approvalMode = policy.ApprovalMode(result.Effective.Mode)
-	}
 	m.state.AddMessage(session.RoleSystem, accessOutcomeNote(result), session.ContentTypePlain)
 	m.refreshViewport()
 }
@@ -7251,7 +7237,6 @@ func (m *Model) applyInteraction(patch interaction.Patch) (interaction.State, bo
 		m.refreshViewport()
 		return interaction.State{}, false
 	}
-	m.approvalMode = policy.ApprovalMode(string(committed.Mode))
 	m.syncedAccessMode = string(committed.Mode)
 	return committed, true
 }
@@ -7355,9 +7340,6 @@ func (m *Model) setSystem(args []string) {
 func (m *Model) cycleMode(forward bool) {
 	_ = forward // Tab and Shift+Tab both toggle Ask ↔ Act.
 	current := m.state.InteractionState().Mode
-	if current != interaction.ModeAsk && current != interaction.ModeAct {
-		current = interaction.Mode(m.approvalMode)
-	}
 	next := interaction.ModeAct
 	if current == interaction.ModeAct {
 		next = interaction.ModeAsk

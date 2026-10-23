@@ -36,7 +36,6 @@ import (
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
@@ -947,11 +946,8 @@ func (rt *Runtime) accessPrepare() session.AccessPrepare {
 		if req.MissingEditing {
 			// Only a normal Act selection can fill an editing gap: Ask never
 			// grants a write, and the retired spellings project onto Act.
-			if !policy.ValidApprovalMode(choice.Mode) {
-				return session.AccessCommit{}, fmt.Errorf("invalid editing mode %q", choice.Mode)
-			}
-			switch policy.ApprovalMode(choice.Mode) {
-			case policy.ModeEdit, policy.ModeCopilot, policy.ModeAuto:
+			switch choice.Mode {
+			case string(interaction.ModeAct), "edit", "copilot", "auto":
 			default:
 				return session.AccessCommit{}, fmt.Errorf("mode %q does not grant editing", choice.Mode)
 			}
@@ -1000,7 +996,6 @@ func (rt *Runtime) projectInteraction() {
 	}
 	effective := rt.State.AccessState()
 	rt.Runner.SetForceClass(forceClassForMode(effective.Mode))
-	rt.Runner.SetApprovalMode(policy.ApprovalMode(effective.Mode))
 }
 
 // SetSessionMode applies an explicit interaction-mode selection for this
@@ -1034,14 +1029,8 @@ func (rt *Runtime) SetSessionMode(mode string) error {
 		}
 		runner := rt.Runner
 		class := forceClassForMode(mode)
-		engineMode := policy.ApprovalMode(mode)
 		apply = func() {
 			runner.SetForceClass(class)
-			// Set the engine directly. The session holds its access gate across
-			// this callback, and Runner.SetApprovalMode derives by re-reading the
-			// live tuple — which would re-enter the non-reentrant gate and
-			// deadlock.
-			runner.Policy.SetApprovalMode(engineMode)
 		}
 	}
 	return rt.State.SetSessionMode(mode, apply)

@@ -52,7 +52,6 @@ import (
 	"marshal/internal/postmortem"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
@@ -1170,10 +1169,8 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 	return f.err
 }
 
-func (f *fakeAgentRunner) SetForceClass(string)                   {}
-func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
-func (f *fakeAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (f *fakeAgentRunner) AnswerGate(string)                      {}
+func (f *fakeAgentRunner) SetForceClass(string) {}
+func (f *fakeAgentRunner) AnswerGate(string)    {}
 
 // blockingAgentRunner blocks on a channel in Run until the channel is
 // closed. Used by TestAgentCommandRegistersAndReleasesSessionWork to
@@ -1188,10 +1185,8 @@ func (b *blockingAgentRunner) Run(ctx context.Context, goal string) error {
 	return b.err
 }
 
-func (b *blockingAgentRunner) SetForceClass(string)                   {}
-func (b *blockingAgentRunner) SetPolicyRules([]config.PermissionRule) {}
-func (b *blockingAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (b *blockingAgentRunner) AnswerGate(string)                      {}
+func (b *blockingAgentRunner) SetForceClass(string) {}
+func (b *blockingAgentRunner) AnswerGate(string)    {}
 
 type fakeSwarmRunner struct {
 	mu    sync.Mutex
@@ -1205,10 +1200,8 @@ func (f *fakeSwarmRunner) Run(ctx context.Context, goal string) error {
 	return nil
 }
 
-func (f *fakeSwarmRunner) SetForceClass(string)                   {}
-func (f *fakeSwarmRunner) SetPolicyRules([]config.PermissionRule) {}
-func (f *fakeSwarmRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (f *fakeSwarmRunner) AnswerGate(string)                      {}
+func (f *fakeSwarmRunner) SetForceClass(string) {}
+func (f *fakeSwarmRunner) AnswerGate(string)    {}
 
 func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
@@ -1351,10 +1344,8 @@ func (f *fakeSDDRunner) Run(ctx context.Context, planPath string) error {
 	return nil
 }
 
-func (f *fakeSDDRunner) SetForceClass(string)                   {}
-func (f *fakeSDDRunner) SetPolicyRules([]config.PermissionRule) {}
-func (f *fakeSDDRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (f *fakeSDDRunner) AnswerGate(string)                      {}
+func (f *fakeSDDRunner) SetForceClass(string) {}
+func (f *fakeSDDRunner) AnswerGate(string)    {}
 
 func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
@@ -4269,7 +4260,7 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 
 	updated, _ = m.Update(picker.PickedMsg{Value: "ask"})
 	m = asModel(t, updated)
-	if got := string(m.approvalMode); got != "ask" {
+	if got := string(m.state.InteractionState().Mode); got != "ask" {
 		t.Fatalf("picking Ask should set approvalMode, got %q", got)
 	}
 	msgs := state.Messages()
@@ -4293,7 +4284,7 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	if m.dock.IsOpen() {
 		t.Fatal("/mode ask must not open the picker")
 	}
-	if got := string(m.approvalMode); got != "ask" {
+	if got := string(m.state.InteractionState().Mode); got != "ask" {
 		t.Fatalf("approvalMode = %q, want ask", got)
 	}
 }
@@ -4311,7 +4302,7 @@ func TestTabTogglesAskActAndClearsAuto(t *testing.T) {
 	}))
 	m.resize(80, 24)
 
-	if got := string(m.approvalMode); got != "act" {
+	if got := string(m.state.InteractionState().Mode); got != "act" {
 		t.Fatalf("initial approvalMode = %q, want act", got)
 	}
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
@@ -4371,7 +4362,7 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 		t.Fatal("cmd popup should be visible after /")
 	}
 
-	initialMode := string(m.approvalMode) // should be "default"
+	initialMode := string(m.state.InteractionState().Mode) // should be "default"
 
 	// Tab should accept the completion, not cycle mode
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
@@ -4379,8 +4370,8 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 	if m.cmdPopup.isVisible() {
 		t.Fatal("cmd popup should be dismissed after Tab")
 	}
-	if string(m.approvalMode) != initialMode {
-		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.approvalMode))
+	if string(m.state.InteractionState().Mode) != initialMode {
+		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.state.InteractionState().Mode))
 	}
 	// Input should have been replaced with the accepted command
 	if !strings.HasPrefix(m.input.Value(), "/test") {
@@ -4401,12 +4392,12 @@ func TestTabIgnoredDuringApproval(t *testing.T) {
 	state.SetPendingApproval(tc)
 	m := New(state)
 	m.resize(80, 24)
-	m.approvalMode = policy.ApprovalMode("act")
+	state.SetSessionMode("act", func() {})
 
 	sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
 
-	if string(m.approvalMode) != "act" {
-		t.Fatalf("approvalMode = %q, want \"act\" (unchanged during approval)", string(m.approvalMode))
+	if string(m.state.InteractionState().Mode) != "act" {
+		t.Fatalf("approvalMode = %q, want \"act\" (unchanged during approval)", string(m.state.InteractionState().Mode))
 	}
 	if state.PendingApproval() == nil {
 		t.Fatal("pending approval was cleared by Tab")
@@ -4547,14 +4538,14 @@ func TestShiftTabDuringPopupIsNoOp(t *testing.T) {
 		t.Fatal("cmd popup should be visible after /")
 	}
 
-	initialMode := string(m.approvalMode)
+	initialMode := string(m.state.InteractionState().Mode)
 	initialInput := m.input.Value()
 
 	// Shift+Tab while popup is visible should be a no-op
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 
-	if string(m.approvalMode) != initialMode {
-		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.approvalMode))
+	if string(m.state.InteractionState().Mode) != initialMode {
+		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.state.InteractionState().Mode))
 	}
 	if m.input.Value() != initialInput {
 		t.Fatalf("input changed from %q to %q, should be unchanged", initialInput, m.input.Value())
@@ -7168,11 +7159,9 @@ func TestOpenAgentsRosterThreadsToolRegistry(t *testing.T) {
 // testAgentRunner is a minimal AgentRunner implementation for tests.
 type testAgentRunner struct{}
 
-func (r *testAgentRunner) Run(ctx context.Context, goal string) error   { return nil }
-func (r *testAgentRunner) SetForceClass(class string)                   {}
-func (r *testAgentRunner) SetPolicyRules(rules []config.PermissionRule) {}
-func (r *testAgentRunner) SetApprovalMode(mode policy.ApprovalMode)     {}
-func (r *testAgentRunner) AnswerGate(string)                            {}
+func (r *testAgentRunner) Run(ctx context.Context, goal string) error { return nil }
+func (r *testAgentRunner) SetForceClass(class string)                 {}
+func (r *testAgentRunner) AnswerGate(string)                          {}
 
 // newStatusTestModelFromTemp builds a Model rooted in a temp git repo so
 // gitInfo resolves. Used by the git-info wiring tests.
@@ -8058,10 +8047,8 @@ func (r *recordingPipelineRunner) Run(ctx context.Context, goal string) error {
 	return nil
 }
 
-func (r *recordingPipelineRunner) SetForceClass(string)                   {}
-func (r *recordingPipelineRunner) SetPolicyRules([]config.PermissionRule) {}
-func (r *recordingPipelineRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (r *recordingPipelineRunner) AnswerGate(answer string)               { r.answer = answer }
+func (r *recordingPipelineRunner) SetForceClass(string)     {}
+func (r *recordingPipelineRunner) AnswerGate(answer string) { r.answer = answer }
 
 func TestSubagentBrokerPublishesRefreshMessage(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
@@ -8471,10 +8458,8 @@ type panicRunner struct{}
 func (p *panicRunner) Run(ctx context.Context, goal string) error {
 	panic("boom")
 }
-func (p *panicRunner) SetForceClass(string)                   {}
-func (p *panicRunner) SetPolicyRules([]config.PermissionRule) {}
-func (p *panicRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (p *panicRunner) AnswerGate(string)                      {}
+func (p *panicRunner) SetForceClass(string) {}
+func (p *panicRunner) AnswerGate(string)    {}
 
 // The transcript is vertical-only: horizontal wheel pans (trackpad
 // sideways gestures, diagonal scrolls) must not shift the view.
@@ -9426,18 +9411,29 @@ func TestWarningIsIndependentOfPostmortemPolicy(t *testing.T) {
 }
 
 // TestWarningIsIndependentOfApprovalMode pins that neither Auto mode nor any
-// other approval mode disables the warning.
+// other interaction state disables the warning.
 func TestWarningIsIndependentOfApprovalMode(t *testing.T) {
-	for _, mode := range []string{"plan", "default", "edit", "copilot", "auto"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode interaction.Mode
+		auto bool
+	}{
+		{"ask", interaction.ModeAsk, false},
+		{"act", interaction.ModeAct, false},
+		{"act auto", interaction.ModeAct, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			m, _ := warningModel(t, workSnapshot("job-1"))
-			m.approvalMode = policy.ApprovalMode(mode)
+			auto := tc.auto
+			if _, err := m.state.ApplyInteraction(interaction.Patch{Mode: &tc.mode, Auto: &auto}); err != nil {
+				t.Fatalf("seed interaction: %v", err)
+			}
 
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
 			}
 			if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
-				t.Fatalf("dock panel = %T, want the warning in %s mode", m.dock.Panel(), mode)
+				t.Fatalf("dock panel = %T, want the warning in %s mode", m.dock.Panel(), tc.name)
 			}
 		})
 	}

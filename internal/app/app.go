@@ -992,7 +992,6 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		pol.SetLogger(state.Logger())
 	}
 	pol.WithRegistry(reg)
-	pol.SetApprovalMode(parseApprovalMode(cfg.Agent.ApprovalMode))
 	pol.SetConfigSource(state.PolicySnapshot)
 	rootAuthorizer := policy.NewAuthorizer(pol, state.InteractionAuthority())
 
@@ -1241,12 +1240,6 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 
 	limitsTable := loadLimitsTable(ctx, cfg, dataDir)
 	runner.LimitsTable = limitsTable
-
-	// Defensive: align runner mode with policy engine in case the runner
-	// ever copies the engine instead of sharing it.
-	if runner.Policy != nil && runner.Policy.ApprovalMode() != parseApprovalMode(cfg.Agent.ApprovalMode) {
-		runner.SetApprovalMode(parseApprovalMode(cfg.Agent.ApprovalMode))
-	}
 
 	// T17: wire UsageCounter so the rollover controller can use
 	// provider-reported prompt_tokens as the numerator for context_percent
@@ -1850,7 +1843,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		),
 		MaxFixRounds:       cfg.SDD.MaxFixRounds,
 		MaxDispatchRetries: cfg.SDD.DispatchRetries,
-		AutoEscalate:       parseApprovalMode(cfg.Agent.ApprovalMode) == policy.ModeAuto,
+		AutoEscalate:       cfg.Agent.Auto,
 		MaxTokensCfg:       cfg.SDD.MaxTotalTokens,
 		Setup:              cfg.Worktree,
 	})
@@ -2077,13 +2070,6 @@ func roleToolIterations(cfg config.Config, role agent.AgentRole) int {
 	return cfg.Agent.MaxToolIterations
 }
 
-// parseApprovalMode converts a string to a policy.ApprovalMode.
-// Unknown or empty values default to ModeDefault. Delegates to the policy
-// package so the TUI seeds its mode label from exactly the same mapping.
-func parseApprovalMode(s string) policy.ApprovalMode {
-	return policy.ParseApprovalMode(s)
-}
-
 // accessTUIOptions wires the TUI's access seam to this runtime. The bound
 // methods read the runtime's current State and Runner under the runtime gate,
 // so a successful NewSession does not leave the TUI holding a closure over the
@@ -2258,12 +2244,16 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			childReg := registry.New()
 			// The child's engine reads the captured owner's live config/rules,
 			// evaluates against the child registry, and admits through the
-			// child actor rather than the root.
-			childPol = pol.Clone()
-			childPol.SetConfigSource(childState.PolicySnapshot)
-			childPol.WithRegistry(childReg)
-			childAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
-			childOpts.CommandAdmission = childAuthorizer.BeginCommand
+			// child actor rather than the root. A construction-only caller may
+			// pass no engine; the child then has no policy surface, which is
+			// enough for registry-shape tests and fails closed at dispatch.
+			if pol != nil {
+				childPol = pol.Clone()
+				childPol.SetConfigSource(childState.PolicySnapshot)
+				childPol.WithRegistry(childReg)
+				childAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
+				childOpts.CommandAdmission = childAuthorizer.BeginCommand
+			}
 			if err := native.RegisterAll(childReg, childOpts); err != nil {
 				return nil, nil, fmt.Errorf("agent.run: child registry: %w", err)
 			}
@@ -3170,7 +3160,6 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if rt.Runner != nil {
 		effective := rt.State.AccessState()
 		rt.Runner.SetForceClass(forceClassForMode(effective.Mode))
-		rt.Runner.SetApprovalMode(policy.ApprovalMode(effective.Mode))
 	}
 	if rt.Runner != nil && rt.Runner.Policy != nil {
 		// Point the installed engine at the owner's live policy snapshot:

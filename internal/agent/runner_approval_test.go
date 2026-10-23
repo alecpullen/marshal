@@ -325,7 +325,7 @@ func TestRunRequiresApprovalForShellRunAndRespectsApproval(t *testing.T) {
 	cfg := config.Default()
 	// The new classifier allows a routine read like `echo hi` outright, so
 	// pin a confirm rule to keep this test exercising the approval path.
-	cfg.Tools.Shell.Confirm.Commands = append(cfg.Tools.Shell.Confirm.Commands, "echo")
+	cfg.Tools.Shell.Confirm.Commands = append(cfg.Tools.Shell.Confirm.Commands, "echo *")
 	pol := policy.NewEngine(&cfg, nil)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
@@ -386,7 +386,7 @@ func TestRunnerShellEditNormalizesSuccessfully(t *testing.T) {
 	// The new classifier allows a routine read like `echo hello` outright, so
 	// pin a confirm rule to keep this test exercising the edit path.
 	cfg := config.Config{}
-	cfg.Tools.Shell.Confirm.Commands = []string{"echo"}
+	cfg.Tools.Shell.Confirm.Commands = []string{"echo *"}
 	pol := policy.NewEngine(&cfg, nil)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 	runner.SetForceClass(string(ClassQuestion))

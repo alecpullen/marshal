@@ -145,7 +145,7 @@ func TestDispatchEditedShellRequiresNewApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{}
-	cfg.Tools.Shell.Confirm.Commands = []string{"echo"}
+	cfg.Tools.Shell.Confirm.Commands = []string{"echo *"}
 	pol := policy.NewEngine(&cfg, nil)
 	pol.WithRegistry(reg)
 	r := NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")
@@ -321,7 +321,7 @@ func TestDispatchShellProofConsumedOnlyAtLaunch(t *testing.T) {
 	state := newTestState(t)
 	reg := registry.New()
 	cfg := config.Config{}
-	cfg.Tools.Shell.Confirm.Commands = []string{"echo"}
+	cfg.Tools.Shell.Confirm.Commands = []string{"echo *"}
 	pol := policy.NewEngine(&cfg, nil)
 	pol.WithRegistry(reg)
 	r := NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")

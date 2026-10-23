@@ -21,7 +21,6 @@ import (
 	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/commands"
 	"marshal/internal/interaction"
-	"marshal/internal/tools/policy"
 )
 
 // TestSystemCommandTogglesFlagAndNotes pins the /system command: it flips the
@@ -158,7 +157,7 @@ func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	ctrl := &endTestController{}
 	m := New(state, WithEndController(ctrl))
 	m.resize(80, 24)
-	m.approvalMode = policy.ApprovalMode("act")
+	state.SetSessionMode("act", func() {})
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 	if cmd != nil {
@@ -177,7 +176,7 @@ func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	if state.SystemAccess() {
 		t.Fatal("the model granted system access itself; the elevation belongs to the runtime's scoped pass")
 	}
-	if got := string(m.approvalMode); got != "act" {
+	if got := string(m.state.InteractionState().Mode); got != "act" {
 		t.Fatalf("approvalMode = %q, want the user's own mode preserved", got)
 	}
 	if len(ctrl.analysisGoals) != 1 {
@@ -761,7 +760,7 @@ func TestAccessManualModeSetterAndReloadStayInSync(t *testing.T) {
 	if got := f.state.InteractionState().Mode; got != interaction.ModeAct {
 		t.Fatalf("session mode = %q, want act", got)
 	}
-	if got := string(f.m.approvalMode); got != "act" {
+	if got := string(f.state.InteractionState().Mode); got != "act" {
 		t.Fatalf("displayed mode = %q, want act", got)
 	}
 
@@ -769,7 +768,7 @@ func TestAccessManualModeSetterAndReloadStayInSync(t *testing.T) {
 	unrelated := cfg
 	unrelated.Agent.MaxToolIterations++
 	f.m.applyNewConfig(unrelated)
-	if got := string(f.m.approvalMode); got != "act" {
+	if got := string(f.state.InteractionState().Mode); got != "act" {
 		t.Fatalf("displayed mode after an unrelated reload = %q, want the override act", got)
 	}
 	if got := f.state.InteractionState().Mode; got != interaction.ModeAct {

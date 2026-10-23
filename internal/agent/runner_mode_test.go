@@ -178,7 +178,10 @@ func TestPlanModeAllowsAskUser(t *testing.T) {
 		`{"rationale":"done","action":{"type":"final","content":"Planned."}}`,
 	}}
 	pol := policy.NewEngine(&config.Config{}, nil)
-	pol.SetApprovalMode(policy.ModePlan)
+	ask := interaction.ModeAsk
+	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &ask}); err != nil {
+		t.Fatalf("seed Ask: %v", err)
+	}
 	r := NewRunner(p, registry.New(), pol, state, "test-model")
 	r.SetForceClass(string(ClassQuestion))
 

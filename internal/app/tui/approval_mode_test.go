@@ -34,7 +34,7 @@ func TestApprovalModeSeededFromCanonicalState(t *testing.T) {
 			cfg.Agent.Auto = tc.auto
 			state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 			m := New(state)
-			if got := string(m.approvalMode); got != tc.want {
+			if got := string(m.state.InteractionState().Mode); got != tc.want {
 				t.Fatalf("approvalMode = %q, want %q", got, tc.want)
 			}
 			if got := m.modeSegment(); got != tc.wantLabel {
@@ -58,7 +58,7 @@ func TestSettingsApprovalModeChangeUpdatesFooter(t *testing.T) {
 	})
 	m = updated.(Model)
 
-	if got := string(m.approvalMode); got != "ask" {
+	if got := string(m.state.InteractionState().Mode); got != "ask" {
 		t.Fatalf("approvalMode = %q, want ask after settings change", got)
 	}
 	if got := m.modeSegment(); got != "Ask" {

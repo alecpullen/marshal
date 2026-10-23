@@ -41,6 +41,27 @@ describe('RecipeEditor', () => {
     render(RecipeEditor, { recipe: { ...base, inputs: [{ name: 'thing' }] }, onSaved: vi.fn(), onCancel: vi.fn() })
     expect(screen.getByTestId('recipe-tokens').querySelector('mark')?.textContent).toBe('{{thing}}')
   })
+
+  it('saves the canonical starting tuple as written', async () => {
+    const onSaved = vi.fn()
+    render(RecipeEditor, {
+      recipe: { ...base, mode: 'ask', auto: false, inputs: [{ name: 'thing' }] },
+      isNew: true,
+      onSaved,
+      onCancel: vi.fn(),
+    })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(api.saveRecipe).toHaveBeenCalled())
+    expect(api.saveRecipe).toHaveBeenCalledWith(expect.objectContaining({ mode: 'ask', auto: false }))
+  })
+
+  it('migrates a stored legacy mode on load', async () => {
+    const onSaved = vi.fn()
+    render(RecipeEditor, { recipe: { ...base, mode: 'plan', inputs: [{ name: 'thing' }] }, isNew: true, onSaved, onCancel: vi.fn() })
+    await fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalled())
+    expect(api.saveRecipe).toHaveBeenCalledWith(expect.objectContaining({ mode: 'ask' }))
+  })
 })
 
 describe('RecipesTab', () => {

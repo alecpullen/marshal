@@ -8,6 +8,13 @@ you type into a masked prompt.
 
 Design: `.docs-archive/superpowers/specs/2026-10-10-system-mode-sudo-design.md`
 
+> **Mode vocabulary superseded (2026-10-19).** This document predates the
+> Ask/Act interaction model
+> ([`docs/interaction-modes/feature-spec.md`](interaction-modes/feature-spec.md)).
+> References below to `plan`/`default`/`edit`/`copilot`/`auto` describe the
+> retired five-mode spelling; the shipped model has Ask, Act, and the Auto
+> modifier. The System modifier and `shell.sudo` behavior are unchanged.
+
 ## The contract
 
 - **`sudo` is not a shell concept any more.** Under system access, a

@@ -162,7 +162,6 @@ func TestAdapterSatisfiesTheRunnerContract(t *testing.T) {
 	if _, ok := a.(interface {
 		Run(context.Context, string) error
 		SetForceClass(string)
-		SetPolicyRules([]config.PermissionRule)
 		AnswerGate(string)
 	}); !ok {
 		t.Fatal("ControllerAdapter does not satisfy the TUI runner contract")

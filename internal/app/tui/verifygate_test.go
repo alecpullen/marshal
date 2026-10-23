@@ -13,7 +13,6 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/castlist"
 	"marshal/internal/commands"
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -51,10 +50,8 @@ func (p *proposalRunner) Run(ctx context.Context, goal string) error {
 	p.state.AddMessage(session.RoleAssistant, `{"build":"make build","test":"make test"}`, session.ContentTypePlain)
 	return nil
 }
-func (p *proposalRunner) SetForceClass(string)                   {}
-func (p *proposalRunner) SetPolicyRules([]config.PermissionRule) {}
-func (p *proposalRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (p *proposalRunner) AnswerGate(string)                      {}
+func (p *proposalRunner) SetForceClass(string) {}
+func (p *proposalRunner) AnswerGate(string)    {}
 
 func TestProposalPersistsOnApprove(t *testing.T) {
 	workDir := t.TempDir()

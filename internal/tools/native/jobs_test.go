@@ -19,6 +19,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/progress"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -1198,48 +1199,46 @@ func TestJobManagerEvictsCompletedJobsByRetention(t *testing.T) {
 	}
 }
 
-// TestShellRunBackgroundInvokesGuardrail verifies that the handler-level
-// guardrail is invoked for background shell.run jobs. Policy evaluation
-// (deny/allow rules) happens upstream in the agent loop before the tool
-// handler runs — see internal/agent/execute.go, where Policy.Evaluate is
-// called for every tool call and DecisionDeny short-circuits before
-// dispatch. The audit finding TOOLS-MOD-F9 ("background shell.run bypasses
-// policy") is a false positive: evaluateShell reads only args["command"]
-// and does not branch on background, so the same command is evaluated the
-// same way whether foreground or background. This test pins the one piece
-// of enforcement that lives at the handler layer: the guardrail pre-flight
-// check, which runs for background jobs too.
-func TestShellRunBackgroundInvokesGuardrail(t *testing.T) {
+// TestShellRunBackgroundInvokesAdmission verifies that a background shell.run
+// job still goes through command admission before it starts. Policy evaluation
+// (deny/allow rules) happens upstream in the agent loop before the tool handler
+// runs — see internal/agent/execute.go, where Policy.Evaluate is called for
+// every tool call and DecisionDeny short-circuits before dispatch. The audit
+// finding TOOLS-MOD-F9 ("background shell.run bypasses policy") is a false
+// positive: evaluateShell reads only args["command"] and does not branch on
+// background, so the same command is evaluated the same way whether foreground
+// or background. This test pins the one piece of enforcement that lives at the
+// handler layer: the admission seam, which runs for background jobs too.
+func TestShellRunBackgroundInvokesAdmission(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
 	state := session.New(config.Config{}, root, time.Now(), session.Persistence{})
 	runner := &fakeRunner{}
 
-	blocked := false
+	admissions := 0
 	if err := RegisterAll(reg, Options{
 		WorkspaceRoot: root,
 		CommandRunner: runner,
 		SessionState:  state,
 		JobManager:    newTestCommandService(t, runner, root, state, nil),
-		Guardrail: func(command string, system bool) error {
-			blocked = true
-			return fmt.Errorf("guardrail blocked %q", command)
+		CommandAdmission: func(context.Context, policy.CommandAttempt) (*policy.Admission, error) {
+			admissions++
+			return nil, fmt.Errorf("admission refused the background command")
 		},
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	// A background job must still pass through the guardrail. If the
-	// guardrail is not invoked for background jobs, this returns nil and
-	// starts a job, which would be a regression.
+	// A background job must still pass through admission. If it does not,
+	// this returns nil and starts a job, which would be a regression.
 	if _, err := invokeTool(t, reg, "shell.run", `{"command":"echo hi","background":true}`); err == nil {
-		t.Fatal("background shell.run should have been blocked by the guardrail")
+		t.Fatal("background shell.run should have been refused by admission")
 	}
-	if !blocked {
-		t.Fatal("guardrail was not invoked for a background shell.run job")
+	if admissions != 1 {
+		t.Fatalf("admission invoked %d times, want 1 for a background job", admissions)
 	}
 	if state.RunningJobsCount() != 0 {
-		t.Fatalf("running jobs = %d, want 0 (guardrail must block before start)", state.RunningJobsCount())
+		t.Fatalf("running jobs = %d, want 0 (admission must refuse before start)", state.RunningJobsCount())
 	}
 }
 
@@ -1248,7 +1247,7 @@ func TestShellRunBackgroundStartsJob(t *testing.T) {
 	reg := registry.New()
 	state := session.New(config.Config{}, root, time.Now(), session.Persistence{})
 	runner := newFakeRunner(withRelease(make(chan struct{})))
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, SessionState: state, JobManager: newTestCommandService(t, runner, root, state, nil)}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, SessionState: state, JobManager: newTestCommandService(t, runner, root, state, nil), CommandAdmission: allowAllAdmission(t)}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -1269,7 +1268,7 @@ func TestShellRunBackgroundUsesWorkspaceRoot(t *testing.T) {
 	root := t.TempDir()
 	reg := registry.New()
 	state := session.New(config.Config{}, root, time.Now(), session.Persistence{})
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, SessionState: state, JobManager: newTestCommandService(t, nil, root, state, nil)}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, SessionState: state, JobManager: newTestCommandService(t, nil, root, state, nil), CommandAdmission: allowAllAdmission(t)}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
@@ -1311,7 +1310,7 @@ func TestRegisterAllHonorsConfigBackgroundLimits(t *testing.T) {
 
 	reg := registry.New()
 	state := session.New(cfg, root, time.Now(), session.Persistence{})
-	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Config: cfg, SessionState: state, JobManager: jm}); err != nil {
+	if err := RegisterAll(reg, Options{WorkspaceRoot: root, CommandRunner: runner, Config: cfg, SessionState: state, JobManager: jm, CommandAdmission: allowAllAdmission(t)}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 

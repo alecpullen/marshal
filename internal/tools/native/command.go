@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"strings"
 	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/progress"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -78,13 +80,13 @@ func (t *toolSet) shellRunTool() registry.Tool {
 			// An explicit background launch does not rescan the language
 			// server: the command has not run to completion yet, and this call
 			// is not waiting for it.
-			return t.runManagedCommandWithProgress(ctx, call.ID, args.Command, wait, true, args.Progress)
+			return t.runManagedCommandWithProgress(ctx, "shell.run", call.ID, args.Command, wait, true, args.Progress)
 		}
 		// A foreground call waited for the command, so whatever it wrote is on
 		// disk by now and open documents must be re-synced — including when
 		// the settled outcome is a tool failure.
 		defer t.rescanLSP()
-		return t.runManagedCommandWithProgress(ctx, call.ID, args.Command, wait, false, args.Progress)
+		return t.runManagedCommandWithProgress(ctx, "shell.run", call.ID, args.Command, wait, false, args.Progress)
 	}
 	return tool
 }
@@ -109,9 +111,9 @@ func (t *toolSet) testRunTool() registry.Tool {
 		}
 		command := args.Command
 		if command == "" {
-			command = t.testCommand
+			command = t.configuredTestCommand()
 		}
-		res, err := t.runManagedCommandWithProgress(ctx, call.ID, command, t.foregroundWait(), false, args.Progress)
+		res, err := t.runManagedCommandWithProgress(ctx, "test.run", call.ID, command, t.foregroundWait(), false, args.Progress)
 		t.rescanLSP()
 		return res, err
 	}
@@ -155,11 +157,92 @@ func resolveShellWait(seconds int, defaultWait time.Duration) (time.Duration, er
 
 // runManagedCommand launches one ordinary command through the conversation's
 // execution service and renders the caller's attachment to it, without opting
-// into progress observation. It keeps its original signature as a delegating
-// compatibility helper for callers that have no progress configuration to
-// supply.
-func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string, wait time.Duration, background bool) (registry.ToolResult, error) {
-	return t.runManagedCommandWithProgress(ctx, callID, command, wait, background, nil)
+// into progress observation.
+func (t *toolSet) runManagedCommand(ctx context.Context, toolName, callID, command string, wait time.Duration, background bool) (registry.ToolResult, error) {
+	return t.runManagedCommandWithProgress(ctx, toolName, callID, command, wait, background, nil)
+}
+
+// configuredTestCommand returns the test command to run when the caller passes
+// no override. It is read from the owner's CURRENT policy snapshot, so a config
+// reload reaches an already-built toolset — including an old child toolset that
+// captured its creation config — instead of silently running the superseded
+// command. A toolset with no session (tests, embedded callers) falls back to the
+// value captured at construction.
+func (t *toolSet) configuredTestCommand() string {
+	if state := t.sessionState; state != nil {
+		cfg, _, _ := state.PolicySnapshot()
+		if command := strings.TrimSpace(cfg.Commands.Test); command != "" {
+			return command
+		}
+	}
+	return t.testCommand
+}
+
+// commandAttempt captures the exact execution facts one managed command is
+// admitted against: the command bytes, the working directory it will run in,
+// the workspace it belongs to, the home and additional read roots it may reach,
+// and the environment the analysis reads. Everything is resolved here, before
+// the authorizer evaluates the command, so a workspace or config change after
+// admission cannot redirect work that was already approved.
+func (t *toolSet) commandAttempt(ctx context.Context, toolName, invocationID, command string) policy.CommandAttempt {
+	// A proof attached by dispatch already captured the shell facts it
+	// evaluated: admit exactly those, under that proof's logical identity,
+	// rather than re-deriving a second description of the same command. The
+	// captured command bytes are the ones that were approved.
+	if input, ok := policy.ShellInputFromContext(ctx); ok {
+		attempt := policy.CommandAttempt{
+			InvocationID: policy.InvocationID(ctx),
+			ToolName:     toolName,
+			Input:        input,
+		}
+		if attempt.InvocationID == "" {
+			attempt.InvocationID = invocationID
+		}
+		return attempt
+	}
+	dir := t.commandRoot()
+	if dir == "" {
+		// A managed command always runs somewhere: the construction root is
+		// absolute and non-empty, so this only guards a future caller that
+		// bypasses it. An empty cwd would make every relative target resolve
+		// against the process's own directory.
+		dir = t.root
+	}
+	workspace := t.activeRoot()
+	if workspace == "" {
+		workspace = t.root
+	}
+	home := ""
+	if h, err := os.UserHomeDir(); err == nil {
+		home = h
+	}
+	return policy.CommandAttempt{
+		InvocationID: invocationID,
+		ToolName:     toolName,
+		Input: policy.ShellInput{
+			Command:       command,
+			Dir:           dir,
+			WorkspaceRoot: workspace,
+			HomeDir:       home,
+			ReadRoots:     append([]string(nil), t.additionalRoots...),
+			Env:           knownEnvironment(),
+		},
+	}
+}
+
+// knownEnvironment is the environment map the shell analysis expands against.
+// Only the variables a command can be classified by travel with the attempt: a
+// variable the analysis cannot see must be treated as unknown rather than
+// guessed, and copying the whole process environment would make the admission
+// fingerprint depend on unrelated ambient state.
+func knownEnvironment() map[string]string {
+	env := make(map[string]string, 8)
+	for _, name := range []string{"HOME", "PATH", "PWD", "SHELL", "TMPDIR", "USER"} {
+		if value, ok := os.LookupEnv(name); ok {
+			env[name] = value
+		}
+	}
+	return env
 }
 
 // runManagedCommandWithProgress launches one ordinary command through the
@@ -175,7 +258,7 @@ func (t *toolSet) runManagedCommand(ctx context.Context, callID, command string,
 // an invalid opt-in never prompts for approval and never reserves a slot; the
 // normalized copy is what the execution captures. A nil cfg stays nil: no
 // observer is allocated and the ordinary tool result is left unfiltered.
-func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, callID, command string, wait time.Duration, background bool, cfg *progress.Config) (registry.ToolResult, error) {
+func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, callID, command string, wait time.Duration, background bool, cfg *progress.Config) (registry.ToolResult, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return registry.ToolResult{}, fmt.Errorf("command is required")
@@ -183,13 +266,13 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, callID, com
 	// An ordinary command has exactly one owner: the conversation's command
 	// service, injected at construction. A registry built without one (a
 	// filtered read-only scope, a plan-author child, a mis-wired test fixture)
-	// must fail here, before the guardrail and before any launch, rather than
+	// must fail here, before admission and before any launch, rather than
 	// creating a private supervisor whose commands nothing can stop, count or
 	// settle.
 	if t.jobManager == nil {
 		return registry.ToolResult{}, fmt.Errorf("shell execution is unavailable: this registry has no conversation command service")
 	}
-	// The optional progress profile is validated before the guardrail: a
+	// The optional progress profile is validated before admission: a
 	// rejected opt-in is a malformed call, not a command to approve, so it must
 	// not reach the approval boundary or reserve an execution nothing can
 	// observe. The normalized copy is what the execution keeps for its whole
@@ -201,13 +284,6 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, callID, com
 			return registry.ToolResult{}, err
 		}
 		progressCfg = &normalized
-	}
-	// Guardrails are validated before admission, so a denied command never
-	// reaches the service.
-	if t.guardrail != nil {
-		if err := t.guardrail(command, t.systemAccess()); err != nil {
-			return registry.ToolResult{}, err
-		}
 	}
 	// A command whose operation was already interrupted must not launch: the
 	// interruption has told the model not to expect its result, and admitting it
@@ -222,6 +298,20 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, callID, com
 	// The active-call writer is wired in unconditionally and the service stops
 	// forwarding to it the moment the execution detaches, so display ownership
 	// follows attachment without this path relaunching anything.
+	// The admission seam. The attempt is captured ONCE, before the authorizer
+	// evaluates it: the exact command bytes, the directory it will run in and
+	// the workspace it belongs to. Launch hands that closure to the authorizer
+	// at accepted admission, so a workspace or config change between approval
+	// and insertion cannot redirect the command that was approved. There is no
+	// unadmitted launch path: a toolset without admission fails closed.
+	if t.commandAdmission == nil {
+		return registry.ToolResult{}, fmt.Errorf("shell execution is unavailable: this registry has no command admission")
+	}
+	attempt := t.commandAttempt(ctx, toolName, callID, command)
+	admit := func(admitCtx context.Context) (*policy.Admission, error) {
+		return t.commandAdmission(admitCtx, attempt)
+	}
+
 	operation, _ := session.OperationFromContext(ctx)
 	info, err := t.jobManager.Launch(ctx, LaunchSpec{
 		Command:        command,
@@ -235,6 +325,7 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, callID, com
 		Detached:       background,
 		Wait:           wait,
 		Progress:       progressCfg,
+		Admit:          admit,
 	})
 	if err != nil {
 		return registry.ToolResult{}, err

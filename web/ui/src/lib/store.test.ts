@@ -39,6 +39,8 @@ vi.mock('./api.js', () => ({
   steerSession: vi.fn(),
   cancelSession: vi.fn(),
   setMode: vi.fn(),
+  getAccess: vi.fn(),
+  patchAccess: vi.fn(),
   resolvePermission: vi.fn(),
   resolveQuestion: vi.fn(),
 }))
@@ -65,13 +67,14 @@ describe('createSessionStore', () => {
     vi.clearAllMocks()
   })
 
-  it('starts idle with default mode', () => {
+  it('starts with unknown access rather than an inferred mode', () => {
     const { state } = createSessionStore('s1', '/tmp')
     const values = collect(state)
     const s = latest(values)
     expect(s.id).toBe('s1')
     expect(s.busy).toBe(false)
-    expect(s.mode).toBe('default')
+    expect(s.mode).toBeNull()
+    expect(s.access).toBeNull()
     expect(s.messages).toEqual([])
   })
 
@@ -149,12 +152,43 @@ describe('createSessionStore', () => {
     expect(latest(values).busy).toBe(false)
   })
 
-  it('syncs mode via mode_changed', () => {
+  it('syncs the full tuple via mode_changed', () => {
+    const { state, actions } = createSessionStore('s1', '/tmp')
+    actions.connect()
+    const values = collect(state)
+    emit({
+      method: 'mode_changed',
+      params: { sessionId: 's1', access: { mode: 'act', auto: true, system_access: false, access_revision: 2 } },
+    })
+    const s = latest(values)
+    expect(s.mode).toBe('act')
+    expect(s.access).toEqual({ mode: 'act', auto: true, system: false, revision: 2 })
+  })
+
+  it('ignores an older revision within one session', () => {
+    const { state, actions } = createSessionStore('s1', '/tmp')
+    actions.connect()
+    const values = collect(state)
+    emit({
+      method: 'mode_changed',
+      params: { sessionId: 's1', access: { mode: 'act', auto: false, system_access: false, access_revision: 4 } },
+    })
+    emit({
+      method: 'mode_changed',
+      params: { sessionId: 's1', access: { mode: 'act', auto: true, system_access: true, access_revision: 2 } },
+    })
+    const s = latest(values)
+    expect(s.access?.revision).toBe(4)
+    expect(s.access?.auto).toBe(false)
+    expect(s.access?.system).toBe(false)
+  })
+
+  it('rejects a malformed or unknown live mode', () => {
     const { state, actions } = createSessionStore('s1', '/tmp')
     actions.connect()
     const values = collect(state)
     emit({ method: 'mode_changed', params: { sessionId: 's1', mode: 'auto' } })
-    expect(latest(values).mode).toBe('auto')
+    expect(latest(values).access).toBeNull()
   })
 
   it('sets pending permission on permission_request', () => {
@@ -210,6 +244,40 @@ describe('createSessionStore', () => {
     const s = latest(values)
     expect(s.messages).toHaveLength(1)
     expect(s.messages[0].text).toBe('loaded')
+  })
+
+  it('bootstraps actual access after replay', async () => {
+    ;(api.loadSession as Mock).mockResolvedValue({ sessionId: 's1', events: [] })
+    ;(api.getAccess as Mock).mockResolvedValue({
+      mode: 'act',
+      auto: false,
+      system_access: true,
+      access_revision: 5,
+    })
+    const { state, actions } = createSessionStore('s1', '/tmp')
+    const values = collect(state)
+    await actions.load()
+    const s = latest(values)
+    expect(s.access).toEqual({ mode: 'act', auto: false, system: true, revision: 5 })
+    expect(api.getAccess).toHaveBeenCalledWith('s1')
+  })
+
+  it('applies only the committed answer on a submitted patch', async () => {
+    ;(api.patchAccess as Mock).mockResolvedValue({
+      mode: 'ask',
+      auto: false,
+      system_access: false,
+      access_revision: 6,
+    })
+    const { state, actions } = createSessionStore('s1', '/tmp')
+    const values = collect(state)
+    const pending = actions.setMode('ask')
+    // The request itself grants nothing: until the committed answer arrives,
+    // the presentation stays unknown rather than optimistically switching.
+    expect(latest(values).mode).toBeNull()
+    await pending
+    expect(latest(values).mode).toBe('ask')
+    expect(api.patchAccess).toHaveBeenCalledWith('s1', { mode: 'ask' })
   })
 
   it('marks connected/disconnected from SSE lifecycle', () => {

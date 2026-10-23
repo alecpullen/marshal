@@ -36,6 +36,11 @@ func isMethodNotFound(err error) bool {
 type Decision struct {
 	Approved bool   `json:"approved"`
 	Edited   string `json:"edited,omitempty"`
+	// ModeAccess is the typed capability choice, when the client supports
+	// it. The bridge forwards it untouched: the agent validates the
+	// identity and applies the grant, so nothing here can grant a
+	// capability locally.
+	ModeAccess *ModeAccessChoice `json:"modeAccess,omitempty"`
 }
 
 // Answer is one question-and-response pair on the wire.
@@ -261,13 +266,49 @@ func (r *Registry) Steer(ctx context.Context, id, text string) error {
 	return err
 }
 
-// SetMode switches the session's permission mode (session/set_mode).
+// SetMode switches the session's permission mode (session/set_mode). It is
+// the legacy single-field form of SetAccess: the mode is forwarded as an
+// atomic patch and the committed state is discarded.
 func (r *Registry) SetMode(ctx context.Context, id, mode string) error {
-	if _, ok := r.lookup(id); !ok {
-		return ErrUnknownSession
-	}
-	_, err := r.child.Request(ctx, "session/set_mode", map[string]string{"sessionId": id, "mode": mode})
+	_, err := r.SetAccess(ctx, id, AccessPatch{Mode: &mode})
 	return err
+}
+
+// SetAccess applies one atomic access patch (session/set_mode) and returns the
+// full committed state the agent reports. Every present field is forwarded,
+// including an explicit false: a revocation is a real patch value, not an
+// omission. The bridge makes no policy decision here — the runtime validates
+// and applies the whole patch before acknowledging it.
+func (r *Registry) SetAccess(ctx context.Context, id string, patch AccessPatch) (AccessState, error) {
+	if _, ok := r.lookup(id); !ok {
+		return AccessState{}, ErrUnknownSession
+	}
+	params := map[string]any{"sessionId": id}
+	if patch.Mode != nil {
+		params["mode"] = *patch.Mode
+	}
+	if patch.Auto != nil {
+		params["auto"] = *patch.Auto
+	}
+	if patch.System != nil {
+		params["system_access"] = *patch.System
+	}
+	res, err := r.child.Request(ctx, "session/set_mode", params)
+	if err != nil {
+		return AccessState{}, err
+	}
+	return decodeAccessState(res)
+}
+
+// AccessState reads the session's committed access state
+// (session/access_state). It is the authoritative bootstrap a client uses
+// instead of inferring privileges from defaults or a transcript.
+func (r *Registry) AccessState(ctx context.Context, id string) (AccessState, error) {
+	res, err := r.call(ctx, id, "session/access_state", "access_state", nil)
+	if err != nil {
+		return AccessState{}, err
+	}
+	return decodeAccessState(res)
 }
 
 // call sends one session-scoped request to the agent and returns the raw
@@ -465,7 +506,14 @@ func (r *Registry) awaitPermission(params json.RawMessage) (any, error) {
 	// This matches the TUI runner and ACP, which also wait forever.
 	select {
 	case d := <-ch:
-		return map[string]any{"approved": d.Approved, "edited": d.Edited}, nil
+		// The ordinary decision keeps its exact wire shape (approved plus
+		// the optional edited command); the typed capability choice rides
+		// alongside it, untouched, so the agent can validate and apply it.
+		out := map[string]any{"approved": d.Approved, "edited": d.Edited}
+		if d.ModeAccess != nil {
+			out["modeAccess"] = d.ModeAccess
+		}
+		return out, nil
 	case <-r.sessionCtx(req.SessionID).Done():
 		return map[string]any{"approved": false}, nil
 	}

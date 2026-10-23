@@ -45,7 +45,8 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Agent.NarrationPrompt, file.Agent.NarrationPrompt)
 		set(&cfg.Agent.IntentNudge, file.Agent.IntentNudge)
 		set(&cfg.Agent.SubtaskIterations, file.Agent.SubtaskIterations)
-		set(&cfg.Agent.ApprovalMode, file.Agent.ApprovalMode)
+		set(&cfg.Agent.Mode, file.Agent.Mode)
+		set(&cfg.Agent.Auto, file.Agent.Auto)
 		set(&cfg.Agent.HistoryBudgetTokens, file.Agent.HistoryBudgetTokens)
 		if file.Agent.ParseRepairFeedback != nil {
 			cfg.Agent.ParseRepairFeedback = file.Agent.ParseRepairFeedback
@@ -172,8 +173,7 @@ func merge(cfg *Config, file configFile) error {
 			cfg.CustomAgents = map[string]routing.CustomAgent{}
 		}
 		for name, a := range file.CustomAgents {
-			a.Name = name
-			cfg.CustomAgents[name] = a
+			cfg.CustomAgents[name] = a.runtime(name)
 		}
 	}
 	// Rewrite references to renamed presets in agent profiles and custom
@@ -207,10 +207,6 @@ func merge(cfg *Config, file configFile) error {
 			cfg.Tools.Shell.BackgroundRetention = d
 		}
 		set(&cfg.Tools.Shell.AllowNetwork, s.AllowNetwork)
-		set(&cfg.Tools.Shell.AutoApprove, s.AutoApprove)
-		if s.GuardrailDynamicArgv0 != nil {
-			cfg.Tools.Shell.GuardrailDynamicArgv0 = *s.GuardrailDynamicArgv0
-		}
 		if s.FloorCommands != nil {
 			cfg.Tools.Shell.FloorCommands = *s.FloorCommands
 		}

@@ -35,7 +35,7 @@ func TestInternalToolsAreNeverOfferedToTheModel(t *testing.T) {
 			t.Fatalf("internal tool offered as a definition: %s", d.Name)
 		}
 	}
-	sys := BuildSystemPromptWithSystem(SystemPromptOptions{Role: RoleGeneral, Tools: reg.List(), Mode: policy.ModeEdit})
+	sys := BuildSystemPromptWithSystem(SystemPromptOptions{Role: RoleGeneral, Tools: reg.List(), Access: defaultInteractionAccess()})
 	if strings.Contains(sys.Content, "hidden.tool") {
 		t.Fatalf("internal tool listed in the envelope prompt:\n%s", sys.Content)
 	}

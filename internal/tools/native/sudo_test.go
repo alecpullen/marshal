@@ -14,7 +14,6 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -196,7 +195,6 @@ func TestSudoToolRefusesWithoutSystemAccess(t *testing.T) {
 		WorkspaceRoot: root,
 		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
 		SessionState:  state,
-		SudoPolicy:    func(string) error { return nil },
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
@@ -215,7 +213,6 @@ func TestSudoToolRefusesWithoutSecretPrompt(t *testing.T) {
 		WorkspaceRoot: root,
 		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
 		SessionState:  state,
-		SudoPolicy:    func(string) error { return nil },
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
@@ -235,10 +232,10 @@ func TestSudoToolRefusesPrivilegeWrapper(t *testing.T) {
 	state.SetSecretPromptCapable(true)
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{
-		WorkspaceRoot: root,
-		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
-		SessionState:  state,
-		SudoPolicy:    func(cmd string) error { return policy.NewEngine(&config.Config{}, nil).CheckPrivileged(cmd) },
+		WorkspaceRoot:     root,
+		CommandRunner:     &fakeRunner{result: CommandResult{ExitCode: 0}},
+		SessionState:      state,
+		CommandAuthorizer: allowAllAuthorizer(t),
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
@@ -248,37 +245,36 @@ func TestSudoToolRefusesPrivilegeWrapper(t *testing.T) {
 	}
 }
 
-// TestSudoToolAppliesTheCatastrophicFloor pins the floor-on-payload fix:
-// CheckPrivileged deliberately does not reject floor commands, so without an
-// explicit GuardrailCheck the tool would be a way to run `rm -rf /etc` as
+// TestSudoToolAppliesTheCatastrophicFloor pins the floor-on-payload fix: the
+// bare payload goes through the same shell analysis ordinary commands use, so
+// the catastrophic floor applies to root work exactly as it does to user work.
+// Without that shared analysis the tool would be a way to run `rm -rf /etc` as
 // root past the floor that shell.run obeys.
 func TestSudoToolAppliesTheCatastrophicFloor(t *testing.T) {
 	// The privileged runner is hardcoded (not the injected CommandRunner), so
 	// this test must put a fake sudo on PATH or it would invoke the real one.
 	fakeSudo(t, 0, "", true)
 	root := t.TempDir()
-	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
+	cfg := config.Default()
+	state := session.New(cfg, root, time.Unix(100, 0), session.Persistence{})
 	state.SetSystemAccess(true)
 	state.SetSecretPromptCapable(true)
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{
-		WorkspaceRoot: root,
-		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
-		SessionState:  state,
-		SudoPolicy:    func(string) error { return nil },
-		Guardrail: func(cmd string, system bool) error {
-			return policy.NewEngine(&config.Config{}, nil).GuardrailCheck(cmd, system)
-		},
+		WorkspaceRoot:     root,
+		CommandRunner:     &fakeRunner{result: CommandResult{ExitCode: 0}},
+		SessionState:      state,
+		CommandAuthorizer: policyAuthorizer(t, cfg),
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	for _, cmd := range []string{"rm -rf /etc", "mkfs /dev/sda", "shutdown -h now"} {
+	for _, cmd := range []string{"rm -rf /", "mkfs /dev/sda", "shutdown -h now"} {
 		_, err := invokeTool(t, reg, "shell.sudo", `{"command":`+strconv.Quote(cmd)+`}`)
 		if err == nil {
 			t.Fatalf("shell.sudo %q = nil error, want the floor to deny it", cmd)
 		}
-		if !strings.Contains(err.Error(), "guardrail") {
-			t.Fatalf("shell.sudo %q = %v, want a guardrail denial", cmd, err)
+		if !strings.Contains(err.Error(), "denied by policy") {
+			t.Fatalf("shell.sudo %q = %v, want a policy denial", cmd, err)
 		}
 	}
 	// The floor must not reject an ordinary admin command. That call gets
@@ -296,10 +292,11 @@ func TestSudoToolAppliesTheCatastrophicFloor(t *testing.T) {
 	}
 }
 
-// waitForSudoPrompt blocks until the pending privileged-auth prompt appears.
-func waitForSudoPrompt(t *testing.T, state *session.State) {
+// waitForSudoPrompt blocks until the pending privileged-auth prompt appears and
+// returns it, so a test can inspect what the prompt discloses.
+func waitForSudoPrompt(t *testing.T, state *session.State) *session.PendingSudoAuth {
 	t.Helper()
-	waitForNewSudoPrompt(t, state, nil)
+	return waitForNewSudoPrompt(t, state, nil)
 }
 
 // waitForNewSudoPrompt blocks until a pending prompt other than prev appears.
@@ -360,10 +357,10 @@ func sudoToolForTest(t *testing.T) (*registry.Registry, *session.State) {
 	state.SetSecretPromptCapable(true)
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{
-		WorkspaceRoot: root,
-		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
-		SessionState:  state,
-		SudoPolicy:    func(string) error { return nil },
+		WorkspaceRoot:     root,
+		CommandRunner:     &fakeRunner{result: CommandResult{ExitCode: 0}},
+		SessionState:      state,
+		CommandAuthorizer: allowAllAuthorizer(t),
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
@@ -377,7 +374,7 @@ func TestSudoUnlockWarmGrantSkipsThePrompt(t *testing.T) {
 	reg, state := sudoToolForTest(t)
 	state.SetSudoUnlockEnabled(true)
 
-	result, err := invokeTool(t, reg, "shell.sudo", `{"command":"id"}`)
+	result, err := invokeTool(t, reg, "shell.sudo", `{"command":"cat /etc/hostname"}`)
 	if err != nil {
 		t.Fatalf("warm unlock = %v, want it to run without a prompt", err)
 	}
@@ -495,7 +492,6 @@ func TestSudoToolSingleFlight(t *testing.T) {
 		WorkspaceRoot: root,
 		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
 		SessionState:  state,
-		SudoPolicy:    func(string) error { return nil },
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
@@ -541,10 +537,10 @@ func TestSudoSteeringCancelBeforeDispatchZerosSecret(t *testing.T) {
 
 	reg := registry.New()
 	if err := RegisterAll(reg, Options{
-		WorkspaceRoot: root,
-		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
-		SessionState:  state,
-		SudoPolicy:    func(string) error { return nil },
+		WorkspaceRoot:     root,
+		CommandRunner:     &fakeRunner{result: CommandResult{ExitCode: 0}},
+		SessionState:      state,
+		CommandAuthorizer: allowAllAuthorizer(t),
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}

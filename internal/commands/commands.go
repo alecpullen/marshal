@@ -303,39 +303,28 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			TUIOnly:     true,
 		},
 		{
-			Name:        "plan",
-			Description: "Switch to Plan mode (read-only, forced numbered plan)",
-			Hidden:      true,
+			Name:        "ask",
+			Description: "Ask mode: every new action needs approval (Auto off)",
+			Group:       groupWorkflow,
 			TUIOnly:     true,
 		},
 		{
-			Name:        "default",
-			Description: "Switch to Default mode (read-only, request elevation to edit)",
-			Hidden:      true,
-			TUIOnly:     true,
-		},
-		{
-			Name:        "edit",
-			Description: "Switch to Edit mode (plan + edit, confirm each change)",
-			Hidden:      true,
-			TUIOnly:     true,
-		},
-		{
-			Name:        "copilot",
-			Description: "Switch to Copilot mode (auto-approve, may ask questions)",
-			Hidden:      true,
+			Name:        "act",
+			Description: "Act mode: routine workspace work proceeds without asking (Auto off)",
+			Group:       groupWorkflow,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "auto",
-			Description: "Switch to Auto mode (fully autonomous, no questions)",
-			Hidden:      true,
+			Description: "Toggle Auto (Act + Auto): preauthorize destructive workspace commands; /auto on enters Act",
+			Args:        "[on|off]",
+			Group:       groupWorkflow,
 			TUIOnly:     true,
 		},
 		{
 			Name:        "mode",
-			Description: "Pick the interaction mode (Plan / Default / Edit / Copilot / Auto)",
-			Args:        "[plan|default|edit|copilot|auto]",
+			Description: "Pick the interaction mode (Ask / Act)",
+			Args:        "[ask|act]",
 			Group:       groupWorkflow,
 			TUIOnly:     true,
 		},
@@ -346,7 +335,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 				"Sticky until toggled off. Does not change approval friction. " +
 				"`/system unlock` toggles privileged unlock: privileged commands reuse sudo's own timestamp grace " +
 				"instead of authenticating fresh each time.",
-			Args:    "[unlock]",
+			Args:    "[on|off|unlock]",
 			Group:   groupWorkflow,
 			TUIOnly: true,
 		},
@@ -415,9 +404,12 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 			Handler: func(state *session.State, args []string) Result {
 				cfg := state.Config
 				route := state.ActiveRoute()
+				// Configured defaults, not the effective runtime state: the
+				// live mode/Auto/System tuple is presented by the runtime's
+				// own status surface.
 				return Text(fmt.Sprintf(
-					"Configuration:\n  Project: %s\n  Working dir: %s\n  Profile: %s\n  Remote allowed: %v\n  Auto-approve: %v",
-					cfg.Project.Name, state.WorkingDir, route.Profile, cfg.Privacy.RemoteProvidersAllowed, cfg.Tools.Shell.AutoApprove,
+					"Configuration:\n  Project: %s\n  Working dir: %s\n  Profile: %s\n  Remote allowed: %v\n  Mode: %s\n  Auto: %v",
+					cfg.Project.Name, state.WorkingDir, route.Profile, cfg.Privacy.RemoteProvidersAllowed, cfg.Agent.Mode, cfg.Agent.Auto,
 				))
 			},
 		},

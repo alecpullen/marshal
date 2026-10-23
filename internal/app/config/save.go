@@ -10,6 +10,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/strutil"
 )
@@ -78,7 +79,11 @@ func SaveVerifyCommands(path, build, test string) error {
 	file.SDD.Verify.Build = strutil.Ptr(build)
 	file.SDD.Verify.Test = strutil.Ptr(test)
 
-	data, err := toml.Marshal(&file)
+	canonical, err := canonicalFileForSave(file, "project config")
+	if err != nil {
+		return err
+	}
+	data, err := toml.Marshal(&canonical)
 	if err != nil {
 		return fmt.Errorf("marshal project config: %w", err)
 	}
@@ -226,7 +231,8 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&agent.NarrationPrompt, fileField[bool](file.Agent, "NarrationPrompt"), cfg.Agent.NarrationPrompt, def.Agent.NarrationPrompt)
 	putKey(&agent.IntentNudge, fileField[bool](file.Agent, "IntentNudge"), cfg.Agent.IntentNudge, def.Agent.IntentNudge)
 	putKey(&agent.SubtaskIterations, fileField[int](file.Agent, "SubtaskIterations"), cfg.Agent.SubtaskIterations, def.Agent.SubtaskIterations)
-	putKey(&agent.ApprovalMode, fileField[string](file.Agent, "ApprovalMode"), cfg.Agent.ApprovalMode, def.Agent.ApprovalMode)
+	putKey(&agent.Mode, fileField[interaction.Mode](file.Agent, "Mode"), cfg.Agent.Mode, def.Agent.Mode)
+	putKey(&agent.Auto, fileField[bool](file.Agent, "Auto"), cfg.Agent.Auto, def.Agent.Auto)
 	putKey(&agent.HistoryBudgetTokens, fileField[int](file.Agent, "HistoryBudgetTokens"), cfg.Agent.HistoryBudgetTokens, def.Agent.HistoryBudgetTokens)
 	// ParseRepairFeedback is a *bool (tri-state). putKey can't infer a **bool
 	// target, so mirror its "write if file had it OR merged differs from
@@ -261,8 +267,9 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&shell.MaxBackgroundJobs, fileField[int](file.Tools.Shell, "MaxBackgroundJobs"), cfg.Tools.Shell.MaxBackgroundJobs, def.Tools.Shell.MaxBackgroundJobs)
 	putKey(&shell.BackgroundRetention, fileField[string](file.Tools.Shell, "BackgroundRetention"), cfg.Tools.Shell.BackgroundRetention.String(), def.Tools.Shell.BackgroundRetention.String())
 	putKey(&shell.AllowNetwork, fileField[bool](file.Tools.Shell, "AllowNetwork"), cfg.Tools.Shell.AllowNetwork, def.Tools.Shell.AllowNetwork)
-	putKey(&shell.AutoApprove, fileField[bool](file.Tools.Shell, "AutoApprove"), cfg.Tools.Shell.AutoApprove, def.Tools.Shell.AutoApprove)
-	putKey(&shell.GuardrailDynamicArgv0, fileField[string](file.Tools.Shell, "GuardrailDynamicArgv0"), cfg.Tools.Shell.GuardrailDynamicArgv0, def.Tools.Shell.GuardrailDynamicArgv0)
+	// auto_approve and guardrail_dynamic_argv0 are retired: they are never
+	// emitted by an explicit save. Authored floor/allow/confirm/deny rules
+	// below are retained.
 	putSlice(&shell.FloorCommands, fileSlice[string](file.Tools.Shell, "FloorCommands"), strutil.Ptr(cfg.Tools.Shell.FloorCommands), strutil.Ptr(def.Tools.Shell.FloorCommands))
 
 	if file.Tools.Shell.Sandbox == nil {
@@ -458,11 +465,9 @@ func writeSections(file *configFile, cfg Config, def Config) {
 		}
 	}
 	if file.CustomAgents != nil || len(cfg.CustomAgents) > 0 {
-		file.CustomAgents = map[string]routing.CustomAgent{}
+		file.CustomAgents = map[string]fileCustomAgent{}
 		for name, a := range cfg.CustomAgents {
-			ca := a
-			ca.Name = name
-			file.CustomAgents[name] = ca
+			file.CustomAgents[name] = customAgentFile(a)
 		}
 	}
 	// Sections below were previously merged on load but never written
@@ -773,7 +778,11 @@ func SaveUserConfigProviderAPIKey(path, providerName string, pc ProviderConfig) 
 	merged.APIKeyEnv = "" // clear stale env-var reference when switching to inline
 	file.Providers[providerName] = merged
 
-	data, err := toml.Marshal(&file)
+	canonical, err := canonicalFileForSave(file, "user config")
+	if err != nil {
+		return err
+	}
+	data, err := toml.Marshal(&canonical)
 	if err != nil {
 		return fmt.Errorf("marshal user config: %w", err)
 	}
@@ -859,7 +868,11 @@ func SaveUserConfigPresets(path string, presets map[string]routing.ModelPreset, 
 // writeUserConfig marshals file and writes it to path via writeUserConfigFile,
 // prepending the standard header when the file is being created.
 func writeUserConfig(path string, file *configFile) error {
-	data, err := toml.Marshal(file)
+	canonical, err := canonicalFileForSave(*file, "user config")
+	if err != nil {
+		return err
+	}
+	data, err := toml.Marshal(&canonical)
 	if err != nil {
 		return fmt.Errorf("marshal user config: %w", err)
 	}

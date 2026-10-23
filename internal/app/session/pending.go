@@ -10,12 +10,16 @@ import (
 )
 
 // AccessState is the effective access tuple for one session: the interaction
-// mode governing approval decisions plus whether the conversation holds the
-// system-access modifier. It is a value snapshot (see State.AccessState), so a
-// reader cannot observe a half-applied pair.
+// mode governing approval decisions, the Auto modifier, whether the
+// conversation holds the system-access modifier, and the access revision. It
+// is a value snapshot (see State.AccessState), so a reader cannot observe a
+// half-applied tuple. Mode keeps the retired string spelling during caller
+// migration; Auto carries the canonical modifier.
 type AccessState struct {
-	Mode   string `json:"mode"`
-	System bool   `json:"system"`
+	Mode     string `json:"mode"`
+	Auto     bool   `json:"auto"`
+	System   bool   `json:"system"`
+	Revision uint64 `json:"access_revision"`
 }
 
 // AccessIntent is what a caller asked for before the session decided whether
@@ -230,8 +234,12 @@ type PendingToolCall struct {
 	Schema  string // Details / schema / description of the tool
 	// StepID is the step (model response) that requested the call, so the
 	// approval panel can show that step's narration as the reason. 0 = none.
-	StepID       StepID
-	ResponseChan chan UserApprovalDecision
+	StepID StepID
+	// ExactCommandApproval marks an approval only the exact command may answer:
+	// a standing or session-wide choice cannot be accepted for it, so the UI
+	// offers exact decisions only.
+	ExactCommandApproval bool
+	ResponseChan         chan UserApprovalDecision
 	// Access, when non-nil, marks this as a typed capability request rather
 	// than an ordinary tool approval. The metadata is display-only (it
 	// carries no channel); settlement goes through the session's private
@@ -618,9 +626,14 @@ type PendingSudoAuth struct {
 	// rejected.
 	Attempt int
 	// Error is the message from the previous failed attempt ("" on the first).
-	Error        string
-	ResponseChan chan SudoAuthDecision
-	responded    sync.Once
+	Error string
+	// CommandApproval marks this prompt as also collecting the specific
+	// approval of the exact command shown. It is the combined privileged
+	// prompt: one dialog approves the command and reads the password, so the
+	// TUI presents it as a command decision instead of opening a second one.
+	CommandApproval bool
+	ResponseChan    chan SudoAuthDecision
+	responded       sync.Once
 	// Key/canonical mirror PendingQuestion; see its comment. A canceled sudo
 	// prompt delivers an empty decision: no password bytes are ever retained.
 	Key       PromptKey
@@ -661,13 +674,14 @@ func (s *State) SetPendingSudoAuth(sa *PendingSudoAuth) {
 	var snap *PendingSudoAuth
 	if sa != nil {
 		snap = &PendingSudoAuth{
-			Command:      sa.Command,
-			Reason:       sa.Reason,
-			StepID:       sa.StepID,
-			AllowUnlock:  sa.AllowUnlock,
-			Attempt:      sa.Attempt,
-			Error:        sa.Error,
-			ResponseChan: sa.ResponseChan,
+			Command:         sa.Command,
+			Reason:          sa.Reason,
+			StepID:          sa.StepID,
+			AllowUnlock:     sa.AllowUnlock,
+			Attempt:         sa.Attempt,
+			Error:           sa.Error,
+			CommandApproval: sa.CommandApproval,
+			ResponseChan:    sa.ResponseChan,
 		}
 	}
 	s.mu.Unlock()

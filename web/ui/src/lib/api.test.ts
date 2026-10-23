@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending, listReviewDrafts, getReviewDraft, editReviewDraft, postReviewDraft, discardReviewDraft, sendDraftToAuthor, runReviewBot, listCIHistory, getCIHistory, createWebhookSecret, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory } from './api'
+import { APIError, BudgetError, answerRun, errMessage, getCommitDraft, getRoster, getRun, listReviewComments, listRuns, postReviewComment, recentPrompts, resolveReviewComment, startRun, undoReroute, getGate, getLastRequest, getNode, getStack, getStepDiffs, listFiles, readFile, runGate, getAccess, patchAccess, setToken, confirmPlugin, confirmSkill, createWatch, deleteMemory, discardPlugin, discardSkill, getBudgets, getModels, getUsage, listMemory, listPlugins, listSkills, listWatches, overrideBudget, previewSkill, probeProvider, removePlugin, removeSkill, scanPlugin, setBudgets, setMemoryConfidence, setPresets, setProviderKey, setProviders, setRouting, spawnAgent, stopWatch, createWorkspace, diffWorkspace, getWorkspace, listBuilds, listWorkspaces, patchWorkspace, publishWorkspace, rotateWorkspaceCA, saveWorkspaceDraft, setWorkspacePool, startBuild, deleteWorkspace, getNetworkHosts, getNetworkRequests, getNetworkAgents, postNetworkDecision, getSecretsStatus, listSecrets, putSecret, deleteSecret, listCredentials, putCredential, deleteCredential, listRepos, registerRepo, removeRepo, getProjectSettings, putProjectSettings, getProjectHealth, getNetworkPending, listReviewDrafts, getReviewDraft, editReviewDraft, postReviewDraft, discardReviewDraft, sendDraftToAuthor, runReviewBot, listCIHistory, getCIHistory, createWebhookSecret, openTerminal, openWorkspaceShell, terminalInput, terminalResize, terminalRelease, closeTerminal, terminalEventsUrl, openPreview, listRecipes, getRecipe, saveRecipe, deleteRecipe, copyRecipe, runRecipe, listSchedules, saveSchedule, deleteSchedule, runSchedule, getNotifications, saveNotifications, testNotifications, createStatusLink, listStatusLinks, revokeStatusLink, memorySuggestions, promoteMemory } from './api'
 
 function reply(status: number, body?: unknown) {
   return vi.fn().mockResolvedValue({
@@ -190,6 +190,8 @@ describe('control API (library, models, usage, budgets, watches)', () => {
     ['deleteMemory', () => deleteMemory(7, '/w/a'), 'DELETE', '/api/library/memory/7?project=%2Fw%2Fa'],
     ['setMemoryConfidence', () => setMemoryConfidence(7, '/w/a', 'stale'), 'POST', '/api/library/memory/7/confidence?project=%2Fw%2Fa'],
     ['getModels', () => getModels(), 'GET', '/api/models'],
+    ['getAccess', () => getAccess('s 1'), 'GET', '/api/sessions/s%201/access'],
+    ['patchAccess', () => patchAccess('s1', { auto: false }), 'PATCH', '/api/sessions/s1/access'],
     ['setProviders', () => setProviders({ x: null }), 'PUT', '/api/models/providers'],
     ['setProviderKey', () => setProviderKey('my p', 'k'), 'PUT', '/api/models/providers/my%20p/key'],
     ['setPresets', () => setPresets({ a: null }), 'PUT', '/api/models/presets'],
@@ -208,6 +210,17 @@ describe('control API (library, models, usage, budgets, watches)', () => {
     await call()
     expect(f.mock.calls[0][0]).toBe(url)
     expect(f.mock.calls[0][1].method).toBe(method)
+  })
+
+  it('sends only the present access fields, preserving an explicit false', async () => {
+    const f = reply(200, {})
+    vi.stubGlobal('fetch', f)
+    await patchAccess('s1', { auto: false })
+    expect(body(f)).toEqual({ auto: false })
+    await patchAccess('s1', { mode: 'ask' })
+    expect(body(f, 1)).toEqual({ mode: 'ask' })
+    await patchAccess('s1', { system_access: false })
+    expect(body(f, 2)).toEqual({ system_access: false })
   })
 
   it('stages a preview and scan on the scope that will own them', async () => {

@@ -14,6 +14,7 @@ import (
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
@@ -857,7 +858,12 @@ func TestRunnerSetsActivityDuringApproval(t *testing.T) {
 			return registry.ToolResult{Summary: "ok"}, nil
 		},
 	})
-	pol := policy.NewEngine(&config.Config{}, nil)
+	// The new classifier allows a routine build like `go test` outright, so
+	// pin a confirm rule to keep this test exercising the approval activity.
+	// The pattern matches the executable, so `go` covers `go test`.
+	cfg := config.Config{}
+	cfg.Tools.Shell.Confirm.Commands = []string{"go *"}
+	pol := policy.NewEngine(&cfg, nil)
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 	runner.MaxToolIterations = 2
@@ -1832,8 +1838,11 @@ func TestWriteInvalidatesToolCache(t *testing.T) {
 		`{"rationale":"done","action":{"type":"final","content":"done"}}`,
 	}}
 	state := newTestState(t)
+	auto := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("seed Auto: %v", err)
+	}
 	pol := policy.NewEngine(&config.Config{}, nil)
-	pol.SetApprovalMode(policy.ModeAuto)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
 	if err := runner.Run(context.Background(), "read, write, read"); err != nil {

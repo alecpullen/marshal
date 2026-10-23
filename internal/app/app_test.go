@@ -93,7 +93,7 @@ func TestPipelineRegistryFactoryExcludesWebTools(t *testing.T) {
 		}
 	}
 
-	factory := makePipelineRegistryFactory(cfg, state, nil, nil, nil, 0, nil, nil, nil)
+	factory := makePipelineRegistryFactory(cfg, state, nil, nil, nil, nil, 0, nil, nil, nil)
 	ctx := pipeline.ExecutionContext{
 		RepoRoot:      dir,
 		WorkspaceRoot: dir,
@@ -1203,7 +1203,7 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 	t.Cleanup(func() { _ = service.manager.Shutdown(context.Background()) })
 
 	childState := session.New(cfg, worktree, time.Unix(100, 0), session.Persistence{})
-	factory := makePipelineRegistryFactory(cfg, state, runner, nil, nil, 0, nil, nil, service)
+	factory := makePipelineRegistryFactory(cfg, state, nil, runner, nil, nil, 0, nil, nil, service)
 	reg, err := factory(pipeline.ExecutionContext{
 		RepoRoot:      repoRoot,
 		WorkspaceRoot: worktree,
@@ -3972,7 +3972,7 @@ func TestRoleRunnerAppliesCustomAgentOverrides(t *testing.T) {
 		"ollama/gpt-4o-mini": {Provider: "ollama", Model: "gpt-4o-mini", LocalOnly: true, ToolCalling: "native"},
 	}
 	cfg.CustomAgents = map[string]routing.CustomAgent{
-		"strict": {Name: "strict", Preset: "ollama/gpt-4o-mini", SystemPrompt: "be strict", ToolDenylist: []string{"file.write_patch"}, ApprovalMode: "plan", MaxIterations: 5},
+		"strict": {Name: "strict", Preset: "ollama/gpt-4o-mini", SystemPrompt: "be strict", ToolDenylist: []string{"file.write_patch"}, MaxIterations: 5},
 	}
 	resolver := newRoutedProviderResolver(cfg, "")
 	reg := registry.New()
@@ -4006,14 +4006,12 @@ func TestRoleRunnerAppliesCustomAgentOverrides(t *testing.T) {
 	}
 }
 
-// TestPipelineRoleRunnerAutoApprovesInChildSession pins the SDD approval
+// TestPipelineRoleRunnerUsesBoundedOwnerAuthority pins the SDD approval
 // contract: pipeline role runners stream into child sessions that no UI
-// watches, so an interactive Confirm would wait out the approval timeout and
-// fail the turn with "agent: request timed out". Child-session runners must
-// therefore evaluate under an auto-approving clone of the shared engine,
-// leaving the parent's mode untouched. Swarm runners share the parent
-// session (their approvals reach the TUI) and keep the shared engine.
-func TestPipelineRoleRunnerAutoApprovesInChildSession(t *testing.T) {
+// watches, so their authority is the owner's bounded tuple — never a forced
+// Auto. The child engine is an independent clone so a child evaluation cannot
+// mutate the parent's rules.
+func TestPipelineRoleRunnerUsesBoundedOwnerAuthority(t *testing.T) {
 	cfg := config.Default()
 	cfg.Privacy.RemoteProvidersAllowed = true
 	cfg.Profile.Default = "p"
@@ -4037,14 +4035,14 @@ func TestPipelineRoleRunnerAutoApprovesInChildSession(t *testing.T) {
 	_ = reg.Register(registry.Tool{Name: "file.write_patch", Risk: registry.RiskWorkspaceWrite, Handler: handler})
 	pol := policy.NewEngine(&cfg, nil)
 	pol.WithRegistry(reg)
-	pol.SetApprovalMode(policy.ModeEdit)
+	parentState := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
 	spec := roleRunnerSpec{
 		cfg:          cfg,
 		resolver:     resolver,
 		reg:          reg,
 		readOnlyReg:  registry.ReadOnlyView(reg),
 		pol:          pol,
-		state:        session.New(cfg, t.TempDir(), time.Now(), session.Persistence{}),
+		state:        parentState,
 		childSession: true,
 	}
 	runner, err := spec.newRunner(agent.RoleSDDImplementer, swarm.ScopeFull)
@@ -4052,21 +4050,33 @@ func TestPipelineRoleRunnerAutoApprovesInChildSession(t *testing.T) {
 		t.Fatalf("newRunner: %v", err)
 	}
 	args := map[string]interface{}{"patch": "File: a\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE"}
-	dec, reason, err := runner.Policy.Evaluate("file.write_patch", args)
+	// The child's authority is the owner's bounded Act tuple: no forced Auto,
+	// so a write still requires approval.
+	childEv, err := runner.Policy.EvaluateInput(policy.Input{
+		ToolName:   "file.write_patch",
+		Args:       args,
+		ActorState: runner.State.InteractionState(),
+	})
 	if err != nil {
-		t.Fatalf("Evaluate: %v", err)
+		t.Fatalf("EvaluateInput: %v", err)
 	}
-	if dec != policy.DecisionAllow {
-		t.Fatalf("pipeline role runner file.write_patch = %v (%q), want Allow (unattended subagent must not wait on approval)", dec, reason)
-	}
-	if pol.ApprovalMode() != policy.ModeEdit {
-		t.Fatalf("parent engine mode = %q, want %q (subagent clone must not mutate the session mode)", pol.ApprovalMode(), policy.ModeEdit)
-	}
-	if dec, _, err := pol.Evaluate("file.write_patch", args); err != nil || dec != policy.DecisionConfirm {
-		t.Fatalf("parent engine file.write_patch = %v, %v; want Confirm", dec, err)
+	if childEv.Decision != policy.DecisionConfirm {
+		t.Fatalf("pipeline role runner file.write_patch = %v, want Confirm (no forced Auto)", childEv.Decision)
 	}
 	if runner.Policy == pol {
 		t.Fatal("child-session runner shares the parent policy engine; want an independent clone")
+	}
+	// The parent engine is untouched.
+	parentEv, err := pol.EvaluateInput(policy.Input{
+		ToolName:   "file.write_patch",
+		Args:       args,
+		ActorState: parentState.InteractionState(),
+	})
+	if err != nil {
+		t.Fatalf("EvaluateInput: %v", err)
+	}
+	if parentEv.Decision != policy.DecisionConfirm {
+		t.Fatalf("parent engine file.write_patch = %v, want Confirm", parentEv.Decision)
 	}
 }
 
@@ -6596,10 +6606,8 @@ func (r *facadeTurnRunner) Run(ctx context.Context, goal string) error {
 	return ctx.Err()
 }
 
-func (r *facadeTurnRunner) SetForceClass(string)                   {}
-func (r *facadeTurnRunner) SetPolicyRules([]config.PermissionRule) {}
-func (r *facadeTurnRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (r *facadeTurnRunner) AnswerGate(string)                      {}
+func (r *facadeTurnRunner) SetForceClass(string) {}
+func (r *facadeTurnRunner) AnswerGate(string)    {}
 
 // TestRuntimeSendNowTUIOptionsExerciseRealFacade drives the production TUI
 // facade end to end: the runtime's own snapshot and submit callbacks are wired
@@ -6806,46 +6814,6 @@ func TestTUIEndControllerAdapterRoundTrips(t *testing.T) {
 	}
 	if !ctrl.EndAccepted() {
 		t.Fatal("EndAccepted() = false after an acceptance")
-	}
-}
-
-// TestExitAnalysisElevationIsRestored pins the app-side ownership of the exit
-// analysis' temporary elevation: it is in place while the pass runs and is
-// undone whatever the outcome, so a failed pass can never leave an ordinary
-// prompt elevated.
-func TestExitAnalysisElevationIsRestored(t *testing.T) {
-	rt := startEndRuntime(t)
-	if rt.Runner == nil {
-		t.Fatal("rt.Runner = nil")
-	}
-
-	// Seed a read-only posture: the pass must not have it, and must get it back.
-	rt.State.SetSystemAccess(false)
-	rt.Runner.SetApprovalMode(policy.ModePlan)
-	rt.Config.Agent.ApprovalMode = string(policy.ModePlan)
-
-	seenSystem, seenMode := false, policy.ModePlan
-	err := runWithExitAnalysisElevation(rt, func() error {
-		seenSystem = rt.State.SystemAccess()
-		if rt.Runner.Policy != nil {
-			seenMode = rt.Runner.Policy.ApprovalMode()
-		}
-		return errors.New("the pass failed")
-	})
-	if err == nil {
-		t.Fatal("runWithExitAnalysisElevation swallowed the pass error")
-	}
-	if !seenSystem {
-		t.Fatal("the pass ran WITHOUT system access; the elevation was not applied")
-	}
-	if seenMode != policy.ModeEdit {
-		t.Fatalf("the pass ran in mode %q, want edit so its write is not mode-denied", seenMode)
-	}
-	if rt.State.SystemAccess() {
-		t.Fatal("a failed pass left system access granted")
-	}
-	if rt.Runner.Policy != nil && rt.Runner.Policy.ApprovalMode() != policy.ModePlan {
-		t.Fatalf("a failed pass left the mode at %q, want the prior plan", rt.Runner.Policy.ApprovalMode())
 	}
 }
 

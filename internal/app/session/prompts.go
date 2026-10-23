@@ -253,18 +253,19 @@ func (s *State) RegisterSudoAuth(ctx context.Context, pending *PendingSudoAuth) 
 
 func approvalSnapshot(tc *PendingToolCall) *PendingToolCall {
 	return &PendingToolCall{
-		ID:        tc.ID,
-		Name:      tc.Name,
-		Args:      tc.Args,
-		Command:   tc.Command,
-		Risk:      tc.Risk,
-		Reason:    tc.Reason,
-		Diff:      tc.Diff,
-		Schema:    tc.Schema,
-		StepID:    tc.StepID,
-		Access:    copyAccessRequest(tc.Access),
-		Key:       tc.Key,
-		canonical: tc.canonical,
+		ID:                   tc.ID,
+		Name:                 tc.Name,
+		Args:                 tc.Args,
+		Command:              tc.Command,
+		Risk:                 tc.Risk,
+		Reason:               tc.Reason,
+		Diff:                 tc.Diff,
+		Schema:               tc.Schema,
+		StepID:               tc.StepID,
+		ExactCommandApproval: tc.ExactCommandApproval,
+		Access:               copyAccessRequest(tc.Access),
+		Key:                  tc.Key,
+		canonical:            tc.canonical,
 	}
 }
 
@@ -288,14 +289,15 @@ func skillGateSnapshot(sg *PendingSkillGate) *PendingSkillGate {
 
 func sudoAuthSnapshot(sa *PendingSudoAuth) *PendingSudoAuth {
 	return &PendingSudoAuth{
-		Command:     sa.Command,
-		Reason:      sa.Reason,
-		StepID:      sa.StepID,
-		AllowUnlock: sa.AllowUnlock,
-		Attempt:     sa.Attempt,
-		Error:       sa.Error,
-		Key:         sa.Key,
-		canonical:   sa.canonical,
+		Command:         sa.Command,
+		Reason:          sa.Reason,
+		StepID:          sa.StepID,
+		AllowUnlock:     sa.AllowUnlock,
+		Attempt:         sa.Attempt,
+		Error:           sa.Error,
+		CommandApproval: sa.CommandApproval,
+		Key:             sa.Key,
+		canonical:       sa.canonical,
 	}
 }
 

@@ -157,6 +157,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/sessions/{id}/cancel", s.cancel)
 	s.mux.HandleFunc("POST /api/sessions/{id}/steer", s.steer)
 	s.mux.HandleFunc("POST /api/sessions/{id}/mode", s.setMode)
+	s.mux.HandleFunc("GET /api/sessions/{id}/access", s.getAccess)
+	s.mux.HandleFunc("PATCH /api/sessions/{id}/access", s.patchAccess)
 	s.mux.HandleFunc("GET /api/sessions/{id}/stack", s.sessionStack)
 	s.mux.HandleFunc("GET /api/sessions/{id}/nodes/{nodeId}", s.sessionNode)
 	s.mux.HandleFunc("GET /api/sessions/{id}/last-request", s.sessionLastRequest)
@@ -430,7 +432,10 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		Project string `json:"project"`
 		Name    string `json:"name"`
 		Mode    string `json:"mode"`
-		Prompt  string `json:"prompt"`
+		// Auto is a pointer so a request that leaves it out takes the
+		// project's default, while an explicit false stays a value.
+		Auto   *bool  `json:"auto"`
+		Prompt string `json:"prompt"`
 		// Isolated is a pointer so a request that leaves it out takes the
 		// project's default.
 		Isolated *bool  `json:"isolated"`
@@ -457,6 +462,9 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 	if body.Mode == "" {
 		body.Mode = defaults.Mode
 	}
+	if body.Auto == nil {
+		body.Auto = defaults.Auto
+	}
 	if len(body.Routing) == 0 || string(body.Routing) == "null" {
 		body.Routing = defaults.Routing
 	}
@@ -464,7 +472,7 @@ func (s *Server) spawnAgent(w http.ResponseWriter, r *http.Request) {
 		body.Workspace = defaults.Workspace
 	}
 	id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
-		Name: body.Name, Mode: body.Mode, Isolated: isolated, Branch: body.Branch, BaseRef: body.BaseRef,
+		Name: body.Name, Mode: body.Mode, Auto: body.Auto, Isolated: isolated, Branch: body.Branch, BaseRef: body.BaseRef,
 		Routing: body.Routing, Workspace: body.Workspace,
 	})
 	if id == "" {
@@ -722,7 +730,11 @@ func (s *Server) newSession(w http.ResponseWriter, r *http.Request) {
 	var id string
 	var err error
 	if s.fleet != nil {
-		id, err = s.fleet.Spawn(r.Context(), body.Cwd, SpawnOptions{})
+		// This is a spawn origin like any other, so it takes the project's
+		// starting tuple: without it a session created here fell back to the
+		// engine default and silently ignored the project's choice.
+		defaults := s.fleet.ws.ProjectSettingsFor(body.Cwd)
+		id, err = s.fleet.Spawn(r.Context(), body.Cwd, SpawnOptions{Mode: defaults.Mode, Auto: defaults.Auto})
 	} else {
 		id, err = s.reg.New(r.Context(), AgentPath(body.Cwd), body.SessionID)
 	}
@@ -887,7 +899,10 @@ func (s *Server) steer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "steered"})
 }
 
-// setMode switches the session's permission mode.
+// setMode switches the session's permission mode. It is the legacy
+// single-field ingress for PATCH /api/sessions/{id}/access: the mode is
+// forwarded as an atomic patch and the full committed state is returned.
+// New clients use the access routes and never need a dummy mode.
 func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Mode string `json:"mode"`
@@ -904,11 +919,51 @@ func (s *Server) setMode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	if err := reg.SetMode(r.Context(), sessionID, body.Mode); err != nil {
+	st, err := reg.SetAccess(r.Context(), sessionID, AccessPatch{Mode: &body.Mode})
+	if err != nil {
 		writeErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, st)
+}
+
+// getAccess reports the session's committed access state
+// (session/access_state). It is the authoritative read a client bootstraps
+// from instead of inferring privileges from defaults or a transcript.
+func (s *Server) getAccess(w http.ResponseWriter, r *http.Request) {
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	st, err := reg.AccessState(r.Context(), sessionID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// patchAccess applies one atomic access patch (session/set_mode) and returns
+// the full committed state. The body is decoded strictly, so a null, unknown,
+// wrong-typed or empty patch is rejected here and never forwarded; the bridge
+// validates the wire shape only and grants nothing locally.
+func (s *Server) patchAccess(w http.ResponseWriter, r *http.Request) {
+	var patch AccessPatch
+	if !decodeJSON(w, r, &patch) {
+		return
+	}
+	reg, _, sessionID, err := s.registryForSession(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	st, err := reg.SetAccess(r.Context(), sessionID, patch)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 // writeRaw writes an agent result as-is.
@@ -1155,6 +1210,7 @@ func (s *Server) listPending(w http.ResponseWriter, r *http.Request) {
 			"prompt":    p.Prompt,
 			"plan":      p.Plan,
 			"mode":      p.Mode,
+			"auto":      p.Auto,
 			"createdAt": p.CreatedAt,
 			"expiresAt": p.ExpiresAt,
 		})

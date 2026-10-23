@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -768,59 +769,118 @@ func TestDiscardRetiresAGitSourcedAgent(t *testing.T) {
 	}
 }
 
-// A bridge-originated agent (a due schedule, the review bot, the CI fixer)
-// starts with nobody attached, so an approval prompt can never be answered:
-// the turn waits until its deadline and the work never happens. Edit mode
-// prompts before every command that is not safe-listed or covered by an
-// allow rule, so it is the mode that stalls an automation. It runs in auto
-// instead, which answers those prompts itself.
-func TestAutomationSpawnRunsInAutoMode(t *testing.T) {
+// TestEverySpawnOriginPreservesExplicitAutoFalse checks that no origin — an
+// operator's own agent or an unattended automation — promotes or drops the
+// requested starting tuple: an explicit Auto false reaches session/new as a
+// value, and no origin follows it with a second patch.
+func TestEverySpawnOriginPreservesExplicitAutoFalse(t *testing.T) {
 	f, _, agentOf := agentFleet(t)
-	id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{
-		Origin: OriginCI, Mode: "edit", Prompt: "reproduce the failure"})
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
-	}
-	calls := agentOf(id).calls("session/set_mode")
-	if len(calls) != 1 || !strings.Contains(calls[0], `"mode":"auto"`) {
-		t.Fatalf("set_mode = %v, want auto for an unattended automation", calls)
-	}
-	a, ok := f.ws.Agent(id)
-	if !ok || a.Mode != "auto" {
-		t.Fatalf("agent mode = %+v, want the mode it actually runs under", a)
-	}
-}
-
-// The operator's own agents are attended: an edit-mode prompt is the
-// interaction they asked for, so the mode must not be promoted.
-func TestOperatorSpawnKeepsItsMode(t *testing.T) {
-	f, _, agentOf := agentFleet(t)
-	for name, origin := range map[string]string{"ui": OriginUI, "mcp": OriginMCP} {
-		id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{
-			Origin: origin, Mode: "edit", Prompt: "x"})
+	for _, origin := range []string{OriginUI, OriginMCP, OriginIssue, OriginSchedule, OriginReviewBot, OriginCI} {
+		id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{Origin: origin, Mode: "act", Auto: boolPtr(false)})
 		if err != nil {
-			t.Fatalf("%s: Spawn: %v", name, err)
+			t.Fatalf("%s: Spawn: %v", origin, err)
 		}
-		calls := agentOf(id).calls("session/set_mode")
-		if len(calls) != 1 || !strings.Contains(calls[0], `"mode":"edit"`) {
-			t.Fatalf("%s: set_mode = %v, want edit unchanged", name, calls)
+		calls := agentOf(id).calls("session/new")
+		if len(calls) != 1 || !strings.Contains(calls[0], `"policy":{"auto":false,"mode":"act"}`) {
+			t.Errorf("%s: session/new = %v, want an explicit auto false", origin, calls)
+		}
+		if got := agentOf(id).calls("session/set_mode"); len(got) != 0 {
+			t.Errorf("%s: set_mode = %v, want no implicit second patch", origin, got)
+		}
+		// Release the slot: the fleet bounds concurrent agents, and this test
+		// inspects more origins than that bound.
+		f.stopAgent(id)
+	}
+}
+
+// TestUnattendedOriginNeverPromotesLegacyEdit checks the retired promotion: an
+// automation that asks for the legacy edit spelling starts Ask, not Auto.
+// Nobody is attached to answer an approval, so the run ends unapproved rather
+// than being silently granted write authority.
+func TestUnattendedOriginNeverPromotesLegacyEdit(t *testing.T) {
+	f, _, agentOf := agentFleet(t)
+	for _, origin := range []string{OriginSchedule, OriginReviewBot, OriginCI} {
+		id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{Origin: origin, Mode: "edit", Prompt: "x"})
+		if err != nil {
+			t.Fatalf("%s: Spawn: %v", origin, err)
+		}
+		calls := agentOf(id).calls("session/new")
+		if len(calls) != 1 || !strings.Contains(calls[0], `"policy":{"mode":"ask"}`) {
+			t.Errorf("%s: session/new = %v, want ask with no Auto promotion", origin, calls)
+		}
+		a, ok := f.ws.Agent(id)
+		if !ok || a.Mode != "ask" || a.Auto != nil {
+			t.Errorf("%s: agent = %+v, want ask with no auto", origin, a)
 		}
 	}
 }
 
-// The review bot runs the read-only review-pr recipe in plan mode. Plan
-// refuses a write rather than prompting, so it never stalls; promoting it
-// would quietly grant an unattended reviewer write access it never had.
-func TestReviewBotKeepsPlanMode(t *testing.T) {
-	f, _, agentOf := agentFleet(t)
-	id, err := f.Spawn(ctlContext(t), "/p", SpawnOptions{
-		Origin: OriginReviewBot, Mode: "plan", Prompt: "review"})
-	if err != nil {
-		t.Fatalf("Spawn: %v", err)
+// TestSpawnUsesCombinedStartingTupleAndActualResponse checks that the project
+// default and the request combine into one policy at session/new, and that the
+// bridge records the tuple the agent actually committed rather than what it
+// asked for.
+func TestSpawnUsesCombinedStartingTupleAndActualResponse(t *testing.T) {
+	e, s, root := projectEnv(t)
+	// The agent answers with the tuple it committed, as a real one does.
+	orig := e.f.newRuntime
+	e.f.newRuntime = func(a Agent) (*Child, error) {
+		c, err := orig(a)
+		if err != nil {
+			return nil, err
+		}
+		if fa, ok := c.Transport.(*fakeAgent); ok {
+			fa.results["session/new"] = map[string]any{
+				"sessionId": "s-committed", "mode": "act", "auto": true,
+				"system_access": false, "access_revision": 3,
+			}
+		}
+		return c, nil
 	}
-	calls := agentOf(id).calls("session/set_mode")
-	if len(calls) != 1 || !strings.Contains(calls[0], `"mode":"plan"`) {
-		t.Fatalf("set_mode = %v, want plan unchanged", calls)
+	// The project supplies the mode; the request supplies an explicit Auto.
+	putSettings(t, s, root, ProjectSettings{Mode: "ask"})
+	rec := doReq(t, s, http.MethodPost, "/api/agents", map[string]any{"project": root, "auto": false}, nil)
+	var out struct {
+		AgentID string `json:"agentId"`
+	}
+	decodeBody(t, rec, &out)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("spawn = %d %s", rec.Code, rec.Body)
+	}
+	calls := e.agents[out.AgentID].calls("session/new")
+	if len(calls) != 1 || !strings.Contains(calls[0], `"policy":{"auto":false,"mode":"ask"}`) {
+		t.Fatalf("session/new = %v, want the combined project/request tuple", calls)
+	}
+	if got := e.agents[out.AgentID].calls("session/set_mode"); len(got) != 0 {
+		t.Fatalf("session/set_mode = %v, want no implicit patch", got)
+	}
+	// The committed response, not the request, is what the bridge records.
+	a, _ := e.f.ws.Agent(out.AgentID)
+	if a.Mode != "act" || a.Auto == nil || !*a.Auto {
+		t.Fatalf("agent = %+v, want the committed act + auto", a)
+	}
+}
+
+// TestPendingSpawnRetainsCanonicalTuplePresence checks that an unconfirmed
+// submission keeps an explicit Auto false across the pending round trip and
+// reports it in the pending listing.
+func TestPendingSpawnRetainsCanonicalTuplePresence(t *testing.T) {
+	f := testFleetWithClient(t, MCPClient{ID: "c1", OwnerID: DefaultOwnerID})
+	registerRepo(t, f, "r1")
+	res, err := f.Submit(context.Background(), SpawnRequest{
+		Origin: OriginMCP, ClientID: "c1", RepoID: "r1", Title: "x", Prompt: "y",
+		Mode: "act", Auto: boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	p, ok := f.ws.PendingByID(res.PendingID)
+	if !ok || p.Auto == nil || *p.Auto {
+		t.Fatalf("pending = %+v, want an explicit auto false", p)
+	}
+	srv := NewServer(f, "")
+	rec := doReq(t, srv, http.MethodGet, "/api/pending", nil, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"auto":false`) {
+		t.Fatalf("pending output = %d %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/tools/policy"
 )
 
 // ControllerAdapter adapts *Controller to the TUI's AgentRunner interface
@@ -210,6 +208,4 @@ func (a *ControllerAdapter) Controller() *Controller { return a.c }
 
 // The pipeline runs its own per-role runners; these knobs belong to the
 // interactive runner and are no-ops here.
-func (a *ControllerAdapter) SetForceClass(string)                   {}
-func (a *ControllerAdapter) SetPolicyRules([]config.PermissionRule) {}
-func (a *ControllerAdapter) SetApprovalMode(policy.ApprovalMode)    {}
+func (a *ControllerAdapter) SetForceClass(string) {}

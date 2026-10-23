@@ -8,7 +8,6 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/tools/registry"
 )
 
 // TestSystemAccessFlagDefaultsOff pins the containment default: without a
@@ -41,43 +40,29 @@ func TestSystemAccessFlagDefaultsOff(t *testing.T) {
 	}
 }
 
-// TestGuardrailClosureCarriesSystemFlag pins that the native pre-flight
-// receives the toolset's own session flag, not a captured parent value.
-func TestGuardrailClosureCarriesSystemFlag(t *testing.T) {
+// TestSystemAccessFollowsTheLiveSessionFlag pins that the toolset reads the
+// session's system-access flag on every call rather than capturing it at
+// construction. The flag is what gates privileged execution and out-of-root
+// path resolution, so a stale copy would keep granting access after the user
+// turned it off (or keep refusing after they turned it on).
+func TestSystemAccessFollowsTheLiveSessionFlag(t *testing.T) {
 	root := t.TempDir()
 	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
 
-	var got []bool
-	reg := registry.New()
-	if err := RegisterAll(reg, Options{
-		WorkspaceRoot: root,
-		CommandRunner: &fakeRunner{result: CommandResult{ExitCode: 0}},
-		SessionState:  state,
-		JobManager:    newTestCommandService(t, &fakeRunner{result: CommandResult{ExitCode: 0}}, root, state, nil),
-		Guardrail: func(command string, system bool) error {
-			got = append(got, system)
-			return nil
-		},
-	}); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
+	tools, err := newToolSet(Options{WorkspaceRoot: root, CommandRunner: &fakeRunner{}, SessionState: state})
+	if err != nil {
+		t.Fatalf("newToolSet: %v", err)
 	}
-
-	if _, err := invokeTool(t, reg, "shell.run", `{"command":"echo hi"}`); err != nil {
-		t.Fatalf("shell.run: %v", err)
+	if tools.systemAccess() {
+		t.Fatal("systemAccess() = true with the flag off")
 	}
 	state.SetSystemAccess(true)
-	if _, err := invokeTool(t, reg, "shell.run", `{"command":"echo hi"}`); err != nil {
-		t.Fatalf("shell.run: %v", err)
+	if !tools.systemAccess() {
+		t.Fatal("systemAccess() = false after the flag was turned on")
 	}
-
-	if len(got) != 2 {
-		t.Fatalf("guardrail invoked %d times, want 2", len(got))
-	}
-	if got[0] {
-		t.Fatal("guardrail received system=true with the flag off")
-	}
-	if !got[1] {
-		t.Fatal("guardrail received system=false with the flag on")
+	state.SetSystemAccess(false)
+	if tools.systemAccess() {
+		t.Fatal("systemAccess() = true after the flag was turned off")
 	}
 }
 

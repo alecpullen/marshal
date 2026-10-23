@@ -17,6 +17,28 @@ type modeRequestArgs struct {
 	Reason string  `json:"reason,omitempty"`
 }
 
+// requestedEditCapability maps the caller's mode hint onto the one capability
+// this tool may request.
+//
+// "act" is the canonical request for editable access. "edit" and "copilot" are
+// the legacy spellings of exactly that request and translate to it, so an old
+// model call still asks for the right thing. "auto" is refused: Auto is the
+// user's choice and an agent may never ask for it. Anything else is a
+// malformed call rather than a capability.
+func requestedEditCapability(mode *string) (bool, error) {
+	if mode == nil {
+		return false, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(*mode)) {
+	case "act", "edit", "copilot":
+		return true, nil
+	case "auto":
+		return false, fmt.Errorf("mode.request cannot request an Auto grant; Auto is the user's choice")
+	default:
+		return false, fmt.Errorf("mode must be act (the legacy edit and copilot hints request the same access)")
+	}
+}
+
 func accessToolResult(result session.AccessResult) (registry.ToolResult, error) {
 	body, err := json.Marshal(result)
 	if err != nil {
@@ -34,8 +56,8 @@ func accessToolResult(result session.AccessResult) (registry.ToolResult, error) 
 func (t *toolSet) modeRequestTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "mode.request",
-		Description: "Request missing editing capability and/or system access. A mode hint does not choose the user's mode. System access is subject to mode, policy and sandbox; no sudo.",
-		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","enum":["edit","copilot","auto"]},"system":{"type":"boolean"},"reason":{"type":"string","maxLength":400}},"anyOf":[{"required":["mode"]},{"required":["system"],"properties":{"system":{"const":true}}}],"additionalProperties":false}`),
+		Description: "Request Act and/or system access. A mode hint does not choose the user's mode; Auto cannot be requested. System access is subject to mode, policy and sandbox; no sudo.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"mode":{"type":"string","enum":["act","edit","copilot","auto"],"description":"\"act\" requests Act; \"edit\" and \"copilot\" are legacy aliases; \"auto\" is refused."},"system":{"type":"boolean"},"reason":{"type":"string","maxLength":400}},"anyOf":[{"required":["mode"]},{"required":["system"],"properties":{"system":{"const":true}}}],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -43,11 +65,12 @@ func (t *toolSet) modeRequestTool() registry.Tool {
 		if err != nil {
 			return registry.ToolResult{}, err
 		}
-		if args.Mode != nil && *args.Mode != "edit" && *args.Mode != "copilot" && *args.Mode != "auto" {
-			return registry.ToolResult{}, fmt.Errorf("mode must be edit, copilot, or auto")
+		editing, modeErr := requestedEditCapability(args.Mode)
+		if modeErr != nil {
+			return registry.ToolResult{}, modeErr
 		}
-		if args.Mode == nil && !args.System {
-			return registry.ToolResult{}, fmt.Errorf("request an editing mode or system access")
+		if !editing && !args.System {
+			return registry.ToolResult{}, fmt.Errorf("request editable access or system access")
 		}
 		if utf8.RuneCountInString(args.Reason) > 400 {
 			return registry.ToolResult{}, fmt.Errorf("reason exceeds 400 characters")
@@ -64,12 +87,12 @@ func (t *toolSet) modeRequestTool() registry.Tool {
 		reason := strings.TrimSpace(args.Reason)
 		if reason == "" {
 			switch {
-			case args.Mode != nil && args.System:
-				reason = "The agent requests editing capability and system access."
+			case editing && args.System:
+				reason = "The agent requests editable access and system access."
 			case args.System:
 				reason = "The agent requests system access."
 			default:
-				reason = "The agent requests editing capability."
+				reason = "The agent requests editable access."
 			}
 		}
 		ch := make(chan session.UserApprovalDecision, 1)
@@ -84,7 +107,7 @@ func (t *toolSet) modeRequestTool() registry.Tool {
 			}
 		}
 		request, waiting, err := t.sessionState.RegisterAccess(ctx, pending, session.AccessIntent{
-			Editing: args.Mode != nil, System: args.System, Reason: reason,
+			Editing: editing, System: args.System, Reason: reason,
 		})
 		if err != nil {
 			return registry.ToolResult{}, err

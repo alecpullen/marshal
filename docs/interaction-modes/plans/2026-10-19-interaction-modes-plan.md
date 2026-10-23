@@ -1921,5 +1921,25 @@ not claims that this unimplemented feature has passed them.
 
 ## Execution record
 
-Not started. The user approved the feature spec and requested this written
-plan. Separate plan approval is still required before Task 1 or product edits.
+### Task 1 — baseline (2026-10-19)
+
+Worktree: `.marshal/worktrees/interaction-modes`, branch `interaction-modes`,
+base `a387ef7fd265ae84d778332cae80fbf093eb29af` (plan base `bdf69de4` is an
+ancestor; anchors re-checked, decisions unchanged). Unrelated untracked docs
+(`docs/fleet-cli/`, `docs/latency-diagnostics/`, `docs/mid-turn-effort/plans/`,
+`docs/send-now/*.pre-implementation-draft`) left intact.
+
+Baseline commands and outcomes:
+
+- `CGO_ENABLED=1 go vet ./...` — clean (exit 0).
+- `CGO_ENABLED=1 go build -o /private/tmp/marshal-interaction-baseline ./cmd/marshal` — clean (exit 0).
+- `CGO_ENABLED=1 go test ./...` — exit 1. Pre-existing failures (18 tests, 5 packages), log `/tmp/baseline-test.log`:
+  - `internal/app`: `TestRuntimeCloseRunsNoGitGC`, `TestStartupSnapshotMaintenanceIsBoundedAndSkipsStorelessWorkspaces`
+  - `internal/sandbox`: `TestContainerRunWithFakeRuntime`
+  - `internal/snapshot`: `TestTrackSucceedsWithNestedGitignoredLargeFile`, `TestLookupDistinguishesExpiryNotFoundAndCorrupt`, `TestLookupFindsLegacySnapshotAndRestoresIt`, `TestLookupFallsBackToLegacyWhenV2DoesNotRetain`, `TestServiceStoreDirMatchesManagerCatalog`, `TestDiscoverFindsV2AndLegacyStoresWhoseCheckoutIsGone`, `TestCleanupReconcilesVersionedStoreWithoutConfirmation`, `TestRootedMaintainsWorktreeStoresNotJustActiveRoot`, `TestRootedMaintenanceCoversBothRootsAcrossRebind`, `TestRootedMaintainsInactiveStoreWhoseCheckoutIsGone`, `TestService_ExcludesLargeFile`, `TestService_ExcludesGitignoredFiles`, `TestService_Prune`
+  - `internal/tools/desktop/browser`: `TestStandaloneBackendNavigateAndRead`
+  - `internal/worktree`: `TestCLIGitOpsCommitAllWithoutARepoIdentity`
+- `web/ui`: `npm test` — clean (exit 0); `npm run build` — clean (exit 0). (`node_modules` installed in the worktree; logs `/tmp/baseline-npm-test.log`, `/tmp/baseline-npm-build.log`.)
+
+These are the known baseline failures for the whole run; they are not
+investigated or re-proved later. No product edits were made in Task 1.

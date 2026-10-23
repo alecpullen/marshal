@@ -10,6 +10,7 @@ import (
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
@@ -221,7 +222,10 @@ func TestSkillGateDisabledAtZeroThreshold(t *testing.T) {
 func TestSkillGateAutoModeAutoAllows(t *testing.T) {
 	state := newTestState(t)
 	r, p := newSkillGateTestRunner(t, state)
-	r.SetApprovalMode(policy.ModeAuto)
+	auto := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("ApplyInteraction(auto): %v", err)
+	}
 
 	if _, err := runSkillGateTurn(t, r, p, "test-skill"); err != nil {
 		t.Fatalf("RunTask err = %v", err)

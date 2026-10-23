@@ -63,7 +63,7 @@ func TestPreToolUseRewriteReentersPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
-	cfg.Permissions.Rules = []config.PermissionRule{{Permission: "shell.run", Pattern: "rm*", Action: "deny"}}
+	cfg.Permissions.Rules = []config.PermissionRule{{Permission: "shell", Pattern: "rm*", Action: "deny"}}
 	p := &agenttest.ScriptedProvider{Responses: []string{`{"rationale":"r","action":{"type":"tool_call","tool":"shell.run","args":{"command":"date"}}}`, `{"rationale":"r","action":{"type":"answer","content":"done"}}`}}
 	state := newTestState(t)
 	runner := NewRunner(p, reg, policy.NewEngine(&cfg, nil), state, "test-model")

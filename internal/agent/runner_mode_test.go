@@ -7,6 +7,7 @@ import (
 
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
+	"marshal/internal/interaction"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -29,8 +30,11 @@ func TestAutoModeBlocksAskUser(t *testing.T) {
 	}}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
-	pol.SetApprovalMode(policy.ModeAuto)
 	state := newTestState(t)
+	auto := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("ApplyInteraction(auto): %v", err)
+	}
 	runner := NewRunner(p, reg, pol, state, "test-model")
 	runner.SetForceClass(string(ClassQuestion))
 
@@ -65,8 +69,11 @@ func TestAutoModeBlocksQuestionAsk(t *testing.T) {
 	}}
 	reg := registry.New()
 	pol := policy.NewEngine(&config.Config{}, nil)
-	pol.SetApprovalMode(policy.ModeAuto)
 	state := newTestState(t)
+	auto := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("ApplyInteraction(auto): %v", err)
+	}
 	runner := NewRunner(p, reg, pol, state, "test-model")
 	runner.SetForceClass(string(ClassQuestion))
 
@@ -114,23 +121,25 @@ func TestEditModeAllowsAskUser(t *testing.T) {
 	}
 }
 
-// TestDefaultModeBlocksFileWritePatch verifies that in default mode,
+// TestDefaultModeBlocksFileWritePatch verifies that in Ask mode,
 // a file.write_patch tool call is denied with a clear message.
 func TestDefaultModeBlocksFileWritePatch(t *testing.T) {
 	reg := registry.New()
 	if err := native.RegisterAll(reg, native.Options{
 		WorkspaceRoot:  t.TempDir(),
 		CommandRunner:  &fakeCommandRunner{},
-		Guardrail:      func(string, bool) error { return nil },
 		MaxOutputBytes: 1000,
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	pol := policy.NewEngine(&config.Config{}, nil)
 	pol.WithRegistry(reg)
-	pol.SetApprovalMode(policy.ModeDefault)
 
 	state := newTestState(t)
+	ask := interaction.ModeAsk
+	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &ask}); err != nil {
+		t.Fatalf("ApplyInteraction(ask): %v", err)
+	}
 	p := &agenttest.ScriptedProvider{
 		Responses: []string{
 			// The envelope patch action is the legitimate path to the internal
@@ -150,7 +159,7 @@ func TestDefaultModeBlocksFileWritePatch(t *testing.T) {
 	second := p.Requests[len(p.Requests)-1]
 	var denied bool
 	for _, m := range second.Messages {
-		if strings.Contains(m.Content, "denied: in default mode") {
+		if strings.Contains(m.Content, "this tool requires Act") {
 			denied = true
 			break
 		}
@@ -169,7 +178,10 @@ func TestPlanModeAllowsAskUser(t *testing.T) {
 		`{"rationale":"done","action":{"type":"final","content":"Planned."}}`,
 	}}
 	pol := policy.NewEngine(&config.Config{}, nil)
-	pol.SetApprovalMode(policy.ModePlan)
+	ask := interaction.ModeAsk
+	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &ask}); err != nil {
+		t.Fatalf("seed Ask: %v", err)
+	}
 	r := NewRunner(p, registry.New(), pol, state, "test-model")
 	r.SetForceClass(string(ClassQuestion))
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 )
 
@@ -137,19 +138,71 @@ func CustomAgentFields(s *State, name string) []*Field {
 		return nil
 	})
 
-	// Approval mode.
-	modeField := NewField("custom_agents."+name+".approval_mode", "Approval mode", KindEnum)
-	SetFieldDesc(modeField, "approval mode for this custom agent")
+	// Optional interaction mode: absence inherits the parent's mode.
+	modeField := NewField("custom_agents."+name+".mode", "Mode", KindEnum)
+	SetFieldDesc(modeField, "optional interaction mode; inherit uses the parent mode")
 	SetFieldGetStr(modeField, func() string {
-		if ca.ApprovalMode == "" {
-			return "default"
+		cur := cfg.CustomAgents[name]
+		if cur.Mode == nil {
+			return "inherit"
 		}
-		return ca.ApprovalMode
+		return string(*cur.Mode)
 	})
-	SetFieldOptions(modeField, func() []string { return []string{"plan", "default", "edit", "copilot", "auto"} })
+	SetFieldOptions(modeField, func() []string { return []string{"inherit", "ask", "act"} })
 	SetFieldSetStr(modeField, func(v string) error {
 		ca2 := cfg.CustomAgents[name]
-		ca2.ApprovalMode = v
+		switch v {
+		case "inherit":
+			ca2.Mode = nil
+		case "ask":
+			m := interaction.ModeAsk
+			ca2.Mode = &m
+			if ca2.Auto != nil && *ca2.Auto {
+				off := false
+				ca2.Auto = &off
+			}
+		case "act":
+			m := interaction.ModeAct
+			ca2.Mode = &m
+		default:
+			return fmt.Errorf("mode must be inherit, ask, or act")
+		}
+		cfg.CustomAgents[name] = ca2
+		return nil
+	})
+
+	// Optional Auto modifier: nil inherits, explicit false is preserved.
+	autoField := NewField("custom_agents."+name+".auto", "Auto", KindEnum)
+	SetFieldDesc(autoField, "optional Auto modifier; inherit uses the parent value")
+	SetFieldGetStr(autoField, func() string {
+		cur := cfg.CustomAgents[name]
+		if cur.Auto == nil {
+			return "inherit"
+		}
+		if *cur.Auto {
+			return "on"
+		}
+		return "off"
+	})
+	SetFieldOptions(autoField, func() []string { return []string{"inherit", "on", "off"} })
+	SetFieldSetStr(autoField, func(v string) error {
+		ca2 := cfg.CustomAgents[name]
+		switch v {
+		case "inherit":
+			ca2.Auto = nil
+		case "on":
+			on := true
+			ca2.Auto = &on
+			if ca2.Mode == nil {
+				m := interaction.ModeAct
+				ca2.Mode = &m
+			}
+		case "off":
+			off := false
+			ca2.Auto = &off
+		default:
+			return fmt.Errorf("auto must be inherit, on, or off")
+		}
 		cfg.CustomAgents[name] = ca2
 		return nil
 	})
@@ -199,6 +252,7 @@ func CustomAgentFields(s *State, name string) []*Field {
 		promptField,
 		denylistField,
 		modeField,
+		autoField,
 		iterField,
 		ctxField,
 	}

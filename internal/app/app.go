@@ -29,6 +29,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
 	"marshal/internal/hooks"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
@@ -57,6 +58,43 @@ import (
 	"marshal/internal/worker"
 	"marshal/internal/worktree"
 )
+
+// errWatchSampleNotApproved is the typed non-approved result a background
+// watch sample returns. A watch never opens an unsolicited approval prompt:
+// the next sample that is not currently Allow reports through the watch's
+// existing error handling instead.
+var errWatchSampleNotApproved = errors.New("watch command sample requires interaction approval")
+
+// watchSampleAttempt captures one command watch sample as a fresh logical
+// invocation. The caller re-reads the current workspace before building it, so
+// the next sample always reflects the owner's current root.
+func watchSampleAttempt(command, dir string) policy.CommandAttempt {
+	return policy.CommandAttempt{
+		InvocationID: fmt.Sprintf("watch-sample-%d", time.Now().UnixNano()),
+		ToolName:     "shell.run",
+		Input:        policy.ShellInput{Command: command, Dir: dir, WorkspaceRoot: dir},
+	}
+}
+
+// authorizeWatchSample evaluates one captured sample against the live owner
+// authority and admits exactly that attempt. Only DecisionAllow is admitted;
+// Confirm, missing capability and Deny return the typed non-approved error, so
+// a background watch never becomes an unsolicited approval prompt.
+func authorizeWatchSample(ctx context.Context, az *policy.Authorizer, attempt policy.CommandAttempt) (*policy.Admission, error) {
+	call := policy.Call{InvocationID: attempt.InvocationID, ToolName: attempt.ToolName, Shell: &attempt.Input}
+	proof, evaluation, err := az.Evaluate(ctx, call)
+	if err != nil {
+		return nil, err
+	}
+	if evaluation.Decision != policy.DecisionAllow {
+		return nil, fmt.Errorf("%w: %s", errWatchSampleNotApproved, evaluation.Decision)
+	}
+	admission, err := az.BeginCommand(policy.WithAuthorization(ctx, proof), attempt)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errWatchSampleNotApproved, err)
+	}
+	return admission, nil
+}
 
 // ProgramResult is the value returned by a ProgramRunner. It carries the
 // bubbletea program outcome plus an optional request to resume a different
@@ -947,6 +985,17 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		})
 	}
 
+	// The root policy engine and its authorizer are constructed BEFORE any
+	// watch starts: a watch sample is an execution, and every sample must be
+	// authorized against the current owner tuple, workspace, rules and config.
+	pol := policy.NewEngine(&cfg, state.SessionRules())
+	if state.Logger() != nil {
+		pol.SetLogger(state.Logger())
+	}
+	pol.WithRegistry(reg)
+	pol.SetConfigSource(state.PolicySnapshot)
+	rootAuthorizer := policy.NewAuthorizer(pol, state.InteractionAuthority())
+
 	// Milestone W: construct the watch manager from the sandboxed command
 	// runner and the job broker. Command samples run through the same
 	// sandboxed runner as background jobs; job watches subscribe to the job
@@ -955,6 +1004,23 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	// to the TUI lane broker.
 	watchManager := watch.NewManager(ctx, watch.Deps{
 		RunSample: func(c context.Context, command, dir string) (string, int, error) {
+			// Each sample is a fresh logical invocation: mode, root, rules and
+			// config are re-read here, so a watch admitted under Act cannot
+			// keep executing new writes after the owner selects Ask.
+			attempt := watchSampleAttempt(command, dir)
+			admission, err := authorizeWatchSample(c, rootAuthorizer, attempt)
+			if err != nil {
+				return "", 0, err
+			}
+			if commitErr := admission.Commit(); commitErr != nil {
+				admission.Release()
+				return "", 0, commitErr
+			}
+			// Release immediately before the direct runner attempt: the
+			// decision is bound to this exact sample, and holding the owner's
+			// admission gate for the command's whole lifetime would block every
+			// other admission in the conversation.
+			admission.Release()
 			res, err := commandRunner.Run(c, native.CommandRequest{
 				Command:        command,
 				Dir:            dir,
@@ -1023,13 +1089,6 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		fileTracker = filetrack.New(database.SQLDB(), state.SessionID())
 	}
 
-	pol := policy.NewEngine(&cfg, state.SessionRules())
-	if state.Logger() != nil {
-		pol.SetLogger(state.Logger())
-	}
-	pol.WithRegistry(reg)
-	pol.SetApprovalMode(parseApprovalMode(cfg.Agent.ApprovalMode))
-
 	nativeOpts := native.Options{
 		WorkspaceRoot:  state.WorkingDir,
 		CommandRunner:  commandRunner,
@@ -1041,15 +1100,15 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 		// capability request here. Child registrations below deliberately leave
 		// this false — a subagent must ask its parent, and the handler and the
 		// session both reject depth > 0 as well.
-		AccessRequests: true,
-		DB:             database,
-		ProjectID:      projectID,
-		FileTracker:    fileTracker,
-		Config:         cfg,
-		JobManager:     jobManager,
-		JobBroker:      jobBroker,
-		Guardrail:      func(cmd string, system bool) error { return pol.GuardrailCheck(cmd, system) },
-		SudoPolicy:     pol.CheckPrivileged,
+		AccessRequests:    true,
+		DB:                database,
+		ProjectID:         projectID,
+		FileTracker:       fileTracker,
+		Config:            cfg,
+		JobManager:        jobManager,
+		JobBroker:         jobBroker,
+		CommandAdmission:  rootAuthorizer.BeginCommand,
+		CommandAuthorizer: rootAuthorizer,
 	}
 	if len(additionalDirs) > 0 {
 		nativeOpts.AdditionalRoots = additionalDirs
@@ -1181,12 +1240,6 @@ func buildAgentRunnerWithLock(ctx context.Context, cfg config.Config, state *ses
 	runner.Pricing = parentPricing
 
 	runner.ModelProbe = modelProbe
-
-	// Defensive: align runner mode with policy engine in case the runner
-	// ever copies the engine instead of sharing it.
-	if runner.Policy != nil && runner.Policy.ApprovalMode() != parseApprovalMode(cfg.Agent.ApprovalMode) {
-		runner.SetApprovalMode(parseApprovalMode(cfg.Agent.ApprovalMode))
-	}
 
 	// T17: wire UsageCounter so the rollover controller can use
 	// provider-reported prompt_tokens as the numerator for context_percent
@@ -1583,6 +1636,40 @@ type roleRunnerSpec struct {
 	childSession     bool                    // SDD pipeline: each role runner gets a fresh child session
 }
 
+// narrowAgentCeiling applies a custom agent's optional Mode/Auto restrictions
+// to an existing ceiling. They can only narrow: an explicit Mode=Ask removes
+// Act, and Auto=false removes Auto; nothing here grants authority.
+func narrowAgentCeiling(c interaction.Ceiling, ca *routing.CustomAgent) interaction.Ceiling {
+	if ca == nil {
+		return c
+	}
+	if ca.Mode != nil && *ca.Mode == interaction.ModeAsk {
+		c.Act = false
+	}
+	if ca.Auto != nil && !*ca.Auto {
+		c.Auto = false
+	}
+	if !c.Act {
+		c.Auto = false
+	}
+	return c
+}
+
+// pipelineRoleCeiling is the immutable ceiling for a pipeline actor. Read-only
+// roles cannot act at all; artifact writers may write only their artifact, not
+// run Auto shell work; implementer/fixer roles inherit the owner's Act/Auto.
+// No pipeline child carries an explicit System request.
+func pipelineRoleCeiling(scope swarm.RegistryScope, ca *routing.CustomAgent) interaction.Ceiling {
+	c := interaction.Ceiling{Act: true, Auto: true}
+	switch scope {
+	case swarm.ScopeReadOnly:
+		c = interaction.Ceiling{}
+	case swarm.ScopeArtifactWriter:
+		c = interaction.Ceiling{Act: true}
+	}
+	return narrowAgentCeiling(c, ca)
+}
+
 // newRunner builds one role runner. It satisfies swarm.RunnerFactory (and,
 // by alias, pipeline.RunnerFactory).
 func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScope) (*agent.Runner, error) {
@@ -1614,14 +1701,12 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 	runnerState := s.state
 	pol := s.pol
 	if s.childSession {
-		runnerState = session.New(s.state.Config, s.state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(s.state.SubagentDepth()+1), session.WithSubagentMaxConcurrency(s.state.Config.Agent.MaxConcurrentSubagents))
-		// No UI watches a child session's pending approvals, so an
-		// unattended runner's approval could sit unanswered indefinitely.
-		// Unattended runners therefore evaluate under an auto-approving
-		// clone of the shared engine (guardrails and the git-push floor
-		// still apply), leaving the parent mode intact.
+		runnerState = session.New(s.state.Config, s.state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(s.state.SubagentDepth()+1), session.WithSubagentMaxConcurrency(s.state.Config.Agent.MaxConcurrentSubagents), session.WithInteractionOwner(s.state, pipelineRoleCeiling(scope, route.CustomAgent)))
+		// Pipeline children share the owner's live policy config and rules, but
+		// their authority is the bounded actor view above. No forced Auto: an
+		// owner who is not in Act/Auto simply cannot run the dispatch.
 		pol = s.pol.Clone()
-		pol.SetApprovalMode(policy.ModeAuto)
+		pol.SetConfigSource(runnerState.PolicySnapshot)
 	}
 	r := agent.NewRunner(p, toolReg, pol, runnerState, route.Preset.Model)
 	r.Role = role
@@ -1728,9 +1813,6 @@ func (s roleRunnerSpec) newRunner(role agent.AgentRole, scope swarm.RegistryScop
 		if len(ca.ToolDenylist) > 0 {
 			r.Registry = agent.DenylistView(r.Registry, ca.ToolDenylist)
 		}
-		if ca.ApprovalMode != "" {
-			r.SetApprovalMode(parseApprovalMode(ca.ApprovalMode))
-		}
 		if ca.MaxIterations > 0 {
 			r.MaxToolIterations = ca.MaxIterations
 		}
@@ -1813,7 +1895,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 				// chained OnTokens closure; read the updated value here.
 				state.UpdateSDDTokens(ctl.UsageTokens, cfg.SDD.MaxTotalTokens)
 			},
-			RegistryFactory: makePipelineRegistryFactory(cfg, state, commandRunner, resolver, database, projectID, skillIndex, reg, commandService),
+			RegistryFactory: makePipelineRegistryFactory(cfg, state, pol, commandRunner, resolver, database, projectID, skillIndex, reg, commandService),
 		},
 		Verifier: pipeline.DefaultVerifier(
 			state.WorkingDir,
@@ -1823,7 +1905,7 @@ func buildPipelineController(cfg config.Config, state *session.State, reg *regis
 		),
 		MaxFixRounds:       cfg.SDD.MaxFixRounds,
 		MaxDispatchRetries: cfg.SDD.DispatchRetries,
-		AutoEscalate:       parseApprovalMode(cfg.Agent.ApprovalMode) == policy.ModeAuto,
+		AutoEscalate:       cfg.Agent.Auto,
 		MaxTokensCfg:       cfg.SDD.MaxTotalTokens,
 		Setup:              cfg.Worktree,
 	})
@@ -1864,9 +1946,9 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		// A fresh child session keeps the authoring turn's tool noise out of
 		// the parent transcript. Depth is parent+1 so any nested subagent
 		// attempt is rejected by the child's own depth guard.
-		childState := session.New(cfg, state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1), session.WithSubagentMaxConcurrency(cfg.Agent.MaxConcurrentSubagents))
+		childState := session.New(cfg, state.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(state.SubagentDepth()+1), session.WithSubagentMaxConcurrency(cfg.Agent.MaxConcurrentSubagents), session.WithInteractionOwner(state, interaction.Ceiling{Act: true}))
 		childPol := pol.Clone()
-		childPol.SetApprovalMode(policy.ModeAuto)
+		childPol.SetConfigSource(childState.PolicySnapshot)
 
 		// A fresh native registry rooted at the working directory, with @plan
 		// aliasing the resolved plans directory so the child can write the
@@ -1887,6 +1969,14 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 			Config:         cfg,
 			NamedRoots:     map[string]string{"@plan": plansDir},
 		}
+		// The plan-author's own engine reads the owner's live config/rules and
+		// is bounded by the artifact-only ceiling above. Its command tools are
+		// stripped by PlanWriterView, but wiring admission keeps the contract
+		// explicit: there is no unadmitted execution path.
+		childPol.WithRegistry(childReg)
+		planAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
+		nativeOpts.CommandAdmission = planAuthorizer.BeginCommand
+		nativeOpts.CommandAuthorizer = planAuthorizer
 		if err := native.RegisterAll(childReg, nativeOpts); err != nil {
 			return nil, fmt.Errorf("plan author registry: register: %w", err)
 		}
@@ -1952,7 +2042,7 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 // it, so its commands belong to the same supervisor: one capacity, one count
 // callback, one exit sink and one stop target. Its output stays child-local
 // because SessionState is the runner's own child state.
-func makePipelineRegistryFactory(cfg config.Config, state *session.State, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry, commandService *conversationCommandService) pipeline.RegistryFactory {
+func makePipelineRegistryFactory(cfg config.Config, state *session.State, pol *policy.PolicyEngine, commandRunner native.CommandRunner, resolver *routedProviderResolver, database *db.DB, projectID int64, skillIndex *skills.Index, parentReg *registry.Registry, commandService *conversationCommandService) pipeline.RegistryFactory {
 	return func(ctx pipeline.ExecutionContext, scope pipeline.RegistryScope, childState *session.State) (*registry.Registry, error) {
 		childReg := registry.New()
 		var jobManager *native.JobManager
@@ -1973,6 +2063,18 @@ func makePipelineRegistryFactory(cfg config.Config, state *session.State, comman
 			// that already started.
 			CommandDir: ctx.WorkspaceRoot,
 			NamedRoots: ctx.NamedRoots(),
+		}
+		// The child's engine reads the captured owner's live config/rules and
+		// checks risk against THIS registry, so a scope-filtered tool is
+		// evaluated as the child will actually dispatch it. The authorizer is
+		// bound to the child actor, not the root.
+		if childState != nil && pol != nil {
+			childPol := pol.Clone()
+			childPol.SetConfigSource(childState.PolicySnapshot)
+			childPol.WithRegistry(childReg)
+			childAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
+			nativeOpts.CommandAdmission = childAuthorizer.BeginCommand
+			nativeOpts.CommandAuthorizer = childAuthorizer
 		}
 		// When the pipeline runs in a worktree (WorkspaceRoot != RepoRoot),
 		// expose the project root as an additional root so workers can read
@@ -2036,13 +2138,6 @@ func roleToolIterations(cfg config.Config, role agent.AgentRole) int {
 	return cfg.Agent.MaxToolIterations
 }
 
-// parseApprovalMode converts a string to a policy.ApprovalMode.
-// Unknown or empty values default to ModeDefault. Delegates to the policy
-// package so the TUI seeds its mode label from exactly the same mapping.
-func parseApprovalMode(s string) policy.ApprovalMode {
-	return policy.ParseApprovalMode(s)
-}
-
 // accessTUIOptions wires the TUI's access seam to this runtime. The bound
 // methods read the runtime's current State and Runner under the runtime gate,
 // so a successful NewSession does not leave the TUI holding a closure over the
@@ -2050,7 +2145,7 @@ func parseApprovalMode(s string) policy.ApprovalMode {
 func accessTUIOptions(rt *Runtime) []tui.Option {
 	return []tui.Option{
 		tui.WithAccessRequests(rt.AccessRequest, rt.ResolveAccess),
-		tui.WithSessionModeSetter(rt.SetSessionMode),
+		tui.WithInteractionSetter(rt.SetInteraction),
 		tui.WithSessionEffortSetter(rt.SetSessionEffort),
 	}
 }
@@ -2157,7 +2252,15 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 	})
 
 	return func(req agent.SubagentRequest) (*agent.Runner, *session.State, error) {
-		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1), session.WithSubagentMaxConcurrency(parentState.Config.Agent.MaxConcurrentSubagents))
+		// A named custom agent may narrow the child's immutable ceiling. Its
+		// Mode/Auto are restrictions only; the live owner tuple still decides.
+		childCeiling := interaction.Ceiling{Act: true, Auto: true, System: true}
+		if req.Agent != "" && router != nil {
+			if route, err := router.ResolveCustomAgent(req.Agent, agent.RoleSubtask); err == nil {
+				childCeiling = narrowAgentCeiling(childCeiling, route.CustomAgent)
+			}
+		}
+		childState := session.New(parentState.Config, parentState.WorkingDir, time.Now(), session.Persistence{}, session.WithDepth(parentState.SubagentDepth()+1), session.WithSubagentMaxConcurrency(parentState.Config.Agent.MaxConcurrentSubagents), session.WithInteractionOwner(parentState, childCeiling))
 		// Seed the child with the parent's session context. Layer-aware
 		// project saves (config.SaveProjectConfig) compare against
 		// state.Layers(): a child without the snapshot silently regresses to
@@ -2167,13 +2270,11 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		childState.SetLayers(parentState.Layers())
 		childState.SetHomeDir(parentState.HomeDir())
 		childState.SetTrusted(parentState.Trusted())
-		// System access is inherited only when the parent has it AND the
-		// request explicitly asked for it. The AND lives here, at
-		// construction, so a child can never widen its own scope even if a
-		// future caller bypasses the handler's guard. Set outside the
-		// native-toolset branch below so the flag holds on every factory
-		// path (including the test wrapper with no WorkspaceRoot).
-		childState.SetSystemAccess(req.System && parentState.SystemAccess())
+		// System access needs an explicit request from this child, and the
+		// live owner must also currently hold it; the actor authority
+		// intersects the two. Capture only this child's request here — never a
+		// one-time snapshot of the parent's grant.
+		childState.SetSystemAccess(req.System)
 		// The child needs its own native toolset, not a filtered view of the
 		// parent's. SubtaskScopeView re-registers the parent's existing Tool
 		// values, whose handlers close over the parent's toolSet — so a
@@ -2185,6 +2286,7 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		// so we fall back to the old SubtaskScopeView view there — those tests
 		// only inspect model/pricing/iterations and never execute a tool.
 		var roReg *registry.Registry
+		childPol := pol
 		if baseNativeOpts.WorkspaceRoot != "" {
 			childOpts := baseNativeOpts
 			childOpts.SessionState = childState    // per-agent: active call, output, approvals
@@ -2205,9 +2307,21 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 			// the child's SecretPromptCapable defaulting to false — a fragile
 			// gate, since any future change that propagates the flag to child
 			// states would silently hand children a working shell.sudo. Clear
-			// the policy seam here so the documented gate is the real one.
-			childOpts.SudoPolicy = nil
+			// the authorizer here so the documented gate is the real one.
+			childOpts.CommandAuthorizer = nil
 			childReg := registry.New()
+			// The child's engine reads the captured owner's live config/rules,
+			// evaluates against the child registry, and admits through the
+			// child actor rather than the root. A construction-only caller may
+			// pass no engine; the child then has no policy surface, which is
+			// enough for registry-shape tests and fails closed at dispatch.
+			if pol != nil {
+				childPol = pol.Clone()
+				childPol.SetConfigSource(childState.PolicySnapshot)
+				childPol.WithRegistry(childReg)
+				childAuthorizer := policy.NewAuthorizer(childPol, childState.InteractionAuthority())
+				childOpts.CommandAdmission = childAuthorizer.BeginCommand
+			}
 			if err := native.RegisterAll(childReg, childOpts); err != nil {
 				return nil, nil, fmt.Errorf("agent.run: child registry: %w", err)
 			}
@@ -2327,7 +2441,7 @@ func buildSubagentFactoryWithLock(cfg config.Config, parentState *session.State,
 		if err := roReg.Replace(native.TodoWriteTool(childState)); err != nil {
 			parentState.Logger().Warn("subagent: todo rebind failed; child shares parent todos", "error", err)
 		}
-		child := agent.NewRunner(childProvider, roReg, pol, childState, model)
+		child := agent.NewRunner(childProvider, roReg, childPol, childState, model)
 		child.Role = role
 		child.NarrationPrompt = cfg.Agent.NarrationPrompt
 		child.IntentNudge = cfg.Agent.IntentNudge
@@ -2467,61 +2581,6 @@ func tuiEndWorkSnapshot(work ActiveWork) tui.EndWorkSnapshot {
 		})
 	}
 	return out
-}
-
-// runWithExitAnalysisElevation runs fn with the temporary elevation the exit
-// postmortem's agent pass needs, and restores the previous values whatever the
-// outcome.
-//
-// The pass writes the report at an absolute path outside the workspace, so it
-// needs system access and an editing approval mode/force class; without them
-// plan/default mode would deny the write and bounce a mode.request at someone
-// who is trying to exit. The grant is SCOPED to this call: it is undone here
-// (including on failure), so a refused or failed pass can never leave an
-// ordinary prompt elevated.
-func runWithExitAnalysisElevation(rt *Runtime, fn func() error) error {
-	if rt == nil {
-		return fmt.Errorf("exit analysis: no runtime")
-	}
-	priorSystem := false
-	if rt.State != nil {
-		priorSystem = rt.State.SystemAccess()
-		rt.State.SetSystemAccess(true)
-	}
-	// Save and restore the runner's own posture. The approval mode lives on the
-	// policy engine; the TUI mirrors it into state.Config.Agent.ApprovalMode, so
-	// the prior mode is read from the engine when one exists and from the config
-	// otherwise. The force class has no accessor (the field is mutex-guarded for
-	// writers only), so it is restored from the same source the TUI derives it
-	// from — the configured mode.
-	priorMode := policy.ParseApprovalMode(rt.Config.Agent.ApprovalMode)
-	runner := rt.Runner
-	if runner != nil {
-		if runner.Policy != nil {
-			priorMode = runner.Policy.ApprovalMode()
-		}
-		runner.SetApprovalMode(policy.ModeEdit)
-		runner.SetForceClass(string(agent.ClassEdit))
-	}
-	defer func() {
-		if runner != nil {
-			runner.SetApprovalMode(priorMode)
-			runner.SetForceClass(classForApprovalMode(priorMode))
-		}
-		if rt.State != nil {
-			rt.State.SetSystemAccess(priorSystem)
-		}
-	}()
-	return fn()
-}
-
-// classForApprovalMode maps an approval mode to the task class the TUI forces
-// for it: plan and default ask before acting, every other mode edits.
-func classForApprovalMode(mode policy.ApprovalMode) string {
-	if mode == policy.ModePlan || mode == policy.ModeDefault {
-		return string(agent.ClassQuestion)
-	}
-	return string(agent.ClassEdit)
 }
 
 type actionDecodingConfig struct {
@@ -2954,9 +3013,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			if rt.Runner == nil {
 				return fmt.Errorf("exit analysis: no agent runner")
 			}
-			return runWithExitAnalysisElevation(rt, func() error {
-				return rt.Runner.Run(analysisCtx, goal)
-			})
+			// The pass runs under the conversation's CURRENT authority. The
+			// runtime grants nothing: an Ask actor (or one without System) that
+			// cannot write the report path gets the pass's own non-approved
+			// failure, and the host-managed extraction that already landed stays
+			// in place. Elevating here would silently widen the user's prompt.
+			return rt.Runner.Run(analysisCtx, goal)
 		})
 
 		// The TUI's structural end seam: acceptance, settlement and the scoped
@@ -3061,6 +3123,15 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if cfg.SessionRouting.Empty() && rt.State != nil {
 		cfg.SessionRouting = rt.State.Config.SessionRouting
 	}
+	// Validate the candidate's configured tuple before the build: a reload that
+	// cannot describe a valid starting tuple must change no config, tuple,
+	// access source or revision.
+	if _, err := cfg.InteractionDefaults(); err != nil {
+		if rt.Logger != nil {
+			rt.Logger.Warn("reload: invalid interaction defaults; keeping previous config", "error", err)
+		}
+		return fmt.Errorf("reload: invalid interaction defaults: %w", err)
+	}
 
 	// The incoming config is the new *configured* baseline; the mode the
 	// session actually runs with may differ, because a manual selection or an
@@ -3070,7 +3141,10 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// configured value for the baseline update below.
 	effectiveCfg := cfg
 	if rt.State != nil {
-		effectiveCfg.Agent.ApprovalMode = rt.State.ModeForConfig(cfg)
+		if st, err := rt.State.InteractionForConfig(cfg); err == nil {
+			effectiveCfg.Agent.Mode = st.Mode
+			effectiveCfg.Agent.Auto = st.Auto
+		}
 	}
 
 	db := must[*db.DB](rt.DB)
@@ -3121,7 +3195,7 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// configured value: an unchanged configured mode keeps the session
 	// override, an explicit change to it clears the override, and the system
 	// flag survives either way.
-	rt.State.RebaseSessionConfig(cfg)
+	rt.State.RebaseInteractionConfig(cfg)
 	// Runtime.Config stays the configured baseline, never the effective mode:
 	// it is what a later reload and a new session start from.
 	rt.Config = cfg
@@ -3157,7 +3231,13 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	if rt.Runner != nil {
 		effective := rt.State.AccessState()
 		rt.Runner.SetForceClass(forceClassForMode(effective.Mode))
-		rt.Runner.SetApprovalMode(policy.ApprovalMode(effective.Mode))
+	}
+	if rt.Runner != nil && rt.Runner.Policy != nil {
+		// Point the installed engine at the owner's live policy snapshot:
+		// config, session rules and the access revision come from one owner
+		// transaction, so a later grant or reload cannot leave the engine
+		// evaluating an old config under a new revision.
+		rt.Runner.Policy.SetConfigSource(rt.State.PolicySnapshot)
 	}
 	if rt.SwarmRunner == nil {
 		rt.SwarmRunner = newSwarmRunner

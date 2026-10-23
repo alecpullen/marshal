@@ -23,7 +23,7 @@ func isBuiltinRecipe(name string) bool {
 func builtinRecipes() []Recipe {
 	return []Recipe{
 		{
-			Name: "review-pr", Title: "Review a PR", Kind: RecipePrompt, Mode: "plan",
+			Name: "review-pr", Title: "Review a PR", Kind: RecipePrompt, Mode: "ask",
 			Description: "Review a pull request and return structured findings.",
 			Inputs: []RecipeInput{
 				{Name: "pr", Label: "PR number", Required: true},
@@ -36,7 +36,7 @@ func builtinRecipes() []Recipe {
 				"3. End your final message with a fenced json block of exactly this shape:\n\n" + reviewFindingsFormat,
 		},
 		{
-			Name: "fix-ci", Title: "Fix a failing check", Kind: RecipePrompt, Mode: "edit",
+			Name: "fix-ci", Title: "Fix a failing check", Kind: RecipePrompt, Mode: "act", Auto: boolPtr(false),
 			Description: "Reproduce a failing CI check, fix it, and report the result.",
 			Inputs: []RecipeInput{
 				{Name: "check", Label: "Failing check", Required: true},
@@ -51,14 +51,14 @@ func builtinRecipes() []Recipe {
 				"4. End your final message with a fenced json block of exactly this shape:\n\n" + ciResultFormat,
 		},
 		{
-			Name: "summarize-changes", Title: "Summarize changes", Kind: RecipePrompt, Mode: "plan",
+			Name: "summarize-changes", Title: "Summarize changes", Kind: RecipePrompt, Mode: "ask",
 			Description: "Summarize what changed in the repository since a ref or date.",
 			Inputs:      []RecipeInput{{Name: "since", Label: "Since (ref or date)", Required: true}},
 			Output:      OutputNone, Builtin: true,
 			Prompt: "Summarize what changed in this repository since {{since}}. Group related changes and call out anything risky.",
 		},
 		{
-			Name: "update-deps", Title: "Update dependencies", Kind: RecipePrompt, Mode: "edit",
+			Name: "update-deps", Title: "Update dependencies", Kind: RecipePrompt, Mode: "act", Auto: boolPtr(false),
 			Description: "Update one ecosystem's dependencies and keep the build green.",
 			Inputs:      []RecipeInput{{Name: "ecosystem", Label: "Ecosystem (go, npm, …)", Required: true}},
 			Output:      OutputNone, Builtin: true,

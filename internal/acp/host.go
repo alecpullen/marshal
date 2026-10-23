@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/credentials"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
 	"marshal/internal/viewmodel"
@@ -225,12 +226,18 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 				BeginWork: rt.BeginWork,
 				Run:       run,
 				Events:    evBroker,
-				// The runtime owns mode validation and the session override, so
-				// the manual RPC path goes through the same operation the TUI
-				// uses rather than mutating the runner directly.
-				SetMode:          rt.SetSessionMode,
+				// The runtime owns interaction validation and the session
+				// override, so the manual RPC path goes through the same
+				// operation the TUI uses rather than mutating the runner
+				// directly. Both seams are bound once, here.
+				SetInteraction: rt.SetInteraction,
+				InteractionState: func() (interaction.State, bool) {
+					if rt.State == nil {
+						return interaction.State{}, false
+					}
+					return rt.State.InteractionState(), true
+				},
 				SetEffort:        rt.SetSessionEffort,
-				SetSystemAccess:  rt.State.SetSystemAccess,
 				AccessRequest:    rt.AccessRequest,
 				ResolveAccess:    rt.ResolveAccess,
 				Steer:            rt.State.PushSteering,
@@ -242,6 +249,11 @@ func newTurnManagerFor(manager *SessionManager, log *slog.Logger, notify NotifyF
 			}
 			crt.WatchResumeEnabled = func() bool { return rt.State != nil && rt.State.Config.Watch.ResumeEnabled }
 			crt.WatchResumeGatePending = func() bool { return rt.State != nil && rt.State.SDDGate().Question != "" }
+			// Start the session-lifetime child approval collector now, before
+			// this runtime can launch a pipeline/background child: a child can
+			// outlive the turn that started it, so its approval must stay
+			// answerable after that turn ends. Idempotent per captured runtime.
+			tm.ensureChildApprovals(sessionID, crt)
 			if rt.WatchResume != nil {
 				// Idempotent: a later Lookup on this connection re-sets the
 				// cell with an equivalent fn, and a fresh connection's first
@@ -359,6 +371,7 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	srv.Handle("session/prompt", turns.PromptTurn)
 	srv.Handle("session/set_mode", turns.SetMode)
+	srv.Handle("session/access_state", turns.AccessState)
 	srv.Handle("session/set_effort", turns.SetEffort)
 	srv.Handle("session/steer", turns.Steer)
 	srv.Handle("session/steering_status", turns.SteeringStatus)
@@ -558,7 +571,12 @@ func (h *agentHost) registerHandlers(srv *Server, alive *atomic.Bool) func() {
 
 	// The work controller is per-connection: its forwarders (Task 22) push
 	// work_state updates to this connection's sink and must stop with it.
-	return works.Close
+	// The child approval collectors are per-connection too: they answer
+	// through this connection's permission bridge, so they end with it.
+	return func() {
+		turns.CloseChildApprovals()
+		works.Close()
+	}
 }
 
 // commandRuntimeFor projects a live runtime onto the per-session slice the

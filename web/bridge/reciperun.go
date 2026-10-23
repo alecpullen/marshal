@@ -128,7 +128,7 @@ func (f *Fleet) RunRecipe(ctx context.Context, name string, req RecipeRunRequest
 	}
 
 	id, err := f.Spawn(ctx, req.Project, SpawnOptions{
-		Name: title, Mode: rec.Mode, Isolated: true, Origin: origin,
+		Name: title, Mode: rec.Mode, Auto: rec.Auto, Isolated: true, Origin: origin,
 		RepoID: req.RepoID, Ref: req.Ref, Routing: routing, Workspace: rec.Workspace,
 	})
 	if err != nil {

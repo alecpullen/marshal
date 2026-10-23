@@ -10,16 +10,15 @@ import (
 	"sync"
 	"time"
 
-	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
-	"marshal/internal/permissions"
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/patch"
@@ -238,9 +237,16 @@ type UsageObserver func(usage schema.TokenUsage)
 type QuotaObserver func(quota schema.QuotaInfo)
 
 type Runner struct {
-	Provider       provider.Provider
-	Registry       *registry.Registry
-	Policy         *policy.PolicyEngine
+	Provider provider.Provider
+	Registry *registry.Registry
+	Policy   *policy.PolicyEngine
+	// Authorizer binds the policy engine to this runner's live interaction
+	// authority. Every dispatch evaluates through it, so a cached result, a
+	// hook rewrite or an edited approval is re-checked against the authority
+	// that is live now rather than the one that was live when the call was
+	// queued. Constructed from Policy and State in NewRunner and copied by
+	// CopyFrom; nil only for a bare struct literal, which fails closed.
+	Authorizer     *policy.Authorizer
 	State          *session.State
 	Model          string
 	RouteResolver  RouteResolver
@@ -468,12 +474,14 @@ type Runner struct {
 	// RunTaskFunc overrides RunTask for testing (see the named type below).
 	RunTaskFunc RunTaskFunc
 
-	forceClassMu sync.Mutex
-	approvalMu   sync.Mutex
-	tracker      *progressTracker
-	trackerMu    sync.Mutex
-	stats        *turnStats
-	statsMu      sync.Mutex
+	forceClassMu   sync.Mutex
+	promptAccessMu sync.Mutex
+	promptAccess   interaction.State
+	approvalMu     sync.Mutex
+	tracker        *progressTracker
+	trackerMu      sync.Mutex
+	stats          *turnStats
+	statsMu        sync.Mutex
 
 	// steeringOutcomeMu guards steeringOutcomes, the per-operation ledger of
 	// what the user's steering actually settled while a tool batch ran. It is
@@ -593,7 +601,7 @@ type Runner struct {
 type RunTaskFunc func(ctx context.Context, prompt string) (*Task, error)
 
 func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEngine, state *session.State, model string) *Runner {
-	return &Runner{
+	r := &Runner{
 		Provider:           p,
 		Registry:           reg,
 		Policy:             pol,
@@ -615,6 +623,14 @@ func NewRunner(p provider.Provider, reg *registry.Registry, pol *policy.PolicyEn
 		// NewRunner, which is every production construction path.
 		snapshotWarnings: NewSnapshotWarningState(),
 	}
+	// The authorizer is the one place a dispatch asks "may this run now?".
+	// It reads the session's live authority, so a mode change, a ceiling or a
+	// workspace switch between queueing and launch is visible to the decision
+	// instead of being frozen into the engine at construction.
+	if state != nil && pol != nil {
+		r.Authorizer = policy.NewAuthorizer(pol, state.InteractionAuthority())
+	}
+	return r
 }
 
 // toolResultChars resolves the character cap for a single tool result:
@@ -650,30 +666,9 @@ func (r *Runner) getTurnFinishReason() string {
 	return r.turnFinishReason
 }
 
-// SetApprovalMode sets the active approval mode on the policy engine.
-// Called by the TUI on mode switch and by app.StartRuntime to seed from
-// config. Satisfies the AgentRunner interface's SetApprovalMode method.
-func (r *Runner) SetApprovalMode(m policy.ApprovalMode) {
-	if r.Policy != nil {
-		r.Policy.SetApprovalMode(m)
-	}
-}
-
 // AnswerGate satisfies tui.AgentRunner. The interactive runner has no
 // human gates; this is a no-op.
 func (r *Runner) AnswerGate(string) {}
-
-func (r *Runner) SetPolicyRules(rules []config.PermissionRule) {
-	prules := make([]permissions.Rule, 0, len(rules))
-	for _, rl := range rules {
-		prules = append(prules, permissions.Rule{
-			Permission: rl.Permission,
-			Pattern:    rl.Pattern,
-			Action:     permissions.Action(rl.Action),
-		})
-	}
-	r.Policy.SetRules(prules)
-}
 
 func (r *Runner) CopyFrom(other *Runner) {
 	if other == nil {
@@ -682,6 +677,7 @@ func (r *Runner) CopyFrom(other *Runner) {
 	r.Provider = other.Provider
 	r.Registry = other.Registry
 	r.Policy = other.Policy
+	r.Authorizer = other.Authorizer
 	r.State = other.State
 	r.Model = other.Model
 	r.RouteResolver = other.RouteResolver
@@ -1299,6 +1295,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 		})
 	}
 
+	r.pinPromptAccess()
 	messages := []schema.ChatMessage{r.systemPromptMessage()}
 	messages = r.setContextPackMessage(messages, r.State.ContextPack())
 	messages = r.appendSkillBodies(messages)
@@ -1415,7 +1412,6 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 	task.Status = TaskStatusExecuting
 	lastRenderedSkills := r.State.ActiveSkills()
 	lastRenderedLoadedTools := r.State.LoadedToolNames()
-	lastRenderedSystemAccess := r.State.SystemAccess()
 	pressureMessageSent := false
 	// overflowRetried bounds context-overflow recovery to one compaction and
 	// one retry per turn, so a provider that rejects even a compacted prompt
@@ -1535,12 +1531,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 
 		currentSkills := r.State.ActiveSkills()
 		currentLoadedTools := r.State.LoadedToolNames()
-		currentSystemAccess := r.State.SystemAccess()
-		if skillsChanged(lastRenderedSkills, currentSkills) || loadedToolsChanged(lastRenderedLoadedTools, currentLoadedTools) || currentSystemAccess != lastRenderedSystemAccess {
+		if skillsChanged(lastRenderedSkills, currentSkills) || loadedToolsChanged(lastRenderedLoadedTools, currentLoadedTools) {
 			messages[0] = r.systemPromptMessage()
 			lastRenderedSkills = currentSkills
 			lastRenderedLoadedTools = currentLoadedTools
-			lastRenderedSystemAccess = currentSystemAccess
 		}
 
 		r.mergeTodos(route.ContextBudget.MaxRepoContextTokens)
@@ -2137,7 +2131,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available for the %s role; proceed with your best judgment or report findings", r.role())))
 				continue
 			}
-			if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+			if r.State != nil && r.State.InteractionState().Auto {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("ask_user is not available in auto mode; proceed with your best judgment and state the assumption you made")))
 				continue
 			}
@@ -2183,7 +2177,7 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask is not available for the %s role; proceed with your best judgment or report findings", r.role())))
 				continue
 			}
-			if r.Policy != nil && r.Policy.ApprovalMode() == policy.ModeAuto {
+			if r.State != nil && r.State.InteractionState().Auto {
 				messages = append(messages, BuildCorrectionMessage(fmt.Errorf("question.ask is not available in auto mode; proceed with your best judgment and state the assumption you made")))
 				continue
 			}

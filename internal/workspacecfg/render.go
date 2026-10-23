@@ -59,9 +59,12 @@ func renderSection(key string, d Doc) []byte {
 			Resources Resources `toml:"resources"`
 		}{d.Resources}
 	case "policy":
+		// Render the canonical interaction fields: a retired spelling is
+		// translated here so Format and Patch never emit one.
+		pol, _ := normalizePolicy(d.Policy)
 		v = struct {
 			Policy Policy `toml:"policy"`
-		}{d.Policy}
+		}{pol}
 	case "preview":
 		v = struct {
 			Preview Preview `toml:"preview"`
@@ -234,6 +237,11 @@ func Patch(src []byte, layer int, value json.RawMessage) ([]byte, error) {
 		return nil, fmt.Errorf("unknown layer %d", layer)
 	}
 	if err := applyLayer(&d, layer, value); err != nil {
+		return nil, err
+	}
+	// A patch value is a higher layer over the document, so its resulting
+	// interaction tuple is validated before anything is spliced in.
+	if err := policyTupleError(d.Policy); err != nil {
 		return nil, err
 	}
 	res := append([]byte(nil), src...)

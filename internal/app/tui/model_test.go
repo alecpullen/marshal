@@ -42,6 +42,7 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
@@ -51,7 +52,6 @@ import (
 	"marshal/internal/postmortem"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
@@ -1169,10 +1169,8 @@ func (f *fakeAgentRunner) Run(ctx context.Context, goal string) error {
 	return f.err
 }
 
-func (f *fakeAgentRunner) SetForceClass(string)                   {}
-func (f *fakeAgentRunner) SetPolicyRules([]config.PermissionRule) {}
-func (f *fakeAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (f *fakeAgentRunner) AnswerGate(string)                      {}
+func (f *fakeAgentRunner) SetForceClass(string) {}
+func (f *fakeAgentRunner) AnswerGate(string)    {}
 
 // blockingAgentRunner blocks on a channel in Run until the channel is
 // closed. Used by TestAgentCommandRegistersAndReleasesSessionWork to
@@ -1187,10 +1185,8 @@ func (b *blockingAgentRunner) Run(ctx context.Context, goal string) error {
 	return b.err
 }
 
-func (b *blockingAgentRunner) SetForceClass(string)                   {}
-func (b *blockingAgentRunner) SetPolicyRules([]config.PermissionRule) {}
-func (b *blockingAgentRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (b *blockingAgentRunner) AnswerGate(string)                      {}
+func (b *blockingAgentRunner) SetForceClass(string) {}
+func (b *blockingAgentRunner) AnswerGate(string)    {}
 
 type fakeSwarmRunner struct {
 	mu    sync.Mutex
@@ -1204,10 +1200,8 @@ func (f *fakeSwarmRunner) Run(ctx context.Context, goal string) error {
 	return nil
 }
 
-func (f *fakeSwarmRunner) SetForceClass(string)                   {}
-func (f *fakeSwarmRunner) SetPolicyRules([]config.PermissionRule) {}
-func (f *fakeSwarmRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (f *fakeSwarmRunner) AnswerGate(string)                      {}
+func (f *fakeSwarmRunner) SetForceClass(string) {}
+func (f *fakeSwarmRunner) AnswerGate(string)    {}
 
 func TestSwarmCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
@@ -1350,10 +1344,8 @@ func (f *fakeSDDRunner) Run(ctx context.Context, planPath string) error {
 	return nil
 }
 
-func (f *fakeSDDRunner) SetForceClass(string)                   {}
-func (f *fakeSDDRunner) SetPolicyRules([]config.PermissionRule) {}
-func (f *fakeSDDRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (f *fakeSDDRunner) AnswerGate(string)                      {}
+func (f *fakeSDDRunner) SetForceClass(string) {}
+func (f *fakeSDDRunner) AnswerGate(string)    {}
 
 func TestSDDCommandOpensPreflightThenStartsRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
@@ -1607,21 +1599,19 @@ func TestSDDCustomPathPickerDispatchesPlanPath(t *testing.T) {
 	}
 }
 
-func TestModePickerIncludesSDD(t *testing.T) {
+func TestModePickerContainsOnlyAskAct(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	model := New(state)
 	items := model.modePickerItems()
-	found := false
-	for _, item := range items {
-		if item.Value == "sdd" {
-			found = true
-			if item.Label != "SDD" {
-				t.Errorf("SDD label = %q, want %q", item.Label, "SDD")
-			}
-		}
+	if len(items) != 2 {
+		t.Fatalf("modePickerItems has %d entries, want 2: %+v", len(items), items)
 	}
-	if !found {
-		t.Fatal("modePickerItems missing SDD entry")
+	got := []string{items[0].Value, items[1].Value}
+	if got[0] != "ask" || got[1] != "act" {
+		t.Fatalf("modePickerItems values = %v, want [ask act]", got)
+	}
+	if items[0].Label != "Ask" || items[1].Label != "Act" {
+		t.Fatalf("modePickerItems labels = %q/%q, want Ask/Act", items[0].Label, items[1].Label)
 	}
 }
 
@@ -4251,9 +4241,10 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg))
+	m := New(state, WithCommandRegistry(reg), WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
+		return state.ApplyInteraction(p)
+	}))
 	m.resize(80, 24)
-	m.approvalMode = policy.ModeEdit
 
 	updated, _ := m.dispatchCommand("/mode")
 	m = asModel(t, updated)
@@ -4261,58 +4252,20 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 		t.Fatal("/mode should open the picker")
 	}
 	view := stripANSI(m.View().Content)
-	for _, want := range []string{"Interaction mode", "Edit", "plan + confirm each", "● now"} {
+	for _, want := range []string{"Interaction mode", "Ask", "Act", "● now"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("mode picker missing %q:\n%s", want, view)
 		}
 	}
 
-	updated, _ = m.Update(picker.PickedMsg{Value: "default"})
+	updated, _ = m.Update(picker.PickedMsg{Value: "ask"})
 	m = asModel(t, updated)
-	if m.approvalMode != "default" {
-		t.Fatalf("picking Default should set approvalMode, got %q", m.approvalMode)
+	if got := string(m.state.InteractionState().Mode); got != "ask" {
+		t.Fatalf("picking Ask should set approvalMode, got %q", got)
 	}
 	msgs := state.Messages()
-	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "Default mode") {
-		t.Fatal("the /default handler's confirmation message should appear")
-	}
-}
-
-func TestModePickerSelectingSDDOpensPlanPicker(t *testing.T) {
-	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	reg := commands.New()
-	if err := commands.RegisterAll(reg, nil); err != nil {
-		t.Fatalf("RegisterAll: %v", err)
-	}
-	m := New(state, WithCommandRegistry(reg))
-	m.resize(80, 24)
-
-	// Open the mode picker first
-	updated, _ := m.dispatchCommand("/mode")
-	m = asModel(t, updated)
-	if _, ok := m.dock.Panel().(*picker.Model); !ok || m.pickerCommand != "mode" {
-		t.Fatal("/mode should open the picker")
-	}
-
-	// Simulate picking "sdd" from the mode picker
-	updated, _ = m.Update(picker.PickedMsg{Value: "sdd"})
-	m = asModel(t, updated)
-
-	// Verify the SDD plan picker opened instead of dispatching "/sdd" directly
-	if _, ok := m.dock.Panel().(*picker.Model); !ok {
-		t.Fatal("picking SDD should open the plan picker")
-	}
-	if m.pickerCommand != "sdd-plan" {
-		t.Fatalf("picking SDD should set pickerCommand to %q, got %q", "sdd-plan", m.pickerCommand)
-	}
-
-	// Verify no usage message was printed (regression: the old code dispatched
-	// "/sdd" with no args, which printed "Usage: /sdd <plan-file>")
-	msgs := state.Messages()
-	for _, msg := range msgs {
-		if strings.Contains(msg.Content, "Usage: /sdd") {
-			t.Fatal("picking SDD from mode picker should not print the /sdd usage message")
-		}
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "Ask mode") {
+		t.Fatal("the /ask handler's confirmation message should appear")
 	}
 }
 
@@ -4322,109 +4275,71 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg))
+	m := New(state, WithCommandRegistry(reg), WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
+		return state.ApplyInteraction(p)
+	}))
 	m.resize(80, 24)
-	updated, _ := m.dispatchCommand("/mode edit")
+	updated, _ := m.dispatchCommand("/mode ask")
 	m = asModel(t, updated)
 	if m.dock.IsOpen() {
-		t.Fatal("/mode edit must not open the picker")
+		t.Fatal("/mode ask must not open the picker")
 	}
-	if string(m.approvalMode) != "edit" {
-		t.Fatalf("approvalMode = %q, want edit", string(m.approvalMode))
+	if got := string(m.state.InteractionState().Mode); got != "ask" {
+		t.Fatalf("approvalMode = %q, want ask", got)
 	}
 }
 
 // ── Tab/Shift+Tab mode cycling and Alt+M model cycling (Task 8) ─────────
 
-func TestTabCyclesModeForward(t *testing.T) {
+func TestTabTogglesAskActAndClearsAuto(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	on := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
+		t.Fatalf("seed Auto: %v", err)
+	}
+	m := New(state, WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
+		return state.ApplyInteraction(p)
+	}))
 	m.resize(80, 24)
 
-	// Start in default mode
-	if string(m.approvalMode) != "default" {
-		t.Fatalf("initial approvalMode = %q, want \"default\"", string(m.approvalMode))
+	if got := string(m.state.InteractionState().Mode); got != "act" {
+		t.Fatalf("initial approvalMode = %q, want act", got)
 	}
-
-	// Tab → edit
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if string(m.approvalMode) != "edit" {
-		t.Fatalf("after 1st Tab: approvalMode = %q, want \"edit\"", string(m.approvalMode))
+	if got := state.InteractionState().Mode; got != interaction.ModeAsk {
+		t.Fatalf("after Tab: mode = %q, want ask", got)
 	}
-
-	// Tab → copilot
+	if state.InteractionState().Auto {
+		t.Fatal("Tab must clear Auto when entering Ask")
+	}
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if string(m.approvalMode) != "copilot" {
-		t.Fatalf("after 2nd Tab: approvalMode = %q, want \"copilot\"", string(m.approvalMode))
+	if got := state.InteractionState().Mode; got != interaction.ModeAct {
+		t.Fatalf("after second Tab: mode = %q, want act", got)
+	}
+	if state.InteractionState().Auto {
+		t.Fatal("Tab must not restore Auto")
 	}
 
-	// Tab → auto
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if string(m.approvalMode) != "auto" {
-		t.Fatalf("after 3rd Tab: approvalMode = %q, want \"auto\"", string(m.approvalMode))
-	}
-
-	// Tab → plan
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if string(m.approvalMode) != "plan" {
-		t.Fatalf("after 4th Tab: approvalMode = %q, want \"plan\"", string(m.approvalMode))
-	}
-
-	// Tab → default (wrap)
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
-	if string(m.approvalMode) != "default" {
-		t.Fatalf("after 5th Tab: approvalMode = %q, want \"default\"", string(m.approvalMode))
-	}
-
-	// Verify the last system message is the default confirmation
 	msgs := state.Messages()
-	if len(msgs) == 0 {
-		t.Fatal("expected at least one system message")
-	}
-	last := msgs[len(msgs)-1]
-	if last.Role != session.RoleSystem {
-		t.Fatal("last message should be system role")
-	}
-	if !strings.Contains(last.Content, "Default mode") {
-		t.Fatalf("last message = %q, want 'Default mode' confirmation", last.Content)
+	if len(msgs) == 0 || !strings.Contains(msgs[len(msgs)-1].Content, "Act mode") {
+		t.Fatalf("last message = %v, want an Act mode receipt", msgs)
 	}
 }
 
-func TestShiftTabCyclesModeBackward(t *testing.T) {
+func TestShiftTabTogglesAskAct(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	m := New(state, WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
+		return state.ApplyInteraction(p)
+	}))
 	m.resize(80, 24)
-	m.approvalMode = policy.ModeEdit
 
-	// Shift+Tab → default
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if string(m.approvalMode) != "default" {
-		t.Fatalf("after 1st Shift+Tab: approvalMode = %q, want \"default\"", string(m.approvalMode))
+	if got := state.InteractionState().Mode; got != interaction.ModeAsk {
+		t.Fatalf("after Shift+Tab: mode = %q, want ask", got)
 	}
-
-	// Shift+Tab → plan
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if string(m.approvalMode) != "plan" {
-		t.Fatalf("after 2nd Shift+Tab: approvalMode = %q, want \"plan\"", string(m.approvalMode))
-	}
-
-	// Shift+Tab → auto (wrap)
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if string(m.approvalMode) != "auto" {
-		t.Fatalf("after 3rd Shift+Tab: approvalMode = %q, want \"auto\"", string(m.approvalMode))
-	}
-
-	// Verify the last system message is the auto confirmation
-	msgs := state.Messages()
-	if len(msgs) == 0 {
-		t.Fatal("expected at least one system message")
-	}
-	last := msgs[len(msgs)-1]
-	if last.Role != session.RoleSystem {
-		t.Fatal("last message should be system role")
-	}
-	if !strings.Contains(last.Content, "Auto mode") {
-		t.Fatalf("last message = %q, want 'Auto mode' confirmation", last.Content)
+	if got := state.InteractionState().Mode; got != interaction.ModeAct {
+		t.Fatalf("after second Shift+Tab: mode = %q, want act", got)
 	}
 }
 
@@ -4447,7 +4362,7 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 		t.Fatal("cmd popup should be visible after /")
 	}
 
-	initialMode := string(m.approvalMode) // should be "default"
+	initialMode := string(m.state.InteractionState().Mode) // should be "default"
 
 	// Tab should accept the completion, not cycle mode
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
@@ -4455,8 +4370,8 @@ func TestTabAcceptsCompletionWhenPopupOpen(t *testing.T) {
 	if m.cmdPopup.isVisible() {
 		t.Fatal("cmd popup should be dismissed after Tab")
 	}
-	if string(m.approvalMode) != initialMode {
-		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.approvalMode))
+	if string(m.state.InteractionState().Mode) != initialMode {
+		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.state.InteractionState().Mode))
 	}
 	// Input should have been replaced with the accepted command
 	if !strings.HasPrefix(m.input.Value(), "/test") {
@@ -4477,13 +4392,15 @@ func TestTabIgnoredDuringApproval(t *testing.T) {
 	state.SetPendingApproval(tc)
 	m := New(state)
 	m.resize(80, 24)
-	m.approvalMode = policy.ModeDefault
+	act := interaction.ModeAct
+	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
+		t.Fatalf("seed Act: %v", err)
+	}
 
-	// Tab while approval is pending should not cycle mode
-	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
+	sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab})
 
-	if string(m.approvalMode) != "default" {
-		t.Fatalf("approvalMode = %q, want \"default\" (unchanged during approval)", string(m.approvalMode))
+	if string(m.state.InteractionState().Mode) != "act" {
+		t.Fatalf("approvalMode = %q, want \"act\" (unchanged during approval)", string(m.state.InteractionState().Mode))
 	}
 	if state.PendingApproval() == nil {
 		t.Fatal("pending approval was cleared by Tab")
@@ -4624,14 +4541,14 @@ func TestShiftTabDuringPopupIsNoOp(t *testing.T) {
 		t.Fatal("cmd popup should be visible after /")
 	}
 
-	initialMode := string(m.approvalMode)
+	initialMode := string(m.state.InteractionState().Mode)
 	initialInput := m.input.Value()
 
 	// Shift+Tab while popup is visible should be a no-op
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
 
-	if string(m.approvalMode) != initialMode {
-		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.approvalMode))
+	if string(m.state.InteractionState().Mode) != initialMode {
+		t.Fatalf("approvalMode changed from %q to %q, should be unchanged", initialMode, string(m.state.InteractionState().Mode))
 	}
 	if m.input.Value() != initialInput {
 		t.Fatalf("input changed from %q to %q, should be unchanged", initialInput, m.input.Value())
@@ -6952,30 +6869,36 @@ func TestUserConfigDirIsUnderHome(t *testing.T) {
 	}
 }
 
-func TestModeCycleOrder(t *testing.T) {
-	if len(modeOrder) != 5 {
-		t.Fatalf("modeOrder has %d entries, want 5", len(modeOrder))
+func TestModeCycleContainsOnlyAskActAndClearsAuto(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	on := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
+		t.Fatalf("seed Auto: %v", err)
 	}
-	want := []string{"plan", "default", "edit", "copilot", "auto"}
-	for i, m := range modeOrder {
-		if string(m) != want[i] {
-			t.Errorf("modeOrder[%d] = %q, want %q", i, m, want[i])
-		}
-	}
-}
+	m := New(state, WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
+		return state.ApplyInteraction(p)
+	}))
+	m.resize(80, 24)
 
-func TestSetModeMapsForceClass(t *testing.T) {
-	m := newTestModel(t)
-	runner := &fakeAgentRunner{}
-	m.runner = runner
-
-	m.setMode("plan")
-	if m.approvalMode != "plan" {
-		t.Fatalf("approvalMode = %q, want plan", m.approvalMode)
+	m.cycleMode(true)
+	if got := state.InteractionState().Mode; got != interaction.ModeAsk {
+		t.Fatalf("after first cycle mode = %q, want ask", got)
 	}
-	m.setMode("auto")
-	if m.approvalMode != "auto" {
-		t.Fatalf("approvalMode = %q, want auto", m.approvalMode)
+	if state.InteractionState().Auto {
+		t.Fatal("Tab cycling to Ask must clear Auto")
+	}
+
+	m.cycleMode(false)
+	if got := state.InteractionState().Mode; got != interaction.ModeAct {
+		t.Fatalf("after second cycle mode = %q, want act", got)
+	}
+	if state.InteractionState().Auto {
+		t.Fatal("Tab cycling back to Act must not restore Auto")
+	}
+
+	items := m.modePickerItems()
+	if len(items) != 2 || items[0].Value != "ask" || items[1].Value != "act" {
+		t.Fatalf("modePickerItems = %+v, want exactly ask/act", items)
 	}
 }
 
@@ -7239,11 +7162,9 @@ func TestOpenAgentsRosterThreadsToolRegistry(t *testing.T) {
 // testAgentRunner is a minimal AgentRunner implementation for tests.
 type testAgentRunner struct{}
 
-func (r *testAgentRunner) Run(ctx context.Context, goal string) error   { return nil }
-func (r *testAgentRunner) SetForceClass(class string)                   {}
-func (r *testAgentRunner) SetPolicyRules(rules []config.PermissionRule) {}
-func (r *testAgentRunner) SetApprovalMode(mode policy.ApprovalMode)     {}
-func (r *testAgentRunner) AnswerGate(string)                            {}
+func (r *testAgentRunner) Run(ctx context.Context, goal string) error { return nil }
+func (r *testAgentRunner) SetForceClass(class string)                 {}
+func (r *testAgentRunner) AnswerGate(string)                          {}
 
 // newStatusTestModelFromTemp builds a Model rooted in a temp git repo so
 // gitInfo resolves. Used by the git-info wiring tests.
@@ -8129,10 +8050,8 @@ func (r *recordingPipelineRunner) Run(ctx context.Context, goal string) error {
 	return nil
 }
 
-func (r *recordingPipelineRunner) SetForceClass(string)                   {}
-func (r *recordingPipelineRunner) SetPolicyRules([]config.PermissionRule) {}
-func (r *recordingPipelineRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (r *recordingPipelineRunner) AnswerGate(answer string)               { r.answer = answer }
+func (r *recordingPipelineRunner) SetForceClass(string)     {}
+func (r *recordingPipelineRunner) AnswerGate(answer string) { r.answer = answer }
 
 func TestSubagentBrokerPublishesRefreshMessage(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
@@ -8542,10 +8461,8 @@ type panicRunner struct{}
 func (p *panicRunner) Run(ctx context.Context, goal string) error {
 	panic("boom")
 }
-func (p *panicRunner) SetForceClass(string)                   {}
-func (p *panicRunner) SetPolicyRules([]config.PermissionRule) {}
-func (p *panicRunner) SetApprovalMode(policy.ApprovalMode)    {}
-func (p *panicRunner) AnswerGate(string)                      {}
+func (p *panicRunner) SetForceClass(string) {}
+func (p *panicRunner) AnswerGate(string)    {}
 
 // The transcript is vertical-only: horizontal wheel pans (trackpad
 // sideways gestures, diagonal scrolls) must not shift the view.
@@ -9497,18 +9414,29 @@ func TestWarningIsIndependentOfPostmortemPolicy(t *testing.T) {
 }
 
 // TestWarningIsIndependentOfApprovalMode pins that neither Auto mode nor any
-// other approval mode disables the warning.
+// other interaction state disables the warning.
 func TestWarningIsIndependentOfApprovalMode(t *testing.T) {
-	for _, mode := range []string{"plan", "default", "edit", "copilot", "auto"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode interaction.Mode
+		auto bool
+	}{
+		{"ask", interaction.ModeAsk, false},
+		{"act", interaction.ModeAct, false},
+		{"act auto", interaction.ModeAct, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			m, _ := warningModel(t, workSnapshot("job-1"))
-			m.approvalMode = policy.ApprovalMode(mode)
+			auto := tc.auto
+			if _, err := m.state.ApplyInteraction(interaction.Patch{Mode: &tc.mode, Auto: &auto}); err != nil {
+				t.Fatalf("seed interaction: %v", err)
+			}
 
 			if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
 				t.Fatalf("warning path returned a cmd (%T), want nil", cmd)
 			}
 			if _, ok := m.dock.Panel().(*activeworkpanel.Panel); !ok {
-				t.Fatalf("dock panel = %T, want the warning in %s mode", m.dock.Panel(), mode)
+				t.Fatalf("dock panel = %T, want the warning in %s mode", m.dock.Panel(), tc.name)
 			}
 		})
 	}

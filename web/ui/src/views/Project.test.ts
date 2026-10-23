@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import Project from './Project.svelte'
 import * as api from '../lib/api.js'
 import { toRow } from '../lib/fleet'
-import { healthChecks, latestAgent, parseWorkspaceRef } from '../lib/project/model'
+import { healthChecks, latestAgent, parseWorkspaceRef, autoFrom, autoOf } from '../lib/project/model'
 
 vi.mock('../lib/api.js', async (importActual) => {
   const actual = await importActual<typeof import('../lib/api.js')>()
@@ -23,7 +23,7 @@ vi.mock('../lib/api.js', async (importActual) => {
 afterEach(cleanup)
 
 const ROOT = '/home/u/alpha'
-const settings: api.ProjectSettings = { workspace: 'go-dev', mode: 'edit', routing: { profile: 'fast', overrides: { reviewer: 'big' } }, intake: { repoId: 'r1', labels: ['agent'], clients: ['c1'] } }
+const settings: api.ProjectSettings = { workspace: 'go-dev', mode: 'ask', routing: { profile: 'fast', overrides: { reviewer: 'big' } }, intake: { repoId: 'r1', labels: ['agent'], clients: ['c1'] } }
 const healthy: api.ProjectHealth = { gateRunnable: 'yes', mirrorFresh: [{ repoId: 'r1', present: true, ageSeconds: 120, head: 'main' }], orphanWorktrees: [], trust: 'trusted', workspaceResolves: { ref: 'go-dev', resolves: true, built: true } }
 
 const mount = (over: Record<string, unknown> = {}) => render(Project, { root: ROOT, agents: [], onNavigate: vi.fn(), ...over })
@@ -33,7 +33,7 @@ beforeEach(() => {
   ;(api.getProjectSettings as Mock).mockResolvedValue(settings)
   ;(api.putProjectSettings as Mock).mockImplementation(async (_r: string, s: api.ProjectSettings) => s)
   ;(api.getProjectHealth as Mock).mockResolvedValue(healthy)
-  ;(api.getWorkspacePolicy as Mock).mockResolvedValue({ mode: 'edit', allow: ['go test ./...'] })
+  ;(api.getWorkspacePolicy as Mock).mockResolvedValue({ mode: 'ask', allow: ['go test ./...'] })
   ;(api.listWorkspaces as Mock).mockResolvedValue([{ source: 'studio', name: 'go-dev' }, { source: 'studio', name: 'node' }, { source: 'repo', name: 'ci', project: ROOT }])
   ;(api.listRepos as Mock).mockResolvedValue([{ id: 'r1', url: 'u' }, { id: 'r2', url: 'u2' }])
   ;(api.listClients as Mock).mockResolvedValue([{ id: 'c1', name: 'Cursor' }, { id: 'c2', name: 'Zed' }])
@@ -56,7 +56,7 @@ describe('Project automations tab', () => {
 describe('Project overview', () => {
   it('loads the saved settings into the defaults and intake cards', async () => {
     mount()
-    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('edit'))
+    await waitFor(() => expect((screen.getByLabelText('Mode') as HTMLSelectElement).value).toBe('ask'))
     expect(api.getProjectSettings).toHaveBeenCalledWith(ROOT)
     await waitFor(() => expect((screen.getByLabelText('Workspace') as HTMLSelectElement).value).toBe('go-dev'))
     await waitFor(() => expect([...(screen.getByLabelText('Workspace') as HTMLSelectElement).options].map((o) => o.value)).toEqual(['', 'go-dev', 'node', 'repo:ci']))
@@ -72,7 +72,8 @@ describe('Project overview', () => {
     await waitFor(() => expect((screen.getByLabelText('Workspace') as HTMLSelectElement).options.length).toBe(4))
     await fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: 'repo:ci' } })
     await fireEvent.change(screen.getByLabelText('Model profile'), { target: { value: 'careful' } })
-    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'auto' } })
+    await fireEvent.change(screen.getByLabelText('Mode'), { target: { value: 'act' } })
+    await fireEvent.change(screen.getByLabelText('Auto'), { target: { value: 'off' } })
     await fireEvent.change(screen.getByLabelText('Isolation'), { target: { value: 'isolated' } })
     await fireEvent.change(screen.getByLabelText('Ship target'), { target: { value: 'patch' } })
     await fireEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
@@ -80,7 +81,8 @@ describe('Project overview', () => {
     expect(api.putProjectSettings).toHaveBeenCalledWith(ROOT, {
       workspace: 'repo:ci',
       routing: { profile: 'careful', overrides: { reviewer: 'big' } },
-      mode: 'auto',
+      mode: 'act',
+      auto: false,
       isolated: true,
       shipTarget: 'patch',
       intake: { repoId: 'r1', labels: ['agent'], clients: ['c1'] },
@@ -217,5 +219,17 @@ describe('project model helpers', () => {
     expect(dot('mirror:r')).toBe('warn')
     expect(dot('trust')).toBe('warn')
     expect(dot('workspace')).toBe('warn')
+  })
+  it('preserves inherited Auto versus an explicit false', () => {
+    expect(autoOf({})).toBe('default')
+    expect(autoOf({ auto: undefined })).toBe('default')
+    expect(autoOf({ auto: true })).toBe('on')
+    expect(autoOf({ auto: false })).toBe('off')
+    expect(autoFrom('default')).toBeUndefined()
+    expect(autoFrom('on')).toBe(true)
+    expect(autoFrom('off')).toBe(false)
+    // Inherit stays omitted on the wire; an explicit false is a real value.
+    expect(JSON.stringify({ auto: autoFrom('default') })).toBe('{}')
+    expect(JSON.stringify({ auto: autoFrom('off') })).toBe('{"auto":false}')
   })
 })

@@ -18,6 +18,7 @@ import (
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/routing"
 	"marshal/internal/pubsub"
+	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/worktree"
 )
@@ -99,20 +100,16 @@ type Options struct {
 	// worktree without exposing absolute paths.
 	NamedRoots map[string]string
 
-	// Guardrail is invoked by shell.run / test.run after policy
-	// evaluation, as a final pre-flight check. Returning a non-nil
-	// error aborts the command with a tool error. Typically wired to
-	// (*policy.PolicyEngine).GuardrailCheck in app.go. The system flag
-	// is the toolset's own session state, so the pre-flight applies the
-	// same catastrophic floor as the engine. Optional; when nil, no
-	// guardrail check is performed (the policy engine already ran
-	// Evaluate upstream in the agent loop).
-	Guardrail func(command string, system bool) error
+	// CommandAdmission admits one managed-command attempt. Required on the
+	// final execution path; a nil callback fails closed.
+	CommandAdmission func(context.Context, policy.CommandAttempt) (*policy.Admission, error)
 
-	// SudoPolicy validates a bare command submitted to shell.sudo. Wired to
-	// (*policy.PolicyEngine).CheckPrivileged in app.go. Optional; when nil,
-	// shell.sudo refuses every command (fail closed).
-	SudoPolicy func(command string) error
+	// CommandAuthorizer evaluates and approves one privileged attempt. The
+	// shell.sudo tool needs it because its own combined prompt collects the
+	// command consent, so the tool evaluates the bare payload, binds that
+	// prompt's identity to the exact proof, and admits the attempt itself. A
+	// nil authorizer fails closed.
+	CommandAuthorizer CommandAuthorizer
 
 	// Symbols answers symbol-name lookups for the `symbols` tool: through a
 	// language server when one is ready, else through the symbol index. Set
@@ -134,6 +131,19 @@ type Options struct {
 
 type CommandRunner interface {
 	Run(ctx context.Context, req CommandRequest) (CommandResult, error)
+}
+
+// CommandAuthorizer is the policy seam for a tool whose own prompt collects the
+// command approval. It is the evaluator contract this package can rely on
+// without depending on how the engine is built; *policy.Authorizer satisfies it.
+type CommandAuthorizer interface {
+	// Evaluate captures a fresh authority snapshot and evaluates the call.
+	Evaluate(ctx context.Context, call policy.Call) (*policy.Authorization, policy.Evaluation, error)
+	// ApproveExact binds one settled prompt's identity to the captured proof.
+	ApproveExact(auth *policy.Authorization, requestID string) (*policy.Authorization, error)
+	// BeginCommand revalidates the proof against live facts and takes the
+	// owner's admission lease.
+	BeginCommand(ctx context.Context, attempt policy.CommandAttempt) (*policy.Admission, error)
 }
 
 type CommandRequest struct {
@@ -204,11 +214,14 @@ type toolSet struct {
 	webHTTPClient *http.Client
 	ssrfCheck     func(*url.URL) bool
 
-	guardrail func(command string, system bool) error
+	// commandAdmission admits one managed-command attempt at accepted launch.
+	// nil fails closed: there is no unadmitted command execution path.
+	commandAdmission func(context.Context, policy.CommandAttempt) (*policy.Admission, error)
 
-	// sudoPolicy validates a bare command submitted to shell.sudo. nil means
-	// shell.sudo refuses every command (fail closed).
-	sudoPolicy func(command string) error
+	// commandAuthorizer evaluates and approves one privileged attempt, because
+	// shell.sudo's combined password prompt collects the command consent. nil
+	// fails closed.
+	commandAuthorizer CommandAuthorizer
 
 	config config.Config
 
@@ -432,8 +445,8 @@ func newToolSet(opts Options) (*toolSet, error) {
 		commandDir:      opts.CommandDir,
 		diagnostics:     newDiagnosticsChecker(opts),
 
-		guardrail:              opts.Guardrail,
-		sudoPolicy:             opts.SudoPolicy,
+		commandAdmission:       opts.CommandAdmission,
+		commandAuthorizer:      opts.CommandAuthorizer,
 		webEnabled:             opts.Config.Web.Enabled,
 		webFetchTimeout:        opts.Config.Web.FetchTimeout,
 		webSearchURL:           opts.Config.Web.SearchURL,

@@ -1,39 +1,36 @@
 package policy
 
 import (
-	"strings"
 	"testing"
 
 	"marshal/internal/app/config"
+	"marshal/internal/interaction"
 )
 
 // TestMatchRule_SessionExactMatch pins S-01: session-approved commands and
 // config allow/confirm lists must match the full normalized command exactly.
-// Prefix matching would let a later `go test ./... && curl ...` inherit the
-// approval granted to `go test ./...`.
+// Prefix matching would let a later `docker ps && curl ...` inherit the
+// approval granted to `docker ps`.
 func TestMatchRule_SessionExactMatch(t *testing.T) {
 	// Use a zero config so the test is not affected by default allow rules.
 	cfg := config.Config{}
-	pe := NewEngine(&cfg, []string{"go test ./..."})
+	pe := NewEngine(&cfg, []string{"docker ps"})
+	state := interaction.State{Mode: interaction.ModeAct, Revision: 1}
 
 	tests := []struct {
 		cmd  string
 		want Decision
 	}{
-		{"go test ./...", DecisionAllow},
-		{"go  test   ./...", DecisionAllow}, // normalization collapses whitespace
-		{"go test ./... && echo leaked", DecisionConfirm},
-		{"go test ./..", DecisionConfirm},
-		{"go test", DecisionConfirm},
+		{"docker ps", DecisionAllow},
+		{"docker  ps", DecisionAllow}, // normalization collapses whitespace
+		{"docker ps && echo leaked", DecisionConfirm},
+		{"docker p", DecisionConfirm},
+		{"docker", DecisionConfirm},
 	}
 
 	for _, tc := range tests {
-		dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": tc.cmd})
-		if err != nil {
-			t.Fatalf("Evaluate(%q) error: %v", tc.cmd, err)
-		}
-		if dec != tc.want {
-			t.Errorf("Evaluate(%q) = %v, want %v; reason=%q", tc.cmd, dec, tc.want, reason)
+		if got := evalShell(t, pe, state, tc.cmd).Decision; got != tc.want {
+			t.Errorf("Evaluate(%q) = %v, want %v", tc.cmd, got, tc.want)
 		}
 	}
 }
@@ -41,34 +38,30 @@ func TestMatchRule_SessionExactMatch(t *testing.T) {
 // TestMatchRule_ConfigAllowExactMatch pins S-01 for the config allow list.
 func TestMatchRule_ConfigAllowExactMatch(t *testing.T) {
 	cfg := config.Config{}
-	cfg.Tools.Shell.Allow.Commands = []string{"go test ./..."}
+	cfg.Tools.Shell.Allow.Commands = []string{"docker ps"}
 	pe := NewEngine(&cfg, nil)
 
-	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "go test ./... && echo leaked"})
-	if err != nil {
-		t.Fatalf("Evaluate error: %v", err)
-	}
-	if dec != DecisionConfirm {
-		t.Errorf("got %v, want Confirm; reason=%q", dec, reason)
+	ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Revision: 1}, "docker ps && echo leaked")
+	if ev.Decision != DecisionConfirm {
+		t.Errorf("got %v, want Confirm", ev.Decision)
 	}
 }
 
 // TestMatchRule_ConfigConfirmExactMatch pins S-01 for the config confirm list.
 func TestMatchRule_ConfigConfirmExactMatch(t *testing.T) {
 	cfg := config.Config{}
-	cfg.Tools.Shell.Confirm.Commands = []string{"go get github.com/foo/bar@latest"}
+	cfg.Tools.Shell.Confirm.Commands = []string{"docker ps"}
 	pe := NewEngine(&cfg, nil)
 
 	// A command that starts with the confirm rule but adds a suffix must not
 	// match; it should fall through to the default secure confirm.
-	dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "go get github.com/foo/bar@latest && echo leaked"})
-	if err != nil {
-		t.Fatalf("Evaluate error: %v", err)
+	ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Revision: 1}, "docker ps && echo leaked")
+	if ev.Decision != DecisionConfirm {
+		t.Errorf("got %v, want Confirm", ev.Decision)
 	}
-	if dec != DecisionConfirm {
-		t.Errorf("got %v, want Confirm; reason=%q", dec, reason)
-	}
-	if strings.Contains(reason, "config confirm rule") {
-		t.Errorf("reason %q should not claim a config confirm rule matched", reason)
+	for _, r := range ev.Reasons {
+		if r.Code == ReasonExplicitConfirm && r.Rule != "" {
+			t.Errorf("reason %+v should not claim a config confirm rule matched", r)
+		}
 	}
 }

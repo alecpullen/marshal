@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/filetrack"
+	"marshal/internal/interaction"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -54,6 +55,12 @@ func TestPostmortemSystemAccessWritePath(t *testing.T) {
 
 	state := session.New(config.Default(), root, time.Unix(100, 0), session.Persistence{})
 	state.SetSystemAccess(true)
+	// Auto is the session's canonical tuple, not the engine's legacy mode: the
+	// dispatch reads the authority, so the test must set the tuple.
+	auto := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+		t.Fatalf("ApplyInteraction: %v", err)
+	}
 
 	reg := registry.New()
 	if err := native.RegisterAll(reg, native.Options{
@@ -66,7 +73,6 @@ func TestPostmortemSystemAccessWritePath(t *testing.T) {
 	}
 
 	pol := policy.NewEngine(&config.Config{}, nil)
-	pol.SetApprovalMode(policy.ModeAuto)
 	pol.WithRegistry(reg)
 
 	patchText := "File: " + report + "\n<<<<<<< SEARCH\n  \"agent_observations\": []\n=======\n  \"agent_observations\": [\"observed\"]\n>>>>>>> REPLACE"

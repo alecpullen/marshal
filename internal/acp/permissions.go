@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"marshal/internal/app/session"
 )
@@ -65,8 +66,40 @@ type PermissionRequest struct {
 // JSON contract is the integration boundary, and web/ must never import an
 // internal Go type.
 type ModeAccessState struct {
-	Mode   string `json:"mode"`
-	System bool   `json:"system"`
+	Mode     string `json:"mode"`
+	Auto     bool   `json:"auto"`
+	System   bool   `json:"system_access"`
+	Revision uint64 `json:"access_revision"`
+}
+
+// modeAccessStateFrom projects the session's compatibility snapshot onto the
+// ACP wire: canonical mode plus every modifier and the revision.
+func modeAccessStateFrom(s session.AccessState) ModeAccessState {
+	mode := "ask"
+	switch s.Mode {
+	case "act", "edit", "copilot", "auto":
+		mode = "act"
+	}
+	return ModeAccessState{Mode: mode, Auto: s.Auto, System: s.System, Revision: s.Revision}
+}
+
+// interactionStateFromAccess projects the compatibility snapshot onto the
+// canonical committed wire state used by mode_changed announcements.
+func interactionStateFromAccess(s session.AccessState) InteractionState {
+	m := modeAccessStateFrom(s)
+	return InteractionState{Mode: m.Mode, Auto: m.Auto, System: m.System, Revision: m.Revision}
+}
+
+// canonicalEditingChoice maps retired capability spellings to normal Act.
+// Auto is never requested by a capability answer; an unknown spelling fails
+// closed rather than partially granting System.
+func canonicalEditingChoice(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "act", "edit", "copilot", "auto":
+		return "act", nil
+	default:
+		return "", fmt.Errorf("acp: unsupported editing capability %q", raw)
+	}
 }
 
 // ModeAccessRequest is the typed presentation of one capability request.
@@ -242,28 +275,25 @@ func (b *PermissionBridge) CollectAccess(ctx context.Context, sessionID, toolCal
 	if sessionID != request.SessionID || request.RequestID == "" {
 		return session.AccessChoice{}, errors.New("acp: invalid access request identity")
 	}
-	scope := "System access; interaction mode stays unchanged."
-	if request.MissingEditing {
-		scope = "Editing capability."
-		if request.MissingSystem {
-			scope = "Editing capability and system access, as one bundle."
-		}
+	scope := "Normal Act editing capability."
+	if request.MissingSystem {
+		scope = "Filesystem access outside the workspace and relaxed workspace shell guardrails; no sudo."
+	}
+	if request.MissingEditing && request.MissingSystem {
+		scope = "Normal Act editing capability plus filesystem access outside the workspace; no sudo."
 	}
 	disclosure := "This conversation only. Interaction mode, policy and sandbox still apply."
-	if request.MissingSystem {
-		disclosure += " Filesystem access outside the workspace and relaxed workspace shell guardrails; no sudo."
-	}
 	wire := &ModeAccessRequest{
 		RequestID: request.RequestID, SessionID: request.SessionID,
 		Actor: request.Actor, StepID: request.StepID, Reason: request.Reason,
-		Current:        ModeAccessState{Mode: request.Current.Mode, System: request.Current.System},
+		Current:        modeAccessStateFrom(request.Current),
 		MissingEditing: request.MissingEditing, MissingSystem: request.MissingSystem,
 	}
 	decision, err := b.client.RequestPermission(ctx, PermissionRequest{
 		SessionID: sessionID, ToolCallID: toolCallID, ToolName: "mode.request",
 		Risk: "read_only",
-		Reason: fmt.Sprintf("%s\nCurrent mode: %s; system access: %t.\n%s\n%s",
-			request.Reason, request.Current.Mode, request.Current.System, scope, disclosure),
+		Reason: fmt.Sprintf("%s\nScope: %s\n%s",
+			request.Reason, scope, disclosure),
 		ModeAccess: wire,
 	})
 	if err != nil {
@@ -279,19 +309,25 @@ func (b *PermissionBridge) CollectAccess(ctx context.Context, sessionID, toolCal
 			return session.AccessChoice{}, errors.New("acp: access choice identity mismatch")
 		}
 		// The choice is judged against the tuple the server actually
-		// presented, never the client's echo of it. Trusting the echo would
-		// let a client — buggy or hostile — report a tuple that was never
-		// shown, which the session reads as "the state moved": a refresh
-		// that re-asks against a state the client misdescribes again, and
-		// so on without the user ever settling anything. choice.Current
-		// keeps the presented snapshot; only the variant comes from the
-		// echo.
-		choice.Mode = echoed.Mode
-	} else if choice.Approved && request.MissingEditing {
-		choice.Mode = decision.Edited
-		if choice.Mode == "" {
-			choice.Mode = "edit"
+		// presented, never the client's echo of it. Only a normal Act
+		// capability is accepted; a typed Auto or unknown value fails closed
+		// before any System half can be granted.
+		switch strings.ToLower(strings.TrimSpace(echoed.Mode)) {
+		case "":
+			if choice.Approved && request.MissingEditing {
+				choice.Mode = "act"
+			}
+		case "act":
+			choice.Mode = "act"
+		default:
+			return session.AccessChoice{}, fmt.Errorf("acp: unsupported capability mode %q", echoed.Mode)
 		}
+	} else if choice.Approved && request.MissingEditing {
+		mode, err := canonicalEditingChoice(decision.Edited)
+		if err != nil {
+			return session.AccessChoice{}, err
+		}
+		choice.Mode = mode
 	}
 	// Legacy Edited is ignored when no editing selector was presented.
 	// Validation/application and canonical channel delivery belong to runtime.

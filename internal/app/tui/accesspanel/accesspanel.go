@@ -21,27 +21,36 @@ type Panel struct {
 	request          session.AccessRequest
 	options          []option
 	selected, offset int
+	// visible records whether the last render was large enough to show the
+	// choices. A hidden or undersized panel must never approve.
+	visible bool
 }
 
 var _ dock.Panel = (*Panel)(nil)
 
+// Minimum geometry for an actionable panel. Below this the panel cannot show
+// its options, so Enter must not turn a hidden selection into a grant.
+const (
+	minPanelWidth  = 20
+	minPanelHeight = 4
+)
+
 func New(request session.AccessRequest) *Panel {
 	p := &Panel{request: request, options: []option{{label: "Deny"}}}
-	if request.MissingEditing {
-		for _, mode := range []string{"edit", "copilot", "auto"} {
-			label := "Use " + strings.ToUpper(mode[:1]) + mode[1:]
-			if request.MissingSystem {
-				label = strings.ToUpper(mode[:1]) + mode[1:] + " + system access"
-			}
-			p.options = append(p.options, option{label: label, mode: mode})
-		}
-	} else if request.MissingSystem {
-		p.options = append(p.options, option{label: "Allow system access for this session"})
+	switch {
+	case request.MissingEditing && request.MissingSystem:
+		p.options = append(p.options, option{label: "Act + system access", mode: "act"})
+	case request.MissingEditing:
+		p.options = append(p.options, option{label: "Act", mode: "act"})
+	case request.MissingSystem:
+		p.options = append(p.options, option{label: "Allow system access for this conversation"})
 	}
 	return p
 }
+
 func (p *Panel) Request() session.AccessRequest { return p.request }
 func (p *Panel) Sizing() dock.Sizing            { return dock.Docked }
+
 func (p *Panel) decision(approved bool) tea.Cmd {
 	choice := session.AccessChoice{
 		RequestID: p.request.RequestID, SessionID: p.request.SessionID,
@@ -52,6 +61,7 @@ func (p *Panel) decision(approved bool) tea.Cmd {
 	}
 	return func() tea.Msg { return ChoiceMsg{Choice: choice} }
 }
+
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	k, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -67,12 +77,17 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	case "pgdown":
 		p.offset++
 	case "enter":
+		// Deny is always safe. Any grant needs a rendered, actionable panel.
+		if p.selected != 0 && !p.visible {
+			return nil
+		}
 		return p.decision(p.selected != 0)
 	case "esc":
 		return p.decision(false)
 	}
 	return nil
 }
+
 func clean(text string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
@@ -84,27 +99,52 @@ func clean(text string) string {
 		return r
 	}, ansi.Strip(text))
 }
+
+// accessLabel renders the full effective tuple as the user saw it: canonical
+// mode, every active modifier, and the access revision.
+func accessLabel(s session.AccessState) string {
+	mode := "Ask"
+	switch s.Mode {
+	case "act", "edit", "copilot", "auto":
+		mode = "Act"
+	}
+	parts := []string{mode}
+	if s.Auto {
+		parts = append(parts, "Auto")
+	}
+	if s.System {
+		parts = append(parts, "System")
+	}
+	parts = append(parts, fmt.Sprintf("rev %d", s.Revision))
+	return strings.Join(parts, " · ")
+}
+
 func (p *Panel) View(width, maxHeight int) string {
+	p.visible = false
 	if maxHeight <= 0 || width <= 0 {
 		return ""
 	}
 	pw := layout.PanelWidth(width)
+	if pw < minPanelWidth || maxHeight < minPanelHeight {
+		return ""
+	}
+	p.visible = true
 	inner := max(1, pw-2)
 	title := "Allow system access?"
 	requested := "system access; mode unchanged"
-	if p.request.MissingEditing {
-		title, requested = "Allow editing?", "editing capability"
-		if p.request.MissingSystem {
-			title, requested = "Allow editing and system access?", "editing + system access"
-		}
+	switch {
+	case p.request.MissingEditing && p.request.MissingSystem:
+		title, requested = "Allow editing and system access?", "Act + system access"
+	case p.request.MissingEditing:
+		title, requested = "Allow editing?", "Act"
 	}
 	rows := []string{
-		fmt.Sprintf("Current: %s; system access: %t", clean(p.request.Current.Mode), p.request.Current.System),
-		"Request: " + requested + "; this session only",
+		"Current: " + accessLabel(p.request.Current),
+		"Request: " + requested + "; for this conversation",
 	}
-	scope := "Interaction mode and tool policy still apply."
+	scope := "Editing uses normal Act; policy and sandbox still apply; sudo is separate."
 	if p.request.MissingSystem {
-		scope = "Outside workspace; mode/policy/sandbox still apply; no sudo."
+		scope = "System access does not grant sudo; policy and sandbox still apply."
 	}
 	rows = append(rows, scope)
 	actionRows := 1

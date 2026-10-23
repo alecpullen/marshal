@@ -346,6 +346,10 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		})
 	}
 
+	// Interaction migration notices are source-specific and already carry
+	// their layer; append them before the sort so they order with the rest.
+	ds = append(ds, layers.InteractionNotices...)
+
 	// 14: removed privacy.remote_limit_discovery. The third-party limits
 	// table it gated is gone, so the key is dropped on the next save. Report
 	// it once per load rather than letting an explicit opt-out vanish

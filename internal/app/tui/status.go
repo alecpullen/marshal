@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/help"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 )
@@ -146,41 +147,46 @@ func joinSegs(segs []statusSeg) string {
 	return strings.Join(parts, dimSeparator)
 }
 
-// modeSegment returns the current mode label for the status line.
-// It prioritises transient UI modes that answer "what will Esc do?",
-// falling back to the persistent mode (/ask, /edit, /auto).
+// modeSegment returns the persistent access label for the status line. It
+// reads one committed interaction snapshot and always includes every active
+// modifier, so approval, browsing, answering and activity cues on the right
+// can never conceal the effective permission state.
 func (m Model) modeSegment() string {
-	if m.state.SDDProgress().Active {
+	access := m.state.InteractionState()
+	label := "Ask"
+	if access.Mode == interaction.ModeAct {
+		label = "Act"
+	}
+	parts := []string{label}
+	if access.Auto {
+		parts = append(parts, "Auto")
+	}
+	if access.System {
+		parts = append(parts, "System")
+	}
+	return strings.Join(parts, dimSeparator)
+}
+
+// transientStatusSegment carries "what is happening right now" cues on the
+// right side. They used to replace the mode label; keeping them separate is
+// what lets the persistent access state survive approvals, browsing and
+// questions.
+func (m Model) transientStatusSegment() string {
+	switch {
+	case m.state.SDDProgress().Active:
 		return "sdd"
-	}
-	if m.editingCommand {
+	case m.editingCommand:
 		return "edit cmd"
-	}
-	if m.activeCompletionPopup() != nil {
+	case m.activeCompletionPopup() != nil:
 		return "completing"
-	}
-	if m.hasPendingApproval() {
-		return "approval"
-	}
-	if m.state.PendingSkillGate() != nil {
+	case m.state.PendingSkillGate() != nil:
 		return "skill gate"
-	}
-	if m.state.PendingQuestion() != nil {
+	case m.state.PendingQuestion() != nil:
 		return "answering"
-	}
-	if m.browsing {
+	case m.browsing:
 		return "browse"
 	}
-	mode := string(m.approvalMode)
-	if mode == "" {
-		mode = "default"
-	}
-	// System access is a modifier on the mode, not a mode of its own, so it
-	// rides the mode cue rather than taking a segment of its own.
-	if m.state.SystemAccess() {
-		mode += " · system"
-	}
-	return mode
+	return ""
 }
 
 // statusLeftSegments returns the left-side status segments with priorities.
@@ -430,6 +436,9 @@ func (m Model) statusRightSegment() string {
 	}
 	if m.flashActive() {
 		return dimStyle().Render(m.flash)
+	}
+	if seg := m.transientStatusSegment(); seg != "" {
+		return dimStyle().Render(seg)
 	}
 	return help.Footer(m.footerHints())
 }

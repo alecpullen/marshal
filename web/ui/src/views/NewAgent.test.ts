@@ -39,7 +39,9 @@ describe('NewAgent', () => {
   it('shows the defaults on its chips', async () => {
     render(NewAgent, { onDone: vi.fn() })
     expect(await screen.findByText('alpha')).toBeTruthy()
-    expect(screen.getByText('edit')).toBeTruthy()
+    // The controls wait for the form's starting tuple: fresh Act with Auto off.
+    expect(screen.getByRole('button', { name: /Mode: Act/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Auto: off/ })).toBeTruthy()
     expect(screen.getByText('worktree')).toBeTruthy()
     expect(document.activeElement).toBe(screen.getByLabelText('Prompt'))
   })
@@ -50,14 +52,15 @@ describe('NewAgent', () => {
     await screen.findByText('alpha')
     const box = screen.getByLabelText('Prompt')
     await fireEvent.input(box, { target: { value: 'do the thing' } })
-    await fireEvent.click(screen.getByText('edit'))
-    await fireEvent.click(screen.getByLabelText('plan'))
+    // The mode radios live in the chip's popover.
+    await fireEvent.click(screen.getByRole('button', { name: /Mode: Act/ }))
+    await fireEvent.click(screen.getByRole('radio', { name: 'Ask' }))
     await fireEvent.keyDown(box, { key: 'Enter', metaKey: true })
     await waitFor(() =>
-      expect(api.spawnAgent).toHaveBeenCalledWith({ project: '/work/alpha', prompt: 'do the thing', mode: 'plan', isolated: true, branch: undefined, baseRef: undefined }),
+      expect(api.spawnAgent).toHaveBeenCalledWith({ project: '/work/alpha', prompt: 'do the thing', mode: 'ask', auto: false, isolated: true, branch: undefined, baseRef: undefined }),
     )
     await waitFor(() => expect(onDone).toHaveBeenCalledWith('a9', undefined))
-    expect(JSON.parse(localStorage.getItem('marshal.ui.newagent')!)).toMatchObject({ project: '/work/alpha', mode: 'plan' })
+    expect(JSON.parse(localStorage.getItem('marshal.ui.newagent')!)).toMatchObject({ project: '/work/alpha', mode: 'ask', auto: false })
   })
 
   it('passes a spawn warning on to the caller', async () => {
@@ -94,8 +97,8 @@ describe('NewAgent', () => {
     await fireEvent.click(screen.getByText('alpha'))
     expect((screen.getByText(/gone/).closest('button') as HTMLButtonElement).disabled).toBe(true)
     await fireEvent.click(screen.getByText(/\/work\/plain/))
-    await waitFor(() => expect(screen.getByText('off')).toBeTruthy())
-    await fireEvent.click(screen.getByText('off'))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Isolation: off/ })).toBeTruthy())
+    await fireEvent.click(screen.getByRole('button', { name: /Isolation: off/ }))
     expect((screen.getByLabelText('Isolate in a git worktree') as HTMLInputElement).disabled).toBe(true)
     expect(screen.getByText(/Unavailable: not a git repository/)).toBeTruthy()
   })
@@ -160,7 +163,9 @@ describe('NewAgent', () => {
     await fireEvent.click(screen.getByRole('tab', { name: 'Recipes' }))
     await fireEvent.click(await screen.findByText('Fix a failing check'))
     expect((screen.getByLabelText('Prompt') as HTMLTextAreaElement).value).toBe('Fix {{check}}')
-    expect(screen.getByText('plan')).toBeTruthy()
+    // The recipe's stored mode is consumed through the shared migration:
+    // a legacy "plan" becomes Ask.
+    expect(screen.getByRole('button', { name: /Mode: Ask/ })).toBeTruthy()
 
     // A required input blocks the run.
     await fireEvent.click(screen.getByText('Create agent'))

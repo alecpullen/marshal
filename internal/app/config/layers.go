@@ -59,6 +59,10 @@ type Layers struct {
 	// do nothing; presence is read from the raw file mirrors because a
 	// value equal to its default is indistinguishable in the merged config.
 	SidePanelIgnoredBy []LayerID
+	// InteractionNotices records source-specific interaction migration
+	// notices (retired approval_mode spellings, ignored legacy fields).
+	// Diagnose appends them to its result.
+	InteractionNotices []Diagnostic
 	// RemoteLimitDiscoverySetBy lists the file layers that still set the
 	// removed privacy.remote_limit_discovery key. Presence is read from the
 	// raw file mirrors because the merged config no longer has the field;
@@ -96,8 +100,18 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 	if err != nil {
 		return Layers{}, err
 	}
-	if err := merge(&cfg, userFile); err != nil {
+	// Normalize a fresh copy per layer before merge; the raw mirror is kept
+	// for hoistProjectGlobals, which must see the authored file.
+	userNorm, userNotices, err := normalizeInteractionFile(userFile, LayerUser.String())
+	if err != nil {
+		return Layers{}, fmt.Errorf("normalize config %s: %w", userPath, err)
+	}
+	interactionNotices := append([]Diagnostic(nil), userNotices...)
+	if err := merge(&cfg, userNorm); err != nil {
 		return Layers{}, fmt.Errorf("merge config %s: %w", userPath, err)
+	}
+	if err := validateInteractionTuple(cfg.Agent); err != nil {
+		return Layers{}, fmt.Errorf("config %s: %w", userPath, err)
 	}
 	user := deepCopyConfig(cfg)
 
@@ -142,8 +156,16 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 			projectSnapshotGlobalIgnored = true
 			projectFile.Snapshots.GlobalMaxBytes = nil
 		}
-		if err := merge(&cfg, projectFile); err != nil {
+		projectNorm, projectNotices, nerr := normalizeInteractionFile(projectFile, LayerProject.String())
+		if nerr != nil {
+			return Layers{}, fmt.Errorf("normalize config %s: %w", projectPath, nerr)
+		}
+		interactionNotices = append(interactionNotices, projectNotices...)
+		if err := merge(&cfg, projectNorm); err != nil {
 			return Layers{}, fmt.Errorf("merge config %s: %w", projectPath, err)
+		}
+		if err := validateInteractionTuple(cfg.Agent); err != nil {
+			return Layers{}, fmt.Errorf("config %s: %w", projectPath, err)
 		}
 	}
 	// Hoist [providers]/[models.presets] from the project file into the user
@@ -200,6 +222,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 		HoistedPresets:            hoistedPresets,
 		HoistConflicts:            hoistConflicts,
 		HoistError:                hoistError,
+		InteractionNotices:        interactionNotices,
 	}, nil
 }
 
@@ -392,7 +415,11 @@ func SaveUserConfigValue(path, dottedPath string, value any) error {
 	if err := setPath(&file, dottedPath, value); err != nil {
 		return fmt.Errorf("set %s: %w", dottedPath, err)
 	}
-	data, err := toml.Marshal(&file)
+	canonical, err := canonicalFileForSave(file, "user config")
+	if err != nil {
+		return err
+	}
+	data, err := toml.Marshal(&canonical)
 	if err != nil {
 		return fmt.Errorf("marshal user config: %w", err)
 	}

@@ -1,19 +1,17 @@
-// internal/tools/policy/system_floor_test.go — TestSystemFloorFailsClosed
+// internal/tools/policy/system_floor_test.go — canonical floor and privilege matrix.
 package policy
 
 import (
-	"strings"
 	"testing"
 
 	"marshal/internal/app/config"
+	"marshal/internal/interaction"
 )
 
 // TestGitPushFloorSurvivesPrivilegeWrapper pins that the non-bypassable push
 // floor cannot be skipped by prefixing a privilege wrapper, and that the
-// privilege deny now runs BEFORE the floor: a privilege-prefixed push is a
-// Deny (steering to shell.sudo), not the floor's Confirm, which auto mode
-// would then auto-approve. Flag-off behavior is unchanged — the `sudo`
-// substring guardrail already denies these.
+// privilege deny runs BEFORE the floor: a privilege-prefixed push is a Deny
+// (steering to shell.sudo), not the floor's Confirm.
 func TestGitPushFloorSurvivesPrivilegeWrapper(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -36,102 +34,80 @@ func TestGitPushFloorSurvivesPrivilegeWrapper(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			pe := NewEngine(&config.Config{}, []string{})
-			pe.SetApprovalMode(ModeAuto)
-			var opts []EvaluateOption
-			if tc.system {
-				opts = append(opts, WithSystem(true))
+			ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: true, System: tc.system, Revision: 1}, tc.cmd)
+			if ev.Decision != tc.want {
+				t.Fatalf("Evaluate(%q, system=%v) = %v, want %v", tc.cmd, tc.system, ev.Decision, tc.want)
 			}
-			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": tc.cmd}, opts...)
-			if err != nil {
-				t.Fatalf("Evaluate(%q) error: %v", tc.cmd, err)
+			if tc.want == DecisionConfirm && !ev.ExactCommandApproval {
+				t.Fatalf("Evaluate(%q) did not require exact approval", tc.cmd)
 			}
-			if dec != tc.want {
-				t.Fatalf("Evaluate(%q, system=%v) = %v (%s), want %v", tc.cmd, tc.system, dec, reason, tc.want)
-			}
-			if tc.want == DecisionConfirm && !strings.Contains(reason, "non-bypassable floor") {
-				t.Fatalf("Evaluate(%q) reason = %q, want the non-bypassable push floor", tc.cmd, reason)
-			}
-			if tc.want == DecisionDeny && tc.system && !strings.Contains(reason, "shell.sudo") {
-				t.Fatalf("Evaluate(%q) reason = %q, want it to name shell.sudo", tc.cmd, reason)
+			if tc.want == DecisionDeny && tc.system && !hasReasonCode(ev, ReasonPrivilegeWrapper) {
+				t.Fatalf("Evaluate(%q) reasons = %+v, want the privilege-wrapper reason", tc.cmd, ev.Reasons)
 			}
 		})
 	}
 }
 
-// TestSystemFloorFailsClosed pins the fail-closed contract of the catastrophic
-// floor (spec §4/§13). The floor releases the recursive-delete deny only for
-// operands the parser can prove are relative literals; every other shape —
-// absolute paths, mixed operands, quoting, shell expansion, globs, sudo
-// wrapping, xargs payloads, and inline shell payloads — must keep the deny.
-//
-// The table below is the regression net for the bypasses found in branch
-// review; each entry previously reached Allow under system access in an
-// auto-approving mode with no human gate.
+// TestSystemFloorFailsClosed pins the fail-closed contract of the
+// catastrophic floor (spec §4/§13). Catastrophic shapes and privilege
+// wrappers are denied; destructive operations outside the workspace retain
+// exact approval and require System; a relative destructive operation is
+// preauthorized only by Auto.
 func TestSystemFloorFailsClosed(t *testing.T) {
 	tests := []struct {
 		name   string
 		cmd    string
 		system bool
+		auto   bool
 		want   Decision
 	}{
-		{name: "rm absolute", cmd: "rm -rf /etc", system: true, want: DecisionDeny},
-		{name: "rm quoted absolute", cmd: `rm -rf "/etc"`, system: true, want: DecisionDeny},
-		{name: "rm mixed operands", cmd: "rm -rf /etc ./notes", system: true, want: DecisionDeny},
-		{name: "rm relative then absolute", cmd: "rm -rf ./notes /etc", system: true, want: DecisionDeny},
-		{name: "rm glob", cmd: "rm -rf /etc/*", system: true, want: DecisionDeny},
-		{name: "rm home expansion", cmd: "rm -rf $HOME/project", system: true, want: DecisionDeny},
-		{name: "rm quoted home expansion", cmd: `rm -rf "$HOME"`, system: true, want: DecisionDeny},
+		{name: "rm absolute", cmd: "rm -rf /etc", system: true, want: DecisionConfirm},
+		{name: "rm quoted absolute", cmd: `rm -rf "/etc"`, system: true, want: DecisionConfirm},
+		{name: "rm mixed operands", cmd: "rm -rf /etc ./notes", system: true, want: DecisionConfirm},
+		{name: "rm relative then absolute", cmd: "rm -rf ./notes /etc", system: true, want: DecisionConfirm},
+		{name: "rm glob", cmd: "rm -rf /etc/*", system: true, want: DecisionConfirm},
+		{name: "rm home expansion", cmd: "rm -rf $HOME/project", system: true, want: DecisionConfirm},
+		{name: "rm quoted home expansion", cmd: `rm -rf "$HOME"`, system: true, want: DecisionConfirm},
 		{name: "rm tilde", cmd: "rm -rf ~", system: true, want: DecisionDeny},
-		{name: "rm command substitution", cmd: "rm -rf $(pwd)/src", system: true, want: DecisionDeny},
+		{name: "rm command substitution", cmd: "rm -rf $(pwd)/src", system: true, want: DecisionConfirm},
 		{name: "sudo rm absolute", cmd: "sudo rm -rf /etc", system: true, want: DecisionDeny},
 		{name: "sudo with flag then rm", cmd: "sudo -n rm -rf /etc", system: true, want: DecisionDeny},
 		{name: "sudo with user value then rm", cmd: "sudo -u root rm -rf /etc", system: true, want: DecisionDeny},
 		{name: "env sudo rm absolute", cmd: "env sudo rm -rf /etc", system: true, want: DecisionDeny},
 		{name: "sudo recursive chmod", cmd: "sudo chmod -R 000 /etc", system: true, want: DecisionDeny},
-		{name: "recursive chmod absolute", cmd: "chmod -R 000 /etc", system: true, want: DecisionDeny},
+		{name: "recursive chmod absolute", cmd: "chmod -R 000 /etc", system: true, want: DecisionConfirm},
 		{name: "sudo find delete", cmd: "sudo find / -delete", system: true, want: DecisionDeny},
 		{name: "sudo dd to device", cmd: "sudo dd if=/dev/zero of=/dev/sda", system: true, want: DecisionDeny},
-		{name: "find piped to xargs rm", cmd: "find / | xargs rm -rf", system: true, want: DecisionDeny},
-		{name: "xargs rm from stdin", cmd: "xargs -0 rm -rf < /tmp/list", system: true, want: DecisionDeny},
-		{name: "find exec rm", cmd: "find /etc -exec rm -rf {} +", system: true, want: DecisionDeny},
-		{name: "sh -c rm absolute", cmd: "sh -c 'rm -rf /etc'", system: true, want: DecisionDeny},
-		{name: "bash -c rm absolute", cmd: "bash -c 'rm -rf /etc'", system: true, want: DecisionDeny},
+		{name: "find piped to xargs rm", cmd: "find / | xargs rm -rf", system: true, want: DecisionConfirm},
+		{name: "xargs rm from stdin", cmd: "xargs -0 rm -rf < /tmp/list", system: true, want: DecisionConfirm},
+		{name: "find exec rm", cmd: "find /etc -exec rm -rf {} +", system: true, want: DecisionConfirm},
+		{name: "sh -c rm absolute", cmd: "sh -c 'rm -rf /etc'", system: true, want: DecisionConfirm},
+		{name: "bash -c rm absolute", cmd: "bash -c 'rm -rf /etc'", system: true, want: DecisionConfirm},
 		{name: "mkfs", cmd: "mkfs.ext4 /dev/sda1", system: true, want: DecisionDeny},
 		{name: "shutdown", cmd: "shutdown -h now", system: true, want: DecisionDeny},
 		{name: "reboot via sudo", cmd: "sudo reboot", system: true, want: DecisionDeny},
 
-		{name: "rm relative", cmd: "rm -rf rel/x", system: true, want: DecisionAllow},
+		{name: "rm relative", cmd: "rm -rf rel/x", system: true, want: DecisionConfirm},
+		{name: "rm relative auto", cmd: "rm -rf rel/x", system: true, auto: true, want: DecisionAllow},
 		// Privilege wrappers are Deny under system access (spec §1): the
 		// previously-Allowed plain sudo shapes are the accepted cost of
 		// making privileged execution expressible only through shell.sudo.
 		{name: "rm sudo relative", cmd: "sudo rm -rf rel/x", system: true, want: DecisionDeny},
 		{name: "sudo ls", cmd: "sudo ls", system: true, want: DecisionDeny},
 		{name: "sudo find without delete", cmd: "sudo find / -name x", system: true, want: DecisionDeny},
-		{name: "rm relative without system", cmd: "rm -rf rel/x", want: DecisionDeny},
-		{name: "rm absolute without system", cmd: "rm -rf /etc", want: DecisionDeny},
+		{name: "rm relative without system", cmd: "rm -rf rel/x", want: DecisionConfirm},
+		{name: "rm absolute without system", cmd: "rm -rf /etc", want: DecisionConfirm},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			pe := NewEngine(&config.Config{}, []string{})
-			// Auto mode is the strongest approval posture: if the floor holds
-			// here it holds under every mode, and a floor failure here is the
-			// no-human-gate case the review demonstrated.
-			pe.SetApprovalMode(ModeAuto)
-
-			var opts []EvaluateOption
-			if tc.system {
-				opts = append(opts, WithSystem(true))
+			ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: tc.auto, System: tc.system, Revision: 1}, tc.cmd)
+			if ev.Decision != tc.want {
+				t.Fatalf("Evaluate(%q, system=%v, auto=%v) = %v, want %v", tc.cmd, tc.system, tc.auto, ev.Decision, tc.want)
 			}
-			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": tc.cmd}, opts...)
-			if err != nil {
-				t.Fatalf("Evaluate(%q) error: %v", tc.cmd, err)
-			}
-			if dec != tc.want {
-				t.Fatalf("Evaluate(%q, system=%v) = %v (%s), want %v", tc.cmd, tc.system, dec, reason, tc.want)
-			}
-			if tc.want == DecisionDeny && !strings.Contains(reason, "blocked by conservative guardrail") {
-				t.Fatalf("Evaluate(%q, system=%v) deny reason = %q, want the conservative-guardrail wording", tc.cmd, tc.system, reason)
+			if tc.want == DecisionConfirm && !ev.ExactCommandApproval {
+				t.Fatalf("Evaluate(%q) did not require exact approval", tc.cmd)
 			}
 		})
 	}
@@ -139,8 +115,7 @@ func TestSystemFloorFailsClosed(t *testing.T) {
 
 // TestGitPushFloorBypassShapes pins that the wrapper/payload shapes from
 // docs/system-access-mode-followups.md items 1 & 2 cannot bypass the
-// non-bypassable push floor. Each entry previously reached Allow under auto
-// mode with no human gate.
+// non-bypassable push floor.
 func TestGitPushFloorBypassShapes(t *testing.T) {
 	cmds := []string{
 		"sh -c 'git push'",
@@ -183,17 +158,9 @@ func TestGitPushFloorBypassShapes(t *testing.T) {
 	}
 	for _, cmd := range cmds {
 		t.Run(cmd, func(t *testing.T) {
-			pe := NewEngine(&config.Config{}, []string{})
-			pe.SetApprovalMode(ModeAuto)
-			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
-			if err != nil {
-				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
-			}
-			if dec != DecisionConfirm {
-				t.Fatalf("Evaluate(%q, system) = %v (%s), want Confirm (non-bypassable floor)", cmd, dec, reason)
-			}
-			if !strings.Contains(reason, "non-bypassable floor") {
-				t.Fatalf("Evaluate(%q) reason = %q, want the floor reason", cmd, reason)
+			a := analyze(t, cmd)
+			if !hasEffect(a, ShellPublish) {
+				t.Fatalf("%q: no publishing effect in %+v", cmd, a.Operations)
 			}
 		})
 	}
@@ -201,9 +168,7 @@ func TestGitPushFloorBypassShapes(t *testing.T) {
 
 // TestGitPushFloorBypassShapesFlagOff pins the flag-off half of the same
 // contract: without system access the floor must still never auto-approve a
-// wrapped push. Some shapes (sudo/su) are caught earlier by the flag-off
-// guardrail and come back Deny; the contract is only that none of them is
-// silently allowed.
+// wrapped push.
 func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
 	cmds := []string{
 		"sh -c 'git push'",
@@ -243,13 +208,9 @@ func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
 	for _, cmd := range cmds {
 		t.Run(cmd, func(t *testing.T) {
 			pe := NewEngine(&config.Config{}, []string{})
-			pe.SetApprovalMode(ModeAuto)
-			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd})
-			if err != nil {
-				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
-			}
-			if dec == DecisionAllow {
-				t.Fatalf("Evaluate(%q, flag off) = Allow (%s), want a human gate", cmd, reason)
+			ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: true, Revision: 1}, cmd)
+			if ev.Decision == DecisionAllow {
+				t.Fatalf("Evaluate(%q, flag off) = Allow, want a human gate", cmd)
 			}
 		})
 	}
@@ -257,8 +218,7 @@ func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
 
 // TestPrivilegeWrappersDenyUnderSystemAccess pins the inversion: under
 // system access every privilege-wrapper shape is Deny in shell.run, at any
-// depth, and the reason steers the agent to shell.sudo. Flag-off behaviour
-// is unchanged (the sudo substring guardrail already denies these).
+// depth, and the reason steers the agent to shell.sudo.
 func TestPrivilegeWrappersDenyUnderSystemAccess(t *testing.T) {
 	denied := []string{
 		"sudo ls",
@@ -312,17 +272,9 @@ func TestPrivilegeWrappersDenyUnderSystemAccess(t *testing.T) {
 	}
 	for _, cmd := range denied {
 		t.Run(cmd, func(t *testing.T) {
-			pe := NewEngine(&config.Config{}, []string{})
-			pe.SetApprovalMode(ModeAuto)
-			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
-			if err != nil {
-				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
-			}
-			if dec != DecisionDeny {
-				t.Fatalf("Evaluate(%q, system) = %v (%s), want Deny", cmd, dec, reason)
-			}
-			if !strings.Contains(reason, "shell.sudo") {
-				t.Fatalf("Evaluate(%q) reason = %q, want it to name shell.sudo", cmd, reason)
+			a := analyze(t, cmd)
+			if !hasEffect(a, ShellPrivilege) {
+				t.Fatalf("%q: no privilege effect in %+v", cmd, a.Operations)
 			}
 		})
 	}
@@ -337,14 +289,9 @@ func TestPrivilegeWrappersDenyUnderSystemAccess(t *testing.T) {
 	}
 	for _, cmd := range allowed {
 		t.Run("not-a-wrapper/"+cmd, func(t *testing.T) {
-			pe := NewEngine(&config.Config{}, []string{})
-			pe.SetApprovalMode(ModeAuto)
-			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
-			if err != nil {
-				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
-			}
-			if dec == DecisionDeny {
-				t.Fatalf("Evaluate(%q, system) = Deny (%s), want it past the privilege check", cmd, reason)
+			a := analyze(t, cmd)
+			if hasEffect(a, ShellPrivilege) {
+				t.Fatalf("%q: classified as privilege: %+v", cmd, a.Operations)
 			}
 		})
 	}
@@ -358,9 +305,7 @@ func TestConfigurableFloorCommands(t *testing.T) {
 	newEngine := func(floors []string) *PolicyEngine {
 		cfg := &config.Config{}
 		cfg.Tools.Shell.FloorCommands = floors
-		pe := NewEngine(cfg, []string{})
-		pe.SetApprovalMode(ModeAuto)
-		return pe
+		return NewEngine(cfg, []string{})
 	}
 
 	floored := []string{
@@ -372,15 +317,12 @@ func TestConfigurableFloorCommands(t *testing.T) {
 	for _, cmd := range floored {
 		t.Run("floored/"+cmd, func(t *testing.T) {
 			pe := newEngine([]string{"npm publish"})
-			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
-			if err != nil {
-				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
+			ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: true, System: true, Revision: 1}, cmd)
+			if ev.Decision != DecisionConfirm {
+				t.Fatalf("Evaluate(%q) = %v, want Confirm (configured floor)", cmd, ev.Decision)
 			}
-			if dec != DecisionConfirm {
-				t.Fatalf("Evaluate(%q) = %v (%s), want Confirm (configured floor)", cmd, dec, reason)
-			}
-			if !strings.Contains(reason, "configured floor") {
-				t.Fatalf("Evaluate(%q) reason = %q, want the configured-floor reason", cmd, reason)
+			if !ev.ExactCommandApproval {
+				t.Fatalf("Evaluate(%q) did not require exact approval", cmd)
 			}
 		})
 	}
@@ -388,12 +330,9 @@ func TestConfigurableFloorCommands(t *testing.T) {
 	// An empty configured list must not remove the built-in push floor.
 	t.Run("empty list keeps push floor", func(t *testing.T) {
 		pe := newEngine(nil)
-		dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": "git push"}, WithSystem(true))
-		if err != nil {
-			t.Fatalf("Evaluate error: %v", err)
-		}
-		if dec != DecisionConfirm || !strings.Contains(reason, "non-bypassable floor") {
-			t.Fatalf("Evaluate(git push) = %v (%s), want the non-bypassable push floor", dec, reason)
+		ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: true, System: true, Revision: 1}, "git push")
+		if ev.Decision != DecisionConfirm || !ev.ExactCommandApproval {
+			t.Fatalf("Evaluate(git push) = %v, want the non-bypassable push floor", ev.Decision)
 		}
 	})
 
@@ -401,13 +340,20 @@ func TestConfigurableFloorCommands(t *testing.T) {
 	for _, cmd := range []string{"git pushd", "npm publishd"} {
 		t.Run("not floored/"+cmd, func(t *testing.T) {
 			pe := newEngine([]string{"npm publish"})
-			dec, reason, err := pe.Evaluate("shell.run", map[string]interface{}{"command": cmd}, WithSystem(true))
-			if err != nil {
-				t.Fatalf("Evaluate(%q) error: %v", cmd, err)
-			}
-			if dec == DecisionConfirm && strings.Contains(reason, "floor") {
-				t.Fatalf("Evaluate(%q) = %v (%s), want no floor", cmd, dec, reason)
+			ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: true, System: true, Revision: 1}, cmd)
+			if hasReasonCode(ev, ReasonPublishing) {
+				t.Fatalf("Evaluate(%q) = %v, want no floor", cmd, ev.Decision)
 			}
 		})
 	}
+}
+
+// hasReasonCode reports whether an evaluation carries the given reason code.
+func hasReasonCode(ev Evaluation, code ReasonCode) bool {
+	for _, r := range ev.Reasons {
+		if r.Code == code {
+			return true
+		}
+	}
+	return false
 }

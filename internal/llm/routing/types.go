@@ -3,6 +3,7 @@ package routing
 import (
 	"sort"
 
+	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
 
 	"github.com/pelletier/go-toml/v2"
@@ -202,14 +203,18 @@ type AgentProfile struct {
 // referenced ModelPreset. It can fill a role slot (via RoleBinding) or be
 // dispatched ad-hoc by name (agent.run / /agents Run now).
 type CustomAgent struct {
-	Name                   string        `toml:"name"`
-	Preset                 string        `toml:"preset"`
-	SystemPrompt           string        `toml:"system_prompt,omitempty"`
-	ToolDenylist           []string      `toml:"tool_denylist,omitempty"`
-	ApprovalMode           string        `toml:"approval_mode,omitempty"`
-	MaxIterations          int           `toml:"max_iterations,omitempty"`
-	MaxIterationsUnlimited bool          `toml:"max_iterations_unlimited,omitempty"`
-	Context                ContextBudget `toml:"context,omitempty"`
+	Name         string   `toml:"name"`
+	Preset       string   `toml:"preset"`
+	SystemPrompt string   `toml:"system_prompt,omitempty"`
+	ToolDenylist []string `toml:"tool_denylist,omitempty"`
+	// Mode and Auto optionally narrow the interaction tuple this agent may
+	// run with. Absence inherits the parent's value; they are restrictions,
+	// never an independent grant.
+	Mode                   *interaction.Mode `toml:"mode,omitempty"`
+	Auto                   *bool             `toml:"auto,omitempty"`
+	MaxIterations          int               `toml:"max_iterations,omitempty"`
+	MaxIterationsUnlimited bool              `toml:"max_iterations_unlimited,omitempty"`
+	Context                ContextBudget     `toml:"context,omitempty"`
 	// Temperature optionally overrides the resolved preset's sampling
 	// temperature for every run of this agent. Nil keeps the preset's
 	// value (or the role default when the preset sets none).

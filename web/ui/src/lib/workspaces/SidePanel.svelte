@@ -5,7 +5,8 @@
   import DiffLines from '../DiffLines.svelte'
   import { diffWorkspace, errMessage, getProjectHealth, listProjects, type BuildsInfo, type ProjectStatus, type WSDoc } from '../api'
   import { shortName } from '../utils'
-  import { buildTone, gateRunnable } from './model'
+  import { MODES } from '../interaction'
+  import { buildTone, gateRunnable, policyChange } from './model'
 
   let {
     name,
@@ -128,14 +129,35 @@
     <h3 class={h}>Policy</h3>
     <label class="flex items-center gap-2 text-xs text-muted">
       Mode
-      <input
-        class="w-28 rounded border border-border bg-bg px-1.5 py-1 font-mono text-fg"
+      <select
+        class="rounded border border-border bg-bg px-1.5 py-1 text-xs text-fg"
         aria-label="Policy mode"
         value={doc.policy.mode}
-        onchange={(e) => onPatch(0, { ...doc.policy, mode: e.currentTarget.value })}
-      />
+        onchange={(e) => onPatch(0, policyChange(doc.policy, { mode: e.currentTarget.value }))}
+      >
+        <option value="">Inherit</option>
+        {#each MODES as m (m)}<option value={m}>{m === 'ask' ? 'Ask' : 'Act'}</option>{/each}
+      </select>
     </label>
-    <ChipList items={doc.policy.allow} label="allow rules" placeholder="go test *" onChange={(allow) => onPatch(0, { ...doc.policy, allow })} />
+    <label class="flex items-center gap-2 text-xs text-muted">
+      Auto
+      <select
+        class="rounded border border-border bg-bg px-1.5 py-1 text-xs text-fg"
+        aria-label="Policy auto"
+        value={doc.policy.auto === true ? 'on' : doc.policy.auto === false ? 'off' : ''}
+        onchange={(e) => {
+          const v = e.currentTarget.value
+          // Only Auto changes: the helper keeps the mode and the allow rules
+          // exactly as they were, so a modifier patch never rewrites policy.
+          onPatch(0, policyChange(doc.policy, { auto: v === 'on' ? true : v === 'off' ? false : undefined }))
+        }}
+      >
+        <option value="">Inherit</option>
+        <option value="on">On</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+    <ChipList items={doc.policy.allow} label="allow rules" placeholder="go test *" onChange={(allow) => onPatch(0, policyChange(doc.policy, { allow }))} />
   </section>
 
   <section class="flex flex-col gap-1.5" data-testid="side-history">

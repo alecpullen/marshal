@@ -159,7 +159,7 @@ echo hi
 '''
 
 [policy]
-mode = 'edit'
+mode = 'act'
 `
 
 func TestParseIgnoresHeaderLookalikesInStrings(t *testing.T) {
@@ -193,7 +193,7 @@ func TestPatchNeighbourOfMultilineStringLeavesScriptAlone(t *testing.T) {
 	if d.Setup.Run != d0.Setup.Run {
 		t.Fatalf("setup script changed:\n%q\n%q", d.Setup.Run, d0.Setup.Run)
 	}
-	if d.Network.Mode != "off" || d.Policy.Mode != "edit" {
+	if d.Network.Mode != "off" || d.Policy.Mode != "act" {
 		t.Fatalf("doc = %+v", d)
 	}
 	if !strings.Contains(out, "if [ -f x ]; then\n[network]\nfi\n[ -d y ]\necho hi\n'''") {
@@ -207,7 +207,7 @@ func TestPatchSetupLayerWithMultilineString(t *testing.T) {
 	if len(diags) != 0 {
 		t.Fatalf("diags = %+v\n%s", diags, out)
 	}
-	if d.Setup.Run != "make\nmake test\n[network]\n" || d.Policy.Mode != "edit" || d.Workspace.Name != "a" {
+	if d.Setup.Run != "make\nmake test\n[network]\n" || d.Policy.Mode != "act" || d.Workspace.Name != "a" {
 		t.Fatalf("doc = %+v\n%s", d, out)
 	}
 	// And the patched text can be patched again around its own script.
@@ -239,5 +239,38 @@ func TestParseQuotedAndSpacedHeaders(t *testing.T) {
 	}
 	if len(secs) != 2 || secs[0].Key != "files" || secs[1].Key != "secrets.inject" || secs[1].StartLine != 4 {
 		t.Fatalf("sections = %+v", secs)
+	}
+}
+
+func TestPolicyFormatEmitsCanonicalInteractionFields(t *testing.T) {
+	// A legacy spelling formats as its canonical pair, with no System or
+	// revision field invented.
+	out := string(Format(Doc{Policy: Policy{Mode: "edit"}}))
+	if !strings.Contains(out, "mode = 'ask'") || !strings.Contains(out, "auto = false") {
+		t.Fatalf("legacy edit not canonical:\n%s", out)
+	}
+	out = string(Format(Doc{Policy: Policy{Mode: "auto"}}))
+	if !strings.Contains(out, "mode = 'act'") || !strings.Contains(out, "auto = true") {
+		t.Fatalf("legacy auto not canonical:\n%s", out)
+	}
+	for _, banned := range []string{"system", "revision", "access_revision"} {
+		if strings.Contains(strings.ToLower(out), banned) {
+			t.Fatalf("format emitted %q:\n%s", banned, out)
+		}
+	}
+	// Absent Auto stays absent; explicit false is emitted.
+	out = string(Format(Doc{Policy: Policy{Mode: "act"}}))
+	if strings.Contains(out, "auto") {
+		t.Fatalf("absent Auto emitted:\n%s", out)
+	}
+	off := false
+	out = string(Format(Doc{Policy: Policy{Mode: "act", Auto: &off}}))
+	if !strings.Contains(out, "auto = false") {
+		t.Fatalf("explicit false dropped:\n%s", out)
+	}
+	// The canonical output round-trips without a migration notice.
+	d, _, diags := Parse([]byte(out))
+	if len(diags) != 0 || d.Policy.Mode != "act" || d.Policy.Auto == nil || *d.Policy.Auto {
+		t.Fatalf("round trip = %+v diags = %+v", d.Policy, diags)
 	}
 }

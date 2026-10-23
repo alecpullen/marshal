@@ -7,6 +7,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/embedding"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
@@ -545,29 +546,61 @@ func (r *Runner) setContextPackMessage(messages []schema.ChatMessage, pack conte
 // archives or history replay, and a retry never stacks a second copy.
 // The input is not modified. Used excludes the tail itself, so the budget
 // line is not recursive.
+//
+// The live interaction tuple is always part of the tail, even when the
+// context pack has no volatile sections: a mode change mid-turn must reach
+// the model on the next request without touching the cached prefix.
 func (r *Runner) withWorkingState(messages []schema.ChatMessage) []schema.ChatMessage {
 	if r.State == nil {
 		return messages
 	}
+	extra := make([]schema.ChatMessage, 0, 2)
 	window, threshold, _ := r.State.TurnBudget()
-	msg, ok := BuildWorkingStateMessage(r.State.ContextPack(), WorkingStateBudget{
+	if msg, ok := BuildWorkingStateMessage(r.State.ContextPack(), WorkingStateBudget{
 		Used:      r.calibratedEstimate(messages),
 		Window:    window,
 		Threshold: threshold,
-	})
-	if !ok {
-		return messages
+	}); ok {
+		extra = append(extra, msg)
 	}
-	out := make([]schema.ChatMessage, len(messages), len(messages)+1)
+	extra = append(extra, BuildInteractionStateMessage(r.State.InteractionState()))
+	out := make([]schema.ChatMessage, len(messages), len(messages)+len(extra))
 	copy(out, messages)
-	return append(out, msg)
+	return append(out, extra...)
 }
 
-// systemPromptMessage builds messages[0] from the runner's live state.
-// Every build site goes through here. The system prompt heads the
-// provider's cache prefix, so two sites that disagree on an option produce
-// different bytes and miss the cache. They also send the model a different
-// prompt: rollover and plan-first used to drop SystemAccess and Narration.
+// pinPromptAccess captures the interaction tuple for the coming turn. The
+// system prompt's Ask/Act/Auto/System directive is fixed from this snapshot
+// so a mid-turn change cannot rewrite the cached prefix; callers that start a
+// fresh context (turn start, rollover, handoff) pin before building it.
+func (r *Runner) pinPromptAccess() {
+	if r.State == nil {
+		return
+	}
+	r.promptAccessMu.Lock()
+	r.promptAccess = r.State.InteractionState()
+	r.promptAccessMu.Unlock()
+}
+
+// promptAccessState returns the turn-start access snapshot. A runner that has
+// not pinned one (direct construction in a unit test) falls back to the live
+// state rather than rendering a zero tuple.
+func (r *Runner) promptAccessState() interaction.State {
+	r.promptAccessMu.Lock()
+	access := r.promptAccess
+	r.promptAccessMu.Unlock()
+	if access.Mode == "" && r.State != nil {
+		return r.State.InteractionState()
+	}
+	return access
+}
+
+// systemPromptMessage builds messages[0] from the runner's turn-start access
+// and live tool/skill state. Every build site goes through here. The system
+// prompt heads the provider's cache prefix, so two sites that disagree on an
+// option produce different bytes and miss the cache. They also send the model
+// a different prompt: rollover and plan-first used to drop SystemAccess and
+// Narration.
 func (r *Runner) systemPromptMessage() schema.ChatMessage {
 	return BuildSystemPromptWithSystem(SystemPromptOptions{
 		Role:         r.role(),
@@ -576,12 +609,11 @@ func (r *Runner) systemPromptMessage() schema.ChatMessage {
 		SkillIndex:   r.SkillIndex,
 		ActiveSkills: r.State.ActiveSkills(),
 		NativeTools:  r.NativeTools,
-		Mode:         r.Policy.ApprovalMode(),
+		Access:       r.promptAccessState(),
 		Addendum:     r.SystemPromptAddendum,
 		WorkingDir:   r.State.WorkingDir,
 		Roster:       r.agentRoster(),
 		LoadedNames:  r.State.LoadedToolNames(),
-		SystemAccess: r.State.SystemAccess(),
 		Narration:    r.NarrationPrompt,
 	})
 }

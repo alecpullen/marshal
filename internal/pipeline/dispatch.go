@@ -60,6 +60,16 @@ func (d Dispatcher) runExec(ctx context.Context, role agent.AgentRole, scope swa
 	if err != nil {
 		return "", fmt.Errorf("pipeline dispatch: build %s runner: %w", role, err)
 	}
+	// Bind the actor to the dispatch's execution workspace before anything
+	// reads its authority: the registry factory and the native tools it
+	// registers close over the same root, and an admission made by this
+	// actor must claim the worktree rather than the parent's project root.
+	// A runner that streams into the parent session (swarm-style) is left
+	// alone — its workspace IS the parent's, and retargeting it here would
+	// move the owner.
+	if runner.State != nil && runner.State != d.State && d.ExecCtx.WorkspaceRoot != "" {
+		runner.State.SetWorkspace(session.Workspace{ActiveRoot: d.ExecCtx.WorkspaceRoot})
+	}
 	// When an execution context and registry factory are wired, bind the
 	// runner to a fresh registry scoped to the worktree and artifact root
 	// rather than the parent session's project root. Otherwise fall back to

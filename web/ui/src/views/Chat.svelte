@@ -1,7 +1,8 @@
 <script lang="ts">
   import { workspaceTag } from '../lib/workspaces/model'
   import { onMount, onDestroy, tick, untrack } from 'svelte'
-  import { createSessionStore, transcriptEntries, type Mode } from '../lib/store.js'
+  import { createSessionStore, transcriptEntries } from '../lib/store.js'
+  import type { AccessPatch } from '../lib/interaction.js'
   import Composer from '../lib/Composer.svelte'
   import ModeSwitcher from '../lib/ModeSwitcher.svelte'
   import ToolCallCard from '../lib/ToolCallCard.svelte'
@@ -527,8 +528,17 @@
     }
   }
 
-  async function changeMode(mode: Mode) {
-    await actions.setMode(mode)
+  let accessError = $state<string | null>(null)
+
+  async function changeAccess(patch: AccessPatch) {
+    accessError = null
+    try {
+      await actions.setAccess(patch)
+    } catch (e) {
+      // A refused or failed patch grants nothing. Report it here; the controls
+      // keep rendering the last committed tuple rather than the request.
+      accessError = e instanceof Error ? e.message : String(e)
+    }
   }
 </script>
 
@@ -563,7 +573,8 @@
         ]}
       />
     {/if}
-    <ModeSwitcher mode={$session.mode} onChange={changeMode} />
+    <ModeSwitcher access={$session.access} onChange={changeAccess} />
+    {#if accessError}<span class="access-error" role="alert">{accessError}</span>{/if}
     <StatusShare agentId={sessionId} />
     <a class="review" href="#chat/{sessionId}/review">Review</a>
     <a class="review" href="#network?agent={encodeURIComponent(sessionId)}">Network</a>
@@ -783,6 +794,10 @@
     gap: 0.75rem;
     padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--color-border);
+  }
+  .access-error {
+    color: var(--color-danger);
+    font-size: 0.75rem;
   }
   .back {
     background: transparent;

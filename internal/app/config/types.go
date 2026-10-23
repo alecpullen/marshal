@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/trust"
 )
@@ -465,16 +466,14 @@ type ShellToolConfig struct {
 	// MaxBackgroundJobs is the managed-command capacity: it counts running
 	// commands with either attachment (foreground and background), not
 	// background jobs alone. Lowering it never evicts an admitted command.
-	MaxBackgroundJobs     int           `toml:"max_background_jobs"`
-	BackgroundRetention   time.Duration `toml:"background_retention"`
-	AllowNetwork          bool          `toml:"allow_network"`
-	AutoApprove           bool          `toml:"auto_approve"`
-	Allow                 CommandRules  `toml:"allow"`
-	Confirm               CommandRules  `toml:"confirm"`
-	Deny                  PatternRules  `toml:"deny"`
-	GuardrailDynamicArgv0 string        `toml:"guardrail_dynamic_argv0"`
-	FloorCommands         []string      `toml:"floor_commands"`
-	Sandbox               SandboxConfig `toml:"sandbox"`
+	MaxBackgroundJobs   int           `toml:"max_background_jobs"`
+	BackgroundRetention time.Duration `toml:"background_retention"`
+	AllowNetwork        bool          `toml:"allow_network"`
+	Allow               CommandRules  `toml:"allow"`
+	Confirm             CommandRules  `toml:"confirm"`
+	Deny                PatternRules  `toml:"deny"`
+	FloorCommands       []string      `toml:"floor_commands"`
+	Sandbox             SandboxConfig `toml:"sandbox"`
 }
 
 // SandboxConfig selects and tunes the Milestone Q execution backend for
@@ -585,10 +584,11 @@ type AgentConfig struct {
 	// 0 (or negative) = built-in default (3, aligned with the default swarm
 	// scout count); values above 8 clamp to 8 at the session seam.
 	MaxConcurrentSubagents int `toml:"max_concurrent_subagents"`
-	// ApprovalMode is the active interaction/approval mode: "plan",
-	// "default", "edit", "copilot", or "auto". Default "default". See
-	// docs/superpowers/specs/2026-07-24-approval-modes-design.md.
-	ApprovalMode string `toml:"approval_mode"`
+	// Mode is the canonical interaction mode: "ask" or "act".
+	Mode interaction.Mode `toml:"mode"`
+	// Auto is the Act modifier that preauthorizes destructive workspace
+	// operations. It is only meaningful in Act.
+	Auto bool `toml:"auto"`
 	// ParseRepairFeedback tells the model when its action envelope was
 	// malformed but repaired, so it emits the right shape next turn instead
 	// of relying on the repair. Default true. Set false to save the tokens

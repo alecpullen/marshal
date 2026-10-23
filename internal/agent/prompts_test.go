@@ -12,6 +12,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
@@ -27,6 +28,13 @@ func dummyTools() []registry.Tool {
 		{Name: "shell.run", Risk: registry.RiskCommand, Description: "Run a shell command."},
 	}
 }
+
+var (
+	promptAccessAsk    = interaction.State{Mode: interaction.ModeAsk, Revision: 1}
+	promptAccessAct    = interaction.State{Mode: interaction.ModeAct, Revision: 1}
+	promptAccessAuto   = interaction.State{Mode: interaction.ModeAct, Auto: true, Revision: 1}
+	promptAccessSystem = interaction.State{Mode: interaction.ModeAct, System: true, Revision: 1}
+)
 
 func TestBuildSystemPromptIncludesToolArgHints(t *testing.T) {
 	tools := []registry.Tool{{
@@ -163,10 +171,9 @@ func TestBaseRulesForbidShellFileWrites(t *testing.T) {
 
 func TestBuildSystemPromptSystemVariant(t *testing.T) {
 	opts := SystemPromptOptions{
-		Role:         RoleGeneral,
-		Tools:        dummyTools(),
-		Mode:         policy.ModeEdit,
-		SystemAccess: true,
+		Role:   RoleGeneral,
+		Tools:  dummyTools(),
+		Access: promptAccessSystem,
 	}
 	content := buildSystemPrompt(opts).Content
 	if !strings.Contains(content, systemAccessDirective) {
@@ -179,7 +186,7 @@ func TestBuildSystemPromptSystemVariant(t *testing.T) {
 		t.Errorf("system variant should not contain the original file-tools rule:\n%s", content)
 	}
 
-	opts.SystemAccess = false
+	opts.Access.System = false
 	content = buildSystemPrompt(opts).Content
 	if strings.Contains(content, systemAccessDirective) {
 		t.Errorf("default variant should not contain systemAccessDirective:\n%s", content)
@@ -194,13 +201,12 @@ func TestBuildSystemPromptSystemVariant(t *testing.T) {
 
 func TestSystemAccessDirectiveAppendedAfterModeDirective(t *testing.T) {
 	opts := SystemPromptOptions{
-		Role:         RoleGeneral,
-		Tools:        dummyTools(),
-		Mode:         policy.ModeEdit,
-		SystemAccess: true,
+		Role:   RoleGeneral,
+		Tools:  dummyTools(),
+		Access: promptAccessSystem,
 	}
 	content := buildSystemPrompt(opts).Content
-	modeIdx := strings.Index(content, modeDirective(policy.ModeEdit))
+	modeIdx := strings.Index(content, interactionDirective(promptAccessAct))
 	sysIdx := strings.Index(content, systemAccessDirective)
 	if modeIdx < 0 {
 		t.Fatalf("mode directive missing from prompt:\n%s", content)
@@ -325,11 +331,11 @@ func TestNativeModeOmitsAvailableToolsProseList(t *testing.T) {
 	}
 }
 
-func TestNativeModeDefaultOmitsModeRequestLine(t *testing.T) {
-	msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, true, policy.ModeDefault)
+func TestNativeModeOmitsRetiredModeRequestLine(t *testing.T) {
+	msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, true, promptAccessAsk)
 	content := msg.Content
 	if strings.Contains(content, "mode.request: Ask the user to switch") {
-		t.Errorf("native default mode should not manually append mode.request line (it's in the API payload)\n%s", content)
+		t.Errorf("the retired mode.request advertisement line must not be rendered\n%s", content)
 	}
 }
 
@@ -341,11 +347,11 @@ func TestJSONModeStillIncludesAvailableToolsList(t *testing.T) {
 	}
 }
 
-func TestJSONModeDefaultStillIncludesModeRequestLine(t *testing.T) {
-	msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeDefault)
+func TestJSONModeOmitsRetiredModeRequestLine(t *testing.T) {
+	msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, promptAccessAsk)
 	content := msg.Content
-	if !strings.Contains(content, "mode.request: Ask the user to switch") {
-		t.Errorf("JSON default mode must still include the mode.request line\n%s", content)
+	if strings.Contains(content, "mode.request: Ask the user to switch") {
+		t.Errorf("the retired mode.request advertisement line must not be rendered\n%s", content)
 	}
 }
 
@@ -754,56 +760,63 @@ func TestSDDPlanAuthorRolePrompt(t *testing.T) {
 	}
 }
 
-func TestModeDirectivePlan(t *testing.T) {
-	d := modeDirective(policy.ModePlan)
-	if !strings.Contains(d, "plan mode") {
-		t.Errorf("plan directive %q should mention 'plan mode'", d)
+func TestInteractionDirectiveAsk(t *testing.T) {
+	d := interactionDirective(promptAccessAsk)
+	for _, want := range []string{"Ask mode", "read-only", "mode.request", "require Act"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("Ask directive missing %q:\n%s", want, d)
+		}
 	}
-	if !strings.Contains(d, "numbered plan") {
-		t.Errorf("plan directive %q should mention 'numbered plan'", d)
-	}
-}
-
-func TestPlanModeDirectiveAsksQuestionsInSingleCall(t *testing.T) {
-	d := modeDirective(policy.ModePlan)
-	if !strings.Contains(d, "single question.ask") {
-		t.Fatalf("plan directive should require a single question.ask call; got:\n%s", d)
-	}
-	if !strings.Contains(d, "numbered plan") {
-		t.Fatalf("plan directive should require a numbered plan; got:\n%s", d)
-	}
-	if !strings.Contains(d, "one round") {
-		t.Fatalf("plan directive should limit clarifications to one round; got:\n%s", d)
+	for _, notWant := range []string{"produce a numbered plan", "You are in plan mode", "default mode"} {
+		if strings.Contains(d, notWant) {
+			t.Errorf("Ask directive should not contain %q:\n%s", notWant, d)
+		}
 	}
 }
 
-func TestModeDirectiveDefault(t *testing.T) {
-	d := modeDirective(policy.ModeDefault)
-	if !strings.Contains(d, "default mode") {
-		t.Errorf("default directive %q should mention 'default mode'", d)
+func TestInteractionDirectiveAskDoesNotForcePlan(t *testing.T) {
+	d := interactionDirective(promptAccessAsk)
+	if strings.Contains(d, "ask ALL of them") || strings.Contains(d, "one round of questions") {
+		t.Fatalf("Ask directive must not force the retired one-round Q&A workflow:\n%s", d)
+	}
+	if !strings.Contains(d, "does not force a numbered plan") {
+		t.Fatalf("Ask directive should explicitly reject a forced numbered plan:\n%s", d)
+	}
+}
+
+func TestInteractionDirectiveAskMentionsGrant(t *testing.T) {
+	d := interactionDirective(promptAccessAsk)
+	if !strings.Contains(d, "Ask mode") {
+		t.Errorf("Ask directive %q should mention 'Ask mode'", d)
 	}
 	if !strings.Contains(d, "mode.request") {
-		t.Errorf("default directive %q should mention mode.request", d)
+		t.Errorf("Ask directive %q should mention mode.request", d)
 	}
 }
 
-func TestModeDirectiveCopilot(t *testing.T) {
-	d := modeDirective(policy.ModeCopilot)
-	if !strings.Contains(d, "copilot mode") {
-		t.Errorf("copilot directive %q should mention 'copilot mode'", d)
+func TestInteractionDirectiveAct(t *testing.T) {
+	d := interactionDirective(promptAccessAct)
+	if !strings.Contains(d, "Act mode") {
+		t.Errorf("Act directive %q should mention 'Act mode'", d)
 	}
-	if !strings.Contains(d, "auto-approved") {
-		t.Errorf("copilot directive %q should mention auto-approved", d)
+	if !strings.Contains(d, "Routine file changes need no per-change approval") {
+		t.Errorf("Act directive %q should describe routine edits without per-change approval", d)
+	}
+	if strings.Contains(d, "mode.request") {
+		t.Errorf("Act directive %q should not tell the agent to request a mode switch", d)
 	}
 }
 
-func TestModeDirectiveAuto(t *testing.T) {
-	d := modeDirective(policy.ModeAuto)
-	if !strings.Contains(d, "auto mode") {
-		t.Errorf("auto directive %q should mention 'auto mode'", d)
+func TestInteractionDirectiveAuto(t *testing.T) {
+	d := interactionDirective(promptAccessAuto)
+	if !strings.Contains(d, "Auto is enabled") {
+		t.Errorf("Auto directive %q should mention 'Auto is enabled'", d)
 	}
-	if !strings.Contains(d, "cannot ask the user") {
-		t.Errorf("auto directive %q should mention cannot ask the user", d)
+	if !strings.Contains(d, "Do not ask clarification questions") {
+		t.Errorf("Auto directive %q should forbid clarification questions", d)
+	}
+	if !strings.Contains(d, "does not manufacture skill or review approvals") {
+		t.Errorf("Auto directive %q must not invent explicit review approvals", d)
 	}
 }
 
@@ -830,81 +843,158 @@ func TestNativeOutputFormatKeepsJSONObjectRule(t *testing.T) {
 }
 
 func TestAutoModeDirectiveOmitsRetraction(t *testing.T) {
-	d := modeDirective(policy.ModeAuto)
-	if !strings.Contains(d, "cannot ask the user") {
-		t.Errorf("auto directive must still say 'cannot ask the user':\n%s", d)
+	d := interactionDirective(promptAccessAuto)
+	if !strings.Contains(d, "Do not ask clarification questions") {
+		t.Errorf("Auto directive must forbid clarification questions:\n%s", d)
 	}
 	if strings.Contains(d, "do not apply") {
 		t.Errorf("auto directive should not contain the retraction sentence:\n%s", d)
 	}
 }
 
-func TestBuildSystemPromptWithModeDirectives(t *testing.T) {
+func TestBuildSystemPromptWithAccessDirectives(t *testing.T) {
 	tests := []struct {
 		name    string
-		mode    policy.ApprovalMode
+		access  interaction.State
 		want    string // substring the content must contain
 		notWant string // substring the content must NOT contain (empty = skip)
 	}{
 		{
-			name:    "plan mode",
-			mode:    policy.ModePlan,
-			want:    "plan mode",
-			notWant: "mode.request: Ask the user to switch",
+			name:    "ask mode",
+			access:  promptAccessAsk,
+			want:    "Ask mode",
+			notWant: "produce a numbered plan",
 		},
 		{
-			name:    "default mode",
-			mode:    policy.ModeDefault,
-			want:    "default mode",
+			name:    "act mode",
+			access:  promptAccessAct,
+			want:    "Act mode",
+			notWant: "mode.request",
+		},
+		{
+			name:    "act with auto",
+			access:  promptAccessAuto,
+			want:    "Auto is enabled",
+			notWant: "mode.request",
+		},
+		{
+			name:    "act with system",
+			access:  promptAccessSystem,
+			want:    systemAccessDirective,
 			notWant: "",
-		},
-		{
-			name:    "edit mode",
-			mode:    policy.ModeEdit,
-			want:    "edit mode",
-			notWant: "mode.request: Ask the user to switch",
-		},
-		{
-			name:    "copilot mode",
-			mode:    policy.ModeCopilot,
-			want:    "copilot mode",
-			notWant: "mode.request: Ask the user to switch",
-		},
-		{
-			name:    "auto mode",
-			mode:    policy.ModeAuto,
-			want:    "auto mode",
-			notWant: "mode.request: Ask the user to switch",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, tt.mode)
+			msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, tt.access)
 			content := msg.Content
 
 			if !strings.Contains(content, tt.want) {
-				t.Errorf("BuildSystemPromptWithMode(%s) content missing %q\n%s", tt.mode, tt.want, content)
+				t.Errorf("BuildSystemPromptWithMode(%+v) content missing %q\n%s", tt.access, tt.want, content)
 			}
 			if tt.notWant != "" && strings.Contains(content, tt.notWant) {
-				t.Errorf("BuildSystemPromptWithMode(%s) content contains unexpected %q\n%s", tt.mode, tt.notWant, content)
+				t.Errorf("BuildSystemPromptWithMode(%+v) content contains unexpected %q\n%s", tt.access, tt.notWant, content)
 			}
 		})
 	}
 }
 
-func TestBuildSystemPromptWithModeDefaultAdvertisesModeRequest(t *testing.T) {
-	msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeDefault)
+func TestBuildSystemPromptWithModeAskMentionsModeRequest(t *testing.T) {
+	msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, promptAccessAsk)
 	content := msg.Content
 
-	if !strings.Contains(content, "mode.request: Ask the user to switch") {
-		t.Errorf("default mode prompt should advertise mode.request tool\n%s", content)
+	if !strings.Contains(content, "mode.request") {
+		t.Errorf("Ask prompt should mention mode.request\n%s", content)
+	}
+	if strings.Contains(content, "mode.request: Ask the user to switch") {
+		t.Errorf("retired mode.request advertisement line must not be rendered\n%s", content)
+	}
+}
+
+func TestInteractionPromptUsesAskActAndModifiers(t *testing.T) {
+	tests := []struct {
+		name    string
+		access  interaction.State
+		want    []string
+		notWant []string
+	}{
+		{
+			name:   "ask",
+			access: promptAccessAsk,
+			want:   []string{"Ask mode", "read-only", "mode.request", "require Act"},
+			// Ask no longer forces the retired plan-mode workflow.
+			notWant: []string{"You are in plan mode", "produce a numbered plan"},
+		},
+		{
+			name:    "act",
+			access:  promptAccessAct,
+			want:    []string{"Act mode", "Routine file changes need no per-change approval"},
+			notWant: []string{"Ask mode", "mode.request"},
+		},
+		{
+			name:    "act auto",
+			access:  promptAccessAuto,
+			want:    []string{"Act mode", "Auto is enabled", "Do not ask clarification questions"},
+			notWant: []string{"Ask mode"},
+		},
+		{
+			name:    "act system",
+			access:  promptAccessSystem,
+			want:    []string{"Act mode", systemAccessDirective},
+			notWant: []string{"Auto is enabled"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, tt.access).Content
+			for _, want := range tt.want {
+				if !strings.Contains(content, want) {
+					t.Errorf("prompt missing %q:\n%s", want, content)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(content, notWant) {
+					t.Errorf("prompt contains unexpected %q:\n%s", notWant, content)
+				}
+			}
+		})
+	}
+}
+
+func TestAutoNeverInventsExplicitSkillReviewApproval(t *testing.T) {
+	d := interactionDirective(promptAccessAuto)
+	if !strings.Contains(d, "does not manufacture skill or review approvals") {
+		t.Fatalf("Auto directive must explicitly refuse to manufacture skill/review approvals:\n%s", d)
+	}
+	if !strings.Contains(d, "required spec, plan, or user review still stops") {
+		t.Fatalf("Auto directive must keep explicit review gates waiting:\n%s", d)
+	}
+	for _, wrong := range []string{"skill approvals are automatic", "review is approved", "skip the review"} {
+		if strings.Contains(d, wrong) {
+			t.Fatalf("Auto directive invents an approval with %q:\n%s", wrong, d)
+		}
+	}
+}
+
+func TestActPlanningWorkflowNeedsNoModeSwitch(t *testing.T) {
+	d := interactionDirective(promptAccessAct)
+	if strings.Contains(d, "mode.request") || strings.Contains(d, "plan mode") {
+		t.Fatalf("Act must not require a mode switch to plan:\n%s", d)
+	}
+	if !strings.Contains(d, "as needed") {
+		t.Fatalf("Act should describe planning work as part of the normal workflow:\n%s", d)
+	}
+	// Planning is a skill workflow in Act, not a separate prompt mode.
+	content := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, false, promptAccessAct).Content
+	if strings.Contains(content, "If you need to make changes, call the mode.request tool") {
+		t.Fatalf("Act prompt still tells the agent to request an editing mode:\n%s", content)
 	}
 }
 
 func TestBuildSystemPromptIncludesWorkingDir(t *testing.T) {
 	wantDir := "/Users/alecpullen/projects/marshal"
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", wantDir, "")
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, promptAccessAct, "", wantDir, "")
 	if !strings.Contains(msg.Content, wantDir) {
 		t.Fatalf("system prompt missing working dir %q\n%s", wantDir, msg.Content)
 	}
@@ -917,7 +1007,7 @@ func TestBuildSystemPromptIncludesWorkingDir(t *testing.T) {
 }
 
 func TestBuildSystemPromptOmitsWorkingDirWhenEmpty(t *testing.T) {
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", "", "")
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, promptAccessAct, "", "", "")
 	if strings.Contains(msg.Content, "The workspace root is") {
 		t.Errorf("empty workingDir should not inject workspace root line\n%s", msg.Content)
 	}
@@ -929,7 +1019,7 @@ func TestBuildSystemPromptNativeOmitsRetiredPatchFormat(t *testing.T) {
 		Risk:        registry.RiskWorkspaceWrite,
 		Description: "Apply search/replace patch blocks to workspace files.",
 	})
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, tools, nil, nil, nil, true, policy.ModeEdit, "", "/tmp/workspace", "")
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, tools, nil, nil, nil, true, promptAccessAct, "", "/tmp/workspace", "")
 	content := msg.Content
 
 	for _, unwanted := range []string{
@@ -944,7 +1034,7 @@ func TestBuildSystemPromptNativeOmitsRetiredPatchFormat(t *testing.T) {
 }
 
 func TestBuildSystemPromptWithAddendum(t *testing.T) {
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "Be extra careful with diffs.", "", "")
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, promptAccessAct, "Be extra careful with diffs.", "", "")
 	if !strings.Contains(msg.Content, "Be extra careful with diffs.") {
 		t.Fatalf("addendum missing from prompt:\n%s", msg.Content)
 	}
@@ -1149,14 +1239,14 @@ func TestPromptOmitsTodoWriteGuidanceWithoutTheTool(t *testing.T) {
 	}
 }
 
-// ModeAuto's directive must tell the model it cannot ask the user
-// questions, in both native and JSON modes.
+// Auto's directive must tell the model not to ask the user questions, in
+// both native and JSON modes.
 func TestBuildSystemPromptAutoModeOverridesAskUserExamples(t *testing.T) {
 	for _, native := range []bool{false, true} {
-		msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, native, policy.ModeAuto)
+		msg := BuildSystemPromptWithMode(RoleGeneral, dummyTools(), nil, nil, nil, native, promptAccessAuto)
 		content := msg.Content
-		if !strings.Contains(content, "cannot ask the user") {
-			t.Fatalf("native=%v: auto mode prompt missing the cannot-ask directive\n%s", native, content)
+		if !strings.Contains(content, "Do not ask clarification questions") {
+			t.Fatalf("native=%v: auto mode prompt missing the no-questions directive\n%s", native, content)
 		}
 	}
 }
@@ -1622,7 +1712,7 @@ func TestBuildSystemPromptIncludesRosterWhenAgentRunAvailable(t *testing.T) {
 		"openai/gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini"},
 	}
 	tools := []registry.Tool{{Name: "agent.run", Risk: registry.RiskWorkspaceWrite, Description: "Dispatch a subagent."}}
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, tools, nil, nil, nil, false, policy.ModeEdit, "", "", RenderAgentRoster(cfg))
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, tools, nil, nil, nil, false, promptAccessAct, "", "", RenderAgentRoster(cfg))
 	if !strings.Contains(msg.Content, "## Agents and models") {
 		t.Fatalf("system prompt missing roster section:\n%s", msg.Content)
 	}
@@ -1636,7 +1726,7 @@ func TestBuildSystemPromptOmitsRosterWithoutAgentRun(t *testing.T) {
 	cfg.Models.Presets = map[string]routing.ModelPreset{
 		"openai/gpt-4o-mini": {Provider: "openai", Model: "gpt-4o-mini"},
 	}
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, policy.ModeEdit, "", "", RenderAgentRoster(cfg))
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, dummyTools(), nil, nil, nil, false, promptAccessAct, "", "", RenderAgentRoster(cfg))
 	if strings.Contains(msg.Content, "## Agents and models") {
 		t.Fatalf("roster should not appear without agent.run:\n%s", msg.Content)
 	}
@@ -1686,7 +1776,7 @@ func TestBuildSystemPromptLoadedDeferredToolMovesToAvailableList(t *testing.T) {
 		Deferred:    true,
 	}
 	// config.read is opted into via tools.select; config.providers.set is not.
-	msg := BuildSystemPromptWithAddendum(RoleGeneral, []registry.Tool{loadedTool, unloadedTool}, []registry.Tool{loadedTool, unloadedTool}, nil, nil, false, policy.ModeEdit, "", "", "", "config.read")
+	msg := BuildSystemPromptWithAddendum(RoleGeneral, []registry.Tool{loadedTool, unloadedTool}, []registry.Tool{loadedTool, unloadedTool}, nil, nil, false, promptAccessAct, "", "", "", "config.read")
 	content := msg.Content
 
 	availableIdx := strings.Index(content, "Available tools:\n")
@@ -1726,7 +1816,7 @@ func TestSystemPromptOptionsMatchesWrappers(t *testing.T) {
 	// with the equivalent SystemPromptOptions.
 	want := BuildSystemPromptWithAddendum(
 		RoleGeneral, tools, nil, idx, []string{"debug"},
-		true, policy.ModeAuto, "extra addendum", "/tmp", "roster text", "config.read",
+		true, promptAccessAuto, "extra addendum", "/tmp", "roster text", "config.read",
 	)
 	got := buildSystemPrompt(SystemPromptOptions{
 		Role:         RoleGeneral,
@@ -1735,7 +1825,7 @@ func TestSystemPromptOptionsMatchesWrappers(t *testing.T) {
 		SkillIndex:   idx,
 		ActiveSkills: []string{"debug"},
 		NativeTools:  true,
-		Mode:         policy.ModeAuto,
+		Access:       promptAccessAuto,
 		Addendum:     "extra addendum",
 		WorkingDir:   "/tmp",
 		Roster:       "roster text",
@@ -1791,7 +1881,7 @@ func TestStaleLoadedConfigSetterIsIgnoredInPrompt(t *testing.T) {
 	read := registry.Tool{Name: "config.read", Description: "Read config.", Risk: registry.RiskReadOnly, Deferred: true}
 	msg := BuildSystemPromptWithSystem(SystemPromptOptions{
 		Role: RoleGeneral, Tools: []registry.Tool{read}, Deferred: []registry.Tool{read},
-		Mode: policy.ModeEdit, LoadedNames: []string{"config.agent.set"},
+		Access: promptAccessAct, LoadedNames: []string{"config.agent.set"},
 	})
 	if strings.Contains(msg.Content, "config.agent.set") {
 		t.Fatalf("stale loaded name leaked into the prompt:\n%s", msg.Content)
@@ -1804,7 +1894,7 @@ func TestStaleLoadedConfigSetterIsIgnoredInPrompt(t *testing.T) {
 // The scratchpad was removed from the model's view in the context-diet
 // Tier 2a cut, so no shipped prompt text may teach it.
 func TestNativePromptHasNoScratchpadAddendum(t *testing.T) {
-	msg := BuildSystemPromptWithSystem(SystemPromptOptions{Role: RoleGeneral, NativeTools: true, Mode: policy.ModeEdit})
+	msg := BuildSystemPromptWithSystem(SystemPromptOptions{Role: RoleGeneral, NativeTools: true, Access: promptAccessAct})
 	if strings.Contains(msg.Content, "scratchpad") {
 		t.Fatalf("native prompt still mentions the scratchpad:\n%s", msg.Content)
 	}
@@ -1852,7 +1942,7 @@ func TestBaseRulesFavourDecisiveAction(t *testing.T) {
 	if !strings.Contains(baseRulesSystem, "Once you choose an approach, carry it out") {
 		t.Errorf("system-access rules must carry the same commit-to-approach rule:\n%s", baseRulesSystem)
 	}
-	if d := modeDirective(policy.ModeCopilot); !strings.Contains(d, "only when the answer would change what you build") {
-		t.Errorf("copilot directive lacks the ask criterion: %q", d)
+	if d := interactionDirective(promptAccessAct); !strings.Contains(d, "only when the answer materially changes the work") {
+		t.Errorf("Act directive lacks the ask criterion: %q", d)
 	}
 }

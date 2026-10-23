@@ -168,10 +168,10 @@ func TestSudoAuthBlocksModeCyclingKeys(t *testing.T) {
 	})
 	m = primeSudoAuth(t, m)
 
-	before := m.approvalMode
+	before := m.state.InteractionState().Mode
 	updated, _ := m.Update(sudoAuthKeyPress("tab"))
 	m = updated.(Model)
-	if m.approvalMode != before {
-		t.Fatalf("mode changed from %v to %v while a sudo prompt was pending", before, m.approvalMode)
+	if m.state.InteractionState().Mode != before {
+		t.Fatalf("mode changed from %v to %v while a sudo prompt was pending", before, m.state.InteractionState().Mode)
 	}
 }

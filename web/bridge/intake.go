@@ -31,6 +31,9 @@ type SpawnRequest struct {
 	// exclusive with Prompt.
 	Plan string
 	Mode string
+	// Auto is the optional Auto modifier of the requested starting tuple.
+	// Nil means the submission named none; an explicit false is preserved.
+	Auto *bool
 	// IssueNumber and IssueURL are set when the submission came from an
 	// issue, so the exit path can link the pull request back to it.
 	IssueNumber int
@@ -91,12 +94,22 @@ func (f *Fleet) Submit(ctx context.Context, req SpawnRequest) (SubmitResult, err
 	// background timer.
 	f.ws.SweepExpired(time.Now().UTC())
 
+	// Validate the requested starting tuple before anything is queued or
+	// spawned, and canonicalize it in place: a spelling the bridge cannot read
+	// must fail the submission where the client sends it, not surface later
+	// when a pending entry is approved.
+	mode, auto, _, err := canonicalModeTuple(req.Mode, req.Auto)
+	if err != nil {
+		return SubmitResult{}, err
+	}
+	req.Mode, req.Auto = mode, auto
+
 	if req.Origin != OriginUI && !client.Autonomous {
 		now := time.Now().UTC()
 		p := PendingSpawn{
 			ID: newAgentID(), Origin: req.Origin, ClientID: req.ClientID,
 			Title: req.Title, RepoID: req.RepoID, Ref: req.Ref,
-			Prompt: req.Prompt, Plan: req.Plan, Mode: req.Mode,
+			Prompt: req.Prompt, Plan: req.Plan, Mode: req.Mode, Auto: req.Auto,
 			CreatedAt: now, ExpiresAt: now.Add(pendingTTL),
 			IssueNumber: req.IssueNumber, IssueURL: req.IssueURL,
 		}
@@ -157,7 +170,7 @@ func (f *Fleet) Approve(ctx context.Context, pendingID string) (string, error) {
 
 	agentID, err := f.spawnFromRequest(ctx, SpawnRequest{
 		Origin: p.Origin, ClientID: p.ClientID, RepoID: p.RepoID, Ref: p.Ref,
-		Title: p.Title, Prompt: p.Prompt, Plan: p.Plan, Mode: p.Mode,
+		Title: p.Title, Prompt: p.Prompt, Plan: p.Plan, Mode: p.Mode, Auto: p.Auto,
 		IssueNumber: p.IssueNumber, IssueURL: p.IssueURL,
 	})
 	if err != nil {

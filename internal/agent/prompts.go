@@ -8,12 +8,12 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/contextpack"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider/modelcache"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/skills"
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 )
 
@@ -581,27 +581,41 @@ func renderRoleAddendum(r rolePrompt, nativeTools bool) string {
 	return b.String()
 }
 
-// modeDirective returns the per-mode behavioral directive prepended to
-// the system prompt. Each directive tells the agent its current mode and
-// the constraints that apply. See the approval-modes design spec.
-func modeDirective(mode policy.ApprovalMode) string {
-	switch mode {
-	case policy.ModePlan:
-		return "You are in plan mode. You are read-only and cannot modify files. " +
-			"If you need clarifying questions, ask ALL of them in a single question.ask tool call, " +
-			"then produce a numbered plan as your final answer and stop. " +
-			"Do not ask more than one round of questions, and do not call any write tools."
-	case policy.ModeDefault:
-		return "You are in default mode. You are read-only and cannot modify files. If you need to make changes, call the mode.request tool to ask the user to switch to an editing mode. Do not attempt write tools directly."
-	case policy.ModeEdit:
-		return "You are in edit mode. Each file change requires user approval before it is applied."
-	case policy.ModeCopilot:
-		return "You are in copilot mode. File changes are auto-approved except for destructive guardrails and git push. Ask the user only when the answer would change what you build and you cannot resolve it yourself; otherwise proceed and state your assumptions."
-	case policy.ModeAuto:
-		return "You are in auto mode. File changes are auto-approved except for destructive guardrails and git push. You cannot ask the user questions — proceed with your best judgment and state the assumptions you make."
-	default:
-		return ""
+// defaultInteractionAccess is the canonical Act/Auto-off state used by the
+// convenience builders that do not take an explicit access tuple.
+func defaultInteractionAccess() interaction.State {
+	return interaction.State{Mode: interaction.ModeAct, Revision: 1}
+}
+
+// normalizePromptAccess keeps prompt rendering total: an unset or invalid
+// tuple renders as canonical Act/Auto-off, and Ask can never carry Auto.
+func normalizePromptAccess(a interaction.State) interaction.State {
+	if a.Mode != interaction.ModeAsk && a.Mode != interaction.ModeAct {
+		a.Mode = interaction.ModeAct
+		a.Auto = false
 	}
+	if a.Mode == interaction.ModeAsk {
+		a.Auto = false
+	}
+	return a
+}
+
+// interactionDirective describes the behavioral contract for the turn-start
+// access tuple. Auto and System are separate modifiers: Auto never widens the
+// approval mode, and System is described by systemAccessDirective below.
+func interactionDirective(access interaction.State) string {
+	access = normalizePromptAccess(access)
+	var b strings.Builder
+	switch access.Mode {
+	case interaction.ModeAsk:
+		b.WriteString("You are in Ask mode. You can investigate, explain, compare approaches, and discuss or outline designs and plans, but you cannot save those documents or implement them. New actions are limited to read-only tools, read-only shell operations, read-only network access, explicitly read-only MCP tools, read-only delegation, and session bookkeeping or instruction loading. Tests, builds, dependency installs, scripts, interpreter runs, unknown shell effects, file writes, config writes, and other mutations require Act. Use mode.request to ask the user to grant Act. An allow rule or an ordinary approval cannot widen Ask. Ask does not force a numbered plan, a short Q&A response, or a special role.")
+	case interaction.ModeAct:
+		b.WriteString("You are in Act mode. Inspect, edit, build, test, install dependencies, and commit as needed. Routine file changes need no per-change approval. Ask only when the answer materially changes the work and the repository cannot settle it; otherwise state a reasonable assumption. Destructive operations need approval.")
+	}
+	if access.Auto {
+		b.WriteString("\n\nAuto is enabled. Do not ask clarification questions: proceed with reasonable assumptions and state them. Destructive operations scoped to the active workspace are preauthorized. Auto does not grant System or publishing approval, does not override explicit deny or confirm rules, and does not manufacture skill or review approvals: a required spec, plan, or user review still stops and presents the artifact.")
+	}
+	return b.String()
 }
 
 // systemAccessDirective is the system-mode advisory appended after
@@ -618,15 +632,14 @@ type SystemPromptOptions struct {
 	SkillIndex   *skills.Index
 	ActiveSkills []string
 	NativeTools  bool
-	Mode         policy.ApprovalMode
-	Addendum     string
-	WorkingDir   string
-	Roster       string
-	LoadedNames  []string
-	// SystemAccess selects the system-access prompt variant: the
-	// file-tools rule is amended and systemAccessDirective is appended
-	// after the mode directive (spec §6).
-	SystemAccess bool
+	// Access is the turn-start interaction state. It fixes the directive for
+	// the turn; the fresh tuple rides in the working-state tail so a mid-turn
+	// change never rewrites the cached prefix.
+	Access      interaction.State
+	Addendum    string
+	WorkingDir  string
+	Roster      string
+	LoadedNames []string
 	// Narration appends narrationAddendum to the native-tools prompt. It is
 	// never added in envelope mode, where `rationale` is already required.
 	Narration bool
@@ -640,7 +653,7 @@ const narrationAddendum = `When you call tools, begin that same response with on
 func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
 	return buildSystemPrompt(SystemPromptOptions{
 		Role: role, Tools: tools, SkillIndex: skillIndex, ActiveSkills: activeSkills,
-		NativeTools: nativeTools, Mode: policy.ModeEdit,
+		NativeTools: nativeTools, Access: defaultInteractionAccess(),
 	})
 }
 
@@ -652,17 +665,17 @@ func BuildSystemPrompt(role AgentRole, tools []registry.Tool, skillIndex *skills
 func BuildSystemPromptWithDeferred(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool) schema.ChatMessage {
 	return buildSystemPrompt(SystemPromptOptions{
 		Role: role, Tools: tools, Deferred: deferred, SkillIndex: skillIndex,
-		ActiveSkills: activeSkills, NativeTools: nativeTools, Mode: policy.ModeEdit,
+		ActiveSkills: activeSkills, NativeTools: nativeTools, Access: defaultInteractionAccess(),
 	})
 }
 
 // BuildSystemPromptWithMode is BuildSystemPromptWithDeferred with an
-// explicit approval mode. The runner calls this to inject the per-mode
-// directive into the system prompt.
-func BuildSystemPromptWithMode(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode) schema.ChatMessage {
+// explicit interaction access tuple. The runner calls this to inject the
+// turn-start Ask/Act/auto/system directive into the system prompt.
+func BuildSystemPromptWithMode(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, access interaction.State) schema.ChatMessage {
 	return buildSystemPrompt(SystemPromptOptions{
 		Role: role, Tools: tools, Deferred: deferred, SkillIndex: skillIndex,
-		ActiveSkills: activeSkills, NativeTools: nativeTools, Mode: mode,
+		ActiveSkills: activeSkills, NativeTools: nativeTools, Access: access,
 	})
 }
 
@@ -677,10 +690,10 @@ func BuildSystemPromptWithMode(role AgentRole, tools []registry.Tool, deferred [
 // stays accurate after tools.select, which matters most in JSON/envelope
 // mode where the tool list exists only as this text. Pass r.State's
 // LoadedToolNames().
-func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, mode policy.ApprovalMode, addendum string, workingDir string, roster string, loadedNames ...string) schema.ChatMessage {
+func BuildSystemPromptWithAddendum(role AgentRole, tools []registry.Tool, deferred []registry.Tool, skillIndex *skills.Index, activeSkills []string, nativeTools bool, access interaction.State, addendum string, workingDir string, roster string, loadedNames ...string) schema.ChatMessage {
 	return buildSystemPrompt(SystemPromptOptions{
 		Role: role, Tools: tools, Deferred: deferred, SkillIndex: skillIndex,
-		ActiveSkills: activeSkills, NativeTools: nativeTools, Mode: mode,
+		ActiveSkills: activeSkills, NativeTools: nativeTools, Access: access,
 		Addendum: addendum, WorkingDir: workingDir, Roster: roster,
 		LoadedNames: loadedNames,
 	})
@@ -708,7 +721,7 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	skillIndex := opts.SkillIndex
 	activeSkills := opts.ActiveSkills
 	nativeTools := opts.NativeTools
-	mode := opts.Mode
+	access := normalizePromptAccess(opts.Access)
 	addendum := opts.Addendum
 	workingDir := opts.WorkingDir
 	roster := opts.Roster
@@ -729,12 +742,12 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 	b.WriteString("\n\n")
 	b.WriteString(baseEnvironment(workingDir))
 	b.WriteString("\n\n")
-	b.WriteString(baseRulesFor(opts.SystemAccess))
-	if d := modeDirective(mode); d != "" {
+	b.WriteString(baseRulesFor(access.System))
+	if d := interactionDirective(access); d != "" {
 		b.WriteString("\n\n")
 		b.WriteString(d)
 	}
-	if opts.SystemAccess {
+	if access.System {
 		b.WriteString("\n\n")
 		b.WriteString(systemAccessDirective)
 	}
@@ -758,9 +771,6 @@ func buildSystemPrompt(opts SystemPromptOptions) schema.ChatMessage {
 				line += " — " + hint
 			}
 			b.WriteString(line + "\n")
-		}
-		if mode == policy.ModeDefault {
-			b.WriteString("- mode.request: Ask the user to switch to an editing mode (edit, copilot, or auto) so you can make changes.\n")
 		}
 	}
 	// Don't advertise tools the agent has already loaded as still "not
@@ -954,6 +964,33 @@ func budgetLine(b WorkingStateBudget) string {
 		return ""
 	}
 	return fmt.Sprintf("Context budget: ~%d tokens in this request, %d window, compaction at %d.", b.Used, b.Window, b.Threshold)
+}
+
+// BuildInteractionStateMessage renders the live interaction tuple and
+// revision as the authoritative per-request tail. It is emitted on every
+// provider request, even when the context pack has no volatile parts, so a
+// mid-turn Ask/Act/Auto/System change reaches the model without rewriting the
+// turn-start system prompt or anything ahead of the transcript.
+func BuildInteractionStateMessage(access interaction.State) schema.ChatMessage {
+	access = normalizePromptAccess(access)
+	mode := "Act"
+	if access.Mode == interaction.ModeAsk {
+		mode = "Ask"
+	}
+	onOff := func(v bool) string {
+		if v {
+			return "on"
+		}
+		return "off"
+	}
+	return schema.ChatMessage{
+		Role:     schema.RoleUser,
+		Volatile: true,
+		Content: fmt.Sprintf(
+			"Current interaction state: mode=%s, Auto=%s, System=%s, revision=%d. This is the authoritative state for this request; it supersedes the turn-start description above.",
+			mode, onOff(access.Auto), onOff(access.System), access.Revision,
+		),
+	}
 }
 
 // BuildToolResultMessage formats a tool result for the model. The

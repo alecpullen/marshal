@@ -64,13 +64,22 @@ export function latestAgent(agents: AgentRow[], root: string): AgentRow | undefi
   return agents.filter((a) => a.project === root).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))[0]
 }
 
-export const MODES = ['plan', 'default', 'edit', 'copilot', 'auto'] as const
+/** The two interaction modes, shared with every other form. */
+export { MODES } from '../interaction'
 export const SHIP_TARGETS = ['merge', 'push', 'patch'] as const
 
 /** `isolated` is a tri-state: unset leaves the caller's default. */
 export type IsolationChoice = 'default' | 'isolated' | 'shared'
 export const isolationOf = (s: Pick<ProjectSettings, 'isolated'>): IsolationChoice => (s.isolated === true ? 'isolated' : s.isolated === false ? 'shared' : 'default')
 export const isolatedFrom = (c: IsolationChoice): boolean | undefined => (c === 'isolated' ? true : c === 'shared' ? false : undefined)
+
+/**
+ * `auto` is a tri-state too: inherit, an explicit on, or an explicit
+ * revocation. Inherit is not a mode and must not be collapsed into false.
+ */
+export type AutoChoice = 'default' | 'on' | 'off'
+export const autoOf = (s: Pick<ProjectSettings, 'auto'>): AutoChoice => (s.auto === true ? 'on' : s.auto === false ? 'off' : 'default')
+export const autoFrom = (c: AutoChoice): boolean | undefined => (c === 'on' ? true : c === 'off' ? false : undefined)
 
 /** A picker's data is optional context: a failed load gives the fallback instead of failing the page. */
 export function soft<T>(p: Promise<T>, fallback: T): Promise<T> {

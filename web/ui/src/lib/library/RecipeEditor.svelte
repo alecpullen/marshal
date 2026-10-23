@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import Button from '../ui/Button.svelte'
   import { errMessage, listWorkspaces, saveRecipe, type Recipe, type RecipeInput, type WorkspaceListItem } from '../api'
+  import { migrateStoredDefaults } from '../interaction'
   import { MODES } from '../newagent/newAgent'
   import { tokenRuns, undeclared } from '../recipes/recipes'
 
@@ -16,8 +17,19 @@
   const OUTPUTS = ['none', 'review-findings', 'ci-result']
   const NAME = /^[a-z0-9][a-z0-9-]*$/
 
+  // A loaded recipe is migrated through the shared table: the bridge stores
+  // canonical ask/act now, but an older stored spelling must not linger as a
+  // mode this form cannot represent. Auto presence is preserved.
   // svelte-ignore state_referenced_locally
-  let draft = $state<Recipe>({ ...recipe, inputs: (recipe.inputs ?? []).map((i) => ({ ...i })), limits: { ...(recipe.limits ?? {}) } })
+  const initialDefaults = migrateStoredDefaults({ mode: recipe.mode, auto: recipe.auto })
+  // svelte-ignore state_referenced_locally
+  let draft = $state<Recipe>({
+    ...recipe,
+    mode: initialDefaults ? initialDefaults.mode : recipe.mode,
+    auto: initialDefaults && 'auto' in initialDefaults ? initialDefaults.auto : undefined,
+    inputs: (recipe.inputs ?? []).map((i) => ({ ...i })),
+    limits: { ...(recipe.limits ?? {}) },
+  })
   let workspaces = $state<WorkspaceListItem[]>([])
   let error = $state('')
   let busy = $state(false)
@@ -101,8 +113,22 @@
     </label>
     <label class="flex flex-col gap-1 text-xs">Mode
       <select bind:value={draft.mode} class="rounded border border-border bg-bg p-1.5 text-sm">
-        <option value="">default</option>
-        {#each MODES as m (m)}<option value={m}>{m}</option>{/each}
+        <option value="">Inherit</option>
+        {#each MODES as m (m)}<option value={m}>{m === 'ask' ? 'Ask' : 'Act'}</option>{/each}
+      </select>
+    </label>
+    <label class="flex flex-col gap-1 text-xs">Auto
+      <select
+        value={draft.auto === true ? 'on' : draft.auto === false ? 'off' : ''}
+        onchange={(e) => {
+          const v = e.currentTarget.value
+          draft = { ...draft, auto: v === 'on' ? true : v === 'off' ? false : undefined }
+        }}
+        class="rounded border border-border bg-bg p-1.5 text-sm"
+      >
+        <option value="">Inherit</option>
+        <option value="on">On</option>
+        <option value="off">Off</option>
       </select>
     </label>
     <label class="flex flex-col gap-1 text-xs">Workspace

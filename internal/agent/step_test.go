@@ -208,7 +208,7 @@ func TestApprovalRequestCarriesStep(t *testing.T) {
 	r := NewRunner(&agenttest.ScriptedProvider{}, registry.New(), policy.NewEngine(&config.Config{}, nil), state, "test-model")
 	r.curStep = 7
 	go func() {
-		_, _, _ = r.requestApproval(context.Background(), registry.Tool{Name: "t", Risk: registry.RiskCommand}, "t", nil, map[string]interface{}{}, "why")
+		_, _, _, _ = r.requestApproval(context.Background(), registry.Tool{Name: "t", Risk: registry.RiskCommand}, "t", nil, map[string]interface{}{}, "why", false)
 	}()
 	deadline := time.After(2 * time.Second)
 	for state.PendingApproval() == nil {
@@ -350,7 +350,7 @@ func TestIntentNudgeDoesNotFire(t *testing.T) {
 func TestNarrationDirectiveInPrompt(t *testing.T) {
 	build := func(native, narration bool) string {
 		return BuildSystemPromptWithSystem(SystemPromptOptions{
-			Role: RoleGeneral, NativeTools: native, Narration: narration, Mode: policy.ModeEdit,
+			Role: RoleGeneral, NativeTools: native, Narration: narration, Access: defaultInteractionAccess(),
 		}).Content
 	}
 	if !strings.Contains(build(true, true), "begin that same response with one short sentence") {

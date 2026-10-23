@@ -1,6 +1,9 @@
 package config
 
-import "marshal/internal/llm/routing"
+import (
+	"marshal/internal/interaction"
+	"marshal/internal/llm/routing"
+)
 
 // sandboxFile is the TOML-mirror nullable form of SandboxConfig, used both
 // by configFile (load path) and by SaveProjectConfig (save path) so all
@@ -47,27 +50,47 @@ type fileProfile struct {
 }
 
 type fileAgent struct {
-	Provider                 *string `toml:"provider"`
-	Model                    *string `toml:"model"`
-	MaxToolIterations        *int    `toml:"max_tool_iterations"`
-	MaxRetries               *int    `toml:"max_retries"`
-	MaxTurnContextTokens     *int    `toml:"max_turn_context_tokens"`
-	ReconnectMaxWaitSeconds  *int    `toml:"reconnect_max_wait_seconds"`
-	IdleTimeoutSeconds       *int    `toml:"idle_timeout_seconds"`
-	RequestCeilingSeconds    *int    `toml:"request_ceiling_seconds"`
-	MaxToolResultChars       *int    `toml:"max_tool_result_chars"`
-	MaxStructuredOutputChars *int    `toml:"max_structured_output_chars"`
-	PlanFirst                *bool   `toml:"plan_first"`
-	NarrationPrompt          *bool   `toml:"narration_prompt"`
-	IntentNudge              *bool   `toml:"intent_nudge"`
-	SubtaskIterations        *int    `toml:"subtask_iterations"`
-	ApprovalMode             *string `toml:"approval_mode"`
-	HistoryBudgetTokens      *int    `toml:"history_budget_tokens"`
-	ParseRepairFeedback      *bool   `toml:"parse_repair_feedback"`
-	VerificationGate         *bool   `toml:"verification_gate"`
-	MaxTouchedFileBytes      *int    `toml:"max_touched_file_bytes"`
-	ThinkingBudgetMargin     *int    `toml:"thinking_budget_margin"`
-	MaxConcurrentSubagents   *int    `toml:"max_concurrent_subagents"`
+	Provider                 *string           `toml:"provider"`
+	Model                    *string           `toml:"model"`
+	MaxToolIterations        *int              `toml:"max_tool_iterations"`
+	MaxRetries               *int              `toml:"max_retries"`
+	MaxTurnContextTokens     *int              `toml:"max_turn_context_tokens"`
+	ReconnectMaxWaitSeconds  *int              `toml:"reconnect_max_wait_seconds"`
+	IdleTimeoutSeconds       *int              `toml:"idle_timeout_seconds"`
+	RequestCeilingSeconds    *int              `toml:"request_ceiling_seconds"`
+	MaxToolResultChars       *int              `toml:"max_tool_result_chars"`
+	MaxStructuredOutputChars *int              `toml:"max_structured_output_chars"`
+	PlanFirst                *bool             `toml:"plan_first"`
+	NarrationPrompt          *bool             `toml:"narration_prompt"`
+	IntentNudge              *bool             `toml:"intent_nudge"`
+	SubtaskIterations        *int              `toml:"subtask_iterations"`
+	ApprovalMode             *string           `toml:"approval_mode"`
+	Mode                     *interaction.Mode `toml:"mode"`
+	Auto                     *bool             `toml:"auto"`
+	HistoryBudgetTokens      *int              `toml:"history_budget_tokens"`
+	ParseRepairFeedback      *bool             `toml:"parse_repair_feedback"`
+	VerificationGate         *bool             `toml:"verification_gate"`
+	MaxTouchedFileBytes      *int              `toml:"max_touched_file_bytes"`
+	ThinkingBudgetMargin     *int              `toml:"thinking_budget_margin"`
+	MaxConcurrentSubagents   *int              `toml:"max_concurrent_subagents"`
+}
+
+// fileCustomAgent is the TOML-mirror form of routing.CustomAgent. Every
+// field preserves presence so an absent value (inherit) stays distinct from
+// an explicit false or Ask.
+type fileCustomAgent struct {
+	Name                   string                `toml:"name"`
+	Preset                 string                `toml:"preset"`
+	SystemPrompt           string                `toml:"system_prompt,omitempty"`
+	ToolDenylist           []string              `toml:"tool_denylist,omitempty"`
+	Mode                   *interaction.Mode     `toml:"mode,omitempty"`
+	Auto                   *bool                 `toml:"auto,omitempty"`
+	ApprovalMode           *string               `toml:"approval_mode,omitempty"`
+	MaxIterations          int                   `toml:"max_iterations,omitempty"`
+	MaxIterationsUnlimited bool                  `toml:"max_iterations_unlimited,omitempty"`
+	Context                routing.ContextBudget `toml:"context,omitempty"`
+	Temperature            *float64              `toml:"temperature,omitempty"`
+	Thinking               string                `toml:"thinking,omitempty"`
 }
 
 type filePrivacy struct {
@@ -352,7 +375,7 @@ type configFile struct {
 	// RoleBinding values happens in merge().
 	AgentProfilesRaw map[string]map[string]any `toml:"agent_profiles"`
 	// CustomAgents mirrors config.CustomAgents for the file layer.
-	CustomAgents map[string]routing.CustomAgent       `toml:"custom_agents"`
+	CustomAgents map[string]fileCustomAgent           `toml:"custom_agents"`
 	Agents       map[routing.AgentRole]fileAgentEntry `toml:"agents"`
 	LSP          *fileLSP                             `toml:"lsp"`
 	Scratchpad   *fileScratchpad                      `toml:"scratchpad"`

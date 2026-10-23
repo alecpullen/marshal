@@ -299,11 +299,18 @@ func TestRunAddsPlanToContextPackBeforeSnippetsAndToolOutput(t *testing.T) {
 	}
 
 	// Tool output is turn-volatile, so it rides in the working-state tail
-	// at the end of the request rather than in the stable context pack.
+	// at the end of the request rather than in the stable context pack. The
+	// interaction tuple is the very last volatile message, so scan the tail.
 	reqMsgs := p.Requests[1].Messages
-	tail := reqMsgs[len(reqMsgs)-1]
-	if !tail.Volatile || !strings.Contains(tail.Content, "## go.test") {
-		t.Fatalf("action request missing tool output in the working-state tail: %#v", tail)
+	var tail *schema.ChatMessage
+	for i := len(reqMsgs) - 1; i >= 0 && reqMsgs[i].Volatile; i-- {
+		if strings.Contains(reqMsgs[i].Content, "## go.test") {
+			tail = &reqMsgs[i]
+			break
+		}
+	}
+	if tail == nil {
+		t.Fatalf("action request missing tool output in the working-state tail: %#v", reqMsgs)
 	}
 	if strings.Contains(actionContext, "## go.test") {
 		t.Fatalf("tool output must not be in the stable context pack:\n%s", actionContext)

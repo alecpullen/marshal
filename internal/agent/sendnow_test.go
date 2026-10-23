@@ -370,28 +370,33 @@ func TestSendNowStartupAndPlanFirstDoNotDuplicateGoal(t *testing.T) {
 		t.Fatalf("provider saw %d requests, want 4 (planning held, planning retry, tool step, final)", len(p.requests))
 	}
 	first, retry, main := p.requests[0].Messages, p.requests[1].Messages, p.requests[2].Messages
+	firstStable, retryStable := stablePrefix(first), stablePrefix(retry)
 
 	// Planning history is append-only: the retry repeats the first attempt and
-	// adds exactly the steering envelope at the end.
-	if len(retry) != len(first)+1 {
-		t.Fatalf("planning retry has %d messages, want %d + 1 appended steering", len(retry), len(first))
+	// adds exactly the steering envelope after the stable prefix. The volatile
+	// interaction tail is rebuilt per request, so it is excluded here.
+	if len(retryStable) != len(firstStable)+1 {
+		t.Fatalf("planning retry stable prefix has %d messages, want %d + 1 appended steering", len(retryStable), len(firstStable))
 	}
-	for i := range first {
-		if !sameMessage(first[i], retry[i]) {
-			t.Fatalf("planning retry rewrote message %d:\nwas: %.300q\nnow: %.300q", i, first[i].Content, retry[i].Content)
+	for i := range firstStable {
+		if !sameMessage(firstStable[i], retryStable[i]) {
+			t.Fatalf("planning retry rewrote message %d:\nwas: %.300q\nnow: %.300q", i, firstStable[i].Content, retryStable[i].Content)
 		}
 	}
-	if retry[len(retry)-1].Content != steeringEnvelope("also cover the timeout path") {
-		t.Fatalf("appended planning tail = %.300q, want the steering envelope", retry[len(retry)-1].Content)
+	if retryStable[len(retryStable)-1].Content != steeringEnvelope("also cover the timeout path") {
+		t.Fatalf("appended planning tail = %.300q, want the steering envelope", retryStable[len(retryStable)-1].Content)
+	}
+	if !retry[len(retry)-1].Volatile {
+		t.Fatalf("planning retry must end with the volatile interaction tail: %+v", retry[len(retry)-1])
 	}
 	// The main wire repeats the shared prefix up to the goal, carries the
 	// steering tail exactly once, and never re-appends the planning prompt.
-	if len(main) < len(first) {
-		t.Fatalf("main wire has %d messages, fewer than the planning prefix (%d)", len(main), len(first))
+	if len(main) < len(firstStable)-1 {
+		t.Fatalf("main wire has %d messages, fewer than the planning prefix (%d)", len(main), len(firstStable)-1)
 	}
-	for i := 0; i < len(first)-1; i++ {
-		if !sameMessage(first[i], main[i]) {
-			t.Fatalf("main wire rewrote planning message %d:\nwas: %.300q\nnow: %.300q", i, first[i].Content, main[i].Content)
+	for i := 0; i < len(firstStable)-1; i++ {
+		if !sameMessage(firstStable[i], main[i]) {
+			t.Fatalf("main wire rewrote planning message %d:\nwas: %.300q\nnow: %.300q", i, firstStable[i].Content, main[i].Content)
 		}
 	}
 	if got := steeringEnvelopeIndexes(main, "also cover the timeout path"); len(got) != 1 {

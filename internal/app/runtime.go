@@ -25,6 +25,7 @@ import (
 	"marshal/internal/commands"
 	"marshal/internal/db"
 	"marshal/internal/hooks"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/lsp"
@@ -35,7 +36,6 @@ import (
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
-	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
@@ -855,11 +855,16 @@ func (rt *Runtime) CurrentWatchManager() *watch.Manager {
 	return rt.WatchManager
 }
 
-// forceClassForMode maps an interaction mode to the runner's force class: the
-// read-only modes force the question class, every editing mode forces edit.
-// Kept next to the access methods so the mode→class mapping has one home.
+// forceClassForMode maps an interaction mode to the runner's force class: Ask
+// forces the question class, Act forces edit. Kept next to the access methods
+// so the mode→class mapping has one home.
+//
+// The mode is always the canonical AccessState().Mode value. Anything that is
+// not positively Ask is treated as an editing mode, because that is the
+// permissive direction policy already gates; a read-only session must never be
+// mistaken for an editing one.
 func forceClassForMode(mode string) string {
-	if mode == "plan" || mode == "default" {
+	if mode == string(interaction.ModeAsk) {
 		return "question"
 	}
 	return "edit"
@@ -910,20 +915,27 @@ func (rt *Runtime) ResolveAccess(choice session.AccessChoice) (session.AccessRes
 		err := errors.New("app: no session state available to resolve access")
 		return session.AccessResult{Status: session.AccessExpired, Message: err.Error()}, err
 	}
-	return rt.State.ResolveAccess(choice, rt.accessPrepare())
+	result, err := rt.State.ResolveAccess(choice, rt.accessPrepare())
+	// A settled grant is authority the runner must agree with immediately, so
+	// the committed tuple is projected onto the engine after the session owns
+	// it. The projection derives from that committed tuple, so it can never
+	// widen what the session just granted.
+	if result.Status == session.AccessGranted || result.Status == session.AccessAvailable {
+		rt.projectInteraction()
+	}
+	return result, err
 }
 
 // accessPrepare builds the resolver the session calls to validate a choice and
 // obtain the commit that applies it. It is the last gate before authority
 // moves, so it revalidates the choice shape and the target pair rather than
-// trusting the session's own checks, and it refuses before any mutation when
-// the runtime cannot actually apply what was selected.
+// trusting the session's own checks.
 //
-// The returned Apply is memory-only by contract: it touches the runner's
-// in-memory policy and force class and nothing else. It must never save a
-// config file, reload the runtime, build a provider, replace a manager or take
-// the write gate — a grant is a session-scoped permission change, not a
-// runtime rebuild.
+// The commit is memory-only by contract: the session owns the tuple change,
+// and the runtime projects the committed tuple onto the runner afterwards. It
+// must never save a config file, reload the runtime, build a provider, replace
+// a manager, take the write gate, or move an engine itself — a grant is a
+// session-scoped permission change, not a runtime rebuild.
 func (rt *Runtime) accessPrepare() session.AccessPrepare {
 	return func(req session.AccessRequest, choice session.AccessChoice) (session.AccessCommit, error) {
 		if choice.RequestID != req.RequestID || choice.SessionID != req.SessionID {
@@ -937,19 +949,10 @@ func (rt *Runtime) accessPrepare() session.AccessPrepare {
 		}
 		target := req.Current
 		if req.MissingEditing {
-			if !policy.ValidApprovalMode(choice.Mode) {
-				return session.AccessCommit{}, fmt.Errorf("invalid editing mode %q", choice.Mode)
-			}
-			switch policy.ApprovalMode(choice.Mode) {
-			case policy.ModeEdit, policy.ModeCopilot, policy.ModeAuto:
-			default:
+			// Only an editing-capable selection can fill an editing gap: Ask
+			// never grants a write, and the retired spellings project onto Act.
+			if !interaction.ModeHasEditing(choice.Mode) {
 				return session.AccessCommit{}, fmt.Errorf("mode %q does not grant editing", choice.Mode)
-			}
-			// An editing change needs a live policy engine to move; refuse
-			// before mutating anything rather than reporting a grant that
-			// never reached the runner.
-			if rt.Runner == nil || rt.Runner.Policy == nil {
-				return session.AccessCommit{}, errors.New("no policy engine available to change the interaction mode")
 			}
 			target.Mode = choice.Mode
 		} else if choice.Mode != "" {
@@ -958,59 +961,44 @@ func (rt *Runtime) accessPrepare() session.AccessPrepare {
 		if req.MissingSystem {
 			target.System = true
 		}
-		// A system-only grant needs no runner work: the session flag is the
-		// whole change. Apply stays non-nil so the commit is never mistaken
-		// for an unapplied one.
-		apply := func() {}
-		if req.MissingEditing {
-			runner := rt.Runner
-			mode := policy.ApprovalMode(target.Mode)
-			apply = func() {
-				runner.SetForceClass("edit")
-				runner.SetApprovalMode(mode)
-			}
-		}
-		return session.AccessCommit{Effective: target, Apply: apply}, nil
+		// The session commits the pair; Apply stays non-nil so the commit is
+		// never mistaken for an unapplied one.
+		return session.AccessCommit{Effective: target, Apply: func() {}}, nil
 	}
 }
 
-// SetSessionMode applies an explicit interaction-mode selection for this
-// session. It is the manual path shared by the TUI and ACP, so it validates
-// the selection and the runtime's ability to apply it before anything moves.
+// SetInteraction applies one canonical interaction patch to this session. It
+// is the only interaction mutation a transport calls.
 //
-// The mode is recorded on the session, which owns the override that survives
-// an unrelated config reload, and applied to the live runner's in-memory
-// policy. Runtime.Config is deliberately untouched: a manual selection is a
-// session-scoped choice, not a config edit, so it must not become the next
-// conversation's default.
-func (rt *Runtime) SetSessionMode(mode string) error {
+// The patch is validated and committed exactly once by the session, serialized
+// against config reloads and session replacements by the reload gate, and the
+// committed tuple is then projected onto the installed runner. A patch never
+// saves a config file, reloads the runtime, rebuilds a provider or a manager,
+// or restores a grant from history: it moves session-scoped authority only.
+func (rt *Runtime) SetInteraction(p interaction.Patch) (interaction.State, error) {
 	rt.reloadMu.Lock()
 	defer rt.reloadMu.Unlock()
 	if rt.State == nil {
-		return errors.New("no session state available to change the interaction mode")
+		return interaction.State{}, errors.New("app: no session state available to change the interaction")
 	}
-	switch mode {
-	case "plan", "default", "edit", "copilot", "auto":
-	default:
-		return fmt.Errorf("invalid approval mode %q", mode)
+	st, err := rt.State.ApplyInteraction(p)
+	if err != nil {
+		return st, err
 	}
-	// An inactive runtime (no provider configured) still records the manual
-	// selection, so the UI reflects the user's choice; there is simply no
-	// runner to move. A runner that exists without a policy engine cannot
-	// apply the change, so that fails rather than silently diverging.
-	apply := func() {}
-	if rt.Runner != nil {
-		if rt.Runner.Policy == nil {
-			return errors.New("no policy engine available to change the interaction mode")
-		}
-		runner := rt.Runner
-		class := forceClassForMode(mode)
-		apply = func() {
-			runner.SetForceClass(class)
-			runner.SetApprovalMode(policy.ApprovalMode(mode))
-		}
+	rt.projectInteraction()
+	return st, nil
+}
+
+// projectInteraction presents the session's committed tuple to the installed
+// runner. It is a projection, never a grant: the runner derives its legacy
+// engine mode from the live session tuple, and the force class follows the
+// same tuple, so the remaining compatibility readers agree with the authority.
+func (rt *Runtime) projectInteraction() {
+	if rt.State == nil || rt.Runner == nil {
+		return
 	}
-	return rt.State.SetSessionMode(mode, apply)
+	effective := rt.State.AccessState()
+	rt.Runner.SetForceClass(forceClassForMode(effective.Mode))
 }
 
 // SteeringSnapshot returns the current conversation's Send now snapshot through
@@ -1638,6 +1626,12 @@ func startRuntime(ctx context.Context, runOpts options) (*Runtime, error) {
 		}
 		cfg.SessionRouting = runOpts.sessionRouting
 	}
+	// Strictly validate the configured starting tuple before any state exists:
+	// a malformed interaction default fails startup explicitly instead of being
+	// silently replaced by Ask inside session construction.
+	if _, err := cfg.InteractionDefaults(); err != nil {
+		return nil, fmt.Errorf("invalid interaction defaults: %w", err)
+	}
 
 	if err := os.MkdirAll(filepath.Join(workingDir, ".marshal"), 0755); err != nil {
 		return nil, fmt.Errorf("create .marshal directory: %w", err)
@@ -1991,6 +1985,12 @@ func (rt *Runtime) NewSession(name string) (*session.State, *agent.Runner, *swar
 
 // newSessionLocked is NewSession's body. It expects reloadMu held.
 func (rt *Runtime) newSessionLocked(name string, replacing bool) (*session.State, *agent.Runner, *swarm.Orchestrator, func(planPath string, overrides map[routing.AgentRole]string) tui.AgentRunner, sddauthor.Factory, tui.SwarmOverrideFactory, *registry.Registry, error) {
+	// Validate the configured starting tuple before any row is created: a
+	// malformed default must fail the replacement explicitly, not start a
+	// conversation under a silently substituted Ask.
+	if _, err := rt.Config.InteractionDefaults(); err != nil {
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("invalid interaction defaults: %w", err)
+	}
 	db := must[*db.DB](rt.DB)
 	jb := must[*pubsub.Broker[native.JobEvent]](rt.JobBroker)
 

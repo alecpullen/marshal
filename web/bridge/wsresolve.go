@@ -94,7 +94,10 @@ type WSResources struct {
 }
 
 type WSPolicy struct {
-	Mode  string   `json:"mode,omitempty"`
+	Mode string `json:"mode,omitempty"`
+	// Auto is optional: nil means the document does not set it, so a higher
+	// layer can still supply one, while an explicit false is a real value.
+	Auto  *bool    `json:"auto,omitempty"`
 	Allow []string `json:"allow,omitempty"`
 }
 
@@ -540,12 +543,35 @@ func mergeWS(base, overlay WSDoc) (WSDoc, error) {
 	}
 	out.Network.Egress = appendUnique(base.Network.Egress, overlay.Network.Egress)
 
-	// policy: allow appends; the mode may only be set where the base has none.
-	if overlay.Policy.Mode != "" {
-		if base.Policy.Mode != "" && base.Policy.Mode != overlay.Policy.Mode {
+	// policy: allow appends; the (mode, auto) tuple may only be set where the
+	// base leaves it unset. Presence is preserved: an explicit false survives
+	// the merge, while an absent value stays absent so a lower layer can still
+	// supply one.
+	baseMode, baseAuto, _, err := canonicalModeTuple(base.Policy.Mode, base.Policy.Auto)
+	if err != nil {
+		return WSDoc{}, ErrWorkspaceMerge{Field: "policy.mode", Reason: err.Error()}
+	}
+	overlayMode, overlayAuto, _, err := canonicalModeTuple(overlay.Policy.Mode, overlay.Policy.Auto)
+	if err != nil {
+		return WSDoc{}, ErrWorkspaceMerge{Field: "policy.mode", Reason: err.Error()}
+	}
+	out.Policy.Mode = baseMode
+	// Carry the base's canonicalized Auto. `out := base` copied the raw value,
+	// which for a legacy `mode = "auto"` base is nil even though that mode
+	// implies Auto; assigning baseAuto is what keeps the merged document
+	// agreeing with every other migration site.
+	out.Policy.Auto = baseAuto
+	if overlayMode != "" {
+		if baseMode != "" && baseMode != overlayMode {
 			return WSDoc{}, ErrWorkspaceMerge{Field: "policy.mode", Reason: "a repo template cannot change the template's mode"}
 		}
-		out.Policy.Mode = overlay.Policy.Mode
+		out.Policy.Mode = overlayMode
+	}
+	if overlayAuto != nil {
+		if baseAuto != nil && *baseAuto != *overlayAuto {
+			return WSDoc{}, ErrWorkspaceMerge{Field: "policy.auto", Reason: "a repo template cannot change the template's auto setting"}
+		}
+		out.Policy.Auto = overlayAuto
 	}
 	out.Policy.Allow = appendUnique(base.Policy.Allow, overlay.Policy.Allow)
 

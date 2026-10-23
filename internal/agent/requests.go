@@ -22,7 +22,7 @@ import (
 // approval behind. Clearing the slot is compare-and-clear on the registered
 // key, so a late cleanup cannot erase a newer request — and there is no
 // wall-clock timeout.
-func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolName string, args json.RawMessage, argsMap map[string]interface{}, reason string) (approved bool, edited string, err error) {
+func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolName string, args json.RawMessage, argsMap map[string]interface{}, reason string, exact bool) (approved bool, edited string, key session.PromptKey, err error) {
 	command, _ := argsMap["command"].(string)
 	if command == "" {
 		command = toolName
@@ -36,16 +36,19 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 	}
 
 	tc := &session.PendingToolCall{
-		ID:           fmt.Sprintf("call_%d", r.Now().UnixNano()),
-		Name:         toolName,
-		Args:         string(args),
-		Command:      command,
-		Risk:         string(tool.Risk),
-		Reason:       reason,
-		Diff:         diff,
-		Schema:       tool.Description,
-		StepID:       r.curStep,
-		ResponseChan: make(chan session.UserApprovalDecision, 1),
+		ID:      fmt.Sprintf("call_%d", r.Now().UnixNano()),
+		Name:    toolName,
+		Args:    string(args),
+		Command: command,
+		Risk:    string(tool.Risk),
+		Reason:  reason,
+		Diff:    diff,
+		Schema:  tool.Description,
+		StepID:  r.curStep,
+		// An exact-only request offers exact decisions only: a standing or
+		// session-wide choice cannot answer it, so the UI must not present one.
+		ExactCommandApproval: exact,
+		ResponseChan:         make(chan session.UserApprovalDecision, 1),
 	}
 	key, regErr := r.State.RegisterApproval(ctx, tc)
 	if regErr != nil {
@@ -54,9 +57,9 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 		// serialize on approvalMu); the second is steering, and must not be
 		// reported as a user denial.
 		if steeringStopped(ctx, regErr) || errors.Is(regErr, context.Canceled) || session.SteeringRequested(ctx) {
-			return false, "", session.ErrSendNow
+			return false, "", session.PromptKey{}, session.ErrSendNow
 		}
-		return false, "", regErr
+		return false, "", session.PromptKey{}, regErr
 	}
 	defer r.State.ClearPrompt(key)
 
@@ -70,9 +73,9 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 			// The session settled this request as interrupted, not answered.
 			// The distinct cause is on the registry record, so the runner
 			// reports steering rather than inventing a denial.
-			return false, "", session.ErrSendNow
+			return false, "", key, session.ErrSendNow
 		}
-		return decision.Approved, decision.Edited, nil
+		return decision.Approved, decision.Edited, key, nil
 	case <-ctx.Done():
 		// Settle by key: this also waits for a response claim that already
 		// won, so an approved decision is never rolled back and the runner
@@ -81,18 +84,18 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 		r.State.CancelPrompt(key, session.SteeringTurnContext(ctx).Err())
 		switch {
 		case errors.Is(r.State.PromptCause(key), session.ErrSendNow):
-			return false, "", session.ErrSendNow
+			return false, "", key, session.ErrSendNow
 		case r.State.PromptCause(key) == nil:
 			// An answer claim won just before this cancellation and still owns
 			// its decision: honor it rather than discarding a grant the session
 			// already acknowledged.
 			select {
 			case decision := <-tc.ResponseChan:
-				return decision.Approved, decision.Edited, nil
+				return decision.Approved, decision.Edited, key, nil
 			default:
 			}
 		}
-		return false, "", ctx.Err()
+		return false, "", key, ctx.Err()
 	}
 }
 

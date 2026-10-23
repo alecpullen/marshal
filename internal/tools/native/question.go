@@ -18,7 +18,7 @@ type questionAskArgs struct {
 func (t *toolSet) questionAskTool() registry.Tool {
 	tool := registry.Tool{
 		Name:        "question.ask",
-		Description: "Ask the user one or more questions in a single round-trip, only when you need information or a decision to proceed. Put known choices in options (never as lettered text); the user can always answer outside them. Don't use it to give instructions or to request a mode switch (use mode.request).",
+		Description: "Ask one or more questions when you need information or a decision. Put known choices in options, never lettered text; the user may answer outside them. Do not use it for instructions or mode switches (use mode.request).",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"question":{"type":"string"},"options":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"object","properties":{"label":{"type":"string"},"description":{"type":"string"}},"required":["label"],"additionalProperties":false}]}},"multi":{"type":"boolean"}},"required":["question"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}`),
 		Risk:        registry.RiskReadOnly,
 	}
@@ -32,6 +32,15 @@ func (t *toolSet) questionAskTool() registry.Tool {
 		}
 		if t.sessionState == nil {
 			return registry.ToolResult{}, fmt.Errorf("session state not available")
+		}
+		// Auto means "proceed without asking", so a clarification prompt cannot
+		// open. The LIVE tuple decides, not a captured config value, so a
+		// modifier change that landed after this toolset was built applies to
+		// this call. Ask still asks: only Auto suppresses the question. An
+		// explicit skill or user review request is a different mechanism and is
+		// not covered by this suppression.
+		if t.sessionState.InteractionState().Auto {
+			return registry.ToolResult{}, fmt.Errorf("question.ask is not available while Auto is enabled; proceed with your best judgment and state the assumption you made")
 		}
 		// Register the prompt through the session's canonical registry rather
 		// than writing the pending slot directly: a registered prompt is

@@ -162,7 +162,7 @@ func TestMergeWS(t *testing.T) {
 	if got.Network.Mode != "off" || len(got.Network.Egress) != 2 || got.Resources.Memory != "4g" || got.Resources.Timeout != "30m" || got.Resources.CPU != 2 {
 		t.Fatalf("network/resources: %+v %+v", got.Network, got.Resources)
 	}
-	if got.Setup.Run != "studio\nrepo" || len(got.Policy.Allow) != 2 || got.Policy.Mode != "default" {
+	if got.Setup.Run != "studio\nrepo" || len(got.Policy.Allow) != 2 || got.Policy.Mode != "ask" {
 		t.Fatalf("setup/policy: %+v %+v", got.Setup, got.Policy)
 	}
 
@@ -187,6 +187,54 @@ func TestMergeWS(t *testing.T) {
 		if !errors.As(err, &me) || me.Field != field {
 			t.Errorf("%s: err = %v", field, err)
 		}
+	}
+}
+
+// TestWorkspacePolicyMergePreservesAutoPresence checks that the policy tuple
+// merges as one value: an explicit false survives, an absent value stays
+// absent, a conflicting repo template is refused, and a retired spelling is
+// canonicalized rather than promoted.
+func TestWorkspacePolicyMergePreservesAutoPresence(t *testing.T) {
+	cases := []struct {
+		name      string
+		base      WSPolicy
+		overlay   WSPolicy
+		wantMode  string
+		wantAuto  *bool
+		wantErrAt string
+	}{
+		{name: "absent stays absent"},
+		{name: "explicit false survives", overlay: WSPolicy{Auto: boolPtr(false)}, wantAuto: boolPtr(false)},
+		{name: "base auto kept", base: WSPolicy{Mode: "act", Auto: boolPtr(true)}, wantMode: "act", wantAuto: boolPtr(true)},
+		{name: "legacy base canonicalized", base: WSPolicy{Mode: "copilot"}, wantMode: "act"},
+		{name: "legacy auto base canonicalized", base: WSPolicy{Mode: "auto"}, wantMode: "act", wantAuto: boolPtr(true)},
+		{name: "conflicting auto refused", base: WSPolicy{Mode: "act", Auto: boolPtr(true)}, overlay: WSPolicy{Auto: boolPtr(false)}, wantErrAt: "policy.auto"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := mergeWS(WSDoc{Policy: tc.base}, WSDoc{Policy: tc.overlay})
+			if tc.wantErrAt != "" {
+				var me ErrWorkspaceMerge
+				if !errors.As(err, &me) || me.Field != tc.wantErrAt {
+					t.Fatalf("err = %v, want a merge error at %s", err, tc.wantErrAt)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Policy.Mode != tc.wantMode {
+				t.Errorf("mode = %q, want %q", got.Policy.Mode, tc.wantMode)
+			}
+			switch {
+			case tc.wantAuto == nil && got.Policy.Auto != nil:
+				t.Errorf("auto = %v, want absent", *got.Policy.Auto)
+			case tc.wantAuto != nil && got.Policy.Auto == nil:
+				t.Errorf("auto absent, want %v", *tc.wantAuto)
+			case tc.wantAuto != nil && *got.Policy.Auto != *tc.wantAuto:
+				t.Errorf("auto = %v, want %v", *got.Policy.Auto, *tc.wantAuto)
+			}
+		})
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
@@ -636,5 +637,98 @@ func TestRootRosterHeadersUnchanged(t *testing.T) {
 	}
 	if strings.Contains(out, "Swarm Roles ─") {
 		t.Errorf("root section header gained a rule; it must keep flHeaderStyle:\n%s", out)
+	}
+}
+
+// TestRosterInteractionFieldsUseCanonicalDefaults pins read/edit/save of the
+// optional Mode/Auto roster controls: nil inherits, explicit false survives,
+// and Ask clears an explicit true Auto.
+func TestRosterInteractionFieldsUseCanonicalDefaults(t *testing.T) {
+	cfg := config.Default()
+	cfg.CustomAgents = map[string]routing.CustomAgent{"worker": {Name: "worker"}}
+	p := NewRosterPanel(cfg, filepath.Join(t.TempDir(), "config.toml"), "", nil)
+
+	var mode, auto *settings.Field
+	for _, f := range p.customAgentFrame("worker").List.Rows() {
+		switch settings.FieldTitle(f) {
+		case "Mode":
+			mode = f
+		case "Auto":
+			auto = f
+		case "Approval mode":
+			t.Fatal("roster still exposes the retired Approval mode row")
+		}
+	}
+	if mode == nil || auto == nil {
+		t.Fatalf("roster missing Mode/Auto: mode=%v auto=%v", mode, auto)
+	}
+	if got := mode.Options(); len(got) != 3 || got[0] != "inherit" || got[1] != "ask" || got[2] != "act" {
+		t.Fatalf("Mode options = %v, want [inherit ask act]", got)
+	}
+	if got := auto.Options(); len(got) != 3 || got[0] != "inherit" || got[1] != "on" || got[2] != "off" {
+		t.Fatalf("Auto options = %v, want [inherit on off]", got)
+	}
+	if got := mode.GetStr(); got != "inherit" {
+		t.Fatalf("initial mode = %q, want inherit", got)
+	}
+	if got := auto.GetStr(); got != "inherit" {
+		t.Fatalf("initial auto = %q, want inherit", got)
+	}
+
+	if err := auto.SetStr("off"); err != nil {
+		t.Fatalf("auto off: %v", err)
+	}
+	ca := settings.StateCfg(p.state).CustomAgents["worker"]
+	if ca.Auto == nil || *ca.Auto {
+		t.Fatalf("explicit auto=false was not preserved: %+v", ca.Auto)
+	}
+	if got := auto.GetStr(); got != "off" {
+		t.Fatalf("auto after off = %q, want off", got)
+	}
+
+	if err := mode.SetStr("act"); err != nil {
+		t.Fatalf("mode act: %v", err)
+	}
+	ca = settings.StateCfg(p.state).CustomAgents["worker"]
+	if ca.Mode == nil || *ca.Mode != interaction.ModeAct {
+		t.Fatalf("mode = %+v, want act", ca.Mode)
+	}
+	if err := auto.SetStr("on"); err != nil {
+		t.Fatalf("auto on: %v", err)
+	}
+	ca = settings.StateCfg(p.state).CustomAgents["worker"]
+	if ca.Auto == nil || !*ca.Auto {
+		t.Fatalf("auto on = %+v, want true", ca.Auto)
+	}
+
+	if err := mode.SetStr("ask"); err != nil {
+		t.Fatalf("mode ask: %v", err)
+	}
+	ca = settings.StateCfg(p.state).CustomAgents["worker"]
+	if ca.Mode == nil || *ca.Mode != interaction.ModeAsk {
+		t.Fatalf("mode = %+v, want ask", ca.Mode)
+	}
+	if ca.Auto == nil || *ca.Auto {
+		t.Fatalf("Ask must clear an explicit true Auto, got %+v", ca.Auto)
+	}
+
+	if err := auto.SetStr("inherit"); err != nil {
+		t.Fatalf("auto inherit: %v", err)
+	}
+	if got := settings.StateCfg(p.state).CustomAgents["worker"].Auto; got != nil {
+		t.Fatalf("inherit must clear the Auto pointer, got %+v", got)
+	}
+	if err := mode.SetStr("inherit"); err != nil {
+		t.Fatalf("mode inherit: %v", err)
+	}
+	if got := settings.StateCfg(p.state).CustomAgents["worker"].Mode; got != nil {
+		t.Fatalf("inherit must clear the Mode pointer, got %+v", got)
+	}
+
+	// The editor still routes through its save path.
+	if cmd := p.persistNow(); cmd == nil {
+		t.Fatal("roster edits produced no persist command")
+	} else {
+		_ = cmd()
 	}
 }

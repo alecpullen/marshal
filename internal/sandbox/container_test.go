@@ -325,45 +325,45 @@ func TestContainerDetectWithFakeInfoRuntime(t *testing.T) {
 	}
 }
 
-// TestIsShellFree verifies the isShellFree helper correctly identifies
-// shell metacharacters.  Commands with no shell metacharacters should
-// return true; those with | & ; ` $ ( ) { } < > * ? or newline should
-// return false.
-func TestIsShellFree(t *testing.T) {
-	tests := []struct {
-		command string
-		want    bool
-	}{
-		// Shell-free (should return true)
-		{"echo hello", true},
-		{"ls -la", true},
-		{"cat file.txt", true},
-		{"go build ./...", true},
-		{"go test -run TestFoo", true},
-		{"/usr/bin/env", true},
-		{"git status", true},
-		{"python3 -c \"print(1)\"", false}, // ( and ) are shell metas
-
-		// Shell metacharacters (should return false)
-		{"echo hello | grep h", false},
-		{"echo $HOME", false},
-		{"echo `whoami`", false},
-		{"echo a && echo b", false},
-		{"echo a; echo b", false},
-		{"echo $(whoami)", false},
-		{"echo ${HOME}", false},
-		{"cat < file.txt", false},
-		{"echo *", false},
-		{"echo ?", false},
-		{"echo hello\nworld", false},
-		{"echo a > out.txt", false},
+// innerArgs returns the argv handed to the image. With CPUSeconds unset the
+// timeout wrapper is absent, so this is the command's own argv.
+func innerArgs(t *testing.T, args []string) []string {
+	t.Helper()
+	for i, a := range args {
+		if a == "alpine:latest" {
+			return args[i+1:]
+		}
 	}
-	for _, tt := range tests {
-		t.Run(tt.command, func(t *testing.T) {
-			if got := isShellFree(tt.command); got != tt.want {
-				t.Errorf("isShellFree(%q) = %v, want %v", tt.command, got, tt.want)
+	t.Fatalf("image not found in %v", args)
+	return nil
+}
+
+// TestContainerCommandUsesSingleShellPath verifies that every admitted
+// command — shell-free, metacharacter-laden or destructive — is handed to the
+// container through the same /bin/sh -lc argv. buildArgs is transport
+// construction: policy/native admission already decided what may run.
+func TestContainerCommandUsesSingleShellPath(t *testing.T) {
+	c := &Container{cfg: Config{}, runtime: "docker", runtimePath: "/usr/bin/docker", envDenySet: make(map[string]bool)}
+	for _, command := range []string{
+		"echo hello",
+		"ls -la",
+		"rm -rf /tmp/x",
+		"go vet ./... 2>&1 | head -50",
+	} {
+		args, err := c.buildArgs(command, "alpine:latest", "/workspace")
+		if err != nil {
+			t.Fatalf("%q: buildArgs: %v", command, err)
+		}
+		inner := innerArgs(t, args)
+		want := []string{"/bin/sh", "-lc", "set -o pipefail 2>/dev/null || true; " + command}
+		if len(inner) != len(want) {
+			t.Fatalf("%q: inner argv = %v, want %v", command, inner, want)
+		}
+		for i := range want {
+			if inner[i] != want[i] {
+				t.Errorf("%q: inner[%d] = %q, want %q", command, i, inner[i], want[i])
 			}
-		})
+		}
 	}
 }
 
@@ -518,49 +518,10 @@ func TestContainerBuildArgs_RoutesDestructiveThroughShell(t *testing.T) {
 	}
 }
 
-// TestContainerBuildArgs_UsesArgvForNonDestructiveShellFree verifies that
-// non-destructive shell-free commands still use the argv path (not /bin/sh -lc).
-// This is the existing behavior — this test guards against regression.
-func TestContainerBuildArgs_UsesArgvForNonDestructiveShellFree(t *testing.T) {
-	c := &Container{
-		cfg:         Config{},
-		runtime:     "docker",
-		runtimePath: "/usr/bin/docker",
-		envDenySet:  make(map[string]bool),
-	}
-
-	// echo hello is shell-free and non-destructive — should use argv path.
-	args, err := c.buildArgs("echo hello", "alpine:latest", "/workspace")
-	if err != nil {
-		t.Fatalf("buildArgs: %v", err)
-	}
-
-	// Verify /bin/sh does NOT appear in the args (argv path).
-	for _, a := range args {
-		if a == "/bin/sh" {
-			t.Errorf("unexpected /bin/sh in args for non-destructive shell-free command, got %v", args)
-			break
-		}
-	}
-
-	// Verify the command args appear directly (echo hello).
-	foundEcho := false
-	for _, a := range args {
-		if a == "echo" {
-			foundEcho = true
-			break
-		}
-	}
-	if !foundEcho {
-		t.Errorf("expected 'echo' in argv path args, got %v", args)
-	}
-}
-
-// TestContainer_AvPathForSimpleCommands verifies that shell-free commands
-// are executed via the argv path (not /bin/sh -lc).  It uses the fake
-// runtime, which only succeeds if its argv-execution path is hit for
-// simple commands.
-func TestContainer_AvPathForSimpleCommands(t *testing.T) {
+// TestContainer_SimpleCommandRunsThroughShell verifies that even a simple,
+// shell-free command is executed through the one /bin/sh -lc path. The fake
+// runtime supports both branches; this guards that the argv branch is unused.
+func TestContainer_SimpleCommandRunsThroughShell(t *testing.T) {
 	runtimePath := writeFakeRuntime(t)
 
 	c := &Container{
@@ -679,57 +640,40 @@ func TestContainerCPUTimeoutFallbackWarning(t *testing.T) {
 	}
 }
 
-// TestContainerBuildArgsShlexError verifies that buildArgs does not fall
-// back to strings.Fields when shlex.Split fails (TOOLS-IMP-F1). A command
-// with an unterminated quote should produce an error, not a silently
-// misparsed argv.
-func TestContainerBuildArgsShlexError(t *testing.T) {
+// TestContainerCommandPreservesQuotedMessageBytes verifies that a command is
+// passed to the shell byte-for-byte. A commit message mentioning sudo, reboot
+// or a quoted phrase is message data, not a parse the transport may
+// reinterpret.
+func TestContainerCommandPreservesQuotedMessageBytes(t *testing.T) {
 	cfg := Config{Backend: "container", ContainerImage: "alpine:latest"}
 	c := newContainer(cfg, "docker", "/usr/bin/docker", nil)
-	// Unterminated quote: shlex.Split returns an error.
-	badCmd := `echo "unterminated`
-	_, err := c.buildArgs(badCmd, "alpine:latest", "/workspace")
-	if err == nil {
-		t.Fatal("expected error from shlex.Split failure, got nil")
+	command := `git commit -m "fix: prevent sudo invocation" -m 'handle reboot state'`
+	args, err := c.buildArgs(command, "alpine:latest", "/workspace")
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
 	}
-	if !strings.Contains(err.Error(), "parse command") {
-		t.Fatalf("expected error to mention parse command, got: %v", err)
+	inner := innerArgs(t, args)
+	if len(inner) != 3 || inner[0] != "/bin/sh" || inner[1] != "-lc" {
+		t.Fatalf("inner argv = %v, want one /bin/sh -lc wrapper", inner)
+	}
+	if want := "set -o pipefail 2>/dev/null || true; " + command; inner[2] != want {
+		t.Fatalf("command bytes changed:\n got %q\nwant %q", inner[2], want)
 	}
 }
 
 func TestContainerParseQuotedArgs(t *testing.T) {
-	// Test that buildArgs correctly parses a command with quoted arguments.
-	// strings.Fields would split "git commit -m \"fix: update logic\"" into
-	// 5 tokens; shlex.Split produces 4.
+	// The command is not re-split: quotes, spaces and the commit message reach
+	// the shell exactly as they were approved.
 	cfg := Config{Backend: "container", ContainerImage: "alpine:latest"}
 	c := newContainer(cfg, "docker", "/usr/bin/docker", nil)
 
-	args, err := c.buildArgs(`git commit -m "fix: update logic"`, "alpine:latest", "/workspace")
+	command := `git commit -m "fix: update logic"`
+	args, err := c.buildArgs(command, "alpine:latest", "/workspace")
 	if err != nil {
 		t.Fatalf("buildArgs: %v", err)
 	}
-
-	// Find the inner command args (after the image name)
-	imgIdx := -1
-	for i, a := range args {
-		if a == "alpine:latest" {
-			imgIdx = i
-			break
-		}
-	}
-	if imgIdx == -1 {
-		t.Fatal("image name not found in args")
-	}
-	inner := args[imgIdx+1:]
-	// When shellFree, inner should be the shlex-split argv.
-	// "git commit -m \"fix: update logic\"" should produce:
-	// ["git", "commit", "-m", "fix: update logic"]
-	// If strings.Fields is used, it produces 5 tokens instead of 4.
-	if len(inner) < 4 {
-		t.Fatalf("expected at least 4 inner args, got %d: %v", len(inner), inner)
-	}
-	// Verify the 4th element is the full quoted string, not split
-	if inner[3] != "fix: update logic" {
-		t.Errorf("expected inner[3] = %q, got %q (strings.Fields splits quoted args)", "fix: update logic", inner[3])
+	inner := innerArgs(t, args)
+	if len(inner) != 3 || inner[2] != "set -o pipefail 2>/dev/null || true; "+command {
+		t.Fatalf("inner argv = %v, want the exact command preserved", inner)
 	}
 }

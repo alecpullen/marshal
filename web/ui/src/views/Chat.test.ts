@@ -27,6 +27,8 @@ vi.mock('../lib/api.js', async (importActual) => {
     getStepDiffs: vi.fn(),
     listFiles: vi.fn(),
     readFile: vi.fn(),
+    getAccess: vi.fn(),
+    patchAccess: vi.fn(),
   }
 })
 
@@ -65,6 +67,18 @@ describe('Chat', () => {
     ;(api.getGate as Mock).mockResolvedValue(null)
     ;(api.getStepDiffs as Mock).mockResolvedValue([])
     ;(api.listFiles as Mock).mockResolvedValue({ entries: [] })
+    ;(api.getAccess as Mock).mockResolvedValue({
+      mode: 'act',
+      auto: false,
+      system_access: false,
+      access_revision: 1,
+    })
+    ;(api.patchAccess as Mock).mockResolvedValue({
+      mode: 'act',
+      auto: false,
+      system_access: false,
+      access_revision: 2,
+    })
     try {
       localStorage.clear()
     } catch {
@@ -406,6 +420,46 @@ describe('Chat', () => {
       render(Chat, { sessionId: 's1', onBack: () => {}, agent: { id: 's1', project: '/p', status: 'idle', updatedAt: '' } as never })
       await screen.findByText('No messages yet.')
       expect(screen.queryByText(/▦/)).toBeNull()
+    })
+  })
+
+  describe('live interaction controls', () => {
+    it('keeps the two modes and modifiers visible during approval', async () => {
+      ;(api.getAccess as Mock).mockResolvedValue({
+        mode: 'act',
+        auto: true,
+        system_access: false,
+        access_revision: 3,
+      })
+      render(Chat, { sessionId: 's1', onBack: () => {} })
+
+      // The controls wait for the committed tuple, then show it.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Auto' }).getAttribute('aria-pressed')).toBe('true'),
+      )
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+
+      // Park the agent on an approval.
+      const call = (connectSSE as Mock).mock.calls.at(-1)![0] as { onEvent: (e: unknown) => void }
+      call.onEvent({
+        type: 'message',
+        message: {
+          id: 2,
+          data: JSON.stringify({
+            type: 'permission_request',
+            toolCallId: 'tc-1',
+            params: { toolCallId: 'tc-1', toolName: 'shell.run', command: 'rm -rf build' },
+          }),
+        },
+      })
+
+      expect(await screen.findByText('Permission request')).toBeTruthy()
+      // The mode and modifier controls stay available beside the dialog; a
+      // person can still change the interaction without losing the decision.
+      expect(screen.getByRole('button', { name: 'Ask' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Act' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Auto' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'System' })).toBeTruthy()
     })
   })
 })

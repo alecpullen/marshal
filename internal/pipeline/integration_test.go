@@ -16,6 +16,7 @@ import (
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -159,8 +160,12 @@ func TestPipelineRunExecResolvesArtifactsUnderRunRoot(t *testing.T) {
 				`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
 			}}
 			pol := policy.NewEngine(&config.Config{}, nil)
-			pol.SetApprovalMode(policy.ModeAuto)
-			runner := agent.NewRunner(p, registry.New(), pol, session.New(config.Default(), execCtx.WorkspaceRoot, time.Now(), session.Persistence{}), "test-model")
+			runnerState := session.New(config.Default(), execCtx.WorkspaceRoot, time.Now(), session.Persistence{})
+			auto := true
+			if _, err := runnerState.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+				return nil, err
+			}
+			runner := agent.NewRunner(p, registry.New(), pol, runnerState, "test-model")
 			runner.Role = role
 			return runner, nil
 		},
@@ -208,8 +213,11 @@ func TestPipelineRunExecTodosLandOnRunnerState(t *testing.T) {
 				`{"rationale":"done","action":{"type":"final","content":"ok"}}`,
 			}}
 			pol := policy.NewEngine(&config.Config{}, nil)
-			pol.SetApprovalMode(policy.ModeAuto)
 			runnerState = session.New(config.Default(), execCtx.WorkspaceRoot, time.Now(), session.Persistence{})
+			auto := true
+			if _, err := runnerState.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+				return nil, err
+			}
 			runner := agent.NewRunner(p, registry.New(), pol, runnerState, "test-model")
 			runner.Role = role
 			return runner, nil

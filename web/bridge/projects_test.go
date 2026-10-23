@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,7 +43,7 @@ func TestProjectSettingsRoundTripAndValidation(t *testing.T) {
 	rec := doReq(t, s, http.MethodGet, "/api/projects/settings?root="+root, nil, nil)
 	var got ProjectSettings
 	decodeBody(t, rec, &got)
-	if got.Workspace != "svc@2" || got.Mode != "plan" || got.ShipTarget != "patch" || got.Isolated == nil || !*got.Isolated || len(got.Intake.Labels) != 2 {
+	if got.Workspace != "svc@2" || got.Mode != "ask" || got.ShipTarget != "patch" || got.Isolated == nil || !*got.Isolated || len(got.Intake.Labels) != 2 {
 		t.Fatalf("settings = %+v", got)
 	}
 
@@ -76,6 +77,39 @@ func TestProjectSettingsRoundTripAndValidation(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no project_settings audit entry")
+	}
+}
+
+// TestProjectInteractionDefaultsRejectInvalidTuple checks that project defaults
+// accept only a coherent starting tuple: an unknown mode is reported rather
+// than promoted, Ask cannot carry Auto, a retired spelling is stored canonical,
+// and an explicit Auto false stays a real value.
+func TestProjectInteractionDefaultsRejectInvalidTuple(t *testing.T) {
+	e, _, root := projectEnv(t)
+
+	for name, ps := range map[string]ProjectSettings{
+		"unknown mode":  {Mode: "yolo"},
+		"ask with auto": {Mode: "ask", Auto: boolPtr(true)},
+	} {
+		if err := e.f.PutProjectSettings(root, ps); !errors.Is(err, errInvalidProjectSettings) {
+			t.Errorf("%s: err = %v, want errInvalidProjectSettings", name, err)
+		}
+	}
+
+	// A retired spelling is accepted and stored as its canonical pair.
+	if err := e.f.PutProjectSettings(root, ProjectSettings{Mode: "copilot"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.f.ws.ProjectSettingsFor(root); got.Mode != "act" || got.Auto != nil {
+		t.Fatalf("copilot stored as %+v, want act with no auto", got)
+	}
+
+	// An explicit false is a real value, not an absent one.
+	if err := e.f.PutProjectSettings(root, ProjectSettings{Mode: "act", Auto: boolPtr(false)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.f.ws.ProjectSettingsFor(root); got.Auto == nil || *got.Auto {
+		t.Fatalf("auto = %v, want an explicit false", got.Auto)
 	}
 }
 
@@ -185,8 +219,13 @@ func TestSpawnPicksUpTheProjectDefaults(t *testing.T) {
 	if len(calls) != 1 || !strings.Contains(calls[0], `"isolation"`) || !strings.Contains(calls[0], `"routing":{"profile":"fast"}`) {
 		t.Fatalf("session/new = %v", calls)
 	}
-	if got := e.agents[out.AgentID].calls("session/set_mode"); len(got) != 1 || !strings.Contains(got[0], `"plan"`) {
-		t.Fatalf("session/set_mode = %v", got)
+	// The project default travels as the session's starting policy; there is
+	// no second implicit set_mode patch.
+	if !strings.Contains(calls[0], `"policy":{"mode":"ask"}`) {
+		t.Fatalf("session/new policy = %v, want the project's ask default", calls[0])
+	}
+	if got := e.agents[out.AgentID].calls("session/set_mode"); len(got) != 0 {
+		t.Fatalf("session/set_mode = %v, want no implicit patch", got)
 	}
 
 	// Explicit request values win over the defaults.
@@ -199,8 +238,13 @@ func TestSpawnPicksUpTheProjectDefaults(t *testing.T) {
 	if strings.Contains(calls[0], `"isolation"`) {
 		t.Fatalf("an explicit isolated:false was overridden: %v", calls)
 	}
-	if got := e.agents[out.AgentID].calls("session/set_mode"); len(got) != 1 || !strings.Contains(got[0], `"auto"`) {
-		t.Fatalf("session/set_mode = %v", got)
+	// The retired "auto" spelling is canonicalized to Act + Auto at the one
+	// policy the spawn sends.
+	if !strings.Contains(calls[0], `"policy":{"auto":true,"mode":"act"}`) {
+		t.Fatalf("session/new policy = %v, want act + auto", calls[0])
+	}
+	if got := e.agents[out.AgentID].calls("session/set_mode"); len(got) != 0 {
+		t.Fatalf("session/set_mode = %v, want no implicit patch", got)
 	}
 }
 

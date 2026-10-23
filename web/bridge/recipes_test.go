@@ -60,12 +60,86 @@ func TestRecipeBuiltinsAreListedAndValid(t *testing.T) {
 			t.Errorf("built-in %s missing", name)
 		}
 	}
-	if r := got["review-pr"]; r.Mode != "plan" || r.Output != OutputReviewFindings {
+	if r := got["review-pr"]; r.Mode != "ask" || r.Output != OutputReviewFindings {
 		t.Errorf("review-pr = mode %q output %q", r.Mode, r.Output)
 	}
-	if r := got["fix-ci"]; r.Mode != "edit" || r.Output != OutputCIResult ||
+	if r := got["fix-ci"]; r.Mode != "act" || r.Auto == nil || *r.Auto || r.Output != OutputCIResult ||
 		!strings.Contains(r.Prompt, "Reproduce first") || !strings.Contains(r.Prompt, "reproduced: false") {
 		t.Errorf("fix-ci = %+v", r)
+	}
+}
+
+// TestRecipeLegacyModesAndExplicitSaveAreCanonical checks that a stored legacy
+// spelling is translated on read, that an explicit save writes the canonical
+// pair, and that an impossible tuple is refused.
+func TestRecipeLegacyModesAndExplicitSaveAreCanonical(t *testing.T) {
+	s := NewRecipeStore(t.TempDir())
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.path("old"),
+		[]byte(`{"name":"old","kind":"prompt","mode":"edit","prompt":"look"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Mode != "ask" || got.Auto != nil {
+		t.Fatalf("stored edit = mode %q auto %v, want ask with no auto", got.Mode, got.Auto)
+	}
+
+	// A legacy spelling is canonicalized once, at save time.
+	if err := s.Put(Recipe{Name: "saved", Kind: RecipePrompt, Mode: "auto", Prompt: "go"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(s.path("saved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored Recipe
+	if err := json.Unmarshal(data, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Mode != "act" || stored.Auto == nil || !*stored.Auto {
+		t.Fatalf("saved recipe = mode %q auto %v, want act + auto true", stored.Mode, stored.Auto)
+	}
+
+	// Ask cannot carry Auto.
+	if err := s.Put(Recipe{Name: "bad", Kind: RecipePrompt, Mode: "ask", Auto: boolPtr(true), Prompt: "x"}); !errors.Is(err, ErrInvalidRecipe) {
+		t.Fatalf("ask + auto: err = %v, want ErrInvalidRecipe", err)
+	}
+}
+
+// TestRecipeInvalidStoredModeIsVisible checks that List reports a stored recipe
+// whose mode cannot be read instead of hiding it or promoting it to Act.
+func TestRecipeInvalidStoredModeIsVisible(t *testing.T) {
+	s := NewRecipeStore(t.TempDir())
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.path("weird"),
+		[]byte(`{"name":"weird","kind":"prompt","mode":"yolo","prompt":"look"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *Recipe
+	for i := range list {
+		if list[i].Name == "weird" {
+			found = &list[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("invalid stored recipe was hidden from List")
+	}
+	if found.Diagnostic == "" {
+		t.Fatal("invalid stored recipe was listed without a diagnostic")
+	}
+	if found.Mode != "yolo" {
+		t.Fatalf("mode = %q, want the stored spelling rather than a promoted default", found.Mode)
 	}
 }
 

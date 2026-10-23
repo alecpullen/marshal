@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/textinput"
@@ -107,6 +108,16 @@ func (m *sudoAuthModel) View() string {
 			b.WriteString(warningStyle().Render(line))
 			b.WriteString("\n")
 		}
+	}
+	if m.sa.CommandApproval {
+		b.WriteString(indent)
+		b.WriteString(mutedStyle().Render("This prompt also approves the exact command above."))
+		b.WriteString("\n")
+	}
+	if m.sa.StepID != 0 {
+		b.WriteString(indent)
+		b.WriteString(mutedStyle().Render(fmt.Sprintf("Requested by step %d.", m.sa.StepID)))
+		b.WriteString("\n")
 	}
 	if m.sa.AllowUnlock {
 		b.WriteString(indent)

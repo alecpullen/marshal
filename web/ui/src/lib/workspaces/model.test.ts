@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contentChips, gateRunnable, latestVersion, poolLabel, workspaceRef } from './model'
+import { contentChips, gateRunnable, latestVersion, policyChange, poolLabel, workspaceRef } from './model'
 import type { WSDoc } from '../api'
 
 describe('gateRunnable', () => {
@@ -43,5 +43,15 @@ describe('model helpers', () => {
     expect(poolLabel(0)).toBe('')
     expect(latestVersion({ published: 1, versions: [{ n: 1, at: 0, buildStatus: 'ok' }, { n: 2, at: 0, buildStatus: 'pending' }] })?.n).toBe(1)
     expect(latestVersion({})).toBeNull()
+  })
+  it('changes one policy field and retains the rest', () => {
+    const policy = { mode: 'act', auto: true, allow: ['go test *'] }
+    expect(policyChange(policy, { auto: false })).toEqual({ mode: 'act', auto: false, allow: ['go test *'] })
+    expect(policyChange(policy, { mode: 'ask' })).toEqual({ mode: 'ask', auto: true, allow: ['go test *'] })
+    expect(policyChange(policy, { allow: ['make *'] })).toEqual({ mode: 'act', auto: true, allow: ['make *'] })
+    // Inherit drops the key rather than turning omission into a revocation.
+    const inherited = policyChange(policy, { auto: undefined })
+    expect(inherited).toEqual({ mode: 'act', allow: ['go test *'] })
+    expect('auto' in inherited).toBe(false)
   })
 })

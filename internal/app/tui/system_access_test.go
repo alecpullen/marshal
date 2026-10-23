@@ -20,7 +20,7 @@ import (
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/commands"
-	"marshal/internal/tools/policy"
+	"marshal/internal/interaction"
 )
 
 // TestSystemCommandTogglesFlagAndNotes pins the /system command: it flips the
@@ -31,7 +31,9 @@ func TestSystemCommandTogglesFlagAndNotes(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg))
+	m := New(state, WithCommandRegistry(reg), WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
+		return state.ApplyInteraction(p)
+	}))
 	m.resize(80, 24)
 
 	if state.SystemAccess() {
@@ -70,13 +72,13 @@ func TestStatusBadgeSystemSuffix(t *testing.T) {
 	m := newStatusTestModel(t)
 
 	line := stripANSI(m.renderStatusLine(100))
-	if strings.Contains(line, "· system") {
+	if strings.Contains(line, "· System") {
 		t.Fatalf("status line shows the system suffix with the flag off:\n%s", line)
 	}
 
 	m.state.SetSystemAccess(true)
 	line = stripANSI(m.renderStatusLine(100))
-	if !strings.Contains(line, "· system") {
+	if !strings.Contains(line, "· System") {
 		t.Fatalf("status line missing the system suffix with the flag on:\n%s", line)
 	}
 }
@@ -114,15 +116,17 @@ func TestModeElevationSystemRequestGrantsFlag(t *testing.T) {
 	if !f.state.SystemAccess() {
 		t.Fatal("approving a system request did not grant system access")
 	}
-	if f.state.AccessState().Mode != "default" {
-		t.Fatalf("mode = %q, want the configured default preserved", f.state.AccessState().Mode)
+	if f.state.InteractionState().Mode != interaction.ModeAct {
+		t.Fatalf("mode = %q, want the configured act preserved", f.state.InteractionState().Mode)
 	}
 }
 
 // TestModeElevationPlainRequestDoesNotGrantSystem pins that an editing-only
 // request leaves the system flag alone.
 func TestModeElevationPlainRequestDoesNotGrantSystem(t *testing.T) {
-	f := newAccessTestFixture(t, 200, 30, config.Default())
+	cfg := config.Default()
+	cfg.Agent.Mode = interaction.ModeAsk
+	f := newAccessTestFixture(t, 200, 30, cfg)
 	f.register(t, session.AccessIntent{Editing: true, Reason: "The agent requests editing capability."})
 
 	f.tick()
@@ -134,8 +138,8 @@ func TestModeElevationPlainRequestDoesNotGrantSystem(t *testing.T) {
 	if f.state.SystemAccess() {
 		t.Fatal("an editing-only request granted system access")
 	}
-	if got := f.state.AccessState().Mode; got != "edit" {
-		t.Fatalf("mode = %q, want edit", got)
+	if got := f.state.InteractionState().Mode; got != interaction.ModeAct {
+		t.Fatalf("mode = %q, want act", got)
 	}
 }
 
@@ -153,7 +157,10 @@ func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	ctrl := &endTestController{}
 	m := New(state, WithEndController(ctrl))
 	m.resize(80, 24)
-	m.approvalMode = policy.ModeDefault
+	act := interaction.ModeAct
+	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
+		t.Fatalf("seed Act: %v", err)
+	}
 
 	m, cmd := runEndCmd(t, m, m.beginEnd(&endIntent{kind: EndIntentExit}))
 	if cmd != nil {
@@ -172,8 +179,8 @@ func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	if state.SystemAccess() {
 		t.Fatal("the model granted system access itself; the elevation belongs to the runtime's scoped pass")
 	}
-	if m.approvalMode != policy.ModeDefault {
-		t.Fatalf("approvalMode = %q, want the user's own mode preserved", m.approvalMode)
+	if got := string(m.state.InteractionState().Mode); got != "act" {
+		t.Fatalf("approvalMode = %q, want the user's own mode preserved", got)
 	}
 	if len(ctrl.analysisGoals) != 1 {
 		t.Fatalf("analysis goals = %d, want the pass requested through the end controller", len(ctrl.analysisGoals))
@@ -237,9 +244,9 @@ func newAccessTestFixture(t *testing.T, width, height int, cfg config.Config) *a
 				return state.ResolveAccess(choice, f.prepare())
 			},
 		),
-		WithSessionModeSetter(func(mode string) error {
+		WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
 			f.modeSetterCalls.Add(1)
-			return state.SetSessionMode(mode, func() {})
+			return state.ApplyInteraction(p)
 		}),
 	)
 	m.resize(width, height)
@@ -354,6 +361,10 @@ func TestAccessPanelAppearsOnRuntimeTickAtSupportedSizes(t *testing.T) {
 // panel without touching the draft or focus.
 func TestAccessPanelQueuesBehindOtherDockAndPreservesDraft(t *testing.T) {
 	f := newAccessTestFixture(t, 120, 40, config.Default())
+	on := true
+	if _, err := f.state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
+		t.Fatalf("seed Auto: %v", err)
+	}
 
 	// A FullFrame doc panel stands in for any unrelated panel holding the dock.
 	doc := commands.Doc{Title: "Inspector", FullFrame: true, Rows: []commands.Row{{Text: "row"}}}
@@ -366,6 +377,11 @@ func TestAccessPanelQueuesBehindOtherDockAndPreservesDraft(t *testing.T) {
 
 	if _, ok := f.m.dock.Panel().(*docpanel.Panel); !ok {
 		t.Fatalf("the unrelated panel was replaced by %T", f.m.dock.Panel())
+	}
+	// The persistent access label stays visible while a FullFrame panel owns
+	// the dock; the queued request is disclosed on the right instead.
+	if got := f.m.modeSegment(); got != "Act · Auto" {
+		t.Fatalf("mode label while the dock is owned = %q, want Act · Auto", got)
 	}
 	if got := stripANSI(f.m.statusRightSegment()); !strings.Contains(got, "Access waiting") {
 		t.Fatalf("status right segment = %q, want the queued-access disclosure", got)
@@ -385,6 +401,34 @@ func TestAccessPanelQueuesBehindOtherDockAndPreservesDraft(t *testing.T) {
 	}
 	if got := f.m.input.Value(); got != "half-written prompt" {
 		t.Fatalf("draft = %q, want it preserved when the access panel opens", got)
+	}
+}
+
+func TestAccessPanelRevisionRefreshResetsDeny(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Mode = interaction.ModeAsk
+	f := newAccessTestFixture(t, 120, 40, cfg)
+	f.register(t, session.AccessIntent{Editing: true, Reason: "The agent requests editing capability."})
+	f.tick()
+
+	first := f.panel()
+	if first == nil {
+		t.Fatal("access panel did not open")
+	}
+	updated, _ := f.m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	f.m = asModel(t, updated)
+	if view := stripANSI(f.panel().View(120, 40)); !strings.Contains(view, "> Act") {
+		t.Fatalf("precondition: Act not selected:\n%s", view)
+	}
+
+	// A revision-only change must re-present the request and reset Deny.
+	f.state.SetSystemAccess(true)
+	f.tick()
+	if f.panel() == first {
+		t.Fatal("a revision change did not re-present the access request")
+	}
+	if view := stripANSI(f.panel().View(120, 40)); !strings.Contains(view, "> Deny") {
+		t.Fatalf("refreshed panel did not reset to Deny:\n%s", view)
 	}
 }
 
@@ -568,7 +612,7 @@ func TestAccessPanelEscDeniesWithoutStoppingTurn(t *testing.T) {
 // decision path performs no persistence.
 func TestAccessPanelGrantOrderingAndNoPersistence(t *testing.T) {
 	cfg := config.Default()
-	cfg.Agent.ApprovalMode = "copilot"
+	cfg.Agent.Mode = interaction.ModeAct
 	f := newAccessTestFixture(t, 120, 40, cfg)
 
 	entered := make(chan struct{})
@@ -597,13 +641,13 @@ func TestAccessPanelGrantOrderingAndNoPersistence(t *testing.T) {
 
 	<-entered
 	// Apply is inside the resolver: the waiter must still be empty-handed.
+	// Do not call an accessor here — Apply deliberately holds the access gate,
+	// so any accessor would block until this commit returns. The empty response
+	// channel is the non-blocking proof that no grant has been acknowledged.
 	select {
 	case d := <-f.call.ResponseChan:
 		t.Fatalf("the grant was acknowledged before it was applied: %+v", d)
 	default:
-	}
-	if f.state.SystemAccess() {
-		t.Fatal("system access moved before Apply returned")
 	}
 
 	close(release)
@@ -617,10 +661,10 @@ func TestAccessPanelGrantOrderingAndNoPersistence(t *testing.T) {
 		t.Fatal("the grant did not reach the session")
 	}
 	// A system-only grant preserves the mode it was made in.
-	if got := f.state.AccessState().Mode; got != "copilot" {
-		t.Fatalf("mode = %q, want the actual copilot preserved", got)
+	if got := f.state.AccessState().Mode; got != "act" {
+		t.Fatalf("mode = %q, want the actual act preserved", got)
 	}
-	if got := lastMessageContent(f.state.Messages()); !strings.Contains(got, "copilot") {
+	if got := lastMessageContent(f.state.Messages()); !strings.Contains(got, "act") {
 		t.Fatalf("transcript note = %q, want it to name the actual mode", got)
 	}
 }
@@ -705,42 +749,32 @@ func TestAccessOrdinaryElevationReasonUsesForcedApproval(t *testing.T) {
 	}
 }
 
-// A manual mode change goes through the injected runtime setter exactly once,
-// and a config reload preserves an unchanged-baseline override while an
-// explicit configured-mode change replaces it.
+// A manual interaction change goes through the injected runtime setter exactly
+// once, and an unrelated config reload preserves the override.
 func TestAccessManualModeSetterAndReloadStayInSync(t *testing.T) {
-	f := newAccessTestFixture(t, 120, 40, config.Default())
+	cfg := config.Default()
+	cfg.Agent.Mode = interaction.ModeAsk
+	f := newAccessTestFixture(t, 120, 40, cfg)
 
-	f.m.setMode("copilot")
+	f.m.setInteractionMode(interaction.ModeAct)
 	if got := f.modeSetterCalls.Load(); got != 1 {
 		t.Fatalf("mode setter calls = %d, want 1", got)
 	}
-	if got := f.state.AccessState().Mode; got != "copilot" {
-		t.Fatalf("session mode = %q, want copilot", got)
+	if got := f.state.InteractionState().Mode; got != interaction.ModeAct {
+		t.Fatalf("session mode = %q, want act", got)
 	}
-	if f.m.approvalMode != policy.ModeCopilot {
-		t.Fatalf("displayed mode = %q, want copilot", f.m.approvalMode)
+	if got := string(f.state.InteractionState().Mode); got != "act" {
+		t.Fatalf("displayed mode = %q, want act", got)
 	}
 
-	// An unrelated setting changes; the configured mode does not.
-	unrelated := config.Default()
+	// An unrelated setting changes; the configured tuple does not.
+	unrelated := cfg
 	unrelated.Agent.MaxToolIterations++
 	f.m.applyNewConfig(unrelated)
-	if got := f.m.approvalMode; got != policy.ModeCopilot {
-		t.Fatalf("displayed mode after an unrelated reload = %q, want the override copilot", got)
+	if got := string(f.state.InteractionState().Mode); got != "act" {
+		t.Fatalf("displayed mode after an unrelated reload = %q, want the override act", got)
 	}
-	if got := f.state.AccessState().Mode; got != "copilot" {
-		t.Fatalf("session mode after an unrelated reload = %q, want copilot", got)
-	}
-
-	// An explicit configured-mode change replaces the override.
-	explicit := config.Default()
-	explicit.Agent.ApprovalMode = "edit"
-	f.m.applyNewConfig(explicit)
-	if got := f.m.approvalMode; got != policy.ModeEdit {
-		t.Fatalf("displayed mode after an explicit change = %q, want edit", got)
-	}
-	if got := f.state.AccessState().Mode; got != "edit" {
-		t.Fatalf("session mode after an explicit change = %q, want edit", got)
+	if got := f.state.InteractionState().Mode; got != interaction.ModeAct {
+		t.Fatalf("session mode after an unrelated reload = %q, want act", got)
 	}
 }

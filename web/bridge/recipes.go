@@ -57,6 +57,7 @@ type Recipe struct {
 	Description string          `json:"description,omitempty"`
 	Kind        string          `json:"kind"`
 	Mode        string          `json:"mode,omitempty"`
+	Auto        *bool           `json:"auto,omitempty"`
 	Workspace   string          `json:"workspace,omitempty"`
 	Routing     json.RawMessage `json:"routing,omitempty"`
 	Inputs      []RecipeInput   `json:"inputs,omitempty"`
@@ -64,6 +65,9 @@ type Recipe struct {
 	Limits      *RecipeLimits   `json:"limits,omitempty"`
 	Output      string          `json:"output,omitempty"`
 	Builtin     bool            `json:"builtin,omitempty"`
+	// Diagnostic reports why a stored recipe could not be read or validated.
+	// It never appears on a built-in or a successfully saved recipe.
+	Diagnostic string `json:"diagnostic,omitempty"`
 }
 
 // Validate checks a recipe's shape.
@@ -79,8 +83,8 @@ func (r Recipe) Validate() error {
 	default:
 		return bad("kind must be prompt, sdd or swarm")
 	}
-	if r.Mode != "" && !validApprovalModes[r.Mode] {
-		return bad("mode %q is not a valid approval mode", r.Mode)
+	if _, _, _, err := canonicalModeTuple(r.Mode, r.Auto); err != nil {
+		return bad("%v", err)
 	}
 	switch r.Output {
 	case "", OutputNone, OutputReviewFindings, OutputCIResult:
@@ -138,6 +142,13 @@ func (s *RecipeStore) stored(name string) (Recipe, bool, error) {
 		return Recipe{}, false, fmt.Errorf("recipe %s is corrupt: %w", name, err)
 	}
 	r.Builtin = false
+	if mode, auto, _, err := canonicalModeTuple(r.Mode, r.Auto); err != nil {
+		// Keep the stored spelling visible: List reports it as a diagnostic
+		// rather than hiding the recipe or promoting it to a working default.
+		r.Diagnostic = err.Error()
+	} else {
+		r.Mode, r.Auto = mode, auto
+	}
 	return r, true, nil
 }
 
@@ -156,7 +167,15 @@ func (s *RecipeStore) List() ([]Recipe, error) {
 		if !ok {
 			continue
 		}
-		if r, found, err := s.stored(name); err == nil && found {
+		r, found, err := s.stored(name)
+		if err != nil {
+			// A stored recipe occupies its name even when it cannot be read.
+			// Surface the problem instead of silently falling back to a
+			// built-in of the same name or hiding the file entirely.
+			byName[name] = Recipe{Name: name, Diagnostic: err.Error()}
+			continue
+		}
+		if found {
 			byName[name] = r
 		}
 	}
@@ -189,6 +208,14 @@ func (s *RecipeStore) Put(r Recipe) error {
 	if r.Builtin {
 		return ErrRecipeBuiltin
 	}
+	mode, auto, _, err := canonicalModeTuple(r.Mode, r.Auto)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRecipe, err)
+	}
+	// An explicit save writes the canonical pair: a legacy spelling is
+	// translated once here rather than being preserved in the file.
+	r.Mode, r.Auto = mode, auto
+	r.Diagnostic = ""
 	if err := r.Validate(); err != nil {
 		return err
 	}

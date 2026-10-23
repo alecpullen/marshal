@@ -1,10 +1,9 @@
 import { writable, type Readable } from 'svelte/store'
 import * as api from './api.js'
+import { applyAccessReport, type AccessPatch, type AccessState, type Mode, type ModeAccessRequest, parseModeAccess, MODES } from './interaction.js'
 import { connectSSE, type SSEEvent } from './sse.js'
 
-export type Mode = 'read' | 'default' | 'plan' | 'edit' | 'copilot' | 'auto'
-
-export const MODES: Mode[] = ['read', 'default', 'plan', 'edit', 'copilot', 'auto']
+export { MODES, type Mode }
 
 /*
   Messages and tool calls are kept in separate arrays because they are
@@ -54,6 +53,15 @@ export interface PendingPermission {
   toolName: string
   command?: string
   diff?: string
+  /** The agent's full disclosure, shown alongside the typed choice. */
+  reason?: string
+  /**
+   * True for an ordinary approval: it allows exactly the presented action and
+   * grants no standing capability. A typed capability bundle sets this false.
+   */
+  exactOnly: boolean
+  /** The typed capability presentation, when the request carries one. */
+  modeAccess?: ModeAccessRequest
 }
 
 export interface QuestionOption {
@@ -78,7 +86,14 @@ export interface SessionState {
   id: string
   cwd: string
   busy: boolean
-  mode: Mode
+  /**
+   * The committed interaction mode, or null while it is unknown. Nothing here
+   * invents a mode: an unavailable report is presented as unavailable.
+   */
+  mode: Mode | null
+  /** The full committed tuple, tagged by the session that issued it. */
+  access: AccessState | null
+  accessSession: string
   messages: Message[]
   toolCalls: ToolCall[]
   pendingPermission: PendingPermission | null
@@ -123,7 +138,11 @@ function createSessionState(id: string, cwd: string): SessionState {
     id,
     cwd,
     busy: false,
-    mode: 'default',
+    // No mode and no access until the agent reports them: an unknown tuple is
+    // presented as unknown, never as an inferred grant.
+    mode: null,
+    access: null,
+    accessSession: '',
     messages: [],
     toolCalls: [],
     pendingPermission: null,
@@ -133,10 +152,16 @@ function createSessionState(id: string, cwd: string): SessionState {
   }
 }
 
-function normalizeMode(mode: string): Mode {
-  const m = mode.toLowerCase()
-  if (MODES.includes(m as Mode)) return m as Mode
-  return 'default'
+/**
+ * Reduce one committed access report into the session state. A malformed
+ * report, or a replay from an older revision within the same session, leaves
+ * the presentation untouched; a report from a different session replaces the
+ * comparison, because a revision only means anything within its own session.
+ */
+function reduceAccess(s: SessionState, sessionId: string, report: unknown): SessionState {
+  const holder = applyAccessReport(s.access ? { sessionId: s.accessSession, access: s.access } : null, sessionId, report)
+  if (!holder) return s
+  return { ...s, access: holder.access, accessSession: holder.sessionId, mode: holder.access.mode }
 }
 
 /**
@@ -148,12 +173,32 @@ export function createSessionStore(id: string, cwd: string, tap?: (event: unknow
   const state = writable<SessionState>(createSessionState(id, cwd))
   let unsubscribeSSE: (() => void) | null = null
 
+  /*
+    Read the session's committed access state. This runs after a replay and
+    after every reconnect, because a transcript cannot say what is granted now
+    and a reconnect may land on a session whose tuple changed. A failed read
+    leaves the last known presentation alone: unknown is shown as unknown, not
+    reconstructed from defaults or from the persisted starting mode.
+  */
+  const refreshAccess = async () => {
+    try {
+      const wire = await api.getAccess(id)
+      state.update((s) => reduceAccess(s, id, wire))
+    } catch {
+      // Unavailable: keep what is known.
+    }
+  }
+
   const applyEvent = (event: unknown) => {
     const ev = event as Record<string, unknown>
     const type = ev.type as string | undefined
 
     if (type === 'permission_request') {
       const params = (ev.params as Record<string, unknown>) ?? {}
+      // The typed capability bundle is forwarded when present. Without one,
+      // this is an ordinary exact-only approval: it covers the presented
+      // action and grants no standing capability.
+      const modeAccess = parseModeAccess(params.modeAccess)
       state.update((s) => ({
         ...s,
         pendingPermission: {
@@ -161,6 +206,9 @@ export function createSessionStore(id: string, cwd: string, tap?: (event: unknow
           toolName: String(params.toolName ?? ''),
           command: params.command ? String(params.command) : undefined,
           diff: params.diff ? String(params.diff) : undefined,
+          reason: typeof params.reason === 'string' && params.reason !== '' ? params.reason : undefined,
+          exactOnly: modeAccess === null,
+          modeAccess: modeAccess ?? undefined,
         },
       }))
       return
@@ -206,8 +254,9 @@ export function createSessionStore(id: string, cwd: string, tap?: (event: unknow
 
     if (type === 'mode_changed') {
       const params = (ev.params as Record<string, unknown>) ?? ev
-      const mode = normalizeMode(String(params.mode ?? 'default'))
-      state.update((s) => ({ ...s, mode }))
+      const sessionId = String(params.sessionId ?? ev.sessionId ?? id)
+      const report = params.access ?? params
+      state.update((s) => reduceAccess(s, sessionId, report))
       return
     }
 
@@ -215,7 +264,7 @@ export function createSessionStore(id: string, cwd: string, tap?: (event: unknow
     const method = ev.method as string | undefined
     if (method) {
       const params = (ev.params as Record<string, unknown>) ?? {}
-      applyACP(state, method, params)
+      applyACP(state, method, params, String(params.sessionId ?? id))
     }
   }
 
@@ -223,6 +272,9 @@ export function createSessionStore(id: string, cwd: string, tap?: (event: unknow
     if (e.type === 'connected') {
       tap?.({ type: 'connected' })
       state.update((s) => ({ ...s, connected: true }))
+      // A reconnect reattaches to a session that may have moved on; ask the
+      // agent what it actually committed rather than trusting the last frame.
+      void refreshAccess()
     } else if (e.type === 'disconnected') {
       state.update((s) => ({ ...s, connected: false }))
     } else if (e.type === 'error') {
@@ -258,6 +310,8 @@ export function createSessionStore(id: string, cwd: string, tap?: (event: unknow
       for (const ev of res.events) {
         applyEvent(ev.data)
       }
+      // Replayed events are history; the committed tuple is read separately.
+      await refreshAccess()
     },
     async prompt(text: string) {
       state.update((s) => ({
@@ -274,7 +328,13 @@ export function createSessionStore(id: string, cwd: string, tap?: (event: unknow
       await api.cancelSession(id)
     },
     async setMode(mode: Mode) {
-      await api.setMode(id, mode)
+      // The committed answer is applied; the request itself grants nothing.
+      const wire = await api.patchAccess(id, { mode })
+      state.update((s) => reduceAccess(s, id, wire))
+    },
+    async setAccess(patch: AccessPatch) {
+      const wire = await api.patchAccess(id, patch)
+      state.update((s) => reduceAccess(s, id, wire))
     },
     async resolvePermission(decision: api.Decision) {
       const toolCallId = get(state).pendingPermission?.toolCallId
@@ -296,7 +356,7 @@ export function createSessionStore(id: string, cwd: string, tap?: (event: unknow
   return { state, actions }
 }
 
-function applyACP(state: ReturnType<typeof writable<SessionState>>, method: string, params: Record<string, unknown>) {
+function applyACP(state: ReturnType<typeof writable<SessionState>>, method: string, params: Record<string, unknown>, sessionId: string) {
   // The agent wraps every update as session/update with the payload under
   // params.update and its type in update.kind (internal/acp/turn.go).
   if (method === 'session/update') {
@@ -383,8 +443,7 @@ function applyACP(state: ReturnType<typeof writable<SessionState>>, method: stri
       break
     }
     case 'mode_changed': {
-      const mode = normalizeMode(String(params.mode ?? 'default'))
-      state.update((s) => ({ ...s, mode }))
+      state.update((s) => reduceAccess(s, sessionId, params.access ?? params))
       break
     }
   }

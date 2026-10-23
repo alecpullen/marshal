@@ -43,20 +43,6 @@ func shellFrame(s *state) *frame {
 				Keywords: []string{"internet"},
 				GetBool:  func() bool { return s.cfg.Tools.Shell.AllowNetwork },
 				SetBool:  func(v bool) { s.cfg.Tools.Shell.AllowNetwork = v }},
-			{ID: "shell.auto_approve", Title: "Auto-approve shell", Kind: kindToggle,
-				TomlPath: "tools.shell.auto_approve",
-				Desc:     "run classified-safe commands without confirmation",
-				GetBool:  func() bool { return s.cfg.Tools.Shell.AutoApprove },
-				SetBool:  func(v bool) { s.cfg.Tools.Shell.AutoApprove = v }},
-			func() *field {
-				f := enumField("shell.guardrail_argv0", "Dynamic argv0 guardrail",
-					[]string{"deny", "confirm", "allow"},
-					func() string { return s.cfg.Tools.Shell.GuardrailDynamicArgv0 },
-					func(v string) { s.cfg.Tools.Shell.GuardrailDynamicArgv0 = v })
-				f.TomlPath = "tools.shell.guardrail_dynamic_argv0"
-				f.Desc = "policy for dynamically-resolved argv[0] commands"
-				return f
-			}(),
 			func() *field {
 				f := listDrill("shell.allow_commands", "Allow commands", &s.cfg.Tools.Shell.Allow.Commands)
 				f.TomlPath = "tools.shell.allow.commands"

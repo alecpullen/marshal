@@ -36,7 +36,6 @@ func TestEffectiveAdditionalRootsInjectsProjectRootInWorktree(t *testing.T) {
 	if err := RegisterAll(reg, Options{
 		WorkspaceRoot: worktreePath,
 		CommandRunner: &fakeRunner{},
-		Guardrail:     func(string, bool) error { return nil },
 		SessionState:  st,
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
@@ -70,7 +69,6 @@ func TestEffectiveAdditionalRootsNoInjectionWhenNotInWorktree(t *testing.T) {
 	if err := RegisterAll(reg, Options{
 		WorkspaceRoot: projectRoot,
 		CommandRunner: &fakeRunner{},
-		Guardrail:     func(string, bool) error { return nil },
 		SessionState:  st,
 	}); err != nil {
 		t.Fatalf("RegisterAll: %v", err)

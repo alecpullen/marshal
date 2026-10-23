@@ -220,7 +220,7 @@ func (s *Server) startRun(w http.ResponseWriter, r *http.Request) {
 		}
 		id, err := s.fleet.Spawn(r.Context(), body.Project, SpawnOptions{
 			Name: runName(req), Origin: OriginUI, Isolated: isolated,
-			Mode: defaults.Mode, Routing: defaults.Routing, Workspace: defaults.Workspace,
+			Mode: defaults.Mode, Auto: defaults.Auto, Routing: defaults.Routing, Workspace: defaults.Workspace,
 		})
 		if err != nil {
 			// Spawn can return an id with an error (the agent exists but is

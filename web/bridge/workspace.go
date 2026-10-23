@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,10 +39,14 @@ const (
 )
 
 type Agent struct {
-	ID          string    `json:"id"`
-	Project     string    `json:"project"`
-	Name        string    `json:"name,omitempty"`
+	ID      string `json:"id"`
+	Project string `json:"project"`
+	Name    string `json:"name,omitempty"`
+	// Mode and Auto are the starting interaction defaults this agent was
+	// spawned with, never its current grants. Auto is optional: nil means the
+	// spawn named no Auto, which is not the same as an explicit false.
 	Mode        string    `json:"mode,omitempty"`
+	Auto        *bool     `json:"auto,omitempty"`
 	Prompt      string    `json:"prompt,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
 	Interrupted bool      `json:"interrupted,omitempty"`
@@ -116,6 +121,9 @@ type ProjectSettings struct {
 	// Routing is a W3 routing object.
 	Routing json.RawMessage `json:"routing,omitempty"`
 	Mode    string          `json:"mode,omitempty"`
+	// Auto accompanies Mode as a starting default. It is a pointer so an
+	// absent value stays distinguishable from an explicit false.
+	Auto *bool `json:"auto,omitempty"`
 	// Isolated is the default isolation; nil leaves the caller's default.
 	Isolated *bool `json:"isolated,omitempty"`
 	// ShipTarget is merge, push or patch.
@@ -196,6 +204,7 @@ type PendingSpawn struct {
 	// stored here so the operator can read what they are approving.
 	Plan      string    `json:"plan,omitempty"`
 	Mode      string    `json:"mode,omitempty"`
+	Auto      *bool     `json:"auto,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	// IssueNumber and IssueURL are set when the submission came from an
@@ -310,6 +319,7 @@ func (w *Workspace) Load() (string, error) {
 	if f.Version < workspaceVersion {
 		migrateWorkspace(&f)
 	}
+	normalizeStoredInteraction(&f)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.projects = append([]string(nil), f.Projects...)
@@ -391,6 +401,72 @@ func migrateWorkspace(f *workspaceFile) {
 		}
 	}
 	f.Version = workspaceVersion
+}
+
+// canonicalModeTuple canonicalizes one persisted interaction default. The
+// retired five-mode spellings are translated through the same table as the
+// engine's interaction.LegacyDefaults; web/ is stdlib-only, so the table is
+// mirrored here rather than imported. Presence is preserved: a nil Auto means
+// the source did not set it, which is not the same as an explicit false. An
+// unknown spelling is an error, never Act — a stored value the bridge cannot
+// read must be reported by the surface that reads it, not quietly promoted.
+// The returned note describes a translation and is empty otherwise.
+func canonicalModeTuple(mode string, auto *bool) (string, *bool, string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "":
+		return "", auto, "", nil
+	case "ask", "act":
+		if strings.EqualFold(strings.TrimSpace(mode), "ask") && auto != nil && *auto {
+			return "", nil, "", errors.New("mode ask cannot enable auto")
+		}
+		return strings.ToLower(strings.TrimSpace(mode)), auto, "", nil
+	case "plan", "default":
+		return "ask", auto, fmt.Sprintf("mode %q replaced with ask; planning remains a skill workflow", mode), nil
+	case "edit":
+		return "ask", auto, fmt.Sprintf("mode %q replaced with ask; approval for every file change was retired", mode), nil
+	case "copilot":
+		return "act", auto, fmt.Sprintf("mode %q replaced with act", mode), nil
+	case "auto":
+		next := true
+		if auto != nil {
+			next = *auto
+		}
+		return "act", &next, fmt.Sprintf("mode %q replaced with act + auto", mode), nil
+	}
+	return "", nil, "", fmt.Errorf("invalid interaction mode %q: want ask or act", mode)
+}
+
+// boolPtr returns a pointer to b, for the optional Auto defaults.
+func boolPtr(b bool) *bool { return &b }
+
+// normalizeStoredInteraction canonicalizes the starting defaults the workspace
+// persists on agents, pending spawns and project settings. It runs on every
+// load, not only a version upgrade, because ask/act is a translation of stored
+// spellings rather than a new file format; workspaceVersion therefore does not
+// change. The migration is memory-only — Load never rewrites the file it read,
+// and a later explicit save writes the canonical pair. None of these fields is
+// a live grant: System is not persisted and no revision is invented, so nothing
+// here can restore access to a session. A spelling the bridge does not know is
+// left exactly as stored, for its reader to report.
+func normalizeStoredInteraction(f *workspaceFile) {
+	for i := range f.Agents {
+		a := &f.Agents[i]
+		if mode, auto, _, err := canonicalModeTuple(a.Mode, a.Auto); err == nil {
+			a.Mode, a.Auto = mode, auto
+		}
+	}
+	for i := range f.Pending {
+		p := &f.Pending[i]
+		if mode, auto, _, err := canonicalModeTuple(p.Mode, p.Auto); err == nil {
+			p.Mode, p.Auto = mode, auto
+		}
+	}
+	for root, ps := range f.ProjectSettings {
+		if mode, auto, _, err := canonicalModeTuple(ps.Mode, ps.Auto); err == nil {
+			ps.Mode, ps.Auto = mode, auto
+			f.ProjectSettings[root] = ps
+		}
+	}
 }
 
 func (w *Workspace) save() error {

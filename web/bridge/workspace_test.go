@@ -19,7 +19,7 @@ func TestWorkspaceRoundTrip(t *testing.T) {
 	if err := w.AddProject("/home/u/repo"); err != nil {
 		t.Fatalf("AddProject: %v", err)
 	}
-	a := Agent{ID: "s1", Project: "/home/u/repo", Name: "fix bug", Mode: "edit", CreatedAt: time.Now()}
+	a := Agent{ID: "s1", Project: "/home/u/repo", Name: "fix bug", Mode: "act", CreatedAt: time.Now()}
 	if err := w.PutAgent(a); err != nil {
 		t.Fatalf("PutAgent: %v", err)
 	}
@@ -35,8 +35,94 @@ func TestWorkspaceRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("agent s1 missing after reload")
 	}
-	if got.Name != "fix bug" || got.Mode != "edit" {
+	if got.Name != "fix bug" || got.Mode != "act" {
 		t.Fatalf("agent round-trip lost fields: %+v", got)
+	}
+}
+
+// TestStoredInteractionDefaultsMigrateWithoutGrantRestore checks that every
+// persisted starting default is translated to ask/act in memory, that Auto
+// presence survives, and that loading restores no live grant: no System value
+// and no revision appear, and the file on disk is not rewritten.
+func TestStoredInteractionDefaultsMigrateWithoutGrantRestore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fleet.json")
+	raw := `{
+  "version": 11,
+  "projects": ["/p"],
+  "agents": [
+    {"id": "a1", "project": "/p", "mode": "edit", "ownerId": "local", "origin": "ui", "profile": {"image": "x"}},
+    {"id": "a2", "project": "/p", "mode": "auto", "ownerId": "local", "origin": "ui", "profile": {"image": "x"}},
+    {"id": "a3", "project": "/p", "mode": "copilot", "ownerId": "local", "origin": "ui", "profile": {"image": "x"}}
+  ],
+  "pending": [
+    {"id": "p1", "origin": "ui", "title": "t", "repoId": "r1", "mode": "plan",
+     "createdAt": "2026-01-01T00:00:00Z", "expiresAt": "2026-01-02T00:00:00Z"}
+  ],
+  "projectSettings": {"/p": {"mode": "copilot"}}
+}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w := NewWorkspace(path)
+	if _, err := w.Load(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]struct {
+		mode string
+		auto *bool
+	}{
+		"a1": {"ask", nil},           // edit retired to Ask
+		"a2": {"act", boolPtr(true)}, // auto is Act + Auto
+		"a3": {"act", nil},           // copilot retired to Act without Auto
+	}
+	for id, exp := range want {
+		a, ok := w.Agent(id)
+		if !ok {
+			t.Fatalf("agent %s missing", id)
+		}
+		if a.Mode != exp.mode {
+			t.Errorf("%s mode = %q, want %q", id, a.Mode, exp.mode)
+		}
+		switch {
+		case exp.auto == nil && a.Auto != nil:
+			t.Errorf("%s auto = %v, want absent", id, *a.Auto)
+		case exp.auto != nil && a.Auto == nil:
+			t.Errorf("%s auto absent, want %v", id, *exp.auto)
+		case exp.auto != nil && *a.Auto != *exp.auto:
+			t.Errorf("%s auto = %v, want %v", id, *a.Auto, *exp.auto)
+		}
+	}
+	if p, ok := w.PendingByID("p1"); !ok || p.Mode != "ask" || p.Auto != nil {
+		t.Errorf("pending = %+v, want ask with no auto", p)
+	}
+	if ps := w.ProjectSettingsFor("/p"); ps.Mode != "act" || ps.Auto != nil {
+		t.Errorf("project settings = %+v, want act with no auto", ps)
+	}
+
+	// Load is memory-only: the stored file keeps its original spellings.
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(onDisk) != raw {
+		t.Fatal("Load rewrote the workspace file instead of migrating in memory")
+	}
+
+	// An explicit save emits the canonical pair and still stores no grant.
+	if err := w.save(); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "system_access") || strings.Contains(string(saved), "access_revision") {
+		t.Fatalf("workspace persisted a live grant: %s", saved)
+	}
+	if !strings.Contains(string(saved), `"mode": "ask"`) || !strings.Contains(string(saved), `"mode": "act"`) {
+		t.Fatalf("save did not write canonical modes: %s", saved)
 	}
 }
 
@@ -389,7 +475,7 @@ func TestProjectSettingsRoundTripAndRemoveWithProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := w2.ProjectSettingsFor("/p")
-	if got.Workspace != "svc@2" || got.Mode != "plan" || got.Isolated == nil || !*got.Isolated || got.ShipTarget != "push" ||
+	if got.Workspace != "svc@2" || got.Mode != "ask" || got.Isolated == nil || !*got.Isolated || got.ShipTarget != "push" ||
 		compactJSON(t, got.Routing) != `{"profile":"fast"}` || got.Intake.RepoID != "r" || len(got.Intake.Labels) != 1 {
 		t.Fatalf("settings = %+v", got)
 	}

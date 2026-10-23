@@ -16,9 +16,6 @@ import (
 // The HTTP layer maps it to 400.
 var errInvalidProjectSettings = errors.New("bridge: invalid project settings")
 
-// validApprovalModes mirrors the engine's interaction modes.
-var validApprovalModes = map[string]bool{"plan": true, "default": true, "edit": true, "copilot": true, "auto": true}
-
 // validShipTargets is the set a project may name.
 var validShipTargets = map[string]bool{"merge": true, "push": true, "patch": true}
 
@@ -127,8 +124,12 @@ func (f *Fleet) PutProjectSettings(root string, ps ProjectSettings) error {
 			return fmt.Errorf("%w: workspace: %v", errInvalidProjectSettings, err)
 		}
 	}
-	if ps.Mode != "" && !validApprovalModes[ps.Mode] {
-		return fmt.Errorf("%w: mode %q is not one of plan, default, edit, copilot, auto", errInvalidProjectSettings, ps.Mode)
+	if ps.Mode != "" || ps.Auto != nil {
+		mode, auto, _, err := canonicalModeTuple(ps.Mode, ps.Auto)
+		if err != nil {
+			return fmt.Errorf("%w: %v", errInvalidProjectSettings, err)
+		}
+		ps.Mode, ps.Auto = mode, auto
 	}
 	if ps.ShipTarget != "" && !validShipTargets[ps.ShipTarget] {
 		return fmt.Errorf("%w: shipTarget must be merge, push or patch", errInvalidProjectSettings)

@@ -1289,10 +1289,13 @@ func (f *Fleet) Spawn(ctx context.Context, root string, opts SpawnOptions) (stri
 	if len(opts.Routing) > 0 && string(opts.Routing) != "null" {
 		params["routing"] = opts.Routing
 	}
-	if wsRes != nil && (wsRes.Doc.Policy.Mode != "" || len(wsRes.Doc.Policy.Allow) > 0) {
+	if wsRes != nil && (wsRes.Doc.Policy.Mode != "" || wsRes.Doc.Policy.Auto != nil || len(wsRes.Doc.Policy.Allow) > 0) {
 		policy := map[string]any{}
 		if wsRes.Doc.Policy.Mode != "" {
 			policy["mode"] = wsRes.Doc.Policy.Mode
+		}
+		if wsRes.Doc.Policy.Auto != nil {
+			policy["auto"] = *wsRes.Doc.Policy.Auto
 		}
 		if len(wsRes.Doc.Policy.Allow) > 0 {
 			policy["allow"] = wsRes.Doc.Policy.Allow

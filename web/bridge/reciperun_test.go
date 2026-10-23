@@ -102,7 +102,7 @@ func TestRecipeRunPromptSpawnsWithModeAndSendsPrompt(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 	fa := agentOf(id)
-	if got := fa.calls("session/set_mode"); len(got) != 1 || !strings.Contains(got[0], `"mode":"plan"`) {
+	if got := fa.calls("session/set_mode"); len(got) != 1 || !strings.Contains(got[0], `"mode":"ask"`) {
 		t.Errorf("set_mode = %v", got)
 	}
 	if got := fa.calls("session/prompt"); len(got) != 1 || !strings.Contains(got[0], "since v1.2") {

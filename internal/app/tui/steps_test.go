@@ -185,9 +185,9 @@ func TestStepRowsStayWithinTheFrameAtEveryWidth(t *testing.T) {
 }
 
 func TestNarrationWrapsCompletelyWithoutDuplication(t *testing.T) {
-	for _, d := range []density{densityOutline, densitySteps, densityFull} {
+	for _, d := range []bool{false, true} {
 		for _, width := range []int{40, 80, 120} {
-			t.Run(fmt.Sprintf("density=%d/width=%d", d, width), func(t *testing.T) {
+			t.Run(fmt.Sprintf("expanded=%v/width=%d", d, width), func(t *testing.T) {
 				narration := "The baseline tests are running; I’ll delegate the document import while I prepare the task-by-task execution plan. Second sentence with important details.\n\nThird paragraph with detail."
 				// Exercise the production renderer directly at narrow widths too.
 				si := &viewmodel.StepInfo{Narration: []*session.Message{{Content: narration}}}
@@ -215,7 +215,7 @@ func TestNarrationWrapsCompletelyWithoutDuplication(t *testing.T) {
 func TestNarrationMarkdownRemainsWhole(t *testing.T) {
 	for _, text := range []string{"**Checking the parser. Then checking the lexer.**", "```go\nfunc example() {}\n```"} {
 		si := &viewmodel.StepInfo{Narration: []*session.Message{{Content: text}}}
-		out, _ := renderStep(&viewmodel.Node{Kind: viewmodel.KindStep, Step: si}, &stepRenderCtx{}, 80, densitySteps)
+		out, _ := renderStep(&viewmodel.Node{Kind: viewmodel.KindStep, Step: si}, &stepRenderCtx{}, 80, false)
 		plain := stripANSI(out)
 		if strings.Contains(plain, "**") || strings.Contains(plain, "```") {
 			t.Fatalf("markdown split or unrendered:\n%s", plain)
@@ -625,7 +625,7 @@ func TestRunningToolRowInsideStepExpandsOnClickEvenWithGlobalExpand(t *testing.T
 	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: id, ToolCallID: "run"})
 	m.state.AppendActiveToolCallOutput("run", "PASS pkg/first\nPASS pkg/b\nPASS pkg/c\nPASS pkg/d\nPASS pkg/e\nPASS pkg/f\nPASS pkg/g\nPASS pkg/h\nPASS pkg/last")
 	m.busy, m.turnStartedAt = true, time.Now()
-	m.density = densityFull // ctrl+g on: settled rows open, running rows stay closed
+	m.expandAll = true // ctrl+g on: settled rows open, running rows stay closed
 
 	row := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
 	m.invalidateTranscript()

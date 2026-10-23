@@ -2606,8 +2606,8 @@ func TestCtrlGExpandsThinkingAndToolRuns(t *testing.T) {
 	m.refreshViewport()
 
 	m = sendKey(m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
-	if m.density != densityFull {
-		t.Fatalf("ctrl+g from steps should reach full, got %v", m.density)
+	if !m.expandAll {
+		t.Fatal("ctrl+g should turn expand-all on")
 	}
 	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "reasoning about the budget") {
@@ -2620,12 +2620,8 @@ func TestCtrlGExpandsThinkingAndToolRuns(t *testing.T) {
 	}
 
 	m = sendKey(m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
-	if m.density != densityOutline {
-		t.Fatalf("ctrl+g from full should reach outline, got %v", m.density)
-	}
-	m = sendKey(m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
-	if m.density != densitySteps {
-		t.Fatalf("ctrl+g from outline should return to steps, got %v", m.density)
+	if m.expandAll {
+		t.Fatal("ctrl+g again should turn expand-all off")
 	}
 	if !strings.Contains(stripANSI(m.View().Content), "×3") {
 		t.Fatal("collapsing again should restore the ×3 line")

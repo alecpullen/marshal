@@ -38,10 +38,9 @@ type subRegion struct {
 
 // stepRenderCtx carries everything renderStep reads from the Model.
 type stepRenderCtx struct {
-	// density resolves a node's level: its own override, else inherited.
-	density func(id viewmodel.NodeID, inherited density) density
-	// record is told the level each node is drawn at.
-	record func(id viewmodel.NodeID, d density)
+	// expanded resolves whether a node draws expanded: its own choice, else
+	// the state it inherits.
+	expanded func(id viewmodel.NodeID, inherited bool) bool
 	// liveExpanded is expanded for an in-flight call, which stays collapsed
 	// until clicked whatever the global default says.
 	liveExpanded func(viewmodel.NodeID) bool
@@ -63,16 +62,12 @@ type stepRenderCtx struct {
 	workdir string
 }
 
-// level resolves and records a node's density.
-func (c *stepRenderCtx) level(id viewmodel.NodeID, inherited density) density {
-	d := inherited
-	if c.density != nil {
-		d = c.density(id, inherited)
+// open resolves whether a node draws expanded.
+func (c *stepRenderCtx) open(id viewmodel.NodeID, inherited bool) bool {
+	if c.expanded == nil {
+		return inherited
 	}
-	if c.record != nil {
-		c.record(id, d)
-	}
-	return d
+	return c.expanded(id, inherited)
 }
 
 func (c *stepRenderCtx) liveToolExpanded(id viewmodel.NodeID) bool {
@@ -93,10 +88,10 @@ func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
 // owner meta), the narration continuation, thinking rows, then tool rows and
 // subagent cards at nested indent. Every piece ends in a newline, so the
 // block's line count is strings.Count(out, "\n").
-func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited density) (string, []subRegion) {
+func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) (string, []subRegion) {
 	si := n.Step
 	rows := n.Children
-	sd := c.level(n.ID, inherited)
+	open := c.open(n.ID, inherited)
 	var b strings.Builder
 	var subs []subRegion
 	lines := 0
@@ -143,18 +138,9 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		dur:        stepDuration(n, c.now),
 		ownerColor: actorColor(si.Step.Actor.Role),
 	}
-	if sd == densityOutline {
-		meta.tools = countToolCalls(rows)
-	}
-	switch {
-	case headless && sd == densityOutline:
-		summary, _ := renderMeta("", "", fmt.Sprintf("%d tools", meta.tools), meta.dur, nil)
-		write(gutterPrefix(g, gc) + summary + "\n")
-	case headless:
-		// No header line.
-	default:
+	if !headless {
 		// Render narration as a single Markdown document so formatting and
-		// code fences survive sentence boundaries. Density never hides it.
+		// code fences survive sentence boundaries.
 		var texts []string
 		for _, m := range si.Narration {
 			if text := strings.TrimSpace(m.Content); text != "" {
@@ -185,21 +171,16 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		}
 		rest = "" // The full narration has already been rendered once.
 	}
-	if sd == densityOutline {
-		// Outline hides reasoning and tool rows, never narration.
-		return b.String(), subs
-	}
 
 	// Narration continuation.
 	if rest != "" {
-		write(renderStepContinuation(rest, sd == densityFull, width))
+		write(renderStepContinuation(rest, width))
 	}
 
 	// Thinking rows.
 	for _, t := range si.Thinking {
 		id := viewmodel.ThinkingID(t)
-		td := c.level(id, sd)
-		row(id, renderNestedThinking(t, td == densityFull, width), subRegion{})
+		row(id, renderNestedThinking(t, c.open(id, open), width), subRegion{})
 	}
 	if si.LiveThinking != "" {
 		rv := c.region(viewmodel.LiveThinkingID)
@@ -213,8 +194,8 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 	}
 
 	// A long beat shows its newest rows; the rest collapse into one line.
-	// A user override on the beat (Enter / click to full) shows them all.
-	if over := len(rows) - viewmodel.BeatRowCap; over > 0 && sd != densityFull {
+	// Expanding the beat shows them all.
+	if over := len(rows) - viewmodel.BeatRowCap; over > 0 && !open {
 		write(strings.Repeat(" ", nestedBodyIndent) + mutedStyle().Render(fmt.Sprintf("+%d earlier calls", over)) + "\n")
 		rows = rows[over:]
 	}
@@ -225,28 +206,16 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited densit
 		case ch.Kind == viewmodel.KindTool && ch.Active != nil:
 			row(ch.ID, renderActiveToolRow(*ch.Active, c, c.liveToolExpanded(ch.ID), width), subRegion{})
 		case ch.Kind == viewmodel.KindTool && ch.Job != nil:
-			row(ch.ID, renderJobCard(ch, c.toolSpinner, c.now, c.level(ch.ID, sd) == densityFull, width, c.workdir), subRegion{live: ch.Job.Running})
+			row(ch.ID, renderJobCard(ch, c.toolSpinner, c.now, c.open(ch.ID, open), width, c.workdir), subRegion{live: ch.Job.Running})
 		case ch.Kind == viewmodel.KindTool && len(ch.Tools) > 1:
-			rd := c.level(ch.ID, sd)
-			if rd == densityOutline {
-				continue
-			}
-			row(ch.ID, renderToolGroupRow(ch.Tools, rd == densityFull, width), subRegion{})
+			row(ch.ID, renderToolGroupRow(ch.Tools, c.open(ch.ID, open), width), subRegion{})
 		case ch.Kind == viewmodel.KindTool && len(ch.Tools) == 1:
-			rd := c.level(ch.ID, sd)
-			if rd == densityOutline {
-				continue
-			}
-			row(ch.ID, renderToolRow(ch.Tools[0], rd == densityFull, c.callersFor(ch.ID), width, c.workdir), subRegion{})
+			row(ch.ID, renderToolRow(ch.Tools[0], c.open(ch.ID, open), c.callersFor(ch.ID), width, c.workdir), subRegion{})
 		case ch.Kind == viewmodel.KindSubagent && ch.Item != nil && ch.Item.Subagent != nil:
 			v := *ch.Item.Subagent
 			rv := c.region(ch.ID)
-			cd := c.level(ch.ID, sd)
-			card := renderSubagentCard(v, cd == densityFull, c.toolSpinner, rv, width-stepRowIndent)
-			if cd == densityOutline {
-				card = headRow(card)
-			}
-			sub := subRegion{live: v.Status == session.SubagentRunning && cd != densityOutline}
+			card := renderSubagentCard(v, c.open(ch.ID, open), c.toolSpinner, rv, width-stepRowIndent)
+			sub := subRegion{live: v.Status == session.SubagentRunning}
 			if v.Child != nil {
 				sub.subagent = &v
 			}
@@ -408,14 +377,6 @@ func renderTodoDivider(l *viewmodel.TodoLabel, width int) string {
 	text = ansi.Truncate(text, room, "…")
 	fill := max(width-gutterWidth-2-ansi.StringWidth(text), 2)
 	return strings.Repeat(" ", gutterWidth) + mutedStyle().Render("──"+text+strings.Repeat("─", fill)) + "\n"
-}
-
-// headRow keeps only the first line of a rendered block, newline included.
-func headRow(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i+1]
-	}
-	return s
 }
 
 // countToolCalls is the number of tool calls a step made, counting each call
@@ -673,9 +634,8 @@ func firstSentence(s string) (head, rest string) { return viewmodel.FirstSentenc
 // which is rendered as plain text.
 func stripEmphasis(s string) string { return viewmodel.StripEmphasis(s) }
 
-// renderStepContinuation always renders the complete narration continuation.
-// Density controls tool and thinking details, not narration visibility.
-func renderStepContinuation(rest string, _ bool, width int) string {
+// renderStepContinuation renders the complete narration continuation.
+func renderStepContinuation(rest string, width int) string {
 	cw := nestedContentWidth(width)
 	pad := strings.Repeat(" ", nestedBodyIndent)
 	body, ok := renderMarkdown(rest, cw)

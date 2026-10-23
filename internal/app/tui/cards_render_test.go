@@ -160,7 +160,7 @@ func TestShellRowElidesTheWorktree(t *testing.T) {
 			Step: &viewmodel.StepInfo{Step: session.Step{ID: 1}}, Children: []*viewmodel.Node{row}}
 	}
 
-	out, _ := renderStep(step(), &stepRenderCtx{workdir: root}, 100, densitySteps)
+	out, _ := renderStep(step(), &stepRenderCtx{workdir: root}, 100, false)
 	plain := ansi.Strip(out)
 	if !strings.Contains(plain, "⌂ pytest -q") {
 		t.Fatalf("row = %q", plain)
@@ -169,7 +169,7 @@ func TestShellRowElidesTheWorktree(t *testing.T) {
 		t.Fatalf("the worktree path should be gone: %q", plain)
 	}
 	// With no workdir known, the command stays exactly as the model wrote it.
-	out, _ = renderStep(step(), &stepRenderCtx{}, 100, densitySteps)
+	out, _ = renderStep(step(), &stepRenderCtx{}, 100, false)
 	if got := ansi.Strip(out); !strings.Contains(got, "cd "+root) {
 		t.Fatalf("row = %q", got)
 	}

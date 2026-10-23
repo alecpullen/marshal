@@ -323,7 +323,7 @@ func (m *Model) openBrowseHelp() (tea.Model, tea.Cmd, bool) {
 			row("g   G", "first / last node"),
 			row("PgUp PgDn  ^U ^D", "scroll a page"),
 			{Header: "Act"},
-			row("Enter", "cycle detail (drills into a subagent card)"),
+			row("Enter", "expand / collapse (drills into a subagent card)"),
 			row("i", "inspect the step or tool call"),
 			row("y", "copy its text (OSC 52)"),
 			row("o", "open its file in $EDITOR"),

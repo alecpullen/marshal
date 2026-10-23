@@ -104,8 +104,7 @@ func (m *Model) refreshViewport() {
 
 	toolFrame := m.activeSpinnerFrame(session.ActivityTool)
 	rctx := &stepRenderCtx{
-		density:       m.densityOf,
-		record:        m.recordDensity,
+		expanded:      m.expandedUnder,
 		liveExpanded:  func(id viewmodel.NodeID) bool { return m.isToolExpanded(id, true) },
 		region:        m.regionView,
 		noteRows:      m.noteRegionRows,
@@ -268,7 +267,7 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return renderReceipt(n.Receipt, width), nil
 	case n.Kind == viewmodel.KindStep && n.Step != nil:
-		return renderStep(n, c, width, m.density)
+		return renderStep(n, c, width, m.expandAll)
 	case n.Kind == viewmodel.KindThinking && n.Step != nil:
 		// Reasoning before any step has begun: the bounded live box on its own.
 		rv := m.regionView(viewmodel.LiveThinkingID)
@@ -283,14 +282,13 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 		return renderActiveToolCall(*n.Active, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
 	case n.Item != nil:
 		rv := m.regionView(n.ID)
-		d := m.densityOf(n.ID, m.density)
-		m.recordDensity(n.ID, d)
-		return renderTranscriptItemIn(*n.Item, d == densityFull, m.spinnerFrame, rv, m.callers[n.ID], width, c.workdir), nil
+		return renderTranscriptItemIn(*n.Item, m.expandedUnder(n.ID, m.expandAll), m.spinnerFrame, rv, m.callers[n.ID], width, c.workdir), nil
 	}
 	return "", nil
 }
 
-// rowBeats maps every row inside a beat to that beat.
+// rowBeats maps every row inside a beat, thinking rows included, to that
+// beat.
 func rowBeats(turns []*viewmodel.Node) map[viewmodel.NodeID]viewmodel.NodeID {
 	out := map[viewmodel.NodeID]viewmodel.NodeID{}
 	for _, turn := range turns {
@@ -300,6 +298,9 @@ func rowBeats(turns []*viewmodel.Node) map[viewmodel.NodeID]viewmodel.NodeID {
 			}
 			for _, row := range n.Children {
 				out[row.ID] = n.ID
+			}
+			for _, t := range n.Step.Thinking {
+				out[viewmodel.ThinkingID(t)] = n.ID
 			}
 		}
 	}
@@ -404,11 +405,11 @@ func (m *Model) nodeSig(n *viewmodel.Node, c *stepRenderCtx) uint64 {
 type sigWriter interface{ Write([]byte) (int, error) }
 
 func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
-	// The node's own override (if any) is what varies per node; inherited
-	// levels come from ancestors, which this fold also covers.
-	ov, hasOv := m.override(n.ID)
-	fmt.Fprintf(h, "%s|%v|%d|%d|%d|", n.ID.Key, hasOv, ov, m.regionOffset[n.ID], m.regionRows[n.ID])
-	fmt.Fprintf(h, "d%d|", m.density)
+	// The node's own choice (if any) is what varies per node; inherited
+	// states come from ancestors, which this fold also covers.
+	ov, hasOv := m.ownExpanded(n.ID)
+	fmt.Fprintf(h, "%s|%v|%v|%d|%d|", n.ID.Key, hasOv, ov, m.regionOffset[n.ID], m.regionRows[n.ID])
+	fmt.Fprintf(h, "x%v|", m.expandAll)
 	if n.Kind == viewmodel.KindStep {
 		fmt.Fprintf(h, "%s|%s|", c.routeModel, c.routeProvider)
 	}
@@ -417,8 +418,8 @@ func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
 	}
 	if n.Step != nil {
 		for _, t := range n.Step.Thinking {
-			tov, thas := m.override(viewmodel.ThinkingID(t))
-			fmt.Fprintf(h, "t%v|%d|", thas, tov)
+			tov, thas := m.ownExpanded(viewmodel.ThinkingID(t))
+			fmt.Fprintf(h, "t%v|%v|", thas, tov)
 		}
 	}
 	for _, ch := range n.Children {
@@ -432,7 +433,7 @@ func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
 // not.
 func (m *Model) contentSignature(turns []*viewmodel.Node, width int, themeSig uint64, queued []string, notice session.Notice, noticeUp bool, reconnect string, hasTurns bool) uint64 {
 	h := fnv.New64a()
-	fmt.Fprintf(h, "w%d|t%d|g%d|", width, themeSig, m.density)
+	fmt.Fprintf(h, "w%d|t%d|x%v|", width, themeSig, m.expandAll)
 	fmt.Fprintf(h, "turns%v|", hasTurns)
 	c := &stepRenderCtx{}
 	if st, _ := m.transcriptSource(); st != nil {

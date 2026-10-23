@@ -607,14 +607,11 @@ type Model struct {
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
-	// density is the global detail level (Ctrl+G); nodeDensity holds per-node
-	// overrides set by Enter or a click, cleared whenever Ctrl+G moves the
-	// global level. A node without one inherits its parent's level.
-	density     density
-	nodeDensity map[viewmodel.NodeID]density
-	// effDensity records the level each node was last drawn at, so a click
-	// cycles from what the user sees rather than from the global default.
-	effDensity map[viewmodel.NodeID]density
+	// expandAll is Ctrl+G: every node draws expanded. expanded holds the
+	// per-node choices made with Enter or a click, cleared whenever Ctrl+G
+	// flips. A row without one follows its beat, and a beat follows expandAll.
+	expandAll bool
+	expanded  map[viewmodel.NodeID]bool
 	// Browse mode (Esc): a cursor over the rendered nodes. browseItems is
 	// rebuilt on every full refresh; browseTree indexes the nodes for copy,
 	// open and inspect.
@@ -1304,16 +1301,11 @@ func relPath(workingDir, path string) string {
 // status line (the policy engine is rebuilt from the same value by the
 // runtime reload).
 func (m *Model) applyNewConfig(cfg config.Config) {
-	prevTranscript := m.state.Config.TUI.Transcript
 	// Rebase rather than assign: the session owns the mode override, so an
 	// unrelated reload must not silently revert a manual selection or an
 	// approved grant. RebaseInteractionConfig installs the new config with the
 	// remaining override applied and preserves the system-access flag.
 	m.state.RebaseInteractionConfig(cfg)
-	if cfg.TUI.Transcript != prevTranscript {
-		// An edit to [tui.transcript] takes effect in the running session.
-		m.applyTranscriptConfig()
-	}
 	// Read the effective mode back from the session: it may differ from the
 	// configured value when an override survived the rebase.
 	m.setReg = nil
@@ -1778,7 +1770,6 @@ func New(state *session.State, opts ...Option) Model {
 		spinner:          NewSpinner(),
 		now:              time.Now,
 		viewportFollow:   true,
-		density:          parseDensity(state.Config.TUI.Transcript.Density),
 		discovered:       map[string][]schema.ModelInfo{},
 	}
 	for _, opt := range opts {

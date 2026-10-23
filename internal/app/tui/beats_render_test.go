@@ -28,7 +28,7 @@ func beatNode(narr string, calls int) *viewmodel.Node {
 }
 
 func TestRenderHeadlessBeatHasNoInventedHeader(t *testing.T) {
-	out, _ := renderStep(beatNode("", 2), &stepRenderCtx{}, 100, densitySteps)
+	out, _ := renderStep(beatNode("", 2), &stepRenderCtx{}, 100, false)
 	plain := ansi.Strip(out)
 	for _, bad := range []string{"inferred", "ran ", "working", "thinking"} {
 		if strings.Contains(plain, bad) {
@@ -42,7 +42,7 @@ func TestRenderHeadlessBeatHasNoInventedHeader(t *testing.T) {
 
 // Review focus 1: a long headless beat shows the last BeatRowCap rows.
 func TestRenderHeadlessBeatCapsRows(t *testing.T) {
-	out, _ := renderStep(beatNode("", viewmodel.BeatRowCap+5), &stepRenderCtx{}, 100, densitySteps)
+	out, _ := renderStep(beatNode("", viewmodel.BeatRowCap+5), &stepRenderCtx{}, 100, false)
 	plain := ansi.Strip(out)
 	if !strings.Contains(plain, "+5 earlier calls") {
 		t.Fatalf("want a collapsed-count line:\n%s", plain)
@@ -52,18 +52,10 @@ func TestRenderHeadlessBeatCapsRows(t *testing.T) {
 	}
 }
 
-func TestRenderHeadlessBeatOutlineIsOneSummaryRow(t *testing.T) {
-	out, _ := renderStep(beatNode("", 3), &stepRenderCtx{}, 100, densityOutline)
-	plain := strings.TrimRight(ansi.Strip(out), "\n")
-	if strings.Count(plain, "\n") != 0 || !strings.Contains(plain, "3 tools") {
-		t.Fatalf("outline headless beat = %q", plain)
-	}
-}
-
 func TestRenderDividerOnLabelledBeat(t *testing.T) {
 	n := beatNode("Parser first.", 1)
 	n.Step.Todo = &viewmodel.TodoLabel{ID: "p", Index: 3, Total: 9, Content: "AccessibleModal initialFocus"}
-	out, _ := renderStep(n, &stepRenderCtx{}, 80, densitySteps)
+	out, _ := renderStep(n, &stepRenderCtx{}, 80, false)
 	first := strings.SplitN(ansi.Strip(out), "\n", 2)[0]
 	if !strings.Contains(first, "3/9 AccessibleModal initialFocus") || !strings.HasPrefix(strings.TrimSpace(first), "──") {
 		t.Fatalf("divider = %q", first)

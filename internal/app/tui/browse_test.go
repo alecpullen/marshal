@@ -138,17 +138,21 @@ func TestBrowseMovementKeys(t *testing.T) {
 	}
 }
 
-func TestEnterCyclesTheNodesDensityAndOnlyThatNode(t *testing.T) {
+func TestEnterTogglesTheNodeAndOnlyThatNode(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc")
 	step := m.cursor
-	before := m.shownDensity(step)
+	before := m.isExpanded(step)
 	m = pressKeys(m, "enter")
-	if got := m.shownDensity(step); got != before.nextOverride() {
-		t.Fatalf("Enter: %v -> %v, want %v", before, got, before.nextOverride())
+	if got := m.isExpanded(step); got == before {
+		t.Fatalf("Enter left the node at expanded=%v", got)
 	}
-	if len(m.nodeDensity) != 1 {
-		t.Fatalf("only the cursor node gets an override, have %v", m.nodeDensity)
+	if len(m.expanded) != 1 {
+		t.Fatalf("only the cursor node gets a choice, have %v", m.expanded)
+	}
+	m = pressKeys(m, "enter")
+	if got := m.isExpanded(step); got != before {
+		t.Fatalf("Enter again restores expanded=%v, got %v", before, got)
 	}
 }
 
@@ -384,23 +388,6 @@ func TestOpenIgnoresDirectoriesAndPathsOutsideTheWorkspace(t *testing.T) {
 		if path, _ := m.nodeFile(n); path != "" {
 			t.Errorf("path %q resolved to %q; directories and outside paths must not open (root %s)", p, path, root)
 		}
-	}
-}
-
-func TestTranscriptConfigChangeReappliesToTheRunningSession(t *testing.T) {
-	m := browseFixture(t)
-	m.density = densityFull
-	cfg := m.state.Config
-	cfg.TUI.Transcript.Density = "outline"
-	m.applyNewConfig(cfg)
-	if m.density != densityOutline {
-		t.Fatalf("density %v after the config changed", m.density)
-	}
-	// An unrelated reload leaves the user's Ctrl+G choice alone.
-	m.density = densityFull
-	m.applyNewConfig(cfg)
-	if m.density != densityFull {
-		t.Fatal("a reload that did not touch [tui.transcript] must not reset the density")
 	}
 }
 

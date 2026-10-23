@@ -8,39 +8,40 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
 
-func TestIsExpandedFollowsGlobalDefaultUntilOverridden(t *testing.T) {
+func TestIsExpandedFollowsExpandAllUntilToggled(t *testing.T) {
 	m := newTestModel(t)
 	key := thinkID(time.Unix(100, 0))
 
 	if m.isExpanded(key) {
-		t.Fatal("expected collapsed by default (density starts at steps)")
+		t.Fatal("expected collapsed by default")
 	}
 
-	m.density = densityFull
+	m.expandAll = true
 	if !m.isExpanded(key) {
-		t.Fatal("expected expanded once the global default flips")
+		t.Fatal("expected expanded once expand-all is on")
 	}
 
 	m.toggleExpanded(key)
 	if m.isExpanded(key) {
-		t.Fatal("expected the per-item override to win over the global default")
+		t.Fatal("expected the node's own choice to win over expand-all")
 	}
 
-	m.density = densitySteps
+	m.expandAll = false
 	if m.isExpanded(key) {
-		t.Fatal("expected the per-item override (still false) to persist")
+		t.Fatal("expected the node's own choice (still collapsed) to persist")
 	}
 }
 
-func TestCtrlGClearsPerItemOverrides(t *testing.T) {
+func TestCtrlGClearsPerNodeChoices(t *testing.T) {
 	m := newTestModel(t)
 	key := thinkID(time.Unix(100, 0))
-	m.toggleExpanded(key) // override to true (default false -> true)
+	m.toggleExpanded(key) // collapsed -> expanded
 	if !m.isExpanded(key) {
-		t.Fatal("precondition: override should read expanded")
+		t.Fatal("precondition: the choice should read expanded")
 	}
 
 	updated, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
@@ -49,24 +50,24 @@ func TestCtrlGClearsPerItemOverrides(t *testing.T) {
 	}
 	mm := asModel(t, updated)
 
-	// the global level moved to full, and the override was cleared, so the
-	// item now simply follows the (new) global default.
-	if !mm.isExpanded(key) {
-		t.Fatal("expected item to follow the flipped global default")
+	// Expand-all turned on and the choice was cleared, so the node simply
+	// follows expand-all.
+	if !mm.expandAll || !mm.isExpanded(key) {
+		t.Fatal("expected the node to follow expand-all")
 	}
-	if len(mm.nodeDensity) != 0 {
-		t.Fatalf("nodeDensity = %v, want cleared", mm.nodeDensity)
+	if len(mm.expanded) != 0 {
+		t.Fatalf("expanded = %v, want cleared", mm.expanded)
 	}
 }
 
-func TestCtrlGClearsActiveToolOverrides(t *testing.T) {
+func TestCtrlGClearsActiveToolChoices(t *testing.T) {
 	m := newTestModel(t)
 	keyA := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:a"}
 	keyB := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:b"}
-	m.toggleExpanded(keyA)
-	m.toggleExpanded(keyB)
+	m.setExpanded(keyA, true)
+	m.setExpanded(keyB, true)
 	if !m.isToolExpanded(keyA, true) || !m.isToolExpanded(keyB, true) {
-		t.Fatal("precondition: both overrides should be set")
+		t.Fatal("precondition: both choices should be set")
 	}
 
 	updated, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
@@ -75,12 +76,44 @@ func TestCtrlGClearsActiveToolOverrides(t *testing.T) {
 	}
 	mm := asModel(t, updated)
 
-	if len(mm.nodeDensity) != 0 {
-		t.Fatalf("nodeDensity = %v, want cleared", mm.nodeDensity)
+	if len(mm.expanded) != 0 {
+		t.Fatalf("expanded = %v, want cleared", mm.expanded)
 	}
-	// A running call ignores the global default: it stays collapsed.
+	// A running call ignores expand-all: it stays collapsed.
 	if mm.isToolExpanded(keyA, true) || mm.isToolExpanded(keyB, true) {
-		t.Fatal("expected all active-tool overrides to be cleared")
+		t.Fatal("expected all active-tool choices to be cleared")
+	}
+}
+
+// Expanding a beat opens every row in it that has no choice of its own; a
+// row's own choice still wins.
+func TestExpandingABeatOpensItsRows(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 60)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Reading two files.")
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "a",
+		Args: []byte(`{"path":"a.go"}`), ResultSummary: "1 line", ResultContent: "alpha body"})
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "git.status", StepID: id, ToolCallID: "b",
+		ResultSummary: "clean", ResultContent: "beta body"})
+	m.state.EndStep(id)
+	m.refreshViewport()
+	if text := viewText(&m); strings.Contains(text, "alpha body") || strings.Contains(text, "beta body") {
+		t.Fatalf("rows start collapsed:\n%s", text)
+	}
+
+	beat := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: "step:1"}
+	m.toggleExpanded(beat)
+	m.invalidateTranscript()
+	if text := viewText(&m); !strings.Contains(text, "alpha body") || !strings.Contains(text, "beta body") {
+		t.Fatalf("an expanded beat opens its rows:\n%s", text)
+	}
+
+	m.toggleExpanded(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:1:a"})
+	m.invalidateTranscript()
+	if text := viewText(&m); strings.Contains(text, "alpha body") || !strings.Contains(text, "beta body") {
+		t.Fatalf("collapsing one row leaves the others open:\n%s", text)
 	}
 }
 

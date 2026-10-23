@@ -18,7 +18,6 @@ import (
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/interaction"
 	"marshal/internal/pipeline"
-	"marshal/internal/viewmodel"
 	"marshal/internal/worktree"
 )
 
@@ -221,11 +220,8 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 
 	// Drop per-message UI state that belongs to the old session.
-	m.nodeDensity = make(map[viewmodel.NodeID]density)
-	m.effDensity = nil
 	m.viewStack = nil
-	m.invalidateTranscript()
-	m.applyTranscriptConfig()
+	m.resetExpansion()
 	m.nodeRegions = nil
 	// The old session's changed-files list must never render in the new
 	// session while the sheetBaseRefMsg round-trips; re-read it below.

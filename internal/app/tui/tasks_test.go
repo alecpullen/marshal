@@ -142,26 +142,6 @@ func TestDroppedTodoGetsNoDivider(t *testing.T) {
 	}
 }
 
-func TestOutlineShowsOneRowPerStep(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(120, 80)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	for i := 0; i < 10; i++ {
-		stepFixture(t, &m, session.Actor{}, fmt.Sprintf("Step %d does a thing. More words here.", i), readEvent("a.go"))
-	}
-	m.density = densityOutline
-	text := viewText(&m)
-	if got := strings.Count(text, "does a thing."); got != 10 {
-		t.Fatalf("outline rows = %d, want 10:\n%s", got, text)
-	}
-	if strings.Contains(text, "a.go") {
-		t.Fatalf("tool rows are hidden at outline:\n%s", text)
-	}
-	if !strings.Contains(text, "1 tool") {
-		t.Fatalf("outline steps carry a tool count:\n%s", text)
-	}
-}
-
 func TestPreTaskSessionsRenderWithoutHeadersOrErrors(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
@@ -295,9 +275,10 @@ func TestSalvagedTurnReceiptSaysSo(t *testing.T) {
 	}
 }
 
-// The density matrix for one step with narration, reasoning and a tool call.
-func TestDensityMatrix(t *testing.T) {
-	build := func(d density) string {
+// One step with narration, reasoning and a tool call, collapsed and with
+// Ctrl+G's expand-all.
+func TestExpandMatrix(t *testing.T) {
+	build := func(all bool) string {
 		m := newTestModel(t)
 		m.resize(120, 80)
 		m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
@@ -307,18 +288,17 @@ func TestDensityMatrix(t *testing.T) {
 		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: "r",
 			Args: []byte(`{"path":"cfg.go"}`), ResultSummary: "12 lines", ResultContent: "package cfg\nvar Secret = 1"})
 		m.state.EndStep(id)
-		m.density = d
+		m.expandAll = all
 		return viewText(&m)
 	}
-	outline, steps, full := build(densityOutline), build(densitySteps), build(densityFull)
+	collapsed, expanded := build(false), build(true)
 
 	for _, c := range []struct {
 		name, text string
 		want       map[string]bool // substring -> expected present
 	}{
-		{"outline", outline, map[string]bool{"Reading the config.": true, "Read file": false, "thought for": false, "1 tool": true}},
-		{"steps", steps, map[string]bool{"Reading the config.": true, "Read file": true, "thought for": true, "private reasoning text": false, "var Secret": false}},
-		{"full", full, map[string]bool{"Reading the config.": true, "private reasoning text": true, "var Secret": true}},
+		{"collapsed", collapsed, map[string]bool{"Reading the config.": true, "Read file": true, "thought for": true, "private reasoning text": false, "var Secret": false}},
+		{"expanded", expanded, map[string]bool{"Reading the config.": true, "private reasoning text": true, "var Secret": true}},
 	} {
 		for sub, want := range c.want {
 			if got := strings.Contains(c.text, sub); got != want {

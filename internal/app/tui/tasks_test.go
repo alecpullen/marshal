@@ -389,9 +389,10 @@ func TestLeftoverPlanIsOneIdleRow(t *testing.T) {
 }
 
 // TestStripWindowCentersOnTheActiveTodo pinned the todo strip's row window.
-// The strip is gone: the band shows one progress line and one checklist line
-// (nowbar_test.go), and the full list opens in the Ctrl+T Tasks panel, which
-// numbers every todo against the whole list (TestTasksDocShowsStepCounts).
+// The strip is gone: the live box's plan band carries the progress
+// (TestTodoDividersOrderTheWorkAndTheBandCarriesProgress), and the full list
+// opens in the Ctrl+T Tasks panel, which numbers every todo against the whole
+// list (TestTasksDocShowsStepCounts).
 
 func TestTransientNarrationFlowsWithoutHeadersWhenThereAreNoTodos(t *testing.T) {
 	m := newTestModel(t)

@@ -622,11 +622,8 @@ type Model struct {
 	// copyWriter is the local clipboard helper; copyRemote reports an SSH
 	// session, where that helper would write the remote machine's clipboard.
 	// With neither usable, copies go to the terminal over OSC 52.
-	copyWriter clipboard.Writer
-	copyRemote func() bool
-	// taskStats counts steps and work time per todo as the transcript groups them (with the
-	// render-time re-binding), so the Tasks panel agrees with the headers.
-	taskStats   map[string]viewmodel.TaskStat
+	copyWriter  clipboard.Writer
+	copyRemote  func() bool
 	cursor      viewmodel.NodeID
 	browseItems []browseItem
 	browseTree  map[viewmodel.NodeID]*viewmodel.Node
@@ -763,8 +760,9 @@ type Model struct {
 	// a result from a closed panel can be told apart from its replacement.
 	panelSeq uint64
 
-	// liveBoxMode is the live box's plan layout. Task 9 seeds it from config;
-	// until then a session starts stacked.
+	// liveBoxMode is the live box's plan layout, seeded from config
+	// (tui.live_box.layout) when the model is constructed and cycled by
+	// Ctrl+T.
 	liveBoxMode livebox.Mode
 	// live is the live part of the transcript — the beat in flight and the
 	// reasoning streaming under it — rendered by refreshViewport. It is drawn

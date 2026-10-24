@@ -215,7 +215,6 @@ func (m *Model) refreshViewport() {
 	m.nodeRegions = regions
 	m.blockSpans = spans
 	m.setBrowseItems(bitems, tree)
-	m.taskStats = viewmodel.TaskStats(turns)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	var sb strings.Builder

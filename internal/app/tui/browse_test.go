@@ -394,7 +394,7 @@ func TestOpenIgnoresDirectoriesAndPathsOutsideTheWorkspace(t *testing.T) {
 	}
 }
 
-func TestTasksPanelStepCountsMatchTheTaskHeaders(t *testing.T) {
+func TestTaskStepCountsMatchTheTaskHeaders(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 60)
 	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
@@ -417,8 +417,23 @@ func TestTasksPanelStepCountsMatchTheTaskHeaders(t *testing.T) {
 	m.state.EndStep(c)
 	m.invalidateTranscript()
 	m.refreshViewport()
-	if m.taskStats["t1"].Steps != 1 || m.taskStats["t2"].Steps != 2 {
-		t.Fatalf("taskStats = %v, want t1:1 t2:2 (the narrated todo.write step renders under t2)", m.taskStats)
+	// Build the same snapshot refreshViewport builds, then recompute the
+	// per-task stats through the production path the task headers use.
+	ts, _ := m.transcriptSource()
+	active := ts.ActiveToolCalls()
+	inProgress := ts.InProgress()
+	snap := viewmodel.Snapshot{
+		Items:       ts.Transcript(),
+		Steps:       ts.Steps(),
+		Todos:       ts.Todos(),
+		ActiveTools: active,
+		InProgress:  inProgress,
+		Busy:        m.busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
+		Now:         m.now(),
+	}
+	stats := viewmodel.TaskStats(viewmodel.Build(snap))
+	if stats["t1"].Steps != 1 || stats["t2"].Steps != 2 {
+		t.Fatalf("taskStats = %v, want t1:1 t2:2 (the narrated todo.write step renders under t2)", stats)
 	}
 }
 

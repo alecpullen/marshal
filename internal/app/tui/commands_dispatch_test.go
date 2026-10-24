@@ -277,7 +277,7 @@ func TestSendNowCommandTokenBoundary(t *testing.T) {
 // item, returning the model and the live panel.
 func openWorkDetail(t *testing.T, m Model, item viewmodel.WorkItem) (Model, *tasksPanelModel) {
 	t.Helper()
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if !m.tasksOpen() {
 		t.Fatal("the Tasks panel did not open")
 	}

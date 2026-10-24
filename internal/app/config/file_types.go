@@ -256,6 +256,11 @@ type fileTUI struct {
 	SidePanel    *fileSidePanel    `toml:"side_panel"`
 	Suggestions  *string           `toml:"suggestions"`
 	Transcript   *fileTranscript   `toml:"transcript"`
+	LiveBox      *fileLiveBox      `toml:"live_box"`
+}
+
+type fileLiveBox struct {
+	Layout *string `toml:"layout"`
 }
 
 // fileTranscript mirrors the retired [tui.transcript] table. Its keys still

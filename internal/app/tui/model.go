@@ -1783,7 +1783,7 @@ func New(state *session.State, opts ...Option) Model {
 		spinner:          NewSpinner(),
 		now:              time.Now,
 		viewportFollow:   true,
-		liveBoxMode:      livebox.Stacked,
+		liveBoxMode:      livebox.ParseMode(state.Config.TUI.LiveBox.Layout),
 		discovered:       map[string][]schema.ModelInfo{},
 	}
 	for _, opt := range opts {
@@ -2920,14 +2920,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			// Ctrl+T and Ctrl+B are global toggles between the two panels they
-			// own: the key that opened a panel closes it, and the other key
-			// switches to the other panel, rather than being swallowed.
+			// Ctrl+B is the global toggle for the sessions sheet: with the
+			// Tasks panel or the sheet itself up, it opens (or refreshes) the
+			// sheet rather than being swallowed.
 			if k, ok := msg.(tea.KeyPressMsg); ok && m.input.Value() == "" && !m.editingCommand && (m.tasksOpen() || m.sheetOpen()) {
 				switch k.String() {
-				case "ctrl+t":
-					m.toggleTasksPanel()
-					return m, nil
 				case "ctrl+b":
 					m.openSessionSheet()
 					return m, nil

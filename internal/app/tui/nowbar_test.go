@@ -521,7 +521,7 @@ func TestTasksPanelStaysLiveWhileTodosChange(t *testing.T) {
 	if err := m.state.SetTodos([]native.TodoItem{{Content: "first draft", Status: native.TodoInProgress}}); err != nil {
 		t.Fatal(err)
 	}
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if view := stripANSI(m.viewString()); !strings.Contains(view, "Tasks 0/1") || !strings.Contains(view, "first draft") {
 		t.Fatalf("initial panel wrong:\n%s", view)
 	}

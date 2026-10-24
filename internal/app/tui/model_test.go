@@ -7087,37 +7087,9 @@ func TestReplaceTriggerTokenHandlesConsecutiveAt(t *testing.T) {
 	}
 }
 
-func ctrlT(m Model) Model {
-	mm, _ := m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-	return mm.(Model)
-}
-
-func TestCtrlTOpensTasksPanelListingEveryTodo(t *testing.T) {
-	m := newTestModel(t)
-	if err := m.state.SetTodos([]native.TodoItem{
-		{Content: "scaffold parser", Status: native.TodoCompleted},
-		{Content: "implement parser", Status: native.TodoInProgress},
-		{Content: "add tests", Status: native.TodoPending},
-	}); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
-	m.refreshViewport()
-
-	m = ctrlT(m)
-	if !m.dock.IsOpen() {
-		t.Fatal("Ctrl+T with todos must open a docked panel")
-	}
-	view := stripANSI(m.dock.View(m.leftWidth, m.height))
-	for _, want := range []string{"Tasks 1/3", "scaffold parser", "implement parser", "add tests"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Tasks panel missing %q:\n%s", want, view)
-		}
-	}
-
-	m = ctrlT(m)
-	if m.dock.IsOpen() {
-		t.Fatal("a second Ctrl+T must close the Tasks panel")
-	}
+func toggleTasks(m Model) Model {
+	m.toggleTasksPanel()
+	return m
 }
 
 func TestEscClosesTasksPanel(t *testing.T) {
@@ -7125,7 +7097,8 @@ func TestEscClosesTasksPanel(t *testing.T) {
 	if err := m.state.SetTodos([]native.TodoItem{{Content: "a", Status: native.TodoPending}}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
-	m = ctrlT(m)
+	updated, _ := m.dispatchCommand("/work")
+	m = asModel(t, updated)
 	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = mm.(Model)
 	if cmd != nil {
@@ -7134,23 +7107,6 @@ func TestEscClosesTasksPanel(t *testing.T) {
 	}
 	if m.dock.IsOpen() {
 		t.Fatal("Esc must close the Tasks panel")
-	}
-}
-
-func TestCtrlTWithoutTodosOnlyAddsNotice(t *testing.T) {
-	m := newTestModel(t)
-	m = ctrlT(m)
-	if m.dock.IsOpen() {
-		t.Fatal("Ctrl+T with no todos must open nothing")
-	}
-	var found bool
-	for _, msg := range m.state.Messages() {
-		if strings.Contains(msg.Content, "No task list in this session.") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("expected the no-task-list notice")
 	}
 }
 

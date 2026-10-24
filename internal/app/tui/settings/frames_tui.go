@@ -35,6 +35,15 @@ func interfaceFrame(s *state) *frame {
 				return f
 			}(),
 			func() *field {
+				f := enumField("tui.live_box.layout", "Plan layout", []string{"stacked", "split", "folded"},
+					func() string { return s.cfg.TUI.LiveBox.Layout },
+					func(v string) { s.cfg.TUI.LiveBox.Layout = v })
+				f.TomlPath = "tui.live_box.layout"
+				f.Desc = "where the plan sits in the live box (Ctrl+T cycles it)"
+				SetFieldWriteGlobal(f, true)
+				return f
+			}(),
+			func() *field {
 				f := &field{ID: "tui.mouse_capture", Title: "Mouse capture", Kind: kindToggle,
 					TomlPath: "tui.mouse_capture",
 					Desc:     "wheel scrolls the transcript; hold Option/Alt to select text",

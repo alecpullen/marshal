@@ -734,6 +734,33 @@ suggestions = "llm"
 	}
 }
 
+func TestTUILiveBoxLayoutDefaultsToStacked(t *testing.T) {
+	cfg := Default()
+	if cfg.TUI.LiveBox.Layout != "stacked" {
+		t.Errorf("LiveBox.Layout default = %q, want %q", cfg.TUI.LiveBox.Layout, "stacked")
+	}
+}
+
+func TestTUILiveBoxLayoutRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := Default()
+	cfg.TUI.LiveBox.Layout = "folded"
+	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := Default()
+	file, err := loadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := merge(&reloaded, file); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.TUI.LiveBox.Layout != "folded" {
+		t.Fatalf("reloaded LiveBox.Layout = %q, want folded", reloaded.TUI.LiveBox.Layout)
+	}
+}
+
 func TestSDDConfigDefaults(t *testing.T) {
 	cfg := Default()
 	if !cfg.SDD.AutoWorktree {

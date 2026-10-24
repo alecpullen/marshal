@@ -111,7 +111,7 @@ func TestWorkTasksInitialAndRememberedTab(t *testing.T) {
 	if err := m.state.SetTodos([]native.TodoItem{{ID: "t1", Content: "a task", Status: native.TodoPending}}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if !m.tasksOpen() {
 		t.Fatal("Ctrl+T with todos must open the Tasks panel")
 	}
@@ -122,7 +122,7 @@ func TestWorkTasksInitialAndRememberedTab(t *testing.T) {
 	// With no todos but a live Work projection, the first open defaults to Work.
 	empty := newTestModel(t)
 	empty.workSnapshot = workSnapOf(workTask("work:a", "Alpha"))
-	empty = ctrlT(empty)
+	empty = toggleTasks(empty)
 	if empty.tasksPanel.activeTab != tasksTabWork {
 		t.Fatalf("first open with only work = %v, want Work", empty.tasksPanel.activeTab)
 	}
@@ -132,11 +132,11 @@ func TestWorkTasksInitialAndRememberedTab(t *testing.T) {
 	if m.tasksPanel.activeTab != tasksTabWork {
 		t.Fatalf("after right = %v, want Work", m.tasksPanel.activeTab)
 	}
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if m.dock.IsOpen() {
 		t.Fatal("a second Ctrl+T must close the Tasks panel")
 	}
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if got := m.tasksPanel.activeTab; got != tasksTabWork {
 		t.Fatalf("reopened tab = %v, want the remembered Work", got)
 	}
@@ -153,7 +153,7 @@ func TestWorkTasksPlanKeepsChildStats(t *testing.T) {
 	}
 	m.viewStack = append(m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: child})
 
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if m.tasksPanel.activeTab != tasksTabPlan {
 		t.Fatalf("todos must default to the Plan tab, got %v", m.tasksPanel.activeTab)
 	}
@@ -177,7 +177,7 @@ func TestWorkTasksPlanKeepsChildStats(t *testing.T) {
 func TestWorkTasksSearchPagingAndSelection(t *testing.T) {
 	m := newTestModel(t)
 	m.workSnapshot = workSnapOf(workTask("work:live1", "Live one"))
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if m.tasksPanel.activeTab != tasksTabWork {
 		t.Fatalf("want the Work tab, got %v", m.tasksPanel.activeTab)
 	}
@@ -276,7 +276,7 @@ func TestWorkTasksSearchPagingAndSelection(t *testing.T) {
 func TestWorkTasksInspectNeverAcknowledges(t *testing.T) {
 	m := newTestModel(t)
 	m.workSnapshot = workSnapOf(workTask("work:a", "Alpha"))
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	p := m.tasksPanel
 
 	// Enter on the selected live item inspects it; it never acknowledges.
@@ -328,7 +328,7 @@ func TestWorkTasksInspectNeverAcknowledges(t *testing.T) {
 func TestWorkTasksKeyboardEmitsExactTargets(t *testing.T) {
 	m := newTestModel(t)
 	m.workSnapshot = workSnapOf(workTask("work:a", "Alpha"), workTask("work:b", "Beta"))
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	p := m.tasksPanel
 	if p.selectedKey != "work:a" {
 		t.Fatalf("initial selection = %q, want work:a", p.selectedKey)
@@ -376,7 +376,7 @@ func TestWorkTasksSpaceTogglesAndReleasesTheBooking(t *testing.T) {
 	m := newWorkModel(t, svc)
 	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1,
 		Items: []viewmodel.WorkItem{workTask("work:a", "Alpha"), workTask("work:b", "Beta")}}
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	p := m.tasksPanel
 
 	// Space expands the selected live card and books exactly one request.
@@ -446,7 +446,7 @@ func TestWorkAsyncReplyCannotReopenClosedPanel(t *testing.T) {
 	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1}}
 	m := newWorkModel(t, svc)
 	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{workTask("work:a", "Alpha")}}
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if !m.tasksOpen() {
 		t.Fatal("the Tasks panel did not open")
 	}
@@ -471,7 +471,7 @@ func TestWorkAsyncReplyCannotReopenClosedPanel(t *testing.T) {
 
 	// The panel closes before the slow reply returns.
 	panelID, conversationID, requestID := p.panelID, req.conversationID, req.requestID
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if m.tasksOpen() {
 		t.Fatal("the Tasks panel did not close")
 	}
@@ -558,7 +558,7 @@ func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
 func TestWorkActionReplyClearsPending(t *testing.T) {
 	m := newTestModel(t)
 	m.workSnapshot = workSnapOf(workTask("work:a", "Alpha"))
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	p := m.tasksPanel
 	if p.activeTab != tasksTabWork {
 		t.Fatalf("want the Work tab, got %v", p.activeTab)

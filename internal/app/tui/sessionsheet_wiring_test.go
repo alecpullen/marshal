@@ -188,24 +188,21 @@ func TestSheetDataChildScopedDuringDrillIn(t *testing.T) {
 	}
 }
 
-func TestCtrlTAndCtrlBSwitchBetweenPanels(t *testing.T) {
+func TestCtrlBSwitchesFromWorkToTheSheet(t *testing.T) {
 	m, dir := gitModel(t)
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o644)
 	if err := m.state.SetTodos([]native.TodoItem{{Content: "a task", Status: native.TodoPending}}); err != nil {
 		t.Fatal(err)
 	}
 
-	m = ctrlB(m)
-	if !m.sheetOpen() {
-		t.Fatal("setup: sheet should be open")
-	}
-	m = ctrlT(m)
-	if !m.tasksOpen() || m.sheetOpen() {
-		t.Fatal("Ctrl+T with the sheet open must switch to the Tasks panel")
+	updated, _ := m.dispatchCommand("/work")
+	m = asModel(t, updated)
+	if !m.tasksOpen() {
+		t.Fatal("setup: the Work list should be open")
 	}
 	m = ctrlB(m)
 	if !m.sheetOpen() || m.tasksOpen() {
-		t.Fatal("Ctrl+B with the Tasks panel open must switch to the sheet")
+		t.Fatal("Ctrl+B with the Work list open must switch to the sheet")
 	}
 	m = ctrlB(m)
 	if m.dock.IsOpen() {

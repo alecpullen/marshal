@@ -144,7 +144,7 @@ func Footer(h FooterHints) string {
 			segs = append(segs, pair("Ctrl+R", "rollback"))
 		}
 		if h.TodosActive {
-			segs = append(segs, pair("Ctrl+T", "tasks"))
+			segs = append(segs, pair("Ctrl+T", "plan"))
 		}
 		segs = append(segs, pair("Ctrl+B", "session"))
 		showMouseHint = true

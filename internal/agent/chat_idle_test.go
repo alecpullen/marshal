@@ -13,6 +13,13 @@ import (
 	"marshal/internal/tools/registry"
 )
 
+func TestIdleTimeoutDefaultsToFiveMinutes(t *testing.T) {
+	r := &Runner{}
+	if got := r.effectiveIdleTimeout(); got != 5*time.Minute {
+		t.Fatalf("effectiveIdleTimeout() = %v, want 5m when IdleTimeout is unset", got)
+	}
+}
+
 // headersBlockingProvider models the pre-stream half of a request: Chat itself
 // blocks until the attempt context is cancelled, then returns the transport
 // error http.Client.Do produces. No ChatEvent ever carries the failure, so the

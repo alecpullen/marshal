@@ -44,7 +44,7 @@ Replace the single total per-request deadline with two independent bounds:
 
 | Bound | Fires when | Default | Classified as |
 |---|---|---|---|
-| Idle | no stream event for `idleTimeout` | 120s | connectivity → reconnect-eligible |
+| Idle | no stream event for `idleTimeout` | 300s | connectivity → reconnect-eligible |
 | Ceiling | total request time exceeds `requestCeiling` | 900s | model → fail fast, never retried |
 
 Any `delta` — content, reasoning, or tool-call — resets the idle timer. That is what makes a model streaming reasoning "working" rather than "stalled", and it is why the idle timeout can legitimately mean connectivity.
@@ -189,7 +189,7 @@ This makes `waited=5m1s` against `max_wait=2m0s` impossible.
 
 Follows the `ReconnectMaxWaitSeconds` precedent (`types.go:545-548`, `file_types.go:55`, `merge.go:39`, `save.go:220`, wiring at `app.go:1266`, `:1590`, `:1853`):
 
-- `agent.idle_timeout_seconds` → `Runner.IdleTimeout` (default 120)
+- `agent.idle_timeout_seconds` → `Runner.IdleTimeout` (default 300)
 - `agent.request_ceiling_seconds` → `Runner.RequestCeiling` (default 900)
 
 `Runner.ChatTimeout` is renamed to `RequestCeiling`: the old name encoded the wrong semantics. The rename is contained to `runner.go` (field, `Clone` at line 679, doc comment at line 203) plus six test sites (`chat_retry_test.go:391,429`, `chat_thinkloop_test.go:303`, `runner_misc_test.go:692,716`, `runner_testhelpers_test.go:83`).
@@ -202,7 +202,7 @@ The ceiling names the model, the elapsed time, and the knob:
 
 The reconnect give-up names the idle timeout rather than "connection lost":
 
-> `no stream activity from deepseek-v4.1-flash:1017 for 2m0s; reconnect budget of 2m0s exhausted`
+> `no stream activity from deepseek-v4.1-flash:1017 for 5m0s; reconnect budget of 2m0s exhausted`
 
 ## Error handling
 
@@ -228,7 +228,7 @@ Run `go test ./internal/agent/... ./internal/app/config/...` and `go vet ./...`.
 
 ## Assumptions
 
-- Defaults are 120s idle and 900s ceiling. The failing turn's requests each ran the full five minutes, so 120s of true silence is comfortably diagnostic.
+- Defaults are 300s idle and 900s ceiling. Five minutes accommodates slow first-token latency on loaded providers; any streamed delta still resets the idle window.
 - The watchdog uses `r.Now()` for consistency with the rest of the runner; tests inject short durations against the real clock.
 - The ceiling is a hard failure, not a salvage. A request that overruns fifteen minutes has produced nothing usable.
 

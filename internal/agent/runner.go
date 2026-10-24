@@ -68,10 +68,9 @@ var ErrModelOutputMalformed = errors.New("agent: model output could not be parse
 // defaultIdleTimeout is how long a request may go without any streamed
 // bytes before it is treated as a stalled connection. Any delta — content,
 // reasoning, or tool-call — resets it, so a model that is thinking hard is
-// working, not stalled. Two minutes is generous for a first token even on a
-// slow reasoning model, and short enough that a dead socket is noticed while
-// the user is still watching.
-const defaultIdleTimeout = 2 * time.Minute
+// working, not stalled. Five minutes accommodates slow first-token latency
+// on loaded providers while still bounding a genuinely silent request.
+const defaultIdleTimeout = 5 * time.Minute
 
 // defaultRequestCeiling bounds a single request's total wall-clock time,
 // regardless of activity. It is the backstop for a model that streams

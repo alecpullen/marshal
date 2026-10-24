@@ -57,10 +57,6 @@ func TestJobExitBecomesOneCompletion(t *testing.T) {
 		},
 		Steps: []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 1, 10, 11)},
 	})
-	card := findNode(nodes, "tool:1:j")
-	if card == nil || card.Job == nil || card.Job.Running || card.Job.ExitCode != 0 || card.Job.ID != "job-4" {
-		t.Fatalf("card = %+v", card)
-	}
 	got := shape(nodes)
 	if strings.Contains(got, "job:job-4") {
 		t.Fatalf("no separate job-exit row:\n%s", got)
@@ -170,9 +166,6 @@ func TestJobExitInLaterTurnCompletesThere(t *testing.T) {
 		},
 		Steps: []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 5, 11, 13)},
 	})
-	if c := findNode(nodes[:1], "tool:1:j"); c == nil || c.Job.Running || c.Job.ExitCode != 1 {
-		t.Fatalf("old card must settle: %+v", c)
-	}
 	if findNode(nodes[1:], "completion:tool:1:j") == nil {
 		t.Fatalf("the event belongs to the later turn:\n%s", shape(nodes))
 	}
@@ -197,18 +190,15 @@ func TestSubagentCompletionLandsInTurnContainingItsEnd(t *testing.T) {
 func TestRunningJobHasNoCompletion(t *testing.T) {
 	nodes := Build(Snapshot{Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-1")},
 		Steps: []session.Step{stepOf(1, 1, 1, 3)}})
-	if c := findNode(nodes, "tool:1:j"); c == nil || !c.Job.Running {
-		t.Fatalf("card = %+v", c)
-	}
 	if strings.Contains(shape(nodes), "completion:") {
 		t.Fatal("no completion until it exits")
 	}
 }
 
 // Job IDs restart at job-1 in every process. After a resume, the new job-1's
-// exit settles only the new card; the old one is lost, not running and not
-// settled by someone else's exit.
-func TestReusedJobIDSettlesOnlyTheLatestStart(t *testing.T) {
+// exit pairs only with the new start; the old one is lost, not running and not
+// paired with someone else's exit.
+func TestReusedJobIDPairsOnlyTheLatestStart(t *testing.T) {
 	lost := session.TranscriptItem{Timestamp: at(2), Kind: session.KindJobExit,
 		JobExit: &session.JobExit{ID: "job-1", ExitCode: -1, At: at(2), Lost: true}}
 	nodes := Build(Snapshot{
@@ -218,13 +208,6 @@ func TestReusedJobIDSettlesOnlyTheLatestStart(t *testing.T) {
 		},
 		Steps: []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 5, 11, 15)},
 	})
-	old, cur := findNode(nodes, "tool:1:old"), findNode(nodes, "tool:2:new")
-	if old == nil || old.Job.Running || !old.Job.Lost || old.Live {
-		t.Fatalf("old card = %+v, want lost and settled", old.Job)
-	}
-	if cur == nil || cur.Job.Running || cur.Job.Lost || cur.Job.ExitCode != 4 {
-		t.Fatalf("new card = %+v, want exit 4", cur.Job)
-	}
 	lostEvent := findNode(nodes, "completion:tool:1:old")
 	if lostEvent == nil || lostEvent.Completion.Outcome != OutcomeLost {
 		t.Fatalf("lost event = %+v", lostEvent)
@@ -293,9 +276,9 @@ func structuredJobExit(s int, displayID, execID string, exit *int) session.Trans
 
 // A completion can reach the transcript before the audit row of the call that
 // started it — the two are written from different goroutines. Pairing by
-// execution identity settles the card anyway; ordering by timestamp would leave
-// it running forever.
-func TestStructuredExitSettlesItsCardRegardlessOfOrder(t *testing.T) {
+// execution identity pairs them anyway; ordering by timestamp would leave the
+// start unpaired forever.
+func TestStructuredExitPairsRegardlessOfOrder(t *testing.T) {
 	code := 0
 	nodes := Build(Snapshot{
 		Items: []session.TranscriptItem{
@@ -306,16 +289,6 @@ func TestStructuredExitSettlesItsCardRegardlessOfOrder(t *testing.T) {
 		},
 		Steps: []session.Step{stepOf(1, 1, 1, 5)},
 	})
-	card := findNode(nodes, "tool:1:j")
-	if card == nil || card.Job == nil {
-		t.Fatalf("card = %+v, want a job card", card)
-	}
-	if card.Job.Running || card.Job.Exit == nil || *card.Job.Exit != 0 {
-		t.Fatalf("card = %+v, want it settled with its observed exit", card.Job)
-	}
-	if card.Live {
-		t.Fatal("a settled card must not stay live")
-	}
 	if got := shape(nodes); !strings.Contains(got, "completion:tool:1:j") {
 		t.Fatalf("the completion still marks the card:\n%s", got)
 	}
@@ -343,89 +316,14 @@ func TestForegroundExecutionMetadataIsNotABackgroundCard(t *testing.T) {
 	if row == nil {
 		t.Fatalf("the call lost its own row:\n%s", shape(nodes))
 	}
-	if row.Job != nil {
-		t.Fatalf("foreground metadata became a background card: %+v", row.Job)
+	if strings.Contains(shape(nodes), "completion:") {
+		t.Fatalf("foreground metadata became a completion:\n%s", shape(nodes))
+	}
+	if row.WorkKey != "" {
+		t.Fatalf("foreground row WorkKey = %q, want none", row.WorkKey)
 	}
 	if row.Live {
 		t.Fatal("a settled foreground row must not be live")
-	}
-}
-
-// A background card that never settles still shows what was captured for it, and
-// an exit that was never observed never reads as success.
-func TestCardCarriesExecutionEvidenceAndUnknownExit(t *testing.T) {
-	nodes := Build(Snapshot{
-		Items: []session.TranscriptItem{
-			userMsg(1, 0), narration(2, 1, 1, "Launch."),
-			structuredJobStart(1, "j", 2, "job-2", "exec-2"),
-			session.TranscriptItem{Timestamp: at(5), Kind: session.KindJobExit,
-				JobExit: &session.JobExit{ID: "job-2", ExecutionID: "exec-2", ExitCode: -1,
-					State: "killed", Outcome: "stopped", Attachment: "background",
-					StopCause: "turn stop", Truncated: true, At: at(5)}},
-		},
-		Steps: []session.Step{stepOf(1, 1, 1, 3)},
-	})
-	card := findNode(nodes, "tool:1:j")
-	if card == nil || card.Job == nil {
-		t.Fatalf("card = %+v", card)
-	}
-	j := card.Job
-	if j.Running || j.Lost {
-		t.Fatalf("card = %+v, want it settled and not lost", j)
-	}
-	if j.Exit != nil {
-		t.Fatalf("Exit = %v, want nil for an unobserved exit rather than a guessed zero", *j.Exit)
-	}
-	if j.ExitCode != -1 {
-		t.Fatalf("ExitCode = %d, want the legacy -1 the record carried", j.ExitCode)
-	}
-	if j.Status != "killed" || j.Attachment != "background" || j.StopCause != "turn stop" || !j.Truncated {
-		t.Fatalf("card lost its evidence: %+v", j)
-	}
-
-	// A lost job keeps the metadata its start carried, and gains nothing else.
-	lost := Build(Snapshot{
-		Items: []session.TranscriptItem{
-			userMsg(1, 0), narration(2, 1, 1, "Launch."), structuredJobStart(1, "j", 2, "job-9", "exec-9"),
-			session.TranscriptItem{Timestamp: at(2), Kind: session.KindJobExit,
-				JobExit: &session.JobExit{ID: "job-9", ExecutionID: "exec-9", ExitCode: -1, Lost: true, At: at(2)}},
-		},
-		Steps: []session.Step{stepOf(1, 1, 1, 3)},
-	})
-	lostCard := findNode(lost, "tool:1:j")
-	if lostCard == nil || lostCard.Job == nil || !lostCard.Job.Lost || lostCard.Job.Running {
-		t.Fatalf("lost card = %+v", lostCard)
-	}
-	if lostCard.Job.Exit != nil || lostCard.Job.Attachment != "background" {
-		t.Fatalf("lost card = %+v, want its captured attachment and no exit", lostCard.Job)
-	}
-}
-
-// The card's version covers every field the renderer reads: a status or
-// truncation change that leaves the exit alone must still rebuild the row.
-func TestJobCardVersionFollowsStatusAndTruncation(t *testing.T) {
-	build := func(state, outcome, stopCause string, truncated bool) uint64 {
-		code := 0
-		start := structuredJobStart(1, "j", 2, "job-3", "exec-3")
-		exit := structuredJobExit(5, "job-3", "exec-3", &code)
-		exit.JobExit.State, exit.JobExit.Outcome = state, outcome
-		exit.JobExit.StopCause, exit.JobExit.Truncated = stopCause, truncated
-		nodes := Build(Snapshot{
-			Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start, exit},
-			Steps: []session.Step{stepOf(1, 1, 1, 3)},
-		})
-		card := findNode(nodes, "tool:1:j")
-		if card == nil {
-			t.Fatal("no card")
-		}
-		return card.Version
-	}
-	base := build("completed", "completed", "", false)
-	if base == build("stopping", "stopped", "turn stop", false) {
-		t.Fatal("a status/stop-cause change left the card's version alone")
-	}
-	if base == build("completed", "completed", "", true) {
-		t.Fatal("a truncation change left the card's version alone")
 	}
 }
 
@@ -463,9 +361,6 @@ func TestLiveWorkDetachedCommandKeepsOneDispatch(t *testing.T) {
 	if row == nil || row.WorkKey != want {
 		t.Fatalf("dispatch row = %+v, want the execution-derived work key %q", row, want)
 	}
-	if row.Job == nil || row.Job.Running || row.Job.Exit == nil || *row.Job.Exit != 0 {
-		t.Fatalf("card = %+v, want it settled in place on the same dispatch row", row.Job)
-	}
 }
 
 // A base-era command record carries an execution identity but no source epoch.
@@ -487,5 +382,41 @@ func TestBaseEraCommandRowUsesStableWorkKey(t *testing.T) {
 	row := findNode(nodes, "tool:1:j")
 	if row == nil || row.WorkKey != want {
 		t.Fatalf("dispatch row = %+v, want the stable work key %q", row, want)
+	}
+}
+
+// A background job's launch row is an ordinary call row: it never takes the
+// job's exit. The same start row keeps its identity, version and work key
+// before and after the exit arrives; only the tree gains a completion.
+func TestJobStartRowNeverSettles(t *testing.T) {
+	code := 0
+	start := structuredJobStart(1, "j", 2, "job-4", "exec-4")
+	before := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+	})
+	after := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start,
+			structuredJobExit(5, "job-4", "exec-4", &code)},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+	})
+	first, second := findNode(before, "tool:1:j"), findNode(after, "tool:1:j")
+	if first == nil || second == nil {
+		t.Fatalf("start row missing: before=%+v after=%+v", first, second)
+	}
+	if first.ID != second.ID || first.Version != second.Version || first.WorkKey != second.WorkKey {
+		t.Fatalf("start row changed when the exit arrived: before=%+v after=%+v", first, second)
+	}
+	if first.WorkKey == "" {
+		t.Fatal("start row has no work key")
+	}
+	if first.Live || second.Live {
+		t.Fatalf("start row is live: before=%v after=%v", first.Live, second.Live)
+	}
+	if strings.Contains(shape(before), "completion:") {
+		t.Fatalf("no completion before the exit:\n%s", shape(before))
+	}
+	if !strings.Contains(shape(after), "completion:tool:1:j") {
+		t.Fatalf("the exit adds a completion:\n%s", shape(after))
 	}
 }

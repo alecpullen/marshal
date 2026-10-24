@@ -13,124 +13,6 @@ import (
 	"marshal/internal/viewmodel"
 )
 
-func TestJobCardIsOneLineAndSettles(t *testing.T) {
-	ev := registry.AuditEvent{ToolName: "shell.run", Args: []byte(`{"command":"cd /w && pytest -q --junitxml=/tmp/a.xml 2>&1 | tail -40"}`), ResultSummary: "started background job job-4"}
-	row := &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{ev},
-		Job: &viewmodel.JobState{ID: "job-4", Command: "pytest -q --junitxml=/tmp/a.xml 2>&1 | tail -40", Running: true}}
-	out := ansi.Strip(renderJobRow(row, "⠋", time.Now(), false, 60, ""))
-	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 || !strings.Contains(out, "job-4") || !strings.Contains(out, "running") {
-		t.Fatalf("running card = %q", out)
-	}
-	row.Job.Running, row.Job.ExitCode, row.Job.Duration = false, 1, 122*time.Second
-	exit := 1
-	row.Job.Exit = &exit
-	out = ansi.Strip(renderJobRow(row, "", time.Now(), false, 60, ""))
-	if !strings.Contains(out, "exit 1") || !strings.Contains(out, "2m") {
-		t.Fatalf("settled card = %q", out)
-	}
-}
-
-// A card's tail must say what is actually known about the execution: an
-// accepted stop that has not settled yet, a lost job, a failure with no exit
-// code, and a completion. Reading "exit 0" for an outcome nobody observed is
-// the failure this distinction exists to prevent.
-func TestJobCardDistinguishesOutcomeStates(t *testing.T) {
-	zero, three := 0, 3
-	tests := []struct {
-		name  string
-		job   viewmodel.JobState
-		words []string
-		gone  []string
-	}{
-		{
-			name:  "running",
-			job:   viewmodel.JobState{ID: "job-1", Running: true, Status: "running"},
-			words: []string{"running"},
-		},
-		{
-			name:  "stopping",
-			job:   viewmodel.JobState{ID: "job-1", Running: true, Status: "stopping", StopCause: "turn stop"},
-			words: []string{"stopping"},
-			gone:  []string{"running", "exit ", "outcome unknown"},
-		},
-		{
-			name:  "lost",
-			job:   viewmodel.JobState{ID: "job-1", Lost: true, ExitCode: -1},
-			words: []string{"ended with session"},
-			gone:  []string{"exit ", "outcome unknown"},
-		},
-		{
-			name:  "completed",
-			job:   viewmodel.JobState{ID: "job-1", ExitCode: 0, Exit: &zero, Status: "completed"},
-			words: []string{"exit 0"},
-		},
-		{
-			name:  "failed with an exit",
-			job:   viewmodel.JobState{ID: "job-1", ExitCode: 3, Exit: &three, Status: "failed"},
-			words: []string{"exit 3"},
-		},
-		{
-			name:  "failed without an exit",
-			job:   viewmodel.JobState{ID: "job-1", Status: "failed", ExitCode: -1},
-			words: []string{"failed"},
-			gone:  []string{"exit -1", "exit 0"},
-		},
-		{
-			name:  "stopped without an exit",
-			job:   viewmodel.JobState{ID: "job-1", Status: "killed", StopCause: "turn stop", ExitCode: -1},
-			words: []string{"stopped"},
-			gone:  []string{"exit -1"},
-		},
-		{
-			name:  "legacy record",
-			job:   viewmodel.JobState{ID: "job-1", Status: "completed", ExitCode: 0},
-			words: []string{"exit 0"},
-		},
-		{
-			name:  "unknown exit",
-			job:   viewmodel.JobState{ID: "job-1", ExitCode: -1},
-			words: []string{"outcome unknown"},
-			gone:  []string{"exit -1", "exit 0"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			job := tt.job
-			row := &viewmodel.Node{Kind: viewmodel.KindTool, Job: &job}
-			out := ansi.Strip(renderJobRow(row, "⠋", time.Now(), false, 80, ""))
-			if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
-				t.Fatalf("card is not one line:\n%s", out)
-			}
-			for _, want := range tt.words {
-				if !strings.Contains(out, want) {
-					t.Errorf("card %q missing %q", out, want)
-				}
-			}
-			for _, unwanted := range tt.gone {
-				if strings.Contains(out, unwanted) {
-					t.Errorf("card %q must not say %q", out, unwanted)
-				}
-			}
-		})
-	}
-}
-
-// A capped tail is called out, so a reader knows the output is not the whole
-// story; the plain case stays quiet.
-func TestJobCardFlagsTruncatedOutput(t *testing.T) {
-	zero := 0
-	job := viewmodel.JobState{ID: "job-1", ExitCode: 0, Exit: &zero, Status: "completed", Truncated: true}
-	row := &viewmodel.Node{Kind: viewmodel.KindTool, Job: &job}
-	if out := ansi.Strip(renderJobRow(row, "", time.Now(), false, 80, "")); !strings.Contains(out, "truncated") {
-		t.Fatalf("card = %q, want the cap called out", out)
-	}
-	job.Truncated = false
-	row.Job = &job
-	if out := ansi.Strip(renderJobRow(row, "", time.Now(), false, 80, "")); strings.Contains(out, "truncated") {
-		t.Fatalf("card = %q, want no cap note without one", out)
-	}
-}
-
 // A collapsed row is one line. The transcript is a list of what happened, and
 // a wrapped row costs the reader a line for a detail they did not ask for.
 func TestCollapsedShellRowIsOneLine(t *testing.T) {
@@ -176,16 +58,24 @@ func TestShellRowElidesTheWorktree(t *testing.T) {
 	}
 }
 
-// The job card's command gets the same treatment: it is the same shell text.
-func TestJobCardElidesTheWorktree(t *testing.T) {
-	root := "/home/a/proj/.marshal/worktrees/x"
-	ev := registry.AuditEvent{ToolName: "shell.run", Args: []byte(`{"command":"cd ` + root + ` && pytest -q"}`),
-		ResultSummary: "started background job job-4"}
-	row := &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{ev},
-		Job: &viewmodel.JobState{ID: "job-4", Command: "cd " + root + " && pytest -q", Running: true}}
-	out := ansi.Strip(renderJobRow(row, "⠋", time.Now(), false, 100, root))
-	if !strings.Contains(out, "⌂ pytest -q") || strings.Contains(out, root) {
-		t.Fatalf("card = %q", out)
+// A background job's launch row is an ordinary call row: the verb, the command
+// and the job it started, on one line.
+func TestJobLaunchRowNamesTheJob(t *testing.T) {
+	ev := registry.AuditEvent{ToolName: "shell.run", ToolCallID: "c1", Timestamp: time.Unix(100, 0),
+		Args:          []byte(`{"command":"pytest -q","background":true}`),
+		ResultSummary: session.JobStartPrefix + "job-4",
+		Notice: registry.NewCommandExecutionNotice(registry.CommandExecution{
+			ExecutionID: "exec-4", DisplayID: "job-4", ConversationID: "conv",
+			Attachment: registry.ExecutionAttachmentBackground, State: "running",
+		})}
+	out := ansi.Strip(renderCallRow(ev, false, nil, 80, ""))
+	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
+		t.Fatalf("launch row is not one line:\n%s", out)
+	}
+	for _, want := range []string{"shell", "pytest -q", glyph.Job + " job-4", "started"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("launch row %q missing %q", out, want)
+		}
 	}
 }
 

@@ -14,7 +14,6 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 )
 
@@ -194,8 +193,6 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 			write(spineBlock(renderPlanRow(ch.PlanUpdate, w), last))
 		case ch.Active != nil:
 			row(ch.ID, spineBlock(renderActiveCallRow(*ch.Active, c, c.liveToolExpanded(ch.ID), w), last), subRegion{})
-		case ch.Job != nil:
-			row(ch.ID, spineBlock(renderJobRow(ch, c.toolSpinner, c.now, c.open(ch.ID, open), w, c.workdir), last), subRegion{live: ch.Job.Running})
 		case len(ch.Tools) > 1:
 			row(ch.ID, spineBlock(renderGroupRow(ch.Tools, c.open(ch.ID, open), w, c.workdir), last), subRegion{})
 		default:
@@ -228,33 +225,6 @@ func spineRow(ch *viewmodel.Node) bool {
 		return ch.PlanUpdate != nil
 	case viewmodel.KindTool:
 		return ch.Active != nil || len(ch.Tools) > 0
-	}
-	return false
-}
-
-// jobOutcomeWord is a settled card's right-hand outcome: the actual exit code
-// when one was observed, or the reason there is none. A stopped process whose
-// runner reported no code and a start-up failure both land here, and neither
-// may read as a clean exit.
-func jobOutcomeWord(j *viewmodel.JobState, code *int) string {
-	switch {
-	case code != nil:
-		return fmt.Sprintf("exit %d", *code)
-	case j.StopCause != "":
-		return "stopped"
-	case j.Status == string(native.StatusFailed):
-		return "failed"
-	default:
-		return "outcome unknown"
-	}
-}
-
-// jobFailedStatus reports whether a terminal status is a failure that must not
-// render as a clean exit.
-func jobFailedStatus(status string) bool {
-	switch native.JobStatus(status) {
-	case native.StatusFailed, native.StatusKilled, native.StatusTimedOut:
-		return true
 	}
 	return false
 }

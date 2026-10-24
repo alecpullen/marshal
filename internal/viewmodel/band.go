@@ -189,22 +189,38 @@ func BandOf(s Snapshot, turns []*Node) BandInfo {
 	// the band omits the duplicated entity listings then, retaining only the
 	// todo/task summary it is the single source for. Legacy clients keep them.
 	if !s.LiveWork {
-		var walk func(ns []*Node)
-		walk = func(ns []*Node) {
-			for _, n := range ns {
-				switch {
-				case n.Kind == KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Status == session.SubagentRunning:
-					v := n.Item.Subagent
-					b.Entities = append(b.Entities, BandEntity{Ref: n.ID, Label: fmt.Sprintf("#%d %s", v.ID, ScrubText(v.Label)), Detail: ScrubText(v.CurrentTool), Started: v.StartedAt})
-				case n.Job != nil && n.Job.Running:
-					b.Entities = append(b.Entities, BandEntity{Ref: n.ID, Label: n.Job.ID, Detail: ScrubText(n.Job.Command), Started: n.JobStart()})
-				}
-				walk(n.Children)
-			}
-		}
-		walk(turns)
+		b.Entities = runningEntities(s.Items)
 	}
 	return b
+}
+
+// runningEntities lists the work still running, in transcript order: a
+// subagent whose status is running, and a job whose start has no exit yet. A
+// job whose exit was lost counts as finished — the session ended while it ran,
+// so it is no longer running.
+func runningEntities(items []session.TranscriptItem) []BandEntity {
+	var out []BandEntity
+	ci := indexCards(items)
+	for _, it := range items {
+		switch {
+		case it.Subagent != nil && it.Subagent.Status == session.SubagentRunning:
+			v := it.Subagent
+			out = append(out, BandEntity{Ref: NodeID{KindSubagent, fmt.Sprintf("sub:%d", v.ID)},
+				Label: fmt.Sprintf("#%d %s", v.ID, ScrubText(v.Label)), Detail: ScrubText(v.CurrentTool), Started: v.StartedAt})
+		case it.Audit != nil:
+			ev := *it.Audit
+			js, ok := JobStartOf(ev)
+			if !ok {
+				continue
+			}
+			if _, settled := ci.exits[ToolID(ev)]; settled {
+				continue
+			}
+			out = append(out, BandEntity{Ref: ToolID(ev), Label: js.DisplayID,
+				Detail: ScrubText(ToolTarget(ev)), Started: ev.Timestamp})
+		}
+	}
+	return out
 }
 
 // WorkOrigin identifies the conversation work a pinned card came from.

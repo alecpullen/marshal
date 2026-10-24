@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -12,7 +11,6 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
@@ -147,6 +145,14 @@ func callResult(ev registry.AuditEvent) string {
 		}
 	case (isDiffTool(ev.ToolName) || ev.ToolName == "file.write") && diffStat(ev.ResultContent) != "":
 		parts = append(parts, diffStat(ev.ResultContent))
+	case viewmodel.JobStartID(ev) != "":
+		id := viewmodel.JobStartID(ev)
+		started := lipgloss.NewStyle().Foreground(theme.Current().StatusInfo).Render(glyph.Job+" "+id) +
+			mutedStyle().Render(" started")
+		if len(parts) > 0 {
+			return mutedStyle().Render(viewmodel.ScrubText(strings.Join(parts, dimSeparator))+dimSeparator) + started
+		}
+		return started
 	default:
 		if id := viewmodel.StartedSubagent(ev); id > 0 {
 			started := lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary).Render(fmt.Sprintf("%s #%d", glyph.Agent, id)) +
@@ -281,87 +287,6 @@ func renderGroupRow(evs []registry.AuditEvent, expanded bool, w int, workdir str
 		detailLines(&b, lines)
 	}
 	return b.String()
-}
-
-// renderJobRow is the row of a shell call that started a background job,
-// settled in place by the job's exit: the command, then the job and its state
-// as the result. Expanded, the job's output follows.
-func renderJobRow(row *viewmodel.Node, spinner string, now time.Time, expanded bool, w int, workdir string) string {
-	j := row.Job
-	// The command is model-authored shell text, scrubbed here as well as at
-	// the viewmodel boundary.
-	cmd := viewmodel.ScrubText(firstLine(viewmodel.ElideWorkdir(j.Command, workdir)))
-	id := lipgloss.NewStyle().Foreground(theme.Current().StatusInfo).Render(glyph.Job + " " + viewmodel.ScrubText(j.ID))
-	state, style := jobState(row, spinner, now)
-	var b strings.Builder
-	b.WriteString(spineHead("shell", cmd, id+" "+style.Render(state), w) + "\n")
-	if expanded && j.Output != "" {
-		dw := max(w-verbWidth, 1)
-		var lines []string
-		// Scrubbed at the projection and again here, at this renderer's own
-		// boundary; the session caps the output, so the second pass is cheap.
-		for _, line := range strings.Split(strings.TrimRight(viewmodel.ScrubBlock(j.Output), "\n"), "\n") {
-			for _, wl := range strings.Split(ansi.Wrap(line, dw, WrapBreakpoints), "\n") {
-				lines = append(lines, mutedStyle().Render(wl))
-			}
-		}
-		detailLines(&b, lines)
-	}
-	return b.String()
-}
-
-// jobState is a job row's state after its ID: running with its elapsed time,
-// stopping, its outcome once settled, or why it has none.
-func jobState(row *viewmodel.Node, spinner string, now time.Time) (string, lipgloss.Style) {
-	j := row.Job
-	var state string
-	style := mutedStyle()
-	switch {
-	case j.Lost:
-		// The session ended while the job ran: there is no exit code to
-		// report, and the row must not claim one.
-		state, style = "ended with session", warningStyle()
-	case j.Status == string(native.StatusStopping):
-		// The stop was accepted and the process is still going. Checked before
-		// running: a stopping execution has no outcome yet.
-		state, style = "stopping", warningStyle()
-		if j.Duration > 0 {
-			state += dimSeparator + formatElapsed(j.Duration)
-		}
-	case j.Running:
-		state = "running"
-		// JobStart, not Tools[0]: a caller-built tree can hold a running job
-		// whose starting call is not attached, and the row still renders.
-		if started := row.JobStart(); !started.IsZero() {
-			state += dimSeparator + formatElapsed(max(now.Sub(started), 0))
-		}
-		if spinner != "" {
-			state = spinner + " " + state
-		}
-	default:
-		// Settled. An exit that was never observed is never success: a start-up
-		// failure produces no code at all, and a legacy record spells "unknown"
-		// as -1, so both render as unknown rather than as a clean exit.
-		code := j.Exit
-		if code == nil && j.ExitCode >= 0 {
-			legacy := j.ExitCode
-			code = &legacy
-		}
-		switch {
-		case jobFailedStatus(j.Status) || (code != nil && *code != 0):
-			style = errorStyle()
-		case code == nil:
-			style = warningStyle()
-		}
-		state = jobOutcomeWord(j, code)
-		if j.Duration > 0 {
-			state += dimSeparator + formatElapsed(j.Duration)
-		}
-	}
-	if j.Truncated {
-		state += dimSeparator + "truncated"
-	}
-	return state, style
 }
 
 // renderActiveCallRow is a call still running: what it acts on, never its

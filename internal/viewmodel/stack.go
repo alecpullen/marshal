@@ -70,7 +70,6 @@ type Node struct {
 	Tools      []registry.AuditEvent // len > 1 = merged same-tool run within a step
 	Active     *session.ActiveToolCall
 	Receipt    *ReceiptInfo
-	Job        *JobState
 	Completion *CompletionInfo
 	PlanUpdate *PlanUpdate
 }
@@ -302,7 +301,7 @@ func Build(s Snapshot) []*Node {
 		if i+1 < len(turns) && turns[i+1].msg != nil {
 			to = turns[i+1].msg.CreatedAt
 		}
-		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg, ci, ci.completionsIn(from, to))
+		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg, ci.completionsIn(from, to))
 		out = append(out, node)
 	}
 	return out
@@ -367,7 +366,7 @@ type stepAcc struct {
 	first  time.Time
 }
 
-func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64, turnKey string, userMsg *session.Message, ci cardIndex, markers []block) []*Node {
+func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64, turnKey string, userMsg *session.Message, markers []block) []*Node {
 	var blocks []block
 	steps := map[session.StepID]*stepAcc{}
 	var stepOrder []session.StepID
@@ -573,9 +572,8 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 				}
 				continue
 			}
-			// A shell row that started a background job becomes that job's card,
-			// settled already when the transcript holds the exit.
-			ci.settleJob(r)
+			// A shell row that started a background job is an ordinary call
+			// row: its result is the job it launched, never the job's exit.
 			node.Children = append(node.Children, r)
 		}
 		node.Children = append(node.Children, a.cards...)
@@ -692,6 +690,9 @@ func toolRows(audits []registry.AuditEvent, active []session.ActiveToolCall) []*
 		}
 		row := &Node{ID: ToolID(ev), Kind: KindTool, Tools: []registry.AuditEvent{ev}}
 		row.WorkKey = dispatchWorkKey(&ev)
+		if row.WorkKey == "" {
+			row.WorkKey = commandWorkKey(ev)
+		}
 		rows = append(rows, row)
 	}
 	for i := range rows {

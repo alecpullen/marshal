@@ -49,6 +49,24 @@ func TestBandEntitiesAreRunningCards(t *testing.T) {
 	}
 }
 
+// A job whose exit is in the transcript is finished, so the band drops it. A
+// lost exit counts as finished too: the session ended while it ran.
+func TestBandEntitiesDropAFinishedJob(t *testing.T) {
+	start := jobStart(1, "j", 3, "job-4")
+	finished := Snapshot{Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start, jobExit(6, "job-4", 0)},
+		Steps: []session.Step{stepOf(1, 1, 1, 0)}, Busy: true, Now: at(10)}
+	if b := BandOf(finished, Build(finished)); len(b.Entities) != 0 {
+		t.Fatalf("a finished job is still listed: %+v", b.Entities)
+	}
+	lost := session.TranscriptItem{Timestamp: at(6), Kind: session.KindJobExit,
+		JobExit: &session.JobExit{ID: "job-4", ExitCode: -1, Lost: true, At: at(6)}}
+	lostSnapshot := Snapshot{Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start, lost},
+		Steps: []session.Step{stepOf(1, 1, 1, 0)}, Busy: true, Now: at(10)}
+	if b := BandOf(lostSnapshot, Build(lostSnapshot)); len(b.Entities) != 0 {
+		t.Fatalf("a lost job is still listed as running: %+v", b.Entities)
+	}
+}
+
 // The runner nudges on its own response count, whatever its role. The band
 // must count the same responses: the turn opener's, not only the general
 // role's, and not a different actor's sharing the session.

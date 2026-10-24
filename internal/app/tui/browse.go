@@ -329,7 +329,7 @@ func (m *Model) enterBoxStop(t livebox.Target) {
 		m.invalidateTranscript()
 		m.refreshViewport()
 	case livebox.TargetMore:
-		m.openTasks(tasksTabWork)
+		m.openWork()
 	case livebox.TargetPlan:
 		m.scrollToPlanItem(t.Key)
 	}

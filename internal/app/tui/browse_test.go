@@ -629,7 +629,7 @@ func boxHistoryModel(t *testing.T, items ...viewmodel.WorkItem) Model {
 // TestBrowseJPastHistoryEntersTheBox: browse does not stop at the last history
 // row; one more j lands on the box's first stop.
 func TestBrowseJPastHistoryEntersTheBox(t *testing.T) {
-	m := boxHistoryModel(t, workRunningCard("work:one", nowBarT0))
+	m := boxHistoryModel(t, workRunningCard("work:one", workT0))
 
 	m = pressKeys(m, "esc", "g")
 	history := 0
@@ -663,7 +663,7 @@ func TestBrowseJPastHistoryEntersTheBox(t *testing.T) {
 // TestBrowseEnterExpandsARunningCard: Enter on a running stop opens that card,
 // and a second Enter closes it again.
 func TestBrowseEnterExpandsARunningCard(t *testing.T) {
-	m := boxHistoryModel(t, workRunningCard("work:one", nowBarT0))
+	m := boxHistoryModel(t, workRunningCard("work:one", workT0))
 
 	m = pressKeys(m, "esc", "G")
 	if _, ok := boxTargetOf(m.cursor); !ok {
@@ -685,9 +685,9 @@ func TestBrowseEnterExpandsARunningCard(t *testing.T) {
 // TestBrowseSRequestsAStopOnlyWhenAllowed: s stops a running item that offers
 // a stop, and stays the unbound key of the transcript elsewhere.
 func TestBrowseSRequestsAStopOnlyWhenAllowed(t *testing.T) {
-	stoppable := workRunningCard("work:stoppable", nowBarT0)
+	stoppable := workRunningCard("work:stoppable", workT0)
 	stoppable.Capabilities.Stop = true
-	quiet := workRunningCard("work:quiet", nowBarT0.Add(-time.Second))
+	quiet := workRunningCard("work:quiet", workT0.Add(-time.Second))
 	svc := &fakeWorkService{
 		snap:       viewmodel.WorkSnapshot{ConversationID: "conv1", Items: []viewmodel.WorkItem{stoppable, quiet}},
 		stopResult: viewmodel.WorkStopResult{Accepted: true},
@@ -732,7 +732,7 @@ func TestBrowseFOpensAnAgentFromTheBox(t *testing.T) {
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
 	view := m.state.RegisterSubagent("explore repo", child)
-	card := workRunningCard("work:agent", nowBarT0)
+	card := workRunningCard("work:agent", workT0)
 	card.Kind = "agent"
 	card.SourceID = strconv.FormatInt(view.ID, 10)
 	m.workSnapshot = workSnapOf(card)
@@ -813,7 +813,7 @@ func TestBrowseEnterOnAPlanItemScrollsToItsBeat(t *testing.T) {
 // TestBrowseGFollowsTheLiveBox: G re-arms following even though the last stop is
 // a box stop and not a live history node.
 func TestBrowseGFollowsTheLiveBox(t *testing.T) {
-	m := boxHistoryModel(t, workRunningCard("work:one", nowBarT0))
+	m := boxHistoryModel(t, workRunningCard("work:one", workT0))
 	for i := range 40 {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
 	}

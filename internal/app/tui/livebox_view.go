@@ -288,7 +288,7 @@ func (m *Model) handleBoxClick(msg tea.Mouse) (tea.Cmd, bool) {
 		m.invalidateTranscript()
 		m.refreshViewport()
 	case livebox.TargetMore:
-		m.openTasks(tasksTabWork)
+		m.openWork()
 	case livebox.TargetPlan:
 		m.scrollToPlanItem(target.Key)
 	}

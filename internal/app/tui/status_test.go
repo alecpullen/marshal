@@ -351,17 +351,9 @@ func TestStatusLineDropsBrowserSegmentFirst(t *testing.T) {
 	}
 }
 
-func TestShouldShowStatusURLReturnsTrueWhenNoBrowserSession(t *testing.T) {
-	m := newStatusTestModel(t)
-	m.state.SetBrowserInfo(session.BrowserInfo{SessionOpen: false})
-	if !m.ShouldShowStatusURL() {
-		t.Fatal("ShouldShowStatusURL should return true when no browser session")
-	}
-}
-
-// The box draws no browser row, so the status line carries the URL on every
-// frame height.
-func TestStatusLineBrowserSegmentAlwaysShown(t *testing.T) {
+// The status line carries the browser URL on every frame height while a
+// session is open.
+func TestStatusLineShowsTheBrowserWhileASessionIsOpen(t *testing.T) {
 	for _, height := range []int{24, 40} {
 		m := newStatusTestModel(t)
 		m.resize(120, height)
@@ -374,8 +366,9 @@ func TestStatusLineBrowserSegmentAlwaysShown(t *testing.T) {
 			Active: true,
 			Roles:  []session.SwarmRole{{Name: "planner", Status: session.SwarmRoleActive}},
 		})
-		if !m.ShouldShowStatusURL() {
-			t.Fatalf("height %d: the status line must carry the browser URL", height)
+		line := stripANSI(m.renderStatusLine(120))
+		if !strings.Contains(line, "example.com/docs") {
+			t.Fatalf("height %d: the status line must carry the browser URL:\n%s", height, line)
 		}
 	}
 }

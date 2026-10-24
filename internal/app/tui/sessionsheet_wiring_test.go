@@ -15,7 +15,6 @@ import (
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/commands"
 	"marshal/internal/db"
-	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 )
 
@@ -191,9 +190,7 @@ func TestSheetDataChildScopedDuringDrillIn(t *testing.T) {
 func TestCtrlBSwitchesFromWorkToTheSheet(t *testing.T) {
 	m, dir := gitModel(t)
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("changed\n"), 0o644)
-	if err := m.state.SetTodos([]native.TodoItem{{Content: "a task", Status: native.TodoPending}}); err != nil {
-		t.Fatal(err)
-	}
+	m.workSnapshot = workSnapOf(workRunningCard("work:a", workT0))
 
 	updated, _ := m.dispatchCommand("/work")
 	m = asModel(t, updated)

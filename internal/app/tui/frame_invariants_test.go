@@ -55,7 +55,7 @@ func TestFrameInvariants(t *testing.T) {
 		{"box+live", func(t *testing.T, m *Model) {
 			cards := make([]viewmodel.WorkItem, 0, 12)
 			for i := range 12 {
-				cards = append(cards, workRunningCard(fmt.Sprintf("work:%02d", i), nowBarT0.Add(-time.Duration(i)*time.Second)))
+				cards = append(cards, workRunningCard(fmt.Sprintf("work:%02d", i), workT0.Add(-time.Duration(i)*time.Second)))
 			}
 			m.workSnapshot = workSnapOf(cards...)
 			items := make([]native.TodoItem, 0, 10)

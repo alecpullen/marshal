@@ -5,14 +5,12 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/livebox"
-	"marshal/internal/commands"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 )
@@ -105,82 +103,10 @@ func panelAction(p *tasksPanelModel, id string) tea.Cmd {
 	return nil
 }
 
-func TestWorkTasksInitialAndRememberedTab(t *testing.T) {
-	// With todos and no Work projection, the first open defaults to Plan.
-	m := newTestModel(t)
-	if err := m.state.SetTodos([]native.TodoItem{{ID: "t1", Content: "a task", Status: native.TodoPending}}); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
-	m = toggleTasks(m)
-	if !m.tasksOpen() {
-		t.Fatal("Ctrl+T with todos must open the Tasks panel")
-	}
-	if got := m.tasksPanel.activeTab; got != tasksTabPlan {
-		t.Fatalf("first open tab = %v, want Plan", got)
-	}
-
-	// With no todos but a live Work projection, the first open defaults to Work.
-	empty := newTestModel(t)
-	empty.workSnapshot = workSnapOf(workTask("work:a", "Alpha"))
-	empty = toggleTasks(empty)
-	if empty.tasksPanel.activeTab != tasksTabWork {
-		t.Fatalf("first open with only work = %v, want Work", empty.tasksPanel.activeTab)
-	}
-
-	// Switching to Work, closing and reopening restores the last tab.
-	m = panelKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
-	if m.tasksPanel.activeTab != tasksTabWork {
-		t.Fatalf("after right = %v, want Work", m.tasksPanel.activeTab)
-	}
-	m = toggleTasks(m)
-	if m.dock.IsOpen() {
-		t.Fatal("a second Ctrl+T must close the Tasks panel")
-	}
-	m = toggleTasks(m)
-	if got := m.tasksPanel.activeTab; got != tasksTabWork {
-		t.Fatalf("reopened tab = %v, want the remembered Work", got)
-	}
-}
-
-func TestWorkTasksPlanKeepsChildStats(t *testing.T) {
-	m := newTestModel(t)
-	if err := m.state.SetTodos([]native.TodoItem{{ID: "p1", Content: "parent task", Status: native.TodoPending}}); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
-	child := session.New(m.state.Config, t.TempDir(), time.Now(), session.Persistence{})
-	if err := child.SetTodos([]native.TodoItem{{ID: "c1", Content: "child task", Status: native.TodoInProgress}}); err != nil {
-		t.Fatalf("child SetTodos: %v", err)
-	}
-	m.viewStack = append(m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: child})
-
-	m = toggleTasks(m)
-	if m.tasksPanel.activeTab != tasksTabPlan {
-		t.Fatalf("todos must default to the Plan tab, got %v", m.tasksPanel.activeTab)
-	}
-	view := stripANSI(m.dock.View(m.leftWidth, m.height))
-	if !strings.Contains(view, "child task") || strings.Contains(view, "parent task") {
-		t.Fatalf("Plan must show the drilled-in child's list, not the parent's:\n%s", view)
-	}
-
-	// The Plan doc source drives the rows, so step counts come from the same
-	// taskStats the transcript groups them with.
-	p := m.tasksPanel
-	p.SetSource(func() commands.Doc {
-		return tasksDoc(child.Todos(), map[string]viewmodel.TaskStat{"c1": {Steps: 2, Work: time.Minute}})
-	})
-	view = stripANSI(m.dock.View(m.leftWidth, m.height))
-	if !strings.Contains(view, "2 steps") {
-		t.Fatalf("Plan must render the stats its source supplies:\n%s", view)
-	}
-}
-
 func TestWorkTasksSearchPagingAndSelection(t *testing.T) {
 	m := newTestModel(t)
 	m.workSnapshot = workSnapOf(workTask("work:live1", "Live one"))
 	m = toggleTasks(m)
-	if m.tasksPanel.activeTab != tasksTabWork {
-		t.Fatalf("want the Work tab, got %v", m.tasksPanel.activeTab)
-	}
 	p := m.tasksPanel
 
 	// "/" focuses the search box; a paste lands in it (paste support).
@@ -295,8 +221,8 @@ func TestWorkTasksInspectNeverAcknowledges(t *testing.T) {
 		t.Fatalf("inspect carried a revision %q; it must not acknowledge", req.resultRevision)
 	}
 
-	// Opening the detail does not acknowledge either; only the explicit action
-	// does, and it carries the same revision the renderer would show.
+	// Opening the detail does not acknowledge either, and nothing in the
+	// detail offers an acknowledgement at all.
 	item := viewmodel.WorkItem{
 		TaskKey: "work:a", State: "failed",
 		Capabilities: viewmodel.WorkCapabilities{Inspect: true, Acknowledge: true},
@@ -307,16 +233,11 @@ func TestWorkTasksInspectNeverAcknowledges(t *testing.T) {
 	if !p.detailOpen {
 		t.Fatal("detail did not open")
 	}
-	ack := panelAction(p, "d-ack")
-	if ack == nil {
-		t.Fatal("an acknowledgeable item must offer an ack action")
+	if ack := panelAction(p, "d-ack"); ack != nil {
+		t.Fatal("the Work detail must not offer an ack action")
 	}
-	areq := ack().(workRequestMsg)
-	if areq.kind != workReqAck || areq.taskKey != "work:a" || areq.resultRevision == "" {
-		t.Fatalf("ack = %+v, want an acknowledgment with a revision", areq)
-	}
-	if want := viewmodel.WorkResultRevision(item); areq.resultRevision != want {
-		t.Fatalf("ack revision = %q, want %q", areq.resultRevision, want)
+	if dismiss := panelAction(p, "d-dismiss"); dismiss != nil {
+		t.Fatal("the Work detail must not offer a dismiss action")
 	}
 
 	// A result for a request the panel never made is dropped.
@@ -553,18 +474,15 @@ func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
 	}
 }
 
-// A stop or acknowledgement reply must release the pending entry its request
-// booked, or a slow reply leaks it for the panel's whole lifetime.
+// A stop reply must release the pending entry its request booked, or a slow
+// reply leaks it for the panel's whole lifetime.
 func TestWorkActionReplyClearsPending(t *testing.T) {
 	m := newTestModel(t)
 	m.workSnapshot = workSnapOf(workTask("work:a", "Alpha"))
 	m = toggleTasks(m)
 	p := m.tasksPanel
-	if p.activeTab != tasksTabWork {
-		t.Fatalf("want the Work tab, got %v", p.activeTab)
-	}
 
-	for _, kind := range []string{workReqStop, workReqAck} {
+	for _, kind := range []string{workReqStop} {
 		cmd := p.request(kind, "work:a", "rev-1", viewmodel.WorkQuery{ConversationID: p.conversationID}, false)
 		req := cmd().(workRequestMsg)
 		if _, ok := p.pending[req.requestID]; !ok {

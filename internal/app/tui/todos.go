@@ -19,7 +19,7 @@ import (
 	"marshal/internal/app/tui/listpanel"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/commands"
+	"marshal/internal/progress"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 )
@@ -81,81 +81,10 @@ func (m Model) viewedTodos() []native.TodoItem {
 	return m.state.Todos()
 }
 
-// tasksDoc builds the Ctrl+T Tasks panel: one row per todo, using the same
-// glyphs as todoLine. docpanel supplies the `esc close` hint.
-//
-// Each row also carries its step count and finished working time, counted by
-// viewmodel.TaskStats from the beats under that task's divider, so the panel,
-// the transcript and the web Tasks tab agree.
-func tasksDoc(todos []native.TodoItem, stats map[string]viewmodel.TaskStat) commands.Doc {
-	done, _ := todoProgress(todos)
-	rows := make([]commands.Row, 0, len(todos))
-	for _, t := range todos {
-		g := glyph.Ambient
-		switch t.Status {
-		case native.TodoCompleted:
-			g = glyph.OK
-		case native.TodoInProgress:
-			g = glyph.Running
-		}
-		var detail []string
-		if st := stats[t.ID]; t.ID != "" && st.Steps > 0 {
-			detail = append(detail, pluralCount(st.Steps, "step", "steps"))
-			if st.Work > 0 {
-				detail = append(detail, compactDuration(st.Work))
-			}
-		}
-		rows = append(rows, commands.Row{Text: g + " " + viewmodel.ScrubText(t.Content), Detail: strings.Join(detail, " · ")})
-	}
-	return commands.Doc{Title: fmt.Sprintf("Tasks %d/%d", done, len(todos)), Rows: rows}
-}
-
 // tasksOpen reports whether the Tasks panel is the open dock panel.
 func (m Model) tasksOpen() bool {
 	return m.tasksPanel != nil && m.dock.Panel() == dock.Panel(m.tasksPanel)
 }
-
-// toggleTasksPanel is Ctrl+T: close the Tasks panel if it is the open dock
-// panel, otherwise open it on the viewed todo list (Plan) or the runtime's
-// live work (Work). The first open defaults to Plan when there are todos,
-// otherwise Work; later opens restore the tab the reader last left on. With
-// neither a list nor a work projection it leaves a notice instead of opening
-// a panel that would only swallow keys behind a notice.
-func (m *Model) toggleTasksPanel() {
-	if m.tasksOpen() {
-		m.tasksPanelTab = m.tasksPanel.activeTab
-		m.tasksPanelUsed = true
-		m.dock.CloseNow()
-		m.tasksPanel = nil
-		m.refreshViewport()
-		return
-	}
-	todos := m.viewedTodos()
-	if len(todos) == 0 && !m.workLaneActive() {
-		m.state.AddMessage(session.RoleSystem, "No task list in this session.", session.ContentTypePlain)
-		m.refreshViewport()
-		return
-	}
-	tab := tasksTabPlan
-	switch {
-	case m.tasksPanelUsed:
-		tab = m.tasksPanelTab
-	case len(todos) == 0:
-		tab = tasksTabWork
-	}
-	m.sheetPanel = nil // opening replaces the session sheet if it was up
-	m.tasksPanel = newTasksPanel(m, todos, m.taskStats, tab)
-	m.dock.Open(m.tasksPanel)
-	m.refreshViewport()
-}
-
-// workTab identifies the Tasks panel's active tab.
-type workTab int
-
-const (
-	tasksTabPlan workTab = iota
-	tasksTabWork
-)
 
 const (
 	// workSearchMaxRunes bounds the Work history query, mirroring the
@@ -178,7 +107,6 @@ const (
 	workReqList    = "list"
 	workReqInspect = "inspect"
 	workReqStop    = "stop"
-	workReqAck     = "ack"
 	workReqExpand  = "expand"
 	workReqOrigin  = "origin"
 	workReqPrompt  = "prompt"
@@ -204,11 +132,6 @@ type workPending struct {
 type tasksPanelModel struct {
 	state   *session.State
 	panelID string
-
-	plan *docpanel.Panel
-
-	activeTab   workTab
-	previousTab workTab
 
 	// Work availability and identity, refreshed when the panel opens and by
 	// the pump (Task 18) when a snapshot arrives.
@@ -242,16 +165,12 @@ type tasksPanelModel struct {
 
 var _ dock.Panel = (*tasksPanelModel)(nil)
 
-// newTasksPanel builds the Tasks panel over the viewed todo list (todos/stats
-// seed the Plan doc; the model refreshes it each frame through SetSource) and
-// the runtime's current Work projection. It allocates a fresh panel ID from
-// the model's monotonic counter.
-func newTasksPanel(m *Model, todos []native.TodoItem, stats map[string]viewmodel.TaskStat, tab workTab) *tasksPanelModel {
+// newTasksPanel builds the Work list panel over the runtime's current Work
+// projection. It allocates a fresh panel ID from the model's monotonic counter.
+func newTasksPanel(m *Model) *tasksPanelModel {
 	p := &tasksPanelModel{
 		state:          m.state,
 		panelID:        m.nextPanelID(),
-		activeTab:      tab,
-		previousTab:    tab,
 		available:      m.workLaneActive(),
 		conversationID: m.state.SessionID(),
 		snapshot:       m.workSnapshot,
@@ -267,7 +186,6 @@ func newTasksPanel(m *Model, todos []native.TodoItem, stats map[string]viewmodel
 	} else if len(attention) > 0 {
 		p.selectedKey = attention[0].TaskKey
 	}
-	p.plan = docpanel.New(tasksDoc(todos, stats), m.state)
 	p.list = listpanel.NewFieldList(p.workFields)
 	return p
 }
@@ -280,18 +198,6 @@ func (m *Model) nextPanelID() string {
 	return fmt.Sprintf("tasks-%d", m.panelSeq)
 }
 
-// SetSource makes the Plan tab re-read its doc from fn on every render, exactly
-// as the bare docpanel did before this panel hosted it. The model calls it each
-// frame so the source sees the current model value rather than the copy the
-// panel was opened from. The active tab is prefixed so the title names it.
-func (p *tasksPanelModel) SetSource(fn func() commands.Doc) {
-	p.plan.SetSource(func() commands.Doc {
-		doc := fn()
-		doc.Title = "Plan · " + doc.Title
-		return doc
-	})
-}
-
 // setWork refreshes the Work availability, identity and projection. The model's
 // Work pump (Task 18) calls it when a snapshot arrives; the panel never reads
 // the service itself.
@@ -301,38 +207,14 @@ func (p *tasksPanelModel) setWork(available bool, conversationID string, snapsho
 	p.snapshot = snapshot
 }
 
-// Sizing keeps the Tasks panel docked; the Plan doc may not take the full
-// frame, so neither may the host.
+// Sizing keeps the Work list docked; the list may not take the full frame, so
+// neither may the host.
 func (p *tasksPanelModel) Sizing() dock.Sizing { return dock.Docked }
 
-// Update routes to the active tab. Plan keeps the bare docpanel's behaviour
-// (Enter drills, Esc pops or closes). Work handles its own keys: left/right (or
-// Tab) switch tabs, Space expands the selected live item, "/" opens search, and
-// Esc leaves detail or search before closing.
+// Update handles the Work list's keys: Space expands the selected live item,
+// "/" opens search, and Esc leaves detail or search before closing.
 func (p *tasksPanelModel) Update(msg tea.Msg) tea.Cmd {
-	if p.activeTab == tasksTabPlan {
-		if k, ok := msg.(tea.KeyPressMsg); ok {
-			switch k.String() {
-			case "tab", "left", "right":
-				p.switchTab()
-				return nil
-			}
-		}
-		return p.plan.Update(msg)
-	}
 	return p.updateWork(msg)
-}
-
-// switchTab moves between Plan and Work. Each tab keeps its own selection and
-// text-editing state: the Plan docpanel keeps its own cursor, and the Work tab
-// keeps its list cursor, selectedKey and search text.
-func (p *tasksPanelModel) switchTab() {
-	p.previousTab = p.activeTab
-	if p.activeTab == tasksTabPlan {
-		p.activeTab = tasksTabWork
-	} else {
-		p.activeTab = tasksTabPlan
-	}
 }
 
 func (p *tasksPanelModel) updateWork(msg tea.Msg) tea.Cmd {
@@ -348,13 +230,10 @@ func (p *tasksPanelModel) updateWork(msg tea.Msg) tea.Cmd {
 			}
 			return func() tea.Msg { return docpanel.ClosedMsg{} }
 		}
-		// Tab switching, search and expansion are list gestures: inside the
-		// detail view the keys belong to the detail's own rows.
+		// Search and expansion are list gestures: inside the detail view the
+		// keys belong to the detail's own rows.
 		if !p.detailOpen {
 			switch k.String() {
-			case "tab", "left", "right":
-				p.switchTab()
-				return nil
 			case "space":
 				return p.expandCursor()
 			case "/":
@@ -623,22 +502,22 @@ func (p *tasksPanelModel) viewTitle() string {
 // itemTitle names one Work row: kind, label and the owner badge, so a row from
 // a subagent or pipeline worker is attributable at a glance.
 func (p *tasksPanelModel) itemTitle(it viewmodel.WorkItem) string {
-	kind := workClean(it.Kind, 24)
+	kind := progress.Clean(it.Kind, 24, false)
 	if kind == "" {
 		kind = "work"
 	}
-	title := workClean(it.Label, 120)
+	title := progress.Clean(it.Label, 120, false)
 	if title == "" {
-		title = workClean(it.DisplayID, 60)
+		title = progress.Clean(it.DisplayID, 60, false)
 	}
 	if title == "" {
-		title = workClean(it.SourceID, 60)
+		title = progress.Clean(it.SourceID, 60, false)
 	}
 	out := kind
 	if title != "" {
 		out += " " + title
 	}
-	if owner := workClean(it.Owner, 40); owner != "" {
+	if owner := progress.Clean(it.Owner, 40, false); owner != "" {
 		out += " · @" + owner
 	}
 	return out
@@ -650,7 +529,7 @@ func (p *tasksPanelModel) itemDesc(it viewmodel.WorkItem) string {
 		parts = append(parts, it.State)
 	}
 	if it.Activity != "" {
-		parts = append(parts, workClean(it.Activity, 60))
+		parts = append(parts, progress.Clean(it.Activity, 60, false))
 	}
 	return strings.Join(parts, " · ")
 }
@@ -768,7 +647,7 @@ func (p *tasksPanelModel) detailFields() []*listpanel.Field {
 	if it.State != "" {
 		rows = append(rows, p.scalarField("d-state", "State: "+it.State))
 	}
-	if owner := workClean(it.Owner, 60); owner != "" {
+	if owner := progress.Clean(it.Owner, 60, false); owner != "" {
 		rows = append(rows, p.scalarField("d-owner", "Owner: @"+owner))
 	}
 	if d.Unavailable != "" {
@@ -780,7 +659,7 @@ func (p *tasksPanelModel) detailFields() []*listpanel.Field {
 				rows = append(rows, p.scalarField("d-more", "…"))
 				break
 			}
-			rows = append(rows, p.scalarField(fmt.Sprintf("d-output-%d", i), workClean(line, 200)))
+			rows = append(rows, p.scalarField(fmt.Sprintf("d-output-%d", i), progress.Clean(line, 200, false)))
 		}
 	}
 	rows = append(rows, p.actionField("d-origin", "Jump to origin", func() tea.Cmd {
@@ -798,17 +677,6 @@ func (p *tasksPanelModel) detailFields() []*listpanel.Field {
 		rows = append(rows, p.actionField("d-stop", "Stop", func() tea.Cmd {
 			return p.request(workReqStop, it.TaskKey, "", viewmodel.WorkQuery{ConversationID: p.conversationID}, false)
 		}))
-	}
-	if it.Capabilities.Acknowledge {
-		revision := viewmodel.WorkResultRevision(it)
-		ack := func() tea.Cmd {
-			return p.request(workReqAck, it.TaskKey, revision,
-				viewmodel.WorkQuery{ConversationID: p.conversationID}, false)
-		}
-		rows = append(rows, p.actionField("d-ack", "Mark reviewed", ack))
-		if viewmodel.WorkNeedsAttention(it) {
-			rows = append(rows, p.actionField("d-dismiss", "Dismiss", ack))
-		}
 	}
 	if it.Capabilities.ResolvePrompt && it.Prompt != nil {
 		prompt := *it.Prompt
@@ -828,15 +696,11 @@ func (p *tasksPanelModel) detailFields() []*listpanel.Field {
 	return rows
 }
 
-// View renders the active tab. Plan delegates to the docpanel it hosts; Work
-// renders its list inside the same chrome. The search box sits under the list
-// while it is open.
+// View renders the Work list inside the panel chrome. The search box sits
+// under the list while it is open.
 func (p *tasksPanelModel) View(width, maxHeight int) string {
 	if width < 4 || maxHeight < 2 {
 		return ""
-	}
-	if p.activeTab == tasksTabPlan {
-		return p.plan.View(width, maxHeight)
 	}
 	pw := layout.PanelWidth(width)
 	inner := pw - 3
@@ -849,7 +713,7 @@ func (p *tasksPanelModel) View(width, maxHeight int) string {
 	if p.mode == workModeHistory && p.query != "" {
 		title = "Work · history"
 	}
-	hints := "←→ tabs · ↑↓ move · ↵ inspect · space expand/collapse · / search · esc close"
+	hints := "↑↓ move · ↵ inspect · space expand/collapse · / search · esc close"
 	ph := min(lipgloss.Height(body)+1, maxHeight)
 	return chrome.PanelWithHints(title, hints, body, pw, ph, true, theme.Current())
 }

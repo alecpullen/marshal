@@ -171,24 +171,6 @@ func TestPreTaskSessionsRenderWithoutHeadersOrErrors(t *testing.T) {
 	}
 }
 
-func TestTasksDocShowsStepCountsAndWorkTime(t *testing.T) {
-	todos := []db.TodoItem{
-		{ID: "t1", Content: "Done one", Status: "completed"},
-		{ID: "t2", Content: "Live one", Status: "in_progress"},
-		{ID: "t3", Content: "Later", Status: "pending"},
-	}
-	doc := tasksDoc(todos, map[string]viewmodel.TaskStat{"t1": {Steps: 2, Work: 3 * time.Minute}, "t2": {Steps: 1, Work: 90 * time.Second}})
-	if got := doc.Rows[0].Detail; got != "2 steps · 3m00s" {
-		t.Errorf("completed row detail = %q", got)
-	}
-	if got := doc.Rows[1].Detail; got != "1 step · 1m30s" {
-		t.Errorf("in-progress row detail = %q", got)
-	}
-	if got := doc.Rows[2].Detail; got != "" {
-		t.Errorf("pending row detail = %q", got)
-	}
-}
-
 func TestFailedRowShowsItsLastOutputLinesCollapsed(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)

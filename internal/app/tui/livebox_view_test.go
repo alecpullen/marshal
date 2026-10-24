@@ -84,7 +84,7 @@ func TestBoxIsBudgetedInTheFrameHeight(t *testing.T) {
 			m.resize(sz.w, sz.h)
 			cards := make([]viewmodel.WorkItem, 0, 8)
 			for i := range 8 {
-				cards = append(cards, workRunningCard(fmt.Sprintf("work:%02d", i), nowBarT0.Add(-time.Duration(i)*time.Second)))
+				cards = append(cards, workRunningCard(fmt.Sprintf("work:%02d", i), workT0.Add(-time.Duration(i)*time.Second)))
 			}
 			m.workSnapshot = workSnapOf(cards...)
 			items := make([]native.TodoItem, 0, 10)
@@ -120,8 +120,8 @@ func TestBoxClickTogglesAWorkCard(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
 	cards := []viewmodel.WorkItem{
-		workRunningCard("work:one", nowBarT0.Add(-30*time.Second)),
-		workRunningCard("work:two", nowBarT0.Add(-20*time.Second)),
+		workRunningCard("work:one", workT0.Add(-30*time.Second)),
+		workRunningCard("work:two", workT0.Add(-20*time.Second)),
 	}
 	m.workSnapshot = workSnapOf(cards...)
 	m.refreshViewport()

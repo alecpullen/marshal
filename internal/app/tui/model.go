@@ -754,23 +754,14 @@ type Model struct {
 	successPulseAt time.Time
 	now            func() time.Time
 
-	// tasksPanel is the open Ctrl+T Tasks panel, kept so a second Ctrl+T
-	// can tell it apart from other docked panels. It hosts the Plan and Work
-	// tabs; the zero value (nil) means the panel is closed.
+	// tasksPanel is the open Work list panel, kept so a second open can tell
+	// it apart from other docked panels. The zero value (nil) means the panel
+	// is closed.
 	tasksPanel *tasksPanelModel
-	// tasksPanelTab remembers the tab the reader last left the Tasks panel on.
-	// The first open defaults to Plan when there are todos, otherwise Work;
-	// later opens restore this tab. tasksPanelUsed distinguishes the zero
-	// value (never opened) from a remembered Plan tab.
-	tasksPanelTab  workTab
-	tasksPanelUsed bool
 	// panelSeq is the monotonic source of dock panel IDs. A new panel takes
 	// the next value; IDs are never derived from a label and never reused, so
 	// a result from a closed panel can be told apart from its replacement.
 	panelSeq uint64
-	// nowBarMemo is the plan viewString computed for the frame in flight; nil
-	// outside viewString. It lives only on that call's model copy.
-	nowBarMemo *nowBarPlan
 
 	// liveBoxMode is the live box's plan layout. Task 9 seeds it from config;
 	// until then a session starts stacked.
@@ -817,9 +808,6 @@ type Model struct {
 	// workExpanded names the single card the reader opened. Empty is the
 	// collapsed default; a card whose item settles or disappears clears it.
 	workExpanded string
-	// workHits is this frame's work hit targets keyed by TaskKey, rebuilt in
-	// viewString from the same plan the rows came from.
-	workHits map[string]workHit
 	// rowBeat maps each row of a beat to the beat, from the last build, so
 	// a completion marker can open the beat that hides its card past the row
 	// cap before jumping to it.
@@ -3815,7 +3803,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.nowBarRows()-m.dockRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.boxRows()-m.dockRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -3829,13 +3817,6 @@ func (m Model) scrollHintRows() int {
 		return 1
 	}
 	return 0
-}
-
-// ShouldShowStatusURL reports whether the status line prints the browser URL.
-// It always does now: the box has no browser row to duplicate it, and Task 10
-// deletes this predicate.
-func (m Model) ShouldShowStatusURL() bool {
-	return true
 }
 
 // dockRows reports the rows the docked panel occupied at last render, so the
@@ -6429,8 +6410,6 @@ func (m Model) handleWorkRequest(msg workRequestMsg) (Model, tea.Cmd) {
 		return m, m.workInspectCmd(msg)
 	case workReqStop:
 		return m, m.workStopCmd(msg)
-	case workReqAck:
-		return m, m.workAckCmd(msg)
 	}
 	return m, nil
 }
@@ -6536,30 +6515,6 @@ func (m Model) handleBoxStop(msg boxStopMsg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
-// workAckCmd issues one acknowledgement off the Update thread, carrying the
-// exact result revision that was on screen.
-func (m Model) workAckCmd(msg workRequestMsg) tea.Cmd {
-	svc := m.workService
-	if svc == nil {
-		return nil
-	}
-	ack := viewmodel.WorkAck{
-		WorkTarget:     viewmodel.WorkTarget{ConversationID: msg.conversationID, TaskKey: msg.taskKey},
-		ResultRevision: msg.resultRevision,
-	}
-	return func() tea.Msg {
-		err := svc.AcknowledgeWork(context.Background(), ack)
-		return workActionMsg{
-			conversationID: msg.conversationID,
-			taskKey:        msg.taskKey,
-			resultRevision: msg.resultRevision,
-			requestID:      msg.requestID,
-			kind:           workReqAck,
-			err:            err,
-		}
-	}
-}
-
 // handleWorkPage applies one list reply, but only while the panel and request
 // that asked for it are still current. A reply from a closed or replaced panel
 // is dropped, so it can never reopen or corrupt it.
@@ -6614,12 +6569,6 @@ func (m Model) handleWorkAction(msg workActionMsg) (Model, tea.Cmd) {
 		case !msg.stop.Accepted:
 			p.err = msg.stop.Summary
 		default:
-			p.err = ""
-		}
-	case workReqAck:
-		if msg.err != nil {
-			p.err = msg.err.Error()
-		} else {
 			p.err = ""
 		}
 	}
@@ -6720,8 +6669,6 @@ func (m *Model) openWorkDetailUnavailable(item viewmodel.WorkItem) {
 	}
 	p.detail = &d
 	p.detailOpen = true
-	p.previousTab = p.activeTab
-	p.activeTab = tasksTabWork
 	m.dock.Open(p)
 	m.refreshViewport()
 }
@@ -6757,10 +6704,6 @@ func (m *Model) navigateToWorkPrompt(msg workRequestMsg) (Model, tea.Cmd) {
 		m.refreshViewport()
 		return *m, nil
 	}
-	if m.tasksPanel != nil {
-		m.tasksPanelTab = m.tasksPanel.activeTab
-		m.tasksPanelUsed = true
-	}
 	m.dock.CloseNow()
 	m.tasksPanel = nil
 	m.reconcileAccess()
@@ -6768,26 +6711,21 @@ func (m *Model) navigateToWorkPrompt(msg workRequestMsg) (Model, tea.Cmd) {
 	return *m, nil
 }
 
-// openTasks opens the Tasks panel on the requested tab, switching tabs when it
-// is already the open panel. It refuses to open a panel with neither a todo
-// list nor a Work projection, leaving a notice instead.
-func (m *Model) openTasks(tab workTab) {
+// openWork opens the Work list, or refreshes it when it is already the open
+// panel. It refuses to open a panel with no live work, leaving a notice
+// instead.
+func (m *Model) openWork() {
 	if m.tasksOpen() {
-		m.tasksPanel.previousTab = m.tasksPanel.activeTab
-		m.tasksPanel.activeTab = tab
 		m.refreshViewport()
 		return
 	}
-	todos := m.viewedTodos()
-	if len(todos) == 0 && !m.workLaneActive() {
-		m.state.AddMessage(session.RoleSystem, "No task list in this session.", session.ContentTypePlain)
+	if !m.workLaneActive() {
+		m.state.AddMessage(session.RoleSystem, "No work in this session.", session.ContentTypePlain)
 		m.refreshViewport()
 		return
 	}
-	m.tasksPanelTab = tab
-	m.tasksPanelUsed = true
 	m.sheetPanel = nil
-	m.tasksPanel = newTasksPanel(m, todos, m.taskStats, tab)
+	m.tasksPanel = newTasksPanel(m)
 	m.dock.Open(m.tasksPanel)
 	m.refreshViewport()
 }

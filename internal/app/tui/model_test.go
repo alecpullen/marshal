@@ -7088,7 +7088,12 @@ func TestReplaceTriggerTokenHandlesConsecutiveAt(t *testing.T) {
 }
 
 func toggleTasks(m Model) Model {
-	m.toggleTasksPanel()
+	if m.tasksOpen() {
+		m.dock.CloseNow()
+		m.tasksPanel = nil
+		return m
+	}
+	m.openWork()
 	return m
 }
 

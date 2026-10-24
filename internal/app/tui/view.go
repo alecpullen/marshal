@@ -15,7 +15,6 @@ import (
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/commands"
 	"marshal/internal/viewmodel"
 )
 
@@ -84,9 +83,6 @@ func (m *Model) viewString() string {
 	// opened from, or it would render stale values.
 	if m.sheetPanel != nil {
 		m.sheetPanel.SetData(m.sheetDataFor)
-	}
-	if m.tasksPanel != nil {
-		m.tasksPanel.SetSource(func() commands.Doc { return tasksDoc(m.viewedTodos(), m.taskStats) })
 	}
 	dockView := m.dock.View(m.leftWidth, m.height)
 	m.updateViewportHeight()

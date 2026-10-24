@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
@@ -379,7 +380,7 @@ func renderPlanRow(p *viewmodel.PlanUpdate, w int) string {
 		}
 		marks = strings.Join(parts, " ")
 	} else {
-		marks = progressBlocks(p.Done(), p.Total(), 8)
+		marks = livebox.Blocks(p.Done(), p.Total(), 8)
 	}
 	pos, text := fmt.Sprintf("%d/%d", p.Done(), p.Total()), ""
 	switch {
@@ -395,3 +396,10 @@ func renderPlanRow(p *viewmodel.PlanUpdate, w int) string {
 	}
 	return ansi.Truncate(line, w, "…") + "\n"
 }
+
+// oneLine flattens line breaks and tabs to single spaces.
+func oneLine(s string) string {
+	return lineFlatten.Replace(s)
+}
+
+var lineFlatten = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")

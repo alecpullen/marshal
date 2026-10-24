@@ -380,13 +380,11 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: style.Render(seg), priority: 8})
 	}
 
-	if m.ShouldShowStatusURL() {
-		if bi := m.state.BrowserInfo(); bi.SessionOpen {
-			segs = append(segs, statusSeg{
-				text:     browserStatusText(bi),
-				priority: 9,
-			})
-		}
+	if bi := m.state.BrowserInfo(); bi.SessionOpen {
+		segs = append(segs, statusSeg{
+			text:     browserStatusText(bi),
+			priority: 9,
+		})
 	}
 
 	if m.diagnosticCount > 0 {

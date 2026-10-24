@@ -407,12 +407,19 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	// loadedHere holds the skills this turn loaded with a call row. A tag for
 	// one of them is redundant: the call row is the trace.
 	loadedHere := map[string]bool{}
+	// unloadedHere holds the skills this turn unloaded. Unload posts the same
+	// ContentTypeSkill tag a load does, so a turn that unloads a skill must
+	// keep that tag even though the same turn also loaded it.
+	unloadedHere := map[string]bool{}
 	for i := range items {
 		it := items[i]
 		if it.Kind != session.KindAudit || it.Audit == nil {
 			continue
 		}
-		if it.Audit.ToolName != "skill.load" || EventFailed(*it.Audit) {
+		if EventFailed(*it.Audit) {
+			continue
+		}
+		if it.Audit.ToolName != "skill.load" && it.Audit.ToolName != "skill.unload" {
 			continue
 		}
 		var args struct {
@@ -421,9 +428,15 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		if err := json.Unmarshal(it.Audit.Args, &args); err != nil {
 			continue
 		}
-		if name := strings.TrimSpace(args.Name); name != "" {
-			loadedHere[name] = true
+		name := strings.TrimSpace(args.Name)
+		if name == "" {
+			continue
 		}
+		if it.Audit.ToolName == "skill.unload" {
+			unloadedHere[name] = true
+			continue
+		}
+		loadedHere[name] = true
 	}
 
 	for i := range items {
@@ -441,8 +454,14 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 			if m != nil && m.ContentType == session.ContentTypeSkillBody {
 				continue
 			}
-			if m != nil && m.ContentType == session.ContentTypeSkill && loadedHere[strings.TrimSpace(m.Content)] {
-				continue
+			if m != nil && m.ContentType == session.ContentTypeSkill {
+				name := strings.TrimSpace(m.Content)
+				// The tag is redundant only when this turn's own call row
+				// already shows the load, and the turn does not also unload
+				// the skill.
+				if loadedHere[name] && !unloadedHere[name] {
+					continue
+				}
 			}
 			if m != nil && m.ContentType == session.ContentTypeNarration {
 				if m.StepID > 0 {

@@ -7487,17 +7487,27 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		newCfg.Models.Presets = map[string]routing.ModelPreset{}
 	}
 	// Merge the presets the connect wizard prepared for every reported model.
-	// The active model's preset is materialized below, so an existing entry
-	// wins here.
-	for name, preset := range msg.Presets {
-		if _, exists := newCfg.Models.Presets[name]; !exists {
-			newCfg.Models.Presets[name] = preset
+	// A preset the prepared provenance manages carries refreshed catalog
+	// values, so it replaces the live entry; an unmanaged entry is the user's
+	// own and is kept (Apply refuses to mutate those anyway). The active
+	// model's preset is materialized below, which only ever fills or grows a
+	// figure, so it cannot undo a refresh.
+	var managed map[string]bool
+	if msg.Provenance != nil {
+		managed = make(map[string]bool, len(msg.Provenance.Presets))
+		for name := range msg.Provenance.Presets {
+			managed[name] = true
 		}
 	}
+	for name, preset := range msg.Presets {
+		if _, exists := newCfg.Models.Presets[name]; exists && !managed[name] {
+			continue
+		}
+		newCfg.Models.Presets[name] = preset
+	}
 	presetName, err := presetflow.Materialize(&newCfg, msg.Provider, msg.Model, msg.ProviderCfg.BaseURL, presetflow.Limits{
-		ContextWindow:   msg.ContextWindow,
-		MaxOutputTokens: msg.MaxOutputTokens,
-		ToolCalling:     msg.ToolCalling,
+		ContextWindow: msg.ContextWindow,
+		ToolCalling:   msg.ToolCalling,
 	})
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("✗ Failed to materialize model preset: %v", err), session.ContentTypePlain)

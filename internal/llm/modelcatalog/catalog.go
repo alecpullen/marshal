@@ -44,15 +44,11 @@ type Cost struct {
 	CacheWrite float64 `json:"cache_write"`
 }
 
-type rawCatalog map[string]rawProvider
-
 type rawProvider struct {
-	ID     string              `json:"id"`
-	Models map[string]rawModel `json:"models"`
+	Models map[string]json.RawMessage `json:"models"`
 }
 
 type rawModel struct {
-	ID       string   `json:"id"`
 	Limit    rawLimit `json:"limit"`
 	Cost     rawCost  `json:"cost"`
 	ToolCall *bool    `json:"tool_call"`
@@ -71,27 +67,35 @@ type rawCost struct {
 	CacheWrite float64 `json:"cache_write"`
 }
 
-// Decode reads a models.dev api.json document. Unknown fields are ignored and
-// empty provider or model ids are skipped; a malformed document is an error.
+// Decode reads a models.dev api.json document. Unknown fields are ignored,
+// empty provider or model ids are skipped, and an entry that does not decode
+// is dropped on its own rather than failing the whole document — one bad
+// entry must not cost every provider its enrichment. Only a document that is
+// not a JSON object at all is an error.
 func Decode(r io.Reader) (*Catalog, error) {
-	var raw rawCatalog
+	var raw map[string]json.RawMessage
 	if err := json.NewDecoder(r).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("decode models.dev catalog: %w", err)
 	}
 	cat := &Catalog{Providers: make(map[string]Provider, len(raw))}
-	for id, rp := range raw {
+	for id, rawProv := range raw {
 		if id == "" {
 			continue
 		}
-		p := Provider{ID: id, Models: make(map[string]Model, len(rp.Models))}
-		if rp.ID != "" {
-			p.ID = rp.ID
+		var rp rawProvider
+		if err := json.Unmarshal(rawProv, &rp); err != nil {
+			continue
 		}
-		for mid, rm := range rp.Models {
+		p := Provider{ID: id, Models: make(map[string]Model, len(rp.Models))}
+		for mid, rawMod := range rp.Models {
 			if mid == "" {
 				continue
 			}
-			m := Model{
+			var rm rawModel
+			if err := json.Unmarshal(rawMod, &rm); err != nil {
+				continue
+			}
+			p.Models[mid] = Model{
 				ID: mid,
 				Limit: Limit{
 					Context: rm.Limit.Context,
@@ -106,10 +110,6 @@ func Decode(r io.Reader) (*Catalog, error) {
 				},
 				ToolCall: rm.ToolCall,
 			}
-			if rm.ID != "" {
-				m.ID = rm.ID
-			}
-			p.Models[mid] = m
 		}
 		cat.Providers[id] = p
 	}

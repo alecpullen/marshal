@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -250,6 +252,7 @@ func TestPickModelEmitsDone(t *testing.T) {
 	// Deliver the prepared result directly: the prepare cmd itself would
 	// probe the provider, which this unit test must not do.
 	m, _ = m.Update(PreparedMsg{
+		Provider: m.providerName,
 		Presets: map[string]routing.ModelPreset{
 			"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b"},
 		},
@@ -448,7 +451,7 @@ func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
 	if m.step != stepPreparing {
 		t.Fatalf("after pickModel should be stepPreparing, got %v", m.step)
 	}
-	m, _ = m.Update(PreparedMsg{Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
 	if m.step != stepSummary {
 		t.Fatalf("after prepare should be stepSummary, got %v", m.step)
 	}
@@ -579,7 +582,7 @@ func TestScopedModelSwitchPreparesPresets(t *testing.T) {
 	if m.step != stepPreparing {
 		t.Fatalf("expected stepPreparing, got %v", m.step)
 	}
-	m, _ = m.Update(PreparedMsg{Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -794,7 +797,7 @@ func advanceToSummary(m *Model) {
 	if m.step == stepConsent {
 		m.Update(tea.KeyPressMsg{Code: 110}) // n
 	}
-	m.Update(PreparedMsg{Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
 }
 
 // newConnectForModelPick builds a Model at stepPickModel with a discovered
@@ -885,7 +888,7 @@ func TestConnectReachesSummaryWithoutConfirmScreen(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
-	m, _ = m.Update(PreparedMsg{Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
 
 	if m.step != stepSummary {
 		t.Fatalf("step = %v, want stepSummary", m.step)
@@ -897,6 +900,7 @@ func TestConnectDoneCarriesPreparedPresets(t *testing.T) {
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
 	m, _ = m.Update(PreparedMsg{
+		Provider: m.providerName,
 		Presets: map[string]routing.ModelPreset{
 			"openai/gpt-4o":      {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"},
 			"openai/gpt-4o-mini": {Name: "openai/gpt-4o-mini", Provider: "openai", Model: "gpt-4o-mini"},
@@ -1658,16 +1662,127 @@ func TestRenderRenameInputTruncatesSafely(t *testing.T) {
 	}
 }
 
-func TestDoneNilConfirmDoesNotPanic(t *testing.T) {
-	m := &Model{} // confirm is nil (only set once the confirm-limits step is entered)
+func TestDoneWithoutPreparedResultDoesNotPanic(t *testing.T) {
+	m := &Model{} // no prepare has run, so prepared is the zero value
 	cmd := m.done()
 	if cmd == nil {
 		t.Fatal("done() should return a tea.Cmd")
 	}
-	// Executing the returned closure must not dereference a nil confirm.
+	// Executing the returned closure must not dereference a nil prepared result.
 	msg := cmd()
 	if _, ok := msg.(DoneMsg); !ok {
 		t.Fatalf("done() cmd returned %T, want DoneMsg", msg)
+	}
+}
+
+func TestDoneCarriesProbedCaps(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
+	toolCalling := true
+	m, _ = m.Update(PreparedMsg{
+		Provider: m.providerName,
+		Caps:     provider.ModelCapabilities{ContextWindow: 32768, ToolCalling: &toolCalling},
+		Result:   presetsetup.Result{Prepared: 1, Fallback: 1},
+	})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
+	if cmd == nil {
+		t.Fatal("Enter on summary should emit a DoneMsg cmd")
+	}
+	dm, ok := cmd().(DoneMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want DoneMsg", cmd())
+	}
+	if dm.ContextWindow != 32768 {
+		t.Fatalf("DoneMsg.ContextWindow = %d, want 32768", dm.ContextWindow)
+	}
+	if dm.ToolCalling == nil || !*dm.ToolCalling {
+		t.Fatalf("DoneMsg.ToolCalling = %v, want true", dm.ToolCalling)
+	}
+}
+
+func TestPreparedMsgFromAnotherProviderIsIgnored(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing", m.step)
+	}
+	m, _ = m.Update(PreparedMsg{Provider: "some-other-provider", Result: presetsetup.Result{Prepared: 1}})
+	if m.step != stepPreparing {
+		t.Fatalf("stale PreparedMsg moved the wizard to %v, want stepPreparing", m.step)
+	}
+}
+
+func TestPrepareCmdDoesNotMutateLivePresetMap(t *testing.T) {
+	cfg := config.Default()
+	deny := false
+	cfg.Privacy.ModelsDevEnrichment = &deny
+	const name = "openai/gpt-4o"
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		name: {Name: name, Provider: "openai", Model: "gpt-4o", ContextWindow: 128000},
+	}
+	m := New(Opts{
+		Cfg: cfg,
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {{ID: "gpt-4o"}, {ID: "gpt-4o-mini"}},
+		},
+		SkipToIntroModel: true,
+		ScopedProvider:   "openai",
+		DataDir:          t.TempDir(),
+	})
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing", m.step)
+	}
+	msg := m.prepareCmd()()
+	pm, ok := msg.(PreparedMsg)
+	if !ok {
+		t.Fatalf("prepareCmd produced %T, want PreparedMsg", msg)
+	}
+	if len(pm.Presets) != 2 {
+		t.Fatalf("prepared %d presets, want 2", len(pm.Presets))
+	}
+	// The wizard works on a copy: a cancelled connect must leave the live
+	// config's preset map exactly as it was.
+	if _, ok := cfg.Models.Presets["openai/gpt-4o-mini"]; ok {
+		t.Fatal("prepareCmd added a preset to the live config")
+	}
+	if got := cfg.Models.Presets[name].ContextWindow; got != 128000 {
+		t.Fatalf("live preset ContextWindow = %d, want 128000", got)
+	}
+}
+
+func TestPrepareCmdSkipsCatalogWhenDenied(t *testing.T) {
+	cfg := config.Default()
+	deny := false
+	cfg.Privacy.ModelsDevEnrichment = &deny
+	dataDir := t.TempDir()
+	m := New(Opts{
+		Cfg: cfg,
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {{ID: "gpt-4o"}},
+		},
+		SkipToIntroModel: true,
+		ScopedProvider:   "openai",
+		DataDir:          dataDir,
+	})
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing", m.step)
+	}
+	msg := m.prepareCmd()()
+	pm, ok := msg.(PreparedMsg)
+	if !ok {
+		t.Fatalf("prepareCmd produced %T, want PreparedMsg", msg)
+	}
+	if pm.ProvenanceErr != nil {
+		t.Fatalf("ProvenanceErr = %v, want nil for a missing sidecar", pm.ProvenanceErr)
+	}
+	// A denied consent must not touch the network, so no catalog cache is
+	// written.
+	if _, err := os.Stat(filepath.Join(dataDir, "models-dev", "catalog.json")); err == nil {
+		t.Fatal("denied consent still fetched the models.dev catalog")
 	}
 }
 

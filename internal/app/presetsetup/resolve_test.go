@@ -174,3 +174,17 @@ func TestResolveLeavesPricingUnsetWhenAbsent(t *testing.T) {
 		t.Fatalf("Pricing = %+v, want nil", m.Pricing)
 	}
 }
+
+func TestPricingFromCostIgnoresInvalidComponent(t *testing.T) {
+	// One negative component is dropped on its own; the valid ones survive.
+	p, ok := pricingFromCost(modelcatalog.Cost{Input: 1.4, CacheRead: -5})
+	if !ok {
+		t.Fatal("pricingFromCost() ok = false, want true")
+	}
+	if p.InputPerMTokCents != 140 {
+		t.Errorf("InputPerMTokCents = %d, want 140", p.InputPerMTokCents)
+	}
+	if p.CacheReadPerMTokCents != 0 {
+		t.Errorf("CacheReadPerMTokCents = %d, want 0 (invalid component ignored)", p.CacheReadPerMTokCents)
+	}
+}

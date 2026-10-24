@@ -19,6 +19,9 @@ const (
 	CacheTTL = 24 * time.Hour
 	// maxCatalogBytes bounds the response body.
 	maxCatalogBytes = 32 << 20
+	// cacheVersion is the on-disk cache schema version. A file written by a
+	// different version is treated as corrupt and refetched.
+	cacheVersion = 1
 )
 
 // Cache loads the models.dev catalog from a local file, refreshing it over
@@ -69,9 +72,13 @@ func (c *Cache) Load(ctx context.Context) (*Catalog, error) {
 	}
 	if notModified {
 		cached.FetchedAt = c.Now()
+		// A cache write failure is not fatal: the catalog is usable for this
+		// run, and the next start simply revalidates over HTTP again.
 		_ = writeCache(path, cached)
 		return cached.Catalog, nil
 	}
+	// Same here: an unwritable data dir costs a refetch next start, not this
+	// run's enrichment.
 	_ = writeCache(path, fresh)
 	return fresh.Catalog, nil
 }
@@ -120,12 +127,17 @@ func readCache(path string) (*cacheFile, error) {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return nil, err
 	}
+	if f.Version != cacheVersion {
+		return nil, fmt.Errorf("catalog cache version %d, want %d", f.Version, cacheVersion)
+	}
 	if f.Catalog == nil {
 		return nil, errors.New("catalog cache has no catalog")
 	}
 	return &f, nil
 }
 
+// writeCache replaces the cache file atomically, so a crash mid-write leaves
+// the previous catalog intact instead of a truncated one.
 func writeCache(path string, f *cacheFile) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -134,5 +146,9 @@ func writeCache(path string, f *cacheFile) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }

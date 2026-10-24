@@ -48,7 +48,7 @@ func cachePath(c *Cache) string {
 func writeTestCache(t *testing.T, c *Cache, fetchedAt time.Time, etag string, cat *Catalog) {
 	t.Helper()
 	if err := writeCache(cachePath(c), &cacheFile{
-		Version:   1,
+		Version:   cacheVersion,
 		FetchedAt: fetchedAt,
 		ETag:      etag,
 		Catalog:   cat,
@@ -178,6 +178,73 @@ func TestLoadRejectsCorruptCache(t *testing.T) {
 	}
 	if err := os.WriteFile(cachePath(c), []byte("{not json"), 0o644); err != nil {
 		t.Fatalf("write corrupt cache: %v", err)
+	}
+
+	cat, err := c.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := cat.Lookup("test", "fresh-model"); !ok {
+		t.Fatalf("fresh model missing from %+v", cat.Providers)
+	}
+}
+
+func TestLoadRejectsOversizeBody(t *testing.T) {
+	// A body larger than maxCatalogBytes is truncated by the limit reader and
+	// fails to decode, so the stale cache is used instead of a partial one.
+	big := strings.Repeat("x", maxCatalogBytes+1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(big))
+	}))
+	defer srv.Close()
+
+	c := newTestCache(t, srv.URL)
+	writeTestCache(t, c, testNow.Add(-25*time.Hour), `"v1"`, mustDecode(t, testDoc("stale-model")))
+
+	cat, err := c.Load(context.Background())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := cat.Lookup("test", "stale-model"); !ok {
+		t.Fatalf("stale model missing from %+v", cat.Providers)
+	}
+}
+
+func TestLoadFailedRefreshLeavesCacheFileUntouched(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := newTestCache(t, srv.URL)
+	staleAt := testNow.Add(-25 * time.Hour)
+	writeTestCache(t, c, staleAt, `"v1"`, mustDecode(t, testDoc("stale-model")))
+
+	if _, err := c.Load(context.Background()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := readTestCache(t, c)
+	if !got.FetchedAt.Equal(staleAt) {
+		t.Errorf("FetchedAt = %v, want %v (a failed refresh must not rewrite the cache)", got.FetchedAt, staleAt)
+	}
+	if got.ETag != `"v1"` {
+		t.Errorf("ETag = %q, want %q", got.ETag, `"v1"`)
+	}
+}
+
+func TestLoadRejectsUnknownCacheVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(testDoc("fresh-model")))
+	}))
+	defer srv.Close()
+
+	c := newTestCache(t, srv.URL)
+	if err := writeCache(cachePath(c), &cacheFile{
+		Version:   cacheVersion + 1,
+		FetchedAt: testNow,
+		Catalog:   mustDecode(t, testDoc("future-model")),
+	}); err != nil {
+		t.Fatalf("write cache: %v", err)
 	}
 
 	cat, err := c.Load(context.Background())

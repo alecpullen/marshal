@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/llm/modelcatalog"
+	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
 )
@@ -198,6 +199,73 @@ func TestApplyRetainsValueWhenMetadataOmitted(t *testing.T) {
 	}
 	if _, ok := prov.Presets[name].Fields["max_output_tokens"]; !ok {
 		t.Fatal("max_output_tokens dropped from provenance")
+	}
+}
+
+func TestApplyRetainsPricingComponentWhenMetadataOmitted(t *testing.T) {
+	const name = "gemini/gemini-2.5-pro"
+	cfg := newApplyConfig()
+	cfg.Models.Presets[name] = routing.ModelPreset{
+		Name:     name,
+		Provider: "gemini",
+		Model:    "gemini-2.5-pro",
+		Pricing:  &pricing.ModelPricing{InputPerMTokCents: 140, CacheReadPerMTokCents: 26},
+	}
+	prov := newProvenance()
+	prov.Presets[name] = PresetProvenance{Fields: map[string]FieldState{
+		"pricing.input":      {Source: string(SourceModelsDev), Value: "140"},
+		"pricing.cache_read": {Source: string(SourceModelsDev), Value: "26"},
+	}}
+	// The catalog entry drops cache_read but keeps input.
+	cat := catalogWithModels("google", map[string]modelcatalog.Model{
+		"gemini-2.5-pro": {ID: "gemini-2.5-pro", Cost: modelcatalog.Cost{Input: 1.4}},
+	})
+	Apply(cfg, "gemini", geminiBaseURL, []schema.ModelInfo{{ID: "gemini-2.5-pro"}}, cat, prov)
+	got, ok := cfg.Models.Presets[name].Pricing.(*pricing.ModelPricing)
+	if !ok {
+		t.Fatalf("Pricing = %T, want *pricing.ModelPricing", cfg.Models.Presets[name].Pricing)
+	}
+	if got.CacheReadPerMTokCents != 26 {
+		t.Fatalf("CacheReadPerMTokCents = %d, want 26 retained", got.CacheReadPerMTokCents)
+	}
+	if got.InputPerMTokCents != 140 {
+		t.Fatalf("InputPerMTokCents = %d, want 140", got.InputPerMTokCents)
+	}
+	if _, ok := prov.Presets[name].Fields["pricing.cache_read"]; !ok {
+		t.Fatal("pricing.cache_read dropped from provenance")
+	}
+}
+
+func TestApplyDoesNotMutateSharedPricing(t *testing.T) {
+	const name = "gemini/gemini-2.5-pro"
+	shared := &pricing.ModelPricing{InputPerMTokCents: 100}
+	cfg := newApplyConfig()
+	cfg.Models.Presets[name] = routing.ModelPreset{
+		Name:     name,
+		Provider: "gemini",
+		Model:    "gemini-2.5-pro",
+		Pricing:  shared,
+	}
+	prov := newProvenance()
+	prov.Presets[name] = PresetProvenance{Fields: map[string]FieldState{
+		"pricing.input": {Source: string(SourceModelsDev), Value: "100"},
+	}}
+	cat := catalogWithModels("google", map[string]modelcatalog.Model{
+		"gemini-2.5-pro": {ID: "gemini-2.5-pro", Cost: modelcatalog.Cost{Input: 2}},
+	})
+	Apply(cfg, "gemini", geminiBaseURL, []schema.ModelInfo{{ID: "gemini-2.5-pro"}}, cat, prov)
+	if shared.InputPerMTokCents != 100 {
+		t.Fatalf("shared pricing mutated to %d, want 100", shared.InputPerMTokCents)
+	}
+	got, ok := cfg.Models.Presets[name].Pricing.(*pricing.ModelPricing)
+	if !ok {
+		t.Fatalf("Pricing = %T, want *pricing.ModelPricing", cfg.Models.Presets[name].Pricing)
+	}
+	if got.InputPerMTokCents != 200 {
+		t.Fatalf("refreshed input = %d, want 200", got.InputPerMTokCents)
+	}
+	if got == shared {
+		t.Fatal("preset still points at the shared pricing struct")
 	}
 }
 

@@ -196,7 +196,7 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	case picker.PickedMsg:
 		return m.handlePickerPicked(msg.Value)
 	case PreparedMsg:
-		if m.step != stepPreparing {
+		if m.step != stepPreparing || msg.Provider != m.providerName {
 			return m, nil
 		}
 		m.prepared = msg
@@ -342,7 +342,6 @@ type DoneMsg struct {
 	ProviderCfg       config.ProviderConfig
 	EnabledRemote     bool
 	ContextWindow     int
-	MaxOutputTokens   int
 	ToolCalling       *bool
 	Presets           map[string]routing.ModelPreset
 	Provenance        *presetsetup.Provenance
@@ -351,10 +350,21 @@ type DoneMsg struct {
 
 // PreparedMsg carries the bulk-prepared presets back to the wizard.
 type PreparedMsg struct {
-	Presets    map[string]routing.ModelPreset
-	Provenance *presetsetup.Provenance
-	Result     presetsetup.Result
-	Err        error
+	// Provider identifies the wizard instance that produced this message. A
+	// prepare that finishes after the panel was cancelled and reopened must
+	// not land in the new instance.
+	Provider string
+	Presets  map[string]routing.ModelPreset
+	// Provenance is nil when the sidecar could not be read. Saving a fresh
+	// one would discard every recorded field, so the caller skips the write.
+	Provenance    *presetsetup.Provenance
+	ProvenanceErr error
+	// Caps is the active model's probed capabilities. A model the provider
+	// listed already carries them in its preset; a manually typed id has no
+	// entry, so the caps travel back here and reach the preset through
+	// DoneMsg instead.
+	Caps   provider.ModelCapabilities
+	Result presetsetup.Result
 }
 
 // RefreshMsg is emitted when the user presses ctrl+r in the model
@@ -440,8 +450,6 @@ func (m *Model) back() tea.Cmd {
 	case stepAPIKey:
 		m.enterPickTemplate()
 	case stepBaseURL:
-		m.enterPickTemplate()
-	case stepSummary:
 		m.enterPickTemplate()
 	case stepRename:
 		switch m.renameReturnStep {
@@ -567,12 +575,15 @@ func (m *Model) reportedModels() []schema.ModelInfo {
 // capability probe, and bulk-creates presets on a copy of the config.
 func (m *Model) prepareCmd() tea.Cmd {
 	providerName := m.providerName
-	baseURL := m.providerCfg.BaseURL
+	providerCfg := m.providerCfg
+	baseURL := providerCfg.BaseURL
 	modelChosen := m.modelChosen
 	models := append([]schema.ModelInfo(nil), m.reportedModels()...)
 	cfg := m.cfg
 	// The preset map is shared with the TUI's live config. Copy it before
 	// Apply mutates it, or a cancelled connect would still change presets.
+	// The copy is shallow, which is enough: Apply copies the pricing struct
+	// it updates rather than writing through the shared pointer.
 	if cfg.Models.Presets != nil {
 		presets := make(map[string]routing.ModelPreset, len(cfg.Models.Presets))
 		for k, v := range cfg.Models.Presets {
@@ -582,26 +593,34 @@ func (m *Model) prepareCmd() tea.Cmd {
 	}
 	dataDir := m.dataDir
 	allowed := m.cfg.Privacy.ModelsDevEnrichment != nil && *m.cfg.Privacy.ModelsDevEnrichment
-	prov, err := provider.NewFromConfigWithAuth(providerName, m.providerCfg, dataDir, m.cfg.Agent.ThinkingBudgetMargin, "", m.auth)
+	margin := m.cfg.Agent.ThinkingBudgetMargin
+	auth := m.auth
 	return func() tea.Msg {
+		// Constructing the provider can resolve a credential from the OS
+		// keychain, so it happens here rather than on the UI thread.
+		var caps provider.ModelCapabilities
+		prov, err := provider.NewFromConfigWithAuth(providerName, providerCfg, dataDir, margin, "", auth)
 		if err == nil {
 			if prober, ok := prov.(provider.CapabilityProber); ok {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				caps := prober.ProbeCapabilities(ctx, modelChosen)
+				caps = prober.ProbeCapabilities(ctx, modelChosen)
 				cancel()
-				for i := range models {
-					if models[i].ID != modelChosen {
-						continue
-					}
-					if caps.ToolCalling != nil {
-						models[i].ToolCalling = caps.ToolCalling
-					}
-					if caps.ContextWindow > 0 {
-						models[i].ContextWindow = caps.ContextWindow
-					}
-					break
-				}
 			}
+		}
+		// Fold the probe into the reported entry when the provider listed the
+		// model. A manually typed id has no entry, so its caps travel back in
+		// the message and reach the preset through DoneMsg instead.
+		for i := range models {
+			if models[i].ID != modelChosen {
+				continue
+			}
+			if caps.ToolCalling != nil {
+				models[i].ToolCalling = caps.ToolCalling
+			}
+			if caps.ContextWindow > 0 {
+				models[i].ContextWindow = caps.ContextWindow
+			}
+			break
 		}
 		var cat *modelcatalog.Catalog
 		if allowed {
@@ -609,12 +628,22 @@ func (m *Model) prepareCmd() tea.Cmd {
 			cat, _ = modelcatalog.NewCache(dataDir).Load(ctx)
 			cancel()
 		}
-		provenance, _ := presetsetup.LoadProvenance(dataDir)
+		// A missing sidecar is safe to recreate; an unreadable one is not.
+		// Recreating it would discard every recorded field and permanently
+		// untrack presets that are still fine on disk, so leave the file
+		// alone and let the presets be created unmanaged.
+		provenance, provErr := presetsetup.LoadProvenance(dataDir)
+		if provErr != nil {
+			provenance = nil
+		}
 		res := presetsetup.Apply(&cfg, providerName, baseURL, models, cat, provenance)
 		return PreparedMsg{
-			Presets:    cfg.Models.Presets,
-			Provenance: provenance,
-			Result:     res,
+			Provider:      providerName,
+			Presets:       cfg.Models.Presets,
+			Provenance:    provenance,
+			ProvenanceErr: provErr,
+			Caps:          caps,
+			Result:        res,
 		}
 	}
 }
@@ -1247,12 +1276,15 @@ func (m *Model) refreshCmd() tea.Cmd {
 }
 
 func (m *Model) done() tea.Cmd {
+	caps := m.prepared.Caps
 	return func() tea.Msg {
 		return DoneMsg{
 			Provider:          m.providerName,
 			Model:             m.modelChosen,
 			ProviderCfg:       m.providerCfg,
 			EnabledRemote:     m.remoteEnabled,
+			ContextWindow:     caps.ContextWindow,
+			ToolCalling:       caps.ToolCalling,
 			Presets:           m.prepared.Presets,
 			Provenance:        m.prepared.Provenance,
 			EnrichmentConsent: m.cfg.Privacy.ModelsDevEnrichment,

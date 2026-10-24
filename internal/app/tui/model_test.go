@@ -5591,11 +5591,10 @@ func TestApplyConnectDoneWritesLimitsToThePreset(t *testing.T) {
 	m, _, homeDir := newModelForConfigTest(t)
 
 	m.applyConnectDone(connect.DoneMsg{
-		Provider:        "openai",
-		Model:           "gpt-4o",
-		ProviderCfg:     config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
-		ContextWindow:   128000,
-		MaxOutputTokens: 16384,
+		Provider:      "openai",
+		Model:         "gpt-4o",
+		ProviderCfg:   config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+		ContextWindow: 128000,
 	})
 
 	cfg := m.state.Config
@@ -5604,8 +5603,10 @@ func TestApplyConnectDoneWritesLimitsToThePreset(t *testing.T) {
 	if preset.ContextWindow != 128000 {
 		t.Errorf("ContextWindow = %d, want 128000", preset.ContextWindow)
 	}
-	if preset.MaxOutputTokens != 16384 {
-		t.Errorf("MaxOutputTokens = %d, want 16384", preset.MaxOutputTokens)
+	// The capability probe reports no output ceiling, so a first-time preset
+	// is seeded with Marshal's documented remote default.
+	if preset.MaxOutputTokens != 128000 {
+		t.Errorf("MaxOutputTokens = %d, want the remote default 128000", preset.MaxOutputTokens)
 	}
 
 	data, err := os.ReadFile(config.UserConfigPath(homeDir))
@@ -6030,6 +6031,7 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
 	m = asModel(t, updated)
 	updated, _ = m.Update(connect.PreparedMsg{
+		Provider: "ollama",
 		Presets: map[string]routing.ModelPreset{
 			"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b"},
 		},
@@ -6079,7 +6081,7 @@ func TestModelsRoutesPreparedMsgToConnectPanel(t *testing.T) {
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
 	m = asModel(t, updated)
-	updated, _ = m.Update(connect.PreparedMsg{Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	updated, _ = m.Update(connect.PreparedMsg{Provider: "ollama", Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
 	m = asModel(t, updated)
 	if m.connectModel == nil || !strings.Contains(stripANSI(m.connectModel.View(80, 24)), "Review provider") {
 		t.Fatal("outer model should route PreparedMsg to connect")
@@ -6168,6 +6170,70 @@ func TestApplyConnectDonePersistsConsent(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "models_dev_enrichment = true") {
 		t.Fatalf("user config missing models_dev_enrichment = true:\n%s", data)
+	}
+}
+
+func TestApplyConnectDoneRefreshesManagedPreset(t *testing.T) {
+	m := newTestModel(t)
+	m.settingsRegistry()
+	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
+
+	const name = "ollama/qwen2.5-coder:7b"
+	m.state.Config.Models.Presets = map[string]routing.ModelPreset{
+		name: {Name: name, Provider: "ollama", Model: "qwen2.5-coder:7b", ContextWindow: 8192},
+	}
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+		Presets: map[string]routing.ModelPreset{
+			name: {Name: name, Provider: "ollama", Model: "qwen2.5-coder:7b", ContextWindow: 32768},
+		},
+		Provenance: &presetsetup.Provenance{
+			Version: presetsetup.ProvenanceVersion,
+			Presets: map[string]presetsetup.PresetProvenance{
+				name: {Fields: map[string]presetsetup.FieldState{
+					"context_window": {Source: "models.dev", Value: "32768"},
+				}},
+			},
+		},
+	})
+	m = updated.(Model)
+
+	// The prepared preset carries the refreshed catalog value, so it must win
+	// over the stale live entry; otherwise the saved provenance would describe
+	// a value the preset does not hold and the next reconnect would read the
+	// mismatch as a user edit.
+	if got := m.state.Config.Models.Presets[name].ContextWindow; got != 32768 {
+		t.Fatalf("ContextWindow = %d, want the refreshed 32768", got)
+	}
+}
+
+func TestApplyConnectDonePersistsDenyConsent(t *testing.T) {
+	m := newTestModel(t)
+	m.settingsRegistry()
+	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
+
+	deny := false
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:          "ollama",
+		Model:             "qwen2.5-coder:7b",
+		ProviderCfg:       config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+		EnrichmentConsent: &deny,
+	})
+	m = updated.(Model)
+
+	home, err := m.userHome()
+	if err != nil {
+		t.Fatalf("userHome: %v", err)
+	}
+	data, err := os.ReadFile(config.UserConfigPath(home))
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if !strings.Contains(string(data), "models_dev_enrichment = false") {
+		t.Fatalf("user config missing models_dev_enrichment = false:\n%s", data)
 	}
 }
 

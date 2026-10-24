@@ -112,6 +112,11 @@ func applyToolField(current string, fields map[string]FieldState, next *bool, so
 
 // applyPricing updates each pricing component independently. A preset whose
 // Pricing holds an unrecognised shape is user-owned and is left alone.
+//
+// The pricing struct is copied before it is updated. Callers hand Apply a
+// shallow copy of the preset map, so *cur can still be the pointer held by
+// the live config; mutating it in place would leak refreshed prices into a
+// connect the user then cancels.
 func applyPricing(preset *routing.ModelPreset, fields map[string]FieldState, next *pricing.ModelPricing, source Source) {
 	if next == nil {
 		return
@@ -120,21 +125,29 @@ func applyPricing(preset *routing.ModelPreset, fields map[string]FieldState, nex
 	if preset.Pricing != nil && !ok {
 		return
 	}
-	if cur == nil {
-		cur = &pricing.ModelPricing{}
+	updated := &pricing.ModelPricing{}
+	if cur != nil {
+		*updated = *cur
 	}
-	cur.InputPerMTokCents = applyInt64Field(cur.InputPerMTokCents, fields, "pricing.input", next.InputPerMTokCents, source)
-	cur.OutputPerMTokCents = applyInt64Field(cur.OutputPerMTokCents, fields, "pricing.output", next.OutputPerMTokCents, source)
-	cur.ReasoningPerMTokCents = applyInt64Field(cur.ReasoningPerMTokCents, fields, "pricing.reasoning", next.ReasoningPerMTokCents, source)
-	cur.CacheReadPerMTokCents = applyInt64Field(cur.CacheReadPerMTokCents, fields, "pricing.cache_read", next.CacheReadPerMTokCents, source)
-	cur.CacheWritePerMTokCents = applyInt64Field(cur.CacheWritePerMTokCents, fields, "pricing.cache_write", next.CacheWritePerMTokCents, source)
-	preset.Pricing = cur
+	updated.InputPerMTokCents = applyInt64Field(updated.InputPerMTokCents, fields, "pricing.input", next.InputPerMTokCents, source)
+	updated.OutputPerMTokCents = applyInt64Field(updated.OutputPerMTokCents, fields, "pricing.output", next.OutputPerMTokCents, source)
+	updated.ReasoningPerMTokCents = applyInt64Field(updated.ReasoningPerMTokCents, fields, "pricing.reasoning", next.ReasoningPerMTokCents, source)
+	updated.CacheReadPerMTokCents = applyInt64Field(updated.CacheReadPerMTokCents, fields, "pricing.cache_read", next.CacheReadPerMTokCents, source)
+	updated.CacheWritePerMTokCents = applyInt64Field(updated.CacheWritePerMTokCents, fields, "pricing.cache_write", next.CacheWritePerMTokCents, source)
+	preset.Pricing = updated
 }
 
+// applyInt64Field updates a managed pricing component with the same
+// compare-before-refresh rule as applyIntField. A non-positive next value
+// never erases a value: models.dev omits a rate by publishing zero, and a
+// dropped component must not wipe the figure recorded on an earlier connect.
 func applyInt64Field(current int64, fields map[string]FieldState, key string, next int64, source Source) int64 {
 	prev, managed := fields[key]
 	if managed && prev.Value != strconv.FormatInt(current, 10) {
 		delete(fields, key)
+		return current
+	}
+	if next <= 0 {
 		return current
 	}
 	fields[key] = FieldState{Source: string(source), Value: strconv.FormatInt(next, 10)}

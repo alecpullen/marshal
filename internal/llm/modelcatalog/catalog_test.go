@@ -150,3 +150,57 @@ func TestResolveBindingRejectsUnknownProvider(t *testing.T) {
 		t.Errorf("ResolveBinding(my-custom-endpoint) = %q, want unbound", got)
 	}
 }
+
+func TestDecodeSkipsMalformedEntries(t *testing.T) {
+	// One provider entry is not an object and one model entry has a string
+	// where a number belongs. Both are dropped on their own; the rest of the
+	// document still decodes.
+	doc := `{
+      "broken-provider": "not-an-object",
+      "google": {
+        "models": {
+          "bad-model": {"limit": {"context": "many"}},
+          "gemini-3-pro": {"limit": {"context": 1048576, "output": 65536}}
+        }
+      }
+    }`
+	cat, err := Decode(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if _, ok := cat.Providers["broken-provider"]; ok {
+		t.Error("malformed provider entry was kept")
+	}
+	if _, ok := cat.Lookup("google", "bad-model"); ok {
+		t.Error("malformed model entry was kept")
+	}
+	if _, ok := cat.Lookup("google", "gemini-3-pro"); !ok {
+		t.Error("valid model entry was dropped with the malformed one")
+	}
+}
+
+func TestDecodeSkipsEmptyIDs(t *testing.T) {
+	doc := `{
+      "": {"models": {"m": {"limit": {"context": 1}}}},
+      "google": {"models": {"": {"limit": {"context": 2}}, "gemini-3-pro": {"limit": {"context": 3}}}}
+    }`
+	cat, err := Decode(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if _, ok := cat.Providers[""]; ok {
+		t.Error("empty provider id was kept")
+	}
+	if _, ok := cat.Lookup("google", ""); ok {
+		t.Error("empty model id was kept")
+	}
+	if _, ok := cat.Lookup("google", "gemini-3-pro"); !ok {
+		t.Error("valid model dropped")
+	}
+}
+
+func TestDecodeRejectsNonObjectDocument(t *testing.T) {
+	if _, err := Decode(strings.NewReader(`[]`)); err == nil {
+		t.Fatal("Decode([]) error = nil, want error")
+	}
+}

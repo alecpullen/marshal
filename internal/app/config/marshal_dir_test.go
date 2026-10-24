@@ -16,7 +16,7 @@ func TestEnsureMarshalDirIgnoredCreatesNestedIgnore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	for _, want := range []string{"marshal.db", "marshal.log", "tool-results/", "pipeline/"} {
+	for _, want := range []string{"marshal.db", "marshal.log", "tool-results/", "pipeline/", "progress/"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("nested .gitignore missing %q:\n%s", want, data)
 		}

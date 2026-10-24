@@ -17,6 +17,7 @@ read or a repository-state query.
 | `command` | yes | |
 | `timeout_seconds` | no | clamped to a default and a maximum |
 | `background` | no | start a job and return immediately |
+| `progress` | no | `{profile, source, title}` opts the run into a live progress card; the `progress-reporting` skill documents the record format |
 
 Runs with the workspace root as the current working directory, subject to
 conservative guardrails. Never use it to create or modify files — no

@@ -206,50 +206,6 @@ func TestDrilledChildAuditEventsRenderNormally(t *testing.T) {
 	}
 }
 
-func TestRenderSubagentCardContent(t *testing.T) {
-	child := newChildState(t)
-	running := session.SubagentView{
-		ID:        1,
-		Label:     "explore repo",
-		Status:    session.SubagentRunning,
-		StartedAt: time.Now().Add(-5 * time.Second),
-		ToolCalls: 7,
-		Child:     child,
-	}
-	out := stripANSI(renderSubagentCard(running, false, "⠋", regionView{}, 80))
-	for _, want := range []string{"explore repo", "7 tool calls"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("running card missing %q, got:\n%s", want, out)
-		}
-	}
-	// The card is a status row, not a window onto the child's work, so it
-	// carries no drill-in footer. ctrl+f stays in the browse help.
-	if strings.Contains(out, "ctrl+f") {
-		t.Fatalf("running card must not carry a drill-in footer, got:\n%s", out)
-	}
-
-	done := session.SubagentView{
-		ID:        2,
-		Label:     "explore repo",
-		Status:    session.SubagentDone,
-		StartedAt: time.Unix(100, 0),
-		EndedAt:   time.Unix(130, 0),
-		ToolCalls: 3,
-		Summary:   "found three entry points",
-	}
-	collapsed := stripANSI(renderSubagentCard(done, false, "⠋", regionView{}, 80))
-	if !strings.Contains(collapsed, "found three entry points") {
-		t.Fatalf("a settled card shows its summary headline, got:\n%s", collapsed)
-	}
-	if strings.Contains(collapsed, "ctrl+f to drill in") {
-		t.Fatalf("childless card must not offer drill-down, got:\n%s", collapsed)
-	}
-	expanded := stripANSI(renderSubagentCard(done, true, "⠋", regionView{}, 80))
-	if !strings.Contains(expanded, "found three entry points") {
-		t.Fatalf("expanded card should show the summary, got:\n%s", expanded)
-	}
-}
-
 func TestUpArrowPopsDrill(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)

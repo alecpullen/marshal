@@ -104,37 +104,3 @@ func TestCompletionLine(t *testing.T) {
 		t.Fatalf("expanded head must end with the disclosure glyph: %q", lines[0])
 	}
 }
-
-func TestRunningSubagentCardHasNoPaddingOrFooter(t *testing.T) {
-	v := session.SubagentView{ID: 3, Label: "Pass 1 Task 1", Status: session.SubagentRunning, StartedAt: time.Now()}
-	out := ansi.Strip(renderSubagentCard(v, false, "⠋", regionView{minRows: 6}, 80))
-	if strings.Contains(out, "ctrl+f") {
-		t.Fatalf("no drill-in footer:\n%s", out)
-	}
-	for _, l := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		if strings.TrimSpace(strings.Trim(l, "▌┃│ ")) == "" {
-			t.Fatalf("no blank padding rows:\n%s", out)
-		}
-	}
-}
-
-func TestSettledSubagentSummaryHasNoMarkdownHeading(t *testing.T) {
-	v := session.SubagentView{ID: 2, Label: "Task 2", Status: session.SubagentDone, Summary: "## Task 2 complete — AccessibleModal\n\nDetails."}
-	if out := ansi.Strip(renderSubagentCard(v, false, "", regionView{}, 80)); strings.Contains(out, "##") {
-		t.Fatalf("markdown leaked:\n%s", out)
-	}
-}
-
-func TestStripMarkdownHeadingKeepsHashText(t *testing.T) {
-	for in, want := range map[string]string{
-		"## Task 2 complete": "Task 2 complete",
-		"# Done":             "Done",
-		"#3 done":            "#3 done",
-		"####### seven":      "####### seven",
-		"plain":              "plain",
-	} {
-		if got := stripMarkdownHeading(in); got != want {
-			t.Errorf("stripMarkdownHeading(%q) = %q, want %q", in, got, want)
-		}
-	}
-}

@@ -284,26 +284,48 @@ func isPrintable(msg tea.KeyPressMsg) bool {
 
 func (m *Model) currentNode() *viewmodel.Node { return m.browseTree[m.cursor] }
 
-// subagentAtCursor finds the subagent card under the cursor, or (when
-// owning is set, or the cursor is on a step) the first card of the cursor's
-// step.
+// subagentAtCursor resolves the subagent the cursor points at: the completion
+// event of a finished child, or the agent.run row that dispatched it. There is
+// no in-place card any more, so onlyCard — the "is there a card to expand?"
+// question Enter asks — is always false.
 func (m *Model) subagentAtCursor(onlyCard bool) (session.SubagentView, bool) {
+	if onlyCard {
+		return session.SubagentView{}, false
+	}
 	n := m.currentNode()
 	if n == nil {
 		return session.SubagentView{}, false
 	}
-	if n.Kind == viewmodel.KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Child != nil {
-		return *n.Item.Subagent, true
-	}
-	if onlyCard {
-		return session.SubagentView{}, false
-	}
-	for _, c := range n.Children {
-		if c.Kind == viewmodel.KindSubagent && c.Item != nil && c.Item.Subagent != nil && c.Item.Subagent.Child != nil {
-			return *c.Item.Subagent, true
+	id := subagentIDOf(n)
+	if id == 0 && n.Kind == viewmodel.KindStep {
+		for _, c := range n.Children {
+			if id = subagentIDOf(c); id > 0 {
+				break
+			}
 		}
 	}
-	return session.SubagentView{}, false
+	if id == 0 {
+		return session.SubagentView{}, false
+	}
+	src, _ := m.transcriptSource()
+	v, ok := src.Subagent(id)
+	return v, ok && v.Child != nil
+}
+
+// subagentIDOf is the subagent a node names: a completion event for a
+// finished child, or the single agent.run call that dispatched one.
+func subagentIDOf(n *viewmodel.Node) int64 {
+	switch n.Kind {
+	case viewmodel.KindCompletion:
+		if n.Completion != nil {
+			return n.Completion.SubagentID
+		}
+	case viewmodel.KindTool:
+		if len(n.Tools) == 1 {
+			return viewmodel.StartedSubagent(n.Tools[0])
+		}
+	}
+	return 0
 }
 
 // paintCursor highlights the cursor node's lines in the joined transcript.

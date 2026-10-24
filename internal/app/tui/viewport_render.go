@@ -315,8 +315,6 @@ func (m *Model) blockTarget(n *viewmodel.Node) *clickTarget {
 		return &clickTarget{node: n.ID}
 	case n.Kind == viewmodel.KindThinking:
 		return &clickTarget{node: n.ID}
-	case n.Kind == viewmodel.KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Child != nil:
-		return &clickTarget{node: n.ID, subagent: n.Item.Subagent, isLiveRegion: n.Item.Subagent.Status == session.SubagentRunning}
 	case n.Kind == viewmodel.KindMessage && n.Item != nil && n.Item.Message != nil &&
 		n.Item.Message.ContentType == session.ContentTypeSkillAuto:
 		return &clickTarget{node: n.ID}

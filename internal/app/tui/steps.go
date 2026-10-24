@@ -79,9 +79,9 @@ func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
 }
 
 // renderStep renders one beat: a head (state glyph, narration, right-aligned
-// meta), its reasoning when the beat is expanded, then tool rows and subagent
-// cards at nested indent. Every piece ends in a newline, so the block's line
-// count is strings.Count(out, "\n").
+// meta), its reasoning when the beat is expanded, then tool rows at nested
+// indent. Every piece ends in a newline, so the block's line count is
+// strings.Count(out, "\n").
 func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) (string, []subRegion) {
 	si := n.Step
 	rows := n.Children
@@ -170,12 +170,6 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 
 	// A long beat shows its newest rows; the rest collapse into one line.
 	// Expanding the beat shows them all.
-	var cards []*viewmodel.Node
-	for _, ch := range rows {
-		if ch.Kind == viewmodel.KindSubagent && ch.Item != nil && ch.Item.Subagent != nil {
-			cards = append(cards, ch)
-		}
-	}
 	rows = slices.DeleteFunc(slices.Clone(rows), func(ch *viewmodel.Node) bool { return !spineRow(ch) })
 	if over := len(rows) - viewmodel.BeatRowCap; over > 0 && !open {
 		write(spineBlock(mutedStyle().Render(fmt.Sprintf("… %d earlier calls", over))+"\n", false))
@@ -200,23 +194,8 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 		}
 	}
 
-	// Subagent cards in the parent view (the projection without live work)
-	// sit below the spine, at the rows' indent.
-	for _, ch := range cards {
-		v := *ch.Item.Subagent
-		card := renderSubagentCard(v, c.open(ch.ID, open), c.toolSpinner, c.region(ch.ID), width-cardIndent)
-		sub := subRegion{live: v.Status == session.SubagentRunning}
-		if v.Child != nil {
-			sub.subagent = &v
-		}
-		row(ch.ID, indentLines(card, cardIndent), sub)
-	}
 	return b.String(), subs
 }
-
-// cardIndent is where a subagent card inside a beat starts: its glyph lines
-// up with the spine's verbs.
-const cardIndent = gutterWidth + 1
 
 // spineRow reports whether a beat's child draws as a row on its spine.
 func spineRow(ch *viewmodel.Node) bool {
@@ -573,7 +552,7 @@ func (m Model) approvalWhyFor(owner *session.State, tc *session.PendingToolCall)
 }
 
 // subagentHeadline is the first sentence of a child's latest narration: what
-// it says it is doing, for the subagent card and the now bar's agent rows.
+// it says it is doing, for the now bar's agent rows.
 func subagentHeadline(child *session.State) string {
 	if child == nil {
 		return ""
@@ -585,59 +564,6 @@ func subagentHeadline(child *session.State) string {
 	head, _ := firstSentence(line)
 	return stripEmphasis(head)
 }
-
-// subagentBodyLines is the live card's body: the child's headline and what
-// tool it is running. Before the child has narrated anything it falls back to
-// the raw activity tail, which agent.await's peek also reads.
-func subagentBodyLines(child *session.State, n int) []string {
-	head := subagentHeadline(child)
-	if head == "" {
-		return subagentTailLines(child, n)
-	}
-	lines := []string{head}
-	if label := child.CurrentToolLabel(); label != "" {
-		g := toolCategoryGlyph(label)
-		text := DisplayToolName(label)
-		if strings.HasPrefix(label, "editing ") {
-			g, text = glyph.Edit, label
-		}
-		lines = append(lines, g+" "+text)
-	}
-	return lines
-}
-
-// subagentSummaryHeadline is the first sentence of a settled child's final
-// summary. Summaries are markdown, so heading marks come off before the
-// sentence becomes a row: "## Task 2 complete" reads as "Task 2 complete".
-func subagentSummaryHeadline(summary string) string {
-	head, _ := firstSentence(strings.TrimSpace(summary))
-	return stripMarkdownHeading(stripEmphasis(head))
-}
-
-// stripMarkdownHeading drops a leading ATX heading marker — one to six '#'
-// followed by a space — and its padding. Anything else starting with '#' is
-// text: "#3 done" keeps its number.
-func stripMarkdownHeading(s string) string {
-	t := strings.TrimLeft(s, " ")
-	n := len(t) - len(strings.TrimLeft(t, "#"))
-	if n == 0 || n > 6 || (n < len(t) && t[n] != ' ') {
-		return s
-	}
-	return strings.TrimLeft(t[n:], " ")
-}
-
-// lastN returns the last n elements, or the whole slice when it is shorter.
-func lastN(lines []string, n int) []string {
-	if n <= 0 || len(lines) <= n {
-		return lines
-	}
-	return lines[len(lines)-n:]
-}
-
-// liveSubagentRows caps a running card: header, meta and one dim activity
-// line. The card used to pad to a high-water mark and carry a drill-in
-// footer, which made a running child the tallest thing on screen.
-const liveSubagentRows = 3
 
 // liveStepSummary describes the beat now running — its narrated headline, or
 // the narration it continues — and the category glyph of its running tool,

@@ -3,7 +3,6 @@ package tui
 import (
 	"testing"
 
-	"marshal/internal/app/session"
 	"marshal/internal/viewmodel"
 )
 
@@ -60,10 +59,4 @@ func TestRenderersDropTerminalControlSequences(t *testing.T) {
 
 	completion := renderCompletion(&viewmodel.CompletionInfo{Source: viewmodel.CompletionSubagent, ID: "#3", Label: esc}, false, 80, "")
 	stray("completion", completion)
-
-	// The subagent card is a live region: it repaints on every spinner tick,
-	// so a leak here is a leak many times a second.
-	sub := session.SubagentView{ID: 3, Label: esc + "Task 1", Status: session.SubagentDone,
-		CurrentTool: esc + "file.read", Summary: esc + "Finished the parser.\nThen the tests."}
-	stray("subagent card", renderSubagentCard(sub, false, "", regionView{}, 80))
 }

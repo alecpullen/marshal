@@ -42,6 +42,8 @@ func (m *Model) nodeCopyText(n *viewmodel.Node) string {
 			}
 		}
 		return strings.Join(lines, "\n")
+	case n.Kind == viewmodel.KindCompletion && n.Completion != nil:
+		return completionCopyText(n.Completion)
 	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return plainText(renderReceipt(n.Receipt, 200))
 	case n.Item != nil && n.Item.Message != nil:
@@ -52,6 +54,26 @@ func (m *Model) nodeCopyText(n *viewmodel.Node) string {
 		return plainText(renderTranscriptItem(*n.Item, true, "", regionView{}, nil, 120))
 	}
 	return ""
+}
+
+// completionCopyText is a finished job or subagent: its plain head line, then
+// the output a job retained or the report a subagent wrote.
+func completionCopyText(c *viewmodel.CompletionInfo) string {
+	head := []string{c.ID, c.Label, c.Outcome}
+	if c.Measure != "" {
+		head = append(head, c.Measure)
+	}
+	if c.Duration > 0 {
+		head = append(head, formatElapsed(c.Duration))
+	}
+	body := c.Output
+	if c.Source == viewmodel.CompletionSubagent {
+		body = c.Report
+	}
+	if body == "" {
+		return strings.Join(head, dimSeparator)
+	}
+	return strings.Join(head, dimSeparator) + "\n\n" + body
 }
 
 // toolCopyText is the result of a call: the diff for an edit, the output for

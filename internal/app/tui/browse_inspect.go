@@ -39,8 +39,52 @@ func (m *Model) inspectorDetail(n *viewmodel.Node) (inspector.Detail, bool) {
 		return m.toolDetail(n), true
 	case n.Kind == viewmodel.KindStep && n.Step != nil:
 		return m.stepDetail(n), true
+	case n.Kind == viewmodel.KindCompletion && n.Completion != nil:
+		return m.completionDetail(n.Completion), true
 	}
 	return inspector.Detail{}, false
+}
+
+// completionDetail is a finished job or subagent in the inspector: every
+// recorded fact, and the whole retained output rather than the report's tail.
+func (m *Model) completionDetail(c *viewmodel.CompletionInfo) inspector.Detail {
+	d := inspector.Detail{Title: c.ID, Subject: c.Label}
+	add := func(k, v string) {
+		if v != "" {
+			d.Fields = append(d.Fields, inspector.Field{Key: k, Value: v})
+		}
+	}
+	add("outcome", c.Outcome)
+	if c.ExitCode != nil {
+		add("exit", fmt.Sprint(*c.ExitCode))
+	}
+	add("stop cause", c.StopCause)
+	if !c.StartedAt.IsZero() {
+		add("started", c.StartedAt.Local().Format("15:04:05"))
+	}
+	if !c.EndedAt.IsZero() {
+		add("ended", c.EndedAt.Local().Format("15:04:05"))
+	}
+	if c.Duration > 0 {
+		add("duration", formatElapsed(c.Duration))
+	}
+	add("cwd", c.Cwd)
+	add("execution", c.ExecutionID)
+	add("work key", c.WorkKey)
+	if c.ReportMessageID != 0 {
+		add("report message", fmt.Sprint(c.ReportMessageID))
+	}
+
+	sec := func(name, body string) {
+		if strings.TrimSpace(body) != "" {
+			d.Sections = append(d.Sections, inspector.Section{Name: name, Body: body})
+		}
+	}
+	sec("output", viewmodel.ScrubBlock(c.Output))
+	sec("report", c.Report)
+	sec("error", c.Error)
+	sec("command", c.Command)
+	return d
 }
 
 func (m *Model) stepOf(id int64) (session.Step, bool) {

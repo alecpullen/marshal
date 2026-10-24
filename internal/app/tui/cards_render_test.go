@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -92,15 +93,82 @@ func TestCompletionLine(t *testing.T) {
 
 	failed := &viewmodel.CompletionInfo{Source: viewmodel.CompletionSubagent, ID: "#3", Label: "review",
 		Outcome: viewmodel.OutcomeFailed, Failed: true, Summary: "budget exhausted"}
-	out = ansi.Strip(renderCompletion(failed, true, 80, ""))
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	// Collapsed, the summary line stands in for the report.
+	collapsed := ansi.Strip(renderCompletion(failed, false, 80, ""))
+	lines := strings.Split(strings.TrimRight(collapsed, "\n"), "\n")
 	if len(lines) != 2 || !strings.Contains(lines[0], "#3") || !strings.Contains(lines[0], "failed") {
-		t.Fatalf("failed completion = %q", out)
+		t.Fatalf("failed completion = %q", collapsed)
 	}
 	if !strings.Contains(lines[1], "budget exhausted") {
 		t.Fatalf("summary line = %q", lines[1])
 	}
-	if !strings.HasSuffix(lines[0], glyph.DisclosureExpanded) {
-		t.Fatalf("expanded head must end with the disclosure glyph: %q", lines[0])
+	// Expanded, the report replaces the summary line.
+	out = ansi.Strip(renderCompletion(failed, true, 80, ""))
+	head := strings.Split(strings.TrimRight(out, "\n"), "\n")[0]
+	if !strings.HasSuffix(head, glyph.DisclosureExpanded) {
+		t.Fatalf("expanded head must end with the disclosure glyph: %q", head)
+	}
+}
+
+// An expanded event is the issue report: what ran, where, how long, how far it
+// got, and the output tail that says why it failed.
+func TestCompletionReportShowsTheFailure(t *testing.T) {
+	var lines []string
+	for i := 1; i <= 30; i++ {
+		lines = append(lines, fmt.Sprintf("line %02d", i))
+	}
+	lines[12] = "--- FAIL: TestThresholdsForCoderModels/context_window"
+	code := 1
+	c := &viewmodel.CompletionInfo{
+		Source: viewmodel.CompletionJob, ID: "job-3", Label: "Harness tests",
+		Outcome: "exit 1", Failed: true, ExitCode: &code,
+		Duration: 48 * time.Second, Measure: "210 passed, 2 failed",
+		Command: "go test ./...", Cwd: "/home/a/proj",
+		Output: strings.Join(lines, "\n"),
+	}
+	out := ansi.Strip(renderCompletion(c, true, 80, ""))
+	for _, want := range []string{"outcome", "command", "cwd", "duration", "progress", "output"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report %q missing %q", out, want)
+		}
+	}
+	// The failure line leads the output tail, on the key's line.
+	tail := out[strings.Index(out, "output"):]
+	first := strings.Split(strings.TrimPrefix(tail, "output"), "\n")[0]
+	if !strings.Contains(first, "--- FAIL") {
+		t.Fatalf("first output line = %q", first)
+	}
+	// The tail is bounded: at most ReportTailLines output lines show.
+	if got := strings.Count(tail, "line "); got > viewmodel.ReportTailLines {
+		t.Fatalf("%d output lines shown", got)
+	}
+}
+
+// A subagent's event carries its task and the report it wrote.
+func TestCompletionReportShowsASubagentsReport(t *testing.T) {
+	c := &viewmodel.CompletionInfo{
+		Source: viewmodel.CompletionSubagent, ID: "#3", Label: "review the config change",
+		Outcome: viewmodel.OutcomeDone, Duration: 62 * time.Second,
+		Report: "The config change is sound.",
+	}
+	out := ansi.Strip(renderCompletion(c, true, 80, ""))
+	if !strings.Contains(out, "task") || !strings.Contains(out, "review the config change") {
+		t.Fatalf("report = %q", out)
+	}
+	if !strings.Contains(out, "The config change is sound.") {
+		t.Fatalf("report body = %q", out)
+	}
+}
+
+// A job that ended with the session has no duration to report, and saying so
+// is more honest than a zero.
+func TestLostJobReportSaysItEndedWithTheSession(t *testing.T) {
+	c := &viewmodel.CompletionInfo{
+		Source: viewmodel.CompletionJob, ID: "job-7", Label: "Download",
+		Outcome: viewmodel.OutcomeLost, Failed: true,
+	}
+	out := ansi.Strip(renderCompletion(c, true, 80, ""))
+	if !strings.Contains(out, "ended with session") {
+		t.Fatalf("report = %q", out)
 	}
 }

@@ -254,12 +254,121 @@ func renderCompletion(c *viewmodel.CompletionInfo, expanded bool, width int, wor
 	b.WriteString(strings.Repeat(" ", pad))
 	b.WriteString(mutedStyle().Render(disclosure))
 	b.WriteString("\n")
-	if c.Summary != "" {
+	if expanded {
+		b.WriteString(renderCompletionReport(c, width, workdir))
+	} else if c.Summary != "" {
 		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
 		b.WriteString(mutedStyle().Render(ansi.Truncate(c.Summary, max(width-nestedBodyIndent, 1), "…")))
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// completionReportKeyWidth is the column the report's values start at: the key
+// is muted and padded to this width, so every value lines up.
+const completionReportKeyWidth = 10
+
+// renderCompletionReport draws an expanded completion event's issue report:
+// one line per field, the key muted and padded, the value in the default
+// foreground. It is what a reader opens when the head's outcome is not enough.
+func renderCompletionReport(c *viewmodel.CompletionInfo, width int, workdir string) string {
+	th := theme.Current()
+	valueStyle := lipgloss.NewStyle().Foreground(th.FGDefault)
+	valueIndent := nestedBodyIndent + completionReportKeyWidth
+	valueWidth := max(width-valueIndent, 1)
+	lineWidth := max(width-nestedBodyIndent, 1)
+
+	var b strings.Builder
+	// field writes one key/value line, truncated to the report's width.
+	field := func(key, value string, style lipgloss.Style) {
+		if value == "" {
+			return
+		}
+		line := mutedStyle().Render(padReportKey(key)) + style.Render(value)
+		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
+		b.WriteString(ansi.Truncate(line, lineWidth, "…"))
+		b.WriteString("\n")
+	}
+	// block writes a value's continuation lines under the value column.
+	block := func(lines []string, style lipgloss.Style) {
+		for _, l := range lines {
+			b.WriteString(strings.Repeat(" ", valueIndent))
+			b.WriteString(style.Render(ansi.Truncate(l, valueWidth, "…")))
+			b.WriteString("\n")
+		}
+	}
+
+	outcome := c.Outcome
+	if c.StopCause != "" {
+		outcome += dimSeparator + "stop: " + c.StopCause
+	}
+	field("outcome", outcome, valueStyle)
+
+	if c.Source == viewmodel.CompletionSubagent {
+		field("task", viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Label, workdir)), valueStyle)
+	} else {
+		field("command", viewmodel.ScrubText(viewmodel.ElideWorkdir(firstLine(c.Command), workdir)), valueStyle)
+	}
+	field("cwd", viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Cwd, workdir)), valueStyle)
+
+	duration := ""
+	switch {
+	case c.Outcome == viewmodel.OutcomeLost:
+		duration = "ended with session"
+	case c.Duration > 0:
+		duration = formatElapsed(c.Duration)
+	}
+	field("duration", duration, valueStyle)
+	field("progress", c.Measure, valueStyle)
+
+	// The output tail: the first line sits on the key's line, the rest under
+	// the value column. Every line is model-authored, so each is scrubbed.
+	lines := viewmodel.ReportTail(c.Output)
+	if len(lines) > 0 {
+		line := mutedStyle().Render(padReportKey("output")) + mutedStyle().Render(viewmodel.ScrubText(lines[0]))
+		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
+		b.WriteString(ansi.Truncate(line, lineWidth, "…"))
+		b.WriteString("\n")
+	}
+	if len(lines) > 1 {
+		rest := make([]string, 0, len(lines)-1)
+		for _, l := range lines[1:] {
+			rest = append(rest, viewmodel.ScrubText(l))
+		}
+		block(rest, mutedStyle())
+	}
+	if c.Truncated {
+		block([]string{"earlier output dropped"}, mutedStyle())
+	}
+
+	// A subagent's report is prose, so it renders as markdown under the value
+	// column; plain prose is the fallback when glamour is unavailable.
+	if c.Report != "" {
+		rw := max(width-nestedBodyIndent-completionReportKeyWidth, 1)
+		body, ok := renderMarkdown(c.Report, rw)
+		if !ok {
+			body = renderPlainProse(c.Report, rw)
+		}
+		rendered := strings.Split(strings.Trim(body, "\n"), "\n")
+		if len(rendered) > 0 {
+			line := mutedStyle().Render(padReportKey("report")) + rendered[0]
+			b.WriteString(strings.Repeat(" ", nestedBodyIndent))
+			b.WriteString(ansi.Truncate(line, lineWidth, "…"))
+			b.WriteString("\n")
+			block(rendered[1:], lipgloss.NewStyle())
+		}
+	}
+
+	field("error", firstLine(c.Error), errorStyle())
+	return b.String()
+}
+
+// padReportKey pads a report key to the value column.
+func padReportKey(key string) string {
+	if n := completionReportKeyWidth - ansi.StringWidth(key); n > 0 {
+		return key + strings.Repeat(" ", n)
+	}
+	return key
 }
 
 // countToolCalls is the number of tool calls a step made, counting each call

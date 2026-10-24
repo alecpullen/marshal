@@ -1,7 +1,7 @@
 # TUI simplification — feature spec
 
 Status: draft for review, 2026-10-23. Updated 2026-10-24 with the decisions
-the P-A plan pinned down.
+the P-A and P-B plans pinned down. P-A has landed.
 Base commit: `87fa8f0e` (main, after the interaction-modes merge).
 Design record: [`alternatives.md`](alternatives.md) (layout),
 [`console-variants.md`](console-variants.md) (dock), and
@@ -9,6 +9,7 @@ Design record: [`alternatives.md`](alternatives.md) (layout),
 Mockups: [`framed-console.html`](framed-console.html).
 Execution plans: one per phase, each against `main` once the previous phase
 has landed. P-A: [`plans/2026-10-24-p-a-renderer-foundation-plan.md`](plans/2026-10-24-p-a-renderer-foundation-plan.md).
+P-B: [`plans/2026-10-24-p-b-lifecycle-plan.md`](plans/2026-10-24-p-b-lifecycle-plan.md).
 
 ## 1. Summary
 
@@ -186,6 +187,13 @@ From top to bottom:
   call's result.
 - **No dividers, no folding.** One level of detail. Enter in browse mode, or a
   click, expands one row; Ctrl+G toggles expand-all.
+- **Streaming reasoning sits at the bottom.** Reasoning in progress is never
+  drawn inside a beat, where it would push the beat's calls apart. It is one
+  bounded row (`⚙ thinking 4s`, scrollable) at the bottom of the transcript,
+  below every beat, call row and completion event, for a reader to glance at or
+  ignore. A step that holds nothing but reasoning so far has no row of its own.
+  Finished reasoning stays with its beat: `thought Ns` in the head, the text
+  when the beat is expanded. (P-B; found in testing.)
 
 ### 5.3 Glyph vocabulary
 
@@ -236,14 +244,29 @@ those.
    - The summary line is the subagent's report headline, a job's last useful
      output line, or a progress card's detail.
    - There is one event per finished item. `coalesceMarkers` goes.
+   - **Where it lands.** An event follows the beat whose row launched its work.
+     Any other event that ends while a beat is still open lands before that
+     beat, because the beat joins history only when it settles (the next beat
+     starts, or the turn ends). One that ends after a finished turn's last
+     beat follows it.
+   - **Outcomes.** `done`, `exit N`, `stopped`, `lost` or `failed`, plus
+     `outcome unknown` (warning colour) for a record with no observed exit and
+     no stop or failure state. A missing exit never reads as success. A lost
+     job (synthesised on resume, stamped with its start) gets an event that
+     follows the beat that launched it.
+   - **Summary line**, first match wins: a subagent's report headline, else its
+     error's first line; for a job, the first `--- FAIL` line, else the
+     progress detail (not `go test`), else the last non-blank output line.
    - **Expanded, an event becomes an issue report.** It shows the outcome and
      stop cause, the command or task, cwd and duration, the final progress
-     snapshot, the bounded output tail (up to 20 lines, failure lines first for
-     Go tests), and, for a subagent, its report. Its actions are `o` output,
-     `i` inspector and drill-in for subagents. This uses the existing
-     `WorkService.InspectWork` detail (ACP `work_inspect`). Failed events are
-     not acknowledged or dismissed; they are part of history.
-     `WorkService.AcknowledgeWork` loses its TUI caller.
+     snapshot, the bounded output tail (up to 20 lines, `--- FAIL` lines first),
+     and, for a subagent, its report. It renders from the projection
+     (`CompletionInfo`), so resume shows the same report. Enter or a click
+     expands it; `i` opens the inspector with the full retained output; `f`
+     drills into a subagent. `o` is not bound on an event. There is no jump
+     from an event to its launch row. Failed events are not acknowledged or
+     dismissed; they are part of history. `WorkService.AcknowledgeWork` loses
+     its TUI caller in P-C, with the now bar's attention row.
 
 ### 5.5 The live box
 
@@ -267,7 +290,8 @@ those.
   An empty section is omitted with its header.
 - **The live beat** is the newest beat while it is still open. It renders with
   the history grammar. Reasoning in progress shows as one bounded row
-  (`⚙ thinking 4s`). When the beat settles (the next beat starts or the turn
+  (`⚙ thinking 4s`) at the bottom of the box, below the live beat and its rows
+  (§5.2). When the beat settles (the next beat starts or the turn
   ends) it is appended to history and leaves the box. While you follow the
   bottom the move is invisible.
 - **A streamed final answer** is not in the box. It appends to history as it
@@ -361,27 +385,53 @@ Chosen only so everything is reachable. The shortcut rework will replace them.
   call is a write is no longer dropped as empty: it joins the beat before it,
   or heads its own.
 - **Completion events:** `MarkerInfo` becomes `CompletionInfo`:
-  - kind, id, label and outcome;
-  - exit code or stop cause, start and end times;
-  - a final measurement summary (from the job exit's retained final progress);
+  - source (`job` or `subagent`), id, subagent ID, label and outcome;
+  - exit code or stop cause, start and end times, duration;
+  - a final measurement summary (`MeasureSummary`, from the job exit's
+    retained final progress);
   - a summary line;
-  - references (`WorkKey`, job ID, subagent report message ID).
+  - the report fields: command, cwd, retained output, subagent report and
+    error;
+  - references (`WorkKey`, execution ID, subagent report message ID) and
+    `Launch`, the row that launched the work.
 
-  `KindMarker` is renamed `KindCompletion`. Delete `coalesceMarkers`.
+  `KindMarker` is renamed `KindCompletion` in place. Delete `coalesceMarkers`.
+  `mergeBeats` places events by the rule in §5.4.
+- **History reads only the transcript.** A settled row must not change when
+  the todo list is rewritten, so:
+  - the todo tag's `N/M` and text come from the plan in effect: the plan left
+    by the write that re-bound the beat, else the newest plan line before it.
+    The current list is the fallback only when no plan with an active item is
+    known;
+  - a narrated beat whose only call is a `todo.write` is re-bound to the stored
+    todo of the same actor's next step in the same turn, not to the list item
+    the write named;
+  - the receipt's task count is the number of items the turn's plan lines
+    moved to completed.
 - **One projection.** Drop the legacy `LiveWork == false` path:
   - in-place subagent cards in the parent view;
   - `settleJob`, which settles dispatch rows in place;
   - the `RunningSubagent` suppression.
 
-  A dispatch row is always just its call row. `Snapshot.LiveWork` and the ACP
-  `session/stack` parameter that selects it are removed after web adopts the
-  change (§6.2).
+  A dispatch row is always just its call row (a background start reads
+  `┆ job-n started`). `Snapshot.LiveWork`, `RunningSubagent` and `Drilled` are
+  removed. Correction: ACP never had a `session/stack` parameter selecting the
+  live-work projection; it always served the legacy one, and switches in the
+  same phase as the web. No tree carries subagent nodes any more.
 - **Band:** `BandOf` drops the `DrivenByTodos` gate. The band always carries the
   full current list (`BandTask`) when one exists, plus the stale signal. Delete
-  `MinTaskTodos` once no caller remains.
-- **The live beat:** add `SplitLive(turns) (history []*Node, live *Node)`. The
-  live beat is the newest open beat of the newest turn while busy. The TUI
-  renders `history` in the viewport and `live` in the box.
+  `MinTaskTodos` once no caller remains. `BandInfo.Todos` keeps its "busy with
+  work left" gate until P-C's idle state. The running entities the web lists
+  come from the snapshot's items (running subagent views, background starts
+  without an exit), since the in-place cards they were read from are gone.
+- **The live beat:** add `SplitLive(turns, busy) (history []*Node, live
+  []*Node)`. While busy, the live part is the newest turn's last beat, whether
+  or not its current step has ended (a narrationless step can still merge into
+  it), plus the events after it, which are only ever events of work that beat
+  launched, plus the streaming reasoning node, which `Build` always makes the
+  newest turn's last child (`LiveThinkingID`; no beat carries in-progress
+  reasoning). The TUI renders `history` in the viewport and `live` in the box
+  (P-C).
 - **The property to test:** for successive snapshots of one session, every
   history node of the earlier tree keeps its ID and `Version` in the later tree,
   apart from appended nodes (§8).
@@ -395,15 +445,21 @@ Chosen only so everything is reachable. The shortcut rework will replace them.
     it renders nothing until P-B;
   - `WireStep.folded` goes in P-A with folding. The web's fold handling is then
     inert, and P-B removes it;
-  - `WireMarker` becomes `WireCompletion`, with the fields above;
-  - `WireJob`'s settle fields go;
+  - `WireMarker` becomes `WireCompletion` (`completion`), with the fields
+    above;
+  - `WireJob` goes, and `WireTool` gains `subagentId`, the subagent an
+    `agent.run` row started, so a client can drill in from the row;
+  - `WireSubagent` goes: no tree carries subagent nodes;
   - `WireTodoLabel` is unchanged.
 
-  Coordinate the JSON names with daemon P2 C6.
+  Coordinate the JSON names with daemon P2 C6, which must drop its planned
+  `LiveWork` stack parameter and its `WireSubagent` additions.
 - `web/ui` renders the changed kinds in the same phase (P-B). The completion
-  event is a one-line row; the plan line is a call row. Its now bar keeps
-  reading the band. `TurnNode.svelte`, `NowBar.svelte` and `stack.ts` are the
-  touch points.
+  event is a one-line row that expands into the issue report; the plan line is
+  a call row. The web loses folding, the job card and the subagent card, and
+  drills into subagents from events and dispatch rows. Its now bar keeps
+  reading the band. `TurnNode.svelte`, `ToolRow.svelte`, `stack.ts`, `browse.ts`
+  and `Chat.svelte` are the touch points.
 
 ### 6.3 TUI
 

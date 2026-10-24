@@ -3,7 +3,7 @@
 Status: P-A, P-B and P-C landed. Updated 2026-10-24 with the decisions
 the P-A and P-B plans pinned down, and 2026-10-25 with P-C's. P-A landed on
 `main` before this branch; P-B landed in `d9975303..9ecfe2ee`, merged as
-`24792d61`; P-C landed in `9fa6097e..612cdf35`.
+`24792d61`; P-C landed in `9fa6097e..65ffc3fa`.
 Base commit: `87fa8f0e` (main, after the interaction-modes merge).
 Design record: [`alternatives.md`](alternatives.md) (layout),
 [`console-variants.md`](console-variants.md) (dock), and

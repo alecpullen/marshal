@@ -95,6 +95,10 @@ type StepInfo struct {
 	// TodoWrites are the beat's todo.write calls. They are not tool rows: the
 	// last one that changed the list is the beat's plan row (KindPlanUpdate).
 	TodoWrites []registry.AuditEvent
+	// labelPlan is the plan left by the write that re-bound this beat
+	// (effectiveTodoID); nil otherwise. absorb does not touch it, so a beat
+	// keeps its first step's.
+	labelPlan *PlanUpdate
 
 	// Todo is set on the beat where work moves to a different todo.
 	Todo *TodoLabel
@@ -261,6 +265,9 @@ func Build(s Snapshot) []*Node {
 		turns = append(turns, &turn{})
 	}
 	out := make([]*Node, 0, len(turns))
+	// plan is the newest plan in effect from the turns already built, so a
+	// turn's tags read the plan that was current when it ran.
+	var plan *PlanUpdate
 	for i, t := range turns {
 		last := i == len(turns)-1
 		key := "turn:pre"
@@ -282,7 +289,7 @@ func Build(s Snapshot) []*Node {
 		if i+1 < len(turns) && turns[i+1].msg != nil {
 			to = turns[i+1].msg.CreatedAt
 		}
-		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg, ci.completionsIn(from, to))
+		node.Children, plan = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg, ci.completionsIn(from, to), plan)
 		out = append(out, node)
 	}
 	return out
@@ -346,12 +353,22 @@ type stepAcc struct {
 	first  time.Time
 }
 
-func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64, turnKey string, userMsg *session.Message, markers []block) []*Node {
+func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64, turnKey string, userMsg *session.Message, markers []block, before *PlanUpdate) ([]*Node, *PlanUpdate) {
 	var blocks []block
 	steps := map[session.StepID]*stepAcc{}
 	var stepOrder []session.StepID
 	var loose []*stepAcc
 	var curLoose *stepAcc
+
+	// turnSteps are this turn's steps in start order, so a write-only beat can
+	// find the step its actor moved on to.
+	var turnSteps []session.Step
+	for _, st := range s.Steps {
+		if st.TurnMsgID == turnMsgID {
+			turnSteps = append(turnSteps, st)
+		}
+	}
+	sort.SliceStable(turnSteps, func(i, j int) bool { return turnSteps[i].StartedAt.Before(turnSteps[j].StartedAt) })
 
 	idStep := func(id session.StepID) *stepAcc {
 		if a, ok := steps[id]; ok {
@@ -521,7 +538,11 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		if id != 0 {
 			a.info.StepIDs = []session.StepID{id}
 		}
-		a.info.TodoID = effectiveTodoID(a.info, len(audits) == 0 && len(active) == 0, s.Todos)
+		todoID, rebound := effectiveTodoID(a.info, len(audits) == 0 && len(active) == 0, turnSteps)
+		a.info.TodoID = todoID
+		if rebound && plan != nil {
+			a.info.labelPlan = plan.PlanUpdate
+		}
 		node.Version = versionOfStep(node)
 		return node
 	}
@@ -590,7 +611,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 			keepLastPlanRow(n)
 		}
 	}
-	labelTransitions(out, s.Todos)
+	after := labelTransitions(out, s.Todos, before)
 	// keepLastPlanRow and labelTransitions run after finish/absorb computed
 	// each beat's version, so recompute it now that the payload is final.
 	for _, n := range out {
@@ -599,11 +620,11 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 	if !(s.Busy && lastTurn) {
-		if rc := receipt(turnKey, out, userMsg, s); rc != nil {
+		if rc := receipt(turnKey, out, userMsg, before, after); rc != nil {
 			out = append(out, rc)
 		}
 	}
-	return out
+	return out, after
 }
 
 func empty(n *Node) bool {

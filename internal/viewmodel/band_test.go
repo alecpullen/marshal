@@ -67,6 +67,21 @@ func TestBandEntitiesDropAFinishedJob(t *testing.T) {
 	}
 }
 
+// A list on the session drives the band whatever the turn did: the gate is
+// "a list exists", not "this turn touched it".
+func TestBandShowsAListTheTurnDidNotTouch(t *testing.T) {
+	s := Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Unrelated."), audit("file.read", 1, "a", 2)},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+		Todos: todos(db.TodoItem{ID: "a", Content: "A", Status: "completed"}, db.TodoItem{ID: "b", Content: "B", Status: "in_progress"}),
+		Busy:  true, Now: at(10),
+	}
+	b := BandOf(s, Build(s))
+	if !b.Todos || b.Done != 1 || b.Total != 2 {
+		t.Fatalf("band = %+v, want the list shown with 1/2 done", b)
+	}
+}
+
 // The runner nudges on its own response count, whatever its role. The band
 // must count the same responses: the turn opener's, not only the general
 // role's, and not a different actor's sharing the session.

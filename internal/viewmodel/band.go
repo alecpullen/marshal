@@ -20,7 +20,7 @@ import (
 // signal, and the running cards. The TUI and web both draw it from here, so
 // the two can never show different numbers.
 type BandInfo struct {
-	Todos    bool // the turn is working from a list of MinTaskTodos or more
+	Todos    bool // a list exists and the turn is running with work left
 	Done     int
 	Total    int
 	Active   string // the in-progress item's content, else the first pending one
@@ -142,7 +142,7 @@ func BandOf(s Snapshot, turns []*Node) BandInfo {
 			}
 		}
 	}
-	if len(turns) > 0 && taskMode(s.Todos) && DrivenByTodos(turns[len(turns)-1]) {
+	if len(s.Todos) > 0 {
 		b.Total = len(s.Todos)
 		active := -1
 		for i, t := range s.Todos {

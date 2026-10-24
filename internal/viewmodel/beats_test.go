@@ -192,21 +192,26 @@ func TestBeatAbsorbingLooseStepKeepsItsEnd(t *testing.T) {
 	}
 }
 
-// The live step merged into a beat makes the beat live and carries its
-// streaming reasoning.
-func TestBeatTakesLiveStepAndThinking(t *testing.T) {
+// The live step merged into a beat makes the beat live; the streaming
+// reasoning is not the beat's, it is the turn's last child.
+func TestBeatTakesLiveStepNotItsThinking(t *testing.T) {
 	nodes := Build(Snapshot{
 		Items: []session.TranscriptItem{
 			userMsg(1, 0),
 			narration(2, 1, 1, "Running the suite."),
 			audit("shell.run", 1, "a", 2),
+			audit("shell.run", 2, "b", 4),
 		},
 		Steps:      []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 1, 3, 0)},
 		Busy:       true,
 		InProgress: session.InProgressMessage{Active: true, Reasoning: "checking output"},
 	})
 	b := nodes[0].Children[1]
-	if !b.Live || b.Step.LiveThinking != "checking output" || !b.Step.Step.EndedAt.IsZero() {
+	if !b.Live || b.Step.LiveThinking != "" || !b.Step.Step.EndedAt.IsZero() {
 		t.Fatalf("beat = live %v thinking %q ended %v", b.Live, b.Step.LiveThinking, b.Step.Step.EndedAt)
+	}
+	children := nodes[0].Children
+	if last := children[len(children)-1]; last.ID != LiveThinkingID {
+		t.Fatalf("the turn's last child must be the live reasoning node, got %s", last.ID.Key)
 	}
 }

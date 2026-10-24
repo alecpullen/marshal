@@ -83,10 +83,12 @@ type StepInfo struct {
 	Step session.Step
 	// StepIDs are the responses merged into this beat, in order. Empty for a
 	// step-less beat.
-	StepIDs      []session.StepID
-	Narration    []*session.Message
-	Thinking     []*session.ThinkingEntry
-	LiveThinking string // in-progress reasoning when this is the live beat
+	StepIDs   []session.StepID
+	Narration []*session.Message
+	Thinking  []*session.ThinkingEntry
+	// LiveThinking is the in-progress reasoning; set only on the live
+	// reasoning node (LiveThinkingID), never on a beat.
+	LiveThinking string
 
 	// TodoID is the task the beat's first response was bound to: the stored
 	// binding, or for a narrated response whose only call was a todo.write,
@@ -477,11 +479,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	if lastTurn && s.InProgress.Active && s.InProgress.Reasoning != "" {
 		reasoning = s.InProgress.Reasoning
 	}
-	liveThinkingPlaced := false
-	if live != nil && reasoning != "" {
-		live.info.LiveThinking = reasoning
-		liveThinkingPlaced = true
-	}
 
 	// Active (in-flight) tool calls become live rows of their step.
 	var strayActive []session.ActiveToolCall
@@ -568,10 +565,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		if isLive {
 			active = strayActive
 			strayActive = nil
-			if reasoning != "" {
-				a.info.LiveThinking = reasoning
-				liveThinkingPlaced = true
-			}
 		}
 		n := finish(0, a, isLive, active)
 		if empty(n) {
@@ -581,12 +574,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	}
 
 	// Anything still unplaced renders as before, at turn level.
-	if reasoning != "" && !liveThinkingPlaced {
-		blocks = append(blocks, block{s.InProgress.StartedAt, &Node{
-			ID: LiveThinkingID, Kind: KindThinking, Live: true,
-			Step: &StepInfo{LiveThinking: reasoning},
-		}})
-	}
 	for i := range strayActive {
 		atc := strayActive[i]
 		blocks = append(blocks, block{atc.StartedAt, activeNode(&atc)})
@@ -624,12 +611,20 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 			out = append(out, rc)
 		}
 	}
+	// Streaming reasoning is drawn last, below every row, so it never lands
+	// inside a beat's spine.
+	if reasoning != "" {
+		out = append(out, &Node{
+			ID: LiveThinkingID, Kind: KindThinking, Live: true,
+			Step: &StepInfo{LiveThinking: reasoning},
+		})
+	}
 	return out, after
 }
 
 func empty(n *Node) bool {
 	return n.Step != nil && len(n.Step.Narration) == 0 && len(n.Step.Thinking) == 0 &&
-		len(n.Children) == 0 && n.Step.LiveThinking == ""
+		len(n.Children) == 0
 }
 
 // toolRows orders a step's calls by time, merging consecutive same-tool runs,
@@ -850,8 +845,8 @@ func versionOfStep(n *Node) uint64 {
 	if st.Todo != nil {
 		b.f("lbl|%s|%d|%d|%s|", st.Todo.ID, st.Todo.Index, st.Todo.Total, st.Todo.Content)
 	}
-	b.f("st|%d|%d|%s|%s|%s|%s|%d|%d|%d|%d|", r.ID, r.TurnMsgID, r.Actor.Role, r.Actor.Label, r.Actor.Model, r.Actor.Provider,
-		r.StartedAt.UnixNano(), r.EndedAt.UnixNano(), len(st.StepIDs), len(st.LiveThinking))
+	b.f("st|%d|%d|%s|%s|%s|%s|%d|%d|%d|", r.ID, r.TurnMsgID, r.Actor.Role, r.Actor.Label, r.Actor.Model, r.Actor.Provider,
+		r.StartedAt.UnixNano(), r.EndedAt.UnixNano(), len(st.StepIDs))
 	for _, id := range st.StepIDs {
 		b.f("sid|%d|", id)
 	}

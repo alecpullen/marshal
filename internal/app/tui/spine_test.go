@@ -246,6 +246,48 @@ func TestPlanRow(t *testing.T) {
 	}
 }
 
+// Streaming reasoning is drawn below every row of the newest turn, so it never
+// lands between a beat's head and its calls.
+func TestLiveThinkingDrawsBelowTheSpine(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	m.busy = true
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Running the suite.")
+	ev := readEvent("a.go")
+	ev.StepID = id
+	ev.ToolCallID = "r"
+	ev.Timestamp = time.Now()
+	m.state.LogToolCall(ev)
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StepID: id, ToolCallID: "run", StartedAt: time.Now()})
+	m.state.BeginStreaming()
+	m.state.AppendThinking("weighing the next step\n")
+	m.refreshViewport()
+
+	content := stripANSI(m.viewport.GetContent())
+	lines := strings.Split(content, "\n")
+	call, think := -1, -1
+	for i, l := range lines {
+		if call < 0 && strings.Contains(l, "go test") {
+			call = i
+		}
+		if think < 0 && strings.Contains(l, "thinking") {
+			think = i
+		}
+	}
+	if call < 0 || think < 0 {
+		t.Fatalf("call line %d, thinking line %d:\n%s", call, think, content)
+	}
+	if call > think {
+		t.Fatalf("the running call must come before the reasoning:\n%s", content)
+	}
+	for _, l := range lines[think+1:] {
+		if strings.Contains(l, "├") || strings.Contains(l, "└") {
+			t.Fatalf("no spine row may follow the reasoning:\n%s", content)
+		}
+	}
+}
+
 // Every row but the last hangs off ├ and the last off └; an expanded row's
 // detail carries the spine down to the next row, and nothing does after the
 // last.

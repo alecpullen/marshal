@@ -231,7 +231,7 @@ func (m *Model) refreshViewport() {
 // continues it instead of starting a new paragraph.
 func narrationOnly(n *viewmodel.Node) bool {
 	return n.Kind == viewmodel.KindStep && n.Step != nil && !n.Live && len(n.Step.Narration) > 0 &&
-		len(n.Children) == 0 && len(n.Step.Thinking) == 0 && n.Step.LiveThinking == ""
+		len(n.Children) == 0 && len(n.Step.Thinking) == 0
 }
 
 // renderNode renders one top-level block, from the cache when it is still

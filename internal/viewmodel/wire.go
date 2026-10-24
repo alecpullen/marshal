@@ -111,20 +111,19 @@ func ProjectBand(b BandInfo) WireNode {
 // WireStep is a step's header and reasoning. Times are Unix milliseconds;
 // zero means unset.
 type WireStep struct {
-	Headline     string         `json:"headline"`
-	Rest         string         `json:"rest,omitempty"`
-	StepIDs      []int64        `json:"stepIds,omitempty"`
-	Owner        string         `json:"owner,omitempty"`
-	RoleWord     string         `json:"roleWord,omitempty"`
-	Role         string         `json:"role,omitempty"`
-	Model        string         `json:"model,omitempty"`
-	Provider     string         `json:"provider,omitempty"`
-	TodoID       string         `json:"todoId,omitempty"`
-	Todo         *WireTodoLabel `json:"todo,omitempty"`
-	StartedAt    int64          `json:"startedAt,omitempty"`
-	EndedAt      int64          `json:"endedAt,omitempty"`
-	Thoughts     []WireThought  `json:"thoughts,omitempty"`
-	LiveThinking string         `json:"liveThinking,omitempty"`
+	Headline  string         `json:"headline"`
+	Rest      string         `json:"rest,omitempty"`
+	StepIDs   []int64        `json:"stepIds,omitempty"`
+	Owner     string         `json:"owner,omitempty"`
+	RoleWord  string         `json:"roleWord,omitempty"`
+	Role      string         `json:"role,omitempty"`
+	Model     string         `json:"model,omitempty"`
+	Provider  string         `json:"provider,omitempty"`
+	TodoID    string         `json:"todoId,omitempty"`
+	Todo      *WireTodoLabel `json:"todo,omitempty"`
+	StartedAt int64          `json:"startedAt,omitempty"`
+	EndedAt   int64          `json:"endedAt,omitempty"`
+	Thoughts  []WireThought  `json:"thoughts,omitempty"`
 }
 
 // WireTodoLabel marks the beat where work moves to a different todo.
@@ -373,7 +372,6 @@ func wireStep(n *Node) *WireStep {
 		Model: st.Actor.Model, Provider: st.Actor.Provider,
 		TodoID: si.TodoID, StepIDs: si.StepIDs,
 		StartedAt: ms(st.StartedAt), EndedAt: ms(st.EndedAt),
-		LiveThinking: si.LiveThinking,
 	}
 	for _, t := range si.Thinking {
 		ws.Thoughts = append(ws.Thoughts, WireThought{Text: ScrubBlock(t.Text), DurationMs: t.Duration.Milliseconds()})

@@ -157,16 +157,6 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 	if open {
 		write(renderBeatReasoning(si.Thinking, width))
 	}
-	if si.LiveThinking != "" {
-		rv := c.region(viewmodel.LiveThinkingID)
-		box := renderThinkingBox(si.LiveThinking, c.thinkSpinner, c.thinkElapsed, rv, nestedContentWidth(width))
-		if box != "" {
-			if cnt := strings.Count(box, "\n"); cnt > rv.minRows {
-				c.noteRows(viewmodel.LiveThinkingID, cnt)
-			}
-			row(viewmodel.LiveThinkingID, indentLines(box, continuationIndent), subRegion{live: true})
-		}
-	}
 
 	// A long beat shows its newest rows; the rest collapse into one line.
 	// Expanding the beat shows them all.

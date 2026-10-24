@@ -237,7 +237,7 @@ func TestBuildSteeringMessageDoesNotOpenATurn(t *testing.T) {
 	}
 }
 
-func TestBuildLiveStepAndThinking(t *testing.T) {
+func TestBuildLiveStepWithThinkingBelowIt(t *testing.T) {
 	snap := Snapshot{
 		Items:      []session.TranscriptItem{userMsg(1, 0), narration(2, 2, 3, "Now this."), audit("file.read", 1, "a", 2)},
 		Steps:      []session.Step{step(1, 1, 2, ""), step(2, 3, 0, "")},
@@ -256,12 +256,18 @@ func TestBuildLiveStepAndThinking(t *testing.T) {
     tool:1:a
   step:2 live
     tool:2:s live
+  think:live live
 `
 	if got != want {
 		t.Fatalf("shape:\n%s\nwant:\n%s", got, want)
 	}
-	if nodes[0].Children[2].Step.LiveThinking != "thinking hard" {
-		t.Errorf("live thinking not attached to the live step")
+	children := nodes[0].Children
+	last := children[len(children)-1]
+	if last.ID != LiveThinkingID || last.Step.LiveThinking != "thinking hard" {
+		t.Errorf("the turn's last child must be the live reasoning node, got %+v", last.ID)
+	}
+	if children[2].Step.LiveThinking != "" {
+		t.Errorf("no beat carries the streaming reasoning, got %q", children[2].Step.LiveThinking)
 	}
 	snap.Busy = false
 	snap.InProgress.Active = false
@@ -269,6 +275,60 @@ func TestBuildLiveStepAndThinking(t *testing.T) {
 		if n.Live {
 			t.Errorf("nothing is live when idle: %s", n.ID.Key)
 		}
+	}
+}
+
+// The streaming reasoning is the turn's last child: below the live beat, below
+// the completion event of the work that beat launched, and below every earlier
+// beat. No beat carries it.
+func TestLiveThinkingIsTheTurnsLastChild(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "First beat."),
+			audit("file.read", 1, "a", 2),
+			narration(3, 2, 3, "Second beat."),
+			jobStart(2, "j", 4, "job-4"),
+			jobExit(5, "job-4", 0),
+		},
+		Steps:      []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 1, 3, 0)},
+		Busy:       true,
+		InProgress: session.InProgressMessage{Active: true, Reasoning: "weighing", StartedAt: at(6)},
+		ActiveTools: []session.ActiveToolCall{
+			{Name: "shell.run", ToolCallID: "s", StepID: 2, StartedAt: at(6)},
+		},
+	})
+	children := nodes[0].Children
+	if len(children) < 3 {
+		t.Fatalf("children = %s", shape(nodes))
+	}
+	tail := children[len(children)-3:]
+	if tail[0].ID.Key != "step:2" || tail[1].ID.Key != "completion:tool:2:j" || tail[2].ID != LiveThinkingID {
+		t.Fatalf("turn must end with the live beat, its completion, then the reasoning:\n%s", shape(nodes))
+	}
+	for _, n := range children {
+		if n.ID != LiveThinkingID && n.Step != nil && n.Step.LiveThinking != "" {
+			t.Errorf("beat %s carries streaming reasoning", n.ID.Key)
+		}
+	}
+}
+
+// A step that has opened but holds only streaming reasoning is empty: it gets
+// no node, and the reasoning shows at the bottom of the turn.
+func TestStepWithOnlyReasoningIsOmitted(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items:      []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "First beat."), audit("file.read", 1, "a", 2)},
+		Steps:      []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 1, 4, 0)},
+		Busy:       true,
+		InProgress: session.InProgressMessage{Active: true, Reasoning: "weighing", StartedAt: at(5)},
+	})
+	got := shape(nodes)
+	if strings.Contains(got, "step:2") {
+		t.Fatalf("a step holding only streaming reasoning is omitted:\n%s", got)
+	}
+	children := nodes[0].Children
+	if last := children[len(children)-1]; last.ID != LiveThinkingID {
+		t.Fatalf("the reasoning must be the turn's last child:\n%s", got)
 	}
 }
 

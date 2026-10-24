@@ -132,9 +132,6 @@ func absorb(beat, n *Node) {
 	bi.StepIDs = append(bi.StepIDs, ni.StepIDs...)
 	bi.Thinking = append(bi.Thinking, ni.Thinking...)
 	bi.TodoWrites = append(bi.TodoWrites, ni.TodoWrites...)
-	if ni.LiveThinking != "" {
-		bi.LiveThinking = ni.LiveThinking
-	}
 	beat.Children = append(beat.Children, n.Children...)
 	beat.Live = beat.Live || n.Live
 	beat.Version = versionOfStep(beat)

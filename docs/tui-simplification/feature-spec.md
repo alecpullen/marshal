@@ -1,7 +1,8 @@
 # TUI simplification — feature spec
 
 Status: draft for review, 2026-10-23. Updated 2026-10-24 with the decisions
-the P-A and P-B plans pinned down. P-A has landed.
+the P-A and P-B plans pinned down. P-A and P-B landed
+(`d9975303..fa2a3ea8`).
 Base commit: `87fa8f0e` (main, after the interaction-modes merge).
 Design record: [`alternatives.md`](alternatives.md) (layout),
 [`console-variants.md`](console-variants.md) (dock), and
@@ -544,7 +545,7 @@ derive from persisted `todo.write` tool calls. Resume renders the same history.
 | Phase | Scope | Depends on | Ships alone |
 |---|---|---|---|
 | **P-A Renderer foundation** | Spine and verbs; glyph cleanup; the todo tag replaces the divider; `KindPlanUpdate` and the plan line (with its wire kind); no folding; Ctrl+G expand-all; humanized running calls; config deprecations. TUI plus small projection changes. | — | yes |
-| **P-B Lifecycle in the projection** | `CompletionInfo` and the expandable issue report; dispatch rows never settle; one projection (legacy path removed); band gating removed; `SplitLive`; wire changes; `web/ui` adoption. | P-A | yes |
+| **P-B Lifecycle in the projection** ([plan](plans/2026-10-24-p-b-lifecycle-plan.md)) | `CompletionInfo` and the expandable issue report; dispatch rows never settle; one projection (legacy path removed); band gating removed; `SplitLive`; wire changes; `web/ui` adoption. | P-A | yes |
 | **P-C Live box** | `livebox` package; the live beat in the box; running rows with bars and the expanded card; stacked, split and folded plus Ctrl+T; budget and shed order; idle state; browse into the box; `nowbar.go` and the Tasks Plan tab deleted; `[tui.live_box]`. | P-B | yes |
 | **P-D Progress-reporting skill** | The skill, the schema pointer and the pinned schema test. | — | yes, any time |
 

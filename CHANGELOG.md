@@ -57,6 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dragging over a call row copies what it acted on: the command, path or
   query.
 
+**Transcript: completion events**
+
+- Finished background jobs and subagents add one completion event to the
+  transcript when they end, with the outcome, final measurement and duration,
+  and an issue report when expanded. The call that started the work no longer
+  changes after it starts. The web shows the same events, and the plan line,
+  as rows.
+
 **Tool-usage prompting and tool architecture docs**
 
 - Two rules in the cached system-prompt prefix now name the tool families by
@@ -150,9 +158,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `agent.output`, `recall_history`, `scratchpad.*`, `parent.ask`,
   `parent.respond`. `test.run` and `file.write_patch` remain internal only.
 - The subagent question channel and its `[agent] parent_question_*` settings.
+- In-place subagent cards, job cards that settled in place, and merged
+  completion markers. The web transcript no longer folds finished beats.
 
 ### Fixed
 
+- The todo tag and turn receipts in finished turns no longer change when the
+  todo list is rewritten later.
+- Streaming reasoning no longer appears between a beat's narration and its
+  tool calls, where it pushed the calls apart. It shows at the bottom of the
+  transcript, in the TUI and the web.
 - The shell analyzer walked only part of a command's parse tree, so a command
   hidden in a construct it skipped never became an operation, and a command
   with no operations fell through to Allow in both Ask and Act. It now walks

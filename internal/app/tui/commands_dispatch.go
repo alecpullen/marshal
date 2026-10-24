@@ -439,11 +439,11 @@ func init() {
 			m.refreshViewport()
 			return m, nil
 		},
-		// /work opens the Tasks panel directly on its Work tab. The command's
-		// registry entry lands in Task 19; the effect is wired here so the
-		// surface exists the moment it is registered.
+		// /work opens the Work list. The command's registry entry lands in Task
+		// 19; the effect is wired here so the surface exists the moment it is
+		// registered.
 		"work": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.openTasks(tasksTabWork)
+			m.openWork()
 			return m, nil
 		},
 		"review": func(m *Model, args []string) (tea.Model, tea.Cmd) {

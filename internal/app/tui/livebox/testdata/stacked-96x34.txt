@@ -1,0 +1,9 @@
+╭─ ⠋ working 4m12s ───────────────────────────────────────────── Ctrl+T plan · Ctrl+C ×2 stop ─╮
+│ ⠋ Checking the eval thresholds still make sense for a coder model.                           │
+├─ running 2 ──────────────────────────────────────────────────────────────────────────────────┤
+│ ▌⧉ #1     review the config change  Checking context_window…                         1m 2s ⠋ │
+│ ▌┆ job-2  Harness tests  last useful line                                              48s ⠋ │
+├─ plan  ▰▰▱▱ 2/4 ─────────────────────────────────────────────────────────────────────────────┤
+│ ✓ todo a                                       ⠋ todo c                                      │
+│ ✓ todo b                                       · todo d                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯

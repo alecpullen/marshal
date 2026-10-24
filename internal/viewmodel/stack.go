@@ -8,10 +8,12 @@
 package viewmodel
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash"
 	"hash/fnv"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -402,6 +404,41 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 
+	// loadedHere holds the skills this turn loaded with a call row. A tag for
+	// one of them is redundant: the call row is the trace.
+	loadedHere := map[string]bool{}
+	// unloadedHere holds the skills this turn unloaded. Unload posts the same
+	// ContentTypeSkill tag a load does, so a turn that unloads a skill must
+	// keep that tag even though the same turn also loaded it.
+	unloadedHere := map[string]bool{}
+	for i := range items {
+		it := items[i]
+		if it.Kind != session.KindAudit || it.Audit == nil {
+			continue
+		}
+		if EventFailed(*it.Audit) {
+			continue
+		}
+		if it.Audit.ToolName != "skill.load" && it.Audit.ToolName != "skill.unload" {
+			continue
+		}
+		var args struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(it.Audit.Args, &args); err != nil {
+			continue
+		}
+		name := strings.TrimSpace(args.Name)
+		if name == "" {
+			continue
+		}
+		if it.Audit.ToolName == "skill.unload" {
+			unloadedHere[name] = true
+			continue
+		}
+		loadedHere[name] = true
+	}
+
 	for i := range items {
 		it := items[i]
 		switch it.Kind {
@@ -409,6 +446,22 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 			m := it.Message
 			if m != nil && m.ContentType == session.ContentTypeSubagentNotice {
 				continue
+			}
+			// A skill's body is model context and never rendered; its tag is
+			// the trace only when no call row already shows the load. Neither
+			// message carries a step ID, so as turn-level blocks they would
+			// draw a second row and end the beat.
+			if m != nil && m.ContentType == session.ContentTypeSkillBody {
+				continue
+			}
+			if m != nil && m.ContentType == session.ContentTypeSkill {
+				name := strings.TrimSpace(m.Content)
+				// The tag is redundant only when this turn's own call row
+				// already shows the load, and the turn does not also unload
+				// the skill.
+				if loadedHere[name] && !unloadedHere[name] {
+					continue
+				}
 			}
 			if m != nil && m.ContentType == session.ContentTypeNarration {
 				if m.StepID > 0 {

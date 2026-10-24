@@ -380,13 +380,11 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: style.Render(seg), priority: 8})
 	}
 
-	if m.ShouldShowStatusURL() {
-		if bi := m.state.BrowserInfo(); bi.SessionOpen {
-			segs = append(segs, statusSeg{
-				text:     browserStatusText(bi),
-				priority: 9,
-			})
-		}
+	if bi := m.state.BrowserInfo(); bi.SessionOpen {
+		segs = append(segs, statusSeg{
+			text:     browserStatusText(bi),
+			priority: 9,
+		})
 	}
 
 	if m.diagnosticCount > 0 {
@@ -496,7 +494,7 @@ func (m Model) footerHints() help.FooterHints {
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
 		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
-		TodosActive:          len(m.state.Todos()) > 0,
+		PlanActive:           len(m.band.Tasks) > 0,
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 		RunActive:            m.hasRunningSubagent(),
 		DrilledRunActive:     m.drilledIntoRunningSubagent(),

@@ -212,7 +212,7 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	if m.viewport.Width() != 100 {
 		t.Fatalf("viewport.Width = %d, want 100 (full terminal width, borderless transcript)", m.viewport.Width())
 	}
-	wantHeight := 30 - m.inputAreaRows() - m.nowBarRows() - statusLineRows
+	wantHeight := 30 - m.inputAreaRows() - m.boxRows() - statusLineRows
 	if m.viewport.Height() != wantHeight {
 		t.Fatalf("viewport.Height = %d, want %d", m.viewport.Height(), wantHeight)
 	}
@@ -673,6 +673,8 @@ func TestRunPanelDoesNotPushInputOffScreen(t *testing.T) {
 		Tasks:       []string{"Scaffold", "Parse", "Evaluate", "Report", "Cleanup"},
 		StartedAt:   m.now().Add(-time.Minute),
 	})
+	// The run summary is the box's state, so the turn has to be running.
+	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
 	m.refreshViewport()
 
 	frame := stripANSI(m.viewString())
@@ -707,20 +709,24 @@ func TestRunPanelDoesNotPushInputOffScreen(t *testing.T) {
 	}
 }
 
-func TestTurnSpinnerReservedWhenIdle(t *testing.T) {
+// TestIdleBoxIsEmptyWithoutAPlan: an idle session with no list has no live
+// part, no running work and nothing to plan, so the box takes no rows at all —
+// never a reserved blank line.
+func TestIdleBoxIsEmptyWithoutAPlan(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
-	if got := nowBarOut(m); got != "" {
-		t.Fatalf("idle turn spinner should render blank, got %q", got)
+	if got := m.boxRows(); got != 0 {
+		t.Fatalf("boxRows() = %d, want 0 when idle with no plan", got)
 	}
-	if m.nowBarRows() != 0 {
-		t.Fatalf("nowBarRows() = %d, want 0 when idle (no blank reserved row)", m.nowBarRows())
+	if out := stripANSI(boxOut(m)); out != "" {
+		t.Fatalf("idle box should render nothing, got %q", out)
 	}
 }
 
-// TestNoBlankRowAboveNowBar pins the reported bug: an idle session
-// with todos showed a blank line above its progress row — the
-// always-reserved (but empty) turn-spinner row. Nothing is reserved now.
-func TestNoBlankRowAboveNowBar(t *testing.T) {
+// TestNoBlankRowAboveTheBox pins the reported bug: an idle session with todos
+// showed a blank line above its progress row — the always-reserved (but empty)
+// turn-spinner row. Nothing is reserved now: the box's top border carries the
+// spinner and sits straight under the transcript.
+func TestNoBlankRowAboveTheBox(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	todoDrivenTurn(t, &m, []native.TodoItem{
 		{Content: "first task", Status: "completed"},
@@ -736,21 +742,15 @@ func TestNoBlankRowAboveNowBar(t *testing.T) {
 	m.refreshViewport()
 
 	lines := strings.Split(stripANSI(m.viewString()), "\n")
-	todoRow := -1
-	for i, l := range lines {
-		if strings.Contains(l, "1/3 · second task") {
-			todoRow = i
-			break
-		}
-	}
-	if todoRow < 0 {
-		t.Fatalf("todo progress row missing from frame:\n%s", strings.Join(lines, "\n"))
+	top := m.boxTop()
+	if !strings.Contains(lines[top], "╭─") || !strings.Contains(lines[top], "working ") {
+		t.Fatalf("box top border not at row %d: %q", top, lines[top])
 	}
 	// The transcript renderer trails each entry with one blank separator
-	// line, so one blank above the panel is legitimate. Two in a row means
+	// line, so one blank above the box is legitimate. Two in a row means
 	// the empty spinner row is back.
-	if todoRow < 2 || strings.TrimSpace(lines[todoRow-2]) == "" {
-		t.Errorf("more than one blank line above the now bar:\n%s", strings.Join(lines, "\n"))
+	if top < 2 || strings.TrimSpace(lines[top-2]) == "" {
+		t.Errorf("more than one blank line above the box:\n%s", strings.Join(lines, "\n"))
 	}
 	if len(lines) != 30 {
 		t.Errorf("frame = %d rows, want 30", len(lines))
@@ -763,7 +763,7 @@ func TestTurnSpinnerShowsElapsedDirectlyAboveInput(t *testing.T) {
 	m.turnStartedAt = m.now().Add(-12 * time.Second)
 	m.spinnerFrame = "⠋"
 
-	row := stripANSI(nowBarOut(m))
+	row := stripANSI(boxOut(m))
 	if !strings.Contains(row, "⠋") || !strings.Contains(row, "12s") {
 		t.Fatalf("turn spinner missing glyph/elapsed: %q", row)
 	}
@@ -777,8 +777,15 @@ func TestTurnSpinnerShowsElapsedDirectlyAboveInput(t *testing.T) {
 	if !strings.Contains(lines[inputTop], "▍") {
 		t.Fatalf("input bar not where expected; line %d = %q", inputTop, lines[inputTop])
 	}
-	if !strings.Contains(lines[inputTop-1], "⠋") {
-		t.Fatalf("turn spinner must sit directly above the input; line %d = %q", inputTop-1, lines[inputTop-1])
+	// The box is the block directly above the input, and its top border is
+	// where the turn spinner's state is drawn. View() is a value receiver, so
+	// the box's height is taken from the model rather than the copy's layout.
+	top := inputTop - m.boxRows()
+	if !strings.Contains(lines[top], "⠋") {
+		t.Fatalf("turn spinner must sit in the box's top border; line %d = %q", top, lines[top])
+	}
+	if bottom := top + m.boxRows(); bottom != inputTop {
+		t.Fatalf("box bottom at %d, want the input at %d", bottom, inputTop)
 	}
 }
 
@@ -793,7 +800,7 @@ func TestTurnSpinnerShowsActivityLabel(t *testing.T) {
 		StartedAt: m.now(),
 	})
 
-	row := stripANSI(nowBarOut(m))
+	row := stripANSI(boxOut(m))
 	if !strings.Contains(row, "⠋") || !strings.Contains(row, "12s") {
 		t.Fatalf("turn spinner missing glyph/elapsed: %q", row)
 	}
@@ -851,7 +858,7 @@ func TestTurnSpinnerSpansPhaseGaps(t *testing.T) {
 	m.spinnerFrame = "⠹"
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 
-	row := stripANSI(nowBarOut(m))
+	row := stripANSI(boxOut(m))
 	if !strings.Contains(row, "24s") {
 		t.Errorf("spinner row = %q, want elapsed 24s while busy between phases", row)
 	}
@@ -863,42 +870,14 @@ func TestTurnSpinnerSpansPhaseGaps(t *testing.T) {
 	}
 }
 
-// TestTurnSpinnerBlankWhenIdleButStillReserved pins the idle invariant:
-// blank content and no row of budget — the row only exists while a turn
-// runs, so an idle frame has no blank line above the todo panel.
-func TestTurnSpinnerBlankWhenIdleButStillReserved(t *testing.T) {
-	m := newViewTestModel(t, 100, 30)
-	m.busy = false
-	m.turnStartedAt = time.Time{}
-
-	if row := nowBarOut(m); row != "" {
-		t.Errorf("renderTurnSpinner() = %q, want empty when idle", row)
-	}
-	if got := m.nowBarRows(); got != 0 {
-		t.Errorf("nowBarRows() = %d, want 0 when idle", got)
-	}
-}
-
-// During an SDD run the progress row replaces the turn row: one row, not
-// two.
-func TestTurnRowFoldsIntoSDDProgressRow(t *testing.T) {
-	m := newViewTestModel(t, 100, 30)
-	m.busy = true
-	m.turnStartedAt = m.now().Add(-10 * time.Second)
-	m.state.SetSDDProgress(session.SDDProgress{Active: true, TotalTasks: 3, CurrentTask: 1})
-	if got := m.nowBarRows(); got != 1 {
-		t.Errorf("nowBarRows() = %d during SDD, want 1", got)
-	}
-	if row := stripANSI(nowBarOut(m)); !strings.Contains(row, "task 1/3") || !strings.Contains(row, "10s") {
-		t.Errorf("SDD progress row = %q, want task counter and turn elapsed", row)
-	}
-}
+// The idle invariant is covered by TestIdleBoxIsEmptyWithoutAPlan; the SDD
+// run's single state row is covered by TestSDDRunShowsInTheBoxBorder.
 
 // TestTurnSpinnerGlyphGatedOnFirst200ms avoids a glyph flash on fast turns.
-// TestTodoProgressRowCarriesTurnElapsed pins that a busy turn with todos
-// shows the band — the progress row (blocks, counts, the in-progress item and
-// the turn clock) over the checklist row — in the two rows directly above the
-// input.
+// TestTodoProgressRowCarriesTurnElapsed pins that a busy turn with a list
+// shows the plan in the box — the turn clock and spinner in the top border, the
+// blocks and counts in the plan header, and the in-progress item on its row —
+// with the box directly above the input.
 func TestTodoProgressRowCarriesTurnElapsed(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	todoDrivenTurn(t, &m, []native.TodoItem{
@@ -912,28 +891,26 @@ func TestTodoProgressRowCarriesTurnElapsed(t *testing.T) {
 	m.spinnerFrame = "⠹"
 	m.refreshViewport()
 
-	lines := strings.Split(stripANSI(m.viewString()), "\n")
-	row := -1
-	for i, l := range lines {
-		if strings.Contains(l, "second task") {
-			row = i
+	frame := stripANSI(m.viewString())
+	lines := strings.Split(frame, "\n")
+	top := m.boxTop()
+	for _, want := range []string{"⠹", "24s"} {
+		if !strings.Contains(lines[top], want) {
+			t.Errorf("box border %q missing %q", lines[top], want)
 		}
 	}
-	if row < 0 {
-		t.Fatalf("progress row missing:\n%s", strings.Join(lines, "\n"))
-	}
-	for _, want := range []string{"⠹", "▰▱▱▱", "1/4", "24s"} {
-		if !strings.Contains(lines[row], want) {
-			t.Errorf("progress row %q missing %q", lines[row], want)
+	for _, want := range []string{"▰▱▱▱", "1/4"} {
+		if !strings.Contains(lines[top+1], want) {
+			t.Errorf("plan header %q missing %q", lines[top+1], want)
 		}
 	}
-	// The band is two rows: progress over checklist, both above the input.
+	if !strings.Contains(frame, "second task") {
+		t.Errorf("the plan should name the item in progress:\n%s", frame)
+	}
+	// The box is the block directly above the input.
 	inputTop := 30 - m.inputAreaRows() - statusLineRows
-	if row != inputTop-2 {
-		t.Errorf("progress row at %d, want two above the input at %d", row, inputTop)
-	}
-	if list := lines[inputTop-1]; !strings.Contains(list, "1 done") || !strings.Contains(list, "next: third task") {
-		t.Errorf("checklist row %q should hold the done count and what comes next", list)
+	if bottom := top + m.boxRows(); bottom != inputTop {
+		t.Errorf("box bottom at %d, want the input at %d", bottom, inputTop)
 	}
 	if len(lines) != 30 {
 		t.Errorf("frame = %d rows, want 30", len(lines))

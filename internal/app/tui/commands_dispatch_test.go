@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -277,7 +276,7 @@ func TestSendNowCommandTokenBoundary(t *testing.T) {
 // item, returning the model and the live panel.
 func openWorkDetail(t *testing.T, m Model, item viewmodel.WorkItem) (Model, *tasksPanelModel) {
 	t.Helper()
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if !m.tasksOpen() {
 		t.Fatal("the Tasks panel did not open")
 	}
@@ -302,12 +301,12 @@ func openWorkDetail(t *testing.T, m Model, item viewmodel.WorkItem) (Model, *tas
 }
 
 // TestWorkStopAndAckStayAsyncAndExact pins that stop and acknowledge run
-// outside Update, capture the exact target and revision, and that a reply from
-// a different panel is dropped.
-func TestWorkStopAndAckStayAsyncAndExact(t *testing.T) {
+// outside Update, capture the exact target, and that a reply from a different
+// panel is dropped.
+func TestWorkStopStaysAsyncAndExact(t *testing.T) {
 	item := viewmodel.WorkItem{
 		TaskKey: "work:a", Kind: "command", Label: "Alpha", State: "running",
-		Capabilities: viewmodel.WorkCapabilities{Inspect: true, Stop: true, Acknowledge: true},
+		Capabilities: viewmodel.WorkCapabilities{Inspect: true, Stop: true},
 	}
 	svc := &fakeWorkService{
 		snap:       viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1},
@@ -367,43 +366,6 @@ func TestWorkStopAndAckStayAsyncAndExact(t *testing.T) {
 	m = updated.(Model)
 	if p.err != "keep" {
 		t.Fatalf("a foreign stop reply mutated the panel: err = %q", p.err)
-	}
-
-	// Acknowledge: exact revision, async, and an error stays visible.
-	ack := panelAction(p, "d-ack")
-	if ack == nil {
-		t.Fatal("no acknowledge action on the detail")
-	}
-	areq := ack().(workRequestMsg)
-	if areq.kind != workReqAck || areq.resultRevision != viewmodel.WorkResultRevision(item) {
-		t.Fatalf("ack = %s/%q, want ack/%q", areq.kind, areq.resultRevision, viewmodel.WorkResultRevision(item))
-	}
-	p.err = ""
-	updated, acmd := m.Update(areq)
-	m = updated.(Model)
-	if acmd == nil {
-		t.Fatal("ack produced no service cmd")
-	}
-	if len(svc.ackCalls) != 0 {
-		t.Fatal("AcknowledgeWork ran inside Update")
-	}
-	amsg := acmd().(workActionMsg)
-	if len(svc.ackCalls) != 1 || svc.ackCalls[0].ResultRevision != areq.resultRevision {
-		t.Fatalf("ack call = %+v, want revision %q", svc.ackCalls, areq.resultRevision)
-	}
-	svc.mu.Lock()
-	svc.ackErr = fmt.Errorf("ack rejected")
-	svc.mu.Unlock()
-	updated, _ = m.Update(amsg)
-	m = updated.(Model)
-	// The first ack reply (err nil) cleared the error; a failing one keeps it
-	// visible.
-	p.err = ""
-	failMsg := workActionMsg{conversationID: areq.conversationID, taskKey: "work:a", requestID: areq.requestID, kind: workReqAck, err: fmt.Errorf("ack rejected")}
-	updated, _ = m.Update(failMsg)
-	m = updated.(Model)
-	if p.err != "ack rejected" {
-		t.Fatalf("a failed acknowledgement is not visible: err = %q", p.err)
 	}
 }
 

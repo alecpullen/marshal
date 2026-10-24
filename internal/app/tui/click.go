@@ -4,6 +4,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/viewmodel"
 )
 
@@ -73,73 +74,6 @@ func (m *Model) regionAt(line int) (clickTarget, bool) {
 	return m.nodeRegions[best].target, true
 }
 
-// nowBarBand returns the half-open screen-row range [top, bottom) the now
-// bar occupies, or false when it isn't rendered. The frame order
-// (view.go) is: scroll hint, breadcrumb, todo strip, transcript viewport,
-// todo band, now bar.
-//
-// This math is coupled to viewString()'s layout: the hint and breadcrumb
-// rows are only emitted when their *Rows() helpers return nonzero. The
-// viewport height is used raw here while the render path guards it with
-// max(height, 1); the viewport is always >= 1, so the two agree.
-func (m *Model) nowBarBand(plan nowBarPlan) (top, bottom int, ok bool) {
-	if len(plan.rows) == 0 || m.dock.FullFrameOpen() {
-		return 0, 0, false
-	}
-	top = m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height()
-	return top, top + len(plan.rows), true
-}
-
-// handleNowBarClick drills into the subagent whose now-bar row was clicked.
-// The bar is often the only handle on a running child: its transcript card
-// can scroll far out of view while the parent keeps working. Clicks on other
-// bar rows are consumed so they do not fall through to the transcript.
-func (m *Model) handleNowBarClick(msg tea.Mouse) (tea.Cmd, bool) {
-	if msg.Button != tea.MouseLeft {
-		return nil, false
-	}
-	if msg.X < 0 || msg.X >= m.leftWidth {
-		return nil, false
-	}
-	plan := m.nowBarPlan()
-	top, bottom, ok := m.nowBarBand(plan)
-	if !ok || msg.Y < top || msg.Y >= bottom {
-		return nil, false
-	}
-	row := msg.Y - top
-	if m.workLaneActive() {
-		// The live-work lane records its click targets in the plan: a card
-		// header toggles that card's expansion, and the overflow row opens the
-		// Work view. A row that hits no target is still consumed, never passed
-		// on to the transcript.
-		for _, h := range plan.workHits {
-			if h.Row != row {
-				continue
-			}
-			switch h.Action {
-			case workActionList:
-				m.openTasks(tasksTabWork)
-			case workActionCollapse:
-				m.workExpanded = ""
-				m.refreshViewport()
-			case workActionExpand:
-				m.workExpanded = h.TaskKey
-				m.refreshViewport()
-			}
-			return nil, true
-		}
-		return nil, true
-	}
-	idx := row - plan.agentRowStart
-	if idx < 0 || idx >= len(plan.agents) {
-		return nil, true
-	}
-	m.drillIntoSubagent(plan.agents[idx])
-	m.invalidateTranscript()
-	m.refreshViewport()
-	return nil, true
-}
-
 // scrollLiveRegionAt routes a wheel event to a bounded live region when the
 // cursor is over one, and reports whether it consumed the event.
 //
@@ -148,6 +82,23 @@ func (m *Model) handleNowBarClick(msg tea.Mouse) (tea.Cmd, bool) {
 // scrolling the transcript underneath it, which reads as the region
 // "jumping" out from under the cursor.
 func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
+	// The streaming reasoning draws in the box now, not in the viewport: a
+	// wheel over its rows scrolls it exactly as a viewport region scrolls.
+	if m.wheelOverBoxReasoning(msg.X, msg.Y) {
+		var delta int
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			delta = 1 // scroll back through the region's history
+		case tea.MouseWheelDown:
+			delta = -1
+		default:
+			return false
+		}
+		m.setRegionOffset(viewmodel.LiveThinkingID, delta)
+		m.invalidateTranscript()
+		m.refreshViewport()
+		return true
+	}
 	line, ok := m.contentLineForClick(msg.X, msg.Y)
 	if !ok {
 		return false
@@ -165,13 +116,7 @@ func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
 	default:
 		return false
 	}
-	if m.regionOffset == nil {
-		m.regionOffset = map[viewmodel.NodeID]int{}
-	}
-	cur := m.regionOffset[target.node]
-	next := min(max(cur+delta, 0), maxRegionOffset)
-	if next != cur {
-		m.regionOffset[target.node] = next
+	if m.setRegionOffset(target.node, delta) {
 		// Belt and braces alongside the transcriptHash change in Step 6:
 		// force the rebuild so the scroll is felt on this very event rather
 		// than on the next tick.
@@ -179,6 +124,39 @@ func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
 		m.refreshViewport()
 	}
 	return true
+}
+
+// setRegionOffset moves a bounded live region's scroll offset by delta, and
+// reports whether it moved.
+func (m *Model) setRegionOffset(id viewmodel.NodeID, delta int) bool {
+	if m.regionOffset == nil {
+		m.regionOffset = map[viewmodel.NodeID]int{}
+	}
+	cur := m.regionOffset[id]
+	next := min(max(cur+delta, 0), maxRegionOffset)
+	if next == cur {
+		return false
+	}
+	m.regionOffset[id] = next
+	return true
+}
+
+// wheelOverBoxReasoning reports whether the pointer sits on a box row that
+// scrolls the streaming reasoning.
+func (m *Model) wheelOverBoxReasoning(x, y int) bool {
+	if m.dock.FullFrameOpen() || x < 0 || x >= m.leftWidth {
+		return false
+	}
+	layout := m.boxLayout()
+	if len(layout.Rows) == 0 {
+		return false
+	}
+	top := m.boxTop()
+	if y < top || y >= top+len(layout.Rows) {
+		return false
+	}
+	t := layout.Rows[y-top].Target
+	return t.Kind == livebox.TargetLive && t.Node == viewmodel.LiveThinkingID
 }
 
 // handleTranscriptClick toggles the expand state of the transcript block

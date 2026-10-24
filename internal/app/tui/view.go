@@ -13,8 +13,8 @@ import (
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/commands"
 	"marshal/internal/viewmodel"
 )
 
@@ -77,16 +77,12 @@ func (m *Model) viewString() string {
 		return m.tooSmallView()
 	}
 	m.reconcileWorkExpansion()
-	plan := planNowBar(m.nowBarInput())
-	m.nowBarMemo = &plan
-	m.recordWorkPlan(plan)
+	layout := livebox.Plan(m.boxInput())
+	m.boxMemo = &layout
 	// The sheet's data func must see this frame's model, not the copy it was
 	// opened from, or it would render stale values.
 	if m.sheetPanel != nil {
 		m.sheetPanel.SetData(m.sheetDataFor)
-	}
-	if m.tasksPanel != nil {
-		m.tasksPanel.SetSource(func() commands.Doc { return tasksDoc(m.viewedTodos(), m.taskStats) })
 	}
 	dockView := m.dock.View(m.leftWidth, m.height)
 	m.updateViewportHeight()
@@ -101,11 +97,11 @@ func (m *Model) viewString() string {
 		left = padRows(dockView, m.height-statusLineRows)
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
-		// The now bar carries every live-progress surface in one place just
-		// above the input: the band's progress and checklist rows, the turn
-		// spinner, and the running agents, browser, jobs and watches.
-		if bar := renderNowBar(plan, m.leftWidth); bar != "" {
-			rows = append(rows, bar)
+		// The box carries the live part of the transcript and the running
+		// work just above the input: the live beat, the running section and
+		// the plan, planned once and painted from that plan.
+		if box := livebox.Render(layout, m.leftWidth); box != "" {
+			rows = append(rows, box)
 		}
 		if dockView != "" {
 			rows = append(rows, dockView)

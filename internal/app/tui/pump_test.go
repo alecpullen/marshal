@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
@@ -372,7 +373,7 @@ func TestWorkUpdateAcceptsNewRevisionWhilePromptOpen(t *testing.T) {
 	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", RuntimeEpoch: "epoch", Revision: 1}}
 	m := newWorkModel(t, svc)
 	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{workTask("work:a", "Alpha")}}
-	m = ctrlT(m)
+	m = toggleTasks(m)
 	if !m.tasksOpen() {
 		t.Fatal("the Tasks panel did not open")
 	}
@@ -400,5 +401,64 @@ func TestWorkUpdateAcceptsNewRevisionWhilePromptOpen(t *testing.T) {
 	}
 	if m.state.PendingQuestion() == nil {
 		t.Fatal("the pending prompt was cleared by a background work update")
+	}
+}
+
+// workProgressItem is a running command carrying one progress observation.
+func workProgressItem(key string, observed time.Time) viewmodel.WorkItem {
+	it := workRunningCard(key, time.Unix(10_000, 0))
+	total := 2.0
+	it.Progress = &progress.Snapshot{
+		Frame: progress.Frame{
+			Version:  1,
+			Sequence: 1,
+			Metrics:  []progress.Metric{{ID: "bytes", Unit: "bytes", Current: 1, Total: &total}},
+		},
+		ObservedAt: observed,
+	}
+	return it
+}
+
+// A rate and an ETA need two observations: the snapshot being applied keeps the
+// one it replaces.
+func TestWorkProgressKeepsThePreviousObservation(t *testing.T) {
+	m := newTestModel(t)
+	first := time.Unix(10_000, 0)
+	m.workSnapshot = workSnapOf(workProgressItem("k", first))
+	m.notePreviousProgress(workSnapOf(workProgressItem("k", first.Add(2*time.Second))))
+	got := m.workPrevious["k"]
+	if got == nil || !got.ObservedAt.Equal(first) {
+		t.Fatalf("previous observation = %v, want %v", got, first)
+	}
+}
+
+// A settled item has no rate to show, so its entry goes with it.
+func TestWorkProgressPrunesSettledItems(t *testing.T) {
+	m := newTestModel(t)
+	first := time.Unix(10_000, 0)
+	m.workSnapshot = workSnapOf(workProgressItem("k", first))
+	m.notePreviousProgress(workSnapOf(workProgressItem("k", first.Add(2*time.Second))))
+	if m.workPrevious["k"] == nil {
+		t.Fatal("setup: no previous observation recorded")
+	}
+	m.notePreviousProgress(workSnapOf())
+	if _, ok := m.workPrevious["k"]; ok {
+		t.Fatal("a settled item kept its previous observation")
+	}
+}
+
+// A repeated observation is not a new measurement, so the earlier previous
+// stays: measuring against itself would invent a rate.
+func TestWorkProgressIgnoresARepeatedObservation(t *testing.T) {
+	m := newTestModel(t)
+	first := time.Unix(10_000, 0)
+	second := first.Add(2 * time.Second)
+	m.workSnapshot = workSnapOf(workProgressItem("k", first))
+	m.notePreviousProgress(workSnapOf(workProgressItem("k", second)))
+	m.workSnapshot = workSnapOf(workProgressItem("k", second))
+	m.notePreviousProgress(workSnapOf(workProgressItem("k", second)))
+	got := m.workPrevious["k"]
+	if got == nil || !got.ObservedAt.Equal(first) {
+		t.Fatalf("a repeated observation replaced the earlier previous: %v", got)
 	}
 }

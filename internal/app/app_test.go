@@ -2344,8 +2344,17 @@ func TestRunWiresSharedWorkService(t *testing.T) {
 			m := model.(tui.Model)
 			updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 			m = updated.(tui.Model)
-			updated, _ = m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+			// /work opens the Work list; Ctrl+T cycles the live box's plan
+			// layout and no longer opens a panel.
+			updated, _ = m.Update(tea.PasteMsg{Content: "/work"})
 			m = updated.(tui.Model)
+			updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			// A slash command dispatches through *Model, not the value.
+			if p, ok := updated.(*tui.Model); ok {
+				m = *p
+			} else {
+				m = updated.(tui.Model)
+			}
 			view = m.View().Content
 			return ProgramResult{}
 		}),

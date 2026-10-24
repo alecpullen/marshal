@@ -179,3 +179,39 @@ func TestInterfaceFrameCycleViaArrows(t *testing.T) {
 	}
 	_ = strings.Join(opts, ",")
 }
+
+func TestInterfaceFrameHasPlanLayoutEnum(t *testing.T) {
+	s := newState(config.Default())
+	ps := newPaneStack(interfaceFrame(s))
+	ps.SetSize(60, 20)
+
+	found := false
+	for _, row := range ps.Top().List.Rows() {
+		if row.Title == "Plan layout" {
+			found = true
+			if row.Kind != kindEnum {
+				t.Fatalf("Plan layout row kind = %d, want kindEnum (%d)", row.Kind, kindEnum)
+			}
+			opts := row.Options()
+			expected := []string{"stacked", "split", "folded"}
+			if len(opts) != len(expected) {
+				t.Fatalf("Plan layout enum has %d options, want %d", len(opts), len(expected))
+			}
+			for i, exp := range expected {
+				if opts[i] != exp {
+					t.Errorf("Plan layout option[%d] = %q, want %q", i, opts[i], exp)
+				}
+			}
+			if row.GetStr() != "stacked" {
+				t.Errorf("Plan layout getStr = %q, want the stacked default", row.GetStr())
+			}
+			if row.TomlPath != "tui.live_box.layout" {
+				t.Errorf("Plan layout TomlPath = %q, want tui.live_box.layout", row.TomlPath)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatal("interfaceFrame should have a 'Plan layout' row")
+	}
+}

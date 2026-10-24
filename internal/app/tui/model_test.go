@@ -30,6 +30,7 @@ import (
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/postmortempanel"
@@ -911,14 +912,21 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = updated.(Model)
 	m.busy = true
+	m.invalidateTranscript()
 	m.refreshViewport()
 	wideView := stripANSI(m.View().Content)
 
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
+	m.invalidateTranscript()
+	// Drop the region height high-water mark: the assertion below compares the
+	// live part against a first render at the narrow width.
+	m.regionRows = nil
+	m.refreshViewport()
 	narrowView := stripANSI(m.View().Content)
 	ip := state.InProgress()
-	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width()) + "\n" + renderThinkingBox(thinking, m.spinnerFrame, m.now().Sub(ip.StartedAt), regionView{}, m.viewport.Width())
+	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width())
+	expectedLive := renderThinkingBox(thinking, m.spinnerFrame, m.now().Sub(ip.StartedAt), regionView{}, livebox.LeftWidth(m.leftWidth, m.liveBoxMode))
 
 	// viewport.View() pads every line to the viewport's fixed width/height
 	// with trailing spaces and blank lines; strip that padding before
@@ -931,8 +939,13 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 		return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 	}
 
+	// History is the user's message alone: the streaming reasoning is the live
+	// part, drawn in the box at the live width.
 	if got, want := trimPadding(m.viewport.View()), trimPadding(expectedViewport); got != want {
 		t.Fatalf("viewport content did not rebuild for resized width\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+	if got, want := trimPadding(strings.Join(m.live.Full, "\n")), trimPadding(expectedLive); got != want {
+		t.Fatalf("the live part did not rebuild for the live width\nwant:\n%s\n\ngot:\n%s", want, got)
 	}
 
 	if wideView == narrowView {
@@ -5330,12 +5343,14 @@ func TestApplyNewConfigInvalidatesSetRegistry(t *testing.T) {
 func TestTUIRendersSDDPanelWhenActive(t *testing.T) {
 	m := newTestModel(t)
 	m.state.SetSDDProgress(session.SDDProgress{Active: true, PlanName: "p", TotalTasks: 1, CurrentTask: 1, Phase: "implementing"})
+	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
+	m.refreshViewport()
 	view := stripANSI(m.View().Content)
 	if !strings.Contains(view, "task 1/1") || !strings.Contains(view, "implementing") {
-		t.Errorf("view missing run panel: %q", view)
+		t.Errorf("view missing the run summary in the box: %q", view)
 	}
 	if strings.Contains(view, "plan · p") {
-		t.Errorf("old SDD panel still rendered alongside the run panel: %q", view)
+		t.Errorf("old SDD panel still rendered alongside the box: %q", view)
 	}
 }
 
@@ -5692,7 +5707,7 @@ func TestConnectDoneClearsEnvRefWhenSavingLiteralKey(t *testing.T) {
 	}
 }
 
-func TestNowBarFollowsDrilledSubagentTodos(t *testing.T) {
+func TestBoxFollowsDrilledSubagentTodos(t *testing.T) {
 	m := newTestModel(t)
 	// Both lists belong to a turn that is working them: the band only shows
 	// progress a running turn is actually driving.
@@ -5717,20 +5732,20 @@ func TestNowBarFollowsDrilledSubagentTodos(t *testing.T) {
 	m.viewStack = append(m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: childState})
 	m.invalidateTranscript()
 	m.refreshViewport()
-	body := stripANSI(nowBarOut(m))
+	body := stripANSI(boxOut(m))
 	if !strings.Contains(body, "child task") {
-		t.Fatalf("drilled bar must show the child's todos:\n%s", body)
+		t.Fatalf("drilled box must show the child's todos:\n%s", body)
 	}
 	if strings.Contains(body, "parent task") {
-		t.Fatalf("drilled bar must not show the parent's todos:\n%s", body)
+		t.Fatalf("drilled box must not show the parent's todos:\n%s", body)
 	}
 
 	m.viewStack = nil
 	m.invalidateTranscript()
 	m.refreshViewport()
-	body = stripANSI(nowBarOut(m))
+	body = stripANSI(boxOut(m))
 	if !strings.Contains(body, "parent task") {
-		t.Fatalf("undrilled bar must show the parent's todos:\n%s", body)
+		t.Fatalf("undrilled box must show the parent's todos:\n%s", body)
 	}
 }
 
@@ -7072,37 +7087,14 @@ func TestReplaceTriggerTokenHandlesConsecutiveAt(t *testing.T) {
 	}
 }
 
-func ctrlT(m Model) Model {
-	mm, _ := m.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
-	return mm.(Model)
-}
-
-func TestCtrlTOpensTasksPanelListingEveryTodo(t *testing.T) {
-	m := newTestModel(t)
-	if err := m.state.SetTodos([]native.TodoItem{
-		{Content: "scaffold parser", Status: native.TodoCompleted},
-		{Content: "implement parser", Status: native.TodoInProgress},
-		{Content: "add tests", Status: native.TodoPending},
-	}); err != nil {
-		t.Fatalf("SetTodos: %v", err)
+func toggleTasks(m Model) Model {
+	if m.tasksOpen() {
+		m.dock.CloseNow()
+		m.tasksPanel = nil
+		return m
 	}
-	m.refreshViewport()
-
-	m = ctrlT(m)
-	if !m.dock.IsOpen() {
-		t.Fatal("Ctrl+T with todos must open a docked panel")
-	}
-	view := stripANSI(m.dock.View(m.leftWidth, m.height))
-	for _, want := range []string{"Tasks 1/3", "scaffold parser", "implement parser", "add tests"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("Tasks panel missing %q:\n%s", want, view)
-		}
-	}
-
-	m = ctrlT(m)
-	if m.dock.IsOpen() {
-		t.Fatal("a second Ctrl+T must close the Tasks panel")
-	}
+	m.openWork()
+	return m
 }
 
 func TestEscClosesTasksPanel(t *testing.T) {
@@ -7110,7 +7102,8 @@ func TestEscClosesTasksPanel(t *testing.T) {
 	if err := m.state.SetTodos([]native.TodoItem{{Content: "a", Status: native.TodoPending}}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
-	m = ctrlT(m)
+	updated, _ := m.dispatchCommand("/work")
+	m = asModel(t, updated)
 	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = mm.(Model)
 	if cmd != nil {
@@ -7122,54 +7115,31 @@ func TestEscClosesTasksPanel(t *testing.T) {
 	}
 }
 
-func TestCtrlTWithoutTodosOnlyAddsNotice(t *testing.T) {
-	m := newTestModel(t)
-	m = ctrlT(m)
-	if m.dock.IsOpen() {
-		t.Fatal("Ctrl+T with no todos must open nothing")
-	}
-	var found bool
-	for _, msg := range m.state.Messages() {
-		if strings.Contains(msg.Content, "No task list in this session.") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("expected the no-task-list notice")
-	}
-}
-
-func TestAllDoneTodosLeaveTheNowBar(t *testing.T) {
+// TestFinishedPlanIsOneIdleRow: once every item is done, the box is the one
+// plain row that says so — the item rows and the framed box are gone.
+func TestFinishedPlanIsOneIdleRow(t *testing.T) {
 	m := newTestModel(t)
 	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	if err := m.state.SetTodos([]native.TodoItem{
-		{ID: "t1", Content: "scaffold parser", Status: native.TodoInProgress},
-		{ID: "t2", Content: "wire the parser", Status: native.TodoPending},
-	}); err != nil {
-		t.Fatalf("SetTodos: %v", err)
-	}
-	// The beat binds to the in-progress todo, so this turn is working the
-	// list and the band shows it.
-	stepUnder(&m, "Starting the parser. Carefully.", "a")
-	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
-	m.invalidateTranscript()
-	m.refreshViewport()
-	if got := stripANSI(nowBarOut(m)); !strings.Contains(got, "scaffold parser") {
-		t.Fatalf("a live todo list must occupy the bar:\n%s", got)
-	}
-
-	// Finish every item: a fully completed list is not progress, so it must
-	// stop holding band rows even though the turn is still bound to it.
 	if err := m.state.SetTodos([]native.TodoItem{
 		{ID: "t1", Content: "scaffold parser", Status: native.TodoCompleted},
 		{ID: "t2", Content: "wire the parser", Status: native.TodoCompleted},
 	}); err != nil {
 		t.Fatalf("SetTodos: %v", err)
 	}
+	stepUnder(&m, "Starting the parser. Carefully.", "a")
+	m.busy = false
 	m.invalidateTranscript()
 	m.refreshViewport()
-	if got := stripANSI(nowBarOut(m)); strings.Contains(got, "scaffold parser") || strings.Contains(got, "done") {
-		t.Fatalf("a finished todo list must not occupy the bar:\n%s", got)
+
+	if got := m.boxRows(); got != 1 {
+		t.Fatalf("boxRows() = %d, want the idle row alone", got)
+	}
+	got := stripANSI(boxOut(m))
+	if !strings.Contains(got, "Plan 2/2 done") {
+		t.Fatalf("idle box = %q, want the finished plan", got)
+	}
+	if strings.Contains(got, "scaffold parser") {
+		t.Fatalf("a finished plan draws no item rows: %q", got)
 	}
 }
 
@@ -8691,7 +8661,7 @@ func TestTurnSpinnerDropsStreamingThinkingLabels(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = time.Now()
 	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "very long streaming thought line"})
-	if out := nowBarOut(m); strings.Contains(out, "very long streaming") {
+	if out := boxOut(m); strings.Contains(out, "very long streaming") {
 		t.Fatal("thinking labels must not appear in the pinned spinner row")
 	}
 }
@@ -8702,7 +8672,7 @@ func TestTurnSpinnerKeepsStableActivityLabels(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = time.Now()
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell: go test"})
-	if out := nowBarOut(m); !strings.Contains(out, "shell: go test") {
+	if out := boxOut(m); !strings.Contains(out, "shell: go test") {
 		t.Fatalf("tool labels should render in the spinner row, got %q", out)
 	}
 }
@@ -8733,7 +8703,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	// First tool label is adopted immediately.
 	clock = start
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: config.go"})
-	out := nowBarOut(m)
+	out := boxOut(m)
 	if !strings.Contains(out, "file.read: config.go") {
 		t.Fatalf("first label should be adopted immediately, got %q", out)
 	}
@@ -8742,7 +8712,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	clock = start.Add(200 * time.Millisecond)
 	m.now = func() time.Time { return clock }
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test"})
-	out = nowBarOut(m)
+	out = boxOut(m)
 	if !strings.Contains(out, "file.read: config.go") {
 		t.Fatalf("old label should persist within dwell window, got %q", out)
 	}
@@ -8753,7 +8723,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	// 600ms after the first label was pinned, the dwell has elapsed.
 	clock = start.Add(600 * time.Millisecond)
 	m.now = func() time.Time { return clock }
-	out = nowBarOut(m)
+	out = boxOut(m)
 	if !strings.Contains(out, "shell.run: go test") {
 		t.Fatalf("new label should appear after dwell expires, got %q", out)
 	}
@@ -8778,13 +8748,13 @@ func TestTurnSpinnerLabelDwellResetsOnKindChange(t *testing.T) {
 	m.turnStartedAt = start
 
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: a.go"})
-	nowBarOut(m)
+	boxOut(m)
 
 	// 100ms later, kind changes to Approval — should adopt immediately.
 	clock = start.Add(100 * time.Millisecond)
 	m.now = func() time.Time { return clock }
 	m.state.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: "approve: shell.run"})
-	out := nowBarOut(m)
+	out := boxOut(m)
 	if !strings.Contains(out, "approve: shell.run") {
 		t.Fatalf("kind change should adopt new label immediately, got %q", out)
 	}

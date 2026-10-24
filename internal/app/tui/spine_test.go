@@ -247,7 +247,9 @@ func TestPlanRow(t *testing.T) {
 }
 
 // Streaming reasoning is drawn below every row of the newest turn, so it never
-// lands between a beat's head and its calls.
+// lands between a beat's head and its calls. Both the beat and the reasoning are
+// the live part now, so the assertion reads the live rows rather than the box's
+// outline: the box's own section borders use ├.
 func TestLiveThinkingDrawsBelowTheSpine(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
@@ -264,14 +266,15 @@ func TestLiveThinkingDrawsBelowTheSpine(t *testing.T) {
 	m.state.AppendThinking("weighing the next step\n")
 	m.refreshViewport()
 
-	content := stripANSI(m.viewport.GetContent())
-	lines := strings.Split(content, "\n")
+	lines := m.live.Full
+	content := stripANSI(strings.Join(lines, "\n"))
 	call, think := -1, -1
 	for i, l := range lines {
-		if call < 0 && strings.Contains(l, "go test") {
+		plain := stripANSI(l)
+		if call < 0 && strings.Contains(plain, "go test") {
 			call = i
 		}
-		if think < 0 && strings.Contains(l, "thinking") {
+		if think < 0 && strings.Contains(plain, "thinking") {
 			think = i
 		}
 	}
@@ -282,7 +285,8 @@ func TestLiveThinkingDrawsBelowTheSpine(t *testing.T) {
 		t.Fatalf("the running call must come before the reasoning:\n%s", content)
 	}
 	for _, l := range lines[think+1:] {
-		if strings.Contains(l, "├") || strings.Contains(l, "└") {
+		plain := stripANSI(l)
+		if strings.Contains(plain, "├") || strings.Contains(plain, "└") {
 			t.Fatalf("no spine row may follow the reasoning:\n%s", content)
 		}
 	}
@@ -355,6 +359,44 @@ func TestSpineRowsCopyFromTheSubjectColumn(t *testing.T) {
 		if sp := spanOf(selRow{text: text}, 80); sp.start != subject || sp.bare {
 			t.Errorf("%q copies from column %d (bare=%v), want %d", text, sp.start, sp.bare, subject)
 		}
+	}
+}
+
+// A running call whose work already has a row in the box points at that row
+// instead of spinning and repeating the work's own output.
+func TestRunningCallPointsAtItsBoxRow(t *testing.T) {
+	now := time.Unix(1000, 0)
+	item := viewmodel.WorkItem{
+		TaskKey: "task-1", Kind: "agent", SourceID: "3", DisplayID: "3", State: "running",
+		Origin: viewmodel.WorkOrigin{ToolCallID: "g"},
+	}
+	c := &stepRenderCtx{now: now, toolSpinner: "⠋", pointer: workPointer([]viewmodel.WorkItem{item})}
+	call := session.ActiveToolCall{Name: "agent.run", Args: `{"description":"review the config change"}`,
+		ToolCallID: "g", StartedAt: now, Output: "reviewing the config change"}
+	lines := plainLines(renderActiveCallRow(call, c, false, 80))
+	if len(lines) != 1 || !strings.HasSuffix(lines[0], "→ ⧉ #3") {
+		t.Fatalf("a pointed call = %q", lines)
+	}
+	if body := strings.Join(lines, "\n"); strings.Contains(body, "⠋") || strings.Contains(body, "reviewing the config change") {
+		t.Fatalf("a pointed call keeps its spinner or its output: %q", lines)
+	}
+}
+
+// A call whose work has no box row keeps its spinner: only a live item that
+// names this call as its origin points a run at the box.
+func TestRunningCallWithoutWorkKeepsItsSpinner(t *testing.T) {
+	now := time.Unix(1000, 0)
+	items := []viewmodel.WorkItem{
+		{TaskKey: "task-1", Kind: "agent", SourceID: "3", DisplayID: "3", State: "running",
+			Origin: viewmodel.WorkOrigin{ToolCallID: "other"}},
+		{TaskKey: "task-2", Kind: "agent", SourceID: "4", DisplayID: "4", State: "completed",
+			Origin: viewmodel.WorkOrigin{ToolCallID: "r"}},
+	}
+	c := &stepRenderCtx{now: now, toolSpinner: "⠋", pointer: workPointer(items)}
+	call := session.ActiveToolCall{Name: "file.read", Path: "a.go", ToolCallID: "r", StartedAt: now.Add(-2 * time.Second)}
+	line := plainLines(renderActiveCallRow(call, c, false, 80))[0]
+	if !strings.HasSuffix(line, "⠋ 2s") || strings.Contains(line, "→") {
+		t.Fatalf("a call without work = %q", line)
 	}
 }
 

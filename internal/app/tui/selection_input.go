@@ -115,7 +115,7 @@ func (m *Model) handleTranscriptMouse(msg tea.Msg) (tea.Cmd, bool) {
 		if cmd, handled := m.handleTranscriptClick(press); handled {
 			return cmd, true
 		}
-		return m.handleNowBarClick(press)
+		return m.handleBoxClick(press)
 	}
 	return nil, false
 }

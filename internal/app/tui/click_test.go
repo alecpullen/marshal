@@ -208,71 +208,22 @@ func TestMouseClickExpandsFailedToolCall(t *testing.T) {
 	}
 }
 
-func TestNowBarClickDrillsIntoAgent(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(100, 40)
-	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	m.state.RegisterSubagent("reviewer", child)
-	m.refreshViewport()
-
-	plan := m.nowBarPlan()
-	top, _, ok := m.nowBarBand(plan)
-	if !ok {
-		t.Fatal("expected a now bar band")
-	}
-	if _, handled := m.handleNowBarClick(tea.Mouse{Button: tea.MouseLeft, X: 1, Y: top + plan.agentRowStart}); !handled {
-		t.Fatal("a click on an agent row must be handled")
-	}
-	if len(m.viewStack) != 1 {
-		t.Fatalf("expected to drill into the subagent, viewStack=%d", len(m.viewStack))
-	}
-}
-
-// Rows above the first agent (the progress/turn row) are not agents;
-// clicking them is consumed but must not drill.
-func TestNowBarClickOnProgressRowDoesNothing(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(100, 40)
-	m.busy = true
-	m.turnStartedAt = m.now().Add(-time.Second)
-	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	m.state.RegisterSubagent("reviewer", child)
-	m.refreshViewport()
-
-	plan := m.nowBarPlan()
-	if plan.agentRowStart != 1 {
-		t.Fatalf("agentRowStart = %d, want 1 under a turn row", plan.agentRowStart)
-	}
-	top, _, _ := m.nowBarBand(plan)
-	if _, handled := m.handleNowBarClick(tea.Mouse{Button: tea.MouseLeft, X: 1, Y: top}); !handled {
-		t.Fatal("a click inside the bar must be consumed")
-	}
-	if len(m.viewStack) != 0 {
-		t.Fatal("clicking the turn row must not drill in")
-	}
-}
-
-// The band sits directly below the transcript viewport.
-func TestNowBarBandSitsBelowViewport(t *testing.T) {
+func TestBoxSitsBelowTheViewport(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
 	m.jobs = []native.JobInfo{runningJob(1, "go test ./...", time.Second)}
 	m.refreshViewport()
-	top, _, ok := m.nowBarBand(m.nowBarPlan())
-	if !ok {
-		t.Fatal("expected a band")
-	}
-	if want := m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height(); top != want {
-		t.Fatalf("band top = %d, want %d", top, want)
+	if got := m.boxTop(); got != m.scrollHintRows()+m.breadcrumbRows()+m.viewport.Height() {
+		t.Fatalf("box top = %d, want %d", got, m.scrollHintRows()+m.breadcrumbRows()+m.viewport.Height())
 	}
 }
 
-func TestNoNowBarNoBand(t *testing.T) {
+func TestNoBoxWhenIdle(t *testing.T) {
 	m := newTestModel(t)
-	if _, _, ok := m.nowBarBand(m.nowBarPlan()); ok {
-		t.Fatal("nothing live means no band")
+	if got := m.boxRows(); got != 0 {
+		t.Fatalf("boxRows() = %d, want no box when nothing is live", got)
 	}
 }
 

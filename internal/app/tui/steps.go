@@ -41,6 +41,9 @@ type stepRenderCtx struct {
 	region       func(viewmodel.NodeID) regionView
 	noteRows     func(id viewmodel.NodeID, rows int)
 	callers      func(viewmodel.NodeID) []string
+	// pointer names the box row a running call's work landed in, so the call
+	// points at it instead of spinning and repeating its own output.
+	pointer func(toolCallID string) string
 
 	spinner       string // live step header glyph
 	toolSpinner   string // live tool row glyph
@@ -76,6 +79,32 @@ func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
 		return nil
 	}
 	return c.callers(id)
+}
+
+// workPointer maps a tool call to the box row its work landed in: the kind
+// glyph and id of the first active item whose origin is that call. A call whose
+// work has no row yet reads "", so it keeps its spinner and its output.
+func workPointer(items []viewmodel.WorkItem) func(toolCallID string) string {
+	return func(toolCallID string) string {
+		if toolCallID == "" {
+			return ""
+		}
+		for _, it := range items {
+			if !viewmodel.WorkActive(it) || it.Origin.ToolCallID != toolCallID {
+				continue
+			}
+			switch it.Kind {
+			case "agent":
+				return glyph.Agent + " #" + it.SourceID
+			case "command":
+				return glyph.Job + " " + it.DisplayID
+			case "watch":
+				return glyph.Watch + " " + it.DisplayID
+			}
+			return ""
+		}
+		return ""
+	}
 }
 
 // renderStep renders one beat: a head (state glyph, narration, right-aligned
@@ -662,33 +691,4 @@ func subagentHeadline(child *session.State) string {
 	}
 	head, _ := firstSentence(line)
 	return stripEmphasis(head)
-}
-
-// liveStepSummary describes the beat now running — its narrated headline, or
-// the narration it continues — and the category glyph of its running tool,
-// for the now bar's live-mirror row.
-func (m Model) liveStepSummary() (headline, toolGlyph string) {
-	state, _ := m.transcriptSource()
-	live, ok := state.OpenStep()
-	if !ok {
-		return "", ""
-	}
-	if h, _ := firstSentence(state.StepNarration(live.ID)); h != "" {
-		headline = stripEmphasis(h)
-	}
-	for _, atc := range state.ActiveToolCalls() {
-		if atc.StepID == live.ID {
-			toolGlyph = toolCategoryGlyph(atc.Name)
-		}
-	}
-	if headline == "" {
-		// A narrationless response continues the beat its actor last
-		// narrated in this turn; mirror that narration rather than invent a
-		// title. A turn that has not narrated yet gets no headline: the
-		// previous turn's narration describes finished work.
-		if h, _ := firstSentence(state.ContinuedNarration(live.ID)); h != "" {
-			headline = stripEmphasis(h)
-		}
-	}
-	return headline, toolGlyph
 }

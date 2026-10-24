@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
@@ -171,44 +171,6 @@ func TestPreTaskSessionsRenderWithoutHeadersOrErrors(t *testing.T) {
 	}
 }
 
-func TestTasksDocShowsStepCountsAndWorkTime(t *testing.T) {
-	todos := []db.TodoItem{
-		{ID: "t1", Content: "Done one", Status: "completed"},
-		{ID: "t2", Content: "Live one", Status: "in_progress"},
-		{ID: "t3", Content: "Later", Status: "pending"},
-	}
-	doc := tasksDoc(todos, map[string]viewmodel.TaskStat{"t1": {Steps: 2, Work: 3 * time.Minute}, "t2": {Steps: 1, Work: 90 * time.Second}})
-	if got := doc.Rows[0].Detail; got != "2 steps · 3m00s" {
-		t.Errorf("completed row detail = %q", got)
-	}
-	if got := doc.Rows[1].Detail; got != "1 step · 1m30s" {
-		t.Errorf("in-progress row detail = %q", got)
-	}
-	if got := doc.Rows[2].Detail; got != "" {
-		t.Errorf("pending row detail = %q", got)
-	}
-}
-
-func TestNowBarClockIsTheInProgressTasksElapsedTime(t *testing.T) {
-	now := time.Now()
-	in := nowBarInput{
-		Width: 80, Busy: true, Now: now, TurnStartedAt: now.Add(-10 * time.Minute),
-		Todos: []db.TodoItem{
-			{ID: "t1", Content: "Working", Status: "in_progress", StartedAt: now.Add(-42 * time.Second)},
-			{ID: "t2", Content: "Next", Status: "pending"},
-		},
-		Band: viewmodel.BandInfo{Todos: true, Done: 0, Total: 2, Active: "Working", Next: []string{"Next"}},
-	}
-	_, _, elapsed := nowBarHead(in)
-	if elapsed != "42s" {
-		t.Fatalf("elapsed = %q, want the task's 42s rather than the turn's 10m", elapsed)
-	}
-	in.Todos[0].StartedAt = time.Time{}
-	if _, _, elapsed = nowBarHead(in); !strings.Contains(elapsed, "10m") {
-		t.Fatalf("with no task start the turn clock is used, got %q", elapsed)
-	}
-}
-
 func TestFailedRowShowsItsLastOutputLinesCollapsed(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
@@ -332,17 +294,6 @@ func TestExpandMatrix(t *testing.T) {
 	}
 }
 
-func TestNowBarIgnoresATaskStartedBeforeThisTurn(t *testing.T) {
-	now := time.Now()
-	in := nowBarInput{
-		Width: 80, Busy: true, Now: now, TurnStartedAt: now.Add(-5 * time.Second),
-		Todos: []db.TodoItem{{ID: "t1", Content: "Carried over", Status: "in_progress", StartedAt: now.Add(-5 * time.Hour)}},
-	}
-	if _, _, elapsed := nowBarHead(in); strings.Contains(elapsed, "h") || strings.Contains(elapsed, "300m") {
-		t.Fatalf("a carried-over task must not put hours on a new turn's clock, got %q", elapsed)
-	}
-}
-
 // A task carried over from an earlier turn must not show the idle hours since
 // then: its clock is the time its steps ran.
 func TestTaskClockIgnoresIdleTimeBetweenTurns(t *testing.T) {
@@ -384,37 +335,44 @@ func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
 		return -1
 	}
 	// The first beat of each todo carries its tag, in list order, on the
-	// head of the work itself.
-	first, second := at("Reading it."), at("Writing it.")
-	if !strings.HasSuffix(strings.TrimRight(lines[first], " "), "▸ 1/4") || !strings.HasSuffix(strings.TrimRight(lines[second], " "), "▸ 2/4") || first > second {
-		t.Fatalf("each todo's first beat carries its tag, in order:\n%s", text)
+	// head of the work itself. The newest beat is the live part, so it draws
+	// in the box; the older ones are history.
+	first := at("Reading it.")
+	if !strings.HasSuffix(strings.TrimRight(lines[first], " "), "▸ 1/4") {
+		t.Fatalf("each todo's first beat carries its tag:\n%s", text)
 	}
-	if strings.Contains(text, "3/4") || strings.Contains(text, "4/4") || strings.Contains(text, "──") {
-		t.Errorf("waiting todos live in the band, and history has no dividers:\n%s", text)
+	box := stripANSI(boxOut(m))
+	if !strings.Contains(box, "Writing it.") {
+		t.Fatalf("the live beat renders in the box:\n%s", box)
+	}
+	if strings.Contains(text, "Writing it.") || strings.Contains(text, "3/4") || strings.Contains(text, "4/4") || strings.Contains(text, "──") {
+		t.Errorf("waiting todos live in the plan section, and history has no dividers:\n%s", text)
 	}
 
-	// The band carries the progress: the head row holds the count and the
-	// active item, the checklist what comes next — on this tall frame, one
-	// row per waiting todo. The numbered per-todo rows are gone — the
-	// transcript's tags cover those.
-	if m.height < nowBarTallHeight {
-		t.Fatalf("frame is %d rows; the test expects a tall one", m.height)
+	// The box's plan section carries the progress: the header counts the
+	// list, and the item rows name the todo in progress.
+	if !strings.Contains(box, "1/4") {
+		t.Errorf("plan header should count progress:\n%s", box)
 	}
-	plain := stripANSI(nowBarOut(m))
-	if !strings.Contains(plain, "1/4") || !strings.Contains(plain, "Write") {
-		t.Errorf("band head should count progress and name the active todo:\n%s", plain)
+	if !strings.Contains(box, "Write") {
+		t.Errorf("plan should name the active todo:\n%s", box)
 	}
-	if !strings.Contains(plain, glyph.Ambient+" Test") || !strings.Contains(plain, glyph.Ambient+" Ship") {
-		t.Errorf("band checklist should list the waiting todos:\n%s", plain)
-	}
-	for _, gone := range []string{"✓ 1/4", "▸ 2/4", "· 3/4"} {
-		if strings.Contains(plain, gone) {
-			t.Errorf("the band must not re-render per-todo rows (%q):\n%s", gone, plain)
+	for _, r := range m.boxLayout().Rows {
+		if r.Target.Kind != livebox.TargetPlan {
+			continue
+		}
+		for _, gone := range []string{"✓ 1/4", "▸ 2/4", "· 3/4"} {
+			if strings.Contains(stripANSI(r.Text), gone) {
+				t.Errorf("the plan must not re-render per-todo rows (%q):\n%s", gone, stripANSI(r.Text))
+			}
 		}
 	}
 }
 
-func TestBandNotShownWhenTheTurnNeverTouchedTheList(t *testing.T) {
+// TestLeftoverPlanIsOneIdleRow: a list the turn never touched is still the
+// plan, so an idle session shows it as the one plain idle row rather than
+// hiding it.
+func TestLeftoverPlanIsOneIdleRow(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "A", Status: "pending"}, {ID: "t2", Content: "B", Status: "pending"}})
@@ -425,15 +383,16 @@ func TestBandNotShownWhenTheTurnNeverTouchedTheList(t *testing.T) {
 	if m.band.Todos {
 		t.Fatalf("leftover todos must not put progress in the band on an unrelated turn: %+v", m.band)
 	}
-	if plain := stripANSI(nowBarOut(m)); strings.Contains(plain, "done") || strings.Contains(plain, "next:") {
-		t.Fatalf("the band must not show todo progress for an unrelated turn:\n%s", plain)
+	if got := stripANSI(boxOut(m)); got != "▸ Plan 0/2 · A" {
+		t.Fatalf("box = %q, want the single idle row naming the plan", got)
 	}
 }
 
 // TestStripWindowCentersOnTheActiveTodo pinned the todo strip's row window.
-// The strip is gone: the band shows one progress line and one checklist line
-// (nowbar_test.go), and the full list opens in the Ctrl+T Tasks panel, which
-// numbers every todo against the whole list (TestTasksDocShowsStepCounts).
+// The strip is gone: the live box's plan band carries the progress
+// (TestTodoDividersOrderTheWorkAndTheBandCarriesProgress), and the full list
+// opens in the Ctrl+T Tasks panel, which numbers every todo against the whole
+// list (TestTasksDocShowsStepCounts).
 
 func TestTransientNarrationFlowsWithoutHeadersWhenThereAreNoTodos(t *testing.T) {
 	m := newTestModel(t)

@@ -57,21 +57,20 @@ func TestRegionRowsArePruned(t *testing.T) {
 	}
 }
 
-func TestRegionScrollRepaintsViewport(t *testing.T) {
+func TestRegionScrollRepaintsTheBox(t *testing.T) {
 	m := newTestModel(t)
-	// The in-progress thinking box: a live region with room to scroll.
-	// A running subagent card no longer scrolls (one body line), so it can
-	// no longer carry this test.
+	// The in-progress thinking box: a live region with room to scroll, drawn
+	// in the box now rather than in the viewport.
 	m.state.BeginStreaming()
 	for i := 0; i < 40; i++ {
 		m.state.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
 	}
 	m.refreshViewport()
-	before := m.viewport.GetContent()
+	before := boxOut(m)
 
 	m.regionOffset = map[viewmodel.NodeID]int{viewmodel.LiveThinkingID: 5}
 	m.refreshViewport()
-	after := m.viewport.GetContent()
+	after := boxOut(m)
 
 	if before == after {
 		t.Fatal("changing a region offset did not repaint: the content signature is not folding in regionOffset")
@@ -142,44 +141,5 @@ func TestRegionOffsetNeverGoesNegative(t *testing.T) {
 	_ = strings.TrimSpace("")
 }
 
-// Full-path test: a wheel event routed through Update over a live region
-// must change the region's offset AND repaint the viewport, without
-// scrolling the transcript underneath. This exercises the wheel→offset→
-// repaint chain that TestRegionScrollRepaintsViewport only covers by
-// setting the offset directly.
-func TestWheelOverLiveRegionScrollsRegionAndRepaints(t *testing.T) {
-	m := newTestModel(t)
-	// The in-progress thinking box: a live region with room to scroll.
-	m.state.BeginStreaming()
-	for i := 0; i < 40; i++ {
-		m.state.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
-	}
-	m.refreshViewport()
-
-	key := viewmodel.LiveThinkingID
-	var region nodeRegion
-	found := false
-	for _, r := range m.nodeRegions {
-		if r.target.node == key && r.target.isLiveRegion {
-			region, found = r, true
-		}
-	}
-	if !found {
-		t.Fatal("expected a live-region click region for the in-progress thinking box")
-	}
-
-	// Aim the wheel at the middle of the region's content lines.
-	top := m.scrollHintRows()
-	y := top + region.startLine + (region.endLine-region.startLine)/2 - m.viewport.YOffset()
-
-	before := m.viewport.GetContent()
-	out, _ := m.Update(tea.MouseWheelMsg{X: 1, Y: y, Button: tea.MouseWheelUp})
-	mm := asModel(t, out)
-
-	if got := mm.regionOffset[key]; got != 1 {
-		t.Fatalf("region offset = %d, want 1 after one wheel-up", got)
-	}
-	if after := mm.viewport.GetContent(); after == before {
-		t.Fatal("scrolling a live region did not repaint the viewport")
-	}
-}
+// The wheel path over the box's reasoning region is covered by
+// TestWheelOverTheBoxReasoningScrollsIt in livebox_view_test.go.

@@ -1255,9 +1255,6 @@ func (m Model) nowBarInput() nowBarInput {
 		in.ActivityLabel = m.state.PinnedSpinnerLabel(act)
 	}
 	in.Model = m.state.ActiveRoute().Model
-	if !m.viewportFollow && m.busy {
-		in.LiveHeadline, in.LiveToolGlyph = m.liveStepSummary()
-	}
 	// The live-work projection owns the work rows. When it is present the bar
 	// reads only its immutable snapshot and never the local agent, job or
 	// watch owners, so one command cannot appear twice under two lifecycles.

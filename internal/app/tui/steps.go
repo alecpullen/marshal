@@ -663,32 +663,3 @@ func subagentHeadline(child *session.State) string {
 	head, _ := firstSentence(line)
 	return stripEmphasis(head)
 }
-
-// liveStepSummary describes the beat now running — its narrated headline, or
-// the narration it continues — and the category glyph of its running tool,
-// for the now bar's live-mirror row.
-func (m Model) liveStepSummary() (headline, toolGlyph string) {
-	state, _ := m.transcriptSource()
-	live, ok := state.OpenStep()
-	if !ok {
-		return "", ""
-	}
-	if h, _ := firstSentence(state.StepNarration(live.ID)); h != "" {
-		headline = stripEmphasis(h)
-	}
-	for _, atc := range state.ActiveToolCalls() {
-		if atc.StepID == live.ID {
-			toolGlyph = toolCategoryGlyph(atc.Name)
-		}
-	}
-	if headline == "" {
-		// A narrationless response continues the beat its actor last
-		// narrated in this turn; mirror that narration rather than invent a
-		// title. A turn that has not narrated yet gets no headline: the
-		// previous turn's narration describes finished work.
-		if h, _ := firstSentence(state.ContinuedNarration(live.ID)); h != "" {
-			headline = stripEmphasis(h)
-		}
-	}
-	return headline, toolGlyph
-}

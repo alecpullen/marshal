@@ -41,6 +41,7 @@ import (
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/inspector"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/modeloptions"
@@ -770,6 +771,17 @@ type Model struct {
 	// nowBarMemo is the plan viewString computed for the frame in flight; nil
 	// outside viewString. It lives only on that call's model copy.
 	nowBarMemo *nowBarPlan
+
+	// liveBoxMode is the live box's plan layout. Task 9 seeds it from config;
+	// until then a session starts stacked.
+	liveBoxMode livebox.Mode
+	// live is the live part of the transcript — the beat in flight and the
+	// reasoning streaming under it — rendered by refreshViewport. It is drawn
+	// in the box, not the viewport.
+	live livebox.Live
+	// boxMemo is this frame's box layout, planned once in viewString; nil
+	// outside viewString. It lives only on that call's model copy.
+	boxMemo *livebox.Layout
 
 	// band is the pinned band's content: todo progress with its stale
 	// signal, and the running cards. viewmodel.BandOf builds it in
@@ -1771,6 +1783,7 @@ func New(state *session.State, opts ...Option) Model {
 		spinner:          NewSpinner(),
 		now:              time.Now,
 		viewportFollow:   true,
+		liveBoxMode:      livebox.Stacked,
 		discovered:       map[string][]schema.ModelInfo{},
 	}
 	for _, opt := range opts {
@@ -1956,7 +1969,7 @@ func (m *Model) resize(width, height int) {
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.nowBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.boxRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 // refreshSheetTurns reloads the turn-metrics cache the session sheet reads.
@@ -3819,11 +3832,11 @@ func (m Model) scrollHintRows() int {
 	return 0
 }
 
-// ShouldShowStatusURL returns false when the now bar already shows the
-// browser URL and tool name. The right-side status segment omits the URL
-// then to avoid duplication.
+// ShouldShowStatusURL reports whether the status line prints the browser URL.
+// It always does now: the box has no browser row to duplicate it, and Task 10
+// deletes this predicate.
 func (m Model) ShouldShowStatusURL() bool {
-	return !m.nowBarPlan().showsBrowser
+	return true
 }
 
 // dockRows reports the rows the docked panel occupied at last render, so the
@@ -3832,7 +3845,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.nowBarRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.boxRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}

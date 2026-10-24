@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/commands"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
@@ -495,12 +496,12 @@ func TestWorkAsyncReplyCannotReopenClosedPanel(t *testing.T) {
 }
 
 // TestWorkScrollAndMouseTargetsSurviveRefresh pins stable scroll anchoring and
-// that the now bar's mouse targets are rebuilt from the planner on every frame,
-// so a departed card leaves no stale target behind.
+// that the box's click targets are rebuilt from the work snapshot on every
+// frame, so a departed card leaves no stale target behind.
 func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
 	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1}}
 	m := newWorkModel(t, svc)
-	// Tall enough that the live-work bar expands past its one-row summary.
+	// Tall enough that the box expands past its one-row summary.
 	m.resize(120, 40)
 	for i := 0; i < 200; i++ {
 		m.state.AddMessage(session.RoleUser, fmt.Sprintf("line %d", i), session.ContentTypePlain)
@@ -512,11 +513,18 @@ func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
 	m.refreshViewport()
 	_ = m.viewString()
 
-	if len(m.workHits) != 2 {
-		t.Fatalf("mouse targets = %d, want 2", len(m.workHits))
+	workKeys := func(m *Model) map[string]bool {
+		keys := map[string]bool{}
+		for _, r := range m.boxLayout().Rows {
+			if r.Target.Kind == livebox.TargetWork {
+				keys[r.Target.Key] = true
+			}
+		}
+		return keys
 	}
-	if _, ok := m.workHits["work:a"]; !ok {
-		t.Fatal("missing mouse target for work:a")
+
+	if keys := workKeys(&m); len(keys) != 2 || !keys["work:a"] {
+		t.Fatalf("box targets = %v, want work:a and work:b", keys)
 	}
 
 	// Anchor the viewport, then deliver a newer snapshot.
@@ -536,11 +544,12 @@ func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
 	if m.viewport.YOffset() != anchor {
 		t.Fatalf("scroll anchor moved on refresh: %d -> %d", anchor, m.viewport.YOffset())
 	}
-	if _, ok := m.workHits["work:b"]; ok {
-		t.Fatal("a departed card left a stale mouse target")
+	keys := workKeys(&m)
+	if keys["work:b"] {
+		t.Fatal("a departed card left a stale click target")
 	}
-	if _, ok := m.workHits["work:c"]; !ok {
-		t.Fatal("the new card has no mouse target")
+	if !keys["work:c"] {
+		t.Fatal("the new card has no click target")
 	}
 }
 

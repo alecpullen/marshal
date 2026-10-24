@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/native"
+	"marshal/internal/viewmodel"
 )
 
 // TestFrameInvariants sweeps stacked-panel states and asserts two things of
@@ -48,6 +49,26 @@ func TestFrameInvariants(t *testing.T) {
 		{"busy turn row", func(t *testing.T, m *Model) {
 			m.busy = true
 			m.turnStartedAt = m.now().Add(-72 * time.Second)
+		}},
+		// The live box in its fullest state: running work with overflow, a
+		// long plan and a beat in flight.
+		{"box+live", func(t *testing.T, m *Model) {
+			cards := make([]viewmodel.WorkItem, 0, 12)
+			for i := range 12 {
+				cards = append(cards, workRunningCard(fmt.Sprintf("work:%02d", i), nowBarT0.Add(-time.Duration(i)*time.Second)))
+			}
+			m.workSnapshot = workSnapOf(cards...)
+			items := make([]native.TodoItem, 0, 10)
+			for i := range 9 {
+				items = append(items, native.TodoItem{Content: fmt.Sprintf("task %d", i), Status: native.TodoCompleted})
+			}
+			items = append(items, native.TodoItem{Content: "current", Status: native.TodoInProgress})
+			mustSetTodos(t, m, items...)
+			id := m.state.BeginStep(session.Actor{})
+			m.state.AddNarration(id, "Running the suite. It takes a while.")
+			m.busy, m.turnStartedAt = true, m.now().Add(-12*time.Second)
+			m.invalidateTranscript()
+			m.refreshViewport()
 		}},
 		{"sdd+todos+agents", func(t *testing.T, m *Model) {
 			m.busy = true

@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/progress"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
@@ -673,8 +674,8 @@ func TestWorkNowBarExpandedAndBlockedOrdering(t *testing.T) {
 	}
 }
 
-// Every plan work hit names a row that was actually drawn, and the model's
-// per-frame targets agree with the rows the same plan rendered.
+// Every running item's box row names the work it acts on, so a click on any
+// row of the running section reaches the right card.
 func TestWorkNowBarHitTargetsMatchRenderedRows(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
@@ -688,32 +689,30 @@ func TestWorkNowBarHitTargetsMatchRenderedRows(t *testing.T) {
 
 	m.viewString()
 
-	plan := m.nowBarPlan()
-	if len(plan.workHits) == 0 {
-		t.Fatal("the plan drew no work rows")
-	}
+	layout := m.boxLayout()
 	firstRow := map[string]int{}
-	for _, h := range plan.workHits {
-		if h.Row < 0 || h.Row >= len(plan.rows) {
-			t.Fatalf("hit for %q points at row %d of %d", h.TaskKey, h.Row, len(plan.rows))
-		}
-		if h.TaskKey == "" {
+	for i, r := range layout.Rows {
+		if r.Target.Kind != livebox.TargetWork {
 			continue
 		}
-		if _, ok := firstRow[h.TaskKey]; !ok {
-			firstRow[h.TaskKey] = h.Row
-			// The card's first row is its header and must name the item.
-			if !strings.Contains(stripANSI(plan.rows[h.Row]), h.TaskKey) {
-				t.Fatalf("row %d does not carry %q: %q", h.Row, h.TaskKey, stripANSI(plan.rows[h.Row]))
-			}
+		if r.Target.Key == "" {
+			t.Fatalf("box row %d carries no task key", i)
+		}
+		if _, ok := firstRow[r.Target.Key]; ok {
+			continue
+		}
+		firstRow[r.Target.Key] = i
+		// A card's first row is its header and must name the item.
+		if !strings.Contains(stripANSI(r.Text), r.Target.Key) {
+			t.Fatalf("row %d does not carry %q: %q", i, r.Target.Key, stripANSI(r.Text))
 		}
 	}
-	if len(m.workHits) != len(firstRow) {
-		t.Fatalf("model hit map has %d targets, plan drew %d cards", len(m.workHits), len(firstRow))
+	if len(firstRow) != len(items) {
+		t.Fatalf("box drew %d cards, want %d", len(firstRow), len(items))
 	}
-	for key, hit := range m.workHits {
-		if hit.Row != firstRow[key] {
-			t.Fatalf("hit for %q is at row %d, plan drew its first row at %d", key, hit.Row, firstRow[key])
+	for _, it := range items {
+		if _, ok := firstRow[it.TaskKey]; !ok {
+			t.Fatalf("no box row for %q", it.TaskKey)
 		}
 	}
 }

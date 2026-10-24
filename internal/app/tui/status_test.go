@@ -325,23 +325,6 @@ func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
 	}
 }
 
-func TestStatusLineHidesBrowserSegmentWhenStripShowsBrowser(t *testing.T) {
-	m := newStatusTestModel(t)
-	m.state.SetBrowserInfo(session.BrowserInfo{
-		SessionOpen: true,
-		URL:         "https://example.com/docs",
-		Mode:        "standalone",
-	})
-	line := m.renderStatusLine(100)
-	stripped := stripANSI(line)
-	if strings.Contains(stripped, "🌐") {
-		t.Fatalf("status line should not show 🌐 when strip shows browser:\n%s", line)
-	}
-	if strings.Contains(stripped, "example.com/docs") {
-		t.Fatalf("status line should not show browser URL when strip shows browser:\n%s", line)
-	}
-}
-
 func TestStatusLineHidesBrowserSegmentWhenNoSession(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetBrowserInfo(session.BrowserInfo{SessionOpen: false})
@@ -356,9 +339,6 @@ func TestStatusLineDropsBrowserSegmentFirst(t *testing.T) {
 	m := newStatusTestModel(t)
 	m.state.SetTrusted(true)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder:14b", Provider: "ollama", LocalOnly: true})
-	// Browser segment is never added when the strip shows the browser
-	// (SessionOpen=true means ShouldShowStatusURL() returns false).
-	// Verify the route survives.
 	m.state.SetBrowserInfo(session.BrowserInfo{
 		SessionOpen: true,
 		URL:         "https://example.com",
@@ -368,20 +348,6 @@ func TestStatusLineDropsBrowserSegmentFirst(t *testing.T) {
 	stripped := stripANSI(line)
 	if !strings.Contains(stripped, "qwen2.5-coder:14b @ ollama") {
 		t.Fatalf("model segment should survive on narrow width:\n%s", line)
-	}
-	if strings.Contains(stripped, "example.com") {
-		t.Fatalf("browser segment should not appear when strip shows browser:\n%s", line)
-	}
-}
-
-func TestShouldShowStatusURLReturnsFalseWhenStripShowsBrowser(t *testing.T) {
-	m := newStatusTestModel(t)
-	m.state.SetBrowserInfo(session.BrowserInfo{
-		SessionOpen: true,
-		URL:         "http://example.com",
-	})
-	if m.ShouldShowStatusURL() {
-		t.Fatal("ShouldShowStatusURL should return false when strip shows browser")
 	}
 }
 
@@ -393,35 +359,24 @@ func TestShouldShowStatusURLReturnsTrueWhenNoBrowserSession(t *testing.T) {
 	}
 }
 
-// On a tall frame the now bar carries the browser row beside swarm progress,
-// so the status line drops its duplicate URL. On a short frame the compact
-// bar is busy with swarm progress and has no room for the browser, so the
-// status line carries it.
-func TestStatusLineBrowserSegmentFollowsNowBar(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		height     int
-		wantStatus bool
-	}{
-		{"tall frame, bar shows browser", 40, false},
-		{"short frame, bar shows swarm only", 24, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m := newStatusTestModel(t)
-			m.resize(120, tc.height)
-			m.state.SetBrowserInfo(session.BrowserInfo{
-				SessionOpen: true,
-				URL:         "https://example.com/docs",
-				Mode:        "standalone",
-			})
-			m.state.SetSwarmProgress(session.SwarmProgress{
-				Active: true,
-				Roles:  []session.SwarmRole{{Name: "planner", Status: session.SwarmRoleActive}},
-			})
-			if got := m.ShouldShowStatusURL(); got != tc.wantStatus {
-				t.Fatalf("ShouldShowStatusURL() = %v, want %v", got, tc.wantStatus)
-			}
+// The box draws no browser row, so the status line carries the URL on every
+// frame height.
+func TestStatusLineBrowserSegmentAlwaysShown(t *testing.T) {
+	for _, height := range []int{24, 40} {
+		m := newStatusTestModel(t)
+		m.resize(120, height)
+		m.state.SetBrowserInfo(session.BrowserInfo{
+			SessionOpen: true,
+			URL:         "https://example.com/docs",
+			Mode:        "standalone",
 		})
+		m.state.SetSwarmProgress(session.SwarmProgress{
+			Active: true,
+			Roles:  []session.SwarmRole{{Name: "planner", Status: session.SwarmRoleActive}},
+		})
+		if !m.ShouldShowStatusURL() {
+			t.Fatalf("height %d: the status line must carry the browser URL", height)
+		}
 	}
 }
 

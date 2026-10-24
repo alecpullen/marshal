@@ -207,6 +207,62 @@ func TestBoxClickOnPlanItemJumpsToItsBeat(t *testing.T) {
 	}
 }
 
+// TestScrollToPlanItemUsesTheOneBasedSlot pins the fallback key a plan item
+// uses when it has no ID: the slot is 1-based, so "#1" must reach the first
+// item's beat and "#2" the second's.
+func TestScrollToPlanItemUsesTheOneBasedSlot(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	a := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(a, "Doing the first thing.")
+	m.state.EndStep(a)
+	b := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(b, "Doing the second thing.")
+	m.state.EndStep(b)
+	// Filler after the beats, so both of them stay inside the scrollable range
+	// and the offsets below are not clamped.
+	for i := range 80 {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
+	}
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	// The steps the transcript rendered, in order, with the line each one
+	// starts at: the beats the plan's items would be bound to.
+	var beats []viewmodel.NodeID
+	starts := map[viewmodel.NodeID]int{}
+	for _, r := range m.nodeRegions {
+		if r.target.node.Kind != viewmodel.KindStep {
+			continue
+		}
+		if _, seen := starts[r.target.node]; !seen {
+			beats = append(beats, r.target.node)
+			starts[r.target.node] = r.startLine
+		}
+	}
+	if len(beats) < 2 {
+		t.Fatalf("transcript rendered %d step regions, want 2", len(beats))
+	}
+	// Both todos are ID-less, so the plan names them by 1-based position.
+	m.band = viewmodel.BandInfo{Tasks: []viewmodel.BandTask{
+		{Content: "First", Status: "completed", TaskStat: viewmodel.TaskStat{First: beats[0]}},
+		{Content: "Second", Status: "in_progress", TaskStat: viewmodel.TaskStat{First: beats[1]}},
+	}}
+	if plan := m.boxInput().Plan; len(plan) != 2 || plan[0].ID != "" {
+		t.Fatalf("plan = %+v, want two ID-less items", plan)
+	}
+
+	m.scrollToPlanItem("#1")
+	if got, want := m.viewport.YOffset(), starts[beats[0]]; got != want {
+		t.Errorf("scrollToPlanItem(%q) went to line %d, want the first item's beat at %d", "#1", got, want)
+	}
+	m.scrollToPlanItem("#2")
+	if got, want := m.viewport.YOffset(), starts[beats[1]]; got != want {
+		t.Errorf("scrollToPlanItem(%q) went to line %d, want the second item's beat at %d", "#2", got, want)
+	}
+}
+
 // TestBoxClickOnALiveCallExpandsIt: the live part's rows are click targets,
 // so a call in flight can be opened to read its args and output.
 func TestBoxClickOnALiveCallExpandsIt(t *testing.T) {

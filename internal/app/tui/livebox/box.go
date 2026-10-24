@@ -23,7 +23,15 @@ import (
 // live part with no box would be on screen nowhere. With none of those, a plan
 // draws the idle row alone; with no plan either, the box has no rows.
 func Plan(in Input) Layout {
-	w := max(in.Width, 2)
+	// The outline costs five cells, so a narrower request is planned at five;
+	// Render draws at the same floor, which keeps every line one width.
+	w := max(in.Width, 5)
+	if in.MaxRows < 1 {
+		// The contract is "the most rows the box may take", so a budget below
+		// one still sheds down to the single plain row rather than growing
+		// without limit.
+		in.MaxRows = 1
+	}
 	if !in.Busy && len(in.Work) == 0 && len(in.Live.Full) == 0 {
 		if len(in.Plan) == 0 {
 			return Layout{Mode: drawnMode(in.Mode, w)}
@@ -35,24 +43,24 @@ func Plan(in Input) Layout {
 
 	st := buildState{mode: in.Mode}
 	l := build(in, st)
-	if in.MaxRows > 0 {
-		// Each step is applied in order and the box rebuilt; Shed is how many
-		// steps it took to fit. Step 7 leaves one plain row, so the loop always
-		// terminates.
-		for step := 1; step <= shedSteps && len(l.Rows) > in.MaxRows; step++ {
-			applyShed(&st, step)
-			l = build(in, st)
-			l.Shed = step
-		}
+	// Each step is applied in order and the box rebuilt; Shed is how many
+	// steps it took to fit. Step 7 leaves one plain row, so the loop always
+	// terminates.
+	for step := 1; step <= shedSteps && len(l.Rows) > in.MaxRows; step++ {
+		applyShed(&st, step)
+		l = build(in, st)
+		l.Shed = step
 	}
 	finish(&l, in)
 	return l
 }
 
 // Render paints a layout: every row on its own line, inner rows inside the
-// outline, and a tinted or cursored row's content area band-painted.
+// outline, and a tinted or cursored row's content area band-painted. The
+// outline costs five cells, so a request narrower than that is drawn at five:
+// every line still closes and every line is the same width.
 func Render(l Layout, width int) string {
-	w := max(width, 1)
+	w := max(width, 5)
 	split := l.Mode == Split && w >= SplitMinWidth
 	cell := InnerWidth(w)
 	if split {
@@ -135,7 +143,7 @@ func drawnMode(m Mode, w int) Mode {
 
 // build assembles the box in one of its shapes.
 func build(in Input, st buildState) Layout {
-	w := max(in.Width, 2)
+	w := max(in.Width, 5)
 	mode := drawnMode(st.mode, w)
 	l := Layout{Mode: mode}
 	if st.compact {
@@ -260,18 +268,41 @@ func finish(l *Layout, in Input) {
 	seen := make(map[Target]bool, len(l.Rows))
 	for i := range l.Rows {
 		r := &l.Rows[i]
-		if in.Cursor.Kind != TargetNone && sameTarget(r.Target, in.Cursor) {
+		if in.Cursor.Kind != TargetNone && (sameTarget(r.Target, in.Cursor) ||
+			anySameTarget(r.Also, in.Cursor)) {
 			r.Cursor = true
 		}
-		switch r.Target.Kind {
-		case TargetWork, TargetMore, TargetPlan:
-			if seen[r.Target] {
-				continue
+		for _, t := range append([]Target{r.Target}, alsoTargets(r.Also)...) {
+			switch t.Kind {
+			case TargetWork, TargetMore, TargetPlan:
+				if seen[t] {
+					continue
+				}
+				seen[t] = true
+				l.Stops = append(l.Stops, t)
 			}
-			seen[r.Target] = true
-			l.Stops = append(l.Stops, r.Target)
 		}
 	}
+}
+
+// alsoTargets is a row's secondary targets, in draw order.
+func alsoTargets(stops []RowStop) []Target {
+	out := make([]Target, 0, len(stops))
+	for _, s := range stops {
+		out = append(out, s.Target)
+	}
+	return out
+}
+
+// anySameTarget reports whether any of a row's secondary targets is the
+// cursor's.
+func anySameTarget(stops []RowStop, cursor Target) bool {
+	for _, s := range stops {
+		if sameTarget(s.Target, cursor) {
+			return true
+		}
+	}
+	return false
 }
 
 // sameTarget compares a row's target with the cursor's: the same kind and key,

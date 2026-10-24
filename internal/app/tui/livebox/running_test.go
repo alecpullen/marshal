@@ -352,6 +352,9 @@ func TestNextSkipsSplitWhenNarrow(t *testing.T) {
 	if got := Next(Split, 90); got != Folded {
 		t.Errorf("Next(Split, 90) = %q, want %q", got, Folded)
 	}
+	if got := Next(Split, 89); got != Folded {
+		t.Errorf("Next(Split, 89) = %q, want %q", got, Folded)
+	}
 	if got := Next(Folded, 90); got != Stacked {
 		t.Errorf("Next(Folded, 90) = %q, want %q", got, Stacked)
 	}

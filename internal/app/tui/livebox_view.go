@@ -268,7 +268,7 @@ func (m *Model) handleBoxClick(msg tea.Mouse) (tea.Cmd, bool) {
 	if msg.Y < top || msg.Y >= top+len(layout.Rows) {
 		return nil, false
 	}
-	target := layout.Rows[msg.Y-top].Target
+	target := boxRowTarget(layout.Rows[msg.Y-top], msg.X-2)
 	switch target.Kind {
 	case livebox.TargetLive:
 		// The reasoning region scrolls with the wheel; a click on it does
@@ -295,12 +295,24 @@ func (m *Model) handleBoxClick(msg tea.Mouse) (tea.Cmd, bool) {
 	return nil, true
 }
 
+// boxRowTarget is the target under a click at cell column col of the row's
+// text: a stacked plan row draws two entries, and the click belongs to the
+// last one that starts at or before it.
+func boxRowTarget(r livebox.Row, col int) livebox.Target {
+	for i := len(r.Also) - 1; i >= 0; i-- {
+		if r.Also[i].Col <= col {
+			return r.Also[i].Target
+		}
+	}
+	return r.Target
+}
+
 // scrollToPlanItem jumps to the first beat bound to a plan item, keyed by the
-// item's ID (or its "#<index>" slot when it has none).
+// item's ID (or its "#<position>" slot, 1-based, when it has none).
 func (m *Model) scrollToPlanItem(key string) {
 	plan := m.boxInput().Plan
 	for i, it := range plan {
-		if it.ID != key && "#"+strconv.Itoa(i) != key {
+		if it.ID != key && "#"+strconv.Itoa(i+1) != key {
 			continue
 		}
 		m.scrollToNode(it.First)

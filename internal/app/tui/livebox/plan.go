@@ -18,18 +18,12 @@ const planWindowItems = 4
 // planMarksMax is the longest plan the folded border draws one mark per item.
 const planMarksMax = 12
 
-// planWindow is the plan's visible slice: every item when the list is short
-// enough, else up to planWindowItems from the anchor. The anchor is the first
-// in-progress item, else the first item that is not completed. doneBefore
-// counts the completed items before the anchor, and moreAfter counts the items
-// the window leaves out.
-func planWindow(items []PlanItem) (shown []PlanItem, doneBefore, moreAfter int) {
-	shown, _, doneBefore, moreAfter = planWindowAt(items)
-	return shown, doneBefore, moreAfter
-}
-
-// planWindowAt is planWindow plus the window's offset in the list, so an entry
-// can still name its item by its position.
+// planWindowAt is the plan's visible slice, plus the window's offset in the
+// list so an entry can still name its item by its position: every item when
+// the list is short enough, else up to planWindowItems from the anchor. The
+// anchor is the first in-progress item, else the first item that is not
+// completed. doneBefore counts the completed items before the anchor, and
+// moreAfter counts the items the window leaves out.
 func planWindowAt(items []PlanItem) (shown []PlanItem, start, doneBefore, moreAfter int) {
 	if len(items) <= PlanWindow {
 		return items, 0, 0, 0
@@ -226,14 +220,21 @@ func planStacked(in Input, w int) (header string, rows []Row) {
 	for i := 0; i < min(left, n); i++ {
 		target := entries[i].target
 		text := planCell(entries[i], cell)
+		row := Row{Target: target}
 		if j := i + left; j < n {
 			gap := max(cell-ansi.StringWidth(text), 0) + 2
 			text += strings.Repeat(" ", gap) + planCell(entries[j], cell)
-			if target.Kind == TargetNone {
-				target = entries[j].target
+			switch {
+			case target.Kind == TargetNone:
+				row.Target = entries[j].target
+			case entries[j].target.Kind != TargetNone:
+				// The row carries two live entries: the second keeps its own
+				// target so its click and its browse stop are not lost.
+				row.Also = []RowStop{{Target: entries[j].target, Col: cell + gap}}
 			}
 		}
-		rows = append(rows, Row{Text: ansi.Truncate(text, w, "…"), Target: target})
+		row.Text = ansi.Truncate(text, w, "…")
+		rows = append(rows, row)
 	}
 	return header, rows
 }
@@ -298,7 +299,8 @@ func planMarks(in Input, maxMarks, blocksCells int) string {
 
 // planFolded is the folded layout's bottom border: the label and the marks (or
 // the blocks once the list is long), the position, the active item's text, and
-// the border fill to ╯. Everything but the marks is in BorderMuted.
+// the border fill to ╯. Everything but the marks is in BorderMuted. The border
+// always closes, whatever the width: the marks give way first.
 func planFolded(in Input, width int) string {
 	border := lipgloss.NewStyle().Foreground(theme.Current().BorderMuted)
 	width = max(width, 2)
@@ -313,7 +315,28 @@ func planFolded(in Input, width int) string {
 			break
 		}
 	}
-	line := border.Render("╰─ plan ") + planMarks(in, planMarksMax, 8) + border.Render(" "+pos)
+	prefix := border.Render("╰─ plan ")
+	posText := border.Render(" " + pos)
+	// Below this the label, a 3-digit position and the closing " ─╯" cannot
+	// coexist with a fill cell, so the border is drawn plain.
+	const foldedMin = 22
+	if width < foldedMin {
+		return border.Render("╰" + strings.Repeat("─", width-2) + "╯")
+	}
+	// Keep one fill cell and the closing " ─╯" before spending cells on the
+	// marks: a narrow border still closes.
+	fits := func(marks string) bool {
+		return ansi.StringWidth(prefix)+ansi.StringWidth(marks)+
+			ansi.StringWidth(posText)+ansi.StringWidth(" ─╯")+1 <= width
+	}
+	marks := planMarks(in, planMarksMax, 8)
+	if !fits(marks) {
+		marks = Blocks(done, total, 8)
+	}
+	if !fits(marks) {
+		marks = ""
+	}
+	line := prefix + marks + posText
 	// The text keeps the closing " ─", at least one fill cell and ╯.
 	if room := width - ansi.StringWidth(line) - ansi.StringWidth(" ─╯") - 1; active != "" && room > 0 {
 		line += border.Render(" ") + border.Render(cut(active, room))

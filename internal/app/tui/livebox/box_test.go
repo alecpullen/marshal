@@ -384,13 +384,17 @@ func TestTargetsMatchRows(t *testing.T) {
 		t.Errorf("first rows = %q, want %q", got, want)
 	}
 
-	// Stops: the running items in row order, then the plan items drawn.
+	// Stops: the running items in row order, then one per plan item drawn, in
+	// the order the rows draw them — the left entry of a two-column row first,
+	// then its right entry.
 	want := []Target{
 		{Kind: TargetWork, Key: "k1"},
 		{Kind: TargetWork, Key: "k2"},
 		{Kind: TargetWork, Key: "k3"},
 		{Kind: TargetPlan, Key: "#1"},
+		{Kind: TargetPlan, Key: "#3"},
 		{Kind: TargetPlan, Key: "#2"},
+		{Kind: TargetPlan, Key: "#4"},
 	}
 	if len(l.Stops) != len(want) {
 		t.Fatalf("stops = %+v, want %+v", l.Stops, want)
@@ -483,4 +487,69 @@ func TestHintsDropBeforeTheState(t *testing.T) {
 	if w := ansi.StringWidth(top); w != 15 {
 		t.Errorf("15-col top border is %d cells, want 15: %q", w, top)
 	}
+}
+
+// TestPlanBudgetBelowOneStillSheds pins the MaxRows contract: a budget below
+// one sheds the box down to the single plain row instead of growing without
+// limit.
+func TestPlanBudgetBelowOneStillSheds(t *testing.T) {
+	in := busyInput()
+	in.MaxRows = 0
+	l := Plan(in)
+	if len(l.Rows) != 1 {
+		t.Fatalf("MaxRows 0 drew %d rows, want 1", len(l.Rows))
+	}
+	if l.Rows[0].Frame != FramePlain {
+		t.Errorf("MaxRows 0 row frame = %v, want the plain summary row", l.Rows[0].Frame)
+	}
+}
+
+// TestRenderNarrowerThanTheOutlineStaysConsistent pins that a request narrower
+// than the outline is still drawn at a consistent width, so every line closes.
+func TestRenderNarrowerThanTheOutlineStaysConsistent(t *testing.T) {
+	for _, width := range []int{1, 2, 4, 5} {
+		in := busyInput()
+		in.Width = width
+		out := Render(Plan(in), width)
+		want := max(width, 5)
+		for i, line := range strings.Split(out, "\n") {
+			if got := ansi.StringWidth(line); got != want {
+				t.Errorf("%d-col request: line %d is %d cells, want %d: %q",
+					width, i, got, want, ansi.Strip(line))
+			}
+		}
+	}
+}
+
+// TestCursorRowPaintsTheSelectionBand pins that the browse cursor's row is
+// band-painted rather than merely flagged: the text is unchanged and the
+// escapes are not.
+func TestCursorRowPaintsTheSelectionBand(t *testing.T) {
+	base := busyInput()
+	l := Plan(base)
+	cursored := Render(l, base.Width)
+
+	base.Cursor = Target{Kind: TargetWork, Key: "k1"}
+	withCursor := Plan(base)
+	if !hasCursorRow(withCursor) {
+		t.Fatal("the cursor target matched no row")
+	}
+	painted := Render(withCursor, base.Width)
+
+	if ansi.Strip(painted) != ansi.Strip(cursored) {
+		t.Fatal("the cursor changed the box's text; it must only paint it")
+	}
+	if painted == cursored {
+		t.Fatal("the cursor row was not painted")
+	}
+}
+
+// hasCursorRow reports whether any row is marked as the cursor's.
+func hasCursorRow(l Layout) bool {
+	for _, r := range l.Rows {
+		if r.Cursor {
+			return true
+		}
+	}
+	return false
 }

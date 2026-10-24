@@ -41,9 +41,9 @@ func planRowTexts(rows []Row) []string {
 // the in-progress item, shows four of them, and summarises both ends.
 func TestPlanWindowAroundTheActiveItem(t *testing.T) {
 	items := planOf(10, 5, 6)
-	shown, doneBefore, moreAfter := planWindow(items)
+	shown, _, doneBefore, moreAfter := planWindowAt(items)
 	if len(shown) != 4 {
-		t.Fatalf("planWindow showed %d items, want 4", len(shown))
+		t.Fatalf("planWindowAt showed %d items, want 4", len(shown))
 	}
 	if got := shown[0].Content; got != "todo f" {
 		t.Errorf("window starts at %q, want the in-progress item %q", got, "todo f")
@@ -84,9 +84,9 @@ func TestPlanWindowAroundTheActiveItem(t *testing.T) {
 // every item and neither summary entry.
 func TestShortPlanShowsEveryItem(t *testing.T) {
 	items := planOf(4, 1, 2)
-	shown, doneBefore, moreAfter := planWindow(items)
+	shown, _, doneBefore, moreAfter := planWindowAt(items)
 	if len(shown) != len(items) || doneBefore != 0 || moreAfter != 0 {
-		t.Fatalf("planWindow = %d shown, %d done before, %d after; want every item and no summaries",
+		t.Fatalf("planWindowAt = %d shown, %d done before, %d after; want every item and no summaries",
 			len(shown), doneBefore, moreAfter)
 	}
 
@@ -231,5 +231,59 @@ func TestSplitPaneWrapsALongTodo(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(one[0]), "…") {
 		t.Errorf("one-line pane line = %q, want it truncated", ansi.Strip(one[0]))
+	}
+}
+
+// TestStackedRowsKeepBothColumnTargets pins that a row drawing two plan items
+// keeps both of their targets: the left one in Target, the right one in Also at
+// the cell it starts at, and both as browse stops in row order.
+func TestStackedRowsKeepBothColumnTargets(t *testing.T) {
+	items := planOf(10, 5, 6)
+	_, rows := planStacked(Input{Plan: items}, 80)
+	if len(rows) < 2 {
+		t.Fatalf("stacked rows = %d, want at least 2", len(rows))
+	}
+	// Row 1 draws "todo f" (6th) on the left and "todo i" (9th) on the right.
+	if want := (Target{Kind: TargetPlan, Key: "#6"}); rows[1].Target != want {
+		t.Fatalf("row 1 target = %+v, want %+v", rows[1].Target, want)
+	}
+	if len(rows[1].Also) != 1 {
+		t.Fatalf("row 1 also = %+v, want the right column's target", rows[1].Also)
+	}
+	if want := (Target{Kind: TargetPlan, Key: "#9"}); rows[1].Also[0].Target != want {
+		t.Errorf("row 1 right target = %+v, want %+v", rows[1].Also[0].Target, want)
+	}
+	if rows[1].Also[0].Col <= 0 {
+		t.Errorf("row 1 right entry starts at cell %d, want a positive offset", rows[1].Also[0].Col)
+	}
+
+	in := Input{Width: 96, MaxRows: 40, Now: testNow, Busy: true, Plan: items, Mode: Stacked}
+	stops := map[string]bool{}
+	for _, s := range Plan(in).Stops {
+		if s.Kind == TargetPlan {
+			stops[s.Key] = true
+		}
+	}
+	for _, key := range []string{"#6", "#9"} {
+		if !stops[key] {
+			t.Errorf("stops = %v, want the drawn plan item %q", stops, key)
+		}
+	}
+}
+
+// TestFoldedBorderClosesAtNarrowWidth pins that the folded border still closes
+// and stays within its width when the plan's marks cannot fit.
+func TestFoldedBorderClosesAtNarrowWidth(t *testing.T) {
+	for _, width := range []int{2, 8, 16, 21, 22, 30, 40, 60} {
+		for _, items := range [][]PlanItem{planOf(4, 1, 2), planOf(12, 3, 5)} {
+			line := planFolded(Input{Plan: items, Now: testNow, Spinner: "⠋"}, width)
+			if got := ansi.StringWidth(line); got != width {
+				t.Errorf("%d-col folded border with %d items is %d cells, want %d: %q",
+					width, len(items), got, width, ansi.Strip(line))
+			}
+			if plain := ansi.Strip(line); !strings.HasSuffix(plain, "╯") {
+				t.Errorf("%d-col folded border does not close: %q", width, plain)
+			}
+		}
 	}
 }

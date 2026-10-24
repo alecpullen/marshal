@@ -89,8 +89,7 @@ func LeftWidth(width int, m Mode) int {
 	return InnerWidth(width)
 }
 
-// Blocks draws done/total as ▰▱ cells, at most maxCells. It is
-// progressBlocks moved unchanged from internal/app/tui/nowbar.go.
+// Blocks draws done/total as ▰▱ cells, at most maxCells.
 func Blocks(done, total, maxCells int) string {
 	cells := min(total, maxCells)
 	if cells <= 0 {
@@ -145,6 +144,7 @@ type PlanItem struct {
 	First               viewmodel.NodeID // the first beat bound to it; zero when none
 }
 
+// TargetKind is what a box row acts on when clicked.
 type TargetKind uint8
 
 const (
@@ -152,15 +152,18 @@ const (
 	TargetLive            // a line of the live part; Node names its row
 	TargetWork            // a running row or a line of its card; Key is the TaskKey
 	TargetMore            // the "+N more · /work" row
-	TargetPlan            // a plan item; Key is its ID, or "#<index>" when it has none
+	TargetPlan            // a plan item; Key is its ID, or "#<position>" (1-based) when it has none
 )
 
+// Target is a box row's click target: what it opens, and which node or item.
 type Target struct {
 	Kind TargetKind
 	Node viewmodel.NodeID
 	Key  string
 }
 
+// Input is everything Plan needs to plan a box: the frame's budget, the clock,
+// the turn's state, the live part, the running work, and the plan.
 type Input struct {
 	Width     int // the column the box spans
 	MaxRows   int // the most rows the box may take
@@ -180,6 +183,7 @@ type Input struct {
 	Cursor    Target // the browse cursor when it is in the box
 }
 
+// RowFrame is how a row sits in the box's outline.
 type RowFrame uint8
 
 const (
@@ -188,6 +192,15 @@ const (
 	FramePlain                  // Text is a whole row with no outline (idle and compact rows)
 )
 
+// RowStop is a second click target drawn on the same row as Row.Target: the
+// stacked plan layout puts two entries on one line, and each keeps its own
+// target so both are clickable and both are browse stops.
+type RowStop struct {
+	Target Target
+	Col    int // the entry's 0-based cell offset inside the row's text
+}
+
+// Row is one line of the box.
 type Row struct {
 	Text   string // styled foreground only
 	Right  string // split mode: the right pane's text for this row
@@ -195,11 +208,14 @@ type Row struct {
 	Tint   bool // running work: painted with the surface colour
 	Cursor bool // the browse cursor's row: painted with the selection colour
 	Target Target
+	Also   []RowStop // further targets on this line, in draw order
 }
 
+// Layout is a planned box: its rows, the mode finally drawn, how many shed
+// steps it took to fit, and the browse stops in row order.
 type Layout struct {
 	Rows  []Row
 	Mode  Mode     // the mode drawn, after shedding
-	Shed  int      // shed steps applied, 0–7 (Task 5)
+	Shed  int      // shed steps applied, 0–7
 	Stops []Target // browse stops in order: running rows, the more row, plan items
 }

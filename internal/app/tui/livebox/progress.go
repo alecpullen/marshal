@@ -10,11 +10,8 @@ import (
 	"marshal/internal/progress"
 )
 
-// The measurement helpers below are moved unchanged from
-// internal/app/tui/nowbar.go, with the work prefix dropped and the TUI's
-// dim/muted styles replaced by theme.MutedStyle. They are the display
-// boundary for producer strings: everything they return is already cleaned,
-// measured and cut.
+// The measurement helpers below are the display boundary for producer
+// strings: everything they return is already cleaned, measured and cut.
 
 // primaryMetric resolves the profile-selected primary metric, falling back
 // to the first observation and then to nothing.

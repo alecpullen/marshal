@@ -193,6 +193,12 @@ it, and the beat that starts a todo carries its number. Nothing folds: `Enter`
 or a click opens a row, `Ctrl+G` opens everything, and a keyboard browse mode
 (`Esc`) and a full inspector (`i`) give detail on demand.
 
+While the agent works, a box above the input shows the step in progress,
+everything running in the background (subagents, jobs, downloads and tests with
+their progress bars) and the plan. Ctrl+T moves the plan between a stacked
+list, a column beside the work, and a one-line summary; `[tui.live_box] layout`
+picks the starting one. `/work` lists all work.
+
 During a normal conversation turn, `Enter` queues steering and `Alt+Enter`
 sends it now. Send now interrupts the current operation: it stops attached
 foreground commands, ends waits without stopping their targets, and cancels

@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+**The live box**
+
+- Everything that can still change sits in one bordered box above the input:
+  the step in progress, running subagents, jobs and progress cards (now with
+  measured bars, rates and ETAs), and the plan. History above it only grows.
+  Ctrl+T cycles the plan between stacked, split and folded;
+  `[tui.live_box] layout` sets the start.
+
 **Transcript: beats on a spine**
 
 - Each tool call hangs off the narration that explains it (`├ └`) as one
@@ -140,6 +148,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The now bar and its live-mirror row; the Tasks panel's Plan tab (the plan is
+  always in the box; `/work` opens the Work list); "Mark reviewed" and
+  "Dismiss" in the Work list.
 - `[tui.transcript] density` and `fold_finished_tasks`, with the beat folding
   and density levels they configured. Files that set them still load, with a
   warning that they are ignored.
@@ -169,6 +180,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A skill the agent loads shows once, as its call row, instead of a second row
+  that also split the step. Running work rows now show a measured rate and ETA.
 - The todo tag and turn receipts in finished turns no longer change when the
   todo list is rewritten later.
 - Streaming reasoning no longer appears between a beat's narration and its

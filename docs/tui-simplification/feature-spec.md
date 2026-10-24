@@ -13,6 +13,7 @@ Execution plans: one per phase, each against `main` once the previous phase
 has landed. P-A: [`plans/2026-10-24-p-a-renderer-foundation-plan.md`](plans/2026-10-24-p-a-renderer-foundation-plan.md).
 P-B: [`plans/2026-10-24-p-b-lifecycle-plan.md`](plans/2026-10-24-p-b-lifecycle-plan.md).
 P-C: [`plans/2026-10-24-p-c-live-box-plan.md`](plans/2026-10-24-p-c-live-box-plan.md).
+P-D: [`plans/2026-10-25-p-d-progress-skill-plan.md`](plans/2026-10-25-p-d-progress-skill-plan.md).
 
 ## 1. Summary
 
@@ -334,8 +335,8 @@ those.
   4. An expanded card collapses.
 
   History keeps at least `minTranscriptRows`: the box's maximum is
-  `min(height×2/5, height − status line − dock − input chrome − 1 −
-  minTranscriptRows)`. If the box still does not fit after the four steps, the
+  `min(height×2/5, height − scroll hint − breadcrumb − status line − dock −
+  input chrome − 1 − minTranscriptRows)`. If the box still does not fit after the four steps, the
   live part goes, then running rows cap at 1 with the more row, and finally the
   box becomes one plain summary row (state, `⧉N ┆N ○N`, `plan N/M`).
 - **Idle.** With nothing live, the box is one plain row (no borders) holding the
@@ -542,25 +543,42 @@ The live part's rows are click targets but not browse stops.
 ### 6.4 The `progress-reporting` skill
 
 - **File:** `internal/skills/builtin/progress-reporting.md`, with risk
-  `read_only` (instructions only).
-- **Description (it decides when the skill is loaded):** "Show live progress for
-  a long-running command (download, transfer, tests, phased custom work) by
-  running it with shell.run's progress option and emitting progress records."
+  `workspace_write`. It has the agent write producer scripts, and the built-in
+  skills that lead to writes declare that risk. (Changed from `read_only` on
+  2026-10-25; the risk is informational and gates nothing.)
+- **Description (it decides when the skill is loaded):** "Show a live progress
+  bar for a long download, transfer, test run or phased job, using shell.run's
+  progress option." (114 bytes; the listing line is 142.)
 - **Body:**
   - when a card helps, and when the generic card is enough;
   - the `progress` object, profiles and sources;
   - the record format, with the prefix, a complete snapshot per line, an
     increasing sequence, the metric, phase, row and detail limits, and never
-    inventing a total;
-  - **embedded** minimal producers for a download, a transfer and a phased
-    custom job, adapted from `docs/live-work/examples/`. They must be embedded
-    because user projects do not contain that directory;
+    inventing a total, with one complete example record;
+  - **embedded** minimal producers, adapted from `docs/live-work/examples/`.
+    They are a shared helper (`marshal_progress.py`) and producers for a
+    download, a transfer and a phased custom job. They must be embedded because
+    user projects do not contain that directory, and the body never names it;
   - the Go test JSON path, which needs no producer.
+- **Where producers live.** The agent writes them with `file.write` under
+  `.marshal/progress/`, reusing any already there. Writes must stay in the
+  workspace, and `.marshal/` is Marshal's own directory. The `.marshal/.gitignore`
+  written for new projects gains `progress/`. In an older project the folder
+  shows as untracked, and the agent says so instead of editing the ignore file.
+  The producers need `python3`; without it the agent uses the generic card.
 - **Schema pointer:** the `progress` property in the `shell.run` and `test.run`
-  schemas gains a short description ("live progress card; see the
-  progress-reporting skill for the record format"). It must fit the
-  tool-schema budget. `TestShellToolTextDocumentsWaitContinuationAndStop` is
+  schemas gains the description "live progress card; see skill
+  progress-reporting". `TestShellToolTextDocumentsWaitContinuationAndStop` is
   extended to pin it.
+- **Budgets.** At `d7d9b39c` the system prompt was 9,110 bytes (over its 9,000
+  ceiling) and the model-facing tool schemas 14,975 (ceiling 15,000).
+  - The skill's listing line fits because the postmortem skill's description
+    shrinks from 383 bytes to 121. Its one caller already names the skill
+    ("Run the postmortem skill: …"), so the trigger text was unused. The prompt
+    ends near 8,990, and `TestDefaultPromptBudget` passes again.
+  - The pointer fits because `shell.run`'s description drops "Commands are
+    subject to conservative guardrails.", which gave the model nothing to act
+    on. The schemas end near 14,991. `test.run` is internal and not counted.
 - **Nothing is added to the system prompt** beyond the skill's listing line.
 
 ### 6.5 Config and settings
@@ -588,7 +606,7 @@ derive from persisted `todo.write` tool calls. Resume renders the same history.
 | **P-A Renderer foundation** | Spine and verbs; glyph cleanup; the todo tag replaces the divider; `KindPlanUpdate` and the plan line (with its wire kind); no folding; Ctrl+G expand-all; humanized running calls; config deprecations. TUI plus small projection changes. | — | yes |
 | **P-B Lifecycle in the projection** ([plan](plans/2026-10-24-p-b-lifecycle-plan.md)) | `CompletionInfo` and the expandable issue report; dispatch rows never settle; one projection (legacy path removed); band gating removed; `SplitLive`; wire changes; `web/ui` adoption. | P-A | yes |
 | **P-C Live box** | `livebox` package; the live beat in the box; running rows with bars and the expanded card; stacked, split and folded plus Ctrl+T; budget and shed order; idle state; browse into the box; `nowbar.go` and the Tasks Plan tab deleted; `[tui.live_box]`. | P-B | yes |
-| **P-D Progress-reporting skill** | The skill, the schema pointer and the pinned schema test. | — | yes, any time |
+| **P-D Progress-reporting skill** ([plan](plans/2026-10-25-p-d-progress-skill-plan.md)) | The skill and its producers, the schema pointer and the pinned schema test, the budget room (§6.4). | — | yes, any time |
 
 **Ordering with daemon P2.** P2 plan 3 moves the renderer onto `WireNode` and
 ports "density, folding, selection, browse and inspect". Land P-A and P-B before
@@ -628,7 +646,14 @@ first.
   exceeds `height - statusLineRows` with the box at its maximum.
 - **Web:** `Transcript.test.ts` and `NowBar.test.ts` cover the new kinds, and
   the web boundary test stays green.
-- **Skill:** the schema budget, the schema text pin, and a skill-load test.
+- **Skill:**
+  - the prompt and schema budgets (`TestDefaultPromptBudget`);
+  - the schema text pin;
+  - a skill-load test that pins the description, risk and key rules;
+  - every example record in the body decodes with the real decoder;
+  - the embedded download and custom producers run under `python3`, skipped
+    when it is absent. Their records decode in sequence, and their totals match
+    the bytes and files they really handled.
 - **Mutation check each phase:** revert one behaviour (append-only, shed order,
   tag placement) and confirm a test fails.
 

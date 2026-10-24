@@ -10,6 +10,7 @@ simplification.
 | [`plans/2026-10-24-p-a-renderer-foundation-plan.md`](plans/2026-10-24-p-a-renderer-foundation-plan.md) | P-A execution plan (landed): beats on a spine, plan line, no folding, one level of detail |
 | [`plans/2026-10-24-p-b-lifecycle-plan.md`](plans/2026-10-24-p-b-lifecycle-plan.md) | P-B execution plan: completion events, one projection, history that only grows, web adoption |
 | [`plans/2026-10-24-p-c-live-box-plan.md`](plans/2026-10-24-p-c-live-box-plan.md) | P-C execution plan: the live box, measured bars, plan layouts and Ctrl+T, skill-load duplicate fix |
+| [`plans/2026-10-25-p-d-progress-skill-plan.md`](plans/2026-10-25-p-d-progress-skill-plan.md) | P-D execution plan: the progress-reporting skill and its producers, the schema pointer, room in the prompt budgets |
 | [`framed-console.md`](framed-console.md) | The chosen design with text frames; [`framed-console.html`](framed-console.html) in colour |
 | [`console-variants.md`](console-variants.md) | Round 2: five dock treatments and four history styles |
 | [`alternatives.md`](alternatives.md) | Round 1: today's frame, the shared foundation, Ledger / Console / Sticky |

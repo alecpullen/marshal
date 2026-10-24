@@ -143,33 +143,6 @@ describe('Chat', () => {
       expect(screen.getByRole('group', { name: 'Detail' })).toBeTruthy()
     })
 
-    it('opens a folded beat when its completion marker is clicked, then scrolls to the card', async () => {
-      const scroll = vi.fn()
-      Element.prototype.scrollIntoView = scroll
-      ;(api.getStack as Mock).mockResolvedValue({
-        rev: 1,
-        roots: ['turn:1'],
-        nodes: [
-          { id: 'turn:1', kind: 'turn', children: ['msg:1', 'step:1', 'marker:tool:j'] },
-          { id: 'msg:1', kind: 'message', parent: 'turn:1', message: { role: 'user', content: 'run it' } },
-          { id: 'step:1', kind: 'step', parent: 'turn:1', children: ['tool:j'], step: { headline: 'Starting the gate', folded: true } },
-          {
-            id: 'tool:j',
-            kind: 'tool',
-            parent: 'step:1',
-            tool: { name: 'shell.run', display: 'Run command', job: { id: 'job-1', command: 'pytest -q', exitCode: 1 } },
-          },
-          { id: 'marker:tool:j', kind: 'marker', parent: 'turn:1', marker: { refs: ['tool:j'], labels: ['job-1'], failed: true } },
-        ],
-      })
-      const { container } = render(Chat, { sessionId: 's1', onBack: () => {} })
-      const transcript = await screen.findByTestId('transcript')
-      expect(container.querySelector('[data-node-id="tool:j"]')).toBeNull()
-      await fireEvent.click(await within(transcript).findByText(/job-1 failed/))
-      await waitFor(() => expect(container.querySelector('[data-node-id="tool:j"]')).toBeTruthy())
-      expect(scroll).toHaveBeenCalled()
-    })
-
     it('falls back to the legacy list when the agent has no stack', async () => {
       ;(api.getStack as Mock).mockResolvedValue('unsupported')
       render(Chat, { sessionId: 's1', onBack: () => {} })
@@ -255,7 +228,7 @@ describe('Chat', () => {
       ],
     })
     const withSub = () =>
-      tree([{ id: 'sub:3', kind: 'subagent', parent: 'step:1', subagent: { label: 'reviewer', status: 'running' } }], ['sub:3'])
+      tree([{ id: 'tool:1:g', kind: 'tool', parent: 'step:1', tool: { name: 'agent.run', display: 'Run agent', subagentId: 3, calls: [{ target: 'reviewer' }] } }], ['tool:1:g'])
     const childTree = {
       rev: 1,
       roots: ['turn:9'],

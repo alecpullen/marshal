@@ -45,11 +45,9 @@ func todoStack(t *testing.T) Model {
 // todoDrivenTurn makes the model's latest turn one that is working from the
 // list: a user turn, the list, and a beat bound to its in-progress item.
 //
-// The band only shows todo progress for such a turn (viewmodel's
-// DrivenByTodos), so a list merely present on the session — left over from an
-// earlier turn, or never touched by this one — holds no band rows. Tests that
-// want band progress must say so through this helper rather than by setting
-// todos alone.
+// A list on the session now drives the band whatever the turn did, so this
+// helper is no longer required for band rows. It still binds a beat, because
+// tests use it to get a running turn.
 func todoDrivenTurn(t *testing.T, m *Model, todos []native.TodoItem) {
 	t.Helper()
 	for i := range todos {

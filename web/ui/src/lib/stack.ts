@@ -21,17 +21,13 @@ export interface WireStep {
   todoId?: string
   /** Set on the one beat where work moves to a different todo. */
   todo?: WireTodoLabel
-  /** The agent finished this beat and it is older than the newest few. */
-  folded?: boolean
   /** The `session.Step` IDs this beat merges, oldest first. */
   stepIds?: number[]
   startedAt?: number
   endedAt?: number
   thoughts?: WireThought[]
-  liveThinking?: string
 }
-// A todo transition, shown once as a divider rather than repeated on every
-// later beat of the same todo.
+// A todo transition: the beat where work moves to a different todo.
 export interface WireTodoLabel {
   id: string
   index: number
@@ -60,33 +56,46 @@ export interface WireRunning { target?: string; output?: string; startedAt?: num
 export interface WireTool {
   name: string
   display: string
+  workKey?: string
   calls?: WireCall[]
   running?: WireRunning
-  /** Set when this row is a background job's card. */
-  job?: WireJob
+  /** The subagent this row started, 0 when it started none. */
+  subagentId?: number
 }
-/** A background job's card: the call that started it, settled in place. */
-export interface WireJob {
+/** One finished piece of background work at the moment it ended: a job's exit or a subagent's end. */
+export interface WireCompletion {
+  source: string
   id: string
-  command: string
-  running?: boolean
-  /** The session ended while the job ran; exitCode means nothing. */
-  lost?: boolean
-  exitCode: number
-  /** When the job was dispatched (unix ms), for a running card's clock. */
+  subagentId?: number
+  label: string
+  outcome: string
+  failed?: boolean
+  exitCode?: number
+  stopCause?: string
   startedAt?: number
+  endedAt?: number
   durationMs?: number
+  measure?: string
+  summary?: string
+  command?: string
+  cwd?: string
   output?: string
+  report?: string
+  error?: string
+  workKey?: string
+  executionId?: string
+  reportMessageId?: number
   truncated?: boolean
 }
-/** A one-line completion marker: what finished, and when. */
-export interface WireMarker {
-  /** Node IDs of the cards this marker reports on. */
-  refs: string[]
-  labels: string[]
-  failed?: boolean
-  at?: number
-  durationMs?: number
+/** A beat's plan line: the todo list as the beat's last todo.write left it. */
+export interface WirePlan {
+  /** Each item's status in list order: "completed", "in_progress" or "pending". */
+  status?: string[]
+  done: number
+  total: number
+  active?: number
+  activeText?: string
+  cleared?: boolean
 }
 export interface WireMessage {
   role: string
@@ -100,22 +109,6 @@ export interface WireMessage {
   at?: number
 }
 export interface WireThinking { text: string; durationMs?: number }
-export interface WireSubagent {
-  label: string
-  status: string
-  role?: string
-  model?: string
-  provider?: string
-  toolCalls?: number
-  currentTool?: string
-  tokens?: number
-  summary?: string
-  error?: string
-  salvaged?: string
-  startedAt?: number
-  endedAt?: number
-  truncated?: boolean
-}
 export interface WireRunEvent {
   kind: string
   taskN?: number
@@ -182,9 +175,9 @@ export interface WireNode {
   tool?: WireTool
   message?: WireMessage
   thinking?: WireThinking
-  subagent?: WireSubagent
   runEvent?: WireRunEvent
-  marker?: WireMarker
+  completion?: WireCompletion
+  plan?: WirePlan
   receipt?: WireReceipt
   band?: WireBand
 }

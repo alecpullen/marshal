@@ -23,6 +23,11 @@ func TestEscClearsTheSelectionBeforeBrowsing(t *testing.T) {
 
 func TestDrillClearsTheSelection(t *testing.T) {
 	m, _ := selectionFixture(t)
+	// The fixture renders no subagent card any more, so this test registers
+	// the child it drills into itself.
+	m.state.RegisterSubagent("explore repo", newChildState(t))
+	m.invalidateTranscript()
+	m.refreshViewport()
 	l := lineOf(t, &m, "Model switched")
 	selectRows(t, &m, selPos{l, 0}, selPos{l, 79})
 	m.drillIntoSubagent(m.state.Subagents()[0])

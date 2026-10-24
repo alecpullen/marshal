@@ -255,22 +255,19 @@ func TestStackPatchAndDetailAgreeOnExecutionEvidence(t *testing.T) {
 		t.Fatalf("patch = %+v, want upserts", patch)
 	}
 
-	// The patch itself carries the card; the detail endpoint carries the
+	// The patch itself carries the launch row; the detail endpoint carries the
 	// evidence for the same node.
 	var toolID string
 	for _, n := range patch.Upsert {
-		if n.Tool != nil && n.Tool.Job != nil {
+		if n.Tool != nil && n.Tool.Name == "shell.run" {
 			toolID = n.ID
-			if n.Tool.Job.ExecutionID != "exec-patch" {
-				t.Fatalf("patch card = %+v, want the execution identity", n.Tool.Job)
-			}
-			if n.Tool.Job.Wait != "10s" || n.Tool.Job.DetachReason != "wait expired" {
-				t.Fatalf("patch card = %+v, want the wait/handoff evidence", n.Tool.Job)
+			if n.Tool.WorkKey == "" {
+				t.Fatalf("patch row = %+v, want the execution work key", n.Tool)
 			}
 		}
 	}
 	if toolID == "" {
-		t.Fatalf("no job card in the patch: %+v", patch.Upsert)
+		t.Fatalf("no shell.run row in the patch: %+v", patch.Upsert)
 	}
 
 	got, err := callNodeID(t, m, toolID)
@@ -744,11 +741,11 @@ func newWorkStackTurnManager(t *testing.T, st *session.State, rec *kindRecorder)
 	})
 }
 
-// TestWorkACPLegacyStackAndWatchRemainCompatible is the compatibility contract
-// for unmodified clients: opting into the work stream does not switch the ACP
-// stack projection, so the band keeps its running-card entity listings, and a
-// legacy watch stream on the same connection still forwards.
-func TestWorkACPLegacyStackAndWatchRemainCompatible(t *testing.T) {
+// TestWorkACPStackAndWatchRemainCompatible is the compatibility contract for
+// unmodified clients: opting into the work stream does not switch the ACP stack
+// projection, so the band keeps its running-card entity listings, and a watch
+// stream on the same connection still forwards.
+func TestWorkACPStackAndWatchRemainCompatible(t *testing.T) {
 	st := runningJobSession(t)
 	rec := &kindRecorder{}
 	tm := newWorkStackTurnManager(t, st, rec)

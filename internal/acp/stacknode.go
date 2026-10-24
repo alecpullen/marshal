@@ -280,7 +280,7 @@ func (m *TurnManager) treeFor(sessionID string, subagentID int64) (*TurnRuntime,
 			busy = v.Status == session.SubagentRunning
 		}
 	}
-	return rt, src, viewmodel.Build(stackSnapshotOf(src, busy, drilled, time.Now())), nil
+	return rt, src, viewmodel.Build(stackSnapshotOf(src, busy, time.Now())), nil
 }
 
 // StackNode handles session/stack_node: one node's wire form plus the detail

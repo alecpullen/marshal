@@ -7,6 +7,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/progress"
 	"marshal/internal/tools/registry"
 )
 
@@ -160,196 +161,34 @@ func TestKindStringCoversEveryKind(t *testing.T) {
 	}
 }
 
-func TestWireMarkerAndJobCard(t *testing.T) {
+// A client outside the process needs the whole event: what finished, how it
+// ended, its final measurement, and a bounded tail of its output.
+func TestWireCompletionCarriesTheEvent(t *testing.T) {
+	long := strings.Repeat("x", WireTextCap+64)
+	exit := jobExit(5, "job-4", 2)
+	exit.JobExit.Output = long
+	exit.JobExit.Progress = &progress.Snapshot{Frame: progress.Frame{Metrics: []progress.Metric{
+		{ID: "passed", Label: "Passed", Current: 210},
+		{ID: "failed", Label: "Failed", Current: 2},
+	}}}
 	nodes := Build(Snapshot{Items: []session.TranscriptItem{
-		userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-4"), jobExit(5, "job-4", 2),
+		userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-4"), exit,
 	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
-	var sawJob, sawMarker bool
+	var got *WireCompletion
 	for _, n := range Project(nodes).Nodes {
-		if n.Tool != nil && n.Tool.Job != nil {
-			sawJob = n.Tool.Job.ExitCode == 2 && !n.Tool.Job.Running
-		}
-		if n.Kind == "marker" {
-			sawMarker = n.Marker != nil && n.Marker.Failed && n.Marker.Refs[0] == "tool:1:j"
+		if n.Completion != nil {
+			got = n.Completion
 		}
 	}
-	if !sawJob || !sawMarker {
-		t.Fatalf("job %v marker %v", sawJob, sawMarker)
+	if got == nil {
+		t.Fatalf("no completion on the wire:\n%s", shape(nodes))
 	}
-}
-
-// A client outside the process needs the same execution evidence the card
-// renders, plus the two facts only the launch's own record carries: the identity
-// the job is paired by across resumes, and the wait it was launched with.
-func TestWireJobCarriesWaitAndDetachEvidence(t *testing.T) {
-	start := structuredJobStart(1, "j", 2, "job-w", "exec-w")
-	start.Audit.Notice = registry.NewCommandExecutionNotice(registry.CommandExecution{
-		ExecutionID: "exec-w", DisplayID: "job-w", ConversationID: "conv",
-		Attachment: registry.ExecutionAttachmentBackground, Wait: "10s",
-		DetachReason: "wait expired", DetachedAt: at(3),
-	})
-	exit := structuredJobExit(5, "job-w", "exec-w", nil)
-	exit.JobExit.State, exit.JobExit.Outcome = "killed", "stopped"
-	exit.JobExit.StopCause = "turn stop requested"
-	nodes := Build(Snapshot{
-		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start, exit},
-		Steps: []session.Step{stepOf(1, 1, 1, 3)},
-	})
-	var job *WireJob
-	for _, n := range Project(nodes).Nodes {
-		if n.Tool != nil && n.Tool.Job != nil {
-			job = n.Tool.Job
-		}
+	if got.ID != "job-4" || got.Outcome != "exit 2" || got.Measure != "210 passed, 2 failed" {
+		t.Fatalf("completion = %+v", got)
 	}
-	if job == nil {
-		t.Fatal("no job card in the projection")
+	if len(got.Output) > WireTextCap || !got.Truncated {
+		t.Fatalf("output = %d bytes, truncated = %v", len(got.Output), got.Truncated)
 	}
-	if job.ExecutionID != "exec-w" {
-		t.Fatalf("ExecutionID = %q, want the execution identity", job.ExecutionID)
-	}
-	if job.Wait != "10s" || job.DetachReason != "wait expired" || job.DetachedAt == 0 {
-		t.Fatalf("job = %+v, want the handoff evidence", job)
-	}
-	if job.Status != "killed" || job.StopCause != "turn stop requested" {
-		t.Fatalf("job = %+v, want the stop evidence", job)
-	}
-	if job.Exit != nil {
-		t.Fatalf("Exit = %v, want it omitted for an unobserved exit", *job.Exit)
-	}
-	raw, err := json.Marshal(job)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), `"executionId":"exec-w"`) {
-		t.Fatalf("the identity is not on the wire: %s", raw)
-	}
-}
-
-// The new fields are additive: a legacy card with no structured launch record
-// projects none of them, and marshals exactly as before.
-func TestWireJobOmitsEvidenceForLegacyCard(t *testing.T) {
-	nodes := Build(Snapshot{Items: []session.TranscriptItem{
-		userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-legacy"), jobExit(5, "job-legacy", 0),
-	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
-	for _, n := range Project(nodes).Nodes {
-		if n.Tool == nil || n.Tool.Job == nil {
-			continue
-		}
-		job := n.Tool.Job
-		if job.ExecutionID != "" || job.Wait != "" || job.DetachReason != "" || job.DetachedAt != 0 {
-			t.Fatalf("job = %+v, want no structured evidence", job)
-		}
-		raw, err := json.Marshal(job)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, key := range []string{"executionId", "wait", "detachReason", "detachedAt"} {
-			if strings.Contains(string(raw), `"`+key+`"`) {
-				t.Fatalf("legacy card carries %s: %s", key, raw)
-			}
-		}
-		return
-	}
-	t.Fatal("no job card in the projection")
-}
-
-// Display text in the new fields is scrubbed like every other wire field: a
-// detach reason is actor-supplied, and a client renders it.
-func TestWireJobScrubsDetachEvidence(t *testing.T) {
-	start := structuredJobStart(1, "j", 2, "job-s", "exec-s")
-	start.Audit.Notice = registry.NewCommandExecutionNotice(registry.CommandExecution{
-		ExecutionID: "exec-s", DisplayID: "job-s", Attachment: registry.ExecutionAttachmentBackground,
-		Wait: "10s", DetachReason: "wait\x1b]0;pwned\x07 expired",
-	})
-	nodes := Build(Snapshot{
-		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start},
-		Steps: []session.Step{stepOf(1, 1, 1, 3)},
-	})
-	for _, n := range Project(nodes).Nodes {
-		if n.Tool == nil || n.Tool.Job == nil {
-			continue
-		}
-		if strings.ContainsAny(n.Tool.Job.DetachReason, "\x1b\x07") {
-			t.Fatalf("detachReason = %q, still carries a control sequence", n.Tool.Job.DetachReason)
-		}
-		if !strings.Contains(n.Tool.Job.DetachReason, "wait") {
-			t.Fatalf("detachReason = %q, want the text preserved", n.Tool.Job.DetachReason)
-		}
-		return
-	}
-	t.Fatal("no job card in the projection")
-}
-
-// A client outside the process needs the same execution evidence the card
-// renders: the observed exit (distinct from the legacy -1 spelling of unknown),
-// the lifecycle state, the attachment, an accepted stop's cause and whether the
-// retained output was capped.
-func TestWireJobCarriesExecutionEvidence(t *testing.T) {
-	code := 3
-	start := structuredJobStart(1, "j", 2, "job-5", "exec-5")
-	exit := structuredJobExit(5, "job-5", "exec-5", &code)
-	exit.JobExit.State, exit.JobExit.StopCause, exit.JobExit.Truncated = "killed", "turn stop", true
-	nodes := Build(Snapshot{
-		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start, exit},
-		Steps: []session.Step{stepOf(1, 1, 1, 3)},
-	})
-	var job *WireJob
-	for _, n := range Project(nodes).Nodes {
-		if n.Tool != nil && n.Tool.Job != nil {
-			job = n.Tool.Job
-		}
-	}
-	if job == nil {
-		t.Fatal("no job card in the projection")
-	}
-	if job.Exit == nil || *job.Exit != 3 || job.ExitCode != 3 {
-		t.Fatalf("exit = %v / %d, want the observed 3", job.Exit, job.ExitCode)
-	}
-	if job.Status != "killed" || job.Attachment != "background" || job.StopCause != "turn stop" || !job.Truncated {
-		t.Fatalf("job = %+v, want its evidence projected", job)
-	}
-	if job.Running || job.Lost {
-		t.Fatalf("job = %+v, want a settled card", job)
-	}
-	if _, err := json.Marshal(job); err != nil {
-		t.Fatalf("a card with evidence must marshal: %v", err)
-	}
-}
-
-// An exit that was never observed is projected as absent, not as a zero a client
-// would render as success; the legacy -1 field stays for older clients.
-func TestWireJobOmitsUnobservedExit(t *testing.T) {
-	nodes := Build(Snapshot{Items: []session.TranscriptItem{
-		userMsg(1, 0), narration(2, 1, 1, "Go."),
-		structuredJobStart(1, "j", 2, "job-6", "exec-6"),
-		session.TranscriptItem{Timestamp: at(5), Kind: session.KindJobExit,
-			JobExit: &session.JobExit{ID: "job-6", ExecutionID: "exec-6", ExitCode: -1,
-				State: "failed", Outcome: "startup_failure", At: at(5)}},
-	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
-	for _, n := range Project(nodes).Nodes {
-		if n.Tool == nil || n.Tool.Job == nil {
-			continue
-		}
-		job := n.Tool.Job
-		if job.Exit != nil {
-			t.Fatalf("Exit = %v, want it omitted for an unobserved exit", *job.Exit)
-		}
-		if job.ExitCode != -1 {
-			t.Fatalf("ExitCode = %d, want the legacy -1", job.ExitCode)
-		}
-		raw, err := json.Marshal(job)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(raw), `"exit"`) {
-			t.Fatalf("the wire omitted nothing: %s", raw)
-		}
-		if !strings.Contains(string(raw), `"status":"failed"`) {
-			t.Fatalf("the wire lost the lifecycle status: %s", raw)
-		}
-		return
-	}
-	t.Fatal("no job card in the projection")
 }
 
 func TestElideWorkdir(t *testing.T) {
@@ -381,37 +220,42 @@ func TestAwaitSummaryIsJustTheWait(t *testing.T) {
 	}
 }
 
-// The wire band keeps the legacy entity listing for a client that has not opted
-// into the pinned surface, and the LiveWork projection drops the duplicated live
-// cards while the band's own summary data stays whole.
-func TestLiveWorkWireOptInPreservesLegacyBand(t *testing.T) {
-	items := []session.TranscriptItem{
-		userMsg(1, 0), narration(2, 1, 1, "Launch."), jobStart(1, "j", 2, "job-1"),
+// A tool row names the subagent it started, so a client can pair the dispatch
+// row with the child it launched without parsing display text.
+func TestWireToolNamesTheSubagentItStarted(t *testing.T) {
+	tree := Project(Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0), narration(2, 1, 1, "Dispatch."),
+			subagentDispatch(1, "g", 2, "task-1", 3),
+			audit("file.read", 1, "r", 3),
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 4)},
+	}))
+	byID := wireByID(t, tree)
+	dispatch := byID["tool:1:g"]
+	if dispatch.Tool == nil || dispatch.Tool.SubagentID != 3 {
+		t.Fatalf("dispatch row = %+v, want subagentId 3", dispatch.Tool)
 	}
-	steps := []session.Step{stepOf(1, 1, 1, 3)}
-	list := todos(db.TodoItem{ID: "p", Content: "Parser", Status: "in_progress"},
-		db.TodoItem{ID: "q", Content: "Q", Status: "pending"})
+	read := byID["tool:1:r"]
+	if read.Tool == nil || read.Tool.SubagentID != 0 {
+		t.Fatalf("file.read row = %+v, want no subagentId", read.Tool)
+	}
+}
 
-	legacy := Snapshot{Items: items, Steps: steps, Todos: list, Busy: true}
-	lb := BandOf(legacy, Build(legacy))
-	if len(lb.Entities) != 1 {
-		t.Fatalf("legacy band lost its running-card listing: %+v", lb.Entities)
-	}
-	if wb := ProjectBand(lb); len(wb.Band.Entities) != 1 {
-		t.Fatalf("legacy wire band dropped the optional entities: %+v", wb.Band.Entities)
-	}
-
-	live := legacy
-	live.LiveWork = true
-	ab := BandOf(live, Build(live))
-	if len(ab.Entities) != 0 {
-		t.Fatalf("LiveWork band must omit the duplicated entity listings: %+v", ab.Entities)
-	}
-	// The summary data the band is the single source for is unchanged.
-	if len(ab.Tasks) != len(lb.Tasks) || len(ab.Tasks) != 2 {
-		t.Fatalf("LiveWork band lost its todo/task summary: %d vs %d", len(ab.Tasks), len(lb.Tasks))
-	}
-	if ab.Total != lb.Total || ab.Done != lb.Done {
-		t.Fatalf("LiveWork band changed todo progress: %+v vs %+v", ab, lb)
+// No tree carries a subagent node any more: a subagent item is a completion
+// event, never a card.
+func TestWireHasNoSubagentNodes(t *testing.T) {
+	tree := Project(Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0), narration(2, 1, 1, "Dispatch."),
+			{Timestamp: at(2), Kind: session.KindSubagent,
+				Subagent: &session.SubagentView{ID: 3, Label: "Task 1", StartedAt: at(2), EndedAt: at(3), Status: session.SubagentDone}},
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 4)},
+	}))
+	for _, n := range tree.Nodes {
+		if n.Kind == "subagent" {
+			t.Fatalf("tree carries a subagent node: %+v", n)
+		}
 	}
 }

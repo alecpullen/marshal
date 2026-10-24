@@ -35,7 +35,7 @@ const (
 	KindThinking
 	KindPassthrough
 	KindReceipt
-	KindMarker
+	KindCompletion
 	KindPlanUpdate
 )
 
@@ -70,8 +70,7 @@ type Node struct {
 	Tools      []registry.AuditEvent // len > 1 = merged same-tool run within a step
 	Active     *session.ActiveToolCall
 	Receipt    *ReceiptInfo
-	Job        *JobState
-	Marker     *MarkerInfo
+	Completion *CompletionInfo
 	PlanUpdate *PlanUpdate
 }
 
@@ -84,10 +83,12 @@ type StepInfo struct {
 	Step session.Step
 	// StepIDs are the responses merged into this beat, in order. Empty for a
 	// step-less beat.
-	StepIDs      []session.StepID
-	Narration    []*session.Message
-	Thinking     []*session.ThinkingEntry
-	LiveThinking string // in-progress reasoning when this is the live beat
+	StepIDs   []session.StepID
+	Narration []*session.Message
+	Thinking  []*session.ThinkingEntry
+	// LiveThinking is the in-progress reasoning; set only on the live
+	// reasoning node (LiveThinkingID), never on a beat.
+	LiveThinking string
 
 	// TodoID is the task the beat's first response was bound to: the stored
 	// binding, or for a narrated response whose only call was a todo.write,
@@ -96,6 +97,10 @@ type StepInfo struct {
 	// TodoWrites are the beat's todo.write calls. They are not tool rows: the
 	// last one that changed the list is the beat's plan row (KindPlanUpdate).
 	TodoWrites []registry.AuditEvent
+	// labelPlan is the plan left by the write that re-bound this beat
+	// (effectiveTodoID); nil otherwise. absorb does not touch it, so a beat
+	// keeps its first step's.
+	labelPlan *PlanUpdate
 
 	// Todo is set on the beat where work moves to a different todo.
 	Todo *TodoLabel
@@ -110,20 +115,7 @@ type Snapshot struct {
 	Busy        bool
 	// Todos is the current task list; it names and orders the task headers.
 	Todos []db.TodoItem
-	// Drilled is true while showing a subagent's own transcript. Then its
-	// agent.run audits render normally; otherwise the subagent card replaces
-	// them.
-	Drilled bool
-	// LiveWork is true while a pinned live-work surface owns presentation of
-	// running work. Then the transcript keeps each actual dispatch/result row
-	// once — its agent.run audits are not suppressed — and the subagent child
-	// boxes are omitted, because the pinned surface shows the live card. False
-	// retains the legacy projection exactly.
-	LiveWork bool
-	// RunningSubagent is true when a subagent card is rendering a running
-	// child, so the parent's in-flight agent.run row is suppressed.
-	RunningSubagent bool
-	Now             time.Time
+	Now   time.Time
 }
 
 // toolCallKey scopes a call ID to its step: providers reuse IDs like call_0
@@ -161,8 +153,8 @@ func ToolID(ev registry.AuditEvent) NodeID { return NodeID{KindTool, ToolKey(ev)
 func ThinkingID(t *session.ThinkingEntry) NodeID { return NodeID{KindThinking, ThinkingKey(t)} }
 
 // AnyLive reports whether the node or any descendant needs per-tick
-// re-rendering. A settled step can still hold a running subagent card or an
-// in-flight call, so a cache must look below the top level.
+// re-rendering. A settled step can still hold an in-flight call, so a cache
+// must look below the top level.
 func (n *Node) AnyLive() bool {
 	if n.Live {
 		return true
@@ -223,19 +215,12 @@ func dispatchWorkKey(ev *registry.AuditEvent) string {
 // Build groups a snapshot into turn nodes, plus a preamble turn for items
 // before the first user turn.
 func Build(s Snapshot) []*Node {
-	items := make([]session.TranscriptItem, 0, len(s.Items))
-	for _, it := range s.Items {
-		if !s.LiveWork && !s.Drilled && it.Kind == session.KindAudit && it.Audit != nil && it.Audit.ToolName == "agent.run" {
-			continue
-		}
-		items = append(items, it)
-	}
-	// Index the cards before dropping job exits from the tree: an exit is
-	// no longer a row of its own (the card it settles carries the outcome,
-	// and a marker carries the moment), but it is still what settles the
-	// card that started the job.
+	items := s.Items
+	// Index the completions before dropping job exits from the tree: an exit
+	// is not a row of its own, but it becomes the completion event that
+	// follows the beat which launched the job.
 	ci := indexCards(items)
-	kept := items[:0]
+	kept := make([]session.TranscriptItem, 0, len(items))
 	for _, it := range items {
 		if it.Kind == session.KindJobExit {
 			continue
@@ -281,6 +266,9 @@ func Build(s Snapshot) []*Node {
 		turns = append(turns, &turn{})
 	}
 	out := make([]*Node, 0, len(turns))
+	// plan is the newest plan in effect from the turns already built, so a
+	// turn's tags read the plan that was current when it ran.
+	var plan *PlanUpdate
 	for i, t := range turns {
 		last := i == len(turns)-1
 		key := "turn:pre"
@@ -302,7 +290,7 @@ func Build(s Snapshot) []*Node {
 		if i+1 < len(turns) && turns[i+1].msg != nil {
 			to = turns[i+1].msg.CreatedAt
 		}
-		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg, ci, ci.markersIn(from, to))
+		node.Children, plan = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg, ci.completionsIn(from, to), plan)
 		out = append(out, node)
 	}
 	return out
@@ -363,16 +351,25 @@ type stepAcc struct {
 	info   *StepInfo
 	loose  bool
 	audits []registry.AuditEvent
-	cards  []*Node
 	first  time.Time
 }
 
-func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64, turnKey string, userMsg *session.Message, ci cardIndex, markers []block) []*Node {
+func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]session.Step, s Snapshot, lastTurn bool, turnMsgID int64, turnKey string, userMsg *session.Message, markers []block, before *PlanUpdate) ([]*Node, *PlanUpdate) {
 	var blocks []block
 	steps := map[session.StepID]*stepAcc{}
 	var stepOrder []session.StepID
 	var loose []*stepAcc
 	var curLoose *stepAcc
+
+	// turnSteps are this turn's steps in start order, so a write-only beat can
+	// find the step its actor moved on to.
+	var turnSteps []session.Step
+	for _, st := range s.Steps {
+		if st.TurnMsgID == turnMsgID {
+			turnSteps = append(turnSteps, st)
+		}
+	}
+	sort.SliceStable(turnSteps, func(i, j int) bool { return turnSteps[i].StartedAt.Before(turnSteps[j].StartedAt) })
 
 	idStep := func(id session.StepID) *stepAcc {
 		if a, ok := steps[id]; ok {
@@ -405,7 +402,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 
-	var cards []session.TranscriptItem
 	for i := range items {
 		it := items[i]
 		switch it.Kind {
@@ -460,44 +456,10 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 			}
 		case session.KindSubagent:
 			curLoose = nil
-			cards = append(cards, it)
+			continue
 		default:
 			curLoose = nil
 			blocks = append(blocks, block{it.Timestamp, passthrough(&items[i])})
-		}
-	}
-
-	// Subagent cards go inside the orchestrator step that was running when
-	// the card began; otherwise they stand at turn level. Under LiveWork the
-	// pinned surface owns the live card, so the transcript omits the parent
-	// child boxes and keeps only the dispatch/result rows.
-	if !s.LiveWork {
-		for i := range cards {
-			it := cards[i]
-			node := passthrough(&cards[i])
-			var home *stepAcc
-			for _, id := range stepOrder {
-				a := steps[id]
-				rec := a.info.Step
-				if rec.ID == 0 || rec.Actor.Role != "" {
-					continue
-				}
-				end := rec.EndedAt
-				if end.IsZero() {
-					end = s.Now
-					if end.IsZero() {
-						end = time.Now()
-					}
-				}
-				if !it.Timestamp.Before(rec.StartedAt) && !it.Timestamp.After(end) {
-					home = a
-				}
-			}
-			if home != nil {
-				home.cards = append(home.cards, node)
-			} else {
-				blocks = append(blocks, block{it.Timestamp, node})
-			}
 		}
 	}
 
@@ -516,11 +478,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	if lastTurn && s.InProgress.Active && s.InProgress.Reasoning != "" {
 		reasoning = s.InProgress.Reasoning
 	}
-	liveThinkingPlaced := false
-	if live != nil && reasoning != "" {
-		live.info.LiveThinking = reasoning
-		liveThinkingPlaced = true
-	}
 
 	// Active (in-flight) tool calls become live rows of their step.
 	var strayActive []session.ActiveToolCall
@@ -528,9 +485,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	for _, atc := range s.ActiveTools {
 		if !lastTurn {
 			break
-		}
-		if atc.Name == "agent.run" && !s.LiveWork && !s.Drilled && s.RunningSubagent {
-			continue
 		}
 		if atc.StepID > 0 && steps[atc.StepID] != nil {
 			activeByStep[atc.StepID] = append(activeByStep[atc.StepID], atc)
@@ -573,16 +527,18 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 				}
 				continue
 			}
-			// A shell row that started a background job becomes that job's card,
-			// settled already when the transcript holds the exit.
-			ci.settleJob(r)
+			// A shell row that started a background job is an ordinary call
+			// row: its result is the job it launched, never the job's exit.
 			node.Children = append(node.Children, r)
 		}
-		node.Children = append(node.Children, a.cards...)
 		if id != 0 {
 			a.info.StepIDs = []session.StepID{id}
 		}
-		a.info.TodoID = effectiveTodoID(a.info, len(audits) == 0 && len(active) == 0, s.Todos)
+		todoID, rebound := effectiveTodoID(a.info, len(audits) == 0 && len(active) == 0, turnSteps)
+		a.info.TodoID = todoID
+		if rebound && plan != nil {
+			a.info.labelPlan = plan.PlanUpdate
+		}
 		node.Version = versionOfStep(node)
 		return node
 	}
@@ -608,10 +564,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		if isLive {
 			active = strayActive
 			strayActive = nil
-			if reasoning != "" {
-				a.info.LiveThinking = reasoning
-				liveThinkingPlaced = true
-			}
 		}
 		n := finish(0, a, isLive, active)
 		if empty(n) {
@@ -621,12 +573,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	}
 
 	// Anything still unplaced renders as before, at turn level.
-	if reasoning != "" && !liveThinkingPlaced {
-		blocks = append(blocks, block{s.InProgress.StartedAt, &Node{
-			ID: LiveThinkingID, Kind: KindThinking, Live: true,
-			Step: &StepInfo{LiveThinking: reasoning},
-		}})
-	}
 	for i := range strayActive {
 		atc := strayActive[i]
 		blocks = append(blocks, block{atc.StartedAt, activeNode(&atc)})
@@ -645,14 +591,13 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	for _, b := range blocks {
 		out = append(out, b.node)
 	}
-	out = mergeBeats(out)
+	out = mergeBeats(out, s.Busy && lastTurn)
 	for _, n := range out {
 		if n.Kind == KindStep {
 			keepLastPlanRow(n)
 		}
 	}
-	out = coalesceMarkers(out)
-	labelTransitions(out, s.Todos)
+	after := labelTransitions(out, s.Todos, before)
 	// keepLastPlanRow and labelTransitions run after finish/absorb computed
 	// each beat's version, so recompute it now that the payload is final.
 	for _, n := range out {
@@ -661,16 +606,24 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 	if !(s.Busy && lastTurn) {
-		if rc := receipt(turnKey, out, userMsg, s); rc != nil {
+		if rc := receipt(turnKey, out, userMsg, before, after); rc != nil {
 			out = append(out, rc)
 		}
 	}
-	return out
+	// Streaming reasoning is drawn last, below every row, so it never lands
+	// inside a beat's spine.
+	if reasoning != "" {
+		out = append(out, &Node{
+			ID: LiveThinkingID, Kind: KindThinking, Live: true,
+			Step: &StepInfo{LiveThinking: reasoning},
+		})
+	}
+	return out, after
 }
 
 func empty(n *Node) bool {
 	return n.Step != nil && len(n.Step.Narration) == 0 && len(n.Step.Thinking) == 0 &&
-		len(n.Children) == 0 && n.Step.LiveThinking == ""
+		len(n.Children) == 0
 }
 
 // toolRows orders a step's calls by time, merging consecutive same-tool runs,
@@ -693,6 +646,9 @@ func toolRows(audits []registry.AuditEvent, active []session.ActiveToolCall) []*
 		}
 		row := &Node{ID: ToolID(ev), Kind: KindTool, Tools: []registry.AuditEvent{ev}}
 		row.WorkKey = dispatchWorkKey(&ev)
+		if row.WorkKey == "" {
+			row.WorkKey = commandWorkKey(ev)
+		}
 		rows = append(rows, row)
 	}
 	for i := range rows {
@@ -730,6 +686,10 @@ func passthrough(it *session.TranscriptItem) *Node {
 			}
 		}
 	case session.KindSubagent:
+		// Unreachable: buildTurn skips subagent items before they reach a
+		// block, and TestSubagentItemIsNeverANode pins that no node carries
+		// this kind. Kept so a future caller cannot silently fall through to
+		// a passthrough node with a default ID.
 		n.Kind = KindSubagent
 		if it.Subagent != nil {
 			n.ID = NodeID{KindSubagent, fmt.Sprintf("sub:%d", it.Subagent.ID)}
@@ -888,8 +848,8 @@ func versionOfStep(n *Node) uint64 {
 	if st.Todo != nil {
 		b.f("lbl|%s|%d|%d|%s|", st.Todo.ID, st.Todo.Index, st.Todo.Total, st.Todo.Content)
 	}
-	b.f("st|%d|%d|%s|%s|%s|%s|%d|%d|%d|%d|", r.ID, r.TurnMsgID, r.Actor.Role, r.Actor.Label, r.Actor.Model, r.Actor.Provider,
-		r.StartedAt.UnixNano(), r.EndedAt.UnixNano(), len(st.StepIDs), len(st.LiveThinking))
+	b.f("st|%d|%d|%s|%s|%s|%s|%d|%d|%d|", r.ID, r.TurnMsgID, r.Actor.Role, r.Actor.Label, r.Actor.Model, r.Actor.Provider,
+		r.StartedAt.UnixNano(), r.EndedAt.UnixNano(), len(st.StepIDs))
 	for _, id := range st.StepIDs {
 		b.f("sid|%d|", id)
 	}

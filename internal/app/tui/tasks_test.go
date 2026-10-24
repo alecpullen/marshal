@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,6 +20,10 @@ import (
 // scriptedTasks seeds a turn with n todos, each worked in stepsPer steps, and
 // completes them one by one. When finish is true the turn ends with a final
 // answer. The last task is left in progress otherwise.
+//
+// Completing a task logs the todo.write a real turn would: the receipt counts
+// the items a turn's plan lines moved to completed, so a fixture that only
+// called SetTodos would produce a receipt with no task count.
 func scriptedTasks(t *testing.T, m *Model, n, stepsPer int, finish bool) {
 	t.Helper()
 	m.state.AddMessage(session.RoleUser, "build the thing", session.ContentTypePlain)
@@ -39,14 +44,22 @@ func scriptedTasks(t *testing.T, m *Model, n, stepsPer int, finish bool) {
 				Timestamp: time.Now(), ToolName: "file.read", StepID: id, ToolCallID: fmt.Sprintf("c%d-%d", i, s),
 				Args: []byte(`{"path":"x.go"}`), ResultSummary: "ok",
 			})
-			m.state.EndStep(id)
-		}
-		if i < n-1 || finish {
-			todos[i].Status = "completed"
-			todos[i].CompletedAt = time.Now()
-			if err := m.state.SetTodos(append([]db.TodoItem(nil), todos...)); err != nil {
-				t.Fatal(err)
+			if s == stepsPer-1 && (i < n-1 || finish) {
+				todos[i].Status = "completed"
+				todos[i].CompletedAt = time.Now()
+				if err := m.state.SetTodos(append([]db.TodoItem(nil), todos...)); err != nil {
+					t.Fatal(err)
+				}
+				args, err := json.Marshal(map[string]any{"todos": todos})
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.state.LogToolCall(registry.AuditEvent{
+					Timestamp: time.Now(), ToolName: "todo.write", StepID: id, ToolCallID: fmt.Sprintf("w%d", i),
+					Args: args, ResultSummary: fmt.Sprintf("tasks updated · %d items", len(todos)),
+				})
 			}
+			m.state.EndStep(id)
 		}
 	}
 	if finish {
@@ -345,30 +358,6 @@ func TestTaskClockIgnoresIdleTimeBetweenTurns(t *testing.T) {
 	text := viewText(&m)
 	if strings.Contains(text, "5h") || strings.Contains(text, "300m") {
 		t.Fatalf("header clock counted the idle time:\n%s", text)
-	}
-}
-
-// Two todos can share their text; a todo.write-only step re-binds to the one
-// it just started, not to a later twin.
-func TestRebindPrefersTheTodoStartedNearestTheWrite(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(120, 50)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	now := time.Now()
-	todos := []db.TodoItem{
-		{ID: "t1", Content: "Run the tests", Status: "completed", StartedAt: now.Add(-time.Hour), CompletedAt: now.Add(-50 * time.Minute)},
-		{ID: "t2", Content: "Run the tests", Status: "pending"}, // a later twin, not started
-	}
-	_ = m.state.SetTodos(todos)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Starting the first test run. Here goes.")
-	m.state.LogToolCall(registry.AuditEvent{Timestamp: now.Add(-time.Hour), ToolName: "todo.write", StepID: id, ToolCallID: "w",
-		Args: []byte(`{"todos":[{"content":"Run the tests","status":"in_progress"}]}`)})
-	m.state.EndStep(id)
-	m.invalidateTranscript()
-	m.refreshViewport()
-	if m.taskStats["t1"].Steps != 1 || m.taskStats["t2"].Steps != 0 {
-		t.Fatalf("taskStats = %v: the old step must stay with t1, not move under the later twin", m.taskStats)
 	}
 }
 

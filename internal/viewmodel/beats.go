@@ -1,5 +1,7 @@
 package viewmodel
 
+import "time"
+
 // BeatRowCap is how many rows a beat shows before older ones collapse into a
 // "+N earlier calls" line. A model that rarely narrates can pile dozens of
 // calls into one beat; the live tail is what matters while watching.
@@ -11,37 +13,89 @@ const BeatRowCap = 8
 // ends the beat, so the transcript stays chronological; a todo change ends it
 // too, so the new todo gets its divider and its own work time.
 //
-// A completion marker that lands inside a beat is held until the beat ends,
-// so a card finishing mid-beat does not split the work around it.
-func mergeBeats(nodes []*Node) []*Node {
+// A completion event follows the beat whose row launched its work. Any other
+// event that ends while a beat is still open comes before that beat, because
+// the beat joins history only when it settles — the next block that does not
+// merge into it starts, or the turn ends. An event that ends after a finished
+// turn's last beat ended follows it.
+//
+// open says the turn is the newest one and the session is busy, so its last
+// beat is still open.
+func mergeBeats(nodes []*Node, open bool) []*Node {
 	out := make([]*Node, 0, len(nodes))
 	var beat *Node
-	var held []*Node // markers that landed inside the open beat
-	flush := func() {
-		out = append(out, held...)
-		held = nil
+	var held []*Node // completions that landed while the beat was pending
+
+	settle := func(atEnd bool) {
+		if beat == nil {
+			return
+		}
+		before, after := splitHeld(beat, held, atEnd, open)
+		out = append(out, before...)
+		out = append(out, beat)
+		out = append(out, after...)
+		beat, held = nil, nil
 	}
+
 	for _, n := range nodes {
-		if n.Kind == KindMarker && beat != nil {
-			held = append(held, n)
+		if n.Kind == KindCompletion {
+			if beat != nil {
+				held = append(held, n)
+			} else {
+				out = append(out, n)
+			}
 			continue
 		}
 		if n.Kind != KindStep || n.Step == nil {
-			flush()
+			settle(false)
 			out = append(out, n)
-			beat = nil
 			continue
 		}
 		if beat != nil && len(n.Step.Narration) == 0 && sameActor(beat.Step, n.Step) && sameTodo(beat.Step, n.Step) {
 			absorb(beat, n)
 			continue
 		}
-		flush()
-		out = append(out, n)
+		settle(false)
 		beat = n
 	}
-	flush()
+	settle(true)
 	return out
+}
+
+// splitHeld divides the completions held while a beat was pending into those
+// that follow the beat and those that come before it.
+func splitHeld(beat *Node, held []*Node, atEnd, open bool) (before, after []*Node) {
+	launched := make(map[NodeID]bool, len(beat.Children))
+	for _, c := range beat.Children {
+		launched[c.ID] = true
+	}
+	ended := beat.Step.Step.EndedAt
+	for _, n := range held {
+		c := n.Completion
+		if c == nil {
+			before = append(before, n)
+			continue
+		}
+		if c.Launch.Key != "" && launched[c.Launch] {
+			after = append(after, n)
+			continue
+		}
+		if atEnd && !open && !ended.IsZero() && completionTime(c).After(ended) {
+			after = append(after, n)
+			continue
+		}
+		before = append(before, n)
+	}
+	return before, after
+}
+
+// completionTime is when a completion event happened: its end, or its start
+// when no end was recorded (a lost job).
+func completionTime(c *CompletionInfo) time.Time {
+	if !c.EndedAt.IsZero() {
+		return c.EndedAt
+	}
+	return c.StartedAt
 }
 
 // sameActor reports whether two beats were produced by the same agent. A
@@ -78,9 +132,6 @@ func absorb(beat, n *Node) {
 	bi.StepIDs = append(bi.StepIDs, ni.StepIDs...)
 	bi.Thinking = append(bi.Thinking, ni.Thinking...)
 	bi.TodoWrites = append(bi.TodoWrites, ni.TodoWrites...)
-	if ni.LiveThinking != "" {
-		bi.LiveThinking = ni.LiveThinking
-	}
 	beat.Children = append(beat.Children, n.Children...)
 	beat.Live = beat.Live || n.Live
 	beat.Version = versionOfStep(beat)

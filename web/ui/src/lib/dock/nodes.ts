@@ -68,16 +68,10 @@ export function nodeLabel(n: WireNode | undefined, id = ''): string {
   if (!n) return id
   if (n.step) return n.step.headline
   if (n.tool) return [n.tool.display, n.tool.calls?.[0]?.target ?? n.tool.running?.target].filter(Boolean).join(' ')
-  if (n.subagent) return n.subagent.label
   if (n.message) return n.message.content.split('\n')[0].slice(0, 80)
   if (n.thinking) return 'thinking'
   if (n.runEvent) return n.runEvent.title ?? n.runEvent.kind
-  if (n.marker) return `${n.marker.labels.join(' ')} ${n.marker.failed ? 'failed' : 'done'}`
+  if (n.completion) return `${n.completion.id} ${n.completion.label} ${n.completion.outcome}`
+  if (n.plan) return `plan ${n.plan.done}/${n.plan.total}`
   return id || n.id
-}
-
-/** The subagent id behind a `sub:<id>` node key. */
-export function subagentIdOf(nodeId: string): number | undefined {
-  const m = /^sub:(\d+)$/.exec(nodeId)
-  return m ? Number(m[1]) : undefined
 }

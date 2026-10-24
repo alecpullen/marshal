@@ -61,22 +61,19 @@ func (m *Model) refreshViewport() {
 		m.clearSelection()
 	}
 	m.updateViewportHeight()
-	transcriptState, drilling := m.transcriptSource()
+	transcriptState, _ := m.transcriptSource()
 
 	items := transcriptState.Transcript()
 	inProgress := transcriptState.InProgress()
 	active := transcriptState.ActiveToolCalls()
 	snap := viewmodel.Snapshot{
-		Items:           items,
-		Steps:           transcriptState.Steps(),
-		Todos:           transcriptState.Todos(),
-		ActiveTools:     active,
-		InProgress:      inProgress,
-		Busy:            m.busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
-		Drilled:         drilling,
-		RunningSubagent: m.state.HasRunningSubagent(),
-		LiveWork:        m.workService != nil,
-		Now:             m.now(),
+		Items:       items,
+		Steps:       transcriptState.Steps(),
+		Todos:       transcriptState.Todos(),
+		ActiveTools: active,
+		InProgress:  inProgress,
+		Busy:        m.busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
+		Now:         m.now(),
 	}
 	turns := viewmodel.Build(snap)
 	// The band is derived here, once, so the now bar and the frame height
@@ -234,7 +231,7 @@ func (m *Model) refreshViewport() {
 // continues it instead of starting a new paragraph.
 func narrationOnly(n *viewmodel.Node) bool {
 	return n.Kind == viewmodel.KindStep && n.Step != nil && !n.Live && len(n.Step.Narration) > 0 &&
-		len(n.Children) == 0 && len(n.Step.Thinking) == 0 && n.Step.LiveThinking == ""
+		len(n.Children) == 0 && len(n.Step.Thinking) == 0
 }
 
 // renderNode renders one top-level block, from the cache when it is still
@@ -276,8 +273,8 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 			m.noteRegionRows(viewmodel.LiveThinkingID, cnt)
 		}
 		return box, nil
-	case n.Kind == viewmodel.KindMarker && n.Marker != nil:
-		return renderMarker(n.Marker, width), nil
+	case n.Kind == viewmodel.KindCompletion && n.Completion != nil:
+		return renderCompletion(n.Completion, m.expandedUnder(n.ID, m.expandAll), width, c.workdir), nil
 	case n.Kind == viewmodel.KindTool && n.Active != nil:
 		return renderActiveToolCall(*n.Active, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
 	case n.Item != nil:
@@ -303,9 +300,9 @@ func rowBeats(turns []*viewmodel.Node) map[viewmodel.NodeID]viewmodel.NodeID {
 	return out
 }
 
-// blockTarget says what a click on a top-level block does. Steps and
-// expandable items toggle; a subagent card with a child drills in; plain
-// messages are not interactive.
+// blockTarget says what a click on a top-level block does. Steps, tools,
+// completion events and thinking rows toggle; plain messages are not
+// interactive.
 func (m *Model) blockTarget(n *viewmodel.Node) *clickTarget {
 	switch {
 	case n.Kind == viewmodel.KindStep:
@@ -314,12 +311,10 @@ func (m *Model) blockTarget(n *viewmodel.Node) *clickTarget {
 		return &clickTarget{node: viewmodel.LiveThinkingID, isLiveRegion: true}
 	case n.Kind == viewmodel.KindTool:
 		return &clickTarget{node: n.ID}
-	case n.Kind == viewmodel.KindMarker && n.Marker != nil && len(n.Marker.Refs) > 0:
-		return &clickTarget{node: n.ID, jumpTo: n.Marker.Refs[0]}
+	case n.Kind == viewmodel.KindCompletion && n.Completion != nil:
+		return &clickTarget{node: n.ID}
 	case n.Kind == viewmodel.KindThinking:
 		return &clickTarget{node: n.ID}
-	case n.Kind == viewmodel.KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Child != nil:
-		return &clickTarget{node: n.ID, subagent: n.Item.Subagent, isLiveRegion: n.Item.Subagent.Status == session.SubagentRunning}
 	case n.Kind == viewmodel.KindMessage && n.Item != nil && n.Item.Message != nil &&
 		n.Item.Message.ContentType == session.ContentTypeSkillAuto:
 		return &clickTarget{node: n.ID}

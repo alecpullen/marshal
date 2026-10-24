@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { editCalls, latestEdit, latestStepId, liveStep, nodeFile, splitTarget, subagentIdOf } from './nodes'
+import { editCalls, latestEdit, latestStepId, liveStep, nodeFile, splitTarget } from './nodes'
 import type { WireNode } from '../stack'
 
 const mk = (list: WireNode[], roots = ['turn:1']) => ({ roots, nodes: new Map(list.map((n) => [n.id, n])) })
@@ -44,10 +44,8 @@ describe('dock node helpers', () => {
     expect(nodeFile(t.nodes.get('tool:1')!)).toEqual({ path: 'a.go', line: 2 })
   })
 
-  it('splits targets and subagent keys', () => {
+  it('splits targets', () => {
     expect(splitTarget('x/y.ts')).toEqual({ path: 'x/y.ts' })
     expect(splitTarget('x/y.ts:10-20')).toEqual({ path: 'x/y.ts', line: 10 })
-    expect(subagentIdOf('sub:12')).toBe(12)
-    expect(subagentIdOf('step:12')).toBeUndefined()
   })
 })

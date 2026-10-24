@@ -49,6 +49,39 @@ func TestBandEntitiesAreRunningCards(t *testing.T) {
 	}
 }
 
+// A job whose exit is in the transcript is finished, so the band drops it. A
+// lost exit counts as finished too: the session ended while it ran.
+func TestBandEntitiesDropAFinishedJob(t *testing.T) {
+	start := jobStart(1, "j", 3, "job-4")
+	finished := Snapshot{Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start, jobExit(6, "job-4", 0)},
+		Steps: []session.Step{stepOf(1, 1, 1, 0)}, Busy: true, Now: at(10)}
+	if b := BandOf(finished, Build(finished)); len(b.Entities) != 0 {
+		t.Fatalf("a finished job is still listed: %+v", b.Entities)
+	}
+	lost := session.TranscriptItem{Timestamp: at(6), Kind: session.KindJobExit,
+		JobExit: &session.JobExit{ID: "job-4", ExitCode: -1, Lost: true, At: at(6)}}
+	lostSnapshot := Snapshot{Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), start, lost},
+		Steps: []session.Step{stepOf(1, 1, 1, 0)}, Busy: true, Now: at(10)}
+	if b := BandOf(lostSnapshot, Build(lostSnapshot)); len(b.Entities) != 0 {
+		t.Fatalf("a lost job is still listed as running: %+v", b.Entities)
+	}
+}
+
+// A list on the session drives the band whatever the turn did: the gate is
+// "a list exists", not "this turn touched it".
+func TestBandShowsAListTheTurnDidNotTouch(t *testing.T) {
+	s := Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Unrelated."), audit("file.read", 1, "a", 2)},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+		Todos: todos(db.TodoItem{ID: "a", Content: "A", Status: "completed"}, db.TodoItem{ID: "b", Content: "B", Status: "in_progress"}),
+		Busy:  true, Now: at(10),
+	}
+	b := BandOf(s, Build(s))
+	if !b.Todos || b.Done != 1 || b.Total != 2 {
+		t.Fatalf("band = %+v, want the list shown with 1/2 done", b)
+	}
+}
+
 // The runner nudges on its own response count, whatever its role. The band
 // must count the same responses: the turn opener's, not only the general
 // role's, and not a different actor's sharing the session.

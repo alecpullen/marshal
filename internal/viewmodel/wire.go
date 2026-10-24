@@ -36,16 +36,15 @@ type WireNode struct {
 	Children []string `json:"children,omitempty"`
 	Live     bool     `json:"live,omitempty"`
 
-	Step     *WireStep     `json:"step,omitempty"`
-	Tool     *WireTool     `json:"tool,omitempty"`
-	Message  *WireMessage  `json:"message,omitempty"`
-	Thinking *WireThinking `json:"thinking,omitempty"`
-	Subagent *WireSubagent `json:"subagent,omitempty"`
-	RunEvent *WireRunEvent `json:"runEvent,omitempty"`
-	Marker   *WireMarker   `json:"marker,omitempty"`
-	Plan     *WirePlan     `json:"plan,omitempty"`
-	Receipt  *WireReceipt  `json:"receipt,omitempty"`
-	Band     *WireBand     `json:"band,omitempty"`
+	Step       *WireStep       `json:"step,omitempty"`
+	Tool       *WireTool       `json:"tool,omitempty"`
+	Message    *WireMessage    `json:"message,omitempty"`
+	Thinking   *WireThinking   `json:"thinking,omitempty"`
+	RunEvent   *WireRunEvent   `json:"runEvent,omitempty"`
+	Completion *WireCompletion `json:"completion,omitempty"`
+	Plan       *WirePlan       `json:"plan,omitempty"`
+	Receipt    *WireReceipt    `json:"receipt,omitempty"`
+	Band       *WireBand       `json:"band,omitempty"`
 }
 
 // WireBand is the pinned band: todo progress with its stale signal, and the
@@ -112,20 +111,19 @@ func ProjectBand(b BandInfo) WireNode {
 // WireStep is a step's header and reasoning. Times are Unix milliseconds;
 // zero means unset.
 type WireStep struct {
-	Headline     string         `json:"headline"`
-	Rest         string         `json:"rest,omitempty"`
-	StepIDs      []int64        `json:"stepIds,omitempty"`
-	Owner        string         `json:"owner,omitempty"`
-	RoleWord     string         `json:"roleWord,omitempty"`
-	Role         string         `json:"role,omitempty"`
-	Model        string         `json:"model,omitempty"`
-	Provider     string         `json:"provider,omitempty"`
-	TodoID       string         `json:"todoId,omitempty"`
-	Todo         *WireTodoLabel `json:"todo,omitempty"`
-	StartedAt    int64          `json:"startedAt,omitempty"`
-	EndedAt      int64          `json:"endedAt,omitempty"`
-	Thoughts     []WireThought  `json:"thoughts,omitempty"`
-	LiveThinking string         `json:"liveThinking,omitempty"`
+	Headline  string         `json:"headline"`
+	Rest      string         `json:"rest,omitempty"`
+	StepIDs   []int64        `json:"stepIds,omitempty"`
+	Owner     string         `json:"owner,omitempty"`
+	RoleWord  string         `json:"roleWord,omitempty"`
+	Role      string         `json:"role,omitempty"`
+	Model     string         `json:"model,omitempty"`
+	Provider  string         `json:"provider,omitempty"`
+	TodoID    string         `json:"todoId,omitempty"`
+	Todo      *WireTodoLabel `json:"todo,omitempty"`
+	StartedAt int64          `json:"startedAt,omitempty"`
+	EndedAt   int64          `json:"endedAt,omitempty"`
+	Thoughts  []WireThought  `json:"thoughts,omitempty"`
 }
 
 // WireTodoLabel marks the beat where work moves to a different todo.
@@ -154,57 +152,36 @@ type WireTool struct {
 	WorkKey string       `json:"workKey,omitempty"`
 	Calls   []WireCall   `json:"calls,omitempty"`
 	Running *WireRunning `json:"running,omitempty"`
-	// Job is set when this row is a background job's card: the call that
-	// started the job, settled in place by its exit.
-	Job *WireJob `json:"job,omitempty"`
+	// SubagentID names the subagent this row started, 0 when it started none.
+	SubagentID int64 `json:"subagentId,omitempty"`
 }
 
-// WireJob is a background job's card.
-type WireJob struct {
-	ID      string `json:"id"`
-	Command string `json:"command"`
-	Running bool   `json:"running,omitempty"`
-	// Lost: the session ended while the job ran; ExitCode means nothing.
-	Lost     bool `json:"lost,omitempty"`
-	ExitCode int  `json:"exitCode"`
-	// Exit is the observed exit code, omitted when none was observed (a lost
-	// job, a start-up failure, a legacy record). A client must render an
-	// absent exit as unknown, never as success: ExitCode's -1 is the legacy
-	// spelling of the same "unknown".
-	Exit *int `json:"exit,omitempty"`
-	// ExecutionID is the execution's cross-resume identity. A display job ID
-	// repeats in every process, so this is what a client pairs a job with its
-	// own history by; omitted on a legacy record, which has none.
-	ExecutionID string `json:"executionId,omitempty"`
-	// Status is the execution's lifecycle status; Attachment is how the
-	// launching caller related to it. Both are omitted on a legacy record.
-	Status     string `json:"status,omitempty"`
-	Attachment string `json:"attachment,omitempty"`
-	// StopCause is an accepted explicit stop request's cause, when one was
-	// recorded.
-	StopCause string `json:"stopCause,omitempty"`
-	// Wait is the effective foreground wait the launch asked for ("10s") —
-	// evidence about the WAIT, not the command's lifetime. DetachReason and
-	// DetachedAt record why and when a wait handed the job to the background,
-	// which is what explains a short Wait on a job that ran far longer.
-	Wait         string `json:"wait,omitempty"`
-	DetachReason string `json:"detachReason,omitempty"`
-	DetachedAt   int64  `json:"detachedAt,omitempty"`
-	// StartedAt is when the job was dispatched (unix ms), so a client can
-	// show a running card's elapsed time; 0 when unknown.
-	StartedAt  int64  `json:"startedAt,omitempty"`
-	DurationMs int64  `json:"durationMs,omitempty"`
-	Output     string `json:"output,omitempty"`
-	Truncated  bool   `json:"truncated,omitempty"`
-}
-
-// WireMarker is a one-line completion marker: what finished, and when.
-type WireMarker struct {
-	Refs       []string `json:"refs"`
-	Labels     []string `json:"labels"`
-	Failed     bool     `json:"failed,omitempty"`
-	At         int64    `json:"at,omitempty"`
-	DurationMs int64    `json:"durationMs,omitempty"`
+// WireCompletion is one finished piece of background work at the moment it
+// ended: a background job's exit or a subagent's end. Expanded, it is the
+// issue report.
+type WireCompletion struct {
+	Source          string `json:"source"`
+	ID              string `json:"id"`
+	SubagentID      int64  `json:"subagentId,omitempty"`
+	Label           string `json:"label"`
+	Outcome         string `json:"outcome"`
+	Failed          bool   `json:"failed,omitempty"`
+	ExitCode        *int   `json:"exitCode,omitempty"`
+	StopCause       string `json:"stopCause,omitempty"`
+	StartedAt       int64  `json:"startedAt,omitempty"`
+	EndedAt         int64  `json:"endedAt,omitempty"`
+	DurationMs      int64  `json:"durationMs,omitempty"`
+	Measure         string `json:"measure,omitempty"`
+	Summary         string `json:"summary,omitempty"`
+	Command         string `json:"command,omitempty"`
+	Cwd             string `json:"cwd,omitempty"`
+	Output          string `json:"output,omitempty"`
+	Report          string `json:"report,omitempty"`
+	Error           string `json:"error,omitempty"`
+	WorkKey         string `json:"workKey,omitempty"`
+	ExecutionID     string `json:"executionId,omitempty"`
+	ReportMessageID int64  `json:"reportMessageId,omitempty"`
+	Truncated       bool   `json:"truncated,omitempty"`
 }
 
 // WirePlan is a beat's plan line: the todo list as the beat's last
@@ -268,24 +245,6 @@ type WireThinking struct {
 	DurationMs int64  `json:"durationMs,omitempty"`
 }
 
-// WireSubagent is a subagent card.
-type WireSubagent struct {
-	Label       string `json:"label"`
-	Status      string `json:"status"`
-	Role        string `json:"role,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Provider    string `json:"provider,omitempty"`
-	ToolCalls   int    `json:"toolCalls,omitempty"`
-	CurrentTool string `json:"currentTool,omitempty"`
-	Tokens      int    `json:"tokens,omitempty"`
-	Summary     string `json:"summary,omitempty"`
-	Error       string `json:"error,omitempty"`
-	Salvaged    string `json:"salvaged,omitempty"`
-	StartedAt   int64  `json:"startedAt,omitempty"`
-	EndedAt     int64  `json:"endedAt,omitempty"`
-	Truncated   bool   `json:"truncated,omitempty"`
-}
-
 // WireRunEvent is one plan-run event (verify failure, review, commit, …).
 type WireRunEvent struct {
 	Kind      string `json:"kind"`
@@ -315,13 +274,13 @@ var kindNames = [...]string{
 	KindTool:        "tool",
 	KindMessage:     "message",
 	KindFinal:       "final",
-	KindSubagent:    "subagent",
+	KindSubagent:    "subagent", // no node carries it; band refs do
 	KindRunEvent:    "runEvent",
-	KindJobExit:     "jobExit",
+	KindJobExit:     "jobExit", // no node carries it; exits become completions
 	KindThinking:    "thinking",
 	KindPassthrough: "passthrough",
 	KindReceipt:     "receipt",
-	KindMarker:      "marker",
+	KindCompletion:  "completion",
 	KindPlanUpdate:  "planUpdate",
 }
 
@@ -367,13 +326,24 @@ func wireNode(n *Node) WireNode {
 	case n.Kind == KindThinking && n.Step != nil:
 		// The live reasoning region when no step could hold it.
 		w.Thinking = &WireThinking{Text: n.Step.LiveThinking}
-	case n.Marker != nil:
-		m := n.Marker
-		wm := &WireMarker{Labels: m.Labels, Failed: m.Failed, At: ms(m.At), DurationMs: m.Dur.Milliseconds()}
-		for _, r := range m.Refs {
-			wm.Refs = append(wm.Refs, r.Key)
+	case n.Completion != nil:
+		c := n.Completion
+		wc := &WireCompletion{
+			Source: c.Source, ID: c.ID, SubagentID: c.SubagentID, Label: c.Label, Outcome: c.Outcome,
+			Failed: c.Failed, StopCause: c.StopCause, StartedAt: ms(c.StartedAt), EndedAt: ms(c.EndedAt),
+			DurationMs: c.Duration.Milliseconds(), Measure: c.Measure, Summary: c.Summary,
+			Command: c.Command, Cwd: c.Cwd, Report: c.Report, Error: c.Error,
+			WorkKey: c.WorkKey, ExecutionID: c.ExecutionID, ReportMessageID: c.ReportMessageID,
 		}
-		w.Marker = wm
+		if c.ExitCode != nil {
+			code := *c.ExitCode
+			wc.ExitCode = &code
+		}
+		var cut1, cut2 bool
+		wc.Output, cut1 = capTail(c.Output)
+		wc.Report, cut2 = capText(c.Report)
+		wc.Truncated = cut1 || cut2 || c.Truncated
+		w.Completion = wc
 	case n.PlanUpdate != nil:
 		p := n.PlanUpdate
 		w.Plan = &WirePlan{Status: p.Status, Done: p.Done(), Total: p.Total(), Active: p.Active,
@@ -383,33 +353,8 @@ func wireNode(n *Node) WireNode {
 	case len(n.Tools) > 0:
 		w.Tool = wireTools(n.Tools)
 		w.Tool.WorkKey = n.WorkKey
-		if j := n.Job; j != nil {
-			wj := &WireJob{ID: j.ID, Command: ScrubText(j.Command), Running: j.Running, Lost: j.Lost, ExitCode: j.ExitCode,
-				Status: j.Status, Attachment: j.Attachment, StopCause: j.StopCause,
-				StartedAt: ms(n.JobStart()), DurationMs: j.Duration.Milliseconds()}
-			if j.Exit != nil {
-				code := *j.Exit
-				wj.Exit = &code
-			}
-			// The launch's own execution record carries what a card's state
-			// does not: the identity a client pairs the job by, and the wait it
-			// was launched with. It is read from the call that started the job
-			// (which is what this row is), so it stays available on a job whose
-			// exit record predates the structured fields.
-			if ex, ok := JobStartOf(n.Tools[0]); ok && ex.Structured {
-				wj.ExecutionID = ex.Execution.ExecutionID
-				wj.Wait = ex.Execution.Wait
-				wj.DetachReason = ScrubText(ex.Execution.DetachReason)
-				wj.DetachedAt = ms(ex.Execution.DetachedAt)
-			}
-			wj.Output, wj.Truncated = capTail(j.Output)
-			if s := ScrubBlock(wj.Output); s != wj.Output {
-				// A scrub that changed the text is itself a reason for a
-				// client to ask for the full payload.
-				wj.Output, wj.Truncated = s, true
-			}
-			wj.Truncated = wj.Truncated || j.Truncated
-			w.Tool.Job = wj
+		if len(n.Tools) == 1 {
+			w.Tool.SubagentID = StartedSubagent(n.Tools[0])
 		}
 	case n.Item != nil:
 		wireItem(&w, n.Item)
@@ -427,7 +372,6 @@ func wireStep(n *Node) *WireStep {
 		Model: st.Actor.Model, Provider: st.Actor.Provider,
 		TodoID: si.TodoID, StepIDs: si.StepIDs,
 		StartedAt: ms(st.StartedAt), EndedAt: ms(st.EndedAt),
-		LiveThinking: si.LiveThinking,
 	}
 	for _, t := range si.Thinking {
 		ws.Thoughts = append(ws.Thoughts, WireThought{Text: ScrubBlock(t.Text), DurationMs: t.Duration.Milliseconds()})
@@ -483,15 +427,6 @@ func wireItem(w *WireNode, it *session.TranscriptItem) {
 		}
 	case it.Thinking != nil:
 		w.Thinking = &WireThinking{Text: ScrubBlock(it.Thinking.Text), DurationMs: it.Thinking.Duration.Milliseconds()}
-	case it.Subagent != nil:
-		v := it.Subagent
-		ws := &WireSubagent{
-			Label: ScrubText(v.Label), Status: subagentStatus(v.Status), Role: string(v.Role), Model: v.Model,
-			Provider: v.Provider, ToolCalls: v.ToolCalls, CurrentTool: ScrubText(v.CurrentTool), Tokens: v.TokensUsed,
-			Error: ScrubBlock(v.Error), Salvaged: ScrubText(v.SalvagedReason), StartedAt: ms(v.StartedAt), EndedAt: ms(v.EndedAt),
-		}
-		ws.Summary, ws.Truncated = capText(ScrubBlock(v.Summary))
-		w.Subagent = ws
 	case it.RunEvent != nil:
 		e := it.RunEvent
 		wr := &WireRunEvent{Kind: runEventKind(e.Kind), TaskN: e.TaskN, Title: e.Title, Detail: e.Detail,
@@ -499,18 +434,6 @@ func wireItem(w *WireNode, it *session.TranscriptItem) {
 		wr.Body, wr.Truncated = capText(e.Body)
 		w.RunEvent = wr
 	}
-}
-
-func subagentStatus(s session.SubagentStatus) string {
-	switch s {
-	case session.SubagentRunning:
-		return "running"
-	case session.SubagentDone:
-		return "done"
-	case session.SubagentFailed:
-		return "failed"
-	}
-	return "unknown"
 }
 
 var runEventKinds = [...]string{

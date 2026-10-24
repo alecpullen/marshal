@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -8,127 +9,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
-
-func TestJobCardIsOneLineAndSettles(t *testing.T) {
-	ev := registry.AuditEvent{ToolName: "shell.run", Args: []byte(`{"command":"cd /w && pytest -q --junitxml=/tmp/a.xml 2>&1 | tail -40"}`), ResultSummary: "started background job job-4"}
-	row := &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{ev},
-		Job: &viewmodel.JobState{ID: "job-4", Command: "pytest -q --junitxml=/tmp/a.xml 2>&1 | tail -40", Running: true}}
-	out := ansi.Strip(renderJobRow(row, "⠋", time.Now(), false, 60, ""))
-	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 || !strings.Contains(out, "job-4") || !strings.Contains(out, "running") {
-		t.Fatalf("running card = %q", out)
-	}
-	row.Job.Running, row.Job.ExitCode, row.Job.Duration = false, 1, 122*time.Second
-	exit := 1
-	row.Job.Exit = &exit
-	out = ansi.Strip(renderJobRow(row, "", time.Now(), false, 60, ""))
-	if !strings.Contains(out, "exit 1") || !strings.Contains(out, "2m") {
-		t.Fatalf("settled card = %q", out)
-	}
-}
-
-// A card's tail must say what is actually known about the execution: an
-// accepted stop that has not settled yet, a lost job, a failure with no exit
-// code, and a completion. Reading "exit 0" for an outcome nobody observed is
-// the failure this distinction exists to prevent.
-func TestJobCardDistinguishesOutcomeStates(t *testing.T) {
-	zero, three := 0, 3
-	tests := []struct {
-		name  string
-		job   viewmodel.JobState
-		words []string
-		gone  []string
-	}{
-		{
-			name:  "running",
-			job:   viewmodel.JobState{ID: "job-1", Running: true, Status: "running"},
-			words: []string{"running"},
-		},
-		{
-			name:  "stopping",
-			job:   viewmodel.JobState{ID: "job-1", Running: true, Status: "stopping", StopCause: "turn stop"},
-			words: []string{"stopping"},
-			gone:  []string{"running", "exit ", "outcome unknown"},
-		},
-		{
-			name:  "lost",
-			job:   viewmodel.JobState{ID: "job-1", Lost: true, ExitCode: -1},
-			words: []string{"ended with session"},
-			gone:  []string{"exit ", "outcome unknown"},
-		},
-		{
-			name:  "completed",
-			job:   viewmodel.JobState{ID: "job-1", ExitCode: 0, Exit: &zero, Status: "completed"},
-			words: []string{"exit 0"},
-		},
-		{
-			name:  "failed with an exit",
-			job:   viewmodel.JobState{ID: "job-1", ExitCode: 3, Exit: &three, Status: "failed"},
-			words: []string{"exit 3"},
-		},
-		{
-			name:  "failed without an exit",
-			job:   viewmodel.JobState{ID: "job-1", Status: "failed", ExitCode: -1},
-			words: []string{"failed"},
-			gone:  []string{"exit -1", "exit 0"},
-		},
-		{
-			name:  "stopped without an exit",
-			job:   viewmodel.JobState{ID: "job-1", Status: "killed", StopCause: "turn stop", ExitCode: -1},
-			words: []string{"stopped"},
-			gone:  []string{"exit -1"},
-		},
-		{
-			name:  "legacy record",
-			job:   viewmodel.JobState{ID: "job-1", Status: "completed", ExitCode: 0},
-			words: []string{"exit 0"},
-		},
-		{
-			name:  "unknown exit",
-			job:   viewmodel.JobState{ID: "job-1", ExitCode: -1},
-			words: []string{"outcome unknown"},
-			gone:  []string{"exit -1", "exit 0"},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			job := tt.job
-			row := &viewmodel.Node{Kind: viewmodel.KindTool, Job: &job}
-			out := ansi.Strip(renderJobRow(row, "⠋", time.Now(), false, 80, ""))
-			if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
-				t.Fatalf("card is not one line:\n%s", out)
-			}
-			for _, want := range tt.words {
-				if !strings.Contains(out, want) {
-					t.Errorf("card %q missing %q", out, want)
-				}
-			}
-			for _, unwanted := range tt.gone {
-				if strings.Contains(out, unwanted) {
-					t.Errorf("card %q must not say %q", out, unwanted)
-				}
-			}
-		})
-	}
-}
-
-// A capped tail is called out, so a reader knows the output is not the whole
-// story; the plain case stays quiet.
-func TestJobCardFlagsTruncatedOutput(t *testing.T) {
-	zero := 0
-	job := viewmodel.JobState{ID: "job-1", ExitCode: 0, Exit: &zero, Status: "completed", Truncated: true}
-	row := &viewmodel.Node{Kind: viewmodel.KindTool, Job: &job}
-	if out := ansi.Strip(renderJobRow(row, "", time.Now(), false, 80, "")); !strings.Contains(out, "truncated") {
-		t.Fatalf("card = %q, want the cap called out", out)
-	}
-	job.Truncated = false
-	row.Job = &job
-	if out := ansi.Strip(renderJobRow(row, "", time.Now(), false, 80, "")); strings.Contains(out, "truncated") {
-		t.Fatalf("card = %q, want no cap note without one", out)
-	}
-}
 
 // A collapsed row is one line. The transcript is a list of what happened, and
 // a wrapped row costs the reader a line for a detail they did not ask for.
@@ -175,60 +59,116 @@ func TestShellRowElidesTheWorktree(t *testing.T) {
 	}
 }
 
-// The job card's command gets the same treatment: it is the same shell text.
-func TestJobCardElidesTheWorktree(t *testing.T) {
-	root := "/home/a/proj/.marshal/worktrees/x"
-	ev := registry.AuditEvent{ToolName: "shell.run", Args: []byte(`{"command":"cd ` + root + ` && pytest -q"}`),
-		ResultSummary: "started background job job-4"}
-	row := &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{ev},
-		Job: &viewmodel.JobState{ID: "job-4", Command: "cd " + root + " && pytest -q", Running: true}}
-	out := ansi.Strip(renderJobRow(row, "⠋", time.Now(), false, 100, root))
-	if !strings.Contains(out, "⌂ pytest -q") || strings.Contains(out, root) {
-		t.Fatalf("card = %q", out)
+// A background job's launch row is an ordinary call row: the verb, the command
+// and the job it started, on one line.
+func TestJobLaunchRowNamesTheJob(t *testing.T) {
+	ev := registry.AuditEvent{ToolName: "shell.run", ToolCallID: "c1", Timestamp: time.Unix(100, 0),
+		Args:          []byte(`{"command":"pytest -q","background":true}`),
+		ResultSummary: session.JobStartPrefix + "job-4",
+		Notice: registry.NewCommandExecutionNotice(registry.CommandExecution{
+			ExecutionID: "exec-4", DisplayID: "job-4", ConversationID: "conv",
+			Attachment: registry.ExecutionAttachmentBackground, State: "running",
+		})}
+	out := ansi.Strip(renderCallRow(ev, false, nil, 80, ""))
+	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
+		t.Fatalf("launch row is not one line:\n%s", out)
 	}
-}
-
-func TestMarkerLine(t *testing.T) {
-	m := &viewmodel.MarkerInfo{Labels: []string{"#3 Pass 1 Task 1"}, Dur: 81 * time.Second}
-	if out := ansi.Strip(renderMarker(m, 80)); !strings.Contains(out, "#3 Pass 1 Task 1 done") || !strings.Contains(out, "1m") {
-		t.Fatalf("marker = %q", out)
-	}
-	m = &viewmodel.MarkerInfo{Labels: []string{"#3", "#5"}, Failed: true}
-	if out := ansi.Strip(renderMarker(m, 80)); !strings.Contains(out, "#3 #5") {
-		t.Fatalf("merged marker = %q", out)
-	}
-}
-
-func TestRunningSubagentCardHasNoPaddingOrFooter(t *testing.T) {
-	v := session.SubagentView{ID: 3, Label: "Pass 1 Task 1", Status: session.SubagentRunning, StartedAt: time.Now()}
-	out := ansi.Strip(renderSubagentCard(v, false, "⠋", regionView{minRows: 6}, 80))
-	if strings.Contains(out, "ctrl+f") {
-		t.Fatalf("no drill-in footer:\n%s", out)
-	}
-	for _, l := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		if strings.TrimSpace(strings.Trim(l, "▌┃│ ")) == "" {
-			t.Fatalf("no blank padding rows:\n%s", out)
+	for _, want := range []string{"shell", "pytest -q", glyph.Job + " job-4", "started"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("launch row %q missing %q", out, want)
 		}
 	}
 }
 
-func TestSettledSubagentSummaryHasNoMarkdownHeading(t *testing.T) {
-	v := session.SubagentView{ID: 2, Label: "Task 2", Status: session.SubagentDone, Summary: "## Task 2 complete — AccessibleModal\n\nDetails."}
-	if out := ansi.Strip(renderSubagentCard(v, false, "", regionView{}, 80)); strings.Contains(out, "##") {
-		t.Fatalf("markdown leaked:\n%s", out)
+func TestCompletionLine(t *testing.T) {
+	done := &viewmodel.CompletionInfo{Source: viewmodel.CompletionJob, ID: "job-4", Label: "Harness tests",
+		Outcome: viewmodel.OutcomeDone, Duration: 81 * time.Second}
+	out := ansi.Strip(renderCompletion(done, false, 80, ""))
+	if !strings.Contains(out, "job-4 Harness tests") || !strings.Contains(out, "done") || !strings.Contains(out, "1m") {
+		t.Fatalf("completion = %q", out)
+	}
+	if !strings.HasSuffix(strings.TrimRight(out, "\n"), glyph.DisclosureCollapsed) {
+		t.Fatalf("collapsed head must end with the disclosure glyph: %q", out)
+	}
+
+	failed := &viewmodel.CompletionInfo{Source: viewmodel.CompletionSubagent, ID: "#3", Label: "review",
+		Outcome: viewmodel.OutcomeFailed, Failed: true, Summary: "budget exhausted"}
+	// Collapsed, the summary line stands in for the report.
+	collapsed := ansi.Strip(renderCompletion(failed, false, 80, ""))
+	lines := strings.Split(strings.TrimRight(collapsed, "\n"), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "#3") || !strings.Contains(lines[0], "failed") {
+		t.Fatalf("failed completion = %q", collapsed)
+	}
+	if !strings.Contains(lines[1], "budget exhausted") {
+		t.Fatalf("summary line = %q", lines[1])
+	}
+	// Expanded, the report replaces the summary line.
+	out = ansi.Strip(renderCompletion(failed, true, 80, ""))
+	head := strings.Split(strings.TrimRight(out, "\n"), "\n")[0]
+	if !strings.HasSuffix(head, glyph.DisclosureExpanded) {
+		t.Fatalf("expanded head must end with the disclosure glyph: %q", head)
 	}
 }
 
-func TestStripMarkdownHeadingKeepsHashText(t *testing.T) {
-	for in, want := range map[string]string{
-		"## Task 2 complete": "Task 2 complete",
-		"# Done":             "Done",
-		"#3 done":            "#3 done",
-		"####### seven":      "####### seven",
-		"plain":              "plain",
-	} {
-		if got := stripMarkdownHeading(in); got != want {
-			t.Errorf("stripMarkdownHeading(%q) = %q, want %q", in, got, want)
+// An expanded event is the issue report: what ran, where, how long, how far it
+// got, and the output tail that says why it failed.
+func TestCompletionReportShowsTheFailure(t *testing.T) {
+	var lines []string
+	for i := 1; i <= 30; i++ {
+		lines = append(lines, fmt.Sprintf("line %02d", i))
+	}
+	lines[12] = "--- FAIL: TestThresholdsForCoderModels/context_window"
+	code := 1
+	c := &viewmodel.CompletionInfo{
+		Source: viewmodel.CompletionJob, ID: "job-3", Label: "Harness tests",
+		Outcome: "exit 1", Failed: true, ExitCode: &code,
+		Duration: 48 * time.Second, Measure: "210 passed, 2 failed",
+		Command: "go test ./...", Cwd: "/home/a/proj",
+		Output: strings.Join(lines, "\n"),
+	}
+	out := ansi.Strip(renderCompletion(c, true, 80, ""))
+	for _, want := range []string{"outcome", "command", "cwd", "duration", "progress", "output"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report %q missing %q", out, want)
 		}
+	}
+	// The failure line leads the output tail, on the key's line.
+	tail := out[strings.Index(out, "output"):]
+	first := strings.Split(strings.TrimPrefix(tail, "output"), "\n")[0]
+	if !strings.Contains(first, "--- FAIL") {
+		t.Fatalf("first output line = %q", first)
+	}
+	// The tail is bounded: at most ReportTailLines output lines show.
+	if got := strings.Count(tail, "line "); got > viewmodel.ReportTailLines {
+		t.Fatalf("%d output lines shown", got)
+	}
+}
+
+// A subagent's event carries its task and the report it wrote.
+func TestCompletionReportShowsASubagentsReport(t *testing.T) {
+	c := &viewmodel.CompletionInfo{
+		Source: viewmodel.CompletionSubagent, ID: "#3", Label: "review the config change",
+		Outcome: viewmodel.OutcomeDone, Duration: 62 * time.Second,
+		Report: "The config change is sound.",
+	}
+	out := ansi.Strip(renderCompletion(c, true, 80, ""))
+	if !strings.Contains(out, "task") || !strings.Contains(out, "review the config change") {
+		t.Fatalf("report = %q", out)
+	}
+	if !strings.Contains(out, "The config change is sound.") {
+		t.Fatalf("report body = %q", out)
+	}
+}
+
+// A job that ended with the session has no duration to report, and saying so
+// is more honest than a zero.
+func TestLostJobReportSaysItEndedWithTheSession(t *testing.T) {
+	c := &viewmodel.CompletionInfo{
+		Source: viewmodel.CompletionJob, ID: "job-7", Label: "Download",
+		Outcome: viewmodel.OutcomeLost, Failed: true,
+	}
+	out := ansi.Strip(renderCompletion(c, true, 80, ""))
+	if !strings.Contains(out, "ended with session") {
+		t.Fatalf("report = %q", out)
 	}
 }

@@ -10,25 +10,17 @@
     store,
     density,
     overrides = new Map<string, Density>(),
-    foldTasks = true,
-    unfolded = new Set<string>(),
     cursor = null,
     onlyNodes = undefined,
-    onToggleFold,
     onToggleDensity,
-    onSelect,
   }: {
     store: Readable<StackState>
     density: Density
     overrides?: ReadonlyMap<string, Density>
-    foldTasks?: boolean
-    unfolded?: ReadonlySet<string>
     cursor?: string | null
     /** Show only these nodes with their ancestors and descendants (the Run page's stage filter). */
     onlyNodes?: ReadonlySet<string>
-    onToggleFold?: (id: string) => void
     onToggleDensity?: (id: string) => void
-    onSelect?: (id: string) => void
   } = $props()
 
   let now = $state(Date.now())
@@ -47,13 +39,9 @@
     nodes: view.nodes,
     global: density,
     overrides,
-    foldTasks,
-    unfolded,
     cursor,
     now,
-    onToggleFold,
     onToggleDensity,
-    onSelect,
   })
 </script>
 

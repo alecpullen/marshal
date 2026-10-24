@@ -475,3 +475,117 @@ func TestCopyingAStepDoesNotRepeatItsHeadline(t *testing.T) {
 		t.Fatalf("headline repeated in the copied text:\n%s", text)
 	}
 }
+
+// browseItemForCompletion finds the browse item for a finished subagent's
+// completion event.
+func browseItemForCompletion(m *Model, id int64) (browseItem, bool) {
+	for _, it := range m.browseItems {
+		n := m.browseTree[it.id]
+		if n == nil || n.Kind != viewmodel.KindCompletion || n.Completion == nil {
+			continue
+		}
+		if n.Completion.SubagentID == id {
+			return it, true
+		}
+	}
+	return browseItem{}, false
+}
+
+// browseItemForDispatch finds the browse item for the agent.run row that
+// started a subagent.
+func browseItemForDispatch(m *Model, id int64) (browseItem, bool) {
+	for _, it := range m.browseItems {
+		n := m.browseTree[it.id]
+		if n == nil || n.Kind != viewmodel.KindTool || len(n.Tools) != 1 {
+			continue
+		}
+		if viewmodel.StartedSubagent(n.Tools[0]) == id {
+			return it, true
+		}
+	}
+	return browseItem{}, false
+}
+
+// finishedSubagentFixture is a turn that dispatched one subagent and saw it
+// finish, so both the dispatch row and the completion event are on screen.
+func finishedSubagentFixture(t *testing.T) (Model, *session.State, session.SubagentView) {
+	t.Helper()
+	m := newTestModel(t)
+	m.resize(120, 50)
+	m.state.AddMessage(session.RoleUser, "ship it", session.ContentTypePlain)
+	child := newChildState(t)
+	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	view := m.state.RegisterSubagent("explore repo", child)
+	a := m.state.BeginStep(session.Actor{})
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "agent.run", StepID: a, ToolCallID: "ar",
+		Args: []byte(`{"task":"explore"}`), ResultSummary: fmt.Sprintf("started as subagent %d", view.ID)})
+	m.state.EndStep(a)
+	m.state.FinishSubagent(view.ID, "found three entry points", nil)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	return m, child, view
+}
+
+func TestBrowseFDrillsFromACompletionEvent(t *testing.T) {
+	m, child, view := finishedSubagentFixture(t)
+	m = pressKeys(m, "esc")
+	it, ok := browseItemForCompletion(&m, view.ID)
+	if !ok {
+		t.Fatalf("no completion event for subagent %d in %v", view.ID, m.browseItems)
+	}
+	m.cursor = it.id
+	m = pressKeys(m, "f")
+	if len(m.viewStack) != 1 {
+		t.Fatalf("f on a completion event should drill in, viewStack = %v", m.viewStack)
+	}
+	if m.viewStack[0].Child != child {
+		t.Fatal("the drilled view is not the subagent's child")
+	}
+}
+
+func TestBrowseFDrillsFromTheDispatchRow(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 50)
+	m.state.AddMessage(session.RoleUser, "ship it", session.ContentTypePlain)
+	child := newChildState(t)
+	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	view := m.state.RegisterSubagent("explore repo", child)
+	a := m.state.BeginStep(session.Actor{})
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "agent.run", StepID: a, ToolCallID: "ar",
+		Args: []byte(`{"task":"explore"}`), ResultSummary: fmt.Sprintf("started as subagent %d", view.ID)})
+	m.state.EndStep(a)
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	m = pressKeys(m, "esc")
+	it, ok := browseItemForDispatch(&m, view.ID)
+	if !ok {
+		t.Fatalf("no agent.run row for subagent %d in %v", view.ID, m.browseItems)
+	}
+	m.cursor = it.id
+	m = pressKeys(m, "f")
+	if len(m.viewStack) != 1 {
+		t.Fatalf("f on the dispatch row should drill in, viewStack = %v", m.viewStack)
+	}
+	if m.viewStack[0].Child != child {
+		t.Fatal("the drilled view is not the subagent's child")
+	}
+}
+
+func TestBrowseEnterExpandsACompletionEvent(t *testing.T) {
+	m, _, view := finishedSubagentFixture(t)
+	m = pressKeys(m, "esc")
+	it, ok := browseItemForCompletion(&m, view.ID)
+	if !ok {
+		t.Fatalf("no completion event for subagent %d in %v", view.ID, m.browseItems)
+	}
+	m.cursor = it.id
+	before := m.isExpanded(it.id)
+	m = pressKeys(m, "enter")
+	if got := m.isExpanded(it.id); got == before {
+		t.Fatalf("Enter left the completion event at expanded=%v", got)
+	}
+	if len(m.viewStack) != 0 {
+		t.Fatalf("Enter must expand, not drill: viewStack = %v", m.viewStack)
+	}
+}

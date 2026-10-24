@@ -77,15 +77,15 @@
   const failed = $derived(wireCalls.some((c) => c.failed) || calls.some((c) => c.error))
   const status = $derived(node?.live ? 'running' : failed ? 'failed' : 'done')
   const statusTone = $derived(status === 'running' ? 'accent' : status === 'failed' ? 'err' : 'ok')
-  const icon = $derived(node?.tool ? toolGlyph(node.tool.name) : node?.step ? glyph.Running : node?.subagent ? glyph.Agent : glyph.Ambient)
+  const icon = $derived(node?.tool ? toolGlyph(node.tool.name) : node?.step ? glyph.Running : node?.completion ? (node.completion.source === 'job' ? glyph.Job : glyph.Agent) : glyph.Ambient)
 
   const time = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString() : '')
   const firstCall = $derived(wireCalls[0])
   const detailCall = $derived(calls[0])
-  const started = $derived(firstCall?.at ?? node?.step?.startedAt ?? node?.subagent?.startedAt)
+  const started = $derived(firstCall?.at ?? node?.step?.startedAt ?? node?.completion?.startedAt)
   const duration = $derived.by(() => {
     if (firstCall?.durationMs) return compactDuration(firstCall.durationMs)
-    const s = node?.step ?? node?.subagent
+    const s = node?.step ?? node?.completion
     return s?.startedAt && s.endedAt ? compactDuration(s.endedAt - s.startedAt) : ''
   })
   const exitCode = $derived(detailCall?.exitCode ?? firstCall?.exitCode)
@@ -97,7 +97,7 @@
   })
   const approval = $derived([firstCall?.approval, firstCall?.risk].filter(Boolean).join(' · '))
   const hooks = $derived(detailCall?.hooks?.length ?? 0)
-  const model = $derived(detailCall?.model || stepInfo?.model || node?.subagent?.model || '')
+  const model = $derived(detailCall?.model || stepInfo?.model || '')
 
   function pretty(s?: string): string {
     if (!s) return ''
@@ -178,13 +178,8 @@
             {#if 'truncated' in c && c.truncated && detail !== 'unsupported'}<p class="text-[11px] text-muted">output truncated</p>{/if}
           {/each}
           {#if detail === 'unsupported' && wireCalls.some((c) => c.truncated)}<p class="text-[11px] text-muted">Output is capped on this agent.</p>{/if}
-          {#if node.tool.job?.output}
-            <div class="mt-2 font-mono text-[11px] text-muted">{node.tool.job.id} · buffered output</div>
-            <pre class="max-h-96 overflow-auto rounded bg-bg p-2 font-mono text-xs whitespace-pre-wrap">{node.tool.job.output}</pre>
-            {#if node.tool.job.truncated}<p class="text-[11px] text-muted">output truncated</p>{/if}
-          {/if}
         {:else}
-          <pre class="max-h-96 overflow-auto rounded bg-bg p-2 font-mono text-xs whitespace-pre-wrap">{node.message?.content ?? node.subagent?.summary ?? node.runEvent?.body ?? nodeLabel(node)}</pre>
+          <pre class="max-h-96 overflow-auto rounded bg-bg p-2 font-mono text-xs whitespace-pre-wrap">{node.message?.content ?? node.completion?.report ?? node.completion?.output ?? node.runEvent?.body ?? nodeLabel(node)}</pre>
         {/if}
       {:else if active === 'args'}
         {#each shownCalls as c, i (i)}

@@ -48,9 +48,8 @@ describe('browseKey', () => {
     expect(browseKey(at('e', true), 'k', ctx).state.follow).toBe(false)
   })
 
-  it('Enter toggles density, z toggles fold, y copies, on the cursor row', () => {
+  it('Enter toggles density, y copies, on the cursor row', () => {
     expect(browseKey(at('b'), 'Enter', ctx).effect).toEqual({ toggleDensity: 'b' })
-    expect(browseKey(at('b'), 'z', ctx).effect).toEqual({ toggleFold: 'b' })
     expect(browseKey(at('b'), 'y', ctx).effect).toEqual({ copy: 'b' })
   })
 
@@ -73,40 +72,35 @@ describe('browseKey', () => {
 
 describe('flattenVisible', () => {
   // Three beats after the prompt. `b3` carries no todo label and so is not a
-  // stop; `b1` is finished (the wire folds it) and `b2` still runs.
+  // stop; `b1` and `b2` are labelled and `b2` still runs.
   const nodes = new Map<string, WireNode>(
     (
       [
         { id: 'turn', kind: 'turn', children: ['u', 'b3', 'b1', 'b2'] },
         { id: 'u', kind: 'message', parent: 'turn', message: { role: 'user', content: 'go' } },
         { id: 'b3', kind: 'step', parent: 'turn', children: [], step: { headline: 'h3' } },
-        { id: 'b1', kind: 'step', parent: 'turn', children: ['x1'], step: { headline: 'h', todo: { id: '1', index: 1, total: 2, content: 'one' }, folded: true } },
+        { id: 'b1', kind: 'step', parent: 'turn', children: ['x1'], step: { headline: 'h', todo: { id: '1', index: 1, total: 2, content: 'one' } } },
         { id: 'x1', kind: 'tool', parent: 'b1', tool: { name: 'file.read', display: 'Read file', calls: [{ target: 'a' }] } },
         { id: 'b2', kind: 'step', parent: 'turn', live: true, children: ['x2'], step: { headline: 'h2', todo: { id: '2', index: 2, total: 2, content: 'two' } } },
         { id: 'x2', kind: 'tool', parent: 'b2', live: true, tool: { name: 'file.read', display: 'Read file', calls: [{ target: 'b' }] } },
       ] as WireNode[]
     ).map((n) => [n.id, n]),
   )
-  const base: TranscriptCtx = { nodes, global: 'steps', overrides: new Map(), foldTasks: true, unfolded: new Set(), cursor: null, now: 0 }
+  const base: TranscriptCtx = { nodes, global: 'steps', overrides: new Map(), cursor: null, now: 0 }
 
-  it('skips containers, folded children and records stops', () => {
-    expect(flattenVisible(base, ['turn'])).toEqual({ ids: ['u', 'b3', 'b1', 'b2', 'x2'], stops: [0, 2, 3], lastLive: true })
+  it('skips containers and records stops', () => {
+    expect(flattenVisible(base, ['turn'])).toEqual({ ids: ['u', 'b3', 'b1', 'x1', 'b2', 'x2'], stops: [0, 2, 4], lastLive: true })
   })
-  it('lists tool rows when beats are open, but not at outline', () => {
-    expect(flattenVisible({ ...base, foldTasks: false }, ['turn']).ids).toEqual(['u', 'b3', 'b1', 'x1', 'b2', 'x2'])
-    expect(flattenVisible({ ...base, foldTasks: false, global: 'outline' }, ['turn']).ids).toEqual(['u', 'b3', 'b1', 'b2'])
+  it('lists tool rows, but not at outline', () => {
+    expect(flattenVisible(base, ['turn']).ids).toEqual(['u', 'b3', 'b1', 'x1', 'b2', 'x2'])
+    expect(flattenVisible({ ...base, global: 'outline' }, ['turn']).ids).toEqual(['u', 'b3', 'b1', 'b2'])
   })
   it('stops J/K on a beat that carries a todo label, not on an unlabelled one', () => {
     // 'b1' and 'b2' are labelled; 'b3' between them is not, so J skips it.
-    expect(browseKey(at('u'), 'J', flattenVisible({ ...base, foldTasks: false }, ['turn'])).state.cursor).toBe('b1')
-    expect(browseKey(at('b1'), 'J', flattenVisible({ ...base, foldTasks: false }, ['turn'])).state.cursor).toBe('b2')
-    expect(browseKey(at('b2'), 'K', flattenVisible({ ...base, foldTasks: false }, ['turn'])).state.cursor).toBe('b1')
-    // A beat the wire folded is still a stop: its children are gone, not it.
+    expect(browseKey(at('b1'), 'J', flattenVisible(base, ['turn'])).state.cursor).toBe('b2')
+    expect(browseKey(at('b2'), 'K', flattenVisible(base, ['turn'])).state.cursor).toBe('b1')
+    // The unlabelled beat between them is not a stop.
     expect(browseKey(at('u'), 'J', flattenVisible(base, ['turn'])).state.cursor).toBe('b1')
-  })
-  it('does not list a folded beat\u2019s children, unless the reader opened it', () => {
-    expect(flattenVisible(base, ['turn']).ids).not.toContain('x1')
-    expect(flattenVisible({ ...base, unfolded: new Set(['b1']) }, ['turn']).ids).toContain('x1')
   })
 })
 

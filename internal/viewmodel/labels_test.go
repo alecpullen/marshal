@@ -129,73 +129,6 @@ func TestLabelResetsPerTurn(t *testing.T) {
 	}
 }
 
-// DrivenByTodos is settled by the brief's code block, not its prose:
-// n.Step.Todo != nil || n.Step.TodoID != "", so any beat bound to a non-empty
-// TodoID drives the turn even when the todo is gone from the current list.
-// This test pins that ruling so the divergence from the prose cannot creep
-// back in silently.
-func TestDrivenByTodosFollowsTheCodeBlockNotTheProse(t *testing.T) {
-	cases := []struct {
-		name string
-		snap Snapshot
-		want bool
-	}{
-		{
-			// A dropped todo gets no label, but the beat stays bound to it.
-			name: "todo no longer in the list",
-			snap: Snapshot{
-				Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Old work."), audit("file.read", 1, "a", 2)},
-				Steps: []session.Step{stepFor(1, "gone", 1, 2)},
-				Todos: todos(db.TodoItem{ID: "x", Content: "X", Status: "pending"}, db.TodoItem{ID: "y", Content: "Y", Status: "pending"}),
-			},
-			want: true,
-		},
-		{
-			name: "one-item list",
-			snap: Snapshot{
-				Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Only item."), audit("file.read", 1, "a", 2)},
-				Steps: []session.Step{stepFor(1, "x", 1, 2)},
-				Todos: todos(db.TodoItem{ID: "x", Content: "X", Status: "in_progress"}),
-			},
-			want: true,
-		},
-		{
-			name: "labelled beat",
-			snap: Snapshot{
-				Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Parser."), audit("file.read", 1, "a", 2)},
-				Steps: []session.Step{stepFor(1, "p", 1, 2)},
-				Todos: todos(db.TodoItem{ID: "p", Content: "Parser", Status: "in_progress"}, db.TodoItem{ID: "q", Content: "Q", Status: "pending"}),
-			},
-			want: true,
-		},
-		{
-			name: "no bound beats",
-			snap: Snapshot{
-				Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Unrelated."), audit("file.read", 1, "a", 2)},
-				Steps: []session.Step{stepFor(1, "", 1, 2)},
-				Todos: todos(db.TodoItem{ID: "x", Content: "X", Status: "pending"}, db.TodoItem{ID: "y", Content: "Y", Status: "pending"}),
-			},
-			want: false,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			nodes := Build(c.snap)
-			if got := DrivenByTodos(nodes[0]); got != c.want {
-				t.Fatalf("DrivenByTodos = %v, want %v\n%s", got, c.want, shape(nodes))
-			}
-		})
-	}
-	// The label alone drives the turn, with no stored binding at all: this is
-	// the n.Step.Todo != nil half of the predicate.
-	labelled := &Node{Kind: KindTurn, Children: []*Node{
-		{Kind: KindStep, Step: &StepInfo{Todo: &TodoLabel{ID: "p"}}},
-	}}
-	if !DrivenByTodos(labelled) {
-		t.Fatal("a labelled beat with no binding must drive the turn")
-	}
-}
-
 func TestReceiptArithmetic(t *testing.T) {
 	edit := audit("file.write_patch", 1, "e", 2)
 	edit.Audit.FilesChanged = []string{"a.go", "b.go"}
@@ -207,7 +140,7 @@ func TestReceiptArithmetic(t *testing.T) {
 		Items: []session.TranscriptItem{
 			userMsg(1, 0),
 			narration(2, 1, 1, "A."), edit,
-			todoWrite(1, "w", 3, `{"todos":[]}`),
+			todoWrite(1, "w", 3, `{"todos":[{"id":"t1","content":"A","status":"completed"},{"id":"t2","content":"B","status":"completed"}]}`),
 			narration(3, 2, 5, "B."), edit2, audit("file.read", 2, "r", 7),
 			fin,
 		},
@@ -274,5 +207,124 @@ func TestLabelsDoNotDependOnListLength(t *testing.T) {
 	flat := []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Reading."), audit("file.read", 1, "a", 2)}
 	if got := labelsOf(Build(Snapshot{Items: flat, Steps: steps, Todos: one})); len(got) != 1 {
 		t.Fatalf("a turn that saw one item is labelled: %v", got)
+	}
+}
+
+// The tag reads the plan in effect, not the list as it stands now, so a list
+// rewritten later cannot change a row that already settled.
+func TestTagReadsThePlanNotTheCurrentList(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Planning."), audit("file.read", 1, "r", 2),
+			todoWrite(1, "w", 3, `{"todos":[{"id":"a","content":"A","status":"in_progress"},{"id":"b","content":"B","status":"pending"},{"id":"c","content":"C","status":"pending"}]}`),
+			narration(3, 2, 5, "Doing A."), audit("file.read", 2, "r2", 6),
+		},
+		Steps: []session.Step{stepFor(1, "", 1, 4), stepFor(2, "a", 5, 7)},
+		Todos: todos(
+			db.TodoItem{ID: "a", Content: "A", Status: "in_progress"},
+			db.TodoItem{ID: "b", Content: "B", Status: "pending"},
+			db.TodoItem{ID: "c", Content: "C", Status: "pending"},
+			db.TodoItem{ID: "d", Content: "D", Status: "pending"},
+		),
+	})
+	l := findNode(nodes, "step:2").Step.Todo
+	if l == nil || l.ID != "a" || l.Index != 1 || l.Total != 3 || l.Content != "A" {
+		t.Fatalf("label = %+v, want the plan's 1/3 A", l)
+	}
+}
+
+// The same steps with the todo dropped from the current list: the tag is
+// unchanged, because it never read that list.
+func TestTagSurvivesDroppingItsTodo(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Planning."), audit("file.read", 1, "r", 2),
+			todoWrite(1, "w", 3, `{"todos":[{"id":"a","content":"A","status":"in_progress"},{"id":"b","content":"B","status":"pending"},{"id":"c","content":"C","status":"pending"}]}`),
+			narration(3, 2, 5, "Doing A."), audit("file.read", 2, "r2", 6),
+		},
+		Steps: []session.Step{stepFor(1, "", 1, 4), stepFor(2, "a", 5, 7)},
+		Todos: todos(
+			db.TodoItem{ID: "b", Content: "B", Status: "pending"},
+			db.TodoItem{ID: "c", Content: "C", Status: "pending"},
+		),
+	})
+	l := findNode(nodes, "step:2").Step.Todo
+	if l == nil || l.ID != "a" || l.Index != 1 || l.Total != 3 || l.Content != "A" {
+		t.Fatalf("label = %+v, want the plan's 1/3 A", l)
+	}
+}
+
+// A narrated beat whose only call is a write is re-bound to the todo the same
+// actor's next step was bound to, and the next step merges into it.
+func TestWriteOnlyBeatTakesTheNextStepsTodo(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Moving on."),
+			todoWrite(1, "w", 2, `{"todos":[{"id":"a","content":"A","status":"completed"},{"id":"b","content":"B","status":"in_progress"}]}`),
+			audit("file.read", 2, "r", 4),
+		},
+		Steps: []session.Step{stepFor(1, "", 1, 3), stepFor(2, "b", 4, 6)},
+		Todos: todos(
+			db.TodoItem{ID: "a", Content: "A", Status: "completed"},
+			db.TodoItem{ID: "b", Content: "B", Status: "in_progress"},
+		),
+	})
+	if got := shape(nodes); strings.Count(got, "step:") != 1 {
+		t.Fatalf("the narrationless step merges into the beat:\n%s", got)
+	}
+	beat := nodes[0].Children[1]
+	if beat.Step.TodoID != "b" {
+		t.Fatalf("beat todo = %q, want the next step's binding", beat.Step.TodoID)
+	}
+	if l := beat.Step.Todo; l == nil || l.ID != "b" || l.Index != 2 || l.Total != 2 || l.Content != "B" {
+		t.Fatalf("label = %+v, want the plan's 2/2 B", l)
+	}
+}
+
+// With no next step to take its binding from, a write-only beat keeps the
+// binding it was stored with.
+func TestWriteOnlyBeatKeepsItsBindingWithoutANextStep(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Moving on."),
+			todoWrite(1, "w", 2, `{"todos":[{"id":"a","content":"A","status":"in_progress"}]}`),
+		},
+		Steps: []session.Step{stepFor(1, "a", 1, 3)},
+		Todos: todos(db.TodoItem{ID: "a", Content: "A", Status: "in_progress"}),
+	})
+	if beat := nodes[0].Children[1]; beat.Step.TodoID != "a" {
+		t.Fatalf("beat todo = %q, want its stored binding", beat.Step.TodoID)
+	}
+}
+
+// The receipt counts what the turn's plan lines moved to completed, so a later
+// write that drops the completed item cannot change a settled receipt.
+func TestReceiptCountsThePlansCompletions(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Doing A."), audit("file.read", 1, "r", 2),
+			todoWrite(1, "w1", 3, `{"todos":[{"id":"a","content":"A","status":"completed"},{"id":"b","content":"B","status":"in_progress"}]}`),
+			final(3, 4),
+			userMsg(5, 10),
+			narration(6, 2, 11, "Doing B."), audit("file.read", 2, "r2", 12),
+			todoWrite(2, "w2", 13, `{"todos":[{"id":"b","content":"B","status":"completed"}]}`),
+			final(7, 14),
+		},
+		Steps: []session.Step{stepFor(1, "a", 1, 3), stepFor(2, "b", 11, 13)},
+		Todos: todos(db.TodoItem{ID: "b", Content: "B", Status: "completed"}),
+	})
+	var rc *ReceiptInfo
+	for _, n := range nodes[0].Children {
+		if n.Kind == KindReceipt {
+			rc = n.Receipt
+		}
+	}
+	if rc == nil || rc.Tasks != 1 {
+		t.Fatalf("turn 1 receipt = %+v, want one task", rc)
 	}
 }

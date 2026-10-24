@@ -14,7 +14,6 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 )
 
@@ -80,9 +79,9 @@ func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
 }
 
 // renderStep renders one beat: a head (state glyph, narration, right-aligned
-// meta), its reasoning when the beat is expanded, then tool rows and subagent
-// cards at nested indent. Every piece ends in a newline, so the block's line
-// count is strings.Count(out, "\n").
+// meta), its reasoning when the beat is expanded, then tool rows at nested
+// indent. Every piece ends in a newline, so the block's line count is
+// strings.Count(out, "\n").
 func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) (string, []subRegion) {
 	si := n.Step
 	rows := n.Children
@@ -158,25 +157,9 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 	if open {
 		write(renderBeatReasoning(si.Thinking, width))
 	}
-	if si.LiveThinking != "" {
-		rv := c.region(viewmodel.LiveThinkingID)
-		box := renderThinkingBox(si.LiveThinking, c.thinkSpinner, c.thinkElapsed, rv, nestedContentWidth(width))
-		if box != "" {
-			if cnt := strings.Count(box, "\n"); cnt > rv.minRows {
-				c.noteRows(viewmodel.LiveThinkingID, cnt)
-			}
-			row(viewmodel.LiveThinkingID, indentLines(box, continuationIndent), subRegion{live: true})
-		}
-	}
 
 	// A long beat shows its newest rows; the rest collapse into one line.
 	// Expanding the beat shows them all.
-	var cards []*viewmodel.Node
-	for _, ch := range rows {
-		if ch.Kind == viewmodel.KindSubagent && ch.Item != nil && ch.Item.Subagent != nil {
-			cards = append(cards, ch)
-		}
-	}
 	rows = slices.DeleteFunc(slices.Clone(rows), func(ch *viewmodel.Node) bool { return !spineRow(ch) })
 	if over := len(rows) - viewmodel.BeatRowCap; over > 0 && !open {
 		write(spineBlock(mutedStyle().Render(fmt.Sprintf("… %d earlier calls", over))+"\n", false))
@@ -194,8 +177,6 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 			write(spineBlock(renderPlanRow(ch.PlanUpdate, w), last))
 		case ch.Active != nil:
 			row(ch.ID, spineBlock(renderActiveCallRow(*ch.Active, c, c.liveToolExpanded(ch.ID), w), last), subRegion{})
-		case ch.Job != nil:
-			row(ch.ID, spineBlock(renderJobRow(ch, c.toolSpinner, c.now, c.open(ch.ID, open), w, c.workdir), last), subRegion{live: ch.Job.Running})
 		case len(ch.Tools) > 1:
 			row(ch.ID, spineBlock(renderGroupRow(ch.Tools, c.open(ch.ID, open), w, c.workdir), last), subRegion{})
 		default:
@@ -203,23 +184,8 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 		}
 	}
 
-	// Subagent cards in the parent view (the projection without live work)
-	// sit below the spine, at the rows' indent.
-	for _, ch := range cards {
-		v := *ch.Item.Subagent
-		card := renderSubagentCard(v, c.open(ch.ID, open), c.toolSpinner, c.region(ch.ID), width-cardIndent)
-		sub := subRegion{live: v.Status == session.SubagentRunning}
-		if v.Child != nil {
-			sub.subagent = &v
-		}
-		row(ch.ID, indentLines(card, cardIndent), sub)
-	}
 	return b.String(), subs
 }
-
-// cardIndent is where a subagent card inside a beat starts: its glyph lines
-// up with the spine's verbs.
-const cardIndent = gutterWidth + 1
 
 // spineRow reports whether a beat's child draws as a row on its spine.
 func spineRow(ch *viewmodel.Node) bool {
@@ -232,50 +198,167 @@ func spineRow(ch *viewmodel.Node) bool {
 	return false
 }
 
-// jobOutcomeWord is a settled card's right-hand outcome: the actual exit code
-// when one was observed, or the reason there is none. A stopped process whose
-// runner reported no code and a start-up failure both land here, and neither
-// may read as a clean exit.
-func jobOutcomeWord(j *viewmodel.JobState, code *int) string {
-	switch {
-	case code != nil:
-		return fmt.Sprintf("exit %d", *code)
-	case j.StopCause != "":
-		return "stopped"
-	case j.Status == string(native.StatusFailed):
-		return "failed"
+// renderCompletion is one finished piece of background work: a head row with
+// its outcome, final measurement and duration, and the summary line under it.
+// Expanded, it becomes the issue report.
+func renderCompletion(c *viewmodel.CompletionInfo, expanded bool, width int, workdir string) string {
+	th := theme.Current()
+	g, colour := glyph.Job, th.StatusInfo
+	if c.Source == viewmodel.CompletionSubagent {
+		g, colour = glyph.Agent, th.AccentSecondary
+	}
+	head := lipgloss.NewStyle().Foreground(colour).Render(c.ID) + " " +
+		lipgloss.NewStyle().Foreground(th.FGDefault).Render(viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Label, workdir)))
+
+	var meta []string
+	switch c.Outcome {
+	case viewmodel.OutcomeDone:
+		meta = append(meta, statusOkStyle().Render(c.Outcome))
+	case viewmodel.OutcomeUnknown:
+		meta = append(meta, warningStyle().Render(c.Outcome))
 	default:
-		return "outcome unknown"
+		meta = append(meta, errorStyle().Render(c.Outcome))
 	}
+	if c.Measure != "" {
+		meta = append(meta, mutedStyle().Render(c.Measure))
+	}
+	if c.Duration > 0 {
+		meta = append(meta, mutedStyle().Render(formatElapsed(c.Duration)))
+	}
+	if len(meta) > 0 {
+		head += dimSeparator + strings.Join(meta, dimSeparator)
+	}
+
+	// The disclosure sits in the last column, so the head is truncated to
+	// leave room for it.
+	head = ansi.Truncate(head, max(width-gutterWidth-2, 1), "…")
+	pad := max(width-gutterWidth-ansi.StringWidth(head)-1, 0)
+	disclosure := glyph.DisclosureCollapsed
+	if expanded {
+		disclosure = glyph.DisclosureExpanded
+	}
+
+	var b strings.Builder
+	b.WriteString(gutterPrefix(g, colour))
+	b.WriteString(head)
+	b.WriteString(strings.Repeat(" ", pad))
+	b.WriteString(mutedStyle().Render(disclosure))
+	b.WriteString("\n")
+	if expanded {
+		b.WriteString(renderCompletionReport(c, width, workdir))
+	} else if c.Summary != "" {
+		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
+		b.WriteString(mutedStyle().Render(ansi.Truncate(viewmodel.ScrubText(c.Summary), max(width-nestedBodyIndent, 1), "…")))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
-// jobFailedStatus reports whether a terminal status is a failure that must not
-// render as a clean exit.
-func jobFailedStatus(status string) bool {
-	switch native.JobStatus(status) {
-	case native.StatusFailed, native.StatusKilled, native.StatusTimedOut:
-		return true
+// completionReportKeyWidth is the column the report's values start at: the key
+// is muted and padded to this width, so every value lines up.
+const completionReportKeyWidth = 10
+
+// renderCompletionReport draws an expanded completion event's issue report:
+// one line per field, the key muted and padded, the value in the default
+// foreground. It is what a reader opens when the head's outcome is not enough.
+func renderCompletionReport(c *viewmodel.CompletionInfo, width int, workdir string) string {
+	th := theme.Current()
+	valueStyle := lipgloss.NewStyle().Foreground(th.FGDefault)
+	valueIndent := nestedBodyIndent + completionReportKeyWidth
+	valueWidth := max(width-valueIndent, 1)
+	lineWidth := max(width-nestedBodyIndent, 1)
+
+	var b strings.Builder
+	// field writes one key/value line, truncated to the report's width.
+	field := func(key, value string, style lipgloss.Style) {
+		if value == "" {
+			return
+		}
+		line := mutedStyle().Render(padReportKey(key)) + style.Render(value)
+		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
+		b.WriteString(ansi.Truncate(line, lineWidth, "…"))
+		b.WriteString("\n")
 	}
-	return false
+	// block writes a value's continuation lines under the value column.
+	block := func(lines []string, style lipgloss.Style) {
+		for _, l := range lines {
+			b.WriteString(strings.Repeat(" ", valueIndent))
+			b.WriteString(style.Render(ansi.Truncate(l, valueWidth, "…")))
+			b.WriteString("\n")
+		}
+	}
+
+	outcome := c.Outcome
+	if c.StopCause != "" {
+		outcome += dimSeparator + "stop: " + c.StopCause
+	}
+	field("outcome", outcome, valueStyle)
+
+	if c.Source == viewmodel.CompletionSubagent {
+		field("task", viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Label, workdir)), valueStyle)
+	} else {
+		field("command", viewmodel.ScrubText(viewmodel.ElideWorkdir(firstLine(c.Command), workdir)), valueStyle)
+	}
+	field("cwd", viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Cwd, workdir)), valueStyle)
+
+	duration := ""
+	switch {
+	case c.Outcome == viewmodel.OutcomeLost:
+		duration = "ended with session"
+	case c.Duration > 0:
+		duration = formatElapsed(c.Duration)
+	}
+	field("duration", duration, valueStyle)
+	field("progress", c.Measure, valueStyle)
+
+	// The output tail: the first line sits on the key's line, the rest under
+	// the value column. Every line is model-authored, so each is scrubbed.
+	lines := viewmodel.ReportTail(c.Output)
+	if len(lines) > 0 {
+		line := mutedStyle().Render(padReportKey("output")) + mutedStyle().Render(viewmodel.ScrubText(lines[0]))
+		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
+		b.WriteString(ansi.Truncate(line, lineWidth, "…"))
+		b.WriteString("\n")
+	}
+	if len(lines) > 1 {
+		rest := make([]string, 0, len(lines)-1)
+		for _, l := range lines[1:] {
+			rest = append(rest, viewmodel.ScrubText(l))
+		}
+		block(rest, mutedStyle())
+	}
+	if c.Truncated {
+		block([]string{"earlier output dropped"}, mutedStyle())
+	}
+
+	// A subagent's report is prose, so it renders as markdown under the value
+	// column; plain prose is the fallback when glamour is unavailable.
+	if c.Report != "" {
+		rw := max(width-nestedBodyIndent-completionReportKeyWidth, 1)
+		body, ok := renderMarkdown(c.Report, rw)
+		if !ok {
+			body = renderPlainProse(c.Report, rw)
+		}
+		rendered := strings.Split(strings.Trim(body, "\n"), "\n")
+		if len(rendered) > 0 {
+			line := mutedStyle().Render(padReportKey("report")) + rendered[0]
+			b.WriteString(strings.Repeat(" ", nestedBodyIndent))
+			b.WriteString(ansi.Truncate(line, lineWidth, "…"))
+			b.WriteString("\n")
+			block(rendered[1:], lipgloss.NewStyle())
+		}
+	}
+
+	field("error", firstLine(c.Error), errorStyle())
+	return b.String()
 }
 
-// renderMarker is a completion marker: one dim row at the moment the work it
-// reports on finished. The card itself stays where it was dispatched;
-// selecting the marker jumps to it.
-func renderMarker(m *viewmodel.MarkerInfo, width int) string {
-	g, color := glyph.OK, theme.Current().FGMuted
-	if m.Failed {
-		g, color = glyph.Error, theme.Current().StatusError
+// padReportKey pads a report key to the value column.
+func padReportKey(key string) string {
+	if n := completionReportKeyWidth - ansi.StringWidth(key); n > 0 {
+		return key + strings.Repeat(" ", n)
 	}
-	word := "done"
-	if m.Failed && len(m.Labels) == 1 {
-		word = "failed"
-	}
-	text := viewmodel.ScrubText(strings.Join(m.Labels, " ") + " " + word)
-	if m.Dur > 0 {
-		text += dimSeparator + formatElapsed(m.Dur)
-	}
-	return gutterPrefix(g, color) + mutedStyle().Render(ansi.Truncate(text, max(width-gutterWidth, 1), "…")) + "\n"
+	return key
 }
 
 // countToolCalls is the number of tool calls a step made, counting each call
@@ -568,7 +651,7 @@ func (m Model) approvalWhyFor(owner *session.State, tc *session.PendingToolCall)
 }
 
 // subagentHeadline is the first sentence of a child's latest narration: what
-// it says it is doing, for the subagent card and the now bar's agent rows.
+// it says it is doing, for the now bar's agent rows.
 func subagentHeadline(child *session.State) string {
 	if child == nil {
 		return ""
@@ -580,59 +663,6 @@ func subagentHeadline(child *session.State) string {
 	head, _ := firstSentence(line)
 	return stripEmphasis(head)
 }
-
-// subagentBodyLines is the live card's body: the child's headline and what
-// tool it is running. Before the child has narrated anything it falls back to
-// the raw activity tail, which agent.await's peek also reads.
-func subagentBodyLines(child *session.State, n int) []string {
-	head := subagentHeadline(child)
-	if head == "" {
-		return subagentTailLines(child, n)
-	}
-	lines := []string{head}
-	if label := child.CurrentToolLabel(); label != "" {
-		g := toolCategoryGlyph(label)
-		text := DisplayToolName(label)
-		if strings.HasPrefix(label, "editing ") {
-			g, text = glyph.Edit, label
-		}
-		lines = append(lines, g+" "+text)
-	}
-	return lines
-}
-
-// subagentSummaryHeadline is the first sentence of a settled child's final
-// summary. Summaries are markdown, so heading marks come off before the
-// sentence becomes a row: "## Task 2 complete" reads as "Task 2 complete".
-func subagentSummaryHeadline(summary string) string {
-	head, _ := firstSentence(strings.TrimSpace(summary))
-	return stripMarkdownHeading(stripEmphasis(head))
-}
-
-// stripMarkdownHeading drops a leading ATX heading marker — one to six '#'
-// followed by a space — and its padding. Anything else starting with '#' is
-// text: "#3 done" keeps its number.
-func stripMarkdownHeading(s string) string {
-	t := strings.TrimLeft(s, " ")
-	n := len(t) - len(strings.TrimLeft(t, "#"))
-	if n == 0 || n > 6 || (n < len(t) && t[n] != ' ') {
-		return s
-	}
-	return strings.TrimLeft(t[n:], " ")
-}
-
-// lastN returns the last n elements, or the whole slice when it is shorter.
-func lastN(lines []string, n int) []string {
-	if n <= 0 || len(lines) <= n {
-		return lines
-	}
-	return lines[len(lines)-n:]
-}
-
-// liveSubagentRows caps a running card: header, meta and one dim activity
-// line. The card used to pad to a high-water mark and carry a drill-in
-// footer, which made a running child the tallest thing on screen.
-const liveSubagentRows = 3
 
 // liveStepSummary describes the beat now running — its narrated headline, or
 // the narration it continues — and the category glyph of its running tool,

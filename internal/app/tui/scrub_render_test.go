@@ -3,10 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
-	"time"
 
-	"marshal/internal/app/session"
-	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
 
@@ -61,39 +58,21 @@ func TestRenderersDropTerminalControlSequences(t *testing.T) {
 		}
 	}
 
-	marker := renderMarker(&viewmodel.MarkerInfo{Labels: []string{"#3 " + esc}}, 80)
-	stray("marker", marker)
+	completion := renderCompletion(&viewmodel.CompletionInfo{Source: viewmodel.CompletionSubagent, ID: "#3", Label: esc}, false, 80, "")
+	stray("completion", completion)
 
-	ev := registry.AuditEvent{ToolName: "shell.run", Args: []byte(`{"command":"pytest -q"}`),
-		ResultSummary: "started background job job-4"}
-	row := &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{ev},
-		Job: &viewmodel.JobState{ID: "job-4", Command: "echo " + esc, Running: true}}
-	stray("job card", renderJobRow(row, "⠋", time.Now(), false, 80, ""))
-
-	// The expanded body is the job's own output: escaping it must not cost it
-	// its lines.
-	row.Job.Running, row.Job.Output = false, "line one\n"+esc+"\nline three"
-	expanded := renderJobRow(row, "", time.Now(), true, 80, "")
-	stray("expanded job output", expanded)
+	// Expanded, the report prints the job's command and output tail — the same
+	// model-authored text, one layer deeper.
+	expanded := renderCompletion(&viewmodel.CompletionInfo{
+		Source:  viewmodel.CompletionJob,
+		ID:      "job-1",
+		Label:   esc,
+		Command: "make " + esc,
+		Summary: esc,
+		Output:  "line one\n" + esc + "\nline three",
+	}, true, 80, "")
+	stray("expanded completion", expanded)
 	if !strings.Contains(expanded, "line three") {
-		t.Fatalf("the output's own lines must survive scrubbing: %q", expanded)
-	}
-
-	// The subagent card is a live region: it repaints on every spinner tick,
-	// so a leak here is a leak many times a second.
-	sub := session.SubagentView{ID: 3, Label: esc + "Task 1", Status: session.SubagentDone,
-		CurrentTool: esc + "file.read", Summary: esc + "Finished the parser.\nThen the tests."}
-	stray("subagent card", renderSubagentCard(sub, false, "", regionView{}, 80))
-}
-
-// A caller-built tree is not guaranteed to have the start call attached to a
-// running job. The row must render with the elapsed time unknown rather than
-// index an empty slice.
-func TestJobCardToleratesAJobWithNoRunAttached(t *testing.T) {
-	row := &viewmodel.Node{Kind: viewmodel.KindTool,
-		Job: &viewmodel.JobState{ID: "job-9", Command: "pytest -q", Running: true}}
-	out := renderJobRow(row, "⠋", time.Now(), false, 80, "")
-	if !strings.Contains(out, "job-9") || !strings.Contains(out, "running") {
-		t.Fatalf("card = %q", out)
+		t.Fatalf("expanded completion dropped the output's last line: %q", expanded)
 	}
 }

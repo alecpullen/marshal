@@ -6271,6 +6271,7 @@ func (m *Model) startWorkSubscription() {
 	m.workEvents = m.workService.SubscribeWork(child)
 	snap := m.workService.WorkSnapshot()
 	m.workSnapshot = snap
+	m.workPrevious = nil
 	m.workConversation = snap.ConversationID
 	m.workEpoch = snap.RuntimeEpoch
 	m.workExpanded = ""
@@ -6342,12 +6343,40 @@ func (m Model) handleWorkMsg(msg workMsg) (Model, tea.Cmd) {
 		msg.snapshot.Revision < m.workSnapshot.Revision {
 		return m, rearm()
 	}
+	m.notePreviousProgress(msg.snapshot)
 	m.workSnapshot = msg.snapshot
 	if m.tasksPanel != nil {
 		m.tasksPanel.setWork(m.workService != nil, m.state.SessionID(), msg.snapshot)
 	}
 	m.refreshViewport()
 	return m, rearm()
+}
+
+// notePreviousProgress records each running item's previous progress
+// observation, so the next snapshot can be measured against it. Keys absent
+// from next are dropped: a settled item has no rate to show.
+func (m *Model) notePreviousProgress(next viewmodel.WorkSnapshot) {
+	prev := make(map[string]*progress.Snapshot, len(next.Items))
+	for _, it := range next.Items {
+		if it.Progress == nil {
+			continue
+		}
+		var old *progress.Snapshot
+		for i := range m.workSnapshot.Items {
+			if m.workSnapshot.Items[i].TaskKey == it.TaskKey {
+				old = m.workSnapshot.Items[i].Progress
+				break
+			}
+		}
+		if old != nil && old.ObservedAt.Before(it.Progress.ObservedAt) {
+			prev[it.TaskKey] = progress.Clone(old)
+			continue
+		}
+		if p, ok := m.workPrevious[it.TaskKey]; ok {
+			prev[it.TaskKey] = p
+		}
+	}
+	m.workPrevious = prev
 }
 
 // handleWorkRequest services one Tasks-panel Work action. Only the currently

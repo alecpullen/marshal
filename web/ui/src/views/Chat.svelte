@@ -238,9 +238,8 @@
     transcriptEl?.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.scrollIntoView?.({ block: 'center' })
   }
 
-  // Scroll to a node — a task's first beat, or a completion event's card. A
-  // card behind its beat's "+N earlier calls" cap is not in the DOM, so its
-  // beat opens at full density first.
+  // Scroll to a beat — reached from TasksTab's onJump, which jumps to the
+  // first beat worked under a task.
   async function scrollToNode(id: string) {
     const node = $shown.nodes.get(id)
     if (!node) return
@@ -256,7 +255,7 @@
   // Clicking a row selects it.
   function onTranscriptClick(e: MouseEvent) {
     const target = e.target as HTMLElement
-    // Fold and density buttons, links and text selections are not selections.
+    // Density buttons, links and text selections are not selections.
     if (target.closest?.('button, a') || window.getSelection()?.toString()) return
     const el = target.closest?.('[data-node-id]') as HTMLElement | null
     const id = el?.dataset.nodeId

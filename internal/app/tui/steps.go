@@ -248,7 +248,7 @@ func renderCompletion(c *viewmodel.CompletionInfo, expanded bool, width int, wor
 		b.WriteString(renderCompletionReport(c, width, workdir))
 	} else if c.Summary != "" {
 		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
-		b.WriteString(mutedStyle().Render(ansi.Truncate(c.Summary, max(width-nestedBodyIndent, 1), "…")))
+		b.WriteString(mutedStyle().Render(ansi.Truncate(viewmodel.ScrubText(c.Summary), max(width-nestedBodyIndent, 1), "…")))
 		b.WriteString("\n")
 	}
 	return b.String()

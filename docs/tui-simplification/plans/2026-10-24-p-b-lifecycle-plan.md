@@ -571,7 +571,7 @@ Expected:
    - **`internal/acp/stack_test.go`:** `TestWorkACPLegacyStackAndWatchRemainCompatible` keeps passing, because a running job is still an entity. Rename it `TestWorkACPStackAndWatchRemainCompatible` and drop "legacy" from its doc comment.
    - **`internal/app/tui`:** add `TestStepRowNamesItsSubagentInCallResult`, which renders a `subagentDispatch`-shaped audit and asserts `⧉ #3 started`. Put it in `spine_test.go`, which exists.
 
-**Verify:** the same commands as Task 1. Also run `grep -rn "LiveWork\b\|RunningSubagent\|Drilled:" internal --include='*.go'`, which must print nothing.
+**Verify:** the same commands as Task 1. Also run `grep -rnE '\.LiveWork\b|\.RunningSubagent\b|Drilled:' internal --include='*.go'`, which must print nothing. (The field references are what must be gone; bare `RunningSubagent` also matches live helpers such as `HasRunningSubagent` and `drillIntoLatestRunningSubagent`, so anchor on the selector.)
 
 ## Task 4: TUI without in-place cards, and drill-in from rows
 

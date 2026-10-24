@@ -77,7 +77,7 @@
   const failed = $derived(wireCalls.some((c) => c.failed) || calls.some((c) => c.error))
   const status = $derived(node?.live ? 'running' : failed ? 'failed' : 'done')
   const statusTone = $derived(status === 'running' ? 'accent' : status === 'failed' ? 'err' : 'ok')
-  const icon = $derived(node?.tool ? toolGlyph(node.tool.name) : node?.step ? glyph.Running : node?.completion ? glyph.Agent : glyph.Ambient)
+  const icon = $derived(node?.tool ? toolGlyph(node.tool.name) : node?.step ? glyph.Running : node?.completion ? (node.completion.source === 'job' ? glyph.Job : glyph.Agent) : glyph.Ambient)
 
   const time = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString() : '')
   const firstCall = $derived(wireCalls[0])

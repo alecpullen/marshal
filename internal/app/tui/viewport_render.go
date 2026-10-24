@@ -300,9 +300,9 @@ func rowBeats(turns []*viewmodel.Node) map[viewmodel.NodeID]viewmodel.NodeID {
 	return out
 }
 
-// blockTarget says what a click on a top-level block does. Steps and
-// expandable items toggle; a subagent card with a child drills in; plain
-// messages are not interactive.
+// blockTarget says what a click on a top-level block does. Steps, tools,
+// completion events and thinking rows toggle; plain messages are not
+// interactive.
 func (m *Model) blockTarget(n *viewmodel.Node) *clickTarget {
 	switch {
 	case n.Kind == viewmodel.KindStep:
@@ -311,7 +311,7 @@ func (m *Model) blockTarget(n *viewmodel.Node) *clickTarget {
 		return &clickTarget{node: viewmodel.LiveThinkingID, isLiveRegion: true}
 	case n.Kind == viewmodel.KindTool:
 		return &clickTarget{node: n.ID}
-	case n.Kind == viewmodel.KindCompletion:
+	case n.Kind == viewmodel.KindCompletion && n.Completion != nil:
 		return &clickTarget{node: n.ID}
 	case n.Kind == viewmodel.KindThinking:
 		return &clickTarget{node: n.ID}

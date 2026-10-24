@@ -64,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and an issue report when expanded. The call that started the work no longer
   changes after it starts. The web shows the same events, and the plan line,
   as rows.
+- The pinned band shows the plan whenever a list exists, not only when the
+  turn touched it.
 
 **Tool-usage prompting and tool architecture docs**
 
@@ -160,6 +162,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The subagent question channel and its `[agent] parent_question_*` settings.
 - In-place subagent cards, job cards that settled in place, and merged
   completion markers. The web transcript no longer folds finished beats.
+- The `subagent`, `job` and `marker` node payloads on the ACP `session/stack`
+  wire contract, replaced by `completion` and `plan`. Clients that read them
+  must move to the completion event; `subagentId` is added to tool rows so a
+  dispatch row still names the subagent it started.
 
 ### Fixed
 

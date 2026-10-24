@@ -179,6 +179,9 @@ func indexCards(items []session.TranscriptItem) cardIndex {
 		return found
 	}
 
+	// seen holds the start-row keys that already have a completion event, so a
+	// duplicated exit record cannot emit a second node under the same ID.
+	seen := map[string]bool{}
 	for _, it := range items {
 		switch {
 		case it.Subagent != nil && it.Subagent.Status != session.SubagentRunning && !it.Subagent.EndedAt.IsZero():
@@ -195,6 +198,14 @@ func indexCards(items []session.TranscriptItem) cardIndex {
 			refKey := ""
 			if ok {
 				refKey = ref.Key
+				if seen[refKey] {
+					// A resume merge can repeat an exit record. Both copies
+					// pair with the same start, so a second event would carry
+					// the same node ID and the ACP patch diff would silently
+					// overwrite the first.
+					continue
+				}
+				seen[refKey] = true
 				ev := ci.starts[ref]
 				start = &ev
 			} else {

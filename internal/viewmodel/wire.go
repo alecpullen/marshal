@@ -274,9 +274,9 @@ var kindNames = [...]string{
 	KindTool:        "tool",
 	KindMessage:     "message",
 	KindFinal:       "final",
-	KindSubagent:    "subagent",
+	KindSubagent:    "subagent", // no node carries it; band refs do
 	KindRunEvent:    "runEvent",
-	KindJobExit:     "jobExit",
+	KindJobExit:     "jobExit", // no node carries it; exits become completions
 	KindThinking:    "thinking",
 	KindPassthrough: "passthrough",
 	KindReceipt:     "receipt",

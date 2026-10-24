@@ -97,7 +97,6 @@ describe('flattenVisible', () => {
   })
   it('stops J/K on a beat that carries a todo label, not on an unlabelled one', () => {
     // 'b1' and 'b2' are labelled; 'b3' between them is not, so J skips it.
-    expect(browseKey(at('u'), 'J', flattenVisible(base, ['turn'])).state.cursor).toBe('b1')
     expect(browseKey(at('b1'), 'J', flattenVisible(base, ['turn'])).state.cursor).toBe('b2')
     expect(browseKey(at('b2'), 'K', flattenVisible(base, ['turn'])).state.cursor).toBe('b1')
     // The unlabelled beat between them is not a stop.

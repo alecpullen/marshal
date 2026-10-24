@@ -33,7 +33,7 @@ func ElideWorkdir(cmd, root string) string {
 }
 
 // DisplaySummary is the summary a row shows. An await's result names what
-// finished, which the completion marker already says; its row just reports
+// finished, which the completion event already says; its row just reports
 // the wait.
 func DisplaySummary(ev registry.AuditEvent) string {
 	if ev.ToolName == "agent.await" && ev.Error == "" {

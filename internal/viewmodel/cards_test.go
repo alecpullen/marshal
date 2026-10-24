@@ -293,6 +293,37 @@ func TestStructuredExitPairsRegardlessOfOrder(t *testing.T) {
 	}
 }
 
+// A resume merge can repeat an exit record. Both copies pair with the same
+// start, so only one completion event may be emitted: a second would carry the
+// same node ID, and the ACP patch diff would silently overwrite the first.
+func TestDuplicateExitEmitsOneCompletion(t *testing.T) {
+	code := 0
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Launch."),
+			structuredJobStart(1, "j", 3, "job-1", "exec-1"),
+			structuredJobExit(4, "job-1", "exec-1", &code),
+			structuredJobExit(4, "job-1", "exec-1", &code),
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 5)},
+	})
+	var ids []string
+	var walk func(ns []*Node)
+	walk = func(ns []*Node) {
+		for _, n := range ns {
+			if n.Kind == KindCompletion {
+				ids = append(ids, n.ID.Key)
+			}
+			walk(n.Children)
+		}
+	}
+	walk(nodes)
+	if len(ids) != 1 {
+		t.Fatalf("want one completion event for a duplicated exit, got %d: %v", len(ids), ids)
+	}
+}
+
 // A command the caller is still waiting on has its own tool row. Its audit
 // carries the same structured record, and the record's attachment is what keeps
 // it from becoming a second — and wrongly background-styled — card.

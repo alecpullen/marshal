@@ -153,8 +153,8 @@ func ToolID(ev registry.AuditEvent) NodeID { return NodeID{KindTool, ToolKey(ev)
 func ThinkingID(t *session.ThinkingEntry) NodeID { return NodeID{KindThinking, ThinkingKey(t)} }
 
 // AnyLive reports whether the node or any descendant needs per-tick
-// re-rendering. A settled step can still hold a running subagent card or an
-// in-flight call, so a cache must look below the top level.
+// re-rendering. A settled step can still hold an in-flight call, so a cache
+// must look below the top level.
 func (n *Node) AnyLive() bool {
 	if n.Live {
 		return true
@@ -216,10 +216,9 @@ func dispatchWorkKey(ev *registry.AuditEvent) string {
 // before the first user turn.
 func Build(s Snapshot) []*Node {
 	items := s.Items
-	// Index the cards before dropping job exits from the tree: an exit is
-	// no longer a row of its own (the card it settles carries the outcome,
-	// and a marker carries the moment), but it is still what settles the
-	// card that started the job.
+	// Index the completions before dropping job exits from the tree: an exit
+	// is not a row of its own, but it becomes the completion event that
+	// follows the beat which launched the job.
 	ci := indexCards(items)
 	kept := make([]session.TranscriptItem, 0, len(items))
 	for _, it := range items {
@@ -687,6 +686,10 @@ func passthrough(it *session.TranscriptItem) *Node {
 			}
 		}
 	case session.KindSubagent:
+		// Unreachable: buildTurn skips subagent items before they reach a
+		// block, and TestSubagentItemIsNeverANode pins that no node carries
+		// this kind. Kept so a future caller cannot silently fall through to
+		// a passthrough node with a default ID.
 		n.Kind = KindSubagent
 		if it.Subagent != nil {
 			n.ID = NodeID{KindSubagent, fmt.Sprintf("sub:%d", it.Subagent.ID)}

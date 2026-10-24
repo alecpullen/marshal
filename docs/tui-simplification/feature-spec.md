@@ -1,8 +1,8 @@
 # TUI simplification — feature spec
 
 Status: draft for review, 2026-10-23. Updated 2026-10-24 with the decisions
-the P-A and P-B plans pinned down. P-A and P-B landed
-(`d9975303..fa2a3ea8`).
+the P-A and P-B plans pinned down. P-A landed on `main` before this branch;
+P-B landed in `d9975303..fa2a3ea8`.
 Base commit: `87fa8f0e` (main, after the interaction-modes merge).
 Design record: [`alternatives.md`](alternatives.md) (layout),
 [`console-variants.md`](console-variants.md) (dock), and
@@ -93,8 +93,8 @@ References are at `87fa8f0e`.
 | B3 | `labelTransitions` skips lists shorter than `MinTaskTodos` (2). `DrivenByTodos` hides the band's plan rows unless the turn touched the list. | `viewmodel/labels.go`, `tasks.go:19` |
 | B4 | `foldBeats` folds every finished beat except the newest `FoldKeep` (3). `z` and `tui.transcript.fold_finished_tasks` toggle it. Ctrl+G cycles three densities (`density.go`, `tui.transcript.density`). | `viewmodel/labels.go`, `tui/density.go` |
 | B5 | `BeatRowCap` (8) collapses a long beat's older rows. It stays. | `viewmodel/beats.go` |
-| B6 | With the live-work service wired (`Snapshot.LiveWork`, true in the app), the transcript keeps each dispatch row once and omits in-place subagent cards. Running work shows in the now bar. Without it (the legacy projection, which ACP still serves by default), cards render in place. | `tui/viewport_render.go:78`, `viewmodel/stack.go` `Snapshot.LiveWork` |
-| B7 | A background job's dispatch row is settled in place with its exit (`settleJob`). Completions also emit `KindMarker` rows, and `coalesceMarkers` merges adjacent ones. | `viewmodel/cards.go` |
+| B6 | With the live-work service wired (`Snapshot.LiveWork`, true in the app), the transcript keeps each dispatch row once and omits in-place subagent cards. Running work shows in the now bar. Without it (the legacy projection, which ACP still serves by default), cards render in place. **Removed in P-B** (§6.1, §9): one projection, no cards. | `tui/viewport_render.go:78`, `viewmodel/stack.go` `Snapshot.LiveWork` |
+| B7 | A background job's dispatch row is settled in place with its exit (`settleJob`). Completions also emit `KindMarker` rows, and `coalesceMarkers` merges adjacent ones. **Removed in P-B** (§6.1, §9): the exit becomes a completion event. | `viewmodel/cards.go` |
 | B8 | The now bar is one planner for progress, checklist, turn spinner, live mirror, browser, SDD and swarm rows, work cards (two rows collapsed, six expanded), attention and receipt rows, and overflow. It has a compact layout below 30 rows and an open checklist from 44. | `tui/nowbar.go` (1,304 lines) |
 | B9 | Work cards render measurements as text only. Live work's spec drew a bar, but none is rendered. | `tui/nowbar.go` `workMetricLine` |
 | B10 | `shell.run` and `test.run` accept `progress {profile, source, title}`. Nothing in the model's context describes the `@@marshal-progress/v1` record, so the agent cannot write a producer. The examples live in `docs/live-work/examples/`, which only exists in Marshal's own repository. | `tools/native/command.go:63,100` |

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"marshal/internal/viewmodel"
@@ -59,4 +60,19 @@ func TestRenderersDropTerminalControlSequences(t *testing.T) {
 
 	completion := renderCompletion(&viewmodel.CompletionInfo{Source: viewmodel.CompletionSubagent, ID: "#3", Label: esc}, false, 80, "")
 	stray("completion", completion)
+
+	// Expanded, the report prints the job's command and output tail — the same
+	// model-authored text, one layer deeper.
+	expanded := renderCompletion(&viewmodel.CompletionInfo{
+		Source:  viewmodel.CompletionJob,
+		ID:      "job-1",
+		Label:   esc,
+		Command: "make " + esc,
+		Summary: esc,
+		Output:  "line one\n" + esc + "\nline three",
+	}, true, 80, "")
+	stray("expanded completion", expanded)
+	if !strings.Contains(expanded, "line three") {
+		t.Fatalf("expanded completion dropped the output's last line: %q", expanded)
+	}
 }

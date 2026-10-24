@@ -18,19 +18,6 @@ func newChildState(t *testing.T) *session.State {
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 }
 
-func TestSubagentCardWithoutChildIsNotClickable(t *testing.T) {
-	m := newTestModel(t)
-	m.state.RegisterSubagent("status only", nil)
-	m.invalidateTranscript()
-	m.refreshViewport()
-
-	for _, r := range m.nodeRegions {
-		if r.target.subagent != nil {
-			t.Fatalf("childless subagent card must not be clickable, got target %+v", r.target.subagent)
-		}
-	}
-}
-
 func TestDrillSwapsTranscriptToChildSession(t *testing.T) {
 	m := newTestModel(t)
 	m.state.AddMessage(session.RoleAssistant, "parent normal text", session.ContentTypePlain)

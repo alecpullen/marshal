@@ -45,6 +45,11 @@ func labelTransitions(nodes []*Node, todos []db.TodoItem, plan *PlanUpdate) *Pla
 			if src != nil && src.Active > 0 {
 				n.Step.Todo = &TodoLabel{ID: id, Index: src.Active, Total: src.Total(), Content: ScrubText(src.ActiveText)}
 			} else {
+				// Fallback: no plan row in the transcript names this item, so
+				// the tag reads the session's current list. This is the one
+				// place a settled beat's label can still move when a later
+				// todo.write rewrites the list — the documented exception to
+				// the append-only property (plan decision 5).
 				for i, td := range todos {
 					if td.ID == id {
 						n.Step.Todo = &TodoLabel{ID: id, Index: i + 1, Total: len(todos), Content: ScrubText(td.Content)}

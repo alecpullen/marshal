@@ -2,6 +2,7 @@ package connect
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"sort"
 	"strings"
@@ -13,15 +14,16 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/mcpauth"
 	"marshal/internal/app/tui/picker"
-	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/llm/modelcatalog"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
@@ -61,12 +63,13 @@ const (
 	stepAPIKey
 	stepProbing
 	stepPickModel
+	stepConsent
+	stepPreparing
 	stepSummary
 	stepRename
 	stepDone
 	stepCancelled
 	stepRemoteGate
-	stepConfirmLimits
 	stepOAuthLogin
 )
 
@@ -121,10 +124,7 @@ type Model struct {
 	dataDir          string
 	auth             provider.AuthResolver
 	openBrowser      func(url string) error
-	confirm          *presetflow.ConfirmState
-	detectingCaps    bool
-	capProbeID       uint64
-	cancelCapProbe   context.CancelFunc
+	prepared         PreparedMsg
 
 	// oauthDisplay receives the authorization URL from the running login
 	// flow so the panel can show it. nil outside stepOAuthLogin.
@@ -195,13 +195,12 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 		return m.handleProbeResult(msg)
 	case picker.PickedMsg:
 		return m.handlePickerPicked(msg.Value)
-	case presetflow.CapabilityProbedMsg:
-		if !m.detectingCaps || msg.RequestID != m.capProbeID ||
-			m.step != stepConfirmLimits || msg.Provider != m.providerName || msg.Model != m.modelChosen {
-			return m, nil // stale result from a since-abandoned selection
+	case PreparedMsg:
+		if m.step != stepPreparing {
+			return m, nil
 		}
-		m.finishCapabilityProbe()
-		m.confirm.Limits = m.confirm.Limits.WithProbed(msg.Caps.ToolCalling, msg.Caps.ContextWindow)
+		m.prepared = msg
+		m.enterSummary()
 		return m, nil
 	case picker.CancelledMsg:
 		if m.step == stepPickTemplate || m.step == stepPickModel {
@@ -218,12 +217,6 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	case tea.PasteMsg:
-		if m.step == stepConfirmLimits {
-			if m.detectingCaps || m.confirm == nil || !m.confirm.Editing() {
-				return m, nil
-			}
-			return m, m.confirm.UpdateInput(msg)
-		}
 		switch m.step {
 		case stepBaseURL, stepAPIKey:
 			var cmd tea.Cmd
@@ -296,21 +289,18 @@ func (m *Model) View(maxW, maxH int) string {
 		b.WriteString(m.renderSummary(pw))
 	case stepRename:
 		b.WriteString(m.renderRenameInput(pw))
-	case stepConfirmLimits:
-		if m.detectingCaps {
-			b.WriteString(hintStyle().Render("detecting model capabilities…"))
-		} else {
-			b.WriteString(m.confirm.Render(pw))
-		}
+	case stepConsent:
+		b.WriteString(mutedStyle().Render("models.dev publishes context limits, tool support and prices."))
+		b.WriteString("\n")
+		b.WriteString(mutedStyle().Render("Only the public catalog is downloaded; no keys or model ids are sent."))
+	case stepPreparing:
+		b.WriteString(mutedStyle().Render("preparing presets…"))
 	}
 	if m.err != "" {
 		b.WriteString("\n")
 		b.WriteString(errStyle().Render(m.err))
 	}
 	footer := m.footer
-	if m.step == stepConfirmLimits && m.detectingCaps {
-		footer = "please wait…"
-	}
 	if footer != "" {
 		b.WriteString("\n")
 		b.WriteString(footerStyle().Render(footer))
@@ -347,13 +337,24 @@ func (m *Model) renderProbing(pw int) string {
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type DoneMsg struct {
-	Provider        string
-	Model           string
-	ProviderCfg     config.ProviderConfig
-	EnabledRemote   bool
-	ContextWindow   int
-	MaxOutputTokens int
-	ToolCalling     *bool
+	Provider          string
+	Model             string
+	ProviderCfg       config.ProviderConfig
+	EnabledRemote     bool
+	ContextWindow     int
+	MaxOutputTokens   int
+	ToolCalling       *bool
+	Presets           map[string]routing.ModelPreset
+	Provenance        *presetsetup.Provenance
+	EnrichmentConsent *bool
+}
+
+// PreparedMsg carries the bulk-prepared presets back to the wizard.
+type PreparedMsg struct {
+	Presets    map[string]routing.ModelPreset
+	Provenance *presetsetup.Provenance
+	Result     presetsetup.Result
+	Err        error
 }
 
 // RefreshMsg is emitted when the user presses ctrl+r in the model
@@ -451,6 +452,8 @@ func (m *Model) back() tea.Cmd {
 		default:
 			m.enterSummary()
 		}
+	case stepConsent:
+		enterPickModelStep(m, m.providerName)
 	default:
 		return m.cancel()
 	}
@@ -523,73 +526,97 @@ func (m *Model) enterRemoteGate() {
 	m.picker = nil
 }
 
-func (m *Model) enterConfirmLimits() (*Model, tea.Cmd) {
-	m.cancelCapabilityProbe()
-	m.step = stepConfirmLimits
-	m.title = "Confirm model limits"
-	m.subtitle = m.providerName + " · " + m.modelChosen
-	m.footer = "[↵] confirm  [c] edit context  [o] edit max output  [Esc] back"
+// afterModelChosen asks for models.dev consent once, then prepares presets.
+func (m *Model) afterModelChosen() (*Model, tea.Cmd) {
+	if m.cfg.Privacy.ModelsDevEnrichment == nil {
+		return m.enterConsent()
+	}
+	return m.enterPrepare()
+}
+
+func (m *Model) enterConsent() (*Model, tea.Cmd) {
+	m.step = stepConsent
+	m.title = "models.dev enrichment"
+	m.subtitle = "fetch public model metadata for every reported model?"
+	m.footer = "[y] allow  [n] skip  [Esc] back"
 	m.err = ""
 	m.picker = nil
-
-	lim := presetflow.Resolve(m.discovered[m.providerName], m.modelChosen, probe.IsLocalhost(m.providerCfg.BaseURL))
-	if preset, ok := m.presetFor(m.providerName, m.modelChosen); ok {
-		lim = lim.WithPreset(preset.ContextWindow, preset.MaxOutputTokens)
-	}
-	m.confirm = presetflow.NewConfirmState(lim)
-
-	cmd, cancel := m.probeCapabilities(m.capProbeID)
-	m.cancelCapProbe = cancel
-	m.detectingCaps = cmd != nil
-	return m, cmd
+	return m, nil
 }
 
-// presetFor returns the preset already saved for providerName+modelID, if
-// any — re-picking a model whose limits came back unknown must not erase
-// figures confirmed earlier.
-func (m *Model) presetFor(providerName, modelID string) (routing.ModelPreset, bool) {
-	for _, p := range m.cfg.Models.Presets {
-		if p.Provider == providerName && p.Model == modelID {
-			return p, true
+func (m *Model) enterPrepare() (*Model, tea.Cmd) {
+	m.step = stepPreparing
+	m.title = "Preparing presets"
+	m.subtitle = m.providerName
+	m.footer = "please wait…"
+	m.err = ""
+	m.picker = nil
+	return m, m.prepareCmd()
+}
+
+// reportedModels returns the provider's live model list, preferring the
+// discovered map so the all-providers flow works too.
+func (m *Model) reportedModels() []schema.ModelInfo {
+	if models := m.discovered[m.providerName]; len(models) > 0 {
+		return models
+	}
+	return m.models
+}
+
+// prepareCmd loads the catalog when allowed, applies the active model's
+// capability probe, and bulk-creates presets on a copy of the config.
+func (m *Model) prepareCmd() tea.Cmd {
+	providerName := m.providerName
+	baseURL := m.providerCfg.BaseURL
+	modelChosen := m.modelChosen
+	models := append([]schema.ModelInfo(nil), m.reportedModels()...)
+	cfg := m.cfg
+	// The preset map is shared with the TUI's live config. Copy it before
+	// Apply mutates it, or a cancelled connect would still change presets.
+	if cfg.Models.Presets != nil {
+		presets := make(map[string]routing.ModelPreset, len(cfg.Models.Presets))
+		for k, v := range cfg.Models.Presets {
+			presets[k] = v
+		}
+		cfg.Models.Presets = presets
+	}
+	dataDir := m.dataDir
+	allowed := m.cfg.Privacy.ModelsDevEnrichment != nil && *m.cfg.Privacy.ModelsDevEnrichment
+	prov, err := provider.NewFromConfigWithAuth(providerName, m.providerCfg, dataDir, m.cfg.Agent.ThinkingBudgetMargin, "", m.auth)
+	return func() tea.Msg {
+		if err == nil {
+			if prober, ok := prov.(provider.CapabilityProber); ok {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				caps := prober.ProbeCapabilities(ctx, modelChosen)
+				cancel()
+				for i := range models {
+					if models[i].ID != modelChosen {
+						continue
+					}
+					if caps.ToolCalling != nil {
+						models[i].ToolCalling = caps.ToolCalling
+					}
+					if caps.ContextWindow > 0 {
+						models[i].ContextWindow = caps.ContextWindow
+					}
+					break
+				}
+			}
+		}
+		var cat *modelcatalog.Catalog
+		if allowed {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			cat, _ = modelcatalog.NewCache(dataDir).Load(ctx)
+			cancel()
+		}
+		provenance, _ := presetsetup.LoadProvenance(dataDir)
+		res := presetsetup.Apply(&cfg, providerName, baseURL, models, cat, provenance)
+		return PreparedMsg{
+			Presets:    cfg.Models.Presets,
+			Provenance: provenance,
+			Result:     res,
 		}
 	}
-	return routing.ModelPreset{}, false
-}
-
-// probeCapabilities returns a cmd that probes the chosen model's
-// capabilities if the constructed provider supports it (currently: Ollama
-// only), or nil if there is nothing to probe — callers must not set
-// detectingCaps=true unless this returns non-nil, or the "detecting…" state
-// would never clear.
-func (m *Model) probeCapabilities(requestID uint64) (tea.Cmd, context.CancelFunc) {
-	// Capability probing only needs the provider client. Limit-table discovery
-	// already happened during model-list discovery and must not block the TUI
-	// while this confirmation screen is opening.
-	prov, err := provider.NewFromConfigWithAuth(m.providerName, m.providerCfg, m.dataDir, m.cfg.Agent.ThinkingBudgetMargin, "", m.auth)
-	if err != nil {
-		return nil, nil
-	}
-	if _, ok := prov.(provider.CapabilityProber); !ok {
-		return nil, nil
-	}
-	return presetflow.ProbeCapabilitiesCmdWithCancel(prov, m.providerName, m.modelChosen, requestID)
-}
-
-func (m *Model) cancelCapabilityProbe() {
-	if m.cancelCapProbe != nil {
-		m.cancelCapProbe()
-		m.cancelCapProbe = nil
-	}
-	m.capProbeID++
-	m.detectingCaps = false
-}
-
-func (m *Model) finishCapabilityProbe() {
-	if m.cancelCapProbe != nil {
-		m.cancelCapProbe()
-		m.cancelCapProbe = nil
-	}
-	m.detectingCaps = false
 }
 
 func (m *Model) enterSummary() {
@@ -636,6 +663,11 @@ func (m *Model) renderSummary(pw int) string {
 	b.WriteString(mutedStyle().Render("endpoint: ") + titleStyle().Render(strutil.Truncate(m.providerCfg.BaseURL, pw-12, true)) + "\n")
 	b.WriteString(mutedStyle().Render("key:      ") + titleStyle().Render(m.keySourceLabel()) + "\n")
 	b.WriteString(mutedStyle().Render("model:    ") + titleStyle().Render(m.modelChosen) + "\n")
+	if m.prepared.Result.Prepared > 0 {
+		b.WriteString(mutedStyle().Render("presets:  ") +
+			titleStyle().Render(fmt.Sprintf("%d prepared · %d models.dev matches · %d using fallbacks",
+				m.prepared.Result.Prepared, m.prepared.Result.Matched, m.prepared.Result.Fallback)) + "\n")
+	}
 	if m.cfgPath != "" {
 		b.WriteString(mutedStyle().Render("save to:  ") + titleStyle().Render(strutil.Truncate(m.cfgPath, pw-12, true)) + "\n")
 	}
@@ -802,9 +834,9 @@ func (m *Model) handlePickerPicked(value string) (*Model, tea.Cmd) {
 		} else {
 			m.modelChosen = value
 		}
-		// Both flows confirm limits before completing: /models skipped the
+		// Both flows prepare presets before completing: /models skipped the
 		// summary, but it must not skip this.
-		return m.enterConfirmLimits()
+		return m.afterModelChosen()
 	}
 	tpl, ok := provider.Lookup(value)
 	if !ok {
@@ -1060,31 +1092,20 @@ func (m *Model) handleKey(k tea.KeyPressMsg) (*Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
-	case stepConfirmLimits:
-		if m.detectingCaps {
-			if ks == "esc" {
-				m.cancelCapabilityProbe()
-				m.confirm = nil
-				enterPickModelStep(m, m.providerName)
-			}
-			return m, nil // ignore keys while the capability probe is in flight
+	case stepConsent:
+		switch ks {
+		case "y":
+			b := true
+			m.cfg.Privacy.ModelsDevEnrichment = &b
+			return m.enterPrepare()
+		case "n":
+			b := false
+			m.cfg.Privacy.ModelsDevEnrichment = &b
+			return m.enterPrepare()
+		case "esc":
+			return m, m.back()
 		}
-		result, cmd := m.confirm.HandleKey(k)
-		switch result {
-		case presetflow.ConfirmDone:
-			if m.scopedProvider != "" {
-				m.step = stepDone
-				return m, m.done()
-			}
-			m.enterSummary()
-			return m, nil
-		case presetflow.ConfirmCancelled:
-			m.cancelCapabilityProbe()
-			m.confirm = nil
-			enterPickModelStep(m, m.providerName)
-			return m, nil
-		}
-		return m, cmd
+		return m, nil
 	case stepRename:
 		switch ks {
 		case "enter":
@@ -1227,21 +1248,14 @@ func (m *Model) refreshCmd() tea.Cmd {
 
 func (m *Model) done() tea.Cmd {
 	return func() tea.Msg {
-		var ctxWin, maxOut int
-		var toolCalling *bool
-		if m.confirm != nil {
-			ctxWin = m.confirm.Limits.ContextWindow
-			maxOut = m.confirm.Limits.MaxOutputTokens
-			toolCalling = m.confirm.Limits.ToolCalling
-		}
 		return DoneMsg{
-			Provider:        m.providerName,
-			Model:           m.modelChosen,
-			ProviderCfg:     m.providerCfg,
-			EnabledRemote:   m.remoteEnabled,
-			ContextWindow:   ctxWin,
-			MaxOutputTokens: maxOut,
-			ToolCalling:     toolCalling,
+			Provider:          m.providerName,
+			Model:             m.modelChosen,
+			ProviderCfg:       m.providerCfg,
+			EnabledRemote:     m.remoteEnabled,
+			Presets:           m.prepared.Presets,
+			Provenance:        m.prepared.Provenance,
+			EnrichmentConsent: m.cfg.Privacy.ModelsDevEnrichment,
 		}
 	}
 }

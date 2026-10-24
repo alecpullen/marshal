@@ -27,6 +27,7 @@ import (
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
+	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/activeworkpanel"
@@ -2664,7 +2665,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshViewport()
 		return m, nil
-	case connect.OAuthDoneMsg, connect.TickMsg:
+	case connect.OAuthDoneMsg, connect.TickMsg, connect.PreparedMsg:
 		if _, ok := m.dock.Panel().(connect.Panel); ok {
 			return m, m.dock.Update(pm)
 		}
@@ -7482,6 +7483,16 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 			presets[k] = v
 		}
 		newCfg.Models.Presets = presets
+	} else {
+		newCfg.Models.Presets = map[string]routing.ModelPreset{}
+	}
+	// Merge the presets the connect wizard prepared for every reported model.
+	// The active model's preset is materialized below, so an existing entry
+	// wins here.
+	for name, preset := range msg.Presets {
+		if _, exists := newCfg.Models.Presets[name]; !exists {
+			newCfg.Models.Presets[name] = preset
+		}
 	}
 	presetName, err := presetflow.Materialize(&newCfg, msg.Provider, msg.Model, msg.ProviderCfg.BaseURL, presetflow.Limits{
 		ContextWindow:   msg.ContextWindow,
@@ -7528,6 +7539,27 @@ func (m *Model) applyConnectDone(msg connect.DoneMsg) {
 		m.state.AddMessage(session.RoleSystem,
 			fmt.Sprintf("✗ Failed to save model preset: %v", err), session.ContentTypePlain)
 		return
+	}
+	// The consent answer is a user-global preference; persist it only when the
+	// wizard actually asked (nil means the user has never answered).
+	if msg.EnrichmentConsent != nil {
+		if err := config.SaveUserConfigValue(userPath, "privacy.models_dev_enrichment", *msg.EnrichmentConsent); err != nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("⚠ Could not save models.dev preference: %v", err), session.ContentTypePlain)
+		}
+	}
+	// Provenance is written after the presets: if it fails, the presets are
+	// already saved and the next refresh fails safe rather than overwriting a
+	// user edit.
+	dataDir := m.modelCacheDir
+	if dataDir == "" {
+		dataDir = config.DataDir(home)
+	}
+	if msg.Provenance != nil {
+		if err := presetsetup.SaveProvenance(dataDir, msg.Provenance); err != nil {
+			m.state.AddMessage(session.RoleSystem,
+				fmt.Sprintf("⚠ Presets saved, but models.dev provenance was not: %v", err), session.ContentTypePlain)
+		}
 	}
 
 	saveErr, reloadErr := m.persistAndReload(newCfg)

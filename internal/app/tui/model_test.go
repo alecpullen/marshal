@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/agents"
@@ -32,7 +33,6 @@ import (
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/postmortempanel"
-	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/sessionsheet"
@@ -6022,15 +6022,26 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	}
 
 	// Simulate selecting a discovered model from the scoped provider picker.
-	// The picker pick now lands on stepConfirmLimits, not stepDone.
+	// The picker pick now lands on the models.dev consent step.
 	updated, _ = m.Update(picker.PickedMsg{Value: "qwen2.5-coder:7b"})
 	m = asModel(t, updated)
 
-	// Press Enter on confirm limits to emit DoneMsg (scoped flow skips summary).
+	// Answer the consent prompt, then deliver the prepared result.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
+	m = asModel(t, updated)
+	updated, _ = m.Update(connect.PreparedMsg{
+		Presets: map[string]routing.ModelPreset{
+			"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b"},
+		},
+		Result: presetsetup.Result{Prepared: 1, Fallback: 1},
+	})
+	m = asModel(t, updated)
+
+	// Press Enter on the summary to emit DoneMsg.
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 13})
 	m = asModel(t, updated)
 	if cmd == nil {
-		t.Fatal("Enter on confirm limits should produce a connect.DoneMsg command")
+		t.Fatal("Enter on summary should produce a connect.DoneMsg command")
 	}
 	// Run the command to deliver the DoneMsg, just as Bubble Tea would.
 	updated, _ = m.Update(cmd())
@@ -6051,7 +6062,7 @@ func TestModelsPickAppliesSwitch(t *testing.T) {
 	}
 }
 
-func TestModelsRoutesCapabilityProbeToConnectPanel(t *testing.T) {
+func TestModelsRoutesPreparedMsgToConnectPanel(t *testing.T) {
 	m := newTestModel(t)
 	m.state.Config.Providers = map[string]config.ProviderConfig{
 		"ollama": {Type: "ollama", BaseURL: "http://localhost:11434"},
@@ -6062,14 +6073,16 @@ func TestModelsRoutesCapabilityProbeToConnectPanel(t *testing.T) {
 	m = asModel(t, updated)
 	updated, _ = m.Update(picker.PickedMsg{Value: "qwen3"})
 	m = asModel(t, updated)
-	if m.connectModel == nil || !strings.Contains(stripANSI(m.connectModel.View(80, 24)), "detecting model capabilities") {
-		t.Fatal("Ollama model pick should wait for capability detection")
+	if m.connectModel == nil || !strings.Contains(stripANSI(m.connectModel.View(80, 24)), "models.dev enrichment") {
+		t.Fatal("Ollama model pick should ask for models.dev consent")
 	}
 
-	updated, _ = m.Update(presetflow.CapabilityProbedMsg{Provider: "ollama", Model: "qwen3", RequestID: 1})
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
 	m = asModel(t, updated)
-	if strings.Contains(stripANSI(m.connectModel.View(80, 24)), "detecting model capabilities") {
-		t.Fatal("outer model should route CapabilityProbedMsg to connect")
+	updated, _ = m.Update(connect.PreparedMsg{Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	m = asModel(t, updated)
+	if m.connectModel == nil || !strings.Contains(stripANSI(m.connectModel.View(80, 24)), "Review provider") {
+		t.Fatal("outer model should route PreparedMsg to connect")
 	}
 }
 
@@ -6104,6 +6117,92 @@ func TestConnectDoneMsgPersistsAgentModel(t *testing.T) {
 	}
 	if updated.(Model).setReg != nil {
 		t.Fatal("connect config update should invalidate the cached /set registry")
+	}
+}
+
+func TestApplyConnectDoneMergesPreparedPresets(t *testing.T) {
+	m := newTestModel(t)
+	m.settingsRegistry()
+	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+		Presets: map[string]routing.ModelPreset{
+			"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b"},
+			"ollama/llama3.1:8b":      {Name: "ollama/llama3.1:8b", Provider: "ollama", Model: "llama3.1:8b"},
+		},
+	})
+	m = updated.(Model)
+
+	if _, ok := m.state.Config.Models.Presets["ollama/llama3.1:8b"]; !ok {
+		t.Fatal("prepared preset ollama/llama3.1:8b should be merged")
+	}
+	if m.state.Config.Profile.ActivePreset != "ollama/qwen2.5-coder:7b" {
+		t.Fatalf("active preset = %q, want the selected model", m.state.Config.Profile.ActivePreset)
+	}
+}
+
+func TestApplyConnectDonePersistsConsent(t *testing.T) {
+	m := newTestModel(t)
+	m.settingsRegistry()
+	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
+
+	allow := true
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:          "ollama",
+		Model:             "qwen2.5-coder:7b",
+		ProviderCfg:       config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+		EnrichmentConsent: &allow,
+	})
+	m = updated.(Model)
+
+	home, err := m.userHome()
+	if err != nil {
+		t.Fatalf("userHome: %v", err)
+	}
+	data, err := os.ReadFile(config.UserConfigPath(home))
+	if err != nil {
+		t.Fatalf("read user config: %v", err)
+	}
+	if !strings.Contains(string(data), "models_dev_enrichment = true") {
+		t.Fatalf("user config missing models_dev_enrichment = true:\n%s", data)
+	}
+}
+
+func TestApplyConnectDoneWarnsOnProvenanceFailure(t *testing.T) {
+	m := newTestModel(t)
+	m.settingsRegistry()
+	m.configReloader = func(cfg config.Config) error { m.state.Config = cfg; return nil }
+
+	// A regular file where the data dir should be makes MkdirAll fail.
+	blocking := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocking, nil, 0o644); err != nil {
+		t.Fatalf("create blocking file: %v", err)
+	}
+	m.modelCacheDir = blocking
+
+	updated, _ := m.Update(connect.DoneMsg{
+		Provider:    "ollama",
+		Model:       "qwen2.5-coder:7b",
+		ProviderCfg: config.ProviderConfig{Type: "openai_compatible", BaseURL: "http://localhost:11434/v1"},
+		Provenance:  &presetsetup.Provenance{Version: presetsetup.ProvenanceVersion, Presets: map[string]presetsetup.PresetProvenance{}},
+	})
+	m = updated.(Model)
+
+	if _, ok := m.state.Config.Models.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+		t.Fatal("presets must still be saved when provenance fails")
+	}
+	found := false
+	for _, msg := range m.state.Messages() {
+		if strings.Contains(msg.Content, "provenance was not") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected a provenance warning message")
 	}
 }
 

@@ -11,7 +11,7 @@
   import ExitPanel from '../lib/ExitPanel.svelte'
   import { renderMarkdown, initHighlighter } from '../lib/markdown'
   import { listAgents, APIError, type AgentStatus } from '../lib/api'
-  import { createStackStore, type StackStore } from '../lib/stack'
+  import { createStackStore, type StackStore, type WireNode } from '../lib/stack'
   import { get } from 'svelte/store'
   import { formatChatRoute, type ChatRoute } from '../lib/routes'
   import type { AgentRow } from '../lib/fleet'
@@ -25,7 +25,7 @@
   import { createNodeCache } from '../lib/dock/nodeCache'
   import { initialDock, load as loadDock, reduce, save as saveDock, type DockAction, type DockState } from '../lib/dock/dock'
   import { gateState } from '../lib/dock/gate'
-  import { latestEdit, editCalls, liveStep, nodeFile, nodeLabel, subagentIdOf } from '../lib/dock/nodes'
+  import { latestEdit, editCalls, liveStep, nodeFile, nodeLabel } from '../lib/dock/nodes'
   import Transcript from '../lib/transcript/Transcript.svelte'
   import NowBar from '../lib/transcript/NowBar.svelte'
   import Segmented from '../lib/ui/Segmented.svelte'
@@ -98,7 +98,6 @@
     }
   }
   let overrides = $state(new Map<string, Density>())
-  let unfolded = $state(new Set<string>())
 
   /*
     The dock. Its size and width persist per browser; the selection, tab and
@@ -193,23 +192,31 @@
   async function drillInto(id: string) {
     const nodes = $shown.nodes
     const n = nodes.get(id)
-    const subNode =
-      n?.kind === 'subagent' ? n : (n?.children ?? []).map((c) => nodes.get(c)).find((c) => c?.kind === 'subagent')
-    const subId = subNode ? subagentIdOf(subNode.id) : undefined
-    if (!subNode || subId === undefined) {
+    // A completion event names the subagent it reports on; the agent.run row
+    // that started it names it too. Either is a way in.
+    const resolve = (c: WireNode | undefined) => {
+      if (!c) return undefined
+      const subId = c.completion?.subagentId ?? c.tool?.subagentId
+      if (!subId) return undefined
+      const label = c.completion?.label ?? c.tool?.calls?.[0]?.target ?? `subagent ${subId}`
+      return { subId, label }
+    }
+    const found = resolve(n) ?? (n?.children ?? []).map((c) => nodes.get(c)).map(resolve).find((x) => x !== undefined)
+    if (!found) {
       flash('No subagent here')
       return
     }
+    const { subId, label } = found
     const store = createStackStore(sessionId, { subagentId: subId })
     await store.load()
     if (get(store).status !== 'ready') {
-      // No transcript of its own: stay put and look at the card.
+      // No transcript of its own: stay put and look at the row.
       store.destroy()
       flash('This subagent has no separate transcript')
-      selectNode(subNode.id)
+      selectNode(id)
       return
     }
-    drill = [...drill, { subagentId: subId, label: subNode.subagent?.label ?? `subagent ${subId}`, store, parentCursor: cursor }]
+    drill = [...drill, { subagentId: subId, label, store, parentCursor: cursor }]
     cursor = null
     dispatch({ type: 'backToLive' })
     scrollToLatest()
@@ -231,18 +238,15 @@
     transcriptEl?.querySelector(`[data-node-id="${CSS.escape(id)}"]`)?.scrollIntoView?.({ block: 'center' })
   }
 
-  // scrollToNode follows a completion marker to the card it reports on. The
-  // card stays where the work was dispatched, which can be many screens back.
-  // Scroll to a node — a completion marker jumping to its card. A card in a
-  // folded beat, or behind its "+N earlier calls" cap, is not in the DOM, so
-  // its beat opens at full density first.
+  // Scroll to a node — a task's first beat, or a completion event's card. A
+  // card behind its beat's "+N earlier calls" cap is not in the DOM, so its
+  // beat opens at full density first.
   async function scrollToNode(id: string) {
     const node = $shown.nodes.get(id)
     if (!node) return
     const find = () => transcriptEl?.querySelector(`[data-node-id="${CSS.escape(id)}"]`)
     const beat = node.parent ? $shown.nodes.get(node.parent) : undefined
     if (!find() && beat?.kind === 'step' && node.parent) {
-      unfolded = new Set(unfolded).add(node.parent)
       overrides = new Map(overrides).set(node.parent, 'full')
       await tick()
     }
@@ -287,19 +291,11 @@
     nodes: $shown.nodes,
     global: effGlobal,
     overrides,
-    foldTasks: true,
-    unfolded,
     cursor,
     now,
   })
   const flat = $derived(flattenVisible(tctx, $shown.roots))
 
-  function toggleFold(id: string) {
-    const next = new Set(unfolded)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    unfolded = next
-  }
   function toggleDensity(id: string) {
     const next = new Map(overrides)
     const cur = effective(id, overrides, (n) => $shown.nodes.get(n)?.parent, effGlobal)
@@ -395,7 +391,6 @@
       else flash('No file for this row')
     } else if ('drill' in fx) void drillInto(fx.drill)
     else if ('toggleDensity' in fx) toggleDensity(fx.toggleDensity)
-    else if ('toggleFold' in fx) toggleFold(fx.toggleFold)
     else if ('toast' in fx) flash(fx.toast)
     else if ('copy' in fx) {
       const n = $shown.nodes.get(fx.copy)
@@ -606,11 +601,8 @@
         store={shown}
         density={effGlobal}
         {overrides}
-        {unfolded}
         {cursor}
-        onToggleFold={toggleFold}
         onToggleDensity={toggleDensity}
-        onSelect={scrollToNode}
       />
       {#if $shown.roots.length === 0 && !$session.busy}
         <div class="empty">
@@ -682,7 +674,7 @@
   {#if useStack}
     <NowBar stack={$stack} {now} hint={stopHint} selecting={dock.mode === 'select'} onStop={() => actions.cancel()} onJumpLive={jumpToLive} onOpenTasks={() => dispatch({ type: 'openTab', tab: 'tasks' })} />
     {#if browsing}
-      <div class="browse-hint" role="status">browse · j/k move · J/K jump · Enter detail · z fold · y copy · Esc exit</div>
+      <div class="browse-hint" role="status">browse · j/k move · J/K jump · Enter detail · y copy · Esc exit</div>
     {/if}
   {/if}
 

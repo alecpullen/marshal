@@ -18,7 +18,6 @@ export interface BrowseCtx {
 
 export type BrowseEffect =
   | { toggleDensity: string }
-  | { toggleFold: string }
   | { copy: string }
   | { toast: string }
   | { inspect: string }
@@ -26,7 +25,7 @@ export type BrowseEffect =
   | { drill: string }
   | { exitBrowse: true }
 
-const BOUND = new Set(['j', 'ArrowDown', 'k', 'ArrowUp', 'J', ']', 'K', '[', 'g', 'Home', 'G', 'End', 'Enter', 'z', 'y', 'i', 'o', 'f', 'Escape'])
+const BOUND = new Set(['j', 'ArrowDown', 'k', 'ArrowUp', 'J', ']', 'K', '[', 'g', 'Home', 'G', 'End', 'Enter', 'y', 'i', 'o', 'f', 'Escape'])
 const CONTAINERS = new Set(['turn', 'passthrough'])
 
 /**
@@ -47,8 +46,6 @@ export function flattenVisible(ctx: TranscriptCtx, roots: string[]): BrowseCtx {
       firstOfTurn.v = false
       ids.push(id)
     }
-    const folded = !!n.step?.folded && ctx.foldTasks && !n.live && !ctx.unfolded.has(id)
-    if (folded) return
     for (const c of n.children ?? []) walk(c, firstOfTurn)
   }
   for (const r of roots) walk(r, { v: true })
@@ -60,17 +57,14 @@ export function flattenVisible(ctx: TranscriptCtx, roots: string[]): BrowseCtx {
 export function nodeText(n: WireNode): string {
   if (n.step) return [n.step.headline, n.step.rest].filter(Boolean).join('\n')
   if (n.tool) {
-    // A job card copies the job's own record: the shell.run that started it
-    // is only the handle, and its command text is truncated in the row.
-    if (n.tool.job) return [n.tool.job.id, n.tool.job.command, n.tool.job.output].filter(Boolean).join('\n')
     const calls = n.tool.calls ?? []
     if (calls.length) return calls.map((c) => [c.target, c.output].filter(Boolean).join('\n')).join('\n\n')
     return [n.tool.running?.target, n.tool.running?.output].filter(Boolean).join('\n')
   }
   if (n.message) return n.message.content
   if (n.thinking) return n.thinking.text
-  if (n.subagent) return [n.subagent.label, n.subagent.summary].filter(Boolean).join('\n')
-  if (n.marker) return `${n.marker.labels.join(' ')} ${n.marker.failed ? 'failed' : 'done'}`
+  if (n.completion) return [n.completion.label, n.completion.outcome, n.completion.summary, n.completion.output, n.completion.report].filter(Boolean).join('\n')
+  if (n.plan) return `${n.plan.done}/${n.plan.total} ${n.plan.activeText ?? ''}`
   if (n.runEvent) return [n.runEvent.title, n.runEvent.detail, n.runEvent.body].filter(Boolean).join('\n')
   return ''
 }
@@ -86,7 +80,7 @@ export function browseKey(state: BrowseState, key: string, ctx: BrowseCtx): { st
   if (ids.length === 0) return { state, bound: BOUND.has(key) }
 
   const at = state.cursor === null ? -1 : ids.indexOf(state.cursor)
-  // A cursor on a row that is gone (folded away) restarts from the end.
+  // A cursor on a row that is gone restarts from the end.
   const idx = at >= 0 ? at : ids.length - 1
   const move = (i: number, follow = false) => ({
     state: { cursor: ids[Math.max(0, Math.min(ids.length - 1, i))], follow },
@@ -119,8 +113,6 @@ export function browseKey(state: BrowseState, key: string, ctx: BrowseCtx): { st
       return move(ids.length - 1, ctx.lastLive)
     case 'Enter':
       return { state: { ...state, cursor: cur }, effect: { toggleDensity: cur }, bound: true }
-    case 'z':
-      return { state: { ...state, cursor: cur }, effect: { toggleFold: cur }, bound: true }
     case 'y':
       return { state: { ...state, cursor: cur }, effect: { copy: cur }, bound: true }
     case 'i':

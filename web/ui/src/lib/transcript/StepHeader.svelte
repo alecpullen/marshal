@@ -38,8 +38,5 @@
     {#each step.thoughts ?? [] as t, i (i)}
       <div class="ml-5"><ThinkingRow thinking={t} open={density === 'full'} /></div>
     {/each}
-    {#if step.liveThinking}
-      <div class="ml-5"><ThinkingRow thinking={{ text: step.liveThinking }} live open={density === 'full'} /></div>
-    {/if}
   {/if}
 </div>

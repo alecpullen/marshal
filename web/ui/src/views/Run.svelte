@@ -316,7 +316,7 @@
                 </button>
               {/each}
             </div>
-            <Transcript store={stack} density="steps" foldTasks={false} onlyNodes={new Set(steps)} cursor={dock.selected ?? null} />
+            <Transcript store={stack} density="steps" onlyNodes={new Set(steps)} cursor={dock.selected ?? null} />
           {/if}
         </section>
       {/if}

@@ -36,16 +36,16 @@ type WireNode struct {
 	Children []string `json:"children,omitempty"`
 	Live     bool     `json:"live,omitempty"`
 
-	Step     *WireStep     `json:"step,omitempty"`
-	Tool     *WireTool     `json:"tool,omitempty"`
-	Message  *WireMessage  `json:"message,omitempty"`
-	Thinking *WireThinking `json:"thinking,omitempty"`
-	Subagent *WireSubagent `json:"subagent,omitempty"`
-	RunEvent *WireRunEvent `json:"runEvent,omitempty"`
-	Marker   *WireMarker   `json:"marker,omitempty"`
-	Plan     *WirePlan     `json:"plan,omitempty"`
-	Receipt  *WireReceipt  `json:"receipt,omitempty"`
-	Band     *WireBand     `json:"band,omitempty"`
+	Step       *WireStep       `json:"step,omitempty"`
+	Tool       *WireTool       `json:"tool,omitempty"`
+	Message    *WireMessage    `json:"message,omitempty"`
+	Thinking   *WireThinking   `json:"thinking,omitempty"`
+	Subagent   *WireSubagent   `json:"subagent,omitempty"`
+	RunEvent   *WireRunEvent   `json:"runEvent,omitempty"`
+	Completion *WireCompletion `json:"completion,omitempty"`
+	Plan       *WirePlan       `json:"plan,omitempty"`
+	Receipt    *WireReceipt    `json:"receipt,omitempty"`
+	Band       *WireBand       `json:"band,omitempty"`
 }
 
 // WireBand is the pinned band: todo progress with its stale signal, and the
@@ -198,13 +198,32 @@ type WireJob struct {
 	Truncated  bool   `json:"truncated,omitempty"`
 }
 
-// WireMarker is a one-line completion marker: what finished, and when.
-type WireMarker struct {
-	Refs       []string `json:"refs"`
-	Labels     []string `json:"labels"`
-	Failed     bool     `json:"failed,omitempty"`
-	At         int64    `json:"at,omitempty"`
-	DurationMs int64    `json:"durationMs,omitempty"`
+// WireCompletion is one finished piece of background work at the moment it
+// ended: a background job's exit or a subagent's end. Expanded, it is the
+// issue report.
+type WireCompletion struct {
+	Source          string `json:"source"`
+	ID              string `json:"id"`
+	SubagentID      int64  `json:"subagentId,omitempty"`
+	Label           string `json:"label"`
+	Outcome         string `json:"outcome"`
+	Failed          bool   `json:"failed,omitempty"`
+	ExitCode        *int   `json:"exitCode,omitempty"`
+	StopCause       string `json:"stopCause,omitempty"`
+	StartedAt       int64  `json:"startedAt,omitempty"`
+	EndedAt         int64  `json:"endedAt,omitempty"`
+	DurationMs      int64  `json:"durationMs,omitempty"`
+	Measure         string `json:"measure,omitempty"`
+	Summary         string `json:"summary,omitempty"`
+	Command         string `json:"command,omitempty"`
+	Cwd             string `json:"cwd,omitempty"`
+	Output          string `json:"output,omitempty"`
+	Report          string `json:"report,omitempty"`
+	Error           string `json:"error,omitempty"`
+	WorkKey         string `json:"workKey,omitempty"`
+	ExecutionID     string `json:"executionId,omitempty"`
+	ReportMessageID int64  `json:"reportMessageId,omitempty"`
+	Truncated       bool   `json:"truncated,omitempty"`
 }
 
 // WirePlan is a beat's plan line: the todo list as the beat's last
@@ -321,7 +340,7 @@ var kindNames = [...]string{
 	KindThinking:    "thinking",
 	KindPassthrough: "passthrough",
 	KindReceipt:     "receipt",
-	KindMarker:      "marker",
+	KindCompletion:  "completion",
 	KindPlanUpdate:  "planUpdate",
 }
 
@@ -367,13 +386,24 @@ func wireNode(n *Node) WireNode {
 	case n.Kind == KindThinking && n.Step != nil:
 		// The live reasoning region when no step could hold it.
 		w.Thinking = &WireThinking{Text: n.Step.LiveThinking}
-	case n.Marker != nil:
-		m := n.Marker
-		wm := &WireMarker{Labels: m.Labels, Failed: m.Failed, At: ms(m.At), DurationMs: m.Dur.Milliseconds()}
-		for _, r := range m.Refs {
-			wm.Refs = append(wm.Refs, r.Key)
+	case n.Completion != nil:
+		c := n.Completion
+		wc := &WireCompletion{
+			Source: c.Source, ID: c.ID, SubagentID: c.SubagentID, Label: c.Label, Outcome: c.Outcome,
+			Failed: c.Failed, StopCause: c.StopCause, StartedAt: ms(c.StartedAt), EndedAt: ms(c.EndedAt),
+			DurationMs: c.Duration.Milliseconds(), Measure: c.Measure, Summary: c.Summary,
+			Command: c.Command, Cwd: c.Cwd, Report: c.Report, Error: c.Error,
+			WorkKey: c.WorkKey, ExecutionID: c.ExecutionID, ReportMessageID: c.ReportMessageID,
 		}
-		w.Marker = wm
+		if c.ExitCode != nil {
+			code := *c.ExitCode
+			wc.ExitCode = &code
+		}
+		var cut1, cut2 bool
+		wc.Output, cut1 = capTail(c.Output)
+		wc.Report, cut2 = capText(c.Report)
+		wc.Truncated = cut1 || cut2 || c.Truncated
+		w.Completion = wc
 	case n.PlanUpdate != nil:
 		p := n.PlanUpdate
 		w.Plan = &WirePlan{Status: p.Status, Done: p.Done(), Total: p.Total(), Active: p.Active,

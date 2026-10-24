@@ -259,23 +259,58 @@ func jobFailedStatus(status string) bool {
 	return false
 }
 
-// renderMarker is a completion marker: one dim row at the moment the work it
-// reports on finished. The card itself stays where it was dispatched;
-// selecting the marker jumps to it.
-func renderMarker(m *viewmodel.MarkerInfo, width int) string {
-	g, color := glyph.OK, theme.Current().FGMuted
-	if m.Failed {
-		g, color = glyph.Error, theme.Current().StatusError
+// renderCompletion is one finished piece of background work: a head row with
+// its outcome, final measurement and duration, and the summary line under it.
+// Expanded, it becomes the issue report.
+func renderCompletion(c *viewmodel.CompletionInfo, expanded bool, width int, workdir string) string {
+	th := theme.Current()
+	g, colour := glyph.Job, th.StatusInfo
+	if c.Source == viewmodel.CompletionSubagent {
+		g, colour = glyph.Agent, th.AccentSecondary
 	}
-	word := "done"
-	if m.Failed && len(m.Labels) == 1 {
-		word = "failed"
+	head := lipgloss.NewStyle().Foreground(colour).Render(c.ID) + " " +
+		lipgloss.NewStyle().Foreground(th.FGDefault).Render(viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Label, workdir)))
+
+	var meta []string
+	switch c.Outcome {
+	case viewmodel.OutcomeDone:
+		meta = append(meta, statusOkStyle().Render(c.Outcome))
+	case viewmodel.OutcomeUnknown:
+		meta = append(meta, warningStyle().Render(c.Outcome))
+	default:
+		meta = append(meta, errorStyle().Render(c.Outcome))
 	}
-	text := viewmodel.ScrubText(strings.Join(m.Labels, " ") + " " + word)
-	if m.Dur > 0 {
-		text += dimSeparator + formatElapsed(m.Dur)
+	if c.Measure != "" {
+		meta = append(meta, mutedStyle().Render(c.Measure))
 	}
-	return gutterPrefix(g, color) + mutedStyle().Render(ansi.Truncate(text, max(width-gutterWidth, 1), "…")) + "\n"
+	if c.Duration > 0 {
+		meta = append(meta, mutedStyle().Render(formatElapsed(c.Duration)))
+	}
+	if len(meta) > 0 {
+		head += dimSeparator + strings.Join(meta, dimSeparator)
+	}
+
+	// The disclosure sits in the last column, so the head is truncated to
+	// leave room for it.
+	head = ansi.Truncate(head, max(width-gutterWidth-2, 1), "…")
+	pad := max(width-gutterWidth-ansi.StringWidth(head)-1, 0)
+	disclosure := glyph.DisclosureCollapsed
+	if expanded {
+		disclosure = glyph.DisclosureExpanded
+	}
+
+	var b strings.Builder
+	b.WriteString(gutterPrefix(g, colour))
+	b.WriteString(head)
+	b.WriteString(strings.Repeat(" ", pad))
+	b.WriteString(mutedStyle().Render(disclosure))
+	b.WriteString("\n")
+	if c.Summary != "" {
+		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
+		b.WriteString(mutedStyle().Render(ansi.Truncate(c.Summary, max(width-nestedBodyIndent, 1), "…")))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // countToolCalls is the number of tool calls a step made, counting each call

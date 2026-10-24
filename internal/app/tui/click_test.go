@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +9,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
@@ -276,11 +276,9 @@ func TestNoNowBarNoBand(t *testing.T) {
 	}
 }
 
-// A completion marker in a later turn points at a job card inside an earlier
-// turn's beat, past the beat's row cap. The card has no region while capped;
-// clicking the marker opens the beat and lands on the card rather than doing
-// nothing.
-func TestMarkerClickOpensTheBeatHidingItsCard(t *testing.T) {
+// A completion event is a row with state of its own: a click expands it in
+// place rather than jumping anywhere.
+func TestCompletionClickTogglesItsDisclosure(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 60)
 	m.state.AddMessage(session.RoleUser, "run the gate", session.ContentTypePlain)
@@ -288,44 +286,29 @@ func TestMarkerClickOpensTheBeatHidingItsCard(t *testing.T) {
 	m.state.AddNarration(s1, "Starting the gate.")
 	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "shell.run", StepID: s1, ToolCallID: "j",
 		Args: []byte(`{"command":"pytest -q","background":true}`), ResultSummary: session.JobStartPrefix + "job-1"})
-	// Edits never merge into a run, so each is its own row and the card is
-	// pushed past the cap.
-	for i := 0; i < viewmodel.BeatRowCap; i++ {
-		m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Now(), ToolName: "file.edit", StepID: s1, ToolCallID: fmt.Sprintf("e%d", i),
-			Args: []byte(fmt.Sprintf(`{"path":"f%d.go"}`, i)), ResultSummary: "edited"})
-	}
 	m.state.EndStep(s1)
 	m.state.AddMessageFinal(session.RoleAssistant, "started", session.ContentTypePlain)
-	m.state.AddMessage(session.RoleUser, "anything else?", session.ContentTypePlain)
-	s2 := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(s2, "Waiting.")
-	m.state.EndStep(s2)
 	m.state.AddJobExit(session.JobExit{ID: "job-1", Command: "pytest -q", ExitCode: 1})
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	var marker nodeRegion
+	var region nodeRegion
 	for _, r := range m.nodeRegions {
-		if r.target.jumpTo.Key != "" {
-			marker = r
+		if r.target.node.Kind == viewmodel.KindCompletion {
+			region = r
 		}
 	}
-	card := marker.target.jumpTo
-	if card.Key == "" {
-		t.Fatal("no completion marker region")
+	if region.target.node.Key == "" {
+		t.Fatalf("no completion region:\n%s", stripANSI(m.viewport.GetContent()))
 	}
-	if _, ok := m.regionFor(card); ok {
-		t.Fatal("precondition: the card must sit past its beat's row cap, leaving it no region")
+	if !strings.Contains(stripANSI(m.viewport.GetContent()), glyph.DisclosureCollapsed) {
+		t.Fatalf("precondition: the event starts collapsed:\n%s", stripANSI(m.viewport.GetContent()))
 	}
 
 	top := m.scrollHintRows()
-	updated := clickAt(t, m, 1, top+marker.startLine-m.viewport.YOffset())
+	updated := clickAt(t, m, 1, top+region.startLine-m.viewport.YOffset())
 	mm := asModel(t, updated)
-	r, ok := mm.regionFor(card)
-	if !ok {
-		t.Fatal("clicking the marker must open the beat that hides its card")
-	}
-	if want := max(0, min(r.startLine, mm.viewport.TotalLineCount()-mm.viewport.Height())); mm.viewport.YOffset() != want {
-		t.Fatalf("viewport at %d, card starts at %d", mm.viewport.YOffset(), r.startLine)
+	if !strings.Contains(stripANSI(mm.viewport.GetContent()), glyph.DisclosureExpanded) {
+		t.Fatalf("a click must expand the event:\n%s", stripANSI(mm.viewport.GetContent()))
 	}
 }

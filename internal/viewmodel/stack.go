@@ -35,7 +35,7 @@ const (
 	KindThinking
 	KindPassthrough
 	KindReceipt
-	KindMarker
+	KindCompletion
 	KindPlanUpdate
 )
 
@@ -71,7 +71,7 @@ type Node struct {
 	Active     *session.ActiveToolCall
 	Receipt    *ReceiptInfo
 	Job        *JobState
-	Marker     *MarkerInfo
+	Completion *CompletionInfo
 	PlanUpdate *PlanUpdate
 }
 
@@ -302,7 +302,7 @@ func Build(s Snapshot) []*Node {
 		if i+1 < len(turns) && turns[i+1].msg != nil {
 			to = turns[i+1].msg.CreatedAt
 		}
-		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg, ci, ci.markersIn(from, to))
+		node.Children = buildTurn(t.items, stepByID, s, last, turnMsgID, key, t.msg, ci, ci.completionsIn(from, to))
 		out = append(out, node)
 	}
 	return out
@@ -645,13 +645,12 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	for _, b := range blocks {
 		out = append(out, b.node)
 	}
-	out = mergeBeats(out)
+	out = mergeBeats(out, s.Busy && lastTurn)
 	for _, n := range out {
 		if n.Kind == KindStep {
 			keepLastPlanRow(n)
 		}
 	}
-	out = coalesceMarkers(out)
 	labelTransitions(out, s.Todos)
 	// keepLastPlanRow and labelTransitions run after finish/absorb computed
 	// each beat's version, so recompute it now that the payload is final.

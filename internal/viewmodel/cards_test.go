@@ -46,7 +46,7 @@ func findNode(nodes []*Node, key string) *Node {
 	return hit
 }
 
-func TestJobStartBecomesCardAndExitBecomesMarker(t *testing.T) {
+func TestJobExitBecomesOneCompletion(t *testing.T) {
 	nodes := Build(Snapshot{
 		Items: []session.TranscriptItem{
 			userMsg(1, 0),
@@ -65,16 +65,21 @@ func TestJobStartBecomesCardAndExitBecomesMarker(t *testing.T) {
 	if strings.Contains(got, "job:job-4") {
 		t.Fatalf("no separate job-exit row:\n%s", got)
 	}
-	if !strings.Contains(got, "  marker:tool:1:j\n  step:2") {
-		t.Fatalf("marker at completion time, before the next beat:\n%s", got)
+	if !strings.Contains(got, "  completion:tool:1:j\n  step:2") {
+		t.Fatalf("the event sits between the beat that launched it and the next:\n%s", got)
+	}
+	c := findNode(nodes, "completion:tool:1:j")
+	if c == nil || c.Completion == nil || c.Completion.Outcome != OutcomeDone || c.Completion.Launch.Key != "tool:1:j" {
+		t.Fatalf("completion = %+v", c)
 	}
 }
 
 // Review focus 5.
-func TestMarkerInsideBeatDoesNotSplitIt(t *testing.T) {
+func TestOtherWorkCompletingInABeatGoesBeforeIt(t *testing.T) {
 	// The subagent ends at 3, between the beat's first response (start 1) and
-	// the narrationless response it absorbs (start 4). Ordering by timestamp
-	// alone would put the marker between them and split the beat in two.
+	// the narrationless response it absorbs (start 4). Nothing in the beat
+	// dispatched it, so it comes before the beat: the beat joins history only
+	// when it settles.
 	sub := session.TranscriptItem{Timestamp: at(2), Kind: session.KindSubagent,
 		Subagent: &session.SubagentView{ID: 3, Label: "Task 1", Status: session.SubagentDone, StartedAt: at(2), EndedAt: at(3)}}
 	nodes := Build(Snapshot{
@@ -86,31 +91,78 @@ func TestMarkerInsideBeatDoesNotSplitIt(t *testing.T) {
 		Steps: []session.Step{stepOf(1, 1, 1, 4), stepOf(2, 1, 4, 7)},
 	})
 	got := shape(nodes)
-	if strings.Count(got, "step:") != 1 || !strings.Contains(got, "    tool:2:w\n  marker:sub:3") {
-		t.Fatalf("beat stays whole, marker follows it:\n%s", got)
+	if strings.Count(got, "step:") != 1 || !strings.Contains(got, "  completion:sub:3\n  step:1") {
+		t.Fatalf("beat stays whole, the event comes before it:\n%s", got)
 	}
 }
 
-func TestSimultaneousCompletionsMergeIntoOneMarker(t *testing.T) {
+func TestCompletionFollowsTheBeatThatLaunchedIt(t *testing.T) {
+	sub := session.TranscriptItem{Timestamp: at(2), Kind: session.KindSubagent,
+		Subagent: &session.SubagentView{ID: 3, Label: "review", Status: session.SubagentDone, StartedAt: at(2), EndedAt: at(3),
+			SubagentWorkFacts: session.SubagentWorkFacts{WorkKey: "task-1"}}}
+	for _, busy := range []bool{false, true} {
+		nodes := Build(Snapshot{
+			Items: []session.TranscriptItem{
+				userMsg(1, 0),
+				narration(2, 1, 1, "Dispatching."),
+				subagentDispatch(1, "g", 2, "task-1", 3),
+				sub,
+				audit("file.read", 2, "r", 5),
+			},
+			Steps:    []session.Step{stepOf(1, 1, 1, 4), stepOf(2, 1, 5, 7)},
+			Busy:     busy,
+			LiveWork: true,
+		})
+		var keys []string
+		for _, n := range nodes[0].Children {
+			keys = append(keys, n.ID.Key)
+		}
+		if got := strings.Join(keys, " "); got != "msg:1 step:1 completion:sub:3" {
+			t.Fatalf("busy=%v: children = %q, want one beat then its event", busy, got)
+		}
+		c := findNode(nodes, "completion:sub:3")
+		if c == nil || c.Completion == nil || c.Completion.Launch.Key != "tool:1:g" {
+			t.Fatalf("busy=%v: completion = %+v", busy, c)
+		}
+	}
+}
+
+func TestCompletionAfterSettledBeatFollowsIt(t *testing.T) {
+	sub := session.TranscriptItem{Timestamp: at(2), Kind: session.KindSubagent,
+		Subagent: &session.SubagentView{ID: 3, Label: "slow", Status: session.SubagentDone, StartedAt: at(2), EndedAt: at(6)}}
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Work."), sub},
+		Steps: []session.Step{stepOf(1, 1, 1, 4)},
+	})
+	if got := shape(nodes); !strings.Contains(got, "  completion:sub:3") ||
+		strings.Index(got, "completion:sub:3") < strings.Index(got, "step:1") {
+		t.Fatalf("an event after a finished beat's end follows it:\n%s", got)
+	}
+}
+
+func TestSimultaneousCompletionsStaySeparate(t *testing.T) {
 	a := session.TranscriptItem{Timestamp: at(2), Kind: session.KindSubagent,
 		Subagent: &session.SubagentView{ID: 3, Label: "A", Status: session.SubagentDone, StartedAt: at(2), EndedAt: at(8)}}
 	b := session.TranscriptItem{Timestamp: at(2), Kind: session.KindSubagent,
 		Subagent: &session.SubagentView{ID: 5, Label: "B", Status: session.SubagentFailed, StartedAt: at(2), EndedAt: at(8)}}
 	nodes := Build(Snapshot{Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), a, b},
 		Steps: []session.Step{stepOf(1, 1, 1, 3)}})
-	var markers []*Node
+	var events []*Node
 	for _, n := range nodes[0].Children {
-		if n.Kind == KindMarker {
-			markers = append(markers, n)
+		if n.Kind == KindCompletion {
+			events = append(events, n)
 		}
 	}
-	if len(markers) != 1 || len(markers[0].Marker.Refs) != 2 || !markers[0].Marker.Failed {
-		t.Fatalf("markers = %+v", markers)
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want one per finished item", len(events))
+	}
+	if events[0].Completion.Outcome != OutcomeDone || events[1].Completion.Outcome != OutcomeFailed {
+		t.Fatalf("outcomes = %q, %q", events[0].Completion.Outcome, events[1].Completion.Outcome)
 	}
 }
 
 // Review focus 2.
-func TestJobExitInLaterTurnSettlesCardAndMarksLaterTurn(t *testing.T) {
+func TestJobExitInLaterTurnCompletesThere(t *testing.T) {
 	nodes := Build(Snapshot{
 		Items: []session.TranscriptItem{
 			userMsg(1, 0), narration(2, 1, 1, "Start."), jobStart(1, "j", 2, "job-7"), final(3, 3),
@@ -121,13 +173,13 @@ func TestJobExitInLaterTurnSettlesCardAndMarksLaterTurn(t *testing.T) {
 	if c := findNode(nodes[:1], "tool:1:j"); c == nil || c.Job.Running || c.Job.ExitCode != 1 {
 		t.Fatalf("old card must settle: %+v", c)
 	}
-	if findNode(nodes[1:], "marker:tool:1:j") == nil {
-		t.Fatalf("marker belongs to the later turn:\n%s", shape(nodes))
+	if findNode(nodes[1:], "completion:tool:1:j") == nil {
+		t.Fatalf("the event belongs to the later turn:\n%s", shape(nodes))
 	}
 }
 
 // Review focus 3.
-func TestSubagentMarkerLandsInTurnContainingItsEnd(t *testing.T) {
+func TestSubagentCompletionLandsInTurnContainingItsEnd(t *testing.T) {
 	sub := session.TranscriptItem{Timestamp: at(2), Kind: session.KindSubagent,
 		Subagent: &session.SubagentView{ID: 3, Label: "slow", Status: session.SubagentDone, StartedAt: at(2), EndedAt: at(20)}}
 	nodes := Build(Snapshot{
@@ -137,19 +189,19 @@ func TestSubagentMarkerLandsInTurnContainingItsEnd(t *testing.T) {
 		},
 		Steps: []session.Step{stepOf(1, 1, 1, 4), stepOf(2, 5, 11, 12)},
 	})
-	if findNode(nodes[1:], "marker:sub:3") == nil || findNode(nodes[:1], "marker:sub:3") != nil {
-		t.Fatalf("marker in the turn containing EndedAt:\n%s", shape(nodes))
+	if findNode(nodes[1:], "completion:sub:3") == nil || findNode(nodes[:1], "completion:sub:3") != nil {
+		t.Fatalf("the event lands in the turn containing EndedAt:\n%s", shape(nodes))
 	}
 }
 
-func TestRunningJobCardHasNoMarker(t *testing.T) {
+func TestRunningJobHasNoCompletion(t *testing.T) {
 	nodes := Build(Snapshot{Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-1")},
 		Steps: []session.Step{stepOf(1, 1, 1, 3)}})
 	if c := findNode(nodes, "tool:1:j"); c == nil || !c.Job.Running {
 		t.Fatalf("card = %+v", c)
 	}
-	if strings.Contains(shape(nodes), "marker:") {
-		t.Fatal("no marker until it exits")
+	if strings.Contains(shape(nodes), "completion:") {
+		t.Fatal("no completion until it exits")
 	}
 }
 
@@ -173,13 +225,21 @@ func TestReusedJobIDSettlesOnlyTheLatestStart(t *testing.T) {
 	if cur == nil || cur.Job.Running || cur.Job.Lost || cur.Job.ExitCode != 4 {
 		t.Fatalf("new card = %+v, want exit 4", cur.Job)
 	}
-	got := shape(nodes)
-	if strings.Count(got, "marker:") != 1 || !strings.Contains(got, "marker:tool:2:new") {
-		t.Fatalf("one marker, for the new job only:\n%s", got)
+	lostEvent := findNode(nodes, "completion:tool:1:old")
+	if lostEvent == nil || lostEvent.Completion.Outcome != OutcomeLost {
+		t.Fatalf("lost event = %+v", lostEvent)
+	}
+	newEvent := findNode(nodes, "completion:tool:2:new")
+	if newEvent == nil || newEvent.Completion.Outcome != "exit 4" {
+		t.Fatalf("new event = %+v", newEvent)
+	}
+	if got := shape(nodes[:1]); !strings.Contains(got, "  completion:tool:1:old") ||
+		strings.Index(got, "completion:tool:1:old") < strings.Index(got, "step:1") {
+		t.Fatalf("the lost job's event follows the beat that launched it:\n%s", got)
 	}
 }
 
-func TestOrphanJobExitsOfReusedIDGetDistinctMarkers(t *testing.T) {
+func TestOrphanJobExitsOfReusedIDGetDistinctCompletions(t *testing.T) {
 	nodes := Build(Snapshot{Items: []session.TranscriptItem{
 		userMsg(1, 0), jobExit(4, "job-1", 0), userMsg(2, 6), jobExit(9, "job-1", 1),
 	}})
@@ -187,9 +247,9 @@ func TestOrphanJobExitsOfReusedIDGetDistinctMarkers(t *testing.T) {
 	var walk func(ns []*Node)
 	walk = func(ns []*Node) {
 		for _, n := range ns {
-			if n.Kind == KindMarker {
+			if n.Kind == KindCompletion {
 				if seen[n.ID.Key] {
-					t.Fatalf("duplicate marker ID %q", n.ID.Key)
+					t.Fatalf("duplicate completion ID %q", n.ID.Key)
 				}
 				seen[n.ID.Key] = true
 			}
@@ -198,7 +258,7 @@ func TestOrphanJobExitsOfReusedIDGetDistinctMarkers(t *testing.T) {
 	}
 	walk(nodes)
 	if len(seen) != 2 {
-		t.Fatalf("markers = %v, want 2", seen)
+		t.Fatalf("completions = %v, want 2", seen)
 	}
 }
 
@@ -256,7 +316,7 @@ func TestStructuredExitSettlesItsCardRegardlessOfOrder(t *testing.T) {
 	if card.Live {
 		t.Fatal("a settled card must not stay live")
 	}
-	if got := shape(nodes); !strings.Contains(got, "marker:tool:1:j") {
+	if got := shape(nodes); !strings.Contains(got, "completion:tool:1:j") {
 		t.Fatalf("the completion still marks the card:\n%s", got)
 	}
 }

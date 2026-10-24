@@ -276,8 +276,8 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 			m.noteRegionRows(viewmodel.LiveThinkingID, cnt)
 		}
 		return box, nil
-	case n.Kind == viewmodel.KindMarker && n.Marker != nil:
-		return renderMarker(n.Marker, width), nil
+	case n.Kind == viewmodel.KindCompletion && n.Completion != nil:
+		return renderCompletion(n.Completion, m.expandedUnder(n.ID, m.expandAll), width, c.workdir), nil
 	case n.Kind == viewmodel.KindTool && n.Active != nil:
 		return renderActiveToolCall(*n.Active, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
 	case n.Item != nil:
@@ -314,8 +314,8 @@ func (m *Model) blockTarget(n *viewmodel.Node) *clickTarget {
 		return &clickTarget{node: viewmodel.LiveThinkingID, isLiveRegion: true}
 	case n.Kind == viewmodel.KindTool:
 		return &clickTarget{node: n.ID}
-	case n.Kind == viewmodel.KindMarker && n.Marker != nil && len(n.Marker.Refs) > 0:
-		return &clickTarget{node: n.ID, jumpTo: n.Marker.Refs[0]}
+	case n.Kind == viewmodel.KindCompletion:
+		return &clickTarget{node: n.ID}
 	case n.Kind == viewmodel.KindThinking:
 		return &clickTarget{node: n.ID}
 	case n.Kind == viewmodel.KindSubagent && n.Item != nil && n.Item.Subagent != nil && n.Item.Subagent.Child != nil:

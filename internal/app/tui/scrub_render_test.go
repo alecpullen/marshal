@@ -61,8 +61,8 @@ func TestRenderersDropTerminalControlSequences(t *testing.T) {
 		}
 	}
 
-	marker := renderMarker(&viewmodel.MarkerInfo{Labels: []string{"#3 " + esc}}, 80)
-	stray("marker", marker)
+	completion := renderCompletion(&viewmodel.CompletionInfo{Source: viewmodel.CompletionSubagent, ID: "#3", Label: esc}, false, 80, "")
+	stray("completion", completion)
 
 	ev := registry.AuditEvent{ToolName: "shell.run", Args: []byte(`{"command":"pytest -q"}`),
 		ResultSummary: "started background job job-4"}

@@ -33,26 +33,24 @@ func TestBandOfSurvivesAJobCardWithNoRun(t *testing.T) {
 	}
 }
 
-// A marker names the card it reports on. Build always gives it one; a
-// caller-built MarkerInfo need not, and the node still needs a distinct key
-// rather than the empty one every such marker would otherwise share.
-func TestMarkerNodeSurvivesAMarkerWithNoRefs(t *testing.T) {
-	n := markerNode(MarkerInfo{At: at(5)})
-	if n.ID.Kind != KindMarker {
-		t.Fatalf("kind = %v", n.ID.Kind)
+// A completion event's text is model-authored — a subagent's label and report,
+// a job's command and output — so the node is scrubbed where it is built.
+func TestCompletionNodeScrubsModelText(t *testing.T) {
+	esc := "\x1b[31mred\x1b[0m"
+	n := completionNode(CompletionInfo{
+		Source: CompletionSubagent, ID: "#3", Label: esc, Summary: esc,
+		Output: esc, Report: esc,
+	}, "sub:3")
+	if n.ID.Kind != KindCompletion || n.ID.Key != "completion:sub:3" {
+		t.Fatalf("id = %v", n.ID)
 	}
-	if n.ID.Key == "" || n.ID.Key == "marker:" {
-		t.Fatalf("key = %q, want a key derived from the marker's own time", n.ID.Key)
-	}
-}
-
-// Labels and refs are parallel slices. Build appends them in pairs, but the
-// version hash indexes one by the other, so a short label slice must not run
-// off the end.
-func TestMarkerNodeToleratesLabelsShorterThanRefs(t *testing.T) {
-	n := markerNode(MarkerInfo{Refs: []NodeID{{KindSubagent, "sub:1"}}, At: at(5)})
-	if n.ID.Key != "marker:sub:1" {
-		t.Fatalf("key = %q", n.ID.Key)
+	for name, got := range map[string]string{
+		"label": n.Completion.Label, "summary": n.Completion.Summary,
+		"output": n.Completion.Output, "report": n.Completion.Report,
+	} {
+		if strings.Contains(got, "\x1b") {
+			t.Errorf("%s = %q, want the escape sequence gone", name, got)
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/db"
+	"marshal/internal/progress"
 	"marshal/internal/tools/registry"
 )
 
@@ -160,21 +161,48 @@ func TestKindStringCoversEveryKind(t *testing.T) {
 	}
 }
 
-func TestWireMarkerAndJobCard(t *testing.T) {
+func TestWireJobCard(t *testing.T) {
 	nodes := Build(Snapshot{Items: []session.TranscriptItem{
 		userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-4"), jobExit(5, "job-4", 2),
 	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
-	var sawJob, sawMarker bool
+	var sawJob bool
 	for _, n := range Project(nodes).Nodes {
 		if n.Tool != nil && n.Tool.Job != nil {
 			sawJob = n.Tool.Job.ExitCode == 2 && !n.Tool.Job.Running
 		}
-		if n.Kind == "marker" {
-			sawMarker = n.Marker != nil && n.Marker.Failed && n.Marker.Refs[0] == "tool:1:j"
+	}
+	if !sawJob {
+		t.Fatalf("job %v", sawJob)
+	}
+}
+
+// A client outside the process needs the whole event: what finished, how it
+// ended, its final measurement, and a bounded tail of its output.
+func TestWireCompletionCarriesTheEvent(t *testing.T) {
+	long := strings.Repeat("x", WireTextCap+64)
+	exit := jobExit(5, "job-4", 2)
+	exit.JobExit.Output = long
+	exit.JobExit.Progress = &progress.Snapshot{Frame: progress.Frame{Metrics: []progress.Metric{
+		{ID: "passed", Label: "Passed", Current: 210},
+		{ID: "failed", Label: "Failed", Current: 2},
+	}}}
+	nodes := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-4"), exit,
+	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
+	var got *WireCompletion
+	for _, n := range Project(nodes).Nodes {
+		if n.Completion != nil {
+			got = n.Completion
 		}
 	}
-	if !sawJob || !sawMarker {
-		t.Fatalf("job %v marker %v", sawJob, sawMarker)
+	if got == nil {
+		t.Fatalf("no completion on the wire:\n%s", shape(nodes))
+	}
+	if got.ID != "job-4" || got.Outcome != "exit 2" || got.Measure != "210 passed, 2 failed" {
+		t.Fatalf("completion = %+v", got)
+	}
+	if len(got.Output) > WireTextCap || !got.Truncated {
+		t.Fatalf("output = %d bytes, truncated = %v", len(got.Output), got.Truncated)
 	}
 }
 

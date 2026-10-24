@@ -156,7 +156,7 @@ func TestBeatKeepsFirstTodoIdentityAndUpdatesVersion(t *testing.T) {
 		Step: s2, StepIDs: []session.StepID{2},
 		TodoWrites: []registry.AuditEvent{{ToolName: "todo.write"}},
 	}}
-	out := mergeBeats([]*Node{a, b})
+	out := mergeBeats([]*Node{a, b}, false)
 	if len(out) != 1 || out[0].ID.Key != "step:1" || out[0].Step.TodoID != "first" || len(out[0].Step.TodoWrites) != 1 {
 		t.Fatalf("first response identity/todo or merged writes lost: %+v", out)
 	}
@@ -171,7 +171,7 @@ func TestBeatEndsAtTodoChange(t *testing.T) {
 	s1, s2 := stepOf(1, 1, 1, 3), stepOf(2, 1, 3, 5)
 	a := &Node{ID: NodeID{KindStep, "step:1"}, Kind: KindStep, Step: &StepInfo{Step: s1, StepIDs: []session.StepID{1}, TodoID: "first"}}
 	b := &Node{ID: NodeID{KindStep, "step:2"}, Kind: KindStep, Step: &StepInfo{Step: s2, StepIDs: []session.StepID{2}, TodoID: "second"}}
-	out := mergeBeats([]*Node{a, b})
+	out := mergeBeats([]*Node{a, b}, false)
 	if len(out) != 2 || out[1].Step.TodoID != "second" {
 		t.Fatalf("beats = %+v, want the second todo in its own beat", out)
 	}
@@ -186,7 +186,7 @@ func TestBeatEndsAtTodoChange(t *testing.T) {
 func TestBeatAbsorbingLooseStepKeepsItsEnd(t *testing.T) {
 	a := &Node{ID: NodeID{KindStep, "step:1"}, Kind: KindStep, Step: &StepInfo{Step: stepOf(1, 1, 1, 3), StepIDs: []session.StepID{1}}}
 	b := &Node{ID: NodeID{KindStep, "step:loose"}, Kind: KindStep, Step: &StepInfo{}}
-	out := mergeBeats([]*Node{a, b})
+	out := mergeBeats([]*Node{a, b}, false)
 	if len(out) != 1 || !out[0].Step.Step.EndedAt.Equal(at(3)) {
 		t.Fatalf("beat end = %v, want %v", out[0].Step.Step.EndedAt, at(3))
 	}

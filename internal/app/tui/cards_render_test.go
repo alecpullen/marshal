@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
@@ -188,14 +189,29 @@ func TestJobCardElidesTheWorktree(t *testing.T) {
 	}
 }
 
-func TestMarkerLine(t *testing.T) {
-	m := &viewmodel.MarkerInfo{Labels: []string{"#3 Pass 1 Task 1"}, Dur: 81 * time.Second}
-	if out := ansi.Strip(renderMarker(m, 80)); !strings.Contains(out, "#3 Pass 1 Task 1 done") || !strings.Contains(out, "1m") {
-		t.Fatalf("marker = %q", out)
+func TestCompletionLine(t *testing.T) {
+	done := &viewmodel.CompletionInfo{Source: viewmodel.CompletionJob, ID: "job-4", Label: "Harness tests",
+		Outcome: viewmodel.OutcomeDone, Duration: 81 * time.Second}
+	out := ansi.Strip(renderCompletion(done, false, 80, ""))
+	if !strings.Contains(out, "job-4 Harness tests") || !strings.Contains(out, "done") || !strings.Contains(out, "1m") {
+		t.Fatalf("completion = %q", out)
 	}
-	m = &viewmodel.MarkerInfo{Labels: []string{"#3", "#5"}, Failed: true}
-	if out := ansi.Strip(renderMarker(m, 80)); !strings.Contains(out, "#3 #5") {
-		t.Fatalf("merged marker = %q", out)
+	if !strings.HasSuffix(strings.TrimRight(out, "\n"), glyph.DisclosureCollapsed) {
+		t.Fatalf("collapsed head must end with the disclosure glyph: %q", out)
+	}
+
+	failed := &viewmodel.CompletionInfo{Source: viewmodel.CompletionSubagent, ID: "#3", Label: "review",
+		Outcome: viewmodel.OutcomeFailed, Failed: true, Summary: "budget exhausted"}
+	out = ansi.Strip(renderCompletion(failed, true, 80, ""))
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "#3") || !strings.Contains(lines[0], "failed") {
+		t.Fatalf("failed completion = %q", out)
+	}
+	if !strings.Contains(lines[1], "budget exhausted") {
+		t.Fatalf("summary line = %q", lines[1])
+	}
+	if !strings.HasSuffix(lines[0], glyph.DisclosureExpanded) {
+		t.Fatalf("expanded head must end with the disclosure glyph: %q", lines[0])
 	}
 }
 

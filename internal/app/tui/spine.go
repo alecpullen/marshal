@@ -148,7 +148,7 @@ func callResult(ev registry.AuditEvent) string {
 	case (isDiffTool(ev.ToolName) || ev.ToolName == "file.write") && diffStat(ev.ResultContent) != "":
 		parts = append(parts, diffStat(ev.ResultContent))
 	default:
-		if id := startedSubagent(ev); id > 0 {
+		if id := viewmodel.StartedSubagent(ev); id > 0 {
 			started := lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary).Render(fmt.Sprintf("%s #%d", glyph.Agent, id)) +
 				mutedStyle().Render(" started")
 			if len(parts) > 0 {
@@ -161,24 +161,6 @@ func callResult(ev registry.AuditEvent) string {
 		}
 	}
 	return style.Render(viewmodel.ScrubText(strings.Join(parts, dimSeparator)))
-}
-
-// startedSubagent is the subagent an agent.run call started in the
-// background, 0 when it started none. The notice's structured reference is
-// read first; a record that predates it falls back to the summary the tool
-// wrote ("started as subagent 3 — …").
-func startedSubagent(ev registry.AuditEvent) int64 {
-	if ev.ToolName != "agent.run" || ev.Error != "" {
-		return 0
-	}
-	if ref, ok := ev.Notice.SubagentWork(); ok {
-		return ref.AgentID
-	}
-	var id int64
-	if _, err := fmt.Sscanf(ev.ResultSummary, "started as subagent %d", &id); err == nil {
-		return id
-	}
-	return 0
 }
 
 // spineHead lays out a row's first line in w cells: the verb in its column,

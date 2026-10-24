@@ -59,14 +59,22 @@ func JobStartOf(ev registry.AuditEvent) (session.JobStart, bool) {
 	return session.JobStarted(ev)
 }
 
-// MarkerInfo is a one-line completion marker at the moment cards finished.
-// The cards themselves stay where they were dispatched.
-type MarkerInfo struct {
-	Refs   []NodeID // the cards this marker reports on, in order
-	Labels []string // "#3 Pass 1 Task 1", "job-6"
-	Failed bool     // any ref failed
-	At     time.Time
-	Dur    time.Duration // the single ref's run time; 0 when merged
+// StartedSubagent is the subagent an agent.run call started in the
+// background, 0 when it started none. The notice's structured reference is
+// read first; a record that predates it falls back to the summary the tool
+// wrote ("started as subagent 3 — …").
+func StartedSubagent(ev registry.AuditEvent) int64 {
+	if ev.ToolName != "agent.run" || ev.Error != "" {
+		return 0
+	}
+	if ref, ok := ev.Notice.SubagentWork(); ok {
+		return ref.AgentID
+	}
+	var id int64
+	if _, err := fmt.Sscanf(ev.ResultSummary, "started as subagent %d", &id); err == nil {
+		return id
+	}
+	return 0
 }
 
 // JobStartID returns the job ID a shell call started in the background, or ""
@@ -87,7 +95,14 @@ func JobStartID(ev registry.AuditEvent) string {
 type cardIndex struct {
 	exits   map[NodeID]*session.JobExit // start row's ID → the exit that settles it
 	exitRef map[*session.JobExit]NodeID // exit → the start row it settles
-	markers []block                     // completion markers, by time
+	starts  map[NodeID]registry.AuditEvent
+	done    []doneEvent // completion events, by time
+}
+
+// doneEvent is one completion event and the moment it happened.
+type doneEvent struct {
+	at   time.Time
+	node *Node
 }
 
 // indexCards pairs each job exit with the start it settles.
@@ -99,7 +114,8 @@ type cardIndex struct {
 // back to the legacy rule — an exit settles the latest start of its display ID
 // before it, and each start at most once.
 func indexCards(items []session.TranscriptItem) cardIndex {
-	ci := cardIndex{exits: map[NodeID]*session.JobExit{}, exitRef: map[*session.JobExit]NodeID{}}
+	ci := cardIndex{exits: map[NodeID]*session.JobExit{}, exitRef: map[*session.JobExit]NodeID{},
+		starts: map[NodeID]registry.AuditEvent{}}
 
 	// Identity pass: every structured start, keyed by the identity its exit
 	// carries, then every exit — a lost one included — matched against it. A
@@ -116,6 +132,7 @@ func indexCards(items []session.TranscriptItem) cardIndex {
 			continue
 		}
 		byIdentity["exec:"+js.Identity] = ToolID(*it.Audit)
+		ci.starts[ToolID(*it.Audit)] = *it.Audit
 	}
 	for _, it := range items {
 		e := it.JobExit
@@ -140,6 +157,7 @@ func indexCards(items []session.TranscriptItem) cardIndex {
 		if it.Audit != nil {
 			if id := JobStartID(*it.Audit); id != "" {
 				pending[id] = ToolID(*it.Audit)
+				ci.starts[ToolID(*it.Audit)] = *it.Audit
 			}
 		}
 		if e := it.JobExit; e != nil {
@@ -162,70 +180,64 @@ func indexCards(items []session.TranscriptItem) cardIndex {
 			delete(pending, e.ID)
 		}
 	}
+	// Find each subagent's dispatch row: the agent.run audit that started it.
+	// A view pairs by its work key when it has one, else by the last dispatch
+	// of its ID that is not after its end.
+	var dispatches []registry.AuditEvent
+	for _, it := range items {
+		if it.Audit != nil && StartedSubagent(*it.Audit) > 0 {
+			dispatches = append(dispatches, *it.Audit)
+		}
+	}
+	dispatchRow := func(v *session.SubagentView) NodeID {
+		if v.WorkKey != "" {
+			for i := range dispatches {
+				if dispatchWorkKey(&dispatches[i]) == v.WorkKey {
+					return ToolID(dispatches[i])
+				}
+			}
+		}
+		var found NodeID
+		for i := range dispatches {
+			if StartedSubagent(dispatches[i]) != v.ID {
+				continue
+			}
+			if !v.EndedAt.IsZero() && dispatches[i].Timestamp.After(v.EndedAt) {
+				continue
+			}
+			found = ToolID(dispatches[i])
+		}
+		return found
+	}
+
 	for _, it := range items {
 		switch {
 		case it.Subagent != nil && it.Subagent.Status != session.SubagentRunning && !it.Subagent.EndedAt.IsZero():
 			v := it.Subagent
-			ci.markers = append(ci.markers, block{v.EndedAt, markerNode(MarkerInfo{
-				Refs:   []NodeID{{KindSubagent, fmt.Sprintf("sub:%d", v.ID)}},
-				Labels: []string{fmt.Sprintf("#%d %s", v.ID, v.Label)},
-				Failed: v.Status == session.SubagentFailed,
-				At:     v.EndedAt, Dur: v.EndedAt.Sub(v.StartedAt),
-			})})
-		case it.JobExit != nil && !it.JobExit.Lost:
-			// A lost job has no finish to mark: its card says so instead.
+			ci.done = append(ci.done, doneEvent{at: v.EndedAt,
+				node: completionNode(subagentCompletion(v, dispatchRow(v)), fmt.Sprintf("sub:%d", v.ID))})
+		case it.JobExit != nil:
+			// Every exit gets an event, a lost one included: a job whose
+			// session ended still finished, and its event follows the beat
+			// that launched it.
 			j := it.JobExit
 			ref, ok := ci.exitRef[j]
-			if !ok {
+			var start *registry.AuditEvent
+			refKey := ""
+			if ok {
+				refKey = ref.Key
+				ev := ci.starts[ref]
+				start = &ev
+			} else {
 				// No start to point at (it sits on a rewound branch). The
 				// time keeps two such exits of a reused ID apart.
-				ref = NodeID{KindJobExit, fmt.Sprintf("job:%s@%d", j.ID, j.At.UnixNano())}
+				refKey = fmt.Sprintf("job:%s@%d", j.ID, j.At.UnixNano())
 			}
-			ci.markers = append(ci.markers, block{j.At, markerNode(MarkerInfo{
-				Refs: []NodeID{ref}, Labels: []string{j.ID}, Failed: j.ExitCode != 0, At: j.At, Dur: j.Duration,
-			})})
+			ci.done = append(ci.done, doneEvent{at: j.At, node: completionNode(jobCompletion(j, start), refKey)})
 		}
 	}
-	sort.SliceStable(ci.markers, func(i, j int) bool { return ci.markers[i].ts.Before(ci.markers[j].ts) })
+	sort.SliceStable(ci.done, func(i, j int) bool { return ci.done[i].at.Before(ci.done[j].at) })
 	return ci
-}
-
-// markerNode builds a completion marker's node. A marker's text is
-// model-authored — a subagent's label, a job's ID — so it is scrubbed here,
-// at the one place every marker is constructed, rather than at each renderer.
-func markerNode(m MarkerInfo) *Node {
-	labels := make([]string, len(m.Labels))
-	for i, l := range m.Labels {
-		labels[i] = ScrubText(l)
-	}
-	m.Labels = labels
-	n := &Node{ID: NodeID{KindMarker, "marker:" + markerKey(m)}, Kind: KindMarker, Marker: &m}
-	n.Version = versionOfMarker(&m)
-	return n
-}
-
-// markerKey is a marker's identity: the first card it reports on. A marker
-// with no refs — which Build never produces — falls back to its timestamp, so
-// it still has a distinct key rather than the empty key every such marker
-// would otherwise share.
-func markerKey(m MarkerInfo) string {
-	if len(m.Refs) > 0 {
-		return m.Refs[0].Key
-	}
-	return fmt.Sprintf("t%d", m.At.UnixNano())
-}
-
-func versionOfMarker(m *MarkerInfo) uint64 {
-	b := newHash()
-	b.f("mk|%v|%d|%d|", m.Failed, m.At.UnixNano(), m.Dur)
-	for i, r := range m.Refs {
-		label := ""
-		if i < len(m.Labels) {
-			label = m.Labels[i]
-		}
-		b.f("r|%s|%s|", r.Key, label)
-	}
-	return b.sum()
 }
 
 // settleJob attaches a job card to a shell.run row that started one. A row
@@ -315,35 +327,15 @@ func (n *Node) JobStart() time.Time {
 	return n.Tools[0].Timestamp
 }
 
-// markersIn returns the markers whose time falls in [from, to). A zero from
-// is unbounded below (the preamble turn); a zero to is unbounded above (the
-// last turn).
-func (ci cardIndex) markersIn(from, to time.Time) []block {
+// completionsIn returns the completion events whose time falls in [from, to).
+// A zero from is unbounded below (the preamble turn); a zero to is unbounded
+// above (the last turn).
+func (ci cardIndex) completionsIn(from, to time.Time) []block {
 	var out []block
-	for _, m := range ci.markers {
-		if (from.IsZero() || !m.ts.Before(from)) && (to.IsZero() || m.ts.Before(to)) {
-			out = append(out, m)
+	for _, d := range ci.done {
+		if (from.IsZero() || !d.at.Before(from)) && (to.IsZero() || d.at.Before(to)) {
+			out = append(out, block{d.at, d.node})
 		}
-	}
-	return out
-}
-
-// coalesceMarkers merges markers with nothing between them into one.
-func coalesceMarkers(nodes []*Node) []*Node {
-	out := make([]*Node, 0, len(nodes))
-	for _, n := range nodes {
-		if k := len(out); k > 0 && n.Kind == KindMarker && out[k-1].Kind == KindMarker {
-			prev := out[k-1].Marker
-			merged := MarkerInfo{
-				Refs:   append(append([]NodeID{}, prev.Refs...), n.Marker.Refs...),
-				Labels: append(append([]string{}, prev.Labels...), n.Marker.Labels...),
-				Failed: prev.Failed || n.Marker.Failed,
-				At:     n.Marker.At,
-			}
-			out[k-1] = markerNode(merged)
-			continue
-		}
-		out = append(out, n)
 	}
 	return out
 }

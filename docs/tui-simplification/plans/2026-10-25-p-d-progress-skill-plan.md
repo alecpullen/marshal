@@ -1,9 +1,10 @@
 # P-D progress-reporting skill — implementation plan
 
-Date: 2026-10-25. Status: ready for review.
-Base: `main` at `d7d9b39c` or later. P-D does not depend on P-C and touches none of its files apart from the docs (see Integration notes).
-- Every anchor was checked at `d7d9b39c`.
-- The byte counts below were measured there with `TestDefaultPromptBudget`'s own log line.
+Date: 2026-10-25. Status: ready for review. Revised the same day after P-C merged.
+Base: `main` at `e667a100` (the P-C merge) or later.
+- Every anchor was first checked at `d7d9b39c`, then again at `e667a100`. None of the files P-D edits changed between the two.
+- P-C added the live box, which is where the card is drawn. The skill's account of what the card shows (Task 2, body section 5) was checked against the box's code at `e667a100`.
+- The byte counts below were measured at `e667a100` with `TestDefaultPromptBudget`'s own log line, using `TMPDIR=/private/tmp/pd-suite`. The prompt contains the test's temp working directory, so the count moves by a few bytes with the temp path; the tolerances allow for that.
 
 Approved design: [feature-spec.md](../feature-spec.md) §4 (B10, B12), §6.4, §7 (P-D) and §8. The spec was updated on 2026-10-25 with the decisions below.
 Previous phase: [P-C plan](2026-10-24-p-c-live-box-plan.md).
@@ -36,11 +37,11 @@ Authoring workflow: [marshal-writing-plans](../../../internal/skills/builtin/mar
 
 **Decisions this plan makes beyond the spec** (all now recorded in the spec's §6.4):
 1. **Room in the system prompt.**
-   - The prompt was 9,110 bytes against a 9,000 ceiling, and the skill's listing line adds 142.
+   - The prompt is 9,107 bytes against a 9,000 ceiling, and the skill's listing line adds 142.
    - The postmortem skill's description shrinks from 383 bytes to 121. Its one caller already names it ("Run the postmortem skill: …"), so the trigger text did nothing.
-   - The prompt ends near 8,990 bytes.
+   - The prompt ends near 8,987 bytes.
 2. **Room in the tool schemas.**
-   - The model-facing schemas were 14,975 bytes against 15,000, and the pointer adds 65.
+   - The model-facing schemas are 14,975 bytes against 15,000, and the pointer adds 65.
    - `shell.run`'s description drops "Commands are subject to conservative guardrails." (49 bytes), which gave the model nothing to act on.
    - The schemas end near 14,991. `test.run` is internal (`Internal: true`), so its pointer is not counted.
 3. **Producers live in `.marshal/progress/`.**
@@ -56,7 +57,7 @@ Authoring workflow: [marshal-writing-plans](../../../internal/skills/builtin/mar
 
 **Execution:**
 - Branch first: `git switch -c p-d-progress-skill` from `main`.
-- If this plan and the spec edits are not on the branch yet, commit them first: `docs/tui-simplification/` as explicit paths, message `p-d-progress-skill: record the P-D plan and the spec decisions it settles`.
+- The first version of this plan and its spec edits reached `main` in `724ea858`. If `git status` shows this revision of them uncommitted, commit it first: `docs/tui-simplification/` as explicit paths, message `p-d-progress-skill: revise the P-D plan after P-C`.
 - Run the tasks in order. Run each task's Verify and commit it as `p-d-progress-skill: task N — <title>`.
 - Stage explicit paths only. Never `git add -A` without a path.
 - "Delete test X" means delete the whole function. "Extend test X" means keep its assertions and add the ones the step names.
@@ -105,7 +106,7 @@ Every producer starts with `from marshal_progress import Progress`. It runs as `
 **Steps:**
 
 1. Replace the frontmatter `description` with the Contracts' text. The body stays as it is.
-2. Nothing else names the old text. `grep -rn "Extraction only; never synthesize" --include='*.go' internal/` prints nothing at `d7d9b39c`.
+2. Nothing else names the old text. `grep -rn "Extraction only; never synthesize" --include='*.go' internal/` prints nothing at `e667a100`.
 
 **Verify:**
 
@@ -117,7 +118,7 @@ TMPDIR=/private/tmp/pd-suite go test ./internal/app/ -run TestDefaultPromptBudge
 
 Expected:
 - skills and commands pass;
-- `TestDefaultPromptBudget` passes and logs a system prompt of 8,848 bytes (±5). A different figure means the base moved, so re-measure before Task 2 and check there is still room for a 142-byte line.
+- `TestDefaultPromptBudget` passes and logs a system prompt of 8,845 bytes (±5). A different figure means the base moved, so re-measure before Task 2 and check there is still room for a 142-byte line.
 
 ## Task 2: The skill and its producers
 
@@ -154,15 +155,22 @@ Expected:
       - **Metrics:** at most 4, each with a unique `id` (up to 64 characters), a `label` (up to 80) and a `unit`.
         - The unit is `bytes`, `files`, `tests`, `packages` or `items`, whose values are integers, or any other unit of up to 16 characters.
         - `current` is 0 or more. `total` is optional and above 0. **Omit `total` when you do not know it, and never invent a total.**
-        - `rate` is optional, in units per second.
+        - `rate` is optional, in units per second. Without it the card works out a rate from successive records.
         - `primaryMetricId` names one of the metrics; without it the first is primary.
       - **Phase:** optional `{id, label, index, total}`, with `1 ≤ index ≤ total`. A phase count is not a percentage of the whole job.
       - **Rows:** at most 8, each `{id, label, state}`, with state `pending`, `running`, `done` or `error`.
       - **Limits:** `detail` is at most 1,024 bytes, and a whole record line at most 16 KiB.
       - **When to emit:** at most about five records a second, plus one at the start, at each phase change and at the end.
-      - **What the card does with them:**
+      - **What the card does with them** (the live box's behaviour at `e667a100`):
+        - The row in the box shows the primary metric:
+          - with a `total`, the phase as `1/2 <label>` when there is one, then a bar, a percentage, the count, the ETA and the rate;
+          - without one, the count, the rate and, for bytes, "size unknown".
+          - Bytes are shown in IEC units (KiB, MiB).
+        - Expanding the row shows `detail` when it is set. Otherwise it shows the first four rows as a checklist. A producer that wants its checklist seen leaves `detail` empty.
+        - A record more than 30 seconds old is stale. The bar holds, the rate and ETA hide, and the row warns "no update for …". Emit whenever the work moves, so a stale warning means the work really stalled.
         - An invalid record is dropped with one warning, and the last valid one stays on the card.
         - Only the process's exit finishes the card. A record at 100% shows the work as reported done while the process still runs.
+        - When the process ends, its completion event shows the last record's measurement, and under it the last record's `detail`, else the last output line.
       - **The example.** End the section with one complete example record on a line of its own: the prefix followed by compact JSON with a phase, one metric with a total, two rows and a detail. Task 2's test decodes it.
    6. **Producers.**
       - Write them with `file.write` under `.marshal/progress/`. If a file is already there, read it and reuse it rather than writing it again.
@@ -191,7 +199,7 @@ Expected:
      - Add `TestLoadSkillsIncludesBuiltInProgressReportingSkill`, as `TestLoadSkillsIncludesBuiltInPostmortemSkill` does. The description equals the Contracts' text, `Risk` is `workspace_write`, and `len(Body)` is at most 12,288. The lowercased body contains each of:
        - `@@marshal-progress/v1 `, `events-v1`, `go-test-json`, `go test -json`;
        - `.marshal/progress/`, `file.write`, `marshal_progress`, `agent.await`;
-       - `never invent a total`.
+       - `never invent a total`, `30 seconds`.
    - **`progress_skill_test.go` (new):**
      - **`progressSkillBody(t)`** loads the built-ins with `loadBuiltIns` and returns the skill's body.
      - **`producerBlocks(body)`** returns a map from path to source, for every fenced `python` block whose first line is `# .marshal/progress/<file>`.
@@ -229,7 +237,7 @@ go vet ./internal/skills/... && gofmt -l internal/
 Expected:
 - `TestProgressSkillProducersRun` runs; it does not skip on this machine.
 - skills, config and agent pass.
-- `TestDefaultPromptBudget` passes, with a system prompt of about 8,990 bytes, under 9,000.
+- `TestDefaultPromptBudget` passes, with a system prompt of about 8,987 bytes, under 9,000.
 - vet is clean, and `gofmt -l` prints nothing.
 
 ## Task 3: The schema pointer
@@ -285,21 +293,21 @@ Expected:
      - the agent loads `progress-reporting` (one `skill.load` row);
      - it writes `.marshal/progress/marshal_progress.py` and `download.py` with `file.write`;
      - it runs the download with `background` and profile `download`, source `events-v1`;
-     - the running card shows bytes, a percentage and a rate: in the live box once P-C has landed, else under `/work`;
-     - the job ends with a completion event.
+     - the job's row in the live box shows a bar, a percentage, the byte count in IEC units and a rate;
+     - expanding that row (click it, or press Esc to browse, move to it and press Enter) shows the full-width bar, and the destination path as its detail;
+     - the job ends with a completion event whose measurement is the final byte count.
    - Record what was seen in the commit message. If the agent took another route, record the route and the prompt, and do not change the skill in this task.
    - Delete the binary afterwards.
 3. **Spec.** Set the status line to say P-D landed, with this plan's commit range.
 4. **`docs/live-work/examples/README.md`.** Add a closing paragraph. The built-in `progress-reporting` skill embeds self-contained copies of these producers, with the helper renamed `marshal_progress.py`, so the agent can write them into any project's `.marshal/progress/`. A change to one copy belongs in the other too.
 5. **`docs/tools/execution.md`.** Add a `progress` row to `shell.run`'s argument table: not required; `{profile, source, title}` opts the run into a live progress card; the `progress-reporting` skill documents the record format.
-6. **CHANGELOG,** under the unreleased section:
-   - **Added:**
-
-     > **`progress-reporting` skill.** The agent can now show a measured progress card for long work. The built-in skill teaches `shell.run`'s `progress` option and the `@@marshal-progress/v1` record format, and carries ready-to-write producers for downloads, SSH transfers and phased jobs (written to `.marshal/progress/`). Go tests need no producer: `go test -json` with profile `tests`.
-
-   - **Changed:**
-
-     > The postmortem skill's description is shorter, and `shell.run`'s description no longer mentions its guardrails, which still apply. Together they make room for the new skill within the prompt budgets, and the default system prompt is back under its ceiling. New projects' `.marshal/.gitignore` also ignores `progress/`.
+6. **CHANGELOG,** under the unreleased section. Each group there is a bold title line followed by bullets; P-C's `**The live box**` group under Changed is an example. Add one group at the top of each section:
+   - **Added**, group title `**Progress-reporting skill**`:
+     - The agent can now show a measured progress card for long work. The built-in `progress-reporting` skill teaches `shell.run`'s `progress` option and the `@@marshal-progress/v1` record format.
+     - It carries ready-to-write producers for downloads, SSH transfers and phased jobs, written to `.marshal/progress/`. Go tests need no producer: `go test -json` with profile `tests`.
+   - **Changed**, group title `**Room for the progress-reporting skill**`:
+     - The postmortem skill's description is shorter, and `shell.run`'s description no longer mentions its guardrails, which still apply. Together they make room for the new skill within the prompt budgets, and the default system prompt is back under its ceiling.
+     - New projects' `.marshal/.gitignore` also ignores `progress/`.
 
 7. **Commit** `CHANGELOG.md`, `docs/tui-simplification/`, `docs/live-work/examples/README.md` and `docs/tools/execution.md` as explicit paths. Merge `p-d-progress-skill` only when the user asks.
 
@@ -307,15 +315,21 @@ Expected:
 
 ## Integration notes
 
-- **P-C** is running at the same time on `p-c-live-box`. The code does not overlap: P-C changes `internal/app/tui`, `internal/viewmodel` and the TUI config, while P-D changes `internal/skills`, `internal/tools/native/command.go` and `marshal_dir.go`. Both edit `CHANGELOG.md`'s unreleased section and the spec's status line, so whichever merges second resolves those two by keeping both entries.
-- **The budgets are close to full.** After P-D there are about 10 bytes left in the system prompt and 9 in the tool schemas. The next addition to either needs its own room.
-- **P-C's running rows** draw exactly what these producers report: the `bytes` unit in IEC form, the bar from `total`, and the rate and ETA from successive records.
+- **P-C has landed** (merged as `e667a100`), so nothing runs alongside P-D. P-D changes no file P-C touched apart from `CHANGELOG.md` and the spec.
+- **The budgets are close to full.** After P-D there are about 13 bytes left in the system prompt and 9 in the tool schemas. The next addition to either needs its own room.
+- **The live box draws what these producers report.** The anchors are in `internal/app/tui/livebox/running.go`:
+  - `fractionText` draws the bar, phase prefix, IEC bytes, ETA and rate;
+  - `metricText` draws a count with no total;
+  - `cardDetail` draws `detail`, else the checklist;
+  - `goCounts` draws the go test JSON counts.
+
+  The rate is the record's own `rate` when given (`progress.estimateRate`), and staleness is `progress.FreshFor` (30 s). The completion event's measurement and summary come from `viewmodel.MeasureSummary` and `jobSummary`. If any of these change before P-D runs, re-check body section 5 against them.
 
 ## Self-review
 
 - **Cold-executor test.** Every string a test pins is in Contracts. The skill body's sections, rules and order are stated, and each producer's behaviour is a row in a table with the example it ports. The two judgment steps are the body's wording and the real session, and both have a checklist.
 - **Contracts.** The postmortem description is used by Task 1. The skill frontmatter, the producers and the ignore entry are used by Task 2, and the pointer by Task 3.
-- **Anchors**, all checked at `d7d9b39c`:
+- **Anchors**, all checked at `d7d9b39c` and again at `e667a100`, plus the live-box anchors in Integration notes:
   - `builtin.go`'s embed list;
   - `TestBuiltInSkillsAllLoad` (12 names) and `TestBuiltInSkillsAreRepoNeutral`'s banned list;
   - `marshalDirIgnore` and `TestEnsureMarshalDirIgnoredCreatesNestedIgnore`;

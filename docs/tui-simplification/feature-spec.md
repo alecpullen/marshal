@@ -555,6 +555,9 @@ The live part's rows are click targets but not browse stops.
   - the record format, with the prefix, a complete snapshot per line, an
     increasing sequence, the metric, phase, row and detail limits, and never
     inventing a total, with one complete example record;
+  - what the live box does with records: a stale warning after 30 seconds
+    without one, `detail` shown before the row checklist, and the last
+    record's measurement and detail on the completion event;
   - **embedded** minimal producers, adapted from `docs/live-work/examples/`.
     They are a shared helper (`marshal_progress.py`) and producers for a
     download, a transfer and a phased custom job. They must be embedded because

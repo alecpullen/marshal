@@ -1,7 +1,7 @@
 # TUI simplification — feature spec
 
 Status: draft for review, 2026-10-23. Updated 2026-10-24 with the decisions
-the P-A plan pinned down.
+the P-A and P-B plans pinned down. P-A has landed.
 Base commit: `87fa8f0e` (main, after the interaction-modes merge).
 Design record: [`alternatives.md`](alternatives.md) (layout),
 [`console-variants.md`](console-variants.md) (dock), and
@@ -9,6 +9,8 @@ Design record: [`alternatives.md`](alternatives.md) (layout),
 Mockups: [`framed-console.html`](framed-console.html).
 Execution plans: one per phase, each against `main` once the previous phase
 has landed. P-A: [`plans/2026-10-24-p-a-renderer-foundation-plan.md`](plans/2026-10-24-p-a-renderer-foundation-plan.md).
+P-B: [`plans/2026-10-24-p-b-lifecycle-plan.md`](plans/2026-10-24-p-b-lifecycle-plan.md).
+P-C: [`plans/2026-10-24-p-c-live-box-plan.md`](plans/2026-10-24-p-c-live-box-plan.md).
 
 ## 1. Summary
 
@@ -186,6 +188,19 @@ From top to bottom:
   call's result.
 - **No dividers, no folding.** One level of detail. Enter in browse mode, or a
   click, expands one row; Ctrl+G toggles expand-all.
+- **Streaming reasoning sits at the bottom.** Reasoning in progress is never
+  drawn inside a beat, where it would push the beat's calls apart. It is one
+  bounded row (`⚙ thinking 4s`, scrollable) at the bottom of the transcript,
+  below every beat, call row and completion event, for a reader to glance at or
+  ignore. A step that holds nothing but reasoning so far has no row of its own.
+  Finished reasoning stays with its beat: `thought Ns` in the head, the text
+  when the beat is expanded. (P-B; found in testing.)
+- **A skill the agent loads shows once,** as its call row. The load also writes
+  a hidden body message and a one-line tag message; neither carries a step ID,
+  so as rows they drew a duplicate under the beat and split it. The projection
+  drops the body always, and drops a tag when the same turn holds a successful
+  `skill.load` of that skill. A tag from a load with no call row (the skills
+  panel, an ACP client) stays. (P-C; found in testing.)
 
 ### 5.3 Glyph vocabulary
 
@@ -236,14 +251,29 @@ those.
    - The summary line is the subagent's report headline, a job's last useful
      output line, or a progress card's detail.
    - There is one event per finished item. `coalesceMarkers` goes.
+   - **Where it lands.** An event follows the beat whose row launched its work.
+     Any other event that ends while a beat is still open lands before that
+     beat, because the beat joins history only when it settles (the next beat
+     starts, or the turn ends). One that ends after a finished turn's last
+     beat follows it.
+   - **Outcomes.** `done`, `exit N`, `stopped`, `lost` or `failed`, plus
+     `outcome unknown` (warning colour) for a record with no observed exit and
+     no stop or failure state. A missing exit never reads as success. A lost
+     job (synthesised on resume, stamped with its start) gets an event that
+     follows the beat that launched it.
+   - **Summary line**, first match wins: a subagent's report headline, else its
+     error's first line; for a job, the first `--- FAIL` line, else the
+     progress detail (not `go test`), else the last non-blank output line.
    - **Expanded, an event becomes an issue report.** It shows the outcome and
      stop cause, the command or task, cwd and duration, the final progress
-     snapshot, the bounded output tail (up to 20 lines, failure lines first for
-     Go tests), and, for a subagent, its report. Its actions are `o` output,
-     `i` inspector and drill-in for subagents. This uses the existing
-     `WorkService.InspectWork` detail (ACP `work_inspect`). Failed events are
-     not acknowledged or dismissed; they are part of history.
-     `WorkService.AcknowledgeWork` loses its TUI caller.
+     snapshot, the bounded output tail (up to 20 lines, `--- FAIL` lines first),
+     and, for a subagent, its report. It renders from the projection
+     (`CompletionInfo`), so resume shows the same report. Enter or a click
+     expands it; `i` opens the inspector with the full retained output; `f`
+     drills into a subagent. `o` is not bound on an event. There is no jump
+     from an event to its launch row. Failed events are not acknowledged or
+     dismissed; they are part of history. `WorkService.AcknowledgeWork` loses
+     its TUI caller in P-C, with the now bar's attention row.
 
 ### 5.5 The live box
 
@@ -262,26 +292,38 @@ those.
 ```
 
 - **Sections.** The top border holds the turn state (spinner, `working`,
-  elapsed) and the stop hint. Below it come the live beat, the running section
-  headed `running N`, and the plan section headed with the plan bar and count.
-  An empty section is omitted with its header.
+  elapsed, and the activity label when there is one) and the hints
+  (`Ctrl+T plan` when a plan exists, `Ctrl+C ×2 stop` while busy; hints drop
+  before the state is cut). During an SDD run or a swarm the state is that run's
+  summary instead of `working`. When nothing is busy the border carries no
+  state. Below it come the live beat, the running section headed `running N`,
+  and the plan section headed with the plan bar and count. An empty section is
+  omitted with its header.
+- **What the box never shows:** the browser session. The status line carries
+  its URL whenever a session is open.
+- **Running work comes only from the live-work snapshot** (the app always
+  attaches the work service); the old lane that read subagents, jobs and
+  watches from the session goes.
 - **The live beat** is the newest beat while it is still open. It renders with
   the history grammar. Reasoning in progress shows as one bounded row
-  (`⚙ thinking 4s`). When the beat settles (the next beat starts or the turn
+  (`⚙ thinking 4s`) at the bottom of the box, below the live beat and its rows
+  (§5.2). When the beat settles (the next beat starts or the turn
   ends) it is appended to history and leaves the box. While you follow the
   bottom the move is invisible.
 - **A streamed final answer** is not in the box. It appends to history as it
   streams, because it only grows.
 - **Plan modes.**
   - *Stacked:* the full list in two columns.
-  - *Split:* the plan in a 34–36 column right-hand column inside the same
-    outline, joined with `┬ ┤ ┴`. Long todos wrap, and the live beat's narration
-    wraps on the left.
+  - *Split:* the plan in a 34-cell right-hand pane inside the same outline,
+    joined with `┬ ┤ ┴`. Long todos wrap onto one continuation line, and the
+    live beat renders at the left pane's width.
   - *Folded:* the plan becomes the bottom border, `╰─ plan ✓ ✓ ▸ · 3/4 <active
     todo> ─╯`.
   - Ctrl+T cycles the modes, skipping split below 90 columns.
   - A list longer than 6 shows a window around the active item, with
     `✓ N done` and `+N more`.
+  - A finished list is one row: the plan section's header alone while busy
+    (`plan ▰▰▰▰ 4/4 done`), or the idle row.
 - **Budget and shed order.** The box takes at most 40% of the frame. When it
   would exceed that, it sheds in this order until it fits:
   1. The plan folds into the bottom border.
@@ -289,7 +331,11 @@ those.
   3. Running rows cap at 3, with `+N more · /work`.
   4. An expanded card collapses.
 
-  History keeps at least `minTranscriptRows`.
+  History keeps at least `minTranscriptRows`: the box's maximum is
+  `min(height×2/5, height − status line − dock − input chrome − 1 −
+  minTranscriptRows)`. If the box still does not fit after the four steps, the
+  live part goes, then running rows cap at 1 with the more row, and finally the
+  box becomes one plain summary row (state, `⧉N ┆N ○N`, `plan N/M`).
 - **Idle.** With nothing live, the box is one plain row (no borders) holding the
   plan's state, for example `✓ Plan 4/4 done`, until your next prompt. With no
   plan either, the box is zero rows.
@@ -298,14 +344,19 @@ those.
 
 A running row is one row:
 `▌` edge, glyph, id, title, measurement, elapsed time, spinner. Its tint is
-`BGSurface`, and its edge and id are in the kind's colour.
+`BGSurface`, painted at every depth including `flat` (the one exception to
+"flat paints nothing", because the tint is what marks running work), and its
+edge and id are in the kind's colour: `⧉` subagents in `AccentSecondary`, `┆`
+commands in `StatusInfo`, `○` watches muted. A measured rate and ETA need two
+observations, so the TUI keeps each item's previous progress snapshot (it never
+did before P-C).
 
 | Item | Measurement |
 |---|---|
 | Subagent | latest activity: the child's newest narration headline, or its running call |
-| Subagent awaiting approval | `⚠ needs approval: <request>` in warning colour |
+| Subagent awaiting input | `⚠ needs approval` / `an answer` / `access` / `a skill decision` / `a password`, by the request's kind, in warning colour |
 | Generic command | the latest useful output line |
-| Tests (`go-test-json`) | `N passed · N failed · N packages`; the failed count in error colour when nonzero; never a percentage |
+| Tests (`go-test-json`) | `N passed · N failed`, plus `N skipped` when nonzero; the failed count in error colour when nonzero; never a percentage (the snapshot has no package count, so none is shown) |
 | Download / transfer, total known | bar, percentage, `current/total` and ETA (rate when width allows) |
 | Download / transfer, total unknown | `current · rate · size unknown`; no bar |
 | Custom with a phase | `N/M <phase>`, a bar and `% of phase` |
@@ -318,14 +369,17 @@ phase-local percentages labelled, outdated totals hide percentage and ETA.
 **Expanded card.** One item at a time opens to at most five rows: the header
 with the profile word and elapsed time; a full-width bar with percentage; the
 measurement with rate and ETA; the detail line or checklist (`✓ ⠋ ·`, at most
-four items inline); and actions (`↵ output · s stop · esc collapse`). The other
+four items inline); and actions (`↵ collapse · s stop · f open · /work list`,
+each only when it applies). The other
 rows stay at one row each. In split mode the row keeps the bar and percentage
 and drops the rest.
 
 ### 5.7 Status line
 
-Unchanged, except that the busy spinner and timer move to the box's top border.
-When the box is idle or absent, the status line shows nothing extra.
+Unchanged. (Correction: the status line never held a busy timer; the now bar's
+turn row did, and that row's spinner, timer and activity label move into the
+box's top border.) The status line always carries the browser URL while a
+browser session is open, because the box never shows it.
 
 ### 5.8 Keys (provisional)
 
@@ -333,12 +387,17 @@ Chosen only so everything is reachable. The shortcut rework will replace them.
 
 | Key | Action |
 |---|---|
-| Ctrl+T | cycle the plan: stacked → split → folded |
+| Ctrl+T | cycle the plan: stacked → split → folded (it no longer opens a panel) |
 | Ctrl+G | toggle expand-all (replaces the density cycle) |
 | Esc, then `j`/`k` | browse mode, as today. `j` past the last history row moves into the box: running rows, then plan items. |
-| Enter (browse, on a running row) | expand or collapse that card |
+| Enter (browse, on a running row) | expand or collapse that card; on a plan item, scroll history to its first beat; on `+N more`, open the Work list |
 | `s` (browse, on a running row) | request stop, when the item's capabilities allow it |
-| `/work` | the Work list (unchanged) |
+| `f` (browse, on a subagent row) | drill into that subagent |
+| `G` / End (browse) | move to the end and resume following |
+| click | a running row expands its card; a plan item scrolls to its beat; a live call row expands; `+N more` opens the Work list |
+| `/work` | the Work list: the Tasks panel without its Plan tab, and without "Mark reviewed" or "Dismiss" |
+
+The live part's rows are click targets but not browse stops.
 | `z` | removed (folding is gone) |
 
 ## 6. Architecture
@@ -346,6 +405,8 @@ Chosen only so everything is reachable. The shortcut rework will replace them.
 ### 6.1 Projection (`internal/viewmodel`)
 
 - **Folding:** delete `foldBeats`, `FoldKeep` and `StepInfo.Folded`.
+- **Messages that are not rows:** skill bodies, and skill tags that a
+  `skill.load` call in the same turn already shows (§5.2), never become nodes.
 - **Todo labels:** `labelTransitions` drops the `MinTaskTodos` gate, so any list
   labels its transitions. Labels for todos no longer in the list stay
   suppressed. The `TodoLabel` payload is unchanged; only its rendering moves
@@ -361,27 +422,53 @@ Chosen only so everything is reachable. The shortcut rework will replace them.
   call is a write is no longer dropped as empty: it joins the beat before it,
   or heads its own.
 - **Completion events:** `MarkerInfo` becomes `CompletionInfo`:
-  - kind, id, label and outcome;
-  - exit code or stop cause, start and end times;
-  - a final measurement summary (from the job exit's retained final progress);
+  - source (`job` or `subagent`), id, subagent ID, label and outcome;
+  - exit code or stop cause, start and end times, duration;
+  - a final measurement summary (`MeasureSummary`, from the job exit's
+    retained final progress);
   - a summary line;
-  - references (`WorkKey`, job ID, subagent report message ID).
+  - the report fields: command, cwd, retained output, subagent report and
+    error;
+  - references (`WorkKey`, execution ID, subagent report message ID) and
+    `Launch`, the row that launched the work.
 
-  `KindMarker` is renamed `KindCompletion`. Delete `coalesceMarkers`.
+  `KindMarker` is renamed `KindCompletion` in place. Delete `coalesceMarkers`.
+  `mergeBeats` places events by the rule in §5.4.
+- **History reads only the transcript.** A settled row must not change when
+  the todo list is rewritten, so:
+  - the todo tag's `N/M` and text come from the plan in effect: the plan left
+    by the write that re-bound the beat, else the newest plan line before it.
+    The current list is the fallback only when no plan with an active item is
+    known;
+  - a narrated beat whose only call is a `todo.write` is re-bound to the stored
+    todo of the same actor's next step in the same turn, not to the list item
+    the write named;
+  - the receipt's task count is the number of items the turn's plan lines
+    moved to completed.
 - **One projection.** Drop the legacy `LiveWork == false` path:
   - in-place subagent cards in the parent view;
   - `settleJob`, which settles dispatch rows in place;
   - the `RunningSubagent` suppression.
 
-  A dispatch row is always just its call row. `Snapshot.LiveWork` and the ACP
-  `session/stack` parameter that selects it are removed after web adopts the
-  change (§6.2).
+  A dispatch row is always just its call row (a background start reads
+  `┆ job-n started`). `Snapshot.LiveWork`, `RunningSubagent` and `Drilled` are
+  removed. Correction: ACP never had a `session/stack` parameter selecting the
+  live-work projection; it always served the legacy one, and switches in the
+  same phase as the web. No tree carries subagent nodes any more.
 - **Band:** `BandOf` drops the `DrivenByTodos` gate. The band always carries the
   full current list (`BandTask`) when one exists, plus the stale signal. Delete
-  `MinTaskTodos` once no caller remains.
-- **The live beat:** add `SplitLive(turns) (history []*Node, live *Node)`. The
-  live beat is the newest open beat of the newest turn while busy. The TUI
-  renders `history` in the viewport and `live` in the box.
+  `MinTaskTodos` once no caller remains. `BandInfo.Todos` keeps its "busy with
+  work left" gate until P-C's idle state. The running entities the web lists
+  come from the snapshot's items (running subagent views, background starts
+  without an exit), since the in-place cards they were read from are gone.
+- **The live beat:** add `SplitLive(turns, busy) (history []*Node, live
+  []*Node)`. While busy, the live part is the newest turn's last beat, whether
+  or not its current step has ended (a narrationless step can still merge into
+  it), plus the events after it, which are only ever events of work that beat
+  launched, plus the streaming reasoning node, which `Build` always makes the
+  newest turn's last child (`LiveThinkingID`; no beat carries in-progress
+  reasoning). The TUI renders `history` in the viewport and `live` in the box
+  (P-C).
 - **The property to test:** for successive snapshots of one session, every
   history node of the earlier tree keeps its ID and `Version` in the later tree,
   apart from appended nodes (§8).
@@ -395,24 +482,33 @@ Chosen only so everything is reachable. The shortcut rework will replace them.
     it renders nothing until P-B;
   - `WireStep.folded` goes in P-A with folding. The web's fold handling is then
     inert, and P-B removes it;
-  - `WireMarker` becomes `WireCompletion`, with the fields above;
-  - `WireJob`'s settle fields go;
+  - `WireMarker` becomes `WireCompletion` (`completion`), with the fields
+    above;
+  - `WireJob` goes, and `WireTool` gains `subagentId`, the subagent an
+    `agent.run` row started, so a client can drill in from the row;
+  - `WireSubagent` goes: no tree carries subagent nodes;
   - `WireTodoLabel` is unchanged.
 
-  Coordinate the JSON names with daemon P2 C6.
+  Coordinate the JSON names with daemon P2 C6, which must drop its planned
+  `LiveWork` stack parameter and its `WireSubagent` additions.
 - `web/ui` renders the changed kinds in the same phase (P-B). The completion
-  event is a one-line row; the plan line is a call row. Its now bar keeps
-  reading the band. `TurnNode.svelte`, `NowBar.svelte` and `stack.ts` are the
-  touch points.
+  event is a one-line row that expands into the issue report; the plan line is
+  a call row. The web loses folding, the job card and the subagent card, and
+  drills into subagents from events and dispatch rows. Its now bar keeps
+  reading the band. `TurnNode.svelte`, `ToolRow.svelte`, `stack.ts`, `browse.ts`
+  and `Chat.svelte` are the touch points.
 
 ### 6.3 TUI
 
 - **New package `internal/app/tui/livebox`.** Pure `Plan(Input) Layout` and
   `Render(Layout, width) string`, the same split as today's
-  `planNowBar`/`renderNowBar`. `Input` holds the live beat node, the work
-  snapshot, previous progress observations, the band, the plan mode, the
-  expanded key, width, height and now. `Layout` records each row's kind and hit
-  target, so the click and browse maps come from the same plan as the drawing.
+  `planNowBar`/`renderNowBar`. `Input` holds the live part already rendered by
+  the TUI (lines with their node targets, plus a short form of the beat's head
+  and current call), the live work items, previous progress observations,
+  subagent headlines, the plan items, the mode, the expanded key, the cursor,
+  width, the row budget and now. `Layout` records each row's frame, tint and
+  hit target, and the browse stops, so the click and browse maps come from the
+  same plan as the drawing. The package never imports `internal/app/tui`.
 - **`view.go`:** compose history, then the box, the dock, the input and the
   status line. The box's height comes from its plan.
 - **Delete from `nowbar.go`:**
@@ -520,9 +616,12 @@ first.
   - one expanded card;
   - idle and empty states;
   - hit targets match the rendered rows.
-- **Golden frames** at 80×24, 96×34 and 120×40, in NO_COLOR and 256-colour
-  modes, following `depth_golden_test.go`: stacked, split, folded, expanded,
-  idle, and every row shape in §5.6.
+- **Golden frames** at 80×24, 96×34 and 120×40 in NO_COLOR, as text files
+  under `internal/app/tui/livebox/testdata/` with an `-update` flag (the repo
+  had no file-based goldens; `depth_golden_test.go` compares properties):
+  stacked, split, folded, expanded, idle, compact, and every row shape in
+  §5.6. Each generated frame is reviewed against §5.5 and §5.6 before it is
+  committed.
 - **Frame invariants** (`frame_invariants_test.go`): the left column never
   exceeds `height - statusLineRows` with the box at its maximum.
 - **Web:** `Transcript.test.ts` and `NowBar.test.ts` cover the new kinds, and

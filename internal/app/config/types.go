@@ -535,7 +535,7 @@ type AgentConfig struct {
 	ReconnectMaxWaitSeconds int `toml:"reconnect_max_wait_seconds"`
 	// IdleTimeoutSeconds bounds how long a request may go without any
 	// streamed bytes before it is treated as a stalled connection. 0 =
-	// built-in default (2 minutes). Any delta — content, reasoning, or
+	// built-in default (5 minutes). Any delta — content, reasoning, or
 	// tool-call — resets it.
 	IdleTimeoutSeconds int `toml:"idle_timeout_seconds"`
 	// RequestCeilingSeconds bounds a single request's total wall-clock

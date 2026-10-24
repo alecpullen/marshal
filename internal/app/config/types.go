@@ -615,6 +615,9 @@ type PrivacyConfig struct {
 	RemoteProvidersAllowed bool `toml:"remote_providers_allowed"`
 	RedactSecrets          bool `toml:"redact_secrets"`
 	IncludeGitignoredFiles bool `toml:"include_gitignored_files"`
+	// ModelsDevEnrichment is tri-state: nil asks before the first fetch,
+	// true allows it, false denies it.
+	ModelsDevEnrichment *bool `toml:"models_dev_enrichment"`
 }
 
 // SkillsConfig controls skill activation.

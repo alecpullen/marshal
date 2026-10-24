@@ -931,6 +931,47 @@ reasoning_history = "final_answers"
 	}
 }
 
+// models_dev_enrichment is tri-state: absent asks, true allows, false denies.
+// The pointer must survive the load path intact rather than collapsing to a
+// plain bool.
+func TestPrivacyModelsDevEnrichmentTriState(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantNil bool
+		want    bool
+	}{
+		{name: "absent", body: "[privacy]\nredact_secrets = true\n", wantNil: true},
+		{name: "true", body: "[privacy]\nmodels_dev_enrichment = true\n", want: true},
+		{name: "false", body: "[privacy]\nmodels_dev_enrichment = false\n", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			work := t.TempDir()
+			writeFile(t, home+"/.config/marshal/config.toml", tc.body)
+
+			cfg, err := Load(LoadOptions{HomeDir: home, WorkingDir: work})
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			got := cfg.Privacy.ModelsDevEnrichment
+			if tc.wantNil {
+				if got != nil {
+					t.Fatalf("ModelsDevEnrichment = %v, want nil (unanswered)", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("ModelsDevEnrichment = nil, want %v", tc.want)
+			}
+			if *got != tc.want {
+				t.Fatalf("ModelsDevEnrichment = %v, want %v", *got, tc.want)
+			}
+		})
+	}
+}
+
 func writeFile(t *testing.T, path string, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

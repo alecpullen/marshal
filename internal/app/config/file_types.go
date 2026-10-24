@@ -97,6 +97,7 @@ type filePrivacy struct {
 	RemoteProvidersAllowed *bool `toml:"remote_providers_allowed"`
 	RedactSecrets          *bool `toml:"redact_secrets"`
 	IncludeGitignoredFiles *bool `toml:"include_gitignored_files"`
+	ModelsDevEnrichment    *bool `toml:"models_dev_enrichment"`
 	// RemoteLimitDiscovery is only observed, never applied: the third-party
 	// limits table it controlled was removed. Keeping the field lets the
 	// loader warn about it instead of dropping a user's explicit opt-out in

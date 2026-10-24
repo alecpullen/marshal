@@ -1759,6 +1759,26 @@ func TestSaveUserConfigSectionDeletePreservesOtherSections(t *testing.T) {
 	}
 }
 
+// An unanswered models_dev_enrichment preference must stay absent from the
+// written file, so the next load still asks instead of reading a default.
+func TestSaveOmitsUnansweredModelsDevEnrichment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	cfg := Default()
+	if cfg.Privacy.ModelsDevEnrichment != nil {
+		t.Fatal("default ModelsDevEnrichment should be nil (unanswered)")
+	}
+	if err := SaveUserConfigSection(path, cfg); err != nil {
+		t.Fatalf("SaveUserConfigSection: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "models_dev_enrichment") {
+		t.Fatalf("unanswered preference must not be written:\n%s", data)
+	}
+}
+
 // A saved config must never carry the deprecated side_panel sizing keys:
 // the app would then warn about a file it wrote itself on every load.
 func TestSaveWritesOnlyHiddenSidePanelKey(t *testing.T) {

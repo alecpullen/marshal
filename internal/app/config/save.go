@@ -255,6 +255,9 @@ func writeSections(file *configFile, cfg Config, def Config) {
 	putKey(&privacy.RemoteProvidersAllowed, fileField[bool](file.Privacy, "RemoteProvidersAllowed"), cfg.Privacy.RemoteProvidersAllowed, def.Privacy.RemoteProvidersAllowed)
 	putKey(&privacy.RedactSecrets, fileField[bool](file.Privacy, "RedactSecrets"), cfg.Privacy.RedactSecrets, def.Privacy.RedactSecrets)
 	putKey(&privacy.IncludeGitignoredFiles, fileField[bool](file.Privacy, "IncludeGitignoredFiles"), cfg.Privacy.IncludeGitignoredFiles, def.Privacy.IncludeGitignoredFiles)
+	if cfg.Privacy.ModelsDevEnrichment != nil {
+		privacy.ModelsDevEnrichment = cfg.Privacy.ModelsDevEnrichment
+	}
 	file.Privacy = privacy
 
 	if file.Tools.Shell == nil {

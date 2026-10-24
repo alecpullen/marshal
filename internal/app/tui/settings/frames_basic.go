@@ -26,6 +26,37 @@ func privacyFrame(s *state) *frame {
 				Desc:     "let indexing and context include gitignored paths",
 				GetBool:  func() bool { return s.cfg.Privacy.IncludeGitignoredFiles },
 				SetBool:  func(v bool) { s.cfg.Privacy.IncludeGitignoredFiles = v }},
+			func() *field {
+				f := NewField("privacy.models_dev_enrichment", "models.dev enrichment", KindEnum)
+				SetFieldDesc(f, "enrich new provider presets from the public models.dev catalog")
+				SetFieldGetStr(f, func() string {
+					if s.cfg.Privacy.ModelsDevEnrichment == nil {
+						return "ask"
+					}
+					if *s.cfg.Privacy.ModelsDevEnrichment {
+						return "allow"
+					}
+					return "deny"
+				})
+				SetFieldOptions(f, func() []string { return []string{"ask", "allow", "deny"} })
+				SetFieldSetStr(f, func(v string) error {
+					switch v {
+					case "ask":
+						s.cfg.Privacy.ModelsDevEnrichment = nil
+					case "allow":
+						b := true
+						s.cfg.Privacy.ModelsDevEnrichment = &b
+					case "deny":
+						b := false
+						s.cfg.Privacy.ModelsDevEnrichment = &b
+					default:
+						return fmt.Errorf("unknown models.dev enrichment value %q", v)
+					}
+					return nil
+				})
+				f.TomlPath = "privacy.models_dev_enrichment"
+				return f
+			}(),
 		}
 	})
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +12,9 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/inspector"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/db"
+	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
@@ -587,5 +590,250 @@ func TestBrowseEnterExpandsACompletionEvent(t *testing.T) {
 	}
 	if len(m.viewStack) != 0 {
 		t.Fatalf("Enter must expand, not drill: viewStack = %v", m.viewStack)
+	}
+}
+
+// browseToBoxStop walks the cursor forward to a named box stop.
+func browseToBoxStop(t *testing.T, m Model, kind livebox.TargetKind, key string) Model {
+	t.Helper()
+	// Start at the top: enterBrowse puts the cursor on the newest node, which
+	// can already be a box stop.
+	m = pressKeys(m, "g")
+	for i := 0; i <= len(m.browseItems); i++ {
+		if tg, ok := boxTargetOf(m.cursor); ok && tg.Kind == kind && tg.Key == key {
+			return m
+		}
+		m = pressKeys(m, "j")
+	}
+	t.Fatalf("no box stop %v/%q in the browse list", kind, key)
+	return m
+}
+
+// boxHistoryModel is the smallest scene with both history and a live box: one
+// finished beat in the transcript and one running row in the box.
+func boxHistoryModel(t *testing.T, items ...viewmodel.WorkItem) Model {
+	t.Helper()
+	m := newTestModel(t)
+	m.resize(120, 40)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	a := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(a, "Doing it.")
+	m.state.EndStep(a)
+	m.workSnapshot = workSnapOf(items...)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	m.viewString()
+	return m
+}
+
+// TestBrowseJPastHistoryEntersTheBox: browse does not stop at the last history
+// row; one more j lands on the box's first stop.
+func TestBrowseJPastHistoryEntersTheBox(t *testing.T) {
+	m := boxHistoryModel(t, workRunningCard("work:one", nowBarT0))
+
+	m = pressKeys(m, "esc", "g")
+	history := 0
+	for _, it := range m.browseItems {
+		if _, ok := boxTargetOf(it.id); !ok {
+			history++
+		}
+	}
+	if history == 0 {
+		t.Fatalf("no history rows to browse: %+v", m.browseItems)
+	}
+	for range history {
+		m = pressKeys(m, "j")
+	}
+	tg, ok := boxTargetOf(m.cursor)
+	if !ok || tg.Kind != livebox.TargetWork || tg.Key != "work:one" {
+		t.Fatalf("cursor = %+v, want the running card's stop", m.cursor)
+	}
+	it := m.browseItems[m.cursorIndex()]
+	if it.kind != viewmodel.KindPassthrough {
+		t.Fatalf("box stop kind = %v, want passthrough", it.kind)
+	}
+	if it.start != -1 || it.end != -1 {
+		t.Fatalf("a box stop owns no content lines: start=%d end=%d", it.start, it.end)
+	}
+	if it.jump {
+		t.Fatal("a box stop is not a J/K jump stop")
+	}
+}
+
+// TestBrowseEnterExpandsARunningCard: Enter on a running stop opens that card,
+// and a second Enter closes it again.
+func TestBrowseEnterExpandsARunningCard(t *testing.T) {
+	m := boxHistoryModel(t, workRunningCard("work:one", nowBarT0))
+
+	m = pressKeys(m, "esc", "G")
+	if _, ok := boxTargetOf(m.cursor); !ok {
+		t.Fatalf("G must land in the box's stops, cursor %+v", m.cursor)
+	}
+	m = pressKeys(m, "enter")
+	if m.workExpanded != "work:one" {
+		t.Fatalf("workExpanded = %q, want the card open", m.workExpanded)
+	}
+	if !m.browsing {
+		t.Fatal("Enter on a box stop must keep browse mode")
+	}
+	m = pressKeys(m, "enter")
+	if m.workExpanded != "" {
+		t.Fatalf("workExpanded = %q, want the card closed again", m.workExpanded)
+	}
+}
+
+// TestBrowseSRequestsAStopOnlyWhenAllowed: s stops a running item that offers
+// a stop, and stays the unbound key of the transcript elsewhere.
+func TestBrowseSRequestsAStopOnlyWhenAllowed(t *testing.T) {
+	stoppable := workRunningCard("work:stoppable", nowBarT0)
+	stoppable.Capabilities.Stop = true
+	quiet := workRunningCard("work:quiet", nowBarT0.Add(-time.Second))
+	svc := &fakeWorkService{
+		snap:       viewmodel.WorkSnapshot{ConversationID: "conv1", Items: []viewmodel.WorkItem{stoppable, quiet}},
+		stopResult: viewmodel.WorkStopResult{Accepted: true},
+	}
+	m := newWorkModel(t, svc)
+	m.resize(120, 40)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	m.viewString()
+
+	m = pressKeys(m, "esc")
+	m = browseToBoxStop(t, m, livebox.TargetWork, "work:quiet")
+	m = pressKeys(m, "s")
+	if len(svc.stopCalls) != 0 {
+		t.Fatalf("s on an item without a stop capability must not request one: %+v", svc.stopCalls)
+	}
+	if m.browsing {
+		t.Fatal("s is unbound off a stoppable stop, so it leaves browse mode and is typed")
+	}
+
+	m = pressKeys(m, "esc")
+	m = browseToBoxStop(t, m, livebox.TargetWork, "work:stoppable")
+	m = pressKeys(m, "s")
+	if len(svc.stopCalls) != 1 {
+		t.Fatalf("stop calls = %d, want 1", len(svc.stopCalls))
+	}
+	if got := svc.stopCalls[0]; got.TaskKey != "work:stoppable" || got.ConversationID != "conv1" {
+		t.Fatalf("stop target = %+v, want the conversation and the stop's key", got)
+	}
+	if m.flash != "Stop requested" {
+		t.Fatalf("flash = %q, want the accepted stop's confirmation", m.flash)
+	}
+}
+
+// TestBrowseFOpensAnAgentFromTheBox: f on a running subagent's stop drills into
+// the child session, resolved from the item's SourceID.
+func TestBrowseFOpensAnAgentFromTheBox(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 40)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	child := newChildState(t)
+	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	view := m.state.RegisterSubagent("explore repo", child)
+	card := workRunningCard("work:agent", nowBarT0)
+	card.Kind = "agent"
+	card.SourceID = strconv.FormatInt(view.ID, 10)
+	m.workSnapshot = workSnapOf(card)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	m.viewString()
+
+	m = pressKeys(m, "esc")
+	m = browseToBoxStop(t, m, livebox.TargetWork, "work:agent")
+	m = pressKeys(m, "f")
+	if m.browsing {
+		t.Fatal("f on a box stop must leave browse mode")
+	}
+	got, ok := m.drilledInto()
+	if !ok || got.ID != view.ID {
+		t.Fatalf("f did not drill into the box's agent (viewStack %v)", m.viewStack)
+	}
+	if content := stripANSI(m.viewport.GetContent()); !strings.Contains(content, "child says hi") {
+		t.Fatalf("the drilled view should be the child's transcript:\n%s", content)
+	}
+}
+
+// TestBrowseEnterOnAPlanItemScrollsToItsBeat: Enter on a plan stop reveals the
+// first beat bound to that item, exactly as a click does.
+func TestBrowseEnterOnAPlanItemScrollsToItsBeat(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 30)
+	for i := range 80 {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
+	}
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	mustSetTodos(t, &m,
+		native.TodoItem{ID: "t1", Content: "First", Status: native.TodoInProgress},
+		native.TodoItem{ID: "t2", Content: "Second", Status: native.TodoPending},
+	)
+	done := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(done, "Doing the first thing.")
+	m.state.EndStep(done)
+	mustSetTodos(t, &m,
+		native.TodoItem{ID: "t1", Content: "First", Status: native.TodoCompleted},
+		native.TodoItem{ID: "t2", Content: "Second", Status: native.TodoInProgress},
+	)
+	live := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(live, "Doing the second thing.")
+	m.busy, m.turnStartedAt = true, m.now()
+	m.invalidateTranscript()
+	m.refreshViewport()
+	m.viewString()
+
+	var beat viewmodel.NodeID
+	for _, task := range m.band.Tasks {
+		if task.ID == "t1" {
+			beat = task.First
+		}
+	}
+	want := -1
+	for _, r := range m.nodeRegions {
+		if r.target.node == beat {
+			want = r.startLine
+			break
+		}
+	}
+	if beat == (viewmodel.NodeID{}) || want <= 0 {
+		t.Fatalf("todo t1 has no beat region to scroll to (beat %v, line %d)", beat, want)
+	}
+
+	m = pressKeys(m, "esc")
+	m = browseToBoxStop(t, m, livebox.TargetPlan, "t1")
+	m = pressKeys(m, "enter")
+	if off, h := m.viewport.YOffset(), m.viewport.Height(); off > want || want >= off+h {
+		t.Fatalf("t1's beat at line %d is not on screen (offset %d, height %d)", want, off, h)
+	}
+	if m.viewportFollow {
+		t.Fatal("jumping to a beat must stop following")
+	}
+}
+
+// TestBrowseGFollowsTheLiveBox: G re-arms following even though the last stop is
+// a box stop and not a live history node.
+func TestBrowseGFollowsTheLiveBox(t *testing.T) {
+	m := boxHistoryModel(t, workRunningCard("work:one", nowBarT0))
+	for i := range 40 {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
+	}
+	m.invalidateTranscript()
+	m.refreshViewport()
+	m.viewString()
+
+	m = pressKeys(m, "esc", "g")
+	if m.viewportFollow {
+		t.Fatal("g must not re-arm following")
+	}
+	m = pressKeys(m, "G")
+	if !m.viewportFollow {
+		t.Fatal("G must re-arm following")
+	}
+	if !m.viewport.AtBottom() {
+		t.Fatalf("G must put the viewport at the bottom (offset %d)", m.viewport.YOffset())
+	}
+	tg, ok := boxTargetOf(m.cursor)
+	if !ok || tg.Key != "work:one" {
+		t.Fatalf("G must land on the last stop, cursor %+v", m.cursor)
 	}
 }

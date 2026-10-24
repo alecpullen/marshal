@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -9,6 +10,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/viewmodel"
 )
@@ -61,6 +63,12 @@ func indexTree(n *viewmodel.Node, into map[viewmodel.NodeID]*viewmodel.Node) {
 
 func (m *Model) setBrowseItems(items []browseItem, tree map[viewmodel.NodeID]*viewmodel.Node) {
 	prev := m.cursorIndex()
+	// Browse continues past the last history row into the box's stops. They
+	// own no content lines (the box paints its own cursor), so start and end
+	// are -1 and they are never J/K stops.
+	for _, t := range m.boxLayout().Stops {
+		items = append(items, browseItem{id: boxStopID(t), kind: viewmodel.KindPassthrough, start: -1, end: -1})
+	}
 	m.browseItems, m.browseTree = items, tree
 	if !m.browsing {
 		return
@@ -136,6 +144,11 @@ func (m *Model) scrollToCursor() {
 		return
 	}
 	it := m.browseItems[i]
+	if it.start < 0 {
+		// A box stop has no content lines; the box keeps its own cursor in
+		// view and the viewport stays where it is.
+		return
+	}
 	top, h := m.viewport.YOffset(), m.viewport.Height()
 	switch {
 	case it.start < top:
@@ -223,10 +236,10 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 		m.moveCursor(0)
 	case "G", "end":
 		m.moveCursor(len(m.browseItems) - 1)
-		if last := m.currentNode(); last != nil && last.AnyLive() {
-			m.viewportFollow = true
-			m.viewport.GotoBottom()
-		}
+		// The live part is no longer a history node, so nothing here can
+		// re-arm following: G always does.
+		m.viewportFollow = true
+		m.viewport.GotoBottom()
 	case "pgup", "ctrl+u":
 		m.viewport.PageUp()
 		m.cursorToVisible()
@@ -236,6 +249,10 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 	case "enter":
 		if len(m.browseItems) == 0 {
 			m.leaveBrowse()
+			return *m, nil, true
+		}
+		if t, ok := boxTargetOf(m.cursor); ok {
+			m.enterBoxStop(t)
 			return *m, nil, true
 		}
 		if v, ok := m.subagentAtCursor(true); ok {
@@ -256,6 +273,13 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 		cmd := m.openCursorFile()
 		return *m, cmd, true
 	case "f":
+		// A box stop names its child by SourceID, so it is resolved before
+		// subagentAtCursor — which finds no node for a stop.
+		if v, ok := m.boxAgentAtCursor(); ok {
+			m.drillIntoSubagent(v)
+			m.leaveBrowse()
+			return *m, nil, true
+		}
 		if v, ok := m.subagentAtCursor(false); ok {
 			m.drillIntoSubagent(v)
 			m.leaveBrowse()
@@ -263,6 +287,13 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 		return *m, nil, true
 	case "?":
 		return m.openBrowseHelp()
+	case "s":
+		// Stop is offered only on a running box stop whose item allows it.
+		// Anywhere else the key stays unbound, as it was before.
+		if cmd, ok := m.boxStopAtCursor(); ok {
+			return *m, cmd, true
+		}
+		fallthrough
 	default:
 		if isPrintable(msg) {
 			// Unbound: leave browse mode and let the key be typed.
@@ -283,6 +314,59 @@ func isPrintable(msg tea.KeyPressMsg) bool {
 }
 
 func (m *Model) currentNode() *viewmodel.Node { return m.browseTree[m.cursor] }
+
+// enterBoxStop acts on a box stop the way a click does: a running card opens
+// or closes, the more row opens the Work list, and a plan item scrolls to the
+// first beat bound to it.
+func (m *Model) enterBoxStop(t livebox.Target) {
+	switch t.Kind {
+	case livebox.TargetWork:
+		if m.workExpanded == t.Key {
+			m.workExpanded = ""
+		} else {
+			m.workExpanded = t.Key
+		}
+		m.invalidateTranscript()
+		m.refreshViewport()
+	case livebox.TargetMore:
+		m.openTasks(tasksTabWork)
+	case livebox.TargetPlan:
+		m.scrollToPlanItem(t.Key)
+	}
+}
+
+// boxStopAtCursor returns the stop command for a box stop whose item allows a
+// stop, and reports false for every other cursor.
+func (m *Model) boxStopAtCursor() (tea.Cmd, bool) {
+	t, ok := boxTargetOf(m.cursor)
+	if !ok || t.Kind != livebox.TargetWork {
+		return nil, false
+	}
+	it, found := m.workItemByKey(t.Key)
+	if !found || !it.Capabilities.Stop {
+		return nil, false
+	}
+	return m.boxStopCmd(t.Key), true
+}
+
+// boxAgentAtCursor resolves the running subagent a box stop names: the item's
+// SourceID is the child session's subagent ID.
+func (m *Model) boxAgentAtCursor() (session.SubagentView, bool) {
+	t, ok := boxTargetOf(m.cursor)
+	if !ok || t.Kind != livebox.TargetWork {
+		return session.SubagentView{}, false
+	}
+	it, found := m.workItemByKey(t.Key)
+	if !found || it.Kind != "agent" {
+		return session.SubagentView{}, false
+	}
+	id, err := strconv.ParseInt(it.SourceID, 10, 64)
+	if err != nil {
+		return session.SubagentView{}, false
+	}
+	v, ok := m.state.Subagent(id)
+	return v, ok && v.Child != nil
+}
 
 // subagentAtCursor resolves the subagent the cursor points at: the completion
 // event of a finished child, or the agent.run row that dispatched it. There is
@@ -338,6 +422,11 @@ func (m *Model) paintCursor(content string) string {
 		return content
 	}
 	cur := m.browseItems[i]
+	if cur.start < 0 {
+		// A box stop has no lines in the transcript: the box paints its own
+		// cursor inside its frame.
+		return content
+	}
 	lines := strings.Split(content, "\n")
 	th := theme.Current()
 	w := max(m.viewport.Width(), 1)

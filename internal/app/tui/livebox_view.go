@@ -95,6 +95,7 @@ func (m Model) boxInput() livebox.Input {
 		Previous: m.workPrevious,
 		Expanded: m.workExpanded,
 		Mode:     m.liveBoxMode,
+		Cursor:   m.boxCursor(),
 	}
 	if in.Busy {
 		elapsed := formatElapsed(max(now.Sub(m.turnStartedAt), 0))
@@ -157,6 +158,59 @@ func (m Model) boxInput() livebox.Input {
 		in.Stale = m.band.StaleAge
 	}
 	return in
+}
+
+// boxCursor is the browse cursor as a box target. A box stop has no transcript
+// node, so the box is told directly which row is the cursor and paints it.
+func (m Model) boxCursor() livebox.Target {
+	if !m.browsing {
+		return livebox.Target{}
+	}
+	t, _ := boxTargetOf(m.cursor)
+	return t
+}
+
+// boxStopID is the synthetic browse identity of a box stop. The box's stops
+// are not transcript nodes, so the ID carries the stop's kind and key instead
+// of a node key.
+func boxStopID(t livebox.Target) viewmodel.NodeID {
+	return viewmodel.NodeID{Kind: viewmodel.KindPassthrough, Key: "box:" + boxKindName(t.Kind) + ":" + t.Key}
+}
+
+// boxTargetOf recovers the box stop a browse cursor ID names.
+func boxTargetOf(id viewmodel.NodeID) (livebox.Target, bool) {
+	if id.Kind != viewmodel.KindPassthrough {
+		return livebox.Target{}, false
+	}
+	if !strings.HasPrefix(id.Key, "box:") {
+		return livebox.Target{}, false
+	}
+	name, key, ok := strings.Cut(strings.TrimPrefix(id.Key, "box:"), ":")
+	if !ok {
+		return livebox.Target{}, false
+	}
+	switch name {
+	case "work":
+		return livebox.Target{Kind: livebox.TargetWork, Key: key}, true
+	case "more":
+		return livebox.Target{Kind: livebox.TargetMore, Key: key}, true
+	case "plan":
+		return livebox.Target{Kind: livebox.TargetPlan, Key: key}, true
+	}
+	return livebox.Target{}, false
+}
+
+// boxKindName is the word boxStopID writes into a stop's ID.
+func boxKindName(k livebox.TargetKind) string {
+	switch k {
+	case livebox.TargetWork:
+		return "work"
+	case livebox.TargetMore:
+		return "more"
+	case livebox.TargetPlan:
+		return "plan"
+	}
+	return "none"
 }
 
 // boxLayout returns this frame's layout: the one viewString planned, or a

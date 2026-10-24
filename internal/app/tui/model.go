@@ -2412,6 +2412,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWorkDetail(msg)
 	case workActionMsg:
 		return m.handleWorkAction(msg)
+	case boxStopMsg:
+		return m.handleBoxStop(msg)
 	case ctrlCExpiredMsg:
 		return m, nil
 	case settings.ChangedMsg:
@@ -6497,6 +6499,44 @@ func (m Model) workStopCmd(msg workRequestMsg) tea.Cmd {
 			err:            err,
 		}
 	}
+}
+
+// boxStopMsg is the reply to a stop asked for from the live box. It carries no
+// panel identity: the box is not the Tasks panel, and its reply must not be
+// validated as one.
+type boxStopMsg struct {
+	taskKey string
+	stop    viewmodel.WorkStopResult
+	err     error
+}
+
+// boxStopCmd issues one stop request from the live box off the Update thread.
+// It does not reuse workStopCmd: that reply is addressed to the Tasks panel and
+// is dropped unless the panel that asked is still open.
+func (m Model) boxStopCmd(taskKey string) tea.Cmd {
+	svc := m.workService
+	if svc == nil {
+		return nil
+	}
+	target := viewmodel.WorkTarget{ConversationID: m.workSnapshot.ConversationID, TaskKey: taskKey}
+	return func() tea.Msg {
+		stop, err := svc.StopWork(context.Background(), target, "requested from the live box")
+		return boxStopMsg{taskKey: taskKey, stop: stop, err: err}
+	}
+}
+
+// handleBoxStop flashes what became of a stop asked for from the box: the
+// error, or the refusal's summary, or that the request went out.
+func (m Model) handleBoxStop(msg boxStopMsg) (Model, tea.Cmd) {
+	text := "Stop requested"
+	switch {
+	case msg.err != nil:
+		text = msg.err.Error()
+	case !msg.stop.Accepted:
+		text = msg.stop.Summary
+	}
+	cmd := m.setFlash(text)
+	return m, cmd
 }
 
 // workAckCmd issues one acknowledgement off the Update thread, carrying the

@@ -26,8 +26,9 @@ type Request struct {
 // Result carries the written plan and its shared inspection back to the
 // caller for review.
 type Result struct {
-	Request    Request
-	Inspection *pipeline.Inspection
+	Request      Request
+	Inspection   *pipeline.Inspection
+	AutoAccepted bool
 }
 
 // ModelRunner is the minimal model contract the authoring child needs: run
@@ -40,6 +41,8 @@ type ModelRunner interface {
 // model, then inspects the written candidate.
 type Runner struct {
 	Model ModelRunner
+	// Auto reads the live owning conversation after authoring completes.
+	Auto func() bool
 }
 
 // Factory builds a Runner for one request. It is wired by the app layer so
@@ -81,7 +84,14 @@ func (r *Runner) Run(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("sddauthor: inspect candidate: %w", err)
 	}
-	return Result{Request: req, Inspection: inspection}, nil
+	result := Result{Request: req, Inspection: inspection}
+	if r.Auto != nil && r.Auto() {
+		if inspection.HasErrors() {
+			return result, fmt.Errorf("sddauthor: Full Auto candidate failed inspection: %v", inspection.Errors())
+		}
+		result.AutoAccepted = true
+	}
+	return result, nil
 }
 
 // RemoveCandidate removes one generated plan artifact. It resolves the

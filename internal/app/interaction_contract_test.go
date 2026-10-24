@@ -61,8 +61,8 @@ func TestInteractionContractActPlanningSkillReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateInput(shell.run): %v", err)
 	}
-	if ev.Decision != policy.DecisionConfirm {
-		t.Errorf("destructive shell command in Act = %v, want Confirm", ev.Decision)
+	if ev.Decision != policy.DecisionAllow {
+		t.Errorf("destructive shell command in Act = %v, want Allow", ev.Decision)
 	}
 }
 
@@ -72,6 +72,7 @@ func TestInteractionContractActPlanningSkillReview(t *testing.T) {
 func TestInteractionContractApprovalThenSingleLaunch(t *testing.T) {
 	cfg := nativeToolAgentConfig("contract-launch")
 	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAct, false
+	cfg.Tools.Shell.Confirm.Commands = []string{"rm -rf rel/x"}
 	rt, _ := newAccessTestRuntime(t, cfg)
 
 	// A destructive workspace command is the operation that still requires a

@@ -30,7 +30,7 @@ func TestAccessActGrantNeverEnablesAuto(t *testing.T) {
 func TestAccessSystemOnlyPreservesModeAndAuto(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.Mode = interaction.ModeAct
-	cfg.Agent.Auto = true
+	cfg.Agent.Auto = false
 	s := New(cfg, "/repo", time.Unix(100, 0), Persistence{})
 
 	call := &PendingToolCall{ID: "c", ResponseChan: make(chan UserApprovalDecision, 1)}
@@ -47,8 +47,8 @@ func TestAccessSystemOnlyPreservesModeAndAuto(t *testing.T) {
 		t.Fatalf("ResolveAccess = (%+v, %v), want a grant", result, err)
 	}
 	got := s.AccessState()
-	if got.Mode != "act" || !got.Auto || !got.System {
-		t.Fatalf("granted tuple = %+v, want Act+Auto+System preserved", got)
+	if got.Mode != "act" || got.Auto || !got.System {
+		t.Fatalf("granted tuple = %+v, want Act+System with Auto off", got)
 	}
 }
 

@@ -156,6 +156,9 @@ func (a *Authorizer) BeginTool(ctx context.Context, call Call) (*Admission, erro
 	if ev.Decision == DecisionDeny {
 		return nil, ErrApprovalRequired
 	}
+	if ev.Required.System && !live.Access.System {
+		return nil, ErrApprovalRequired
+	}
 	if ev.Decision == DecisionConfirm && !approved {
 		return nil, ErrApprovalRequired
 	}

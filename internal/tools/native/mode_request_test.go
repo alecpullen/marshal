@@ -384,10 +384,10 @@ func TestModeRequestCapabilityMatrix(t *testing.T) {
 					switch kind {
 					case "system":
 						args, wantEditing = `{"system":true}`, false
-						wantSystem = !systemOn
+						wantSystem = !systemOn && mode != "auto"
 					case "combined":
 						args = `{"mode":"edit","system":true}`
-						wantSystem = !systemOn
+						wantSystem = !systemOn && mode != "auto"
 					}
 
 					ctx, cancel := context.WithCancel(context.Background())
@@ -430,38 +430,20 @@ func TestModeRequestCapabilityMatrix(t *testing.T) {
 	}
 }
 
-// Auto mode does not auto-grant a read-only mode.request: the request still
-// waits for an explicit decision.
-func TestModeRequestAutoStillWaitsForSystemDecision(t *testing.T) {
+// Full Auto already grants System, so mode.request never publishes a prompt.
+func TestModeRequestFullAutoHasSystemAlready(t *testing.T) {
 	cfg := config.Default()
-	cfg.Agent.Mode = interaction.ModeAct
 	cfg.Agent.Auto = true
 	f := newEditableModeRequestFixture(t, cfg)
-	events := f.subscribe(t)
-
-	done := startModeRequest(f.reg, context.Background(), "call-1", `{"system":true}`)
-	req := awaitAccessRequest(t, events)
-	if !req.MissingSystem {
-		t.Fatalf("request flags = %+v, want system access missing under Auto", req)
+	out, err := invokeModeRequest(f.reg, context.Background(), "call-1", `{"system":true}`)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	// The handler is still blocked: nothing has been granted yet.
-	select {
-	case out := <-done:
-		t.Fatalf("mode.request returned without a decision: %+v", out)
-	default:
+	if f.state.PendingApproval() != nil || !f.state.SystemAccess() {
+		t.Fatal("Full Auto must not wait for System approval")
 	}
-	if f.state.SystemAccess() {
-		t.Fatal("Auto mode granted system access without a decision")
-	}
-
-	resolveAccess(t, f.state, req, true, "", testAccessPrepare(nil))
-	out := awaitOutcome(t, done)
-	if out.err != nil {
-		t.Fatalf("mode.request error: %v", out.err)
-	}
-	if !f.state.SystemAccess() {
-		t.Fatal("the approved grant did not reach the session")
+	if !strings.Contains(out.Content, string(session.AccessAvailable)) {
+		t.Fatalf("result = %+v, want already available", out)
 	}
 }
 

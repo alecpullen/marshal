@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/patch"
 	"marshal/internal/tools/registry"
@@ -67,35 +68,43 @@ func (r *Runner) requestApproval(ctx context.Context, tool registry.Tool, toolNa
 	r.State.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: label, StartedAt: r.Now()})
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 
-	select {
-	case decision := <-tc.ResponseChan:
-		if decision.Canceled {
-			// The session settled this request as interrupted, not answered.
-			// The distinct cause is on the registry record, so the runner
-			// reports steering rather than inventing a denial.
-			return false, "", key, session.ErrSendNow
+	for {
+		changed := r.State.InteractionChanged()
+		if r.State.InteractionState().Auto {
+			_, _ = r.State.ResolveApproval(key, session.UserApprovalDecision{Approved: true}, nil)
 		}
-		return decision.Approved, decision.Edited, key, nil
-	case <-ctx.Done():
-		// Settle by key: this also waits for a response claim that already
-		// won, so an approved decision is never rolled back and the runner
-		// returns only after that settle finished. The cause distinguishes
-		// steering from a plain turn cancel or a shutdown.
-		r.State.CancelPrompt(key, session.SteeringTurnContext(ctx).Err())
-		switch {
-		case errors.Is(r.State.PromptCause(key), session.ErrSendNow):
-			return false, "", key, session.ErrSendNow
-		case r.State.PromptCause(key) == nil:
-			// An answer claim won just before this cancellation and still owns
-			// its decision: honor it rather than discarding a grant the session
-			// already acknowledged.
-			select {
-			case decision := <-tc.ResponseChan:
-				return decision.Approved, decision.Edited, key, nil
-			default:
+		select {
+		case decision := <-tc.ResponseChan:
+			if decision.Canceled {
+				// The session settled this request as interrupted, not answered.
+				// The distinct cause is on the registry record, so the runner
+				// reports steering rather than inventing a denial.
+				return false, "", key, session.ErrSendNow
 			}
+			return decision.Approved, decision.Edited, key, nil
+		case <-ctx.Done():
+			// Settle by key: this also waits for a response claim that already
+			// won, so an approved decision is never rolled back and the runner
+			// returns only after that settle finished. The cause distinguishes
+			// steering from a plain turn cancel or a shutdown.
+			r.State.CancelPrompt(key, session.SteeringTurnContext(ctx).Err())
+			switch {
+			case errors.Is(r.State.PromptCause(key), session.ErrSendNow):
+				return false, "", key, session.ErrSendNow
+			case r.State.PromptCause(key) == nil:
+				// An answer claim won just before this cancellation and still owns
+				// its decision: honor it rather than discarding a grant the session
+				// already acknowledged.
+				select {
+				case decision := <-tc.ResponseChan:
+					return decision.Approved, decision.Edited, key, nil
+				default:
+				}
+			}
+			return false, "", key, ctx.Err()
+		case <-changed:
+			continue
 		}
-		return false, "", key, ctx.Err()
 	}
 }
 
@@ -122,6 +131,9 @@ func (r *Runner) requestAnswer(ctx context.Context, question string) (string, er
 // settles through the registry with its distinct cause instead of being
 // mistaken for a human answer.
 func (r *Runner) requestQuestions(ctx context.Context, questions []session.Question) ([]session.Answer, error) {
+	if r.State.InteractionState().Auto {
+		return nil, interaction.ErrQuestionsDisabled
+	}
 	q := &session.PendingQuestion{
 		Questions:    questions,
 		ResponseChan: make(chan []session.Answer, 1),
@@ -139,23 +151,31 @@ func (r *Runner) requestQuestions(ctx context.Context, questions []session.Quest
 	r.State.SetActivity(session.Activity{Kind: session.ActivityQuestion, Label: label, StartedAt: r.Now()})
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 
-	select {
-	case answers := <-q.ResponseChan:
-		if cause := r.State.PromptCause(key); cause != nil {
-			// A canceled question delivers the Unanswered compatibility
-			// sentinel on its channel; the registry's cause is what
-			// distinguishes that from a real decline, and the caller must see
-			// the interruption, never a fabricated answer.
-			return nil, cause
+	for {
+		changed := r.State.InteractionChanged()
+		if r.State.InteractionState().Auto {
+			r.State.CancelPrompt(key, interaction.ErrQuestionsDisabled)
 		}
-		recordQuestionAnswers(r.State, answers)
-		return answers, nil
-	case <-ctx.Done():
-		r.State.CancelPrompt(key, session.SteeringTurnContext(ctx).Err())
-		if cause := r.State.PromptCause(key); cause != nil {
-			return nil, cause
+		select {
+		case answers := <-q.ResponseChan:
+			if cause := r.State.PromptCause(key); cause != nil {
+				// A canceled question delivers the Unanswered compatibility
+				// sentinel on its channel; the registry's cause is what
+				// distinguishes that from a real decline, and the caller must see
+				// the interruption, never a fabricated answer.
+				return nil, cause
+			}
+			recordQuestionAnswers(r.State, answers)
+			return answers, nil
+		case <-ctx.Done():
+			r.State.CancelPrompt(key, session.SteeringTurnContext(ctx).Err())
+			if cause := r.State.PromptCause(key); cause != nil {
+				return nil, cause
+			}
+			return nil, ctx.Err()
+		case <-changed:
+			continue
 		}
-		return nil, ctx.Err()
 	}
 }
 
@@ -232,20 +252,28 @@ func (r *Runner) requestSkillGate(ctx context.Context, name string) (session.Ski
 	r.State.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: label, StartedAt: r.Now()})
 	defer r.State.SetActivity(session.Activity{Kind: session.ActivityIdle})
 
-	select {
-	case choice := <-sg.ResponseChan:
-		if cause := r.State.PromptCause(key); errors.Is(cause, session.ErrSendNow) {
-			// Canceled, not denied: a cancellation must not be recorded as a
-			// sticky skill denial, so the distinct cause travels out as the
-			// error and the caller skips its deny bookkeeping.
-			return session.SkillGateDeny, session.ErrSendNow
+	for {
+		changed := r.State.InteractionChanged()
+		if r.State.InteractionState().Mode == interaction.ModeAct {
+			_, _ = r.State.ResolveSkillGate(key, session.SkillGateAllowOnce, nil)
 		}
-		return choice, nil
-	case <-ctx.Done():
-		r.State.CancelPrompt(key, session.SteeringTurnContext(ctx).Err())
-		if cause := r.State.PromptCause(key); errors.Is(cause, session.ErrSendNow) {
-			return session.SkillGateDeny, session.ErrSendNow
+		select {
+		case choice := <-sg.ResponseChan:
+			if cause := r.State.PromptCause(key); errors.Is(cause, session.ErrSendNow) {
+				// Canceled, not denied: a cancellation must not be recorded as a
+				// sticky skill denial, so the distinct cause travels out as the
+				// error and the caller skips its deny bookkeeping.
+				return session.SkillGateDeny, session.ErrSendNow
+			}
+			return choice, nil
+		case <-ctx.Done():
+			r.State.CancelPrompt(key, session.SteeringTurnContext(ctx).Err())
+			if cause := r.State.PromptCause(key); errors.Is(cause, session.ErrSendNow) {
+				return session.SkillGateDeny, session.ErrSendNow
+			}
+			return session.SkillGateDeny, ctx.Err()
+		case <-changed:
+			continue
 		}
-		return session.SkillGateDeny, ctx.Err()
 	}
 }

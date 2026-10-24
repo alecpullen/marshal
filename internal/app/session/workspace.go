@@ -73,6 +73,7 @@ func (s *State) SetWorkspace(w Workspace) {
 
 	if rootChanged {
 		owner.access.Revision++
+		owner.signalInteractionLocked()
 	}
 	if !changed {
 		return

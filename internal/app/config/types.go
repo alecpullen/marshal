@@ -573,8 +573,8 @@ type AgentConfig struct {
 	MaxConcurrentSubagents int `toml:"max_concurrent_subagents"`
 	// Mode is the canonical interaction mode: "ask" or "act".
 	Mode interaction.Mode `toml:"mode"`
-	// Auto is the Act modifier that preauthorizes destructive workspace
-	// operations. It is only meaningful in Act.
+	// Auto preauthorizes operation confirmations and System access, and
+	// suppresses questions. It is only meaningful in Act.
 	Auto bool `toml:"auto"`
 	// ParseRepairFeedback tells the model when its action envelope was
 	// malformed but repaired, so it emits the right shape next turn instead

@@ -183,7 +183,7 @@ func (t *toolSet) runSudo(ctx context.Context, callID string, args sudoArgs) (re
 	if t.sessionState == nil {
 		return registry.ToolResult{}, errors.New("session state not available")
 	}
-	if !t.sessionState.SecretPromptCapable() {
+	if !t.sessionState.SecretPromptCapable() && !t.sessionState.InteractionState().Auto {
 		return registry.ToolResult{}, errors.New("this client cannot prompt for a password; shell.sudo is available only in the TUI")
 	}
 	if _, err := exec.LookPath("sudo"); err != nil {
@@ -244,6 +244,9 @@ func (t *toolSet) runSudoOnce(ctx context.Context, callID string, runner sudoRun
 // obtained is zeroed before it returns. The wait ends on a decision, on ctx
 // cancellation, or on State.ResolvePendingForShutdown.
 func (t *toolSet) requestSudoPassword(ctx context.Context, command, reason string, unlock bool, attempt int, prevErr string, commandApproval bool) (password []byte, promptKey session.PromptKey, denied bool, err error) {
+	if t.sessionState.InteractionState().Auto {
+		return nil, session.PromptKey{}, false, errors.New("privileged command requires a password; Full Auto cannot prompt for credentials")
+	}
 	sa := &session.PendingSudoAuth{
 		Command:         command,
 		Reason:          reason,
@@ -259,33 +262,41 @@ func (t *toolSet) requestSudoPassword(ctx context.Context, command, reason strin
 	}
 	defer t.sessionState.ClearPrompt(key)
 
-	select {
-	case d := <-sa.ResponseChan:
-		if !d.OK {
-			// A canceled prompt delivers an empty denial that is channel-wise
-			// indistinguishable from a user denial. The recorded cause is what
-			// tells them apart: an interruption must not be reported as
-			// "denied by user", which would count an intentional stop as a tool
-			// failure and feed the failed-repeat ladder.
+	for {
+		changed := t.sessionState.InteractionChanged()
+		if t.sessionState.InteractionState().Auto {
+			t.sessionState.CancelPrompt(key, errors.New("privileged command requires a password; Full Auto cannot prompt for credentials"))
+		}
+		select {
+		case d := <-sa.ResponseChan:
+			if !d.OK {
+				// A canceled prompt delivers an empty denial that is channel-wise
+				// indistinguishable from a user denial. The recorded cause is what
+				// tells them apart: an interruption must not be reported as
+				// "denied by user", which would count an intentional stop as a tool
+				// failure and feed the failed-repeat ladder.
+				if cause := t.sessionState.PromptCause(key); cause != nil {
+					return nil, key, false, cause
+				}
+				return nil, key, true, nil
+			}
+			return d.Password, key, false, nil
+		case <-ctx.Done():
+			// Settle canonically, then accept whatever the settlement delivered: a
+			// password the user had already submitted (whose claim won) is returned
+			// so the privileged dispatch can proceed, while a cancellation delivers
+			// an empty denial with no bytes.
+			t.sessionState.CancelPrompt(key, session.ErrSendNow)
+			if d, ok := <-sa.ResponseChan; ok && d.OK {
+				return d.Password, key, false, nil
+			}
 			if cause := t.sessionState.PromptCause(key); cause != nil {
 				return nil, key, false, cause
 			}
-			return nil, key, true, nil
+			return nil, key, false, ctx.Err()
+		case <-changed:
+			continue
 		}
-		return d.Password, key, false, nil
-	case <-ctx.Done():
-		// Settle canonically, then accept whatever the settlement delivered: a
-		// password the user had already submitted (whose claim won) is returned
-		// so the privileged dispatch can proceed, while a cancellation delivers
-		// an empty denial with no bytes.
-		t.sessionState.CancelPrompt(key, session.ErrSendNow)
-		if d, ok := <-sa.ResponseChan; ok && d.OK {
-			return d.Password, key, false, nil
-		}
-		if cause := t.sessionState.PromptCause(key); cause != nil {
-			return nil, key, false, cause
-		}
-		return nil, key, false, ctx.Err()
 	}
 }
 
@@ -301,7 +312,7 @@ func (t *toolSet) requestSudoPassword(ctx context.Context, command, reason strin
 // a credential, never consent.
 func (t *toolSet) runSudoAdmitted(ctx context.Context, callID, command string, args sudoArgs) (registry.ToolResult, error) {
 	timeout := clampTimeout(args.TimeoutSeconds, defaultSudoTimeout, maxSudoTimeout)
-	unlock := t.sessionState.SudoUnlockEnabled()
+	unlock := t.sessionState.SudoUnlockEnabled() || t.sessionState.InteractionState().Auto
 	runner := sudoRunner{fresh: !unlock}
 
 	// Capture the attempt once: the exact command, the directory it will run in
@@ -335,6 +346,9 @@ func (t *toolSet) runSudoAdmitted(ctx context.Context, callID, command string, a
 		case sudoRequiresTTY(result.Stderr):
 			return registry.ToolResult{}, errSudoRequiresTTY
 		case sudoNeedsPassword(result.Stderr):
+			if t.sessionState.InteractionState().Auto {
+				return registry.ToolResult{}, errors.New("privileged command requires a password; Full Auto cannot prompt for credentials")
+			}
 			// Cold timestamp: the prompt loop below collects the password.
 		default:
 			// A genuine command failure: the output IS the result.

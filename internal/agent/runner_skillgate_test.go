@@ -23,6 +23,11 @@ import (
 // tools, and a skill index containing "test-skill" (and "other-skill").
 func newSkillGateTestRunner(t *testing.T, state *session.State) (*Runner, *agenttest.ScriptedProvider) {
 	t.Helper()
+	// Ask exercises the optional context-budget confirmation; Act preapproves it.
+	ask := interaction.ModeAsk
+	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &ask}); err != nil {
+		t.Fatal(err)
+	}
 	idx := skills.NewIndex()
 	idx.Set("test-skill", skills.Skill{Name: "test-skill", Description: "a test skill", Body: "TEST SKILL BODY"})
 	idx.Set("other-skill", skills.Skill{Name: "other-skill", Description: "another", Body: "OTHER BODY"})
@@ -232,6 +237,21 @@ func TestSkillGateAutoModeAutoAllows(t *testing.T) {
 	}
 	if state.PendingSkillGate() != nil {
 		t.Fatal("auto mode must auto-allow without prompting")
+	}
+}
+
+func TestSkillGateActLoadsWithoutPermissionPrompt(t *testing.T) {
+	state := newTestState(t)
+	r, p := newSkillGateTestRunner(t, state)
+	act := interaction.ModeAct
+	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runSkillGateTurn(t, r, p, "test-skill"); err != nil {
+		t.Fatal(err)
+	}
+	if state.PendingSkillGate() != nil {
+		t.Fatal("Act should load skills without permission")
 	}
 }
 

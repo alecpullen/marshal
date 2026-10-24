@@ -8,6 +8,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 )
 
 // TestSystemAccessFlagDefaultsOff pins the containment default: without a
@@ -37,6 +38,24 @@ func TestSystemAccessFlagDefaultsOff(t *testing.T) {
 	}
 	if _, err := withSession.resolveToolPath("/etc/passwd", false); err == nil {
 		t.Fatal("resolveToolPath(/etc/passwd) with the flag off = nil error, want rejection")
+	}
+}
+
+func TestFullAutoNativePathsRespectChildSystemCeiling(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Auto = true
+	owner := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	child := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{}, session.WithInteractionOwner(owner, interaction.Ceiling{Act: true, Auto: true}))
+	tools, err := newToolSet(Options{WorkspaceRoot: child.WorkingDir, CommandRunner: &fakeRunner{}, SessionState: child})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "fixture.txt")
+	if _, err := tools.resolveToolPath(outside, false); err == nil {
+		t.Fatal("Full Auto widened child's write scope")
+	}
+	if _, err := tools.resolveToolPath(outside, true); err == nil {
+		t.Fatal("Full Auto widened child's read scope")
 	}
 }
 

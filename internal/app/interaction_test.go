@@ -3,7 +3,9 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -16,6 +18,7 @@ import (
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/policy"
+	"marshal/internal/tools/registry"
 )
 
 // A runtime interaction patch is a session-scoped authority change: it must not
@@ -285,87 +288,132 @@ func TestRuntimeInteractionGrantRevisionSerializesWithReload(t *testing.T) {
 	}
 }
 
-// The optional exit-analysis pass runs under the conversation's current
-// authority. In Ask, and in Act without System, the report write it would make
-// is not admitted, the pass reports its own non-approved failure, and the
-// host-managed extracted report is retained untouched.
-func TestExitAnalysisNeverElevatesConversationPermissions(t *testing.T) {
+// Exit analysis gets temporary Act + System access to annotate its external
+// report, then restores the user's tuple on success, failure, and cancellation.
+func TestExitAnalysisAutomaticallyGrantsAndRestoresSystemAccess(t *testing.T) {
 	for _, mode := range []interaction.Mode{interaction.ModeAsk, interaction.ModeAct} {
-		t.Run(string(mode), func(t *testing.T) {
-			ctx := context.Background()
-			rt := startEndRuntime(t)
-			if rt.Runner == nil || rt.Runner.Policy == nil {
-				t.Fatal("the fixture runtime has no runner/engine")
-			}
-
-			sys := false
-			m := mode
-			if _, err := rt.SetInteraction(interaction.Patch{Mode: &m, System: &sys}); err != nil {
-				t.Fatalf("SetInteraction: %v", err)
-			}
-			before := rt.State.InteractionState()
-
-			// The host-managed extraction landed before the optional agent pass
-			// starts.
-			report := filepath.Join(t.TempDir(), "postmortem.json")
-			original := []byte(`{"agent_observations":[]}`)
-			if err := os.WriteFile(report, original, 0644); err != nil {
-				t.Fatalf("write extracted report: %v", err)
-			}
-
-			// Settle an exit so the postmortem phase admits analysis.
-			if _, err := rt.AcceptEnd(EndAcceptRequest{
-				Intent:           EndIntentExit,
-				DisplayedIDs:     endWorkIDs(rt.ActiveWork()),
-				RequireDisplayed: true,
-			}); err != nil {
-				t.Fatalf("AcceptEnd: %v", err)
-			}
-			settleCtx, cancelSettle := context.WithTimeout(ctx, 5*time.Second)
-			if err := rt.WaitForEnd(settleCtx); err != nil {
+		for _, outcome := range []string{"success", "failure", "canceled"} {
+			t.Run(string(mode)+"/"+outcome, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				rt := startEndRuntime(t)
+				sys := false
+				if _, err := rt.SetInteraction(interaction.Patch{Mode: &mode, System: &sys}); err != nil {
+					t.Fatal(err)
+				}
+				before := rt.State.InteractionState()
+				report := filepath.Join(t.TempDir(), "postmortem.json")
+				original := []byte(`{"agent_observations":[]}`)
+				if err := os.WriteFile(report, original, 0644); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := rt.AcceptEnd(EndAcceptRequest{Intent: EndIntentExit, DisplayedIDs: endWorkIDs(rt.ActiveWork()), RequireDisplayed: true}); err != nil {
+					t.Fatal(err)
+				}
+				settleCtx, cancelSettle := context.WithTimeout(ctx, 5*time.Second)
+				if err := rt.WaitForEnd(settleCtx); err != nil {
+					cancelSettle()
+					t.Fatal(err)
+				}
 				cancelSettle()
-				t.Fatalf("WaitForEnd: %v", err)
-			}
-			cancelSettle()
-
-			opRan := false
-			writeAdmitted := false
-			rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
-				opRan = true
-				if scope == nil || scope.ID() == "" {
-					t.Error("the analysis pass ran without a scope")
+				analysisErr := errors.New("analysis failed")
+				ran := false
+				rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
+					ran = true
+					access := rt.State.InteractionState()
+					if access.Mode != interaction.ModeAct || !access.System || access.Auto != before.Auto {
+						return fmt.Errorf("postmortem authority = %+v, want Act + System with Auto preserved", access)
+					}
+					registryBefore, policyBefore := rt.ToolRegistry, rt.Runner.Policy
+					candidate := config.Clone(rt.Config)
+					candidate.Project.Name = "must-not-reload-during-postmortem"
+					if err := reloadAgentRuntime(analysisCtx, candidate, rt); !errors.Is(err, session.ErrConversationEnding) {
+						return fmt.Errorf("reload during postmortem = %v, want conversation-ending refusal", err)
+					}
+					if rt.ToolRegistry != registryBefore || rt.Runner.Policy != policyBefore || rt.Config.Project.Name == candidate.Project.Name {
+						return errors.New("postmortem reload replaced live dependencies")
+					}
+					authority := rt.State.InteractionAuthority()
+					if lease, err := authority.BeginAdmission(context.Background(), authority.Snapshot()); err == nil {
+						lease.Release()
+						return errors.New("ordinary tool admission reopened during postmortem")
+					}
+					if outcome == "failure" {
+						return analysisErr
+					}
+					if outcome == "canceled" {
+						cancel()
+						return ctx.Err()
+					}
+					for i, name := range []string{"file.read", "file.edit"} {
+						args := map[string]any{"path": report}
+						if name == "file.edit" {
+							args["old_string"] = "[]"
+							args["new_string"] = `["observed"]`
+						}
+						call := policy.Call{InvocationID: fmt.Sprint(i), ToolName: name, Args: args}
+						proof, ev, err := rt.Runner.Authorizer.Evaluate(analysisCtx, call)
+						if err != nil || ev.Decision != policy.DecisionAllow {
+							return fmt.Errorf("%s evaluation = %+v: %v", name, ev, err)
+						}
+						toolCtx := policy.WithAuthorization(analysisCtx, proof)
+						admission, err := rt.Runner.Authorizer.BeginTool(toolCtx, call)
+						if err != nil {
+							return err
+						}
+						err = admission.Commit()
+						admission.Release()
+						if err != nil {
+							return err
+						}
+						tool, ok := rt.ToolRegistry.Lookup(name)
+						if !ok {
+							return fmt.Errorf("missing native tool %s", name)
+						}
+						raw, err := json.Marshal(args)
+						if err != nil {
+							return err
+						}
+						if _, err := tool.Handler(toolCtx, registry.ToolCall{Name: name, Args: raw}); err != nil {
+							return err
+						}
+					}
+					return nil
+				})
+				err := rt.RunExitAnalysis(ctx, "record observations in "+report)
+				switch outcome {
+				case "success":
+					if err != nil {
+						t.Fatalf("RunExitAnalysis: %v", err)
+					}
+				case "failure":
+					if !errors.Is(err, analysisErr) {
+						t.Fatalf("RunExitAnalysis = %v, want analysis error", err)
+					}
+				case "canceled":
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("RunExitAnalysis = %v, want cancellation", err)
+					}
 				}
-				if rt.State.SystemAccess() {
-					t.Error("the analysis pass ran with system access it was never granted")
+				if !ran {
+					t.Fatal("postmortem pass did not run")
 				}
-				// The optional agent write: evaluate the report write under the
-				// conversation's live authority. It must not be preauthorized.
-				call := policy.Call{ToolName: "file.write", Args: map[string]any{"path": report}}
-				if _, ev, err := rt.Runner.Authorizer.Evaluate(analysisCtx, call); err == nil && ev.Decision == policy.DecisionAllow {
-					writeAdmitted = true
+				after := rt.State.InteractionState()
+				if after.Mode != before.Mode || after.Auto != before.Auto || after.System != before.System {
+					t.Fatalf("postmortem leaked access: %+v -> %+v", before, after)
 				}
-				return errors.New("analysis not approved: the pass cannot write the report path")
+				data, err := os.ReadFile(report)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := original
+				if outcome == "success" {
+					want = []byte(`{"agent_observations":["observed"]}`)
+				}
+				if !bytes.Equal(data, want) {
+					t.Fatalf("report = %q, want %q", data, want)
+				}
 			})
-
-			if err := rt.RunExitAnalysis(ctx, "record observations in "+report); err == nil {
-				t.Fatal("RunExitAnalysis swallowed the pass's non-approved failure")
-			}
-			if !opRan {
-				t.Fatal("the optional agent pass never ran")
-			}
-			if writeAdmitted {
-				t.Fatal("an unapproved optional agent write was admitted")
-			}
-			if got := rt.State.InteractionState(); got != before {
-				t.Fatalf("exit analysis changed conversation permissions: %+v → %+v", before, got)
-			}
-			after, err := os.ReadFile(report)
-			if err != nil {
-				t.Fatalf("the managed report was removed by a failed analysis: %v", err)
-			}
-			if !bytes.Equal(after, original) {
-				t.Fatalf("the failed analysis rewrote the managed report: %q", after)
-			}
-		})
+		}
 	}
 }

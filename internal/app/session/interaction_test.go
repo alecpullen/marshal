@@ -42,8 +42,8 @@ func TestInteractionSessionAtomicTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyInteraction(system): %v", err)
 	}
-	if !next.System || next.Revision != 4 {
-		t.Fatalf("after system = %+v, want system/4", next)
+	if !next.System || next.Revision != 3 {
+		t.Fatalf("after system = %+v, want system/3", next)
 	}
 
 	// A no-op patch does not increment the revision.
@@ -51,8 +51,8 @@ func TestInteractionSessionAtomicTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyInteraction(no-op): %v", err)
 	}
-	if next.Revision != 4 {
-		t.Fatalf("no-op revision = %d, want 4", next.Revision)
+	if next.Revision != 3 {
+		t.Fatalf("no-op revision = %d, want 3", next.Revision)
 	}
 }
 

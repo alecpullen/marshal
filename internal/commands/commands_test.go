@@ -19,6 +19,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
 	"marshal/internal/history"
+	"marshal/internal/interaction"
 	"marshal/internal/postmortem"
 	"marshal/internal/tools/registry"
 )
@@ -1122,6 +1123,25 @@ func TestPostmortemCommandAgentFlagSetsAgentGoal(t *testing.T) {
 	}
 	if _, err := os.Stat(postmortemReportPath(t, state)); err != nil {
 		t.Errorf("report not written: %v", err)
+	}
+}
+
+func TestPostmortemAgentCommandFromAskGrantsEditingAndSystem(t *testing.T) {
+	postmortemTestEnv(t)
+	cmdReg := New()
+	if err := RegisterAll(cmdReg, registry.New()); err != nil {
+		t.Fatal(err)
+	}
+	state := newTestState()
+	ask := interaction.ModeAsk
+	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &ask}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, _ := cmdReg.Lookup("postmortem")
+	result := cmd.Handler(state, []string{"--agent"})
+	access := state.InteractionState()
+	if result.AgentGoal == "" || access.Mode != interaction.ModeAct || !access.System || access.Auto {
+		t.Fatalf("postmortem --agent: access=%+v, goal=%q, text=%q", access, result.AgentGoal, result.Text)
 	}
 }
 

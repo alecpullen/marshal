@@ -601,8 +601,7 @@ func normalizePromptAccess(a interaction.State) interaction.State {
 }
 
 // interactionDirective describes the behavioral contract for the turn-start
-// access tuple. Auto and System are separate modifiers: Auto never widens the
-// approval mode, and System is described by systemAccessDirective below.
+// access tuple. Auto preauthorizes confirmations and supplies System access.
 func interactionDirective(access interaction.State) string {
 	access = normalizePromptAccess(access)
 	var b strings.Builder
@@ -610,10 +609,10 @@ func interactionDirective(access interaction.State) string {
 	case interaction.ModeAsk:
 		b.WriteString("You are in Ask mode. You can investigate, explain, compare approaches, and discuss or outline designs and plans, but you cannot save those documents or implement them. New actions are limited to read-only tools, read-only shell operations, read-only network access, explicitly read-only MCP tools, read-only delegation, and session bookkeeping or instruction loading. Tests, builds, dependency installs, scripts, interpreter runs, unknown shell effects, file writes, config writes, and other mutations require Act. Use mode.request to ask the user to grant Act. An allow rule or an ordinary approval cannot widen Ask. Ask does not force a numbered plan, a short Q&A response, or a special role.")
 	case interaction.ModeAct:
-		b.WriteString("You are in Act mode. Inspect, edit, build, test, install dependencies, and commit as needed. Routine file changes need no per-change approval. Ask only when the answer materially changes the work and the repository cannot settle it; otherwise state a reasonable assumption. Destructive operations need approval.")
+		b.WriteString("You are in Act mode. Run requested edits, builds, tests, installs, shell and Git operations without permission prompts. Routine file changes need no per-change approval. Honor explicit rules and access limits. Ask only material clarification questions the repository cannot settle; otherwise proceed.")
 	}
 	if access.Auto {
-		b.WriteString("\n\nAuto is enabled. Do not ask clarification questions: proceed with reasonable assumptions and state them. Destructive operations scoped to the active workspace are preauthorized. Auto does not grant System or publishing approval, does not override explicit deny or confirm rules, and does not manufacture skill or review approvals: a required spec, plan, or user review still stops and presents the artifact.")
+		b.WriteString("\n\nAuto is enabled (Full Auto). Do not ask clarification questions or request permission: proceed with reasonable assumptions and state them. All operation confirmations, including publishing and System access, are preauthorized. Explicit deny rules, child capability limits, and the sandbox still apply. Complete required skill, spec, plan, and code reviews automatically and continue; present the resulting artifacts without waiting for user approval. If an operation cannot run, report the concrete blocker without asking a question.")
 	}
 	return b.String()
 }

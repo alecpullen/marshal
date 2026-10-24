@@ -815,8 +815,8 @@ func TestInteractionDirectiveAuto(t *testing.T) {
 	if !strings.Contains(d, "Do not ask clarification questions") {
 		t.Errorf("Auto directive %q should forbid clarification questions", d)
 	}
-	if !strings.Contains(d, "does not manufacture skill or review approvals") {
-		t.Errorf("Auto directive %q must not invent explicit review approvals", d)
+	if !strings.Contains(d, "without waiting for user approval") {
+		t.Errorf("Auto directive %q must preauthorize review gates", d)
 	}
 }
 
@@ -962,17 +962,16 @@ func TestInteractionPromptUsesAskActAndModifiers(t *testing.T) {
 	}
 }
 
-func TestAutoNeverInventsExplicitSkillReviewApproval(t *testing.T) {
+func TestFullAutoContinuesThroughSkillReviewGates(t *testing.T) {
 	d := interactionDirective(promptAccessAuto)
-	if !strings.Contains(d, "does not manufacture skill or review approvals") {
-		t.Fatalf("Auto directive must explicitly refuse to manufacture skill/review approvals:\n%s", d)
+	for _, want := range []string{"without waiting for user approval", "Complete required skill, spec, plan, and code reviews automatically", "All operation confirmations", "Do not ask clarification questions or request permission"} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("Full Auto directive missing %q: %s", want, d)
+		}
 	}
-	if !strings.Contains(d, "required spec, plan, or user review still stops") {
-		t.Fatalf("Auto directive must keep explicit review gates waiting:\n%s", d)
-	}
-	for _, wrong := range []string{"skill approvals are automatic", "review is approved", "skip the review"} {
+	for _, wrong := range []string{"Auto does not grant System", "review still stops", "Destructive operations need approval"} {
 		if strings.Contains(d, wrong) {
-			t.Fatalf("Auto directive invents an approval with %q:\n%s", wrong, d)
+			t.Fatalf("Full Auto directive contains obsolete gate %q", wrong)
 		}
 	}
 }
@@ -982,7 +981,7 @@ func TestActPlanningWorkflowNeedsNoModeSwitch(t *testing.T) {
 	if strings.Contains(d, "mode.request") || strings.Contains(d, "plan mode") {
 		t.Fatalf("Act must not require a mode switch to plan:\n%s", d)
 	}
-	if !strings.Contains(d, "as needed") {
+	if !strings.Contains(d, "without permission prompts") {
 		t.Fatalf("Act should describe planning work as part of the normal workflow:\n%s", d)
 	}
 	// Planning is a skill workflow in Act, not a separate prompt mode.
@@ -1942,7 +1941,7 @@ func TestBaseRulesFavourDecisiveAction(t *testing.T) {
 	if !strings.Contains(baseRulesSystem, "Once you choose an approach, carry it out") {
 		t.Errorf("system-access rules must carry the same commit-to-approach rule:\n%s", baseRulesSystem)
 	}
-	if d := interactionDirective(promptAccessAct); !strings.Contains(d, "only when the answer materially changes the work") {
+	if d := interactionDirective(promptAccessAct); !strings.Contains(d, "only material clarification questions") {
 		t.Errorf("Act directive lacks the ask criterion: %q", d)
 	}
 }

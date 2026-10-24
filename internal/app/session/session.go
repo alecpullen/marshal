@@ -354,10 +354,14 @@ type State struct {
 	// half-applied pair. It guards access, configuredAccess and
 	// accessOverride. Lock order is accessMu → workMu or accessMu → mu,
 	// never the reverse.
-	accessMu sync.Mutex
+	accessMu      sync.Mutex
+	accessChanged chan struct{}
 	// access is the canonical effective interaction tuple (mode, Auto,
 	// System, revision). Guarded by accessMu.
 	access interaction.State
+	// exitAnalysisAccess freezes permission/config changes while the scoped
+	// postmortem pass holds its temporary grant. Guarded by accessMu.
+	exitAnalysisAccess *ExitAnalysisScope
 	// configuredAccess is the configured starting tuple a reload keeps
 	// unless the user explicitly changed it. Guarded by accessMu.
 	configuredAccess interaction.Defaults
@@ -954,11 +958,11 @@ func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opt
 	}
 	// The configured tuple is the reload baseline: it is what a later config
 	// reload compares against (see RebaseInteractionConfig). New
-	// conversations start with no override and system access off. A
+	// conversations start with no override. Full Auto includes system access. A
 	// malformed standalone fixture cannot authorize work: fall back to Ask.
 	if d, err := s.Config.InteractionDefaults(); err == nil {
 		s.configuredAccess = d
-		s.access = interaction.State{Mode: d.Mode, Auto: d.Auto, Revision: 1}
+		s.access = interaction.State{Mode: d.Mode, Auto: d.Auto, System: d.Auto, Revision: 1}
 	} else {
 		s.configuredAccess = interaction.Defaults{Mode: interaction.ModeAsk}
 		s.access = interaction.State{Mode: interaction.ModeAsk, Revision: 1}
@@ -1005,18 +1009,22 @@ func (s *State) Trusted() bool {
 
 // SystemAccess reports whether the session has system access enabled.
 func (s *State) SystemAccess() bool {
-	return s.InteractionState().System
+	return s.InteractionAuthority().Snapshot().Access.System
 }
 
 // SetSystemAccess toggles the per-session system-access modifier.
 func (s *State) SetSystemAccess(on bool) {
 	s.accessMu.Lock()
 	defer s.accessMu.Unlock()
+	if s.exitAnalysisAccess != nil {
+		return
+	}
 	if s.access.System == on {
 		return
 	}
 	s.access.System = on
 	s.access.Revision++
+	s.signalInteractionLocked()
 }
 
 // AccessState returns the effective access tuple — the mode governing
@@ -1458,6 +1466,7 @@ func (s *State) ResolveAccess(choice AccessChoice, prepare AccessPrepare) (Acces
 		s.access.System = true
 	}
 	s.access.Revision++
+	s.signalInteractionLocked()
 
 	result := AccessResult{
 		RequestID: req.RequestID,
@@ -3780,6 +3789,7 @@ func (s *State) AddSessionRule(prefix string) {
 	s.sessionRules = append(s.sessionRules, prefix)
 	s.mu.Unlock()
 	s.access.Revision++
+	s.signalInteractionLocked()
 }
 
 func (s *State) SessionRules() []string {

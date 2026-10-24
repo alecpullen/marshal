@@ -136,7 +136,7 @@ func TestSetModeAtomicPatchTransitionTable(t *testing.T) {
 			name:  "legacy auto derives auto",
 			start: interaction.State{Mode: interaction.ModeAsk, Revision: 1},
 			body:  `{"sessionId":"s","mode":"auto"}`,
-			want:  InteractionState{Mode: "act", Auto: true, Revision: 2},
+			want:  InteractionState{Mode: "act", Auto: true, System: true, Revision: 2},
 		},
 		{
 			name:  "explicit auto overrides derived auto",
@@ -148,7 +148,7 @@ func TestSetModeAtomicPatchTransitionTable(t *testing.T) {
 			name:  "explicit auto enables auto on act",
 			start: interaction.State{Mode: interaction.ModeAct, Revision: 1},
 			body:  `{"sessionId":"s","mode":"act","auto":true}`,
-			want:  InteractionState{Mode: "act", Auto: true, Revision: 2},
+			want:  InteractionState{Mode: "act", Auto: true, System: true, Revision: 2},
 		},
 		{
 			name:  "canonical ask clears auto",

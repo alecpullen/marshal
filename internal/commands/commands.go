@@ -12,6 +12,7 @@ import (
 	"marshal/internal/db"
 	"marshal/internal/export"
 	"marshal/internal/history"
+	"marshal/internal/interaction"
 	"marshal/internal/postmortem"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
@@ -316,7 +317,7 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 		},
 		{
 			Name:        "auto",
-			Description: "Toggle Auto (Act + Auto): preauthorize destructive workspace commands; /auto on enters Act",
+			Description: "Toggle Full Auto: preapprove operations and System access, with no questions; /auto on enters Act",
 			Args:        "[on|off]",
 			Group:       groupWorkflow,
 			TUIOnly:     true,
@@ -882,10 +883,18 @@ func RegisterAll(cmdReg *Registry, toolReg *registry.Registry) error {
 					// The agent pass edits the report at an absolute path outside
 					// the workspace, so it needs system access. The grant is
 					// disclosed in the transcript alongside the report path.
-					state.SetSystemAccess(true)
+					on := true
+					patch := interaction.Patch{System: &on}
+					if state.InteractionState().Mode == interaction.ModeAsk {
+						act := interaction.ModeAct
+						patch.Mode = &act
+					}
+					if _, err := state.ApplyInteraction(patch); err != nil {
+						return Text(summary + " — " + path + "\nAgent pass unavailable: " + err.Error())
+					}
 					return Result{
 						Text: summary + " — " + path +
-							"\nThe agent pass runs with system access: it may edit this file at an absolute path outside the workspace.",
+							"\nThe agent pass runs in Act with system access: it may edit this file at an absolute path outside the workspace.",
 						AgentGoal: "Run the postmortem skill: review this session's transcript and append semantic observations into the agent_observations field of " + path + ". Extraction only — record observations, do not summarize or rank.",
 					}
 				}

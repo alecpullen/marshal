@@ -97,9 +97,9 @@ func (a *stateAuthority) snapshotLocked(owner *State, actorSystem bool) interact
 	// the raw field would report the zero ceiling for every root and make its
 	// snapshot claim Ask, which under-reports the access it actually has.
 	access := interaction.Bound(owner.access, a.actor.effectiveCeiling())
-	// System in a ceiling is permission to request, not a grant: the actor
-	// must also have asked for it explicitly.
-	if !actorSystem {
+	// Outside Full Auto, System in a ceiling is permission to request rather
+	// than a grant. Full Auto inherits System only within that same ceiling.
+	if !actorSystem && !access.Auto {
 		access.System = false
 	}
 	return interaction.Snapshot{
@@ -135,6 +135,13 @@ func (a *stateAuthority) BeginAdmission(ctx context.Context, expected interactio
 	if current := a.snapshotLocked(owner, actorSystem); current != expected {
 		owner.accessMu.Unlock()
 		return nil, ErrAdmissionStale
+	}
+	if phase := owner.WorkPhase(); phase != ExitPhaseOpen {
+		scope, ok := ExitAnalysisScopeFromContext(ctx)
+		if phase != ExitPhasePostmortem || !ok || !owner.ExitAnalysisOpen(scope) {
+			owner.accessMu.Unlock()
+			return nil, ErrConversationEnding
+		}
 	}
 	return &admissionLease{owner: owner}, nil
 }

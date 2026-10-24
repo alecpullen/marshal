@@ -11,6 +11,7 @@ import (
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -361,31 +362,42 @@ func TestHardStallFinalizesWhenUserDeclines(t *testing.T) {
 	}
 }
 
-func TestHardStallAutoFinalizesForNonGeneralRole(t *testing.T) {
-	toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
-	responses := scriptRepeats(repeatHardStall, toolResp)
-	responses = append(responses, `{"rationale":"stopping","action":{"type":"final","content":"scout findings"}}`)
-	p := &agenttest.ScriptedProvider{Responses: responses}
-	reg := registry.New()
-	reg.Register(registry.Tool{
-		Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
-		Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
-			return registry.ToolResult{Summary: "ok", Content: "same output"}, nil
-		},
-	})
-	pol := policy.NewEngine(&config.Config{}, nil)
-	state := newTestState(t)
-	runner := NewRunner(p, reg, pol, state, "test-model")
-	runner.Role = RoleRepoScout
-	runner.SetForceClass(string(ClassQuestion))
+func TestHardStallFinalizesForNoninteractiveRuns(t *testing.T) {
+	for _, role := range []AgentRole{RoleGeneral, RoleRepoScout} {
+		t.Run(string(role), func(t *testing.T) {
+			toolResp := `{"rationale":"look","action":{"type":"tool_call","tool":"echo.tool","args":{}}}`
+			responses := scriptRepeats(repeatHardStall, toolResp)
+			responses = append(responses, `{"rationale":"stopping","action":{"type":"final","content":"scout findings"}}`)
+			p := &agenttest.ScriptedProvider{Responses: responses}
+			reg := registry.New()
+			reg.Register(registry.Tool{
+				Name: "echo.tool", Description: "static output", Risk: registry.RiskReadOnly,
+				Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+					return registry.ToolResult{Summary: "ok", Content: "same output"}, nil
+				},
+			})
+			pol := policy.NewEngine(&config.Config{}, nil)
+			state := newTestState(t)
+			runner := NewRunner(p, reg, pol, state, "test-model")
+			runner.Role = role
+			if role == RoleGeneral {
+				on := true
+				if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runner.SetForceClass(string(ClassQuestion))
 
-	task, err := runner.RunTask(context.Background(), "scout the repo")
-	if err != nil {
-		t.Fatalf("RunTask returned error: %v", err)
+			task, err := runner.RunTask(context.Background(), "scout the repo")
+			if err != nil {
+				t.Fatalf("RunTask returned error: %v", err)
+			}
+			if task.SalvagedReason != string(reasonStalled) {
+				t.Fatalf("SalvagedReason = %q, want stalled auto-finalize for swarm role", task.SalvagedReason)
+			}
+		})
 	}
-	if task.SalvagedReason != string(reasonStalled) {
-		t.Fatalf("SalvagedReason = %q, want stalled auto-finalize for swarm role", task.SalvagedReason)
-	}
+
 }
 
 // Some providers (Kimi's kimi-for-coding, confirmed live) reject the entire

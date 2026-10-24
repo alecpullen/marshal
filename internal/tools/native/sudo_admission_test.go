@@ -27,7 +27,10 @@ func newSudoAuthorizer(t *testing.T) (*policy.Authorizer, *testAuthority) {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Tools.Shell.Deny.Patterns = nil
+	cfg.Tools.Shell.Confirm.Commands = []string{"git reset --hard", "git push"}
+	cfg.Tools.Shell.FloorCommands = []string{"git push"}
 	authority := newTestAuthority()
+	authority.snap.Access.System = true
 	return policy.NewAuthorizer(policy.NewEngine(&cfg, nil), authority), authority
 }
 
@@ -77,6 +80,46 @@ func TestSudoWithoutCommandAuthorizerFailsClosed(t *testing.T) {
 	}
 	if _, statErr := os.Stat(argvFile); !os.IsNotExist(statErr) {
 		t.Fatal("the privileged runner ran without an authorizer")
+	}
+}
+
+func TestFullAutoSudoDoesNotAskForPassword(t *testing.T) {
+	fakeSudo(t, 1, "sudo: a password is required", false)
+	cfg := config.Default()
+	cfg.Agent.Auto = true
+	state := session.New(cfg, t.TempDir(), time.Now(), session.Persistence{})
+	authorizer := policy.NewAuthorizer(policy.NewEngine(&cfg, nil), state.InteractionAuthority())
+	reg := sudoRegistry(t, state.WorkingDir, state, authorizer)
+	_, err := invokeTool(t, reg, "shell.sudo", `{"command":"id"}`)
+	if err == nil || !strings.Contains(err.Error(), "Full Auto cannot prompt") {
+		t.Fatalf("sudo = %v, want credential blocker", err)
+	}
+	if state.PendingSudoAuth() != nil || state.PendingApproval() != nil {
+		t.Fatal("Full Auto opened a prompt")
+	}
+}
+
+func TestEnablingFullAutoClosesPendingCredentialPrompt(t *testing.T) {
+	fakeSudo(t, 0, "", false)
+	reg, state, _, _ := sudoAdmittedToolForTest(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	tool, _ := reg.Lookup("shell.sudo")
+	go func() {
+		_, err := tool.Handler(ctx, registry.ToolCall{ID: "sudo", Name: "shell.sudo", Args: []byte(`{"command":"id"}`)})
+		done <- err
+	}()
+	waitForSudoPrompt(t, state)
+	on := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "Full Auto cannot prompt") {
+		t.Fatalf("sudo = %v, want credential blocker", err)
+	}
+	if state.PendingSudoAuth() != nil {
+		t.Fatal("Full Auto left a credential prompt open")
 	}
 }
 

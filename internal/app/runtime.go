@@ -753,12 +753,39 @@ func (rt *Runtime) RunExitAnalysis(ctx context.Context, goal string) error {
 	// epoch no matter which transport supplied the operation, so the epoch's
 	// cleanup is complete and its work can never be mistaken for ordinary work.
 	analysisCtx := session.WithExitAnalysisScope(ctx, scope)
-	runErr := rt.runScopedAnalysis(analysisCtx, scope, goal)
+	// The requested postmortem pass edits a harness report outside the
+	// workspace, including when the conversation ended in Ask. Elevation is
+	// temporary and cannot reopen ordinary work or survive the pass.
+	// Serialize grant setup with a reload's preview/build/commit, without
+	// holding the reload gate while the model or its tools run.
+	rt.reloadMu.Lock()
+	restoreAccess, runErr := rt.State.BeginExitAnalysisAccess(scope)
+	if runErr == nil {
+		rt.projectInteraction()
+	}
+	rt.reloadMu.Unlock()
+	cleanupAccess := func() {
+		if restoreAccess == nil {
+			return
+		}
+		rt.reloadMu.Lock()
+		defer rt.reloadMu.Unlock()
+		restoreAccess()
+		restoreAccess = nil
+		rt.projectInteraction()
+	}
+	defer cleanupAccess()
+	if runErr == nil {
+		runErr = rt.runScopedAnalysis(analysisCtx, scope, goal)
+	}
 
 	// Always stop and join this epoch before returning, whatever happened.
 	rt.State.CloseExitAnalysis(scope)
 	rt.stopEndWork(ctx, scope)
 	joinErr := rt.joinEndWork(ctx, scope)
+	// Restore before making a new epoch available: a following pass must
+	// capture the user's tuple, never this pass's temporary grant.
+	cleanupAccess()
 
 	rt.endMu.Lock()
 	if rt.analysisScope == scope {

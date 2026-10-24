@@ -2385,8 +2385,8 @@ func TestAccessStateReadsModeAndSystemTogether(t *testing.T) {
 		cfg.Agent.Mode = tc.mode
 		cfg.Agent.Auto = tc.auto
 		seeded := New(cfg, t.TempDir(), time.Unix(100, 0), Persistence{})
-		if got := seeded.AccessState(); got.Mode != tc.want || got.System {
-			t.Errorf("configured %q/%v: AccessState() = %+v, want {Mode: %s, System: false}", tc.mode, tc.auto, got, tc.want)
+		if got := seeded.AccessState(); got.Mode != tc.want || got.System != tc.auto {
+			t.Errorf("configured %q/%v: AccessState() = %+v, want {Mode: %s, System: %v}", tc.mode, tc.auto, got, tc.want, tc.auto)
 		}
 	}
 

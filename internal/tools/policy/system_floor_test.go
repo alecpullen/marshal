@@ -19,7 +19,7 @@ func TestGitPushFloorSurvivesPrivilegeWrapper(t *testing.T) {
 		system bool
 		want   Decision
 	}{
-		{name: "plain push system", cmd: "git push", system: true, want: DecisionConfirm},
+		{name: "plain push system", cmd: "git push", system: true, want: DecisionAllow},
 		// Privilege wrappers deny before the floor under system access.
 		{name: "privilege push system", cmd: "sudo git push", system: true, want: DecisionDeny},
 		{name: "privilege push with remote system", cmd: "sudo git push origin main", system: true, want: DecisionDeny},
@@ -61,33 +61,33 @@ func TestSystemFloorFailsClosed(t *testing.T) {
 		auto   bool
 		want   Decision
 	}{
-		{name: "rm absolute", cmd: "rm -rf /etc", system: true, want: DecisionConfirm},
-		{name: "rm quoted absolute", cmd: `rm -rf "/etc"`, system: true, want: DecisionConfirm},
-		{name: "rm mixed operands", cmd: "rm -rf /etc ./notes", system: true, want: DecisionConfirm},
-		{name: "rm relative then absolute", cmd: "rm -rf ./notes /etc", system: true, want: DecisionConfirm},
-		{name: "rm glob", cmd: "rm -rf /etc/*", system: true, want: DecisionConfirm},
-		{name: "rm home expansion", cmd: "rm -rf $HOME/project", system: true, want: DecisionConfirm},
-		{name: "rm quoted home expansion", cmd: `rm -rf "$HOME"`, system: true, want: DecisionConfirm},
+		{name: "rm absolute", cmd: "rm -rf /etc", system: true, want: DecisionAllow},
+		{name: "rm quoted absolute", cmd: `rm -rf "/etc"`, system: true, want: DecisionAllow},
+		{name: "rm mixed operands", cmd: "rm -rf /etc ./notes", system: true, want: DecisionAllow},
+		{name: "rm relative then absolute", cmd: "rm -rf ./notes /etc", system: true, want: DecisionAllow},
+		{name: "rm glob", cmd: "rm -rf /etc/*", system: true, want: DecisionAllow},
+		{name: "rm home expansion", cmd: "rm -rf $HOME/project", system: true, want: DecisionAllow},
+		{name: "rm quoted home expansion", cmd: `rm -rf "$HOME"`, system: true, want: DecisionAllow},
 		{name: "rm tilde", cmd: "rm -rf ~", system: true, want: DecisionDeny},
-		{name: "rm command substitution", cmd: "rm -rf $(pwd)/src", system: true, want: DecisionConfirm},
+		{name: "rm command substitution", cmd: "rm -rf $(pwd)/src", system: true, want: DecisionAllow},
 		{name: "sudo rm absolute", cmd: "sudo rm -rf /etc", system: true, want: DecisionDeny},
 		{name: "sudo with flag then rm", cmd: "sudo -n rm -rf /etc", system: true, want: DecisionDeny},
 		{name: "sudo with user value then rm", cmd: "sudo -u root rm -rf /etc", system: true, want: DecisionDeny},
 		{name: "env sudo rm absolute", cmd: "env sudo rm -rf /etc", system: true, want: DecisionDeny},
 		{name: "sudo recursive chmod", cmd: "sudo chmod -R 000 /etc", system: true, want: DecisionDeny},
-		{name: "recursive chmod absolute", cmd: "chmod -R 000 /etc", system: true, want: DecisionConfirm},
+		{name: "recursive chmod absolute", cmd: "chmod -R 000 /etc", system: true, want: DecisionAllow},
 		{name: "sudo find delete", cmd: "sudo find / -delete", system: true, want: DecisionDeny},
 		{name: "sudo dd to device", cmd: "sudo dd if=/dev/zero of=/dev/sda", system: true, want: DecisionDeny},
-		{name: "find piped to xargs rm", cmd: "find / | xargs rm -rf", system: true, want: DecisionConfirm},
-		{name: "xargs rm from stdin", cmd: "xargs -0 rm -rf < /tmp/list", system: true, want: DecisionConfirm},
-		{name: "find exec rm", cmd: "find /etc -exec rm -rf {} +", system: true, want: DecisionConfirm},
-		{name: "sh -c rm absolute", cmd: "sh -c 'rm -rf /etc'", system: true, want: DecisionConfirm},
-		{name: "bash -c rm absolute", cmd: "bash -c 'rm -rf /etc'", system: true, want: DecisionConfirm},
+		{name: "find piped to xargs rm", cmd: "find / | xargs rm -rf", system: true, want: DecisionAllow},
+		{name: "xargs rm from stdin", cmd: "xargs -0 rm -rf < /tmp/list", system: true, want: DecisionAllow},
+		{name: "find exec rm", cmd: "find /etc -exec rm -rf {} +", system: true, want: DecisionAllow},
+		{name: "sh -c rm absolute", cmd: "sh -c 'rm -rf /etc'", system: true, want: DecisionAllow},
+		{name: "bash -c rm absolute", cmd: "bash -c 'rm -rf /etc'", system: true, want: DecisionAllow},
 		{name: "mkfs", cmd: "mkfs.ext4 /dev/sda1", system: true, want: DecisionDeny},
 		{name: "shutdown", cmd: "shutdown -h now", system: true, want: DecisionDeny},
 		{name: "reboot via sudo", cmd: "sudo reboot", system: true, want: DecisionDeny},
 
-		{name: "rm relative", cmd: "rm -rf rel/x", system: true, want: DecisionConfirm},
+		{name: "rm relative", cmd: "rm -rf rel/x", system: true, want: DecisionAllow},
 		{name: "rm relative auto", cmd: "rm -rf rel/x", system: true, auto: true, want: DecisionAllow},
 		// Privilege wrappers are Deny under system access (spec §1): the
 		// previously-Allowed plain sudo shapes are the accepted cost of
@@ -95,7 +95,7 @@ func TestSystemFloorFailsClosed(t *testing.T) {
 		{name: "rm sudo relative", cmd: "sudo rm -rf rel/x", system: true, want: DecisionDeny},
 		{name: "sudo ls", cmd: "sudo ls", system: true, want: DecisionDeny},
 		{name: "sudo find without delete", cmd: "sudo find / -name x", system: true, want: DecisionDeny},
-		{name: "rm relative without system", cmd: "rm -rf rel/x", want: DecisionConfirm},
+		{name: "rm relative without system", cmd: "rm -rf rel/x", want: DecisionAllow},
 		{name: "rm absolute without system", cmd: "rm -rf /etc", want: DecisionConfirm},
 	}
 
@@ -209,8 +209,12 @@ func TestGitPushFloorBypassShapesFlagOff(t *testing.T) {
 		t.Run(cmd, func(t *testing.T) {
 			pe := NewEngine(&config.Config{}, []string{})
 			ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: true, Revision: 1}, cmd)
-			if ev.Decision == DecisionAllow {
-				t.Fatalf("Evaluate(%q, flag off) = Allow, want a human gate", cmd)
+			want := DecisionAllow
+			if hasReasonCode(ev, ReasonPrivilegeWrapper) {
+				want = DecisionDeny
+			}
+			if ev.Decision != want {
+				t.Fatalf("%q: got %v, want %v", cmd, ev.Decision, want)
 			}
 		})
 	}
@@ -317,7 +321,7 @@ func TestConfigurableFloorCommands(t *testing.T) {
 	for _, cmd := range floored {
 		t.Run("floored/"+cmd, func(t *testing.T) {
 			pe := newEngine([]string{"npm publish"})
-			ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: true, System: true, Revision: 1}, cmd)
+			ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: false, System: true, Revision: 1}, cmd)
 			if ev.Decision != DecisionConfirm {
 				t.Fatalf("Evaluate(%q) = %v, want Confirm (configured floor)", cmd, ev.Decision)
 			}
@@ -331,8 +335,8 @@ func TestConfigurableFloorCommands(t *testing.T) {
 	t.Run("empty list keeps push floor", func(t *testing.T) {
 		pe := newEngine(nil)
 		ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: true, System: true, Revision: 1}, "git push")
-		if ev.Decision != DecisionConfirm || !ev.ExactCommandApproval {
-			t.Fatalf("Evaluate(git push) = %v, want the non-bypassable push floor", ev.Decision)
+		if ev.Decision != DecisionAllow || ev.ExactCommandApproval {
+			t.Fatalf("Evaluate(git push) = %v, want preapproved publishing", ev.Decision)
 		}
 	})
 

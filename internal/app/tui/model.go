@@ -5702,7 +5702,11 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 		return m, nil
 	}
 	m.state.ClearNotice(session.NoticeProvider)
-	m.dock.Open(sddreview.New(msg.result))
+	if msg.result.AutoAccepted {
+		m.state.AddMessage(session.RoleSystem, "Plan accepted in Full Auto: "+msg.result.Request.PlanPath, session.ContentTypePlain)
+	} else {
+		m.dock.Open(sddreview.New(msg.result))
+	}
 	m.updateViewportHeight()
 	m.refreshViewport()
 	return m, nil
@@ -7286,7 +7290,7 @@ func (m *Model) setAuto(args []string) {
 	}
 	if on {
 		m.state.AddMessage(session.RoleSystem,
-			"Auto enabled: Act mode preauthorizes destructive workspace commands.", session.ContentTypePlain)
+			"Full Auto enabled: operations and System access are preapproved; no questions.", session.ContentTypePlain)
 	} else {
 		m.state.AddMessage(session.RoleSystem,
 			"Auto disabled; the current mode and System access are unchanged.", session.ContentTypePlain)

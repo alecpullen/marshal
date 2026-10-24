@@ -1,5 +1,9 @@
 # Ask/Act interaction model and shell policy
 
+The approval and Auto contract was revised on 2026-10-24. See
+[`permission-behavior.md`](permission-behavior.md) for current behavior;
+the approval matrix below records the original implementation.
+
 Status: written spec approved; implemented on branch `interaction-modes`.
 Date: 2026-10-19.
 Source baseline: `f637b8edd42b6529b0334c0ffae37ebe100966c2`.

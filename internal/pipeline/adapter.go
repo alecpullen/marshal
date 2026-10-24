@@ -66,13 +66,17 @@ func (a *ControllerAdapter) Run(ctx context.Context, goal string) error {
 	})
 	if errors.Is(err, ErrHumanGateRequired) {
 		title, report := a.c.QuestionContext()
-		a.state.SetSDDGate(session.SDDGate{
-			TaskN:     a.c.nextTask,
-			Question:  a.c.Question(),
-			TaskTitle: title,
-			Report:    report,
-		})
-		return err
+		if a.state.InteractionState().Auto {
+			err = fmt.Errorf("Full Auto pipeline blocked at %s: %s", title, a.c.Question())
+		} else {
+			a.state.SetSDDGate(session.SDDGate{
+				TaskN:     a.c.nextTask,
+				Question:  a.c.Question(),
+				TaskTitle: title,
+				Report:    report,
+			})
+			return err
+		}
 	}
 	if err == nil {
 		a.state.AddMessage(session.RoleSystem, a.c.Summary(), session.ContentTypePlain)

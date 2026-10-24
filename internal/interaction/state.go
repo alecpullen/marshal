@@ -9,6 +9,8 @@ import (
 
 type Mode string
 
+var ErrQuestionsDisabled = errors.New("Full Auto is enabled; proceed with reasonable assumptions without asking questions")
+
 const (
 	ModeAsk Mode = "ask"
 	ModeAct Mode = "act"
@@ -126,6 +128,11 @@ func Apply(s State, p Patch) (State, error) {
 	}
 	if p.System != nil {
 		next.System = *p.System
+	}
+	// Full Auto preauthorizes broader access as part of the same transaction.
+	// Turning Auto off leaves the session's System grant under /system control.
+	if next.Auto {
+		next.System = true
 	}
 	if err := ValidateState(next); err != nil {
 		return s, err

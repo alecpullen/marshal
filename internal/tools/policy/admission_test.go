@@ -7,6 +7,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/interaction"
+	"marshal/internal/permissions"
 )
 
 type fakeLease struct{ released bool }
@@ -94,6 +95,7 @@ func TestAdmissionRechecksSymlinkFactsAndConfig(t *testing.T) {
 
 func TestAdmissionCannotReuseApproval(t *testing.T) {
 	az, _ := admissionFixture(t)
+	az.engine.SetRules([]permissions.Rule{{Permission: "shell", Pattern: "*", Action: permissions.ActionAsk}})
 	call := Call{InvocationID: "inv-1", ToolName: "shell.run", Shell: &ShellInput{Command: "git reset --hard", Dir: "/repo", WorkspaceRoot: "/repo"}}
 	proof, ev, err := az.Evaluate(context.Background(), call)
 	if err != nil {
@@ -175,6 +177,7 @@ func TestFingerprintBindsEveryAnalysisInput(t *testing.T) {
 
 func TestAdmissionBackgroundAllowNeverManufacturesApproval(t *testing.T) {
 	az, _ := admissionFixture(t)
+	az.engine.SetRules([]permissions.Rule{{Permission: "shell", Pattern: "*", Action: permissions.ActionAsk}})
 	call := Call{InvocationID: "inv-1", ToolName: "shell.run", Shell: &ShellInput{Command: "git reset --hard", Dir: "/repo", WorkspaceRoot: "/repo"}}
 	proof, ev, err := az.Evaluate(context.Background(), call)
 	if err != nil {

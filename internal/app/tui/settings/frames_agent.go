@@ -134,7 +134,7 @@ func agentFrame(s *state) *frame {
 					}
 				})
 				f.TomlPath = "agent.auto"
-				f.Desc = "starting Auto modifier: preauthorize destructive workspace commands (enters Act)"
+				f.Desc = "Full Auto: preapprove operations and System access, with no questions (enters Act)"
 				SetFieldWriteGlobal(f, true)
 				return f
 			}(),

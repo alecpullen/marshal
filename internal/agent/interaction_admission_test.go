@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,122 @@ import (
 
 // modePtr is the pointer form interaction.Patch needs for a mode change.
 func modePtr(m interaction.Mode) *interaction.Mode { return &m }
+
+func TestExecutionModesReachCommandAdmissionWithoutPrompt(t *testing.T) {
+	for _, auto := range []bool{false, true} {
+		t.Run(fmt.Sprint(auto), func(t *testing.T) {
+			state := newTestState(t)
+			if auto {
+				if _, err := state.ApplyInteraction(interaction.Patch{Auto: &auto}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reg := registry.New()
+			pol := policy.NewEngine(&config.Config{}, nil)
+			if auto {
+				pol.SetRules([]permissions.Rule{{Permission: "shell", Pattern: "*", Action: permissions.ActionAsk}})
+			}
+			var runner *Runner
+			launches := 0
+			if err := reg.Register(registry.Tool{Name: "shell.run", Risk: registry.RiskCommand, Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+				input, ok := policy.ShellInputFromContext(ctx)
+				if !ok {
+					return registry.ToolResult{}, errors.New("missing captured command")
+				}
+				admission, err := runner.Authorizer.BeginCommand(ctx, policy.CommandAttempt{InvocationID: policy.InvocationID(ctx), ToolName: call.Name, Input: input})
+				if err != nil {
+					return registry.ToolResult{}, err
+				}
+				defer admission.Release()
+				if err := admission.Commit(); err != nil {
+					return registry.ToolResult{}, err
+				}
+				launches++
+				return registry.ToolResult{Summary: "ran"}, nil
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			pol.WithRegistry(reg)
+			runner = NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			msgs, err := runner.executeToolCall(ctx, ModelAction{Type: ActionToolCall, Tool: "shell.run", Args: json.RawMessage(`{"command":"git checkout feature"}`), ToolCallID: "checkout"})
+			if err != nil || launches != 1 || state.PendingApproval() != nil {
+				t.Fatalf("dispatch = %v, launches=%d, messages=%v", err, launches, msgs)
+			}
+		})
+	}
+}
+
+func TestEnablingFullAutoRefreshesPendingCommandProof(t *testing.T) {
+	state := newTestState(t)
+	reg := registry.New()
+	pol := policy.NewEngine(&config.Config{}, nil)
+	pol.SetRules([]permissions.Rule{{Permission: "shell", Pattern: "*", Action: permissions.ActionAsk}})
+	var runner *Runner
+	launches := 0
+	if err := reg.Register(registry.Tool{Name: "shell.run", Risk: registry.RiskCommand, Handler: func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
+		input, _ := policy.ShellInputFromContext(ctx)
+		admission, err := runner.Authorizer.BeginCommand(ctx, policy.CommandAttempt{InvocationID: policy.InvocationID(ctx), ToolName: call.Name, Input: input})
+		if err != nil {
+			return registry.ToolResult{}, err
+		}
+		defer admission.Release()
+		if err := admission.Commit(); err != nil {
+			return registry.ToolResult{}, err
+		}
+		launches++
+		return registry.ToolResult{Summary: "ran"}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	pol.WithRegistry(reg)
+	runner = NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.executeToolCall(ctx, ModelAction{Type: ActionToolCall, Tool: "shell.run", Args: json.RawMessage(`{"command":"git checkout feature"}`), ToolCallID: "checkout"})
+		done <- err
+	}()
+	for state.PendingApproval() == nil {
+		select {
+		case err := <-done:
+			t.Fatalf("returned before approval: %v", err)
+		case <-ctx.Done():
+			t.Fatal("approval never appeared")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	on := true
+	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil || launches != 1 || state.PendingApproval() != nil {
+		t.Fatalf("Auto transition: error=%v, launches=%d, pending=%v", err, launches, state.PendingApproval())
+	}
+}
+
+func TestActMissingSystemDoesNotOfferUnusableToolApproval(t *testing.T) {
+	state := newTestState(t)
+	reg := registry.New()
+	ran := false
+	if err := reg.Register(registry.Tool{Name: "file.write", Risk: registry.RiskWorkspaceWrite, Handler: func(context.Context, registry.ToolCall) (registry.ToolResult, error) {
+		ran = true
+		return registry.ToolResult{}, nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	pol := policy.NewEngine(&config.Config{}, nil)
+	pol.WithRegistry(reg)
+	r := NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	msgs, err := r.executeToolCall(ctx, ModelAction{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"/outside/file.txt","content":"x"}`), ToolCallID: "outside"})
+	if err != nil || ran || state.PendingApproval() != nil || len(msgs) != 1 || !strings.Contains(msgs[0].Content, "mode.request") {
+		t.Fatalf("missing System: messages=%v, error=%v, ran=%v", msgs, err, ran)
+	}
+}
 
 // answerApproval answers the next pending approval with d, failing the test if
 // none appears. It is the single-answer form of the approval fixtures.
@@ -182,6 +299,7 @@ func TestDispatchHookRewriteRechecksAllEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	pol := policy.NewEngine(&config.Config{}, nil)
+	pol.SetRules([]permissions.Rule{{Permission: "shell", Pattern: "rm *", Action: permissions.ActionAsk}})
 	pol.WithRegistry(reg)
 	r := NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")
 	r.HookRunner = &onceRewriteTo{rewrite: json.RawMessage(`{"command":"rm -rf build"}`)}
@@ -216,6 +334,7 @@ func TestDispatchQueuedWriteRechecksAfterWriteGate(t *testing.T) {
 	}
 	pol := policy.NewEngine(&config.Config{}, nil)
 	pol.WithRegistry(reg)
+	pol.SetRules([]permissions.Rule{{Permission: "file.write", Pattern: "*", Action: permissions.ActionAsk}})
 	r := NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")
 	gate := newBlockingGate()
 	r.WriteGate = gate
@@ -229,9 +348,8 @@ func TestDispatchQueuedWriteRechecksAfterWriteGate(t *testing.T) {
 		close(gate.release)
 	}()
 
-	// An out-of-workspace write still needs System, so it is the write this
-	// gate fixture can park behind a pending approval in normal Act.
-	action := ModelAction{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"/tmp/outside/a.txt","content":"x"}`), ToolCallID: "c1"}
+	// An explicit confirmation rule parks this write behind an approval.
+	action := ModelAction{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"a.txt","content":"x"}`), ToolCallID: "c1"}
 	msgs, err := r.executeToolCall(context.Background(), action)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
@@ -260,6 +378,7 @@ func TestDispatchExactApprovalCannotCreateStandingRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	pol := policy.NewEngine(&config.Config{}, nil)
+	pol.SetRules([]permissions.Rule{{Permission: "shell", Pattern: "rm *", Action: permissions.ActionAsk}})
 	pol.WithRegistry(reg)
 	r := NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")
 
@@ -387,6 +506,7 @@ func TestDispatchStaleApprovalCannotLaunchAfterAsk(t *testing.T) {
 	}
 	pol := policy.NewEngine(&config.Config{}, nil)
 	pol.WithRegistry(reg)
+	pol.SetRules([]permissions.Rule{{Permission: "file.write", Pattern: "*", Action: permissions.ActionAsk}})
 	r := NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")
 	gate := newBlockingGate()
 	r.WriteGate = gate
@@ -400,9 +520,8 @@ func TestDispatchStaleApprovalCannotLaunchAfterAsk(t *testing.T) {
 		close(gate.release)
 	}()
 
-	// An out-of-workspace write still needs System, so it is the write this
-	// stale-approval fixture can park behind a pending approval in normal Act.
-	action := ModelAction{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"/tmp/outside/a.txt","content":"x"}`), ToolCallID: "c1"}
+	// An explicit confirmation rule parks this write behind an approval.
+	action := ModelAction{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"a.txt","content":"x"}`), ToolCallID: "c1"}
 	msgs, err := r.executeToolCall(context.Background(), action)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)

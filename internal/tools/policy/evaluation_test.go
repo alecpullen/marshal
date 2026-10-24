@@ -37,9 +37,9 @@ func TestInteractionPolicyMatrix(t *testing.T) {
 		{"ask redirect write", interaction.State{Mode: interaction.ModeAsk, Revision: 1}, "cat x > out.txt", DecisionDeny},
 		{"ask write", interaction.State{Mode: interaction.ModeAsk, Revision: 1}, "git reset --hard", DecisionDeny},
 		{"act read", interaction.State{Mode: interaction.ModeAct, Revision: 1}, "cat x", DecisionAllow},
-		{"act destructive", interaction.State{Mode: interaction.ModeAct, Revision: 1}, "git reset --hard", DecisionConfirm},
+		{"act destructive", interaction.State{Mode: interaction.ModeAct, Revision: 1}, "git reset --hard", DecisionAllow},
 		{"act auto destructive", interaction.State{Mode: interaction.ModeAct, Auto: true, Revision: 1}, "git reset --hard", DecisionAllow},
-		{"act publish", interaction.State{Mode: interaction.ModeAct, Revision: 1}, "git push", DecisionConfirm},
+		{"act publish", interaction.State{Mode: interaction.ModeAct, Revision: 1}, "git push", DecisionAllow},
 		{"act catastrophic", interaction.State{Mode: interaction.ModeAct, Revision: 1}, "mkfs.ext4 /dev/sda", DecisionDeny},
 	}
 	for _, tc := range cases {
@@ -117,10 +117,10 @@ func TestShellEvaluationNeverAllowsAnEmptyAnalysis(t *testing.T) {
 	act := interaction.State{Mode: interaction.ModeAct, Revision: 1}
 
 	// An input redirect runs no command the analyzer understands.
-	if got := evalShell(t, pe, act, `< important.txt`); got.Decision != DecisionConfirm {
-		t.Fatalf("zero ops in Act: decision = %q, want confirm", got.Decision)
-	} else if !got.ExactCommandApproval {
-		t.Fatal("zero ops in Act: confirmation did not require exact approval")
+	if got := evalShell(t, pe, act, `< important.txt`); got.Decision != DecisionAllow {
+		t.Fatalf("zero ops in Act: decision = %q, want allow", got.Decision)
+	} else if got.ExactCommandApproval {
+		t.Fatal("Act should not require implicit command approval")
 	}
 	if got := evalShell(t, pe, ask, `< important.txt`).Decision; got != DecisionDeny {
 		t.Fatalf("zero ops in Ask: decision = %q, want deny", got)
@@ -240,10 +240,10 @@ func TestShellApprovedDestructionHasNoSecondGuardrailDeny(t *testing.T) {
 	cfg.Tools.Shell.Deny.Patterns = nil
 	pe := NewEngine(&cfg, nil)
 	ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Revision: 1}, "git reset --hard")
-	if ev.Decision != DecisionConfirm {
-		t.Fatalf("approved destruction = %q, want confirm", ev.Decision)
+	if ev.Decision != DecisionAllow {
+		t.Fatalf("approved destruction = %q, want allow", ev.Decision)
 	}
-	if !ev.ExactCommandApproval {
-		t.Fatal("destructive confirmation did not require exact approval")
+	if ev.ExactCommandApproval {
+		t.Fatal("Act unexpectedly required an exact approval")
 	}
 }

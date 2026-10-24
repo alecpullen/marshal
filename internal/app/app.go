@@ -2021,7 +2021,9 @@ func buildPlanAuthorFactory(cfg config.Config, state *session.State, reg *regist
 		}
 		childRunner.Pricing = pricing.Lookup(route.Preset, state.Logger())
 		childRunner.SystemPromptAddendum = repoInstructionsForPlanAuthor
-		return sddauthor.NewRunner(childRunner), nil
+		author := sddauthor.NewRunner(childRunner)
+		author.Auto = func() bool { return state.InteractionState().Auto }
+		return author, nil
 	}
 }
 
@@ -3003,21 +3005,13 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// reopens ordinary conversation work, and it cannot recursively trigger
 		// the active-work warning.
 		//
-		// The TEMPORARY ELEVATION the pass needs lives here, not in the TUI. The
-		// pass writes the report at an absolute path outside the workspace, so
-		// it needs system access and an editing approval mode; granting either
-		// from the model would leave an ordinary prompt elevated if the pass
-		// failed. Both are saved before the run and restored after it, whatever
-		// the outcome.
+		// RunExitAnalysis owns the temporary Act + System grant and restores it
+		// after the epoch's work is joined. The transport and model never grant
+		// access themselves.
 		rt.SetExitAnalysisOperation(func(analysisCtx context.Context, scope *session.ExitAnalysisScope, goal string) error {
 			if rt.Runner == nil {
 				return fmt.Errorf("exit analysis: no agent runner")
 			}
-			// The pass runs under the conversation's CURRENT authority. The
-			// runtime grants nothing: an Ask actor (or one without System) that
-			// cannot write the report path gets the pass's own non-approved
-			// failure, and the host-managed extraction that already landed stays
-			// in place. Elevating here would silently widen the user's prompt.
 			return rt.Runner.Run(analysisCtx, goal)
 		})
 
@@ -3141,10 +3135,12 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// configured value for the baseline update below.
 	effectiveCfg := cfg
 	if rt.State != nil {
-		if st, err := rt.State.InteractionForConfig(cfg); err == nil {
-			effectiveCfg.Agent.Mode = st.Mode
-			effectiveCfg.Agent.Auto = st.Auto
+		st, err := rt.State.InteractionForConfig(cfg)
+		if err != nil {
+			return fmt.Errorf("reload: interaction state unavailable: %w", err)
 		}
+		effectiveCfg.Agent.Mode = st.Mode
+		effectiveCfg.Agent.Auto = st.Auto
 	}
 
 	db := must[*db.DB](rt.DB)
@@ -3195,7 +3191,23 @@ func reloadAgentRuntime(ctx context.Context, cfg config.Config, rt *Runtime) err
 	// configured value: an unchanged configured mode keeps the session
 	// override, an explicit change to it clears the override, and the system
 	// flag survives either way.
-	rt.State.RebaseInteractionConfig(cfg)
+	if _, err := rt.State.RebaseInteractionConfig(cfg); err != nil {
+		rt.mu.Unlock()
+		// The candidate did not become live. Its private resources can be
+		// closed; the borrowed conversation command service must survive.
+		if newMCP != nil {
+			err = errors.Join(err, newMCP.Close())
+		}
+		if newWatchMgr != nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			err = errors.Join(err, newWatchMgr.Close(cleanupCtx))
+			cancel()
+		}
+		if newDesktopCloser != nil {
+			newDesktopCloser()
+		}
+		return err
+	}
 	// Runtime.Config stays the configured baseline, never the effective mode:
 	// it is what a later reload and a new session start from.
 	rt.Config = cfg

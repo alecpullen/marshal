@@ -641,6 +641,12 @@ func modelChangeNeedsConsent(parentModel, parentProvider, childModel, childProvi
 // PendingToolCall mechanism so the TUI renders the standard approve/deny
 // panel — the consent reason is displayed as the approval reason.
 func requestSubagentConsent(ctx context.Context, state *session.State, reason string) (approved, denied bool) {
+	if ctx.Err() != nil {
+		return false, false
+	}
+	if state.InteractionState().Auto {
+		return true, false
+	}
 	ch := make(chan session.UserApprovalDecision, 1)
 	tc := &session.PendingToolCall{
 		ID:           "subagent-model-consent",
@@ -652,10 +658,18 @@ func requestSubagentConsent(ctx context.Context, state *session.State, reason st
 	}
 	state.SetPendingApproval(tc)
 	defer state.SetPendingApproval(nil)
-	select {
-	case d := <-ch:
-		return d.Approved, !d.Approved
-	case <-ctx.Done():
-		return false, false
+	for {
+		changed := state.InteractionChanged()
+		if state.InteractionState().Auto {
+			return true, false
+		}
+		select {
+		case d := <-ch:
+			return d.Approved, !d.Approved
+		case <-ctx.Done():
+			return false, false
+		case <-changed:
+			continue
+		}
 	}
 }

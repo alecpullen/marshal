@@ -4,10 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/agent/agenttest"
 	"marshal/internal/app/config"
 	"marshal/internal/interaction"
+	"marshal/internal/llm/schema"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
 	"marshal/internal/tools/registry"
@@ -57,6 +59,56 @@ func TestAutoModeBlocksAskUser(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected a correction message mentioning auto mode; none found in provider requests")
+	}
+}
+
+func TestEnablingFullAutoContinuesPastPendingQuestion(t *testing.T) {
+	for _, kind := range []string{"ask_user", "question.ask", "native", "tool_call"} {
+		t.Run(kind, func(t *testing.T) {
+			state := newTestState(t)
+			reg := registry.New()
+			if err := native.RegisterAll(reg, native.Options{WorkspaceRoot: state.WorkingDir, SessionState: state, CommandRunner: &fakeCommandRunner{}}); err != nil {
+				t.Fatal(err)
+			}
+			first := `{"rationale":"ask","action":{"type":"ask_user","content":"Which approach?"}}`
+			if kind == "question.ask" {
+				first = `{"rationale":"ask","action":{"type":"question.ask","questions":[{"question":"Which approach?"}]}}`
+			}
+			if kind == "tool_call" {
+				first = `{"rationale":"ask","action":{"type":"tool_call","tool":"question.ask","args":{"questions":[{"question":"Which approach?"}]}}}`
+			}
+			p := &agenttest.ScriptedProvider{Responses: []string{first, `{"rationale":"done","action":{"type":"final","content":"Proceeded with assumptions."}}`}}
+			r := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+			r.SetForceClass(string(ClassQuestion))
+			if kind == "native" {
+				r.NativeTools = true
+				p.Responses = []string{"Need input.", "Proceeded with assumptions."}
+				p.ToolCalls = [][]schema.ToolCall{{{ID: "question", Name: "question.ask", Args: []byte(`{"questions":[{"question":"Which approach?"}]}`)}}, nil}
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- r.Run(ctx, "do the work") }()
+			for state.PendingQuestion() == nil {
+				select {
+				case err := <-done:
+					t.Fatalf("returned before question: %v", err)
+				case <-ctx.Done():
+					t.Fatal("question never appeared")
+				case <-time.After(time.Millisecond):
+				}
+			}
+			on := true
+			if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("Full Auto stopped instead of continuing: %v", err)
+			}
+			if state.PendingQuestion() != nil || len(p.Requests) < 2 {
+				t.Fatal("Full Auto did not resume the model")
+			}
+		})
 	}
 }
 

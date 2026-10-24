@@ -29,8 +29,13 @@ func TestMatchRule_SessionExactMatch(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		if got := evalShell(t, pe, state, tc.cmd).Decision; got != tc.want {
-			t.Errorf("Evaluate(%q) = %v, want %v", tc.cmd, got, tc.want)
+		ev := evalShell(t, pe, state, tc.cmd)
+		matched := false
+		for _, reason := range ev.Reasons {
+			matched = matched || reason.Code == ReasonExplicitAllow
+		}
+		if matched != (tc.want == DecisionAllow) {
+			t.Errorf("%q: session match = %v", tc.cmd, matched)
 		}
 	}
 }
@@ -42,8 +47,10 @@ func TestMatchRule_ConfigAllowExactMatch(t *testing.T) {
 	pe := NewEngine(&cfg, nil)
 
 	ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Revision: 1}, "docker ps && echo leaked")
-	if ev.Decision != DecisionConfirm {
-		t.Errorf("got %v, want Confirm", ev.Decision)
+	for _, reason := range ev.Reasons {
+		if reason.Code == ReasonExplicitAllow {
+			t.Errorf("config allow matched a suffix: %+v", ev)
+		}
 	}
 }
 
@@ -56,8 +63,8 @@ func TestMatchRule_ConfigConfirmExactMatch(t *testing.T) {
 	// A command that starts with the confirm rule but adds a suffix must not
 	// match; it should fall through to the default secure confirm.
 	ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Revision: 1}, "docker ps && echo leaked")
-	if ev.Decision != DecisionConfirm {
-		t.Errorf("got %v, want Confirm", ev.Decision)
+	if ev.Decision != DecisionAllow {
+		t.Errorf("got %v, want Allow", ev.Decision)
 	}
 	for _, r := range ev.Reasons {
 		if r.Code == ReasonExplicitConfirm && r.Rule != "" {

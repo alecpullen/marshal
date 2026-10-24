@@ -42,7 +42,7 @@ func TestInteractionCommandTransitionTable(t *testing.T) {
 	}
 
 	dispatch("/auto on")
-	assert("/auto on", interaction.ModeAct, true, false)
+	assert("/auto on", interaction.ModeAct, true, true)
 
 	dispatch("/system on")
 	assert("/system on", interaction.ModeAct, true, true)

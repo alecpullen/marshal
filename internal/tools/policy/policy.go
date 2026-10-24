@@ -142,7 +142,7 @@ func (pe *PolicyEngine) Logger() *slog.Logger {
 // and the F4 permission rules. Precedence: exact-match deny > pattern deny
 // (two-pass, deny-first) > F4 rule > exact/pattern allow-or-confirm >
 // secure-default confirm.
-func evaluateMCP(cfg *config.Config, rules []permissions.Rule, toolName string, args map[string]interface{}) (Decision, string) {
+func evaluateMCP(cfg *config.Config, rules []permissions.Rule, toolName string, args map[string]interface{}) (Decision, string, bool) {
 	var mcpMatched bool
 	var mcpDecision Decision
 	var mcpReason string
@@ -152,7 +152,7 @@ func evaluateMCP(cfg *config.Config, rules []permissions.Rule, toolName string, 
 		if policyStr, ok := cfg.MCP.Policies[toolName]; ok {
 			switch Decision(policyStr) {
 			case DecisionDeny:
-				return DecisionDeny, "blocked by MCP policy config exact match"
+				return DecisionDeny, "blocked by MCP policy config exact match", true
 			case DecisionAllow:
 				mcpDecision = DecisionAllow
 				mcpReason = "allowed by MCP policy config exact match"
@@ -182,7 +182,7 @@ func evaluateMCP(cfg *config.Config, rules []permissions.Rule, toolName string, 
 					}
 					switch want {
 					case DecisionDeny:
-						return DecisionDeny, "blocked by MCP policy match: " + pattern
+						return DecisionDeny, "blocked by MCP policy match: " + pattern, true
 					case DecisionConfirm:
 						mcpDecision = DecisionConfirm
 						mcpReason = "requires approval by MCP policy match: " + pattern
@@ -205,15 +205,15 @@ func evaluateMCP(cfg *config.Config, rules []permissions.Rule, toolName string, 
 	if len(subjects) > 0 {
 		decision, matched := evaluateSubjects(rules, permissions.PermissionForTool(toolName), subjects)
 		if matched {
-			return decision, "resolved by permission rule"
+			return decision, "resolved by permission rule", true
 		}
 	}
 
 	// 4. Fall back to the MCP policy decision, or the secure default.
 	if mcpMatched {
-		return mcpDecision, mcpReason
+		return mcpDecision, mcpReason, true
 	}
-	return DecisionConfirm, "requires approval (unconfigured MCP tool secure default)"
+	return DecisionConfirm, "unconfigured MCP tool", false
 }
 
 // unescapeLit removes the backslash escapes the shell would strip from a

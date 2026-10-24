@@ -2,6 +2,7 @@ package sddauthor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,31 +18,39 @@ func (f fakeModelRunner) Run(ctx context.Context, prompt string) error {
 }
 
 func TestRunnerInspectsTheWrittenPlan(t *testing.T) {
-	root := t.TempDir()
-	planPath := filepath.Join(root, ".marshal", "plans", "feature.md")
-	model := fakeModelRunner{run: func(_ context.Context, prompt string) error {
-		if !strings.Contains(prompt, "approved design") {
-			t.Fatalf("prompt omitted design handoff: %q", prompt)
-		}
-		if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(planPath, []byte("# Plan\n\n## Task 1: Add file\n\n"+
-			"```marshal.file path=\"created.txt\"\nhello\n```\n"), 0o644)
-	}}
-	author := NewRunner(model)
+	for _, auto := range []bool{false, true} {
+		t.Run(fmt.Sprint(auto), func(t *testing.T) {
+			root := t.TempDir()
+			planPath := filepath.Join(root, ".marshal", "plans", "feature.md")
+			model := fakeModelRunner{run: func(_ context.Context, prompt string) error {
+				if !strings.Contains(prompt, "approved design") {
+					t.Fatalf("prompt omitted design handoff: %q", prompt)
+				}
+				if err := os.MkdirAll(filepath.Dir(planPath), 0o755); err != nil {
+					return err
+				}
+				return os.WriteFile(planPath, []byte("# Plan\n\n## Task 1: Add file\n\n"+
+					"```marshal.file path=\"created.txt\"\nhello\n```\n"), 0o644)
+			}}
+			author := NewRunner(model)
+			author.Auto = func() bool { return auto }
 
-	result, err := author.Run(context.Background(), Request{
-		Goal:     "add a file",
-		Design:   "approved design",
-		RepoRoot: root,
-		PlanPath: planPath,
-	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if result.Inspection == nil || result.Inspection.Report.Total.DetOps != 1 {
-		t.Fatalf("inspection = %+v", result.Inspection)
+			result, err := author.Run(context.Background(), Request{
+				Goal:     "add a file",
+				Design:   "approved design",
+				RepoRoot: root,
+				PlanPath: planPath,
+			})
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.Inspection == nil || result.Inspection.Report.Total.DetOps != 1 {
+				t.Fatalf("inspection = %+v", result.Inspection)
+			}
+			if result.AutoAccepted != auto {
+				t.Fatalf("AutoAccepted = %v, want %v", result.AutoAccepted, auto)
+			}
+		})
 	}
 }
 

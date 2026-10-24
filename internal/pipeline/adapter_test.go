@@ -2,11 +2,14 @@ package pipeline
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/worktree"
 )
 
@@ -96,6 +99,24 @@ func TestAdapterSurfacesGateAndAnswer(t *testing.T) {
 	}
 	if err := a.Run(context.Background(), c.Plan.Path); err != nil {
 		t.Fatalf("resumed Run: %v", err)
+	}
+}
+
+func TestAdapterFullAutoReportsBlockerWithoutQuestion(t *testing.T) {
+	d, _ := scriptedDispatch(t, implAsks)
+	c := testController(t, d, NewFakeCommandRunner())
+	c.Git.(*worktree.FakeGitOps).Dirty = true
+	st := newAdapterTestState(t)
+	on := true
+	if _, err := st.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
+		t.Fatal(err)
+	}
+	err := NewControllerAdapter(c, st).Run(t.Context(), c.Plan.Path)
+	if err == nil || errors.Is(err, ErrHumanGateRequired) || !strings.Contains(err.Error(), "user level or system level?") {
+		t.Fatalf("Run = %v, want concrete blocker without a human gate", err)
+	}
+	if st.SDDGate().Question != "" || st.SDDProgress().Active || !st.SDDProgress().Finished {
+		t.Fatal("Full Auto must finish without opening a question")
 	}
 }
 

@@ -36,12 +36,39 @@ func (pe *PolicyEngine) EvaluateInput(in Input) (Evaluation, error) {
 		return Evaluation{}, ErrStalePolicy
 	}
 	if in.Shell == nil {
-		return pe.evaluateNonShell(in, cfg), nil
+		return applyExecutionMode(in.ActorState, pe.evaluateNonShell(in, cfg)), nil
 	}
 	pe.mu.RLock()
 	rules := pe.rules
 	pe.mu.RUnlock()
-	return pe.evaluateShellInput(in, cfg, sessionRules, rules), nil
+	return applyExecutionMode(in.ActorState, pe.evaluateShellInput(in, cfg, sessionRules, rules)), nil
+}
+
+// Act authorizes the requested work. Only an explicit confirmation rule or a
+// missing capability can interrupt it. Full Auto also preauthorizes explicit
+// confirmations; neither mode overrides a denial or a child capability ceiling.
+func applyExecutionMode(state interaction.State, ev Evaluation) Evaluation {
+	if state.Mode != interaction.ModeAct || ev.Decision != DecisionConfirm {
+		return ev
+	}
+	if ev.Required.System && !state.System {
+		if state.Auto {
+			ev.Decision = DecisionDeny
+			ev.ExactCommandApproval = false
+		}
+		return ev
+	}
+	if !state.Auto {
+		for _, reason := range ev.Reasons {
+			if reason.Code == ReasonExplicitConfirm {
+				return ev
+			}
+		}
+	}
+	ev.Decision = DecisionAllow
+	ev.Required = CapabilityRequirement{}
+	ev.ExactCommandApproval = false
+	return ev
 }
 
 // evaluateNonShell classifies a non-shell tool from its registry risk and the
@@ -80,8 +107,11 @@ func (pe *PolicyEngine) evaluateNonShell(in Input, cfg config.Config) Evaluation
 	// MCP policy and the F4 rules are both consulted here, so an explicit
 	// allow/deny still wins over the secure default.
 	if strings.HasPrefix(in.ToolName, "mcp.") {
-		decision, reason := evaluateMCP(&cfg, rules, in.ToolName, in.Args)
-		code := ReasonExplicitConfirm
+		decision, reason, explicit := evaluateMCP(&cfg, rules, in.ToolName, in.Args)
+		code := ReasonToolApproval
+		if explicit {
+			code = ReasonExplicitConfirm
+		}
 		if decision == DecisionDeny {
 			code = ReasonExplicitDeny
 		}
@@ -123,16 +153,15 @@ func (pe *PolicyEngine) evaluateNonShell(in Input, cfg config.Config) Evaluation
 	case "network":
 		return Evaluation{
 			Decision: DecisionConfirm,
-			Reasons:  []PolicyReason{{Code: ReasonExplicitConfirm, Message: "network access requires specific approval"}},
+			Reasons:  []PolicyReason{{Code: ReasonToolApproval, Message: "network access"}},
 		}
 	default:
-		// A destructive or environment-classified tool (privileged execution,
-		// global install, out-of-workspace state change) is never ordinary
-		// workspace work: Auto does not preauthorize it and Act asks.
+		// Preserve the tool's classification; applyExecutionMode supplies Act's
+		// operation preauthorization after capability and deny checks.
 		return Evaluation{
 			Decision: DecisionConfirm,
 			Required: CapabilityRequirement{Act: true},
-			Reasons:  []PolicyReason{{Code: ReasonExplicitConfirm, Message: "this tool requires specific approval"}},
+			Reasons:  []PolicyReason{{Code: ReasonToolApproval, Message: "tool execution"}},
 		}
 	}
 }
@@ -228,16 +257,6 @@ func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionR
 		}
 	}
 
-	// Publishing always retains exact approval.
-	if effects&ShellPublish != 0 {
-		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: reasons}
-	}
-
-	// Configured publishing/floor prefixes are exact approvals, like git push.
-	if match := configuredFloorMatch(cfg, in.Shell); match != "" {
-		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: append(reasons, PolicyReason{Code: ReasonPublishing, Message: match + " requires approval (configured floor)"})}
-	}
-
 	// An explicit F4 deny refuses the operation outright and must do so before
 	// any gate that could ask instead: a rule that refuses a destructive
 	// command must not turn into an approval prompt. The allow/ask half of F4
@@ -261,21 +280,38 @@ func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionR
 		return Evaluation{Decision: DecisionDeny, Reasons: append(reasons, reason)}
 	}
 	confirmRule, hasConfirm := matchShellConfirm(cfg, in.Shell)
+	if hasConfirm {
+		reasons = append(reasons, confirmRule)
+	}
+	if f4Matched && f4Decision == DecisionConfirm {
+		reasons = append(reasons, PolicyReason{Code: ReasonExplicitConfirm, Message: "resolved by permission rule"})
+	}
+	// Scope applies to the entire command, including mixed commands with a
+	// publishing, destructive or configured-confirm operation. No earlier
+	// classification may hide another operation's missing System capability.
+	if !in.ActorState.System && (in.ToolName == "shell.sudo" || effects&ShellEnvironment != 0 || destructiveOutsideWorkspace(in.Shell)) {
+		return Evaluation{
+			Decision:             DecisionConfirm,
+			Required:             CapabilityRequirement{System: true},
+			Reasons:              append(reasons, PolicyReason{Code: ReasonRequiresSystem, Message: "operations outside the workspace require System"}),
+			ExactCommandApproval: effects&ShellDestructive != 0,
+		}
+	}
+	if match := configuredFloorMatch(cfg, in.Shell); match != "" {
+		reasons = append(reasons, PolicyReason{Code: ReasonExplicitConfirm, Message: match + " requires approval (configured floor)"})
+		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: reasons}
+	}
+	if effects&ShellPublish != 0 {
+		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: reasons}
+	}
 
-	// Destructive workspace operations are preauthorized only by Auto and
-	// only when fully known. A destructive operation whose target is outside
-	// the workspace (or cannot be resolved) additionally requires System.
+	// Preserve exact-command scope when an explicit confirmation rule applies
+	// to destruction. Act/Auto preauthorization is resolved by applyExecutionMode.
 	if effects&ShellDestructive != 0 {
-		outside := destructiveOutsideWorkspace(in.Shell)
-		if in.ActorState.Auto && effects&(ShellEnvironment|ShellUnknown) == 0 && !outside {
-			return Evaluation{Decision: DecisionAllow, Reasons: reasons}
-		}
-		ev := Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: reasons}
-		if outside && !in.ActorState.System {
-			ev.Required.System = true
-			ev.Reasons = append(ev.Reasons, PolicyReason{Code: ReasonRequiresSystem, Message: "destructive operations outside the workspace require System"})
-		}
-		return ev
+		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: reasons}
+	}
+	if hasConfirm {
+		return Evaluation{Decision: DecisionConfirm, Reasons: reasons}
 	}
 
 	// The allow/ask half of F4, now that the destructive gate has had its say.
@@ -299,13 +335,6 @@ func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionR
 
 	// Environment effects require System.
 	if effects&ShellEnvironment != 0 {
-		if !in.ActorState.System {
-			return Evaluation{
-				Decision: DecisionConfirm,
-				Required: CapabilityRequirement{System: true},
-				Reasons:  append(reasons, PolicyReason{Code: ReasonRequiresSystem, Message: "environment changes require System"}),
-			}
-		}
 		return Evaluation{Decision: DecisionConfirm, Reasons: reasons}
 	}
 
@@ -314,9 +343,6 @@ func (pe *PolicyEngine) evaluateShellInput(in Input, cfg config.Config, sessionR
 		return Evaluation{Decision: DecisionConfirm, ExactCommandApproval: true, Reasons: reasons}
 	}
 
-	if hasConfirm {
-		return Evaluation{Decision: DecisionConfirm, Reasons: append(reasons, confirmRule)}
-	}
 	return Evaluation{Decision: DecisionAllow, Reasons: reasons}
 }
 

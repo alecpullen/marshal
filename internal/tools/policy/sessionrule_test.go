@@ -53,8 +53,11 @@ func TestSessionRuleWildcard(t *testing.T) {
 		"docker ps <<EOF\nhi\nEOF",
 	}
 	for _, cmd := range notAllowed {
-		if got := evalShell(t, pe, state, cmd).Decision; got == DecisionAllow {
-			t.Errorf("%q: allowed by wildcard rule, want confirm or deny", cmd)
+		ev := evalShell(t, pe, state, cmd)
+		for _, reason := range ev.Reasons {
+			if reason.Code == ReasonExplicitAllow {
+				t.Errorf("%q: inherited a wildcard approval: %+v", cmd, ev)
+			}
 		}
 	}
 }

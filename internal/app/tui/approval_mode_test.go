@@ -24,7 +24,7 @@ func TestApprovalModeSeededFromCanonicalState(t *testing.T) {
 	}{
 		{"act", interaction.ModeAct, false, "act", "Act"},
 		{"ask", interaction.ModeAsk, false, "ask", "Ask"},
-		{"act auto", interaction.ModeAct, true, "act", "Act · Auto"},
+		{"act auto", interaction.ModeAct, true, "act", "Act · Auto · System"},
 		{"empty falls back ask", "", false, "ask", "Ask"},
 		{"invalid falls back ask", "nonsense", false, "ask", "Ask"},
 	} {

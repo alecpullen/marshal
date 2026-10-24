@@ -44,13 +44,13 @@ func TestApplyInteractionPatchTable(t *testing.T) {
 			name:  "auto on from act",
 			start: base,
 			patch: Patch{Auto: boolPtr(true)},
-			want:  State{Mode: ModeAct, Auto: true, Revision: 7},
+			want:  State{Mode: ModeAct, Auto: true, System: true, Revision: 7},
 		},
 		{
 			name:  "auto on from ask promotes to act",
 			start: ask,
 			patch: Patch{Auto: boolPtr(true)},
-			want:  State{Mode: ModeAct, Auto: true, Revision: 7},
+			want:  State{Mode: ModeAct, Auto: true, System: true, Revision: 7},
 		},
 		{
 			name:  "auto off from act",
@@ -74,13 +74,13 @@ func TestApplyInteractionPatchTable(t *testing.T) {
 			name:  "system off leaves mode and auto untouched",
 			start: actAutoSystem,
 			patch: Patch{System: boolPtr(false)},
-			want:  State{Mode: ModeAct, Auto: true, Revision: 7},
+			want:  State{Mode: ModeAct, Auto: true, System: true, Revision: 7},
 		},
 		{
 			name:  "mode act plus auto on",
 			start: ask,
 			patch: Patch{Mode: modePtr(ModeAct), Auto: boolPtr(true)},
-			want:  State{Mode: ModeAct, Auto: true, Revision: 7},
+			want:  State{Mode: ModeAct, Auto: true, System: true, Revision: 7},
 		},
 		{
 			name:  "mode act plus auto off",

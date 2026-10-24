@@ -1,13 +1,79 @@
 package session
 
 import (
+	"sync"
+
 	"marshal/internal/app/config"
 	"marshal/internal/interaction"
 )
 
+// BeginExitAnalysisAccess grants Act + System for the runtime's open
+// postmortem epoch. Ordinary work stays frozen. The returned cleanup restores
+// the prior tuple even if shutdown begins while the pass is running.
+func (s *State) BeginExitAnalysisAccess(scope *ExitAnalysisScope) (func(), error) {
+	if s == nil || s.interactionOwner != nil {
+		return nil, ErrNotPostmortemPhase
+	}
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	if s.WorkPhase() != ExitPhasePostmortem || !s.ExitAnalysisOpen(scope) {
+		return nil, ErrNotPostmortemPhase
+	}
+	if s.quiescingLocked() {
+		return nil, ErrSessionQuiescing
+	}
+	if s.exitAnalysisAccess != nil {
+		return nil, ErrExitAnalysisAlreadyOpen
+	}
+	previous := s.access
+	next := previous
+	next.Mode, next.System = interaction.ModeAct, true
+	s.exitAnalysisAccess = scope
+	if next != previous {
+		next.Revision++
+		s.access = next
+		s.signalInteractionLocked()
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			s.accessMu.Lock()
+			defer s.accessMu.Unlock()
+			s.exitAnalysisAccess = nil
+			if s.access.Mode != previous.Mode || s.access.Auto != previous.Auto || s.access.System != previous.System {
+				previous.Revision = s.access.Revision + 1
+				s.access = previous
+				s.signalInteractionLocked()
+			}
+		})
+	}, nil
+}
+
+// InteractionChanged subscribes before a caller reads the live tuple. Closing
+// the channel wakes pending prompts when a manual change or reload enables Auto.
+func (s *State) InteractionChanged() <-chan struct{} {
+	owner := s.ownerState()
+	owner.accessMu.Lock()
+	defer owner.accessMu.Unlock()
+	if owner.accessChanged == nil {
+		owner.accessChanged = make(chan struct{})
+	}
+	return owner.accessChanged
+}
+
+func (s *State) signalInteractionLocked() {
+	if s.accessChanged != nil {
+		close(s.accessChanged)
+		s.accessChanged = nil
+	}
+}
+
 // InteractionState returns the canonical effective tuple as one value read
 // under a single lock, so a reader never sees a half-applied pair.
 func (s *State) InteractionState() interaction.State {
+	if s.interactionOwner != nil {
+		return s.InteractionAuthority().Snapshot().Access
+	}
 	s.accessMu.Lock()
 	defer s.accessMu.Unlock()
 	return s.access
@@ -32,6 +98,9 @@ func (s *State) accessStateLocked() AccessState {
 func (s *State) ApplyInteraction(p interaction.Patch) (interaction.State, error) {
 	s.accessMu.Lock()
 	defer s.accessMu.Unlock()
+	if s.exitAnalysisAccess != nil {
+		return s.access, ErrConversationEnding
+	}
 	// The quiescing gate is checked under workMu (never the other way round,
 	// which would invert the documented lock order) so a change cannot land
 	// during shutdown.
@@ -50,6 +119,7 @@ func (s *State) ApplyInteraction(p interaction.Patch) (interaction.State, error)
 	}
 	next.Revision = s.access.Revision + 1
 	s.access = next
+	s.signalInteractionLocked()
 	if p.Mode != nil || p.Auto != nil {
 		ov := interaction.Defaults{Mode: next.Mode, Auto: next.Auto}
 		s.accessOverride = &ov
@@ -67,11 +137,15 @@ func (s *State) InteractionForConfig(cfg config.Config) (interaction.State, erro
 	}
 	s.accessMu.Lock()
 	defer s.accessMu.Unlock()
+	if s.exitAnalysisAccess != nil {
+		return interaction.State{}, ErrConversationEnding
+	}
 	st := interaction.State{Mode: d.Mode, Auto: d.Auto, System: s.access.System, Revision: s.access.Revision}
 	if d == s.configuredAccess && s.accessOverride != nil {
 		st.Mode = s.accessOverride.Mode
 		st.Auto = s.accessOverride.Auto
 	}
+	st.System = st.System || st.Auto
 	return st, nil
 }
 
@@ -86,6 +160,9 @@ func (s *State) RebaseInteractionConfig(cfg config.Config) (interaction.State, e
 	}
 	s.accessMu.Lock()
 	defer s.accessMu.Unlock()
+	if s.exitAnalysisAccess != nil {
+		return s.access, ErrConversationEnding
+	}
 	if d != s.configuredAccess {
 		s.accessOverride = nil
 	}
@@ -95,7 +172,9 @@ func (s *State) RebaseInteractionConfig(cfg config.Config) (interaction.State, e
 		next.Mode = s.accessOverride.Mode
 		next.Auto = s.accessOverride.Auto
 	}
+	next.System = next.System || next.Auto
 	s.access = next
+	s.signalInteractionLocked()
 	s.mu.Lock()
 	s.Config = cfg
 	s.mu.Unlock()
@@ -109,5 +188,6 @@ func (s *State) InvalidateInteraction() interaction.State {
 	s.accessMu.Lock()
 	defer s.accessMu.Unlock()
 	s.access.Revision++
+	s.signalInteractionLocked()
 	return s.access
 }

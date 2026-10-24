@@ -59,9 +59,9 @@ func TestIsGitPushFloor_Variants(t *testing.T) {
 	}
 }
 
-// TestGitPushFloorAlwaysConfirms_Variants pins S-05 end-to-end: even in auto
-// mode, every recognized git push variant must require approval.
-func TestGitPushFloorAlwaysConfirms_Variants(t *testing.T) {
+// Every recognized publishing form runs in Act and Full Auto without an
+// implicit confirmation. Explicit publishing rules are tested separately.
+func TestGitPushRunsWithoutImplicitApproval_Variants(t *testing.T) {
 	variants := []string{
 		"git push origin main",
 		"/usr/bin/git push",
@@ -74,11 +74,11 @@ func TestGitPushFloorAlwaysConfirms_Variants(t *testing.T) {
 		for _, cmd := range variants {
 			pe := NewEngine(&config.Config{}, nil)
 			ev := evalShell(t, pe, interaction.State{Mode: interaction.ModeAct, Auto: auto, Revision: 1}, cmd)
-			if ev.Decision != DecisionConfirm {
-				t.Errorf("auto=%v cmd %q: got %v, want Confirm", auto, cmd, ev.Decision)
+			if ev.Decision != DecisionAllow {
+				t.Errorf("auto=%v cmd %q: got %v, want Allow", auto, cmd, ev.Decision)
 			}
-			if !ev.ExactCommandApproval {
-				t.Errorf("auto=%v cmd %q: publishing did not require exact approval", auto, cmd)
+			if ev.ExactCommandApproval {
+				t.Errorf("auto=%v cmd %q: publishing unexpectedly required exact approval", auto, cmd)
 			}
 		}
 	}

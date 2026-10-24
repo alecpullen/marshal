@@ -361,10 +361,6 @@ func TestAccessPanelAppearsOnRuntimeTickAtSupportedSizes(t *testing.T) {
 // panel without touching the draft or focus.
 func TestAccessPanelQueuesBehindOtherDockAndPreservesDraft(t *testing.T) {
 	f := newAccessTestFixture(t, 120, 40, config.Default())
-	on := true
-	if _, err := f.state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
-		t.Fatalf("seed Auto: %v", err)
-	}
 
 	// A FullFrame doc panel stands in for any unrelated panel holding the dock.
 	doc := commands.Doc{Title: "Inspector", FullFrame: true, Rows: []commands.Row{{Text: "row"}}}
@@ -380,8 +376,8 @@ func TestAccessPanelQueuesBehindOtherDockAndPreservesDraft(t *testing.T) {
 	}
 	// The persistent access label stays visible while a FullFrame panel owns
 	// the dock; the queued request is disclosed on the right instead.
-	if got := f.m.modeSegment(); got != "Act · Auto" {
-		t.Fatalf("mode label while the dock is owned = %q, want Act · Auto", got)
+	if got := f.m.modeSegment(); got != "Act" {
+		t.Fatalf("mode label while the dock is owned = %q, want Act", got)
 	}
 	if got := stripANSI(f.m.statusRightSegment()); !strings.Contains(got, "Access waiting") {
 		t.Fatalf("status right segment = %q, want the queued-access disclosure", got)

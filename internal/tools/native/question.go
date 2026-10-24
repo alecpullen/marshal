@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/tools/registry"
 )
 
@@ -36,9 +37,7 @@ func (t *toolSet) questionAskTool() registry.Tool {
 		// Auto means "proceed without asking", so a clarification prompt cannot
 		// open. The LIVE tuple decides, not a captured config value, so a
 		// modifier change that landed after this toolset was built applies to
-		// this call. Ask still asks: only Auto suppresses the question. An
-		// explicit skill or user review request is a different mechanism and is
-		// not covered by this suppression.
+		// this call. Ask and normal Act can still ask clarification questions.
 		if t.sessionState.InteractionState().Auto {
 			return registry.ToolResult{}, fmt.Errorf("question.ask is not available while Auto is enabled; proceed with your best judgment and state the assumption you made")
 		}
@@ -56,31 +55,41 @@ func (t *toolSet) questionAskTool() registry.Tool {
 		}
 
 		var answers []session.Answer
-		select {
-		case answers = <-pending.ResponseChan:
-			// Delivered: either a real answer or the cancellation sentinel. The
-			// recorded cause distinguishes them, and a canceled question must
-			// never be reported to the model as a fabricated human answer.
-			if cause := t.sessionState.PromptCause(key); cause != nil {
+	waitForAnswer:
+		for {
+			changed := t.sessionState.InteractionChanged()
+			if t.sessionState.InteractionState().Auto {
+				t.sessionState.CancelPrompt(key, interaction.ErrQuestionsDisabled)
+			}
+			select {
+			case answers = <-pending.ResponseChan:
+				// Delivered: either a real answer or the cancellation sentinel. The
+				// recorded cause distinguishes them, and a canceled question must
+				// never be reported to the model as a fabricated human answer.
+				if cause := t.sessionState.PromptCause(key); cause != nil {
+					t.sessionState.ClearPrompt(key)
+					return registry.ToolResult{}, cause
+				}
 				t.sessionState.ClearPrompt(key)
-				return registry.ToolResult{}, cause
+			case <-ctx.Done():
+				// The operation was interrupted (or the turn stopped): settle the
+				// prompt canonically. CancelPrompt waits outside the state locks for
+				// a response claim that already won, so the channel then carries
+				// either that real answer or the cancellation sentinel.
+				t.sessionState.CancelPrompt(key, session.ErrSendNow)
+				answers = <-pending.ResponseChan
+				cause := t.sessionState.PromptCause(key)
+				t.sessionState.ClearPrompt(key)
+				if cause != nil {
+					return registry.ToolResult{}, cause
+				}
+				if answers == nil {
+					return registry.ToolResult{}, ctx.Err()
+				}
+			case <-changed:
+				continue
 			}
-			t.sessionState.ClearPrompt(key)
-		case <-ctx.Done():
-			// The operation was interrupted (or the turn stopped): settle the
-			// prompt canonically. CancelPrompt waits outside the state locks for
-			// a response claim that already won, so the channel then carries
-			// either that real answer or the cancellation sentinel.
-			t.sessionState.CancelPrompt(key, session.ErrSendNow)
-			answers = <-pending.ResponseChan
-			cause := t.sessionState.PromptCause(key)
-			t.sessionState.ClearPrompt(key)
-			if cause != nil {
-				return registry.ToolResult{}, cause
-			}
-			if answers == nil {
-				return registry.ToolResult{}, ctx.Err()
-			}
+			break waitForAnswer
 		}
 		parts := []string{"You can now continue with the user's answers in mind."}
 		for _, a := range answers {

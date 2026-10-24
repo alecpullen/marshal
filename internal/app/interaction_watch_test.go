@@ -18,6 +18,7 @@ import (
 func watchTestOwner(t *testing.T) (*session.State, *policy.Authorizer) {
 	t.Helper()
 	cfg := config.Default()
+	cfg.Tools.Shell.Confirm.Commands = []string{"git reset --hard"}
 	state := session.New(cfg, t.TempDir(), time.Unix(1, 0), session.Persistence{})
 	pol := policy.NewEngine(&cfg, nil)
 	return state, policy.NewAuthorizer(pol, state.InteractionAuthority())

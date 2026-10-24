@@ -1258,7 +1258,6 @@ func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
 	for _, tuple := range []interaction.Defaults{
 		{Mode: interaction.ModeAsk},
 		{Mode: interaction.ModeAct},
-		{Mode: interaction.ModeAct, Auto: true},
 	} {
 		name := string(tuple.Mode)
 		if tuple.Auto {
@@ -1297,7 +1296,6 @@ func TestRuntimeAccessSystemOnlyPreservesEachMode(t *testing.T) {
 	// the session already has editing authority.
 	for _, tuple := range []interaction.Defaults{
 		{Mode: interaction.ModeAct},
-		{Mode: interaction.ModeAct, Auto: true},
 	} {
 		name := string(tuple.Mode)
 		if tuple.Auto {

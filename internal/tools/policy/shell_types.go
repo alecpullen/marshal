@@ -96,6 +96,7 @@ const (
 	ReasonExplicitDeny        ReasonCode = "rule.deny"
 	ReasonExplicitAllow       ReasonCode = "rule.allow"
 	ReasonExplicitConfirm     ReasonCode = "rule.confirm"
+	ReasonToolApproval        ReasonCode = "tool.approval"
 	ReasonRequiresAct         ReasonCode = "access.requires_act"
 	ReasonRequiresSystem      ReasonCode = "access.requires_system"
 )

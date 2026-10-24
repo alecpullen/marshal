@@ -438,6 +438,7 @@ func TestRunnerReevaluatesPolicyAfterEditedArgs(t *testing.T) {
 	cfg := config.Default()
 	pol := policy.NewEngine(&cfg, nil)
 	pol.WithRegistry(reg)
+	pol.SetRules([]permissions.Rule{{Permission: "web.fetch", Pattern: "*", Action: permissions.ActionAsk}})
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
@@ -515,6 +516,7 @@ func TestRunnerReevaluatesDenyAfterValidEdit(t *testing.T) {
 	cfg := config.Default()
 	pol := policy.NewEngine(&cfg, nil)
 	pol.WithRegistry(reg)
+	pol.SetRules([]permissions.Rule{{Permission: "web.fetch", Pattern: "*", Action: permissions.ActionAsk}})
 	state := newTestState(t)
 	runner := NewRunner(p, reg, pol, state, "test-model")
 
@@ -601,7 +603,9 @@ func TestRunnerNonShellToolApprovalAndJSONEditing(t *testing.T) {
 
 	state := newTestState(t)
 
-	runner := NewRunner(p, reg, policy.NewEngine(&config.Config{}, nil), state, "test-model")
+	cfg := config.Default()
+	cfg.MCP.Policies = map[string]string{"mcp.github.create_issue": "confirm"}
+	runner := NewRunner(p, reg, policy.NewEngine(&cfg, nil), state, "test-model")
 	runner.SetForceClass("question")
 
 	go func() {

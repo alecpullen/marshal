@@ -12,6 +12,7 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/hooks"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/policy"
@@ -197,6 +198,9 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		r.countToolCall(true, false)
 		return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}}, nil
 	case policy.DecisionConfirm:
+		if evaluation.Required.System {
+			return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "System access is required; use mode.request with system=true before retrying this operation", toolCallID)}}, nil
+		}
 		// State.PendingApproval is a single slot; two concurrent approvals
 		// would overwrite each other and strand the first caller. Serialize
 		// all approval requests on this runner, including those launched
@@ -216,11 +220,24 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		// Canonical settlement alone approves the exact proof. The prompt's
 		// identity is what binds the grant to this one invocation, so a
 		// standing or session-wide choice cannot answer an exact-only request.
-		approvedProof, approveErr := r.Authorizer.ApproveExact(proof, key.ID)
-		if approveErr != nil {
-			return policyLoopResult{}, approveErr
+		if r.State.InteractionState().Auto {
+			// Auto may have been enabled while this prompt was waiting. Its
+			// old proof names the pre-Auto revision; admit fresh facts instead.
+			fresh, ev, err := r.Authorizer.Evaluate(ctx, r.policyCall(invocationID, toolName, argsMap))
+			if err != nil {
+				return policyLoopResult{}, err
+			}
+			if ev.Decision != policy.DecisionAllow {
+				return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "not started: "+evaluationReason(ev), toolCallID)}}, nil
+			}
+			proof = fresh
+		} else {
+			approvedProof, approveErr := r.Authorizer.ApproveExact(proof, key.ID)
+			if approveErr != nil {
+				return policyLoopResult{}, approveErr
+			}
+			proof = approvedProof
 		}
-		proof = approvedProof
 		approval = registry.ApprovalApproved
 		if edited != "" {
 			// A user edit is a NEW invocation: the proof described the
@@ -1385,6 +1402,9 @@ func (r *Runner) executeNativeQuestionAsk(ctx context.Context, call schema.ToolC
 	}
 	answers, waitErr := r.requestQuestions(ctx, payload.Questions)
 	if waitErr != nil {
+		if errors.Is(waitErr, interaction.ErrQuestionsDisabled) {
+			return BuildNativeToolErrorMessage(call.Name, waitErr.Error(), call.ID), nil
+		}
 		// A canceled question is settled here rather than returned as a batch
 		// failure: the call has a pairing to fill, and the settled result says
 		// the question was interrupted instead of presenting a fabricated human
@@ -1628,7 +1648,7 @@ func (r *Runner) skillLoadGate(ctx context.Context, tool registry.Tool, args jso
 		r.State.SkillGateRecordDeny(name)
 		return r.skillGateDenyMessages(name, args, toolCallID), true
 	}
-	if r.State != nil && r.State.InteractionState().Auto {
+	if r.State != nil && r.State.InteractionState().Mode == interaction.ModeAct {
 		r.State.SkillGateRecordAllow(name, false)
 		return nil, false
 	}

@@ -2139,6 +2139,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			answer, waitErr := r.requestAnswer(opCtx, action.Content)
 			finish()
 			if waitErr != nil {
+				if errors.Is(waitErr, interaction.ErrQuestionsDisabled) {
+					messages = append(messages, BuildCorrectionMessage(waitErr))
+					continue
+				}
 				// A canceled question is settled here rather than failing the
 				// turn: the steering signal must reach the checkpoint, which
 				// delivers the user's text in this same turn.
@@ -2189,6 +2193,10 @@ func (r *Runner) RunTask(ctx context.Context, goal string) (*Task, error) {
 			answers, waitErr := r.requestQuestions(opCtx, action.Questions)
 			finish()
 			if waitErr != nil {
+				if errors.Is(waitErr, interaction.ErrQuestionsDisabled) {
+					messages = append(messages, BuildCorrectionMessage(waitErr))
+					continue
+				}
 				// Same rule as ask_user: a canceled question round-trip is
 				// settled, not turned into a failed turn, so the checkpoint can
 				// deliver the steering that canceled it.
@@ -2292,13 +2300,13 @@ func (r *Runner) maybeFinalizeOnStall(ctx context.Context, p provider.Provider, 
 	}
 	r.withStats(func(s *turnStats) { s.m.HardStalls++ })
 
-	if r.role() == RoleGeneral {
+	if r.role() == RoleGeneral && !r.State.InteractionState().Auto {
 		question := fmt.Sprintf(
 			"I appear to be stuck: I have repeated %s with args %s without making progress. Reply with guidance on how to proceed, or send an empty reply to stop and get a summary of progress so far.",
 			name, args,
 		)
 		answer, waitErr := r.requestAnswer(ctx, question)
-		if waitErr != nil {
+		if waitErr != nil && !errors.Is(waitErr, interaction.ErrQuestionsDisabled) {
 			return true, task, r.failTurn(task, waitErr), ""
 		}
 		if strings.TrimSpace(answer) != "" {

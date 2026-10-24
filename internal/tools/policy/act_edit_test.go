@@ -96,17 +96,16 @@ func TestActOutsideWorkspaceEditRequiresSystem(t *testing.T) {
 	}
 }
 
-// TestActStillConfirmsNonRoutineTools keeps the rest of the matrix honest: a
-// destructive tool and a network tool still ask in Act.
-func TestActStillConfirmsNonRoutineTools(t *testing.T) {
+// Act also preauthorizes network and destructive tools.
+func TestActPreauthorizesNonRoutineTools(t *testing.T) {
 	pe := actEditEngine(t)
 	for _, tool := range []string{"shell.sudo", "web.fetch"} {
 		ev, err := pe.EvaluateInput(Input{ToolName: tool, Args: map[string]any{"command": "id"}, ActorState: actState(), WorkspaceRoot: "/repo"})
 		if err != nil {
 			t.Fatalf("EvaluateInput(%s): %v", tool, err)
 		}
-		if ev.Decision != DecisionConfirm {
-			t.Errorf("%s in Act = %s, want confirm", tool, ev.Decision)
+		if ev.Decision != DecisionAllow {
+			t.Errorf("%s in Act = %s, want allow", tool, ev.Decision)
 		}
 	}
 }

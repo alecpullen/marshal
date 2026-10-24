@@ -88,6 +88,7 @@ func newTestAdmission(t *testing.T, approve bool) *testAdmission {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Tools.Shell.Deny.Patterns = nil
+	cfg.Permissions.Rules = []config.PermissionRule{{Permission: "shell", Pattern: "git reset *", Action: "ask"}}
 	authority := newTestAuthority()
 	return &testAdmission{
 		authorizer: policy.NewAuthorizer(policy.NewEngine(&cfg, nil), authority),
@@ -145,7 +146,9 @@ func allowAllAdmission(t *testing.T) func(context.Context, policy.CommandAttempt
 // are not about privileged admission itself.
 func allowAllAuthorizer(t *testing.T) CommandAuthorizer {
 	t.Helper()
-	return newTestAdmission(t, true).authorizer
+	f := newTestAdmission(t, true)
+	f.authority.snap.Access.System = true
+	return f.authorizer
 }
 
 // policyAuthorizer builds a privileged authorizer over a caller-supplied
@@ -154,7 +157,9 @@ func allowAllAuthorizer(t *testing.T) CommandAuthorizer {
 // patterns, so it would reach the password prompt instead of denying.
 func policyAuthorizer(t *testing.T, cfg config.Config) CommandAuthorizer {
 	t.Helper()
-	return policy.NewAuthorizer(policy.NewEngine(&cfg, nil), newTestAuthority())
+	authority := newTestAuthority()
+	authority.snap.Access.System = true
+	return policy.NewAuthorizer(policy.NewEngine(&cfg, nil), authority)
 }
 
 // registerManagedCommands builds a registry whose shell.run/test.run dispatch

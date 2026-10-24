@@ -4078,8 +4078,8 @@ func TestPipelineRoleRunnerUsesBoundedOwnerAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateInput(shell.run): %v", err)
 	}
-	if destructive.Decision != policy.DecisionConfirm {
-		t.Fatalf("pipeline role runner destructive command = %v, want Confirm (no forced Auto)", destructive.Decision)
+	if destructive.Decision != policy.DecisionAllow {
+		t.Fatalf("pipeline role runner destructive command = %v, want Allow in Act", destructive.Decision)
 	}
 	if runner.Policy == pol {
 		t.Fatal("child-session runner shares the parent policy engine; want an independent clone")

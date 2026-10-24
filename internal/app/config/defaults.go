@@ -66,7 +66,6 @@ func Default() Config {
 				MaxBackgroundJobs:     25,
 				BackgroundRetention:   8 * time.Hour,
 				AllowNetwork:          false,
-				FloorCommands:         []string{"git push"},
 				Allow:                 CommandRules{Commands: []string{"go test", "git status", "git diff"}},
 				Sandbox: SandboxConfig{
 					Backend: "restricted",

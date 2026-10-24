@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"strconv"
 	"strings"
 
@@ -289,6 +290,20 @@ func renderGroupRow(evs []registry.AuditEvent, expanded bool, w int, workdir str
 	return b.String()
 }
 
+// pointerColor is the kind colour of a work pointer, read from the glyph that
+// leads it: a subagent in AccentSecondary, a command in StatusInfo, a watch
+// muted.
+func pointerColor(p string) color.Color {
+	th := theme.Current()
+	switch {
+	case strings.HasPrefix(p, glyph.Agent):
+		return th.AccentSecondary
+	case strings.HasPrefix(p, glyph.Job):
+		return th.StatusInfo
+	}
+	return th.FGMuted
+}
+
 // renderActiveCallRow is a call still running: what it acts on, never its
 // raw arguments, with a spinner and its elapsed time as the result. A
 // command's sandbox and the tail of its output follow; expanded, the whole
@@ -307,6 +322,15 @@ func renderActiveCallRow(atc session.ActiveToolCall, c *stepRenderCtx, expanded 
 	}
 	elapsed := formatElapsed(max(c.now.Sub(atc.StartedAt), 0))
 	result := lipgloss.NewStyle().Foreground(accentColor).Render(spin + " " + elapsed)
+	// A call whose work already has a row in the box points at that row: the
+	// box shows the work, so the row keeps only its sandbox line.
+	ptr := ""
+	if c.pointer != nil {
+		ptr = c.pointer(atc.ToolCallID)
+	}
+	if ptr != "" {
+		result = lipgloss.NewStyle().Foreground(pointerColor(ptr)).Render("→ " + ptr)
+	}
 	var b strings.Builder
 	b.WriteString(spineHead(callVerb(atc.Name), viewmodel.ScrubText(subject), result, w) + "\n")
 	dw := max(w-verbWidth, 1)
@@ -316,7 +340,7 @@ func renderActiveCallRow(atc session.ActiveToolCall, c *stepRenderCtx, expanded 
 			lines = append(lines, mutedStyle().Render(ansi.Truncate(iso, dw, "…")))
 		}
 	}
-	if atc.Output != "" {
+	if ptr == "" && atc.Output != "" {
 		out := strings.Split(strings.TrimRight(viewmodel.ScrubBlock(atc.Output), "\n"), "\n")
 		if !expanded && len(out) > liveTailLines {
 			out = out[len(out)-liveTailLines:]

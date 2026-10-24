@@ -362,6 +362,44 @@ func TestSpineRowsCopyFromTheSubjectColumn(t *testing.T) {
 	}
 }
 
+// A running call whose work already has a row in the box points at that row
+// instead of spinning and repeating the work's own output.
+func TestRunningCallPointsAtItsBoxRow(t *testing.T) {
+	now := time.Unix(1000, 0)
+	item := viewmodel.WorkItem{
+		TaskKey: "task-1", Kind: "agent", SourceID: "3", DisplayID: "3", State: "running",
+		Origin: viewmodel.WorkOrigin{ToolCallID: "g"},
+	}
+	c := &stepRenderCtx{now: now, toolSpinner: "⠋", pointer: workPointer([]viewmodel.WorkItem{item})}
+	call := session.ActiveToolCall{Name: "agent.run", Args: `{"description":"review the config change"}`,
+		ToolCallID: "g", StartedAt: now, Output: "reviewing the config change"}
+	lines := plainLines(renderActiveCallRow(call, c, false, 80))
+	if len(lines) != 1 || !strings.HasSuffix(lines[0], "→ ⧉ #3") {
+		t.Fatalf("a pointed call = %q", lines)
+	}
+	if body := strings.Join(lines, "\n"); strings.Contains(body, "⠋") || strings.Contains(body, "reviewing the config change") {
+		t.Fatalf("a pointed call keeps its spinner or its output: %q", lines)
+	}
+}
+
+// A call whose work has no box row keeps its spinner: only a live item that
+// names this call as its origin points a run at the box.
+func TestRunningCallWithoutWorkKeepsItsSpinner(t *testing.T) {
+	now := time.Unix(1000, 0)
+	items := []viewmodel.WorkItem{
+		{TaskKey: "task-1", Kind: "agent", SourceID: "3", DisplayID: "3", State: "running",
+			Origin: viewmodel.WorkOrigin{ToolCallID: "other"}},
+		{TaskKey: "task-2", Kind: "agent", SourceID: "4", DisplayID: "4", State: "completed",
+			Origin: viewmodel.WorkOrigin{ToolCallID: "r"}},
+	}
+	c := &stepRenderCtx{now: now, toolSpinner: "⠋", pointer: workPointer(items)}
+	call := session.ActiveToolCall{Name: "file.read", Path: "a.go", ToolCallID: "r", StartedAt: now.Add(-2 * time.Second)}
+	line := plainLines(renderActiveCallRow(call, c, false, 80))[0]
+	if !strings.HasSuffix(line, "⠋ 2s") || strings.Contains(line, "→") {
+		t.Fatalf("a call without work = %q", line)
+	}
+}
+
 // A dispatch row names the subagent it started in its call result, so the row
 // pairs with the child it launched without parsing display text.
 func TestStepRowNamesItsSubagentInCallResult(t *testing.T) {

@@ -41,6 +41,9 @@ type stepRenderCtx struct {
 	region       func(viewmodel.NodeID) regionView
 	noteRows     func(id viewmodel.NodeID, rows int)
 	callers      func(viewmodel.NodeID) []string
+	// pointer names the box row a running call's work landed in, so the call
+	// points at it instead of spinning and repeating its own output.
+	pointer func(toolCallID string) string
 
 	spinner       string // live step header glyph
 	toolSpinner   string // live tool row glyph
@@ -76,6 +79,32 @@ func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
 		return nil
 	}
 	return c.callers(id)
+}
+
+// workPointer maps a tool call to the box row its work landed in: the kind
+// glyph and id of the first active item whose origin is that call. A call whose
+// work has no row yet reads "", so it keeps its spinner and its output.
+func workPointer(items []viewmodel.WorkItem) func(toolCallID string) string {
+	return func(toolCallID string) string {
+		if toolCallID == "" {
+			return ""
+		}
+		for _, it := range items {
+			if !viewmodel.WorkActive(it) || it.Origin.ToolCallID != toolCallID {
+				continue
+			}
+			switch it.Kind {
+			case "agent":
+				return glyph.Agent + " #" + it.SourceID
+			case "command":
+				return glyph.Job + " " + it.DisplayID
+			case "watch":
+				return glyph.Watch + " " + it.DisplayID
+			}
+			return ""
+		}
+		return ""
+	}
 }
 
 // renderStep renders one beat: a head (state glyph, narration, right-aligned

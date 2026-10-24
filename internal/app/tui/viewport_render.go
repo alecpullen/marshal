@@ -109,6 +109,7 @@ func (m *Model) refreshViewport() {
 		region:        m.regionView,
 		noteRows:      m.noteRegionRows,
 		callers:       func(id viewmodel.NodeID) []string { return m.callers[id] },
+		pointer:       workPointer(m.workSnapshot.Items),
 		spinner:       m.spinnerFrame,
 		toolSpinner:   toolFrame,
 		thinkSpinner:  m.activeSpinnerFrame(session.ActivityThinking),

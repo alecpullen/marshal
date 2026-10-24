@@ -558,14 +558,25 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 			}
 			audits = append(audits, ev)
 		}
-		node.Children = toolRows(audits, active)
-		// A shell row that started a background job becomes that job's card,
-		// settled already when the transcript holds the exit.
-		for _, r := range node.Children {
+		plan := planRow(a.info.TodoWrites)
+		// Group before replacing todo writes with the selected plan row. A
+		// write is a chronological boundary, including at equal timestamps.
+		for _, r := range toolRows(a.audits, active) {
+			if len(r.Tools) > 0 && r.Tools[0].ToolName == todoWriteTool {
+				if plan != nil {
+					for _, ev := range r.Tools {
+						if PlanID(ev) == plan.ID {
+							node.Children = append(node.Children, plan)
+							break
+						}
+					}
+				}
+				continue
+			}
+			// A shell row that started a background job becomes that job's card,
+			// settled already when the transcript holds the exit.
 			ci.settleJob(r)
-		}
-		if plan, at := planRow(a.info.TodoWrites); plan != nil {
-			node.Children = insertPlanRow(node.Children, plan, at)
+			node.Children = append(node.Children, r)
 		}
 		node.Children = append(node.Children, a.cards...)
 		if id != 0 {

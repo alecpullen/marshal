@@ -199,7 +199,11 @@ func (r *Runner) handlePolicyDecision(ctx context.Context, tool registry.Tool, t
 		return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "denied by policy: "+reason, toolCallID)}}, nil
 	case policy.DecisionConfirm:
 		if evaluation.Required.System {
-			return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, "System access is required; use mode.request with system=true before retrying this operation", toolCallID)}}, nil
+			err := errors.New("System access is required; use mode.request with system=true before retrying this operation")
+			event := registry.NewAuditEvent(r.Now(), tool, registry.ToolCall{Name: toolName, Args: args}, registry.ToolResult{}, registry.ApprovalDenied, err)
+			r.logToolCall(toolCallID, event)
+			r.countToolCall(true, false)
+			return policyLoopResult{Messages: []schema.ChatMessage{r.buildToolErrorMessage(toolName, err.Error(), toolCallID)}}, nil
 		}
 		// State.PendingApproval is a single slot; two concurrent approvals
 		// would overwrite each other and strand the first caller. Serialize

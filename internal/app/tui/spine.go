@@ -145,7 +145,7 @@ func callResult(ev registry.AuditEvent) string {
 		if *ev.CommandExitCode != 0 {
 			style = errorStyle()
 		}
-	case isDiffTool(ev.ToolName) && diffStat(ev.ResultContent) != "":
+	case (isDiffTool(ev.ToolName) || ev.ToolName == "file.write") && diffStat(ev.ResultContent) != "":
 		parts = append(parts, diffStat(ev.ResultContent))
 	default:
 		if id := startedSubagent(ev); id > 0 {

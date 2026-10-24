@@ -3,7 +3,6 @@ package viewmodel
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
@@ -83,9 +82,9 @@ func PlanID(ev registry.AuditEvent) NodeID {
 	return NodeID{KindPlanUpdate, "plan:" + ToolKey(ev)}
 }
 
-// planRow is the plan row for a step's todo.writes, from the last one that
-// changed the list, and that write's time. It is nil when none did.
-func planRow(writes []registry.AuditEvent) (*Node, time.Time) {
+// planRow is the plan row for a step's last todo.write that changed the list.
+// It is nil when none did.
+func planRow(writes []registry.AuditEvent) *Node {
 	for i := len(writes) - 1; i >= 0; i-- {
 		p, ok := planOf(writes[i])
 		if !ok {
@@ -93,23 +92,9 @@ func planRow(writes []registry.AuditEvent) (*Node, time.Time) {
 		}
 		n := &Node{ID: PlanID(writes[i]), Kind: KindPlanUpdate, PlanUpdate: p}
 		n.Version = versionOfPlan(p)
-		return n, writes[i].Timestamp
+		return n
 	}
-	return nil, time.Time{}
-}
-
-// insertPlanRow places a plan row among a step's rows at the time of the
-// write it came from: after every settled row that started no later.
-// In-flight rows always stay last.
-func insertPlanRow(rows []*Node, plan *Node, at time.Time) []*Node {
-	i := 0
-	for i < len(rows) && len(rows[i].Tools) > 0 && !rows[i].Tools[0].Timestamp.After(at) {
-		i++
-	}
-	rows = append(rows, nil)
-	copy(rows[i+1:], rows[i:])
-	rows[i] = plan
-	return rows
+	return nil
 }
 
 // keepLastPlanRow drops every plan row of a beat but the last: several writes

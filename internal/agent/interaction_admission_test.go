@@ -132,11 +132,19 @@ func TestActMissingSystemDoesNotOfferUnusableToolApproval(t *testing.T) {
 	pol := policy.NewEngine(&config.Config{}, nil)
 	pol.WithRegistry(reg)
 	r := NewRunner(&agenttest.ScriptedProvider{}, reg, pol, state, "test-model")
+	r.stats = &turnStats{}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	msgs, err := r.executeToolCall(ctx, ModelAction{Type: ActionToolCall, Tool: "file.write", Args: json.RawMessage(`{"path":"/outside/file.txt","content":"x"}`), ToolCallID: "outside"})
 	if err != nil || ran || state.PendingApproval() != nil || len(msgs) != 1 || !strings.Contains(msgs[0].Content, "mode.request") {
 		t.Fatalf("missing System: messages=%v, error=%v, ran=%v", msgs, err, ran)
+	}
+	audit := state.AuditLog()
+	if len(audit) != 1 || audit[0].ToolName != "file.write" || audit[0].ToolCallID != "outside" || !strings.Contains(audit[0].Error, "System access is required") {
+		t.Fatalf("missing-System rejection was not audited: %+v", audit)
+	}
+	if r.stats.m.ToolCalls != 1 || r.stats.m.ToolErrors != 1 {
+		t.Fatalf("missing-System rejection metrics = %+v", r.stats.m)
 	}
 }
 

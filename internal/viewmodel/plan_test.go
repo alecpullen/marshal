@@ -50,6 +50,39 @@ func TestPlanRowSitsAtItsWrite(t *testing.T) {
 	}
 }
 
+func TestPlanRowSeparatesReadGroups(t *testing.T) {
+	for _, equalTime := range []bool{false, true} {
+		name := "distinct timestamps"
+		if equalTime {
+			name = "equal timestamps"
+		}
+		t.Run(name, func(t *testing.T) {
+			at := func(i int) int {
+				if equalTime {
+					return 2
+				}
+				return i
+			}
+			nodes := Build(Snapshot{
+				Items: []session.TranscriptItem{
+					userMsg(1, 0), narration(2, 1, 1, "Planning."),
+					audit("file.read", 1, "r1", at(2)),
+					audit("file.read", 1, "r2", at(3)),
+					planWrite(1, "w", at(4), `{"todos":[{"content":"A","status":"in_progress"}]}`, ""),
+					audit("file.read", 1, "r3", at(5)),
+					audit("file.read", 1, "r4", at(6)),
+				},
+				Steps: []session.Step{stepOf(1, 1, 1, 7)},
+			})
+			beat := nodes[0].Children[1]
+			want := "step:1\n  tool:1:r1 x2\n  plan:tool:1:w\n  tool:1:r3 x2\n"
+			if got := shape([]*Node{beat}); got != want {
+				t.Fatalf("shape:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
 // Several writes in one beat show only the last: the state the beat ended
 // with, at the position of that write. A narrationless follow-up whose only
 // call is a write joins the beat rather than vanishing.

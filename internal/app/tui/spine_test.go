@@ -95,6 +95,8 @@ func TestCallResults(t *testing.T) {
 		{"a command's exit and time", registry.AuditEvent{ToolName: "shell.run", CommandExitCode: &exit0, Duration: 3 * time.Second, ResultSummary: "ignored"}, "exit 0 · 3s"},
 		{"a failing exit", registry.AuditEvent{ToolName: "test.run", CommandExitCode: &exit2}, "exit 2"},
 		{"an edit's diff stat", registry.AuditEvent{ToolName: "file.edit", ResultContent: diff}, "+2 −1"},
+		{"a whole-file write's diff stat", registry.AuditEvent{ToolName: "file.write", ResultContent: diff, ResultSummary: "Wrote x.go"}, "+2 −1"},
+		{"a whole-file write without a diff", registry.AuditEvent{ToolName: "file.write", ResultContent: "new contents", ResultSummary: "Wrote x.go"}, "Wrote x.go"},
 		{"a started subagent", registry.AuditEvent{ToolName: "agent.run", Notice: notice, ResultSummary: "started as subagent 3 — review"}, "⧉ #3 started"},
 		{"a legacy started subagent", registry.AuditEvent{ToolName: "agent.run", ResultSummary: "started as subagent 7 — review"}, "⧉ #7 started"},
 		{"a hook leads", registry.AuditEvent{ToolName: "file.read", ResultSummary: "4 lines", Hooks: []registry.HookMetadata{{Rewrote: true}}}, "hook rewrote · 4 lines"},

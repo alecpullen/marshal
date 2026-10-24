@@ -40,7 +40,6 @@ type WireNode struct {
 	Tool       *WireTool       `json:"tool,omitempty"`
 	Message    *WireMessage    `json:"message,omitempty"`
 	Thinking   *WireThinking   `json:"thinking,omitempty"`
-	Subagent   *WireSubagent   `json:"subagent,omitempty"`
 	RunEvent   *WireRunEvent   `json:"runEvent,omitempty"`
 	Completion *WireCompletion `json:"completion,omitempty"`
 	Plan       *WirePlan       `json:"plan,omitempty"`
@@ -154,6 +153,8 @@ type WireTool struct {
 	WorkKey string       `json:"workKey,omitempty"`
 	Calls   []WireCall   `json:"calls,omitempty"`
 	Running *WireRunning `json:"running,omitempty"`
+	// SubagentID names the subagent this row started, 0 when it started none.
+	SubagentID int64 `json:"subagentId,omitempty"`
 }
 
 // WireCompletion is one finished piece of background work at the moment it
@@ -243,24 +244,6 @@ type WireMessage struct {
 type WireThinking struct {
 	Text       string `json:"text"`
 	DurationMs int64  `json:"durationMs,omitempty"`
-}
-
-// WireSubagent is a subagent card.
-type WireSubagent struct {
-	Label       string `json:"label"`
-	Status      string `json:"status"`
-	Role        string `json:"role,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Provider    string `json:"provider,omitempty"`
-	ToolCalls   int    `json:"toolCalls,omitempty"`
-	CurrentTool string `json:"currentTool,omitempty"`
-	Tokens      int    `json:"tokens,omitempty"`
-	Summary     string `json:"summary,omitempty"`
-	Error       string `json:"error,omitempty"`
-	Salvaged    string `json:"salvaged,omitempty"`
-	StartedAt   int64  `json:"startedAt,omitempty"`
-	EndedAt     int64  `json:"endedAt,omitempty"`
-	Truncated   bool   `json:"truncated,omitempty"`
 }
 
 // WireRunEvent is one plan-run event (verify failure, review, commit, …).
@@ -371,6 +354,9 @@ func wireNode(n *Node) WireNode {
 	case len(n.Tools) > 0:
 		w.Tool = wireTools(n.Tools)
 		w.Tool.WorkKey = n.WorkKey
+		if len(n.Tools) == 1 {
+			w.Tool.SubagentID = StartedSubagent(n.Tools[0])
+		}
 	case n.Item != nil:
 		wireItem(&w, n.Item)
 	}
@@ -443,15 +429,6 @@ func wireItem(w *WireNode, it *session.TranscriptItem) {
 		}
 	case it.Thinking != nil:
 		w.Thinking = &WireThinking{Text: ScrubBlock(it.Thinking.Text), DurationMs: it.Thinking.Duration.Milliseconds()}
-	case it.Subagent != nil:
-		v := it.Subagent
-		ws := &WireSubagent{
-			Label: ScrubText(v.Label), Status: subagentStatus(v.Status), Role: string(v.Role), Model: v.Model,
-			Provider: v.Provider, ToolCalls: v.ToolCalls, CurrentTool: ScrubText(v.CurrentTool), Tokens: v.TokensUsed,
-			Error: ScrubBlock(v.Error), Salvaged: ScrubText(v.SalvagedReason), StartedAt: ms(v.StartedAt), EndedAt: ms(v.EndedAt),
-		}
-		ws.Summary, ws.Truncated = capText(ScrubBlock(v.Summary))
-		w.Subagent = ws
 	case it.RunEvent != nil:
 		e := it.RunEvent
 		wr := &WireRunEvent{Kind: runEventKind(e.Kind), TaskN: e.TaskN, Title: e.Title, Detail: e.Detail,
@@ -459,18 +436,6 @@ func wireItem(w *WireNode, it *session.TranscriptItem) {
 		wr.Body, wr.Truncated = capText(e.Body)
 		w.RunEvent = wr
 	}
-}
-
-func subagentStatus(s session.SubagentStatus) string {
-	switch s {
-	case session.SubagentRunning:
-		return "running"
-	case session.SubagentDone:
-		return "done"
-	case session.SubagentFailed:
-		return "failed"
-	}
-	return "unknown"
 }
 
 var runEventKinds = [...]string{

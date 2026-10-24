@@ -741,11 +741,11 @@ func newWorkStackTurnManager(t *testing.T, st *session.State, rec *kindRecorder)
 	})
 }
 
-// TestWorkACPLegacyStackAndWatchRemainCompatible is the compatibility contract
-// for unmodified clients: opting into the work stream does not switch the ACP
-// stack projection, so the band keeps its running-card entity listings, and a
-// legacy watch stream on the same connection still forwards.
-func TestWorkACPLegacyStackAndWatchRemainCompatible(t *testing.T) {
+// TestWorkACPStackAndWatchRemainCompatible is the compatibility contract for
+// unmodified clients: opting into the work stream does not switch the ACP stack
+// projection, so the band keeps its running-card entity listings, and a watch
+// stream on the same connection still forwards.
+func TestWorkACPStackAndWatchRemainCompatible(t *testing.T) {
 	st := runningJobSession(t)
 	rec := &kindRecorder{}
 	tm := newWorkStackTurnManager(t, st, rec)

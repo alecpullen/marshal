@@ -220,37 +220,42 @@ func TestAwaitSummaryIsJustTheWait(t *testing.T) {
 	}
 }
 
-// The wire band keeps the legacy entity listing for a client that has not opted
-// into the pinned surface, and the LiveWork projection drops the duplicated live
-// cards while the band's own summary data stays whole.
-func TestLiveWorkWireOptInPreservesLegacyBand(t *testing.T) {
-	items := []session.TranscriptItem{
-		userMsg(1, 0), narration(2, 1, 1, "Launch."), jobStart(1, "j", 2, "job-1"),
+// A tool row names the subagent it started, so a client can pair the dispatch
+// row with the child it launched without parsing display text.
+func TestWireToolNamesTheSubagentItStarted(t *testing.T) {
+	tree := Project(Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0), narration(2, 1, 1, "Dispatch."),
+			subagentDispatch(1, "g", 2, "task-1", 3),
+			audit("file.read", 1, "r", 3),
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 4)},
+	}))
+	byID := wireByID(t, tree)
+	dispatch := byID["tool:1:g"]
+	if dispatch.Tool == nil || dispatch.Tool.SubagentID != 3 {
+		t.Fatalf("dispatch row = %+v, want subagentId 3", dispatch.Tool)
 	}
-	steps := []session.Step{stepOf(1, 1, 1, 3)}
-	list := todos(db.TodoItem{ID: "p", Content: "Parser", Status: "in_progress"},
-		db.TodoItem{ID: "q", Content: "Q", Status: "pending"})
+	read := byID["tool:1:r"]
+	if read.Tool == nil || read.Tool.SubagentID != 0 {
+		t.Fatalf("file.read row = %+v, want no subagentId", read.Tool)
+	}
+}
 
-	legacy := Snapshot{Items: items, Steps: steps, Todos: list, Busy: true}
-	lb := BandOf(legacy, Build(legacy))
-	if len(lb.Entities) != 1 {
-		t.Fatalf("legacy band lost its running-card listing: %+v", lb.Entities)
-	}
-	if wb := ProjectBand(lb); len(wb.Band.Entities) != 1 {
-		t.Fatalf("legacy wire band dropped the optional entities: %+v", wb.Band.Entities)
-	}
-
-	live := legacy
-	live.LiveWork = true
-	ab := BandOf(live, Build(live))
-	if len(ab.Entities) != 0 {
-		t.Fatalf("LiveWork band must omit the duplicated entity listings: %+v", ab.Entities)
-	}
-	// The summary data the band is the single source for is unchanged.
-	if len(ab.Tasks) != len(lb.Tasks) || len(ab.Tasks) != 2 {
-		t.Fatalf("LiveWork band lost its todo/task summary: %d vs %d", len(ab.Tasks), len(lb.Tasks))
-	}
-	if ab.Total != lb.Total || ab.Done != lb.Done {
-		t.Fatalf("LiveWork band changed todo progress: %+v vs %+v", ab, lb)
+// No tree carries a subagent node any more: a subagent item is a completion
+// event, never a card.
+func TestWireHasNoSubagentNodes(t *testing.T) {
+	tree := Project(Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0), narration(2, 1, 1, "Dispatch."),
+			{Timestamp: at(2), Kind: session.KindSubagent,
+				Subagent: &session.SubagentView{ID: 3, Label: "Task 1", StartedAt: at(2), EndedAt: at(3), Status: session.SubagentDone}},
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 4)},
+	}))
+	for _, n := range tree.Nodes {
+		if n.Kind == "subagent" {
+			t.Fatalf("tree carries a subagent node: %+v", n)
+		}
 	}
 }

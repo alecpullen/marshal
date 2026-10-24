@@ -315,3 +315,19 @@ func TestSpineRowsCopyFromTheSubjectColumn(t *testing.T) {
 		}
 	}
 }
+
+// A dispatch row names the subagent it started in its call result, so the row
+// pairs with the child it launched without parsing display text.
+func TestStepRowNamesItsSubagentInCallResult(t *testing.T) {
+	ev := registry.AuditEvent{
+		ToolName: "agent.run",
+		Args:     json.RawMessage(`{"description":"review the config change","role":"reviewer"}`),
+		Notice: &registry.ToolNotice{Kind: registry.NoticeSubagentWork,
+			Data: map[string]any{registry.NoticeSubagentWork: registry.SubagentWorkReference{
+				TaskKey: "task-1", RuntimeEpoch: "epoch-1", AgentID: 3, ChildSessionID: "child"}}},
+	}
+	line := plainLines(renderCallRow(ev, false, nil, 80, ""))[0]
+	if !strings.Contains(line, "⧉ #3 started") {
+		t.Fatalf("dispatch row = %q, want the subagent it started", line)
+	}
+}

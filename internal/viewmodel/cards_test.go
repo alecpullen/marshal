@@ -105,9 +105,8 @@ func TestCompletionFollowsTheBeatThatLaunchedIt(t *testing.T) {
 				sub,
 				audit("file.read", 2, "r", 5),
 			},
-			Steps:    []session.Step{stepOf(1, 1, 1, 4), stepOf(2, 1, 5, 7)},
-			Busy:     busy,
-			LiveWork: true,
+			Steps: []session.Step{stepOf(1, 1, 1, 4), stepOf(2, 1, 5, 7)},
+			Busy:  busy,
 		})
 		var keys []string
 		for _, n := range nodes[0].Children {
@@ -344,14 +343,13 @@ func detachedJobStart(step session.StepID, callID string, s int, displayID, exec
 // A detach changes the execution's attachment and the card's placement on the
 // one dispatch row it already had: it can never add a second dispatch. The row's
 // work key is the execution identity the runtime mints, not the summary text.
-func TestLiveWorkDetachedCommandKeepsOneDispatch(t *testing.T) {
+func TestDetachedCommandKeepsOneDispatch(t *testing.T) {
 	code := 0
 	start := detachedJobStart(1, "j", 2, "job-1", "exec-1", "epoch-cmd")
 	exit := structuredJobExit(5, "job-1", "exec-1", &code)
 	nodes := Build(Snapshot{
-		Items:    []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start, exit},
-		Steps:    []session.Step{stepOf(1, 1, 1, 3)},
-		LiveWork: true,
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start, exit},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
 	})
 	want := WorkKey("conv", "epoch-cmd", workKindCommand, "exec-1")
 	if n := countWorkKey(nodes, want); n != 1 {
@@ -371,9 +369,8 @@ func TestBaseEraCommandRowUsesStableWorkKey(t *testing.T) {
 	start := detachedJobStart(1, "j", 2, "job-1", "exec-1", "")
 	exit := structuredJobExit(5, "job-1", "exec-1", nil)
 	nodes := Build(Snapshot{
-		Items:    []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start, exit},
-		Steps:    []session.Step{stepOf(1, 1, 1, 3)},
-		LiveWork: true,
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Launch."), start, exit},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
 	})
 	want := WorkKey("conv", legacyWorkEpoch, workKindCommand, "exec-1")
 	if n := countWorkKey(nodes, want); n != 1 {

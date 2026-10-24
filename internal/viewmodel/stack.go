@@ -109,20 +109,7 @@ type Snapshot struct {
 	Busy        bool
 	// Todos is the current task list; it names and orders the task headers.
 	Todos []db.TodoItem
-	// Drilled is true while showing a subagent's own transcript. Then its
-	// agent.run audits render normally; otherwise the subagent card replaces
-	// them.
-	Drilled bool
-	// LiveWork is true while a pinned live-work surface owns presentation of
-	// running work. Then the transcript keeps each actual dispatch/result row
-	// once — its agent.run audits are not suppressed — and the subagent child
-	// boxes are omitted, because the pinned surface shows the live card. False
-	// retains the legacy projection exactly.
-	LiveWork bool
-	// RunningSubagent is true when a subagent card is rendering a running
-	// child, so the parent's in-flight agent.run row is suppressed.
-	RunningSubagent bool
-	Now             time.Time
+	Now   time.Time
 }
 
 // toolCallKey scopes a call ID to its step: providers reuse IDs like call_0
@@ -222,19 +209,13 @@ func dispatchWorkKey(ev *registry.AuditEvent) string {
 // Build groups a snapshot into turn nodes, plus a preamble turn for items
 // before the first user turn.
 func Build(s Snapshot) []*Node {
-	items := make([]session.TranscriptItem, 0, len(s.Items))
-	for _, it := range s.Items {
-		if !s.LiveWork && !s.Drilled && it.Kind == session.KindAudit && it.Audit != nil && it.Audit.ToolName == "agent.run" {
-			continue
-		}
-		items = append(items, it)
-	}
+	items := s.Items
 	// Index the cards before dropping job exits from the tree: an exit is
 	// no longer a row of its own (the card it settles carries the outcome,
 	// and a marker carries the moment), but it is still what settles the
 	// card that started the job.
 	ci := indexCards(items)
-	kept := items[:0]
+	kept := make([]session.TranscriptItem, 0, len(items))
 	for _, it := range items {
 		if it.Kind == session.KindJobExit {
 			continue
@@ -362,7 +343,6 @@ type stepAcc struct {
 	info   *StepInfo
 	loose  bool
 	audits []registry.AuditEvent
-	cards  []*Node
 	first  time.Time
 }
 
@@ -404,7 +384,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 
-	var cards []session.TranscriptItem
 	for i := range items {
 		it := items[i]
 		switch it.Kind {
@@ -459,44 +438,10 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 			}
 		case session.KindSubagent:
 			curLoose = nil
-			cards = append(cards, it)
+			continue
 		default:
 			curLoose = nil
 			blocks = append(blocks, block{it.Timestamp, passthrough(&items[i])})
-		}
-	}
-
-	// Subagent cards go inside the orchestrator step that was running when
-	// the card began; otherwise they stand at turn level. Under LiveWork the
-	// pinned surface owns the live card, so the transcript omits the parent
-	// child boxes and keeps only the dispatch/result rows.
-	if !s.LiveWork {
-		for i := range cards {
-			it := cards[i]
-			node := passthrough(&cards[i])
-			var home *stepAcc
-			for _, id := range stepOrder {
-				a := steps[id]
-				rec := a.info.Step
-				if rec.ID == 0 || rec.Actor.Role != "" {
-					continue
-				}
-				end := rec.EndedAt
-				if end.IsZero() {
-					end = s.Now
-					if end.IsZero() {
-						end = time.Now()
-					}
-				}
-				if !it.Timestamp.Before(rec.StartedAt) && !it.Timestamp.After(end) {
-					home = a
-				}
-			}
-			if home != nil {
-				home.cards = append(home.cards, node)
-			} else {
-				blocks = append(blocks, block{it.Timestamp, node})
-			}
 		}
 	}
 
@@ -527,9 +472,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	for _, atc := range s.ActiveTools {
 		if !lastTurn {
 			break
-		}
-		if atc.Name == "agent.run" && !s.LiveWork && !s.Drilled && s.RunningSubagent {
-			continue
 		}
 		if atc.StepID > 0 && steps[atc.StepID] != nil {
 			activeByStep[atc.StepID] = append(activeByStep[atc.StepID], atc)
@@ -576,7 +518,6 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 			// row: its result is the job it launched, never the job's exit.
 			node.Children = append(node.Children, r)
 		}
-		node.Children = append(node.Children, a.cards...)
 		if id != 0 {
 			a.info.StepIDs = []session.StepID{id}
 		}

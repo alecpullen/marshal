@@ -185,12 +185,7 @@ func BandOf(s Snapshot, turns []*Node) BandInfo {
 			}
 		}
 	}
-	// The pinned live-work surface owns the running cards while LiveWork is on:
-	// the band omits the duplicated entity listings then, retaining only the
-	// todo/task summary it is the single source for. Legacy clients keep them.
-	if !s.LiveWork {
-		b.Entities = runningEntities(s.Items)
-	}
+	b.Entities = runningEntities(s.Items)
 	return b
 }
 

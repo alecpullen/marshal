@@ -18,91 +18,6 @@ func newChildState(t *testing.T) *session.State {
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 }
 
-// TestClickRunningCardDrillsInAndBack verifies a click on a running subagent
-// card drills into the live child transcript, shows a later child update,
-// and returns to the parent on Esc — the live regular-card drill-down path.
-func TestClickRunningCardDrillsInAndBack(t *testing.T) {
-	m := newTestModel(t)
-	m.state.AddMessage(session.RoleAssistant, "parent normal text", session.ContentTypePlain)
-	child := newChildState(t)
-	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
-	m.state.RegisterSubagent("explore repo", child)
-	m.resize(80, 24)
-	m.invalidateTranscript()
-	m.refreshViewport()
-
-	// Locate the subagent card's click region.
-	var region nodeRegion
-	found := false
-	for _, r := range m.nodeRegions {
-		if r.target.subagent != nil && r.target.subagent.Label == "explore repo" {
-			region, found = r, true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("expected a click region for the running subagent card")
-	}
-
-	top := m.scrollHintRows()
-	y := top + region.startLine - m.viewport.YOffset()
-	updated := clickAt(t, m, 1, y)
-	mm := asModel(t, updated)
-	if len(mm.viewStack) != 1 {
-		t.Fatalf("click should drill into the subagent, viewStack len = %d", len(mm.viewStack))
-	}
-
-	mm.invalidateTranscript()
-	mm.refreshViewport()
-	if content := stripANSI(mm.viewport.GetContent()); !strings.Contains(content, "child says hi") {
-		t.Fatalf("drilled view should show the child transcript:\n%s", content)
-	}
-
-	// A later child update is reflected while drilled in.
-	child.AddMessage(session.RoleAssistant, "child second update", session.ContentTypePlain)
-	mm.invalidateTranscript()
-	mm.refreshViewport()
-	if content := stripANSI(mm.viewport.GetContent()); !strings.Contains(content, "child second update") {
-		t.Fatalf("drilled view should show the later child update:\n%s", content)
-	}
-
-	// Esc returns to the parent.
-	mm2, _, handled := mm.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if !handled {
-		t.Fatal("esc must be handled while drilled")
-	}
-	parent := asModel(t, mm2)
-	if len(parent.viewStack) != 0 {
-		t.Fatalf("esc should pop the drill stack, len = %d", len(parent.viewStack))
-	}
-	parent.invalidateTranscript()
-	parent.refreshViewport()
-	if content := stripANSI(parent.viewport.GetContent()); !strings.Contains(content, "parent normal text") {
-		t.Fatalf("after popping, the parent transcript should be restored:\n%s", content)
-	}
-}
-
-func TestSubagentCardHasClickTarget(t *testing.T) {
-	m := newTestModel(t)
-	child := newChildState(t)
-	m.state.RegisterSubagent("explore repo", child)
-	m.invalidateTranscript()
-	m.refreshViewport()
-
-	found := false
-	for _, r := range m.nodeRegions {
-		if r.target.subagent != nil && r.target.subagent.Label == "explore repo" {
-			found = true
-			if r.startLine < 0 || r.endLine <= r.startLine {
-				t.Fatalf("invalid region for subagent card: %+v", r)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("expected a click region targeting the subagent card")
-	}
-}
-
 func TestSubagentCardWithoutChildIsNotClickable(t *testing.T) {
 	m := newTestModel(t)
 	m.state.RegisterSubagent("status only", nil)
@@ -269,32 +184,6 @@ func TestBreadcrumbOmitsRoleWhenUnset(t *testing.T) {
 	}
 	if strings.Contains(frame, " — explore") {
 		t.Fatalf("breadcrumb must not render a separator without a role, frame:\n%s", frame)
-	}
-}
-
-func TestAgentRunAuditSuppressedInParentView(t *testing.T) {
-	m := newTestModel(t)
-	m.state.AddMessage(session.RoleAssistant, "parent normal text", session.ContentTypePlain)
-	m.state.LogToolCall(registry.AuditEvent{
-		Timestamp:     time.Unix(200, 0),
-		ToolName:      "agent.run",
-		ResultSummary: "VERBOSE AGENT RUN SUMMARY",
-		ResultContent: "VERBOSE AGENT RUN LOG",
-	})
-	m.state.LogToolCall(registry.AuditEvent{
-		Timestamp:     time.Unix(201, 0),
-		ToolName:      "file.read",
-		ResultSummary: "ordinary tool stays",
-	})
-	m.invalidateTranscript()
-	m.refreshViewport()
-
-	content := stripANSI(m.viewport.GetContent())
-	if strings.Contains(content, "VERBOSE AGENT RUN SUMMARY") {
-		t.Fatalf("agent.run audit block should be suppressed in the parent view, got:\n%s", content)
-	}
-	if !strings.Contains(content, "ordinary tool stays") {
-		t.Fatalf("unrelated tool calls must still render, got:\n%s", content)
 	}
 }
 

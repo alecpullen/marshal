@@ -61,22 +61,19 @@ func (m *Model) refreshViewport() {
 		m.clearSelection()
 	}
 	m.updateViewportHeight()
-	transcriptState, drilling := m.transcriptSource()
+	transcriptState, _ := m.transcriptSource()
 
 	items := transcriptState.Transcript()
 	inProgress := transcriptState.InProgress()
 	active := transcriptState.ActiveToolCalls()
 	snap := viewmodel.Snapshot{
-		Items:           items,
-		Steps:           transcriptState.Steps(),
-		Todos:           transcriptState.Todos(),
-		ActiveTools:     active,
-		InProgress:      inProgress,
-		Busy:            m.busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
-		Drilled:         drilling,
-		RunningSubagent: m.state.HasRunningSubagent(),
-		LiveWork:        m.workService != nil,
-		Now:             m.now(),
+		Items:       items,
+		Steps:       transcriptState.Steps(),
+		Todos:       transcriptState.Todos(),
+		ActiveTools: active,
+		InProgress:  inProgress,
+		Busy:        m.busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
+		Now:         m.now(),
 	}
 	turns := viewmodel.Build(snap)
 	// The band is derived here, once, so the now bar and the frame height

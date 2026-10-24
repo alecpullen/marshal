@@ -102,21 +102,16 @@ func (p *stackProjector) diff(tree viewmodel.WireTree) (stackPatch, bool) {
 	return patch, true
 }
 
-// stackSnapshotOf builds the projection a stack request reads. LiveWork stays
-// false for ACP: an existing stack request keeps its legacy default projection,
-// so an unmodified client sees exactly the tree it saw before the work view
-// existed — every dispatch row once, the band's running-card entity listings
-// included. A work-aware client treats the work_state stream as the
-// authoritative live surface and ignores those legacy entity listings instead;
-// the ACP layer never switches the stack projection for it.
-func stackSnapshotOf(st *session.State, busy, drilled bool, now time.Time) viewmodel.Snapshot {
+// stackSnapshotOf builds the projection a stack request reads: the same one
+// the TUI renders.
+func stackSnapshotOf(st *session.State, busy bool, now time.Time) viewmodel.Snapshot {
 	active := st.ActiveToolCalls()
 	inProgress := st.InProgress()
 	return viewmodel.Snapshot{
 		Items: st.Transcript(), Steps: st.Steps(), Todos: st.Todos(),
 		ActiveTools: active, InProgress: inProgress,
-		Busy:    busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
-		Drilled: drilled, RunningSubagent: st.HasRunningSubagent(), Now: now,
+		Busy: busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
+		Now:  now,
 	}
 }
 
@@ -202,7 +197,7 @@ func (m *TurnManager) flushProjector(sessionID string, subagentID int64, st *ses
 	if !p.active || (onlyDirty && !p.dirty && !due) {
 		return
 	}
-	snap := stackSnapshotOf(st, busy, drilled, now)
+	snap := stackSnapshotOf(st, busy, now)
 	turns := viewmodel.Build(snap)
 	tree := viewmodel.Project(turns)
 	band := viewmodel.BandOf(snap, turns)
@@ -306,7 +301,7 @@ func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *s
 	p := m.stackFor(stackKey(request.SessionID, request.SubagentID))
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	snap := stackSnapshotOf(src, busy, drilled, time.Now())
+	snap := stackSnapshotOf(src, busy, time.Now())
 	turns := viewmodel.Build(snap)
 	tree := viewmodel.Project(turns)
 	// The band rides along as an extra node. It is not in roots, so a

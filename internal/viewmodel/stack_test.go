@@ -237,54 +237,6 @@ func TestBuildSteeringMessageDoesNotOpenATurn(t *testing.T) {
 	}
 }
 
-func TestBuildSubagentCardPlacement(t *testing.T) {
-	card := func(id int64, s int) session.TranscriptItem {
-		return session.TranscriptItem{Timestamp: at(s), Kind: session.KindSubagent,
-			Subagent: &session.SubagentView{ID: id, Label: "x", StartedAt: at(s), Status: session.SubagentRunning}}
-	}
-	nodes := Build(Snapshot{
-		Items: []session.TranscriptItem{
-			userMsg(1, 0), narration(2, 1, 1, "Dispatching."), audit("agent.run", 1, "r", 2),
-			card(10, 2),  // inside orchestrator step 1 [1,10]
-			card(11, 20), // after every step: turn level
-		},
-		Steps: []session.Step{step(1, 1, 10, "")},
-	})
-	got := shape(nodes)
-	if !strings.Contains(got, "step:1\n    sub:10") {
-		t.Fatalf("card 10 should sit inside step 1:\n%s", got)
-	}
-	if !strings.Contains(got, "\n  sub:11") || strings.Contains(got, "step:1\n    sub:10\n    sub:11") {
-		t.Fatalf("card 11 should be pass-through at turn level:\n%s", got)
-	}
-	if strings.Contains(got, "tool:1:r") {
-		t.Fatalf("the agent.run audit duplicates the card and must be dropped:\n%s", got)
-	}
-}
-
-func TestBuildKeepsAgentRunAuditsWhenDrilled(t *testing.T) {
-	nodes := Build(Snapshot{
-		Items:   []session.TranscriptItem{userMsg(1, 0), audit("agent.run", 1, "r", 2)},
-		Steps:   []session.Step{step(1, 1, 3, "")},
-		Drilled: true,
-	})
-	if !strings.Contains(shape(nodes), "tool:1:r") {
-		t.Fatalf("drilled view must show the child's own agent.run rows:\n%s", shape(nodes))
-	}
-}
-
-func TestBuildSubagentCardNotPlacedInPipelineRoleStep(t *testing.T) {
-	card := session.TranscriptItem{Timestamp: at(2), Kind: session.KindSubagent,
-		Subagent: &session.SubagentView{ID: 1, StartedAt: at(2)}}
-	nodes := Build(Snapshot{
-		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Reviewing."), card},
-		Steps: []session.Step{step(1, 1, 10, "sdd_reviewer")},
-	})
-	if strings.Contains(shape(nodes), "step:1\n    sub:") {
-		t.Fatalf("cards belong in orchestrator steps only:\n%s", shape(nodes))
-	}
-}
-
 func TestBuildLiveStepAndThinking(t *testing.T) {
 	snap := Snapshot{
 		Items:      []session.TranscriptItem{userMsg(1, 0), narration(2, 2, 3, "Now this."), audit("file.read", 1, "a", 2)},
@@ -377,18 +329,6 @@ func TestBuildUnstampedActiveCallStandsAlone(t *testing.T) {
 	last := nodes[0].Children[len(nodes[0].Children)-1]
 	if last.Kind != KindTool || last.Active == nil || !last.Live {
 		t.Fatalf("unstamped active call should render as a live pass-through row: %+v", last)
-	}
-}
-
-func TestBuildSuppressesActiveAgentRunWhileCardRenders(t *testing.T) {
-	nodes := Build(Snapshot{
-		Items:           []session.TranscriptItem{userMsg(1, 0)},
-		Busy:            true,
-		RunningSubagent: true,
-		ActiveTools:     []session.ActiveToolCall{{Name: "agent.run", ToolCallID: "r", StartedAt: at(1)}},
-	})
-	if strings.Contains(shape(nodes), "tool:1:r") {
-		t.Fatalf("in-flight agent.run duplicates the running card")
 	}
 }
 
@@ -537,39 +477,30 @@ func countWorkKey(nodes []*Node, key string) int {
 	return n
 }
 
-// Under LiveWork the transcript keeps the actual dispatch once — as its own
-// agent.run row carrying the notice's work key — and drops the parent child box
-// the pinned surface now owns. The legacy projection is unchanged: the card
-// replaces the dispatch.
-func TestLiveWorkDispatchShownOnceWithoutChildBox(t *testing.T) {
+// The transcript keeps the actual dispatch once — as its own agent.run row
+// carrying the notice's work key — and never places a subagent child box.
+func TestDispatchShownOnceWithoutChildBox(t *testing.T) {
 	dispatch := subagentDispatch(1, "r", 2, "work-abc", 3)
 	card := session.TranscriptItem{Timestamp: at(2), Kind: session.KindSubagent,
 		Subagent: &session.SubagentView{ID: 3, Label: "Task 1", StartedAt: at(2), Status: session.SubagentRunning}}
 	items := []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Dispatch."), dispatch, card}
 	steps := []session.Step{stepOf(1, 1, 1, 3)}
 
-	legacy := Build(Snapshot{Items: items, Steps: steps})
-	if findNode(legacy, "sub:3") == nil || findNode(legacy, "tool:1:r") != nil {
-		t.Fatalf("legacy projection must show the card and hide the dispatch:\n%s", shape(legacy))
+	nodes := Build(Snapshot{Items: items, Steps: steps})
+	if findNode(nodes, "sub:3") != nil {
+		t.Fatalf("the transcript must omit the parent child box:\n%s", shape(nodes))
 	}
-
-	live := Build(Snapshot{Items: items, Steps: steps, LiveWork: true})
-	if findNode(live, "sub:3") != nil {
-		t.Fatalf("LiveWork must omit the parent child box:\n%s", shape(live))
-	}
-	row := findNode(live, "tool:1:r")
+	row := findNode(nodes, "tool:1:r")
 	if row == nil || row.WorkKey != "work-abc" {
 		t.Fatalf("dispatch row = %+v, want exactly one row carrying the notice's work key", row)
 	}
-	if n := countWorkKey(live, "work-abc"); n != 1 {
+	if n := countWorkKey(nodes, "work-abc"); n != 1 {
 		t.Fatalf("dispatch rows with the work key = %d, want exactly one", n)
 	}
 }
 
-// The retained report message stays reachable under LiveWork, and a drilled
-// child's own transcript is untouched: its agent.run rows render exactly as
-// before.
-func TestLiveWorkReportAndDrilledTranscriptRemainReachable(t *testing.T) {
+// The retained report message stays reachable.
+func TestReportStaysReachable(t *testing.T) {
 	dispatch := subagentDispatch(1, "r", 2, "work-abc", 3)
 	report := session.TranscriptItem{Timestamp: at(4), Kind: session.KindMessage,
 		Message: &session.Message{ID: 9, Role: session.RoleUser, ContentType: session.ContentTypeSubagentReport,
@@ -577,17 +508,38 @@ func TestLiveWorkReportAndDrilledTranscriptRemainReachable(t *testing.T) {
 	items := []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Dispatch."), dispatch, report}
 	steps := []session.Step{stepOf(1, 1, 1, 5)}
 
-	live := Build(Snapshot{Items: items, Steps: steps, LiveWork: true})
-	if findNode(live, "msg:9") == nil {
-		t.Fatalf("the persisted report message must remain a reachable row:\n%s", shape(live))
+	nodes := Build(Snapshot{Items: items, Steps: steps})
+	if findNode(nodes, "msg:9") == nil {
+		t.Fatalf("the persisted report message must remain a reachable row:\n%s", shape(nodes))
 	}
+}
 
-	// Drilling into a child's own transcript is unchanged: its dispatch renders
-	// as it always did, whether or not the parent opted into LiveWork.
-	for _, liveWork := range []bool{false, true} {
-		drilled := Build(Snapshot{Items: items, Steps: steps, Drilled: true, LiveWork: liveWork})
-		if findNode(drilled, "tool:1:r") == nil {
-			t.Fatalf("a drilled child's own dispatch must still render (liveWork=%v):\n%s", liveWork, shape(drilled))
+// A subagent item is never a node of its own: a running one is only the band's
+// entity, and a finished one is a completion event.
+func TestSubagentItemIsNeverANode(t *testing.T) {
+	running := session.TranscriptItem{Timestamp: at(2), Kind: session.KindSubagent,
+		Subagent: &session.SubagentView{ID: 3, Label: "Task 1", StartedAt: at(2), Status: session.SubagentRunning}}
+	finished := session.TranscriptItem{Timestamp: at(4), Kind: session.KindSubagent,
+		Subagent: &session.SubagentView{ID: 4, Label: "Task 2", StartedAt: at(3), EndedAt: at(4), Status: session.SubagentDone}}
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), narration(2, 1, 1, "Dispatch."), running, finished},
+		Steps: []session.Step{stepOf(1, 1, 1, 5)},
+	})
+	completions := 0
+	var walk func([]*Node)
+	walk = func(ns []*Node) {
+		for _, n := range ns {
+			if n.Kind == KindSubagent {
+				t.Fatalf("a subagent item must never become a node:\n%s", shape(nodes))
+			}
+			if n.Kind == KindCompletion {
+				completions++
+			}
+			walk(n.Children)
 		}
+	}
+	walk(nodes)
+	if completions != 1 {
+		t.Fatalf("completions = %d, want 1 for the finished subagent:\n%s", completions, shape(nodes))
 	}
 }

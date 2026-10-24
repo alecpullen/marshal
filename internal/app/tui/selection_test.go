@@ -33,9 +33,6 @@ func selectionFixture(t *testing.T) (Model, *fakeClipboard) {
 	m.state.LogToolCall(registry.AuditEvent{ToolName: "search.text", StepID: id, ToolCallID: "c3", Timestamp: ts.Add(3 * time.Millisecond), Args: []byte(`{"query":"hookTimeout"}`), ResultSummary: "1 match"})
 	code := 1
 	m.state.LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: id, ToolCallID: "c4", Timestamp: ts.Add(4 * time.Millisecond), Args: []byte(`{"command":"go test ./internal/hooks/... -run TestPreToolUseBlockDecision -count=20 -v -timeout 30s"}`), CommandExitCode: &code, Error: "exit status 1", ResultContent: "--- FAIL: TestX (0.01s)\n    hooks_test.go:12: timeout\nFAIL"})
-	child := newChildState(t)
-	child.AddNarration(child.BeginStep(session.Actor{}), "Tracing the config loader. It has three layers.")
-	m.state.RegisterSubagent("reviewer", child)
 	m.state.EndStep(id)
 	m.state.AddMessage(session.RoleSystem, "Model switched to gpt-x\nsecond notice line", session.ContentTypePlain)
 	m.invalidateTranscript()
@@ -74,8 +71,6 @@ go test ./internal/hooks/... -run TestPreToolUseBlockDecision -count=20 -v -time
 --- FAIL: TestX (0.01s)
     hooks_test.go:12: timeout
 FAIL
-reviewer
-Tracing the config loader.
 
 Model switched to gpt-x
 second notice line`

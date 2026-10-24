@@ -8,10 +8,12 @@
 package viewmodel
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash"
 	"hash/fnv"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -402,12 +404,44 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 
+	// loadedHere holds the skills this turn loaded with a call row. A tag for
+	// one of them is redundant: the call row is the trace.
+	loadedHere := map[string]bool{}
+	for i := range items {
+		it := items[i]
+		if it.Kind != session.KindAudit || it.Audit == nil {
+			continue
+		}
+		if it.Audit.ToolName != "skill.load" || EventFailed(*it.Audit) {
+			continue
+		}
+		var args struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(it.Audit.Args, &args); err != nil {
+			continue
+		}
+		if name := strings.TrimSpace(args.Name); name != "" {
+			loadedHere[name] = true
+		}
+	}
+
 	for i := range items {
 		it := items[i]
 		switch it.Kind {
 		case session.KindMessage:
 			m := it.Message
 			if m != nil && m.ContentType == session.ContentTypeSubagentNotice {
+				continue
+			}
+			// A skill's body is model context and never rendered; its tag is
+			// the trace only when no call row already shows the load. Neither
+			// message carries a step ID, so as turn-level blocks they would
+			// draw a second row and end the beat.
+			if m != nil && m.ContentType == session.ContentTypeSkillBody {
+				continue
+			}
+			if m != nil && m.ContentType == session.ContentTypeSkill && loadedHere[strings.TrimSpace(m.Content)] {
 				continue
 			}
 			if m != nil && m.ContentType == session.ContentTypeNarration {

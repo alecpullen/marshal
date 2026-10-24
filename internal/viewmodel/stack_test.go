@@ -603,3 +603,70 @@ func TestSubagentItemIsNeverANode(t *testing.T) {
 		t.Fatalf("completions = %d, want 1 for the finished subagent:\n%s", completions, shape(nodes))
 	}
 }
+
+// systemMsg is a step-less system message of the given content type, the shape
+// a skill load writes beside its call row.
+func systemMsg(id int64, s int, ct session.ContentType, text string) session.TranscriptItem {
+	return session.TranscriptItem{Timestamp: at(s), Kind: session.KindMessage,
+		Message: &session.Message{ID: id, Role: session.RoleSystem, ContentType: ct, Content: text, CreatedAt: at(s)}}
+}
+
+// A skill load writes a hidden body and a one-line tag beside its call row.
+// Neither carries a step ID, so both would draw a turn-level row and end the
+// beat; the call row is the trace, so both are dropped.
+func TestSkillLoadLeavesOneRow(t *testing.T) {
+	load := audit("skill.load", 1, "s", 3)
+	load.Audit.Args = []byte(`{"name":"debug"}`)
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Loading the debug skill."),
+			systemMsg(3, 2, session.ContentTypeSkillBody, "the whole skill body"),
+			systemMsg(4, 2, session.ContentTypeSkill, "debug"),
+			load,
+			audit("file.read", 2, "r", 5),
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 4), stepOf(2, 1, 5, 6)},
+	})
+	want := `turn:1
+  msg:1
+  step:1
+    tool:1:s
+    tool:2:r
+`
+	if got := shape(nodes); got != want {
+		t.Fatalf("shape:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// A tag with no call row in the turn (the skills panel, an ACP client) is the
+// only trace of the load, so it stays.
+func TestSkillTagWithoutACallStays(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			systemMsg(2, 1, session.ContentTypeSkill, "debug"),
+		},
+	})
+	if got := shape(nodes); !strings.Contains(got, "msg:2") {
+		t.Fatalf("a tag with no call row must stay a message:\n%s", got)
+	}
+}
+
+// A failed load has no successful call row to stand in for the tag.
+func TestFailedSkillLoadKeepsItsTag(t *testing.T) {
+	load := audit("skill.load", 1, "s", 2)
+	load.Audit.Args = []byte(`{"name":"debug"}`)
+	load.Audit.Error = "boom"
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			systemMsg(2, 1, session.ContentTypeSkill, "debug"),
+			load,
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 3)},
+	})
+	if got := shape(nodes); !strings.Contains(got, "msg:2") {
+		t.Fatalf("a failed load must keep its tag:\n%s", got)
+	}
+}

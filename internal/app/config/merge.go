@@ -62,6 +62,9 @@ func merge(cfg *Config, file configFile) error {
 		set(&cfg.Privacy.RemoteProvidersAllowed, file.Privacy.RemoteProvidersAllowed)
 		set(&cfg.Privacy.RedactSecrets, file.Privacy.RedactSecrets)
 		set(&cfg.Privacy.IncludeGitignoredFiles, file.Privacy.IncludeGitignoredFiles)
+		if file.Privacy.ModelsDevEnrichment != nil {
+			cfg.Privacy.ModelsDevEnrichment = file.Privacy.ModelsDevEnrichment
+		}
 	}
 	if file.Skills != nil {
 		if file.Skills.Autoload != nil {

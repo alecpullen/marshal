@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -19,9 +21,9 @@ import (
 	"charm.land/bubbles/v2/textinput"
 
 	"marshal/internal/app/config"
+	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/picker"
-	"marshal/internal/app/tui/presetflow"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/credentials"
@@ -233,48 +235,31 @@ func TestSkipProbeUsesCatalogAndAdvances(t *testing.T) {
 }
 
 func TestPickModelEmitsDone(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+	cfg := config.Default()
+	deny := false
+	cfg.Privacy.ModelsDevEnrichment = &deny
+	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, cmd := m.Update(pickerPicked("qwen2.5-coder:7b"))
-	if m.step != stepConfirmLimits {
-		t.Fatalf("after pickModel should be stepConfirmLimits, got %v", m.step)
-	}
-	if !m.detectingCaps {
-		t.Fatal("expected detectingCaps=true immediately after entering confirm limits for an Ollama-backed provider")
+	if m.step != stepPreparing {
+		t.Fatalf("after pickModel should be stepPreparing, got %v", m.step)
 	}
 	if cmd == nil {
-		t.Fatal("expected a capability-probe cmd")
-	}
-	view := ansi.Strip(m.View(80, 24))
-	if !strings.Contains(view, "please wait") || strings.Contains(view, "[↵] confirm") {
-		t.Fatalf("detecting view should show a wait-only footer, got:\n%s", view)
+		t.Fatal("expected a prepare cmd")
 	}
 
-	// Enter while still detecting must not advance the step.
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
-	if m.step != stepConfirmLimits {
-		t.Fatalf("Enter while detecting should not advance, got %v", m.step)
-	}
-
-	// Deliver the probe result. This test's "ollama" template points at a
-	// base URL with nothing listening, so the probe itself will fail and
-	// Caps comes back zero-valued — that's fine, this only needs to verify
-	// detectingCaps clears and the flow can proceed.
-	msg := cmd()
-	probed, ok := msg.(presetflow.CapabilityProbedMsg)
-	if !ok {
-		t.Fatalf("cmd produced %T, want presetflow.CapabilityProbedMsg", msg)
-	}
-	m, _ = m.Update(probed)
-	if m.detectingCaps {
-		t.Fatal("expected detectingCaps=false after CapabilityProbedMsg")
-	}
-
-	// Now Enter on confirm limits advances to summary.
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	// Deliver the prepared result directly: the prepare cmd itself would
+	// probe the provider, which this unit test must not do.
+	m, _ = m.Update(PreparedMsg{
+		Provider: m.providerName,
+		Presets: map[string]routing.ModelPreset{
+			"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b"},
+		},
+		Result: presetsetup.Result{Prepared: 1, Fallback: 1},
+	})
 	if m.step != stepSummary {
-		t.Fatalf("after confirm limits Enter should be stepSummary, got %v", m.step)
+		t.Fatalf("after prepare should be stepSummary, got %v", m.step)
 	}
 
 	// Press Enter on summary to emit DoneMsg.
@@ -290,30 +275,23 @@ func TestPickModelEmitsDone(t *testing.T) {
 	if dm.Model != "qwen2.5-coder:7b" {
 		t.Fatalf("DoneMsg.Model = %q", dm.Model)
 	}
+	if _, ok := dm.Presets["ollama/qwen2.5-coder:7b"]; !ok {
+		t.Fatalf("DoneMsg.Presets missing the prepared preset: %v", dm.Presets)
+	}
 }
 
-func TestEscCancelsCapabilityProbeAndRejectsLateResult(t *testing.T) {
+func TestConsentEscReturnsToModelPick(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen3"}}})
 	m, _ = m.Update(pickerPicked("qwen3"))
-	oldRequestID := m.capProbeID
-	if !m.detectingCaps {
-		t.Fatal("expected capability detection to be active")
+	if m.step != stepConsent {
+		t.Fatalf("step = %v, want stepConsent", m.step)
 	}
 
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m.step != stepPickModel || m.detectingCaps {
-		t.Fatalf("Esc should cancel detection and return to model picker: step=%v detecting=%v", m.step, m.detectingCaps)
-	}
-
-	m, _ = m.Update(pickerPicked("qwen3"))
-	if m.capProbeID == oldRequestID || !m.detectingCaps {
-		t.Fatal("re-picking the model should start a new capability request")
-	}
-	m, _ = m.Update(presetflow.CapabilityProbedMsg{Provider: "ollama", Model: "qwen3", RequestID: oldRequestID})
-	if !m.detectingCaps {
-		t.Fatal("late result from the canceled request must not clear the new detection state")
+	if m.step != stepPickModel {
+		t.Fatalf("Esc should return to the model picker, got %v", m.step)
 	}
 }
 
@@ -395,25 +373,6 @@ func TestPickKimiPropagatesTemperatureLocked(t *testing.T) {
 	}
 }
 
-func TestPasteMsgIntoConfirmLimitInput(t *testing.T) {
-	m := newConnectForModelPick(t)
-	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
-
-	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear the pre-filled catalog default
-	m.Update(tea.PasteMsg{Content: "65536"})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-
-	if m.confirm.Limits.ContextWindow != 65536 {
-		t.Fatalf("pasted context window = %d, want 65536", m.confirm.Limits.ContextWindow)
-	}
-	if m.confirm.Limits.ContextSource != presetflow.SourceEdited {
-		t.Fatalf("pasted context source = %q, want %q", m.confirm.Limits.ContextSource, presetflow.SourceEdited)
-	}
-}
-
-// TestTickThrottlesSpinner pins the tick delay: an immediate tick is a
-// busy loop that spins a core for the duration of every probe.
 func TestTickThrottlesSpinner(t *testing.T) {
 	start := time.Now()
 	msg := tick()()
@@ -476,8 +435,10 @@ func TestRemoteGateYEnablesAndEntersAPIKey(t *testing.T) {
 }
 
 func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
-	// Simulate: pick remote template -> gate -> y -> apiKey -> enter -> probe -> pick model -> confirm limits -> summary enter
+	// Simulate: pick remote template -> gate -> y -> apiKey -> enter -> probe -> pick model -> prepare -> summary enter
 	cfg := config.Default()
+	deny := false
+	cfg.Privacy.ModelsDevEnrichment = &deny
 	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("openrouter"))
 	m, _ = m.Update(tea.KeyPressMsg{Code: 121}) // y
@@ -485,15 +446,14 @@ func TestDoneMsgCarriesEnabledRemote(t *testing.T) {
 	m, _ = m.Update(tea.KeyPressMsg{Code: 13}) // enter -> probing
 	// Skip probe
 	m, _ = m.Update(tea.KeyPressMsg{Code: 115}) // s -> skip
-	// Pick a model -> lands on confirm limits
+	// Pick a model -> lands on preparing
 	m, _ = m.Update(pickerPicked("gpt-4o"))
-	if m.step != stepConfirmLimits {
-		t.Fatalf("after pickModel should be stepConfirmLimits, got %v", m.step)
+	if m.step != stepPreparing {
+		t.Fatalf("after pickModel should be stepPreparing, got %v", m.step)
 	}
-	// Press Enter on confirm limits to advance to summary
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
 	if m.step != stepSummary {
-		t.Fatalf("after confirm limits should be stepSummary, got %v", m.step)
+		t.Fatalf("after prepare should be stepSummary, got %v", m.step)
 	}
 	// Press Enter on summary to emit DoneMsg
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
@@ -535,9 +495,7 @@ func TestSummaryShowsNameModelAndDestination(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Confirm limits then land on summary.
-	clearCaps(m)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	advanceToSummary(m)
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -558,9 +516,7 @@ func TestSummaryEnterEmitsDone(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Confirm limits then land on summary.
-	clearCaps(m)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	advanceToSummary(m)
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -579,9 +535,7 @@ func TestSummaryRenameChangesProviderName(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Confirm limits then land on summary.
-	clearCaps(m)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	advanceToSummary(m)
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -615,22 +569,26 @@ func TestSummaryRenameChangesProviderName(t *testing.T) {
 	}
 }
 
-func TestScopedModelSwitchGoesThroughConfirmLimits(t *testing.T) {
-	m := New(Opts{Cfg: config.Default(), SkipToIntroModel: true, ScopedProvider: "ollama", Discovered: map[string][]schema.ModelInfo{}})
+func TestScopedModelSwitchPreparesPresets(t *testing.T) {
+	cfg := config.Default()
+	deny := false
+	cfg.Privacy.ModelsDevEnrichment = &deny
+	m := New(Opts{Cfg: cfg, SkipToIntroModel: true, ScopedProvider: "ollama", Discovered: map[string][]schema.ModelInfo{}})
 	if m.step != stepPickModel {
 		t.Fatalf("expected stepPickModel, got %v", m.step)
 	}
-	// Picking a model now lands on confirm limits, not stepDone.
+	// Picking a model now lands on preparing, not stepDone.
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	if m.step != stepConfirmLimits {
-		t.Fatalf("expected stepConfirmLimits, got %v", m.step)
+	if m.step != stepPreparing {
+		t.Fatalf("expected stepPreparing, got %v", m.step)
 	}
-	// Clear the async capability-probe gate, then Enter on confirm limits to
-	// emit DoneMsg.
-	clearCaps(m)
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	if m.step != stepSummary {
+		t.Fatalf("expected stepSummary, got %v", m.step)
+	}
 	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
 	if cmd == nil {
-		t.Fatal("Enter on confirm limits should emit a DoneMsg cmd")
+		t.Fatal("Enter on summary should emit a DoneMsg cmd")
 	}
 	msg := cmd()
 	dm, ok := msg.(DoneMsg)
@@ -647,9 +605,7 @@ func TestSummaryEscGoesBackToModelPick(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Confirm limits then land on summary.
-	clearCaps(m)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	advanceToSummary(m)
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -667,9 +623,7 @@ func TestRenameEmptyNameShowsError(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Confirm limits then land on summary.
-	clearCaps(m)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	advanceToSummary(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	m.renameInput.SetValue("")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
@@ -687,9 +641,7 @@ func TestRenameDuplicateNameShowsError(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Confirm limits then land on summary.
-	clearCaps(m)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	advanceToSummary(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	m.renameInput.SetValue("ollama")
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 13})
@@ -710,9 +662,7 @@ func TestRenameToOwnNameIsAllowed(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Confirm limits then land on summary.
-	clearCaps(m)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	advanceToSummary(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	// The uniqueName() will produce "ollama-2" or similar, but we set it to "ollama" to test
 	// that renaming to the same name is allowed.
@@ -733,9 +683,7 @@ func TestRenameEscReturnsToSummary(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Confirm limits then land on summary.
-	clearCaps(m)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	advanceToSummary(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
 	if m.step != stepRename {
 		t.Fatalf("expected stepRename, got %v", m.step)
@@ -751,9 +699,7 @@ func TestPasteMsgIntoRenameInput(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	// Confirm limits then land on summary.
-	clearCaps(m)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	advanceToSummary(m)
 	if m.step != stepSummary {
 		t.Fatalf("expected stepSummary, got %v", m.step)
 	}
@@ -821,8 +767,7 @@ func TestSummaryRenameHintIsProminent(t *testing.T) {
 	m, _ = m.Update(pickerPicked("ollama"))
 	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
-	clearCaps(m)
-	m, _ = m.Update(tea.KeyPressMsg{Code: 13})
+	advanceToSummary(m)
 	view := m.View(80, 24)
 	if !strings.Contains(view, "rename provider") {
 		t.Fatalf("summary view should mention rename provider, got:\n%s", view)
@@ -846,17 +791,17 @@ func TestModelPickerUsesStoredTemplateID(t *testing.T) {
 	}
 }
 
-// clearCaps delivers a zero-valued capability result for m's current confirm
-// target, clearing the async detectingCaps gate on an Ollama-backed provider
-// without performing a network probe. Callers that pick a model on an
-// Ollama-backed provider (providerCfg.Type == "ollama") must call this after
-// the pick so a subsequent Enter can advance the confirm screen.
-func clearCaps(m *Model) {
-	m.Update(presetflow.CapabilityProbedMsg{Provider: m.providerName, Model: m.modelChosen, RequestID: m.capProbeID})
+// advanceToSummary drives the consent/prepare flow to the summary step
+// without running the prepare cmd, which would probe the provider.
+func advanceToSummary(m *Model) {
+	if m.step == stepConsent {
+		m.Update(tea.KeyPressMsg{Code: 110}) // n
+	}
+	m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
 }
 
 // newConnectForModelPick builds a Model at stepPickModel with a discovered
-// model that has known limits, ready to test the confirm-limits step.
+// model that has known limits, ready to test the consent/prepare flow.
 func newConnectForModelPick(t *testing.T) *Model {
 	t.Helper()
 	m := New(Opts{
@@ -875,55 +820,103 @@ func newConnectForModelPick(t *testing.T) *Model {
 	return m
 }
 
-func TestPickingAModelEntersConfirmLimits(t *testing.T) {
+func TestPickingAModelEntersConsent(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 
-	if m.step != stepConfirmLimits {
-		t.Fatalf("step = %v, want stepConfirmLimits", m.step)
-	}
-	if m.confirm.Limits.ContextWindow != 128000 {
-		t.Errorf("ContextWindow = %d, want the discovered figure", m.confirm.Limits.ContextWindow)
+	if m.step != stepConsent {
+		t.Fatalf("step = %v, want stepConsent", m.step)
 	}
 }
 
-func TestConfirmLimitsReachedFromScopedModelsFlow(t *testing.T) {
+func TestScopedModelsFlowReachesConsent(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.scopedProvider = "openai" // the /models flow
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
 
-	if m.step != stepConfirmLimits {
-		t.Fatalf("step = %v, want stepConfirmLimits — /models must not skip it", m.step)
+	if m.step != stepConsent {
+		t.Fatalf("step = %v, want stepConsent — /models must not skip it", m.step)
 	}
 }
 
-func TestConfirmLimitsViewShowsFiguresAndSources(t *testing.T) {
+func TestConsentAllowSetsPreferenceAndPrepares(t *testing.T) {
 	m := newConnectForModelPick(t)
 	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 121}) // y
 
-	view := ansi.Strip(m.View(80, 24))
-	for _, want := range []string{"128000", "context", "max output", string(presetflow.SourceReported)} {
-		if !strings.Contains(strings.ToLower(view), strings.ToLower(want)) {
-			t.Errorf("view missing %q:\n%s", want, view)
-		}
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing", m.step)
+	}
+	if m.cfg.Privacy.ModelsDevEnrichment == nil || !*m.cfg.Privacy.ModelsDevEnrichment {
+		t.Fatal("answering y must record an allow preference")
 	}
 }
 
-func TestConfirmLimitsRendersUnknownNotZero(t *testing.T) {
+func TestConsentDenySetsPreferenceAndPrepares(t *testing.T) {
 	m := newConnectForModelPick(t)
-	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
 
-	view := ansi.Strip(m.View(80, 24))
-	if !strings.Contains(strings.ToLower(view), "unknown") {
-		t.Errorf("unknown limits must say so:\n%s", view)
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing", m.step)
 	}
-	// A bare "0" would read as a configured value.
-	for _, line := range strings.Split(view, "\n") {
-		l := strings.ToLower(line)
-		if (strings.Contains(l, "context") || strings.Contains(l, "max output")) &&
-			strings.Contains(line, " 0") {
-			t.Errorf("rendered a confident zero: %q", line)
-		}
+	if m.cfg.Privacy.ModelsDevEnrichment == nil || *m.cfg.Privacy.ModelsDevEnrichment {
+		t.Fatal("answering n must record a deny preference")
+	}
+}
+
+func TestConnectSkipsConsentWhenAnswered(t *testing.T) {
+	cfg := config.Default()
+	deny := false
+	cfg.Privacy.ModelsDevEnrichment = &deny
+	m := New(Opts{
+		Cfg: cfg,
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {{ID: "gpt-4o", ContextWindow: 128000}},
+		},
+		SkipToIntroModel: true,
+		ScopedProvider:   "openai",
+	})
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing (consent already answered)", m.step)
+	}
+}
+
+func TestConnectReachesSummaryWithoutConfirmScreen(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+
+	if m.step != stepSummary {
+		t.Fatalf("step = %v, want stepSummary", m.step)
+	}
+}
+
+func TestConnectDoneCarriesPreparedPresets(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
+	m, _ = m.Update(PreparedMsg{
+		Provider: m.providerName,
+		Presets: map[string]routing.ModelPreset{
+			"openai/gpt-4o":      {Name: "openai/gpt-4o", Provider: "openai", Model: "gpt-4o"},
+			"openai/gpt-4o-mini": {Name: "openai/gpt-4o-mini", Provider: "openai", Model: "gpt-4o-mini"},
+		},
+		Result: presetsetup.Result{Prepared: 2, Matched: 2},
+	})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
+	if cmd == nil {
+		t.Fatal("Enter on summary should emit a DoneMsg cmd")
+	}
+	dm, ok := cmd().(DoneMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want DoneMsg", cmd())
+	}
+	if len(dm.Presets) != 2 {
+		t.Fatalf("DoneMsg.Presets = %v, want 2 entries", dm.Presets)
 	}
 }
 
@@ -934,68 +927,6 @@ func TestConfirmLimitsEscGoesBackToModelPick(t *testing.T) {
 
 	if m.step != stepPickModel {
 		t.Errorf("step = %v, want stepPickModel after Esc", m.step)
-	}
-}
-
-func TestConfirmLimitsPrefersSavedPresetFigures(t *testing.T) {
-	// Re-picking a model whose fresh probe returned no limits must surface
-	// the figures saved in the existing preset (possibly hand-edited),
-	// not "unknown".
-	cfg := config.Default()
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"openai/acme-ultra-3": {
-			Name: "openai/acme-ultra-3", Provider: "openai", Model: "acme-ultra-3",
-			ContextWindow: 200000, MaxOutputTokens: 8192,
-		},
-	}
-	m := New(Opts{
-		Cfg: cfg,
-		Discovered: map[string][]schema.ModelInfo{
-			"openai": {{ID: "acme-ultra-3"}}, // probed, but with zero limits
-		},
-		SkipToIntroModel: true,
-		ScopedProvider:   "openai",
-	})
-	m.handlePickerPicked(encodeModelValue("openai", "acme-ultra-3"))
-
-	if m.step != stepConfirmLimits {
-		t.Fatalf("step = %v, want stepConfirmLimits", m.step)
-	}
-	if m.confirm.Limits.ContextWindow != 200000 || m.confirm.Limits.MaxOutputTokens != 8192 {
-		t.Errorf("limits = %d/%d, want the saved preset's 200000/8192",
-			m.confirm.Limits.ContextWindow, m.confirm.Limits.MaxOutputTokens)
-	}
-	if m.confirm.Limits.ContextSource != presetflow.SourcePreset || m.confirm.Limits.OutputSource != presetflow.SourcePreset {
-		t.Errorf("sources = %q/%q, want both %q", m.confirm.Limits.ContextSource, m.confirm.Limits.OutputSource, presetflow.SourcePreset)
-	}
-}
-
-func TestConfirmLimitsFetchedFiguresBeatSavedPreset(t *testing.T) {
-	// A fresh fetch is newer than the saved preset: non-zero discovered
-	// figures win.
-	cfg := config.Default()
-	cfg.Models.Presets = map[string]routing.ModelPreset{
-		"openai/acme-ultra-3": {
-			Name: "openai/acme-ultra-3", Provider: "openai", Model: "acme-ultra-3",
-			ContextWindow: 200000, MaxOutputTokens: 8192,
-		},
-	}
-	m := New(Opts{
-		Cfg: cfg,
-		Discovered: map[string][]schema.ModelInfo{
-			"openai": {{ID: "acme-ultra-3", ContextWindow: 256000, MaxOutputTokens: 4096}},
-		},
-		SkipToIntroModel: true,
-		ScopedProvider:   "openai",
-	})
-	m.handlePickerPicked(encodeModelValue("openai", "acme-ultra-3"))
-
-	if m.confirm.Limits.ContextWindow != 256000 || m.confirm.Limits.MaxOutputTokens != 4096 {
-		t.Errorf("limits = %d/%d, want the fetched 256000/4096",
-			m.confirm.Limits.ContextWindow, m.confirm.Limits.MaxOutputTokens)
-	}
-	if m.confirm.Limits.ContextSource != presetflow.SourceReported || m.confirm.Limits.OutputSource != presetflow.SourceReported {
-		t.Errorf("sources = %q/%q, want both %q", m.confirm.Limits.ContextSource, m.confirm.Limits.OutputSource, presetflow.SourceReported)
 	}
 }
 
@@ -1443,9 +1374,9 @@ func TestModelPickerPickAttributesTheRightProvider(t *testing.T) {
 		t.Errorf("modelChosen = %q, want llama-3.3-70b", m.modelChosen)
 	}
 	// The scoped flow (scopedProvider is empty since AllProviders doesn't set it)
-	// should land on stepConfirmLimits, not stepDone.
-	if m.step != stepConfirmLimits {
-		t.Errorf("step = %v, want stepConfirmLimits", m.step)
+	// should land on the consent step, not stepDone.
+	if m.step != stepConsent {
+		t.Errorf("step = %v, want stepConsent", m.step)
 	}
 	_ = cmd
 }
@@ -1669,123 +1600,6 @@ func TestManualRowPickScopesToItsProvider(t *testing.T) {
 	}
 }
 
-func TestEditingContextWindowMarksItEdited(t *testing.T) {
-	m := newConnectForModelPick(t)
-	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
-
-	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear pre-filled value
-	for _, r := range "200000" {
-		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
-	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-
-	if m.confirm.Limits.ContextWindow != 200000 {
-		t.Errorf("ContextWindow = %d, want 200000", m.confirm.Limits.ContextWindow)
-	}
-	if m.confirm.Limits.ContextSource != presetflow.SourceEdited {
-		t.Errorf("ContextSource = %q, want %q", m.confirm.Limits.ContextSource, presetflow.SourceEdited)
-	}
-	if m.confirm.Limits.OutputSource == presetflow.SourceEdited {
-		t.Error("editing the context window must not relabel the output cap")
-	}
-}
-
-func TestEditingMaxOutputMarksItEdited(t *testing.T) {
-	m := newConnectForModelPick(t)
-	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
-
-	m.Update(tea.KeyPressMsg{Code: 'o', Text: "o"})
-	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear pre-filled value
-	for _, r := range "32768" {
-		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
-	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-
-	if m.confirm.Limits.MaxOutputTokens != 32768 {
-		t.Errorf("MaxOutputTokens = %d, want 32768", m.confirm.Limits.MaxOutputTokens)
-	}
-	if m.confirm.Limits.OutputSource != presetflow.SourceEdited {
-		t.Errorf("OutputSource = %q, want %q", m.confirm.Limits.OutputSource, presetflow.SourceEdited)
-	}
-}
-
-func TestRejectsNonNumericEdit(t *testing.T) {
-	m := newConnectForModelPick(t)
-	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
-	before := m.confirm.Limits.ContextWindow
-
-	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
-	for _, r := range "not a number" {
-		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
-	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-
-	if m.confirm.Limits.ContextWindow != before {
-		t.Errorf("ContextWindow = %d, want it unchanged at %d", m.confirm.Limits.ContextWindow, before)
-	}
-	if m.confirm.Err == "" {
-		t.Error("want an error message for a non-numeric edit")
-	}
-}
-
-func TestRejectsNegativeEdit(t *testing.T) {
-	m := newConnectForModelPick(t)
-	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
-	before := m.confirm.Limits.ContextWindow
-
-	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
-	for _, r := range "-1" {
-		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
-	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-
-	if m.confirm.Limits.ContextWindow != before {
-		t.Errorf("ContextWindow = %d, want it unchanged", m.confirm.Limits.ContextWindow)
-	}
-}
-
-func TestEditingAnUnknownFigureResolvesIt(t *testing.T) {
-	m := newConnectForModelPick(t)
-	m.handlePickerPicked(encodeModelValue("openai", "totally-unknown-model"))
-	if m.confirm.Limits.ContextSource != presetflow.SourceDefault {
-		t.Fatalf("precondition: want built-in default, got %q", m.confirm.Limits.ContextSource)
-	}
-
-	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl}) // clear the pre-filled default
-	for _, r := range "8192" {
-		m.Update(tea.KeyPressMsg{Text: string(r), Code: r})
-	}
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-
-	if m.confirm.Limits.ContextWindow != 8192 || m.confirm.Limits.ContextSource != presetflow.SourceEdited {
-		t.Errorf("got %d/%q, want 8192/%q", m.confirm.Limits.ContextWindow, m.confirm.Limits.ContextSource, presetflow.SourceEdited)
-	}
-}
-
-func TestEditingZeroClearsToUnknown(t *testing.T) {
-	m := newConnectForModelPick(t)
-	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
-	if m.confirm.Limits.ContextSource != presetflow.SourceReported {
-		t.Fatalf("precondition: want reported, got %q", m.confirm.Limits.ContextSource)
-	}
-
-	m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
-	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
-	m.Update(tea.KeyPressMsg{Text: "0", Code: '0'})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-
-	if m.confirm.Limits.ContextWindow != 0 {
-		t.Errorf("ContextWindow = %d, want 0 (cleared)", m.confirm.Limits.ContextWindow)
-	}
-	if m.confirm.Limits.ContextSource != presetflow.SourceUnknown {
-		t.Errorf("ContextSource = %q, want %q", m.confirm.Limits.ContextSource, presetflow.SourceUnknown)
-	}
-}
-
 func TestModelStepSubtitleNamesTheProviderWhenScoped(t *testing.T) {
 	m := New(Opts{
 		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
@@ -1848,16 +1662,127 @@ func TestRenderRenameInputTruncatesSafely(t *testing.T) {
 	}
 }
 
-func TestDoneNilConfirmDoesNotPanic(t *testing.T) {
-	m := &Model{} // confirm is nil (only set once the confirm-limits step is entered)
+func TestDoneWithoutPreparedResultDoesNotPanic(t *testing.T) {
+	m := &Model{} // no prepare has run, so prepared is the zero value
 	cmd := m.done()
 	if cmd == nil {
 		t.Fatal("done() should return a tea.Cmd")
 	}
-	// Executing the returned closure must not dereference a nil confirm.
+	// Executing the returned closure must not dereference a nil prepared result.
 	msg := cmd()
 	if _, ok := msg.(DoneMsg); !ok {
 		t.Fatalf("done() cmd returned %T, want DoneMsg", msg)
+	}
+}
+
+func TestDoneCarriesProbedCaps(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
+	toolCalling := true
+	m, _ = m.Update(PreparedMsg{
+		Provider: m.providerName,
+		Caps:     provider.ModelCapabilities{ContextWindow: 32768, ToolCalling: &toolCalling},
+		Result:   presetsetup.Result{Prepared: 1, Fallback: 1},
+	})
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 13})
+	if cmd == nil {
+		t.Fatal("Enter on summary should emit a DoneMsg cmd")
+	}
+	dm, ok := cmd().(DoneMsg)
+	if !ok {
+		t.Fatalf("cmd produced %T, want DoneMsg", cmd())
+	}
+	if dm.ContextWindow != 32768 {
+		t.Fatalf("DoneMsg.ContextWindow = %d, want 32768", dm.ContextWindow)
+	}
+	if dm.ToolCalling == nil || !*dm.ToolCalling {
+		t.Fatalf("DoneMsg.ToolCalling = %v, want true", dm.ToolCalling)
+	}
+}
+
+func TestPreparedMsgFromAnotherProviderIsIgnored(t *testing.T) {
+	m := newConnectForModelPick(t)
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // n
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing", m.step)
+	}
+	m, _ = m.Update(PreparedMsg{Provider: "some-other-provider", Result: presetsetup.Result{Prepared: 1}})
+	if m.step != stepPreparing {
+		t.Fatalf("stale PreparedMsg moved the wizard to %v, want stepPreparing", m.step)
+	}
+}
+
+func TestPrepareCmdDoesNotMutateLivePresetMap(t *testing.T) {
+	cfg := config.Default()
+	deny := false
+	cfg.Privacy.ModelsDevEnrichment = &deny
+	const name = "openai/gpt-4o"
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		name: {Name: name, Provider: "openai", Model: "gpt-4o", ContextWindow: 128000},
+	}
+	m := New(Opts{
+		Cfg: cfg,
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {{ID: "gpt-4o"}, {ID: "gpt-4o-mini"}},
+		},
+		SkipToIntroModel: true,
+		ScopedProvider:   "openai",
+		DataDir:          t.TempDir(),
+	})
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing", m.step)
+	}
+	msg := m.prepareCmd()()
+	pm, ok := msg.(PreparedMsg)
+	if !ok {
+		t.Fatalf("prepareCmd produced %T, want PreparedMsg", msg)
+	}
+	if len(pm.Presets) != 2 {
+		t.Fatalf("prepared %d presets, want 2", len(pm.Presets))
+	}
+	// The wizard works on a copy: a cancelled connect must leave the live
+	// config's preset map exactly as it was.
+	if _, ok := cfg.Models.Presets["openai/gpt-4o-mini"]; ok {
+		t.Fatal("prepareCmd added a preset to the live config")
+	}
+	if got := cfg.Models.Presets[name].ContextWindow; got != 128000 {
+		t.Fatalf("live preset ContextWindow = %d, want 128000", got)
+	}
+}
+
+func TestPrepareCmdSkipsCatalogWhenDenied(t *testing.T) {
+	cfg := config.Default()
+	deny := false
+	cfg.Privacy.ModelsDevEnrichment = &deny
+	dataDir := t.TempDir()
+	m := New(Opts{
+		Cfg: cfg,
+		Discovered: map[string][]schema.ModelInfo{
+			"openai": {{ID: "gpt-4o"}},
+		},
+		SkipToIntroModel: true,
+		ScopedProvider:   "openai",
+		DataDir:          dataDir,
+	})
+	m.handlePickerPicked(encodeModelValue("openai", "gpt-4o"))
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing", m.step)
+	}
+	msg := m.prepareCmd()()
+	pm, ok := msg.(PreparedMsg)
+	if !ok {
+		t.Fatalf("prepareCmd produced %T, want PreparedMsg", msg)
+	}
+	if pm.ProvenanceErr != nil {
+		t.Fatalf("ProvenanceErr = %v, want nil for a missing sidecar", pm.ProvenanceErr)
+	}
+	// A denied consent must not touch the network, so no catalog cache is
+	// written.
+	if _, err := os.Stat(filepath.Join(dataDir, "models-dev", "catalog.json")); err == nil {
+		t.Fatal("denied consent still fetched the models.dev catalog")
 	}
 }
 

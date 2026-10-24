@@ -77,6 +77,55 @@ func TestPrivacyFrameTogglesRemoteProviders(t *testing.T) {
 	}
 }
 
+func TestPrivacyFrameModelsDevEnrichmentCycles(t *testing.T) {
+	s := newState(config.Default())
+	ps := newPaneStack(privacyFrame(s))
+	ps.SetSize(60, 20)
+	for ps.Top().List.CursorRow().Title != "models.dev enrichment" {
+		ps.Update(kp("j"))
+	}
+	row := ps.Top().List.CursorRow()
+	if row == nil {
+		t.Fatal("expected a models.dev enrichment row")
+	}
+	if row.TomlPath != "privacy.models_dev_enrichment" {
+		t.Fatalf("TomlPath = %q, want privacy.models_dev_enrichment", row.TomlPath)
+	}
+	if got := row.GetStr(); got != "ask" {
+		t.Fatalf("initial value = %q, want ask", got)
+	}
+	if s.cfg.Privacy.ModelsDevEnrichment != nil {
+		t.Fatalf("initial pointer = %v, want nil", *s.cfg.Privacy.ModelsDevEnrichment)
+	}
+
+	// ask -> allow
+	ps.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if s.cfg.Privacy.ModelsDevEnrichment == nil || !*s.cfg.Privacy.ModelsDevEnrichment {
+		t.Fatalf("after one cycle ModelsDevEnrichment = %v, want true", s.cfg.Privacy.ModelsDevEnrichment)
+	}
+	if got := row.GetStr(); got != "allow" {
+		t.Fatalf("after one cycle value = %q, want allow", got)
+	}
+
+	// allow -> deny
+	ps.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if s.cfg.Privacy.ModelsDevEnrichment == nil || *s.cfg.Privacy.ModelsDevEnrichment {
+		t.Fatalf("after two cycles ModelsDevEnrichment = %v, want false", s.cfg.Privacy.ModelsDevEnrichment)
+	}
+	if got := row.GetStr(); got != "deny" {
+		t.Fatalf("after two cycles value = %q, want deny", got)
+	}
+
+	// deny -> ask (back to unanswered)
+	ps.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if s.cfg.Privacy.ModelsDevEnrichment != nil {
+		t.Fatalf("after three cycles ModelsDevEnrichment = %v, want nil", *s.cfg.Privacy.ModelsDevEnrichment)
+	}
+	if got := row.GetStr(); got != "ask" {
+		t.Fatalf("after three cycles value = %q, want ask", got)
+	}
+}
+
 func TestWebFrameDurationValidation(t *testing.T) {
 	s := newState(config.Default())
 	ps := newPaneStack(webFrame(s))

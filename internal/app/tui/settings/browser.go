@@ -523,11 +523,10 @@ func (b *BrowserPanel) closePicker() {
 }
 
 // startConfirm opens the shared confirm-limits screen for a just-picked
-// discovered model, mirroring connect.Model.enterConfirmLimits. It probes
-// the model's capabilities asynchronously (Ollama only — see
-// provider.CapabilityProber) only when there is something to probe, so the
-// "detecting…" state never appears, and never hangs, for providers that
-// can't report anything beyond their bulk model list.
+// discovered model. It probes the model's capabilities asynchronously
+// (Ollama only — see provider.CapabilityProber) only when there is something
+// to probe, so the "detecting…" state never appears, and never hangs, for
+// providers that can't report anything beyond their bulk model list.
 func (b *BrowserPanel) startConfirm(pending pendingMaterialization) tea.Cmd {
 	b.cancelCapabilityProbe()
 	pc := b.reg.st.cfg.Providers[pending.ProviderName]

@@ -17,6 +17,7 @@ worktrees/
 plugins/
 plugins-lock.json
 skills/
+progress/
 `
 
 // EnsureMarshalDirIgnored writes .marshal/.gitignore excluding

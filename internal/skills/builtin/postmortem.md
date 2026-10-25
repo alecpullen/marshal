@@ -1,6 +1,6 @@
 ---
 name: postmortem
-description: Append semantic observations to a Marshal session postmortem report. Use only when the prompt gives you the path to a report JSON file and asks for the agent pass — review the session transcript and record friction you can see (wrong-tool choices, repeated failed strategies, prompt-confusion patterns) into the report's agent_observations field. Extraction only; never synthesize.
+description: Append observations to a session postmortem report's agent_observations. Use only when asked to run the postmortem skill.
 risk: workspace_write
 ---
 

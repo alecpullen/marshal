@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+**Progress-reporting skill**
+
+- The agent can now show a measured progress card for long work. The built-in
+  `progress-reporting` skill teaches `shell.run`'s `progress` option and the
+  `@@marshal-progress/v1` record format.
+- It carries ready-to-write producers for downloads, SSH transfers and phased
+  jobs, written to `.marshal/progress/`. Go tests need no producer:
+  `go test -json` with profile `tests`.
+
 **System access mode**
 
 - A per-session, runtime-only modifier that grants full-filesystem read/write
@@ -39,6 +48,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy says so.
 
 ### Changed
+
+**Room for the progress-reporting skill**
+
+- The postmortem skill's description is shorter, and `shell.run`'s description
+  no longer mentions its guardrails, which still apply. Together they make room
+  for the new skill within the prompt budgets, and the default system prompt is
+  back under its ceiling.
+- New projects' `.marshal/.gitignore` also ignores `progress/`.
 
 **The live box**
 

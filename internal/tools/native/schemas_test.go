@@ -52,10 +52,12 @@ func TestShellToolTextDocumentsWaitContinuationAndStop(t *testing.T) {
 			"background",
 			"not killed by elapsed time",
 			"agent.await",
+			"progress-reporting",
 		},
 		"test.run": {
 			"managed execution",
 			"agent.await",
+			"progress-reporting",
 		},
 	} {
 		tool, ok := reg.Lookup(name)
@@ -88,5 +90,14 @@ func TestShellToolTextDocumentsWaitContinuationAndStop(t *testing.T) {
 		if !strings.Contains(timeout.Description, want) {
 			t.Errorf("timeout_seconds description missing %q: %q", want, timeout.Description)
 		}
+	}
+
+	// The progress property must point the model at the skill that documents it.
+	progress, ok := schema.Properties["progress"]
+	if !ok {
+		t.Fatal("shell.run schema has no progress property")
+	}
+	if want := "live progress card; see skill progress-reporting"; progress.Description != want {
+		t.Errorf("progress description = %q, want %q", progress.Description, want)
 	}
 }

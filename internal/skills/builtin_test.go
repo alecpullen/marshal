@@ -67,6 +67,44 @@ func TestLoadSkillsIncludesBuiltInPostmortemSkill(t *testing.T) {
 	}
 }
 
+func TestLoadSkillsIncludesBuiltInProgressReportingSkill(t *testing.T) {
+	idx, err := LoadSkills(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	skill, ok := idx.Load("progress-reporting")
+	if !ok {
+		t.Fatal("built-in progress-reporting skill is missing")
+	}
+	const wantDescription = "Show a live progress bar for a long download, transfer, test run or phased job, using shell.run's progress option."
+	if skill.Description != wantDescription {
+		t.Errorf("description = %q, want %q", skill.Description, wantDescription)
+	}
+	if skill.Risk != "workspace_write" {
+		t.Errorf("risk = %q, want workspace_write", skill.Risk)
+	}
+	if len(skill.Body) > 12288 {
+		t.Errorf("body is %d bytes, over the 12288 ceiling", len(skill.Body))
+	}
+	lower := strings.ToLower(skill.Body)
+	for _, want := range []string{
+		"@@marshal-progress/v1 ",
+		"events-v1",
+		"go-test-json",
+		"go test -json",
+		".marshal/progress/",
+		"file.write",
+		"marshal_progress",
+		"agent.await",
+		"never invent a total",
+		"30 seconds",
+	} {
+		if !strings.Contains(lower, want) {
+			t.Errorf("progress-reporting body missing %q", want)
+		}
+	}
+}
+
 func TestLoadSkillsIncludesBuiltInWritingPlansSkill(t *testing.T) {
 	idx, err := LoadSkills(t.TempDir(), t.TempDir())
 	if err != nil {
@@ -123,6 +161,7 @@ func TestBuiltInSkillsAllLoad(t *testing.T) {
 		"marshal-sdd-plan-authoring",
 		"marshal-writing-plans",
 		"postmortem",
+		"progress-reporting",
 		"systematic-debugging",
 		"test-driven-development",
 		"using-skills",
@@ -173,7 +212,7 @@ func TestBuiltInSkillsAreRepoNeutral(t *testing.T) {
 	}
 	for _, sk := range idx.List() {
 		lower := strings.ToLower(sk.Body)
-		for _, banned := range []string{"cmd/marshal", "cgo_enabled=1 go", "this codebase uses", "internal/app", "internal/agent", "web/bridge"} {
+		for _, banned := range []string{"cmd/marshal", "cgo_enabled=1 go", "this codebase uses", "internal/app", "internal/agent", "web/bridge", "docs/live-work"} {
 			if strings.Contains(lower, banned) {
 				t.Errorf("built-in %q hard-codes repo-specific text %q", sk.Name, banned)
 			}

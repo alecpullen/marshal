@@ -57,12 +57,12 @@ func (t *toolSet) shellRunTool() registry.Tool {
 		Name: "shell.run",
 		Description: "Run a shell command with the workspace root as the current working directory. " +
 			"Prefer native tools such as repo.search, symbols, and file.read over broad filesystem commands " +
-			"(e.g. find /, ls -R /, grep -r /). Commands are subject to conservative guardrails. " +
+			"(e.g. find /, ls -R /, grep -r /). " +
 			"Never use shell.run to create or modify files (no redirection, heredocs, or tee) — use file.write or file.edit instead. " +
 			"Use git.* for repository state and the workspace tools for worktree isolation and merging. " +
 			"The command is not killed by elapsed time: one still running when the wait ends continues in the background with a job_id. " +
 			"agent.await reports its status, exit code, stop cause and recent output; agent.kill stops one named job.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime. Omit or pass 0 for the foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately"}},"required":["command"],"additionalProperties":false}`),
+		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card; see skill progress-reporting","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime. Omit or pass 0 for the foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately"}},"required":["command"],"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -99,7 +99,7 @@ func (t *toolSet) testRunTool() registry.Tool {
 			"the override is subject to the same approval policy. " +
 			"The command runs through the same managed execution as shell.run: this call waits for the configured foreground period, " +
 			"and a test command still running when the wait ends continues in the background with a job_id for agent.await instead of being killed.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false}},"additionalProperties":false}`),
+		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card; see skill progress-reporting","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false}},"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
 		// Internal: the general agent runs tests through shell.run; only the swarm tester (TesterView) gets this constrained tool.
 		Internal: true,

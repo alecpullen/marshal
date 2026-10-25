@@ -30,3 +30,8 @@ control prefix. Unknown totals omit total; never fabricate a denominator.
 
 Records describe measurements/checklists. Only the real process result can
 complete or stop a card. No example is a production download/transfer backend.
+
+The built-in `progress-reporting` skill embeds self-contained copies of these
+producers, with the helper renamed `marshal_progress.py`, so the agent can
+write them into any project's `.marshal/progress/`. A change to one copy
+belongs in the other too.

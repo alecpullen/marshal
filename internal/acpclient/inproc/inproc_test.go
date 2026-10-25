@@ -155,6 +155,13 @@ func TestStatusMirrorsTheState(t *testing.T) {
 		UpdatedAt:   time.Unix(200, 0),
 	})
 	state.BeginGeneration("g", 2, "d")
+	// Plant the identity, backup and subagent state the TUI reads: a fresh
+	// state has leaf 0 and no branches, so without this the expectations below
+	// could not tell a mirrored value from a hard-coded zero.
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "hi", session.ContentTypeMarkdown)
+	state.StoreBackup([]session.BackupFile{{Path: "notes.txt", Content: "old"}})
+	state.RegisterSubagent("scout", newState(t, "child"))
 
 	got := sess.Status()
 	want := acpwire.SessionStatus{
@@ -206,6 +213,9 @@ func TestStatusMirrorsTheState(t *testing.T) {
 		},
 		SudoUnlock: true,
 		Trusted:    true,
+		HasBackup:  true,
+
+		SubagentRunning: true,
 		Activity: acpwire.Activity{
 			Kind:      string(session.ActivityTool),
 			Label:     "reading",
@@ -227,6 +237,15 @@ func TestStatusMirrorsTheState(t *testing.T) {
 			SessionOpen: true,
 			UpdatedAt:   200000,
 		},
+	}
+	// LeafID and Branches are the only expectations the state itself supplies,
+	// so pin that the planted values are non-trivial: a Status() that
+	// hard-coded zero would otherwise compare equal to them.
+	if got.LeafID == 0 {
+		t.Errorf("LeafID = 0, want the non-zero leaf planted by AddMessage")
+	}
+	if len(got.Branches) == 0 {
+		t.Errorf("Branches = %v, want the branch tips planted by AddMessage", got.Branches)
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Status() =\n%+v\nwant\n%+v", got, want)

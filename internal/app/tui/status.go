@@ -196,12 +196,18 @@ func joinSegs(segs []statusSeg) string {
 	return strings.Join(parts, dimSeparator)
 }
 
-// modeSegment returns the persistent access label for the status line. It
-// reads one committed interaction snapshot and always includes every active
-// modifier, so approval, browsing, answering and activity cues on the right
-// can never conceal the effective permission state.
+// modeSegment returns the persistent access label for the status line, read
+// from a fresh status. Callers that already took a status snapshot pass it to
+// modeSegmentFor instead, so one frame never composes two different status
+// values.
 func (m Model) modeSegment() string {
-	access := m.sess.Status().Interaction
+	return modeSegmentFor(m.sess.Status().Interaction)
+}
+
+// modeSegmentFor returns the persistent access label for access. It always
+// includes every active modifier, so approval, browsing, answering and
+// activity cues on the right can never conceal the effective permission state.
+func modeSegmentFor(access acpwire.Interaction) string {
 	label := "Ask"
 	if access.Mode == string(interaction.ModeAct) {
 		label = "Act"
@@ -251,7 +257,7 @@ func (m Model) transientStatusSegment() string {
 func (m Model) statusLeftSegments() []statusSeg {
 	st := m.sess.Status()
 	segs := []statusSeg{
-		{text: m.modeSegmentStyle().Render(m.modeSegment()), priority: 0, pinned: true},
+		{text: m.modeSegmentStyle().Render(modeSegmentFor(st.Interaction)), priority: 0, pinned: true},
 	}
 
 	if !st.Trusted {

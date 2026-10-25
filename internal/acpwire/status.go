@@ -7,12 +7,19 @@ package acpwire
 // plan 2c the session's start time, plans 3 and 4 the sandbox info, and plan 6
 // the current notice. The session ID is not here: Session.ID() carries it.
 type SessionStatus struct {
-	WorkingDir      string      `json:"workingDir"`
-	GenerationSeq   int         `json:"generationSeq,omitempty"`
-	LeafID          int64       `json:"leafId,omitempty"`
-	Branches        []int64     `json:"branches,omitempty"`
-	ActiveRoute     Route       `json:"activeRoute"`
-	TurnRoute       *Route      `json:"turnRoute,omitempty"` // nil between turns
+	WorkingDir string `json:"workingDir"`
+	// GenerationSeq and LeafID carry omitempty per the plan's contract, so a
+	// legitimate zero — the first generation, the first leaf — encodes
+	// exactly like an unset field. The struct is always carried whole, so a
+	// consumer must read zero as "first", never as "absent".
+	GenerationSeq int     `json:"generationSeq,omitempty"`
+	LeafID        int64   `json:"leafId,omitempty"`
+	Branches      []int64 `json:"branches,omitempty"`
+	ActiveRoute   Route   `json:"activeRoute"`
+	TurnRoute     *Route  `json:"turnRoute,omitempty"` // nil between turns
+	// TurnUsed and TurnWindow are tokens: what the running turn has spent and
+	// the context window it is measured against. They are not milliseconds,
+	// unlike Quota's durations.
 	TurnUsed        int         `json:"turnUsed,omitempty"`
 	TurnWindow      int         `json:"turnWindow,omitempty"`
 	Quota           *Quota      `json:"quota,omitempty"`

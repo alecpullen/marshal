@@ -7,10 +7,13 @@ import (
 	"go/token"
 	"io/fs"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
 	"testing"
+
+	"marshal/internal/app/session"
 )
 
 // movedStateReads names each session.State method or field the TUI no
@@ -106,6 +109,29 @@ func TestMovedStateReadsStayMoved(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walk: %v", err)
+	}
+}
+
+// TestMovedStateReadsAreRealNames keeps the guard's list honest: every name it
+// polices must exist on session.State as a method or a field. Without this, a
+// typo in a later plan's addition switches that entry off silently, and the
+// guard reports success for a name nothing can ever match.
+func TestMovedStateReadsAreRealNames(t *testing.T) {
+	typ := reflect.TypeOf(&session.State{})
+	names := make([]string, 0, len(movedStateReads))
+	for name := range movedStateReads {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if _, ok := typ.MethodByName(name); ok {
+			continue
+		}
+		if _, ok := typ.Elem().FieldByName(name); ok {
+			continue
+		}
+		t.Errorf("movedStateReads names %q (plan %s), which is neither a method nor a field of session.State",
+			name, movedStateReads[name])
 	}
 }
 

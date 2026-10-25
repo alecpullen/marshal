@@ -15,24 +15,20 @@ import (
 	"testing"
 )
 
-// seamPrefix is the module path every TUI import starts with when it reaches
-// into this repository.
-const seamPrefix = "marshal/"
+// seamModule is this module's import path, and seamPrefix is the prefix every
+// TUI import carries when it reaches into the repository.
+const seamModule = "marshal"
+const seamPrefix = seamModule + "/"
 
 // seamImportAllowed reports whether a TUI file may import importPath under
 // P2 C1: the TUI talks to the agent side through acpclient, never by importing
 // it. Standard library and third-party packages are always fine, the TUI
 // itself is fine, and a small set of pure data packages is fine. Everything
-// else under marshal/ is agent side.
+// else in this module is agent side.
 func seamImportAllowed(importPath string) bool {
-	first, _, _ := strings.Cut(importPath, "/")
-	if !strings.Contains(first, ".") {
-		// A standard library path, unless it is this module's own.
-		if !strings.HasPrefix(importPath, seamPrefix) {
-			return true
-		}
-	} else if !strings.HasPrefix(importPath, seamPrefix) {
-		// A third-party path: its first element is a domain.
+	// Anything that is neither the module root nor inside the module belongs
+	// to the standard library or to a third party, both of which are fine.
+	if importPath != seamModule && !strings.HasPrefix(importPath, seamPrefix) {
 		return true
 	}
 	switch importPath {
@@ -146,21 +142,32 @@ func seamViolations(root string, denied map[string]bool) (map[string][]string, e
 				}
 			}
 		}
-		if configName != "" && configName != "_" && configName != "." {
-			ast.Inspect(file, func(n ast.Node) bool {
-				sel, ok := n.(*ast.SelectorExpr)
-				if !ok {
+		if configName != "" {
+			switch configName {
+			case "_":
+				// A blank import binds no name, so it cannot call a config
+				// function.
+			case ".":
+				// A dot-import reaches every denied function unqualified, so
+				// the selector scan below cannot see it. Record the import
+				// itself as the violation.
+				add("config.(dot-import)")
+			default:
+				ast.Inspect(file, func(n ast.Node) bool {
+					sel, ok := n.(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+					id, ok := sel.X.(*ast.Ident)
+					if !ok || id.Name != configName {
+						return true
+					}
+					if denied[sel.Sel.Name] {
+						add("config." + sel.Sel.Name)
+					}
 					return true
-				}
-				id, ok := sel.X.(*ast.Ident)
-				if !ok || id.Name != configName {
-					return true
-				}
-				if denied[sel.Sel.Name] {
-					add("config." + sel.Sel.Name)
-				}
-				return true
-			})
+				})
+			}
 		}
 		if len(entries) > 0 {
 			sort.Strings(entries)
@@ -264,6 +271,7 @@ func TestSeamImportAllowedClassifies(t *testing.T) {
 		}
 	}
 	denied := []string{
+		"marshal",
 		"marshal/internal/acpclient/inproc",
 		"marshal/internal/app/session",
 		"marshal/internal/viewmodel",
@@ -274,6 +282,26 @@ func TestSeamImportAllowedClassifies(t *testing.T) {
 		if seamImportAllowed(importPath) {
 			t.Errorf("seamImportAllowed(%q) = true, want false", importPath)
 		}
+	}
+}
+
+func TestSeamViolationsSeesADotImportedConfig(t *testing.T) {
+	dir := t.TempDir()
+	src := `package tui
+
+import . "marshal/internal/app/config"
+
+func configDir() string { return UserConfigPath() }
+`
+	if err := os.WriteFile(filepath.Join(dir, "dotimport.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	found, err := seamViolations(dir, map[string]bool{"UserConfigPath": true})
+	if err != nil {
+		t.Fatalf("seamViolations: %v", err)
+	}
+	if entries := found["dotimport.go"]; !stringInSlice(entries, "config.(dot-import)") {
+		t.Fatalf("dotimport.go entries = %v, want config.(dot-import)", entries)
 	}
 }
 

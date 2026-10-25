@@ -195,7 +195,11 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 
 	m.state = snap.State
-	m.sess = snap.Session
+	// A swapper that omits Session leaves the seam session alone rather than
+	// nil-ing it out from under the next render.
+	if snap.Session != nil {
+		m.sess = snap.Session
+	}
 	m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
 	m.lastGitRead = m.now()
 	if snap.Runner != nil {

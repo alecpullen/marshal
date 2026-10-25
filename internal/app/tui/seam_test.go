@@ -119,3 +119,35 @@ func TestNewSessionSwapsTheClientSession(t *testing.T) {
 		t.Errorf("expected the new-session system message, got: %s", m.state.Messages()[0].Content)
 	}
 }
+
+// stateOnlySwapper swaps the legacy state but reports no client session, the
+// shape a future swapper implementation can produce.
+type stateOnlySwapper struct{ state *session.State }
+
+func (s stateOnlySwapper) NewSession(string) (SessionSwapResult, error) {
+	return SessionSwapResult{State: s.state}, nil
+}
+
+func TestNewSessionKeepsTheSeamSessionWhenTheSwapperOmitsIt(t *testing.T) {
+	oldState := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{SessionID: "old"})
+	newState := session.New(config.Default(), "/repo", time.Unix(200, 0), session.Persistence{SessionID: "new"})
+
+	cmdReg := setupCmdReg(t)
+	model := testModel(oldState, WithCommandRegistry(cmdReg), WithSessionSwapper(stateOnlySwapper{state: newState}))
+	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = updated.(Model)
+
+	model.input.SetValue("/new")
+	updated, _ = model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m := updated.(*Model)
+
+	if m.state != newState {
+		t.Fatal("expected model state to be swapped to the new session")
+	}
+	if m.sess == nil {
+		t.Fatal("expected the seam session to survive a swapper that omits it")
+	}
+	if got := m.sess.ID(); got != "old" {
+		t.Fatalf("session ID after the swap = %q, want old", got)
+	}
+}

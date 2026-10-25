@@ -335,22 +335,23 @@ func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
 		return -1
 	}
 	// The first beat of each todo carries its tag, in list order, on the
-	// head of the work itself. The newest beat is the live part, so it draws
-	// in the box; the older ones are history.
+	// head of the work itself. Every beat is history now, so both draw in
+	// the transcript.
 	first := at("Reading it.")
 	if !strings.HasSuffix(strings.TrimRight(lines[first], " "), "▸ 1/4") {
 		t.Fatalf("each todo's first beat carries its tag:\n%s", text)
 	}
-	box := stripANSI(boxOut(m))
-	if !strings.Contains(box, "Writing it.") {
-		t.Fatalf("the live beat renders in the box:\n%s", box)
+	second := at("Writing it.")
+	if !strings.HasSuffix(strings.TrimRight(lines[second], " "), "▸ 2/4") {
+		t.Fatalf("the second todo's first beat carries its tag:\n%s", text)
 	}
-	if strings.Contains(text, "Writing it.") || strings.Contains(text, "3/4") || strings.Contains(text, "4/4") || strings.Contains(text, "──") {
+	if strings.Contains(text, "3/4") || strings.Contains(text, "4/4") || strings.Contains(text, "──") {
 		t.Errorf("waiting todos live in the plan section, and history has no dividers:\n%s", text)
 	}
 
 	// The box's plan section carries the progress: the header counts the
 	// list, and the item rows name the todo in progress.
+	box := stripANSI(boxOut(m))
 	if !strings.Contains(box, "1/4") {
 		t.Errorf("plan header should count progress:\n%s", box)
 	}

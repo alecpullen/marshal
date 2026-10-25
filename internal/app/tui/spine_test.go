@@ -247,9 +247,7 @@ func TestPlanRow(t *testing.T) {
 }
 
 // Streaming reasoning is drawn below every row of the newest turn, so it never
-// lands between a beat's head and its calls. Both the beat and the reasoning are
-// the live part now, so the assertion reads the live rows rather than the box's
-// outline: the box's own section borders use ├.
+// lands between a beat's head and its calls.
 func TestLiveThinkingDrawsBelowTheSpine(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
@@ -266,15 +264,14 @@ func TestLiveThinkingDrawsBelowTheSpine(t *testing.T) {
 	m.state.AppendThinking("weighing the next step\n")
 	m.refreshViewport()
 
-	lines := m.live.Full
-	content := stripANSI(strings.Join(lines, "\n"))
+	content := stripANSI(m.viewport.GetContent())
+	lines := strings.Split(content, "\n")
 	call, think := -1, -1
 	for i, l := range lines {
-		plain := stripANSI(l)
-		if call < 0 && strings.Contains(plain, "go test") {
+		if call < 0 && strings.Contains(l, "go test") {
 			call = i
 		}
-		if think < 0 && strings.Contains(plain, "thinking") {
+		if think < 0 && strings.Contains(l, "thinking") {
 			think = i
 		}
 	}
@@ -285,8 +282,7 @@ func TestLiveThinkingDrawsBelowTheSpine(t *testing.T) {
 		t.Fatalf("the running call must come before the reasoning:\n%s", content)
 	}
 	for _, l := range lines[think+1:] {
-		plain := stripANSI(l)
-		if strings.Contains(plain, "├") || strings.Contains(plain, "└") {
+		if strings.Contains(l, "├") || strings.Contains(l, "└") {
 			t.Fatalf("no spine row may follow the reasoning:\n%s", content)
 		}
 	}

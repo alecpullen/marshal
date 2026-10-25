@@ -40,10 +40,9 @@ func boxRowFor(m *Model, f func(livebox.Row) bool) int {
 	return -1
 }
 
-// TestLiveBeatRendersInTheBoxNotTheViewport is the split's whole point: while
-// the turn runs, the beat in flight is the box's content, and only settles
-// into the transcript once it is history.
-func TestLiveBeatRendersInTheBoxNotTheViewport(t *testing.T) {
+// TestLiveBeatRendersInTheViewport: the step in progress streams at the end of
+// the transcript, and settles where it was drawn.
+func TestLiveBeatRendersInTheViewport(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
@@ -55,20 +54,36 @@ func TestLiveBeatRendersInTheBoxNotTheViewport(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	if box := stripANSI(boxOut(m)); !strings.Contains(box, "Reading the parser.") {
-		t.Fatalf("the live beat must render in the box:\n%s", box)
+	vp := stripANSI(m.viewport.GetContent())
+	if !strings.Contains(vp, "Reading the parser.") {
+		t.Fatalf("the live beat must render in the viewport:\n%s", vp)
 	}
-	if vp := stripANSI(m.viewport.GetContent()); strings.Contains(vp, "Reading the parser.") {
-		t.Fatalf("the live beat must not be in the viewport:\n%s", vp)
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "Reading the parser.") {
+		t.Fatalf("the live beat must not be in the tray:\n%s", box)
 	}
+	busyLine := lineIndexOf(vp, "Reading the parser.")
 
-	// Settled, the same beat is history and belongs to the viewport.
+	// Settled, the same beat is history and stays where it was drawn.
 	m.busy = false
 	m.invalidateTranscript()
 	m.refreshViewport()
-	if vp := stripANSI(m.viewport.GetContent()); !strings.Contains(vp, "Reading the parser.") {
-		t.Fatalf("a settled beat belongs in the viewport:\n%s", vp)
+	settled := stripANSI(m.viewport.GetContent())
+	if !strings.Contains(settled, "Reading the parser.") {
+		t.Fatalf("a settled beat belongs in the viewport:\n%s", settled)
 	}
+	if got := lineIndexOf(settled, "Reading the parser."); got != busyLine {
+		t.Errorf("the settled beat moved from line %d to %d", busyLine, got)
+	}
+}
+
+// lineIndexOf is the index of the first line holding want, or -1.
+func lineIndexOf(content, want string) int {
+	for i, l := range strings.Split(content, "\n") {
+		if strings.Contains(l, want) {
+			return i
+		}
+	}
+	return -1
 }
 
 // TestBoxIsBudgetedInTheFrameHeight is the geometry guard: the box's rows are
@@ -260,67 +275,6 @@ func TestScrollToPlanItemUsesTheOneBasedSlot(t *testing.T) {
 	m.scrollToPlanItem("#2")
 	if got, want := m.viewport.YOffset(), starts[beats[1]]; got != want {
 		t.Errorf("scrollToPlanItem(%q) went to line %d, want the second item's beat at %d", "#2", got, want)
-	}
-}
-
-// TestBoxClickOnALiveCallExpandsIt: the live part's rows are click targets,
-// so a call in flight can be opened to read its args and output.
-func TestBoxClickOnALiveCallExpandsIt(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(100, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Running the suite.")
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: m.now(), StepID: id, ToolCallID: "run"})
-	m.busy, m.turnStartedAt = true, m.now()
-	m.invalidateTranscript()
-	m.refreshViewport()
-	m.viewString()
-
-	i := boxRowFor(&m, func(r livebox.Row) bool {
-		return r.Target.Kind == livebox.TargetLive && r.Target.Node.Kind == viewmodel.KindTool
-	})
-	if i < 0 {
-		t.Fatalf("the live call has no box row:\n%s", stripANSI(boxOut(m)))
-	}
-	row := m.boxLayout().Rows[i]
-	before := m.isToolExpanded(row.Target.Node, true)
-	if _, handled := m.handleBoxClick(tea.Mouse{Button: tea.MouseLeft, X: 1, Y: boxRowY(&m, i)}); !handled {
-		t.Fatal("a click on a live call must be consumed")
-	}
-	if got := m.isToolExpanded(row.Target.Node, true); got == before {
-		t.Fatalf("click on the live call did not toggle its expansion (was %v)", before)
-	}
-}
-
-// TestWheelOverTheBoxReasoningScrollsIt: the streaming reasoning draws in the
-// box, and the wheel over it scrolls the bounded region rather than the
-// transcript underneath.
-func TestWheelOverTheBoxReasoningScrollsIt(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(100, 40)
-	m.state.BeginStreaming()
-	for i := range 40 {
-		m.state.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
-	}
-	m.refreshViewport()
-	m.viewString()
-
-	i := boxRowFor(&m, func(r livebox.Row) bool {
-		return r.Target.Kind == livebox.TargetLive && r.Target.Node == viewmodel.LiveThinkingID
-	})
-	if i < 0 {
-		t.Fatalf("the reasoning has no box row:\n%s", stripANSI(boxOut(m)))
-	}
-	before := m.viewport.YOffset()
-	out, _ := m.Update(tea.MouseWheelMsg{X: 1, Y: boxRowY(&m, i), Button: tea.MouseWheelUp})
-	mm := asModel(t, out)
-
-	if got := mm.regionOffset[viewmodel.LiveThinkingID]; got != 1 {
-		t.Fatalf("region offset = %d, want 1 after one wheel-up", got)
-	}
-	if got := mm.viewport.YOffset(); got != before {
-		t.Fatalf("the wheel over the box scrolled the transcript: %d -> %d", before, got)
 	}
 }
 

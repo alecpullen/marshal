@@ -57,20 +57,21 @@ func TestRegionRowsArePruned(t *testing.T) {
 	}
 }
 
-func TestRegionScrollRepaintsTheBox(t *testing.T) {
+func TestRegionScrollRepaintsViewport(t *testing.T) {
 	m := newTestModel(t)
-	// The in-progress thinking box: a live region with room to scroll, drawn
-	// in the box now rather than in the viewport.
+	// The in-progress thinking box: a live region with room to scroll.
+	// A running subagent card no longer scrolls (one body line), so it can
+	// no longer carry this test.
 	m.state.BeginStreaming()
 	for i := 0; i < 40; i++ {
 		m.state.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
 	}
 	m.refreshViewport()
-	before := boxOut(m)
+	before := m.viewport.GetContent()
 
 	m.regionOffset = map[viewmodel.NodeID]int{viewmodel.LiveThinkingID: 5}
 	m.refreshViewport()
-	after := boxOut(m)
+	after := m.viewport.GetContent()
 
 	if before == after {
 		t.Fatal("changing a region offset did not repaint: the content signature is not folding in regionOffset")

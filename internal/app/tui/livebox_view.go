@@ -11,76 +11,7 @@ import (
 )
 
 // livebox_view.go wires the live box to the model: it snapshots the model for
-// livebox.Plan, plans once per frame, renders the live part of the transcript
-// into the box, and routes the box's height and clicks.
-//
-// History renders in the viewport (refreshViewport renders it); the live part
-// — the beat in flight and the reasoning streaming under it — never enters the
-// viewport's content, because it changes with the clock and the spinner.
-
-// renderLive renders the live part of the transcript at width, in order, and
-// records which node owns each line. It goes through renderNode so a live beat
-// renders exactly as history would draw it — and so nodeRenderHook still fires
-// for it, which is what keeps an unchanged history from being re-rendered on a
-// spinner tick.
-func (m *Model) renderLive(live []*viewmodel.Node, c *stepRenderCtx, width int, themeSig uint64) livebox.Live {
-	var out livebox.Live
-	sawBeat := false
-	for _, n := range live {
-		text, subs := m.renderNode(n, c, width, themeSig)
-		if text == "" {
-			continue
-		}
-		lines := strings.Split(text, "\n")
-		targets := make([]viewmodel.NodeID, len(lines))
-		for i := range targets {
-			targets[i] = n.ID
-		}
-		for _, sr := range subs {
-			for i := max(sr.start, 0); i < min(sr.end, len(lines)); i++ {
-				targets[i] = sr.id
-			}
-		}
-		if n.Kind == viewmodel.KindStep && !sawBeat {
-			sawBeat = true
-			// The compact form is the beat's first line and the call it is
-			// running right now: the last tool row it drew.
-			out.Short = append(out.Short, lines[0])
-			out.ShortTargets = append(out.ShortTargets, targets[0])
-			if id, ok := lastToolChild(n); ok {
-				for _, sr := range subs {
-					if sr.id != id {
-						continue
-					}
-					for i := max(sr.start, 0); i < min(sr.end, len(lines)); i++ {
-						out.Short = append(out.Short, lines[i])
-						out.ShortTargets = append(out.ShortTargets, targets[i])
-					}
-				}
-			}
-		}
-		if n.ID == viewmodel.LiveThinkingID {
-			// The streaming reasoning's head line, so the compact form keeps
-			// saying what the model is thinking about. With no beat, that
-			// line is the whole of Short.
-			out.Short = append(out.Short, lines[0])
-			out.ShortTargets = append(out.ShortTargets, targets[0])
-		}
-		out.Full = append(out.Full, lines...)
-		out.Targets = append(out.Targets, targets...)
-	}
-	return out
-}
-
-// lastToolChild is the newest call the beat drew a row for.
-func lastToolChild(n *viewmodel.Node) (viewmodel.NodeID, bool) {
-	for i := len(n.Children) - 1; i >= 0; i-- {
-		if n.Children[i].Kind == viewmodel.KindTool {
-			return n.Children[i].ID, true
-		}
-	}
-	return viewmodel.NodeID{}, false
-}
+// livebox.Plan, plans once per frame, and routes the box's height and clicks.
 
 // boxInput snapshots the model for livebox.Plan.
 func (m Model) boxInput() livebox.Input {
@@ -91,7 +22,6 @@ func (m Model) boxInput() livebox.Input {
 		Now:      now,
 		Busy:     m.busy && !m.turnStartedAt.IsZero(),
 		Spinner:  m.turnSpinnerFrame(),
-		Live:     m.live,
 		Previous: m.workPrevious,
 		Expanded: m.workExpanded,
 		Mode:     m.liveBoxMode,
@@ -270,15 +200,6 @@ func (m *Model) handleBoxClick(msg tea.Mouse) (tea.Cmd, bool) {
 	}
 	target := boxRowTarget(layout.Rows[msg.Y-top], msg.X-2)
 	switch target.Kind {
-	case livebox.TargetLive:
-		// The reasoning region scrolls with the wheel; a click on it does
-		// not fold the stream away mid-thought.
-		if target.Node == viewmodel.LiveThinkingID {
-			return nil, true
-		}
-		m.toggleExpanded(target.Node)
-		m.invalidateTranscript()
-		m.refreshViewport()
 	case livebox.TargetWork:
 		if m.workExpanded == target.Key {
 			m.workExpanded = ""
@@ -322,7 +243,6 @@ func (m *Model) scrollToPlanItem(key string) {
 
 // scrollToNode reveals a transcript node by scrolling the viewport to the
 // first line of a region that targets it, and reports whether it was found.
-// The live part has no viewport region any more: it is in the box.
 func (m *Model) scrollToNode(id viewmodel.NodeID) bool {
 	if id == (viewmodel.NodeID{}) {
 		return false

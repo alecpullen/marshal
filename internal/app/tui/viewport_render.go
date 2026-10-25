@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/viewmodel"
 )
@@ -80,8 +79,6 @@ func (m *Model) refreshViewport() {
 	// The band is derived here, once, so the now bar and the frame height
 	// both read the same value.
 	m.band = viewmodel.BandOf(snap, turns)
-	// History renders in the viewport; the live part renders in the box.
-	history, live := viewmodel.SplitLive(turns, snap.Busy)
 	m.rowBeat = rowBeats(turns)
 	m.updateViewportHeight()
 
@@ -164,7 +161,7 @@ func (m *Model) refreshViewport() {
 	tree := map[viewmodel.NodeID]*viewmodel.Node{}
 	var bitems []browseItem
 	firstTurn := true
-	for _, turn := range history {
+	for _, turn := range turns {
 		// A separator precedes every user turn but the first, so the rule
 		// always reads as "a new turn starts here" rather than as a header.
 		if turn.ID.Key != "turn:pre" {
@@ -193,14 +190,6 @@ func (m *Model) refreshViewport() {
 			nextTight = false // never leaks onto a later block, even if this one was empty
 		}
 	}
-	for _, node := range live {
-		// The live part is not in the viewport, but its nodes still need
-		// their seen and tree entries: pruneRenderState drops the expansion
-		// and scroll state of anything it did not see this pass.
-		collectSeen(node, seen)
-		indexTree(node, tree)
-	}
-	m.live = m.renderLive(live, rctx, livebox.LeftWidth(width, m.liveBoxMode), themeSig)
 	if reconnect != "" {
 		addBlock(blockKey{name: "reconnect"}, renderReconnectNotice(reconnect, m.activeSpinnerFrame(session.ActivityReconnecting), width), nil, nil)
 	}

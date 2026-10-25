@@ -764,10 +764,6 @@ type Model struct {
 	// (tui.live_box.layout) when the model is constructed and cycled by
 	// Ctrl+T.
 	liveBoxMode livebox.Mode
-	// live is the live part of the transcript — the beat in flight and the
-	// reasoning streaming under it — rendered by refreshViewport. It is drawn
-	// in the box, not the viewport.
-	live livebox.Live
 	// boxMemo is this frame's box layout, planned once in viewString; nil
 	// outside viewString. It lives only on that call's model copy.
 	boxMemo *livebox.Layout

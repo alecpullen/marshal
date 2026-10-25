@@ -30,7 +30,6 @@ import (
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
 	"marshal/internal/app/tui/gitinfo"
-	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/postmortempanel"
@@ -912,21 +911,14 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = updated.(Model)
 	m.busy = true
-	m.invalidateTranscript()
 	m.refreshViewport()
 	wideView := stripANSI(m.View().Content)
 
 	updated, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(Model)
-	m.invalidateTranscript()
-	// Drop the region height high-water mark: the assertion below compares the
-	// live part against a first render at the narrow width.
-	m.regionRows = nil
-	m.refreshViewport()
 	narrowView := stripANSI(m.View().Content)
 	ip := state.InProgress()
-	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width())
-	expectedLive := renderThinkingBox(thinking, m.spinnerFrame, m.now().Sub(ip.StartedAt), regionView{}, livebox.LeftWidth(m.leftWidth, m.liveBoxMode))
+	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width()) + "\n" + renderThinkingBox(thinking, m.spinnerFrame, m.now().Sub(ip.StartedAt), regionView{}, m.viewport.Width())
 
 	// viewport.View() pads every line to the viewport's fixed width/height
 	// with trailing spaces and blank lines; strip that padding before
@@ -939,13 +931,8 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 		return strings.TrimRight(strings.Join(lines, "\n"), "\n")
 	}
 
-	// History is the user's message alone: the streaming reasoning is the live
-	// part, drawn in the box at the live width.
 	if got, want := trimPadding(m.viewport.View()), trimPadding(expectedViewport); got != want {
 		t.Fatalf("viewport content did not rebuild for resized width\nwant:\n%s\n\ngot:\n%s", want, got)
-	}
-	if got, want := trimPadding(strings.Join(m.live.Full, "\n")), trimPadding(expectedLive); got != want {
-		t.Fatalf("the live part did not rebuild for the live width\nwant:\n%s\n\ngot:\n%s", want, got)
 	}
 
 	if wideView == narrowView {

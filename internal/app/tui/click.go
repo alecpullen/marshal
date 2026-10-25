@@ -4,7 +4,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/livebox"
 	"marshal/internal/viewmodel"
 )
 
@@ -82,23 +81,6 @@ func (m *Model) regionAt(line int) (clickTarget, bool) {
 // scrolling the transcript underneath it, which reads as the region
 // "jumping" out from under the cursor.
 func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
-	// The streaming reasoning draws in the box now, not in the viewport: a
-	// wheel over its rows scrolls it exactly as a viewport region scrolls.
-	if m.wheelOverBoxReasoning(msg.X, msg.Y) {
-		var delta int
-		switch msg.Button {
-		case tea.MouseWheelUp:
-			delta = 1 // scroll back through the region's history
-		case tea.MouseWheelDown:
-			delta = -1
-		default:
-			return false
-		}
-		m.setRegionOffset(viewmodel.LiveThinkingID, delta)
-		m.invalidateTranscript()
-		m.refreshViewport()
-		return true
-	}
 	line, ok := m.contentLineForClick(msg.X, msg.Y)
 	if !ok {
 		return false
@@ -139,24 +121,6 @@ func (m *Model) setRegionOffset(id viewmodel.NodeID, delta int) bool {
 	}
 	m.regionOffset[id] = next
 	return true
-}
-
-// wheelOverBoxReasoning reports whether the pointer sits on a box row that
-// scrolls the streaming reasoning.
-func (m *Model) wheelOverBoxReasoning(x, y int) bool {
-	if m.dock.FullFrameOpen() || x < 0 || x >= m.leftWidth {
-		return false
-	}
-	layout := m.boxLayout()
-	if len(layout.Rows) == 0 {
-		return false
-	}
-	top := m.boxTop()
-	if y < top || y >= top+len(layout.Rows) {
-		return false
-	}
-	t := layout.Rows[y-top].Target
-	return t.Kind == livebox.TargetLive && t.Node == viewmodel.LiveThinkingID
 }
 
 // handleTranscriptClick toggles the expand state of the transcript block

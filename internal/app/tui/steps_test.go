@@ -590,14 +590,14 @@ func TestRunningToolRowInsideStepExpandsOnClickEvenWithGlobalExpand(t *testing.T
 	row := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
 	m.invalidateTranscript()
 	m.refreshViewport()
-	if strings.Contains(stripANSI(boxOut(m)), "PASS pkg/first") {
+	if strings.Contains(stripANSI(m.viewport.GetContent()), "PASS pkg/first") {
 		t.Fatal("a running call starts collapsed")
 	}
 	m.toggleExpanded(row)
 	m.invalidateTranscript()
 	m.refreshViewport()
-	if !strings.Contains(stripANSI(boxOut(m)), "PASS pkg/first") {
-		t.Fatalf("one click must expand the running row's output tail:\n%s", stripANSI(boxOut(m)))
+	if !strings.Contains(stripANSI(m.viewport.GetContent()), "PASS pkg/first") {
+		t.Fatalf("one click must expand the running row's output tail:\n%s", stripANSI(m.viewport.GetContent()))
 	}
 }
 

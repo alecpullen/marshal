@@ -250,7 +250,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.openSessionSheet()
 		return *m, nil, true
 	case "ctrl+r":
-		if m.state.HasBackup() {
+		if m.sess.Status().HasBackup {
 			// Arm on the first press, revert on the second. Ctrl+R is
 			// reverse-i-search in every readline shell, so it gets pressed
 			// reflexively; without this it silently rewrote the working tree

@@ -1738,6 +1738,7 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 		panic("tui.New: WithLegacyState is required until P2 plan 9")
 	}
 	state := m.state
+	st := m.sess.Status()
 
 	loadTheme(state.Config.TUI)
 
@@ -1814,7 +1815,7 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// non-canonical config does not make the first reconcile flip the
 	// model: it stays a no-op rather than re-asserting the mode over
 	// whatever the model already shows.
-	m.syncedAccessMode = string(state.InteractionState().Mode)
+	m.syncedAccessMode = st.Interaction.Mode
 
 	// The held window opens when the model is built, so a resumed session
 	// starts with nothing held. It is taken after the options run so an
@@ -1893,7 +1894,7 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	// has a pending request (parent or subagent), so the first render shows
 	// the huh surface instead of the legacy fallback panels.
 	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
-		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30), m.approvalWhyFor(m.approvalOwner(), tc))
+		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(m.approvalOwner(), tc))
 	}
 	if q := m.state.PendingQuestion(); q != nil {
 		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
@@ -3253,8 +3254,7 @@ func (m *Model) reconcileAccess() {
 	// edge-triggered on the session's own mode: re-asserting an unchanged
 	// value would clobber a mode another path just set (cycleMode reads
 	// m.approvalMode to compute the next rung).
-	effective := m.state.InteractionState()
-	effectiveMode := string(effective.Mode)
+	effectiveMode := m.sess.Status().Interaction.Mode
 	modeChanged := m.syncedAccessMode != effectiveMode
 	if modeChanged {
 		m.syncedAccessMode = effectiveMode
@@ -3372,6 +3372,7 @@ func (m *Model) handleAccessChoice(choice session.AccessChoice) {
 // The decision is always Responded on the original tc; a shallow display copy
 // with a prefixed reason is shown so the dialog names who is asking.
 func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.PendingToolCall, source string) (tea.Model, tea.Cmd) {
+	st := m.sess.Status()
 	// A typed access request is presented by the accesspanel through
 	// reconciliation, never here: it must not create a generic approval model
 	// or consume runtime events. A raw untyped mode.request (no Access
@@ -3449,7 +3450,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		}
 	}
 	if m.approvalModel == nil {
-		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, m.state.HasBackup(), max(m.leftWidth-4, 30), m.approvalWhyFor(owner, displayTC))
+		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(owner, displayTC))
 	}
 	am, cmd := m.approvalModel.Update(msg)
 	m.approvalModel = am
@@ -3536,7 +3537,7 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		m.invalidateTranscript()
 		return m, nil
 	case choiceRollback:
-		if m.state.HasBackup() {
+		if st.HasBackup {
 			// The error is load-bearing: a partial rollback leaves a mixed
 			// working tree, and reporting success would hide that from both
 			// the user and the audit trail.
@@ -7352,7 +7353,7 @@ func (m *Model) setAuto(args []string) {
 			return
 		}
 	} else {
-		on = !m.state.InteractionState().Auto
+		on = !m.sess.Status().Interaction.Auto
 	}
 	if _, ok := m.applyInteraction(interaction.Patch{Auto: &on}); !ok {
 		return
@@ -7383,7 +7384,7 @@ func (m *Model) setSystem(args []string) {
 			return
 		}
 	} else {
-		on = !m.state.InteractionState().System
+		on = !m.sess.Status().Interaction.System
 	}
 	if _, ok := m.applyInteraction(interaction.Patch{System: &on}); !ok {
 		return
@@ -7400,7 +7401,7 @@ func (m *Model) setSystem(args []string) {
 // never restored implicitly because a Mode patch clears it.
 func (m *Model) cycleMode(forward bool) {
 	_ = forward // Tab and Shift+Tab both toggle Ask ↔ Act.
-	current := m.state.InteractionState().Mode
+	current := interaction.Mode(m.sess.Status().Interaction.Mode)
 	next := interaction.ModeAct
 	if current == interaction.ModeAct {
 		next = interaction.ModeAsk
@@ -7820,7 +7821,7 @@ func (m *Model) rewindPickerItems() []picker.Item {
 // modePickerItems builds picker items for the two canonical interaction modes.
 // The current mode carries a "● now" badge.
 func (m *Model) modePickerItems() []picker.Item {
-	current := string(m.state.InteractionState().Mode)
+	current := m.sess.Status().Interaction.Mode
 	badge := func(v string) string {
 		if v == current {
 			return "● now"

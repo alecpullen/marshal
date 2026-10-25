@@ -288,12 +288,12 @@ func init() {
 			return m, nil
 		},
 		"skills": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.dock.Open(skills.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state, m.skillIndex))
+			m.dock.Open(skills.NewPanel(m.homeDir, m.workDir, m.sess.Status().Trusted, m.state, m.skillIndex))
 			m.refreshViewport()
 			return m, nil
 		},
 		"plugins": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state))
+			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.sess.Status().Trusted, m.state))
 			m.refreshViewport()
 			return m, nil
 		},
@@ -301,7 +301,7 @@ func init() {
 			return m.handleMCPCommand(args)
 		},
 		"trust": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			if m.state.Trusted() {
+			if m.sess.Status().Trusted {
 				m.refreshViewport()
 				return m, nil
 			}
@@ -363,7 +363,7 @@ func init() {
 		},
 		"system": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			if len(args) > 0 && strings.ToLower(args[0]) == "unlock" {
-				on := !m.state.SudoUnlockEnabled()
+				on := !m.sess.Status().SudoUnlock
 				m.state.SetSudoUnlockEnabled(on)
 				if on {
 					m.state.AddMessage(session.RoleSystem,

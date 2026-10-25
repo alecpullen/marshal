@@ -201,9 +201,9 @@ func joinSegs(segs []statusSeg) string {
 // modifier, so approval, browsing, answering and activity cues on the right
 // can never conceal the effective permission state.
 func (m Model) modeSegment() string {
-	access := m.state.InteractionState()
+	access := m.sess.Status().Interaction
 	label := "Ask"
-	if access.Mode == interaction.ModeAct {
+	if access.Mode == string(interaction.ModeAct) {
 		label = "Act"
 	}
 	parts := []string{label}
@@ -254,7 +254,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 		{text: m.modeSegmentStyle().Render(m.modeSegment()), priority: 0, pinned: true},
 	}
 
-	if !m.state.Trusted() {
+	if !st.Trusted {
 		segs = append(segs, statusSeg{text: untrustedStyle().Render("untrusted"), priority: 0})
 	}
 
@@ -554,7 +554,7 @@ func (m Model) footerHints() help.FooterHints {
 		QuestionPending:      m.state.PendingQuestion() != nil,
 		SkillGatePending:     m.state.PendingSkillGate() != nil,
 		PopupOpen:            m.activeCompletionPopup() != nil,
-		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
+		IdleRollbackEligible: !m.busy && m.sess.Status().HasBackup,
 		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 		RunActive:            m.hasRunningSubagent(),

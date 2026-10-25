@@ -2800,7 +2800,19 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		state := rt.State
 		logger := rt.Logger
 
-		seamHost, seamSession := inproc.New(inproc.Deps{State: state})
+		// The brokers exist whatever the provider's state, so the session's
+		// events flow from the first frame: a start whose initial provider
+		// build failed still repaints on workspace, subagent, job, watch and
+		// steering events.
+		seamHost, seamSession := inproc.New(inproc.Deps{
+			State:     state,
+			Context:   ctx,
+			Jobs:      jobBroker,
+			Watches:   watchBroker,
+			Steering:  steeringBroker,
+			Workspace: workspaceBroker,
+			Subagents: subagentBroker,
+		})
 
 		cmdReg := rt.CommandRegistry
 
@@ -2861,9 +2873,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			}
 			return ctx, rt.Runner
 		}))
-		// Workspace events must flow even when the initial provider build
-		// failed, or the worktree footer/rail never updates until a busy-tick.
-		// The broker is created in runtime.go regardless of provider state.
 		tuiOpts = append(tuiOpts, tui.WithWorkspaceBroker(ctx, workspaceBroker))
 		tuiOpts = append(tuiOpts, tui.WithSubagentBroker(ctx, subagentBroker))
 		if n, ok := state.Notice(); !ok || n.Category != session.NoticeProvider {

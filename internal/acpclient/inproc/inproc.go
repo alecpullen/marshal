@@ -10,6 +10,7 @@
 package inproc
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 
@@ -17,14 +18,26 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/schema"
+	"marshal/internal/pubsub"
 	"marshal/internal/repo/gitinfo"
+	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
+	"marshal/internal/watch"
 )
 
 // Deps is what the adapter serves. Each P2 plan adds its group's
 // dependencies (C4).
 type Deps struct {
 	State *session.State
+	// Context bounds the session's event subscriptions. Nil means
+	// context.Background().
+	Context context.Context
+	// The runtime's brokers. A nil broker is not subscribed.
+	Jobs      *pubsub.Broker[native.JobEvent]
+	Watches   *pubsub.Broker[watch.Event]
+	Steering  *pubsub.Broker[session.SteeringEvent]
+	Workspace *pubsub.Broker[session.WorkspaceEvent]
+	Subagents *pubsub.Broker[session.SubagentEvent]
 	// GitInfo reads the git info for a directory. Nil means gitinfo.Read.
 	GitInfo func(dir string) gitinfo.Info
 }
@@ -42,6 +55,18 @@ type Session struct {
 	state   *session.State
 	gitInfo func(dir string) gitinfo.Info
 	closed  atomic.Bool
+
+	// ctx bounds the event subscriptions; cancel releases them.
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// mu guards the signal channel and the values the event loop keeps.
+	mu            sync.Mutex
+	changed       chan struct{}
+	changedClosed bool
+	receipts      map[string]session.SteeringReceipt
+	resume        *acpwire.WatchResume
+	resumeSeq     uint64
 }
 
 var (
@@ -55,23 +80,13 @@ func New(d Deps) (*Host, *Session) {
 	return &Host{deps: d, current: sess}, sess
 }
 
-// newSession builds one session over d.State. It keeps d.GitInfo, or
-// gitinfo.Read when the caller supplied none.
-func newSession(d Deps) *Session {
-	gitInfo := d.GitInfo
-	if gitInfo == nil {
-		gitInfo = gitinfo.Read
-	}
-	return &Session{state: d.State, gitInfo: gitInfo}
-}
-
 // Swap closes the current session and returns a new one over state. It serves
 // today's swap path; plan 5 replaces it with Host.NewSession and Host.Resume.
 func (h *Host) Swap(state *session.State) *Session {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.current != nil {
-		h.current.closed.Store(true)
+		h.current.close()
 	}
 	d := h.deps
 	d.State = state
@@ -106,6 +121,7 @@ func (s *Session) Status() acpwire.SessionStatus {
 	if len(queue) == 0 {
 		queue = nil
 	}
+	snap := st.SteeringSnapshot()
 
 	status := acpwire.SessionStatus{
 		WorkingDir:    st.WorkingDir,
@@ -154,7 +170,7 @@ func (s *Session) Status() acpwire.SessionStatus {
 		},
 		Steering: acpwire.Steering{
 			Queue: queue,
-			State: viewmodel.SteeringStateOf(st.SteeringSnapshot()),
+			State: viewmodel.SteeringStateOf(snap),
 		},
 		RunningJobs: st.RunningJobsCount(),
 		Subagents:   subagentsOf(st.Subagents()),
@@ -172,6 +188,11 @@ func (s *Session) Status() acpwire.SessionStatus {
 		route := routeOf(r)
 		status.TurnRoute = &route
 	}
+	if rec, ok := s.latestReceipt(snap.TurnID); ok {
+		receipt := viewmodel.SteeringReceiptOf(rec)
+		status.Steering.Receipt = &receipt
+	}
+	status.WatchResume = s.watchResume()
 	return status
 }
 

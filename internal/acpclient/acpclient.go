@@ -46,4 +46,12 @@ type Session interface {
 	//
 	// ACP: session/status (new in P3). A session_status update refreshes it.
 	Status() acpwire.SessionStatus
+
+	// Changed fires after anything Status returns may have changed. It is a
+	// coalescing signal with a buffer of 1: a reader re-reads Status and never
+	// infers what changed. It is closed when a swap replaces the session.
+	//
+	// ACP: none (the client fires it; P3's mirror fires it after applying a
+	// session/update notification).
+	Changed() <-chan struct{}
 }

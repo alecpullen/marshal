@@ -11,6 +11,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
@@ -223,6 +224,64 @@ func TestNarrationMarkdownRemainsWhole(t *testing.T) {
 		}
 		if strings.Contains(text, "example") && !strings.Contains(plain, "example") {
 			t.Fatalf("code missing:\n%s", plain)
+		}
+	}
+}
+
+// A narration that wraps keeps its todo tag on its first line: the head
+// re-wraps the prose narrower rather than dropping the meta onto a line of
+// its own under the head.
+func TestWrappedNarrationKeepsItsMetaOnTheFirstLine(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(80, 30)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	todos := []db.TodoItem{
+		{ID: "t1", Content: "Read", Status: "in_progress", StartedAt: time.Now()},
+		{ID: "t2", Content: "Write", Status: "pending"},
+		{ID: "t3", Content: "Test", Status: "pending"},
+		{ID: "t4", Content: "Ship", Status: "pending"},
+	}
+	if err := m.state.SetTodos(append([]db.TodoItem(nil), todos...)); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	// About 150 characters of plain prose: wide enough to wrap at every
+	// width below.
+	stepUnder(&m, "Reading the parser to find the guard. The guard rejects an empty input, and it sits just past the token stream, before the rest of the pass runs at all.", "a")
+	// A second, short beat under the same todo. Only the beat that starts a
+	// todo carries its tag.
+	stepUnder(&m, "Checking the lexer tables now.", "b")
+	m.busy = false
+
+	for _, size := range [][2]int{{80, 30}, {96, 34}} {
+		m.resize(size[0], size[1])
+		lines := transcriptLines(&m)
+		head, later := -1, -1
+		for i, l := range lines {
+			if strings.Contains(l, "Reading the parser to find the guard.") {
+				head = i
+			}
+			if strings.Contains(l, "Checking the lexer tables now.") {
+				later = i
+			}
+			if strings.TrimSpace(l) == "▸ 1/4" {
+				t.Errorf("w=%d: the tag got a line of its own:\n%s", size[0], strings.Join(lines, "\n"))
+			}
+		}
+		if head < 0 {
+			t.Fatalf("w=%d: the narration head is missing:\n%s", size[0], strings.Join(lines, "\n"))
+		}
+		if got := strings.TrimRight(lines[head], " "); !strings.HasSuffix(got, "▸ 1/4") {
+			t.Errorf("w=%d: the wrapped head must end with its tag, got %q\n%s", size[0], lines[head], strings.Join(lines, "\n"))
+		}
+		if later < 0 {
+			t.Fatalf("w=%d: the second beat's narration is missing:\n%s", size[0], strings.Join(lines, "\n"))
+		}
+		got := strings.TrimRight(lines[later], " ")
+		if !strings.HasSuffix(got, "Checking the lexer tables now.") {
+			t.Errorf("w=%d: a short narration stays on one line, got %q", size[0], lines[later])
+		}
+		if strings.Contains(got, "▸") {
+			t.Errorf("w=%d: a later beat under one todo carries no tag: %q", size[0], lines[later])
 		}
 	}
 }

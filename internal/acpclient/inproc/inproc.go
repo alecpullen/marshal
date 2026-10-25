@@ -17,25 +17,31 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/schema"
+	"marshal/internal/repo/gitinfo"
+	"marshal/internal/viewmodel"
 )
 
 // Deps is what the adapter serves. Each P2 plan adds its group's
 // dependencies (C4).
 type Deps struct {
 	State *session.State
+	// GitInfo reads the git info for a directory. Nil means gitinfo.Read.
+	GitInfo func(dir string) gitinfo.Info
 }
 
 // Host is the in-process transport: it owns the current session and hands out
 // a new one on a swap.
 type Host struct {
 	mu      sync.Mutex
+	deps    Deps
 	current *Session
 }
 
 // Session is one conversation over a session.State.
 type Session struct {
-	state  *session.State
-	closed atomic.Bool
+	state   *session.State
+	gitInfo func(dir string) gitinfo.Info
+	closed  atomic.Bool
 }
 
 var (
@@ -45,8 +51,18 @@ var (
 
 // New builds the host and the session over d.State.
 func New(d Deps) (*Host, *Session) {
-	sess := &Session{state: d.State}
-	return &Host{current: sess}, sess
+	sess := newSession(d)
+	return &Host{deps: d, current: sess}, sess
+}
+
+// newSession builds one session over d.State. It keeps d.GitInfo, or
+// gitinfo.Read when the caller supplied none.
+func newSession(d Deps) *Session {
+	gitInfo := d.GitInfo
+	if gitInfo == nil {
+		gitInfo = gitinfo.Read
+	}
+	return &Session{state: d.State, gitInfo: gitInfo}
 }
 
 // Swap closes the current session and returns a new one over state. It serves
@@ -57,7 +73,9 @@ func (h *Host) Swap(state *session.State) *Session {
 	if h.current != nil {
 		h.current.closed.Store(true)
 	}
-	sess := &Session{state: state}
+	d := h.deps
+	d.State = state
+	sess := newSession(d)
 	h.current = sess
 	return sess
 }
@@ -81,6 +99,13 @@ func (s *Session) Status() acpwire.SessionStatus {
 	act := st.Activity()
 	ws := st.Workspace()
 	bi := st.BrowserInfo()
+	gate := st.SDDGate()
+	// An empty queue encodes as absent under omitempty, so keep it nil rather
+	// than the non-nil empty slice SteeringQueue returns.
+	queue := st.SteeringQueue()
+	if len(queue) == 0 {
+		queue = nil
+	}
 
 	status := acpwire.SessionStatus{
 		WorkingDir:    st.WorkingDir,
@@ -127,6 +152,21 @@ func (s *Session) Status() acpwire.SessionStatus {
 			SessionOpen: bi.SessionOpen,
 			UpdatedAt:   acpwire.Millis(bi.UpdatedAt),
 		},
+		Steering: acpwire.Steering{
+			Queue: queue,
+			State: viewmodel.SteeringStateOf(st.SteeringSnapshot()),
+		},
+		RunningJobs: st.RunningJobsCount(),
+		Subagents:   subagentsOf(st.Subagents()),
+		Swarm:       swarmOf(st.SwarmProgress()),
+		SDD:         sddOf(st.SDDProgress()),
+		SDDGate: acpwire.SDDGate{
+			TaskN:     gate.TaskN,
+			Question:  gate.Question,
+			TaskTitle: gate.TaskTitle,
+			Report:    gate.Report,
+		},
+		Git: gitOf(s.gitInfo(ws.ActiveRoot)),
 	}
 	if r, ok := st.TurnRoute(); ok {
 		route := routeOf(r)

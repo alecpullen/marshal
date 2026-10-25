@@ -347,6 +347,41 @@ func TestFinishedItemHoldsItsRowUntilTheNextPrompt(t *testing.T) {
 	if box := stripANSI(boxOut(m)); strings.Contains(box, "k2") {
 		t.Fatalf("an item that ended before the window must not be held:\n%s", box)
 	}
+
+	// A foreground-attached command is never held: it stays an ordinary tool
+	// row, whatever its state.
+	m.heldSince = base.Add(-time.Minute)
+	fg := workRunningCard("k3", base.Add(-2*time.Minute))
+	fg.Attachment = "foreground"
+	fg.State = "completed"
+	fg.EndedAt = base.Add(-30 * time.Second)
+	m.workSnapshot = workSnapOf(fg)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "k3") {
+		t.Fatalf("a foreground command must never be held:\n%s", box)
+	}
+}
+
+// TestNewModelStartsWithNothingHeld: the held window opens when the model is
+// built, so a resumed session does not resurrect terminal rows from before it.
+func TestNewModelStartsWithNothingHeld(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	if m.heldSince.IsZero() {
+		t.Fatal("New must open the held window; a zero window holds every finished item")
+	}
+
+	// An item that ended before the model was built is never held.
+	old := workRunningCard("k-old", time.Unix(50, 0))
+	old.State = "completed"
+	old.EndedAt = time.Unix(60, 0)
+	m.workSnapshot = workSnapOf(old)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "k-old") {
+		t.Fatalf("a model built now must not hold an item that ended before it:\n%s", box)
+	}
 }
 
 // TestHeldRowMatchesItsCompletionEvent: the held row's outcome and summary are

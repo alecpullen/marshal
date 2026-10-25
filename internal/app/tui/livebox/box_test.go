@@ -332,6 +332,43 @@ func TestTargetsMatchRows(t *testing.T) {
 	}
 }
 
+// TestFoldedHeldRowIsNoStop: the "✓ N finished" row is information, not a
+// browse stop, so folding the held rows must not add one.
+func TestFoldedHeldRowIsNoStop(t *testing.T) {
+	base := busyInput()
+	st := buildState{}
+	applyShed(&st, 2) // fold the held rows into one row
+	l := build(base, st)
+	finish(&l, base)
+
+	folded := false
+	onRows := map[Target]bool{}
+	for _, r := range l.Rows {
+		if strings.Contains(ansi.Strip(r.Text), "finished") {
+			folded = true
+			if r.Target.Kind != TargetNone || len(r.Also) > 0 {
+				t.Errorf("the folded held row carries a target: %+v %+v", r.Target, r.Also)
+			}
+		}
+		if r.Target.Kind != TargetNone {
+			onRows[r.Target] = true
+		}
+		for _, a := range r.Also {
+			if a.Target.Kind != TargetNone {
+				onRows[a.Target] = true
+			}
+		}
+	}
+	if !folded {
+		t.Fatal("the fixture did not fold the held rows")
+	}
+	for _, s := range l.Stops {
+		if !onRows[s] {
+			t.Errorf("stop %+v is not a row target", s)
+		}
+	}
+}
+
 // TestEveryRowIsExactlyTheWidth pins the geometry: every rendered line is
 // exactly the frame's width.
 func TestEveryRowIsExactlyTheWidth(t *testing.T) {

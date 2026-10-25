@@ -142,5 +142,68 @@ func TestRegionOffsetNeverGoesNegative(t *testing.T) {
 	_ = strings.TrimSpace("")
 }
 
-// The wheel path over the box's reasoning region is covered by
-// TestWheelOverTheBoxReasoningScrollsIt in livebox_view_test.go.
+// screenRowForNode returns the screen row of a node's first visible line.
+func screenRowForNode(m *Model, id viewmodel.NodeID) (int, bool) {
+	top := m.scrollHintRows() + m.breadcrumbRows()
+	for _, r := range m.nodeRegions {
+		if r.target.node != id {
+			continue
+		}
+		line := r.startLine - m.viewport.YOffset()
+		if line >= 0 && line < m.viewport.Height() {
+			return top + line, true
+		}
+	}
+	return 0, false
+}
+
+// A wheel event over the in-progress reasoning region scrolls that region, not
+// the transcript underneath it.
+func TestWheelOverTheLiveReasoningRegionScrollsIt(t *testing.T) {
+	m := newTestModel(t)
+	m.state.BeginStreaming()
+	for i := 0; i < 40; i++ {
+		m.state.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
+	}
+	m.refreshViewport()
+
+	y, ok := screenRowForNode(&m, viewmodel.LiveThinkingID)
+	if !ok {
+		t.Fatalf("the live reasoning region is not on screen:\n%s", stripANSI(m.viewport.GetContent()))
+	}
+	before := m.regionOffset[viewmodel.LiveThinkingID]
+	out, _ := m.Update(tea.MouseWheelMsg{X: 1, Y: y, Button: tea.MouseWheelUp})
+	got := out.(Model)
+	if got.regionOffset[viewmodel.LiveThinkingID] == before {
+		t.Fatalf("the wheel did not scroll the live region (offset %d)", before)
+	}
+}
+
+// A click on a running call row expands it through the real mouse path, not by
+// calling toggleExpanded directly.
+func TestClickOnARunningCallRowExpandsIt(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Running the suite.")
+	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Now(), StepID: id, ToolCallID: "run"})
+	m.state.AppendActiveToolCallOutput("run", "PASS pkg/first\nPASS pkg/b\nPASS pkg/c\nPASS pkg/d\nPASS pkg/e\nPASS pkg/f\nPASS pkg/g\nPASS pkg/h\nPASS pkg/last")
+	m.busy, m.turnStartedAt = true, time.Now()
+	m.expandAll = true // ctrl+g on: settled rows open, running rows stay closed
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	row := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
+	y, ok := screenRowForNode(&m, row)
+	if !ok {
+		t.Fatalf("the running call row is not on screen:\n%s", stripANSI(m.viewport.GetContent()))
+	}
+	if strings.Contains(stripANSI(m.viewport.GetContent()), "PASS pkg/first") {
+		t.Fatal("a running call starts collapsed")
+	}
+	m = sendMsg(m, tea.MouseClickMsg{X: 2, Y: y, Button: tea.MouseLeft})
+	m = sendMsg(m, tea.MouseReleaseMsg{X: 2, Y: y, Button: tea.MouseLeft})
+	if !strings.Contains(stripANSI(m.viewport.GetContent()), "PASS pkg/first") {
+		t.Fatalf("a click on the running row must expand its output tail:\n%s", stripANSI(m.viewport.GetContent()))
+	}
+}

@@ -217,7 +217,9 @@ func planRows(in Input, w int) []Row {
 	entries := planEntries(in)
 	n := len(entries)
 	inner := max(w-1, 3) // one cell of indent
-	cell := max((inner-2)/2, 1)
+	// The indent and the two-cell gap are charged before the columns are
+	// split, so a full left column cannot push the right one past inner.
+	cell := max((inner-3)/2, 1)
 	left := (n + 1) / 2
 	rows := make([]Row, 0, left)
 	for i := 0; i < min(left, n); i++ {

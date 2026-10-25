@@ -188,7 +188,19 @@ func mergedOrder(in Input, heldFolded bool) []mergedEntry {
 		}
 		return entries[i].key < entries[j].key
 	})
-	return entries
+	// A snapshot should never carry a duplicate TaskKey, but one would share a
+	// keep slot in capEntries and let the tray exceed its row budget, so the
+	// first entry for a key wins.
+	seen := make(map[string]bool, len(entries))
+	out := entries[:0]
+	for _, e := range entries {
+		if seen[e.key] {
+			continue
+		}
+		seen[e.key] = true
+		out = append(out, e)
+	}
+	return out
 }
 
 // capEntries keeps at most n entries, blocked ones first, and returns the kept

@@ -135,8 +135,10 @@ func (m Model) boxInput() livebox.Input {
 }
 
 // activateWorkRow acts on a work row: a running item toggles its card, and a
-// held one scrolls to the completion event that finished it.
-func (m *Model) activateWorkRow(key string) {
+// held one scrolls to the completion event that finished it. When that event
+// has been trimmed or rolled out of the transcript, the row says so rather
+// than swallowing the key.
+func (m *Model) activateWorkRow(key string) tea.Cmd {
 	if it, ok := m.workItemByKey(key); ok && viewmodel.WorkActive(it) {
 		if m.workExpanded == key {
 			m.workExpanded = ""
@@ -145,11 +147,12 @@ func (m *Model) activateWorkRow(key string) {
 		}
 		m.invalidateTranscript()
 		m.refreshViewport()
-		return
+		return nil
 	}
-	if ref, ok := m.completions[key]; ok {
-		m.scrollToNode(ref.node)
+	if ref, ok := m.completions[key]; ok && m.scrollToNode(ref.node) {
+		return nil
 	}
+	return m.setFlash("That event is no longer in the transcript")
 }
 
 // heldItem is a finished item's held row, when it ended inside the current
@@ -304,7 +307,7 @@ func (m *Model) handleBoxClick(msg tea.Mouse) (tea.Cmd, bool) {
 	target := boxRowTarget(layout.Rows[msg.Y-top], msg.X)
 	switch target.Kind {
 	case livebox.TargetWork:
-		m.activateWorkRow(target.Key)
+		return m.activateWorkRow(target.Key), true
 	case livebox.TargetMore:
 		m.openWork()
 	case livebox.TargetPlan:

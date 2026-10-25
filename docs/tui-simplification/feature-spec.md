@@ -7,7 +7,7 @@ and round 5's. P-A
 landed on
 `main` before this branch; P-B landed in `d9975303..9ecfe2ee`, merged as
 `24792d61`; P-C landed in `9fa6097e..65ffc3fa`; P-D landed in
-`ee9b6626..913b62bf`; P-E landed in `9b92c32d..45a4caf6`.
+`ee9b6626..913b62bf`; P-E landed in `9b92c32d..eaffe080`.
 Base commit: `87fa8f0e` (main, after the interaction-modes merge).
 Design record: [`alternatives.md`](alternatives.md) (layout),
 [`console-variants.md`](console-variants.md) (dock), and
@@ -684,11 +684,13 @@ first.
   - `SplitLive` boundaries.
 - **`livebox` planner tests** (pure):
   - each shed step at each threshold, and the 40% cap;
-  - split skipped below 90 columns;
   - the window for long plans;
   - one expanded card;
   - idle and empty states;
   - hit targets match the rendered rows.
+  - P-E retired the split-mode cases (`TestSplitSkippedBelowNinety`,
+    `TestNextSkipsSplitWhenNarrow`) with the modes themselves; the shed-order
+    and threshold tests above replace them.
 - **Golden frames** at 80×24, 96×34 and 120×40 in NO_COLOR, as text files
   under `internal/app/tui/livebox/testdata/` with an `-update` flag (the repo
   had no file-based goldens; `depth_golden_test.go` compares properties):

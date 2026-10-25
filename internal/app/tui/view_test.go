@@ -683,10 +683,10 @@ func TestRunPanelDoesNotPushInputOffScreen(t *testing.T) {
 		t.Fatalf("frame height = %d, want %d (run panel pushed input off screen)\n%s", len(lines), m.height, frame)
 	}
 
-	// The turn state must be visible on the status line. The run summary
-	// becomes the tray's plan-run row in Task 6.
-	if !strings.Contains(frame, "working") {
-		t.Fatalf("turn state missing from the frame:\n%s", frame)
+	// The run is the tray's first row, and the tray must not push the input
+	// off screen.
+	if box := stripANSI(boxOut(m)); !strings.Contains(box, "test-plan") {
+		t.Fatalf("the plan-run row is missing from the tray:\n%s", box)
 	}
 
 	// The input box must be visible (the ❯ prompt).

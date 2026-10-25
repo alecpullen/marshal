@@ -246,7 +246,8 @@ func TestWrappedNarrationKeepsItsMetaOnTheFirstLine(t *testing.T) {
 	}
 	// About 150 characters of plain prose: wide enough to wrap at every
 	// width below.
-	stepUnder(&m, "Reading the parser to find the guard. The guard rejects an empty input, and it sits just past the token stream, before the rest of the pass runs at all.", "a")
+	const narration = "Reading the parser to find the guard. The guard rejects an empty input, and it sits just past the token stream, before the rest of the pass runs at all."
+	stepUnder(&m, narration, "a")
 	// A second, short beat under the same todo. Only the beat that starts a
 	// todo carries its tag.
 	stepUnder(&m, "Checking the lexer tables now.", "b")
@@ -269,6 +270,20 @@ func TestWrappedNarrationKeepsItsMetaOnTheFirstLine(t *testing.T) {
 		}
 		if head < 0 {
 			t.Fatalf("w=%d: the narration head is missing:\n%s", size[0], strings.Join(lines, "\n"))
+		}
+		// Every word of the narration must survive the re-wrap: the narrow
+		// render moves words off the first line, so taking only the head from
+		// it would drop them.
+		words := map[string]bool{}
+		for _, l := range lines {
+			for _, w := range strings.Fields(l) {
+				words[w] = true
+			}
+		}
+		for _, want := range strings.Fields(narration) {
+			if !words[want] {
+				t.Errorf("w=%d: the re-wrap dropped %q:\n%s", size[0], want, strings.Join(lines, "\n"))
+			}
 		}
 		if got := strings.TrimRight(lines[head], " "); !strings.HasSuffix(got, "▸ 1/4") {
 			t.Errorf("w=%d: the wrapped head must end with its tag, got %q\n%s", size[0], lines[head], strings.Join(lines, "\n"))

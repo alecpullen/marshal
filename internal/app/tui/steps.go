@@ -173,13 +173,17 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 		if metaW > 0 && ansi.StringWidth(first)+metaW+2 > width-gutterWidth {
 			// The first line leaves the meta no room beside it: wrap the
 			// narration narrower so the meta keeps its place on the head
-			// instead of dropping to a line of its own under it. Only the
-			// first line is taken from this render.
+			// instead of dropping to a line of its own under it. The whole
+			// body comes from this render: the narrow break moves words off
+			// the first line, and the wide render's continuation starts after
+			// words the narrow one has not placed yet, so keeping it would
+			// drop them.
 			narrow := max(cw-metaW-2, 1)
 			rebody, ok := renderMarkdown(text, narrow)
 			if !ok {
 				rebody = renderPlainProse(text, narrow)
 			}
+			wrapped = strings.Split(strings.Trim(rebody, "\n"), "\n")
 			first = firstLine(rebody)
 		}
 		line := gutterPrefix(g, gc) + first

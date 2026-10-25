@@ -252,8 +252,7 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 			return *m, nil, true
 		}
 		if t, ok := boxTargetOf(m.cursor); ok {
-			m.enterBoxStop(t)
-			return *m, nil, true
+			return *m, m.enterBoxStop(t), true
 		}
 		if v, ok := m.subagentAtCursor(true); ok {
 			m.drillIntoSubagent(v)
@@ -318,15 +317,16 @@ func (m *Model) currentNode() *viewmodel.Node { return m.browseTree[m.cursor] }
 // enterBoxStop acts on a box stop the way a click does: a running card opens
 // or closes, a held row scrolls to its completion event, the more row opens the
 // Work list, and a plan item scrolls to the first beat bound to it.
-func (m *Model) enterBoxStop(t livebox.Target) {
+func (m *Model) enterBoxStop(t livebox.Target) tea.Cmd {
 	switch t.Kind {
 	case livebox.TargetWork:
-		m.activateWorkRow(t.Key)
+		return m.activateWorkRow(t.Key)
 	case livebox.TargetMore:
 		m.openWork()
 	case livebox.TargetPlan:
 		m.scrollToPlanItem(t.Key)
 	}
+	return nil
 }
 
 // boxStopAtCursor returns the stop command for a box stop whose item allows a

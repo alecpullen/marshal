@@ -113,7 +113,7 @@ func heldRow(h HeldItem, in Input, w int) Row {
 	g, c := kindStyle(h.Item.Kind)
 	prefix := rowPrefix(g, c, itemID(h.Item))
 
-	right := theme.MutedStyle().Render(formatElapsed(h.Duration)) + " " + outcomeStyle(h.Outcome).Render(outcomeGlyph(h.Outcome))
+	right := theme.MutedStyle().Render(formatElapsed(h.Duration)) + " " + outcomeStyle(h.Outcome, h.Failed).Render(outcomeGlyph(h.Outcome, h.Failed))
 
 	title := clean(h.Item.Label, 120)
 	if title == "" {
@@ -121,7 +121,7 @@ func heldRow(h HeldItem, in Input, w int) Row {
 	}
 	text := prefix + muted(title)
 	if h.Outcome != "" {
-		text += "  " + outcomeStyle(h.Outcome).Render(h.Outcome)
+		text += "  " + outcomeStyle(h.Outcome, h.Failed).Render(h.Outcome)
 	}
 	if h.Summary != "" {
 		text += " · " + muted(clean(h.Summary, 120))
@@ -171,27 +171,29 @@ func runRow(r RunRow, in Input, w int) Row {
 }
 
 // outcomeStyle is the colour of a held row's outcome word and glyph: success
-// for done, warning for an outcome the tray could not learn, error otherwise.
-func outcomeStyle(outcome string) lipgloss.Style {
+// when the item did not fail, warning for an outcome the tray could not learn,
+// error otherwise. The failure flag is authoritative; the word only decides
+// the unknown case.
+func outcomeStyle(outcome string, failed bool) lipgloss.Style {
 	th := theme.Current()
-	switch outcome {
-	case "done":
-		return lipgloss.NewStyle().Foreground(th.StatusSuccess)
-	case "outcome unknown":
+	switch {
+	case outcome == "outcome unknown":
 		return lipgloss.NewStyle().Foreground(th.StatusWarning)
+	case failed:
+		return lipgloss.NewStyle().Foreground(th.StatusError)
 	}
-	return lipgloss.NewStyle().Foreground(th.StatusError)
+	return lipgloss.NewStyle().Foreground(th.StatusSuccess)
 }
 
 // outcomeGlyph is the mark a held row ends with.
-func outcomeGlyph(outcome string) string {
-	switch outcome {
-	case "done":
-		return glyph.OK
-	case "outcome unknown":
+func outcomeGlyph(outcome string, failed bool) string {
+	switch {
+	case outcome == "outcome unknown":
 		return glyph.Warning
+	case failed:
+		return glyph.Error
 	}
-	return glyph.Error
+	return glyph.OK
 }
 
 // headlined folds the child agent's newest narration headline into the item's

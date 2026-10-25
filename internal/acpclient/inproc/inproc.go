@@ -74,6 +74,12 @@ var (
 	_ acpclient.Session = (*Session)(nil)
 )
 
+// errSessionClosed is what a session a swap replaced answers with (spec C4).
+var errSessionClosed = &acpwire.Error{
+	Code:    acpwire.CodeSessionClosed,
+	Message: "inproc: the session was replaced",
+}
+
 // New builds the host and the session over d.State.
 func New(d Deps) (*Host, *Session) {
 	sess := newSession(d)
@@ -194,6 +200,31 @@ func (s *Session) Status() acpwire.SessionStatus {
 	}
 	status.WatchResume = s.watchResume()
 	return status
+}
+
+// SendNow submits one Send now request: its text goes to the running turn at
+// the next safe boundary, interrupting the operation in flight. The receipt is
+// in Status before SendNow returns.
+//
+// Acceptance is a bounded, memory-only call, so ctx is not consulted. A
+// refused request comes back unchanged, so the TUI shows the state's text as it
+// always has.
+func (s *Session) SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpwire.SteeringReceipt, error) {
+	if s.closed.Load() {
+		return acpwire.SteeringReceipt{}, errSessionClosed
+	}
+	receipt, err := s.state.SubmitSendNow(session.SendNowRequest{
+		SessionID: req.SessionID,
+		TurnID:    req.TurnID,
+		RequestID: req.RequestID,
+		Text:      req.Text,
+	})
+	if err != nil {
+		return acpwire.SteeringReceipt{}, err
+	}
+	s.absorbReceipt(receipt)
+	s.signal()
+	return viewmodel.SteeringReceiptOf(receipt), nil
 }
 
 // routeOf copies a session route onto the wire.

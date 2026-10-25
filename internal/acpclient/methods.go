@@ -21,4 +21,5 @@ var Methods = []Method{
 	{Iface: "Session", Name: "ID", ACP: "session/new", Exists: true},
 	{Iface: "Session", Name: "Status", ACP: "session/status"},
 	{Iface: "Session", Name: "Changed"},
+	{Iface: "Session", Name: "SendNow", ACP: "session/steer", Exists: true},
 }

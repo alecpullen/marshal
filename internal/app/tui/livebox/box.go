@@ -121,7 +121,7 @@ func build(in Input, st buildState) Layout {
 		if in.Expanded != "" && in.Expanded == e.item.TaskKey && !st.collapse {
 			rows = append(rows, card(e.item, in, w)...)
 		} else {
-			rows = append(rows, runningRow(e.item, in, w))
+			rows = append(rows, itemRows(e.item, in, w)...)
 		}
 	}
 	if n := len(entries) - len(shown); n > 0 {

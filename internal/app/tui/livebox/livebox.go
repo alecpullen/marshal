@@ -106,6 +106,16 @@ type RunRow struct {
 	StartedAt time.Time // the turn's start: the row's clock
 }
 
+// AgentMeta is a subagent's route provenance: the model and provider actually
+// running it, and whether the route fell back to reach it. The tray shows it on
+// the agent's card so a running child is never anonymous, and the same words
+// land on its held row once it finishes.
+type AgentMeta struct {
+	Model    string
+	Provider string
+	Fallback bool
+}
+
 // HeldItem is a finished item that keeps its tray row until the next prompt.
 type HeldItem struct {
 	Item     viewmodel.WorkItem // the finished item; its TaskKey and StartedAt keep its slot
@@ -126,8 +136,9 @@ type Input struct {
 	Work      []viewmodel.WorkItem // running items only (viewmodel.WorkActive)
 	Held      []HeldItem           // finished items held until the next prompt
 	Previous  map[string]*progress.Snapshot
-	Headlines map[string]string // agent TaskKey → the child's newest narration headline
-	Expanded  string            // TaskKey of the one open card
+	Headlines map[string]string    // agent TaskKey → the child's newest narration headline
+	Agents    map[string]AgentMeta // agent TaskKey → the model and provider running it
+	Expanded  string               // TaskKey of the one open card
 	Plan      []PlanItem
 	Stale     time.Duration // > 0 when the plan is stale
 	Cursor    Target        // the browse cursor when it is in the tray

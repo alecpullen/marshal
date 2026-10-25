@@ -309,3 +309,115 @@ func TestCardCapsAtFiveRowsAndOffersStopOnlyWhenAllowed(t *testing.T) {
 		t.Errorf("card = %q, want no stop action when the item is not stoppable", all)
 	}
 }
+
+// subagentItem is a running subagent's tray item.
+func subagentItem() viewmodel.WorkItem {
+	return viewmodel.WorkItem{
+		TaskKey: "k1", Kind: "agent", SourceID: "1", DisplayID: "#1",
+		Label: "review the config change", State: "running",
+		StartedAt: testNow.Add(-62 * time.Second),
+	}
+}
+
+// TestSubagentCardIsTwoRowsWithItsRoute pins the card's shape: a subagent is
+// two rows — its head, then the model at the provider running it plus what it
+// is doing — and every row is the same click target.
+func TestSubagentCardIsTwoRowsWithItsRoute(t *testing.T) {
+	in := Input{
+		Now: testNow, Spinner: "⠋",
+		Headlines: map[string]string{"k1": "Checking context_window…"},
+		Agents:    map[string]AgentMeta{"k1": {Model: "kimi-k3", Provider: "kimi"}},
+	}
+	rows := itemRows(subagentItem(), in, 120)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 for a subagent card", len(rows))
+	}
+	head, detail := ansi.Strip(rows[0].Text), ansi.Strip(rows[1].Text)
+	for _, want := range []string{"#1", "review the config change"} {
+		if !strings.Contains(head, want) {
+			t.Errorf("head row = %q, want it to contain %q", head, want)
+		}
+	}
+	if strings.Contains(head, "Checking context_window") {
+		t.Errorf("head row = %q, want the activity on the card's second row", head)
+	}
+	for _, want := range []string{"kimi-k3 @ kimi", "Checking context_window…"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("detail row = %q, want it to contain %q", detail, want)
+		}
+	}
+	for i, r := range rows {
+		if r.Target != (Target{Kind: TargetWork, Key: "k1"}) {
+			t.Errorf("row %d target = %+v, want the item's work target", i, r.Target)
+		}
+		if !r.Tint {
+			t.Errorf("row %d is not tinted; a running card is always tinted", i)
+		}
+	}
+}
+
+// TestSubagentCardMarksAFallbackRoute: a route that fell back says so.
+func TestSubagentCardMarksAFallbackRoute(t *testing.T) {
+	in := Input{
+		Now:    testNow,
+		Agents: map[string]AgentMeta{"k1": {Model: "glm-5.3", Provider: "ollama-cloud", Fallback: true}},
+	}
+	detail := ansi.Strip(itemRows(subagentItem(), in, 120)[1].Text)
+	for _, want := range []string{"glm-5.3 @ ollama-cloud", "(fallback)"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("detail row = %q, want it to contain %q", detail, want)
+		}
+	}
+}
+
+// TestAgentRouteOmitsEmptyFallback: a fallback marker with no route behind it
+// would render as dangling provenance, so the row stays blank.
+func TestAgentRouteOmitsEmptyFallback(t *testing.T) {
+	if got := agentRoute(AgentMeta{Fallback: true}); got != "" {
+		t.Errorf("agentRoute(empty fallback) = %q, want empty", got)
+	}
+}
+
+// TestSubagentCardKeepsTwoRowsWhileQuiet: a child with nothing to report still
+// gets its second row, so the rows under it never move as it goes quiet.
+func TestSubagentCardKeepsTwoRowsWhileQuiet(t *testing.T) {
+	rows := itemRows(subagentItem(), Input{Now: testNow}, 120)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2 even with no headline and no route", len(rows))
+	}
+	if got := strings.TrimSpace(ansi.Strip(rows[1].Text)); got != "running" {
+		t.Errorf("quiet card's second row = %q, want the item's state", got)
+	}
+}
+
+// TestOnlySubagentsGetTwoRows: every other kind keeps its single row, so the
+// card is a subagent affordance rather than a tray-wide change.
+func TestOnlySubagentsGetTwoRows(t *testing.T) {
+	it := subagentItem()
+	it.Kind, it.DisplayID = "command", "job-1"
+	if rows := itemRows(it, Input{Now: testNow}, 120); len(rows) != 1 {
+		t.Fatalf("command rows = %d, want 1", len(rows))
+	}
+}
+
+// TestHeldSubagentRowKeepsItsRoute: a finished subagent's held row still says
+// which model and provider ran it.
+func TestHeldSubagentRowKeepsItsRoute(t *testing.T) {
+	item := subagentItem()
+	item.State = "completed"
+	item.EndedAt = testNow
+	held := HeldItem{
+		Item: item, Outcome: "done",
+		Summary:  "found 4 call sites",
+		Duration: 62 * time.Second,
+	}
+	got := ansi.Strip(heldRow(held, Input{
+		Now:    testNow,
+		Agents: map[string]AgentMeta{"k1": {Model: "kimi-k3", Provider: "kimi"}},
+	}, 120).Text)
+	for _, want := range []string{"review the config change", "kimi-k3 @ kimi", "done", "found 4 call sites"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("held row = %q, want it to contain %q", got, want)
+		}
+	}
+}

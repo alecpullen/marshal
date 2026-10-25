@@ -1,1 +1,2 @@
-▌⧉ #2     review the config change  ⚠ needs approval                                    1m 30s ⠋
+▌⧉ #2     review the config change                                                      1m 30s ⠋
+          glm-5.3 @ ollama-cloud (fallback) · ⚠ needs approval                                  

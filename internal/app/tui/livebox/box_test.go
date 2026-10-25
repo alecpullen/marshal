@@ -150,8 +150,8 @@ func TestShedOrder(t *testing.T) {
 		t.Fatalf("full tray shed %d steps, want none", full.Shed)
 	}
 	fullHeight := len(full.Rows)
-	if fullHeight != 12 {
-		t.Fatalf("full height = %d, want 12 (held, card+4 running, 2 plan rows)", fullHeight)
+	if fullHeight != 14 {
+		t.Fatalf("full height = %d, want 14 (held, card+4 running, the two subagent cards on two rows each, 2 plan rows)", fullHeight)
 	}
 
 	byShed := make([]Layout, shedSteps+1)
@@ -180,8 +180,8 @@ func TestShedOrder(t *testing.T) {
 	if got := joined(byShed[1]); !strings.Contains(got, "3/4") || !strings.Contains(got, "todo c") {
 		t.Errorf("shed 1 tray = %q, want the one-line plan", got)
 	}
-	if n := len(byShed[1].Rows); n != 11 {
-		t.Errorf("shed 1 rows = %d, want 11", n)
+	if n := len(byShed[1].Rows); n != 13 {
+		t.Errorf("shed 1 rows = %d, want 13", n)
 	}
 
 	// Step 2: the held rows fold into one row.
@@ -248,8 +248,8 @@ func TestBoxNeverExceedsMaxRows(t *testing.T) {
 	}
 }
 
-// TestOneExpandedCard pins that exactly one item opens and the rest stay one
-// row each.
+// TestOneExpandedCard pins that exactly one item opens and the rest keep their
+// collapsed shape: one row each, except a subagent, whose card is two.
 func TestOneExpandedCard(t *testing.T) {
 	in := busyInput()
 	in.Expanded = "k2"
@@ -263,9 +263,9 @@ func TestOneExpandedCard(t *testing.T) {
 	if rows["k2"] < 2 {
 		t.Errorf("expanded item drew %d rows, want its card", rows["k2"])
 	}
-	for _, key := range []string{"k1", "k3", "k4", "k5", "k6"} {
-		if rows[key] != 1 {
-			t.Errorf("item %q drew %d rows, want 1", key, rows[key])
+	for key, want := range map[string]int{"k1": 1, "k3": 1, "k4": 1, "k5": 2, "k6": 1} {
+		if rows[key] != want {
+			t.Errorf("item %q drew %d rows, want %d", key, rows[key], want)
 		}
 	}
 }

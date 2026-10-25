@@ -66,6 +66,9 @@ func frameInput(w, h int) Input {
 		Headlines: map[string]string{
 			"k1": "Checking context_window…",
 		},
+		Agents: map[string]AgentMeta{
+			"k1": {Model: "kimi-k3", Provider: "kimi"},
+		},
 		Plan: planOf(4, 2, 3),
 	}
 }
@@ -132,6 +135,7 @@ type shapeFrame struct {
 	item      viewmodel.WorkItem
 	previous  map[string]*progress.Snapshot
 	headlines map[string]string
+	agents    map[string]AgentMeta
 }
 
 // shapeFrames is the §5.6 table as fixed inputs: one running item per shape.
@@ -146,6 +150,7 @@ func shapeFrames() []shapeFrame {
 				StartedAt: frameNow.Add(-62 * time.Second),
 			},
 			headlines: map[string]string{"k1": "Checking context_window…"},
+			agents:    map[string]AgentMeta{"k1": {Model: "kimi-k3", Provider: "kimi"}},
 		},
 		{
 			name: "blocked-subagent",
@@ -155,6 +160,7 @@ func shapeFrames() []shapeFrame {
 				Prompt:    &viewmodel.WorkPrompt{Kind: "approval"},
 				StartedAt: frameNow.Add(-90 * time.Second),
 			},
+			agents: map[string]AgentMeta{"k1": {Model: "glm-5.3", Provider: "ollama-cloud", Fallback: true}},
 		},
 		{
 			name: "generic-command-with-output",
@@ -305,6 +311,7 @@ func TestFrames(t *testing.T) {
 			Work:      []viewmodel.WorkItem{shape.item},
 			Previous:  shape.previous,
 			Headlines: shape.headlines,
+			Agents:    shape.agents,
 		}
 		checkFrame(t, "rows-"+shape.name, in, 96)
 	}

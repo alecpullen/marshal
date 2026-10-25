@@ -23,6 +23,10 @@ const edge = "▌"
 // idCells is the id column's width, and so the column the title starts at.
 const idCells = 7
 
+// rowIndent is the column a card's second line starts at: under the title,
+// past the edge, the kind glyph and the id column.
+const rowIndent = 1 + 1 + 1 + idCells
+
 // kindStyle maps a work item's kind to its glyph and colour: subagents in
 // AccentSecondary, commands in StatusInfo, watches muted, and anything else in
 // the primary accent.
@@ -64,6 +68,18 @@ func rowPrefix(g string, c color.Color, id string) string {
 // spinner right-aligned. It is pure — every string is cleaned and cut on a
 // cell boundary, and the producer controls none of the colour or layout.
 func runningRow(it viewmodel.WorkItem, in Input, w int) Row {
+	return runningRowText(it, in, w, true)
+}
+
+// runningHeadRow is runningRow without its measurement: a subagent's card draws
+// the measurement on its second line, under the title, so its head row leaves
+// that room to the title and the clock.
+func runningHeadRow(it viewmodel.WorkItem, in Input, w int) Row {
+	return runningRowText(it, in, w, false)
+}
+
+// runningRowText is runningRow with the measurement suppressible.
+func runningRowText(it viewmodel.WorkItem, in Input, w int, withMeasure bool) Row {
 	w = max(w, 1)
 	g, c := kindStyle(it.Kind)
 	style := lipgloss.NewStyle().Foreground(c)
@@ -91,8 +107,10 @@ func runningRow(it viewmodel.WorkItem, in Input, w int) Row {
 
 	room := w - ansi.StringWidth(prefix) - ansi.StringWidth(title) - 2 - ansi.StringWidth(right) - 1
 	text := prefix + title
-	if m := measure(headlined(it, in.Headlines), in.Previous[it.TaskKey], in.Now, max(room, 0)); m != "" {
-		text += "  " + m
+	if withMeasure {
+		if m := measure(headlined(it, in.Headlines), in.Previous[it.TaskKey], in.Now, max(room, 0)); m != "" {
+			text += "  " + m
+		}
 	}
 	gap := max(w-ansi.StringWidth(text)-ansi.StringWidth(right), 1)
 	text = text + strings.Repeat(" ", gap) + right
@@ -102,6 +120,68 @@ func runningRow(it viewmodel.WorkItem, in Input, w int) Row {
 		Target: Target{Kind: TargetWork, Key: it.TaskKey},
 		Tint:   true,
 	}
+}
+
+// itemRows is a running item's rows as the tray draws them. A subagent is a
+// two-row card — its head, then the model running it and what it is doing — so
+// the provenance is visible without expanding it. Every other kind is one row.
+func itemRows(it viewmodel.WorkItem, in Input, w int) []Row {
+	if it.Kind != "agent" {
+		return []Row{runningRow(it, in, w)}
+	}
+	return []Row{runningHeadRow(it, in, w), agentDetailRow(it, in, w)}
+}
+
+// agentDetailRow is a running subagent's second row: the model at the provider
+// running it, then the measurement — the child's newest headline, or the
+// request it is blocked on. It starts under the title so the pair reads as one
+// card, and carries the item's target so a click anywhere on the card acts on
+// the same work. It is always one row: a card that grew and shrank as a child
+// went quiet would move the rows under the cursor.
+func agentDetailRow(it viewmodel.WorkItem, in Input, w int) Row {
+	route := agentRoute(in.Agents[it.TaskKey])
+	room := max(w-rowIndent-ansi.StringWidth(route)-3, 0)
+	measurement := measure(headlined(it, in.Headlines), in.Previous[it.TaskKey], in.Now, room)
+	var text string
+	switch {
+	case route != "" && measurement != "":
+		text = muted(route) + muted(" · ") + measurement
+	case route != "":
+		text = muted(route)
+	case measurement != "":
+		text = measurement
+	default:
+		// Nothing to report yet. The card keeps its height rather than
+		// collapsing to one row and shunting the rows below it up.
+		text = muted(clean(it.State, 40))
+	}
+	return Row{
+		Text:   ansi.Truncate(strings.Repeat(" ", rowIndent)+text, w, "…"),
+		Target: Target{Kind: TargetWork, Key: it.TaskKey},
+		Tint:   true,
+	}
+}
+
+// agentRoute is a subagent row's provenance: `model @ provider`, with the
+// fallback marker when the route fell back to reach it. "" when the tray was
+// told none. These are config values rather than model output, but they are
+// still cleaned and cut so a long provider name cannot push the row out.
+func agentRoute(m AgentMeta) string {
+	text := clean(m.Model, 80)
+	provider := clean(m.Provider, 40)
+	switch {
+	case provider != "" && text != "":
+		text += " @ " + provider
+	case provider != "":
+		text = provider
+	}
+	if text == "" {
+		return ""
+	}
+	if m.Fallback {
+		text += " (fallback)"
+	}
+	return text
 }
 
 // heldRow is a finished item's row, held until the next prompt: the same edge,
@@ -120,6 +200,11 @@ func heldRow(h HeldItem, in Input, w int) Row {
 		title = clean(itemID(h.Item), 60)
 	}
 	text := prefix + muted(title)
+	if h.Item.Kind == "agent" {
+		if route := agentRoute(in.Agents[h.Item.TaskKey]); route != "" {
+			text += "  " + muted(route)
+		}
+	}
 	if h.Outcome != "" {
 		text += "  " + outcomeStyle(h.Outcome, h.Failed).Render(h.Outcome)
 	}
@@ -393,6 +478,13 @@ func card(it viewmodel.WorkItem, in Input, w int) []Row {
 	prev := in.Previous[it.TaskKey]
 
 	rows := []Row{runningRow(it, in, w)}
+	if it.Kind == "agent" {
+		// A subagent's card keeps the second row its unexpanded form has, so
+		// opening it adds detail without changing where its provenance sits.
+		// Its measurement moves to that row, leaving the head for the title.
+		rows[0] = runningHeadRow(it, in, w)
+		rows = append(rows, agentDetailRow(it, in, w))
+	}
 	add := func(text string) {
 		if text == "" || len(rows) >= CardRows {
 			return
@@ -409,7 +501,10 @@ func card(it viewmodel.WorkItem, in Input, w int) []Row {
 			}
 		}
 	}
-	add(measureText(it, prev, in.Now, w, false))
+	if it.Kind != "agent" {
+		// An agent's detail row already carries the measurement.
+		add(measureText(it, prev, in.Now, w, false))
+	}
 	add(cardDetail(it, in))
 	add(muted(cardActions(it)))
 	return rows

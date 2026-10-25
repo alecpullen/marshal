@@ -96,18 +96,36 @@ func (m Model) boxInput() livebox.Input {
 			in.Held = append(in.Held, h)
 		}
 	}
-	for _, it := range in.Work {
-		// Only a subagent's row carries a headline; its TaskKey names the
-		// item, its SourceID the child session.
+	// A subagent's card carries its route provenance and, while it runs, its
+	// child's newest narration headline. Held agents keep the provenance too:
+	// the finished row still says which model ran the work.
+	agents := make([]viewmodel.WorkItem, 0, len(in.Work)+len(in.Held))
+	agents = append(agents, in.Work...)
+	for _, h := range in.Held {
+		agents = append(agents, h.Item)
+	}
+	for _, it := range agents {
 		if it.Kind != "agent" {
 			continue
 		}
+		// The item's SourceID is the child session's subagent ID.
 		id, err := strconv.ParseInt(it.SourceID, 10, 64)
 		if err != nil {
 			continue
 		}
 		v, ok := m.state.Subagent(id)
-		if !ok || v.Child == nil {
+		if !ok {
+			continue
+		}
+		if in.Agents == nil {
+			in.Agents = map[string]livebox.AgentMeta{}
+		}
+		in.Agents[it.TaskKey] = livebox.AgentMeta{
+			Model:    v.Model,
+			Provider: v.Provider,
+			Fallback: v.Fallback,
+		}
+		if v.Child == nil || !viewmodel.WorkActive(it) {
 			continue
 		}
 		if in.Headlines == nil {

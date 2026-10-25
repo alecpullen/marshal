@@ -278,6 +278,49 @@ func TestScrollToPlanItemUsesTheOneBasedSlot(t *testing.T) {
 	}
 }
 
+// TestTraySubagentCardShowsItsModelAndProvider: a running subagent's tray card
+// is two rows and names the model and provider actually running the child, read
+// from the subagent view rather than from the work projection.
+func TestTraySubagentCardShowsItsModelAndProvider(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 40)
+	child := newChildState(t)
+	view := m.state.RegisterSubagentWithMeta("explore repo", child, session.SubagentMeta{
+		Model: "kimi-k3", Provider: "kimi",
+	})
+	m.workSnapshot = workSnapOf(viewmodel.WorkItem{
+		TaskKey: "work:child", Kind: "agent", SourceID: fmt.Sprint(view.ID),
+		DisplayID: fmt.Sprintf("#%d", view.ID), Label: "explore repo",
+		State: "running", StartedAt: m.now().Add(-time.Minute),
+	})
+	m.invalidateTranscript()
+	m.refreshViewport()
+	m.viewString()
+
+	in := m.boxInput()
+	if got := in.Agents["work:child"]; got.Model != "kimi-k3" || got.Provider != "kimi" {
+		t.Fatalf("tray agent meta = %+v, want the subagent view's model and provider", got)
+	}
+
+	layout := m.boxLayout()
+	head := boxRowFor(&m, func(r livebox.Row) bool {
+		return r.Target.Kind == livebox.TargetWork && r.Target.Key == "work:child"
+	})
+	if head < 0 {
+		t.Fatalf("no tray row for the subagent card:\n%s", stripANSI(boxOut(m)))
+	}
+	if head+1 >= len(layout.Rows) {
+		t.Fatalf("the subagent card is one row, want two:\n%s", stripANSI(boxOut(m)))
+	}
+	detail := layout.Rows[head+1]
+	if detail.Target != (livebox.Target{Kind: livebox.TargetWork, Key: "work:child"}) {
+		t.Errorf("second row target = %+v, want the same work as the head row", detail.Target)
+	}
+	if got := stripANSI(detail.Text); !strings.Contains(got, "kimi-k3 @ kimi") {
+		t.Errorf("second row = %q, want the model at the provider", got)
+	}
+}
+
 // TestSwarmIsTheTraysFirstRow: an active swarm is the tray's first row.
 func TestSwarmIsTheTraysFirstRow(t *testing.T) {
 	m := newTestModel(t)

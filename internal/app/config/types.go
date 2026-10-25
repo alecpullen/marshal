@@ -269,14 +269,6 @@ type TUIConfig struct {
 	// additionally falls back to a background model call when the rules
 	// produce no suggestion.
 	Suggestions string `toml:"suggestions"`
-	// LiveBox is the live box's plan section.
-	LiveBox LiveBoxConfig `toml:"live_box"`
-}
-
-// LiveBoxConfig is the live box's plan section.
-type LiveBoxConfig struct {
-	// Layout is the plan's starting layout: "stacked", "split" or "folded".
-	Layout string `toml:"layout"`
 }
 
 // SidePanelConfig is what remains of the removed widescreen side rail. Only

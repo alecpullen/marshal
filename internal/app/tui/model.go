@@ -322,6 +322,13 @@ const (
 	maxRegionOffset = 40
 )
 
+// completionRef is one completion event, indexed by the WorkKey it shares with
+// the work item it finished.
+type completionRef struct {
+	node viewmodel.NodeID
+	info *viewmodel.CompletionInfo
+}
+
 type Model struct {
 	state           *session.State
 	input           textarea.Model
@@ -760,14 +767,6 @@ type Model struct {
 	// a result from a closed panel can be told apart from its replacement.
 	panelSeq uint64
 
-	// liveBoxMode is the live box's plan layout, seeded from config
-	// (tui.live_box.layout) when the model is constructed and cycled by
-	// Ctrl+T.
-	liveBoxMode livebox.Mode
-	// live is the live part of the transcript — the beat in flight and the
-	// reasoning streaming under it — rendered by refreshViewport. It is drawn
-	// in the box, not the viewport.
-	live livebox.Live
 	// boxMemo is this frame's box layout, planned once in viewString; nil
 	// outside viewString. It lives only on that call's model copy.
 	boxMemo *livebox.Layout
@@ -776,6 +775,19 @@ type Model struct {
 	// signal, and the running cards. viewmodel.BandOf builds it in
 	// refreshViewport; the now bar renders it.
 	band viewmodel.BandInfo
+
+	// heldSince is when the current held window opened: a finished item that
+	// ended after it keeps its tray row until the next prompt. It is set when
+	// the model is built and again at each turn start.
+	heldSince time.Time
+	// planDismissed is the fingerprint of the finished list seen at the last
+	// turn start. The tray leaves out a finished list with that fingerprint,
+	// so a finished plan is one row until the next prompt.
+	planDismissed string
+	// completions indexes the completion events by WorkKey, rebuilt on every
+	// refresh. A held row takes its outcome and summary from its event, so the
+	// tray and history always agree.
+	completions map[string]completionRef
 
 	// workService is the runtime's Work facade (WithWork). When attached the
 	// now bar renders the immutable WorkSnapshot's bounded cards instead of
@@ -1769,12 +1781,15 @@ func New(state *session.State, opts ...Option) Model {
 		spinner:          NewSpinner(),
 		now:              time.Now,
 		viewportFollow:   true,
-		liveBoxMode:      livebox.ParseMode(state.Config.TUI.LiveBox.Layout),
 		discovered:       map[string][]schema.ModelInfo{},
 	}
 	for _, opt := range opts {
 		opt(&m)
 	}
+	// The held window opens when the model is built, so a resumed session
+	// starts with nothing held. It is taken after the options run so an
+	// injected clock is used.
+	m.heldSince = m.now()
 	// Select the production adapters only when no option supplied one. Doing
 	// it once here — rather than per call site — means every surface below
 	// (probes, connect, settings, /mcp auth) shares one dependency and an
@@ -4484,6 +4499,7 @@ func (m *Model) startAgentRun(runner AgentRunner, goal string) (tea.Model, tea.C
 	m.beginTurnStopRegistration()
 	m.busy = true
 	m.turnStartedAt = m.now()
+	m.startHeldWindow()
 	// A fresh prompt means the user is acting on their own — clear any
 	// stale ghost suggestion so it never survives into the new turn, and
 	// bump the generation counter so an in-flight LLM fallback result is
@@ -4633,6 +4649,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 	releaseStop := m.beginTurnStopRegistration()
 	m.busy = true
 	m.turnStartedAt = m.now()
+	m.startHeldWindow()
 	agentCtx, cancel := context.WithCancel(m.ctx)
 	m.agentCancel = cancel
 	return *m, tea.Batch(runPlanAuthorCmd(agentCtx, m.state, author, sddauthor.Request{

@@ -683,15 +683,10 @@ func TestRunPanelDoesNotPushInputOffScreen(t *testing.T) {
 		t.Fatalf("frame height = %d, want %d (run panel pushed input off screen)\n%s", len(lines), m.height, frame)
 	}
 
-	// The run panel summary must be visible.
-	panelRow := -1
-	for i, line := range lines {
-		if strings.Contains(line, "task 2/5") {
-			panelRow = i
-		}
-	}
-	if panelRow < 0 {
-		t.Fatalf("run panel missing from the frame:\n%s", frame)
+	// The run is the tray's first row, and the tray must not push the input
+	// off screen.
+	if box := stripANSI(boxOut(m)); !strings.Contains(box, "test-plan") {
+		t.Fatalf("the plan-run row is missing from the tray:\n%s", box)
 	}
 
 	// The input box must be visible (the ❯ prompt).
@@ -722,11 +717,11 @@ func TestIdleBoxIsEmptyWithoutAPlan(t *testing.T) {
 	}
 }
 
-// TestNoBlankRowAboveTheBox pins the reported bug: an idle session with todos
+// TestNoBlankRowAboveTheTray pins the reported bug: an idle session with todos
 // showed a blank line above its progress row — the always-reserved (but empty)
-// turn-spinner row. Nothing is reserved now: the box's top border carries the
-// spinner and sits straight under the transcript.
-func TestNoBlankRowAboveTheBox(t *testing.T) {
+// turn-spinner row. Nothing is reserved now: the tray's first plan row sits
+// straight under the transcript.
+func TestNoBlankRowAboveTheTray(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	todoDrivenTurn(t, &m, []native.TodoItem{
 		{Content: "first task", Status: "completed"},
@@ -734,7 +729,7 @@ func TestNoBlankRowAboveTheBox(t *testing.T) {
 		{Content: "third task", Status: "pending"},
 	})
 	// Fill the transcript so its bottom row is real content: an empty
-	// viewport pads with blanks, which would mask the spinner row.
+	// viewport pads with blanks, which would mask the tray's first row.
 	for i := 0; i < 40; i++ {
 		m.state.AddMessage(session.RoleAssistant, fmt.Sprintf("transcript filler %d", i), session.ContentTypePlain)
 	}
@@ -743,49 +738,66 @@ func TestNoBlankRowAboveTheBox(t *testing.T) {
 
 	lines := strings.Split(stripANSI(m.viewString()), "\n")
 	top := m.boxTop()
-	if !strings.Contains(lines[top], "╭─") || !strings.Contains(lines[top], "working ") {
-		t.Fatalf("box top border not at row %d: %q", top, lines[top])
+	if !strings.Contains(lines[top], "first task") {
+		t.Fatalf("the tray's first plan row is not at row %d: %q", top, lines[top])
 	}
 	// The transcript renderer trails each entry with one blank separator
-	// line, so one blank above the box is legitimate. Two in a row means
+	// line, so one blank above the tray is legitimate. Two in a row means
 	// the empty spinner row is back.
 	if top < 2 || strings.TrimSpace(lines[top-2]) == "" {
-		t.Errorf("more than one blank line above the box:\n%s", strings.Join(lines, "\n"))
+		t.Errorf("more than one blank line above the tray:\n%s", strings.Join(lines, "\n"))
 	}
 	if len(lines) != 30 {
 		t.Errorf("frame = %d rows, want 30", len(lines))
 	}
 }
 
-func TestTurnSpinnerShowsElapsedDirectlyAboveInput(t *testing.T) {
+func TestTurnStateShowsInTheStatusLine(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.busy = true
 	m.turnStartedAt = m.now().Add(-12 * time.Second)
 	m.spinnerFrame = "⠋"
 
-	row := stripANSI(boxOut(m))
-	if !strings.Contains(row, "⠋") || !strings.Contains(row, "12s") {
-		t.Fatalf("turn spinner missing glyph/elapsed: %q", row)
-	}
 	// No activity set: spinner and elapsed only, no label separator.
-	if strings.Contains(row, "·") {
-		t.Fatalf("turn spinner without activity must not show a label: %q", row)
+	if got := stripANSI(m.turnStateSegment()); got != "⠋ working 12s" {
+		t.Fatalf("turn state segment = %q, want %q", got, "⠋ working 12s")
 	}
 
 	lines := strings.Split(strings.TrimRight(stripANSI(m.View().Content), "\n"), "\n")
-	inputTop := 30 - m.inputAreaRows() - statusLineRows
-	if !strings.Contains(lines[inputTop], "▍") {
-		t.Fatalf("input bar not where expected; line %d = %q", inputTop, lines[inputTop])
+	last := lines[len(lines)-1]
+	if !strings.Contains(last, "⠋ working 12s") {
+		t.Fatalf("the status line must carry the turn state; last line = %q", last)
 	}
-	// The box is the block directly above the input, and its top border is
-	// where the turn spinner's state is drawn. View() is a value receiver, so
-	// the box's height is taken from the model rather than the copy's layout.
-	top := inputTop - m.boxRows()
-	if !strings.Contains(lines[top], "⠋") {
-		t.Fatalf("turn spinner must sit in the box's top border; line %d = %q", top, lines[top])
-	}
-	if bottom := top + m.boxRows(); bottom != inputTop {
-		t.Fatalf("box bottom at %d, want the input at %d", bottom, inputTop)
+}
+
+func TestStatusLineKeepsTheTurnStateWhenNarrow(t *testing.T) {
+	for _, width := range []int{80, 96} {
+		m := newViewTestModel(t, width, 24)
+		m.busy = true
+		m.turnStartedAt = m.now().Add(-12 * time.Second)
+		m.spinnerFrame = "⠋"
+		m.state.SetActiveRoute(session.RouteInfo{
+			Active:    true,
+			Model:     "qwen2.5-coder:14b-instruct-q8_0",
+			Provider:  "ollama",
+			LocalOnly: true,
+		})
+		m.state.SetActivity(session.Activity{
+			Kind:      session.ActivityTool,
+			Label:     "checking the auth module",
+			StartedAt: m.now(),
+		})
+
+		line := stripANSI(m.renderStatusLine(width))
+		if !strings.Contains(line, "working") {
+			t.Errorf("width %d: status line lost the turn state: %q", width, line)
+		}
+		if !strings.Contains(line, "Ctrl+C stop") {
+			t.Errorf("width %d: status line lost the stop hint: %q", width, line)
+		}
+		if got := strings.TrimSpace(line); !strings.HasPrefix(got, "Act") {
+			t.Errorf("width %d: the mode segment must stay first: %q", width, got)
+		}
 	}
 }
 
@@ -800,7 +812,7 @@ func TestTurnSpinnerShowsActivityLabel(t *testing.T) {
 		StartedAt: m.now(),
 	})
 
-	row := stripANSI(boxOut(m))
+	row := stripANSI(m.turnStateSegment())
 	if !strings.Contains(row, "⠋") || !strings.Contains(row, "12s") {
 		t.Fatalf("turn spinner missing glyph/elapsed: %q", row)
 	}
@@ -858,7 +870,7 @@ func TestTurnSpinnerSpansPhaseGaps(t *testing.T) {
 	m.spinnerFrame = "⠹"
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle})
 
-	row := stripANSI(boxOut(m))
+	row := stripANSI(m.turnStateSegment())
 	if !strings.Contains(row, "24s") {
 		t.Errorf("spinner row = %q, want elapsed 24s while busy between phases", row)
 	}
@@ -894,23 +906,22 @@ func TestTodoProgressRowCarriesTurnElapsed(t *testing.T) {
 	frame := stripANSI(m.viewString())
 	lines := strings.Split(frame, "\n")
 	top := m.boxTop()
+	// The turn clock and spinner ride the status line, the frame's last row.
+	statusLine := lines[len(lines)-1]
 	for _, want := range []string{"⠹", "24s"} {
-		if !strings.Contains(lines[top], want) {
-			t.Errorf("box border %q missing %q", lines[top], want)
+		if !strings.Contains(statusLine, want) {
+			t.Errorf("status line %q missing %q", statusLine, want)
 		}
 	}
-	for _, want := range []string{"▰▱▱▱", "1/4"} {
-		if !strings.Contains(lines[top+1], want) {
-			t.Errorf("plan header %q missing %q", lines[top+1], want)
-		}
+	// The tray's plan rows name the item in progress.
+	tray := stripANSI(boxOut(m))
+	if !strings.Contains(tray, "second task") {
+		t.Errorf("the tray should name the item in progress:\n%s", tray)
 	}
-	if !strings.Contains(frame, "second task") {
-		t.Errorf("the plan should name the item in progress:\n%s", frame)
-	}
-	// The box is the block directly above the input.
+	// The tray is the block directly above the input.
 	inputTop := 30 - m.inputAreaRows() - statusLineRows
 	if bottom := top + m.boxRows(); bottom != inputTop {
-		t.Errorf("box bottom at %d, want the input at %d", bottom, inputTop)
+		t.Errorf("tray bottom at %d, want the input at %d", bottom, inputTop)
 	}
 	if len(lines) != 30 {
 		t.Errorf("frame = %d rows, want 30", len(lines))

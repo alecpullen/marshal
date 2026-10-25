@@ -63,6 +63,10 @@ type Layers struct {
 	// [tui.transcript] table, read from the raw file mirrors like
 	// SidePanelIgnoredBy.
 	TranscriptIgnoredBy []LayerID
+	// LiveBoxIgnoredBy lists the file layers that set a key of the retired
+	// [tui.live_box] table, read from the raw file mirrors like
+	// SidePanelIgnoredBy.
+	LiveBoxIgnoredBy []LayerID
 	// InteractionNotices records source-specific interaction migration
 	// notices (retired approval_mode spellings, ignored legacy fields).
 	// Diagnose appends them to its result.
@@ -222,6 +226,7 @@ func LoadLayers(opts LoadOptions) (Layers, error) {
 		SubtaskIterationsSet:      subtaskSet,
 		SidePanelIgnoredBy:        sidePanelIgnoredBy(userFile, projectFile),
 		TranscriptIgnoredBy:       transcriptIgnoredBy(userFile, projectFile),
+		LiveBoxIgnoredBy:          liveBoxIgnoredBy(userFile, projectFile),
 		RemoteLimitDiscoverySetBy: remoteLimitDiscoverySetBy(userFile, projectFile),
 		HoistedProviders:          hoistedProviders,
 		HoistedPresets:            hoistedPresets,
@@ -260,6 +265,25 @@ func transcriptIgnoredBy(user, project configFile) []LayerID {
 			return false
 		}
 		return f.TUI.Transcript.Density != nil || f.TUI.Transcript.FoldFinishedTasks != nil
+	}
+	var out []LayerID
+	if set(user) {
+		out = append(out, LayerUser)
+	}
+	if set(project) {
+		out = append(out, LayerProject)
+	}
+	return out
+}
+
+// liveBoxIgnoredBy reports which file layers set a key of the retired
+// [tui.live_box] table.
+func liveBoxIgnoredBy(user, project configFile) []LayerID {
+	set := func(f configFile) bool {
+		if f.TUI == nil || f.TUI.LiveBox == nil {
+			return false
+		}
+		return f.TUI.LiveBox.Layout != nil
 	}
 	var out []LayerID
 	if set(user) {

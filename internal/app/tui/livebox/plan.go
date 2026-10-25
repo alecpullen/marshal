@@ -11,19 +11,19 @@ import (
 	"marshal/internal/app/tui/theme"
 )
 
-// planWindowItems is how many items the plan section draws one by one; a
-// longer list is summarised by the "✓ N done" and "+N more" entries.
+// planWindowItems is how many items the plan draws one by one; a longer list
+// is summarised by the "✓ N done" and "+N more" entries.
 const planWindowItems = 4
 
-// planMarksMax is the longest plan the folded border draws one mark per item.
+// planMarksMax is the longest plan the one-line form draws one mark per item.
 const planMarksMax = 12
 
 // planWindowAt is the plan's visible slice, plus the window's offset in the
 // list so an entry can still name its item by its position: every item when
-// the list is short enough, else up to planWindowItems from the anchor. The
-// anchor is the first in-progress item, else the first item that is not
-// completed. doneBefore counts the completed items before the anchor, and
-// moreAfter counts the items the window leaves out.
+// the list is short enough, else up to PlanWindow from the anchor. The anchor
+// is the first in-progress item, else the first item that is not completed.
+// doneBefore counts the completed items before the anchor, and moreAfter
+// counts the items the window leaves out.
 func planWindowAt(items []PlanItem) (shown []PlanItem, start, doneBefore, moreAfter int) {
 	if len(items) <= PlanWindow {
 		return items, 0, 0, 0
@@ -45,8 +45,8 @@ func planWindowAt(items []PlanItem) (shown []PlanItem, start, doneBefore, moreAf
 	}
 	if start < 0 {
 		// Every item is completed, so there is no anchor to start from: the
-		// window is empty and every item counts as done before it. The
-		// section draws no item rows for a finished plan (decision 8).
+		// window is empty and every item counts as done before it. A finished
+		// plan draws its one finished row instead of item rows.
 		start = len(items)
 	}
 	for _, it := range items[:start] {
@@ -68,8 +68,14 @@ func planCounts(items []PlanItem) (done, total int) {
 	return done, len(items)
 }
 
+// planFinished reports whether every item of a non-empty list is completed.
+func planFinished(items []PlanItem) bool {
+	done, total := planCounts(items)
+	return total > 0 && done == total
+}
+
 // planOpen reports whether the plan still has work to draw: a finished plan is
-// its header alone (decision 8).
+// its one finished row.
 func planOpen(items []PlanItem) bool {
 	done, total := planCounts(items)
 	return total > 0 && done < total
@@ -116,19 +122,20 @@ func planKey(it PlanItem, pos int) string {
 	return fmt.Sprintf("#%d", pos)
 }
 
-// planEntry is one cell of the plan section: a window item, or the summary
-// entry standing in for the items the window leaves out.
+// planEntry is one cell of the plan: a window item, or the summary entry
+// standing in for the items the window leaves out, or the stale notice.
 type planEntry struct {
-	mark   string // the styled status mark; "" for a summary entry
-	text   string // the cleaned content, or the summary's label
-	tail   string // the in-progress elapsed clock, styled; "" when none
-	dim    bool   // completed text is muted
-	target Target
+	mark    string // the styled status mark; "" for a summary entry
+	text    string // the cleaned content, or the summary's label
+	tail    string // the in-progress elapsed clock, styled; "" when none
+	dim     bool   // completed text is muted
+	warning bool   // the stale entry is painted in the warning colour
+	target  Target
 }
 
-// planEntries is the window as the section draws it: the window's items
-// between a "✓ N done" entry and a "+N more" entry when the window trimmed the
-// list.
+// planEntries is the window as the plan draws it: the window's items between a
+// "✓ N done" entry and a "+N more" entry when the window trimmed the list, and
+// the stale notice last when the plan is stale.
 func planEntries(in Input) (entries []planEntry) {
 	shown, start, doneBefore, moreAfter := planWindowAt(in.Plan)
 	if doneBefore > 0 {
@@ -155,6 +162,12 @@ func planEntries(in Input) (entries []planEntry) {
 			dim:  true,
 		})
 	}
+	if in.Stale > 0 {
+		entries = append(entries, planEntry{
+			text:    "stale " + formatElapsed(in.Stale),
+			warning: true,
+		})
+	}
 	return entries
 }
 
@@ -166,7 +179,7 @@ func planCell(e planEntry, room int) string {
 	}
 	head, tail := planHeadTail(e)
 	text := cut(e.text, max(room-ansi.StringWidth(head)-ansi.StringWidth(tail), 1))
-	return ansi.Truncate(head+styledText(text, e.dim)+tail, room, "…")
+	return ansi.Truncate(head+styledText(text, e.dim, e.warning)+tail, room, "…")
 }
 
 // planHeadTail is an entry's styled mark with its trailing space, and its
@@ -181,48 +194,41 @@ func planHeadTail(e planEntry) (head, tail string) {
 	return head, tail
 }
 
-// styledText mutes a completed entry's content.
-func styledText(s string, dim bool) string {
-	if dim {
+// styledText mutes a completed entry's content, or paints the stale notice in
+// the warning colour.
+func styledText(s string, dim, warning bool) string {
+	switch {
+	case warning:
+		return warn(s)
+	case dim:
 		return muted(s)
 	}
 	return s
 }
 
-// planHeader is the plan section's header, which the stacked layout puts in
-// the top border's segment: the label, the blocks, the counts, the stale age
-// and the finished notice.
-func planHeader(in Input) string {
-	done, total := planCounts(in.Plan)
-	header := "plan  " + Blocks(done, total, 10) + fmt.Sprintf(" %d/%d", done, total)
-	if in.Stale > 0 {
-		header += "  " + warn("stale "+formatElapsed(in.Stale))
-	}
-	if total > 0 && done == total {
-		header += " done"
-	}
-	return header
-}
-
-// planStacked is the stacked plan section: the header and the window as two
-// columns of entries, filled column-major. The left column takes ceil(n/2)
-// entries. A finished plan is the header alone (decision 8).
-func planStacked(in Input, w int) (header string, rows []Row) {
-	header = planHeader(in)
+// planRows is the plan as two columns of entries, filled column-major. The
+// left column takes ceil(n/2) entries. Each row is indented one cell so its
+// marks sit in the same column as history's glyphs. A finished plan is not
+// drawn by it.
+func planRows(in Input, w int) []Row {
 	if !planOpen(in.Plan) {
-		return header, nil
+		return nil
 	}
 	entries := planEntries(in)
 	n := len(entries)
-	w = max(w, 3)
-	cell := max((w-2)/2, 1)
+	inner := max(w-1, 3) // one cell of indent
+	// The indent and the two-cell gap are charged before the columns are
+	// split, so a full left column cannot push the right one past inner.
+	cell := max((inner-3)/2, 1)
 	left := (n + 1) / 2
+	rows := make([]Row, 0, left)
 	for i := 0; i < min(left, n); i++ {
 		target := entries[i].target
 		text := planCell(entries[i], cell)
 		row := Row{Target: target}
 		if j := i + left; j < n {
 			gap := max(cell-ansi.StringWidth(text), 0) + 2
+			col := 1 + ansi.StringWidth(text) + gap
 			text += strings.Repeat(" ", gap) + planCell(entries[j], cell)
 			switch {
 			case target.Kind == TargetNone:
@@ -230,56 +236,38 @@ func planStacked(in Input, w int) (header string, rows []Row) {
 			case entries[j].target.Kind != TargetNone:
 				// The row carries two live entries: the second keeps its own
 				// target so its click and its browse stop are not lost.
-				row.Also = []RowStop{{Target: entries[j].target, Col: cell + gap}}
+				row.Also = []RowStop{{Target: entries[j].target, Col: col}}
 			}
 		}
-		row.Text = ansi.Truncate(text, w, "…")
+		row.Text = " " + ansi.Truncate(text, inner, "…")
 		rows = append(rows, row)
 	}
-	return header, rows
+	return rows
 }
 
-// planSplit is the split layout's right pane, one entry per line at
-// RightWidth. An entry whose content is longer than the pane wraps onto one
-// continuation line indented by two cells, then truncates. The header sits in
-// the top border (Task 5), so this is entries only. A finished plan draws no
-// lines: its header is the whole section (decision 8).
-func planSplit(in Input, rows int) []string {
-	if rows <= 0 || !planOpen(in.Plan) {
-		return nil
+// planLine is the plan as one row, with no border characters: the marks (or
+// the blocks once the list is long), the position, the active item's text, and
+// the stale notice last. It is indented one cell and has no target.
+func planLine(in Input, w int) Row {
+	if len(in.Plan) == 0 {
+		return Row{}
 	}
-	entries := planEntries(in)
-	out := make([]string, 0, min(rows, len(entries)))
-	for _, e := range entries {
-		if len(out) >= rows {
+	done, total := planCounts(in.Plan)
+	pos, active := fmt.Sprintf("%d/%d", done, total), ""
+	for i, it := range in.Plan {
+		if it.Status == "in_progress" {
+			pos, active = fmt.Sprintf("%d/%d", i+1, total), clean(it.Content, 120)
 			break
 		}
-		head, tail := planHeadTail(e)
-		first, rest := wrapCells(e.text, max(RightWidth-ansi.StringWidth(head), 1))
-		if rest == "" {
-			out = append(out, ansi.Truncate(head+styledText(first, e.dim)+tail, RightWidth, "…"))
-			continue
-		}
-		if len(out)+1 >= rows {
-			// There is no room for the continuation line, so the entry
-			// truncates on one line instead of wrapping.
-			out = append(out, planCell(e, RightWidth))
-			continue
-		}
-		out = append(out, ansi.Truncate(head+styledText(first, e.dim), RightWidth, "…"))
-		room := max(RightWidth-2-ansi.StringWidth(tail), 1)
-		out = append(out, "  "+ansi.Truncate(styledText(cut(rest, room), e.dim)+tail, RightWidth-2, "…"))
 	}
-	return out
-}
-
-// wrapCells splits s after room cells: the first line, and the rest.
-func wrapCells(s string, room int) (first, rest string) {
-	lines := strings.SplitN(ansi.Hardwrap(s, max(room, 1), false), "\n", 2)
-	if len(lines) == 1 {
-		return lines[0], ""
+	text := " " + planMarks(in, planMarksMax, 8) + "  " + pos
+	if active != "" {
+		text += "  " + active
 	}
-	return lines[0], lines[1]
+	if in.Stale > 0 {
+		text += "  " + warn("stale "+formatElapsed(in.Stale))
+	}
+	return Row{Text: ansi.Truncate(text, max(w, 1), "…")}
 }
 
 // planMarks draws one mark per item, separated by border-coloured spaces, or
@@ -297,72 +285,11 @@ func planMarks(in Input, maxMarks, blocksCells int) string {
 	return strings.Join(parts, sep)
 }
 
-// planFolded is the folded layout's bottom border: the label and the marks (or
-// the blocks once the list is long), the position, the active item's text, and
-// the border fill to ╯. Everything but the marks is in BorderMuted. The border
-// always closes, whatever the width: the marks give way first.
-func planFolded(in Input, width int) string {
-	border := lipgloss.NewStyle().Foreground(theme.Current().BorderMuted)
-	width = max(width, 2)
-	if len(in.Plan) == 0 {
-		return border.Render("╰" + strings.Repeat("─", width-2) + "╯")
-	}
+// finishedRow is the plan's row once every item is completed: one row saying
+// so, indented one cell, with no target.
+func finishedRow(in Input, w int) Row {
 	done, total := planCounts(in.Plan)
-	pos, active := fmt.Sprintf("%d/%d", done, total), ""
-	for i, it := range in.Plan {
-		if it.Status == "in_progress" {
-			pos, active = fmt.Sprintf("%d/%d", i+1, total), clean(it.Content, 120)
-			break
-		}
-	}
-	prefix := border.Render("╰─ plan ")
-	posText := border.Render(" " + pos)
-	// Below this the label, a 3-digit position and the closing " ─╯" cannot
-	// coexist with a fill cell, so the border is drawn plain.
-	const foldedMin = 22
-	if width < foldedMin {
-		return border.Render("╰" + strings.Repeat("─", width-2) + "╯")
-	}
-	// Keep one fill cell and the closing " ─╯" before spending cells on the
-	// marks: a narrow border still closes.
-	fits := func(marks string) bool {
-		return ansi.StringWidth(prefix)+ansi.StringWidth(marks)+
-			ansi.StringWidth(posText)+ansi.StringWidth(" ─╯")+1 <= width
-	}
-	marks := planMarks(in, planMarksMax, 8)
-	if !fits(marks) {
-		marks = Blocks(done, total, 8)
-	}
-	if !fits(marks) {
-		marks = ""
-	}
-	line := prefix + marks + posText
-	// The text keeps the closing " ─", at least one fill cell and ╯.
-	if room := width - ansi.StringWidth(line) - ansi.StringWidth(" ─╯") - 1; active != "" && room > 0 {
-		line += border.Render(" ") + border.Render(cut(active, room))
-	}
-	line += border.Render(" ─")
-	if fill := width - ansi.StringWidth(line) - 1; fill > 0 {
-		line += border.Render(strings.Repeat("─", fill))
-	}
-	return line + border.Render("╯")
-}
-
-// idleRow is the plan's row when the box is not drawn: the finished plan, or
-// the position and the item the plan is on.
-func idleRow(in Input, width int) Row {
-	th := theme.Current()
-	done, total := planCounts(in.Plan)
-	var text string
-	if total > 0 && done == total {
-		text = lipgloss.NewStyle().Foreground(th.StatusSuccess).Render(glyph.OK) +
-			fmt.Sprintf(" Plan %d/%d done", done, total)
-	} else {
-		text = lipgloss.NewStyle().Foreground(th.AccentPrimary).Render(glyph.Running) +
-			fmt.Sprintf(" Plan %d/%d", done, total)
-		if focus := clean(planFocus(in.Plan), 120); focus != "" {
-			text += " · " + focus
-		}
-	}
-	return Row{Text: ansi.Truncate(text, max(width, 1), "…"), Frame: FramePlain}
+	text := lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess).Render(glyph.OK) +
+		fmt.Sprintf(" Plan %d/%d done", done, total)
+	return Row{Text: ansi.Truncate(" "+text, max(w, 1), "…")}
 }

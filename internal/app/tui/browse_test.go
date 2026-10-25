@@ -852,3 +852,54 @@ func TestBrowseGFollowsTheLiveBox(t *testing.T) {
 		t.Fatalf("G must land on the last stop, cursor %+v", m.cursor)
 	}
 }
+
+// TestBrowseEnterOnAHeldRowScrollsToItsEvent: Enter on a held row scrolls to
+// the completion event that finished it, and opens no card.
+func TestBrowseEnterOnAHeldRowScrollsToItsEvent(t *testing.T) {
+	m, _, view := finishedSubagentFixture(t)
+	base := m.now()
+	m.heldSince = base.Add(-time.Minute)
+
+	// Push the event out of view.
+	for i := 0; i < 40; i++ {
+		m.state.AddMessage(session.RoleAssistant, fmt.Sprintf("filler %d", i), session.ContentTypePlain)
+	}
+	item := workRunningCard(view.WorkKey, base.Add(-2*time.Minute))
+	item.Kind = "agent"
+	item.State = "completed"
+	item.EndedAt = base.Add(-30 * time.Second)
+	m.workSnapshot = workSnapOf(item)
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	var stop livebox.Target
+	for _, s := range m.boxLayout().Stops {
+		if s.Kind == livebox.TargetWork && s.Key == view.WorkKey {
+			stop = s
+		}
+	}
+	if stop.Kind == livebox.TargetNone {
+		t.Fatalf("the held row has no stop: %+v", m.boxLayout().Stops)
+	}
+	ref, ok := m.completions[view.WorkKey]
+	if !ok {
+		t.Fatalf("no completion event for %q in %v", view.WorkKey, m.completions)
+	}
+
+	m.enterBoxStop(stop)
+	if m.workExpanded != "" {
+		t.Errorf("Enter on a held row must not open a card, workExpanded = %q", m.workExpanded)
+	}
+	want := -1
+	for _, r := range m.nodeRegions {
+		if r.target.node == ref.node {
+			want = r.startLine
+		}
+	}
+	if want < 0 {
+		t.Fatalf("the completion event has no region:\n%s", stripANSI(m.viewport.GetContent()))
+	}
+	if got := m.viewport.YOffset(); got != want {
+		t.Errorf("Enter on a held row went to line %d, want the event's region at %d", got, want)
+	}
+}

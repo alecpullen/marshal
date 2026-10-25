@@ -40,10 +40,9 @@ func boxRowFor(m *Model, f func(livebox.Row) bool) int {
 	return -1
 }
 
-// TestLiveBeatRendersInTheBoxNotTheViewport is the split's whole point: while
-// the turn runs, the beat in flight is the box's content, and only settles
-// into the transcript once it is history.
-func TestLiveBeatRendersInTheBoxNotTheViewport(t *testing.T) {
+// TestLiveBeatRendersInTheViewport: the step in progress streams at the end of
+// the transcript, and settles where it was drawn.
+func TestLiveBeatRendersInTheViewport(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
@@ -55,20 +54,36 @@ func TestLiveBeatRendersInTheBoxNotTheViewport(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	if box := stripANSI(boxOut(m)); !strings.Contains(box, "Reading the parser.") {
-		t.Fatalf("the live beat must render in the box:\n%s", box)
+	vp := stripANSI(m.viewport.GetContent())
+	if !strings.Contains(vp, "Reading the parser.") {
+		t.Fatalf("the live beat must render in the viewport:\n%s", vp)
 	}
-	if vp := stripANSI(m.viewport.GetContent()); strings.Contains(vp, "Reading the parser.") {
-		t.Fatalf("the live beat must not be in the viewport:\n%s", vp)
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "Reading the parser.") {
+		t.Fatalf("the live beat must not be in the tray:\n%s", box)
 	}
+	busyLine := lineIndexOf(vp, "Reading the parser.")
 
-	// Settled, the same beat is history and belongs to the viewport.
+	// Settled, the same beat is history and stays where it was drawn.
 	m.busy = false
 	m.invalidateTranscript()
 	m.refreshViewport()
-	if vp := stripANSI(m.viewport.GetContent()); !strings.Contains(vp, "Reading the parser.") {
-		t.Fatalf("a settled beat belongs in the viewport:\n%s", vp)
+	settled := stripANSI(m.viewport.GetContent())
+	if !strings.Contains(settled, "Reading the parser.") {
+		t.Fatalf("a settled beat belongs in the viewport:\n%s", settled)
 	}
+	if got := lineIndexOf(settled, "Reading the parser."); got != busyLine {
+		t.Errorf("the settled beat moved from line %d to %d", busyLine, got)
+	}
+}
+
+// lineIndexOf is the index of the first line holding want, or -1.
+func lineIndexOf(content, want string) int {
+	for i, l := range strings.Split(content, "\n") {
+		if strings.Contains(l, want) {
+			return i
+		}
+	}
+	return -1
 }
 
 // TestBoxIsBudgetedInTheFrameHeight is the geometry guard: the box's rows are
@@ -263,82 +278,184 @@ func TestScrollToPlanItemUsesTheOneBasedSlot(t *testing.T) {
 	}
 }
 
-// TestBoxClickOnALiveCallExpandsIt: the live part's rows are click targets,
-// so a call in flight can be opened to read its args and output.
-func TestBoxClickOnALiveCallExpandsIt(t *testing.T) {
+// TestSwarmIsTheTraysFirstRow: an active swarm is the tray's first row.
+func TestSwarmIsTheTraysFirstRow(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
-	id := m.state.BeginStep(session.Actor{})
-	m.state.AddNarration(id, "Running the suite.")
-	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: m.now(), StepID: id, ToolCallID: "run"})
-	m.busy, m.turnStartedAt = true, m.now()
-	m.invalidateTranscript()
-	m.refreshViewport()
-	m.viewString()
-
-	i := boxRowFor(&m, func(r livebox.Row) bool {
-		return r.Target.Kind == livebox.TargetLive && r.Target.Node.Kind == viewmodel.KindTool
-	})
-	if i < 0 {
-		t.Fatalf("the live call has no box row:\n%s", stripANSI(boxOut(m)))
-	}
-	row := m.boxLayout().Rows[i]
-	before := m.isToolExpanded(row.Target.Node, true)
-	if _, handled := m.handleBoxClick(tea.Mouse{Button: tea.MouseLeft, X: 1, Y: boxRowY(&m, i)}); !handled {
-		t.Fatal("a click on a live call must be consumed")
-	}
-	if got := m.isToolExpanded(row.Target.Node, true); got == before {
-		t.Fatalf("click on the live call did not toggle its expansion (was %v)", before)
-	}
-}
-
-// TestWheelOverTheBoxReasoningScrollsIt: the streaming reasoning draws in the
-// box, and the wheel over it scrolls the bounded region rather than the
-// transcript underneath.
-func TestWheelOverTheBoxReasoningScrollsIt(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(100, 40)
-	m.state.BeginStreaming()
-	for i := range 40 {
-		m.state.AppendThinking(fmt.Sprintf("reasoning line %d that is long enough to be distinct\n", i))
-	}
-	m.refreshViewport()
-	m.viewString()
-
-	i := boxRowFor(&m, func(r livebox.Row) bool {
-		return r.Target.Kind == livebox.TargetLive && r.Target.Node == viewmodel.LiveThinkingID
-	})
-	if i < 0 {
-		t.Fatalf("the reasoning has no box row:\n%s", stripANSI(boxOut(m)))
-	}
-	before := m.viewport.YOffset()
-	out, _ := m.Update(tea.MouseWheelMsg{X: 1, Y: boxRowY(&m, i), Button: tea.MouseWheelUp})
-	mm := asModel(t, out)
-
-	if got := mm.regionOffset[viewmodel.LiveThinkingID]; got != 1 {
-		t.Fatalf("region offset = %d, want 1 after one wheel-up", got)
-	}
-	if got := mm.viewport.YOffset(); got != before {
-		t.Fatalf("the wheel over the box scrolled the transcript: %d -> %d", before, got)
-	}
-}
-
-// TestBoxStateShowsTheSDDRun: an active run's summary is the box's state.
-func TestBoxStateShowsTheSDDRun(t *testing.T) {
-	m := newTestModel(t)
-	m.resize(100, 40)
-	m.state.SetSDDProgress(session.SDDProgress{
-		Active: true, PlanName: "p", TotalTasks: 5, DoneTasks: 1, CurrentTask: 2, Phase: "implement",
+	m.state.SetSwarmProgress(session.SwarmProgress{
+		Active: true,
+		Goal:   "ship the tray",
+		Roles:  []session.SwarmRole{{Name: "implementer", Status: "running"}},
 	})
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	rows := m.boxLayout().Rows
+	if len(rows) == 0 {
+		t.Fatal("the tray has no rows")
+	}
+	first := stripANSI(rows[0].Text)
+	for _, want := range []string{"run", "swarm"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("tray row 0 = %q, want it to contain %q", first, want)
+		}
+	}
+}
+
+// TestFinishedItemHoldsItsRowUntilTheNextPrompt: a finished item keeps its tray
+// row until a turn starts, and an item that ended before the window opened is
+// never shown.
+func TestFinishedItemHoldsItsRowUntilTheNextPrompt(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	base := m.now()
+	m.heldSince = base.Add(-time.Minute)
+
+	finished := workRunningCard("k1", base.Add(-2*time.Minute))
+	finished.State = "completed"
+	finished.EndedAt = base.Add(-30 * time.Second)
+	m.workSnapshot = workSnapOf(finished)
+	m.invalidateTranscript()
 	m.refreshViewport()
 
 	box := stripANSI(boxOut(m))
-	if !strings.Contains(box, "task 2/5") {
-		t.Fatalf("the box must carry the run summary:\n%s", box)
+	if !strings.Contains(box, "done") {
+		t.Fatalf("a finished item must keep its row with its outcome:\n%s", box)
 	}
-	if !strings.Contains(box, "1m") {
-		t.Fatalf("the box must carry the turn clock:\n%s", box)
+	for _, r := range m.boxLayout().Rows {
+		if r.Target.Kind == livebox.TargetWork && r.Target.Key == "k1" && r.Tint {
+			t.Error("a held row must not be tinted")
+		}
+	}
+
+	// A prompt opens a new held window, which drops the row.
+	m.startHeldWindow()
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "k1") {
+		t.Fatalf("the next prompt must drop the held row:\n%s", box)
+	}
+
+	// An item that ended before the window opened is never shown.
+	old := workRunningCard("k2", base.Add(-5*time.Minute))
+	old.State = "completed"
+	old.EndedAt = base.Add(-4 * time.Minute)
+	m.workSnapshot = workSnapOf(old)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "k2") {
+		t.Fatalf("an item that ended before the window must not be held:\n%s", box)
+	}
+
+	// A foreground-attached command is never held: it stays an ordinary tool
+	// row, whatever its state.
+	m.heldSince = base.Add(-time.Minute)
+	fg := workRunningCard("k3", base.Add(-2*time.Minute))
+	fg.Attachment = "foreground"
+	fg.State = "completed"
+	fg.EndedAt = base.Add(-30 * time.Second)
+	m.workSnapshot = workSnapOf(fg)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "k3") {
+		t.Fatalf("a foreground command must never be held:\n%s", box)
+	}
+}
+
+// TestNewModelStartsWithNothingHeld: the held window opens when the model is
+// built, so a resumed session does not resurrect terminal rows from before it.
+func TestNewModelStartsWithNothingHeld(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	if m.heldSince.IsZero() {
+		t.Fatal("New must open the held window; a zero window holds every finished item")
+	}
+
+	// An item that ended before the model was built is never held.
+	old := workRunningCard("k-old", time.Unix(50, 0))
+	old.State = "completed"
+	old.EndedAt = time.Unix(60, 0)
+	m.workSnapshot = workSnapOf(old)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "k-old") {
+		t.Fatalf("a model built now must not hold an item that ended before it:\n%s", box)
+	}
+}
+
+// TestHeldRowMatchesItsCompletionEvent: the held row's outcome and summary are
+// the completion event's, so the tray and history always agree.
+func TestHeldRowMatchesItsCompletionEvent(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	base := m.now()
+	m.heldSince = base.Add(-time.Minute)
+
+	const conv, epoch, execID = "conv-1", "epoch-1", "exec-1"
+	if err := m.state.AddJobExit(session.JobExit{
+		ID: "job-1", Command: "pytest -q", ExitCode: 1, Output: "boom\n",
+		ExecutionID: execID, ConversationID: conv, SourceEpoch: epoch,
+		At: base.Add(-30 * time.Second),
+	}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+	key := viewmodel.WorkKey(conv, epoch, "command", execID)
+	item := workRunningCard(key, base.Add(-2*time.Minute))
+	item.State = "failed"
+	item.EndedAt = base.Add(-30 * time.Second)
+	m.workSnapshot = workSnapOf(item)
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	ref, ok := m.completions[key]
+	if !ok || ref.info == nil {
+		t.Fatalf("no completion event for %q in %v", key, m.completions)
+	}
+	held, ok := m.heldItem(item)
+	if !ok {
+		t.Fatal("the finished item is not held")
+	}
+	if held.Outcome != ref.info.Outcome {
+		t.Errorf("held outcome = %q, want the event's %q", held.Outcome, ref.info.Outcome)
+	}
+	if held.Summary != ref.info.Summary {
+		t.Errorf("held summary = %q, want the event's %q", held.Summary, ref.info.Summary)
+	}
+	if held.Outcome != "exit 1" {
+		t.Errorf("held outcome = %q, want exit 1", held.Outcome)
+	}
+}
+
+// TestFinishedPlanStaysUntilTheNextPrompt: a finished list is one row until a
+// turn starts, and a new open list shows again.
+func TestFinishedPlanStaysUntilTheNextPrompt(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	mustSetTodos(t, &m,
+		native.TodoItem{Content: "A", Status: native.TodoCompleted},
+		native.TodoItem{Content: "B", Status: native.TodoCompleted})
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	if box := stripANSI(boxOut(m)); !strings.Contains(box, "Plan 2/2 done") {
+		t.Fatalf("a finished list must be one row:\n%s", box)
+	}
+
+	m.startHeldWindow()
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "Plan 2/2 done") {
+		t.Fatalf("the next prompt must drop the finished plan:\n%s", box)
+	}
+
+	// A new open list shows again.
+	mustSetTodos(t, &m,
+		native.TodoItem{Content: "A", Status: native.TodoCompleted},
+		native.TodoItem{Content: "C", Status: native.TodoInProgress})
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); !strings.Contains(box, "C") {
+		t.Fatalf("a new open list must show again:\n%s", box)
 	}
 }

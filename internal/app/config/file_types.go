@@ -259,6 +259,9 @@ type fileTUI struct {
 	LiveBox      *fileLiveBox      `toml:"live_box"`
 }
 
+// fileLiveBox mirrors the retired [tui.live_box] table, as fileTranscript
+// mirrors [tui.transcript]. Its key still parses so existing files load; it
+// does nothing, and Diagnose says so.
 type fileLiveBox struct {
 	Layout *string `toml:"layout"`
 }

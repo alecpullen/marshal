@@ -11,75 +11,44 @@ import (
 )
 
 // livebox_view.go wires the live box to the model: it snapshots the model for
-// livebox.Plan, plans once per frame, renders the live part of the transcript
-// into the box, and routes the box's height and clicks.
-//
-// History renders in the viewport (refreshViewport renders it); the live part
-// — the beat in flight and the reasoning streaming under it — never enters the
-// viewport's content, because it changes with the clock and the spinner.
+// livebox.Plan, plans once per frame, and routes the box's height and clicks.
 
-// renderLive renders the live part of the transcript at width, in order, and
-// records which node owns each line. It goes through renderNode so a live beat
-// renders exactly as history would draw it — and so nodeRenderHook still fires
-// for it, which is what keeps an unchanged history from being re-rendered on a
-// spinner tick.
-func (m *Model) renderLive(live []*viewmodel.Node, c *stepRenderCtx, width int, themeSig uint64) livebox.Live {
-	var out livebox.Live
-	sawBeat := false
-	for _, n := range live {
-		text, subs := m.renderNode(n, c, width, themeSig)
-		if text == "" {
-			continue
-		}
-		lines := strings.Split(text, "\n")
-		targets := make([]viewmodel.NodeID, len(lines))
-		for i := range targets {
-			targets[i] = n.ID
-		}
-		for _, sr := range subs {
-			for i := max(sr.start, 0); i < min(sr.end, len(lines)); i++ {
-				targets[i] = sr.id
-			}
-		}
-		if n.Kind == viewmodel.KindStep && !sawBeat {
-			sawBeat = true
-			// The compact form is the beat's first line and the call it is
-			// running right now: the last tool row it drew.
-			out.Short = append(out.Short, lines[0])
-			out.ShortTargets = append(out.ShortTargets, targets[0])
-			if id, ok := lastToolChild(n); ok {
-				for _, sr := range subs {
-					if sr.id != id {
-						continue
-					}
-					for i := max(sr.start, 0); i < min(sr.end, len(lines)); i++ {
-						out.Short = append(out.Short, lines[i])
-						out.ShortTargets = append(out.ShortTargets, targets[i])
-					}
-				}
-			}
-		}
-		if n.ID == viewmodel.LiveThinkingID {
-			// The streaming reasoning's head line, so the compact form keeps
-			// saying what the model is thinking about. With no beat, that
-			// line is the whole of Short.
-			out.Short = append(out.Short, lines[0])
-			out.ShortTargets = append(out.ShortTargets, targets[0])
-		}
-		out.Full = append(out.Full, lines...)
-		out.Targets = append(out.Targets, targets...)
+// startHeldWindow opens a new held window: a finished item that ended after
+// this instant keeps its tray row until the next prompt. A finished plan seen
+// now is dismissed, so it is one row until the next prompt.
+func (m *Model) startHeldWindow() {
+	m.heldSince = m.now()
+	if allTasksCompleted(m.band.Tasks) {
+		m.planDismissed = planFingerprint(m.band.Tasks)
 	}
-	return out
 }
 
-// lastToolChild is the newest call the beat drew a row for.
-func lastToolChild(n *viewmodel.Node) (viewmodel.NodeID, bool) {
-	for i := len(n.Children) - 1; i >= 0; i-- {
-		if n.Children[i].Kind == viewmodel.KindTool {
-			return n.Children[i].ID, true
+// allTasksCompleted reports whether every item of a non-empty list is done.
+func allTasksCompleted(tasks []viewmodel.BandTask) bool {
+	if len(tasks) == 0 {
+		return false
+	}
+	for _, t := range tasks {
+		if t.Status != "completed" {
+			return false
 		}
 	}
-	return viewmodel.NodeID{}, false
+	return true
+}
+
+// planFingerprint identifies a plan list by its items' identity and status, so
+// a finished list seen at the last turn start can be left out of the tray.
+func planFingerprint(tasks []viewmodel.BandTask) string {
+	var b strings.Builder
+	for _, t := range tasks {
+		b.WriteString(t.ID)
+		b.WriteByte(0)
+		b.WriteString(t.Content)
+		b.WriteByte(0)
+		b.WriteString(t.Status)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // boxInput snapshots the model for livebox.Plan.
@@ -89,41 +58,42 @@ func (m Model) boxInput() livebox.Input {
 		Width:    max(m.leftWidth, 1),
 		MaxRows:  m.boxMaxRows(),
 		Now:      now,
-		Busy:     m.busy && !m.turnStartedAt.IsZero(),
 		Spinner:  m.turnSpinnerFrame(),
-		Live:     m.live,
 		Previous: m.workPrevious,
 		Expanded: m.workExpanded,
-		Mode:     m.liveBoxMode,
 		Cursor:   m.boxCursor(),
 	}
-	if in.Busy {
-		elapsed := formatElapsed(max(now.Sub(m.turnStartedAt), 0))
+	// An active SDD run or swarm is the tray's first row. The turn state on the
+	// status line still says "working"; the run's own summary is this row.
+	if m.busy && !m.turnStartedAt.IsZero() {
 		sdd := m.state.SDDProgress()
 		swarm := m.state.SwarmProgress()
 		switch {
 		case sdd.Active:
-			in.State = spinnerLabel(in.Spinner, runPanelSummaryText(sdd, now, 60)) + " " + elapsed
+			title := sdd.PlanName
+			if title == "" {
+				title = "plan run"
+			}
+			in.Run = &livebox.RunRow{
+				Title:     title,
+				Summary:   runPanelSummaryText(sdd, now, 60),
+				StartedAt: m.turnStartedAt,
+			}
 		case swarm.Active:
-			in.State = spinnerLabel(in.Spinner, swarmStripText(swarm)) + " " + elapsed
-		default:
-			in.State = spinnerLabel(in.Spinner, "working "+elapsed)
-			if act := m.state.Activity(); spinnerShowsLabel(act.Kind) && act.Label != "" {
-				if label := m.state.PinnedSpinnerLabel(act); label != "" {
-					in.State += " · " + label
-				}
+			in.Run = &livebox.RunRow{
+				Title:     "swarm",
+				Summary:   swarmStripText(swarm),
+				StartedAt: m.turnStartedAt,
 			}
 		}
-	}
-	if len(m.band.Tasks) > 0 {
-		in.Hints = append(in.Hints, "Ctrl+T plan")
-	}
-	if in.Busy {
-		in.Hints = append(in.Hints, "Ctrl+C ×2 stop")
 	}
 	for _, it := range m.workSnapshot.Items {
 		if viewmodel.WorkActive(it) {
 			in.Work = append(in.Work, it)
+			continue
+		}
+		if h, ok := m.heldItem(it); ok {
+			in.Held = append(in.Held, h)
 		}
 	}
 	for _, it := range in.Work {
@@ -145,19 +115,85 @@ func (m Model) boxInput() livebox.Input {
 		}
 		in.Headlines[it.TaskKey] = subagentHeadline(v.Child)
 	}
-	for _, t := range m.band.Tasks {
-		in.Plan = append(in.Plan, livebox.PlanItem{
-			ID:        t.ID,
-			Content:   t.Content,
-			Status:    t.Status,
-			StartedAt: t.StartedAt,
-			First:     t.First,
-		})
+	// A finished plan is one row until the next prompt: once the list seen at
+	// the last turn start is dismissed, the tray leaves it out entirely.
+	if len(m.band.Tasks) > 0 && !(allTasksCompleted(m.band.Tasks) && planFingerprint(m.band.Tasks) == m.planDismissed) {
+		for _, t := range m.band.Tasks {
+			in.Plan = append(in.Plan, livebox.PlanItem{
+				ID:        t.ID,
+				Content:   t.Content,
+				Status:    t.Status,
+				StartedAt: t.StartedAt,
+				First:     t.First,
+			})
+		}
 	}
 	if m.band.Stale {
 		in.Stale = m.band.StaleAge
 	}
 	return in
+}
+
+// activateWorkRow acts on a work row: a running item toggles its card, and a
+// held one scrolls to the completion event that finished it. When that event
+// has been trimmed or rolled out of the transcript, the row says so rather
+// than swallowing the key.
+func (m *Model) activateWorkRow(key string) tea.Cmd {
+	if it, ok := m.workItemByKey(key); ok && viewmodel.WorkActive(it) {
+		if m.workExpanded == key {
+			m.workExpanded = ""
+		} else {
+			m.workExpanded = key
+		}
+		m.invalidateTranscript()
+		m.refreshViewport()
+		return nil
+	}
+	if ref, ok := m.completions[key]; ok && m.scrollToNode(ref.node) {
+		return nil
+	}
+	return m.setFlash("That event is no longer in the transcript")
+}
+
+// heldItem is a finished item's held row, when it ended inside the current
+// held window. A foreground-attached command is never held: it stays an
+// ordinary tool row. The row's words come from the completion event, so the
+// tray and history always agree; until the event exists it falls back to the
+// item's own state, with no summary.
+func (m Model) heldItem(it viewmodel.WorkItem) (livebox.HeldItem, bool) {
+	if it.Kind == "command" && it.Attachment == "foreground" {
+		return livebox.HeldItem{}, false
+	}
+	switch it.State {
+	case "completed", "failed", "stopped", "unknown":
+	default:
+		return livebox.HeldItem{}, false
+	}
+	if !it.EndedAt.After(m.heldSince) {
+		return livebox.HeldItem{}, false
+	}
+	h := livebox.HeldItem{
+		Item:     it,
+		Duration: max(it.EndedAt.Sub(it.StartedAt), 0),
+	}
+	if ref, ok := m.completions[it.TaskKey]; ok && ref.info != nil {
+		h.Outcome = ref.info.Outcome
+		h.Failed = ref.info.Failed
+		h.Summary = ref.info.Summary
+		return h, true
+	}
+	switch it.State {
+	case "completed":
+		h.Outcome = "done"
+	case "failed":
+		h.Outcome = "failed"
+	case "stopped":
+		h.Outcome = "stopped"
+	default:
+		h.Outcome = "outcome unknown"
+	}
+	h.Failed = h.Outcome != "done"
+	return h, true
 }
 
 // boxCursor is the browse cursor as a box target. A box stop has no transcript
@@ -268,25 +304,10 @@ func (m *Model) handleBoxClick(msg tea.Mouse) (tea.Cmd, bool) {
 	if msg.Y < top || msg.Y >= top+len(layout.Rows) {
 		return nil, false
 	}
-	target := boxRowTarget(layout.Rows[msg.Y-top], msg.X-2)
+	target := boxRowTarget(layout.Rows[msg.Y-top], msg.X)
 	switch target.Kind {
-	case livebox.TargetLive:
-		// The reasoning region scrolls with the wheel; a click on it does
-		// not fold the stream away mid-thought.
-		if target.Node == viewmodel.LiveThinkingID {
-			return nil, true
-		}
-		m.toggleExpanded(target.Node)
-		m.invalidateTranscript()
-		m.refreshViewport()
 	case livebox.TargetWork:
-		if m.workExpanded == target.Key {
-			m.workExpanded = ""
-		} else {
-			m.workExpanded = target.Key
-		}
-		m.invalidateTranscript()
-		m.refreshViewport()
+		return m.activateWorkRow(target.Key), true
 	case livebox.TargetMore:
 		m.openWork()
 	case livebox.TargetPlan:
@@ -322,7 +343,6 @@ func (m *Model) scrollToPlanItem(key string) {
 
 // scrollToNode reveals a transcript node by scrolling the viewport to the
 // first line of a region that targets it, and reports whether it was found.
-// The live part has no viewport region any more: it is in the box.
 func (m *Model) scrollToNode(id viewmodel.NodeID) bool {
 	if id == (viewmodel.NodeID{}) {
 		return false

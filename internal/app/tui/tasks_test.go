@@ -335,27 +335,24 @@ func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
 		return -1
 	}
 	// The first beat of each todo carries its tag, in list order, on the
-	// head of the work itself. The newest beat is the live part, so it draws
-	// in the box; the older ones are history.
+	// head of the work itself. Every beat is history now, so both draw in
+	// the transcript.
 	first := at("Reading it.")
 	if !strings.HasSuffix(strings.TrimRight(lines[first], " "), "▸ 1/4") {
 		t.Fatalf("each todo's first beat carries its tag:\n%s", text)
 	}
-	box := stripANSI(boxOut(m))
-	if !strings.Contains(box, "Writing it.") {
-		t.Fatalf("the live beat renders in the box:\n%s", box)
+	second := at("Writing it.")
+	if !strings.HasSuffix(strings.TrimRight(lines[second], " "), "▸ 2/4") {
+		t.Fatalf("the second todo's first beat carries its tag:\n%s", text)
 	}
-	if strings.Contains(text, "Writing it.") || strings.Contains(text, "3/4") || strings.Contains(text, "4/4") || strings.Contains(text, "──") {
+	if strings.Contains(text, "3/4") || strings.Contains(text, "4/4") || strings.Contains(text, "──") {
 		t.Errorf("waiting todos live in the plan section, and history has no dividers:\n%s", text)
 	}
 
-	// The box's plan section carries the progress: the header counts the
-	// list, and the item rows name the todo in progress.
-	if !strings.Contains(box, "1/4") {
-		t.Errorf("plan header should count progress:\n%s", box)
-	}
+	// The tray's plan rows name the todo in progress.
+	box := stripANSI(boxOut(m))
 	if !strings.Contains(box, "Write") {
-		t.Errorf("plan should name the active todo:\n%s", box)
+		t.Errorf("the tray should name the active todo:\n%s", box)
 	}
 	for _, r := range m.boxLayout().Rows {
 		if r.Target.Kind != livebox.TargetPlan {
@@ -369,10 +366,9 @@ func TestTodoDividersOrderTheWorkAndTheBandCarriesProgress(t *testing.T) {
 	}
 }
 
-// TestLeftoverPlanIsOneIdleRow: a list the turn never touched is still the
-// plan, so an idle session shows it as the one plain idle row rather than
-// hiding it.
-func TestLeftoverPlanIsOneIdleRow(t *testing.T) {
+// TestLeftoverPlanShowsItsRows: a list the turn never touched is still the
+// plan, so an idle session shows its rows rather than hiding it.
+func TestLeftoverPlanShowsItsRows(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
 	_ = m.state.SetTodos([]db.TodoItem{{ID: "t1", Content: "A", Status: "pending"}, {ID: "t2", Content: "B", Status: "pending"}})
@@ -383,8 +379,12 @@ func TestLeftoverPlanIsOneIdleRow(t *testing.T) {
 	if m.band.Todos {
 		t.Fatalf("leftover todos must not put progress in the band on an unrelated turn: %+v", m.band)
 	}
-	if got := stripANSI(boxOut(m)); got != "▸ Plan 0/2 · A" {
-		t.Fatalf("box = %q, want the single idle row naming the plan", got)
+	got := stripANSI(boxOut(m))
+	if !strings.Contains(got, "· A") || !strings.Contains(got, "· B") {
+		t.Fatalf("tray = %q, want the plan's rows naming A and B", got)
+	}
+	if rows := strings.Split(got, "\n"); len(rows) != 1 {
+		t.Fatalf("tray = %d rows, want the plan's one two-column row:\n%s", len(rows), got)
 	}
 }
 

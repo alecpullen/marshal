@@ -355,20 +355,24 @@ func TestRunPanelShowsAgentFallbackPhase(t *testing.T) {
 	}
 }
 
-// An SDD run is one state line in the box's top border, not a panel of its
-// own: reclaiming transcript rows is why the run summary moved there.
-func TestSDDRunShowsInTheBoxBorder(t *testing.T) {
+// An SDD run's summary is the tray's first row.
+func TestSDDRunIsTheTraysFirstRow(t *testing.T) {
 	m := newTestModelInRepo(t)
 	m.width, m.height = 100, 40
 	m.leftWidth = 100
 	m.state.SetSDDProgress(etaTestProgress())
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
+	m.invalidateTranscript()
+	m.refreshViewport()
 
-	if got := m.boxRows(); got < 2 {
-		t.Fatalf("boxRows() = %d, want a framed box", got)
+	rows := m.boxLayout().Rows
+	if len(rows) == 0 {
+		t.Fatal("the tray has no rows")
 	}
-	box := stripANSI(boxOut(m))
-	if first, _, _ := strings.Cut(box, "\n"); !strings.Contains(first, "task ") {
-		t.Fatalf("the run summary belongs in the top border: %q", first)
+	first := stripANSI(rows[0].Text)
+	for _, want := range []string{"run", "task "} {
+		if !strings.Contains(first, want) {
+			t.Errorf("tray row 0 = %q, want it to contain %q", first, want)
+		}
 	}
 }

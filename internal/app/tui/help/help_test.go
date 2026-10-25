@@ -27,6 +27,18 @@ func TestFooterIdle(t *testing.T) {
 	}
 }
 
+// TestFooterStopOnly pins the narrow-terminal fallback: while busy, the stop
+// hint is the only pair the footer keeps, and the flag does nothing when idle.
+func TestFooterStopOnly(t *testing.T) {
+	want := pair("Ctrl+C", "stop")
+	if got := Footer(FooterHints{Busy: true, StopOnly: true}); got != want {
+		t.Fatalf("busy stop-only footer = %q, want exactly %q", got, want)
+	}
+	if got, plain := Footer(FooterHints{StopOnly: true}), Footer(FooterHints{}); got != plain {
+		t.Fatalf("StopOnly without Busy changed the footer: %q, want %q", got, plain)
+	}
+}
+
 func TestFooterBusyShowsCancelAndQueue(t *testing.T) {
 	out := stripANSI(Footer(FooterHints{Busy: true}))
 	if !strings.Contains(out, "Ctrl+C stop") || !strings.Contains(out, "Ctrl+X clear queue") {
@@ -127,13 +139,19 @@ func TestFooterIdleShowsClearQueue(t *testing.T) {
 	}
 }
 
-func TestFooterShowsPlanToggleWhenPlanActive(t *testing.T) {
-	out := Footer(FooterHints{PlanActive: true})
-	if !strings.Contains(out, "Ctrl+T") || !strings.Contains(out, "plan") {
-		t.Fatalf("idle footer should hint the plan-layout cycle:\n%s", out)
+func TestFooterHasNoCtrlT(t *testing.T) {
+	states := []FooterHints{
+		{},
+		{Busy: true},
+		{QueueNonEmpty: true},
+		{IdleRollbackEligible: true},
+		{Browsing: true},
+		{RunActive: true},
 	}
-	if busy := Footer(FooterHints{Busy: true, PlanActive: true}); strings.Contains(busy, "Ctrl+T") {
-		t.Fatalf("busy footer must keep its cancel-focused hints:\n%s", busy)
+	for _, h := range states {
+		if out := Footer(h); strings.Contains(out, "Ctrl+T") {
+			t.Fatalf("no footer state may advertise Ctrl+T: %+v → %q", h, out)
+		}
 	}
 }
 

@@ -1,0 +1,1 @@
+▌┆ job-1  go build ./...  done · ok                                                        12s ✓

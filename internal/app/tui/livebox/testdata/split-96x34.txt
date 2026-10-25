@@ -1,6 +1,0 @@
-╭─ ⠋ working 4m12s ──────── Ctrl+T plan · Ctrl+C ×2 stop ─┬─ plan  ▰▰▱▱ 2/4 ───────────────────╮
-│ ⠋ Checking the eval thresholds still make sense for a … │ ✓ todo a                           │
-├─ running 2 ─────────────────────────────────────────────┤ ✓ todo b                           │
-│ ▌⧉ #1     review the c…  Checking context_wind… 1m 2s ⠋ │ ⠋ todo c                           │
-│ ▌┆ job-2  Harness tests  last useful line         48s ⠋ │ · todo d                           │
-╰─────────────────────────────────────────────────────────┴────────────────────────────────────╯

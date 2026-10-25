@@ -98,7 +98,7 @@ func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 	m.busy, m.turnStartedAt = true, base
 	m.refreshViewport()
 
-	running := stripANSI(boxOut(m))
+	running := stripANSI(m.viewport.View())
 	if !strings.Contains(running, "budget.go, runner.go") || !strings.Contains(running, "×2") {
 		t.Errorf("while running, want a ×2 group of completed calls:\n%s", running)
 	}
@@ -111,11 +111,9 @@ func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 
 	m.state.ClearActiveToolCall()
 	m.state.LogToolCall(readEvent("chat.go", base.Add(3*time.Second)))
-	m.busy = false
-	m.invalidateTranscript()
 	m.refreshViewport()
 
-	done := stripANSI(m.viewport.GetContent())
+	done := stripANSI(m.viewport.View())
 	if !strings.Contains(done, "budget.go, runner.go, chat.go") || !strings.Contains(done, "×3") {
 		t.Errorf("after completion, want the call folded into a ×3 group:\n%s", done)
 	}

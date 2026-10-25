@@ -22,19 +22,7 @@ var update = flag.Bool("update", false, "rewrite testdata frames")
 // frameNow is the clock every frame is built at, so an elapsed time is stable.
 var frameNow = time.Unix(10_000, 0)
 
-// frameLive is the live part of the standard frame.
-func frameLive() Live {
-	return Live{
-		Full: []string{
-			"⠋ Checking the eval thresholds still make sense for a coder model.",
-		},
-		Targets:      []viewmodel.NodeID{node("live-1")},
-		Short:        []string{"⠋ Checking the eval thresholds…"},
-		ShortTargets: []viewmodel.NodeID{node("live-1")},
-	}
-}
-
-// frameWork is the standard frame's running section: a subagent and a command,
+// frameWork is the standard frame's running rows: a subagent and a command,
 // both running.
 func frameWork() []viewmodel.WorkItem {
 	return []viewmodel.WorkItem{
@@ -52,25 +40,41 @@ func frameWork() []viewmodel.WorkItem {
 	}
 }
 
-// frameInput is the standard frame: the turn's live beat, two running items, a
-// four-item plan, and the mode under test.
-func frameInput(w, h int, mode Mode) Input {
+// frameHeld is the standard frame's held row: a finished command, kept until
+// the next prompt.
+func frameHeld() []HeldItem {
+	return []HeldItem{{
+		Item: viewmodel.WorkItem{
+			TaskKey: "k3", Kind: "command", DisplayID: "job-1",
+			Label: "go build ./...", State: "completed",
+			StartedAt: frameNow.Add(-3 * time.Minute),
+		},
+		Outcome:  "done",
+		Summary:  "ok",
+		Duration: 12 * time.Second,
+	}}
+}
+
+// frameInput is the standard frame: two running items and a four-item plan.
+func frameInput(w, h int) Input {
 	return Input{
 		Width:   w,
 		MaxRows: h * 2 / 5,
 		Now:     frameNow,
-		Busy:    true,
-		State:   "⠋ working 4m12s",
-		Hints:   []string{"Ctrl+T plan", "Ctrl+C ×2 stop"},
 		Spinner: "⠋",
-		Live:    frameLive(),
 		Work:    frameWork(),
 		Headlines: map[string]string{
 			"k1": "Checking context_window…",
 		},
 		Plan: planOf(4, 2, 3),
-		Mode: mode,
 	}
+}
+
+// heldInput is the standard frame with one finished item still held.
+func heldInput(w, h int) Input {
+	in := frameInput(w, h)
+	in.Held = frameHeld()
+	return in
 }
 
 // frameDownload is the expanded frame's item: a download with every card row.
@@ -92,14 +96,33 @@ func frameDownload() viewmodel.WorkItem {
 	}
 }
 
-// expandedInput is the box with one item's card open and the plan out of the
-// way, so the card is the frame's subject.
-func expandedInput(w, h int, mode Mode) Input {
-	in := frameInput(w, h, mode)
+// idleInput is the tray with one running download and the plan, and nothing
+// else pinned.
+func idleInput(w, h int) Input {
+	return Input{
+		Width:   w,
+		MaxRows: h * 2 / 5,
+		Now:     frameNow,
+		Spinner: "⠋",
+		Work:    []viewmodel.WorkItem{frameDownload()},
+		Plan:    planOf(4, 2, 3),
+	}
+}
+
+// cardInput is the tray with one item's card open and the plan out of the way,
+// so the card is the frame's subject.
+func cardInput(w, h int) Input {
+	in := frameInput(w, h)
 	in.Plan = nil
 	in.Expanded = "k1"
 	in.Work = []viewmodel.WorkItem{frameDownload()}
-	in.Hints = []string{"Ctrl+C ×2 stop"}
+	return in
+}
+
+// compactInput is the standard frame shed to its single compact row.
+func compactInput(w, h int) Input {
+	in := frameInput(w, h)
+	in.MaxRows = 1
 	return in
 }
 
@@ -250,30 +273,26 @@ func shapeFrames() []shapeFrame {
 	}
 }
 
-// TestFrames renders the box's shapes as golden frames, one file per shape and
+// TestFrames renders the tray's shapes as golden frames, one file per shape and
 // frame size, so a change to the drawing is visible in review.
 func TestFrames(t *testing.T) {
 	dims := []struct{ w, h int }{{80, 24}, {96, 34}, {120, 40}}
 	for _, d := range dims {
-		for _, name := range []string{"stacked", "folded", "expanded", "idle", "compact"} {
+		for _, name := range []string{"busy", "held", "idle", "card", "compact"} {
 			var in Input
 			switch name {
-			case "stacked":
-				in = frameInput(d.w, d.h, Stacked)
-			case "folded":
-				in = frameInput(d.w, d.h, Folded)
-			case "expanded":
-				in = expandedInput(d.w, d.h, Stacked)
+			case "busy":
+				in = frameInput(d.w, d.h)
+			case "held":
+				in = heldInput(d.w, d.h)
 			case "idle":
-				in = Input{Width: d.w, MaxRows: d.h * 2 / 5, Now: frameNow, Plan: planOf(4, 2, 3)}
+				in = idleInput(d.w, d.h)
+			case "card":
+				in = cardInput(d.w, d.h)
 			case "compact":
-				in = frameInput(d.w, d.h, Stacked)
-				in.MaxRows = 1
+				in = compactInput(d.w, d.h)
 			}
 			checkFrame(t, fmt.Sprintf("%s-%dx%d", name, d.w, d.h), in, d.w)
-		}
-		if d.w >= SplitMinWidth {
-			checkFrame(t, fmt.Sprintf("split-%dx%d", d.w, d.h), frameInput(d.w, d.h, Split), d.w)
 		}
 	}
 
@@ -282,9 +301,6 @@ func TestFrames(t *testing.T) {
 			Width:     96,
 			MaxRows:   13,
 			Now:       frameNow,
-			Busy:      true,
-			State:     "⠋ working 0m12s",
-			Hints:     []string{"Ctrl+C ×2 stop"},
 			Spinner:   "⠋",
 			Work:      []viewmodel.WorkItem{shape.item},
 			Previous:  shape.previous,
@@ -292,6 +308,36 @@ func TestFrames(t *testing.T) {
 		}
 		checkFrame(t, "rows-"+shape.name, in, 96)
 	}
+
+	// The held rows' shapes: a done command, a failed one, and the plan-run
+	// row.
+	checkFrame(t, "rows-held-done", Input{
+		Width: 96, MaxRows: 13, Now: frameNow, Spinner: "⠋",
+		Held: frameHeld(),
+	}, 96)
+	checkFrame(t, "rows-held-exit-1", Input{
+		Width: 96, MaxRows: 13, Now: frameNow, Spinner: "⠋",
+		Held: []HeldItem{{
+			Item: viewmodel.WorkItem{
+				TaskKey: "k1", Kind: "command", DisplayID: "job-9",
+				Label: "go test ./...", State: "failed",
+				StartedAt: frameNow.Add(-4 * time.Minute),
+			},
+			Outcome:  "exit 1",
+			Failed:   true,
+			Summary:  "FAIL marshal/internal/app/tui",
+			Duration: 2*time.Minute + 8*time.Second,
+		}},
+	}, 96)
+	checkFrame(t, "rows-plan-run", Input{
+		Width: 96, MaxRows: 13, Now: frameNow, Spinner: "⠋",
+		Run: &RunRow{
+			Title:     "p-e-tray",
+			Summary:   "task 2/5 implement",
+			StartedAt: frameNow.Add(-4 * time.Minute),
+		},
+		Work: frameWork(),
+	}, 96)
 }
 
 // checkFrame renders one frame with NO_COLOR and flat depth, then compares it

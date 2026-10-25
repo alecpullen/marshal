@@ -1,0 +1,3 @@
+▌▸ run    p-e-tray  task 2/5 implement                                                   4m 0s ⠋
+▌⧉ #1     review the config change                                                       1m 2s ⠋
+▌┆ job-2  Harness tests  last useful line                                                  48s ⠋

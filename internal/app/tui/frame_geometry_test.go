@@ -201,10 +201,10 @@ func TestInputAndFooterVisibleWithTodosAndFullTranscript(t *testing.T) {
 			}
 			m.refreshViewport()
 
-			// Precondition: the plan must actually be showing in the box.
+			// Precondition: the plan must actually be showing in the tray.
 			frame := stripANSI(m.viewString())
-			if tc.busy && !strings.Contains(frame, "1/3") {
-				t.Fatalf("plan section missing; scenario no longer exercises the bug:\n%s", frame)
+			if tc.busy && !strings.Contains(frame, "second task") {
+				t.Fatalf("plan rows missing; scenario no longer exercises the bug:\n%s", frame)
 			}
 
 			lines := strings.Split(frame, "\n")

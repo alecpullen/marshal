@@ -36,26 +36,14 @@ func downloadItem(key, id string, started time.Time) viewmodel.WorkItem {
 	}
 }
 
-// busyInput is the fixture the box tests start from: a two-line live part, five
+// busyInput is the fixture the tray tests start from: one held row, five
 // running items (the download expanded), and a four-item plan.
 func busyInput() Input {
 	return Input{
 		Width:   100,
 		MaxRows: 40,
 		Now:     testNow,
-		Busy:    true,
-		State:   "⠋ working 4m12s",
-		Hints:   []string{"Ctrl+T plan", "Ctrl+C ×2 stop"},
 		Spinner: "⠋",
-		Live: Live{
-			Full: []string{
-				"⠋ Checking the eval thresholds still make sense for a coder model.",
-				"  ├ read evals/thresholds.toml",
-			},
-			Targets:      []viewmodel.NodeID{node("live-1"), node("live-2")},
-			Short:        []string{"⠋ Checking the eval thresholds still make sense…"},
-			ShortTargets: []viewmodel.NodeID{node("live-1")},
-		},
 		Work: []viewmodel.WorkItem{
 			downloadItem("k1", "job-1", testNow.Add(-2*time.Minute)),
 			{
@@ -81,10 +69,19 @@ func busyInput() Input {
 				StartedAt: testNow.Add(-10 * time.Second),
 			},
 		},
+		Held: []HeldItem{{
+			Item: viewmodel.WorkItem{
+				TaskKey: "k6", Kind: "command", DisplayID: "job-0",
+				Label: "go build ./...", State: "completed",
+				StartedAt: testNow.Add(-3 * time.Minute),
+			},
+			Outcome:  "done",
+			Summary:  "ok",
+			Duration: 12 * time.Second,
+		}},
 		Headlines: map[string]string{"k2": "Checking context_window…"},
 		Expanded:  "k1",
 		Plan:      planOf(4, 2, 3),
-		Mode:      Stacked,
 	}
 }
 
@@ -108,9 +105,9 @@ func joined(l Layout) string {
 	return strings.Join(rowTexts(l), "\n")
 }
 
-// TestBoxEmptyWhenNothingLiveAndNoPlan pins the box's absence: no turn clock,
-// no work, no live part and no plan means no rows at all.
-func TestBoxEmptyWhenNothingLiveAndNoPlan(t *testing.T) {
+// TestTrayEmptyWithNothingToPin pins the tray's absence: no run, no work, no
+// held rows and no plan means no rows at all.
+func TestTrayEmptyWithNothingToPin(t *testing.T) {
 	l := Plan(Input{Width: 80, MaxRows: 20, Now: testNow})
 	if len(l.Rows) != 0 {
 		t.Fatalf("rows = %d, want none: %q", len(l.Rows), rowTexts(l))
@@ -120,57 +117,27 @@ func TestBoxEmptyWhenNothingLiveAndNoPlan(t *testing.T) {
 	}
 }
 
-// TestIdlePlanIsOnePlainRow pins the idle box: with nothing live, a plan draws
-// one plain row and no outline.
-func TestIdlePlanIsOnePlainRow(t *testing.T) {
+// TestIdlePlanDrawsItsRows pins the idle tray: with no work, a four-item plan
+// is two plan rows, each indented one cell.
+func TestIdlePlanDrawsItsRows(t *testing.T) {
 	in := Input{Width: 80, MaxRows: 20, Now: testNow, Plan: planOf(4, 2, 3)}
 	l := Plan(in)
-	if len(l.Rows) != 1 {
-		t.Fatalf("rows = %d, want 1: %q", len(l.Rows), rowTexts(l))
+	if len(l.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2: %q", len(l.Rows), rowTexts(l))
 	}
-	row := l.Rows[0]
-	if row.Frame != FramePlain {
-		t.Errorf("frame = %v, want FramePlain", row.Frame)
+	for i, r := range l.Rows {
+		if !strings.HasPrefix(ansi.Strip(r.Text), " ") {
+			t.Errorf("plan row %d = %q, want it indented one cell", i, ansi.Strip(r.Text))
+		}
 	}
-	if got, want := ansi.Strip(row.Text), "▸ Plan 2/4 · todo c"; got != want {
-		t.Errorf("idle row = %q, want %q", got, want)
+	out := ansi.Strip(Render(l, 80))
+	for _, want := range []string{"todo a", "todo b"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Render = %q, want it to contain %q", out, want)
+		}
 	}
-	if out := Render(l, 80); out != row.Text {
-		t.Errorf("Render = %q, want the plain row alone", out)
-	}
-}
-
-// TestLivePartDrawsTheBoxWithoutTheTurnClock pins that the live part keeps the
-// box on screen after the turn clock stops, with no state in the border.
-func TestLivePartDrawsTheBoxWithoutTheTurnClock(t *testing.T) {
-	in := Input{
-		Width: 80, MaxRows: 10, Now: testNow,
-		Live: Live{
-			Full:    []string{"⠋ Checking the eval thresholds…"},
-			Targets: []viewmodel.NodeID{node("live-1")},
-		},
-		Mode: Stacked,
-	}
-	l := Plan(in)
-	if len(l.Rows) < 3 {
-		t.Fatalf("rows = %d, want a bordered box: %q", len(l.Rows), rowTexts(l))
-	}
-	texts := rowTexts(l)
-	if !strings.HasPrefix(texts[0], "╭──") {
-		t.Errorf("top border = %q, want it to start ╭─ with no state gap", texts[0])
-	}
-	if got := texts[len(texts)-1]; got != "╰"+strings.Repeat("─", 78)+"╯" {
-		t.Errorf("bottom border = %q, want the plain outline", got)
-	}
-	if !strings.Contains(strings.Join(texts, "\n"), "Checking the eval thresholds") {
-		t.Errorf("box = %q, want the live line", texts)
-	}
-	if strings.Contains(texts[0], "working") {
-		t.Errorf("top border = %q, want no state while the turn clock is off", texts[0])
-	}
-	// The live row is a target, so the TUI can click it.
-	if got, want := l.Rows[1].Target, (Target{Kind: TargetLive, Node: node("live-1")}); got != want {
-		t.Errorf("live target = %+v, want %+v", got, want)
+	if n := len(strings.Split(out, "\n")); n != 2 {
+		t.Errorf("Render = %d lines, want the plan's two rows", n)
 	}
 }
 
@@ -180,97 +147,79 @@ func TestShedOrder(t *testing.T) {
 	base := busyInput()
 	full := Plan(withMax(base, 40))
 	if full.Shed != 0 {
-		t.Fatalf("full box shed %d steps, want none", full.Shed)
+		t.Fatalf("full tray shed %d steps, want none", full.Shed)
 	}
 	fullHeight := len(full.Rows)
-	if fullHeight != 17 {
-		t.Fatalf("full height = %d, want 17 (top, 2 live, header, card+4 rows, plan header+2, bottom)", fullHeight)
+	if fullHeight != 12 {
+		t.Fatalf("full height = %d, want 12 (held, card+4 running, 2 plan rows)", fullHeight)
 	}
 
-	byShed := make(map[int]Layout, shedSteps+1)
-	for m := 1; m <= fullHeight; m++ {
-		l := Plan(withMax(base, m))
-		if len(l.Rows) > m {
-			t.Errorf("MaxRows %d: %d rows, want at most %d", m, len(l.Rows), m)
-		}
-		if _, ok := byShed[l.Shed]; !ok {
-			byShed[l.Shed] = l
-		}
+	byShed := make([]Layout, shedSteps+1)
+	byShed[0] = full
+	// Each step is applied cumulatively, exactly as the shed loop does. A
+	// budget cannot reach every step — folding one held row into one row does
+	// not change the height — so the shapes are built from the state directly.
+	st := buildState{}
+	for step := 1; step <= shedSteps; step++ {
+		applyShed(&st, step)
+		byShed[step] = build(base, st)
 	}
 	for step := 0; step <= shedSteps; step++ {
-		if _, ok := byShed[step]; !ok {
-			t.Fatalf("no budget produced shed step %d", step)
+		if len(byShed[step].Rows) == 0 {
+			t.Fatalf("shed step %d drew no rows", step)
 		}
 	}
 
-	if got := byShed[0].Mode; got != Stacked {
-		t.Errorf("unshed mode = %q, want stacked", got)
-	}
-	if got := joined(byShed[0]); !strings.Contains(got, "├─ plan") {
-		t.Errorf("unshed box = %q, want the stacked plan section", got)
-	}
-
-	// Step 1: the plan folds into the bottom border and any split ends.
-	if got := byShed[1].Mode; got != Folded {
-		t.Errorf("shed 1 mode = %q, want folded", got)
-	}
-	if texts := rowTexts(byShed[1]); strings.Contains(strings.Join(texts, "\n"), "├─ plan") {
-		t.Errorf("shed 1 box = %q, want no plan section", texts)
-	}
-	if got := rowTexts(byShed[1])[len(byShed[1].Rows)-1]; !strings.HasPrefix(got, "╰─ plan ") {
-		t.Errorf("shed 1 bottom = %q, want the folded plan", got)
+	// Unshed: the held row comes first, in start order.
+	unshed := rowTexts(byShed[0])
+	if !strings.Contains(unshed[0], "job-0") {
+		t.Errorf("unshed row 0 = %q, want the held row first", unshed[0])
 	}
 
-	// Step 2: the live part drops to Short.
-	short := joined(byShed[2])
-	if !strings.Contains(short, "Checking the eval thresholds still make sense…") {
-		t.Errorf("shed 2 box = %q, want the live part's short lines", short)
+	// Step 1: the plan becomes its one-line form.
+	if got := joined(byShed[1]); !strings.Contains(got, "3/4") || !strings.Contains(got, "todo c") {
+		t.Errorf("shed 1 tray = %q, want the one-line plan", got)
 	}
-	if strings.Contains(short, "├ read evals/thresholds.toml") {
-		t.Errorf("shed 2 box = %q, want the live part's second line gone", short)
+	if n := len(byShed[1].Rows); n != 11 {
+		t.Errorf("shed 1 rows = %d, want 11", n)
 	}
 
-	// Step 3: running rows cap at three, with the more row.
+	// Step 2: the held rows fold into one row.
+	if got := joined(byShed[2]); !strings.Contains(got, "✓ 1 finished") {
+		t.Errorf("shed 2 tray = %q, want the folded held row", got)
+	}
+
+	// Step 3: running rows cap at three, blocked first, with the more row.
 	capped := joined(byShed[3])
 	if !strings.Contains(capped, "+2 more · /work") {
-		t.Errorf("shed 3 box = %q, want the more row", capped)
+		t.Errorf("shed 3 tray = %q, want the more row", capped)
 	}
 	if n := countWorkRows(byShed[3]); n != 3 {
 		t.Errorf("shed 3 work items = %d, want 3", n)
 	}
+	if !strings.Contains(capped, "#2") {
+		t.Errorf("shed 3 tray = %q, want the blocked k5 kept", capped)
+	}
 
 	// Step 4: the expanded card collapses.
-	collapsed := joined(byShed[4])
-	if strings.Contains(collapsed, "↵ collapse") {
-		t.Errorf("shed 4 box = %q, want the card collapsed", collapsed)
-	}
-	if n := countWorkRows(byShed[4]); n != 3 {
-		t.Errorf("shed 4 work items = %d, want 3 one-row items", n)
+	if got := joined(byShed[4]); strings.Contains(got, "↵ collapse") {
+		t.Errorf("shed 4 tray = %q, want the card collapsed", got)
 	}
 
-	// Steps 5 and 6: the live part goes, then running rows cap at one.
-	if got := joined(byShed[5]); strings.Contains(got, "Checking the eval") {
-		t.Errorf("shed 5 box = %q, want the live part dropped", got)
+	// Step 5: running rows cap at one, the blocked one.
+	if n := countWorkRows(byShed[5]); n != 1 {
+		t.Errorf("shed 5 work items = %d, want 1", n)
 	}
-	if n := countWorkRows(byShed[6]); n != 1 {
-		t.Errorf("shed 6 work items = %d, want 1", n)
-	}
-	if got := joined(byShed[6]); !strings.Contains(got, "+4 more · /work") {
-		t.Errorf("shed 6 box = %q, want the more row", got)
+	if got := joined(byShed[5]); !strings.Contains(got, "+4 more · /work") {
+		t.Errorf("shed 5 tray = %q, want the more row", got)
 	}
 
-	// Step 7: one plain summary row.
-	if len(byShed[7].Rows) != 1 {
-		t.Fatalf("shed 7 rows = %d, want 1", len(byShed[7].Rows))
+	// Step 6: one compact row.
+	if len(byShed[6].Rows) != 1 {
+		t.Fatalf("shed 6 rows = %d, want 1", len(byShed[6].Rows))
 	}
-	if got := byShed[7].Rows[0].Frame; got != FramePlain {
-		t.Errorf("shed 7 frame = %v, want FramePlain", got)
-	}
-	compact := ansi.Strip(byShed[7].Rows[0].Text)
-	for _, want := range []string{"working", "⧉2", "┆2", "○1", "plan 2/4"} {
-		if !strings.Contains(compact, want) {
-			t.Errorf("compact row = %q, want it to contain %q", compact, want)
-		}
+	if got, want := ansi.Strip(byShed[6].Rows[0].Text), "⧉2 ┆2 ○1 plan 2/4"; got != want {
+		t.Errorf("compact row = %q, want %q", got, want)
 	}
 }
 
@@ -288,41 +237,14 @@ func countWorkRows(l Layout) int {
 // TestBoxNeverExceedsMaxRows is the budget invariant over every small budget.
 func TestBoxNeverExceedsMaxRows(t *testing.T) {
 	base := busyInput()
-	for _, mode := range []Mode{Stacked, Split, Folded} {
-		for m := 1; m <= 30; m++ {
-			in := withMax(base, m)
-			in.Mode = mode
-			l := Plan(in)
-			if len(l.Rows) > m {
-				t.Fatalf("%s MaxRows %d: %d rows, want at most %d", mode, m, len(l.Rows), m)
-			}
-			if l.Shed > shedSteps {
-				t.Fatalf("%s MaxRows %d: shed %d steps, want at most %d", mode, m, l.Shed, shedSteps)
-			}
+	for m := 1; m <= 30; m++ {
+		l := Plan(withMax(base, m))
+		if len(l.Rows) > m {
+			t.Fatalf("MaxRows %d: %d rows, want at most %d", m, len(l.Rows), m)
 		}
-	}
-}
-
-// TestSplitSkippedBelowNinety pins that the split layout only exists from 90
-// columns.
-func TestSplitSkippedBelowNinety(t *testing.T) {
-	in := busyInput()
-	in.Width = 89
-	in.Mode = Split
-	l := Plan(in)
-	if got := l.Mode; got != Stacked {
-		t.Errorf("mode at 89 columns = %q, want stacked", got)
-	}
-	texts := joined(l)
-	for _, notWant := range []string{"┬", "┴"} {
-		if strings.Contains(texts, notWant) {
-			t.Errorf("box at 89 columns = %q, want no split glyph %q", texts, notWant)
+		if l.Shed > shedSteps {
+			t.Fatalf("MaxRows %d: shed %d steps, want at most %d", m, l.Shed, shedSteps)
 		}
-	}
-
-	in.Width = 90
-	if got := Plan(in).Mode; got != Split {
-		t.Errorf("mode at 90 columns = %q, want split", got)
 	}
 }
 
@@ -341,7 +263,7 @@ func TestOneExpandedCard(t *testing.T) {
 	if rows["k2"] < 2 {
 		t.Errorf("expanded item drew %d rows, want its card", rows["k2"])
 	}
-	for _, key := range []string{"k1", "k3", "k4", "k5"} {
+	for _, key := range []string{"k1", "k3", "k4", "k5", "k6"} {
 		if rows[key] != 1 {
 			t.Errorf("item %q drew %d rows, want 1", key, rows[key])
 		}
@@ -349,8 +271,8 @@ func TestOneExpandedCard(t *testing.T) {
 }
 
 // TestTargetsMatchRows pins the row targets and the browse stops: every work
-// row names an item drawn, every running item's first row is targeted, the
-// stops follow row order, and the cursor marks its row.
+// row names an item drawn, the stops follow row order, and the cursor marks
+// its row.
 func TestTargetsMatchRows(t *testing.T) {
 	in := busyInput()
 	in.Expanded = ""
@@ -358,7 +280,7 @@ func TestTargetsMatchRows(t *testing.T) {
 	in.Cursor = Target{Kind: TargetWork, Key: "k2"}
 	l := Plan(in)
 
-	// The running order is k1 (2m), k2 (1m), k3 (30s).
+	// The order is k6 (3m, held), k1 (2m), k2 (1m), k3 (30s).
 	drawn := make(map[string]bool)
 	var firstRow []string
 	lastKey := ""
@@ -380,14 +302,18 @@ func TestTargetsMatchRows(t *testing.T) {
 			t.Errorf("item %q has no targeted row", it.TaskKey)
 		}
 	}
-	if got, want := strings.Join(firstRow, ","), "k1,k2,k3"; got != want {
+	if !drawn["k6"] {
+		t.Error("the held item has no targeted row")
+	}
+	if got, want := strings.Join(firstRow, ","), "k6,k1,k2,k3"; got != want {
 		t.Errorf("first rows = %q, want %q", got, want)
 	}
 
-	// Stops: the running items in row order, then one per plan item drawn, in
-	// the order the rows draw them — the left entry of a two-column row first,
-	// then its right entry.
+	// Stops: the held row first, then the running rows in row order, then one
+	// per plan item drawn — the left entry of a two-column row first, then its
+	// right entry.
 	want := []Target{
+		{Kind: TargetWork, Key: "k6"},
 		{Kind: TargetWork, Key: "k1"},
 		{Kind: TargetWork, Key: "k2"},
 		{Kind: TargetWork, Key: "k3"},
@@ -406,91 +332,62 @@ func TestTargetsMatchRows(t *testing.T) {
 	}
 }
 
-// TestEveryRowIsExactlyTheWidth pins the geometry: in every mode, every rendered
-// line is exactly the frame's width.
+// TestFoldedHeldRowIsNoStop: the "✓ N finished" row is information, not a
+// browse stop, so folding the held rows must not add one.
+func TestFoldedHeldRowIsNoStop(t *testing.T) {
+	base := busyInput()
+	st := buildState{}
+	applyShed(&st, 2) // fold the held rows into one row
+	l := build(base, st)
+	finish(&l, base)
+
+	folded := false
+	onRows := map[Target]bool{}
+	for _, r := range l.Rows {
+		if strings.Contains(ansi.Strip(r.Text), "finished") {
+			folded = true
+			if r.Target.Kind != TargetNone || len(r.Also) > 0 {
+				t.Errorf("the folded held row carries a target: %+v %+v", r.Target, r.Also)
+			}
+		}
+		if r.Target.Kind != TargetNone {
+			onRows[r.Target] = true
+		}
+		for _, a := range r.Also {
+			if a.Target.Kind != TargetNone {
+				onRows[a.Target] = true
+			}
+		}
+	}
+	if !folded {
+		t.Fatal("the fixture did not fold the held rows")
+	}
+	for _, s := range l.Stops {
+		if !onRows[s] {
+			t.Errorf("stop %+v is not a row target", s)
+		}
+	}
+}
+
+// TestEveryRowIsExactlyTheWidth pins the geometry: every rendered line is
+// exactly the frame's width.
 func TestEveryRowIsExactlyTheWidth(t *testing.T) {
 	base := busyInput()
 	for _, width := range []int{80, 89, 96, 120} {
-		for _, mode := range []Mode{Stacked, Split, Folded} {
-			if mode == Split && width < SplitMinWidth {
-				continue
-			}
-			in := withMax(base, 40)
-			in.Width = width
-			in.Mode = mode
-			out := Render(Plan(in), width)
-			for i, line := range strings.Split(out, "\n") {
-				if got := ansi.StringWidth(line); got != width {
-					t.Errorf("%s %d cols: line %d is %d cells, want %d: %q",
-						mode, width, i, got, width, ansi.Strip(line))
-				}
+		in := withMax(base, 40)
+		in.Width = width
+		out := Render(Plan(in), width)
+		for i, line := range strings.Split(out, "\n") {
+			if got := ansi.StringWidth(line); got != width {
+				t.Errorf("%d cols: line %d is %d cells, want %d: %q",
+					width, i, got, width, ansi.Strip(line))
 			}
 		}
 	}
 }
 
-// TestHintsDropBeforeTheState pins the top border's priority: hints drop from
-// the end first, and only then is the state cut.
-func TestHintsDropBeforeTheState(t *testing.T) {
-	base := Input{
-		Width: 40, MaxRows: 40, Now: testNow, Busy: true,
-		State:   "⠋ working 4m12s",
-		Hints:   []string{"Ctrl+T plan", "Ctrl+C ×2 stop"},
-		Spinner: "⠋",
-		Live:    Live{Full: []string{"⠋ checking"}, Targets: []viewmodel.NodeID{node("l")}},
-		Mode:    Stacked,
-	}
-
-	// Both hints fit at 80 columns.
-	in := withMax(base, 40)
-	in.Width = 80
-	wide := rowTexts(Plan(in))[0]
-	if !strings.Contains(wide, "Ctrl+T plan") || !strings.Contains(wide, "Ctrl+C ×2 stop") {
-		t.Errorf("80-col top border = %q, want both hints", wide)
-	}
-
-	// At 40 columns the last hint goes; the state stays whole.
-	in.Width = 40
-	top := rowTexts(Plan(in))[0]
-	if !strings.Contains(top, "⠋ working 4m12s") {
-		t.Errorf("40-col top border = %q, want the state intact", top)
-	}
-	if strings.Contains(top, "Ctrl+C ×2 stop") {
-		t.Errorf("40-col top border = %q, want the last hint dropped", top)
-	}
-	if !strings.Contains(top, "Ctrl+T plan") {
-		t.Errorf("40-col top border = %q, want the first hint kept", top)
-	}
-	if w := ansi.StringWidth(top); w != 40 {
-		t.Errorf("40-col top border is %d cells, want 40", w)
-	}
-
-	// At 30 columns no hint fits.
-	in.Width = 30
-	top = rowTexts(Plan(in))[0]
-	if strings.Contains(top, "Ctrl") {
-		t.Errorf("30-col top border = %q, want every hint dropped", top)
-	}
-	if !strings.Contains(top, "⠋ working 4m12s") {
-		t.Errorf("30-col top border = %q, want the state intact", top)
-	}
-
-	// At 15 columns the state itself is cut.
-	in.Width = 15
-	top = rowTexts(Plan(in))[0]
-	if strings.Contains(top, "4m12s") {
-		t.Errorf("15-col top border = %q, want the state truncated", top)
-	}
-	if !strings.Contains(top, "…") {
-		t.Errorf("15-col top border = %q, want the truncation mark", top)
-	}
-	if w := ansi.StringWidth(top); w != 15 {
-		t.Errorf("15-col top border is %d cells, want 15: %q", w, top)
-	}
-}
-
 // TestPlanBudgetBelowOneStillSheds pins the MaxRows contract: a budget below
-// one sheds the box down to the single plain row instead of growing without
+// one sheds the tray down to the single compact row instead of growing without
 // limit.
 func TestPlanBudgetBelowOneStillSheds(t *testing.T) {
 	in := busyInput()
@@ -499,14 +396,11 @@ func TestPlanBudgetBelowOneStillSheds(t *testing.T) {
 	if len(l.Rows) != 1 {
 		t.Fatalf("MaxRows 0 drew %d rows, want 1", len(l.Rows))
 	}
-	if l.Rows[0].Frame != FramePlain {
-		t.Errorf("MaxRows 0 row frame = %v, want the plain summary row", l.Rows[0].Frame)
-	}
 }
 
-// TestRenderNarrowerThanTheOutlineStaysConsistent pins that a request narrower
-// than the outline is still drawn at a consistent width, so every line closes.
-func TestRenderNarrowerThanTheOutlineStaysConsistent(t *testing.T) {
+// TestRenderStaysOneWidthWhenNarrow pins that a request narrower than the
+// floor is still drawn at a consistent width.
+func TestRenderStaysOneWidthWhenNarrow(t *testing.T) {
 	for _, width := range []int{1, 2, 4, 5} {
 		in := busyInput()
 		in.Width = width
@@ -537,7 +431,7 @@ func TestCursorRowPaintsTheSelectionBand(t *testing.T) {
 	painted := Render(withCursor, base.Width)
 
 	if ansi.Strip(painted) != ansi.Strip(cursored) {
-		t.Fatal("the cursor changed the box's text; it must only paint it")
+		t.Fatal("the cursor changed the tray's text; it must only paint it")
 	}
 	if painted == cursored {
 		t.Fatal("the cursor row was not painted")
@@ -552,4 +446,115 @@ func hasCursorRow(l Layout) bool {
 		}
 	}
 	return false
+}
+
+// TestHeldRowKeepsItsSlot: a held item between two running items by start time
+// draws between them, untinted, with its outcome, summary, duration and mark.
+func TestHeldRowKeepsItsSlot(t *testing.T) {
+	in := Input{
+		Width: 100, MaxRows: 40, Now: testNow, Spinner: "⠋",
+		Work: []viewmodel.WorkItem{
+			{TaskKey: "a", Kind: "command", DisplayID: "job-a", Label: "first", State: "running", StartedAt: testNow.Add(-3 * time.Minute)},
+			{TaskKey: "c", Kind: "command", DisplayID: "job-c", Label: "third", State: "running", StartedAt: testNow.Add(-time.Minute)},
+		},
+		Held: []HeldItem{{
+			Item: viewmodel.WorkItem{
+				TaskKey: "b", Kind: "command", DisplayID: "job-b", Label: "second", State: "completed",
+				StartedAt: testNow.Add(-2 * time.Minute),
+			},
+			Outcome:  "done",
+			Summary:  "ok",
+			Duration: 12 * time.Second,
+		}},
+	}
+	l := Plan(in)
+	if len(l.Rows) != 3 {
+		t.Fatalf("rows = %d, want 3: %q", len(l.Rows), rowTexts(l))
+	}
+	if got := l.Rows[1].Target.Key; got != "b" {
+		t.Fatalf("row 1 = %q, want the held item between the two running ones", got)
+	}
+	if l.Rows[1].Tint {
+		t.Error("a held row must not be tinted")
+	}
+	text := ansi.Strip(l.Rows[1].Text)
+	for _, want := range []string{"done · ok", "12s", "✓"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("held row = %q, want it to contain %q", text, want)
+		}
+	}
+}
+
+// TestRowsDoNotMoveWhenOneBlocks: blocking the middle of three running items
+// leaves the order unchanged when uncapped; capped at one, the blocked item is
+// the one kept.
+func TestRowsDoNotMoveWhenOneBlocks(t *testing.T) {
+	items := []viewmodel.WorkItem{
+		{TaskKey: "a", Kind: "command", DisplayID: "job-a", Label: "first", State: "running", StartedAt: testNow.Add(-3 * time.Minute)},
+		{TaskKey: "b", Kind: "command", DisplayID: "job-b", Label: "second", State: "running", StartedAt: testNow.Add(-2 * time.Minute)},
+		{TaskKey: "c", Kind: "command", DisplayID: "job-c", Label: "third", State: "running", StartedAt: testNow.Add(-time.Minute)},
+	}
+	order := func(l Layout) string {
+		var keys []string
+		for _, r := range l.Rows {
+			if r.Target.Kind == TargetWork {
+				keys = append(keys, r.Target.Key)
+			}
+		}
+		return strings.Join(keys, ",")
+	}
+
+	before := order(Plan(Input{Width: 100, MaxRows: 40, Now: testNow, Work: items}))
+	blocked := append([]viewmodel.WorkItem(nil), items...)
+	blocked[1].State = "blocked"
+	blocked[1].Prompt = &viewmodel.WorkPrompt{Kind: "approval"}
+	after := order(Plan(Input{Width: 100, MaxRows: 40, Now: testNow, Work: blocked}))
+	if before != after {
+		t.Errorf("order changed when one item blocked: %q → %q", before, after)
+	}
+
+	// The cap is driven directly: a MaxRows of one sheds all the way to the
+	// compact row, which has no work targets at all.
+	one := build(Input{Width: 100, MaxRows: 40, Now: testNow, Work: blocked}, buildState{cap: 1})
+	if got := order(one); got != "b" {
+		t.Errorf("capped at one kept %q, want the blocked item b", got)
+	}
+}
+
+// TestRunRowComesFirstAndIsNoStop: with a run active, row 0 is the plan-run
+// row, and no stop names it.
+func TestRunRowComesFirstAndIsNoStop(t *testing.T) {
+	in := busyInput()
+	in.Run = &RunRow{Title: "p-e-tray", Summary: "task 2/5 implement", StartedAt: testNow.Add(-4 * time.Minute)}
+	l := Plan(in)
+	if len(l.Rows) == 0 {
+		t.Fatal("no rows")
+	}
+	first := ansi.Strip(l.Rows[0].Text)
+	for _, want := range []string{"run", "p-e-tray", "task 2/5 implement"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("row 0 = %q, want it to contain %q", first, want)
+		}
+	}
+	if !l.Rows[0].Tint {
+		t.Error("the plan-run row must be tinted")
+	}
+	for _, s := range l.Stops {
+		if s.Kind == TargetWork && s.Key == "" {
+			t.Errorf("the plan-run row must not be a stop: %+v", s)
+		}
+	}
+	if n := len(l.Stops); n != 6+4 {
+		t.Errorf("stops = %d, want the held row, five running rows and four plan items", n)
+	}
+}
+
+// TestNoFrameRows: the tray draws no outline at all.
+func TestNoFrameRows(t *testing.T) {
+	out := Render(Plan(busyInput()), 100)
+	for _, glyph := range []string{"╭", "├─", "╰", "│"} {
+		if strings.Contains(out, glyph) {
+			t.Errorf("tray contains the frame glyph %q:\n%s", glyph, ansi.Strip(out))
+		}
+	}
 }

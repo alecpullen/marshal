@@ -25,9 +25,6 @@ type FooterHints struct {
 	IdleRollbackEligible bool
 	// QueueNonEmpty is true when the steering queue has items waiting.
 	QueueNonEmpty bool
-	// PlanActive is true when the box is drawing a plan section (the band
-	// carries todos), so the Ctrl+T layout cycle is worth advertising.
-	PlanActive bool
 	// MouseReleased reports that the mouse currently belongs to the terminal
 	// (Ctrl+S). The hint's label flips on it: a user who has released the
 	// mouse needs to be told how to get wheel scrolling back, and a user who
@@ -62,6 +59,11 @@ type FooterHints struct {
 	// the second action when the runtime cannot honour it would promise an
 	// interruption that never happens, so the hint is gated on it.
 	SendNowAvailable bool
+	// StopOnly is true while busy, when the footer is only the stop hint. A
+	// narrow terminal cannot carry the whole busy cluster, and of everything
+	// in it "stop" is the one key a stuck user needs; the caller sets this
+	// when the full cluster does not fit.
+	StopOnly bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -83,6 +85,11 @@ func Footer(h FooterHints) string {
 	showMouseHint := false
 
 	var segs []string
+	if h.StopOnly && h.Busy {
+		// Busy on a terminal too narrow for the whole cluster: the single key
+		// that unsticks a turn is the only hint worth the space.
+		return pair("Ctrl+C", "stop")
+	}
 	if h.Browsing && !h.QuestionPending && !h.SkillGatePending && !h.ApprovalPending {
 		segs = append(segs,
 			pair("j/k", "move"), pair("↵", "detail"), pair("i", "inspect"),
@@ -142,9 +149,6 @@ func Footer(h FooterHints) string {
 		}
 		if h.IdleRollbackEligible {
 			segs = append(segs, pair("Ctrl+R", "rollback"))
-		}
-		if h.PlanActive {
-			segs = append(segs, pair("Ctrl+T", "plan"))
 		}
 		segs = append(segs, pair("Ctrl+B", "session"))
 		showMouseHint = true

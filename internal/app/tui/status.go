@@ -31,10 +31,11 @@ const (
 
 // statusSeg is a single left-side status segment with a priority value.
 // Lower priority numbers are kept first when the status line is too narrow;
-// higher numbers are dropped first.
+// higher numbers are dropped first. A pinned segment never sheds at all.
 type statusSeg struct {
 	text     string
 	priority int
+	pinned   bool
 }
 
 // branchStyle colors the git branch segment (accent.secondary / violet).
@@ -70,6 +71,35 @@ func untrustedStyle() lipgloss.Style {
 // segments above stand out.
 func dimStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
+}
+
+// turnStateSegment is the left-side "what the turn is doing" segment: the
+// pinned turn spinner, the word working, the elapsed time and — when the
+// activity kind is worth pinning — its label. It is empty unless a turn is
+// actually running.
+//
+// The turn's own state used to live in the box's top border; the status line
+// is where a user looks for the session's live state, so the segment sits
+// beside the mode cue and survives the box collapsing.
+func (m Model) turnStateSegment() string {
+	if !m.busy || m.turnStartedAt.IsZero() {
+		return ""
+	}
+	elapsed := formatElapsed(max(m.now().Sub(m.turnStartedAt), 0))
+	state := "working " + elapsed
+	if act := m.state.Activity(); spinnerShowsLabel(act.Kind) && act.Label != "" {
+		if label := m.state.PinnedSpinnerLabel(act); label != "" {
+			state += " · " + label
+		}
+	}
+	// The glyph carries the primary accent so the beat reads first; the rest
+	// stays dim, because the mode cue is the only bold cue on the line apart
+	// from the warning cues.
+	if spinner := m.turnSpinnerFrame(); spinner != "" {
+		return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary).Render(spinner) +
+			" " + dimStyle().Render(state)
+	}
+	return dimStyle().Render(state)
 }
 
 // identityStyle renders the "where am I" cluster — working directory, git
@@ -112,19 +142,36 @@ func (m Model) renderStatusLine(width int) string {
 			hints.SuppressBrowseHint = true
 			right = help.Footer(hints)
 		}
+		// While a turn runs, the stop key outranks every other hint: a
+		// terminal too narrow for the cluster keeps the one pair that
+		// unsticks the turn, and the segment shedding below makes room for
+		// it out of the left cluster.
 		if !fits(right) {
-			right = ""
+			if m.busy {
+				hints := m.footerHints()
+				hints.StopOnly = true
+				right = help.Footer(hints)
+			} else {
+				right = ""
+			}
 		}
 	}
 
 	for len(segs) > 1 && visibleRunes(left)+visibleRunes(right)+statusHorizontalPadding+statusMinGap > width {
-		// drop the lowest-priority segment (highest priority number), but
-		// always preserve the first segment (the mode cue).
-		worst := 1
-		for i := 2; i < len(segs); i++ {
-			if segs[i].priority > segs[worst].priority {
+		// Drop the lowest-priority unpinned segment (highest priority
+		// number), earliest first on a tie. The mode cue and the turn's live
+		// state are pinned: neither ever sheds.
+		worst := -1
+		for i := range segs {
+			if segs[i].pinned {
+				continue
+			}
+			if worst < 0 || segs[i].priority > segs[worst].priority {
 				worst = i
 			}
+		}
+		if worst < 0 {
+			break
 		}
 		segs = append(segs[:worst], segs[worst+1:]...)
 		left = joinSegs(segs)
@@ -192,15 +239,25 @@ func (m Model) transientStatusSegment() string {
 // statusLeftSegments returns the left-side status segments with priorities.
 // Priorities (lower = higher priority, kept first when collapsing):
 //
-//	mode=0, untrusted=0, route=1, local=2, ctx=3, ±files=4, think=4, gen=4,
-//	branch=5, dir=5, swarm tokens=6, jobs=7, queued=8
+//	mode=0 (pinned), untrusted=0, turn state=0 (pinned), route=1,
+//	send now=1, local=2, ctx=3, ±files=4, think=4, gen=4, branch=5,
+//	dir=5, swarm tokens=6, jobs=7, queued=8, browser=9, config issues=10
+//
+// The send-now receipt outranks the identity and metric segments: it reports
+// an action the user just took against the running turn, so it must survive
+// the collapse that a long route or a narrow terminal forces.
 func (m Model) statusLeftSegments() []statusSeg {
 	segs := []statusSeg{
-		{text: m.modeSegmentStyle().Render(m.modeSegment()), priority: 0},
+		{text: m.modeSegmentStyle().Render(m.modeSegment()), priority: 0, pinned: true},
 	}
 
 	if !m.state.Trusted() {
 		segs = append(segs, statusSeg{text: untrustedStyle().Render("untrusted"), priority: 0})
+	}
+
+	// The turn's live state never sheds: it is the answer to "is it stuck?".
+	if seg := m.turnStateSegment(); seg != "" {
+		segs = append(segs, statusSeg{text: seg, priority: 0, pinned: true})
 	}
 
 	active := m.state.ActiveRoute()
@@ -377,7 +434,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 		if seg == "send now: undelivered" || seg == "send now: waiting for a safe boundary" {
 			style = warningStyle()
 		}
-		segs = append(segs, statusSeg{text: style.Render(seg), priority: 8})
+		segs = append(segs, statusSeg{text: style.Render(seg), priority: 1})
 	}
 
 	if bi := m.state.BrowserInfo(); bi.SessionOpen {
@@ -494,7 +551,6 @@ func (m Model) footerHints() help.FooterHints {
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
 		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
-		PlanActive:           len(m.band.Tasks) > 0,
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 		RunActive:            m.hasRunningSubagent(),
 		DrilledRunActive:     m.drilledIntoRunningSubagent(),

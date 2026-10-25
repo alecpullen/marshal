@@ -158,15 +158,34 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 			}
 		}
 		text := strings.Join(texts, "\n\n")
+		firstLine := func(body string) string {
+			first := strings.TrimSpace(strings.Split(strings.Trim(body, "\n"), "\n")[0])
+			return ansi.Cut(first, 0, ansi.StringWidth(strings.TrimRight(ansi.Strip(first), " ")))
+		}
 		cw := nestedContentWidth(width)
 		body, ok := renderMarkdown(text, cw)
 		if !ok {
 			body = renderPlainProse(text, cw)
 		}
 		wrapped := strings.Split(strings.Trim(body, "\n"), "\n")
-		first := strings.TrimSpace(wrapped[0])
-		first = ansi.Cut(first, 0, ansi.StringWidth(strings.TrimRight(ansi.Strip(first), " ")))
+		first := firstLine(body)
 		metaText, metaW := rightMeta(meta, ansi.StringWidth(first), width)
+		if metaW > 0 && ansi.StringWidth(first)+metaW+2 > width-gutterWidth {
+			// The first line leaves the meta no room beside it: wrap the
+			// narration narrower so the meta keeps its place on the head
+			// instead of dropping to a line of its own under it. The whole
+			// body comes from this render: the narrow break moves words off
+			// the first line, and the wide render's continuation starts after
+			// words the narrow one has not placed yet, so keeping it would
+			// drop them.
+			narrow := max(cw-metaW-2, 1)
+			rebody, ok := renderMarkdown(text, narrow)
+			if !ok {
+				rebody = renderPlainProse(text, narrow)
+			}
+			wrapped = strings.Split(strings.Trim(rebody, "\n"), "\n")
+			first = firstLine(rebody)
+		}
 		line := gutterPrefix(g, gc) + first
 		metaFits := metaW > 0 && ansi.StringWidth(first)+metaW+2 <= width-gutterWidth
 		if metaFits {

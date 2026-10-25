@@ -558,3 +558,27 @@ func TestNoFrameRows(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderTintsTheWholeRow: a running card's tint runs edge to edge. Every
+// styled segment ends in a reset, and the tint must come back after each one,
+// or only the id column is tinted and the rest of the row is bare.
+func TestRenderTintsTheWholeRow(t *testing.T) {
+	in := Input{Now: testNow, Spinner: "⠋"}
+	out := Render(Layout{Rows: itemRows(subagentItem(), in, 100)}, 100)
+	for i, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, "\x1b[48") {
+			t.Fatalf("row %d is not tinted: %q", i, line)
+		}
+		rest := strings.TrimSuffix(line, "\x1b[m")
+		for {
+			j := strings.Index(rest, "\x1b[m")
+			if j < 0 {
+				break
+			}
+			rest = rest[j+len("\x1b[m"):]
+			if !strings.HasPrefix(rest, "\x1b[48") {
+				t.Fatalf("row %d loses its tint after a styled segment: %q", i, line)
+			}
+		}
+	}
+}

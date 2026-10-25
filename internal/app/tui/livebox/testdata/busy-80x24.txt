@@ -1,5 +1,5 @@
 ▌⧉ #1     review the config chan…                                        1m 2s ⠋
-          kimi-k3 @ kimi · Checking context_window…                             
+▌         kimi-k3 @ kimi · Checking context_window…                             
 ▌┆ job-2  Harness tests  last useful line                                  48s ⠋
  ✓ todo a                                ⠋ todo c                               
  ✓ todo b                                · todo d                               

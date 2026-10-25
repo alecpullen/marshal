@@ -500,7 +500,7 @@ func (m *Model) acceptSuggestion() {
 // log on the user's next turn, so a second run's events don't append to the
 // first run's.
 func (m *Model) clearFinishedRun() {
-	if m.state.SDDProgress().Finished {
+	if m.sess.Status().SDD.Finished {
 		m.state.ClearSDDProgress()
 		m.state.ClearRunEvents()
 	}

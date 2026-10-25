@@ -2083,8 +2083,8 @@ func (m Model) sheetData() sessionsheet.Data {
 		Audit:   m.state.AuditLog(),
 		Rules:   m.state.SessionRules(),
 		Skills:  m.state.ActiveSkills(),
-		Swarm:   m.state.SwarmProgress(),
-		SDD:     m.state.SDDProgress(),
+		Swarm:   st.Swarm,
+		SDD:     st.SDD,
 		Spinner: m.turnSpinnerFrame(),
 		Now:     m.now(),
 	}
@@ -2762,7 +2762,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.pipelineRunner.AnswerGate(pm.Text)
-		goal := m.state.SDDProgress().PlanPath
+		goal := m.sess.Status().SDD.PlanPath
 		mm, sddCmd, _ := m.startAgentRun(m.pipelineRunner, goal)
 		return mm, sddCmd
 
@@ -3716,7 +3716,7 @@ func (m Model) inputChromeRows() int {
 		return 1
 	}
 	rows := 0
-	if sd := m.state.SDDProgress(); sd.Active {
+	if m.sess.Status().SDD.Active {
 		rows++ // SDD hint row
 	}
 	if sa := m.state.PendingSudoAuth(); sa != nil {
@@ -4787,10 +4787,11 @@ func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
 	if kind == session.ActivityIdle {
 		return ""
 	}
-	if m.state.SDDProgress().Active {
+	st := m.sess.Status()
+	if st.SDD.Active {
 		return ""
 	}
-	act := m.sess.Status().Activity
+	act := st.Activity
 	if m.now().Sub(acpwire.Time(act.StartedAt)) < 200*time.Millisecond {
 		return ""
 	}
@@ -5529,7 +5530,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
-			gate := m.state.SDDGate()
+			gate := m.sess.Status().SDDGate
 			if gate.Question != "" {
 				// One surface: the panel carries the question, its context,
 				// and the key hints. Nothing goes to the transcript here.

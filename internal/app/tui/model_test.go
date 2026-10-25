@@ -8201,7 +8201,7 @@ func TestAnswerMsgResumesTheRun(t *testing.T) {
 	m.pipelineRunner = runner
 	m.state.SetSDDProgress(session.SDDProgress{PlanPath: "/plans/p.md"})
 	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "q"})
-	m.dock.Open(gatepanel.New(m.state.SDDGate()))
+	m.dock.Open(gatepanel.New(m.sess.Status().SDDGate))
 
 	m2, cmd := m.Update(gatepanel.AnswerMsg{Text: "use 30s"})
 	mm := m2.(Model)
@@ -8229,7 +8229,7 @@ func TestAnswerMsgResumesTheRun(t *testing.T) {
 func TestStopMsgEndsTheRun(t *testing.T) {
 	m := newTestModelInRepo(t)
 	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "q"})
-	m.dock.Open(gatepanel.New(m.state.SDDGate()))
+	m.dock.Open(gatepanel.New(m.sess.Status().SDDGate))
 
 	m2, _ := m.Update(gatepanel.StopMsg{})
 	mm := m2.(Model)
@@ -9257,7 +9257,7 @@ func TestFailedJoinNeverAdvancesAsSettled(t *testing.T) {
 // ending the user declined.
 func TestWarningDisplacedSurfaceIsRestoredOnDecline(t *testing.T) {
 	m, _ := warningModel(t, workSnapshot("job-1"))
-	displaced := gatepanel.New(session.SDDGate{TaskN: 1, Question: "Ship it?"})
+	displaced := gatepanel.New(acpwire.SDDGate{TaskN: 1, Question: "Ship it?"})
 	m.dock.Open(displaced)
 
 	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {

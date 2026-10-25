@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
@@ -36,7 +37,7 @@ func (SDDSection) Relevant(d Data) bool { return d.SDD.Active || d.SDD.Finished 
 
 func (SDDSection) Render(d Data, width, maxRows int) []string {
 	if d.SDD.Finished {
-		elapsed := d.SDD.EndedAt.Sub(d.SDD.StartedAt)
+		elapsed := acpwire.Time(d.SDD.EndedAt).Sub(acpwire.Time(d.SDD.StartedAt))
 		if elapsed < 0 {
 			elapsed = 0
 		}

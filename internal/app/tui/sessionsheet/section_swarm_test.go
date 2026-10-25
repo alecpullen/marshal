@@ -5,21 +5,21 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 )
 
 func swarmData() Data {
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	return Data{
 		Now: now,
-		Swarm: session.SwarmProgress{
+		Swarm: acpwire.SwarmProgress{
 			Active: true,
-			Roles: []session.SwarmRole{
-				{Name: "planner", Status: session.SwarmRoleDone, Tokens: 1200,
-					StartedAt: now.Add(-74 * time.Second)},
-				{Name: "implementer", Status: session.SwarmRoleActive, Detail: "patch resolve.go",
-					Tokens: 8400, StartedAt: now.Add(-62 * time.Second)},
-				{Name: "reviewer", Status: session.SwarmRolePending},
+			Roles: []acpwire.SwarmRole{
+				{Name: "planner", Status: acpwire.SwarmRoleDone, Tokens: 1200,
+					StartedAt: acpwire.Millis(now.Add(-74 * time.Second))},
+				{Name: "implementer", Status: acpwire.SwarmRoleActive, Detail: "patch resolve.go",
+					Tokens: 8400, StartedAt: acpwire.Millis(now.Add(-62 * time.Second))},
+				{Name: "reviewer", Status: acpwire.SwarmRolePending},
 			},
 		},
 	}

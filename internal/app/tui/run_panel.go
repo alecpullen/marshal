@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 )
@@ -43,7 +43,7 @@ func joinRunSegs(segs []runSeg) string {
 // ~6–25m left`, dropping whole segments as width shrinks rather than
 // truncating mid-word. The drop order is documented in the run-panel layout
 // spec; the task counter is the floor and always survives.
-func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, width int) string {
+func runPanelSummaryLine(p acpwire.SDDProgress, spinner string, now time.Time, width int) string {
 	g := spinner
 	if g == "" {
 		g = glyph.Running
@@ -54,7 +54,7 @@ func runPanelSummaryLine(p session.SDDProgress, spinner string, now time.Time, w
 // runPanelSummaryText is runPanelSummaryLine without its gutter glyph, fit
 // to budget cells. The now bar composes its own glyph and progress blocks
 // around it.
-func runPanelSummaryText(p session.SDDProgress, now time.Time, budget int) string {
+func runPanelSummaryText(p acpwire.SDDProgress, now time.Time, budget int) string {
 	segs := []runSeg{{text: fmt.Sprintf("task %d/%d", p.CurrentTask, p.TotalTasks), priority: 0}}
 
 	// Percent counts completed tasks only: the in-flight task is not done,
@@ -66,8 +66,8 @@ func runPanelSummaryText(p session.SDDProgress, now time.Time, budget int) strin
 	}
 	if p.Phase != "" {
 		segs = append(segs, runSeg{text: p.Phase, priority: 1})
-		if !p.PhaseStartedAt.IsZero() {
-			if d := now.Sub(p.PhaseStartedAt); d > 0 {
+		if started := acpwire.Time(p.PhaseStartedAt); !started.IsZero() {
+			if d := now.Sub(started); d > 0 {
 				segs = append(segs, runSeg{text: formatElapsed(d), priority: 2, glue: true})
 			}
 		}
@@ -81,8 +81,8 @@ func runPanelSummaryText(p session.SDDProgress, now time.Time, budget int) strin
 	if low, high, openEnded, ok := estimateRemaining(p, now); ok {
 		segs = append(segs, runSeg{text: formatETA(low, high, openEnded), priority: 4})
 	}
-	if !p.StartedAt.IsZero() {
-		if d := now.Sub(p.StartedAt); d > 0 {
+	if started := acpwire.Time(p.StartedAt); !started.IsZero() {
+		if d := now.Sub(started); d > 0 {
 			segs = append(segs, runSeg{text: formatElapsed(d), priority: 5})
 		}
 	}
@@ -112,15 +112,15 @@ func runPanelSummaryText(p session.SDDProgress, now time.Time, budget int) strin
 // `✗ sdd stopped — 3/7 tasks · 12s · <reason> — /sdd to resume`.
 // When the panel is narrow the resume hint is dropped first, then the
 // reason.
-func runPanelFinishedLine(p session.SDDProgress, width int) string {
+func runPanelFinishedLine(p acpwire.SDDProgress, width int) string {
 	g, c, text := runPanelFinishedParts(p, max(width-3, 1))
 	return gutterPrefix(g, c) + text
 }
 
 // runPanelFinishedParts is runPanelFinishedLine split into its glyph, glyph
 // colour and label (fit to budget cells), for the now bar.
-func runPanelFinishedParts(p session.SDDProgress, budget int) (string, color.Color, string) {
-	elapsed := p.EndedAt.Sub(p.StartedAt)
+func runPanelFinishedParts(p acpwire.SDDProgress, budget int) (string, color.Color, string) {
+	elapsed := acpwire.Time(p.EndedAt).Sub(acpwire.Time(p.StartedAt))
 	if elapsed < 0 {
 		elapsed = 0
 	}

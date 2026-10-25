@@ -68,8 +68,8 @@ func (m Model) boxInput() livebox.Input {
 	// An active SDD run or swarm is the tray's first row. The turn state on the
 	// status line still says "working"; the run's own summary is this row.
 	if m.busy && !m.turnStartedAt.IsZero() {
-		sdd := m.state.SDDProgress()
-		swarm := m.state.SwarmProgress()
+		sdd := st.SDD
+		swarm := st.Swarm
 		switch {
 		case sdd.Active:
 			title := sdd.PlanName

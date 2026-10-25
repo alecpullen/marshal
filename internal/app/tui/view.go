@@ -260,7 +260,7 @@ func (m Model) renderInputArea() string {
 			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth, m.approvalWhyFor(m.approvalOwner(), tc)))
 		}
 	} else {
-		if m.state.SDDProgress().Active {
+		if m.sess.Status().SDD.Active {
 			rows = append(rows, mutedStyle().Render("SDD running — /stop to cancel, wait for completion to resume typing"))
 		}
 		if popup := m.renderCompletionPopup(); popup != "" {
@@ -287,7 +287,7 @@ func (m Model) inputBarColor() color.Color {
 		return violetColor
 	case m.hasPendingApproval():
 		return warningColor
-	case m.state.SDDProgress().Active, !m.input.Focused():
+	case m.sess.Status().SDD.Active, !m.input.Focused():
 		return dimColor
 	default:
 		return accentColor

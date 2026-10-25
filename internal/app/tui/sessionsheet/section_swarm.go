@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/strutil"
 )
@@ -25,13 +25,13 @@ func (SwarmSection) Clippable() bool { return true }
 func (SwarmSection) Relevant(d Data) bool { return d.Swarm.Active }
 
 // roleGlyph maps a role status to its one-rune cue.
-func roleGlyph(s session.SwarmRoleStatus) string {
+func roleGlyph(s string) string {
 	switch s {
-	case session.SwarmRoleDone:
+	case acpwire.SwarmRoleDone:
 		return glyph.OK
-	case session.SwarmRoleFailed:
+	case acpwire.SwarmRoleFailed:
 		return "✘"
-	case session.SwarmRoleActive:
+	case acpwire.SwarmRoleActive:
 		return "◐"
 	default:
 		return glyph.Ambient
@@ -61,9 +61,9 @@ func (SwarmSection) Render(d Data, width, maxRows int) []string {
 		if r.Tokens > 0 {
 			tok = strutil.CompactTokens(r.Tokens)
 		}
-		right := fmt.Sprintf("%*s %*s", tokCol, tok, elapsedCol, elapsed(r.StartedAt, d.Now))
+		right := fmt.Sprintf("%*s %*s", tokCol, tok, elapsedCol, elapsed(acpwire.Time(r.StartedAt), d.Now))
 		rows = append(rows, railRow(roleGlyph(r.Status), r.Name, right, width))
-		if r.Status == session.SwarmRoleActive && r.Detail != "" {
+		if r.Status == acpwire.SwarmRoleActive && r.Detail != "" {
 			rows = append(rows, "   └ "+r.Detail)
 		}
 	}
@@ -80,9 +80,9 @@ func (SwarmSection) OneLine(d Data, width int) string {
 	done, active := 0, ""
 	for _, r := range d.Swarm.Roles {
 		switch r.Status {
-		case session.SwarmRoleDone, session.SwarmRoleFailed:
+		case acpwire.SwarmRoleDone, acpwire.SwarmRoleFailed:
 			done++
-		case session.SwarmRoleActive:
+		case acpwire.SwarmRoleActive:
 			if active == "" {
 				active = r.Name
 			}

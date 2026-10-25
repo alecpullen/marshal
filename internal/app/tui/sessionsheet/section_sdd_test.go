@@ -6,13 +6,13 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 )
 
 func sddData() Data {
 	return Data{
 		Spinner: "⠋",
-		SDD: session.SDDProgress{
+		SDD: acpwire.SDDProgress{
 			Active:      true,
 			DoneTasks:   2,
 			TotalTasks:  4,
@@ -46,7 +46,7 @@ func TestSDDSectionRelevance(t *testing.T) {
 	if !(SDDSection{}).Relevant(sddData()) {
 		t.Error("Relevant(active run) = false, want true")
 	}
-	finished := Data{SDD: session.SDDProgress{Finished: true}}
+	finished := Data{SDD: acpwire.SDDProgress{Finished: true}}
 	if !(SDDSection{}).Relevant(finished) {
 		t.Error("Relevant(finished run) = false, want true — the collapsed summary still shows")
 	}
@@ -87,7 +87,7 @@ func TestSDDSectionWindowsChecklistAroundCurrentTask(t *testing.T) {
 	}
 	d := Data{
 		Spinner: "⠋",
-		SDD: session.SDDProgress{
+		SDD: acpwire.SDDProgress{
 			Active:      true,
 			DoneTasks:   14,
 			TotalTasks:  20,
@@ -122,14 +122,14 @@ func TestSDDSectionFinishedSuccess(t *testing.T) {
 	started := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
 	ended := time.Date(2026, 7, 30, 10, 23, 41, 0, time.UTC)
 	d := Data{
-		SDD: session.SDDProgress{
+		SDD: acpwire.SDDProgress{
 			Finished:   true,
 			Succeeded:  true,
 			DoneTasks:  4,
 			TotalTasks: 4,
 			Tasks:      []string{"A", "B", "C", "D"},
-			StartedAt:  started,
-			EndedAt:    ended,
+			StartedAt:  acpwire.Millis(started),
+			EndedAt:    acpwire.Millis(ended),
 		},
 	}
 	got := StripANSI(strings.Join((SDDSection{}).Render(d, 50, 12), "\n"))
@@ -143,14 +143,14 @@ func TestSDDSectionFinishedFailure(t *testing.T) {
 	started := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
 	ended := time.Date(2026, 7, 30, 10, 0, 12, 0, time.UTC)
 	d := Data{
-		SDD: session.SDDProgress{
+		SDD: acpwire.SDDProgress{
 			Finished:   true,
 			Succeeded:  false,
 			DoneTasks:  2,
 			TotalTasks: 4,
 			Tasks:      []string{"A", "B", "C", "D"},
-			StartedAt:  started,
-			EndedAt:    ended,
+			StartedAt:  acpwire.Millis(started),
+			EndedAt:    acpwire.Millis(ended),
 		},
 	}
 	got := StripANSI(strings.Join((SDDSection{}).Render(d, 60, 12), "\n"))
@@ -164,14 +164,14 @@ func TestSDDSectionFinishedFailureWithReason(t *testing.T) {
 	started := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
 	ended := time.Date(2026, 7, 30, 10, 0, 12, 0, time.UTC)
 	d := Data{
-		SDD: session.SDDProgress{
+		SDD: acpwire.SDDProgress{
 			Finished:   true,
 			Succeeded:  false,
 			DoneTasks:  2,
 			TotalTasks: 4,
 			Tasks:      []string{"A", "B", "C", "D"},
-			StartedAt:  started,
-			EndedAt:    ended,
+			StartedAt:  acpwire.Millis(started),
+			EndedAt:    acpwire.Millis(ended),
 			Error:      "transient timeout",
 		},
 	}
@@ -186,13 +186,13 @@ func TestSDDSectionFinishedFailureTruncatesHintFirst(t *testing.T) {
 	started := time.Date(2026, 7, 30, 10, 0, 0, 0, time.UTC)
 	ended := time.Date(2026, 7, 30, 10, 0, 12, 0, time.UTC)
 	d := Data{
-		SDD: session.SDDProgress{
+		SDD: acpwire.SDDProgress{
 			Finished:   true,
 			Succeeded:  false,
 			DoneTasks:  2,
 			TotalTasks: 4,
-			StartedAt:  started,
-			EndedAt:    ended,
+			StartedAt:  acpwire.Millis(started),
+			EndedAt:    acpwire.Millis(ended),
 			Error:      "transient timeout",
 		},
 	}
@@ -204,10 +204,10 @@ func TestSDDSectionFinishedFailureTruncatesHintFirst(t *testing.T) {
 }
 
 func TestRailFinishedLineMatchesPanelWording(t *testing.T) {
-	d := Data{SDD: session.SDDProgress{
+	d := Data{SDD: acpwire.SDDProgress{
 		Finished: true, Succeeded: false, DoneTasks: 2, TotalTasks: 4,
-		StartedAt: time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
-		EndedAt:   time.Date(2026, 8, 7, 10, 0, 12, 0, time.UTC),
+		StartedAt: acpwire.Millis(time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)),
+		EndedAt:   acpwire.Millis(time.Date(2026, 8, 7, 10, 0, 12, 0, time.UTC)),
 	}}
 	got := StripANSI(strings.Join((SDDSection{}).Render(d, 80, 12), "\n"))
 	if strings.Contains(got, "/sdd to resume") {

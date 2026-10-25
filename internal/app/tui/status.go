@@ -228,7 +228,7 @@ func modeSegmentFor(access acpwire.Interaction) string {
 // questions.
 func (m Model) transientStatusSegment() string {
 	switch {
-	case m.state.SDDProgress().Active:
+	case m.sess.Status().SDD.Active:
 		return "sdd"
 	case m.editingCommand:
 		return "edit cmd"
@@ -401,13 +401,13 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: worktreeStyle().Render("wt:" + st.Git.Worktree), priority: 6})
 	}
 
-	if sp := m.state.SwarmProgress(); sp.Active && (sp.TokensMax > 0 || sp.TokensUsed > 0) {
+	if sp := st.Swarm; sp.Active && (sp.TokensMax > 0 || sp.TokensUsed > 0) {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("tokens %s/%s",
 			strutil.CompactTokens(sp.TokensUsed),
 			strutil.CompactTokens(sp.TokensMax)), priority: 6})
 	}
 
-	if sp := m.state.SDDProgress(); sp.Active {
+	if sp := st.SDD; sp.Active {
 		// The now bar owns task counts and phase; the status line keeps
 		// only the mode cue (modeSegment) and the token budget.
 		if sp.TokensMax > 0 || sp.TokensUsed > 0 {

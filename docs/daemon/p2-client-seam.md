@@ -734,3 +734,14 @@ presets. Changes:
   - The counts and line references in "Where the code is today" and the
     spike were re-measured with a type-checked scan of the TUI tree.
   - T6 and the manual check cover the tray.
+
+## Implementation record
+
+**Plan 1 (foundation), branch `p2-1-foundation`.** Added
+`internal/acpwire` (the error codes and T2's field rules),
+`internal/acpclient` (the `Host` and `Session` interfaces, the method
+table and the error helpers), and `internal/acpclient/inproc` (the
+in-process adapter). `tui.New` now takes a host and a session, the state
+arrives through `WithLegacyState`, and `gitinfo` and `changedfiles` moved
+to `internal/repo`. The boundary test's allowlist starts at 66 files,
+140 import entries and 22 `config.*` entries.

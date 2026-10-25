@@ -74,6 +74,8 @@ Runtime & orchestration
   internal/postmortem/     per-session harness-friction report
 
 App shell & config
+  internal/acpwire/        wire types and error codes for the TUI client seam (stdlib only)
+  internal/acpclient/      the TUI's Host/Session interfaces; inproc/ is the in-process adapter (deleted in P3)
   internal/app/            Run(), dependency wiring, signal handling, repo instructions
   internal/app/config/     TOML loading, defaults, merge rules
   internal/app/session/    shared mutable state between TUI and agent
@@ -90,7 +92,7 @@ TUI (rendering only)
                            shared panel host, session sheet, browse inspector, list engine, dressing
   internal/app/tui/{settings,connect,agents,memory,skills,plugins,mcpauth,modeloptions,presetflow,probe,doctorpanel}
                            interactive surfaces for config, providers, roles, MCP, models
-  internal/app/tui/{sddreview,castlist,gatepanel,postmortempanel,trustpanel,changedfiles,gitinfo,liveregion,textfield}
+  internal/app/tui/{sddreview,castlist,gatepanel,postmortempanel,trustpanel,liveregion,textfield}
 
 Models
   internal/llm/            provider abstraction (OpenAI-compatible, Anthropic, Ollama-native, Codex)
@@ -100,6 +102,7 @@ Models
 
 Repo intelligence
   internal/repo/           scanner, hashing, gitignore, repo map/card, tree-sitter symbols
+  internal/repo/{gitinfo,changedfiles}   git branch/worktree info, changed files against a base ref
   internal/index/          chunking, embedding indexer, file watcher
   internal/retrieval/      semantic retrieval over embeddings
   internal/lsp/            LSP client/manager with symbol, query, diagnostics adapters
@@ -157,7 +160,11 @@ These are load-bearing; code comments and tests point back at them.
   contract; do not share a Go type.
 - **The TUI renders only.** No routing, policy, or prompt logic in
   `internal/app/tui/`. It talks to the agent loop through the structural
-  `AgentRunner` interface so it never imports `internal/agent`.
+  `AgentRunner` interface so it never imports `internal/agent`. It reaches
+  the agent side through `internal/acpclient` (daemon P2, in progress).
+  `TestTUIStaysOnTheClientSeam` (`internal/app/tui/boundary_test.go`) fails
+  on any new direct use. As with `TestWebIsStdlibOnly`, the fix is to move
+  the call behind the interface, never to add an allowlist entry.
 - **Tool-safe.** Shell execution is risk-classified and approval-gated; file
   writes prefer `file.write` / `file.edit` because they alone give diff
   review, backups, and rollback. (`file.write_patch` still exists, but as an

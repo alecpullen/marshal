@@ -919,3 +919,40 @@ names, all at plan `2b`: `SteeringQueue`, `SteeringSnapshot`,
 (`commands_dispatch.go`, `events.go`, `model.go`, `pump.go`,
 `sessionsheet/section.go`) and four keys dropped entirely (`eta.go`,
 `gatepanel/gatepanel.go`, `run_panel.go`, `sessionsheet/section_swarm.go`).
+
+**Plan 2c (the session sheet), branch `p2-2c-sheet`.** Added
+`acpwire.SessionSheet` and its parts (`SheetContext`,
+`SheetContextSection`, `SheetChangedFile`, `SheetTurn`, `SheetTotals`,
+`SheetFleetRow`, `SheetRepo`, `SheetTool`, `SheetFile`, `SheetToolBudget`,
+`SheetSandbox`) plus `SheetRefresh`, and one `SessionStatus` field,
+`ChangedFiles`, which carries the count the status line shows. The start
+time is not on `SessionStatus`: only the sheet reads it, so `SessionSheet`
+carries it. `acpclient.Session` gains `Sheet(subagentID)` and
+`RefreshSheet(ctx, req)`, both with their `session/sheet` row in `Methods`.
+The per-tool and per-file aggregation moved out of `sessionsheet` into
+`viewmodel.SheetToolsOf` and `viewmodel.SheetFilesOf`, returning wire types,
+because P3's `session/sheet` handler needs them and the adapter is deleted
+then.
+
+The in-process adapter keeps the sheet's database and git values — HEAD as
+the changed-files base, the changed files, the 24 most recent turn metrics,
+the session's usage totals, the repo's file and symbol counts, and the agent
+worktrees — in one cache under its mutex, re-reads the values a
+`SheetRefresh` names, and stores each only when the workspace it was read
+for is still the active one. `Sheet` returns the cache without copying, and
+a subagent's sheet carries the session's fleet and repo counts but none of
+its changed files, turns or totals.
+
+The TUI's base-ref command, its message, its handler and its six sheet
+caches are deleted; the status line's count and every sheet section now read
+`Session.Status` and `Session.Sheet`, and the sheet refreshes on request at
+today's trigger points. The repo section's language row and
+`RepoStats.Languages` are deleted with it: nothing set the field outside
+tests. T1b gains seven names, all at plan `2c`: `AuditLog`, `ContextPack`,
+`SessionRules`, `ActiveSkills`, `ToolBudget`, `LoadedToolNames` and
+`StartedAt`. T1's allowlist lost 14 entries across 7 files — two files
+trimmed (`model.go`, `pump.go`) and five keys dropped entirely
+(`sessionsheet/filestats.go`, `sessionsheet/section.go`,
+`sessionsheet/section_session.go`, `sessionsheet/section_tools.go`,
+`sessionsheet/telemetry.go`). `sessionsheet` now imports no agent-side
+package.

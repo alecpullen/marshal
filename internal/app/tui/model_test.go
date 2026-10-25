@@ -8648,7 +8648,7 @@ func TestTurnSpinnerDropsStreamingThinkingLabels(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = time.Now()
 	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "very long streaming thought line"})
-	if out := boxOut(m); strings.Contains(out, "very long streaming") {
+	if out := stripANSI(m.turnStateSegment()); strings.Contains(out, "very long streaming") {
 		t.Fatal("thinking labels must not appear in the pinned spinner row")
 	}
 }
@@ -8659,7 +8659,7 @@ func TestTurnSpinnerKeepsStableActivityLabels(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = time.Now()
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell: go test"})
-	if out := boxOut(m); !strings.Contains(out, "shell: go test") {
+	if out := stripANSI(m.turnStateSegment()); !strings.Contains(out, "shell: go test") {
 		t.Fatalf("tool labels should render in the spinner row, got %q", out)
 	}
 }
@@ -8690,7 +8690,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	// First tool label is adopted immediately.
 	clock = start
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: config.go"})
-	out := boxOut(m)
+	out := stripANSI(m.turnStateSegment())
 	if !strings.Contains(out, "file.read: config.go") {
 		t.Fatalf("first label should be adopted immediately, got %q", out)
 	}
@@ -8699,7 +8699,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	clock = start.Add(200 * time.Millisecond)
 	m.now = func() time.Time { return clock }
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test"})
-	out = boxOut(m)
+	out = stripANSI(m.turnStateSegment())
 	if !strings.Contains(out, "file.read: config.go") {
 		t.Fatalf("old label should persist within dwell window, got %q", out)
 	}
@@ -8710,7 +8710,7 @@ func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
 	// 600ms after the first label was pinned, the dwell has elapsed.
 	clock = start.Add(600 * time.Millisecond)
 	m.now = func() time.Time { return clock }
-	out = boxOut(m)
+	out = stripANSI(m.turnStateSegment())
 	if !strings.Contains(out, "shell.run: go test") {
 		t.Fatalf("new label should appear after dwell expires, got %q", out)
 	}
@@ -8735,13 +8735,13 @@ func TestTurnSpinnerLabelDwellResetsOnKindChange(t *testing.T) {
 	m.turnStartedAt = start
 
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: a.go"})
-	boxOut(m)
+	stripANSI(m.turnStateSegment())
 
 	// 100ms later, kind changes to Approval — should adopt immediately.
 	clock = start.Add(100 * time.Millisecond)
 	m.now = func() time.Time { return clock }
 	m.state.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: "approve: shell.run"})
-	out := boxOut(m)
+	out := stripANSI(m.turnStateSegment())
 	if !strings.Contains(out, "approve: shell.run") {
 		t.Fatalf("kind change should adopt new label immediately, got %q", out)
 	}

@@ -72,6 +72,34 @@ func dimStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().FGMuted)
 }
 
+// turnStateSegment is the left-side "what the turn is doing" segment: the
+// pinned turn spinner, the word working, the elapsed time and — when the
+// activity kind is worth pinning — its label. It is empty unless a turn is
+// actually running.
+//
+// The turn's own state used to live in the box's top border; the status line
+// is where a user looks for the session's live state, so the segment sits
+// beside the mode cue and survives the box collapsing.
+func (m Model) turnStateSegment() string {
+	if !m.busy || m.turnStartedAt.IsZero() {
+		return ""
+	}
+	elapsed := formatElapsed(max(m.now().Sub(m.turnStartedAt), 0))
+	state := "working " + elapsed
+	if act := m.state.Activity(); spinnerShowsLabel(act.Kind) && act.Label != "" {
+		if label := m.state.PinnedSpinnerLabel(act); label != "" {
+			state += " · " + label
+		}
+	}
+	// The glyph carries the primary accent so the beat reads first; the rest
+	// stays dim, because the mode cue is the only bold cue on the line.
+	if spinner := m.turnSpinnerFrame(); spinner != "" {
+		return lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary).Render(spinner) +
+			" " + dimStyle().Render(state)
+	}
+	return dimStyle().Render(state)
+}
+
 // identityStyle renders the "where am I" cluster — working directory, git
 // branch, worktree — at normal foreground weight.
 //
@@ -112,8 +140,18 @@ func (m Model) renderStatusLine(width int) string {
 			hints.SuppressBrowseHint = true
 			right = help.Footer(hints)
 		}
+		// While a turn runs, the stop key outranks every other hint: a
+		// terminal too narrow for the cluster keeps the one pair that
+		// unsticks the turn, and the segment shedding below makes room for
+		// it out of the left cluster.
 		if !fits(right) {
-			right = ""
+			if m.busy {
+				hints := m.footerHints()
+				hints.StopOnly = true
+				right = help.Footer(hints)
+			} else {
+				right = ""
+			}
 		}
 	}
 
@@ -192,8 +230,8 @@ func (m Model) transientStatusSegment() string {
 // statusLeftSegments returns the left-side status segments with priorities.
 // Priorities (lower = higher priority, kept first when collapsing):
 //
-//	mode=0, untrusted=0, route=1, local=2, ctx=3, ±files=4, think=4, gen=4,
-//	branch=5, dir=5, swarm tokens=6, jobs=7, queued=8
+//	mode=0, untrusted=0, turn state=0, route=1, local=2, ctx=3, ±files=4,
+//	think=4, gen=4, branch=5, dir=5, swarm tokens=6, jobs=7, queued=8
 func (m Model) statusLeftSegments() []statusSeg {
 	segs := []statusSeg{
 		{text: m.modeSegmentStyle().Render(m.modeSegment()), priority: 0},
@@ -201,6 +239,11 @@ func (m Model) statusLeftSegments() []statusSeg {
 
 	if !m.state.Trusted() {
 		segs = append(segs, statusSeg{text: untrustedStyle().Render("untrusted"), priority: 0})
+	}
+
+	// The turn's live state never sheds: it is the answer to "is it stuck?".
+	if seg := m.turnStateSegment(); seg != "" {
+		segs = append(segs, statusSeg{text: seg, priority: 0})
 	}
 
 	active := m.state.ActiveRoute()

@@ -27,6 +27,18 @@ func TestFooterIdle(t *testing.T) {
 	}
 }
 
+// TestFooterStopOnly pins the narrow-terminal fallback: while busy, the stop
+// hint is the only pair the footer keeps, and the flag does nothing when idle.
+func TestFooterStopOnly(t *testing.T) {
+	want := pair("Ctrl+C", "stop")
+	if got := Footer(FooterHints{Busy: true, StopOnly: true}); got != want {
+		t.Fatalf("busy stop-only footer = %q, want exactly %q", got, want)
+	}
+	if got, plain := Footer(FooterHints{StopOnly: true}), Footer(FooterHints{}); got != plain {
+		t.Fatalf("StopOnly without Busy changed the footer: %q, want %q", got, plain)
+	}
+}
+
 func TestFooterBusyShowsCancelAndQueue(t *testing.T) {
 	out := stripANSI(Footer(FooterHints{Busy: true}))
 	if !strings.Contains(out, "Ctrl+C stop") || !strings.Contains(out, "Ctrl+X clear queue") {

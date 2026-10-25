@@ -62,6 +62,11 @@ type FooterHints struct {
 	// the second action when the runtime cannot honour it would promise an
 	// interruption that never happens, so the hint is gated on it.
 	SendNowAvailable bool
+	// StopOnly is true while busy, when the footer is only the stop hint. A
+	// narrow terminal cannot carry the whole busy cluster, and of everything
+	// in it "stop" is the one key a stuck user needs; the caller sets this
+	// when the full cluster does not fit.
+	StopOnly bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
@@ -83,6 +88,11 @@ func Footer(h FooterHints) string {
 	showMouseHint := false
 
 	var segs []string
+	if h.StopOnly && h.Busy {
+		// Busy on a terminal too narrow for the whole cluster: the single key
+		// that unsticks a turn is the only hint worth the space.
+		return pair("Ctrl+C", "stop")
+	}
 	if h.Browsing && !h.QuestionPending && !h.SkillGatePending && !h.ApprovalPending {
 		segs = append(segs,
 			pair("j/k", "move"), pair("↵", "detail"), pair("i", "inspect"),

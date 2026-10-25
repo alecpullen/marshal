@@ -462,6 +462,50 @@ func TestDiagnoseWarnsOnceForRetiredTranscriptKeys(t *testing.T) {
 	}
 }
 
+// The retired [tui.live_box] key still loads, warns once whichever layers set
+// it, and is gone from the next save.
+func TestDiagnoseWarnsOnceForRetiredLiveBoxKey(t *testing.T) {
+	home, work, userPath, projectPath := hoistPaths(t)
+	writeFile(t, userPath, "[tui.live_box]\nlayout = \"split\"\n")
+	writeFile(t, projectPath, "[tui.live_box]\nlayout = \"folded\"\n")
+
+	l, err := LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work, TrustResolver: trust.FixedResolver{Decision: trust.DecisionTrustSession}})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	var got []Diagnostic
+	for _, d := range Diagnose(l.Merged, l) {
+		if d.Path == "tui.live_box" {
+			got = append(got, d)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("tui.live_box diagnostics = %d, want exactly 1: %+v", len(got), got)
+	}
+	if d := got[0]; d.Severity != SeverityWarning || !strings.Contains(d.Message, "the live box became the tray") ||
+		!strings.Contains(d.Source, "user config") || !strings.Contains(d.Source, "project config") {
+		t.Fatalf("diagnostic = %+v", d)
+	}
+
+	out := filepath.Join(t.TempDir(), ".marshal", "config.toml")
+	if err := SaveProjectConfig(out, l.Merged, l); err != nil {
+		t.Fatal(err)
+	}
+	if data := readFile(t, out); strings.Contains(data, "live_box") {
+		t.Fatalf("a save must not write the retired table:\n%s", data)
+	}
+
+	quiet, err := LoadLayers(LoadOptions{HomeDir: t.TempDir(), WorkingDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	for _, d := range Diagnose(quiet.Merged, quiet) {
+		if d.Path == "tui.live_box" {
+			t.Fatalf("defaults produced a live_box diagnostic: %+v", d)
+		}
+	}
+}
+
 func TestDiagnoseQuietForDefaultsAndHiddenOnly(t *testing.T) {
 	home, work, userPath, _ := hoistPaths(t)
 	l, err := LoadLayers(LoadOptions{HomeDir: home, WorkingDir: work})

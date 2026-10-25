@@ -312,7 +312,23 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		})
 	}
 
-	// 12: snapshot storage budgets. Both are user-configurable byte sizes and
+	// 12: [tui.live_box]. The box became the tray, which has one layout.
+	// layout still parses (existing files must keep loading) but does
+	// nothing. One diagnostic however many layers set it.
+	if len(layers.LiveBoxIgnoredBy) > 0 {
+		sources := make([]string, len(layers.LiveBoxIgnoredBy))
+		for i, l := range layers.LiveBoxIgnoredBy {
+			sources[i] = l.String()
+		}
+		ds = append(ds, Diagnostic{
+			Severity: SeverityWarning,
+			Path:     "tui.live_box",
+			Message:  "tui.live_box.layout is ignored — the live box became the tray, which has one layout",
+			Source:   strings.Join(sources, ", "),
+		})
+	}
+
+	// 13: snapshot storage budgets. Both are user-configurable byte sizes and
 	// merge() copies them verbatim, so a hand-edited config can carry 0 or a
 	// negative value. Zero does NOT disable budgets — an invalid limit fails
 	// closed for storage — so it must be reported rather than silently
@@ -333,7 +349,7 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		})
 	}
 
-	// 13: sandbox env allowlist. An explicit-empty allowlist is a deliberate
+	// 14: sandbox env allowlist. An explicit-empty allowlist is a deliberate
 	// opt-out, but it is also reachable by accident: the /settings list-drill
 	// stores [] when its last entry is deleted, and the value is merged
 	// wholesale, so once written it is indistinguishable from a curated list.
@@ -355,7 +371,7 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 	// their layer; append them before the sort so they order with the rest.
 	ds = append(ds, layers.InteractionNotices...)
 
-	// 14: removed privacy.remote_limit_discovery. The third-party limits
+	// 15: removed privacy.remote_limit_discovery. The third-party limits
 	// table it gated is gone, so the key is dropped on the next save. Report
 	// it once per load rather than letting an explicit opt-out vanish
 	// silently — the same treatment as the dead tui.side_panel keys above.
@@ -372,7 +388,7 @@ func Diagnose(cfg Config, layers Layers) []Diagnostic {
 		})
 	}
 
-	// 15: preset pointing at a local endpoint without local_only and without
+	// 16: preset pointing at a local endpoint without local_only and without
 	// an explicit window. Limits default off preset.LocalOnly, which config
 	// loading never derives from the provider's base_url, so a hand-written
 	// local preset silently resolves the remote 1M/128K pair: compaction then

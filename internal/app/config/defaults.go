@@ -190,7 +190,6 @@ func Default() Config {
 				MaxCols:  60,
 			},
 			Suggestions: "rules",
-			LiveBox:     LiveBoxConfig{Layout: "stacked"},
 		},
 		Hooks: HooksConfig{
 			FailClosed: false,

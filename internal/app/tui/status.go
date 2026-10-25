@@ -11,7 +11,6 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
-	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/help"
 	"marshal/internal/app/tui/theme"
@@ -180,7 +179,12 @@ func (m Model) renderStatusLine(width int) string {
 	}
 	line := " " + left + strings.Repeat(" ", gap) + right + " "
 	out := statusBarStyle().Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
-	return chrome.PaintBand(out, width, theme.Current().ChromeBG())
+	// Deliberately not banded with ChromeBG, unlike the rest of the chrome.
+	// The status line is the bottom-most row, so a tinted strip here reads as
+	// a second, empty bar below the input area rather than as part of it.
+	// statusBarStyle pads to width, so the row stays full-width without
+	// PaintBand's padding.
+	return out
 }
 
 // joinSegs joins status segments with the dim separator.

@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/docpanel"
@@ -113,7 +114,7 @@ func (m *Model) sendNowCommand(raw string) (tea.Model, tea.Cmd) {
 	// The Enter handler cleared the draft before dispatching, so a refused
 	// request has to put it back: the user's line is theirs until the runtime
 	// actually accepts it.
-	if !m.submitSendNow(session.SendNowRequest{
+	if !m.submitSendNow(acpwire.SendNowRequest{
 		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      text,
@@ -133,12 +134,12 @@ func (m *Model) sendNowFlushOrOpen(raw string) (tea.Model, tea.Cmd) {
 		m.rejectSendNow(sendNowUnavailable + " The command text was kept.")
 		return m, nil
 	}
-	if len(m.state.SteeringQueue()) == 0 {
+	if len(m.sess.Status().Steering.Queue) == 0 {
 		// Nothing to flush: the composer is the remaining way to write one.
 		m.openSteeringComposer()
 		return m, nil
 	}
-	if !m.submitSendNow(session.SendNowRequest{
+	if !m.submitSendNow(acpwire.SendNowRequest{
 		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      "",

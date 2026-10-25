@@ -2840,12 +2840,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// operations the TUI invokes, and both must keep working after a
 		// session swap.
 		tuiOpts = append(tuiOpts, accessTUIOptions(rt)...)
-		// Send now: the same rule as the access seam. The bound runtime methods
-		// read the conversation's current State under the pointer mutex, so a
-		// successful NewSession keeps the facade working against the replacement
-		// while an explicit SessionID/TurnID on the request stops a stale one
-		// from targeting it.
-		tuiOpts = append(tuiOpts, tui.WithSendNow(rt.SteeringSnapshot, rt.SubmitSendNow))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
 		// The TUI's auth-backed surfaces (provider probes, the connect

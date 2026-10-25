@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 )
@@ -27,6 +29,47 @@ func testModel(state *session.State, opts ...Option) Model {
 	host, sess := inproc.New(inproc.Deps{State: state})
 	all := append([]Option{WithLegacyState(state)}, opts...)
 	return New(host, sess, all...)
+}
+
+// testModelWith builds a model over an adapter made from d, as testModel
+// builds one over d.State alone.
+func testModelWith(d inproc.Deps, opts ...Option) Model {
+	host, sess := inproc.New(d)
+	all := append([]Option{WithLegacyState(d.State)}, opts...)
+	return New(host, sess, all...)
+}
+
+// stubSession wraps the adapter's session for tests that need a value only
+// events or a call produce: patch adjusts every Status read, and onSendNow
+// sees each SendNow request before the adapter does.
+type stubSession struct {
+	acpclient.Session
+	patch     func(*acpwire.SessionStatus)
+	onSendNow func(acpwire.SendNowRequest)
+}
+
+func (s *stubSession) Status() acpwire.SessionStatus {
+	st := s.Session.Status()
+	if s.patch != nil {
+		s.patch(&st)
+	}
+	return st
+}
+
+func (s *stubSession) SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpwire.SteeringReceipt, error) {
+	if s.onSendNow != nil {
+		s.onSendNow(req)
+	}
+	return s.Session.SendNow(ctx, req)
+}
+
+// testModelStub builds a model whose session is stub, wrapped around an
+// adapter session over state.
+func testModelStub(state *session.State, stub *stubSession, opts ...Option) Model {
+	host, sess := inproc.New(inproc.Deps{State: state})
+	stub.Session = sess
+	all := append([]Option{WithLegacyState(state)}, opts...)
+	return New(host, stub, all...)
 }
 
 // fakeHost is an acpclient.Host whose SharedFilesystem is the test's choice.

@@ -6676,7 +6676,6 @@ func TestRuntimeSendNowTUIOptionsExerciseRealFacade(t *testing.T) {
 	model := testTUIModel(state,
 		tui.WithCommandRegistry(reg),
 		tui.WithRunner(runCtx, agentProcess),
-		tui.WithSendNow(rt.SteeringSnapshot, rt.SubmitSendNow),
 	)
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	model = updated.(tui.Model)

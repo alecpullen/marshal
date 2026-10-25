@@ -420,7 +420,8 @@ func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 
 func TestStatusLineShowsQueueHint(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.queuedCount = 2
+	m.state.PushSteering("a")
+	m.state.PushSteering("b")
 	line := stripANSI(m.renderStatusLine(140))
 	if !strings.Contains(line, "Ctrl+X") || !strings.Contains(line, "clear queue") {
 		t.Fatalf("status line missing queue hint:\n%s", line)

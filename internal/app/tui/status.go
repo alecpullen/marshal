@@ -433,14 +433,14 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("jobs %d", n), priority: 7})
 	}
 
-	if n := m.queuedCount; n > 0 {
+	if n := len(st.Steering.Queue); n > 0 {
 		segs = append(segs, statusSeg{text: warningStyle().Render(fmt.Sprintf("queued %d", n)), priority: 8})
 	}
 
 	// Send now progress. It rides the status line rather than a transcript card:
 	// the action is a property of the running turn, and the transcript must keep
 	// rendering truthfully while an operation is being interrupted.
-	if seg, active := m.steeringStatusSegment(); active {
+	if seg, active := m.steeringStatusSegment(st.Steering.Receipt); active {
 		style := dimStyle()
 		if seg == "send now: undelivered" || seg == "send now: waiting for a safe boundary" {
 			style = warningStyle()
@@ -553,6 +553,7 @@ func quotaSegment(q *acpwire.Quota) string {
 }
 
 func (m Model) footerHints() help.FooterHints {
+	st := m.sess.Status()
 	return help.FooterHints{
 		Busy:                 m.busy,
 		EditingCommand:       m.editingCommand,
@@ -560,15 +561,15 @@ func (m Model) footerHints() help.FooterHints {
 		QuestionPending:      m.state.PendingQuestion() != nil,
 		SkillGatePending:     m.state.PendingSkillGate() != nil,
 		PopupOpen:            m.activeCompletionPopup() != nil,
-		IdleRollbackEligible: !m.busy && m.sess.Status().HasBackup,
-		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
+		IdleRollbackEligible: !m.busy && st.HasBackup,
+		QueueNonEmpty:        len(st.Steering.Queue) > 0,
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 		RunActive:            m.hasRunningSubagent(),
 		DrilledRunActive:     m.drilledIntoRunningSubagent(),
 		Browsing:             m.browsing,
 		// The interruption hint is only advertised when the runtime can honour
 		// it: a busy turn with a supported, active steering snapshot.
-		SendNowAvailable: m.busy && m.steeringSnapshot.Active && m.steeringSnapshot.Supported,
+		SendNowAvailable: m.busy && st.Steering.State.Active && st.Steering.State.Supported,
 	}
 }
 

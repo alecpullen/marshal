@@ -510,30 +510,10 @@ type Model struct {
 
 	// F16: steering broker pump. steeringBroker is the F16 message broker;
 	// the pump cmd returned from Init (and re-armed from Update on each
-	// steeringMsg) bridges it into steeringMsg values. queuedCount is the
-	// cached count the status line and transcript render. When
-	// steeringBroker is nil, m.queuedCount is driven by direct
-	// state.SteeringQueue() reads.
+	// steeringMsg) bridges it into steeringMsg values.
 	steeringBroker *pubsub.Broker[session.SteeringEvent]
 	steeringEvents <-chan pubsub.Event[session.SteeringEvent]
-	queuedCount    int
 	cancelling     bool
-
-	// Send now (Alt+Enter / /send-now). steeringSnapshot is the cached
-	// runtime snapshot the status line and the footer gate read; it is
-	// refreshed from broker events and, in a build with no broker (tests,
-	// fallback), read directly from the callback on every tick.
-	steeringSnapshot session.SteeringSnapshot
-	// steeringReceipts caches the latest receipt per request ID. Receipt
-	// revisions advance per request, so a comparison must be per key: one
-	// global revision would let one request's final outcome discard another
-	// request's.
-	steeringReceipts map[string]session.SteeringReceipt
-	// steeringSnapshotFn / submitSendNowFn are the runtime-facing seam
-	// (WithSendNow). Either nil makes the action unavailable: a fail-closed
-	// Alt+Enter is better than one that pretends to interrupt nothing.
-	steeringSnapshotFn func() session.SteeringSnapshot
-	submitSendNowFn    func(session.SendNowRequest) (session.SteeringReceipt, error)
 	// steeringComposer is the temporary composer currently holding the dock,
 	// or nil. It is identified by its ComposerID so a late message from a
 	// replaced composer can never act on the new one.
@@ -1208,22 +1188,6 @@ func WithSteeringBroker(ctx context.Context, broker *pubsub.Broker[session.Steer
 	return func(m *Model) {
 		m.ctx = ctx
 		m.steeringBroker = broker
-	}
-}
-
-// WithSendNow wires the runtime-facing Send now seam: snapshot reads the
-// active-turn steering state, submit accepts one request and returns its
-// receipt. Both are bounded, memory-only calls — the TUI must never await a
-// process or a model call inside an update handler. Omitting either makes the
-// action unavailable (fail closed): Alt+Enter then never submits and the
-// footer never advertises it.
-func WithSendNow(
-	snapshot func() session.SteeringSnapshot,
-	submit func(session.SendNowRequest) (session.SteeringReceipt, error),
-) Option {
-	return func(m *Model) {
-		m.steeringSnapshotFn = snapshot
-		m.submitSendNowFn = submit
 	}
 }
 
@@ -4266,13 +4230,7 @@ func replaceTriggerToken(value, replacement string) string {
 // message. Used by the F16 R2 follow-up path so each Enter pops one
 // item at a time; the runner's loop-top drain handles any remainder.
 func (m *Model) popOldestSteering() (string, bool) {
-	msg, ok := m.state.PopSteering()
-	if ok {
-		// Mirror the cached count; the broker is the source of truth in
-		// production, but tests construct models without a broker.
-		m.queuedCount = len(m.state.SteeringQueue())
-	}
-	return msg, ok
+	return m.state.PopSteering()
 }
 
 // isUserTurn reports whether a transcript item is a user prompt, the boundary
@@ -4594,7 +4552,6 @@ func (m *Model) flushQueuedSteering() tea.Cmd {
 		// than disappearing. It lands at the tail, which only reorders entries
 		// in the rare refused-start case.
 		m.state.PushSteering(followUp)
-		m.queuedCount = len(m.state.SteeringQueue())
 		return nil
 	}
 	*m = model.(Model)
@@ -5413,7 +5370,6 @@ func (m *Model) finishQuit() tea.Cmd {
 		m.lspCancel()
 		m.lspCancel = nil
 	}
-	m.queuedCount = 0
 	m.state.ResolvePendingForShutdown()
 	m.state.Shutdown()
 	return tea.Quit
@@ -5562,10 +5518,8 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		// ClearSteering drops the ordinary queued entries but preserves the
 		// ones an accepted, undelivered Send now request is still responsible
 		// for: the user asked explicitly for those to be delivered, and a UI
-		// cleanup must not silently revoke the request. The surviving depth is
-		// re-read rather than assumed to be zero.
+		// cleanup must not silently revoke the request.
 		m.state.ClearSteering()
-		m.queuedCount = len(m.state.SteeringQueue())
 		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
 		m.state.ClearNotice(session.NoticeProvider)
 		m.cancelling = false
@@ -5838,57 +5792,13 @@ func (m Model) handleWatchMsg(msg watchMsg) (Model, tea.Cmd) {
 // handleSteering handles a steeringMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
-	// F16: cache the queued count so the status line and transcript
-	// render without polling, then re-arm the pump. The transcript
-	// re-renders via the viewport dirty hash on the next refresh.
-	m.queuedCount = msg.queueLen
-	m.absorbSteeringEvent(msg.snapshot, msg.receipt)
+	// The transcript re-renders via the viewport dirty hash on the next
+	// refresh, then the pump re-arms.
+	m.refreshViewport()
 	if m.steeringEvents == nil {
-		m.refreshViewport()
 		return m, nil
 	}
-	m.refreshViewport()
 	return m, pumpSteeringEvents(m.steeringEvents)
-}
-
-// absorbSteeringEvent caches the snapshot and receipt a SteeringEvent carried.
-// A snapshot older than the cached one is dropped (the broker preserves order,
-// but a direct message in a test need not), and a receipt is dropped unless its
-// per-request revision is newer: comparing one global revision would let a
-// settled request's final outcome be discarded by another request's older
-// event, or vice versa.
-func (m *Model) absorbSteeringEvent(snapshot *session.SteeringSnapshot, receipt *session.SteeringReceipt) {
-	// Versions are only comparable within one turn: a replacement conversation
-	// restarts its own counter, so a different turn's snapshot is taken as-is
-	// rather than being rejected as "older" than the previous turn's.
-	if snapshot != nil && (snapshot.TurnID != m.steeringSnapshot.TurnID || snapshot.Version >= m.steeringSnapshot.Version) {
-		m.steeringSnapshot = *snapshot
-	}
-	if receipt == nil {
-		return
-	}
-	if m.steeringReceipts == nil {
-		m.steeringReceipts = map[string]session.SteeringReceipt{}
-	}
-	if prev, ok := m.steeringReceipts[receipt.RequestID]; ok && prev.Version >= receipt.Version {
-		return
-	}
-	m.steeringReceipts[receipt.RequestID] = *receipt
-}
-
-// refreshSteeringSnapshot re-reads the cache directly from the runtime seam.
-// A build with a broker is kept current by events; one without (tests, a
-// runtime that never binds a broker) would otherwise render a stale or empty
-// snapshot forever, so ticks read it here. The direct read is authoritative —
-// it names the conversation this model is actually attached to — so it is
-// taken verbatim rather than through the event-order comparison. It is a
-// bounded, memory-only read.
-func (m *Model) refreshSteeringSnapshot() {
-	if m.steeringSnapshotFn == nil {
-		m.steeringSnapshot = session.SteeringSnapshot{}
-		return
-	}
-	m.steeringSnapshot = m.steeringSnapshotFn()
 }
 
 // ── Send now ────────────────────────────────────────────────────────────
@@ -5910,18 +5820,12 @@ func isSendNowKey(k tea.KeyPressMsg) bool {
 }
 
 // sendNowTarget resolves the turn a Send now action may target. It reports
-// false when the feature is unavailable (no runtime seam), the turn is not
-// eligible (idle, closing, unsupported), or the TUI is not in a turn. The
-// snapshot is refreshed first so a runtime that publishes no broker is still
-// current.
-func (m *Model) sendNowTarget() (session.SteeringSnapshot, bool) {
-	if m.steeringSnapshotFn == nil || m.submitSendNowFn == nil {
-		return session.SteeringSnapshot{}, false
-	}
-	m.refreshSteeringSnapshot()
-	snap := m.steeringSnapshot
+// false when the turn is not eligible (idle, closing, unsupported) or the TUI
+// is not in a turn.
+func (m *Model) sendNowTarget() (acpwire.SteeringState, bool) {
+	snap := m.sess.Status().Steering.State
 	if !m.busy || !snap.Active || !snap.Supported {
-		return session.SteeringSnapshot{}, false
+		return acpwire.SteeringState{}, false
 	}
 	return snap, true
 }
@@ -5933,33 +5837,23 @@ func (m *Model) rejectSendNow(reason string) {
 	m.refreshViewport()
 }
 
-// submitSendNow performs the bounded, memory-only runtime call for one
+// submitSendNow performs the bounded, memory-only session call for one
 // request. clear runs only after acceptance, which is what makes the accepted
 // text — and only the accepted text — disappear. On rejection the caller's
 // draft survives untouched and the reason is rendered.
-func (m *Model) submitSendNow(request session.SendNowRequest, clear func()) bool {
-	if m.submitSendNowFn == nil {
-		m.rejectSendNow(sendNowUnavailable)
-		return false
-	}
+func (m *Model) submitSendNow(request acpwire.SendNowRequest, clear func()) bool {
 	if request.RequestID == "" {
 		// The request ID identifies one transport submission; a retry reuses
 		// it, so it is minted here and never reused for different text.
 		request.RequestID = rand.Text()
 	}
-	receipt, err := m.submitSendNowFn(request)
-	if err != nil {
+	if _, err := m.sess.SendNow(m.ctx, request); err != nil {
 		m.rejectSendNow("Send now was rejected: " + err.Error() + " Your text was kept.")
 		return false
 	}
-	// Cache the receipt now: the broker event that carries it may not have
-	// arrived when the very next frame renders.
-	m.absorbSteeringEvent(nil, &receipt)
-	m.queuedCount = len(m.state.SteeringQueue())
 	if clear != nil {
 		clear()
 	}
-	m.refreshSteeringSnapshot()
 	m.refreshViewport()
 	return true
 }
@@ -6035,11 +5929,11 @@ func (m *Model) beginSendNow() (tea.Model, tea.Cmd) {
 	if len(m.pastes) > 0 {
 		text = m.expandPastes(text)
 	}
-	if strings.TrimSpace(text) == "" && len(m.state.SteeringQueue()) == 0 {
+	if strings.TrimSpace(text) == "" && len(m.sess.Status().Steering.Queue) == 0 {
 		m.rejectSendNow("Nothing to send now: the input is empty and no steering is queued.")
 		return m, nil
 	}
-	m.submitSendNow(session.SendNowRequest{
+	m.submitSendNow(acpwire.SendNowRequest{
 		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      text,
@@ -6190,12 +6084,12 @@ func (m *Model) handleComposerSubmit(msg steerpanel.SubmitMsg) (tea.Model, tea.C
 		m.rejectSendNow("The turn this composer targets has ended. The composer text was kept.")
 		return m, nil
 	}
-	if strings.TrimSpace(msg.Text) == "" && len(m.state.SteeringQueue()) == 0 {
+	if strings.TrimSpace(msg.Text) == "" && len(m.sess.Status().Steering.Queue) == 0 {
 		m.rejectSendNow("Nothing to send now: the composer is empty and no steering is queued.")
 		return m, nil
 	}
 	id := m.composerID
-	m.submitSendNow(session.SendNowRequest{
+	m.submitSendNow(acpwire.SendNowRequest{
 		SessionID: msg.SessionID,
 		TurnID:    msg.TurnID,
 		Text:      msg.Text,
@@ -6210,47 +6104,29 @@ func (m *Model) handleComposerClose(msg steerpanel.CloseMsg) (tea.Model, tea.Cmd
 	return m, nil
 }
 
-// latestSteeringReceipt returns the newest receipt for the cached turn, so the
-// status line reports the current request's progress rather than another
-// request's final state.
-func (m Model) latestSteeringReceipt() (session.SteeringReceipt, bool) {
-	var best session.SteeringReceipt
-	found := false
-	for _, r := range m.steeringReceipts {
-		if m.steeringSnapshot.TurnID != "" && r.TurnID != m.steeringSnapshot.TurnID {
-			continue
-		}
-		if !found || r.Version > best.Version {
-			best, found = r, true
-		}
-	}
-	return best, found
-}
-
 // steeringStatusSegment renders the bounded Send now status beside the queue
 // marker. It is a status segment, not a task card: the action is a property of
 // the running turn, and the transcript keeps rendering through the stop.
-func (m Model) steeringStatusSegment() (string, bool) {
-	receipt, ok := m.latestSteeringReceipt()
-	if !ok {
+func (m Model) steeringStatusSegment(r *acpwire.SteeringReceipt) (string, bool) {
+	if r == nil {
 		return "", false
 	}
-	if !m.busy && receipt.Status != session.SteeringUndelivered {
+	if !m.busy && r.Status != acpwire.SteeringUndelivered {
 		// A settled turn keeps only the truthful undelivered disclosure: once
 		// the turn is over, "delivered" and "interrupting" describe a request
 		// that no longer has a live operation behind it.
 		return "", false
 	}
-	switch receipt.Status {
-	case session.SteeringInterrupting:
+	switch r.Status {
+	case acpwire.SteeringInterrupting:
 		return "send now: interrupting", true
-	case session.SteeringWaitingSafe:
+	case acpwire.SteeringWaitingSafe:
 		return "send now: waiting for a safe boundary", true
-	case session.SteeringWaitingResume:
+	case acpwire.SteeringWaitingResume:
 		return "send now: waiting for resume", true
-	case session.SteeringDelivered:
+	case acpwire.SteeringDelivered:
 		return "send now: delivered", true
-	case session.SteeringUndelivered:
+	case acpwire.SteeringUndelivered:
 		return "send now: undelivered", true
 	default:
 		// Accepted: the interruption has not started yet, and claiming more
@@ -6814,10 +6690,6 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 		m.gitInfo = gitinfo.Read(st.Workspace.ActiveRoot)
 		m.lastGitRead = now
 	}
-	// Read the steering snapshot directly on ticks. A runtime that publishes no
-	// broker (tests, a fallback build) would otherwise render a stale snapshot
-	// forever, and a slow stop's progress is exactly what a tick must surface.
-	m.refreshSteeringSnapshot()
 	if !m.busy && m.successPulse && m.now().Sub(m.successPulseAt) >= successPulseDuration {
 		m.successPulse = false
 	}

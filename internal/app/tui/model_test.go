@@ -18,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/session"
@@ -3451,13 +3452,12 @@ func TestCtrlXClearsSteering(t *testing.T) {
 	m.busy = true
 	m.state.PushSteering("a")
 	m.state.PushSteering("b")
-	m.queuedCount = 2
 	m = sendKey(m, tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 	if len(m.state.SteeringQueue()) != 0 {
 		t.Fatalf("queue not cleared: %v", m.state.SteeringQueue())
 	}
-	if m.queuedCount != 0 {
-		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	if n := len(m.sess.Status().Steering.Queue); n != 0 {
+		t.Fatalf("queued = %d, want 0", n)
 	}
 }
 
@@ -3467,7 +3467,6 @@ func TestEnterOnEmptyDrainsQueuedFollowUp(t *testing.T) {
 	// We pre-seed the queue and verify Enter pops the oldest.
 	m.state.PushSteering("first follow-up")
 	m.state.PushSteering("second follow-up")
-	m.queuedCount = 2
 	// Busy must be false for the follow-up path to fire.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if len(m.state.SteeringQueue()) != 1 {
@@ -3487,7 +3486,6 @@ func TestCancelTurnDropsSteeringQueue(t *testing.T) {
 	m.busy = true
 	m.state.PushSteering("a")
 	m.state.PushSteering("b")
-	m.queuedCount = 2
 	cancelled := false
 	m.agentCancel = func() { cancelled = true }
 	for range 2 {
@@ -3508,8 +3506,8 @@ func TestCancelTurnDropsSteeringQueue(t *testing.T) {
 	if len(m.state.SteeringQueue()) != 0 {
 		t.Fatalf("queue not dropped on agent finish: %v", m.state.SteeringQueue())
 	}
-	if m.queuedCount != 0 {
-		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	if n := len(m.sess.Status().Steering.Queue); n != 0 {
+		t.Fatalf("queued = %d, want 0", n)
 	}
 	if m.cancelling {
 		t.Fatal("cancelling flag should be cleared after agentFinishedMsg")
@@ -3524,12 +3522,12 @@ func TestCancelTurnDoesNotClearSteeringWhenAgentAlreadyFinished(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
 	m.cancelling = true // cancelTurn was called, set the flag
-	m.queuedCount = 1
+	m.state.PushSteering("pending")
 	// Simulate agent finishing first (before cancel took effect).
 	updated, _ := m.Update(agentFinishedMsg{err: nil})
 	m = updated.(Model)
-	if m.queuedCount != 0 {
-		t.Fatalf("steering not drained on agent finish: %d", m.queuedCount)
+	if n := len(m.sess.Status().Steering.Queue); n != 0 {
+		t.Fatalf("steering not drained on agent finish: %d", n)
 	}
 	// Now call cancelTurn — must not double-clear.
 	if m.cancelTurn() {
@@ -3547,7 +3545,6 @@ func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 	m.runner = runner
 	m.busy = true
 	m.state.PushSteering("deliver me after the turn")
-	m.queuedCount = 1
 
 	updated, cmd := m.Update(agentFinishedMsg{err: nil})
 	m = updated.(Model)
@@ -3555,8 +3552,8 @@ func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 	if q := m.state.SteeringQueue(); len(q) != 0 {
 		t.Fatalf("queue = %v, want the entry delivered", q)
 	}
-	if m.queuedCount != 0 {
-		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	if n := len(m.sess.Status().Steering.Queue); n != 0 {
+		t.Fatalf("queued = %d, want 0", n)
 	}
 	if !m.busy {
 		t.Fatal("busy = false, want the follow-up turn to have started")
@@ -3573,7 +3570,6 @@ func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	m.runner = runner
 	m.state.PushSteering("deliver me after the turn")
-	m.queuedCount = 1
 
 	cmd := m.flushQueuedSteering()
 	if cmd == nil {
@@ -3620,7 +3616,6 @@ func TestAgentFinishedKeepsQueueOnFailure(t *testing.T) {
 	m.runner = runner
 	m.busy = true
 	m.state.PushSteering("retry me")
-	m.queuedCount = 1
 
 	updated, _ := m.Update(agentFinishedMsg{err: errors.New("boom")})
 	m = updated.(Model)
@@ -4620,7 +4615,6 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 			m.busy = true
 			m.agentCancel = func() { cancelled = true }
 			m.state.PushSteering("pending")
-			m.queuedCount = 1
 
 			cmd := tt.trigger(&m)
 
@@ -4633,8 +4627,8 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 			if len(m.state.SteeringQueue()) != 0 {
 				t.Fatal("steering queue should be cleared")
 			}
-			if m.queuedCount != 0 {
-				t.Fatal("queuedCount should be 0")
+			if n := len(m.sess.Status().Steering.Queue); n != 0 {
+				t.Fatalf("queued = %d, want 0", n)
 			}
 			if state.PendingApproval() != nil {
 				t.Fatal("pending approval should be cleared")
@@ -10166,8 +10160,9 @@ type sendNowFixture struct {
 	t       *testing.T
 	state   *session.State
 	m       Model
+	stub    *stubSession
 	turnID  string
-	submits []session.SendNowRequest
+	submits []acpwire.SendNowRequest
 }
 
 // newSendNowFixture builds the fixture. supported controls whether an operation
@@ -10192,15 +10187,14 @@ func newSendNowFixture(t *testing.T, width, height int, supported bool) *sendNow
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	f := &sendNowFixture{t: t, state: state, turnID: turnID}
-	m := testModel(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()),
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }),
-		WithSendNow(state.SteeringSnapshot, func(req session.SendNowRequest) (session.SteeringReceipt, error) {
-			f.submits = append(f.submits, req)
-			return state.SubmitSendNow(req)
-		}))
+	stub := &stubSession{onSendNow: func(req acpwire.SendNowRequest) {
+		f.submits = append(f.submits, req)
+	}}
+	f.stub = stub
+	m := testModelStub(state, stub, WithCommandRegistry(reg), WithHomeDir(t.TempDir()),
+		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
 	m.resize(width, height)
 	m.busy = true
-	m.refreshSteeringSnapshot()
 	m.refreshViewport()
 	f.m = m
 	return f
@@ -10508,48 +10502,38 @@ func TestSendNowSizeGateResizeAndNoColor(t *testing.T) {
 	}
 }
 
-// TestSendNowReceiptVersionsAndSlowStopRemainTruthful pins the status
-// reporting: a slow stop reads as interrupting or waiting, never as stopped or
-// delivered, and one request's final outcome is never discarded by another
-// request's older revision.
-func TestSendNowReceiptVersionsAndSlowStopRemainTruthful(t *testing.T) {
+// TestSendNowStatusSegmentFollowsTheReceipt pins the status reporting: a slow
+// stop reads as interrupting or waiting, never as stopped or delivered, and a
+// settled request reads as delivered.
+func TestSendNowStatusSegmentFollowsTheReceipt(t *testing.T) {
 	f := newSendNowFixture(t, 160, 40, true)
-	snap := f.state.SteeringSnapshot()
-	interrupting := session.SteeringReceipt{
-		Version: 2, RequestID: "req-a", TurnID: f.turnID, Status: session.SteeringInterrupting,
+	receipt := func(status string) {
+		f.stub.patch = func(st *acpwire.SessionStatus) {
+			st.Steering.Receipt = &acpwire.SteeringReceipt{
+				Version: 2, RequestID: "req-a", TurnID: f.turnID, Status: status,
+			}
+		}
 	}
-	f.send(steeringMsg{queueLen: 1, snapshot: &snap, receipt: &interrupting})
+
+	receipt(acpwire.SteeringInterrupting)
 	line := stripANSI(f.m.renderStatusLine(200))
-	if !strings.Contains(line, "interrupting") {
+	if !strings.Contains(line, "send now: interrupting") {
 		t.Fatalf("status line missing the interrupting state:\n%s", line)
 	}
 	if strings.Contains(line, "stopped") || strings.Contains(line, "delivered") {
 		t.Fatalf("status line claimed a settled outcome during a slow stop:\n%s", line)
 	}
 
-	// A later revision of the same request settles it as delivered.
-	delivered := interrupting
-	delivered.Version = 3
-	delivered.Status = session.SteeringDelivered
-	f.send(steeringMsg{snapshot: &snap, receipt: &delivered})
-	if got := f.m.steeringReceipts["req-a"].Status; got != session.SteeringDelivered {
-		t.Fatalf("receipt status = %q, want delivered", got)
+	receipt(acpwire.SteeringWaitingSafe)
+	line = stripANSI(f.m.renderStatusLine(200))
+	if !strings.Contains(line, "send now: waiting for a safe boundary") {
+		t.Fatalf("status line missing the safe-boundary state:\n%s", line)
 	}
-	// An older revision of the same request must not roll it back.
-	stale := interrupting
-	f.send(steeringMsg{snapshot: &snap, receipt: &stale})
-	if got := f.m.steeringReceipts["req-a"].Status; got != session.SteeringDelivered {
-		t.Fatalf("stale receipt rolled the outcome back to %q", got)
-	}
-	// Another request's lower revision must not discard this one's outcome.
-	f.send(steeringMsg{snapshot: &snap, receipt: &session.SteeringReceipt{
-		Version: 1, RequestID: "req-b", TurnID: f.turnID, Status: session.SteeringAccepted,
-	}})
-	if got := f.m.steeringReceipts["req-a"].Status; got != session.SteeringDelivered {
-		t.Fatalf("another request's revision discarded req-a: %q", got)
-	}
-	if got := f.m.steeringReceipts["req-b"].Status; got != session.SteeringAccepted {
-		t.Fatalf("req-b = %q, want accepted", got)
+
+	receipt(acpwire.SteeringDelivered)
+	line = stripANSI(f.m.renderStatusLine(200))
+	if !strings.Contains(line, "send now: delivered") {
+		t.Fatalf("status line missing the delivered state:\n%s", line)
 	}
 }
 
@@ -10684,10 +10668,10 @@ func TestSendNowFinishDoesNotDropAcceptedFeedback(t *testing.T) {
 	if q := f.state.SteeringQueue(); len(q) != 1 || q[0] != "please deliver this" {
 		t.Fatalf("turn completion dropped accepted feedback: %v", q)
 	}
-	if f.m.queuedCount != 1 {
-		t.Fatalf("queuedCount = %d, want the surviving depth", f.m.queuedCount)
+	if n := len(f.m.sess.Status().Steering.Queue); n != 1 {
+		t.Fatalf("queued = %d, want the surviving depth", n)
 	}
-	if r, ok := f.m.steeringReceipts[f.submits[0].RequestID]; ok && r.Status == session.SteeringDelivered {
+	if r := f.m.sess.Status().Steering.Receipt; r != nil && r.RequestID == f.submits[0].RequestID && r.Status == acpwire.SteeringDelivered {
 		t.Fatal("the cleanup falsely marked the request delivered")
 	}
 }

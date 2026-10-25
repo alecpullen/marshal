@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
@@ -932,7 +933,7 @@ func TestACPSendNowAccessApplyRaceKeepsCommittedGrant(t *testing.T) {
 			if o.err != nil {
 				t.Fatalf("send now after the grant: %v", o.err)
 			}
-			w, ok := o.receipt.(SteeringReceiptWire)
+			w, ok := o.receipt.(acpwire.SteeringReceipt)
 			if !ok || w.Status != string(session.SteeringAccepted) {
 				t.Fatalf("send now receipt = %#v, want accepted", o.receipt)
 			}

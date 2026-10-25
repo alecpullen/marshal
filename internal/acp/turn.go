@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/interaction"
@@ -24,6 +25,7 @@ import (
 	"marshal/internal/repo/gitinfo"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -480,52 +482,11 @@ func eventToSessionUpdate(ev pubsub.Event[session.Event], proj *turnProjection) 
 	return nil, false
 }
 
-// steeringStateWire projects a session snapshot onto the JSON boundary. Every
-// field is copied; no wire field aliases an internal struct.
-func steeringStateWire(snap session.SteeringSnapshot) SteeringStateWire {
-	return SteeringStateWire{
-		Version:       snap.Version,
-		TurnID:        snap.TurnID,
-		Active:        snap.Active,
-		Supported:     snap.Supported,
-		Held:          snap.Held,
-		OperationID:   snap.OperationID,
-		OperationKind: string(snap.OperationKind),
-		PendingCount:  snap.PendingCount,
-	}
-}
-
-// steeringReceiptWire projects a session receipt onto the JSON boundary,
-// deep-copying its outcome list.
-func steeringReceiptWire(rec session.SteeringReceipt) SteeringReceiptWire {
-	out := SteeringReceiptWire{
-		Version:     rec.Version,
-		RequestID:   rec.RequestID,
-		TurnID:      rec.TurnID,
-		Status:      string(rec.Status),
-		OperationID: rec.OperationID,
-	}
-	if len(rec.Outcomes) > 0 {
-		out.Outcomes = make([]SteeringOutcomeWire, len(rec.Outcomes))
-		for i, o := range rec.Outcomes {
-			out.Outcomes[i] = SteeringOutcomeWire{
-				Kind:        o.Kind,
-				State:       o.State,
-				ToolCallID:  o.ToolCallID,
-				ExecutionID: o.ExecutionID,
-				AgentID:     o.AgentID,
-				Summary:     o.Summary,
-			}
-		}
-	}
-	return out
-}
-
 // steeringStateUpdate builds the additive session/update body for one snapshot.
-// It carries the same fields as SteeringStateWire, flattened under the update's
-// own "kind" so a client reads them without a nested object.
+// It carries the same fields as acpwire.SteeringState, flattened under the
+// update's own "kind" so a client reads them without a nested object.
 func steeringStateUpdate(snap session.SteeringSnapshot) map[string]any {
-	w := steeringStateWire(snap)
+	w := viewmodel.SteeringStateOf(snap)
 	update := map[string]any{
 		"kind":         "steering_state",
 		"version":      w.Version,
@@ -546,7 +507,7 @@ func steeringStateUpdate(snap session.SteeringSnapshot) map[string]any {
 
 // steeringReceiptUpdate builds the additive session/update body for one receipt.
 func steeringReceiptUpdate(rec session.SteeringReceipt) map[string]any {
-	w := steeringReceiptWire(rec)
+	w := viewmodel.SteeringReceiptOf(rec)
 	update := map[string]any{
 		"kind":      "steering_receipt",
 		"version":   w.Version,
@@ -1631,42 +1592,6 @@ type SteerParams struct {
 	RequestID string `json:"requestId,omitempty"`
 }
 
-// The steering wire types duplicate the external JSON contract field by field.
-// No wire field aliases an internal struct: the ACP transport is an external
-// client boundary, so a change to session's own types must not silently change
-// the bytes a client sends or reads.
-type SteeringStateWire struct {
-	Version       uint64 `json:"version"`
-	TurnID        string `json:"turnId"`
-	Active        bool   `json:"active"`
-	Supported     bool   `json:"supported"`
-	Held          bool   `json:"held"`
-	OperationID   string `json:"operationId,omitempty"`
-	OperationKind string `json:"operationKind,omitempty"`
-	PendingCount  int    `json:"pendingCount"`
-}
-
-// SteeringOutcomeWire is one settled effect an interrupted operation left
-// behind, as reported to a client.
-type SteeringOutcomeWire struct {
-	Kind        string `json:"kind"`
-	State       string `json:"state"`
-	ToolCallID  string `json:"toolCallId,omitempty"`
-	ExecutionID string `json:"executionId,omitempty"`
-	AgentID     string `json:"agentId,omitempty"`
-	Summary     string `json:"summary,omitempty"`
-}
-
-// SteeringReceiptWire is the JSON-RPC result of one accepted Send now request.
-type SteeringReceiptWire struct {
-	Version     uint64                `json:"version"`
-	RequestID   string                `json:"requestId"`
-	TurnID      string                `json:"turnId"`
-	Status      string                `json:"status"`
-	OperationID string                `json:"operationId,omitempty"`
-	Outcomes    []SteeringOutcomeWire `json:"outcomes,omitempty"`
-}
-
 // Steer handles session/steer. A queued request (delivery omitted or
 // "queued") enqueues a steering message for the active turn, exactly as
 // before: it requires an active turn and non-empty text. A "now" request
@@ -1754,7 +1679,7 @@ func (m *TurnManager) sendNow(p SteerParams) (any, error) {
 		// stale, conflicting or an empty flush). Nothing was queued or stopped.
 		return nil, serverErrorf("send now: %v", err)
 	}
-	return steeringReceiptWire(receipt), nil
+	return viewmodel.SteeringReceiptOf(receipt), nil
 }
 
 // SteeringStatus handles session/steering_status: a poll-style read of the
@@ -1784,9 +1709,9 @@ func (m *TurnManager) SteeringStatus(ctx context.Context, params json.RawMessage
 	// its identity is the slot's opaque id.
 	if rt.SteeringSnapshot == nil {
 		if slot == nil {
-			return SteeringStateWire{}, nil
+			return acpwire.SteeringState{}, nil
 		}
-		return SteeringStateWire{TurnID: slot.id, Active: true}, nil
+		return acpwire.SteeringState{TurnID: slot.id, Active: true}, nil
 	}
 
 	snap := rt.SteeringSnapshot()
@@ -1797,13 +1722,13 @@ func (m *TurnManager) SteeringStatus(ctx context.Context, params json.RawMessage
 		// active turn with the slot's opaque id would invite a `now` request
 		// that sendNow must then reject, because the session has no active turn
 		// to steer.
-		return steeringStateWire(snap), nil
+		return viewmodel.SteeringStateOf(snap), nil
 	}
 	// A turn is running on this connection but the session has no eligible
 	// steering turn: its runner is an SDD/swarm controller. Report it as
 	// active, identified by the ACP slot id, never by a session turn id the
 	// client could steer.
-	wire := steeringStateWire(snap)
+	wire := viewmodel.SteeringStateOf(snap)
 	wire.TurnID = slot.id
 	wire.Active = true
 	wire.OperationID = ""

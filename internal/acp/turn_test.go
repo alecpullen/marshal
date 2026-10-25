@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
@@ -27,6 +28,7 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
+	"marshal/internal/viewmodel"
 )
 
 // identityBeginWork is a TurnRuntime.BeginWork gate that passes through
@@ -4571,15 +4573,15 @@ func (h *sendNowHarness) cancel() {
 	_, _ = h.manager.Cancel(context.Background(), json.RawMessage(fmt.Sprintf(`{"sessionId":%q}`, h.session)))
 }
 
-func (h *sendNowHarness) status() SteeringStateWire {
+func (h *sendNowHarness) status() acpwire.SteeringState {
 	h.t.Helper()
 	res, err := h.manager.SteeringStatus(context.Background(), json.RawMessage(fmt.Sprintf(`{"sessionId":%q}`, h.session)))
 	if err != nil {
 		h.t.Fatalf("SteeringStatus: %v", err)
 	}
-	w, ok := res.(SteeringStateWire)
+	w, ok := res.(acpwire.SteeringState)
 	if !ok {
-		h.t.Fatalf("SteeringStatus result = %T, want SteeringStateWire", res)
+		h.t.Fatalf("SteeringStatus result = %T, want acpwire.SteeringState", res)
 	}
 	return w
 }
@@ -4588,17 +4590,17 @@ func (h *sendNowHarness) steerRaw(raw string) (any, error) {
 	return h.manager.Steer(context.Background(), json.RawMessage(raw))
 }
 
-func (h *sendNowHarness) steerNow(turnID, requestID, text string) (SteeringReceiptWire, error) {
+func (h *sendNowHarness) steerNow(turnID, requestID, text string) (acpwire.SteeringReceipt, error) {
 	h.t.Helper()
 	res, err := h.steerRaw(fmt.Sprintf(
 		`{"sessionId":%q,"delivery":"now","turnId":%q,"requestId":%q,"text":%q}`,
 		h.session, turnID, requestID, text))
 	if err != nil {
-		return SteeringReceiptWire{}, err
+		return acpwire.SteeringReceipt{}, err
 	}
-	w, ok := res.(SteeringReceiptWire)
+	w, ok := res.(acpwire.SteeringReceipt)
 	if !ok {
-		h.t.Fatalf("session/steer delivery=now result = %T, want SteeringReceiptWire", res)
+		h.t.Fatalf("session/steer delivery=now result = %T, want acpwire.SteeringReceipt", res)
 	}
 	return w, nil
 }
@@ -4742,12 +4744,12 @@ func TestACPSendNowQueuedCompatibilityAndWireRoundTrip(t *testing.T) {
 			t.Fatalf("omitted fields = %+v, want zero values", q)
 		}
 
-		stateJSON, err := json.Marshal(SteeringStateWire{
+		stateJSON, err := json.Marshal(acpwire.SteeringState{
 			Version: 3, TurnID: "t1", Active: true, Supported: true, Held: true,
 			OperationID: "op1", OperationKind: "tools", PendingCount: 2,
 		})
 		if err != nil {
-			t.Fatalf("marshal SteeringStateWire: %v", err)
+			t.Fatalf("marshal acpwire.SteeringState: %v", err)
 		}
 		for _, want := range []string{
 			`"version":3`, `"turnId":"t1"`, `"active":true`, `"supported":true`,
@@ -4757,15 +4759,15 @@ func TestACPSendNowQueuedCompatibilityAndWireRoundTrip(t *testing.T) {
 				t.Fatalf("steering state wire missing %s in %s", want, stateJSON)
 			}
 		}
-		receiptJSON, err := json.Marshal(SteeringReceiptWire{
+		receiptJSON, err := json.Marshal(acpwire.SteeringReceipt{
 			Version: 2, RequestID: "r1", TurnID: "t1", Status: "interrupting", OperationID: "op1",
-			Outcomes: []SteeringOutcomeWire{{
+			Outcomes: []acpwire.SteeringOutcome{{
 				Kind: "command", State: "stopped", ToolCallID: "call-1",
 				ExecutionID: "exec-1", AgentID: "agent-1", Summary: "stopped",
 			}},
 		})
 		if err != nil {
-			t.Fatalf("marshal SteeringReceiptWire: %v", err)
+			t.Fatalf("marshal acpwire.SteeringReceipt: %v", err)
 		}
 		for _, want := range []string{
 			`"version":2`, `"requestId":"r1"`, `"turnId":"t1"`, `"status":"interrupting"`,
@@ -4784,10 +4786,10 @@ func TestACPSendNowQueuedCompatibilityAndWireRoundTrip(t *testing.T) {
 			OperationID: "op1",
 			Outcomes:    []session.SteeringOutcome{{Kind: "command", State: "stopped", Summary: "ok"}},
 		}
-		wire := steeringReceiptWire(internal)
+		wire := viewmodel.SteeringReceiptOf(internal)
 		if wire.Status != "delivered" || wire.Version != 7 || len(wire.Outcomes) != 1 ||
 			wire.Outcomes[0].Kind != "command" || wire.Outcomes[0].State != "stopped" {
-			t.Fatalf("steeringReceiptWire = %+v, want every field copied", wire)
+			t.Fatalf("viewmodel.SteeringReceiptOf = %+v, want every field copied", wire)
 		}
 		wire.Outcomes[0].Kind = "mutated"
 		if internal.Outcomes[0].Kind != "command" {

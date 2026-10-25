@@ -79,6 +79,7 @@ plans retain the legacy agent strategy.
 | Entrypoint | `cmd/marshal/` | Thin main that delegates to `internal/app`. |
 | App shell | `internal/app/`, `internal/app/session/` | Dependency wiring, config, logging, signal handling, shared session state. |
 | TUI | `internal/app/tui/` | Bubble Tea model, panels, settings, chrome, themes, help footer. |
+| Client seam | `internal/acpwire/`, `internal/acpclient/`, `internal/acpclient/inproc/` | The TUI's only path to the agent side: the wire types and error codes, the `Host` and `Session` interfaces, and the in-process adapter that implements them until P3. `TestTUIStaysOnTheClientSeam` enforces it with a shrinking allowlist. |
 | Agent | `internal/agent/`, `internal/agent/swarm/` | Single-agent loop and multi-agent swarm orchestration. |
 | Pipeline | `internal/pipeline/` | Plan execution with implementer/reviewer subagents. |
 | LLM | `internal/llm/`, `internal/llm/routing/` | Provider abstraction, model presets, role-based routing. Assistant messages carry provider-bound reasoning (`schema.ChatMessage.Reasoning`) that each adapter replays in its own wire format. |

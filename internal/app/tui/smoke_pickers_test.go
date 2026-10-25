@@ -35,7 +35,7 @@ func makeSmokeModel(t *testing.T) Model {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg))
+	m := testModel(state, WithCommandRegistry(reg))
 	m.resize(120, 40)
 	return m
 }
@@ -110,7 +110,7 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 		if err := commands.RegisterAll(emptyReg, nil); err != nil {
 			t.Fatalf("RegisterAll: %v", err)
 		}
-		mm := New(emptyState, WithCommandRegistry(emptyReg))
+		mm := testModel(emptyState, WithCommandRegistry(emptyReg))
 		mm.resize(120, 40)
 		updated, _ := mm.dispatchCommand("/models")
 		mm2 := *(updated.(*Model))

@@ -15,7 +15,7 @@ func TestSkillsCommandOpensPanel(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := New(state, WithHomeDir(t.TempDir()), WithWorkingDir(t.TempDir()), WithCommandRegistry(reg))
+	m := testModel(state, WithHomeDir(t.TempDir()), WithWorkingDir(t.TempDir()), WithCommandRegistry(reg))
 
 	m.dispatchCommand("/skills")
 	if _, ok := m.dock.Panel().(*skills.Panel); !ok {
@@ -27,7 +27,7 @@ func TestPluginsCommandOpensPanel(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := New(state, WithHomeDir(t.TempDir()), WithWorkingDir(t.TempDir()), WithCommandRegistry(reg))
+	m := testModel(state, WithHomeDir(t.TempDir()), WithWorkingDir(t.TempDir()), WithCommandRegistry(reg))
 
 	m.dispatchCommand("/plugins")
 	if _, ok := m.dock.Panel().(*plugins.Panel); !ok {

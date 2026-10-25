@@ -1698,12 +1698,20 @@ func TestRuntimeFailedReloadKeepsAccessState(t *testing.T) {
 	}
 }
 
+// withoutRevision drops the commit counter: it counts commits, and is not part
+// of what a test means by "the same access".
+func withoutRevision(s session.AccessState) session.AccessState {
+	s.Revision = 0
+	return s
+}
+
 // A new conversation and a resumed one both start from the configured mode
 // with system access off, and a retired request cannot reach either.
 func TestRuntimeNewAndResumedSessionResetAccess(t *testing.T) {
 	ctx := context.Background()
 	cfg := nativeToolAgentConfig("access-reset")
 	cfg.Skills.Autoload = nil
+	cfg.Agent.Mode = interaction.ModeAsk
 	work := t.TempDir()
 	home := t.TempDir()
 
@@ -1722,10 +1730,10 @@ func TestRuntimeNewAndResumedSessionResetAccess(t *testing.T) {
 	}
 
 	req := registerAccess(t, rt.State, "call-1", session.AccessIntent{Editing: true, System: true, Reason: "edit and read outside"})
-	if _, err := rt.ResolveAccess(approve(req, "copilot")); err != nil {
+	if _, err := rt.ResolveAccess(approve(req, "act")); err != nil {
 		t.Fatalf("ResolveAccess: %v", err)
 	}
-	if got, want := rt.State.AccessState(), (session.AccessState{Mode: "copilot", System: true}); got != want {
+	if got, want := withoutRevision(rt.State.AccessState()), (session.AccessState{Mode: "act", System: true}); got != want {
 		t.Fatalf("granted pair = %+v, want %+v", got, want)
 	}
 
@@ -1734,13 +1742,13 @@ func TestRuntimeNewAndResumedSessionResetAccess(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	want := session.AccessState{Mode: string(cfg.Agent.Mode), System: false}
-	if got := newState.AccessState(); got != want {
+	if got := withoutRevision(newState.AccessState()); got != want {
 		t.Fatalf("new session pair = %+v, want %+v", got, want)
 	}
-	if _, err := rt.ResolveAccess(approve(req, "copilot")); err == nil {
+	if _, err := rt.ResolveAccess(approve(req, "act")); err == nil {
 		t.Fatal("a retired request ID resolved against the replacement session")
 	}
-	if got := newState.AccessState(); got != want {
+	if got := withoutRevision(newState.AccessState()); got != want {
 		t.Fatalf("a retired request changed the new session: %+v", got)
 	}
 
@@ -1755,7 +1763,7 @@ func TestRuntimeNewAndResumedSessionResetAccess(t *testing.T) {
 		t.Fatalf("StartRuntime (resumed): %v", err)
 	}
 	defer resumed.Close(ctx)
-	if got := resumed.State.AccessState(); got != want {
+	if got := withoutRevision(resumed.State.AccessState()); got != want {
 		t.Fatalf("resumed session pair = %+v, want %+v", got, want)
 	}
 }

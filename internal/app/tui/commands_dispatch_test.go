@@ -95,7 +95,7 @@ func TestTrustCommandOpensTrustPanelWhenPending(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := New(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
+	m := testModel(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
 
 	var decided trust.Decision
 	m.trustDecide = func(d trust.Decision) { decided = d }
@@ -117,7 +117,7 @@ func TestTrustCommandFallsBackWhenNoPendingDecision(t *testing.T) {
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := New(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
+	m := testModel(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
 
 	// No trustDecide wired: the handler's docpanel opens, then the effect
 	// must NOT open a trustpanel and must steer to the shell path.
@@ -143,7 +143,7 @@ func TestTrustCommandTrustedDoesNothingExtra(t *testing.T) {
 	state.SetTrusted(true)
 	reg := commands.New()
 	_ = commands.RegisterAll(reg, nil)
-	m := New(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
+	m := testModel(state, WithHomeDir(t.TempDir()), WithWorkingDir("/some/project"), WithCommandRegistry(reg))
 
 	m.dispatchCommand("/trust")
 	if _, ok := m.dock.Panel().(*trustpanel.Panel); ok {
@@ -191,7 +191,7 @@ func TestExitCommandsWithoutWorkExitDirectly(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg), WithEndController(&endTestController{}))
+	m := testModel(state, WithCommandRegistry(reg), WithEndController(&endTestController{}))
 	m.resize(80, 24)
 
 	updated, cmd := m.dispatchCommand("/quit")
@@ -266,7 +266,7 @@ func TestSendNowCommandTokenBoundary(t *testing.T) {
 		t.Fatal("/send-now was not recognized")
 	}
 	// A registry without the entry refuses the recognition too.
-	bare := New(newTestState(t), WithCommandRegistry(commands.New()))
+	bare := testModel(newTestState(t), WithCommandRegistry(commands.New()))
 	if bare.isSendNowCommand("/send-now text") {
 		t.Fatal("recognized /send-now without the registry entry")
 	}

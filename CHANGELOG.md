@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4-alpha] - 2026-10-25
+
 ### Added
 
 **Progress-reporting skill**
@@ -522,7 +524,8 @@ without a migration path before 0.1.0.
 - Building from source requires `CGO_ENABLED=1` and a C toolchain, because of
   the tree-sitter dependency.
 
-[Unreleased]: https://github.com/alecpullen/marshal/compare/v0.0.3-alpha...HEAD
+[Unreleased]: https://github.com/alecpullen/marshal/compare/v0.0.4-alpha...HEAD
+[0.0.4-alpha]: https://github.com/alecpullen/marshal/compare/v0.0.3-alpha...v0.0.4-alpha
 [0.0.3-alpha]: https://github.com/alecpullen/marshal/compare/v0.0.2-alpha...v0.0.3-alpha
 [0.0.2-alpha]: https://github.com/alecpullen/marshal/compare/v0.0.1-alpha...v0.0.2-alpha
 [0.0.1-alpha]: https://github.com/alecpullen/marshal/releases/tag/v0.0.1-alpha

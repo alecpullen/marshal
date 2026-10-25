@@ -10,11 +10,11 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/contextpack"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
+	"marshal/internal/repo/gitinfo"
 )
 
 func newStatusTestModel(t *testing.T) Model {
@@ -24,7 +24,7 @@ func newStatusTestModel(t *testing.T) Model {
 	// which would otherwise resolve every slot to NoColor{} and emit no SGR.
 	t.Setenv("NO_COLOR", "")
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	m := testModel(state)
 	m.resize(100, 30)
 	return m
 }
@@ -397,7 +397,7 @@ func TestStatusLineHintsYieldToActivity(t *testing.T) {
 func TestStatusLineShowsWorkingDir(t *testing.T) {
 	dir := t.TempDir()
 	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	m := testModel(state)
 	m.resize(100, 30)
 	line := stripANSI(m.renderStatusLine(100))
 	if !strings.Contains(line, filepath.Base(dir)) {
@@ -819,7 +819,7 @@ func newInteractionStatusModel(t *testing.T) Model {
 	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on, System: &on}); err != nil {
 		t.Fatalf("seed interaction: %v", err)
 	}
-	m := New(state)
+	m := testModel(state)
 	m.resize(100, 30)
 	return m
 }

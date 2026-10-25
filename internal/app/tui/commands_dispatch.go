@@ -11,13 +11,13 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
-	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/interaction"
 	"marshal/internal/pipeline"
+	"marshal/internal/repo/gitinfo"
 	"marshal/internal/worktree"
 )
 
@@ -195,6 +195,11 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 
 	m.state = snap.State
+	// A swapper that omits Session leaves the seam session alone rather than
+	// nil-ing it out from under the next render.
+	if snap.Session != nil {
+		m.sess = snap.Session
+	}
 	m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
 	m.lastGitRead = m.now()
 	if snap.Runner != nil {

@@ -8,7 +8,7 @@ remembers what it learned. It is built for models running on your own machine,
 and treats hosted providers as something you opt into rather than something
 you must sign up for.
 
-> **Status: alpha (v0.0.3-alpha).** Usable day to day, but interfaces, config
+> **Status: alpha (v0.0.4-alpha).** Usable day to day, but interfaces, config
 > keys, and on-disk formats may change without a migration path before 0.1.0.
 
 ![The Marshal TUI answering a question about a small Go project](docs/ui/tui-session.svg)
@@ -332,8 +332,8 @@ wired up.
 2. Tag and push:
 
 ```bash
-git tag -a v0.0.3-alpha -m "Release v0.0.3-alpha"
-git push origin v0.0.3-alpha
+git tag -a v0.0.4-alpha -m "Release v0.0.4-alpha"
+git push origin v0.0.4-alpha
 ```
 
 The `release` workflow runs tests, builds binaries, creates a draft release and

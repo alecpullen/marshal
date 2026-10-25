@@ -44,6 +44,11 @@ mkdir -p "$WORK/proj"
 cp "$ROOT/test/usability/fixtures/go-calc/calc.go" "$WORK/proj/"
 cp "$ROOT/test/usability/fixtures/go-calc/calc_test.go" "$WORK/proj/"
 printf 'module democalc\n\ngo 1.21\n' > "$WORK/proj/go.mod"
+# Make it a real repository: a coding agent runs in one, and a shell-out to git
+# should report the project's state rather than "not a git repository".
+( cd "$WORK/proj" && git init -q && git add -A \
+  && git -c user.name=uishot -c user.email=uishot@example.invalid \
+       commit -qm "demo project" )
 
 # ---------------------------------------------------------------------------
 # TUI -> SVG
@@ -51,18 +56,26 @@ printf 'module democalc\n\ngo 1.21\n' > "$WORK/proj/go.mod"
 mkdir -p "$WORK/cfg"
 cp "$HERE/config.example.toml" "$WORK/cfg/config.toml"
 if [ -n "$MODEL" ]; then
-  sed -i "s|^model = .*|model = '$MODEL'|" "$WORK/cfg/config.toml"
+  # BSD sed (macOS) requires an explicit backup suffix for -i; the .bak file is
+  # discarded. This form works with both BSD and GNU sed.
+  sed -i.bak "s|^model = .*|model = '$MODEL'|" "$WORK/cfg/config.toml"
+  rm -f "$WORK/cfg/config.toml.bak"
 fi
 CAPTURE_MODEL="$(sed -n "s/^model = '\(.*\)'/\1/p" "$WORK/cfg/config.toml")"
 
 echo "==> capturing TUI (model: $CAPTURE_MODEL)"
 echo "    a local provider must be reachable, or the transcript will show an error"
+# The first delay has to outlast startup (config load, DB open, provider
+# probe), which takes a few seconds; keystrokes sent before the input box is
+# live are dropped and the transcript stays empty. Override with UISHOT_KEYS
+# for a different question or a slower machine.
+KEYS="${UISHOT_KEYS:-6.0:Explain what this code does,0.8:\\r}"
 python3 "$HERE/capture.py" "$WORK/marshal" "$WORK/tui.bin" \
   --width 120 --height 34 --seconds "${UISHOT_SECONDS:-30}" \
   --workdir "$WORK/proj" \
   --config-dir "$WORK/cfg" \
   --data-dir "$WORK/data" \
-  --keys "4.0:Explain what this code does,0.8:\\r"
+  --keys "$KEYS"
 
 echo "==> rendering TUI SVG"
 mkdir -p "$OUT"

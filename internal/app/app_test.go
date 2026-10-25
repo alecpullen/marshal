@@ -6462,7 +6462,7 @@ func TestAccessTUIOptionsResolveWithoutConfigReload(t *testing.T) {
 		return nil
 	}
 
-	m := tui.New(state, accessTUIOptions(rt)...)
+	m := testTUIModel(state, accessTUIOptions(rt)...)
 
 	// The size gate needs a real frame first, exactly as the production
 	// program gets one at startup.
@@ -6491,8 +6491,8 @@ func TestAccessTUIOptionsResolveWithoutConfigReload(t *testing.T) {
 		if !d.Approved || d.Access == nil || d.Access.Status != session.AccessGranted {
 			t.Fatalf("delivered decision = %+v, want an approved typed grant", d)
 		}
-		if want := (session.AccessState{Mode: "default", System: true}); d.Access.Effective != want {
-			t.Fatalf("effective = %+v, want %+v", d.Access.Effective, want)
+		if eff := d.Access.Effective; eff.Mode != "act" || eff.Auto || !eff.System {
+			t.Fatalf("effective = %+v, want mode act with system access and no auto", eff)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the request was never settled")
@@ -6537,7 +6537,7 @@ func TestAccessTUIOptionsFollowNewSession(t *testing.T) {
 	oldReq, oldDecisions := accessTUIRequest(t, oldState, session.AccessIntent{
 		System: true, Reason: "The agent requests system access.",
 	})
-	oldModel := tui.New(oldState, opts...)
+	oldModel := testTUIModel(oldState, opts...)
 	updated, _ := oldModel.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	oldModel = updated.(tui.Model)
 	if view := ansi.Strip(oldModel.View().Content); !strings.Contains(view, "Allow system access?") {
@@ -6573,7 +6573,7 @@ func TestAccessTUIOptionsFollowNewSession(t *testing.T) {
 	}
 
 	// The same options now drive the replacement session.
-	newModel := tui.New(newState, opts...)
+	newModel := testTUIModel(newState, opts...)
 	newReq, newDecisions := accessTUIRequest(t, newState, session.AccessIntent{
 		System: true, Reason: "The agent requests system access.",
 	})
@@ -6673,7 +6673,7 @@ func TestRuntimeSendNowTUIOptionsExerciseRealFacade(t *testing.T) {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	model := tui.New(state,
+	model := testTUIModel(state,
 		tui.WithCommandRegistry(reg),
 		tui.WithRunner(runCtx, agentProcess),
 		tui.WithSendNow(rt.SteeringSnapshot, rt.SubmitSendNow),

@@ -61,7 +61,7 @@ func TestProposalPersistsOnApprove(t *testing.T) {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	pr := &proposalRunner{state: state}
-	m := New(state, WithCommandRegistry(reg), WithSubagentFactory(func(string) (AgentRunner, error) {
+	m := testModel(state, WithCommandRegistry(reg), WithSubagentFactory(func(string) (AgentRunner, error) {
 		return pr, nil
 	}))
 	m.resize(80, 24)
@@ -106,7 +106,7 @@ func TestProposalFromSession(t *testing.T) {
 	workDir := t.TempDir()
 	state := session.New(config.Default(), workDir, time.Unix(100, 0), session.Persistence{})
 	state.AddMessage(session.RoleAssistant, `{"build":"go build ./...","test":"go test ./..."}`, session.ContentTypePlain)
-	m := New(state)
+	m := testModel(state)
 	build, test, err := m.proposalFromSession()
 	if err != nil {
 		t.Fatalf("proposalFromSession: %v", err)

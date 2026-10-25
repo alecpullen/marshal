@@ -3,9 +3,10 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/changedfiles"
-	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/pubsub"
+	"marshal/internal/repo/changedfiles"
+	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
@@ -131,6 +132,25 @@ func sheetBaseRefCmd(dir string) tea.Cmd {
 	}
 	return func() tea.Msg {
 		ref := gitinfo.HeadSHA(dir)
-		return sheetBaseRefMsg{dir: dir, ref: ref, changed: changedfiles.Read(dir, ref)}
+		return sheetBaseRefMsg{dir: dir, ref: ref, changed: sheetChangedFiles(changedfiles.Read(dir, ref))}
 	}
+}
+
+// sheetChangedFiles converts the repo package's changed-file rows into the
+// session sheet's render type. The types stay separate so the sheet does not
+// depend on the git-reading package's richer File shape.
+func sheetChangedFiles(files []changedfiles.File) []sessionsheet.ChangedFile {
+	if files == nil {
+		return nil
+	}
+	out := make([]sessionsheet.ChangedFile, 0, len(files))
+	for _, f := range files {
+		out = append(out, sessionsheet.ChangedFile{
+			Path:    f.Path,
+			Status:  f.Status,
+			Added:   f.Added,
+			Removed: f.Removed,
+		})
+	}
+	return out
 }

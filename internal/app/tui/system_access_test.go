@@ -31,7 +31,7 @@ func TestSystemCommandTogglesFlagAndNotes(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg), WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
+	m := testModel(state, WithCommandRegistry(reg), WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
 		return state.ApplyInteraction(p)
 	}))
 	m.resize(80, 24)
@@ -87,7 +87,7 @@ func TestStatusBadgeSystemSuffix(t *testing.T) {
 // as a rung on the mode ladder — it must not be confusable with a mode.
 func TestModePickerExcludesSystemModifier(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	model := New(state)
+	model := testModel(state)
 	for _, item := range model.modePickerItems() {
 		if item.Value == "system" {
 			t.Fatal("modePickerItems must not offer the system modifier as a mode")
@@ -155,7 +155,7 @@ func TestPostmortemAgentPassScopedElevation(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.Config.Postmortem.OnExit = "prompt"
 	ctrl := &endTestController{}
-	m := New(state, WithEndController(ctrl))
+	m := testModel(state, WithEndController(ctrl))
 	m.resize(80, 24)
 	act := interaction.ModeAct
 	if _, err := state.ApplyInteraction(interaction.Patch{Mode: &act}); err != nil {
@@ -196,7 +196,7 @@ func TestEndAnalysisFailureLeavesNoElevation(t *testing.T) {
 	state := postmortemTestState(t, "sess-sysrefused")
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	ctrl := &endTestController{analysisErr: errors.New("refused")}
-	m := New(state, WithEndController(ctrl))
+	m := testModel(state, WithEndController(ctrl))
 	m.resize(80, 24)
 	m.endAnalyzing = true
 
@@ -237,7 +237,7 @@ func newAccessTestFixture(t *testing.T, width, height int, cfg config.Config) *a
 	t.Helper()
 	state := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	f := &accessTestFixture{t: t, state: state}
-	m := New(state,
+	m := testModel(state,
 		WithAccessRequests(
 			func() (session.AccessRequest, bool) { return state.AccessRequest() },
 			func(choice session.AccessChoice) (session.AccessResult, error) {
@@ -692,7 +692,7 @@ func TestAccessPanelUnavailableResolverFailsClosed(t *testing.T) {
 				t.Fatalf("RegisterAccess = (%v, %v), want a published request", waiting, err)
 			}
 
-			m := New(state, tc.opts...)
+			m := testModel(state, tc.opts...)
 			m.resize(120, 40)
 			updated, _ := m.Update(agentTickMsg{})
 			m = updated.(Model)

@@ -467,6 +467,7 @@ func init() {
 			m.beginTurnStopRegistration()
 			m.busy = true
 			m.turnStartedAt = m.now()
+			m.startHeldWindow()
 			agentCtx, cancel := context.WithCancel(m.ctx)
 			m.agentCancel = cancel
 			model, base, reviewRange, remaining := parseReviewArgs(args)

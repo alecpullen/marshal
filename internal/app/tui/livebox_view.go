@@ -13,6 +13,44 @@ import (
 // livebox_view.go wires the live box to the model: it snapshots the model for
 // livebox.Plan, plans once per frame, and routes the box's height and clicks.
 
+// startHeldWindow opens a new held window: a finished item that ended after
+// this instant keeps its tray row until the next prompt. A finished plan seen
+// now is dismissed, so it is one row until the next prompt.
+func (m *Model) startHeldWindow() {
+	m.heldSince = m.now()
+	if allTasksCompleted(m.band.Tasks) {
+		m.planDismissed = planFingerprint(m.band.Tasks)
+	}
+}
+
+// allTasksCompleted reports whether every item of a non-empty list is done.
+func allTasksCompleted(tasks []viewmodel.BandTask) bool {
+	if len(tasks) == 0 {
+		return false
+	}
+	for _, t := range tasks {
+		if t.Status != "completed" {
+			return false
+		}
+	}
+	return true
+}
+
+// planFingerprint identifies a plan list by its items' identity and status, so
+// a finished list seen at the last turn start can be left out of the tray.
+func planFingerprint(tasks []viewmodel.BandTask) string {
+	var b strings.Builder
+	for _, t := range tasks {
+		b.WriteString(t.ID)
+		b.WriteByte(0)
+		b.WriteString(t.Content)
+		b.WriteByte(0)
+		b.WriteString(t.Status)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // boxInput snapshots the model for livebox.Plan.
 func (m Model) boxInput() livebox.Input {
 	now := m.now()
@@ -28,6 +66,10 @@ func (m Model) boxInput() livebox.Input {
 	for _, it := range m.workSnapshot.Items {
 		if viewmodel.WorkActive(it) {
 			in.Work = append(in.Work, it)
+			continue
+		}
+		if h, ok := m.heldItem(it); ok {
+			in.Held = append(in.Held, h)
 		}
 	}
 	for _, it := range in.Work {
@@ -49,19 +91,82 @@ func (m Model) boxInput() livebox.Input {
 		}
 		in.Headlines[it.TaskKey] = subagentHeadline(v.Child)
 	}
-	for _, t := range m.band.Tasks {
-		in.Plan = append(in.Plan, livebox.PlanItem{
-			ID:        t.ID,
-			Content:   t.Content,
-			Status:    t.Status,
-			StartedAt: t.StartedAt,
-			First:     t.First,
-		})
+	// A finished plan is one row until the next prompt: once the list seen at
+	// the last turn start is dismissed, the tray leaves it out entirely.
+	if len(m.band.Tasks) > 0 && !(allTasksCompleted(m.band.Tasks) && planFingerprint(m.band.Tasks) == m.planDismissed) {
+		for _, t := range m.band.Tasks {
+			in.Plan = append(in.Plan, livebox.PlanItem{
+				ID:        t.ID,
+				Content:   t.Content,
+				Status:    t.Status,
+				StartedAt: t.StartedAt,
+				First:     t.First,
+			})
+		}
 	}
 	if m.band.Stale {
 		in.Stale = m.band.StaleAge
 	}
 	return in
+}
+
+// activateWorkRow acts on a work row: a running item toggles its card, and a
+// held one scrolls to the completion event that finished it.
+func (m *Model) activateWorkRow(key string) {
+	if it, ok := m.workItemByKey(key); ok && viewmodel.WorkActive(it) {
+		if m.workExpanded == key {
+			m.workExpanded = ""
+		} else {
+			m.workExpanded = key
+		}
+		m.invalidateTranscript()
+		m.refreshViewport()
+		return
+	}
+	if ref, ok := m.completions[key]; ok {
+		m.scrollToNode(ref.node)
+	}
+}
+
+// heldItem is a finished item's held row, when it ended inside the current
+// held window. A foreground-attached command is never held: it stays an
+// ordinary tool row. The row's words come from the completion event, so the
+// tray and history always agree; until the event exists it falls back to the
+// item's own state, with no summary.
+func (m Model) heldItem(it viewmodel.WorkItem) (livebox.HeldItem, bool) {
+	if it.Kind == "command" && it.Attachment == "foreground" {
+		return livebox.HeldItem{}, false
+	}
+	switch it.State {
+	case "completed", "failed", "stopped", "unknown":
+	default:
+		return livebox.HeldItem{}, false
+	}
+	if !it.EndedAt.After(m.heldSince) {
+		return livebox.HeldItem{}, false
+	}
+	h := livebox.HeldItem{
+		Item:     it,
+		Duration: max(it.EndedAt.Sub(it.StartedAt), 0),
+	}
+	if ref, ok := m.completions[it.TaskKey]; ok && ref.info != nil {
+		h.Outcome = ref.info.Outcome
+		h.Failed = ref.info.Failed
+		h.Summary = ref.info.Summary
+		return h, true
+	}
+	switch it.State {
+	case "completed":
+		h.Outcome = "done"
+	case "failed":
+		h.Outcome = "failed"
+	case "stopped":
+		h.Outcome = "stopped"
+	default:
+		h.Outcome = "outcome unknown"
+	}
+	h.Failed = h.Outcome != "done"
+	return h, true
 }
 
 // boxCursor is the browse cursor as a box target. A box stop has no transcript
@@ -175,13 +280,7 @@ func (m *Model) handleBoxClick(msg tea.Mouse) (tea.Cmd, bool) {
 	target := boxRowTarget(layout.Rows[msg.Y-top], msg.X)
 	switch target.Kind {
 	case livebox.TargetWork:
-		if m.workExpanded == target.Key {
-			m.workExpanded = ""
-		} else {
-			m.workExpanded = target.Key
-		}
-		m.invalidateTranscript()
-		m.refreshViewport()
+		m.activateWorkRow(target.Key)
 	case livebox.TargetMore:
 		m.openWork()
 	case livebox.TargetPlan:

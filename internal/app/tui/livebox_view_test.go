@@ -293,3 +293,125 @@ func TestBoxStateShowsTheSDDRun(t *testing.T) {
 		t.Fatalf("the turn state must carry the clock, got %q", got)
 	}
 }
+
+// TestFinishedItemHoldsItsRowUntilTheNextPrompt: a finished item keeps its tray
+// row until a turn starts, and an item that ended before the window opened is
+// never shown.
+func TestFinishedItemHoldsItsRowUntilTheNextPrompt(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	base := m.now()
+	m.heldSince = base.Add(-time.Minute)
+
+	finished := workRunningCard("k1", base.Add(-2*time.Minute))
+	finished.State = "completed"
+	finished.EndedAt = base.Add(-30 * time.Second)
+	m.workSnapshot = workSnapOf(finished)
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	box := stripANSI(boxOut(m))
+	if !strings.Contains(box, "done") {
+		t.Fatalf("a finished item must keep its row with its outcome:\n%s", box)
+	}
+	for _, r := range m.boxLayout().Rows {
+		if r.Target.Kind == livebox.TargetWork && r.Target.Key == "k1" && r.Tint {
+			t.Error("a held row must not be tinted")
+		}
+	}
+
+	// A prompt opens a new held window, which drops the row.
+	m.startHeldWindow()
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "k1") {
+		t.Fatalf("the next prompt must drop the held row:\n%s", box)
+	}
+
+	// An item that ended before the window opened is never shown.
+	old := workRunningCard("k2", base.Add(-5*time.Minute))
+	old.State = "completed"
+	old.EndedAt = base.Add(-4 * time.Minute)
+	m.workSnapshot = workSnapOf(old)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "k2") {
+		t.Fatalf("an item that ended before the window must not be held:\n%s", box)
+	}
+}
+
+// TestHeldRowMatchesItsCompletionEvent: the held row's outcome and summary are
+// the completion event's, so the tray and history always agree.
+func TestHeldRowMatchesItsCompletionEvent(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	base := m.now()
+	m.heldSince = base.Add(-time.Minute)
+
+	const conv, epoch, execID = "conv-1", "epoch-1", "exec-1"
+	if err := m.state.AddJobExit(session.JobExit{
+		ID: "job-1", Command: "pytest -q", ExitCode: 1, Output: "boom\n",
+		ExecutionID: execID, ConversationID: conv, SourceEpoch: epoch,
+		At: base.Add(-30 * time.Second),
+	}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+	key := viewmodel.WorkKey(conv, epoch, "command", execID)
+	item := workRunningCard(key, base.Add(-2*time.Minute))
+	item.State = "failed"
+	item.EndedAt = base.Add(-30 * time.Second)
+	m.workSnapshot = workSnapOf(item)
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	ref, ok := m.completions[key]
+	if !ok || ref.info == nil {
+		t.Fatalf("no completion event for %q in %v", key, m.completions)
+	}
+	held, ok := m.heldItem(item)
+	if !ok {
+		t.Fatal("the finished item is not held")
+	}
+	if held.Outcome != ref.info.Outcome {
+		t.Errorf("held outcome = %q, want the event's %q", held.Outcome, ref.info.Outcome)
+	}
+	if held.Summary != ref.info.Summary {
+		t.Errorf("held summary = %q, want the event's %q", held.Summary, ref.info.Summary)
+	}
+	if held.Outcome != "exit 1" {
+		t.Errorf("held outcome = %q, want exit 1", held.Outcome)
+	}
+}
+
+// TestFinishedPlanStaysUntilTheNextPrompt: a finished list is one row until a
+// turn starts, and a new open list shows again.
+func TestFinishedPlanStaysUntilTheNextPrompt(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	mustSetTodos(t, &m,
+		native.TodoItem{Content: "A", Status: native.TodoCompleted},
+		native.TodoItem{Content: "B", Status: native.TodoCompleted})
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	if box := stripANSI(boxOut(m)); !strings.Contains(box, "Plan 2/2 done") {
+		t.Fatalf("a finished list must be one row:\n%s", box)
+	}
+
+	m.startHeldWindow()
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); strings.Contains(box, "Plan 2/2 done") {
+		t.Fatalf("the next prompt must drop the finished plan:\n%s", box)
+	}
+
+	// A new open list shows again.
+	mustSetTodos(t, &m,
+		native.TodoItem{Content: "A", Status: native.TodoCompleted},
+		native.TodoItem{Content: "C", Status: native.TodoInProgress})
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if box := stripANSI(boxOut(m)); !strings.Contains(box, "C") {
+		t.Fatalf("a new open list must show again:\n%s", box)
+	}
+}

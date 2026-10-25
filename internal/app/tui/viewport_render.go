@@ -79,6 +79,7 @@ func (m *Model) refreshViewport() {
 	// The band is derived here, once, so the now bar and the frame height
 	// both read the same value.
 	m.band = viewmodel.BandOf(snap, turns)
+	m.completions = completionIndex(turns)
 	m.rowBeat = rowBeats(turns)
 	m.updateViewportHeight()
 
@@ -295,6 +296,27 @@ func rowBeats(turns []*viewmodel.Node) map[viewmodel.NodeID]viewmodel.NodeID {
 			for _, row := range n.Children {
 				out[row.ID] = n.ID
 			}
+		}
+	}
+	return out
+}
+
+// completionIndex indexes the completion events by WorkKey, so a held row can
+// take its outcome and summary from the same event history draws.
+func completionIndex(turns []*viewmodel.Node) map[string]completionRef {
+	out := map[string]completionRef{}
+	var walk func(n *viewmodel.Node)
+	walk = func(n *viewmodel.Node) {
+		if n.Kind == viewmodel.KindCompletion && n.Completion != nil && n.Completion.WorkKey != "" {
+			out[n.Completion.WorkKey] = completionRef{node: n.ID, info: n.Completion}
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	for _, turn := range turns {
+		for _, n := range turn.Children {
+			walk(n)
 		}
 	}
 	return out

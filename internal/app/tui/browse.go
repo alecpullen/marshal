@@ -316,18 +316,12 @@ func isPrintable(msg tea.KeyPressMsg) bool {
 func (m *Model) currentNode() *viewmodel.Node { return m.browseTree[m.cursor] }
 
 // enterBoxStop acts on a box stop the way a click does: a running card opens
-// or closes, the more row opens the Work list, and a plan item scrolls to the
-// first beat bound to it.
+// or closes, a held row scrolls to its completion event, the more row opens the
+// Work list, and a plan item scrolls to the first beat bound to it.
 func (m *Model) enterBoxStop(t livebox.Target) {
 	switch t.Kind {
 	case livebox.TargetWork:
-		if m.workExpanded == t.Key {
-			m.workExpanded = ""
-		} else {
-			m.workExpanded = t.Key
-		}
-		m.invalidateTranscript()
-		m.refreshViewport()
+		m.activateWorkRow(t.Key)
 	case livebox.TargetMore:
 		m.openWork()
 	case livebox.TargetPlan:

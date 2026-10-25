@@ -11,8 +11,8 @@ import (
 )
 
 // RepoSection is the ambient identity block: git branch, indexed repo
-// size, language mix, sandbox posture. Always relevant and lowest
-// priority, so it is the rail's filler and the first to yield.
+// size, sandbox posture. Always relevant and lowest priority, so it is the
+// rail's filler and the first to yield.
 type RepoSection struct{}
 
 func (RepoSection) ID() string         { return "repo" }
@@ -36,25 +36,13 @@ func (RepoSection) Render(d Data, width, maxRows int) []string {
 		strutil.CompactTokens(d.Repo.Files),
 		strutil.CompactTokens(d.Repo.Symbols)))
 
-	if len(d.Repo.Languages) > 0 {
-		parts := make([]string, 0, 3)
-		for i, l := range d.Repo.Languages {
-			if i == 3 {
-				break
-			}
-			parts = append(parts, fmt.Sprintf("%s %d%%", l.Name, l.Share))
-		}
-		rows = append(rows, railRow("", strings.Join(parts, " · "), "", width))
-	}
-
-	if d.State != nil {
-		sb := d.State.SandboxInfo()
+	if !d.StartedAt.IsZero() {
 		net := "✘"
-		if d.State.Config.Tools.Shell.AllowNetwork {
+		if d.Sandbox.AllowNetwork {
 			net = glyph.OK
 		}
-		rows = append(rows, fmt.Sprintf(" sandbox %s · net %s", sb.Backend, net))
-		rows = append(rows, fmt.Sprintf(" %d tools loaded", len(d.State.LoadedToolNames())))
+		rows = append(rows, fmt.Sprintf(" sandbox %s · net %s", d.Sandbox.Backend, net))
+		rows = append(rows, fmt.Sprintf(" %d tools loaded", d.LoadedTools))
 	}
 
 	for i := range rows {

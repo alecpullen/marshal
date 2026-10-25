@@ -4,26 +4,30 @@ import (
 	"strings"
 	"testing"
 
-	"marshal/internal/tools/registry"
+	"marshal/internal/acpwire"
 )
 
-func wsData(events ...registry.AuditEvent) Data {
-	return Data{Audit: events, Now: at(20)}
+// wsData builds a sheet snapshot whose file rows are files, in the order the
+// aggregate returns them.
+func wsData(files ...acpwire.SheetFile) Data {
+	return Data{Files: files}
 }
 
 func TestWorkingSetIrrelevantWhenNothingTouched(t *testing.T) {
 	if (WorkingSetSection{}).Relevant(Data{}) {
 		t.Fatal("no file activity means the section must not render")
 	}
-	// A session that only ran shell commands has no working set either.
-	if (WorkingSetSection{}).Relevant(wsData(registry.AuditEvent{ToolName: "shell.run", Timestamp: at(1)})) {
-		t.Fatal("non-file tools must not make the section relevant")
+	// A session that only ran shell commands has no working set either: the
+	// aggregate carries no file rows for it.
+	if (WorkingSetSection{}).Relevant(wsData()) {
+		t.Fatal("no file rows must not make the section relevant")
 	}
 }
 
 func TestWorkingSetListsMostRecentFirst(t *testing.T) {
 	rows := WorkingSetSection{}.Render(wsData(
-		writeEvent("old.go", 1), writeEvent("new.go", 9),
+		acpwire.SheetFile{Path: "new.go", Edits: 1, LastAt: 9000},
+		acpwire.SheetFile{Path: "old.go", Edits: 1, LastAt: 1000},
 	), 40, 0)
 	if len(rows) != 2 {
 		t.Fatalf("want a row per file, got %d: %v", len(rows), rows)
@@ -37,7 +41,8 @@ func TestWorkingSetListsMostRecentFirst(t *testing.T) {
 // distinction the section exists to make.
 func TestWorkingSetDistinguishesEditsFromReads(t *testing.T) {
 	rows := WorkingSetSection{}.Render(wsData(
-		writeEvent("edited.go", 5), readEvent("readonly.go", 4),
+		acpwire.SheetFile{Path: "edited.go", Edits: 1, LastAt: 5000},
+		acpwire.SheetFile{Path: "readonly.go", Reads: 1, LastAt: 4000},
 	), 60, 0)
 	edited, readonly := rows[0], rows[1]
 	if !strings.Contains(edited, "edit") {
@@ -50,7 +55,7 @@ func TestWorkingSetDistinguishesEditsFromReads(t *testing.T) {
 
 func TestWorkingSetShowsEditCount(t *testing.T) {
 	rows := WorkingSetSection{}.Render(wsData(
-		writeEvent("a.go", 1), writeEvent("a.go", 2), writeEvent("a.go", 3),
+		acpwire.SheetFile{Path: "a.go", Edits: 3, LastAt: 3000},
 	), 60, 0)
 	if !strings.Contains(rows[0], "3 edits") {
 		t.Fatalf("row should carry the edit count, got %q", rows[0])
@@ -58,18 +63,18 @@ func TestWorkingSetShowsEditCount(t *testing.T) {
 }
 
 func TestWorkingSetClipsToMaxRows(t *testing.T) {
-	var evs []registry.AuditEvent
+	var files []acpwire.SheetFile
 	for i := 1; i <= 10; i++ {
-		evs = append(evs, writeEvent(string(rune('a'+i))+".go", i))
+		files = append(files, acpwire.SheetFile{Path: string(rune('a'+i)) + ".go", Edits: 1, LastAt: int64(i)})
 	}
-	if rows := (WorkingSetSection{}).Render(wsData(evs...), 40, 3); len(rows) != 3 {
+	if rows := (WorkingSetSection{}).Render(wsData(files...), 40, 3); len(rows) != 3 {
 		t.Fatalf("want 3 rows, got %d", len(rows))
 	}
 }
 
 func TestWorkingSetTruncatesToWidth(t *testing.T) {
 	long := strings.Repeat("d/", 60) + "file.go"
-	for _, row := range (WorkingSetSection{}).Render(wsData(writeEvent(long, 3)), 24, 0) {
+	for _, row := range (WorkingSetSection{}).Render(wsData(acpwire.SheetFile{Path: long, Edits: 1}), 24, 0) {
 		if len([]rune(row)) > 24 {
 			t.Fatalf("row exceeds width: %d runes", len([]rune(row)))
 		}
@@ -77,7 +82,10 @@ func TestWorkingSetTruncatesToWidth(t *testing.T) {
 }
 
 func TestWorkingSetOneLineSummarises(t *testing.T) {
-	got := WorkingSetSection{}.OneLine(wsData(writeEvent("a.go", 1), readEvent("b.go", 2)), 40)
+	got := WorkingSetSection{}.OneLine(wsData(
+		acpwire.SheetFile{Path: "a.go", Edits: 1},
+		acpwire.SheetFile{Path: "b.go", Reads: 1},
+	), 40)
 	if !strings.Contains(got, "2") {
 		t.Fatalf("one-line form should carry the file count, got %q", got)
 	}

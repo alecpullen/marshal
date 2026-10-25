@@ -4,79 +4,31 @@ import (
 	"time"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
-	"marshal/internal/contextpack"
-	"marshal/internal/db"
-	"marshal/internal/tools/registry"
-	"marshal/internal/worktree"
 )
 
-// RepoStats is the indexed-repository summary the repo section renders.
-// Populated by the Model from the project DB on turn boundaries.
-type RepoStats struct {
-	Files     int
-	Symbols   int
-	Languages []LanguageShare // descending by Share, at most 3 entries
-}
-
-// LanguageShare is one language's percentage of the indexed file count.
-type LanguageShare struct {
-	Name  string
-	Share int // 0-100
-}
-
-// Data is everything the session sheet can render. The Model assembles it once per
-// frame. Sections never reach outside it, and everything expensive (DB
-// queries, git subprocesses) is cached in on turn boundaries — never
-// computed during render.
+// Data is everything the session sheet can render. The Model assembles it
+// from Session.Sheet and Session.Status on every frame. Sections never reach
+// outside it, and the session caches everything expensive off the render path.
 type Data struct {
-	State *session.State
-	Git   acpwire.Git
-	Repo  RepoStats
-	Turns []db.TurnMetricsRow // most recent first
-	// Totals is the session-scoped usage aggregate backing the footer's
-	// turn/token counters. Distinct from Turns, which is the recent-rows
-	// window other sections read: Turns is capped by its query limit and
-	// (before this change) was project-scoped, so it could not be used to
-	// count a session's turns.
-	Totals  db.UsageTotals
-	Changed []acpwire.SheetChangedFile
-	// Fleet is the agent-worktree listing, cached on turn boundaries like
-	// Changed: ListFleet shells out to git per worktree, so it must never
-	// be computed during render. Ahead/Behind are against the project
-	// root's HEAD.
-	Fleet []worktree.FleetRow
-	Now   time.Time // injected so elapsed-time rendering is deterministic
-
-	// Pack is the context pack snapshot. Held directly rather than read
-	// from State so tests can build one without a session.
-	Pack contextpack.Pack
-
-	// Audit is the session's tool-call log, held directly so sections are
-	// testable without a live session.
-	Audit []registry.AuditEvent
-
-	// Rules is the session's approval rules, held directly so sections are
-	// testable without a live session.
-	Rules []string
-
-	// Skills is the session's currently active skills, held directly so the
-	// section is testable without a live session. This is cumulative state
-	// — what is loaded right now — as distinct from the per-turn transcript
-	// line, which records what loaded at one point.
-	Skills []string
-
-	// Swarm is the swarm run progress, held directly so tests don't need a
-	// live session.
-	Swarm acpwire.SwarmProgress
-
-	// SDD is the SDD run progress, held directly so tests don't need a
-	// live session.
-	SDD acpwire.SDDProgress
-
-	// Spinner is the current shared spinner frame ("" when gated or
-	// idle), so live sections tick in lockstep with the main column.
-	Spinner string
+	Git         acpwire.Git
+	Repo        acpwire.SheetRepo
+	Turns       []acpwire.SheetTurn // most recent first
+	Totals      acpwire.SheetTotals
+	Changed     []acpwire.SheetChangedFile
+	Fleet       []acpwire.SheetFleetRow
+	Now         time.Time // injected so elapsed-time rendering is deterministic
+	Context     acpwire.SheetContext
+	Tools       []acpwire.SheetTool
+	Files       []acpwire.SheetFile
+	Rules       []string
+	Skills      []string
+	StartedAt   time.Time // the session's start; zero when there is no session
+	ToolBudget  acpwire.SheetToolBudget
+	LoadedTools int
+	Sandbox     acpwire.SheetSandbox
+	Swarm       acpwire.SwarmProgress
+	SDD         acpwire.SDDProgress
+	Spinner     string
 }
 
 // Section is one read-only block in the session sheet. Sections are pure functions

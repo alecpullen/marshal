@@ -7,13 +7,13 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/worktree"
+	"marshal/internal/acpwire"
 )
 
 func fleetData() Data {
-	return Data{Fleet: []worktree.FleetRow{
-		{Path: "/repo/.marshal/worktrees/feat-x", Branch: "feat/x", Ahead: 2, Behind: 1, Dirty: true, Age: 2 * time.Hour},
-		{Path: "/repo/.marshal/worktrees/feat-y", Branch: "feat/y", Ahead: 0, Behind: 0, Age: 30 * time.Minute},
+	return Data{Fleet: []acpwire.SheetFleetRow{
+		{Branch: "feat/x", Ahead: 2, Behind: 1, Dirty: true, AgeMs: (2 * time.Hour).Milliseconds()},
+		{Branch: "feat/y", AgeMs: (30 * time.Minute).Milliseconds()},
 	}}
 }
 

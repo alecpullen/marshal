@@ -2,6 +2,7 @@ package sessionsheet
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -25,11 +26,12 @@ func (WorktreesSection) Relevant(d Data) bool { return len(d.Fleet) > 0 }
 func (WorktreesSection) Render(d Data, width, maxRows int) []string {
 	rows := make([]string, 0, len(d.Fleet))
 	for _, w := range d.Fleet {
+		age := time.Duration(w.AgeMs) * time.Millisecond
 		// Build the right column plain first: the branch label's width
 		// budget depends on its visible width, and styling must not affect
 		// that math. The age rides in the right column too — it is the
 		// row's third fact after direction and dirty state.
-		counts := fmt.Sprintf("↑%d ↓%d · %s", w.Ahead, w.Behind, strutil.HumanAge(w.Age))
+		counts := fmt.Sprintf("↑%d ↓%d · %s", w.Ahead, w.Behind, strutil.HumanAge(age))
 
 		marker := ""
 		if w.Dirty {
@@ -50,7 +52,7 @@ func (WorktreesSection) Render(d Data, width, maxRows int) []string {
 		case w.Behind > 0:
 			styled = styleError(fmt.Sprintf("↓%d", w.Behind))
 		}
-		styled += " · " + strutil.HumanAge(w.Age)
+		styled += " · " + strutil.HumanAge(age)
 
 		rows = append(rows, railRow(marker, branch, styled, width))
 	}

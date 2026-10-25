@@ -3,18 +3,18 @@ package sessionsheet
 import (
 	"strings"
 	"testing"
-
-	"github.com/charmbracelet/x/ansi"
 	"time"
 
-	"marshal/internal/contextpack"
-	"marshal/internal/db"
+	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/acpwire"
 )
 
 func ctxData() Data {
-	return Data{Pack: contextpack.Pack{
-		TokenUsage: contextpack.TokenUsage{EstimatedTokens: 14000, MaxTokens: 128000},
-		Sections: []contextpack.Section{
+	return Data{Context: acpwire.SheetContext{
+		MaxTokens:       128000,
+		EstimatedTokens: 14000,
+		Sections: []acpwire.SheetContextSection{
 			{Title: "system", EstimatedTokens: 2100},
 			{Title: "repo map", EstimatedTokens: 4000},
 			{Title: "files", EstimatedTokens: 1200},
@@ -69,9 +69,9 @@ func TestContextSectionRendersTelemetry(t *testing.T) {
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	d := ctxData()
 	d.Now = now
-	d.Turns = []db.TurnMetricsRow{
-		{StartedAt: now.Add(-2 * time.Minute), PromptTokens: 1800, CompletionTokens: 200},
-		{StartedAt: now.Add(-6 * time.Minute), PromptTokens: 1700, CompletionTokens: 300},
+	d.Turns = []acpwire.SheetTurn{
+		{StartedAt: acpwire.Millis(now.Add(-2 * time.Minute)), PromptTokens: 1800, CompletionTokens: 200},
+		{StartedAt: acpwire.Millis(now.Add(-6 * time.Minute)), PromptTokens: 1700, CompletionTokens: 300},
 	}
 	got := StripANSI(strings.Join((ContextSection{}).Render(d, 34, 20), "\n"))
 	if !strings.Contains(got, "/min") {
@@ -89,13 +89,10 @@ func TestContextSectionNoTelemetryWithoutTurns(t *testing.T) {
 	}
 }
 
-func packWithUsage(t *testing.T, used, max int) contextpack.Pack {
-	t.Helper()
-	return contextpack.Pack{
-		TokenUsage: contextpack.TokenUsage{
-			EstimatedTokens: used,
-			MaxTokens:       max,
-		},
+func contextWithUsage(used, max int) acpwire.SheetContext {
+	return acpwire.SheetContext{
+		EstimatedTokens: used,
+		MaxTokens:       max,
 	}
 }
 
@@ -117,8 +114,8 @@ func stripAll(rows []string) []string {
 }
 
 func TestContextSectionWarnsWhenNearLimit(t *testing.T) {
-	over := Data{Pack: packWithUsage(t, 90_000, 100_000)}
-	under := Data{Pack: packWithUsage(t, 10_000, 100_000)}
+	over := Data{Context: contextWithUsage(90_000, 100_000)}
+	under := Data{Context: contextWithUsage(10_000, 100_000)}
 
 	overRows := ContextSection{}.Render(over, 30, 0)
 	underRows := ContextSection{}.Render(under, 30, 0)

@@ -5,17 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/app/config"
-	"marshal/internal/app/session"
-	"marshal/internal/db"
+	"marshal/internal/acpwire"
 )
 
 func sessionData(now time.Time) Data {
-	st := session.New(config.Config{}, "/tmp", now.Add(-90*time.Second), session.Persistence{})
 	return Data{
-		Now:   now,
-		State: st,
-		Totals: db.UsageTotals{
+		Now:       now,
+		StartedAt: now.Add(-90 * time.Second),
+		Totals: acpwire.SheetTotals{
 			Turns:            7,
 			PromptTokens:     42_100,
 			CompletionTokens: 8_300,
@@ -63,12 +60,12 @@ func TestSessionSectionUsesTotals(t *testing.T) {
 	}
 }
 
-// Elapsed is session wall-clock from State.StartedAt, not the age of the
-// oldest turn row — so it is correct even with zero completed turns.
+// Elapsed is session wall-clock from StartedAt, not the age of the oldest
+// turn row — so it is correct even with zero completed turns.
 func TestSessionSectionElapsedFromSessionStart(t *testing.T) {
 	now := time.Now()
 	d := sessionData(now)
-	d.Totals = db.UsageTotals{} // no turns at all
+	d.Totals = acpwire.SheetTotals{} // no turns at all
 	rows := SessionSection{}.Render(d, 60, 4)
 	if !strings.Contains(rows[0], "turn 0") {
 		t.Errorf("row 0 = %q, want turn 0", rows[0])
@@ -136,10 +133,8 @@ func TestSessionSectionBudgetRow(t *testing.T) {
 	}
 
 	// Unlimited budget (Max 0) with tools used.
-	st := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
-	st.SetToolBudget(session.ToolBudget{Used: 7, Max: 0})
 	d := base
-	d.State = st
+	d.ToolBudget = acpwire.SheetToolBudget{Used: 7}
 	rows = s.Render(d, 24, 0)
 	joined = StripANSI(strings.Join(rows, "\n"))
 	if !strings.Contains(joined, "tools 7 · no cap") {
@@ -147,7 +142,7 @@ func TestSessionSectionBudgetRow(t *testing.T) {
 	}
 
 	// Capped budget.
-	st.SetToolBudget(session.ToolBudget{Used: 7, Max: 100})
+	d.ToolBudget = acpwire.SheetToolBudget{Used: 7, Max: 100}
 	rows = s.Render(d, 24, 0)
 	joined = StripANSI(strings.Join(rows, "\n"))
 	if !strings.Contains(joined, "tools 7/100") {

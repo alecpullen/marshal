@@ -16,7 +16,6 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/commands"
-	"marshal/internal/db"
 	"marshal/internal/tools/registry"
 )
 
@@ -141,11 +140,13 @@ func TestSessionSheetHonoursHiddenFilter(t *testing.T) {
 // sheetData must hand the session-scoped totals to the sheet; without this
 // the footer renders zeroes regardless of what the query returned.
 func TestSheetDataCarriesTotals(t *testing.T) {
-	m := newTestModel(t)
-	m.sheetTotals = db.UsageTotals{Turns: 5, PromptTokens: 1000, CompletionTokens: 200}
-	got := m.sheetData()
+	stub := &stubSession{sheetPatch: func(sh *acpwire.SessionSheet) {
+		sh.Totals = acpwire.SheetTotals{Turns: 5, PromptTokens: 1000, CompletionTokens: 200}
+	}}
+	m := testModelStub(seamState(t, "s1"), stub)
+	got := m.sheetDataFor()
 	if got.Totals.Turns != 5 || got.Totals.PromptTokens != 1000 {
-		t.Errorf("Totals = %+v, want the cached aggregate", got.Totals)
+		t.Errorf("Totals = %+v, want the session's aggregate", got.Totals)
 	}
 }
 
@@ -162,13 +163,13 @@ func TestNilChildCardCannotDrillIn(t *testing.T) {
 	if len(m.viewStack) != 0 {
 		t.Fatal("nil-Child card must not be pushed onto the view stack")
 	}
-	if m.drilledSheetState() != nil {
-		t.Error("drilledSheetState = non-nil with an empty view stack")
+	if got := m.drilledSheetID(); got != 0 {
+		t.Errorf("drilledSheetID = %d with an empty view stack, want 0", got)
 	}
 }
 
 // While drilled into a real subagent the sheet is child-scoped: it reads the
-// child's audit trail, not the parent's.
+// child's tool-call log, not the parent's.
 func TestSheetDataChildScopedDuringDrillIn(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
@@ -180,12 +181,29 @@ func TestSheetDataChildScopedDuringDrillIn(t *testing.T) {
 		t.Fatalf("viewStack len = %d, want 1 after drill-in", len(m.viewStack))
 	}
 	var names []string
-	for _, e := range m.sheetDataFor().Audit {
-		names = append(names, e.ToolName)
+	for _, tool := range m.sheetDataFor().Tools {
+		names = append(names, tool.Name)
 	}
 	joined := strings.Join(names, ",")
 	if !strings.Contains(joined, "zchild-only-probe") || strings.Contains(joined, "zparent-only-probe") {
-		t.Errorf("sheet audit = %q, want the child's only", joined)
+		t.Errorf("sheet tools = %q, want the child's only", joined)
+	}
+}
+
+// A subagent's sheet carries no run progress: the swarm and SDD goals belong
+// to the session.
+func TestChildSheetDataLeavesOutTheRunProgress(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetSwarmProgress(session.SwarmProgress{Active: true, Goal: "ship it"})
+	child := newChildState(t)
+	m.state.RegisterSubagent("explore repo", child)
+
+	if got := m.sheetDataFor().Swarm.Goal; got != "ship it" {
+		t.Fatalf("Swarm.Goal = %q before the drill-in, want %q", got, "ship it")
+	}
+	m.drillIntoSubagent(m.state.Subagents()[0])
+	if got := m.sheetDataFor().Swarm.Goal; got != "" {
+		t.Errorf("Swarm.Goal = %q during the drill-in, want empty", got)
 	}
 }
 
@@ -287,7 +305,7 @@ func TestOpeningTheSheetRefreshesIt(t *testing.T) {
 	m.resize(100, 40)
 
 	ctrlB(m)
-	if want := []acpwire.SheetRefresh{{Changed: true}}; !reflect.DeepEqual(got, want) {
+	if want := []acpwire.SheetRefresh{{Changed: true, Stats: true, Fleet: true}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("RefreshSheet requests = %+v, want %+v", got, want)
 	}
 }
@@ -310,6 +328,24 @@ func TestTurnEndRebasesTheSheet(t *testing.T) {
 	}
 	runCmdChain(t, cmd)
 	if want := []acpwire.SheetRefresh{{Rebase: true}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("RefreshSheet requests = %+v, want %+v", got, want)
+	}
+
+	// With the sheet open, the turn end also refreshes its turn and fleet
+	// values, still off the UI thread.
+	m = ctrlB(m)
+	if !m.sheetOpen() {
+		t.Fatal("setup: the sheet should be open")
+	}
+	got = nil
+	m.busy = true
+	mm, cmd = m.handleAgentFinished(agentFinishedMsg{err: nil})
+	m = mm
+	if len(got) != 0 {
+		t.Fatalf("handleAgentFinished refreshed synchronously with the sheet open: %+v", got)
+	}
+	runCmdChain(t, cmd)
+	if want := []acpwire.SheetRefresh{{Rebase: true, Stats: true, Fleet: true}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("RefreshSheet requests = %+v, want %+v", got, want)
 	}
 }

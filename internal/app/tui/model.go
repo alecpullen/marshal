@@ -76,7 +76,6 @@ import (
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
-	"marshal/internal/worktree"
 )
 
 // AgentRunner is the one thing the TUI knows about the agent loop: how to
@@ -552,19 +551,7 @@ type Model struct {
 	// the terminal cannot deliver events to both — so this is a toggle rather
 	// than something the two features can share.
 	mouseReleased bool
-	// sheetRepoStats is refreshed on turn boundaries, never during render.
-	sheetRepoStats sessionsheet.RepoStats
-	// sheetTurns is the recent turn-metrics cache, refreshed when a turn
-	// completes. Never queried during render.
-	sheetTurns []db.TurnMetricsRow
-	// sheetTotals is the session-scoped usage aggregate the sheet footer
-	// reports. Refreshed alongside sheetTurns.
-	sheetTotals db.UsageTotals
-	// sheetFleet is the agent-worktree cache, refreshed on turn boundaries
-	// (ListFleet shells out to git per worktree). Ahead/behind is against
-	// the project root's HEAD.
-	sheetFleet []worktree.FleetRow
-	viewport   viewport.Model
+	viewport      viewport.Model
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
@@ -1781,16 +1768,6 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 		}
 	}
 
-	if database := state.DB(); database != nil {
-		if projectID := m.memoryProject; projectID != 0 {
-			files, ferr := database.CountFiles(projectID)
-			syms, serr := database.CountSymbols(projectID)
-			if ferr == nil && serr == nil {
-				m.sheetRepoStats = sessionsheet.RepoStats{Files: files, Symbols: syms}
-			}
-		}
-	}
-
 	if m.trustDecide != nil && m.trustPromptDir != "" {
 		m.dock.Open(trustpanel.New(m.trustPromptDir, m.trustDecide))
 	}
@@ -1853,45 +1830,6 @@ func (m *Model) resize(width, height int) {
 	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.boxRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
-// refreshSheetTurns reloads the turn-metrics cache the session sheet reads.
-// Called on turn completion, never from View.
-func (m *Model) refreshSheetTurns() {
-	database := m.state.DB()
-	if database == nil {
-		return
-	}
-	if rows, err := database.RecentTurnMetrics(m.memoryProject, 24); err == nil {
-		m.sheetTurns = rows
-	}
-	if totals, err := database.SessionUsage(m.memoryProject, m.sess.ID()); err == nil {
-		m.sheetTotals = totals
-	}
-}
-
-// refreshSheetFleet reloads the agent-worktree cache the session sheet reads.
-// Shells out to git (ListFleet runs several subprocesses per worktree), so
-// it runs on turn boundaries only — never from View. Ahead/behind is
-// against the project root's HEAD, not the active root: the fleet describes
-// the whole project's agent worktrees, not the checked-out one.
-func (m *Model) refreshSheetFleet() {
-	st := m.sess.Status()
-	root := st.Workspace.ProjectRoot
-	if root == "" {
-		root = st.WorkingDir
-	}
-	base, err := worktree.CLIGitOps{}.RevParse(root, "HEAD")
-	if err != nil {
-		m.sheetFleet = nil
-		return
-	}
-	rows, err := worktree.ListFleet(worktree.CLIGitOps{}, root, base)
-	if err != nil {
-		m.sheetFleet = nil
-		return
-	}
-	m.sheetFleet = rows
-}
-
 // sheetSections is the session sheet's section list, minus any section the
 // config's [tui.side_panel].hidden names.
 func (m Model) sheetSections() []sessionsheet.Section {
@@ -1910,14 +1848,14 @@ func (m Model) sheetSections() []sessionsheet.Section {
 }
 
 // openSessionSheet opens the Ctrl+B session sheet (or closes it, if it is
-// already the open panel). The turn, changed-file and fleet caches are
-// refreshed once on open; the panel then reads them live.
+// already the open panel). The session re-reads the sheet's cached values
+// once on open, before the panel is built, so its first frame is fresh.
 func (m *Model) openSessionSheet() {
 	if m.sheetOpen() {
 		m.closeSessionSheet()
 		return
 	}
-	m.refreshSheetCaches()
+	_ = m.sess.RefreshSheet(m.ctx, acpwire.SheetRefresh{Changed: true, Stats: true, Fleet: true})
 	panel := sessionsheet.NewPanel(m.sheetSections(), m.sheetDataFor)
 	// Opening a panel with nothing in it would leave an invisible dock that
 	// swallows keys until Esc (every section hidden or irrelevant).
@@ -1945,81 +1883,50 @@ func (m *Model) closeSessionSheet() {
 	m.refreshViewport()
 }
 
-// refreshSheetCaches reloads every turn-boundary cache the sheet reads.
-func (m *Model) refreshSheetCaches() {
-	m.refreshSheetTurns()
-	_ = m.sess.RefreshSheet(m.ctx, acpwire.SheetRefresh{Changed: true})
-	m.refreshSheetFleet()
-}
-
-// sheetDataFor is the sheet's data source: the drilled-in subagent's
-// snapshot while drilled into a real child, the parent's otherwise.
+// sheetDataFor is the sheet's data source. The adapter picks the subagent's
+// sheet and falls back to the session's, so the Model only says which ID to
+// read.
 func (m Model) sheetDataFor() sessionsheet.Data {
-	if child := m.drilledSheetState(); child != nil {
-		return m.childSheetData(child)
-	}
-	return m.sheetData()
-}
-
-// sheetData assembles the session sheet's render snapshot. Everything here is
-// either already in memory or cached on turn boundaries — this runs once
-// per frame and must never query the DB or shell out.
-func (m Model) sheetData() sessionsheet.Data {
 	st := m.sess.Status()
-	return sessionsheet.Data{
-		State:   m.state,
-		Git:     st.Git,
-		Repo:    m.sheetRepoStats,
-		Turns:   m.sheetTurns,
-		Totals:  m.sheetTotals,
-		Changed: m.sess.Sheet(0).Changed,
-		Fleet:   m.sheetFleet,
-		Pack:    m.state.ContextPack(),
-		Audit:   m.state.AuditLog(),
-		Rules:   m.state.SessionRules(),
-		Skills:  m.state.ActiveSkills(),
-		Swarm:   st.Swarm,
-		SDD:     st.SDD,
-		Spinner: m.turnSpinnerFrame(),
-		Now:     m.now(),
+	sh := m.sess.Sheet(m.drilledSheetID())
+	data := sessionsheet.Data{
+		Git:         st.Git,
+		Repo:        sh.Repo,
+		Turns:       sh.Turns,
+		Totals:      sh.Totals,
+		Changed:     sh.Changed,
+		Fleet:       sh.Fleet,
+		Now:         m.now(),
+		Context:     sh.Context,
+		Tools:       sh.Tools,
+		Files:       sh.Files,
+		Rules:       sh.Rules,
+		Skills:      sh.Skills,
+		StartedAt:   acpwire.Time(sh.StartedAt),
+		ToolBudget:  sh.ToolBudget,
+		LoadedTools: sh.LoadedTools,
+		Sandbox:     sh.Sandbox,
+		Spinner:     m.turnSpinnerFrame(),
 	}
+	// The run progress belongs to the session, not to a subagent's sheet.
+	if sh.SubagentID == 0 {
+		data.Swarm = st.Swarm
+		data.SDD = st.SDD
+	}
+	return data
 }
 
-// drilledSheetState returns the child session the sheet should render while
-// drilled into a subagent, or nil when the sheet should show the parent (no
-// drill-in, or a pipeline/SDD card with no Child state). Mirrors
-// refreshViewport's transcriptState resolution.
-func (m Model) drilledSheetState() *session.State {
+// drilledSheetID is the drilled-in subagent's ID, or 0 when the view is not
+// drilled in.
+func (m Model) drilledSheetID() int64 {
 	if len(m.viewStack) == 0 {
-		return nil
+		return 0
 	}
 	v, ok := m.drilledInto()
-	if !ok || v.Child == nil {
-		return nil
+	if !ok {
+		return 0
 	}
-	return v.Child
-}
-
-// childSheetData assembles a sheet snapshot scoped to a drilled-in subagent:
-// session-scoped telemetry (audit trail, rules, skills) comes from the
-// child, while environment-level sections (git, repo index) stay parent-
-// sourced — they describe the workspace, not the conversation. Parent turn
-// telemetry (Changed/Pack/Swarm/SDD/Turns/Totals) is omitted: it has no
-// per-child meaning and nothing per-child is cached at turn boundaries yet.
-func (m Model) childSheetData(child *session.State) sessionsheet.Data {
-	return sessionsheet.Data{
-		State:  child,
-		Audit:  child.AuditLog(),
-		Rules:  child.SessionRules(),
-		Skills: child.ActiveSkills(),
-		Git:    m.sess.Status().Git,
-		Repo:   m.sheetRepoStats,
-		// Fleet stays parent-sourced like Git/Repo: the agent worktrees
-		// describe the project's workspace, not the drilled-in conversation.
-		Fleet:   m.sheetFleet,
-		Spinner: m.turnSpinnerFrame(),
-		Now:     m.now(),
-	}
+	return v.ID
 }
 
 // ctrlCAction is what a double Ctrl+C will do.
@@ -5416,12 +5323,9 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.restoreRunner = nil
 	}
 	// The changed files are refreshed off-thread by the refresh returned
-	// below. The turn and fleet caches are read only by the session sheet:
-	// refresh them here while it is open, otherwise when it opens.
-	if m.sheetOpen() {
-		m.refreshSheetTurns()
-		m.refreshSheetFleet()
-	}
+	// below. An open sheet's turn and fleet values are refreshed with it,
+	// off the UI thread, so they land a moment after the turn ends.
+	sheetOpen := m.sheetOpen()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
@@ -5458,7 +5362,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	flushCmd := m.flushPendingModelOptions()
 	// The session rebases the changed files onto the active root's HEAD, so
 	// committed agent work stops inflating the diff.
-	cmds := []tea.Cmd{tickCmd(), flushCmd, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true})}
+	cmds := []tea.Cmd{tickCmd(), flushCmd, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true, Stats: sheetOpen, Fleet: sheetOpen})}
 	if suggestionCmd != nil {
 		cmds = append(cmds, suggestionCmd)
 	}

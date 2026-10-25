@@ -114,7 +114,7 @@ func (m *Model) sendNowCommand(raw string) (tea.Model, tea.Cmd) {
 	// request has to put it back: the user's line is theirs until the runtime
 	// actually accepts it.
 	if !m.submitSendNow(session.SendNowRequest{
-		SessionID: m.state.SessionID(),
+		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      text,
 	}, nil) {
@@ -139,7 +139,7 @@ func (m *Model) sendNowFlushOrOpen(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if !m.submitSendNow(session.SendNowRequest{
-		SessionID: m.state.SessionID(),
+		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      "",
 	}, nil) {
@@ -200,7 +200,7 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	if snap.Session != nil {
 		m.sess = snap.Session
 	}
-	m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
+	m.gitInfo = gitinfo.Read(m.sess.Status().Workspace.ActiveRoot)
 	m.lastGitRead = m.now()
 	if snap.Runner != nil {
 		m.runner = snap.Runner
@@ -242,7 +242,7 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
-	baseCmd := sheetBaseRefCmd(m.state.Workspace().ActiveRoot)
+	baseCmd := sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot)
 	if workCmd != nil {
 		return tea.Batch(baseCmd, workCmd)
 	}
@@ -288,12 +288,12 @@ func init() {
 			return m, nil
 		},
 		"skills": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.dock.Open(skills.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state, m.skillIndex))
+			m.dock.Open(skills.NewPanel(m.homeDir, m.workDir, m.sess.Status().Trusted, m.state, m.skillIndex))
 			m.refreshViewport()
 			return m, nil
 		},
 		"plugins": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.state.Trusted(), m.state))
+			m.dock.Open(plugins.NewPanel(m.homeDir, m.workDir, m.sess.Status().Trusted, m.state))
 			m.refreshViewport()
 			return m, nil
 		},
@@ -301,7 +301,7 @@ func init() {
 			return m.handleMCPCommand(args)
 		},
 		"trust": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			if m.state.Trusted() {
+			if m.sess.Status().Trusted {
 				m.refreshViewport()
 				return m, nil
 			}
@@ -363,7 +363,7 @@ func init() {
 		},
 		"system": func(m *Model, args []string) (tea.Model, tea.Cmd) {
 			if len(args) > 0 && strings.ToLower(args[0]) == "unlock" {
-				on := !m.state.SudoUnlockEnabled()
+				on := !m.sess.Status().SudoUnlock
 				m.state.SetSudoUnlockEnabled(on)
 				if on {
 					m.state.AddMessage(session.RoleSystem,
@@ -439,7 +439,7 @@ func init() {
 			return m, nil
 		},
 		"run": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			doc := runOutcomeDoc(m.state.SDDProgress(), worktree.CLIGitOps{}, m.state.WorkingDir, m.now(), m.width)
+			doc := runOutcomeDoc(m.state.SDDProgress(), worktree.CLIGitOps{}, m.sess.Status().WorkingDir, m.now(), m.width)
 			m.dock.Open(docpanel.New(doc, m.state))
 			m.refreshViewport()
 			return m, nil

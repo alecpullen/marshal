@@ -4,13 +4,18 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
+	"marshal/internal/llm/routing"
+	"marshal/internal/llm/schema"
 )
 
 // newState builds a state the way the TUI tests do.
@@ -53,6 +58,214 @@ func TestHostSharesTheFilesystem(t *testing.T) {
 		t.Fatalf("SharedFilesystem() = false, want true for the in-process adapter")
 	}
 }
+
+// TestStatusOfAFreshState pins what a session that has done nothing reports:
+// no turn route, no quota, and an activity with no start.
+func TestStatusOfAFreshState(t *testing.T) {
+	state := newState(t, "s1")
+	_, sess := New(Deps{State: state})
+
+	got := sess.Status()
+	if got.WorkingDir != state.WorkingDir {
+		t.Errorf("WorkingDir = %q, want the state's %q", got.WorkingDir, state.WorkingDir)
+	}
+	if got.TurnRoute != nil {
+		t.Errorf("TurnRoute = %+v, want nil between turns", got.TurnRoute)
+	}
+	if got.Quota != nil {
+		t.Errorf("Quota = %+v, want nil before the provider reports one", got.Quota)
+	}
+	if want := string(state.InteractionState().Mode); got.Interaction.Mode != want {
+		t.Errorf("Interaction.Mode = %q, want %q", got.Interaction.Mode, want)
+	}
+	if got.Activity.StartedAt != 0 {
+		t.Errorf("Activity.StartedAt = %d, want 0 when the activity has no start", got.Activity.StartedAt)
+	}
+}
+
+// TestStatusMirrorsTheState sets every field through its setter and compares
+// the status with the value it should carry.
+func TestStatusMirrorsTheState(t *testing.T) {
+	state := newState(t, "s1")
+	_, sess := New(Deps{State: state})
+
+	active := session.RouteInfo{
+		Role:             routing.RoleImplementer,
+		Profile:          "profile-a",
+		Preset:           "preset-a",
+		Provider:         "provider-a",
+		Model:            "model-a",
+		LocalOnly:        true,
+		Thinking:         "high",
+		ReasoningCapable: true,
+		Active:           true,
+	}
+	turn := session.RouteInfo{
+		Role:             routing.RoleReviewer,
+		Profile:          "profile-b",
+		Preset:           "preset-b",
+		Provider:         "provider-b",
+		Model:            "model-b",
+		LocalOnly:        true,
+		Thinking:         "low",
+		ReasoningCapable: true,
+		Active:           true,
+	}
+	state.SetActiveRoute(active)
+	state.SetTurnRoute(turn)
+	state.SetTurnUsage(1200)
+	state.SetTurnContextWindow(8000)
+	state.SetTurnQuota(&schema.QuotaInfo{
+		PlanType:                "plus",
+		PrimaryUsedPercent:      12,
+		PrimaryResetAfterSecs:   14845,
+		PrimaryWindowMinutes:    300,
+		SecondaryUsedPercent:    34,
+		SecondaryResetAfterSecs: 601645,
+		SecondaryWindowMinutes:  10080,
+	})
+	state.SetEffortOverride(session.EffortOverride{Level: "high", Provider: "provider-a", Model: "model-a"})
+	if _, err := state.ApplyInteraction(interaction.Patch{
+		Mode: ptr(interaction.ModeAct),
+		Auto: ptr(true),
+	}); err != nil {
+		t.Fatalf("ApplyInteraction: %v", err)
+	}
+	state.SetSudoUnlockEnabled(true)
+	state.SetTrusted(true)
+	state.SetActivity(session.Activity{
+		Kind:      session.ActivityTool,
+		Label:     "reading",
+		StartedAt: time.Unix(100, 5_000_000),
+	})
+	state.SetWorkspace(session.Workspace{
+		ProjectRoot:  "/project",
+		ActiveRoot:   "/project/worktree",
+		Branch:       "feature",
+		BaseSha:      "abc123",
+		TargetBranch: "main",
+	})
+	state.SetBrowserInfo(session.BrowserInfo{
+		Active:      true,
+		ToolName:    "browser_navigate",
+		URL:         "https://example.com",
+		Title:       "Example",
+		Mode:        "read",
+		SessionOpen: true,
+		UpdatedAt:   time.Unix(200, 0),
+	})
+	state.BeginGeneration("g", 2, "d")
+	// Plant the identity, backup and subagent state the TUI reads: a fresh
+	// state has leaf 0 and no branches, so without this the expectations below
+	// could not tell a mirrored value from a hard-coded zero.
+	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	state.AddMessage(session.RoleAssistant, "hi", session.ContentTypeMarkdown)
+	state.StoreBackup([]session.BackupFile{{Path: "notes.txt", Content: "old"}})
+	state.RegisterSubagent("scout", newState(t, "child"))
+
+	got := sess.Status()
+	want := acpwire.SessionStatus{
+		WorkingDir:    state.WorkingDir,
+		GenerationSeq: 2,
+		LeafID:        state.LeafID(),
+		Branches:      state.Branches(),
+		ActiveRoute: acpwire.Route{
+			Role:             string(routing.RoleImplementer),
+			Profile:          "profile-a",
+			Preset:           "preset-a",
+			Provider:         "provider-a",
+			Model:            "model-a",
+			LocalOnly:        true,
+			Thinking:         "high",
+			ReasoningCapable: true,
+			Active:           true,
+		},
+		TurnRoute: &acpwire.Route{
+			Role:             string(routing.RoleReviewer),
+			Profile:          "profile-b",
+			Preset:           "preset-b",
+			Provider:         "provider-b",
+			Model:            "model-b",
+			LocalOnly:        true,
+			Thinking:         "low",
+			ReasoningCapable: true,
+			Active:           true,
+		},
+		TurnUsed:   1200,
+		TurnWindow: 8000,
+		Quota: &acpwire.Quota{
+			PlanType:              "plus",
+			PrimaryUsedPercent:    12,
+			PrimaryResetAfterMs:   14845000,
+			PrimaryWindowMs:       18000000,
+			SecondaryUsedPercent:  34,
+			SecondaryResetAfterMs: 601645000,
+			SecondaryWindowMs:     604800000,
+		},
+		Effort: acpwire.Effort{Level: "high", Provider: "provider-a", Model: "model-a"},
+		Interaction: acpwire.Interaction{
+			Mode: string(interaction.ModeAct),
+			Auto: true,
+			// Enabling Auto grants System access in the same transaction
+			// (interaction.Apply).
+			System:   true,
+			Revision: state.InteractionState().Revision,
+		},
+		SudoUnlock: true,
+		Trusted:    true,
+		HasBackup:  true,
+
+		SubagentRunning: true,
+		Activity: acpwire.Activity{
+			Kind:      string(session.ActivityTool),
+			Label:     "reading",
+			StartedAt: 100005,
+		},
+		Workspace: acpwire.Workspace{
+			ProjectRoot:  "/project",
+			ActiveRoot:   "/project/worktree",
+			Branch:       "feature",
+			BaseSha:      "abc123",
+			TargetBranch: "main",
+		},
+		Browser: acpwire.Browser{
+			Active:      true,
+			ToolName:    "browser_navigate",
+			URL:         "https://example.com",
+			Title:       "Example",
+			Mode:        "read",
+			SessionOpen: true,
+			UpdatedAt:   200000,
+		},
+	}
+	// LeafID and Branches are the only expectations the state itself supplies,
+	// so pin that the planted values are non-trivial: a Status() that
+	// hard-coded zero would otherwise compare equal to them.
+	if got.LeafID == 0 {
+		t.Errorf("LeafID = 0, want the non-zero leaf planted by AddMessage")
+	}
+	if len(got.Branches) == 0 {
+		t.Errorf("Branches = %v, want the branch tips planted by AddMessage", got.Branches)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Status() =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// TestStatusOfAClosedSessionStillReads pins C4: a closed session keeps
+// answering with its own state's values.
+func TestStatusOfAClosedSessionStillReads(t *testing.T) {
+	oldState := newState(t, "s1")
+	h, old := New(Deps{State: oldState})
+	h.Swap(newState(t, "s2"))
+
+	if got, want := old.Status().WorkingDir, oldState.WorkingDir; got != want {
+		t.Errorf("closed session Status().WorkingDir = %q, want its own state's %q", got, want)
+	}
+}
+
+// ptr is the address of v, for the interaction patch's optional fields.
+func ptr[T any](v T) *T { return &v }
 
 // TestAdapterDoesNotImportApp keeps the adapter out of the app package: TUI
 // tests import this package, and app imports tui, so an import back into app

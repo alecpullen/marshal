@@ -9,13 +9,13 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/help"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/interaction"
-	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 )
 
@@ -196,14 +196,20 @@ func joinSegs(segs []statusSeg) string {
 	return strings.Join(parts, dimSeparator)
 }
 
-// modeSegment returns the persistent access label for the status line. It
-// reads one committed interaction snapshot and always includes every active
-// modifier, so approval, browsing, answering and activity cues on the right
-// can never conceal the effective permission state.
+// modeSegment returns the persistent access label for the status line, read
+// from a fresh status. Callers that already took a status snapshot pass it to
+// modeSegmentFor instead, so one frame never composes two different status
+// values.
 func (m Model) modeSegment() string {
-	access := m.state.InteractionState()
+	return modeSegmentFor(m.sess.Status().Interaction)
+}
+
+// modeSegmentFor returns the persistent access label for access. It always
+// includes every active modifier, so approval, browsing, answering and
+// activity cues on the right can never conceal the effective permission state.
+func modeSegmentFor(access acpwire.Interaction) string {
 	label := "Ask"
-	if access.Mode == interaction.ModeAct {
+	if access.Mode == string(interaction.ModeAct) {
 		label = "Act"
 	}
 	parts := []string{label}
@@ -249,11 +255,12 @@ func (m Model) transientStatusSegment() string {
 // an action the user just took against the running turn, so it must survive
 // the collapse that a long route or a narrow terminal forces.
 func (m Model) statusLeftSegments() []statusSeg {
+	st := m.sess.Status()
 	segs := []statusSeg{
-		{text: m.modeSegmentStyle().Render(m.modeSegment()), priority: 0, pinned: true},
+		{text: m.modeSegmentStyle().Render(modeSegmentFor(st.Interaction)), priority: 0, pinned: true},
 	}
 
-	if !m.state.Trusted() {
+	if !st.Trusted {
 		segs = append(segs, statusSeg{text: untrustedStyle().Render("untrusted"), priority: 0})
 	}
 
@@ -262,17 +269,19 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: seg, priority: 0, pinned: true})
 	}
 
-	active := m.state.ActiveRoute()
+	active := st.ActiveRoute
 	route := active
-	turn, running := m.state.TurnRoute()
+	running := st.TurnRoute != nil
+	turn := acpwire.Route{}
 	if running {
+		turn = *st.TurnRoute
 		route = turn
 	}
 	// The runner only applies an override whose provider and model match the
 	// running turn's route (agent/effort.go sessionEffortTarget); anything
 	// else is dropped at the next turn's start. Rendering such an override as
 	// pending would advertise a change this turn will not make.
-	override := m.state.EffortOverride()
+	override := st.Effort
 	overrideApplies := override.Level != "" &&
 		override.Provider == route.Provider && override.Model == route.Model
 	if route.Active {
@@ -327,7 +336,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	// resolved model window. Subagent usage is recorded on the child's own
 	// session state (see buildSubagentFactory) and never folded in here, so
 	// the number cannot inflate past the window.
-	if used, window := m.state.TurnUsage(); window > 0 {
+	if used, window := st.TurnUsed, st.TurnWindow; window > 0 {
 		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("ctx %s/%s",
 			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 3})
 	}
@@ -349,7 +358,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	// remaining-request count. Priority 3 keeps it beside the context
 	// counter: both are consumable budgets that drop together on narrow
 	// terminals.
-	if q := m.state.TurnQuota(); q != nil {
+	if q := st.Quota; q != nil {
 		segs = append(segs, statusSeg{
 			text:     dimStyle().Render(quotaSegment(q)),
 			priority: 3,
@@ -359,15 +368,15 @@ func (m Model) statusLeftSegments() []statusSeg {
 	// Generation > 0 means the session has compacted at least once. Show
 	// it so a user who notices the agent "forgetting" can see that a
 	// handoff happened rather than guessing.
-	if gen := m.state.Generation(); gen.Seq > 0 {
+	if st.GenerationSeq > 0 {
 		segs = append(segs, statusSeg{
-			text:     dimStyle().Render(fmt.Sprintf("gen %d", gen.Seq)),
+			text:     dimStyle().Render(fmt.Sprintf("gen %d", st.GenerationSeq)),
 			priority: 4,
 		})
 	}
 
-	if leaves := m.state.Branches(); len(leaves) > 1 {
-		cur := m.state.LeafID()
+	if leaves := st.Branches; len(leaves) > 1 {
+		cur := st.LeafID
 		idx := 1
 		for i, id := range leaves {
 			if id == cur {
@@ -378,7 +387,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("branch %d/%d", idx, len(leaves)), priority: 5})
 	}
 
-	if wd := m.state.WorkingDir; wd != "" {
+	if wd := st.WorkingDir; wd != "" {
 		segs = append(segs, statusSeg{text: identityStyle().Render(filepath.Base(wd)), priority: 5})
 	}
 
@@ -439,7 +448,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: style.Render(seg), priority: 1})
 	}
 
-	if bi := m.state.BrowserInfo(); bi.SessionOpen {
+	if bi := st.Browser; bi.SessionOpen {
 		segs = append(segs, statusSeg{
 			text:     browserStatusText(bi),
 			priority: 9,
@@ -456,7 +465,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	return segs
 }
 
-func browserStatusText(bi session.BrowserInfo) string {
+func browserStatusText(bi acpwire.Browser) string {
 	g := browserGlyphStyle().Render(glyph.Web)
 	url := truncateURL(bi.URL, 20)
 	if url == "" {
@@ -529,13 +538,13 @@ func (m Model) noticeVisible() bool {
 // The secondary window is deliberately omitted here — it is a 7-day budget
 // that rarely moves, and the footer is the scarcest space in the UI; the
 // /agents roster shows both.
-func quotaSegment(q *schema.QuotaInfo) string {
+func quotaSegment(q *acpwire.Quota) string {
 	if q == nil {
 		return ""
 	}
 	seg := fmt.Sprintf("⚡ %d%%", q.PrimaryUsedPercent)
-	if q.PrimaryResetAfterSecs > 0 {
-		seg += " " + strutil.CompactDuration(time.Duration(q.PrimaryResetAfterSecs)*time.Second)
+	if q.PrimaryResetAfterMs > 0 {
+		seg += " " + strutil.CompactDuration(time.Duration(q.PrimaryResetAfterMs)*time.Millisecond)
 	}
 	if q.PlanType != "" {
 		seg += " " + q.PlanType
@@ -551,7 +560,7 @@ func (m Model) footerHints() help.FooterHints {
 		QuestionPending:      m.state.PendingQuestion() != nil,
 		SkillGatePending:     m.state.PendingSkillGate() != nil,
 		PopupOpen:            m.activeCompletionPopup() != nil,
-		IdleRollbackEligible: !m.busy && m.state.HasBackup(),
+		IdleRollbackEligible: !m.busy && m.sess.Status().HasBackup,
 		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 		RunActive:            m.hasRunningSubagent(),

@@ -12,7 +12,7 @@ import (
 // route's model, in the order the provider offers them. Nil when the route
 // has no effort control.
 func (m *Model) effortLevels() []string {
-	opts := m.modelThinkingOptions(m.state.ActiveRoute().Preset)
+	opts := m.modelThinkingOptions(m.sess.Status().ActiveRoute.Preset)
 	if opts == nil {
 		return nil
 	}
@@ -58,7 +58,7 @@ func (m *Model) applyEffort(level string) {
 // the active route's levels, wrapping around, and applies the next entry.
 func (m *Model) cycleEffort() {
 	cycle := m.effortCycle()
-	cur := m.state.EffortOverride().Level
+	cur := m.sess.Status().Effort.Level
 	idx := slices.Index(cycle, cur)
 	if idx < 0 {
 		idx = 0
@@ -72,7 +72,7 @@ func (m *Model) cycleEffort() {
 // switch, so the set/clear semantics stay in one place.
 func (m *Model) openEffortPicker() {
 	cycle := m.effortCycle()
-	cur := m.state.EffortOverride().Level
+	cur := m.sess.Status().Effort.Level
 	items := make([]picker.Item, 0, len(cycle))
 	for _, level := range cycle {
 		label := level

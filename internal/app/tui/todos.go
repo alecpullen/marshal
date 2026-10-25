@@ -159,7 +159,7 @@ func newTasksPanel(m *Model) *tasksPanelModel {
 		state:          m.state,
 		panelID:        m.nextPanelID(),
 		available:      m.workLaneActive(),
-		conversationID: m.state.SessionID(),
+		conversationID: m.sess.ID(),
 		snapshot:       m.workSnapshot,
 		mode:           workModeLive,
 		pending:        map[string]workPending{},

@@ -1,0 +1,102 @@
+package acpwire
+
+// SessionStatus is what the status line, the footer and input gating read
+// about a session (C5).
+//
+// It arrives over several plans. Plan 2b adds the runs, queues and git info,
+// plan 2c the session's start time, plans 3 and 4 the sandbox info, and plan 6
+// the current notice. The session ID is not here: Session.ID() carries it.
+type SessionStatus struct {
+	WorkingDir string `json:"workingDir"`
+	// GenerationSeq and LeafID carry omitempty per the plan's contract, so a
+	// legitimate zero — the first generation, the first leaf — encodes
+	// exactly like an unset field. The struct is always carried whole, so a
+	// consumer must read zero as "first", never as "absent".
+	GenerationSeq int     `json:"generationSeq,omitempty"`
+	LeafID        int64   `json:"leafId,omitempty"`
+	Branches      []int64 `json:"branches,omitempty"`
+	ActiveRoute   Route   `json:"activeRoute"`
+	TurnRoute     *Route  `json:"turnRoute,omitempty"` // nil between turns
+	// TurnUsed and TurnWindow are tokens: what the running turn has spent and
+	// the context window it is measured against. They are not milliseconds,
+	// unlike Quota's durations.
+	TurnUsed        int         `json:"turnUsed,omitempty"`
+	TurnWindow      int         `json:"turnWindow,omitempty"`
+	Quota           *Quota      `json:"quota,omitempty"`
+	Effort          Effort      `json:"effort"`
+	Interaction     Interaction `json:"interaction"`
+	SudoUnlock      bool        `json:"sudoUnlock,omitempty"`
+	Trusted         bool        `json:"trusted,omitempty"`
+	HasBackup       bool        `json:"hasBackup,omitempty"`
+	Activity        Activity    `json:"activity"`
+	SubagentRunning bool        `json:"subagentRunning,omitempty"`
+	Workspace       Workspace   `json:"workspace"`
+	Browser         Browser     `json:"browser"`
+}
+
+// Route mirrors the session's RouteInfo: the route a turn runs on.
+type Route struct {
+	Role             string `json:"role,omitempty"`
+	Profile          string `json:"profile,omitempty"`
+	Preset           string `json:"preset,omitempty"`
+	Provider         string `json:"provider,omitempty"`
+	Model            string `json:"model,omitempty"`
+	LocalOnly        bool   `json:"localOnly,omitempty"`
+	Thinking         string `json:"thinking,omitempty"`
+	ReasoningCapable bool   `json:"reasoningCapable,omitempty"`
+	Active           bool   `json:"active,omitempty"`
+}
+
+// Quota mirrors the provider's schema.QuotaInfo. Its durations are
+// milliseconds, converted from the seconds and minutes the provider reports.
+type Quota struct {
+	PlanType              string `json:"planType,omitempty"`
+	PrimaryUsedPercent    int    `json:"primaryUsedPercent"`
+	PrimaryResetAfterMs   int64  `json:"primaryResetAfterMs,omitempty"`
+	PrimaryWindowMs       int64  `json:"primaryWindowMs,omitempty"`
+	SecondaryUsedPercent  int    `json:"secondaryUsedPercent"`
+	SecondaryResetAfterMs int64  `json:"secondaryResetAfterMs,omitempty"`
+	SecondaryWindowMs     int64  `json:"secondaryWindowMs,omitempty"`
+}
+
+// Effort mirrors the session's EffortOverride.
+type Effort struct {
+	Level    string `json:"level,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+// Interaction mirrors the session's interaction.State.
+type Interaction struct {
+	Mode     string `json:"mode"`
+	Auto     bool   `json:"auto,omitempty"`
+	System   bool   `json:"system,omitempty"`
+	Revision uint64 `json:"revision,omitempty"`
+}
+
+// Activity mirrors the session's Activity.
+type Activity struct {
+	Kind      string `json:"kind"`
+	Label     string `json:"label,omitempty"`
+	StartedAt int64  `json:"startedAt,omitempty"`
+}
+
+// Workspace mirrors the session's Workspace.
+type Workspace struct {
+	ProjectRoot  string `json:"projectRoot,omitempty"`
+	ActiveRoot   string `json:"activeRoot,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	BaseSha      string `json:"baseSha,omitempty"`
+	TargetBranch string `json:"targetBranch,omitempty"`
+}
+
+// Browser mirrors the session's BrowserInfo.
+type Browser struct {
+	Active      bool   `json:"active,omitempty"`
+	ToolName    string `json:"toolName,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Mode        string `json:"mode,omitempty"`
+	SessionOpen bool   `json:"sessionOpen,omitempty"`
+	UpdatedAt   int64  `json:"updatedAt,omitempty"`
+}

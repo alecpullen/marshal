@@ -305,23 +305,29 @@ Decision: `WireTree`, with the C6 additions.
 
 - `Session.Status() acpwire.SessionStatus` is one value carrying
   everything the status line, tray, footer, input gating and turn
-  logic read today:
-  - **identity:** session ID, working directory, start time, generation
+  logic read today. It arrives over several plans (Migration order).
+  The session ID is not in it: `Session.ID()` (plan 1) carries it.
+  - **identity:** working directory, start time (plan 2c), generation
     sequence, leaf ID and branch count;
   - **route:** the active route, the turn route and whether it is
     running, turn usage and window, quota, and effort override;
   - **access:** the interaction state (mode, auto and system access),
     sudo unlock, trusted, and whether there is a backup;
-  - **activity:** kind, label, start, the pinned spinner label, and
-    whether a turn or a subagent is running;
+  - **activity:** kind, label and start, and whether a subagent is
+    running;
   - **workspace:** project root, active root, and git info (branch,
-    worktree, HEAD);
-  - **live state:** browser info, sandbox info and the current notice;
-  - **queues and runs:** the steering queue and Send-now snapshot,
-    todos, jobs (the running count and the job list), the watch
+    worktree, HEAD; plan 2b);
+  - **live state:** browser info. Sandbox info arrives with plans 3
+    and 4, because only the running-call and approval renderers read
+    it. The current notice arrives with plan 6, which also moves
+    notice writes (C9);
+  - **queues and runs** (plan 2b): the steering queue and Send-now
+    snapshot, jobs (the running count and the job list), the watch
     snapshot, subagent views, swarm and SDD progress (the tray's
-    plan-run row), the SDD gate, active skills, loaded tool count, tool
-    budget, session rules and a pending watch resume.
+    plan-run row), the SDD gate and a pending watch resume. The todos
+    reach the tray through the band (C6). Active skills, loaded tool
+    count, tool budget and session rules are read only by the session
+    sheet, so they are `Sheet` fields (plan 2c).
   - **subagent views** leave out the child state. Each carries what
     the tray and the drill-in breadcrumb read today: the role, label,
     model, provider and fallback flag. While the child runs, it also
@@ -606,15 +612,30 @@ The TUI works after every plan.
    - `acpwire` with the error codes and T2, `acpclient`, an almost
      empty `inproc`, and `tui.New(host, session, …)` with
      `WithLegacyState`. Each group's plan moves its own types into
-     `acpwire`: the work types in plan 2, the projection types in plan
+     `acpwire`: the work types in plan 2b, the projection types in plan
      3, and the request and command types in plans 4 and 6.
    - The test helpers, and every test moved onto them.
    - The gitinfo/changedfiles move.
    - The boundary test (T1), with an allowlist of every current
      violation by file and import.
    - The ACP mapping test (T4).
-2. **Status and events** (C5), including the subagent data the tray
-   reads.
+2. **Status and events** (C5), in three plans:
+   - **2a. Status** ([plan](plans/2026-10-25-p2-2a-status-plan.md)).
+     `Session.Status` with identity, route, access, activity, workspace
+     roots and browser info: the reads the status line, footer and
+     input gating take straight from the state. No event changes.
+   - **2b. Runs, queues and events.** `Session.Changed`. The job,
+     watch, steering, workspace, subagent and work pumps go away, and
+     the adapter keeps what only their events carry: the job list, the
+     watch snapshot, Send-now receipts and the pending watch resume.
+     Also git info, subagent views (with the tray's headline), swarm
+     and SDD progress, the SDD gate and the work types.
+   - **2c. Sheet.** `Session.Sheet(subagentID)`.
+
+   2a needs no events, because the TUI already re-reads on its tick.
+   2b changes how the TUI learns that something changed, so it is
+   kept apart from the reads. The sheet's data come from the database
+   and git, so 2c keeps them off the render path.
 3. **Transcript** (C6): the renderer, the TUI's indexes over the tree
    and the tray's band and held-row inputs. This is the largest and
    riskiest plan, so it comes early.
@@ -634,6 +655,13 @@ Each plan removes its group's allowlist entries.
   file under the tree. It fails on any import or denied `config` function
   outside C1's rule that is not on the allowlist, and on any allowlist
   entry that is no longer needed. Plan 9 empties the allowlist.
+- **T1b. Moved reads.** A test in `internal/app/tui` fails on any
+  `<x>.state.<Name>` selector whose `Name` is in its list of `State`
+  methods and fields that have moved behind the seam. Plan 2a starts the
+  list, each later plan adds its own, and plan 9 deletes the test along
+  with `WithLegacyState`. T1 only shrinks when a file loses its last
+  agent-side import, and most files mix groups, so T1b is what shows a
+  group has moved.
 - **T2. Wire types.** `acpwire` imports only the standard library. A
   reflection walk over its exported types enforces C3's field rules.
 - **T3. Shared data types.** A fully populated `config.Config` and the
@@ -735,6 +763,25 @@ presets. Changes:
     spike were re-measured with a type-checked scan of the TUI tree.
   - T6 and the manual check cover the tray.
 
+**2026-10-25, against `4a81ef11` (plan 1 merged).**
+- **Plan 2 splits into 2a (status), 2b (runs, queues and events) and 2c
+  (sheet)** (Migration order). The handlers the five broker pumps feed do
+  more than re-read:
+  - the watch handler merges events into a list and starts a resume
+    turn;
+  - the steering handler keeps Send-now receipts;
+  - the workspace handler re-reads git.
+
+  Replacing the pumps is therefore its own plan, and the plain reads
+  move first.
+- **C5.**
+  - The session ID comes from `Session.ID()`.
+  - The pinned spinner label no longer exists.
+  - Sandbox info waits for plans 3 and 4, and the notice for plan 6.
+  - Active skills, the loaded tool count, the tool budget and session
+    rules are sheet fields. The todos reach the tray through the band.
+- **Tests.** T1b, the moved-reads guard, is added.
+
 ## Implementation record
 
 **Plan 1 (foundation), branch `p2-1-foundation`.** Added
@@ -745,3 +792,20 @@ in-process adapter). `tui.New` now takes a host and a session, the state
 arrives through `WithLegacyState`, and `gitinfo` and `changedfiles` moved
 to `internal/repo`. The boundary test's allowlist starts at 66 files,
 140 import entries and 22 `config.*` entries.
+
+**Plan 2a (status), branch `p2-2a-status`.** Added `acpwire.SessionStatus`
+and its parts (`Route`, `Quota`, `Effort`, `Interaction`, `Activity`,
+`Workspace`, `Browser`) with their JSON names fixed, plus `acpwire.Millis`
+and `acpwire.Time` for the Unix-millisecond fields. `acpclient.Session`
+gains `Status() acpwire.SessionStatus`, with its `session/status` row in
+`Methods`, and the in-process adapter builds it from the state on every
+call. The TUI now reads its identity, routes, access, activity, workspace
+roots and browser state through `Status()`, and its session ID through
+`ID()`: 89 reads in 47 functions moved off `m.state`. T1b, the
+moved-reads guard, starts its list with these 18 names, all at plan `2a`:
+`WorkingDir`, `Generation`, `LeafID`, `Branches`, `SessionID`,
+`ActiveRoute`, `TurnRoute`, `TurnUsage`, `TurnQuota`, `EffortOverride`,
+`InteractionState`, `SudoUnlockEnabled`, `Trusted`, `HasBackup`,
+`Activity`, `HasRunningSubagent`, `Workspace` and `BrowserInfo`. T1's
+allowlist did not change: no file lost its last agent-side import, because
+most files mix groups.

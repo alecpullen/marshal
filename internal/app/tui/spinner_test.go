@@ -33,7 +33,7 @@ func TestSpinnerFramesAreNotEmpty(t *testing.T) {
 func TestSpinnerHiddenBefore200ms(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	now := time.Unix(100, 0) // anchors time at 0
-	m := New(state)
+	m := testModel(state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
 	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: now})
@@ -48,7 +48,7 @@ func TestSpinnerHiddenBefore200ms(t *testing.T) {
 func TestSpinnerShownAfter200ms(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	now := time.Unix(100, 0) // anchors time at 0
-	m := New(state)
+	m := testModel(state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
 	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: now.Add(-300 * time.Millisecond)})
@@ -62,7 +62,7 @@ func TestSpinnerShownAfter200ms(t *testing.T) {
 
 func TestSpinnerAlwaysHiddenForIdle(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	m := testModel(state)
 	m.spinnerFrame = "⠋"
 	m.state.SetActivity(session.Activity{Kind: session.ActivityIdle, StartedAt: time.Unix(0, 0)})
 
@@ -90,7 +90,7 @@ func TestSpinnerTickCmdArmsCorrectly(t *testing.T) {
 
 func TestSpinnerTickMsgAdvancesFrameWhenBusy(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	m := testModel(state)
 	m.busy = true
 	m.spinnerFrame = ""
 
@@ -113,7 +113,7 @@ func TestSpinnerTickMsgAdvancesFrameWhenBusy(t *testing.T) {
 
 func TestSpinnerTickMsgDoesNotAdvanceOrReArmWhenNotBusy(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	m := testModel(state)
 	m.busy = false
 	m.spinnerFrame = ""
 
@@ -130,7 +130,7 @@ func TestSpinnerTickMsgDoesNotAdvanceOrReArmWhenNotBusy(t *testing.T) {
 
 func TestSpinnerContinuesAfterParentFinishesWhileSubagentRuns(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	m := testModel(state)
 	m.resize(100, 40)
 	m.busy = true
 	registerRunningSubagent(t, &m, "reviewer")
@@ -169,7 +169,7 @@ func TestSpinnerContinuesAfterParentFinishesWhileSubagentRuns(t *testing.T) {
 func TestSpinnerHiddenDuringSDDRun(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	now := time.Unix(100, 0)
-	m := New(state)
+	m := testModel(state)
 	m.now = func() time.Time { return now }
 	m.spinnerFrame = "⠋"
 	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, StartedAt: now.Add(-time.Second)})
@@ -186,7 +186,7 @@ func TestSpinnerHiddenDuringSDDRun(t *testing.T) {
 func TestAgentTickNoLongerAdvancesSpinner(t *testing.T) {
 	// Verify that the agentTickMsg handler no longer calls m.spinner.Next().
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	m := testModel(state)
 	m.busy = true
 	m.spinnerFrame = ""
 

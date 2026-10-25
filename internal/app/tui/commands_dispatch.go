@@ -195,6 +195,7 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 
 	m.state = snap.State
+	m.sess = snap.Session
 	m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
 	m.lastGitRead = m.now()
 	if snap.Runner != nil {

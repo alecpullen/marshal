@@ -274,6 +274,9 @@ func (m *Model) openCursorFile() tea.Cmd {
 }
 
 func (m *Model) openFile(path string, line int) tea.Cmd {
+	if !m.host.SharedFilesystem() {
+		return m.setFlash("$EDITOR is unavailable: the files are on the agent's machine")
+	}
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
 		return m.setFlash("$EDITOR is not set")

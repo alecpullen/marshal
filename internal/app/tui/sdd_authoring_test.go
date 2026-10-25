@@ -51,7 +51,7 @@ func newAuthoringModel(t *testing.T) Model {
 	if err := commands.RegisterAll(cmdReg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state,
+	m := testModel(state,
 		WithCommandRegistry(cmdReg),
 		WithPlanAuthorFactory(context.Background(), fakePlanAuthorFactory()),
 		WithPipelineFactory(context.Background(), func(planPath string, overrides map[routing.AgentRole]string) AgentRunner {

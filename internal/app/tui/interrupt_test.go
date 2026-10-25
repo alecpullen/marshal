@@ -17,7 +17,7 @@ import (
 func TestRollbackRequiresConfirmation(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	state.StoreBackup([]session.BackupFile{{Path: "app.go", Content: "original", Exists: true}})
-	m := New(state)
+	m := testModel(state)
 
 	updated, _ := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	m = updated.(Model)
@@ -90,7 +90,7 @@ func TestCancelTurnStopsTurnWorkBeforeCancelling(t *testing.T) {
 	svc.onStopFunc = func() { order = append(order, "service-stop") }
 	svc.mu.Unlock()
 
-	m := New(state)
+	m := testModel(state)
 	m.busy = true
 	m.agentCancel = func() {
 		order = append(order, "agent-cancel")
@@ -123,7 +123,7 @@ func TestNormalFinishUnregistersWithoutStopping(t *testing.T) {
 	svc := &fakeTUISessionStopService{}
 	state.SetTurnStopService(svc)
 
-	m := New(state)
+	m := testModel(state)
 	m.busy = true
 	m.beginTurnStopRegistration()
 	if state.CurrentTurnStop() == nil {
@@ -149,7 +149,7 @@ func TestTurnStopSurvivesReplacementRelease(t *testing.T) {
 	svc := &fakeTUISessionStopService{}
 	state.SetTurnStopService(svc)
 
-	m := New(state)
+	m := testModel(state)
 	firstRelease := m.beginTurnStopRegistration()
 	first := state.CurrentTurnStop()
 
@@ -176,7 +176,7 @@ func TestTurnStopSurvivesReplacementRelease(t *testing.T) {
 // commands behaves exactly as it did before explicit stop targeting existed.
 func TestCancelTurnWithoutServiceStillCancels(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	m := testModel(state)
 	m.busy = true
 	cancelled := false
 	m.agentCancel = func() { cancelled = true }
@@ -199,7 +199,7 @@ func TestCancelTurnLeavesDetachedWorkRunning(t *testing.T) {
 	svc := &fakeTUISessionStopService{}
 	state.SetTurnStopService(svc)
 
-	m := New(state)
+	m := testModel(state)
 	m.busy = true
 	m.agentCancel = func() {}
 	m.beginTurnStopRegistration()

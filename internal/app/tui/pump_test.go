@@ -67,7 +67,7 @@ func TestModelJobPumpRearmsWithoutLeakingTerminalSubscriptions(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	m := New(state, WithJobBroker(ctx, b))
+	m := testModel(state, WithJobBroker(ctx, b))
 
 	updated, cmd := m.Update(jobCountMsg{count: 1})
 	m = updated.(Model)

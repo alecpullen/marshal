@@ -46,7 +46,7 @@ func gitModel(t *testing.T) (Model, string) {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()))
+	m := testModel(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()))
 	m.resize(100, 40)
 	m.refreshViewport()
 	return m, dir

@@ -24,7 +24,7 @@ func newDispatchModel(t *testing.T, state *session.State, opts ...Option) Model 
 		t.Fatalf("RegisterAll() error = %v", err)
 	}
 	opts = append([]Option{WithCommandRegistry(cmdReg)}, opts...)
-	m := New(state, opts...)
+	m := testModel(state, opts...)
 	updated, _ := m.Update(teaWindowSize())
 	return asModel(t, updated)
 }

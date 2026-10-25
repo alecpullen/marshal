@@ -18,6 +18,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/agent"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/clipboard"
@@ -2799,9 +2800,11 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		state := rt.State
 		logger := rt.Logger
 
+		seamHost, seamSession := inproc.New(inproc.Deps{State: state})
+
 		cmdReg := rt.CommandRegistry
 
-		var tuiOpts []tui.Option
+		tuiOpts := []tui.Option{tui.WithLegacyState(state)}
 		tuiOpts = append(tuiOpts, tui.WithMemoryStore(database, projectID))
 		tuiOpts = append(tuiOpts, tui.WithCommandRegistry(cmdReg))
 		configLayers := &rt.Layers
@@ -2945,6 +2948,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			}
 			return tui.SessionSwapResult{
 				State:                state,
+				Session:              seamHost.Swap(state),
 				Runner:               runner,
 				SwarmRunner:          swarmRunner,
 				PipelineFactory:      pipelineFactory,
@@ -3020,7 +3024,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// nothing about policy or processes.
 		tuiOpts = append(tuiOpts, tui.WithEndController(&tuiEndController{rt: rt}))
 
-		progResult := runOpts.programRunner(ctx, tui.New(state, tuiOpts...), stdout)
+		progResult := runOpts.programRunner(ctx, tui.New(seamHost, seamSession, tuiOpts...), stdout)
 
 		if progResult.ResumeSession != "" && progResult.Err == nil {
 			// User chose to resume a different session. Tear down the

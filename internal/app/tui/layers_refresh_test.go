@@ -25,7 +25,7 @@ func newLayersTestModel(t *testing.T, work string) Model {
 	if err := commands.RegisterAll(reg, registry.New()); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := New(state, WithCommandRegistry(reg))
+	m := testModel(state, WithCommandRegistry(reg))
 	m.resize(80, 24)
 	m.refreshViewport()
 	return m

@@ -26,7 +26,7 @@ func newViewTestModel(t *testing.T, width, height int) Model {
 	// palette even when the outer environment sets NO_COLOR.
 	t.Setenv("NO_COLOR", "")
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state)
+	m := testModel(state)
 	m.resize(width, height)
 	m.refreshViewport()
 	return m
@@ -575,7 +575,7 @@ func newViewTestModelWithRegistry(t *testing.T, width, height int) Model {
 		Name: "tools", Description: "List tools", Args: "",
 		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
-	m := New(state, WithCommandRegistry(reg))
+	m := testModel(state, WithCommandRegistry(reg))
 	m.resize(width, height)
 	m.refreshViewport()
 	return m
@@ -587,7 +587,7 @@ func newViewTestModelWithRegistry(t *testing.T, width, height int) Model {
 func newViewTestModelWithFileIndex(t *testing.T, width, height int, paths []string) Model {
 	t.Helper()
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := New(state, WithFileIndex(paths))
+	m := testModel(state, WithFileIndex(paths))
 	m.resize(width, height)
 	m.refreshViewport()
 	return m
@@ -615,7 +615,7 @@ func newViewTestModelWithRegistryAndFileIndex(t *testing.T, width, height int, p
 		Name: "help", Description: "Show help", Args: "",
 		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
 	})
-	m := New(state, WithCommandRegistry(reg), WithFileIndex(paths))
+	m := testModel(state, WithCommandRegistry(reg), WithFileIndex(paths))
 	m.resize(width, height)
 	m.refreshViewport()
 	return m

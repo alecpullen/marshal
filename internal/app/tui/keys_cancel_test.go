@@ -214,7 +214,7 @@ func TestCtrlCQuitsOnlyAfterTheWarningIsAnswered(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(1000, 0), session.Persistence{})
 	state.Config.Postmortem.OnExit = "never"
 	ctrl := &endTestController{work: workSnapshot("job-1")}
-	m := New(state, WithEndController(ctrl))
+	m := testModel(state, WithEndController(ctrl))
 	m.resize(80, 24)
 	m.now = func() time.Time { return time.Unix(1000, 0) }
 
@@ -248,7 +248,7 @@ func TestCtrlCStopsTheRightThingBeforeTheWarning(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(1000, 0), session.Persistence{})
 	state.Config.Postmortem.OnExit = "never"
 	ctrl := &endTestController{work: workSnapshot("job-1")}
-	m := New(state, WithEndController(ctrl))
+	m := testModel(state, WithEndController(ctrl))
 	m.resize(80, 24)
 	m.now = func() time.Time { return time.Unix(1000, 0) }
 	cancelled := false

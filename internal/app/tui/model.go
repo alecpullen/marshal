@@ -24,6 +24,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/google/shlex"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
@@ -117,7 +118,9 @@ type RoleOverrideRunner interface {
 // swap so the TUI can re-point every model field that depends on the current
 // session.
 type SessionSwapResult struct {
-	State                *session.State
+	State *session.State
+	// Session is the client session over State (P2).
+	Session              acpclient.Session
 	Runner               AgentRunner
 	SwarmRunner          AgentRunner
 	PipelineFactory      func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
@@ -330,6 +333,12 @@ type completionRef struct {
 }
 
 type Model struct {
+	// host and sess are the client seam (P2): the TUI reaches the agent side
+	// through them, never through the runtime directly.
+	host acpclient.Host
+	sess acpclient.Session
+	// state is the legacy path: the TUI still reads it everywhere, and P2
+	// plans 2 to 9 empty it.
 	state           *session.State
 	input           textarea.Model
 	editingCommand  bool
@@ -902,6 +911,15 @@ type pendingAgentRun struct {
 }
 
 type Option func(*Model)
+
+// WithLegacyState hands the model the session state it still reads directly.
+//
+// It is temporary: plan 1 adds it, and plan 9 deletes it once no group reads
+// the state. Until then it must be the first option, so no later option sees a
+// nil state.
+func WithLegacyState(state *session.State) Option {
+	return func(m *Model) { m.state = state }
+}
 
 type ConfigReloader func(cfg config.Config) error
 
@@ -1695,7 +1713,30 @@ func (m *Model) refreshOpenSettingsBrowser() {
 // frame (see ghostPosition in view.go).
 const inputPromptWidth = 2
 
-func New(state *session.State, opts ...Option) Model {
+func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
+	if host == nil || sess == nil {
+		panic("tui.New: nil client host or session")
+	}
+
+	m := Model{
+		host:           host,
+		sess:           sess,
+		editingCommand: false,
+		ctx:            context.Background(),
+		viewport:       viewport.New(),
+		spinner:        NewSpinner(),
+		now:            time.Now,
+		viewportFollow: true,
+		discovered:     map[string][]schema.ModelInfo{},
+	}
+	for _, opt := range opts {
+		opt(&m)
+	}
+	if m.state == nil {
+		panic("tui.New: WithLegacyState is required until P2 plan 9")
+	}
+	state := m.state
+
 	loadTheme(state.Config.TUI)
 
 	input := textarea.New()
@@ -1765,27 +1806,14 @@ func New(state *session.State, opts ...Option) Model {
 	styles.Cursor.Color = accentColor
 	styles.Cursor.Blink = true
 	input.SetStyles(styles)
+	m.input = input
+	// Seed the reconciliation baseline from the session's effective mode.
+	// session.New normalizes the configured value, so a blank or
+	// non-canonical config does not make the first reconcile flip the
+	// model: it stays a no-op rather than re-asserting the mode over
+	// whatever the model already shows.
+	m.syncedAccessMode = string(state.InteractionState().Mode)
 
-	m := Model{
-		state:          state,
-		input:          input,
-		editingCommand: false,
-		// Seed the reconciliation baseline from the session's effective mode.
-		// session.New normalizes the configured value, so a blank or
-		// non-canonical config does not make the first reconcile flip the
-		// model: it stays a no-op rather than re-asserting the mode over
-		// whatever the model already shows.
-		syncedAccessMode: string(state.InteractionState().Mode),
-		ctx:              context.Background(),
-		viewport:         viewport.New(),
-		spinner:          NewSpinner(),
-		now:              time.Now,
-		viewportFollow:   true,
-		discovered:       map[string][]schema.ModelInfo{},
-	}
-	for _, opt := range opts {
-		opt(&m)
-	}
 	// The held window opens when the model is built, so a resumed session
 	// starts with nothing held. It is taken after the options run so an
 	// injected clock is used.

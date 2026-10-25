@@ -49,6 +49,14 @@ var movedStateReads = map[string]string{
 	"SwarmProgress":    "2b",
 	"SDDProgress":      "2b",
 	"SDDGate":          "2b",
+
+	"AuditLog":        "2c",
+	"ContextPack":     "2c",
+	"SessionRules":    "2c",
+	"ActiveSkills":    "2c",
+	"ToolBudget":      "2c",
+	"LoadedToolNames": "2c",
+	"StartedAt":       "2c",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

@@ -29,8 +29,8 @@ func f64(v float64) *float64 { return &v }
 
 // rowText renders one running row at a generous width and returns its text
 // with every escape stripped.
-func rowText(it viewmodel.WorkItem, in Input, split bool) string {
-	return ansi.Strip(runningRow(it, in, 200, split).Text)
+func rowText(it viewmodel.WorkItem, in Input) string {
+	return ansi.Strip(runningRow(it, in, 200).Text)
 }
 
 // TestRunningRowPerShape is the spec §5.6 table: every work item shape draws
@@ -204,7 +204,7 @@ func TestRunningRowPerShape(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := rowText(tc.item, tc.in, false)
+			got := rowText(tc.item, tc.in)
 			for _, want := range tc.want {
 				if !strings.Contains(got, want) {
 					t.Errorf("row = %q, want it to contain %q", got, want)
@@ -249,37 +249,6 @@ func TestBarDrawsHalfCells(t *testing.T) {
 	}
 	if w := ansi.StringWidth(got); w != 12 {
 		t.Errorf("Bar(0.54, 12) width = %d, want 12", w)
-	}
-}
-
-// TestSplitRowKeepsOnlyBarAndPercent pins the split layout's narrower
-// measurement: the bar and its percentage survive, the count, rate and ETA do
-// not.
-func TestSplitRowKeepsOnlyBarAndPercent(t *testing.T) {
-	total := 3.7 * gib
-	it := viewmodel.WorkItem{
-		TaskKey: "k5", Kind: "command", DisplayID: "job-3",
-		Label: "Download qwen3-coder weights", State: "running",
-		ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-		Progress: &progress.Snapshot{
-			Frame: progress.Frame{Sequence: 2, PrimaryMetricID: "bytes",
-				Metrics: []progress.Metric{
-					{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
-				}},
-			ObservedAt: testNow,
-		},
-		StartedAt: testNow.Add(-2 * time.Minute),
-	}
-	got := rowText(it, Input{Now: testNow}, true)
-	for _, want := range []string{"━", "57%"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("split row = %q, want it to contain %q", got, want)
-		}
-	}
-	for _, notWant := range []string{"GiB/3.7", "~", "/s"} {
-		if strings.Contains(got, notWant) {
-			t.Errorf("split row = %q, want it not to contain %q", got, notWant)
-		}
 	}
 }
 
@@ -338,41 +307,5 @@ func TestCardCapsAtFiveRowsAndOffersStopOnlyWhenAllowed(t *testing.T) {
 	}
 	if strings.Contains(all, "s stop") {
 		t.Errorf("card = %q, want no stop action when the item is not stoppable", all)
-	}
-}
-
-// TestNextSkipsSplitWhenNarrow pins the mode cycle's width guard.
-func TestNextSkipsSplitWhenNarrow(t *testing.T) {
-	if got := Next(Stacked, 89); got != Folded {
-		t.Errorf("Next(Stacked, 89) = %q, want %q", got, Folded)
-	}
-	if got := Next(Stacked, 90); got != Split {
-		t.Errorf("Next(Stacked, 90) = %q, want %q", got, Split)
-	}
-	if got := Next(Split, 90); got != Folded {
-		t.Errorf("Next(Split, 90) = %q, want %q", got, Folded)
-	}
-	if got := Next(Split, 89); got != Folded {
-		t.Errorf("Next(Split, 89) = %q, want %q", got, Folded)
-	}
-	if got := Next(Folded, 90); got != Stacked {
-		t.Errorf("Next(Folded, 90) = %q, want %q", got, Stacked)
-	}
-}
-
-// TestParseModeDefaultsToStacked pins that an unknown config value is the
-// default layout rather than an error.
-func TestParseModeDefaultsToStacked(t *testing.T) {
-	cases := map[string]Mode{
-		"stacked":  Stacked,
-		"split":    Split,
-		"folded":   Folded,
-		"":         Stacked,
-		"nonsense": Stacked,
-	}
-	for in, want := range cases {
-		if got := ParseMode(in); got != want {
-			t.Errorf("ParseMode(%q) = %q, want %q", in, got, want)
-		}
 	}
 }

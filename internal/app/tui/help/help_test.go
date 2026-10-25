@@ -139,13 +139,19 @@ func TestFooterIdleShowsClearQueue(t *testing.T) {
 	}
 }
 
-func TestFooterShowsPlanToggleWhenPlanActive(t *testing.T) {
-	out := Footer(FooterHints{PlanActive: true})
-	if !strings.Contains(out, "Ctrl+T") || !strings.Contains(out, "plan") {
-		t.Fatalf("idle footer should hint the plan-layout cycle:\n%s", out)
+func TestFooterHasNoCtrlT(t *testing.T) {
+	states := []FooterHints{
+		{},
+		{Busy: true},
+		{QueueNonEmpty: true},
+		{IdleRollbackEligible: true},
+		{Browsing: true},
+		{RunActive: true},
 	}
-	if busy := Footer(FooterHints{Busy: true, PlanActive: true}); strings.Contains(busy, "Ctrl+T") {
-		t.Fatalf("busy footer must keep its cancel-focused hints:\n%s", busy)
+	for _, h := range states {
+		if out := Footer(h); strings.Contains(out, "Ctrl+T") {
+			t.Fatalf("no footer state may advertise Ctrl+T: %+v → %q", h, out)
+		}
 	}
 }
 

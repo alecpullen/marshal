@@ -97,9 +97,9 @@ func (m *Model) viewString() string {
 		left = padRows(dockView, m.height-statusLineRows)
 	} else {
 		rows := []string{m.renderTranscriptFrame()}
-		// The box carries the live part of the transcript and the running
-		// work just above the input: the live beat, the running section and
-		// the plan, planned once and painted from that plan.
+		// The tray pins the running work, the finished work held until the
+		// next prompt, and the plan just above the input, planned once and
+		// painted from that plan.
 		if box := livebox.Render(layout, m.leftWidth); box != "" {
 			rows = append(rows, box)
 		}

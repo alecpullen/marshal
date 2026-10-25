@@ -5,46 +5,37 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/viewmodel"
 )
 
-// Plan assembles the box from its sections and sheds it until it fits
+// Plan assembles the tray from its sections and sheds it until it fits
 // in.MaxRows.
 //
-// The box exists while the turn is busy, while work is running, or while the
-// live part has lines to draw: the live part's own busy flag stays set for an
-// active call or streaming reasoning after the turn clock has stopped, and a
-// live part with no box would be on screen nowhere. With none of those, a plan
-// draws the idle row alone; with no plan either, the box has no rows.
+// The tray has rows while a run is active, while work is running or held, or
+// while there is a plan to show. With none of those it has no rows at all.
 func Plan(in Input) Layout {
-	// The outline costs five cells, so a narrower request is planned at five;
-	// Render draws at the same floor, which keeps every line one width.
-	w := max(in.Width, 5)
 	if in.MaxRows < 1 {
-		// The contract is "the most rows the box may take", so a budget below
-		// one still sheds down to the single plain row rather than growing
+		// The contract is "the most rows the tray may take", so a budget below
+		// one still sheds down to the single compact row rather than growing
 		// without limit.
 		in.MaxRows = 1
 	}
-	if !in.Busy && len(in.Work) == 0 && len(in.Live.Full) == 0 {
-		if len(in.Plan) == 0 {
-			return Layout{Mode: drawnMode(in.Mode, w)}
-		}
-		l := Layout{Mode: drawnMode(in.Mode, w), Rows: []Row{idleRow(in, w)}}
-		finish(&l, in)
-		return l
+	if in.Run == nil && len(in.Work) == 0 && len(in.Held) == 0 && len(in.Plan) == 0 {
+		return Layout{}
 	}
 
-	st := buildState{mode: in.Mode}
+	st := buildState{}
 	l := build(in, st)
-	// Each step is applied in order and the box rebuilt; Shed is how many
-	// steps it took to fit. Step 7 leaves one plain row, so the loop always
+	// Each step is applied in order and the tray rebuilt; Shed is how many
+	// steps it took to fit. Step 6 leaves one compact row, so the loop always
 	// terminates.
 	for step := 1; step <= shedSteps && len(l.Rows) > in.MaxRows; step++ {
 		applyShed(&st, step)
@@ -55,215 +46,185 @@ func Plan(in Input) Layout {
 	return l
 }
 
-// Render paints a layout: every row on its own line, inner rows inside the
-// outline, and a tinted or cursored row's content area band-painted. The
-// outline costs five cells, so a request narrower than that is drawn at five:
-// every line still closes and every line is the same width.
+// Render paints a layout: every row on its own line, truncated and padded to
+// exactly width cells, with a tinted or cursored row band-painted. There is no
+// outline. A request narrower than the floor is drawn at the floor, so every
+// line is still the same width.
 func Render(l Layout, width int) string {
 	w := max(width, 5)
-	split := l.Mode == Split && w >= SplitMinWidth
-	cell := InnerWidth(w)
-	if split {
-		cell = LeftWidth(w, l.Mode)
-	}
-	b := borderStyle()
 	lines := make([]string, 0, len(l.Rows))
 	for _, r := range l.Rows {
-		if r.Frame != FrameInner {
-			lines = append(lines, ansi.Truncate(r.Text, w, "…"))
-			continue
-		}
-		text := padCells(ansi.Truncate(r.Text, cell, "…"), cell)
+		text := padCells(ansi.Truncate(r.Text, w, "…"), w)
 		switch {
 		case r.Cursor:
-			text = chrome.PaintBand(text, cell, theme.Current().BGSelection)
+			text = chrome.PaintBand(text, w, theme.Current().BGSelection)
 		case r.Tint:
-			text = chrome.PaintBand(text, cell, theme.Current().BGSurface)
+			text = chrome.PaintBand(text, w, theme.Current().BGSurface)
 		}
-		line := b.Render("│ ") + text
-		if split {
-			right := padCells(ansi.Truncate(r.Right, RightWidth, "…"), RightWidth)
-			line += b.Render(" │ ") + right + b.Render(" │")
-		} else {
-			line += b.Render(" │")
-		}
-		lines = append(lines, line)
+		lines = append(lines, text)
 	}
 	return strings.Join(lines, "\n")
 }
 
 // shedSteps is the length of the shed order.
-const shedSteps = 7
+const shedSteps = 6
 
-// buildState is how much of the box the shed order has taken away.
+// buildState is how much of the tray the shed order has taken away.
 type buildState struct {
-	mode      Mode
-	liveShort bool // step 2: the live part is Live.Short
-	cap       int  // step 3 (RunningCap) and step 6 (1): running rows cap
-	collapse  bool // step 4: the expanded card is a row
-	liveOff   bool // step 5: the live part is gone
-	compact   bool // step 7: one plain summary row
+	planOneLine bool // step 1: the plan is its one-row form
+	heldFolded  bool // step 2: the held rows are one "✓ N finished" row
+	cap         int  // step 3 (RunningCap) and step 5 (1): running rows cap
+	collapse    bool // step 4: the expanded card is a row
+	compact     bool // step 6: one compact row
 }
 
 // applyShed applies shed step n (1-based).
 func applyShed(st *buildState, step int) {
 	switch step {
 	case 1:
-		st.mode = Folded
+		st.planOneLine = true
 	case 2:
-		st.liveShort = true
+		st.heldFolded = true
 	case 3:
 		st.cap = RunningCap
 	case 4:
 		st.collapse = true
 	case 5:
-		st.liveOff = true
-	case 6:
 		st.cap = 1
-	case 7:
+	case 6:
 		st.compact = true
 	}
 }
 
-// drawnMode is the mode as drawn: split falls back to stacked below its
-// minimum width, and anything unknown is stacked.
-func drawnMode(m Mode, w int) Mode {
-	switch m {
-	case Split:
-		if w < SplitMinWidth {
-			return Stacked
-		}
-		return Split
-	case Folded:
-		return Folded
-	default:
-		return Stacked
-	}
-}
-
-// build assembles the box in one of its shapes.
+// build assembles the tray in one of its shapes.
 func build(in Input, st buildState) Layout {
 	w := max(in.Width, 5)
-	mode := drawnMode(st.mode, w)
-	l := Layout{Mode: mode}
 	if st.compact {
-		l.Rows = []Row{compactRow(in, w)}
-		return l
-	}
-	inner := InnerWidth(w)
-	left := LeftWidth(w, mode)
-
-	live, liveTargets := liveLines(in.Live, st)
-	work := runningOrder(in.Work)
-	shown := work
-	if st.cap > 0 && len(work) > st.cap {
-		shown = work[:st.cap]
+		return Layout{Rows: []Row{compactRow(in, w)}}
 	}
 
-	var body []Row
-	for i, line := range live {
-		var node viewmodel.NodeID
-		if i < len(liveTargets) {
-			node = liveTargets[i]
-		}
-		body = append(body, Row{Text: line, Target: Target{Kind: TargetLive, Node: node}})
+	var rows []Row
+	if in.Run != nil {
+		rows = append(rows, runRow(*in.Run, in, w))
 	}
-	rowW := inner
-	if mode == Split {
-		rowW = left
+
+	entries := mergedOrder(in, st.heldFolded)
+	shown := entries
+	if st.cap > 0 {
+		shown = capEntries(entries, st.cap)
 	}
-	if len(work) > 0 {
-		hdrW := w
-		if mode == Split {
-			hdrW = left + 4
+	for _, e := range shown {
+		if e.held != nil {
+			rows = append(rows, heldRow(*e.held, in, w))
+			continue
 		}
-		body = append(body, Row{Text: sectionHeader(fmt.Sprintf("running %d", len(work)), hdrW), Frame: FrameBorder})
-		for _, it := range shown {
-			if in.Expanded != "" && in.Expanded == it.TaskKey && !st.collapse {
-				body = append(body, card(it, in, rowW)...)
-			} else {
-				body = append(body, runningRow(it, in, rowW, mode == Split))
-			}
+		if in.Expanded != "" && in.Expanded == e.item.TaskKey && !st.collapse {
+			rows = append(rows, card(e.item, in, w)...)
+		} else {
+			rows = append(rows, runningRow(e.item, in, w))
 		}
-		if n := len(work) - len(shown); n > 0 {
-			body = append(body, Row{
-				Text:   muted(fmt.Sprintf("+%d more · /work", n)),
-				Target: Target{Kind: TargetMore},
+	}
+	if n := len(entries) - len(shown); n > 0 {
+		rows = append(rows, Row{
+			Text:   muted(fmt.Sprintf("+%d more · /work", n)),
+			Target: Target{Kind: TargetMore},
+		})
+	}
+	if st.heldFolded {
+		if n := len(in.Held); n > 0 {
+			rows = append(rows, finishedCountRow(n))
+		}
+	}
+
+	if len(in.Plan) > 0 {
+		switch {
+		case planFinished(in.Plan):
+			rows = append(rows, finishedRow(in, w))
+		case st.planOneLine:
+			rows = append(rows, planLine(in, w))
+		default:
+			rows = append(rows, planRows(in, w)...)
+		}
+	}
+	return Layout{Rows: rows}
+}
+
+// mergedEntry is one row of the running-and-held stack: a running item, or a
+// held one, with the start time and key that fix its slot.
+type mergedEntry struct {
+	item    viewmodel.WorkItem
+	held    *HeldItem
+	start   time.Time
+	key     string
+	blocked bool
+}
+
+// mergedOrder sorts the running and held rows by start time, then task key, so
+// a row never moves: becoming blocked does not reorder it. Held rows are left
+// out when the shed order has folded them into one row.
+func mergedOrder(in Input, heldFolded bool) []mergedEntry {
+	entries := make([]mergedEntry, 0, len(in.Work)+len(in.Held))
+	for _, it := range in.Work {
+		entries = append(entries, mergedEntry{
+			item:    it,
+			start:   it.StartedAt,
+			key:     it.TaskKey,
+			blocked: it.State == "blocked",
+		})
+	}
+	if !heldFolded {
+		for i := range in.Held {
+			h := &in.Held[i]
+			entries = append(entries, mergedEntry{
+				held:  h,
+				start: h.Item.StartedAt,
+				key:   h.Item.TaskKey,
 			})
 		}
 	}
-
-	if mode == Split {
-		budget := in.MaxRows - 2
-		if budget < 1 {
-			budget = planWindowItems + 2
+	sort.SliceStable(entries, func(i, j int) bool {
+		if !entries[i].start.Equal(entries[j].start) {
+			return entries[i].start.Before(entries[j].start)
 		}
-		lines := planSplit(in, budget)
-		l.Rows = append(l.Rows, Row{Text: splitTop(in, w, left), Frame: FrameBorder})
-		// The box is as tall as the longer side: the left content or the plan's
-		// rows, whichever asks for more.
-		for i := 0; i < max(len(body), len(lines)); i++ {
-			var r Row
-			if i < len(body) {
-				r = body[i]
-			}
-			var right string
-			if i < len(lines) {
-				right = lines[i]
-			}
-			if r.Frame == FrameBorder {
-				l.Rows = append(l.Rows, Row{Text: splitBorder(r.Text, right, left), Frame: FrameBorder})
-				continue
-			}
-			r.Right = right
-			l.Rows = append(l.Rows, r)
-		}
-		l.Rows = append(l.Rows, Row{Text: splitBottom(w, left), Frame: FrameBorder})
-		return l
-	}
-
-	l.Rows = append(l.Rows, Row{Text: topLine(in.State, in.Hints, w, "─╮"), Frame: FrameBorder})
-	l.Rows = append(l.Rows, body...)
-	if mode == Stacked && len(in.Plan) > 0 {
-		header, planRows := planStacked(in, inner)
-		l.Rows = append(l.Rows, Row{Text: sectionHeader(header, w), Frame: FrameBorder})
-		l.Rows = append(l.Rows, planRows...)
-	}
-	l.Rows = append(l.Rows, Row{Text: bottomLine(in, mode, w), Frame: FrameBorder})
-	return l
-}
-
-// liveLines is the live part as the shed order leaves it.
-func liveLines(l Live, st buildState) ([]string, []viewmodel.NodeID) {
-	switch {
-	case st.liveOff:
-		return nil, nil
-	case st.liveShort:
-		return l.Short, l.ShortTargets
-	default:
-		return l.Full, l.Targets
-	}
-}
-
-// runningOrder sorts a copy of the work for the running section: blocked items
-// first, then the earliest started, then by task key.
-func runningOrder(items []viewmodel.WorkItem) []viewmodel.WorkItem {
-	out := append([]viewmodel.WorkItem(nil), items...)
-	sort.SliceStable(out, func(i, j int) bool {
-		bi, bj := out[i].State == "blocked", out[j].State == "blocked"
-		if bi != bj {
-			return bi
-		}
-		if !out[i].StartedAt.Equal(out[j].StartedAt) {
-			return out[i].StartedAt.Before(out[j].StartedAt)
-		}
-		return out[i].TaskKey < out[j].TaskKey
+		return entries[i].key < entries[j].key
 	})
+	return entries
+}
+
+// capEntries keeps at most n entries, blocked ones first, and returns the kept
+// entries in start order.
+func capEntries(entries []mergedEntry, n int) []mergedEntry {
+	if n <= 0 || len(entries) <= n {
+		return entries
+	}
+	keep := make(map[string]bool, n)
+	for _, e := range entries {
+		if len(keep) >= n {
+			break
+		}
+		if e.blocked {
+			keep[e.key] = true
+		}
+	}
+	for _, e := range entries {
+		if len(keep) >= n {
+			break
+		}
+		keep[e.key] = true
+	}
+	out := make([]mergedEntry, 0, n)
+	for _, e := range entries {
+		if keep[e.key] {
+			out = append(out, e)
+		}
+	}
 	return out
 }
 
 // finish marks the cursor's row and collects the browse stops in row order: one
-// per running item, the more row, then one per plan item drawn.
+// per running or held row, the more row, then one per plan item drawn. The
+// plan-run row and the "✓ N finished" row carry no target, so they are not
+// stops.
 func finish(l *Layout, in Input) {
 	seen := make(map[Target]bool, len(l.Rows))
 	for i := range l.Rows {
@@ -305,124 +266,22 @@ func anySameTarget(stops []RowStop, cursor Target) bool {
 	return false
 }
 
-// sameTarget compares a row's target with the cursor's: the same kind and key,
-// and for a live row the same node.
+// sameTarget compares a row's target with the cursor's: the same kind and key.
 func sameTarget(a, b Target) bool {
-	if a.Kind != b.Kind {
-		return false
-	}
-	if a.Kind == TargetLive {
-		return a.Node == b.Node
-	}
-	return a.Key == b.Key
+	return a.Kind == b.Kind && a.Key == b.Key
 }
 
-// borderStyle is the colour every outline glyph is drawn in.
-func borderStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(theme.Current().BorderMuted)
+// finishedCountRow is the folded held rows: one row saying how many finished
+// items the tray is holding. It has no target.
+func finishedCountRow(n int) Row {
+	return Row{Text: lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess).Render(glyph.OK) +
+		muted(fmt.Sprintf(" %d finished", n))}
 }
 
-// topLine draws a top border segment of exactly w cells:
-// ╭─ [state] ─…─ [hints] <close>, close being ─╮ or ─┬. Hints drop from the
-// end before the state is cut.
-func topLine(state string, hints []string, w int, close string) string {
-	const open = "╭─"
-	b := borderStyle()
-	statePart := ""
-	if state != "" {
-		statePart = " " + state + " "
-	}
-	for len(hints) > 0 {
-		hintPart := " " + strings.Join(hints, " · ") + " "
-		fill := w - ansi.StringWidth(open) - ansi.StringWidth(statePart) -
-			ansi.StringWidth(hintPart) - ansi.StringWidth(close)
-		if fill >= 1 {
-			return b.Render(open) + statePart + b.Render(strings.Repeat("─", fill)) +
-				muted(hintPart) + b.Render(close)
-		}
-		hints = hints[:len(hints)-1]
-	}
-	if state != "" {
-		// The state keeps its two surrounding spaces and the border's corners,
-		// with the rest left to the fill.
-		if room := w - ansi.StringWidth(open) - ansi.StringWidth(close) - 2; room >= 1 {
-			statePart = " " + ansi.Truncate(state, room, "…") + " "
-		} else {
-			statePart = ""
-		}
-	}
-	fill := max(w-ansi.StringWidth(open)-ansi.StringWidth(statePart)-ansi.StringWidth(close), 0)
-	line := b.Render(open) + statePart + b.Render(strings.Repeat("─", fill)+close)
-	if ansi.StringWidth(line) > w {
-		return ansi.Truncate(line, w, "")
-	}
-	return line
-}
-
-// sectionHeader draws a left-aligned section header of exactly w cells:
-// ├─ <label> ─…─┤.
-func sectionHeader(label string, w int) string {
-	b := borderStyle()
-	label = ansi.Truncate(label, max(w-6, 1), "…")
-	fill := max(w-5-ansi.StringWidth(label), 1)
-	return b.Render("├─ ") + label + b.Render(" "+strings.Repeat("─", fill)+"┤")
-}
-
-// splitTop is the split layout's top border: the left segment closes with ┬ at
-// the split column, and the plan header sits in the right pane.
-func splitTop(in Input, w, left int) string {
-	leftW := left + 4
-	header := ""
-	if len(in.Plan) > 0 {
-		header = planHeader(in)
-	}
-	return topLine(in.State, in.Hints, leftW, "─┬") + splitTopRight(header, w-leftW)
-}
-
-// splitTopRight draws the top border over the right pane, which holds the plan
-// header when there is a plan.
-func splitTopRight(header string, w int) string {
-	b := borderStyle()
-	if header == "" {
-		return b.Render(strings.Repeat("─", max(w-1, 0)) + "╮")
-	}
-	header = ansi.Truncate(header, max(w-6, 1), "…")
-	fill := max(w-5-ansi.StringWidth(header), 1)
-	return b.Render("─ ") + header + b.Render(" "+strings.Repeat("─", fill)+"─╮")
-}
-
-// splitBorder draws a section header across the split layout: the left segment
-// padded to the split column, then the right pane's line for that row.
-func splitBorder(leftSeg, right string, left int) string {
-	b := borderStyle()
-	leftSeg = padCells(ansi.Truncate(leftSeg, left+4, "…"), left+4)
-	right = padCells(ansi.Truncate(right, RightWidth, "…"), RightWidth)
-	return leftSeg + b.Render(" ") + right + b.Render(" │")
-}
-
-// splitBottom is the split layout's bottom border, ┴ at the split column.
-func splitBottom(w, left int) string {
-	b := borderStyle()
-	return b.Render("╰" + strings.Repeat("─", left+2) + "┴" +
-		strings.Repeat("─", max(w-left-5, 0)) + "╯")
-}
-
-// bottomLine is the bottom border: the folded plan when there is one, else the
-// plain outline.
-func bottomLine(in Input, mode Mode, w int) string {
-	if mode == Folded && len(in.Plan) > 0 {
-		return planFolded(in, w)
-	}
-	return borderStyle().Render("╰" + strings.Repeat("─", max(w-2, 0)) + "╯")
-}
-
-// compactRow is the box as one plain row: the state, the counts of running
-// kinds, and the plan's progress.
+// compactRow is the tray as one plain row: the counts of running kinds and the
+// plan's progress, joined by single spaces.
 func compactRow(in Input, w int) Row {
 	parts := make([]string, 0, 5)
-	if strings.TrimSpace(ansi.Strip(in.State)) != "" {
-		parts = append(parts, in.State)
-	}
 	counts := make(map[string]int, len(in.Work))
 	for _, it := range in.Work {
 		counts[it.Kind]++
@@ -433,7 +292,7 @@ func compactRow(in Input, w int) Row {
 			delete(counts, kind)
 		}
 	}
-	// Any other kind still counts: the box must not hide work.
+	// Any other kind still counts: the tray must not hide work.
 	rest := make([]string, 0, len(counts))
 	for kind := range counts {
 		rest = append(rest, kind)
@@ -446,7 +305,7 @@ func compactRow(in Input, w int) Row {
 		done, total := planCounts(in.Plan)
 		parts = append(parts, muted(fmt.Sprintf("plan %d/%d", done, total)))
 	}
-	return Row{Text: ansi.Truncate(strings.Join(parts, " "), max(w, 1), "…"), Frame: FramePlain}
+	return Row{Text: ansi.Truncate(strings.Join(parts, " "), max(w, 1), "…")}
 }
 
 // countCell is one kind's glyph in its colour and its count muted.

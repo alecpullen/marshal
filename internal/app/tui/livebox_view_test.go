@@ -288,11 +288,8 @@ func TestBoxStateShowsTheSDDRun(t *testing.T) {
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
 	m.refreshViewport()
 
-	box := stripANSI(boxOut(m))
-	if !strings.Contains(box, "task 2/5") {
-		t.Fatalf("the box must carry the run summary:\n%s", box)
-	}
-	if !strings.Contains(box, "1m") {
-		t.Fatalf("the box must carry the turn clock:\n%s", box)
+	// The turn clock is the status line's now, not the box's.
+	if got := stripANSI(m.turnStateSegment()); !strings.Contains(got, "1m") {
+		t.Fatalf("the turn state must carry the clock, got %q", got)
 	}
 }

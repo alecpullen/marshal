@@ -10,7 +10,6 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/doctorpanel"
-	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/tools/registry"
 )
@@ -219,15 +218,6 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			word = "on"
 		}
 		cmd := m.setFlash("Expand all: " + word)
-		m.invalidateTranscript()
-		m.refreshViewport()
-		return *m, cmd, true
-	case "ctrl+t":
-		if !readlineShortcutAvailable() {
-			return *m, nil, false
-		}
-		m.liveBoxMode = livebox.Next(m.liveBoxMode, m.leftWidth)
-		cmd := m.setFlash("Plan: " + string(m.liveBoxMode))
 		m.invalidateTranscript()
 		m.refreshViewport()
 		return *m, cmd, true

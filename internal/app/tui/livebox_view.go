@@ -20,36 +20,10 @@ func (m Model) boxInput() livebox.Input {
 		Width:    max(m.leftWidth, 1),
 		MaxRows:  m.boxMaxRows(),
 		Now:      now,
-		Busy:     m.busy && !m.turnStartedAt.IsZero(),
 		Spinner:  m.turnSpinnerFrame(),
 		Previous: m.workPrevious,
 		Expanded: m.workExpanded,
-		Mode:     m.liveBoxMode,
 		Cursor:   m.boxCursor(),
-	}
-	if in.Busy {
-		elapsed := formatElapsed(max(now.Sub(m.turnStartedAt), 0))
-		sdd := m.state.SDDProgress()
-		swarm := m.state.SwarmProgress()
-		switch {
-		case sdd.Active:
-			in.State = spinnerLabel(in.Spinner, runPanelSummaryText(sdd, now, 60)) + " " + elapsed
-		case swarm.Active:
-			in.State = spinnerLabel(in.Spinner, swarmStripText(swarm)) + " " + elapsed
-		default:
-			in.State = spinnerLabel(in.Spinner, "working "+elapsed)
-			if act := m.state.Activity(); spinnerShowsLabel(act.Kind) && act.Label != "" {
-				if label := m.state.PinnedSpinnerLabel(act); label != "" {
-					in.State += " · " + label
-				}
-			}
-		}
-	}
-	if len(m.band.Tasks) > 0 {
-		in.Hints = append(in.Hints, "Ctrl+T plan")
-	}
-	if in.Busy {
-		in.Hints = append(in.Hints, "Ctrl+C ×2 stop")
 	}
 	for _, it := range m.workSnapshot.Items {
 		if viewmodel.WorkActive(it) {
@@ -198,7 +172,7 @@ func (m *Model) handleBoxClick(msg tea.Mouse) (tea.Cmd, bool) {
 	if msg.Y < top || msg.Y >= top+len(layout.Rows) {
 		return nil, false
 	}
-	target := boxRowTarget(layout.Rows[msg.Y-top], msg.X-2)
+	target := boxRowTarget(layout.Rows[msg.Y-top], msg.X)
 	switch target.Kind {
 	case livebox.TargetWork:
 		if m.workExpanded == target.Key {

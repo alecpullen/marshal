@@ -683,15 +683,10 @@ func TestRunPanelDoesNotPushInputOffScreen(t *testing.T) {
 		t.Fatalf("frame height = %d, want %d (run panel pushed input off screen)\n%s", len(lines), m.height, frame)
 	}
 
-	// The run panel summary must be visible.
-	panelRow := -1
-	for i, line := range lines {
-		if strings.Contains(line, "task 2/5") {
-			panelRow = i
-		}
-	}
-	if panelRow < 0 {
-		t.Fatalf("run panel missing from the frame:\n%s", frame)
+	// The turn state must be visible on the status line. The run summary
+	// becomes the tray's plan-run row in Task 6.
+	if !strings.Contains(frame, "working") {
+		t.Fatalf("turn state missing from the frame:\n%s", frame)
 	}
 
 	// The input box must be visible (the ❯ prompt).
@@ -722,11 +717,11 @@ func TestIdleBoxIsEmptyWithoutAPlan(t *testing.T) {
 	}
 }
 
-// TestNoBlankRowAboveTheBox pins the reported bug: an idle session with todos
+// TestNoBlankRowAboveTheTray pins the reported bug: an idle session with todos
 // showed a blank line above its progress row — the always-reserved (but empty)
-// turn-spinner row. Nothing is reserved now: the box's top border carries the
-// spinner and sits straight under the transcript.
-func TestNoBlankRowAboveTheBox(t *testing.T) {
+// turn-spinner row. Nothing is reserved now: the tray's first plan row sits
+// straight under the transcript.
+func TestNoBlankRowAboveTheTray(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	todoDrivenTurn(t, &m, []native.TodoItem{
 		{Content: "first task", Status: "completed"},
@@ -734,7 +729,7 @@ func TestNoBlankRowAboveTheBox(t *testing.T) {
 		{Content: "third task", Status: "pending"},
 	})
 	// Fill the transcript so its bottom row is real content: an empty
-	// viewport pads with blanks, which would mask the spinner row.
+	// viewport pads with blanks, which would mask the tray's first row.
 	for i := 0; i < 40; i++ {
 		m.state.AddMessage(session.RoleAssistant, fmt.Sprintf("transcript filler %d", i), session.ContentTypePlain)
 	}
@@ -743,14 +738,14 @@ func TestNoBlankRowAboveTheBox(t *testing.T) {
 
 	lines := strings.Split(stripANSI(m.viewString()), "\n")
 	top := m.boxTop()
-	if !strings.Contains(lines[top], "╭─") || !strings.Contains(lines[top], "working ") {
-		t.Fatalf("box top border not at row %d: %q", top, lines[top])
+	if !strings.Contains(lines[top], "first task") {
+		t.Fatalf("the tray's first plan row is not at row %d: %q", top, lines[top])
 	}
 	// The transcript renderer trails each entry with one blank separator
-	// line, so one blank above the box is legitimate. Two in a row means
+	// line, so one blank above the tray is legitimate. Two in a row means
 	// the empty spinner row is back.
 	if top < 2 || strings.TrimSpace(lines[top-2]) == "" {
-		t.Errorf("more than one blank line above the box:\n%s", strings.Join(lines, "\n"))
+		t.Errorf("more than one blank line above the tray:\n%s", strings.Join(lines, "\n"))
 	}
 	if len(lines) != 30 {
 		t.Errorf("frame = %d rows, want 30", len(lines))
@@ -918,18 +913,15 @@ func TestTodoProgressRowCarriesTurnElapsed(t *testing.T) {
 			t.Errorf("status line %q missing %q", statusLine, want)
 		}
 	}
-	for _, want := range []string{"▰▱▱▱", "1/4"} {
-		if !strings.Contains(lines[top+1], want) {
-			t.Errorf("plan header %q missing %q", lines[top+1], want)
-		}
+	// The tray's plan rows name the item in progress.
+	tray := stripANSI(boxOut(m))
+	if !strings.Contains(tray, "second task") {
+		t.Errorf("the tray should name the item in progress:\n%s", tray)
 	}
-	if !strings.Contains(frame, "second task") {
-		t.Errorf("the plan should name the item in progress:\n%s", frame)
-	}
-	// The box is the block directly above the input.
+	// The tray is the block directly above the input.
 	inputTop := 30 - m.inputAreaRows() - statusLineRows
 	if bottom := top + m.boxRows(); bottom != inputTop {
-		t.Errorf("box bottom at %d, want the input at %d", bottom, inputTop)
+		t.Errorf("tray bottom at %d, want the input at %d", bottom, inputTop)
 	}
 	if len(lines) != 30 {
 		t.Errorf("frame = %d rows, want 30", len(lines))

@@ -52,18 +52,22 @@ func itemID(it viewmodel.WorkItem) string {
 	return ansi.Truncate(id, 6, "…")
 }
 
+// rowPrefix is the edge, kind glyph and id column every work row starts with.
+func rowPrefix(g string, c color.Color, id string) string {
+	style := lipgloss.NewStyle().Foreground(c)
+	idField := id + strings.Repeat(" ", max(idCells-ansi.StringWidth(id), 0))
+	return style.Render(edge + g + " " + idField)
+}
+
 // runningRow is one live work item's row: the edge, kind glyph and id in the
 // kind's colour, the title, the measurement, and the elapsed clock with the
 // spinner right-aligned. It is pure — every string is cleaned and cut on a
 // cell boundary, and the producer controls none of the colour or layout.
-func runningRow(it viewmodel.WorkItem, in Input, w int, split bool) Row {
+func runningRow(it viewmodel.WorkItem, in Input, w int) Row {
 	w = max(w, 1)
 	g, c := kindStyle(it.Kind)
 	style := lipgloss.NewStyle().Foreground(c)
-
-	idText := itemID(it)
-	idField := idText + strings.Repeat(" ", max(idCells-ansi.StringWidth(idText), 0))
-	prefix := style.Render(edge + g + " " + idField)
+	prefix := rowPrefix(g, c, itemID(it))
 
 	// The right-hand side is the elapsed clock and the turn spinner. The
 	// clock stays plain so the row has one coloured anchor.
@@ -87,7 +91,7 @@ func runningRow(it viewmodel.WorkItem, in Input, w int, split bool) Row {
 
 	room := w - ansi.StringWidth(prefix) - ansi.StringWidth(title) - 2 - ansi.StringWidth(right) - 1
 	text := prefix + title
-	if m := measure(headlined(it, in.Headlines), in.Previous[it.TaskKey], in.Now, max(room, 0), split); m != "" {
+	if m := measure(headlined(it, in.Headlines), in.Previous[it.TaskKey], in.Now, max(room, 0)); m != "" {
 		text += "  " + m
 	}
 	gap := max(w-ansi.StringWidth(text)-ansi.StringWidth(right), 1)
@@ -98,6 +102,96 @@ func runningRow(it viewmodel.WorkItem, in Input, w int, split bool) Row {
 		Target: Target{Kind: TargetWork, Key: it.TaskKey},
 		Tint:   true,
 	}
+}
+
+// heldRow is a finished item's row, held until the next prompt: the same edge,
+// glyph and id as a running row, the title muted, the outcome word, and the
+// completion event's summary. On the right, the duration and the outcome
+// glyph. It is not tinted: the work is over.
+func heldRow(h HeldItem, in Input, w int) Row {
+	w = max(w, 1)
+	g, c := kindStyle(h.Item.Kind)
+	prefix := rowPrefix(g, c, itemID(h.Item))
+
+	right := theme.MutedStyle().Render(formatElapsed(h.Duration)) + " " + outcomeStyle(h.Outcome).Render(outcomeGlyph(h.Outcome))
+
+	title := clean(h.Item.Label, 120)
+	if title == "" {
+		title = clean(itemID(h.Item), 60)
+	}
+	text := prefix + muted(title)
+	if h.Outcome != "" {
+		text += "  " + outcomeStyle(h.Outcome).Render(h.Outcome)
+	}
+	if h.Summary != "" {
+		text += " · " + muted(clean(h.Summary, 120))
+	}
+	gap := max(w-ansi.StringWidth(text)-ansi.StringWidth(right), 1)
+	text = text + strings.Repeat(" ", gap) + right
+
+	return Row{
+		Text:   ansi.Truncate(text, w, "…"),
+		Target: Target{Kind: TargetWork, Key: h.Item.TaskKey},
+	}
+}
+
+// runRow is the plan-run row: an active SDD run or swarm, laid out as a
+// running row with the run's title and summary, and the turn's clock. It is
+// tinted and has no target: it is information, not a browse stop.
+func runRow(r RunRow, in Input, w int) Row {
+	w = max(w, 1)
+	style := lipgloss.NewStyle().Foreground(theme.Current().AccentPrimary)
+	prefix := rowPrefix(glyph.Running, theme.Current().AccentPrimary, "run")
+
+	elapsed := time.Duration(0)
+	if !r.StartedAt.IsZero() {
+		elapsed = max(in.Now.Sub(r.StartedAt), 0)
+	}
+	spinner := in.Spinner
+	if spinner == "" {
+		spinner = glyph.Running
+	}
+	right := theme.MutedStyle().Render(formatElapsed(elapsed)) + " " + style.Render(spinner)
+
+	title := clean(r.Title, 120)
+	title = ansi.Truncate(title, min(ansi.StringWidth(title), max((w-22)*2/5, 8)), "…")
+
+	room := w - ansi.StringWidth(prefix) - ansi.StringWidth(title) - 2 - ansi.StringWidth(right) - 1
+	text := prefix + title
+	if s := clean(r.Summary, 200); s != "" {
+		text += "  " + cut(s, max(room, 0))
+	}
+	gap := max(w-ansi.StringWidth(text)-ansi.StringWidth(right), 1)
+	text = text + strings.Repeat(" ", gap) + right
+
+	return Row{
+		Text: ansi.Truncate(text, w, "…"),
+		Tint: true,
+	}
+}
+
+// outcomeStyle is the colour of a held row's outcome word and glyph: success
+// for done, warning for an outcome the tray could not learn, error otherwise.
+func outcomeStyle(outcome string) lipgloss.Style {
+	th := theme.Current()
+	switch outcome {
+	case "done":
+		return lipgloss.NewStyle().Foreground(th.StatusSuccess)
+	case "outcome unknown":
+		return lipgloss.NewStyle().Foreground(th.StatusWarning)
+	}
+	return lipgloss.NewStyle().Foreground(th.StatusError)
+}
+
+// outcomeGlyph is the mark a held row ends with.
+func outcomeGlyph(outcome string) string {
+	switch outcome {
+	case "done":
+		return glyph.OK
+	case "outcome unknown":
+		return glyph.Warning
+	}
+	return glyph.Error
 }
 
 // headlined folds the child agent's newest narration headline into the item's
@@ -116,13 +210,13 @@ func headlined(it viewmodel.WorkItem, headlines map[string]string) viewmodel.Wor
 // measure is the running item's measurement: the one line that says how far
 // the work has got, in the most honest form its producer supports. First
 // match wins.
-func measure(it viewmodel.WorkItem, prev *progress.Snapshot, now time.Time, room int, split bool) string {
-	return measureText(it, prev, now, room, split, true)
+func measure(it viewmodel.WorkItem, prev *progress.Snapshot, now time.Time, room int) string {
+	return measureText(it, prev, now, room, true)
 }
 
 // measureText is measure with the bar suppressible: the expanded card draws
 // its own full-width bar, so its measurement line carries the text alone.
-func measureText(it viewmodel.WorkItem, prev *progress.Snapshot, now time.Time, room int, split, withBar bool) string {
+func measureText(it viewmodel.WorkItem, prev *progress.Snapshot, now time.Time, room int, withBar bool) string {
 	if room <= 0 {
 		return ""
 	}
@@ -140,7 +234,7 @@ func measureText(it viewmodel.WorkItem, prev *progress.Snapshot, now time.Time, 
 		}
 	}
 	if p := it.Progress; p != nil {
-		if s := progressText(it, p, prev, now, room, split, withBar); s != "" {
+		if s := progressText(it, p, prev, now, room, withBar); s != "" {
 			return cut(s, room)
 		}
 	}
@@ -153,14 +247,14 @@ func measureText(it viewmodel.WorkItem, prev *progress.Snapshot, now time.Time, 
 // progressText renders a progress-bearing item's measurement: the go test
 // JSON counts, a bar with its percentage and count, an untotalled metric, or a
 // bare phase label. "" when the snapshot carries none of them.
-func progressText(it viewmodel.WorkItem, p *progress.Snapshot, prev *progress.Snapshot, now time.Time, room int, split, withBar bool) string {
+func progressText(it viewmodel.WorkItem, p *progress.Snapshot, prev *progress.Snapshot, now time.Time, room int, withBar bool) string {
 	m, ok := primaryMetric(p)
 	est := progress.EstimateFor(prev, p, m.ID, now, it.State == "stopping")
 	switch {
 	case isGoTestJSON(it):
 		return goCounts(p)
 	case ok && est.Fraction != nil:
-		return fractionText(it, p, m, est, now, room, split, withBar)
+		return fractionText(it, p, m, est, now, room, withBar)
 	case ok:
 		return metricText(m, est)
 	case p.Phase != nil:
@@ -211,15 +305,11 @@ func goMetric(p *progress.Snapshot, label string) float64 {
 
 // fractionText renders a metric with a known total: the phase prefix when the
 // phase has one, the bar and percentage, the count, and then the stale signal,
-// the reported-done notice or the ETA and rate. Split mode keeps the bar and
-// the percentage only.
-func fractionText(it viewmodel.WorkItem, p *progress.Snapshot, m progress.Metric, est progress.Estimate, now time.Time, room int, split, withBar bool) string {
+// the reported-done notice or the ETA and rate.
+func fractionText(it viewmodel.WorkItem, p *progress.Snapshot, m progress.Metric, est progress.Estimate, now time.Time, room int, withBar bool) string {
 	_, c := kindStyle(it.Kind)
 	frac := *est.Fraction
 	pct := fmt.Sprintf("%.0f%%", frac*100)
-	if split {
-		return Bar(frac, BarCells, c) + " " + pct
-	}
 	text := ""
 	if p.Phase != nil && p.Phase.Total > 0 {
 		text = fmt.Sprintf("%d/%d %s ", p.Phase.Index, p.Phase.Total, phaseLabel(p.Phase))
@@ -300,7 +390,7 @@ func card(it viewmodel.WorkItem, in Input, w int) []Row {
 	it = headlined(it, in.Headlines)
 	prev := in.Previous[it.TaskKey]
 
-	rows := []Row{runningRow(it, in, w, false)}
+	rows := []Row{runningRow(it, in, w)}
 	add := func(text string) {
 		if text == "" || len(rows) >= CardRows {
 			return
@@ -317,7 +407,7 @@ func card(it viewmodel.WorkItem, in Input, w int) []Row {
 			}
 		}
 	}
-	add(measureText(it, prev, in.Now, w, false, false))
+	add(measureText(it, prev, in.Now, w, false))
 	add(cardDetail(it, in))
 	add(muted(cardActions(it)))
 	return rows

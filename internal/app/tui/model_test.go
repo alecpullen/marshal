@@ -5332,12 +5332,14 @@ func TestTUIRendersSDDPanelWhenActive(t *testing.T) {
 	m.state.SetSDDProgress(session.SDDProgress{Active: true, PlanName: "p", TotalTasks: 1, CurrentTask: 1, Phase: "implementing"})
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
 	m.refreshViewport()
-	view := stripANSI(m.View().Content)
-	if !strings.Contains(view, "task 1/1") || !strings.Contains(view, "implementing") {
-		t.Errorf("view missing the run summary in the box: %q", view)
+	// The run summary becomes the tray's plan-run row in Task 6; until then the
+	// turn state is the status line's.
+	if got := stripANSI(m.turnStateSegment()); !strings.Contains(got, "working") {
+		t.Errorf("turn state missing while an SDD run is active: %q", got)
 	}
+	view := stripANSI(m.View().Content)
 	if strings.Contains(view, "plan · p") {
-		t.Errorf("old SDD panel still rendered alongside the box: %q", view)
+		t.Errorf("old SDD panel still rendered alongside the tray: %q", view)
 	}
 }
 

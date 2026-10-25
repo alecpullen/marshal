@@ -25,9 +25,6 @@ type FooterHints struct {
 	IdleRollbackEligible bool
 	// QueueNonEmpty is true when the steering queue has items waiting.
 	QueueNonEmpty bool
-	// PlanActive is true when the box is drawing a plan section (the band
-	// carries todos), so the Ctrl+T layout cycle is worth advertising.
-	PlanActive bool
 	// MouseReleased reports that the mouse currently belongs to the terminal
 	// (Ctrl+S). The hint's label flips on it: a user who has released the
 	// mouse needs to be told how to get wheel scrolling back, and a user who
@@ -152,9 +149,6 @@ func Footer(h FooterHints) string {
 		}
 		if h.IdleRollbackEligible {
 			segs = append(segs, pair("Ctrl+R", "rollback"))
-		}
-		if h.PlanActive {
-			segs = append(segs, pair("Ctrl+T", "plan"))
 		}
 		segs = append(segs, pair("Ctrl+B", "session"))
 		showMouseHint = true

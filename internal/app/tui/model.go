@@ -760,10 +760,6 @@ type Model struct {
 	// a result from a closed panel can be told apart from its replacement.
 	panelSeq uint64
 
-	// liveBoxMode is the live box's plan layout, seeded from config
-	// (tui.live_box.layout) when the model is constructed and cycled by
-	// Ctrl+T.
-	liveBoxMode livebox.Mode
 	// boxMemo is this frame's box layout, planned once in viewString; nil
 	// outside viewString. It lives only on that call's model copy.
 	boxMemo *livebox.Layout
@@ -1765,7 +1761,6 @@ func New(state *session.State, opts ...Option) Model {
 		spinner:          NewSpinner(),
 		now:              time.Now,
 		viewportFollow:   true,
-		liveBoxMode:      livebox.ParseMode(state.Config.TUI.LiveBox.Layout),
 		discovered:       map[string][]schema.ModelInfo{},
 	}
 	for _, opt := range opts {

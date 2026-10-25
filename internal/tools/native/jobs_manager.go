@@ -78,9 +78,9 @@ var resourceLimitCauses = map[string]bool{
 // JobEvent is the broker payload published by JobManager whenever the tracked
 // execution snapshot changes: admission, published PID, attachment, state and
 // settlement — including changes that leave the detached count equal. The TUI's
-// pump converts it into a jobCountMsg to drive the status line without polling.
-// The type lives next to the service that publishes it; the tui package imports
-// this native type directly.
+// change pump wakes on it through the in-process adapter, so the status line
+// follows the count without polling. The type lives next to the service that
+// publishes it; the tui package imports this native type directly.
 type JobEvent struct {
 	// Count is the number of detached executions that are still running or
 	// stopping. Attached foreground commands are not background work; they

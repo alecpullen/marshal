@@ -287,10 +287,10 @@ Decision: `WireTree`, with the C6 additions.
   `tui.SessionSwapResult.Session` carries to the TUI.
 - It must not import `internal/app`. TUI tests import it, and `app`
   imports `tui`.
-- The `Host` holds what `accessTUIOptions` and `WithSendNow` bind to
-  today: the runtime's current state and runner, read under the runtime
-  gate. A `Session` handed out before a swap never reaches the session
-  that replaced it.
+- The `Host` holds what `accessTUIOptions` binds to today (and what
+  `WithSendNow` bound to until plan 2b deleted it): the runtime's current
+  state and runner, read under the runtime gate. A `Session` handed out
+  before a swap never reaches the session that replaced it.
 - It behaves exactly like the code it replaces. Where the TUI applied a
   side effect itself, the adapter now does: writing and applying a
   permission rule, reloading config after a write, and logging a
@@ -874,6 +874,7 @@ carries the program's context. The job list and the watch snapshot are
 deleted rather than moved, because nothing read them. T1b gains seven
 names, all at plan `2b`: `SteeringQueue`, `SteeringSnapshot`,
 `SubmitSendNow`, `RunningJobsCount`, `SwarmProgress`, `SDDProgress` and
-`SDDGate`. T1's allowlist lost 13 entries across 7 files, and 4 files lost
-their key entirely (`eta.go`, `gatepanel/gatepanel.go`, `run_panel.go`,
-`sessionsheet/section_swarm.go`).
+`SDDGate`. T1's allowlist lost 13 entries across 9 files — five files trimmed
+(`commands_dispatch.go`, `events.go`, `model.go`, `pump.go`,
+`sessionsheet/section.go`) and four keys dropped entirely (`eta.go`,
+`gatepanel/gatepanel.go`, `run_panel.go`, `sessionsheet/section_swarm.go`).

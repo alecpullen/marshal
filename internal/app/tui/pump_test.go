@@ -32,7 +32,13 @@ func TestPumpChangedCarriesItsChannel(t *testing.T) {
 func TestPumpChangedEndsOnClose(t *testing.T) {
 	ch := make(chan struct{})
 	close(ch)
-	if msg := runCmdOnce(pumpChanged(ch), time.Second); msg != nil {
+	msg := runCmdOnce(pumpChanged(ch), time.Second)
+	// A nil success value makes a blocking regression indistinguishable from
+	// the expected result, so the deadline is checked as its own outcome.
+	if _, timedOut := msg.(cmdTimeout); timedOut {
+		t.Fatal("the pump blocked on a closed channel instead of ending")
+	}
+	if msg != nil {
 		t.Fatalf("got %#v, want nil on a closed channel", msg)
 	}
 }
@@ -66,9 +72,17 @@ func TestHandleChangedIgnoresAReplacedSession(t *testing.T) {
 	}
 }
 
-// runCmdOnce runs the cmd once with a hard timeout. Returns the produced
-// msg, or nil if the cmd blocked past the timeout (the cmd is then left
-// to finish in the background — acceptable for blocking-pump tests).
+// cmdTimeout is the message runCmdOnce returns when a cmd blocked past its
+// deadline. It is a distinct value, not nil, because several cmds legitimately
+// return nil: a test whose success value is nil would otherwise pass when the
+// cmd never returned at all. The cmd is left to finish in the background, which
+// is acceptable for the blocking-pump tests.
+type cmdTimeout struct{}
+
+func (cmdTimeout) String() string { return "cmd timed out" }
+
+// runCmdOnce runs the cmd once with a hard timeout. Returns the produced msg,
+// or cmdTimeout if the cmd blocked past the deadline.
 func runCmdOnce(cmd tea.Cmd, timeout time.Duration) tea.Msg {
 	if cmd == nil {
 		return nil
@@ -79,7 +93,7 @@ func runCmdOnce(cmd tea.Cmd, timeout time.Duration) tea.Msg {
 	case msg := <-out:
 		return msg
 	case <-time.After(timeout):
-		return nil
+		return cmdTimeout{}
 	}
 }
 

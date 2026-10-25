@@ -172,13 +172,19 @@ func (s *Session) absorbReceipt(r session.SteeringReceipt) {
 
 // latestReceipt returns the stored receipt with the highest version among those
 // for turnID, or among all of them when turnID is empty.
+//
+// When turnID names a turn, receipts from earlier turns are dropped on the way
+// past: a session never needs them again, and keeping them would grow the map
+// for the session's whole life and make every Status scan all of it. The map is
+// therefore bounded by the current turn's requests, not by the session's.
 func (s *Session) latestReceipt(turnID string) (session.SteeringReceipt, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var best session.SteeringReceipt
 	found := false
-	for _, r := range s.receipts {
+	for id, r := range s.receipts {
 		if turnID != "" && r.TurnID != turnID {
+			delete(s.receipts, id)
 			continue
 		}
 		if !found || r.Version > best.Version {

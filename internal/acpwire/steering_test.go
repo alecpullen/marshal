@@ -34,3 +34,30 @@ func TestSteeringReceiptJSONIsTheACPContract(t *testing.T) {
 		t.Errorf("receipt JSON:\n got: %s\nwant: %s", got, want)
 	}
 }
+
+// TestSteeringReceiptOmitsEmptyFields pins the other half of the contract: a
+// receipt with no outcomes and no operation encodes without those keys at all,
+// so a client must not expect them to be present-but-empty.
+func TestSteeringReceiptOmitsEmptyFields(t *testing.T) {
+	got, err := json.Marshal(SteeringReceipt{})
+	if err != nil {
+		t.Fatalf("marshal receipt: %v", err)
+	}
+	const want = `{"version":0,"requestId":"","turnId":"","status":""}`
+	if string(got) != want {
+		t.Errorf("empty receipt JSON:\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// TestSendNowRequestOmitsEmptyText pins the client-to-server direction: an
+// empty text omits the key rather than sending "".
+func TestSendNowRequestOmitsEmptyText(t *testing.T) {
+	got, err := json.Marshal(SendNowRequest{SessionID: "s1", TurnID: "t1", RequestID: "r1"})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	const want = `{"sessionId":"s1","turnId":"t1","requestId":"r1"}`
+	if string(got) != want {
+		t.Errorf("request JSON:\n got: %s\nwant: %s", got, want)
+	}
+}

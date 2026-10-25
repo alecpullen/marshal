@@ -1707,6 +1707,9 @@ func collectSheetBaseRefs(t *testing.T, cmd tea.Cmd) []sheetBaseRefMsg {
 			return
 		}
 		msg := runCmdOnce(c, time.Second)
+		if _, timedOut := msg.(cmdTimeout); timedOut {
+			return
+		}
 		if msg == nil {
 			return
 		}

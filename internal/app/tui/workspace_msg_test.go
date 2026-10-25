@@ -82,10 +82,20 @@ func TestChangedLeavesTheSheetWhenTheWorkspaceStays(t *testing.T) {
 	mm, cmd := m.Update(changedMsg{ch: m.sess.Changed()})
 	m = mm.(Model)
 	_ = batchResults(t, cmd)
+	seen := m.workspaceSeen
 
 	// A second change with the same workspace yields no base-ref command.
 	mm, cmd = m.Update(changedMsg{ch: m.sess.Changed()})
 	m = mm.(Model)
+	// The guard is asserted on state, not only on the collected batch: a
+	// regression that issued a slow rebase could otherwise be hidden by
+	// batchResults' deadline.
+	if m.sess.Status().Workspace != seen {
+		t.Fatalf("the workspace moved between changes: %+v, want %+v", m.sess.Status().Workspace, seen)
+	}
+	if m.workspaceSeen != seen {
+		t.Fatalf("workspaceSeen = %+v, want the unchanged %+v", m.workspaceSeen, seen)
+	}
 	for _, msg := range batchResults(t, cmd) {
 		if _, ok := msg.(sheetBaseRefMsg); ok {
 			t.Fatal("a repeated change with an unchanged workspace rebased the sheet")

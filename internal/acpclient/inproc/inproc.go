@@ -222,6 +222,12 @@ func (s *Session) SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpw
 	if err != nil {
 		return acpwire.SteeringReceipt{}, err
 	}
+	// A swap can land between the check above and the submission. The receipt
+	// would then belong to a session that no longer exists, so refuse it rather
+	// than keep it and signal a channel that is already closed.
+	if s.closed.Load() {
+		return acpwire.SteeringReceipt{}, errSessionClosed
+	}
 	s.absorbReceipt(receipt)
 	s.signal()
 	return viewmodel.SteeringReceiptOf(receipt), nil

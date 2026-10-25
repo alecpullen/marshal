@@ -75,12 +75,20 @@ func testModelStub(state *session.State, stub *stubSession, opts ...Option) Mode
 // batchResults runs cmd and returns the messages it produces. The commands of
 // a batch run concurrently under one deadline, because the change pump blocks
 // until the next signal and a sequential run would wait on it.
+//
+// A blocking pump member never delivers, so the deadline is expected to fire on
+// any batch that contains one. Tests that assert something is *absent* must
+// therefore not lean on this collection alone: assert the state that issues the
+// command too, or a slow command could hide behind the deadline.
 func batchResults(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	t.Helper()
 	if cmd == nil {
 		return nil
 	}
 	msg := runCmdOnce(cmd, time.Second)
+	if _, timedOut := msg.(cmdTimeout); timedOut {
+		return nil
+	}
 	batch, ok := msg.(tea.BatchMsg)
 	if !ok {
 		if msg == nil {

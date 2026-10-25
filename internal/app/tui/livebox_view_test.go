@@ -278,19 +278,28 @@ func TestScrollToPlanItemUsesTheOneBasedSlot(t *testing.T) {
 	}
 }
 
-// TestBoxStateShowsTheSDDRun: an active run's summary is the box's state.
-func TestBoxStateShowsTheSDDRun(t *testing.T) {
+// TestSwarmIsTheTraysFirstRow: an active swarm is the tray's first row.
+func TestSwarmIsTheTraysFirstRow(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
-	m.state.SetSDDProgress(session.SDDProgress{
-		Active: true, PlanName: "p", TotalTasks: 5, DoneTasks: 1, CurrentTask: 2, Phase: "implement",
+	m.state.SetSwarmProgress(session.SwarmProgress{
+		Active: true,
+		Goal:   "ship the tray",
+		Roles:  []session.SwarmRole{{Name: "implementer", Status: "running"}},
 	})
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
+	m.invalidateTranscript()
 	m.refreshViewport()
 
-	// The turn clock is the status line's now, not the box's.
-	if got := stripANSI(m.turnStateSegment()); !strings.Contains(got, "1m") {
-		t.Fatalf("the turn state must carry the clock, got %q", got)
+	rows := m.boxLayout().Rows
+	if len(rows) == 0 {
+		t.Fatal("the tray has no rows")
+	}
+	first := stripANSI(rows[0].Text)
+	for _, want := range []string{"run", "swarm"} {
+		if !strings.Contains(first, want) {
+			t.Errorf("tray row 0 = %q, want it to contain %q", first, want)
+		}
 	}
 }
 

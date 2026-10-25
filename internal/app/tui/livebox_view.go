@@ -63,6 +63,30 @@ func (m Model) boxInput() livebox.Input {
 		Expanded: m.workExpanded,
 		Cursor:   m.boxCursor(),
 	}
+	// An active SDD run or swarm is the tray's first row. The turn state on the
+	// status line still says "working"; the run's own summary is this row.
+	if m.busy && !m.turnStartedAt.IsZero() {
+		sdd := m.state.SDDProgress()
+		swarm := m.state.SwarmProgress()
+		switch {
+		case sdd.Active:
+			title := sdd.PlanName
+			if title == "" {
+				title = "plan run"
+			}
+			in.Run = &livebox.RunRow{
+				Title:     title,
+				Summary:   runPanelSummaryText(sdd, now, 60),
+				StartedAt: m.turnStartedAt,
+			}
+		case swarm.Active:
+			in.Run = &livebox.RunRow{
+				Title:     "swarm",
+				Summary:   swarmStripText(swarm),
+				StartedAt: m.turnStartedAt,
+			}
+		}
+	}
 	for _, it := range m.workSnapshot.Items {
 		if viewmodel.WorkActive(it) {
 			in.Work = append(in.Work, it)

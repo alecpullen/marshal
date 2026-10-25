@@ -355,16 +355,24 @@ func TestRunPanelShowsAgentFallbackPhase(t *testing.T) {
 	}
 }
 
-// An SDD run's summary is the tray's plan-run row (Task 6); until then the
-// turn state is the status line's, not a panel of its own.
-func TestSDDRunShowsInTheBoxBorder(t *testing.T) {
+// An SDD run's summary is the tray's first row.
+func TestSDDRunIsTheTraysFirstRow(t *testing.T) {
 	m := newTestModelInRepo(t)
 	m.width, m.height = 100, 40
 	m.leftWidth = 100
 	m.state.SetSDDProgress(etaTestProgress())
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
+	m.invalidateTranscript()
+	m.refreshViewport()
 
-	if got := stripANSI(m.turnStateSegment()); !strings.Contains(got, "working") {
-		t.Fatalf("turn state missing while an SDD run is active: %q", got)
+	rows := m.boxLayout().Rows
+	if len(rows) == 0 {
+		t.Fatal("the tray has no rows")
+	}
+	first := stripANSI(rows[0].Text)
+	for _, want := range []string{"run", "task "} {
+		if !strings.Contains(first, want) {
+			t.Errorf("tray row 0 = %q, want it to contain %q", first, want)
+		}
 	}
 }

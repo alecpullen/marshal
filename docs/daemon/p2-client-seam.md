@@ -792,3 +792,20 @@ in-process adapter). `tui.New` now takes a host and a session, the state
 arrives through `WithLegacyState`, and `gitinfo` and `changedfiles` moved
 to `internal/repo`. The boundary test's allowlist starts at 66 files,
 140 import entries and 22 `config.*` entries.
+
+**Plan 2a (status), branch `p2-2a-status`.** Added `acpwire.SessionStatus`
+and its parts (`Route`, `Quota`, `Effort`, `Interaction`, `Activity`,
+`Workspace`, `Browser`) with their JSON names fixed, plus `acpwire.Millis`
+and `acpwire.Time` for the Unix-millisecond fields. `acpclient.Session`
+gains `Status() acpwire.SessionStatus`, with its `session/status` row in
+`Methods`, and the in-process adapter builds it from the state on every
+call. The TUI now reads its identity, routes, access, activity, workspace
+roots and browser state through `Status()`, and its session ID through
+`ID()`: 89 reads in 47 functions moved off `m.state`. T1b, the
+moved-reads guard, starts its list with these 18 names, all at plan `2a`:
+`WorkingDir`, `Generation`, `LeafID`, `Branches`, `SessionID`,
+`ActiveRoute`, `TurnRoute`, `TurnUsage`, `TurnQuota`, `EffortOverride`,
+`InteractionState`, `SudoUnlockEnabled`, `Trusted`, `HasBackup`,
+`Activity`, `HasRunningSubagent`, `Workspace` and `BrowserInfo`. T1's
+allowlist did not change: no file lost its last agent-side import, because
+most files mix groups.

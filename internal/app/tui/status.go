@@ -74,9 +74,12 @@ func dimStyle() lipgloss.Style {
 }
 
 // turnStateSegment is the left-side "what the turn is doing" segment: the
-// pinned turn spinner, the word working, the elapsed time and — when the
-// activity kind is worth pinning — its label. It is empty unless a turn is
-// actually running.
+// pinned turn spinner, the word working and the elapsed time. It is empty
+// unless a turn is actually running.
+//
+// The current tool is deliberately absent: the tray's running row already
+// names it, and repeating it here made the status line churn on every tool
+// call. The spinner and clock alone answer "is it stuck?".
 //
 // The turn's own state used to live in the box's top border; the status line
 // is where a user looks for the session's live state, so the segment sits
@@ -87,11 +90,6 @@ func (m Model) turnStateSegment() string {
 	}
 	elapsed := formatElapsed(max(m.now().Sub(m.turnStartedAt), 0))
 	state := "working " + elapsed
-	if act := m.state.Activity(); spinnerShowsLabel(act.Kind) && act.Label != "" {
-		if label := m.state.PinnedSpinnerLabel(act); label != "" {
-			state += " · " + label
-		}
-	}
 	// The glyph carries the primary accent so the beat reads first; the rest
 	// stays dim, because the mode cue is the only bold cue on the line apart
 	// from the warning cues.

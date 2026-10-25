@@ -801,7 +801,7 @@ func TestStatusLineKeepsTheTurnStateWhenNarrow(t *testing.T) {
 	}
 }
 
-func TestTurnSpinnerShowsActivityLabel(t *testing.T) {
+func TestTurnSpinnerOmitsActivityLabel(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.busy = true
 	m.turnStartedAt = m.now().Add(-12 * time.Second)
@@ -816,8 +816,8 @@ func TestTurnSpinnerShowsActivityLabel(t *testing.T) {
 	if !strings.Contains(row, "⠋") || !strings.Contains(row, "12s") {
 		t.Fatalf("turn spinner missing glyph/elapsed: %q", row)
 	}
-	if !strings.Contains(row, "checking the auth module") {
-		t.Fatalf("turn spinner missing activity label: %q", row)
+	if strings.Contains(row, "checking the auth module") {
+		t.Fatalf("turn spinner must not repeat the current tool: %q", row)
 	}
 }
 

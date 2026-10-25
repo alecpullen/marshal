@@ -8644,108 +8644,20 @@ func TestCommandAcceptArmsArgumentCompletion(t *testing.T) {
 	}
 }
 
-// F5: streaming thinking labels never render in the pinned spinner row.
-func TestTurnSpinnerDropsStreamingThinkingLabels(t *testing.T) {
-	m := newViewTestModelWithRegistry(t, 80, 24)
-	m.busy = true
-	m.turnStartedAt = time.Now()
-	m.state.SetActivity(session.Activity{Kind: session.ActivityThinking, Label: "very long streaming thought line"})
-	if out := stripANSI(m.turnStateSegment()); strings.Contains(out, "very long streaming") {
-		t.Fatal("thinking labels must not appear in the pinned spinner row")
-	}
-}
-
-// F5: slow, stable activity kinds still pin their label into the row.
-func TestTurnSpinnerKeepsStableActivityLabels(t *testing.T) {
+// The status line's turn segment carries only the spinner and clock: the
+// current tool is already named by the tray's running row, so repeating it
+// here would churn the line on every tool call.
+func TestTurnSpinnerOmitsTheCurrentTool(t *testing.T) {
 	m := newViewTestModelWithRegistry(t, 80, 24)
 	m.busy = true
 	m.turnStartedAt = time.Now()
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell: go test"})
-	if out := stripANSI(m.turnStateSegment()); !strings.Contains(out, "shell: go test") {
-		t.Fatalf("tool labels should render in the spinner row, got %q", out)
-	}
-}
-
-// The spinner label dwell time prevents fast-cycling tool labels from
-// flickering. A new label arriving within the dwell window keeps the old
-// label; once the dwell expires, the new label is adopted.
-func TestTurnSpinnerLabelDwellHoldsOldLabel(t *testing.T) {
-	// The dwell state lives on session.State (not Model) so it survives
-	// View() being a value receiver. The test controls time via the
-	// State's clock (WithClock), not m.now.
-	start := time.Unix(100, 0)
-	clock := start
-	state := session.New(config.Default(), t.TempDir(), start, session.Persistence{},
-		session.WithClock(func() time.Time { return clock }))
-	reg := commands.New()
-	mustRegister(t, reg, commands.Command{
-		Name: "plan", Description: "Plan a task", Args: "<goal>",
-		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
-	})
-	m := New(state, WithCommandRegistry(reg))
-	m.resize(80, 24)
-	m.refreshViewport()
-	m.busy = true
-	m.now = func() time.Time { return clock }
-	m.turnStartedAt = start
-
-	// First tool label is adopted immediately.
-	clock = start
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: config.go"})
 	out := stripANSI(m.turnStateSegment())
-	if !strings.Contains(out, "file.read: config.go") {
-		t.Fatalf("first label should be adopted immediately, got %q", out)
+	if strings.Contains(out, "shell: go test") {
+		t.Fatalf("the current tool must not repeat in the status line, got %q", out)
 	}
-
-	// 200ms later, a new label arrives — within the 500ms dwell, old stays.
-	clock = start.Add(200 * time.Millisecond)
-	m.now = func() time.Time { return clock }
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "shell.run: go test"})
-	out = stripANSI(m.turnStateSegment())
-	if !strings.Contains(out, "file.read: config.go") {
-		t.Fatalf("old label should persist within dwell window, got %q", out)
-	}
-	if strings.Contains(out, "shell.run: go test") {
-		t.Fatalf("new label must not appear within dwell window, got %q", out)
-	}
-
-	// 600ms after the first label was pinned, the dwell has elapsed.
-	clock = start.Add(600 * time.Millisecond)
-	m.now = func() time.Time { return clock }
-	out = stripANSI(m.turnStateSegment())
-	if !strings.Contains(out, "shell.run: go test") {
-		t.Fatalf("new label should appear after dwell expires, got %q", out)
-	}
-}
-
-// A kind change adopts the new label immediately, bypassing the dwell.
-func TestTurnSpinnerLabelDwellResetsOnKindChange(t *testing.T) {
-	start := time.Unix(200, 0)
-	clock := start
-	state := session.New(config.Default(), t.TempDir(), start, session.Persistence{},
-		session.WithClock(func() time.Time { return clock }))
-	reg := commands.New()
-	mustRegister(t, reg, commands.Command{
-		Name: "plan", Description: "Plan a task", Args: "<goal>",
-		Handler: func(s *session.State, args []string) commands.Result { return commands.Text("") },
-	})
-	m := New(state, WithCommandRegistry(reg))
-	m.resize(80, 24)
-	m.refreshViewport()
-	m.busy = true
-	m.now = func() time.Time { return clock }
-	m.turnStartedAt = start
-
-	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: "file.read: a.go"})
-	stripANSI(m.turnStateSegment())
-
-	// 100ms later, kind changes to Approval — should adopt immediately.
-	clock = start.Add(100 * time.Millisecond)
-	m.now = func() time.Time { return clock }
-	m.state.SetActivity(session.Activity{Kind: session.ActivityApproval, Label: "approve: shell.run"})
-	out := stripANSI(m.turnStateSegment())
-	if !strings.Contains(out, "approve: shell.run") {
-		t.Fatalf("kind change should adopt new label immediately, got %q", out)
+	if !strings.Contains(out, "working") {
+		t.Fatalf("the turn state must keep the spinner and clock, got %q", out)
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
@@ -581,17 +580,4 @@ func (m Model) fallbackView() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		mutedStyle().Render("Marshal — waiting for terminal resize..."),
 	)
-}
-
-// spinnerShowsLabel reports whether an activity kind is slow and stable
-// enough to pin into the turn-spinner row. Streaming labels (thinking,
-// narration) churn per reasoning line and are excluded; the transcript's
-// live blocks already render them inline.
-func spinnerShowsLabel(kind session.ActivityKind) bool {
-	switch kind {
-	case session.ActivityTool, session.ActivityApproval, session.ActivityQuestion, session.ActivityReconnecting:
-		return true
-	default:
-		return false
-	}
 }

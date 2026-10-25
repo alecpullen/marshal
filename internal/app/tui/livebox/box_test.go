@@ -100,6 +100,17 @@ func rowTexts(l Layout) []string {
 	return out
 }
 
+// innerRows is a layout's rows inside the outline, without its border lines.
+func innerRows(l Layout) []Row {
+	out := make([]Row, 0, len(l.Rows))
+	for _, r := range l.Rows {
+		if r.Frame == FrameInner {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // joined is a layout's plain rows as one string.
 func joined(l Layout) string {
 	return strings.Join(rowTexts(l), "\n")
@@ -118,26 +129,28 @@ func TestTrayEmptyWithNothingToPin(t *testing.T) {
 }
 
 // TestIdlePlanDrawsItsRows pins the idle tray: with no work, a four-item plan
-// is two plan rows, each indented one cell.
+// is its own framed section, the header in the top border over two plan rows.
 func TestIdlePlanDrawsItsRows(t *testing.T) {
 	in := Input{Width: 80, MaxRows: 20, Now: testNow, Plan: planOf(4, 2, 3)}
 	l := Plan(in)
-	if len(l.Rows) != 2 {
-		t.Fatalf("rows = %d, want 2: %q", len(l.Rows), rowTexts(l))
+	texts := rowTexts(l)
+	if len(l.Rows) != 4 {
+		t.Fatalf("rows = %d, want the top border, 2 plan rows and the bottom border: %q", len(l.Rows), texts)
 	}
-	for i, r := range l.Rows {
-		if !strings.HasPrefix(ansi.Strip(r.Text), " ") {
-			t.Errorf("plan row %d = %q, want it indented one cell", i, ansi.Strip(r.Text))
-		}
+	if !strings.HasPrefix(texts[0], "╭─ plan") || !strings.Contains(texts[0], "2/4") {
+		t.Errorf("top border = %q, want the plan header", texts[0])
 	}
-	out := ansi.Strip(Render(l, 80))
-	for _, want := range []string{"todo a", "todo b"} {
-		if !strings.Contains(out, want) {
+	if n := len(innerRows(l)); n != 2 {
+		t.Errorf("inner rows = %d, want the plan's two rows", n)
+	}
+	out := strings.Split(ansi.Strip(Render(l, 80)), "\n")
+	for _, want := range []string{"│ ✓ todo a", "│ ✓ todo b"} {
+		if !strings.Contains(strings.Join(out, "\n"), want) {
 			t.Errorf("Render = %q, want it to contain %q", out, want)
 		}
 	}
-	if n := len(strings.Split(out, "\n")); n != 2 {
-		t.Errorf("Render = %d lines, want the plan's two rows", n)
+	if !strings.HasPrefix(out[len(out)-1], "╰") {
+		t.Errorf("last line = %q, want the bottom border", out[len(out)-1])
 	}
 }
 
@@ -150,8 +163,8 @@ func TestShedOrder(t *testing.T) {
 		t.Fatalf("full tray shed %d steps, want none", full.Shed)
 	}
 	fullHeight := len(full.Rows)
-	if fullHeight != 14 {
-		t.Fatalf("full height = %d, want 14 (held, card+4 running, the two subagent cards on two rows each, 2 plan rows)", fullHeight)
+	if fullHeight != 17 {
+		t.Fatalf("full height = %d, want 17 (top border, held, card+4 running, the two subagent cards on two rows each, plan header, 2 plan rows, bottom border)", fullHeight)
 	}
 
 	byShed := make([]Layout, shedSteps+1)
@@ -171,17 +184,20 @@ func TestShedOrder(t *testing.T) {
 	}
 
 	// Unshed: the held row comes first, in start order.
-	unshed := rowTexts(byShed[0])
-	if !strings.Contains(unshed[0], "job-0") {
-		t.Errorf("unshed row 0 = %q, want the held row first", unshed[0])
+	if got := ansi.Strip(innerRows(byShed[0])[0].Text); !strings.Contains(got, "job-0") {
+		t.Errorf("unshed first row = %q, want the held row first", got)
 	}
 
-	// Step 1: the plan becomes its one-line form.
-	if got := joined(byShed[1]); !strings.Contains(got, "3/4") || !strings.Contains(got, "todo c") {
-		t.Errorf("shed 1 tray = %q, want the one-line plan", got)
+	// Step 1: the plan's section folds into the bottom border's one line.
+	shed1 := rowTexts(byShed[1])
+	if got := shed1[len(shed1)-1]; !strings.HasPrefix(got, "╰─ plan") || !strings.Contains(got, "3/4") || !strings.Contains(got, "todo c") {
+		t.Errorf("shed 1 bottom border = %q, want the one-line plan", got)
 	}
-	if n := len(byShed[1].Rows); n != 13 {
-		t.Errorf("shed 1 rows = %d, want 13", n)
+	if got := joined(byShed[1]); strings.Contains(got, "├─ plan") {
+		t.Errorf("shed 1 tray = %q, want the plan section gone", got)
+	}
+	if n := len(byShed[1].Rows); n != 14 {
+		t.Errorf("shed 1 rows = %d, want 14", n)
 	}
 
 	// Step 2: the held rows fold into one row.
@@ -468,16 +484,20 @@ func TestHeldRowKeepsItsSlot(t *testing.T) {
 		}},
 	}
 	l := Plan(in)
-	if len(l.Rows) != 3 {
-		t.Fatalf("rows = %d, want 3: %q", len(l.Rows), rowTexts(l))
+	rows := innerRows(l)
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want 3: %q", len(rows), rowTexts(l))
 	}
-	if got := l.Rows[1].Target.Key; got != "b" {
+	if got := rows[1].Target.Key; got != "b" {
 		t.Fatalf("row 1 = %q, want the held item between the two running ones", got)
 	}
-	if l.Rows[1].Tint {
+	if rows[1].Tint {
 		t.Error("a held row must not be tinted")
 	}
-	text := ansi.Strip(l.Rows[1].Text)
+	if got := rowTexts(l)[0]; !strings.Contains(got, "running 2 · 1 finished") {
+		t.Errorf("top border = %q, want the running and finished counts", got)
+	}
+	text := ansi.Strip(rows[1].Text)
 	for _, want := range []string{"done · ok", "12s", "✓"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("held row = %q, want it to contain %q", text, want)
@@ -521,22 +541,23 @@ func TestRowsDoNotMoveWhenOneBlocks(t *testing.T) {
 	}
 }
 
-// TestRunRowComesFirstAndIsNoStop: with a run active, row 0 is the plan-run
-// row, and no stop names it.
+// TestRunRowComesFirstAndIsNoStop: with a run active, the first row inside the
+// frame is the plan-run row, and no stop names it.
 func TestRunRowComesFirstAndIsNoStop(t *testing.T) {
 	in := busyInput()
 	in.Run = &RunRow{Title: "p-e-tray", Summary: "task 2/5 implement", StartedAt: testNow.Add(-4 * time.Minute)}
 	l := Plan(in)
-	if len(l.Rows) == 0 {
+	rows := innerRows(l)
+	if len(rows) == 0 {
 		t.Fatal("no rows")
 	}
-	first := ansi.Strip(l.Rows[0].Text)
+	first := ansi.Strip(rows[0].Text)
 	for _, want := range []string{"run", "p-e-tray", "task 2/5 implement"} {
 		if !strings.Contains(first, want) {
-			t.Errorf("row 0 = %q, want it to contain %q", first, want)
+			t.Errorf("first row = %q, want it to contain %q", first, want)
 		}
 	}
-	if !l.Rows[0].Tint {
+	if !rows[0].Tint {
 		t.Error("the plan-run row must be tinted")
 	}
 	for _, s := range l.Stops {
@@ -549,12 +570,77 @@ func TestRunRowComesFirstAndIsNoStop(t *testing.T) {
 	}
 }
 
-// TestNoFrameRows: the tray draws no outline at all.
-func TestNoFrameRows(t *testing.T) {
-	out := Render(Plan(busyInput()), 100)
-	for _, glyph := range []string{"╭", "├─", "╰", "│"} {
-		if strings.Contains(out, glyph) {
-			t.Errorf("tray contains the frame glyph %q:\n%s", glyph, ansi.Strip(out))
+// TestFrameOutlinesTheTray: the running work and the plan sit inside one
+// outline, the running section's header in the top border and the plan's
+// between them, and every line closes at the same width.
+func TestFrameOutlinesTheTray(t *testing.T) {
+	lines := strings.Split(ansi.Strip(Render(Plan(busyInput()), 100)), "\n")
+	if got := lines[0]; !strings.HasPrefix(got, "╭─ running 5 · 1 finished ") || !strings.HasSuffix(got, "╮") {
+		t.Errorf("top border = %q, want the running section's header", got)
+	}
+	if got := lines[len(lines)-1]; !strings.HasPrefix(got, "╰") || !strings.HasSuffix(got, "╯") {
+		t.Errorf("last line = %q, want the bottom border", got)
+	}
+	plan := -1
+	for i, line := range lines {
+		if w := ansi.StringWidth(line); w != 100 {
+			t.Errorf("line %d is %d cells, want 100: %q", i, w, line)
+		}
+		switch {
+		case strings.HasPrefix(line, "├─ plan"):
+			plan = i
+		case i > 0 && i < len(lines)-1:
+			if !strings.HasPrefix(line, "│ ") || !strings.HasSuffix(line, " │") {
+				t.Errorf("line %d = %q, want it inside the outline", i, line)
+			}
+		}
+	}
+	if plan < 0 {
+		t.Fatalf("no plan section header:\n%s", strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[plan+1], "todo a") {
+		t.Errorf("line after the plan header = %q, want the plan's first row", lines[plan+1])
+	}
+}
+
+// TestCompactRowHasNoOutline: a budget too small for the outline sheds to the
+// one plain row.
+func TestCompactRowHasNoOutline(t *testing.T) {
+	l := Plan(withMax(busyInput(), 2))
+	if len(l.Rows) != 1 || l.Rows[0].Frame != FramePlain {
+		t.Fatalf("rows = %q, want the one plain compact row", rowTexts(l))
+	}
+	if out := ansi.Strip(Render(l, 100)); strings.ContainsAny(out, "╭│╰") {
+		t.Errorf("compact row = %q, want no outline", out)
+	}
+}
+
+// TestRenderTintsTheWholeRow: a running card's tint runs edge to edge. Every
+// styled segment ends in a reset, and the tint must come back after each one,
+// or only the id column is tinted and the rest of the row is bare.
+func TestRenderTintsTheWholeRow(t *testing.T) {
+	in := Input{Now: testNow, Spinner: "⠋"}
+	out := Render(Layout{Rows: itemRows(subagentItem(), in, InnerWidth(100))}, 100)
+	b := borderStyle()
+	for i, line := range strings.Split(out, "\n") {
+		band, ok := strings.CutPrefix(line, b.Render("│ "))
+		band, closed := strings.CutSuffix(band, b.Render(" │"))
+		if !ok || !closed {
+			t.Fatalf("row %d is not inside the outline: %q", i, line)
+		}
+		if !strings.HasPrefix(band, "\x1b[48") {
+			t.Fatalf("row %d is not tinted: %q", i, line)
+		}
+		rest := strings.TrimSuffix(band, "\x1b[m")
+		for {
+			j := strings.Index(rest, "\x1b[m")
+			if j < 0 {
+				break
+			}
+			rest = rest[j+len("\x1b[m"):]
+			if !strings.HasPrefix(rest, "\x1b[48") {
+				t.Fatalf("row %d loses its tint after a styled segment: %q", i, line)
+			}
 		}
 	}
 }

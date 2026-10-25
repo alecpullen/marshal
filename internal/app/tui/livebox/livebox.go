@@ -1,5 +1,5 @@
 // Package livebox plans and renders the tray: the plan-run row, the running
-// and held rows, and the plan, as one unframed stack above the input.
+// and held rows, and the plan, as one framed panel above the input.
 //
 // It is pure. Plan reads an Input value and returns a Layout; Render paints a
 // Layout. The TUI composes the result into the frame, so every row's tint and
@@ -32,7 +32,15 @@ const (
 	CardRows = 5
 	// RunningCap is how many running rows survive shed step 3.
 	RunningCap = 3
+	// Inset is how far an inner row's text sits from the panel's left edge:
+	// the border and its space.
+	Inset = 2
 )
+
+// InnerWidth is the content width inside the outline: width − 4.
+func InnerWidth(width int) int {
+	return max(width-4, 1)
+}
 
 // Blocks draws done/total as ▰▱ cells, at most maxCells.
 func Blocks(done, total, maxCells int) string {
@@ -152,11 +160,21 @@ type RowStop struct {
 	Col    int // the entry's 0-based cell offset inside the row's text
 }
 
+// RowFrame is how a row sits in the panel's outline.
+type RowFrame uint8
+
+const (
+	FrameInner  RowFrame = iota // Text sits inside "│ … │"
+	FrameBorder                 // Text is a whole border line
+	FramePlain                  // Text is a whole row with no outline (the compact row)
+)
+
 // Row is one line of the tray.
 type Row struct {
-	Text   string // styled foreground only
-	Tint   bool   // running work: painted with the surface colour
-	Cursor bool   // the browse cursor's row: painted with the selection colour
+	Text   string   // styled foreground only
+	Frame  RowFrame // how it sits in the outline
+	Tint   bool     // running work: painted with the surface colour
+	Cursor bool     // the browse cursor's row: painted with the selection colour
 	Target Target
 	Also   []RowStop // further targets on this line, in draw order
 }

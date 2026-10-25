@@ -1,7 +1,11 @@
 # Pinned work
 
 Status: decided 2026-10-25: the tray (option A) without its rule. The spec's
-P-E phase records it. Follows
+P-E phase records it. **Revised the same day (round 6):** after testing P-E,
+the frame is back. Only the box's step in progress was meant to go; the
+running work and the plan live inside P-C's outline again, with the running
+section's header in the top border. The spec's §5.5 is current; the frames
+below show the frameless tray as it was decided. Follows
 [`framed-console.md`](framed-console.md), whose live box shipped in P-C. The
 spec is [`feature-spec.md`](feature-spec.md). Mockups in colour:
 [`pinned-work.html`](pinned-work.html).

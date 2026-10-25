@@ -383,8 +383,8 @@ func TestLeftoverPlanShowsItsRows(t *testing.T) {
 	if !strings.Contains(got, "· A") || !strings.Contains(got, "· B") {
 		t.Fatalf("tray = %q, want the plan's rows naming A and B", got)
 	}
-	if rows := strings.Split(got, "\n"); len(rows) != 1 {
-		t.Fatalf("tray = %d rows, want the plan's one two-column row:\n%s", len(rows), got)
+	if rows := boxInnerRows(m); len(rows) != 1 {
+		t.Fatalf("tray = %d rows inside the outline, want the plan's one two-column row:\n%s", len(rows), got)
 	}
 }
 

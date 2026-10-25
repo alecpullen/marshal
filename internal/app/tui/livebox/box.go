@@ -46,22 +46,29 @@ func Plan(in Input) Layout {
 	return l
 }
 
-// Render paints a layout: every row on its own line, truncated and padded to
-// exactly width cells, with a tinted or cursored row band-painted. There is no
-// outline. A request narrower than the floor is drawn at the floor, so every
-// line is still the same width.
+// Render paints a layout: every row on its own line and exactly width cells
+// wide. Inner rows sit inside the outline, "│ … │", with a tinted or cursored
+// row's content band-painted; border and plain rows are drawn as they are. A
+// request narrower than the floor is drawn at the floor, so every line is
+// still the same width.
 func Render(l Layout, width int) string {
 	w := max(width, 5)
+	inner := InnerWidth(w)
+	b := borderStyle()
 	lines := make([]string, 0, len(l.Rows))
 	for _, r := range l.Rows {
-		text := padCells(ansi.Truncate(r.Text, w, "…"), w)
+		if r.Frame != FrameInner {
+			lines = append(lines, padCells(ansi.Truncate(r.Text, w, "…"), w))
+			continue
+		}
+		text := padCells(ansi.Truncate(r.Text, inner, "…"), inner)
 		switch {
 		case r.Cursor:
-			text = chrome.PaintBand(text, w, theme.Current().BGSelection)
+			text = chrome.PaintBand(text, inner, theme.Current().BGSelection)
 		case r.Tint:
-			text = chrome.PaintBand(text, w, theme.Current().BGSurface)
+			text = chrome.PaintBand(text, inner, theme.Current().BGSurface)
 		}
-		lines = append(lines, text)
+		lines = append(lines, b.Render("│ ")+text+b.Render(" │"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -96,18 +103,30 @@ func applyShed(st *buildState, step int) {
 	}
 }
 
-// build assembles the tray in one of its shapes.
+// section is one part of the framed tray: its header's label and its rows.
+type section struct {
+	label string
+	rows  []Row
+}
+
+// build assembles the tray in one of its shapes: the framed panel, or the
+// compact row.
+//
+// The panel has up to two sections, the running work then the plan. The top
+// border carries the first section's header and the second gets a "├─ … ─┤"
+// header. When the plan is shed to one line and there is running work, the
+// plan moves into the bottom border and its section goes.
 func build(in Input, st buildState) Layout {
 	w := max(in.Width, 5)
 	if st.compact {
 		return Layout{Rows: []Row{compactRow(in, w)}}
 	}
+	inner := InnerWidth(w)
 
-	var rows []Row
+	var work []Row
 	if in.Run != nil {
-		rows = append(rows, runRow(*in.Run, in, w))
+		work = append(work, runRow(*in.Run, in, inner))
 	}
-
 	entries := mergedOrder(in, st.heldFolded)
 	shown := entries
 	if st.cap > 0 {
@@ -115,38 +134,98 @@ func build(in Input, st buildState) Layout {
 	}
 	for _, e := range shown {
 		if e.held != nil {
-			rows = append(rows, heldRow(*e.held, in, w))
+			work = append(work, heldRow(*e.held, in, inner))
 			continue
 		}
 		if in.Expanded != "" && in.Expanded == e.item.TaskKey && !st.collapse {
-			rows = append(rows, card(e.item, in, w)...)
+			work = append(work, card(e.item, in, inner)...)
 		} else {
-			rows = append(rows, itemRows(e.item, in, w)...)
+			work = append(work, itemRows(e.item, in, inner)...)
 		}
 	}
 	if n := len(entries) - len(shown); n > 0 {
-		rows = append(rows, Row{
+		work = append(work, Row{
 			Text:   muted(fmt.Sprintf("+%d more · /work", n)),
 			Target: Target{Kind: TargetMore},
 		})
 	}
 	if st.heldFolded {
 		if n := len(in.Held); n > 0 {
-			rows = append(rows, finishedCountRow(n))
+			work = append(work, finishedCountRow(n))
 		}
 	}
 
+	var sections []section
+	if len(work) > 0 {
+		sections = append(sections, section{label: workLabel(in), rows: work})
+	}
+	bottom := borderStyle().Render("╰" + strings.Repeat("─", max(w-2, 0)) + "╯")
 	if len(in.Plan) > 0 {
+		plan := section{label: planHeader(in)}
 		switch {
+		case st.planOneLine && len(sections) > 0:
+			bottom = planFolded(in, w)
+			plan.label = ""
 		case planFinished(in.Plan):
-			rows = append(rows, finishedRow(in, w))
+			// A finished plan beside running work is its header alone. On its
+			// own it keeps one row, so the panel is never an empty outline.
+			if len(sections) == 0 {
+				plan.rows = []Row{finishedRow(in, inner)}
+			}
 		case st.planOneLine:
-			rows = append(rows, planLine(in, w))
+			plan.rows = []Row{planLine(in, inner)}
 		default:
-			rows = append(rows, planRows(in, w)...)
+			plan.rows = planRows(in, inner)
+		}
+		if plan.label != "" {
+			sections = append(sections, plan)
 		}
 	}
+	if len(sections) == 0 {
+		return Layout{}
+	}
+
+	rows := []Row{{Text: borderLine("╭─ ", sections[0].label, "╮", w), Frame: FrameBorder}}
+	for i, s := range sections {
+		if i > 0 {
+			rows = append(rows, Row{Text: borderLine("├─ ", s.label, "┤", w), Frame: FrameBorder})
+		}
+		rows = append(rows, s.rows...)
+	}
+	rows = append(rows, Row{Text: bottom, Frame: FrameBorder})
 	return Layout{Rows: rows}
+}
+
+// workLabel is the running section's header: how many items are running, the
+// plan-run row included, and how many finished ones the tray is holding.
+func workLabel(in Input) string {
+	running := len(in.Work)
+	if in.Run != nil {
+		running++
+	}
+	held := len(in.Held)
+	switch {
+	case held == 0:
+		return fmt.Sprintf("running %d", running)
+	case running == 0:
+		return fmt.Sprintf("finished %d", held)
+	}
+	return fmt.Sprintf("running %d · %d finished", running, held)
+}
+
+// borderStyle is the colour every outline glyph is drawn in.
+func borderStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(theme.Current().BorderMuted)
+}
+
+// borderLine draws a border line of exactly w cells with a left-aligned label:
+// <open><label> ─…─<close>, as "╭─ running 2 ───╮" or "├─ plan … ───┤".
+func borderLine(open, label, close string, w int) string {
+	b := borderStyle()
+	room := w - ansi.StringWidth(open) - ansi.StringWidth(close) - 2
+	label = ansi.Truncate(label, max(room, 1), "…")
+	fill := max(w-ansi.StringWidth(open)-ansi.StringWidth(label)-1-ansi.StringWidth(close), 1)
+	return b.Render(open) + label + b.Render(" "+strings.Repeat("─", fill)+close)
 }
 
 // mergedEntry is one row of the running-and-held stack: a running item, or a
@@ -317,7 +396,7 @@ func compactRow(in Input, w int) Row {
 		done, total := planCounts(in.Plan)
 		parts = append(parts, muted(fmt.Sprintf("plan %d/%d", done, total)))
 	}
-	return Row{Text: ansi.Truncate(strings.Join(parts, " "), max(w, 1), "…")}
+	return Row{Text: ansi.Truncate(strings.Join(parts, " "), max(w, 1), "…"), Frame: FramePlain}
 }
 
 // countCell is one kind's glyph in its colour and its count muted.

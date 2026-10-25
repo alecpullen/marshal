@@ -719,8 +719,8 @@ func TestIdleBoxIsEmptyWithoutAPlan(t *testing.T) {
 
 // TestNoBlankRowAboveTheTray pins the reported bug: an idle session with todos
 // showed a blank line above its progress row — the always-reserved (but empty)
-// turn-spinner row. Nothing is reserved now: the tray's first plan row sits
-// straight under the transcript.
+// turn-spinner row. Nothing is reserved now: the tray's top border sits
+// straight under the transcript, with the first plan row under it.
 func TestNoBlankRowAboveTheTray(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	todoDrivenTurn(t, &m, []native.TodoItem{
@@ -738,8 +738,11 @@ func TestNoBlankRowAboveTheTray(t *testing.T) {
 
 	lines := strings.Split(stripANSI(m.viewString()), "\n")
 	top := m.boxTop()
-	if !strings.Contains(lines[top], "first task") {
-		t.Fatalf("the tray's first plan row is not at row %d: %q", top, lines[top])
+	if !strings.HasPrefix(lines[top], "╭─ plan") {
+		t.Fatalf("the tray's top border is not at row %d: %q", top, lines[top])
+	}
+	if !strings.Contains(lines[top+1], "first task") {
+		t.Fatalf("the tray's first plan row is not at row %d: %q", top+1, lines[top+1])
 	}
 	// The transcript renderer trails each entry with one blank separator
 	// line, so one blank above the tray is legitimate. Two in a row means

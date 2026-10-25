@@ -322,7 +322,9 @@ func (m *Model) handleBoxClick(msg tea.Mouse) (tea.Cmd, bool) {
 	if msg.Y < top || msg.Y >= top+len(layout.Rows) {
 		return nil, false
 	}
-	target := boxRowTarget(layout.Rows[msg.Y-top], msg.X)
+	// A border line has no target, and an inner row's text starts past the
+	// outline's left border.
+	target := boxRowTarget(layout.Rows[msg.Y-top], msg.X-livebox.Inset)
 	switch target.Kind {
 	case livebox.TargetWork:
 		return m.activateWorkRow(target.Key), true

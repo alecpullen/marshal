@@ -385,8 +385,8 @@ func TestSubagentCardKeepsTwoRowsWhileQuiet(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("rows = %d, want 2 even with no headline and no route", len(rows))
 	}
-	if got := strings.TrimSpace(ansi.Strip(rows[1].Text)); got != "running" {
-		t.Errorf("quiet card's second row = %q, want the item's state", got)
+	if got := strings.TrimSpace(ansi.Strip(rows[1].Text)); got != edge+"         running" {
+		t.Errorf("quiet card's second row = %q, want the card's edge and the item's state", got)
 	}
 }
 

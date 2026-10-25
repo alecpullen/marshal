@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/viewmodel"
 )
 
 // planOf builds a plan of n items labelled "todo a", "todo b", …: the first
@@ -104,12 +105,12 @@ func TestShortPlanShowsEveryItem(t *testing.T) {
 	}
 }
 
-// TestFinishedPlanIsOneRow pins that a finished plan is its one finished row,
-// and that Plan draws only that row for it.
+// TestFinishedPlanIsOneRow pins that a finished plan is its one finished row
+// under its header, and only its header beside running work.
 func TestFinishedPlanIsOneRow(t *testing.T) {
 	in := Input{Width: 80, MaxRows: 20, Now: testNow, Plan: planOf(4, 4, 0)}
 	row := finishedRow(in, 80)
-	if got, want := ansi.Strip(row.Text), " ✓ Plan 4/4 done"; got != want {
+	if got, want := ansi.Strip(row.Text), "✓ Plan 4/4 done"; got != want {
 		t.Errorf("finished row = %q, want %q", got, want)
 	}
 	if row.Target.Kind != TargetNone {
@@ -117,11 +118,18 @@ func TestFinishedPlanIsOneRow(t *testing.T) {
 	}
 
 	l := Plan(in)
-	if len(l.Rows) != 1 {
-		t.Fatalf("finished plan drew %d rows, want 1: %q", len(l.Rows), rowTexts(l))
+	rows := innerRows(l)
+	if len(rows) != 1 {
+		t.Fatalf("finished plan drew %d rows, want 1: %q", len(rows), rowTexts(l))
 	}
-	if got := ansi.Strip(l.Rows[0].Text); !strings.Contains(got, "Plan 4/4 done") {
+	if got := ansi.Strip(rows[0].Text); !strings.Contains(got, "Plan 4/4 done") {
 		t.Errorf("finished plan row = %q, want the finished notice", got)
+	}
+
+	in.Work = []viewmodel.WorkItem{subagentItem()}
+	beside := rowTexts(Plan(in))
+	if got := beside[len(beside)-2]; !strings.HasPrefix(got, "├─ plan") || !strings.Contains(got, "4/4 done") {
+		t.Errorf("row before the bottom border = %q, want the finished plan's header alone", got)
 	}
 }
 
@@ -167,9 +175,6 @@ func TestPlanLineUsesBlocksPastTwelve(t *testing.T) {
 	if !strings.Contains(long, "todo d") {
 		t.Errorf("plan line = %q, want the active item's text", long)
 	}
-	if !strings.HasPrefix(long, " ") {
-		t.Errorf("plan line = %q, want it indented one cell", long)
-	}
 
 	short := ansi.Strip(planLine(Input{Plan: planOf(6, 2, 3)}, 100).Text)
 	if n := strings.Count(short, glyph.OK); n != 2 {
@@ -186,7 +191,7 @@ func TestPlanLineUsesBlocksPastTwelve(t *testing.T) {
 // item is completed.
 func TestIdleRowSaysDoneOrActive(t *testing.T) {
 	done := finishedRow(Input{Plan: planOf(4, 4, 0)}, 80)
-	if got, want := ansi.Strip(done.Text), " ✓ Plan 4/4 done"; got != want {
+	if got, want := ansi.Strip(done.Text), "✓ Plan 4/4 done"; got != want {
 		t.Errorf("finished row = %q, want %q", got, want)
 	}
 	if done.Target.Kind != TargetNone {

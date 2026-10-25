@@ -1,5 +1,8 @@
-▌⧉ #1     review the config chan…                                        1m 2s ⠋
-          kimi-k3 @ kimi · Checking context_window…                             
-▌┆ job-2  Harness tests  last useful line                                  48s ⠋
- ✓ todo a                                ⠋ todo c                               
- ✓ todo b                                · todo d                               
+╭─ running 2 ──────────────────────────────────────────────────────────────────╮
+│ ▌⧉ #1     review the config ch…                                      1m 2s ⠋ │
+│ ▌         kimi-k3 @ kimi · Checking context_window…                          │
+│ ▌┆ job-2  Harness tests  last useful line                              48s ⠋ │
+├─ plan  ▰▰▱▱ 2/4 ─────────────────────────────────────────────────────────────┤
+│ ✓ todo a                               ⠋ todo c                              │
+│ ✓ todo b                               · todo d                              │
+╰──────────────────────────────────────────────────────────────────────────────╯

@@ -7108,8 +7108,8 @@ func TestEscClosesTasksPanel(t *testing.T) {
 	}
 }
 
-// TestFinishedPlanIsOneIdleRow: once every item is done, the box is the one
-// plain row that says so — the item rows and the framed box are gone.
+// TestFinishedPlanIsOneIdleRow: once every item is done, the tray's plan is the
+// one row that says so, inside the outline — the item rows are gone.
 func TestFinishedPlanIsOneIdleRow(t *testing.T) {
 	m := newTestModel(t)
 	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
@@ -7124,8 +7124,8 @@ func TestFinishedPlanIsOneIdleRow(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	if got := m.boxRows(); got != 1 {
-		t.Fatalf("boxRows() = %d, want the idle row alone", got)
+	if got := m.boxRows(); got != 3 {
+		t.Fatalf("boxRows() = %d, want the finished row between the top and bottom borders", got)
 	}
 	got := stripANSI(boxOut(m))
 	if !strings.Contains(got, "Plan 2/2 done") {

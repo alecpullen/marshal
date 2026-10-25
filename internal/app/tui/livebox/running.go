@@ -63,6 +63,13 @@ func rowPrefix(g string, c color.Color, id string) string {
 	return style.Render(edge + g + " " + idField)
 }
 
+// cardEdge starts a card's continuation row: the edge alone, in the kind's
+// colour, so every row of a card carries the same stripe as its head.
+func cardEdge(kind string) string {
+	_, c := kindStyle(kind)
+	return lipgloss.NewStyle().Foreground(c).Render(edge)
+}
+
 // runningRow is one live work item's row: the edge, kind glyph and id in the
 // kind's colour, the title, the measurement, and the elapsed clock with the
 // spinner right-aligned. It is pure — every string is cleaned and cut on a
@@ -134,8 +141,8 @@ func itemRows(it viewmodel.WorkItem, in Input, w int) []Row {
 
 // agentDetailRow is a running subagent's second row: the model at the provider
 // running it, then the measurement — the child's newest headline, or the
-// request it is blocked on. It starts under the title so the pair reads as one
-// card, and carries the item's target so a click anywhere on the card acts on
+// request it is blocked on. It carries the card's edge and starts its text
+// under the title so the pair reads as one card, and carries the item's target so a click anywhere on the card acts on
 // the same work. It is always one row: a card that grew and shrank as a child
 // went quiet would move the rows under the cursor.
 func agentDetailRow(it viewmodel.WorkItem, in Input, w int) Row {
@@ -156,7 +163,7 @@ func agentDetailRow(it viewmodel.WorkItem, in Input, w int) Row {
 		text = muted(clean(it.State, 40))
 	}
 	return Row{
-		Text:   ansi.Truncate(strings.Repeat(" ", rowIndent)+text, w, "…"),
+		Text:   ansi.Truncate(cardEdge(it.Kind)+strings.Repeat(" ", rowIndent-1)+text, w, "…"),
 		Target: Target{Kind: TargetWork, Key: it.TaskKey},
 		Tint:   true,
 	}
@@ -485,25 +492,28 @@ func card(it viewmodel.WorkItem, in Input, w int) []Row {
 		rows[0] = runningHeadRow(it, in, w)
 		rows = append(rows, agentDetailRow(it, in, w))
 	}
+	// Each detail row starts with the card's edge and a space, so the content
+	// has two cells less.
 	add := func(text string) {
 		if text == "" || len(rows) >= CardRows {
 			return
 		}
-		rows = append(rows, Row{Text: ansi.Truncate(text, w, "…"), Tint: true, Target: target})
+		rows = append(rows, Row{Text: ansi.Truncate(cardEdge(it.Kind)+" "+text, w, "…"), Tint: true, Target: target})
 	}
+	inner := max(w-2, 1)
 
 	if p := it.Progress; p != nil {
 		if m, ok := primaryMetric(p); ok {
 			if est := progress.EstimateFor(prev, p, m.ID, in.Now, it.State == "stopping"); est.Fraction != nil {
 				_, c := kindStyle(it.Kind)
 				frac := *est.Fraction
-				add(Bar(frac, max(w-10, 1), c) + " " + fmt.Sprintf("%.0f%%", frac*100))
+				add(Bar(frac, max(inner-8, 1), c) + " " + fmt.Sprintf("%.0f%%", frac*100))
 			}
 		}
 	}
 	if it.Kind != "agent" {
 		// An agent's detail row already carries the measurement.
-		add(measureText(it, prev, in.Now, w, false))
+		add(measureText(it, prev, in.Now, inner, false))
 	}
 	add(cardDetail(it, in))
 	add(muted(cardActions(it)))

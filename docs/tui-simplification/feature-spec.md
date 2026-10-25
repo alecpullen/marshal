@@ -31,11 +31,12 @@ above the input.
   only grows: once a row is drawn, it never changes shape or content except
   when the reader expands it. The one exception is the newest beat while it
   runs: its spinner and its newest call change in place until it settles.
-- **The tray** sits directly above the input, with no frame. It holds running
+- **The tray** sits directly above the input, inside a frame. It holds running
   work (subagents, background jobs, plan runs and progress cards), finished
   work until your next prompt, and the plan. (P-E. P-C built a bordered live
   box that also held the step in progress; testing found it out of step with
-  the rest of the TUI, see [`pinned-work.md`](pinned-work.md).)
+  the rest of the TUI, see [`pinned-work.md`](pinned-work.md). Round 6 kept the
+  frame and moved only the step in progress out.)
 
 Each tool call hangs on a spine under the narration that explains it. Todo
 progress is marked where it happened, with no dividers. Running work is drawn
@@ -88,7 +89,8 @@ with one rule for history and one tray with a fixed shed order.
 | Failed background work | A red completion event in history. Expanding it shows a fuller issue report. Live work's attention row and acknowledgement go. | 4 |
 | Teaching the agent | A built-in `progress-reporting` skill. | 4 |
 | Tasks panel shortcut | Ctrl+T leaves the Tasks panel. The Work list stays on `/work` and the `+N more` row. | 4 |
-| The live box (after testing P-C) | Replaced by **the tray**: running rows, then the full plan list, directly above the input. No frame, no rule, no section headers. The step in progress goes back to the end of history. Supersedes the box treatment, split mode and plan modes above. | 5 |
+| The live box (after testing P-C) | Replaced by **the tray**: running rows, then the full plan list, directly above the input. No frame, no rule, no section headers. The step in progress goes back to the end of history. Supersedes the box treatment, split mode and plan modes above. Round 6 restores the frame. | 5 |
+| The tray's frame (after testing P-E) | Restored. Only the box's step in progress was unwanted: the running work and the plan live inside the P-C outline, with the running section's header in the top border and the plan's as a `├─ plan ─┤` header. The turn's state stays on the status line. | 6 |
 | Plan modes | Gone with the box: no split or folded mode, Ctrl+T unbound, `[tui.live_box]` deprecated. | 5 |
 | Finished items | Keep their tray row until the next prompt: untinted, with their outcome and stopped clock. Their completion event still lands in history when they finish. | 5 |
 | Beat head meta | Always on the narration's first line. A narration too long to sit beside it wraps narrower; the meta never takes a line of its own. | 5 |
@@ -303,20 +305,27 @@ those.
 ### 5.5 The tray
 
 ```
-▌┆ job-3  Download qwen3-coder weights  ━━━━━━━───── 57%  2.1 GiB/3.7 GiB        2m 0s ⠋
-▌⧉ #1     review the config change  done · context_window matches the model card  1m 48s ✓
- ✓ Add retry with backoff to the downloader     ▸ Check the eval thresholds
- ✓ Start the weights download                   · Run the harness tests
+╭─ running 1 · 1 finished ─────────────────────────────────────────────────────────────────╮
+│ ▌┆ job-3  Download qwen3-coder weights  ━━━━━━━───── 57%  2.1 GiB/3.7 GiB        2m 0s ⠋ │
+│ ▌⧉ #1     review the config change  kimi-k3 @ kimi  done · it is consistent     1m 48s ✓ │
+├─ plan  ▰▰▱▱ 2/4 ─────────────────────────────────────────────────────────────────────────┤
+│ ✓ Add retry with backoff to the downloader  ▸ Check the eval thresholds                  │
+│ ✓ Start the weights download                · Run the harness tests                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────╯
 ▍❯ Ask Marshal...
- Act · ⠋ working 4m 12s · qwen3-coder @ ollama · local                       Ctrl+C stop
+ Act · ⠋ working 4m 12s · qwen3-coder @ ollama · local                           Ctrl+C stop
 ```
 
 (P-E. It replaces P-C's live box; the frames are in
-[`pinned-work.md`](pinned-work.md).)
+[`pinned-work.md`](pinned-work.md). Round 6 put P-C's frame back around it.)
 
 - **What it holds, top to bottom:** the plan-run row, running and held rows,
-  then the plan. There is no frame, no rule and no section header. The tint on
-  running rows and the plan's marks set the tray apart from the transcript.
+  then the plan, inside one outline drawn in the muted border colour. The
+  running section's header is the top border, `╭─ running 2 · 1 finished ─╮`
+  (`finished N` when only held rows are left); the plan's is
+  `├─ plan  ▰▰▱▱ 2/4 ─┤`, or the top border when the plan is all the tray holds.
+  The turn's state is not repeated in the frame: it stays on the status line
+  (§5.7).
 - **What it never holds:** the step in progress, and the browser session. The
   status line carries the browser's URL whenever a session is open.
 - **The step in progress is history's last beat.** `SplitLive`'s live part
@@ -325,8 +334,8 @@ those.
   nothing moves. A streamed final answer appends to history as it streams.
 - **Running work comes only from the live-work snapshot** (the app always
   attaches the work service).
-- **The plan-run row.** While an SDD run or a swarm is active, the tray's first
-  row is that run, in the accent colour: `▌▸ run  <plan>  task 2/5 · implement
+- **The plan-run row.** While an SDD run or a swarm is active, the running
+  section's first row is that run, in the accent colour: `▌▸ run  <plan>  task 2/5 · implement
   3m · 20% · ~12–16m left  14m 2s ⠋`, the run summary the box's top border
   showed. It has no action: it is not a browse stop, and a click on it does
   nothing.
@@ -338,33 +347,43 @@ those.
   the tray, held or not, and new rows join at the end. Becoming blocked does
   not move a row. When a shed step caps the rows, blocked rows are kept first,
   still drawn in start order.
-- **Columns.** Running and held rows put their `▌` edge in column 0 and their
-  glyph in column 1, under history's glyphs. Plan rows are indented one cell so
-  their marks sit in the same column.
+- **Columns.** Every row inside the frame starts two cells in, past `│ `: the
+  running and held rows' `▌` edge and the plan's marks share that column. A
+  card's further rows (a subagent's route row, an open card's bar, detail and
+  actions) repeat the `▌` edge, so the card reads as one block. Tint and the
+  browse cursor fill the inside of the frame, edge to edge.
 - **The plan** is the full list in two columns, as the box's stacked mode drew
-  it, without its header. A list longer than 6 shows a window around the active
+  it, under its header. A list longer than 6 shows a window around the active
   item, with `✓ N done` and `+N more`. A stale plan gains a last entry,
-  `stale 4m`, in the warning colour (the box put it in its header). A finished
-  list is one row, `✓ Plan 4/4 done`, until the next prompt; after that the plan
-  leaves the tray until a list has open items again.
+  `stale 4m`, in the warning colour. A finished list is its header alone
+  (`plan ▰▰▰▰ 4/4 done`) beside running work, and one row, `✓ Plan 4/4 done`,
+  when it is all the tray holds. Either way it stays until the next prompt;
+  after that the plan leaves the tray until a list has open items again.
 - **Budget and shed order.** The tray takes at most
   `min(height×2/5, height − scroll hint − breadcrumb − status line − dock −
   input chrome − 1 − minTranscriptRows)` rows. When it would take more, it
   sheds in this order until it fits:
-  1. The plan becomes one row in the plan line's grammar
-     (`✓ ✓ ▸ ·  3/4  <active todo>`).
+  1. The plan becomes one line in the plan line's grammar. Beside running
+     work it moves into the bottom border,
+     `╰─ plan ✓ ✓ ▸ · 3/4 <active todo> ─╯`, and its section goes; on its own
+     it is one row under its header.
   2. Held rows fold into one row (`✓ 2 finished`).
   3. Running rows cap at 3, with `+N more · /work`.
   4. An expanded card collapses.
   5. Running rows cap at 1, with the more row.
-  6. The tray becomes one plain summary row: the kind counts and the plan's
-     done/total (`⧉2 ┆2 ○1 plan 2/4`).
+  6. The tray becomes one plain summary row with no outline: the kind counts
+     and the plan's done/total (`⧉2 ┆2 ○1 plan 2/4`).
+
+  The outline is part of the budget: two border rows, plus the plan's header
+  when there is running work.
 - **Idle** is the same tray: running work that outlives the turn, held rows and
-  the plan stay. With none of them, the tray is zero rows.
+  the plan stay. With none of them, the tray is zero rows, and no outline is
+  drawn.
 - **Controls.** Running and held rows, the more row and plan items are browse
   stops after the last history row, and clicks do what Enter does (§5.8). The
-  plan-run row and the folded `✓ N finished` row have no action. There is no
-  layout key.
+  plan-run row, the folded `✓ N finished` row and the border lines have no
+  action. A click's column is measured from the row's text, past the left
+  border. There is no layout key.
 
 ### 5.6 Running rows and progress cards
 
@@ -754,6 +773,8 @@ first.
   above it changes.
 - **The tray's maximum height** on busy swarms is held by the 40% cap and
   `+N more`. A swarm view stays out of scope.
-- **No rule above the tray** (P-E). If the plan rows read as transcript text
-  in testing, a one-cell rail on them is the fallback, not the rule.
+- **The tray's frame** (round 6) costs two rows, three with the plan's header.
+  On a short terminal the shed order absorbs it: the plan folds into the
+  bottom border first, and below three rows the tray is the plain summary
+  row.
 - **Keyboard:** every key in §5.8 is provisional.

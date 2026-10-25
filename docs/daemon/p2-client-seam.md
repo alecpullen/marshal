@@ -307,18 +307,20 @@ Decision: `WireTree`, with the C6 additions.
   everything the status line, tray, footer, input gating and turn
   logic read today. It arrives over several plans (Migration order).
   The session ID is not in it: `Session.ID()` (plan 1) carries it.
-  - **identity:** working directory, start time (plan 2c), generation
-    sequence, leaf ID and branch count;
+  - **identity:** working directory, generation sequence, leaf ID and
+    branch count. The start time is a `Sheet` field (plan 2c), because
+    only the sheet reads it;
   - **route:** the active route, the turn route and whether it is
     running, turn usage and window, quota, and effort override;
   - **access:** the interaction state (mode, auto and system access),
     sudo unlock, trusted, and whether there is a backup;
   - **activity:** kind, label and start, and whether a subagent is
     running;
-  - **workspace:** project root, active root, and git info (branch,
-    worktree and whether the root is a repository; plan 2b). HEAD comes
-    with the sheet (plan 2c), because only the sheet's changed-files diff
-    reads it;
+  - **workspace:** project root, active root, git info (branch,
+    worktree and whether the root is a repository; plan 2b), and the
+    number of files changed against the sheet's base, which the status
+    line shows (plan 2c). HEAD itself stays agent side: the adapter keeps
+    it as that base, and only the changed-files diff reads it;
   - **live state:** browser info. Sandbox info arrives with plans 3
     and 4, because only the running-call and approval renderers read
     it. The current notice arrives with plan 6, which also moves
@@ -330,9 +332,9 @@ Decision: `WireTree`, with the C6 additions.
     snapshot are not carried: the TUI caches both from their events
     today, but nothing reads them. The work snapshot keeps its own pump
     until the work group moves (plan 5). The todos reach the tray through
-    the band (C6). Active skills, loaded tool count, tool budget and
-    session rules are read only by the session sheet, so they are
-    `Sheet` fields (plan 2c).
+    the band (C6). Active skills, the loaded tool count, the tool budget,
+    the session rules and the sandbox posture are read only by the
+    session sheet, so they are `Sheet` fields (plan 2c).
   - **subagent views** leave out the child state. Each carries what
     the tray and the drill-in breadcrumb read today: the role, label,
     model, provider and fallback flag. While the child runs, it also
@@ -344,17 +346,32 @@ Decision: `WireTree`, with the C6 additions.
   and SDD progress, the SDD gate) reaches the screen on the tick, as
   today.
 - `Session.Sheet(subagentID int64) acpwire.SessionSheet` carries what the
-  session sheet's sections read. For the session, that is the tool-call
-  log fields the sections use, the context-pack summary, changed files
-  against the sheet's base ref, turn metrics, usage totals, the fleet
-  rows and repo stats. For a subagent it carries the same subset
-  `childSheetData` uses today. Values the TUI caches on turn boundaries
-  today stay cached that way, so the adapter computes them off the
-  render path, as the TUI does now.
+  session sheet's sections read (plan 2c). For the session, that is:
+  - the start time;
+  - the tool and file activity, aggregated per tool and per file from the
+    tool-call log, so the log itself never crosses the seam;
+  - the session rules and the active skills;
+  - the tool budget, the loaded tool count and the sandbox posture;
+  - the context pack's per-section sizes;
+  - the files changed against the sheet's base;
+  - the recent turn metrics and the session's usage totals;
+  - the fleet rows and the repo's file and symbol counts.
+
+  For a subagent it carries the subset `childSheetData` uses today: the
+  child's own start time, activity, rules, skills, budget, loaded tools
+  and sandbox posture, with the session's fleet rows and repo counts.
+- **The sheet refreshes on request.** The values read from the database
+  and git are cached agent side, and `Sheet` never blocks.
+  `Session.RefreshSheet(ctx, flags)` re-reads the values its flags name,
+  then fires `Changed`. Until plan 5 moves turns behind `Prompt`, the TUI
+  owns the turn boundaries. It therefore calls `RefreshSheet` at the
+  points where it re-reads those values today: startup, turn end, a
+  workspace move, a new session and opening the sheet.
 - ACP (P3): `session/status` with a `session_status` update, and
-  `session/sheet`. Two parts already have reads: `session/access_state`
-  serves the interaction state and `session/steering_status` the
-  Send-now snapshot (both exist).
+  `session/sheet`. `RefreshSheet` sends `session/sheet` with its flags,
+  and the result fills the mirror that `Sheet` reads. Two parts already
+  have reads: `session/access_state` serves the interaction state and
+  `session/steering_status` the Send-now snapshot (both exist).
 
 ### C6. Transcript
 
@@ -642,7 +659,11 @@ The TUI works after every plan.
      (with the tray's headline), swarm and SDD progress and the SDD
      gate. ACP's steering wire types move into `acpwire`. The work pump
      stays until plan 5.
-   - **2c. Sheet.** `Session.Sheet(subagentID)`.
+   - **2c. Sheet** ([plan](plans/2026-10-26-p2-2c-sheet-plan.md)).
+     `Session.Sheet(subagentID)` and `Session.RefreshSheet`. The sheet's
+     database and git caches move into the adapter, along with HEAD and
+     the changed files. The status line's changed-file count comes from
+     `Status`.
 
    2a needs no events, because the TUI already re-reads on its tick.
    2b changes how the TUI learns that something changed, so it is
@@ -820,6 +841,26 @@ plan 2b:
   and whether the root is a repository.
 - **ACP's steering wire types move into `acpwire`** (C1), with their
   conversion in `viewmodel`. Their JSON is unchanged.
+
+**2026-10-26, against `726e1506` (plan 2b merged).** Found while writing
+plan 2c:
+- **The sheet refreshes on request** (C5). Its database and git values
+  are cached agent side, and `Session.RefreshSheet(ctx, flags)` re-reads
+  the ones its flags name. The TUI decides when, because it owns the turn
+  boundaries until plan 5 moves turns behind `Prompt`. It calls the method
+  at the points where it re-reads those values today. `Sheet` and
+  `RefreshSheet` both map to `session/sheet`.
+- **HEAD stays agent side** (C5). The adapter keeps it as the
+  changed-files base and never returns it. `Status` carries the
+  changed-file count instead, because the status line reads it.
+- **The start time is a sheet field** (C5). Only the session sheet reads
+  it, and a subagent's sheet needs the child's own.
+- **The sheet carries aggregates, not the tool-call log** (C5). The tools
+  and files sections read per-tool and per-file totals. The adapter
+  computes them with the functions the sheet uses today, which move to
+  `viewmodel`, so the log never crosses the seam.
+- **The repo's language mix is dropped** (C5). Nothing has ever filled
+  it.
 
 ## Implementation record
 

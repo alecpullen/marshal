@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
@@ -25,7 +26,6 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
-	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
@@ -69,13 +69,13 @@ type Panel struct {
 	// quota is the session's latest subscription quota reading, when the
 	// active provider reports one (OAuth-backed providers). nil hides the
 	// quota line entirely.
-	quota *schema.QuotaInfo
+	quota *acpwire.Quota
 }
 
 // SetQuota supplies the session's latest subscription quota reading. A nil
 // value hides the quota line, which is the normal case for providers that
 // report none.
-func (p *Panel) SetQuota(q *schema.QuotaInfo) { p.quota = q }
+func (p *Panel) SetQuota(q *acpwire.Quota) { p.quota = q }
 
 // SetLayers supplies the load-time config snapshots used by project-scope
 // saves to avoid baking user-layer values into the project file.
@@ -786,15 +786,15 @@ func (p *Panel) View(width, maxHeight int) string {
 // "quota 50% (4h7m) · 8% (6d23h) plus". The footer is the only place both
 // windows are shown — the status line carries the primary window alone,
 // because it is the one that actually runs out mid-session.
-func quotaLine(q *schema.QuotaInfo) string {
+func quotaLine(q *acpwire.Quota) string {
 	if q == nil {
 		return ""
 	}
 	line := fmt.Sprintf("quota %d%% (%s) · %d%% (%s)",
 		q.PrimaryUsedPercent,
-		strutil.CompactDuration(time.Duration(q.PrimaryResetAfterSecs)*time.Second),
+		strutil.CompactDuration(time.Duration(q.PrimaryResetAfterMs)*time.Millisecond),
 		q.SecondaryUsedPercent,
-		strutil.CompactDuration(time.Duration(q.SecondaryResetAfterSecs)*time.Second),
+		strutil.CompactDuration(time.Duration(q.SecondaryResetAfterMs)*time.Millisecond),
 	)
 	if q.PlanType != "" {
 		line += " " + q.PlanType

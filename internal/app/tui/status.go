@@ -9,13 +9,13 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/help"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/interaction"
-	"marshal/internal/llm/schema"
 	"marshal/internal/strutil"
 )
 
@@ -263,17 +263,19 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: seg, priority: 0, pinned: true})
 	}
 
-	active := m.state.ActiveRoute()
+	active := st.ActiveRoute
 	route := active
-	turn, running := m.state.TurnRoute()
+	running := st.TurnRoute != nil
+	turn := acpwire.Route{}
 	if running {
+		turn = *st.TurnRoute
 		route = turn
 	}
 	// The runner only applies an override whose provider and model match the
 	// running turn's route (agent/effort.go sessionEffortTarget); anything
 	// else is dropped at the next turn's start. Rendering such an override as
 	// pending would advertise a change this turn will not make.
-	override := m.state.EffortOverride()
+	override := st.Effort
 	overrideApplies := override.Level != "" &&
 		override.Provider == route.Provider && override.Model == route.Model
 	if route.Active {
@@ -328,7 +330,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	// resolved model window. Subagent usage is recorded on the child's own
 	// session state (see buildSubagentFactory) and never folded in here, so
 	// the number cannot inflate past the window.
-	if used, window := m.state.TurnUsage(); window > 0 {
+	if used, window := st.TurnUsed, st.TurnWindow; window > 0 {
 		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("ctx %s/%s",
 			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 3})
 	}
@@ -350,7 +352,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	// remaining-request count. Priority 3 keeps it beside the context
 	// counter: both are consumable budgets that drop together on narrow
 	// terminals.
-	if q := m.state.TurnQuota(); q != nil {
+	if q := st.Quota; q != nil {
 		segs = append(segs, statusSeg{
 			text:     dimStyle().Render(quotaSegment(q)),
 			priority: 3,
@@ -530,13 +532,13 @@ func (m Model) noticeVisible() bool {
 // The secondary window is deliberately omitted here — it is a 7-day budget
 // that rarely moves, and the footer is the scarcest space in the UI; the
 // /agents roster shows both.
-func quotaSegment(q *schema.QuotaInfo) string {
+func quotaSegment(q *acpwire.Quota) string {
 	if q == nil {
 		return ""
 	}
 	seg := fmt.Sprintf("⚡ %d%%", q.PrimaryUsedPercent)
-	if q.PrimaryResetAfterSecs > 0 {
-		seg += " " + strutil.CompactDuration(time.Duration(q.PrimaryResetAfterSecs)*time.Second)
+	if q.PrimaryResetAfterMs > 0 {
+		seg += " " + strutil.CompactDuration(time.Duration(q.PrimaryResetAfterMs)*time.Millisecond)
 	}
 	if q.PlanType != "" {
 		seg += " " + q.PlanType

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/sessionsheet"
@@ -94,7 +95,7 @@ func TestStatusLineQuotaClearedByNil(t *testing.T) {
 // TestQuotaSegmentOmitsZeroReset: a reading with no reset countdown must not
 // render a "now" placeholder that reads as a real countdown.
 func TestQuotaSegmentOmitsZeroReset(t *testing.T) {
-	got := quotaSegment(&schema.QuotaInfo{PrimaryUsedPercent: 12})
+	got := quotaSegment(&acpwire.Quota{PrimaryUsedPercent: 12})
 	if got != "⚡ 12%" {
 		t.Fatalf("quotaSegment = %q, want %q", got, "⚡ 12%")
 	}

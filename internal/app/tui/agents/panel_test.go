@@ -10,12 +10,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
-	"marshal/internal/llm/schema"
 	"marshal/internal/tools/registry"
 )
 
@@ -41,12 +41,12 @@ func TestRosterRendersPresetBinding(t *testing.T) {
 func TestRosterShowsQuotaWhenSet(t *testing.T) {
 	cfg := config.Default()
 	p := NewRosterPanel(cfg, "", "", nil)
-	p.SetQuota(&schema.QuotaInfo{
-		PlanType:                "plus",
-		PrimaryUsedPercent:      50,
-		PrimaryResetAfterSecs:   14845, // 4h7m
-		SecondaryUsedPercent:    8,
-		SecondaryResetAfterSecs: 601645, // 6d23h
+	p.SetQuota(&acpwire.Quota{
+		PlanType:              "plus",
+		PrimaryUsedPercent:    50,
+		PrimaryResetAfterMs:   14845000, // 4h7m
+		SecondaryUsedPercent:  8,
+		SecondaryResetAfterMs: 601645000, // 6d23h
 	})
 	view := ansi.Strip(p.View(100, 30))
 	for _, want := range []string{"quota 50%", "4h7m", "8%", "6d23h", "plus"} {
@@ -71,7 +71,7 @@ func TestRosterOmitsQuotaWhenUnset(t *testing.T) {
 func TestRosterQuotaClearedByNil(t *testing.T) {
 	cfg := config.Default()
 	p := NewRosterPanel(cfg, "", "", nil)
-	p.SetQuota(&schema.QuotaInfo{PrimaryUsedPercent: 50})
+	p.SetQuota(&acpwire.Quota{PrimaryUsedPercent: 50})
 	if view := ansi.Strip(p.View(100, 30)); !strings.Contains(view, "quota") {
 		t.Fatalf("expected a quota line:\n%s", view)
 	}

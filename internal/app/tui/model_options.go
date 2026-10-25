@@ -34,7 +34,7 @@ func (m *Model) resolveReasoningSupport(presetName string) bool {
 
 // openModelOptions opens the model-options panel for the active route's preset.
 func (m *Model) openModelOptions() tea.Cmd {
-	route := m.state.ActiveRoute()
+	route := m.sess.Status().ActiveRoute
 	if !route.Active || route.Preset == "" {
 		m.state.AddMessage(session.RoleSystem, "No active model preset. Use /models to pick one first.", session.ContentTypePlain)
 		return nil

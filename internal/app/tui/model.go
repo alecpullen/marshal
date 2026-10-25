@@ -1668,7 +1668,7 @@ func (m *Model) openAgentsRoster(arg string) {
 		m.toolRegistry,
 	)
 	roster.SetLayers(m.state.Layers())
-	roster.SetQuota(m.state.TurnQuota())
+	roster.SetQuota(m.sess.Status().Quota)
 	m.dock.Open(roster)
 }
 
@@ -7427,7 +7427,7 @@ func (m *Model) cycleModel(forward bool) {
 		m.refreshViewport()
 		return
 	}
-	cur := m.state.ActiveRoute().Preset
+	cur := m.sess.Status().ActiveRoute.Preset
 	idx := slices.Index(names, cur)
 	if idx < 0 {
 		idx = 0 // legacy/unknown route → start at the first preset
@@ -7770,7 +7770,7 @@ func (m *Model) sortedPresetNames() []string {
 func (m *Model) modelPickerItems() []picker.Item {
 	presets := m.state.Config.Models.Presets
 	names := m.sortedPresetNames()
-	current := m.state.ActiveRoute().Preset
+	current := m.sess.Status().ActiveRoute.Preset
 	items := make([]picker.Item, 0, len(names))
 	for _, n := range names {
 		p := presets[n]

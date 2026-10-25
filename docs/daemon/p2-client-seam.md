@@ -316,18 +316,23 @@ Decision: `WireTree`, with the C6 additions.
   - **activity:** kind, label and start, and whether a subagent is
     running;
   - **workspace:** project root, active root, and git info (branch,
-    worktree, HEAD; plan 2b);
+    worktree and whether the root is a repository; plan 2b). HEAD comes
+    with the sheet (plan 2c), because only the sheet's changed-files diff
+    reads it;
   - **live state:** browser info. Sandbox info arrives with plans 3
     and 4, because only the running-call and approval renderers read
     it. The current notice arrives with plan 6, which also moves
     notice writes (C9);
-  - **queues and runs** (plan 2b): the steering queue and Send-now
-    snapshot, jobs (the running count and the job list), the watch
-    snapshot, subagent views, swarm and SDD progress (the tray's
-    plan-run row), the SDD gate and a pending watch resume. The todos
-    reach the tray through the band (C6). Active skills, loaded tool
-    count, tool budget and session rules are read only by the session
-    sheet, so they are `Sheet` fields (plan 2c).
+  - **queues and runs** (plan 2b): the steering queue, the Send-now
+    snapshot and the newest receipt for its turn, the running job count,
+    subagent views, swarm and SDD progress (the tray's plan-run row), the
+    SDD gate and a pending watch resume. The job list and the watch
+    snapshot are not carried: the TUI caches both from their events
+    today, but nothing reads them. The work snapshot keeps its own pump
+    until the work group moves (plan 5). The todos reach the tray through
+    the band (C6). Active skills, loaded tool count, tool budget and
+    session rules are read only by the session sheet, so they are
+    `Sheet` fields (plan 2c).
   - **subagent views** leave out the child state. Each carries what
     the tray and the drill-in breadcrumb read today: the role, label,
     model, provider and fallback flag. While the child runs, it also
@@ -335,7 +340,9 @@ Decision: `WireTree`, with the C6 additions.
     `steps.go:703`).
 - The job, watch, steering, workspace and subagent broker pumps go away.
   Their data are `Status` fields, and the adapter fires `Changed` when
-  they publish.
+  they publish and after a `SendNow`. A value no event announces (swarm
+  and SDD progress, the SDD gate) reaches the screen on the tick, as
+  today.
 - `Session.Sheet(subagentID int64) acpwire.SessionSheet` carries what the
   session sheet's sections read. For the session, that is the tool-call
   log fields the sections use, the context-pack summary, changed files
@@ -473,7 +480,8 @@ Decision: `WireTree`, with the C6 additions.
     sequence (`session/cancel` exists);
   - `Steer` and `SendNow` (`session/steer` exists; Send now is its
     `now` delivery), and `PopSteering` and `ClearSteering` (new) cover
-    the steering queue;
+    the steering queue. `SendNow` arrives early, in plan 2b, because
+    the receipt it returns is part of `Status`;
   - `SetInteraction(ctx, patch)` replaces the interaction setter. It
     covers mode, auto and system access (`session/set_mode` exists and
     takes all three). `SetEffort` exists, and `SetSudoUnlock` is new;
@@ -482,7 +490,7 @@ Decision: `WireTree`, with the C6 additions.
   - `TakeWatchResume` (new).
 - **Work.** The work service's list, inspect, stop and acknowledge calls,
   and its snapshot, become `Session` methods (`session/work_*`
-  exists).
+  exists). The work pump and the work types move with them (plan 5).
 - **Ending a session.**
   - The `EndController` calls become `Session` methods: `ActiveWork`,
     `AcceptEnd`, `WaitForEnd` and `RunExitAnalysis`. `Postmortem(ctx)`
@@ -612,8 +620,9 @@ The TUI works after every plan.
    - `acpwire` with the error codes and T2, `acpclient`, an almost
      empty `inproc`, and `tui.New(host, session, …)` with
      `WithLegacyState`. Each group's plan moves its own types into
-     `acpwire`: the work types in plan 2b, the projection types in plan
-     3, and the request and command types in plans 4 and 6.
+     `acpwire`: ACP's steering types in plan 2b, the projection types
+     in plan 3, the request types in plan 4, the work types in plan 5
+     and the command types in plan 6.
    - The test helpers, and every test moved onto them.
    - The gitinfo/changedfiles move.
    - The boundary test (T1), with an allowlist of every current
@@ -624,12 +633,15 @@ The TUI works after every plan.
      `Session.Status` with identity, route, access, activity, workspace
      roots and browser info: the reads the status line, footer and
      input gating take straight from the state. No event changes.
-   - **2b. Runs, queues and events.** `Session.Changed`. The job,
-     watch, steering, workspace, subagent and work pumps go away, and
-     the adapter keeps what only their events carry: the job list, the
-     watch snapshot, Send-now receipts and the pending watch resume.
-     Also git info, subagent views (with the tray's headline), swarm
-     and SDD progress, the SDD gate and the work types.
+   - **2b. Runs, queues and events**
+     ([plan](plans/2026-10-25-p2-2b-events-plan.md)). `Session.Changed`,
+     and `Session.SendNow` from C8. The job, watch, steering, workspace
+     and subagent pumps go away, and the adapter keeps what only their
+     events carry: Send-now receipts and the pending watch resume. Also
+     the steering queue, the running job count, git info, subagent views
+     (with the tray's headline), swarm and SDD progress and the SDD
+     gate. ACP's steering wire types move into `acpwire`. The work pump
+     stays until plan 5.
    - **2c. Sheet.** `Session.Sheet(subagentID)`.
 
    2a needs no events, because the TUI already re-reads on its tick.
@@ -781,6 +793,33 @@ presets. Changes:
   - Active skills, the loaded tool count, the tool budget and session
     rules are sheet fields. The todos reach the tray through the band.
 - **Tests.** T1b, the moved-reads guard, is added.
+
+**2026-10-25, against `2268ce0b` (plan 2a merged).** Found while writing
+plan 2b:
+- **The work group moves in plan 5, not 2b** (C5, C8, Migration order).
+  `acpwire` cannot hold `viewmodel`'s work types as they are. They have
+  `time.Time` and `progress` fields, `WorkQuery` and `WorkTarget` carry
+  no JSON tags, and `WorkAck` embeds `WorkTarget`. ACP already has a
+  separate wire form (`acp/work.go`), but the tray and the tasks panel
+  render `viewmodel.WorkItem` fields, `progress` snapshots and the work
+  predicates. Moving the pump therefore means porting that rendering,
+  and that work belongs with the work calls, which C8 already places
+  in plan 5. The work pump stays until then.
+- **The job list and the watch snapshot are dropped, not carried**
+  (C5). The TUI caches both from their events, but no production code
+  reads either cache. `Status` carries the running job count, which
+  the state already holds: the job manager sets it just before each
+  job event is published.
+- **`SendNow` moves to plan 2b** (C8). `Status` carries the newest
+  Send-now receipt. The TUI shows the receipt a submission returns on
+  the very next frame, before its event arrives. A receipt in `Status`
+  can only do the same if the adapter records it before the call
+  returns, so the call has to move with the receipts.
+- **HEAD moves with the sheet** (C5). Only the sheet's changed-files
+  diff reads it. The status line needs only the branch, the worktree
+  and whether the root is a repository.
+- **ACP's steering wire types move into `acpwire`** (C1), with their
+  conversion in `viewmodel`. Their JSON is unchanged.
 
 ## Implementation record
 

@@ -420,7 +420,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 		if seg == "send now: undelivered" || seg == "send now: waiting for a safe boundary" {
 			style = warningStyle()
 		}
-		segs = append(segs, statusSeg{text: style.Render(seg), priority: 8})
+		segs = append(segs, statusSeg{text: style.Render(seg), priority: 0})
 	}
 
 	if bi := m.state.BrowserInfo(); bi.SessionOpen {

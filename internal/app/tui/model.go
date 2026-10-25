@@ -1384,7 +1384,8 @@ func (m *Model) userHome() (string, error) {
 // save failures) so the user can fix the underlying problem and retry
 // without losing their edit. Messaging is the caller's job.
 func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
-	path := projectConfigPath(m.state.WorkingDir)
+	st := m.sess.Status()
+	path := projectConfigPath(st.WorkingDir)
 	if err := config.SaveProjectConfig(path, cfg, m.state.Layers()); err != nil {
 		m.applyNewConfig(cfg)
 		m.configSavePending = true
@@ -1392,7 +1393,7 @@ func (m *Model) persistAndReload(cfg config.Config) (saveErr, reloadErr error) {
 	}
 	m.configSavePending = false
 	if m.trustRefresh != nil {
-		m.trustRefresh(m.state.WorkingDir)
+		m.trustRefresh(st.WorkingDir)
 	}
 	// The project file changed on disk, so the load-time snapshots are
 	// stale. Refresh them before rebuilding the runtime: the session
@@ -1587,15 +1588,16 @@ func (m *Model) reportSetResult(key string, change settings.Change, saveErr, rel
 		m.state.AddMessage(session.RoleSystem, text, session.ContentTypePlain)
 	}
 	m.refreshOpenSettingsBrowser()
+	st := m.sess.Status()
 	switch {
 	case saveErr != nil:
 		sys(fmt.Sprintf("✗ %s applied in session, but save failed: %v", key, saveErr))
 	case reloadErr != nil:
 		sys(fmt.Sprintf("✗ %s saved, but live reload failed: %v", key, reloadErr))
 	case !change.Changed:
-		sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
+		sys(fmt.Sprintf("✓ %s persisted · %s", key, relPath(st.WorkingDir, projectConfigPath(st.WorkingDir))))
 	default:
-		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir))))
+		sys(fmt.Sprintf("✓ %s: %s → %s · %s", key, change.OldValue, change.NewValue, relPath(st.WorkingDir, projectConfigPath(st.WorkingDir))))
 	}
 }
 
@@ -1627,7 +1629,7 @@ func (m *Model) openSettingsBrowser(query string) {
 	}
 	browser := settings.NewBrowser(
 		m.state.Config,
-		projectConfigPath(m.state.WorkingDir),
+		projectConfigPath(m.sess.Status().WorkingDir),
 		query,
 		opts...,
 	)
@@ -1660,7 +1662,7 @@ func (m *Model) openAgentsRoster(arg string) {
 	}
 	roster := agents.NewRosterPanelWithRegistry(
 		m.state.Config,
-		projectConfigPath(m.state.WorkingDir),
+		projectConfigPath(m.sess.Status().WorkingDir),
 		arg,
 		dispatch,
 		m.toolRegistry,
@@ -2011,7 +2013,7 @@ func (m *Model) refreshSheetTurns() {
 	if rows, err := database.RecentTurnMetrics(m.memoryProject, 24); err == nil {
 		m.sheetTurns = rows
 	}
-	if totals, err := database.SessionUsage(m.memoryProject, m.state.SessionID()); err == nil {
+	if totals, err := database.SessionUsage(m.memoryProject, m.sess.ID()); err == nil {
 		m.sheetTotals = totals
 	}
 }
@@ -2028,9 +2030,10 @@ func (m *Model) refreshSheetChanged() {
 // against the project root's HEAD, not the active root: the fleet describes
 // the whole project's agent worktrees, not the checked-out one.
 func (m *Model) refreshSheetFleet() {
+	st := m.sess.Status()
 	root := m.state.Workspace().ProjectRoot
 	if root == "" {
-		root = m.state.WorkingDir
+		root = st.WorkingDir
 	}
 	base, err := worktree.CLIGitOps{}.RevParse(root, "HEAD")
 	if err != nil {
@@ -2446,6 +2449,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ctrlCExpiredMsg:
 		return m, nil
 	case settings.ChangedMsg:
+		st := m.sess.Status()
 		if msg.BlockedReason != "" {
 			m.applyNewConfig(msg.Cfg)
 			m.configSavePending = true
@@ -2473,11 +2477,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyNewConfig(msg.Cfg)
 			m.configSavePending = false
 			if !msg.GlobalTarget && m.trustRefresh != nil {
-				m.trustRefresh(m.state.WorkingDir)
+				m.trustRefresh(st.WorkingDir)
 			}
 			m.reloadLayers()
-			cfgPath := projectConfigPath(m.state.WorkingDir)
-			base := m.state.WorkingDir
+			cfgPath := projectConfigPath(st.WorkingDir)
+			base := st.WorkingDir
 			if msg.GlobalTarget {
 				if home, err := m.userHome(); err == nil {
 					cfgPath = config.UserConfigPath(home)
@@ -2503,7 +2507,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				userPath = config.UserConfigPath(home)
 			}
 			m.state.AddMessage(session.RoleSystem,
-				fmt.Sprintf("✗ save failed: %v · %s", msg.SaveErr, relPath(m.state.WorkingDir, userPath)),
+				fmt.Sprintf("✗ save failed: %v · %s", msg.SaveErr, relPath(st.WorkingDir, userPath)),
 				session.ContentTypePlain)
 			m.refreshViewport()
 			return m, nil
@@ -2526,7 +2530,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// persistAndReload already refreshed the layer snapshots.
 		for _, receipt := range msg.Receipts {
 			m.state.AddMessage(session.RoleSystem,
-				"✓ "+receipt+" · "+relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir)),
+				"✓ "+receipt+" · "+relPath(st.WorkingDir, projectConfigPath(st.WorkingDir)),
 				session.ContentTypePlain)
 		}
 		m.refreshViewport()
@@ -2833,16 +2837,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshViewport()
 			return m, nil
 		}
+		st := m.sess.Status()
 		// Persist proposed verify commands to project config before the run
 		// starts. A write failure warns but never blocks the run.
 		if run.verifyBuild != "" || run.verifyTest != "" {
-			if err := config.SaveVerifyCommands(projectConfigPath(m.state.WorkingDir), run.verifyBuild, run.verifyTest); err != nil {
+			if err := config.SaveVerifyCommands(projectConfigPath(st.WorkingDir), run.verifyBuild, run.verifyTest); err != nil {
 				m.state.AddMessage(session.RoleSystem,
 					fmt.Sprintf("✗ verify commands apply to this run but could not be persisted: %v", err),
 					session.ContentTypePlain)
 			} else {
 				m.state.AddMessage(session.RoleSystem,
-					"✓ verify commands persisted to "+relPath(m.state.WorkingDir, projectConfigPath(m.state.WorkingDir)),
+					"✓ verify commands persisted to "+relPath(st.WorkingDir, projectConfigPath(st.WorkingDir)),
 					session.ContentTypePlain)
 			}
 		}
@@ -2927,7 +2932,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sddreview.CancelMsg:
 		// Discard removes only the generated candidate.
 		if panel, ok := m.dock.Panel().(*sddreview.Panel); ok {
-			_ = sddauthor.RemoveCandidate(panel.CandidatePath(), m.state.WorkingDir, m.state.Config.SDD.PlansDir)
+			_ = sddauthor.RemoveCandidate(panel.CandidatePath(), m.sess.Status().WorkingDir, m.state.Config.SDD.PlansDir)
 		}
 		m.dock.CloseNow()
 		m.refreshViewport()
@@ -3266,7 +3271,7 @@ func (m *Model) reconcileAccess() {
 	}
 	// A snapshot from another conversation must not open here: the session was
 	// replaced underneath this model.
-	if pending && snapshot.SessionID != m.state.SessionID() {
+	if pending && snapshot.SessionID != m.sess.ID() {
 		pending = false
 	}
 
@@ -4353,6 +4358,7 @@ func (m Model) breadcrumbRows() int {
 // openRunPreflight opens the cast list panel for the given kind ("sdd" or
 // "swarm") and waits for the user to confirm before starting the run.
 func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
+	st := m.sess.Status()
 	router := routing.NewStaticRouter(m.state.Config.RoutingConfig())
 	roles := routing.SwarmCastRoles
 	title := "Start swarm run?"
@@ -4370,7 +4376,7 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		// roster matters less than the fact that this is an autonomous,
 		// multi-commit run against a branch the user has not seen.
 		tasks := "unknown task count"
-		for _, c := range sddplans.Discover(m.state.WorkingDir, m.state.Config.SDD.PlansDir) {
+		for _, c := range sddplans.Discover(st.WorkingDir, m.state.Config.SDD.PlansDir) {
 			if c.Path != goal {
 				continue
 			}
@@ -4424,7 +4430,7 @@ func (m *Model) openRunPreflight(kind string, runner AgentRunner, goal string) {
 		rows = append(rows, row)
 	}
 	if kind == "sdd" {
-		rows = append(rows, verifyGateRow(m.state.Config, m.state.WorkingDir))
+		rows = append(rows, verifyGateRow(m.state.Config, st.WorkingDir))
 	}
 	m.pendingRun = &pendingAgentRun{runner: runner, goal: goal, kind: kind}
 	panel := castlist.New(title, rows, meta, "agent")
@@ -4612,6 +4618,7 @@ func (m *Model) lastAssistantText() string {
 // async command. On success the completion handler opens the review panel;
 // it never starts an SDD run.
 func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
+	st := m.sess.Status()
 	if m.endStage != endIdle {
 		// An accepted ending owns the conversation. Plan authoring is an
 		// ordinary operation and registers its own work, so it must not start
@@ -4647,7 +4654,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	}
-	planPath, err := sddplans.DraftPath(m.state.WorkingDir, m.state.Config.SDD.PlansDir, goal, m.now())
+	planPath, err := sddplans.DraftPath(st.WorkingDir, m.state.Config.SDD.PlansDir, goal, m.now())
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Cannot resolve plan path: %v", err), session.ContentTypePlain)
 		m.refreshViewport()
@@ -4656,7 +4663,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 	author, err := m.planAuthorFactory(sddauthor.Request{
 		Goal:     goal,
 		Design:   design,
-		RepoRoot: m.state.WorkingDir,
+		RepoRoot: st.WorkingDir,
 		PlanPath: planPath,
 	})
 	if err != nil {
@@ -4683,7 +4690,7 @@ func (m *Model) startSDDAuthoring(parsed parsedSDDArgs) (tea.Model, tea.Cmd) {
 	return *m, tea.Batch(runPlanAuthorCmd(agentCtx, m.state, author, sddauthor.Request{
 		Goal:     goal,
 		Design:   design,
-		RepoRoot: m.state.WorkingDir,
+		RepoRoot: st.WorkingDir,
 		PlanPath: planPath,
 	}, releaseStop), tickCmd(), spinnerTickCmd())
 }
@@ -6031,7 +6038,7 @@ func (m *Model) beginSendNow() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.submitSendNow(session.SendNowRequest{
-		SessionID: m.state.SessionID(),
+		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      text,
 	}, func() { m.clearChatDraft() })
@@ -6061,10 +6068,10 @@ func (m *Model) openSteeringComposer() {
 	} else if key, ok := m.focusedPromptKey(); ok {
 		m.composerDisplacedPrompt = key
 	}
-	composer := steerpanel.New(m.state.SessionID(), snap.TurnID)
+	composer := steerpanel.New(m.sess.ID(), snap.TurnID)
 	m.steeringComposer = composer
 	m.composerID = composer.ID()
-	m.composerSessionID = m.state.SessionID()
+	m.composerSessionID = m.sess.ID()
 	m.composerTurnID = snap.TurnID
 	m.dock.Open(composer)
 	// The base editor keeps its text but must not render a cursor while the
@@ -6168,7 +6175,7 @@ func (m *Model) handleComposerSubmit(msg steerpanel.SubmitMsg) (tea.Model, tea.C
 		// has no side effect at all.
 		return m, nil
 	}
-	if msg.SessionID != m.composerSessionID || m.state.SessionID() != m.composerSessionID {
+	if msg.SessionID != m.composerSessionID || m.sess.ID() != m.composerSessionID {
 		m.rejectSendNow("Send now targets a different conversation now. The composer text was kept.")
 		return m, nil
 	}
@@ -6358,7 +6365,7 @@ func (m *Model) resetTasksPanelWork() {
 	p.detail = nil
 	p.detailOpen = false
 	p.err = ""
-	p.setWork(m.workService != nil, m.state.SessionID(), m.workSnapshot)
+	p.setWork(m.workService != nil, m.sess.ID(), m.workSnapshot)
 }
 
 // handleWorkMsg applies one snapshot event. An event from a superseded
@@ -6382,7 +6389,7 @@ func (m Model) handleWorkMsg(msg workMsg) (Model, tea.Cmd) {
 	m.notePreviousProgress(msg.snapshot)
 	m.workSnapshot = msg.snapshot
 	if m.tasksPanel != nil {
-		m.tasksPanel.setWork(m.workService != nil, m.state.SessionID(), msg.snapshot)
+		m.tasksPanel.setWork(m.workService != nil, m.sess.ID(), msg.snapshot)
 	}
 	m.refreshViewport()
 	return m, rearm()
@@ -7236,12 +7243,13 @@ func (m *Model) beginResume(id string) (tea.Model, tea.Cmd) {
 // openSessionPicker opens a picker listing previous sessions for this
 // project. The picked session ID is passed to beginResume.
 func (m *Model) openSessionPicker(prefilter string) {
+	st := m.sess.Status()
 	database := m.state.DB()
 	if database == nil {
 		m.state.AddMessage(session.RoleSystem, "Session list is not available (no database).", session.ContentTypePlain)
 		return
 	}
-	sessions, _, err := database.ListSessions(context.Background(), m.state.WorkingDir, "", 100)
+	sessions, _, err := database.ListSessions(context.Background(), st.WorkingDir, "", 100)
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Could not list sessions: %v", err), session.ContentTypePlain)
 		return
@@ -7254,7 +7262,7 @@ func (m *Model) openSessionPicker(prefilter string) {
 		}
 		detail := s.UpdatedAt.Format("2006-01-02 15:04") + fmt.Sprintf(" · %d messages", s.MessageCount)
 		badge := ""
-		if s.SessionID == m.state.SessionID() {
+		if s.SessionID == m.sess.ID() {
 			badge = "● now"
 		}
 		items = append(items, picker.Item{
@@ -7438,7 +7446,7 @@ func (m *Model) cycleModel(forward bool) {
 // is listed with its error rather than hidden, and a partly-finished run is
 // pinned to the top as an explicit resume.
 func (m *Model) openSDDPlanPicker() {
-	candidates := sddplans.Discover(m.state.WorkingDir, m.state.Config.SDD.PlansDir)
+	candidates := sddplans.Discover(m.sess.Status().WorkingDir, m.state.Config.SDD.PlansDir)
 
 	var items []picker.Item
 	// Resumable runs first: re-picking the plan is how a stopped run is

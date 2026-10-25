@@ -114,7 +114,7 @@ func (m *Model) sendNowCommand(raw string) (tea.Model, tea.Cmd) {
 	// request has to put it back: the user's line is theirs until the runtime
 	// actually accepts it.
 	if !m.submitSendNow(session.SendNowRequest{
-		SessionID: m.state.SessionID(),
+		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      text,
 	}, nil) {
@@ -139,7 +139,7 @@ func (m *Model) sendNowFlushOrOpen(raw string) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if !m.submitSendNow(session.SendNowRequest{
-		SessionID: m.state.SessionID(),
+		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      "",
 	}, nil) {
@@ -439,7 +439,7 @@ func init() {
 			return m, nil
 		},
 		"run": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			doc := runOutcomeDoc(m.state.SDDProgress(), worktree.CLIGitOps{}, m.state.WorkingDir, m.now(), m.width)
+			doc := runOutcomeDoc(m.state.SDDProgress(), worktree.CLIGitOps{}, m.sess.Status().WorkingDir, m.now(), m.width)
 			m.dock.Open(docpanel.New(doc, m.state))
 			m.refreshViewport()
 			return m, nil

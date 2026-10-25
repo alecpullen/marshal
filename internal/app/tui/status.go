@@ -249,6 +249,7 @@ func (m Model) transientStatusSegment() string {
 // an action the user just took against the running turn, so it must survive
 // the collapse that a long route or a narrow terminal forces.
 func (m Model) statusLeftSegments() []statusSeg {
+	st := m.sess.Status()
 	segs := []statusSeg{
 		{text: m.modeSegmentStyle().Render(m.modeSegment()), priority: 0, pinned: true},
 	}
@@ -359,15 +360,15 @@ func (m Model) statusLeftSegments() []statusSeg {
 	// Generation > 0 means the session has compacted at least once. Show
 	// it so a user who notices the agent "forgetting" can see that a
 	// handoff happened rather than guessing.
-	if gen := m.state.Generation(); gen.Seq > 0 {
+	if st.GenerationSeq > 0 {
 		segs = append(segs, statusSeg{
-			text:     dimStyle().Render(fmt.Sprintf("gen %d", gen.Seq)),
+			text:     dimStyle().Render(fmt.Sprintf("gen %d", st.GenerationSeq)),
 			priority: 4,
 		})
 	}
 
-	if leaves := m.state.Branches(); len(leaves) > 1 {
-		cur := m.state.LeafID()
+	if leaves := st.Branches; len(leaves) > 1 {
+		cur := st.LeafID
 		idx := 1
 		for i, id := range leaves {
 			if id == cur {
@@ -378,7 +379,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("branch %d/%d", idx, len(leaves)), priority: 5})
 	}
 
-	if wd := m.state.WorkingDir; wd != "" {
+	if wd := st.WorkingDir; wd != "" {
 		segs = append(segs, statusSeg{text: identityStyle().Render(filepath.Base(wd)), priority: 5})
 	}
 

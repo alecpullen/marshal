@@ -41,6 +41,14 @@ var movedStateReads = map[string]string{
 	"HasRunningSubagent": "2a",
 	"Workspace":          "2a",
 	"BrowserInfo":        "2a",
+
+	"SteeringQueue":    "2b",
+	"SteeringSnapshot": "2b",
+	"SubmitSendNow":    "2b",
+	"RunningJobsCount": "2b",
+	"SwarmProgress":    "2b",
+	"SDDProgress":      "2b",
+	"SDDGate":          "2b",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

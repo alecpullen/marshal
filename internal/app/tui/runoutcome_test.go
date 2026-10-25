@@ -5,24 +5,24 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/commands"
 	"marshal/internal/worktree"
 )
 
-func succeededRun() session.SDDProgress {
-	return session.SDDProgress{
+func succeededRun() acpwire.SDDProgress {
+	return acpwire.SDDProgress{
 		Finished: true, Succeeded: true,
 		PlanName: "add-retries", Branch: "pipeline/add-retries", BaseRef: "main",
 		LedgerPath:   "/repo/.marshal/pipeline/add-retries/ledger.md",
 		ArtifactsDir: "/repo/.marshal/pipeline/add-retries",
 		TotalTasks:   4, DoneTasks: 4,
-		StartedAt: time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
-		EndedAt:   time.Date(2026, 8, 7, 10, 23, 41, 0, time.UTC),
+		StartedAt: acpwire.Millis(time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)),
+		EndedAt:   acpwire.Millis(time.Date(2026, 8, 7, 10, 23, 41, 0, time.UTC)),
 	}
 }
 
-func failedRun() session.SDDProgress {
+func failedRun() acpwire.SDDProgress {
 	p := succeededRun()
 	p.Succeeded = false
 	p.DoneTasks = 2
@@ -94,14 +94,14 @@ func TestOutcomeDocHandlesMissingBranchGracefully(t *testing.T) {
 }
 
 func TestOutcomeDocWithNoRunAtAll(t *testing.T) {
-	doc := runOutcomeDoc(session.SDDProgress{}, worktree.NewFakeGitOps(), "/repo", time.Now(), 100)
+	doc := runOutcomeDoc(acpwire.SDDProgress{}, worktree.NewFakeGitOps(), "/repo", time.Now(), 100)
 	joined := strings.Join(rowTexts(doc), "\n")
 	if !strings.Contains(strings.ToLower(joined), "no plan run") {
 		t.Errorf("with no run recorded the doc must say so plainly:\n%s", joined)
 	}
 }
 
-func activeRun() (session.SDDProgress, time.Time) {
+func activeRun() (acpwire.SDDProgress, time.Time) {
 	p := etaTestProgress()
 	p.PlanName = "add-retries"
 	p.Branch = "pipeline/add-retries"

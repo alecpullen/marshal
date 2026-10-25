@@ -74,7 +74,6 @@ import (
 	"marshal/internal/sddplans"
 	"marshal/internal/skills"
 	"marshal/internal/strutil"
-	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
@@ -485,55 +484,12 @@ type Model struct {
 	suggestionProvider func(ctx context.Context, lastMsg string) (string, error)
 	suggestionGen      int
 
-	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
-	// cmd returned from Init (and re-armed from Update on each
-	// jobCountMsg) bridges it into jobCountMsg values. jobCount is the
-	// cached value the status line renders. When jobBroker is nil
-	// (tests, fallback), the status line reads m.state.RunningJobsCount()
-	// as the polled fallback.
-	jobBroker *pubsub.Broker[native.JobEvent]
-	jobEvents <-chan pubsub.Event[native.JobEvent]
-	jobCount  int
-	// jobs is the cached JobInfo snapshot from the latest JobEvent, used by
-	// the now bar above the input. Nil/empty when no broker is wired.
-	jobs []native.JobInfo
-
-	// watchBroker is the watch-event broker; the pump cmd returned from Init
-	// (and re-armed from Update on each watchMsg) bridges it into watchMsg
-	// values. watchEvents is the persistent subscription channel. When
-	// watchBroker is nil (tests, fallback), the now bar renders no watch rows.
-	watchBroker *pubsub.Broker[watch.Event]
-	watchEvents <-chan pubsub.Event[watch.Event]
-	// watches is the cached watch snapshot from the latest watch.Event, used
-	// by the now bar above the input. Nil/empty when no broker is wired.
-	watches []watch.Event
-
-	// F16: steering broker pump. steeringBroker is the F16 message broker;
-	// the pump cmd returned from Init (and re-armed from Update on each
-	// steeringMsg) bridges it into steeringMsg values. queuedCount is the
-	// cached count the status line and transcript render. When
-	// steeringBroker is nil, m.queuedCount is driven by direct
-	// state.SteeringQueue() reads.
-	steeringBroker *pubsub.Broker[session.SteeringEvent]
-	steeringEvents <-chan pubsub.Event[session.SteeringEvent]
-	queuedCount    int
-	cancelling     bool
-
-	// Send now (Alt+Enter / /send-now). steeringSnapshot is the cached
-	// runtime snapshot the status line and the footer gate read; it is
-	// refreshed from broker events and, in a build with no broker (tests,
-	// fallback), read directly from the callback on every tick.
-	steeringSnapshot session.SteeringSnapshot
-	// steeringReceipts caches the latest receipt per request ID. Receipt
-	// revisions advance per request, so a comparison must be per key: one
-	// global revision would let one request's final outcome discard another
-	// request's.
-	steeringReceipts map[string]session.SteeringReceipt
-	// steeringSnapshotFn / submitSendNowFn are the runtime-facing seam
-	// (WithSendNow). Either nil makes the action unavailable: a fail-closed
-	// Alt+Enter is better than one that pretends to interrupt nothing.
-	steeringSnapshotFn func() session.SteeringSnapshot
-	submitSendNowFn    func(session.SendNowRequest) (session.SteeringReceipt, error)
+	cancelling bool
+	// watchResumeSeq is the last watch-resume sequence the model acted on, so
+	// one fire wakes the session once.
+	watchResumeSeq uint64
+	// workspaceSeen is the workspace the sheet's base ref last followed.
+	workspaceSeen acpwire.Workspace
 	// steeringComposer is the temporary composer currently holding the dock,
 	// or nil. It is identified by its ComposerID so a late message from a
 	// replaced composer can never act on the new one.
@@ -582,12 +538,6 @@ type Model struct {
 	// re-renders subagent cards as they are registered or change status.
 	subagentBroker *pubsub.Broker[session.SubagentEvent]
 	subagentEvents <-chan pubsub.Event[session.SubagentEvent]
-
-	// gitInfo holds the cached branch + worktree for state.WorkingDir,
-	// refreshed on a throttled tick and on every WindowSizeMsg. lastGitRead
-	// bounds the throttle (see handleAgentTick).
-	gitInfo     gitinfo.Info
-	lastGitRead time.Time
 
 	// New Layout State
 	rawWidth  int // unclamped terminal dimensions (gate check)
@@ -1164,29 +1114,6 @@ func WithPlanAuthorFactory(ctx context.Context, factory PlanAuthorFactory) Optio
 	}
 }
 
-// WithJobBroker wires the F19 pub/sub broker for F5 job-state changes.
-// The model subscribes via pumpJobEvents from Init and re-arms the pump
-// on each jobCountMsg. When broker is nil the model falls back to the
-// polled m.state.RunningJobsCount() for tests that don't construct a
-// broker.
-func WithJobBroker(ctx context.Context, broker *pubsub.Broker[native.JobEvent]) Option {
-	return func(m *Model) {
-		m.ctx = ctx
-		m.jobBroker = broker
-	}
-}
-
-// WithWatchBroker wires the pub/sub broker for watch events. The model
-// subscribes via pumpWatchEvents from Init and re-arms the pump on each
-// watchMsg. When broker is nil the now bar renders no watch rows (tests,
-// fallback).
-func WithWatchBroker(ctx context.Context, broker *pubsub.Broker[watch.Event]) Option {
-	return func(m *Model) {
-		m.ctx = ctx
-		m.watchBroker = broker
-	}
-}
-
 // WithWork wires the runtime's Work facade. When set, the now bar renders
 // the immutable WorkSnapshot's bounded cards from the runtime projection and
 // never reads the local agent, job or watch owners. A nil service (the
@@ -1199,50 +1126,11 @@ func WithWork(service viewmodel.WorkService) Option {
 	}
 }
 
-// WithSteeringBroker wires the F19 pub/sub broker for the F16 steering
-// queue. The model subscribes via pumpSteeringEvents from Init and
-// re-arms the pump on each steeringMsg. When broker is nil the status
-// line and transcript still read the queue from session.State directly
-// (used by tests that don't construct a broker).
-func WithSteeringBroker(ctx context.Context, broker *pubsub.Broker[session.SteeringEvent]) Option {
+// WithContext carries the program's context. It is the parent of the session's
+// event subscriptions and of each turn.
+func WithContext(ctx context.Context) Option {
 	return func(m *Model) {
 		m.ctx = ctx
-		m.steeringBroker = broker
-	}
-}
-
-// WithSendNow wires the runtime-facing Send now seam: snapshot reads the
-// active-turn steering state, submit accepts one request and returns its
-// receipt. Both are bounded, memory-only calls — the TUI must never await a
-// process or a model call inside an update handler. Omitting either makes the
-// action unavailable (fail closed): Alt+Enter then never submits and the
-// footer never advertises it.
-func WithSendNow(
-	snapshot func() session.SteeringSnapshot,
-	submit func(session.SendNowRequest) (session.SteeringReceipt, error),
-) Option {
-	return func(m *Model) {
-		m.steeringSnapshotFn = snapshot
-		m.submitSendNowFn = submit
-	}
-}
-
-// WithWorkspaceBroker wires the broker carrying session.WorkspaceEvents.
-// When broker is nil, git info still follows the active root on the 5s
-// agent tick (used by tests that don't construct a broker).
-func WithWorkspaceBroker(ctx context.Context, broker *pubsub.Broker[session.WorkspaceEvent]) Option {
-	return func(m *Model) {
-		m.ctx = ctx
-		m.workspaceBroker = broker
-	}
-}
-
-// WithSubagentBroker wires the broker carrying session.SubagentEvents so
-// subagent cards re-render on registration/status changes.
-func WithSubagentBroker(ctx context.Context, broker *pubsub.Broker[session.SubagentEvent]) Option {
-	return func(m *Model) {
-		m.ctx = ctx
-		m.subagentBroker = broker
 	}
 }
 
@@ -1868,21 +1756,6 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	if m.filePopup == nil {
 		m.filePopup = newCompletionPopup(m.fileIndex)
 	}
-	if m.jobBroker != nil && m.jobEvents == nil {
-		m.jobEvents = m.jobBroker.Subscribe(m.ctx, pubsub.WithTerminal[native.JobEvent]())
-	}
-	if m.watchBroker != nil && m.watchEvents == nil {
-		m.watchEvents = m.watchBroker.Subscribe(m.ctx, pubsub.WithTerminal[watch.Event]())
-	}
-	if m.steeringBroker != nil && m.steeringEvents == nil {
-		m.steeringEvents = m.steeringBroker.Subscribe(m.ctx)
-	}
-	if m.workspaceBroker != nil && m.workspaceEvents == nil {
-		m.workspaceEvents = m.workspaceBroker.Subscribe(m.ctx)
-	}
-	if m.subagentBroker != nil && m.subagentEvents == nil {
-		m.subagentEvents = m.subagentBroker.Subscribe(m.ctx)
-	}
 	// Subscribe to the Work snapshot stream once. The subscription is created
 	// before the seed snapshot is read so nothing published between the two is
 	// lost; the seed then binds the conversation and epoch the stream must
@@ -1907,8 +1780,6 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
 	}
 
-	m.gitInfo = gitinfo.Read(state.Workspace().ActiveRoot)
-	m.lastGitRead = m.now()
 	m.sheetBaseRef = gitinfo.HeadSHA(state.Workspace().ActiveRoot)
 
 	m.histIdx = -1
@@ -1957,20 +1828,8 @@ func (m Model) Init() tea.Cmd {
 	if cmd := sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
-	if m.jobEvents != nil {
-		cmds = append(cmds, pumpJobEvents(m.jobEvents))
-	}
-	if m.watchEvents != nil {
-		cmds = append(cmds, pumpWatchEvents(m.watchEvents))
-	}
-	if m.steeringEvents != nil {
-		cmds = append(cmds, pumpSteeringEvents(m.steeringEvents))
-	}
-	if m.workspaceEvents != nil {
-		cmds = append(cmds, pumpWorkspaceEvents(m.workspaceEvents))
-	}
-	if m.subagentEvents != nil {
-		cmds = append(cmds, pumpSubagentEvents(m.subagentEvents))
+	if cmd := pumpChanged(m.sess.Changed()); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
 	if m.workEvents != nil {
 		cmds = append(cmds, pumpWorkEvents(m.workEvents, m.workSubscriptionID))
@@ -2123,9 +1982,10 @@ func (m Model) sheetDataFor() sessionsheet.Data {
 // either already in memory or cached on turn boundaries — this runs once
 // per frame and must never query the DB or shell out.
 func (m Model) sheetData() sessionsheet.Data {
+	st := m.sess.Status()
 	return sessionsheet.Data{
 		State:   m.state,
-		Git:     m.gitInfo,
+		Git:     st.Git,
 		Repo:    m.sheetRepoStats,
 		Turns:   m.sheetTurns,
 		Totals:  m.sheetTotals,
@@ -2135,8 +1995,8 @@ func (m Model) sheetData() sessionsheet.Data {
 		Audit:   m.state.AuditLog(),
 		Rules:   m.state.SessionRules(),
 		Skills:  m.state.ActiveSkills(),
-		Swarm:   m.state.SwarmProgress(),
-		SDD:     m.state.SDDProgress(),
+		Swarm:   st.Swarm,
+		SDD:     st.SDD,
 		Spinner: m.turnSpinnerFrame(),
 		Now:     m.now(),
 	}
@@ -2169,7 +2029,7 @@ func (m Model) childSheetData(child *session.State) sessionsheet.Data {
 		Audit:  child.AuditLog(),
 		Rules:  child.SessionRules(),
 		Skills: child.ActiveSkills(),
-		Git:    m.gitInfo,
+		Git:    m.sess.Status().Git,
 		Repo:   m.sheetRepoStats,
 		// Fleet stays parent-sourced like Git/Repo: the agent worktrees
 		// describe the project's workspace, not the drilled-in conversation.
@@ -2429,10 +2289,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sudoAuthModel != nil {
 			m.sudoAuthModel.SetSize(max(m.leftWidth-4, 30))
 		}
-		// Refresh git state on focus/resize: a fresh view should reflect
-		// current branch even if it changed in another tool.
-		m.gitInfo = gitinfo.Read(m.sess.Status().Workspace.ActiveRoot)
-		m.lastGitRead = m.now()
 		m.refreshViewport()
 		return m, nil
 	}
@@ -2646,7 +2502,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWorkMsg(wm)
 	}
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, jobCountMsg, steeringMsg, agentTickMsg, spinnerTickMsg, workspaceMsg, subagentMsg, sheetBaseRefMsg, suggestionMsg, callersMsg, watchMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, changedMsg, agentTickMsg, spinnerTickMsg, sheetBaseRefMsg, suggestionMsg, callersMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -2818,7 +2674,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.pipelineRunner.AnswerGate(pm.Text)
-		goal := m.state.SDDProgress().PlanPath
+		goal := m.sess.Status().SDD.PlanPath
 		mm, sddCmd, _ := m.startAgentRun(m.pipelineRunner, goal)
 		return mm, sddCmd
 
@@ -3772,7 +3628,7 @@ func (m Model) inputChromeRows() int {
 		return 1
 	}
 	rows := 0
-	if sd := m.state.SDDProgress(); sd.Active {
+	if m.sess.Status().SDD.Active {
 		rows++ // SDD hint row
 	}
 	if sa := m.state.PendingSudoAuth(); sa != nil {
@@ -4266,13 +4122,7 @@ func replaceTriggerToken(value, replacement string) string {
 // message. Used by the F16 R2 follow-up path so each Enter pops one
 // item at a time; the runner's loop-top drain handles any remainder.
 func (m *Model) popOldestSteering() (string, bool) {
-	msg, ok := m.state.PopSteering()
-	if ok {
-		// Mirror the cached count; the broker is the source of truth in
-		// production, but tests construct models without a broker.
-		m.queuedCount = len(m.state.SteeringQueue())
-	}
-	return msg, ok
+	return m.state.PopSteering()
 }
 
 // isUserTurn reports whether a transcript item is a user prompt, the boundary
@@ -4594,7 +4444,6 @@ func (m *Model) flushQueuedSteering() tea.Cmd {
 		// than disappearing. It lands at the tail, which only reorders entries
 		// in the rare refused-start case.
 		m.state.PushSteering(followUp)
-		m.queuedCount = len(m.state.SteeringQueue())
 		return nil
 	}
 	*m = model.(Model)
@@ -4850,10 +4699,11 @@ func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
 	if kind == session.ActivityIdle {
 		return ""
 	}
-	if m.state.SDDProgress().Active {
+	st := m.sess.Status()
+	if st.SDD.Active {
 		return ""
 	}
-	act := m.sess.Status().Activity
+	act := st.Activity
 	if m.now().Sub(acpwire.Time(act.StartedAt)) < 200*time.Millisecond {
 		return ""
 	}
@@ -5413,7 +5263,6 @@ func (m *Model) finishQuit() tea.Cmd {
 		m.lspCancel()
 		m.lspCancel = nil
 	}
-	m.queuedCount = 0
 	m.state.ResolvePendingForShutdown()
 	m.state.Shutdown()
 	return tea.Quit
@@ -5562,10 +5411,8 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		// ClearSteering drops the ordinary queued entries but preserves the
 		// ones an accepted, undelivered Send now request is still responsible
 		// for: the user asked explicitly for those to be delivered, and a UI
-		// cleanup must not silently revoke the request. The surviving depth is
-		// re-read rather than assumed to be zero.
+		// cleanup must not silently revoke the request.
 		m.state.ClearSteering()
-		m.queuedCount = len(m.state.SteeringQueue())
 		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
 		m.state.ClearNotice(session.NoticeProvider)
 		m.cancelling = false
@@ -5595,7 +5442,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
-			gate := m.state.SDDGate()
+			gate := m.sess.Status().SDDGate
 			if gate.Question != "" {
 				// One surface: the panel carries the question, its context,
 				// and the key hints. Nothing goes to the transcript here.
@@ -5758,137 +5605,38 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 	return m, nil
 }
 
-// handleJobCount handles a jobCountMsg, shared by Update and
-// handleRuntimeMessage.
-func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
-	// Job exits are recorded agent-side (the JobManager's exit callback), so
-	// every client sees a settled card. This handler only refreshes the
-	// cached snapshot: repaint now so a settled card renders even when the
-	// user is idle (no tick, notice, or pulse would otherwise trigger a
-	// rebuild).
-	m.jobCount = msg.count
-	m.jobs = msg.jobs
-	m.refreshViewport()
-	flushCmd := m.flushPendingModelOptions()
-	// Re-arm the pump: exactly one in-flight subscription at a time
-	// (F19 R2). Return nil if no broker is wired so the cmd chain
-	// terminates (this should not happen when the pump is sourced
-	// from Init, but keeps Update safe under tests that wire msgs
-	// directly).
-	if m.jobEvents == nil {
-		return m, flushCmd
-	}
-	return m, tea.Sequence(pumpJobEvents(m.jobEvents), flushCmd)
-}
-
-// handleWatchMsg handles a watchMsg, shared by Update and
-// handleRuntimeMessage. It updates the cached watch snapshot so the
-// now bar can render watch rows, then re-arms the pump.
-func (m Model) handleWatchMsg(msg watchMsg) (Model, tea.Cmd) {
-	// Update the cached snapshot: replace any existing entry with the same
-	// WatchID, append new ones. Terminal states (fired/stopped/error) are
-	// kept so the now bar can show the last known state until the watch is
-	// removed from the manager's list.
-	updated := false
-	for i, w := range m.watches {
-		if w.WatchID == msg.event.WatchID {
-			m.watches[i] = msg.event
-			updated = true
-			break
-		}
-	}
-	if !updated {
-		m.watches = append(m.watches, msg.event)
-	}
-	// Auto-resume (spec §4): a resume-bearing event on an idle session
-	// with no open dock panel starts a turn immediately. Event.Resume is
-	// true only for report-bearing fires on resume-opted watches
-	// (deliberate stops, deduped repeat fires, and transient errors
-	// carry false), so no owner or dedup check is needed here. The dock
-	// guard keeps an auto-turn from starting under a settings browser,
-	// SDD gate, or castlist — "never wake over an open panel"; the report
-	// stays persisted and a repeat watch retries on its next fire.
-	// Wake-on-idle and the latch (handleAgentFinished) are mutually
-	// exclusive in practice: the latch only arms when a fire lands
-	// mid-turn (the session was busy here), but the check is cheap and
-	// the gate read is live so a config reload applies immediately.
-	if msg.event.Resume {
-		if cmd := m.startWatchResumeRun(msg.event.Name, msg.event.Mode == watch.ModeRepeat); cmd != nil {
-			// Post-start state (busy flag, suggestion clear, agentCancel)
-			// already stuck via the helper's *m assignment. The wake cmd
-			// AND the pump re-arm must both ride the return: the pump is a
-			// chain — each watchMsg returns the next pump cmd, and
-			// dropping it would permanently stall the watch-event pump.
-			m.refreshViewport()
-			flush := m.flushPendingModelOptions()
-			if m.watchEvents == nil {
-				return m, tea.Batch(cmd, flush)
-			}
-			return m, tea.Sequence(pumpWatchEvents(m.watchEvents), tea.Batch(cmd, flush))
-		}
-	}
-	m.refreshViewport()
-	flushCmd := m.flushPendingModelOptions()
-	if m.watchEvents == nil {
-		return m, flushCmd
-	}
-	return m, tea.Sequence(pumpWatchEvents(m.watchEvents), flushCmd)
-}
-
-// handleSteering handles a steeringMsg, shared by Update and
-// handleRuntimeMessage.
-func (m Model) handleSteering(msg steeringMsg) (Model, tea.Cmd) {
-	// F16: cache the queued count so the status line and transcript
-	// render without polling, then re-arm the pump. The transcript
-	// re-renders via the viewport dirty hash on the next refresh.
-	m.queuedCount = msg.queueLen
-	m.absorbSteeringEvent(msg.snapshot, msg.receipt)
-	if m.steeringEvents == nil {
-		m.refreshViewport()
+// handleChanged handles a changedMsg: the session signalled that its status
+// may have changed. It repaints, follows the workspace's base ref, acts on a
+// new watch resume, and re-arms the pump.
+func (m Model) handleChanged(msg changedMsg) (Model, tea.Cmd) {
+	// A pump from a replaced session is ignored and not re-armed, so it ends.
+	if msg.ch != m.sess.Changed() {
 		return m, nil
 	}
+	st := m.sess.Status()
+	cmds := []tea.Cmd{pumpChanged(msg.ch)}
+
+	// The sheet's base ref follows the workspace's active root.
+	if st.Workspace != m.workspaceSeen {
+		m.workspaceSeen = st.Workspace
+		if st.Workspace.ActiveRoot != "" {
+			cmds = append(cmds, sheetBaseRefCmd(st.Workspace.ActiveRoot))
+		}
+	}
+
+	// A resume-bearing watch fire wakes the session once per sequence.
+	if r := st.WatchResume; r != nil && r.Seq > m.watchResumeSeq {
+		m.watchResumeSeq = r.Seq
+		if cmd := m.startWatchResumeRun(r.Name, r.Repeat); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+
 	m.refreshViewport()
-	return m, pumpSteeringEvents(m.steeringEvents)
-}
-
-// absorbSteeringEvent caches the snapshot and receipt a SteeringEvent carried.
-// A snapshot older than the cached one is dropped (the broker preserves order,
-// but a direct message in a test need not), and a receipt is dropped unless its
-// per-request revision is newer: comparing one global revision would let a
-// settled request's final outcome be discarded by another request's older
-// event, or vice versa.
-func (m *Model) absorbSteeringEvent(snapshot *session.SteeringSnapshot, receipt *session.SteeringReceipt) {
-	// Versions are only comparable within one turn: a replacement conversation
-	// restarts its own counter, so a different turn's snapshot is taken as-is
-	// rather than being rejected as "older" than the previous turn's.
-	if snapshot != nil && (snapshot.TurnID != m.steeringSnapshot.TurnID || snapshot.Version >= m.steeringSnapshot.Version) {
-		m.steeringSnapshot = *snapshot
+	if cmd := m.flushPendingModelOptions(); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
-	if receipt == nil {
-		return
-	}
-	if m.steeringReceipts == nil {
-		m.steeringReceipts = map[string]session.SteeringReceipt{}
-	}
-	if prev, ok := m.steeringReceipts[receipt.RequestID]; ok && prev.Version >= receipt.Version {
-		return
-	}
-	m.steeringReceipts[receipt.RequestID] = *receipt
-}
-
-// refreshSteeringSnapshot re-reads the cache directly from the runtime seam.
-// A build with a broker is kept current by events; one without (tests, a
-// runtime that never binds a broker) would otherwise render a stale or empty
-// snapshot forever, so ticks read it here. The direct read is authoritative —
-// it names the conversation this model is actually attached to — so it is
-// taken verbatim rather than through the event-order comparison. It is a
-// bounded, memory-only read.
-func (m *Model) refreshSteeringSnapshot() {
-	if m.steeringSnapshotFn == nil {
-		m.steeringSnapshot = session.SteeringSnapshot{}
-		return
-	}
-	m.steeringSnapshot = m.steeringSnapshotFn()
+	return m, tea.Batch(cmds...)
 }
 
 // ── Send now ────────────────────────────────────────────────────────────
@@ -5910,18 +5658,12 @@ func isSendNowKey(k tea.KeyPressMsg) bool {
 }
 
 // sendNowTarget resolves the turn a Send now action may target. It reports
-// false when the feature is unavailable (no runtime seam), the turn is not
-// eligible (idle, closing, unsupported), or the TUI is not in a turn. The
-// snapshot is refreshed first so a runtime that publishes no broker is still
-// current.
-func (m *Model) sendNowTarget() (session.SteeringSnapshot, bool) {
-	if m.steeringSnapshotFn == nil || m.submitSendNowFn == nil {
-		return session.SteeringSnapshot{}, false
-	}
-	m.refreshSteeringSnapshot()
-	snap := m.steeringSnapshot
+// false when the turn is not eligible (idle, closing, unsupported) or the TUI
+// is not in a turn.
+func (m *Model) sendNowTarget() (acpwire.SteeringState, bool) {
+	snap := m.sess.Status().Steering.State
 	if !m.busy || !snap.Active || !snap.Supported {
-		return session.SteeringSnapshot{}, false
+		return acpwire.SteeringState{}, false
 	}
 	return snap, true
 }
@@ -5933,33 +5675,23 @@ func (m *Model) rejectSendNow(reason string) {
 	m.refreshViewport()
 }
 
-// submitSendNow performs the bounded, memory-only runtime call for one
+// submitSendNow performs the bounded, memory-only session call for one
 // request. clear runs only after acceptance, which is what makes the accepted
 // text — and only the accepted text — disappear. On rejection the caller's
 // draft survives untouched and the reason is rendered.
-func (m *Model) submitSendNow(request session.SendNowRequest, clear func()) bool {
-	if m.submitSendNowFn == nil {
-		m.rejectSendNow(sendNowUnavailable)
-		return false
-	}
+func (m *Model) submitSendNow(request acpwire.SendNowRequest, clear func()) bool {
 	if request.RequestID == "" {
 		// The request ID identifies one transport submission; a retry reuses
 		// it, so it is minted here and never reused for different text.
 		request.RequestID = rand.Text()
 	}
-	receipt, err := m.submitSendNowFn(request)
-	if err != nil {
+	if _, err := m.sess.SendNow(m.ctx, request); err != nil {
 		m.rejectSendNow("Send now was rejected: " + err.Error() + " Your text was kept.")
 		return false
 	}
-	// Cache the receipt now: the broker event that carries it may not have
-	// arrived when the very next frame renders.
-	m.absorbSteeringEvent(nil, &receipt)
-	m.queuedCount = len(m.state.SteeringQueue())
 	if clear != nil {
 		clear()
 	}
-	m.refreshSteeringSnapshot()
 	m.refreshViewport()
 	return true
 }
@@ -6035,11 +5767,11 @@ func (m *Model) beginSendNow() (tea.Model, tea.Cmd) {
 	if len(m.pastes) > 0 {
 		text = m.expandPastes(text)
 	}
-	if strings.TrimSpace(text) == "" && len(m.state.SteeringQueue()) == 0 {
+	if strings.TrimSpace(text) == "" && len(m.sess.Status().Steering.Queue) == 0 {
 		m.rejectSendNow("Nothing to send now: the input is empty and no steering is queued.")
 		return m, nil
 	}
-	m.submitSendNow(session.SendNowRequest{
+	m.submitSendNow(acpwire.SendNowRequest{
 		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      text,
@@ -6190,12 +5922,12 @@ func (m *Model) handleComposerSubmit(msg steerpanel.SubmitMsg) (tea.Model, tea.C
 		m.rejectSendNow("The turn this composer targets has ended. The composer text was kept.")
 		return m, nil
 	}
-	if strings.TrimSpace(msg.Text) == "" && len(m.state.SteeringQueue()) == 0 {
+	if strings.TrimSpace(msg.Text) == "" && len(m.sess.Status().Steering.Queue) == 0 {
 		m.rejectSendNow("Nothing to send now: the composer is empty and no steering is queued.")
 		return m, nil
 	}
 	id := m.composerID
-	m.submitSendNow(session.SendNowRequest{
+	m.submitSendNow(acpwire.SendNowRequest{
 		SessionID: msg.SessionID,
 		TurnID:    msg.TurnID,
 		Text:      msg.Text,
@@ -6210,82 +5942,35 @@ func (m *Model) handleComposerClose(msg steerpanel.CloseMsg) (tea.Model, tea.Cmd
 	return m, nil
 }
 
-// latestSteeringReceipt returns the newest receipt for the cached turn, so the
-// status line reports the current request's progress rather than another
-// request's final state.
-func (m Model) latestSteeringReceipt() (session.SteeringReceipt, bool) {
-	var best session.SteeringReceipt
-	found := false
-	for _, r := range m.steeringReceipts {
-		if m.steeringSnapshot.TurnID != "" && r.TurnID != m.steeringSnapshot.TurnID {
-			continue
-		}
-		if !found || r.Version > best.Version {
-			best, found = r, true
-		}
-	}
-	return best, found
-}
-
 // steeringStatusSegment renders the bounded Send now status beside the queue
 // marker. It is a status segment, not a task card: the action is a property of
 // the running turn, and the transcript keeps rendering through the stop.
-func (m Model) steeringStatusSegment() (string, bool) {
-	receipt, ok := m.latestSteeringReceipt()
-	if !ok {
+func (m Model) steeringStatusSegment(r *acpwire.SteeringReceipt) (string, bool) {
+	if r == nil {
 		return "", false
 	}
-	if !m.busy && receipt.Status != session.SteeringUndelivered {
+	if !m.busy && r.Status != acpwire.SteeringUndelivered {
 		// A settled turn keeps only the truthful undelivered disclosure: once
 		// the turn is over, "delivered" and "interrupting" describe a request
 		// that no longer has a live operation behind it.
 		return "", false
 	}
-	switch receipt.Status {
-	case session.SteeringInterrupting:
+	switch r.Status {
+	case acpwire.SteeringInterrupting:
 		return "send now: interrupting", true
-	case session.SteeringWaitingSafe:
+	case acpwire.SteeringWaitingSafe:
 		return "send now: waiting for a safe boundary", true
-	case session.SteeringWaitingResume:
+	case acpwire.SteeringWaitingResume:
 		return "send now: waiting for resume", true
-	case session.SteeringDelivered:
+	case acpwire.SteeringDelivered:
 		return "send now: delivered", true
-	case session.SteeringUndelivered:
+	case acpwire.SteeringUndelivered:
 		return "send now: undelivered", true
 	default:
 		// Accepted: the interruption has not started yet, and claiming more
 		// than that would be a lie about work that is still running.
 		return "send now: accepted", true
 	}
-}
-
-// handleWorkspaceMsg handles a workspaceMsg: the session's active root
-// changed, so re-read git info for the new root immediately rather than
-// waiting for the 5s tick, then re-arm the pump. It also returns a
-// sheetBaseRefCmd so the changed-files cache rebases onto the new root's HEAD
-// off the UI thread.
-func (m Model) handleWorkspaceMsg(msg workspaceMsg) (Model, tea.Cmd) {
-	var baseCmd tea.Cmd
-	if msg.activeRoot != "" {
-		m.gitInfo = gitinfo.Read(msg.activeRoot)
-		m.lastGitRead = m.now()
-		baseCmd = sheetBaseRefCmd(msg.activeRoot)
-	}
-	if m.workspaceEvents == nil {
-		return m, baseCmd
-	}
-	return m, tea.Batch(pumpWorkspaceEvents(m.workspaceEvents), baseCmd)
-}
-
-// handleSubagentMsg handles a subagentMsg: a subagent card was registered
-// or changed status, so refresh the transcript viewport to reflect the
-// new card state, then re-arm the pump.
-func (m Model) handleSubagentMsg(msg subagentMsg) (Model, tea.Cmd) {
-	m.refreshViewport()
-	if m.subagentEvents == nil {
-		return m, nil
-	}
-	return m, pumpSubagentEvents(m.subagentEvents)
 }
 
 // ── Live work ──────────────────────────────────────────────────────────────
@@ -6809,15 +6494,6 @@ func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
 // handleAgentTick handles an agentTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
-	st := m.sess.Status()
-	if now := m.now(); st.Workspace.ActiveRoot != "" && now.Sub(m.lastGitRead) >= 5*time.Second {
-		m.gitInfo = gitinfo.Read(st.Workspace.ActiveRoot)
-		m.lastGitRead = now
-	}
-	// Read the steering snapshot directly on ticks. A runtime that publishes no
-	// broker (tests, a fallback build) would otherwise render a stale snapshot
-	// forever, and a slow stop's progress is exactly what a tick must surface.
-	m.refreshSteeringSnapshot()
 	if !m.busy && m.successPulse && m.now().Sub(m.successPulseAt) >= successPulseDuration {
 		m.successPulse = false
 	}
@@ -6882,7 +6558,7 @@ func (m Model) handleRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// here, and a late approval/gate event cannot take the dock from it.
 	if m.endStage == endAwaitingDecision || m.endStage == endStopping {
 		switch msg.(type) {
-		case jobCountMsg, agentTickMsg, subagentMsg, watchMsg, workspaceMsg, agentFinishedMsg, steeringMsg:
+		case changedMsg, agentTickMsg, agentFinishedMsg:
 			refreshed := m
 			refreshed.refreshEndWarning()
 			out, cmd := refreshed.dispatchRuntimeMessage(msg)
@@ -6916,16 +6592,8 @@ func (m Model) dispatchRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleAgentFinished(msg)
 	case planAuthorFinishedMsg:
 		return m.handlePlanAuthorFinished(msg)
-	case jobCountMsg:
-		return m.handleJobCount(msg)
-	case watchMsg:
-		return m.handleWatchMsg(msg)
-	case steeringMsg:
-		return m.handleSteering(msg)
-	case workspaceMsg:
-		return m.handleWorkspaceMsg(msg)
-	case subagentMsg:
-		return m.handleSubagentMsg(msg)
+	case changedMsg:
+		return m.handleChanged(msg)
 	case sheetBaseRefMsg:
 		return m.handleSheetBaseRef(msg)
 	case agentTickMsg:
@@ -7313,7 +6981,7 @@ func (m *Model) modeReceipt(state interaction.State) {
 	switch state.Mode {
 	case interaction.ModeAsk:
 		msg = "Switched to Ask mode. New actions need approval."
-		if m.busy || m.state.RunningJobsCount() > 0 {
+		if m.busy || m.sess.Status().RunningJobs > 0 {
 			msg += " Work already running continues."
 		}
 	case interaction.ModeAct:

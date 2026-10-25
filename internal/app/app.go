@@ -2800,7 +2800,19 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		state := rt.State
 		logger := rt.Logger
 
-		seamHost, seamSession := inproc.New(inproc.Deps{State: state})
+		// The brokers exist whatever the provider's state, so the session's
+		// events flow from the first frame: a start whose initial provider
+		// build failed still repaints on workspace, subagent, job, watch and
+		// steering events.
+		seamHost, seamSession := inproc.New(inproc.Deps{
+			State:     state,
+			Context:   ctx,
+			Jobs:      jobBroker,
+			Watches:   watchBroker,
+			Steering:  steeringBroker,
+			Workspace: workspaceBroker,
+			Subagents: subagentBroker,
+		})
 
 		cmdReg := rt.CommandRegistry
 
@@ -2828,12 +2840,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// operations the TUI invokes, and both must keep working after a
 		// session swap.
 		tuiOpts = append(tuiOpts, accessTUIOptions(rt)...)
-		// Send now: the same rule as the access seam. The bound runtime methods
-		// read the conversation's current State under the pointer mutex, so a
-		// successful NewSession keeps the facade working against the replacement
-		// while an explicit SessionID/TurnID on the request stops a stale one
-		// from targeting it.
-		tuiOpts = append(tuiOpts, tui.WithSendNow(rt.SteeringSnapshot, rt.SubmitSendNow))
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
 		// The TUI's auth-backed surfaces (provider probes, the connect
@@ -2861,11 +2867,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			}
 			return ctx, rt.Runner
 		}))
-		// Workspace events must flow even when the initial provider build
-		// failed, or the worktree footer/rail never updates until a busy-tick.
-		// The broker is created in runtime.go regardless of provider state.
-		tuiOpts = append(tuiOpts, tui.WithWorkspaceBroker(ctx, workspaceBroker))
-		tuiOpts = append(tuiOpts, tui.WithSubagentBroker(ctx, subagentBroker))
+		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
 		if n, ok := state.Notice(); !ok || n.Category != session.NoticeProvider {
 			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
@@ -2874,10 +2876,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				tuiOpts = append(tuiOpts, tui.WithSwarmOverrideFactory(rt.SwarmOverrideFactory))
 			}
 			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
-			tuiOpts = append(tuiOpts, tui.WithJobBroker(ctx, jobBroker))
-			tuiOpts = append(tuiOpts, tui.WithWatchBroker(ctx, watchBroker))
 			tuiOpts = append(tuiOpts, tui.WithWork(rt))
-			tuiOpts = append(tuiOpts, tui.WithSteeringBroker(ctx, steeringBroker))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
 				func(agentName string) (tui.AgentRunner, error) {

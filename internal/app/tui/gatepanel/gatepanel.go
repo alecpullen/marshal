@@ -16,7 +16,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/layout"
@@ -41,14 +41,14 @@ const wrapBreakpoints = "/-:"
 
 // Panel is a dock.Panel that asks the human a subagent's question.
 type Panel struct {
-	gate  session.SDDGate
+	gate  acpwire.SDDGate
 	input textfield.Model
 }
 
 var _ dock.Panel = (*Panel)(nil)
 
 // New creates a gate panel for the open gate.
-func New(g session.SDDGate) *Panel {
+func New(g acpwire.SDDGate) *Panel {
 	ti := textfield.New()
 	ti.SetVirtualCursor(true)
 	ti.Focus()

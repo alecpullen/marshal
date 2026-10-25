@@ -383,10 +383,9 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// working. Out-of-band so /clear semantics don't collide.
 		// An accepted, undelivered Send now request keeps its covered entry:
 		// Ctrl+X clears ordinary queued text, it cannot revoke a request the
-		// runtime already accepted. The surviving depth is re-read.
+		// runtime already accepted.
 		if m.busy {
 			m.state.ClearSteering()
-			m.queuedCount = len(m.state.SteeringQueue())
 			m.refreshViewport()
 			return *m, nil, true
 		}
@@ -452,7 +451,6 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 			// F16: turn is running — enqueue as a steering message
 			// instead of dropping the input.
 			m.state.PushSteering(value)
-			m.queuedCount = len(m.state.SteeringQueue())
 			m.refreshViewport()
 			return *m, nil, true
 		}
@@ -502,7 +500,7 @@ func (m *Model) acceptSuggestion() {
 // log on the user's next turn, so a second run's events don't append to the
 // first run's.
 func (m *Model) clearFinishedRun() {
-	if m.state.SDDProgress().Finished {
+	if m.sess.Status().SDD.Finished {
 		m.state.ClearSDDProgress()
 		m.state.ClearRunEvents()
 	}

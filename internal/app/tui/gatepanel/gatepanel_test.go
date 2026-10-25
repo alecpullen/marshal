@@ -7,11 +7,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 )
 
-func testGate() session.SDDGate {
-	return session.SDDGate{
+func testGate() acpwire.SDDGate {
+	return acpwire.SDDGate{
 		TaskN:     3,
 		TaskTitle: "Add the retry helper",
 		Question:  "Should this reuse the existing backoff in internal/retry?",

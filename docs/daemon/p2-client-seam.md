@@ -287,10 +287,10 @@ Decision: `WireTree`, with the C6 additions.
   `tui.SessionSwapResult.Session` carries to the TUI.
 - It must not import `internal/app`. TUI tests import it, and `app`
   imports `tui`.
-- The `Host` holds what `accessTUIOptions` and `WithSendNow` bind to
-  today: the runtime's current state and runner, read under the runtime
-  gate. A `Session` handed out before a swap never reaches the session
-  that replaced it.
+- The `Host` holds what `accessTUIOptions` binds to today (and what
+  `WithSendNow` bound to until plan 2b deleted it): the runtime's current
+  state and runner, read under the runtime gate. A `Session` handed out
+  before a swap never reaches the session that replaced it.
 - It behaves exactly like the code it replaces. Where the TUI applied a
   side effect itself, the adapter now does: writing and applying a
   permission rule, reloading config after a write, and logging a
@@ -848,3 +848,33 @@ moved-reads guard, starts its list with these 18 names, all at plan `2a`:
 `Activity`, `HasRunningSubagent`, `Workspace` and `BrowserInfo`. T1's
 allowlist did not change: no file lost its last agent-side import, because
 most files mix groups.
+
+**Plan 2b (runs, queues and events), branch `p2-2b-events`.** Added
+`acpwire.Steering` and its parts (`SteeringState`, `SteeringOutcome`,
+`SteeringReceipt`, `SendNowRequest`) plus `Subagent`, `SwarmProgress`,
+`SwarmRole`, `SDDProgress`, `TaskTiming`, `SDDGate`, `Git` and
+`WatchResume`, and eight `SessionStatus` fields (`Steering`,
+`RunningJobs`, `Subagents`, `Swarm`, `SDD`, `SDDGate`, `Git`,
+`WatchResume`). ACP's steering wire types moved out of `internal/acp` into
+`acpwire`, with their JSON unchanged, and the projection lives in
+`viewmodel.SteeringStateOf` and `viewmodel.SteeringReceiptOf` so the
+adapter can share it. `acpclient.Session` gains `Changed()` (a coalescing
+signal with a buffer of 1, closed when a swap replaces the session) and
+`SendNow`, with its `session/steer` row in `Methods`. The in-process
+adapter subscribes to the five session brokers, keeps the newest receipt
+per request and the pending watch resume with its sequence, and fires
+`Changed` after each event and after a successful `SendNow`.
+
+The TUI's five broker pumps, their messages, their handlers and their
+caches are gone: one pump on `Session.Changed()` replaces them, and the
+job count, git info, subagent views, swarm and SDD progress, the SDD gate,
+the steering queue and the Send-now receipt all come from `Status()`.
+`WithSendNow` and the five broker options are deleted; `WithContext`
+carries the program's context. The job list and the watch snapshot are
+deleted rather than moved, because nothing read them. T1b gains seven
+names, all at plan `2b`: `SteeringQueue`, `SteeringSnapshot`,
+`SubmitSendNow`, `RunningJobsCount`, `SwarmProgress`, `SDDProgress` and
+`SDDGate`. T1's allowlist lost 13 entries across 9 files — five files trimmed
+(`commands_dispatch.go`, `events.go`, `model.go`, `pump.go`,
+`sessionsheet/section.go`) and four keys dropped entirely (`eta.go`,
+`gatepanel/gatepanel.go`, `run_panel.go`, `sessionsheet/section_swarm.go`).

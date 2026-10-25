@@ -17,7 +17,11 @@
 // line in its doc.
 package acpclient
 
-import "marshal/internal/acpwire"
+import (
+	"context"
+
+	"marshal/internal/acpwire"
+)
 
 // Host is the transport the TUI holds: what the agent side is, independent of
 // any one session. It gains its groups' methods plan by plan (spec Migration
@@ -46,4 +50,19 @@ type Session interface {
 	//
 	// ACP: session/status (new in P3). A session_status update refreshes it.
 	Status() acpwire.SessionStatus
+
+	// Changed fires after anything Status returns may have changed. It is a
+	// coalescing signal with a buffer of 1: a reader re-reads Status and never
+	// infers what changed. It is closed when a swap replaces the session.
+	//
+	// ACP: none (the client fires it; P3's mirror fires it after applying a
+	// session/update notification).
+	Changed() <-chan struct{}
+
+	// SendNow submits one Send now request: its text goes to the running
+	// turn at the next safe boundary, interrupting the operation in flight.
+	// The receipt is in Status before SendNow returns.
+	//
+	// ACP: session/steer (exists), with delivery "now".
+	SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpwire.SteeringReceipt, error)
 }

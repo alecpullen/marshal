@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 )
@@ -27,6 +29,96 @@ func testModel(state *session.State, opts ...Option) Model {
 	host, sess := inproc.New(inproc.Deps{State: state})
 	all := append([]Option{WithLegacyState(state)}, opts...)
 	return New(host, sess, all...)
+}
+
+// testModelWith builds a model over an adapter made from d, as testModel
+// builds one over d.State alone.
+func testModelWith(d inproc.Deps, opts ...Option) Model {
+	host, sess := inproc.New(d)
+	all := append([]Option{WithLegacyState(d.State)}, opts...)
+	return New(host, sess, all...)
+}
+
+// stubSession wraps the adapter's session for tests that need a value only
+// events or a call produce: patch adjusts every Status read, and onSendNow
+// sees each SendNow request before the adapter does.
+type stubSession struct {
+	acpclient.Session
+	patch     func(*acpwire.SessionStatus)
+	onSendNow func(acpwire.SendNowRequest)
+}
+
+func (s *stubSession) Status() acpwire.SessionStatus {
+	st := s.Session.Status()
+	if s.patch != nil {
+		s.patch(&st)
+	}
+	return st
+}
+
+func (s *stubSession) SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpwire.SteeringReceipt, error) {
+	if s.onSendNow != nil {
+		s.onSendNow(req)
+	}
+	return s.Session.SendNow(ctx, req)
+}
+
+// testModelStub builds a model whose session is stub, wrapped around an
+// adapter session over state.
+func testModelStub(state *session.State, stub *stubSession, opts ...Option) Model {
+	host, sess := inproc.New(inproc.Deps{State: state})
+	stub.Session = sess
+	all := append([]Option{WithLegacyState(state)}, opts...)
+	return New(host, stub, all...)
+}
+
+// batchResults runs cmd and returns the messages it produces. The commands of
+// a batch run concurrently under one deadline, because the change pump blocks
+// until the next signal and a sequential run would wait on it.
+//
+// A blocking pump member never delivers, so the deadline is expected to fire on
+// any batch that contains one. Tests that assert something is *absent* must
+// therefore not lean on this collection alone: assert the state that issues the
+// command too, or a slow command could hide behind the deadline.
+func batchResults(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	msg := runCmdOnce(cmd, time.Second)
+	if _, timedOut := msg.(cmdTimeout); timedOut {
+		return nil
+	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		if msg == nil {
+			return nil
+		}
+		return []tea.Msg{msg}
+	}
+	out := make(chan tea.Msg, len(batch))
+	started := 0
+	for _, c := range batch {
+		if c == nil {
+			continue
+		}
+		started++
+		go func(c tea.Cmd) { out <- c() }(c)
+	}
+	var msgs []tea.Msg
+	deadline := time.After(time.Second)
+	for received := 0; received < started; {
+		select {
+		case m := <-out:
+			received++
+			if m != nil {
+				msgs = append(msgs, m)
+			}
+		case <-deadline:
+			return msgs
+		}
+	}
+	return msgs
 }
 
 // fakeHost is an acpclient.Host whose SharedFilesystem is the test's choice.

@@ -3,10 +3,10 @@ package sessionsheet
 import (
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
-	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/registry"
 	"marshal/internal/worktree"
 )
@@ -39,7 +39,7 @@ type ChangedFile struct {
 // computed during render.
 type Data struct {
 	State *session.State
-	Git   gitinfo.Info
+	Git   acpwire.Git
 	Repo  RepoStats
 	Turns []db.TurnMetricsRow // most recent first
 	// Totals is the session-scoped usage aggregate backing the footer's
@@ -76,11 +76,11 @@ type Data struct {
 
 	// Swarm is the swarm run progress, held directly so tests don't need a
 	// live session.
-	Swarm session.SwarmProgress
+	Swarm acpwire.SwarmProgress
 
 	// SDD is the SDD run progress, held directly so tests don't need a
 	// live session.
-	SDD session.SDDProgress
+	SDD acpwire.SDDProgress
 
 	// Spinner is the current shared spinner frame ("" when gated or
 	// idle), so live sections tick in lockstep with the main column.

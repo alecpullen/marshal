@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
-	"marshal/internal/watch"
 )
 
 // assertNoWake fails when the runner is invoked inside the window. It is the
@@ -22,6 +22,17 @@ func assertNoWake(t *testing.T, runner *fakeAgentRunner) {
 	}
 }
 
+// withWatchResume wraps the model's session so its status carries a pending
+// watch resume, and returns the change message a pump would deliver.
+func withWatchResume(m *Model, name string, repeat bool, seq uint64) changedMsg {
+	stub := &stubSession{patch: func(st *acpwire.SessionStatus) {
+		st.WatchResume = &acpwire.WatchResume{Name: name, Repeat: repeat, Seq: seq}
+	}}
+	stub.Session = m.sess
+	m.sess = stub
+	return changedMsg{ch: m.sess.Changed()}
+}
+
 // TestWatchResumeWakeOnIdleFire: idle model, gate on, runner wired, event
 // with Resume=true -> a turn starts with the wrapper goal.
 func TestWatchResumeWakeOnIdleFire(t *testing.T) {
@@ -29,7 +40,7 @@ func TestWatchResumeWakeOnIdleFire(t *testing.T) {
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m.runner = runner
 	m.state.AddMessage(session.RoleAssistant, "I'll wait for the build to finish.", session.ContentTypePlain)
-	m2, cmd := m.handleWatchMsg(watchMsg{event: resumeWatchEvent("w1", "build", watch.ModeOnce)})
+	m2, cmd := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	if !m2.busy {
 		t.Fatal("auto-resume did not set the busy flag")
 	}
@@ -54,7 +65,7 @@ func TestWatchResumeGoalQuoteCapped(t *testing.T) {
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m.runner = runner
 	m.state.AddMessage(session.RoleAssistant, strings.Repeat("y", 500), session.ContentTypePlain)
-	m2, cmd := m.handleWatchMsg(watchMsg{event: resumeWatchEvent("w1", "build", watch.ModeRepeat)})
+	m2, cmd := m.handleChanged(withWatchResume(&m, "build", true, 1))
 	drainCmds(m2, cmd)
 	select {
 	case goal := <-runner.called:
@@ -77,7 +88,7 @@ func TestWatchResumeBusyFireNoWake(t *testing.T) {
 	m.runner = runner
 	m.busy = true
 	m.state.AddMessage(session.RoleAssistant, "working", session.ContentTypePlain)
-	m2, _ := m.handleWatchMsg(watchMsg{event: resumeWatchEvent("w1", "build", watch.ModeOnce)})
+	m2, _ := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	if !m2.busy {
 		t.Fatal("a refused wake must leave the session busy")
 	}
@@ -92,7 +103,7 @@ func TestWatchResumeGateOffNoWake(t *testing.T) {
 	m.runner = runner
 	m.state.Config.Watch.ResumeEnabled = false
 	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
-	m2, _ := m.handleWatchMsg(watchMsg{event: resumeWatchEvent("w1", "build", watch.ModeOnce)})
+	m2, _ := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	if m2.busy {
 		t.Fatal("gate-off wake set the busy flag")
 	}
@@ -106,23 +117,23 @@ func TestWatchResumeDockOpenNoWake(t *testing.T) {
 	m.runner = runner
 	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
 	m.dock.Open(picker.New("Pick", "", []picker.Item{{Label: "one"}}))
-	m2, _ := m.handleWatchMsg(watchMsg{event: resumeWatchEvent("w1", "build", watch.ModeOnce)})
+	m2, _ := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	if m2.busy {
 		t.Fatal("dock-open wake set the busy flag")
 	}
 	assertNoWake(t, runner)
 }
 
-// TestWatchResumeEventNotBearingNoWake: a plain (report-less) event never
-// wakes, even on an idle session.
-func TestWatchResumeEventNotBearingNoWake(t *testing.T) {
+// TestNoPendingResumeNoWake: a change with no pending resume never wakes, even
+// on an idle session.
+func TestNoPendingResumeNoWake(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m.runner = runner
 	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
-	m2, _ := m.handleWatchMsg(watchMsg{event: watchEvent("w1", "build", watch.KindCommand, watch.StateWatching)})
+	m2, _ := m.handleChanged(changedMsg{ch: m.sess.Changed()})
 	if m2.busy {
-		t.Fatal("non-bearing event set the busy flag")
+		t.Fatal("a change with no pending resume set the busy flag")
 	}
 	assertNoWake(t, runner)
 }
@@ -133,7 +144,7 @@ func TestWatchResumeNoAssistantQuote(t *testing.T) {
 	m := newTestModel(t)
 	runner := &fakeAgentRunner{called: make(chan string, 4)}
 	m.runner = runner
-	m2, cmd := m.handleWatchMsg(watchMsg{event: resumeWatchEvent("w1", "build", watch.ModeOnce)})
+	m2, cmd := m.handleChanged(withWatchResume(&m, "build", false, 1))
 	drainCmds(m2, cmd)
 	select {
 	case goal := <-runner.called:
@@ -142,6 +153,42 @@ func TestWatchResumeNoAssistantQuote(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("auto-resume did not start a turn")
+	}
+}
+
+// TestWatchResumeActsOncePerSequence pins the sequence rule: a fire the model
+// already acted on never wakes again, and a newer sequence does.
+func TestWatchResumeActsOncePerSequence(t *testing.T) {
+	m := newTestModel(t)
+	runner := &fakeAgentRunner{called: make(chan string, 4)}
+	m.runner = runner
+	m.state.AddMessage(session.RoleAssistant, "waiting", session.ContentTypePlain)
+
+	// Sequence 1 while busy starts nothing.
+	m.busy = true
+	m2, _ := m.handleChanged(withWatchResume(&m, "build", false, 1))
+	m = m2
+	assertNoWake(t, runner)
+
+	// The same sequence once idle starts nothing either.
+	m.busy = false
+	m2, _ = m.handleChanged(withWatchResume(&m, "build", false, 1))
+	m = m2
+	if m.busy {
+		t.Fatal("a sequence already acted on started a turn")
+	}
+	assertNoWake(t, runner)
+
+	// A newer sequence starts the turn.
+	m2, cmd := m.handleChanged(withWatchResume(&m, "build", false, 2))
+	if !m2.busy {
+		t.Fatal("a newer sequence did not start a turn")
+	}
+	drainCmds(m2, cmd)
+	select {
+	case <-runner.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a newer sequence did not reach the runner")
 	}
 }
 

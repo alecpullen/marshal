@@ -85,7 +85,7 @@ func (m *Model) refreshViewport() {
 
 	width := m.viewport.Width()
 	themeSig := themeFingerprint()
-	queued := m.state.SteeringQueue()
+	queued := m.sess.Status().Steering.Queue
 	notice, noticeUp := m.state.Notice()
 	reconnect := ""
 	if act := transcriptState.Activity(); act.Kind == session.ActivityReconnecting && act.Label != "" {

@@ -10,6 +10,7 @@
 package inproc
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 
@@ -17,25 +18,55 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/llm/schema"
+	"marshal/internal/pubsub"
+	"marshal/internal/repo/gitinfo"
+	"marshal/internal/tools/native"
+	"marshal/internal/viewmodel"
+	"marshal/internal/watch"
 )
 
 // Deps is what the adapter serves. Each P2 plan adds its group's
 // dependencies (C4).
 type Deps struct {
 	State *session.State
+	// Context bounds the session's event subscriptions. Nil means
+	// context.Background().
+	Context context.Context
+	// The runtime's brokers. A nil broker is not subscribed.
+	Jobs      *pubsub.Broker[native.JobEvent]
+	Watches   *pubsub.Broker[watch.Event]
+	Steering  *pubsub.Broker[session.SteeringEvent]
+	Workspace *pubsub.Broker[session.WorkspaceEvent]
+	Subagents *pubsub.Broker[session.SubagentEvent]
+	// GitInfo reads the git info for a directory. Nil means gitinfo.Read.
+	GitInfo func(dir string) gitinfo.Info
 }
 
 // Host is the in-process transport: it owns the current session and hands out
 // a new one on a swap.
 type Host struct {
 	mu      sync.Mutex
+	deps    Deps
 	current *Session
 }
 
 // Session is one conversation over a session.State.
 type Session struct {
-	state  *session.State
-	closed atomic.Bool
+	state   *session.State
+	gitInfo func(dir string) gitinfo.Info
+	closed  atomic.Bool
+
+	// ctx bounds the event subscriptions; cancel releases them.
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// mu guards the signal channel and the values the event loop keeps.
+	mu            sync.Mutex
+	changed       chan struct{}
+	changedClosed bool
+	receipts      map[string]session.SteeringReceipt
+	resume        *acpwire.WatchResume
+	resumeSeq     uint64
 }
 
 var (
@@ -43,10 +74,16 @@ var (
 	_ acpclient.Session = (*Session)(nil)
 )
 
+// errSessionClosed is what a session a swap replaced answers with (spec C4).
+var errSessionClosed = &acpwire.Error{
+	Code:    acpwire.CodeSessionClosed,
+	Message: "inproc: the session was replaced",
+}
+
 // New builds the host and the session over d.State.
 func New(d Deps) (*Host, *Session) {
-	sess := &Session{state: d.State}
-	return &Host{current: sess}, sess
+	sess := newSession(d)
+	return &Host{deps: d, current: sess}, sess
 }
 
 // Swap closes the current session and returns a new one over state. It serves
@@ -55,9 +92,11 @@ func (h *Host) Swap(state *session.State) *Session {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.current != nil {
-		h.current.closed.Store(true)
+		h.current.close()
 	}
-	sess := &Session{state: state}
+	d := h.deps
+	d.State = state
+	sess := newSession(d)
 	h.current = sess
 	return sess
 }
@@ -81,6 +120,14 @@ func (s *Session) Status() acpwire.SessionStatus {
 	act := st.Activity()
 	ws := st.Workspace()
 	bi := st.BrowserInfo()
+	gate := st.SDDGate()
+	// An empty queue encodes as absent under omitempty, so keep it nil rather
+	// than the non-nil empty slice SteeringQueue returns.
+	queue := st.SteeringQueue()
+	if len(queue) == 0 {
+		queue = nil
+	}
+	snap := st.SteeringSnapshot()
 
 	status := acpwire.SessionStatus{
 		WorkingDir:    st.WorkingDir,
@@ -127,12 +174,63 @@ func (s *Session) Status() acpwire.SessionStatus {
 			SessionOpen: bi.SessionOpen,
 			UpdatedAt:   acpwire.Millis(bi.UpdatedAt),
 		},
+		Steering: acpwire.Steering{
+			Queue: queue,
+			State: viewmodel.SteeringStateOf(snap),
+		},
+		RunningJobs: st.RunningJobsCount(),
+		Subagents:   subagentsOf(st.Subagents()),
+		Swarm:       swarmOf(st.SwarmProgress()),
+		SDD:         sddOf(st.SDDProgress()),
+		SDDGate: acpwire.SDDGate{
+			TaskN:     gate.TaskN,
+			Question:  gate.Question,
+			TaskTitle: gate.TaskTitle,
+			Report:    gate.Report,
+		},
+		Git: gitOf(s.gitInfo(ws.ActiveRoot)),
 	}
 	if r, ok := st.TurnRoute(); ok {
 		route := routeOf(r)
 		status.TurnRoute = &route
 	}
+	if rec, ok := s.latestReceipt(snap.TurnID); ok {
+		receipt := viewmodel.SteeringReceiptOf(rec)
+		status.Steering.Receipt = &receipt
+	}
+	status.WatchResume = s.watchResume()
 	return status
+}
+
+// SendNow submits one Send now request: its text goes to the running turn at
+// the next safe boundary, interrupting the operation in flight. The receipt is
+// in Status before SendNow returns.
+//
+// Acceptance is a bounded, memory-only call, so ctx is not consulted. A
+// refused request comes back unchanged, so the TUI shows the state's text as it
+// always has.
+func (s *Session) SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpwire.SteeringReceipt, error) {
+	if s.closed.Load() {
+		return acpwire.SteeringReceipt{}, errSessionClosed
+	}
+	receipt, err := s.state.SubmitSendNow(session.SendNowRequest{
+		SessionID: req.SessionID,
+		TurnID:    req.TurnID,
+		RequestID: req.RequestID,
+		Text:      req.Text,
+	})
+	if err != nil {
+		return acpwire.SteeringReceipt{}, err
+	}
+	// A swap can land between the check above and the submission. The receipt
+	// would then belong to a session that no longer exists, so refuse it rather
+	// than keep it and signal a channel that is already closed.
+	if s.closed.Load() {
+		return acpwire.SteeringReceipt{}, errSessionClosed
+	}
+	s.absorbReceipt(receipt)
+	s.signal()
+	return viewmodel.SteeringReceiptOf(receipt), nil
 }
 
 // routeOf copies a session route onto the wire.

@@ -885,6 +885,7 @@ Expected:
 - `internal/tools/desktop/browser`: `TestStandaloneBackendNavigateAndRead`.
 - `internal/worktree`: `TestCLIGitOpsCommitAllWithoutARepoIdentity`.
 - Known to be flaky under load, and passing in this run: `TestRunManagedCancellationKillsTree` (`internal/snapshot`), `TestRuntimeCloseRunsNoGitGC` (`internal/app`) and `TestACPChildApprovalUsesOwningSessionRegistry` (`internal/acp`).
+- `internal/acp`: `TestACPSendNowCancelsPromptRPCWithoutCancelingTurn` fails intermittently (about one run in three) on `the outbound approval RPC context was not cancelled by the interruption`. It exists at `2268ce0b` with only a mechanical rename on this branch, and passes 6 of 6 alone, so it is pre-existing: the test reads `ctx.Err()` immediately after a cancellation that settles asynchronously. It counts as pre-existing whether it passes or fails, and should be given a polled assertion before plan 2c leans on it.
 - `web/bridge` took 109 s.
 
 Finally, run `./marshal` in this repository and check by eye:
@@ -915,4 +916,7 @@ Finally, run `./marshal` in this repository and check by eye:
   - every changed test names its new mechanism (`testModelWith`, `stubSession`, `batchResults`).
 - Contracts hold every cross-task declaration: the wire types, the interface methods, the adapter's `Deps`, the TUI's changed signatures and the test helpers.
 - Anchors were checked at `2268ce0b`. The baseline was taken there in a detached worktree.
+- **Verification record (this branch).** `gofmt -l ./internal ./cmd` printed nothing, `go vet ./...` was clean, `CGO_ENABLED=1 go build ./cmd/marshal` succeeded, `go test -race ./internal/acpclient/...` was clean, and the ACP method-table, T1, T1b and self-check guards passed. The full `go test ./... -timeout 20m` run under `TMPDIR=/private/tmp/p2-2b-suite` failed exactly on the baseline above — `TestSubagentChildRegistryBorrowsConversationService`, `TestPipelineRegistryCommandsCaptureDispatchWorktree`, `TestSubagentShellOutputDoesNotReachParent`, `TestDefaultPromptBudget`, `TestRuntimeAccessSerializesWithReloadAndQuiesce`, `TestStandaloneBackendNavigateAndRead` and `TestCLIGitOpsCommitAllWithoutARepoIdentity`. No new failures.
+- `internal/app`'s `TestStartupSnapshotMaintenanceIsBoundedAndSkipsStorelessWorkspaces` is TMPDIR-sensitive: it fails under the default TMPDIR and passes under the plan's, which is why every Verify block sets that variable. It is not part of this branch's diff.
+- **Review pass (post-implementation).** A branch review fixed five items without changing a contract: receipts are pruned to the current turn so `Status` scans a bounded map; `SendNow` re-checks `closed` after submission to close the swap window; `runCmdOnce` returns a distinct `cmdTimeout` so `TestPumpChangedEndsOnClose` can no longer pass on a block; `TestSteeringReceiptOmitsEmptyFields` pins the `omitempty` absence half; and the two doc lines that miscounted the allowlist (13 entries span 9 files, not 7) and called `WithSendNow` current were corrected.
 - Nothing here contradicts the spec. Decisions 1 to 4 are written into its revision record. C5, C8 and the Migration order were updated to match.

@@ -162,7 +162,7 @@ func TestOptionsPendingChangeFlushesWhenIdle(t *testing.T) {
 	m = asModel(t, m2)
 
 	m.busy = false
-	m2, _ = m.handleJobCount(jobCountMsg{count: 0})
+	m2, _ = m.Update(changedMsg{ch: m.sess.Changed()})
 	m = asModel(t, m2)
 
 	if reloads != 1 {
@@ -211,7 +211,7 @@ func TestOptionsReloadFailureRetainsPendingCandidate(t *testing.T) {
 	m = asModel(t, m2)
 
 	m.busy = false
-	m2, _ = m.handleJobCount(jobCountMsg{count: 0})
+	m2, _ = m.Update(changedMsg{ch: m.sess.Changed()})
 	m = asModel(t, m2)
 
 	if reloads != 1 {

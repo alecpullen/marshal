@@ -228,7 +228,7 @@ func modeSegmentFor(access acpwire.Interaction) string {
 // questions.
 func (m Model) transientStatusSegment() string {
 	switch {
-	case m.state.SDDProgress().Active:
+	case m.sess.Status().SDD.Active:
 		return "sdd"
 	case m.editingCommand:
 		return "edit cmd"
@@ -394,20 +394,20 @@ func (m Model) statusLeftSegments() []statusSeg {
 	// Git context: branch + worktree, inserted right after dir so cwd and
 	// branch read as one cluster. Branch shares priority 5 with dir (drops
 	// together on narrow widths); worktree is 6 (drops first).
-	if m.gitInfo.InRepo && m.gitInfo.Branch != "" {
-		segs = append(segs, statusSeg{text: branchStyle().Render("⎇ " + m.gitInfo.Branch), priority: 5})
+	if st.Git.InRepo && st.Git.Branch != "" {
+		segs = append(segs, statusSeg{text: branchStyle().Render("⎇ " + st.Git.Branch), priority: 5})
 	}
-	if m.gitInfo.Worktree != "" {
-		segs = append(segs, statusSeg{text: worktreeStyle().Render("wt:" + m.gitInfo.Worktree), priority: 6})
+	if st.Git.Worktree != "" {
+		segs = append(segs, statusSeg{text: worktreeStyle().Render("wt:" + st.Git.Worktree), priority: 6})
 	}
 
-	if sp := m.state.SwarmProgress(); sp.Active && (sp.TokensMax > 0 || sp.TokensUsed > 0) {
+	if sp := st.Swarm; sp.Active && (sp.TokensMax > 0 || sp.TokensUsed > 0) {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("tokens %s/%s",
 			strutil.CompactTokens(sp.TokensUsed),
 			strutil.CompactTokens(sp.TokensMax)), priority: 6})
 	}
 
-	if sp := m.state.SDDProgress(); sp.Active {
+	if sp := st.SDD; sp.Active {
 		// The now bar owns task counts and phase; the status line keeps
 		// only the mode cue (modeSegment) and the token budget.
 		if sp.TokensMax > 0 || sp.TokensUsed > 0 {
@@ -425,22 +425,18 @@ func (m Model) statusLeftSegments() []statusSeg {
 		}
 	}
 
-	if n := m.jobCount; m.jobBroker != nil {
-		if n > 0 {
-			segs = append(segs, statusSeg{text: fmt.Sprintf("jobs %d", n), priority: 7})
-		}
-	} else if n := m.state.RunningJobsCount(); n > 0 {
+	if n := st.RunningJobs; n > 0 {
 		segs = append(segs, statusSeg{text: fmt.Sprintf("jobs %d", n), priority: 7})
 	}
 
-	if n := m.queuedCount; n > 0 {
+	if n := len(st.Steering.Queue); n > 0 {
 		segs = append(segs, statusSeg{text: warningStyle().Render(fmt.Sprintf("queued %d", n)), priority: 8})
 	}
 
 	// Send now progress. It rides the status line rather than a transcript card:
 	// the action is a property of the running turn, and the transcript must keep
 	// rendering truthfully while an operation is being interrupted.
-	if seg, active := m.steeringStatusSegment(); active {
+	if seg, active := m.steeringStatusSegment(st.Steering.Receipt); active {
 		style := dimStyle()
 		if seg == "send now: undelivered" || seg == "send now: waiting for a safe boundary" {
 			style = warningStyle()
@@ -553,6 +549,7 @@ func quotaSegment(q *acpwire.Quota) string {
 }
 
 func (m Model) footerHints() help.FooterHints {
+	st := m.sess.Status()
 	return help.FooterHints{
 		Busy:                 m.busy,
 		EditingCommand:       m.editingCommand,
@@ -560,15 +557,15 @@ func (m Model) footerHints() help.FooterHints {
 		QuestionPending:      m.state.PendingQuestion() != nil,
 		SkillGatePending:     m.state.PendingSkillGate() != nil,
 		PopupOpen:            m.activeCompletionPopup() != nil,
-		IdleRollbackEligible: !m.busy && m.sess.Status().HasBackup,
-		QueueNonEmpty:        m.queuedCount > 0 || len(m.state.SteeringQueue()) > 0,
+		IdleRollbackEligible: !m.busy && st.HasBackup,
+		QueueNonEmpty:        len(st.Steering.Queue) > 0,
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
-		RunActive:            m.hasRunningSubagent(),
+		RunActive:            st.SubagentRunning,
 		DrilledRunActive:     m.drilledIntoRunningSubagent(),
 		Browsing:             m.browsing,
 		// The interruption hint is only advertised when the runtime can honour
 		// it: a busy turn with a supported, active steering snapshot.
-		SendNowAvailable: m.busy && m.steeringSnapshot.Active && m.steeringSnapshot.Supported,
+		SendNowAvailable: m.busy && st.Steering.State.Active && st.Steering.State.Supported,
 	}
 }
 
@@ -579,15 +576,4 @@ func (m Model) drilledIntoRunningSubagent() bool {
 		return false
 	}
 	return m.viewStack[len(m.viewStack)-1].Status == session.SubagentRunning
-}
-
-// hasRunningSubagent reports whether any registered subagent is currently
-// running, which makes the Ctrl+F drill-in hint actionable.
-func (m Model) hasRunningSubagent() bool {
-	for _, v := range m.state.Subagents() {
-		if v.Status == session.SubagentRunning {
-			return true
-		}
-	}
-	return false
 }

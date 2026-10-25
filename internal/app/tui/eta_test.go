@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 )
 
 // base is an arbitrary fixed clock; all timings are relative to it.
@@ -14,19 +14,19 @@ var etaBase = time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 // progressWith builds a run where the first len(done) tasks took the given
 // durations, the next task started currentElapsed ago, and the rest are
 // pending.
-func progressWith(total int, done []time.Duration, currentElapsed time.Duration) (session.SDDProgress, time.Time) {
-	timings := make([]session.TaskTiming, total)
+func progressWith(total int, done []time.Duration, currentElapsed time.Duration) (acpwire.SDDProgress, time.Time) {
+	timings := make([]acpwire.TaskTiming, total)
 	at := etaBase
 	for i, d := range done {
-		timings[i] = session.TaskTiming{StartedAt: at, EndedAt: at.Add(d)}
+		timings[i] = acpwire.TaskTiming{StartedAt: acpwire.Millis(at), EndedAt: acpwire.Millis(at.Add(d))}
 		at = at.Add(d)
 	}
 	now := at
 	if len(done) < total {
-		timings[len(done)] = session.TaskTiming{StartedAt: at}
+		timings[len(done)] = acpwire.TaskTiming{StartedAt: acpwire.Millis(at)}
 		now = at.Add(currentElapsed)
 	}
-	return session.SDDProgress{
+	return acpwire.SDDProgress{
 		TotalTasks:  total,
 		DoneTasks:   len(done),
 		CurrentTask: len(done) + 1,
@@ -145,13 +145,13 @@ func TestEstimateCurrentTaskReducesLowBound(t *testing.T) {
 
 func TestEstimateIgnoresDegenerateTimings(t *testing.T) {
 	// Zero-length and reversed timings are not samples.
-	timings := []session.TaskTiming{
-		{StartedAt: etaBase, EndedAt: etaBase},                      // zero length
-		{StartedAt: etaBase.Add(time.Minute), EndedAt: etaBase},     // reversed
-		{StartedAt: etaBase, EndedAt: etaBase.Add(2 * time.Minute)}, // valid
+	timings := []acpwire.TaskTiming{
+		{StartedAt: acpwire.Millis(etaBase), EndedAt: acpwire.Millis(etaBase)},                      // zero length
+		{StartedAt: acpwire.Millis(etaBase.Add(time.Minute)), EndedAt: acpwire.Millis(etaBase)},     // reversed
+		{StartedAt: acpwire.Millis(etaBase), EndedAt: acpwire.Millis(etaBase.Add(2 * time.Minute))}, // valid
 		{}, // pending
 	}
-	p := session.SDDProgress{TotalTasks: 4, DoneTasks: 3, CurrentTask: 4, TaskTimings: timings}
+	p := acpwire.SDDProgress{TotalTasks: 4, DoneTasks: 3, CurrentTask: 4, TaskTimings: timings}
 	if _, _, _, ok := estimateRemaining(p, etaBase.Add(time.Hour)); ok {
 		t.Error("only 1 usable sample; the estimate must be withheld")
 	}

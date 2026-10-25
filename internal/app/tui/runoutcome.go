@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/commands"
@@ -29,7 +30,7 @@ const diffContextLines = 3
 // controller.go CleanupWorktrees) and leaves only a branch name, while a
 // failed run collapsed to an 80-character truncated error with no route to
 // the ledger or the per-task reports.
-func runOutcomeDoc(p session.SDDProgress, git worktree.GitOps, repoRoot string, now time.Time, width int) commands.Doc {
+func runOutcomeDoc(p acpwire.SDDProgress, git worktree.GitOps, repoRoot string, now time.Time, width int) commands.Doc {
 	if !p.Finished && !p.Active {
 		return commands.Doc{
 			Title:  "Plan run",
@@ -42,7 +43,7 @@ func runOutcomeDoc(p session.SDDProgress, git worktree.GitOps, repoRoot string, 
 
 	// A live run has no EndedAt; measuring against it produced an
 	// overflowed negative duration.
-	end := p.EndedAt
+	end := acpwire.Time(p.EndedAt)
 	if end.IsZero() {
 		end = now
 	}
@@ -58,7 +59,7 @@ func runOutcomeDoc(p session.SDDProgress, git worktree.GitOps, repoRoot string, 
 	rows = append(rows, commands.Row{Header: "Run"})
 	rows = append(rows, commands.Row{
 		Text:   p.PlanName,
-		Detail: fmt.Sprintf("%s · %d/%d tasks · %s", status, p.DoneTasks, p.TotalTasks, formatElapsed(end.Sub(p.StartedAt))),
+		Detail: fmt.Sprintf("%s · %d/%d tasks · %s", status, p.DoneTasks, p.TotalTasks, formatElapsed(end.Sub(acpwire.Time(p.StartedAt)))),
 	})
 	if p.Branch != "" {
 		rows = append(rows, commands.Row{Text: "branch", Detail: p.Branch})
@@ -137,7 +138,7 @@ func runOutcomeDoc(p session.SDDProgress, git worktree.GitOps, repoRoot string, 
 
 // taskGlyph marks a task done, in progress, or pending — the same status
 // derivation the side rail uses.
-func taskGlyph(i int, p session.SDDProgress) string {
+func taskGlyph(i int, p acpwire.SDDProgress) string {
 	switch {
 	case i < p.DoneTasks:
 		return glyph.OK
@@ -150,19 +151,20 @@ func taskGlyph(i int, p session.SDDProgress) string {
 
 // taskDuration renders a task's elapsed time: its full duration once
 // complete, its running time while in flight, and nothing when pending.
-func taskDuration(i int, p session.SDDProgress, now time.Time) string {
+func taskDuration(i int, p acpwire.SDDProgress, now time.Time) string {
 	if i < 0 || i >= len(p.TaskTimings) {
 		return ""
 	}
 	t := p.TaskTimings[i]
-	if t.StartedAt.IsZero() {
+	started := acpwire.Time(t.StartedAt)
+	if started.IsZero() {
 		return ""
 	}
-	end := t.EndedAt
+	end := acpwire.Time(t.EndedAt)
 	if end.IsZero() {
 		end = now
 	}
-	if d := end.Sub(t.StartedAt); d > 0 {
+	if d := end.Sub(started); d > 0 {
 		return formatElapsed(d)
 	}
 	return ""

@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/viewmodel"
 )
@@ -54,6 +55,7 @@ func planFingerprint(tasks []viewmodel.BandTask) string {
 // boxInput snapshots the model for livebox.Plan.
 func (m Model) boxInput() livebox.Input {
 	now := m.now()
+	st := m.sess.Status()
 	in := livebox.Input{
 		Width:    max(m.leftWidth, 1),
 		MaxRows:  m.boxMaxRows(),
@@ -66,8 +68,8 @@ func (m Model) boxInput() livebox.Input {
 	// An active SDD run or swarm is the tray's first row. The turn state on the
 	// status line still says "working"; the run's own summary is this row.
 	if m.busy && !m.turnStartedAt.IsZero() {
-		sdd := m.state.SDDProgress()
-		swarm := m.state.SwarmProgress()
+		sdd := st.SDD
+		swarm := st.Swarm
 		switch {
 		case sdd.Active:
 			title := sdd.PlanName
@@ -113,8 +115,15 @@ func (m Model) boxInput() livebox.Input {
 		if err != nil {
 			continue
 		}
-		v, ok := m.state.Subagent(id)
-		if !ok {
+		var v acpwire.Subagent
+		found := false
+		for _, view := range st.Subagents {
+			if view.ID == id {
+				v, found = view, true
+				break
+			}
+		}
+		if !found {
 			continue
 		}
 		if in.Agents == nil {
@@ -125,13 +134,13 @@ func (m Model) boxInput() livebox.Input {
 			Provider: v.Provider,
 			Fallback: v.Fallback,
 		}
-		if v.Child == nil || !viewmodel.WorkActive(it) {
+		if !viewmodel.WorkActive(it) || v.Headline == "" {
 			continue
 		}
 		if in.Headlines == nil {
 			in.Headlines = map[string]string{}
 		}
-		in.Headlines[it.TaskKey] = subagentHeadline(v.Child)
+		in.Headlines[it.TaskKey] = v.Headline
 	}
 	// A finished plan is one row until the next prompt: once the list seen at
 	// the last turn start is dismissed, the tray leaves it out entirely.

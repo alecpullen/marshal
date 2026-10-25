@@ -4,12 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	"marshal/internal/repo/gitinfo"
+	"marshal/internal/acpwire"
 )
 
 func repoData() Data {
 	return Data{
-		Git: gitinfo.Info{InRepo: true, Branch: "main"},
+		Git: acpwire.Git{InRepo: true, Branch: "main"},
 		Repo: RepoStats{
 			Files:   412,
 			Symbols: 3100,
@@ -65,7 +65,7 @@ func TestRepoSectionOneLine(t *testing.T) {
 
 func TestRepoSectionOutsideRepo(t *testing.T) {
 	d := repoData()
-	d.Git = gitinfo.Info{}
+	d.Git = acpwire.Git{}
 	got := StripANSI(strings.Join((RepoSection{}).Render(d, 30, 10), "\n"))
 	if strings.Contains(got, "⎇") {
 		t.Errorf("branch glyph rendered outside a repo:\n%s", got)

@@ -3,9 +3,9 @@ package acpwire
 // SessionStatus is what the status line, the footer and input gating read
 // about a session (C5).
 //
-// It arrives over several plans. Plan 2b adds the runs, queues and git info,
-// plan 2c the session's start time, plans 3 and 4 the sandbox info, and plan 6
-// the current notice. The session ID is not here: Session.ID() carries it.
+// It arrives over several plans. Plan 2c adds the session's start time, plans
+// 3 and 4 the sandbox info, and plan 6 the current notice. The session ID is
+// not here: Session.ID() carries it.
 type SessionStatus struct {
 	WorkingDir string `json:"workingDir"`
 	// GenerationSeq and LeafID carry omitempty per the plan's contract, so a
@@ -20,18 +20,26 @@ type SessionStatus struct {
 	// TurnUsed and TurnWindow are tokens: what the running turn has spent and
 	// the context window it is measured against. They are not milliseconds,
 	// unlike Quota's durations.
-	TurnUsed        int         `json:"turnUsed,omitempty"`
-	TurnWindow      int         `json:"turnWindow,omitempty"`
-	Quota           *Quota      `json:"quota,omitempty"`
-	Effort          Effort      `json:"effort"`
-	Interaction     Interaction `json:"interaction"`
-	SudoUnlock      bool        `json:"sudoUnlock,omitempty"`
-	Trusted         bool        `json:"trusted,omitempty"`
-	HasBackup       bool        `json:"hasBackup,omitempty"`
-	Activity        Activity    `json:"activity"`
-	SubagentRunning bool        `json:"subagentRunning,omitempty"`
-	Workspace       Workspace   `json:"workspace"`
-	Browser         Browser     `json:"browser"`
+	TurnUsed        int           `json:"turnUsed,omitempty"`
+	TurnWindow      int           `json:"turnWindow,omitempty"`
+	Quota           *Quota        `json:"quota,omitempty"`
+	Effort          Effort        `json:"effort"`
+	Interaction     Interaction   `json:"interaction"`
+	SudoUnlock      bool          `json:"sudoUnlock,omitempty"`
+	Trusted         bool          `json:"trusted,omitempty"`
+	HasBackup       bool          `json:"hasBackup,omitempty"`
+	Activity        Activity      `json:"activity"`
+	SubagentRunning bool          `json:"subagentRunning,omitempty"`
+	Workspace       Workspace     `json:"workspace"`
+	Browser         Browser       `json:"browser"`
+	Steering        Steering      `json:"steering"`
+	RunningJobs     int           `json:"runningJobs,omitempty"`
+	Subagents       []Subagent    `json:"subagents,omitempty"`
+	Swarm           SwarmProgress `json:"swarm"`
+	SDD             SDDProgress   `json:"sdd"`
+	SDDGate         SDDGate       `json:"sddGate"`
+	Git             Git           `json:"git"`
+	WatchResume     *WatchResume  `json:"watchResume,omitempty"`
 }
 
 // Route mirrors the session's RouteInfo: the route a turn runs on.

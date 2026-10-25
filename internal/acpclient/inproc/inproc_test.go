@@ -16,6 +16,7 @@ import (
 	"marshal/internal/interaction"
 	"marshal/internal/llm/routing"
 	"marshal/internal/llm/schema"
+	"marshal/internal/repo/gitinfo"
 )
 
 // newState builds a state the way the TUI tests do.
@@ -87,7 +88,12 @@ func TestStatusOfAFreshState(t *testing.T) {
 // the status with the value it should carry.
 func TestStatusMirrorsTheState(t *testing.T) {
 	state := newState(t, "s1")
-	_, sess := New(Deps{State: state})
+	_, sess := New(Deps{
+		State: state,
+		GitInfo: func(string) gitinfo.Info {
+			return gitinfo.Info{Branch: "feature", Worktree: "wt", InRepo: true}
+		},
+	})
 
 	active := session.RouteInfo{
 		Role:             routing.RoleImplementer,
@@ -161,7 +167,7 @@ func TestStatusMirrorsTheState(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.AddMessage(session.RoleAssistant, "hi", session.ContentTypeMarkdown)
 	state.StoreBackup([]session.BackupFile{{Path: "notes.txt", Content: "old"}})
-	state.RegisterSubagent("scout", newState(t, "child"))
+	view := state.RegisterSubagent("scout", newState(t, "child"))
 
 	got := sess.Status()
 	want := acpwire.SessionStatus{
@@ -237,6 +243,13 @@ func TestStatusMirrorsTheState(t *testing.T) {
 			SessionOpen: true,
 			UpdatedAt:   200000,
 		},
+		// The child has no narration, so its view carries no headline.
+		Subagents: []acpwire.Subagent{{
+			ID:     view.ID,
+			Label:  "scout",
+			Status: acpwire.SubagentRunning,
+		}},
+		Git: acpwire.Git{Branch: "feature", Worktree: "wt", InRepo: true},
 	}
 	// LeafID and Branches are the only expectations the state itself supplies,
 	// so pin that the planted values are non-trivial: a Status() that

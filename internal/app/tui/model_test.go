@@ -18,6 +18,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/presetsetup"
 	"marshal/internal/app/session"
@@ -49,8 +50,6 @@ import (
 	"marshal/internal/permissions"
 	"marshal/internal/pipeline"
 	"marshal/internal/postmortem"
-	"marshal/internal/pubsub"
-	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
@@ -1696,7 +1695,9 @@ func TestAgentFinishedMsgClearsBusyAndRecordsNotice(t *testing.T) {
 
 // collectSheetBaseRefs executes a cmd chain (which may be a tea.Sequence or
 // tea.Batch) and returns every sheetBaseRefMsg it produces. The sequence msg
-// type is unexported, so it is unwrapped via reflection.
+// type is unexported, so it is unwrapped via reflection. A command that blocks
+// (the change pump) yields no message; the timeout keeps the walk from waiting
+// on it.
 func collectSheetBaseRefs(t *testing.T, cmd tea.Cmd) []sheetBaseRefMsg {
 	t.Helper()
 	var refs []sheetBaseRefMsg
@@ -1705,7 +1706,13 @@ func collectSheetBaseRefs(t *testing.T, cmd tea.Cmd) []sheetBaseRefMsg {
 		if c == nil {
 			return
 		}
-		msg := c()
+		msg := runCmdOnce(c, time.Second)
+		if _, timedOut := msg.(cmdTimeout); timedOut {
+			return
+		}
+		if msg == nil {
+			return
+		}
 		if batch, ok := msg.(tea.BatchMsg); ok {
 			for _, sub := range batch {
 				walk(sub)
@@ -2793,9 +2800,7 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
-	// Pre-set stale git info and a stale changed-files rail.
-	model.gitInfo = gitinfo.Info{Branch: "old", InRepo: true}
-	model.lastGitRead = time.Unix(50, 0)
+	// Pre-set a stale changed-files rail.
 	model.sheetChanged = []sessionsheet.ChangedFile{{Path: "old.txt"}}
 
 	model.input.SetValue("/new")
@@ -2805,22 +2810,25 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	if !swapper.called {
 		t.Fatal("expected session swapper to be called")
 	}
-	if m.gitInfo.Branch != "feat-new" {
-		t.Errorf("gitInfo.Branch = %q, want feat-new after /new", m.gitInfo.Branch)
+	if got := m.sess.Status().Git.Branch; got != "feat-new" {
+		t.Errorf("Git.Branch = %q, want feat-new after /new", got)
 	}
 	if m.sheetChanged != nil {
 		t.Errorf("sheetChanged = %+v, want nil after /new", m.sheetChanged)
 	}
-	if m.lastGitRead.Before(time.Unix(50, 0)) {
-		t.Errorf("lastGitRead = %v, want refreshed after /new", m.lastGitRead)
-	}
 	if cmd == nil {
 		t.Fatal("expected a non-nil cmd (sheetBaseRefCmd) from /new")
 	}
-	msg := cmd()
-	rb, ok := msg.(sheetBaseRefMsg)
-	if !ok {
-		t.Fatalf("cmd() returned %T, want sheetBaseRefMsg", msg)
+	var rb sheetBaseRefMsg
+	found := false
+	for _, msg := range batchResults(t, cmd) {
+		if v, ok := msg.(sheetBaseRefMsg); ok {
+			rb, found = v, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("the /new batch carried no sheetBaseRefMsg")
 	}
 	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
@@ -3392,47 +3400,14 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 // parent.ask/parent.respond channel in the context-diet Tier 2a cut: the TUI
 // no longer renders a subagent question.
 
-// TestStatusLineJobCountFromBroker exercises the F19 broker-sourced job
-// count: when a jobBroker is wired, the status line reads m.jobCount
-// instead of m.state.RunningJobsCount().
-func TestStatusLineJobCountFromBroker(t *testing.T) {
-	b := pubsub.NewBroker[native.JobEvent]()
-	m := newViewTestModel(t, 100, 24)
-	m.jobBroker = b
-	m.jobCount = 5
-	line := m.renderStatusLine(100)
-	if !strings.Contains(stripANSI(line), "jobs 5") {
-		t.Fatalf("status line missing broker job count:\n%s", line)
-	}
-}
-
-// TestStatusLineJobCountFallbackWhenNoBroker verifies the polled fallback
-// is used when no broker is wired (e.g. test harnesses).
-func TestStatusLineJobCountFallbackWhenNoBroker(t *testing.T) {
+// TestStatusLineShowsTheRunningJobCount verifies the status line reads the
+// running job count from the session status.
+func TestStatusLineShowsTheRunningJobCount(t *testing.T) {
 	m := newViewTestModel(t, 100, 24)
 	m.state.SetRunningJobsCount(3)
 	line := m.renderStatusLine(100)
 	if !strings.Contains(stripANSI(line), "jobs 3") {
 		t.Fatalf("status line missing polled job count:\n%s", line)
-	}
-}
-
-// TestJobCountMsgUpdatesModel verifies the jobCountMsg handler updates
-// the cached count and re-arms the pump.
-func TestJobCountMsgUpdatesModel(t *testing.T) {
-	b := pubsub.NewBroker[native.JobEvent]()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	m := newViewTestModel(t, 80, 24)
-	m.jobBroker = b
-	m.jobEvents = b.Subscribe(ctx)
-	updated, cmd := m.Update(jobCountMsg{count: 7})
-	um := updated.(Model)
-	if um.jobCount != 7 {
-		t.Fatalf("jobCount = %d, want 7", um.jobCount)
-	}
-	if cmd == nil {
-		t.Fatal("expected pump re-arm cmd, got nil")
 	}
 }
 
@@ -3451,13 +3426,12 @@ func TestCtrlXClearsSteering(t *testing.T) {
 	m.busy = true
 	m.state.PushSteering("a")
 	m.state.PushSteering("b")
-	m.queuedCount = 2
 	m = sendKey(m, tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 	if len(m.state.SteeringQueue()) != 0 {
 		t.Fatalf("queue not cleared: %v", m.state.SteeringQueue())
 	}
-	if m.queuedCount != 0 {
-		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	if n := len(m.sess.Status().Steering.Queue); n != 0 {
+		t.Fatalf("queued = %d, want 0", n)
 	}
 }
 
@@ -3467,7 +3441,6 @@ func TestEnterOnEmptyDrainsQueuedFollowUp(t *testing.T) {
 	// We pre-seed the queue and verify Enter pops the oldest.
 	m.state.PushSteering("first follow-up")
 	m.state.PushSteering("second follow-up")
-	m.queuedCount = 2
 	// Busy must be false for the follow-up path to fire.
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if len(m.state.SteeringQueue()) != 1 {
@@ -3487,7 +3460,6 @@ func TestCancelTurnDropsSteeringQueue(t *testing.T) {
 	m.busy = true
 	m.state.PushSteering("a")
 	m.state.PushSteering("b")
-	m.queuedCount = 2
 	cancelled := false
 	m.agentCancel = func() { cancelled = true }
 	for range 2 {
@@ -3508,8 +3480,8 @@ func TestCancelTurnDropsSteeringQueue(t *testing.T) {
 	if len(m.state.SteeringQueue()) != 0 {
 		t.Fatalf("queue not dropped on agent finish: %v", m.state.SteeringQueue())
 	}
-	if m.queuedCount != 0 {
-		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	if n := len(m.sess.Status().Steering.Queue); n != 0 {
+		t.Fatalf("queued = %d, want 0", n)
 	}
 	if m.cancelling {
 		t.Fatal("cancelling flag should be cleared after agentFinishedMsg")
@@ -3524,12 +3496,12 @@ func TestCancelTurnDoesNotClearSteeringWhenAgentAlreadyFinished(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
 	m.cancelling = true // cancelTurn was called, set the flag
-	m.queuedCount = 1
+	m.state.PushSteering("pending")
 	// Simulate agent finishing first (before cancel took effect).
 	updated, _ := m.Update(agentFinishedMsg{err: nil})
 	m = updated.(Model)
-	if m.queuedCount != 0 {
-		t.Fatalf("steering not drained on agent finish: %d", m.queuedCount)
+	if n := len(m.sess.Status().Steering.Queue); n != 0 {
+		t.Fatalf("steering not drained on agent finish: %d", n)
 	}
 	// Now call cancelTurn — must not double-clear.
 	if m.cancelTurn() {
@@ -3547,7 +3519,6 @@ func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 	m.runner = runner
 	m.busy = true
 	m.state.PushSteering("deliver me after the turn")
-	m.queuedCount = 1
 
 	updated, cmd := m.Update(agentFinishedMsg{err: nil})
 	m = updated.(Model)
@@ -3555,8 +3526,8 @@ func TestAgentFinishedFlushesQueuedSteering(t *testing.T) {
 	if q := m.state.SteeringQueue(); len(q) != 0 {
 		t.Fatalf("queue = %v, want the entry delivered", q)
 	}
-	if m.queuedCount != 0 {
-		t.Fatalf("queuedCount = %d, want 0", m.queuedCount)
+	if n := len(m.sess.Status().Steering.Queue); n != 0 {
+		t.Fatalf("queued = %d, want 0", n)
 	}
 	if !m.busy {
 		t.Fatal("busy = false, want the follow-up turn to have started")
@@ -3573,7 +3544,6 @@ func TestFlushQueuedSteeringStartsFollowUpTurn(t *testing.T) {
 	runner := &fakeAgentRunner{called: make(chan string, 1)}
 	m.runner = runner
 	m.state.PushSteering("deliver me after the turn")
-	m.queuedCount = 1
 
 	cmd := m.flushQueuedSteering()
 	if cmd == nil {
@@ -3620,7 +3590,6 @@ func TestAgentFinishedKeepsQueueOnFailure(t *testing.T) {
 	m.runner = runner
 	m.busy = true
 	m.state.PushSteering("retry me")
-	m.queuedCount = 1
 
 	updated, _ := m.Update(agentFinishedMsg{err: errors.New("boom")})
 	m = updated.(Model)
@@ -4620,7 +4589,6 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 			m.busy = true
 			m.agentCancel = func() { cancelled = true }
 			m.state.PushSteering("pending")
-			m.queuedCount = 1
 
 			cmd := tt.trigger(&m)
 
@@ -4633,8 +4601,8 @@ func TestCtrlCCancelsTurn(t *testing.T) {
 			if len(m.state.SteeringQueue()) != 0 {
 				t.Fatal("steering queue should be cleared")
 			}
-			if m.queuedCount != 0 {
-				t.Fatal("queuedCount should be 0")
+			if n := len(m.sess.Status().Steering.Queue); n != 0 {
+				t.Fatalf("queued = %d, want 0", n)
 			}
 			if state.PendingApproval() != nil {
 				t.Fatal("pending approval should be cleared")
@@ -6713,14 +6681,11 @@ func TestDockedSettingsBrowserDoesNotSwallowRuntimeMessages(t *testing.T) {
 		t.Fatal("settings browser should stay open after agentFinishedMsg")
 	}
 
-	updated, _ = m.Update(jobCountMsg{count: 3})
+	updated, _ = m.Update(changedMsg{ch: m.sess.Changed()})
 	m = updated.(Model)
 
-	if m.jobCount != 3 {
-		t.Fatalf("jobCount = %d, want 3", m.jobCount)
-	}
 	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
-		t.Fatal("settings browser should stay open after jobCountMsg")
+		t.Fatal("settings browser should stay open after a change")
 	}
 }
 
@@ -7286,21 +7251,6 @@ func (r *testAgentRunner) Run(ctx context.Context, goal string) error { return n
 func (r *testAgentRunner) SetForceClass(class string)                 {}
 func (r *testAgentRunner) AnswerGate(string)                          {}
 
-// newStatusTestModelFromTemp builds a Model rooted in a temp git repo so
-// gitInfo resolves. Used by the git-info wiring tests.
-func newStatusTestModelFromTemp(t *testing.T) Model {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	dir := t.TempDir()
-	initRepoTest(t, dir)
-	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
-	m.resize(100, 30)
-	return m
-}
-
 func initRepoTest(t *testing.T, dir string) {
 	t.Helper()
 	for _, args := range [][]string{
@@ -7318,25 +7268,6 @@ func initRepoTest(t *testing.T, dir string) {
 	}
 	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "init").CombinedOutput(); err != nil {
 		t.Fatalf("git commit: %v\n%s", err, out)
-	}
-}
-
-func TestGitInfoPopulatedOnResize(t *testing.T) {
-	m := newStatusTestModelFromTemp(t)
-	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	if !m.gitInfo.InRepo {
-		t.Fatalf("gitInfo not populated after resize; InRepo=%v", m.gitInfo)
-	}
-}
-
-func TestGitInfoRefreshThrottled(t *testing.T) {
-	m := newStatusTestModelFromTemp(t)
-	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	first := m.gitInfo
-	// Immediate tick: throttled, must NOT re-read (same value).
-	m.handleAgentTick(agentTickMsg{})
-	if m.gitInfo != first {
-		t.Fatalf("gitInfo changed on throttled tick; freshness window broken")
 	}
 }
 
@@ -8173,30 +8104,7 @@ func (r *recordingPipelineRunner) Run(ctx context.Context, goal string) error {
 func (r *recordingPipelineRunner) SetForceClass(string)     {}
 func (r *recordingPipelineRunner) AnswerGate(answer string) { r.answer = answer }
 
-func TestSubagentBrokerPublishesRefreshMessage(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	broker := pubsub.NewBroker[session.SubagentEvent]()
-	m := testModel(state, WithSubagentBroker(context.Background(), broker))
-	m.resize(80, 24)
-
-	// Publish a subagent event; the pump should turn it into a subagentMsg.
-	broker.Publish("subagent", session.SubagentEvent{View: session.SubagentView{Label: "review"}})
-
-	cmd := pumpSubagentEvents(m.subagentEvents)
-	if cmd == nil {
-		t.Fatal("pumpSubagentEvents returned nil")
-	}
-	msg := cmd()
-	sm, ok := msg.(subagentMsg)
-	if !ok {
-		t.Fatalf("pump returned %T, want subagentMsg", msg)
-	}
-	if sm.view.Label != "review" {
-		t.Fatalf("view label = %q, want review", sm.view.Label)
-	}
-}
-
-func TestHandleSubagentMsgRefreshesViewport(t *testing.T) {
+func TestChangedRefreshesTheViewportForANewSubagent(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := testModel(state)
 	m.resize(80, 24)
@@ -8205,9 +8113,10 @@ func TestHandleSubagentMsgRefreshesViewport(t *testing.T) {
 	state.RegisterSubagentWithMeta("review", child, session.SubagentMeta{})
 	before := m.lastTranscriptHash
 
-	updated, _ := m.handleSubagentMsg(subagentMsg{view: session.SubagentView{Label: "review"}})
-	if updated.lastTranscriptHash == before {
-		t.Fatal("handleSubagentMsg should refresh the viewport")
+	updated, _ := m.Update(changedMsg{ch: m.sess.Changed()})
+	mm := asModel(t, updated)
+	if mm.lastTranscriptHash == before {
+		t.Fatal("handleChanged should refresh the viewport")
 	}
 }
 
@@ -8283,7 +8192,7 @@ func TestAnswerMsgResumesTheRun(t *testing.T) {
 	m.pipelineRunner = runner
 	m.state.SetSDDProgress(session.SDDProgress{PlanPath: "/plans/p.md"})
 	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "q"})
-	m.dock.Open(gatepanel.New(m.state.SDDGate()))
+	m.dock.Open(gatepanel.New(m.sess.Status().SDDGate))
 
 	m2, cmd := m.Update(gatepanel.AnswerMsg{Text: "use 30s"})
 	mm := m2.(Model)
@@ -8311,7 +8220,7 @@ func TestAnswerMsgResumesTheRun(t *testing.T) {
 func TestStopMsgEndsTheRun(t *testing.T) {
 	m := newTestModelInRepo(t)
 	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "q"})
-	m.dock.Open(gatepanel.New(m.state.SDDGate()))
+	m.dock.Open(gatepanel.New(m.sess.Status().SDDGate))
 
 	m2, _ := m.Update(gatepanel.StopMsg{})
 	mm := m2.(Model)
@@ -9339,7 +9248,7 @@ func TestFailedJoinNeverAdvancesAsSettled(t *testing.T) {
 // ending the user declined.
 func TestWarningDisplacedSurfaceIsRestoredOnDecline(t *testing.T) {
 	m, _ := warningModel(t, workSnapshot("job-1"))
-	displaced := gatepanel.New(session.SDDGate{TaskN: 1, Question: "Ship it?"})
+	displaced := gatepanel.New(acpwire.SDDGate{TaskN: 1, Question: "Ship it?"})
 	m.dock.Open(displaced)
 
 	if cmd := m.beginEnd(&endIntent{kind: EndIntentExit}); cmd != nil {
@@ -9392,7 +9301,7 @@ func TestWarningRefreshesFromRuntimeEvents(t *testing.T) {
 	// Work finishes and other work starts while the prompt is open.
 	ctrl.work = workSnapshot("job-2")
 
-	updated, _ := m.Update(jobCountMsg{count: 1})
+	updated, _ := m.Update(changedMsg{ch: m.sess.Changed()})
 	m = asModel(t, updated)
 
 	panel, ok := m.dock.Panel().(*activeworkpanel.Panel)
@@ -9591,8 +9500,15 @@ func TestNewSessionAcceptanceBuildsTheReplacement(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("the replacement must return the sheet-base-ref command")
 	}
-	if _, ok := cmd().(sheetBaseRefMsg); !ok {
-		t.Fatalf("cmd() = %T, want sheetBaseRefMsg", cmd())
+	found := false
+	for _, msg := range batchResults(t, cmd) {
+		if _, ok := msg.(sheetBaseRefMsg); ok {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("the replacement batch carried no sheetBaseRefMsg")
 	}
 }
 
@@ -10166,8 +10082,9 @@ type sendNowFixture struct {
 	t       *testing.T
 	state   *session.State
 	m       Model
+	stub    *stubSession
 	turnID  string
-	submits []session.SendNowRequest
+	submits []acpwire.SendNowRequest
 }
 
 // newSendNowFixture builds the fixture. supported controls whether an operation
@@ -10192,15 +10109,14 @@ func newSendNowFixture(t *testing.T, width, height int, supported bool) *sendNow
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	f := &sendNowFixture{t: t, state: state, turnID: turnID}
-	m := testModel(state, WithCommandRegistry(reg), WithHomeDir(t.TempDir()),
-		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }),
-		WithSendNow(state.SteeringSnapshot, func(req session.SendNowRequest) (session.SteeringReceipt, error) {
-			f.submits = append(f.submits, req)
-			return state.SubmitSendNow(req)
-		}))
+	stub := &stubSession{onSendNow: func(req acpwire.SendNowRequest) {
+		f.submits = append(f.submits, req)
+	}}
+	f.stub = stub
+	m := testModelStub(state, stub, WithCommandRegistry(reg), WithHomeDir(t.TempDir()),
+		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
 	m.resize(width, height)
 	m.busy = true
-	m.refreshSteeringSnapshot()
 	m.refreshViewport()
 	f.m = m
 	return f
@@ -10508,48 +10424,38 @@ func TestSendNowSizeGateResizeAndNoColor(t *testing.T) {
 	}
 }
 
-// TestSendNowReceiptVersionsAndSlowStopRemainTruthful pins the status
-// reporting: a slow stop reads as interrupting or waiting, never as stopped or
-// delivered, and one request's final outcome is never discarded by another
-// request's older revision.
-func TestSendNowReceiptVersionsAndSlowStopRemainTruthful(t *testing.T) {
+// TestSendNowStatusSegmentFollowsTheReceipt pins the status reporting: a slow
+// stop reads as interrupting or waiting, never as stopped or delivered, and a
+// settled request reads as delivered.
+func TestSendNowStatusSegmentFollowsTheReceipt(t *testing.T) {
 	f := newSendNowFixture(t, 160, 40, true)
-	snap := f.state.SteeringSnapshot()
-	interrupting := session.SteeringReceipt{
-		Version: 2, RequestID: "req-a", TurnID: f.turnID, Status: session.SteeringInterrupting,
+	receipt := func(status string) {
+		f.stub.patch = func(st *acpwire.SessionStatus) {
+			st.Steering.Receipt = &acpwire.SteeringReceipt{
+				Version: 2, RequestID: "req-a", TurnID: f.turnID, Status: status,
+			}
+		}
 	}
-	f.send(steeringMsg{queueLen: 1, snapshot: &snap, receipt: &interrupting})
+
+	receipt(acpwire.SteeringInterrupting)
 	line := stripANSI(f.m.renderStatusLine(200))
-	if !strings.Contains(line, "interrupting") {
+	if !strings.Contains(line, "send now: interrupting") {
 		t.Fatalf("status line missing the interrupting state:\n%s", line)
 	}
 	if strings.Contains(line, "stopped") || strings.Contains(line, "delivered") {
 		t.Fatalf("status line claimed a settled outcome during a slow stop:\n%s", line)
 	}
 
-	// A later revision of the same request settles it as delivered.
-	delivered := interrupting
-	delivered.Version = 3
-	delivered.Status = session.SteeringDelivered
-	f.send(steeringMsg{snapshot: &snap, receipt: &delivered})
-	if got := f.m.steeringReceipts["req-a"].Status; got != session.SteeringDelivered {
-		t.Fatalf("receipt status = %q, want delivered", got)
+	receipt(acpwire.SteeringWaitingSafe)
+	line = stripANSI(f.m.renderStatusLine(200))
+	if !strings.Contains(line, "send now: waiting for a safe boundary") {
+		t.Fatalf("status line missing the safe-boundary state:\n%s", line)
 	}
-	// An older revision of the same request must not roll it back.
-	stale := interrupting
-	f.send(steeringMsg{snapshot: &snap, receipt: &stale})
-	if got := f.m.steeringReceipts["req-a"].Status; got != session.SteeringDelivered {
-		t.Fatalf("stale receipt rolled the outcome back to %q", got)
-	}
-	// Another request's lower revision must not discard this one's outcome.
-	f.send(steeringMsg{snapshot: &snap, receipt: &session.SteeringReceipt{
-		Version: 1, RequestID: "req-b", TurnID: f.turnID, Status: session.SteeringAccepted,
-	}})
-	if got := f.m.steeringReceipts["req-a"].Status; got != session.SteeringDelivered {
-		t.Fatalf("another request's revision discarded req-a: %q", got)
-	}
-	if got := f.m.steeringReceipts["req-b"].Status; got != session.SteeringAccepted {
-		t.Fatalf("req-b = %q, want accepted", got)
+
+	receipt(acpwire.SteeringDelivered)
+	line = stripANSI(f.m.renderStatusLine(200))
+	if !strings.Contains(line, "send now: delivered") {
+		t.Fatalf("status line missing the delivered state:\n%s", line)
 	}
 }
 
@@ -10684,10 +10590,10 @@ func TestSendNowFinishDoesNotDropAcceptedFeedback(t *testing.T) {
 	if q := f.state.SteeringQueue(); len(q) != 1 || q[0] != "please deliver this" {
 		t.Fatalf("turn completion dropped accepted feedback: %v", q)
 	}
-	if f.m.queuedCount != 1 {
-		t.Fatalf("queuedCount = %d, want the surviving depth", f.m.queuedCount)
+	if n := len(f.m.sess.Status().Steering.Queue); n != 1 {
+		t.Fatalf("queued = %d, want the surviving depth", n)
 	}
-	if r, ok := f.m.steeringReceipts[f.submits[0].RequestID]; ok && r.Status == session.SteeringDelivered {
+	if r := f.m.sess.Status().Steering.Receipt; r != nil && r.RequestID == f.submits[0].RequestID && r.Status == acpwire.SteeringDelivered {
 		t.Fatal("the cleanup falsely marked the request delivered")
 	}
 }

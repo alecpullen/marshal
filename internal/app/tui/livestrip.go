@@ -6,18 +6,19 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 )
 
 // swarmStripText renders `swarm 3/5 · implementer — round 1/2`.
-func swarmStripText(p session.SwarmProgress) string {
+func swarmStripText(p acpwire.SwarmProgress) string {
 	done, active, detail := 0, "", ""
 	for _, r := range p.Roles {
 		switch r.Status {
-		case session.SwarmRoleDone, session.SwarmRoleFailed:
+		case acpwire.SwarmRoleDone, acpwire.SwarmRoleFailed:
 			done++
-		case session.SwarmRoleActive:
+		case acpwire.SwarmRoleActive:
 			if active == "" {
 				active, detail = r.Name, r.Detail
 			}

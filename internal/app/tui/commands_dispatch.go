@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/docpanel"
@@ -17,7 +18,6 @@ import (
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/interaction"
 	"marshal/internal/pipeline"
-	"marshal/internal/repo/gitinfo"
 	"marshal/internal/worktree"
 )
 
@@ -113,7 +113,7 @@ func (m *Model) sendNowCommand(raw string) (tea.Model, tea.Cmd) {
 	// The Enter handler cleared the draft before dispatching, so a refused
 	// request has to put it back: the user's line is theirs until the runtime
 	// actually accepts it.
-	if !m.submitSendNow(session.SendNowRequest{
+	if !m.submitSendNow(acpwire.SendNowRequest{
 		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      text,
@@ -133,12 +133,12 @@ func (m *Model) sendNowFlushOrOpen(raw string) (tea.Model, tea.Cmd) {
 		m.rejectSendNow(sendNowUnavailable + " The command text was kept.")
 		return m, nil
 	}
-	if len(m.state.SteeringQueue()) == 0 {
+	if len(m.sess.Status().Steering.Queue) == 0 {
 		// Nothing to flush: the composer is the remaining way to write one.
 		m.openSteeringComposer()
 		return m, nil
 	}
-	if !m.submitSendNow(session.SendNowRequest{
+	if !m.submitSendNow(acpwire.SendNowRequest{
 		SessionID: m.sess.ID(),
 		TurnID:    snap.TurnID,
 		Text:      "",
@@ -197,11 +197,13 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	m.state = snap.State
 	// A swapper that omits Session leaves the seam session alone rather than
 	// nil-ing it out from under the next render.
-	if snap.Session != nil {
+	replaced := snap.Session != nil
+	if replaced {
 		m.sess = snap.Session
+		// A replacement session restarts its watch-resume sequence, so the
+		// model's mark restarts with it.
+		m.watchResumeSeq = 0
 	}
-	m.gitInfo = gitinfo.Read(m.sess.Status().Workspace.ActiveRoot)
-	m.lastGitRead = m.now()
 	if snap.Runner != nil {
 		m.runner = snap.Runner
 	}
@@ -231,6 +233,9 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	// The old session's changed-files list must never render in the new
 	// session while the sheetBaseRefMsg round-trips; re-read it below.
 	m.sheetChanged = nil
+	// The sheet's base ref follows the workspace the new session reports.
+	st := m.sess.Status()
+	m.workspaceSeen = st.Workspace
 	// Rebind the Work stream: the previous conversation's subscription is
 	// cancelled and drained, its cards cleared, and the new epoch seeded and
 	// re-armed so no work from the old session leaks into the new one.
@@ -242,11 +247,16 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
-	baseCmd := sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot)
-	if workCmd != nil {
-		return tea.Batch(baseCmd, workCmd)
+	cmds := []tea.Cmd{sheetBaseRefCmd(st.Workspace.ActiveRoot)}
+	// A replaced session needs its own change pump; the old one ends when its
+	// channel no longer matches.
+	if replaced {
+		cmds = append(cmds, pumpChanged(m.sess.Changed()))
 	}
-	return baseCmd
+	if workCmd != nil {
+		cmds = append(cmds, workCmd)
+	}
+	return tea.Batch(cmds...)
 }
 
 func init() {
@@ -439,7 +449,8 @@ func init() {
 			return m, nil
 		},
 		"run": func(m *Model, _ []string) (tea.Model, tea.Cmd) {
-			doc := runOutcomeDoc(m.state.SDDProgress(), worktree.CLIGitOps{}, m.sess.Status().WorkingDir, m.now(), m.width)
+			st := m.sess.Status()
+			doc := runOutcomeDoc(st.SDD, worktree.CLIGitOps{}, st.WorkingDir, m.now(), m.width)
 			m.dock.Open(docpanel.New(doc, m.state))
 			m.refreshViewport()
 			return m, nil

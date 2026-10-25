@@ -7,13 +7,14 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 )
 
 // renderRunPanel renders the run's status line (active summary or finished
 // summary) as the old top bar did, so the line builders keep their coverage
 // now that the now bar composes them.
-func renderRunPanel(p session.SDDProgress, spinner string, now time.Time, width int) string {
+func renderRunPanel(p acpwire.SDDProgress, spinner string, now time.Time, width int) string {
 	switch {
 	case p.Finished:
 		return runPanelFinishedLine(p, width)
@@ -23,8 +24,8 @@ func renderRunPanel(p session.SDDProgress, spinner string, now time.Time, width 
 	return ""
 }
 
-func runPanelFixture() session.SDDProgress {
-	return session.SDDProgress{
+func runPanelFixture() acpwire.SDDProgress {
+	return acpwire.SDDProgress{
 		Active:      true,
 		CurrentTask: 3,
 		DoneTasks:   2,
@@ -32,12 +33,12 @@ func runPanelFixture() session.SDDProgress {
 		Phase:       "implementing",
 		Detail:      "src/auth.go",
 		Tasks:       []string{"Scaffold config", "Add theme slots", "Consolidate run panel", "Remove live strip"},
-		StartedAt:   time.Unix(100, 0),
+		StartedAt:   acpwire.Millis(time.Unix(100, 0)),
 	}
 }
 
 func TestRunPanelEmptyWhenNoRun(t *testing.T) {
-	if out := renderRunPanel(session.SDDProgress{}, "⠋", time.Now(), 80); out != "" {
+	if out := renderRunPanel(acpwire.SDDProgress{}, "⠋", time.Now(), 80); out != "" {
 		t.Errorf("want empty when no run and no finished summary, got %q", out)
 	}
 }
@@ -45,7 +46,7 @@ func TestRunPanelEmptyWhenNoRun(t *testing.T) {
 func TestRunPanelSummaryLine(t *testing.T) {
 	p := runPanelFixture()
 	p.FixRound, p.MaxFixRounds = 1, 3
-	now := p.StartedAt.Add(4*time.Minute + 12*time.Second)
+	now := acpwire.Time(p.StartedAt).Add(4*time.Minute + 12*time.Second)
 	out := ansi.Strip(renderRunPanel(p, "⠋", now, 100))
 	for _, want := range []string{"⠋", "task 3/4", "implementing", "fix 1/3", "src/auth.go", "4m 12s"} {
 		if !strings.Contains(out, want) {
@@ -57,7 +58,7 @@ func TestRunPanelSummaryLine(t *testing.T) {
 func TestRunPanelSummaryOmitsEmptySegments(t *testing.T) {
 	p := runPanelFixture()
 	p.Phase, p.Detail = "", ""
-	out := ansi.Strip(renderRunPanel(p, "⠋", p.StartedAt, 100))
+	out := ansi.Strip(renderRunPanel(p, "⠋", acpwire.Time(p.StartedAt), 100))
 	if strings.Contains(out, " ·  · ") || strings.Contains(out, "fix ") {
 		t.Errorf("empty segments leaked into summary:\n%s", out)
 	}
@@ -67,7 +68,7 @@ func TestRunPanelFinishedSuccess(t *testing.T) {
 	p := runPanelFixture()
 	p.Active, p.Finished, p.Succeeded = false, true, true
 	p.DoneTasks, p.TotalTasks = 4, 4
-	p.EndedAt = p.StartedAt.Add(23*time.Minute + 41*time.Second)
+	p.EndedAt = acpwire.Millis(acpwire.Time(p.StartedAt).Add(23*time.Minute + 41*time.Second))
 	out := ansi.Strip(renderRunPanel(p, "⠋", time.Unix(100, 0), 100))
 	if !strings.Contains(out, "✓") || !strings.Contains(out, "sdd done — 4/4 tasks · 23m 41s") {
 		t.Errorf("collapsed success line wrong:\n%s", out)
@@ -80,7 +81,7 @@ func TestRunPanelFinishedSuccess(t *testing.T) {
 func TestRunPanelFinishedFailure(t *testing.T) {
 	p := runPanelFixture()
 	p.Active, p.Finished, p.Succeeded = false, true, false
-	p.EndedAt = p.StartedAt.Add(12 * time.Second)
+	p.EndedAt = acpwire.Millis(acpwire.Time(p.StartedAt).Add(12 * time.Second))
 	out := renderRunPanel(p, "⠋", time.Unix(100, 0), 100)
 	stripped := ansi.Strip(out)
 	if !strings.Contains(stripped, "✗") || !strings.Contains(stripped, "sdd stopped — 2/4 tasks · 12s") {
@@ -97,7 +98,7 @@ func TestRunPanelFinishedFailure(t *testing.T) {
 func TestRunPanelFinishedFailureWithReason(t *testing.T) {
 	p := runPanelFixture()
 	p.Active, p.Finished, p.Succeeded = false, true, false
-	p.EndedAt = p.StartedAt.Add(12 * time.Second)
+	p.EndedAt = acpwire.Millis(acpwire.Time(p.StartedAt).Add(12 * time.Second))
 	p.Error = "transient timeout"
 	out := ansi.Strip(renderRunPanel(p, "⠋", time.Unix(100, 0), 100))
 	want := "sdd stopped — 2/4 tasks · 12s · transient timeout — /run for details · /sdd to resume"
@@ -109,7 +110,7 @@ func TestRunPanelFinishedFailureWithReason(t *testing.T) {
 func TestRunPanelFinishedFailureTruncatesHintFirst(t *testing.T) {
 	p := runPanelFixture()
 	p.Active, p.Finished, p.Succeeded = false, true, false
-	p.EndedAt = p.StartedAt.Add(12 * time.Second)
+	p.EndedAt = acpwire.Millis(acpwire.Time(p.StartedAt).Add(12 * time.Second))
 	p.Error = "transient timeout"
 	out := ansi.Strip(renderRunPanel(p, "⠋", time.Unix(100, 0), 55))
 	want := "sdd stopped — 2/4 tasks · 12s · transient timeout"
@@ -137,10 +138,10 @@ func TestNextTurnClearsRunEvents(t *testing.T) {
 func TestSummaryLineShowsPhaseElapsedAndTotal(t *testing.T) {
 	start := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
 	now := start.Add(18 * time.Minute)
-	p := session.SDDProgress{
+	p := acpwire.SDDProgress{
 		Active: true, CurrentTask: 3, TotalTasks: 7,
-		Phase: "verifying", StartedAt: start,
-		PhaseStartedAt: now.Add(-2*time.Minute - 14*time.Second),
+		Phase: "verifying", StartedAt: acpwire.Millis(start),
+		PhaseStartedAt: acpwire.Millis(now.Add(-2*time.Minute - 14*time.Second)),
 	}
 	got := stripANSI(runPanelSummaryLine(p, "⠋", now, 100))
 
@@ -153,7 +154,7 @@ func TestSummaryLineShowsPhaseElapsedAndTotal(t *testing.T) {
 }
 
 func TestRunPanelNoLongerDuplicatesTheGate(t *testing.T) {
-	p := session.SDDProgress{Active: true, CurrentTask: 2, TotalTasks: 5, Phase: "implementing"}
+	p := acpwire.SDDProgress{Active: true, CurrentTask: 2, TotalTasks: 5, Phase: "implementing"}
 
 	got := stripANSI(renderRunPanel(p, "⠋", time.Now(), 100))
 	if strings.Contains(got, "Which timeout applies?") {
@@ -162,10 +163,10 @@ func TestRunPanelNoLongerDuplicatesTheGate(t *testing.T) {
 }
 
 func TestFinishedLineAdvertisesTheOutcomePanel(t *testing.T) {
-	p := session.SDDProgress{
+	p := acpwire.SDDProgress{
 		Finished: true, Succeeded: true, DoneTasks: 4, TotalTasks: 4,
-		StartedAt: time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
-		EndedAt:   time.Date(2026, 8, 7, 10, 23, 41, 0, time.UTC),
+		StartedAt: acpwire.Millis(time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)),
+		EndedAt:   acpwire.Millis(time.Date(2026, 8, 7, 10, 23, 41, 0, time.UTC)),
 	}
 	got := stripANSI(runPanelFinishedLine(p, 100))
 	if !strings.Contains(got, "/run") {
@@ -174,11 +175,11 @@ func TestFinishedLineAdvertisesTheOutcomePanel(t *testing.T) {
 }
 
 func TestFinishedLineDropsHintBeforeReasonWhenNarrow(t *testing.T) {
-	p := session.SDDProgress{
+	p := acpwire.SDDProgress{
 		Finished: true, Succeeded: false, DoneTasks: 2, TotalTasks: 4,
 		Error:     "task 3 still fails go test",
-		StartedAt: time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
-		EndedAt:   time.Date(2026, 8, 7, 10, 0, 12, 0, time.UTC),
+		StartedAt: acpwire.Millis(time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)),
+		EndedAt:   acpwire.Millis(time.Date(2026, 8, 7, 10, 0, 12, 0, time.UTC)),
 	}
 	wide := stripANSI(runPanelFinishedLine(p, 100))
 	if !strings.Contains(wide, "task 3 still fails") || !strings.Contains(wide, "/run") {
@@ -192,9 +193,9 @@ func TestFinishedLineDropsHintBeforeReasonWhenNarrow(t *testing.T) {
 
 func TestSummaryLineOmitsPhaseElapsedWhenUnset(t *testing.T) {
 	start := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
-	p := session.SDDProgress{
+	p := acpwire.SDDProgress{
 		Active: true, CurrentTask: 1, TotalTasks: 3,
-		Phase: "implementing", StartedAt: start,
+		Phase: "implementing", StartedAt: acpwire.Millis(start),
 	}
 	got := stripANSI(runPanelSummaryLine(p, "⠋", start.Add(time.Minute), 100))
 	if !strings.Contains(got, "implementing") {
@@ -205,25 +206,25 @@ func TestSummaryLineOmitsPhaseElapsedWhenUnset(t *testing.T) {
 	}
 }
 
-func etaTestProgress() session.SDDProgress {
+func etaTestProgress() acpwire.SDDProgress {
 	start := time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)
-	timings := make([]session.TaskTiming, 7)
+	timings := make([]acpwire.TaskTiming, 7)
 	at := start
 	for i, d := range []time.Duration{122 * time.Second, 340 * time.Second, 401 * time.Second} {
-		timings[i] = session.TaskTiming{StartedAt: at, EndedAt: at.Add(d)}
+		timings[i] = acpwire.TaskTiming{StartedAt: acpwire.Millis(at), EndedAt: acpwire.Millis(at.Add(d))}
 		at = at.Add(d)
 	}
-	timings[3] = session.TaskTiming{StartedAt: at}
-	return session.SDDProgress{
+	timings[3] = acpwire.TaskTiming{StartedAt: acpwire.Millis(at)}
+	return acpwire.SDDProgress{
 		Active: true, TotalTasks: 7, DoneTasks: 3, CurrentTask: 4,
-		Phase: "verifying", PhaseStartedAt: at, StartedAt: start,
+		Phase: "verifying", PhaseStartedAt: acpwire.Millis(at), StartedAt: acpwire.Millis(start),
 		Tasks:       []string{"a", "b", "c", "d", "e", "f", "g"},
 		TaskTimings: timings,
 	}
 }
 
-func etaTestNow(p session.SDDProgress) time.Time {
-	return p.TaskTimings[3].StartedAt.Add(134 * time.Second)
+func etaTestNow(p acpwire.SDDProgress) time.Time {
+	return acpwire.Time(p.TaskTimings[3].StartedAt).Add(134 * time.Second)
 }
 
 func TestRunPanelIsOneRowDuringARun(t *testing.T) {
@@ -262,8 +263,8 @@ func TestPercentCountsCompletedNotCurrent(t *testing.T) {
 func TestSummaryLineOmitsETABeforeThreeTasks(t *testing.T) {
 	p := etaTestProgress()
 	p.DoneTasks = 1
-	p.TaskTimings[1] = session.TaskTiming{}
-	p.TaskTimings[2] = session.TaskTiming{}
+	p.TaskTimings[1] = acpwire.TaskTiming{}
+	p.TaskTimings[2] = acpwire.TaskTiming{}
 	got := stripANSI(runPanelSummaryLine(p, "⠋", etaTestNow(p), 100))
 	if strings.Contains(got, "left") {
 		t.Errorf("no ETA is shown before it is earned:\n%s", got)
@@ -313,10 +314,10 @@ func TestSummaryLineFloorIsTaskCounter(t *testing.T) {
 }
 
 func TestFinishedLineUnchanged(t *testing.T) {
-	p := session.SDDProgress{
+	p := acpwire.SDDProgress{
 		Finished: true, Succeeded: true, DoneTasks: 4, TotalTasks: 4,
-		StartedAt: time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC),
-		EndedAt:   time.Date(2026, 8, 7, 10, 23, 41, 0, time.UTC),
+		StartedAt: acpwire.Millis(time.Date(2026, 8, 7, 10, 0, 0, 0, time.UTC)),
+		EndedAt:   acpwire.Millis(time.Date(2026, 8, 7, 10, 23, 41, 0, time.UTC)),
 	}
 	got := stripANSI(runPanelFinishedLine(p, 100))
 	want := "✓ sdd done — 4/4 tasks · 23m 41s — /run for details"
@@ -326,13 +327,13 @@ func TestFinishedLineUnchanged(t *testing.T) {
 }
 
 func TestRunPanelShowsApplyingPhase(t *testing.T) {
-	p := session.SDDProgress{
+	p := acpwire.SDDProgress{
 		Active:      true,
 		PlanName:    "test",
 		TotalTasks:  3,
 		CurrentTask: 2,
 		Phase:       "applying",
-		StartedAt:   time.Now(),
+		StartedAt:   acpwire.Millis(time.Now()),
 	}
 	out := stripANSI(renderRunPanel(p, "⠋", time.Now(), 80))
 	if !strings.Contains(out, "applying") {
@@ -341,13 +342,13 @@ func TestRunPanelShowsApplyingPhase(t *testing.T) {
 }
 
 func TestRunPanelShowsAgentFallbackPhase(t *testing.T) {
-	p := session.SDDProgress{
+	p := acpwire.SDDProgress{
 		Active:      true,
 		PlanName:    "test",
 		TotalTasks:  3,
 		CurrentTask: 2,
 		Phase:       "agent fallback",
-		StartedAt:   time.Now(),
+		StartedAt:   acpwire.Millis(time.Now()),
 	}
 	out := stripANSI(renderRunPanel(p, "⠋", time.Now(), 80))
 	if !strings.Contains(out, "agent fallback") {
@@ -360,7 +361,11 @@ func TestSDDRunIsTheTraysFirstRow(t *testing.T) {
 	m := newTestModelInRepo(t)
 	m.width, m.height = 100, 40
 	m.leftWidth = 100
-	m.state.SetSDDProgress(etaTestProgress())
+	m.state.SetSDDProgress(session.SDDProgress{
+		Active: true, TotalTasks: 7, DoneTasks: 3, CurrentTask: 4,
+		Phase: "verifying", PhaseStartedAt: time.Now(), StartedAt: time.Now().Add(-time.Minute),
+		Tasks: []string{"a", "b", "c", "d", "e", "f", "g"},
+	})
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Minute)
 	m.invalidateTranscript()
 	m.refreshViewport()

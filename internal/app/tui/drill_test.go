@@ -94,7 +94,6 @@ func TestCtrlXStopsRunningSubagentWhileDrilled(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
 	m.state.PushSteering("queued message")
-	m.queuedCount = 1
 
 	child := newChildState(t)
 	view := m.state.RegisterSubagent("explore repo", child)
@@ -119,7 +118,6 @@ func TestCtrlXUndrilledClearsSteeringQueue(t *testing.T) {
 	m := newTestModel(t)
 	m.busy = true
 	m.state.PushSteering("queued message")
-	m.queuedCount = 1
 
 	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 	if !handled {

@@ -5,7 +5,7 @@ import (
 	"math"
 	"time"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 )
 
 // minETASamples is how many tasks must complete before a remaining-time
@@ -29,14 +29,15 @@ const etaCeilingMinutes = 240
 // openEnded reports that the current task has already outrun every
 // completed one, so its remaining time cannot be bounded at all; callers
 // render an "at least" form. ok is false when there is nothing to estimate.
-func estimateRemaining(p session.SDDProgress, now time.Time) (low, high time.Duration, openEnded, ok bool) {
+func estimateRemaining(p acpwire.SDDProgress, now time.Time) (low, high time.Duration, openEnded, ok bool) {
 	var shortest, longest time.Duration
 	samples := 0
 	for _, t := range p.TaskTimings {
-		if t.StartedAt.IsZero() || t.EndedAt.IsZero() {
+		started, ended := acpwire.Time(t.StartedAt), acpwire.Time(t.EndedAt)
+		if started.IsZero() || ended.IsZero() {
 			continue
 		}
-		d := t.EndedAt.Sub(t.StartedAt)
+		d := ended.Sub(started)
 		if d <= 0 {
 			continue // a zero-length or reversed timing is not a measurement
 		}
@@ -75,12 +76,12 @@ func remainderOf(expected, elapsed time.Duration) time.Duration {
 
 // currentTaskElapsed returns how long the in-flight task has been running,
 // or zero when there is no in-flight task or it has no start stamp.
-func currentTaskElapsed(p session.SDDProgress, now time.Time) time.Duration {
+func currentTaskElapsed(p acpwire.SDDProgress, now time.Time) time.Duration {
 	i := p.CurrentTask - 1
 	if i < 0 || i >= len(p.TaskTimings) {
 		return 0
 	}
-	started := p.TaskTimings[i].StartedAt
+	started := acpwire.Time(p.TaskTimings[i].StartedAt)
 	if started.IsZero() {
 		return 0
 	}

@@ -2,12 +2,14 @@
 
 Parent: [`design.md`](design.md) §4.5. This spec replaces §4.5's sketch
 where they differ, and settles §8's transcript-shape question.
-Depends on: P1 (merged at `ee15d2ed`). Agent side and TUI only: no bridge
+Depends on: P1 (merged at `ee15d2ed`) and the TUI simplification
+([`../tui-simplification/feature-spec.md`](../tui-simplification/feature-spec.md),
+P-A–P-E, merged at `991c18d7`). Agent side and TUI only: no bridge
 change, no new ACP method, no database schema change. ACP messages that
 already exist change only by gaining optional fields (C6).
-Status: drafted 2026-10-20, awaiting review. Delivered as nine plans
-(Migration order), each written against `main` once the previous one has
-landed.
+Status: drafted 2026-10-20; revised 2026-10-25 against `991c18d7`
+(Revision record); awaiting review. Delivered as nine plans (Migration
+order), each written against `main` once the previous one has landed.
 
 Decided with the user (2026-10-20):
 - **Transcript on the wire:** `WireTree`. The TUI renders the same
@@ -30,31 +32,35 @@ adapter.
 
 ## Where the code is today
 
-- **`tui.New` takes the session state** (`internal/app/tui/model.go:1702`).
-  Non-test TUI code calls 97 distinct `session.State` methods and reads
-  the `Config` (about 90 sites), `WorkingDir` (30) and `StartedAt`
-  fields. `sessionsheet`, the plugins, skills, doctor and doc panels hold
-  the state too.
-- **About 36 other agent-side dependencies arrive as options.** `Run`
-  passes 40 `tui.With*` options (`internal/app/app.go:2676-2899`). The
-  client-local ones are the clipboard, the working directory for display
-  and the open-connect flag. The rest are agent side:
+- **`tui.New` takes the session state** (`internal/app/tui/model.go:1698`).
+  Non-test TUI code calls 91 distinct `session.State` methods and reads
+  the `Config` (85 sites), `WorkingDir` (30) and `StartedAt` (1)
+  fields. `sessionsheet`, the access, gate, plugins, skills, doctor and
+  doc panels hold the state too.
+- **37 other agent-side dependencies arrive as options.** `Run`
+  passes 40 `tui.With*` options (`internal/app/app.go:2805-3021`, plus
+  `accessTUIOptions` at `app.go:2147`). The client-local ones are the
+  clipboard, the working directory for display and the open-connect
+  flag. The rest are agent side:
   - the agent, swarm and pipeline runners and their factories, plus the
     plan-author, custom-agent, subagent, review and suggestion factories;
   - five event brokers (job, watch, steering, workspace, subagent) and
     the work service;
-  - the database, the tool registry, the command registry, the skill
-    index and the file index;
-  - config layers, the reloaders, the auth resolver, the model cache and
-    the trust callbacks;
+  - the database, the memory store, the tool registry, the command
+    registry, the skill index and the file index;
+  - config layers, the reloaders, the auth resolver, the model cache,
+    the home and data directories and the trust callbacks;
+  - the interaction, effort and access-request seams and the Send-now
+    seam. These are bound to the runtime rather than to one state, so
+    they keep working after a session swap;
   - the session swapper, the end controller and the reference finder.
 - **The TUI polls.** It re-reads the state on a 150ms tick
-  (`model.go:4786`) and on every broker event, and `refreshViewport`
-  rebuilds the transcript from it (`viewport_render.go:53`).
+  (`model.go:4785`) and on every broker event, and `refreshViewport`
+  rebuilds the transcript from it (`viewport_render.go:54`).
 - **The TUI applies policy itself.**
   - "Always allow" writes a permission rule to the user config, applies
     the new config and resets the runner's policy rules
-    (`model.go:3447`).
+    (`model.go:3456`).
   - The settings, connect, presets and agents panels write config files
     with `config.Save*`.
   - Approvals, questions, skill gates and sudo prompts are read with
@@ -62,53 +68,79 @@ adapter.
     subagent's child state included.
   - The TUI also installs plugins (`git clone`), writes SDD starter
     plans and postmortems, and reads git state in the project
-    (`tui/gitinfo`, `tui/changedfiles`). `internal/acp` already imports
-    both of those packages.
-- **The TUI writes into the transcript.** 137 of its 139 `AddMessage`
+    (`tui/gitinfo`, `tui/changedfiles`, and the run-outcome branch diff
+    in `runoutcome.go:173`). `internal/acp` already imports `gitinfo`
+    and `changedfiles` (`acp/turn.go:17`).
+  - After a connect, the TUI sets up presets itself: it loads the
+    models.dev catalog cache and the preset provenance file from the data
+    directory, runs `presetsetup.Apply` (`connect/connect.go:625-639`)
+    and saves the provenance (`model.go:7601`).
+- **The TUI writes into the transcript.** 139 of its 141 `AddMessage`
   calls append a system message, which is persisted with the session.
   The other two add the user's prompt.
 - **Some seams already exist:** `AgentRunner`, `SessionSwapper`,
   `EndController` and `viewmodel.WorkService` are interfaces, and the
   work service already has ACP counterparts (`session/work_*`).
-- **ACP already has 69 methods**, including `session/prompt`, `steer`,
-  `set_mode`, `set_effort`, `command`, `stack`, `stack_node`, `work_*`,
-  `swarm_*`, `sdd_*`, `memory_*`, `skills_*`, `plugins_*`, `list`,
-  `resume` and `config/*`. It cannot be imported by the TUI: `acp`
-  imports `app`, which imports `tui`.
-- **TUI tests build state directly:** 214 `session.New` calls and 432
-  `New(` calls across 34 test files.
+- **ACP already has 70 methods**, including `session/prompt`, `steer`
+  (whose `now` delivery is Send now), `steering_status`, `set_mode`
+  (mode, auto and system access), `access_state`, `set_effort`,
+  `command`, `stack`, `stack_node`, `run`, `work_*`, `swarm_*`, `sdd_*`,
+  `memory_*`, `skills_*`, `plugins_*`, `list`, `resume` and `config/*`.
+  It cannot be imported by the TUI: `acp` imports `app`, which imports
+  `tui`.
+- **The boundary today.** Under C1's rule, 66 non-test TUI files make
+  135 disallowed imports. The largest are `app/session` (40 files),
+  `viewmodel` (23) and `tools/registry` (12).
+- **TUI tests build state directly:** 210 `session.New` calls in 30 test
+  files, and 225 `tui.New` calls.
 
 ## Transcript spike (design §8)
 
 The question was whether the `WireTree` projection drops anything the
 TUI renders. It does, and every gap can be closed by adding a field.
+Re-checked on 2026-10-25 against the reworked renderer.
 
 - **The TUI renders full records.** `viewmodel.Node` carries
-  `*session.TranscriptItem`, `[]registry.AuditEvent` and the subagent's
-  child `*State`. The renderer reads them directly
-  (`transcript.go:565`, `steps.go:100`).
+  `*session.TranscriptItem` and `[]registry.AuditEvent`, and the
+  renderer reads them directly (`transcript.go:565`, `steps.go:155`,
+  `spine.go:98-160`). Subagent nodes are gone since P-B. Instead the
+  tray reads each running subagent's view and child state
+  (`livebox_view.go:99-117`).
 - **Collapsed rows read fields the projection leaves out:**
-  - a message's reasoning;
-  - the subagent's ID and fallback flag;
-  - the running subagent card's latest child activity line;
-  - the hook indicator, the sandbox's kill reason and the call's step ID;
-  - the active call's step ID;
-  - the tool row head. The TUI builds it from raw arguments: the shell
-    subject with a leading `cd` into the active root removed, the symbol
-    or search subject, and diff stats. `WireCall.Args` is capped at
-    `WireTextCap` (4096 bytes, `viewmodel/wire.go:21`), which cuts the
-    JSON of a large edit.
-  - the diff preview: per-file `+N −M` stats and the first 12 lines of
-    up to 6 files. These come from the full unified diff, and
-    `WireCall.Output` keeps only its first 4096 bytes.
+  - a message's reasoning (`transcript.go:591`);
+  - a beat's narration texts (`steps.go:155`), joined as one markdown
+    document. `WireStep.headline` loses its emphasis and the separator
+    before `rest`, so the two cannot rebuild the text;
+  - from a call row on the beat's spine (`spine.go:98-160`):
+    - its subject (`callSubject`), built from raw arguments: the shell
+      command with a leading `cd` into the active root removed, an
+      `agent.run` description, or the symbol or search subject.
+      `WireCall.Args` is capped at `WireTextCap` (4096 bytes,
+      `viewmodel/wire.go:21`), which cuts the JSON of a large edit;
+    - the diff stat, counted over the full diff;
+    - the hook indicator and the sandbox's kill reason;
+    - a failed call's last three output lines (`failedTail`,
+      `spine.go:242`). `WireCall.Output` keeps only the first 4096
+      bytes, which loses the end of a long failing test run;
+  - from a call outside any beat, which still renders through the older
+    head (`toolRowHead`, `transcript.go:815`): that head, plus the diff
+    preview, which shows per-file `+N −M` stats and the first 12 lines of
+    up to 6 files (`transcript.go:1044`);
+  - the active call's step ID and its command line.
+- **The tray and the drill-in breadcrumb read the subagent view.** The
+  tray reads a running child's newest narration headline. The
+  breadcrumb reads the child's model, provider and fallback flag
+  (`view.go:181-194`). These are session status, not transcript (C5).
 - **Expanded rows are covered.** `session/stack_node`
   (`acp/stacknode.go:22`) returns uncapped arguments, original arguments,
-  output, diff, error, hooks, sandbox metadata, symbols and the finish
-  reason.
-- **The cost** is porting about 3k lines of renderer (`transcript.go`,
-  `steps.go`, `toolgroup.go`, `symbolrow.go`, `receipt.go`, the browse
-  files and `viewport_render.go`) and the tests that build session
-  records to render.
+  output, diff, error, hooks, sandbox metadata, symbols, the finish
+  reason, a beat's narration and its reasoning.
+- **The cost** is porting about 4.5k lines: the renderer
+  (`transcript.go`, `steps.go`, `spine.go`, `expand.go`, `symbolrow.go`,
+  `receipt.go`, `callers.go`, the browse files and `viewport_render.go`),
+  the tray's glue (`livebox_view.go`), and the tests that build session
+  records to render. P-A deleted folding and the density ladder, so
+  neither needs porting.
 
 Decision: `WireTree`, with the C6 additions.
 
@@ -162,8 +194,12 @@ Decision: `WireTree`, with the C6 additions.
   - `internal/app/tui/...`, `internal/acpwire` and
     `internal/acpclient`;
   - the data and pure packages `app/config`, `llm/routing`,
-    `llm/schema`, `llm/catalog`, `app/clipboard`, `strutil`,
+    `llm/schema`, `interaction`, `app/clipboard`, `strutil`,
     `diffview`, `jsonextract` and `progress`.
+
+  `llm/modelcatalog` and `app/presetsetup` are agent side. The first
+  fetches and caches the models.dev catalog, and the second reads and
+  writes the provenance file.
 
   From `app/config`, only types and pure functions may be used. Its
   functions that touch or locate files are denied by name: every
@@ -173,7 +209,15 @@ Decision: `WireTree`, with the C6 additions.
   such as `LookupPath`, `Diagnose` and `Default` stay allowed. Every other
   `marshal/internal/...` package is agent side. `internal/viewmodel`
   is agent side too. Any pure text helper the TUI still needs from it
-  moves to an allowed package.
+  moves to an allowed package. The TUI calls 28 `viewmodel` functions
+  today:
+  - text helpers such as `ScrubText`, `FirstSentence` and
+    `StripEmphasis`, which move;
+  - work predicates such as `WorkActive` and `WorkNeedsAttention`, which
+    move with the work types;
+  - the rest read audit events or nodes, such as `IsShellFamily`,
+    `ElideWorkdir`, `JobStartID` and `ToolID`. They go away once rows
+    take those values from the wire (C6).
 - **What the boundary means at run time.** TUI code reads and writes no
   file in the project tree, the config directory or the data directory.
   It runs no subprocess against them and opens no network connection.
@@ -233,11 +277,20 @@ Decision: `WireTree`, with the C6 additions.
 
 ### C4. The adapter
 
-- `inproc.New(inproc.Deps) (acpclient.Host, acpclient.Session)`. `Deps`
+- `inproc.New(inproc.Deps)` returns `(*inproc.Host, *inproc.Session)`,
+  which implement `acpclient.Host` and `acpclient.Session`. `Deps`
   holds the state and everything `Run` passes as an agent-side TUI
   option today. `Run` builds `Deps` instead of those options.
+- Until plan 5 replaces the swapper with `Host.NewSession` and
+  `Host.Resume`, `(*Host).Swap(state)` serves today's swap path. It
+  closes the old session and returns one over the new state, which
+  `tui.SessionSwapResult.Session` carries to the TUI.
 - It must not import `internal/app`. TUI tests import it, and `app`
   imports `tui`.
+- The `Host` holds what `accessTUIOptions` and `WithSendNow` bind to
+  today: the runtime's current state and runner, read under the runtime
+  gate. A `Session` handed out before a swap never reaches the session
+  that replaced it.
 - It behaves exactly like the code it replaces. Where the TUI applied a
   side effect itself, the adapter now does: writing and applying a
   permission rule, reloading config after a write, and logging a
@@ -251,14 +304,14 @@ Decision: `WireTree`, with the C6 additions.
 ### C5. Status
 
 - `Session.Status() acpwire.SessionStatus` is one value carrying
-  everything the status line, now bar, footer, input gating and turn
+  everything the status line, tray, footer, input gating and turn
   logic read today:
   - **identity:** session ID, working directory, start time, generation
     sequence, leaf ID and branch count;
   - **route:** the active route, the turn route and whether it is
     running, turn usage and window, quota, and effort override;
-  - **access:** mode, system access, sudo unlock, trusted, and whether
-    there is a backup;
+  - **access:** the interaction state (mode, auto and system access),
+    sudo unlock, trusted, and whether there is a backup;
   - **activity:** kind, label, start, the pinned spinner label, and
     whether a turn or a subagent is running;
   - **workspace:** project root, active root, and git info (branch,
@@ -266,9 +319,14 @@ Decision: `WireTree`, with the C6 additions.
   - **live state:** browser info, sandbox info and the current notice;
   - **queues and runs:** the steering queue and Send-now snapshot,
     todos, jobs (the running count and the job list), the watch
-    snapshot, subagent views without the child state, swarm and SDD
-    progress, the SDD gate, active skills, loaded tool count, tool
+    snapshot, subagent views, swarm and SDD progress (the tray's
+    plan-run row), the SDD gate, active skills, loaded tool count, tool
     budget, session rules and a pending watch resume.
+  - **subagent views** leave out the child state. Each carries what
+    the tray and the drill-in breadcrumb read today: the role, label,
+    model, provider and fallback flag. While the child runs, it also
+    carries the child's newest narration headline (`subagentHeadline`,
+    `steps.go:703`).
 - The job, watch, steering, workspace and subagent broker pumps go away.
   Their data are `Status` fields, and the adapter fires `Changed` when
   they publish.
@@ -281,48 +339,62 @@ Decision: `WireTree`, with the C6 additions.
   today stay cached that way, so the adapter computes them off the
   render path, as the TUI does now.
 - ACP (P3): `session/status` with a `session_status` update, and
-  `session/sheet`.
+  `session/sheet`. Two parts already have reads: `session/access_state`
+  serves the interaction state and `session/steering_status` the
+  Send-now snapshot (both exist).
 
 ### C6. Transcript
 
-- `Session.Stack(acpwire.StackQuery{SubagentID, LiveWork})
-  acpwire.StackSnapshot` returns the projected tree with the band node.
-  `LiveWork` selects the projection the TUI uses today. ACP's
-  `session/stack` gains the same optional parameter, and leaving it out
-  keeps today's projection.
+- `Session.Stack(subagentID int64) acpwire.StackSnapshot` returns the
+  projected tree with the band node: the one projection `session/stack`
+  already serves. P-B removed the legacy projection, so the stack needs
+  no parameter to select one.
 - `Session.StackNode(ctx, nodeID, subagentID)` returns
   `acpwire.NodeDetail`, the uncapped detail behind a row. ACP:
   `session/stack_node` (exists).
-- **One projector.** Build, project and band move from
-  `acp/stack.go:112-213` into `internal/viewmodel`, and both `acp` and
-  the adapter call it. ACP keeps its patch diffing.
+- **One projector.** The TUI (`viewport_render.go:66-81`) and ACP
+  (`stackSnapshotOf`, `acp/stack.go:107`) already build the same
+  snapshot from a state. Both then call `Build`, `Project`, `BandOf`
+  and `ProjectBand` in the same order (`acp/stack.go:201-204` and
+  `305-310`). The snapshot assembly and that sequence become one
+  `internal/viewmodel` function, called by both `acp` and the adapter.
+  ACP keeps its patch diffing.
 - **`WireNode` gains `version`**, the hex of `Node.Version`, so a client
   caches rendered rows without hashing them.
 - **Additive fields.** The projection carries every field a collapsed row
   reads, computed by the helpers the renderer uses now:
   - `WireMessage.reasoning`, capped;
-  - `WireSubagent` gains `id`, `fallback` and `tail`, the running
-    child's latest activity line;
-  - `WireCall` gains `head`, `hookHint`, `killedReason`, `stepId` and
-    `diffFiles`. `head` is today's `toolRowHead`, built server-side
-    against the active root. Each `diffFiles` entry carries the path,
-    added and removed counts, and the first 12 diff lines, for at most
-    6 files, with the full count;
-  - `WireRunning` gains `stepId` and the command line;
-  - `WireStep` gains `narration`, the step's trimmed narration texts in
+  - `WireStep` gains `narration`, the beat's trimmed narration texts in
     order. The renderer joins them as one markdown document, and
-    `headline` (emphasis stripped, cut at the first sentence) cannot
-    rebuild them.
+    `headline` (emphasis stripped, cut at the first sentence) plus
+    `rest` cannot rebuild them;
+  - `WireCall` gains:
+    - `subject`, today's `callSubject`, built server-side against the
+      active root and scrubbed;
+    - `diffStat`, counted over the full diff;
+    - `hookHint` and `killedReason`;
+    - `tail`, a failed call's last three output lines;
+    - `stepId`;
+  - a call outside any beat also gets `head` (today's `toolRowHead`) and
+    `diffFiles`. Each `diffFiles` entry carries the path, the added and
+    removed counts and the first 12 diff lines, for at most 6 files,
+    plus the full count;
+  - `WireRunning` gains `stepId` and the command line.
 
   The plan fixes the JSON names. Anything only an expanded row needs
-  comes from `StackNode`.
+  comes from `StackNode`. `WireTool.subagentId`, which drill-in needs,
+  already exists (P-B), and `WireSubagent` is gone.
 - **The renderer moves from `viewmodel.Node` to `acpwire.WireNode`.**
-  Node identity becomes the wire ID and kind. Density, folding,
-  selection, browse and inspect work on wire nodes.
+  Node identity becomes the wire ID and kind. Expansion, selection,
+  browse and inspect work on wire nodes. So do the TUI's indexes over
+  the tree (`completionIndex`, `rowBeats`) and the tray's inputs: the
+  band's tasks, and the held rows, which find their completion event by
+  `WorkKey`.
 - **Callers.** The callers line uses
   `Session.Callers(ctx, nodeID) ([]string, error)`, cached per node as
   today. ACP: `session/callers` (new in P3).
-- **Subagent drill-in** reads `Stack` with the subagent's ID.
+- **Subagent drill-in** reads `Stack` with the subagent's ID, starting
+  from a dispatch row's `subagentId` or a completion event.
 
 ### C7. Agent requests
 
@@ -333,7 +405,10 @@ Decision: `WireTree`, with the C6 additions.
   - Each request carries:
     - an opaque key that stays stable while the request is open;
     - its owner: subagent ID and label, or 0 for the session itself;
-    - the fields the TUI displays today.
+    - the fields the TUI displays today. These include the approval's
+      "why" line: the requesting step's owner and narration headline,
+      which `approvalWhyFor` (`steps.go:686`) looks up by step ID in
+      the owning state.
 - **Answers:**
   - `AnswerApproval(ctx, key, ApprovalAnswer{Decision, Edited})`, where
     the decision is `once`, `session`, `always` or `deny`;
@@ -390,10 +465,12 @@ Decision: `WireTree`, with the C6 additions.
 - **Turn control:**
   - `Stop(ctx, cause)` covers today's begin/request/end turn-stop
     sequence (`session/cancel` exists);
-  - `Steer`, `SendNow`, `PopSteering` and `ClearSteering` cover the
-    steering queue (`session/steer` exists; the rest are new);
-  - `SetMode` and `SetEffort` (exist), and `SetSystemAccess` and
-    `SetSudoUnlock` (new);
+  - `Steer` and `SendNow` (`session/steer` exists; Send now is its
+    `now` delivery), and `PopSteering` and `ClearSteering` (new) cover
+    the steering queue;
+  - `SetInteraction(ctx, patch)` replaces the interaction setter. It
+    covers mode, auto and system access (`session/set_mode` exists and
+    takes all three). `SetEffort` exists, and `SetSudoUnlock` is new;
   - `CancelSubagent` (new);
   - `ClearRunEvents`, `ClearSDDProgress` and `SetIdle` (new);
   - `TakeWatchResume` (new).
@@ -442,8 +519,8 @@ Decision: `WireTree`, with the C6 additions.
   - project config and verify commands.
 
   After writing, the adapter reloads the config of the session it
-  serves, as the TUI's `applyNewConfig` (`model.go:1312`), the config
-  reloader and `RebaseSessionConfig` do today. It returns the path
+  serves, as the TUI's `applyNewConfig` (`model.go:1314`), the config
+  reloader and `RebaseInteractionConfig` do today. It returns the path
   written, the new config and its diagnostics.
 
   A provider write keeps any stored key it does not name, as
@@ -456,6 +533,11 @@ Decision: `WireTree`, with the C6 additions.
     cache, and includes the thinking options the TUI resolves today
     (new).
   - `ProbeProvider` uses `config/probe_provider` (exists).
+  - **Preset setup after a connect** runs agent side as one `Host` call
+    (new). The call loads the models.dev catalog, reads the provenance
+    file and runs `presetsetup.Apply`, then returns the proposed
+    presets. Accepting them saves the presets and the provenance
+    together. Today the TUI does all of this itself.
 - **OAuth logins** (Codex connect, MCP auth) run agent side. The call
   reports the authorization URL in a progress update, the TUI opens it
   (C12), and the call returns when the callback lands. This matches how
@@ -484,8 +566,9 @@ Decision: `WireTree`, with the C6 additions.
 - **Plans and worktrees.**
   - SDD plan discovery, the draft path, removing a candidate and writing
     a starter plan: `Plans()`, `DraftPlan` and `ScaffoldPlan` (new).
-  - Run-outcome diffs and file reads: `session/diff` and `session/file`
-    (exist).
+  - Run outcome: the run detail, branch diff and file reads use
+    `session/run`, `session/diff` and `session/file` (exist). This
+    replaces `runOutcomeDoc`'s own git calls (`runoutcome.go:32`).
   - Fleet rows are in `Sheet`.
 - **Git info and changed files** arrive through `Status` and `Sheet`.
 
@@ -493,8 +576,10 @@ Decision: `WireTree`, with the C6 additions.
 
 These stay in the TUI:
 - terminal I/O, rendering and the theme;
-- key handling, the input box, density, folding and selection, and the
+- key handling, the input box, expansion, browse and selection, and the
   clipboard (P0);
+- the tray's view state: the held-row window (`heldSince`), the
+  dismissed finished plan, the open card and the cursor;
 - opening a URL in the browser;
 - opening a project file in `$EDITOR`, offered only when
   `Host.SharedFilesystem()` is true. It is always true in P2, and true
@@ -508,7 +593,7 @@ These stay in the TUI:
 | `internal/acpclient` (new) | `Host`, `Session` and `IsCode`. |
 | `internal/acpclient/inproc` (new) | The adapter. Gains each group's methods as its plan lands. |
 | `internal/viewmodel` | Builds `acpwire` types. Gains the shared projector and the C6 fields. |
-| `internal/acp` | Uses `acpwire` types and the shared projector. `session/stack` takes `liveWork`. |
+| `internal/acp` | Uses `acpwire` types and the shared projector. |
 | `internal/repo/gitinfo`, `internal/repo/changedfiles` | Moved from `internal/app/tui/`. |
 | `internal/app/app.go` | `Run` builds `inproc.Deps` and calls `tui.New(host, session, …)`. The agent-side `tui.With*` options are deleted as their groups move. |
 | `internal/app/tui/...` | Every group moves onto `Host`/`Session`. The renderer moves to wire nodes. Test setup goes through shared helpers that build an adapter over a test state, so P3 changes only the helpers. |
@@ -517,17 +602,22 @@ These stay in the TUI:
 
 The TUI works after every plan.
 
-1. **Foundation.**
-   - `acpwire` and `acpclient`, an empty `inproc`, and
-     `tui.New(host, session, …)` with `WithLegacyState`.
+1. **Foundation** ([plan](plans/2026-10-25-p2-1-foundation-plan.md)).
+   - `acpwire` with the error codes and T2, `acpclient`, an almost
+     empty `inproc`, and `tui.New(host, session, …)` with
+     `WithLegacyState`. Each group's plan moves its own types into
+     `acpwire`: the work types in plan 2, the projection types in plan
+     3, and the request and command types in plans 4 and 6.
    - The test helpers, and every test moved onto them.
    - The gitinfo/changedfiles move.
    - The boundary test (T1), with an allowlist of every current
      violation by file and import.
    - The ACP mapping test (T4).
-2. **Status and events** (C5).
-3. **Transcript** (C6). This is the largest and riskiest plan, so it
-   comes early.
+2. **Status and events** (C5), including the subagent data the tray
+   reads.
+3. **Transcript** (C6): the renderer, the TUI's indexes over the tree
+   and the tray's band and held-row inputs. This is the largest and
+   riskiest plan, so it comes early.
 4. **Agent requests** (C7).
 5. **Turns and runs** (C8).
 6. **Notes, notices and commands** (C9).
@@ -558,9 +648,12 @@ Each plan removes its group's allowlist entries.
   system message. A swapped-out session's calls fail closed.
 - **T6. Renderer equivalence.** Before porting, Plan 3 records the old
   renderer's output for a fixture set as golden files. The set covers
-  every node kind, collapsed and expanded, plus diffs, hooks, a killed
-  sandbox, jobs, subagent cards and a band. The ported renderer must
-  match the goldens byte for byte.
+  every node kind, collapsed and expanded. That includes beats with a
+  todo tag, plan lines, completion events with their issue reports,
+  receipts and a call outside any beat. It also covers diffs, hooks, a
+  killed sandbox, a failed call's tail, a running call, and the tray
+  with running, held and plan-run rows. The ported renderer must match
+  the goldens byte for byte.
 - **T7. Secrets.** A config read has no literal key. A sudo answer's
   password appears in no `Status`, `Pending`, update or log output.
 - **T8. Suite.** Every plan keeps the TUI and app suites green.
@@ -576,10 +669,14 @@ Each plan removes its group's allowlist entries.
   methods marked new are listed for P3.
 - `go test ./...` and `go vet ./...` pass, apart from the known local
   failures.
-- A manual run behaves as before. It covers a turn with an approval, a
-  question and a sudo prompt, a `/settings` change, `/connect`, `/new`,
-  resume, a subagent drill-in, a swarm or SDD run, and exit with a
-  postmortem.
+- A manual run behaves as before. It covers:
+  - a turn with an approval, a question and a sudo prompt;
+  - an Ask/Act switch;
+  - a `/settings` change, and `/connect` with preset setup;
+  - `/new` and resume;
+  - a subagent and a background job in the tray, and a drill-in;
+  - a swarm or SDD run;
+  - exit with a postmortem.
 
 ## Assumptions
 
@@ -603,3 +700,37 @@ Made while drafting, without asking:
 - **Plan order.** The transcript comes third, because it is the riskiest
   group.
 - **`$EDITOR`** is offered only on a shared filesystem.
+
+## Revision record
+
+**2026-10-25, against `991c18d7`.** The draft predates three merges:
+the TUI simplification (P-A–P-E), interaction modes and models.dev
+presets. Changes:
+
+- **C6.**
+  - The `StackQuery.LiveWork` parameter is dropped: one projection
+    remains, and ACP never had the parameter.
+  - The `WireSubagent` additions are dropped: P-B removed subagent
+    nodes and added `WireTool.subagentId`.
+  - "One projector" now describes what is left to share.
+  - Call rows take `subject`, `diffStat` and `tail` from the spine
+    renderer. `head` and `diffFiles` remain only for calls outside a
+    beat.
+  - Density and folding are no longer ported (P-A deleted them).
+- **C5.** The tray replaces the now bar. The interaction state replaces
+  the mode, and subagent views carry the child's narration headline
+  for the tray.
+- **C8.** `SetInteraction` replaces `SetMode` and `SetSystemAccess`.
+  Send now maps to `session/steer`'s `now` delivery, which exists.
+- **C1.**
+  - `llm/catalog` no longer exists and is removed from the allowlist.
+  - `interaction` (pure) is added.
+  - `llm/modelcatalog` and `app/presetsetup` are listed as agent side.
+- **C10.** Preset setup after a connect moves agent side.
+- **C11.** The run outcome uses `session/run`.
+- **C7.** Each request carries the approval's "why" line.
+- **C12.** The tray's view state stays client-local.
+- **Other.**
+  - The counts and line references in "Where the code is today" and the
+    spike were re-measured with a type-checked scan of the TUI tree.
+  - T6 and the manual check cover the tray.

@@ -3,8 +3,9 @@
 Status: direction agreed 2026-10-19. P0 is specified and implemented (§5,
 §7). P1 is specified ([`p1-project-host.md`](p1-project-host.md)) and
 implemented (see its implementation record). P2 is specified
-([`p2-client-seam.md`](p2-client-seam.md)) and awaiting review; its scope
-widened to the whole agent side, and it settles §8's transcript question.
+([`p2-client-seam.md`](p2-client-seam.md)), revised on 2026-10-25 after the
+TUI simplification landed, and awaiting review; its scope widened to the
+whole agent side, and it settles §8's transcript question.
 Later phases have no spec yet. The decision to keep the TUI in Go depends
 on P0 (text selection, §5) working.
 
@@ -74,8 +75,8 @@ bridge-mediated.
   Ink has the same two options. In the alternate screen it has the same
   problem. Inline `<Static>` output gives native selection, but text
   cannot change once printed, and the single-stack design relies on
-  changing it (folding tasks, expanding rows, density levels, browse
-  mode). The fix in either framework is selection handled by the app
+  changing it (expanding rows, browse mode, the step in progress, the
+  tray). The fix in either framework is selection handled by the app
   (§5).
 - **Porting is much cheaper in Go.** Every transcript passes through
   `viewmodel.Build`, so staying in Go keeps the rendering code and changes
@@ -268,7 +269,7 @@ and streaming output.
   escape-aware cutting.
 - **Copied text.** The renderer records soft-wrap boundaries and each
   row's gutter width. Copied text joins soft-wrapped lines and leaves out
-  gutter glyphs, the now bar and the dock.
+  gutter glyphs, the tray and the dock.
 - **Copy.** Copy happens on release (the tmux/zellij convention). It goes
   through `internal/app/clipboard` locally and through `tea.SetClipboard`
   (OSC 52) over SSH. A detached TUI runs on the user's machine, so the
@@ -340,7 +341,7 @@ state, not corruption.
 |---|---|---|
 | P0 | Selection handled by the app (§5) — implemented; manual terminal check pending (see the spec's implementation record) | The P0 check in §5 passes in the current TUI |
 | P1 | ProjectHost/Session split and headless indexing (§4.2) — implemented; see the spec's implementation record | Two ACP sessions on one repo in one process share one host, one set of language servers and one watcher. With `indexing.watch = true`, a headless session's edit refreshes its embeddings. Two processes on one tree run one indexer |
-| P2 | TUI client seam with the in-process adapter (§4.5) — specified, nine plans | The TUI reaches the agent side only through the client interface: it imports no agent-side package, holds no `session.State`, and does no project, config or keychain I/O (enforced by a boundary test). The transcript renders from the wire projection (§8 settled) |
+| P2 | TUI client seam with the in-process adapter (§4.5) — specified (revised 2026-10-25), nine plans | The TUI reaches the agent side only through the client interface: it imports no agent-side package, holds no `session.State`, and does no project, config or keychain I/O (enforced by a boundary test). The transcript renders from the wire projection (§8 settled) |
 | P3 | ACP client transports; embedded mode over the pipe | Embedded mode runs entirely over ACP and the adapter is deleted |
 | P4 | Bridge local profile: user service, unix listener, RPC passthrough, `request_secret`, pinning, environment resolution, OAuth refresh run once, one `marshal acp` child per project for host-process agents | A TUI can quit and reattach to a running turn on the local daemon |
 | P5 | Fleet screen in the Go TUI, shared types, server-computed views | The fleet loop from `docs/fleet-cli/design.md` §1 works from the Go TUI against local and server profiles |

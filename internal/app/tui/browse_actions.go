@@ -179,7 +179,7 @@ func (m *Model) nodeFile(n *viewmodel.Node) (path string, line int) {
 	if n == nil {
 		return "", 0
 	}
-	root := m.state.Workspace().ActiveRoot
+	root := m.sess.Status().Workspace.ActiveRoot
 	var events []registry.AuditEvent
 	switch {
 	case len(n.Tools) > 0:

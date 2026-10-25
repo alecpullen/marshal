@@ -200,7 +200,7 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	if snap.Session != nil {
 		m.sess = snap.Session
 	}
-	m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
+	m.gitInfo = gitinfo.Read(m.sess.Status().Workspace.ActiveRoot)
 	m.lastGitRead = m.now()
 	if snap.Runner != nil {
 		m.runner = snap.Runner
@@ -242,7 +242,7 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
-	baseCmd := sheetBaseRefCmd(m.state.Workspace().ActiveRoot)
+	baseCmd := sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot)
 	if workCmd != nil {
 		return tea.Batch(baseCmd, workCmd)
 	}

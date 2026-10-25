@@ -25,6 +25,7 @@ import (
 	"github.com/google/shlex"
 
 	"marshal/internal/acpclient"
+	"marshal/internal/acpwire"
 	"marshal/internal/agent/swarm"
 	"marshal/internal/app/clipboard"
 	"marshal/internal/app/config"
@@ -1953,7 +1954,7 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{blinkCmd()}
 	// Read HEAD and the changed files off-thread so ±N files is right from
 	// the first frame instead of waiting for a turn to end.
-	if cmd := sheetBaseRefCmd(m.state.Workspace().ActiveRoot); cmd != nil {
+	if cmd := sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
 	if m.jobEvents != nil {
@@ -2022,7 +2023,7 @@ func (m *Model) refreshSheetTurns() {
 // refreshSheetChanged reloads the changed-files cache. Shells out to git,
 // so it runs on turn boundaries only — never from View.
 func (m *Model) refreshSheetChanged() {
-	m.sheetChanged = sheetChangedFiles(changedfiles.Read(m.state.Workspace().ActiveRoot, m.sheetBaseRef))
+	m.sheetChanged = sheetChangedFiles(changedfiles.Read(m.sess.Status().Workspace.ActiveRoot, m.sheetBaseRef))
 }
 
 // refreshSheetFleet reloads the agent-worktree cache the session sheet reads.
@@ -2032,7 +2033,7 @@ func (m *Model) refreshSheetChanged() {
 // the whole project's agent worktrees, not the checked-out one.
 func (m *Model) refreshSheetFleet() {
 	st := m.sess.Status()
-	root := m.state.Workspace().ProjectRoot
+	root := st.Workspace.ProjectRoot
 	if root == "" {
 		root = st.WorkingDir
 	}
@@ -2430,7 +2431,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Refresh git state on focus/resize: a fresh view should reflect
 		// current branch even if it changed in another tool.
-		m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
+		m.gitInfo = gitinfo.Read(m.sess.Status().Workspace.ActiveRoot)
 		m.lastGitRead = m.now()
 		m.refreshViewport()
 		return m, nil
@@ -4852,8 +4853,8 @@ func (m *Model) activeSpinnerFrame(kind session.ActivityKind) string {
 	if m.state.SDDProgress().Active {
 		return ""
 	}
-	act := m.state.Activity()
-	if m.now().Sub(act.StartedAt) < 200*time.Millisecond {
+	act := m.sess.Status().Activity
+	if m.now().Sub(acpwire.Time(act.StartedAt)) < 200*time.Millisecond {
 		return ""
 	}
 	return m.spinnerFrame
@@ -5628,7 +5629,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// Rebase the changed-files base ref onto the active root's HEAD so committed
 	// agent work stops inflating the diff; the sheetBaseRefMsg handler sets the
 	// new base and refreshes the cache after the next tick.
-	cmds := []tea.Cmd{tickCmd(), flushCmd, sheetBaseRefCmd(m.state.Workspace().ActiveRoot)}
+	cmds := []tea.Cmd{tickCmd(), flushCmd, sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot)}
 	if suggestionCmd != nil {
 		cmds = append(cmds, suggestionCmd)
 	}
@@ -6789,7 +6790,7 @@ func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
 	// share the object store, so a stale in-flight cmd from a previous
 	// workspace/session could otherwise rebase the session sheet against the wrong
 	// tree and produce a misleading diff.
-	if msg.dir != m.state.Workspace().ActiveRoot {
+	if msg.dir != m.sess.Status().Workspace.ActiveRoot {
 		return m, nil
 	}
 	if msg.ref == "" {
@@ -6808,8 +6809,9 @@ func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
 // handleAgentTick handles an agentTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
-	if now := m.now(); m.state.Workspace().ActiveRoot != "" && now.Sub(m.lastGitRead) >= 5*time.Second {
-		m.gitInfo = gitinfo.Read(m.state.Workspace().ActiveRoot)
+	st := m.sess.Status()
+	if now := m.now(); st.Workspace.ActiveRoot != "" && now.Sub(m.lastGitRead) >= 5*time.Second {
+		m.gitInfo = gitinfo.Read(st.Workspace.ActiveRoot)
 		m.lastGitRead = now
 	}
 	// Read the steering snapshot directly on ticks. A runtime that publishes no
@@ -6856,7 +6858,7 @@ func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
 func (m Model) handleSpinnerTick(msg spinnerTickMsg) (Model, tea.Cmd) {
 	// A parent turn can finish while background children are still running.
 	// Their cards share this animation clock, so keep ticking until they settle.
-	if !m.busy && !m.state.HasRunningSubagent() {
+	if !m.busy && !m.sess.Status().SubagentRunning {
 		return m, nil
 	}
 	m.spinnerFrame = m.spinner.Next()

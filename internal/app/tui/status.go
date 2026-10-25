@@ -442,7 +442,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 		segs = append(segs, statusSeg{text: style.Render(seg), priority: 1})
 	}
 
-	if bi := m.state.BrowserInfo(); bi.SessionOpen {
+	if bi := st.Browser; bi.SessionOpen {
 		segs = append(segs, statusSeg{
 			text:     browserStatusText(bi),
 			priority: 9,
@@ -459,7 +459,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	return segs
 }
 
-func browserStatusText(bi session.BrowserInfo) string {
+func browserStatusText(bi acpwire.Browser) string {
 	g := browserGlyphStyle().Render(glyph.Web)
 	url := truncateURL(bi.URL, 20)
 	if url == "" {

@@ -12,8 +12,6 @@ package changedfiles
 import (
 	"context"
 	"time"
-
-	"marshal/internal/app/tui/sessionsheet"
 )
 
 // readTimeout bounds the git subprocesses Read runs. A slow or hung git must
@@ -27,9 +25,8 @@ const readTimeout = 2 * time.Second
 //
 // Counts come from the worktree against one resolved base OID. An untracked
 // or binary file reports Added and Removed as 0 because git gives no line
-// counts for it; Snapshot.CountsKnown carries that distinction, which a
-// sessionsheet.ChangedFile has no field for.
-func Read(workingDir, baseRef string) []sessionsheet.ChangedFile {
+// counts for it; File.CountsKnown carries that distinction.
+func Read(workingDir, baseRef string) []File {
 	ctx, cancel := context.WithTimeout(context.Background(), readTimeout)
 	defer cancel()
 
@@ -39,14 +36,5 @@ func Read(workingDir, baseRef string) []sessionsheet.ChangedFile {
 		// callers (and tests) rely on that exact shape.
 		return nil
 	}
-	out := make([]sessionsheet.ChangedFile, 0, len(snap.Files))
-	for _, f := range snap.Files {
-		out = append(out, sessionsheet.ChangedFile{
-			Path:    f.Path,
-			Status:  f.Status,
-			Added:   f.Added,
-			Removed: f.Removed,
-		})
-	}
-	return out
+	return snap.Files
 }

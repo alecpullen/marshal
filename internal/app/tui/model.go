@@ -33,13 +33,11 @@ import (
 	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
-	"marshal/internal/app/tui/changedfiles"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
-	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/mcpauth"
@@ -68,6 +66,8 @@ import (
 	"marshal/internal/postmortem"
 	"marshal/internal/progress"
 	"marshal/internal/pubsub"
+	"marshal/internal/repo/changedfiles"
+	"marshal/internal/repo/gitinfo"
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
 	"marshal/internal/skills"
@@ -1991,7 +1991,7 @@ func (m *Model) refreshSheetTurns() {
 // refreshSheetChanged reloads the changed-files cache. Shells out to git,
 // so it runs on turn boundaries only — never from View.
 func (m *Model) refreshSheetChanged() {
-	m.sheetChanged = changedfiles.Read(m.state.Workspace().ActiveRoot, m.sheetBaseRef)
+	m.sheetChanged = sheetChangedFiles(changedfiles.Read(m.state.Workspace().ActiveRoot, m.sheetBaseRef))
 }
 
 // refreshSheetFleet reloads the agent-worktree cache the session sheet reads.

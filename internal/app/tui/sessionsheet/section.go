@@ -4,9 +4,9 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
+	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/registry"
 	"marshal/internal/worktree"
 )

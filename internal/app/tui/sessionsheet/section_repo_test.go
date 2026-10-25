@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"marshal/internal/app/tui/gitinfo"
+	"marshal/internal/repo/gitinfo"
 )
 
 func repoData() Data {

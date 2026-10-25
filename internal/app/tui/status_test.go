@@ -10,11 +10,11 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/contextpack"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
+	"marshal/internal/repo/gitinfo"
 )
 
 func newStatusTestModel(t *testing.T) Model {

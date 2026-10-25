@@ -11,13 +11,13 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
-	"marshal/internal/app/tui/gitinfo"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/app/tui/plugins"
 	"marshal/internal/app/tui/skills"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/interaction"
 	"marshal/internal/pipeline"
+	"marshal/internal/repo/gitinfo"
 	"marshal/internal/worktree"
 )
 

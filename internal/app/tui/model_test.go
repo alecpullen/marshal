@@ -50,7 +50,6 @@ import (
 	"marshal/internal/permissions"
 	"marshal/internal/pipeline"
 	"marshal/internal/postmortem"
-	"marshal/internal/pubsub"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
@@ -1696,7 +1695,9 @@ func TestAgentFinishedMsgClearsBusyAndRecordsNotice(t *testing.T) {
 
 // collectSheetBaseRefs executes a cmd chain (which may be a tea.Sequence or
 // tea.Batch) and returns every sheetBaseRefMsg it produces. The sequence msg
-// type is unexported, so it is unwrapped via reflection.
+// type is unexported, so it is unwrapped via reflection. A command that blocks
+// (the change pump) yields no message; the timeout keeps the walk from waiting
+// on it.
 func collectSheetBaseRefs(t *testing.T, cmd tea.Cmd) []sheetBaseRefMsg {
 	t.Helper()
 	var refs []sheetBaseRefMsg
@@ -1705,7 +1706,10 @@ func collectSheetBaseRefs(t *testing.T, cmd tea.Cmd) []sheetBaseRefMsg {
 		if c == nil {
 			return
 		}
-		msg := c()
+		msg := runCmdOnce(c, time.Second)
+		if msg == nil {
+			return
+		}
 		if batch, ok := msg.(tea.BatchMsg); ok {
 			for _, sub := range batch {
 				walk(sub)
@@ -2812,10 +2816,16 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected a non-nil cmd (sheetBaseRefCmd) from /new")
 	}
-	msg := cmd()
-	rb, ok := msg.(sheetBaseRefMsg)
-	if !ok {
-		t.Fatalf("cmd() returned %T, want sheetBaseRefMsg", msg)
+	var rb sheetBaseRefMsg
+	found := false
+	for _, msg := range batchResults(t, cmd) {
+		if v, ok := msg.(sheetBaseRefMsg); ok {
+			rb, found = v, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("the /new batch carried no sheetBaseRefMsg")
 	}
 	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
 	if err != nil {
@@ -6668,11 +6678,11 @@ func TestDockedSettingsBrowserDoesNotSwallowRuntimeMessages(t *testing.T) {
 		t.Fatal("settings browser should stay open after agentFinishedMsg")
 	}
 
-	updated, _ = m.Update(jobCountMsg{count: 3})
+	updated, _ = m.Update(changedMsg{ch: m.sess.Changed()})
 	m = updated.(Model)
 
 	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
-		t.Fatal("settings browser should stay open after jobCountMsg")
+		t.Fatal("settings browser should stay open after a change")
 	}
 }
 
@@ -8091,30 +8101,7 @@ func (r *recordingPipelineRunner) Run(ctx context.Context, goal string) error {
 func (r *recordingPipelineRunner) SetForceClass(string)     {}
 func (r *recordingPipelineRunner) AnswerGate(answer string) { r.answer = answer }
 
-func TestSubagentBrokerPublishesRefreshMessage(t *testing.T) {
-	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
-	broker := pubsub.NewBroker[session.SubagentEvent]()
-	m := testModel(state, WithSubagentBroker(context.Background(), broker))
-	m.resize(80, 24)
-
-	// Publish a subagent event; the pump should turn it into a subagentMsg.
-	broker.Publish("subagent", session.SubagentEvent{View: session.SubagentView{Label: "review"}})
-
-	cmd := pumpSubagentEvents(m.subagentEvents)
-	if cmd == nil {
-		t.Fatal("pumpSubagentEvents returned nil")
-	}
-	msg := cmd()
-	sm, ok := msg.(subagentMsg)
-	if !ok {
-		t.Fatalf("pump returned %T, want subagentMsg", msg)
-	}
-	if sm.view.Label != "review" {
-		t.Fatalf("view label = %q, want review", sm.view.Label)
-	}
-}
-
-func TestHandleSubagentMsgRefreshesViewport(t *testing.T) {
+func TestChangedRefreshesTheViewportForANewSubagent(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	m := testModel(state)
 	m.resize(80, 24)
@@ -8123,9 +8110,10 @@ func TestHandleSubagentMsgRefreshesViewport(t *testing.T) {
 	state.RegisterSubagentWithMeta("review", child, session.SubagentMeta{})
 	before := m.lastTranscriptHash
 
-	updated, _ := m.handleSubagentMsg(subagentMsg{view: session.SubagentView{Label: "review"}})
-	if updated.lastTranscriptHash == before {
-		t.Fatal("handleSubagentMsg should refresh the viewport")
+	updated, _ := m.Update(changedMsg{ch: m.sess.Changed()})
+	mm := asModel(t, updated)
+	if mm.lastTranscriptHash == before {
+		t.Fatal("handleChanged should refresh the viewport")
 	}
 }
 
@@ -9310,7 +9298,7 @@ func TestWarningRefreshesFromRuntimeEvents(t *testing.T) {
 	// Work finishes and other work starts while the prompt is open.
 	ctrl.work = workSnapshot("job-2")
 
-	updated, _ := m.Update(jobCountMsg{count: 1})
+	updated, _ := m.Update(changedMsg{ch: m.sess.Changed()})
 	m = asModel(t, updated)
 
 	panel, ok := m.dock.Panel().(*activeworkpanel.Panel)
@@ -9509,8 +9497,15 @@ func TestNewSessionAcceptanceBuildsTheReplacement(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("the replacement must return the sheet-base-ref command")
 	}
-	if _, ok := cmd().(sheetBaseRefMsg); !ok {
-		t.Fatalf("cmd() = %T, want sheetBaseRefMsg", cmd())
+	found := false
+	for _, msg := range batchResults(t, cmd) {
+		if _, ok := msg.(sheetBaseRefMsg); ok {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("the replacement batch carried no sheetBaseRefMsg")
 	}
 }
 

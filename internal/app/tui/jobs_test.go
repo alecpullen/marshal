@@ -32,12 +32,12 @@ func runningJob(id int, cmd string, ago time.Duration) native.JobInfo {
 // append; viewmodel's card tests pin the settled card and its marker.
 //
 // What remains this layer's job is the repaint: a job finishing while the user
-// is idle arrives only as a count change, so handleJobCount must refresh the
+// is idle arrives only as a change signal, so handleChanged must refresh the
 // viewport or the change stays invisible until some unrelated event triggers a
 // rebuild. The job-exit *row* these tests once asserted no longer exists —
 // the exit settles the card that started the job, and a marker records the
 // moment — so this pins the refresh itself.
-func TestJobCountRepaintsViewport(t *testing.T) {
+func TestChangedRepaintsViewport(t *testing.T) {
 	m := newTestModel(t)
 	m.refreshViewport()
 	const notice = "backend gate finished"
@@ -46,13 +46,13 @@ func TestJobCountRepaintsViewport(t *testing.T) {
 	}
 
 	// Stand in for whatever the exit callback appended: the point is that a
-	// transcript change that lands with the count message becomes visible.
+	// transcript change that lands with the change signal becomes visible.
 	m.state.AddMessage(session.RoleSystem, notice, session.ContentTypePlain)
 
-	m2, _ := m.handleJobCount(jobCountMsg{count: 0})
+	m2, _ := m.Update(changedMsg{ch: m.sess.Changed()})
 	mm := asModel(t, m2)
 
 	if after := ansi.Strip(mm.viewport.GetContent()); !strings.Contains(after, notice) {
-		t.Fatalf("handleJobCount did not repaint the viewport:\n%s", after)
+		t.Fatalf("handleChanged did not repaint the viewport:\n%s", after)
 	}
 }

@@ -197,8 +197,12 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	m.state = snap.State
 	// A swapper that omits Session leaves the seam session alone rather than
 	// nil-ing it out from under the next render.
-	if snap.Session != nil {
+	replaced := snap.Session != nil
+	if replaced {
 		m.sess = snap.Session
+		// A replacement session restarts its watch-resume sequence, so the
+		// model's mark restarts with it.
+		m.watchResumeSeq = 0
 	}
 	if snap.Runner != nil {
 		m.runner = snap.Runner
@@ -229,6 +233,9 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	// The old session's changed-files list must never render in the new
 	// session while the sheetBaseRefMsg round-trips; re-read it below.
 	m.sheetChanged = nil
+	// The sheet's base ref follows the workspace the new session reports.
+	st := m.sess.Status()
+	m.workspaceSeen = st.Workspace
 	// Rebind the Work stream: the previous conversation's subscription is
 	// cancelled and drained, its cards cleared, and the new epoch seeded and
 	// re-armed so no work from the old session leaks into the new one.
@@ -240,11 +247,16 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
-	baseCmd := sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot)
-	if workCmd != nil {
-		return tea.Batch(baseCmd, workCmd)
+	cmds := []tea.Cmd{sheetBaseRefCmd(st.Workspace.ActiveRoot)}
+	// A replaced session needs its own change pump; the old one ends when its
+	// channel no longer matches.
+	if replaced {
+		cmds = append(cmds, pumpChanged(m.sess.Changed()))
 	}
-	return baseCmd
+	if workCmd != nil {
+		cmds = append(cmds, workCmd)
+	}
+	return tea.Batch(cmds...)
 }
 
 func init() {

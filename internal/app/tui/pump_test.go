@@ -7,100 +7,63 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/progress"
 	"marshal/internal/pubsub"
-	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 )
 
-func TestPumpBridgesJobEventsToMsgs(t *testing.T) {
-	// First call: nothing published. The pump cmd must block until a
-	// publish arrives or ctx is cancelled (not return nil immediately).
-	blockingBroker := pubsub.NewBroker[native.JobEvent]()
-	blockingCtx, blockingCancel := context.WithCancel(context.Background())
-	cmd := pumpJobEvents(blockingBroker.Subscribe(blockingCtx))
-	first := runCmdOnce(cmd, 20*time.Millisecond)
-	blockingCancel()
-	if first != nil {
-		t.Fatalf("expected pump to block on empty broker, got immediate msg: %#v", first)
-	}
-
-	// Second call: publish from another goroutine, then call the pump cmd
-	// and expect a jobCountMsg.
-	b := pubsub.NewBroker[native.JobEvent]()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	ch := b.Subscribe(ctx)
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		b.Publish("jobs", native.JobEvent{Count: 3, Delta: 1})
-	}()
-	cmd = pumpJobEvents(ch)
-	msg := runCmdOnce(cmd, time.Second)
-	if msg == nil {
-		t.Fatal("pump did not bridge the event")
-	}
-	jc, ok := msg.(jobCountMsg)
+// TestPumpChangedCarriesItsChannel pins that the pump reports the channel it
+// read, so the handler can tell a replaced session's pump from the current one.
+func TestPumpChangedCarriesItsChannel(t *testing.T) {
+	ch := make(chan struct{}, 1)
+	ch <- struct{}{}
+	msg := runCmdOnce(pumpChanged(ch), time.Second)
+	got, ok := msg.(changedMsg)
 	if !ok {
-		t.Fatalf("got %T, want jobCountMsg", msg)
+		t.Fatalf("got %T, want changedMsg", msg)
 	}
-	if jc.count != 3 {
-		t.Fatalf("count = %d, want 3", jc.count)
-	}
-}
-
-func TestPumpReturnsNilOnCtxCancel(t *testing.T) {
-	b := pubsub.NewBroker[native.JobEvent]()
-	ctx, cancel := context.WithCancel(context.Background())
-	ch := b.Subscribe(ctx)
-	cancel()
-	cmd := pumpJobEvents(ch)
-	if msg := runCmdOnce(cmd, 100*time.Millisecond); msg != nil {
-		t.Fatalf("expected nil msg on cancelled ctx, got %#v", msg)
+	if got.ch != ch {
+		t.Fatal("changedMsg did not carry the channel the pump read")
 	}
 }
 
-func TestModelJobPumpRearmsWithoutLeakingTerminalSubscriptions(t *testing.T) {
-	b := pubsub.NewBroker[native.JobEvent](pubsub.WithBufferSize[native.JobEvent](0), pubsub.WithTerminal[native.JobEvent]())
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	state := session.New(config.Config{}, t.TempDir(), time.Now(), session.Persistence{})
-	m := testModel(state, WithJobBroker(ctx, b))
-
-	updated, cmd := m.Update(jobCountMsg{count: 1})
-	m = updated.(Model)
-	msg := publishJobAndRunCmd(t, b, cmd, 2)
-	updated, cmd = m.Update(msg)
-	m = updated.(Model)
-	msg = publishJobAndRunCmd(t, b, cmd, 3)
-	jc, ok := msg.(jobCountMsg)
-	if !ok {
-		t.Fatalf("got %T, want jobCountMsg", msg)
-	}
-	if jc.count != 3 {
-		t.Fatalf("count = %d, want 3", jc.count)
+// TestPumpChangedEndsOnClose pins that a closed channel ends the pump.
+func TestPumpChangedEndsOnClose(t *testing.T) {
+	ch := make(chan struct{})
+	close(ch)
+	if msg := runCmdOnce(pumpChanged(ch), time.Second); msg != nil {
+		t.Fatalf("got %#v, want nil on a closed channel", msg)
 	}
 }
 
-func publishJobAndRunCmd(t *testing.T, b *pubsub.Broker[native.JobEvent], cmd tea.Cmd, count int) tea.Msg {
-	t.Helper()
-	published := make(chan struct{})
-	go func() {
-		b.Publish("jobs", native.JobEvent{Count: count, Delta: 1})
-		close(published)
-	}()
-	msg := runCmdOnce(cmd, time.Second)
-	if msg == nil {
-		t.Fatalf("pump did not deliver job count %d", count)
+// TestHandleChangedIgnoresAReplacedSession pins that a message from a pump
+// belonging to a replaced session is dropped and not re-armed.
+func TestHandleChangedIgnoresAReplacedSession(t *testing.T) {
+	m := newTestModel(t)
+	m.refreshViewport()
+	before := m.lastTranscriptHash
+	// A transcript change makes the next refresh produce a different hash.
+	m.state.AddMessage(session.RoleSystem, "changed", session.ContentTypePlain)
+
+	other := make(chan struct{}, 1)
+	updated, cmd := m.Update(changedMsg{ch: other})
+	mm := updated.(Model)
+	if cmd != nil {
+		t.Fatalf("a replaced session's message returned a cmd (%T), want nil", cmd)
 	}
-	select {
-	case <-published:
-	case <-time.After(time.Second):
-		t.Fatalf("publish for job count %d blocked", count)
+	if mm.lastTranscriptHash != before {
+		t.Fatal("a replaced session's message refreshed the transcript")
 	}
-	return msg
+
+	updated, cmd = mm.Update(changedMsg{ch: mm.sess.Changed()})
+	mm = updated.(Model)
+	if cmd == nil {
+		t.Fatal("the current session's message returned no cmd")
+	}
+	if mm.lastTranscriptHash == before {
+		t.Fatal("the current session's message did not refresh the transcript")
+	}
 }
 
 // runCmdOnce runs the cmd once with a hard timeout. Returns the produced

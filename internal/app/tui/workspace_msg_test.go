@@ -10,7 +10,7 @@ import (
 	"marshal/internal/app/tui/sessionsheet"
 )
 
-func TestHandleWorkspaceMsgRebasesRail(t *testing.T) {
+func TestChangedRebasesTheSheetWhenTheWorkspaceMoves(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -28,15 +28,21 @@ func TestHandleWorkspaceMsgRebasesRail(t *testing.T) {
 	m := newTestModel(t)
 	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: wt, Branch: "feat-x"})
 
-	mm, cmd := m.Update(workspaceMsg{activeRoot: wt})
+	mm, cmd := m.Update(changedMsg{ch: m.sess.Changed()})
 	m = mm.(Model)
 	if cmd == nil {
-		t.Fatal("expected a non-nil cmd from workspaceMsg")
+		t.Fatal("expected a non-nil cmd from handleChanged")
 	}
-	msg := cmd()
-	rb, ok := msg.(sheetBaseRefMsg)
-	if !ok {
-		t.Fatalf("cmd() returned %T, want sheetBaseRefMsg", msg)
+	var rb sheetBaseRefMsg
+	found := false
+	for _, msg := range batchResults(t, cmd) {
+		if v, ok := msg.(sheetBaseRefMsg); ok {
+			rb, found = v, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("handleChanged returned no sheetBaseRefMsg")
 	}
 	want, err := exec.Command("git", "-C", wt, "rev-parse", "HEAD").Output()
 	if err != nil {
@@ -55,14 +61,35 @@ func TestHandleWorkspaceMsgRebasesRail(t *testing.T) {
 	if m.sheetBaseRef != rb.ref {
 		t.Errorf("sheetBaseRef = %q, want %q", m.sheetBaseRef, rb.ref)
 	}
-	found := false
+	sawFile := false
 	for _, f := range m.sheetChanged {
 		if f.Path == "a.txt" {
-			found = true
+			sawFile = true
 		}
 	}
-	if !found {
+	if !sawFile {
 		t.Errorf("sheetChanged missing worktree-modified a.txt: %+v", m.sheetChanged)
+	}
+}
+
+// TestChangedLeavesTheSheetWhenTheWorkspaceStays pins the follow's guard: a
+// change that does not move the workspace does not rebase the sheet.
+func TestChangedLeavesTheSheetWhenTheWorkspaceStays(t *testing.T) {
+	m := newTestModel(t)
+	m.state.SetWorkspace(session.Workspace{ProjectRoot: "/repo", ActiveRoot: "/repo", Branch: "main"})
+
+	// The first change follows the workspace and records it.
+	mm, cmd := m.Update(changedMsg{ch: m.sess.Changed()})
+	m = mm.(Model)
+	_ = batchResults(t, cmd)
+
+	// A second change with the same workspace yields no base-ref command.
+	mm, cmd = m.Update(changedMsg{ch: m.sess.Changed()})
+	m = mm.(Model)
+	for _, msg := range batchResults(t, cmd) {
+		if _, ok := msg.(sheetBaseRefMsg); ok {
+			t.Fatal("a repeated change with an unchanged workspace rebased the sheet")
+		}
 	}
 }
 

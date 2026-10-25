@@ -2,106 +2,25 @@ package tui
 
 import (
 	tea "charm.land/bubbletea/v2"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/pubsub"
 	"marshal/internal/repo/changedfiles"
 	"marshal/internal/repo/gitinfo"
-	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
-	"marshal/internal/watch"
 )
 
-// pumpJobEvents reads from the model's persistent job subscription and returns a tea.Cmd that
-// blocks until the next JobEvent arrives (or ctx is cancelled), then
-// returns a jobCountMsg. The model calls this repeatedly from Update to
-// keep the pump alive without creating a new broker subscription per event.
-func pumpJobEvents(ch <-chan pubsub.Event[native.JobEvent]) tea.Cmd {
+// pumpChanged blocks until the session signals that its status may have
+// changed, then returns a changedMsg carrying the channel it read. A closed
+// channel gives a nil message, which ends the pump.
+func pumpChanged(ch <-chan struct{}) tea.Cmd {
 	if ch == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return nil // broker closed / ctx cancelled → pump stops
-		}
-		return jobCountMsg{count: ev.Payload.Count, jobs: ev.Payload.Jobs}
-	}
-}
-
-// pumpWatchEvents reads from the model's persistent watch subscription and
-// returns a tea.Cmd that blocks until the next watch.Event arrives (or ctx
-// is cancelled), then returns a watchMsg. The model calls this repeatedly
-// from Update to keep the pump alive without creating a new broker
-// subscription per event.
-func pumpWatchEvents(ch <-chan pubsub.Event[watch.Event]) tea.Cmd {
-	if ch == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return nil // broker closed / ctx cancelled → pump stops
-		}
-		return watchMsg{event: ev.Payload}
-	}
-}
-
-// pumpSteeringEvents reads from the model's persistent steering subscription and returns a
-// tea.Cmd that blocks until the next SteeringEvent lands, then returns
-// a steeringMsg. Re-arming reads from the same channel so stale subscribers
-// do not accumulate while the F16 queue is active.
-func pumpSteeringEvents(ch <-chan pubsub.Event[session.SteeringEvent]) tea.Cmd {
-	if ch == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
+		if _, ok := <-ch; !ok {
 			return nil
 		}
-		return steeringMsg{
-			queueLen: ev.Payload.QueueLen,
-			message:  ev.Payload.Message,
-			// The payload's snapshot and receipt are deep copies the publisher
-			// made, so caching them here cannot reach session state.
-			snapshot: ev.Payload.Snapshot,
-			receipt:  ev.Payload.Receipt,
-		}
-	}
-}
-
-// pumpWorkspaceEvents reads from the model's persistent workspace
-// subscription and returns a tea.Cmd that blocks until the next
-// WorkspaceEvent lands, then returns a workspaceMsg. Re-arming reads from
-// the same channel, matching pumpSteeringEvents.
-func pumpWorkspaceEvents(ch <-chan pubsub.Event[session.WorkspaceEvent]) tea.Cmd {
-	if ch == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return workspaceMsg{activeRoot: ev.Payload.Workspace.ActiveRoot}
-	}
-}
-
-// pumpSubagentEvents reads from the model's persistent subagent
-// subscription and returns a tea.Cmd that blocks until the next
-// SubagentEvent lands, then returns a subagentMsg. Re-arming reads from
-// the same channel so card updates do not accumulate stale subscribers.
-func pumpSubagentEvents(ch <-chan pubsub.Event[session.SubagentEvent]) tea.Cmd {
-	if ch == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ev, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return subagentMsg{view: ev.Payload.View}
+		return changedMsg{ch: ch}
 	}
 }
 

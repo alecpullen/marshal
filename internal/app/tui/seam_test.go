@@ -72,6 +72,47 @@ func testModelStub(state *session.State, stub *stubSession, opts ...Option) Mode
 	return New(host, stub, all...)
 }
 
+// batchResults runs cmd and returns the messages it produces. The commands of
+// a batch run concurrently under one deadline, because the change pump blocks
+// until the next signal and a sequential run would wait on it.
+func batchResults(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	msg := runCmdOnce(cmd, time.Second)
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		if msg == nil {
+			return nil
+		}
+		return []tea.Msg{msg}
+	}
+	out := make(chan tea.Msg, len(batch))
+	started := 0
+	for _, c := range batch {
+		if c == nil {
+			continue
+		}
+		started++
+		go func(c tea.Cmd) { out <- c() }(c)
+	}
+	var msgs []tea.Msg
+	deadline := time.After(time.Second)
+	for received := 0; received < started; {
+		select {
+		case m := <-out:
+			received++
+			if m != nil {
+				msgs = append(msgs, m)
+			}
+		case <-deadline:
+			return msgs
+		}
+	}
+	return msgs
+}
+
 // fakeHost is an acpclient.Host whose SharedFilesystem is the test's choice.
 type fakeHost struct{ shared bool }
 

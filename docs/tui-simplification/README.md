@@ -1,7 +1,7 @@
 # TUI simplification
 
 The redesign of Marshal's main screen around one rule: history only grows, and
-everything that can still change lives in one box above the input. Goal:
+running work and the plan are pinned in a tray above the input. Goal:
 simplification.
 
 | Doc | What it covers |
@@ -11,7 +11,9 @@ simplification.
 | [`plans/2026-10-24-p-b-lifecycle-plan.md`](plans/2026-10-24-p-b-lifecycle-plan.md) | P-B execution plan: completion events, one projection, history that only grows, web adoption |
 | [`plans/2026-10-24-p-c-live-box-plan.md`](plans/2026-10-24-p-c-live-box-plan.md) | P-C execution plan: the live box, measured bars, plan layouts and Ctrl+T, skill-load duplicate fix |
 | [`plans/2026-10-25-p-d-progress-skill-plan.md`](plans/2026-10-25-p-d-progress-skill-plan.md) | P-D execution plan: the progress-reporting skill and its producers, the schema pointer, room in the prompt budgets |
-| [`framed-console.md`](framed-console.md) | The chosen design with text frames; [`framed-console.html`](framed-console.html) in colour |
+| [`plans/2026-10-25-p-e-tray-plan.md`](plans/2026-10-25-p-e-tray-plan.md) | P-E execution plan: the step in progress back in history, the tray, held rows, the turn clock in the status line, `[tui.live_box]` retired |
+| [`pinned-work.md`](pinned-work.md) | Round 5, after testing P-C: the tray that replaces the live box (P-E), and the options it was chosen from; [`pinned-work.html`](pinned-work.html) in colour |
+| [`framed-console.md`](framed-console.md) | Round 4: the live box P-C built, with text frames; [`framed-console.html`](framed-console.html) in colour |
 | [`console-variants.md`](console-variants.md) | Round 2: five dock treatments and four history styles |
 | [`alternatives.md`](alternatives.md) | Round 1: today's frame, the shared foundation, Ledger / Console / Sticky |
 | [`mockups.html`](mockups.html), [`console-variants.html`](console-variants.html) | Colour versions of rounds 1 and 2 |

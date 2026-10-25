@@ -45,6 +45,55 @@ func TestGitHygieneNote(t *testing.T) {
 	}
 }
 
+// TestProgressHint pins when a long command's result suggests a progress card:
+// only after half a minute, and never to a call that already asked for one.
+func TestProgressHint(t *testing.T) {
+	// A fixed base keeps the elapsed time exact: measuring between two
+	// time.Now() calls yields 46s for 47s of separation.
+	base := time.Now()
+	long := func() JobInfo {
+		return JobInfo{
+			StartedAt: base.Add(-47 * time.Second),
+			EndedAt:   base,
+		}
+	}
+
+	got := progressHint(nil, long())
+	for _, want := range []string{
+		"47s",
+		"no progress card",
+		`{"profile":"download","source":"events-v1"}`,
+		`{"profile":"tests","source":"go-test-json"}`,
+		"progress-reporting",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hint missing %q: %q", want, got)
+		}
+	}
+
+	// A command that already opted in needs no nudge.
+	if got := progressHint(&progress.Config{Profile: "download", Source: "events-v1"}, long()); got != "" {
+		t.Errorf("hint for an opted-in execution = %q, want empty", got)
+	}
+
+	// A short command is not worth a card, so it is not worth a hint either.
+	short := JobInfo{StartedAt: time.Now().Add(-3 * time.Second), EndedAt: time.Now()}
+	if got := progressHint(nil, short); got != "" {
+		t.Errorf("hint for a %s command = %q, want empty", 5*time.Second, got)
+	}
+
+	// A continuation has no EndedAt: the elapsed time so far is what it reports.
+	running := JobInfo{StartedAt: time.Now().Add(-45 * time.Second)}
+	if got := progressHint(nil, running); !strings.Contains(got, "45s") {
+		t.Errorf("hint for a running command = %q, want it to report 45s", got)
+	}
+
+	// An execution with no recorded start cannot claim an elapsed time.
+	if got := progressHint(nil, JobInfo{}); got != "" {
+		t.Errorf("hint without a start time = %q, want empty", got)
+	}
+}
+
 func TestShellRunGitMergeNote(t *testing.T) {
 	root := t.TempDir()
 	runner := &fakeRunner{result: CommandResult{Stdout: "merged\n", ExitCode: 0}}

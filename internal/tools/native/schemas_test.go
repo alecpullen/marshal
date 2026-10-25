@@ -92,12 +92,21 @@ func TestShellToolTextDocumentsWaitContinuationAndStop(t *testing.T) {
 		}
 	}
 
-	// The progress property must point the model at the skill that documents it.
+	// The progress property must point the model at the skill that documents it,
+	// and must carry the common pairings inline: a model that decides to use a
+	// card should not have to load the skill just to learn a valid combination.
 	progress, ok := schema.Properties["progress"]
 	if !ok {
 		t.Fatal("shell.run schema has no progress property")
 	}
-	if want := "live progress card; see skill progress-reporting"; progress.Description != want {
-		t.Errorf("progress description = %q, want %q", progress.Description, want)
+	for _, want := range []string{
+		"live progress card",
+		"progress-reporting",
+		`{"profile":"download","source":"events-v1"}`,
+		`{"profile":"tests","source":"go-test-json"}`,
+	} {
+		if !strings.Contains(progress.Description, want) {
+			t.Errorf("progress description missing %q: %q", want, progress.Description)
+		}
 	}
 }

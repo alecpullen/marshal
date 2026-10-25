@@ -62,7 +62,7 @@ func (t *toolSet) shellRunTool() registry.Tool {
 			"Use git.* for repository state and the workspace tools for worktree isolation and merging. " +
 			"The command is not killed by elapsed time: one still running when the wait ends continues in the background with a job_id. " +
 			"agent.await reports its status, exit code, stop cause and recent output; agent.kill stops one named job.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card; see skill progress-reporting","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime. Omit or pass 0 for the foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately"}},"required":["command"],"additionalProperties":false}`),
+		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card for a command you will watch (roughly >30s with something real to count). Common: {\"profile\":\"download\",\"source\":\"events-v1\"} for byte counts from a real Content-Length, {\"profile\":\"tests\",\"source\":\"go-test-json\"} for go tests, which needs no producer. Load skill progress-reporting for a multi-phase or custom job, or to write a producer.","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime. Omit or pass 0 for the foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately"}},"required":["command"],"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
@@ -99,7 +99,7 @@ func (t *toolSet) testRunTool() registry.Tool {
 			"the override is subject to the same approval policy. " +
 			"The command runs through the same managed execution as shell.run: this call waits for the configured foreground period, " +
 			"and a test command still running when the wait ends continues in the background with a job_id for agent.await instead of being killed.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card; see skill progress-reporting","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false}},"additionalProperties":false}`),
+		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card for a command you will watch (roughly >30s with something real to count). Common: {\"profile\":\"download\",\"source\":\"events-v1\"} for byte counts from a real Content-Length, {\"profile\":\"tests\",\"source\":\"go-test-json\"} for go tests, which needs no producer. Load skill progress-reporting for a multi-phase or custom job, or to write a producer.","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false}},"additionalProperties":false}`),
 		Risk:   registry.RiskCommand,
 		// Internal: the general agent runs tests through shell.run; only the swarm tester (TesterView) gets this constrained tool.
 		Internal: true,
@@ -118,6 +118,41 @@ func (t *toolSet) testRunTool() registry.Tool {
 		return res, err
 	}
 	return tool
+}
+
+// progressHintAfter is how long a command must run before a result without a
+// progress card suggests one. It is the same half-minute the progress skill
+// uses for "long enough to watch": below it a card costs more than it shows.
+const progressHintAfter = 30 * time.Second
+
+// progressHint returns a one-line nudge appended to the result of a command that
+// ran long enough to watch without opting into a progress card, and "" for every
+// other command: a short one, or one that already asked for a card.
+//
+// It exists because the only trigger the model has before launching a command is
+// its own prediction that the command will be slow, and that prediction is
+// unreliable. This hint instead arrives with evidence — the elapsed time the
+// command actually took — and it rides in the tool result, after the transcript,
+// so it never disturbs the cache-stable prompt prefix.
+func progressHint(cfg *progress.Config, info JobInfo) string {
+	if cfg != nil || info.StartedAt.IsZero() {
+		return ""
+	}
+	ended := info.EndedAt
+	if ended.IsZero() {
+		// A continuation: the command is still running, so the elapsed time so
+		// far is the honest measure of how long it has taken.
+		ended = time.Now()
+	}
+	elapsed := ended.Sub(info.StartedAt)
+	if elapsed < progressHintAfter {
+		return ""
+	}
+	return fmt.Sprintf("\n\nnote: this command ran %s with no progress card. For a command you will watch, "+
+		"pass progress={\"profile\":\"download\",\"source\":\"events-v1\"} for byte counts, "+
+		"progress={\"profile\":\"tests\",\"source\":\"go-test-json\"} for go tests, "+
+		"or load skill progress-reporting for a multi-phase job or a producer.",
+		elapsed.Round(time.Second))
 }
 
 // gitHygieneNote returns a nudge line for `git merge` and `git stash`
@@ -345,9 +380,9 @@ func (t *toolSet) runManagedCommandWithProgress(ctx context.Context, toolName, c
 		return registry.ToolResult{}, err
 	}
 	if !res.Terminal {
-		return t.continuationCommandResult(command, res), nil
+		return t.continuationCommandResult(command, res, progressCfg), nil
 	}
-	return t.settledCommandResult(command, res)
+	return t.settledCommandResult(command, res, progressCfg)
 }
 
 // activeCallWriter returns the writer that forwards a running command's output
@@ -399,7 +434,7 @@ func (t *toolSet) backgroundCommandResult(info JobInfo) registry.ToolResult {
 // still running. It is a normal result — not an error, not a failed command —
 // because the same process continues in the background under the service's
 // ownership; the handle is how the caller keeps track of it.
-func (t *toolSet) continuationCommandResult(command string, res ForegroundResult) registry.ToolResult {
+func (t *toolSet) continuationCommandResult(command string, res ForegroundResult, cfg *progress.Config) registry.ToolResult {
 	info := res.Info
 	var b strings.Builder
 	fmt.Fprintf(&b, "Command is still running in the background.\njob_id: %s\nstatus: %s", info.ID, info.Status)
@@ -413,6 +448,7 @@ func (t *toolSet) continuationCommandResult(command string, res ForegroundResult
 		b.WriteString("\n\nrecent output:\n" + output)
 	}
 	fmt.Fprintf(&b, "\n\nWait with agent.await using job_id %q; inspect with peek: true.", info.ID)
+	b.WriteString(progressHint(cfg, info))
 
 	return registry.ToolResult{
 		Summary: fmt.Sprintf("command %q is still running in the background (job %s)", command, info.ID),
@@ -430,7 +466,7 @@ func (t *toolSet) continuationCommandResult(command string, res ForegroundResult
 // output travel with the error rather than being discarded. A natural non-zero
 // exit is deliberately NOT an error: CommandExitCode already tells the agent the
 // command failed, and the old path behaved the same way.
-func (t *toolSet) settledCommandResult(command string, res ForegroundResult) (registry.ToolResult, error) {
+func (t *toolSet) settledCommandResult(command string, res ForegroundResult, cfg *progress.Config) (registry.ToolResult, error) {
 	info := res.Info
 	if info.Outcome == OutcomeStartupFailure {
 		// The runner never started a process, so there is no exit code and
@@ -491,6 +527,7 @@ func (t *toolSet) settledCommandResult(command string, res ForegroundResult) (re
 	if note := gitHygieneNote(command); note != "" {
 		content += "\n\n" + note
 	}
+	content += progressHint(cfg, info)
 	return registry.ToolResult{
 		Summary:         summary,
 		Content:         content,

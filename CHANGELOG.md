@@ -57,13 +57,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   back under its ceiling.
 - New projects' `.marshal/.gitignore` also ignores `progress/`.
 
-**The live box**
+**The tray**
 
-- Everything that can still change sits in one bordered box above the input:
-  the step in progress, running subagents, jobs and progress cards (now with
-  measured bars, rates and ETAs), and the plan. History above it only grows.
-  Ctrl+T cycles the plan between stacked, split and folded;
-  `[tui.live_box] layout` sets the start.
+- Running work, the work that finished until your next prompt, and the plan are
+  pinned in a tray above the input, with measured bars, rates and ETAs. The step
+  in progress stays in the transcript, and the turn's clock is in the status
+  line.
+- A wrapped narration keeps its todo tag on its first line.
 
 **Transcript: beats on a spine**
 

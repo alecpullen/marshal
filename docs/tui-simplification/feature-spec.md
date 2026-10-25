@@ -1,13 +1,13 @@
 # TUI simplification — feature spec
 
-Status: P-A, P-B, P-C and P-D landed. P-E (the tray, replacing P-C's live box
-after testing) designed and planned 2026-10-25. Updated 2026-10-24 with the
+Status: P-A, P-B, P-C, P-D and P-E landed. P-E (the tray, replacing P-C's live
+box after testing) designed and planned 2026-10-25. Updated 2026-10-24 with the
 decisions the P-A and P-B plans pinned down, and 2026-10-25 with P-C's, P-D's
 and round 5's. P-A
 landed on
 `main` before this branch; P-B landed in `d9975303..9ecfe2ee`, merged as
 `24792d61`; P-C landed in `9fa6097e..65ffc3fa`; P-D landed in
-`ee9b6626..913b62bf`.
+`ee9b6626..913b62bf`; P-E landed in `9b92c32d..45a4caf6`.
 Base commit: `87fa8f0e` (main, after the interaction-modes merge).
 Design record: [`alternatives.md`](alternatives.md) (layout),
 [`console-variants.md`](console-variants.md) (dock), and

@@ -17,6 +17,8 @@
 // line in its doc.
 package acpclient
 
+import "marshal/internal/acpwire"
+
 // Host is the transport the TUI holds: what the agent side is, independent of
 // any one session. It gains its groups' methods plan by plan (spec Migration
 // order).
@@ -37,4 +39,11 @@ type Session interface {
 	// ACP: session/new (exists). Its result carries the ID, and every
 	// session/* call sends it back.
 	ID() string
+
+	// Status is the session's current status (C5). It is read without
+	// blocking: the in-process adapter builds it from the state on each call,
+	// and P3 serves it from a mirror.
+	//
+	// ACP: session/status (new in P3). A session_status update refreshes it.
+	Status() acpwire.SessionStatus
 }

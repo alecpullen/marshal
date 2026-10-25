@@ -19,4 +19,5 @@ type Method struct {
 var Methods = []Method{
 	{Iface: "Host", Name: "SharedFilesystem"},
 	{Iface: "Session", Name: "ID", ACP: "session/new", Exists: true},
+	{Iface: "Session", Name: "Status", ACP: "session/status"},
 }

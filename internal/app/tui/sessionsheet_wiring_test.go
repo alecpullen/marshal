@@ -4,12 +4,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/sessionsheet"
@@ -62,8 +64,8 @@ func TestCtrlBOpensAndClosesSessionSheet(t *testing.T) {
 	if m.sheetPanel == nil || !m.dock.IsOpen() {
 		t.Fatal("Ctrl+B must open the session sheet")
 	}
-	if len(m.sheetChanged) != 1 {
-		t.Fatalf("opening the sheet must refresh the changed-file cache, got %v", m.sheetChanged)
+	if got := m.sess.Status().ChangedFiles; got != 1 {
+		t.Fatalf("opening the sheet must refresh the changed files, got %d", got)
 	}
 	if view := stripANSI(m.viewString()); !strings.Contains(view, "CHANGED") || !strings.Contains(view, "a.txt") {
 		t.Fatalf("sheet should list the changed file:\n%s", view)
@@ -241,47 +243,73 @@ func TestSessionSheetThatEmptiesWhileOpenStaysVisible(t *testing.T) {
 	}
 }
 
-// ±N files must be right from startup: Init reads HEAD and the diff off the
-// UI thread and the handler installs both.
+// ±N files must be right from startup: Init asks the session to read HEAD and
+// the diff off the UI thread.
 func TestInitLoadsChangedFilesOffThread(t *testing.T) {
 	m, dir := gitModel(t)
 	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if len(m.sheetChanged) != 0 {
-		t.Fatal("New must not run git for the changed files")
+	if got := m.sess.Status().ChangedFiles; got != 0 {
+		t.Fatalf("New must not run git for the changed files, got %d", got)
 	}
-	var found *sheetBaseRefMsg
-	for _, msg := range collectSheetBaseRefs(t, m.Init()) {
-		found = &msg
-	}
-	if found == nil {
-		t.Fatal("Init must schedule a base-ref/changed-files read")
-	}
-	mm, _ := m.Update(*found)
-	m = asModel(t, mm)
+	runCmdChain(t, m.Init())
 	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±1 file") {
 		t.Fatalf("status line missing ±1 file after startup:\n%s", got)
 	}
 }
 
 // Turn end does no git work on the UI thread: the diff arrives with the
-// sheetBaseRefMsg, not from a synchronous refresh that the message then
-// overwrites.
+// session's off-thread refresh, not from a synchronous read.
 func TestTurnEndDoesNotDiffSynchronously(t *testing.T) {
 	m, dir := gitModel(t)
 	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644)
 	m.busy = true
 	mm, cmd := m.Update(agentFinishedMsg{})
 	m = asModel(t, mm)
-	if len(m.sheetChanged) != 0 {
+	if got := m.sess.Status().ChangedFiles; got != 0 {
 		t.Fatal("handleAgentFinished diffed on the UI thread")
 	}
-	for _, msg := range collectSheetBaseRefs(t, cmd) {
-		mm, _ = m.Update(msg)
-		m = asModel(t, mm)
+	runCmdChain(t, cmd)
+	if got := m.sess.Status().ChangedFiles; got != 1 {
+		t.Fatalf("ChangedFiles = %d after the off-thread refresh, want 1", got)
 	}
-	if len(m.sheetChanged) != 1 {
-		t.Fatalf("sheetChanged = %v after the base-ref message", m.sheetChanged)
+}
+
+// Opening the sheet re-reads its cached values once, synchronously, so the
+// first frame shows fresh values.
+func TestOpeningTheSheetRefreshesIt(t *testing.T) {
+	state := seamState(t, "s1")
+	stub := &stubSession{}
+	var got []acpwire.SheetRefresh
+	stub.onRefreshSheet = func(req acpwire.SheetRefresh) { got = append(got, req) }
+	m := testModelStub(state, stub)
+	m.resize(100, 40)
+
+	ctrlB(m)
+	if want := []acpwire.SheetRefresh{{Changed: true}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("RefreshSheet requests = %+v, want %+v", got, want)
+	}
+}
+
+// Turn end rebases the sheet off the UI thread, and reads nothing
+// synchronously.
+func TestTurnEndRebasesTheSheet(t *testing.T) {
+	state := seamState(t, "s1")
+	stub := &stubSession{}
+	var got []acpwire.SheetRefresh
+	stub.onRefreshSheet = func(req acpwire.SheetRefresh) { got = append(got, req) }
+	m := testModelStub(state, stub)
+	m.resize(100, 40)
+	m.busy = true
+
+	mm, cmd := m.handleAgentFinished(agentFinishedMsg{err: nil})
+	m = mm
+	if len(got) != 0 {
+		t.Fatalf("handleAgentFinished refreshed synchronously: %+v", got)
+	}
+	runCmdChain(t, cmd)
+	if want := []acpwire.SheetRefresh{{Rebase: true}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("RefreshSheet requests = %+v, want %+v", got, want)
 	}
 }

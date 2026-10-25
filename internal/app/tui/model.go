@@ -68,8 +68,6 @@ import (
 	"marshal/internal/postmortem"
 	"marshal/internal/progress"
 	"marshal/internal/pubsub"
-	"marshal/internal/repo/changedfiles"
-	"marshal/internal/repo/gitinfo"
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
 	"marshal/internal/skills"
@@ -562,12 +560,6 @@ type Model struct {
 	// sheetTotals is the session-scoped usage aggregate the sheet footer
 	// reports. Refreshed alongside sheetTurns.
 	sheetTotals db.UsageTotals
-	// sheetBaseRef is the commit the changed-files section diffs against,
-	// rebased when the workspace changes and after each completed turn
-	// (see handleWorkspaceMsg/handleAgentFinished).
-	sheetBaseRef string
-	// sheetChanged is the changed-files cache, refreshed on turn boundaries.
-	sheetChanged []sessionsheet.ChangedFile
 	// sheetFleet is the agent-worktree cache, refreshed on turn boundaries
 	// (ListFleet shells out to git per worktree). Ahead/behind is against
 	// the project root's HEAD.
@@ -1780,8 +1772,6 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
 	}
 
-	m.sheetBaseRef = gitinfo.HeadSHA(state.Workspace().ActiveRoot)
-
 	m.histIdx = -1
 	if state.Config.History.Enabled {
 		if database := state.DB(); database != nil && m.memoryProject != 0 {
@@ -1823,11 +1813,10 @@ func blinkCmd() tea.Cmd {
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{blinkCmd()}
-	// Read HEAD and the changed files off-thread so ±N files is right from
-	// the first frame instead of waiting for a turn to end.
-	if cmd := sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot); cmd != nil {
-		cmds = append(cmds, cmd)
-	}
+	// The session reads HEAD and the changed files off the UI thread, so
+	// ±N files is right from the first frame instead of waiting for a turn
+	// to end.
+	cmds = append(cmds, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true}))
 	if cmd := pumpChanged(m.sess.Changed()); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
@@ -1877,12 +1866,6 @@ func (m *Model) refreshSheetTurns() {
 	if totals, err := database.SessionUsage(m.memoryProject, m.sess.ID()); err == nil {
 		m.sheetTotals = totals
 	}
-}
-
-// refreshSheetChanged reloads the changed-files cache. Shells out to git,
-// so it runs on turn boundaries only — never from View.
-func (m *Model) refreshSheetChanged() {
-	m.sheetChanged = sheetChangedFiles(changedfiles.Read(m.sess.Status().Workspace.ActiveRoot, m.sheetBaseRef))
 }
 
 // refreshSheetFleet reloads the agent-worktree cache the session sheet reads.
@@ -1965,7 +1948,7 @@ func (m *Model) closeSessionSheet() {
 // refreshSheetCaches reloads every turn-boundary cache the sheet reads.
 func (m *Model) refreshSheetCaches() {
 	m.refreshSheetTurns()
-	m.refreshSheetChanged()
+	_ = m.sess.RefreshSheet(m.ctx, acpwire.SheetRefresh{Changed: true})
 	m.refreshSheetFleet()
 }
 
@@ -1989,7 +1972,7 @@ func (m Model) sheetData() sessionsheet.Data {
 		Repo:    m.sheetRepoStats,
 		Turns:   m.sheetTurns,
 		Totals:  m.sheetTotals,
-		Changed: m.sheetChanged,
+		Changed: m.sess.Sheet(0).Changed,
 		Fleet:   m.sheetFleet,
 		Pack:    m.state.ContextPack(),
 		Audit:   m.state.AuditLog(),
@@ -2502,7 +2485,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWorkMsg(wm)
 	}
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, changedMsg, agentTickMsg, spinnerTickMsg, sheetBaseRefMsg, suggestionMsg, callersMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, changedMsg, agentTickMsg, spinnerTickMsg, suggestionMsg, callersMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -5432,9 +5415,9 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.restoreRunner()
 		m.restoreRunner = nil
 	}
-	// The changed-file count is refreshed off-thread by the sheetBaseRefCmd
-	// returned below. The turn and fleet caches are read only by the session
-	// sheet: refresh them here while it is open, otherwise when it opens.
+	// The changed files are refreshed off-thread by the refresh returned
+	// below. The turn and fleet caches are read only by the session sheet:
+	// refresh them here while it is open, otherwise when it opens.
 	if m.sheetOpen() {
 		m.refreshSheetTurns()
 		m.refreshSheetFleet()
@@ -5473,10 +5456,9 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.updateViewportHeight()
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
-	// Rebase the changed-files base ref onto the active root's HEAD so committed
-	// agent work stops inflating the diff; the sheetBaseRefMsg handler sets the
-	// new base and refreshes the cache after the next tick.
-	cmds := []tea.Cmd{tickCmd(), flushCmd, sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot)}
+	// The session rebases the changed files onto the active root's HEAD, so
+	// committed agent work stops inflating the diff.
+	cmds := []tea.Cmd{tickCmd(), flushCmd, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true})}
 	if suggestionCmd != nil {
 		cmds = append(cmds, suggestionCmd)
 	}
@@ -5616,11 +5598,11 @@ func (m Model) handleChanged(msg changedMsg) (Model, tea.Cmd) {
 	st := m.sess.Status()
 	cmds := []tea.Cmd{pumpChanged(msg.ch)}
 
-	// The sheet's base ref follows the workspace's active root.
+	// The sheet's changed files follow the workspace's active root.
 	if st.Workspace != m.workspaceSeen {
 		m.workspaceSeen = st.Workspace
 		if st.Workspace.ActiveRoot != "" {
-			cmds = append(cmds, sheetBaseRefCmd(st.Workspace.ActiveRoot))
+			cmds = append(cmds, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true}))
 		}
 	}
 
@@ -6467,30 +6449,6 @@ func (m *Model) openWork() {
 	m.refreshViewport()
 }
 
-// handleSheetBaseRef handles a sheetBaseRefMsg: a freshly-read HEAD SHA for
-// the changed-files cache. It rebases the base ref and installs the diff the
-// command already read off-thread, so the handler does no git work.
-func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
-	// Drop msgs whose dir is no longer the active root: linked worktrees
-	// share the object store, so a stale in-flight cmd from a previous
-	// workspace/session could otherwise rebase the session sheet against the wrong
-	// tree and produce a misleading diff.
-	if msg.dir != m.sess.Status().Workspace.ActiveRoot {
-		return m, nil
-	}
-	if msg.ref == "" {
-		// git could not read HEAD; keep the base and the cache as they were.
-		return m, nil
-	}
-	m.sheetBaseRef = msg.ref
-	m.sheetChanged = msg.changed
-	// No explicit refreshViewport here: Bubble Tea re-renders after every
-	// Update, and the status line and session sheet read m.sheetChanged
-	// directly in View. refreshViewport only rebuilds the transcript
-	// viewport, which this message does not touch.
-	return m, nil
-}
-
 // handleAgentTick handles an agentTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
@@ -6594,8 +6552,6 @@ func (m Model) dispatchRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePlanAuthorFinished(msg)
 	case changedMsg:
 		return m.handleChanged(msg)
-	case sheetBaseRefMsg:
-		return m.handleSheetBaseRef(msg)
 	case agentTickMsg:
 		return m.handleAgentTick(msg)
 	case spinnerTickMsg:

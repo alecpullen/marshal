@@ -35,7 +35,6 @@ import (
 	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/app/tui/probe"
 	"marshal/internal/app/tui/sddreview"
-	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/steerpanel"
 	"marshal/internal/app/tui/theme"
@@ -1693,14 +1692,12 @@ func TestAgentFinishedMsgClearsBusyAndRecordsNotice(t *testing.T) {
 	}
 }
 
-// collectSheetBaseRefs executes a cmd chain (which may be a tea.Sequence or
-// tea.Batch) and returns every sheetBaseRefMsg it produces. The sequence msg
-// type is unexported, so it is unwrapped via reflection. A command that blocks
-// (the change pump) yields no message; the timeout keeps the walk from waiting
-// on it.
-func collectSheetBaseRefs(t *testing.T, cmd tea.Cmd) []sheetBaseRefMsg {
+// runCmdChain runs a command tree of batches and sequences, and returns the
+// messages its leaves produce. A leaf that blocks for a second (the change
+// pump) yields none.
+func runCmdChain(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	t.Helper()
-	var refs []sheetBaseRefMsg
+	var msgs []tea.Msg
 	var walk func(c tea.Cmd)
 	walk = func(c tea.Cmd) {
 		if c == nil {
@@ -1720,8 +1717,8 @@ func collectSheetBaseRefs(t *testing.T, cmd tea.Cmd) []sheetBaseRefMsg {
 			return
 		}
 		// tea.Sequence returns an unexported sequenceMsg []Cmd (Cmd is
-		// func() tea.Msg); unwrap via reflection so we can collect the
-		// sheetBaseRefCmd inside it.
+		// func() tea.Msg); unwrap via reflection so we can reach the
+		// commands inside it.
 		rv := reflect.ValueOf(msg)
 		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Func {
 			for i := 0; i < rv.Len(); i++ {
@@ -1731,12 +1728,10 @@ func collectSheetBaseRefs(t *testing.T, cmd tea.Cmd) []sheetBaseRefMsg {
 			}
 			return
 		}
-		if rb, ok := msg.(sheetBaseRefMsg); ok {
-			refs = append(refs, rb)
-		}
+		msgs = append(msgs, msg)
 	}
 	walk(cmd)
-	return refs
+	return msgs
 }
 
 func TestAgentFinishedAdvancesSheetBaseRef(t *testing.T) {
@@ -1750,21 +1745,32 @@ func TestAgentFinishedAdvancesSheetBaseRef(t *testing.T) {
 	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: dir})
 	m.busy = true
 
+	// Rebase onto the clean repository, then commit a change: the turn end
+	// must rebase past it.
+	if err := m.sess.RefreshSheet(m.ctx, acpwire.SheetRefresh{Rebase: true}); err != nil {
+		t.Fatalf("RefreshSheet: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "commit", "-qam", "change").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	if err := m.sess.RefreshSheet(m.ctx, acpwire.SheetRefresh{Changed: true}); err != nil {
+		t.Fatalf("RefreshSheet: %v", err)
+	}
+	if len(m.sess.Sheet(0).Changed) == 0 {
+		t.Fatal("Changed is empty before the turn end, want a.txt against the old base")
+	}
+
 	mm, cmd := m.handleAgentFinished(agentFinishedMsg{err: nil})
 	m = mm
 	if m.busy {
 		t.Fatal("busy should be cleared after agentFinishedMsg")
 	}
-	refs := collectSheetBaseRefs(t, cmd)
-	if len(refs) != 1 {
-		t.Fatalf("expected 1 sheetBaseRefMsg from the cmd chain, got %d", len(refs))
-	}
-	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatalf("rev-parse HEAD: %v", err)
-	}
-	if refs[0].ref != string(want[:len(want)-1]) {
-		t.Errorf("sheetBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
+	runCmdChain(t, cmd)
+	if got := m.sess.Sheet(0).Changed; len(got) != 0 {
+		t.Errorf("Changed after the turn end = %+v, want none: the refresh rebased onto the new HEAD", got)
 	}
 }
 
@@ -2042,21 +2048,32 @@ func TestAgentFinishedAdvancesSheetBaseRefWhenCancelled(t *testing.T) {
 	m.busy = true
 	m.cancelling = true
 
+	// Rebase onto the clean repository, then commit a change: the cancelled
+	// turn end must rebase past it too.
+	if err := m.sess.RefreshSheet(m.ctx, acpwire.SheetRefresh{Rebase: true}); err != nil {
+		t.Fatalf("RefreshSheet: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "commit", "-qam", "change").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+	if err := m.sess.RefreshSheet(m.ctx, acpwire.SheetRefresh{Changed: true}); err != nil {
+		t.Fatalf("RefreshSheet: %v", err)
+	}
+	if len(m.sess.Sheet(0).Changed) == 0 {
+		t.Fatal("Changed is empty before the turn end, want a.txt against the old base")
+	}
+
 	mm, cmd := m.handleAgentFinished(agentFinishedMsg{err: context.Canceled})
 	m = mm
 	if m.cancelling {
 		t.Fatal("cancelling flag should be cleared after agentFinishedMsg")
 	}
-	refs := collectSheetBaseRefs(t, cmd)
-	if len(refs) != 1 {
-		t.Fatalf("expected 1 sheetBaseRefMsg from the cancelled cmd chain, got %d", len(refs))
-	}
-	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatalf("rev-parse HEAD: %v", err)
-	}
-	if refs[0].ref != string(want[:len(want)-1]) {
-		t.Errorf("sheetBaseRefMsg.ref = %q, want %q", refs[0].ref, string(want[:len(want)-1]))
+	runCmdChain(t, cmd)
+	if got := m.sess.Sheet(0).Changed; len(got) != 0 {
+		t.Errorf("Changed after the cancelled turn end = %+v, want none: the refresh rebased onto the new HEAD", got)
 	}
 }
 
@@ -2800,8 +2817,11 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
-	// Pre-set a stale changed-files rail.
-	model.sheetChanged = []sessionsheet.ChangedFile{{Path: "old.txt"}}
+	// An uncommitted change in the new session's tree: the replacement's
+	// cache starts empty and the refresh below fills it.
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
 
 	model.input.SetValue("/new")
 	updated, cmd := model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -2813,29 +2833,15 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	if got := m.sess.Status().Git.Branch; got != "feat-new" {
 		t.Errorf("Git.Branch = %q, want feat-new after /new", got)
 	}
-	if m.sheetChanged != nil {
-		t.Errorf("sheetChanged = %+v, want nil after /new", m.sheetChanged)
+	if got := m.sess.Status().ChangedFiles; got != 0 {
+		t.Errorf("ChangedFiles = %d before the refresh, want 0: the replacement's cache starts empty", got)
 	}
 	if cmd == nil {
-		t.Fatal("expected a non-nil cmd (sheetBaseRefCmd) from /new")
+		t.Fatal("expected a non-nil cmd (the sheet refresh) from /new")
 	}
-	var rb sheetBaseRefMsg
-	found := false
-	for _, msg := range batchResults(t, cmd) {
-		if v, ok := msg.(sheetBaseRefMsg); ok {
-			rb, found = v, true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("the /new batch carried no sheetBaseRefMsg")
-	}
-	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatalf("rev-parse HEAD: %v", err)
-	}
-	if rb.ref != string(want[:len(want)-1]) {
-		t.Errorf("sheetBaseRefMsg.ref = %q, want %q", rb.ref, string(want[:len(want)-1]))
+	runCmdChain(t, cmd)
+	if got := m.sess.Status().ChangedFiles; got != 1 {
+		t.Errorf("ChangedFiles = %d after the refresh, want 1", got)
 	}
 }
 
@@ -9498,18 +9504,9 @@ func TestNewSessionAcceptanceBuildsTheReplacement(t *testing.T) {
 		t.Fatalf("new session name = %q, want %q", swapper.lastName, "fix-auth")
 	}
 	if cmd == nil {
-		t.Fatal("the replacement must return the sheet-base-ref command")
+		t.Fatal("the replacement must return its commands")
 	}
-	found := false
-	for _, msg := range batchResults(t, cmd) {
-		if _, ok := msg.(sheetBaseRefMsg); ok {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("the replacement batch carried no sheetBaseRefMsg")
-	}
+	runCmdChain(t, cmd)
 }
 
 // TestResumeDeclineLeavesTheResumeTargetUntouched pins step 2's mutation rule

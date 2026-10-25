@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/viewmodel"
 )
 
@@ -56,16 +55,3 @@ type workActionMsg struct {
 // that its status may have changed. ch is the channel the pump read, so a
 // message from a replaced session's pump is recognised and dropped.
 type changedMsg struct{ ch <-chan struct{} }
-
-// sheetBaseRefMsg carries a freshly-read HEAD SHA and the changed files against it.
-// Emitted by sheetBaseRefCmd so the git subprocess stays off the UI thread.
-// dir is the workspace active root the SHA was read from; the handler drops
-// msgs whose dir is no longer the active root, so a stale in-flight cmd from
-// a previous workspace/session cannot set the base ref from the wrong tree.
-type sheetBaseRefMsg struct {
-	dir string
-	ref string
-	// changed is the working-tree diff against ref, read in the same
-	// off-thread command so the handler does no git work of its own.
-	changed []sessionsheet.ChangedFile
-}

@@ -5,13 +5,15 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"marshal/internal/acpwire"
 )
 
 func changedData() Data {
-	return Data{Changed: []ChangedFile{
-		{Path: "internal/llm/routing/resolve.go", Status: 'M', Added: 42, Removed: 8},
-		{Path: "internal/llm/routing/route.go", Status: 'M', Added: 11},
-		{Path: "internal/llm/routing/route_test.go", Status: 'A', Added: 96},
+	return Data{Changed: []acpwire.SheetChangedFile{
+		{Path: "internal/llm/routing/resolve.go", Status: "M", Added: 42, Removed: 8},
+		{Path: "internal/llm/routing/route.go", Status: "M", Added: 11},
+		{Path: "internal/llm/routing/route_test.go", Status: "A", Added: 96},
 	}}
 }
 
@@ -61,8 +63,8 @@ func TestChangedSectionRespectsMaxRows(t *testing.T) {
 }
 
 func TestChangedSectionColorsLineCounts(t *testing.T) {
-	d := Data{Changed: []ChangedFile{
-		{Path: "model.go", Status: 'M', Added: 42, Removed: 8},
+	d := Data{Changed: []acpwire.SheetChangedFile{
+		{Path: "model.go", Status: "M", Added: 42, Removed: 8},
 	}}
 	rows := ChangedSection{}.Render(d, 30, 0)
 	if len(rows) != 1 {
@@ -91,8 +93,8 @@ func TestChangedSectionColorsLineCounts(t *testing.T) {
 }
 
 func TestChangedSectionRowWidthUnaffectedByStyling(t *testing.T) {
-	d := Data{Changed: []ChangedFile{
-		{Path: "internal/app/tui/dockpanel/section_changed.go", Status: 'M', Added: 42, Removed: 8},
+	d := Data{Changed: []acpwire.SheetChangedFile{
+		{Path: "internal/app/tui/dockpanel/section_changed.go", Status: "M", Added: 42, Removed: 8},
 	}}
 	rows := ChangedSection{}.Render(d, 24, 0)
 	for i, r := range rows {

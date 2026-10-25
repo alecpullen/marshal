@@ -25,14 +25,6 @@ type LanguageShare struct {
 	Share int // 0-100
 }
 
-// ChangedFile is one entry in the changed-files section.
-type ChangedFile struct {
-	Path    string
-	Status  rune // 'A' added, 'M' modified, 'D' deleted
-	Added   int
-	Removed int
-}
-
 // Data is everything the session sheet can render. The Model assembles it once per
 // frame. Sections never reach outside it, and everything expensive (DB
 // queries, git subprocesses) is cached in on turn boundaries — never
@@ -48,7 +40,7 @@ type Data struct {
 	// (before this change) was project-scoped, so it could not be used to
 	// count a session's turns.
 	Totals  db.UsageTotals
-	Changed []ChangedFile
+	Changed []acpwire.SheetChangedFile
 	// Fleet is the agent-worktree listing, cached on turn boundaries like
 	// Changed: ListFleet shells out to git per worktree, so it must never
 	// be computed during render. Ahead/Behind are against the project

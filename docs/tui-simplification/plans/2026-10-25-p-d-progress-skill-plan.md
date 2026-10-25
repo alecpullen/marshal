@@ -25,12 +25,13 @@ Authoring workflow: [marshal-writing-plans](../../../internal/skills/builtin/mar
 
 **Assumptions:**
 - Every Go test command below runs with `TMPDIR=/private/tmp/pd-suite`. Create it first: `mkdir -p /private/tmp/pd-suite`.
-- **Pre-existing failures,** measured at `d7d9b39c`:
+- **Pre-existing failures,** measured at `d7d9b39c` and again at `e667a100`, with the same result except where noted:
   - `internal/app`: `TestSubagentChildRegistryBorrowsConversationService`, `TestPipelineRegistryCommandsCaptureDispatchWorktree`, `TestSubagentShellOutputDoesNotReachParent`, `TestAccessTUIOptionsResolveWithoutConfigReload`, `TestDefaultPromptBudget` and `TestRuntimeNewAndResumedSessionResetAccess`;
   - `internal/app/tui`: `TestStatusLineUntrustedIsWarningColored`;
   - `internal/tools/desktop/browser`: `TestStandaloneBackendNavigateAndRead`;
   - `internal/worktree`: `TestCLIGitOpsCommitAllWithoutARepoIdentity`;
-  - flaky under full-suite load, passing alone: `TestRuntimeAccessSerializesWithReloadAndQuiesce` and `TestRuntimeCloseRunsNoGitGC` (`internal/app`), and `TestACPChildApprovalUsesOwningSessionRegistry` (`internal/acp`).
+  - flaky under full-suite load, passing alone: `TestRuntimeAccessSerializesWithReloadAndQuiesce` and `TestRuntimeCloseRunsNoGitGC` (`internal/app`), and `TestACPChildApprovalUsesOwningSessionRegistry` (`internal/acp`);
+  - new at `e667a100`: `web/bridge` hit `go test`'s 10-minute default timeout under full-suite load, and passes alone in about 2.5 minutes (`go test ./web/bridge/ -count=1`). P-D does not touch `web/`.
 
   **`TestDefaultPromptBudget` leaves this list in Task 1** and must pass from then on. A flaky test that fails in a full run counts as pre-existing only when it passes on its own with `-count=3`.
 - `python3` is on the machine. This machine has 3.9, so the producers use nothing newer than Python 3.8: no `match` statements and no `X | Y` type unions.

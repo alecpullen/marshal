@@ -10,7 +10,6 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
-	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
@@ -213,7 +212,6 @@ func TestBoxSitsBelowTheViewport(t *testing.T) {
 	m.resize(100, 40)
 	child := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
 	m.state.RegisterSubagent("reviewer", child)
-	m.jobs = []native.JobInfo{runningJob(1, "go test ./...", time.Second)}
 	m.refreshViewport()
 	if got := m.boxTop(); got != m.scrollHintRows()+m.breadcrumbRows()+m.viewport.Height() {
 		t.Fatalf("box top = %d, want %d", got, m.scrollHintRows()+m.breadcrumbRows()+m.viewport.Height())

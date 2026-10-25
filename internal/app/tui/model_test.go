@@ -51,7 +51,6 @@ import (
 	"marshal/internal/pipeline"
 	"marshal/internal/postmortem"
 	"marshal/internal/pubsub"
-	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
@@ -2794,9 +2793,7 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	updated, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = updated.(Model)
 
-	// Pre-set stale git info and a stale changed-files rail.
-	model.gitInfo = gitinfo.Info{Branch: "old", InRepo: true}
-	model.lastGitRead = time.Unix(50, 0)
+	// Pre-set a stale changed-files rail.
 	model.sheetChanged = []sessionsheet.ChangedFile{{Path: "old.txt"}}
 
 	model.input.SetValue("/new")
@@ -2806,14 +2803,11 @@ func TestNewSessionRereadsGitInfo(t *testing.T) {
 	if !swapper.called {
 		t.Fatal("expected session swapper to be called")
 	}
-	if m.gitInfo.Branch != "feat-new" {
-		t.Errorf("gitInfo.Branch = %q, want feat-new after /new", m.gitInfo.Branch)
+	if got := m.sess.Status().Git.Branch; got != "feat-new" {
+		t.Errorf("Git.Branch = %q, want feat-new after /new", got)
 	}
 	if m.sheetChanged != nil {
 		t.Errorf("sheetChanged = %+v, want nil after /new", m.sheetChanged)
-	}
-	if m.lastGitRead.Before(time.Unix(50, 0)) {
-		t.Errorf("lastGitRead = %v, want refreshed after /new", m.lastGitRead)
 	}
 	if cmd == nil {
 		t.Fatal("expected a non-nil cmd (sheetBaseRefCmd) from /new")
@@ -3393,47 +3387,14 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 // parent.ask/parent.respond channel in the context-diet Tier 2a cut: the TUI
 // no longer renders a subagent question.
 
-// TestStatusLineJobCountFromBroker exercises the F19 broker-sourced job
-// count: when a jobBroker is wired, the status line reads m.jobCount
-// instead of m.state.RunningJobsCount().
-func TestStatusLineJobCountFromBroker(t *testing.T) {
-	b := pubsub.NewBroker[native.JobEvent]()
-	m := newViewTestModel(t, 100, 24)
-	m.jobBroker = b
-	m.jobCount = 5
-	line := m.renderStatusLine(100)
-	if !strings.Contains(stripANSI(line), "jobs 5") {
-		t.Fatalf("status line missing broker job count:\n%s", line)
-	}
-}
-
-// TestStatusLineJobCountFallbackWhenNoBroker verifies the polled fallback
-// is used when no broker is wired (e.g. test harnesses).
-func TestStatusLineJobCountFallbackWhenNoBroker(t *testing.T) {
+// TestStatusLineShowsTheRunningJobCount verifies the status line reads the
+// running job count from the session status.
+func TestStatusLineShowsTheRunningJobCount(t *testing.T) {
 	m := newViewTestModel(t, 100, 24)
 	m.state.SetRunningJobsCount(3)
 	line := m.renderStatusLine(100)
 	if !strings.Contains(stripANSI(line), "jobs 3") {
 		t.Fatalf("status line missing polled job count:\n%s", line)
-	}
-}
-
-// TestJobCountMsgUpdatesModel verifies the jobCountMsg handler updates
-// the cached count and re-arms the pump.
-func TestJobCountMsgUpdatesModel(t *testing.T) {
-	b := pubsub.NewBroker[native.JobEvent]()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	m := newViewTestModel(t, 80, 24)
-	m.jobBroker = b
-	m.jobEvents = b.Subscribe(ctx)
-	updated, cmd := m.Update(jobCountMsg{count: 7})
-	um := updated.(Model)
-	if um.jobCount != 7 {
-		t.Fatalf("jobCount = %d, want 7", um.jobCount)
-	}
-	if cmd == nil {
-		t.Fatal("expected pump re-arm cmd, got nil")
 	}
 }
 
@@ -6710,9 +6671,6 @@ func TestDockedSettingsBrowserDoesNotSwallowRuntimeMessages(t *testing.T) {
 	updated, _ = m.Update(jobCountMsg{count: 3})
 	m = updated.(Model)
 
-	if m.jobCount != 3 {
-		t.Fatalf("jobCount = %d, want 3", m.jobCount)
-	}
 	if _, ok := m.dock.Panel().(*settings.BrowserPanel); !ok {
 		t.Fatal("settings browser should stay open after jobCountMsg")
 	}
@@ -7280,21 +7238,6 @@ func (r *testAgentRunner) Run(ctx context.Context, goal string) error { return n
 func (r *testAgentRunner) SetForceClass(class string)                 {}
 func (r *testAgentRunner) AnswerGate(string)                          {}
 
-// newStatusTestModelFromTemp builds a Model rooted in a temp git repo so
-// gitInfo resolves. Used by the git-info wiring tests.
-func newStatusTestModelFromTemp(t *testing.T) Model {
-	t.Helper()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git not available: %v", err)
-	}
-	dir := t.TempDir()
-	initRepoTest(t, dir)
-	state := session.New(config.Default(), dir, time.Unix(100, 0), session.Persistence{})
-	m := testModel(state)
-	m.resize(100, 30)
-	return m
-}
-
 func initRepoTest(t *testing.T, dir string) {
 	t.Helper()
 	for _, args := range [][]string{
@@ -7312,25 +7255,6 @@ func initRepoTest(t *testing.T, dir string) {
 	}
 	if out, err := exec.Command("git", "-C", dir, "commit", "-m", "init").CombinedOutput(); err != nil {
 		t.Fatalf("git commit: %v\n%s", err, out)
-	}
-}
-
-func TestGitInfoPopulatedOnResize(t *testing.T) {
-	m := newStatusTestModelFromTemp(t)
-	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	if !m.gitInfo.InRepo {
-		t.Fatalf("gitInfo not populated after resize; InRepo=%v", m.gitInfo)
-	}
-}
-
-func TestGitInfoRefreshThrottled(t *testing.T) {
-	m := newStatusTestModelFromTemp(t)
-	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	first := m.gitInfo
-	// Immediate tick: throttled, must NOT re-read (same value).
-	m.handleAgentTick(agentTickMsg{})
-	if m.gitInfo != first {
-		t.Fatalf("gitInfo changed on throttled tick; freshness window broken")
 	}
 }
 

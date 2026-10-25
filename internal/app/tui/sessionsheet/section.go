@@ -3,10 +3,10 @@ package sessionsheet
 import (
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/contextpack"
 	"marshal/internal/db"
-	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/registry"
 	"marshal/internal/worktree"
 )
@@ -39,7 +39,7 @@ type ChangedFile struct {
 // computed during render.
 type Data struct {
 	State *session.State
-	Git   gitinfo.Info
+	Git   acpwire.Git
 	Repo  RepoStats
 	Turns []db.TurnMetricsRow // most recent first
 	// Totals is the session-scoped usage aggregate backing the footer's

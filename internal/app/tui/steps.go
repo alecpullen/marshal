@@ -697,17 +697,3 @@ func (m Model) approvalWhyFor(owner *session.State, tc *session.PendingToolCall)
 	}
 	return w
 }
-
-// subagentHeadline is the first sentence of a child's latest narration: what
-// it says it is doing, for the now bar's agent rows.
-func subagentHeadline(child *session.State) string {
-	if child == nil {
-		return ""
-	}
-	line := strings.TrimSpace(child.LatestNarrationLine())
-	if line == "" {
-		return ""
-	}
-	head, _ := firstSentence(line)
-	return stripEmphasis(head)
-}

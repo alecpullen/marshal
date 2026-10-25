@@ -18,7 +18,6 @@ import (
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/interaction"
 	"marshal/internal/pipeline"
-	"marshal/internal/repo/gitinfo"
 	"marshal/internal/worktree"
 )
 
@@ -201,8 +200,6 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	if snap.Session != nil {
 		m.sess = snap.Session
 	}
-	m.gitInfo = gitinfo.Read(m.sess.Status().Workspace.ActiveRoot)
-	m.lastGitRead = m.now()
 	if snap.Runner != nil {
 		m.runner = snap.Runner
 	}

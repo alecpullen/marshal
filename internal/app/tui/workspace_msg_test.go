@@ -5,40 +5,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/sessionsheet"
 )
-
-func TestHandleWorkspaceMsgRereadsGitInfo(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	dir := t.TempDir()
-	initSheetTestRepo(t, dir)
-
-	m := Model{now: time.Now}
-	m, cmd := m.handleWorkspaceMsg(workspaceMsg{activeRoot: dir})
-	if cmd == nil {
-		t.Fatal("expected a non-nil cmd (sheetBaseRefCmd) even without a subscription")
-	}
-	msg := cmd()
-	rb, ok := msg.(sheetBaseRefMsg)
-	if !ok {
-		t.Fatalf("cmd() returned %T, want sheetBaseRefMsg", msg)
-	}
-	want, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
-	if err != nil {
-		t.Fatalf("rev-parse HEAD: %v", err)
-	}
-	if rb.ref != string(want[:len(want)-1]) {
-		t.Errorf("sheetBaseRefMsg.ref = %q, want %q", rb.ref, string(want[:len(want)-1]))
-	}
-	if !m.gitInfo.InRepo || m.gitInfo.Branch != "main" {
-		t.Fatalf("gitInfo = %+v, want branch main in repo", m.gitInfo)
-	}
-}
 
 func TestHandleWorkspaceMsgRebasesRail(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {

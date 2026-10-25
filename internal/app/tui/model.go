@@ -487,16 +487,9 @@ type Model struct {
 
 	// F19 broker pump. jobBroker is the F5 job-event broker; the pump
 	// cmd returned from Init (and re-armed from Update on each
-	// jobCountMsg) bridges it into jobCountMsg values. jobCount is the
-	// cached value the status line renders. When jobBroker is nil
-	// (tests, fallback), the status line reads m.state.RunningJobsCount()
-	// as the polled fallback.
+	// jobCountMsg) bridges it into jobCountMsg values.
 	jobBroker *pubsub.Broker[native.JobEvent]
 	jobEvents <-chan pubsub.Event[native.JobEvent]
-	jobCount  int
-	// jobs is the cached JobInfo snapshot from the latest JobEvent, used by
-	// the now bar above the input. Nil/empty when no broker is wired.
-	jobs []native.JobInfo
 
 	// watchBroker is the watch-event broker; the pump cmd returned from Init
 	// (and re-armed from Update on each watchMsg) bridges it into watchMsg
@@ -562,12 +555,6 @@ type Model struct {
 	// re-renders subagent cards as they are registered or change status.
 	subagentBroker *pubsub.Broker[session.SubagentEvent]
 	subagentEvents <-chan pubsub.Event[session.SubagentEvent]
-
-	// gitInfo holds the cached branch + worktree for state.WorkingDir,
-	// refreshed on a throttled tick and on every WindowSizeMsg. lastGitRead
-	// bounds the throttle (see handleAgentTick).
-	gitInfo     gitinfo.Info
-	lastGitRead time.Time
 
 	// New Layout State
 	rawWidth  int // unclamped terminal dimensions (gate check)
@@ -1146,9 +1133,7 @@ func WithPlanAuthorFactory(ctx context.Context, factory PlanAuthorFactory) Optio
 
 // WithJobBroker wires the F19 pub/sub broker for F5 job-state changes.
 // The model subscribes via pumpJobEvents from Init and re-arms the pump
-// on each jobCountMsg. When broker is nil the model falls back to the
-// polled m.state.RunningJobsCount() for tests that don't construct a
-// broker.
+// on each jobCountMsg.
 func WithJobBroker(ctx context.Context, broker *pubsub.Broker[native.JobEvent]) Option {
 	return func(m *Model) {
 		m.ctx = ctx
@@ -1871,8 +1856,6 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
 	}
 
-	m.gitInfo = gitinfo.Read(state.Workspace().ActiveRoot)
-	m.lastGitRead = m.now()
 	m.sheetBaseRef = gitinfo.HeadSHA(state.Workspace().ActiveRoot)
 
 	m.histIdx = -1
@@ -2087,9 +2070,10 @@ func (m Model) sheetDataFor() sessionsheet.Data {
 // either already in memory or cached on turn boundaries — this runs once
 // per frame and must never query the DB or shell out.
 func (m Model) sheetData() sessionsheet.Data {
+	st := m.sess.Status()
 	return sessionsheet.Data{
 		State:   m.state,
-		Git:     m.gitInfo,
+		Git:     st.Git,
 		Repo:    m.sheetRepoStats,
 		Turns:   m.sheetTurns,
 		Totals:  m.sheetTotals,
@@ -2133,7 +2117,7 @@ func (m Model) childSheetData(child *session.State) sessionsheet.Data {
 		Audit:  child.AuditLog(),
 		Rules:  child.SessionRules(),
 		Skills: child.ActiveSkills(),
-		Git:    m.gitInfo,
+		Git:    m.sess.Status().Git,
 		Repo:   m.sheetRepoStats,
 		// Fleet stays parent-sourced like Git/Repo: the agent worktrees
 		// describe the project's workspace, not the drilled-in conversation.
@@ -2393,10 +2377,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sudoAuthModel != nil {
 			m.sudoAuthModel.SetSize(max(m.leftWidth-4, 30))
 		}
-		// Refresh git state on focus/resize: a fresh view should reflect
-		// current branch even if it changed in another tool.
-		m.gitInfo = gitinfo.Read(m.sess.Status().Workspace.ActiveRoot)
-		m.lastGitRead = m.now()
 		m.refreshViewport()
 		return m, nil
 	}
@@ -5716,12 +5696,9 @@ func (m Model) handlePlanAuthorFinished(msg planAuthorFinishedMsg) (Model, tea.C
 // handleRuntimeMessage.
 func (m Model) handleJobCount(msg jobCountMsg) (Model, tea.Cmd) {
 	// Job exits are recorded agent-side (the JobManager's exit callback), so
-	// every client sees a settled card. This handler only refreshes the
-	// cached snapshot: repaint now so a settled card renders even when the
-	// user is idle (no tick, notice, or pulse would otherwise trigger a
-	// rebuild).
-	m.jobCount = msg.count
-	m.jobs = msg.jobs
+	// every client sees a settled card. This handler only repaints: a settled
+	// card renders even when the user is idle (no tick, notice, or pulse would
+	// otherwise trigger a rebuild).
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
 	// Re-arm the pump: exactly one in-flight subscription at a time
@@ -6136,15 +6113,11 @@ func (m Model) steeringStatusSegment(r *acpwire.SteeringReceipt) (string, bool) 
 }
 
 // handleWorkspaceMsg handles a workspaceMsg: the session's active root
-// changed, so re-read git info for the new root immediately rather than
-// waiting for the 5s tick, then re-arm the pump. It also returns a
-// sheetBaseRefCmd so the changed-files cache rebases onto the new root's HEAD
-// off the UI thread.
+// changed, so it returns a sheetBaseRefCmd so the changed-files cache rebases
+// onto the new root's HEAD off the UI thread, then re-arms the pump.
 func (m Model) handleWorkspaceMsg(msg workspaceMsg) (Model, tea.Cmd) {
 	var baseCmd tea.Cmd
 	if msg.activeRoot != "" {
-		m.gitInfo = gitinfo.Read(msg.activeRoot)
-		m.lastGitRead = m.now()
 		baseCmd = sheetBaseRefCmd(msg.activeRoot)
 	}
 	if m.workspaceEvents == nil {
@@ -6685,11 +6658,6 @@ func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
 // handleAgentTick handles an agentTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
-	st := m.sess.Status()
-	if now := m.now(); st.Workspace.ActiveRoot != "" && now.Sub(m.lastGitRead) >= 5*time.Second {
-		m.gitInfo = gitinfo.Read(st.Workspace.ActiveRoot)
-		m.lastGitRead = now
-	}
 	if !m.busy && m.successPulse && m.now().Sub(m.successPulseAt) >= successPulseDuration {
 		m.successPulse = false
 	}
@@ -7185,7 +7153,7 @@ func (m *Model) modeReceipt(state interaction.State) {
 	switch state.Mode {
 	case interaction.ModeAsk:
 		msg = "Switched to Ask mode. New actions need approval."
-		if m.busy || m.state.RunningJobsCount() > 0 {
+		if m.busy || m.sess.Status().RunningJobs > 0 {
 			msg += " Work already running continues."
 		}
 	case interaction.ModeAct:

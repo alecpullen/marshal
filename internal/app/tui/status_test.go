@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/contextpack"
 	"marshal/internal/interaction"
@@ -26,6 +28,19 @@ func newStatusTestModel(t *testing.T) Model {
 	t.Setenv("NO_COLOR", "")
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	m := testModel(state)
+	m.resize(100, 30)
+	return m
+}
+
+// newStatusTestModelWithGit builds a status model whose git info is git.
+func newStatusTestModelWithGit(t *testing.T, git *gitinfo.Info) Model {
+	t.Helper()
+	t.Setenv("NO_COLOR", "")
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := testModelWith(inproc.Deps{
+		State:   state,
+		GitInfo: func(string) gitinfo.Info { return *git },
+	})
 	m.resize(100, 30)
 	return m
 }
@@ -429,8 +444,8 @@ func TestStatusLineShowsQueueHint(t *testing.T) {
 }
 
 func TestStatusLineShowsGitBranch(t *testing.T) {
-	m := newStatusTestModel(t)
-	m.gitInfo = gitinfo.Info{Branch: "main", Worktree: "", InRepo: true}
+	git := gitinfo.Info{Branch: "main", Worktree: "", InRepo: true}
+	m := newStatusTestModelWithGit(t, &git)
 	line := stripANSI(m.renderStatusLine(120))
 	if !strings.Contains(line, "⎇ main") {
 		t.Fatalf("status line missing git branch:\n%s", line)
@@ -438,8 +453,8 @@ func TestStatusLineShowsGitBranch(t *testing.T) {
 }
 
 func TestStatusLineShowsWorktree(t *testing.T) {
-	m := newStatusTestModel(t)
-	m.gitInfo = gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
+	git := gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
+	m := newStatusTestModelWithGit(t, &git)
 	line := stripANSI(m.renderStatusLine(120))
 	if !strings.Contains(line, "wt:linked") {
 		t.Fatalf("status line missing worktree:\n%s", line)
@@ -447,8 +462,8 @@ func TestStatusLineShowsWorktree(t *testing.T) {
 }
 
 func TestStatusLineOmitsGitSegmentsWhenNotInRepo(t *testing.T) {
-	m := newStatusTestModel(t)
-	m.gitInfo = gitinfo.Info{}
+	git := gitinfo.Info{}
+	m := newStatusTestModelWithGit(t, &git)
 	line := stripANSI(m.renderStatusLine(100))
 	if strings.Contains(line, "⎇") {
 		t.Fatalf("status line shows branch glyph when not in repo:\n%s", line)
@@ -459,10 +474,10 @@ func TestStatusLineOmitsGitSegmentsWhenNotInRepo(t *testing.T) {
 }
 
 func TestStatusLineCollapseDropsWorktreeBeforeBranch(t *testing.T) {
-	m := newStatusTestModel(t)
+	git := gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
+	m := newStatusTestModelWithGit(t, &git)
 	m.state.SetTrusted(true)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
-	m.gitInfo = gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
 	line := stripANSI(m.renderStatusLine(58))
 	// branch shares priority 5 with dir; worktree is 6. On a tight width the
 	// worktree should be dropped while the branch survives (branch + dir both 5).
@@ -566,9 +581,9 @@ func TestStatusCleanWhenNoDiagnostics(t *testing.T) {
 	}
 }
 
-func TestWorkspaceMsgUpdatesGitInfoWhenDockOpen(t *testing.T) {
+func TestStatusLineFollowsTheActiveRootsBranchWhenDockOpen(t *testing.T) {
 	// gitinfo.Read reads real git state from the filesystem, so build a real
-	// temp repo and point the workspace message at it.
+	// temp repo and point the workspace at it.
 	dir := t.TempDir()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -583,17 +598,16 @@ func TestWorkspaceMsgUpdatesGitInfoWhenDockOpen(t *testing.T) {
 		}
 	}
 
-	m := newTestModel(t)
-	m.gitInfo = gitinfo.Info{Branch: "main", InRepo: true}
+	m := newStatusTestModel(t)
+	m.dock.Open(&picker.Model{})
 
-	mm, _ := m.Update(workspaceMsg{activeRoot: dir})
-	m = mm.(Model)
+	// No message is sent: the status line reads the workspace's active root
+	// through the session on the next render.
+	m.state.SetWorkspace(session.Workspace{ActiveRoot: dir})
 
-	if !m.gitInfo.InRepo {
-		t.Fatalf("gitInfo.InRepo = false, want true after workspace change")
-	}
-	if m.gitInfo.Branch != "pipeline/feature" {
-		t.Errorf("gitInfo.Branch = %q, want pipeline/feature", m.gitInfo.Branch)
+	line := stripANSI(m.renderStatusLine(120))
+	if !strings.Contains(line, "⎇ pipeline/feature") {
+		t.Fatalf("status line missing the active root's branch:\n%s", line)
 	}
 }
 
@@ -693,10 +707,10 @@ func TestStatusLineSDDTokensUnlimited(t *testing.T) {
 }
 
 func TestStatusLineDropsHintsBeforePathAndWorktree(t *testing.T) {
-	m := newStatusTestModel(t)
+	git := gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
+	m := newStatusTestModelWithGit(t, &git)
 	m.state.SetTrusted(true)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama", LocalOnly: true})
-	m.gitInfo = gitinfo.Info{Branch: "feature", Worktree: "linked", InRepo: true}
 
 	// At a wide width, both the worktree segment and the footer hints
 	// (e.g. "Tab mode", "? help") should be visible.

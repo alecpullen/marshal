@@ -76,4 +76,10 @@ type Session interface {
 	// ACP: session/sheet (new in P3). P3 serves it from a mirror that
 	// RefreshSheet fills.
 	Sheet(subagentID int64) acpwire.SessionSheet
+
+	// RefreshSheet re-reads the sheet values req names from the database and
+	// git, then fires Changed. It blocks on those reads.
+	//
+	// ACP: session/sheet (new in P3), sent with the refresh flags.
+	RefreshSheet(ctx context.Context, req acpwire.SheetRefresh) error
 }

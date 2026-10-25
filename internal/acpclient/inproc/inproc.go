@@ -40,6 +40,9 @@ type Deps struct {
 	Subagents *pubsub.Broker[session.SubagentEvent]
 	// GitInfo reads the git info for a directory. Nil means gitinfo.Read.
 	GitInfo func(dir string) gitinfo.Info
+	// ProjectID is the project's database ID, for the sheet's turn metrics
+	// and repo counts. The database itself is the state's.
+	ProjectID int64
 }
 
 // Host is the in-process transport: it owns the current session and hands out
@@ -56,17 +59,26 @@ type Session struct {
 	gitInfo func(dir string) gitinfo.Info
 	closed  atomic.Bool
 
+	// projectID is the project's database ID, for the sheet's turn metrics
+	// and repo counts.
+	projectID int64
+	// headSHA reads a directory's HEAD. Replaceable so the package's tests
+	// can move the workspace mid-read.
+	headSHA func(dir string) string
+
 	// ctx bounds the event subscriptions; cancel releases them.
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// mu guards the signal channel and the values the event loop keeps.
+	// mu guards the signal channel, the values the event loop keeps and the
+	// sheet cache.
 	mu            sync.Mutex
 	changed       chan struct{}
 	changedClosed bool
 	receipts      map[string]session.SteeringReceipt
 	resume        *acpwire.WatchResume
 	resumeSeq     uint64
+	sheet         sheetCache
 }
 
 var (
@@ -189,6 +201,9 @@ func (s *Session) Status() acpwire.SessionStatus {
 			Report:    gate.Report,
 		},
 		Git: gitOf(s.gitInfo(ws.ActiveRoot)),
+		// The count the status line shows. The session refreshes it on turn
+		// boundaries and workspace moves, never during render.
+		ChangedFiles: s.changedFiles(),
 	}
 	if r, ok := st.TurnRoute(); ok {
 		route := routeOf(r)

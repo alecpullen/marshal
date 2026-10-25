@@ -60,9 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **The tray**
 
 - Running work, the work that finished until your next prompt, and the plan are
-  pinned in a tray above the input, with measured bars, rates and ETAs. The step
-  in progress stays in the transcript, and the turn's clock is in the status
-  line.
+  pinned in a framed tray above the input, a section each for the work and the
+  plan, with measured bars, rates and ETAs. Running rows are tinted across the
+  frame. The step in progress stays in the transcript, and the turn's clock is
+  in the status line.
 - A wrapped narration keeps its todo tag on its first line.
 
 **Transcript: beats on a spine**

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/livebox"
@@ -28,6 +29,18 @@ func boxRowY(m *Model, i int) int {
 		return -1
 	}
 	return m.boxTop() + i
+}
+
+// boxInnerRows is the tray's rows inside its outline, without the border
+// lines.
+func boxInnerRows(m Model) []livebox.Row {
+	var out []livebox.Row
+	for _, r := range m.boxLayout().Rows {
+		if r.Frame == livebox.FrameInner {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // boxRowFor returns the index of the first layout row matching f.
@@ -169,7 +182,12 @@ func TestBoxClickTogglesAWorkCard(t *testing.T) {
 
 // TestBoxClickOnPlanItemJumpsToItsBeat: the plan item's row scrolls the
 // transcript to the first beat bound to it.
-func TestBoxClickOnPlanItemJumpsToItsBeat(t *testing.T) {
+// twoItemPlanModel is a busy session whose plan has two items, t1 finished
+// and t2 in progress, each bound to its own beat, with enough history above
+// them that jumping to t1's beat scrolls the viewport. gap more messages sit
+// between the two beats.
+func twoItemPlanModel(t *testing.T, gap int) Model {
+	t.Helper()
 	m := newTestModel(t)
 	m.resize(100, 40)
 	for i := range 80 {
@@ -183,6 +201,9 @@ func TestBoxClickOnPlanItemJumpsToItsBeat(t *testing.T) {
 	done := m.state.BeginStep(session.Actor{})
 	m.state.AddNarration(done, "Doing the first thing.")
 	m.state.EndStep(done)
+	for i := range gap {
+		m.state.AddMessage(session.RoleSystem, fmt.Sprintf("between %d", i), session.ContentTypePlain)
+	}
 	// The list moves on, and the live beat binds to the new item.
 	mustSetTodos(t, &m,
 		native.TodoItem{ID: "t1", Content: "First", Status: native.TodoCompleted},
@@ -194,6 +215,11 @@ func TestBoxClickOnPlanItemJumpsToItsBeat(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 	m.viewString()
+	return m
+}
+
+func TestBoxClickOnPlanItemJumpsToItsBeat(t *testing.T) {
+	m := twoItemPlanModel(t, 0)
 
 	var want viewmodel.NodeID
 	for _, t := range m.band.Tasks {
@@ -219,6 +245,60 @@ func TestBoxClickOnPlanItemJumpsToItsBeat(t *testing.T) {
 	}
 	if got := m.viewport.YOffset(); got == 0 {
 		t.Fatalf("viewport did not scroll to the beat (offset %d)", got)
+	}
+}
+
+// TestBoxClickOnTheRightPlanColumn: the tray's rows sit inside its outline, so
+// a click is measured from the row's text, two cells in. The gap cell just
+// left of the right-hand entry still belongs to the left item, and the
+// entry's own mark is the right item.
+func TestBoxClickOnTheRightPlanColumn(t *testing.T) {
+	// The history between the beats keeps t1's beat clear of the bottom, so
+	// the jump to it is not clamped to the same offset as t2's.
+	m := twoItemPlanModel(t, 80)
+	var first viewmodel.NodeID
+	for _, t := range m.band.Tasks {
+		if t.ID == "t1" {
+			first = t.First
+		}
+	}
+	firstLine := -1
+	for _, r := range m.nodeRegions {
+		if r.target.node == first {
+			firstLine = r.startLine
+			break
+		}
+	}
+	if firstLine < 0 {
+		t.Fatal("t1's beat has no region")
+	}
+
+	i := boxRowFor(&m, func(r livebox.Row) bool {
+		return r.Target.Kind == livebox.TargetPlan && r.Target.Key == "t1"
+	})
+	if i < 0 {
+		t.Fatalf("no plan row for t1:\n%s", stripANSI(boxOut(m)))
+	}
+	// Find the right-hand entry on screen: its mark sits two cells before its
+	// text.
+	line := stripANSI(strings.Split(boxOut(m), "\n")[i])
+	at := strings.Index(line, "Second")
+	if at < 0 {
+		t.Fatalf("no right-hand entry on the row: %q", line)
+	}
+	mark := ansi.StringWidth(line[:at]) - 2
+
+	if _, handled := m.handleBoxClick(tea.Mouse{Button: tea.MouseLeft, X: mark - 1, Y: boxRowY(&m, i)}); !handled {
+		t.Fatal("a click on a plan row must be consumed")
+	}
+	if got := m.viewport.YOffset(); got != firstLine {
+		t.Errorf("a click left of the right-hand entry scrolled to line %d, want t1's beat at %d", got, firstLine)
+	}
+	if _, handled := m.handleBoxClick(tea.Mouse{Button: tea.MouseLeft, X: mark, Y: boxRowY(&m, i)}); !handled {
+		t.Fatal("a click on a plan row must be consumed")
+	}
+	if got := m.viewport.YOffset(); got == firstLine {
+		t.Errorf("a click on the right-hand entry's mark stayed on t1's beat (line %d)", got)
 	}
 }
 
@@ -321,7 +401,8 @@ func TestTraySubagentCardShowsItsModelAndProvider(t *testing.T) {
 	}
 }
 
-// TestSwarmIsTheTraysFirstRow: an active swarm is the tray's first row.
+// TestSwarmIsTheTraysFirstRow: an active swarm is the first row inside the
+// tray's outline.
 func TestSwarmIsTheTraysFirstRow(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(100, 40)
@@ -334,14 +415,14 @@ func TestSwarmIsTheTraysFirstRow(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	rows := m.boxLayout().Rows
+	rows := boxInnerRows(m)
 	if len(rows) == 0 {
 		t.Fatal("the tray has no rows")
 	}
 	first := stripANSI(rows[0].Text)
 	for _, want := range []string{"run", "swarm"} {
 		if !strings.Contains(first, want) {
-			t.Errorf("tray row 0 = %q, want it to contain %q", first, want)
+			t.Errorf("tray's first row = %q, want it to contain %q", first, want)
 		}
 	}
 }

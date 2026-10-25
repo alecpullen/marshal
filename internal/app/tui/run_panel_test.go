@@ -355,7 +355,7 @@ func TestRunPanelShowsAgentFallbackPhase(t *testing.T) {
 	}
 }
 
-// An SDD run's summary is the tray's first row.
+// An SDD run's summary is the first row inside the tray's outline.
 func TestSDDRunIsTheTraysFirstRow(t *testing.T) {
 	m := newTestModelInRepo(t)
 	m.width, m.height = 100, 40
@@ -365,14 +365,14 @@ func TestSDDRunIsTheTraysFirstRow(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	rows := m.boxLayout().Rows
+	rows := boxInnerRows(m)
 	if len(rows) == 0 {
 		t.Fatal("the tray has no rows")
 	}
 	first := stripANSI(rows[0].Text)
 	for _, want := range []string{"run", "task "} {
 		if !strings.Contains(first, want) {
-			t.Errorf("tray row 0 = %q, want it to contain %q", first, want)
+			t.Errorf("tray's first row = %q, want it to contain %q", first, want)
 		}
 	}
 }

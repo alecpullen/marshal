@@ -1,2 +1,4 @@
-▌⧉ #1     review the config change                                                       1m 2s ⠋
-▌         kimi-k3 @ kimi · Checking context_window…                                             
+╭─ running 1 ──────────────────────────────────────────────────────────────────────────────────╮
+│ ▌⧉ #1     review the config change                                                   1m 2s ⠋ │
+│ ▌         kimi-k3 @ kimi · Checking context_window…                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────╯

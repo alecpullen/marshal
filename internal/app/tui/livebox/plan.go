@@ -206,20 +206,29 @@ func styledText(s string, dim, warning bool) string {
 	return s
 }
 
+// planHeader is the plan section's header: the blocks and done/total, and
+// "done" once every item is completed.
+func planHeader(in Input) string {
+	done, total := planCounts(in.Plan)
+	header := "plan  " + Blocks(done, total, 10) + fmt.Sprintf(" %d/%d", done, total)
+	if total > 0 && done == total {
+		header += " done"
+	}
+	return header
+}
+
 // planRows is the plan as two columns of entries, filled column-major. The
-// left column takes ceil(n/2) entries. Each row is indented one cell so its
-// marks sit in the same column as history's glyphs. A finished plan is not
-// drawn by it.
+// left column takes ceil(n/2) entries. A finished plan is not drawn by it.
 func planRows(in Input, w int) []Row {
 	if !planOpen(in.Plan) {
 		return nil
 	}
 	entries := planEntries(in)
 	n := len(entries)
-	inner := max(w-1, 3) // one cell of indent
-	// The indent and the two-cell gap are charged before the columns are
-	// split, so a full left column cannot push the right one past inner.
-	cell := max((inner-3)/2, 1)
+	inner := max(w, 3)
+	// The two-cell gap is charged before the columns are split, so a full
+	// left column cannot push the right one past inner.
+	cell := max((inner-2)/2, 1)
 	left := (n + 1) / 2
 	rows := make([]Row, 0, left)
 	for i := 0; i < min(left, n); i++ {
@@ -228,7 +237,7 @@ func planRows(in Input, w int) []Row {
 		row := Row{Target: target}
 		if j := i + left; j < n {
 			gap := max(cell-ansi.StringWidth(text), 0) + 2
-			col := 1 + ansi.StringWidth(text) + gap
+			col := ansi.StringWidth(text) + gap
 			text += strings.Repeat(" ", gap) + planCell(entries[j], cell)
 			switch {
 			case target.Kind == TargetNone:
@@ -239,7 +248,7 @@ func planRows(in Input, w int) []Row {
 				row.Also = []RowStop{{Target: entries[j].target, Col: col}}
 			}
 		}
-		row.Text = " " + ansi.Truncate(text, inner, "…")
+		row.Text = ansi.Truncate(text, inner, "…")
 		rows = append(rows, row)
 	}
 	return rows
@@ -247,7 +256,7 @@ func planRows(in Input, w int) []Row {
 
 // planLine is the plan as one row, with no border characters: the marks (or
 // the blocks once the list is long), the position, the active item's text, and
-// the stale notice last. It is indented one cell and has no target.
+// the stale notice last. It has no target.
 func planLine(in Input, w int) Row {
 	if len(in.Plan) == 0 {
 		return Row{}
@@ -260,7 +269,7 @@ func planLine(in Input, w int) Row {
 			break
 		}
 	}
-	text := " " + planMarks(in, planMarksMax, 8) + "  " + pos
+	text := planMarks(in, planMarksMax, 8) + "  " + pos
 	if active != "" {
 		text += "  " + active
 	}
@@ -286,10 +295,68 @@ func planMarks(in Input, maxMarks, blocksCells int) string {
 }
 
 // finishedRow is the plan's row once every item is completed: one row saying
-// so, indented one cell, with no target.
+// so, with no target.
 func finishedRow(in Input, w int) Row {
 	done, total := planCounts(in.Plan)
 	text := lipgloss.NewStyle().Foreground(theme.Current().StatusSuccess).Render(glyph.OK) +
 		fmt.Sprintf(" Plan %d/%d done", done, total)
-	return Row{Text: ansi.Truncate(" "+text, max(w, 1), "…")}
+	return Row{Text: ansi.Truncate(text, max(w, 1), "…")}
+}
+
+// planFolded is the bottom border carrying the plan in one line:
+// "╰─ plan ✓ ✓ ▸ · 3/4 <active item> ─…─╯", with the blocks in place of the
+// marks once they do not fit, and the stale notice after the position. Too
+// narrow for that, it is the plain bottom border.
+func planFolded(in Input, width int) string {
+	border := borderStyle()
+	width = max(width, 2)
+	plain := border.Render("╰" + strings.Repeat("─", width-2) + "╯")
+	if len(in.Plan) == 0 {
+		return plain
+	}
+	done, total := planCounts(in.Plan)
+	pos, active := fmt.Sprintf("%d/%d", done, total), ""
+	for i, it := range in.Plan {
+		if it.Status == "in_progress" {
+			pos, active = fmt.Sprintf("%d/%d", i+1, total), clean(it.Content, 120)
+			break
+		}
+	}
+	prefix := border.Render("╰─ plan ")
+	posText := border.Render(" " + pos)
+	if in.Stale > 0 {
+		posText += " " + warn("stale "+formatElapsed(in.Stale))
+	}
+	// Below this the label, a 3-digit position and the closing " ─╯" cannot
+	// coexist with a fill cell, so the border is drawn plain.
+	const foldedMin = 22
+	if width < foldedMin {
+		return plain
+	}
+	// Keep one fill cell and the closing " ─╯" before spending cells on the
+	// marks: a narrow border still closes.
+	fits := func(marks string) bool {
+		return ansi.StringWidth(prefix)+ansi.StringWidth(marks)+
+			ansi.StringWidth(posText)+ansi.StringWidth(" ─╯")+1 <= width
+	}
+	marks := planMarks(in, planMarksMax, 8)
+	if !fits(marks) {
+		marks = Blocks(done, total, 8)
+	}
+	if !fits(marks) {
+		marks = ""
+	}
+	line := prefix + marks + posText
+	if ansi.StringWidth(line)+ansi.StringWidth(" ─╯")+1 > width {
+		return plain
+	}
+	// The text keeps the closing " ─", at least one fill cell and ╯.
+	if room := width - ansi.StringWidth(line) - ansi.StringWidth(" ─╯") - 1; active != "" && room > 1 {
+		line += border.Render(" ") + cut(active, room-1)
+	}
+	line += border.Render(" ─")
+	if fill := width - ansi.StringWidth(line) - 1; fill > 0 {
+		line += border.Render(strings.Repeat("─", fill))
+	}
+	return line + border.Render("╯")
 }

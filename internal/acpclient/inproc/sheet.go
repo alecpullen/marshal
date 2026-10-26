@@ -224,6 +224,10 @@ func activityOf(st *session.State) acpwire.SessionSheet {
 			Max:  budget.Max,
 		},
 		LoadedTools: len(st.LoadedToolNames()),
+		// Backend is the sandbox actually in force; AllowNetwork is the
+		// configured intent. Session.SandboxInfo reports observed network
+		// isolation instead, which is a different question: a restricted
+		// backend isolates even where the config would allow the network.
 		Sandbox: acpwire.SheetSandbox{
 			Backend:      sandbox.Backend,
 			AllowNetwork: st.Config.Tools.Shell.AllowNetwork,

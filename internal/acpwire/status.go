@@ -40,7 +40,7 @@ type SessionStatus struct {
 	SDD             SDDProgress   `json:"sdd"`
 	SDDGate         SDDGate       `json:"sddGate"`
 	Git             Git           `json:"git"`
-	ChangedFiles    int           `json:"changedFiles,omitempty"` // files changed against the sheet's base
+	ChangedFiles    int           `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
 	WatchResume     *WatchResume  `json:"watchResume,omitempty"`
 }
 

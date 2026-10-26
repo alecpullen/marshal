@@ -51,8 +51,9 @@ func (k Kind) String() string {
 	return "unknown"
 }
 
-// Project flattens a built tree for the wire.
-func Project(turns []*Node) acpwire.WireTree {
+// Project flattens a built tree for the wire. workdir is the active root a
+// call's subject elides.
+func Project(turns []*Node, workdir string) acpwire.WireTree {
 	t := acpwire.WireTree{Roots: make([]string, 0, len(turns))}
 	var walk func(n *Node, parent string)
 	walk = func(n *Node, parent string) {

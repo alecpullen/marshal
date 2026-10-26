@@ -34,7 +34,7 @@ func TestProjectLinksParentsAndChildren(t *testing.T) {
 		},
 		Steps: []session.Step{{ID: 7, TurnMsgID: 1, StartedAt: at(1), EndedAt: at(4)}},
 		Now:   at(6),
-	}))
+	}), "")
 	if len(tree.Roots) != 1 || tree.Roots[0] != "turn:1" {
 		t.Fatalf("roots = %v, want [turn:1]", tree.Roots)
 	}
@@ -75,7 +75,7 @@ func TestProjectLeavesNarrationlessBeatHeadless(t *testing.T) {
 		Items: []session.TranscriptItem{userMsg(1, 0), audit("file.read", 7, "c1", 2), audit("file.read", 7, "c2", 3)},
 		Steps: []session.Step{{ID: 7, TurnMsgID: 1, StartedAt: at(1), EndedAt: at(4)}},
 		Now:   at(6),
-	}))
+	}), "")
 	st := wireByID(t, tree)["step:7"].Step
 	if st == nil || st.Headline != "" {
 		t.Fatalf("step = %+v, want headless beat", st)
@@ -91,7 +91,7 @@ func TestWireStepCarriesMergedStepIDs(t *testing.T) {
 		},
 		Steps: []session.Step{stepOf(1, 1, 1, 3), stepOf(2, 1, 3, 5)},
 	})
-	tree := Project(nodes)
+	tree := Project(nodes, "")
 	for _, n := range tree.Nodes {
 		if n.Kind == "step" {
 			if len(n.Step.StepIDs) != 2 {
@@ -110,7 +110,7 @@ func TestProjectRunningCallIsLive(t *testing.T) {
 		ActiveTools: []session.ActiveToolCall{{Name: "shell.run", Args: "$ go test ./...", StartedAt: at(2), StepID: 7, ToolCallID: "c9"}},
 		Busy:        true,
 		Now:         at(3),
-	}))
+	}), "")
 	n := wireByID(t, tree)["tool:7:c9"]
 	if !n.Live || n.Tool == nil || n.Tool.Running == nil || n.Tool.Running.Target != "$ go test ./..." {
 		t.Fatalf("running call = %+v", n)
@@ -124,7 +124,7 @@ func TestProjectCapsLargeText(t *testing.T) {
 		Items: []session.TranscriptItem{userMsg(1, 0), {Timestamp: at(2), Kind: session.KindAudit, Audit: &ev}},
 		Steps: []session.Step{{ID: 7, TurnMsgID: 1, StartedAt: at(1), EndedAt: at(3)}},
 		Now:   at(4),
-	}))
+	}), "")
 	c := wireByID(t, tree)["tool:7:c1"].Tool.Calls[0]
 	if !c.Truncated || len(c.Output) > acpwire.WireTextCap || !strings.HasPrefix(big, c.Output) {
 		t.Fatalf("output len %d truncated %v", len(c.Output), c.Truncated)
@@ -143,7 +143,7 @@ func TestWireStepCarriesTodoLabel(t *testing.T) {
 		Steps: []session.Step{func() session.Step { s := stepFor(1, "p", 1, 2); s.TurnMsgID = 1; return s }(), stepOf(2, 5, 11, 12)},
 		Todos: todos(db.TodoItem{ID: "p", Content: "Parser", Status: "completed"}, db.TodoItem{ID: "q", Content: "Q", Status: "pending"}),
 	})
-	for _, n := range Project(nodes).Nodes {
+	for _, n := range Project(nodes, "").Nodes {
 		if n.ID == "step:1" {
 			if n.Step.Todo == nil || n.Step.Todo.Content != "Parser" {
 				t.Fatalf("step:1 = %+v", n.Step)
@@ -176,7 +176,7 @@ func TestWireCompletionCarriesTheEvent(t *testing.T) {
 		userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-4"), exit,
 	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
 	var got *acpwire.WireCompletion
-	for _, n := range Project(nodes).Nodes {
+	for _, n := range Project(nodes, "").Nodes {
 		if n.Completion != nil {
 			got = n.Completion
 		}
@@ -231,7 +231,7 @@ func TestWireToolNamesTheSubagentItStarted(t *testing.T) {
 			audit("file.read", 1, "r", 3),
 		},
 		Steps: []session.Step{stepOf(1, 1, 1, 4)},
-	}))
+	}), "")
 	byID := wireByID(t, tree)
 	dispatch := byID["tool:1:g"]
 	if dispatch.Tool == nil || dispatch.Tool.SubagentID != 3 {
@@ -253,7 +253,7 @@ func TestWireHasNoSubagentNodes(t *testing.T) {
 				Subagent: &session.SubagentView{ID: 3, Label: "Task 1", StartedAt: at(2), EndedAt: at(3), Status: session.SubagentDone}},
 		},
 		Steps: []session.Step{stepOf(1, 1, 1, 4)},
-	}))
+	}), "")
 	for _, n := range tree.Nodes {
 		if n.Kind == "subagent" {
 			t.Fatalf("tree carries a subagent node: %+v", n)

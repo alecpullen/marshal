@@ -741,7 +741,7 @@ func buildTray(t *testing.T, clk *goldenClock, st *session.State, m *Model) {
 		ID: "job-1", Command: "go build ./...", ExitCode: 1, Exit: &one,
 		Duration: 11 * time.Second, ExecutionID: "e1", ConversationID: "conv",
 		SourceEpoch: "ep1",
-		Output:       "--- FAIL: TestB\nFAIL\n",
+		Output:      "--- FAIL: TestB\nFAIL\n",
 	}); err != nil {
 		t.Fatalf("AddJobExit(job-1): %v", err)
 	}

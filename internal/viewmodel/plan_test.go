@@ -190,7 +190,7 @@ func TestWireCarriesThePlanRow(t *testing.T) {
 		Steps: []session.Step{stepOf(1, 1, 1, 3)},
 	})
 	var got *acpwire.WireNode
-	tree := Project(nodes)
+	tree := Project(nodes, "")
 	for i := range tree.Nodes {
 		if tree.Nodes[i].Kind == "planUpdate" {
 			got = &tree.Nodes[i]

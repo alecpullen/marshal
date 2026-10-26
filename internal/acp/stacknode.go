@@ -280,7 +280,7 @@ func (m *TurnManager) treeFor(sessionID string, subagentID int64) (*TurnRuntime,
 			busy = v.Status == session.SubagentRunning
 		}
 	}
-	return rt, src, viewmodel.Build(stackSnapshotOf(src, busy, time.Now())), nil
+	return rt, src, viewmodel.Build(viewmodel.SnapshotOf(src, busy, time.Now())), nil
 }
 
 // StackNode handles session/stack_node: one node's wire form plus the detail
@@ -321,7 +321,7 @@ func (m *TurnManager) StackNode(ctx context.Context, params json.RawMessage) (an
 	if rel, ok := viewmodel.ResolveBeats(viewmodel.Relations(state.Transcript()), tree)[n.ID]; ok {
 		detail.Relations = &RelationDetail{CausedBy: keysOf(rel.CausedBy), FixedBy: keysOf(rel.FixedBy)}
 	}
-	node := viewmodel.Project([]*viewmodel.Node{n}).Nodes[0]
+	node := viewmodel.Project([]*viewmodel.Node{n}, state.Workspace().ActiveRoot).Nodes[0]
 	if parent != nil {
 		node.Parent = parent.ID.Key
 	}

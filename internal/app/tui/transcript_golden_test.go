@@ -43,14 +43,16 @@ func (c *goldenClock) now() time.Time { return c.t }
 func (c *goldenClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 // goldenScene is one fixture. build fills the state and the model; expand,
-// when true, presses Ctrl+G (toggleExpandAll) after build; view renders what
-// the golden holds (nil: the transcript); marks are text the golden must show
-// once ANSI is stripped.
+// when true, presses Ctrl+G through Update after build; view renders what the
+// golden holds (nil: the transcript); width is the column count that view is
+// drawn into (nil: the transcript viewport); marks are text the golden must
+// show once ANSI is stripped.
 type goldenScene struct {
 	name   string
 	build  func(t *testing.T, clk *goldenClock, st *session.State, m *Model)
 	expand bool
 	view   func(m *Model) string
+	width  func(m *Model) int
 	marks  []string
 }
 
@@ -65,11 +67,11 @@ func goldenState(t *testing.T, clk *goldenClock, root string) *session.State {
 }
 
 // renderScene builds sc twice, each time on a fresh clock, state, root and
-// model, renders both, and fails unless the two renders match. It returns
-// the render.
-func renderScene(t *testing.T, sc goldenScene) string {
+// model, renders both, and fails unless the two renders match. It returns the
+// render and the column count it was drawn into.
+func renderScene(t *testing.T, sc goldenScene) (string, int) {
 	t.Helper()
-	render := func() string {
+	render := func() (string, int) {
 		t.Setenv("NO_COLOR", "1")
 		t.Setenv("TERM", "xterm-256color")
 		prev := theme.Current()
@@ -86,7 +88,12 @@ func renderScene(t *testing.T, sc goldenScene) string {
 
 		sc.build(t, clk, st, &m)
 		if sc.expand {
-			m.toggleExpandAll()
+			// The expanded scenes go through the key route, so the golden pins
+			// Ctrl+G's handling as well as the render it produces.
+			m = sendKey(m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+			if !m.expandAll {
+				t.Fatalf("scene %s: ctrl+g did not turn expand-all on", sc.name)
+			}
 		}
 		m.invalidateTranscript()
 		m.refreshViewport()
@@ -103,11 +110,16 @@ func renderScene(t *testing.T, sc goldenScene) string {
 		for _, v := range st.Subagents() {
 			out = strings.ReplaceAll(out, "#"+strconv.FormatInt(v.ID, 10), "#100")
 		}
-		return out
+
+		bound := m.viewport.Width()
+		if sc.width != nil {
+			bound = sc.width(&m)
+		}
+		return out, bound
 	}
 
-	first := render()
-	second := render()
+	first, firstBound := render()
+	second, secondBound := render()
 	if first != second {
 		a := strings.Split(first, "\n")
 		b := strings.Split(second, "\n")
@@ -118,7 +130,10 @@ func renderScene(t *testing.T, sc goldenScene) string {
 		}
 		t.Fatalf("scene %s is not deterministic: %d lines, then %d", sc.name, len(a), len(b))
 	}
-	return first
+	if firstBound != secondBound {
+		t.Fatalf("scene %s is not deterministic: %d-cell column, then %d", sc.name, firstBound, secondBound)
+	}
+	return first, firstBound
 }
 
 // checkGolden compares got with testdata/transcript/<name>.golden, or
@@ -155,6 +170,9 @@ func checkGolden(t *testing.T, name, got string) {
 // burnSubagentIDs registers throwaway subagents on a scratch state until the
 // next subagent ID is at least 100, so the scene's subagent has a three-digit
 // ID. It fails the test when the counter is already past 999.
+//
+// The counter is process-wide, so the golden tests must keep running
+// sequentially: no t.Parallel in this file.
 func burnSubagentIDs(t *testing.T) {
 	t.Helper()
 	scratch := session.New(config.Default(), t.TempDir(), goldenT0, session.Persistence{}, session.WithClock(func() time.Time { return goldenT0 }))
@@ -174,10 +192,10 @@ func burnSubagentIDs(t *testing.T) {
 func TestTranscriptGoldens(t *testing.T) {
 	for _, sc := range goldenScenes() {
 		t.Run(sc.name, func(t *testing.T) {
-			got := renderScene(t, sc)
+			got, bound := renderScene(t, sc)
 			for i, line := range strings.Split(strings.TrimSuffix(got, "\n"), "\n") {
-				if n := ansi.StringWidth(line); n > goldenWidth {
-					t.Errorf("line %d is %d cells, wider than the %d-cell column: %q", i, n, goldenWidth, line)
+				if n := ansi.StringWidth(line); n > bound {
+					t.Errorf("line %d is %d cells, wider than the %d-cell column: %q", i, n, bound, line)
 				}
 			}
 			stripped := ansi.Strip(got)
@@ -282,6 +300,9 @@ func goldenScenes() []goldenScene {
 			view: func(m *Model) string {
 				return livebox.Render(livebox.Plan(m.boxInput()), m.leftWidth)
 			},
+			// The tray is drawn into the left column, not the transcript
+			// viewport, so that column is its width bound.
+			width: func(m *Model) int { return m.leftWidth },
 			marks: []string{
 				"Edit the config", "go build ./...", "exit 1",
 				"--- FAIL: TestB", "k2", "p2-3a",

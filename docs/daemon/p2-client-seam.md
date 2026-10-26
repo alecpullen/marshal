@@ -1029,11 +1029,16 @@ fixture on a fixed clock builds the same transcript every time.
 
 T6's goldens are recorded first, at the base: eleven files under
 `internal/app/tui/testdata/transcript/`, rendered under `NO_COLOR` with the
-flat theme at 100 columns, covering every node kind collapsed and expanded
-plus the tray. Each scene builds twice on a fresh clock, state and root and
-must render identically; a scene's subagent ID is replaced with `#100` so
-the process-wide counter cannot move the layout. No later task runs
-`-update`.
+flat theme at 100 columns, covering the collapsed and expanded variants of
+each surface — messages, steps with their tool rows, run events, completions
+and the live turn — plus the tray. A receipt or plan-update row is in no
+scene, and a subagent is covered through the tool row it starts and the
+completion it produces rather than as a row of its own. Each scene builds
+twice on a fresh clock, state and root and must render identically; the
+expanded scenes reach their state by pressing Ctrl+G through `Update`, so
+the key route is pinned with the render; a scene's subagent ID is replaced
+with `#100` so the process-wide counter cannot move the layout. No later
+task runs `-update`.
 
 The projection types moved to `internal/acpwire/stack.go` — `WireTextCap`,
 `WireTree`, `WireNode`, `WireBand`, `WireTask`, `WireBandEntity`,
@@ -1069,7 +1074,10 @@ omitted at zero. The collapsed-row fields are `WireTool.verb`;
 `jobId` and `tail`; `WireRunning.subject`, `callId` and `args`;
 `WireStep.narration`; `WireMessage.reasoning`; `WireThinking.startedAt`;
 and `WireRunEvent.bodyLines`. `StepInfo.LiveSince` carries the live
-reasoning's start. Every existing field keeps its name, type and value.
+reasoning's start. Every existing field keeps its name, type and value, with
+one widened meaning: `running.truncated` now reports a cut in the args as
+well as in the output, because a running call carries its args for the first
+time.
 
 T1's allowlist and T1b's list did not change: the TUI still imports
 `viewmodel` in every file it did, and no read moved off the state.

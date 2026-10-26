@@ -220,7 +220,7 @@ func capJobOutput(out string) string {
 // appending a second completion.
 func (s *State) AddJobExit(e JobExit) error {
 	if e.At.IsZero() {
-		e.At = time.Now()
+		e.At = s.clockNow()
 	}
 	e.Output = capJobOutput(e.Output)
 

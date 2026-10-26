@@ -329,7 +329,7 @@ func (s *State) appendMessageStepped(role Role, content string, contentType Cont
 	reasoning := s.inProgress.Reasoning
 	var thinkDuration time.Duration
 	if reasoning != "" {
-		thinkDuration = time.Since(s.inProgress.StartedAt)
+		thinkDuration = s.clockNow().Sub(s.inProgress.StartedAt)
 		if thinkDuration <= 0 {
 			thinkDuration = time.Millisecond
 		}
@@ -337,7 +337,7 @@ func (s *State) appendMessageStepped(role Role, content string, contentType Cont
 	s.inProgress = InProgressMessage{}
 
 	parent := s.leafID
-	createdAt := time.Now()
+	createdAt := s.clockNow()
 
 	var id int64
 	var dbID int64

@@ -254,7 +254,7 @@ func (s *State) registerSubagent(meta SubagentMeta, work WorkID, label string, c
 		Label:     label,
 		Status:    SubagentRunning,
 		Child:     child,
-		StartedAt: time.Now(),
+		StartedAt: s.clockNow(),
 		Role:      meta.Role,
 		Provider:  meta.Provider,
 		Model:     meta.Model,
@@ -489,7 +489,7 @@ func (s *State) FinishSubagent(id int64, summary string, err error) {
 	}
 	s.subagentSettling[id] = true
 
-	s.subagents[idx].EndedAt = time.Now()
+	s.subagents[idx].EndedAt = s.clockNow()
 	s.subagents[idx].Summary = summary
 	outcome := "completed"
 	if err != nil {

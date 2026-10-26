@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/progress"
@@ -39,13 +40,13 @@ func newStackTestManager(t *testing.T) (*TurnManager, *session.State, *[]stackNo
 	return m, st, &notices
 }
 
-func takeStack(t *testing.T, m *TurnManager) StackSnapshot {
+func takeStack(t *testing.T, m *TurnManager) acpwire.StackSnapshot {
 	t.Helper()
 	v, err := m.Stack(context.Background(), json.RawMessage(`{"sessionId":"s1"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return v.(StackSnapshot)
+	return v.(acpwire.StackSnapshot)
 }
 
 func stackPatchFromNotice(t *testing.T, n stackNotice) stackPatch {
@@ -111,7 +112,7 @@ func TestStackSnapshotCarriesTheBand(t *testing.T) {
 	m, st, _ := newStackTestManager(t)
 	st.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	snap := takeStack(t, m)
-	var band *viewmodel.WireNode
+	var band *acpwire.WireNode
 	for i := range snap.Nodes {
 		if snap.Nodes[i].Kind == "band" {
 			band = &snap.Nodes[i]
@@ -216,7 +217,7 @@ func TestStackRemoveListsVanishedNodes(t *testing.T) {
 }
 
 func TestStackSnapshotJSONEmptyArrays(t *testing.T) {
-	data, err := json.Marshal(StackSnapshot{SessionID: "s1", Rev: 1, Roots: []string{}, Nodes: []viewmodel.WireNode{}})
+	data, err := json.Marshal(acpwire.StackSnapshot{SessionID: "s1", Rev: 1, Roots: []string{}, Nodes: []acpwire.WireNode{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +370,7 @@ func runStackTestTurn(t *testing.T) ([]stackNotice, bool) {
 			notices = append(notices, stackNotice{method, p})
 			mu.Unlock()
 			if p.Update["kind"] == "stack_patch" {
-				for _, n := range p.Update["upsert"].([]viewmodel.WireNode) {
+				for _, n := range p.Update["upsert"].([]acpwire.WireNode) {
 					if n.Live {
 						liveOnce.Do(func() { close(livePatch) })
 					}
@@ -528,7 +529,7 @@ func TestStackSubagentSnapshotAndPatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap := got.(StackSnapshot)
+	snap := got.(acpwire.StackSnapshot)
 	found := false
 	for _, n := range snap.Nodes {
 		found = found || (n.Message != nil && n.Message.Content == "child prompt")
@@ -707,7 +708,7 @@ func runningJobSession(t *testing.T) *session.State {
 	return st
 }
 
-func bandNode(t *testing.T, snap StackSnapshot) viewmodel.WireNode {
+func bandNode(t *testing.T, snap acpwire.StackSnapshot) acpwire.WireNode {
 	t.Helper()
 	for _, n := range snap.Nodes {
 		if n.Kind == "band" {
@@ -715,12 +716,12 @@ func bandNode(t *testing.T, snap StackSnapshot) viewmodel.WireNode {
 		}
 	}
 	t.Fatalf("no band node in %+v", snap.Nodes)
-	return viewmodel.WireNode{}
+	return acpwire.WireNode{}
 }
 
 // stackFingerprint is the tuple a client's incremental render depends on: the
 // root ordering and, per node, the hash of its wire bytes.
-func stackFingerprint(t *testing.T, snap StackSnapshot) ([]string, map[string][32]byte) {
+func stackFingerprint(t *testing.T, snap acpwire.StackSnapshot) ([]string, map[string][32]byte) {
 	t.Helper()
 	hashes := map[string][32]byte{}
 	for _, n := range snap.Nodes {

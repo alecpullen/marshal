@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/progress"
 	"marshal/internal/tools/registry"
@@ -14,17 +15,17 @@ import (
 
 // The two sources of a completion event.
 const (
-	CompletionJob      = "job"
-	CompletionSubagent = "subagent"
+	CompletionJob      = acpwire.CompletionJob
+	CompletionSubagent = acpwire.CompletionSubagent
 )
 
 // Outcome words that are not an exit code.
 const (
-	OutcomeDone    = "done"
-	OutcomeStopped = "stopped"
-	OutcomeLost    = "lost"
-	OutcomeFailed  = "failed"
-	OutcomeUnknown = "outcome unknown"
+	OutcomeDone    = acpwire.OutcomeDone
+	OutcomeStopped = acpwire.OutcomeStopped
+	OutcomeLost    = acpwire.OutcomeLost
+	OutcomeFailed  = acpwire.OutcomeFailed
+	OutcomeUnknown = acpwire.OutcomeUnknown
 )
 
 // ReportTailLines bounds the output an issue report shows.

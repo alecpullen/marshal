@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 )
@@ -188,7 +189,7 @@ func TestWireCarriesThePlanRow(t *testing.T) {
 		},
 		Steps: []session.Step{stepOf(1, 1, 1, 3)},
 	})
-	var got *WireNode
+	var got *acpwire.WireNode
 	tree := Project(nodes)
 	for i := range tree.Nodes {
 		if tree.Nodes[i].Kind == "planUpdate" {

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
@@ -170,7 +171,7 @@ func (n *Node) AnyLive() bool {
 }
 
 // LiveThinkingID is the in-progress reasoning region's identity.
-var LiveThinkingID = NodeID{KindThinking, "think:live"}
+var LiveThinkingID = NodeID{KindThinking, acpwire.LiveThinkingID}
 
 // Mergeable reports whether an audit event may join a collapsed run of
 // same-tool calls. Collapsing is a readability feature: the events most worth

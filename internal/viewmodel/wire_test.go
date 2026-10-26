@@ -5,15 +5,16 @@ import (
 	"strings"
 	"testing"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/progress"
 	"marshal/internal/tools/registry"
 )
 
-func wireByID(t *testing.T, tree WireTree) map[string]WireNode {
+func wireByID(t *testing.T, tree acpwire.WireTree) map[string]acpwire.WireNode {
 	t.Helper()
-	out := map[string]WireNode{}
+	out := map[string]acpwire.WireNode{}
 	for _, n := range tree.Nodes {
 		if _, dup := out[n.ID]; dup {
 			t.Fatalf("duplicate wire id %q", n.ID)
@@ -117,7 +118,7 @@ func TestProjectRunningCallIsLive(t *testing.T) {
 }
 
 func TestProjectCapsLargeText(t *testing.T) {
-	big := strings.Repeat("é", WireTextCap) // 2 bytes per rune
+	big := strings.Repeat("é", acpwire.WireTextCap) // 2 bytes per rune
 	ev := registry.AuditEvent{Timestamp: at(2), ToolName: "shell.run", StepID: 7, ToolCallID: "c1", ResultContent: big}
 	tree := Project(Build(Snapshot{
 		Items: []session.TranscriptItem{userMsg(1, 0), {Timestamp: at(2), Kind: session.KindAudit, Audit: &ev}},
@@ -125,7 +126,7 @@ func TestProjectCapsLargeText(t *testing.T) {
 		Now:   at(4),
 	}))
 	c := wireByID(t, tree)["tool:7:c1"].Tool.Calls[0]
-	if !c.Truncated || len(c.Output) > WireTextCap || !strings.HasPrefix(big, c.Output) {
+	if !c.Truncated || len(c.Output) > acpwire.WireTextCap || !strings.HasPrefix(big, c.Output) {
 		t.Fatalf("output len %d truncated %v", len(c.Output), c.Truncated)
 	}
 	if _, err := json.Marshal(tree); err != nil {
@@ -164,7 +165,7 @@ func TestKindStringCoversEveryKind(t *testing.T) {
 // A client outside the process needs the whole event: what finished, how it
 // ended, its final measurement, and a bounded tail of its output.
 func TestWireCompletionCarriesTheEvent(t *testing.T) {
-	long := strings.Repeat("x", WireTextCap+64)
+	long := strings.Repeat("x", acpwire.WireTextCap+64)
 	exit := jobExit(5, "job-4", 2)
 	exit.JobExit.Output = long
 	exit.JobExit.Progress = &progress.Snapshot{Frame: progress.Frame{Metrics: []progress.Metric{
@@ -174,7 +175,7 @@ func TestWireCompletionCarriesTheEvent(t *testing.T) {
 	nodes := Build(Snapshot{Items: []session.TranscriptItem{
 		userMsg(1, 0), narration(2, 1, 1, "Go."), jobStart(1, "j", 2, "job-4"), exit,
 	}, Steps: []session.Step{stepOf(1, 1, 1, 3)}})
-	var got *WireCompletion
+	var got *acpwire.WireCompletion
 	for _, n := range Project(nodes).Nodes {
 		if n.Completion != nil {
 			got = n.Completion
@@ -186,7 +187,7 @@ func TestWireCompletionCarriesTheEvent(t *testing.T) {
 	if got.ID != "job-4" || got.Outcome != "exit 2" || got.Measure != "210 passed, 2 failed" {
 		t.Fatalf("completion = %+v", got)
 	}
-	if len(got.Output) > WireTextCap || !got.Truncated {
+	if len(got.Output) > acpwire.WireTextCap || !got.Truncated {
 		t.Fatalf("output = %d bytes, truncated = %v", len(got.Output), got.Truncated)
 	}
 }

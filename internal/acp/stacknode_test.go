@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/pubsub"
@@ -68,7 +69,7 @@ func TestStackNodeToolReturnsFullOutput(t *testing.T) {
 	s := newSyncStack(t)
 	s.st.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	step := s.st.BeginStep(session.Actor{})
-	big := strings.Repeat("x", viewmodel.WireTextCap*3)
+	big := strings.Repeat("x", acpwire.WireTextCap*3)
 	s.st.LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: int64(step), ToolCallID: "c1",
 		Args: json.RawMessage(`{"command":"ls"}`), ResultContent: big})
 	key := viewmodel.ToolKey(registry.AuditEvent{StepID: int64(step), ToolCallID: "c1"})
@@ -83,7 +84,7 @@ func TestStackNodeToolReturnsFullOutput(t *testing.T) {
 	if !strings.Contains(detail.Calls[0].Args, "\n") {
 		t.Fatalf("args not indented: %q", detail.Calls[0].Args)
 	}
-	if got["node"].(viewmodel.WireNode).Parent == "" {
+	if got["node"].(acpwire.WireNode).Parent == "" {
 		t.Fatal("node lost its parent")
 	}
 }

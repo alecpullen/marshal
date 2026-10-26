@@ -10,20 +10,9 @@ import (
 	"marshal/internal/viewmodel"
 )
 
-// subjectFirstTool reports whether a tool's row should lead with its reports whether a tool's row should lead with its
-// subject rather than its name.
-//
-// It is deliberately a small allow-list. For a file or symbol tool the verb
-// is the least interesting thing on the line and the subject is the point.
-// For shell, git, and agent calls the verb IS the content, so those keep
-// the tool-name-first shape.
-func subjectFirstTool(name string) bool {
-	switch name {
-	case "file.write_patch", "file.edit", "file.write", "file.read", "symbols", "symbols.find":
-		return true
-	}
-	return viewmodel.IsShellFamily(name)
-}
+// subjectFirstTool reports whether a tool's row should lead with its subject
+// rather than its name; viewmodel.SubjectFirstTool decides it.
+func subjectFirstTool(name string) bool { return viewmodel.SubjectFirstTool(name) }
 
 // shellSubject renders a command row: the command itself, then its exit
 // code and how long it took.
@@ -47,30 +36,9 @@ func shellSubjectIn(event registry.AuditEvent, workdir string) string {
 	return strings.Join(parts, dimSeparator)
 }
 
-// searchQualifiers gives each ◈ tool a short, distinguishable label.
-//
-// toolCategoryGlyph maps several tools onto ◈ (toolnames.go), so unlike the
-// shell family the glyph cannot stand alone here: a literal grep and a
-// semantic search answer different questions and cost very different
-// amounts, and a reader must be able to tell them apart at a glance.
-//
-// json.query and csv.inspect are retired (context-diet Tier 2a); their
-// entries stay so persisted transcripts still render a qualifier instead of
-// a bare ◈.
-var searchQualifiers = map[string]string{
-	"repo.search":     "search",
-	"codebase.search": "semantic",
-	"symbols":         "symbols",
-	"symbols.find":    "symbols",
-	"json.query":      "json",
-	"csv.inspect":     "csv",
-}
-
-// searchQualifier returns the short label for a search-family tool.
-func searchQualifier(name string) (string, bool) {
-	q, ok := searchQualifiers[name]
-	return q, ok
-}
+// searchQualifier returns the short label for a search-family tool;
+// viewmodel.SearchQualifier decides it.
+func searchQualifier(name string) (string, bool) { return viewmodel.SearchQualifier(name) }
 
 // searchSubject renders `search "gutterPrefix"` — the qualifier plus the
 // query. The outcome stays in ResultSummary, which these tools already
@@ -93,40 +61,13 @@ func searchSubject(event registry.AuditEvent) string {
 	return q + " " + strconv.Quote(target)
 }
 
-// searchTarget returns the subject string for a search-family row. It
-// prefers the jq expression for json.query (where the expression is the
-// point and the path is context) and the symbol name for symbols (where the
-// name is the point and a pinning path is context), and falls back to
-// toolTarget's path-first ordering for every other search tool.
-func searchTarget(event registry.AuditEvent) string {
-	if event.ToolName == "json.query" {
-		if s := argString(event.Args, "query"); s != "" {
-			return s
-		}
-	}
-	if event.ToolName == "symbols" {
-		if s := argString(event.Args, "name"); s != "" {
-			return s
-		}
-	}
-	return toolTarget(event)
-}
+// searchTarget returns the subject string for a search-family row;
+// viewmodel.SearchTarget decides it.
+func searchTarget(event registry.AuditEvent) string { return viewmodel.SearchTarget(event) }
 
-// argString extracts a string field from a tool-call's JSON args. Returns
-// "" when the args are missing, malformed, or the field is absent/empty.
-func argString(args json.RawMessage, key string) string {
-	if len(args) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal(args, &m); err != nil {
-		return ""
-	}
-	if s, ok := m[key].(string); ok {
-		return s
-	}
-	return ""
-}
+// argString extracts a string field from a tool-call's JSON args;
+// viewmodel.ArgString decides it.
+func argString(args json.RawMessage, key string) string { return viewmodel.ArgString(args, key) }
 
 // symbolSubject renders "path › A(), B() +2" for an event carrying symbol
 // attribution, grouped by file in first-seen order. It returns "" when the
@@ -138,31 +79,6 @@ func symbolSubject(event registry.AuditEvent) string { return viewmodel.SymbolSu
 // differently from a type at a glance.
 func symbolLabel(s registry.SymbolRef) string { return viewmodel.SymbolLabel(s) }
 
-// diffStat summarises a unified diff as "+N −M". Returns "" for a diff with
-// no changed lines, so a row never carries an empty "+0 −0".
-//
-// This is formatting of data the row already holds, not derivation: the
-// diff is on the audit event, and splitDiffFiles in transcript.go already
-// parses diffs in this layer.
-func diffStat(diff string) string {
-	added, removed := diffCounts(diff)
-	if added == 0 && removed == 0 {
-		return ""
-	}
-	return fmt.Sprintf("+%d −%d", added, removed)
-}
-
-// diffCounts is the number of added and removed lines in a unified diff.
-func diffCounts(diff string) (added, removed int) {
-	for _, line := range strings.Split(diff, "\n") {
-		switch {
-		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
-			continue
-		case strings.HasPrefix(line, "+"):
-			added++
-		case strings.HasPrefix(line, "-"):
-			removed++
-		}
-	}
-	return added, removed
-}
+// diffStat summarises a unified diff as "+N −M"; viewmodel.DiffStat decides
+// it.
+func diffStat(diff string) string { return viewmodel.DiffStat(diff) }

@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/db"
+	"marshal/internal/acpwire"
 	"marshal/internal/strutil"
 )
 
@@ -23,7 +23,7 @@ func (SessionSection) Clippable() bool { return false }
 // Relevant reports whether the footer should render. It needs only a session
 // — not a completed turn — so the footer is present from the first frame
 // rather than popping in after turn 1.
-func (SessionSection) Relevant(d Data) bool { return d.State != nil }
+func (SessionSection) Relevant(d Data) bool { return !d.StartedAt.IsZero() }
 
 // sessionElapsed is session wall-clock: now minus the session's start.
 // Deliberately not the age of the oldest turn row (which was wrong whenever
@@ -32,10 +32,10 @@ func (SessionSection) Relevant(d Data) bool { return d.State != nil }
 // number). Named sessionElapsed to avoid colliding with the swarm section's
 // elapsed(start, now) helper.
 func sessionElapsed(d Data) time.Duration {
-	if d.State == nil {
+	if d.StartedAt.IsZero() {
 		return 0
 	}
-	return d.Now.Sub(d.State.StartedAt)
+	return d.Now.Sub(d.StartedAt)
 }
 
 // shortDuration renders a duration compactly: "42s", "1m12s", "2h04m".
@@ -56,10 +56,7 @@ func shortDuration(d time.Duration) string {
 // budgetLabel renders the tool-budget row: "tools 7 · no cap" when Max is 0
 // (unlimited), "tools 7/100" when a cap is set. Empty when no tools have run.
 func budgetLabel(d Data) string {
-	if d.State == nil {
-		return ""
-	}
-	b := d.State.ToolBudget()
+	b := d.ToolBudget
 	if b.Used <= 0 {
 		return ""
 	}
@@ -71,7 +68,7 @@ func budgetLabel(d Data) string {
 
 // cachedShare is the percentage of the session's prompt tokens served from
 // the provider's prompt cache; 0 when nothing was reported.
-func cachedShare(t db.UsageTotals) int {
+func cachedShare(t acpwire.SheetTotals) int {
 	if t.PromptTokens <= 0 || t.CacheReadTokens <= 0 {
 		return 0
 	}

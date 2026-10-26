@@ -2812,6 +2812,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			Steering:  steeringBroker,
 			Workspace: workspaceBroker,
 			Subagents: subagentBroker,
+			ProjectID: projectID,
 		})
 
 		cmdReg := rt.CommandRegistry

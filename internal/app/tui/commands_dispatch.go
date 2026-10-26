@@ -230,10 +230,8 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	m.viewStack = nil
 	m.resetExpansion()
 	m.nodeRegions = nil
-	// The old session's changed-files list must never render in the new
-	// session while the sheetBaseRefMsg round-trips; re-read it below.
-	m.sheetChanged = nil
-	// The sheet's base ref follows the workspace the new session reports.
+	// The sheet's changed files follow the workspace the new session reports;
+	// a replaced session's cache starts empty.
 	st := m.sess.Status()
 	m.workspaceSeen = st.Workspace
 	// Rebind the Work stream: the previous conversation's subscription is
@@ -247,7 +245,7 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	}
 	m.state.AddMessage(session.RoleSystem, msg, session.ContentTypePlain)
 	m.refreshViewport()
-	cmds := []tea.Cmd{sheetBaseRefCmd(st.Workspace.ActiveRoot)}
+	cmds := []tea.Cmd{refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true})}
 	// A replaced session needs its own change pump; the old one ends when its
 	// channel no longer matches.
 	if replaced {

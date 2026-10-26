@@ -32,7 +32,7 @@ func (ChangedSection) Render(d Data, width, maxRows int) []string {
 		}
 		counts := strings.TrimSpace(plus + " " + minus)
 
-		marker := string(f.Status)
+		marker := f.Status
 		path := shortenPath(f.Path, railBudget(marker, counts, width))
 
 		// Style only after the layout is fixed, so the escape sequences

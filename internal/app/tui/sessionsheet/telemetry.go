@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"marshal/internal/db"
+	"marshal/internal/acpwire"
 )
 
 // sparkRunes are the eight block heights, lowest first.
@@ -54,8 +54,8 @@ type TelemetryStats struct {
 }
 
 // Telemetry derives per-turn statistics from persisted turn metrics.
-// turns is most-recent-first, as db.RecentTurnMetrics returns it.
-func Telemetry(turns []db.TurnMetricsRow, now time.Time) TelemetryStats {
+// turns is most-recent-first, as the session's sheet carries it.
+func Telemetry(turns []acpwire.SheetTurn, now time.Time) TelemetryStats {
 	if len(turns) == 0 {
 		return TelemetryStats{Series: []int{}}
 	}
@@ -81,7 +81,7 @@ func Telemetry(turns []db.TurnMetricsRow, now time.Time) TelemetryStats {
 		stats.PromptCachePct = min(cached*100/prompt, 100)
 	}
 
-	oldest := turns[len(turns)-1].StartedAt
+	oldest := acpwire.Time(turns[len(turns)-1].StartedAt)
 	if elapsed := now.Sub(oldest); elapsed >= time.Minute {
 		stats.BurnPerMin = int(float64(total) / elapsed.Minutes())
 	}

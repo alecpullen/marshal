@@ -1,11 +1,12 @@
 package tui
 
 import (
+	"context"
+
 	tea "charm.land/bubbletea/v2"
-	"marshal/internal/app/tui/sessionsheet"
+	"marshal/internal/acpclient"
+	"marshal/internal/acpwire"
 	"marshal/internal/pubsub"
-	"marshal/internal/repo/changedfiles"
-	"marshal/internal/repo/gitinfo"
 	"marshal/internal/viewmodel"
 )
 
@@ -42,34 +43,11 @@ func pumpWorkEvents(ch <-chan pubsub.Event[viewmodel.WorkSnapshot], subscription
 	}
 }
 
-// sheetBaseRefCmd shells out to git off the UI thread — rev-parse, then the
-// changed-files diff against that ref — and returns both as a
-// sheetBaseRefMsg. dir is the workspace active root.
-func sheetBaseRefCmd(dir string) tea.Cmd {
-	if dir == "" {
-		return nil
-	}
+// refreshSheetCmd re-reads the sheet values req names, off the UI thread. sess
+// fires Changed when they land, so the command returns no message.
+func refreshSheetCmd(ctx context.Context, sess acpclient.Session, req acpwire.SheetRefresh) tea.Cmd {
 	return func() tea.Msg {
-		ref := gitinfo.HeadSHA(dir)
-		return sheetBaseRefMsg{dir: dir, ref: ref, changed: sheetChangedFiles(changedfiles.Read(dir, ref))}
-	}
-}
-
-// sheetChangedFiles converts the repo package's changed-file rows into the
-// session sheet's render type. The types stay separate so the sheet does not
-// depend on the git-reading package's richer File shape.
-func sheetChangedFiles(files []changedfiles.File) []sessionsheet.ChangedFile {
-	if files == nil {
+		_ = sess.RefreshSheet(ctx, req)
 		return nil
 	}
-	out := make([]sessionsheet.ChangedFile, 0, len(files))
-	for _, f := range files {
-		out = append(out, sessionsheet.ChangedFile{
-			Path:    f.Path,
-			Status:  f.Status,
-			Added:   f.Added,
-			Removed: f.Removed,
-		})
-	}
-	return out
 }

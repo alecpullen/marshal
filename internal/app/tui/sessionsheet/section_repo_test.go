@@ -3,22 +3,15 @@ package sessionsheet
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/acpwire"
 )
 
 func repoData() Data {
 	return Data{
-		Git: acpwire.Git{InRepo: true, Branch: "main"},
-		Repo: RepoStats{
-			Files:   412,
-			Symbols: 3100,
-			Languages: []LanguageShare{
-				{Name: "go", Share: 89},
-				{Name: "md", Share: 7},
-				{Name: "toml", Share: 4},
-			},
-		},
+		Git:  acpwire.Git{InRepo: true, Branch: "main"},
+		Repo: acpwire.SheetRepo{Files: 412, Symbols: 3100},
 	}
 }
 
@@ -43,9 +36,33 @@ func TestRepoSectionIdentity(t *testing.T) {
 
 func TestRepoSectionRender(t *testing.T) {
 	got := strings.Join((RepoSection{}).Render(repoData(), 30, 10), "\n")
-	for _, want := range []string{"main", "412", "3k", "go"} {
+	for _, want := range []string{"main", "412", "3k"} {
 		if !strings.Contains(StripANSI(got), want) {
 			t.Errorf("Render missing %q:\n%s", want, StripANSI(got))
+		}
+	}
+}
+
+// The sandbox and loaded-tool rows describe a live session, so they render
+// only when the sheet carries one.
+func TestRepoSectionShowsTheSandboxForASession(t *testing.T) {
+	d := repoData()
+	d.StartedAt = time.Unix(100, 0)
+	d.Sandbox = acpwire.SheetSandbox{Backend: "restricted", AllowNetwork: true}
+	d.LoadedTools = 3
+
+	got := StripANSI(strings.Join((RepoSection{}).Render(d, 40, 10), "\n"))
+	for _, want := range []string{"sandbox restricted · net ✓", "3 tools loaded"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Render missing %q:\n%s", want, got)
+		}
+	}
+
+	d.StartedAt = time.Time{}
+	got = StripANSI(strings.Join((RepoSection{}).Render(d, 40, 10), "\n"))
+	for _, unwanted := range []string{"sandbox", "tools loaded"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("Render carries %q with no session:\n%s", unwanted, got)
 		}
 	}
 }

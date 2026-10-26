@@ -65,4 +65,21 @@ type Session interface {
 	//
 	// ACP: session/steer (exists), with delivery "now".
 	SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpwire.SteeringReceipt, error)
+
+	// Sheet is what the session sheet's sections read (C5): the session's
+	// own sheet when subagentID is 0, or the sheet of the subagent with that
+	// ID anywhere in the session's tree. An ID that names no child session
+	// reads as 0, and the result's SubagentID says which sheet was read.
+	// Sheet does not block: its database and git values are the ones the
+	// last RefreshSheet read.
+	//
+	// ACP: session/sheet (new in P3). P3 serves it from a mirror that
+	// RefreshSheet fills.
+	Sheet(subagentID int64) acpwire.SessionSheet
+
+	// RefreshSheet re-reads the sheet values req names from the database and
+	// git, then fires Changed. It blocks on those reads.
+	//
+	// ACP: session/sheet (new in P3), sent with the refresh flags.
+	RefreshSheet(ctx context.Context, req acpwire.SheetRefresh) error
 }

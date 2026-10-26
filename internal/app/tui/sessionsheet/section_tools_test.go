@@ -3,58 +3,18 @@ package sessionsheet
 import (
 	"strings"
 	"testing"
-	"time"
 
-	"marshal/internal/tools/registry"
+	"marshal/internal/acpwire"
 )
 
-func toolEvents() []registry.AuditEvent {
-	return []registry.AuditEvent{
-		{ToolName: "file.read", Duration: 10 * time.Millisecond},
-		{ToolName: "file.read", Duration: 20 * time.Millisecond},
-		{ToolName: "shell.run", Duration: 4200 * time.Millisecond},
-		{ToolName: "shell.run", Duration: 100 * time.Millisecond, Error: "exit 1"},
-		{ToolName: "file.write_patch", Duration: 5 * time.Millisecond},
-	}
-}
-
-func TestToolStatsAggregates(t *testing.T) {
-	got := ToolStats(toolEvents())
-	if len(got) != 3 {
-		t.Fatalf("got %d tools, want 3: %+v", len(got), got)
-	}
-	// Descending by call count, so file.read and shell.run (2 each) lead.
-	byName := map[string]ToolStat{}
-	for _, s := range got {
-		byName[s.Name] = s
-	}
-	if byName["shell.run"].Calls != 2 {
-		t.Errorf("shell.run calls = %d, want 2", byName["shell.run"].Calls)
-	}
-	if byName["shell.run"].Errors != 1 {
-		t.Errorf("shell.run errors = %d, want 1", byName["shell.run"].Errors)
-	}
-	if byName["shell.run"].Slowest != 4200*time.Millisecond {
-		t.Errorf("shell.run slowest = %v, want 4.2s", byName["shell.run"].Slowest)
-	}
-	if byName["file.read"].Errors != 0 {
-		t.Errorf("file.read errors = %d, want 0", byName["file.read"].Errors)
-	}
-}
-
-func TestToolStatsSortedByCallsDescending(t *testing.T) {
-	got := ToolStats(toolEvents())
-	for i := 1; i < len(got); i++ {
-		if got[i-1].Calls < got[i].Calls {
-			t.Errorf("not sorted descending by calls: %+v", got)
-			break
-		}
-	}
-}
-
-func TestToolStatsEmpty(t *testing.T) {
-	if got := ToolStats(nil); len(got) != 0 {
-		t.Errorf("ToolStats(nil) = %+v, want empty", got)
+// toolStats is the aggregate SheetToolsOf returns for the tool-call log the
+// section used to read: file.read twice (20 ms slowest), shell.run twice with
+// one failure (4.2 s slowest), file.write_patch once (5 ms).
+func toolStats() []acpwire.SheetTool {
+	return []acpwire.SheetTool{
+		{Name: "file.read", Calls: 2, SlowestMs: 20},
+		{Name: "shell.run", Calls: 2, Errors: 1, SlowestMs: 4200},
+		{Name: "file.write_patch", Calls: 1, SlowestMs: 5},
 	}
 }
 
@@ -72,7 +32,7 @@ func TestToolsSectionIdentity(t *testing.T) {
 }
 
 func TestToolsSectionRender(t *testing.T) {
-	d := Data{Audit: toolEvents()}
+	d := Data{Tools: toolStats()}
 	got := StripANSI(strings.Join((ToolsSection{}).Render(d, 34, 10), "\n"))
 	for _, want := range []string{"read", "run", "4.2s"} {
 		if !strings.Contains(got, want) {
@@ -82,7 +42,7 @@ func TestToolsSectionRender(t *testing.T) {
 }
 
 func TestToolsSectionOneLine(t *testing.T) {
-	got := StripANSI((ToolsSection{}).OneLine(Data{Audit: toolEvents()}, 40))
+	got := StripANSI((ToolsSection{}).OneLine(Data{Tools: toolStats()}, 40))
 	if !strings.Contains(got, "5") {
 		t.Errorf("OneLine = %q, want the call count", got)
 	}
@@ -92,9 +52,9 @@ func TestToolsSectionOneLine(t *testing.T) {
 }
 
 func TestToolsSectionColorsErrorCount(t *testing.T) {
-	d := Data{Audit: []registry.AuditEvent{
-		{ToolName: "file.read"},
-		{ToolName: "shell.run", Error: "exit 1"},
+	d := Data{Tools: []acpwire.SheetTool{
+		{Name: "file.read", Calls: 1},
+		{Name: "shell.run", Calls: 1, Errors: 1},
 	}}
 	rows := ToolsSection{}.Render(d, 30, 0)
 
@@ -113,7 +73,7 @@ func TestToolsSectionColorsErrorCount(t *testing.T) {
 }
 
 func TestToolsSectionCleanRunHasNoStatusColor(t *testing.T) {
-	d := Data{Audit: []registry.AuditEvent{{ToolName: "file.read"}}}
+	d := Data{Tools: []acpwire.SheetTool{{Name: "file.read", Calls: 1}}}
 	for _, r := range (ToolsSection{}).Render(d, 30, 0) {
 		if strings.Contains(r, "\x1b[") {
 			t.Errorf("clean run should be unstyled, got %q", r)
@@ -123,9 +83,9 @@ func TestToolsSectionCleanRunHasNoStatusColor(t *testing.T) {
 
 func TestToolsSectionRelevance(t *testing.T) {
 	if (ToolsSection{}).Relevant(Data{}) {
-		t.Error("Relevant(no events) = true, want false")
+		t.Error("Relevant(no tools) = true, want false")
 	}
-	if !(ToolsSection{}).Relevant(Data{Audit: toolEvents()}) {
-		t.Error("Relevant(events) = false, want true")
+	if !(ToolsSection{}).Relevant(Data{Tools: toolStats()}) {
+		t.Error("Relevant(tools) = false, want true")
 	}
 }

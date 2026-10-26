@@ -23,7 +23,7 @@ func (ContextSection) Title() string   { return "CONTEXT" }
 func (ContextSection) Priority() int   { return 1 }
 func (ContextSection) Clippable() bool { return false }
 
-func (ContextSection) Relevant(d Data) bool { return !d.Pack.IsEmpty() }
+func (ContextSection) Relevant(d Data) bool { return len(d.Context.Sections) > 0 }
 
 // Bar renders a fill bar of the given width. fraction is clamped to [0,1].
 func Bar(fraction float64, width int) string {
@@ -50,7 +50,7 @@ const (
 )
 
 func (ContextSection) Render(d Data, width, maxRows int) []string {
-	u := d.Pack.TokenUsage
+	u := d.Context
 	rows := make([]string, 0, 8)
 
 	frac := 0.0
@@ -66,7 +66,7 @@ func (ContextSection) Render(d Data, width, maxRows int) []string {
 	}
 	rows = append(rows, barRow)
 
-	for _, s := range d.Pack.Sections {
+	for _, s := range u.Sections {
 		if s.EstimatedTokens == 0 {
 			continue
 		}
@@ -109,7 +109,7 @@ func pct(fraction float64) string {
 }
 
 func (ContextSection) OneLine(d Data, width int) string {
-	u := d.Pack.TokenUsage
+	u := d.Context
 	frac := 0.0
 	if u.MaxTokens > 0 {
 		frac = float64(u.EstimatedTokens) / float64(u.MaxTokens)

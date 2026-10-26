@@ -13,7 +13,6 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
-	"marshal/internal/app/tui/sessionsheet"
 	"marshal/internal/contextpack"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
@@ -41,6 +40,17 @@ func newStatusTestModelWithGit(t *testing.T, git *gitinfo.Info) Model {
 		State:   state,
 		GitInfo: func(string) gitinfo.Info { return *git },
 	})
+	m.resize(100, 30)
+	return m
+}
+
+// newStatusTestModelStub builds a status model whose session is stub, so a
+// test can patch the values the status line reads.
+func newStatusTestModelStub(t *testing.T, stub *stubSession) Model {
+	t.Helper()
+	t.Setenv("NO_COLOR", "")
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := testModelStub(state, stub)
 	m.resize(100, 30)
 	return m
 }
@@ -641,48 +651,6 @@ func initSheetTestRepo(t *testing.T, dir string) string {
 	return string(out[:len(out)-1])
 }
 
-func TestRefreshSheetChangedUsesActiveRoot(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	dir := t.TempDir()
-	base := initSheetTestRepo(t, dir)
-
-	// Create a linked worktree on a new branch.
-	wt := filepath.Join(dir, "wt")
-	if out, err := exec.Command("git", "-C", dir, "worktree", "add", "-b", "feat-x", wt).CombinedOutput(); err != nil {
-		t.Fatalf("git worktree add: %v\n%s", err, out)
-	}
-
-	// Modify a file only in the worktree.
-	if err := os.WriteFile(filepath.Join(wt, "a.txt"), []byte("one\ntwo\nthree\n"), 0o644); err != nil {
-		t.Fatalf("write worktree a.txt: %v", err)
-	}
-	// Modify a file only in the main checkout.
-	if err := os.WriteFile(filepath.Join(dir, "main-only.txt"), []byte("main\n"), 0o644); err != nil {
-		t.Fatalf("write main-only.txt: %v", err)
-	}
-
-	m := newTestModel(t)
-	m.state.SetWorkspace(session.Workspace{ProjectRoot: dir, ActiveRoot: wt, Branch: "feat-x"})
-	m.sheetBaseRef = base
-
-	m.refreshSheetChanged()
-
-	found := false
-	for _, f := range m.sheetChanged {
-		if f.Path == "a.txt" {
-			found = true
-		}
-		if f.Path == "main-only.txt" {
-			t.Errorf("sheetChanged includes main-checkout file %q, want only worktree changes", f.Path)
-		}
-	}
-	if !found {
-		t.Errorf("sheetChanged missing worktree-modified a.txt: %+v", m.sheetChanged)
-	}
-}
-
 func TestStatusLineSDDTokensUnlimited(t *testing.T) {
 	m := newTestModel(t)
 	m.state.SetSDDProgress(session.SDDProgress{
@@ -769,15 +737,17 @@ func TestStatusHidesGenerationBeforeAnyCompaction(t *testing.T) {
 }
 
 func TestStatusLineShowsChangedFileCount(t *testing.T) {
-	m := newStatusTestModel(t)
+	changed := 0
+	stub := &stubSession{patch: func(st *acpwire.SessionStatus) { st.ChangedFiles = changed }}
+	m := newStatusTestModelStub(t, stub)
 	if strings.Contains(stripANSI(m.renderStatusLine(140)), "±") {
 		t.Fatal("±N files must be hidden when nothing changed")
 	}
-	m.sheetChanged = []sessionsheet.ChangedFile{{Path: "a"}, {Path: "b"}, {Path: "c"}}
+	changed = 3
 	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±3 files") {
 		t.Fatalf("status line missing ±3 files:\n%s", got)
 	}
-	m.sheetChanged = m.sheetChanged[:1]
+	changed = 1
 	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±1 file") || strings.Contains(got, "±1 files") {
 		t.Fatalf("one changed file must read ±1 file:\n%s", got)
 	}
@@ -785,9 +755,9 @@ func TestStatusLineShowsChangedFileCount(t *testing.T) {
 
 // ±N files drops before the route and mode segments when the line is tight.
 func TestStatusLineChangedFileCountDropsBeforeRoute(t *testing.T) {
-	m := newStatusTestModel(t)
+	stub := &stubSession{patch: func(st *acpwire.SessionStatus) { st.ChangedFiles = 1 }}
+	m := newStatusTestModelStub(t, stub)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
-	m.sheetChanged = []sessionsheet.ChangedFile{{Path: "a"}}
 	var sawBoth bool
 	for w := 120; w >= 20; w -= 2 {
 		line := stripANSI(m.renderStatusLine(w))
@@ -816,10 +786,7 @@ func TestChangedFileCountAppearsAfterTurn(t *testing.T) {
 	m.busy = true
 	mm, cmd := m.Update(agentFinishedMsg{})
 	m = asModel(t, mm)
-	for _, msg := range collectSheetBaseRefs(t, cmd) {
-		mm, _ = m.Update(msg)
-		m = asModel(t, mm)
-	}
+	runCmdChain(t, cmd)
 	if got := stripANSI(m.renderStatusLine(140)); !strings.Contains(got, "±1 file") {
 		t.Fatalf("status line missing ±1 file after the turn:\n%s", got)
 	}

@@ -342,9 +342,9 @@ func (m Model) statusLeftSegments() []statusSeg {
 	}
 
 	// Changed-file count against the base ref, so the working tree's state
-	// stays visible now that the rail is gone. Refreshed on turn boundaries
-	// and workspace events, never during render.
-	if n := len(m.sheetChanged); n > 0 {
+	// stays visible now that the rail is gone. The session refreshes it on
+	// turn boundaries and workspace moves, never during render.
+	if n := st.ChangedFiles; n > 0 {
 		word := "files"
 		if n == 1 {
 			word = "file"

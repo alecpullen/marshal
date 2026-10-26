@@ -21,15 +21,15 @@ func (WorkingSetSection) Title() string   { return "FILES" }
 func (WorkingSetSection) Priority() int   { return 3 }
 func (WorkingSetSection) Clippable() bool { return true }
 
-func (WorkingSetSection) Relevant(d Data) bool { return hasFileActivity(d.Audit) }
+func (WorkingSetSection) Relevant(d Data) bool { return len(d.Files) > 0 }
 
 func (WorkingSetSection) Render(d Data, width, maxRows int) []string {
-	stats := FileStats(d.Audit)
-	if maxRows > 0 && len(stats) > maxRows {
-		stats = stats[:maxRows]
+	files := d.Files
+	if maxRows > 0 && len(files) > maxRows {
+		files = files[:maxRows]
 	}
-	rows := make([]string, 0, len(stats))
-	for _, s := range stats {
+	rows := make([]string, 0, len(files))
+	for _, s := range files {
 		g, detail := glyph.File, "read"
 		if s.Edits > 0 {
 			g = glyph.Edit
@@ -45,13 +45,12 @@ func (WorkingSetSection) Render(d Data, width, maxRows int) []string {
 }
 
 func (WorkingSetSection) OneLine(d Data, width int) string {
-	stats := FileStats(d.Audit)
 	edited := 0
-	for _, s := range stats {
+	for _, s := range d.Files {
 		if s.Edits > 0 {
 			edited++
 		}
 	}
 	return ansi.Truncate(
-		fmt.Sprintf("%s %d files · %d edited", glyph.File, len(stats), edited), width, "…")
+		fmt.Sprintf("%s %d files · %d edited", glyph.File, len(d.Files), edited), width, "…")
 }

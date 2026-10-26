@@ -2,56 +2,12 @@ package sessionsheet
 
 import (
 	"fmt"
-	"sort"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/tools/registry"
+	"marshal/internal/acpwire"
 )
-
-// ToolStat is one tool's aggregate across the session.
-type ToolStat struct {
-	Name    string
-	Calls   int
-	Errors  int
-	Slowest time.Duration
-}
-
-// ToolStats aggregates an audit log by tool name, most-called first.
-// Ties break alphabetically so the ordering is stable across renders.
-func ToolStats(events []registry.AuditEvent) []ToolStat {
-	if len(events) == 0 {
-		return nil
-	}
-	idx := map[string]*ToolStat{}
-	for _, e := range events {
-		s, ok := idx[e.ToolName]
-		if !ok {
-			s = &ToolStat{Name: e.ToolName}
-			idx[e.ToolName] = s
-		}
-		s.Calls++
-		if e.Error != "" {
-			s.Errors++
-		}
-		if e.Duration > s.Slowest {
-			s.Slowest = e.Duration
-		}
-	}
-	out := make([]ToolStat, 0, len(idx))
-	for _, s := range idx {
-		out = append(out, *s)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Calls != out[j].Calls {
-			return out[i].Calls > out[j].Calls
-		}
-		return out[i].Name < out[j].Name
-	})
-	return out
-}
 
 // ToolsSection is the session's tool-call histogram. Nothing surfaces
 // this today — the audit log is written but never shown.
@@ -62,7 +18,7 @@ func (ToolsSection) Title() string   { return "TOOLS" }
 func (ToolsSection) Priority() int   { return 3 }
 func (ToolsSection) Clippable() bool { return true }
 
-func (ToolsSection) Relevant(d Data) bool { return len(d.Audit) > 0 }
+func (ToolsSection) Relevant(d Data) bool { return len(d.Tools) > 0 }
 
 // shortToolName drops the namespace so "file.read" reads as "read" in a
 // narrow sheet. MCP tools keep their server segment.
@@ -77,12 +33,11 @@ func shortToolName(name string) string {
 }
 
 func (ToolsSection) Render(d Data, width, maxRows int) []string {
-	stats := ToolStats(d.Audit)
-	rows := make([]string, 0, len(stats)+1)
+	rows := make([]string, 0, len(d.Tools)+1)
 
-	var slowest ToolStat
-	for _, s := range stats {
-		if s.Slowest > slowest.Slowest {
+	var slowest acpwire.SheetTool
+	for _, s := range d.Tools {
+		if s.SlowestMs > slowest.SlowestMs {
 			slowest = s
 		}
 		// The error badge carries ANSI; railRow measures the right column
@@ -93,9 +48,9 @@ func (ToolsSection) Render(d Data, width, maxRows int) []string {
 		}
 		rows = append(rows, railRow("", shortToolName(s.Name), right, width))
 	}
-	if slowest.Slowest > 0 {
+	if slowest.SlowestMs > 0 {
 		rows = append(rows, railRow("", "slowest "+shortToolName(slowest.Name),
-			fmt.Sprintf("%.1fs", slowest.Slowest.Seconds()), width))
+			fmt.Sprintf("%.1fs", float64(slowest.SlowestMs)/1000), width))
 	}
 
 	if maxRows > 0 && len(rows) > maxRows {
@@ -108,21 +63,20 @@ func (ToolsSection) Render(d Data, width, maxRows int) []string {
 }
 
 func (ToolsSection) OneLine(d Data, width int) string {
-	errs, slowest := 0, time.Duration(0)
-	for _, e := range d.Audit {
-		if e.Error != "" {
-			errs++
-		}
-		if e.Duration > slowest {
-			slowest = e.Duration
+	calls, errs, slowest := 0, 0, int64(0)
+	for _, s := range d.Tools {
+		calls += s.Calls
+		errs += s.Errors
+		if s.SlowestMs > slowest {
+			slowest = s.SlowestMs
 		}
 	}
-	line := fmt.Sprintf("⚒ %d calls", len(d.Audit))
+	line := fmt.Sprintf("⚒ %d calls", calls)
 	if errs > 0 {
 		line += fmt.Sprintf(" · %d failed", errs)
 	}
 	if slowest > 0 {
-		line += fmt.Sprintf(" · %.1fs max", slowest.Seconds())
+		line += fmt.Sprintf(" · %.1fs max", float64(slowest)/1000)
 	}
 	return ansi.Truncate(line, width, "…")
 }

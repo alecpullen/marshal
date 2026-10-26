@@ -68,8 +68,6 @@ import (
 	"marshal/internal/postmortem"
 	"marshal/internal/progress"
 	"marshal/internal/pubsub"
-	"marshal/internal/repo/changedfiles"
-	"marshal/internal/repo/gitinfo"
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
 	"marshal/internal/skills"
@@ -78,7 +76,6 @@ import (
 	"marshal/internal/trust"
 	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
-	"marshal/internal/worktree"
 )
 
 // AgentRunner is the one thing the TUI knows about the agent loop: how to
@@ -554,25 +551,7 @@ type Model struct {
 	// the terminal cannot deliver events to both — so this is a toggle rather
 	// than something the two features can share.
 	mouseReleased bool
-	// sheetRepoStats is refreshed on turn boundaries, never during render.
-	sheetRepoStats sessionsheet.RepoStats
-	// sheetTurns is the recent turn-metrics cache, refreshed when a turn
-	// completes. Never queried during render.
-	sheetTurns []db.TurnMetricsRow
-	// sheetTotals is the session-scoped usage aggregate the sheet footer
-	// reports. Refreshed alongside sheetTurns.
-	sheetTotals db.UsageTotals
-	// sheetBaseRef is the commit the changed-files section diffs against,
-	// rebased when the workspace changes and after each completed turn
-	// (see handleWorkspaceMsg/handleAgentFinished).
-	sheetBaseRef string
-	// sheetChanged is the changed-files cache, refreshed on turn boundaries.
-	sheetChanged []sessionsheet.ChangedFile
-	// sheetFleet is the agent-worktree cache, refreshed on turn boundaries
-	// (ListFleet shells out to git per worktree). Ahead/behind is against
-	// the project root's HEAD.
-	sheetFleet []worktree.FleetRow
-	viewport   viewport.Model
+	viewport      viewport.Model
 
 	// Viewport dirty tracking.
 	lastTranscriptHash uint64
@@ -1780,23 +1759,11 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
 	}
 
-	m.sheetBaseRef = gitinfo.HeadSHA(state.Workspace().ActiveRoot)
-
 	m.histIdx = -1
 	if state.Config.History.Enabled {
 		if database := state.DB(); database != nil && m.memoryProject != 0 {
 			if prompts, err := database.RecentPrompts(m.memoryProject, promptHistoryLimit); err == nil {
 				m.history = prompts
-			}
-		}
-	}
-
-	if database := state.DB(); database != nil {
-		if projectID := m.memoryProject; projectID != 0 {
-			files, ferr := database.CountFiles(projectID)
-			syms, serr := database.CountSymbols(projectID)
-			if ferr == nil && serr == nil {
-				m.sheetRepoStats = sessionsheet.RepoStats{Files: files, Symbols: syms}
 			}
 		}
 	}
@@ -1823,11 +1790,10 @@ func blinkCmd() tea.Cmd {
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{blinkCmd()}
-	// Read HEAD and the changed files off-thread so ±N files is right from
-	// the first frame instead of waiting for a turn to end.
-	if cmd := sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot); cmd != nil {
-		cmds = append(cmds, cmd)
-	}
+	// The session reads HEAD and the changed files off the UI thread, so
+	// ±N files is right from the first frame instead of waiting for a turn
+	// to end.
+	cmds = append(cmds, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true}))
 	if cmd := pumpChanged(m.sess.Changed()); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
@@ -1864,51 +1830,6 @@ func (m *Model) resize(width, height int) {
 	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.boxRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
-// refreshSheetTurns reloads the turn-metrics cache the session sheet reads.
-// Called on turn completion, never from View.
-func (m *Model) refreshSheetTurns() {
-	database := m.state.DB()
-	if database == nil {
-		return
-	}
-	if rows, err := database.RecentTurnMetrics(m.memoryProject, 24); err == nil {
-		m.sheetTurns = rows
-	}
-	if totals, err := database.SessionUsage(m.memoryProject, m.sess.ID()); err == nil {
-		m.sheetTotals = totals
-	}
-}
-
-// refreshSheetChanged reloads the changed-files cache. Shells out to git,
-// so it runs on turn boundaries only — never from View.
-func (m *Model) refreshSheetChanged() {
-	m.sheetChanged = sheetChangedFiles(changedfiles.Read(m.sess.Status().Workspace.ActiveRoot, m.sheetBaseRef))
-}
-
-// refreshSheetFleet reloads the agent-worktree cache the session sheet reads.
-// Shells out to git (ListFleet runs several subprocesses per worktree), so
-// it runs on turn boundaries only — never from View. Ahead/behind is
-// against the project root's HEAD, not the active root: the fleet describes
-// the whole project's agent worktrees, not the checked-out one.
-func (m *Model) refreshSheetFleet() {
-	st := m.sess.Status()
-	root := st.Workspace.ProjectRoot
-	if root == "" {
-		root = st.WorkingDir
-	}
-	base, err := worktree.CLIGitOps{}.RevParse(root, "HEAD")
-	if err != nil {
-		m.sheetFleet = nil
-		return
-	}
-	rows, err := worktree.ListFleet(worktree.CLIGitOps{}, root, base)
-	if err != nil {
-		m.sheetFleet = nil
-		return
-	}
-	m.sheetFleet = rows
-}
-
 // sheetSections is the session sheet's section list, minus any section the
 // config's [tui.side_panel].hidden names.
 func (m Model) sheetSections() []sessionsheet.Section {
@@ -1927,14 +1848,14 @@ func (m Model) sheetSections() []sessionsheet.Section {
 }
 
 // openSessionSheet opens the Ctrl+B session sheet (or closes it, if it is
-// already the open panel). The turn, changed-file and fleet caches are
-// refreshed once on open; the panel then reads them live.
+// already the open panel). The session re-reads the sheet's cached values
+// once on open, before the panel is built, so its first frame is fresh.
 func (m *Model) openSessionSheet() {
 	if m.sheetOpen() {
 		m.closeSessionSheet()
 		return
 	}
-	m.refreshSheetCaches()
+	_ = m.sess.RefreshSheet(m.ctx, acpwire.SheetRefresh{Changed: true, Stats: true, Fleet: true})
 	panel := sessionsheet.NewPanel(m.sheetSections(), m.sheetDataFor)
 	// Opening a panel with nothing in it would leave an invisible dock that
 	// swallows keys until Esc (every section hidden or irrelevant).
@@ -1962,81 +1883,50 @@ func (m *Model) closeSessionSheet() {
 	m.refreshViewport()
 }
 
-// refreshSheetCaches reloads every turn-boundary cache the sheet reads.
-func (m *Model) refreshSheetCaches() {
-	m.refreshSheetTurns()
-	m.refreshSheetChanged()
-	m.refreshSheetFleet()
-}
-
-// sheetDataFor is the sheet's data source: the drilled-in subagent's
-// snapshot while drilled into a real child, the parent's otherwise.
+// sheetDataFor is the sheet's data source. The adapter picks the subagent's
+// sheet and falls back to the session's, so the Model only says which ID to
+// read.
 func (m Model) sheetDataFor() sessionsheet.Data {
-	if child := m.drilledSheetState(); child != nil {
-		return m.childSheetData(child)
-	}
-	return m.sheetData()
-}
-
-// sheetData assembles the session sheet's render snapshot. Everything here is
-// either already in memory or cached on turn boundaries — this runs once
-// per frame and must never query the DB or shell out.
-func (m Model) sheetData() sessionsheet.Data {
 	st := m.sess.Status()
-	return sessionsheet.Data{
-		State:   m.state,
-		Git:     st.Git,
-		Repo:    m.sheetRepoStats,
-		Turns:   m.sheetTurns,
-		Totals:  m.sheetTotals,
-		Changed: m.sheetChanged,
-		Fleet:   m.sheetFleet,
-		Pack:    m.state.ContextPack(),
-		Audit:   m.state.AuditLog(),
-		Rules:   m.state.SessionRules(),
-		Skills:  m.state.ActiveSkills(),
-		Swarm:   st.Swarm,
-		SDD:     st.SDD,
-		Spinner: m.turnSpinnerFrame(),
-		Now:     m.now(),
+	sh := m.sess.Sheet(m.drilledSheetID())
+	data := sessionsheet.Data{
+		Git:         st.Git,
+		Repo:        sh.Repo,
+		Turns:       sh.Turns,
+		Totals:      sh.Totals,
+		Changed:     sh.Changed,
+		Fleet:       sh.Fleet,
+		Now:         m.now(),
+		Context:     sh.Context,
+		Tools:       sh.Tools,
+		Files:       sh.Files,
+		Rules:       sh.Rules,
+		Skills:      sh.Skills,
+		StartedAt:   acpwire.Time(sh.StartedAt),
+		ToolBudget:  sh.ToolBudget,
+		LoadedTools: sh.LoadedTools,
+		Sandbox:     sh.Sandbox,
+		Spinner:     m.turnSpinnerFrame(),
 	}
+	// The run progress belongs to the session, not to a subagent's sheet.
+	if sh.SubagentID == 0 {
+		data.Swarm = st.Swarm
+		data.SDD = st.SDD
+	}
+	return data
 }
 
-// drilledSheetState returns the child session the sheet should render while
-// drilled into a subagent, or nil when the sheet should show the parent (no
-// drill-in, or a pipeline/SDD card with no Child state). Mirrors
-// refreshViewport's transcriptState resolution.
-func (m Model) drilledSheetState() *session.State {
+// drilledSheetID is the drilled-in subagent's ID, or 0 when the view is not
+// drilled in.
+func (m Model) drilledSheetID() int64 {
 	if len(m.viewStack) == 0 {
-		return nil
+		return 0
 	}
 	v, ok := m.drilledInto()
-	if !ok || v.Child == nil {
-		return nil
+	if !ok {
+		return 0
 	}
-	return v.Child
-}
-
-// childSheetData assembles a sheet snapshot scoped to a drilled-in subagent:
-// session-scoped telemetry (audit trail, rules, skills) comes from the
-// child, while environment-level sections (git, repo index) stay parent-
-// sourced — they describe the workspace, not the conversation. Parent turn
-// telemetry (Changed/Pack/Swarm/SDD/Turns/Totals) is omitted: it has no
-// per-child meaning and nothing per-child is cached at turn boundaries yet.
-func (m Model) childSheetData(child *session.State) sessionsheet.Data {
-	return sessionsheet.Data{
-		State:  child,
-		Audit:  child.AuditLog(),
-		Rules:  child.SessionRules(),
-		Skills: child.ActiveSkills(),
-		Git:    m.sess.Status().Git,
-		Repo:   m.sheetRepoStats,
-		// Fleet stays parent-sourced like Git/Repo: the agent worktrees
-		// describe the project's workspace, not the drilled-in conversation.
-		Fleet:   m.sheetFleet,
-		Spinner: m.turnSpinnerFrame(),
-		Now:     m.now(),
-	}
+	return v.ID
 }
 
 // ctrlCAction is what a double Ctrl+C will do.
@@ -2502,7 +2392,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWorkMsg(wm)
 	}
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, changedMsg, agentTickMsg, spinnerTickMsg, sheetBaseRefMsg, suggestionMsg, callersMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, changedMsg, agentTickMsg, spinnerTickMsg, suggestionMsg, callersMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -5432,13 +5322,10 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		m.restoreRunner()
 		m.restoreRunner = nil
 	}
-	// The changed-file count is refreshed off-thread by the sheetBaseRefCmd
-	// returned below. The turn and fleet caches are read only by the session
-	// sheet: refresh them here while it is open, otherwise when it opens.
-	if m.sheetOpen() {
-		m.refreshSheetTurns()
-		m.refreshSheetFleet()
-	}
+	// The changed files are refreshed off-thread by the refresh returned
+	// below. An open sheet's turn and fleet values are refreshed with it,
+	// off the UI thread, so they land a moment after the turn ends.
+	sheetOpen := m.sheetOpen()
 	if msg.err != nil && !cancelled && !errors.Is(msg.err, context.Canceled) {
 		// SDD human gate: open the gate panel and wait for the user's answer.
 		if errors.Is(msg.err, pipeline.ErrHumanGateRequired) {
@@ -5473,10 +5360,9 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	m.updateViewportHeight()
 	m.refreshViewport()
 	flushCmd := m.flushPendingModelOptions()
-	// Rebase the changed-files base ref onto the active root's HEAD so committed
-	// agent work stops inflating the diff; the sheetBaseRefMsg handler sets the
-	// new base and refreshes the cache after the next tick.
-	cmds := []tea.Cmd{tickCmd(), flushCmd, sheetBaseRefCmd(m.sess.Status().Workspace.ActiveRoot)}
+	// The session rebases the changed files onto the active root's HEAD, so
+	// committed agent work stops inflating the diff.
+	cmds := []tea.Cmd{tickCmd(), flushCmd, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true, Stats: sheetOpen, Fleet: sheetOpen})}
 	if suggestionCmd != nil {
 		cmds = append(cmds, suggestionCmd)
 	}
@@ -5616,11 +5502,11 @@ func (m Model) handleChanged(msg changedMsg) (Model, tea.Cmd) {
 	st := m.sess.Status()
 	cmds := []tea.Cmd{pumpChanged(msg.ch)}
 
-	// The sheet's base ref follows the workspace's active root.
+	// The sheet's changed files follow the workspace's active root.
 	if st.Workspace != m.workspaceSeen {
 		m.workspaceSeen = st.Workspace
 		if st.Workspace.ActiveRoot != "" {
-			cmds = append(cmds, sheetBaseRefCmd(st.Workspace.ActiveRoot))
+			cmds = append(cmds, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true}))
 		}
 	}
 
@@ -6467,30 +6353,6 @@ func (m *Model) openWork() {
 	m.refreshViewport()
 }
 
-// handleSheetBaseRef handles a sheetBaseRefMsg: a freshly-read HEAD SHA for
-// the changed-files cache. It rebases the base ref and installs the diff the
-// command already read off-thread, so the handler does no git work.
-func (m Model) handleSheetBaseRef(msg sheetBaseRefMsg) (Model, tea.Cmd) {
-	// Drop msgs whose dir is no longer the active root: linked worktrees
-	// share the object store, so a stale in-flight cmd from a previous
-	// workspace/session could otherwise rebase the session sheet against the wrong
-	// tree and produce a misleading diff.
-	if msg.dir != m.sess.Status().Workspace.ActiveRoot {
-		return m, nil
-	}
-	if msg.ref == "" {
-		// git could not read HEAD; keep the base and the cache as they were.
-		return m, nil
-	}
-	m.sheetBaseRef = msg.ref
-	m.sheetChanged = msg.changed
-	// No explicit refreshViewport here: Bubble Tea re-renders after every
-	// Update, and the status line and session sheet read m.sheetChanged
-	// directly in View. refreshViewport only rebuilds the transcript
-	// viewport, which this message does not touch.
-	return m, nil
-}
-
 // handleAgentTick handles an agentTickMsg, shared by Update and
 // handleRuntimeMessage.
 func (m Model) handleAgentTick(msg agentTickMsg) (Model, tea.Cmd) {
@@ -6594,8 +6456,6 @@ func (m Model) dispatchRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePlanAuthorFinished(msg)
 	case changedMsg:
 		return m.handleChanged(msg)
-	case sheetBaseRefMsg:
-		return m.handleSheetBaseRef(msg)
 	case agentTickMsg:
 		return m.handleAgentTick(msg)
 	case spinnerTickMsg:

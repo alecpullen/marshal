@@ -3,9 +3,10 @@ package acpwire
 // SessionStatus is what the status line, the footer and input gating read
 // about a session (C5).
 //
-// It arrives over several plans. Plan 2c adds the session's start time, plans
-// 3 and 4 the sandbox info, and plan 6 the current notice. The session ID is
-// not here: Session.ID() carries it.
+// It arrives over several plans: plans 3 and 4 add the sandbox info, and plan
+// 6 the current notice. The session ID is not here: Session.ID() carries it.
+// The start time is not here either: only the sheet reads it, so SessionSheet
+// carries it.
 type SessionStatus struct {
 	WorkingDir string `json:"workingDir"`
 	// GenerationSeq and LeafID carry omitempty per the plan's contract, so a
@@ -39,6 +40,7 @@ type SessionStatus struct {
 	SDD             SDDProgress   `json:"sdd"`
 	SDDGate         SDDGate       `json:"sddGate"`
 	Git             Git           `json:"git"`
+	ChangedFiles    int           `json:"changedFiles,omitempty"` // against the sheet's base; 0 means "no changes", never "not refreshed"
 	WatchResume     *WatchResume  `json:"watchResume,omitempty"`
 }
 

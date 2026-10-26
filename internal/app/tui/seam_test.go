@@ -40,12 +40,15 @@ func testModelWith(d inproc.Deps, opts ...Option) Model {
 }
 
 // stubSession wraps the adapter's session for tests that need a value only
-// events or a call produce: patch adjusts every Status read, and onSendNow
-// sees each SendNow request before the adapter does.
+// events or a call produce: patch adjusts every Status read, onSendNow sees
+// each SendNow request before the adapter does, onRefreshSheet sees each
+// RefreshSheet request, and sheetPatch adjusts every Sheet read.
 type stubSession struct {
 	acpclient.Session
-	patch     func(*acpwire.SessionStatus)
-	onSendNow func(acpwire.SendNowRequest)
+	patch          func(*acpwire.SessionStatus)
+	onSendNow      func(acpwire.SendNowRequest)
+	onRefreshSheet func(acpwire.SheetRefresh)
+	sheetPatch     func(*acpwire.SessionSheet)
 }
 
 func (s *stubSession) Status() acpwire.SessionStatus {
@@ -61,6 +64,21 @@ func (s *stubSession) SendNow(ctx context.Context, req acpwire.SendNowRequest) (
 		s.onSendNow(req)
 	}
 	return s.Session.SendNow(ctx, req)
+}
+
+func (s *stubSession) RefreshSheet(ctx context.Context, req acpwire.SheetRefresh) error {
+	if s.onRefreshSheet != nil {
+		s.onRefreshSheet(req)
+	}
+	return s.Session.RefreshSheet(ctx, req)
+}
+
+func (s *stubSession) Sheet(subagentID int64) acpwire.SessionSheet {
+	sheet := s.Session.Sheet(subagentID)
+	if s.sheetPatch != nil {
+		s.sheetPatch(&sheet)
+	}
+	return sheet
 }
 
 // testModelStub builds a model whose session is stub, wrapped around an

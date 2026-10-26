@@ -25,12 +25,14 @@ func newSession(d Deps) *Session {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	s := &Session{
-		state:    d.State,
-		gitInfo:  gitInfo,
-		ctx:      ctx,
-		cancel:   cancel,
-		changed:  make(chan struct{}, 1),
-		receipts: map[string]session.SteeringReceipt{},
+		state:     d.State,
+		gitInfo:   gitInfo,
+		projectID: d.ProjectID,
+		headSHA:   gitinfo.HeadSHA,
+		ctx:       ctx,
+		cancel:    cancel,
+		changed:   make(chan struct{}, 1),
+		receipts:  map[string]session.SteeringReceipt{},
 	}
 	s.subscribe(d)
 	return s

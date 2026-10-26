@@ -8,8 +8,9 @@ P-A–P-E, merged at `991c18d7`). Agent side and TUI only: no bridge
 change, no new ACP method, no database schema change. ACP messages that
 already exist change only by gaining optional fields (C6).
 Status: drafted 2026-10-20; revised 2026-10-25 against `991c18d7`
-(Revision record); awaiting review. Delivered as nine plans (Migration
-order), each written against `main` once the previous one has landed.
+and since, plan by plan (Revision record). Delivered as nine plans
+(Migration order), each written against `main` once the previous one has
+landed; plans 2 and 3 are split into sub-plans.
 
 Decided with the user (2026-10-20):
 - **Transcript on the wire:** `WireTree`. The TUI renders the same
@@ -122,11 +123,11 @@ Re-checked on 2026-10-25 against the reworked renderer.
     - a failed call's last three output lines (`failedTail`,
       `spine.go:242`). `WireCall.Output` keeps only the first 4096
       bytes, which loses the end of a long failing test run;
-  - from a call outside any beat, which still renders through the older
-    head (`toolRowHead`, `transcript.go:815`): that head, plus the diff
-    preview, which shows per-file `+N −M` stats and the first 12 lines of
-    up to 6 files (`transcript.go:1044`);
-  - the active call's step ID and its command line.
+  - from a running call outside any beat, which renders through the older
+    active-call renderer (`renderActiveToolCall`): its command line. A
+    settled call never sits outside a beat (revision record against
+    `75ee412d`), so the older settled head and its diff preview need
+    nothing.
 - **The tray and the drill-in breadcrumb read the subagent view.** The
   tray reads a running child's newest narration headline. The
   breadcrumb reads the child's model, provider and fallback flag
@@ -398,21 +399,21 @@ Decision: `WireTree`, with the C6 additions.
     order. The renderer joins them as one markdown document, and
     `headline` (emphasis stripped, cut at the first sentence) plus
     `rest` cannot rebuild them;
+  - `WireTool` gains `verb`, the word the row leads with;
   - `WireCall` gains:
     - `subject`, today's `callSubject`, built server-side against the
       active root and scrubbed;
+    - `summaryLine`, the summary's first line;
     - `diffStat`, counted over the full diff;
-    - `hookHint` and `killedReason`;
+    - `hookHint`, `killedReason` and `jobId`;
     - `tail`, a failed call's last three output lines;
-    - `stepId`;
-  - a call outside any beat also gets `head` (today's `toolRowHead`) and
-    `diffFiles`. Each `diffFiles` entry carries the path, the added and
-    removed counts and the first 12 diff lines, for at most 6 files,
-    plus the full count;
-  - `WireRunning` gains `stepId` and the command line.
+  - `WireRunning` gains `subject`, `callId` and `args`;
+  - `WireThinking` gains `startedAt`, for the live reasoning box;
+  - `WireRunEvent` gains `bodyLines`, the whole body's line count.
 
-  The plan fixes the JSON names. Anything only an expanded row needs
-  comes from `StackNode`. `WireTool.subagentId`, which drill-in needs,
+  Plan 3a fixes the JSON names. Anything only an expanded row needs
+  comes from `StackNode`, and plans 3b and 3c add to `NodeDetail` what
+  their readers need. `WireTool.subagentId`, which drill-in needs,
   already exists (P-B), and `WireSubagent` is gone.
 - **The renderer moves from `viewmodel.Node` to `acpwire.WireNode`.**
   Node identity becomes the wire ID and kind. Expansion, selection,
@@ -671,7 +672,25 @@ The TUI works after every plan.
    and git, so 2c keeps them off the render path.
 3. **Transcript** (C6): the renderer, the TUI's indexes over the tree
    and the tray's band and held-row inputs. This is the largest and
-   riskiest plan, so it comes early.
+   riskiest group, so it comes early, in four plans:
+   - **3a. Projection** ([plan](plans/2026-10-27-p2-3a-projection-plan.md)).
+     T6's golden files, recorded before anything changes. The projection
+     types and their wire names move to `acpwire`, one shared projector
+     serves `acp` and the TUI, the row helpers move to `viewmodel`, and
+     the projection gains `version` and the collapsed-row fields. Agent
+     side only, apart from wrappers and one snapshot call in the TUI.
+   - **3b. Browse actions.** `Session.StackNode`. The inspector, copy,
+     open and the selection's full-subject copy read a node's wire form
+     and detail instead of its payload. Callers lookups move agent side
+     (`Session.Callers`).
+   - **3c. Rows.** The row renderers take wire payloads, from a tree the
+     TUI still builds and projects itself. Expanded rows read
+     `StackNode` detail. The settled-row renderer nothing reaches is
+     deleted.
+   - **3d. Tree.** `Session.Stack`. The TUI's tree, node identity,
+     expansion, regions, browse items, drill-in, band and completion
+     index come from wire nodes. The text helpers move to an allowed
+     package, and T1b and the allowlist close the group.
 4. **Agent requests** (C7).
 5. **Turns and runs** (C8).
 6. **Notes, notices and commands** (C9).
@@ -707,13 +726,15 @@ Each plan removes its group's allowlist entries.
   does what the code it replaced did. For example, `always` writes the
   rule, applies it and resets the runner's rules. `AddNote` persists a
   system message. A swapped-out session's calls fail closed.
-- **T6. Renderer equivalence.** Before porting, Plan 3 records the old
+- **T6. Renderer equivalence.** Before porting, plan 3a records the old
   renderer's output for a fixture set as golden files. The set covers
   every node kind, collapsed and expanded. That includes beats with a
   todo tag, plan lines, completion events with their issue reports,
-  receipts and a call outside any beat. It also covers diffs, hooks, a
-  killed sandbox, a failed call's tail, a running call, and the tray
-  with running, held and plan-run rows. The ported renderer must match
+  receipts and a running call outside any beat. It also covers diffs,
+  hooks, a killed sandbox, a failed call's tail, a running call, and the
+  tray with running, held and plan-run rows. The goldens are rendered
+  under `NO_COLOR` with the flat theme, as the tray's frames are, and the
+  fixtures' state runs on a fixed clock. The ported renderer must match
   the goldens byte for byte.
 - **T7. Secrets.** A config read has no literal key. A sudo answer's
   password appears in no `Status`, `Pending`, update or log output.
@@ -861,6 +882,48 @@ plan 2c:
   `viewmodel`, so the log never crosses the seam.
 - **The repo's language mix is dropped** (C5). Nothing has ever filled
   it.
+
+**2026-10-27, against `75ee412d` (plan 2c merged).** Found while writing
+plan 3a:
+- **Plan 3 splits into 3a (projection), 3b (browse actions), 3c (rows)
+  and 3d (tree)** (Migration order). The renderer, browse mode and the
+  drill-in share one tree, so the tree itself has to move in one plan.
+  But the reads of node payloads can move first: the browse actions to
+  `StackNode`, then the row renderers to wire payloads over a tree the
+  TUI still builds. Each step is checked against T6's goldens, which
+  plan 3a records before anything changes.
+- **No settled call renders outside a beat** (C6, spike). `Build` files
+  every audit under a beat: an ID'd one, or a loose one for a call with
+  no step (`viewmodel/stack.go:480-494`). It never hands an audit to
+  `passthrough`. The older settled-row renderer (`toolRowHead`,
+  `renderCompletedToolCallIn` and the collapsed diff preview in
+  `toolBody`) is reached only by tests and by `nodeCopyText`'s item
+  fallback, which no audit reaches. `head` and `diffFiles` are dropped,
+  and plan 3c deletes that renderer. A *running* call can still stand
+  outside a beat, and T6 covers it.
+- **The collapsed-row fields change** (C6). These are added, each because
+  a collapsed row reads it:
+  - `WireTool.verb`. The subject's fallback uses the same verb table, so
+    the table moves agent side and the verb travels with the row.
+  - `WireCall.summaryLine`. The existing `summary` turns line breaks into
+    spaces, so its first line cannot be recovered.
+  - `WireCall.jobId`, for the "job started" result.
+  - `WireRunning.subject`, `callId` and `args`. These are the running
+    row's subject, the key of the work row it points at, and the stray
+    running row's command line. `target` is not enough: the stray row
+    shows the arguments even when the call has a path.
+  - `WireThinking.startedAt`, for the live reasoning box's elapsed time.
+  - `WireRunEvent.bodyLines`. The collapsed "… N more lines" counts the
+    whole body, which `body` caps.
+
+  `WireCall.stepId` and `WireRunning.stepId` are dropped. No collapsed
+  row reads a step ID, and the inspector takes it from `stack_node`'s
+  `CallDetail.StepID`, which exists.
+- **T6** (Tests). The goldens are rendered under `NO_COLOR` with the
+  flat theme, as the tray's frames are: colour comes from the theme, not
+  from the wire. The fixtures run on a fixed clock. `session.WithClock`
+  already exists, but nothing read it, so plan 3a makes the state stamp
+  its transcript times from it.
 
 ## Implementation record
 

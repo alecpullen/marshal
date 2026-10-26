@@ -1,6 +1,8 @@
 package viewmodel
 
 import (
+	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -57,7 +59,7 @@ func Project(turns []*Node, workdir string) acpwire.WireTree {
 	t := acpwire.WireTree{Roots: make([]string, 0, len(turns))}
 	var walk func(n *Node, parent string)
 	walk = func(n *Node, parent string) {
-		w := wireNode(n)
+		w := wireNode(n, workdir)
 		w.Parent = parent
 		t.Nodes = append(t.Nodes, w)
 		for _, c := range n.Children {
@@ -71,8 +73,8 @@ func Project(turns []*Node, workdir string) acpwire.WireTree {
 	return t
 }
 
-func wireNode(n *Node) acpwire.WireNode {
-	w := acpwire.WireNode{ID: n.ID.Key, Kind: n.Kind.String(), Live: n.Live}
+func wireNode(n *Node, workdir string) acpwire.WireNode {
+	w := acpwire.WireNode{ID: n.ID.Key, Kind: n.Kind.String(), Live: n.Live, Version: versionHex(n.Version)}
 	for _, c := range n.Children {
 		w.Children = append(w.Children, c.ID.Key)
 	}
@@ -85,7 +87,7 @@ func wireNode(n *Node) acpwire.WireNode {
 		w.Step = wireStep(n)
 	case n.Kind == KindThinking && n.Step != nil:
 		// The live reasoning region when no step could hold it.
-		w.Thinking = &acpwire.WireThinking{Text: n.Step.LiveThinking}
+		w.Thinking = &acpwire.WireThinking{Text: n.Step.LiveThinking, StartedAt: ms(n.Step.LiveSince)}
 	case n.Completion != nil:
 		c := n.Completion
 		wc := &acpwire.WireCompletion{
@@ -111,7 +113,7 @@ func wireNode(n *Node) acpwire.WireNode {
 	case n.Active != nil:
 		w.Tool = wireActive(n.Active)
 	case len(n.Tools) > 0:
-		w.Tool = wireTools(n.Tools)
+		w.Tool = wireTools(n.Tools, workdir)
 		w.Tool.WorkKey = n.WorkKey
 		if len(n.Tools) == 1 {
 			w.Tool.SubagentID = StartedSubagent(n.Tools[0])
@@ -136,20 +138,28 @@ func wireStep(n *Node) *acpwire.WireStep {
 	for _, t := range si.Thinking {
 		ws.Thoughts = append(ws.Thoughts, acpwire.WireThought{Text: ScrubBlock(t.Text), DurationMs: t.Duration.Milliseconds()})
 	}
+	for _, m := range si.Narration {
+		ws.Narration = append(ws.Narration, strings.TrimSpace(m.Content))
+	}
 	if l := si.Todo; l != nil {
 		ws.Todo = &acpwire.WireTodoLabel{ID: l.ID, Index: l.Index, Total: l.Total, Content: ScrubText(l.Content)}
 	}
 	return ws
 }
 
-func wireTools(evs []registry.AuditEvent) *acpwire.WireTool {
-	wt := &acpwire.WireTool{Name: evs[0].ToolName, Display: DisplayToolName(evs[0].ToolName)}
+func wireTools(evs []registry.AuditEvent, workdir string) *acpwire.WireTool {
+	wt := &acpwire.WireTool{Name: evs[0].ToolName, Display: DisplayToolName(evs[0].ToolName), Verb: CallVerb(evs[0].ToolName)}
 	for _, ev := range evs {
 		c := acpwire.WireCall{
 			CallID: ev.ToolCallID, Target: ScrubText(ToolTarget(ev)), Summary: ScrubText(DisplaySummary(ev)),
 			Error: ScrubBlock(ev.Error), ExitCode: ev.CommandExitCode, Failed: EventFailed(ev),
 			Approval: string(ev.Approval), Risk: string(ev.Risk), Role: ev.AgentRole,
 			DurationMs: ev.Duration.Milliseconds(), At: ms(ev.Timestamp),
+			Subject: CallSubject(ev, workdir), SummaryLine: SummaryLine(ev), DiffStat: CallDiffStat(ev),
+			HookHint: HookHint(ev.Hooks), KilledReason: ScrubText(ev.Sandbox.KilledReason), JobID: JobStartID(ev),
+		}
+		if EventFailed(ev) {
+			c.Tail = FailedTail(ev)
 		}
 		for _, f := range ev.FilesChanged {
 			c.Files = append(c.Files, ScrubText(f))
@@ -171,19 +181,24 @@ func wireActive(a *session.ActiveToolCall) *acpwire.WireTool {
 	if target == "" {
 		target = a.Args
 	}
-	r := &acpwire.WireRunning{Target: target, StartedAt: ms(a.StartedAt)}
-	r.Output, r.Truncated = capTail(a.Output)
-	return &acpwire.WireTool{Name: a.Name, Display: DisplayToolName(a.Name), Running: r}
+	r := &acpwire.WireRunning{Target: target, StartedAt: ms(a.StartedAt),
+		Subject: RunningSubject(*a), CallID: a.ToolCallID}
+	var outCut, argCut bool
+	r.Output, outCut = capTail(a.Output)
+	r.Args, argCut = capText(a.Args)
+	r.Truncated = outCut || argCut
+	return &acpwire.WireTool{Name: a.Name, Display: DisplayToolName(a.Name), Verb: CallVerb(a.Name), Running: r}
 }
 
 func wireItem(w *acpwire.WireNode, it *session.TranscriptItem) {
 	switch {
 	case it.Message != nil:
 		m := it.Message
+		reasoning, _ := capText(m.Reasoning)
 		w.Message = &acpwire.WireMessage{
 			Role: string(m.Role), ContentType: string(m.ContentType), Content: m.Content,
 			Final: m.Final, Usage: m.Usage, Salvaged: m.Salvaged, SalvageReason: m.SalvageReason,
-			ThinkMs: m.ThinkDuration.Milliseconds(), At: ms(it.Timestamp),
+			ThinkMs: m.ThinkDuration.Milliseconds(), At: ms(it.Timestamp), Reasoning: reasoning,
 		}
 	case it.Thinking != nil:
 		w.Thinking = &acpwire.WireThinking{Text: ScrubBlock(it.Thinking.Text), DurationMs: it.Thinking.Duration.Milliseconds()}
@@ -192,8 +207,19 @@ func wireItem(w *acpwire.WireNode, it *session.TranscriptItem) {
 		wr := &acpwire.WireRunEvent{Kind: runEventKind(e.Kind), TaskN: e.TaskN, Title: e.Title, Detail: e.Detail,
 			Severity: e.Severity, At: ms(e.At)}
 		wr.Body, wr.Truncated = capText(e.Body)
+		wr.BodyLines = bodyLines(e.Body)
 		w.RunEvent = wr
 	}
+}
+
+// bodyLines is how many lines a run-event body renders as: the count
+// renderRunEvent takes, with the trailing newline a body usually ends in
+// trimmed off. An empty body is no lines at all.
+func bodyLines(body string) int {
+	if body == "" {
+		return 0
+	}
+	return len(strings.Split(strings.TrimRight(body, "\n"), "\n"))
 }
 
 var runEventKinds = [...]string{
@@ -219,6 +245,15 @@ func ms(t time.Time) int64 {
 		return 0
 	}
 	return t.UnixMilli()
+}
+
+// versionHex is a payload hash as a node's wire version, "" when the node
+// carries none: the turn nodes and the running calls.
+func versionHex(v uint64) string {
+	if v == 0 {
+		return ""
+	}
+	return strconv.FormatUint(v, 16)
 }
 
 // capText keeps the first acpwire.WireTextCap bytes of s, cut on a rune

@@ -129,3 +129,74 @@ func TestStackSnapshotJSON(t *testing.T) {
 		}
 	}
 }
+
+// TestCollapsedRowFieldsJSON pins the fields a client renders a collapsed row
+// from: the node's version, the verb it leads with, and the row's one-line
+// facts. Each literal is the whole node, so a field moving or a tag changing
+// is a wire change rather than a rendering detail.
+func TestCollapsedRowFieldsJSON(t *testing.T) {
+	cases := []struct {
+		name  string
+		value WireNode
+		want  string
+	}{
+		{
+			name: "step",
+			value: WireNode{
+				ID: "step:1", Kind: KindStep, Version: "9f3a",
+				Step: &WireStep{Headline: "Reading the config.",
+					Narration: []string{"Reading the config. Then editing it.", ""}},
+			},
+			want: `{"id":"step:1","kind":"step","version":"9f3a","step":{"headline":"Reading the config.","narration":["Reading the config. Then editing it.",""]}}`,
+		},
+		{
+			name: "tool row",
+			value: WireNode{
+				ID: "tool:1:c1", Kind: KindTool, Version: "1c",
+				Tool: &WireTool{
+					Name: "shell.run", Display: "Shell", Verb: "shell",
+					Calls: []WireCall{{
+						Subject: "⌂ go test ./...", SummaryLine: "exit 1", DiffStat: "+1 −1",
+						HookHint: "hook rewrote", KilledReason: "timeout", JobID: "job-1",
+						Tail: []string{"--- FAIL: TestEval", "FAIL"},
+					}},
+					Running: &WireRunning{Subject: "evals/config.toml", CallID: "c2", Args: "go vet ./..."},
+				},
+			},
+			want: `{"id":"tool:1:c1","kind":"tool","version":"1c","tool":{"name":"shell.run","display":"Shell","verb":"shell","calls":[{"subject":"⌂ go test ./...","summaryLine":"exit 1","diffStat":"+1 −1","hookHint":"hook rewrote","killedReason":"timeout","jobId":"job-1","tail":["--- FAIL: TestEval","FAIL"]}],"running":{"subject":"evals/config.toml","callId":"c2","args":"go vet ./..."}}}`,
+		},
+		{
+			name: "message",
+			value: WireNode{
+				ID: "msg:2", Kind: KindMessage,
+				Message: &WireMessage{Role: "assistant", Content: "Done.", Reasoning: "weighing two configs"},
+			},
+			want: `{"id":"msg:2","kind":"message","message":{"role":"assistant","content":"Done.","reasoning":"weighing two configs"}}`,
+		},
+		{
+			name: "live reasoning",
+			value: WireNode{
+				ID: LiveThinkingID, Kind: KindThinking,
+				Thinking: &WireThinking{Text: "hmm", StartedAt: 1000},
+			},
+			want: `{"id":"think:live","kind":"thinking","thinking":{"text":"hmm","startedAt":1000}}`,
+		},
+		{
+			name: "run event",
+			value: WireNode{
+				ID: "run:7", Kind: KindRunEvent,
+				RunEvent: &WireRunEvent{Kind: RunEventVerifyFailed, Body: "a\nb", BodyLines: 14},
+			},
+			want: `{"id":"run:7","kind":"runEvent","runEvent":{"kind":"verifyFailed","body":"a\nb","bodyLines":14}}`,
+		},
+	}
+	for _, c := range cases {
+		got, err := json.Marshal(c.value)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", c.name, err)
+		}
+		if string(got) != c.want {
+			t.Errorf("%s JSON =\n%s\nwant\n%s", c.name, got, c.want)
+		}
+	}
+}

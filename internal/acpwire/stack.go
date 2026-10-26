@@ -27,6 +27,9 @@ type WireNode struct {
 	Parent   string   `json:"parent,omitempty"`
 	Children []string `json:"children,omitempty"`
 	Live     bool     `json:"live,omitempty"`
+	// Version is the hex of the node's payload hash: a client caches a
+	// rendered row while it is unchanged. Empty for a node without one.
+	Version string `json:"version,omitempty"`
 
 	Step       *WireStep       `json:"step,omitempty"`
 	Tool       *WireTool       `json:"tool,omitempty"`
@@ -98,6 +101,10 @@ type WireStep struct {
 	StartedAt int64          `json:"startedAt,omitempty"`
 	EndedAt   int64          `json:"endedAt,omitempty"`
 	Thoughts  []WireThought  `json:"thoughts,omitempty"`
+
+	// Narration is the beat's narration texts in order, each trimmed and an
+	// empty one kept, so the count is the beat's narration count.
+	Narration []string `json:"narration,omitempty"`
 }
 
 // WireTodoLabel marks the beat where work moves to a different todo.
@@ -119,6 +126,7 @@ type WireThought struct {
 type WireTool struct {
 	Name    string `json:"name"`
 	Display string `json:"display"`
+	Verb    string `json:"verb,omitempty"` // the word the row leads with
 	// WorkKey is the stable conversation-work identity this row dispatched, so
 	// a client can pair the retained dispatch row with the pinned live card by
 	// identity rather than by display text. Omitted when the record carries
@@ -189,6 +197,14 @@ type WireCall struct {
 	DurationMs int64    `json:"durationMs,omitempty"`
 	At         int64    `json:"at,omitempty"`
 	Truncated  bool     `json:"truncated,omitempty"`
+
+	Subject      string   `json:"subject,omitempty"`      // what the call acted on, scrubbed, its first line
+	SummaryLine  string   `json:"summaryLine,omitempty"`  // the summary's first line, scrubbed
+	DiffStat     string   `json:"diffStat,omitempty"`     // "+N −M" over the whole diff, for an edit or a whole-file write
+	HookHint     string   `json:"hookHint,omitempty"`     // the hook decision the row shows first
+	KilledReason string   `json:"killedReason,omitempty"` // why the sandbox killed the command
+	JobID        string   `json:"jobId,omitempty"`        // the background job the call started
+	Tail         []string `json:"tail,omitempty"`         // a failed call's last output lines
 }
 
 // WireRunning is a call that has not finished.
@@ -197,6 +213,10 @@ type WireRunning struct {
 	Output    string `json:"output,omitempty"`
 	StartedAt int64  `json:"startedAt,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`
+
+	Subject string `json:"subject,omitempty"` // what the call acts on, scrubbed
+	CallID  string `json:"callId,omitempty"`
+	Args    string `json:"args,omitempty"` // the arguments as the tool shows them, capped
 }
 
 // WireMessage is a user prompt, an assistant reply, or any other message the
@@ -211,12 +231,14 @@ type WireMessage struct {
 	SalvageReason string `json:"salvageReason,omitempty"`
 	ThinkMs       int64  `json:"thinkMs,omitempty"`
 	At            int64  `json:"at,omitempty"`
+	Reasoning     string `json:"reasoning,omitempty"` // capped at WireTextCap
 }
 
 // WireThinking is a reasoning row outside any step, finished or live.
 type WireThinking struct {
 	Text       string `json:"text"`
 	DurationMs int64  `json:"durationMs,omitempty"`
+	StartedAt  int64  `json:"startedAt,omitempty"` // when the live reasoning began
 }
 
 // WireRunEvent is one plan-run event (verify failure, review, commit, …).
@@ -229,6 +251,7 @@ type WireRunEvent struct {
 	Severity  string `json:"severity,omitempty"`
 	At        int64  `json:"at,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`
+	BodyLines int    `json:"bodyLines,omitempty"` // the whole body's line count
 }
 
 // WireReceipt is the summary line closing a finished turn.

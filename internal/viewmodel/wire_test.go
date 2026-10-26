@@ -2,8 +2,10 @@ package viewmodel
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
@@ -22,6 +24,24 @@ func wireByID(t *testing.T, tree acpwire.WireTree) map[string]acpwire.WireNode {
 		out[n.ID] = n
 	}
 	return out
+}
+
+// wireCalls indexes a projected tree's finished calls by call ID, with the verb
+// of the row each one sits on.
+func wireCalls(t *testing.T, tree acpwire.WireTree) (map[string]acpwire.WireCall, map[string]string) {
+	t.Helper()
+	calls := map[string]acpwire.WireCall{}
+	verbs := map[string]string{}
+	for _, n := range tree.Nodes {
+		if n.Tool == nil {
+			continue
+		}
+		for _, c := range n.Tool.Calls {
+			calls[c.CallID] = c
+			verbs[c.CallID] = n.Tool.Verb
+		}
+	}
+	return calls, verbs
 }
 
 func TestProjectLinksParentsAndChildren(t *testing.T) {
@@ -258,5 +278,310 @@ func TestWireHasNoSubagentNodes(t *testing.T) {
 		if n.Kind == "subagent" {
 			t.Fatalf("tree carries a subagent node: %+v", n)
 		}
+	}
+}
+
+// A client caches a rendered row while its version is unchanged, so every node
+// that has a payload hash must carry the hex of it. A turn node has none.
+func TestWireNodesCarryTheirVersion(t *testing.T) {
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0), narration(2, 1, 1, "Reading the config."),
+			audit("file.read", 1, "c1", 2), final(3, 3),
+		},
+		Steps: []session.Step{stepOf(1, 1, 1, 4)},
+		Now:   at(5),
+	})
+	versions := map[string]uint64{}
+	var walk func(ns []*Node)
+	walk = func(ns []*Node) {
+		for _, n := range ns {
+			versions[n.ID.Key] = n.Version
+			walk(n.Children)
+		}
+	}
+	walk(nodes)
+
+	tree := Project(nodes, "")
+	if len(tree.Nodes) != len(versions) {
+		t.Fatalf("projected %d nodes, built %d", len(tree.Nodes), len(versions))
+	}
+	sawTurn, sawTool, sawFinal := false, false, false
+	for _, w := range tree.Nodes {
+		v, ok := versions[w.ID]
+		if !ok {
+			t.Fatalf("wire node %s has no built node", w.ID)
+		}
+		if w.ID == "turn:1" {
+			sawTurn = true
+			if w.Version != "" {
+				t.Errorf("turn version = %q, want none", w.Version)
+			}
+			continue
+		}
+		if want := strconv.FormatUint(v, 16); w.Version != want {
+			t.Errorf("%s version = %q, want %q", w.ID, w.Version, want)
+		}
+		switch w.ID {
+		case "tool:1:c1":
+			sawTool = w.Version != ""
+		case "msg:3":
+			sawFinal = w.Version != ""
+		}
+	}
+	if !sawTurn || !sawTool || !sawFinal {
+		t.Fatalf("turn %v tool row %v final message %v, want all present with a version",
+			sawTurn, sawTool, sawFinal)
+	}
+}
+
+// beatsRows is the beats scene's reviewer rows (15 to 20) as audit items: the
+// failed eval run, the hook-rewritten vet, the killed command, the background
+// build, the subagent dispatch and the failed read.
+func beatsRows(step session.StepID) []session.TranscriptItem {
+	exit := func(n int) *int { return &n }
+	row := func(callID string, s int, ev registry.AuditEvent) session.TranscriptItem {
+		ev.ToolCallID, ev.StepID, ev.Timestamp = callID, step, at(s)
+		return session.TranscriptItem{Timestamp: at(s), Kind: session.KindAudit, Audit: &ev}
+	}
+	return []session.TranscriptItem{
+		row("c6", 2, registry.AuditEvent{
+			ToolName: "shell.run", Args: []byte(`{"command":"cd /w && go test ./evals/..."}`),
+			CommandExitCode: exit(1), Duration: 3 * time.Second, ResultSummary: "exit 1",
+			ResultContent: "=== RUN   TestEval\n--- FAIL: TestEval (0.01s)\n    eval_test.go:12: want qwen3-coder\nFAIL\n",
+		}),
+		row("c7", 3, registry.AuditEvent{
+			ToolName: "shell.run", Args: []byte(`{"command":"go vet ./..."}`),
+			CommandExitCode: exit(0), Duration: time.Second, ResultSummary: "exit 0",
+			Hooks: []registry.HookMetadata{{Event: "PreToolUse", Rewrote: true}},
+		}),
+		row("c8", 4, registry.AuditEvent{
+			ToolName: "shell.run", Args: []byte(`{"command":"sleep 600"}`),
+			CommandExitCode: exit(137), Duration: 30 * time.Second, ResultSummary: "command killed: timeout",
+			Sandbox: registry.SandboxMeta{Enabled: true, Backend: "restricted", KilledReason: "timeout"},
+		}),
+		row("c9", 5, registry.AuditEvent{
+			ToolName: "shell.run", Args: []byte(`{"command":"go build ./..."}`),
+			ResultSummary: "started background job job-1",
+		}),
+		row("c10", 6, registry.AuditEvent{
+			ToolName:      "agent.run",
+			Args:          []byte(`{"description":"review the config change","role":"reviewer"}`),
+			ResultSummary: "started as subagent 3 — review the config change",
+		}),
+		row("c11", 7, registry.AuditEvent{
+			ToolName: "file.read", Args: []byte(`{"path":"evals/old.toml"}`),
+			Error: "no such file: evals/old.toml",
+		}),
+	}
+}
+
+// A collapsed tool row is one line: what it acted on, how it ended, and — when
+// it failed — the tail of its output.
+func TestWireCallsCarryTheirRowFields(t *testing.T) {
+	const step = session.StepID(1)
+	items := append([]session.TranscriptItem{userMsg(1, 0), narration(2, step, 1, "Running the evals and a background build.")},
+		beatsRows(step)...)
+	tree := Project(Build(Snapshot{
+		Items: items,
+		Steps: []session.Step{stepOf(step, 1, 1, 9)},
+		Now:   at(10),
+	}), "/w")
+
+	calls, verbs := wireCalls(t, tree)
+	if len(calls) != 6 {
+		t.Fatalf("projected %d calls, want 6", len(calls))
+	}
+
+	test := calls["c6"]
+	if test.Subject != "⌂ go test ./evals/..." {
+		t.Errorf("failed run subject = %q", test.Subject)
+	}
+	wantTail := []string{"--- FAIL: TestEval (0.01s)", "    eval_test.go:12: want qwen3-coder", "FAIL"}
+	if len(test.Tail) != len(wantTail) {
+		t.Fatalf("failed run tail = %q, want %q", test.Tail, wantTail)
+	}
+	for i, line := range wantTail {
+		if test.Tail[i] != line {
+			t.Errorf("failed run tail[%d] = %q, want %q", i, test.Tail[i], line)
+		}
+	}
+	if test.SummaryLine != "exit 1" {
+		t.Errorf("failed run summaryLine = %q", test.SummaryLine)
+	}
+
+	if got := calls["c7"].HookHint; got != "hook rewrote" {
+		t.Errorf("hooked row hookHint = %q", got)
+	}
+	if got := calls["c8"].KilledReason; got != "timeout" {
+		t.Errorf("killed row killedReason = %q", got)
+	}
+	if got := calls["c9"].JobID; got != "job-1" {
+		t.Errorf("background row jobId = %q", got)
+	}
+	if got := calls["c10"].Subject; got != "review the config change" {
+		t.Errorf("agent row subject = %q", got)
+	}
+	read := calls["c11"]
+	if len(read.Tail) != 1 || read.Tail[0] != "no such file: evals/old.toml" {
+		t.Errorf("failed read tail = %q", read.Tail)
+	}
+	if read.SummaryLine != "" {
+		t.Errorf("failed read summaryLine = %q, want none", read.SummaryLine)
+	}
+
+	wantVerbs := map[string]string{"c6": "shell", "c7": "shell", "c8": "shell", "c9": "shell", "c10": "agent", "c11": "read"}
+	for callID, want := range wantVerbs {
+		if got := verbs[callID]; got != want {
+			t.Errorf("%s verb = %q, want %q", callID, got, want)
+		}
+		if !calls[callID].Failed && len(calls[callID].Tail) != 0 {
+			t.Errorf("%s tail = %q, want none on a call that did not fail", callID, calls[callID].Tail)
+		}
+	}
+}
+
+func TestWireEditCarriesItsDiffStat(t *testing.T) {
+	patch := audit("file.write_patch", 1, "e1", 2)
+	patch.Audit.FilesChanged = []string{"evals/config.toml"}
+	patch.Audit.ResultContent = "--- a/evals/config.toml\n+++ b/evals/config.toml\n@@ -1 +1 @@\n-model = \"llama3\"\n+model = \"qwen3-coder\"\n"
+	read := audit("file.read", 1, "r1", 3)
+	read.Audit.ResultContent = "-model = \"llama3\"\n"
+
+	tree := Project(Build(Snapshot{
+		Items: []session.TranscriptItem{userMsg(1, 0), patch, read},
+		Steps: []session.Step{stepOf(1, 1, 1, 4)},
+	}), "")
+	calls, _ := wireCalls(t, tree)
+	if got := calls["e1"].DiffStat; got != "+1 −1" {
+		t.Errorf("edit diffStat = %q, want +1 −1", got)
+	}
+	if got := calls["r1"].DiffStat; got != "" {
+		t.Errorf("read diffStat = %q, want none", got)
+	}
+}
+
+func TestWireRunningCarriesItsRowFields(t *testing.T) {
+	run := func(args string) acpwire.WireTool {
+		tree := Project(Build(Snapshot{
+			Items:       []session.TranscriptItem{userMsg(1, 0)},
+			Steps:       []session.Step{{ID: 7, TurnMsgID: 1, StartedAt: at(1)}},
+			ActiveTools: []session.ActiveToolCall{{Name: "shell.run", Args: args, StartedAt: at(2), StepID: 7, ToolCallID: "c2"}},
+			Busy:        true,
+			Now:         at(3),
+		}), "")
+		n := wireByID(t, tree)["tool:7:c2"]
+		if n.Tool == nil || n.Tool.Running == nil {
+			t.Fatalf("running call = %+v", n)
+		}
+		if n.Tool.Verb != "shell" {
+			t.Errorf("running verb = %q, want shell", n.Tool.Verb)
+		}
+		return *n.Tool
+	}
+
+	tool := run("make lint")
+	r := tool.Running
+	if r.Subject != "make lint" || r.CallID != "c2" || r.Args != "make lint" {
+		t.Fatalf("running = %+v, want subject, callId and args of the call", r)
+	}
+	if r.Truncated {
+		t.Error("a short call is not truncated")
+	}
+
+	long := strings.Repeat("x", acpwire.WireTextCap+64)
+	r = run(long).Running
+	if len(r.Args) != acpwire.WireTextCap || !r.Truncated {
+		t.Errorf("long args = %d bytes, truncated %v; want %d and cut", len(r.Args), r.Truncated, acpwire.WireTextCap)
+	}
+}
+
+func TestWireMessageCarriesItsReasoning(t *testing.T) {
+	msg := func(reasoning string) *acpwire.WireMessage {
+		tree := Project(Build(Snapshot{
+			Items: []session.TranscriptItem{
+				userMsg(1, 0),
+				{Timestamp: at(2), Kind: session.KindMessage, Message: &session.Message{
+					ID: 2, Role: session.RoleAssistant, Content: "done", Reasoning: reasoning, CreatedAt: at(2)}},
+			},
+		}), "")
+		n := wireByID(t, tree)["msg:2"]
+		if n.Message == nil {
+			t.Fatalf("msg:2 = %+v", n)
+		}
+		return n.Message
+	}
+
+	if got := msg("weighing two configs").Reasoning; got != "weighing two configs" {
+		t.Errorf("reasoning = %q", got)
+	}
+	long := strings.Repeat("y", acpwire.WireTextCap+64)
+	if got := msg(long).Reasoning; len(got) != acpwire.WireTextCap {
+		t.Errorf("long reasoning = %d bytes, want it cut to %d", len(got), acpwire.WireTextCap)
+	}
+}
+
+func TestWireStepCarriesItsNarration(t *testing.T) {
+	const step = session.StepID(1)
+	nodes := Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, step, 1, "  First.  "),
+			narration(3, step, 2, "   "),
+			audit("file.read", step, "c1", 3),
+		},
+		Steps: []session.Step{stepOf(step, 1, 1, 4)},
+	})
+	ws := wireByID(t, Project(nodes, ""))["step:1"].Step
+	if ws == nil {
+		t.Fatal("no step:1 node")
+	}
+	if len(ws.Narration) != 2 || ws.Narration[0] != "First." || ws.Narration[1] != "" {
+		t.Fatalf("narration = %q, want [First. ]", ws.Narration)
+	}
+}
+
+func TestLiveReasoningCarriesItsStart(t *testing.T) {
+	tree := Project(Build(Snapshot{
+		Items:      []session.TranscriptItem{userMsg(1, 0)},
+		InProgress: session.InProgressMessage{Active: true, Reasoning: "hmm", StartedAt: time.Unix(50, 0)},
+		Busy:       true,
+	}), "")
+	n := wireByID(t, tree)[acpwire.LiveThinkingID]
+	if n.Thinking == nil {
+		t.Fatalf("%s = %+v", acpwire.LiveThinkingID, n)
+	}
+	if n.Thinking.StartedAt != 50000 {
+		t.Errorf("live reasoning startedAt = %d, want 50000", n.Thinking.StartedAt)
+	}
+}
+
+func TestWireRunEventCountsItsBodyLines(t *testing.T) {
+	body := func(b string) int {
+		tree := Project(Build(Snapshot{
+			Items: []session.TranscriptItem{
+				userMsg(1, 0),
+				{Timestamp: at(2), Kind: session.KindRunEvent,
+					RunEvent: &session.RunEvent{Kind: session.RunEventVerifyFailed, Body: b, At: at(2)}},
+			},
+		}), "")
+		for _, n := range tree.Nodes {
+			if n.RunEvent != nil {
+				return n.RunEvent.BodyLines
+			}
+		}
+		t.Fatal("no run-event node")
+		return 0
+	}
+
+	lines := make([]string, 14)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	if got := body(strings.Join(lines, "\n") + "\n"); got != 14 {
+		t.Errorf("bodyLines = %d, want 14", got)
+	}
+	if got := body(""); got != 0 {
+		t.Errorf("empty bodyLines = %d, want 0", got)
 	}
 }

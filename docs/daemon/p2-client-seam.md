@@ -1019,3 +1019,57 @@ trimmed (`model.go`, `pump.go`) and five keys dropped entirely
 `sessionsheet/section_session.go`, `sessionsheet/section_tools.go`,
 `sessionsheet/telemetry.go`). `sessionsheet` now imports no agent-side
 package.
+
+**Plan 3a (projection), branch `p2-3a-projection`.** The state stamps every
+transcript time from its clock: `State.clockNow` reads the one `WithClock`
+set, or `time.Now` for a `State` built as a literal, and the ten sites that
+stamped a message, a step, the in-progress reasoning, a tool call, a run
+event, a subagent or a job exit now read it. Production is unchanged; a
+fixture on a fixed clock builds the same transcript every time.
+
+T6's goldens are recorded first, at the base: eleven files under
+`internal/app/tui/testdata/transcript/`, rendered under `NO_COLOR` with the
+flat theme at 100 columns, covering every node kind collapsed and expanded
+plus the tray. Each scene builds twice on a fresh clock, state and root and
+must render identically; a scene's subagent ID is replaced with `#100` so
+the process-wide counter cannot move the layout. No later task runs
+`-update`.
+
+The projection types moved to `internal/acpwire/stack.go` — `WireTextCap`,
+`WireTree`, `WireNode`, `WireBand`, `WireTask`, `WireBandEntity`,
+`WireStep`, `WireTodoLabel`, `WireThought`, `WireTool`, `WireCompletion`,
+`WirePlan`, `WireCall`, `WireRunning`, `WireMessage`, `WireThinking`,
+`WireRunEvent`, `WireReceipt` and `StackSnapshot` — with their JSON
+unchanged, plus the wire names as constants: the fourteen `Kind*` values,
+`BandID` and `LiveThinkingID`, the seven `RunEvent*` values, the two
+`Completion*` sources and the five `Outcome*` values. `viewmodel` defines
+its own names from them, so no caller changed.
+
+One projector now serves both clients. `viewmodel.SnapshotOf` is the
+snapshot `Build` reads; `viewmodel.ProjectState` runs `SnapshotOf`, `Build`,
+`Project` and `BandOf` and appends the band node after the tree's nodes,
+outside `Roots`. `acp`'s `flushProjector` and `stackSnapshot` call it and
+read `Projection.Band.StaleAt`; `treeFor` builds with `SnapshotOf`;
+`StackNode` projects its one node against the source state's active root.
+The TUI's `refreshViewport` takes its snapshot from `SnapshotOf` and still
+builds and bands it itself until plan 3d. `Project` gained the `workdir` a
+call's subject elides.
+
+The row helpers moved to `viewmodel/rows.go`: `CallVerb`,
+`FallbackSubject`, `CallSubject`, `SubjectFirstTool`, `SearchQualifier`,
+`SearchTarget`, `ArgString`, `HookHint`, `DiffStat` and `FailedTail`, with
+`FailedTailLines`. Three compositions are new, so the TUI and the wire
+share one source of truth: `RunningSubject`, `SummaryLine` and
+`CallDiffStat`. The TUI's functions are one-line wrappers, and its inline
+copies call the compositions.
+
+Every wire node carries `version`, the lower-case hex of its payload hash,
+omitted at zero. The collapsed-row fields are `WireTool.verb`;
+`WireCall.subject`, `summaryLine`, `diffStat`, `hookHint`, `killedReason`,
+`jobId` and `tail`; `WireRunning.subject`, `callId` and `args`;
+`WireStep.narration`; `WireMessage.reasoning`; `WireThinking.startedAt`;
+and `WireRunEvent.bodyLines`. `StepInfo.LiveSince` carries the live
+reasoning's start. Every existing field keeps its name, type and value.
+
+T1's allowlist and T1b's list did not change: the TUI still imports
+`viewmodel` in every file it did, and no read moved off the state.

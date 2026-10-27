@@ -10,19 +10,21 @@ import (
 
 func TestInputChromeRowsExcludesTextarea(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
-	if got := m.inputChromeRows(); got != 0 {
-		t.Fatalf("inputChromeRows() = %d, want 0 with no chrome visible", got)
+	// One row only: the console's top border.
+	if got := m.inputChromeRows(); got != 1 {
+		t.Fatalf("inputChromeRows() = %d, want 1 (the console's top border)", got)
 	}
-	if got, want := m.inputAreaRows(), max(m.input.Height(), 1); got != want {
-		t.Fatalf("inputAreaRows() = %d, want %d (chrome 0 + input height)", got, want)
+	if got, want := m.inputAreaRows(), 1+max(m.input.Height(), 1); got != want {
+		t.Fatalf("inputAreaRows() = %d, want %d (top border + input height)", got, want)
 	}
 }
 
 func TestDynamicMaxHeightBudget(t *testing.T) {
 	m := newViewTestModel(t, 80, 40)
 	// 40 - transcriptFrameRows(0) - statusLineRows(1) - turnSpinnerRows(0 when
-	// idle) - minTranscriptRows(4); no todo panel, live strip, dock, or popup.
-	if got, want := m.input.MaxHeight, 35; got != want {
+	// idle) - minTranscriptRows(4) - inputChromeRows(1, the console's top
+	// border); no todo panel, live strip, dock, or popup.
+	if got, want := m.input.MaxHeight, 34; got != want {
 		t.Fatalf("input.MaxHeight = %d, want %d", got, want)
 	}
 }

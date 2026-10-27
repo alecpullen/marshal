@@ -401,7 +401,7 @@ func (am *approvalModel) View() string {
 	}
 
 	// Chrome rail: the same ▍ state bar the input box wears (warning color
-	// while an approval is pending — see inputBarColor), prefixed on every
+	// while an approval is pending — see consoleColor), prefixed on every
 	// line so the whole panel reads as one contained unit.
 	return chromeRail(b.String(), warningColor)
 }

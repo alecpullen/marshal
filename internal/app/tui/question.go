@@ -308,7 +308,7 @@ func (qm *questionModel) View() string {
 			}
 		}
 	}
-	// Chrome rail: violet while a question is pending (see inputBarColor).
+	// Chrome rail: violet while a question is pending (see consoleColor).
 	return chromeRail(b.String(), violetColor)
 }
 

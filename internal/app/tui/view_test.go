@@ -163,9 +163,14 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	if idleLines[0] != busyLines[0] {
 		t.Fatalf("transcript top frame moved:\nidle: %q\nbusy: %q", idleLines[0], busyLines[0])
 	}
+	// The console's top border is the input area's first row, and the composer
+	// sits inside the gutter under it.
 	inputTop := 30 - m.inputAreaRows() - statusLineRows
-	if !strings.Contains(stripANSI(busyLines[inputTop]), "▍") {
-		t.Fatalf("input area missing state bar; line %d = %q", inputTop, busyLines[inputTop])
+	if got := stripANSI(busyLines[inputTop]); !strings.HasPrefix(got, "╭") {
+		t.Fatalf("input area does not open with the console's top border; line %d = %q", inputTop, got)
+	}
+	if got := stripANSI(busyLines[inputTop+1]); !strings.Contains(got, "│ ❯") {
+		t.Fatalf("composer is not inside the console gutter; line %d = %q", inputTop+1, got)
 	}
 }
 
@@ -216,17 +221,20 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	}
 }
 
-func TestInputBarPulsesTealOnSuccess(t *testing.T) {
+func TestConsoleBorderPulsesTealOnSuccess(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.successPulse = true
+	if got := m.consoleColor(); got != successColor {
+		t.Fatalf("consoleColor() during the success pulse = %#v, want the success colour", got)
+	}
 	teal := m.renderInputArea()
 	m.successPulse = false
+	if got := m.consoleColor(); got != theme.Current().BorderMuted {
+		t.Fatalf("consoleColor() after the pulse = %#v, want BorderMuted", got)
+	}
 	neutral := m.renderInputArea()
 	if teal == neutral {
-		t.Fatal("success pulse bar should differ from the default focused bar")
-	}
-	if !strings.Contains(stripANSI(teal), "▍") {
-		t.Fatalf("input area missing state bar:\n%s", stripANSI(teal))
+		t.Fatal("the success pulse should colour the console's border differently from the idle state")
 	}
 }
 
@@ -255,16 +263,21 @@ func TestInputBarColorReflectsFocus(t *testing.T) {
 	}
 }
 
-func TestInputAreaHasNoBorderBox(t *testing.T) {
+func TestInputAreaIsFramed(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	out := stripANSI(m.renderInputArea())
-	for _, glyph := range []string{"╭", "╰", "│"} {
-		if strings.Contains(out, glyph) {
-			t.Fatalf("input area still box-bordered (%q):\n%s", glyph, out)
-		}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("input area should be a frame over the composer, got %d rows:\n%s", len(lines), out)
 	}
-	if !strings.Contains(out, "▍❯") {
-		t.Fatalf("input area missing ▍❯ prompt:\n%s", out)
+	if !strings.HasPrefix(lines[0], "╭") || !strings.HasSuffix(lines[0], "╮") {
+		t.Fatalf("input area does not open with the console's top border: %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "│ ❯") {
+		t.Fatalf("composer is not inside the console gutter: %q", lines[1])
+	}
+	if strings.Contains(out, "▍") {
+		t.Fatalf("the rail is gone from the console:\n%s", out)
 	}
 }
 
@@ -386,13 +399,13 @@ func TestInputAreaHasNoBlankRowsWhenIdle(t *testing.T) {
 
 	promptCount := 0
 	for _, line := range lines {
-		if strings.Contains(line, "▍❯") {
+		if strings.Contains(line, "│ ❯") {
 			promptCount++
 		}
 	}
 
 	if promptCount != 1 {
-		t.Fatalf("expected exactly 1 line with ▍❯, got %d:\n%s", promptCount, out)
+		t.Fatalf("expected exactly 1 row holding the composer prompt, got %d:\n%s", promptCount, out)
 	}
 }
 
@@ -415,7 +428,7 @@ func TestInputWrapsBeforeTerminalWidth(t *testing.T) {
 
 		promptRow := ""
 		for _, line := range lines {
-			if strings.Contains(line, "▍❯") {
+			if strings.Contains(line, "│ ❯") {
 				promptRow = line
 				break
 			}
@@ -424,7 +437,7 @@ func TestInputWrapsBeforeTerminalWidth(t *testing.T) {
 			t.Fatalf("width=%d: no prompt row found:\n%s", w, out)
 		}
 		if !strings.Contains(promptRow, "a") {
-			t.Fatalf("width=%d: prompt row has no text after ▍❯:\n%s", w, out)
+			t.Fatalf("width=%d: prompt row has no text after the console prompt:\n%s", w, out)
 		}
 	}
 }
@@ -494,7 +507,7 @@ func TestCompletionPopupANSITruncationStaysRenderable(t *testing.T) {
 	m := newViewTestModelWithRegistry(t, 24, 24)
 	m.input.SetValue("/pl")
 	m.updateCompletionPopups()
-	out := m.renderCompletionPopup()
+	out := m.renderInputArea()
 	// Check that every \x1b[ escape is properly terminated with m (no
 	// truncated sequences). The old heuristic of counting raw "m" chars
 	// broke once the chrome panel added text content containing "m".
@@ -667,7 +680,7 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 		if strings.Contains(line, "implement parser") {
 			todoRow = i
 		}
-		if strings.Contains(line, "▍") && strings.Contains(line, "❯") {
+		if strings.Contains(line, "│ ❯") {
 			inputRow = i
 		}
 	}

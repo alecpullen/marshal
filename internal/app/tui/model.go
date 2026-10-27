@@ -710,6 +710,10 @@ type Model struct {
 	// outside viewString. It lives only on that call's model copy.
 	boxMemo *livebox.Layout
 
+	// dockFramed records whether the docked panel's last view was framed, so
+	// consoleAbove can tell a joined panel from one that drew nothing.
+	dockFramed bool
+
 	// band is the pinned band's content: todo progress with its stale
 	// signal, and the running cards. viewmodel.BandOf builds it in
 	// refreshViewport; the now bar renders it.
@@ -1818,11 +1822,11 @@ func (m *Model) resize(width, height int) {
 
 	m.leftWidth = width
 
-	// Input interior: the ▍ bar (1 cell) + 1 right margin = 2 reserved
-	// cells. The textarea's SetWidth sets the text wrap width and
-	// internally subtracts promptWidth (2). Reserve 2 so rendered lines
-	// stay inside the left column.
-	m.input.SetWidth(max(m.leftWidth-2, 1))
+	// Input interior: the console's "│ " and " │" take 4 cells of the left
+	// column. The textarea's SetWidth sets the text wrap width and internally
+	// subtracts promptWidth (2), so the rendered line plus its gutter stays
+	// inside the outline.
+	m.input.SetWidth(max(m.leftWidth-4, 1))
 
 	// Transcript viewport spans the left column (borderless).
 	m.viewport.SetWidth(max(m.leftWidth, 1))
@@ -3505,17 +3509,17 @@ func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 }
 
 // inputChromeRows counts the rows the input area reserves for everything
-// except the textarea itself: the SDD hint, question/approval panels, and
-// the completion popup. Splitting this out of inputAreaRows breaks the
-// circularity in the MaxHeight budget (available rows must not depend on
-// the textarea's own height).
+// except the textarea itself: its console headers, the SDD hint,
+// question/approval panels, and the completion popup. Splitting this out of
+// inputAreaRows breaks the circularity in the MaxHeight budget (available rows
+// must not depend on the textarea's own height).
 func (m Model) inputChromeRows() int {
 	// While the composer owns the input, the base input area renders only its
 	// suspended notice: the pending prompts, the completion popup and the base
 	// textarea belong to the composer now, so reserving rows for them would
 	// over-budget the transcript.
 	if m.steeringComposer != nil {
-		return 1
+		return 1 + m.inputHeaderRows()
 	}
 	rows := 0
 	if m.sess.Status().SDD.Active {
@@ -3528,7 +3532,7 @@ func (m Model) inputChromeRows() int {
 		} else {
 			content = renderSudoAuthPanel(sa, max(m.leftWidth-4, 1))
 		}
-		rows += lipgloss.Height(content)
+		rows += len(consoleLines(content))
 	} else if sg := m.state.PendingSkillGate(); sg != nil {
 		content := ""
 		if m.skillGateModel != nil {
@@ -3536,7 +3540,7 @@ func (m Model) inputChromeRows() int {
 		} else {
 			content = renderSkillGatePanel(sg, max(m.leftWidth-4, 1))
 		}
-		rows += lipgloss.Height(content)
+		rows += len(consoleLines(content))
 	} else if q := m.state.PendingQuestion(); q != nil {
 		content := ""
 		if m.questionModel != nil {
@@ -3544,10 +3548,10 @@ func (m Model) inputChromeRows() int {
 		} else {
 			content = renderQuestionPanel(q, max(m.leftWidth-4, 1))
 		}
-		rows += lipgloss.Height(content)
+		rows += len(consoleLines(content))
 	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
-		// Mirror renderInputArea's switch exactly so the budget never
-		// disagrees with what is on screen.
+		// Mirror inputSections' switch exactly so the budget never disagrees
+		// with what is on screen.
 		var content string
 		switch {
 		case tc.Access != nil:
@@ -3567,14 +3571,14 @@ func (m Model) inputChromeRows() int {
 		default:
 			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))
 		}
-		rows += lipgloss.Height(content)
+		rows += len(consoleLines(content))
 	}
 	if p := m.activeCompletionPopup(); p != nil {
 		// Cap the popup at completionPopupMax visible match rows plus the
-		// panel title row (matches the renderer in view.go).
+		// console header row (matches completionSection's rows).
 		rows += min(len(p.matches()), completionPopupMax) + completionPanelChromeRows
 	}
-	return rows
+	return rows + m.inputHeaderRows()
 }
 
 func (m Model) inputAreaRows() int {

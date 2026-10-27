@@ -44,7 +44,23 @@ type Panel struct {
 	// status is a transient confirmation line ("installed foo (global)")
 	// rendered in the footer, so a completed action is never silent.
 	status      string
-	removeArmed map[string]bool
+	removeArmed map[removeIdentity]bool
+}
+
+// removeIdentity is the confirmation key for a removal: the scope plus the
+// discovered filesystem source. Skill names are frontmatter content and may
+// repeat — two entries in one store can share a name, and the same name can
+// exist in both scopes — so a name-only key could confirm a deletion the user
+// never armed, on an entry they were not looking at.
+type removeIdentity struct {
+	scope  string
+	source string
+}
+
+// removalIdentity derives the confirmation key from filesystem provenance,
+// never from Skill.Name.
+func removalIdentity(s skills.ScopedSkill) removeIdentity {
+	return removeIdentity{scope: s.Scope, source: s.SourceName}
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -59,7 +75,7 @@ func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State
 		projectTrusted: projectTrusted,
 		state:          state,
 		skillIndex:     skillIndex,
-		removeArmed:    make(map[string]bool),
+		removeArmed:    make(map[removeIdentity]bool),
 		installScope:   scopeGlobal,
 	}
 	p.filter = textfield.New()
@@ -201,18 +217,23 @@ func (p *Panel) detailFrame(s skills.ScopedSkill) *settings.Frame {
 
 		remove := settings.NewField("action.remove", "Remove", settings.KindAction)
 		settings.SetFieldDesc(remove, "delete this skill from disk")
+		id := removalIdentity(s)
 		settings.SetFieldActLabel(remove, func() string {
-			if p.removeArmed[s.Skill.Name] {
+			if p.removeArmed[id] {
 				return "↵ confirm remove"
 			}
 			return "↵ remove"
 		})
+		// Leaving the row (arrow keys call the row's disarm) or the detail
+		// frame must drop the armed confirmation, so it can never be carried
+		// into a different selection or a later visit.
+		settings.SetFieldDisarm(remove, func() { delete(p.removeArmed, id) })
 		settings.SetFieldAct(remove, func() tea.Cmd {
-			if !p.removeArmed[s.Skill.Name] {
-				p.removeArmed[s.Skill.Name] = true
+			if !p.removeArmed[id] {
+				p.removeArmed[id] = true
 				return nil
 			}
-			p.removeArmed[s.Skill.Name] = false
+			delete(p.removeArmed, id)
 			return p.runRemove(s)
 		})
 		fields = append(fields, remove)
@@ -287,16 +308,30 @@ func (p *Panel) runInstall() tea.Cmd {
 	}
 }
 
+// runRemove deletes the discovered source of s from its own store. The root is
+// chosen from the scope alone, and the removal itself is confined to that
+// store by skills.RemoveScopedSkill — the target is never rebuilt from
+// s.Skill.Name, which is untrusted frontmatter content.
 func (p *Panel) runRemove(s skills.ScopedSkill) tea.Cmd {
 	return func() tea.Msg {
-		var path string
-		if s.Scope == scopeGlobal {
-			path = filepath.Join(p.globalSkillsDir(), s.Skill.Name)
-		} else {
-			path = filepath.Join(p.projectSkillsDir(), s.Skill.Name)
+		var root string
+		switch s.Scope {
+		case scopeGlobal:
+			root = p.globalSkillsDir()
+		case scopeProject:
+			root = p.projectSkillsDir()
+		default:
+			return removeResultMsg{
+				Name:  s.Skill.Name,
+				Scope: s.Scope,
+				Err:   fmt.Errorf("cannot remove skill: unknown scope %q", s.Scope),
+			}
 		}
-		err := os.RemoveAll(path)
-		return removeResultMsg{Name: s.Skill.Name, Scope: s.Scope, Err: err}
+		return removeResultMsg{
+			Name:  s.Skill.Name,
+			Scope: s.Scope,
+			Err:   skills.RemoveScopedSkill(root, s),
+		}
 	}
 }
 
@@ -476,6 +511,10 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case tea.KeyPressMsg:
 		if msg.Code == tea.KeyEscape {
+			// Leaving the frame — or the panel — drops any armed removal, so
+			// a confirmation cannot carry over to another selection or a
+			// later visit.
+			p.ActiveList().DisarmCurrent()
 			if len(p.stack) > 0 {
 				p.stack = p.stack[:len(p.stack)-1]
 				return nil

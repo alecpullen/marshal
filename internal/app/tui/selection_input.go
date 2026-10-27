@@ -13,12 +13,13 @@ type selScrollTickMsg struct{ gen int }
 const selScrollInterval = 50 * time.Millisecond
 
 // contentPosAt maps a screen cell to a content position, clamping cells
-// outside the viewport to its nearest edge.
+// outside the viewport to its nearest edge. The drilled-in frame's "│ "
+// gutter is not content, so its two cells are subtracted from x.
 func (m *Model) contentPosAt(x, y int) selPos {
 	top := m.scrollHintRows() + m.breadcrumbRows()
 	h := max(m.viewport.Height(), 1)
 	y = min(max(y, top), top+h-1)
-	x = min(max(x, 0), max(m.leftWidth-1, 0))
+	x = min(max(x-m.transcriptLeft(), 0), max(m.viewport.Width()-1, 0))
 	return selPos{line: m.viewport.YOffset() + y - top, col: x}
 }
 

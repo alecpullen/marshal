@@ -9,7 +9,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
-	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
@@ -182,32 +181,13 @@ func clipLeftColumn(s string, maxRows int) string {
 func (m Model) renderTranscriptFrame() string {
 	vpWidth := max(m.leftWidth, 1)
 	vpHeight := max(m.viewport.Height(), 1)
+	if v, ok := m.drilledInto(); ok {
+		return m.renderDrillFrame(v)
+	}
 	content := lipgloss.NewStyle().Width(vpWidth).Height(vpHeight).Render(m.paintSelection(m.viewport.View()))
 	if m.scrollHintRows() > 0 {
 		hint := mutedStyle().Render("↑ scrolled — End to follow")
 		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
-	}
-
-	if v, ok := m.drilledInto(); ok {
-		label := v.Label
-		if v.Role != "" {
-			label = string(v.Role) + " — " + label
-		}
-		if v.Model != "" {
-			if v.Provider != "" {
-				label += fmt.Sprintf(" · %s @ %s", v.Model, v.Provider)
-			} else {
-				label += " · " + v.Model
-			}
-		}
-		if v.Fallback {
-			label += " (fallback)"
-		}
-		crumb := lipgloss.NewStyle().Foreground(accentColor).Render(glyph.Brand+" orchestrator") +
-			mutedStyle().Render(" "+glyph.Running+" ") +
-			lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(glyph.Agent+" "+label) +
-			mutedStyle().Render("  (↑/Esc to go back)")
-		content = lipgloss.JoinVertical(lipgloss.Left, crumb, content)
 	}
 	return chrome.PaintBand(content, m.leftWidth, theme.Current().TranscriptBG())
 }

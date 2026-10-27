@@ -301,13 +301,14 @@ func (m Model) boxMaxRows() int {
 	if m.dock.FullFrameOpen() {
 		return 0
 	}
-	return max(min(m.height*2/5, m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.dockRows()-m.inputChromeRows()-1-minTranscriptRows), 1)
+	return max(min(m.height*2/5, m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.drillCloseRows()-statusLineRows-m.dockRows()-m.inputChromeRows()-1-minTranscriptRows), 1)
 }
 
 // boxTop is the screen row of the box's first line: the hint row, the
-// breadcrumb row and the whole transcript viewport sit above it.
+// breadcrumb row, the drill frame's closing row and the whole transcript
+// viewport sit above it.
 func (m *Model) boxTop() int {
-	return m.scrollHintRows() + m.breadcrumbRows() + m.viewport.Height()
+	return m.scrollHintRows() + m.breadcrumbRows() + m.drillCloseRows() + m.viewport.Height()
 }
 
 // handleBoxClick acts on the box row under a left click. Every click inside

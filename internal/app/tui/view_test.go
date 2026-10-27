@@ -171,6 +171,46 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	}
 }
 
+// TestDrilledFrameFitsTheTerminal: the drill frame closes, the tray opens a new
+// outline directly under its closing row, and no row exceeds the terminal.
+func TestDrilledFrameFitsTheTerminal(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {120, 40}} {
+		w, h := size[0], size[1]
+		m := newTestModel(t)
+		m.resize(w, h)
+		child := newChildState(t)
+		child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+		view := m.state.RegisterSubagent("explore repo", child)
+		m.drillIntoSubagent(view)
+		m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
+		m.busy = true
+		m.refreshViewport()
+
+		rows := strings.Split(stripANSI(m.viewString()), "\n")
+		if len(rows) != h {
+			t.Fatalf("%dx%d: frame is %d rows tall, want %d", w, h, len(rows), h)
+		}
+		closeRow := -1
+		for i, row := range rows {
+			if strings.HasPrefix(row, "╰") {
+				closeRow = i
+				break
+			}
+		}
+		if closeRow < 0 {
+			t.Fatalf("%dx%d: the drill frame never closes:\n%s", w, h, strings.Join(rows, "\n"))
+		}
+		if got := rows[closeRow+1]; !strings.HasPrefix(got, "╭") {
+			t.Fatalf("%dx%d: the tray must open a new outline under the drill frame: %q", w, h, got)
+		}
+		for i, row := range rows {
+			if got := visibleRunes(row); got > w {
+				t.Fatalf("%dx%d: row %d is %d cells wide: %q", w, h, i, got, row)
+			}
+		}
+	}
+}
+
 func TestViewFitsTerminalSizesSingleColumn(t *testing.T) {
 	sizes := [][2]int{{80, 24}, {100, 30}, {120, 40}}
 	for _, size := range sizes {

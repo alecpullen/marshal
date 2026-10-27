@@ -228,6 +228,7 @@ func startNewSession(m *Model, name string) tea.Cmd {
 
 	// Drop per-message UI state that belongs to the old session.
 	m.viewStack = nil
+	m.syncTranscriptWidth()
 	m.resetExpansion()
 	m.nodeRegions = nil
 	// The sheet's changed files follow the workspace the new session reports;

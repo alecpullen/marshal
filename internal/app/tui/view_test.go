@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/tools/native"
 )
@@ -90,8 +91,8 @@ func TestPickerRendersDockedAboveInput(t *testing.T) {
 	if inputLine == -1 || inputLine < panelLine {
 		t.Fatalf("picker must sit above the input area (panel=%d input=%d)", panelLine, inputLine)
 	}
-	if !strings.HasPrefix(lines[panelLine], "▍") {
-		t.Errorf("panel should be left-aligned, got %q", lines[panelLine])
+	if !strings.HasPrefix(lines[panelLine], "╭─ ") {
+		t.Errorf("panel should be left-aligned inside its frame, got %q", lines[panelLine])
 	}
 }
 
@@ -106,11 +107,11 @@ func TestConnectRendersDockedAboveInput(t *testing.T) {
 
 	lines := strings.Split(view, "\n")
 	// connect.Model.View delegates straight to the active picker's own
-	// gutter-framed panel (single border, titled with the step name) rather
-	// than wrapping it in a second outer panel.
+	// framed panel (single border, titled with the step name) rather than
+	// wrapping it in a second outer panel.
 	panelLine, inputLine := -1, -1
 	for index, line := range lines {
-		if strings.Contains(line, "▍") && strings.Contains(line, "Connect a provider") {
+		if strings.HasPrefix(line, "╭─ ") && strings.Contains(line, "Connect a provider") {
 			panelLine = index
 		}
 		if panelLine != -1 && strings.Contains(line, "❯") {
@@ -119,17 +120,14 @@ func TestConnectRendersDockedAboveInput(t *testing.T) {
 		}
 	}
 	if panelLine == -1 {
-		t.Fatal("connect panel gutter not rendered")
+		t.Fatal("connect panel frame not rendered")
 	}
 	if inputLine == -1 || inputLine < panelLine {
 		t.Fatalf("connect panel must sit above the input area (panel=%d input=%d)", panelLine, inputLine)
 	}
-	if !strings.HasPrefix(lines[panelLine], "▍") {
-		t.Errorf("panel should be left-aligned, got %q", lines[panelLine])
-	}
 	for _, line := range lines {
-		if strings.Count(line, "▍") > 1 {
-			t.Errorf("connect panel should have a single gutter, got nested gutters: %q", line)
+		if strings.Count(line, "╭") > 1 {
+			t.Errorf("connect panel should have a single frame, got nested frames: %q", line)
 		}
 	}
 }
@@ -267,6 +265,34 @@ func TestInputAreaHasNoBorderBox(t *testing.T) {
 	}
 	if !strings.Contains(out, "▍❯") {
 		t.Fatalf("input area missing ▍❯ prompt:\n%s", out)
+	}
+}
+
+// The input area is console content, not a painted band: at the deepest level
+// the theme paints only the transcript, so no input row may carry a background
+// SGR parameter at all — idle or with a prompt pending.
+func TestInputAreaPaintsNoBackground(t *testing.T) {
+	df := newDepthFrame(t)
+	th := theme.Current()
+	th.Depth = theme.DepthFull
+	theme.Reload(th)
+
+	m := df.m
+	if out := m.renderInputArea(); strings.Contains(out, "48;") {
+		t.Fatalf("idle input area paints a background SGR:\n%q", out)
+	}
+
+	tc := &session.PendingToolCall{
+		ID:           "call-input-band",
+		Name:         "shell.run",
+		Command:      "git status",
+		Risk:         "command",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	m.state.SetPendingApproval(tc)
+	m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), false, false, max(m.width-4, 30))
+	if out := m.renderInputArea(); strings.Contains(out, "48;") {
+		t.Fatalf("input area paints a background SGR while an approval is pending:\n%q", out)
 	}
 }
 

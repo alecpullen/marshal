@@ -1,11 +1,15 @@
 package dock
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/layout"
+	"marshal/internal/app/tui/theme"
 )
 
 type stubPanel struct {
@@ -66,8 +70,8 @@ func TestHostViewBudgetsBySizingHint(t *testing.T) {
 	full := &stubPanel{sizing: FullFrame}
 	h.Open(full)
 	h.View(100, 40)
-	if want := 40 - 1; full.gotMaxH != want {
-		t.Fatalf("FullFrame panel got maxHeight %d, want frame minus status line = %d", full.gotMaxH, want)
+	if want := 40 - statusLineRows - 1; full.gotMaxH != want {
+		t.Fatalf("FullFrame panel got maxHeight %d, want frame minus status line and the closing border row = %d", full.gotMaxH, want)
 	}
 	if !h.FullFrameOpen() {
 		t.Fatal("FullFrameOpen() = false with a FullFrame panel open")
@@ -75,6 +79,43 @@ func TestHostViewBudgetsBySizingHint(t *testing.T) {
 	h.Open(docked)
 	if h.FullFrameOpen() {
 		t.Fatal("FullFrameOpen() = true with a Docked panel open")
+	}
+}
+
+// fullFrameStub fills whatever height budget it is given with an open
+// chrome frame, the way a full-frame settings panel draws itself.
+type fullFrameStub struct{ gotMaxH int }
+
+func (s *fullFrameStub) Update(msg tea.Msg) tea.Cmd { return nil }
+func (s *fullFrameStub) Sizing() Sizing             { return FullFrame }
+func (s *fullFrameStub) View(width, maxHeight int) string {
+	s.gotMaxH = maxHeight
+	body := strings.TrimSuffix(strings.Repeat("row\n", max(maxHeight-1, 1)), "\n")
+	return chrome.PanelWithHints("Full", "esc close", body, layout.PanelWidth(width), maxHeight, true, theme.Current())
+}
+
+// TestFullFrameViewIsClosedInItsBudget pins decision 8: the dock hands a
+// FullFrame panel one row less than the status line leaves, then closes the
+// open frame itself, so the panel fills frameHeight-statusLineRows rows and
+// ends on a bottom border.
+func TestFullFrameViewIsClosedInItsBudget(t *testing.T) {
+	const frameHeight = 40
+	var h Host
+	h.Open(&fullFrameStub{})
+
+	view := h.View(100, frameHeight)
+	if got, want := h.Rows(), frameHeight-statusLineRows; got != want {
+		t.Fatalf("FullFrame view is %d rows, want frameHeight-statusLineRows = %d:\n%s", got, want, ansi.Strip(view))
+	}
+	if got, want := len(strings.Split(ansi.Strip(view), "\n")), h.Rows(); got != want {
+		t.Fatalf("measured %d rows but rendered %d", want, got)
+	}
+	lines := strings.Split(ansi.Strip(view), "\n")
+	if !strings.HasPrefix(lines[0], "╭─ ") {
+		t.Fatalf("first row is not an open frame top: %q", lines[0])
+	}
+	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "╰") || !strings.HasSuffix(last, "╯") {
+		t.Fatalf("last row = %q, want the dock's closing bottom border", last)
 	}
 }
 

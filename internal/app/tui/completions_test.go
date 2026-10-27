@@ -221,8 +221,8 @@ func TestCompletionPopupShowsSlashPrefix(t *testing.T) {
 	if !strings.Contains(out, "Commands") {
 		t.Fatalf("expected Commands title in popup, got %q", out)
 	}
-	if !strings.Contains(out, "▍") {
-		t.Fatalf("expected ▍ gutter in popup, got %q", out)
+	if !strings.Contains(out, "╭─ ") {
+		t.Fatalf("expected the popup's frame top border, got %q", out)
 	}
 	if !strings.Contains(out, "↑↓ select · ↵ run · esc dismiss") {
 		t.Fatalf("expected key hints in popup, got %q", out)

@@ -5,7 +5,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/layout"
+	"marshal/internal/app/tui/theme"
 )
 
 // Sizing is a panel's height-budget hint to the dock host.
@@ -97,17 +99,26 @@ func (h *Host) FullFrameOpen() bool {
 
 // View renders the active panel within the height budget its sizing hint
 // requests.
+//
+// A FullFrame panel is drawn then closed: it gets one row less than the
+// status line leaves, and its open frame gains a bottom border before the
+// rows are measured, so the panel occupies its budget exactly. Docked panels
+// stay open frames — they continue into the input area below them.
 func (h *Host) View(width, frameHeight int) string {
 	if h.panel == nil {
 		h.rows = 0
 		return ""
 	}
 
+	full := h.panel.Sizing() == FullFrame
 	budget := MaxRows(frameHeight)
-	if h.panel.Sizing() == FullFrame {
-		budget = max(frameHeight-statusLineRows, 1)
+	if full {
+		budget = max(frameHeight-statusLineRows-1, 1)
 	}
 	view := h.panel.View(width, budget)
+	if full {
+		view = chrome.Close(view, width, chrome.FocusColor(theme.Current()))
+	}
 	h.rows = lipgloss.Height(view)
 	return view
 }

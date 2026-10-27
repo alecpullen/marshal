@@ -9,6 +9,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/listpanel"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/llm/routing"
@@ -304,10 +305,11 @@ func (d descriptor) valueString(preset routing.ModelPreset) string {
 
 // View renders the panel inside the dock's dimensions.
 func (p *Panel) View(width, maxHeight int) string {
-	p.fields.SetSize(width-3, max(maxHeight-2, 1))
+	pw := layout.PanelWidth(width)
+	p.fields.SetSize(pw-3, max(maxHeight-2, 1))
 	th := theme.Current()
 	title := fmt.Sprintf("Options: %s", p.presetName)
-	return chrome.PanelWithHints(title, "↵ edit · Esc close", p.fields.View(), width, maxHeight, true, th)
+	return chrome.PanelWithHints(title, "↵ edit · Esc close", p.fields.View(), pw, maxHeight, true, th)
 }
 
 // Sizing reports that the panel wants a docked portion of the frame.

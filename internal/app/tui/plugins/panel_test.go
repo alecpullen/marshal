@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -65,6 +66,21 @@ func TestPanelViewRendersPushedInstallFrame(t *testing.T) {
 	}
 	if strings.Contains(view, "＋ Install plugin") {
 		t.Fatalf("expected root list hidden while install frame is active, got:\n%s", view)
+	}
+}
+
+// The plugins panel is framed, and its frame never renders past the dock's
+// height budget.
+func TestPluginsPanelIsFramed(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	const maxHeight = 20
+	view := p.View(80, maxHeight)
+	rows := strings.Split(ansi.Strip(view), "\n")
+	if !strings.HasPrefix(rows[0], "╭─ Plugins") {
+		t.Fatalf("first row should open the Plugins frame, got %q", rows[0])
+	}
+	if len(rows) > maxHeight {
+		t.Fatalf("view is %d rows tall, past the %d-row budget", len(rows), maxHeight)
 	}
 }
 

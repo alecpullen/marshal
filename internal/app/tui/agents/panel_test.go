@@ -627,8 +627,9 @@ func TestDrilledFrameRendersHeader(t *testing.T) {
 	}
 }
 
-// The root roster's five KindHeader rows are out of scope and must not gain
-// a rule: they keep flHeaderStyle, which /settings shares.
+// The root roster's five KindHeader rows keep flHeaderStyle in the two-column
+// layout, which this renders: in two columns a divider would erase the detail
+// pane's text on its row, so the panel leaves group dividers off.
 func TestRootRosterHeadersUnchanged(t *testing.T) {
 	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
 	out := ansi.Strip(p.View(120, 30))
@@ -637,6 +638,16 @@ func TestRootRosterHeadersUnchanged(t *testing.T) {
 	}
 	if strings.Contains(out, "Swarm Roles ─") {
 		t.Errorf("root section header gained a rule; it must keep flHeaderStyle:\n%s", out)
+	}
+}
+
+// The roster count is the closed frame's footer, not a content row.
+func TestAgentsCountIsInTheBottomBorder(t *testing.T) {
+	p := NewRosterPanel(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "", nil)
+	rows := strings.Split(ansi.Strip(p.View(80, 30)), "\n")
+	last := rows[len(rows)-1]
+	if !strings.HasPrefix(last, "╰─ ") || !strings.Contains(last, "entries") {
+		t.Fatalf("last row should carry the entries count in the bottom border, got %q", last)
 	}
 }
 

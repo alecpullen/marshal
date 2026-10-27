@@ -86,6 +86,12 @@ type FieldList struct {
 	// descSuppressed hides the inline desc line under the cursor row; the
 	// two-column browser renders desc in its detail pane instead.
 	descSuppressed bool
+
+	// groupDividers draws KindHeader rows as chrome dividers (a rule across
+	// the frame) instead of a styled, padded line. Only single-column layouts
+	// turn it on: in two columns the rule would erase the detail pane's text
+	// on its row.
+	groupDividers bool
 }
 
 // NewFieldList creates a FieldList with the given field provider.
@@ -150,6 +156,8 @@ func (fl *FieldList) CursorRow() *Field {
 func (fl *FieldList) SetSize(w, h int) { fl.width, fl.height = w, h }
 
 func (fl *FieldList) setDescSuppressed(suppress bool) { fl.descSuppressed = suppress }
+
+func (fl *FieldList) setGroupDividers(on bool) { fl.groupDividers = on }
 
 func (fl *FieldList) disarmRow(i int) {
 	fl.Refresh()
@@ -594,6 +602,10 @@ func (fl *FieldList) View() string {
 	for i, row := range fl.rows {
 		isCursor := i == fl.cursor
 		if row.Kind == KindHeader {
+			if fl.groupDividers {
+				lines = append(lines, chrome.Divider(row.Title))
+				continue
+			}
 			header := flHeaderStyle().Render(row.Title)
 			gap := fl.width - lipgloss.Width(header)
 			if gap < 0 {

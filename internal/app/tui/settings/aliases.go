@@ -110,6 +110,7 @@ var (
 	FieldListCursorRow         = listpanel.FieldListCursorRow
 	FieldListView              = listpanel.FieldListView
 	FieldListSetDescSuppressed = listpanel.FieldListSetDescSuppressed
+	FieldListSetGroupDividers  = listpanel.FieldListSetGroupDividers
 	FieldListCursorDesc        = listpanel.FieldListCursorDesc
 	NewFieldList               = listpanel.NewFieldList
 	NewFrame                   = listpanel.NewFrame

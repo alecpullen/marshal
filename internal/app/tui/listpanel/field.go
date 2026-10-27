@@ -290,6 +290,10 @@ func FieldListView(fl *FieldList) string { return fl.View() }
 // (used by two-column panels that render desc in a detail pane).
 func FieldListSetDescSuppressed(fl *FieldList, suppress bool) { fl.setDescSuppressed(suppress) }
 
+// FieldListSetGroupDividers draws header rows as chrome dividers, for the
+// single-column layouts grouped settings and agents use.
+func FieldListSetGroupDividers(fl *FieldList, on bool) { fl.setGroupDividers(on) }
+
 // FieldListCursorDesc returns the description of the cursor row, or "".
 func FieldListCursorDesc(fl *FieldList) string {
 	if row := fl.CursorRow(); row != nil {

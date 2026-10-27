@@ -2865,9 +2865,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			&clipboard.LocalWriter{},
 			func() bool { return clipboard.Remote(os.Getenv) },
 		))
-		if rt.LSPManager != nil {
-			tuiOpts = append(tuiOpts, tui.WithReferenceFinder(lsp.NewSymbolQuery(rt.LSPManager, nil, 0)))
-		}
 		tuiOpts = append(tuiOpts, tui.WithRunnerSource(func() (context.Context, tui.AgentRunner) {
 			rt.mu.Lock()
 			defer rt.mu.Unlock()

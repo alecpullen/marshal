@@ -589,8 +589,6 @@ type Model struct {
 	// switches between streamed reasoning and audit summaries), so without
 	// this the card oscillates. Pruned with regionOffset.
 	regionRows map[viewmodel.NodeID]int
-	// refFinder resolves blast radius; nil when LSP is unavailable.
-	refFinder ReferenceFinder
 	// callers caches reference lookups per tool row. A present-but-empty
 	// entry is a negative result and must not be re-queried.
 	callers      map[viewmodel.NodeID][]string

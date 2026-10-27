@@ -237,6 +237,14 @@ func (m Model) inputSections() []consoleSection {
 		}
 	}
 
+	// The doctor repair's masked key field sits after the prompt chain and
+	// before the composer: the doctor panel is already closed while it is up,
+	// and it owns every keystroke, so the textarea is deliberately not rendered
+	// beside it.
+	if m.doctorSecret != nil {
+		return prompt("⚠ API key", mutedStyle().Render(m.doctorSecret.provider), m.doctorSecretLines())
+	}
+
 	var sections []consoleSection
 	if popup, ok := m.completionSection(); ok {
 		sections = append(sections, popup)

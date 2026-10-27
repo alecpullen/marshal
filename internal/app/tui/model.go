@@ -686,12 +686,11 @@ type Model struct {
 	// an executed flow never opens a real browser.
 	openBrowser func(url string) error
 
-	// doctorFixProvider is non-empty while the /doctor panel is in key-input
-	// sub-mode: the input prompt asks for an API key for this provider.
-	// savedInputPlaceholder restores the input placeholder when the sub-mode
-	// exits.
-	doctorFixProvider     string
-	savedInputPlaceholder string
+	// doctorSecret is the masked key field of an in-progress /doctor repair,
+	// nil when no repair is in progress. It owns its own text input: the chat
+	// composer's text, cursor, placeholder and paste attachments are never
+	// touched while it is up.
+	doctorSecret *doctorSecret
 
 	spinner      Spinner
 	spinnerFrame string
@@ -1852,6 +1851,10 @@ func (m *Model) resize(width, height int) {
 		// The isolated edit editor occupies the same column while it is open.
 		m.approvalEdit.input.SetWidth(max(m.leftWidth-4, 1))
 	}
+	if m.doctorSecret != nil {
+		// The masked key field occupies the same column while a repair is open.
+		m.doctorSecret.input.SetWidth(max(m.leftWidth-4, 1))
+	}
 
 	// Transcript viewport spans the left column, less the drill frame's gutter.
 	m.syncTranscriptWidth()
@@ -2401,11 +2404,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	case doctorpanel.FixMsg:
+		// The repair asks for a key in its own masked field. The chat composer
+		// is left exactly as it is: no reset, no placeholder swap, no paste
+		// attachment touched, so a repair can neither discard nor submit the
+		// draft the user was writing.
 		m.dock.CloseNow()
-		m.doctorFixProvider = msg.Provider
-		m.savedInputPlaceholder = m.input.Placeholder
-		m.resetInput()
-		m.input.Placeholder = "Enter API key for " + msg.Provider
+		m.doctorSecret = newDoctorSecret(msg.Provider, max(m.leftWidth-4, 1))
+		m.updateViewportHeight()
+		m.invalidateTranscript()
 		m.refreshViewport()
 		return m, nil
 	case activeworkpanel.DoneMsg:
@@ -2876,6 +2882,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// index 0 after every arrow-key press.
 	if _, ok := msg.(tea.KeyReleaseMsg); ok {
 		return m, nil
+	}
+
+	// Doctor repair: the masked key field owns the keyboard while it is up. It
+	// is intercepted here — after the prompts, which keep their precedence, and
+	// before the composer, the paste-condensing branch and handleKeypress — so
+	// ordinary typing, "?", completion, history and the large-paste attachment
+	// never see a byte of the key.
+	if m.doctorSecret != nil {
+		switch msg.(type) {
+		case tea.KeyPressMsg, tea.PasteMsg:
+			return m.handleDoctorSecret(msg)
+		}
 	}
 
 	switch msg := msg.(type) {
@@ -3715,6 +3733,10 @@ func (m Model) inputChromeRows() int {
 			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))
 		}
 		rows += len(consoleLines(content))
+	} else if m.doctorSecret != nil {
+		// Mirror inputSections' doctor case exactly: the masked key field and
+		// its hint row, before the composer and after the prompt chain.
+		rows += len(m.doctorSecretLines())
 	}
 	if p := m.activeCompletionPopup(); p != nil {
 		// Cap the popup at completionPopupMax visible match rows plus the
@@ -3731,7 +3753,8 @@ func (m Model) inputAreaRows() int {
 		// input area below it renders only its suspended notice row.
 		return rows
 	}
-	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil && m.state.PendingSudoAuth() == nil {
+	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil &&
+		m.state.PendingSudoAuth() == nil && m.doctorSecret == nil {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
 		rows += max(m.input.Height(), 1)
@@ -5961,10 +5984,11 @@ func (m *Model) clearChatDraft() {
 
 // surfaceOwnsInput reports whether something other than the plain chat editor
 // owns the keyboard: a dock panel (including the access panel), a pending
-// human prompt, or the command-edit sub-mode. Alt+Enter then opens the
-// temporary composer instead of submitting, and never reads the owner's value.
+// human prompt, the command-edit sub-mode, or a /doctor repair's masked key
+// field. Alt+Enter then opens the temporary composer instead of submitting,
+// and never reads the owner's value.
 func (m *Model) surfaceOwnsInput() bool {
-	if m.dock.IsOpen() || m.editingApproval() {
+	if m.dock.IsOpen() || m.editingApproval() || m.doctorSecret != nil {
 		return true
 	}
 	return m.hasPendingApproval() ||

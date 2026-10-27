@@ -8385,7 +8385,12 @@ func TestRefreshViewportKeepsOverridesAcrossNewTool(t *testing.T) {
 
 func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 	work := t.TempDir()
-	m := newTestModel(t)
+	home := t.TempDir()
+	t.Setenv("MARSHAL_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	m := testModel(session.New(config.Default(), work, time.Unix(100, 0), session.Persistence{}),
+		WithHomeDir(home),
+		WithAuthResolver(newMemAuth()), WithOpenBrowser(func(string) error { return nil }))
 	m.state.WorkingDir = work
 	m.workDir = work
 	m.state.Config.Providers = map[string]config.ProviderConfig{
@@ -8395,27 +8400,44 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 			APIKeyEnv: "MISSING_OPENAI_KEY",
 		},
 	}
+	m.resize(80, 24)
+	m.refreshViewport()
+
+	// A draft already in the composer must survive the whole repair.
+	var draft composerDraft
+	m, draft = seedComposerDraft(t, m)
+
 	// Simulate the doctor panel emitting FixMsg after selecting the fixable row.
 	updated, _ := m.Update(doctorpanel.FixMsg{Provider: "openai"})
 	m = asModel(t, updated)
-	if m.doctorFixProvider != "openai" {
-		t.Fatalf("doctorFixProvider = %q, want openai", m.doctorFixProvider)
+	if m.doctorSecret == nil || m.doctorSecret.provider != "openai" {
+		t.Fatalf("doctorSecret = %+v, want a field for openai", m.doctorSecret)
 	}
-	// FixMsg must close the dock so the input keys reach the doctor fix
-	// sub-mode via the real key path (the dock routing swallows them
-	// otherwise — the old test bypassed it by calling handleKeypress).
+	// FixMsg must close the dock so the field is the surface on screen.
 	if m.dock.IsOpen() {
 		t.Fatal("expected FixMsg to close the dock")
 	}
-	// Type a key and submit through the real Update path.
-	m.input.SetValue("sk-test-123")
+
+	// Type the key through the real Update path, one rune at a time.
+	for _, r := range "sk-test-123" {
+		m = sendKey(m, tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	if got := m.doctorSecret.input.Value(); got != "sk-test-123" {
+		t.Fatalf("field value length = %d, want %d", len(got), len("sk-test-123"))
+	}
+	if m.input.Value() == "sk-test-123" {
+		t.Fatal("the key was typed into the chat composer")
+	}
+
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = asModel(t, updated)
-	if m.doctorFixProvider != "" {
-		t.Fatal("expected doctor fix mode to exit")
+	if m.doctorSecret != nil {
+		t.Fatal("expected the doctor field to close after a successful save")
 	}
+	assertDraftIntact(t, m, draft, "after saving the key")
+
 	// Verify the key was saved to the user config.
-	cfg, err := config.LoadLayers(config.LoadOptions{HomeDir: m.homeDir, WorkingDir: work})
+	cfg, err := config.LoadLayers(config.LoadOptions{HomeDir: home, WorkingDir: work})
 	if err != nil {
 		t.Fatalf("LoadLayers: %v", err)
 	}
@@ -8424,7 +8446,7 @@ func TestDoctorFixSavesKeyAndReloads(t *testing.T) {
 		t.Fatal("openai provider missing from reloaded config")
 	}
 	if pc.APIKey != "sk-test-123" {
-		t.Fatalf("APIKey = %q, want sk-test-123", pc.APIKey)
+		t.Fatalf("saved APIKey length = %d, want %d", len(pc.APIKey), len("sk-test-123"))
 	}
 	if pc.APIKeyEnv != "" {
 		t.Fatalf("APIKeyEnv = %q, want empty", pc.APIKeyEnv)

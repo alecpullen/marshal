@@ -196,7 +196,11 @@ or a click opens a row, `Ctrl+G` opens everything, and a keyboard browse mode
 The step in progress streams at the end of the transcript. A tray above the
 input pins everything running in the background (subagents, jobs, downloads and
 tests with their progress bars), the work that finished until your next prompt,
-and the plan. The status line shows the turn's clock. `/work` lists all work.
+and the plan. The tray, any docked panel, the input and the status line are
+drawn as one framed outline: prompts are coloured sections of it (an approval
+or the access panel amber, a question violet), the status line closes its
+bottom edge, and a subagent you drill into is framed in coral. The status line
+shows the turn's clock. `/work` lists all work.
 
 During a normal conversation turn, `Enter` queues steering and `Alt+Enter`
 sends it now. Send now interrupts the current operation: it stops attached

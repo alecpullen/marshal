@@ -2084,11 +2084,10 @@ func reconcileIfModel(updated tea.Model) Model {
 // result reaches exactly one panel: the retained one, never both.
 func (m Model) routeWithSuspendedSurface(msg tea.Msg) (tea.Model, tea.Cmd) {
 	composer := m.dock.Panel()
-	if m.composerDisplaced != nil {
-		m.dock.Open(m.composerDisplaced)
-	} else {
-		m.dock.CloseNow()
-	}
+	// The composer is suspended, not released: the exchange is silent and it
+	// comes back below. With no displaced panel the slot is simply emptied the
+	// same way, so the composer is never told it was closed.
+	m.dock.SwapRetained(m.composerDisplaced)
 	updated, cmd := m.update(msg)
 	next, ok := modelOf(updated)
 	if !ok {
@@ -2099,7 +2098,7 @@ func (m Model) routeWithSuspendedSurface(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// that re-opened (or one the pass opened) is the new one.
 	next.composerDisplaced = next.dock.Panel()
 	if composer != nil {
-		next.dock.Open(composer)
+		next.dock.SwapRetained(composer)
 	}
 	return next, cmd
 }
@@ -5098,8 +5097,9 @@ func (m *Model) declineEnd() (tea.Model, tea.Cmd) {
 	m.endStage = endIdle
 	if displaced != nil {
 		// Nothing was stopped, so a pending approval or gate is still pending
-		// and its surface is still meaningful.
-		m.dock.Open(displaced)
+		// and its surface is still meaningful. It comes back without a close
+		// notification: it was retained, never released.
+		m.dock.SwapRetained(displaced)
 	}
 	m.state.AddMessage(session.RoleSystem, "Kept open. Active work continues.", session.ContentTypePlain)
 	m.refreshViewport()
@@ -5151,7 +5151,9 @@ func (m *Model) openActiveWorkWarning() {
 	// A notice explains a previous refusal; a freshly opened warning has nothing
 	// to explain, and a caller that wants one sets it after this returns.
 	warning.SetNotice("")
-	m.dock.Open(warning)
+	// The surface the warning displaces is retained (endDisplaced), not
+	// released: declining the ending puts it back, so the exchange is silent.
+	m.dock.SwapRetained(warning)
 	m.refreshViewport()
 }
 
@@ -5208,7 +5210,7 @@ func (m *Model) acceptEnd(displayedIDs []string) tea.Cmd {
 		// No runtime seam: nothing to freeze or settle. Go straight to the
 		// existing end behavior.
 		m.endStage = endPostmortem
-		m.endDisplaced = nil
+		m.releaseEndDisplaced()
 		return m.afterSettlement()
 	}
 	decision, err := m.endController.AcceptEnd(EndAcceptRequest{
@@ -5239,8 +5241,20 @@ func (m *Model) acceptEnd(displayedIDs []string) tea.Cmd {
 	// The displaced surface is deliberately NOT restored: the runtime is
 	// settling this conversation, and a panel that outlived it would be a
 	// handle into work that is being stopped.
-	m.endDisplaced = nil
+	m.releaseEndDisplaced()
 	return m.settleEnd()
+}
+
+// releaseEndDisplaced permanently discards the surface the ending warning
+// displaced. The end has been accepted or there is nothing to settle, so that
+// panel is never restored: a CloseAware one is notified here instead of being
+// kept alive to the exit.
+func (m *Model) releaseEndDisplaced() {
+	displaced := m.endDisplaced
+	m.endDisplaced = nil
+	if displaced != nil {
+		m.dock.ReleaseRetained(displaced)
+	}
 }
 
 // settleEnd runs the stop/join pass outside the render loop, keeping the
@@ -5405,6 +5419,13 @@ func (m *Model) finishQuit() tea.Cmd {
 		m.lspCancel = nil
 	}
 	m.state.ResolvePendingForShutdown()
+	// Release the dock's surfaces once on the way out: the active panel and any
+	// surface parked behind a temporary exchange (the Send now composer's, the
+	// ending warning's) are permanently gone now, so a panel that cancels
+	// resources on close gets its chance before the program stops.
+	m.dock.ReleaseRetained(m.dock.Panel())
+	m.dock.ReleaseRetained(m.composerDisplaced)
+	m.dock.ReleaseRetained(m.endDisplaced)
 	m.state.Shutdown()
 	return tea.Quit
 }
@@ -5944,7 +5965,9 @@ func (m *Model) openSteeringComposer() {
 	m.composerID = composer.ID()
 	m.composerSessionID = m.sess.ID()
 	m.composerTurnID = snap.TurnID
-	m.dock.Open(composer)
+	// The displaced panel is retained, not released: closing the composer puts
+	// it back, so the exchange is silent.
+	m.dock.SwapRetained(composer)
 	// The base editor keeps its text but must not render a cursor while the
 	// composer owns the input.
 	m.input.Blur()
@@ -5987,13 +6010,21 @@ func (m *Model) restoreComposerSurface() {
 	if key := m.composerDisplacedPrompt; key.ID != "" && !m.promptStillPending(key) {
 		m.retireStalePromptModels(key)
 	}
+	// The composer is permanently gone once it closes, whether or not the
+	// surface it displaced survives.
+	retired := m.composerDisplaced
 	m.composerDisplaced = nil
 	m.composerDisplacedAccess = ""
 	m.composerDisplacedPrompt = session.PromptKey{}
 	if panel != nil {
-		m.dock.Open(panel)
+		// The restored surface takes the slot silently; the composer it
+		// replaces is what has been permanently discarded.
+		m.dock.ReleaseRetained(m.dock.SwapRetained(panel))
 		return
 	}
+	// The displaced surface retired instead of being resurrected, so it is
+	// discarded too; CloseNow notifies the composer and clears the slot.
+	m.dock.ReleaseRetained(retired)
 	m.dock.CloseNow()
 }
 

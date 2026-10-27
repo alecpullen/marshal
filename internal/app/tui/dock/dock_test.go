@@ -198,3 +198,108 @@ func TestHostOwnsMsgNonOwner(t *testing.T) {
 		t.Error("non-owner panel claimed a message")
 	}
 }
+
+// closeAwarePanel records how often the host told it that it is gone.
+type closeAwarePanel struct {
+	stubPanel
+	closes int
+}
+
+func (p *closeAwarePanel) OnClose() { p.closes++ }
+
+// uncomparablePanel holds a slice, so its dynamic type cannot be compared with
+// ==. The host must never do that: it would panic as soon as such a panel is
+// displaced.
+type uncomparablePanel struct{ notes []string }
+
+func (p uncomparablePanel) Update(tea.Msg) tea.Cmd { return nil }
+func (p uncomparablePanel) View(int, int) string   { return "" }
+func (p uncomparablePanel) Sizing() Sizing         { return Docked }
+
+// TestHostCloseAwareDisplacementAndClose pins the host's notification rules:
+// a permanently displaced panel is told exactly once, a repeated close is
+// inert, a panel without the interface is hosted unchanged, and panels are
+// never compared by identity.
+func TestHostCloseAwareDisplacementAndClose(t *testing.T) {
+	// Replacing the visible panel closes the one it displaces, once, and does
+	// not tell the newcomer anything.
+	first, second := &closeAwarePanel{}, &closeAwarePanel{}
+	var h Host
+	h.Open(first)
+	if first.closes != 0 {
+		t.Fatalf("opening a panel into an empty host notified it %d times", first.closes)
+	}
+	h.Open(second)
+	if first.closes != 1 {
+		t.Fatalf("displaced panel notified %d times, want exactly 1", first.closes)
+	}
+	if second.closes != 0 {
+		t.Fatalf("the newly opened panel was notified %d times", second.closes)
+	}
+
+	// Closing notifies the active panel once and empties the slot; a repeated
+	// close has nothing left to notify.
+	h.CloseNow()
+	if second.closes != 1 {
+		t.Fatalf("closed panel notified %d times, want exactly 1", second.closes)
+	}
+	if h.IsOpen() {
+		t.Fatal("CloseNow left a panel open")
+	}
+	h.CloseNow()
+	if second.closes != 1 {
+		t.Fatalf("a repeated CloseNow notified the panel again: %d notifications", second.closes)
+	}
+
+	// A panel without the interface is hosted exactly the same; there is simply
+	// nobody to tell.
+	plain := &stubPanel{}
+	h.Open(plain)
+	if h.Panel() != Panel(plain) {
+		t.Fatalf("host holds %T, want the plain panel", h.Panel())
+	}
+	h.CloseNow()
+	if h.IsOpen() {
+		t.Fatal("CloseNow left the plain panel open")
+	}
+
+	// SwapRetained exchanges the slot without notifying either panel, and hands
+	// the displaced one back for restoration or release.
+	retained, replacement := &closeAwarePanel{}, &closeAwarePanel{}
+	h.Open(retained)
+	if got := h.SwapRetained(replacement); got != Panel(retained) {
+		t.Fatalf("SwapRetained returned %T, want the displaced panel", got)
+	}
+	if retained.closes != 0 || replacement.closes != 0 {
+		t.Fatalf("a swap notified: displaced %d, incoming %d", retained.closes, replacement.closes)
+	}
+	if h.Panel() != Panel(replacement) {
+		t.Fatalf("host holds %T after the swap, want the incoming panel", h.Panel())
+	}
+
+	// ReleaseRetained notifies the released panel and leaves the slot alone: the
+	// caller owns it, and a later close may notify the same panel again.
+	h.ReleaseRetained(retained)
+	if retained.closes != 1 {
+		t.Fatalf("released panel notified %d times, want exactly 1", retained.closes)
+	}
+	if h.Panel() != Panel(replacement) {
+		t.Fatalf("ReleaseRetained touched the slot: %T", h.Panel())
+	}
+	h.ReleaseRetained(nil)
+	if retained.closes != 1 {
+		t.Fatalf("releasing nil notified the retained panel again: %d", retained.closes)
+	}
+
+	// Non-comparable panels are handled the same way: no identity comparison
+	// anywhere, so nothing panics.
+	h.Open(uncomparablePanel{notes: []string{"a"}})
+	h.Open(uncomparablePanel{notes: []string{"b"}})
+	h.CloseNow()
+	h.SwapRetained(uncomparablePanel{notes: []string{"c"}})
+	h.ReleaseRetained(uncomparablePanel{notes: []string{"d"}})
+	h.CloseNow()
+	if h.IsOpen() {
+		t.Fatal("the host kept a non-comparable panel open")
+	}
+}

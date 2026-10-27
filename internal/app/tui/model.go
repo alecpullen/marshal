@@ -2903,10 +2903,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tea.PasteMsg:
 		if shouldCondensePaste(msg.Content) {
-			m.addPaste(msg.Content)
+			cmd := m.addPaste(msg.Content)
 			m.updateViewportHeight()
 			m.refreshViewport()
-			return m, nil
+			return m, cmd
 		}
 		// Small paste: fall through to the textarea as today.
 	case tea.KeyPressMsg:

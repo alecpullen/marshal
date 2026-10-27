@@ -145,6 +145,10 @@ anyone viewing the terminal. An existing draft is also discarded.
   value for retry. Covered by `TestDoctorSecretMasksTypedAndPastedKey`,
   `TestDoctorSecretPreservesDraft`, `TestDoctorSecretHiddenCannotSubmit` and
   `TestDoctorFixSavesKeyAndReloads`.
+  One deliberate change to the old flow: a successful save no longer re-runs
+  and re-opens the `/doctor` panel. The panel is closed while a prompt owns the
+  keys, so the user is returned to the chat with a system message naming the
+  provider as the receipt; re-run `/doctor` to see the refreshed diagnosis.
 
 ### Inspector silently omits metadata
 

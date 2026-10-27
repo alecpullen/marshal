@@ -3,7 +3,10 @@
 Date: 2026-10-27. Status: executed 2026-10-27 — commits `120c0a24` (task 1),
 `2a081201` (task 2), `02e137a5` (task 3) and `43af57e7` (task 4), run
 sequentially as this plan requires, after the P2 plugin work was integrated
-(`6a821e28`). A review pass followed.
+(`6a821e28`). A review pass followed: two reviewers found no blockers and
+recorded one stale comment, one over-claiming paste comment, one undocumented
+behaviour change and three test pins that did not actually pin their
+behaviour; `8c47ff6b` fixes those.
 Authored base: `e306ccbaa70aa5a7b2c2cc4a1068a6231748b21d`. The
 [plugin safety plan](2026-10-27-p2-plugin-install-safety-plan.md) is running
 separately; integrate its completed work and recheck the anchors and baseline

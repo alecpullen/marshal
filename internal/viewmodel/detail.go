@@ -26,6 +26,14 @@ func StackNodeOf(st *session.State, tree []*Node, nodeID string) (res acpwire.St
 		for _, ev := range n.Tools {
 			detail.Calls = append(detail.Calls, callDetail(ev))
 		}
+		// A call row's step is its first call's: the one that opened the row.
+		// It is absent when the call named no step or the state no longer
+		// holds the record.
+		if id := n.Tools[0].StepID; id != 0 {
+			if rec, ok := st.Step(id); ok {
+				detail.Step = stepDetailOf(st, rec)
+			}
+		}
 	case n.Kind == KindStep && n.Step != nil:
 		for _, msg := range n.Step.Narration {
 			detail.Narration = append(detail.Narration, msg.Content)
@@ -34,6 +42,11 @@ func StackNodeOf(st *session.State, tree []*Node, nodeID string) (res acpwire.St
 			detail.Thinking = append(detail.Thinking, acpwire.ThoughtDetail{Text: t.Text, DurationMs: t.Duration.Milliseconds()})
 		}
 		detail.Todo = todoDetail(st, n.Step.TodoID)
+		// A beat's step record travels even when its ID is 0, which is a loose
+		// beat: the client shows the actor and the stored todo regardless.
+		detail.Step = stepDetailOf(st, n.Step.Step)
+	case n.Completion != nil:
+		detail.Completion = &acpwire.CompletionDetail{Output: n.Completion.Output, Report: n.Completion.Report}
 	}
 	if rel, ok := ResolveBeats(Relations(st.Transcript()), tree)[n.ID]; ok {
 		detail.Relations = &acpwire.RelationDetail{CausedBy: nodeKeys(rel.CausedBy), FixedBy: nodeKeys(rel.FixedBy)}
@@ -43,6 +56,24 @@ func StackNodeOf(st *session.State, tree []*Node, nodeID string) (res acpwire.St
 		node.Parent = parent.ID.Key
 	}
 	return acpwire.StackNodeResult{Detail: detail, Node: node}, true
+}
+
+// stepDetailOf is rec as the wire's StepDetail. A loose beat's record has no
+// ID, and no narration to take a "why" line from.
+func stepDetailOf(st *session.State, rec session.Step) *acpwire.StepDetail {
+	d := &acpwire.StepDetail{
+		ID:       int64(rec.ID),
+		Owner:    StepOwner(rec),
+		Model:    rec.Actor.Model,
+		Provider: rec.Actor.Provider,
+		TodoID:   rec.TodoID,
+	}
+	if rec.ID != 0 {
+		if h, _ := FirstSentence(st.StepNarration(rec.ID)); h != "" {
+			d.Why = StripEmphasis(h)
+		}
+	}
+	return d
 }
 
 // executionDetail projects a stored execution record onto the detail
@@ -111,6 +142,7 @@ func callDetail(ev registry.AuditEvent) acpwire.CallDetail {
 		CallID: ev.ToolCallID, StepID: ev.StepID, ToolName: ev.ToolName,
 		Args: indentJSON(ev.Args), Error: ev.Error, ExitCode: ev.CommandExitCode,
 		Model: ev.Model, FinishReason: ev.FinishReason, Rewritten: ev.Rewritten,
+		Summary: ev.ResultSummary,
 	}
 	// The hooks trail travels as registry.HookMetadata's own JSON: its
 	// failed_open key is not a wire-field name, so it stays raw bytes.

@@ -9,6 +9,13 @@ type NodeDetail struct {
 	Thinking  []ThoughtDetail `json:"thinking,omitempty"`
 	Todo      *TodoDetail     `json:"todo,omitempty"`
 	Relations *RelationDetail `json:"relations,omitempty"`
+	// Step is the step record behind this node: a call's own step, or a
+	// beat's first. It carries who spoke, the model, the "why" line and the
+	// todo the step began under.
+	Step *StepDetail `json:"step,omitempty"`
+	// Completion is a completion's retained output and its report, neither
+	// capped.
+	Completion *CompletionDetail `json:"completion,omitempty"`
 }
 
 // CallDetail is one tool call with nothing capped.
@@ -38,6 +45,7 @@ type CallDetail struct {
 	// for the model, while this is the data a client explains a wait, a
 	// handoff or a stop outcome with, without parsing a sentence.
 	Execution *ExecutionDetail `json:"execution,omitempty"`
+	Summary   string           `json:"summary,omitempty"` // the call's own summary, uncut
 }
 
 // ExecutionDetail is one managed command execution's structured evidence as
@@ -139,6 +147,25 @@ type SandboxDetail struct {
 	Backend         string `json:"backend,omitempty"`
 	NetworkIsolated bool   `json:"networkIsolated,omitempty"`
 	KilledReason    string `json:"killedReason,omitempty"`
+}
+
+// StepDetail is a step record: a call's own step, or a beat's first. Why is
+// the first sentence of the step's narration, emphasis stripped. TodoID is the
+// todo the step was bound to when it started.
+type StepDetail struct {
+	ID       int64  `json:"id,omitempty"`
+	Owner    string `json:"owner,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Why      string `json:"why,omitempty"`
+	TodoID   string `json:"todoId,omitempty"`
+}
+
+// CompletionDetail is a completion's retained output and its report, neither
+// capped.
+type CompletionDetail struct {
+	Output string `json:"output,omitempty"`
+	Report string `json:"report,omitempty"`
 }
 
 // ApprovalNotRequired is the WireCall.Approval value of a call that needed no

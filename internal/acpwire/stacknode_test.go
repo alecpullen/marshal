@@ -99,3 +99,46 @@ func TestHookAndSandboxDetailsDecode(t *testing.T) {
 		t.Fatalf("sandbox = %+v, want %+v", sandbox, want)
 	}
 }
+
+// TestDetailAdditionsJSON pins the fields plan 3b adds to the detail transport
+// and to a call row's wire form. As with TestStackNodeResultJSON, the literals
+// were produced by encoding the declared types.
+func TestDetailAdditionsJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		got  any
+		want string
+	}{
+		{
+			name: "the new detail fields",
+			got: NodeDetail{
+				Calls: []CallDetail{{ToolName: "file.edit", Summary: "edit failed"}},
+				Step: &StepDetail{
+					ID: 3, Owner: "reviewer #1", Model: "qwen3", Provider: "local",
+					Why: "Running the tests.", TodoID: "t2",
+				},
+				Completion: &CompletionDetail{Output: "ok\n", Report: "## Review"},
+			},
+			want: `{"calls":[{"toolName":"file.edit","summary":"edit failed"}],"step":{"id":3,"owner":"reviewer #1","model":"qwen3","provider":"local","why":"Running the tests.","todoId":"t2"},"completion":{"output":"ok\n","report":"## Review"}}`,
+		},
+		{
+			name: "a row a callers lookup asks about",
+			got: WireNode{
+				ID: "tool:3:c1", Kind: "tool",
+				Tool: &WireTool{Name: "file.edit", Display: "Edit", Verb: "edit", Callers: true},
+			},
+			want: `{"id":"tool:3:c1","kind":"tool","tool":{"name":"file.edit","display":"Edit","verb":"edit","callers":true}}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			raw, err := json.Marshal(c.got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(raw) != c.want {
+				t.Fatalf("JSON = %s\nwant    %s", raw, c.want)
+			}
+		})
+	}
+}

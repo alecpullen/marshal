@@ -274,9 +274,9 @@ func (m Model) transientStatusSegment() string {
 //	branch=5, dir=5, swarm tokens=6, jobs=7, queued=8, browser=9,
 //	config issues=10
 //
-// The context counter and the quota are consumable budgets: they drop before
-// the locality cue, because "ctx 42k/200k" is the number a user acts on while
-// "local" only restates the route already shown beside it.
+// The locality cue drops before the consumable budgets, because "ctx 42k/200k"
+// is the number a user acts on while "local" only restates the route already
+// shown beside it.
 //
 // The send-now receipt outranks the identity and metric segments: it reports
 // an action the user just took against the running turn, so it must survive

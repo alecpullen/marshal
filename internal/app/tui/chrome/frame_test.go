@@ -100,6 +100,49 @@ func TestBorderLineKeepsTheRightLabel(t *testing.T) {
 	}
 }
 
+// A frame is asked for absurd heights only by a shrinking terminal. Render
+// must stay within h and never panic. A closed frame needs two rows before it
+// can show both a top and a bottom border, so at h=1 it shows only the top —
+// which is what "at most h rows" means.
+func TestFrameNarrowHeights(t *testing.T) {
+	for _, h := range []int{0, 1, 2, 3} {
+		out := Frame{Title: "T", Footer: "f", Closed: true}.Render("a\nb\nc", 20, h, testTheme)
+		lines := rows(out)
+		if want := max(h, 1); len(lines) > want {
+			t.Fatalf("h=%d: rendered %d rows, want at most %d: %q", h, len(lines), want, lines)
+		}
+		for i, l := range lines {
+			if got := ansi.StringWidth(l); got != 20 {
+				t.Fatalf("h=%d row %d is %d cells, want 20: %q", h, i, got, l)
+			}
+		}
+	}
+	if got := len(rows(Frame{Closed: true}.Render("x", 20, 1, testTheme))); got != 1 {
+		t.Fatalf("closed frame at h=1 drew %d rows, want the top border only", got)
+	}
+	if got := len(rows(Frame{Closed: true}.Render("x", 20, 2, testTheme))); got != 2 {
+		t.Fatalf("closed frame at h=2 drew %d rows, want top + bottom", got)
+	}
+}
+
+// BorderLine is exported, so widths the TUI itself never asks for still have
+// to stay inside the width requested rather than overflowing it.
+func TestBorderLineNeverExceedsItsWidth(t *testing.T) {
+	for _, w := range []int{1, 2, 3, 4, 5, 6, 7, 8, 20, 40} {
+		for _, right := range []string{"", "Esc close"} {
+			out := ansi.Strip(BorderLine("╭─ ", "a long left label", right, "╮", w, testTheme.AccentSecondary))
+			if got := ansi.StringWidth(out); got > max(w, 1) {
+				t.Fatalf("w=%d right=%q: row is %d cells, want at most %d: %q", w, right, got, max(w, 1), out)
+			}
+			if w >= 20 {
+				if got := ansi.StringWidth(out); got != w {
+					t.Fatalf("w=%d right=%q: row is %d cells, want exactly %d: %q", w, right, got, w, out)
+				}
+			}
+		}
+	}
+}
+
 func TestCloseAddsOneBorderOnce(t *testing.T) {
 	open := Frame{Title: "T"}.Render("body", 20, 4, testTheme)
 	closed := Close(open, 20, FocusColor(testTheme))

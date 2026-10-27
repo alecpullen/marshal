@@ -70,8 +70,12 @@ func TestHostViewBudgetsBySizingHint(t *testing.T) {
 	full := &stubPanel{sizing: FullFrame}
 	h.Open(full)
 	h.View(100, 40)
-	if want := 40 - statusLineRows - 1; full.gotMaxH != want {
-		t.Fatalf("FullFrame panel got maxHeight %d, want frame minus status line and the closing border row = %d", full.gotMaxH, want)
+	// A FullFrame panel is offered every row the status line leaves. The
+	// closing row is charged only when Close actually appends one, which
+	// TestFullFrameViewIsClosedInItsBudget and
+	// TestFullFrameClosedPanelFillsItsBudget pin from both sides.
+	if want := 40 - statusLineRows; full.gotMaxH != want {
+		t.Fatalf("FullFrame panel got maxHeight %d, want frame minus status line = %d", full.gotMaxH, want)
 	}
 	if !h.FullFrameOpen() {
 		t.Fatal("FullFrameOpen() = false with a FullFrame panel open")
@@ -116,6 +120,47 @@ func TestFullFrameViewIsClosedInItsBudget(t *testing.T) {
 	}
 	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "╰") || !strings.HasSuffix(last, "╯") {
 		t.Fatalf("last row = %q, want the dock's closing bottom border", last)
+	}
+}
+
+// closedFullFrameStub draws a closed chrome frame, the way the settings and
+// agents panels do. It already ends on its own bottom border, so the dock must
+// not reserve a row for closing it.
+type closedFullFrameStub struct{ gotMaxH int }
+
+func (s *closedFullFrameStub) Update(msg tea.Msg) tea.Cmd { return nil }
+func (s *closedFullFrameStub) Sizing() Sizing             { return FullFrame }
+func (s *closedFullFrameStub) View(width, maxHeight int) string {
+	s.gotMaxH = maxHeight
+	body := strings.TrimSuffix(strings.Repeat("row\n", max(maxHeight-2, 1)), "\n")
+	return chrome.Frame{Title: "Full", Closed: true, Focused: true}.
+		Render(body, layout.PanelWidth(width)+2, maxHeight, theme.Current())
+}
+
+// TestFullFrameClosedPanelFillsItsBudget pins the other half of the contract:
+// a panel that draws its own bottom border keeps the whole budget. Reserving a
+// row for a close that never happens left the panel one row short and
+// padRows painted a blank row between its ╰╯ and the status line.
+func TestFullFrameClosedPanelFillsItsBudget(t *testing.T) {
+	const frameHeight = 40
+	var h Host
+	h.Open(&closedFullFrameStub{})
+
+	view := h.View(100, frameHeight)
+	want := frameHeight - statusLineRows
+	if got := h.Rows(); got != want {
+		t.Fatalf("closed FullFrame view is %d rows, want %d: a closed panel must not lose a row to the dock's close reserve:\n%s",
+			got, want, ansi.Strip(view))
+	}
+	if got, want := h.panel.(*closedFullFrameStub).gotMaxH, frameHeight-statusLineRows; got != want {
+		t.Fatalf("panel was given maxHeight %d, want %d", got, want)
+	}
+	lines := strings.Split(ansi.Strip(view), "\n")
+	if first := lines[0]; !strings.HasPrefix(first, "╭─ ") {
+		t.Fatalf("first row = %q, want the panel's own top border", first)
+	}
+	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "╰") || !strings.HasSuffix(last, "╯") {
+		t.Fatalf("last row = %q, want the panel's own bottom border", last)
 	}
 }
 

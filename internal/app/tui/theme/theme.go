@@ -66,9 +66,9 @@ type Theme struct {
 	BorderMuted color.Color
 	FGEmphasis  color.Color
 	// BGBase is a reference value that is only painted at DepthFull (by
-	// TranscriptBG, for the transcript background). At flat and raised the
-	// terminal's own background (and any transparency or background image)
-	// shows through. BGSurface and BGSelection are derived relative to it,
+	// TranscriptBG, for the transcript background). At flat the terminal's
+	// own background (and any transparency or background image) shows
+	// through. BGSurface and BGSelection are derived relative to it,
 	// and contrast_test.go validates foregrounds against a range of
 	// plausible terminal backgrounds rather than against this value.
 	BGBase          color.Color

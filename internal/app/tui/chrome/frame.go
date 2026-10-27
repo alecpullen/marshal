@@ -62,8 +62,12 @@ func (f Frame) Render(content string, outer, h int, th theme.Theme) string {
 		}
 	}
 
+	// A closed frame needs two rows before it can draw both its borders. Below
+	// that it draws only the top border, so "at most h rows tall" holds even
+	// for the heights a collapsing terminal can produce.
+	closed := f.Closed && h >= 2
 	budget := max(h-1, 0)
-	if f.Closed {
+	if closed {
 		budget = max(h-2, 0)
 	}
 	if len(lines) > budget {
@@ -88,7 +92,7 @@ func (f Frame) Render(content string, outer, h int, th theme.Theme) string {
 		out = append(out, border.Render("│ ")+row+border.Render(" │"))
 	}
 
-	if f.Closed {
+	if closed {
 		if f.Footer == "" {
 			out = append(out, border.Render("╰"+strings.Repeat("─", max(outer-2, 1))+"╯"))
 		} else {
@@ -119,7 +123,8 @@ func (f Frame) hintsLabel(th theme.Theme) string {
 	return lipgloss.NewStyle().Foreground(th.FGMuted).Render(f.Hints)
 }
 
-// BorderLine draws one row of exactly w cells:
+// BorderLine draws one row of at most w cells — exactly w whenever there is
+// room for the fixed glyphs:
 // <open><left> ─…─ <right> ─<close>. With right empty it is
 // <open><left> ─…─<close>, as livebox's border line is today. The glyphs are
 // drawn in c; left and right are drawn as passed (already styled).
@@ -146,12 +151,20 @@ func BorderLine(open, left, right, close string, w int, c color.Color) string {
 		right = ""
 	}
 	left = ansi.Truncate(left, max(room(right), 1), "…")
+	var out string
 	if right != "" {
 		fill := max(w-openW-closeW-ansi.StringWidth(left)-ansi.StringWidth(right)-3, 1)
-		return b.Render(open) + left + b.Render(" "+strings.Repeat("─", fill)+" ") + right + b.Render("─"+close)
+		out = b.Render(open) + left + b.Render(" "+strings.Repeat("─", fill)+" ") + right + b.Render("─"+close)
+	} else {
+		fill := max(w-openW-closeW-ansi.StringWidth(left)-1, 1)
+		out = b.Render(open) + left + b.Render(" "+strings.Repeat("─", fill)+close)
 	}
-	fill := max(w-openW-closeW-ansi.StringWidth(left)-1, 1)
-	return b.Render(open) + left + b.Render(" "+strings.Repeat("─", fill)+close)
+	// A row can be narrower than its own fixed glyphs (open + gap + one fill
+	// cell + close). Nothing inside the TUI asks for that — panels floor at
+	// layout.PanelWidth and the renderer at minTerminalWidth — but BorderLine
+	// is exported, so the row is clamped rather than allowed to overflow the
+	// width a caller asked for.
+	return ansi.Truncate(out, max(w, 1), "")
 }
 
 // Divider returns a content line Frame.Render draws as a horizontal rule

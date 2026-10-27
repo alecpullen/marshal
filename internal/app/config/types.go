@@ -250,10 +250,10 @@ type TUIConfig struct {
 	Theme string `toml:"theme"`
 	// Depth is how many background planes the TUI paints for itself:
 	// "flat" (none — the terminal's background shows through everywhere,
-	// including transparency and images), "raised" (chrome paints a
-	// surface, the transcript does not), or "full" (marshal owns every
-	// cell). Unknown values resolve to "flat". Depth is clamped to "flat"
-	// on terminals without 256-colour support and under NO_COLOR.
+	// including transparency and images) or "full" (marshal owns every
+	// cell). Unknown values resolve to "flat", as does the retired
+	// "raised", which paints nothing. Depth is clamped to "flat" on
+	// terminals without 256-colour support and under NO_COLOR.
 	Depth   string            `toml:"depth"`
 	Palette map[string]string `toml:"palette"`
 	Mode    string            `toml:"mode"`

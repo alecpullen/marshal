@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/help"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 )
@@ -235,6 +236,34 @@ func TestPromptSectionsCarryLabelsAndKeys(t *testing.T) {
 			t.Fatalf("question header lost its keys: %q", first)
 		}
 	})
+}
+
+// TestPendingPromptKeysLiveOnlyInTheFrameHeader asserts the property directly
+// through the model rather than by comparing help.PromptKeys to itself: a
+// pending prompt draws its keys in the console's section header, and the
+// footer — which would draw the same keys outside the frame — keeps only the
+// stop key while a turn is running.
+func TestPendingPromptKeysLiveOnlyInTheFrameHeader(t *testing.T) {
+	m := consoleTestModel(t, 80, 24)
+	m.state.SetPendingQuestion(&session.PendingQuestion{
+		Questions: []session.Question{{Question: "what?"}},
+	})
+	m.busy = true
+	m.turnStartedAt = m.now().Add(-5 * time.Second)
+	m.refreshViewport()
+
+	header := strings.Split(stripANSI(m.renderInputArea()), "\n")[0]
+	if !strings.Contains(header, "Enter answer") {
+		t.Fatalf("prompt section header lost its keys: %q", header)
+	}
+
+	footer := stripANSI(help.Footer(m.footerHints()))
+	if strings.Contains(footer, "Enter answer") || strings.Contains(footer, "Esc skip") {
+		t.Fatalf("footer repeats the keys the frame header already draws: %q", footer)
+	}
+	if !strings.Contains(footer, "Ctrl+C stop") {
+		t.Fatalf("footer = %q, want the stop key while the turn runs", footer)
+	}
 }
 
 // TestStatusLineDropsPromptKeysWhileFramed: the prompt's keys live in its

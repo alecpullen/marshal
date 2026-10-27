@@ -45,6 +45,10 @@ func sectionDrawsHeader(i int, label string, above consoleAbove) bool {
 // renderConsole draws the console: every section's header, then its content
 // rows inside "│ … │", in that section's colour. It never draws a bottom
 // border — the status line closes the outline.
+//
+// Sections carry plain text, not frame directives: chrome.Divider lines are
+// understood by chrome.Frame.Render, not here, so a section that emitted one
+// would print the private-use mark as content.
 func renderConsole(sections []consoleSection, above consoleAbove, w int) string {
 	if len(sections) == 0 {
 		return ""
@@ -99,6 +103,13 @@ func (m Model) consoleColor() color.Color {
 // consoleAbove reports how the framed part directly above the console ends: an
 // open, framed docked panel counts as framed, otherwise the tray's state
 // decides.
+//
+// During the budget pass inside livebox.Plan the memo still holds the previous
+// frame's layout (it is replaced only after Plan returns). That is deliberate:
+// re-planning here would recurse, and the only consequence is that the tray
+// may shed one row differently on the frame the tray's own shape changes. The
+// frame height stays correct because updateViewportHeight recomputes against
+// the fresh memo and subtracts the rows actually planned.
 func (m Model) consoleAbove() consoleAbove {
 	if m.dock.IsOpen() && m.dockFramed {
 		return aboveFramed

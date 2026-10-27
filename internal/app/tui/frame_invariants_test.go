@@ -16,6 +16,7 @@ import (
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 )
@@ -152,6 +153,35 @@ func TestFrameInvariants(t *testing.T) {
 		}},
 		{"console+access", func(t *testing.T, m *Model) {
 			m.dock.Open(accesspanel.New(session.AccessRequest{MissingEditing: true}))
+		}},
+		// A typed access request has two console branches of its own. Queued
+		// behind an unrelated panel it renders one muted disclosure row; while
+		// the access panel owns the dock it renders no console at all, and the
+		// panel's own closed frame is the outline. The second case is the
+		// regression for an empty console being appended as a blank row.
+		{"console+access+queued", func(t *testing.T, m *Model) {
+			m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
+			m.busy = true
+			m.dock.Open(trustpanel.New(m.workDir, m.trustDecide))
+			m.state.SetPendingApproval(&session.PendingToolCall{
+				ID:           "call-access-queued",
+				Name:         "mode.request",
+				Reason:       "editing",
+				Access:       &session.AccessRequest{RequestID: "req-queued", Reason: "editing", MissingEditing: true},
+				ResponseChan: make(chan session.UserApprovalDecision, 1),
+			})
+		}},
+		{"console+access+owner", func(t *testing.T, m *Model) {
+			m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
+			m.busy = true
+			m.dock.Open(accesspanel.New(session.AccessRequest{MissingEditing: true}))
+			m.state.SetPendingApproval(&session.PendingToolCall{
+				ID:           "call-access-owner",
+				Name:         "mode.request",
+				Reason:       "editing",
+				Access:       &session.AccessRequest{RequestID: "req-owner", Reason: "editing", MissingEditing: true},
+				ResponseChan: make(chan session.UserApprovalDecision, 1),
+			})
 		}},
 		// Task 10: the ending surfaces are stacked panels like any other, so
 		// they must obey the same rail and width invariants while live work is

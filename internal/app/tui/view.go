@@ -109,7 +109,13 @@ func (m *Model) viewString() string {
 			}
 			rows = append(rows, dockView)
 		}
-		rows = append(rows, m.renderInputArea())
+		// An empty console is not appended at all: it happens when the access
+		// panel owns the dock (the panel is the decision UI, so there is no
+		// composer to frame), and appending "" would contribute one blank row
+		// that no budget counted, pushing a transcript row out of the frame.
+		if in := m.renderInputArea(); in != "" {
+			rows = append(rows, in)
+		}
 		left = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
 	// Hard invariant: the left column must never be taller than the frame

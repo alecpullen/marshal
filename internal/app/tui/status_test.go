@@ -356,10 +356,12 @@ func TestStatusLineDropsLocalBeforeCtx(t *testing.T) {
 }
 
 // The border form closes the console at exactly the row's width in every
-// state: ╰─ <clusters> ─╯.
+// state: ╰─ <clusters> ─╯. Narrow widths are included because the border is
+// the one status form with no ansi.Cut net of its own: the width guarantee
+// comes from chrome.BorderLine, and pinned segments can outgrow a cramped row.
 func TestStatusBorderIsExactlyTheWidth(t *testing.T) {
 	for _, busy := range []bool{false, true} {
-		for _, width := range []int{80, 96, 120} {
+		for _, width := range []int{40, 80, 96, 120} {
 			m := newViewTestModel(t, width, 24)
 			m.state.SetTrusted(true)
 			m.busy = busy

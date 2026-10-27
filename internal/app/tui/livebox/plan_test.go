@@ -128,8 +128,39 @@ func TestFinishedPlanIsOneRow(t *testing.T) {
 
 	in.Work = []viewmodel.WorkItem{subagentItem()}
 	beside := rowTexts(Plan(in))
-	if got := beside[len(beside)-2]; !strings.HasPrefix(got, "├─ plan") || !strings.Contains(got, "4/4 done") {
-		t.Errorf("row before the bottom border = %q, want the finished plan's header alone", got)
+	if got := beside[len(beside)-1]; !strings.HasPrefix(got, "├─ plan") || !strings.Contains(got, "4/4 done") {
+		t.Errorf("last row = %q, want the finished plan's header alone", got)
+	}
+}
+
+// TestPlanFoldedIsTheTraysLastRow pins the folded plan: drawn with tees, so the
+// console continues under it, and closed with " ─┤". Too narrow for the label,
+// or with no plan, it draws nothing at all and the tray ends at its last
+// section.
+func TestPlanFoldedIsTheTraysLastRow(t *testing.T) {
+	in := Input{Plan: planOf(4, 2, 3), Now: testNow, Spinner: "⠋"}
+	line := ansi.Strip(planFolded(in, 100))
+	if !strings.HasPrefix(line, "├─ plan") || !strings.HasSuffix(line, "┤") || strings.ContainsAny(line, "╰╯") {
+		t.Errorf("folded plan = %q, want the tray's tees: \"├─ plan\" and a closing \"┤\"", line)
+	}
+	if !strings.Contains(line, " ─") {
+		t.Errorf("folded plan = %q, want the closing \" ─\" before the fill", line)
+	}
+	if w := ansi.StringWidth(line); w != 100 {
+		t.Errorf("folded plan is %d cells, want 100: %q", w, line)
+	}
+	for _, want := range []string{"3/4", "todo c"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("folded plan = %q, want it to contain %q", line, want)
+		}
+	}
+	for _, width := range []int{0, 2, 21} {
+		if got := planFolded(in, width); got != "" {
+			t.Errorf("%d-col folded plan = %q, want nothing", width, got)
+		}
+	}
+	if got := planFolded(Input{}, 100); got != "" {
+		t.Errorf("folded plan with no plan = %q, want nothing", got)
 	}
 }
 

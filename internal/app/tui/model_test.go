@@ -7095,8 +7095,8 @@ func TestFinishedPlanIsOneIdleRow(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	if got := m.boxRows(); got != 3 {
-		t.Fatalf("boxRows() = %d, want the finished row between the top and bottom borders", got)
+	if got := m.boxRows(); got != 2 {
+		t.Fatalf("boxRows() = %d, want the top border and the finished row; the tray draws no closing row", got)
 	}
 	got := stripANSI(boxOut(m))
 	if !strings.Contains(got, "Plan 2/2 done") {

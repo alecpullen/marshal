@@ -1,5 +1,7 @@
 // Package livebox plans and renders the tray: the plan-run row, the running
-// and held rows, and the plan, as one framed panel above the input.
+// and held rows, and the plan, as one framed panel above the input. The
+// panel's outline is open at the bottom — it draws no closing row — so the
+// console below continues it, and Layout.Open says how the tray ends.
 //
 // It is pure. Plan reads an Input value and returns a Layout; Render paints a
 // Layout. The TUI composes the result into the frame, so every row's tint and
@@ -179,10 +181,17 @@ type Row struct {
 	Also   []RowStop // further targets on this line, in draw order
 }
 
-// Layout is a planned tray: its rows, how many shed steps it took to fit, and
-// the browse stops in row order.
+// Layout is a planned tray: its rows, how many shed steps it took to fit, the
+// browse stops in row order, and how it ends.
 type Layout struct {
 	Rows  []Row
 	Shed  int      // shed steps applied, 0–6
 	Stops []Target // browse stops in row order: running and held rows, the more row, plan items
+	Open  bool     // the last row is a border row: the section below continues under it without a divider
+}
+
+// Framed reports whether the tray draws an outline: it has rows and is not the
+// compact row.
+func (l Layout) Framed() bool {
+	return len(l.Rows) > 0 && l.Rows[0].Frame != FramePlain
 }

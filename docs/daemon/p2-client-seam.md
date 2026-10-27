@@ -679,14 +679,17 @@ The TUI works after every plan.
      serves `acp` and the TUI, the row helpers move to `viewmodel`, and
      the projection gains `version` and the collapsed-row fields. Agent
      side only, apart from wrappers and one snapshot call in the TUI.
-   - **3b. Browse actions.** `Session.StackNode`. The inspector, copy,
-     open and the selection's full-subject copy read a node's wire form
-     and detail instead of its payload. Callers lookups move agent side
-     (`Session.Callers`).
-   - **3c. Rows.** The row renderers take wire payloads, from a tree the
-     TUI still builds and projects itself. Expanded rows read
-     `StackNode` detail. The settled-row renderer nothing reaches is
-     deleted.
+   - **3b. Browse actions** ([plan](plans/2026-10-27-p2-3b-browse-plan.md)).
+     `Session.StackNode` and `Session.Callers`. The TUI starts keeping a
+     wire index of the tree it renders, which it builds and projects
+     itself. The inspector, copy, open and the selection's full-subject
+     copy read a node's wire form from that index and its uncapped detail
+     from `StackNode`, instead of its payload. Callers lookups move agent
+     side.
+   - **3c. Rows.** The row renderers take wire payloads from the same
+     index. Expanded rows read `StackNode` detail. The settled-row
+     renderer nothing reaches is deleted, and so is the TUI's index of
+     `viewmodel` nodes.
    - **3d. Tree.** `Session.Stack`. The TUI's tree, node identity,
      expansion, regions, browse items, drill-in, band and completion
      index come from wire nodes. The text helpers move to an allowed
@@ -924,6 +927,33 @@ plan 3a:
   from the wire. The fixtures run on a fixed clock. `session.WithClock`
   already exists, but nothing read it, so plan 3a makes the state stamp
   its transcript times from it.
+
+**2026-10-27, against plan 3a (written while it ran).** Found while
+writing plan 3b:
+- **The TUI starts keeping a wire index in 3b, not 3c** (Migration
+  order). The inspector numbers a call among its beat's calls, lists a
+  beat's rows, and copies a row's full subject. Each of those reads the
+  node's neighbours as well as the node. The TUI already builds the tree,
+  so it projects it after its content check and keeps the wire nodes by
+  ID. Browse actions read node fields from there and ask `StackNode` only
+  for what the wire caps or leaves out. Plan 3c's renderers read the same
+  index, and plan 3d swaps its source for `Session.Stack`.
+- **`NodeDetail` moves to `acpwire` with its JSON unchanged** (C1, C3).
+  `CallDetail.hooks` carries `registry.HookMetadata` as raw JSON: its
+  `failed_open` name breaks C3's camelCase rule, and the raw bytes are
+  what ACP sends today. `CallDetail.sandbox` is raw already.
+  `acpwire.HookDetail` and `acpwire.SandboxDetail` decode the parts the
+  TUI reads.
+- **`NodeDetail` gains `step` and `completion`, and `CallDetail` gains
+  `summary`** (C6). The inspector shows the actor and the "why" line of a
+  call's own step, and a beat's stored todo. It also shows a completion's
+  whole output and report, which the wire caps. Copy takes a call's
+  summary when the call has no result, which `output` cannot say for an
+  edit.
+- **`WireTool` gains `callers`** (C6). It marks a row whose call changed
+  a resolved symbol, which is the row a callers lookup asks about. The TUI
+  asks `Callers` for those rows, and only while it is not drilled into a
+  subagent, because the index then holds the child's transcript.
 
 ## Implementation record
 

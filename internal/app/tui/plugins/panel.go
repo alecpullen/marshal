@@ -517,14 +517,25 @@ func (p *Panel) installFrame() *settings.Frame {
 // single terminal row can neither hold nor safely render a command the user has
 // to judge for themselves.
 func (p *Panel) executableRow(id, title, detailTitle string, lines []string) *settings.Field {
-	f := settings.NewField(id, strutil.ShowControls(title), settings.KindAction)
+	f := settings.NewField(id, reviewTitle(title), settings.KindAction)
 	settings.SetFieldActLabel(f, func() string { return "↵ review" })
 	settings.SetFieldDesc(f, previewLine(lines))
 	settings.SetFieldAct(f, func() tea.Cmd {
-		p.reviewDetail = &reviewDetail{rowID: id, title: detailTitle, lines: lines}
+		p.reviewDetail = &reviewDetail{rowID: id, title: reviewTitle(detailTitle), lines: lines}
 		return nil
 	})
 	return f
+}
+
+// reviewTitle escapes a plugin-supplied name for a single display row. It
+// flattens newline, carriage return and tab first: ShowControls deliberately
+// leaves those alone because they are layout elsewhere, but on a row the view
+// budgets at one line a newline would silently add another, and a name is
+// plugin data, not layout. Everything else — ESC included — is shown as its
+// escape rather than executed by the terminal.
+func reviewTitle(s string) string {
+	s = strings.NewReplacer("\n", `\n`, "\r", `\r`, "\t", `\t`).Replace(s)
+	return strutil.ShowControls(s)
 }
 
 // previewLine is the escaped, truncated first content line of a detail body.
@@ -544,7 +555,8 @@ func previewLine(lines []string) string {
 	return ""
 }
 
-func hookReviewTitle(event string) string { return "hook · " + strutil.ShowControls(event) }
+// Titles are escaped once, in executableRow, where the detail stores them.
+func hookReviewTitle(event string) string { return "hook · " + event }
 
 func hookReviewLines(h config.HookConfig) []string {
 	return []string{
@@ -555,6 +567,12 @@ func hookReviewLines(h config.HookConfig) []string {
 
 func mcpReviewLines(name string, srv config.MCPServerConfig) []string {
 	lines := []string{"server:", "  " + strutil.ShowControls(name)}
+	// A plugin may set trust itself, and "unrestricted" changes how the
+	// server's tools are gated. It is part of what the user is authorising,
+	// so it belongs on this screen rather than only in the TOML.
+	if srv.Trust != "" {
+		lines = append(lines, "trust:", "  "+strutil.ShowControls(srv.Trust))
+	}
 	if srv.Command != "" {
 		lines = append(lines, "command:", "  "+strutil.ShowControls(srv.Command))
 	}
@@ -564,6 +582,21 @@ func mcpReviewLines(name string, srv config.MCPServerConfig) []string {
 	lines = append(lines, fmt.Sprintf("arguments (%d):", len(srv.Args)))
 	for i, arg := range srv.Args {
 		lines = append(lines, fmt.Sprintf("  [%d] %s", i, quoteArg(arg)))
+	}
+	// Environment and headers were omitted entirely, so a plugin could inject
+	// values into the server's process or its requests without the review
+	// screen ever showing them — the same defect the arguments list had.
+	if len(srv.Env) > 0 {
+		lines = append(lines, fmt.Sprintf("environment (%d):", len(srv.Env)))
+		for _, k := range sortedKeys(srv.Env) {
+			lines = append(lines, fmt.Sprintf("  %s=%s", strutil.ShowControls(k), quoteArg(srv.Env[k])))
+		}
+	}
+	if len(srv.Headers) > 0 {
+		lines = append(lines, fmt.Sprintf("headers (%d):", len(srv.Headers)))
+		for _, k := range sortedKeys(srv.Headers) {
+			lines = append(lines, fmt.Sprintf("  %s: %s", strutil.ShowControls(k), quoteArg(srv.Headers[k])))
+		}
 	}
 	return lines
 }

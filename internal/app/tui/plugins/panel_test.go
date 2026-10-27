@@ -959,6 +959,64 @@ func TestReviewDetailShowsCompleteExecutableContent(t *testing.T) {
 	}
 }
 
+// TestMCPReviewShowsHiddenServerFieldsAndEscapesNames pins two review gaps: the
+// detail's title row rendered a plugin-supplied server name raw, so a control
+// byte or newline from the plugin's TOML reached the terminal and broke the
+// view's row budget; and an MCP server's environment, headers and trust were
+// never displayed, so the user was asked to authorise values the screen
+// omitted.
+func TestMCPReviewShowsHiddenServerFieldsAndEscapesNames(t *testing.T) {
+	const hostile = "srv\nNAME\x1b[2K"
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p.stack = append(p.stack, p.installFrame())
+	p.scannedContents = &plugins.Contents{
+		MCPServers: map[string]config.MCPServerConfig{
+			hostile: {
+				Command: "bin",
+				Trust:   "unrestricted",
+				Env:     map[string]string{"TOKEN": "se\x1b[2Kcret", "PLAIN": "plain"},
+				Headers: map[string]string{"Authorization": "Bearer \x1b[2Ktok"},
+			},
+		},
+	}
+	p.scannedSource = "file:///tmp/plugin"
+	p.scannedScope = scopeGlobal
+
+	focusRow(t, p, "confirm.mcp."+hostile)
+	press(t, p, keyEnter)
+	if p.reviewDetail == nil {
+		t.Fatal("entering the MCP row did not open its full content")
+	}
+
+	pages, raw := reviewPages(t, p, 80, 24)
+	joined := strings.Join(pages, "\n")
+	for _, want := range []string{
+		"trust:",
+		"  unrestricted",
+		"environment (2):",
+		`  TOKEN="se\x1b[2Kcret"`,
+		`  PLAIN="plain"`,
+		"headers (1):",
+		`  Authorization: "Bearer \x1b[2Ktok"`,
+		`mcp server · srv\nNAME\x1b[2K`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("%q missing from the detail:\n%s", want, joined)
+		}
+	}
+	// Every plugin-supplied byte is shown, never executed: the name in the
+	// title row and the values above are the only carriers.
+	for _, view := range raw {
+		if strings.Contains(view, "\x1b[2K") {
+			t.Fatalf("a plugin-supplied erase-line sequence reached the terminal raw:\n%q", view)
+		}
+	}
+	// The escaped name is one display row, so the view keeps its budget.
+	if lines := strings.Split(raw[0], "\n"); len(lines) > 24 {
+		t.Fatalf("the detail rendered %d rows, past its 24-row budget", len(lines))
+	}
+}
+
 // TestReviewDetailResizeAndNoColor pins that the detail survives a resize and
 // stays readable with colour stripped: the entry title, the page hint and any
 // overflow indicator are plain text, and no colour escape is emitted under

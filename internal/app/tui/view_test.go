@@ -9,9 +9,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
-
-	"marshal/internal/app/tui/glyph"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -982,33 +979,6 @@ func TestTurnSpinnerGlyphGatedOnFirst200ms(t *testing.T) {
 	m.turnStartedAt = m.now().Add(-time.Second)
 	if got := m.turnSpinnerFrame(); got != "⠹" {
 		t.Errorf("turnSpinnerFrame() = %q at 1s, want ⠹", got)
-	}
-}
-
-// Rail panels paint no background: the ▍ rail carries the grouping, and a
-// painted band renders as a light stripe around content on light/16-color
-// terminal themes.
-func TestChromeRailWidthPaintsNoBackground(t *testing.T) {
-	out := chromeRailWidth(" row one\nrow two ", dimColor, 40)
-	if strings.Contains(out, "48;") || strings.Contains(out, "[48;") {
-		t.Fatalf("chromeRailWidth must not emit background SGR:\n%q", out)
-	}
-	lines := strings.Split(out, "\n")
-	if len(lines) != 2 {
-		t.Fatalf("want 2 railed lines, got %d:\n%q", len(lines), out)
-	}
-	for i, l := range lines {
-		if !strings.Contains(stripANSI(l), "row") {
-			t.Errorf("line %d lost its content: %q", i, l)
-		}
-	}
-}
-
-func TestChromeRailWidthTruncatesToWidth(t *testing.T) {
-	out := chromeRailWidth(strings.Repeat("x", 50), dimColor, 20)
-	plain := strings.TrimPrefix(ansi.Strip(out), glyph.Rail)
-	if w := ansi.StringWidth(plain); w > 20 {
-		t.Fatalf("content not truncated to width: %d > 20", w)
 	}
 }
 

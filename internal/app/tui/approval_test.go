@@ -194,21 +194,25 @@ func TestApprovalNavigatesHorizontally(t *testing.T) {
 	}
 }
 
-func TestApprovalViewHasChromeRail(t *testing.T) {
+func TestApprovalViewHasNoRail(t *testing.T) {
 	tc := &session.PendingToolCall{
 		Name: "file.write_patch",
 		Args: `{"path":"a.go"}`,
 		Diff: "--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,1 @@\n-old\n+new\n",
 	}
 	am := newApprovalModel(tc, session.SandboxInfo{}, false, false, 160)
-	lines := strings.Split(strings.TrimRight(stripANSI(am.View()), "\n"), "\n")
+	view := stripANSI(am.View())
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 	if len(lines) < 3 {
-		t.Fatalf("approval view too short to rail:\n%s", am.View())
+		t.Fatalf("approval view too short:\n%s", view)
 	}
 	for i, line := range lines {
-		if !strings.HasPrefix(line, "▍") {
-			t.Errorf("line %d missing the ▍ chrome rail: %q\nfull view:\n%s", i, line, stripANSI(am.View()))
+		if strings.HasPrefix(line, "▍") {
+			t.Errorf("line %d still wears the ▍ rail: %q\nfull view:\n%s", i, line, view)
 		}
+	}
+	if !strings.Contains(view, "new") || !strings.Contains(view, "old") {
+		t.Fatalf("the patch's lines are missing from the view:\n%s", view)
 	}
 }
 

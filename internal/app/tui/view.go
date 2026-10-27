@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"image/color"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -343,40 +342,6 @@ func overlayGhost(view string, row, col int, ghost string) string {
 	tail := ansi.TruncateLeft(line, col+ansi.StringWidth(ghost), "")
 	lines[row] = head + ghost + tail
 	return strings.Join(lines, "\n")
-}
-
-// chromeRail prefixes every line of s with the ▍ state bar in color c — the
-// same rail the input box wears — so stacked panels (approval, question,
-// todos) read as one contained unit with the input. A trailing newline on s
-// is preserved; empty input stays empty.
-func chromeRail(s string, c color.Color) string {
-	return chromeRailWidth(s, c, 0)
-}
-
-// chromeRailWidth is chromeRail with lines truncated to w cells. The ▍
-// rail carries the panel grouping on its own — a painted surface band
-// renders as a light stripe around content on light terminal themes and
-// in the 16-color palette (BGSurface = ANSI bright black), so panels paint
-// no background. w <= 0 skips truncation.
-func chromeRailWidth(s string, c color.Color, w int) string {
-	if s == "" {
-		return ""
-	}
-	trailing := strings.HasSuffix(s, "\n")
-	body := strings.TrimRight(s, "\n")
-	bar := lipgloss.NewStyle().Foreground(c).Render(glyph.Rail)
-	lines := strings.Split(body, "\n")
-	for i := range lines {
-		if w > 0 {
-			lines[i] = ansi.Truncate(lines[i], w, "…")
-		}
-		lines[i] = bar + lines[i]
-	}
-	out := strings.Join(lines, "\n")
-	if trailing {
-		out += "\n"
-	}
-	return out
 }
 
 // highlightMatches bolds runes at the given byte indices using the

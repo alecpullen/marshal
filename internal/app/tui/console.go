@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
+	"marshal/internal/app/tui/help"
 	"marshal/internal/app/tui/theme"
 )
 
@@ -160,6 +161,17 @@ func (m Model) inputSections() []consoleSection {
 	only := func(lines []string) []consoleSection {
 		return []consoleSection{{color: c, lines: lines}}
 	}
+	prompt := func(label, right string, lines []string) []consoleSection {
+		return []consoleSection{{
+			label: consoleLabelStyle(labelColor(label)).Render(label),
+			right: right,
+			color: c,
+			lines: lines,
+		}}
+	}
+	// A prompt's keys ride in its header; the footer then keeps only the stop
+	// key (help.Footer reads the same flag).
+	keys := help.PromptKeys(m.footerHints())
 
 	// While the Send now composer owns the input, the base editor renders no
 	// cursor and none of its ordinary prompt controls: the completion popup,
@@ -174,21 +186,21 @@ func (m Model) inputSections() []consoleSection {
 	// is deliberately not rendered beside them.
 	if sa := m.state.PendingSudoAuth(); sa != nil {
 		if m.sudoAuthModel != nil {
-			return only(consoleLines(m.sudoAuthModel.View()))
+			return prompt("⚠ Sudo password", "", consoleLines(m.sudoAuthModel.View()))
 		}
-		return only(consoleLines(renderSudoAuthPanel(sa, max(m.leftWidth-4, 1))))
+		return prompt("⚠ Sudo password", "", consoleLines(renderSudoAuthPanel(sa, max(m.leftWidth-4, 1))))
 	}
 	if sg := m.state.PendingSkillGate(); sg != nil {
 		if m.skillGateModel != nil {
-			return only(consoleLines(m.skillGateModel.View()))
+			return prompt("? Skill gate", keys, consoleLines(m.skillGateModel.View()))
 		}
-		return only(consoleLines(renderSkillGatePanel(sg, max(m.leftWidth-4, 1))))
+		return prompt("? Skill gate", keys, consoleLines(renderSkillGatePanel(sg, max(m.leftWidth-4, 1))))
 	}
 	if q := m.state.PendingQuestion(); q != nil {
 		if m.questionModel != nil {
-			return only(consoleLines(m.questionModel.View()))
+			return prompt("? Question", keys, consoleLines(m.questionModel.View()))
 		}
-		return only(consoleLines(renderQuestionPanel(q, max(m.leftWidth-4, 1))))
+		return prompt("? Question", keys, consoleLines(renderQuestionPanel(q, max(m.leftWidth-4, 1))))
 	}
 	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
 		switch {
@@ -206,9 +218,9 @@ func (m Model) inputSections() []consoleSection {
 			// so m.input.View() already includes it — do not prepend it again.
 			return only(consoleLines(m.input.View()))
 		case m.approvalModel != nil:
-			return only(consoleLines(m.approvalModel.View()))
+			return prompt("⚠ Approval", keys, consoleLines(m.approvalModel.View()))
 		default:
-			return only(consoleLines(renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))))
+			return prompt("⚠ Approval", keys, consoleLines(renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))))
 		}
 	}
 
@@ -222,6 +234,17 @@ func (m Model) inputSections() []consoleSection {
 	}
 	composer = append(composer, consoleLines(m.composerView())...)
 	return append(sections, consoleSection{color: c, lines: composer})
+}
+
+// labelColor is the colour a prompt's section label is drawn in, matching the
+// colour consoleColor gives that prompt's border.
+func labelColor(label string) color.Color {
+	switch label {
+	case "? Question", "? Skill gate":
+		return violetColor
+	default:
+		return warningColor
+	}
 }
 
 // completionSection builds the command popup as a console section: its label is
@@ -277,9 +300,14 @@ func (m Model) completionSection() (consoleSection, bool) {
 // sectionLabelStyle styles a section label the way chrome draws a focused
 // panel title: accent-secondary and bold, with the bold dropped in monochrome.
 func sectionLabelStyle() lipgloss.Style {
-	th := theme.Current()
-	style := lipgloss.NewStyle().Foreground(th.AccentSecondary)
-	if !theme.IsMonochromeTheme(th) {
+	return consoleLabelStyle(theme.Current().AccentSecondary)
+}
+
+// consoleLabelStyle styles a section label in c, dropping the bold weight in
+// monochrome.
+func consoleLabelStyle(c color.Color) lipgloss.Style {
+	style := lipgloss.NewStyle().Foreground(c)
+	if !theme.IsMonochromeTheme(theme.Current()) {
 		style = style.Bold(true)
 	}
 	return style

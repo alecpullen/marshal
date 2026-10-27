@@ -64,12 +64,45 @@ type FooterHints struct {
 	// in it "stop" is the one key a stuck user needs; the caller sets this
 	// when the full cluster does not fit.
 	StopOnly bool
+	// KeysInFrame is true when the pending prompt's keys are drawn in its
+	// console header instead of the footer, so the footer keeps only the one
+	// key the header cannot carry: stopping the turn.
+	KeysInFrame bool
 }
 
 var keyStyle = lipgloss.NewStyle().Bold(true)
 var sep = lipgloss.NewStyle().Faint(true).SetString(" · ")
 
 func pair(k, label string) string { return keyStyle.Render(k) + " " + label }
+
+// PromptKeys returns the key pairs the footer shows for a pending question,
+// skill gate or approval, joined the way the footer joins them. It is empty
+// when none of those prompts is pending, and while a command is being edited
+// (where the approval keys do not apply). The console draws the same string in
+// the prompt section's header.
+func PromptKeys(h FooterHints) string {
+	var segs []string
+	switch {
+	case h.QuestionPending:
+		segs = append(segs, pair("Enter", "answer"), pair("Esc", "skip"))
+	case h.SkillGatePending:
+		segs = append(segs, pair("↑↓", "choose"), pair("1-4", "jump"), pair("Enter", "confirm"))
+	case h.ApprovalPending && !h.EditingCommand:
+		// One hint per key: this used to emit Enter twice, labelled "arm" and
+		// "submit", in the same row.
+		segs = append(segs,
+			pair("←→", "choose"),
+			pair("Enter", "confirm"),
+			pair("Esc", "deny"),
+		)
+	default:
+		return ""
+	}
+	if h.SendNowAvailable {
+		segs = append(segs, pair("Alt+Enter", "send now"))
+	}
+	return strings.Join(segs, sep.Render(""))
+}
 
 // Footer returns the single-row keybinding bar.
 func Footer(h FooterHints) string {
@@ -90,32 +123,25 @@ func Footer(h FooterHints) string {
 		// that unsticks a turn is the only hint worth the space.
 		return pair("Ctrl+C", "stop")
 	}
+	if h.KeysInFrame && PromptKeys(h) != "" {
+		// The prompt's keys ride in its console header; the footer keeps only
+		// the key that stops the turn, and nothing is actionable while idle.
+		if h.Busy {
+			return pair("Ctrl+C", "stop")
+		}
+		return ""
+	}
 	if h.Browsing && !h.QuestionPending && !h.SkillGatePending && !h.ApprovalPending {
 		segs = append(segs,
 			pair("j/k", "move"), pair("↵", "detail"), pair("i", "inspect"),
 			pair("y", "copy"), pair("o", "open"), pair("esc", "back"))
 		return strings.Join(segs, sep.Render(""))
 	} else if h.QuestionPending {
-		segs = append(segs, pair("Enter", "answer"), pair("Esc", "skip"))
-		if h.SendNowAvailable {
-			segs = append(segs, pair("Alt+Enter", "send now"))
-		}
+		segs = append(segs, PromptKeys(h))
 	} else if h.SkillGatePending {
-		segs = append(segs, pair("↑↓", "choose"), pair("1-4", "jump"), pair("Enter", "confirm"))
-		if h.SendNowAvailable {
-			segs = append(segs, pair("Alt+Enter", "send now"))
-		}
+		segs = append(segs, PromptKeys(h))
 	} else if h.ApprovalPending && !h.EditingCommand {
-		// One hint per key: this used to emit Enter twice, labelled "arm" and
-		// "submit", in the same row.
-		segs = append(segs,
-			pair("←→", "choose"),
-			pair("Enter", "confirm"),
-			pair("Esc", "deny"),
-		)
-		if h.SendNowAvailable {
-			segs = append(segs, pair("Alt+Enter", "send now"))
-		}
+		segs = append(segs, PromptKeys(h))
 	} else if h.EditingCommand {
 		segs = append(segs, pair("Enter", "save"), pair("Esc", "cancel edit"))
 	} else if h.PopupOpen {

@@ -165,3 +165,47 @@ func TestFooterMouseHintNamesDragWhileCaptured(t *testing.T) {
 		t.Fatalf("released footer should offer Ctrl+S to scroll: %q", released)
 	}
 }
+
+// TestPromptKeysMatchTheFooter: the console draws the same key pairs in the
+// prompt section's header that the footer used to show, from one source.
+func TestPromptKeysMatchTheFooter(t *testing.T) {
+	for _, h := range []FooterHints{
+		{QuestionPending: true},
+		{QuestionPending: true, SendNowAvailable: true},
+		{SkillGatePending: true},
+		{SkillGatePending: true, SendNowAvailable: true},
+		{ApprovalPending: true},
+		{ApprovalPending: true, SendNowAvailable: true},
+	} {
+		if got, want := PromptKeys(h), Footer(h); got != want {
+			t.Fatalf("PromptKeys(%+v) = %q, want the footer's %q", h, got, want)
+		}
+	}
+	if got := PromptKeys(FooterHints{Busy: true}); got != "" {
+		t.Fatalf("PromptKeys with no prompt = %q, want empty", got)
+	}
+	if got := PromptKeys(FooterHints{ApprovalPending: true, EditingCommand: true}); got != "" {
+		t.Fatalf("PromptKeys while editing a command = %q, want empty", got)
+	}
+}
+
+// TestFooterKeysInFrame: once a pending prompt's keys ride in its console
+// header, the footer keeps only the stop key while busy and nothing while idle.
+func TestFooterKeysInFrame(t *testing.T) {
+	busy := FooterHints{QuestionPending: true, KeysInFrame: true, Busy: true}
+	if got, want := Footer(busy), pair("Ctrl+C", "stop"); got != want {
+		t.Fatalf("busy keys-in-frame footer = %q, want %q", got, want)
+	}
+	idle := FooterHints{QuestionPending: true, KeysInFrame: true}
+	if got := Footer(idle); got != "" {
+		t.Fatalf("idle keys-in-frame footer = %q, want empty", got)
+	}
+	// Prompt-free states are unchanged by the flag.
+	for _, h := range []FooterHints{{}, {Busy: true}, {PopupOpen: true}} {
+		withFlag := h
+		withFlag.KeysInFrame = true
+		if got, want := Footer(withFlag), Footer(h); got != want {
+			t.Fatalf("KeysInFrame changed a prompt-free footer: got %q, want %q", got, want)
+		}
+	}
+}

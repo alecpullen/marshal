@@ -199,3 +199,63 @@ func TestPromptStatusRowKeepsTheOutline(t *testing.T) {
 		t.Fatalf("the status border must close the frame under a prompt: %q", last)
 	}
 }
+
+// TestPromptSectionsCarryLabelsAndKeys: a pending prompt is a labelled,
+// coloured section whose header carries the keys the footer used to show.
+func TestPromptSectionsCarryLabelsAndKeys(t *testing.T) {
+	t.Run("approval", func(t *testing.T) {
+		m := consoleTestModel(t, 80, 24)
+		m.state.SetPendingApproval(&session.PendingToolCall{
+			ID:           "call-console",
+			Name:         "shell.run",
+			Command:      "git push",
+			Risk:         "command",
+			ResponseChan: make(chan session.UserApprovalDecision, 1),
+		})
+		out := stripANSI(m.renderInputArea())
+		first := strings.Split(out, "\n")[0]
+		if !strings.HasPrefix(first, "╭─ ⚠ Approval") {
+			t.Fatalf("approval section header = %q", first)
+		}
+		if !strings.Contains(first, "←→ choose") {
+			t.Fatalf("approval header lost its keys: %q", first)
+		}
+	})
+	t.Run("question", func(t *testing.T) {
+		m := consoleTestModel(t, 80, 24)
+		m.state.SetPendingQuestion(&session.PendingQuestion{
+			Questions: []session.Question{{Question: "what?"}},
+		})
+		out := stripANSI(m.renderInputArea())
+		first := strings.Split(out, "\n")[0]
+		if !strings.HasPrefix(first, "╭─ ? Question") {
+			t.Fatalf("question section header = %q", first)
+		}
+		if !strings.Contains(first, "Enter answer") {
+			t.Fatalf("question header lost its keys: %q", first)
+		}
+	})
+}
+
+// TestStatusLineDropsPromptKeysWhileFramed: the prompt's keys live in its
+// header, so the status row never repeats them. (While a prompt is pending the
+// status right cluster is the turn state, so the stop key only reaches the row
+// through help.Footer's hint cluster — see TestFooterKeysInFrame.)
+func TestStatusLineDropsPromptKeysWhileFramed(t *testing.T) {
+	m := consoleTestModel(t, 80, 24)
+	m.state.SetPendingQuestion(&session.PendingQuestion{
+		Questions: []session.Question{{Question: "what?"}},
+	})
+	m.busy = true
+	m.turnStartedAt = m.now().Add(-5 * time.Second)
+	m.refreshViewport()
+
+	rows := consoleRows(t, m)
+	last := rows[len(rows)-1]
+	if strings.Contains(last, "Enter answer") || strings.Contains(last, "Esc skip") {
+		t.Fatalf("the status row repeats the prompt keys its header already draws: %q", last)
+	}
+	if !strings.HasPrefix(last, "╰─ ") || !strings.HasSuffix(last, "╯") {
+		t.Fatalf("the status border must still close the frame: %q", last)
+	}
+}

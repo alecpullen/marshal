@@ -71,7 +71,7 @@ func (m *skillGateModel) IsDone() bool { return m.done }
 func (m *skillGateModel) View() string {
 	gutter := gutterPrefix(glyph.Question, violetColor)
 	indent := strings.Repeat(" ", 3)
-	contentWidth := max(m.width-4, 1)
+	contentWidth := max(m.width-3, 1)
 
 	var b strings.Builder
 	title := "Load skill '" + m.sg.Skill + "'?"
@@ -107,7 +107,9 @@ func (m *skillGateModel) View() string {
 		b.WriteString(row)
 		b.WriteString("\n")
 	}
-	return chromeRail(b.String(), violetColor)
+	// No rail: the console draws the gutter around this section and its
+	// header carries the keys.
+	return b.String()
 }
 
 // renderSkillGatePanel is the fallback static panel shown before the

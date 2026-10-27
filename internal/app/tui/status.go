@@ -593,6 +593,9 @@ func (m Model) footerHints() help.FooterHints {
 		// The interruption hint is only advertised when the runtime can honour
 		// it: a busy turn with a supported, active steering snapshot.
 		SendNowAvailable: m.busy && st.Steering.State.Active && st.Steering.State.Supported,
+		// A pending prompt's keys are drawn in its console header, unless a
+		// full-frame panel has replaced the console entirely.
+		KeysInFrame: !m.dock.FullFrameOpen(),
 	}
 }
 

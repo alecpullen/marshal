@@ -133,6 +133,107 @@ func TestEscAfterOtherKeyResetsPendingDeny(t *testing.T) {
 	}
 }
 
+// TestApprovalEscDisarmsPendingSubmit pins the gesture order the footer
+// advertises: Escape always disarms an armed action, so the next Enter arms
+// again instead of confirming the action the user was refusing.
+func TestApprovalEscDisarmsPendingSubmit(t *testing.T) {
+	am := newApprovalModel(&session.PendingToolCall{
+		Name: "shell.run",
+		Args: `{"command":"ls"}`,
+	}, session.SandboxInfo{}, false, false, 160)
+
+	am, _ = am.Update(keyPress("enter"))
+	if !am.submitPending {
+		t.Fatal("first Enter should arm the selected action")
+	}
+	am, _ = am.Update(keyPress("esc"))
+	if am.IsDone() {
+		t.Fatal("one Escape must not settle the prompt: it disarms and opens the deny window")
+	}
+	if am.submitPending {
+		t.Fatal("Escape must disarm the pending submit")
+	}
+	am, _ = am.Update(keyPress("enter"))
+	if am.IsDone() {
+		t.Fatal("Enter after Escape must arm again, not confirm")
+	}
+	if !am.submitPending {
+		t.Fatal("Enter after Escape should leave the action newly armed")
+	}
+	am, _ = am.Update(keyPress("enter"))
+	if !am.IsDone() || am.Choice() != choiceApprove {
+		t.Fatalf("only the further Enter confirms; got done=%v choice=%v", am.IsDone(), am.Choice())
+	}
+}
+
+// TestApprovalEscDisarmsEveryChoice covers every action a prompt can offer,
+// not just the default one: the disarm belongs to the prompt. Rollback is
+// included because it is a selectable decision like any other when a backup
+// exists.
+func TestApprovalEscDisarmsEveryChoice(t *testing.T) {
+	tc := &session.PendingToolCall{Name: "shell.run", Args: `{"command":"ls"}`}
+	candidates := newApprovalModel(tc, session.SandboxInfo{}, false, true, 160).candidates
+	have := map[approvalChoice]bool{}
+	for _, c := range candidates {
+		have[c] = true
+	}
+	for _, want := range []approvalChoice{
+		choiceApprove, choiceDeny, choiceEdit, choiceAlways, choiceSessionAllow, choiceRollback,
+	} {
+		if !have[want] {
+			t.Fatalf("setup: the unrestricted selector should offer %v; offered %v", want, candidates)
+		}
+	}
+
+	for i, c := range candidates {
+		am := newApprovalModel(tc, session.SandboxInfo{}, false, true, 160)
+		am.selected, am.choice = i, c
+		am, _ = am.Update(keyPress("enter"))
+		if !am.submitPending {
+			t.Fatalf("%v: first Enter should arm the action", c)
+		}
+		am, _ = am.Update(keyPress("esc"))
+		if am.submitPending {
+			t.Fatalf("%v: Escape must disarm the pending submit", c)
+		}
+		if am.IsDone() {
+			t.Fatalf("%v: one Escape must not settle the prompt", c)
+		}
+		am, _ = am.Update(keyPress("enter"))
+		if am.IsDone() || !am.submitPending {
+			t.Fatalf("%v: Enter after Escape should re-arm, not confirm; done=%v armed=%v",
+				c, am.IsDone(), am.submitPending)
+		}
+	}
+}
+
+// TestApprovalNavigationDisarmsPendingSubmit covers the other half of the
+// contract: moving the selection also cancels an armed confirmation, so the
+// armed action is always the one still on screen.
+func TestApprovalNavigationDisarmsPendingSubmit(t *testing.T) {
+	// A key that cannot move the selection (left at the first choice) changes
+	// nothing, so it is armed from a position where every key here does move.
+	for name, move := range map[string]tea.KeyPressMsg{
+		"right arrow": {Code: tea.KeyRight},
+		"left arrow":  {Code: tea.KeyLeft},
+		"mnemonic":    {Code: 'd', Text: "d"},
+	} {
+		am := newApprovalModel(&session.PendingToolCall{Name: "shell.run", Args: `{"command":"ls"}`},
+			session.SandboxInfo{}, false, false, 160)
+		if name == "left arrow" {
+			am, _ = am.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+		}
+		am, _ = am.Update(keyPress("enter"))
+		if !am.submitPending {
+			t.Fatalf("%s: setup: Enter should arm the action", name)
+		}
+		am, _ = am.Update(move)
+		if am.submitPending {
+			t.Fatalf("%s: moving the selection must disarm the pending submit", name)
+		}
+	}
+}
+
 func TestApprovalDialogLabelsContainFlatSelector(t *testing.T) {
 	tc := &session.PendingToolCall{
 		Name: "shell.run",

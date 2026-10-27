@@ -262,6 +262,11 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 		}
 		switch k.String() {
 		case "esc":
+			// Starting a denial cancels an armed confirmation. Enter arms the
+			// action and a second Enter confirms it; without this, a user who
+			// pressed Escape (meaning to cancel) and then pressed Enter for
+			// any reason would confirm the action they had just refused.
+			am.submitPending = false
 			if am.pendingDenyAt.IsZero() {
 				am.pendingDenyAt = time.Now()
 				return am, nil

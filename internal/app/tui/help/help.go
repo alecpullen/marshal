@@ -89,11 +89,13 @@ func PromptKeys(h FooterHints) string {
 		segs = append(segs, pair("↑↓", "choose"), pair("1-4", "jump"), pair("Enter", "confirm"))
 	case h.ApprovalPending && !h.EditingCommand:
 		// One hint per key: this used to emit Enter twice, labelled "arm" and
-		// "submit", in the same row.
+		// "submit", in the same row. Both gestures are two presses, and the
+		// labels say so — a bare "Enter confirm" read as a single press that
+		// appeared to do nothing.
 		segs = append(segs,
 			pair("←→", "choose"),
-			pair("Enter", "confirm"),
-			pair("Esc", "deny"),
+			pair("Enter", "twice confirm"),
+			pair("Esc", "twice deny"),
 		)
 	default:
 		return ""

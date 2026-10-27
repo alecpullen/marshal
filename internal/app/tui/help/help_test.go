@@ -95,7 +95,7 @@ func TestFooterPromptKeepsAnswerAndSendNowDistinct(t *testing.T) {
 	// The same distinction for an approval prompt: confirm stays the ordinary
 	// answer, and send now is its own key.
 	approval := stripANSI(Footer(FooterHints{ApprovalPending: true, SendNowAvailable: true}))
-	if got := strings.Count(approval, "Enter confirm"); got != 1 {
+	if got := strings.Count(approval, "Enter twice confirm"); got != 1 {
 		t.Fatalf("approval footer has %d confirm hints, want exactly 1: %q", got, approval)
 	}
 	if !strings.Contains(approval, "Alt+Enter send now") {
@@ -127,8 +127,17 @@ func TestFooterApprovalWording(t *testing.T) {
 	if strings.Count(out, "Enter") != 1 {
 		t.Fatalf("expected exactly one Enter hint, got %q", out)
 	}
-	if !strings.Contains(out, "Enter confirm") {
-		t.Fatalf("expected 'Enter confirm', got %q", out)
+	// Both gestures are two presses. A single-press label made the first press
+	// of an armed control look like a key that did nothing.
+	if !strings.Contains(out, "Enter twice confirm") {
+		t.Fatalf("expected 'Enter twice confirm', got %q", out)
+	}
+	if !strings.Contains(out, "Esc twice deny") {
+		t.Fatalf("expected 'Esc twice deny', got %q", out)
+	}
+	// Navigation is unchanged: arrows still choose among the allowed actions.
+	if !strings.Contains(out, "←→ choose") {
+		t.Fatalf("approval footer lost the navigation hint: %q", out)
 	}
 }
 

@@ -14,42 +14,68 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/tools/registry"
+	"marshal/internal/acpwire"
 	"marshal/internal/viewmodel"
 )
 
-// nodeCopyText is what `y` puts on the clipboard for a node, ANSI-free.
-func (m *Model) nodeCopyText(n *viewmodel.Node) string {
-	switch {
-	case n == nil:
+// nodeCopyText is what `y` puts on the clipboard for a node, ANSI-free. Node
+// fields come from the wire index; the text the wire caps or leaves out comes
+// from the session.
+func (m *Model) nodeCopyText(id viewmodel.NodeID) string {
+	w := m.wireNode(id)
+	if w == nil {
 		return ""
-	case n.Kind == viewmodel.KindTool && len(n.Tools) > 0:
+	}
+	switch {
+	case w.Kind == acpwire.KindTool && w.Tool != nil && len(w.Tool.Calls) > 0:
+		res, ok := m.nodeDetail(id)
+		if !ok {
+			return ""
+		}
 		var parts []string
-		for _, ev := range n.Tools {
-			parts = append(parts, toolCopyText(ev))
+		for _, c := range res.Detail.Calls {
+			parts = append(parts, callCopyText(c))
 		}
 		return strings.Join(parts, "\n\n")
-	case n.Kind == viewmodel.KindStep && n.Step != nil:
+	case w.Kind == acpwire.KindStep && w.Step != nil:
+		res, ok := m.nodeDetail(id)
+		if !ok {
+			return ""
+		}
 		// The narration already opens with the headline. A headless beat has
 		// no headline to stand in for it, so it copies its rows only.
 		var lines []string
-		for _, msg := range n.Step.Narration {
-			lines = append(lines, strings.TrimSpace(msg.Content))
+		for _, s := range res.Detail.Narration {
+			lines = append(lines, strings.TrimSpace(s))
 		}
-		for _, row := range n.Children {
-			for _, ev := range row.Tools {
-				lines = append(lines, "- "+ev.ToolName+" "+toolTarget(ev))
+		for _, key := range w.Children {
+			row := m.wire[key]
+			if row == nil || row.Tool == nil {
+				continue
+			}
+			for _, c := range row.Tool.Calls {
+				lines = append(lines, "- "+row.Tool.Name+" "+c.Target)
 			}
 		}
 		return strings.Join(lines, "\n")
-	case n.Kind == viewmodel.KindCompletion && n.Completion != nil:
-		return completionCopyText(n.Completion)
+	case w.Completion != nil:
+		res, ok := m.nodeDetail(id)
+		if !ok {
+			return ""
+		}
+		return completionCopyText(w.Completion, res.Detail.Completion)
+	case w.Message != nil:
+		return w.Message.Content
+	}
+	// A receipt copies its rendered line, and any other item its rendered
+	// transcript text. Plan 3c ports these renderers to the wire index.
+	n := m.browseTree[id]
+	if n == nil {
+		return ""
+	}
+	switch {
 	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return plainText(renderReceipt(n.Receipt, 200))
-	case n.Item != nil && n.Item.Message != nil:
-		return n.Item.Message.Content
-	case n.Item != nil && n.Item.Subagent != nil:
-		return n.Item.Subagent.Summary
 	case n.Item != nil:
 		return plainText(renderTranscriptItem(*n.Item, true, "", regionView{}, nil, 120))
 	}
@@ -57,18 +83,22 @@ func (m *Model) nodeCopyText(n *viewmodel.Node) string {
 }
 
 // completionCopyText is a finished job or subagent: its plain head line, then
-// the output a job retained or the report a subagent wrote.
-func completionCopyText(c *viewmodel.CompletionInfo) string {
+// the output a job retained or the report a subagent wrote. A nil d gives no
+// body.
+func completionCopyText(c *acpwire.WireCompletion, d *acpwire.CompletionDetail) string {
 	head := []string{c.ID, c.Label, c.Outcome}
 	if c.Measure != "" {
 		head = append(head, c.Measure)
 	}
-	if c.Duration > 0 {
-		head = append(head, formatElapsed(c.Duration))
+	if c.DurationMs > 0 {
+		head = append(head, formatElapsed(time.Duration(c.DurationMs)*time.Millisecond))
 	}
-	body := c.Output
-	if c.Source == viewmodel.CompletionSubagent {
-		body = c.Report
+	var body string
+	if d != nil {
+		body = d.Output
+		if c.Source == acpwire.CompletionSubagent {
+			body = d.Report
+		}
 	}
 	if body == "" {
 		return strings.Join(head, dimSeparator)
@@ -76,13 +106,16 @@ func completionCopyText(c *viewmodel.CompletionInfo) string {
 	return strings.Join(head, dimSeparator) + "\n\n" + body
 }
 
-// toolCopyText is the result of a call: the diff for an edit, the output for
-// anything that has one, else the one-line summary.
-func toolCopyText(ev registry.AuditEvent) string {
-	if ev.ResultContent != "" {
-		return ev.ResultContent
+// callCopyText is what copy takes from one call: its diff, else its output,
+// else its one-line summary.
+func callCopyText(c acpwire.CallDetail) string {
+	switch {
+	case c.Diff != "":
+		return c.Diff
+	case c.Output != "":
+		return c.Output
 	}
-	return ev.ResultSummary
+	return c.Summary
 }
 
 // osc52Unsupported reports terminals known not to honour OSC 52.
@@ -96,7 +129,7 @@ func osc52Unsupported() bool {
 
 // copyCursorNode copies the cursor node over OSC 52 and says how much.
 func (m *Model) copyCursorNode() tea.Cmd {
-	return m.copyText(m.nodeCopyText(m.currentNode()))
+	return m.copyText(m.nodeCopyText(m.cursor))
 }
 
 // copyText puts text on the clipboard and says how much. Browse mode and the
@@ -172,26 +205,20 @@ func copyLines(text string) string {
 
 var pathLineRE = regexp.MustCompile(`([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+):(\d+)`)
 
-// nodeFile resolves the file a node is about: the call's path argument, else
-// the first file it changed, else for a shell row the first path:line in its
-// output that exists inside the workspace.
-func (m *Model) nodeFile(n *viewmodel.Node) (path string, line int) {
-	if n == nil {
-		return "", 0
-	}
-	root := m.sess.Status().Workspace.ActiveRoot
-	var events []registry.AuditEvent
-	switch {
-	case len(n.Tools) > 0:
-		events = n.Tools
-	case n.Kind == viewmodel.KindStep:
-		for _, row := range n.Children {
-			events = append(events, row.Tools...)
-		}
-	}
-	for _, ev := range events {
+// openCall is what the open action reads of one call.
+type openCall struct {
+	tool   string
+	args   string   // the whole arguments, as JSON
+	files  []string // the files it changed
+	output string   // its whole output; "" when it printed nothing
+}
+
+// fileIn resolves the file calls are about, under root: a path argument, else
+// a changed file, else for a shell call the first path:line in its output.
+func fileIn(root string, calls []openCall) (path string, line int) {
+	for _, c := range calls {
 		var args map[string]any
-		if json.Unmarshal(ev.Args, &args) == nil {
+		if json.Unmarshal([]byte(c.args), &args) == nil {
 			if p, ok := args["path"].(string); ok && p != "" {
 				l := 0
 				if f, ok := args["line"].(float64); ok {
@@ -202,17 +229,17 @@ func (m *Model) nodeFile(n *viewmodel.Node) (path string, line int) {
 				}
 			}
 		}
-		for _, f := range ev.FilesChanged {
+		for _, f := range c.files {
 			if abs := absIn(root, f); openable(root, abs) {
 				return abs, 0
 			}
 		}
 	}
-	for _, ev := range events {
-		if !viewmodel.IsShellFamily(ev.ToolName) {
+	for _, c := range calls {
+		if !viewmodel.IsShellFamily(c.tool) {
 			continue
 		}
-		for _, mt := range pathLineRE.FindAllStringSubmatch(ev.ResultContent, -1) {
+		for _, mt := range pathLineRE.FindAllStringSubmatch(c.output, -1) {
 			if p := absIn(root, mt[1]); openable(root, p) {
 				l, _ := strconv.Atoi(mt[2])
 				return p, l
@@ -220,6 +247,50 @@ func (m *Model) nodeFile(n *viewmodel.Node) (path string, line int) {
 		}
 	}
 	return "", 0
+}
+
+// nodeFile resolves the file a node is about: the call's path argument, else
+// the first file it changed, else for a shell row the first path:line in its
+// output that exists inside the workspace.
+func (m *Model) nodeFile(id viewmodel.NodeID) (path string, line int) {
+	w := m.wireNode(id)
+	if w == nil {
+		return "", 0
+	}
+	root := m.sess.Status().Workspace.ActiveRoot
+	var calls []openCall
+	gather := func(key string) {
+		row := m.wire[key]
+		if row == nil || row.Tool == nil {
+			return
+		}
+		res, ok := m.nodeDetail(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: key})
+		if !ok {
+			return
+		}
+		for i, call := range row.Tool.Calls {
+			var cd acpwire.CallDetail
+			if i < len(res.Detail.Calls) {
+				cd = res.Detail.Calls[i]
+			}
+			// The wire's output is empty exactly when the call printed
+			// nothing, and the detail's then holds the summary.
+			output := ""
+			if call.Output != "" {
+				output = cd.Output
+			}
+			calls = append(calls, openCall{tool: row.Tool.Name, args: cd.Args, files: call.Files, output: output})
+		}
+	}
+	switch {
+	case w.Kind == acpwire.KindTool && w.Tool != nil && len(w.Tool.Calls) > 0:
+		gather(w.ID)
+	case w.Kind == acpwire.KindStep && w.Step != nil:
+		for _, key := range w.Children {
+			gather(key)
+		}
+	}
+	return fileIn(root, calls)
 }
 
 // openable is true for a regular file inside the workspace: a directory (a
@@ -270,7 +341,7 @@ type editorDoneMsg struct{ err error }
 
 // openCursorFile opens the node's file in $EDITOR.
 func (m *Model) openCursorFile() tea.Cmd {
-	return m.openFile(m.nodeFile(m.currentNode()))
+	return m.openFile(m.nodeFile(m.cursor))
 }
 
 func (m *Model) openFile(path string, line int) tea.Cmd {

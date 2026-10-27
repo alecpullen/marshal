@@ -326,8 +326,6 @@ func (m *Model) nodeDetail(id viewmodel.NodeID) (acpwire.StackNodeResult, bool) 
 	return res, true
 }
 
-func (m *Model) currentNode() *viewmodel.Node { return m.browseTree[m.cursor] }
-
 // enterBoxStop acts on a box stop the way a click does: a running card opens
 // or closes, a held row scrolls to its completion event, the more row opens the
 // Work list, and a plan item scrolls to the first beat bound to it.
@@ -384,14 +382,14 @@ func (m *Model) subagentAtCursor(onlyCard bool) (session.SubagentView, bool) {
 	if onlyCard {
 		return session.SubagentView{}, false
 	}
-	n := m.currentNode()
-	if n == nil {
+	w := m.wireNode(m.cursor)
+	if w == nil {
 		return session.SubagentView{}, false
 	}
-	id := subagentIDOf(n)
-	if id == 0 && n.Kind == viewmodel.KindStep {
-		for _, c := range n.Children {
-			if id = subagentIDOf(c); id > 0 {
+	id := subagentIDOf(w)
+	if id == 0 && w.Kind == acpwire.KindStep {
+		for _, key := range w.Children {
+			if id = subagentIDOf(m.wire[key]); id > 0 {
 				break
 			}
 		}
@@ -404,18 +402,17 @@ func (m *Model) subagentAtCursor(onlyCard bool) (session.SubagentView, bool) {
 	return v, ok && v.Child != nil
 }
 
-// subagentIDOf is the subagent a node names: a completion event for a
+// subagentIDOf is the subagent a wire node names: a completion event for a
 // finished child, or the single agent.run call that dispatched one.
-func subagentIDOf(n *viewmodel.Node) int64 {
-	switch n.Kind {
-	case viewmodel.KindCompletion:
-		if n.Completion != nil {
-			return n.Completion.SubagentID
-		}
-	case viewmodel.KindTool:
-		if len(n.Tools) == 1 {
-			return viewmodel.StartedSubagent(n.Tools[0])
-		}
+func subagentIDOf(w *acpwire.WireNode) int64 {
+	if w == nil {
+		return 0
+	}
+	if w.Completion != nil {
+		return w.Completion.SubagentID
+	}
+	if w.Kind == acpwire.KindTool && w.Tool != nil && len(w.Tool.Calls) == 1 {
+		return w.Tool.SubagentID
 	}
 	return 0
 }

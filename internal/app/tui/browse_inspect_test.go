@@ -38,20 +38,14 @@ func TestInspectorShowsACompletionsFullOutput(t *testing.T) {
 // `y` on an event copies its head line and the output behind it, so a failure
 // can be pasted into an issue without retyping the command.
 func TestCopyTakesTheCompletionHeadAndOutput(t *testing.T) {
-	c := &viewmodel.CompletionInfo{
-		Source: viewmodel.CompletionJob, ID: "job-3", Label: "Harness tests",
-		Outcome: "exit 1", Failed: true, Duration: 48 * time.Second,
+	c := &acpwire.WireCompletion{
+		Source: acpwire.CompletionJob, ID: "job-3", Label: "Harness tests",
+		Outcome: "exit 1", Failed: true, DurationMs: 48000,
 		Measure: "210 passed, 2 failed",
-		Output:  "--- FAIL: TestThresholds",
 	}
-	m := newTestModel(t)
-	n := &viewmodel.Node{
-		ID:         viewmodel.NodeID{Kind: viewmodel.KindCompletion, Key: "completion:job-3"},
-		Kind:       viewmodel.KindCompletion,
-		Completion: c,
-	}
+	d := &acpwire.CompletionDetail{Output: "--- FAIL: TestThresholds"}
 	want := "job-3 · Harness tests · exit 1 · 210 passed, 2 failed · 48s\n\n--- FAIL: TestThresholds"
-	if got := m.nodeCopyText(n); got != want {
+	if got := completionCopyText(c, d); got != want {
 		t.Fatalf("copy = %q, want %q", got, want)
 	}
 }

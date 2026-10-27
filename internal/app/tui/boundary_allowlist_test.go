@@ -11,7 +11,7 @@ var boundaryAllowlist = map[string][]string{
 	"agents/panel.go":                {"config.SaveProjectConfig", "marshal/internal/tools/registry"},
 	"approval.go":                    {"marshal/internal/app/session"},
 	"browse.go":                      {"marshal/internal/app/session", "marshal/internal/viewmodel"},
-	"browse_actions.go":              {"marshal/internal/tools/registry", "marshal/internal/viewmodel"},
+	"browse_actions.go":              {"marshal/internal/viewmodel"},
 	"browse_inspect.go":              {"marshal/internal/commands", "marshal/internal/viewmodel"},
 	"callers.go":                     {"marshal/internal/app/session", "marshal/internal/tools/registry", "marshal/internal/viewmodel"},
 	"click.go":                       {"marshal/internal/app/session", "marshal/internal/viewmodel"},

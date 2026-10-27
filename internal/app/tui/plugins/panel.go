@@ -760,6 +760,8 @@ func (p *Panel) runInstallFromScan() tea.Cmd {
 	name := p.scannedName
 	scope := p.scannedScope
 	source := p.scannedSource
+	commit := p.scannedCommit
+	reviewed := p.scannedHash
 	cloneDest := filepath.Join(p.scanParent, "clone")
 	// The worker owns the clone from here: clearing the panel's reference
 	// before it starts is what stops a later panel close from deleting files
@@ -772,32 +774,18 @@ func (p *Panel) runInstallFromScan() tea.Cmd {
 		// The worker always cleans its own clone, on every outcome — including
 		// when this message is never delivered.
 		defer os.RemoveAll(parent)
-		dest := filepath.Join(storeDir, name)
-		if err := os.MkdirAll(storeDir, 0755); err != nil {
-			return installResultMsg{Err: err}
-		}
-		if err := os.RemoveAll(dest); err != nil {
-			return installResultMsg{Err: err}
-		}
-		if err := plugins.CopyDir(cloneDest, dest); err != nil {
-			return installResultMsg{Err: err}
-		}
-		hash, err := plugins.HashDir(dest)
-		if err != nil {
-			return installResultMsg{Err: err}
-		}
-		commit := "unknown"
-		lf, err := plugins.ReadLockfile(lockPath)
-		if err != nil {
-			return installResultMsg{Err: err}
-		}
-		lf.Upsert(plugins.LockEntry{
-			Name:        name,
-			Source:      source,
-			Commit:      commit,
-			ContentHash: hash,
-		})
-		if err := lf.Write(lockPath); err != nil {
+		// The install is staged and rolled back by the plugins package: a copy,
+		// hash, rename or lockfile failure must leave the plugin that is
+		// already installed, and its lockfile entry, exactly as they were.
+		if err := plugins.InstallReviewed(context.Background(), plugins.ReviewedInstall{
+			Name:         name,
+			Source:       source,
+			Commit:       commit,
+			ReviewedHash: reviewed,
+			CloneDir:     cloneDest,
+			StoreDir:     storeDir,
+			LockPath:     lockPath,
+		}); err != nil {
 			return installResultMsg{Err: err}
 		}
 		return installResultMsg{Name: name, Scope: scope}

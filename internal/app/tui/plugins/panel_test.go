@@ -772,6 +772,47 @@ func TestInstallOwnsCloneAfterConfirm(t *testing.T) {
 	mustExistPath(t, filepath.Join(plugins.GlobalStoreDir(home), "demo"))
 }
 
+// TestConfirmRejectsChangedClone pins the guarantee through the real Confirm
+// path: the clone is hashed when the user reviews it and staged again when they
+// confirm, so a clone that changed in between is refused — visibly, and without
+// installing anything over what is already there.
+func TestConfirmRejectsChangedClone(t *testing.T) {
+	home := t.TempDir()
+	p := newPanelWithScanDeps(home, t.TempDir(), true, nil, fakeScanDeps(nil))
+	parent := scanReview(t, p, "https://example.com/demo.git")
+
+	// The clone changes after its hash was shown on the review screen.
+	tampered := filepath.Join(parent, "clone", "hooks.toml")
+	if err := os.WriteFile(tampered, []byte("changed after the review\n"), 0o644); err != nil {
+		t.Fatalf("tamper with the clone: %v", err)
+	}
+
+	focusRow(t, p, "install.confirm")
+	cmd := p.Update(keyEnter)
+	if cmd == nil {
+		t.Fatal("Confirm produced no command")
+	}
+	p.Update(cmd())
+
+	if msg := p.activeList().ErrMsg; !strings.Contains(msg, "changed since the review") {
+		t.Fatalf("the content mismatch is not visible: %q", msg)
+	}
+	if p.busy != "" {
+		t.Errorf("the panel is still %q after a refused install", p.busy)
+	}
+	mustBeGonePath(t, filepath.Join(plugins.GlobalStoreDir(home), "demo"))
+	mustBeGonePath(t, plugins.GlobalLockPath(home))
+
+	// The refused install left no staging directory behind either.
+	entries, err := os.ReadDir(plugins.GlobalStoreDir(home))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read the plugin store: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("the refused install left %d entries in the store: %v", len(entries), entries)
+	}
+}
+
 // reviewPages renders the open detail at the given size, paging to the end, and
 // returns every page, both plain and raw.
 func reviewPages(t *testing.T, p *Panel, width, height int) (plain, raw []string) {

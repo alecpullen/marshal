@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/plugins"
 )
 
@@ -237,10 +238,12 @@ func TestConfirmScreenListsAllExecutableContent(t *testing.T) {
 // assertions cover the path a user actually takes: drill in, arm, confirm.
 
 var (
-	keyEnter = tea.KeyPressMsg{Code: tea.KeyEnter}
-	keyUp    = tea.KeyPressMsg{Code: tea.KeyUp}
-	keyDown  = tea.KeyPressMsg{Code: tea.KeyDown}
-	keyEsc   = tea.KeyPressMsg{Code: tea.KeyEscape}
+	keyEnter  = tea.KeyPressMsg{Code: tea.KeyEnter}
+	keyUp     = tea.KeyPressMsg{Code: tea.KeyUp}
+	keyDown   = tea.KeyPressMsg{Code: tea.KeyDown}
+	keyEsc    = tea.KeyPressMsg{Code: tea.KeyEscape}
+	keyPgDown = tea.KeyPressMsg{Code: tea.KeyPgDown}
+	keyPgUp   = tea.KeyPressMsg{Code: tea.KeyPgUp}
 )
 
 // newRemovalPanel builds a trusted panel over a fresh home/work pair, so both
@@ -509,5 +512,227 @@ func TestConfirmScreenOrdersMCPEntriesStably(t *testing.T) {
 	}
 	if !slices.IsSorted(first) {
 		t.Errorf("MCP entries not sorted: %v", first)
+	}
+}
+
+// reviewPages renders the open detail at the given size, paging to the end, and
+// returns every page, both plain and raw.
+func reviewPages(t *testing.T, p *Panel, width, height int) (plain, raw []string) {
+	t.Helper()
+	for i := 0; i < 40; i++ {
+		view := p.View(width, height)
+		raw = append(raw, view)
+		plain = append(plain, ansi.Strip(view))
+		before := p.reviewDetail.offset
+		press(t, p, keyPgDown)
+		if p.reviewDetail.offset == before {
+			break
+		}
+	}
+	return plain, raw
+}
+
+// TestReviewDetailShowsCompleteExecutableContent pins the review contract: the
+// confirmation screen used to ask the user to authorise executable content it
+// rendered truncated to one row, with MCP arguments joined by a space so their
+// boundaries were invisible. Every executable entry now opens a wrapped,
+// pageable view of its complete text, and terminal controls in that text are
+// shown rather than executed.
+func TestReviewDetailShowsCompleteExecutableContent(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p.stack = append(p.stack, p.installFrame())
+
+	p.scannedContents = &plugins.Contents{
+		Hooks: []config.HookConfig{{
+			Event:   "pre_tool_use",
+			Command: "echo " + strings.Repeat("h", 90) + " MARKER_HOOK_END \x1b[2Kwipe",
+		}},
+		MCPServers: map[string]config.MCPServerConfig{
+			"srv": {Command: "server-bin", Args: []string{
+				"--flag",
+				"has space",
+				`has"quote`,
+				"\x1b[31mevil",
+			}},
+		},
+		MCPPolicies: map[string]string{
+			"net-policy": "deny " + strings.Repeat("p", 100) + " MARKER_POLICY_END",
+		},
+	}
+	p.scannedName = "demo"
+	p.scannedSource = "https://example.com/demo.git"
+	p.scannedScope = scopeGlobal
+	p.scanDir = filepath.Join(t.TempDir(), "clone")
+
+	// The confirmation states the source and scope the review belongs to, as
+	// the normalized source the scan fetched rather than the typed text.
+	var gotSource, gotScope string
+	for _, f := range settings.FieldListRows(p.activeList()) {
+		switch settings.FieldID(f) {
+		case "confirm.reviewed_source":
+			gotSource = settings.FieldGetStr(f)
+		case "confirm.reviewed_scope":
+			gotScope = settings.FieldGetStr(f)
+		}
+	}
+	if gotSource != p.scannedSource || gotScope != scopeGlobal {
+		t.Fatalf("review rows show source=%q scope=%q, want %q/%q",
+			gotSource, gotScope, p.scannedSource, scopeGlobal)
+	}
+
+	// The hook's complete command, including its tail, is reachable.
+	focusRow(t, p, "confirm.hook.pre_tool_use")
+	press(t, p, keyEnter)
+	if p.reviewDetail == nil {
+		t.Fatal("entering the hook row did not open its full content")
+	}
+
+	// Enter inside the detail must never install.
+	press(t, p, keyEnter)
+	if p.busy != "" {
+		t.Fatalf("Enter inside the detail started %q", p.busy)
+	}
+
+	pages, raw := reviewPages(t, p, 80, 24)
+	joined := strings.Join(pages, "\n")
+	if !strings.Contains(joined, "MARKER_HOOK_END") {
+		t.Fatalf("the hook command's tail never rendered across %d pages:\n%s", len(pages), joined)
+	}
+	if !strings.Contains(joined, `\x1b[2K`) {
+		t.Errorf("the hook command's control character was not shown as an escape:\n%s", joined)
+	}
+	for _, view := range raw {
+		if strings.Contains(view, "\x1b[2K") {
+			t.Errorf("the hook command's erase-line sequence reached the terminal raw:\n%q", view)
+		}
+	}
+
+	// Esc returns to the entry the detail was opened from.
+	press(t, p, keyEsc)
+	if p.reviewDetail != nil {
+		t.Fatal("esc did not return to the review")
+	}
+	if cur := settings.FieldListCursorRow(p.activeList()); cur == nil || settings.FieldID(cur) != "confirm.hook.pre_tool_use" {
+		t.Fatalf("esc landed on %v, want the hook row it came from", cur)
+	}
+
+	// MCP arguments keep their boundaries and their escapes.
+	focusRow(t, p, "confirm.mcp.srv")
+	press(t, p, keyEnter)
+	if p.reviewDetail == nil {
+		t.Fatal("entering the MCP row did not open its full content")
+	}
+	pages, _ = reviewPages(t, p, 80, 24)
+	joined = strings.Join(pages, "\n")
+	for _, want := range []string{
+		`[0] "--flag"`,
+		`[1] "has space"`,
+		`[2] "has\"quote"`,
+		`[3] "\x1b[31mevil"`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("argument %s not distinct in the detail:\n%s", want, joined)
+		}
+	}
+	press(t, p, keyEsc)
+
+	// A long policy is readable to its end.
+	focusRow(t, p, "confirm.mcppolicy.net-policy")
+	press(t, p, keyEnter)
+	if p.reviewDetail == nil {
+		t.Fatal("entering the policy row did not open its full content")
+	}
+	pages, _ = reviewPages(t, p, 80, 24)
+	joined = strings.Join(pages, "\n")
+	if !strings.Contains(joined, "MARKER_POLICY_END") {
+		t.Fatalf("the policy's tail never rendered across %d pages:\n%s", len(pages), joined)
+	}
+	press(t, p, keyEsc)
+
+	// The Confirm row is still the only way to install.
+	focusRow(t, p, "install.confirm")
+	if cmd := p.Update(keyEnter); cmd == nil {
+		t.Fatal("confirm produced no command")
+	}
+	if p.busy != "installing" {
+		t.Fatalf("confirm left busy=%q, want installing", p.busy)
+	}
+}
+
+// TestReviewDetailResizeAndNoColor pins that the detail survives a resize and
+// stays readable with colour stripped: the entry title, the page hint and any
+// overflow indicator are plain text, and no colour escape is emitted under
+// NO_COLOR.
+func TestReviewDetailResizeAndNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("TERM", "xterm-256color")
+	prev := theme.Current()
+	theme.Reload(theme.Load())
+	t.Cleanup(func() { theme.Reload(prev) })
+
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+	p.stack = append(p.stack, p.installFrame())
+	p.scannedContents = &plugins.Contents{
+		Hooks:       []config.HookConfig{{Event: "pre_tool_use", Command: "echo " + strings.Repeat("z", 240)}},
+		MCPPolicies: map[string]string{"pol": "deny"},
+	}
+	p.scannedSource = "file:///tmp/plugin"
+	p.scannedScope = scopeGlobal
+
+	focusRow(t, p, "confirm.hook.pre_tool_use")
+	press(t, p, keyEnter)
+	if p.reviewDetail == nil {
+		t.Fatal("entering the hook row did not open its full content")
+	}
+
+	for _, size := range [][2]int{{80, 24}, {40, 12}, {60, 8}} {
+		view := p.View(size[0], size[1])
+		plain := ansi.Strip(view)
+		if lines := strings.Split(plain, "\n"); len(lines) > size[1] {
+			t.Fatalf("%dx%d: detail rendered %d rows, past its budget", size[0], size[1], len(lines))
+		}
+		for _, want := range []string{"esc back", "PgUp/PgDn", "hook · pre_tool_use"} {
+			if !strings.Contains(plain, want) {
+				t.Errorf("%dx%d: %q missing from the detail:\n%s", size[0], size[1], want, plain)
+			}
+		}
+		if p.reviewDetail == nil {
+			t.Fatalf("%dx%d: the detail closed on resize", size[0], size[1])
+		}
+		if p.reviewDetail.offset != 0 {
+			t.Fatalf("%dx%d: resize left offset %d, want the re-wrapped body pinned to the top",
+				size[0], size[1], p.reviewDetail.offset)
+		}
+		// Only bold/faint attributes may survive NO_COLOR, the same allowance
+		// the settings panel makes; any other escape is a colour the user
+		// asked not to see.
+		stripped := strings.NewReplacer("\x1b[1m", "", "\x1b[2m", "", "\x1b[m", "").Replace(view)
+		if strings.Contains(stripped, "\x1b[") {
+			t.Errorf("%dx%d: monochrome detail emitted a colour escape:\n%q", size[0], size[1], stripped)
+		}
+		if rows := p.reviewDetail.rows(p.reviewDetail.width); len(rows) > p.reviewDetail.height {
+			if !strings.Contains(plain, "rows ") {
+				t.Errorf("%dx%d: overflowing detail hid its page indicator:\n%s", size[0], size[1], plain)
+			}
+		}
+	}
+
+	// Paging still works after the last resize, in both directions.
+	press(t, p, keyPgDown)
+	paged := p.reviewDetail.offset
+	if paged == 0 {
+		t.Fatal("pgdown did not page the re-wrapped detail")
+	}
+	press(t, p, keyPgUp)
+	if p.reviewDetail.offset >= paged {
+		t.Fatalf("pgup left offset %d, want less than %d", p.reviewDetail.offset, paged)
+	}
+
+	press(t, p, keyEsc)
+	if p.reviewDetail != nil {
+		t.Fatal("esc did not return to the review")
+	}
+	if cur := settings.FieldListCursorRow(p.activeList()); cur == nil || settings.FieldID(cur) != "confirm.hook.pre_tool_use" {
+		t.Fatalf("esc landed on %v, want the hook row it came from", cur)
 	}
 }

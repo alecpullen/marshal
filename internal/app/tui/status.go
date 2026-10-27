@@ -179,9 +179,9 @@ func (m Model) renderStatusLine(width int) string {
 	}
 	line := " " + left + strings.Repeat(" ", gap) + right + " "
 	out := statusBarStyle().Width(max(width, 1)).MaxWidth(max(width, 1)).Render(ansi.Cut(line, 0, width))
-	// Deliberately not banded with ChromeBG, unlike the rest of the chrome.
-	// The status line is the bottom-most row, so a tinted strip here reads as
-	// a second, empty bar below the input area rather than as part of it.
+	// No tint: the status line is the console's bottom border (or a plain row
+	// while a full-frame panel is open), so it is drawn as part of the outline
+	// rather than as a second, empty bar below the input area.
 	// statusBarStyle pads to width, so the row stays full-width without
 	// PaintBand's padding.
 	return out

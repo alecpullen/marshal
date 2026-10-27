@@ -181,7 +181,7 @@ func TestFrameInvariants(t *testing.T) {
 	for _, v := range variants {
 		for _, w := range []int{80, 100, 140, 200} {
 			for _, h := range []int{24, 30, 40} {
-				for _, depth := range []theme.Depth{theme.DepthFlat, theme.DepthRaised, theme.DepthFull} {
+				for _, depth := range []theme.Depth{theme.DepthFlat, theme.DepthFull} {
 					th := prev
 					th.Depth = depth
 					theme.Reload(th)

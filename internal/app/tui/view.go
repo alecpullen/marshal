@@ -212,8 +212,7 @@ func (m Model) renderInputArea() string {
 	// goes. The transcript and the background panels keep rendering above.
 	if m.steeringComposer != nil {
 		rows = append(rows, mutedStyle().Render("Send now owns the input — Esc returns to the previous surface."))
-		out := lipgloss.JoinVertical(lipgloss.Left, rows...)
-		return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
+		return lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
 
 	if sa := m.state.PendingSudoAuth(); sa != nil {
@@ -269,7 +268,7 @@ func (m Model) renderInputArea() string {
 		rows = append(rows, m.gutteredInput())
 	}
 	out := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
+	return out
 }
 
 // inputBarColor picks the ▍ state-bar color. This is the input box's old

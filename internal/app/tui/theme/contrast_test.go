@@ -142,7 +142,7 @@ func TestPresetContrast(t *testing.T) {
 		}
 		light := lightPresets[name]
 
-		for _, depth := range []Depth{DepthFlat, DepthRaised, DepthFull} {
+		for _, depth := range []Depth{DepthFlat, DepthFull} {
 			backgrounds := gateBackgrounds(th, depth, light)
 
 			for _, slot := range contrastSlots {

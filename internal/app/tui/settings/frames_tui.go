@@ -30,7 +30,7 @@ func interfaceFrame(s *state) *frame {
 					func() string { return s.cfg.TUI.Depth },
 					func(v string) { s.cfg.TUI.Depth = v })
 				f.TomlPath = "tui.depth"
-				f.Desc = "background planes the TUI paints (flat · raised · full)"
+				f.Desc = "background planes the TUI paints (flat · full)"
 				SetFieldWriteGlobal(f, true)
 				return f
 			}(),

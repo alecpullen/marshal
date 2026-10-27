@@ -73,6 +73,9 @@ func (m *Model) viewString() string {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return m.tooSmallView()
 	}
+	// The prompt's own rows are part of the budget livebox.Plan computes, so
+	// the review body's height must be settled before the tray is planned.
+	m.syncPromptReviewHeights()
 	m.reconcileWorkExpansion()
 	layout := livebox.Plan(m.boxInput())
 	m.boxMemo = &layout

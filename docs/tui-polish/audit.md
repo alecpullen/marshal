@@ -26,6 +26,15 @@ Users can confirm without seeing the full operation or the reason for consent.
   `internal/app/tui/console.go:216` and `internal/app/tui/model.go:3206`.
 - Potential direction: show the complete relevant details in the interactive
   prompt and keep them accessible before confirmation.
+- **Status (2026-10-27): fixed.** The interactive prompt no longer re-renders a
+  compact layout of its own; `approvalModel.reviewLines` builds the body from
+  `shownToolCall` and shows the requester line, the operation (literal command
+  for `shell.run`, arguments and nonempty schema otherwise), the model's own
+  "why", risk and reason as separate fields, sandbox isolation, and the
+  sanitized full diff. `TestApprovalReviewShowsOperationAndReason` asserts each
+  of them through the composed frame, including that a control character in the
+  arguments is shown as a visible escape and that no raw SGR sequence reaches
+  the frame.
 
 ### Long shell commands are clipped in the interactive approval prompt
 
@@ -38,6 +47,14 @@ additional shell operations are not visible.
   `internal/app/tui/console.go:52`.
 - Potential direction: wrap or provide a scrollable full command display,
   ensuring the complete command remains available before confirmation.
+- **Status (2026-10-27): fixed.** The body is now a bounded, pageable window:
+  `promptReviewRows` wraps with `ansi.Wrap` (never truncating), and
+  `promptReview.Window`/`Page` expose every wrapped row within a fixed physical
+  height with a textual `rows x–y of n · PgUp/PgDn` indicator. Pinned rows below
+  the body carry the selected action and the arm/deny notice, so paging never
+  hides the decision. `TestApprovalReviewPagesFullCommandAndDiff` pages a long
+  command and a long diff at 80×24 and asserts every unique marker becomes
+  visible with the selector still on screen.
 
 ### Oversized inline prompts can lose their first rows
 
@@ -54,6 +71,20 @@ overflow review.
 - Potential direction: constrain and scroll prompt content, keep decision
   controls reachable, and make the complete command inspectable before
   authentication.
+- **Status (2026-10-27): fixed for approval and sudo.** `Model.promptReviewBodyHeight`
+  budgets the review body from the frame after the status row, the scroll hint,
+  the dock, one console header, the prompt's own pinned controls and the
+  transcript floor, and caps it at half the terminal. The tray yields rather
+  than the prompt: `boxMaxRows` already subtracts `inputChromeRows`, which now
+  includes the bounded body. Both prompts page with `PgUp`/`PgDn` (taking
+  precedence over transcript paging only while a prompt is up) and pin their
+  controls below the body. A prompt that cannot fit — below the supported
+  minimum, behind a full-frame dock, or with no body rows — accepts no positive
+  decision; Escape still denies and Ctrl+C still works.
+  `TestApprovalReviewResizeAndVisibility`, `TestSudoReviewPagesFullCommandAndReason`
+  and `TestSudoReviewHiddenPromptCannotAuthenticate` cover the resize, gating,
+  cancellation and replacement paths. Question and skill-gate overflow remain
+  open (see P1 item 5 and P2 item 8).
 
 ### Escape does not disarm a pending approval
 
@@ -67,6 +98,15 @@ without explaining that it takes two presses.
   `internal/app/tui/help/help.go:90`.
 - Potential direction: disarm any pending action when Escape is pressed and
   make confirmation and denial gestures explicit in the displayed hints.
+- **Status (2026-10-27): fixed.** Escape now clears `submitPending` before it
+  opens the 1.5-second deny window, so the armed action is always the one the
+  user last selected on screen; moving the selection with an arrow or a
+  mnemonic disarms it too. The footer and the console header read
+  `Enter twice confirm` and `Esc twice deny` instead of the single-press labels
+  that made the first press look inert. `TestApprovalEscDisarmsPendingSubmit`,
+  `TestApprovalEscDisarmsEveryChoice` (allow, deny, edit, always, session and
+  rollback) and `TestApprovalNavigationDisarmsPendingSubmit` cover the gestures;
+  the existing double-Escape and expired-window tests are unchanged.
 
 ### Consent disclosure can be clipped or omitted
 

@@ -45,6 +45,23 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
    Exercise long commands, diffs, arguments, reasons and resize through the real
    update path, including the sudo path.
 
+   **Status (2026-10-27): done** — tasks 1–4 of the
+   [P1 approval and sudo plan](plans/2026-10-27-p1-approval-sudo-plan.md)
+   (commits `48bd264d`, `a4f07e36`, `e6ec9208`, `ab9accdf`). Escape disarms an
+   armed action and the hints name both two-press gestures; a reusable
+   `promptReview` wraps and pages the body at a fixed physical height; approval
+   and sudo build that body from the sanitized operation and pin their controls
+   below it; page keys page the prompt while `Ctrl+U`/`Ctrl+D` and the mouse keep
+   scrolling the transcript; and a prompt that is below the supported minimum,
+   behind a full-frame dock, or has no body rows accepts no positive decision
+   while Escape still denies. Tests exercise the real `Model` update and render
+   path at 120×40 and 80×24, including long commands, diffs and reasons, resize,
+   prompt replacement, forced choices and two-step confirmation. Full suite: no
+   new failures against the recorded baseline (pre-existing failures remain in
+   `internal/snapshot`, `internal/tools/desktop/browser` and
+   `internal/worktree`); the TUI packages, build, `go vet`, `gofmt` and the
+   scripted usability suite are clean.
+
 3. **Bind plugin confirmation to the reviewed content and protect installation.**
    Group [changed source after scan](audit.md#plugin-install-can-confirm-a-scan-of-a-different-source),
    [clipped executable commands](audit.md#plugin-review-clips-executable-commands-without-a-detail-view),

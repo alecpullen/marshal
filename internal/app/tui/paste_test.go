@@ -261,7 +261,7 @@ func TestLargePasteAtInputLimitIsAllOrNothing(t *testing.T) {
 
 	// assertRefused checks the all-or-nothing contract for a rejected paste and
 	// returns the model.
-	assertRefused := func(t *testing.T, m Model, before string, col int, wantFlash string) Model {
+	assertRefused := func(t *testing.T, m Model, before string, row, col int, wantFlash string) Model {
 		t.Helper()
 		if len(m.pastes) != 0 {
 			t.Fatalf("pastes = %d, want 0: a refused paste must not leave an attachment", len(m.pastes))
@@ -271,6 +271,9 @@ func TestLargePasteAtInputLimitIsAllOrNothing(t *testing.T) {
 		}
 		if strings.Contains(m.input.Value(), "[pasted #") {
 			t.Fatalf("refused paste left a partial chip in the input: %q", m.input.Value())
+		}
+		if got := m.input.Line(); got != row {
+			t.Fatalf("cursor row after a refused paste = %d, want %d", got, row)
 		}
 		if got := m.input.Column(); got != col {
 			t.Fatalf("cursor column after a refused paste = %d, want %d", got, col)
@@ -311,13 +314,36 @@ func TestLargePasteAtInputLimitIsAllOrNothing(t *testing.T) {
 
 	t.Run("one rune too little", func(t *testing.T) {
 		m := newViewTestModel(t, 80, 24)
-		m.input.SetValue("draft")
-		m.input.MoveToEnd()
+		// A multi-line draft with the caret mid-text: a refusal must leave the
+		// text and the caret where they were, not append, not trim, and not jump
+		// to the end of the draft.
+		m.input.SetValue("draft line one\ndraft line two")
+		m.input.CursorUp()
+		m.input.SetCursorColumn(5)
 		m.input.CharLimit = m.input.Length() + len([]rune(chip)) - 1
-		before, col := m.input.Value(), m.input.Column()
+		before, row, col := m.input.Value(), m.input.Line(), m.input.Column()
+		if row != 0 || col != 5 {
+			t.Fatalf("test setup: cursor at (%d,%d), want it mid-draft at (0,5)", row, col)
+		}
 
 		updated, _ := m.Update(tea.PasteMsg{Content: content})
-		m = assertRefused(t, updated.(Model), before, col, "character")
+		m = assertRefused(t, updated.(Model), before, row, col, "character")
+	})
+
+	t.Run("production character limit", func(t *testing.T) {
+		m := newViewTestModel(t, 80, 24)
+		// The refusal must hold under the composer's real CharLimit, not only
+		// under the synthetic limit the cases above install: fill a genuine
+		// draft one rune short of room for the chip.
+		if m.input.CharLimit <= len([]rune(chip)) {
+			t.Fatalf("composer CharLimit = %d, too small to test the refusal", m.input.CharLimit)
+		}
+		m.input.SetValue(strings.Repeat("x", m.input.CharLimit-len([]rune(chip))+1))
+		m.input.SetCursorColumn(3)
+		before, row, col := m.input.Value(), m.input.Line(), m.input.Column()
+
+		updated, _ := m.Update(tea.PasteMsg{Content: content})
+		m = assertRefused(t, updated.(Model), before, row, col, "character")
 	})
 
 	t.Run("content height", func(t *testing.T) {
@@ -327,12 +353,12 @@ func TestLargePasteAtInputLimitIsAllOrNothing(t *testing.T) {
 		// textarea's height guard drops the insert.
 		m.input.SetWidth(20)
 		m.input.SetValue("draft text here")
-		m.input.MoveToEnd()
+		m.input.SetCursorColumn(3)
 		m.input.MaxContentHeight = 1
-		before, col := m.input.Value(), m.input.Column()
+		before, row, col := m.input.Value(), m.input.Line(), m.input.Column()
 
 		updated, _ := m.Update(tea.PasteMsg{Content: content})
-		m = assertRefused(t, updated.(Model), before, col, "line limit")
+		m = assertRefused(t, updated.(Model), before, row, col, "line limit")
 	})
 }
 

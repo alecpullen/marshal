@@ -3792,7 +3792,10 @@ func TestApprovalEditPreservesComposer(t *testing.T) {
 		tc := newPending(t)
 		state.SetPendingApproval(tc)
 
+		// Type into the isolated editor before abandoning it, so that a leaked
+		// editor value would be visible in the assertions below.
 		m = chooseApprovalEdit(t, m)
+		m = sendKey(m, tea.KeyPressMsg{Text: " -v"})
 		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEscape})
 
 		if m.approvalEdit != nil {
@@ -3807,6 +3810,18 @@ func TestApprovalEditPreservesComposer(t *testing.T) {
 		default:
 		}
 		assertDraftIntact(t, m, want, "after cancelling the edit")
+
+		// Re-entering the edit starts from the pending command again: the
+		// abandoned editor's text is gone rather than carried over.
+		m = chooseApprovalEdit(t, m)
+		if got := m.approvalEdit.input.Value(); got != "go test" {
+			t.Fatalf("re-opened editor value = %q, want the pending command, not the abandoned text", got)
+		}
+		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEscape})
+		if m.approvalEdit != nil {
+			t.Fatal("the second Esc kept the approval editor open")
+		}
+		assertDraftIntact(t, m, want, "after abandoning the edit twice")
 
 		// The approval is still answerable: choosing deny afterwards works.
 		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})

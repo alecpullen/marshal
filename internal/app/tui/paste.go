@@ -40,7 +40,8 @@ func (p pasteAttachment) chipText() string {
 // the CharLimit silent-truncation path. The attachment is recorded only after
 // the whole chip has landed, so a refused insert never leaves a partial chip
 // or an attachment no chip can expand; a refusal is reported with a flash
-// naming the limit that rejected it and leaves the draft exactly as it was.
+// naming the limit that rejected it and leaves the draft exactly as it was
+// (and, on the refusals that actually occur here, the caret too).
 func (m *Model) addPaste(content string) tea.Cmd {
 	lines := strings.Count(content, "\n") + 1
 	att := pasteAttachment{
@@ -63,8 +64,12 @@ func (m *Model) addPaste(content string) tea.Cmd {
 	m.input.InsertString(chip)
 	if after := m.input.Value(); !strings.Contains(after, chip) ||
 		len([]rune(after)) != len([]rune(before))+len([]rune(chip)) {
-		// The line/height guard refused the insert (possibly after trimming it):
-		// restore the draft and leave the attachments alone.
+		// The insert did not land whole. The preflight above reproduces the
+		// textarea's CharLimit cutoff exactly and the chip is a single line, so
+		// in practice a refusal leaves the value untouched (the line/height
+		// guard returns before writing). Restoring is therefore a fallback for
+		// a trimmed insert: the draft comes back, and the caret goes to the end
+		// of it rather than to where it was.
 		if m.input.Value() != before {
 			m.input.SetValue(before)
 		}

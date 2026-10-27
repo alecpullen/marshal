@@ -2833,8 +2833,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Inline approval chooser: when a tool call is pending, route every
 	// message (keypresses AND huh's internal nextField/nextGroup messages)
 	// to the approval form so selection navigation round-trips correctly.
-	// The edit sub-mode captures the edited command/args in the main
-	// textarea before the decision is sent.
+	// The edit sub-mode owns its own textarea (approvalEdit) and never
+	// touches the chat composer, so a draft typed before the prompt is
+	// still there afterwards.
 	//
 	// Scroll gestures are handled first so the user can review transcript
 	// history before approving a destructive command.

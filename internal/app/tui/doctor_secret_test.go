@@ -260,15 +260,19 @@ func TestDoctorSecretPreservesDraft(t *testing.T) {
 		}
 		assertDraftIntact(t, m, draft, "after a failed save")
 
-		// No error message may echo key material.
+		// No error message may echo key material, and the failure must actually
+		// be reported: a silent save failure would be invisible to the user.
+		reported := false
 		for _, msg := range m.state.Messages() {
 			if strings.Contains(msg.Content, "sk-retried") {
 				t.Fatal("the failure message carries the key")
 			}
 			if msg.Role == session.RoleSystem && strings.Contains(msg.Content, "Failed to save API key") {
-				// The expected diagnostic is present; nothing more to assert.
-				break
+				reported = true
 			}
+		}
+		if !reported {
+			t.Fatal("the failed save produced no diagnostic")
 		}
 
 		// The path is writable again: the same field retries without a retype.

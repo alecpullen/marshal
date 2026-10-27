@@ -151,6 +151,11 @@ func (m Model) submitDoctorSecret() (tea.Model, tea.Cmd) {
 	// The key is saved, so the field has done its job: clear it and leave the
 	// draft exactly as it was. The diagnostics badge is recomputed here so the
 	// fixed problem stops counting even on the reload-failure paths.
+	//
+	// The /doctor panel itself is not re-run or re-opened: it is closed for the
+	// whole time a prompt owns the keys (see doctorActionable), so the user is
+	// returned to the chat and the system message above is the receipt. Re-run
+	// /doctor to see the refreshed diagnosis.
 	m.clearDoctorSecret()
 	m.refreshDiagnostics()
 	m.refreshViewport()

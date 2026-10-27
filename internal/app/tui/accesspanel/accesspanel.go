@@ -138,6 +138,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	case p.request.MissingEditing:
 		title, requested = "Allow editing?", "Act"
 	}
+	title = "⚠ " + title
 	rows := []string{
 		"Current: " + accessLabel(p.request.Current),
 		"Request: " + requested + "; for this conversation",
@@ -151,7 +152,7 @@ func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight >= 10+len(p.options) {
 		actionRows = len(p.options)
 	}
-	detailRows := max(0, maxHeight-1-len(rows)-actionRows-1)
+	detailRows := max(0, maxHeight-1-len(rows)-actionRows)
 	detail := clean(p.request.Reason)
 	if p.request.Actor != "" || p.request.StepID != 0 {
 		attribution := "Requested"
@@ -179,10 +180,9 @@ func (p *Panel) View(width, maxHeight int) string {
 			rows = append(rows, marker+choice.label)
 		}
 	}
-	hints := "Arrows/Tab choose; Enter decide; Esc deny"
+	hints := "↑↓/Tab choose · ↵ decide · Esc deny"
 	if detailRows > 0 && len(details) > detailRows {
-		hints += "; PgUp/PgDn details"
+		hints += " · PgUp/PgDn details"
 	}
-	rows = append(rows, theme.MutedStyle().Render(hints))
-	return chrome.Panel(title, strings.Join(rows, "\n"), pw, maxHeight, true, theme.Current())
+	return chrome.Frame{Title: title, Hints: hints, Color: theme.Current().StatusWarning, Focused: true}.Render(strings.Join(rows, "\n"), pw+2, maxHeight, theme.Current())
 }

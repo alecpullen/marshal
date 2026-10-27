@@ -3396,7 +3396,12 @@ func (m *Model) settleApproval(owner *session.State, tc *session.PendingToolCall
 // every question marked "Unanswered" on abort) to the runner's response
 // channel.
 func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Model, tea.Cmd) {
-	if m.questionModel == nil {
+	if m.questionModel == nil || m.questionModel.q != q {
+		// Build the form for the question that is pending now — and rebuild it
+		// when the open form is bound to a round-trip that settled or was
+		// interrupted out from under it. Driving the stale form would answer
+		// the replacement with the previous question's answers (parity with
+		// the approval/skill-gate/sudo pending-identity guards).
 		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
 		return m, m.questionModel.Init()
 	}
@@ -3418,9 +3423,11 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 		q.Respond(answers)
 		m.state.SetPendingQuestion(nil)
 	}
+	// The form has its own input: settling it must leave the composer exactly
+	// as the user left it — text, cursor, placeholder and paste attachments.
+	// Clearing here would discard an unrelated draft the user was writing
+	// when the question arrived.
 	m.questionModel = nil
-	m.resetInput()
-	m.input.Placeholder = "Ask Marshal..."
 	m.updateViewportHeight()
 	m.invalidateTranscript()
 	return m, nil

@@ -3425,6 +3425,256 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 	}
 }
 
+// composerDraft records the composer state a transient surface must not
+// disturb: text, logical cursor line, placeholder, focus and paste chips.
+type composerDraft struct {
+	value       string
+	line        int
+	placeholder string
+	focused     bool
+	chip        string
+	content     string
+}
+
+// seedComposerDraft leaves the model with a multiline draft that carries a
+// condensed paste chip and parks the cursor at column 3 of the second line
+// ("mid line"), so a later keystroke proves whether the cursor survived.
+func seedComposerDraft(t *testing.T, m Model) (Model, composerDraft) {
+	t.Helper()
+	content := strings.Repeat("pasted line\n", 9) + "pasted tail"
+	updated, _ := m.Update(tea.PasteMsg{Content: content})
+	m = updated.(Model)
+	if len(m.pastes) != 1 {
+		t.Fatalf("pastes = %d, want 1", len(m.pastes))
+	}
+	chip := m.pastes[0].chipText()
+	m.input.SetValue("first line\nmid line\n" + chip + "\nlast line")
+	m.input.MoveToEnd()
+	m.input.CursorUp() // chip line
+	m.input.CursorUp() // "mid line"
+	m.input.SetCursorColumn(3)
+	return m, composerDraft{
+		value:       m.input.Value(),
+		line:        m.input.Line(),
+		placeholder: m.input.Placeholder,
+		focused:     m.input.Focused(),
+		chip:        chip,
+		content:     content,
+	}
+}
+
+// assertDraftIntact fails when the composer no longer holds want. It never
+// prints the whole draft beyond what the assertion needs.
+func assertDraftIntact(t *testing.T, m Model, want composerDraft, when string) {
+	t.Helper()
+	if got := m.input.Value(); got != want.value {
+		t.Fatalf("%s: composer value = %q, want %q", when, got, want.value)
+	}
+	if got := m.input.Line(); got != want.line {
+		t.Fatalf("%s: composer cursor line = %d, want %d", when, got, want.line)
+	}
+	if got := m.input.Placeholder; got != want.placeholder {
+		t.Fatalf("%s: placeholder = %q, want %q", when, got, want.placeholder)
+	}
+	if got := m.input.Focused(); got != want.focused {
+		t.Fatalf("%s: focused = %v, want %v", when, got, want.focused)
+	}
+	if len(m.pastes) != 1 || m.pastes[0].chipText() != want.chip {
+		t.Fatalf("%s: paste attachments changed: %+v", when, m.pastes)
+	}
+}
+
+// answerPendingQuestion drives the inline question form to a submitted custom
+// answer through the real update path. The first message only builds the form
+// (as when a prompt appears while the user is already typing), so it is sent
+// again.
+func answerPendingQuestion(m Model) Model {
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = drainCmds(updated.(Model), cmd)
+	for _, r := range "archive" {
+		m = sendKey(m, tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	return sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
+// declinePendingQuestion declines the inline question form with Escape.
+func declinePendingQuestion(m Model) Model {
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	m = drainCmds(updated.(Model), cmd)
+	return sendKey(m, tea.KeyPressMsg{Code: tea.KeyEsc})
+}
+
+// TestQuestionSettlementPreservesComposer verifies that answering or declining
+// an inline question leaves the composer untouched — text, cursor, placeholder,
+// focus and paste attachments — and that the preserved draft still submits with
+// its chip expanded.
+func TestQuestionSettlementPreservesComposer(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		drive func(Model) Model
+		check func(t *testing.T, q *session.PendingQuestion)
+	}{
+		{
+			name:  "answered",
+			drive: answerPendingQuestion,
+			check: func(t *testing.T, q *session.PendingQuestion) {
+				t.Helper()
+				select {
+				case got := <-q.ResponseChan:
+					if len(got) != 1 || got[0].Answer != "archive" {
+						t.Fatalf("answer = %+v, want archive", got)
+					}
+				default:
+					t.Fatal("no answer sent on Enter")
+				}
+			},
+		},
+		{
+			name:  "declined",
+			drive: declinePendingQuestion,
+			check: func(t *testing.T, q *session.PendingQuestion) {
+				t.Helper()
+				select {
+				case got := <-q.ResponseChan:
+					if len(got) != 1 || got[0].Answer != session.AnswerUnanswered {
+						t.Fatalf("answer = %+v, want [Unanswered]", got)
+					}
+				default:
+					t.Fatal("no answer sent on Esc")
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newViewTestModel(t, 80, 24)
+			var want composerDraft
+			m, want = seedComposerDraft(t, m)
+
+			q := &session.PendingQuestion{
+				Questions:    []session.Question{{Question: "Archive or delete?"}},
+				ResponseChan: make(chan []session.Answer, 1),
+			}
+			m.state.SetPendingQuestion(q)
+			m = tc.drive(m)
+
+			if m.state.PendingQuestion() != nil {
+				t.Fatal("pending question not cleared after settlement")
+			}
+			assertDraftIntact(t, m, want, "after settlement")
+
+			// The cursor still sits at column 3 of "mid line": the next keystroke
+			// lands there rather than at the end of the draft.
+			m = sendKey(m, tea.KeyPressMsg{Code: 'X', Text: "X"})
+			typed := strings.Replace(want.value, "mid line", "midX line", 1)
+			if got := m.input.Value(); got != typed {
+				t.Fatalf("keystroke did not land at the preserved cursor: got %q", got)
+			}
+
+			// The draft still submits with the chip expanded, in place.
+			m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+			msgs := m.state.Messages()
+			if len(msgs) == 0 {
+				t.Fatal("expected a user message after submitting the draft")
+			}
+			last := msgs[len(msgs)-1]
+			if last.Role != session.RoleUser {
+				t.Fatalf("last message role = %v, want user", last.Role)
+			}
+			if strings.Contains(last.Content, "[pasted #") {
+				t.Fatalf("submitted prompt still contains a chip: %q", last.Content)
+			}
+			if !strings.Contains(last.Content, "pasted tail") {
+				t.Fatal("submitted prompt lost the paste content")
+			}
+			if !strings.Contains(last.Content, "midX line") || !strings.Contains(last.Content, "last line") {
+				t.Fatalf("submitted prompt lost draft text: %q", last.Content)
+			}
+			if len(m.pastes) != 0 {
+				t.Fatalf("pastes = %d after submit, want 0", len(m.pastes))
+			}
+		})
+	}
+}
+
+// TestQuestionCancellationAndReplacementKeepDraft verifies that an interrupted
+// question, and the replacement question that follows it, neither clear nor
+// submit an unrelated composer draft — and that the replacement is answered by
+// its own form, not by the settled one.
+func TestQuestionCancellationAndReplacementKeepDraft(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	var want composerDraft
+	m, want = seedComposerDraft(t, m)
+
+	q1 := &session.PendingQuestion{
+		Questions:    []session.Question{{Question: "Archive or delete?"}},
+		ResponseChan: make(chan []session.Answer, 1),
+	}
+	if _, err := m.state.RegisterQuestion(context.Background(), q1); err != nil {
+		t.Fatalf("RegisterQuestion: %v", err)
+	}
+	// Open the form, then interrupt it: CancelPrompt is the claim Send now makes.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = drainCmds(updated.(Model), cmd)
+	if !m.state.CancelPrompt(q1.Key, session.ErrSendNow) {
+		t.Fatal("CancelPrompt did not win the interrupted question")
+	}
+	if m.state.PendingQuestion() != nil {
+		t.Fatal("canceled question still pending")
+	}
+	assertDraftIntact(t, m, want, "after interruption")
+	if n := len(m.state.Messages()); n != 0 {
+		t.Fatalf("interruption sent %d message(s); it must not submit the draft", n)
+	}
+
+	// The interrupted form no longer owns the keyboard: a keystroke returns to
+	// the composer at the preserved cursor.
+	m = sendKey(m, tea.KeyPressMsg{Code: 'z', Text: "z"})
+	if got, wantTyped := m.input.Value(), strings.Replace(want.value, "mid line", "midz line", 1); got != wantTyped {
+		t.Fatalf("keystroke after interruption = %q, want the draft with z inserted", got)
+	}
+	// Undo that probe so the rest compares against the original draft.
+	m.input.SetValue(want.value)
+	m.input.MoveToEnd()
+	m.input.CursorUp()
+	m.input.CursorUp()
+	m.input.SetCursorColumn(3)
+
+	// A replacement question arrives while the interrupted form is still in the
+	// model. It must be answered by a form built for it.
+	q2 := &session.PendingQuestion{
+		Questions:    []session.Question{{Question: "Continue?"}},
+		ResponseChan: make(chan []session.Answer, 1),
+	}
+	m.state.SetPendingQuestion(q2)
+	m = answerPendingQuestion(m)
+
+	select {
+	case got := <-q2.ResponseChan:
+		if len(got) != 1 || got[0].Question != "Continue?" {
+			t.Fatalf("replacement question answered as %+v, want the Continue? question", got)
+		}
+	default:
+		t.Fatal("replacement question was never answered")
+	}
+	if m.state.PendingQuestion() != nil {
+		t.Fatal("replacement question still pending after settlement")
+	}
+	assertDraftIntact(t, m, want, "after replacement settlement")
+	if n := len(m.state.Messages()); n != 0 {
+		t.Fatalf("question settlement sent %d message(s); it must not submit the draft", n)
+	}
+
+	// The preserved draft still submits, expanded, once the user asks for it.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	msgs := m.state.Messages()
+	if len(msgs) != 1 || msgs[0].Role != session.RoleUser {
+		t.Fatalf("messages = %+v, want one user message", msgs)
+	}
+	if !strings.Contains(msgs[0].Content, "pasted tail") || strings.Contains(msgs[0].Content, "[pasted #") {
+		t.Fatalf("submitted prompt did not expand the preserved paste: %q", msgs[0].Content)
+	}
+}
+
 // The inline child-question form tests that lived here were removed with the
 // parent.ask/parent.respond channel in the context-diet Tier 2a cut: the TUI
 // no longer renders a subagent question.

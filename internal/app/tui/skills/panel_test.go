@@ -445,3 +445,341 @@ func TestGateRowsOmittedWithoutState(t *testing.T) {
 		}
 	}
 }
+
+// --- removal fixtures and helpers -----------------------------------------
+//
+// Every removal test below drives Panel.Update and the commands it emits, so
+// the assertions cover the path a user actually takes: drill in, arm, confirm.
+
+var (
+	keyEnter = tea.KeyPressMsg{Code: tea.KeyEnter}
+	keyUp    = tea.KeyPressMsg{Code: tea.KeyUp}
+	keyDown  = tea.KeyPressMsg{Code: tea.KeyDown}
+	keyEsc   = tea.KeyPressMsg{Code: tea.KeyEscape}
+)
+
+// newRemovalPanel builds a stateless panel over a fresh home/work pair with
+// both skill stores created, returning the panel and those store roots.
+func newRemovalPanel(t *testing.T) (p *Panel, global, project string) {
+	t.Helper()
+	home, work := t.TempDir(), t.TempDir()
+	p = NewPanel(home, work, true, nil, nil)
+	global, project = p.globalSkillsDir(), p.projectSkillsDir()
+	for _, dir := range []string{global, project} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("create skill store %s: %v", dir, err)
+		}
+	}
+	return p, global, project
+}
+
+// skillFixture renders a skill file whose frontmatter name is deliberately
+// independent of its filename.
+func skillFixture(name, description string) string {
+	return fmt.Sprintf("+++\nname = %q\ndescription = %q\n+++\n\n# %s\n", name, description, name)
+}
+
+// writeSkillEntry writes a top-level .md skill into dir and returns its path.
+func writeSkillEntry(t *testing.T, dir, file, name, description string) string {
+	t.Helper()
+	path := filepath.Join(dir, file)
+	if err := os.WriteFile(path, []byte(skillFixture(name, description)), 0644); err != nil {
+		t.Fatalf("write skill %s: %v", path, err)
+	}
+	return path
+}
+
+// writeBundleEntry writes <dir>/<bundle>/SKILL.md and returns the bundle dir.
+func writeBundleEntry(t *testing.T, dir, bundle, name string) string {
+	t.Helper()
+	bundleDir := filepath.Join(dir, bundle)
+	if err := os.MkdirAll(bundleDir, 0755); err != nil {
+		t.Fatalf("create bundle %s: %v", bundleDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(bundleDir, skills.BundleFileName), []byte(skillFixture(name, "bundled")), 0644); err != nil {
+		t.Fatalf("write bundle skill: %v", err)
+	}
+	return bundleDir
+}
+
+// discovered returns the entry a fresh ListScopes reports for a store child.
+func discovered(t *testing.T, p *Panel, scope, source string) skills.ScopedSkill {
+	t.Helper()
+	list, err := skills.ListScopes(p.globalSkillsDir(), p.projectSkillsDir())
+	if err != nil {
+		t.Fatalf("ListScopes: %v", err)
+	}
+	for _, s := range list {
+		if s.Scope == scope && s.SourceName == source {
+			return s
+		}
+	}
+	t.Fatalf("no discovered skill scope=%q source=%q in %+v", scope, source, list)
+	return skills.ScopedSkill{}
+}
+
+// press delivers a key through Panel.Update and feeds the emitted command's
+// message straight back, the way the dock host does.
+func press(t *testing.T, p *Panel, key tea.KeyPressMsg) {
+	t.Helper()
+	cmd := p.Update(key)
+	if cmd == nil {
+		return
+	}
+	if msg := cmd(); msg != nil {
+		p.Update(msg)
+	}
+}
+
+// focusRow parks the active list's cursor on the row with the given field ID.
+func focusRow(t *testing.T, p *Panel, id string) {
+	t.Helper()
+	for i, r := range settings.FieldListRows(p.ActiveList()) {
+		if settings.FieldID(r) == id {
+			p.ActiveList().SetCursor(i)
+			return
+		}
+	}
+	t.Fatalf("no row %q in the active list", id)
+}
+
+// openSkillDetail stacks the detail frame for s with its Remove row focused.
+func openSkillDetail(t *testing.T, p *Panel, s skills.ScopedSkill) {
+	t.Helper()
+	p.stack = append(p.stack, p.detailFrame(s))
+	focusRow(t, p, "action.remove")
+}
+
+// openSkillFromList drills into a skill's detail from the root list, so at
+// least one removal test covers the real drill-in path.
+func openSkillFromList(t *testing.T, p *Panel, rowID string) {
+	t.Helper()
+	focusRow(t, p, rowID)
+	press(t, p, keyEnter)
+	if len(p.stack) == 0 {
+		t.Fatalf("enter on %q did not open a detail frame", rowID)
+	}
+	focusRow(t, p, "action.remove")
+}
+
+func mustExistPath(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("expected %s to survive: %v", path, err)
+	}
+}
+
+func mustBeGonePath(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be removed, Lstat error = %v", path, err)
+	}
+}
+
+// TestRemoveUsesDiscoveredSource pins the audit finding: removal targets the
+// direct child discovery recorded, never the frontmatter name.
+func TestRemoveUsesDiscoveredSource(t *testing.T) {
+	t.Run("top-level file ignores the frontmatter name", func(t *testing.T) {
+		p, global, _ := newRemovalPanel(t)
+		target := writeSkillEntry(t, global, "actual.md", "displayed", "fixture")
+		sibling := writeSkillEntry(t, global, "sibling.md", "sibling", "fixture")
+
+		openSkillFromList(t, p, "skill.displayed")
+		press(t, p, keyEnter) // arms
+		mustExistPath(t, target)
+		press(t, p, keyEnter) // confirms
+
+		mustBeGonePath(t, target)
+		mustExistPath(t, sibling)
+		mustExistPath(t, global)
+	})
+
+	t.Run("bundle removes its directory", func(t *testing.T) {
+		p, _, project := newRemovalPanel(t)
+		bundle := writeBundleEntry(t, project, "bundle-dir", "bundled")
+		sibling := writeSkillEntry(t, project, "sibling.md", "sibling", "fixture")
+
+		openSkillDetail(t, p, discovered(t, p, scopeProject, "bundle-dir"))
+		press(t, p, keyEnter)
+		press(t, p, keyEnter)
+
+		mustBeGonePath(t, bundle)
+		mustExistPath(t, sibling)
+		mustExistPath(t, project)
+	})
+
+	t.Run("malicious metadata name reaches nothing outside the store", func(t *testing.T) {
+		p, global, _ := newRemovalPanel(t)
+		// The pre-fix bug joined the frontmatter name onto the store, so
+		// "../../victim" resolved to this sentinel.
+		victim := filepath.Join(filepath.Dir(filepath.Dir(global)), "victim")
+		if err := os.WriteFile(victim, []byte("sentinel"), 0644); err != nil {
+			t.Fatalf("write sentinel: %v", err)
+		}
+		target := writeSkillEntry(t, global, "innocent.md", "../../victim", "hostile name")
+
+		openSkillDetail(t, p, discovered(t, p, scopeGlobal, "innocent.md"))
+		press(t, p, keyEnter)
+		press(t, p, keyEnter)
+
+		mustBeGonePath(t, target)
+		mustExistPath(t, victim)
+	})
+}
+
+// TestRemoveReportsStaleOrSymlinkSource pins that a changed, vanished, or
+// symlinked entry surfaces an error instead of silently removing something
+// else.
+func TestRemoveReportsStaleOrSymlinkSource(t *testing.T) {
+	t.Run("entry replaced after the detail opened", func(t *testing.T) {
+		p, global, _ := newRemovalPanel(t)
+		target := writeSkillEntry(t, global, "target.md", "target", "original body")
+		openSkillDetail(t, p, discovered(t, p, scopeGlobal, "target.md"))
+
+		// Replace the discovered child behind the same name, after the
+		// snapshot the detail frame holds was taken.
+		replacement := writeSkillEntry(t, global, "replacement.md", "target", "replacement body")
+		if err := os.Rename(replacement, target); err != nil {
+			t.Fatalf("rename replacement over target: %v", err)
+		}
+
+		press(t, p, keyEnter)
+		press(t, p, keyEnter)
+
+		if got := p.ActiveList().ErrMsg; !strings.Contains(got, "replaced") {
+			t.Fatalf("error = %q, want it to mention the replacement", got)
+		}
+		raw, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatalf("replacement should survive: %v", err)
+		}
+		if !strings.Contains(string(raw), "replacement body") {
+			t.Errorf("replacement was modified: %q", raw)
+		}
+	})
+
+	t.Run("entry missing after the detail opened", func(t *testing.T) {
+		p, global, _ := newRemovalPanel(t)
+		target := writeSkillEntry(t, global, "ghost.md", "ghost", "fixture")
+		openSkillDetail(t, p, discovered(t, p, scopeGlobal, "ghost.md"))
+
+		if err := os.Remove(target); err != nil {
+			t.Fatalf("remove ghost: %v", err)
+		}
+		press(t, p, keyEnter)
+		press(t, p, keyEnter)
+
+		if got := p.ActiveList().ErrMsg; !strings.Contains(got, "missing") {
+			t.Fatalf("error = %q, want it to mention the missing entry", got)
+		}
+	})
+
+	t.Run("symlinked entry", func(t *testing.T) {
+		p, global, _ := newRemovalPanel(t)
+		outside := writeSkillEntry(t, t.TempDir(), "outside.md", "outside", "fixture")
+		link := filepath.Join(global, "link.md")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Skipf("platform cannot create symlinks: %v", err)
+		}
+
+		openSkillDetail(t, p, discovered(t, p, scopeGlobal, "link.md"))
+		press(t, p, keyEnter)
+		press(t, p, keyEnter)
+
+		if got := p.ActiveList().ErrMsg; !strings.Contains(got, "symlink") {
+			t.Fatalf("error = %q, want it to refuse the symlink", got)
+		}
+		mustExistPath(t, outside)
+		mustExistPath(t, link)
+	})
+}
+
+// TestRemoveConfirmationDisarmsOnNavigationAndEscape pins that an armed
+// confirmation never survives leaving the row or the detail frame.
+func TestRemoveConfirmationDisarmsOnNavigationAndEscape(t *testing.T) {
+	t.Run("leaving the remove row", func(t *testing.T) {
+		p, global, _ := newRemovalPanel(t)
+		target := writeSkillEntry(t, global, "debug.md", "debug", "fixture")
+		s := discovered(t, p, scopeGlobal, "debug.md")
+		openSkillDetail(t, p, s)
+
+		press(t, p, keyEnter) // arms
+		if !p.removeArmed[removalIdentity(s)] {
+			t.Fatal("remove did not arm on the first enter")
+		}
+		press(t, p, keyUp)   // leaves the row
+		press(t, p, keyDown) // and comes back
+		press(t, p, keyEnter)
+
+		mustExistPath(t, target)
+		if !p.removeArmed[removalIdentity(s)] {
+			t.Fatal("enter after navigation armed nothing — it deleted instead")
+		}
+
+		// Two consecutive confirmations on the same row still delete.
+		press(t, p, keyEnter)
+		mustBeGonePath(t, target)
+	})
+
+	t.Run("leaving and reopening the detail", func(t *testing.T) {
+		p, global, _ := newRemovalPanel(t)
+		target := writeSkillEntry(t, global, "debug.md", "debug", "fixture")
+		s := discovered(t, p, scopeGlobal, "debug.md")
+		openSkillDetail(t, p, s)
+
+		press(t, p, keyEnter) // arms
+		press(t, p, keyEsc)   // pops the frame
+		if len(p.stack) != 0 {
+			t.Fatal("escape did not pop the detail frame")
+		}
+		mustExistPath(t, target)
+
+		openSkillDetail(t, p, s)
+		press(t, p, keyEnter)
+		mustExistPath(t, target)
+
+		press(t, p, keyEnter)
+		mustBeGonePath(t, target)
+	})
+}
+
+// TestRemoveConfirmationIsScopedBySource pins that the armed flag belongs to
+// one discovered entry, not to a name that another entry can share.
+func TestRemoveConfirmationIsScopedBySource(t *testing.T) {
+	t.Run("across scopes", func(t *testing.T) {
+		p, global, project := newRemovalPanel(t)
+		globalTarget := writeSkillEntry(t, global, "same.md", "dup", "global")
+		projectTarget := writeSkillEntry(t, project, "same.md", "dup", "project")
+
+		openSkillDetail(t, p, discovered(t, p, scopeGlobal, "same.md"))
+		press(t, p, keyEnter) // arms the global copy
+
+		// The project copy shares a name but not an identity: stacking its
+		// detail must not inherit the armed confirmation.
+		openSkillDetail(t, p, discovered(t, p, scopeProject, "same.md"))
+		press(t, p, keyEnter)
+		mustExistPath(t, projectTarget)
+		mustExistPath(t, globalTarget)
+
+		press(t, p, keyEnter)
+		mustBeGonePath(t, projectTarget)
+		mustExistPath(t, globalTarget)
+	})
+
+	t.Run("two entries sharing a name in one store", func(t *testing.T) {
+		p, global, _ := newRemovalPanel(t)
+		first := writeSkillEntry(t, global, "one.md", "dup", "first")
+		second := writeSkillEntry(t, global, "two.md", "dup", "second")
+
+		openSkillDetail(t, p, discovered(t, p, scopeGlobal, "one.md"))
+		press(t, p, keyEnter) // arms one.md
+
+		openSkillDetail(t, p, discovered(t, p, scopeGlobal, "two.md"))
+		press(t, p, keyEnter) // shares the name, not the confirmation
+		mustExistPath(t, second)
+
+		press(t, p, keyEnter)
+		mustBeGonePath(t, second)
+		mustExistPath(t, first)
+	})
+}

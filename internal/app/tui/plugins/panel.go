@@ -49,7 +49,22 @@ type Panel struct {
 	scannedName     string
 	scannedSource   string
 	scanDir         string
-	removeArmed     map[string]bool
+	removeArmed     map[removeIdentity]bool
+}
+
+// removeIdentity is the confirmation key for a removal: the entry's scope plus
+// its lockfile name. The same name can be installed in both scopes, so a
+// name-only key could confirm a deletion the user never armed, on an entry
+// they were not looking at.
+type removeIdentity struct {
+	scope string
+	name  string
+}
+
+// removalIdentity derives the confirmation key from the entry's lockfile
+// provenance, so two entries sharing a name never share a confirmation.
+func removalIdentity(e scopedEntry) removeIdentity {
+	return removeIdentity{scope: e.Scope, name: e.Name}
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -61,7 +76,7 @@ func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State
 		workDir:        workDir,
 		projectTrusted: projectTrusted,
 		state:          state,
-		removeArmed:    make(map[string]bool),
+		removeArmed:    make(map[removeIdentity]bool),
 		installScope:   scopeGlobal,
 	}
 	p.filter = textfield.New()
@@ -165,18 +180,23 @@ func (p *Panel) detailFrame(e scopedEntry) *settings.Frame {
 
 		remove := settings.NewField("action.remove", "Remove", settings.KindAction)
 		settings.SetFieldDesc(remove, "delete this plugin from disk")
+		id := removalIdentity(e)
 		settings.SetFieldActLabel(remove, func() string {
-			if p.removeArmed[e.Name] {
+			if p.removeArmed[id] {
 				return "↵ confirm remove"
 			}
 			return "↵ remove"
 		})
+		// Leaving the row (arrow keys call the row's disarm) or the detail
+		// frame must drop the armed confirmation, so it can never be carried
+		// into a different selection or a later visit.
+		settings.SetFieldDisarm(remove, func() { delete(p.removeArmed, id) })
 		settings.SetFieldAct(remove, func() tea.Cmd {
-			if !p.removeArmed[e.Name] {
-				p.removeArmed[e.Name] = true
+			if !p.removeArmed[id] {
+				p.removeArmed[id] = true
 				return nil
 			}
-			p.removeArmed[e.Name] = false
+			delete(p.removeArmed, id)
 			return p.runRemove(e)
 		})
 		fields = append(fields, remove)
@@ -554,6 +574,10 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		if msg.Code == tea.KeyEscape {
+			// Leaving the frame — or the panel — drops any armed removal, so
+			// a confirmation cannot carry over to another selection or a
+			// later visit.
+			p.activeList().DisarmCurrent()
 			if len(p.stack) > 0 {
 				p.stack = p.stack[:len(p.stack)-1]
 				// Leaving the install frame abandons any outstanding scan.

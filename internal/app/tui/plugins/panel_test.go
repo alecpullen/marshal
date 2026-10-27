@@ -231,6 +231,254 @@ func TestConfirmScreenListsAllExecutableContent(t *testing.T) {
 	}
 }
 
+// --- removal fixtures and helpers -----------------------------------------
+//
+// The removal tests below drive Panel.Update and the commands it emits, so the
+// assertions cover the path a user actually takes: drill in, arm, confirm.
+
+var (
+	keyEnter = tea.KeyPressMsg{Code: tea.KeyEnter}
+	keyUp    = tea.KeyPressMsg{Code: tea.KeyUp}
+	keyDown  = tea.KeyPressMsg{Code: tea.KeyDown}
+	keyEsc   = tea.KeyPressMsg{Code: tea.KeyEscape}
+)
+
+// newRemovalPanel builds a trusted panel over a fresh home/work pair, so both
+// the global and the project lockfile are local temp files.
+func newRemovalPanel(t *testing.T) *Panel {
+	t.Helper()
+	return NewPanel(t.TempDir(), t.TempDir(), true, nil)
+}
+
+// installFixture writes a store directory and a lockfile entry for name in
+// scope, so a removal has something real to delete and to leave behind.
+// It returns the installed store directory.
+func installFixture(t *testing.T, p *Panel, scope, name string) string {
+	t.Helper()
+	storeDir, lockPath := p.globalStoreDir(), p.globalLockPath()
+	if scope == scopeProject {
+		storeDir, lockPath = p.projectStoreDir(), p.projectLockPath()
+	}
+	dir := filepath.Join(storeDir, name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("create plugin store %s: %v", dir, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plugin.toml"), []byte("# "+name+"\n"), 0644); err != nil {
+		t.Fatalf("write plugin manifest: %v", err)
+	}
+	lf, err := plugins.ReadLockfile(lockPath)
+	if err != nil {
+		t.Fatalf("read lockfile %s: %v", lockPath, err)
+	}
+	lf.Upsert(plugins.LockEntry{
+		Name:   name,
+		Source: "https://example.com/" + name + ".git",
+		Commit: "abc1234567",
+	})
+	if err := lf.Write(lockPath); err != nil {
+		t.Fatalf("write lockfile %s: %v", lockPath, err)
+	}
+	return dir
+}
+
+// entryFor resolves the scopedEntry a fresh lockfile read reports, the way the
+// list's drill row builds one.
+func entryFor(t *testing.T, p *Panel, scope, name string) scopedEntry {
+	t.Helper()
+	for _, e := range p.lockEntries() {
+		if e.Scope == scope && e.Name == name {
+			return e
+		}
+	}
+	t.Fatalf("no lockfile entry scope=%q name=%q in %+v", scope, name, p.lockEntries())
+	return scopedEntry{}
+}
+
+func readLock(t *testing.T, p *Panel, scope string) *plugins.Lockfile {
+	t.Helper()
+	path := p.globalLockPath()
+	if scope == scopeProject {
+		path = p.projectLockPath()
+	}
+	lf, err := plugins.ReadLockfile(path)
+	if err != nil {
+		t.Fatalf("read lockfile %s: %v", path, err)
+	}
+	return lf
+}
+
+func mustKeepLockEntry(t *testing.T, p *Panel, scope, name string) {
+	t.Helper()
+	if _, ok := readLock(t, p, scope).Find(name); !ok {
+		t.Fatalf("lockfile entry %q (%s) did not survive", name, scope)
+	}
+}
+
+func mustDropLockEntry(t *testing.T, p *Panel, scope, name string) {
+	t.Helper()
+	if e, ok := readLock(t, p, scope).Find(name); ok {
+		t.Fatalf("lockfile entry %q (%s) survived removal: %+v", name, scope, e)
+	}
+}
+
+// press delivers a key through Panel.Update and feeds the emitted command's
+// message straight back, the way the dock host does.
+func press(t *testing.T, p *Panel, key tea.KeyPressMsg) {
+	t.Helper()
+	cmd := p.Update(key)
+	if cmd == nil {
+		return
+	}
+	if msg := cmd(); msg != nil {
+		p.Update(msg)
+	}
+}
+
+// focusRow parks the active list's cursor on the row with the given field ID.
+func focusRow(t *testing.T, p *Panel, id string) {
+	t.Helper()
+	for i, r := range settings.FieldListRows(p.activeList()) {
+		if settings.FieldID(r) == id {
+			p.activeList().SetCursor(i)
+			return
+		}
+	}
+	t.Fatalf("no row %q in the active list", id)
+}
+
+// openRemoveRow stacks e's detail frame with its Remove row focused, the way
+// drilling in from the list does.
+func openRemoveRow(t *testing.T, p *Panel, e scopedEntry) {
+	t.Helper()
+	p.stack = append(p.stack, p.detailFrame(e))
+	focusRow(t, p, "action.remove")
+}
+
+func mustExistPath(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("expected %s to survive: %v", path, err)
+	}
+}
+
+func mustBeGonePath(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be removed, Lstat error = %v", path, err)
+	}
+}
+
+// TestRemoveConfirmationDisarmsOnNavigationAndEscape pins that an armed
+// confirmation never survives leaving the row or the detail frame — otherwise
+// it would carry into a selection the user was never shown as armed.
+func TestRemoveConfirmationDisarmsOnNavigationAndEscape(t *testing.T) {
+	t.Run("leaving the remove row", func(t *testing.T) {
+		p := newRemovalPanel(t)
+		target := installFixture(t, p, scopeGlobal, "demo")
+		bystander := installFixture(t, p, scopeGlobal, "other")
+		e := entryFor(t, p, scopeGlobal, "demo")
+		openRemoveRow(t, p, e)
+
+		press(t, p, keyEnter) // arms
+		if !p.removeArmed[removalIdentity(e)] {
+			t.Fatal("remove did not arm on the first enter")
+		}
+		press(t, p, keyUp)   // leaves the row
+		press(t, p, keyDown) // and comes back
+		if p.removeArmed[removalIdentity(e)] {
+			t.Fatal("armed confirmation survived navigation away from the row")
+		}
+		press(t, p, keyEnter) // must only arm again
+
+		mustExistPath(t, target)
+		mustExistPath(t, bystander)
+		mustKeepLockEntry(t, p, scopeGlobal, "demo")
+		mustKeepLockEntry(t, p, scopeGlobal, "other")
+		if !p.removeArmed[removalIdentity(e)] {
+			t.Fatal("enter after navigation armed nothing — it confirmed instead")
+		}
+
+		// Two consecutive confirmations on the same row still delete.
+		press(t, p, keyEnter)
+		mustBeGonePath(t, target)
+		mustDropLockEntry(t, p, scopeGlobal, "demo")
+		mustExistPath(t, bystander)
+		mustKeepLockEntry(t, p, scopeGlobal, "other")
+	})
+
+	t.Run("leaving and reopening the detail", func(t *testing.T) {
+		p := newRemovalPanel(t)
+		target := installFixture(t, p, scopeGlobal, "demo")
+		bystander := installFixture(t, p, scopeGlobal, "other")
+		e := entryFor(t, p, scopeGlobal, "demo")
+		openRemoveRow(t, p, e)
+
+		press(t, p, keyEnter) // arms
+		press(t, p, keyEsc)   // pops the detail frame
+		if len(p.stack) != 0 {
+			t.Fatal("escape did not pop the detail frame")
+		}
+		if p.removeArmed[removalIdentity(e)] {
+			t.Fatal("armed confirmation survived closing the detail frame")
+		}
+		mustExistPath(t, target)
+
+		openRemoveRow(t, p, e)
+		press(t, p, keyEnter) // must only arm again
+		mustExistPath(t, target)
+		mustExistPath(t, bystander)
+		mustKeepLockEntry(t, p, scopeGlobal, "demo")
+		if !p.removeArmed[removalIdentity(e)] {
+			t.Fatal("enter after reopening the detail armed nothing — it confirmed instead")
+		}
+
+		press(t, p, keyEnter)
+		mustBeGonePath(t, target)
+		mustDropLockEntry(t, p, scopeGlobal, "demo")
+		mustExistPath(t, bystander)
+		mustKeepLockEntry(t, p, scopeGlobal, "other")
+	})
+}
+
+// TestRemoveConfirmationIsScoped pins that the armed flag belongs to one
+// scoped entry. The lockfile holds the same name per scope, so a name-only key
+// would let the global copy's confirmation delete the project copy.
+func TestRemoveConfirmationIsScoped(t *testing.T) {
+	p := newRemovalPanel(t)
+	globalDir := installFixture(t, p, scopeGlobal, "dup")
+	projectDir := installFixture(t, p, scopeProject, "dup")
+
+	globalEntry := entryFor(t, p, scopeGlobal, "dup")
+	projectEntry := entryFor(t, p, scopeProject, "dup")
+	if removalIdentity(globalEntry) == removalIdentity(projectEntry) {
+		t.Fatal("global and project entries share a removal identity")
+	}
+
+	openRemoveRow(t, p, globalEntry)
+	press(t, p, keyEnter) // arms the global copy
+	if !p.removeArmed[removalIdentity(globalEntry)] {
+		t.Fatal("global remove did not arm")
+	}
+
+	// The project copy shares a name but not an identity: opening and
+	// confirming it must not inherit the global confirmation.
+	openRemoveRow(t, p, projectEntry)
+	press(t, p, keyEnter)
+	mustExistPath(t, projectDir)
+	mustExistPath(t, globalDir)
+	mustKeepLockEntry(t, p, scopeProject, "dup")
+	mustKeepLockEntry(t, p, scopeGlobal, "dup")
+	if !p.removeArmed[removalIdentity(projectEntry)] {
+		t.Fatal("project remove armed nothing — it confirmed a deletion never armed")
+	}
+
+	press(t, p, keyEnter)
+	mustBeGonePath(t, projectDir)
+	mustDropLockEntry(t, p, scopeProject, "dup")
+	mustExistPath(t, globalDir)
+	mustKeepLockEntry(t, p, scopeGlobal, "dup")
+}
+
 // TestConfirmScreenOrdersMCPEntriesStably pins A-04: map order reshuffled the
 // trust-review list between renders of identical data.
 func TestConfirmScreenOrdersMCPEntriesStably(t *testing.T) {

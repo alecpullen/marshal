@@ -57,7 +57,27 @@ type Panel struct {
 	// must show what was reviewed, and a scope changed after the scan is a
 	// different review (Task 2 invalidates it).
 	scannedScope string
-	scanDir      string
+	// scannedRawSource is the text the user entered, kept beside the
+	// normalized source so Confirm can prove the fields above still hold the
+	// source the scan actually read.
+	scannedRawSource string
+	// scannedHash is the hash of the scanned clone after .git removal: the
+	// content the user reviewed, and what the install compares against before
+	// it commits anything.
+	scannedHash   string
+	scannedCommit string
+	// scanParent is the temporary parent the claimed scan owns: the clone
+	// lives in <parent>/clone, and the parent is what gets deleted. Empty when
+	// no review is outstanding, or once an install worker has taken it.
+	scanParent string
+	// scanLease owns the outstanding scan until this panel claims it.
+	scanLease *scanLease
+	// scanGen identifies the current review. A result whose generation is not
+	// this one cannot become the review, however late it arrives.
+	scanGen int
+	// scanDeps are the external operations a scan performs. Production uses
+	// the real plugins package; tests inject delays and failures per panel.
+	scanDeps scanDeps
 	// reviewDetail is the open full-content view of one executable entry.
 	// While it is open the review list is hidden and no key can reach the
 	// Confirm action.
@@ -106,8 +126,41 @@ func removalIdentity(e scopedEntry) removeIdentity {
 
 var _ dock.Panel = (*Panel)(nil)
 
+// The panel disposes its outstanding scan when the dock releases it, because a
+// released panel never receives the scan's result message.
+var _ dock.CloseAware = (*Panel)(nil)
+
+// scanDeps are the external operations one scan performs. Production uses the
+// plugins package directly; tests inject delays, failures and observations per
+// panel, so no package-global hook is needed to exercise a race.
+type scanDeps struct {
+	NewInstaller func() (*plugins.Installer, error)
+	Clone        func(ctx context.Context, inst *plugins.Installer, source, ref, dest string) (string, error)
+	Scan         func(dir string) (plugins.Contents, error)
+	Hash         func(dir string) (string, error)
+}
+
+// defaultScanDeps is the production scan: a real clone, a real scan, and the
+// same hash the install and startup verification use.
+func defaultScanDeps() scanDeps {
+	return scanDeps{
+		NewInstaller: plugins.NewInstaller,
+		Clone: func(ctx context.Context, inst *plugins.Installer, source, ref, dest string) (string, error) {
+			return inst.Clone(ctx, source, ref, dest)
+		},
+		Scan: plugins.ScanPlugin,
+		Hash: plugins.HashDir,
+	}
+}
+
 // NewPanel builds a plugins panel.
 func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State) *Panel {
+	return newPanelWithScanDeps(homeDir, workDir, projectTrusted, state, defaultScanDeps())
+}
+
+// newPanelWithScanDeps builds a panel whose scans run through deps. It is the
+// only seam a test needs: everything else about the panel is production code.
+func newPanelWithScanDeps(homeDir, workDir string, projectTrusted bool, state *session.State, deps scanDeps) *Panel {
 	p := &Panel{
 		homeDir:        homeDir,
 		workDir:        workDir,
@@ -115,6 +168,7 @@ func NewPanel(homeDir, workDir string, projectTrusted bool, state *session.State
 		state:          state,
 		removeArmed:    make(map[removeIdentity]bool),
 		installScope:   scopeGlobal,
+		scanDeps:       deps,
 	}
 	p.filter = textfield.New()
 	p.filter.SetVirtualCursor(true)
@@ -208,6 +262,9 @@ func (p *Panel) detailFrame(e scopedEntry) *settings.Frame {
 		update := settings.NewField("action.update", "Update", settings.KindAction)
 		settings.SetFieldDesc(update, "check for a newer version")
 		settings.SetFieldAct(update, func() tea.Cmd {
+			// The previous review (and its clone) belongs to the entry the user
+			// was looking at, not to this install.
+			p.invalidateReview()
 			p.installSource = e.Source
 			p.installScope = e.Scope
 			p.stack = append(p.stack, p.installFrame())
@@ -255,12 +312,19 @@ type installResultMsg struct {
 }
 
 type scanResultMsg struct {
-	Name     string
-	Source   string
-	Scope    string
-	Contents plugins.Contents
-	ScanDir  string
-	Err      error
+	// gen and lease bind the result to the frame that asked for it: a result
+	// whose lease or generation is no longer current cannot become a review.
+	gen          int
+	lease        *scanLease
+	RawSource    string
+	Name         string
+	Source       string
+	Scope        string
+	Commit       string
+	ReviewedHash string
+	Contents     plugins.Contents
+	CloneDir     string
+	Err          error
 }
 
 // OwnsMsg claims this panel's async result messages so the dock host
@@ -316,6 +380,12 @@ func (p *Panel) installFrame() *settings.Frame {
 		settings.SetFieldGetStr(source, func() string { return p.installSource })
 		settings.SetFieldSetStr(source, func(v string) error {
 			p.installSource = v
+			// A review belongs to the exact source that was scanned. Editing it
+			// invalidates the review — and disposes of its clone — rather than
+			// leaving a Confirm that would install something else.
+			if p.busy != "installing" {
+				p.invalidateReview()
+			}
 			return nil
 		})
 		fields = append(fields, source)
@@ -329,6 +399,11 @@ func (p *Panel) installFrame() *settings.Frame {
 		settings.SetFieldGetStr(scope, func() string { return p.installScope })
 		settings.SetFieldSetStr(scope, func(v string) error {
 			p.installScope = v
+			// The scope is part of the review: a destination changed after the
+			// scan is a different install.
+			if p.busy != "installing" {
+				p.invalidateReview()
+			}
 			return nil
 		})
 		fields = append(fields, scope)
@@ -505,123 +580,208 @@ func policyReviewLines(name, policy string) []string {
 	}
 }
 
+// runScan starts a scan for the entered source and scope. Everything the review
+// will claim — the generation, the exact entered source and the scope — is
+// captured here, before any work starts, so a later edit cannot be mistaken for
+// what was scanned.
 func (p *Panel) runScan() tea.Cmd {
 	if p.busy != "" {
 		return nil
 	}
-	if strings.TrimSpace(p.installSource) == "" {
+	raw := strings.TrimSpace(p.installSource)
+	if raw == "" {
 		p.fail("enter a source first")
 		return nil
 	}
+	// A new scan supersedes any previous review, including its clone.
+	p.invalidateReview()
+	p.scanGen++
+	gen := p.scanGen
+	scope := p.installScope
 	p.busy = "scanning"
 	p.installErr = ""
-	ctx := context.Background()
-	source := p.installSource
-	scope := p.installScope
+
+	ctx, cancel := context.WithCancel(context.Background())
+	lease := newScanLease(cancel)
+	p.scanLease = lease
+	deps := p.scanDeps
+	workDir := p.workDir
 	return func() tea.Msg {
-		cloneURL, name, err := plugins.NormalizeSource(source)
-		if err != nil {
-			return scanResultMsg{Err: err}
-		}
-		if name == "" {
-			name = "unknown"
-		}
-		// Validate the clone source against the workspace root before
-		// cloning, matching the CLI and ACP install paths.
-		if err := plugins.ValidateCloneSource(cloneURL, p.workDir); err != nil {
-			return scanResultMsg{Err: err}
-		}
-		inst, err := plugins.NewInstaller()
-		if err != nil {
-			return scanResultMsg{Err: err}
-		}
-		tmpDir, err := os.MkdirTemp("", "marshal-plugin-tui-*")
-		if err != nil {
-			return scanResultMsg{Err: err}
-		}
-		cloneDest := filepath.Join(tmpDir, "clone")
-		_, err = inst.Clone(ctx, cloneURL, "", cloneDest)
-		if err != nil {
-			os.RemoveAll(tmpDir)
-			return scanResultMsg{Err: err}
-		}
-		_ = os.RemoveAll(filepath.Join(cloneDest, ".git"))
-		contents, err := plugins.ScanPlugin(cloneDest)
-		if err != nil {
-			os.RemoveAll(tmpDir)
-			return scanResultMsg{Err: err}
-		}
-		return scanResultMsg{Name: name, Source: cloneURL, Scope: scope, Contents: contents, ScanDir: cloneDest}
+		return scanPlugin(ctx, deps, lease, gen, raw, scope, workDir)
 	}
 }
+
+// scanPlugin performs one scan and owns the lease: every failure closes it, so
+// a clone that never becomes a review is deleted whether or not this function's
+// message is ever delivered.
+func scanPlugin(ctx context.Context, deps scanDeps, lease *scanLease, gen int, rawSource, scope, workDir string) tea.Msg {
+	failed := func(err error) scanResultMsg {
+		lease.Close()
+		return scanResultMsg{gen: gen, lease: lease, Err: err}
+	}
+
+	cloneURL, name, err := plugins.NormalizeSource(rawSource)
+	if err != nil {
+		return failed(err)
+	}
+	// Every derived name is validated, including the github: branch: a name is
+	// a single directory inside the plugin store.
+	if !plugins.ValidName(name) {
+		return failed(fmt.Errorf("invalid plugin name %q derived from %q", name, rawSource))
+	}
+	// Validate the clone source against the workspace root before cloning,
+	// matching the CLI and ACP install paths.
+	if err := plugins.ValidateCloneSource(cloneURL, workDir); err != nil {
+		return failed(err)
+	}
+	inst, err := deps.NewInstaller()
+	if err != nil {
+		return failed(err)
+	}
+	tmpDir, err := os.MkdirTemp("", "marshal-plugin-tui-*")
+	if err != nil {
+		return failed(err)
+	}
+	// The lease owns the parent from here on: a cancellation or a result that
+	// is never delivered still has an owner that deletes it.
+	if !lease.Publish(tmpDir) {
+		return scanResultMsg{gen: gen, lease: lease, Err: context.Canceled}
+	}
+	cloneDest := filepath.Join(tmpDir, "clone")
+	commit, err := deps.Clone(ctx, inst, cloneURL, "", cloneDest)
+	if err != nil {
+		return failed(err)
+	}
+	_ = os.RemoveAll(filepath.Join(cloneDest, ".git"))
+	contents, err := deps.Scan(cloneDest)
+	if err != nil {
+		return failed(err)
+	}
+	// The hash covers exactly what was reviewed: .git is gone, so a re-clone of
+	// the same commit hashes the same.
+	hash, err := deps.Hash(cloneDest)
+	if err != nil {
+		return failed(err)
+	}
+	return scanResultMsg{
+		gen:          gen,
+		lease:        lease,
+		RawSource:    rawSource,
+		Name:         name,
+		Source:       cloneURL,
+		Scope:        scope,
+		Commit:       commit,
+		ReviewedHash: hash,
+		Contents:     contents,
+		CloneDir:     cloneDest,
+	}
+}
+
+// clearReview drops the review state without touching the entered source or
+// scope. The clone is not deleted here: the caller either already disposed of
+// it or transferred it to an install worker.
+func (p *Panel) clearReview() {
+	p.scannedContents = nil
+	p.scannedName = ""
+	p.scannedSource = ""
+	p.scannedRawSource = ""
+	p.scannedScope = ""
+	p.scannedHash = ""
+	p.scannedCommit = ""
+	p.scanParent = ""
+	p.reviewDetail = nil
+}
+
+// invalidateReview abandons the current review. It advances the generation so a
+// late result cannot attach, cancels and disposes of the outstanding scan or
+// claimed clone, and drops the review state. It never blocks on a worker: the
+// lease cancels the clone and deletes what the lease still owns.
+func (p *Panel) invalidateReview() {
+	p.scanGen++
+	if p.scanLease != nil {
+		p.scanLease.Close()
+		p.scanLease = nil
+	}
+	if p.scanParent != "" {
+		os.RemoveAll(p.scanParent)
+	}
+	// An install worker owns its clone now: editing the fields above must not
+	// make the panel look idle while it is still writing.
+	if p.busy != "installing" {
+		p.busy = ""
+	}
+	p.clearReview()
+}
+
+// OnClose is the dock's permanent-release notification. The panel may never
+// receive another message, so it disposes of the outstanding scan here instead
+// of waiting for a result that will not arrive. See dock.CloseAware.
+func (p *Panel) OnClose() { p.invalidateReview() }
 
 // resetInstall clears the install/scan working state, discarding the scan's
 // temporary clone.
 //
 // The clone outlives runScan (the confirm step copies from it), so it cannot
-// be cleaned up with a deferred RemoveAll the way skills.Install does. That
-// left every abandoned scan — Esc, panel close, or reopening the install
-// frame — leaking a full repository clone into the temp dir.
+// be cleaned up with a deferred RemoveAll the way skills.Install does. Every
+// path that abandons the review — Esc, panel close, replacement, or reopening
+// the install frame — has to dispose of it, which invalidateReview does.
 func (p *Panel) resetInstall() {
-	p.discardScan()
+	p.invalidateReview()
 	p.installSource = ""
 	p.installScope = scopeGlobal
-	p.scannedContents = nil
-	p.scannedName = ""
-	p.scannedSource = ""
-	p.scannedScope = ""
-	p.reviewDetail = nil
 }
 
-// discardScan removes the temporary clone created by runScan, if any.
-// Safe to call when no scan is outstanding.
-func (p *Panel) discardScan() {
-	if p.scanDir == "" {
-		return
+// storePaths resolves the store and lockfile paths for a scope.
+func (p *Panel) storePaths(scope string) (storeDir, lockPath string) {
+	if scope == scopeProject {
+		return p.projectStoreDir(), p.projectLockPath()
 	}
-	// runScan clones into <tmp>/clone, so the directory to remove is the
-	// parent — matching what the confirm path does at the end of an install.
-	os.RemoveAll(filepath.Dir(p.scanDir))
-	p.scanDir = ""
+	return p.globalStoreDir(), p.globalLockPath()
 }
 
 func (p *Panel) runInstallFromScan() tea.Cmd {
 	if p.busy != "" {
 		return nil
 	}
-	if p.scannedContents == nil || p.scanDir == "" {
+	if p.scannedContents == nil || p.scanParent == "" {
 		p.fail("scan a source first")
+		return nil
+	}
+	// A review belongs to the exact source and scope that were scanned: if the
+	// fields above changed since, Confirm would install something the user
+	// never reviewed.
+	if strings.TrimSpace(p.installSource) != p.scannedRawSource || p.installScope != p.scannedScope {
+		p.invalidateReview()
+		p.fail("the source or scope changed since the scan; scan again")
 		return nil
 	}
 	p.busy = "installing"
 	p.installErr = ""
 	name := p.scannedName
-	scope := p.installScope
+	scope := p.scannedScope
 	source := p.scannedSource
-	cloneDest := p.scanDir
+	cloneDest := filepath.Join(p.scanParent, "clone")
+	// The worker owns the clone from here: clearing the panel's reference
+	// before it starts is what stops a later panel close from deleting files
+	// the worker is still copying.
+	parent := p.scanParent
+	p.scanParent = ""
+	p.scanLease = nil
+	storeDir, lockPath := p.storePaths(scope)
 	return func() tea.Msg {
-		var storeDir, lockPath string
-		if scope == scopeGlobal {
-			storeDir = p.globalStoreDir()
-			lockPath = p.globalLockPath()
-		} else {
-			storeDir = p.projectStoreDir()
-			lockPath = p.projectLockPath()
-		}
+		// The worker always cleans its own clone, on every outcome — including
+		// when this message is never delivered.
+		defer os.RemoveAll(parent)
 		dest := filepath.Join(storeDir, name)
 		if err := os.MkdirAll(storeDir, 0755); err != nil {
-			os.RemoveAll(filepath.Dir(cloneDest))
 			return installResultMsg{Err: err}
 		}
 		if err := os.RemoveAll(dest); err != nil {
-			os.RemoveAll(filepath.Dir(cloneDest))
 			return installResultMsg{Err: err}
 		}
 		if err := plugins.CopyDir(cloneDest, dest); err != nil {
-			os.RemoveAll(filepath.Dir(cloneDest))
 			return installResultMsg{Err: err}
 		}
-		os.RemoveAll(filepath.Dir(cloneDest))
 		hash, err := plugins.HashDir(dest)
 		if err != nil {
 			return installResultMsg{Err: err}
@@ -721,13 +881,11 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 				p.stack = p.stack[:len(p.stack)-1]
 				// Leaving the install frame abandons any outstanding scan.
 				if len(p.stack) == 0 {
-					p.discardScan()
-					p.reviewDetail = nil
+					p.invalidateReview()
 				}
 				return nil
 			}
-			p.discardScan()
-			p.reviewDetail = nil
+			p.invalidateReview()
 			return func() tea.Msg { return settings.BrowserClosedMsg{} }
 		}
 		l := p.activeList()
@@ -750,36 +908,62 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			return cmd
 		}
 	case scanResultMsg:
+		// Only the current scan's result may become this frame's review: the
+		// lease and generation must still be the ones the worker was started
+		// with. Anything else owns its own clone and is disposed of here, so a
+		// late result from an abandoned frame cannot attach to a new one.
+		if msg.lease == nil || msg.lease != p.scanLease || msg.gen != p.scanGen {
+			if msg.lease != nil {
+				msg.lease.Close()
+			}
+			return nil
+		}
 		p.busy = ""
 		if msg.Err != nil {
+			msg.lease.Close()
+			p.scanLease = nil
 			p.fail(msg.Err.Error())
 			return nil
 		}
+		if strings.TrimSpace(p.installSource) != msg.RawSource || p.installScope != msg.Scope {
+			// The fields above the review changed while the clone ran, so this
+			// scan is for an install the user is no longer looking at.
+			p.invalidateReview()
+			p.fail("the source or scope changed while scanning; scan again")
+			return nil
+		}
+		parent, ok := msg.lease.Claim()
+		if !ok {
+			p.scanLease = nil
+			return nil
+		}
+		// The claim transfers the clone's ownership to this panel: from here
+		// it belongs to the review, and only an install worker can take it.
+		p.scanLease = nil
+		p.scanParent = parent
 		p.scannedContents = &msg.Contents
 		p.scannedName = msg.Name
 		p.scannedSource = msg.Source
+		p.scannedRawSource = msg.RawSource
 		p.scannedScope = msg.Scope
-		p.scanDir = msg.ScanDir
+		p.scannedHash = msg.ReviewedHash
+		p.scannedCommit = msg.Commit
 		p.activeList().Refresh()
 		return nil
 	case installResultMsg:
 		p.busy = ""
 		if msg.Err != nil {
 			p.fail(msg.Err.Error())
-			// Most install error paths have already removed the clone, so the
-			// scan state now points at nothing. Clear it rather than leave a
-			// Confirm action that would copy from a deleted directory.
-			p.scanDir = ""
-			p.scannedContents = nil
-			p.scannedName = ""
-			p.scannedSource = ""
+			// The worker already removed its clone, so the review now points
+			// at nothing. Clear it rather than leave a Confirm action that
+			// would copy from a deleted directory.
+			p.clearReview()
 			p.activeList().Refresh()
 			return nil
 		}
 		p.status = fmt.Sprintf("installed %s (%s)", msg.Name, msg.Scope)
-		// The install command already removed the clone; drop the reference
-		// so resetInstall does not try to remove it a second time.
-		p.scanDir = ""
+		// The install worker removed the clone; drop the review so nothing
+		// tries to remove it a second time.
 		p.resetInstall()
 		settings.FieldListRefresh(p.list)
 		if p.state != nil {

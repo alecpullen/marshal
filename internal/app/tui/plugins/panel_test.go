@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/plugins"
@@ -137,19 +139,27 @@ func TestConfirmInstallWithoutScanReportsError(t *testing.T) {
 }
 
 // TestScanErrorIsVisible pins that a failed scan renders. p.installErr used to
-// be assigned and never read, so failures showed nothing at all.
+// be assigned and never read, so failures showed nothing at all. The failure is
+// driven through the panel's real scan path, so it also proves the error result
+// belongs to the current frame and that a failed scan keeps no directory.
 func TestScanErrorIsVisible(t *testing.T) {
-	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
-	p.stack = append(p.stack, p.installFrame())
-	p.busy = "scanning"
-
-	p.Update(scanResultMsg{Err: errBoom{}})
+	deps := fakeScanDeps(nil)
+	deps.Clone = func(context.Context, *plugins.Installer, string, string, string) (string, error) {
+		return "", errBoom{}
+	}
+	p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, deps)
+	openInstallFrame(t, p)
+	setInstallField(t, p, "install.source", "https://example.com/demo.git")
+	p.Update(scanMsg(t, p))
 
 	if p.busy != "" {
 		t.Error("busy state not cleared after a failed scan")
 	}
 	if !strings.Contains(p.activeList().ErrMsg, "boom") {
 		t.Errorf("scan error not surfaced: %q", p.activeList().ErrMsg)
+	}
+	if p.scanLease != nil || p.scanParent != "" {
+		t.Error("a failed scan kept ownership of a directory")
 	}
 }
 
@@ -181,20 +191,19 @@ func (errBoom) Error() string { return "boom" }
 func TestAbandonedScanRemovesTempClone(t *testing.T) {
 	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
 
-	tmpDir := t.TempDir()
-	cloneDir := filepath.Join(tmpDir, "scan", "clone")
-	if err := os.MkdirAll(cloneDir, 0755); err != nil {
+	parent := filepath.Join(t.TempDir(), "scan")
+	if err := os.MkdirAll(filepath.Join(parent, "clone"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	p.scanDir = cloneDir
+	p.scanParent = parent
 	p.scannedContents = &plugins.Contents{}
 
 	p.resetInstall()
 
-	if p.scanDir != "" {
-		t.Error("scanDir not cleared")
+	if p.scanParent != "" {
+		t.Error("scanParent not cleared")
 	}
-	if _, err := os.Stat(filepath.Dir(cloneDir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(parent); !os.IsNotExist(err) {
 		t.Errorf("temp clone not removed: %v", err)
 	}
 }
@@ -515,6 +524,254 @@ func TestConfirmScreenOrdersMCPEntriesStably(t *testing.T) {
 	}
 }
 
+// --- scan lifecycle fixtures ---------------------------------------------
+//
+// These fixtures drive the real install frame: open it from the root list, set
+// the source through the frame's own setter, press Scan, and deliver the
+// worker's message. Only the clone is faked, so no test needs the network, git,
+// or a package-global hook.
+
+// fakeScanDeps fakes the clone, writing one hook into dest, and records that it
+// ran. Scan and Hash stay real: the review's contents and hash are the ones the
+// user decides on.
+func fakeScanDeps(cloned *bool) scanDeps {
+	return scanDeps{
+		NewInstaller: func() (*plugins.Installer, error) { return &plugins.Installer{}, nil },
+		Clone: func(_ context.Context, _ *plugins.Installer, _, _, dest string) (string, error) {
+			if cloned != nil {
+				*cloned = true
+			}
+			if err := os.MkdirAll(dest, 0o755); err != nil {
+				return "", err
+			}
+			hook := "[hooks]\n[[hooks.entries]]\nevent = \"pre_tool_use\"\ncommand = \"echo reviewed\"\n"
+			if err := os.WriteFile(filepath.Join(dest, "hooks.toml"), []byte(hook), 0o644); err != nil {
+				return "", err
+			}
+			return "abc1234", nil
+		},
+		Scan: plugins.ScanPlugin,
+		Hash: plugins.HashDir,
+	}
+}
+
+// hasRow reports whether the active list has a row with this field ID.
+func hasRow(p *Panel, id string) bool {
+	for _, f := range settings.FieldListRows(p.activeList()) {
+		if settings.FieldID(f) == id {
+			return true
+		}
+	}
+	return false
+}
+
+// openInstallFrame opens the install frame from the root list, the way the
+// Install action does.
+func openInstallFrame(t *testing.T, p *Panel) {
+	t.Helper()
+	p.Update(keyEnter)
+	if len(p.stack) == 0 {
+		t.Fatal("the install frame did not open")
+	}
+}
+
+// setInstallField writes an install-frame value through the row's own setter,
+// then rebuilds the frame, so the invalidation hooks run exactly as they do for
+// a committed edit.
+func setInstallField(t *testing.T, p *Panel, id, value string) {
+	t.Helper()
+	for _, f := range settings.FieldListRows(p.activeList()) {
+		if settings.FieldID(f) != id {
+			continue
+		}
+		if f.SetStr == nil {
+			t.Fatalf("row %q is not editable", id)
+		}
+		if err := f.SetStr(value); err != nil {
+			t.Fatalf("set %q: %v", id, err)
+		}
+		p.activeList().Refresh()
+		return
+	}
+	t.Fatalf("no row %q in the install frame", id)
+}
+
+// scanMsg runs the Scan action and returns the worker's message without
+// delivering it, so a test can act while the result is still undelivered.
+func scanMsg(t *testing.T, p *Panel) scanResultMsg {
+	t.Helper()
+	focusRow(t, p, "install.scan")
+	cmd := p.Update(keyEnter)
+	if cmd == nil {
+		t.Fatal("Scan produced no command")
+	}
+	t.Cleanup(func() {
+		if p.scanLease != nil || p.scanParent != "" {
+			t.Errorf("scan state outlived the test: lease=%v parent=%q", p.scanLease != nil, p.scanParent)
+		}
+	})
+	msg, ok := cmd().(scanResultMsg)
+	if !ok {
+		t.Fatalf("scan produced %T, want a scan result", msg)
+	}
+	return msg
+}
+
+// scanReview performs a full scan through the panel and returns the temporary
+// parent the review now owns.
+func scanReview(t *testing.T, p *Panel, source string) string {
+	t.Helper()
+	openInstallFrame(t, p)
+	setInstallField(t, p, "install.source", source)
+	p.Update(scanMsg(t, p))
+	if p.scanParent == "" {
+		t.Fatalf("the scan claimed no clone; error %q", p.activeList().ErrMsg)
+	}
+	return p.scanParent
+}
+
+// replacementPanel is any other dock panel: the test needs a second panel to
+// replace the plugins panel with.
+type replacementPanel struct{}
+
+func (replacementPanel) Update(tea.Msg) tea.Cmd { return nil }
+func (replacementPanel) View(int, int) string   { return "" }
+func (replacementPanel) Sizing() dock.Sizing    { return dock.Docked }
+
+// TestScanReviewInvalidatedBySourceOrScope pins that a review belongs to the
+// exact source and scope that were scanned: editing either drops the review,
+// deletes its clone, and removes Confirm, so the user is never asked to confirm
+// an install they did not review.
+func TestScanReviewInvalidatedBySourceOrScope(t *testing.T) {
+	for _, tc := range []struct{ name, id, value string }{
+		{"source", "install.source", "https://example.com/other.git"},
+		{"scope", "install.scope", scopeProject},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(nil))
+			parent := scanReview(t, p, "https://example.com/demo.git")
+			if !hasRow(p, "install.confirm") {
+				t.Fatal("a successful scan did not offer Confirm")
+			}
+
+			setInstallField(t, p, tc.id, tc.value)
+
+			if p.scannedContents != nil || p.scanParent != "" {
+				t.Fatal("the review survived an edit to the source or scope")
+			}
+			if hasRow(p, "install.confirm") {
+				t.Fatal("Confirm survived an invalidated review")
+			}
+			mustBeGonePath(t, parent)
+
+			if cmd := p.runInstallFromScan(); cmd != nil {
+				t.Fatal("an invalidated review still produced an install command")
+			}
+		})
+	}
+}
+
+// TestAbandonedScanCannotAttachToReopenedFrame pins that a scan result which
+// arrives after its frame was left and reopened cannot become the new frame's
+// review, and that the clone it published is deleted without waiting for that
+// result.
+func TestAbandonedScanCannotAttachToReopenedFrame(t *testing.T) {
+	cloned := false
+	p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(&cloned))
+
+	openInstallFrame(t, p)
+	setInstallField(t, p, "install.source", "https://example.com/demo.git")
+	msg := scanMsg(t, p) // the scan ran; its result is still undelivered
+	if !cloned {
+		t.Fatal("the fake clone never ran")
+	}
+
+	// Leave the install frame — abandoning the scan — then come back: the
+	// reopened frame is a different review with a later generation.
+	press(t, p, keyEsc)
+	if len(p.stack) != 0 {
+		t.Fatal("escape did not leave the install frame")
+	}
+	openInstallFrame(t, p)
+
+	p.Update(msg)
+	if p.scannedContents != nil || p.scanParent != "" {
+		t.Fatal("an abandoned scan attached to the reopened frame")
+	}
+	if hasRow(p, "install.confirm") {
+		t.Fatal("an abandoned scan offered Confirm in the reopened frame")
+	}
+	if p.busy != "" {
+		t.Fatalf("the panel is still %q after an abandoned scan", p.busy)
+	}
+	// The lease owned the clone, so it is gone whether or not a message
+	// arrived.
+	mustBeGonePath(t, filepath.Dir(msg.CloneDir))
+}
+
+// TestPanelReplacementCleansUndeliveredScan pins the dock lifecycle contract:
+// replacing the panel notifies it even though its scan result is still in
+// flight, so the clone is deleted instead of leaking with the message.
+func TestPanelReplacementCleansUndeliveredScan(t *testing.T) {
+	p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(nil))
+	openInstallFrame(t, p)
+	setInstallField(t, p, "install.source", "https://example.com/demo.git")
+	msg := scanMsg(t, p) // never delivered to the panel
+
+	parent := filepath.Dir(msg.CloneDir)
+	mustExistPath(t, parent)
+
+	var h dock.Host
+	h.Open(p)
+	h.Open(replacementPanel{})
+	mustBeGonePath(t, parent)
+	if p.scanLease != nil || p.scanParent != "" {
+		t.Fatal("the released panel kept ownership of its scan")
+	}
+
+	// A late delivery finds no frame to attach to and deletes nothing twice.
+	p.Update(msg)
+	mustBeGonePath(t, parent)
+}
+
+// TestInstallOwnsCloneAfterConfirm pins the ownership handover: once the user
+// confirms, the worker owns the clone, so closing or replacing the panel must
+// not delete files the worker is still copying — and the worker cleans them
+// itself when it finishes.
+func TestInstallOwnsCloneAfterConfirm(t *testing.T) {
+	home := t.TempDir()
+	p := newPanelWithScanDeps(home, t.TempDir(), true, nil, fakeScanDeps(nil))
+	parent := scanReview(t, p, "https://example.com/demo.git")
+	cloneDir := filepath.Join(parent, "clone")
+
+	focusRow(t, p, "install.confirm")
+	cmd := p.Update(keyEnter)
+	if cmd == nil {
+		t.Fatal("Confirm produced no command")
+	}
+	if p.scanParent != "" {
+		t.Fatal("the panel still references the clone it handed to the install worker")
+	}
+
+	// The panel is released while the install is still running: the worker's
+	// input is not the panel's to delete any more.
+	var h dock.Host
+	h.Open(p)
+	h.Open(replacementPanel{})
+	mustExistPath(t, cloneDir)
+
+	msg, ok := cmd().(installResultMsg)
+	if !ok {
+		t.Fatalf("install produced %T, want an install result", msg)
+	}
+	if msg.Err != nil {
+		t.Fatalf("install failed: %v", msg.Err)
+	}
+	// The worker cleaned its own clone and committed the plugin.
+	mustBeGonePath(t, cloneDir)
+	mustExistPath(t, filepath.Join(plugins.GlobalStoreDir(home), "demo"))
+}
+
 // reviewPages renders the open detail at the given size, paging to the end, and
 // returns every page, both plain and raw.
 func reviewPages(t *testing.T, p *Panel, width, height int) (plain, raw []string) {
@@ -560,9 +817,11 @@ func TestReviewDetailShowsCompleteExecutableContent(t *testing.T) {
 		},
 	}
 	p.scannedName = "demo"
+	p.scannedRawSource = "https://example.com/demo.git"
 	p.scannedSource = "https://example.com/demo.git"
 	p.scannedScope = scopeGlobal
-	p.scanDir = filepath.Join(t.TempDir(), "clone")
+	p.installSource = "https://example.com/demo.git"
+	p.scanParent = filepath.Join(t.TempDir(), "scan")
 
 	// The confirmation states the source and scope the review belongs to, as
 	// the normalized source the scan fetched rather than the typed text.

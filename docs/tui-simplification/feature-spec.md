@@ -1,7 +1,8 @@
 # TUI simplification — feature spec
 
 Status: P-A, P-B, P-C, P-D and P-E landed. P-E (the tray, replacing P-C's live
-box after testing) designed and planned 2026-10-25. Updated 2026-10-24 with the
+box after testing) designed and planned 2026-10-25. P-F (the framed console,
+round 7) designed and planned 2026-10-27. Updated 2026-10-24 with the
 decisions the P-A and P-B plans pinned down, and 2026-10-25 with P-C's, P-D's
 and round 5's. P-A
 landed on
@@ -12,15 +13,17 @@ Base commit: `87fa8f0e` (main, after the interaction-modes merge).
 Design record: [`alternatives.md`](alternatives.md) (layout),
 [`console-variants.md`](console-variants.md) (dock), and
 [`framed-console.md`](framed-console.md) (the box P-C built, with frames), and
-[`pinned-work.md`](pinned-work.md) (round 5: the tray that replaces it in P-E).
+[`pinned-work.md`](pinned-work.md) (round 5: the tray that replaces it in P-E), and
+[`border-study.md`](border-study.md) (round 7: the framed console, P-F).
 Mockups: [`framed-console.html`](framed-console.html),
-[`pinned-work.html`](pinned-work.html).
+[`pinned-work.html`](pinned-work.html), [`border-study.html`](border-study.html).
 Execution plans: one per phase, each against `main` once the previous phase
 has landed. P-A: [`plans/2026-10-24-p-a-renderer-foundation-plan.md`](plans/2026-10-24-p-a-renderer-foundation-plan.md).
 P-B: [`plans/2026-10-24-p-b-lifecycle-plan.md`](plans/2026-10-24-p-b-lifecycle-plan.md).
 P-C: [`plans/2026-10-24-p-c-live-box-plan.md`](plans/2026-10-24-p-c-live-box-plan.md).
 P-D: [`plans/2026-10-25-p-d-progress-skill-plan.md`](plans/2026-10-25-p-d-progress-skill-plan.md).
 P-E: [`plans/2026-10-25-p-e-tray-plan.md`](plans/2026-10-25-p-e-tray-plan.md).
+P-F: [`plans/2026-10-27-p-f-framed-console-plan.md`](plans/2026-10-27-p-f-framed-console-plan.md).
 
 ## 1. Summary
 
@@ -95,6 +98,8 @@ with one rule for history and one tray with a fixed shed order.
 | Finished items | Keep their tray row until the next prompt: untinted, with their outcome and stopped clock. Their completion event still lands in history when they finish. | 5 |
 | Beat head meta | Always on the narration's first line. A narration too long to sit beside it wraps narrower; the meta never takes a line of its own. | 5 |
 | Plan run | An SDD or swarm run is a pinned row like a job, with no action of its own. (Assumed from "the other plan information"; not yet confirmed.) | 5 |
+| Where the frame goes (after round 6) | **The framed console** (§5.9): the tray, a docked panel, the input area and the status line form one outline. A frame means "live, or waiting on you": prompts are coloured sections of it, panels are framed, and a drilled-in child's transcript is framed in coral. History stays unframed. | 7 |
+| Chrome tint | Gone. The input area stops painting the surface colour, as the status line already had, and `tui.depth = "raised"` is retired because it painted nothing else. The only tint left marks moving work: running tray rows and the live thinking row. | 7 |
 
 Two decisions were taken as defaults from round 1 without objection. They are
 listed so a reviewer can overturn them:
@@ -133,9 +138,13 @@ From top to bottom:
 2. **The tray.** Zero rows when nothing runs, nothing finished is held and no
    plan is shown.
 3. **Dock panel,** when one is open (unchanged: `tui/dock`).
-4. **Input area.** Unchanged, including the approval, question and sudo
+4. **Input area,** including the approval, question, skill-gate and sudo
    takeovers.
 5. **Status line.** Gains the turn state and the stop hint while busy (§5.7).
+
+Since P-F, zones 2 to 5 are drawn as one outline, the console (§5.9). A
+full-frame panel replaces zones 1 to 4 with its own closed frame, and the
+status line stays a plain row under it.
 
 ### 5.2 History grammar
 
@@ -366,7 +375,8 @@ those.
   1. The plan becomes one line in the plan line's grammar. Beside running
      work it moves into the bottom border,
      `╰─ plan ✓ ✓ ▸ · 3/4 <active todo> ─╯`, and its section goes; on its own
-     it is one row under its header.
+     it is one row under its header. (Since P-F the tray has no bottom
+     border: the folded plan is its last row, `├─ plan ✓ ✓ ▸ · 3/4 … ─┤`.)
   2. Held rows fold into one row (`✓ 2 finished`).
   3. Running rows cap at 3, with `+N more · /work`.
   4. An expanded card collapses.
@@ -375,7 +385,8 @@ those.
      and the plan's done/total (`⧉2 ┆2 ○1 plan 2/4`).
 
   The outline is part of the budget: two border rows, plus the plan's header
-  when there is running work.
+  when there is running work. Since P-F the tray draws only its top border;
+  the console's next row (§5.9) takes the place of the closing one.
 - **Idle** is the same tray: running work that outlives the turn, held rows and
   the plan stay. With none of them, the tray is zero rows, and no outline is
   drawn.
@@ -431,6 +442,14 @@ drops its whole hint cluster when it does not fit, which happens at 96 columns
 while busy. Before dropping it, the cluster now shrinks to `Ctrl+C stop` alone,
 so the stop hint the box's border always showed stays on screen.
 
+**P-F:** the status line is the console's bottom border,
+`╰─ Act · untrusted · ⠋ working 4m 12s · … ── Ctrl+C stop ─╯`, drawn in the
+input section's border colour (§5.9). It keeps every segment and the same
+shedding, with 6 fewer cells to spend. To keep the context meter on screen
+longer, `ctx` and the quota drop to priority 2 and `local` rises to 3, so
+`local` sheds first. While a full-frame panel is open, the status line is the
+plain row under the panel's frame.
+
 During an SDD run or a swarm the state stays `working`; the run's summary is the
 tray's plan-run row. Scrolled up, the step in progress is out of view, and the
 turn state and activity label stand in for it. The status line always carries
@@ -455,6 +474,78 @@ Chosen only so everything is reachable. The shortcut rework will replace them.
 
 The step in progress is history again (P-E), so its rows are ordinary browse
 stops and click targets. (In P-C its rows in the box were click targets only.)
+
+### 5.9 The framed console (P-F)
+
+```
+╭─ running 1 · 1 finished ─────────────────────────────────────────────────────────────────╮
+│ ▌┆ job-1  go test ./...  done · ./calc_test.go:12:12: undefined: Subtract           0s ✓ │
+│ ▌⧉ #1     Review calc.go for bugs                                                  46s ⠦ │
+├─ plan  ▱▱▱ 0/3 ──────────────────────────────────────────────────────────────────────────┤
+│ · Run go test ./... as background job         · Fix any failing tests or bugs found      │
+├──────────────────────────────────────────────────────────────────────────────────────────┤
+│ ❯ Ask Marshal...                                                                         │
+╰─ Act · untrusted · ⠦ working 2m 41s · qwen/qwen3.5-9b @ lmstudio · local ── Ctrl+C stop ─╯
+```
+
+(Round 7. The frames for every placement are in [`border-study.md`](border-study.md).)
+
+- **The rule.** A frame means "live, or waiting on you". The tray, a docked
+  panel, the input area and the status line form one outline. History is never
+  framed, except for a drilled-in child below. Chrome paints no tint.
+- **Building the outline.** The first framed part opens with `╭─ label ─╮`,
+  and every later section opens with `├─ label ─┤`, or a plain `├───┤` when it
+  has no label. The tray no longer closes itself: its last row is its last
+  content row, or a border row when its last section is a header alone (the
+  folded plan, or a finished plan beside running work). An unlabelled section
+  directly under a border row draws no divider of its own. The status line
+  closes the outline as its bottom border (§5.7).
+- **The input section.** The composer sits inside `│ ❯ … │` with no `▍` bar.
+  The border is muted at rest, focused or not, and during an SDD run. It is
+  teal during the success pulse, amber while an approval or the sudo prompt is
+  up, and violet for a question or the skill gate. The status border takes
+  the same colour. `❯` keeps its own focus colour.
+- **Prompts** replace the composer in that section, with their own header and
+  without their `▍` rail:
+
+  | Prompt | Header label | Colour | Header right |
+  |---|---|---|---|
+  | Approval | `⚠ Approval` | amber | its keys (`←→ choose · Enter confirm · Esc deny`, plus `Alt+Enter send now` when available) |
+  | Question | `? Question` | violet | `Enter answer · Esc skip` (plus send now) |
+  | Skill gate | `? Skill gate` | violet | `↑↓ choose · 1-4 jump · Enter confirm` (plus send now) |
+  | Sudo | `⚠ Sudo password` | amber | none; its own `[↵] authenticate  [Esc] deny` row stays |
+
+  The keys live in the header because the status line sheds them first on a
+  narrow or busy frame. While a prompt shows its keys there, the status line's
+  hint cluster is just `Ctrl+C stop` while busy and empty otherwise. A patch
+  approval draws its diff inside the section without the surface tint.
+- **The command popup** is a section labelled `Commands`, `Files` or
+  `Settings`, with its keys on the right of the header, then a plain divider,
+  then the composer.
+- **Docked panels** are open frames: the title and keys in the top border
+  (`╭`, or `├` under a framed tray), content inside `│ … │`, and no bottom
+  border, because the input section continues below. A panel's section
+  headers become `├─ NAME ─┤` dividers, and a divider on a panel's first row
+  joins the top border as `<Title> · <name>`. A focused panel's border is
+  violet. The access panel's is amber: its title gains `⚠ `, and its key row
+  moves into the header (`↑↓/Tab choose · ↵ decide · Esc deny`). Plugins and
+  Skills, which drew no frame, gain one.
+- **Full-frame panels** (`/settings`, `/agents`, the inspector, full-frame
+  docs) get a closed frame. Settings and agents put their count in the bottom
+  border, and in single-column layouts their groups become dividers. The
+  status line stays a plain row under them.
+- **A drilled-in child** (Ctrl+F) is framed in coral. The crumb is the top
+  border, with `↑/Esc to go back` on its right. The child's transcript sits
+  inside `│ … │`, 4 columns narrower, and a coral `╰─╯` closes it above the
+  console. That costs one row.
+- **Widths.** A panel's frame spans the dock exactly: its right edge takes the
+  2-cell margin `layout.PanelWidth` leaves, so content keeps its width.
+- **Monochrome.** The outline survives NO_COLOR. Every state colour has a word
+  in its label, so nothing depends on colour alone.
+- **Rows.** The outline costs one row at idle (the input's top border) and
+  none while the tray is up. The approval and access prompts save up to
+  three rows (their title and key rows move into the header), questions save
+  one, and the session sheet saves its title and closing rule.
 
 ## 6. Architecture
 
@@ -604,6 +695,18 @@ stops and click targets. (In P-C its rows in the box were click targets only.)
     the plan-run row and the new shed order (§5.5);
   - the status line takes the turn state and the stop hint (§5.7);
   - `steps.go`'s head keeps its meta on the narration's first line (§5.2).
+- **P-F, the framed console (§5.9):**
+  - `chrome` gains `Frame` (title, hints, footer, closed, colour), `BorderLine`
+    (moved from `livebox.borderLine`, with a right label), `Divider`, `Close`,
+    `JoinTop` and `IsFramed`. `Panel` and `PanelWithHints` draw an open frame
+    in the height the gutter panel took;
+  - `dock.Host.View` closes full-frame panels and gives them one row less;
+  - `livebox` drops its closing row and gains `Layout.Open` and
+    `Layout.Framed`;
+  - the TUI draws the input area as console sections, the status line as the
+    bottom border, and the drill-in frame. `chromeRail`, `inputBarColor` and
+    the input band go;
+  - `help` gains `PromptKeys` and `FooterHints.KeysInFrame`.
 
 ### 6.4 The `progress-reporting` skill
 
@@ -658,6 +761,9 @@ stops and click targets. (In P-C its rows in the box were click targets only.)
 - **Deprecated in P-E:** `[tui.live_box] layout` is still parsed but no longer
   merged or saved, `/settings` drops its field, and one warning at path
   `tui.live_box` says it is ignored, as `tui.transcript` does.
+- **Retired in P-F:** `tui.depth = "raised"`. It painted only the input band,
+  which P-F removes. The value still loads and means `flat`. `/settings`
+  offers `flat` and `full`.
 - **Deprecated:** `tui.transcript.density` and
   `tui.transcript.fold_finished_tasks` are still parsed but no longer merged or
   saved, and `/settings` drops both fields. One warning at path
@@ -679,6 +785,7 @@ derive from persisted `todo.write` tool calls. Resume renders the same history.
 | **P-C Live box** | `livebox` package; the live beat in the box; running rows with bars and the expanded card; stacked, split and folded plus Ctrl+T; budget and shed order; idle state; browse into the box; `nowbar.go` and the Tasks Plan tab deleted; `[tui.live_box]`. | P-B | yes |
 | **P-D Progress-reporting skill** ([plan](plans/2026-10-25-p-d-progress-skill-plan.md)) | The skill and its producers, the schema pointer and the pinned schema test, the budget room (§6.4). | — | yes, any time |
 | **P-E The tray** ([design](pinned-work.md), [plan](plans/2026-10-25-p-e-tray-plan.md)) | The step in progress back at the end of history; the tray with plan-run, running and held rows and the plan list, without frame, rule, headers or modes; held rows until the next prompt; the new shed order; head meta on the first line; turn state and stop hint in the status line; `[tui.live_box]` deprecated; Ctrl+T unbound. | P-C | yes |
+| **P-F The framed console** ([design](border-study.md), [plan](plans/2026-10-27-p-f-framed-console-plan.md)) | No chrome tint and `raised` retired; chrome frames for every panel; the tray opens into the console; the input area as framed sections with coloured prompts and the popup; the status line as the bottom border; the drill-in frame. | P-E | yes |
 
 **Ordering with daemon P2.** P2 plan 3 moves the renderer onto `WireNode` and
 ports "density, folding, selection, browse and inspect". Land P-A and P-B before
@@ -730,6 +837,18 @@ first.
     and no head writes a meta-only line;
   - the status line keeps the turn state and `Ctrl+C stop` at 80 and 96
     columns while busy, with the mode cue first.
+- **P-F:**
+  - `chrome` frames: exact width, the height budget, dividers and the
+    first-row merge, `Close` and `JoinTop`, monochrome;
+  - the console: the first header for each kind of row above it (nothing,
+    content, an open border), prompt sections with their labels and keys,
+    the popup section, the status border's shedding and width;
+  - frame invariants extended to the popup, each prompt, a docked panel under
+    the tray, and drill-in;
+  - the drill frame: the crumb in the border, the narrower transcript and the
+    click offset;
+  - history stays unframed (`TestTranscriptIsBorderless`), and no chrome
+    paints a background at any depth.
 - **Web:** `Transcript.test.ts` and `NowBar.test.ts` cover the new kinds, and
   the web boundary test stays green.
 - **Skill:**
@@ -760,6 +879,10 @@ first.
 | The Tasks panel's Plan tab | the plan section |
 | The live box's frame, section headers and plan modes; Ctrl+T's cycle; `[tui.live_box]` (P-E) | the tray |
 | The step in progress inside the box (P-E) | the end of history |
+| The input band, `ChromeBG`, `OverlayBG` and `tui.depth = "raised"` (P-F) | an unpainted input area inside the console frame |
+| The `▍` input bar, `inputBarColor` and `chromeRail` (P-F) | the console's border colour and prompt sections |
+| The `▍` panel gutter (P-F) | chrome frames |
+| The tray's closing row (P-F) | the console's next section |
 
 ## 10. Risks and open points
 
@@ -777,4 +900,12 @@ first.
   On a short terminal the shed order absorbs it: the plan folds into the
   bottom border first, and below three rows the tray is the plain summary
   row.
+- **The console's row cost** (P-F) is one row at idle. While the tray is up
+  it costs nothing, because the input's divider replaces the tray's closing
+  row.
+- **Drilled-in transcripts are 4 columns narrower** (P-F), so long narration
+  re-wraps while you are inside a child.
+- **Panels that drew no frame** (P-F) gain a title row inside their existing
+  budget. A panel that filled its budget exactly would lose a list row to
+  `↓ more`.
 - **Keyboard:** every key in §5.8 is provisional.

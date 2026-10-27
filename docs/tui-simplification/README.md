@@ -12,6 +12,8 @@ simplification.
 | [`plans/2026-10-24-p-c-live-box-plan.md`](plans/2026-10-24-p-c-live-box-plan.md) | P-C execution plan: the live box, measured bars, plan layouts and Ctrl+T, skill-load duplicate fix |
 | [`plans/2026-10-25-p-d-progress-skill-plan.md`](plans/2026-10-25-p-d-progress-skill-plan.md) | P-D execution plan: the progress-reporting skill and its producers, the schema pointer, room in the prompt budgets |
 | [`plans/2026-10-25-p-e-tray-plan.md`](plans/2026-10-25-p-e-tray-plan.md) | P-E execution plan: the step in progress back in history, the tray, held rows, the turn clock in the status line, `[tui.live_box]` retired |
+| [`plans/2026-10-27-p-f-framed-console-plan.md`](plans/2026-10-27-p-f-framed-console-plan.md) | P-F execution plan: no chrome tint, chrome frames for every panel, the console outline with prompt sections and the status line as its bottom border, the drill-in frame |
+| [`border-study.md`](border-study.md) | Round 7, after round 6 restored the tray frame: where else the frame goes (the framed console, P-F), from real captures; [`border-study.html`](border-study.html) in colour |
 | [`pinned-work.md`](pinned-work.md) | Round 5, after testing P-C: the tray that replaces the live box (P-E), and the options it was chosen from; [`pinned-work.html`](pinned-work.html) in colour |
 | [`framed-console.md`](framed-console.md) | Round 4: the live box P-C built, with text frames; [`framed-console.html`](framed-console.html) in colour |
 | [`console-variants.md`](console-variants.md) | Round 2: five dock treatments and four history styles |

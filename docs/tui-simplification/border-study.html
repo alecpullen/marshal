@@ -1,0 +1,880 @@
+<title>Framed Console Mockups</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+/* Layout: one reading column of placements; each terminal plate keeps its own
+   dark palette in both page themes and scrolls sideways inside itself. */
+:root {
+  --bg: #f2f3f5;
+  --surface: #ffffff;
+  --ink: #1a1c21;
+  --mute: #5a5f6a;
+  --rule: #d8dbe1;
+  --accent: #b5452a;
+  --do: #0b7560;
+  --maybe: #95590a;
+  --dont: #b0354b;
+  --chip-bg: #e8eaee;
+  --t-bg: #121212;
+  --t-fg: #d0d0d0;
+  --t-edge: #2b2b2b;
+  --f-display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --f-body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e0f11; --surface: #16171a; --ink: #e5e6e9; --mute: #9aa0aa; --rule: #272a30;
+    --accent: #ff875f; --do: #00d7af; --maybe: #ffaf5f; --dont: #ff87af; --chip-bg: #1e2024;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e0f11; --surface: #16171a; --ink: #e5e6e9; --mute: #9aa0aa; --rule: #272a30;
+  --accent: #ff875f; --do: #00d7af; --maybe: #ffaf5f; --dont: #ff87af; --chip-bg: #1e2024;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.6 var(--f-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 72px;
+}
+main { max-width: 880px; margin: 0 auto; display: grid; gap: 56px; }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; margin: 0; line-height: 1.15; }
+h1 { font-size: clamp(2.1rem, 5vw, 3rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.55rem; font-weight: 700; }
+h3 { font-size: 1.1rem; font-weight: 700; }
+p { margin: 0; }
+code { font: 0.88em var(--f-mono); background: var(--chip-bg); padding: 0.05em 0.35em; border-radius: 4px; }
+a { color: inherit; text-decoration-color: var(--rule); text-underline-offset: 3px; }
+a:hover { text-decoration-color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.intro { display: grid; gap: 18px; }
+.eyebrow { font: 600 0.78rem var(--f-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); }
+.intro .lede { font-size: 1.12rem; max-width: 64ch; }
+.intro .meta { color: var(--mute); max-width: 64ch; }
+
+.rule {
+  display: grid; gap: 14px; padding: 22px 24px;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 10px;
+}
+.rule .glyph { font: 700 1rem var(--f-mono); color: var(--accent); }
+.rule dl { display: grid; grid-template-columns: max-content 1fr; gap: 10px 18px; margin: 0; }
+.rule dt { font-weight: 700; }
+.rule dd { margin: 0; min-width: 0; }
+@media (max-width: 560px) { .rule dl { grid-template-columns: 1fr; gap: 2px; } .rule dd { margin-bottom: 10px; } }
+
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.95rem; }
+th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font: 600 0.75rem var(--f-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--mute); }
+td.n { font-family: var(--f-mono); font-size: 0.85rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+.chip {
+  display: inline-block; font: 700 0.72rem var(--f-mono); letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px; background: var(--chip-bg); white-space: nowrap;
+}
+.chip.do { color: var(--do); }
+.chip.maybe { color: var(--maybe); }
+.chip.dont { color: var(--dont); }
+
+section { display: grid; gap: 16px; scroll-margin-top: 24px; }
+.sh { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+section .lede { max-width: 66ch; }
+.notes { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 70ch; color: var(--ink); }
+.notes li::marker { color: var(--mute); }
+
+.viewer { display: grid; gap: 10px; min-width: 0; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+.tabs button {
+  font: 500 0.84rem var(--f-body); color: var(--mute); background: transparent;
+  border: 1px solid var(--rule); border-radius: 999px; padding: 5px 12px; cursor: pointer;
+}
+.tabs button:hover { color: var(--ink); border-color: var(--mute); }
+.tabs button[aria-selected="true"] { color: var(--ink); background: var(--surface); border-color: var(--ink); }
+.tabs .rec { color: var(--accent); margin-left: 6px; font-size: 0.7em; vertical-align: 0.15em; }
+.scroll { overflow-x: auto; border-radius: 8px; background: var(--t-bg); border: 1px solid var(--t-edge); }
+.term {
+  margin: 0; padding: 14px 16px; width: max-content;
+  font: 12.5px/1.22 var(--f-mono); color: var(--t-fg); background: var(--t-bg);
+  font-variant-ligatures: none;
+}
+.term i { font-style: normal; display: inline-block; width: 1ch; text-align: center; vertical-align: top; }
+.cap { color: var(--mute); font-size: 0.92rem; }
+
+.build { display: grid; gap: 14px; }
+.build ul { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; max-width: 70ch; }
+.how { color: var(--mute); font-size: 0.92rem; max-width: 70ch; display: grid; gap: 8px; }
+</style>
+
+<main>
+  <header class="intro">
+    <p class="eyebrow">Marshal TUI · border study · 27 Oct 2026</p>
+    <h1>Framed Console</h1>
+    <p class="lede">The tray's rounded outline, carried to the rest of the live part of the screen: the
+      prompt, the prompts that replace it, the popup, and the panels. Nothing at the bottom of the screen is
+      tinted any more. The frame does the grouping.</p>
+    <p class="meta">Every "Today" frame is a real capture: <code>marshal</code> at 100×34 with
+      <code>depth = "raised"</code>, on qwen3.5-9b and nemotron-3.5 through LM Studio. The proposed frames
+      keep the captured transcript and tray rows and redraw only the chrome. Pick a tab to compare; ● marks
+      the one I'd take.</p>
+  </header>
+
+  <aside class="rule" aria-labelledby="rule-h">
+    <h3 id="rule-h"><span class="glyph">╭─</span> A frame means live, or waiting on you</h3>
+    <dl>
+      <dt>Framed</dt>
+      <dd>The tray, the prompt input, anything that replaces the input (access, approval, question, skill
+        gate, sudo), the command popup, docked and full-frame panels, and a drilled-in child.</dd>
+      <dt>Not framed</dt>
+      <dd>Transcript history: beats, events, answers, code and diffs keep the spine and the gutter.</dd>
+      <dt>No chrome tint</dt>
+      <dd>The input band goes, as the status line's already has. The only tint left marks work that is
+        still moving: running tray rows and the live thinking row.</dd>
+      <dt>Border colour</dt>
+      <dd>Muted at rest. Amber when Marshal needs a decision, violet for a question or a focused panel,
+        coral inside a child. The label says the same thing in words, so it still reads without colour.</dd>
+    </dl>
+  </aside>
+
+  <section aria-labelledby="sum-h">
+    <h2 id="sum-h">Where it goes</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Placement</th><th>Change</th><th>Rows vs today</th><th>Verdict</th></tr></thead>
+        <tbody><tr><td><a href="#idle">Prompt input</a></td><td>Frame instead of tint; status line as the bottom border</td><td class="n">+1 idle · 0 busy</td><td><span class="chip do">Do it</span></td></tr><tr><td><a href="#busy">Tray and prompt</a></td><td>One outline: ╰─╯ becomes ├─┤</td><td class="n">0</td><td><span class="chip do">Do it</span></td></tr><tr><td><a href="#popup">Command popup</a></td><td>A section of the outline, keys in its header</td><td class="n">0</td><td><span class="chip do">Do it</span></td></tr><tr><td><a href="#access">Access and approval</a></td><td>Amber section; title and keys in the header</td><td class="n">−3</td><td><span class="chip do">Do it</span></td></tr><tr><td><a href="#question">Questions</a></td><td>Violet section</td><td class="n">−1</td><td><span class="chip do">Do it</span></td></tr><tr><td><a href="#sheet">Session sheet</a></td><td>├─ NAME ─┤ dividers inside the outline</td><td class="n">−3</td><td><span class="chip do">Do it</span></td></tr><tr><td><a href="#settings">Full-frame panels</a></td><td>One frame; groups as dividers</td><td class="n">0, +1 content row</td><td><span class="chip do">Do it</span></td></tr><tr><td><a href="#drill">Subagent drill-in</a></td><td>Coral frame, crumb in the top border</td><td class="n">+1, −4 columns</td><td><span class="chip maybe">Optional</span></td></tr><tr><td><a href="#dont">Transcript history</a></td><td>Stays unframed</td><td class="n">—</td><td><span class="chip dont">Don&#x27;t</span></td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="idle"><div class="sh"><h2>Prompt input</h2><span class="chip do">Do it</span></div><p class="lede">The input gets the tray's outline instead of the tinted band. The status line can close the frame as its bottom border, or stay a separate row under it.</p><div class="viewer"><div class="tabs" role="tablist" aria-label="Frames"><button role="tab" id="v-idle-t0" aria-controls="v-idle-p0" aria-selected="false" tabindex="-1">Today</button><button role="tab" id="v-idle-t1" aria-controls="v-idle-p1" aria-selected="false" tabindex="-1">No tint</button><button role="tab" id="v-idle-t2" aria-controls="v-idle-p2" aria-selected="true" tabindex="0">Framed · status in border<span class="rec" aria-label="recommended">●</span></button><button role="tab" id="v-idle-t3" aria-controls="v-idle-p3" aria-selected="false" tabindex="-1">Framed · status below</button></div><div role="tabpanel" id="v-idle-p0" aria-labelledby="v-idle-t0" hidden><div class="scroll"><pre class="term">  <span style="color:#ff875f"><i>●</i></span> <span style="color:#ff875f;font-weight:700">marshal</span> <i>·</i> <span style="color:#9e9e9e">local-friendly coding agent</span>
+
+  <span style="color:#9e9e9e">Type a question, or </span><span style="color:#9e9e9e;font-weight:700">/</span> for commands.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<span style="color:#ff875f;background:#303030"><i>▍</i></span><span style="color:#bcbcbc;background:#303030"><i>❯</i> </span><span style="color:#9e9e9e;background:#303030">Ask Marshal...</span>
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Act</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">think default</span> <i>·</i> <span style="color:#9e9e9e"><i>±</i>1 file</span> <i>·</i> <span style="color:#bcbcbc">repo</span> <i>·</i> <span style="color:#d787ff"><i>⎇</i> main</span></pre></div><p class="cap">depth = raised: the prompt row is painted with the surface tint.</p></div><div role="tabpanel" id="v-idle-p1" aria-labelledby="v-idle-t1" hidden><div class="scroll"><pre class="term">  <span style="color:#ff875f"><i>●</i></span> <span style="color:#ff875f;font-weight:700">marshal</span> <i>·</i> <span style="color:#9e9e9e">local-friendly coding agent</span>
+
+  <span style="color:#9e9e9e">Type a question, or </span><span style="color:#9e9e9e;font-weight:700">/</span> for commands.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<span style="color:#ff875f"><i>▍</i></span><span style="color:#bcbcbc"><i>❯</i> </span><span style="color:#9e9e9e">Ask Marshal...</span>
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Act</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">think default</span> <i>·</i> <span style="color:#9e9e9e"><i>±</i>1 file</span> <i>·</i> <span style="color:#bcbcbc">repo</span> <i>·</i> <span style="color:#d787ff"><i>⎇</i> main</span></pre></div><p class="cap">The smallest change: the band goes, the ▍❯ rail stays. Same rows.</p></div><div role="tabpanel" id="v-idle-p2" aria-labelledby="v-idle-t2"><div class="scroll"><pre class="term">  <span style="color:#ff875f"><i>●</i></span> <span style="color:#ff875f;font-weight:700">marshal</span> <i>·</i> <span style="color:#9e9e9e">local-friendly coding agent</span>
+
+  <span style="color:#9e9e9e">Type a question, or </span><span style="color:#9e9e9e;font-weight:700">/</span> for commands.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<span style="color:#808080">╭──────────────────────────────────────────────────────────────────────────────────────────────────╮</span>
+<span style="color:#808080">│ </span><span style="color:#bcbcbc"><i>❯</i> </span><span style="color:#9e9e9e">Ask Marshal...</span>                                                                                <span style="color:#808080"> │</span>
+<span style="color:#808080">╰─ </span><span style="color:#ff875f;font-weight:700">Act</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ffaf5f;font-weight:700">untrusted</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span><span style="color:#9e9e9e"> <i>·</i> local <i>·</i> think default <i>·</i> <i>±</i>1 file <i>·</i> </span><span style="color:#bcbcbc">repo</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#d787ff"><i>⎇</i> main</span><span style="color:#808080"> ─╯</span></pre></div><p class="cap">+1 row at idle. The status line is the composer&#x27;s bottom border.</p></div><div role="tabpanel" id="v-idle-p3" aria-labelledby="v-idle-t3" hidden><div class="scroll"><pre class="term">  <span style="color:#ff875f"><i>●</i></span> <span style="color:#ff875f;font-weight:700">marshal</span> <i>·</i> <span style="color:#9e9e9e">local-friendly coding agent</span>
+
+  <span style="color:#9e9e9e">Type a question, or </span><span style="color:#9e9e9e;font-weight:700">/</span> for commands.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<span style="color:#808080">╭──────────────────────────────────────────────────────────────────────────────────────────────────╮</span>
+<span style="color:#808080">│ </span><span style="color:#bcbcbc"><i>❯</i> </span><span style="color:#9e9e9e">Ask Marshal...</span>                                                                                <span style="color:#808080"> │</span>
+<span style="color:#808080">╰──────────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Act</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">think default</span> <i>·</i> <span style="color:#9e9e9e"><i>±</i>1 file</span> <i>·</i> <span style="color:#bcbcbc">repo</span> <i>·</i> <span style="color:#d787ff"><i>⎇</i> main</span></pre></div><p class="cap">+2 rows at idle. The status line stays a separate row under the frame.</p></div></div><ul class="notes"><li>The ▍ state bar becomes the frame. ❯ keeps its coral while the input has focus and goes muted when it does not.</li><li>With the status line in the bottom border the line has 6 fewer cells. At 100 columns that sheds <code>ctx</code> before <code>local</code>, because ctx is priority 3 and local is 2. Swap the two if this option wins.</li><li><b>No tint</b> is the change you asked for on its own: drop the <code>ChromeBG</code> band in <code>renderInputArea</code>. It ships first whichever frame option wins.</li></ul></section>
+<section id="busy"><div class="sh"><h2>Tray and prompt as one outline</h2><span class="chip do">Do it</span></div><p class="lede">When the tray is up, the prompt joins its outline: the tray's ╰─╯ becomes a ├─┤ divider and the status line closes the whole thing.</p><div class="viewer"><div class="tabs" role="tablist" aria-label="Frames"><button role="tab" id="v-busy-t0" aria-controls="v-busy-p0" aria-selected="false" tabindex="-1">Today</button><button role="tab" id="v-busy-t1" aria-controls="v-busy-p1" aria-selected="true" tabindex="0">Joined<span class="rec" aria-label="recommended">●</span></button><button role="tab" id="v-busy-t2" aria-controls="v-busy-p2" aria-selected="false" tabindex="-1">Stacked</button></div><div role="tabpanel" id="v-busy-p0" aria-labelledby="v-busy-t0" hidden><div class="scroll"><pre class="term">   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">shell   </span><span style="color:#bcbcbc">go test ./... &amp;</span>                                                         <span style="color:#5fd7ff">┆ job-1</span><span style="color:#9e9e9e"> started</span>
+
+<span style="color:#5fd7ff"> ┆ job-1</span> <span style="color:#bcbcbc">go test ./... &amp;</span> <i>·</i> <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">0s</span>                                                               <span style="color:#9e9e9e"><i>▹</i></span>
+     <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>
+
+<span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">Spawn subagent to review calc.go for bugs while tests run in background.</span>              <span style="color:#9e9e9e">thought 14s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">Review calc.go for bugs while tests run in background</span>                     <span style="color:#d787ff"><i>⧉</i> #1</span><span style="color:#9e9e9e"> started</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Wait for both the background test job and subagent to complete before</span>           <span style="color:#9e9e9e">thought 16s <i>·</i> 16s</span>
+     <span style="color:#d0d0d0">proceeding.</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Peek at subagent progress and find calc.go file.</span>                                      <span style="color:#9e9e9e">thought 12s</span>
+   <span style="color:#9e9e9e">├</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                 <span style="color:#9e9e9e">found 0 matches (mode: regex)</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Search for calc.go using substring mode to find the file.</span>                              <span style="color:#9e9e9e">thought 8s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                               <span style="color:#9e9e9e">found 0 matches</span>
+
+<span style="background:#303030"> <i>⠦</i> </span><span style="color:#ff875f;background:#303030;font-weight:700">thinking</span><span style="background:#303030">                                                                                      </span><span style="color:#9e9e9e;background:#303030">10s</span>
+ <i>▍</i> The subagent is still running and hasn&#x27;t found calc.go yet. Let me wait a bit more to see if it
+<span style="color:#9e9e9e"> <i>▍</i> completes its task, or I can check the git status to understand what files exist in the</span>
+<span style="color:#9e9e9e"> <i>▍</i> repository.</span>
+
+<span style="color:#808080">╭─ </span>running 1 <i>·</i> 1 finished<span style="color:#808080"> ─────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#5fd7ff"><i>▌</i>┆ job-1  </span><span style="color:#9e9e9e">go test ./... &amp;</span>  <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>                 <span style="color:#9e9e9e">0s</span> <span style="color:#00d7af"><i>✓</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #1     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                    </span><span style="color:#9e9e9e;background:#303030">46s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠦</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">The repo.search didn&#x27;t find calc.go with wildcard patter<i>…</i></span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... as background job            <span style="color:#9e9e9e"><i>·</i></span> Fix any failing tests or bugs found          <span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+<span style="color:#ff875f;background:#303030"><i>▍</i></span><span style="color:#bcbcbc;background:#303030"><i>❯</i> </span><span style="color:#303030;background:#ff875f">A</span><span style="color:#9e9e9e;background:#303030">sk Marshal...</span>
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Act</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#ff875f"><i>⠦</i></span> <span style="color:#9e9e9e">working 2m 41s</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">ctx 6k/32k</span>   <span style="font-weight:700">Ctrl+C</span> stop</pre></div><p class="cap">The tray closes with ╰─╯; the prompt sits under it on a tinted band.</p></div><div role="tabpanel" id="v-busy-p1" aria-labelledby="v-busy-t1"><div class="scroll"><pre class="term">   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">shell   </span><span style="color:#bcbcbc">go test ./... &amp;</span>                                                         <span style="color:#5fd7ff">┆ job-1</span><span style="color:#9e9e9e"> started</span>
+
+<span style="color:#5fd7ff"> ┆ job-1</span> <span style="color:#bcbcbc">go test ./... &amp;</span> <i>·</i> <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">0s</span>                                                               <span style="color:#9e9e9e"><i>▹</i></span>
+     <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>
+
+<span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">Spawn subagent to review calc.go for bugs while tests run in background.</span>              <span style="color:#9e9e9e">thought 14s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">Review calc.go for bugs while tests run in background</span>                     <span style="color:#d787ff"><i>⧉</i> #1</span><span style="color:#9e9e9e"> started</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Wait for both the background test job and subagent to complete before</span>           <span style="color:#9e9e9e">thought 16s <i>·</i> 16s</span>
+     <span style="color:#d0d0d0">proceeding.</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Peek at subagent progress and find calc.go file.</span>                                      <span style="color:#9e9e9e">thought 12s</span>
+   <span style="color:#9e9e9e">├</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                 <span style="color:#9e9e9e">found 0 matches (mode: regex)</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Search for calc.go using substring mode to find the file.</span>                              <span style="color:#9e9e9e">thought 8s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                               <span style="color:#9e9e9e">found 0 matches</span>
+
+<span style="background:#303030"> <i>⠦</i> </span><span style="color:#ff875f;background:#303030;font-weight:700">thinking</span><span style="background:#303030">                                                                                      </span><span style="color:#9e9e9e;background:#303030">10s</span>
+ <i>▍</i> The subagent is still running and hasn&#x27;t found calc.go yet. Let me wait a bit more to see if it
+<span style="color:#9e9e9e"> <i>▍</i> completes its task, or I can check the git status to understand what files exist in the</span>
+<span style="color:#9e9e9e"> <i>▍</i> repository.</span>
+
+<span style="color:#808080">╭─ </span>running 1 <i>·</i> 1 finished<span style="color:#808080"> ─────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#5fd7ff"><i>▌</i>┆ job-1  </span><span style="color:#9e9e9e">go test ./... &amp;</span>  <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>                 <span style="color:#9e9e9e">0s</span> <span style="color:#00d7af"><i>✓</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #1     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                    </span><span style="color:#9e9e9e;background:#303030">46s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠦</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">The repo.search didn&#x27;t find calc.go with wildcard patter<i>…</i></span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... as background job            <span style="color:#9e9e9e"><i>·</i></span> Fix any failing tests or bugs found          <span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+<span style="color:#808080">├──────────────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#808080">│ </span><span style="color:#bcbcbc"><i>❯</i> </span><span style="color:var(--t-bg);background:#ff875f">A</span><span style="color:#9e9e9e">sk Marshal...</span>                                                                                <span style="color:#808080"> │</span>
+<span style="color:#808080">╰─ </span><span style="color:#ff875f;font-weight:700">Act</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ffaf5f;font-weight:700">untrusted</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ff875f"><i>⠦</i></span> <span style="color:#9e9e9e">working 2m 41s <i>·</i> </span><span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span><span style="color:#9e9e9e"> <i>·</i> local</span><span style="color:#808080"> ────────── </span><span style="font-weight:700">Ctrl+C</span> stop<span style="color:#808080"> ─╯</span></pre></div><p class="cap">0 rows. The tray&#x27;s ╰─╯ becomes ├─┤ and the status line closes the outline. The status line sheds ctx 6k/32k to fit.</p></div><div role="tabpanel" id="v-busy-p2" aria-labelledby="v-busy-t2" hidden><div class="scroll"><pre class="term"><span style="color:#5fd7ff"> ┆ job-1</span> <span style="color:#bcbcbc">go test ./... &amp;</span> <i>·</i> <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">0s</span>                                                               <span style="color:#9e9e9e"><i>▹</i></span>
+     <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>
+
+<span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">Spawn subagent to review calc.go for bugs while tests run in background.</span>              <span style="color:#9e9e9e">thought 14s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">Review calc.go for bugs while tests run in background</span>                     <span style="color:#d787ff"><i>⧉</i> #1</span><span style="color:#9e9e9e"> started</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Wait for both the background test job and subagent to complete before</span>           <span style="color:#9e9e9e">thought 16s <i>·</i> 16s</span>
+     <span style="color:#d0d0d0">proceeding.</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Peek at subagent progress and find calc.go file.</span>                                      <span style="color:#9e9e9e">thought 12s</span>
+   <span style="color:#9e9e9e">├</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                 <span style="color:#9e9e9e">found 0 matches (mode: regex)</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Search for calc.go using substring mode to find the file.</span>                              <span style="color:#9e9e9e">thought 8s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                               <span style="color:#9e9e9e">found 0 matches</span>
+
+<span style="background:#303030"> <i>⠦</i> </span><span style="color:#ff875f;background:#303030;font-weight:700">thinking</span><span style="background:#303030">                                                                                      </span><span style="color:#9e9e9e;background:#303030">10s</span>
+ <i>▍</i> The subagent is still running and hasn&#x27;t found calc.go yet. Let me wait a bit more to see if it
+<span style="color:#9e9e9e"> <i>▍</i> completes its task, or I can check the git status to understand what files exist in the</span>
+<span style="color:#9e9e9e"> <i>▍</i> repository.</span>
+
+<span style="color:#808080">╭─ </span>running 1 <i>·</i> 1 finished<span style="color:#808080"> ─────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#5fd7ff"><i>▌</i>┆ job-1  </span><span style="color:#9e9e9e">go test ./... &amp;</span>  <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>                 <span style="color:#9e9e9e">0s</span> <span style="color:#00d7af"><i>✓</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #1     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                    </span><span style="color:#9e9e9e;background:#303030">46s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠦</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">The repo.search didn&#x27;t find calc.go with wildcard patter<i>…</i></span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... as background job            <span style="color:#9e9e9e"><i>·</i></span> Fix any failing tests or bugs found          <span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+<span style="color:#808080">╭──────────────────────────────────────────────────────────────────────────────────────────────────╮</span>
+<span style="color:#808080">│ </span><span style="color:#bcbcbc"><i>❯</i> </span><span style="color:var(--t-bg);background:#ff875f">A</span><span style="color:#9e9e9e">sk Marshal...</span>                                                                                <span style="color:#808080"> │</span>
+<span style="color:#808080">╰──────────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Act</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#ff875f"><i>⠦</i></span> <span style="color:#9e9e9e">working 2m 41s</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">ctx 6k/32k</span>   <span style="font-weight:700">Ctrl+C</span> stop</pre></div><p class="cap">+2 rows. Two separate boxes: the tray&#x27;s ╰─╯ and the composer&#x27;s ╭─╮ sit back to back.</p></div></div><ul class="notes"><li>Joined costs no rows against today. The divider replaces ╰─╯ and the bottom border replaces the status row.</li><li>Stacked is there to show why the join matters: two boxes back to back cost 2 rows and read as two unrelated panels.</li><li>The tray is no longer the only framed thing on screen. Its running rows keep the tint and the ▌ edge, and that is what marks live work.</li></ul></section>
+<section id="popup"><div class="sh"><h2>Command popup</h2><span class="chip do">Do it</span></div><p class="lede">The popup becomes a section of the outline. Its title moves into the header, with the keys right-aligned, as the tray does with its counts.</p><div class="viewer"><div class="tabs" role="tablist" aria-label="Frames"><button role="tab" id="v-popup-t0" aria-controls="v-popup-p0" aria-selected="false" tabindex="-1">Today</button><button role="tab" id="v-popup-t1" aria-controls="v-popup-p1" aria-selected="true" tabindex="0">Joined<span class="rec" aria-label="recommended">●</span></button></div><div role="tabpanel" id="v-popup-p0" aria-labelledby="v-popup-t0" hidden><div class="scroll"><pre class="term"><span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">Search for calc.go using substring mode to find the file.</span>                              <span style="color:#9e9e9e">thought 8s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                               <span style="color:#9e9e9e">found 0 matches</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Wait for subagent to complete its review of calc.go.</span>                                  <span style="color:#9e9e9e">thought 11s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Peek at subagent progress to see what it&#x27;s doing.</span>                                      <span style="color:#9e9e9e">thought 8s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Wait for subagent to complete its review.</span>                                             <span style="color:#9e9e9e">thought 10s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+<span style="background:#303030"> <i>⠋</i> </span><span style="color:#ff875f;background:#303030;font-weight:700">thinking</span><span style="background:#303030">                                                                                       </span><span style="color:#9e9e9e;background:#303030">3s</span>
+ <i>▍</i> The subagent has found calc.go and needs to read it. Let me
+
+<span style="color:#808080">╭─ </span>running 1 <i>·</i> 1 finished<span style="color:#808080"> ─────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#5fd7ff"><i>▌</i>┆ job-1  </span><span style="color:#9e9e9e">go test ./... &amp;</span>  <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>                 <span style="color:#9e9e9e">0s</span> <span style="color:#00d7af"><i>✓</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #1     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                  </span><span style="color:#9e9e9e;background:#303030">1m 7s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠋</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">Found calc.go.                                           </span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... as background job            <span style="color:#9e9e9e"><i>·</i></span> Fix any failing tests or bugs found          <span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+<span style="color:#d787ff;background:#303030"><i>▍</i></span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030;font-weight:700">Commands</span><span style="background:#303030">                                                       </span><span style="color:#9e9e9e;background:#303030"><i>↑</i><i>↓</i> select <i>·</i> <i>↵</i> run <i>·</i> esc dismiss</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#ff875f;font-weight:700"><i>▸</i> /act  Act mode: routine workspace work proceeds without asking (Auto off)</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">  /agents  Configure the agent roster: roles, models, custom agents, swarm &amp; SDD budgets</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">  /ask  Ask mode: every new action needs approval (Auto off)</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">  /auto  Toggle Full Auto: preapprove operations and System access, with no questions; /auto o</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">  /branches  List branches and switch to one (e.g. /branches 2)</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">  /clear  Start a new conversation (alias for /new)</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">  /config  Show current configuration summary</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">  /connect  Add or reconnect a provider</span>
+<span style="color:#ff875f"><i>▍</i></span><span style="color:#bcbcbc"><i>❯</i> /</span><span style="color:var(--t-bg);background:#ff875f"> </span><span style="color:#bcbcbc;background:#303030">            </span>
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Act</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#ff875f"><i>⠋</i></span> <span style="color:#9e9e9e">working 3m 2s</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">ctx 7k/32k</span>    <span style="font-weight:700">Ctrl+C</span> stop</pre></div><p class="cap">The popup is a ▍ panel inside the tinted input band (its title row is tinted).</p></div><div role="tabpanel" id="v-popup-p1" aria-labelledby="v-popup-t1"><div class="scroll"><pre class="term"><span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">Search for calc.go using substring mode to find the file.</span>                              <span style="color:#9e9e9e">thought 8s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                               <span style="color:#9e9e9e">found 0 matches</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Wait for subagent to complete its review of calc.go.</span>                                  <span style="color:#9e9e9e">thought 11s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Peek at subagent progress to see what it&#x27;s doing.</span>                                      <span style="color:#9e9e9e">thought 8s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Wait for subagent to complete its review.</span>                                             <span style="color:#9e9e9e">thought 10s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+<span style="background:#303030"> <i>⠋</i> </span><span style="color:#ff875f;background:#303030;font-weight:700">thinking</span><span style="background:#303030">                                                                                       </span><span style="color:#9e9e9e;background:#303030">3s</span>
+ <i>▍</i> The subagent has found calc.go and needs to read it. Let me
+
+<span style="color:#808080">╭─ </span>running 1 <i>·</i> 1 finished<span style="color:#808080"> ─────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#5fd7ff"><i>▌</i>┆ job-1  </span><span style="color:#9e9e9e">go test ./... &amp;</span>  <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>                 <span style="color:#9e9e9e">0s</span> <span style="color:#00d7af"><i>✓</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #1     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                  </span><span style="color:#9e9e9e;background:#303030">1m 7s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠋</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">Found calc.go.                                           </span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... as background job            <span style="color:#9e9e9e"><i>·</i></span> Fix any failing tests or bugs found          <span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+<span style="color:#808080">├─ </span><span style="color:#d787ff;font-weight:700">commands</span><span style="color:#808080"> ───────────────────────────────────────────────────── </span><span style="color:#9e9e9e"><i>↑</i><i>↓</i> select <i>·</i> <i>↵</i> run <i>·</i> esc dismiss</span><span style="color:#808080"> ─┤</span>
+<span style="color:#808080">│ </span><span style="color:#ff875f;font-weight:700"><i>▸</i> /act  Act mode: routine workspace work proceeds without asking (Auto off)</span>                     <span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span><span style="color:#9e9e9e">  /agents  Configure the agent roster: roles, models, custom agents, swarm &amp; SDD budgets</span>        <span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span><span style="color:#9e9e9e">  /ask  Ask mode: every new action needs approval (Auto off)</span>                                    <span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span><span style="color:#9e9e9e">  /auto  Toggle Full Auto: preapprove operations and System access, with no questions; /auto o</span>  <span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span><span style="color:#9e9e9e">  /branches  List branches and switch to one (e.g. /branches 2)</span>                                 <span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span><span style="color:#9e9e9e">  /clear  Start a new conversation (alias for /new)</span>                                             <span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span><span style="color:#9e9e9e">  /config  Show current configuration summary</span>                                                   <span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span><span style="color:#9e9e9e">  /connect  Add or reconnect a provider</span>                                                         <span style="color:#808080"> │</span>
+<span style="color:#808080">├──────────────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#808080">│ </span><span style="color:#bcbcbc"><i>❯</i> /</span>                                                                                             <span style="color:#808080"> │</span>
+<span style="color:#808080">╰─ </span><span style="color:#ff875f;font-weight:700">Act</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ffaf5f;font-weight:700">untrusted</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ff875f"><i>⠋</i></span> <span style="color:#9e9e9e">working 3m 2s <i>·</i> </span><span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span><span style="color:#9e9e9e"> <i>·</i> local</span><span style="color:#808080"> ─────────── </span><span style="font-weight:700">Ctrl+C</span> stop<span style="color:#808080"> ─╯</span></pre></div><p class="cap">0 rows. The popup&#x27;s title becomes a section header with its keys on the right.</p></div></div><ul class="notes"><li>Same rows as today. The header row replaces both the tray's ╰─╯ and the popup's title row, and one divider separates the matches from the input.</li><li>Today the popup's title row sits on the tinted input band and its other rows do not. In the outline nothing is tinted.</li><li>The file and settings popups work the same way, each with its own label.</li></ul></section>
+<section id="access"><div class="sh"><h2>Access and approval prompts</h2><span class="chip do">Do it</span></div><p class="lede">A prompt that replaces the input takes the input's section and turns its border amber. Its title and keys move into the header.</p><div class="viewer"><div class="tabs" role="tablist" aria-label="Frames"><button role="tab" id="v-access-t0" aria-controls="v-access-p0" aria-selected="false" tabindex="-1">Today</button><button role="tab" id="v-access-t1" aria-controls="v-access-p1" aria-selected="true" tabindex="0">Framed<span class="rec" aria-label="recommended">●</span></button></div><div role="tabpanel" id="v-access-p0" aria-labelledby="v-access-t0" hidden><div class="scroll"><pre class="term">
+<span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">The tool output is consistently showing only lines 1-6 of </span><span style="color:#ff5f5f;background:#303030"><i> </i>calc.go<i> </i></span><span style="color:#d0d0d0">. I must assume the file is</span>
+     <span style="color:#d0d0d0">larger than 6 lines, and the previous tool call was not sufficient to retrieve the whole</span>
+     <span style="color:#d0d0d0">content. I need to try reading up to a larger line number, say 100, to see if more code is</span>
+     <span style="color:#d0d0d0">available. If this still only returns lines 1-6, I will proceed by adding the function at the</span>
+     <span style="color:#d0d0d0">end of the existing code block.</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">read    </span><span style="color:#bcbcbc">calc.go</span>                                                          <span style="color:#9e9e9e">read calc.go lines 1-6</span>
+
+<span style="color:#ff87af"> <i>✗</i> </span><span style="color:#d0d0d0">The tool output is still only lines 1-6, despite requesting up to line 100. Since I cannot</span>    <span style="color:#9e9e9e">22s</span>
+     <span style="color:#d0d0d0">retrieve the rest of the file through </span><span style="color:#ff5f5f;background:#303030"><i> </i>file.read<i> </i></span><span style="color:#d0d0d0"> in this manner, and the user specifically</span>
+     <span style="color:#d0d0d0">requested to add </span><span style="color:#ff5f5f;background:#303030"><i> </i>Subtract(a, b int) int<i> </i></span><span style="color:#d0d0d0"> to make tests compile, I will append the new function</span>
+     <span style="color:#d0d0d0">immediately after </span><span style="color:#ff5f5f;background:#303030"><i> </i>Add<i> </i></span><span style="color:#d0d0d0"> in the existing code block, using </span><span style="color:#ff5f5f;background:#303030"><i> </i>file.edit<i> </i></span><span style="color:#d0d0d0"> to replace the last line</span>
+     <span style="color:#d0d0d0">of </span><span style="color:#ff5f5f;background:#303030"><i> </i>Add<i> </i></span><span style="color:#d0d0d0">&#x27;s body plus a newline, or more safely, by overwriting the whole file content if I</span>
+     <span style="color:#d0d0d0">assume it&#x27;s small enough. Given </span><span style="color:#ff5f5f;background:#303030"><i> </i>file.edit<i> </i></span><span style="color:#d0d0d0"> requires an exact match, and I only have lines 1-6,</span>
+     <span style="color:#d0d0d0">I will append the new function after the existing content block, effectively overwriting lines</span>
+     <span style="color:#d0d0d0">1-6 with all known code plus the new function.</span>
+<span style="color:#808080">╭─ </span>running 1<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #prom<i>…</i> </span><span style="background:#303030">awaiting an access decision                                                       </span><span style="color:#9e9e9e;background:#303030">2s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠴</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#ffaf5f;background:#303030"><i>⚠</i> needs access</span><span style="background:#303030">                                                                        </span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... in background.               <span style="color:#9e9e9e"><i>·</i></span> Fix any failures identified by tests or suba<i>…</i><span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#d787ff;font-weight:700">Allow editing?</span>
+<span style="color:#d787ff"><i>▍</i></span> Current: Ask <i>·</i> rev 2
+<span style="color:#d787ff"><i>▍</i></span> Request: Act; for this conversation
+<span style="color:#d787ff"><i>▍</i></span> Editing uses normal Act; policy and sandbox still apply; sudo is separate.
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">From Marshal / step 44. To implement the user&#x27;s request to add Subtract(a, b int) int to calc.go</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">and fix compilation failures.</span>
+<span style="color:#d787ff"><i>▍</i></span> &gt; Deny
+<span style="color:#d787ff"><i>▍</i></span>   Act
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">Arrows/Tab choose; Enter decide; Esc deny</span>
+
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Ask</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#ff875f"><i>⠴</i></span> <span style="color:#9e9e9e">working 1m 34s</span> <i>·</i> <span style="color:#bcbcbc">nvidia-nemotron-3.5-bolt-e4b-mlx @ lmstudio</span>        <span style="color:#ffaf5f;font-weight:700"><i>⚠</i> approval</span></pre></div><p class="cap">Title row, body, a hint row, a blank row, then the status line.</p></div><div role="tabpanel" id="v-access-p1" aria-labelledby="v-access-t1"><div class="scroll"><pre class="term">
+
+
+
+<span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">The tool output is consistently showing only lines 1-6 of </span><span style="color:#ff5f5f;background:#303030"><i> </i>calc.go<i> </i></span><span style="color:#d0d0d0">. I must assume the file is</span>
+     <span style="color:#d0d0d0">larger than 6 lines, and the previous tool call was not sufficient to retrieve the whole</span>
+     <span style="color:#d0d0d0">content. I need to try reading up to a larger line number, say 100, to see if more code is</span>
+     <span style="color:#d0d0d0">available. If this still only returns lines 1-6, I will proceed by adding the function at the</span>
+     <span style="color:#d0d0d0">end of the existing code block.</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">read    </span><span style="color:#bcbcbc">calc.go</span>                                                          <span style="color:#9e9e9e">read calc.go lines 1-6</span>
+
+<span style="color:#ff87af"> <i>✗</i> </span><span style="color:#d0d0d0">The tool output is still only lines 1-6, despite requesting up to line 100. Since I cannot</span>    <span style="color:#9e9e9e">22s</span>
+     <span style="color:#d0d0d0">retrieve the rest of the file through </span><span style="color:#ff5f5f;background:#303030"><i> </i>file.read<i> </i></span><span style="color:#d0d0d0"> in this manner, and the user specifically</span>
+     <span style="color:#d0d0d0">requested to add </span><span style="color:#ff5f5f;background:#303030"><i> </i>Subtract(a, b int) int<i> </i></span><span style="color:#d0d0d0"> to make tests compile, I will append the new function</span>
+     <span style="color:#d0d0d0">immediately after </span><span style="color:#ff5f5f;background:#303030"><i> </i>Add<i> </i></span><span style="color:#d0d0d0"> in the existing code block, using </span><span style="color:#ff5f5f;background:#303030"><i> </i>file.edit<i> </i></span><span style="color:#d0d0d0"> to replace the last line</span>
+     <span style="color:#d0d0d0">of </span><span style="color:#ff5f5f;background:#303030"><i> </i>Add<i> </i></span><span style="color:#d0d0d0">&#x27;s body plus a newline, or more safely, by overwriting the whole file content if I</span>
+     <span style="color:#d0d0d0">assume it&#x27;s small enough. Given </span><span style="color:#ff5f5f;background:#303030"><i> </i>file.edit<i> </i></span><span style="color:#d0d0d0"> requires an exact match, and I only have lines 1-6,</span>
+     <span style="color:#d0d0d0">I will append the new function after the existing content block, effectively overwriting lines</span>
+     <span style="color:#d0d0d0">1-6 with all known code plus the new function.</span>
+<span style="color:#808080">╭─ </span>running 1<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #prom<i>…</i> </span><span style="background:#303030">awaiting an access decision                                                       </span><span style="color:#9e9e9e;background:#303030">2s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠴</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#ffaf5f;background:#303030"><i>⚠</i> needs access</span><span style="background:#303030">                                                                        </span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... in background.               <span style="color:#9e9e9e"><i>·</i></span> Fix any failures identified by tests or suba<i>…</i><span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+<span style="color:#ffaf5f">├─ </span><span style="color:#ffaf5f;font-weight:700"><i>⚠</i> allow editing?</span><span style="color:#ffaf5f"> ───────────────────────────────────────── </span><span style="color:#9e9e9e"><i>↑</i><i>↓</i>/Tab choose <i>·</i> <i>↵</i> decide <i>·</i> Esc deny</span><span style="color:#ffaf5f"> ─┤</span>
+<span style="color:#ffaf5f">│ </span>Current: Ask <i>·</i> rev 2                                                                            <span style="color:#ffaf5f"> │</span>
+<span style="color:#ffaf5f">│ </span>Request: Act; for this conversation                                                             <span style="color:#ffaf5f"> │</span>
+<span style="color:#ffaf5f">│ </span>Editing uses normal Act; policy and sandbox still apply; sudo is separate.                      <span style="color:#ffaf5f"> │</span>
+<span style="color:#ffaf5f">│ </span><span style="color:#9e9e9e">From Marshal / step 44. To implement the user&#x27;s request to add Subtract(a, b int) int to calc.go</span><span style="color:#ffaf5f"> │</span>
+<span style="color:#ffaf5f">│ </span><span style="color:#9e9e9e">and fix compilation failures.</span>                                                                   <span style="color:#ffaf5f"> │</span>
+<span style="color:#ffaf5f">│ </span>&gt; Deny                                                                                          <span style="color:#ffaf5f"> │</span>
+<span style="color:#ffaf5f">│ </span>  Act                                                                                           <span style="color:#ffaf5f"> │</span>
+<span style="color:#ffaf5f">╰─ </span><span style="color:#ff875f;font-weight:700">Ask</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ffaf5f;font-weight:700">untrusted</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ff875f"><i>⠴</i></span> <span style="color:#9e9e9e">working 1m 34s <i>·</i> </span><span style="color:#bcbcbc">nvidia-nemotron-3.5-bolt-e4b-mlx @ lmstudio</span><span style="color:#ffaf5f"> ── </span><span style="color:#ffaf5f;font-weight:700"><i>⚠</i> approval</span><span style="color:#ffaf5f"> ─╯</span></pre></div><p class="cap">−3 rows. Title and keys move into the amber header; the status line closes it.</p></div></div><ul class="notes"><li>Saves 3 rows: the title row, the key-hint row and the blank row above the status line all go.</li><li>The tool approval (command, risk and sandbox, then allow/always/session/edit/deny) uses the same slot. Its command and risk go in the header and the choices sit inside. A patch approval draws its diff inside the frame without the surface tint.</li><li>The skill gate (violet) and the sudo prompt (amber) follow the same pattern. The label states what is being asked, so the prompt still reads without colour (NO_COLOR, monochrome).</li></ul></section>
+<section id="question"><div class="sh"><h2>Questions</h2><span class="chip do">Do it</span></div><p class="lede">The same slot in violet. The answer field loses its ┃ bar, because the frame already marks where typing goes.</p><div class="viewer"><div class="tabs" role="tablist" aria-label="Frames"><button role="tab" id="v-question-t0" aria-controls="v-question-p0" aria-selected="false" tabindex="-1">Today</button><button role="tab" id="v-question-t1" aria-controls="v-question-p1" aria-selected="true" tabindex="0">Framed<span class="rec" aria-label="recommended">●</span></button></div><div role="tabpanel" id="v-question-p0" aria-labelledby="v-question-t0" hidden><div class="scroll"><pre class="term">
+<span style="color:#9e9e9e"> <i>·</i> Agent failed: read stream: context canceled</span>
+
+<span style="color:#9e9e9e"> <i>·</i> Turn stopped.</span>
+
+<span style="color:#9e9e9e"> <i>·</i> Agent turn cancelled.</span>
+
+<span style="color:#9e9e9e"> <i>·</i> Switched to Ask mode. New actions need approval.</span>
+
+   <span style="color:#808080">─────────────────────────────────────────────────────────────────────────────────────────────────</span>
+
+<span style="color:#ff875f"> <i>❯</i> </span><span style="color:#bcbcbc">Run go vet ./... with shell.run and tell me the result.</span>
+
+<span style="color:#9e9e9e"> <i>·</i> Turn interrupted (read stream: context canceled). The next turn continues from this state.</span>
+
+<span style="color:#ff87af"> <i>✗</i> </span><span style="color:#d0d0d0">Running go vet as requested.</span>                                                    <span style="color:#9e9e9e">thought 20s <i>·</i> 20s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">shell   </span><span style="color:#bcbcbc">go vet ./...</span>                                <span style="color:#ff87af;font-weight:700">denied: Ask admits only read-only operatio<i>…</i></span>
+   <span style="color:#9e9e9e"> </span>         <span style="color:#9e9e9e">denied: Ask admits only read-only operations</span>
+
+<span style="color:#ff875f"> <i>⠋</i> </span><span style="color:#d0d0d0">I need Act mode to run go vet via shell.run, which is a mutating operation.</span>   <span style="color:#9e9e9e">thought 9s <i>·</i> 1m 10s</span>
+
+<span style="color:#808080">╭─ </span>running 2<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #2     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                 </span><span style="color:#9e9e9e;background:#303030">1m 52s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠋</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">The file.read tool is truncating results showing only 6 <i>…</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #prom<i>…</i> </span><span style="background:#303030">awaiting an answer                                                             </span><span style="color:#9e9e9e;background:#303030">1m 1s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠋</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#ffaf5f;background:#303030"><i>⚠</i> needs an answer</span><span style="background:#303030">                                                                     </span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... as background job            <span style="color:#9e9e9e"><i>·</i></span> Fix any failing tests or bugs found          <span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+<span style="color:#d787ff;background:#303030"><i>▍</i> ? </span><span style="color:#d0d0d0;background:#303030">Run </span><span style="color:#ff5f5f;background:#303030"><i> </i>go vet ./...<i> </i></span><span style="color:#d0d0d0;background:#303030"> <i>—</i> grant Act mode to allow this command.</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#9e9e9e">┃</span> <span style="color:#ff875f"><i>❯</i></span>
+
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Ask</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#ff875f"><i>⠋</i></span> <span style="color:#9e9e9e">working 1m 40s</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">ctx 5k/32k</span>   <span style="font-weight:700">Ctrl+C</span> stop</pre></div><p class="cap">Violet ▍ rail, an answer field, then a blank row above the status line.</p></div><div role="tabpanel" id="v-question-p1" aria-labelledby="v-question-t1"><div class="scroll"><pre class="term">
+
+<span style="color:#9e9e9e"> <i>·</i> Agent failed: read stream: context canceled</span>
+
+<span style="color:#9e9e9e"> <i>·</i> Turn stopped.</span>
+
+<span style="color:#9e9e9e"> <i>·</i> Agent turn cancelled.</span>
+
+<span style="color:#9e9e9e"> <i>·</i> Switched to Ask mode. New actions need approval.</span>
+
+   <span style="color:#808080">─────────────────────────────────────────────────────────────────────────────────────────────────</span>
+
+<span style="color:#ff875f"> <i>❯</i> </span><span style="color:#bcbcbc">Run go vet ./... with shell.run and tell me the result.</span>
+
+<span style="color:#9e9e9e"> <i>·</i> Turn interrupted (read stream: context canceled). The next turn continues from this state.</span>
+
+<span style="color:#ff87af"> <i>✗</i> </span><span style="color:#d0d0d0">Running go vet as requested.</span>                                                    <span style="color:#9e9e9e">thought 20s <i>·</i> 20s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">shell   </span><span style="color:#bcbcbc">go vet ./...</span>                                <span style="color:#ff87af;font-weight:700">denied: Ask admits only read-only operatio<i>…</i></span>
+   <span style="color:#9e9e9e"> </span>         <span style="color:#9e9e9e">denied: Ask admits only read-only operations</span>
+
+<span style="color:#ff875f"> <i>⠋</i> </span><span style="color:#d0d0d0">I need Act mode to run go vet via shell.run, which is a mutating operation.</span>   <span style="color:#9e9e9e">thought 9s <i>·</i> 1m 10s</span>
+
+<span style="color:#808080">╭─ </span>running 2<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #2     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                 </span><span style="color:#9e9e9e;background:#303030">1m 52s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠋</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">The file.read tool is truncating results showing only 6 <i>…</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #prom<i>…</i> </span><span style="background:#303030">awaiting an answer                                                             </span><span style="color:#9e9e9e;background:#303030">1m 1s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠋</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#ffaf5f;background:#303030"><i>⚠</i> needs an answer</span><span style="background:#303030">                                                                     </span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... as background job            <span style="color:#9e9e9e"><i>·</i></span> Fix any failing tests or bugs found          <span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#d787ff;font-weight:700">? question</span><span style="color:#d787ff"> ──────────────────────────────────────────────────────────── </span><span style="color:#9e9e9e"><i>↵</i> answer <i>·</i> Esc dismiss</span><span style="color:#d787ff"> ─┤</span>
+<span style="color:#d787ff">│ </span><span style="color:#d0d0d0">Run </span><span style="color:#ff5f5f"><i> </i>go vet ./...<i> </i></span><span style="color:#d0d0d0"> <i>—</i> grant Act mode to allow this command.</span>                                      <span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">│ </span><span style="color:#d787ff;font-weight:700"><i>❯</i> </span><span style="color:var(--t-bg);background:var(--t-fg)"> </span>                                                                                             <span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">╰─ </span><span style="color:#ff875f;font-weight:700">Ask</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ffaf5f;font-weight:700">untrusted</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ff875f"><i>⠋</i></span> <span style="color:#9e9e9e">working 1m 40s <i>·</i> </span><span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span><span style="color:#9e9e9e"> <i>·</i> local</span><span style="color:#d787ff"> ────────── </span><span style="font-weight:700">Ctrl+C</span> stop<span style="color:#d787ff"> ─╯</span></pre></div><p class="cap">−1 row. The prompt takes the composer&#x27;s section and turns its border violet.</p></div></div><ul class="notes"><li>Saves 1 row: today's blank row above the status line goes.</li><li>A form with several questions would stack them in one section, with "question 1/3" in the header.</li></ul></section>
+<section id="sheet"><div class="sh"><h2>Session sheet</h2><span class="chip do">Do it</span></div><p class="lede">Ctrl+B docks between the tray and the input, so it joins the outline as well. Its sections become ├─ NAME ─┤ dividers, the same grammar as the tray's plan header.</p><div class="viewer"><div class="tabs" role="tablist" aria-label="Frames"><button role="tab" id="v-sheet-t0" aria-controls="v-sheet-p0" aria-selected="false" tabindex="-1">Today</button><button role="tab" id="v-sheet-t1" aria-controls="v-sheet-p1" aria-selected="true" tabindex="0">Joined<span class="rec" aria-label="recommended">●</span></button></div><div role="tabpanel" id="v-sheet-p0" aria-labelledby="v-sheet-t0" hidden><div class="scroll"><pre class="term">
+<span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">Spawn subagent to review calc.go for bugs while tests run in background.</span>              <span style="color:#9e9e9e">thought 14s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">Review calc.go for bugs while tests run in background</span>                      <span style="color:#d787ff"><i>⧉</i> #1</span><span style="color:#9e9e9e"> started</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Wait for both the background test job and subagent to complete before</span>           <span style="color:#9e9e9e">thought 16s <i>·</i> 16s</span>
+     <span style="color:#d0d0d0">proceeding.</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Peek at subagent progress and find calc.go file.</span>                                      <span style="color:#9e9e9e">thought 12s</span>
+   <span style="color:#9e9e9e">├</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                 <span style="color:#9e9e9e">found 0 matches (mode: regex)</span>
+<span style="color:#808080">╭─ </span>running 1 <i>·</i> 1 finished<span style="color:#808080"> ─────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#5fd7ff"><i>▌</i>┆ job-1  </span><span style="color:#9e9e9e">go test ./... &amp;</span>  <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>                 <span style="color:#9e9e9e">0s</span> <span style="color:#00d7af"><i>✓</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #1     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                  </span><span style="color:#9e9e9e;background:#303030">1m 5s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠦</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">Found calc.go.                                           </span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... as background job            <span style="color:#9e9e9e"><i>·</i></span> Fix any failing tests or bugs found          <span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#d787ff;font-weight:700">Session</span>                                                          <span style="color:#9e9e9e"><i>↑</i><i>↓</i> section <i>·</i> <i>↵</i> open <i>·</i> esc close</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#eeeeee;font-weight:700"><i>▸</i> CONTEXT</span> <span style="color:#808080">─────────────────────────────────────────────────────────────────────────────────────</span>
+<span style="color:#d787ff"><i>▍</i></span>  <i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i> 0%
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#eeeeee;font-weight:700">CHANGED</span> <span style="color:#808080">───────────────────────────────────────────────────────────────────────────────────────</span>
+<span style="color:#d787ff"><i>▍</i></span> <i>±</i> 1 files <i>·</i> +0 -0
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#eeeeee;font-weight:700">TOOLS</span> <span style="color:#808080">─────────────────────────────────────────────────────────────────────────────────────────</span>
+<span style="color:#d787ff"><i>▍</i></span> <i>⚒</i> 10 calls <i>·</i> 0.0s max
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#eeeeee;font-weight:700">REPO</span> <span style="color:#808080">──────────────────────────────────────────────────────────────────────────────────────────</span>
+<span style="color:#d787ff"><i>▍</i></span> <i>⎇</i> main <i>·</i> 4 files <i>·</i> 4 symbols
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#eeeeee;font-weight:700">SKILLS</span> <span style="color:#808080">────────────────────────────────────────────────────────────────────────────────────────</span>
+<span style="color:#d787ff"><i>▍</i></span> <i>◆</i> 1 skills active
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#808080">───────────────────────────────────────────────────────────────────────────────────────────────</span>
+<span style="color:#d787ff"><i>▍</i></span> turn 0 <i>·</i> 3m04s <i>·</i> 0/0 <i>·</i> tools 12/49
+<span style="color:#ff875f;background:#303030"><i>▍</i></span><span style="color:#bcbcbc;background:#303030"><i>❯</i> </span><span style="color:#303030;background:#ff875f">A</span><span style="color:#9e9e9e;background:#303030">sk Marshal...</span>
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Act</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#ff875f"><i>⠦</i></span> <span style="color:#9e9e9e">working 3m 0s</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">ctx 7k/32k</span>    <span style="font-weight:700">Ctrl+C</span> stop</pre></div><p class="cap">Ctrl+B: a ▍ panel docked between the tray and the prompt.</p></div><div role="tabpanel" id="v-sheet-p1" aria-labelledby="v-sheet-t1"><div class="scroll"><pre class="term">
+
+
+
+<span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">Spawn subagent to review calc.go for bugs while tests run in background.</span>              <span style="color:#9e9e9e">thought 14s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">Review calc.go for bugs while tests run in background</span>                      <span style="color:#d787ff"><i>⧉</i> #1</span><span style="color:#9e9e9e"> started</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Wait for both the background test job and subagent to complete before</span>           <span style="color:#9e9e9e">thought 16s <i>·</i> 16s</span>
+     <span style="color:#d0d0d0">proceeding.</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+
+ <i>●</i> <span style="color:#d0d0d0">Peek at subagent progress and find calc.go file.</span>                                      <span style="color:#9e9e9e">thought 12s</span>
+   <span style="color:#9e9e9e">├</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                         <span style="color:#9e9e9e">waited 0s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                 <span style="color:#9e9e9e">found 0 matches (mode: regex)</span>
+<span style="color:#808080">╭─ </span>running 1 <i>·</i> 1 finished<span style="color:#808080"> ─────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#5fd7ff"><i>▌</i>┆ job-1  </span><span style="color:#9e9e9e">go test ./... &amp;</span>  <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>                 <span style="color:#9e9e9e">0s</span> <span style="color:#00d7af"><i>✓</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #1     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                  </span><span style="color:#9e9e9e;background:#303030">1m 5s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠦</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">Found calc.go.                                           </span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... as background job            <span style="color:#9e9e9e"><i>·</i></span> Fix any failing tests or bugs found          <span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#d787ff;font-weight:700"><i>▸</i> </span><span style="color:#eeeeee;font-weight:700">CONTEXT</span><span style="color:#d787ff"> ────────────────────────────────────────── </span><span style="color:#9e9e9e">session <i>·</i> <i>↑</i><i>↓</i> section <i>·</i> <i>↵</i> open <i>·</i> esc close</span><span style="color:#d787ff"> ─┤</span>
+<span style="color:#d787ff">│ </span> <span style="color:#808080"><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i><i>░</i></span> 0%<span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#eeeeee;font-weight:700">CHANGED</span><span style="color:#d787ff"> ────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#d787ff">│ </span><i>±</i> 1 files <i>·</i> +0 -0                                                                               <span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#eeeeee;font-weight:700">TOOLS</span><span style="color:#d787ff"> ──────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#d787ff">│ </span><i>⚒</i> 10 calls <i>·</i> 0.0s max                                                                           <span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#eeeeee;font-weight:700">REPO</span><span style="color:#d787ff"> ───────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#d787ff">│ </span><i>⎇</i> main <i>·</i> 4 files <i>·</i> 4 symbols                                                                    <span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#eeeeee;font-weight:700">SKILLS</span><span style="color:#d787ff"> ─────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#d787ff">│ </span><i>◆</i> 1 skills active                                                                               <span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">├─ </span>turn 0 <i>·</i> 3m04s <i>·</i> 0/0 <i>·</i> tools 12/49<span style="color:#d787ff"> ─────────────────────────────────────────────────────────────┤</span>
+<span style="color:#808080">│ </span><span style="color:#bcbcbc"><i>❯</i> </span><span style="color:var(--t-bg);background:#ff875f">A</span><span style="color:#9e9e9e">sk Marshal...</span>                                                                                <span style="color:#808080"> │</span>
+<span style="color:#808080">╰─ </span><span style="color:#ff875f;font-weight:700">Act</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ffaf5f;font-weight:700">untrusted</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ff875f"><i>⠦</i></span> <span style="color:#9e9e9e">working 3m 0s <i>·</i> </span><span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span><span style="color:#9e9e9e"> <i>·</i> local</span><span style="color:#808080"> ─────────── </span><span style="font-weight:700">Ctrl+C</span> stop<span style="color:#808080"> ─╯</span></pre></div><p class="cap">−3 rows. Sections become ├─ NAME ─┤ dividers, like the tray&#x27;s plan header; violet while focused.</p></div></div><ul class="notes"><li>Saves 3 rows: the title row, the closing rule and the footer row merge into dividers.</li><li>Violet marks focus, the colour today's ▍ gutter uses for a focused panel. The selected section keeps its ▸.</li><li>Any docked panel (the agent lane, access panel, steer panel) can use the same treatment.</li></ul></section>
+<section id="settings"><div class="sh"><h2>Full-frame panels</h2><span class="chip do">Do it</span></div><p class="lede">/settings, /agents, /skills and the other panels drawn through <code>chrome.Panel</code> get one frame: title and keys in the top border, groups as dividers, count and scroll hint in the bottom border.</p><div class="viewer"><div class="tabs" role="tablist" aria-label="Frames"><button role="tab" id="v-settings-t0" aria-controls="v-settings-p0" aria-selected="false" tabindex="-1">Today</button><button role="tab" id="v-settings-t1" aria-controls="v-settings-p1" aria-selected="true" tabindex="0">Framed<span class="rec" aria-label="recommended">●</span></button></div><div role="tabpanel" id="v-settings-p0" aria-labelledby="v-settings-t0" hidden><div class="scroll"><pre class="term"><span style="color:#d787ff"><i>▍</i></span> <span style="color:#d787ff;font-weight:700">Settings</span>                                        <span style="color:#9e9e9e"><i>←</i><i>→</i> cycle <i>·</i> <i>↵</i> pick <i>·</i> <i>→</i> project config <i>·</i> Esc close</span>
+<span style="color:#d787ff"><i>▍</i></span> / <span style="color:#e5e5e5">&gt;</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#d787ff;font-weight:700">Agent</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#eeeeee;background:#4e4e4e;font-weight:700"><i>▸</i> Agent <i>·</i> Default profile</span><span style="background:#4e4e4e">                                                               </span><span style="color:#eeeeee;background:#4e4e4e;font-weight:700">local <i>▾</i></span>
+<span style="color:#d787ff"><i>▍</i></span>     <span style="color:#9e9e9e">agent.default_profile <i>·</i> active agent profile that sets model routing roles [toml: profile.d<i>…</i></span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Preset</span>                                                       <span style="color:#d787ff">lmstudio/qwen/qwen3.5-9b</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Max tool iterations</span>                                                                 <span style="color:#d787ff">0</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Max retries</span>                                                                         <span style="color:#d787ff">0</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Max turn context tokens</span>                                                             <span style="color:#d787ff">0</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Max concurrent subagents</span>                                                            <span style="color:#d787ff">3</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Max tool result chars</span>                                                               <span style="color:#d787ff">0</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Subtask iterations</span>                                                                  <span style="color:#d787ff">0</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Thinking budget margin</span>                                                           <span style="color:#d787ff">4096</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Plan first</span>                                                                      <span style="color:#9e9e9e">off <i>○</i></span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Narration prompt</span>                                                                 <span style="color:#00d7af">on <i>●</i></span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Intent nudge</span>                                                                     <span style="color:#00d7af">on <i>●</i></span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Mode</span>                                                                            <span style="color:#d787ff">act <i>▾</i></span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Agent <i>·</i> Auto</span>                                                                            <span style="color:#9e9e9e">off <i>○</i></span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#d787ff;font-weight:700">Providers</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Providers <i>·</i> lmstudio  http://127.0.0.1:1234/v1 <i>·</i> local <i>·</i> no key</span>                            <span style="color:#d787ff"> <i>›</i></span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#d787ff;font-weight:700">Profiles</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Profiles <i>·</i> local  (3 roles)</span>                                                                <span style="color:#d787ff"> <i>›</i></span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#d787ff;font-weight:700">Privacy</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Privacy <i>·</i> Remote providers allowed</span>                                                      <span style="color:#9e9e9e">off <i>○</i></span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Privacy <i>·</i> Redact secrets</span>                                                                 <span style="color:#00d7af">on <i>●</i></span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Privacy <i>·</i> Include gitignored files</span>                                                      <span style="color:#9e9e9e">off <i>○</i></span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Privacy <i>·</i> models.dev enrichment</span>                                                         <span style="color:#d787ff">ask <i>▾</i></span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#d787ff;font-weight:700">Shell</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Shell <i>·</i> Foreground wait (s)</span>                                                                <span style="color:#d787ff">10</span>
+<span style="color:#d787ff"><i>▍</i></span>   <span style="color:#bcbcbc">Shell <i>·</i> Max output size</span>                                                              <span style="color:#d787ff">195.3 KB</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">  <i>↓</i> more</span>
+<span style="color:#d787ff"><i>▍</i></span> <span style="color:#9e9e9e">138 settings</span>
+
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Act</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">think default</span> <i>·</i> <span style="color:#9e9e9e"><i>±</i>1 file</span> <i>·</i> <span style="color:#bcbcbc">repo</span> <i>·</i> <span style="color:#d787ff"><i>⎇</i> main</span></pre></div><p class="cap">/settings: a full-frame ▍ panel, groups as bold violet rows.</p></div><div role="tabpanel" id="v-settings-p1" aria-labelledby="v-settings-t1"><div class="scroll"><pre class="term"><span style="color:#d787ff">╭─ </span><span style="color:#d787ff;font-weight:700">Settings</span><span style="color:#d787ff"> ──────────────────────────────────── </span><span style="color:#9e9e9e"><i>←</i><i>→</i> cycle <i>·</i> <i>↵</i> pick <i>·</i> <i>→</i> project config <i>·</i> Esc close</span><span style="color:#d787ff"> ─╮</span>
+<span style="color:#d787ff">│ </span>/ <span style="color:#e5e5e5">&gt;</span>                                                                                             <span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#d787ff;font-weight:700">Agent</span><span style="color:#d787ff"> ──────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#d787ff">│ </span><span style="color:#eeeeee;background:#4e4e4e;font-weight:700"><i>▸</i> Agent <i>·</i> Default profile</span><span style="background:#4e4e4e">                                                                </span><span style="color:#eeeeee;background:#4e4e4e;font-weight:700">local <i>▾</i></span><span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">│ </span>    <span style="color:#9e9e9e">agent.default_profile <i>·</i> active agent profile that sets model routing roles [toml: profile.d<i>…</i></span><span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Preset</span>                                                        <span style="color:#d787ff">lmstudio/qwen/qwen3.5-9b │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Max tool iterations</span>                                                                  <span style="color:#d787ff">0 │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Max retries</span>                                                                          <span style="color:#d787ff">0 │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Max turn context tokens</span>                                                              <span style="color:#d787ff">0 │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Max concurrent subagents</span>                                                             <span style="color:#d787ff">3 │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Max tool result chars</span>                                                                <span style="color:#d787ff">0 │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Subtask iterations</span>                                                                   <span style="color:#d787ff">0 │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Thinking budget margin</span>                                                            <span style="color:#d787ff">4096 │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Plan first</span>                                                                       <span style="color:#9e9e9e">off <i>○</i></span><span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Narration prompt</span>                                                                  <span style="color:#00d7af">on <i>●</i></span><span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Intent nudge</span>                                                                      <span style="color:#00d7af">on <i>●</i></span><span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Mode</span>                                                                             <span style="color:#d787ff">act <i>▾</i> │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Agent <i>·</i> Auto</span>                                                                             <span style="color:#9e9e9e">off <i>○</i></span><span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#d787ff;font-weight:700">Providers</span><span style="color:#d787ff"> ──────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Providers <i>·</i> lmstudio  http://127.0.0.1:1234/v1 <i>·</i> local <i>·</i> no key</span>                              <span style="color:#d787ff"><i>›</i> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#d787ff;font-weight:700">Profiles</span><span style="color:#d787ff"> ───────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Profiles <i>·</i> local  (3 roles)</span>                                                                  <span style="color:#d787ff"><i>›</i> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#d787ff;font-weight:700">Privacy</span><span style="color:#d787ff"> ────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Privacy <i>·</i> Remote providers allowed</span>                                                       <span style="color:#9e9e9e">off <i>○</i></span><span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Privacy <i>·</i> Redact secrets</span>                                                                  <span style="color:#00d7af">on <i>●</i></span><span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Privacy <i>·</i> Include gitignored files</span>                                                       <span style="color:#9e9e9e">off <i>○</i></span><span style="color:#d787ff"> │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Privacy <i>·</i> models.dev enrichment</span>                                                          <span style="color:#d787ff">ask <i>▾</i> │</span>
+<span style="color:#d787ff">├─ </span><span style="color:#d787ff;font-weight:700">Shell</span><span style="color:#d787ff"> ──────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Shell <i>·</i> Foreground wait (s)</span>                                                                 <span style="color:#d787ff">10 │</span>
+<span style="color:#d787ff">│ </span>  <span style="color:#bcbcbc">Shell <i>·</i> Max output size</span>                                                               <span style="color:#d787ff">195.3 KB │</span>
+<span style="color:#d787ff">╰─ </span><span style="color:#9e9e9e">138 settings</span><span style="color:#d787ff"> ────────────────────────────────────────────────────────────────────────── </span><span style="color:#9e9e9e"><i>↓</i> more</span><span style="color:#d787ff"> ─╯</span>
+
+
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Act</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">think default</span> <i>·</i> <span style="color:#9e9e9e"><i>±</i>1 file</span> <i>·</i> <span style="color:#bcbcbc">repo</span> <i>·</i> <span style="color:#d787ff"><i>⎇</i> main</span></pre></div><p class="cap">0 rows. Groups become ├─ Agent ─┤ dividers; the count and ↓ more move into the bottom border, which frees one row for another setting.</p></div></div><ul class="notes"><li>Same rows as today, and the bottom border frees one row for another setting.</li><li>The cost is 2 columns: "│ " and " │" take 4 cells where "▍ " took 2.</li><li>This is one change to <code>chrome.Panel</code> and <code>PanelWithHints</code>, with callers unchanged, plus a divider helper for group headers.</li></ul></section>
+<section id="drill"><div class="sh"><h2>Subagent drill-in</h2><span class="chip maybe">Optional</span></div><p class="lede">Ctrl+F shows a child's transcript. A coral frame with the crumb as its top border makes clear you are inside the child, not the parent.</p><div class="viewer"><div class="tabs" role="tablist" aria-label="Frames"><button role="tab" id="v-drill-t0" aria-controls="v-drill-p0" aria-selected="false" tabindex="-1">Today</button><button role="tab" id="v-drill-t1" aria-controls="v-drill-p1" aria-selected="true" tabindex="0">Framed<span class="rec" aria-label="recommended">●</span></button></div><div role="tabpanel" id="v-drill-p0" aria-labelledby="v-drill-t0" hidden><div class="scroll"><pre class="term"><span style="color:#ff875f"><i>●</i> orchestrator</span><span style="color:#9e9e9e"> <i>▸</i> </span><span style="color:#ff875f;font-weight:700"><i>⧉</i> subtask <i>—</i> Review calc.go for bugs while tests run in background <i>·</i> qwen/qwen3.5-9b</span>
+   <span style="color:#bcbcbc">- Division by zero</span>
+   <span style="color:#bcbcbc">- Integer overflow</span>
+   <span style="color:#bcbcbc">- Race conditions</span>
+   <span style="color:#bcbcbc">- Resource leaks</span>
+   <span style="color:#bcbcbc">- Incorrect error handling</span>
+   <span style="color:#bcbcbc">- Off-by-one errors</span>
+   <span style="color:#bcbcbc">- Logic errors</span>
+
+   <span style="color:#bcbcbc">Provide a detailed analysis of any issues found.</span>
+
+<span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">I need to find and read calc.go before analyzing it for bugs.</span>          <span style="color:#5fd7ff">subtask</span><span style="color:#9e9e9e"> <i>·</i> thought 8s <i>·</i> 18s</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                               <span style="color:#9e9e9e">found 0 matches</span>
+
+ <i>●</i> <span style="color:#d0d0d0">The initial search didn&#x27;t find calc.go. Let me try a broader file search</span>     <span style="color:#5fd7ff">subtask</span><span style="color:#9e9e9e"> <i>·</i> thought 6s</span>
+     <span style="color:#d0d0d0">to locate it.</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;*.go.*calc*&quot;</span>                                                           <span style="color:#9e9e9e">found 0 matches</span>
+
+ <i>●</i> <span style="color:#d0d0d0">The repo.search didn&#x27;t find calc.go with wildcard patterns. Let me</span>    <span style="color:#5fd7ff">subtask</span><span style="color:#9e9e9e"> <i>·</i> thought 15s <i>·</i> 17s</span>
+     <span style="color:#d0d0d0">try a broader approach - using git status or looking at what Go</span>
+     <span style="color:#d0d0d0">files exist in the repo.</span>
+   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">shell   </span><span style="color:#bcbcbc">find /private/tmp/scratch/go-calc-broken-----------------------------1a8-<i>…</i></span>  <span style="color:#9e9e9e">exit 0 <i>·</i> 0s</span>
+
+<span style="background:#303030"> <i>⠇</i> </span><span style="color:#ff875f;background:#303030;font-weight:700">thinking</span><span style="background:#303030">                                                                                      </span><span style="color:#9e9e9e;background:#303030">10s</span>
+ <i>▍</i> The find command found calc.go exists at that path. I should read both calc.go and its test file
+<span style="color:#9e9e9e"> <i>▍</i> to understand the full picture before analyzing for bugs.</span>
+
+<span style="color:#808080">╭─ </span>running 1 <i>·</i> 1 finished<span style="color:#808080"> ─────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#5fd7ff"><i>▌</i>┆ job-1  </span><span style="color:#9e9e9e">go test ./... &amp;</span>  <span style="color:#00d7af">done</span>                                                             <span style="color:#9e9e9e">0s</span> <span style="color:#00d7af"><i>✓</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #1     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                    </span><span style="color:#9e9e9e;background:#303030">55s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠇</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">The repo.search didn&#x27;t find calc.go with wildcard patter<i>…</i></span><span style="color:#808080"> │</span>
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+<span style="color:#ff875f;background:#303030"><i>▍</i></span><span style="color:#bcbcbc;background:#303030"><i>❯</i> </span><span style="color:#9e9e9e;background:#303030">Ask Marshal...</span>
+<span style="color:#bcbcbc"> </span><span style="color:#ff875f;font-weight:700">Act</span> <i>·</i> <span style="color:#ffaf5f;font-weight:700">untrusted</span> <i>·</i> <span style="color:#ff875f"><i>⠇</i></span> <span style="color:#9e9e9e">working 2m 50s</span> <i>·</i> <span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span> <i>·</i> <span style="color:#9e9e9e">local</span> <i>·</i> <span style="color:#9e9e9e">ctx 6k/32k</span>   <span style="font-weight:700">Ctrl+C</span> stop</pre></div><p class="cap">Ctrl+F: a crumb row on top; the child&#x27;s transcript looks like the parent&#x27;s.</p></div><div role="tabpanel" id="v-drill-p1" aria-labelledby="v-drill-t1"><div class="scroll"><pre class="term"><span style="color:#ff875f">╭─ <i>●</i> orchestrator</span><span style="color:#9e9e9e"> <i>▸</i> </span><span style="color:#ff875f;font-weight:700"><i>⧉</i> subtask <i>—</i> Review calc.go for bugs while tests run in backgrou<i>…</i></span><span style="color:#ff875f"> ─ </span><span style="color:#9e9e9e"><i>↑</i>/Esc back</span><span style="color:#ff875f"> ─╮</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#bcbcbc">- Division by zero</span>                                                                           <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#bcbcbc">- Integer overflow</span>                                                                           <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#bcbcbc">- Race conditions</span>                                                                            <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#bcbcbc">- Resource leaks</span>                                                                             <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#bcbcbc">- Incorrect error handling</span>                                                                   <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#bcbcbc">- Off-by-one errors</span>                                                                          <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#bcbcbc">- Logic errors</span>                                                                               <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>                                                                                                <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#bcbcbc">Provide a detailed analysis of any issues found.</span>                                             <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>                                                                                                <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span><span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">I</span> <span style="color:#d0d0d0">need</span> <span style="color:#d0d0d0">to</span> <span style="color:#d0d0d0">find</span> <span style="color:#d0d0d0">and</span> <span style="color:#d0d0d0">read</span> <span style="color:#d0d0d0">calc.go</span> <span style="color:#d0d0d0">before</span> <span style="color:#d0d0d0">analyzing</span> <span style="color:#d0d0d0">it</span> <span style="color:#d0d0d0">for</span> <span style="color:#d0d0d0">bugs.</span>      <span style="color:#5fd7ff">subtask</span><span style="color:#9e9e9e"> <i>·</i> thought 8s <i>·</i> 18s</span><span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                           <span style="color:#9e9e9e">found 0 matches</span><span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>                                                                                                <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span> <i>●</i> <span style="color:#d0d0d0">The</span> <span style="color:#d0d0d0">initial</span> <span style="color:#d0d0d0">search</span> <span style="color:#d0d0d0">didn&#x27;t</span> <span style="color:#d0d0d0">find</span> <span style="color:#d0d0d0">calc.go.</span> <span style="color:#d0d0d0">Let</span> <span style="color:#d0d0d0">me</span> <span style="color:#d0d0d0">try</span> <span style="color:#d0d0d0">a</span> <span style="color:#d0d0d0">broader</span> <span style="color:#d0d0d0">file</span>        <span style="color:#5fd7ff">subtask</span><span style="color:#9e9e9e"> <i>·</i> thought 6s</span><span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>     <span style="color:#d0d0d0">search</span> <span style="color:#d0d0d0">to</span> <span style="color:#d0d0d0">locate</span> <span style="color:#d0d0d0">it.</span>                                                                       <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;*.go.*calc*&quot;</span>                                                       <span style="color:#9e9e9e">found 0 matches</span><span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>                                                                                                <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span> <i>●</i> <span style="color:#d0d0d0">The</span> <span style="color:#d0d0d0">repo.search</span> <span style="color:#d0d0d0">didn&#x27;t</span> <span style="color:#d0d0d0">find</span> <span style="color:#d0d0d0">calc.go</span> <span style="color:#d0d0d0">with</span> <span style="color:#d0d0d0">wildcard</span> <span style="color:#d0d0d0">patterns.</span> <span style="color:#d0d0d0">Let</span>   <span style="color:#5fd7ff">subtask</span><span style="color:#9e9e9e"> <i>·</i> thought 15s <i>·</i> 17s</span><span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>     <span style="color:#d0d0d0">me</span> <span style="color:#d0d0d0">try</span> <span style="color:#d0d0d0">a</span> <span style="color:#d0d0d0">broader</span> <span style="color:#d0d0d0">approach</span> <span style="color:#d0d0d0">-</span> <span style="color:#d0d0d0">using</span> <span style="color:#d0d0d0">git</span> <span style="color:#d0d0d0">status</span> <span style="color:#d0d0d0">or</span> <span style="color:#d0d0d0">looking</span> <span style="color:#d0d0d0">at</span>                                 <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>     <span style="color:#d0d0d0">what</span> <span style="color:#d0d0d0">Go</span> <span style="color:#d0d0d0">files</span> <span style="color:#d0d0d0">exist</span> <span style="color:#d0d0d0">in</span> <span style="color:#d0d0d0">the</span> <span style="color:#d0d0d0">repo.</span>                                                           <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">shell   </span><span style="color:#bcbcbc">find /private/tmp/scratch/go-calc-broken-----------------------------<i>…</i></span>  <span style="color:#9e9e9e">exit 0 <i>·</i> 0s</span><span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span>                                                                                                <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span><span style="background:#303030"> <i>⠇</i> </span><span style="color:#ff875f;background:#303030;font-weight:700">thinking</span>                                                                                  <span style="color:#9e9e9e;background:#303030">10s</span><span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span> <i>▍</i> The find command found calc.go exists at that path. I should read both calc.go and its test  <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">│ </span> <i>▍</i> file <span style="color:#9e9e9e">to</span> <span style="color:#9e9e9e">understand</span> <span style="color:#9e9e9e">the</span> <span style="color:#9e9e9e">full</span> <span style="color:#9e9e9e">picture</span> <span style="color:#9e9e9e">before</span> <span style="color:#9e9e9e">analyzing</span> <span style="color:#9e9e9e">for</span> <span style="color:#9e9e9e">bugs.</span>                               <span style="color:#ff875f"> │</span>
+<span style="color:#ff875f">╰──────────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span style="color:#808080">╭─ </span>running 1 <i>·</i> 1 finished<span style="color:#808080"> ─────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#5fd7ff"><i>▌</i>┆ job-1  </span><span style="color:#9e9e9e">go test ./... &amp;</span>  <span style="color:#00d7af">done</span>                                                             <span style="color:#9e9e9e">0s</span> <span style="color:#00d7af"><i>✓</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #1     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                    </span><span style="color:#9e9e9e;background:#303030">55s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠇</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">The repo.search didn&#x27;t find calc.go with wildcard patter<i>…</i></span><span style="color:#808080"> │</span>
+<span style="color:#808080">├──────────────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#808080">│ </span><span style="color:#bcbcbc"><i>❯</i> </span><span style="color:#9e9e9e">Ask Marshal...</span>                                                                                <span style="color:#808080"> │</span>
+<span style="color:#808080">╰─ </span><span style="color:#ff875f;font-weight:700">Act</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ffaf5f;font-weight:700">untrusted</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ff875f"><i>⠇</i></span> <span style="color:#9e9e9e">working 2m 50s <i>·</i> </span><span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span><span style="color:#9e9e9e"> <i>·</i> local</span><span style="color:#808080"> ────────── </span><span style="font-weight:700">Ctrl+C</span> stop<span style="color:#808080"> ─╯</span></pre></div><p class="cap">+1 row and −4 columns. The child&#x27;s transcript sits in a coral frame whose top border is the crumb.</p></div></div><ul class="notes"><li>Costs 1 row, and the transcript loses 4 columns, so narration re-wraps narrower.</li><li>Today the crumb's "(↑/Esc to go back)" falls off the right edge at 100 columns. As the border's right label it always fits.</li><li>This is the one place a frame goes around history. It is justified only because the view is a scope you entered and will leave.</li></ul></section>
+<section id="dont"><div class="sh"><h2>Transcript history</h2><span class="chip dont">Don&#x27;t</span></div><p class="lede">Here is what boxing the history would look like: every beat, event and answer in its own frame.</p><div class="viewer"><div role="tabpanel" id="v-dont-p0" aria-labelledby="v-dont-t0"><div class="scroll"><pre class="term"><span style="color:#808080">╭──────────────────────────────────────────────────────────────────────────────────────────────────╮</span>
+<span style="color:#808080">│ </span><span style="color:#9e9e9e"> <i>●</i> </span><span style="color:#d0d0d0">Spawn</span> <span style="color:#d0d0d0">subagent</span> <span style="color:#d0d0d0">to</span> <span style="color:#d0d0d0">review</span> <span style="color:#d0d0d0">calc.go</span> <span style="color:#d0d0d0">for</span> <span style="color:#d0d0d0">bugs</span> <span style="color:#d0d0d0">while</span> <span style="color:#d0d0d0">tests</span> <span style="color:#d0d0d0">run</span> <span style="color:#d0d0d0">in</span> <span style="color:#d0d0d0">background.</span>          <span style="color:#9e9e9e">thought 14s</span><span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span>   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">Review calc.go for bugs while tests run in background</span>                  <span style="color:#d787ff"><i>⧉</i> #1</span><span style="color:#9e9e9e"> started</span><span style="color:#808080"> │</span>
+<span style="color:#808080">╰──────────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span style="color:#808080">╭──────────────────────────────────────────────────────────────────────────────────────────────────╮</span>
+<span style="color:#808080">│ </span> <i>●</i> <span style="color:#d0d0d0">Wait</span> <span style="color:#d0d0d0">for</span> <span style="color:#d0d0d0">both</span> <span style="color:#d0d0d0">the</span> <span style="color:#d0d0d0">background</span> <span style="color:#d0d0d0">test</span> <span style="color:#d0d0d0">job</span> <span style="color:#d0d0d0">and</span> <span style="color:#d0d0d0">subagent</span> <span style="color:#d0d0d0">to</span> <span style="color:#d0d0d0">complete</span> <span style="color:#d0d0d0">before</span>       <span style="color:#9e9e9e">thought 16s <i>·</i> 16s</span><span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span>     <span style="color:#d0d0d0">proceeding.</span>                                                                                <span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span>   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                     <span style="color:#9e9e9e">waited 0s</span><span style="color:#808080"> │</span>
+<span style="color:#808080">╰──────────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span style="color:#808080">╭──────────────────────────────────────────────────────────────────────────────────────────────────╮</span>
+<span style="color:#808080">│ </span> <i>●</i> <span style="color:#d0d0d0">Peek</span> <span style="color:#d0d0d0">at</span> <span style="color:#d0d0d0">subagent</span> <span style="color:#d0d0d0">progress</span> <span style="color:#d0d0d0">and</span> <span style="color:#d0d0d0">find</span> <span style="color:#d0d0d0">calc.go</span> <span style="color:#d0d0d0">file.</span>                                  <span style="color:#9e9e9e">thought 12s</span><span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span>   <span style="color:#9e9e9e">├</span> <span style="color:#9e9e9e">agent   </span><span style="color:#bcbcbc">await</span>                                                                     <span style="color:#9e9e9e">waited 0s</span><span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span>   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                             <span style="color:#9e9e9e">found 0 matches (mode: regex)</span><span style="color:#808080"> │</span>
+<span style="color:#808080">╰──────────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span style="color:#808080">╭──────────────────────────────────────────────────────────────────────────────────────────────────╮</span>
+<span style="color:#808080">│ </span> <i>●</i> <span style="color:#d0d0d0">Search</span> <span style="color:#d0d0d0">for</span> <span style="color:#d0d0d0">calc.go</span> <span style="color:#d0d0d0">using</span> <span style="color:#d0d0d0">substring</span> <span style="color:#d0d0d0">mode</span> <span style="color:#d0d0d0">to</span> <span style="color:#d0d0d0">find</span> <span style="color:#d0d0d0">the</span> <span style="color:#d0d0d0">file.</span>                          <span style="color:#9e9e9e">thought 8s</span><span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span>   <span style="color:#9e9e9e">└</span> <span style="color:#9e9e9e">search  </span><span style="color:#bcbcbc">&quot;calc.go&quot;</span>                                                           <span style="color:#9e9e9e">found 0 matches</span><span style="color:#808080"> │</span>
+<span style="color:#808080">╰──────────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span style="color:#808080">╭──────────────────────────────────────────────────────────────────────────────────────────────────╮</span>
+<span style="color:#808080">│ </span><span style="background:#303030"> <i>⠦</i> </span><span style="color:#ff875f;background:#303030;font-weight:700">thinking</span>                                                                                  <span style="color:#9e9e9e;background:#303030">10s</span><span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span> <i>▍</i> The subagent is still running and hasn&#x27;t found calc.go yet. Let me wait a bit more to see if <span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span> <i>▍</i> it <span style="color:#9e9e9e">completes</span> <span style="color:#9e9e9e">its</span> <span style="color:#9e9e9e">task,</span> <span style="color:#9e9e9e">or</span> <span style="color:#9e9e9e">I</span> <span style="color:#9e9e9e">can</span> <span style="color:#9e9e9e">check</span> <span style="color:#9e9e9e">the</span> <span style="color:#9e9e9e">git</span> <span style="color:#9e9e9e">status</span> <span style="color:#9e9e9e">to</span> <span style="color:#9e9e9e">understand</span> <span style="color:#9e9e9e">what</span> <span style="color:#9e9e9e">files</span> <span style="color:#9e9e9e">exist</span> <span style="color:#9e9e9e">in</span> <span style="color:#9e9e9e">the</span>   <span style="color:#808080"> │</span>
+<span style="color:#808080">│ </span> <i>▍</i> <span style="color:#9e9e9e">repository.</span>                                                                                  <span style="color:#808080"> │</span>
+<span style="color:#808080">╰──────────────────────────────────────────────────────────────────────────────────────────────────╯</span>
+<span style="color:#808080">╭─ </span>running 1 <i>·</i> 1 finished<span style="color:#808080"> ─────────────────────────────────────────────────────────────────────────╮</span>
+│ <span style="color:#5fd7ff"><i>▌</i>┆ job-1  </span><span style="color:#9e9e9e">go test ./... &amp;</span>  <span style="color:#00d7af">done</span> <i>·</i> <span style="color:#9e9e9e">./calc_test.go:12:12: undefined: Subtract</span>                 <span style="color:#9e9e9e">0s</span> <span style="color:#00d7af"><i>✓</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i><i>⧉</i> #1     </span><span style="background:#303030">Review calc.go for bugs whil<i>…</i>                                                    </span><span style="color:#9e9e9e;background:#303030">46s</span><span style="background:#303030"> </span><span style="color:#d787ff;background:#303030"><i>⠦</i></span><span style="color:#808080"> │</span>
+│ <span style="color:#d787ff;background:#303030"><i>▌</i></span><span style="background:#303030">         </span><span style="color:#9e9e9e;background:#303030">qwen/qwen3.5-9b @ lmstudio <i>·</i> </span><span style="background:#303030">The repo.search didn&#x27;t find calc.go with wildcard patter<i>…</i></span><span style="color:#808080"> │</span>
+├─ plan  <span style="color:#9e9e9e"><i>▱</i><i>▱</i><i>▱</i></span> 0/3<span style="color:#808080"> ──────────────────────────────────────────────────────────────────────────────────┤</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Run go test ./... as background job            <span style="color:#9e9e9e"><i>·</i></span> Fix any failing tests or bugs found          <span style="color:#808080"> │</span>
+│ <span style="color:#9e9e9e"><i>·</i></span> Spawn subagent to review calc.go for bugs wh<i>…</i>                                                 <span style="color:#808080"> │</span>
+<span style="color:#808080">├──────────────────────────────────────────────────────────────────────────────────────────────────┤</span>
+<span style="color:#808080">│ </span><span style="color:#bcbcbc"><i>❯</i> </span><span style="color:var(--t-bg);background:#ff875f">A</span><span style="color:#9e9e9e">sk Marshal...</span>                                                                                <span style="color:#808080"> │</span>
+<span style="color:#808080">╰─ </span><span style="color:#ff875f;font-weight:700">Act</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ffaf5f;font-weight:700">untrusted</span><span style="color:#9e9e9e"> <i>·</i> </span><span style="color:#ff875f"><i>⠦</i></span> <span style="color:#9e9e9e">working 2m 41s <i>·</i> </span><span style="color:#bcbcbc">qwen/qwen3.5-9b @ lmstudio</span><span style="color:#9e9e9e"> <i>·</i> local</span><span style="color:#808080"> ────────── </span><span style="font-weight:700">Ctrl+C</span> stop<span style="color:#808080"> ─╯</span></pre></div><p class="cap">Every block of history boxed. The tray stops being the one framed thing at the bottom.</p></div></div><ul class="notes"><li>Each block costs 2 rows. The July hairline-gutter redesign took borders out of the transcript (code blocks, answers) to win back exactly these rows.</li><li>The spine (├ └) already ties calls to their narration. A box around them adds nothing.</li><li>Once history is boxed, a frame no longer means "live, or waiting on you", and the console stops standing out.</li></ul></section>
+
+  <section class="build" aria-labelledby="build-h">
+    <h2 id="build-h">Building it</h2>
+    <ul>
+      <li>Move <code>livebox.borderLine</code> into <code>chrome</code> as a shared border helper with an
+        optional right-aligned label and a colour. livebox already imports chrome, so nothing forks.</li>
+      <li><code>livebox.Render</code> gains an open-bottom mode that ends in ├─┤ when the input follows.
+        Only the goldens' last row changes.</li>
+      <li><code>renderInputArea</code> drops the <code>ChromeBG</code> band and draws │ … │ around the
+        input. <code>inputInnerWidth</code> is already <code>leftWidth − 4</code>, and
+        <code>inputBarColor</code> becomes the border colour for prompts.</li>
+      <li><code>renderStatusLine</code> renders inside ╰─ … ─╯ with 6 fewer cells, and
+        <code>statusLineRows</code> stays 1. Swap the shed priorities of <code>local</code> and
+        <code>ctx</code>.</li>
+      <li><code>chrome.Panel</code> and <code>PanelWithHints</code> draw the frame instead of the ▍ gutter,
+        with callers unchanged. A divider helper covers group and section headers.</li>
+      <li>Budgets and hit-testing: the input gains a top border row only at idle, so
+        <code>inputChromeRows</code> grows by one there and the input's click row moves down one.</li>
+      <li>Tests that will move: frame geometry and invariants, the input area, the status line, the chrome
+        panel tests and the livebox goldens.</li>
+    </ul>
+  </section>
+
+  <footer class="how">
+    <p>Frames came from tmux <code>capture-pane -e</code> on an isolated config and a copy of the
+      <code>go-calc-broken</code> usability fixture. A throwaway script redraws the proposed chrome with the
+      theme's 256-colour values (border 244, muted 247, amber 215, violet 177, coral 209, surface 236).
+      Where a proposed stack is shorter, rows that had scrolled off are recovered from earlier captures of
+      the same session.</p>
+  </footer>
+</main>
+
+<script>
+document.querySelectorAll('.viewer').forEach(function (v) {
+  var tabs = Array.prototype.slice.call(v.querySelectorAll('[role="tab"]'));
+  function show(t) {
+    tabs.forEach(function (b) {
+      var on = b === t;
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+      b.tabIndex = on ? 0 : -1;
+      document.getElementById(b.getAttribute('aria-controls')).hidden = !on;
+    });
+  }
+  tabs.forEach(function (b, i) {
+    b.addEventListener('click', function () { show(b); });
+    b.addEventListener('keydown', function (e) {
+      var d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (!d) return;
+      e.preventDefault();
+      var n = tabs[(i + d + tabs.length) % tabs.length];
+      show(n); n.focus();
+    });
+  });
+});
+</script>

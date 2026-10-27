@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"path/filepath"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/accesspanel"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/help"
 	"marshal/internal/app/tui/theme"
@@ -110,13 +112,14 @@ func identityStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Current().FGDefault)
 }
 
-// renderStatusLine is the single row of persistent chrome below the input:
-// left cluster identifies the session (mode · model @ provider · locality
-// · ctx usage), right cluster shows what the agent is doing right now.
-func (m Model) renderStatusLine(width int) string {
+// statusClusters computes the status row's two label clusters at the given
+// width: the left identity cluster and the right activity cluster, after the
+// hint fallbacks and the segment shedding have done their work. The plain row
+// and the border form share it, each passing the width its own glyphs leave.
+func (m Model) statusClusters(width int) (left, right string) {
 	segs := m.statusLeftSegments()
-	left := joinSegs(segs)
-	right := m.statusRightSegment()
+	left = joinSegs(segs)
+	right = m.statusRightSegment()
 
 	// When the terminal is narrow, drop the button-hint cluster first so
 	// that project path, worktree, and other identity segments remain
@@ -173,6 +176,16 @@ func (m Model) renderStatusLine(width int) string {
 		segs = append(segs[:worst], segs[worst+1:]...)
 		left = joinSegs(segs)
 	}
+	return left, right
+}
+
+// renderStatusLine is the plain single row of status chrome: left cluster
+// identifies the session (mode · model @ provider · locality · ctx usage),
+// right cluster shows what the agent is doing right now. It is drawn plain
+// while a full-frame panel is open, where the console's outline is the
+// panel's own closed frame rather than the status row.
+func (m Model) renderStatusLine(width int) string {
+	left, right := m.statusClusters(width)
 	gap := width - visibleRunes(left) - visibleRunes(right) - statusHorizontalPadding
 	if gap < statusMinGap {
 		gap = statusMinGap
@@ -185,6 +198,15 @@ func (m Model) renderStatusLine(width int) string {
 	// statusBarStyle pads to width, so the row stays full-width without
 	// PaintBand's padding.
 	return out
+}
+
+// renderStatusBorder draws the status clusters as the console's bottom border:
+// ╰─ <left> ─…─ <right> ─╯ in c. The clusters are computed six cells narrower
+// than the row, because the corner, the two label gaps and the fill glyphs
+// take those cells.
+func (m Model) renderStatusBorder(width int, c color.Color) string {
+	left, right := m.statusClusters(max(width-6, 1))
+	return chrome.BorderLine("╰─ ", left, right, "╯", width, c)
 }
 
 // joinSegs joins status segments with the dim separator.
@@ -248,8 +270,13 @@ func (m Model) transientStatusSegment() string {
 // Priorities (lower = higher priority, kept first when collapsing):
 //
 //	mode=0 (pinned), untrusted=0, turn state=0 (pinned), route=1,
-//	send now=1, local=2, ctx=3, ±files=4, think=4, gen=4, branch=5,
-//	dir=5, swarm tokens=6, jobs=7, queued=8, browser=9, config issues=10
+//	send now=1, ctx=2, quota=2, local=3, ±files=4, think=4, gen=4,
+//	branch=5, dir=5, swarm tokens=6, jobs=7, queued=8, browser=9,
+//	config issues=10
+//
+// The context counter and the quota are consumable budgets: they drop before
+// the locality cue, because "ctx 42k/200k" is the number a user acts on while
+// "local" only restates the route already shown beside it.
 //
 // The send-now receipt outranks the identity and metric segments: it reports
 // an action the user just took against the running turn, so it must survive
@@ -287,7 +314,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	if route.Active {
 		segs = append(segs, statusSeg{text: identityStyle().Render(fmt.Sprintf("%s @ %s", route.Model, route.Provider)), priority: 1})
 		if route.LocalOnly {
-			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 2})
+			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 3})
 		}
 		// The active route has moved on while a turn still runs: show where
 		// it will land next, without hiding the turn's own model above.
@@ -328,7 +355,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	} else {
 		segs = append(segs, statusSeg{text: identityStyle().Render("no model"), priority: 1})
 		if !m.state.Config.Privacy.RemoteProvidersAllowed {
-			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 2})
+			segs = append(segs, statusSeg{text: dimStyle().Render("local"), priority: 3})
 		}
 	}
 
@@ -338,7 +365,7 @@ func (m Model) statusLeftSegments() []statusSeg {
 	// the number cannot inflate past the window.
 	if used, window := st.TurnUsed, st.TurnWindow; window > 0 {
 		segs = append(segs, statusSeg{text: dimStyle().Render(fmt.Sprintf("ctx %s/%s",
-			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 3})
+			strutil.CompactTokens(used), strutil.CompactTokens(window))), priority: 2})
 	}
 
 	// Changed-file count against the base ref, so the working tree's state
@@ -355,13 +382,13 @@ func (m Model) statusLeftSegments() []statusSeg {
 	// Subscription quota from an OAuth-backed provider. Rendered as
 	// percent-used plus a reset countdown, matching the spike's finding
 	// that the endpoint reports percent-of-window rather than a
-	// remaining-request count. Priority 3 keeps it beside the context
+	// remaining-request count. Priority 2 keeps it beside the context
 	// counter: both are consumable budgets that drop together on narrow
 	// terminals.
 	if q := st.Quota; q != nil {
 		segs = append(segs, statusSeg{
 			text:     dimStyle().Render(quotaSegment(q)),
-			priority: 3,
+			priority: 2,
 		})
 	}
 

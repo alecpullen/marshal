@@ -13,6 +13,7 @@ import (
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/contextpack"
 	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
@@ -328,26 +329,76 @@ func TestStatusLinePreservesModeSegmentUnderCollapse(t *testing.T) {
 	}
 }
 
-func TestStatusLineDropsLowPrioritySegment(t *testing.T) {
+// The context counter outlives the locality cue: on a narrow line "ctx
+// 42k/200k" is the number a user acts on, while "local" only restates the
+// route drawn beside it. Width 55 is narrow enough that, once the footer
+// hints are dropped, something still has to go.
+func TestStatusLineDropsLocalBeforeCtx(t *testing.T) {
 	m := newViewTestModel(t, 50, 24)
 	m.state.SetTrusted(true)
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen2.5-coder-7b", Provider: "ollama", LocalOnly: true})
 	m.state.SetTurnBudget(128000, 100000, "derived")
 	m.state.SetTurnUsage(42000)
-	line := m.renderStatusLine(55)
-	// mode + route must remain; the ctx segment should be dropped (priority
-	// 3 vs 0/1/2). Width 55 is narrow enough that even after dropping the
-	// footer hints (now dropped first on narrow terminals), ctx still
-	// doesn't fit.
+	line := stripANSI(m.renderStatusLine(55))
 	if !strings.Contains(line, "qwen") || !strings.Contains(line, "ollama") {
 		t.Fatalf("route dropped on narrow line:\n%s", line)
 	}
-	if strings.Contains(line, "ctx") {
-		t.Fatalf("low-priority ctx segment should have been dropped:\n%s", line)
+	if !strings.Contains(line, "ctx") {
+		t.Fatalf("ctx must survive the shed that local loses:\n%s", line)
+	}
+	if strings.Contains(line, "local") {
+		t.Fatalf("local must shed before ctx:\n%s", line)
 	}
 	// Nothing mid-truncated with a dangling partial token:
 	if strings.Contains(line, "ol") && !strings.Contains(line, "ollama") {
 		t.Fatalf("route was mid-truncated:\n%s", line)
+	}
+}
+
+// The border form closes the console at exactly the row's width in every
+// state: ╰─ <clusters> ─╯.
+func TestStatusBorderIsExactlyTheWidth(t *testing.T) {
+	for _, busy := range []bool{false, true} {
+		for _, width := range []int{80, 96, 120} {
+			m := newViewTestModel(t, width, 24)
+			m.state.SetTrusted(true)
+			m.busy = busy
+			line := stripANSI(m.renderStatusBorder(width, theme.Current().BorderMuted))
+			if !strings.HasPrefix(line, "╰─ ") || !strings.HasSuffix(line, "─╯") {
+				t.Fatalf("busy=%v width=%d: not a bottom border: %q", busy, width, line)
+			}
+			if got := visibleRunes(line); got != width {
+				t.Fatalf("busy=%v width=%d: border is %d cells, want %d: %q", busy, width, got, width, line)
+			}
+		}
+	}
+}
+
+// The border draws the same clusters the plain row does, six cells narrower:
+// shedding is one rule, not two.
+func TestStatusBorderShedsLikeTheStatusLine(t *testing.T) {
+	const width = 80
+	m := newViewTestModel(t, width, 24)
+	m.state.SetTrusted(true)
+	m.busy = true
+	m.turnStartedAt = m.now().Add(-12 * time.Second)
+	m.spinnerFrame = "⠋"
+	m.state.SetActiveRoute(session.RouteInfo{
+		Active:    true,
+		Model:     "qwen2.5-coder:14b-instruct-q8_0",
+		Provider:  "ollama",
+		LocalOnly: true,
+	})
+	left, _ := m.statusClusters(width - 6)
+	border := stripANSI(m.renderStatusBorder(width, theme.Current().BorderMuted))
+	if !strings.Contains(border, stripANSI(left)) {
+		t.Fatalf("border does not carry statusClusters(%d) on the left:\nborder=%q\nleft=%q", width-6, border, stripANSI(left))
+	}
+	if !strings.Contains(border, "Act") {
+		t.Fatalf("border lost the mode cue: %q", border)
+	}
+	if !strings.Contains(border, "Ctrl+C stop") {
+		t.Fatalf("busy border lost the stop key: %q", border)
 	}
 }
 

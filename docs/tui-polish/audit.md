@@ -323,6 +323,16 @@ the user believes they selected.
 - Evidence: `internal/app/tui/plugins/panel.go:257`, `:292` and `:434`.
 - Potential direction: invalidate the scan whenever the source changes and
   bind the confirmation visibly to the exact scanned source.
+- Status (2026-10-27): fixed. A scan is bound to the frame generation, the
+  entered source and the scope it started with: editing either field, leaving
+  the frame, or the dock releasing the panel invalidates the review, cancels
+  the scan and deletes its clone, and a result only becomes the review when
+  the panel claims it and the lease, generation, source and scope all still
+  match. The confirmation now shows the normalized source and scope the scan
+  read as their own rows. Covered by
+  `TestScanReviewInvalidatedBySourceOrScope`,
+  `TestAbandonedScanCannotAttachToReopenedFrame` and
+  `TestPanelReplacementCleansUndeliveredScan`.
 
 ### Plugin review clips executable commands without a detail view
 
@@ -336,6 +346,14 @@ suffix is hidden.
   `internal/app/tui/chrome/row.go:92`.
 - Potential direction: offer a wrapped or scrollable full-content view for
   every executable entry before installation.
+- Status (2026-10-27): fixed. Hook, MCP server and MCP policy rows are now
+  actions that open the entry's complete text in a wrapped, pageable view
+  (PgUp/PgDn to page, Esc back to the same row), escaped with
+  `strutil.ShowControls` so a control byte is shown rather than executed, with
+  each MCP argument quoted separately so its boundaries stay visible. Enter in
+  that view installs nothing: Confirm remains the only installation action.
+  Covered by `TestReviewDetailShowsCompleteExecutableContent` and
+  `TestReviewDetailResizeAndNoColor`, both at 80×24.
 
 ### Shared field lists budget logical rows instead of display lines
 
@@ -421,6 +439,16 @@ attach to a different install flow.
   `:587`; `internal/app/tui/dock/dock.go:53`.
 - Potential direction: retain or cancel ownership of each scan until cleanup,
   and correlate results with the active install operation.
+- Status (2026-10-27): fixed. A scan publishes its temporary parent to a
+  mutex-protected lease that cancels the clone and deletes the directory when
+  the frame leaves, when the panel is replaced, or when the lease was closed
+  before the publish arrived. Results carry that lease and a generation and can
+  be claimed once, by the frame that started them, so a late result cannot
+  attach to a different flow. The panel implements `dock.CloseAware`, so a
+  released panel disposes of its scan even though its result is never
+  delivered. Covered by `TestScanLeaseClosePublishClaimRaces`,
+  `TestAbandonedScanCannotAttachToReopenedFrame` and
+  `TestPanelReplacementCleansUndeliveredScan`.
 
 ### Leaving a plugin install can remove the clone during its copy
 
@@ -434,6 +462,15 @@ installation was already removed.
 - Evidence: `internal/app/tui/plugins/panel.go:424`, `:434` and `:553`.
 - Potential direction: transfer clone ownership to the installer and replace
   the destination atomically only after a successful staged copy.
+- Status (2026-10-27): fixed. Confirming hands the clone to the install worker,
+  which defers its own cleanup on every outcome and is its only owner from that
+  point, so closing or replacing the panel no longer touches files it is
+  copying. Installation stages the copy inside the store, rejects a stage whose
+  hash differs from the reviewed one, moves an existing install to a unique
+  same-store backup, renames the stage into place and commits a prepared
+  lockfile last, restoring the backup on any ordinary failure. Covered by
+  `TestInstallOwnsCloneAfterConfirm`, `TestConfirmRejectsChangedClone` and
+  `TestInstallReviewed*`.
 
 ### Skill removal reconstructs the wrong filesystem path
 

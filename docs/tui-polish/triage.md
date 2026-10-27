@@ -71,6 +71,30 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
    and stage replacements so failure does not destroy an existing install.
    Verify with controlled delayed scan/copy and failure fixtures.
 
+   **Status (2026-10-27): done** — tasks 1–4 of the
+   [P2 plugin install safety plan](plans/2026-10-27-p2-plugin-install-safety-plan.md)
+   (commits `5f129508`, `9ab6d5bb`, `c6db5b98`, `daf74b1b`). The dock notifies a
+   panel the host permanently releases (`CloseAware`/`SwapRetained`/
+   `ReleaseRetained`), so a released panel disposes of work whose result will
+   never reach it. A scan lease owns each scan's temporary clone until exactly
+   one claimant takes it, and a review is bound to the frame generation, the
+   entered source and the scope it was scanned for; a late or superseded result
+   cannot become the current review. Installation stages the copy inside the
+   store, compares it against the reviewed hash, swaps the destination behind a
+   unique same-store backup and commits the lockfile last, so an ordinary copy,
+   hash, rename or lockfile failure leaves the previous install and its
+   lockfile entry intact. Hook, MCP server and MCP policy rows open a wrapped,
+   pageable full-content view with terminal controls escaped and MCP arguments
+   quoted individually. Tests use isolated local fixtures and injected
+   per-instance dependencies for delayed scans, source and scope changes,
+   undelivered results, tampered clones, changed lockfiles and per-call
+   filesystem failures; the 80×24 review, source change, cancel-during-scan and
+   update paths are covered by those tests rather than an interactive terminal
+   session. Full suite: no new failures against the recorded baseline
+   (pre-existing failures remain in `internal/snapshot`,
+   `internal/tools/desktop/browser` and `internal/worktree`); the TUI packages,
+   build, `go vet`, `gofmt` and the scripted usability suite are clean.
+
 4. **Preserve drafts and protect secret entry.** Address
    [doctor key exposure and draft loss](audit.md#doctor-repair-exposes-api-keys-and-discards-the-composer-draft),
    [question draft loss](audit.md#answering-a-question-discards-an-unrelated-composer-draft),

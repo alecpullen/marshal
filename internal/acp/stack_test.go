@@ -275,7 +275,7 @@ func TestStackPatchAndDetailAgreeOnExecutionEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ex := got["detail"].(NodeDetail).Calls[0].Execution
+	ex := got.Detail.Calls[0].Execution
 	if ex == nil || ex.ExecutionID != "exec-patch" {
 		t.Fatalf("detail execution = %+v, want the same identity the patch carried", ex)
 	}
@@ -285,14 +285,14 @@ func TestStackPatchAndDetailAgreeOnExecutionEvidence(t *testing.T) {
 }
 
 // callNodeID is callNode for an already-resolved node ID rather than a tool key.
-func callNodeID(t *testing.T, m *TurnManager, nodeID string) (map[string]any, error) {
+func callNodeID(t *testing.T, m *TurnManager, nodeID string) (acpwire.StackNodeResult, error) {
 	t.Helper()
 	params, _ := json.Marshal(StackNodeParams{SessionID: "s1", NodeID: nodeID})
 	v, err := m.StackNode(context.Background(), params)
 	if err != nil {
-		return nil, err
+		return acpwire.StackNodeResult{}, err
 	}
-	return v.(map[string]any), nil
+	return v.(acpwire.StackNodeResult), nil
 }
 
 func TestStackSnapshotFlushesThenAnswers(t *testing.T) {

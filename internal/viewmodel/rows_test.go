@@ -181,3 +181,40 @@ func TestHookHintPrefersBlockThenRewriteThenFailOpen(t *testing.T) {
 		})
 	}
 }
+
+func TestCallersSymbol(t *testing.T) {
+	resolved := registry.SymbolRef{File: "transcript.go", Name: "renderSubagentCard", Line: 584, Col: 5, Resolved: true}
+	unresolved := registry.SymbolRef{File: "transcript.go", Name: "renderSubagentCard", Line: 584, Col: 5}
+
+	cases := []struct {
+		name string
+		ev   registry.AuditEvent
+		want registry.SymbolRef
+		ok   bool
+	}{
+		{"an unresolved symbol before a resolved one gives the resolved one",
+			registry.AuditEvent{ToolName: "file.write_patch", Symbols: []registry.SymbolRef{unresolved, resolved}}, resolved, true},
+		{"an unresolved symbol alone is never asked about",
+			registry.AuditEvent{ToolName: "file.write_patch", Symbols: []registry.SymbolRef{unresolved}}, registry.SymbolRef{}, false},
+		{"a read is never asked about",
+			registry.AuditEvent{ToolName: "file.read", Symbols: []registry.SymbolRef{resolved}}, registry.SymbolRef{}, false},
+		// SubjectFirstTool includes the shell family, which is what today's
+		// callerQueryCmds asks about, so a resolved symbol on a shell call is
+		// flagged. The plan's rule decides this, not its test bullet.
+		{"the shell family is subject-first",
+			registry.AuditEvent{ToolName: "shell.run", Symbols: []registry.SymbolRef{resolved}}, resolved, true},
+		{"a call with no symbols",
+			registry.AuditEvent{ToolName: "file.edit"}, registry.SymbolRef{}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := CallersSymbol(c.ev)
+			if ok != c.ok {
+				t.Fatalf("ok = %v, want %v", ok, c.ok)
+			}
+			if ok && got != c.want {
+				t.Fatalf("symbol = %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}

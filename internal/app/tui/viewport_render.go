@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"strings"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/viewmodel"
@@ -193,6 +194,10 @@ func (m *Model) refreshViewport() {
 	m.pruneRenderState(seen)
 	m.nodeRegions = regions
 	m.blockSpans = spans
+	// The wire index is projected here, after the content-signature check, so
+	// a frame whose content did not change keeps the index it already built.
+	// It is what is on screen, which is what browse actions act on.
+	m.wire = wireIndex(viewmodel.Project(turns, rctx.workdir))
 	m.setBrowseItems(bitems, tree)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
@@ -272,6 +277,15 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 		return renderTranscriptItemIn(*n.Item, m.expandedUnder(n.ID, m.expandAll), m.spinnerFrame, rv, m.callers[n.ID], width, c.workdir), nil
 	}
 	return "", nil
+}
+
+// wireIndex keeps tree's nodes by ID. The pointers address tree's slice.
+func wireIndex(tree acpwire.WireTree) map[string]*acpwire.WireNode {
+	out := make(map[string]*acpwire.WireNode, len(tree.Nodes))
+	for i := range tree.Nodes {
+		out[tree.Nodes[i].ID] = &tree.Nodes[i]
+	}
+	return out
 }
 
 // rowBeats maps every row inside a beat to that beat.

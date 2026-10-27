@@ -117,6 +117,9 @@ func wireNode(n *Node, workdir string) acpwire.WireNode {
 		w.Tool.WorkKey = n.WorkKey
 		if len(n.Tools) == 1 {
 			w.Tool.SubagentID = StartedSubagent(n.Tools[0])
+			if _, ok := CallersSymbol(n.Tools[0]); ok {
+				w.Tool.Callers = true
+			}
 		}
 	case n.Item != nil:
 		wireItem(&w, n.Item)

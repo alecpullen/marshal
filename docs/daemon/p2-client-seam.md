@@ -1111,3 +1111,58 @@ time.
 
 T1's allowlist and T1b's list did not change: the TUI still imports
 `viewmodel` in every file it did, and no read moved off the state.
+
+**Plan 3b (browse actions), branch `p2-3b-browse`.** The detail transport
+moved to `internal/acpwire/stacknode.go` — `NodeDetail`, `CallDetail`,
+`ExecutionDetail`, `SymbolDetail`, `NoticeDetail`, `ThoughtDetail`,
+`TodoDetail` and `RelationDetail` — with their JSON unchanged, plus
+`StackNodeResult{Detail, Node}`, whose field order keeps the JSON the
+handler's map produced, `ApprovalNotRequired`, and the two decode types the
+TUI reads with: `HookDetail` and `SandboxDetail`. `CallDetail.Hooks` changed
+type only: the hooks travel as the JSON `registry.HookMetadata` encodes to,
+because its `failed_open` name breaks C3's camelCase rule in a typed field,
+and `HookDetail` decodes the part a client shows.
+
+One builder answers the request. `viewmodel.StackNodeOf` finds a node in a
+built tree and returns its wire form with its parent's ID set and the detail
+the projection caps or leaves out; `acp`'s `session/stack_node` handler keeps
+its params check and `treeFor` and calls it, and the in-process adapter calls
+it too. The detail gained `NodeDetail.step` (`StepDetail`: a call's own step,
+or a beat's first, with the owner, model, provider, the narration's first
+sentence as the "why" line and the stored todo), `NodeDetail.completion`
+(`CompletionDetail`: a completion's retained output and its report, neither
+capped), and `CallDetail.summary`, the call's own summary uncut — which is
+what copy takes from an edit whose result is empty, because such a call has
+no `output` or `diff`. `WireTool.callers` marks a one-call row whose call
+changed a resolved symbol in a subject-first tool other than `file.read`;
+`viewmodel.CallersSymbol` is that test.
+
+`acpclient.Session` gains `StackNode` and `Callers`, with their rows in
+`Methods` (`session/stack_node` exists; `session/callers` is new in P3). The
+adapter answers `StackNode` from the session's own transcript, or from
+`childState` for a subagent ID, and builds not busy: busy decides only which
+beat is live and whether the receipt exists. A subagent ID that names no
+child is an error, because a node ID like `step:3` exists in every session.
+`Callers` walks the transcript for the audit the node ID names, applies
+`CallersSymbol`, and asks `Deps.ReferenceFinder`; `app.go` sets it from the
+runtime's LSP handle and leaves it nil when there is none, never assigning a
+nil `*lsp.SymbolQuery` to the interface.
+
+The TUI keeps a wire index of what it renders. `refreshViewport` projects the
+tree it already built, after the content-signature check, and keeps the nodes
+by ID in `m.wire`; the band node is not in it. The inspector, copy, open, the
+selection's full-subject copy and the drill-in's subagent ID read node fields
+from that index and ask `StackNode` only for what the wire caps or leaves
+out. Callers lookups ask `Session.Callers` once per flagged row, and only
+while the view is not drilled in, because the index then holds the child's
+transcript; `handleCallers` keeps a nil answer, so a failed or empty lookup
+never costs a second ask. The TUI holds no reference finder:
+`ReferenceFinder`, `WithReferenceFinder`, `firstResolvedSymbol`, `refFinder`
+and `app.go`'s wiring are deleted. T1b gains one name, at plan `3b`:
+`Transcript`, whose last read was `callers.go`'s scan. T1's allowlist lost
+five entries across three files — `session` and `registry` from
+`browse_inspect.go`, `registry` from `browse_actions.go`, and `session` and
+`registry` from `callers.go`. No key was dropped. Two edge cases differ from
+before: the inspector's subject and a beat's copied rows use the wire's
+scrubbed `target`, so a command with a line break shows on one line, and the
+inspector's times are built from Unix milliseconds in local time.

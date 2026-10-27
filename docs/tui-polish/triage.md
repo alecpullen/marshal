@@ -105,6 +105,26 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
    Preserve text, cursor and paste attachments across transient surfaces; use a
    masked secret field. Test completion and cancellation separately.
 
+   **Status (2026-10-27): done** — tasks 1–4 of the
+   [P3 drafts and secret entry plan](plans/2026-10-27-p3-drafts-and-secret-entry-plan.md)
+   (commits `120c0a24`, `2a081201`, `02e137a5`, `43af57e7`). A settled question
+   no longer resets the composer or its placeholder, and a replacement question
+   gets a form of its own; choosing Edit for an approval now opens an isolated
+   editor bound to that owner and request instead of overwriting the composer,
+   and a stale edit is retired before it can settle a replacement; the doctor
+   repair collects the key in a dedicated masked field routed ahead of the
+   composer, completion and the condensing branch, so the key never reaches the
+   frame, history or a paste attachment, and only `esc` reaches a field that is
+   below the supported minimum or behind a panel. Condensed pastes insert as a
+   complete chip at the cursor, and a refused insert leaves the draft and its
+   attachments unchanged with a flash naming the limit that refused it. Tests
+   drive the real `Model.Update` path at 80×24 and 100×40 with isolated fixtures
+   and no real keys. Full suite: no new failures against the recorded baseline
+   (pre-existing failures remain in `internal/app` (6),
+   `internal/snapshot`, `internal/tools/desktop/browser` and
+   `internal/worktree`); the TUI packages, build, `go vet`, `gofmt` and the
+   scripted usability suite are clean.
+
 5. **Make exit postmortem consent readable.** Fix
    [clipped or omitted disclosure](audit.md#consent-disclosure-can-be-clipped-or-omitted)
    independently of ordinary approval handling. Verify the disclosure and

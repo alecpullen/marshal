@@ -8,10 +8,28 @@ import (
 	"strings"
 )
 
+// The only scopes discovery reports and the only scopes a removal may target.
+const (
+	scopeGlobal  = "global"
+	scopeProject = "project"
+)
+
 // ScopedSkill pairs a skill with the scope it was loaded from.
 type ScopedSkill struct {
-	Skill Skill
-	Scope string // "global" or "project"
+	Skill      Skill
+	Scope      string      // "global" or "project"
+	SourceName string      // direct child of the corresponding store
+	SourceInfo os.FileInfo // Lstat snapshot of that child at discovery
+}
+
+// removalSourceName returns the direct child of the store that a discovered
+// skill path lives under: the file itself for a top-level .md skill, or the
+// containing directory for a bundle's SKILL.md.
+func removalSourceName(path string) string {
+	if filepath.Base(path) == BundleFileName {
+		return filepath.Base(filepath.Dir(path))
+	}
+	return filepath.Base(path)
 }
 
 // scanSkillDir walks a directory and returns the paths of all skill files:
@@ -48,8 +66,8 @@ func scanSkillDir(dir string) ([]string, error) {
 func ListScopes(globalDir, projectDir string) ([]ScopedSkill, error) {
 	var out []ScopedSkill
 	for _, pair := range []struct{ dir, scope string }{
-		{globalDir, "global"},
-		{projectDir, "project"},
+		{globalDir, scopeGlobal},
+		{projectDir, scopeProject},
 	} {
 		paths, err := scanSkillDir(pair.dir)
 		if err != nil {
@@ -60,7 +78,20 @@ func ListScopes(globalDir, projectDir string) ([]ScopedSkill, error) {
 			if err != nil {
 				continue
 			}
-			out = append(out, ScopedSkill{Skill: skill, Scope: pair.scope})
+			// Provenance comes from the filesystem, never from Skill.Name. An
+			// entry that vanished between scan and stat is skipped the same way
+			// an unreadable entry is: no identity is fabricated.
+			sourceName := removalSourceName(p)
+			info, err := os.Lstat(filepath.Join(pair.dir, sourceName))
+			if err != nil {
+				continue
+			}
+			out = append(out, ScopedSkill{
+				Skill:      skill,
+				Scope:      pair.scope,
+				SourceName: sourceName,
+				SourceInfo: info,
+			})
 		}
 	}
 	return out, nil

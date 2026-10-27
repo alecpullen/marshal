@@ -1105,31 +1105,9 @@ func isDiffTool(name string) bool {
 	return name == "file.write_patch" || name == "file.edit" || name == "patch.apply"
 }
 
-// hookIndicatorText picks the single highest-signal hook event from the
-// metadata slice for the tool summary line. Priority (most specific first):
-// block > rewrote > failed-open > generic count. Returns "" when there are
-// no hooks to summarize.
-func hookIndicatorText(hooks []registry.HookMetadata) string {
-	if len(hooks) == 0 {
-		return ""
-	}
-	for _, h := range hooks {
-		if h.Decision == "block" || h.Decision == "halt" {
-			return "hook blocked"
-		}
-	}
-	for _, h := range hooks {
-		if h.Rewrote {
-			return "hook rewrote"
-		}
-	}
-	for _, h := range hooks {
-		if h.FailedOpen {
-			return "hook failed-open"
-		}
-	}
-	return fmt.Sprintf("hooks %d", len(hooks))
-}
+// hookIndicatorText picks the single highest-signal hook event for the tool
+// summary line; viewmodel.HookHint decides it.
+func hookIndicatorText(hooks []registry.HookMetadata) string { return viewmodel.HookHint(hooks) }
 
 func formatElapsed(d time.Duration) string {
 	if d < time.Minute {

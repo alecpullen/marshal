@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"image/color"
-	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -41,87 +40,21 @@ const (
 	maxPlanMarks = 12
 )
 
-// callVerbs maps a tool-name prefix to the verb its row leads with. The first
-// matching prefix wins, so write tools come before the broader file prefix.
-var callVerbs = []struct{ prefix, verb string }{
-	{"file.read", "read"},
-	{"file.write_patch", "edit"},
-	{"file.edit", "edit"},
-	{"patch.", "edit"},
-	{"file.write", "write"},
-	{"shell.", "shell"},
-	{"test.", "shell"},
-	{"repo.search", "search"},
-	{"codebase.search", "search"},
-	{"codebase_search", "search"},
-	{"search.", "search"},
-	{"symbols", "search"},
-	{"lsp.", "read"},
-	{"agent.", "agent"},
-	{"web.", "web"},
-	{"browser.", "web"},
-	{"todo.write", "plan"},
-	{"mcp.", "mcp"},
-}
+// callVerb is the verb a call's row leads with; viewmodel.CallVerb decides it.
+func callVerb(name string) string { return viewmodel.CallVerb(name) }
 
-// callVerb is the verb a call's row leads with. A tool outside the table
-// uses the first segment of its name ("git.status" reads "git").
-func callVerb(name string) string {
-	for _, v := range callVerbs {
-		if strings.HasPrefix(name, v.prefix) {
-			return v.verb
-		}
-	}
-	first, _, _ := strings.Cut(name, ".")
-	return first
-}
-
-// fallbackSubject is a row's subject when the call's arguments name none:
-// the rest of the tool's name after its first segment ("git.status" reads
-// "git status", "agent.await" reads "agent await"), unless that only repeats
-// the verb ("file.read" reads "read", not "read read").
-func fallbackSubject(name string) string {
-	_, rest, ok := strings.Cut(name, ".")
-	if !ok || rest == callVerb(name) {
-		return ""
-	}
-	return strings.ReplaceAll(rest, ".", " ")
-}
+// fallbackSubject is a row's subject when the call's arguments name none;
+// viewmodel.FallbackSubject decides it.
+func fallbackSubject(name string) string { return viewmodel.FallbackSubject(name) }
 
 // toolTarget returns the short human-facing subject of a tool call — the
 // path it read, the command it ran, the query it searched for.
 func toolTarget(event registry.AuditEvent) string { return viewmodel.ToolTarget(event) }
 
-// callSubject is what a settled call acted on: the command it ran, the file
-// or symbols it touched, the query it searched for, or the task it handed to
-// a subagent. It is model-authored text, so it is scrubbed here.
+// callSubject is what a settled call acted on; viewmodel.CallSubject decides
+// it, against the session's active root.
 func callSubject(ev registry.AuditEvent, workdir string) string {
-	var s string
-	switch {
-	case viewmodel.IsShellFamily(ev.ToolName):
-		s = viewmodel.ElideWorkdir(toolTarget(ev), workdir)
-	case ev.ToolName == "agent.run":
-		s = argString(ev.Args, "description")
-	default:
-		if sym := symbolSubject(ev); sym != "" && subjectFirstTool(ev.ToolName) {
-			s = sym
-		} else if q, ok := searchQualifier(ev.ToolName); ok {
-			if t := searchTarget(ev); t != "" {
-				s = strconv.Quote(t)
-				// The verb already says "search"; any other qualifier tells
-				// two kinds of search apart.
-				if q != "search" {
-					s = q + " " + s
-				}
-			}
-		} else {
-			s = toolTarget(ev)
-		}
-	}
-	if s == "" {
-		s = fallbackSubject(ev.ToolName)
-	}
-	return viewmodel.ScrubText(firstLine(s))
+	return viewmodel.CallSubject(ev, workdir)
 }
 
 // callResult is a settled call's right-aligned result, styled: its error, a
@@ -133,6 +66,7 @@ func callResult(ev registry.AuditEvent) string {
 	if h := hookIndicatorText(ev.Hooks); h != "" {
 		parts = append(parts, h)
 	}
+	stat := viewmodel.CallDiffStat(ev)
 	switch {
 	case ev.Error != "":
 		parts = append(parts, firstLine(ev.Error))
@@ -145,8 +79,8 @@ func callResult(ev registry.AuditEvent) string {
 		if *ev.CommandExitCode != 0 {
 			style = errorStyle()
 		}
-	case (isDiffTool(ev.ToolName) || ev.ToolName == "file.write") && diffStat(ev.ResultContent) != "":
-		parts = append(parts, diffStat(ev.ResultContent))
+	case stat != "":
+		parts = append(parts, stat)
 	case viewmodel.JobStartID(ev) != "":
 		id := viewmodel.JobStartID(ev)
 		started := lipgloss.NewStyle().Foreground(theme.Current().StatusInfo).Render(glyph.Job+" "+id) +
@@ -164,8 +98,8 @@ func callResult(ev registry.AuditEvent) string {
 			}
 			return started
 		}
-		if s := viewmodel.DisplaySummary(ev); s != "" {
-			parts = append(parts, firstLine(s))
+		if s := viewmodel.SummaryLine(ev); s != "" {
+			parts = append(parts, s)
 		}
 	}
 	return style.Render(viewmodel.ScrubText(strings.Join(parts, dimSeparator)))
@@ -240,26 +174,16 @@ func renderCallRow(ev registry.AuditEvent, expanded bool, callers []string, w in
 // collapsed row so the reason is visible without opening it. The tail is the
 // useful end: a test run prints its failures last.
 func failedTail(ev registry.AuditEvent, w int) []string {
-	text := strings.TrimRight(ev.ResultContent, "\n")
-	if text == "" {
-		text = ev.Error
-	}
-	if text == "" {
-		return nil
-	}
-	lines := strings.Split(viewmodel.ScrubBlock(text), "\n")
-	if len(lines) > failedTailLines {
-		lines = lines[len(lines)-failedTailLines:]
-	}
+	lines := viewmodel.FailedTail(ev)
 	out := make([]string, 0, len(lines))
 	for _, l := range lines {
-		out = append(out, mutedStyle().Render(ansi.Truncate(strings.TrimRight(l, " \t\r"), w, "…")))
+		out = append(out, mutedStyle().Render(ansi.Truncate(l, w, "…")))
 	}
 	return out
 }
 
 // failedTailLines is how many output lines a failed row shows collapsed.
-const failedTailLines = 3
+const failedTailLines = viewmodel.FailedTailLines
 
 // renderGroupRow is a merged run of same-tool calls: their subjects on one
 // line and the count as the result. Expanded, one line per call follows with
@@ -278,11 +202,11 @@ func renderGroupRow(evs []registry.AuditEvent, expanded bool, w int, workdir str
 		var lines []string
 		for _, ev := range evs {
 			line := callSubject(ev, workdir)
-			if s := viewmodel.DisplaySummary(ev); s != "" {
+			if s := viewmodel.SummaryLine(ev); s != "" {
 				if line != "" {
 					line += dimSeparator
 				}
-				line += viewmodel.ScrubText(firstLine(s))
+				line += s
 			}
 			lines = append(lines, mutedStyle().Render(ansi.Truncate(line, dw, "…")))
 		}
@@ -310,13 +234,7 @@ func pointerColor(p string) color.Color {
 // command's sandbox and the tail of its output follow; expanded, the whole
 // captured output does.
 func renderActiveCallRow(atc session.ActiveToolCall, c *stepRenderCtx, expanded bool, w int) string {
-	subject := atc.Path
-	if subject == "" {
-		subject = firstLine(atc.Args)
-	}
-	if subject == "" {
-		subject = fallbackSubject(atc.Name)
-	}
+	subject := viewmodel.RunningSubject(atc)
 	spin := c.toolSpinner
 	if spin == "" {
 		spin = spinnerFrames[0]
@@ -333,7 +251,7 @@ func renderActiveCallRow(atc session.ActiveToolCall, c *stepRenderCtx, expanded 
 		result = lipgloss.NewStyle().Foreground(pointerColor(ptr)).Render("→ " + ptr)
 	}
 	var b strings.Builder
-	b.WriteString(spineHead(callVerb(atc.Name), viewmodel.ScrubText(subject), result, w) + "\n")
+	b.WriteString(spineHead(callVerb(atc.Name), subject, result, w) + "\n")
 	dw := max(w-verbWidth, 1)
 	var lines []string
 	if viewmodel.IsShellFamily(atc.Name) {

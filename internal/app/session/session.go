@@ -903,15 +903,25 @@ func WithSubagentMaxConcurrency(n int) Option {
 	}
 }
 
-// WithClock overrides the state's clock. Tests pass a frozen clock so
-// time-dependent state can be advanced deterministically; the default is
-// time.Now.
+// WithClock overrides the state's clock. Tests pass a frozen clock so the
+// transcript's times are fixed and a state builds the same transcript every
+// time: messages and their thinking time, steps, the in-progress reasoning,
+// tool calls, run events, subagents and job exits. The default is time.Now.
 func WithClock(now func() time.Time) Option {
 	return func(s *State) {
 		if now != nil {
 			s.now = now
 		}
 	}
+}
+
+// clockNow is the state's clock: the one WithClock set, or time.Now for a
+// State that New did not build.
+func (s *State) clockNow() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opts ...Option) *State {
@@ -3758,7 +3768,7 @@ func (s *State) SessionRules() []string {
 func (s *State) LogToolCall(event registry.AuditEvent) {
 	s.mu.Lock()
 	if event.Timestamp.IsZero() {
-		event.Timestamp = time.Now()
+		event.Timestamp = s.clockNow()
 	}
 	s.auditLog = append(s.auditLog, event)
 	// Also accumulate into the per-turn ledger buffer. The compaction in

@@ -51,7 +51,7 @@ type RunEvent struct {
 // left it zero.
 func (s *State) AddRunEvent(ev RunEvent) {
 	if ev.At.IsZero() {
-		ev.At = time.Now()
+		ev.At = s.clockNow()
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

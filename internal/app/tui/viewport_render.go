@@ -63,18 +63,7 @@ func (m *Model) refreshViewport() {
 	m.updateViewportHeight()
 	transcriptState, _ := m.transcriptSource()
 
-	items := transcriptState.Transcript()
-	inProgress := transcriptState.InProgress()
-	active := transcriptState.ActiveToolCalls()
-	snap := viewmodel.Snapshot{
-		Items:       items,
-		Steps:       transcriptState.Steps(),
-		Todos:       transcriptState.Todos(),
-		ActiveTools: active,
-		InProgress:  inProgress,
-		Busy:        m.busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
-		Now:         m.now(),
-	}
+	snap := viewmodel.SnapshotOf(transcriptState, m.busy, m.now())
 	turns := viewmodel.Build(snap)
 	// The band is derived here, once, so the now bar and the frame height
 	// both read the same value.
@@ -94,7 +83,7 @@ func (m *Model) refreshViewport() {
 
 	// Cheap signature of everything the content depends on, taken before any
 	// rendering: if it matches the last refresh, nothing needs to move.
-	sig := m.contentSignature(turns, width, themeSig, queued, notice, noticeUp, reconnect, hasConversationTurns(items))
+	sig := m.contentSignature(turns, width, themeSig, queued, notice, noticeUp, reconnect, hasConversationTurns(snap.Items))
 	if sig == m.lastTranscriptHash {
 		return
 	}
@@ -111,7 +100,7 @@ func (m *Model) refreshViewport() {
 		spinner:       m.spinnerFrame,
 		toolSpinner:   toolFrame,
 		thinkSpinner:  m.activeSpinnerFrame(session.ActivityThinking),
-		thinkElapsed:  m.now().Sub(inProgress.StartedAt),
+		thinkElapsed:  m.now().Sub(snap.InProgress.StartedAt),
 		now:           m.now(),
 		routeModel:    transcriptState.ActiveRoute().Model,
 		routeProvider: transcriptState.ActiveRoute().Provider,
@@ -120,7 +109,7 @@ func (m *Model) refreshViewport() {
 		workdir:       transcriptState.Workspace().ActiveRoot,
 	}
 
-	blocks := make([]string, 0, len(items)+4)
+	blocks := make([]string, 0, len(snap.Items)+4)
 	// tight[i] joins block i to the one before it with no blank line:
 	// back-to-back narration reads as one text.
 	var tight []bool
@@ -155,7 +144,7 @@ func (m *Model) refreshViewport() {
 		lineCursor += n + 1 // +1 for the blank separator between blocks
 	}
 
-	if !hasConversationTurns(items) {
+	if !hasConversationTurns(snap.Items) {
 		addBlock(blockKey{name: "banner"}, renderWelcomeBanner(width), nil, nil)
 	}
 	seen := map[viewmodel.NodeID]bool{}

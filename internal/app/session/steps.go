@@ -72,7 +72,7 @@ func (s *State) BeginStep(actor Actor) StepID {
 			break
 		}
 	}
-	st := Step{ID: s.nextStepSeq, TurnMsgID: turn, Actor: actor, TodoID: todoID, StartedAt: time.Now()}
+	st := Step{ID: s.nextStepSeq, TurnMsgID: turn, Actor: actor, TodoID: todoID, StartedAt: s.clockNow()}
 	s.nextStepSeq++
 	s.steps = append(s.steps, st)
 	published := st
@@ -106,7 +106,7 @@ func (s *State) EndStep(id StepID) {
 		s.mu.Unlock()
 		return
 	}
-	s.steps[idx].EndedAt = time.Now()
+	s.steps[idx].EndedAt = s.clockNow()
 	ended := s.steps[idx]
 	s.mu.Unlock()
 

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
 	"marshal/internal/tools/registry"
@@ -91,6 +92,9 @@ type StepInfo struct {
 	// LiveThinking is the in-progress reasoning; set only on the live
 	// reasoning node (LiveThinkingID), never on a beat.
 	LiveThinking string
+	// LiveSince is when the live reasoning began; set only with
+	// LiveThinking.
+	LiveSince time.Time
 
 	// TodoID is the task the beat's first response was bound to: the stored
 	// binding, or for a narrated response whose only call was a todo.write,
@@ -170,7 +174,7 @@ func (n *Node) AnyLive() bool {
 }
 
 // LiveThinkingID is the in-progress reasoning region's identity.
-var LiveThinkingID = NodeID{KindThinking, "think:live"}
+var LiveThinkingID = NodeID{KindThinking, acpwire.LiveThinkingID}
 
 // Mergeable reports whether an audit event may join a collapsed run of
 // same-tool calls. Collapsing is a readability feature: the events most worth
@@ -528,8 +532,10 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 		}
 	}
 	reasoning := ""
+	var reasoningSince time.Time
 	if lastTurn && s.InProgress.Active && s.InProgress.Reasoning != "" {
 		reasoning = s.InProgress.Reasoning
+		reasoningSince = s.InProgress.StartedAt
 	}
 
 	// Active (in-flight) tool calls become live rows of their step.
@@ -668,7 +674,7 @@ func buildTurn(items []session.TranscriptItem, stepByID map[session.StepID]sessi
 	if reasoning != "" {
 		out = append(out, &Node{
 			ID: LiveThinkingID, Kind: KindThinking, Live: true,
-			Step: &StepInfo{LiveThinking: reasoning},
+			Step: &StepInfo{LiveThinking: reasoning, LiveSince: reasoningSince},
 		})
 	}
 	return out, after

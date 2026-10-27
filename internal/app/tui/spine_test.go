@@ -27,46 +27,6 @@ func plainLines(s string) []string {
 	return strings.Split(strings.TrimRight(ansi.Strip(s), "\n"), "\n")
 }
 
-func TestCallVerbs(t *testing.T) {
-	cases := map[string]string{
-		"file.read":        "read",
-		"file.edit":        "edit",
-		"file.write_patch": "edit",
-		"patch.apply":      "edit",
-		"file.write":       "write",
-		"shell.run":        "shell",
-		"shell.sudo":       "shell",
-		"test.run":         "shell",
-		"repo.search":      "search",
-		"codebase.search":  "search",
-		"symbols.find":     "search",
-		"agent.run":        "agent",
-		"agent.await":      "agent",
-		"web.fetch":        "web",
-		"browser.navigate": "web",
-		"todo.write":       "plan",
-		"mcp.github.issue": "mcp",
-		"git.status":       "git",
-		"skill.load":       "skill",
-	}
-	for name, want := range cases {
-		if got := callVerb(name); got != want {
-			t.Errorf("callVerb(%q) = %q, want %q", name, got, want)
-		}
-	}
-}
-
-// A call whose arguments name nothing falls back to the rest of its tool
-// name, but never just repeats the verb.
-func TestFallbackSubjectNeverRepeatsTheVerb(t *testing.T) {
-	cases := map[string]string{"git.status": "status", "agent.await": "await", "file.read": "", "file.write": "", "todos": ""}
-	for name, want := range cases {
-		if got := fallbackSubject(name); got != want {
-			t.Errorf("fallbackSubject(%q) = %q, want %q", name, got, want)
-		}
-	}
-}
-
 // The verb sits in its column, the subject follows, and the result ends at
 // the row's right edge. A long subject gives way to the result.
 func TestCallRowLaysOutVerbSubjectAndResult(t *testing.T) {
@@ -106,28 +66,6 @@ func TestCallResults(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			if got := ansi.Strip(callResult(c.ev)); got != c.want {
 				t.Fatalf("callResult = %q, want %q", got, c.want)
-			}
-		})
-	}
-}
-
-func TestCallSubjects(t *testing.T) {
-	cases := []struct {
-		name string
-		ev   registry.AuditEvent
-		want string
-	}{
-		{"a command, first line, workdir elided", registry.AuditEvent{ToolName: "shell.run", Args: json.RawMessage(`{"command":"cd /w && go test ./...\necho done"}`)}, "⌂ go test ./..."},
-		{"a search query, quoted", registry.AuditEvent{ToolName: "repo.search", Args: json.RawMessage(`{"query":"auth flow"}`)}, `"auth flow"`},
-		{"a semantic search says so", registry.AuditEvent{ToolName: "codebase.search", Args: json.RawMessage(`{"query":"auth flow"}`)}, `semantic "auth flow"`},
-		{"a subagent's task", registry.AuditEvent{ToolName: "agent.run", Args: json.RawMessage(`{"description":"review the config change","role":"reviewer"}`)}, "review the config change"},
-		{"a path", registry.AuditEvent{ToolName: "file.read", Args: json.RawMessage(`{"path":"a.go"}`)}, "a.go"},
-		{"nothing named", registry.AuditEvent{ToolName: "git.status"}, "status"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := callSubject(c.ev, "/w"); got != c.want {
-				t.Fatalf("callSubject = %q, want %q", got, c.want)
 			}
 		})
 	}

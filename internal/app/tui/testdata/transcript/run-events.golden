@@ -1,0 +1,31 @@
+ ❯ /sdd run plan.md
+
+ ✗ task 2 · go test ./... failed — exit 1
+   line 01
+   line 02
+   line 03
+   line 04
+   line 05
+   line 06
+   line 07
+   line 08
+   line 09
+   line 10
+   line 11
+   line 12
+   … 2 more lines — ctrl+g to expand
+
+ ⚠ task 3 · verification skipped — no test command
+
+ ✓ task 3 · review clean
+
+ ⚠ task 4 · review · high · missing error check
+
+ ● task 4 · abc1234  wire the client
+
+ ⚠ task 5 · attempt 2 — verify failed
+
+ ⚠ task 5 · concern — flaky test
+
+ ✓ task 5 · done — 3 commits
+

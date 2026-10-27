@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/viewmodel"
 )
@@ -24,23 +25,14 @@ type StackParams struct {
 	SubagentID int64  `json:"subagentId,omitempty"`
 }
 
-// StackSnapshot is the full stack at Rev (foundation spec §5.1).
-type StackSnapshot struct {
-	SessionID  string               `json:"sessionId"`
-	SubagentID int64                `json:"subagentId,omitempty"`
-	Rev        uint64               `json:"rev"`
-	Roots      []string             `json:"roots"`
-	Nodes      []viewmodel.WireNode `json:"nodes"`
-}
-
 type stackPatch struct {
-	Kind       string               `json:"kind"`
-	SubagentID int64                `json:"subagentId,omitempty"`
-	Rev        uint64               `json:"rev"`
-	BaseRev    uint64               `json:"baseRev"`
-	Roots      []string             `json:"roots"`
-	Upsert     []viewmodel.WireNode `json:"upsert,omitempty"`
-	Remove     []string             `json:"remove,omitempty"`
+	Kind       string             `json:"kind"`
+	SubagentID int64              `json:"subagentId,omitempty"`
+	Rev        uint64             `json:"rev"`
+	BaseRev    uint64             `json:"baseRev"`
+	Roots      []string           `json:"roots"`
+	Upsert     []acpwire.WireNode `json:"upsert,omitempty"`
+	Remove     []string           `json:"remove,omitempty"`
 }
 
 // stackProjector tracks the encoded nodes last sent to one session's client.
@@ -74,7 +66,7 @@ func stackKey(sessionID string, subagentID int64) string {
 }
 
 // diff requires p.mu. Unchanged trees leave the revision and sent state alone.
-func (p *stackProjector) diff(tree viewmodel.WireTree) (stackPatch, bool) {
+func (p *stackProjector) diff(tree acpwire.WireTree) (stackPatch, bool) {
 	patch := stackPatch{Kind: "stack_patch"}
 	sent := make(map[string][]byte, len(tree.Nodes))
 	order := make([]string, 0, len(tree.Nodes))
@@ -100,19 +92,6 @@ func (p *stackProjector) diff(tree viewmodel.WireTree) (stackPatch, bool) {
 	patch.Roots = tree.Roots
 	p.sent, p.sentOrder = sent, order
 	return patch, true
-}
-
-// stackSnapshotOf builds the projection a stack request reads: the same one
-// the TUI renders.
-func stackSnapshotOf(st *session.State, busy bool, now time.Time) viewmodel.Snapshot {
-	active := st.ActiveToolCalls()
-	inProgress := st.InProgress()
-	return viewmodel.Snapshot{
-		Items: st.Transcript(), Steps: st.Steps(), Todos: st.Todos(),
-		ActiveTools: active, InProgress: inProgress,
-		Busy: busy || len(active) > 0 || len(inProgress.Reasoning) > 0,
-		Now:  now,
-	}
 }
 
 func (m *TurnManager) stackFor(key string) *stackProjector {
@@ -197,14 +176,10 @@ func (m *TurnManager) flushProjector(sessionID string, subagentID int64, st *ses
 	if !p.active || (onlyDirty && !p.dirty && !due) {
 		return
 	}
-	snap := stackSnapshotOf(st, busy, now)
-	turns := viewmodel.Build(snap)
-	tree := viewmodel.Project(turns)
-	band := viewmodel.BandOf(snap, turns)
-	tree.Nodes = append(tree.Nodes, viewmodel.ProjectBand(band))
-	patch, changed := p.diff(tree)
+	proj := viewmodel.ProjectState(st, busy, now)
+	patch, changed := p.diff(proj.Tree)
 	p.dirty = false
-	p.wakeAt = band.StaleAt
+	p.wakeAt = proj.Band.StaleAt
 	if changed {
 		patch.SubagentID = subagentID
 		m.notifyStackPatch(sessionID, patch)
@@ -297,17 +272,14 @@ func (m *TurnManager) Stack(ctx context.Context, params json.RawMessage) (any, e
 }
 
 // stackSnapshot builds the snapshot, activating the projector on first use.
-func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *session.State, drilled, busy bool) (StackSnapshot, bool) {
+func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *session.State, drilled, busy bool) (acpwire.StackSnapshot, bool) {
 	p := m.stackFor(stackKey(request.SessionID, request.SubagentID))
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	snap := stackSnapshotOf(src, busy, time.Now())
-	turns := viewmodel.Build(snap)
-	tree := viewmodel.Project(turns)
 	// The band rides along as an extra node. It is not in roots, so a
 	// transcript walk never sees it, but the projector carries it to web
 	// clients like any other node.
-	tree.Nodes = append(tree.Nodes, viewmodel.ProjectBand(viewmodel.BandOf(snap, turns)))
+	tree := viewmodel.ProjectState(src, busy, time.Now()).Tree
 	activated := false
 	if !p.active {
 		activated = true
@@ -326,7 +298,7 @@ func (m *TurnManager) stackSnapshot(request StackParams, rt *TurnRuntime, src *s
 	}
 	p.dirty = false
 	m.watchRun(request.SessionID, rt.State)
-	snapshot := StackSnapshot{SessionID: request.SessionID, SubagentID: request.SubagentID, Rev: p.rev, Roots: make([]string, 0, len(tree.Roots)), Nodes: make([]viewmodel.WireNode, 0, len(tree.Nodes))}
+	snapshot := acpwire.StackSnapshot{SessionID: request.SessionID, SubagentID: request.SubagentID, Rev: p.rev, Roots: make([]string, 0, len(tree.Roots)), Nodes: make([]acpwire.WireNode, 0, len(tree.Nodes))}
 	snapshot.Roots = append(snapshot.Roots, tree.Roots...)
 	snapshot.Nodes = append(snapshot.Nodes, tree.Nodes...)
 	return snapshot, activated

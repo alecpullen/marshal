@@ -30,7 +30,7 @@ type InProgressMessage struct {
 // stream reasoning content, before consuming its event stream.
 func (s *State) BeginStreaming() {
 	s.mu.Lock()
-	s.inProgress = InProgressMessage{StartedAt: time.Now(), Active: true}
+	s.inProgress = InProgressMessage{StartedAt: s.clockNow(), Active: true}
 	snap := s.inProgress
 	s.mu.Unlock()
 	s.publishEvent(EventThinkingChanged, Event{Thinking: &snap})

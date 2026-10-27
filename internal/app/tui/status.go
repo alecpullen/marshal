@@ -248,12 +248,15 @@ func modeSegmentFor(access acpwire.Interaction) string {
 // right side. They used to replace the mode label; keeping them separate is
 // what lets the persistent access state survive approvals, browsing and
 // questions.
+//
+// There is deliberately no "edit cmd" cue: an approval edit only exists while
+// its approval is still pending, and statusRightSegment reports that pending
+// decision first. Replacing it with the edit cue would hide the one persistent
+// reminder that a decision is outstanding.
 func (m Model) transientStatusSegment() string {
 	switch {
 	case m.sess.Status().SDD.Active:
 		return "sdd"
-	case m.editingCommand:
-		return "edit cmd"
 	case m.activeCompletionPopup() != nil:
 		return "completing"
 	case m.state.PendingSkillGate() != nil:
@@ -579,7 +582,7 @@ func (m Model) footerHints() help.FooterHints {
 	st := m.sess.Status()
 	return help.FooterHints{
 		Busy:                 m.busy,
-		EditingCommand:       m.editingCommand,
+		EditingCommand:       m.editingApproval(),
 		ApprovalPending:      m.hasPendingApproval(),
 		QuestionPending:      m.state.PendingQuestion() != nil,
 		SkillGatePending:     m.state.PendingSkillGate() != nil,

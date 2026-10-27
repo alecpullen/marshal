@@ -224,10 +224,12 @@ func (m Model) inputSections() []consoleSection {
 				return only([]string{mutedStyle().Render(accessWaitingRow)})
 			}
 			return nil
-		case m.editingCommand:
-			// The ❯ prompt is rendered inside the textarea by SetPromptFunc,
-			// so m.input.View() already includes it — do not prepend it again.
-			return only(consoleLines(m.input.View()))
+		case m.editingApproval():
+			// The isolated edit editor renders its own ❯ prompt (it is
+			// configured exactly like the composer), so its View already
+			// includes it — do not prepend it again. The chat textarea is
+			// deliberately not rendered while the edit owns the input.
+			return only(consoleLines(m.approvalEdit.input.View()))
 		case m.approvalModel != nil:
 			return prompt("⚠ Approval", keys, consoleLines(m.approvalModel.View()))
 		default:

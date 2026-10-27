@@ -104,7 +104,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	// through to the textarea so shell muscle memory (Ctrl+U clears the
 	// prompt, End goes to line-end, etc.) keeps working.
 	readlineShortcutAvailable := func() bool {
-		return m.input.Value() == "" && !m.editingCommand
+		return m.input.Value() == "" && !m.editingApproval()
 	}
 	// Any key other than a second Ctrl+R disarms a pending rollback, so the
 	// armed state can never outlive the keystroke that set it.
@@ -142,7 +142,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// (or mid approval/question/skill-gate/command-edit), ? falls
 		// through to the trailing m.input.Update(msg) below and is typed
 		// literally.
-		if m.input.Value() == "" && !m.editingCommand && m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil && m.state.PendingSudoAuth() == nil {
+		if m.input.Value() == "" && !m.editingApproval() && m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil && m.state.PendingSudoAuth() == nil {
 			mm, cmd := m.dispatchCommand("/help")
 			return mm, cmd, true
 		}

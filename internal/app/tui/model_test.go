@@ -1072,17 +1072,17 @@ func TestTUIApprovalBannerAndKeypresses(t *testing.T) {
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if !m.editingCommand {
-		t.Fatal("expected model to enter editingCommand mode")
+	if !m.editingApproval() {
+		t.Fatal("expected model to open the approval editor")
 	}
-	if m.input.Value() != "go test" {
-		t.Fatalf("expected input value to be 'go test', got %q", m.input.Value())
+	if m.approvalEdit.input.Value() != "go test" {
+		t.Fatalf("expected edited value to be 'go test', got %q", m.approvalEdit.input.Value())
 	}
 
 	updated, _ = m.Update(tea.KeyPressMsg{Text: " -v"})
 	m = updated.(Model)
-	if m.input.Value() != "go test -v" {
-		t.Fatalf("expected edited input value to be 'go test -v', got %q", m.input.Value())
+	if m.approvalEdit.input.Value() != "go test -v" {
+		t.Fatalf("expected edited value to be 'go test -v', got %q", m.approvalEdit.input.Value())
 	}
 
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -3329,14 +3329,14 @@ func TestTUIRichMCPApprovalStates(t *testing.T) {
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if !m.editingCommand {
-		t.Fatal("expected editingCommand to be true")
+	if !m.editingApproval() {
+		t.Fatal("expected the approval editor to be open")
 	}
-	if m.input.Value() != `{"title":"some issue"}` {
-		t.Errorf("input value = %q, want JSON args", m.input.Value())
+	if m.approvalEdit.input.Value() != `{"title":"some issue"}` {
+		t.Errorf("edited value = %q, want JSON args", m.approvalEdit.input.Value())
 	}
 
-	m.input.SetValue(`{"title":"edited issue"}`)
+	m.approvalEdit.input.SetValue(`{"title":"edited issue"}`)
 	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(Model)
 
@@ -3423,6 +3423,24 @@ func TestPendingQuestionEscDeclines(t *testing.T) {
 	if state.PendingQuestion() != nil {
 		t.Fatal("pending question not cleared after Esc")
 	}
+}
+
+// openTestApprovalEdit opens the isolated approval editor over a pending shell
+// approval on m's state, the way choosing Edit does, and returns the model.
+// The pending request is left live so the edit is the surface that owns input.
+func openTestApprovalEdit(t *testing.T, m Model, command string) Model {
+	t.Helper()
+	tc := &session.PendingToolCall{
+		ID:           "call_edit",
+		Name:         "shell.run",
+		Command:      command,
+		Risk:         "shell",
+		Reason:       "runs a shell command",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	m.state.SetPendingApproval(tc)
+	m.approvalEdit = newApprovalEdit(m.state, tc, max(m.leftWidth-4, 30))
+	return m
 }
 
 // composerDraft records the composer state a transient surface must not
@@ -3672,6 +3690,290 @@ func TestQuestionCancellationAndReplacementKeepDraft(t *testing.T) {
 	}
 	if !strings.Contains(msgs[0].Content, "pasted tail") || strings.Contains(msgs[0].Content, "[pasted #") {
 		t.Fatalf("submitted prompt did not expand the preserved paste: %q", msgs[0].Content)
+	}
+}
+
+// chooseApprovalEdit drives the real approval form to its Edit choice through
+// Model.Update and returns the model with the isolated editor open.
+func chooseApprovalEdit(t *testing.T, m Model) Model {
+	t.Helper()
+	// A size message builds the form without moving its selection.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: m.rawWidth, Height: m.rawHeight})
+	m = drainCmds(updated.(Model), nil)
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight}) // deny
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight}) // edit
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // choose edit
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // confirm
+	if !m.editingApproval() || m.approvalEdit == nil {
+		t.Fatalf("approval form did not open the isolated editor (approvalModel = %v)", m.approvalModel != nil)
+	}
+	return m
+}
+
+// TestApprovalEditPreservesComposer pins that editing an approval never
+// overwrites, clears or submits the chat draft: the draft keeps its text,
+// cursor and paste chip across opening, saving and cancelling the edit, and
+// the edit text never becomes a chat prompt.
+func TestApprovalEditPreservesComposer(t *testing.T) {
+	newPending := func(t *testing.T) *session.PendingToolCall {
+		t.Helper()
+		return &session.PendingToolCall{
+			ID:           "call_1",
+			Name:         "shell.run",
+			Command:      "go test",
+			Risk:         "shell",
+			Reason:       "runs the test suite",
+			ResponseChan: make(chan session.UserApprovalDecision, 1),
+		}
+	}
+
+	t.Run("save", func(t *testing.T) {
+		state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		m := testModel(state)
+		m.resize(100, 40)
+		m.refreshViewport()
+		// The draft (and its paste chip) exists before the approval arrives.
+		var want composerDraft
+		m, want = seedComposerDraft(t, m)
+		tc := newPending(t)
+		state.SetPendingApproval(tc)
+
+		m = chooseApprovalEdit(t, m)
+		assertDraftIntact(t, m, want, "after opening the edit")
+		if got := m.approvalEdit.input.Value(); got != "go test" {
+			t.Fatalf("editor value = %q, want the pending command", got)
+		}
+
+		// Typing reaches the isolated editor, not the draft.
+		m = sendKey(m, tea.KeyPressMsg{Text: " -v"})
+		if got := m.approvalEdit.input.Value(); got != "go test -v" {
+			t.Fatalf("editor value = %q after typing", got)
+		}
+		assertDraftIntact(t, m, want, "after typing in the edit")
+
+		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+		select {
+		case dec := <-tc.ResponseChan:
+			if !dec.Approved || dec.Edited != "go test -v" {
+				t.Fatalf("decision = %+v, want approved with the edited command", dec)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("edited approval was never settled")
+		}
+		if m.approvalEdit != nil {
+			t.Fatal("the editor survived a save")
+		}
+		if state.PendingApproval() != nil {
+			t.Fatal("the approval stayed pending after a save")
+		}
+		assertDraftIntact(t, m, want, "after saving the edit")
+
+		// The preserved draft submits, expanded, and never carries the edit.
+		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+		msgs := m.state.Messages()
+		if len(msgs) != 1 || msgs[0].Role != session.RoleUser {
+			t.Fatalf("messages = %+v, want one user message", msgs)
+		}
+		if !strings.Contains(msgs[0].Content, "pasted tail") || !strings.Contains(msgs[0].Content, "mid line") {
+			t.Fatalf("submitted prompt lost the preserved draft: %q", msgs[0].Content)
+		}
+		if strings.Contains(msgs[0].Content, "go test -v") {
+			t.Fatalf("edited approval reached the chat prompt: %q", msgs[0].Content)
+		}
+	})
+
+	t.Run("cancel", func(t *testing.T) {
+		state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		m := testModel(state)
+		m.resize(100, 40)
+		m.refreshViewport()
+		var want composerDraft
+		m, want = seedComposerDraft(t, m)
+		tc := newPending(t)
+		state.SetPendingApproval(tc)
+
+		m = chooseApprovalEdit(t, m)
+		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEscape})
+
+		if m.approvalEdit != nil {
+			t.Fatal("Esc kept the approval editor open")
+		}
+		if state.PendingApproval() != tc {
+			t.Fatal("Esc dismissed the pending approval instead of only the edit")
+		}
+		select {
+		case dec := <-tc.ResponseChan:
+			t.Fatalf("Esc settled the approval: %+v", dec)
+		default:
+		}
+		assertDraftIntact(t, m, want, "after cancelling the edit")
+
+		// The approval is still answerable: choosing deny afterwards works.
+		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyRight})
+		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+		m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+		select {
+		case dec := <-tc.ResponseChan:
+			if dec.Approved {
+				t.Fatal("deny after cancelling the edit approved the call")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("the pending approval was no longer answerable after cancelling the edit")
+		}
+		assertDraftIntact(t, m, want, "after answering the approval")
+	})
+}
+
+// TestApprovalEditStaleRequestCannotSettleReplacement pins that a keyed edit
+// whose request was interrupted can never answer, clear or submit anything:
+// the edit is retired, the replacement stays pending, and the draft survives.
+func TestApprovalEditStaleRequestCannotSettleReplacement(t *testing.T) {
+	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+	m := testModel(state)
+	m.resize(100, 40)
+	m.refreshViewport()
+	var want composerDraft
+	m, want = seedComposerDraft(t, m)
+
+	first := &session.PendingToolCall{
+		ID:           "call_first",
+		Name:         "shell.run",
+		Command:      "rm -rf build",
+		Risk:         "destructive",
+		Reason:       "deletes the build directory",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	if _, err := state.RegisterApproval(context.Background(), first); err != nil {
+		t.Fatalf("RegisterApproval: %v", err)
+	}
+	m = chooseApprovalEdit(t, m)
+	m = sendKey(m, tea.KeyPressMsg{Text: " --dry-run"})
+	if got := m.approvalEdit.input.Value(); got != "rm -rf build --dry-run" {
+		t.Fatalf("editor value = %q", got)
+	}
+
+	// The request is interrupted while the edit is open: CancelPrompt is the
+	// claim Send now makes and it wins the record.
+	if !state.CancelPrompt(first.Key, session.ErrSendNow) {
+		t.Fatal("CancelPrompt did not win the interrupted approval")
+	}
+	select {
+	case dec := <-first.ResponseChan:
+		if dec.Approved {
+			t.Fatal("the interrupted request was approved")
+		}
+	default:
+		t.Fatal("the interrupted request was never settled")
+	}
+
+	// A replacement request arrives before the user touches the keyboard.
+	replacement := &session.PendingToolCall{
+		ID:           "call_second",
+		Name:         "shell.run",
+		Command:      "rm -rf dist",
+		Risk:         "destructive",
+		Reason:       "deletes the dist directory",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	state.SetPendingApproval(replacement)
+
+	// Enter used to be the edit's save key: it must not answer the replacement.
+	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.approvalEdit != nil {
+		t.Fatal("the stale edit survived the replacement")
+	}
+	if state.PendingApproval() != replacement {
+		t.Fatal("the replacement request was cleared")
+	}
+	select {
+	case dec := <-replacement.ResponseChan:
+		t.Fatalf("the stale edit settled the replacement: %+v", dec)
+	default:
+	}
+	if n := len(state.Messages()); n != 0 {
+		t.Fatalf("the stale edit sent %d message(s); it must not submit the draft", n)
+	}
+	assertDraftIntact(t, m, want, "after the stale edit was retired")
+}
+
+// TestApprovalEditSendNowKeepsBothDrafts pins that Send now over an open
+// approval edit owns a separate composer: accepted and rejected submissions,
+// and a resize while editing, never settle the approval or lose either draft.
+func TestApprovalEditSendNowKeepsBothDrafts(t *testing.T) {
+	f := newSendNowFixture(t, 120, 40, true)
+	var want composerDraft
+	f.m, want = seedComposerDraft(t, f.m)
+	f.m = openTestApprovalEdit(t, f.m, "go test -count=1")
+	if !f.m.editingApproval() {
+		t.Fatal("the approval editor did not own the input")
+	}
+	tc := f.m.state.PendingApproval()
+
+	// Accepted Send now: the composer carries only its own text and the edit
+	// keeps both the command and the chat draft.
+	p := f.composer()
+	f.send(tea.PasteMsg{Content: "steer the turn"})
+	if p.Text() != "steer the turn" {
+		t.Fatalf("composer text = %q", p.Text())
+	}
+	f.send(steerpanel.SubmitMsg{ComposerID: p.ID(), SessionID: f.state.SessionID(), TurnID: f.turnID, Text: p.Text()})
+	if len(f.submits) != 1 || f.submits[0].Text != "steer the turn" {
+		t.Fatalf("submits = %+v, want the steering text only", f.submits)
+	}
+	if f.m.steeringComposer != nil {
+		t.Fatal("an accepted submit kept the composer open")
+	}
+	if !f.m.editingApproval() {
+		t.Fatal("an accepted Send now closed the approval editor")
+	}
+	if got := f.m.approvalEdit.input.Value(); got != "go test -count=1" {
+		t.Fatalf("editor value = %q after Send now", got)
+	}
+	assertDraftIntact(t, f.m, want, "after an accepted Send now")
+	select {
+	case dec := <-tc.ResponseChan:
+		t.Fatalf("Send now settled the approval: %+v", dec)
+	default:
+	}
+
+	// Rejected Send now: the turn ends under the composer, which keeps its
+	// text, and neither the edit nor the draft is disturbed.
+	p2 := f.composer()
+	f.send(tea.PasteMsg{Content: "keep me"})
+	f.state.EndSteeringTurn(f.turnID, "the turn ended")
+	f.send(steerpanel.SubmitMsg{ComposerID: p2.ID(), SessionID: f.state.SessionID(), TurnID: f.turnID, Text: p2.Text()})
+	if len(f.submits) != 1 {
+		t.Fatalf("a rejected submit recorded a request: %+v", f.submits)
+	}
+	if f.m.steeringComposer == nil {
+		t.Fatal("a rejected submit closed the composer")
+	}
+	if p2.Text() != "keep me" {
+		t.Fatalf("a rejected submit lost the composer text: %q", p2.Text())
+	}
+	f.send(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if f.m.steeringComposer != nil {
+		t.Fatal("Esc did not close the composer")
+	}
+	if !f.m.editingApproval() {
+		t.Fatal("closing the composer dropped the approval editor")
+	}
+	assertDraftIntact(t, f.m, want, "after a rejected Send now")
+
+	// A resize while the edit is open keeps the binding, the command and the
+	// draft, and still never settles the approval.
+	f.send(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if !f.m.editingApproval() {
+		t.Fatal("a resize closed the approval editor")
+	}
+	if got := f.m.approvalEdit.input.Value(); got != "go test -count=1" {
+		t.Fatalf("editor value = %q after resize", got)
+	}
+	assertDraftIntact(t, f.m, want, "after resizing while editing")
+	select {
+	case dec := <-tc.ResponseChan:
+		t.Fatalf("resizing settled the approval: %+v", dec)
+	default:
 	}
 }
 
@@ -10482,9 +10784,7 @@ func TestSendNowComposerDoesNotCopyPromptOrSecretInput(t *testing.T) {
 		prep func(f *sendNowFixture)
 	}{
 		{"approval edit", func(f *sendNowFixture) {
-			f.m.editingCommand = true
-			f.m.input.Placeholder = "Edit command..."
-			f.m.input.SetValue(secret)
+			f.m = openTestApprovalEdit(t, f.m, secret)
 		}},
 		{"question", func(f *sendNowFixture) {
 			f.state.SetPendingQuestion(&session.PendingQuestion{

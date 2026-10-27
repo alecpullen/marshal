@@ -82,4 +82,23 @@ type Session interface {
 	//
 	// ACP: session/sheet (new in P3), sent with the refresh flags.
 	RefreshSheet(ctx context.Context, req acpwire.SheetRefresh) error
+
+	// StackNode is one transcript node's wire form with the detail the
+	// projection caps or leaves out (C6): a call's whole arguments, output,
+	// diff and summary and its step; a beat's narration, reasoning and step;
+	// a completion's whole output and report. subagentID 0 reads the
+	// session's transcript, and any other ID the transcript of the subagent
+	// with that ID anywhere in the session's tree. It fails for an ID that
+	// names no child, and for a node the transcript does not hold.
+	//
+	// ACP: session/stack_node (exists).
+	StackNode(ctx context.Context, nodeID string, subagentID int64) (acpwire.StackNodeResult, error)
+
+	// Callers lists what references the symbol a call row changed (C6). It
+	// returns nil and no error when the row changed no resolved symbol, when
+	// no language server is wired or ready, and when the node is gone. A
+	// caller asks once per row and keeps the answer, a nil one included.
+	//
+	// ACP: session/callers (new in P3).
+	Callers(ctx context.Context, nodeID string) ([]string, error)
 }

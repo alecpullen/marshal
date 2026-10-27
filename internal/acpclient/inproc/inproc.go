@@ -43,6 +43,15 @@ type Deps struct {
 	// ProjectID is the project's database ID, for the sheet's turn metrics
 	// and repo counts. The database itself is the state's.
 	ProjectID int64
+	// ReferenceFinder answers Callers. Nil means no callers lookups.
+	ReferenceFinder ReferenceFinder
+}
+
+// ReferenceFinder resolves what references a symbol. ok is false when no
+// language server is ready for the file's language. lsp.SymbolQuery
+// satisfies it.
+type ReferenceFinder interface {
+	References(ctx context.Context, filePath string, line, col int) ([]string, bool)
 }
 
 // Host is the in-process transport: it owns the current session and hands out
@@ -65,6 +74,9 @@ type Session struct {
 	// headSHA reads a directory's HEAD. Replaceable so the package's tests
 	// can move the workspace mid-read.
 	headSHA func(dir string) string
+
+	// refs answers Callers. Nil means no callers lookups.
+	refs ReferenceFinder
 
 	// ctx bounds the event subscriptions; cancel releases them.
 	ctx    context.Context

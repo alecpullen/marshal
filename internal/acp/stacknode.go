@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
@@ -18,83 +19,6 @@ type StackNodeParams struct {
 	SubagentID int64  `json:"subagentId,omitempty"`
 }
 
-// NodeDetail is the uncapped detail behind one stack node.
-type NodeDetail struct {
-	Calls     []CallDetail    `json:"calls,omitempty"`
-	Narration []string        `json:"narration,omitempty"`
-	Thinking  []ThoughtDetail `json:"thinking,omitempty"`
-	Todo      *TodoDetail     `json:"todo,omitempty"`
-	Relations *RelationDetail `json:"relations,omitempty"`
-}
-
-// CallDetail is one tool call with nothing capped.
-type CallDetail struct {
-	CallID       string                  `json:"callId,omitempty"`
-	StepID       int64                   `json:"stepId,omitempty"`
-	ToolName     string                  `json:"toolName"`
-	Args         string                  `json:"args,omitempty"`
-	OriginalArgs string                  `json:"originalArgs,omitempty"`
-	Output       string                  `json:"output,omitempty"`
-	Diff         string                  `json:"diff,omitempty"`
-	Error        string                  `json:"error,omitempty"`
-	ExitCode     *int                    `json:"exitCode,omitempty"`
-	Model        string                  `json:"model,omitempty"`
-	FinishReason string                  `json:"finishReason,omitempty"`
-	Rewritten    bool                    `json:"rewritten,omitempty"`
-	Hooks        []registry.HookMetadata `json:"hooks,omitempty"`
-	Sandbox      json.RawMessage         `json:"sandbox,omitempty"`
-	Symbols      []SymbolDetail          `json:"symbols,omitempty"`
-	Notice       *NoticeDetail           `json:"notice,omitempty"`
-	// Execution is the structured command-execution evidence this call
-	// carries, separate from Notice: Notice.Text is coaching prose written
-	// for the model, while this is the data a client explains a wait, a
-	// handoff or a stop outcome with, without parsing a sentence.
-	Execution *ExecutionDetail `json:"execution,omitempty"`
-}
-
-// ExecutionDetail is one managed command execution's structured evidence as
-// the detail transport reports it: what was launched, who owned it, how the
-// launching caller related to it and how it ended.
-//
-// Every field is optional. An absent Exit means no exit code was ever
-// observed — a start-up failure, a still-running continuation, a lost record —
-// and must never be rendered as success. Empty State/Outcome means the record
-// predates structured evidence or has not settled, which is likewise unknown
-// rather than zero-valued fact.
-type ExecutionDetail struct {
-	Version        int    `json:"version,omitempty"`
-	ExecutionID    string `json:"executionId,omitempty"`
-	DisplayID      string `json:"displayId,omitempty"`
-	ConversationID string `json:"conversationId,omitempty"`
-	Actor          string `json:"actor,omitempty"`
-	TurnID         string `json:"turnId,omitempty"`
-	StepID         string `json:"stepId,omitempty"`
-	ToolCallID     string `json:"toolCallId,omitempty"`
-	Cwd            string `json:"cwd,omitempty"`
-	Generation     int    `json:"generation,omitempty"`
-	PID            int    `json:"pid,omitempty"`
-	// State is the lifecycle status ("running", "stopping", "completed",
-	// "failed", "killed", "timed_out"); Outcome is the finer cause
-	// ("nonzero_exit", "startup_failure", "stopped", "resource_limit", …).
-	State      string `json:"state,omitempty"`
-	Outcome    string `json:"outcome,omitempty"`
-	Attachment string `json:"attachment,omitempty"`
-	// Wait is the effective foreground wait the launch used; DetachReason is
-	// why and DetachedAt when a wait handed the execution to the background.
-	Wait         string `json:"wait,omitempty"`
-	DetachReason string `json:"detachReason,omitempty"`
-	DetachedAt   int64  `json:"detachedAt,omitempty"`
-	// StopCause and StopRequestedAt record an accepted explicit stop request
-	// separately from the outcome it produced.
-	StopCause       string `json:"stopCause,omitempty"`
-	StopRequestedAt int64  `json:"stopRequestedAt,omitempty"`
-	// Exit is the observed exit code; absent means none was observed.
-	Exit      *int  `json:"exit,omitempty"`
-	Truncated bool  `json:"truncated,omitempty"`
-	StartedAt int64 `json:"startedAt,omitempty"`
-	EndedAt   int64 `json:"endedAt,omitempty"`
-}
-
 // executionDetail projects a stored execution record onto the detail
 // transport. It returns nil for a record that carries nothing at all, so an
 // empty payload is omitted rather than sent as an object a client has to
@@ -104,11 +28,11 @@ type ExecutionDetail struct {
 // uses for a card's command: they are display text (a working directory, a
 // stop cause an actor supplied) and a control sequence in one of them would
 // otherwise reach a client's renderer verbatim.
-func executionDetail(ex registry.CommandExecution) *ExecutionDetail {
+func executionDetail(ex registry.CommandExecution) *acpwire.ExecutionDetail {
 	if ex == (registry.CommandExecution{}) {
 		return nil
 	}
-	return &ExecutionDetail{
+	return &acpwire.ExecutionDetail{
 		Version:         ex.Version,
 		ExecutionID:     ex.ExecutionID,
 		DisplayID:       ex.DisplayID,
@@ -145,40 +69,6 @@ func copyExitCode(p *int) *int {
 	return &v
 }
 
-// SymbolDetail is a symbol a call touched.
-type SymbolDetail struct {
-	File string `json:"file"`
-	Name string `json:"name"`
-	Kind string `json:"kind,omitempty"`
-}
-
-// NoticeDetail is a tool-UX notice attached to a call.
-type NoticeDetail struct {
-	Kind string `json:"kind"`
-	Text string `json:"text"`
-}
-
-// ThoughtDetail is one finished reasoning block.
-type ThoughtDetail struct {
-	Text       string `json:"text"`
-	DurationMs int64  `json:"durationMs,omitempty"`
-}
-
-// TodoDetail is the todo a step or task belongs to.
-type TodoDetail struct {
-	ID          string `json:"id"`
-	Content     string `json:"content"`
-	Status      string `json:"status"`
-	StartedAt   int64  `json:"startedAt,omitempty"`
-	CompletedAt int64  `json:"completedAt,omitempty"`
-}
-
-// RelationDetail lists node keys of related steps.
-type RelationDetail struct {
-	CausedBy []string `json:"causedBy,omitempty"`
-	FixedBy  []string `json:"fixedBy,omitempty"`
-}
-
 func indentJSON(raw []byte) string {
 	if len(raw) == 0 {
 		return ""
@@ -190,11 +80,16 @@ func indentJSON(raw []byte) string {
 	return string(raw)
 }
 
-func callDetail(ev registry.AuditEvent) CallDetail {
-	c := CallDetail{
+func callDetail(ev registry.AuditEvent) acpwire.CallDetail {
+	c := acpwire.CallDetail{
 		CallID: ev.ToolCallID, StepID: ev.StepID, ToolName: ev.ToolName,
 		Args: indentJSON(ev.Args), Error: ev.Error, ExitCode: ev.CommandExitCode,
-		Model: ev.Model, FinishReason: ev.FinishReason, Rewritten: ev.Rewritten, Hooks: ev.Hooks,
+		Model: ev.Model, FinishReason: ev.FinishReason, Rewritten: ev.Rewritten,
+	}
+	// The hooks trail travels as registry.HookMetadata's own JSON: its
+	// failed_open key is not a wire-field name, so it stays raw bytes.
+	if len(ev.Hooks) > 0 {
+		c.Hooks, _ = json.Marshal(ev.Hooks)
 	}
 	if ev.Rewritten {
 		c.OriginalArgs = indentJSON(ev.OriginalArgs)
@@ -212,10 +107,10 @@ func callDetail(ev registry.AuditEvent) CallDetail {
 		c.Sandbox = raw
 	}
 	for _, s := range ev.Symbols {
-		c.Symbols = append(c.Symbols, SymbolDetail{File: s.File, Name: s.Name, Kind: s.Kind})
+		c.Symbols = append(c.Symbols, acpwire.SymbolDetail{File: s.File, Name: s.Name, Kind: s.Kind})
 	}
 	if ev.Notice != nil {
-		c.Notice = &NoticeDetail{Kind: ev.Notice.Kind, Text: ev.Notice.Text}
+		c.Notice = &acpwire.NoticeDetail{Kind: ev.Notice.Kind, Text: ev.Notice.Text}
 		// The structured execution record rides in the notice's Data, but it is
 		// not a notice: it is the machine-readable evidence a client explains a
 		// wait, a handoff or a stop with. Exposing it as its own typed field
@@ -232,8 +127,8 @@ func isDiffToolName(name string) bool {
 	return name == "file.write_patch" || name == "file.edit" || name == "patch.apply"
 }
 
-func activeCallDetail(a *session.ActiveToolCall) CallDetail {
-	return CallDetail{CallID: a.ToolCallID, StepID: int64(a.StepID), ToolName: a.Name, Args: indentJSON([]byte(a.Args)), Output: a.Output}
+func activeCallDetail(a *session.ActiveToolCall) acpwire.CallDetail {
+	return acpwire.CallDetail{CallID: a.ToolCallID, StepID: int64(a.StepID), ToolName: a.Name, Args: indentJSON([]byte(a.Args)), Output: a.Output}
 }
 
 func unixMs(t time.Time) int64 {
@@ -243,13 +138,13 @@ func unixMs(t time.Time) int64 {
 	return t.UnixMilli()
 }
 
-func todoDetail(st *session.State, id string) *TodoDetail {
+func todoDetail(st *session.State, id string) *acpwire.TodoDetail {
 	if id == "" {
 		return nil
 	}
 	for _, td := range st.Todos() {
 		if td.ID == id {
-			return &TodoDetail{ID: td.ID, Content: td.Content, Status: td.Status,
+			return &acpwire.TodoDetail{ID: td.ID, Content: td.Content, Status: td.Status,
 				StartedAt: unixMs(td.StartedAt), CompletedAt: unixMs(td.CompletedAt)}
 		}
 	}
@@ -301,7 +196,7 @@ func (m *TurnManager) StackNode(ctx context.Context, params json.RawMessage) (an
 	if n == nil {
 		return nil, invalidParamsError("unknown node: %s", p.NodeID)
 	}
-	var detail NodeDetail
+	var detail acpwire.NodeDetail
 	switch {
 	case n.Active != nil:
 		detail.Calls = append(detail.Calls, activeCallDetail(n.Active))
@@ -314,16 +209,16 @@ func (m *TurnManager) StackNode(ctx context.Context, params json.RawMessage) (an
 			detail.Narration = append(detail.Narration, msg.Content)
 		}
 		for _, t := range n.Step.Thinking {
-			detail.Thinking = append(detail.Thinking, ThoughtDetail{Text: t.Text, DurationMs: t.Duration.Milliseconds()})
+			detail.Thinking = append(detail.Thinking, acpwire.ThoughtDetail{Text: t.Text, DurationMs: t.Duration.Milliseconds()})
 		}
 		detail.Todo = todoDetail(state, n.Step.TodoID)
 	}
 	if rel, ok := viewmodel.ResolveBeats(viewmodel.Relations(state.Transcript()), tree)[n.ID]; ok {
-		detail.Relations = &RelationDetail{CausedBy: keysOf(rel.CausedBy), FixedBy: keysOf(rel.FixedBy)}
+		detail.Relations = &acpwire.RelationDetail{CausedBy: keysOf(rel.CausedBy), FixedBy: keysOf(rel.FixedBy)}
 	}
 	node := viewmodel.Project([]*viewmodel.Node{n}, state.Workspace().ActiveRoot).Nodes[0]
 	if parent != nil {
 		node.Parent = parent.ID.Key
 	}
-	return map[string]any{"node": node, "detail": detail}, nil
+	return acpwire.StackNodeResult{Detail: detail, Node: node}, nil
 }

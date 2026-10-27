@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/livebox"
@@ -549,6 +550,39 @@ func TestOpenFindsAFileInABeatsSecondRow(t *testing.T) {
 	path, _ := m.nodeFile(wireBeatKey(t, m))
 	if path != root+"/a.go" {
 		t.Fatalf("open resolved %q, want %q", path, root+"/a.go")
+	}
+}
+
+// TestOpenKeepsAChangedFileWhenTheDetailIsGone pins the stale-index case: the
+// index still holds a row the session can no longer resolve, so its detail
+// lookup fails. The changed files travel on the wire itself, so `o` must still
+// open one rather than claim there is nothing to open.
+func TestOpenKeepsAChangedFileWhenTheDetailIsGone(t *testing.T) {
+	m := newTestModel(t)
+	root := m.state.Workspace().ActiveRoot
+	if err := os.WriteFile(root+"/a.go", []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{Model: "qwen3"})
+	m.state.LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: id, ToolCallID: "c1",
+		Args: []byte(`{"command":"true"}`)})
+	m.refreshViewport()
+
+	beat := wireBeatKey(t, m)
+	gone := "tool:gone"
+	m.wire[gone] = &acpwire.WireNode{
+		ID: gone, Kind: acpwire.KindTool, Parent: beat.Key,
+		Tool: &acpwire.WireTool{
+			Name:  "file.edit",
+			Calls: []acpwire.WireCall{{CallID: "c9", Files: []string{"a.go"}}},
+		},
+	}
+	m.wire[beat.Key].Children = append(m.wire[beat.Key].Children, gone)
+
+	path, _ := m.nodeFile(beat)
+	if path != root+"/a.go" {
+		t.Fatalf("open resolved %q, want the changed file %q", path, root+"/a.go")
 	}
 }
 

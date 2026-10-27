@@ -264,10 +264,11 @@ func (m *Model) nodeFile(id viewmodel.NodeID) (path string, line int) {
 		if row == nil || row.Tool == nil {
 			return
 		}
-		res, ok := m.nodeDetail(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: key})
-		if !ok {
-			return
-		}
+		// A failed lookup is a stale index entry, not an empty row: the
+		// wire still says which files the call changed, so fall through
+		// with the changed files and no args or output rather than
+		// claiming there is nothing to open.
+		res, _ := m.nodeDetail(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: key})
 		for i, call := range row.Tool.Calls {
 			var cd acpwire.CallDetail
 			if i < len(res.Detail.Calls) {

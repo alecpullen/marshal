@@ -75,15 +75,27 @@ func TestCallDetailCarriesItsHooksAsTheirJSON(t *testing.T) {
 		{Event: "PreToolUse", Decision: "allow"},
 		{Event: "PostToolUse", FailedOpen: true},
 	}
-	want, err := json.Marshal(hooks)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := callDetail(registry.AuditEvent{ToolName: "shell.run", Hooks: hooks}).Hooks; string(got) != string(want) {
+	// Pinned by hand, not by re-marshalling hooks: the point is that the
+	// bytes are registry.HookMetadata's own, failed_open included. A
+	// re-encode through a wire type would drop that key and still pass a
+	// recomputed comparison.
+	const want = `[{"event":"PreToolUse","decision":"allow"},{"event":"PostToolUse","failed_open":true}]`
+	if got := callDetail(registry.AuditEvent{ToolName: "shell.run", Hooks: hooks}).Hooks; string(got) != want {
 		t.Fatalf("hooks = %s, want %s", got, want)
 	}
 	if got := callDetail(registry.AuditEvent{ToolName: "shell.run"}).Hooks; len(got) != 0 {
 		t.Fatalf("a call with no hooks carries %q, want none", got)
+	}
+}
+
+// TestApprovalNotRequiredMatchesTheRegistry pins the duplicated constant: the
+// approval value on the wire originates in registry, acpwire cannot import it,
+// and the TUI compares a wire approval against acpwire's copy. If the two ever
+// drifted, the inspector would silently stop showing the approval field.
+func TestApprovalNotRequiredMatchesTheRegistry(t *testing.T) {
+	if acpwire.ApprovalNotRequired != string(registry.ApprovalNotRequired) {
+		t.Fatalf("acpwire.ApprovalNotRequired = %q, want registry's %q",
+			acpwire.ApprovalNotRequired, string(registry.ApprovalNotRequired))
 	}
 }
 

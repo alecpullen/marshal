@@ -29,6 +29,7 @@ func newSession(d Deps) *Session {
 		gitInfo:   gitInfo,
 		projectID: d.ProjectID,
 		headSHA:   gitinfo.HeadSHA,
+		refs:      d.ReferenceFinder,
 		ctx:       ctx,
 		cancel:    cancel,
 		changed:   make(chan struct{}, 1),

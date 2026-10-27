@@ -57,6 +57,10 @@ var movedStateReads = map[string]string{
 	"ToolBudget":      "2c",
 	"LoadedToolNames": "2c",
 	"StartedAt":       "2c",
+
+	// callers.go's last transcript read moved in 3b: the rows a callers
+	// lookup applies to now come from the wire index.
+	"Transcript": "3b",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

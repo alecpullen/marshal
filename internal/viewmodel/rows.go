@@ -104,6 +104,23 @@ func SubjectFirstTool(name string) bool {
 	return IsShellFamily(name)
 }
 
+// CallersSymbol is the symbol a callers lookup asks about for ev: the first
+// resolved symbol of a call that changed it, in a subject-first tool other
+// than file.read. ok is false when there is none. An unresolved position is
+// never asked about: a lookup at a guessed column returns confidently wrong
+// callers, which is worse than none.
+func CallersSymbol(ev registry.AuditEvent) (ref registry.SymbolRef, ok bool) {
+	if !SubjectFirstTool(ev.ToolName) || ev.ToolName == "file.read" {
+		return registry.SymbolRef{}, false
+	}
+	for _, s := range ev.Symbols {
+		if s.Resolved {
+			return s, true
+		}
+	}
+	return registry.SymbolRef{}, false
+}
+
 // searchQualifiers gives each ◈ tool a short, distinguishable label.
 //
 // toolCategoryGlyph maps several tools onto ◈ (toolnames.go), so unlike the

@@ -55,14 +55,14 @@ func (s *syncStack) notices() []stackNotice {
 	return append([]stackNotice(nil), s.got...)
 }
 
-func callNode(t *testing.T, m *TurnManager, nodeID string) (map[string]any, error) {
+func callNode(t *testing.T, m *TurnManager, nodeID string) (acpwire.StackNodeResult, error) {
 	t.Helper()
 	params, _ := json.Marshal(StackNodeParams{SessionID: "s1", NodeID: nodeID})
 	v, err := m.StackNode(context.Background(), params)
 	if err != nil {
-		return nil, err
+		return acpwire.StackNodeResult{}, err
 	}
-	return v.(map[string]any), nil
+	return v.(acpwire.StackNodeResult), nil
 }
 
 func TestStackNodeToolReturnsFullOutput(t *testing.T) {
@@ -77,14 +77,14 @@ func TestStackNodeToolReturnsFullOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	detail := got["detail"].(NodeDetail)
+	detail := got.Detail
 	if len(detail.Calls) != 1 || detail.Calls[0].Output != big {
 		t.Fatalf("calls = %+v", detail.Calls)
 	}
 	if !strings.Contains(detail.Calls[0].Args, "\n") {
 		t.Fatalf("args not indented: %q", detail.Calls[0].Args)
 	}
-	if got["node"].(acpwire.WireNode).Parent == "" {
+	if got.Node.Parent == "" {
 		t.Fatal("node lost its parent")
 	}
 }
@@ -100,7 +100,7 @@ func TestStackNodeStepReturnsNarrationAndThinking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	detail := got["detail"].(NodeDetail)
+	detail := got.Detail
 	if len(detail.Narration) != 1 || detail.Narration[0] != "Looking around." || len(detail.Thinking) != 1 || detail.Thinking[0].Text != "hmm" {
 		t.Fatalf("detail = %+v", detail)
 	}
@@ -151,7 +151,7 @@ func TestStackNodeCallDetailCarriesExecutionEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	detail := got["detail"].(NodeDetail)
+	detail := got.Detail
 	if len(detail.Calls) != 1 {
 		t.Fatalf("calls = %+v", detail.Calls)
 	}
@@ -198,7 +198,7 @@ func TestStackNodeExecutionEvidenceOmitsUnobservedExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ex := got["detail"].(NodeDetail).Calls[0].Execution
+	ex := got.Detail.Calls[0].Execution
 	if ex == nil || ex.Exit != nil {
 		t.Fatalf("execution = %+v, want no exit for a start-up failure", ex)
 	}
@@ -227,7 +227,7 @@ func TestStackNodeOmitsExecutionWithoutRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := got["detail"].(NodeDetail).Calls[0]
+	call := got.Detail.Calls[0]
 	if call.Execution != nil {
 		t.Fatalf("execution = %+v, want none", call.Execution)
 	}
@@ -264,7 +264,7 @@ func TestStackNodeExecutionEvidenceScrubsDisplayText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ex := got["detail"].(NodeDetail).Calls[0].Execution
+	ex := got.Detail.Calls[0].Execution
 	if ex == nil {
 		t.Fatal("no execution evidence")
 	}

@@ -1,25 +1,24 @@
 package tui
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/inspector"
 	"marshal/internal/commands"
-	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
 
-// openInspector opens the inspector on the cursor node. Only steps and tool
-// rows have anything to inspect.
+// openInspector opens the inspector on the cursor node. Only steps, tool rows
+// and completion events have anything to inspect.
 func (m *Model) openInspector() (tea.Model, tea.Cmd, bool) {
-	d, ok := m.inspectorDetail(m.currentNode())
+	d, ok := m.inspectorDetail(m.cursor)
 	if !ok {
 		cmd := m.setFlash("Nothing to inspect here")
 		return *m, cmd, true
@@ -29,29 +28,40 @@ func (m *Model) openInspector() (tea.Model, tea.Cmd, bool) {
 	return *m, nil, true
 }
 
-// inspectorDetail builds the inspector's view model for a step or tool row.
-func (m *Model) inspectorDetail(n *viewmodel.Node) (inspector.Detail, bool) {
-	if n == nil {
+// inspectorDetail builds the inspector's view model for a step, tool row or
+// completion event. It reads the node's fields from the wire index and its
+// uncapped detail from the session: either missing means nothing to inspect.
+func (m *Model) inspectorDetail(id viewmodel.NodeID) (inspector.Detail, bool) {
+	w := m.wireNode(id)
+	if w == nil {
+		return inspector.Detail{}, false
+	}
+	tool := w.Kind == acpwire.KindTool && w.Tool != nil && len(w.Tool.Calls) > 0
+	beat := w.Kind == acpwire.KindStep && w.Step != nil
+	if !tool && !beat && w.Completion == nil {
+		return inspector.Detail{}, false
+	}
+	res, ok := m.nodeDetail(id)
+	if !ok {
 		return inspector.Detail{}, false
 	}
 	switch {
-	case n.Kind == viewmodel.KindTool && len(n.Tools) > 0:
-		return m.toolDetail(n), true
-	case n.Kind == viewmodel.KindStep && n.Step != nil:
-		return m.stepDetail(n), true
-	case n.Kind == viewmodel.KindCompletion && n.Completion != nil:
-		return m.completionDetail(n.Completion), true
+	case tool:
+		return m.toolDetail(w, res.Detail), true
+	case beat:
+		return m.stepDetail(w, res.Detail), true
 	}
-	return inspector.Detail{}, false
+	return completionDetail(w.Completion, res.Detail.Completion), true
 }
 
 // completionDetail is a finished job or subagent in the inspector: every
 // recorded fact, and the whole retained output rather than the report's tail.
-func (m *Model) completionDetail(c *viewmodel.CompletionInfo) inspector.Detail {
-	d := inspector.Detail{Title: c.ID, Subject: c.Label}
+// A nil d reads as empty.
+func completionDetail(c *acpwire.WireCompletion, d *acpwire.CompletionDetail) inspector.Detail {
+	det := inspector.Detail{Title: c.ID, Subject: c.Label}
 	add := func(k, v string) {
 		if v != "" {
-			d.Fields = append(d.Fields, inspector.Field{Key: k, Value: v})
+			det.Fields = append(det.Fields, inspector.Field{Key: k, Value: v})
 		}
 	}
 	add("outcome", c.Outcome)
@@ -59,14 +69,14 @@ func (m *Model) completionDetail(c *viewmodel.CompletionInfo) inspector.Detail {
 		add("exit", fmt.Sprint(*c.ExitCode))
 	}
 	add("stop cause", c.StopCause)
-	if !c.StartedAt.IsZero() {
-		add("started", c.StartedAt.Local().Format("15:04:05"))
+	if c.StartedAt != 0 {
+		add("started", acpwire.Time(c.StartedAt).Local().Format("15:04:05"))
 	}
-	if !c.EndedAt.IsZero() {
-		add("ended", c.EndedAt.Local().Format("15:04:05"))
+	if c.EndedAt != 0 {
+		add("ended", acpwire.Time(c.EndedAt).Local().Format("15:04:05"))
 	}
-	if c.Duration > 0 {
-		add("duration", formatElapsed(c.Duration))
+	if c.DurationMs > 0 {
+		add("duration", formatElapsed(time.Duration(c.DurationMs)*time.Millisecond))
 	}
 	add("cwd", c.Cwd)
 	add("execution", c.ExecutionID)
@@ -77,240 +87,248 @@ func (m *Model) completionDetail(c *viewmodel.CompletionInfo) inspector.Detail {
 
 	sec := func(name, body string) {
 		if strings.TrimSpace(body) != "" {
-			d.Sections = append(d.Sections, inspector.Section{Name: name, Body: body})
+			det.Sections = append(det.Sections, inspector.Section{Name: name, Body: body})
 		}
 	}
-	sec("output", viewmodel.ScrubBlock(c.Output))
-	sec("report", c.Report)
+	var output, report string
+	if d != nil {
+		output, report = d.Output, d.Report
+	}
+	sec("output", viewmodel.ScrubBlock(output))
+	sec("report", report)
 	sec("error", c.Error)
 	sec("command", c.Command)
-	return d
+	return det
 }
 
-func (m *Model) stepOf(id int64) (session.Step, bool) {
-	st, _ := m.transcriptSource()
-	if st == nil || id == 0 {
-		return session.Step{}, false
-	}
-	return st.Step(id)
-}
-
-func actorText(st session.Step) string {
+// actorText is who spoke and with what: the owner label, then the model, with
+// the provider after an @.
+func actorText(owner, model, provider string) string {
 	parts := []string{}
-	if o := stepOwner(st); o != "" {
-		parts = append(parts, o)
+	if owner != "" {
+		parts = append(parts, owner)
 	}
-	if st.Actor.Model != "" {
-		mp := st.Actor.Model
-		if st.Actor.Provider != "" {
-			mp += " @ " + st.Actor.Provider
+	if model != "" {
+		mp := model
+		if provider != "" {
+			mp += " @ " + provider
 		}
 		parts = append(parts, mp)
 	}
 	return strings.Join(parts, " · ")
 }
 
-func (m *Model) whyText(stepID int64) string {
-	state, _ := m.transcriptSource()
-	if state == nil || stepID == 0 {
-		return ""
+func (m *Model) toolDetail(w *acpwire.WireNode, d acpwire.NodeDetail) inspector.Detail {
+	call := w.Tool.Calls[0]
+	var cd acpwire.CallDetail
+	if len(d.Calls) > 0 {
+		cd = d.Calls[0]
 	}
-	if h, _ := firstSentence(state.StepNarration(stepID)); h != "" {
-		return stripEmphasis(h)
+	subject := w.Tool.Name
+	if call.Target != "" {
+		subject += " " + call.Target
 	}
-	return ""
-}
-
-func prettyJSON(raw []byte) string {
-	if len(bytes.TrimSpace(raw)) == 0 {
-		return ""
-	}
-	var buf bytes.Buffer
-	if json.Indent(&buf, raw, "", "  ") == nil {
-		return buf.String()
-	}
-	return string(raw)
-}
-
-func (m *Model) toolDetail(n *viewmodel.Node) inspector.Detail {
-	ev := n.Tools[0]
-	d := inspector.Detail{Subject: toolSubject(ev)}
+	det := inspector.Detail{Subject: subject}
 	pos := ""
-	if parent := m.parentStep(n.ID); parent != nil {
-		idx, total := 0, 0
-		for _, row := range parent.Children {
-			for _, t := range row.Tools {
-				total++
-				if t.ToolCallID == ev.ToolCallID && t.Timestamp.Equal(ev.Timestamp) {
-					idx = total
-				}
-			}
-		}
+	if idx, total, ok := m.callPlace(w); ok {
 		pos = fmt.Sprintf(" · tool %d/%d", max(idx, 1), max(total, 1))
 	}
-	d.Title = fmt.Sprintf("step %d%s", ev.StepID, pos)
-	if ev.StepID == 0 {
-		d.Title = "tool call" + pos
+	det.Title = fmt.Sprintf("step %d%s", cd.StepID, pos)
+	if cd.StepID == 0 {
+		det.Title = "tool call" + pos
 	}
 	add := func(k, v string) {
 		if v != "" {
-			d.Fields = append(d.Fields, inspector.Field{Key: k, Value: v})
+			det.Fields = append(det.Fields, inspector.Field{Key: k, Value: v})
 		}
 	}
-	if st, ok := m.stepOf(ev.StepID); ok {
-		add("actor", actorText(st))
-	} else if ev.AgentRole != "" {
-		add("actor", ev.AgentRole)
+	if d.Step != nil {
+		add("actor", actorText(d.Step.Owner, d.Step.Model, d.Step.Provider))
+		add("why", d.Step.Why)
+	} else {
+		add("actor", call.Role)
 	}
-	add("why", m.whyText(ev.StepID))
-	if !ev.Timestamp.IsZero() {
-		add("started", ev.Timestamp.Format("15:04:05"))
+	if call.At != 0 {
+		add("started", acpwire.Time(call.At).Format("15:04:05"))
 	}
-	if ev.Duration > 0 {
-		add("duration", compactDuration(ev.Duration))
+	if call.DurationMs > 0 {
+		add("duration", compactDuration(time.Duration(call.DurationMs)*time.Millisecond))
 	}
-	if ev.CommandExitCode != nil {
-		add("exit code", fmt.Sprint(*ev.CommandExitCode))
+	if cd.ExitCode != nil {
+		add("exit code", fmt.Sprint(*cd.ExitCode))
 	}
-	if ev.Sandbox.Enabled || ev.Sandbox.Backend != "" {
-		sb := ev.Sandbox.Backend
-		if ev.Sandbox.NetworkIsolated {
-			sb += ", network off"
+	if len(cd.Sandbox) > 0 {
+		var sb acpwire.SandboxDetail
+		if json.Unmarshal(cd.Sandbox, &sb) == nil {
+			txt := sb.Backend
+			if sb.NetworkIsolated {
+				txt += ", network off"
+			}
+			if sb.KilledReason != "" {
+				txt += ", killed: " + sb.KilledReason
+			}
+			add("sandbox", strings.TrimPrefix(txt, ", "))
 		}
-		if ev.Sandbox.KilledReason != "" {
-			sb += ", killed: " + ev.Sandbox.KilledReason
-		}
-		add("sandbox", strings.TrimPrefix(sb, ", "))
 	}
-	if ev.Approval != "" && ev.Approval != registry.ApprovalNotRequired {
-		add("approval", string(ev.Approval))
+	if call.Approval != "" && call.Approval != acpwire.ApprovalNotRequired {
+		add("approval", call.Approval)
 	}
-	if h := hookIndicatorText(ev.Hooks); h != "" {
+	// The wire carries the row's one-line hook hint; the detail carries the
+	// hooks themselves, and each decision is worth naming.
+	if call.HookHint != "" {
 		var parts []string
-		for _, hk := range ev.Hooks {
-			if hk.Decision != "" {
-				parts = append(parts, hk.Event+": "+hk.Decision)
+		var hooks []acpwire.HookDetail
+		if len(cd.Hooks) > 0 && json.Unmarshal(cd.Hooks, &hooks) == nil {
+			for _, hk := range hooks {
+				if hk.Decision != "" {
+					parts = append(parts, hk.Event+": "+hk.Decision)
+				}
 			}
 		}
-		add("hooks", strings.TrimSpace(h+" "+strings.Join(parts, ", ")))
+		add("hooks", strings.TrimSpace(call.HookHint+" "+strings.Join(parts, ", ")))
 	}
-	if ev.Rewritten {
+	if cd.Rewritten {
 		add("rewritten", "yes — arguments changed after approval")
 	}
-	add("finish reason", ev.FinishReason)
-	add("tool call id", ev.ToolCallID)
-	if ev.Notice != nil {
-		add("notice", ev.Notice.Text)
+	add("finish reason", cd.FinishReason)
+	add("tool call id", call.CallID)
+	if cd.Notice != nil {
+		add("notice", cd.Notice.Text)
 	}
-	if ev.Risk != "" {
-		add("risk", string(ev.Risk))
+	if call.Risk != "" {
+		add("risk", call.Risk)
 	}
 
 	sec := func(name, body string) {
 		if strings.TrimSpace(body) != "" {
-			d.Sections = append(d.Sections, inspector.Section{Name: name, Body: body})
+			det.Sections = append(det.Sections, inspector.Section{Name: name, Body: body})
 		}
 	}
-	sec("args", prettyJSON(ev.Args))
-	output := ev.ResultContent
-	if output == "" {
-		output = ev.ResultSummary
+	sec("args", cd.Args)
+	output := cd.Output
+	if cd.Error != "" {
+		output = strings.TrimRight(output, "\n") + "\n\nerror: " + cd.Error
 	}
-	if ev.Error != "" {
-		output = strings.TrimRight(output, "\n") + "\n\nerror: " + ev.Error
-	}
-	if isDiffTool(ev.ToolName) {
-		sec("diff", ev.ResultContent)
-		if ev.Error != "" {
-			sec("output", "error: "+ev.Error)
+	if isDiffTool(w.Tool.Name) {
+		sec("diff", cd.Diff)
+		if cd.Error != "" {
+			sec("output", "error: "+cd.Error)
 		}
 	} else {
 		sec("output", output)
 	}
-	if ev.Rewritten {
-		sec("original args", prettyJSON(ev.OriginalArgs))
+	if cd.Rewritten {
+		sec("original args", cd.OriginalArgs)
 	}
-	if len(d.Sections) == 0 {
-		d.Sections = []inspector.Section{{Name: "output", Body: "(no output)"}}
+	if len(det.Sections) == 0 {
+		det.Sections = []inspector.Section{{Name: "output", Body: "(no output)"}}
 	}
-	return d
+	return det
 }
 
-func (m *Model) stepDetail(n *viewmodel.Node) inspector.Detail {
-	si := n.Step
-	head, _ := stepHeadline(si)
-	d := inspector.Detail{Subject: head}
-	d.Title = "step"
-	if si.Step.ID != 0 {
-		d.Title = fmt.Sprintf("step %d", si.Step.ID)
+func (m *Model) stepDetail(w *acpwire.WireNode, d acpwire.NodeDetail) inspector.Detail {
+	si := w.Step
+	det := inspector.Detail{Subject: si.Headline}
+	det.Title = "step"
+	if d.Step != nil && d.Step.ID != 0 {
+		det.Title = fmt.Sprintf("step %d", d.Step.ID)
 	}
 	add := func(k, v string) {
 		if v != "" {
-			d.Fields = append(d.Fields, inspector.Field{Key: k, Value: v})
+			det.Fields = append(det.Fields, inspector.Field{Key: k, Value: v})
 		}
 	}
-	add("actor", actorText(si.Step))
-	add("why", m.whyText(si.Step.ID))
-	if !si.Step.StartedAt.IsZero() {
-		add("started", si.Step.StartedAt.Format("15:04:05"))
-		if !si.Step.EndedAt.IsZero() {
-			add("duration", compactDuration(si.Step.EndedAt.Sub(si.Step.StartedAt)))
+	add("actor", actorText(si.Owner, si.Model, si.Provider))
+	if d.Step != nil {
+		add("why", d.Step.Why)
+	}
+	if si.StartedAt != 0 {
+		add("started", acpwire.Time(si.StartedAt).Format("15:04:05"))
+		if si.EndedAt != 0 {
+			add("duration", compactDuration(acpwire.Time(si.EndedAt).Sub(acpwire.Time(si.StartedAt))))
 		}
 	}
-	if si.Step.TodoID != "" {
-		add("task", si.Step.TodoID)
+	if d.Step != nil {
+		add("task", d.Step.TodoID)
 	}
-	add("tools", fmt.Sprint(countToolCalls(n.Children)))
+	add("tools", fmt.Sprint(m.beatCalls(w)))
 	var narr []string
-	for _, msg := range si.Narration {
-		narr = append(narr, strings.TrimSpace(msg.Content))
+	for _, s := range d.Narration {
+		narr = append(narr, strings.TrimSpace(s))
 	}
 	if len(narr) > 0 {
-		d.Sections = append(d.Sections, inspector.Section{Name: "narration", Body: strings.Join(narr, "\n\n")})
+		det.Sections = append(det.Sections, inspector.Section{Name: "narration", Body: strings.Join(narr, "\n\n")})
 	}
 	var think []string
-	for _, t := range si.Thinking {
+	for _, t := range d.Thinking {
 		think = append(think, strings.TrimSpace(t.Text))
 	}
 	if len(think) > 0 {
-		d.Sections = append(d.Sections, inspector.Section{Name: "thinking", Body: strings.Join(think, "\n\n")})
+		det.Sections = append(det.Sections, inspector.Section{Name: "thinking", Body: strings.Join(think, "\n\n")})
 	}
 	var tools []string
-	for _, row := range n.Children {
-		for _, ev := range row.Tools {
-			tools = append(tools, ev.ToolName+" "+toolTarget(ev))
+	for _, key := range w.Children {
+		row := m.wire[key]
+		if row == nil || row.Tool == nil {
+			continue
+		}
+		for _, call := range row.Tool.Calls {
+			tools = append(tools, row.Tool.Name+" "+call.Target)
 		}
 	}
 	if len(tools) > 0 {
-		d.Sections = append(d.Sections, inspector.Section{Name: "tools", Body: strings.Join(tools, "\n")})
+		det.Sections = append(det.Sections, inspector.Section{Name: "tools", Body: strings.Join(tools, "\n")})
 	}
-	if len(d.Sections) == 0 {
-		d.Sections = []inspector.Section{{Name: "narration", Body: "(nothing recorded)"}}
+	if len(det.Sections) == 0 {
+		det.Sections = []inspector.Section{{Name: "narration", Body: "(nothing recorded)"}}
 	}
-	return d
+	return det
 }
 
-// toolSubject is the row's headline: its command, path or query.
-func toolSubject(ev registry.AuditEvent) string {
-	if t := toolTarget(ev); t != "" {
-		return ev.ToolName + " " + t
+// callPlace is a call row's first call's place among its beat's calls, and the
+// beat's call count. ok is false outside a beat.
+func (m *Model) callPlace(w *acpwire.WireNode) (index, total int, ok bool) {
+	parent := m.wire[w.Parent]
+	if parent == nil || parent.Step == nil {
+		return 0, 0, false
 	}
-	return ev.ToolName
-}
-
-// parentStep finds the step node a tool row sits under.
-func (m *Model) parentStep(id viewmodel.NodeID) *viewmodel.Node {
-	for _, n := range m.browseTree {
-		if n.Kind != viewmodel.KindStep {
+	for _, key := range parent.Children {
+		if r := m.wire[key]; r != nil && r.Tool != nil {
+			total += len(r.Tool.Calls)
+		}
+	}
+	before := 0
+	for _, key := range parent.Children {
+		row := m.wire[key]
+		if row == nil || row.Tool == nil {
 			continue
 		}
-		for _, c := range n.Children {
-			if c.ID == id {
-				return n
+		if row.ID == w.ID {
+			if len(row.Tool.Calls) == 0 {
+				return 0, 0, false
 			}
+			return before + 1, total, true
+		}
+		before += len(row.Tool.Calls)
+	}
+	return 0, 0, false
+}
+
+// beatCalls counts a beat's calls, a running one included, as countToolCalls
+// does.
+func (m *Model) beatCalls(w *acpwire.WireNode) int {
+	n := 0
+	for _, key := range w.Children {
+		row := m.wire[key]
+		if row == nil || row.Tool == nil {
+			continue
+		}
+		n += len(row.Tool.Calls)
+		if row.Tool.Running != nil {
+			n++
 		}
 	}
-	return nil
+	return n
 }
 
 // handleInspectorMsg routes the inspector's requests. It returns handled=false
@@ -348,7 +366,7 @@ func (m *Model) stepInspector(delta int) {
 			continue
 		}
 		m.moveCursorNoScroll(j)
-		if d, ok := m.inspectorDetail(m.currentNode()); ok {
+		if d, ok := m.inspectorDetail(m.cursor); ok {
 			p.SetDetail(d)
 		}
 		return

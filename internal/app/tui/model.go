@@ -575,6 +575,9 @@ type Model struct {
 	cursor      viewmodel.NodeID
 	browseItems []browseItem
 	browseTree  map[viewmodel.NodeID]*viewmodel.Node
+	// wire indexes the transcript's wire nodes by ID, from the last refresh
+	// that changed the content. Browse actions read node fields from it.
+	wire map[string]*acpwire.WireNode
 	// flash is a transient status-line message (see flash.go).
 	flash      string
 	flashUntil time.Time
@@ -588,8 +591,6 @@ type Model struct {
 	// switches between streamed reasoning and audit summaries), so without
 	// this the card oscillates. Pruned with regionOffset.
 	regionRows map[viewmodel.NodeID]int
-	// refFinder resolves blast radius; nil when LSP is unavailable.
-	refFinder ReferenceFinder
 	// callers caches reference lookups per tool row. A present-but-empty
 	// entry is a negative result and must not be re-queried.
 	callers      map[viewmodel.NodeID][]string

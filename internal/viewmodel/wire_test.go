@@ -585,3 +585,44 @@ func TestWireRunEventCountsItsBodyLines(t *testing.T) {
 		t.Errorf("empty bodyLines = %d, want 0", got)
 	}
 }
+
+// auditWithSymbols is a finished call that touched symbols.
+func auditWithSymbols(tool string, step session.StepID, callID string, s int, syms ...registry.SymbolRef) session.TranscriptItem {
+	ev := registry.AuditEvent{Timestamp: at(s), ToolName: tool, StepID: step, ToolCallID: callID,
+		ResultSummary: "ok", Symbols: syms}
+	return session.TranscriptItem{Timestamp: at(s), Kind: session.KindAudit, Audit: &ev}
+}
+
+func TestWireToolFlagsCallersLookups(t *testing.T) {
+	resolved := registry.SymbolRef{File: "transcript.go", Name: "renderSubagentCard", Line: 584, Col: 5, Resolved: true}
+	unresolved := registry.SymbolRef{File: "transcript.go", Name: "renderSubagentCard", Line: 584, Col: 5}
+	tree := Project(Build(Snapshot{
+		Items: []session.TranscriptItem{
+			userMsg(1, 0),
+			narration(2, 1, 1, "Editing the card."),
+			auditWithSymbols("file.write_patch", 1, "c1", 2, resolved),
+			auditWithSymbols("file.write_patch", 1, "c2", 3, unresolved),
+			auditWithSymbols("file.read", 1, "c3", 4, resolved),
+		},
+		Steps: []session.Step{step(1, 1, 5, "")},
+	}), "")
+
+	flagged := map[string]bool{}
+	for _, n := range tree.Nodes {
+		if n.Tool == nil {
+			continue
+		}
+		for _, c := range n.Tool.Calls {
+			flagged[c.CallID] = n.Tool.Callers
+		}
+	}
+	if !flagged["c1"] {
+		t.Error("a patch with a resolved symbol is flagged, want c1 flagged")
+	}
+	if flagged["c2"] {
+		t.Error("a patch with only an unresolved symbol is not flagged")
+	}
+	if flagged["c3"] {
+		t.Error("a read is never flagged")
+	}
+}

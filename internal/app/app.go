@@ -2804,15 +2804,23 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// events flow from the first frame: a start whose initial provider
 		// build failed still repaints on workspace, subagent, job, watch and
 		// steering events.
+		// The seam answers Callers through the runtime's one LSP handle. A
+		// runtime without one leaves the finder nil rather than assigning a
+		// nil *lsp.SymbolQuery to the interface.
+		var refFinder inproc.ReferenceFinder
+		if rt.LSPManager != nil {
+			refFinder = lsp.NewSymbolQuery(rt.LSPManager, nil, 0)
+		}
 		seamHost, seamSession := inproc.New(inproc.Deps{
-			State:     state,
-			Context:   ctx,
-			Jobs:      jobBroker,
-			Watches:   watchBroker,
-			Steering:  steeringBroker,
-			Workspace: workspaceBroker,
-			Subagents: subagentBroker,
-			ProjectID: projectID,
+			State:           state,
+			Context:         ctx,
+			Jobs:            jobBroker,
+			Watches:         watchBroker,
+			Steering:        steeringBroker,
+			Workspace:       workspaceBroker,
+			Subagents:       subagentBroker,
+			ProjectID:       projectID,
+			ReferenceFinder: refFinder,
 		})
 
 		cmdReg := rt.CommandRegistry
@@ -2857,9 +2865,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			&clipboard.LocalWriter{},
 			func() bool { return clipboard.Remote(os.Getenv) },
 		))
-		if rt.LSPManager != nil {
-			tuiOpts = append(tuiOpts, tui.WithReferenceFinder(lsp.NewSymbolQuery(rt.LSPManager, nil, 0)))
-		}
 		tuiOpts = append(tuiOpts, tui.WithRunnerSource(func() (context.Context, tui.AgentRunner) {
 			rt.mu.Lock()
 			defer rt.mu.Unlock()

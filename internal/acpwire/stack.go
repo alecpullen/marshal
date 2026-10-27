@@ -136,6 +136,9 @@ type WireTool struct {
 	Running *WireRunning `json:"running,omitempty"`
 	// SubagentID names the subagent this row started, 0 when it started none.
 	SubagentID int64 `json:"subagentId,omitempty"`
+	// Callers says the row's call changed a resolved symbol whose callers
+	// Session.Callers can look up.
+	Callers bool `json:"callers,omitempty"`
 }
 
 // WireCompletion is one finished piece of background work at the moment it

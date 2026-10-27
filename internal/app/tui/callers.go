@@ -5,8 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/app/session"
-	"marshal/internal/tools/registry"
+	"marshal/internal/acpclient"
 	"marshal/internal/viewmodel"
 )
 
@@ -14,64 +13,42 @@ import (
 // the rest into a count.
 const maxCallersShown = 3
 
-// ReferenceFinder resolves what references a symbol.
-//
-// ok is false when no language server is ready for the file's language,
-// which is the common case: LSP is optional and off by default. The
-// interface is declared here, narrow, rather than taking *lsp.Handle — the
-// TUI needs exactly one method and should not take on the LSP package.
-// lsp.SymbolQuery satisfies it as-is.
-type ReferenceFinder interface {
-	References(ctx context.Context, filePath string, line, col int) ([]string, bool)
-}
-
-// WithReferenceFinder wires blast-radius lookups. When unset, edit rows
-// simply render without a callers line.
-func WithReferenceFinder(rf ReferenceFinder) Option {
-	return func(m *Model) { m.refFinder = rf }
-}
-
-// callersMsg carries a completed reference lookup back to the model. ok is
-// false when no server was ready; the result is still cached, as a negative,
-// so the query is never retried.
+// callersMsg carries a completed reference lookup back to the model. A nil
+// callers is an answer, not a missing one: no callers line, and no second ask.
 type callersMsg struct {
 	key     viewmodel.NodeID
-	callers []string
-	ok      bool
+	callers []string // nil: no callers line, and no second ask
 }
 
-// callerQueryCmds returns a batched command for every transcript audit item
-// that carries a resolved symbol and has not been queried yet.
+// callerQueryCmds returns a batched command for every call row the wire flags
+// for a callers lookup that has not been asked yet.
 //
 // This is deliberately not called from refreshViewport: that runs on every
 // spinner tick and returns no commands. Callers come from the tick and
 // turn-finished handlers instead, so a lookup costs at most one tick of
 // latency and never sits on the render path.
+//
+// While the view is drilled into a subagent the index holds the child's
+// transcript, so nothing is asked: a row that settles during a drill-in is
+// asked on the first tick after the view returns.
 func (m *Model) callerQueryCmds() tea.Cmd {
-	if m.refFinder == nil {
+	if m.sess == nil || len(m.viewStack) > 0 {
 		return nil
 	}
 	if m.callersAsked == nil {
 		m.callersAsked = map[viewmodel.NodeID]bool{}
 	}
 	var cmds []tea.Cmd
-	for _, item := range m.state.Transcript() {
-		if item.Kind != session.KindAudit || item.Audit == nil {
+	for id, w := range m.wire {
+		if w.Tool == nil || !w.Tool.Callers {
 			continue
 		}
-		if !subjectFirstTool(item.Audit.ToolName) || item.Audit.ToolName == "file.read" {
-			continue
-		}
-		ref, ok := firstResolvedSymbol(*item.Audit)
-		if !ok {
-			continue
-		}
-		key := viewmodel.ToolID(*item.Audit)
+		key := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: id}
 		if m.callersAsked[key] {
 			continue
 		}
 		m.callersAsked[key] = true
-		cmds = append(cmds, queryCallersCmd(m.lspCtx, m.refFinder, key, ref))
+		cmds = append(cmds, queryCallersCmd(m.lspCtx, m.sess, key))
 	}
 	if len(cmds) == 0 {
 		return nil
@@ -79,37 +56,25 @@ func (m *Model) callerQueryCmds() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// firstResolvedSymbol returns the event's first symbol whose name position
-// was resolved. An unresolved position is never queried: a lookup at a
-// guessed column returns confidently wrong callers, which is worse than
-// none.
-func firstResolvedSymbol(event registry.AuditEvent) (registry.SymbolRef, bool) {
-	for _, s := range event.Symbols {
-		if s.Resolved {
-			return s, true
-		}
-	}
-	return registry.SymbolRef{}, false
-}
-
-func queryCallersCmd(ctx context.Context, rf ReferenceFinder, key viewmodel.NodeID, ref registry.SymbolRef) tea.Cmd {
+// queryCallersCmd asks the session what references the symbol the row changed.
+// An error is an empty answer: the row renders without a callers line.
+func queryCallersCmd(ctx context.Context, sess acpclient.Session, key viewmodel.NodeID) tea.Cmd {
 	return func() tea.Msg {
-		refs, ok := rf.References(ctx, ref.File, ref.Line, ref.Col)
-		return callersMsg{key: key, callers: refs, ok: ok}
+		refs, err := sess.Callers(ctx, key.Key)
+		if err != nil {
+			refs = nil
+		}
+		return callersMsg{key: key, callers: refs}
 	}
 }
 
-// handleCallers stores a completed lookup. A negative result is stored as
-// an empty slice so the key is present and the query is not retried.
+// handleCallers stores a completed lookup. A nil answer is stored so the key
+// is present and the query is not retried.
 func (m Model) handleCallers(msg callersMsg) (Model, tea.Cmd) {
 	if m.callers == nil {
 		m.callers = map[viewmodel.NodeID][]string{}
 	}
-	if msg.ok {
-		m.callers[msg.key] = msg.callers
-	} else {
-		m.callers[msg.key] = nil
-	}
+	m.callers[msg.key] = msg.callers
 	m.invalidateTranscript()
 	m.refreshViewport()
 	return m, nil

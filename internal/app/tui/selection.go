@@ -172,18 +172,14 @@ func (m *Model) fullToolHead(id viewmodel.NodeID, text string) string {
 	if id.Kind != viewmodel.KindTool || !strings.Contains(text, "…") {
 		return ""
 	}
-	n := m.browseTree[id]
-	if n == nil {
+	w := m.wireNode(id)
+	if w == nil || w.Tool == nil {
 		return ""
 	}
-	if len(n.Tools) == 0 {
-		return ""
-	}
-	state, _ := m.transcriptSource()
-	subjects := make([]string, 0, len(n.Tools))
-	for _, ev := range n.Tools {
-		if s := callSubject(ev, state.Workspace().ActiveRoot); s != "" {
-			subjects = append(subjects, s)
+	subjects := make([]string, 0, len(w.Tool.Calls))
+	for _, c := range w.Tool.Calls {
+		if c.Subject != "" {
+			subjects = append(subjects, c.Subject)
 		}
 	}
 	return strings.Join(subjects, ", ")

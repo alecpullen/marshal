@@ -10,6 +10,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/livebox"
@@ -342,7 +343,7 @@ func TestOpenResolvesAPathFromArgsAndFromShellOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	m = pressKeys(m, "esc", "j")
-	path, line := m.nodeFile(m.currentNode())
+	path, line := m.nodeFile(m.cursor)
 	if path != root+"/main.go" || line != 12 {
 		t.Fatalf("shell output path:line = %q:%d", path, line)
 	}
@@ -387,8 +388,8 @@ func TestOpenIgnoresDirectoriesAndPathsOutsideTheWorkspace(t *testing.T) {
 	root := m.state.Workspace().ActiveRoot
 	outside := t.TempDir()
 	for _, p := range []string{".", "/etc", outside} {
-		n := &viewmodel.Node{Kind: viewmodel.KindTool, Tools: []registry.AuditEvent{{ToolName: "search.grep", Args: []byte(fmt.Sprintf(`{"path":%q}`, p))}}}
-		if path, _ := m.nodeFile(n); path != "" {
+		calls := []openCall{{tool: "search.grep", args: fmt.Sprintf(`{"path":%q}`, p)}}
+		if path, _ := fileIn(root, calls); path != "" {
 			t.Errorf("path %q resolved to %q; directories and outside paths must not open (root %s)", p, path, root)
 		}
 	}
@@ -488,9 +489,107 @@ func TestCursorStaysNearWhereItWasWhenItsNodeVanishes(t *testing.T) {
 func TestCopyingAStepDoesNotRepeatItsHeadline(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc") // newest step
-	text := m.nodeCopyText(m.currentNode())
+	text := m.nodeCopyText(m.cursor)
 	if strings.Count(text, "Running the tests.") != 1 {
 		t.Fatalf("headline repeated in the copied text:\n%s", text)
+	}
+}
+
+// copyFixture is a model whose state holds one beat with the given calls.
+func copyFixture(t *testing.T, events ...registry.AuditEvent) Model {
+	t.Helper()
+	m := newTestModel(t)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{Model: "qwen3"})
+	for i := range events {
+		events[i].StepID = id
+		m.state.LogToolCall(events[i])
+	}
+	m.refreshViewport()
+	return m
+}
+
+func TestCopyOfAMergedRowJoinsEveryResult(t *testing.T) {
+	m := copyFixture(t,
+		registry.AuditEvent{ToolName: "file.read", ToolCallID: "c1",
+			Args: []byte(`{"path":"a.go"}`), ResultContent: "one"},
+		registry.AuditEvent{ToolName: "file.read", ToolCallID: "c2",
+			Args: []byte(`{"path":"b.go"}`), ResultContent: "two"},
+	)
+	key := wireToolKey(t, m, "c1")
+	if w := m.wireNode(key); w == nil || w.Tool == nil || len(w.Tool.Calls) != 2 {
+		t.Fatalf("the two reads did not merge into one row: %+v", w)
+	}
+	if got, want := m.nodeCopyText(key), "one\n\ntwo"; got != want {
+		t.Fatalf("copy = %q, want %q", got, want)
+	}
+}
+
+func TestCopyOfAnEmptyEditTakesItsSummary(t *testing.T) {
+	m := copyFixture(t, registry.AuditEvent{ToolName: "file.edit", ToolCallID: "c1",
+		Args: []byte(`{"path":"a.go"}`), Error: "boom", ResultSummary: "edit failed"})
+	if got, want := m.nodeCopyText(wireToolKey(t, m, "c1")), "edit failed"; got != want {
+		t.Fatalf("copy = %q, want %q", got, want)
+	}
+}
+
+func TestOpenFindsAFileInABeatsSecondRow(t *testing.T) {
+	m := newTestModel(t)
+	root := m.state.Workspace().ActiveRoot
+	if err := os.WriteFile(root+"/a.go", []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{Model: "qwen3"})
+	m.state.LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: id, ToolCallID: "c1",
+		Args: []byte(`{"command":"true"}`)})
+	m.state.LogToolCall(registry.AuditEvent{ToolName: "file.read", StepID: id, ToolCallID: "c2",
+		Args: []byte(`{"path":"a.go"}`), ResultContent: "package a"})
+	m.refreshViewport()
+
+	path, _ := m.nodeFile(wireBeatKey(t, m))
+	if path != root+"/a.go" {
+		t.Fatalf("open resolved %q, want %q", path, root+"/a.go")
+	}
+}
+
+// TestOpenKeepsAChangedFileWhenTheDetailIsGone pins the stale-index case: the
+// index still holds a row the session can no longer resolve, so its detail
+// lookup fails. The changed files travel on the wire itself, so `o` must still
+// open one rather than claim there is nothing to open.
+func TestOpenKeepsAChangedFileWhenTheDetailIsGone(t *testing.T) {
+	m := newTestModel(t)
+	root := m.state.Workspace().ActiveRoot
+	if err := os.WriteFile(root+"/a.go", []byte("package a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{Model: "qwen3"})
+	m.state.LogToolCall(registry.AuditEvent{ToolName: "shell.run", StepID: id, ToolCallID: "c1",
+		Args: []byte(`{"command":"true"}`)})
+	m.refreshViewport()
+
+	beat := wireBeatKey(t, m)
+	gone := "tool:gone"
+	m.wire[gone] = &acpwire.WireNode{
+		ID: gone, Kind: acpwire.KindTool, Parent: beat.Key,
+		Tool: &acpwire.WireTool{
+			Name:  "file.edit",
+			Calls: []acpwire.WireCall{{CallID: "c9", Files: []string{"a.go"}}},
+		},
+	}
+	m.wire[beat.Key].Children = append(m.wire[beat.Key].Children, gone)
+
+	path, _ := m.nodeFile(beat)
+	if path != root+"/a.go" {
+		t.Fatalf("open resolved %q, want the changed file %q", path, root+"/a.go")
+	}
+}
+
+func TestCopyWithoutDetailSaysNothingToCopy(t *testing.T) {
+	m := newTestModel(t)
+	if got := m.nodeCopyText(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:gone"}); got != "" {
+		t.Fatalf("copy of a key no node has = %q, want nothing", got)
 	}
 }
 

@@ -73,7 +73,8 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
 
    **Status (2026-10-27): done** — tasks 1–4 of the
    [P2 plugin install safety plan](plans/2026-10-27-p2-plugin-install-safety-plan.md)
-   (commits `5f129508`, `9ab6d5bb`, `c6db5b98`, `daf74b1b`). The dock notifies a
+   (commits `5f129508`, `9ab6d5bb`, `c6db5b98`, `daf74b1b`, plus review fixes in
+   `f0076e65`). The dock notifies a
    panel the host permanently releases (`CloseAware`/`SwapRetained`/
    `ReleaseRetained`), so a released panel disposes of work whose result will
    never reach it. A scan lease owns each scan's temporary clone until exactly
@@ -85,7 +86,8 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
    hash, rename or lockfile failure leaves the previous install and its
    lockfile entry intact. Hook, MCP server and MCP policy rows open a wrapped,
    pageable full-content view with terminal controls escaped and MCP arguments
-   quoted individually. Tests use isolated local fixtures and injected
+   quoted individually, including an MCP server's environment, headers and
+   trust. Tests use isolated local fixtures and injected
    per-instance dependencies for delayed scans, source and scope changes,
    undelivered results, tampered clones, changed lockfiles and per-call
    filesystem failures; the 80×24 review, source change, cancel-during-scan and

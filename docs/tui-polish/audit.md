@@ -352,8 +352,15 @@ suffix is hidden.
   `strutil.ShowControls` so a control byte is shown rather than executed, with
   each MCP argument quoted separately so its boundaries stay visible. Enter in
   that view installs nothing: Confirm remains the only installation action.
-  Covered by `TestReviewDetailShowsCompleteExecutableContent` and
-  `TestReviewDetailResizeAndNoColor`, both at 80×24.
+  A follow-up review pass closed two gaps in that view: its title row escaped
+  with `ShowControls` alone, which leaves newlines intact, so a plugin-supplied
+  name could add a row the view never budgeted for — titles now go through
+  `reviewTitle`, which flattens layout characters first — and an MCP server's
+  `env`, `headers` and `trust` were never rendered at all, so the screen asked
+  the user to authorise values it did not show. Covered by
+  `TestReviewDetailShowsCompleteExecutableContent`,
+  `TestReviewDetailResizeAndNoColor` (both at 80×24) and
+  `TestMCPReviewShowsHiddenServerFieldsAndEscapesNames`.
 
 ### Shared field lists budget logical rows instead of display lines
 
@@ -376,8 +383,8 @@ The plugin panel handles keypresses and asynchronous results but has no
 into the filter therefore does nothing in terminals that send bracketed
 paste. The skills panel explicitly forwards paste to the relevant control.
 
-- Evidence: `internal/app/tui/plugins/panel.go:553` and
-  `internal/app/tui/skills/panel.go:504`.
+- Evidence: `internal/app/tui/plugins/panel.go:888` (`Update`, where a
+  `tea.PasteMsg` case is missing) and `internal/app/tui/skills/panel.go:504`.
 - Potential direction: route paste to the active field or filter, and cover
   both paths through the panel's real update handler.
 
@@ -389,7 +396,8 @@ panel instead pops the entire install frame; the plugin panel also abandons
 its scan. This differs from the shared editor's normal Escape behavior.
 
 - Evidence: `internal/app/tui/skills/panel.go:477`,
-  `internal/app/tui/plugins/panel.go:553`, and
+  `internal/app/tui/plugins/panel.go:888` (`Update`, which pops the install
+  frame before the field editor sees Escape), and
   `internal/app/tui/listpanel/fieldlist.go:408`.
 - Potential direction: give an active edit first refusal on Escape, then pop
   the frame on a subsequent Escape.

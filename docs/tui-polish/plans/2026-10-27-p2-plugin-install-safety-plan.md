@@ -1,8 +1,9 @@
 # P2 plugin install safety — implementation plan
 
-Date: 2026-10-27. Status: executed 2026-10-27 — tasks 1–4, commits `5f129508`,
-`9ab6d5bb`, `c6db5b98`, `daf74b1b`. Task 4 ran in parallel with Task 1 (their
-file sets are disjoint); the remaining tasks ran in plan order.
+Date: 2026-10-27. Status: executed 2026-10-27 — commits `5f129508` (task 1),
+`c6db5b98` (task 2) and `daf74b1b` (task 3) in plan order, with `9ab6d5bb`
+(task 4) run in parallel with task 1 since their file sets are disjoint. A
+review pass then fixed two gaps in the task 4 view (`f0076e65`).
 Base: `e306ccbaa70aa5a7b2c2cc4a1068a6231748b21d`.
 Requirements: [triage item 3](../triage.md#p1--restore-trustworthy-decisions-and-prevent-data-loss)
 and [plugin audit findings](../audit.md#plugin-install-can-confirm-a-scan-of-a-different-source).

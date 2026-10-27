@@ -12,7 +12,7 @@ var boundaryAllowlist = map[string][]string{
 	"approval.go":                    {"marshal/internal/app/session"},
 	"browse.go":                      {"marshal/internal/app/session", "marshal/internal/viewmodel"},
 	"browse_actions.go":              {"marshal/internal/tools/registry", "marshal/internal/viewmodel"},
-	"browse_inspect.go":              {"marshal/internal/app/session", "marshal/internal/commands", "marshal/internal/tools/registry", "marshal/internal/viewmodel"},
+	"browse_inspect.go":              {"marshal/internal/commands", "marshal/internal/viewmodel"},
 	"callers.go":                     {"marshal/internal/app/session", "marshal/internal/tools/registry", "marshal/internal/viewmodel"},
 	"click.go":                       {"marshal/internal/app/session", "marshal/internal/viewmodel"},
 	"commands_dispatch.go":           {"marshal/internal/app/session", "marshal/internal/pipeline", "marshal/internal/worktree"},

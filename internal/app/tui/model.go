@@ -573,6 +573,9 @@ type Model struct {
 	cursor      viewmodel.NodeID
 	browseItems []browseItem
 	browseTree  map[viewmodel.NodeID]*viewmodel.Node
+	// wire indexes the transcript's wire nodes by ID, from the last refresh
+	// that changed the content. Browse actions read node fields from it.
+	wire map[string]*acpwire.WireNode
 	// flash is a transient status-line message (see flash.go).
 	flash      string
 	flashUntil time.Time

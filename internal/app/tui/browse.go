@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/livebox"
@@ -310,6 +311,19 @@ func isPrintable(msg tea.KeyPressMsg) bool {
 		return false
 	}
 	return msg.Mod&(tea.ModCtrl|tea.ModAlt|tea.ModMeta|tea.ModSuper) == 0
+}
+
+// wireNode is id's wire form from the last refresh, or nil.
+func (m *Model) wireNode(id viewmodel.NodeID) *acpwire.WireNode { return m.wire[id.Key] }
+
+// nodeDetail asks the session for id's detail, in the drilled-in subagent's
+// transcript while the view is drilled in. ok is false when the call fails.
+func (m *Model) nodeDetail(id viewmodel.NodeID) (acpwire.StackNodeResult, bool) {
+	res, err := m.sess.StackNode(m.ctx, id.Key, m.drilledSheetID())
+	if err != nil {
+		return acpwire.StackNodeResult{}, false
+	}
+	return res, true
 }
 
 func (m *Model) currentNode() *viewmodel.Node { return m.browseTree[m.cursor] }

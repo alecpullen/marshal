@@ -11,10 +11,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/accesspanel"
 	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/postmortempanel"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 )
@@ -117,6 +119,70 @@ func TestFrameInvariants(t *testing.T) {
 			items = append(items, native.TodoItem{Content: "current", Status: native.TodoInProgress})
 			mustSetTodos(t, m, items...)
 		}},
+		// The console's own states: an open popup, a docked panel joined under
+		// a running tray, and the three pending prompts, each of which draws a
+		// labelled section of its own.
+		{"console+popup", func(t *testing.T, m *Model) {
+			m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
+			m.busy = true
+			pop := newCompletionPopup([]completionItem{
+				{Text: "plan", Description: "Plan a task", Kind: completionCommand},
+				{Text: "plugins", Description: "Manage plugins", Kind: completionCommand},
+			})
+			pop.update("pl")
+			m.cmdPopup = pop
+		}},
+		{"console+sheet", func(t *testing.T, m *Model) {
+			m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
+			m.busy = true
+			m.openSessionSheet()
+		}},
+		{"console+question", func(t *testing.T, m *Model) {
+			m.state.SetPendingQuestion(&session.PendingQuestion{
+				Questions: []session.Question{{Question: "which approach?"}},
+			})
+		}},
+		{"console+approval", func(t *testing.T, m *Model) {
+			m.state.SetPendingApproval(&session.PendingToolCall{
+				ID:           "call-frame",
+				Name:         "shell.run",
+				Command:      "git push",
+				Risk:         "command",
+				ResponseChan: make(chan session.UserApprovalDecision, 1),
+			})
+		}},
+		{"console+access", func(t *testing.T, m *Model) {
+			m.dock.Open(accesspanel.New(session.AccessRequest{MissingEditing: true}))
+		}},
+		// A typed access request has two console branches of its own. Queued
+		// behind an unrelated panel it renders one muted disclosure row; while
+		// the access panel owns the dock it renders no console at all, and the
+		// panel's own closed frame is the outline. The second case is the
+		// regression for an empty console being appended as a blank row.
+		{"console+access+queued", func(t *testing.T, m *Model) {
+			m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
+			m.busy = true
+			m.dock.Open(trustpanel.New(m.workDir, m.trustDecide))
+			m.state.SetPendingApproval(&session.PendingToolCall{
+				ID:           "call-access-queued",
+				Name:         "mode.request",
+				Reason:       "editing",
+				Access:       &session.AccessRequest{RequestID: "req-queued", Reason: "editing", MissingEditing: true},
+				ResponseChan: make(chan session.UserApprovalDecision, 1),
+			})
+		}},
+		{"console+access+owner", func(t *testing.T, m *Model) {
+			m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
+			m.busy = true
+			m.dock.Open(accesspanel.New(session.AccessRequest{MissingEditing: true}))
+			m.state.SetPendingApproval(&session.PendingToolCall{
+				ID:           "call-access-owner",
+				Name:         "mode.request",
+				Reason:       "editing",
+				Access:       &session.AccessRequest{RequestID: "req-owner", Reason: "editing", MissingEditing: true},
+				ResponseChan: make(chan session.UserApprovalDecision, 1),
+			})
+		}},
 		// Task 10: the ending surfaces are stacked panels like any other, so
 		// they must obey the same rail and width invariants while live work is
 		// described beneath them.
@@ -181,7 +247,7 @@ func TestFrameInvariants(t *testing.T) {
 	for _, v := range variants {
 		for _, w := range []int{80, 100, 140, 200} {
 			for _, h := range []int{24, 30, 40} {
-				for _, depth := range []theme.Depth{theme.DepthFlat, theme.DepthRaised, theme.DepthFull} {
+				for _, depth := range []theme.Depth{theme.DepthFlat, theme.DepthFull} {
 					th := prev
 					th.Depth = depth
 					theme.Reload(th)

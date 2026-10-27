@@ -27,10 +27,13 @@ func interfaceFrame(s *state) *frame {
 			}(),
 			func() *field {
 				f := enumField("tui.depth", "Depth", theme.DepthNames(),
-					func() string { return s.cfg.TUI.Depth },
+					// Read through ParseDepth so a legacy `depth = "raised"`
+					// shows the level it actually renders at rather than an
+					// orphan value that is not in the enum.
+					func() string { return theme.ParseDepth(s.cfg.TUI.Depth).String() },
 					func(v string) { s.cfg.TUI.Depth = v })
 				f.TomlPath = "tui.depth"
-				f.Desc = "background planes the TUI paints (flat · raised · full)"
+				f.Desc = "background planes the TUI paints (flat · full)"
 				SetFieldWriteGlobal(f, true)
 				return f
 			}(),

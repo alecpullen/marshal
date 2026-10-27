@@ -1,8 +1,9 @@
 # TUI simplification — feature spec
 
-Status: P-A, P-B, P-C, P-D and P-E landed. P-E (the tray, replacing P-C's live
+Status: P-A, P-B, P-C, P-D, P-E and P-F landed. P-E (the tray, replacing P-C's live
 box after testing) designed and planned 2026-10-25. P-F (the framed console,
-round 7) designed and planned 2026-10-27. Updated 2026-10-24 with the
+round 7) designed and planned 2026-10-27, and landed in
+`c5f8ece3..afa2e52f` with its docs and verification in `6fcbc84c`. Updated 2026-10-24 with the
 decisions the P-A and P-B plans pinned down, and 2026-10-25 with P-C's, P-D's
 and round 5's. P-A
 landed on

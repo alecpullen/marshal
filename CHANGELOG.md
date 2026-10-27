@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+**The framed console**
+
+- The tray, any docked panel, the input area and the status line are drawn as
+  one framed outline. The tray no longer draws a closing row, a docked panel
+  joins the outline with tees, and the status line is its bottom border
+  (`╰─ … ─╯`). A full-frame panel keeps the plain status row over its own
+  closed frame.
+- Prompts are coloured sections of the outline: an approval and the access
+  panel are amber, a question and the skill gate violet, and each prompt's keys
+  are drawn in its section header instead of the status line. The command
+  popup is a section too, titled `Commands`, `Files` or `Settings`.
+- Every chrome panel is framed. Settings and agents close their own frames with
+  their count line in the bottom border, Plugins and Skills gained frames, the
+  session sheet's sections are rules through its frame, and a subagent you
+  drill into is framed in coral with its crumb in the top border.
+- The input area paints no background at any depth, so `DepthRaised` is gone:
+  `tui.depth = "raised"` now parses as `flat`, and the setting offers `flat`
+  and `full`.
+
 ## [0.0.4-alpha] - 2026-10-25
 
 ### Added

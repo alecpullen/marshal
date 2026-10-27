@@ -739,6 +739,9 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 	settings.FieldListSetSize(l, listWidth, max(maxHeight-4, 1))
 	settings.FieldListSetDescSuppressed(l, twoCol)
+	// Group dividers only in the single-column layout: in two columns the rule
+	// would erase the detail pane's text on its row.
+	settings.FieldListSetGroupDividers(l, !twoCol)
 	body := ""
 	if len(p.stack) == 0 {
 		body = "/ " + p.filter.View() + "\n"
@@ -770,8 +773,8 @@ func (p *Panel) View(width, maxHeight int) string {
 		footer += " · " + quotaLine(q)
 	}
 
-	content := body + "\n" + chrome.TertiaryStyle().Render(footer)
-	panelHeight := min(lipgloss.Height(content)+1, maxHeight)
+	content := body
+	panelHeight := min(lipgloss.Height(content)+2, maxHeight)
 
 	var hints string
 	if len(p.stack) > 0 {
@@ -779,7 +782,13 @@ func (p *Panel) View(width, maxHeight int) string {
 	} else {
 		hints = "↑↓ select · ↵ open · ? legend · Esc close"
 	}
-	return chrome.PanelWithHints(title, hints, content, panelWidth, panelHeight, true, theme.Current())
+	return chrome.Frame{
+		Title:   title,
+		Hints:   hints,
+		Footer:  footer,
+		Closed:  true,
+		Focused: true,
+	}.Render(content, panelWidth+2, panelHeight, theme.Current())
 }
 
 // quotaLine renders both subscription windows for the roster footer:

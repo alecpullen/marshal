@@ -837,6 +837,9 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 	// Suppress the inline desc line before rendering; in two-column mode the
 	// desc renders in the detail pane instead.
 	FieldListSetDescSuppressed(b.activeList(), twoCol)
+	// Group dividers only in the single-column layout: in two columns the rule
+	// would erase the detail pane's text on its row.
+	FieldListSetGroupDividers(b.activeList(), !twoCol)
 
 	title := "Settings"
 	var body string
@@ -891,7 +894,13 @@ func (b *BrowserPanel) View(width, maxHeight int) string {
 		footer = fmt.Sprintf("%d settings", len(b.list.Rows()))
 	}
 	hints := rowHints(b, b.stack == nil)
-	content := body + "\n" + flDescStyle().Render(footer)
-	panelHeight := min(lipgloss.Height(content)+1, maxHeight)
-	return chrome.PanelWithHints(title, hints, content, panelWidth, panelHeight, true, settingsTheme())
+	content := body
+	panelHeight := min(lipgloss.Height(content)+2, maxHeight)
+	return chrome.Frame{
+		Title:   title,
+		Hints:   hints,
+		Footer:  footer,
+		Closed:  true,
+		Focused: true,
+	}.Render(content, panelWidth+2, panelHeight, settingsTheme())
 }

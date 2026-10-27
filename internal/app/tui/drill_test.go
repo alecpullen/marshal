@@ -143,6 +143,83 @@ func TestBreadcrumbShowsPathWhileDrilled(t *testing.T) {
 	}
 }
 
+// TestDrillFrameDrawsTheCrumbInTheBorder: a drilled-in child's transcript is a
+// closed frame whose top border carries the crumb and the way back.
+func TestDrillFrameDrawsTheCrumbInTheBorder(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.drillIntoSubagent(view)
+	m.refreshViewport()
+
+	rows := strings.Split(stripANSI(m.renderTranscriptFrame()), "\n")
+	top := rows[0]
+	if !strings.HasPrefix(top, "╭─ ") || !strings.HasSuffix(top, "╮") {
+		t.Fatalf("drill frame does not open with a corner: %q", top)
+	}
+	for _, want := range []string{"explore repo", "↑/Esc to go back"} {
+		if !strings.Contains(top, want) {
+			t.Fatalf("drill frame's top border missing %q: %q", want, top)
+		}
+	}
+	for _, row := range rows[1 : len(rows)-1] {
+		if !strings.HasPrefix(row, "│ ") || !strings.HasSuffix(row, " │") {
+			t.Fatalf("drill frame body row is not inside the gutter: %q", row)
+		}
+	}
+	if last := rows[len(rows)-1]; !strings.HasPrefix(last, "╰") || !strings.HasSuffix(last, "╯") {
+		t.Fatalf("drill frame does not close: %q", last)
+	}
+	// The crumb becomes the top border, so only the closing row is new.
+	if got := m.breadcrumbRows() + m.drillCloseRows(); got != 2 {
+		t.Fatalf("the drill frame budgets %d rows, want the top border and the closing row", got)
+	}
+}
+
+// TestDrillNarrowsTheTranscript: the frame's "│ … │" takes four cells, so the
+// viewport narrows while drilled in and widens again on pop.
+func TestDrillNarrowsTheTranscript(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 30)
+	child := newChildState(t)
+	view := m.state.RegisterSubagent("explore repo", child)
+
+	if got, want := m.viewport.Width(), m.leftWidth; got != want {
+		t.Fatalf("undrilled viewport width = %d, want the full column %d", got, want)
+	}
+	m.drillIntoSubagent(view)
+	if got, want := m.viewport.Width(), m.leftWidth-4; got != want {
+		t.Fatalf("drilled viewport width = %d, want %d", got, want)
+	}
+	m.popDrill()
+	if got, want := m.viewport.Width(), m.leftWidth; got != want {
+		t.Fatalf("viewport width after popDrill = %d, want %d", got, want)
+	}
+}
+
+// TestDrillClickOffsetsTheBorder: clicks map to content only past the frame's
+// left border.
+func TestDrillClickOffsetsTheBorder(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.drillIntoSubagent(view)
+	m.refreshViewport()
+
+	y := m.scrollHintRows() + m.breadcrumbRows()
+	if _, ok := m.contentLineForClick(1, y); ok {
+		t.Fatal("x=1 is the frame's border and must miss the viewport")
+	}
+	if _, ok := m.contentLineForClick(2, y); !ok {
+		t.Fatal("x=2 is the first content cell and must hit the viewport")
+	}
+	if got := m.contentPosAt(2, y).col; got != 0 {
+		t.Fatalf("contentPosAt(2, y).col = %d, want 0", got)
+	}
+}
+
 func TestBreadcrumbShowsDispatchedRole(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
@@ -277,8 +354,10 @@ func TestClickBeatWhileDrilledIntoSubagent(t *testing.T) {
 	top := m.scrollHintRows() + m.breadcrumbRows()
 	y := top + region.startLine - m.viewport.YOffset()
 
-	// The click must land on the correct region and expand it.
-	updated := clickAt(t, m, 1, y)
+	// The click must land on the correct region and expand it. The drilled-in
+	// frame's "│ " gutter takes the first two cells, so a click inside the
+	// viewport starts at x=2.
+	updated := clickAt(t, m, 3, y)
 	mm := asModel(t, updated)
 	if !mm.isExpanded(key) {
 		t.Fatal("expected the click to expand the child's beat while drilled in (off-by-one fix)")

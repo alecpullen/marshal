@@ -36,9 +36,11 @@ type nodeRegion struct {
 // click landed outside the viewport. The transcript viewport is always the
 // top-left element of the screen (see viewString in view.go): row
 // scrollHintRows() (0 or 1, for the "↑ scrolled" hint) through
-// scrollHintRows()+viewport.Height(), column 0 through leftWidth.
+// scrollHintRows()+viewport.Height(), column transcriptLeft() (2 inside a
+// drilled-in frame's "│ " gutter) through transcriptLeft()+viewport.Width().
 func (m *Model) contentLineForClick(x, y int) (int, bool) {
-	if x < 0 || x >= m.leftWidth {
+	left := m.transcriptLeft()
+	if x < left || x >= left+m.viewport.Width() {
 		return 0, false
 	}
 	top := m.scrollHintRows() + m.breadcrumbRows()

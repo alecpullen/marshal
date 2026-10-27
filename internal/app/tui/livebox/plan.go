@@ -303,16 +303,16 @@ func finishedRow(in Input, w int) Row {
 	return Row{Text: ansi.Truncate(text, max(w, 1), "…")}
 }
 
-// planFolded is the bottom border carrying the plan in one line:
-// "╰─ plan ✓ ✓ ▸ · 3/4 <active item> ─…─╯", with the blocks in place of the
+// planFolded is the tray's last row carrying the plan in one line:
+// "├─ plan ✓ ✓ ▸ · 3/4 <active item> ─…─┤", with the blocks in place of the
 // marks once they do not fit, and the stale notice after the position. Too
-// narrow for that, it is the plain bottom border.
+// narrow for that, or with no plan, it draws nothing: the tray ends at its last
+// section.
 func planFolded(in Input, width int) string {
 	border := borderStyle()
 	width = max(width, 2)
-	plain := border.Render("╰" + strings.Repeat("─", width-2) + "╯")
 	if len(in.Plan) == 0 {
-		return plain
+		return ""
 	}
 	done, total := planCounts(in.Plan)
 	pos, active := fmt.Sprintf("%d/%d", done, total), ""
@@ -322,22 +322,22 @@ func planFolded(in Input, width int) string {
 			break
 		}
 	}
-	prefix := border.Render("╰─ plan ")
+	prefix := border.Render("├─ plan ")
 	posText := border.Render(" " + pos)
 	if in.Stale > 0 {
 		posText += " " + warn("stale "+formatElapsed(in.Stale))
 	}
-	// Below this the label, a 3-digit position and the closing " ─╯" cannot
-	// coexist with a fill cell, so the border is drawn plain.
+	// Below this the label, a 3-digit position and the closing " ─┤" cannot
+	// coexist with a fill cell, so the tray draws no folded line at all.
 	const foldedMin = 22
 	if width < foldedMin {
-		return plain
+		return ""
 	}
-	// Keep one fill cell and the closing " ─╯" before spending cells on the
-	// marks: a narrow border still closes.
+	// Keep one fill cell and the closing " ─┤" before spending cells on the
+	// marks: a narrow line still closes.
 	fits := func(marks string) bool {
 		return ansi.StringWidth(prefix)+ansi.StringWidth(marks)+
-			ansi.StringWidth(posText)+ansi.StringWidth(" ─╯")+1 <= width
+			ansi.StringWidth(posText)+ansi.StringWidth(" ─┤")+1 <= width
 	}
 	marks := planMarks(in, planMarksMax, 8)
 	if !fits(marks) {
@@ -347,16 +347,16 @@ func planFolded(in Input, width int) string {
 		marks = ""
 	}
 	line := prefix + marks + posText
-	if ansi.StringWidth(line)+ansi.StringWidth(" ─╯")+1 > width {
-		return plain
+	if ansi.StringWidth(line)+ansi.StringWidth(" ─┤")+1 > width {
+		return ""
 	}
-	// The text keeps the closing " ─", at least one fill cell and ╯.
-	if room := width - ansi.StringWidth(line) - ansi.StringWidth(" ─╯") - 1; active != "" && room > 1 {
+	// The text keeps the closing " ─", at least one fill cell and ┤.
+	if room := width - ansi.StringWidth(line) - ansi.StringWidth(" ─┤") - 1; active != "" && room > 1 {
 		line += border.Render(" ") + cut(active, room-1)
 	}
 	line += border.Render(" ─")
 	if fill := width - ansi.StringWidth(line) - 1; fill > 0 {
 		line += border.Render(strings.Repeat("─", fill))
 	}
-	return line + border.Render("╯")
+	return line + border.Render("┤")
 }

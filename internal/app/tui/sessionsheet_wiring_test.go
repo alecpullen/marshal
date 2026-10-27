@@ -261,6 +261,46 @@ func TestSessionSheetThatEmptiesWhileOpenStaysVisible(t *testing.T) {
 	}
 }
 
+// TestSheetSectionsAreDividers pins that every section heading is a rule
+// through the panel's frame, not a header row drawn inside it.
+func TestSheetSectionsAreDividers(t *testing.T) {
+	m, dir := gitModel(t)
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("one\ntwo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m = ctrlB(m)
+	rows := strings.Split(stripANSI(m.viewString()), "\n")
+
+	// The sheet's top border carries the panel title, and the first section's
+	// title when that divider merge (chrome.Frame.Render).
+	start := -1
+	for i, row := range rows {
+		if strings.Contains(row, "Session") && (strings.HasPrefix(row, "╭") || strings.HasPrefix(row, "├")) {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatalf("no sheet top border in:\n%s", strings.Join(rows, "\n"))
+	}
+
+	var dividers int
+	for _, row := range rows[start:] {
+		if rest, ok := strings.CutPrefix(row, "├─ "); ok {
+			name := strings.TrimPrefix(rest, "▸ ")
+			if name != "" && name == strings.ToUpper(name) {
+				dividers++
+			}
+		}
+		if strings.HasPrefix(row, "│ ") && strings.Contains(row, "──") {
+			t.Fatalf("section rule drawn inside the frame: %q\n%s", row, strings.Join(rows, "\n"))
+		}
+	}
+	if dividers == 0 {
+		t.Fatalf("no section divider row:\n%s", strings.Join(rows, "\n"))
+	}
+}
+
 // ±N files must be right from startup: Init asks the session to read HEAD and
 // the diff off the UI thread.
 func TestInitLoadsChangedFilesOffThread(t *testing.T) {

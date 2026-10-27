@@ -35,11 +35,13 @@ import (
 	"marshal/internal/app/tui/activeworkpanel"
 	"marshal/internal/app/tui/agents"
 	"marshal/internal/app/tui/castlist"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/connect"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/gatepanel"
+	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/inspector"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/mcpauth"
@@ -710,6 +712,10 @@ type Model struct {
 	// boxMemo is this frame's box layout, planned once in viewString; nil
 	// outside viewString. It lives only on that call's model copy.
 	boxMemo *livebox.Layout
+
+	// dockFramed records whether the docked panel's last view was framed, so
+	// consoleAbove can tell a joined panel from one that drew nothing.
+	dockFramed bool
 
 	// band is the pinned band's content: todo progress with its stale
 	// signal, and the running cards. viewmodel.BandOf builds it in
@@ -1819,16 +1825,16 @@ func (m *Model) resize(width, height int) {
 
 	m.leftWidth = width
 
-	// Input interior: the ▍ bar (1 cell) + 1 right margin = 2 reserved
-	// cells. The textarea's SetWidth sets the text wrap width and
-	// internally subtracts promptWidth (2). Reserve 2 so rendered lines
-	// stay inside the left column.
-	m.input.SetWidth(max(m.leftWidth-2, 1))
+	// Input interior: the console's "│ " and " │" take 4 cells of the left
+	// column. The textarea's SetWidth sets the text wrap width and internally
+	// subtracts promptWidth (2), so the rendered line plus its gutter stays
+	// inside the outline.
+	m.input.SetWidth(max(m.leftWidth-4, 1))
 
-	// Transcript viewport spans the left column (borderless).
-	m.viewport.SetWidth(max(m.leftWidth, 1))
+	// Transcript viewport spans the left column, less the drill frame's gutter.
+	m.syncTranscriptWidth()
 	m.input.MaxHeight = m.maxInputHeight()
-	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.boxRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
+	m.viewport.SetHeight(max(height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.drillCloseRows()-m.boxRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1))
 }
 
 // sheetSections is the session sheet's section list, minus any section the
@@ -3506,17 +3512,17 @@ func (m *Model) scrollTranscript(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 }
 
 // inputChromeRows counts the rows the input area reserves for everything
-// except the textarea itself: the SDD hint, question/approval panels, and
-// the completion popup. Splitting this out of inputAreaRows breaks the
-// circularity in the MaxHeight budget (available rows must not depend on
-// the textarea's own height).
+// except the textarea itself: its console headers, the SDD hint,
+// question/approval panels, and the completion popup. Splitting this out of
+// inputAreaRows breaks the circularity in the MaxHeight budget (available rows
+// must not depend on the textarea's own height).
 func (m Model) inputChromeRows() int {
 	// While the composer owns the input, the base input area renders only its
 	// suspended notice: the pending prompts, the completion popup and the base
 	// textarea belong to the composer now, so reserving rows for them would
 	// over-budget the transcript.
 	if m.steeringComposer != nil {
-		return 1
+		return 1 + m.inputHeaderRows()
 	}
 	rows := 0
 	if m.sess.Status().SDD.Active {
@@ -3529,7 +3535,7 @@ func (m Model) inputChromeRows() int {
 		} else {
 			content = renderSudoAuthPanel(sa, max(m.leftWidth-4, 1))
 		}
-		rows += lipgloss.Height(content)
+		rows += len(consoleLines(content))
 	} else if sg := m.state.PendingSkillGate(); sg != nil {
 		content := ""
 		if m.skillGateModel != nil {
@@ -3537,7 +3543,7 @@ func (m Model) inputChromeRows() int {
 		} else {
 			content = renderSkillGatePanel(sg, max(m.leftWidth-4, 1))
 		}
-		rows += lipgloss.Height(content)
+		rows += len(consoleLines(content))
 	} else if q := m.state.PendingQuestion(); q != nil {
 		content := ""
 		if m.questionModel != nil {
@@ -3545,10 +3551,10 @@ func (m Model) inputChromeRows() int {
 		} else {
 			content = renderQuestionPanel(q, max(m.leftWidth-4, 1))
 		}
-		rows += lipgloss.Height(content)
+		rows += len(consoleLines(content))
 	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
-		// Mirror renderInputArea's switch exactly so the budget never
-		// disagrees with what is on screen.
+		// Mirror inputSections' switch exactly so the budget never disagrees
+		// with what is on screen.
 		var content string
 		switch {
 		case tc.Access != nil:
@@ -3568,14 +3574,14 @@ func (m Model) inputChromeRows() int {
 		default:
 			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))
 		}
-		rows += lipgloss.Height(content)
+		rows += len(consoleLines(content))
 	}
 	if p := m.activeCompletionPopup(); p != nil {
 		// Cap the popup at completionPopupMax visible match rows plus the
-		// panel title row (matches the renderer in view.go).
+		// console header row (matches completionSection's rows).
 		rows += min(len(p.matches()), completionPopupMax) + completionPanelChromeRows
 	}
-	return rows
+	return rows + m.inputHeaderRows()
 }
 
 func (m Model) inputAreaRows() int {
@@ -3598,7 +3604,7 @@ func (m Model) inputAreaRows() int {
 // panels, input chrome, and the transcript floor. Always at least 1 so the
 // input never becomes untypable on short terminals.
 func (m Model) maxInputHeight() int {
-	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-statusLineRows-m.boxRows()-m.dockRows()-m.inputChromeRows()-minTranscriptRows, 1)
+	return max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.drillCloseRows()-statusLineRows-m.boxRows()-m.dockRows()-m.inputChromeRows()-minTranscriptRows, 1)
 }
 
 // scrollHintRows reports the rows the "↑ scrolled — End to follow" hint
@@ -3620,7 +3626,7 @@ func (m Model) dockRows() int { return m.dock.Rows() }
 
 func (m *Model) updateViewportHeight() bool {
 	m.input.MaxHeight = m.maxInputHeight()
-	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.boxRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
+	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.drillCloseRows()-m.boxRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {
 		return false
 	}
@@ -4048,6 +4054,57 @@ func (m *Model) drilledInto() (session.SubagentView, bool) {
 	return m.viewStack[len(m.viewStack)-1], true
 }
 
+// drillCrumb is the drilled-in child's identity line: the orchestrator, the
+// child's role and label, and its route.
+func drillCrumb(v session.SubagentView) string {
+	label := v.Label
+	if v.Role != "" {
+		label = string(v.Role) + " — " + label
+	}
+	if v.Model != "" {
+		if v.Provider != "" {
+			label += fmt.Sprintf(" · %s @ %s", v.Model, v.Provider)
+		} else {
+			label += " · " + v.Model
+		}
+	}
+	if v.Fallback {
+		label += " (fallback)"
+	}
+	return lipgloss.NewStyle().Foreground(accentColor).Render(glyph.Brand+" orchestrator") +
+		mutedStyle().Render(" "+glyph.Running+" ") +
+		lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(glyph.Agent+" "+label)
+}
+
+// renderDrillFrame draws a drilled-in child's transcript as a closed coral
+// frame: the crumb in the top border with the way back on its right, the
+// scroll hint and the viewport lines inside "│ … │", then the closing rule. The
+// frame closes the region, so the first row under it — the tray or the console
+// — opens a new outline.
+//
+// It lives here rather than in view.go because it names session.SubagentView:
+// the boundary test keeps view.go off the agent side (P2 C1).
+func (m Model) renderDrillFrame(v session.SubagentView) string {
+	border := lipgloss.NewStyle().Foreground(accentColor)
+	inner := max(m.leftWidth-4, 1)
+	body := func(row string) string {
+		row = ansi.Truncate(row, inner, "…")
+		row += strings.Repeat(" ", max(inner-ansi.StringWidth(row), 0))
+		return border.Render("│ ") + row + border.Render(" │")
+	}
+
+	lines := make([]string, 0, m.viewport.Height()+3)
+	lines = append(lines, chrome.BorderLine("╭─ ", drillCrumb(v), mutedStyle().Render("↑/Esc to go back"), "╮", m.leftWidth, accentColor))
+	if m.scrollHintRows() > 0 {
+		lines = append(lines, body(mutedStyle().Render("↑ scrolled — End to follow")))
+	}
+	for _, line := range strings.Split(m.paintSelection(m.viewport.View()), "\n") {
+		lines = append(lines, body(line))
+	}
+	lines = append(lines, border.Render("╰"+strings.Repeat("─", max(m.leftWidth-2, 1))+"╯"))
+	return chrome.PaintBand(strings.Join(lines, "\n"), m.leftWidth, theme.Current().TranscriptBG())
+}
+
 // drillIntoSubagent pushes a subagent onto the view stack so its child
 // session's transcript replaces the orchestrator's in the viewport.
 // Cards without a child session (status-only) are not drillable.
@@ -4056,6 +4113,7 @@ func (m *Model) drillIntoSubagent(v session.SubagentView) {
 		return
 	}
 	m.viewStack = append(m.viewStack, v)
+	m.syncTranscriptWidth()
 	m.clearSelection()
 	m.invalidateTranscript()
 	m.viewportFollow = true
@@ -4082,6 +4140,7 @@ func (m *Model) popDrill() bool {
 		return false
 	}
 	m.viewStack = m.viewStack[:len(m.viewStack)-1]
+	m.syncTranscriptWidth()
 	m.clearSelection()
 	m.invalidateTranscript()
 	return true
@@ -4096,6 +4155,41 @@ func (m Model) breadcrumbRows() int {
 		return 1
 	}
 	return 0
+}
+
+// drillCloseRows reports the row a drilled-in frame's closing border takes
+// below the viewport: 1 while drilled in, 0 otherwise. The crumb row becomes
+// the frame's top border (breadcrumbRows), so only the bottom rule is new.
+func (m Model) drillCloseRows() int {
+	if len(m.viewStack) > 0 {
+		return 1
+	}
+	return 0
+}
+
+// transcriptLeft is the cells the transcript frame's left border occupies on
+// every row: 2 inside a drilled-in frame, 0 in the borderless orchestrator
+// view.
+func (m Model) transcriptLeft() int {
+	if len(m.viewStack) > 0 {
+		return 2
+	}
+	return 0
+}
+
+// syncTranscriptWidth sets the viewport width for the current drill state and
+// invalidates the transcript when it has to change: a drilled-in child is
+// framed, so its body is four cells narrower than the column.
+func (m *Model) syncTranscriptWidth() {
+	width := max(m.leftWidth, 1)
+	if len(m.viewStack) > 0 {
+		width = max(m.leftWidth-4, 1)
+	}
+	if width == m.viewport.Width() {
+		return
+	}
+	m.viewport.SetWidth(width)
+	m.invalidateTranscript()
 }
 
 // openRunPreflight opens the cast list panel for the given kind ("sdd" or

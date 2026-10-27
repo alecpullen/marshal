@@ -48,9 +48,10 @@ func Plan(in Input) Layout {
 
 // Render paints a layout: every row on its own line and exactly width cells
 // wide. Inner rows sit inside the outline, "│ … │", with a tinted or cursored
-// row's content band-painted; border and plain rows are drawn as they are. A
-// request narrower than the floor is drawn at the floor, so every line is
-// still the same width.
+// row's content band-painted; border and plain rows are drawn as they are. The
+// outline is open at the bottom: no row closes it, and the console below
+// continues it. A request narrower than the floor is drawn at the floor, so
+// every line is still the same width.
 func Render(l Layout, width int) string {
 	w := max(width, 5)
 	inner := InnerWidth(w)
@@ -115,7 +116,9 @@ type section struct {
 // The panel has up to two sections, the running work then the plan. The top
 // border carries the first section's header and the second gets a "├─ … ─┤"
 // header. When the plan is shed to one line and there is running work, the
-// plan moves into the bottom border and its section goes.
+// plan moves into a last row of its own and its section goes. The panel draws
+// no closing row: its outline is open at the bottom, and the console below
+// continues it.
 func build(in Input, st buildState) Layout {
 	w := max(in.Width, 5)
 	if st.compact {
@@ -159,12 +162,17 @@ func build(in Input, st buildState) Layout {
 	if len(work) > 0 {
 		sections = append(sections, section{label: workLabel(in), rows: work})
 	}
-	bottom := borderStyle().Render("╰" + strings.Repeat("─", max(w-2, 0)) + "╯")
+	var folded Row // step 1's plan, drawn as the tray's last row
 	if len(in.Plan) > 0 {
 		plan := section{label: planHeader(in)}
 		switch {
 		case st.planOneLine && len(sections) > 0:
-			bottom = planFolded(in, w)
+			// The folded plan takes the tray's last row, drawn with tees so the
+			// console continues under it. Too narrow for the label, it draws
+			// nothing and the tray ends at its last section.
+			if text := planFolded(in, w); text != "" {
+				folded = Row{Text: text, Frame: FrameBorder}
+			}
 			plan.label = ""
 		case planFinished(in.Plan):
 			// A finished plan beside running work is its header alone. On its
@@ -192,8 +200,15 @@ func build(in Input, st buildState) Layout {
 		}
 		rows = append(rows, s.rows...)
 	}
-	rows = append(rows, Row{Text: bottom, Frame: FrameBorder})
-	return Layout{Rows: rows}
+	if folded.Text != "" {
+		rows = append(rows, folded)
+	}
+	// Open is derived here rather than in Plan, so every layout carries it: the
+	// tray has no closing row, and a last row that is a border row says the
+	// section below continues under it.
+	l := Layout{Rows: rows}
+	l.Open = rows[len(rows)-1].Frame == FrameBorder
+	return l
 }
 
 // workLabel is the running section's header: how many items are running, the
@@ -221,11 +236,7 @@ func borderStyle() lipgloss.Style {
 // borderLine draws a border line of exactly w cells with a left-aligned label:
 // <open><label> ─…─<close>, as "╭─ running 2 ───╮" or "├─ plan … ───┤".
 func borderLine(open, label, close string, w int) string {
-	b := borderStyle()
-	room := w - ansi.StringWidth(open) - ansi.StringWidth(close) - 2
-	label = ansi.Truncate(label, max(room, 1), "…")
-	fill := max(w-ansi.StringWidth(open)-ansi.StringWidth(label)-1-ansi.StringWidth(close), 1)
-	return b.Render(open) + label + b.Render(" "+strings.Repeat("─", fill)+close)
+	return chrome.BorderLine(open, label, "", close, w, theme.Current().BorderMuted)
 }
 
 // mergedEntry is one row of the running-and-held stack: a running item, or a

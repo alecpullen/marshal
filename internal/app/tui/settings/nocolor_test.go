@@ -23,7 +23,7 @@ func TestViewUsableWhenColorStripped(t *testing.T) {
 	plain := ansi.Strip(v)
 	// The cursor/border structure and the plain-text toggle glyph must both
 	// survive stripping; the seeded row renders "off".
-	for _, want := range []string{"▸", "▍", "off"} {
+	for _, want := range []string{"▸", "│", "off"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("structure marker %q must survive color stripping:\n%s", want, plain)
 		}

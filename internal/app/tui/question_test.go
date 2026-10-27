@@ -252,15 +252,15 @@ func TestQuestionModelViewUsesGutter(t *testing.T) {
 	}
 	qm := newQuestionModel(q, 80)
 	view := stripANSI(qm.View())
-	if !strings.HasPrefix(view, "▍ ? ") {
-		t.Fatalf("question view missing ▍ rail + ? gutter:\n%s", view)
+	if !strings.HasPrefix(view, " ? ") {
+		t.Fatalf("question view missing the ? gutter:\n%s", view)
 	}
 	if strings.Contains(view, "Marshal asks") {
 		t.Fatalf("question view must not show old title:\n%s", view)
 	}
 }
 
-func TestQuestionModelViewHasChromeRail(t *testing.T) {
+func TestQuestionModelViewHasNoRail(t *testing.T) {
 	q := &session.PendingQuestion{
 		Questions: []session.Question{
 			{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}}},
@@ -271,13 +271,14 @@ func TestQuestionModelViewHasChromeRail(t *testing.T) {
 	if msg := qm.Init()(); msg != nil {
 		qm, _ = qm.Update(msg)
 	}
-	lines := strings.Split(strings.TrimRight(stripANSI(qm.View()), "\n"), "\n")
+	view := stripANSI(qm.View())
+	lines := strings.Split(strings.TrimRight(view, "\n"), "\n")
 	if len(lines) < 3 {
-		t.Fatalf("question view too short to rail:\n%s", qm.View())
+		t.Fatalf("question view too short:\n%s", view)
 	}
 	for i, line := range lines {
-		if !strings.HasPrefix(line, "▍") {
-			t.Errorf("line %d missing the ▍ chrome rail: %q\nfull view:\n%s", i, line, stripANSI(qm.View()))
+		if strings.HasPrefix(line, "▍") {
+			t.Errorf("line %d still wears the ▍ rail: %q\nfull view:\n%s", i, line, view)
 		}
 	}
 }

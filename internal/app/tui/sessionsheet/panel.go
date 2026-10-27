@@ -153,7 +153,7 @@ func (p *Panel) View(width, maxHeight int) string {
 			title = glyph.Running + " " + title
 			selStart = len(lines)
 		}
-		lines = append(lines, chrome.Header(title, "", inner))
+		lines = append(lines, chrome.Divider(title))
 		if i == p.sel {
 			body := s.Render(d, inner, bodyRows)
 			if len(body) > bodyRows {

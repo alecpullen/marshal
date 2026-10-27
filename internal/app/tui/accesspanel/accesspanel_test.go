@@ -183,16 +183,44 @@ func TestAccessPanelFitsBudgetsAndMonochrome(t *testing.T) {
 					}
 				}
 				plain := ansi.Strip(out)
-				for _, text := range []string{"Allow system access?", "Current: Act · rev 0",
-					"mode unchanged", "for this conversation", "does not grant sudo", "Deny", "Enter decide", "Esc deny"} {
+				for _, text := range []string{"Current: Act · rev 0",
+					"mode unchanged", "for this conversation", "does not grant sudo", "Deny", "↵ decide", "Esc deny"} {
 					if !strings.Contains(plain, text) {
 						t.Fatalf("missing %q: %s", text, plain)
 					}
+				}
+				// The title shares the top border with the key hints, so a
+				// narrow border truncates it: its head always survives, and a
+				// border with room pins it in full.
+				if !strings.HasPrefix(plain, "╭─ ⚠ Allow system") {
+					t.Fatalf("missing the titled border: %s", plain)
+				}
+				if width >= 120 && !strings.Contains(plain, "Allow system access?") {
+					t.Fatalf("missing the full title: %s", plain)
 				}
 				if mono && strings.Contains(out, "\x1b[") {
 					t.Fatal("monochrome emitted escape")
 				}
 			}
+		}
+	}
+}
+
+// TestAccessPanelHeaderCarriesTheKeys pins that the key row lives in the
+// frame's top border, under a warning glyph, rather than inside the panel.
+func TestAccessPanelHeaderCarriesTheKeys(t *testing.T) {
+	r := request()
+	r.MissingEditing, r.MissingSystem = true, false
+	rows := strings.Split(ansi.Strip(New(r).View(120, 24)), "\n")
+	if len(rows) == 0 {
+		t.Fatal("panel rendered nothing")
+	}
+	if !strings.HasPrefix(rows[0], "╭─ ⚠ Allow editing?") || !strings.Contains(rows[0], "↵ decide") {
+		t.Fatalf("top border = %q, want the title and keys", rows[0])
+	}
+	for _, row := range rows[1:] {
+		if strings.Contains(row, "Esc deny") {
+			t.Fatalf("key row still drawn inside the frame: %q", row)
 		}
 	}
 }

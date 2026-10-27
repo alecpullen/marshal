@@ -14,19 +14,18 @@ import (
 // returns a zero Theme before the first Reload. A zero value that painted
 // would silently change all of them.
 //
-// The ladder is strictly additive:
+// The ladder has two levels:
 //
-//	DepthFlat   — nothing painted; the terminal's own background shows
-//	              through everywhere, including any transparency or image.
-//	DepthRaised — chrome (input, docked panel, lanes, rail, status line)
-//	              paints BGSurface; the transcript stays unpainted.
-//	DepthFull   — the transcript paints BGBase too, so marshal owns every
-//	              cell it draws.
+//	DepthFlat — nothing painted; the terminal's own background shows
+//	            through everywhere, including any transparency or image.
+//	DepthFull — the transcript paints BGBase, so marshal owns every
+//	            cell it draws inside the transcript. Chrome paints no
+//	            tint at either level: the console is an outline, so
+//	            depth no longer reaches the input area or the panels.
 type Depth int
 
 const (
 	DepthFlat Depth = iota
-	DepthRaised
 	DepthFull
 )
 
@@ -37,7 +36,9 @@ const (
 func ParseDepth(s string) Depth {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "raised":
-		return DepthRaised
+		// Retired in P-F, when the input band — the only thing it painted —
+		// went. Old configs keep loading and mean "flat".
+		return DepthFlat
 	case "full":
 		return DepthFull
 	default:
@@ -48,8 +49,6 @@ func ParseDepth(s string) Depth {
 // String returns the config spelling of d.
 func (d Depth) String() string {
 	switch d {
-	case DepthRaised:
-		return "raised"
 	case DepthFull:
 		return "full"
 	default:
@@ -60,7 +59,7 @@ func (d Depth) String() string {
 // DepthNames returns the config spellings in ladder order, for the settings
 // enum field. Order is meaningful — it is the order the user cycles through.
 func DepthNames() []string {
-	return []string{DepthFlat.String(), DepthRaised.String(), DepthFull.String()}
+	return []string{DepthFlat.String(), DepthFull.String()}
 }
 
 // clampDepth reduces d to what the colour tier can actually render.
@@ -78,38 +77,12 @@ func clampDepth(d Depth, tier ColorTier) Depth {
 	return d
 }
 
-// ChromeBG is the background for the input area, docked panel, lanes, side
-// rail and status line. It is NoColor below DepthRaised, so callers emit no
-// background SGR at all.
-//
-// Note this returns the BGSurface slot rather than replacing it: the raw slot
-// keeps its value at every depth, because codeSurfaceStyle and the live
-// region already paint it unconditionally and must not change.
-func (t Theme) ChromeBG() color.Color {
-	if t.Depth < DepthRaised {
-		return lipgloss.NoColor{}
-	}
-	return t.BGSurface
-}
-
 // TranscriptBG is the background for the transcript body. Only DepthFull
-// paints it — at flat and raised the terminal's own background (and any
-// transparency or image) shows through the largest region on screen.
+// paints it — at flat the terminal's own background (and any transparency or
+// image) shows through the largest region on screen.
 func (t Theme) TranscriptBG() color.Color {
 	if t.Depth < DepthFull {
 		return lipgloss.NoColor{}
 	}
 	return t.BGBase
-}
-
-// OverlayBG is the background for pickers and modals — the plane above
-// ChromeBG. It is NoColor below DepthRaised.
-//
-// Because it is the lightest plane, any text rendered on it governs the
-// contrast floor for the whole neutral ramp (see contrast_test.go).
-func (t Theme) OverlayBG() color.Color {
-	if t.Depth < DepthRaised {
-		return lipgloss.NoColor{}
-	}
-	return t.BGOverlay
 }

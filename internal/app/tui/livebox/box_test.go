@@ -129,13 +129,14 @@ func TestTrayEmptyWithNothingToPin(t *testing.T) {
 }
 
 // TestIdlePlanDrawsItsRows pins the idle tray: with no work, a four-item plan
-// is its own framed section, the header in the top border over two plan rows.
+// is its own framed section, the header in the top border over two plan rows,
+// and the tray ends on its last plan row — it draws no closing row.
 func TestIdlePlanDrawsItsRows(t *testing.T) {
 	in := Input{Width: 80, MaxRows: 20, Now: testNow, Plan: planOf(4, 2, 3)}
 	l := Plan(in)
 	texts := rowTexts(l)
-	if len(l.Rows) != 4 {
-		t.Fatalf("rows = %d, want the top border, 2 plan rows and the bottom border: %q", len(l.Rows), texts)
+	if len(l.Rows) != 3 {
+		t.Fatalf("rows = %d, want the top border and 2 plan rows: %q", len(l.Rows), texts)
 	}
 	if !strings.HasPrefix(texts[0], "╭─ plan") || !strings.Contains(texts[0], "2/4") {
 		t.Errorf("top border = %q, want the plan header", texts[0])
@@ -149,8 +150,11 @@ func TestIdlePlanDrawsItsRows(t *testing.T) {
 			t.Errorf("Render = %q, want it to contain %q", out, want)
 		}
 	}
-	if !strings.HasPrefix(out[len(out)-1], "╰") {
-		t.Errorf("last line = %q, want the bottom border", out[len(out)-1])
+	if got := out[len(out)-1]; !strings.HasPrefix(got, "│ ✓ todo b") {
+		t.Errorf("last line = %q, want the plan's last row", got)
+	}
+	if l.Open {
+		t.Error("the tray ends on a plan row, so it is not open")
 	}
 }
 
@@ -163,8 +167,11 @@ func TestShedOrder(t *testing.T) {
 		t.Fatalf("full tray shed %d steps, want none", full.Shed)
 	}
 	fullHeight := len(full.Rows)
-	if fullHeight != 17 {
-		t.Fatalf("full height = %d, want 17 (top border, held, card+4 running, the two subagent cards on two rows each, plan header, 2 plan rows, bottom border)", fullHeight)
+	if fullHeight != 16 {
+		t.Fatalf("full height = %d, want 16 (top border, held, card+4 running, the two subagent cards on two rows each, plan header, 2 plan rows — no closing row)", fullHeight)
+	}
+	if full.Open {
+		t.Error("the full tray ends on a plan row, so it is not open")
 	}
 
 	byShed := make([]Layout, shedSteps+1)
@@ -188,13 +195,17 @@ func TestShedOrder(t *testing.T) {
 		t.Errorf("unshed first row = %q, want the held row first", got)
 	}
 
-	// Step 1: the plan's section folds into the bottom border's one line.
+	// Step 1: the plan's section folds into the tray's last row, drawn with
+	// tees so the console continues under it.
 	shed1 := rowTexts(byShed[1])
-	if got := shed1[len(shed1)-1]; !strings.HasPrefix(got, "╰─ plan") || !strings.Contains(got, "3/4") || !strings.Contains(got, "todo c") {
-		t.Errorf("shed 1 bottom border = %q, want the one-line plan", got)
+	if got := shed1[len(shed1)-1]; !strings.HasPrefix(got, "├─ plan") || !strings.Contains(got, "3/4") || !strings.Contains(got, "todo c") {
+		t.Errorf("shed 1 last row = %q, want the one-line plan", got)
 	}
-	if got := joined(byShed[1]); strings.Contains(got, "├─ plan") {
-		t.Errorf("shed 1 tray = %q, want the plan section gone", got)
+	if !byShed[1].Open {
+		t.Error("shed 1 ends on the folded plan's border row, so it must be open")
+	}
+	if n := strings.Count(joined(byShed[1]), "├─ plan"); n != 1 {
+		t.Errorf("shed 1 tray = %q, want the plan section gone and only the folded line", joined(byShed[1]))
 	}
 	if n := len(byShed[1].Rows); n != 14 {
 		t.Errorf("shed 1 rows = %d, want 14", n)
@@ -570,26 +581,28 @@ func TestRunRowComesFirstAndIsNoStop(t *testing.T) {
 	}
 }
 
-// TestFrameOutlinesTheTray: the running work and the plan sit inside one
+// TestTrayOpensAtTheBottom: the running work and the plan sit inside one
 // outline, the running section's header in the top border and the plan's
-// between them, and every line closes at the same width.
-func TestFrameOutlinesTheTray(t *testing.T) {
-	lines := strings.Split(ansi.Strip(Render(Plan(busyInput()), 100)), "\n")
+// between them, and the tray draws no closing row: every row after the top
+// border is inside the outline or a section header.
+func TestTrayOpensAtTheBottom(t *testing.T) {
+	l := Plan(busyInput())
+	lines := strings.Split(ansi.Strip(Render(l, 100)), "\n")
 	if got := lines[0]; !strings.HasPrefix(got, "╭─ running 5 · 1 finished ") || !strings.HasSuffix(got, "╮") {
 		t.Errorf("top border = %q, want the running section's header", got)
-	}
-	if got := lines[len(lines)-1]; !strings.HasPrefix(got, "╰") || !strings.HasSuffix(got, "╯") {
-		t.Errorf("last line = %q, want the bottom border", got)
 	}
 	plan := -1
 	for i, line := range lines {
 		if w := ansi.StringWidth(line); w != 100 {
 			t.Errorf("line %d is %d cells, want 100: %q", i, w, line)
 		}
+		if strings.HasPrefix(line, "╰") {
+			t.Errorf("line %d = %q, want no closing row", i, line)
+		}
 		switch {
 		case strings.HasPrefix(line, "├─ plan"):
 			plan = i
-		case i > 0 && i < len(lines)-1:
+		case i > 0:
 			if !strings.HasPrefix(line, "│ ") || !strings.HasSuffix(line, " │") {
 				t.Errorf("line %d = %q, want it inside the outline", i, line)
 			}
@@ -601,17 +614,49 @@ func TestFrameOutlinesTheTray(t *testing.T) {
 	if !strings.Contains(lines[plan+1], "todo a") {
 		t.Errorf("line after the plan header = %q, want the plan's first row", lines[plan+1])
 	}
+	if l.Open {
+		t.Error("the tray ends on a plan row, so it is not open")
+	}
 }
 
 // TestCompactRowHasNoOutline: a budget too small for the outline sheds to the
-// one plain row.
+// one plain row, which is not a framed tray.
 func TestCompactRowHasNoOutline(t *testing.T) {
 	l := Plan(withMax(busyInput(), 2))
 	if len(l.Rows) != 1 || l.Rows[0].Frame != FramePlain {
 		t.Fatalf("rows = %q, want the one plain compact row", rowTexts(l))
 	}
+	if l.Framed() {
+		t.Error("the compact row is not framed")
+	}
+	if l.Open {
+		t.Error("the compact row has no border row, so it is not open")
+	}
 	if out := ansi.Strip(Render(l, 100)); strings.ContainsAny(out, "╭│╰") {
 		t.Errorf("compact row = %q, want no outline", out)
+	}
+}
+
+// TestFinishedPlanBesideWorkLeavesTheTrayOpen: a finished plan beside running
+// work is its header alone, drawn as the tray's last row, so the tray stays
+// open for the console.
+func TestFinishedPlanBesideWorkLeavesTheTrayOpen(t *testing.T) {
+	in := Input{
+		Width: 100, MaxRows: 40, Now: testNow, Spinner: "⠋",
+		Work: []viewmodel.WorkItem{subagentItem()},
+		Plan: planOf(4, 4, 0),
+	}
+	l := Plan(in)
+	texts := rowTexts(l)
+	last := texts[len(texts)-1]
+	if !strings.HasPrefix(last, "├─ plan") || !strings.Contains(last, "4/4 done") {
+		t.Errorf("last row = %q, want the finished plan's header", last)
+	}
+	if len(innerRows(l)) == 0 {
+		t.Errorf("tray = %q, want the running work above the header", texts)
+	}
+	if !l.Open {
+		t.Error("the tray ends on the plan's header border row, so it must be open")
 	}
 }
 

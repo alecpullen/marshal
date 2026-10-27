@@ -72,7 +72,7 @@ func (m *sudoAuthModel) IsDone() bool { return m.done }
 func (m *sudoAuthModel) View() string {
 	gutter := gutterPrefix(glyph.Question, warningColor)
 	indent := strings.Repeat(" ", 3)
-	contentWidth := max(m.width-4, 1)
+	contentWidth := max(m.width-3, 1)
 
 	var b strings.Builder
 	title := "Run as root?"
@@ -130,7 +130,9 @@ func (m *sudoAuthModel) View() string {
 	b.WriteString(indent)
 	b.WriteString(mutedStyle().Render("[↵] authenticate  [Esc] deny"))
 	b.WriteString("\n")
-	return chromeRail(b.String(), warningColor)
+	// No rail: the console draws the gutter around this section. Sudo keeps
+	// its own key row, so its header carries no right label.
+	return b.String()
 }
 
 // renderSudoAuthPanel is the fallback static panel shown before the

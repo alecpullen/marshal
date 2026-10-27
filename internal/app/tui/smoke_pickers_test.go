@@ -71,8 +71,8 @@ func TestSmokePickersProgrammatic(t *testing.T) {
 					t.Fatalf("%s: expected picker to open", tc.name)
 				}
 				view := mm.View().Content
-				if !strings.Contains(view, "▍") {
-					t.Fatalf("%s: View should render a chrome.Panel (missing gutter):\n%s", tc.name, view)
+				if !strings.Contains(view, "╭─ ") {
+					t.Fatalf("%s: View should render a chrome.Panel frame (missing top border):\n%s", tc.name, view)
 				}
 				// Esc should close cleanly
 				upd, cmd := mm.Update(tea.KeyPressMsg{Code: tea.KeyEscape})

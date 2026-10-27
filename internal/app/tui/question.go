@@ -271,8 +271,8 @@ func (qm *questionModel) View() string {
 	}
 	gutter := gutterPrefix("?", violetColor)
 	indent := strings.Repeat(" ", 3)
-	// contentWidth leaves room for the ▍ rail cell plus the 3-cell gutter.
-	contentWidth := max(qm.width-4, 1)
+	// contentWidth leaves room for the 3-cell gutter.
+	contentWidth := max(qm.width-3, 1)
 	focused := qm.form.GetFocusedField()
 
 	var b strings.Builder
@@ -308,8 +308,9 @@ func (qm *questionModel) View() string {
 			}
 		}
 	}
-	// Chrome rail: violet while a question is pending (see inputBarColor).
-	return chromeRail(b.String(), violetColor)
+	// No rail: the console draws the gutter around this section and its
+	// header carries the keys.
+	return b.String()
 }
 
 // focusedFieldFor returns focused when it belongs to the given question's

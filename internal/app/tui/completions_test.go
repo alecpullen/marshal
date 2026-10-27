@@ -213,43 +213,53 @@ func TestCompletionPopupShowsSlashPrefix(t *testing.T) {
 		{Text: "plan", Description: "Plan a task", Kind: completionCommand},
 	})
 	pop.update("pl")
-	m := Model{cmdPopup: pop, width: 80, leftWidth: 80}
-	out := stripANSI(m.renderCompletionPopup())
-	if !strings.Contains(out, "/plan") {
-		t.Fatalf("expected /plan in popup, got %q", out)
+	m := newViewTestModel(t, 80, 24)
+	m.cmdPopup = pop
+	section, ok := m.completionSection()
+	if !ok {
+		t.Fatal("expected a console section for the /pl popup")
 	}
-	if !strings.Contains(out, "Commands") {
-		t.Fatalf("expected Commands title in popup, got %q", out)
+	lines := stripANSI(strings.Join(section.lines, "\n"))
+	if !strings.Contains(lines, "/plan") {
+		t.Fatalf("expected /plan in popup, got %q", lines)
 	}
-	if !strings.Contains(out, "▍") {
-		t.Fatalf("expected ▍ gutter in popup, got %q", out)
+	if label := stripANSI(section.label); !strings.Contains(label, "Commands") {
+		t.Fatalf("expected Commands label in the popup header, got %q", label)
 	}
-	if !strings.Contains(out, "↑↓ select · ↵ run · esc dismiss") {
-		t.Fatalf("expected key hints in popup, got %q", out)
+	if right := stripANSI(section.right); !strings.Contains(right, "↑↓ select · ↵ run · esc dismiss") {
+		t.Fatalf("expected the key hints in the popup header, got %q", right)
 	}
 }
 
 func TestCompletionPopupTitleFollowsPopupKind(t *testing.T) {
 	filePop := newCompletionPopup([]completionItem{{Text: "main.go", Kind: completionFile}})
 	filePop.update("ma")
-	m := Model{filePopup: filePop, width: 80, leftWidth: 80}
-	out := stripANSI(m.renderCompletionPopup())
-	if !strings.Contains(out, "Files") {
-		t.Fatalf("expected Files title for @ popup, got %q", out)
+	m := newViewTestModel(t, 80, 24)
+	m.filePopup = filePop
+	section, ok := m.completionSection()
+	if !ok {
+		t.Fatal("expected a console section for the file popup")
 	}
-	if !strings.Contains(out, "↵ accept") {
-		t.Fatalf("expected accept hint for file popup, got %q", out)
+	if label := stripANSI(section.label); !strings.Contains(label, "Files") {
+		t.Fatalf("expected Files label for @ popup, got %q", label)
+	}
+	if right := stripANSI(section.right); !strings.Contains(right, "↵ accept") {
+		t.Fatalf("expected accept hint for file popup, got %q", right)
 	}
 
 	setPop := newCompletionPopup([]completionItem{{Text: "theme", Kind: completionSetting}})
 	setPop.update("th")
-	m = Model{setPopup: setPop, width: 80, leftWidth: 80}
-	out = stripANSI(m.renderCompletionPopup())
-	if !strings.Contains(out, "Settings") {
-		t.Fatalf("expected Settings title for /set popup, got %q", out)
+	m = newViewTestModel(t, 80, 24)
+	m.setPopup = setPop
+	section, ok = m.completionSection()
+	if !ok {
+		t.Fatal("expected a console section for the settings popup")
 	}
-	if !strings.Contains(out, "↵ accept") {
-		t.Fatalf("expected accept hint for settings popup, got %q", out)
+	if label := stripANSI(section.label); !strings.Contains(label, "Settings") {
+		t.Fatalf("expected Settings label for /set popup, got %q", label)
+	}
+	if right := stripANSI(section.right); !strings.Contains(right, "↵ accept") {
+		t.Fatalf("expected accept hint for settings popup, got %q", right)
 	}
 }
 
@@ -261,9 +271,11 @@ func TestInputChromeRowsCountsPopupTitleRow(t *testing.T) {
 	if p == nil {
 		t.Fatal("expected a visible completion popup for /pl")
 	}
-	want := min(len(p.matches()), completionPopupMax) + completionPanelChromeRows
+	// The popup's own header is completionPanelChromeRows; the composer's
+	// divider under it is the console header the popup pushes down.
+	want := min(len(p.matches()), completionPopupMax) + completionPanelChromeRows + 1
 	if got := m.inputChromeRows(); got != want {
-		t.Fatalf("inputChromeRows() = %d, want %d (popup rows + title row)", got, want)
+		t.Fatalf("inputChromeRows() = %d, want %d (popup rows + popup header + composer divider)", got, want)
 	}
 }
 

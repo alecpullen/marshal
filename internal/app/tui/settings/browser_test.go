@@ -39,6 +39,35 @@ func TestBrowserFiltersAndRendersRows(t *testing.T) {
 	}
 }
 
+func TestBrowserGroupsAreDividersInOneColumn(t *testing.T) {
+	b := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	rows := strings.Split(stripANSI(b.View(80, 40)), "\n")
+	if !strings.HasPrefix(rows[0], "╭─") {
+		t.Fatalf("first row should open the frame, got %q", rows[0])
+	}
+	var agentRow string
+	for _, r := range rows {
+		if strings.HasPrefix(r, "├─ Agent") {
+			agentRow = r
+			break
+		}
+	}
+	if agentRow == "" {
+		t.Fatalf("single-column view should draw the Agent group as a divider, got:\n%s", strings.Join(rows, "\n"))
+	}
+	last := rows[len(rows)-1]
+	if !strings.HasPrefix(last, "╰─ ") || !strings.Contains(last, "settings") {
+		t.Fatalf("last row should be the frame's footer carrying the count, got %q", last)
+	}
+
+	twoCol := NewBrowser(config.Default(), filepath.Join(t.TempDir(), "config.toml"), "")
+	for _, r := range strings.Split(stripANSI(twoCol.View(140, 40)), "\n") {
+		if strings.HasPrefix(r, "├─ Agent") {
+			t.Fatalf("two-column view must not draw group dividers, got:\n%s", twoCol.View(140, 40))
+		}
+	}
+}
+
 func TestBrowserToggleSavesAndEmitsChangedMsg(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	b := NewBrowser(config.Default(), path, "shell.allow_network")

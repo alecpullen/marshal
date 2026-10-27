@@ -7095,8 +7095,8 @@ func TestFinishedPlanIsOneIdleRow(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	if got := m.boxRows(); got != 3 {
-		t.Fatalf("boxRows() = %d, want the finished row between the top and bottom borders", got)
+	if got := m.boxRows(); got != 2 {
+		t.Fatalf("boxRows() = %d, want the top border and the finished row; the tray draws no closing row", got)
 	}
 	got := stripANSI(boxOut(m))
 	if !strings.Contains(got, "Plan 2/2 done") {
@@ -7901,7 +7901,8 @@ func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
 
 	top := m.scrollHintRows() + m.breadcrumbRows()
 	y := top + region.startLine - m.viewport.YOffset()
-	updated := clickAt(t, m, 1, y)
+	// x=3 is inside the drilled-in frame's border and gutter.
+	updated := clickAt(t, m, 3, y)
 	mm := asModel(t, updated)
 
 	if !mm.isToolExpanded(key, true) {

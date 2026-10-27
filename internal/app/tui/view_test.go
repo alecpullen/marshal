@@ -9,13 +9,11 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
-
-	"marshal/internal/app/tui/glyph"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/settings"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/commands"
 	"marshal/internal/tools/native"
 )
@@ -90,8 +88,8 @@ func TestPickerRendersDockedAboveInput(t *testing.T) {
 	if inputLine == -1 || inputLine < panelLine {
 		t.Fatalf("picker must sit above the input area (panel=%d input=%d)", panelLine, inputLine)
 	}
-	if !strings.HasPrefix(lines[panelLine], "▍") {
-		t.Errorf("panel should be left-aligned, got %q", lines[panelLine])
+	if !strings.HasPrefix(lines[panelLine], "╭─ ") {
+		t.Errorf("panel should be left-aligned inside its frame, got %q", lines[panelLine])
 	}
 }
 
@@ -106,11 +104,11 @@ func TestConnectRendersDockedAboveInput(t *testing.T) {
 
 	lines := strings.Split(view, "\n")
 	// connect.Model.View delegates straight to the active picker's own
-	// gutter-framed panel (single border, titled with the step name) rather
-	// than wrapping it in a second outer panel.
+	// framed panel (single border, titled with the step name) rather than
+	// wrapping it in a second outer panel.
 	panelLine, inputLine := -1, -1
 	for index, line := range lines {
-		if strings.Contains(line, "▍") && strings.Contains(line, "Connect a provider") {
+		if strings.HasPrefix(line, "╭─ ") && strings.Contains(line, "Connect a provider") {
 			panelLine = index
 		}
 		if panelLine != -1 && strings.Contains(line, "❯") {
@@ -119,17 +117,14 @@ func TestConnectRendersDockedAboveInput(t *testing.T) {
 		}
 	}
 	if panelLine == -1 {
-		t.Fatal("connect panel gutter not rendered")
+		t.Fatal("connect panel frame not rendered")
 	}
 	if inputLine == -1 || inputLine < panelLine {
 		t.Fatalf("connect panel must sit above the input area (panel=%d input=%d)", panelLine, inputLine)
 	}
-	if !strings.HasPrefix(lines[panelLine], "▍") {
-		t.Errorf("panel should be left-aligned, got %q", lines[panelLine])
-	}
 	for _, line := range lines {
-		if strings.Count(line, "▍") > 1 {
-			t.Errorf("connect panel should have a single gutter, got nested gutters: %q", line)
+		if strings.Count(line, "╭") > 1 {
+			t.Errorf("connect panel should have a single frame, got nested frames: %q", line)
 		}
 	}
 }
@@ -165,9 +160,54 @@ func TestTranscriptFrameDoesNotMoveWhenActivityStarts(t *testing.T) {
 	if idleLines[0] != busyLines[0] {
 		t.Fatalf("transcript top frame moved:\nidle: %q\nbusy: %q", idleLines[0], busyLines[0])
 	}
+	// The console's top border is the input area's first row, and the composer
+	// sits inside the gutter under it.
 	inputTop := 30 - m.inputAreaRows() - statusLineRows
-	if !strings.Contains(stripANSI(busyLines[inputTop]), "▍") {
-		t.Fatalf("input area missing state bar; line %d = %q", inputTop, busyLines[inputTop])
+	if got := stripANSI(busyLines[inputTop]); !strings.HasPrefix(got, "╭") {
+		t.Fatalf("input area does not open with the console's top border; line %d = %q", inputTop, got)
+	}
+	if got := stripANSI(busyLines[inputTop+1]); !strings.Contains(got, "│ ❯") {
+		t.Fatalf("composer is not inside the console gutter; line %d = %q", inputTop+1, got)
+	}
+}
+
+// TestDrilledFrameFitsTheTerminal: the drill frame closes, the tray opens a new
+// outline directly under its closing row, and no row exceeds the terminal.
+func TestDrilledFrameFitsTheTerminal(t *testing.T) {
+	for _, size := range [][2]int{{80, 24}, {120, 40}} {
+		w, h := size[0], size[1]
+		m := newTestModel(t)
+		m.resize(w, h)
+		child := newChildState(t)
+		child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+		view := m.state.RegisterSubagent("explore repo", child)
+		m.drillIntoSubagent(view)
+		m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
+		m.busy = true
+		m.refreshViewport()
+
+		rows := strings.Split(stripANSI(m.viewString()), "\n")
+		if len(rows) != h {
+			t.Fatalf("%dx%d: frame is %d rows tall, want %d", w, h, len(rows), h)
+		}
+		closeRow := -1
+		for i, row := range rows {
+			if strings.HasPrefix(row, "╰") {
+				closeRow = i
+				break
+			}
+		}
+		if closeRow < 0 {
+			t.Fatalf("%dx%d: the drill frame never closes:\n%s", w, h, strings.Join(rows, "\n"))
+		}
+		if got := rows[closeRow+1]; !strings.HasPrefix(got, "╭") {
+			t.Fatalf("%dx%d: the tray must open a new outline under the drill frame: %q", w, h, got)
+		}
+		for i, row := range rows {
+			if got := visibleRunes(row); got > w {
+				t.Fatalf("%dx%d: row %d is %d cells wide: %q", w, h, i, got, row)
+			}
+		}
 	}
 }
 
@@ -218,17 +258,20 @@ func TestResizeComputesSingleColumnGeometry(t *testing.T) {
 	}
 }
 
-func TestInputBarPulsesTealOnSuccess(t *testing.T) {
+func TestConsoleBorderPulsesTealOnSuccess(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	m.successPulse = true
+	if got := m.consoleColor(); got != successColor {
+		t.Fatalf("consoleColor() during the success pulse = %#v, want the success colour", got)
+	}
 	teal := m.renderInputArea()
 	m.successPulse = false
+	if got := m.consoleColor(); got != theme.Current().BorderMuted {
+		t.Fatalf("consoleColor() after the pulse = %#v, want BorderMuted", got)
+	}
 	neutral := m.renderInputArea()
 	if teal == neutral {
-		t.Fatal("success pulse bar should differ from the default focused bar")
-	}
-	if !strings.Contains(stripANSI(teal), "▍") {
-		t.Fatalf("input area missing state bar:\n%s", stripANSI(teal))
+		t.Fatal("the success pulse should colour the console's border differently from the idle state")
 	}
 }
 
@@ -257,16 +300,49 @@ func TestInputBarColorReflectsFocus(t *testing.T) {
 	}
 }
 
-func TestInputAreaHasNoBorderBox(t *testing.T) {
+func TestInputAreaIsFramed(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	out := stripANSI(m.renderInputArea())
-	for _, glyph := range []string{"╭", "╰", "│"} {
-		if strings.Contains(out, glyph) {
-			t.Fatalf("input area still box-bordered (%q):\n%s", glyph, out)
-		}
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("input area should be a frame over the composer, got %d rows:\n%s", len(lines), out)
 	}
-	if !strings.Contains(out, "▍❯") {
-		t.Fatalf("input area missing ▍❯ prompt:\n%s", out)
+	if !strings.HasPrefix(lines[0], "╭") || !strings.HasSuffix(lines[0], "╮") {
+		t.Fatalf("input area does not open with the console's top border: %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "│ ❯") {
+		t.Fatalf("composer is not inside the console gutter: %q", lines[1])
+	}
+	if strings.Contains(out, "▍") {
+		t.Fatalf("the rail is gone from the console:\n%s", out)
+	}
+}
+
+// The input area is console content, not a painted band: at the deepest level
+// the theme paints only the transcript, so no input row may carry a background
+// SGR parameter at all — idle or with a prompt pending.
+func TestInputAreaPaintsNoBackground(t *testing.T) {
+	df := newDepthFrame(t)
+	th := theme.Current()
+	th.Depth = theme.DepthFull
+	theme.Reload(th)
+
+	m := df.m
+	if out := m.renderInputArea(); strings.Contains(out, "48;") {
+		t.Fatalf("idle input area paints a background SGR:\n%q", out)
+	}
+
+	tc := &session.PendingToolCall{
+		ID:           "call-input-band",
+		Name:         "shell.run",
+		Command:      "git status",
+		Risk:         "command",
+		ResponseChan: make(chan session.UserApprovalDecision, 1),
+	}
+	m.state.SetPendingApproval(tc)
+	m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), false, false, max(m.width-4, 30))
+	if out := m.renderInputArea(); strings.Contains(out, "48;") {
+		t.Fatalf("input area paints a background SGR while an approval is pending:\n%q", out)
 	}
 }
 
@@ -360,13 +436,13 @@ func TestInputAreaHasNoBlankRowsWhenIdle(t *testing.T) {
 
 	promptCount := 0
 	for _, line := range lines {
-		if strings.Contains(line, "▍❯") {
+		if strings.Contains(line, "│ ❯") {
 			promptCount++
 		}
 	}
 
 	if promptCount != 1 {
-		t.Fatalf("expected exactly 1 line with ▍❯, got %d:\n%s", promptCount, out)
+		t.Fatalf("expected exactly 1 row holding the composer prompt, got %d:\n%s", promptCount, out)
 	}
 }
 
@@ -389,7 +465,7 @@ func TestInputWrapsBeforeTerminalWidth(t *testing.T) {
 
 		promptRow := ""
 		for _, line := range lines {
-			if strings.Contains(line, "▍❯") {
+			if strings.Contains(line, "│ ❯") {
 				promptRow = line
 				break
 			}
@@ -398,7 +474,7 @@ func TestInputWrapsBeforeTerminalWidth(t *testing.T) {
 			t.Fatalf("width=%d: no prompt row found:\n%s", w, out)
 		}
 		if !strings.Contains(promptRow, "a") {
-			t.Fatalf("width=%d: prompt row has no text after ▍❯:\n%s", w, out)
+			t.Fatalf("width=%d: prompt row has no text after the console prompt:\n%s", w, out)
 		}
 	}
 }
@@ -468,7 +544,7 @@ func TestCompletionPopupANSITruncationStaysRenderable(t *testing.T) {
 	m := newViewTestModelWithRegistry(t, 24, 24)
 	m.input.SetValue("/pl")
 	m.updateCompletionPopups()
-	out := m.renderCompletionPopup()
+	out := m.renderInputArea()
 	// Check that every \x1b[ escape is properly terminated with m (no
 	// truncated sequences). The old heuristic of counting raw "m" chars
 	// broke once the chrome panel added text content containing "m".
@@ -641,7 +717,7 @@ func TestTodoPanelIsPinnedBelowTranscript(t *testing.T) {
 		if strings.Contains(line, "implement parser") {
 			todoRow = i
 		}
-		if strings.Contains(line, "▍") && strings.Contains(line, "❯") {
+		if strings.Contains(line, "│ ❯") {
 			inputRow = i
 		}
 	}
@@ -943,33 +1019,6 @@ func TestTurnSpinnerGlyphGatedOnFirst200ms(t *testing.T) {
 	m.turnStartedAt = m.now().Add(-time.Second)
 	if got := m.turnSpinnerFrame(); got != "⠹" {
 		t.Errorf("turnSpinnerFrame() = %q at 1s, want ⠹", got)
-	}
-}
-
-// Rail panels paint no background: the ▍ rail carries the grouping, and a
-// painted band renders as a light stripe around content on light/16-color
-// terminal themes.
-func TestChromeRailWidthPaintsNoBackground(t *testing.T) {
-	out := chromeRailWidth(" row one\nrow two ", dimColor, 40)
-	if strings.Contains(out, "48;") || strings.Contains(out, "[48;") {
-		t.Fatalf("chromeRailWidth must not emit background SGR:\n%q", out)
-	}
-	lines := strings.Split(out, "\n")
-	if len(lines) != 2 {
-		t.Fatalf("want 2 railed lines, got %d:\n%q", len(lines), out)
-	}
-	for i, l := range lines {
-		if !strings.Contains(stripANSI(l), "row") {
-			t.Errorf("line %d lost its content: %q", i, l)
-		}
-	}
-}
-
-func TestChromeRailWidthTruncatesToWidth(t *testing.T) {
-	out := chromeRailWidth(strings.Repeat("x", 50), dimColor, 20)
-	plain := strings.TrimPrefix(ansi.Strip(out), glyph.Rail)
-	if w := ansi.StringWidth(plain); w > 20 {
-		t.Fatalf("content not truncated to width: %d > 20", w)
 	}
 }
 

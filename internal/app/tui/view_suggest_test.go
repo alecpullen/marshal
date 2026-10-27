@@ -5,12 +5,10 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
-
-	"marshal/internal/app/tui/glyph"
 )
 
-// firstRow returns the first rendered row of the guttered input with
-// styling stripped and trailing padding removed.
+// firstRow returns the first rendered row of the composer with styling
+// stripped and trailing padding removed.
 func firstRow(s string) string {
 	return strings.TrimRight(stripANSI(strings.Split(s, "\n")[0]), " ")
 }
@@ -31,14 +29,14 @@ func TestGutteredInputRestoresPlaceholder(t *testing.T) {
 	m.suggestionDismissed = false
 	m.input.Placeholder = "TEMP"
 
-	_ = m.gutteredInput()
+	_ = m.composerView()
 
 	// The function captures the current placeholder at entry, blanks it
 	// while a suggestion ghost overlays the input, and restores it on exit.
 	// With the value receiver this defer ran on a copy, so the caller's
 	// placeholder was left permanently "" — the bug this guards against.
 	if m.input.Placeholder != "TEMP" {
-		t.Errorf("placeholder should be restored to its entry value after gutteredInput: got %q, want %q", m.input.Placeholder, "TEMP")
+		t.Errorf("placeholder should be restored to its entry value after composerView: got %q, want %q", m.input.Placeholder, "TEMP")
 	}
 }
 
@@ -69,8 +67,8 @@ func TestGhostSitsAtCursorColumn(t *testing.T) {
 				m.input.Blur()
 			}
 
-			want := glyph.Rail + "❯ yes, go ahead"
-			if got := firstRow(m.gutteredInput()); got != want {
+			want := "❯ yes, go ahead"
+			if got := firstRow(m.composerView()); got != want {
 				t.Fatalf("input row = %q, want %q", got, want)
 			}
 		})
@@ -84,11 +82,11 @@ func TestGhostPreservesRowWidth(t *testing.T) {
 	m := newViewTestModel(t, 80, 24)
 	m.input.SetValue("yes")
 	m.input.CursorEnd()
-	before := ansi.StringWidth(strings.Split(m.gutteredInput(), "\n")[0])
+	before := ansi.StringWidth(strings.Split(m.composerView(), "\n")[0])
 
 	m.suggestion = "yes, go ahead"
 	m.suggestionDismissed = false
-	after := ansi.StringWidth(strings.Split(m.gutteredInput(), "\n")[0])
+	after := ansi.StringWidth(strings.Split(m.composerView(), "\n")[0])
 
 	if before != after {
 		t.Fatalf("row width with ghost = %d, want %d (unchanged)", after, before)
@@ -110,7 +108,7 @@ func TestGhostHiddenWhenCursorNotAtEnd(t *testing.T) {
 	if got := m.suggestionGhost(); got != "" {
 		t.Fatalf("suggestionGhost = %q, want empty when cursor is not at end of input", got)
 	}
-	if got := stripANSI(m.gutteredInput()); strings.Contains(got, "go ahead") {
+	if got := stripANSI(m.composerView()); strings.Contains(got, "go ahead") {
 		t.Fatalf("expected no ghost when cursor is not at end of input, got %q", got)
 	}
 }
@@ -182,16 +180,16 @@ func TestOverlayGhostOutOfRangeColumnIsNoop(t *testing.T) {
 	}
 }
 
-func TestGutteredInputSuggestion(t *testing.T) {
+func TestComposerViewSuggestion(t *testing.T) {
 	t.Run("empty_input_shows_full_suggestion", func(t *testing.T) {
 		m := newViewTestModel(t, 80, 24)
 		m.suggestion = "yes"
 		m.suggestionDismissed = false
-		want := glyph.Rail + "❯ yes"
-		if got := firstRow(m.gutteredInput()); got != want {
+		want := "❯ yes"
+		if got := firstRow(m.composerView()); got != want {
 			t.Fatalf("input row = %q, want %q", got, want)
 		}
-		if strings.Contains(stripANSI(m.gutteredInput()), "Ask Marshal") {
+		if strings.Contains(stripANSI(m.composerView()), "Ask Marshal") {
 			t.Fatal("placeholder should be suppressed when a suggestion is active")
 		}
 	})
@@ -203,8 +201,8 @@ func TestGutteredInputSuggestion(t *testing.T) {
 		m.input.CursorEnd()
 		// Fish-style: the typed "ye" plus the ghosted suffix "s" — the
 		// row reads "yes" exactly once, not "yeyes".
-		want := glyph.Rail + "❯ yes"
-		if got := firstRow(m.gutteredInput()); got != want {
+		want := "❯ yes"
+		if got := firstRow(m.composerView()); got != want {
 			t.Fatalf("input row = %q, want %q", got, want)
 		}
 	})
@@ -212,7 +210,7 @@ func TestGutteredInputSuggestion(t *testing.T) {
 		m := newViewTestModel(t, 80, 24)
 		m.suggestion = "yes"
 		m.suggestionDismissed = true
-		if got := stripANSI(m.gutteredInput()); strings.Contains(got, "yes") {
+		if got := stripANSI(m.composerView()); strings.Contains(got, "yes") {
 			t.Fatalf("expected no ghost when dismissed, got %q", got)
 		}
 	})
@@ -221,7 +219,7 @@ func TestGutteredInputSuggestion(t *testing.T) {
 		m.suggestion = "yes"
 		m.suggestionDismissed = false
 		m.busy = true
-		if got := stripANSI(m.gutteredInput()); strings.Contains(got, "yes") {
+		if got := stripANSI(m.composerView()); strings.Contains(got, "yes") {
 			t.Fatalf("expected no ghost while busy, got %q", got)
 		}
 	})
@@ -231,7 +229,7 @@ func TestGutteredInputSuggestion(t *testing.T) {
 		m.suggestionDismissed = false
 		m.input.SetValue("no")
 		m.input.CursorEnd()
-		if got := stripANSI(m.gutteredInput()); strings.Contains(got, "yes") {
+		if got := stripANSI(m.composerView()); strings.Contains(got, "yes") {
 			t.Fatalf("expected no ghost when input doesn't prefix suggestion, got %q", got)
 		}
 	})

@@ -108,9 +108,9 @@ var gamutExempt = map[string]bool{
 }
 
 // gateBackgrounds returns the backgrounds text can land on at the given depth.
-// At flat and raised the transcript is unpainted, so text still lands on an
-// unknown terminal background and the bracket governs. Only at full does
-// marshal own every plane.
+// At flat the transcript is unpainted, so text still lands on an unknown
+// terminal background and the bracket governs. Only at full does marshal own
+// every plane.
 //
 // BGOverlay is deliberately excluded: it is the modal/picker plane, and the
 // general contrast gate tests foregrounds against the planes they render on
@@ -142,7 +142,7 @@ func TestPresetContrast(t *testing.T) {
 		}
 		light := lightPresets[name]
 
-		for _, depth := range []Depth{DepthFlat, DepthRaised, DepthFull} {
+		for _, depth := range []Depth{DepthFlat, DepthFull} {
 			backgrounds := gateBackgrounds(th, depth, light)
 
 			for _, slot := range contrastSlots {

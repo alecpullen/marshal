@@ -1,10 +1,7 @@
 package tui
 
 import (
-	"strings"
 	"testing"
-
-	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/theme"
 )
@@ -68,55 +65,11 @@ func TestDepthFlatIsByteIdenticalToUnpainted(t *testing.T) {
 	}
 }
 
-// raised must actually change the frame — this is the flip of
-// TestRaisedNotYetPainting from Task 5.
-func TestRaisedPaintsChrome(t *testing.T) {
-	df := newDepthFrame(t)
-	flat := df.renderAt(theme.DepthFlat)
-	raised := df.renderAt(theme.DepthRaised)
-	if flat == raised {
-		t.Fatal("depth=raised rendered identically to flat; no region is painting")
-	}
-}
-
-// Raised must not change the frame's shape — the height invariant enforced
-// by clipLeftColumn and the status footer's position both still hold.
-func TestRaisedPreservesFrameGeometry(t *testing.T) {
-	df := newDepthFrame(t)
-	flat := strings.Split(stripANSI(df.renderAt(theme.DepthFlat)), "\n")
-	raised := strings.Split(stripANSI(df.renderAt(theme.DepthRaised)), "\n")
-	if len(flat) != len(raised) {
-		t.Fatalf("row count changed: flat %d, raised %d", len(flat), len(raised))
-	}
-}
-
-// Every painted row must be exactly the frame width. A short row is the
-// ragged-stripe artifact; an over-wide row means PaintBand failed to
-// truncate.
-func TestRaisedBandsAreFullWidth(t *testing.T) {
-	df := newDepthFrame(t)
-	lines := strings.Split(df.renderAt(theme.DepthRaised), "\n")
-	for i, line := range lines {
-		w := ansi.StringWidth(line)
-		if w == 0 {
-			continue // blank line (e.g. trailing)
-		}
-		if w > 100 {
-			t.Errorf("row %d overflows the 100-cell frame: width %d", i, w)
-		}
-		// The frame is 100 cells wide; every painted row should fill it.
-		// Under-width rows are the ragged-stripe artifact.
-		if w < 100 {
-			t.Errorf("row %d is under-width: %d cells (expected 100)", i, w)
-		}
-	}
-}
-
 func TestFullPaintsTranscript(t *testing.T) {
 	df := newDepthFrame(t)
-	raised := df.renderAt(theme.DepthRaised)
+	flat := df.renderAt(theme.DepthFlat)
 	full := df.renderAt(theme.DepthFull)
-	if raised == full {
-		t.Fatal("depth=full rendered identically to raised; the transcript is not painting")
+	if flat == full {
+		t.Fatal("depth=full rendered identically to flat; the transcript is not painting")
 	}
 }

@@ -340,13 +340,14 @@ func (am *approvalModel) View() string {
 			Mode:      diffview.ModeAuto,
 			Highlight: true,
 		})
-		// Render the diff as a surface-tinted block. Width is am.width-3:
-		// one cell for the ▍ rail plus the surface's own horizontal padding.
+		// One plain row per diff line, truncated to the section's content
+		// width. No surface tint: the console paints no band, so the diff
+		// reads as part of the frame's body.
 		for _, line := range strings.Split(diff, "\n") {
 			if line == "" {
 				continue
 			}
-			b.WriteString(codeSurfaceStyle().Width(max(am.width-3, 1)).Render(line))
+			b.WriteString(ansi.Truncate(line, max(am.width, 1), "…"))
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
@@ -400,10 +401,9 @@ func (am *approvalModel) View() string {
 		b.WriteString("\n")
 	}
 
-	// Chrome rail: the same ▍ state bar the input box wears (warning color
-	// while an approval is pending — see inputBarColor), prefixed on every
-	// line so the whole panel reads as one contained unit.
-	return chromeRail(b.String(), warningColor)
+	// No rail: the console draws the gutter around this section and its
+	// header carries the keys.
+	return b.String()
 }
 
 func (am *approvalModel) Choice() approvalChoice { return am.choice }

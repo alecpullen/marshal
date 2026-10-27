@@ -19,10 +19,10 @@ func TestParseDepth(t *testing.T) {
 		want Depth
 	}{
 		{"flat", DepthFlat},
-		{"raised", DepthRaised},
+		{"raised", DepthFlat},
 		{"full", DepthFull},
 		{"FULL", DepthFull},
-		{"  raised  ", DepthRaised},
+		{"  raised  ", DepthFlat},
 		{"", DepthFlat},
 		{"nonsense", DepthFlat},
 	} {
@@ -33,7 +33,7 @@ func TestParseDepth(t *testing.T) {
 }
 
 func TestDepthStringRoundTrips(t *testing.T) {
-	for _, d := range []Depth{DepthFlat, DepthRaised, DepthFull} {
+	for _, d := range []Depth{DepthFlat, DepthFull} {
 		if got := ParseDepth(d.String()); got != d {
 			t.Errorf("ParseDepth(%q) = %d, want %d", d.String(), got, d)
 		}
@@ -42,8 +42,8 @@ func TestDepthStringRoundTrips(t *testing.T) {
 
 func TestDepthNamesMatchParse(t *testing.T) {
 	names := DepthNames()
-	if len(names) != 3 {
-		t.Fatalf("DepthNames() = %v, want 3 entries", names)
+	if len(names) != 2 {
+		t.Fatalf("DepthNames() = %v, want 2 entries", names)
 	}
 	for _, n := range names {
 		if ParseDepth(n).String() != n {
@@ -52,24 +52,19 @@ func TestDepthNamesMatchParse(t *testing.T) {
 	}
 }
 
-// The chrome plane paints from DepthRaised up; the transcript plane only at
-// DepthFull. Below those, each accessor must yield NoColor so the caller
-// emits no SGR at all.
+// The transcript plane paints only at DepthFull. Below it, the accessor must
+// yield NoColor so the caller emits no SGR at all. Chrome paints no tint at
+// either depth, so there is no chrome column to check.
 func TestBackgroundAccessorsByDepth(t *testing.T) {
 	for _, tc := range []struct {
 		depth        Depth
-		chromePaints bool
 		transcriptOn bool
 	}{
-		{DepthFlat, false, false},
-		{DepthRaised, true, false},
-		{DepthFull, true, true},
+		{DepthFlat, false},
+		{DepthFull, true},
 	} {
 		th := warmSunset256
 		th.Depth = tc.depth
-		if got := !isNoColor(th.ChromeBG()); got != tc.chromePaints {
-			t.Errorf("depth %s: ChromeBG paints = %v, want %v", tc.depth, got, tc.chromePaints)
-		}
 		if got := !isNoColor(th.TranscriptBG()); got != tc.transcriptOn {
 			t.Errorf("depth %s: TranscriptBG paints = %v, want %v", tc.depth, got, tc.transcriptOn)
 		}
@@ -81,9 +76,6 @@ func TestBackgroundAccessorsByDepth(t *testing.T) {
 func TestAccessorsReturnTheRealSlots(t *testing.T) {
 	th := warmSunset256
 	th.Depth = DepthFull
-	if th.ChromeBG() != warmSunset256.BGSurface {
-		t.Errorf("ChromeBG() = %#v, want BGSurface %#v", th.ChromeBG(), warmSunset256.BGSurface)
-	}
 	if th.TranscriptBG() != warmSunset256.BGBase {
 		t.Errorf("TranscriptBG() = %#v, want BGBase %#v", th.TranscriptBG(), warmSunset256.BGBase)
 	}
@@ -95,7 +87,7 @@ func TestAccessorsReturnTheRealSlots(t *testing.T) {
 // clamps to flat below Tier256, exactly as ColorTier.PaintsSurface required.
 func TestDepthClampsBelowTier256(t *testing.T) {
 	for _, tier := range []ColorTier{Tier16, TierMono} {
-		for _, d := range []Depth{DepthRaised, DepthFull} {
+		for _, d := range []Depth{DepthFull} {
 			if got := clampDepth(d, tier); got != DepthFlat {
 				t.Errorf("clampDepth(%s, tier %d) = %s, want flat", d, tier, got)
 			}
@@ -109,7 +101,7 @@ func TestDepthClampsBelowTier256(t *testing.T) {
 // The raw slots must be untouched by depth — existing call sites read
 // BGSurface directly and must keep working at every depth.
 func TestRawSlotsSurviveEveryDepth(t *testing.T) {
-	for _, d := range []Depth{DepthFlat, DepthRaised, DepthFull} {
+	for _, d := range []Depth{DepthFlat, DepthFull} {
 		th := warmSunset256
 		th.Depth = d
 		if th.BGSurface != warmSunset256.BGSurface {
@@ -124,12 +116,12 @@ func TestRawSlotsSurviveEveryDepth(t *testing.T) {
 func TestLoadWithConfigStampsDepth(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")
-	th := LoadWithConfig("warm-sunset", ModeDark, DepthRaised, nil)
-	if th.Depth != DepthRaised {
-		t.Fatalf("Depth = %s, want raised", th.Depth)
+	th := LoadWithConfig("warm-sunset", ModeDark, DepthFull, nil)
+	if th.Depth != DepthFull {
+		t.Fatalf("Depth = %s, want full", th.Depth)
 	}
-	if isNoColor(th.ChromeBG()) {
-		t.Error("raised at Tier256 must paint chrome")
+	if isNoColor(th.TranscriptBG()) {
+		t.Error("full at Tier256 must paint the transcript")
 	}
 }
 
@@ -140,8 +132,8 @@ func TestLoadWithConfigClampsBelow256(t *testing.T) {
 	if th.Depth != DepthFlat {
 		t.Fatalf("Depth = %s at Tier16, want flat (clamped)", th.Depth)
 	}
-	if !isNoColor(th.ChromeBG()) {
-		t.Error("clamped theme must not paint chrome")
+	if !isNoColor(th.TranscriptBG()) {
+		t.Error("clamped theme must not paint the transcript")
 	}
 }
 
@@ -158,10 +150,10 @@ func TestNoColorClampsDepth(t *testing.T) {
 func TestOverridesPreserveDepth(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm-256color")
-	th := LoadWithConfig("warm-sunset", ModeDark, DepthRaised,
+	th := LoadWithConfig("warm-sunset", ModeDark, DepthFull,
 		PaletteOverrides{"fg_default": "#ffffff"})
-	if th.Depth != DepthRaised {
-		t.Fatalf("Apply dropped Depth: got %s, want raised", th.Depth)
+	if th.Depth != DepthFull {
+		t.Fatalf("Apply dropped Depth: got %s, want full", th.Depth)
 	}
 }
 
@@ -180,21 +172,6 @@ func TestPlanesAreDistinguishable(t *testing.T) {
 	got := contrastRatio(rgbFor256(surface), rgbFor256(base))
 	if got < 1.5 {
 		t.Errorf("plane separation %.2f:1 is below the 1.5:1 legibility floor", got)
-	}
-}
-
-func TestOverlayBGFollowsDepth(t *testing.T) {
-	th := warmSunset256
-	th.Depth = DepthFlat
-	if !isNoColor(th.OverlayBG()) {
-		t.Error("flat must not paint an overlay")
-	}
-	th.Depth = DepthRaised
-	if isNoColor(th.OverlayBG()) {
-		t.Error("raised must paint the overlay plane")
-	}
-	if th.OverlayBG() != th.BGOverlay {
-		t.Error("OverlayBG must return the BGOverlay slot verbatim")
 	}
 }
 

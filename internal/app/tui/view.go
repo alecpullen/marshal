@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"image/color"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -10,7 +9,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
-	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
@@ -84,6 +82,7 @@ func (m *Model) viewString() string {
 		m.sheetPanel.SetData(m.sheetDataFor)
 	}
 	dockView := m.dock.View(m.leftWidth, m.height)
+	m.dockFramed = chrome.IsFramed(dockView)
 	m.updateViewportHeight()
 
 	var left string
@@ -102,10 +101,21 @@ func (m *Model) viewString() string {
 		if box := livebox.Render(layout, m.leftWidth); box != "" {
 			rows = append(rows, box)
 		}
+		// A docked panel is an open frame. Under a framed tray it joins that
+		// outline with tees instead of opening a second one inside it.
 		if dockView != "" {
+			if layout.Framed() {
+				dockView = chrome.JoinTop(dockView)
+			}
 			rows = append(rows, dockView)
 		}
-		rows = append(rows, m.renderInputArea())
+		// An empty console is not appended at all: it happens when the access
+		// panel owns the dock (the panel is the decision UI, so there is no
+		// composer to frame), and appending "" would contribute one blank row
+		// that no budget counted, pushing a transcript row out of the frame.
+		if in := m.renderInputArea(); in != "" {
+			rows = append(rows, in)
+		}
 		left = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
 	// Hard invariant: the left column must never be taller than the frame
@@ -115,7 +125,13 @@ func (m *Model) viewString() string {
 	// rows from the top — the transcript is the topmost block and is
 	// scrollable, so nothing the user must always see is lost.
 	left = clipLeftColumn(left, m.height-statusLineRows)
-	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
+	// The status row closes the console's outline. While a full-frame panel
+	// is open that panel owns a closed frame of its own, so the row stays
+	// plain rather than drawing a second bottom border under it.
+	if m.dock.FullFrameOpen() {
+		return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusLine(m.width))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, left, m.renderStatusBorder(m.width, m.consoleColor()))
 }
 
 // reconcileWorkExpansion clears the expanded card when its item has settled or
@@ -171,153 +187,22 @@ func clipLeftColumn(s string, maxRows int) string {
 func (m Model) renderTranscriptFrame() string {
 	vpWidth := max(m.leftWidth, 1)
 	vpHeight := max(m.viewport.Height(), 1)
+	if v, ok := m.drilledInto(); ok {
+		return m.renderDrillFrame(v)
+	}
 	content := lipgloss.NewStyle().Width(vpWidth).Height(vpHeight).Render(m.paintSelection(m.viewport.View()))
 	if m.scrollHintRows() > 0 {
 		hint := mutedStyle().Render("↑ scrolled — End to follow")
 		content = lipgloss.JoinVertical(lipgloss.Left, hint, content)
 	}
-
-	if v, ok := m.drilledInto(); ok {
-		label := v.Label
-		if v.Role != "" {
-			label = string(v.Role) + " — " + label
-		}
-		if v.Model != "" {
-			if v.Provider != "" {
-				label += fmt.Sprintf(" · %s @ %s", v.Model, v.Provider)
-			} else {
-				label += " · " + v.Model
-			}
-		}
-		if v.Fallback {
-			label += " (fallback)"
-		}
-		crumb := lipgloss.NewStyle().Foreground(accentColor).Render(glyph.Brand+" orchestrator") +
-			mutedStyle().Render(" "+glyph.Running+" ") +
-			lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(glyph.Agent+" "+label) +
-			mutedStyle().Render("  (↑/Esc to go back)")
-		content = lipgloss.JoinVertical(lipgloss.Left, crumb, content)
-	}
 	return chrome.PaintBand(content, m.leftWidth, theme.Current().TranscriptBG())
 }
 
+// renderInputArea draws the console: the input area's framed sections, closed
+// below by the status border. The sections and their headers live in
+// console.go.
 func (m Model) renderInputArea() string {
-	inputInnerWidth := max(m.leftWidth-4, 1)
-	rows := make([]string, 0, 4)
-
-	// While the Send now composer owns the input, the base editor renders no
-	// cursor and none of its ordinary prompt controls: the completion popup, the
-	// approval/question/gate/privileged prompts and the base draft are all
-	// suspended, and showing a second live input would lie about where typing
-	// goes. The transcript and the background panels keep rendering above.
-	if m.steeringComposer != nil {
-		rows = append(rows, mutedStyle().Render("Send now owns the input — Esc returns to the previous surface."))
-		out := lipgloss.JoinVertical(lipgloss.Left, rows...)
-		return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
-	}
-
-	if sa := m.state.PendingSudoAuth(); sa != nil {
-		if m.sudoAuthModel != nil {
-			rows = append(rows, m.sudoAuthModel.View())
-		} else {
-			rows = append(rows, renderSudoAuthPanel(sa, inputInnerWidth))
-		}
-		// The textarea is deliberately not rendered: every keypress routes to
-		// the masked prompt while it is pending.
-	} else if sg := m.state.PendingSkillGate(); sg != nil {
-		if m.skillGateModel != nil {
-			rows = append(rows, m.skillGateModel.View())
-		} else {
-			rows = append(rows, renderSkillGatePanel(sg, inputInnerWidth))
-		}
-		// The textarea is deliberately not rendered: every keypress routes
-		// to the gate dialog while it is pending.
-	} else if q := m.state.PendingQuestion(); q != nil {
-		if m.questionModel != nil {
-			rows = append(rows, m.questionModel.View())
-		} else {
-			rows = append(rows, renderQuestionPanel(q, inputInnerWidth))
-		}
-		// The main textarea is deliberately NOT rendered here: while a
-		// question is pending every keypress routes to the question form
-		// (handleQuestion), so a visible textarea would be a dead input
-		// that swallows nothing yet appears typable.
-	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
-		switch {
-		case tc.Access != nil:
-			// A typed access request is presented by the accesspanel, which
-			// owns the decision. When another panel holds the dock the request
-			// is queued: disclose it without rendering a second approve/deny
-			// form, and leave the main draft untouched.
-			if m.dock.IsOpen() && !m.accessPanelOwnsDock() {
-				rows = append(rows, mutedStyle().Render(accessWaitingRow))
-			}
-		case m.editingCommand:
-			rows = append(rows, m.gutteredInput())
-		case m.approvalModel != nil:
-			rows = append(rows, m.approvalModel.View())
-		default:
-			rows = append(rows, renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, inputInnerWidth, m.approvalWhyFor(m.approvalOwner(), tc)))
-		}
-	} else {
-		if m.sess.Status().SDD.Active {
-			rows = append(rows, mutedStyle().Render("SDD running — /stop to cancel, wait for completion to resume typing"))
-		}
-		if popup := m.renderCompletionPopup(); popup != "" {
-			rows = append(rows, popup)
-		}
-		rows = append(rows, m.gutteredInput())
-	}
-	out := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	return chrome.PaintBand(out, m.leftWidth, theme.Current().ChromeBG())
-}
-
-// inputBarColor picks the ▍ state-bar color. This is the input box's old
-// border-color semantics compressed into one cell (spec: "state moves to
-// the ▍❯ prompt").
-func (m Model) inputBarColor() color.Color {
-	switch {
-	case m.successPulse:
-		return successColor
-	case m.state.PendingSudoAuth() != nil:
-		return warningColor
-	case m.state.PendingSkillGate() != nil:
-		return violetColor
-	case m.state.PendingQuestion() != nil:
-		return violetColor
-	case m.hasPendingApproval():
-		return warningColor
-	case m.sess.Status().SDD.Active, !m.input.Focused():
-		return dimColor
-	default:
-		return accentColor
-	}
-}
-
-// gutteredInput renders the textarea with the ▍ state bar prepended to
-// every display line, and overlays the active next-prompt suggestion as
-// grey ghost text immediately after the cursor on the cursor line.
-func (m *Model) gutteredInput() string {
-	bar := lipgloss.NewStyle().Foreground(m.inputBarColor()).Render(glyph.Rail)
-	placeholder := m.input.Placeholder
-	if m.input.Value() == "" && m.suggestionGhost() != "" {
-		m.input.Placeholder = ""
-		defer func() { m.input.Placeholder = placeholder }()
-	}
-	view := m.input.View()
-	if ghost := m.suggestionGhost(); ghost != "" {
-		// No fallback position: when the cursor's row and column cannot be
-		// derived from model state, the ghost is not drawn at all. A ghost
-		// in the wrong place is worse than no ghost.
-		if row, col, ok := m.ghostPosition(); ok {
-			view = overlayGhost(view, row, col, renderGhost(ghost))
-		}
-	}
-	lines := strings.Split(view, "\n")
-	for i := range lines {
-		lines[i] = bar + lines[i]
-	}
-	return strings.Join(lines, "\n")
+	return renderConsole(m.inputSections(), m.consoleAbove(), m.leftWidth)
 }
 
 // suggestionGhost returns the unstyled ghost text to overlay on the input,
@@ -445,40 +330,6 @@ func overlayGhost(view string, row, col int, ghost string) string {
 	return strings.Join(lines, "\n")
 }
 
-// chromeRail prefixes every line of s with the ▍ state bar in color c — the
-// same rail the input box wears — so stacked panels (approval, question,
-// todos) read as one contained unit with the input. A trailing newline on s
-// is preserved; empty input stays empty.
-func chromeRail(s string, c color.Color) string {
-	return chromeRailWidth(s, c, 0)
-}
-
-// chromeRailWidth is chromeRail with lines truncated to w cells. The ▍
-// rail carries the panel grouping on its own — a painted surface band
-// renders as a light stripe around content on light terminal themes and
-// in the 16-color palette (BGSurface = ANSI bright black), so panels paint
-// no background. w <= 0 skips truncation.
-func chromeRailWidth(s string, c color.Color, w int) string {
-	if s == "" {
-		return ""
-	}
-	trailing := strings.HasSuffix(s, "\n")
-	body := strings.TrimRight(s, "\n")
-	bar := lipgloss.NewStyle().Foreground(c).Render(glyph.Rail)
-	lines := strings.Split(body, "\n")
-	for i := range lines {
-		if w > 0 {
-			lines[i] = ansi.Truncate(lines[i], w, "…")
-		}
-		lines[i] = bar + lines[i]
-	}
-	out := strings.Join(lines, "\n")
-	if trailing {
-		out += "\n"
-	}
-	return out
-}
-
 // highlightMatches bolds runes at the given byte indices using the
 // active theme's AccentPrimary color. The indices are byte positions in
 // the (ASCII-dominated) text. For non-ASCII text the highlight may
@@ -501,62 +352,6 @@ func highlightMatches(text string, idxs []int) string {
 		}
 	}
 	return b.String()
-}
-
-// renderCompletionPopup renders the active F18 completion popup as a
-// guttered panel above the input area, using the same chrome.Panel dressing
-// as settings, pickers, and docked panels. Returns "" when no popup is
-// visible. Capped at completionPopupMax match rows. The popup scrolls so the
-// selected item (p.index) is always visible.
-func (m Model) renderCompletionPopup() string {
-	p := m.activeCompletionPopup()
-	if p == nil {
-		return ""
-	}
-	matches := p.matches()
-	if len(matches) == 0 {
-		return ""
-	}
-	width := max(m.leftWidth-4, 1)
-	inner := max(width-2, 1) // chrome.Panel reserves 2 cells for the ▍ gutter
-	rows := make([]string, 0, completionPopupMax)
-	limit := completionPopupMax
-	if len(matches) < limit {
-		limit = len(matches)
-	}
-	// The popup's reconcileOffset() is the single source of truth for
-	// scroll position. The renderer only reads p.viewOffset.
-	offset := p.viewOffset
-	for i := 0; i < limit; i++ {
-		mi := offset + i
-		marker := "  "
-		style := mutedStyle()
-		if mi == p.index {
-			marker = "▸ "
-			style = promptPrefixStyle()
-		}
-		display := matches[mi].Text
-		if matches[mi].Kind == completionCommand && !strings.HasPrefix(display, "/") {
-			display = "/" + display
-		}
-		row := marker + highlightMatches(display, matches[mi].matchedIdxs)
-		if matches[mi].Description != "" {
-			row += "  " + matches[mi].Description
-		}
-		row = ansi.Cut(row, 0, inner)
-		rows = append(rows, style.Render(row))
-	}
-	title := "Commands"
-	hint := "↑↓ select · ↵ run · esc dismiss"
-	if p == m.filePopup {
-		title = "Files"
-		hint = "↑↓ select · ↵ accept · esc dismiss"
-	} else if p == m.setPopup {
-		title = "Settings"
-		hint = "↑↓ select · ↵ accept · esc dismiss"
-	}
-	return chrome.PanelWithHints(title, hint,
-		strings.Join(rows, "\n"), width, limit+1, true, theme.Current())
 }
 
 func (m Model) tooSmallView() string {

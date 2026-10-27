@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/picker"
 )
 
@@ -545,6 +546,32 @@ func TestHeaderRowRendersAndCursorSkips(t *testing.T) {
 	fl.Update(kp("G"))
 	if fl.CursorRow().Title != "Beta" {
 		t.Fatalf("G should land on Beta, got %q", fl.CursorRow().Title)
+	}
+}
+
+func TestGroupDividersDrawHeaderRowsAsDividers(t *testing.T) {
+	a := false
+	newList := func() *FieldList {
+		return NewFieldList(func() []*Field {
+			return []*Field{
+				{ID: "header.x", Title: "Section X", Kind: KindHeader},
+				testToggleField("Alpha", &a),
+			}
+		})
+	}
+
+	fl := newList()
+	fl.SetSize(40, 10)
+	FieldListSetGroupDividers(fl, true)
+	if view := fl.View(); !strings.Contains(view, chrome.Divider("Section X")) {
+		t.Fatalf("with dividers on, the header row should be chrome.Divider, got:\n%q", view)
+	}
+
+	plain := newList()
+	plain.SetSize(40, 10)
+	FieldListSetGroupDividers(plain, false)
+	if view := plain.View(); strings.Contains(view, chrome.Divider("Section X")) {
+		t.Fatalf("with dividers off, the header row should not be a divider, got:\n%q", view)
 	}
 }
 

@@ -8,14 +8,17 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/fuzzy"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/app/tui/textfield"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/skills"
 )
 
@@ -538,8 +541,9 @@ func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 4 {
 		return ""
 	}
+	pw := layout.PanelWidth(width)
 	l := p.ActiveList()
-	settings.FieldListSetSize(l, width-3, maxHeight-4)
+	settings.FieldListSetSize(l, pw-3, maxHeight-4)
 	header := "/ " + p.filter.View()
 	if len(p.stack) > 0 {
 		header = settings.FrameTitle(p.stack[len(p.stack)-1])
@@ -555,7 +559,7 @@ func (p *Panel) View(width, maxHeight int) string {
 		footer += " · " + p.status
 	}
 	content := body + "\n" + chrome.TertiaryStyle().Render(footer)
-	return content
+	return chrome.PanelWithHints("Skills", "", content, pw, min(lipgloss.Height(content)+1, maxHeight), true, theme.Current())
 }
 
 func (p *Panel) Sizing() dock.Sizing { return dock.Docked }

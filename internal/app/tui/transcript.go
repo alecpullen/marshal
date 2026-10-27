@@ -1252,7 +1252,7 @@ func renderQuestionPanel(q *session.PendingQuestion, width int) string {
 	}
 	gutter := gutterPrefix(glyph.Question, violetColor)
 	indent := continuation()
-	// contentWidth leaves room for the ▍ rail cell plus the 3-cell gutter.
+	// contentWidth already leaves room for the 3-cell gutter.
 	cw := contentWidth(width)
 	questionStyle := lipgloss.NewStyle().Foreground(violetColor).Bold(true)
 	var b strings.Builder
@@ -1276,7 +1276,9 @@ func renderQuestionPanel(q *session.PendingQuestion, width int) string {
 			b.WriteString("\n")
 		}
 	}
-	return chromeRail(b.String(), violetColor)
+	// No rail: the console draws the gutter around this section and its
+	// header carries the keys.
+	return b.String()
 }
 
 // renderWelcomeBanner prints the one-time startup identity as plain

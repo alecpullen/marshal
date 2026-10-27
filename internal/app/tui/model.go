@@ -1825,6 +1825,11 @@ func (m *Model) resize(width, height int) {
 
 	m.leftWidth = width
 
+	// The approval review body's height has to be known before any row budget
+	// is queried: inputChromeRows reads the prompt's rendered rows, and the
+	// tray's budget subtracts that.
+	m.syncPromptReviewHeights()
+
 	// Input interior: the console's "│ " and " │" take 4 cells of the left
 	// column. The textarea's SetWidth sets the text wrap width and internally
 	// subtracts promptWidth (2), so the rendered line plus its gutter stays
@@ -2784,6 +2789,26 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Scroll gestures are handled first so the user can review transcript
 	// history before approving a destructive command.
 	if owner, tc, label := m.pendingApprovalTarget(); tc != nil {
+		// A prompt the user cannot fully see must never accept a decision they
+		// could not review: below the supported minimum, behind a full-frame
+		// panel, or with no room for the body, only Escape reaches the form so
+		// the deny window still works. Every other key and paste is dropped
+		// before it can reach the form or the edit sub-mode. Ctrl+C never
+		// arrives here: it is handled at the top of update().
+		if !m.promptActionable() {
+			switch k := msg.(type) {
+			case tea.PasteMsg:
+				return m, nil
+			case tea.KeyPressMsg:
+				if k.String() != "esc" {
+					return m, nil
+				}
+				return m.handleApproval(msg, owner, tc, label)
+			}
+		}
+		if m.handleApprovalPageKey(msg) {
+			return m, nil
+		}
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
@@ -3203,8 +3228,12 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 			ResponseChan:         tc.ResponseChan,
 		}
 	}
-	if m.approvalModel == nil {
+	if m.approvalModel == nil || m.approvalModel.tc.ID != displayTC.ID {
+		// A different pending request replaces the prompt, so the review must
+		// start at the top of the new operation rather than wherever the
+		// previous one was left scrolled.
 		m.approvalModel = newApprovalModel(displayTC, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(owner, displayTC))
+		m.syncPromptReviewHeights()
 	}
 	am, cmd := m.approvalModel.Update(msg)
 	m.approvalModel = am
@@ -3624,7 +3653,75 @@ func (m Model) scrollHintRows() int {
 // transcript viewport shrinks while a panel is open.
 func (m Model) dockRows() int { return m.dock.Rows() }
 
+// promptReviewBodyHeight is the number of display rows an approval review body
+// may occupy in the current frame.
+//
+// It reserves the status row, the scroll hint, the dock, one console header,
+// the prompt's own pinned control rows, and the transcript floor, then caps the
+// body at half the terminal. It deliberately does not consult boxRows: the
+// tray's own budget already subtracts inputChromeRows, which includes this
+// body, so the tray yields to the prompt instead of the other way round — and
+// reading boxRows here would close the boxMaxRows → inputChromeRows → body
+// height → boxMaxRows cycle.
+//
+// A result of zero means the body cannot fit: the prompt is then shown but is
+// not actionable (see promptActionable).
+func (m Model) promptReviewBodyHeight(controlRows int) int {
+	avail := m.height - statusLineRows - m.scrollHintRows() - m.dockRows() -
+		1 - controlRows - minTranscriptRows
+	return max(min(avail, max(m.height/2, 1)), 0)
+}
+
+// syncPromptReviewHeights stores the review body height the next render will
+// use, so the prompt's own row count and every budget that reads it agree.
+// Callers must run it before querying a row budget.
+func (m *Model) syncPromptReviewHeights() {
+	if m.approvalModel == nil {
+		return
+	}
+	m.approvalModel.SetBodyHeight(m.promptReviewBodyHeight(approvalControlRows()))
+}
+
+// promptActionable reports whether the pending prompt is on screen and can
+// accept a decision: the terminal is at least the supported minimum, no
+// full-frame dock owns the frame, and the review body has at least one row.
+func (m Model) promptActionable() bool {
+	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
+		return false
+	}
+	if m.dock.FullFrameOpen() {
+		return false
+	}
+	return m.promptReviewBodyHeight(approvalControlRows()) >= 1
+}
+
+// handleApprovalPageKey pages the approval's review body on PgUp/PgDn. Only the
+// page keys move the review; Ctrl+U/Ctrl+D, End and the mouse keep scrolling
+// the transcript, and the edit sub-mode keeps every key for the textarea.
+func (m *Model) handleApprovalPageKey(msg tea.Msg) bool {
+	am := m.approvalModel
+	if am == nil || m.editingCommand {
+		return false
+	}
+	k, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return false
+	}
+	var direction int
+	switch k.String() {
+	case "pgup":
+		direction = -1
+	case "pgdown":
+		direction = 1
+	default:
+		return false
+	}
+	am.review.Page(promptReviewRows(am.reviewLines(), am.contentWidth()), am.bodyHeight, direction)
+	return true
+}
+
 func (m *Model) updateViewportHeight() bool {
+	m.syncPromptReviewHeights()
 	m.input.MaxHeight = m.maxInputHeight()
 	newViewportHeight := max(m.height-transcriptFrameRows-m.scrollHintRows()-m.breadcrumbRows()-m.drillCloseRows()-m.boxRows()-m.dockRows()-m.inputAreaRows()-statusLineRows, 1)
 	if newViewportHeight == m.viewport.Height() {

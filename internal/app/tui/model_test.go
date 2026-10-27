@@ -819,12 +819,19 @@ func TestPolishedViewPreservesPendingApprovalContent(t *testing.T) {
 	for _, want := range []string{
 		"⚠",
 		"go test ./...",
-		"allow",
-		"deny",
-		"edit",
+		"▸ a allow",
+		"1/5",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing approval item %q:\n%s", want, view)
+		}
+	}
+	// The selector shows one action at a time; deny and edit stay reachable.
+	for _, want := range []string{"deny", "edit"} {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+		m = updated.(Model)
+		if got := stripANSI(m.View().Content); !strings.Contains(got, want) {
+			t.Fatalf("View() does not offer %q in the selector:\n%s", want, got)
 		}
 	}
 }
@@ -847,13 +854,22 @@ func TestScrollWorksWhileApprovalPending(t *testing.T) {
 	m.refreshViewport()
 	bottom := m.viewport.YOffset()
 
+	// PgUp now pages the approval's review, which leaves the transcript where
+	// it was: the page keys belong to the prompt while it is up.
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	m = updated.(Model)
+	if m.viewport.YOffset() != bottom {
+		t.Fatalf("PgUp scrolled the transcript instead of the review: offset %d -> %d", bottom, m.viewport.YOffset())
+	}
+
+	// Ctrl+U still scrolls the transcript behind the prompt.
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	m = updated.(Model)
 	if m.viewport.YOffset() >= bottom {
-		t.Fatalf("PgUp did not scroll while approval pending: offset %d -> %d", bottom, m.viewport.YOffset())
+		t.Fatalf("Ctrl+U did not scroll while approval pending: offset %d -> %d", bottom, m.viewport.YOffset())
 	}
 	if m.viewportFollow {
-		t.Fatal("PgUp should disable viewport follow while approval pending")
+		t.Fatal("Ctrl+U should disable viewport follow while approval pending")
 	}
 }
 
@@ -2539,12 +2555,19 @@ func TestPolishedApprovalStateShowsCommandReasonRiskAndActions(t *testing.T) {
 		"⚠",
 		"go test",
 		"Low - test command",
-		"allow",
-		"deny",
-		"edit",
+		"▸ a allow",
+		"1/5",
 	} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing approval copy %q:\n%s", want, view)
+		}
+	}
+	// Deny and edit remain reachable through the pinned selector.
+	for _, want := range []string{"deny", "edit"} {
+		updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+		m = updated.(Model)
+		if got := stripANSI(m.View().Content); !strings.Contains(got, want) {
+			t.Fatalf("View() does not offer %q in the approval selector:\n%s", want, got)
 		}
 	}
 	if strings.Contains(view, "Approval needed") {

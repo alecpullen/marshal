@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -65,6 +66,15 @@ type approvalModel struct {
 	form   *huh.Form
 	tc     *session.PendingToolCall
 	choice approvalChoice
+	// review is the bounded, pageable window over the sanitized operation the
+	// prompt is asking the user to authorise.
+	review promptReview
+	// why is who asked and, in the model's own words, why.
+	why approvalWhy
+	// bodyHeight is how many display rows the review may occupy. The parent
+	// Model computes it from the frame budget; zero means the body does not
+	// fit, and the prompt is then not actionable.
+	bodyHeight int
 	// candidates is the ordered list of approval choices the user can pick.
 	// Tracked locally so we can update am.choice from h/l navigation
 	// without forwarding to huh (which we don't, because we intercept
@@ -192,6 +202,10 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 	for i, o := range opts {
 		candidates[i] = o.Value
 	}
+	var w approvalWhy
+	if len(why) > 0 {
+		w = why[0]
+	}
 	am := &approvalModel{
 		tc:           tc,
 		width:        width,
@@ -200,12 +214,10 @@ func newApprovalModel(tc *session.PendingToolCall, sb session.SandboxInfo, allow
 		selected:     0,
 		sb:           sb,
 		allowNetwork: allowNetwork,
+		why:          w,
+		bodyHeight:   defaultApprovalBodyHeight,
 	}
 
-	var w approvalWhy
-	if len(why) > 0 {
-		w = why[0]
-	}
 	summary := approvalSummary(tc, sb, allowNetwork, width, w)
 
 	sel := huh.NewSelect[approvalChoice]().
@@ -333,81 +345,175 @@ func (am *approvalModel) Update(msg tea.Msg) (*approvalModel, tea.Cmd) {
 	return am, cmd
 }
 
+// defaultApprovalBodyHeight is the review height a prompt gets before the
+// parent Model has measured the frame: the eager build during New, and the
+// prompts tests construct directly. syncPromptReviewHeights replaces it with
+// the real budget on the first render.
+const defaultApprovalBodyHeight = 12
+
+// approvalControlRows is how many pinned rows an approval prompt renders below
+// its review body: the overflow hint, the compact action selector and the
+// arm/deny notice.
+//
+// The hint row is reserved even when nothing is omitted (it then renders
+// blank) and the notice row is reserved even when empty, so paging, arming and
+// opening the deny window cannot change the prompt's height — and therefore
+// cannot make the row budget disagree with what is drawn.
+func approvalControlRows() int { return 3 }
+
+// SetBodyHeight records how many review rows the frame can give this prompt.
+// Zero means the body does not fit: the prompt renders its pinned controls
+// only and accepts no decision (see Model.promptActionable).
+func (am *approvalModel) SetBodyHeight(height int) {
+	am.bodyHeight = max(height, 0)
+}
+
+// contentWidth is the width the review and its pinned rows wrap to: the
+// console already spends gutterWidth cells on the prompt's own gutter, and a
+// row wider than what is left would be truncated — which is exactly how a
+// selector's counter goes missing.
+func (am *approvalModel) contentWidth() int {
+	return max(am.width-gutterWidth, 1)
+}
+
+// reviewLines builds the sanitized operation the prompt asks the user to
+// authorise, as logical lines. Every field comes from shownToolCall, the
+// display safety boundary: control characters in a model-written command,
+// argument, patch or reason are shown as visible escapes instead of being
+// executed by the terminal.
+func (am *approvalModel) reviewLines() []string {
+	tc := shownToolCall(am.tc)
+	lines := make([]string, 0, 12)
+	if line := am.why.ownerLine(tc); line != "" {
+		lines = append(lines, line)
+	}
+	if tc.Name == "shell.run" {
+		lines = append(lines, "Agent wants to run:")
+		if tc.Command != "" {
+			lines = append(lines, tc.Command)
+		}
+	} else {
+		lines = append(lines, "Agent wants to call tool: "+tc.Name)
+		if tc.Schema != "" {
+			lines = append(lines, "Description: "+tc.Schema)
+		}
+		if tc.Args != "" {
+			lines = append(lines, "Arguments: "+tc.Args)
+		}
+	}
+	if line := am.why.whyLine(); line != "" {
+		lines = append(lines, line)
+	}
+	// Risk and Reason are separate facts and are shown as separate fields:
+	// riskText falls back to Reason, so a prompt with both would otherwise
+	// hide the sentence that says why the guardrail or policy fired.
+	if risk := riskText(tc); risk != "" {
+		lines = append(lines, "Risk: "+risk)
+	}
+	if iso := sandboxIsolationText(am.sb, am.allowNetwork); iso != "" && (tc.Name == "shell.run" || tc.Name == "test.run") {
+		lines = append(lines, iso)
+	}
+	if tc.Reason != "" {
+		lines = append(lines, "Reason: "+tc.Reason)
+	}
+	if tc.Diff != "" {
+		// The whole diff, never truncated: the review wraps long lines, so a
+		// patch line keeps its suffix instead of losing it to an ellipsis.
+		diff := diffview.Render(tc.Diff, diffview.Options{
+			Width:     am.contentWidth(),
+			Mode:      diffview.ModeAuto,
+			Highlight: true,
+		})
+		lines = append(lines, strings.Split(strings.TrimRight(diff, "\n"), "\n")...)
+	}
+	return lines
+}
+
+// reviewOmits reports whether the review window leaves rows unseen, i.e.
+// whether the "rows x–y of n" indicator (or, for a one-row body, the pinned
+// hint) is telling the user to page.
+func (am *approvalModel) reviewOmits(total int) bool {
+	switch {
+	case am.bodyHeight <= 0:
+		return total > 0
+	case am.bodyHeight == 1:
+		return total > 1
+	default:
+		return total > am.bodyHeight-1
+	}
+}
+
+// overflowHintRow is the pinned row that tells the user the body continues. It
+// is reserved unconditionally and renders blank when everything is visible.
+func (am *approvalModel) overflowHintRow(total int) string {
+	if !am.reviewOmits(total) {
+		return ""
+	}
+	return mutedStyle().Render("PgUp/PgDn to review the rest")
+}
+
+// selectorRow renders the selected action alone, with its position in the
+// list. Joining every label wraps in the console's column and clips the choice
+// the user is about to confirm; the arrows, h/l and the mnemonics still reach
+// every candidate.
+func (am *approvalModel) selectorRow() string {
+	if am.selected < 0 || am.selected >= len(am.candidates) {
+		return ""
+	}
+	ch := am.candidates[am.selected]
+	label := choiceLabels[ch]
+	if mk, ok := choiceMnemonic[ch]; ok {
+		label = mk + " " + label
+	}
+	head := "▸ " + label
+	counter := fmt.Sprintf("%d/%d", am.selected+1, len(am.candidates))
+	width := am.contentWidth()
+	gap := width - ansi.StringWidth(head) - ansi.StringWidth(counter)
+	if gap < 1 {
+		head = ansi.Truncate(head, max(width-ansi.StringWidth(counter)-1, 1), "…")
+		gap = max(width-ansi.StringWidth(head)-ansi.StringWidth(counter), 1)
+	}
+	selected := lipgloss.NewStyle().Foreground(accentColor).Bold(true).Render(head)
+	return selected + strings.Repeat(" ", gap) + mutedStyle().Render(counter)
+}
+
+// noticeRow is the pinned arm/deny notice. It is reserved even when empty so
+// that arming or opening the deny window never reflows the body.
+func (am *approvalModel) noticeRow() string {
+	if !am.pendingDenyAt.IsZero() {
+		return warningStyle().Render("Press Esc again to deny · any other key cancels")
+	}
+	if am.submitPending {
+		return promptPrefixStyle().Render("Press Enter again to confirm")
+	}
+	return ""
+}
+
 func (am *approvalModel) View() string {
 	if am.form == nil || am.tc == nil {
 		return ""
 	}
-	tc := shownToolCall(am.tc)
+	rows := promptReviewRows(am.reviewLines(), am.contentWidth())
+	lines := am.review.Window(rows, am.bodyHeight)
+	// Pinned rows below the body, top to bottom: the overflow hint (blank when
+	// nothing is omitted), the selected action, then the arm/deny notice.
+	// Reserving each of them keeps the prompt's height constant as the user
+	// pages, arms an action or opens the deny window.
+	lines = append(lines, am.overflowHintRow(len(rows)), am.selectorRow(), am.noticeRow())
+
+	// No rail of its own: the console draws "│ … │" around this section, and
+	// the first rendered row carries the warning glyph so the prompt still
+	// reads as one block.
 	var b strings.Builder
-	if tc.Diff != "" && am.width > 0 {
-		diff := diffview.Render(tc.Diff, diffview.Options{
-			Width:     am.width,
-			Mode:      diffview.ModeAuto,
-			Highlight: true,
-		})
-		// One plain row per diff line, truncated to the section's content
-		// width. No surface tint: the console paints no band, so the diff
-		// reads as part of the frame's body.
-		for _, line := range strings.Split(diff, "\n") {
-			if line == "" {
-				continue
-			}
-			b.WriteString(ansi.Truncate(line, max(am.width, 1), "…"))
-			b.WriteString("\n")
+	for i, line := range lines {
+		if i == 0 {
+			b.WriteString(gutterPrefix(glyph.Warning, warningColor))
+		} else {
+			b.WriteString(gutterPrefix(" ", warningColor))
 		}
+		b.WriteString(line)
 		b.WriteString("\n")
 	}
-
-	b.WriteString(gutterPrefix(glyph.Warning, warningColor))
-	headParts := []string{}
-	if tc.Name == "shell.run" {
-		headParts = append(headParts, tc.Command)
-	} else {
-		headParts = append(headParts, tc.Name)
-	}
-	headParts = append(headParts, riskText(tc))
-	if iso := sandboxIsolationText(am.sb, am.allowNetwork); iso != "" {
-		headParts = append(headParts, iso)
-	}
-	b.WriteString(warningStyle().Render(strings.Join(headParts, dimSeparator)))
-	b.WriteString("\n")
-
-	var choices []string
-	for _, ch := range am.candidates {
-		label := choiceLabels[ch]
-		// Show the mnemonic key alongside the label so the user knows
-		// the single-key shortcuts work in the interactive prompt.
-		if mk, ok := choiceMnemonic[ch]; ok {
-			label = mk + " " + label
-		}
-		selected := am.selected == indexOf(am.candidates, ch)
-		style := mutedStyle()
-		prefix := "  "
-		if selected {
-			style = lipgloss.NewStyle().Foreground(accentColor).Bold(true)
-			prefix = "▸ "
-			if am.submitPending {
-				prefix = "▸ "
-			}
-		}
-		choices = append(choices, style.Render(prefix+label))
-	}
-	b.WriteString(gutterPrefix(" ", warningColor)) // blank gutter for selector row
-	b.WriteString(strings.Join(choices, mutedStyle().Render("  ")))
-	b.WriteString("\n")
-
-	if !am.pendingDenyAt.IsZero() {
-		b.WriteString(gutterPrefix(" ", warningColor))
-		b.WriteString(warningStyle().Render("Press Esc again to deny · any other key cancels"))
-		b.WriteString("\n")
-	} else if am.submitPending {
-		b.WriteString(gutterPrefix(" ", warningColor))
-		b.WriteString(promptPrefixStyle().Render("Press Enter again to confirm"))
-		b.WriteString("\n")
-	}
-
-	// No rail: the console draws the gutter around this section and its
-	// header carries the keys.
 	return b.String()
 }
 

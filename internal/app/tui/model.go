@@ -2764,6 +2764,26 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// messages to the masked form (scroll gestures first, mirroring the
 	// approval and question forms).
 	if sa := m.state.PendingSudoAuth(); sa != nil {
+		// A prompt the user cannot see must never read a password byte or
+		// authenticate: below the supported minimum, behind a full-frame panel,
+		// or with no room for its body, only Escape reaches the form so denial
+		// still works. Every other key and every paste is dropped before the
+		// masked field can see it. Ctrl+C never arrives here: it is handled at
+		// the top of update().
+		if !m.sudoActionable() {
+			switch k := msg.(type) {
+			case tea.PasteMsg:
+				return m, nil
+			case tea.KeyPressMsg:
+				if k.String() != "esc" {
+					return m, nil
+				}
+				return m.handleSudoAuth(msg, sa)
+			}
+		}
+		if m.handleSudoPageKey(msg) {
+			return m, nil
+		}
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
@@ -3465,8 +3485,10 @@ func (m Model) handleSudoAuth(msg tea.Msg, sa *session.PendingSudoAuth) (tea.Mod
 	if m.sudoAuthModel == nil || m.sudoAuthModel.sa != sa {
 		// Build lazily — and rebuild when the open form is bound to a pending
 		// struct that was superseded while it was up (parity with the
-		// approval/question/skill-gate pending-identity guards).
+		// approval/question/skill-gate pending-identity guards). A freshly
+		// built prompt starts its review at the top.
 		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
+		m.syncPromptReviewHeights()
 	}
 	// msg is applied exactly once, including on the build path above: the
 	// prompt appears asynchronously, so the user is often already typing when
@@ -3676,24 +3698,36 @@ func (m Model) promptReviewBodyHeight(controlRows int) int {
 // use, so the prompt's own row count and every budget that reads it agree.
 // Callers must run it before querying a row budget.
 func (m *Model) syncPromptReviewHeights() {
-	if m.approvalModel == nil {
-		return
+	if m.approvalModel != nil {
+		m.approvalModel.SetBodyHeight(m.promptReviewBodyHeight(approvalControlRows()))
 	}
-	m.approvalModel.SetBodyHeight(m.promptReviewBodyHeight(approvalControlRows()))
+	if m.sudoAuthModel != nil {
+		m.sudoAuthModel.SetBodyHeight(m.promptReviewBodyHeight(sudoControlRows()))
+	}
 }
 
-// promptActionable reports whether the pending prompt is on screen and can
-// accept a decision: the terminal is at least the supported minimum, no
-// full-frame dock owns the frame, and the review body has at least one row.
-func (m Model) promptActionable() bool {
+// promptFits reports whether a pending prompt with controlRows pinned rows is
+// on screen and can accept a decision: the terminal is at least the supported
+// minimum, no full-frame dock owns the frame, and the review body has at least
+// one row.
+func (m Model) promptFits(controlRows int) bool {
 	if m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight {
 		return false
 	}
 	if m.dock.FullFrameOpen() {
 		return false
 	}
-	return m.promptReviewBodyHeight(approvalControlRows()) >= 1
+	return m.promptReviewBodyHeight(controlRows) >= 1
 }
+
+// promptActionable reports whether the pending approval is on screen and can
+// accept a decision.
+func (m Model) promptActionable() bool { return m.promptFits(approvalControlRows()) }
+
+// sudoActionable reports whether the pending privileged-auth prompt is on
+// screen and can accept a decision. A prompt the user cannot see must never
+// read a password byte or authenticate.
+func (m Model) sudoActionable() bool { return m.promptFits(sudoControlRows()) }
 
 // handleApprovalPageKey pages the approval's review body on PgUp/PgDn. Only the
 // page keys move the review; Ctrl+U/Ctrl+D, End and the mouse keep scrolling
@@ -3717,6 +3751,31 @@ func (m *Model) handleApprovalPageKey(msg tea.Msg) bool {
 		return false
 	}
 	am.review.Page(promptReviewRows(am.reviewLines(), am.contentWidth()), am.bodyHeight, direction)
+	return true
+}
+
+// handleSudoPageKey pages the privileged prompt's review body on PgUp/PgDn.
+// Only the page keys move the review; Ctrl+U/Ctrl+D, End and the mouse keep
+// scrolling the transcript, and every other key belongs to the masked field.
+func (m *Model) handleSudoPageKey(msg tea.Msg) bool {
+	sm := m.sudoAuthModel
+	if sm == nil {
+		return false
+	}
+	k, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return false
+	}
+	var direction int
+	switch k.String() {
+	case "pgup":
+		direction = -1
+	case "pgdown":
+		direction = 1
+	default:
+		return false
+	}
+	sm.review.Page(promptReviewRows(sm.reviewLines(), sm.contentWidth()), sm.bodyHeight, direction)
 	return true
 }
 

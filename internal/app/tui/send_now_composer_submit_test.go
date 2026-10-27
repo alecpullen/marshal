@@ -66,3 +66,74 @@ func TestSendNowComposerSubmitClosesOnlyOnAcceptance(t *testing.T) {
 		t.Fatalf("a rejected submit lost the composer text: %q", p2.Text())
 	}
 }
+
+// closeCountingSendNowPanel is a suspended-surface panel that records the
+// host's close notifications, standing in for a panel whose workers are
+// cancelled when it is gone for good.
+type closeCountingSendNowPanel struct {
+	sendNowTestPanel
+	closes int
+}
+
+func (p *closeCountingSendNowPanel) OnClose() { p.closes++ }
+
+var _ dock.CloseAware = (*closeCountingSendNowPanel)(nil)
+
+// TestHostSuspendRestoreDoesNotCloseRetainedPanel pins the Send now suspension
+// contract: a panel the composer displaces is retained and restored without a
+// close notification, and it is notified exactly once when the host really
+// discards it.
+func TestHostSuspendRestoreDoesNotCloseRetainedPanel(t *testing.T) {
+	f := newSendNowFixture(t, 120, 40, true)
+	panel := &closeCountingSendNowPanel{sendNowTestPanel: sendNowTestPanel{id: "installer"}}
+	f.m.dock.Open(panel)
+
+	// Send now suspends the panel: the composer takes the dock and the panel is
+	// retained, so it is told nothing.
+	f.composer()
+	if f.m.composerDisplaced != dock.Panel(panel) {
+		t.Fatalf("composer displaced %T, want the installer panel", f.m.composerDisplaced)
+	}
+	if panel.closes != 0 {
+		t.Fatalf("opening the composer closed the panel it displaced (%d notifications)", panel.closes)
+	}
+
+	// A routing pass runs with the retained panel in the slot and puts the
+	// composer back; still nobody is closed and the result lands once.
+	f.send(sendNowOwnedMsg{})
+	if panel.owned != 1 {
+		t.Fatalf("suspended panel claimed %d results, want exactly 1", panel.owned)
+	}
+	if panel.closes != 0 {
+		t.Fatalf("the routing pass closed the suspended panel (%d notifications)", panel.closes)
+	}
+	if _, ok := f.m.dock.Panel().(*steerpanel.Panel); !ok {
+		t.Fatalf("composer was not restored; dock panel = %T", f.m.dock.Panel())
+	}
+
+	// Esc restores the panel: it was retained, so coming back notifies nobody.
+	f.send(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if f.m.dock.Panel() != dock.Panel(panel) {
+		t.Fatalf("dock panel = %T, want the retained panel", f.m.dock.Panel())
+	}
+	if panel.closes != 0 {
+		t.Fatalf("restoring the retained panel closed it (%d notifications)", panel.closes)
+	}
+
+	// The actual discard: on shutdown the active composer and the panel retained
+	// behind it are released once, so a panel that cancels work on close gets
+	// its chance before the program stops.
+	g := newSendNowFixture(t, 120, 40, true)
+	retained := &closeCountingSendNowPanel{sendNowTestPanel: sendNowTestPanel{id: "installer"}}
+	g.m.dock.Open(retained)
+	g.composer()
+	if retained.closes != 0 {
+		t.Fatalf("the second composer closed its displaced panel (%d notifications)", retained.closes)
+	}
+	if cmd := g.m.finishQuit(); cmd == nil {
+		t.Fatal("finishQuit returned no command")
+	}
+	if retained.closes != 1 {
+		t.Fatalf("shutdown notified the retained panel %d times, want exactly 1", retained.closes)
+	}
+}

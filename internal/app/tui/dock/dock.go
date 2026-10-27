@@ -50,6 +50,9 @@ type MessageOwner interface {
 	OwnsMsg(msg tea.Msg) bool
 }
 
+// CloseAware is notified when the host permanently releases a panel.
+type CloseAware interface{ OnClose() }
+
 // OwnsMsg reports whether the active panel claims msg as its own async
 // result. False when no panel is open or the panel does not implement
 // MessageOwner.
@@ -69,11 +72,43 @@ type Host struct {
 	rows  int
 }
 
-// Open replaces the active panel.
-func (h *Host) Open(panel Panel) { h.panel = panel }
+// Open replaces the active panel. The displaced panel is gone for good, so a
+// CloseAware one is notified before the slot takes the new panel; a panel that
+// must survive the exchange is exchanged with SwapRetained instead.
+func (h *Host) Open(panel Panel) {
+	notifyClose(h.panel)
+	h.panel = panel
+}
 
-// CloseNow clears the active panel and its rendered height.
-func (h *Host) CloseNow() { h.panel, h.rows = nil, 0 }
+// CloseNow clears the active panel and its rendered height. The panel is gone
+// for good, so a CloseAware one is notified once; a repeated call with nothing
+// open is inert.
+func (h *Host) CloseNow() {
+	notifyClose(h.panel)
+	h.panel, h.rows = nil, 0
+}
+
+// SwapRetained replaces the visible panel without closing either panel and
+// returns the displaced panel to its owner for later restoration or release.
+func (h *Host) SwapRetained(panel Panel) Panel {
+	previous := h.panel
+	h.panel = panel
+	return previous
+}
+
+// ReleaseRetained closes a panel previously returned by SwapRetained.
+func (h *Host) ReleaseRetained(panel Panel) {
+	notifyClose(panel)
+}
+
+// notifyClose tells a CloseAware panel that the host will not show it again.
+// Panels are interfaces and need not be comparable, so the notification is a
+// type assertion and never an identity comparison.
+func notifyClose(panel Panel) {
+	if c, ok := panel.(CloseAware); ok {
+		c.OnClose()
+	}
+}
 
 // IsOpen reports whether the dock has an active panel.
 func (h *Host) IsOpen() bool { return h.panel != nil }

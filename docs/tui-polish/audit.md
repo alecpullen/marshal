@@ -557,6 +557,15 @@ paste. The skills panel explicitly forwards paste to the relevant control.
   `tea.PasteMsg` case is missing) and `internal/app/tui/skills/panel.go:504`.
 - Potential direction: route paste to the active field or filter, and cover
   both paths through the panel's real update handler.
+- Status (2026-10-28): fixed. `Panel.Update` gained the missing
+  `tea.PasteMsg` branch: the full-content review consumes it, a drilled frame
+  or an active edit receives it through `settings.FieldListUpdate`, and only an
+  unedited root forwards it to the filter. Evidenced by
+  `TestPluginPasteFollowsFocus` (root query, an idle Source row, an open edit, a
+  non-text row and the full-content review, each asserting the other input does
+  not move) and by `TestManagementPanelPasteAndEscapeThroughModel`, which sends
+  a bracketed paste through `Model.Update` at 80×24 and 140×40 and asserts the
+  visible control received it while the chat composer draft stayed unchanged.
 
 ### Escape leaves skill and plugin frames while editing a field
 
@@ -571,6 +580,18 @@ its scan. This differs from the shared editor's normal Escape behavior.
   `internal/app/tui/listpanel/fieldlist.go:408`.
 - Potential direction: give an active edit first refusal on Escape, then pop
   the frame on a subsequent Escape.
+- Status (2026-10-28): fixed. Both panels now ask the active list whether an
+  edit (scalar editor, enum picker or add prompt) is open, and forward Escape
+  to it before the disarm → frame-pop → close path; a cancellation runs no
+  setter, so the committed value stands, and the plugin panel keeps its scan
+  lease and generation until a later Escape actually leaves the frame.
+  Evidenced by `TestEscapeCancelsSkillEditorBeforeLeavingFrame` (committed
+  source, frame and filter unchanged across a cancelled edit and picker, then
+  back, then closed), `TestSkillEscapePreservesRemovalConfirmationSafety`,
+  `TestPluginEscapeCancelsEditBeforeScanAbandonment` (a cancelled Source edit
+  keeps the lease and generation intact and a matching result can still be
+  reviewed; committing a changed Source or Scope still invalidates the review)
+  and the host-level `TestManagementPanelPasteAndEscapeThroughModel`.
 
 ### Agent editor misroutes paste and intercepts question marks
 
@@ -583,6 +604,20 @@ question mark cannot be typed into a scalar editor.
 - Evidence: `internal/app/tui/agents/panel.go:612`, `:626` and `:661`.
 - Potential direction: route text and paste to the focused editor or picker
   before applying roster shortcuts.
+- Status (2026-10-28): fixed. `Panel.Update` keeps the picker overlay's first
+  refusal on keys, then forwards `?` and Escape to the active list whenever a
+  field edit, enum picker or add prompt is open, so `?` becomes field input and
+  Escape cancels only that edit; `tea.PasteMsg` now goes to the picker overlay
+  while one is open, to the drilled frame or active edit through
+  `settings.FieldListUpdate`, and to the root filter only when neither owns
+  focus. With nothing focused, `?` still toggles the roster legend. Evidenced by
+  `TestAgentPasteFollowsFocusedControl` (root filter, idle and active scalar
+  edits, the custom-name picker and a choice picker, each with its commit path
+  and persistence receipt) and `TestAgentQuestionMarkAndEscapeRespectEditor`
+  (`?` typed into a scalar and into a collection-add prompt, `?` reaching the
+  picker, Escape cancelling without saving or popping, and the legend still
+  toggling when nothing owns the key), plus the host-level picker case in
+  `TestManagementPanelPasteAndEscapeThroughModel`.
 
 ### Skill and plugin removal confirmations remain armed after navigation
 

@@ -1473,6 +1473,170 @@ func TestDuplicateSkillRowsHaveDistinctIdentity(t *testing.T) {
 	})
 }
 
+// --- escape precedence inside a frame -------------------------------------
+
+// typeIntoPanel delivers each rune of s through Panel.Update as a keypress, so
+// the text reaches whatever the panel currently routes keys to.
+func typeIntoPanel(t *testing.T, p *Panel, s string) {
+	t.Helper()
+	for _, r := range s {
+		press(t, p, tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+}
+
+// pasteIntoPanel delivers a bracketed paste through Panel.Update and feeds the
+// emitted command's message back, the way the dock host does.
+func pasteIntoPanel(t *testing.T, p *Panel, text string) {
+	t.Helper()
+	cmd := p.Update(tea.PasteMsg{Content: text})
+	if cmd == nil {
+		return
+	}
+	if msg := cmd(); msg != nil {
+		p.Update(msg)
+	}
+}
+
+// TestEscapeCancelsSkillEditorBeforeLeavingFrame pins escape precedence inside
+// a drilled frame: an in-progress edit — a scalar editor or an enum picker —
+// is cancelled first, so abandoning a value is never the same keystroke as
+// leaving the frame, and only the escape after that navigates back.
+func TestEscapeCancelsSkillEditorBeforeLeavingFrame(t *testing.T) {
+	p, _, _ := newRemovalPanel(t)
+
+	// Put text in the root filter first, so every later assertion can tell
+	// that escape never reached the filter input.
+	typeIntoPanel(t, p, "install")
+	if got := p.filter.Value(); got != "install" {
+		t.Fatalf("filter = %q, want %q", got, "install")
+	}
+
+	focusRow(t, p, "action.install")
+	press(t, p, keyEnter)
+	if len(p.stack) != 1 {
+		t.Fatalf("enter on action.install pushed %d frames, want 1", len(p.stack))
+	}
+
+	// Commit a Source value: it is what every later escape has to leave alone.
+	focusRow(t, p, "install.source")
+	press(t, p, keyEnter) // opens the scalar editor
+	if !p.ActiveList().Editing() {
+		t.Fatal("enter on install.source did not open the editor")
+	}
+	typeIntoPanel(t, p, "chosen/path")
+	press(t, p, keyEnter) // commits
+	if got := p.installSource; got != "chosen/path" {
+		t.Fatalf("committed source = %q, want %q", got, "chosen/path")
+	}
+
+	// Edit and paste over the committed value, then escape: the edit is
+	// abandoned, the committed value stands and the frame survives.
+	press(t, p, keyEnter) // reopens the editor over the committed value
+	pasteIntoPanel(t, p, "pasted/path")
+	typeIntoPanel(t, p, "x")
+	if !p.ActiveList().Editing() {
+		t.Fatal("the paste or keypress closed the editor")
+	}
+	press(t, p, keyEsc)
+
+	if got := p.installSource; got != "chosen/path" {
+		t.Fatalf("source = %q after escape, want the committed %q", got, "chosen/path")
+	}
+	if len(p.stack) != 1 {
+		t.Fatalf("escape on an active editor left %d frames on the stack, want 1", len(p.stack))
+	}
+	if p.ActiveList().Editing() {
+		t.Fatal("escape did not cancel the editor")
+	}
+	if got := p.filter.Value(); got != "install" {
+		t.Fatalf("filter = %q after escape, want %q", got, "install")
+	}
+
+	// The Scope enum picker is an in-progress edit too: escape closes the
+	// picker rather than the frame, and commits nothing.
+	focusRow(t, p, "install.scope")
+	press(t, p, keyEnter)
+	if !p.ActiveList().Editing() {
+		t.Fatal("enter on install.scope did not open the picker")
+	}
+	press(t, p, keyDown)
+	press(t, p, keyEsc)
+	if len(p.stack) != 1 {
+		t.Fatalf("escape on an active picker left %d frames on the stack, want 1", len(p.stack))
+	}
+	if got := p.installScope; got != scopeGlobal {
+		t.Fatalf("scope = %q after escaping the picker, want %q", got, scopeGlobal)
+	}
+	// The picker still commits when it is not escaped, so escape is what
+	// cancelled it — not a broken picker.
+	press(t, p, keyEnter)
+	press(t, p, keyDown)
+	press(t, p, keyEnter)
+	if got := p.installScope; got != scopeProject {
+		t.Fatalf("scope = %q after committing the picker, want %q", got, scopeProject)
+	}
+
+	// With no edit in progress the next escape goes back...
+	press(t, p, keyEsc)
+	if len(p.stack) != 0 {
+		t.Fatalf("escape left %d frames on the stack, want 0", len(p.stack))
+	}
+	if got := p.filter.Value(); got != "install" {
+		t.Fatalf("filter = %q after going back, want %q", got, "install")
+	}
+	// ...and the one after that closes the panel.
+	cmd := p.Update(keyEsc)
+	if cmd == nil {
+		t.Fatal("escape at the panel root emitted no command")
+	}
+	if msg := cmd(); msg == nil {
+		t.Fatal("escape at the panel root emitted a command that produced no message")
+	} else if _, ok := msg.(settings.BrowserClosedMsg); !ok {
+		t.Fatalf("escape at the panel root emitted %T, want settings.BrowserClosedMsg", msg)
+	}
+}
+
+// TestSkillEscapePreservesRemovalConfirmationSafety pins that escape's first
+// refusal on an editor did not cost the removal flow its safety: escape still
+// leaves the detail frame and drops the armed confirmation with it, so
+// returning to the same row needs two presses again.
+func TestSkillEscapePreservesRemovalConfirmationSafety(t *testing.T) {
+	p, global, _ := newRemovalPanel(t)
+	target := writeSkillEntry(t, global, "debug.md", "debug", "fixture")
+
+	openSkillFromList(t, p, skillRowID(scopeGlobal, "debug.md"))
+	s := discovered(t, p, scopeGlobal, "debug.md")
+	press(t, p, keyEnter) // arms
+	if !p.removeArmed[removalIdentity(s)] {
+		t.Fatal("remove did not arm on the first enter")
+	}
+	mustExistPath(t, target)
+
+	// Nothing in the detail frame is being edited, so escape leaves the frame
+	// — and takes the armed confirmation with it.
+	press(t, p, keyEsc)
+	if len(p.stack) != 0 {
+		t.Fatalf("escape left %d frames on the stack, want 0", len(p.stack))
+	}
+	if p.removeArmed[removalIdentity(s)] {
+		t.Fatal("escape left the removal armed across the frame")
+	}
+	mustExistPath(t, target)
+
+	// Returning to the same row arms again rather than deleting: the stale
+	// confirmation never survives the visit.
+	openSkillFromList(t, p, skillRowID(scopeGlobal, "debug.md"))
+	press(t, p, keyEnter)
+	mustExistPath(t, target)
+	if !p.removeArmed[removalIdentity(s)] {
+		t.Fatal("enter after returning neither armed nor deleted — the confirmation was lost")
+	}
+
+	press(t, p, keyEnter) // the second press confirms
+	mustBeGonePath(t, target)
+	mustExistPath(t, global)
+}
+
 // TestRestartOnlySkillChangesDoNotMutateRuntimeIndex pins the restart
 // contract: disk installs, edits and removals never mutate the session's
 // shared index, and a new session built through the production path does

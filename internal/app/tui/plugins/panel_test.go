@@ -1094,3 +1094,284 @@ func TestReviewDetailResizeAndNoColor(t *testing.T) {
 		t.Fatalf("esc landed on %v, want the hook row it came from", cur)
 	}
 }
+
+// TestPluginPasteFollowsFocus pins that an OS paste reaches the input the user
+// is actually looking at. The panel had no paste case at all, so a pasted
+// source never arrived anywhere in the install frame, and nothing stopped a
+// paste from landing in the root filter behind an open edit.
+func TestPluginPasteFollowsFocus(t *testing.T) {
+	p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+
+	// Nothing is drilled and nothing is being edited, so the root filter owns
+	// the paste and the install working state is untouched.
+	const rootQuery = "install"
+	p.Update(tea.PasteMsg{Content: rootQuery})
+	if got := p.filter.Value(); got != rootQuery {
+		t.Fatalf("root paste landed in %q, want the filter", got)
+	}
+	if p.installSource != "" {
+		t.Fatalf("the root paste reached the install source: %q", p.installSource)
+	}
+
+	openInstallFrame(t, p)
+
+	// Pasting a local source onto the idle Source row opens its editor and
+	// inserts there; the root filter behind the frame does not move.
+	const local = "/tmp/local-plugin"
+	focusRow(t, p, "install.source")
+	p.Update(tea.PasteMsg{Content: local})
+	if got := p.activeList().InputValue(); got != local {
+		t.Fatalf("paste into the idle Source row reached %q, want %q", got, local)
+	}
+	if p.installSource != "" {
+		t.Fatalf("the pasted source was committed before Enter: %q", p.installSource)
+	}
+	if got := p.filter.Value(); got != rootQuery {
+		t.Fatalf("paste into the install frame also reached the filter: %q", got)
+	}
+	// The editor's own Enter path is what commits it.
+	press(t, p, keyEnter)
+	if p.installSource != local {
+		t.Fatalf("Enter did not commit the pasted source: %q", p.installSource)
+	}
+
+	// An edit that is already open owns the paste the same way.
+	press(t, p, keyEnter) // reopen the Source editor
+	if !p.activeList().Editing() {
+		t.Fatal("the Source row did not open for editing")
+	}
+	p.Update(tea.PasteMsg{Content: "-2"})
+	if got, want := p.activeList().InputValue(), local+"-2"; got != want {
+		t.Fatalf("paste into the open edit reached %q, want %q", got, want)
+	}
+	if p.installSource != local {
+		t.Fatalf("the open edit committed before Enter: %q", p.installSource)
+	}
+	if got := p.filter.Value(); got != rootQuery {
+		t.Fatalf("paste into the open edit also reached the filter: %q", got)
+	}
+	press(t, p, keyEnter) // commit, so no edit is left open
+	if want := local + "-2"; p.installSource != want {
+		t.Fatalf("committed source = %q, want %q", p.installSource, want)
+	}
+
+	// A non-text row takes no paste: it is an action, not an input.
+	focusRow(t, p, "install.scan")
+	source := p.installSource
+	p.Update(tea.PasteMsg{Content: "junk"})
+	if p.activeList().Editing() {
+		t.Fatal("paste on the Scan action opened an editor")
+	}
+	if p.installSource != source {
+		t.Fatalf("paste on the Scan action changed the source: %q", p.installSource)
+	}
+	if got := p.filter.Value(); got != rootQuery {
+		t.Fatalf("paste on a non-text row reached the filter: %q", got)
+	}
+
+	// The full-content review owns every key, paste included.
+	p.scannedContents = &plugins.Contents{
+		Hooks: []config.HookConfig{{Event: "pre_tool_use", Command: "echo reviewed"}},
+	}
+	p.activeList().Refresh()
+	focusRow(t, p, "confirm.hook.pre_tool_use")
+	press(t, p, keyEnter)
+	if p.reviewDetail == nil {
+		t.Fatal("the hook row did not open its full content")
+	}
+	p.Update(tea.PasteMsg{Content: "smuggled"})
+	if p.reviewDetail == nil {
+		t.Fatal("paste closed the full-content review")
+	}
+	if p.installSource != source {
+		t.Fatalf("paste in the review changed the source: %q", p.installSource)
+	}
+	if got := p.filter.Value(); got != rootQuery {
+		t.Fatalf("paste in the review reached the filter: %q", got)
+	}
+}
+
+// TestPluginEscapeCancelsEditBeforeScanAbandonment pins the ownership order of
+// Escape in the install frame. An edit is cancelled first: cancelling one must
+// not leave the frame, so it must not abandon the scan the frame is about to
+// confirm. Only an Escape with no edit open leaves the frame and disposes of
+// the scan. Committing a changed source or scope still invalidates the review.
+func TestPluginEscapeCancelsEditBeforeScanAbandonment(t *testing.T) {
+	const source = "https://example.com/demo.git"
+
+	t.Run("cancelling an edit keeps the scan", func(t *testing.T) {
+		p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(nil))
+		openInstallFrame(t, p)
+		setInstallField(t, p, "install.source", source)
+		msg := scanMsg(t, p) // the scan ran; its result is still undelivered
+		if p.scanLease == nil {
+			t.Fatal("the scan published no lease")
+		}
+		lease, gen := p.scanLease, p.scanGen
+
+		// Start an edit on the Source row and change the text without
+		// committing it, then cancel.
+		focusRow(t, p, "install.source")
+		press(t, p, keyEnter)
+		if !p.activeList().Editing() {
+			t.Fatal("Enter did not open the Source editor")
+		}
+		p.Update(tea.PasteMsg{Content: "/elsewhere"})
+		press(t, p, keyEsc)
+
+		if p.activeList().Editing() {
+			t.Fatal("Escape did not cancel the edit")
+		}
+		if len(p.stack) == 0 {
+			t.Fatal("Escape left the install frame instead of only cancelling the edit")
+		}
+		if p.installSource != source {
+			t.Fatalf("the cancelled edit changed the committed source: %q", p.installSource)
+		}
+		if p.scanLease != lease || p.scanGen != gen {
+			t.Fatal("cancelling an edit abandoned the outstanding scan")
+		}
+		if p.busy != "scanning" {
+			t.Fatalf("busy = %q after cancelling an edit, want scanning", p.busy)
+		}
+
+		// The scan the cancelled edit left alone still becomes the review.
+		p.Update(msg)
+		if p.scannedContents == nil || p.scanParent == "" {
+			t.Fatalf("the scan result was discarded after an edit was cancelled: %q", p.activeList().ErrMsg)
+		}
+		if !hasRow(p, "install.confirm") {
+			t.Fatal("the review offers no Confirm")
+		}
+
+		// With no edit open, Escape does leave the frame — and only then is
+		// the scan abandoned.
+		press(t, p, keyEsc)
+		if len(p.stack) != 0 {
+			t.Fatal("Escape did not leave the install frame once no edit was open")
+		}
+		if p.scannedContents != nil || p.scanParent != "" {
+			t.Fatal("leaving the frame kept the review")
+		}
+	})
+
+	t.Run("leaving the frame disposes of a late result", func(t *testing.T) {
+		p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(nil))
+		openInstallFrame(t, p)
+		setInstallField(t, p, "install.source", source)
+		msg := scanMsg(t, p) // never delivered before the frame is left
+		cloneParent := filepath.Dir(msg.CloneDir)
+
+		focusRow(t, p, "install.source")
+		press(t, p, keyEnter)
+		p.Update(tea.PasteMsg{Content: "/elsewhere"})
+		press(t, p, keyEsc) // cancels the edit only
+		if len(p.stack) == 0 {
+			t.Fatal("the first Escape left the install frame")
+		}
+
+		press(t, p, keyEsc) // now it does leave the frame
+		if len(p.stack) != 0 {
+			t.Fatal("the second Escape did not leave the install frame")
+		}
+		// The lease owned the clone, so it is gone without waiting for a
+		// message that now belongs to an abandoned frame.
+		mustBeGonePath(t, cloneParent)
+
+		p.Update(msg)
+		if p.scannedContents != nil || p.scanParent != "" {
+			t.Fatal("a late scan result attached to the left frame")
+		}
+		if hasRow(p, "install.confirm") {
+			t.Fatal("a late scan result offered Confirm")
+		}
+		if p.busy != "" {
+			t.Fatalf("the panel is still %q after a late result", p.busy)
+		}
+	})
+
+	t.Run("committing a changed source or scope still invalidates", func(t *testing.T) {
+		for _, tc := range []struct{ name, id string }{
+			{"source", "install.source"},
+			{"scope", "install.scope"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				p := newPanelWithScanDeps(t.TempDir(), t.TempDir(), true, nil, fakeScanDeps(nil))
+				parent := scanReview(t, p, source)
+				if !hasRow(p, "install.confirm") {
+					t.Fatal("a successful scan did not offer Confirm")
+				}
+
+				// Change the value through the row's own editor and commit it
+				// with Enter, the way a user does.
+				focusRow(t, p, tc.id)
+				press(t, p, keyEnter)
+				if !p.activeList().Editing() {
+					t.Fatalf("Enter did not open %s", tc.id)
+				}
+				if tc.id == "install.scope" {
+					press(t, p, keyDown) // a different option, still uncommitted
+				} else {
+					// Append, so the source no longer matches the review.
+					p.Update(tea.PasteMsg{Content: "/changed"})
+				}
+				press(t, p, keyEnter) // commit the changed value
+
+				if p.scannedContents != nil || p.scanParent != "" {
+					t.Fatal("the review survived a committed change to the source or scope")
+				}
+				if hasRow(p, "install.confirm") {
+					t.Fatal("Confirm survived an invalidated review")
+				}
+				mustBeGonePath(t, parent)
+				if cmd := p.runInstallFromScan(); cmd != nil {
+					t.Fatal("an invalidated review still produced an install command")
+				}
+			})
+		}
+	})
+
+	t.Run("escape cancels the enum picker", func(t *testing.T) {
+		p := NewPanel(t.TempDir(), t.TempDir(), true, nil)
+		openInstallFrame(t, p)
+		focusRow(t, p, "install.scope")
+		press(t, p, keyEnter)
+		if !p.activeList().Editing() {
+			t.Fatal("Enter did not open the scope picker")
+		}
+		press(t, p, keyDown) // a different option, not committed
+		press(t, p, keyEsc)
+
+		if p.activeList().Editing() {
+			t.Fatal("Escape did not close the scope picker")
+		}
+		if len(p.stack) == 0 {
+			t.Fatal("Escape left the install frame instead of only closing the picker")
+		}
+		if p.installScope != scopeGlobal {
+			t.Fatalf("the cancelled picker changed the scope: %q", p.installScope)
+		}
+	})
+
+	t.Run("escape still disarms a pending removal", func(t *testing.T) {
+		p := newRemovalPanel(t)
+		target := installFixture(t, p, scopeGlobal, "demo")
+		e := entryFor(t, p, scopeGlobal, "demo")
+		openRemoveRow(t, p, e)
+
+		press(t, p, keyEnter) // arms
+		if !p.removeArmed[removalIdentity(e)] {
+			t.Fatal("remove did not arm on the first enter")
+		}
+		press(t, p, keyEsc)
+
+		if len(p.stack) != 0 {
+			t.Fatal("Escape did not leave the detail frame")
+		}
+		if p.removeArmed[removalIdentity(e)] {
+			t.Fatal("the armed confirmation survived leaving the frame")
+		}
+		mustExistPath(t, target)
+		mustKeepLockEntry(t, p, scopeGlobal, "demo")
+	})
+}

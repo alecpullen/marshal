@@ -614,6 +614,14 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		if p.pickerActive && p.pickerModel != nil {
 			return p.pickerModel.Update(msg)
 		}
+		// An active field edit, enum picker or collection-add prompt owns the
+		// keyboard: Escape cancels just that edit instead of leaving the frame,
+		// and "?" is typed into the field instead of toggling the legend
+		// underneath it. No setter runs on a cancellation, so a cancelled edit
+		// never commits or persists.
+		if p.activeList().Editing() {
+			return p.maybePersist(settings.FieldListUpdate(p.activeList(), msg))
+		}
 		switch msg.String() {
 		case "esc":
 			if len(p.stack) > 0 {
@@ -659,6 +667,16 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			return cmd
 		}
 	case tea.PasteMsg:
+		// Paste follows focus: the picker overlay first (it filters its own
+		// choices), then the drilled frame or the field being edited, and only
+		// then the roster filter. The same input never reaches two of them.
+		if p.pickerActive && p.pickerModel != nil {
+			return p.pickerModel.Update(msg)
+		}
+		l := p.activeList()
+		if len(p.stack) > 0 || l.Editing() {
+			return p.maybePersist(settings.FieldListUpdate(l, msg))
+		}
 		var cmd tea.Cmd
 		p.filter, cmd = p.filter.Update(msg)
 		settings.FieldListRefresh(p.list)

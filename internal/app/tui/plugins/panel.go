@@ -894,6 +894,13 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			return p.updateReviewDetail(msg)
 		}
 		if msg.Code == tea.KeyEscape {
+			// An active edit owns Escape: it cancels just that edit, so
+			// cancelling a source edit neither leaves the install frame nor
+			// abandons the scan that frame is about to confirm. No setter runs
+			// on a cancellation, so the committed value stands.
+			if p.activeList().Editing() {
+				return settings.FieldListUpdate(p.activeList(), msg)
+			}
 			// Leaving the frame — or the panel — drops any armed removal, so
 			// a confirmation cannot carry over to another selection or a
 			// later visit.
@@ -928,6 +935,23 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.list.Refresh()
 			return cmd
 		}
+	case tea.PasteMsg:
+		// The full-content view owns the keyboard while it is open, paste
+		// included: nothing may reach the review list (or the filter) behind
+		// it. Paste follows focus for the same reason keys do — it belongs to
+		// the drilled frame or the field being edited, and only reaches the
+		// root filter when neither is active. The value is not committed
+		// here: the editor's own Enter path does that.
+		if p.reviewDetail != nil {
+			return nil
+		}
+		if len(p.stack) > 0 || p.activeList().Editing() {
+			return settings.FieldListUpdate(p.activeList(), msg)
+		}
+		var cmd tea.Cmd
+		p.filter, cmd = p.filter.Update(msg)
+		p.list.Refresh()
+		return cmd
 	case scanResultMsg:
 		// Only the current scan's result may become this frame's review: the
 		// lease and generation must still be the ones the worker was started

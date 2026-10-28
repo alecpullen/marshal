@@ -269,6 +269,38 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
    and [agent editor paste and question marks](audit.md#agent-editor-misroutes-paste-and-intercepts-question-marks).
    Include keyboard and bracketed-paste cases for each active editor and picker.
 
+   **Status (2026-10-28): done** — tasks 1–4 of the
+   [P8 focused input plan](plans/2026-10-28-p8-focused-input-plan.md)
+   (commits `52da0209`, `8be3d5c1`, `b591a1da`, `66f4d9ab`). The skills and
+   plugins panels now give an active field edit, enum picker or add prompt the
+   first refusal on Escape, so a cancelled edit no longer leaves the frame (or,
+   for plugins, abandons the scan its lease owns); the plugin panel gained the
+   missing `tea.PasteMsg` branch, and paste in all three panels follows focus —
+   full-content review first, picker overlay next, then the drilled frame or
+   active edit, and only then the root filter. The agent roster forwards both
+   `?` and Escape to a field that is being edited, sends paste to its picker
+   overlay while one is open, and keeps the legend toggle for when nothing owns
+   the key. Verification: `go build ./cmd/marshal` succeeds;
+   `go test ./internal/app/tui/... -count=1`, `go vet ./...`, gofmt for the
+   touched packages and `git diff --check` are all clean; the scripted usability
+   suite passes against the built binary. New behaviour is evidenced by
+   `TestEscapeCancelsSkillEditorBeforeLeavingFrame`,
+   `TestSkillEscapePreservesRemovalConfirmationSafety`,
+   `TestPluginPasteFollowsFocus`,
+   `TestPluginEscapeCancelsEditBeforeScanAbandonment`,
+   `TestAgentPasteFollowsFocusedControl`,
+   `TestAgentQuestionMarkAndEscapeRespectEditor` and
+   `TestManagementPanelPasteAndEscapeThroughModel`, which drives the real panels
+   through `Model.Update` at 80×24 and 140×40 and asserts the composer draft
+   underneath is untouched. The full suite shows no new failures against the
+   recorded baseline — the same four packages (`internal/app`,
+   `internal/snapshot`, `internal/tools/desktop/browser`, `internal/worktree`)
+   and passes in every package this phase changed. Limitations: no controlling
+   terminal, multiplexer or SSH environment was available, so keyboard and
+   bracketed paste were exercised through the model and panel update paths
+   rather than by hand; the scripted usability suite remains help-only and does
+   not cover management-panel paste.
+
 10. **Stabilize model selection and sign-in.** Address
     [selection moving during discovery](audit.md#model-discovery-can-move-the-selection-while-the-user-is-choosing),
     [late skipped probe results](audit.md#skipped-provider-probes-can-interrupt-later-wizard-steps),

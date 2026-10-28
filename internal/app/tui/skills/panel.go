@@ -629,6 +629,13 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case tea.KeyPressMsg:
 		if msg.Code == tea.KeyEscape {
+			// An in-progress edit owns the first escape — a scalar editor, an
+			// enum picker or a collection-add prompt all count: cancel that
+			// and keep the frame open, so abandoning a value is never the
+			// same keystroke as leaving the panel.
+			if l := p.ActiveList(); l.Editing() {
+				return settings.FieldListUpdate(l, msg)
+			}
 			// Leaving the frame — or the panel — drops any armed removal, so
 			// a confirmation cannot carry over to another selection or a
 			// later visit.

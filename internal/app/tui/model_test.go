@@ -11639,3 +11639,231 @@ func TestSendNowFinishDoesNotDropAcceptedFeedback(t *testing.T) {
 		t.Fatal("the cleanup falsely marked the request delivered")
 	}
 }
+
+// --- focused input in the management panels, through the host --------------
+
+// dockPanelView renders the open dock panel at the given size. Assertions go
+// against what the focused control shows, not against a helper's opinion about
+// where input landed.
+func dockPanelView(t *testing.T, m Model, width, height int) string {
+	t.Helper()
+	p := m.dock.Panel()
+	if p == nil {
+		t.Fatal("no dock panel is open")
+	}
+	return ansi.Strip(p.View(width, height))
+}
+
+// sendHost delivers one message through Model.Update the way the program loop
+// does, returning the command undrained so a test can follow it explicitly.
+func sendHost(t *testing.T, m *Model, msg tea.Msg) tea.Cmd {
+	t.Helper()
+	updated, cmd := m.Update(msg)
+	switch next := updated.(type) {
+	case Model:
+		*m = next
+	case *Model:
+		*m = *next
+	default:
+		t.Fatalf("Update returned %T, want Model", updated)
+	}
+	return cmd
+}
+
+// walkToCustomAgent parks the roster cursor on the custom agent "scout" and
+// drills into its edit frame. The roster order is deterministic — profile,
+// swarm roles, SDD roles, housekeeping roles, then custom agents — so this
+// walks a fixed count; the frame's own content then confirms the landing, and
+// an undershooting count fails loudly rather than passing quietly.
+func walkToCustomAgent(t *testing.T, m *Model, width, height int) {
+	t.Helper()
+	down := tea.KeyPressMsg{Code: tea.KeyDown}
+	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+	for i := 0; i < 15; i++ {
+		sendHost(t, m, down)
+	}
+	sendHost(t, m, enter)
+	if view := dockPanelView(t, *m, width, height); !strings.Contains(view, "System prompt") {
+		t.Fatalf("the custom agent frame did not open after walking the roster:\n%s", view)
+	}
+}
+
+// TestManagementPanelPasteAndEscapeThroughModel pins focused input at the host
+// boundary: a bracketed paste reaches the visible management-panel control, the
+// first Escape cancels that control's edit without leaving its frame, the next
+// Escape navigates back, and the chat composer underneath never receives any of
+// it.
+func TestManagementPanelPasteAndEscapeThroughModel(t *testing.T) {
+	const draft = "half-typed chat draft"
+
+	down := tea.KeyPressMsg{Code: tea.KeyDown}
+	enter := tea.KeyPressMsg{Code: tea.KeyEnter}
+	esc := tea.KeyPressMsg{Code: tea.KeyEscape}
+
+	geometries := []struct{ width, height int }{{80, 24}, {140, 40}}
+	for _, geo := range geometries {
+		t.Run(fmt.Sprintf("%dx%d", geo.width, geo.height), func(t *testing.T) {
+			type target struct {
+				name string
+				open func(t *testing.T) Model
+				// drill and edit reach the frame's Source/scalar row and open it.
+				drill func(t *testing.T, m *Model)
+				// frame is a row label only the edit frame renders, so a failed
+				// drill cannot pass by matching something on the root list.
+				frame string
+				// pasted is the text the visible control must show afterwards.
+				pasted string
+				// root marks the panel's root list, seen again after going back.
+				root string
+			}
+
+			targets := []target{
+				{
+					name: "skills install source",
+					open: func(t *testing.T) Model {
+						m := newTestModel(t)
+						m.dispatchCommand("/skills")
+						return m
+					},
+					drill: func(t *testing.T, m *Model) {
+						// The gate action is the first row; Install skill is next.
+						sendHost(t, m, down)
+						sendHost(t, m, enter)
+					},
+					frame:  "Source",
+					pasted: "pasted-skill",
+					root:   "Skill load gate",
+				},
+				{
+					name: "plugin install source",
+					open: func(t *testing.T) Model {
+						m := newTestModel(t)
+						m.dispatchCommand("/plugins")
+						return m
+					},
+					drill: func(t *testing.T, m *Model) {
+						// With no plugins installed, Install plugin is the cursor row.
+						sendHost(t, m, enter)
+					},
+					frame:  "Source",
+					pasted: "pasted-plugin",
+					root:   "＋ Install plugin",
+				},
+				{
+					name: "agent system prompt",
+					open: func(t *testing.T) Model {
+						m := newTestModel(t)
+						m.state.Config.CustomAgents = map[string]routing.CustomAgent{
+							"scout": {Name: "scout", Preset: "fast"},
+						}
+						m.dispatchCommand("/agents")
+						return m
+					},
+					drill: func(t *testing.T, m *Model) {
+						walkToCustomAgent(t, m, geo.width, geo.height)
+						sendHost(t, m, down) // Preset → System prompt
+					},
+					frame:  "System prompt",
+					pasted: "pasted-prompt",
+					root:   "Custom Agents",
+				},
+			}
+
+			for _, tc := range targets {
+				t.Run(tc.name, func(t *testing.T) {
+					m := tc.open(t)
+					m.resize(geo.width, geo.height)
+					m.input.SetValue(draft)
+
+					tc.drill(t, &m)
+					view := dockPanelView(t, m, geo.width, geo.height)
+					if !strings.Contains(view, tc.frame) {
+						t.Fatalf("the edit frame did not open:\n%s", view)
+					}
+					// The first row of the frame is the control under test.
+					sendHost(t, &m, enter)
+
+					sendHost(t, &m, tea.PasteMsg{Content: tc.pasted})
+					view = dockPanelView(t, m, geo.width, geo.height)
+					if !strings.Contains(view, tc.pasted) {
+						t.Fatalf("the visible control did not receive the paste:\n%s", view)
+					}
+					if got := m.input.Value(); got != draft {
+						t.Fatalf("the paste reached the chat composer: %q", got)
+					}
+
+					// The first Escape cancels the edit and keeps the frame.
+					sendHost(t, &m, esc)
+					view = dockPanelView(t, m, geo.width, geo.height)
+					if strings.Contains(view, tc.pasted) {
+						t.Fatalf("escape did not cancel the edit:\n%s", view)
+					}
+					if !strings.Contains(view, tc.frame) {
+						t.Fatalf("escape left the frame instead of cancelling the edit:\n%s", view)
+					}
+					if got := m.input.Value(); got != draft {
+						t.Fatalf("escape reached the chat composer: %q", got)
+					}
+
+					// The next Escape navigates back to the panel's root list.
+					sendHost(t, &m, esc)
+					view = dockPanelView(t, m, geo.width, geo.height)
+					if strings.Contains(view, tc.frame) {
+						t.Fatalf("the second escape did not navigate back:\n%s", view)
+					}
+					if !strings.Contains(view, tc.root) {
+						t.Fatalf("expected the panel's root list (%q) after going back:\n%s", tc.root, view)
+					}
+					if got := m.input.Value(); got != draft {
+						t.Fatalf("going back reached the chat composer: %q", got)
+					}
+				})
+			}
+		})
+	}
+
+	// The agent picker owns "?" while it is open, through its own returned
+	// message path, and the roster legend underneath it never turns on.
+	t.Run("agent picker keeps question marks from the legend", func(t *testing.T) {
+		m := newTestModel(t)
+		m.state.Config.CustomAgents = map[string]routing.CustomAgent{
+			"scout": {Name: "scout", Preset: "fast"},
+		}
+		m.dispatchCommand("/agents")
+		walkToCustomAgent(t, &m, 100, 30)
+		sendHost(t, &m, enter) // Enter on the Preset row opens its picker
+
+		view := dockPanelView(t, m, 100, 30)
+		if !strings.Contains(view, "Preset") {
+			t.Fatalf("the Preset picker did not open:\n%s", view)
+		}
+		sendHost(t, &m, tea.PasteMsg{Content: "?"})
+		view = dockPanelView(t, m, 100, 30)
+		if !strings.Contains(view, "?") {
+			t.Fatalf("the pasted ? did not reach the picker:\n%s", view)
+		}
+		if strings.Contains(view, "preset bound") {
+			t.Fatalf("the legend rendered behind the picker:\n%s", view)
+		}
+
+		// Escape cancels through the picker's own returned message.
+		cancel := sendHost(t, &m, esc)
+		if cancel == nil {
+			t.Fatal("escape produced no picker message")
+		}
+		sendHost(t, &m, cancel())
+		// Back to the roster root, where the legend would render if it were on.
+		sendHost(t, &m, esc)
+		view = dockPanelView(t, m, 100, 30)
+		if strings.Contains(view, "preset bound") {
+			t.Fatalf("? toggled the legend that no control was showing:\n%s", view)
+		}
+
+		// With nothing owning the key, "?" still toggles the roster legend.
+		sendHost(t, &m, tea.KeyPressMsg{Text: "?"})
+		view = dockPanelView(t, m, 100, 30)
+		if !strings.Contains(view, "preset bound") {
+			t.Fatalf("? no longer toggles the legend when no control owns it:\n%s", view)
+		}
+	})
+}

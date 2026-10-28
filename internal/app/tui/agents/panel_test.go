@@ -743,3 +743,333 @@ func TestRosterInteractionFieldsUseCanonicalDefaults(t *testing.T) {
 		_ = cmd()
 	}
 }
+
+// --- focused input routing -------------------------------------------------
+
+// rosterFixture builds a roster over an isolated config file with two presets,
+// one profile and one custom agent, so every edit and pick has somewhere real
+// to land.
+func rosterFixture(t *testing.T) (*Panel, string) {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg := config.Default()
+	cfg.Privacy.RemoteProvidersAllowed = true
+	cfg.Models.Presets = map[string]routing.ModelPreset{
+		"fast": {Provider: "ollama", Model: "tiny"},
+		"slow": {Provider: "ollama", Model: "big"},
+	}
+	cfg.AgentProfiles = map[string]routing.AgentProfile{
+		"default": {Name: "default", Roles: map[routing.AgentRole]routing.RoleBinding{
+			routing.RoleImplementer: {Preset: "fast"},
+		}},
+	}
+	cfg.Profile.Default = "default"
+	cfg.CustomAgents = map[string]routing.CustomAgent{
+		"scout": {Name: "scout", Preset: "fast"},
+	}
+	return NewRosterPanel(cfg, cfgPath, "", nil), cfgPath
+}
+
+// openAgentFrame drills into the custom agent "scout" and returns after its
+// edit frame is on the stack.
+func openAgentFrame(t *testing.T, p *Panel) {
+	t.Helper()
+	drillToRow(t, p, "scout")
+	p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if len(p.stack) != 1 {
+		t.Fatalf("enter on the custom agent row pushed %d frames, want 1", len(p.stack))
+	}
+}
+
+// runCommand runs cmd and feeds the message it produced back through the panel,
+// the way the dock host does.
+func runCommand(t *testing.T, p *Panel, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		return
+	}
+	if msg := cmd(); msg != nil {
+		p.Update(msg)
+	}
+}
+
+// changedReceipt runs a commit command and returns its persistence receipt,
+// failing when the command is missing or produced something else.
+func changedReceipt(t *testing.T, cmd tea.Cmd) settings.ChangedMsg {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("the commit emitted no command")
+	}
+	msg := cmd()
+	changed, ok := msg.(settings.ChangedMsg)
+	if !ok {
+		t.Fatalf("commit produced %T, want settings.ChangedMsg", msg)
+	}
+	if changed.SaveErr != nil {
+		t.Fatalf("saving the commit failed: %v", changed.SaveErr)
+	}
+	return changed
+}
+
+// TestAgentPasteFollowsFocusedControl pins paste ownership: the picker overlay,
+// then the drilled frame or field being edited, then the roster filter — never
+// two of them, and never the filter underneath a visible control.
+func TestAgentPasteFollowsFocusedControl(t *testing.T) {
+	t.Run("root filter", func(t *testing.T) {
+		p, _ := rosterFixture(t)
+		p.Update(tea.PasteMsg{Content: "planner"})
+		if got := p.FilterValue(); got != "planner" {
+			t.Fatalf("filter = %q, want %q", got, "planner")
+		}
+		if got := settings.StateCfg(p.state).CustomAgents["scout"].SystemPrompt; got != "" {
+			t.Fatalf("a filter paste changed the committed prompt: %q", got)
+		}
+	})
+
+	t.Run("idle scalar opens and receives", func(t *testing.T) {
+		p, cfgPath := rosterFixture(t)
+		openAgentFrame(t, p)
+		drillToRow(t, p, "System prompt")
+		p.Update(tea.PasteMsg{Content: "be terse"})
+		if !p.activeList().Editing() {
+			t.Fatal("paste on an idle editable scalar did not open its editor")
+		}
+		if got := p.activeList().InputValue(); got != "be terse" {
+			t.Fatalf("editor value = %q, want %q", got, "be terse")
+		}
+		if got := p.FilterValue(); got != "" {
+			t.Fatalf("filter = %q, want empty — the paste went to the editor", got)
+		}
+		// The value is not committed until the editor's own Enter path.
+		if got := settings.StateCfg(p.state).CustomAgents["scout"].SystemPrompt; got != "" {
+			t.Fatalf("prompt = %q before Enter, want it uncommitted", got)
+		}
+		changed := changedReceipt(t, p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+		if got := changed.Cfg.CustomAgents["scout"].SystemPrompt; got != "be terse" {
+			t.Fatalf("committed prompt = %q, want %q", got, "be terse")
+		}
+		if _, err := os.Stat(cfgPath); err != nil {
+			t.Fatalf("the commit did not write the config file: %v", err)
+		}
+	})
+
+	t.Run("active edit keeps the paste", func(t *testing.T) {
+		p, _ := rosterFixture(t)
+		openAgentFrame(t, p)
+		drillToRow(t, p, "System prompt")
+		p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if !p.activeList().Editing() {
+			t.Fatal("enter on System prompt did not open the editor")
+		}
+		p.Update(tea.PasteMsg{Content: "pasted"})
+		if got := p.activeList().InputValue(); got != "pasted" {
+			t.Fatalf("editor value = %q, want %q", got, "pasted")
+		}
+		if got := p.FilterValue(); got != "" {
+			t.Fatalf("filter = %q, want empty", got)
+		}
+		if len(p.stack) != 1 {
+			t.Fatalf("stack = %d frames, want the edit frame still open", len(p.stack))
+		}
+	})
+
+	t.Run("custom-name picker", func(t *testing.T) {
+		p, _ := rosterFixture(t)
+		drillToRow(t, p, "＋ New custom agent")
+		runCommand(t, p, p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+		if !p.pickerActive || p.pickerModel == nil {
+			t.Fatal("create action did not open the name picker")
+		}
+		p.Update(tea.PasteMsg{Content: "new-agent"})
+		if got := p.pickerModel.FilterValue(); got != "new-agent" {
+			t.Fatalf("picker filter = %q, want %q", got, "new-agent")
+		}
+		if got := p.FilterValue(); got != "" {
+			t.Fatalf("roster filter = %q, want empty — the paste belongs to the picker", got)
+		}
+		if _, ok := settings.StateCfg(p.state).CustomAgents["new-agent"]; ok {
+			t.Fatal("the pasted name was committed before the picker's Enter")
+		}
+		pick := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if pick == nil {
+			t.Fatal("the picker's Enter emitted no command")
+		}
+		changed := changedReceipt(t, p.Update(pick()))
+		if _, ok := changed.Cfg.CustomAgents["new-agent"]; !ok {
+			t.Fatalf("the picker commit did not create the agent: %#v", changed.Cfg.CustomAgents)
+		}
+	})
+
+	t.Run("choice picker", func(t *testing.T) {
+		p, _ := rosterFixture(t)
+		drillToRow(t, p, "Planner")
+		runCommand(t, p, p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+		if !p.pickerActive || p.pickerModel == nil {
+			t.Fatal("enter on a role row did not open its picker")
+		}
+		p.Update(tea.PasteMsg{Content: "slow"})
+		if got := p.pickerModel.FilterValue(); got != "slow" {
+			t.Fatalf("picker filter = %q, want %q", got, "slow")
+		}
+		if got := p.FilterValue(); got != "" {
+			t.Fatalf("roster filter = %q, want empty", got)
+		}
+		if got := settings.StateCfg(p.state).AgentProfiles["default"].Roles[routing.RolePlanner]; got.Preset != "" {
+			t.Fatalf("planner preset = %q before the picker's Enter, want unset", got.Preset)
+		}
+		pick := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if pick == nil {
+			t.Fatal("the picker's Enter emitted no command")
+		}
+		changed := changedReceipt(t, p.Update(pick()))
+		profile := changed.Cfg.AgentProfiles["default"]
+		if got := profile.Roles[routing.RolePlanner].Preset; got != "slow" {
+			t.Fatalf("planner preset = %q after picking, want %q", got, "slow")
+		}
+	})
+}
+
+// TestAgentQuestionMarkAndEscapeRespectEditor pins that "?" belongs to the
+// focused control rather than the roster legend, and that Escape cancels an
+// active edit or prompt before it navigates back.
+func TestAgentQuestionMarkAndEscapeRespectEditor(t *testing.T) {
+	t.Run("scalar", func(t *testing.T) {
+		p, _ := rosterFixture(t)
+		openAgentFrame(t, p)
+		drillToRow(t, p, "System prompt")
+		p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if !p.activeList().Editing() {
+			t.Fatal("enter on System prompt did not open the editor")
+		}
+
+		p.Update(tea.KeyPressMsg{Text: "?"})
+		if p.showLegend {
+			t.Fatal("? toggled the roster legend from inside an active editor")
+		}
+		if !p.activeList().Editing() {
+			t.Fatal("? closed the editor instead of being typed")
+		}
+		changed := changedReceipt(t, p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+		if got := changed.Cfg.CustomAgents["scout"].SystemPrompt; got != "?" {
+			t.Fatalf("committed prompt = %q, want ? typed as input", got)
+		}
+
+		// A cancelled edit changes nothing and keeps the frame open.
+		p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if !p.activeList().Editing() {
+			t.Fatal("re-opening the editor failed")
+		}
+		p.Update(tea.PasteMsg{Content: "discard me"})
+		if cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape}); cmd != nil {
+			t.Fatalf("escape on an active editor emitted %T, want a plain cancel", cmd())
+		}
+		if p.activeList().Editing() {
+			t.Fatal("escape did not cancel the editor")
+		}
+		if len(p.stack) != 1 {
+			t.Fatalf("stack = %d frames after cancelling, want the frame still open", len(p.stack))
+		}
+		if got := settings.StateCfg(p.state).CustomAgents["scout"].SystemPrompt; got != "?" {
+			t.Fatalf("cancelled edit changed the saved prompt to %q", got)
+		}
+
+		// With no editor active, escape navigates back.
+		p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		if len(p.stack) != 0 {
+			t.Fatalf("stack = %d frames after going back, want 0", len(p.stack))
+		}
+		if p.showLegend {
+			t.Fatal("escape toggled the legend")
+		}
+	})
+
+	t.Run("collection prompt", func(t *testing.T) {
+		p, _ := rosterFixture(t)
+		drillToRow(t, p, "Swarm")
+		p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if len(p.stack) != 1 {
+			t.Fatalf("enter on Swarm pushed %d frames, want 1", len(p.stack))
+		}
+		drillToRow(t, p, "Tool iters")
+		p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if len(p.stack) != 2 {
+			t.Fatalf("enter on Tool iters pushed %d frames, want 2", len(p.stack))
+		}
+		p.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
+		if !p.activeList().Editing() {
+			t.Fatal("a did not open the new-key prompt")
+		}
+		p.Update(tea.KeyPressMsg{Text: "?"})
+		if p.showLegend {
+			t.Fatal("? toggled the legend from the collection-add prompt")
+		}
+		if !p.activeList().Editing() {
+			t.Fatal("? closed the collection-add prompt")
+		}
+		if cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd == nil {
+			t.Fatal("committing the new key emitted no command")
+		}
+		if _, ok := settings.StateCfg(p.state).Swarm.Budget.ToolIters["?"]; !ok {
+			t.Fatalf("? was not used as the new key: %#v", settings.StateCfg(p.state).Swarm.Budget.ToolIters)
+		}
+	})
+
+	t.Run("picker", func(t *testing.T) {
+		p, _ := rosterFixture(t)
+		drillToRow(t, p, "Planner")
+		runCommand(t, p, p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+		if !p.pickerActive || p.pickerModel == nil {
+			t.Fatal("enter on a role row did not open its picker")
+		}
+		p.Update(tea.KeyPressMsg{Text: "?"})
+		if p.showLegend {
+			t.Fatal("? toggled the legend from the picker overlay")
+		}
+		if got := p.pickerModel.FilterValue(); got != "?" {
+			t.Fatalf("picker filter = %q, want ?", got)
+		}
+		cancel := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		if cancel == nil {
+			t.Fatal("escape emitted no command from the picker")
+		}
+		p.Update(cancel())
+		if p.pickerActive || p.pickerModel != nil {
+			t.Fatal("escape did not close the picker")
+		}
+		if got := settings.StateCfg(p.state).AgentProfiles["default"].Roles[routing.RolePlanner].Preset; got != "" {
+			t.Fatalf("the cancelled picker still wrote planner preset %q", got)
+		}
+	})
+
+	t.Run("legend without an editor", func(t *testing.T) {
+		p, _ := rosterFixture(t)
+		p.Update(tea.KeyPressMsg{Text: "?"})
+		if !p.showLegend {
+			t.Fatal("? should still toggle the legend when no control owns the key")
+		}
+		p.Update(tea.KeyPressMsg{Text: "?"})
+		if p.showLegend {
+			t.Fatal("? should toggle the legend back off")
+		}
+	})
+
+	t.Run("delete confirmation", func(t *testing.T) {
+		p, _ := rosterFixture(t)
+		openAgentFrame(t, p)
+		drillToRow(t, p, "Delete this agent")
+		p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if !p.deleteArmed {
+			t.Fatal("the first press did not arm the delete")
+		}
+		p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		if p.deleteArmed {
+			t.Fatal("escape left the delete armed")
+		}
+		if len(p.stack) != 0 {
+			t.Fatalf("stack = %d frames, want the roster root", len(p.stack))
+		}
+		if _, ok := settings.StateCfg(p.state).CustomAgents["scout"]; !ok {
+			t.Fatal("escape deleted the agent")
+		}
+	})
+}

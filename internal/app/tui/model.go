@@ -2036,6 +2036,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		// A hidden review cannot show which candidate `d` would delete, so the
+		// discard keys are consumed before the dock can arm or confirm one.
+		// Esc still reaches the panel and keeps the candidate, and Ctrl+C keeps
+		// its own path.
+		if m.reviewPanel() != nil {
+			if key, ok := msg.(tea.KeyPressMsg); ok {
+				switch key.String() {
+				case "d", "D":
+					return m, nil
+				}
+			}
+		}
 	}
 	if choice, ok := msg.(accesspanel.ChoiceMsg); ok {
 		m.handleAccessChoice(choice.Choice)
@@ -2231,6 +2243,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// visible render recomputes it — so a key that arrives in between is
 		// refused rather than consenting to rows the user never saw.
 		if panel := m.postmortemConsentPanel(); panel != nil {
+			panel.InvalidateVisibility()
+		}
+		// The review panel's discard confirmation is destructive: a resize
+		// must not carry an arm into a frame the user has not seen, so the
+		// next render has to re-show the candidate and the action.
+		if panel := m.reviewPanel(); panel != nil {
 			panel.InvalidateVisibility()
 		}
 		m.resize(ws.Width, ws.Height)
@@ -2743,16 +2761,46 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	case sddreview.AcceptMsg:
-		// Accept leaves the candidate artifact in place for a later /sdd.
+		// Accept leaves the candidate artifact in place for a later /sdd. A
+		// delayed message from a review that is no longer docked must not
+		// close its replacement.
+		if pm.Panel == nil || pm.Panel != m.reviewPanel() {
+			return m, nil
+		}
 		m.dock.CloseNow()
 		m.refreshViewport()
 		return m, nil
-	case sddreview.CancelMsg:
-		// Discard removes only the generated candidate.
-		if panel, ok := m.dock.Panel().(*sddreview.Panel); ok {
-			_ = sddauthor.RemoveCandidate(panel.CandidatePath(), m.sess.Status().WorkingDir, m.state.Config.SDD.PlansDir)
+	case sddreview.KeepMsg:
+		// Esc keeps the candidate whether the inspection was clean or blocked:
+		// leaving review must never delete work the user may still edit.
+		if pm.Panel == nil || pm.Panel != m.reviewPanel() {
+			return m, nil
+		}
+		path := pm.Panel.CandidatePath()
+		m.dock.CloseNow()
+		m.state.AddMessage(session.RoleSystem,
+			fmt.Sprintf("Kept the generated plan candidate at %s. Edit it first, then run /sdd to execute it.", path),
+			session.ContentTypePlain)
+		m.refreshViewport()
+		return m, nil
+	case sddreview.DiscardMsg:
+		// Discard removes only the active review's generated candidate, and
+		// only after the panel's own two-press confirmation.
+		if pm.Panel == nil || pm.Panel != m.reviewPanel() {
+			return m, nil
+		}
+		path := pm.Panel.CandidatePath()
+		if err := sddauthor.RemoveCandidate(path, m.sess.Status().WorkingDir, m.state.Config.SDD.PlansDir); err != nil {
+			// The candidate is still on disk: keep the panel open so the user
+			// can retry or keep it, and never claim it was removed.
+			pm.Panel.SetError(err)
+			m.refreshViewport()
+			return m, nil
 		}
 		m.dock.CloseNow()
+		m.state.AddMessage(session.RoleSystem,
+			fmt.Sprintf("Discarded the generated plan candidate at %s.", path),
+			session.ContentTypePlain)
 		m.refreshViewport()
 		return m, nil
 	}
@@ -5519,6 +5567,18 @@ func (m *Model) openPostmortemPrompt() {
 // never be affected by it.
 func (m Model) postmortemConsentPanel() *postmortempanel.Panel {
 	panel, ok := m.dock.Panel().(*postmortempanel.Panel)
+	if !ok {
+		return nil
+	}
+	return panel
+}
+
+// reviewPanel returns the active generated-plan review, or nil when the dock
+// is showing anything else (including nothing). The panel-to-host messages
+// carry their originating panel, so an identity check against this value is
+// what stops a delayed message from acting on a replacement review.
+func (m Model) reviewPanel() *sddreview.Panel {
+	panel, ok := m.dock.Panel().(*sddreview.Panel)
 	if !ok {
 		return nil
 	}

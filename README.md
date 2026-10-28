@@ -11,7 +11,7 @@ you must sign up for.
 > **Status: alpha (v0.0.4-alpha).** Usable day to day, but interfaces, config
 > keys, and on-disk formats may change without a migration path before 0.1.0.
 
-![The Marshal TUI answering a question about a small Go project](docs/ui/tui-session.svg)
+![The Marshal TUI explaining a small Go project, with a background test job and a subagent in the framed tray above the input](docs/ui/tui-session.svg)
 
 ---
 

@@ -13,7 +13,12 @@ default = 'shot'
 [agent]
 # Writes are allowed without a prompt, but shell commands still go through the
 # approval gate — which is what makes the transcript show a real tool call.
-approval_mode = 'copilot'
+mode = 'act'
+
+[snapshots]
+# The capture project is thrown away, so rollback snapshots serve no purpose,
+# and on a nearly full disk their warning would end up in the image.
+enabled = false
 
 [providers.ollama]
 type = 'ollama'

@@ -7,6 +7,10 @@
 # Requires: go (cgo), python3, node, plus `npm install` and
 # `npx playwright install chromium` in this directory. Run from the repo root.
 #
+# UISHOT_CONFIG picks the capture config (default: config.example.toml here;
+# config.lmstudio.toml targets LM Studio), UISHOT_MODEL overrides its model,
+# and UISHOT_SKIP_WEB=1 leaves web-fleet.png alone.
+#
 # Everything runs against throwaway state: a temp MARSHAL_DATA_DIR, a temp demo
 # project, and the bridge's own --state-dir. Your real config, database and
 # trust store are never touched, and no capture writes into the repository.
@@ -30,6 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+CONFIG="${UISHOT_CONFIG:-$HERE/config.example.toml}"
 FONT="$ROOT/web/ui/node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2"
 MODEL="${UISHOT_MODEL:-}"
 
@@ -54,7 +59,7 @@ printf 'module democalc\n\ngo 1.21\n' > "$WORK/proj/go.mod"
 # TUI -> SVG
 # ---------------------------------------------------------------------------
 mkdir -p "$WORK/cfg"
-cp "$HERE/config.example.toml" "$WORK/cfg/config.toml"
+cp "$CONFIG" "$WORK/cfg/config.toml"
 if [ -n "$MODEL" ]; then
   # BSD sed (macOS) requires an explicit backup suffix for -i; the .bak file is
   # discarded. This form works with both BSD and GNU sed.
@@ -91,6 +96,14 @@ fi
 # ---------------------------------------------------------------------------
 # Web Studio -> PNG
 # ---------------------------------------------------------------------------
+if [ "${UISHOT_SKIP_WEB:-}" = 1 ]; then
+  echo "==> skipping Web Studio (UISHOT_SKIP_WEB=1)"
+  echo
+  echo "==> wrote:"
+  ls -la "$OUT"
+  exit 0
+fi
+
 echo "==> capturing Web Studio"
 ( cd "$ROOT" && go build -o "$WORK/webbridge" ./cmd/webbridge )
 

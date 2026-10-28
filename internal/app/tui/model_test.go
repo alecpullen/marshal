@@ -8441,6 +8441,111 @@ func TestModelDiscoveryNewestProbeWins(t *testing.T) {
 	}
 }
 
+func TestModelSelectionSurvivesHostDiscovery(t *testing.T) {
+	groqCfg := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.groq.com/openai/v1"}
+	openaiCfg := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"}
+
+	for _, frame := range []struct {
+		name          string
+		width, height int
+	}{{"80x24", 80, 24}, {"wide", 140, 40}} {
+		t.Run(frame.name, func(t *testing.T) {
+			state := newTestState(t)
+			state.Config.Privacy.RemoteProvidersAllowed = true
+			// Deny enrichment so picking a model starts preparation instead of
+			// stopping at the consent step, which keeps the post-pick command
+			// observable.
+			deny := false
+			state.Config.Privacy.ModelsDevEnrichment = &deny
+			state.Config.Providers = map[string]config.ProviderConfig{"groq": groqCfg, "openai": openaiCfg}
+			m := testModel(state, WithModelCache(t.TempDir()))
+			m.resize(frame.width, frame.height)
+
+			if cmd := m.openModels(); cmd == nil {
+				t.Fatal("openModels dispatched no probes")
+			}
+			groqGen, openaiGen := m.modelsProbeGen["groq"], m.modelsProbeGen["openai"]
+
+			deliver := func(m Model, provider string, gen uint64, res probe.ResultMsg) Model {
+				updated, _ := m.Update(modelsProbeResultMsg{Provider: provider, Generation: gen, Result: res})
+				return asModel(t, updated)
+			}
+
+			// Both providers offer the same model id, so only the encoded row
+			// value identifies which provider a choice belongs to.
+			m = deliver(m, "groq", groqGen, probe.ResultMsg{
+				FieldID: modelsProbeFieldID, Provider: "groq",
+				Models: []schema.ModelInfo{{ID: "shared-70b"}, {ID: "groq-fast"}},
+			})
+			m = deliver(m, "openai", openaiGen, probe.ResultMsg{
+				FieldID: modelsProbeFieldID, Provider: "openai",
+				Models: []schema.ModelInfo{{ID: "shared-70b"}, {ID: "gpt-4o"}},
+			})
+
+			// Choose a row that is neither the default nor the first match.
+			updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			m = asModel(t, updated)
+			want := selectedPickerValue(t, m)
+			if want == "" {
+				t.Fatal("no row was selected")
+			}
+			if !strings.Contains(want, "groq") && !strings.Contains(want, "openai") {
+				t.Fatalf("selected value %q does not encode a provider", want)
+			}
+
+			// Superseded and late results arrive after the choice is made.
+			m = deliver(m, "groq", groqGen-1, probe.ResultMsg{
+				FieldID: modelsProbeFieldID, Provider: "groq",
+				Models: []schema.ModelInfo{{ID: "shared-70b"}},
+			})
+			m = deliver(m, "openai", openaiGen-1, probe.ResultMsg{
+				FieldID: modelsProbeFieldID, Provider: "openai", Err: errors.New("stale failure"),
+			})
+			m = deliver(m, "groq", groqGen, probe.ResultMsg{
+				FieldID: modelsProbeFieldID, Provider: "groq",
+				Models: []schema.ModelInfo{{ID: "shared-70b"}, {ID: "groq-fast"}, {ID: "groq-new"}},
+			})
+
+			if got := selectedPickerValue(t, m); got != want {
+				t.Fatalf("selection moved from %q to %q", want, got)
+			}
+			view := dockPanelView(t, m, frame.width, frame.height)
+			if !strings.Contains(view, "groq-new") {
+				t.Errorf("the newly discovered model is not offered:\n%s", view)
+			}
+
+			// Enter offers the original choice; feeding the resulting pick
+			// back is what advances the wizard, the way the program loop does.
+			before := dockPanelView(t, m, frame.width, frame.height)
+			updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			m = asModel(t, updated)
+			if cmd == nil {
+				t.Fatal("Enter produced no pick")
+			}
+			picked, ok := cmd().(picker.PickedMsg)
+			if !ok {
+				t.Fatalf("Enter produced %T, want picker.PickedMsg", cmd())
+			}
+			if picked.Value != want {
+				t.Fatalf("picked %q, want the row selected before discovery: %q", picked.Value, want)
+			}
+			updated, prepareCmd := m.Update(picked)
+			m = asModel(t, updated)
+
+			after := dockPanelView(t, m, frame.width, frame.height)
+			if after == before {
+				t.Fatalf("the pick did not advance past the model picker:\n%s", after)
+			}
+			if strings.Contains(after, "pick a model") {
+				t.Errorf("the picker is still rendered after the pick:\n%s", after)
+			}
+			if prepareCmd == nil {
+				t.Error("picking a model should start preset preparation")
+			}
+		})
+	}
+}
+
 func TestModelCacheSeedsDiscoveredAtStartup(t *testing.T) {
 	dir := t.TempDir()
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}

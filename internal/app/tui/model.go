@@ -2423,6 +2423,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case connect.CopyLinkMsg:
 		return m, m.copyText(msg.URL)
+	case mcpauth.CopyLinkMsg:
+		// A delayed copy request must not act on a replacement auth flow,
+		// even one showing an identical URL, so the live panel has to accept
+		// the message before anything reaches the clipboard.
+		if panel, ok := m.dock.Panel().(*mcpauth.Panel); ok && panel.AcceptsCopyLink(msg) {
+			return m, m.copyText(msg.URL)
+		}
+		return m, nil
 	case flashClearMsg:
 		// Only wakes the view; it must not reach the textarea path, which
 		// would bump the suggestion generation and drop an in-flight result.

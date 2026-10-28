@@ -2016,6 +2016,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		// The exit postmortem question's agent stage asks for consent to a
+		// pass with system access and editing approval. A hidden frame cannot
+		// show that disclosure, so the affirmative answers are consumed here,
+		// before the dock can turn them into consent. Declining (n, N, Esc)
+		// and Ctrl+C still pass through: the question must never be a dead
+		// end, whatever the geometry.
+		if m.postmortemConsentPanel() != nil {
+			if key, ok := msg.(tea.KeyPressMsg); ok && postmortemConsentKey(key) {
+				return m, nil
+			}
+		}
 	}
 	if choice, ok := msg.(accesspanel.ChoiceMsg); ok {
 		m.handleAccessChoice(choice.Choice)
@@ -2205,6 +2216,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// WindowSizeMsg must always resize the underlying layout (and the
 	// settings/memory overlays) regardless of which overlay is open.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		// A resize invalidates any earlier rendering: the exit postmortem
+		// question's consent is only valid for the geometry its disclosure was
+		// drawn at. Invalidate before the new size is applied — the next
+		// visible render recomputes it — so a key that arrives in between is
+		// refused rather than consenting to rows the user never saw.
+		if panel := m.postmortemConsentPanel(); panel != nil {
+			panel.InvalidateVisibility()
+		}
 		m.resize(ws.Width, ws.Height)
 		if m.approvalModel != nil {
 			m.approvalModel.SetSize(max(m.leftWidth-4, 30))
@@ -5483,6 +5502,30 @@ func (m *Model) afterSettlement() tea.Cmd {
 func (m *Model) openPostmortemPrompt() {
 	m.dock.Open(postmortempanel.New())
 	m.refreshViewport()
+}
+
+// postmortemConsentPanel returns the active exit-postmortem question, or nil
+// when the dock is showing anything else (including nothing). It is the only
+// place that decides whether a consent gate applies, so an unrelated panel can
+// never be affected by it.
+func (m Model) postmortemConsentPanel() *postmortempanel.Panel {
+	panel, ok := m.dock.Panel().(*postmortempanel.Panel)
+	if !ok {
+		return nil
+	}
+	return panel
+}
+
+// postmortemConsentKey reports whether k is an affirmative answer to the exit
+// postmortem question: yes, or the Enter that confirms the selected choice.
+// Declining keys are deliberately absent — the question must stay answerable
+// at every geometry, so only consent is ever gated.
+func postmortemConsentKey(k tea.KeyPressMsg) bool {
+	switch k.String() {
+	case "y", "Y", "enter":
+		return true
+	}
+	return false
 }
 
 // finishReplacement completes an accepted replacement: a new session or a

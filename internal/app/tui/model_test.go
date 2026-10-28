@@ -10654,6 +10654,209 @@ func TestExitQuestionIsAskedOnce(t *testing.T) {
 	}
 }
 
+// assertNoPostmortemProgress fails when anything the consent gate protects has
+// started: the extraction, the scoped analysis pass, or the exit being answered
+// — asserted through the controller's own calls and the session's result state,
+// not through the shape of a returned command.
+func assertNoPostmortemProgress(t *testing.T, m Model, ctrl *endTestController, state *session.State) {
+	t.Helper()
+	if m.endAnswered {
+		t.Fatal("the exit was answered from a question the user could not see")
+	}
+	if m.endStage != endPostmortem {
+		t.Fatalf("endStage = %v, want endPostmortem while the question is open", m.endStage)
+	}
+	if len(ctrl.accepted) != 0 || ctrl.waitCalls != 0 {
+		t.Fatalf("the runtime was asked to settle work: accepted = %d, wait calls = %d",
+			len(ctrl.accepted), ctrl.waitCalls)
+	}
+	if len(ctrl.analysisGoals) != 0 {
+		t.Fatalf("the scoped analysis pass ran: %v", ctrl.analysisGoals)
+	}
+	if _, err := os.Stat(postmortemReportPath(t, state)); !os.IsNotExist(err) {
+		t.Fatalf("extraction ran (report stat err = %v), want no report", err)
+	}
+}
+
+// TestPostmortemConsentResizeInvalidatesVisibility pins the resize gate: an
+// affirmative answer to the agent question is only good for the geometry its
+// disclosure was drawn at. A resize invalidates it — including one that hides
+// the whole frame — so the answer is refused until the question has been
+// rendered again at the new size. Declining stays available throughout, and a
+// replaced panel never inherits a rendering it did not do.
+func TestPostmortemConsentResizeInvalidatesVisibility(t *testing.T) {
+	t.Setenv("MARSHAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	// openQuestion opens the exit question over a session with one user turn,
+	// advances it to the agent stage when asked to, and renders it at the
+	// supported minimum so the disclosure is on screen and consent is live.
+	openQuestion := func(t *testing.T, sessionID string, agentStage bool) (Model, *endTestController, *session.State) {
+		t.Helper()
+		state := postmortemTestState(t, sessionID)
+		state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+		state.Config.Postmortem.OnExit = "prompt"
+		ctrl := &endTestController{}
+		m := testModel(state, WithEndController(ctrl))
+		m.resize(80, 24)
+		m.end = &endIntent{kind: EndIntentExit}
+		m.endStage = endPostmortem
+		m.openPostmortemPrompt()
+		if agentStage {
+			// Stage zero → one through the host's own routing.
+			next, cmd := press(m, tea.KeyPressMsg{Code: 'y'})
+			if cmd != nil {
+				t.Fatalf("advancing to the agent question returned a cmd, want nil")
+			}
+			m = next
+		}
+		m.viewString()
+		return m, ctrl, state
+	}
+
+	t.Run("a hidden frame refuses consent", func(t *testing.T) {
+		m, ctrl, state := openQuestion(t, "sess-resize-hidden", true)
+
+		// A resize below the supported minimum hides the whole frame; the
+		// disclosure the user just read is gone with it.
+		m, _ = press(m, tea.WindowSizeMsg{Width: 40, Height: 12})
+		if m.rawWidth != 40 || m.rawHeight != 12 {
+			t.Fatalf("raw size = %dx%d, want 40x12", m.rawWidth, m.rawHeight)
+		}
+		for _, key := range []tea.KeyPressMsg{{Code: 'y'}, {Code: tea.KeyEnter}} {
+			var cmd tea.Cmd
+			m, cmd = press(m, key)
+			if cmd != nil {
+				t.Fatalf("%q below the minimum produced a command, want the answer refused", key.String())
+			}
+			if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
+				t.Fatalf("%q below the minimum closed the question (%T)", key.String(), m.dock.Panel())
+			}
+		}
+		assertNoPostmortemProgress(t, m, ctrl, state)
+	})
+
+	t.Run("a restored frame still needs a render", func(t *testing.T) {
+		m, ctrl, state := openQuestion(t, "sess-resize-restored", true)
+		m, _ = press(m, tea.WindowSizeMsg{Width: 40, Height: 12})
+		m, _ = press(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+		if m.rawWidth != 80 || m.rawHeight != 24 {
+			t.Fatalf("raw size = %dx%d, want 80x24", m.rawWidth, m.rawHeight)
+		}
+
+		// The frame is back, but the earlier rendering belonged to the old
+		// geometry: before the question is drawn again the answer is refused.
+		var cmd tea.Cmd
+		m, cmd = press(m, tea.KeyPressMsg{Code: 'y'})
+		if cmd != nil {
+			t.Fatal("the affirmative answer was accepted before the disclosure was rendered at this size")
+		}
+		if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
+			t.Fatalf("the refused answer closed the question (%T)", m.dock.Panel())
+		}
+		assertNoPostmortemProgress(t, m, ctrl, state)
+
+		// One render is enough, and the next key resolves the question exactly
+		// once: one extraction, one scoped analysis pass.
+		m.viewString()
+		m, cmd = press(m, tea.KeyPressMsg{Code: 'y'})
+		if cmd == nil {
+			t.Fatal("the affirmative answer was still refused after the disclosure was rendered")
+		}
+		done, ok := cmd().(postmortempanel.DoneMsg)
+		if !ok || done.Result != postmortempanel.ResultWithAgent {
+			t.Fatalf("answer = %+v (ok = %t), want ResultWithAgent", done, ok)
+		}
+		updated, next := m.Update(done)
+		m = asModel(t, updated)
+		if m.dock.IsOpen() {
+			t.Fatalf("the dock stayed open after the question was answered (%T)", m.dock.Panel())
+		}
+		if !m.endAnswered {
+			t.Fatal("endAnswered = false after the question was answered")
+		}
+		m, next = runEndCmd(t, m, next)
+		if len(ctrl.analysisGoals) != 1 {
+			t.Fatalf("scoped analysis passes = %d, want exactly 1", len(ctrl.analysisGoals))
+		}
+		if _, err := os.Stat(postmortemReportPath(t, state)); err != nil {
+			t.Fatalf("postmortem report not written: %v", err)
+		}
+		if next == nil {
+			t.Fatal("a completed exit must quit")
+		}
+		if _, ok := next().(tea.QuitMsg); !ok {
+			t.Fatalf("cmd() = %T, want tea.QuitMsg", next())
+		}
+	})
+
+	t.Run("declining stays available when hidden", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			agentStage bool
+			key        tea.KeyPressMsg
+			want       postmortempanel.Result
+		}{
+			{"esc at the first question", false, tea.KeyPressMsg{Code: tea.KeyEscape}, postmortempanel.ResultDeclined},
+			{"no at the first question", false, tea.KeyPressMsg{Code: 'n'}, postmortempanel.ResultDeclined},
+			{"esc at the agent question", true, tea.KeyPressMsg{Code: tea.KeyEscape}, postmortempanel.ResultExtractOnly},
+			{"no at the agent question", true, tea.KeyPressMsg{Code: 'n'}, postmortempanel.ResultExtractOnly},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				m, ctrl, _ := openQuestion(t, "sess-resize-decline", tc.agentStage)
+				m, _ = press(m, tea.WindowSizeMsg{Width: 40, Height: 12})
+
+				// Declining is never gated: the question has to stay answerable
+				// at every geometry, or a hidden frame would be a dead end.
+				m, cmd := press(m, tc.key)
+				if cmd == nil {
+					t.Fatalf("%q below the minimum produced no answer", tc.key.String())
+				}
+				done, ok := cmd().(postmortempanel.DoneMsg)
+				if !ok || done.Result != tc.want {
+					t.Fatalf("answer = %+v (ok = %t), want %v", done, ok, tc.want)
+				}
+				updated, next := m.Update(done)
+				m = asModel(t, updated)
+				if m.dock.IsOpen() {
+					t.Fatalf("the dock stayed open after a decline (%T)", m.dock.Panel())
+				}
+				m, next = runEndCmd(t, m, next)
+				if len(ctrl.analysisGoals) != 0 {
+					t.Fatalf("a decline ran the scoped analysis pass: %v", ctrl.analysisGoals)
+				}
+				if next == nil {
+					t.Fatal("a declined exit must still quit")
+				}
+				if _, ok := next().(tea.QuitMsg); !ok {
+					t.Fatalf("cmd() = %T, want tea.QuitMsg", next())
+				}
+			})
+		}
+	})
+
+	t.Run("a replacement panel does not inherit visibility", func(t *testing.T) {
+		m, ctrl, state := openQuestion(t, "sess-resize-replaced", true)
+
+		// The open panel has rendered its disclosure, but the panel that
+		// replaces it has never been drawn: what the old one proved about
+		// itself must not carry over.
+		m.openPostmortemPrompt()
+		m, cmd := press(m, tea.KeyPressMsg{Code: 'y'})
+		if cmd != nil {
+			t.Fatal("advancing the replacement panel returned a command, want nil")
+		}
+		m, cmd = press(m, tea.KeyPressMsg{Code: 'y'})
+		if cmd != nil {
+			t.Fatal("the replacement panel inherited the previous panel's visibility")
+		}
+		if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
+			t.Fatalf("the refused answer closed the replacement question (%T)", m.dock.Panel())
+		}
+		assertNoPostmortemProgress(t, m, ctrl, state)
+	})
+}
+
 // ── Send now ────────────────────────────────────────────────────────────
 
 // sendNowOwnedMsg is the async result the sendNowTestPanel claims, standing in

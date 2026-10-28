@@ -640,6 +640,11 @@ type Model struct {
 	// Connect panel (docked; opened by /connect, /models, Ctrl+P).
 	connectModel *connect.Model
 	discovered   map[string][]schema.ModelInfo
+	// modelsProbeGen records the newest /models discovery attempt dispatched
+	// per provider, so an older attempt's completion cannot overwrite a newer
+	// one. It persists for the model's lifetime — closing and reopening the
+	// picker does not restart the count.
+	modelsProbeGen map[string]uint64
 	// auth is the credential/OAuth dependency the runtime selected. Every
 	// auth-backed surface this model opens — the connect wizard, provider
 	// probes, the settings browser, /mcp auth — consumes it, so an isolated
@@ -2554,9 +2559,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.dock.Update(pm)
 		}
 		return m, nil
+	case modelsProbeResultMsg:
+		return m.handleModelsProbeResult(pm)
 	case connect.WizardProbeResult:
 		return m.handleWizardProbeResult(pm)
 	case probe.ResultMsg:
+		if pm.FieldID == modelsProbeFieldID {
+			// A discovery completion must arrive correlated with the attempt
+			// that dispatched it; an untagged one cannot prove it is the
+			// newest for its provider, so it moves no state at all.
+			return m, nil
+		}
 		if pm.Err == nil && pm.Provider != "" {
 			pm.Models = provider.PreserveThinkingOptions(pm.Models, m.discovered[pm.Provider])
 			m.discovered[pm.Provider] = pm.Models
@@ -7185,6 +7198,22 @@ func (m *Model) openModels() tea.Cmd {
 	return m.probeProviders(names)
 }
 
+// modelsProbeFieldID is the FieldID on the /models discovery probe this
+// model dispatches. Setup probes in the connect wizard use "connect", so a
+// result carrying this id is always host discovery.
+const modelsProbeFieldID = "models"
+
+// modelsProbeResultMsg carries a /models discovery completion together with
+// the provider and the attempt that dispatched it. Discovery runs in the
+// parent model, once per provider, so only that provider's newest attempt may
+// move session discovery, the disk cache or an open picker. A global
+// generation would wrongly drop another provider's legitimate result.
+type modelsProbeResultMsg struct {
+	Provider   string
+	Generation uint64
+	Result     probe.ResultMsg
+}
+
 // probeProviders dispatches a probe for each named provider that has no
 // cached entry and whose endpoint is permitted by the remote-provider
 // gate. Codex refreshes even with a cached entry: its catalog is versioned
@@ -7200,9 +7229,57 @@ func (m *Model) probeProviders(names []string) tea.Cmd {
 		if !probe.IsLocalhost(pc.BaseURL) && !m.state.Config.Privacy.RemoteProvidersAllowed {
 			continue
 		}
-		cmds = append(cmds, probe.ProviderWithAuth("models", n, pc, m.modelCacheDir, m.state.Config.Agent.ThinkingBudgetMargin, m.auth))
+		// Count the attempt only when a probe is really dispatched, so a
+		// skipped provider cannot invalidate the attempt that did run.
+		if m.modelsProbeGen == nil {
+			m.modelsProbeGen = map[string]uint64{}
+		}
+		m.modelsProbeGen[n]++
+		owner, gen := n, m.modelsProbeGen[n]
+		inner := probe.ProviderWithAuth("models", n, pc, m.modelCacheDir, m.state.Config.Agent.ThinkingBudgetMargin, m.auth)
+		cmds = append(cmds, func() tea.Msg {
+			res, ok := inner().(probe.ResultMsg)
+			if !ok {
+				return nil
+			}
+			return modelsProbeResultMsg{Provider: owner, Generation: gen, Result: res}
+		})
 	}
 	return tea.Batch(cmds...)
+}
+
+// handleModelsProbeResult applies a /models discovery completion only when it
+// belongs to the provider's newest dispatched attempt. Session discovery, the
+// disk cache and an open picker are all shared, so a late older attempt must
+// move none of them — a stale success would resurrect an outdated catalog and
+// a stale failure would evict a good cached one. Only a live connect panel
+// receives the inner result, and Task 2 restricts it to the all-provider
+// model-selection step.
+func (m *Model) handleModelsProbeResult(msg modelsProbeResultMsg) (tea.Model, tea.Cmd) {
+	if msg.Provider == "" || msg.Generation == 0 || msg.Result.Provider != msg.Provider {
+		return m, nil // unattributable result
+	}
+	if m.modelsProbeGen[msg.Provider] != msg.Generation {
+		return m, nil // a newer attempt for this provider supersedes it
+	}
+	if msg.Result.Err == nil {
+		msg.Result.Models = provider.PreserveThinkingOptions(msg.Result.Models, m.discovered[msg.Provider])
+		m.discovered[msg.Provider] = msg.Result.Models
+		m.persistDiscovered(msg.Provider, msg.Result.Models)
+		if panel, ok := m.dock.Panel().(*modeloptions.Panel); ok {
+			preset := m.state.Config.Models.Presets[panel.PresetName()]
+			if preset.Provider == msg.Provider {
+				panel.SetThinkingOptions(m.modelThinkingOptions(panel.PresetName()))
+			}
+		}
+	}
+	// Failures carry no models, but the picker still needs to note them
+	// against the provider, so both outcomes are forwarded while a panel is
+	// open.
+	if _, ok := m.dock.Panel().(connect.Panel); ok {
+		return m, m.dock.Update(msg.Result)
+	}
+	return m, nil
 }
 
 // handleWizardProbeResult applies a setup probe's completion to the host's

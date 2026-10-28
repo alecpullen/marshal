@@ -6554,10 +6554,14 @@ func TestProbeProvidersUsesInjectedResolver(t *testing.T) {
 		}
 		msg = batch[0]()
 	}
-	res, ok := msg.(probe.ResultMsg)
+	wrapped, ok := msg.(modelsProbeResultMsg)
 	if !ok {
-		t.Fatalf("probe produced %T, want probe.ResultMsg", msg)
+		t.Fatalf("probe produced %T, want modelsProbeResultMsg", msg)
 	}
+	if wrapped.Provider != "codex" || wrapped.Generation == 0 {
+		t.Fatalf("probe wrapper = %+v, want a correlated codex attempt", wrapped)
+	}
+	res := wrapped.Result
 	if res.Err == nil || !strings.Contains(res.Err.Error(), "injected store failure") {
 		t.Fatalf("err = %v, want the injected resolver failure", res.Err)
 	}
@@ -8209,10 +8213,10 @@ func TestModelsRefreshesCachedCodexAndUpdatesPicker(t *testing.T) {
 	if cmd := m.openModels(); cmd == nil {
 		t.Fatal("cached Codex catalog prevented a live refresh")
 	}
-	updated, _ := m.Update(probe.ResultMsg{
+	updated, _ := m.Update(modelsResult(m, "codex", probe.ResultMsg{
 		FieldID: "models", Provider: "codex",
 		Models: []schema.ModelInfo{{ID: "gpt-6.1-sol"}, {ID: "gpt-6-sol"}, {ID: "gpt-6-luna"}},
-	})
+	}))
 	m = asModel(t, updated)
 	view := stripANSI(m.connectModel.View(100, 30))
 	for _, id := range []string{"gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"} {
@@ -8234,6 +8238,206 @@ func TestCodexCachedRefreshRespectsRemotePrivacy(t *testing.T) {
 	m.discovered["codex"] = []schema.ModelInfo{{ID: "gpt-5.6-luna"}}
 	if cmd := m.probeProviders([]string{"codex"}); cmd != nil {
 		t.Fatal("Codex refresh bypassed remote privacy setting")
+	}
+}
+
+// idsOf joins a model list's ids for compact assertions.
+func idsOf(models []schema.ModelInfo) string {
+	ids := make([]string, len(models))
+	for i, mi := range models {
+		ids[i] = mi.ID
+	}
+	return strings.Join(ids, ",")
+}
+
+// selectedPickerValue reports the value the connect picker would deliver on
+// Enter without consuming the pick: the wizard's own Update returns the
+// PickedMsg command and leaves its step untouched.
+func selectedPickerValue(t *testing.T, m Model) string {
+	t.Helper()
+	panel, ok := m.dock.Panel().(connect.Panel)
+	if !ok {
+		t.Fatalf("dock panel = %T, want connect.Panel", m.dock.Panel())
+	}
+	_, cmd := panel.Model.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		return ""
+	}
+	if pm, ok := cmd().(picker.PickedMsg); ok {
+		return pm.Value
+	}
+	return ""
+}
+
+// pressCtrlR drives the picker's refresh key and applies the RefreshMsg it
+// emits. The probes the refresh dispatches are deliberately not executed: they
+// would reach real endpoints.
+func pressCtrlR(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	m = asModel(t, updated)
+	if cmd == nil {
+		t.Fatal("ctrl+r produced no refresh message")
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		msg = nil
+		for _, sub := range batch {
+			if rm, ok := sub().(connect.RefreshMsg); ok {
+				msg = rm
+				break
+			}
+		}
+	}
+	rm, ok := msg.(connect.RefreshMsg)
+	if !ok {
+		t.Fatalf("ctrl+r produced %T, want connect.RefreshMsg", msg)
+	}
+	updated, _ = m.Update(rm)
+	return asModel(t, updated)
+}
+
+func TestModelDiscoveryNewestProbeWins(t *testing.T) {
+	groqCfg := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.groq.com/openai/v1"}
+	openaiCfg := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"}
+
+	dir := t.TempDir()
+	state := newTestState(t)
+	state.Config.Privacy.RemoteProvidersAllowed = true
+	state.Config.Providers = map[string]config.ProviderConfig{"groq": groqCfg, "openai": openaiCfg}
+	m := testModel(state, WithModelCache(dir))
+
+	if cmd := m.openModels(); cmd == nil {
+		t.Fatal("openModels dispatched no probes")
+	}
+	groqGen, openaiGen := m.modelsProbeGen["groq"], m.modelsProbeGen["openai"]
+	if groqGen == 0 || openaiGen == 0 {
+		t.Fatalf("generations = %v, want one dispatch per provider", m.modelsProbeGen)
+	}
+
+	deliver := func(m Model, provider string, gen uint64, res probe.ResultMsg) Model {
+		updated, _ := m.Update(modelsProbeResultMsg{Provider: provider, Generation: gen, Result: res})
+		return asModel(t, updated)
+	}
+
+	// The newest groq attempt lands first.
+	m = deliver(m, "groq", groqGen, probe.ResultMsg{
+		FieldID: modelsProbeFieldID, Provider: "groq",
+		Models: []schema.ModelInfo{{ID: "groq-fast"}, {ID: "groq-deep"}},
+	})
+
+	// Move off the default row so the stability assertion has teeth.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m = asModel(t, updated)
+	selectedBefore := selectedPickerValue(t, m)
+	if selectedBefore == "" {
+		t.Fatal("no row was selected before the late results arrived")
+	}
+
+	// An older groq attempt completes afterwards — success, then failure.
+	m = deliver(m, "groq", groqGen-1, probe.ResultMsg{
+		FieldID: modelsProbeFieldID, Provider: "groq",
+		Models: []schema.ModelInfo{{ID: "groq-stale"}},
+	})
+	m = deliver(m, "groq", groqGen-1, probe.ResultMsg{
+		FieldID: modelsProbeFieldID, Provider: "groq", Err: errors.New("stale failure"),
+	})
+	// A different provider's current result interleaves.
+	m = deliver(m, "openai", openaiGen, probe.ResultMsg{
+		FieldID: modelsProbeFieldID, Provider: "openai",
+		Models: []schema.ModelInfo{{ID: "gpt-4o"}},
+	})
+
+	if got := idsOf(m.discovered["groq"]); got != "groq-fast,groq-deep" {
+		t.Errorf("session discovery = %q, want the newest groq catalog", got)
+	}
+	if got := idsOf(m.discovered["openai"]); got != "gpt-4o" {
+		t.Errorf("session discovery = %q, want openai's own result", got)
+	}
+	groqCached, ok := modelcache.Load(dir).Lookup("groq", groqCfg, modelcache.DefaultTTL, time.Now())
+	if !ok {
+		t.Fatal("groq cache entry missing")
+	}
+	if got := idsOf(groqCached); got != "groq-fast,groq-deep" {
+		t.Errorf("cached groq models = %q, want the newest catalog", got)
+	}
+	if got := selectedPickerValue(t, m); got != selectedBefore {
+		t.Errorf("selected value = %q, want the untouched %q", got, selectedBefore)
+	}
+	if view := stripANSI(m.connectModel.View(120, 40)); strings.Contains(view, "groq-stale") {
+		t.Errorf("picker rendered a superseded model:\n%s", view)
+	}
+
+	// Repeated Ctrl+R: each refresh is a new attempt, and the previous one is
+	// stale from that moment on.
+	beforeRefresh := m.modelsProbeGen["groq"]
+	m = pressCtrlR(t, m)
+	afterRefresh := m.modelsProbeGen["groq"]
+	if afterRefresh <= beforeRefresh {
+		t.Fatalf("refresh generation = %d, want a newer attempt than %d", afterRefresh, beforeRefresh)
+	}
+	// The refresh evicted groq's session and disk entries; a superseded
+	// completion must not bring either back.
+	m = deliver(m, "groq", afterRefresh-1, probe.ResultMsg{
+		FieldID: modelsProbeFieldID, Provider: "groq",
+		Models: []schema.ModelInfo{{ID: "groq-superseded"}},
+	})
+	if got := idsOf(m.discovered["groq"]); got != "" {
+		t.Errorf("session discovery = %q, want untouched by the superseded attempt", got)
+	}
+	if _, ok := modelcache.Load(dir).Lookup("groq", groqCfg, modelcache.DefaultTTL, time.Now()); ok {
+		t.Error("a superseded completion repopulated the evicted cache")
+	}
+
+	// Closing and reopening the picker does not restart the count: the next
+	// dispatch continues the sequence rather than starting over at 1.
+	m = deliver(m, "openai", openaiGen, probe.ResultMsg{
+		FieldID: modelsProbeFieldID, Provider: "openai",
+		Models: []schema.ModelInfo{{ID: "gpt-4o"}},
+	})
+	updated, _ = m.Update(connect.CancelledMsg{})
+	m = asModel(t, updated)
+	if m.dock.Panel() != nil {
+		t.Fatalf("dock panel = %T, want closed", m.dock.Panel())
+	}
+	if cmd := m.openModels(); cmd == nil {
+		t.Fatal("reopening dispatched no probes")
+	}
+	reopenGen := m.modelsProbeGen["groq"]
+	if reopenGen <= afterRefresh {
+		t.Fatalf("generation after reopen = %d, want it to continue past %d", reopenGen, afterRefresh)
+	}
+	// The attempt dispatched before the close is stale now.
+	m = deliver(m, "groq", afterRefresh, probe.ResultMsg{
+		FieldID: modelsProbeFieldID, Provider: "groq",
+		Models: []schema.ModelInfo{{ID: "groq-pre-close"}},
+	})
+	if got := idsOf(m.discovered["groq"]); got != "" {
+		t.Errorf("session discovery = %q, want untouched by a pre-close attempt", got)
+	}
+
+	// The current attempt still lands normally.
+	m = deliver(m, "groq", reopenGen, probe.ResultMsg{
+		FieldID: modelsProbeFieldID, Provider: "groq",
+		Models: []schema.ModelInfo{{ID: "groq-new"}},
+	})
+	if got := idsOf(m.discovered["groq"]); got != "groq-new" {
+		t.Fatalf("session discovery = %q, want the current attempt's result", got)
+	}
+
+	// A current failure after a cached success must not evict the good entry.
+	m = deliver(m, "groq", reopenGen, probe.ResultMsg{
+		FieldID: modelsProbeFieldID, Provider: "groq", Err: errors.New("network down"),
+	})
+	groqCached, ok = modelcache.Load(dir).Lookup("groq", groqCfg, modelcache.DefaultTTL, time.Now())
+	if !ok {
+		t.Fatal("a current failure evicted the good cached entry")
+	}
+	if got := idsOf(groqCached); got != "groq-new" {
+		t.Errorf("cached groq models = %q, want the surviving catalog", got)
+	}
+	if got := idsOf(m.discovered["groq"]); got != "groq-new" {
+		t.Errorf("session discovery = %q, want the good entry kept", got)
 	}
 }
 
@@ -8284,18 +8488,26 @@ func TestModelCacheDoesNotSeedWhenConfigChanged(t *testing.T) {
 	}
 }
 
+// modelsResult wraps a /models discovery completion at the provider's current
+// dispatched generation. Tests that never call probeProviders seed
+// m.modelsProbeGen explicitly so the attempt is a real current one.
+func modelsResult(m Model, provider string, res probe.ResultMsg) modelsProbeResultMsg {
+	return modelsProbeResultMsg{Provider: provider, Generation: m.modelsProbeGen[provider], Result: res}
+}
+
 func TestProbeResultWritesThroughToCache(t *testing.T) {
 	dir := t.TempDir()
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
 	m := testModel(state, WithModelCache(dir))
+	m.modelsProbeGen = map[string]uint64{"openai": 1}
 
-	m.Update(probe.ResultMsg{
+	m.Update(modelsResult(m, "openai", probe.ResultMsg{
 		FieldID:  "models",
 		Provider: "openai",
 		Models:   []schema.ModelInfo{{ID: "gpt-4o", ContextWindow: 128000}},
-	})
+	}))
 
 	models, ok := modelcache.Load(dir).Lookup("openai", pc, modelcache.DefaultTTL, time.Now())
 	if !ok {
@@ -8319,8 +8531,9 @@ func TestFailedProbeKeepsCachedEntry(t *testing.T) {
 	state := newTestState(t)
 	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
 	m := testModel(state, WithModelCache(dir))
+	m.modelsProbeGen = map[string]uint64{"openai": 1}
 
-	m.Update(probe.ResultMsg{FieldID: "models", Provider: "openai", Err: errors.New("network down")})
+	m.Update(modelsResult(m, "openai", probe.ResultMsg{FieldID: "models", Provider: "openai", Err: errors.New("network down")}))
 
 	if _, ok := modelcache.Load(dir).Lookup("openai", pc, modelcache.DefaultTTL, time.Now()); !ok {
 		t.Error("a failed probe evicted a good cached entry")
@@ -8548,10 +8761,11 @@ func TestStaleWizardProbeCannotPopulateHostCache(t *testing.T) {
 func TestNoCacheDirIsHarmless(t *testing.T) {
 	state := newTestState(t)
 	m := testModel(state) // no WithModelCache
-	m.Update(probe.ResultMsg{
+	m.modelsProbeGen = map[string]uint64{"openai": 1}
+	m.Update(modelsResult(m, "openai", probe.ResultMsg{
 		FieldID: "models", Provider: "openai",
 		Models: []schema.ModelInfo{{ID: "gpt-4o"}},
-	})
+	}))
 	if len(m.discovered["openai"]) != 1 {
 		t.Error("in-session discovery must still work without a cache dir")
 	}

@@ -2554,6 +2554,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.dock.Update(pm)
 		}
 		return m, nil
+	case connect.WizardProbeResult:
+		return m.handleWizardProbeResult(pm)
 	case probe.ResultMsg:
 		if pm.Err == nil && pm.Provider != "" {
 			pm.Models = provider.PreserveThinkingOptions(pm.Models, m.discovered[pm.Provider])
@@ -7203,11 +7205,30 @@ func (m *Model) probeProviders(names []string) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// persistDiscovered writes one provider's models through to the on-disk
-// cache. Failures are silent: the cache is an optimization, and a session
-// that cannot write it behaves exactly as it did before caching existed.
-// A failed probe must not evict a good cached entry, so this is only
-// called on the success path of probe.ResultMsg.
+// handleWizardProbeResult applies a setup probe's completion to the host's
+// shared model state, but only when the live connect panel is the very wizard
+// instance that launched it and that attempt is still current. A stale
+// result — skipped, superseded by a retry, cancelled, or belonging to a
+// replaced wizard — must touch neither the session discovery map nor the disk
+// cache, whether it succeeded or failed. Otherwise a late failure could evict
+// a good cached catalog, and a late success could resurrect models the user
+// already moved past.
+func (m *Model) handleWizardProbeResult(wr connect.WizardProbeResult) (tea.Model, tea.Cmd) {
+	panel, ok := m.dock.Panel().(connect.Panel)
+	if !ok || wr.Owner == nil || panel.Model != wr.Owner {
+		return m, nil // the wizard was closed or replaced
+	}
+	if !wr.Owner.AcceptsWizardProbe(wr) {
+		return m, nil // a stale attempt within the live wizard
+	}
+	if wr.Result.Err == nil && wr.Result.Provider != "" {
+		wr.Result.Models = provider.PreserveThinkingOptions(wr.Result.Models, m.discovered[wr.Result.Provider])
+		m.discovered[wr.Result.Provider] = wr.Result.Models
+		m.persistDiscovered(wr.Result.Provider, wr.Result.Models)
+	}
+	return m, m.dock.Update(wr)
+}
+
 func (m *Model) persistDiscovered(name string, models []schema.ModelInfo) {
 	if m.modelCacheDir == "" || len(models) == 0 {
 		return

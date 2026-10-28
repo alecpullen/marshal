@@ -8327,6 +8327,224 @@ func TestFailedProbeKeepsCachedEntry(t *testing.T) {
 	}
 }
 
+// wizardProbeGeneration runs the command the connect wizard returned when it
+// entered the probing step and reports the generation that attempt stamps on
+// its result. The wizard's probe targets a closed localhost port, so it fails
+// immediately: no fixture or network is involved, and the returned message is
+// discarded. Callers need the number because the generation is private to the
+// connect package.
+func wizardProbeGeneration(t *testing.T, cmd tea.Cmd) uint64 {
+	t.Helper()
+	var (
+		gen  uint64
+		seen bool
+		walk func(tea.Cmd)
+	)
+	walk = func(c tea.Cmd) {
+		if c == nil || seen {
+			return
+		}
+		msg := c()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, sub := range batch {
+				walk(sub)
+			}
+			return
+		}
+		if wr, ok := msg.(connect.WizardProbeResult); ok {
+			gen = wr.Generation
+			seen = true
+		}
+	}
+	walk(cmd)
+	if !seen {
+		t.Fatal("the probing command produced no correlated wizard result")
+	}
+	return gen
+}
+
+func TestStaleWizardProbeCannotPopulateHostCache(t *testing.T) {
+	pc := config.ProviderConfig{Type: "ollama", BaseURL: "http://localhost:11434"}
+
+	// openProbingWizard drives the host through the template picker to the
+	// setup-probing step and returns the wizard plus its current generation.
+	// persist registers the provider the wizard just chose: without it
+	// persistDiscovered is a no-op, and a rejected write would be
+	// indistinguishable from an impossible one. It runs *after* creation so
+	// the wizard keeps the unsuffixed template name.
+	openProbingWizard := func(t *testing.T, m Model, persist bool) (Model, *connect.Model, uint64) {
+		t.Helper()
+		m.openConnect("")
+		updated, cmd := m.Update(picker.PickedMsg{Value: "ollama"})
+		m = asModel(t, updated)
+		panel, ok := m.dock.Panel().(connect.Panel)
+		if !ok {
+			t.Fatalf("dock panel = %T, want connect.Panel", m.dock.Panel())
+		}
+		if persist {
+			m.state.Config.Providers = map[string]config.ProviderConfig{"ollama": pc}
+		}
+		return m, panel.Model, wizardProbeGeneration(t, cmd)
+	}
+	newHost := func(t *testing.T) (Model, string) {
+		t.Helper()
+		// No providers configured: the wizard adopts the plain template name.
+		dir := t.TempDir()
+		return testModel(newTestState(t), WithModelCache(dir)), dir
+	}
+	// seedCache plants a good catalog so an eviction or an overwrite is
+	// observable rather than lost against an empty cache.
+	seedCache := func(t *testing.T, dir string) {
+		t.Helper()
+		if err := modelcache.Save(dir, modelcache.Cache{Providers: map[string]modelcache.Entry{
+			"ollama": {ConfigHash: modelcache.HashProvider(pc), Models: []schema.ModelInfo{{ID: "cached-before"}}, FetchedAt: time.Now()},
+		}}); err != nil {
+			t.Fatalf("seed cache: %v", err)
+		}
+	}
+	assertCacheHolds := func(t *testing.T, dir, want string) {
+		t.Helper()
+		models, ok := modelcache.Load(dir).Lookup("ollama", pc, modelcache.DefaultTTL, time.Now())
+		if !ok {
+			t.Fatalf("cache lost its entry, want %q", want)
+		}
+		if len(models) != 1 || models[0].ID != want {
+			t.Fatalf("cached models = %v, want [%s]", models, want)
+		}
+	}
+	success := func(owner *connect.Model, gen uint64) connect.WizardProbeResult {
+		return connect.WizardProbeResult{
+			Owner:      owner,
+			Generation: gen,
+			Result:     probe.ResultMsg{FieldID: "connect", Provider: "ollama", Models: []schema.ModelInfo{{ID: "stale-model"}}},
+		}
+	}
+
+	t.Run("stale success cannot populate the cache", func(t *testing.T) {
+		m, dir := newHost(t)
+		seedCache(t, dir)
+		var wiz *connect.Model
+		var gen uint64
+		m, wiz, gen = openProbingWizard(t, m, true)
+
+		// A superseded attempt: the generation is one behind the live one.
+		updated, _ := m.Update(success(wiz, gen-1))
+		m = asModel(t, updated)
+
+		if got := m.discovered["ollama"]; len(got) != 0 {
+			t.Errorf("session discovery = %v, want untouched by a stale result", got)
+		}
+		assertCacheHolds(t, dir, "cached-before")
+	})
+
+	t.Run("stale failure cannot evict a good cache", func(t *testing.T) {
+		m, dir := newHost(t)
+		seedCache(t, dir)
+		var wiz *connect.Model
+		var gen uint64
+		m, wiz, gen = openProbingWizard(t, m, true)
+
+		updated, _ := m.Update(connect.WizardProbeResult{
+			Owner: wiz, Generation: gen - 1,
+			Result: probe.ResultMsg{FieldID: "connect", Provider: "ollama", Err: errors.New("stale failure")},
+		})
+		m = asModel(t, updated)
+
+		assertCacheHolds(t, dir, "cached-before")
+	})
+
+	t.Run("skip invalidates the attempt", func(t *testing.T) {
+		m, dir := newHost(t)
+		seedCache(t, dir)
+		var wiz *connect.Model
+		var gen uint64
+		m, wiz, gen = openProbingWizard(t, m, true)
+
+		updated, _ := m.Update(tea.KeyPressMsg{Code: 115}) // s = skip
+		m = asModel(t, updated)
+		updated, _ = m.Update(success(wiz, gen))
+		m = asModel(t, updated)
+
+		if got := m.discovered["ollama"]; len(got) != 0 {
+			t.Errorf("session discovery = %v, want untouched after skip", got)
+		}
+		assertCacheHolds(t, dir, "cached-before")
+	})
+
+	t.Run("retry supersedes the earlier attempt", func(t *testing.T) {
+		m, dir := newHost(t)
+		seedCache(t, dir)
+		var wiz *connect.Model
+		var gen uint64
+		m, wiz, gen = openProbingWizard(t, m, true)
+
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: 114}) // r = retry
+		m = asModel(t, updated)
+		if cmd == nil {
+			t.Fatal("retry must re-arm the probe")
+		}
+		if next := wizardProbeGeneration(t, cmd); next == gen {
+			t.Fatalf("retry reused generation %d, want a new attempt", gen)
+		}
+		updated, _ = m.Update(success(wiz, gen))
+		m = asModel(t, updated)
+
+		if got := m.discovered["ollama"]; len(got) != 0 {
+			t.Errorf("session discovery = %v, want untouched by the superseded attempt", got)
+		}
+		assertCacheHolds(t, dir, "cached-before")
+	})
+
+	t.Run("closed wizard cannot populate the cache", func(t *testing.T) {
+		m, dir := newHost(t)
+		seedCache(t, dir)
+		var wiz *connect.Model
+		var gen uint64
+		m, wiz, gen = openProbingWizard(t, m, true)
+
+		updated, _ := m.Update(connect.CancelledMsg{})
+		m = asModel(t, updated)
+		updated, _ = m.Update(success(wiz, gen))
+		m = asModel(t, updated)
+
+		if got := m.discovered["ollama"]; len(got) != 0 {
+			t.Errorf("session discovery = %v, want untouched after the wizard closed", got)
+		}
+		assertCacheHolds(t, dir, "cached-before")
+	})
+
+	t.Run("replaced wizard instance cannot populate the cache", func(t *testing.T) {
+		m, dir := newHost(t)
+		seedCache(t, dir)
+		var first *connect.Model
+		var firstGen uint64
+		m, first, firstGen = openProbingWizard(t, m, false)
+
+		// A second wizard for the same provider replaces the first on the
+		// dock. The old instance's result must not reach the new panel.
+		var second *connect.Model
+		var secondGen uint64
+		m, second, secondGen = openProbingWizard(t, m, true)
+		if second == first {
+			t.Fatal("precondition: the replacement should be a distinct wizard")
+		}
+		updated, _ := m.Update(success(first, firstGen))
+		m = asModel(t, updated)
+		if got := m.discovered["ollama"]; len(got) != 0 {
+			t.Errorf("session discovery = %v, want untouched by the replaced wizard's result", got)
+		}
+		assertCacheHolds(t, dir, "cached-before")
+
+		// The live wizard's own result is still accepted.
+		updated, _ = m.Update(success(second, secondGen))
+		m = asModel(t, updated)
+		if got := m.discovered["ollama"]; len(got) != 1 || got[0].ID != "stale-model" {
+			t.Fatalf("session discovery = %v, want the live wizard's result", got)
+		}
+		assertCacheHolds(t, dir, "stale-model")
+	})
+}
+
 func TestNoCacheDirIsHarmless(t *testing.T) {
 	state := newTestState(t)
 	m := testModel(state) // no WithModelCache

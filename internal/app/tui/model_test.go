@@ -8600,6 +8600,62 @@ func modelsResult(m Model, provider string, res probe.ResultMsg) modelsProbeResu
 	return modelsProbeResultMsg{Provider: provider, Generation: m.modelsProbeGen[provider], Result: res}
 }
 
+// TestRawModelsProbeMovesNoState pins that an untagged discovery completion is
+// inert: only a result correlated with the attempt that dispatched it can prove
+// it is the newest for its provider, so it may not reach the session map or the
+// disk cache.
+func TestRawModelsProbeMovesNoState(t *testing.T) {
+	dir := t.TempDir()
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
+	state := newTestState(t)
+	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
+	m := testModel(state, WithModelCache(dir))
+	m.modelsProbeGen = map[string]uint64{"openai": 1}
+
+	updated, _ := m.Update(probe.ResultMsg{
+		FieldID:  modelsProbeFieldID,
+		Provider: "openai",
+		Models:   []schema.ModelInfo{{ID: "gpt-4o", ContextWindow: 128000}},
+	})
+	m = asModel(t, updated)
+
+	if got := m.discovered["openai"]; len(got) != 0 {
+		t.Fatalf("discovered = %v, want the untagged result ignored", got)
+	}
+	if _, ok := modelcache.Load(dir).Lookup("openai", pc, modelcache.DefaultTTL, time.Now()); ok {
+		t.Fatal("an untagged result must not be persisted")
+	}
+}
+
+// TestModelsProbeResultForRemovedProviderIsDropped pins that a discovery
+// completion landing after its provider left the config writes nothing: no
+// session entry and no cache row for a provider that no longer exists.
+func TestModelsProbeResultForRemovedProviderIsDropped(t *testing.T) {
+	dir := t.TempDir()
+	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
+	state := newTestState(t)
+	state.Config.Providers = map[string]config.ProviderConfig{"openai": pc}
+	m := testModel(state, WithModelCache(dir))
+	m.modelsProbeGen = map[string]uint64{"openai": 1}
+
+	// The probe was dispatched, then the provider was deleted while it ran.
+	msg := modelsResult(m, "openai", probe.ResultMsg{
+		Provider: "openai",
+		Models:   []schema.ModelInfo{{ID: "gpt-4o", ContextWindow: 128000}},
+	})
+	delete(state.Config.Providers, "openai")
+
+	updated, _ := m.Update(msg)
+	m = asModel(t, updated)
+
+	if got := m.discovered["openai"]; len(got) != 0 {
+		t.Fatalf("discovered = %v, want the removed provider ignored", got)
+	}
+	if _, ok := modelcache.Load(dir).Lookup("openai", pc, modelcache.DefaultTTL, time.Now()); ok {
+		t.Fatal("a removed provider must not gain a cache entry")
+	}
+}
+
 func TestProbeResultWritesThroughToCache(t *testing.T) {
 	dir := t.TempDir()
 	pc := config.ProviderConfig{Type: "openai_compatible", BaseURL: "https://a/v1"}
@@ -8865,6 +8921,10 @@ func TestStaleWizardProbeCannotPopulateHostCache(t *testing.T) {
 
 func TestNoCacheDirIsHarmless(t *testing.T) {
 	state := newTestState(t)
+	// Discovery is only ever dispatched for a configured provider, and the
+	// session map refuses results for one that has since been removed, so the
+	// fixture configures it like production does.
+	state.Config.Providers = map[string]config.ProviderConfig{"openai": {Type: "openai_compatible", BaseURL: "https://a/v1"}}
 	m := testModel(state) // no WithModelCache
 	m.modelsProbeGen = map[string]uint64{"openai": 1}
 	m.Update(modelsResult(m, "openai", probe.ResultMsg{

@@ -217,6 +217,15 @@ func (p *Panel) View(width, maxHeight int) string {
 	if len(urlLines) > 0 && viewport > 0 {
 		textRows := viewport
 		scrollable := len(urlLines) > viewport
+		if scrollable && viewport <= 1 {
+			// A one-row viewport cannot afford the indicator row, so the
+			// paging keys ride on the hint instead of vanishing entirely.
+			if len(tail) == 2 {
+				tail[1] = hint + " · PgUp/PgDn scroll"
+			} else {
+				tail[0] += " · PgUp/PgDn scroll"
+			}
+		}
 		if scrollable && viewport > 1 {
 			// One viewport row pays for the position indicator.
 			textRows = viewport - 1

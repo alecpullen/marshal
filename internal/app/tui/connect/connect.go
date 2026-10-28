@@ -74,7 +74,11 @@ const (
 )
 
 type Opts struct {
-	Cfg              config.Config
+	Cfg config.Config
+	// Discovered is the host's session-wide model-discovery map, passed by
+	// reference so a setup probe lands where /models reads. The host also
+	// writes this map when it applies a correlated result before forwarding
+	// it to this wizard, so both writers must agree on the same provider key.
 	Discovered       map[string][]schema.ModelInfo
 	SkipToIntroModel bool
 	ScopedProvider   string

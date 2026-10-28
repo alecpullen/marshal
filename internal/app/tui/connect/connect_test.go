@@ -2328,6 +2328,39 @@ func TestSetupProbeRejectsSkippedAndSupersededResults(t *testing.T) {
 		second, _ = second.Update(wizardResult(first, probe.ResultMsg{Provider: first.providerName, Models: []schema.ModelInfo{{ID: "stale-model"}}}))
 		assertWizardUnchanged(t, before, snapshotWizard(second), "replaced wizard's result")
 	})
+
+	t.Run("other provider", func(t *testing.T) {
+		m := newProbingWizard(t)
+		// Right instance and generation, wrong provider: the result belongs to
+		// a different wizard's probe and must not touch this one.
+		wr := wizardResult(m, probe.ResultMsg{Provider: "someone-else", Models: []schema.ModelInfo{{ID: "elsewhere"}}})
+		if m.AcceptsWizardProbe(wr) {
+			t.Fatal("a result naming another provider must be rejected")
+		}
+		before := snapshotWizard(m)
+		m, _ = m.Update(wr)
+		assertWizardUnchanged(t, before, snapshotWizard(m), "other provider's result")
+	})
+
+	t.Run("cancelled wizard", func(t *testing.T) {
+		// Esc at the probing step abandons the wizard; the probe it launched
+		// is still running and must not land afterwards.
+		m := newProbingWizard(t)
+		old := wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "stale-model"}}})
+		if !m.AcceptsWizardProbe(old) {
+			t.Fatal("precondition: the result matches the wizard before it is cancelled")
+		}
+		m = pressKeys(m, tea.KeyPressMsg{Code: tea.KeyEscape})
+		if m.step != stepCancelled {
+			t.Fatalf("esc: step = %v, want stepCancelled", m.step)
+		}
+		if m.AcceptsWizardProbe(old) {
+			t.Fatal("a cancelled wizard must reject its in-flight probe")
+		}
+		before := snapshotWizard(m)
+		m, _ = m.Update(old)
+		assertWizardUnchanged(t, before, snapshotWizard(m), "result after cancel")
+	})
 }
 
 func TestDiscoveryKeepsSelectedProviderModel(t *testing.T) {

@@ -619,4 +619,93 @@ func TestReplaceItemsRequiresExplicitChoiceWhenMissing(t *testing.T) {
 			t.Fatalf("the error must stay visible at 80x24:\n%s", ansi.Strip(view))
 		}
 	})
+
+	t.Run("error survives the smallest dock", func(t *testing.T) {
+		// A docked panel can be as short as dock.MaxRows' floor. With a footer
+		// and an error the list must yield rows — and the footer is dropped
+		// last — so the error never falls out of the frame where the user
+		// could not read the reason Enter refused.
+		m := New("Models", "↵ pick · Esc cancel", items)
+		moveTo(t, m, "b")
+		m.ReplaceItems([]Item{{Label: "alpha", Value: "a"}})
+		for _, maxH := range []int{6, 5, 4, 3} {
+			view := m.View(80, maxH)
+			if h := lipgloss.Height(view); h > maxH {
+				t.Errorf("View(80, %d) rendered %d rows", maxH, h)
+			}
+			if !strings.Contains(ansi.Strip(view), errMissingSelection) {
+				t.Errorf("View(80, %d) must keep the error visible:\n%s", maxH, ansi.Strip(view))
+			}
+		}
+	})
+}
+
+// TestReplaceItemsUnderActiveFilter pins what a refresh may do while the user
+// is filtering. A row the filter hides can never be the selected row — the
+// cursor is positional, so refilter already re-bound it — but the selected
+// value leaving the catalog is still a disappearance, and it must not slide
+// onto a row that happens to match.
+func TestReplaceItemsUnderActiveFilter(t *testing.T) {
+	items := []Item{
+		{Label: "alpha", Value: "a"},
+		{Label: "beta", Value: "b"},
+		{Label: "gamma", Value: "c"},
+	}
+	m := New("Models", "", items)
+	for _, r := range "gamm" {
+		m.Update(key(r))
+	}
+	if got := cursorValue(m); got != "c" {
+		t.Fatalf("precondition: selected = %q, want gamma", got)
+	}
+	if len(m.matches) != 1 {
+		t.Fatalf("precondition: filter should leave one match, got %d", len(m.matches))
+	}
+
+	// The selected value leaves the catalog while the filter is still active.
+	if m.ReplaceItems(items[:2]) {
+		t.Fatal("a selection the refresh dropped must count as disappeared")
+	}
+	if m.cursor != -1 {
+		t.Fatalf("cursor = %d, want -1", m.cursor)
+	}
+	if got := m.ErrMsg(); got != errMissingSelection {
+		t.Fatalf("errMsg = %q, want %q", got, errMissingSelection)
+	}
+	if cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatalf("enter must not pick while nothing is selected, got %#v", cmd())
+	}
+
+	// A second refresh under the same filter still waits for the user.
+	if m.ReplaceItems(items[:2]) {
+		t.Fatal("a later refresh must still not select a row for the user")
+	}
+	if m.cursor != -1 {
+		t.Fatalf("cursor = %d after a second refresh, want -1", m.cursor)
+	}
+}
+
+// TestReplaceItemsKeepsFirstOfDuplicateValues pins the tie-break when a list
+// carries the same opaque value twice: selection re-binds to the first match,
+// so a refresh cannot shuffle which row stays highlighted.
+func TestReplaceItemsKeepsFirstOfDuplicateValues(t *testing.T) {
+	items := []Item{
+		{Label: "same (a)", Value: "dup"},
+		{Label: "other", Value: "other"},
+		{Label: "same (b)", Value: "dup"},
+	}
+	m := New("Models", "", items)
+	moveTo(t, m, "dup")
+	if m.cursor != 0 {
+		t.Fatalf("precondition: cursor = %d, want the first duplicate", m.cursor)
+	}
+	if !m.ReplaceItems(items) {
+		t.Fatal("the value is still present, so the selection survives")
+	}
+	if m.cursor != 0 {
+		t.Fatalf("cursor = %d, want the first row carrying the value", m.cursor)
+	}
+	if got := m.items[m.matches[m.cursor]].Label; got != "same (a)" {
+		t.Fatalf("re-bound to %q, want the first duplicate", got)
+	}
 }

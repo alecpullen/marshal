@@ -2578,6 +2578,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// newest for its provider, so it moves no state at all.
 			return m, nil
 		}
+		// Every model-discovery and setup probe is now wrapped in
+		// modelsProbeResultMsg / connect.WizardProbeResult, so what reaches
+		// here is a probe from another surface (the model-options panel
+		// claims its own FieldID first). Keep the shared-state application and
+		// the dock hand-off for those, since a panel that asked for the probe
+		// is still the only one that can interpret its result.
 		if pm.Err == nil && pm.Provider != "" {
 			pm.Models = provider.PreserveThinkingOptions(pm.Models, m.discovered[pm.Provider])
 			m.discovered[pm.Provider] = pm.Models
@@ -7269,6 +7275,12 @@ func (m *Model) handleModelsProbeResult(msg modelsProbeResultMsg) (tea.Model, te
 	}
 	if m.modelsProbeGen[msg.Provider] != msg.Generation {
 		return m, nil // a newer attempt for this provider supersedes it
+	}
+	if _, ok := m.state.Config.Providers[msg.Provider]; !ok {
+		// The provider was removed while the probe was in flight. Its result
+		// must not seed a cache entry (or a session map key) for a provider
+		// that no longer exists.
+		return m, nil
 	}
 	if msg.Result.Err == nil {
 		msg.Result.Models = provider.PreserveThinkingOptions(msg.Result.Models, m.discovered[msg.Provider])

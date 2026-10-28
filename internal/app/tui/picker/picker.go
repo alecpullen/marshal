@@ -252,24 +252,21 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		case "esc":
 			return func() tea.Msg { return CancelledMsg{} }
 		case "enter":
-			if m.cursor < 0 {
-				// No row is selected: a refresh dropped the former choice.
-				// Enter must not pick a neighbour on the user's behalf.
-				if len(m.matches) == 0 {
+			if len(m.matches) == 0 || m.cursor < 0 || m.cursor >= len(m.matches) {
+				// No row is selected: a refresh dropped the former choice, or
+				// nothing matches at all. Enter must not pick a neighbour on
+				// the user's behalf, and it must not replace the more specific
+				// "selection disappeared" message with a vaguer one.
+				if m.errMsg == "" {
 					m.errMsg = "No matches to select"
 				}
 				return nil
 			}
-			if m.cursor < len(m.matches) && len(m.matches) > 0 {
-				idx := m.matches[m.cursor]
-				if idx == -1 {
-					return func() tea.Msg { return PickedMsg{Value: m.filter.Value()} }
-				}
-				v := m.items[idx].Value
-				return func() tea.Msg { return PickedMsg{Value: v} }
+			idx := m.matches[m.cursor]
+			if idx == -1 {
+				return func() tea.Msg { return PickedMsg{Value: m.filter.Value()} }
 			}
-			m.errMsg = "No matches to select"
-			return nil
+			return func() tea.Msg { return PickedMsg{Value: m.items[idx].Value} }
 		case "up":
 			m.errMsg = ""
 			if m.cursor < 0 {
@@ -375,18 +372,26 @@ func (m *Model) View(maxW, maxH int) string {
 		rows = append(rows, mutedStyle().Render("  no matches"))
 	}
 
-	listH := maxH - 3 // header + filter + margin
+	// The frame spends one of maxH rows on its top border, so the panel draws
+	// at most maxH-1 content rows. Non-list rows are reserved in priority
+	// order — filter, then the error (the reason Enter refused), then the
+	// footer hint, which repeats the panel's own hint row — so a short dock
+	// shrinks the list instead of clipping away the error.
+	budget := max(maxH-1, 0)
+	fixed := 1 // filter input
 	if m.errMsg != "" {
-		// The error borrows a row from the list rather than sitting outside
-		// the panel's height budget, where the frame would clip it away.
-		listH--
+		fixed++
 	}
-	if listH < 3 {
-		listH = 3
+	showFooter := m.footer != "" && budget-fixed >= 2 // one list row must survive
+	if showFooter {
+		fixed++
 	}
-	body := chrome.ClipLines(rows, focusLine, listH, theme.Current())
-	content := "/ " + m.filter.View() + "\n" + body
-	if m.footer != "" {
+	listH := max(budget-fixed, 0)
+	content := "/ " + m.filter.View()
+	if listH > 0 {
+		content += "\n" + chrome.ClipLines(rows, focusLine, listH, theme.Current())
+	}
+	if showFooter {
 		content += "\n" + mutedStyle().Render(m.footer)
 	}
 	if m.errMsg != "" {

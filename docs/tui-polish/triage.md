@@ -332,7 +332,16 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
     (composed frames at 80×24, 120×40 and 140×40) rather than by hand; a real
     OAuth round trip and a real terminal clipboard were not exercised, so the
     OSC 52 acceptance path stays unproven on device; the scripted usability
-    suite remains help-only.
+    suite remains help-only. A three-reviewer branch review (`glm-5.3-flash`)
+    then found, and this branch fixed: the picker clipping its own error line at
+    the smallest dock heights (the list and footer now yield rows to it), no
+    paging cue when the authorization-URL viewport is a single row, a parent
+    discovery result landing for a provider already removed from the config, and
+    Enter replacing the specific missing-selection message with a vaguer one.
+    Remaining review notes are accepted as-is: the auth panel's viewport clamp
+    lives in `View` (documented, and every paging key clamps again), and the
+    `models` probe field id is spelled in both packages because `connect` cannot
+    import `tui`.
 
 11. **Clarify and preserve question answers.** Address
     [skip discarding prior answers](audit.md#skipping-a-multi-question-form-discards-earlier-answers)

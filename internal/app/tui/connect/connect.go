@@ -964,6 +964,14 @@ func (m *Model) handleOAuthDone(msg OAuthDoneMsg) (*Model, tea.Cmd) {
 }
 
 func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
+	if msg.FieldID == parentModelProbeFieldID && (!m.allProviders || m.step != stepPickModel) {
+		// /models discovery runs in the parent model. It may refresh this
+		// picker only while the picker is the all-provider model-selection
+		// step; anywhere else it is not this wizard's result, and treating it
+		// as a setup probe would advance or fail a step it knows nothing
+		// about.
+		return m, nil
+	}
 	name := msg.Provider
 	if name == "" {
 		name = m.providerName
@@ -1004,16 +1012,17 @@ func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
 }
 
 // rebuildModelPicker refreshes the model rows (e.g. after a probe result)
-// while preserving whatever the user has typed into the filter.
+// without replacing the picker: the user's filter text and selected model both
+// live on that instance. ReplaceItems re-binds the selection by value, so a
+// row that arrives under a different provider cannot capture a choice the user
+// already made, and it reports when the chosen row disappeared.
 func (m *Model) rebuildModelPicker() {
-	filter := ""
-	if m.picker != nil {
-		filter = m.picker.FilterValue()
+	fresh := buildModelPicker(m, m.providerName)
+	if m.picker == nil {
+		m.picker = fresh
+		return
 	}
-	m.picker = buildModelPicker(m, m.providerName)
-	if filter != "" {
-		m.picker.SetFilter(filter)
-	}
+	m.picker.ReplaceItems(fresh.Items())
 }
 
 // probeHint maps common connection failures to a one-line remediation.
@@ -1243,6 +1252,12 @@ func (m *Model) advanceToPickModel() (*Model, tea.Cmd) {
 	enterPickModelStep(m, m.providerName)
 	return m, nil
 }
+
+// parentModelProbeFieldID is the FieldID on a model discovery probe launched
+// by the /models flow in the parent model. This wizard's own setup probe uses
+// "connect" (see runProbe), so a result carrying this field id is never the
+// wizard's own probe.
+const parentModelProbeFieldID = "models"
 
 func (m *Model) runProbe() tea.Cmd {
 	return probe.ProviderWithAuth("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Agent.ThinkingBudgetMargin, m.auth)

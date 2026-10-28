@@ -2069,3 +2069,255 @@ func TestOAuthLoginNilOpenerFallsBackToProduction(t *testing.T) {
 		t.Fatal("a nil opener must fall back to mcpauth.OpenBrowser, not leave Open unset")
 	}
 }
+
+// ── Discovery arriving while the model picker is open ────────────────
+//
+// /models probes run in the parent model and arrive here as a
+// probe.ResultMsg with FieldID "models". They may refresh the all-provider
+// model list, but they must never move the user's choice.
+
+// newDiscoveryModel builds an all-providers picker whose two providers offer
+// the same model id, so a selection is only identifiable by provider *and*
+// model. Rows: groq/llama-3.3-70b, groq/llama-3.3-70b-versatile,
+// openai/gpt-4o, openai/llama-3.3-70b.
+func newDiscoveryModel(t *testing.T) *Model {
+	t.Helper()
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"groq":   {Type: "openai_compatible", BaseURL: "https://api.groq.com/openai/v1"},
+			"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+		}},
+		Discovered: map[string][]schema.ModelInfo{
+			"groq":   {{ID: "llama-3.3-70b"}, {ID: "llama-3.3-70b-versatile"}},
+			"openai": {{ID: "gpt-4o"}, {ID: "llama-3.3-70b"}},
+		},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+		ScopedProvider:   "groq",
+	})
+	if m.step != stepPickModel {
+		t.Fatalf("newDiscoveryModel: step = %v, want stepPickModel", m.step)
+	}
+	return m
+}
+
+// pressKeys drives the wizard through real key presses, the way the docked
+// panel is driven.
+func pressKeys(m *Model, keys ...tea.KeyPressMsg) *Model {
+	for _, k := range keys {
+		m, _ = m.Update(k)
+	}
+	return m
+}
+
+// typeFilter types text into the picker's filter box through the Update path.
+func typeFilter(m *Model, text string) *Model {
+	keys := make([]tea.KeyPressMsg, 0, len(text))
+	for _, r := range text {
+		keys = append(keys, tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	return pressKeys(m, keys...)
+}
+
+// deliverProbe feeds one discovery result through the Update path.
+func deliverProbe(m *Model, msg probe.ResultMsg) *Model {
+	m, _ = m.Update(msg)
+	return m
+}
+
+// enterCmd runs the command an Enter press produced and applies its message,
+// so a pick travels the same path the docked panel would take.
+func enterCmd(t *testing.T, m *Model) (*Model, tea.Msg) {
+	t.Helper()
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		return m, nil
+	}
+	msg := cmd()
+	m, _ = m.Update(msg)
+	return m, msg
+}
+
+func TestDiscoveryKeepsSelectedProviderModel(t *testing.T) {
+	t.Run("a model row under a nonempty filter", func(t *testing.T) {
+		m := newDiscoveryModel(t)
+		// Typing a filter inserts the synthetic custom row first, so the
+		// matches are [custom, groq/llama-3.3-70b,
+		// groq/llama-3.3-70b-versatile, openai/llama-3.3-70b]. Three Downs
+		// land on openai's row, which shares its model id with groq's row.
+		m = typeFilter(m, "llama-3.3-70b")
+		m = pressKeys(m,
+			tea.KeyPressMsg{Code: tea.KeyDown},
+			tea.KeyPressMsg{Code: tea.KeyDown},
+			tea.KeyPressMsg{Code: tea.KeyDown})
+		want := encodeModelValue("openai", "llama-3.3-70b")
+
+		// Another provider's success, then its failure, arrive while the
+		// picker is open.
+		m = deliverProbe(m, probe.ResultMsg{
+			FieldID:  parentModelProbeFieldID,
+			Provider: "groq",
+			Models:   []schema.ModelInfo{{ID: "llama-3.3-70b"}, {ID: "llama-3.3-70b-versatile"}, {ID: "mixtral-8x7b"}},
+		})
+		m = deliverProbe(m, probe.ResultMsg{
+			FieldID:  parentModelProbeFieldID,
+			Provider: "groq",
+			Err:      errors.New("connection refused"),
+		})
+
+		if got := m.picker.FilterValue(); got != "llama-3.3-70b" {
+			t.Fatalf("filter = %q, want it preserved across discoveries", got)
+		}
+		_, msg := enterCmd(t, m)
+		picked, ok := msg.(picker.PickedMsg)
+		if !ok {
+			t.Fatalf("Enter produced %T, want picker.PickedMsg", msg)
+		}
+		if picked.Value != want {
+			t.Fatalf("picked %q, want the originally selected %q", picked.Value, want)
+		}
+	})
+
+	t.Run("the custom row", func(t *testing.T) {
+		m := newDiscoveryModel(t)
+		m = typeFilter(m, "brand-new-model")
+		// Nothing matches yet, so the custom row is the only choice and the
+		// cursor sits on it. When a provider then reports a model with
+		// exactly that id, the row appears — and the custom selection must
+		// still be the one Enter returns, not the new model row.
+		m = deliverProbe(m, probe.ResultMsg{
+			FieldID:  parentModelProbeFieldID,
+			Provider: "groq",
+			Models:   []schema.ModelInfo{{ID: "brand-new-model"}},
+		})
+
+		_, msg := enterCmd(t, m)
+		picked, ok := msg.(picker.PickedMsg)
+		if !ok {
+			t.Fatalf("Enter produced %T, want picker.PickedMsg", msg)
+		}
+		if picked.Value != "brand-new-model" {
+			t.Fatalf("picked %q, want the typed custom value %q", picked.Value, "brand-new-model")
+		}
+	})
+}
+
+func TestDiscoveryRemovedSelectionRequiresChoice(t *testing.T) {
+	const missing = "Selected model is no longer available; choose another"
+
+	m := newDiscoveryModel(t)
+	// Select the last row: openai/llama-3.3-70b.
+	m = pressKeys(m,
+		tea.KeyPressMsg{Code: tea.KeyDown},
+		tea.KeyPressMsg{Code: tea.KeyDown},
+		tea.KeyPressMsg{Code: tea.KeyDown})
+
+	// openai no longer offers that model: the chosen row is gone.
+	m = deliverProbe(m, probe.ResultMsg{
+		FieldID:  parentModelProbeFieldID,
+		Provider: "openai",
+		Models:   []schema.ModelInfo{{ID: "gpt-4o"}},
+	})
+	if got := m.picker.ErrMsg(); got != missing {
+		t.Fatalf("picker error = %q, want %q", got, missing)
+	}
+	if view := ansi.Strip(m.View(80, 24)); !strings.Contains(view, missing) {
+		t.Fatalf("the picker must show the missing-selection message:\n%s", view)
+	}
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatalf("Enter after the selection vanished must do nothing, got %T", cmd())
+	}
+
+	// A second result arriving before the user chooses must not select a row
+	// on their behalf either.
+	m = deliverProbe(m, probe.ResultMsg{
+		FieldID:  parentModelProbeFieldID,
+		Provider: "groq",
+		Models:   []schema.ModelInfo{{ID: "llama-3.3-70b"}, {ID: "mixtral-8x7b"}},
+	})
+	if got := m.picker.ErrMsg(); got != missing {
+		t.Fatalf("a second result changed the message to %q, want %q", got, missing)
+	}
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatalf("Enter before the user picks again must do nothing, got %T", cmd())
+	}
+
+	// Explicit recovery: an arrow re-selects the first available row.
+	m = pressKeys(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.picker.ErrMsg(); got != "" {
+		t.Fatalf("picker error = %q, want it cleared once the user moved", got)
+	}
+	_, msg := enterCmd(t, m)
+	picked, ok := msg.(picker.PickedMsg)
+	if !ok {
+		t.Fatalf("Enter after an explicit choice produced %T, want picker.PickedMsg", msg)
+	}
+	if want := encodeModelValue("groq", "llama-3.3-70b"); picked.Value != want {
+		t.Fatalf("picked %q, want %q", picked.Value, want)
+	}
+}
+
+func TestAllProviderResultDoesNotReopenLaterWizardStep(t *testing.T) {
+	m := newDiscoveryModel(t)
+	// Enter on the first row accepts groq/llama-3.3-70b and leaves the picker
+	// for the consent step.
+	m, msg := enterCmd(t, m)
+	if _, ok := msg.(picker.PickedMsg); !ok {
+		t.Fatalf("Enter on the picker produced %T, want picker.PickedMsg", msg)
+	}
+	if m.step != stepConsent {
+		t.Fatalf("step = %v, want stepConsent after the pick", m.step)
+	}
+	if m.picker != nil {
+		t.Fatal("the picker should be gone once the selection advanced")
+	}
+
+	// A live success for another provider must not reopen the picker, move
+	// the wizard back, or touch the discovery state behind the closed panel.
+	m = deliverProbe(m, probe.ResultMsg{
+		FieldID:  parentModelProbeFieldID,
+		Provider: "openai",
+		Models:   []schema.ModelInfo{{ID: "gpt-4o-mini"}},
+	})
+	if m.step != stepConsent {
+		t.Fatalf("success moved the wizard to %v, want stepConsent", m.step)
+	}
+	if m.picker != nil {
+		t.Fatal("success reopened the model picker")
+	}
+	if got := m.discovered["openai"]; len(got) != 2 {
+		t.Fatalf("discovered[openai] = %v, want the pre-existing two models", got)
+	}
+	if m.err != "" {
+		t.Fatalf("err = %q, want empty", m.err)
+	}
+
+	// Advance to the summary, then deliver a failure.
+	m = pressKeys(m, tea.KeyPressMsg{Code: 110}) // n: skip models.dev
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing", m.step)
+	}
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	if m.step != stepSummary {
+		t.Fatalf("step = %v, want stepSummary", m.step)
+	}
+
+	m = deliverProbe(m, probe.ResultMsg{
+		FieldID:  parentModelProbeFieldID,
+		Provider: "openai",
+		Err:      errors.New("401 unauthorized"),
+	})
+	if m.step != stepSummary {
+		t.Fatalf("failure moved the wizard to %v, want stepSummary", m.step)
+	}
+	if m.picker != nil {
+		t.Fatal("failure reopened the model picker")
+	}
+	if m.err != "" {
+		t.Fatalf("err = %q, want a discovery failure to stay out of the step's error line", m.err)
+	}
+	if _, ok := m.probeErrs["openai"]; ok {
+		t.Fatal("a discovery failure must not be recorded as a setup probe failure")
+	}
+}

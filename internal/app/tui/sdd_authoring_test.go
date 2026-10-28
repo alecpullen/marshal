@@ -149,6 +149,22 @@ func authoredReview(t *testing.T, m Model) (Model, *sddreview.Panel, string) {
 	return m, panel, panel.CandidatePath()
 }
 
+// TestCandidatePhraseNamesTheCandidateSafely pins the transcript wording: the
+// path is escaped, and a review that carried no path does not trail off into a
+// dangling "at .".
+func TestCandidatePhraseNamesTheCandidateSafely(t *testing.T) {
+	generic := candidatePhrase("")
+	if strings.Contains(generic, " at ") || strings.HasSuffix(generic, " .") {
+		t.Errorf("empty path phrase = %q, want a phrase that names no path", generic)
+	}
+	if got := candidatePhrase("/repo/plan.md"); got != "the generated plan candidate at /repo/plan.md" {
+		t.Errorf("phrase = %q, want the path named", got)
+	}
+	if got := candidatePhrase("/repo/\x1b[31mevil.md"); strings.Contains(got, "\x1b") {
+		t.Errorf("phrase = %q, want control characters escaped", got)
+	}
+}
+
 func TestSDDNewKeepClosesReviewAndKeepsCandidate(t *testing.T) {
 	m := newAuthoringModel(t)
 	m, panel, path := authoredReview(t, m)

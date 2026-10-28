@@ -244,6 +244,66 @@ func TestDiscardRefusedBelowMinimumGeometry(t *testing.T) {
 	}
 }
 
+// TestDiscardRefusedBelowMinimumInnerWidth pins the narrow rule: a panel too
+// narrow to show the candidate and the action does not earn the permission,
+// even when the height is generous.
+func TestDiscardRefusedBelowMinimumInnerWidth(t *testing.T) {
+	p := New(cleanResult())
+	out := ansi.Strip(p.View(16, 20)) // a 14-cell interior, under minReviewInner
+	if strings.Contains(out, "d discard") {
+		t.Fatalf("a too-narrow render must not show the discard action:\n%s", out)
+	}
+	if cmd := p.Update(tea.KeyPressMsg{Code: 'd'}); cmd != nil {
+		t.Fatalf("narrow render must not arm, got %T", cmd())
+	}
+	if cmd := p.Update(tea.KeyPressMsg{Code: 'd'}); cmd != nil {
+		t.Fatalf("narrow render must not confirm, got %T", cmd())
+	}
+}
+
+// TestActionRowKeepsIdentityWhenNarrow pins the confirmation row's content at
+// the narrowest interiors the panel accepts: the label may be abbreviated, but
+// the row must still name what `d` would delete and the key that declines.
+func TestActionRowKeepsIdentityWhenNarrow(t *testing.T) {
+	for _, width := range []int{22, 26, 30, 40, 80} {
+		p := rendered(t, cleanResult())
+		p.View(width, 20)
+		p.discardArmed = true
+		row := ansi.Strip(p.actionRow(p.CandidatePath()))
+		if got := ansi.StringWidth(row); got > p.inner {
+			t.Errorf("width %d: armed row is %d cells, over the %d-cell interior: %q",
+				width, got, p.inner, row)
+		}
+		if !strings.Contains(row, "esc keep") {
+			t.Errorf("width %d: armed row dropped the decline key: %q", width, row)
+		}
+		if !strings.Contains(row, "repo") {
+			t.Errorf("width %d: armed row dropped the candidate identity: %q", width, row)
+		}
+	}
+}
+
+// TestActionRowKeepsDeclineWhenNarrow pins the same guarantee for a failed
+// discard, whose message is the reason the panel is still open.
+func TestActionRowKeepsDeclineWhenNarrow(t *testing.T) {
+	for _, width := range []int{22, 30, 80} {
+		p := rendered(t, cleanResult())
+		p.View(width, 20)
+		p.err = errors.New("permission denied")
+		row := ansi.Strip(p.actionRow(p.CandidatePath()))
+		if got := ansi.StringWidth(row); got > p.inner {
+			t.Errorf("width %d: error row is %d cells, over the %d-cell interior: %q",
+				width, got, p.inner, row)
+		}
+		if !strings.Contains(row, "esc keep") {
+			t.Errorf("width %d: error row dropped the decline key: %q", width, row)
+		}
+		if !strings.Contains(row, "permissi") {
+			t.Errorf("width %d: error row dropped the failure: %q", width, row)
+		}
+	}
+}
+
 // TestInvalidateVisibilityDisarms pins the resize rule: an arm does not
 // survive a geometry change, and the next render re-earns it.
 func TestInvalidateVisibilityDisarms(t *testing.T) {

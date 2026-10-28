@@ -52,12 +52,18 @@ type DiscardMsg struct{ Panel *Panel }
 // user could not read.
 const minReviewInner = 20
 
+// minFitMiddle is the fewest cells an action row may leave its middle. Below
+// it a path or an error is noise, so the label is abbreviated further instead.
+const minFitMiddle = 6
+
 // Panel is a dock.Panel that reviews one authored plan candidate.
 type Panel struct {
 	result sddauthor.Result
 
 	// discardArmed reports that `d` has been pressed once. A second
 	// consecutive `d` confirms the discard; any other key disarms it.
+	// Update only ever sees key presses, so non-key invalidation (a resize,
+	// a failure) is the host's job through InvalidateVisibility and SetError.
 	discardArmed bool
 	// visible reports that the current geometry rendered the candidate
 	// identity, the discard action and the confirmation state. A positive
@@ -255,7 +261,10 @@ func (p *Panel) View(width, maxHeight int) string {
 
 // scrollBy moves the body window by delta physical rows, clamped to the rows
 // and body height the last render measured. It only ever moves the window: it
-// never accepts, keeps or deletes the candidate.
+// never accepts, keeps or deletes the candidate. An undersized render leaves
+// those counts at their last good values, so a key between it and the next full
+// render clamps against the previous geometry; the render re-clamps anyway, so
+// the window can never stay out of range.
 func (p *Panel) scrollBy(delta int) {
 	p.scroll = clampScroll(p.scroll+delta, p.rowCount, p.bodyH)
 }
@@ -285,15 +294,37 @@ func wrapText(s string, width int) []string {
 	return strings.Split(ansi.Wrap(s, width, reviewBreakpoints), "\n")
 }
 
+// discardPrefixes and errorPrefixes are the action row labels, longest first.
+// A narrow panel takes a shorter label before it gives up the middle, because
+// the middle names what the confirmation would delete and the suffix names the
+// way out; the label is the part that can be abbreviated without lying.
+var (
+	discardPrefixes = []string{"d again to discard ", "d again: ", "d: ", ""}
+	errorPrefixes   = []string{"discard failed: ", "failed: ", ""}
+)
+
 // fitRow composes one row from a prefix, a variable middle and a suffix within
-// width cells, shortening only the middle. The fixed ends are the keys the row
+// width cells, shortening only the middle. The fixed ends are what the row
 // exists to keep reachable, so a long path or error must not push them out.
-func fitRow(prefix, middle, suffix string, width int) string {
-	room := width - ansi.StringWidth(prefix) - ansi.StringWidth(suffix)
-	if room < 1 {
-		return ansi.Truncate(prefix+suffix, max(width, 1), "…")
+// The prefixes are tried longest first: when the full label leaves the middle
+// unreadable, the label is abbreviated so the middle — which names what the
+// confirmation would act on — and the suffix keys survive beside it.
+func fitRow(prefixes []string, middle, suffix string, width int) string {
+	suffixW := ansi.StringWidth(suffix)
+	for _, prefix := range prefixes {
+		if room := width - ansi.StringWidth(prefix) - suffixW; room >= minFitMiddle {
+			return prefix + ansi.Truncate(middle, room, "…") + suffix
+		}
 	}
-	return prefix + ansi.Truncate(middle, room, "…") + suffix
+	// No label leaves the middle readable, so keep the identity and the way
+	// out together rather than a label beside an unreadable middle.
+	shortest := prefixes[len(prefixes)-1]
+	if room := width - ansi.StringWidth(shortest) - suffixW; room >= 1 {
+		return shortest + ansi.Truncate(middle, room, "…") + suffix
+	}
+	// The ends do not fit at all: keep the keys rather than a partial label
+	// that would say less than they do.
+	return ansi.Truncate(shortest+suffix, max(width, 1), "…")
 }
 
 // bodyRows builds the review's body rows and returns them as physical rows,
@@ -362,9 +393,9 @@ func (p *Panel) actionRow(path string) string {
 	width := max(p.inner, 1)
 	switch {
 	case p.err != nil:
-		return errorStyle().Render(fitRow("discard failed: ", strutil.ShowControls(p.err.Error()), " · esc keep", width))
+		return errorStyle().Render(fitRow(errorPrefixes, strutil.ShowControls(p.err.Error()), " · esc keep", width))
 	case p.discardArmed:
-		return warnStyle().Render(fitRow("d again to discard ", strutil.ShowControls(path), " · esc keep", width))
+		return warnStyle().Render(fitRow(discardPrefixes, strutil.ShowControls(path), " · esc keep", width))
 	default:
 		keys := "esc keep · d discard"
 		if p.rowCount > p.bodyH {

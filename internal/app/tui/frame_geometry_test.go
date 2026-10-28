@@ -102,8 +102,10 @@ func pageReviewThroughModel(t *testing.T, m *Model, geometry string, w, h int) [
 	prev := ""
 	for page := 0; page < 100; page++ {
 		frame := stripANSI(m.viewString())
-		if rows, widest := frameRows(m); rows != h || widest > w {
-			t.Fatalf("%s: frame is %d rows (want %d) and %d wide (want <= %d):\n%s",
+		// The frame fills the terminal exactly: a layout change that over- or
+		// under-fills either axis is a regression, not a cosmetic difference.
+		if rows, widest := frameRows(m); rows != h || widest != w {
+			t.Fatalf("%s: frame is %d rows (want %d) and %d wide (want %d):\n%s",
 				geometry, rows, h, widest, w, frame)
 		}
 		for _, want := range []string{"Review plan", "esc keep", "d discard"} {

@@ -2779,7 +2779,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		path := pm.Panel.CandidatePath()
 		m.dock.CloseNow()
 		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("Kept the generated plan candidate at %s. Edit it first, then run /sdd to execute it.", path),
+			fmt.Sprintf("Kept %s. Edit it first, then run /sdd to execute it.", candidatePhrase(path)),
 			session.ContentTypePlain)
 		m.refreshViewport()
 		return m, nil
@@ -2799,7 +2799,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.dock.CloseNow()
 		m.state.AddMessage(session.RoleSystem,
-			fmt.Sprintf("Discarded the generated plan candidate at %s.", path),
+			fmt.Sprintf("Discarded %s.", candidatePhrase(path)),
 			session.ContentTypePlain)
 		m.refreshViewport()
 		return m, nil
@@ -5583,6 +5583,16 @@ func (m Model) reviewPanel() *sddreview.Panel {
 		return nil
 	}
 	return panel
+}
+
+// candidatePhrase names the review's generated plan candidate for a transcript
+// message. The path is escaped before it is rendered, and a review that carried
+// no path falls back to a phrase that does not trail off into "at .".
+func candidatePhrase(path string) string {
+	if path == "" {
+		return "the generated plan candidate"
+	}
+	return "the generated plan candidate at " + strutil.ShowControls(path)
 }
 
 // postmortemConsentKey reports whether k is an affirmative answer to the exit

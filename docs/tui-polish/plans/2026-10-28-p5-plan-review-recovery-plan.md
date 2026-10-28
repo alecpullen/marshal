@@ -1,6 +1,8 @@
 # P5 generated-plan review and recovery — implementation plan
 
-Date: 2026-10-28. Status: proposed; not executed.
+Date: 2026-10-28. Status: executed 2026-10-28 — commits `8ee41eef` (task 1)
+and `2f7cff04` (task 2), run sequentially as this plan requires, with task 1
+inline and task 2 delegated.
 Base: `8a82aa18b3f72eb24e78b8a32eb4bc99dd25a0b5`.
 Requirements: [triage item 6](../triage.md#p1--restore-trustworthy-decisions-and-prevent-data-loss),
 [unreachable review diagnostics](../audit.md#plan-review-cannot-reach-overflow-diagnostics)

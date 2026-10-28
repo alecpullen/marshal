@@ -10697,7 +10697,18 @@ func TestPostmortemConsentResizeInvalidatesVisibility(t *testing.T) {
 		state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 		state.Config.Postmortem.OnExit = "prompt"
 		ctrl := &endTestController{}
-		m := testModel(state, WithEndController(ctrl))
+		m := testModel(state,
+			WithEndController(ctrl),
+			// Wire the access seam so a request queued behind the exit question
+			// stays pending. Without it reconcileAccess fails such a request
+			// closed as unanswerable, which is a different scenario.
+			WithAccessRequests(
+				func() (session.AccessRequest, bool) { return state.AccessRequest() },
+				func(choice session.AccessChoice) (session.AccessResult, error) {
+					return state.ResolveAccess(choice, nil)
+				},
+			),
+		)
 		m.resize(80, 24)
 		m.end = &endIntent{kind: EndIntentExit}
 		m.endStage = endPostmortem
@@ -10741,6 +10752,65 @@ func TestPostmortemConsentResizeInvalidatesVisibility(t *testing.T) {
 			if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
 				t.Fatalf("%q below the minimum closed the question (%T)", key.String(), m.dock.Panel())
 			}
+		}
+		assertNoPostmortemProgress(t, m, ctrl, state)
+	})
+
+	t.Run("a queued access request does not block the decline", func(t *testing.T) {
+		m, ctrl, state := openQuestion(t, "sess-resize-access-queued", true)
+
+		// A request the runtime is waiting on can be queued behind the exit
+		// question: reconcileAccess deliberately leaves the open panel alone.
+		call := &session.PendingToolCall{
+			ID:           "call-consent-1",
+			Name:         "mode.request",
+			Reason:       "read outside the workspace",
+			ResponseChan: make(chan session.UserApprovalDecision, 1),
+		}
+		req, waiting, err := state.RegisterAccess(context.Background(), call,
+			session.AccessIntent{System: true, Reason: "read outside the workspace"})
+		if err != nil {
+			t.Fatalf("RegisterAccess: %v", err)
+		}
+		if !waiting {
+			t.Fatal("RegisterAccess published no request")
+		}
+
+		// Hide the frame. The question keeps the dock; the request stays queued
+		// behind it rather than displacing it.
+		m, _ = press(m, tea.WindowSizeMsg{Width: 40, Height: 12})
+		if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
+			t.Fatalf("the queued request displaced the exit question (%T)", m.dock.Panel())
+		}
+
+		// Consent stays refused, and refusing it must not answer the request
+		// the user cannot see.
+		for _, key := range []tea.KeyPressMsg{{Code: 'y'}, {Code: tea.KeyEnter}} {
+			var cmd tea.Cmd
+			m, cmd = press(m, key)
+			if cmd != nil {
+				t.Fatalf("%q with a queued request produced a command, want refusal", key.String())
+			}
+			if _, ok := m.dock.Panel().(*postmortempanel.Panel); !ok {
+				t.Fatalf("%q with a queued request closed the question (%T)", key.String(), m.dock.Panel())
+			}
+			if got, pending := state.AccessRequest(); !pending || got.RequestID != req.RequestID {
+				t.Fatalf("%q settled the queued access request", key.String())
+			}
+		}
+
+		// Declining must still reach the question through the access gate: the
+		// question on screen is the one the user can act on.
+		m, cmd := press(m, tea.KeyPressMsg{Code: tea.KeyEscape})
+		if cmd == nil {
+			t.Fatal("esc produced no answer while an access request was queued")
+		}
+		done, ok := cmd().(postmortempanel.DoneMsg)
+		if !ok || done.Result != postmortempanel.ResultExtractOnly {
+			t.Fatalf("esc with a queued request = %+v (ok = %t), want ResultExtractOnly", done, ok)
+		}
+		if _, pending := state.AccessRequest(); !pending {
+			t.Fatal("declining the postmortem question answered the queued access request")
 		}
 		assertNoPostmortemProgress(t, m, ctrl, state)
 	})

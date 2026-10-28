@@ -2011,7 +2011,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// show that disclosure, so the affirmative answers are consumed here,
 		// before the dock can turn them into consent. Declining (n, N, Esc)
 		// and Ctrl+C still pass through: the question must never be a dead
-		// end, whatever the geometry.
+		// end, whatever the geometry. Enter is consumed unconditionally — it
+		// is the affirmative confirmation while Yes is selected, so it cannot
+		// be classified as a decline key here; n, N and Esc are the decline
+		// routes at a hidden geometry.
 		consentOwnsDock := m.postmortemConsentPanel() != nil
 		if consentOwnsDock {
 			if key, ok := msg.(tea.KeyPressMsg); ok && postmortemConsentKey(key) {

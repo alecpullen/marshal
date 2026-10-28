@@ -192,7 +192,12 @@ func TestBothChoicesVisibleAndKeyboardReachableAtRealSizes(t *testing.T) {
 		if !yes {
 			press(t, p, tea.KeyPressMsg{Code: 'j'})
 		}
-		for {
+		for attempt := 0; ; attempt++ {
+			if attempt > 50 {
+				// A regression that makes the chosen answer unsatisfiable used
+				// to hang here until the package-wide test timeout.
+				t.Fatalf("the panel reached no terminal result after %d renders (stage %d, yes = %t)", attempt, p.stage, yes)
+			}
 			// The affirmative choice at the agent stage requires its complete
 			// content to have been rendered at the current geometry.
 			p.View(80, 24)

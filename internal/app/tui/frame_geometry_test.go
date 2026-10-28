@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,7 +13,10 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/postmortempanel"
+	"marshal/internal/app/tui/sddreview"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/pipeline"
+	"marshal/internal/sddauthor"
 	"marshal/internal/tools/native"
 )
 
@@ -24,6 +29,154 @@ func (p overRenderingPanel) View(_, _ int) string {
 	return strings.Repeat("panel row\n", p.rows-1) + "panel row"
 }
 func (p overRenderingPanel) Sizing() dock.Sizing { return dock.FullFrame }
+
+// generatedReviewFixture writes a blocked candidate whose diagnostics are
+// wider than the panel at the supported minimum, and returns the result the
+// /sdd new flow would dock for it. The markers avoid wrap breakpoints, so only
+// a real failure can hide one.
+func generatedReviewFixture(t *testing.T) (sddauthor.Result, []string) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(),
+		"pathelementalphaqz", "pathelementbravoqz", "pathelementcharlieqz", "generated-plan.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create candidate directory: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("# Plan\n"), 0o644); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+
+	filler := strings.Repeat("detail that runs well past the panel width ", 2)
+	return sddauthor.Result{
+			Request: sddauthor.Request{PlanPath: path},
+			Inspection: &pipeline.Inspection{
+				Plan: &pipeline.Plan{Path: path, Slug: "generated"},
+				IR:   &pipeline.PlanIR{Tasks: []pipeline.TaskIR{{TaskN: 1, Title: "Add file"}}},
+				Diagnostics: []pipeline.Diagnostic{
+					{TaskN: 0, Severity: pipeline.DiagError, Line: 12, Message: "diagoneqzstart " + filler + "diagoneqzend"},
+					{TaskN: 1, Severity: pipeline.DiagWarning, Message: "diagtwoqzstart " + filler + "diagtwoqzend"},
+					{TaskN: 2, Severity: pipeline.DiagError, Line: 344, Message: "diagthreeqzstart " + filler + "diagthreeqzend"},
+				},
+				EffectiveStrategy: pipeline.StrategyAdaptive,
+				HasMarshalBlocks:  true,
+			},
+		}, []string{
+			"diagoneqzstart", "diagoneqzend",
+			"diagtwoqzstart", "diagtwoqzend",
+			"diagthreeqzstart", "diagthreeqzend",
+			"pathelementalphaqz", "pathelementcharlieqz",
+			"plan error", "task 1 warning", "line 344",
+		}
+}
+
+// generatedReviewFrameModel is the parent model over a populated transcript and
+// tray, with the real review docked through its own model, at w×h.
+func generatedReviewFrameModel(t *testing.T, w, h int, result sddauthor.Result) *Model {
+	t.Helper()
+	m := newAuthoringModel(t)
+	for i := 0; i < 60; i++ {
+		m.state.AddMessage(session.RoleAssistant, fmt.Sprintf("transcript line %d", i), session.ContentTypePlain)
+	}
+	todoDrivenTurn(t, &m, []native.TodoItem{
+		{Content: "first task", Status: native.TodoCompleted},
+		{Content: "second task", Status: native.TodoInProgress},
+	})
+	m.dock.Open(sddreview.New(result))
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	// Resize through the model's own routing, which is also what disarms the
+	// review's discard confirmation on a geometry change.
+	next, _ := press(m, tea.WindowSizeMsg{Width: w, Height: h})
+	next.refreshViewport()
+	return &next
+}
+
+// pageReviewThroughModel renders the composed frame and pages the docked review
+// to its end through the model, returning every frame it showed. Each frame is
+// asserted to fill the terminal exactly and to name the review's actions.
+func pageReviewThroughModel(t *testing.T, m *Model, geometry string, w, h int) []string {
+	t.Helper()
+
+	var frames []string
+	prev := ""
+	for page := 0; page < 100; page++ {
+		frame := stripANSI(m.viewString())
+		if rows, widest := frameRows(m); rows != h || widest > w {
+			t.Fatalf("%s: frame is %d rows (want %d) and %d wide (want <= %d):\n%s",
+				geometry, rows, h, widest, w, frame)
+		}
+		for _, want := range []string{"Review plan", "esc keep", "d discard"} {
+			if !strings.Contains(frame, want) {
+				t.Fatalf("%s: composed frame is missing %q:\n%s", geometry, want, frame)
+			}
+		}
+		if page > 0 && frame == prev {
+			return frames // the window stopped moving: the end is on screen
+		}
+		frames = append(frames, frame)
+		prev = frame
+
+		next, _ := press(*m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+		*m = next
+	}
+	t.Fatalf("%s: paging the docked review did not terminate", geometry)
+	return frames
+}
+
+// TestGeneratedPlanReviewFitsComposedFrame drives the real generated-plan
+// review through the parent model: over a populated transcript and tray, at
+// every supported geometry, the composed frame fills the terminal exactly, the
+// review's actions stay on screen, and every diagnostic is reachable by paging
+// — including after the terminal is resized under the open review.
+func TestGeneratedPlanReviewFitsComposedFrame(t *testing.T) {
+	geometries := []struct {
+		name string
+		w, h int
+	}{
+		{"80x24", 80, 24},
+		{"120x40", 120, 40},
+		{"200x60", 200, 60},
+	}
+
+	for i, tc := range geometries {
+		t.Run(tc.name, func(t *testing.T) {
+			result, markers := generatedReviewFixture(t)
+			m := generatedReviewFrameModel(t, tc.w, tc.h, result)
+
+			if _, ok := m.dock.Panel().(*sddreview.Panel); !ok {
+				t.Fatalf("expected the real review in the dock, got %T", m.dock.Panel())
+			}
+
+			// The candidate path and the diagnostics are reachable at this
+			// geometry, and nothing about reading it leaves the frame.
+			text := strings.Join(pageReviewThroughModel(t, m, tc.name, tc.w, tc.h), "\n")
+			for _, want := range markers {
+				if !strings.Contains(text, want) {
+					t.Errorf("%s: %q is not reachable in the composed frame:\n%s", tc.name, want, text)
+				}
+			}
+
+			// A resize under the open review must reflow, not lose content: the
+			// frame still fills the new terminal and every diagnostic is still
+			// reachable from the top.
+			other := geometries[(i+1)%len(geometries)]
+			next, _ := press(*m, tea.WindowSizeMsg{Width: other.w, Height: other.h})
+			next.refreshViewport()
+			*m = next
+			nextPanel, _ := press(*m, tea.KeyPressMsg{Code: tea.KeyHome})
+			*m = nextPanel
+
+			resized := strings.Join(pageReviewThroughModel(t, m, tc.name+" after resize to "+other.name, other.w, other.h), "\n")
+			for _, want := range markers {
+				if !strings.Contains(resized, want) {
+					t.Errorf("%s: %q is not reachable after a resize to %s:\n%s",
+						tc.name, want, other.name, resized)
+				}
+			}
+		})
+	}
+}
 
 func TestClipLeftColumn(t *testing.T) {
 	three := "a\nb\nc"

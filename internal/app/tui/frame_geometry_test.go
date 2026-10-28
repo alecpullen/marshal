@@ -11,6 +11,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/dock"
 	"marshal/internal/app/tui/postmortempanel"
+	"marshal/internal/app/tui/theme"
 	"marshal/internal/tools/native"
 )
 
@@ -165,6 +166,102 @@ func TestEndingSurfacesFitTheTerminal(t *testing.T) {
 			if rows, widest := frameRows(m); rows != size.h || widest > size.w {
 				t.Errorf("postmortem frame: rows = %d (want %d), widest = %d (want <= %d)",
 					rows, size.h, widest, size.w)
+			}
+		})
+	}
+}
+
+// postmortemConsentFrameModel opens the real exit-postmortem question over a
+// populated transcript and tray, and drives it from its first question to the
+// agent disclosure through the model's own routing — so the panel is at the
+// stage whose consent matters, at a size it can render.
+func postmortemConsentFrameModel(t *testing.T, w, h int) *Model {
+	t.Helper()
+	m := scrolledModel(t, w, h)
+	m.state.Config.Postmortem.OnExit = "prompt"
+	m.state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
+	if err := m.state.SetTodos([]native.TodoItem{
+		{ID: "t1", Content: "first task", Status: native.TodoInProgress},
+		{ID: "t2", Content: "second task", Status: native.TodoPending},
+	}); err != nil {
+		t.Fatalf("SetTodos: %v", err)
+	}
+	m.endController = &endTestController{}
+	m.end = &endIntent{kind: EndIntentExit}
+	m.endStage = endPostmortem
+	m.openPostmortemPrompt()
+	m.refreshViewport()
+	next, cmd := press(*m, tea.KeyPressMsg{Code: 'y'})
+	if cmd != nil {
+		t.Fatalf("advancing to the agent question returned a cmd (%T), want nil", cmd)
+	}
+	return &next
+}
+
+// TestPostmortemConsentVisibleInComposedFrame pins the consent gate to the
+// composed frame rather than to the panel's own idea of its size: over a
+// populated transcript and tray, at every supported geometry, the agent
+// question's two full disclosure lines and both choices must survive in the
+// rendered view, the frame must still fill the terminal exactly, and each
+// answer must still reach the result it always produced. The minimum supported
+// size is repeated with NO_COLOR, where nothing can fit by luck of a style.
+func TestPostmortemConsentVisibleInComposedFrame(t *testing.T) {
+	prevTheme := theme.Current()
+	t.Cleanup(func() { theme.Reload(prevTheme) })
+
+	disclosure := []string{
+		"Include agent analysis?",
+		"Agent analysis has system access and editing approval.",
+		"It can access and edit files outside this workspace.",
+		"▸ Yes",
+		"No",
+	}
+	for _, tc := range []struct {
+		name    string
+		w, h    int
+		noColor bool
+	}{
+		{"80x24", 80, 24, false},
+		{"120x40", 120, 40, false},
+		{"200x60", 200, 60, false},
+		{"80x24-no-color", 80, 24, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			theme.Reload(theme.LoadFor(tc.noColor, "xterm-256color"))
+			m := postmortemConsentFrameModel(t, tc.w, tc.h)
+
+			frame := stripANSI(m.View().Content)
+			for _, want := range disclosure {
+				if !strings.Contains(frame, want) {
+					t.Fatalf("%dx%d frame is missing %q; the disclosure and the choices must be on screen:\n%s",
+						tc.w, tc.h, want, frame)
+				}
+			}
+			if rows, widest := frameRows(m); rows != tc.h || widest > tc.w {
+				t.Errorf("%dx%d frame: rows = %d (want %d), widest = %d (want <= %d)",
+					tc.w, tc.h, rows, tc.h, widest, tc.w)
+			}
+
+			// The choices the frame just showed are the ones that answer: No
+			// still extracts only, Yes still runs the scoped analysis pass.
+			for _, answer := range []struct {
+				key  rune
+				want postmortempanel.Result
+			}{
+				{'n', postmortempanel.ResultExtractOnly},
+				{'y', postmortempanel.ResultWithAgent},
+			} {
+				_, cmd := press(*m, tea.KeyPressMsg{Code: answer.key})
+				if cmd == nil {
+					t.Fatalf("%q produced no answer after the disclosure was rendered", string(answer.key))
+				}
+				done, ok := cmd().(postmortempanel.DoneMsg)
+				if !ok {
+					t.Fatalf("%q produced %T, want postmortempanel.DoneMsg", string(answer.key), cmd())
+				}
+				if done.Result != answer.want {
+					t.Errorf("%q = %v, want %v", string(answer.key), done.Result, answer.want)
+				}
 			}
 		})
 	}

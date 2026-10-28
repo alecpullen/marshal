@@ -2006,10 +2006,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// through: the application's interrupt handling must keep working.
 	hidden := m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight
 	if hidden {
+		// The exit postmortem question's agent stage asks for consent to a
+		// pass with system access and editing approval. A hidden frame cannot
+		// show that disclosure, so the affirmative answers are consumed here,
+		// before the dock can turn them into consent. Declining (n, N, Esc)
+		// and Ctrl+C still pass through: the question must never be a dead
+		// end, whatever the geometry. Enter is consumed unconditionally — it
+		// is the affirmative confirmation while Yes is selected, so it cannot
+		// be classified as a decline key here; n, N and Esc are the decline
+		// routes at a hidden geometry.
+		consentOwnsDock := m.postmortemConsentPanel() != nil
+		if consentOwnsDock {
+			if key, ok := msg.(tea.KeyPressMsg); ok && postmortemConsentKey(key) {
+				return m, nil
+			}
+		}
+		// An access request queued behind another panel consumes keys as well.
+		// The postmortem question is the one panel whose decline must still
+		// reach it: those keys answer the modal question the user can act on,
+		// never the request neither of them can see. Approvals are already
+		// consumed above, and access choices stay consumed here.
 		if _, pending := m.state.AccessRequest(); pending {
 			switch key := msg.(type) {
 			case tea.KeyPressMsg:
-				if key.String() != "ctrl+c" {
+				if key.String() != "ctrl+c" && !(consentOwnsDock && postmortemDeclineKey(key)) {
 					return m, nil
 				}
 			case tea.PasteMsg, accesspanel.ChoiceMsg:
@@ -2205,6 +2225,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// WindowSizeMsg must always resize the underlying layout (and the
 	// settings/memory overlays) regardless of which overlay is open.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		// A resize invalidates any earlier rendering: the exit postmortem
+		// question's consent is only valid for the geometry its disclosure was
+		// drawn at. Invalidate before the new size is applied — the next
+		// visible render recomputes it — so a key that arrives in between is
+		// refused rather than consenting to rows the user never saw.
+		if panel := m.postmortemConsentPanel(); panel != nil {
+			panel.InvalidateVisibility()
+		}
 		m.resize(ws.Width, ws.Height)
 		if m.approvalModel != nil {
 			m.approvalModel.SetSize(max(m.leftWidth-4, 30))
@@ -5483,6 +5511,41 @@ func (m *Model) afterSettlement() tea.Cmd {
 func (m *Model) openPostmortemPrompt() {
 	m.dock.Open(postmortempanel.New())
 	m.refreshViewport()
+}
+
+// postmortemConsentPanel returns the active exit-postmortem question, or nil
+// when the dock is showing anything else (including nothing). It is the only
+// place that decides whether a consent gate applies, so an unrelated panel can
+// never be affected by it.
+func (m Model) postmortemConsentPanel() *postmortempanel.Panel {
+	panel, ok := m.dock.Panel().(*postmortempanel.Panel)
+	if !ok {
+		return nil
+	}
+	return panel
+}
+
+// postmortemConsentKey reports whether k is an affirmative answer to the exit
+// postmortem question: yes, or the Enter that confirms the selected choice.
+// Declining keys are deliberately absent — the question must stay answerable
+// at every geometry, so only consent is ever gated.
+func postmortemConsentKey(k tea.KeyPressMsg) bool {
+	switch k.String() {
+	case "y", "Y", "enter":
+		return true
+	}
+	return false
+}
+
+// postmortemDeclineKey reports whether k can only decline the exit postmortem
+// question. It exists so the below-minimum gate can tell a key that answers the
+// visible modal question from one aimed at the hidden request behind it.
+func postmortemDeclineKey(k tea.KeyPressMsg) bool {
+	switch k.String() {
+	case "n", "N", "esc":
+		return true
+	}
+	return false
 }
 
 // finishReplacement completes an accepted replacement: a new session or a

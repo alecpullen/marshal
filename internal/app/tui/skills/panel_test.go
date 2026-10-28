@@ -41,8 +41,9 @@ func TestLoadResultRoutesErrorToActiveListAndSetsStatusOnSuccess(t *testing.T) {
 
 	// Simulate a successful load.
 	p.Update(loadResultMsg{Name: "debug"})
-	if p.status != "loaded debug" {
-		t.Fatalf("status = %q, want %q", p.status, "loaded debug")
+	want := "loaded debug — content matched the current session"
+	if p.status != want {
+		t.Fatalf("status = %q, want %q", p.status, want)
 	}
 	if p.ActiveList().ErrMsg != "" {
 		t.Fatalf("error not cleared after success: %q", p.ActiveList().ErrMsg)
@@ -94,7 +95,7 @@ description = "debugging skill"
 	}
 	found := false
 	for _, r := range rows {
-		if settings.FieldID(r) == "skill.debug" {
+		if settings.FieldID(r) == skillRowID(scopeGlobal, "debug.md") {
 			found = true
 		}
 	}
@@ -298,7 +299,7 @@ func TestAutoloadShowsInRowSummary(t *testing.T) {
 	p.state.Config.Skills.Autoload = []string{"debug"}
 	p.list.Refresh()
 
-	row := fieldByID(t, settings.FieldListRows(p.list), "skill.debug")
+	row := fieldByID(t, settings.FieldListRows(p.list), skillRowID(scopeGlobal, "debug.md"))
 	if got := row.Summary(); !strings.Contains(got, "autoload") {
 		t.Fatalf("row summary = %q, want it to mention autoload", got)
 	}
@@ -584,7 +585,7 @@ func TestRemoveUsesDiscoveredSource(t *testing.T) {
 		target := writeSkillEntry(t, global, "actual.md", "displayed", "fixture")
 		sibling := writeSkillEntry(t, global, "sibling.md", "sibling", "fixture")
 
-		openSkillFromList(t, p, "skill.displayed")
+		openSkillFromList(t, p, skillRowID(scopeGlobal, "actual.md"))
 		press(t, p, keyEnter) // arms
 		mustExistPath(t, target)
 		press(t, p, keyEnter) // confirms
@@ -781,5 +782,687 @@ func TestRemoveConfirmationIsScopedBySource(t *testing.T) {
 		press(t, p, keyEnter)
 		mustBeGonePath(t, second)
 		mustExistPath(t, first)
+	})
+}
+
+// --- install targeting fixtures and helpers -------------------------------
+//
+// The install tests below drive Panel.runInstall and feed the emitted result
+// back through Update, so the assertions cover the path a user actually takes.
+
+// isolatedConfigDir points MARSHAL_CONFIG_DIR at a fresh temp directory —
+// making the global store a path this test owns rather than a directory
+// shared with the rest of the package — and returns its skills subdirectory.
+func isolatedConfigDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("MARSHAL_CONFIG_DIR", dir)
+	return filepath.Join(dir, "skills")
+}
+
+// writeInstallSource writes a local .md install source outside the isolated
+// home and returns its path.
+func writeInstallSource(t *testing.T, name, description string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name+".md")
+	if err := os.WriteFile(path, []byte(skillFixture(name, description)), 0644); err != nil {
+		t.Fatalf("write install source %s: %v", path, err)
+	}
+	return path
+}
+
+// installAction fills in the install frame's fields, runs the action and
+// feeds its result message back, the way the dock host does.
+func installAction(t *testing.T, p *Panel, source, scope string) {
+	t.Helper()
+	p.stack = append(p.stack, p.installFrame())
+	p.installSource = source
+	p.installScope = scope
+	cmd := p.runInstall()
+	if cmd == nil {
+		t.Fatalf("runInstall returned no command for source %q scope %q (err %q)", source, scope, p.installErr)
+	}
+	if msg := cmd(); msg != nil {
+		p.Update(msg)
+	}
+}
+
+// TestInstallUsesEffectiveGlobalSkillsDir pins that a global install lands in
+// the config directory the panel and the runtime read — config.UserDir's
+// effective location — not the ~/.config path skills.ScopeDir hardcodes.
+func TestInstallUsesEffectiveGlobalSkillsDir(t *testing.T) {
+	cases := []struct {
+		name string
+		// setup points the config directory somewhere specific and returns
+		// the effective Marshal config directory plus whether it was moved
+		// away from <home>/.config/marshal.
+		setup func(t *testing.T, home string) (effective string, overridden bool)
+	}{
+		{
+			name: "MARSHAL_CONFIG_DIR",
+			setup: func(t *testing.T, _ string) (string, bool) {
+				dir := t.TempDir()
+				t.Setenv("MARSHAL_CONFIG_DIR", dir)
+				// Set XDG too, so the case proves MARSHAL_CONFIG_DIR wins.
+				t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+				return dir, true
+			},
+		},
+		{
+			name: "XDG_CONFIG_HOME",
+			setup: func(t *testing.T, _ string) (string, bool) {
+				xdg := t.TempDir()
+				t.Setenv("MARSHAL_CONFIG_DIR", "")
+				t.Setenv("XDG_CONFIG_HOME", xdg)
+				return filepath.Join(xdg, "marshal"), true
+			},
+		},
+		{
+			name: "neither set",
+			setup: func(t *testing.T, home string) (string, bool) {
+				t.Setenv("MARSHAL_CONFIG_DIR", "")
+				t.Setenv("XDG_CONFIG_HOME", "")
+				return filepath.Join(home, ".config", "marshal"), false
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home, work := t.TempDir(), t.TempDir()
+			effective, overridden := tc.setup(t, home)
+			source := writeInstallSource(t, "installed-here", "fixture")
+
+			p := NewPanel(home, work, true, nil, nil)
+			installAction(t, p, source, scopeGlobal)
+
+			if p.installErr != "" {
+				t.Fatalf("install error: %s", p.installErr)
+			}
+			if got := p.ActiveList().ErrMsg; got != "" {
+				t.Fatalf("install surfaced a visible error: %q", got)
+			}
+			mustExistPath(t, filepath.Join(effective, "skills", "installed-here.md"))
+			if overridden {
+				mustBeGonePath(t, filepath.Join(home, ".config", "marshal", "skills", "installed-here.md"))
+			}
+
+			// Discovery is what the panel and the runtime index read from, so
+			// the installed entry must be found there and nowhere else.
+			if got := discovered(t, p, scopeGlobal, "installed-here.md"); got.Skill.Name != "installed-here" {
+				t.Fatalf("discovered skill = %+v, want the installed one", got.Skill)
+			}
+			if !strings.Contains(p.status, "restart Marshal") {
+				t.Fatalf("status = %q, want it to disclose the restart", p.status)
+			}
+		})
+	}
+}
+
+// TestInstallProjectScopeAndTrust pins that a project install is rooted in the
+// project only when the folder is trusted, and that every refusal is visible
+// and starts no command.
+func TestInstallProjectScopeAndTrust(t *testing.T) {
+	t.Run("trusted project installs below its own .marshal/skills", func(t *testing.T) {
+		home, work := t.TempDir(), t.TempDir()
+		globalDir := isolatedConfigDir(t)
+		source := writeInstallSource(t, "project-only", "fixture")
+
+		p := NewPanel(home, work, true, nil, nil)
+		installAction(t, p, source, scopeProject)
+
+		if p.installErr != "" {
+			t.Fatalf("install error: %s", p.installErr)
+		}
+		want := filepath.Join(work, ".marshal", "skills", "project-only.md")
+		mustExistPath(t, want)
+		mustBeGonePath(t, filepath.Join(globalDir, "project-only.md"))
+		if got := discovered(t, p, scopeProject, "project-only.md"); got.Skill.Name != "project-only" {
+			t.Fatalf("discovered skill = %+v, want the installed one", got.Skill)
+		}
+	})
+
+	t.Run("untrusted project scope fails visibly", func(t *testing.T) {
+		home, work := t.TempDir(), t.TempDir()
+		globalDir := isolatedConfigDir(t)
+		source := writeInstallSource(t, "project-only", "fixture")
+
+		p := NewPanel(home, work, false, nil, nil)
+		p.stack = append(p.stack, p.installFrame())
+		p.installSource = source
+		p.installScope = scopeProject
+
+		if cmd := p.runInstall(); cmd != nil {
+			t.Fatal("untrusted project scope started an install")
+		}
+		if p.installErr == "" {
+			t.Fatal("untrusted project scope produced no error message")
+		}
+		if got := p.ActiveList().ErrMsg; got == "" {
+			t.Fatal("untrusted project scope surfaced no visible error")
+		}
+		mustBeGonePath(t, p.projectSkillsDir())
+		mustBeGonePath(t, globalDir)
+	})
+
+	t.Run("unknown scope fails visibly", func(t *testing.T) {
+		home, work := t.TempDir(), t.TempDir()
+		globalDir := isolatedConfigDir(t)
+		source := writeInstallSource(t, "anywhere", "fixture")
+
+		p := NewPanel(home, work, true, nil, nil)
+		p.stack = append(p.stack, p.installFrame())
+		p.installSource = source
+		p.installScope = "elsewhere"
+
+		if cmd := p.runInstall(); cmd != nil {
+			t.Fatal("unknown scope started an install")
+		}
+		if !strings.Contains(p.installErr, "unknown skill scope") {
+			t.Fatalf("error = %q, want it to name the unknown scope", p.installErr)
+		}
+		if got := p.ActiveList().ErrMsg; got == "" {
+			t.Fatal("unknown scope surfaced no visible error")
+		}
+		mustBeGonePath(t, p.projectSkillsDir())
+		mustBeGonePath(t, globalDir)
+	})
+}
+
+// TestSkillDiskChangeReportsRestart pins that a disk-level install or removal
+// is disclosed as a change that needs a restart, and that it leaves the
+// runtime index — a startup artifact — untouched.
+func TestSkillDiskChangeReportsRestart(t *testing.T) {
+	// newIndexWithPluginSkill is the runtime index a session would already
+	// hold: one skill loaded from a source this panel never writes.
+	newIndexWithPluginSkill := func() *skills.Index {
+		idx := skills.NewIndex()
+		idx.Set("plugin-only", skills.Skill{
+			Name:        "plugin-only",
+			Description: "loaded by a plugin",
+			Body:        "# Plugin\n",
+		})
+		return idx
+	}
+	assertIndexUnchanged := func(t *testing.T, idx *skills.Index, absent string) {
+		t.Helper()
+		if _, ok := idx.Load(absent); ok {
+			t.Fatalf("runtime index gained %q from a disk change", absent)
+		}
+		plugin, ok := idx.Load("plugin-only")
+		if !ok {
+			t.Fatal("runtime index lost its pre-existing skill")
+		}
+		if plugin.Description != "loaded by a plugin" {
+			t.Fatalf("pre-existing skill changed: %+v", plugin)
+		}
+	}
+
+	t.Run("install", func(t *testing.T) {
+		home, work := t.TempDir(), t.TempDir()
+		globalDir := isolatedConfigDir(t)
+		idx := newIndexWithPluginSkill()
+		source := writeInstallSource(t, "fresh-skill", "fixture")
+
+		p := NewPanel(home, work, true, nil, idx)
+		installAction(t, p, source, scopeGlobal)
+
+		if p.installErr != "" {
+			t.Fatalf("install error: %s", p.installErr)
+		}
+		mustExistPath(t, filepath.Join(globalDir, "fresh-skill.md"))
+		if !strings.Contains(p.status, "restart Marshal to apply it to the runtime") {
+			t.Fatalf("status = %q, want the restart disclosure", p.status)
+		}
+		assertIndexUnchanged(t, idx, "fresh-skill")
+	})
+
+	t.Run("P0-protected remove", func(t *testing.T) {
+		home, work := t.TempDir(), t.TempDir()
+		globalDir := isolatedConfigDir(t)
+		idx := newIndexWithPluginSkill()
+
+		p := NewPanel(home, work, true, nil, idx)
+		if err := os.MkdirAll(globalDir, 0755); err != nil {
+			t.Fatalf("create skill store %s: %v", globalDir, err)
+		}
+		target := writeSkillEntry(t, globalDir, "doomed.md", "doomed", "fixture")
+
+		openSkillDetail(t, p, discovered(t, p, scopeGlobal, "doomed.md"))
+		press(t, p, keyEnter) // arms
+		mustExistPath(t, target)
+		press(t, p, keyEnter) // confirms
+
+		mustBeGonePath(t, target)
+		if got := p.ActiveList().ErrMsg; got != "" {
+			t.Fatalf("remove surfaced an error: %q", got)
+		}
+		if !strings.Contains(p.status, "restart Marshal to drop it from the runtime") {
+			t.Fatalf("status = %q, want the restart disclosure", p.status)
+		}
+		assertIndexUnchanged(t, idx, "doomed")
+	})
+}
+
+// --- Load now fixtures ----------------------------------------------------
+//
+// The load tests below drill in from the root list and drive Panel.Update and
+// the commands it emits, so they cover the path a user actually takes.
+
+// writeSkillBody writes dir/file as a skill named name whose body carries
+// marker, returning the parsed value the file yields.
+func writeSkillBody(t *testing.T, dir, file, name, marker string) skills.Skill {
+	t.Helper()
+	content := fmt.Sprintf("+++\nname = %q\ndescription = %q\n+++\n\n# %s %s\n", name, marker+" skill", name, marker)
+	if err := os.WriteFile(filepath.Join(dir, file), []byte(content), 0644); err != nil {
+		t.Fatalf("write skill %s: %v", file, err)
+	}
+	skill, err := skills.Parse(content)
+	if err != nil {
+		t.Fatalf("parse skill %s: %v", file, err)
+	}
+	return skill
+}
+
+// newLoadPanel builds a panel with a live session over fresh, created stores.
+func newLoadPanel(t *testing.T, idx *skills.Index) (*Panel, string, string) {
+	t.Helper()
+	home, work := t.TempDir(), t.TempDir()
+	state := session.New(config.Default(), work, time.Now(), session.Persistence{})
+	p := NewPanel(home, work, true, state, idx)
+	for _, dir := range []string{p.globalSkillsDir(), p.projectSkillsDir()} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("create skill store %s: %v", dir, err)
+		}
+	}
+	return p, p.globalSkillsDir(), p.projectSkillsDir()
+}
+
+// runtimeIndex builds what the production startup path hands a session:
+// built-ins plus both stores, the project layer overwriting the global one.
+func runtimeIndex(t *testing.T, p *Panel) *skills.Index {
+	t.Helper()
+	idx, err := skills.LoadSkills(p.globalSkillsDir(), p.projectSkillsDir())
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	return idx
+}
+
+// skillBodies returns the skill bodies the session has actually loaded.
+func skillBodies(p *Panel) []string {
+	var bodies []string
+	for _, item := range p.state.Transcript() {
+		if item.Message != nil && item.Message.ContentType == session.ContentTypeSkillBody {
+			bodies = append(bodies, item.Message.Content)
+		}
+	}
+	return bodies
+}
+
+// openLoadRow drills into the row for scope/source and parks on Load now.
+func openLoadRow(t *testing.T, p *Panel, scope, source string) {
+	t.Helper()
+	openSkillFromList(t, p, skillRowID(scope, source))
+	focusRow(t, p, "action.load")
+}
+
+// TestLoadNowUsesMatchingSessionContent pins that the panel loads only the
+// content the current session actually holds, and says so as content
+// equality — never as a claim about which scope the runtime loaded from.
+func TestLoadNowUsesMatchingSessionContent(t *testing.T) {
+	t.Run("matching inactive entry loads exactly its body", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, nil)
+		onDisk := writeSkillBody(t, global, "debug.md", "debug", "alpha")
+		p.skillIndex = runtimeIndex(t, p)
+
+		openLoadRow(t, p, scopeGlobal, "debug.md")
+		press(t, p, keyEnter)
+
+		if got := p.ActiveList().ErrMsg; got != "" {
+			t.Fatalf("load surfaced an error: %q", got)
+		}
+		if !p.state.HasActiveSkill("debug") {
+			t.Fatal("matching inactive entry was not activated")
+		}
+		if !strings.Contains(p.status, "loaded debug") || !strings.Contains(p.status, "content matched the current session") {
+			t.Fatalf("status = %q, want the content-match wording", p.status)
+		}
+		bodies := skillBodies(p)
+		if len(bodies) != 1 {
+			t.Fatalf("loaded bodies = %d, want 1: %v", len(bodies), bodies)
+		}
+		if !strings.Contains(bodies[0], onDisk.Body) {
+			t.Fatalf("loaded body = %q, want the selected body %q", bodies[0], onDisk.Body)
+		}
+	})
+
+	t.Run("absent runtime entry stays unloaded", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, skills.NewIndex())
+		writeSkillBody(t, global, "debug.md", "debug", "alpha")
+
+		openLoadRow(t, p, scopeGlobal, "debug.md")
+		press(t, p, keyEnter)
+
+		if p.state.HasActiveSkill("debug") {
+			t.Fatal("loaded a skill the runtime index does not hold")
+		}
+		if got := p.ActiveList().ErrMsg; !strings.Contains(got, "restart Marshal") {
+			t.Fatalf("error = %q, want it to point at a restart", got)
+		}
+		if got := len(skillBodies(p)); got != 0 {
+			t.Fatalf("loaded bodies = %d, want 0", got)
+		}
+	})
+
+	t.Run("different scope contents: only the session value loads", func(t *testing.T) {
+		p, global, project := newLoadPanel(t, nil)
+		writeSkillBody(t, global, "debug.md", "debug", "alpha")
+		writeSkillBody(t, project, "debug.md", "debug", "beta")
+		p.skillIndex = runtimeIndex(t, p) // project overwrites global
+
+		openLoadRow(t, p, scopeGlobal, "debug.md")
+		press(t, p, keyEnter)
+
+		if p.state.HasActiveSkill("debug") {
+			t.Fatal("loaded the global entry although the session holds the project body")
+		}
+		if got := p.ActiveList().ErrMsg; !strings.Contains(got, "different") {
+			t.Fatalf("error = %q, want it to say the contents differ", got)
+		}
+
+		press(t, p, keyEsc)
+		openLoadRow(t, p, scopeProject, "debug.md")
+		press(t, p, keyEnter)
+
+		if !p.state.HasActiveSkill("debug") {
+			t.Fatal("the entry matching the session was not loaded")
+		}
+		if bodies := skillBodies(p); len(bodies) != 1 || !strings.Contains(bodies[0], "beta") {
+			t.Fatalf("loaded bodies = %v, want the project body", bodies)
+		}
+	})
+
+	t.Run("plugin-overridden value stays unloaded", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, nil)
+		writeSkillBody(t, global, "debug.md", "debug", "on-disk")
+		idx := runtimeIndex(t, p)
+		plugin := skills.Skill{Name: "debug", Description: "from a plugin", Body: "# Debug plugin\n"}
+		idx.Set("debug", plugin)
+		p.skillIndex = idx
+
+		openLoadRow(t, p, scopeGlobal, "debug.md")
+		press(t, p, keyEnter)
+
+		if p.state.HasActiveSkill("debug") {
+			t.Fatal("loaded the shadowed on-disk value")
+		}
+		got := p.ActiveList().ErrMsg
+		if !strings.Contains(got, "different") || !strings.Contains(got, "precedence") {
+			t.Fatalf("error = %q, want it to name precedence", got)
+		}
+		if current, _ := idx.Load("debug"); current != plugin {
+			t.Fatalf("shared index mutated: %+v", current)
+		}
+	})
+
+	t.Run("already-active name keeps its body", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, nil)
+		writeSkillBody(t, global, "debug.md", "debug", "alpha")
+		p.skillIndex = runtimeIndex(t, p)
+		if err := skills.LoadSkillIntoSession(p.skillIndex, p.state, "debug"); err != nil {
+			t.Fatalf("activate: %v", err)
+		}
+		before := len(skillBodies(p))
+
+		openLoadRow(t, p, scopeGlobal, "debug.md")
+		press(t, p, keyEnter)
+
+		if got := p.ActiveList().ErrMsg; !strings.Contains(got, "already active") {
+			t.Fatalf("error = %q, want it to say the skill is already active", got)
+		}
+		if got := len(skillBodies(p)); got != before {
+			t.Fatalf("loaded bodies = %d, want %d — an active body was re-sent", got, before)
+		}
+	})
+
+	t.Run("identical content in two scopes reports equality only", func(t *testing.T) {
+		p, global, project := newLoadPanel(t, nil)
+		writeSkillBody(t, global, "debug.md", "debug", "same")
+		writeSkillBody(t, project, "debug.md", "debug", "same")
+		p.skillIndex = runtimeIndex(t, p)
+
+		// Both rows are loadable while nothing is active, and neither claims
+		// which scope the runtime loaded from.
+		for _, scope := range []string{scopeGlobal, scopeProject} {
+			p.stack = append(p.stack, p.detailFrame(discovered(t, p, scope, "debug.md")))
+			row := fieldByID(t, settings.FieldListRows(settings.FrameList(p.stack[len(p.stack)-1])), "action.load")
+			desc := settings.FieldDesc(row)
+			if !strings.Contains(desc, "content matches the current session") {
+				t.Fatalf("%s desc = %q, want the content-equality wording", scope, desc)
+			}
+			for _, claim := range []string{"global", "project", "scope"} {
+				if strings.Contains(desc, claim) {
+					t.Fatalf("%s desc = %q, claims provenance (%q)", scope, desc, claim)
+				}
+			}
+			p.stack = p.stack[:len(p.stack)-1]
+		}
+
+		openLoadRow(t, p, scopeProject, "debug.md")
+		press(t, p, keyEnter)
+		if !p.state.HasActiveSkill("debug") {
+			t.Fatal("identical content in the project scope did not load")
+		}
+	})
+}
+
+// TestLoadNowRevalidatesSelectedSource pins that the action re-checks the
+// source and the shared index at invocation: a selection that went stale
+// while the detail frame was open is never loaded.
+func TestLoadNowRevalidatesSelectedSource(t *testing.T) {
+	t.Run("source deleted after the detail opened", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, nil)
+		writeSkillBody(t, global, "debug.md", "debug", "alpha")
+		p.skillIndex = runtimeIndex(t, p)
+
+		openLoadRow(t, p, scopeGlobal, "debug.md")
+		if err := os.Remove(filepath.Join(global, "debug.md")); err != nil {
+			t.Fatalf("remove source: %v", err)
+		}
+		press(t, p, keyEnter)
+
+		if p.state.HasActiveSkill("debug") {
+			t.Fatal("loaded from a deleted source")
+		}
+		if got := p.ActiveList().ErrMsg; !strings.Contains(got, "no longer") {
+			t.Fatalf("error = %q, want it to say the source is gone", got)
+		}
+	})
+
+	t.Run("source replaced at the same path", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, nil)
+		writeSkillBody(t, global, "debug.md", "debug", "alpha")
+		p.skillIndex = runtimeIndex(t, p)
+
+		openLoadRow(t, p, scopeGlobal, "debug.md")
+		// Same path, same content, different inode: only the Lstat snapshot
+		// can tell that the discovered child is no longer the one selected.
+		writeSkillBody(t, global, "replacement.md", "debug", "alpha")
+		if err := os.Rename(filepath.Join(global, "replacement.md"), filepath.Join(global, "debug.md")); err != nil {
+			t.Fatalf("rename replacement over target: %v", err)
+		}
+		press(t, p, keyEnter)
+
+		if p.state.HasActiveSkill("debug") {
+			t.Fatal("loaded a replaced source")
+		}
+		if got := p.ActiveList().ErrMsg; !strings.Contains(got, "replaced") {
+			t.Fatalf("error = %q, want it to mention the replacement", got)
+		}
+	})
+
+	t.Run("same path with changed content", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, nil)
+		writeSkillBody(t, global, "debug.md", "debug", "alpha")
+		p.skillIndex = runtimeIndex(t, p)
+
+		openLoadRow(t, p, scopeGlobal, "debug.md")
+		writeSkillBody(t, global, "debug.md", "debug", "beta") // same inode, new bytes
+		press(t, p, keyEnter)
+
+		if p.state.HasActiveSkill("debug") {
+			t.Fatal("loaded content that changed after the detail opened")
+		}
+		if got := p.ActiveList().ErrMsg; !strings.Contains(got, "changed on disk") {
+			t.Fatalf("error = %q, want it to say the content changed", got)
+		}
+	})
+
+	t.Run("shared index changed after the row was drawn", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, nil)
+		writeSkillBody(t, global, "debug.md", "debug", "alpha")
+		idx := runtimeIndex(t, p)
+		p.skillIndex = idx
+
+		// The row is drawn loadable; then the session's index moves on.
+		openLoadRow(t, p, scopeGlobal, "debug.md")
+		idx.Set("debug", skills.Skill{Name: "debug", Description: "swapped", Body: "# swapped\n"})
+		press(t, p, keyEnter)
+
+		if p.state.HasActiveSkill("debug") {
+			t.Fatal("loaded a value the index no longer holds")
+		}
+		if got := p.ActiveList().ErrMsg; !strings.Contains(got, "different") {
+			t.Fatalf("error = %q, want it to say the session value differs", got)
+		}
+		if got := len(skillBodies(p)); got != 0 {
+			t.Fatalf("loaded bodies = %d, want 0", got)
+		}
+	})
+}
+
+// TestDuplicateSkillRowsHaveDistinctIdentity pins that two entries sharing a
+// name are two rows, each bound to its own discovered source.
+func TestDuplicateSkillRowsHaveDistinctIdentity(t *testing.T) {
+	t.Run("same name in both scopes", func(t *testing.T) {
+		p, global, project := newLoadPanel(t, nil)
+		writeSkillBody(t, global, "dup.md", "dup", "global")
+		writeSkillBody(t, project, "dup.md", "dup", "project")
+
+		globalID := skillRowID(scopeGlobal, "dup.md")
+		projectID := skillRowID(scopeProject, "dup.md")
+		if globalID == projectID {
+			t.Fatalf("row IDs collide: %q", globalID)
+		}
+
+		for id, wantScope := range map[string]string{globalID: scopeGlobal, projectID: scopeProject} {
+			openSkillFromList(t, p, id)
+			fields := settings.FieldListRows(settings.FrameList(p.stack[len(p.stack)-1]))
+			if got := fieldByID(t, fields, "detail.scope").GetStr(); got != wantScope {
+				t.Fatalf("row %q opened the %q detail, want %q", id, got, wantScope)
+			}
+			press(t, p, keyEsc)
+			if len(p.stack) != 0 {
+				t.Fatal("escape did not pop the detail frame")
+			}
+		}
+	})
+
+	t.Run("same name twice in one store", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, nil)
+		writeSkillBody(t, global, "one.md", "dup", "first")
+		writeSkillBody(t, global, "two.md", "dup", "second")
+
+		oneID := skillRowID(scopeGlobal, "one.md")
+		twoID := skillRowID(scopeGlobal, "two.md")
+		if oneID == twoID {
+			t.Fatalf("row IDs collide: %q", oneID)
+		}
+
+		// Each row navigates to its own source: the removal confirmed
+		// through the second row must not touch the first file.
+		openSkillFromList(t, p, twoID)
+		press(t, p, keyEnter) // arms
+		press(t, p, keyEnter) // confirms
+
+		mustBeGonePath(t, filepath.Join(global, "two.md"))
+		mustExistPath(t, filepath.Join(global, "one.md"))
+	})
+}
+
+// TestRestartOnlySkillChangesDoNotMutateRuntimeIndex pins the restart
+// contract: disk installs, edits and removals never mutate the session's
+// shared index, and a new session built through the production path does
+// pick the effective value up.
+func TestRestartOnlySkillChangesDoNotMutateRuntimeIndex(t *testing.T) {
+	t.Run("disk changes leave the runtime index alone", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, nil)
+		plugin := skills.Skill{Name: "plugin-only", Description: "loaded by a plugin", Body: "# Plugin\n"}
+		active := skills.Skill{Name: "already-active", Description: "active skill", Body: "# Active\n"}
+
+		idx := skills.NewIndex()
+		idx.Set(plugin.Name, plugin)
+		idx.Set(active.Name, active)
+		p.skillIndex = idx
+		p.state.ActivateSkill(active.Name)
+		before := idx.List()
+
+		source := writeInstallSource(t, "fresh-skill", "fixture")
+		installAction(t, p, source, scopeGlobal)
+		if p.installErr != "" {
+			t.Fatalf("install error: %s", p.installErr)
+		}
+		if !strings.Contains(p.status, "restart Marshal") {
+			t.Fatalf("status = %q, want the restart disclosure", p.status)
+		}
+
+		// Edit an installed skill and remove it; neither is a runtime change.
+		writeSkillBody(t, global, "edited.md", "edited", "one")
+		writeSkillBody(t, global, "edited.md", "edited", "two")
+		if err := os.Remove(filepath.Join(global, "edited.md")); err != nil {
+			t.Fatalf("remove fixture: %v", err)
+		}
+
+		if got := idx.List(); !reflect.DeepEqual(got, before) {
+			t.Fatalf("runtime index changed: %v -> %v", before, got)
+		}
+		if p.state.HasActiveSkill("fresh-skill") {
+			t.Fatal("install activated a skill in the running session")
+		}
+		if !p.state.HasActiveSkill(active.Name) {
+			t.Fatal("session-active skill was disturbed")
+		}
+
+		// Reopening the panel must not make the newly installed skill
+		// loadable: the session still has no content for it.
+		p.list.Refresh()
+		p.stack = append(p.stack, p.detailFrame(discovered(t, p, scopeGlobal, "fresh-skill.md")))
+		row := fieldByID(t, settings.FieldListRows(settings.FrameList(p.stack[len(p.stack)-1])), "action.load")
+		if desc := settings.FieldDesc(row); !strings.Contains(desc, "unavailable") {
+			t.Fatalf("desc = %q, want the load to stay unavailable before a restart", desc)
+		}
+		p.stack = p.stack[:len(p.stack)-1]
+	})
+
+	t.Run("a new session loads the effective value", func(t *testing.T) {
+		p, global, _ := newLoadPanel(t, nil)
+		onDisk := writeSkillBody(t, global, "debug.md", "debug", "alpha")
+
+		// A restart: the production startup path builds a fresh index, and a
+		// new panel over a new session can load the effective content.
+		state := session.New(config.Default(), t.TempDir(), time.Now(), session.Persistence{})
+		q := NewPanel(p.homeDir, p.workDir, true, state, runtimeIndex(t, p))
+
+		openLoadRow(t, q, scopeGlobal, "debug.md")
+		press(t, q, keyEnter)
+
+		if !state.HasActiveSkill("debug") {
+			t.Fatal("a new session could not load the effective skill")
+		}
+		bodies := skillBodies(q)
+		if len(bodies) != 1 || !strings.Contains(bodies[0], onDisk.Body) {
+			t.Fatalf("loaded bodies = %v, want the effective body", bodies)
+		}
 	})
 }

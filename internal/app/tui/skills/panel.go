@@ -63,6 +63,17 @@ func removalIdentity(s skills.ScopedSkill) removeIdentity {
 	return removeIdentity{scope: s.Scope, source: s.SourceName}
 }
 
+// skillRowID is the stable identity of one discovered skill row: the scope
+// plus the store child discovery recorded, never the frontmatter name alone.
+// A name can exist in both scopes and twice in one store, so a name-only ID
+// let two different entries share a row. Length-prefixing each component
+// makes the encoding unambiguous — no (scope, source) pair can produce
+// another pair's ID — while the "skill." prefix stays what countLabel and
+// the filter match on.
+func skillRowID(scope, source string) string {
+	return fmt.Sprintf("skill.%d:%s.%d:%s", len(scope), scope, len(source), source)
+}
+
 var _ dock.Panel = (*Panel)(nil)
 
 // NewPanel builds a skills panel. skillIndex is the runtime skill index
@@ -166,6 +177,11 @@ func (p *Panel) projectSkillsDir() string {
 	return filepath.Join(p.workDir, ".marshal", "skills")
 }
 
+// activeIndex is the session's shared runtime index, or a freshly built one
+// when the panel has none. It answers "what does this session know", so it is
+// not a load decision: loadableSelection compares against p.skillIndex
+// directly and refuses when the session has no index, because loading from a
+// just-constructed index would silently disagree with the session.
 func (p *Panel) activeIndex() *skills.Index {
 	if p.skillIndex != nil {
 		return p.skillIndex
@@ -175,6 +191,58 @@ func (p *Panel) activeIndex() *skills.Index {
 		idx = skills.NewIndex()
 	}
 	return idx
+}
+
+// loadableSelection returns the exact current-session value to load, or a
+// user-facing reason why this selected on-disk entry cannot be loaded now.
+//
+// The index has no source provenance, so the only honest claim is that the
+// selected content equals what this session holds — never that this scope is
+// the runtime's origin, since a matching body from another source is the same
+// value. The stores are re-read here rather than trusting the snapshot the
+// detail frame was built from: the file, or the shared index, can change while
+// the frame is open. A directory read error is not an empty valid index, so it
+// fails closed instead of reporting "nothing installed".
+func (p *Panel) loadableSelection(s skills.ScopedSkill) (skills.Skill, string) {
+	if p.state == nil {
+		return skills.Skill{}, "no session available"
+	}
+	if p.skillIndex == nil {
+		return skills.Skill{}, "this session has no skill index — restart Marshal to build one"
+	}
+
+	list, err := skills.ListScopes(p.globalSkillsDir(), p.projectSkillsDir())
+	if err != nil {
+		return skills.Skill{}, fmt.Sprintf("cannot read the skills directories: %v", err)
+	}
+	var found *skills.ScopedSkill
+	for i := range list {
+		if list[i].Scope == s.Scope && list[i].SourceName == s.SourceName {
+			found = &list[i]
+			break
+		}
+	}
+	if found == nil {
+		return skills.Skill{}, fmt.Sprintf("%s is no longer in the %s store — reopen the panel", s.SourceName, s.Scope)
+	}
+	if s.SourceInfo != nil && found.SourceInfo != nil && !os.SameFile(s.SourceInfo, found.SourceInfo) {
+		return skills.Skill{}, fmt.Sprintf("%s was replaced on disk — reopen the panel", s.SourceName)
+	}
+	if found.Skill != s.Skill {
+		return skills.Skill{}, fmt.Sprintf("%s changed on disk — reopen the panel to pick up the new content", s.SourceName)
+	}
+
+	indexed, ok := p.skillIndex.Load(s.Skill.Name)
+	if !ok {
+		return skills.Skill{}, fmt.Sprintf("the current session has no %s — restart Marshal to pick it up", s.Skill.Name)
+	}
+	if indexed != found.Skill {
+		return skills.Skill{}, fmt.Sprintf("the current session holds a different %s — another source may take precedence; restart Marshal to apply disk changes", s.Skill.Name)
+	}
+	if p.state.HasActiveSkill(s.Skill.Name) {
+		return skills.Skill{}, fmt.Sprintf("%s is already active — its current body is kept until unloaded; unload it before loading another version", s.Skill.Name)
+	}
+	return found.Skill, ""
 }
 
 func (p *Panel) detailFrame(s skills.ScopedSkill) *settings.Frame {
@@ -200,17 +268,36 @@ func (p *Panel) detailFrame(s skills.ScopedSkill) *settings.Frame {
 		fields = append(fields, auto)
 
 		load := settings.NewField("action.load", "Load now", settings.KindAction)
-		settings.SetFieldDesc(load, "inject this skill into the current session")
+		// Derive the label and description from the same check the action
+		// runs, so the row never promises a load the session cannot honour.
+		// What is verified is content equality with the current session, not
+		// which scope the runtime actually loaded from.
+		if _, reason := p.loadableSelection(s); reason != "" {
+			settings.SetFieldDesc(load, "unavailable — "+reason)
+			settings.SetFieldActLabel(load, func() string { return "↵ load unavailable" })
+		} else {
+			settings.SetFieldDesc(load, "content matches the current session — inject it now")
+			settings.SetFieldActLabel(load, func() string { return "↵ load now" })
+		}
 		settings.SetFieldAct(load, func() tea.Cmd {
 			return func() tea.Msg {
-				if p.state == nil {
-					return loadResultMsg{Err: fmt.Errorf("no session available")}
+				// Revalidate here, not only when the row was drawn: the
+				// source file and the shared index can both change while
+				// the frame is open.
+				exact, reason := p.loadableSelection(s)
+				if reason != "" {
+					return loadResultMsg{Err: fmt.Errorf("%s", reason)}
 				}
-				idx := p.activeIndex()
-				if err := skills.LoadSkillIntoSession(idx, p.state, s.Skill.Name); err != nil {
+				// Load from a one-entry index built from the value just
+				// checked, so a concurrent update to the shared index cannot
+				// swap the body between validation and lookup. The session's
+				// shared index is never mutated from here.
+				idx := skills.NewIndex()
+				idx.Set(exact.Name, exact)
+				if err := skills.LoadSkillIntoSession(idx, p.state, exact.Name); err != nil {
 					return loadResultMsg{Err: err}
 				}
-				return loadResultMsg{Name: s.Skill.Name}
+				return loadResultMsg{Name: exact.Name}
 			}
 		})
 		fields = append(fields, load)
@@ -297,9 +384,28 @@ func (p *Panel) runInstall() tea.Cmd {
 		p.ActiveList().ErrMsg = p.installErr
 		return nil
 	}
+	// Target the same directory the panel and the runtime read. Never
+	// skills.ScopeDir: its global path is hardcoded to ~/.config, so an
+	// install under MARSHAL_CONFIG_DIR or XDG_CONFIG_HOME would land
+	// somewhere neither the panel nor the loader ever looks.
+	var targetDir string
+	switch p.installScope {
+	case scopeGlobal:
+		targetDir = p.globalSkillsDir()
+	case scopeProject:
+		if !p.projectTrusted {
+			p.installErr = "project scope needs a trusted folder"
+			p.ActiveList().ErrMsg = p.installErr
+			return nil
+		}
+		targetDir = p.projectSkillsDir()
+	default:
+		p.installErr = fmt.Sprintf("unknown skill scope %q", p.installScope)
+		p.ActiveList().ErrMsg = p.installErr
+		return nil
+	}
 	p.installing = true
 	p.installErr = ""
-	targetDir := skills.ScopeDir(p.homeDir, p.workDir, p.installScope == scopeProject)
 	source := p.installSource
 	scope := p.installScope
 	return func() tea.Msg {
@@ -341,6 +447,12 @@ func (p *Panel) buildFields() []*settings.Field {
 
 	fields := []*settings.Field{
 		settings.NewField("header.installed", "Installed skills", settings.KindHeader),
+		// Disk changes never reach the shared runtime index: it is built at
+		// startup and also carries verified plugin skills. Say so up front,
+		// not only after an action, and admit that precedence can still pick
+		// another value for a shadowed name.
+		settings.NewField("note.restart", "disk changes apply after a restart — the index loads at startup", settings.KindHeader),
+		settings.NewField("note.precedence", "project and plugin skills can shadow a global entry", settings.KindHeader),
 	}
 
 	// The gate is a session-scope control: flipping it here never edits the
@@ -372,7 +484,10 @@ func (p *Panel) buildFields() []*settings.Field {
 	for _, s := range scoped {
 		s := s
 		name := s.Skill.Name
-		f := settings.NewField("skill."+name, name, settings.KindDrill)
+		// Identify the row by discovered provenance, not the frontmatter
+		// name: two entries can share a name, and an ID built from the name
+		// made them one row.
+		f := settings.NewField(skillRowID(s.Scope, s.SourceName), name, settings.KindDrill)
 		settings.SetFieldDesc(f, fmt.Sprintf("%s · %s", s.Scope, s.Skill.Description))
 		// Which skills are always-on is otherwise invisible without opening
 		// the config file, so it belongs in the row summary.
@@ -478,7 +593,10 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.ActiveList().ErrMsg = msg.Err.Error()
 			return nil
 		}
-		p.status = fmt.Sprintf("loaded %s", msg.Name)
+		// Say what was actually verified: the loaded content equals this
+		// session's value for the name. The index carries no provenance, so
+		// this is not a claim about which scope the runtime loaded from.
+		p.status = fmt.Sprintf("loaded %s — content matched the current session", msg.Name)
 		p.ActiveList().ErrMsg = ""
 		return nil
 	case installResultMsg:
@@ -490,7 +608,7 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		}
 		p.installSource = ""
 		p.installScope = scopeGlobal
-		p.status = fmt.Sprintf("installed %s (%s)", msg.Name, msg.Scope)
+		p.status = fmt.Sprintf("installed %s (%s) — restart Marshal to apply it to the runtime", msg.Name, msg.Scope)
 		if len(p.stack) > 0 {
 			p.stack = p.stack[:len(p.stack)-1]
 		}
@@ -501,7 +619,7 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			p.ActiveList().ErrMsg = msg.Err.Error()
 			return nil
 		}
-		p.status = fmt.Sprintf("removed %s (%s)", msg.Name, msg.Scope)
+		p.status = fmt.Sprintf("removed %s (%s) — restart Marshal to drop it from the runtime", msg.Name, msg.Scope)
 		// A remove drills in from the detail frame; pop back so the refreshed
 		// list is what the user lands on.
 		if len(p.stack) > 0 {

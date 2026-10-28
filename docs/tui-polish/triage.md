@@ -207,6 +207,25 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
    Decide explicitly whether changes become usable immediately or require a
    restart; the UI and runtime must agree on the selected version.
 
+   **Status (2026-10-28): done** — tasks 1–2 of the
+   [P6 skill identity plan](plans/2026-10-28-p6-skill-identity-plan.md)
+   (commits `015e594f`, `34549cb5`). Global installation now targets the
+   effective `config.UserDir` skills directory and project installation is
+   gated on folder trust. Load now is enabled only for an entry that still
+   exists unchanged and whose parsed content exactly equals the current
+   session's index value; a missing entry, a replaced or edited source, a
+   differing or plugin-overridden value, an unavailable index, and an
+   already-active name all stay inert with a stated reason, and the panel says
+   "content matches the current session" rather than claiming a source
+   identity. Disk changes do not mutate the session-owned runtime index: the
+   panel and the install/remove results say a restart applies them. Skill rows
+   carry a scope-plus-source identity, so duplicate names are distinct rows.
+   Full suite: no new failures against the recorded baseline (22 pre-existing
+   failures in `internal/app`, `internal/snapshot`,
+   `internal/tools/desktop/browser` and `internal/worktree`); the TUI packages,
+   `internal/skills`, build, `go vet`, `gofmt` and the scripted usability suite
+   are clean.
+
 ## P2 — interaction and visibility
 
 8. **Fix shared list sizing before panel-specific layout work.**

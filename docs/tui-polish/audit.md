@@ -615,6 +615,16 @@ an install can report success but not appear in the panel or runtime.
   `internal/skills/install.go:16`.
 - Potential direction: resolve install and discovery through the same effective
   global directory.
+- Status (2026-10-28): fixed. `runInstall` resolves its target from the
+  panel's own effective roots — `p.globalSkillsDir()` for `global`,
+  `p.projectSkillsDir()` for a trusted `project` — so an install lands in the
+  directory both the panel and the loader read, including under
+  `MARSHAL_CONFIG_DIR` and `XDG_CONFIG_HOME`. An unknown scope, or a project
+  install in an untrusted folder, starts no command and reports the refusal on
+  the active list. `skills.ScopeDir` is unchanged for its other callers; the
+  panel no longer uses it. Covered by
+  `TestInstallUsesEffectiveGlobalSkillsDir` and
+  `TestInstallProjectScopeAndTrust`.
 
 ### Skill scope selection does not determine which version loads
 
@@ -627,6 +637,21 @@ can load the project version without saying so.
   `internal/skills/loader.go:46` and `:77`.
 - Potential direction: make the effective version and precedence explicit or
   load the selected scoped identity.
+- Status (2026-10-28): fixed. Load now re-derives the selection through
+  `loadableSelection`, which re-runs `skills.ListScopes` with the panel's
+  effective roots, matches scope plus discovered source name, verifies the
+  source still has the same identity (`os.SameFile` against the `Lstat`
+  snapshot) and the same parsed content as the selected value, and compares
+  that content with the runtime index and the session's active-skill state.
+  When the selection is not exactly what the session holds, the row reads as
+  unavailable, Enter loads nothing, and the reason is shown. The panel claims
+  only that the content matches the current session, never that the runtime
+  loaded the selected scope, because the index carries no provenance and a
+  matching body from another source is the same value. A matching value is
+  loaded from a temporary one-entry index, so a concurrent index update cannot
+  swap the body between validation and lookup. Covered by
+  `TestLoadNowUsesMatchingSessionContent` and
+  `TestLoadNowRevalidatesSelectedSource`.
 
 ### Skill list and runtime index diverge after install or removal
 
@@ -639,6 +664,20 @@ current session, and removed or changed content can remain in the index.
   `:449`; `internal/app/runtime.go:1761`.
 - Potential direction: reconcile the runtime index after changes, or make a
   restart requirement explicit and prevent misleading current-session actions.
+- Status (2026-10-28): fixed by making the restart requirement explicit rather
+  than by reconciling the live index. The runtime index is a session-owned
+  artifact that also carries verified plugin skills, and replacing it with a
+  directory-only scan would drop those entries, so disk installs, edits and
+  removals do not mutate it. Install and remove report that a restart applies
+  the change, the panel carries a standing note that disk changes take effect
+  after a restart and that project and plugin skills can shadow a global entry,
+  and a newly installed or changed entry reads as unavailable to Load now until
+  a new session rebuilds the index through `skills.LoadSkills`. Skill rows are
+  identified by scope plus discovered source rather than name alone, so two
+  entries sharing a name are two rows bound to their own sources. Covered by
+  `TestRestartOnlySkillChangesDoNotMutateRuntimeIndex`,
+  `TestSkillDiskChangeReportsRestart` and
+  `TestDuplicateSkillRowsHaveDistinctIdentity`.
 
 ## Removal candidates
 

@@ -306,8 +306,17 @@ func TestAgentConsentRequiresCurrentVisibleDisclosure(t *testing.T) {
 		p := New()
 		advance(t, p)
 		view := ansi.Strip(p.View(size.w, size.h))
-		if strings.Contains(view, "It can access and edit files outside this workspace.") {
-			t.Fatalf("%dx%d rendered a disclosure it cannot fit:\n%s", size.w, size.h, view)
+		// No row of the mandatory set may survive in part. A single "not
+		// present" check on one line would also pass for a line the frame
+		// clipped, so every row of the set is checked.
+		for _, absent := range []string{
+			"Include agent analysis?",
+			"Agent analysis has system access and editing approval.",
+			"It can access and edit files outside this workspace.",
+		} {
+			if strings.Contains(view, absent) {
+				t.Fatalf("%dx%d rendered part of the disclosure set (%q):\n%s", size.w, size.h, absent, view)
+			}
 		}
 		if !strings.Contains(view, "Resize") {
 			t.Fatalf("%dx%d dropped the disclosure without a resize instruction:\n%s", size.w, size.h, view)
@@ -320,6 +329,22 @@ func TestAgentConsentRequiresCurrentVisibleDisclosure(t *testing.T) {
 		if got := press(t, p, tea.KeyPressMsg{Code: tea.KeyEscape}); got == nil || got.Result != ResultExtractOnly {
 			t.Fatalf("%dx%d esc = %+v, want ResultExtractOnly", size.w, size.h, got)
 		}
+	}
+
+	// A rendering is good only for the geometry it was drawn at: a later render
+	// that cannot hold the disclosure retracts it without any explicit
+	// invalidation, and the safe answer still works from there.
+	shrunk := New()
+	renderAgentStage(t, shrunk)
+	shrunk.View(40, 12)
+	if got := press(t, shrunk, tea.KeyPressMsg{Code: 'y'}); got != nil {
+		t.Fatalf("y after a shrinking render emitted %+v, want refusal", got)
+	}
+	if got := press(t, shrunk, tea.KeyPressMsg{Code: tea.KeyEnter}); got != nil {
+		t.Fatalf("enter after a shrinking render emitted %+v, want refusal", got)
+	}
+	if got := press(t, shrunk, tea.KeyPressMsg{Code: 'n'}); got == nil || got.Result != ResultExtractOnly {
+		t.Fatalf("no after a shrinking render = %+v, want ResultExtractOnly", got)
 	}
 
 	// InvalidateVisibility drops a rendering that was complete a moment ago.

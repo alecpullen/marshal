@@ -10723,6 +10723,15 @@ func TestPostmortemConsentResizeInvalidatesVisibility(t *testing.T) {
 		if m.rawWidth != 40 || m.rawHeight != 12 {
 			t.Fatalf("raw size = %dx%d, want 40x12", m.rawWidth, m.rawHeight)
 		}
+		// Give the panel back the visibility the resize took away, so the only
+		// thing standing between a hidden frame and consent is the parent gate
+		// above the dock. Without that gate the panel answers on the next
+		// keystroke and this subtest fails.
+		panel, ok := m.dock.Panel().(*postmortempanel.Panel)
+		if !ok {
+			t.Fatalf("the exit question is not open (%T)", m.dock.Panel())
+		}
+		panel.View(80, 24)
 		for _, key := range []tea.KeyPressMsg{{Code: 'y'}, {Code: tea.KeyEnter}} {
 			var cmd tea.Cmd
 			m, cmd = press(m, key)

@@ -2006,24 +2006,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// through: the application's interrupt handling must keep working.
 	hidden := m.rawWidth < minTerminalWidth || m.rawHeight < minTerminalHeight
 	if hidden {
-		if _, pending := m.state.AccessRequest(); pending {
-			switch key := msg.(type) {
-			case tea.KeyPressMsg:
-				if key.String() != "ctrl+c" {
-					return m, nil
-				}
-			case tea.PasteMsg, accesspanel.ChoiceMsg:
-				return m, nil
-			}
-		}
 		// The exit postmortem question's agent stage asks for consent to a
 		// pass with system access and editing approval. A hidden frame cannot
 		// show that disclosure, so the affirmative answers are consumed here,
 		// before the dock can turn them into consent. Declining (n, N, Esc)
 		// and Ctrl+C still pass through: the question must never be a dead
 		// end, whatever the geometry.
-		if m.postmortemConsentPanel() != nil {
+		consentOwnsDock := m.postmortemConsentPanel() != nil
+		if consentOwnsDock {
 			if key, ok := msg.(tea.KeyPressMsg); ok && postmortemConsentKey(key) {
+				return m, nil
+			}
+		}
+		// An access request queued behind another panel consumes keys as well.
+		// The postmortem question is the one panel whose decline must still
+		// reach it: those keys answer the modal question the user can act on,
+		// never the request neither of them can see. Approvals are already
+		// consumed above, and access choices stay consumed here.
+		if _, pending := m.state.AccessRequest(); pending {
+			switch key := msg.(type) {
+			case tea.KeyPressMsg:
+				if key.String() != "ctrl+c" && !(consentOwnsDock && postmortemDeclineKey(key)) {
+					return m, nil
+				}
+			case tea.PasteMsg, accesspanel.ChoiceMsg:
 				return m, nil
 			}
 		}
@@ -5523,6 +5529,17 @@ func (m Model) postmortemConsentPanel() *postmortempanel.Panel {
 func postmortemConsentKey(k tea.KeyPressMsg) bool {
 	switch k.String() {
 	case "y", "Y", "enter":
+		return true
+	}
+	return false
+}
+
+// postmortemDeclineKey reports whether k can only decline the exit postmortem
+// question. It exists so the below-minimum gate can tell a key that answers the
+// visible modal question from one aimed at the hidden request behind it.
+func postmortemDeclineKey(k tea.KeyPressMsg) bool {
+	switch k.String() {
+	case "n", "N", "esc":
 		return true
 	}
 	return false

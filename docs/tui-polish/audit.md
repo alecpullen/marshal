@@ -127,11 +127,15 @@ a file at an absolute path outside the workspace.
   and `It can access and edit files outside this workspace.` — together with
   the question and both choices in one pass, or not at all: at a geometry that
   cannot hold all five rows the panel shows a resize instruction instead of
-  dropping the disclosure, and the affirmative answer is refused while nothing
-  is on screen. Consent is scoped to the geometry it was rendered at: a stage
-  transition, a resize (including one that hides the frame below the supported
-  minimum) or a replaced panel invalidates it, while `n`, `N` and `esc` answer
-  at every size and Ctrl+C still interrupts. Covered by
+  dropping the disclosure, falling back to the bare choices only where not even
+  the instruction fits (a geometry the dock's floor keeps out of reach), and
+  the affirmative answer is refused while nothing is on screen. Consent is
+  scoped to the geometry it was rendered at: entering the agent stage starts it
+  ungated, a resize — including one that hides the frame below the supported
+  minimum — or a replaced panel invalidates a rendering, and a render the
+  disclosure no longer fits retracts it. `n`, `N` and `esc` answer at every
+  size, including while an access request is queued behind the question, and
+  Ctrl+C still interrupts. Covered by
   `TestAgentDisclosureAndChoicesFit`,
   `TestAgentConsentRequiresCurrentVisibleDisclosure`,
   `TestPostmortemConsentVisibleInComposedFrame` and

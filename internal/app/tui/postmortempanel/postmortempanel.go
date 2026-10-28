@@ -67,8 +67,10 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	yes := func() tea.Cmd {
 		if p.stage == 0 {
 			p.stage = 1
-			// The agent question has not been seen yet, whatever was on screen
-			// a moment ago.
+			// The agent question has not been seen yet. The flag cannot be true
+			// here today — only a fitting stage-1 render sets it, and stage 0
+			// clears it on every render — but the reset stays explicit so a
+			// future path back to stage 0 cannot inherit a stale consent.
 			p.agentVisible = false
 			return nil
 		}
@@ -129,7 +131,10 @@ func (p *Panel) Sizing() dock.Sizing { return dock.Docked }
 // renders the question, both disclosure lines and both choices together or not
 // at all: at a geometry that cannot hold all five rows it shows a resize
 // instruction instead and leaves the affirmative answer refused (see Update).
-// No and Esc stay reachable at every size, so the question is never a dead end.
+// When even the instruction cannot fit — a geometry the dock's own floor keeps
+// out of reach — the panel falls back to the bare choices rather than clipping
+// the instruction, and the answer stays refused either way. No and Esc stay
+// reachable at every size, so the question is never a dead end.
 func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 3 {
 		return ""

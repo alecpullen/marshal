@@ -138,18 +138,33 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
    geometry too small for that shows a resize instruction instead and refuses
    the affirmative answer, and while the terminal is below its 80×24 minimum —
    where the parent replaces the whole frame — `y`, `Y` and Enter are consumed
-   before the dock sees them. A stage transition, a resize or a replaced panel
-   invalidates the rendering, so consent must be re-earned at the new geometry;
-   `n`, `N`, Esc and Ctrl+C stay available throughout. Tests drive the real
-   `Model.Update` path and assert controller calls and report state, not command
-   shape. Full suite: no new failures against the recorded baseline
-   (pre-existing failures remain in `internal/app`, `internal/snapshot`,
-   `internal/tools/desktop/browser` and `internal/worktree`); the TUI packages,
-   build, `go vet`, `gofmt` and the scripted usability suite are clean.
-   Interactive manual exercise of the two questions and a resize below the
-   minimum was not possible in this environment (no controlling terminal for a
-   real TUI session); the composed-frame and resize tests render the real `Model`
-   at those geometries and are the recorded substitute.
+   before the dock sees them. Consent is re-earned per geometry: entering the
+   agent stage starts ungated, a resize or a replaced panel invalidates a
+   rendering, and a render the disclosure no longer fits retracts it. `n`, `N`,
+   Esc and Ctrl+C stay available throughout, including while an access request
+   is queued behind the question. Tests drive the real `Model.Update` path and
+   assert controller calls and report state, not command shape. Full suite: no
+   new failures against the recorded baseline (pre-existing failures remain in
+   `internal/app`, `internal/snapshot`, `internal/tools/desktop/browser` and
+   `internal/worktree`); the TUI packages, build, `go vet`, `gofmt` and the
+   scripted usability suite are clean. Interactive manual exercise of the two
+   questions and a resize below the minimum was not possible in this
+   environment (no controlling terminal for a real TUI session); the
+   composed-frame and resize tests render the real `Model` at those geometries
+   and are the recorded substitute.
+
+   Review follow-up (two `glm-5.3-flash` reviewers on the branch diff): the
+   parent below-minimum gate was previously unproven — every existing assertion
+   also held with the gate reverted, because the panel refuses on its own at
+   those geometries. The hidden-frame subtest now renders the panel's disclosure
+   directly, so only the parent gate can refuse the answer and removing it fails
+   the test. The postmortem gate also moved ahead of the queued access-request
+   gate, which had been swallowing `n`/`N`/Esc and made the question
+   unanswerable in that stacked state. Added a fit-then-shrink retraction case,
+   widened the too-small absence check to every mandatory row, and corrected
+   wording that overstated the resize-instruction fallback and credited the
+   stage transition with an invalidation it cannot observably cause (the flag is
+   already false at every transition; the reset stays as a defensive invariant).
 
 6. **Make generated-plan recovery safe.** Fix
    [review diagnostics overflow](audit.md#plan-review-cannot-reach-overflow-diagnostics)

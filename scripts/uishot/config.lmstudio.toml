@@ -1,0 +1,33 @@
+# Capture config for LM Studio, used with UISHOT_CONFIG:
+#
+#   UISHOT_CONFIG=scripts/uishot/config.lmstudio.toml bash scripts/uishot/generate.sh
+#
+# Like config.example.toml, it reaches the capture run only through
+# MARSHAL_CONFIG_DIR. Load the model in LM Studio first with a context at
+# least as large as context_window below:
+#
+#   lms load qwen/qwen3.5-9b --context-length 32768
+
+[profile]
+default = 'shot'
+
+[agent]
+# Writes are allowed without a prompt, but shell commands still go through the
+# approval gate.
+mode = 'act'
+
+[snapshots]
+# The capture project is thrown away, so rollback snapshots serve no purpose,
+# and on a nearly full disk their warning would end up in the image.
+enabled = false
+
+[providers.lmstudio]
+type = 'openai_compatible'
+base_url = 'http://127.0.0.1:1234/v1'
+
+[models.presets.shot]
+provider = 'lmstudio'
+model = 'qwen/qwen3.5-9b'
+context_window = 32768
+# See config.example.toml: the remote-provider gate keys on this flag.
+local_only = true

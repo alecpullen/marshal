@@ -120,6 +120,22 @@ a file at an absolute path outside the workspace.
   `internal/app/tui/chrome/frame.go:85`.
 - Potential direction: wrap the disclosure and ensure its essential content is
   visible before the choice can be confirmed, including at small sizes.
+- Status (2026-10-28): fixed (tasks 1–2 of the
+  [P4 postmortem consent plan](plans/2026-10-28-p4-postmortem-consent-plan.md),
+  commits `8c37a029`, `e2997d16`). The agent-analysis stage renders two
+  mandatory lines — `Agent analysis has system access and editing approval.`
+  and `It can access and edit files outside this workspace.` — together with
+  the question and both choices in one pass, or not at all: at a geometry that
+  cannot hold all five rows the panel shows a resize instruction instead of
+  dropping the disclosure, and the affirmative answer is refused while nothing
+  is on screen. Consent is scoped to the geometry it was rendered at: a stage
+  transition, a resize (including one that hides the frame below the supported
+  minimum) or a replaced panel invalidates it, while `n`, `N` and `esc` answer
+  at every size and Ctrl+C still interrupts. Covered by
+  `TestAgentDisclosureAndChoicesFit`,
+  `TestAgentConsentRequiresCurrentVisibleDisclosure`,
+  `TestPostmortemConsentVisibleInComposedFrame` and
+  `TestPostmortemConsentResizeInvalidatesVisibility`.
 
 ### Doctor repair exposes API keys and discards the composer draft
 

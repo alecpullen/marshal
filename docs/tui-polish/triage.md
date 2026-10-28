@@ -130,6 +130,27 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
    independently of ordinary approval handling. Verify the disclosure and
    choices together at minimum dimensions and after resize.
 
+   Resolved 2026-10-28 (commits `8c37a029`, `e2997d16`; tasks 1–2 of the
+   [P4 postmortem consent plan](plans/2026-10-28-p4-postmortem-consent-plan.md)).
+   The agent-analysis stage now renders its two mandatory disclosure lines with
+   the question and both choices in one pass, so they are verified together at
+   80×24, 120×40 and 200×60 and under `NO_COLOR` in the composed frame. A
+   geometry too small for that shows a resize instruction instead and refuses
+   the affirmative answer, and while the terminal is below its 80×24 minimum —
+   where the parent replaces the whole frame — `y`, `Y` and Enter are consumed
+   before the dock sees them. A stage transition, a resize or a replaced panel
+   invalidates the rendering, so consent must be re-earned at the new geometry;
+   `n`, `N`, Esc and Ctrl+C stay available throughout. Tests drive the real
+   `Model.Update` path and assert controller calls and report state, not command
+   shape. Full suite: no new failures against the recorded baseline
+   (pre-existing failures remain in `internal/app`, `internal/snapshot`,
+   `internal/tools/desktop/browser` and `internal/worktree`); the TUI packages,
+   build, `go vet`, `gofmt` and the scripted usability suite are clean.
+   Interactive manual exercise of the two questions and a resize below the
+   minimum was not possible in this environment (no controlling terminal for a
+   real TUI session); the composed-frame and resize tests render the real `Model`
+   at those geometries and are the recorded substitute.
+
 6. **Make generated-plan recovery safe.** Fix
    [review diagnostics overflow](audit.md#plan-review-cannot-reach-overflow-diagnostics)
    and [the edit hint that leads to discard](audit.md#the-plan-review-recovery-hint-conflicts-with-discard-behavior).

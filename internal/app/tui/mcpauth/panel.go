@@ -13,8 +13,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
@@ -72,6 +74,15 @@ func Tick() tea.Cmd {
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
+// CopyLinkMsg asks the host to copy the MCP authorization URL through its
+// existing clipboard path. The panel identity and the exact URL travel with
+// the request so the host can verify it before copying; nothing here touches a
+// clipboard or a browser, and the URL is never written to a log.
+type CopyLinkMsg struct {
+	Panel *Panel
+	URL   string
+}
+
 // Panel is the docked authorization panel.
 type Panel struct {
 	name       string
@@ -79,6 +90,12 @@ type Panel struct {
 	cancel     context.CancelFunc
 	spinner    int
 	cancelling bool
+	// offset is the first wrapped URL row the viewport shows; pageRows and
+	// maxOffset record the last rendered viewport so PgUp/PgDn and End move
+	// by what the user can actually see. View re-clamps both after a resize.
+	offset    int
+	pageRows  int
+	maxOffset int
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -108,46 +125,155 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		p.spinner++
 		return Tick()
 	case tea.KeyPressMsg:
-		if msg.String() == "esc" && !p.cancelling {
-			p.cancelling = true
-			if p.cancel != nil {
-				p.cancel()
+		switch msg.String() {
+		case "esc":
+			if !p.cancelling {
+				p.cancelling = true
+				if p.cancel != nil {
+					p.cancel()
+				}
 			}
+		case "c":
+			// Copy is meaningful only while a URL is on screen and the flow is
+			// still live; before ShowURL and after cancellation there is
+			// nothing to hand the clipboard.
+			if url := p.disp.URL(); url != "" && !p.cancelling {
+				return func() tea.Msg { return CopyLinkMsg{Panel: p, URL: url} }
+			}
+		case "pgdown":
+			// View clamps to the last page, so paging past the end is inert.
+			p.offset += max(p.pageRows, 1)
+		case "pgup":
+			p.offset = max(p.offset-max(p.pageRows, 1), 0)
+		case "home":
+			p.offset = 0
+		case "end":
+			p.offset = p.maxOffset
 		}
 	}
 	return nil
 }
 
-func (p *Panel) View(width, maxHeight int) string {
-	pw := layout.PanelWidth(width)
-	frame := spinnerFrames[p.spinner%len(spinnerFrames)]
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "Authorizing MCP server %q\n", p.name)
-	if u := p.disp.URL(); u != "" {
-		b.WriteString("Open this URL to authorize (a browser should have opened):\n")
-		b.WriteString(u + "\n")
-	} else {
-		b.WriteString("Contacting the authorization server…\n")
+// AcceptsCopyLink reports whether msg names this panel, carries the URL the
+// panel is displaying right now, and arrives before cancellation began. It is
+// a pure predicate: it never copies, clears state or cancels the flow, so the
+// host can ask before committing to its clipboard path.
+func (p *Panel) AcceptsCopyLink(msg CopyLinkMsg) bool {
+	if msg.Panel != p || msg.URL == "" || msg.URL != p.disp.URL() {
+		return false
 	}
-
-	switch {
-	case p.cancelling:
-		b.WriteString(frame + " cancelling…")
-	case p.disp.URL() != "":
-		b.WriteString(frame + " waiting for authorization in the browser…")
-	default:
-		b.WriteString(frame + " working…")
-	}
-	b.WriteString("\nEsc to cancel")
-
-	h := min(strings.Count(b.String(), "\n")+3, maxHeight)
-	return chrome.Panel("mcp auth", b.String(), pw, h, true, theme.Current())
+	return !p.cancelling
 }
 
-// OpenBrowser opens url in the platform's default browser. It is best-effort:
-// a missing browser is not an error the flow depends on, because the
-// authorization URL is always rendered in the panel for manual copy.
+// View renders the panel: the authorization URL as a pageable body wrapped to
+// the panel's cell width, with the copy and cancel instructions kept on screen.
+// The frame never exceeds maxHeight rows.
+func (p *Panel) View(width, maxHeight int) string {
+	if width <= 0 || maxHeight <= 0 {
+		return ""
+	}
+	pw := layout.PanelWidth(width)
+	inner := max(pw-2, 1)
+	frame := spinnerFrames[p.spinner%len(spinnerFrames)]
+	url := p.disp.URL()
+
+	status := frame + " working…"
+	switch {
+	case p.cancelling:
+		status = frame + " cancelling…"
+	case url != "":
+		status = frame + " waiting for authorization in the browser…"
+	}
+	hint := "Esc to cancel"
+	if url != "" {
+		hint = "c copy URL · Esc cancel"
+	}
+
+	head := []string{fmt.Sprintf("Authorizing MCP server %q", p.name)}
+	if url != "" {
+		head = append(head, "Open this URL to authorize (a browser should have opened):")
+	} else {
+		head = append(head, "Contacting the authorization server…")
+	}
+
+	// The frame's top border is one of maxHeight rows, so the panel draws at
+	// most maxHeight-1 content rows.
+	budget := max(maxHeight-1, 0)
+	tail := []string{status, hint}
+	if budget < len(head)+len(tail)+1 {
+		// Too short for both instruction rows and a URL row: fold the hint
+		// into the status row so neither instruction is lost.
+		tail = []string{status + " · " + hint}
+	}
+
+	var urlLines []string
+	if url != "" {
+		urlLines = strings.Split(ansi.Wrap(displayURL(url), inner, "/-:?&=#"), "\n")
+	}
+
+	rows := head
+	p.pageRows, p.maxOffset = 0, 0
+	viewport := max(budget-len(head)-len(tail), 0)
+	if len(urlLines) > 0 && viewport > 0 {
+		textRows := viewport
+		scrollable := len(urlLines) > viewport
+		if scrollable && viewport > 1 {
+			// One viewport row pays for the position indicator.
+			textRows = viewport - 1
+		}
+		p.pageRows = textRows
+		p.maxOffset = max(len(urlLines)-textRows, 0)
+		p.offset = min(max(p.offset, 0), p.maxOffset)
+		end := min(p.offset+textRows, len(urlLines))
+		rows = append(rows, urlLines[p.offset:end]...)
+		if scrollable && viewport > 1 {
+			rows = append(rows, p.indicator(len(urlLines), end))
+		}
+	}
+
+	rows = append(rows, tail...)
+	h := min(len(rows)+1, maxHeight)
+	return chrome.Panel("mcp auth", strings.Join(rows, "\n"), pw, h, true, theme.Current())
+}
+
+// indicator reports where the URL viewport sits in the whole URL and which keys
+// move it, so paging is discoverable without a browser or a clipboard.
+func (p *Panel) indicator(total, end int) string {
+	where := "↓ PgDn"
+	switch {
+	case p.offset > 0 && end < total:
+		where = "↑ PgUp · ↓ PgDn"
+	case p.offset > 0:
+		where = "↑ PgUp"
+	}
+	label := fmt.Sprintf("%s · URL lines %d–%d of %d", where, p.offset+1, end, total)
+	return theme.MutedStyle().Render(label)
+}
+
+// displayURL makes a URL safe to render: control characters (a stray newline, a
+// smuggled ESC sequence) become single-cell control pictures so they never
+// reach the terminal as control. Only the rendering is escaped — CopyLinkMsg
+// still carries the exact URL the authorization server returned.
+func displayURL(url string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == 0x7f:
+			return 0x2421 // ␡
+		case r < 0x20:
+			return 0x2400 + r // ␀ … ␟
+		case unicode.IsControl(r):
+			return 0x2421 // C1 controls: visible, and inert
+		}
+		return r
+	}, url)
+}
+
+// OpenBrowser opens url in the platform's default browser. It is best-effort: a
+// missing browser is not an error the flow depends on, because the panel always
+// renders the whole authorization URL as a pageable body (PgUp/PgDn/Home/End)
+// and `c` copies it verbatim. A browser that never opened, an unavailable
+// clipboard and a terminal that ignores OSC 52 all leave the user a way to
+// reach the URL.
 func OpenBrowser(url string) error {
 	var name string
 	var args []string

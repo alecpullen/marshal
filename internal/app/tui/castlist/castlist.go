@@ -4,8 +4,12 @@
 package castlist
 
 import (
+	"fmt"
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
@@ -56,6 +60,15 @@ type Panel struct {
 	originals   map[routing.AgentRole]rowOriginal
 	pick        *picker.Model // non-nil when the in-panel picker is open
 	pickerItems []picker.Item // model presets offered by the in-panel picker
+
+	// offset is the first physical body line shown; bodyRows is the number of
+	// content lines the last render had room for (page keys use it, and it
+	// bounds paging before the next render clamps it). followSel is set by
+	// moveCursor so the next View scrolls the newly selected role into the
+	// window, and is consumed by that View.
+	offset    int
+	bodyRows  int
+	followSel bool
 }
 
 // rowOriginal captures a row's Detail and Badge before an override was
@@ -217,6 +230,18 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		case "down":
 			p.moveCursor(1)
 			return nil
+		case "pgup":
+			p.scrollBy(-max(p.bodyRows-1, 1))
+			return nil
+		case "pgdown":
+			p.scrollBy(max(p.bodyRows-1, 1))
+			return nil
+		case "home":
+			p.scrollBy(-1 << 30)
+			return nil
+		case "end":
+			p.scrollBy(1 << 30)
+			return nil
 		}
 	}
 	return nil
@@ -317,11 +342,26 @@ func (p *Panel) applyOverrideToRow(role routing.AgentRole) {
 }
 
 // moveCursor moves the cursor by dir (+1 or -1), skipping rows with empty Role.
+// It arms followSel so the next View brings the newly selected role into the
+// window rather than leaving it scrolled out of sight.
 func (p *Panel) moveCursor(dir int) {
 	if len(p.rows) == 0 {
 		return
 	}
 	p.cursor = p.nextRoleRow(p.cursor, dir)
+	p.followSel = true
+}
+
+// scrollBy moves the body offset by delta without touching the selected role.
+// The next View clamps the result against the real body height, so paging past
+// either end simply settles at the end on render.
+func (p *Panel) scrollBy(delta int) {
+	p.followSel = false
+	if delta < 0 {
+		p.offset = max(p.offset+delta, 0)
+		return
+	}
+	p.offset = min(p.offset+delta, 1<<30)
 }
 
 // nextRoleRow returns the index of the next role row in direction dir,
@@ -386,14 +426,22 @@ func (p *Panel) View(width, maxHeight int) string {
 		return theme.MutedStyle().Render("Cast list")
 	}
 
-	var rows []string
+	var lines []string
+	// roleFirst/roleLast record each row's first physical line and the line
+	// just past its block, so the selected role's wrapped diagnostics can be
+	// brought into view as a unit.
+	roleFirst := make([]int, len(p.rows))
+	roleLast := make([]int, len(p.rows))
+	for i := range roleFirst {
+		roleFirst[i] = -1
+	}
 
 	// Metadata lines.
 	for _, line := range p.meta {
-		rows = append(rows, theme.MutedStyle().Render(line))
+		lines = append(lines, theme.MutedStyle().Render(line))
 	}
 	if len(p.meta) > 0 {
-		rows = append(rows, "")
+		lines = append(lines, "")
 	}
 
 	// Strategy row.
@@ -404,13 +452,13 @@ func (p *Panel) View(width, maxHeight int) string {
 	if reason := p.disabledReason(); reason != "" {
 		stratRow.Err = reason
 	}
-	rows = append(rows, renderRow(stratRow, inner))
+	lines = appendBlock(lines, renderRow(stratRow, inner))
 	// Explain disabled options that are not currently selected.
 	for _, o := range p.strategyOptions {
 		if o.Value == p.strategy || o.DisabledReason == "" {
 			continue
 		}
-		rows = append(rows, theme.MutedStyle().Render("  "+o.Value+": "+o.DisabledReason))
+		lines = appendBlock(lines, mutedBlock("  "+o.Value+": "+o.DisabledReason, inner-2))
 	}
 
 	// Cast rows.
@@ -418,33 +466,187 @@ func (p *Panel) View(width, maxHeight int) string {
 		if i == p.cursor && r.Role != "" && p.pick == nil {
 			r.Title = "▸ " + r.Title
 		}
-		rows = append(rows, renderRow(r, inner))
+		roleFirst[i] = len(lines)
+		lines = appendBlock(lines, renderRow(r, inner))
+		roleLast[i] = len(lines)
 	}
 
 	// Blocked indicator.
 	if p.blocked() {
-		rows = append(rows, "")
-		rows = append(rows, errorStyle().Render("  "+glyph.Warning+" fix errors above before starting"))
+		lines = append(lines, "")
+		lines = append(lines, errorStyle().Render("  "+glyph.Warning+" fix errors above before starting"))
 	}
 
-	listH := maxHeight - 1
-	if listH < 1 {
-		listH = 1
+	// avail is what the frame leaves for the body: the panel border row takes
+	// one of maxHeight, and the body must never render past it.
+	avail := max(maxHeight-1, 1)
+
+	// Reserve the last content row for the position indicator when the body
+	// overflows and the budget can spare it.
+	content := avail
+	showPos := false
+	if len(lines) > avail && avail >= 4 {
+		content = avail - 1
+		showPos = true
 	}
-	body := chrome.ClipLines(rows, 0, listH, th)
+
+	// Clamp the offset after a resize or a data change so the body cannot
+	// stay scrolled past its end. At any offset above zero the "↑ more"
+	// indicator costs a row, so the offset that still shows the final line
+	// sits one line short of len(lines)-content.
+	p.offset = clampOffset(p.offset, len(lines), content)
+	if p.followSel {
+		p.offset = p.followOffset(roleFirst, roleLast, len(lines), p.offset, content)
+		p.followSel = false
+	}
+	p.offset = clampOffset(p.offset, len(lines), content)
+
+	var body []string
+	if len(lines) > content {
+		n, top, bottom := visibleCount(len(lines), p.offset, content)
+		p.bodyRows = n
+		if top {
+			body = append(body, theme.MutedStyle().Render("  ↑ more"))
+		}
+		end := min(p.offset+n, len(lines))
+		body = append(body, lines[p.offset:end]...)
+		if bottom {
+			body = append(body, theme.MutedStyle().Render("  ↓ more"))
+		}
+		if showPos {
+			first := p.offset + 1
+			body = append(body, theme.MutedStyle().Render(
+				fmt.Sprintf("  %d–%d/%d", first, first+n-1, len(lines))))
+		}
+	} else {
+		p.bodyRows = len(lines)
+		body = lines
+	}
 
 	hints := "↵ start · o override"
 	if p.blocked() {
 		hints = "↵ blocked"
 	}
 	hints += " · Esc cancel"
+	if len(lines) > content {
+		hints += " · ⇞⇟ page"
+	}
 
-	ph := min(lipgloss.Height(body)+1, maxHeight)
-	return chrome.PanelWithHints(p.title, hints, body, pw, ph, true, th)
+	bodyText := strings.Join(body, "\n")
+	ph := min(lipgloss.Height(bodyText)+1, maxHeight)
+	return chrome.PanelWithHints(p.title, hints, bodyText, pw, ph, true, th)
+}
+
+// appendBlock appends a possibly multi-line rendered block, one physical line
+// per entry, so the body can be windowed and paged by line.
+func appendBlock(lines []string, block string) []string {
+	return append(lines, strings.Split(block, "\n")...)
+}
+
+// mutedBlock wraps text to budget cells and renders every line muted, keeping
+// indent on each line. It is the muted counterpart of renderRow's Err/Warn
+// continuation lines.
+func mutedBlock(text string, budget int) string {
+	if budget < 1 {
+		budget = 1
+	}
+	segments := strings.Split(ansi.Wrap(text, budget, ""), "\n")
+	out := make([]string, 0, len(segments))
+	for _, seg := range segments {
+		out = append(out, theme.MutedStyle().Render(seg))
+	}
+	return strings.Join(out, "\n")
+}
+
+// clampOffset bounds offset to a value that still renders within a window of
+// content lines over total physical lines.
+func clampOffset(offset, total, content int) int {
+	if total <= 0 {
+		return 0
+	}
+	maxOff := 0
+	if total > content {
+		maxOff = max(total-content+1, 0)
+	}
+	return max(min(offset, maxOff), 0)
+}
+
+// visibleCount reports how many physical lines fit at offset within content
+// rows, and whether the ↑/↓ more indicators take a row each.
+func visibleCount(total, offset, content int) (n int, top, bottom bool) {
+	top = offset > 0
+	n = content
+	if top {
+		n--
+	}
+	if n < 1 {
+		n = 1
+	}
+	bottom = offset+n < total
+	if bottom {
+		n--
+	}
+	if n < 1 {
+		n = 1
+		bottom = offset+n < total
+	}
+	return n, top, bottom
+}
+
+// followOffset moves offset as little as possible so the selected role's whole
+// physical block — its wrapped error and warning lines included — is inside the
+// window. A block taller than the window is scrolled to its first line instead.
+func (p *Panel) followOffset(first, last []int, total, offset, content int) int {
+	if p.cursor < 0 || p.cursor >= len(first) || first[p.cursor] < 0 {
+		return offset
+	}
+	start, end := first[p.cursor], last[p.cursor]
+
+	// shows reports whether the block's first line, and then the whole block,
+	// land in the rows the window at off actually renders. The "↑ more"
+	// indicator costs a row but does not shift the slice, so the window always
+	// starts at off.
+	shows := func(off int) (firstLine, whole bool) {
+		n, _, _ := visibleCount(total, off, content)
+		firstLine = start >= off && start < off+n
+		return firstLine, firstLine && end <= off+n
+	}
+
+	if _, whole := shows(offset); whole {
+		return offset
+	}
+	// Scroll the shortest distance in either direction that brings the block
+	// into view whole, or at least its first line.
+	best, bestScore := offset, 0
+	for d := 1; d <= content && bestScore < 2; d++ {
+		for _, cand := range []int{offset + d, offset - d} {
+			if cand < 0 || cand > total {
+				continue
+			}
+			firstLine, whole := shows(cand)
+			score := 0
+			if firstLine {
+				score = 1
+			}
+			if whole {
+				score = 2
+			}
+			if score > bestScore {
+				best, bestScore = cand, score
+			}
+		}
+	}
+	if bestScore == 0 {
+		// Too far away for the short scan: align the block to the top.
+		best = max(start-1, 0)
+	}
+	return clampOffset(best, total, content)
 }
 
 // renderRow renders a single cast row (or the strategy row) into a string,
-// including any Err/Warn continuation lines.
+// including any Err/Warn continuation lines. Error and warning text wraps to
+// the cells left inside the row instead of being truncated: a blocking reason
+// cut off mid-sentence is not a reason the user can act on.
 func renderRow(r Row, inner int) string {
 	detail := ""
 	if r.Detail != "" {
@@ -457,12 +659,31 @@ func renderRow(r Row, inner int) string {
 	line := chrome.Row("  ", r.Title, detail, badge, inner)
 
 	if r.Err != "" {
-		line += "\n" + errorStyle().Render("    "+r.Err)
+		line += "\n" + wrapDiag(errorStyle(), "    ", "", r.Err, inner)
 	}
 	if r.Warn != "" {
-		line += "\n" + warnStyle().Render("    "+glyph.Warning+" "+r.Warn)
+		line += "\n" + wrapDiag(warnStyle(), "    ", glyph.Warning+" ", r.Warn, inner)
 	}
 	return line
+}
+
+// wrapDiag wraps text into the cells left after indent and prefix and renders
+// every segment with style. The prefix is drawn on the first line only;
+// continuation lines keep the same margin so the block stays aligned.
+func wrapDiag(style lipgloss.Style, indent, prefix, text string, inner int) string {
+	budget := inner - ansi.StringWidth(indent) - ansi.StringWidth(prefix)
+	budget = max(budget, 1)
+	segments := strings.Split(ansi.Wrap(text, budget, ""), "\n")
+	pad := indent + strings.Repeat(" ", ansi.StringWidth(prefix))
+	out := make([]string, 0, len(segments))
+	for i, seg := range segments {
+		lead := pad
+		if i == 0 {
+			lead = indent + prefix
+		}
+		out = append(out, style.Render(lead+seg))
+	}
+	return strings.Join(out, "\n")
 }
 
 func detailStyle() lipgloss.Style {

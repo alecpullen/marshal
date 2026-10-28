@@ -1,13 +1,18 @@
 package castlist
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/llm/routing"
 )
 
 var testTheme = theme.LoadFor(false, "xterm-256color")
@@ -248,4 +253,276 @@ func TestDisabledStrategyIsSkippedAndCannotStart(t *testing.T) {
 	if cmd := panel.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
 		t.Fatal("disabled strict strategy must not emit StartMsg")
 	}
+}
+
+// TestCastListSelectionVisibleAfterNavigation walks a cast list taller than its
+// panel and checks that the selected role — and the first line of its wrapped
+// diagnostics — is on screen after every move, survives resizes, and keeps the
+// override it carries.
+func TestCastListSelectionVisibleAfterNavigation(t *testing.T) {
+	const width, height = 80, 12
+
+	rows := make([]Row, 12)
+	errText := make([]string, len(rows))
+	warnText := make([]string, len(rows))
+	for i := range rows {
+		rows[i] = Row{
+			Title:  fmt.Sprintf("role %02d", i),
+			Role:   routing.AgentRole(fmt.Sprintf("role%02d", i)),
+			Detail: "ollama/qwen3",
+			Badge:  "ready",
+		}
+		if i%3 == 0 {
+			errText[i] = fmt.Sprintf("error %02d: no provider matched this role's constraints and the fallback preset is still unresolved", i)
+			rows[i].Err = errText[i]
+		}
+		if i%4 == 0 {
+			warnText[i] = fmt.Sprintf("warn %02d: no build or test command is configured for this repository, so the verify gate stays unknown until one is added", i)
+			rows[i].Warn = warnText[i]
+		}
+	}
+
+	p := New("Cast", rows, []string{"mode: sdd2", "model: minimax-m3"}, "agent")
+	frame := func(h int) string { return ansi.Strip(p.View(width, h)) }
+
+	// assertVisible checks the height budget, the selection marker, and the
+	// first line of the selected role's error and warning.
+	assertVisible := func(t *testing.T, out string, h int) {
+		t.Helper()
+		if got := len(strings.Split(out, "\n")); got > h {
+			t.Fatalf("view is %d lines, budget %d:\n%s", got, h, out)
+		}
+		if want := "▸ " + fmt.Sprintf("role %02d", p.cursor); !strings.Contains(out, want) {
+			t.Fatalf("selected role %q is not visible:\n%s", want, out)
+		}
+		if errText[p.cursor] != "" && !strings.Contains(out, fmt.Sprintf("error %02d:", p.cursor)) {
+			t.Fatalf("selected role's error is not visible:\n%s", out)
+		}
+		if warnText[p.cursor] != "" && !strings.Contains(out, fmt.Sprintf("warn %02d:", p.cursor)) {
+			t.Fatalf("selected role's warning is not visible:\n%s", out)
+		}
+	}
+
+	// The list overflows the panel, so the selection must scroll with it.
+	assertVisible(t, frame(height), height)
+	seen := map[routing.AgentRole]bool{}
+	for i := 1; i < len(rows); i++ {
+		p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		role := p.rows[p.cursor].Role
+		if seen[role] {
+			t.Fatalf("Down did not advance the selection: stuck on %q", role)
+		}
+		seen[role] = true
+		assertVisible(t, frame(height), height)
+	}
+
+	// An override applied to the selected role must show on its row and stay
+	// attached to that role.
+	target := p.rows[p.cursor].Role
+	p.setOverride(target, "opus-5")
+	out := frame(height)
+	for _, want := range []string{"opus-5", "override"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("overridden row is missing %q:\n%s", want, out)
+		}
+	}
+	if got := p.Overrides()[target]; got != "opus-5" {
+		t.Fatalf("override for %q = %q, want opus-5", target, got)
+	}
+
+	// Resizing must keep the selected role reachable and never render past the
+	// budget. Navigating re-arms follow-the-selection after each resize.
+	for _, h := range []int{20, 9, 6, 12} {
+		if got := len(strings.Split(frame(h), "\n")); got > h {
+			t.Fatalf("after resize to %d the view is %d lines:\n%s", h, got, frame(h))
+		}
+		p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+		p.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+		assertVisible(t, frame(h), h)
+	}
+}
+
+// TestCastListPagesEveryDiagnostic pages a blocked cast list and accumulates the
+// frames to prove that every wrapped segment of every blocking reason, disabled
+// reason and warning is reachable, that paging leaves the selected override
+// target alone, and that Enter stays refused until both conditions clear.
+func TestCastListPagesEveryDiagnostic(t *testing.T) {
+	const width, height = 80, 8
+	inner := layout.PanelWidth(width) - 3
+
+	const (
+		blockErr = "verify gate: no build or test command is configured, and the proposal left " +
+			"the command list empty, so the gate cannot be evaluated"
+		strictReason = "fallback work remains on three roles, so the strict strategy cannot be " +
+			"selected until every fallback preset is replaced with an explicit model and the " +
+			"router re-validates the cast"
+		adaptiveReason = "adaptive needs a verify gate with at least one command before it can " +
+			"choose between the fast and careful paths"
+		longWarn = "no build or test command is configured for this repository, so the verify " +
+			"gate stays unknown and the run will start without a post-implementation check"
+	)
+
+	p := New("Cast", []Row{
+		{Title: "scout", Role: routing.AgentRole("scout"), Detail: "ollama/qwen3", Badge: "ready"},
+		{Title: "planner", Role: routing.AgentRole("planner"), Detail: "ollama/qwen3", Badge: "ready"},
+		{Title: "implementer", Role: routing.AgentRole("implementer"), Detail: "ollama/qwen3", Badge: "ready", Warn: longWarn},
+		{Title: "reviewer", Role: routing.AgentRole("reviewer"), Detail: "ollama/qwen3", Badge: "ready"},
+		{Title: "verify gate", Err: blockErr},
+	}, []string{"mode: sdd2", "model: minimax-m3"}, "agent")
+	p.SetStrategyOptions([]StrategyOption{
+		{Value: "agent"},
+		{Value: "adaptive", DisabledReason: adaptiveReason},
+		{Value: "strict", DisabledReason: strictReason},
+	})
+	p.SetStrategy("strict")
+
+	// Enter is refused while the gate row errors and the selected strategy is
+	// disabled.
+	if !p.blocked() {
+		t.Fatal("panel must be blocked before the conditions clear")
+	}
+	if cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatal("Enter must not start a blocked run")
+	}
+
+	// Park the cursor on the row carrying the long warning and give it an
+	// override: paging must move neither.
+	for i := 0; p.rows[p.cursor].Role != routing.AgentRole("implementer"); i++ {
+		if i > len(p.rows) {
+			t.Fatalf("cursor never reached the implementer row, stuck on %q", p.rows[p.cursor].Role)
+		}
+		p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	p.setOverride(routing.AgentRole("implementer"), "opus-5")
+
+	var frames []string
+	render := func() string {
+		out := ansi.Strip(p.View(width, height))
+		frames = append(frames, out)
+		if got := len(strings.Split(out, "\n")); got > height {
+			t.Fatalf("view is %d lines, budget %d:\n%s", got, height, out)
+		}
+		return out
+	}
+	render()
+	// Start the page-through at the top of the body so the accumulation covers
+	// the strategy rows as well as everything below them.
+	p.Update(tea.KeyPressMsg{Code: tea.KeyHome})
+	render()
+	for i := 0; i < 20; i++ {
+		p.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+		render()
+	}
+	all := strings.Join(frames, "\n")
+
+	// Every wrapped segment of every diagnostic must appear in some frame.
+	warnPrefix := glyph.Warning + " "
+	diags := []struct {
+		name   string
+		text   string
+		budget int
+	}{
+		{"blocking error", blockErr, inner - 4},
+		{"selected strategy reason", strictReason, inner - 4},
+		{"disabled option reason", "  adaptive: " + adaptiveReason, inner - 2},
+		{"later warning", longWarn, inner - 4 - ansi.StringWidth(warnPrefix)},
+	}
+	for _, d := range diags {
+		segments := wrapSegments(d.text, d.budget)
+		if len(segments) < 2 {
+			t.Fatalf("%s did not wrap into several segments at width %d: %q", d.name, width, segments)
+		}
+		for i, seg := range segments {
+			if !strings.Contains(all, seg) {
+				t.Errorf("%s segment %d/%d is unreachable by paging: %q", d.name, i+1, len(segments), seg)
+			}
+		}
+	}
+
+	// The overflow affordances must be there, and the override of a row that
+	// starts off screen must be reachable too.
+	if !strings.Contains(all, "↓ more") || !strings.Contains(all, "↑ more") {
+		t.Error("a paged body must show both overflow indicators")
+	}
+	if !strings.Contains(all, "⇞⇟ page") {
+		t.Error("overflowing bodies must advertise the paging keys in the hints")
+	}
+	if !regexp.MustCompile(`\d+–\d+/\d+`).MatchString(all) {
+		t.Errorf("a paged body must show its position:\n%s", all)
+	}
+	if !strings.Contains(all, "opus-5") {
+		t.Errorf("the overridden row never became reachable:\n%s", all)
+	}
+
+	// Home and End are independent of the selection.
+	if out := homeEnd(t, p, tea.KeyHome, width, height); !strings.Contains(out, "mode: sdd2") {
+		t.Errorf("Home must return to the top of the body:\n%s", out)
+	}
+	if out := homeEnd(t, p, tea.KeyEnd, width, height); !strings.Contains(out, "fix errors above") {
+		t.Errorf("End must reach the blocked banner:\n%s", out)
+	}
+
+	// Paging must not have moved the override target.
+	if got := p.rows[p.cursor].Role; got != routing.AgentRole("implementer") {
+		t.Fatalf("paging moved the selection to %q", got)
+	}
+	if got := p.Overrides()[routing.AgentRole("implementer")]; got != "opus-5" {
+		t.Fatalf("after paging the override target is %q, want implementer", got)
+	}
+
+	// Clearing one condition is not enough.
+	for i := range p.rows {
+		if p.rows[i].Title == "verify gate" {
+			p.rows[i].Err = ""
+		}
+	}
+	if !p.blocked() {
+		t.Fatal("the disabled strategy must still block once the row error clears")
+	}
+	if cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatal("Enter must stay refused while the selected strategy is disabled")
+	}
+
+	// Clearing both lets the run start, with the override that survived paging.
+	p.SetStrategy("agent")
+	if p.blocked() {
+		t.Fatal("panel must be unblocked once the strategy is selectable")
+	}
+	cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter must start once the conditions clear")
+	}
+	start, ok := cmd().(StartMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want StartMsg", cmd())
+	}
+	if start.Strategy != "agent" {
+		t.Errorf("StartMsg.Strategy = %q, want agent", start.Strategy)
+	}
+	if got := start.Overrides[routing.AgentRole("implementer")]; got != "opus-5" {
+		t.Errorf("StartMsg.Overrides[implementer] = %q, want opus-5", got)
+	}
+}
+
+// wrapSegments reports the trimmed, non-empty lines ansi.Wrap produces for text
+// at the given budget: the physical lines the panel must be able to show.
+func wrapSegments(text string, budget int) []string {
+	var out []string
+	for _, seg := range strings.Split(ansi.Wrap(text, max(budget, 1), ""), "\n") {
+		if seg = strings.TrimSpace(seg); seg != "" {
+			out = append(out, seg)
+		}
+	}
+	return out
+}
+
+// homeEnd presses one of Home/End and returns the rendered frame.
+func homeEnd(t *testing.T, p *Panel, code rune, width, height int) string {
+	t.Helper()
+	p.Update(tea.KeyPressMsg{Code: code})
+	out := ansi.Strip(p.View(width, height))
+	if got := len(strings.Split(out, "\n")); got > height {
+		t.Fatalf("view is %d lines, budget %d:\n%s", got, height, out)
+	}
+	return out
 }

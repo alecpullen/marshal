@@ -14,6 +14,7 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/settings"
 	"marshal/internal/skills"
 )
@@ -153,6 +154,87 @@ func TestSkillsPanelIsFramed(t *testing.T) {
 	}
 	if len(rows) > maxHeight {
 		t.Fatalf("view is %d rows tall, past the %d-row budget", len(rows), maxHeight)
+	}
+}
+
+// A narrow dock stacks every field row onto two physical lines, so the pane's
+// height budget has to be counted in lines rather than rows. It used to count
+// rows: the list overflowed the height the dock gave it and the selected row
+// drifted off-frame, which only shows up through a consumer that owns a frame.
+func TestSkillPanelStackedFieldsKeepSelectionVisible(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	p := NewPanel(home, work, true, nil, nil)
+	global := p.globalSkillsDir()
+	if err := os.MkdirAll(global, 0755); err != nil {
+		t.Fatalf("create skill store %s: %v", global, err)
+	}
+	for _, name := range []string{"alpha", "beta", "gamma", "delta"} {
+		writeSkillEntry(t, global, name+".md", name, "fixture")
+	}
+	p.list.Refresh()
+
+	const width, maxHeight = 36, 14
+	// The list's own budget: the panel reserves 4 rows for its header, footer
+	// and frame.
+	const listHeight = maxHeight - 4
+
+	listRows := func(t *testing.T) []string {
+		t.Helper()
+		view := ansi.Strip(p.ActiveList().View())
+		if view == "" {
+			return nil
+		}
+		return strings.Split(view, "\n")
+	}
+
+	if got := len(listRows(t)); got > listHeight {
+		t.Fatalf("list renders %d physical rows, past its %d-row budget:\n%s",
+			got, listHeight, ansi.Strip(p.ActiveList().View()))
+	}
+	if plain := ansi.Strip(p.View(width, maxHeight)); !strings.Contains(plain, chrome.SelectionMarker) {
+		t.Fatalf("the selected row is off-frame:\n%s", plain)
+	}
+
+	// Navigate to the install action through the real panel, so the window has
+	// to follow the cursor rather than the cursor landing in view by accident.
+	for i := 0; i <= len(settings.FieldListRows(p.ActiveList())) && settings.FieldID(p.ActiveList().CursorRow()) != "action.install"; i++ {
+		p.Update(keyDown)
+	}
+	if got := settings.FieldID(p.ActiveList().CursorRow()); got != "action.install" {
+		t.Fatalf("cursor is on %q, want action.install", got)
+	}
+
+	view := p.View(width, maxHeight)
+	plain := ansi.Strip(view)
+	if rows := strings.Split(plain, "\n"); len(rows) > maxHeight {
+		t.Fatalf("frame is %d rows tall, past the %d-row budget:\n%s", len(rows), maxHeight, plain)
+	}
+	if got := len(listRows(t)); got > listHeight {
+		t.Fatalf("list renders %d physical rows after navigation, past its %d-row budget:\n%s",
+			got, listHeight, ansi.Strip(p.ActiveList().View()))
+	}
+	// The selected action, not just some row, is what the window keeps.
+	focused := false
+	for _, row := range strings.Split(plain, "\n") {
+		if strings.Contains(row, chrome.SelectionMarker) && strings.Contains(row, "Install skill") {
+			focused = true
+		}
+	}
+	if !focused {
+		t.Fatalf("the selected install action is off-frame:\n%s", plain)
+	}
+
+	// One action, taken after that navigation, still opens its frame.
+	p.Update(keyEnter)
+	if len(p.stack) != 1 {
+		t.Fatalf("enter on the install action pushed %d frames, want 1", len(p.stack))
+	}
+	plain = ansi.Strip(p.View(width, maxHeight))
+	if rows := strings.Split(plain, "\n"); len(rows) > maxHeight {
+		t.Fatalf("install frame is %d rows tall, past the %d-row budget:\n%s", len(rows), maxHeight, plain)
+	}
+	if !strings.Contains(plain, "Source") {
+		t.Fatalf("the install frame's Source field is off-frame:\n%s", plain)
 	}
 }
 

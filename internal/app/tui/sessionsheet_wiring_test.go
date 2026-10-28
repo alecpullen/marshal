@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -387,5 +388,118 @@ func TestTurnEndRebasesTheSheet(t *testing.T) {
 	runCmdChain(t, cmd)
 	if want := []acpwire.SheetRefresh{{Rebase: true, Stats: true, Fleet: true}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("RefreshSheet requests = %+v, want %+v", got, want)
+	}
+}
+
+// TestRulesDetailThroughModel pins the composed routing for the sheet's rules
+// detail view: Enter on RULES opens the read-only view without dispatching a
+// slash command or touching a rule, paging and resizing through Model.Update
+// reach the last rule in the composed frame, and Escape returns to the sheet
+// rather than closing it.
+func TestRulesDetailThroughModel(t *testing.T) {
+	m, _ := gitModel(t)
+
+	var rules []string
+	for i := 1; i <= 24; i++ {
+		rules = append(rules, fmt.Sprintf("MODEL-RULE-%02d %s",
+			i, strings.Repeat("allow the shell to run go test and gofmt here ", 2)))
+	}
+	for _, rule := range rules {
+		m.state.AddSessionRule(rule)
+	}
+	before := m.state.SessionRules()
+
+	m = ctrlB(m)
+	if !m.sheetOpen() {
+		t.Fatal("setup: Ctrl+B must open the session sheet")
+	}
+
+	press := func(t *testing.T, m Model, k tea.KeyPressMsg) (Model, tea.Cmd) {
+		t.Helper()
+		mm, cmd := m.Update(k)
+		return asModel(t, mm), cmd
+	}
+
+	// Walk the selection to RULES.
+	var selected bool
+	for i := 0; i < 20; i++ {
+		if strings.Contains(stripANSI(m.viewString()), "▸ RULES") {
+			selected = true
+			break
+		}
+		m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	if !selected {
+		t.Fatalf("could not select RULES:\n%s", stripANSI(m.viewString()))
+	}
+
+	// Enter opens the detail view: no slash command, no rule mutation.
+	m, cmd := press(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			if run, ok := msg.(sessionsheet.RunCommandMsg); ok {
+				t.Fatalf("Enter on RULES dispatched /%s instead of opening details", run.Command)
+			}
+		}
+	}
+	if !m.sheetOpen() {
+		t.Fatal("opening the rules detail view must not close the sheet")
+	}
+	if after := m.state.SessionRules(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("opening details mutated the session rules:\n%v\n->\n%v", before, after)
+	}
+	if opened := stripANSI(m.viewString()); !strings.Contains(opened, "esc back") {
+		t.Fatalf("Enter on RULES did not open the detail view:\n%s", opened)
+	}
+
+	// Page and resize through the model until the last rule is on screen.
+	var frames []string
+	seen := func() string {
+		frame := stripANSI(m.viewString())
+		frames = append(frames, frame)
+		return frame
+	}
+	var last string
+	for i := 0; i < 100 && last == ""; i++ {
+		if frame := seen(); strings.Contains(frame, "MODEL-RULE-24") {
+			last = frame
+			break
+		}
+		m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyPgDown})
+		if i == 20 {
+			// A resize mid-scroll must keep the detail view and its content.
+			mm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+			m = asModel(t, mm)
+		}
+	}
+	if last == "" {
+		t.Fatalf("paging through the model never reached the last rule:\n%s",
+			frames[len(frames)-1])
+	}
+
+	// Escape returns to the sheet, not to the transcript.
+	m, cmd = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			if _, ok := msg.(sessionsheet.ClosedMsg); ok {
+				t.Fatal("Escape in the rules detail view closed the sheet instead of going back")
+			}
+		}
+	}
+	if !m.sheetOpen() {
+		t.Fatal("Escape in the rules detail view must return to the sheet")
+	}
+	back := stripANSI(m.viewString())
+	if !strings.Contains(back, "RULES") {
+		t.Fatalf("the sheet did not come back after leaving the detail view:\n%s", back)
+	}
+	if strings.Contains(back, "esc back") {
+		t.Fatalf("Escape left the rules detail view open:\n%s", back)
+	}
+	if !strings.Contains(back, "↑↓ section") {
+		t.Fatalf("the ordinary sheet hints did not come back:\n%s", back)
+	}
+	if after := m.state.SessionRules(); !reflect.DeepEqual(after, before) {
+		t.Fatalf("scrolling the rules detail view mutated the session rules:\n%v\n->\n%v", before, after)
 	}
 }

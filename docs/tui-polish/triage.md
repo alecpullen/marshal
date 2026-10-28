@@ -237,6 +237,32 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
    [session rules](audit.md#session-sheet-can-hide-standing-approval-rules).
    Verify selection, scroll reachability and long text at 80×24 and wider sizes.
 
+   **Status (2026-10-28): done** — tasks 1–6 of the
+   [P7 layout and overflow plan](plans/2026-10-28-p7-layout-overflow-plan.md)
+   (commits `895bf532`, `fcd7251d`, `040d31a4`, `c77fbeb7`, `105f269f`,
+   `b6951ad4`). Physical-line budgeting landed in the shared field-list engine
+   first (`windowLines`, with shared `chrome.ClipLines` left untouched), then
+   each panel got its own offset, wrapping and paging: the cast list follows
+   the selected role and pages every wrapped diagnostic, the gate wraps the
+   whole question and report above a pinned input row, the inspector gained a
+   view-only metadata tab, and the sheet gained a read-only rules detail mode.
+   Every panel keeps the frame inside its `maxHeight`; overflow indicators are
+   textual (`↑ more` / `↓ more`, `N–M/T`, `⇞⇟ page`) so they survive without
+   colour. Verification: `go build ./cmd/marshal` succeeds;
+   `go test ./internal/app/tui/... -count=1`, `go vet ./...`, gofmt for the six
+   touched packages and `git diff --check` are all clean; the scripted usability
+   suite passes. The full suite shows no new failures against the recorded
+   baseline — the same four packages (`internal/app`, `internal/snapshot`,
+   `internal/tools/desktop/browser`, `internal/worktree`) and passes in every
+   package this phase changed, including `internal/app/tui`. `web/bridge`
+   timed out once at 301 s inside the 5-minute whole-suite budget and passed on
+   re-run; `web/` is stdlib-only behind `TestWebIsStdlibOnly`, so this phase
+   cannot reach it. Limitations: no controlling terminal, multiplexer or SSH
+   environment was available, so resize, paging and key routing were exercised
+   through the model and panel update paths (including composed frames at 80×24
+   and 120×40) rather than by hand; the scripted usability suite remains
+   help-only and does not cover these panels.
+
 9. **Correct focused input routing.** Fix
    [plugin paste](audit.md#plugin-manager-ignores-bracketed-paste),
    [Escape in skill/plugin editors](audit.md#escape-leaves-skill-and-plugin-frames-while-editing-a-field),

@@ -8836,6 +8836,158 @@ func TestAnswerMsgResumesTheRun(t *testing.T) {
 	}
 }
 
+// TestGatePagingThroughModel pins the composed gate path: paging keys sent
+// through Model.Update reach the gate's body, so the question's first line and
+// the report's last line are both reachable at a narrow and a tall terminal
+// while the answer field stays on screen; the answer then still reaches the
+// existing gate handler, and Escape still stops the run.
+func TestGatePagingThroughModel(t *testing.T) {
+	const answer = "reuse the backoff"
+
+	gateFixture := func() session.SDDGate {
+		var report strings.Builder
+		report.WriteString("STATUS: NEEDS_CONTEXT\n")
+		for i := 1; i <= 20; i++ {
+			fmt.Fprintf(&report, "MODEL-EVIDENCE-%02d: %s\n", i, strings.Repeat("根拠 ", 8))
+		}
+		report.WriteString("MODEL-REPORT-END")
+		return session.SDDGate{
+			TaskN:     7,
+			TaskTitle: "Add the retry helper",
+			Question: "MODEL-QUESTION-START " +
+				strings.Repeat("should the runner reuse the existing backoff? ", 10) +
+				"MODEL-QUESTION-END",
+			Report: report.String(),
+		}
+	}
+
+	openGate := func(t *testing.T) Model {
+		t.Helper()
+		m := newTestModelInRepo(t)
+		m.pipelineRunner = &recordingPipelineRunner{}
+		m.state.SetSDDProgress(session.SDDProgress{PlanPath: "/plans/p.md"})
+		m.state.SetSDDGate(gateFixture())
+		m.dock.Open(gatepanel.New(m.sess.Status().SDDGate))
+		return m
+	}
+
+	press := func(t *testing.T, m Model, code rune) Model {
+		t.Helper()
+		mm, _ := m.Update(tea.KeyPressMsg{Code: code})
+		return asModel(t, mm)
+	}
+
+	for _, size := range []struct{ w, h int }{{80, 24}, {120, 40}} {
+		t.Run(fmt.Sprintf("%dx%d", size.w, size.h), func(t *testing.T) {
+			m := openGate(t)
+			m.resize(size.w, size.h)
+
+			for _, r := range answer {
+				mm, _ := m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+				m = asModel(t, mm)
+			}
+
+			var frames []string
+			seen := func() string {
+				t.Helper()
+				frame := stripANSI(m.viewString())
+				if got := len(strings.Split(frame, "\n")); got > size.h {
+					t.Fatalf("composed frame is %d rows, budget is %d:\n%s", got, size.h, frame)
+				}
+				if !strings.Contains(frame, answer) {
+					t.Fatalf("the answer field left the composed frame, so the gate cannot be answered:\n%s", frame)
+				}
+				frames = append(frames, frame)
+				return frame
+			}
+
+			if first := seen(); !strings.Contains(first, "MODEL-QUESTION-START") {
+				t.Fatalf("the gate must open on the question's first line:\n%s", first)
+			}
+
+			var end string
+			for i := 0; i < 100 && end == ""; i++ {
+				m = press(t, m, tea.KeyPgDown)
+				if frame := seen(); strings.Contains(frame, "MODEL-REPORT-END") {
+					end = frame
+				}
+			}
+			if end == "" {
+				t.Fatalf("paging through the model never reached the report's end:\n%s",
+					frames[len(frames)-1])
+			}
+			// The border only has room for the paging hint on the wider frame.
+			if size.w >= 110 && !strings.Contains(strings.Join(frames, "\n"), "⇞⇟ page") {
+				t.Errorf("the composed frame never advertises paging:\n%s", end)
+			}
+
+			// The answer reaches the existing gate handler from a paged panel.
+			mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			m = asModel(t, mm)
+			if cmd == nil {
+				t.Fatal("enter after paging must emit the gate's answer command")
+			}
+			msg := cmd()
+			if _, ok := msg.(gatepanel.AnswerMsg); !ok {
+				t.Fatalf("enter after paging produced %T, want gatepanel.AnswerMsg", msg)
+			}
+			mm, _ = m.Update(msg)
+			m = asModel(t, mm)
+			runner, ok := m.pipelineRunner.(*recordingPipelineRunner)
+			if !ok || runner.answer != answer {
+				t.Fatalf("the gate handler received %q, want %q",
+					runnerAnswer(m.pipelineRunner), answer)
+			}
+			if m.dock.IsOpen() {
+				t.Error("answering must close the gate panel")
+			}
+			var echoed bool
+			for _, msg := range m.state.Messages() {
+				if msg.Role == session.RoleUser && strings.Contains(msg.Content, answer) {
+					echoed = true
+				}
+			}
+			if !echoed {
+				t.Error("the paged answer must still be echoed into the transcript")
+			}
+		})
+	}
+
+	// Escape still stops the run, including after the body has been paged.
+	t.Run("escape stops the run", func(t *testing.T) {
+		m := openGate(t)
+		m.resize(80, 24)
+		m = press(t, m, tea.KeyPgDown)
+
+		mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		m = asModel(t, mm)
+		if cmd == nil {
+			t.Fatal("esc must emit a command")
+		}
+		msg := cmd()
+		if _, ok := msg.(gatepanel.StopMsg); !ok {
+			t.Fatalf("esc produced %T, want gatepanel.StopMsg", msg)
+		}
+		mm, _ = m.Update(msg)
+		m = asModel(t, mm)
+		if m.dock.IsOpen() {
+			t.Error("stopping must close the gate panel")
+		}
+		if g := m.state.SDDGate(); g.Question != "" {
+			t.Error("stopping must clear the gate")
+		}
+	})
+}
+
+// runnerAnswer reports the answer a recording runner received, for failure
+// messages that must not panic on a nil runner.
+func runnerAnswer(r any) string {
+	if rr, ok := r.(*recordingPipelineRunner); ok && rr != nil {
+		return rr.answer
+	}
+	return "<no recording runner>"
+}
+
 func TestStopMsgEndsTheRun(t *testing.T) {
 	m := newTestModelInRepo(t)
 	m.state.SetSDDGate(session.SDDGate{TaskN: 1, Question: "q"})

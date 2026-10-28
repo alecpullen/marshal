@@ -586,24 +586,38 @@ func (fl *FieldList) valueCell(row *Field, isCursor bool) string {
 	return ""
 }
 
-// View renders the list clipped to height, keeping the cursor row visible
-// and adding ↑/↓ more indicators when clipped.
+// View renders the list to at most height physical rows, keeping the focused
+// row — or its open editor, picker option, or add prompt — visible and adding
+// ↑/↓ more indicators when clipped.
+//
+// Elements are budgeted as physical lines, not as elements: chrome.Row stacks
+// onto two lines when the right column would starve the label, and a stacked
+// row that counted as one line silently overflowed the height the dock gave
+// the pane.
 func (fl *FieldList) View() string {
 	fl.Refresh()
 	var lines []string
-	cursorLine := 0
+	// push splits one rendered element into its physical lines and returns
+	// the index of the first, so callers can track where the focus landed.
+	push := func(rendered string) int {
+		start := len(lines)
+		lines = append(lines, strings.Split(rendered, "\n")...)
+		return start
+	}
+	cursorStart := 0
+	editLine, pickLine, addLine := -1, -1, -1
 	if len(fl.rows) == 0 && !fl.adding {
 		empty := "  (empty"
 		if fl.OnAdd != nil {
 			empty += " — press a to add"
 		}
-		lines = append(lines, DescStyle().Render(empty+")"))
+		push(DescStyle().Render(empty + ")"))
 	}
 	for i, row := range fl.rows {
 		isCursor := i == fl.cursor
 		if row.Kind == KindHeader {
 			if fl.groupDividers {
-				lines = append(lines, chrome.Divider(row.Title))
+				push(chrome.Divider(row.Title))
 				continue
 			}
 			header := flHeaderStyle().Render(row.Title)
@@ -611,7 +625,7 @@ func (fl *FieldList) View() string {
 			if gap < 0 {
 				gap = 0
 			}
-			lines = append(lines, header+strings.Repeat(" ", gap))
+			push(header + strings.Repeat(" ", gap))
 			continue
 		}
 		marker := chrome.BlankMarker
@@ -625,18 +639,26 @@ func (fl *FieldList) View() string {
 		}
 		var line string
 		if isCursor {
-			cursorLine = len(lines)
 			line = chrome.SelectionStyle().Width(fl.width).
 				Render(chrome.Row(marker, row.Title, ansi.Strip(val), "", fl.width))
 		} else {
 			line = chrome.Row(marker, flTitleStyle().Render(title), val, "", fl.width)
 		}
-		lines = append(lines, line)
+		start := push(line)
+		if isCursor {
+			cursorStart = start
+			if fl.editing {
+				// The edited value is the row's right column, which lands on
+				// the last physical line of a stacked row and on the row
+				// itself otherwise.
+				editLine = len(lines) - 1
+			}
+		}
 		if isCursor && fl.ErrMsg != "" {
-			lines = append(lines, "    "+flErrStyle().Render(glyph.Warning+" "+fl.ErrMsg))
+			push("    " + flErrStyle().Render(glyph.Warning+" "+fl.ErrMsg))
 		}
 		if isCursor && row.Desc != "" && !fl.Editing() && !fl.descSuppressed {
-			lines = append(lines, "    "+DescStyle().Render(row.Desc))
+			push("    " + DescStyle().Render(row.Desc))
 		}
 		if isCursor && fl.picking {
 			for j, opt := range row.Options() {
@@ -644,23 +666,103 @@ func (fl *FieldList) View() string {
 				if j == fl.pickIdx {
 					pm = "  ▸ "
 				}
-				lines = append(lines, pm+flValueStyle().Render(opt))
+				optStart := push(pm + flValueStyle().Render(opt))
+				if j == fl.pickIdx {
+					pickLine = optStart
+				}
 			}
 		}
 	}
 	if fl.adding {
-		lines = append(lines, "▸ "+fl.KeyPrompt+": "+fl.keyInput.View())
+		addLine = push("▸ " + fl.KeyPrompt + ": " + fl.keyInput.View())
 		if fl.ErrMsg != "" {
-			lines = append(lines, "    "+flErrStyle().Render(glyph.Warning+" "+fl.ErrMsg))
+			push("    " + flErrStyle().Render(glyph.Warning+" "+fl.ErrMsg))
 		}
 	}
-	return clipLines(lines, cursorLine, fl.height)
+	// Focus priority: an open add prompt, then an open editor, then the
+	// selected picker option, else the cursor row's marker line.
+	focus := cursorStart
+	switch {
+	case fl.adding && addLine >= 0:
+		focus = addLine
+	case fl.editing && editLine >= 0:
+		focus = editLine
+	case fl.picking && pickLine >= 0:
+		focus = pickLine
+	}
+	return windowLines(lines, focus, fl.height)
 }
 
-// clipLines windows lines to at most height rows, keeping focusLine visible,
-// with ↑/↓ more indicators when clipped.
-func clipLines(lines []string, focusLine, height int) string {
-	return chrome.ClipLines(lines, focusLine, height, theme.Current())
+// windowLines windows physical lines to at most height rows, keeping focusLine
+// visible with ↑/↓ more indicators when content is hidden.
+//
+// Unlike chrome.ClipLines — which unrelated callers share and which treats
+// "no lines" as "zero height" — this budgets rendered physical lines: a
+// stacked row spends two rows, so a half-visible stacked field is trimmed to
+// the focus line rather than overflowing the pane. height <= 0 renders
+// nothing; height 1 renders the focus line alone, whole and unindicated.
+func windowLines(lines []string, focusLine, height int) string {
+	if height <= 0 || len(lines) == 0 {
+		return ""
+	}
+	if focusLine < 0 {
+		focusLine = 0
+	}
+	if focusLine >= len(lines) {
+		focusLine = len(lines) - 1
+	}
+	if height == 1 {
+		return lines[focusLine]
+	}
+	if len(lines) <= height {
+		return strings.Join(lines, "\n")
+	}
+
+	// Take the largest window that fits once its indicators are counted, so
+	// the rows an absent indicator frees go back to content. Each size is
+	// tried centred on the focus first, then anchored to either end and to the
+	// focus: a window that starts at the list's own edge spends one indicator
+	// instead of two and is what a focus near an end actually wants.
+	for size := height; size >= 1; size-- {
+		centred := focusLine - (size-1)/2
+		if centred < 0 {
+			centred = 0
+		}
+		if centred+size > len(lines) {
+			centred = len(lines) - size
+		}
+		for _, start := range [4]int{centred, 0, len(lines) - size, focusLine} {
+			end := start + size
+			if start < 0 || end > len(lines) || focusLine < start || focusLine >= end {
+				continue
+			}
+			rows := size
+			if start > 0 {
+				rows++
+			}
+			if end < len(lines) {
+				rows++
+			}
+			if rows > height {
+				continue
+			}
+			out := make([]string, 0, height)
+			if start > 0 {
+				out = append(out, DescStyle().Render("  ↑ more"))
+			}
+			out = append(out, lines[start:end]...)
+			if end < len(lines) {
+				out = append(out, DescStyle().Render("  ↓ more"))
+			}
+			return strings.Join(out, "\n")
+		}
+	}
+	// Only the focus line fits beside a single indicator: announce the hidden
+	// content nearest it, below when there is any.
+	if focusLine+1 < len(lines) {
+		return lines[focusLine] + "\n" + DescStyle().Render("  ↓ more")
+	}
+	return DescStyle().Render("  ↑ more") + "\n" + lines[focusLine]
 }
 
 type pickerRequest struct {

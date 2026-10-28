@@ -1,9 +1,11 @@
 package sessionsheet
 
 import (
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
@@ -11,6 +13,10 @@ import (
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/theme"
 )
+
+// rulesDetailHints are the keys the rules detail view advertises. It is
+// read-only, so scrolling and leaving are all it offers.
+const rulesDetailHints = "↑↓ scroll · esc back · ctrl+b close"
 
 // ClosedMsg asks the Model to close the sheet.
 type ClosedMsg struct{}
@@ -65,6 +71,15 @@ type Panel struct {
 	sections []Section
 	data     func() Data
 	sel      int // index into the relevant sections
+
+	// rulesDetail is the read-only full-rules view Enter opens on the rules
+	// section. rulesOffset is its scroll position in physical lines and
+	// rulesRows the body height it last rendered at, which PgUp/PgDn size
+	// their stride from. Both are derived state: the content itself is
+	// rebuilt from data on every render.
+	rulesDetail bool
+	rulesOffset int
+	rulesRows   int
 }
 
 // NewPanel builds the sheet. data is called on every render so the sheet
@@ -95,11 +110,15 @@ func (p *Panel) relevant(d Data) []Section {
 }
 
 // Update moves the selection, opens the selected section's command, or
-// closes the sheet.
+// closes the sheet. On the rules section Enter opens the read-only detail
+// view instead, which owns the keys until Escape returns to the sheet.
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	k, ok := msg.(tea.KeyPressMsg)
 	if !ok {
 		return nil
+	}
+	if p.rulesDetail {
+		return p.updateRulesDetail(k)
 	}
 	live := p.relevant(p.data())
 	switch k.String() {
@@ -111,10 +130,44 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 		p.sel = min(p.sel+1, max(len(live)-1, 0))
 	case "enter":
 		if p.sel < len(live) {
+			if live[p.sel].ID() == rulesSectionID {
+				p.rulesDetail = true
+				p.rulesOffset = 0
+				return nil
+			}
 			if cmd := commandFor(live[p.sel].ID()); cmd != "" {
 				return func() tea.Msg { return RunCommandMsg{Command: cmd} }
 			}
 		}
+	}
+	return nil
+}
+
+// updateRulesDetail scrolls the detail view or leaves it. Escape returns to
+// the sheet without closing it; Ctrl+B still closes outright. Scrolling only
+// moves the offset — it never touches the data it renders.
+func (p *Panel) updateRulesDetail(k tea.KeyPressMsg) tea.Cmd {
+	switch k.String() {
+	case "ctrl+b":
+		return func() tea.Msg { return ClosedMsg{} }
+	case "esc":
+		p.rulesDetail = false
+		p.rulesOffset = 0
+	case "up", "k":
+		p.rulesOffset = max(p.rulesOffset-1, 0)
+	case "down", "j":
+		// Clamped against the freshly derived line count at render time.
+		p.rulesOffset++
+	case "pgup":
+		p.rulesOffset = max(p.rulesOffset-max(p.rulesRows-1, 1), 0)
+	case "pgdown":
+		p.rulesOffset += max(p.rulesRows-1, 1)
+	case "home", "g":
+		p.rulesOffset = 0
+	case "end", "G":
+		// Clamped to the last page at render time, where the line count and
+		// the body height are both known.
+		p.rulesOffset = 1 << 30
 	}
 	return nil
 }
@@ -126,6 +179,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 func (p *Panel) View(width, maxHeight int) string {
 	if maxHeight < 3 {
 		return ""
+	}
+	if p.rulesDetail {
+		return p.viewRulesDetail(width, maxHeight)
 	}
 	d := p.data()
 	live := p.relevant(d)
@@ -174,5 +230,84 @@ func (p *Panel) View(width, maxHeight int) string {
 	}
 
 	body := strings.Join(lines, "\n")
-	return chrome.PanelWithHints("Session", "↑↓ section · ↵ open · esc close", body, pw, len(lines)+1, true, theme.Current())
+	hints := "↑↓ section · esc close"
+	if p.sel < len(live) {
+		if id := live[p.sel].ID(); commandFor(id) != "" || id == rulesSectionID {
+			hints = "↑↓ section · ↵ open · esc close"
+		}
+	}
+	return chrome.PanelWithHints("Session", hints, body, pw, len(lines)+1, true, theme.Current())
+}
+
+// viewRulesDetail renders every standing rule in full, one rule per " allow "
+// line, each wrapped to the width the sheet body uses. The content is derived
+// from live data on every render, so a rule that disappears while the view is
+// open leaves an empty message instead of a stale snapshot.
+func (p *Panel) viewRulesDetail(width, maxHeight int) string {
+	pw := layout.PanelWidth(width)
+	inner := max(pw-3, 1)
+	budget := maxHeight - 1 // the panel's own title row
+
+	lines := p.rulesDetailLines(inner)
+	if len(lines) == 0 {
+		// The rules can go while the view is open. Say so, and reset the
+		// scroll position: there is nothing left to be scrolled to.
+		p.rulesOffset, p.rulesRows = 0, 0
+		return chrome.PanelWithHints("Session", "esc back · ctrl+b close",
+			theme.MutedStyle().Render("Nothing to show."), pw, 2, true, theme.Current())
+	}
+
+	// One budget row carries the position indicator, so the window and its
+	// ↑/↓ markers share what remains and the frame never exceeds maxHeight.
+	const posRows = 1
+	avail := max(budget-posRows, 1)
+
+	// Markers are only worth a row while a content row survives beside them.
+	shown := avail
+	top, bottom := false, false
+	if avail >= 2 && p.rulesOffset > 0 {
+		top = true
+		shown--
+	}
+	off := min(max(p.rulesOffset, 0), max(len(lines)-shown, 0))
+	if shown > 1 && off+shown < len(lines) && (avail-shown) < 2 {
+		bottom = true
+		shown--
+	}
+	shown = max(shown, 1)
+
+	// Clamp against the line count derived this frame: that covers both a
+	// resize and rules disappearing under the view. It only ever lowers the
+	// offset, so scrolling cannot drift past the last page.
+	p.rulesOffset = min(max(p.rulesOffset, 0), max(len(lines)-shown, 0))
+	top = p.rulesOffset > 0
+	bottom = p.rulesOffset+shown < len(lines)
+	p.rulesRows = shown
+
+	muted := theme.MutedStyle()
+	rows := make([]string, 0, budget)
+	if top {
+		rows = append(rows, muted.Render("  ↑ more"))
+	}
+	rows = append(rows, lines[p.rulesOffset:p.rulesOffset+shown]...)
+	if bottom {
+		rows = append(rows, muted.Render("  ↓ more"))
+	}
+	end := p.rulesOffset + shown
+	rows = append(rows, muted.Render(ansi.Truncate(
+		fmt.Sprintf("  %d–%d/%d", p.rulesOffset+1, end, len(lines)), inner, "…")))
+
+	return chrome.PanelWithHints("Session", rulesDetailHints,
+		strings.Join(rows, "\n"), pw, len(rows)+1, true, theme.Current())
+}
+
+// rulesDetailLines is the detail view's complete content: every rule prefixed
+// the way the sheet prefixes it, wrapped to width, one physical line each.
+func (p *Panel) rulesDetailLines(width int) []string {
+	d := p.data()
+	lines := make([]string, 0, len(d.Rules))
+	for _, r := range d.Rules {
+		lines = append(lines, strings.Split(ansi.Wrap(" allow "+r, width, ""), "\n")...)
+	}
+	return lines
 }

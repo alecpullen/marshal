@@ -1,10 +1,12 @@
 package listpanel
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/picker"
@@ -630,4 +632,257 @@ func TestValueCellWithoutDisplayIsUnchanged(t *testing.T) {
 	if out := fl.View(); !strings.Contains(out, "gpt-4o") {
 		t.Errorf("nil Display must preserve GetStr rendering, got:\n%s", out)
 	}
+}
+
+// --- physical-line height budget -------------------------------------------
+//
+// chrome.Row stacks onto two lines when the right column would starve the
+// label, so a view that budgets elements instead of physical lines renders
+// taller than the height the dock handed the pane. These tests pin the
+// physical budget and which line the window keeps.
+
+// flWidth is narrow enough that every scalar row stacks: chrome.Row gives up
+// on one line once the right column would leave the label under
+// chrome.StackThreshold cells.
+const flWidth = 20
+
+// viewRows splits a rendered view into physical rows; "" renders no rows.
+func viewRows(view string) []string {
+	if view == "" {
+		return nil
+	}
+	return strings.Split(view, "\n")
+}
+
+// stackedScalarFields builds n scalar rows titled and valued with double-width
+// runes, so the window also has to budget cells rather than runes.
+func stackedScalarFields(n int) []*Field {
+	out := make([]*Field, 0, n)
+	for i := 0; i < n; i++ {
+		title := fmt.Sprintf("項目%d", i+1)
+		value := fmt.Sprintf("値%d", i+1)
+		out = append(out, ScalarField(fmt.Sprintf("t.f%d", i), title,
+			func() string { return value }, func(string) error { return nil }))
+	}
+	return out
+}
+
+func TestFieldListPhysicalHeightAndFocus(t *testing.T) {
+	const n = 5
+	build := func() *FieldList {
+		fields := append([]*Field{{ID: "header.top", Title: "設定", Kind: KindHeader}}, stackedScalarFields(n)...)
+		fl := NewFieldList(func() []*Field { return fields })
+		fl.SetSize(flWidth, 40)
+		return fl
+	}
+
+	t.Run("stacked rows spend two physical rows each", func(t *testing.T) {
+		fl := build()
+		fl.rows[1].Desc = "説明"
+		fl.Refresh()
+		rows := viewRows(fl.View())
+		// One header + n stacked rows (two lines each) + the cursor row's
+		// description: element count would be n+2, physical height 2n+2.
+		if want := 2*n + 2; len(rows) != want {
+			t.Fatalf("rendered %d physical rows, want %d:\n%s", len(rows), want, fl.View())
+		}
+		if plain := ansi.Strip(fl.View()); strings.Contains(plain, "more") {
+			t.Fatalf("nothing is clipped at height 40, got indicators:\n%s", plain)
+		}
+	})
+
+	t.Run("height 0 renders nothing", func(t *testing.T) {
+		fl := build()
+		fl.SetSize(flWidth, 0)
+		if got := fl.View(); got != "" {
+			t.Fatalf("height 0 rendered %q, want the empty string", got)
+		}
+	})
+
+	t.Run("height 1 shows the focus line whole and unindicated", func(t *testing.T) {
+		fl := build()
+		fl.Update(kp("G"))
+		fl.SetSize(flWidth, 1)
+		rows := viewRows(fl.View())
+		if len(rows) != 1 {
+			t.Fatalf("height 1 rendered %d rows, want 1:\n%s", len(rows), fl.View())
+		}
+		plain := ansi.Strip(rows[0])
+		if !strings.Contains(plain, chrome.SelectionMarker) {
+			t.Fatalf("height 1 dropped the selection, got %q", plain)
+		}
+		if strings.Contains(plain, "more") {
+			t.Fatalf("height 1 spent its only row on an indicator: %q", plain)
+		}
+	})
+
+	t.Run("every height keeps the selection visible", func(t *testing.T) {
+		for _, height := range []int{2, 3, 4, 5, 6} {
+			for _, pos := range []string{"first", "middle", "last"} {
+				fl := build()
+				switch pos {
+				case "first":
+					fl.Update(kp("g"))
+				case "middle":
+					for i := 0; i < n/2; i++ {
+						fl.Update(kp("j"))
+					}
+				case "last":
+					fl.Update(kp("G"))
+				}
+				fl.SetSize(flWidth, height)
+				view := fl.View()
+				rows := viewRows(view)
+				if len(rows) > height {
+					t.Fatalf("height %d %s: rendered %d rows:\n%s", height, pos, len(rows), view)
+				}
+				plain := ansi.Strip(view)
+				if !strings.Contains(plain, chrome.SelectionMarker) {
+					t.Fatalf("height %d %s: selection off-window:\n%s", height, pos, plain)
+				}
+				if pos == "first" && strings.Contains(plain, "↑ more") {
+					t.Fatalf("height %d: ↑ more above the first row:\n%s", height, plain)
+				}
+				for i, row := range rows {
+					if w := ansi.StringWidth(row); w > flWidth {
+						t.Fatalf("height %d %s row %d is %d cells, want <= %d: %q",
+							height, pos, i, w, flWidth, ansi.Strip(row))
+					}
+				}
+			}
+		}
+	})
+
+	t.Run("resize rebudgets the physical window", func(t *testing.T) {
+		fl := build()
+		fl.Update(kp("G"))
+		for _, height := range []int{2, 5, 9} {
+			fl.SetSize(flWidth, height)
+			if got := len(viewRows(fl.View())); got > height {
+				t.Fatalf("height %d rendered %d rows:\n%s", height, got, fl.View())
+			}
+		}
+		// Widened past the stacking threshold the same fields render one row
+		// each, so the same height holds more of them.
+		fl.SetSize(120, 4)
+		rows := viewRows(fl.View())
+		if len(rows) > 4 {
+			t.Fatalf("height 4 at width 120 rendered %d rows:\n%s", len(rows), fl.View())
+		}
+		if !strings.Contains(ansi.Strip(fl.View()), chrome.SelectionMarker) {
+			t.Fatalf("selection off-window after resize:\n%s", fl.View())
+		}
+	})
+}
+
+func TestFieldListFocusedEditorAndPickerVisible(t *testing.T) {
+	t.Run("the scalar editor stays visible in a stacked list", func(t *testing.T) {
+		fl := NewFieldList(func() []*Field { return stackedScalarFields(4) })
+		fl.SetSize(flWidth, 3)
+		fl.Update(kp("G"))
+		fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open the inline edit
+		if !fl.editing {
+			t.Fatal("enter should open the inline editor")
+		}
+		fl.Update(kp("z")) // the editor now holds a value no other row renders
+		view := fl.View()
+		if got := len(viewRows(view)); got > 3 {
+			t.Fatalf("rendered %d rows, want <= 3:\n%s", got, view)
+		}
+		plain := ansi.Strip(view)
+		if !strings.Contains(plain, "値4z") {
+			t.Fatalf("the editor scrolled out of the window:\n%s", plain)
+		}
+		if !strings.Contains(plain, chrome.SelectionMarker) {
+			t.Fatalf("the edited row lost its marker:\n%s", plain)
+		}
+	})
+
+	t.Run("a failed setter keeps the error under the visible editor", func(t *testing.T) {
+		fl := NewFieldList(func() []*Field {
+			return []*Field{ScalarField("t.bad", "項目",
+				func() string { return "元" },
+				func(string) error { return fmt.Errorf("拒否") })}
+		})
+		fl.SetSize(flWidth, 3)
+		fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		fl.Update(kp("z"))
+		fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // rejected, editor stays open
+		view := fl.View()
+		if got := len(viewRows(view)); got > 3 {
+			t.Fatalf("rendered %d rows, want <= 3:\n%s", got, view)
+		}
+		plain := ansi.Strip(view)
+		if !strings.Contains(plain, "拒否") {
+			t.Fatalf("the error row scrolled out of the window:\n%s", plain)
+		}
+		if !strings.Contains(plain, "元z") {
+			t.Fatalf("the still-open editor scrolled out of the window:\n%s", plain)
+		}
+	})
+
+	t.Run("the add prompt is focused below the window", func(t *testing.T) {
+		fl := NewFieldList(func() []*Field { return stackedScalarFields(3) })
+		fl.OnAdd = func(string) error { return nil }
+		fl.KeyPrompt = "name"
+		fl.SetSize(flWidth, 2)
+		fl.Update(kp("a"))
+		if !fl.adding {
+			t.Fatal("a should open the add prompt")
+		}
+		for _, r := range "zebra" {
+			fl.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+		}
+		view := fl.View()
+		rows := viewRows(view)
+		if len(rows) != 2 {
+			t.Fatalf("rendered %d rows, want 2 (prompt + indicator):\n%s", len(rows), view)
+		}
+		plain := ansi.Strip(view)
+		if !strings.Contains(plain, "name:") || !strings.Contains(plain, "zebra") {
+			t.Fatalf("the add prompt scrolled out of the window:\n%s", plain)
+		}
+	})
+
+	t.Run("the picker follows the selected option below the window", func(t *testing.T) {
+		opts := []string{"deny", "confirm", "allow"}
+		value := "deny"
+		fields := append(stackedScalarFields(3),
+			EnumField("t.e", "Guardrail", opts, func() string { return value }, func(v string) { value = v }))
+		fl := NewFieldList(func() []*Field { return fields })
+		fl.SetSize(flWidth, 3)
+		fl.SetCursor(len(fields) - 1)
+		fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // open the picker
+		if !fl.picking {
+			t.Fatal("enter should open the enum picker")
+		}
+		for i, want := range opts {
+			view := fl.View()
+			if got := len(viewRows(view)); got > 3 {
+				t.Fatalf("pickIdx %d rendered %d rows, want <= 3:\n%s", i, got, view)
+			}
+			plain := ansi.Strip(view)
+			if !strings.Contains(plain, "▸ "+want) {
+				t.Fatalf("pickIdx %d scrolled the selected option out of the window:\n%s", i, plain)
+			}
+			if i == len(opts)-1 && strings.Contains(plain, "Guardrail") {
+				t.Fatalf("the window kept the row instead of following the picker:\n%s", plain)
+			}
+			if i < len(opts)-1 {
+				fl.Update(kp("j"))
+			}
+		}
+		fl.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if value != "allow" {
+			t.Fatalf("picker applied %q, want allow", value)
+		}
+		if fl.picking {
+			t.Fatal("the picker should close after apply")
+		}
+		// The committed value is back on the row the window focuses.
+		fl.SetSize(flWidth, 4)
+		if plain := ansi.Strip(fl.View()); !strings.Contains(plain, "allow") {
+			t.Fatalf("the committed value is not visible:\n%s", plain)
+		}
+	})
 }

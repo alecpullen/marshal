@@ -30,10 +30,6 @@ type AnswerMsg struct{ Text string }
 // StopMsg is emitted when the user presses Esc to abandon the run.
 type StopMsg struct{}
 
-// reportLines caps how much of the implementer's report the panel shows.
-// The question is the point; the report is supporting evidence.
-const reportLines = 6
-
 // wrapBreakpoints mirrors tui.WrapBreakpoints. gatepanel cannot import tui
 // (tui imports gatepanel), so the value is duplicated deliberately; keep the
 // two in step.
@@ -43,6 +39,13 @@ const wrapBreakpoints = "/-:"
 type Panel struct {
 	gate  acpwire.SDDGate
 	input textfield.Model
+
+	// offset is the first wrapped body row on screen and bodyRows is the
+	// height of the scrollable body the last render had, which is how far a
+	// page key moves. Both are normalized by View, so a resize or a longer
+	// report can never leave the window scrolled past the text.
+	offset   int
+	bodyRows int
 }
 
 var _ dock.Panel = (*Panel)(nil)
@@ -56,10 +59,10 @@ func New(g acpwire.SDDGate) *Panel {
 }
 
 // Update handles key events. Enter submits a non-empty answer; Esc stops
-// the run. Everything else goes to the answer field.
+// the run. Paging belongs to the body; every other key, including the arrows
+// and ordinary typing, goes to the answer field.
 func (p *Panel) Update(msg tea.Msg) tea.Cmd {
-	switch k := msg.(type) {
-	case tea.KeyPressMsg:
+	if k, ok := msg.(tea.KeyPressMsg); ok {
 		switch k.String() {
 		case "enter":
 			answer := strings.TrimSpace(p.input.Value())
@@ -69,6 +72,9 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 			return func() tea.Msg { return AnswerMsg{Text: answer} }
 		case "esc":
 			return func() tea.Msg { return StopMsg{} }
+		case "pgup", "pgdown", "home", "end":
+			p.page(k.String())
+			return nil
 		}
 	}
 	var cmd tea.Cmd
@@ -76,48 +82,164 @@ func (p *Panel) Update(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
+// page scrolls the body. The offset is clamped against the content in View, so
+// overshooting either end here is safe.
+func (p *Panel) page(k string) {
+	switch k {
+	case "pgup":
+		p.offset = max(p.offset-max(p.bodyRows-1, 1), 0)
+	case "pgdown":
+		p.offset += max(p.bodyRows-1, 1)
+	case "home":
+		p.offset = 0
+	case "end":
+		p.offset = 1 << 30
+	}
+}
+
 // Sizing keeps the gate panel under the default docked height cap.
 func (p *Panel) Sizing() dock.Sizing { return dock.Docked }
 
-// View renders the question, its context, and the answer field.
+// View renders the question and the whole report as a bounded, scrollable body
+// with the answer field pinned underneath it. The frame never exceeds
+// maxHeight rows: the body gives up rows first, the input line never does.
 func (p *Panel) View(width, maxHeight int) string {
 	th := theme.Current()
 	pw := layout.PanelWidth(width)
-	inner := pw - 3
-	if inner < 1 {
-		inner = 1
+	inner := max(pw-3, 1)
+
+	content := p.body(inner)
+
+	// Rows inside the frame below its top border, and how many of them the
+	// scrollable body may use once the answer field has its pinned row.
+	avail := max(maxHeight-1, 0)
+	scrollRows := max(avail-1, 0)
+
+	rows := p.bodyWindow(content, scrollRows)
+	if avail >= 1 {
+		rows = append(rows, "  "+p.input.View())
 	}
 
-	var rows []string
+	hints := "↵ answer · esc stop the run"
+	if len(content) > p.bodyRows {
+		hints += " · ⇞⇟ page"
+	}
 
-	// The question, first and unmissable.
-	for _, line := range strings.Split(ansi.Wrap(p.gate.Question, inner, wrapBreakpoints), "\n") {
+	ph := min(len(rows)+1, maxHeight)
+	if ph < 1 {
+		ph = 1
+	}
+	return chrome.PanelWithHints(p.title(), hints, strings.Join(rows, "\n"), pw, ph, true, th)
+}
+
+// body wraps the question and the whole report into body rows: the question
+// first, unmissable, then the report as supporting evidence. Nothing is capped
+// or truncated — a gate the user cannot read is a gate they cannot answer.
+func (p *Panel) body(inner int) []string {
+	width := max(inner-2, 1) // every row spends two cells on its left margin
+	var rows []string
+	for _, line := range wrapLines(p.gate.Question, width) {
 		rows = append(rows, "  "+line)
 	}
-
-	// The report, as supporting evidence, capped and muted.
-	if body := strings.TrimSpace(p.gate.Report); body != "" && maxHeight > 8 {
+	if report := strings.TrimSpace(p.gate.Report); report != "" {
 		rows = append(rows, "")
-		lines := strings.Split(body, "\n")
-		if len(lines) > reportLines {
-			lines = lines[:reportLines]
-		}
-		for _, line := range lines {
-			rows = append(rows, mutedStyle().Render("  "+ansi.Truncate(line, inner, "…")))
+		for _, line := range wrapLines(report, width) {
+			rows = append(rows, mutedStyle().Render("  "+line))
 		}
 	}
+	return rows
+}
 
-	rows = append(rows, "")
-	rows = append(rows, "  "+p.input.View())
+// wrapLines wraps text to width, keeping the text's own line breaks.
+func wrapLines(s string, width int) []string {
+	return strings.Split(ansi.Wrap(s, width, wrapBreakpoints), "\n")
+}
 
-	listH := maxHeight - 1
-	if listH < 1 {
-		listH = 1
+// bodyWindow returns the body rows for the current scroll offset: a window of
+// content plus the indicators that make the rest of it reachable. It returns at
+// most scrollRows rows, so the pinned input row below it always fits, and it
+// normalizes the stored offset to the window it just chose.
+func (p *Panel) bodyWindow(content []string, scrollRows int) []string {
+	total := len(content)
+	if scrollRows < 1 || total < 1 {
+		p.bodyRows = 0
+		p.offset = 0
+		return nil
 	}
-	body := chrome.ClipLines(rows, len(rows)-1, listH, th)
+	if total <= scrollRows {
+		p.bodyRows = total
+		p.offset = 0
+		return append([]string(nil), content...)
+	}
 
-	ph := min(lipgloss.Height(body)+1, maxHeight)
-	return chrome.PanelWithHints(p.title(), "↵ answer · esc stop the run", body, pw, ph, true, th)
+	// Indicators are budgeted before content: they are what makes the rest of
+	// the report reachable. The "more" line the body continues past comes
+	// first, then the position line, then the second "more" line.
+	budget := 0
+	switch {
+	case scrollRows >= 5:
+		budget = 3
+	case scrollRows >= 3:
+		budget = 2
+	case scrollRows >= 2:
+		budget = 1
+	}
+	height := max(scrollRows-budget, 1)
+	if budget >= 3 && p.offset == 0 {
+		// Nothing is scrolled away above, so that row belongs to content.
+		height++
+	}
+	start := min(max(p.offset, 0), max(total-height, 0))
+	top := start > 0
+	bottom := start+height < total
+
+	used := height + boolInt(top) + boolInt(bottom)
+	pos := budget >= 2 && used+1 <= scrollRows
+	if pos {
+		used++
+	}
+	// At the narrowest heights indicators are trimmed from the top of that
+	// priority list down: the input row and at least one content row outrank
+	// them, and the frame hint still advertises the paging they cannot.
+	if used > scrollRows && pos {
+		pos = false
+		used--
+	}
+	if used > scrollRows && top {
+		top = false
+		used--
+	}
+	if used > scrollRows && bottom {
+		bottom = false
+	}
+
+	p.bodyRows = height
+	p.offset = start
+
+	rows := make([]string, 0, used)
+	if top {
+		rows = append(rows, mutedStyle().Render("  ↑ more"))
+	}
+	rows = append(rows, content[start:start+height]...)
+	if bottom {
+		rows = append(rows, mutedStyle().Render("  ↓ more"))
+	}
+	if pos {
+		rows = append(rows, mutedStyle().Render(positionLine(start+1, start+height, total)))
+	}
+	return rows
+}
+
+// positionLine labels the visible slice of the body: first–last/total.
+func positionLine(from, last, total int) string {
+	return fmt.Sprintf("  %d–%d/%d", from, last, total)
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // title names the asking task so the question has a subject.

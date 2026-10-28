@@ -180,6 +180,20 @@ call ID and risk, without indicating that anything is missing.
 - Evidence: `internal/app/tui/inspector/inspector.go:172` and
   `internal/app/tui/browse_inspect.go:145`.
 - Potential direction: make all metadata reachable and indicate overflow.
+- **Status (2026-10-28): fixed.** The half-height field loop is gone. When
+  fields exist the inspector prepends a view-only `metadata` tab to the
+  displayed tab sequence, rendered in the same scrolling body as the section
+  tabs, with every key and its full wrapped value. The tab is panel-local:
+  `Detail.Sections` and `Detail()` are unchanged. Metadata carries a separate
+  internal identity (a `tabRef.meta` flag) so a real section named `metadata`
+  stays distinct, `Section()` reports `-1` while metadata is selected, and `y`
+  copies the complete `key: value` text. Offsets are per displayed tab and
+  clamped on resize, with muted `↑ more` / `↓ more` rows. Existing inspector
+  tests were updated for the metadata-first selection. Evidenced by
+  `TestInspectorMetadataTabReachesEveryField` (every key and full value
+  reachable at 100×20 and 64×14, frame budget held at 80×8 and 40×6) and
+  `TestInspectorMetadataAndSectionsRemainDistinct` (copying, no sections, no
+  fields, a section named `metadata`, tab identity across `SetDetail`).
 
 ### Ctrl+X footer guidance can conflict or repeat
 
@@ -230,6 +244,20 @@ cannot be inspected through the sheet, and there is no overflow indication.
 - Potential direction: provide a scrollable or full-detail rules view and
   show when the summary is truncated. Make the Enter hint conditional on an
   actual action for the selected section.
+- **Status (2026-10-28): fixed.** Enter on the selected RULES section opens a
+  read-only detail mode inside the sheet: each complete rule is wrapped with
+  `ansi.Wrap`, the offset is clamped against content derived from the current
+  `p.data()` on every render (so rules that disappear show an empty message
+  rather than a stale list), and Up/Down, PgUp/PgDn and Home/End scroll
+  physical lines with a position row in the budget. Escape returns to the
+  sheet; Ctrl+B still closes it; no rule is modified. The ordinary summary now
+  reads `⚑ N session rules · ↵ details`, a clipped body reserves a row for
+  `… N more — ↵ details`, and the general `↵ open` hint appears only when the
+  selected section has a command or is rules. Evidenced by
+  `TestRulesDetailShowsEveryRule`, `TestRulesDetailLiveDataAndEscape`,
+  `TestSheetEnterHintMatchesSelectedAction`, `TestRulesDetailOverflowThemes`
+  and `TestRulesDetailThroughModel`. Limitation: the detail mode is
+  deliberately read-only — it cannot add or remove a rule.
 
 ### Model discovery can move the selection while the user is choosing
 
@@ -383,6 +411,22 @@ though they prevent the run or affect the user's decision.
 - Evidence: `internal/app/tui/castlist/castlist.go:319` and `:374`.
 - Potential direction: scroll to the selected row and provide access to all
   diagnostic rows, including wrapped messages.
+- **Status (2026-10-28): fixed.** `Panel.View` assembles the body as physical
+  rows (metadata, strategy row, disabled-option reasons, every role row, the
+  blocked banner) and records each role's first physical line. Error and
+  warning text is wrapped with `ansi.Wrap` instead of truncated, so no
+  diagnostic segment is lost. A panel-owned offset plus a `followSel` flag set
+  by `moveCursor` bring the newly selected role into the window, and the offset
+  is clamped on every render for resizes and data changes. PgUp/PgDn and
+  Home/End page the body independently of the selection, muted `↑ more` /
+  `↓ more` rows and a position row appear only when content overflows, and
+  Enter's blocked check, strategy cycling, overrides and Escape are unchanged.
+  Evidenced by `TestCastListSelectionVisibleAfterNavigation` and
+  `TestCastListPagesEveryDiagnostic` (a non-role blocking error, a long later
+  warning and a disabled-strategy reason accumulated through real `Update`
+  paging). Limitation, by design: manual paging can move the window away from
+  the selected role so diagnostics on non-role rows are reachable; Up/Down
+  restores selected visibility and the override target is unaffected.
 
 ### Plan-run gate can hide the question it asks the user to answer
 
@@ -394,6 +438,20 @@ the hidden rows, but Enter still sends the answer and Escape stops the run.
 - Evidence: `internal/app/tui/gatepanel/gatepanel.go:57` and `:80`.
 - Potential direction: keep the answer input reachable while allowing the
   full question and relevant report to be reviewed.
+- **Status (2026-10-28): fixed.** The six-line report cap and every truncation
+  are gone: the complete question and report are wrapped with `ansi.Wrap` and
+  `wrapBreakpoints` into a bounded scrollable body above a pinned input row.
+  The offset and last body height live on the panel and are normalised on
+  every render, so a resize or a longer report cannot park the window past the
+  text. PgUp/PgDn and Home/End scroll the body
+  before the text field; arrows and typing still reach the editor; a nonempty
+  Enter still emits `AnswerMsg` and Escape still emits `StopMsg` after paging.
+  A compact position row and `⇞⇟ page` hint advertise overflow within the
+  budget, and when only one usable row exists the input keeps it with the
+  overflow advertised in the frame hint. Evidenced by
+  `TestGatePagesQuestionAndFullReport`, `TestGatePagingResizePreservesAnswer`,
+  `TestGateOverflowThemes` and `TestGatePagingThroughModel` (composed frames at
+  80×24 and 120×40, answer still reaching the existing gate handler).
 
 ### MCP sign-in fallback cannot expose a long authorization URL
 
@@ -470,6 +528,23 @@ shared engine is used by settings and several management panels.
   `internal/app/tui/chrome/chrome.go:41`.
 - Potential direction: window physical rendered lines while preserving the
   selected field's visibility; verify with stacked rows at narrow widths.
+- **Status (2026-10-28): fixed.** `FieldList.View` now splits every composed
+  element into physical lines before recording its start and appending it, so a
+  stacked `chrome.Row` costs the two rows it actually occupies. The focus line
+  is tracked through that physical sequence: the add input while adding, the
+  line holding the input during a scalar edit, the selected option during enum
+  picking, otherwise the selected field's marker. The local `clipLines` wrapper
+  was replaced by `windowLines`, a bounded physical-line window that returns
+  empty for a non-positive height, renders the focus line alone at height 1,
+  and reserves `↑ more` / `↓ more` only when an indicator fits alongside the
+  focus. Shared `chrome.ClipLines` is unchanged, because unrelated callers
+  depend on its current behaviour. Setters, row IDs and navigation are
+  untouched. Evidenced by `TestFieldListPhysicalHeightAndFocus` (stacked rows,
+  selection near both ends, header and description, heights 0/1/2, Unicode
+  widths, resize), `TestFieldListFocusedEditorAndPickerVisible` (edit, a failed
+  setter error, the add prompt, and an enum selection below the window) and
+  `TestSkillPanelStackedFieldsKeepSelectionVisible`, which drives the real
+  skills panel frame at narrow width.
 
 ### Plugin manager ignores bracketed paste
 

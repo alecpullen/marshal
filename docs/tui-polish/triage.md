@@ -307,6 +307,33 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
     and [MCP authorization URL fallback](audit.md#mcp-sign-in-fallback-cannot-expose-a-long-authorization-url).
     Test out-of-order probe completions and manual sign-in without a browser.
 
+    **Status (2026-10-29): done** — tasks 1–6 of the
+    [P9 model discovery and sign-in plan](plans/2026-10-29-p9-model-discovery-sign-in-plan.md)
+    (commits `db7f5e96`, `e139103a`, `fef23349`, `625c6058`, `aa8fffcf`,
+    `c7c1ac5e`). Discovery can no longer move a choice: the picker replaces its
+    rows in place and re-binds the selection by value, and requires an explicit
+    new choice when the selected row disappears. Setup probes and `/models`
+    refreshes are now correlated — the wizard by instance and attempt, the
+    parent per provider — so skipped, retried, cancelled, replaced or superseded
+    completions change neither wizard state nor the session and disk catalogs.
+    The MCP authorization URL is pageable and copyable, with truthful OSC 52
+    feedback when the local clipboard cannot confirm. Verification:
+    `go build ./cmd/marshal` succeeds; `go test ./internal/app/tui/... -count=1`,
+    `go test -race ./internal/app/tui/connect ./internal/app/tui/picker ./internal/app/tui/mcpauth`,
+    `go vet ./...`, gofmt for the touched files and `git diff --check` are all
+    clean; the scripted usability suite passes against the built binary. The
+    full suite shows no new failures against the recorded baseline — the same
+    four packages (`internal/app`, `internal/snapshot`,
+    `internal/tools/desktop/browser`, `internal/worktree`) fail identically at
+    the plan's base commit `bc564242`, and every package this phase changed
+    passes. Limitations: no controlling terminal, multiplexer or SSH
+    environment was available, so pagination, copy, resize and out-of-order
+    completions were exercised through the model and panel update paths
+    (composed frames at 80×24, 120×40 and 140×40) rather than by hand; a real
+    OAuth round trip and a real terminal clipboard were not exercised, so the
+    OSC 52 acceptance path stays unproven on device; the scripted usability
+    suite remains help-only.
+
 11. **Clarify and preserve question answers.** Address
     [skip discarding prior answers](audit.md#skipping-a-multi-question-form-discards-earlier-answers)
     and [the `other` sentinel collision](audit.md#a-legitimate-other-option-collides-with-the-custom-answer-sentinel).

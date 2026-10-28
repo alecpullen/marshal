@@ -8975,7 +8975,7 @@ func TestSDDAuthoringToPreflight(t *testing.T) {
 		t.Fatalf("candidate artifact should exist: %v", err)
 	}
 	// Accept closes review; no pipeline runner has run.
-	updated, _ = m.Update(sddreview.AcceptMsg{})
+	updated, _ = m.Update(sddreview.AcceptMsg{Panel: panel})
 	m = asModel(t, updated)
 	if m.dock.IsOpen() {
 		t.Fatal("dock should be closed after accept")

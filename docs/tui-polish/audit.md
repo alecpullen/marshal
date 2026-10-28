@@ -334,6 +334,18 @@ acceptance. Long diagnostic lines are also truncated by the panel frame.
 
 - Evidence: `internal/app/tui/sddreview/review.go:52` and `:69`.
 - Potential direction: make diagnostics scrollable and wrap long messages.
+- Resolved 2026-10-28 (`2f7cff04`, task 2 of the
+  [P5 plan](plans/2026-10-28-p5-plan-review-recovery-plan.md)): every
+  diagnostic is built as a logical row naming its severity and location in
+  text, wrapped to the panel's real inner width with `ansi.Wrap` (paths break
+  on directory separators), and windowed by a physical-row scroll offset that
+  Up/Down, PgUp/PgDn and Home/End move under an overflow-position row. The
+  frame header, the persistent action row and — only when the body overflows —
+  the position row are reserved first, so no diagnostic or path is silently
+  truncated and the keys stay reachable. Tests page a blocked inspection from
+  beginning to end at the real dock budget for 80×24, 120×40 and 200×60 and
+  assert every marker and suffix is reachable, the frame never exceeds its
+  budget, and Enter stays blocked.
 
 ### The plan-review recovery hint conflicts with discard behavior
 
@@ -347,6 +359,18 @@ file gone.
   `internal/app/tui/model.go:2687`.
 - Potential direction: provide a keep-and-edit exit distinct from discard,
   and report removal failures.
+- Resolved 2026-10-28 (`8ee41eef`, task 1 of the
+  [P5 plan](plans/2026-10-28-p5-plan-review-recovery-plan.md)): Escape now
+  emits a keep, and the host closes the review, keeps the file and adds a
+  transcript message naming the retained path and the edit-then-`/sdd` next
+  step. Discard is a deliberate two-press `d` confirmation that says which
+  candidate it would delete, runs only against the active review's candidate
+  through `sddauthor.RemoveCandidate`, and on failure keeps the panel open,
+  preserves the file, disarms the action and renders the error instead of
+  reporting a removal that did not happen. Panel-to-host messages carry their
+  originating panel, so a delayed message cannot act on a replacement review,
+  and both a resize and the parent's below-80×24 size gate disarm the
+  confirmation.
 
 ### Preflight cast list can hide the selected role or blocking error
 

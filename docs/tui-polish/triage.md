@@ -172,6 +172,34 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
    Preserve a candidate when the user intends to edit it and report discard
    failures. Ensure blocked diagnostics are reachable.
 
+   Resolved 2026-10-28 (commits `8ee41eef`, `2f7cff04`; tasks 1–2 of the
+   [P5 plan-review and recovery plan](plans/2026-10-28-p5-plan-review-recovery-plan.md)).
+   Escape now keeps the candidate rather than discarding it, and a transcript
+   message names the retained path and the edit-then-`/sdd` next step, for
+   clean, blocked and nil inspections alike; Enter still accepts only a clean
+   candidate and never starts the pipeline. Discard takes two consecutive `d`
+   presses, targets only the active review's candidate through the existing
+   `sddauthor.RemoveCandidate` containment checks, and a failure keeps the panel
+   open, preserves the candidate and shows the error instead of claiming
+   removal. The panel-to-host messages carry their originating panel, so a
+   delayed keep, accept or discard cannot act on a replacement review, and a
+   hidden or resized frame disarms the confirmation (the parent also consumes
+   `d`/`D` below 80×24). The body wraps diagnostics and long paths to physical
+   cell width and scrolls with Up/Down, PgUp/PgDn and Home/End under an
+   overflow-position row, so every diagnostic and its complete message is
+   reachable at 80×24, 120×40 and 200×60 without losing the candidate or
+   accidentally accepting it. Tests drive the real `Model.Update` path and the
+   composed frame, covering clean, blocked and nil inspections, `NO_COLOR`,
+   control characters, discard failure, sibling preservation, stale messages and
+   hidden or resized geometry. Interactive manual exercise at 80×24 was not
+   possible in this environment (no controlling terminal for a real TUI
+   session); the real-`Model.Update` and composed-frame tests render the actual
+   `Model` at those geometries and are the recorded substitute. Full suite: no
+   new failures against the recorded baseline (pre-existing failures remain in
+   `internal/app`, `internal/snapshot`, `internal/tools/desktop/browser` and
+   `internal/worktree`); the TUI packages, build, `go vet`, `gofmt` and the
+   scripted usability suite are clean.
+
 7. **Fix current-session skill identity and visibility.** Group
    [relocated global install path](audit.md#global-skill-installation-ignores-relocated-config-directories),
    [scope selection mismatch](audit.md#skill-scope-selection-does-not-determine-which-version-loads),

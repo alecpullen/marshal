@@ -131,6 +131,24 @@ anyone viewing the terminal. An existing draft is also discarded.
   `internal/app/tui/console.go:139`, and `internal/app/tui/keypress.go:26`.
 - Potential direction: use a dedicated masked secret entry and preserve the
   draft across the flow.
+- Status (2026-10-27): fixed (task 3 of the
+  [P3 drafts and secret entry plan](plans/2026-10-27-p3-drafts-and-secret-entry-plan.md)).
+  The repair now opens its own `doctorSecret` field in
+  `internal/app/tui/doctor_secret.go` (`textinput.EchoPassword`,
+  `CharLimit = 0`), rendered as a dedicated console section and budgeted like
+  any other prompt. Keypresses and pastes are routed to it before the composer
+  and before the condensing branch, so `?`, completion, history and paste
+  attachments never see key material, and the chat draft is never reset,
+  re-purposed or submitted: `m.input` and `m.pastes` are untouched from the
+  moment the repair opens. Only `esc` reaches a field that is below the
+  supported minimum or behind an open panel; a failed save keeps the masked
+  value for retry. Covered by `TestDoctorSecretMasksTypedAndPastedKey`,
+  `TestDoctorSecretPreservesDraft`, `TestDoctorSecretHiddenCannotSubmit` and
+  `TestDoctorFixSavesKeyAndReloads`.
+  One deliberate change to the old flow: a successful save no longer re-runs
+  and re-opens the `/doctor` panel. The panel is closed while a prompt owns the
+  keys, so the user is returned to the chat with a system message naming the
+  provider as the receipt; re-run `/doctor` to see the refreshed diagnosis.
 
 ### Inspector silently omits metadata
 
@@ -167,6 +185,17 @@ of a prompt without an obvious indication of what happened.
   `internal/app/tui/paste.go:25` and `:39`.
 - Potential direction: insert the chip at the current cursor position and
   test it in multiline drafts.
+- Status (2026-10-27): fixed (task 4 of the
+  [P3 drafts and secret entry plan](plans/2026-10-27-p3-drafts-and-secret-entry-plan.md)).
+  `addPaste` inserts the complete chip with `textarea.Model.InsertString` at
+  the current cursor and no longer moves the cursor to the end. It preflights
+  the remaining `CharLimit` in runes and verifies the whole chip landed before
+  recording the attachment, so a refused insert leaves the draft and the
+  attachments unchanged and reports, with a status flash, whether the character
+  or the line limit refused it; a partial chip or an attachment no chip can
+  expand is no longer possible. Covered by `TestLargePasteInsertsAtCursor`,
+  `TestLargePasteAtInputLimitIsAllOrNothing` and
+  `TestMultiplePastesAndDraftPreservation`.
 
 ### Session sheet can hide standing approval rules
 
@@ -217,6 +246,15 @@ when its question is answered or skipped.
   `internal/app/tui/paste.go:71`.
 - Potential direction: preserve and restore the composer state across the
   question rather than clearing it.
+- Status (2026-10-27): fixed (task 1 of the
+  [P3 drafts and secret entry plan](plans/2026-10-27-p3-drafts-and-secret-entry-plan.md)).
+  Settling a question (answer or Escape) no longer resets the composer or
+  rewrites its placeholder: the form has its own fields, so the draft keeps its
+  text, cursor, focus and paste attachments and still submits with its chips
+  expanded. A replacement question is answered by a form built for it instead
+  of the settled one, so a stale answer can no longer clear or send the draft.
+  Covered by `TestQuestionSettlementPreservesComposer` and
+  `TestQuestionCancellationAndReplacementKeepDraft`.
 
 ### Editing an approval overwrites the composer draft
 
@@ -228,6 +266,19 @@ paste attachments.
 - Evidence: `internal/app/tui/model.go:3148` and `:3280`.
 - Potential direction: use a separate edit field or save and restore the
   complete composer state when the edit ends.
+- Status (2026-10-27): fixed (task 2 of the
+  [P3 drafts and secret entry plan](plans/2026-10-27-p3-drafts-and-secret-entry-plan.md)).
+  Choosing Edit now opens an isolated `approvalEdit` with its own textarea
+  (`CharLimit = 0`) bound to the exact owner and pending request; the chat
+  composer, its cursor and its paste attachments are never written, so saving,
+  cancelling, interrupting or replacing the request leaves the draft intact.
+  A stale edit is retired before it can keypress into a replacement, and a
+  keyed decision settles through the canonical registry claim, so an
+  interrupted edit cannot approve the next request. The approval visibility
+  indicator still shows while the edit is open. Covered by
+  `TestApprovalEditPreservesComposer`,
+  `TestApprovalEditStaleRequestCannotSettleReplacement` and
+  `TestApprovalEditSendNowKeepsBothDrafts`.
 
 ### Skipping a multi-question form discards earlier answers
 

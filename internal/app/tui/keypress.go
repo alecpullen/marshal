@@ -1,15 +1,12 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/app/tui/doctorpanel"
 	"marshal/internal/app/tui/memory"
 	"marshal/internal/tools/registry"
 )
@@ -21,71 +18,6 @@ import (
 // keys with no completion popup, Tab while an approval/question is
 // pending).
 func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
-	// Doctor fix sub-mode: the input prompt is asking for an API key. Enter
-	// saves it to the user config and re-runs /doctor; esc abandons it.
-	if m.doctorFixProvider != "" {
-		switch msg.String() {
-		case "enter":
-			value := strings.TrimSpace(m.input.Value())
-			if value != "" {
-				home, err := m.userHome()
-				if err != nil {
-					m.state.AddMessage(session.RoleSystem,
-						fmt.Sprintf("✗ Failed to locate home directory: %v", err), session.ContentTypePlain)
-				} else if err := config.SaveUserConfigProviderAPIKey(
-					config.UserConfigPath(home), m.doctorFixProvider,
-					config.ProviderConfig{APIKey: value}); err != nil {
-					m.state.AddMessage(session.RoleSystem,
-						fmt.Sprintf("✗ Failed to save API key: %v", err), session.ContentTypePlain)
-				} else {
-					// Reload config/runtime and re-run /doctor so the fixed
-					// diagnostic disappears.
-					newCfg := m.state.Config
-					if newCfg.Providers != nil {
-						copied := make(map[string]config.ProviderConfig, len(newCfg.Providers))
-						for k, v := range newCfg.Providers {
-							copied[k] = v
-						}
-						newCfg.Providers = copied
-					}
-					if pc, ok := newCfg.Providers[m.doctorFixProvider]; ok {
-						pc.APIKey = value
-						pc.APIKeyEnv = ""
-						newCfg.Providers[m.doctorFixProvider] = pc
-					}
-					if saveErr, reloadErr := m.persistAndReload(newCfg); saveErr != nil {
-						m.state.AddMessage(session.RoleSystem,
-							fmt.Sprintf("✗ Saved key, but failed to persist project config: %v", saveErr), session.ContentTypePlain)
-					} else if reloadErr != nil {
-						m.state.AddMessage(session.RoleSystem,
-							fmt.Sprintf("✗ Saved key, but failed to reload runtime: %v", reloadErr), session.ContentTypePlain)
-					} else {
-						m.state.AddMessage(session.RoleSystem,
-							fmt.Sprintf("✓ Saved API key for %s", m.doctorFixProvider), session.ContentTypePlain)
-					}
-					// Re-run /doctor to refresh the panel.
-					diags := config.Diagnose(m.state.Config, m.state.Layers())
-					checks := doctorpanel.ComputeIntelligence(m.state.Config, m.memoryDB, m.memoryProject)
-					m.dock.Open(doctorpanel.New(m.state, diags, checks))
-				}
-			}
-			m.resetInput()
-			m.input.Placeholder = m.savedInputPlaceholder
-			m.doctorFixProvider = ""
-			m.savedInputPlaceholder = ""
-			m.refreshViewport()
-			return *m, nil, true
-		case "esc":
-			m.resetInput()
-			m.input.Placeholder = m.savedInputPlaceholder
-			m.doctorFixProvider = ""
-			m.savedInputPlaceholder = ""
-			m.refreshViewport()
-			return *m, nil, true
-		}
-		// Let typing/pasting fall through to the textarea.
-	}
-
 	// Browse mode owns its keys; the ones it declines (Ctrl chords) continue
 	// down the normal path below.
 	if m.browsing {
@@ -104,7 +36,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	// through to the textarea so shell muscle memory (Ctrl+U clears the
 	// prompt, End goes to line-end, etc.) keeps working.
 	readlineShortcutAvailable := func() bool {
-		return m.input.Value() == "" && !m.editingCommand
+		return m.input.Value() == "" && !m.editingApproval()
 	}
 	// Any key other than a second Ctrl+R disarms a pending rollback, so the
 	// armed state can never outlive the keystroke that set it.
@@ -142,7 +74,7 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// (or mid approval/question/skill-gate/command-edit), ? falls
 		// through to the trailing m.input.Update(msg) below and is typed
 		// literally.
-		if m.input.Value() == "" && !m.editingCommand && m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil && m.state.PendingSudoAuth() == nil {
+		if m.input.Value() == "" && !m.editingApproval() && m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil && m.state.PendingSudoAuth() == nil {
 			mm, cmd := m.dispatchCommand("/help")
 			return mm, cmd, true
 		}

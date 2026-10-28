@@ -338,9 +338,13 @@ type Model struct {
 	sess acpclient.Session
 	// state is the legacy path: the TUI still reads it everywhere, and P2
 	// plans 2 to 9 empty it.
-	state           *session.State
-	input           textarea.Model
-	editingCommand  bool
+	state *session.State
+	input textarea.Model
+	// approvalEdit is the isolated editor for one pending approval's command
+	// or JSON arguments, or nil while no edit is open. It owns its own
+	// textarea, so editing a decision never shares text, cursor, placeholder
+	// or paste attachments with the chat composer underneath it.
+	approvalEdit    *approvalEdit
 	runner          AgentRunner
 	swarmRunner     AgentRunner
 	pipelineFactory func(planPath string, overrides map[routing.AgentRole]string) AgentRunner
@@ -682,12 +686,11 @@ type Model struct {
 	// an executed flow never opens a real browser.
 	openBrowser func(url string) error
 
-	// doctorFixProvider is non-empty while the /doctor panel is in key-input
-	// sub-mode: the input prompt asks for an API key for this provider.
-	// savedInputPlaceholder restores the input placeholder when the sub-mode
-	// exits.
-	doctorFixProvider     string
-	savedInputPlaceholder string
+	// doctorSecret is the masked key field of an in-progress /doctor repair,
+	// nil when no repair is in progress. It owns its own text input: the chat
+	// composer's text, cursor, placeholder and paste attachments are never
+	// touched while it is up.
+	doctorSecret *doctorSecret
 
 	spinner      Spinner
 	spinnerFrame string
@@ -1590,38 +1593,15 @@ func (m *Model) refreshOpenSettingsBrowser() {
 // frame (see ghostPosition in view.go).
 const inputPromptWidth = 2
 
-func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
-	if host == nil || sess == nil {
-		panic("tui.New: nil client host or session")
-	}
-
-	m := Model{
-		host:           host,
-		sess:           sess,
-		editingCommand: false,
-		ctx:            context.Background(),
-		viewport:       viewport.New(),
-		spinner:        NewSpinner(),
-		now:            time.Now,
-		viewportFollow: true,
-		discovered:     map[string][]schema.ModelInfo{},
-	}
-	for _, opt := range opts {
-		opt(&m)
-	}
-	if m.state == nil {
-		panic("tui.New: WithLegacyState is required until P2 plan 9")
-	}
-	state := m.state
-	st := m.sess.Status()
-
-	loadTheme(state.Config.TUI)
-
+// newComposerTextarea builds a textarea configured exactly like the chat
+// composer: the ❯ prompt on the first line, a two-cell gutter on continuation
+// lines, shift+enter for a newline, dynamic height and the theme's styles.
+// Callers set Placeholder, CharLimit and Width for their own surface; an
+// isolated editor therefore looks and types like the composer it sits over.
+func newComposerTextarea() textarea.Model {
 	input := textarea.New()
 	input.Prompt = ""
 	input.ShowLineNumbers = false
-	input.Placeholder = "Ask Marshal..."
-	input.CharLimit = 4000
 	input.MinHeight = 1
 	input.DynamicHeight = true
 	input.SetHeight(1)
@@ -1684,6 +1664,38 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	styles.Cursor.Color = accentColor
 	styles.Cursor.Blink = true
 	input.SetStyles(styles)
+	return input
+}
+
+func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
+	if host == nil || sess == nil {
+		panic("tui.New: nil client host or session")
+	}
+
+	m := Model{
+		host:           host,
+		sess:           sess,
+		ctx:            context.Background(),
+		viewport:       viewport.New(),
+		spinner:        NewSpinner(),
+		now:            time.Now,
+		viewportFollow: true,
+		discovered:     map[string][]schema.ModelInfo{},
+	}
+	for _, opt := range opts {
+		opt(&m)
+	}
+	if m.state == nil {
+		panic("tui.New: WithLegacyState is required until P2 plan 9")
+	}
+	state := m.state
+	st := m.sess.Status()
+
+	loadTheme(state.Config.TUI)
+
+	input := newComposerTextarea()
+	input.Placeholder = "Ask Marshal..."
+	input.CharLimit = 4000
 	m.input = input
 	// Seed the reconciliation baseline from the session's effective mode.
 	// session.New normalizes the configured value, so a blank or
@@ -1835,6 +1847,14 @@ func (m *Model) resize(width, height int) {
 	// subtracts promptWidth (2), so the rendered line plus its gutter stays
 	// inside the outline.
 	m.input.SetWidth(max(m.leftWidth-4, 1))
+	if m.approvalEdit != nil {
+		// The isolated edit editor occupies the same column while it is open.
+		m.approvalEdit.input.SetWidth(max(m.leftWidth-4, 1))
+	}
+	if m.doctorSecret != nil {
+		// The masked key field occupies the same column while a repair is open.
+		m.doctorSecret.input.SetWidth(max(m.leftWidth-4, 1))
+	}
 
 	// Transcript viewport spans the left column, less the drill frame's gutter.
 	m.syncTranscriptWidth()
@@ -1973,6 +1993,14 @@ func (m Model) ctrlCArmed() ctrlCAction {
 // each one. A value receiver cannot defer, so the two calls are explicit.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.reconcileAccess()
+	// An approval edit is bound to exactly one request. When that request is no
+	// longer the pending one — settled, interrupted or replaced — the edit is
+	// retired before any message can reach it, the composer or a replacement.
+	if m.approvalEdit != nil && !m.approvalEditLive() {
+		m.retireApprovalEdit()
+		m.updateViewportHeight()
+		m.invalidateTranscript()
+	}
 	// Below the supported terminal minimum the size gate hides the frame, so
 	// no approval may be accepted from an invisible panel. Ctrl+C still passes
 	// through: the application's interrupt handling must keep working.
@@ -2376,11 +2404,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 	case doctorpanel.FixMsg:
+		// The repair asks for a key in its own masked field. The chat composer
+		// is left exactly as it is: no reset, no placeholder swap, no paste
+		// attachment touched, so a repair can neither discard nor submit the
+		// draft the user was writing.
 		m.dock.CloseNow()
-		m.doctorFixProvider = msg.Provider
-		m.savedInputPlaceholder = m.input.Placeholder
-		m.resetInput()
-		m.input.Placeholder = "Enter API key for " + msg.Provider
+		m.doctorSecret = newDoctorSecret(msg.Provider, max(m.leftWidth-4, 1))
+		m.updateViewportHeight()
+		m.invalidateTranscript()
 		m.refreshViewport()
 		return m, nil
 	case activeworkpanel.DoneMsg:
@@ -2716,7 +2747,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Ctrl+B is the global toggle for the sessions sheet: with the
 			// Tasks panel or the sheet itself up, it opens (or refreshes) the
 			// sheet rather than being swallowed.
-			if k, ok := msg.(tea.KeyPressMsg); ok && m.input.Value() == "" && !m.editingCommand && (m.tasksOpen() || m.sheetOpen()) {
+			if k, ok := msg.(tea.KeyPressMsg); ok && m.input.Value() == "" && !m.editingApproval() && (m.tasksOpen() || m.sheetOpen()) {
 				switch k.String() {
 				case "ctrl+b":
 					m.openSessionSheet()
@@ -2802,8 +2833,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Inline approval chooser: when a tool call is pending, route every
 	// message (keypresses AND huh's internal nextField/nextGroup messages)
 	// to the approval form so selection navigation round-trips correctly.
-	// The edit sub-mode captures the edited command/args in the main
-	// textarea before the decision is sent.
+	// The edit sub-mode owns its own textarea (approvalEdit) and never
+	// touches the chat composer, so a draft typed before the prompt is
+	// still there afterwards.
 	//
 	// Scroll gestures are handled first so the user can review transcript
 	// history before approving a destructive command.
@@ -2853,6 +2885,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Doctor repair: the masked key field owns the keyboard while it is up. It
+	// is intercepted here — after the prompts, which keep their precedence, and
+	// before the composer, the paste-condensing branch and handleKeypress — so
+	// ordinary typing, "?", completion, history and the large-paste attachment
+	// never see a byte of the key.
+	if m.doctorSecret != nil {
+		switch msg.(type) {
+		case tea.KeyPressMsg, tea.PasteMsg:
+			return m.handleDoctorSecret(msg)
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.MouseWheelMsg, tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
 		// Wheel, click and drag all go to the transcript (selection_input.go).
@@ -2860,10 +2904,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case tea.PasteMsg:
 		if shouldCondensePaste(msg.Content) {
-			m.addPaste(msg.Content)
+			cmd := m.addPaste(msg.Content)
 			m.updateViewportHeight()
 			m.refreshViewport()
-			return m, nil
+			return m, cmd
 		}
 		// Small paste: fall through to the textarea as today.
 	case tea.KeyPressMsg:
@@ -3159,10 +3203,60 @@ func (m *Model) handleAccessChoice(choice session.AccessChoice) {
 	m.refreshViewport()
 }
 
+// approvalEdit is the isolated editor for one pending approval's command or
+// JSON arguments. It owns its own textarea, so opening, typing in, saving or
+// abandoning an edit never shares text, cursor, placeholder or paste
+// attachments with the chat composer. It remembers the exact owner and request
+// it edits: an edit whose request settled, was replaced or was interrupted is
+// retired instead of being allowed to settle whatever is pending now.
+type approvalEdit struct {
+	input textarea.Model
+	owner *session.State
+	call  *session.PendingToolCall
+}
+
+// newApprovalEdit builds the editor for tc, prefilled from the request. The
+// character limit is unlimited so a long command or argument blob is never
+// silently truncated.
+func newApprovalEdit(owner *session.State, tc *session.PendingToolCall, width int) *approvalEdit {
+	input := newComposerTextarea()
+	input.CharLimit = 0
+	if tc.Name == "shell.run" {
+		// Command editing shows the whole command as one editable value.
+		input.Placeholder = "Edit command..."
+		input.SetValue(tc.Command)
+	} else {
+		input.Placeholder = "Edit JSON arguments..."
+		input.SetValue(tc.Args)
+	}
+	input.SetWidth(max(width, 1))
+	input.MoveToEnd()
+	return &approvalEdit{input: input, owner: owner, call: tc}
+}
+
+// approvalEditLive reports whether the open edit is still bound to the approval
+// pending now. A settled, interrupted or replaced request leaves the edit
+// stale, and a stale edit must not own the input or accept a decision.
+func (m Model) approvalEditLive() bool {
+	ed := m.approvalEdit
+	if ed == nil {
+		return false
+	}
+	owner, tc, _ := m.pendingApprovalTarget()
+	return tc != nil && tc == ed.call && owner == ed.owner
+}
+
+// editingApproval reports whether an approval edit holds the input.
+func (m Model) editingApproval() bool { return m.approvalEditLive() }
+
+// retireApprovalEdit drops the edit without settling, approving or clearing
+// anything. The chat composer underneath is untouched.
+func (m *Model) retireApprovalEdit() { m.approvalEdit = nil }
+
 // handleApproval routes messages to the inline approval chooser (or the
-// edit-command textarea sub-mode) while a tool-call approval is pending. It
-// is called before the main keypress switch so huh's internal navigation
-// messages (nextFieldMsg/nextGroupMsg) round-trip back to the form.
+// isolated edit-command editor) while a tool-call approval is pending. It is
+// called before the main keypress switch so huh's internal navigation messages
+// (nextFieldMsg/nextGroupMsg) round-trip back to the form.
 //
 // owner is the session.State that owns the pending approval (the parent, or
 // a running subagent's child state); tc is the pending tool call on that
@@ -3189,36 +3283,48 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		return m, nil
 	}
 
-	// Edit sub-mode: the main textarea captures the edited command/args.
-	if m.editingCommand {
+	// Edit sub-mode: an isolated editor owns the input. The chat composer and
+	// its paste attachments stay untouched underneath it, and the edit is
+	// bound to the exact owner and request it was opened for.
+	if m.approvalEdit != nil {
+		if !m.approvalEditLive() {
+			// The request this edit was bound to is gone: replaced, settled or
+			// interrupted. Retire the edit without approving anything, without
+			// clearing the replacement and without touching the draft.
+			m.retireApprovalEdit()
+			m.updateViewportHeight()
+			m.invalidateTranscript()
+			return m, nil
+		}
+		ed := m.approvalEdit
 		if k, ok := msg.(tea.KeyPressMsg); ok {
 			switch k.String() {
 			case "esc":
-				m.editingCommand = false
-				m.resetInput()
-				m.input.Placeholder = "Ask Marshal..."
+				// Abandon the edit and return to the same pending approval.
+				m.retireApprovalEdit()
 				m.updateViewportHeight()
 				m.invalidateTranscript()
 				return m, nil
 			case "enter":
-				value := strings.TrimSpace(m.input.Value())
+				value := strings.TrimSpace(ed.input.Value())
 				if value != "" {
-					if owner.PendingApproval() == tc {
-						tc.Respond(session.UserApprovalDecision{Approved: true, Edited: value})
-					}
-					m.editingCommand = false
-					m.resetInput()
-					m.input.Placeholder = "Ask Marshal..."
-					m.updateViewportHeight()
-					owner.SetPendingApproval(nil)
+					// Settlement goes through the canonical keyed path when the
+					// request registered one; a request that was canceled
+					// meanwhile loses the claim and settles nothing.
+					m.settleApproval(owner, tc, session.UserApprovalDecision{Approved: true, Edited: value}, nil)
 					m.approvalModel = nil
+					m.retireApprovalEdit()
+					m.updateViewportHeight()
+					m.invalidateTranscript()
+					return m, nil
 				}
+				// Empty content is not an approval: stay in the editor.
 				m.invalidateTranscript()
 				return m, nil
 			}
 		}
 		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
+		ed.input, cmd = ed.input.Update(msg)
 		m.updateViewportHeight()
 		return m, cmd
 	}
@@ -3326,16 +3432,11 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		m.invalidateTranscript()
 		return m, nil
 	case choiceEdit:
-		m.editingCommand = true
-		if tc.Name == "shell.run" {
-			m.input.SetValue(tc.Command)
-			m.input.Placeholder = "Edit command..."
-		} else {
-			m.input.SetValue(tc.Args)
-			m.input.Placeholder = "Edit JSON arguments..."
-		}
+		// The edit gets its own editor bound to this exact owner and request;
+		// the chat composer, its cursor and its paste attachments are left
+		// exactly as the user typed them.
+		m.approvalEdit = newApprovalEdit(owner, tc, max(m.leftWidth-4, 30))
 		m.updateViewportHeight()
-		m.input.Focus()
 		m.invalidateTranscript()
 		return m, nil
 	case choiceRollback:
@@ -3396,7 +3497,12 @@ func (m *Model) settleApproval(owner *session.State, tc *session.PendingToolCall
 // every question marked "Unanswered" on abort) to the runner's response
 // channel.
 func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Model, tea.Cmd) {
-	if m.questionModel == nil {
+	if m.questionModel == nil || m.questionModel.q != q {
+		// Build the form for the question that is pending now — and rebuild it
+		// when the open form is bound to a round-trip that settled or was
+		// interrupted out from under it. Driving the stale form would answer
+		// the replacement with the previous question's answers (parity with
+		// the approval/skill-gate/sudo pending-identity guards).
 		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
 		return m, m.questionModel.Init()
 	}
@@ -3418,9 +3524,11 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 		q.Respond(answers)
 		m.state.SetPendingQuestion(nil)
 	}
+	// The form has its own input: settling it must leave the composer exactly
+	// as the user left it — text, cursor, placeholder and paste attachments.
+	// Clearing here would discard an unrelated draft the user was writing
+	// when the question arrived.
 	m.questionModel = nil
-	m.resetInput()
-	m.input.Placeholder = "Ask Marshal..."
 	m.updateViewportHeight()
 	m.invalidateTranscript()
 	return m, nil
@@ -3615,16 +3723,21 @@ func (m Model) inputChromeRows() int {
 			if m.dock.IsOpen() && !m.accessPanelOwnsDock() {
 				content = mutedStyle().Render(accessWaitingRow)
 			}
-		case m.editingCommand:
-			// The ❯ prompt is rendered inside the textarea by SetPromptFunc,
-			// so m.input.View() already includes it — do not prepend it again.
-			content = m.input.View()
+		case m.editingApproval():
+			// The ❯ prompt is rendered inside the isolated edit editor by
+			// SetPromptFunc, so its View already includes it — do not prepend
+			// it again. The chat textarea is not rendered while editing.
+			content = m.approvalEdit.input.View()
 		case m.approvalModel != nil:
 			content = m.approvalModel.View()
 		default:
 			content = renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))
 		}
 		rows += len(consoleLines(content))
+	} else if m.doctorSecret != nil {
+		// Mirror inputSections' doctor case exactly: the masked key field and
+		// its hint row, before the composer and after the prompt chain.
+		rows += len(m.doctorSecretLines())
 	}
 	if p := m.activeCompletionPopup(); p != nil {
 		// Cap the popup at completionPopupMax visible match rows plus the
@@ -3641,7 +3754,8 @@ func (m Model) inputAreaRows() int {
 		// input area below it renders only its suspended notice row.
 		return rows
 	}
-	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil && m.state.PendingSudoAuth() == nil {
+	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil &&
+		m.state.PendingSudoAuth() == nil && m.doctorSecret == nil {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
 		rows += max(m.input.Height(), 1)
@@ -3733,7 +3847,7 @@ func (m Model) sudoActionable() bool { return m.promptFits(sudoControlRows()) }
 // the transcript, and the edit sub-mode keeps every key for the textarea.
 func (m *Model) handleApprovalPageKey(msg tea.Msg) bool {
 	am := m.approvalModel
-	if am == nil || m.editingCommand {
+	if am == nil || m.editingApproval() {
 		return false
 	}
 	k, ok := msg.(tea.KeyPressMsg)
@@ -5871,10 +5985,11 @@ func (m *Model) clearChatDraft() {
 
 // surfaceOwnsInput reports whether something other than the plain chat editor
 // owns the keyboard: a dock panel (including the access panel), a pending
-// human prompt, or the command-edit sub-mode. Alt+Enter then opens the
-// temporary composer instead of submitting, and never reads the owner's value.
+// human prompt, the command-edit sub-mode, or a /doctor repair's masked key
+// field. Alt+Enter then opens the temporary composer instead of submitting,
+// and never reads the owner's value.
 func (m *Model) surfaceOwnsInput() bool {
-	if m.dock.IsOpen() || m.editingCommand {
+	if m.dock.IsOpen() || m.editingApproval() || m.doctorSecret != nil {
 		return true
 	}
 	return m.hasPendingApproval() ||
@@ -6064,6 +6179,9 @@ func (m *Model) retireStalePromptModels(key session.PromptKey) {
 		m.sudoAuthModel = nil
 	default:
 		m.approvalModel = nil
+		// An edit bound to the settled request must not survive it: the
+		// replacement (if any) gets its own editor or the approval form.
+		m.retireApprovalEdit()
 	}
 }
 

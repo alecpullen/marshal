@@ -297,11 +297,16 @@ func TestStatusLineShowsSwarmTokenBudget(t *testing.T) {
 
 func TestStatusLineShowsEditCmdModeWhenEditingCommand(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.editingCommand = true
+	m = openTestApprovalEdit(t, m, "go test")
 
-	line := m.renderStatusLine(100)
-	if !strings.Contains(line, "edit cmd") {
-		t.Fatalf("status line missing 'edit cmd' mode:\n%s", line)
+	// Editing never hides the pending decision: the status line keeps the
+	// approval cue (the P1 visibility invariant) while the edit owns input.
+	if !m.editingApproval() {
+		t.Fatal("the approval editor does not own the input")
+	}
+	line := stripANSI(m.renderStatusLine(100))
+	if !strings.Contains(line, "approval") {
+		t.Fatalf("status line hid the pending approval while editing:\n%s", line)
 	}
 }
 
@@ -318,7 +323,7 @@ func TestStatusLineShowsCompletingModeWhenPopupIsVisible(t *testing.T) {
 
 func TestStatusLinePreservesModeSegmentUnderCollapse(t *testing.T) {
 	m := newStatusTestModel(t)
-	m.editingCommand = true
+	m = openTestApprovalEdit(t, m, "go test")
 	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: strings.Repeat("model", 8), Provider: strings.Repeat("provider", 6), LocalOnly: true})
 	m.state.SetActivity(session.Activity{Kind: session.ActivityTool, Label: strings.Repeat("very-long-activity ", 3), StartedAt: time.Unix(100, 0)})
 	m.now = func() time.Time { return time.Unix(105, 0) }
@@ -907,12 +912,13 @@ func TestInteractionStatusSurvivesTransientSurfaces(t *testing.T) {
 
 	t.Run("editing command", func(t *testing.T) {
 		m := newInteractionStatusModel(t)
-		m.editingCommand = true
+		m = openTestApprovalEdit(t, m, "go test")
 		if got := m.modeSegment(); got != want {
 			t.Fatalf("modeSegment = %q, want %q while editing a command", got, want)
 		}
-		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "edit cmd") {
-			t.Fatalf("statusRightSegment = %q, want the edit-command indicator", got)
+		// The pending decision stays visible while its command is edited.
+		if got := stripANSI(m.statusRightSegment()); !strings.Contains(got, "approval") {
+			t.Fatalf("statusRightSegment = %q, want the pending-approval indicator", got)
 		}
 	})
 

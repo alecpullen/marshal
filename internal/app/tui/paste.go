@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 // pasteCondenseMinLines and pasteCondenseMinChars are the thresholds above
@@ -33,10 +35,14 @@ func (p pasteAttachment) chipText() string {
 	return fmt.Sprintf("[pasted #%d · %d lines]", p.N, p.Lines)
 }
 
-// addPaste condenses a large paste into an attachment and inserts a chip
-// into the main input. The full content never enters the textarea, avoiding
-// the CharLimit silent-truncation path.
-func (m *Model) addPaste(content string) {
+// addPaste condenses a large paste into an attachment and inserts a chip at
+// the current cursor. The full content never enters the textarea, avoiding
+// the CharLimit silent-truncation path. The attachment is recorded only after
+// the whole chip has landed, so a refused insert never leaves a partial chip
+// or an attachment no chip can expand; a refusal is reported with a flash
+// naming the limit that rejected it and leaves the draft exactly as it was
+// (and, on the refusals that actually occur here, the caret too).
+func (m *Model) addPaste(content string) tea.Cmd {
 	lines := strings.Count(content, "\n") + 1
 	att := pasteAttachment{
 		N:       len(m.pastes) + 1,
@@ -44,9 +50,34 @@ func (m *Model) addPaste(content string) {
 		Chars:   len(content),
 		Content: content,
 	}
+	chip := att.chipText()
+	// InsertString silently truncates to the remaining CharLimit, and drops the
+	// insert altogether once the textarea's line budget is spent. Preflight the
+	// characters the textarea would compare (Length is what it measures against
+	// CharLimit; the chip is ASCII plus one middle dot, so its rune count is its
+	// width) and verify the whole chip afterwards: either the complete chip
+	// lands at the cursor or nothing changes.
+	if m.input.CharLimit > 0 && m.input.Length()+len([]rune(chip)) > m.input.CharLimit {
+		return m.setFlash(fmt.Sprintf("Paste did not fit: the input limit is %d characters", m.input.CharLimit))
+	}
+	before := m.input.Value()
+	m.input.InsertString(chip)
+	if after := m.input.Value(); !strings.Contains(after, chip) ||
+		len([]rune(after)) != len([]rune(before))+len([]rune(chip)) {
+		// The insert did not land whole. The preflight above reproduces the
+		// textarea's CharLimit cutoff exactly and the chip is a single line, so
+		// in practice a refusal leaves the value untouched (the line/height
+		// guard returns before writing). Restoring is therefore a fallback for
+		// a trimmed insert: the draft comes back, and the caret goes to the end
+		// of it rather than to where it was.
+		if m.input.Value() != before {
+			m.input.SetValue(before)
+		}
+		return m.setFlash("Paste did not fit: the input has reached its line limit")
+	}
 	m.pastes = append(m.pastes, att)
-	m.input.SetValue(m.input.Value() + att.chipText())
-	m.input.MoveToEnd()
+	m.updateViewportHeight()
+	return nil
 }
 
 // expandPastes replaces each chip in value with its full fenced content.

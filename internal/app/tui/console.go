@@ -224,15 +224,25 @@ func (m Model) inputSections() []consoleSection {
 				return only([]string{mutedStyle().Render(accessWaitingRow)})
 			}
 			return nil
-		case m.editingCommand:
-			// The ❯ prompt is rendered inside the textarea by SetPromptFunc,
-			// so m.input.View() already includes it — do not prepend it again.
-			return only(consoleLines(m.input.View()))
+		case m.editingApproval():
+			// The isolated edit editor renders its own ❯ prompt (it is
+			// configured exactly like the composer), so its View already
+			// includes it — do not prepend it again. The chat textarea is
+			// deliberately not rendered while the edit owns the input.
+			return only(consoleLines(m.approvalEdit.input.View()))
 		case m.approvalModel != nil:
 			return prompt("⚠ Approval", keys, consoleLines(m.approvalModel.View()))
 		default:
 			return prompt("⚠ Approval", keys, consoleLines(renderApprovalPanel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, max(m.leftWidth-4, 1), m.approvalWhyFor(m.approvalOwner(), tc))))
 		}
+	}
+
+	// The doctor repair's masked key field sits after the prompt chain and
+	// before the composer: the doctor panel is already closed while it is up,
+	// and it owns every keystroke, so the textarea is deliberately not rendered
+	// beside it.
+	if m.doctorSecret != nil {
+		return prompt("⚠ API key", mutedStyle().Render(m.doctorSecret.provider), m.doctorSecretLines())
 	}
 
 	var sections []consoleSection

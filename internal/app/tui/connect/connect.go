@@ -74,7 +74,11 @@ const (
 )
 
 type Opts struct {
-	Cfg              config.Config
+	Cfg config.Config
+	// Discovered is the host's session-wide model-discovery map, passed by
+	// reference so a setup probe lands where /models reads. The host also
+	// writes this map when it applies a correlated result before forwarding
+	// it to this wizard, so both writers must agree on the same provider key.
 	Discovered       map[string][]schema.ModelInfo
 	SkipToIntroModel bool
 	ScopedProvider   string
@@ -116,15 +120,20 @@ type Model struct {
 	width            int
 	height           int
 	probeStart       int64
-	spinner          int
-	modelChosen      string
-	remoteEnabled    bool
-	allProviders     bool
-	probeErrs        map[string]error
-	dataDir          string
-	auth             provider.AuthResolver
-	openBrowser      func(url string) error
-	prepared         PreparedMsg
+	// probeGen correlates a setup probe result with the wizard instance and
+	// attempt that dispatched it. It increases on every dispatch (including
+	// retries) and on skip or cancel, so a late result can never be mistaken
+	// for the current attempt's.
+	probeGen      uint64
+	spinner       int
+	modelChosen   string
+	remoteEnabled bool
+	allProviders  bool
+	probeErrs     map[string]error
+	dataDir       string
+	auth          provider.AuthResolver
+	openBrowser   func(url string) error
+	prepared      PreparedMsg
 
 	// oauthDisplay receives the authorization URL from the running login
 	// flow so the panel can show it. nil outside stepOAuthLogin.
@@ -191,7 +200,23 @@ func (m *Model) Update(msg tea.Msg) (*Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case OAuthDoneMsg:
 		return m.handleOAuthDone(msg)
+	case WizardProbeResult:
+		// Only the wizard instance currently waiting on this attempt may act
+		// on the result. Validate against *this* receiver: asking the owner
+		// would let a replaced wizard's result validate itself.
+		if !m.AcceptsWizardProbe(msg) {
+			return m, nil
+		}
+		return m.handleProbeResult(msg.Result)
 	case probe.ResultMsg:
+		// A raw result reaches this wizard only from the parent's /models
+		// discovery. It may refresh the all-provider picker, and nothing else:
+		// a setup probe's completion always arrives wrapped in
+		// WizardProbeResult, so an untagged result must never drive a wizard
+		// step.
+		if msg.FieldID != parentModelProbeFieldID {
+			return m, nil
+		}
 		return m.handleProbeResult(msg)
 	case picker.PickedMsg:
 		return m.handlePickerPicked(msg.Value)
@@ -441,6 +466,9 @@ func tick() tea.Cmd {
 }
 
 func (m *Model) cancel() tea.Cmd {
+	// Invalidate any in-flight setup probe: an abandoned wizard must not act
+	// on its result, success or failure alike.
+	m.probeGen++
 	m.step = stepCancelled
 	return func() tea.Msg { return CancelledMsg{} }
 }
@@ -963,7 +991,42 @@ func (m *Model) handleOAuthDone(msg OAuthDoneMsg) (*Model, tea.Cmd) {
 	return m.enterProbing()
 }
 
+// WizardProbeResult carries a setup probe's completion together with the
+// wizard instance and the attempt that dispatched it. Only the owner of the
+// current attempt may act on it: the result of a skipped, superseded,
+// cancelled or replaced wizard is stale even when it succeeded.
+type WizardProbeResult struct {
+	Owner      *Model
+	Generation uint64
+	Result     probe.ResultMsg
+}
+
+// AcceptsWizardProbe reports whether msg is the completion of this wizard's
+// current setup probe. It is a pure predicate: it changes no state, so a
+// caller can ask before deciding whether to touch the shared model cache.
+func (m *Model) AcceptsWizardProbe(msg WizardProbeResult) bool {
+	if msg.Owner != m || msg.Generation != m.probeGen {
+		return false
+	}
+	if m.step != stepProbing {
+		return false
+	}
+	name := msg.Result.Provider
+	if name == "" {
+		name = m.providerName
+	}
+	return name == m.providerName
+}
+
 func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
+	if msg.FieldID == parentModelProbeFieldID && (!m.allProviders || m.step != stepPickModel) {
+		// /models discovery runs in the parent model. It may refresh this
+		// picker only while the picker is the all-provider model-selection
+		// step; anywhere else it is not this wizard's result, and treating it
+		// as a setup probe would advance or fail a step it knows nothing
+		// about.
+		return m, nil
+	}
 	name := msg.Provider
 	if name == "" {
 		name = m.providerName
@@ -1004,16 +1067,17 @@ func (m *Model) handleProbeResult(msg probe.ResultMsg) (*Model, tea.Cmd) {
 }
 
 // rebuildModelPicker refreshes the model rows (e.g. after a probe result)
-// while preserving whatever the user has typed into the filter.
+// without replacing the picker: the user's filter text and selected model both
+// live on that instance. ReplaceItems re-binds the selection by value, so a
+// row that arrives under a different provider cannot capture a choice the user
+// already made, and it reports when the chosen row disappeared.
 func (m *Model) rebuildModelPicker() {
-	filter := ""
-	if m.picker != nil {
-		filter = m.picker.FilterValue()
+	fresh := buildModelPicker(m, m.providerName)
+	if m.picker == nil {
+		m.picker = fresh
+		return
 	}
-	m.picker = buildModelPicker(m, m.providerName)
-	if filter != "" {
-		m.picker.SetFilter(filter)
-	}
+	m.picker.ReplaceItems(fresh.Items())
 }
 
 // probeHint maps common connection failures to a one-line remediation.
@@ -1231,10 +1295,14 @@ func (m *Model) enterProbing() (*Model, tea.Cmd) {
 	m.providerCfg.Type = orDefault(m.template.Type, "openai_compatible")
 	m.probeStart = time.Now().UnixNano()
 	m.spinner = 0
+	// A new attempt: any result still in flight is now stale.
+	m.probeGen++
 	return m, tea.Batch(m.runProbe(), tick())
 }
 
 func (m *Model) skipProbe() (*Model, tea.Cmd) {
+	// Skipping abandons the probe; its result must not land later.
+	m.probeGen++
 	m.models = templateModelsToInfo(m.template.Models)
 	return m.advanceToPickModel()
 }
@@ -1244,8 +1312,25 @@ func (m *Model) advanceToPickModel() (*Model, tea.Cmd) {
 	return m, nil
 }
 
+// parentModelProbeFieldID is the FieldID on a model discovery probe launched
+// by the /models flow in the parent model. This wizard's own setup probe uses
+// "connect" (see runProbe), so a result carrying this field id is never the
+// wizard's own probe.
+const parentModelProbeFieldID = "models"
+
+// runProbe dispatches this wizard's setup probe and tags its completion with
+// the wizard instance and attempt, so only the current attempt can act on it.
 func (m *Model) runProbe() tea.Cmd {
-	return probe.ProviderWithAuth("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Agent.ThinkingBudgetMargin, m.auth)
+	owner := m
+	gen := m.probeGen
+	inner := probe.ProviderWithAuth("connect", m.providerName, m.providerCfg, m.dataDir, m.cfg.Agent.ThinkingBudgetMargin, m.auth)
+	return func() tea.Msg {
+		res, ok := inner().(probe.ResultMsg)
+		if !ok {
+			return nil
+		}
+		return WizardProbeResult{Owner: owner, Generation: gen, Result: res}
+	}
 }
 
 // refreshCmd emits a RefreshMsg naming the providers whose entries the

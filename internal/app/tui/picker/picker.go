@@ -27,6 +27,10 @@ func badgeStyle() lipgloss.Style  { return lipgloss.NewStyle().Foreground(theme.
 func mutedStyle() lipgloss.Style  { return theme.MutedStyle() }
 func errStyle() lipgloss.Style    { return lipgloss.NewStyle().Foreground(theme.Current().StatusError) }
 
+// errMissingSelection is shown when a refreshed item list drops the row the
+// user had selected. The picker never moves the choice on the user's behalf.
+const errMissingSelection = "Selected model is no longer available; choose another"
+
 // Item is one pickable row.
 type Item struct {
 	Label  string // primary text, left-aligned
@@ -53,9 +57,14 @@ type Model struct {
 	items       []Item
 	filter      textfield.Model
 	matches     []int // indices into items, rank order
-	cursor      int   // index into matches
+	cursor      int   // index into matches; -1 means nothing is selected
 	allowCustom bool
 	errMsg      string // transient error displayed below the footer
+	// pending records that a row the user had selected disappeared during a
+	// ReplaceItems refresh. It keeps that "nothing selected" state distinct
+	// from a picker that simply started empty, so a later refresh cannot
+	// silently select a row on the user's behalf.
+	pending bool
 }
 
 // New creates a picker model. The cursor starts on the first item whose
@@ -85,6 +94,79 @@ func (m *Model) SetFilter(q string) {
 
 // FilterValue returns the current filter text.
 func (m *Model) FilterValue() string { return m.filter.Value() }
+
+// ReplaceItems refreshes the choices while retaining the filter input and
+// selected value (including the custom row). It returns false when a former
+// selection disappeared; in that case there is no selection until user input.
+func (m *Model) ReplaceItems(items []Item) bool {
+	value, custom, hadSelection := m.selected()
+	next := make([]Item, len(items))
+	copy(next, items)
+	m.items = next
+	m.refilter()
+
+	if hadSelection {
+		if m.selectValue(value, custom) {
+			m.pending = false
+			if m.errMsg == errMissingSelection {
+				m.errMsg = ""
+			}
+			return true
+		}
+		// The chosen row is gone. Never slide onto a neighbour: leave the
+		// list with no selection until the user moves or edits the filter.
+		m.cursor = -1
+		m.pending = true
+		m.errMsg = errMissingSelection
+		return false
+	}
+	if m.pending {
+		// A selection already disappeared and the user has not chosen a
+		// replacement yet; a second refresh must not pick a row for them.
+		m.cursor = -1
+		return false
+	}
+	// Nothing was ever selected — the picker started with no matches — so
+	// the first arrival may select the first match.
+	if len(m.matches) > 0 {
+		m.cursor = 0
+		return true
+	}
+	m.cursor = -1
+	return true
+}
+
+// selected reports the value of the row under the cursor and whether it is
+// the synthetic custom row. hadSelection is false when no row is selected.
+func (m *Model) selected() (value string, custom, hadSelection bool) {
+	if m.cursor < 0 || m.cursor >= len(m.matches) {
+		return "", false, false
+	}
+	idx := m.matches[m.cursor]
+	if idx == -1 {
+		return m.filter.Value(), true, true
+	}
+	return m.items[idx].Value, false, true
+}
+
+// selectValue points the cursor at the first match carrying value with the
+// same custom/ordinary identity, and reports whether one exists.
+func (m *Model) selectValue(value string, custom bool) bool {
+	for pos, idx := range m.matches {
+		if custom {
+			if idx == -1 {
+				m.cursor = pos
+				return true
+			}
+			continue
+		}
+		if idx >= 0 && m.items[idx].Value == value {
+			m.cursor = pos
+			return true
+		}
+	}
+	return false
+}
 
 // Items returns a copy of the picker's items, in the order they were
 // supplied. It exists so callers (and tests) can inspect the offered rows
@@ -158,6 +240,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.PasteMsg:
 		m.errMsg = ""
+		m.pending = false
 		var cmd tea.Cmd
 		m.filter, cmd = m.filter.Update(msg)
 		m.refilter()
@@ -169,24 +252,45 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		case "esc":
 			return func() tea.Msg { return CancelledMsg{} }
 		case "enter":
-			if m.cursor < len(m.matches) && len(m.matches) > 0 {
-				idx := m.matches[m.cursor]
-				if idx == -1 {
-					return func() tea.Msg { return PickedMsg{Value: m.filter.Value()} }
+			if len(m.matches) == 0 || m.cursor < 0 || m.cursor >= len(m.matches) {
+				// No row is selected: a refresh dropped the former choice, or
+				// nothing matches at all. Enter must not pick a neighbour on
+				// the user's behalf, and it must not replace the more specific
+				// "selection disappeared" message with a vaguer one.
+				if m.errMsg == "" {
+					m.errMsg = "No matches to select"
 				}
-				v := m.items[idx].Value
-				return func() tea.Msg { return PickedMsg{Value: v} }
+				return nil
 			}
-			m.errMsg = "No matches to select"
-			return nil
+			idx := m.matches[m.cursor]
+			if idx == -1 {
+				return func() tea.Msg { return PickedMsg{Value: m.filter.Value()} }
+			}
+			return func() tea.Msg { return PickedMsg{Value: m.items[idx].Value} }
 		case "up":
 			m.errMsg = ""
+			if m.cursor < 0 {
+				// Nothing was selected; either arrow recovers the first
+				// available match.
+				if len(m.matches) > 0 {
+					m.cursor = 0
+					m.pending = false
+				}
+				return nil
+			}
 			if m.cursor > 0 {
 				m.cursor--
 			}
 			return nil
 		case "down":
 			m.errMsg = ""
+			if m.cursor < 0 {
+				if len(m.matches) > 0 {
+					m.cursor = 0
+					m.pending = false
+				}
+				return nil
+			}
 			if m.cursor < len(m.matches)-1 {
 				m.cursor++
 			}
@@ -195,6 +299,7 @@ func (m *Model) Update(msg tea.Msg) tea.Cmd {
 		// Any other key edits the filter — clear the error as the user
 		// corrects their input.
 		m.errMsg = ""
+		m.pending = false
 		var cmd tea.Cmd
 		m.filter, cmd = m.filter.Update(k)
 		m.refilter()
@@ -267,13 +372,26 @@ func (m *Model) View(maxW, maxH int) string {
 		rows = append(rows, mutedStyle().Render("  no matches"))
 	}
 
-	listH := maxH - 3 // header + filter + margin
-	if listH < 3 {
-		listH = 3
+	// The frame spends one of maxH rows on its top border, so the panel draws
+	// at most maxH-1 content rows. Non-list rows are reserved in priority
+	// order — filter, then the error (the reason Enter refused), then the
+	// footer hint, which repeats the panel's own hint row — so a short dock
+	// shrinks the list instead of clipping away the error.
+	budget := max(maxH-1, 0)
+	fixed := 1 // filter input
+	if m.errMsg != "" {
+		fixed++
 	}
-	body := chrome.ClipLines(rows, focusLine, listH, theme.Current())
-	content := "/ " + m.filter.View() + "\n" + body
-	if m.footer != "" {
+	showFooter := m.footer != "" && budget-fixed >= 2 // one list row must survive
+	if showFooter {
+		fixed++
+	}
+	listH := max(budget-fixed, 0)
+	content := "/ " + m.filter.View()
+	if listH > 0 {
+		content += "\n" + chrome.ClipLines(rows, focusLine, listH, theme.Current())
+	}
+	if showFooter {
 		content += "\n" + mutedStyle().Render(m.footer)
 	}
 	if m.errMsg != "" {

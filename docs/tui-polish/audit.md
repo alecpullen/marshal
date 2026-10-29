@@ -270,6 +270,25 @@ before Enter can therefore cause the user to choose a different model.
   `internal/app/tui/picker/picker.go:61`.
 - Potential direction: preserve selection by stable item value across refreshes
   and define a visible fallback if the selected item disappears.
+- Status (2026-10-29): fixed (tasks 1 and 2 of the
+  [P9 model discovery and sign-in plan](plans/2026-10-29-p9-model-discovery-sign-in-plan.md),
+  commits `db7f5e96`, `e139103a`). `picker.ReplaceItems` refreshes the rows in
+  place, re-binding the cursor to the same `Item.Value` and the same
+  custom-row/ordinary identity, so the filter text and its cursor survive and
+  the selection never slides onto a neighbour. When the chosen row disappears
+  the picker selects nothing, shows `Selected model is no longer available;
+  choose another` inside its height budget, and Enter emits no pick until the
+  user moves or edits the filter — including when a second result arrives first.
+  `connect.rebuildModelPicker` now replaces items instead of the picker, and an
+  all-provider `/models` result is applied only in the all-provider
+  model-selection step. Evidenced by
+  `TestReplaceItemsPreservesSelectionAndFilterCursor`,
+  `TestReplaceItemsRequiresExplicitChoiceWhenMissing`,
+  `TestDiscoveryKeepsSelectedProviderModel`,
+  `TestDiscoveryRemovedSelectionRequiresChoice`,
+  `TestAllProviderResultDoesNotReopenLaterWizardStep` and
+  `TestModelSelectionSurvivesHostDiscovery` (composed host frames at 80×24 and
+  140×40).
 
 ### Skipped provider probes can interrupt later wizard steps
 
@@ -281,6 +300,19 @@ back from a subsequent step; a late failure can leave a stale error.
 - Evidence: `internal/app/tui/connect/connect.go:966`, `:1218` and `:1237`.
 - Potential direction: cancel or identify probe requests and ignore results
   that no longer belong to the active step.
+- Status (2026-10-29): fixed (task 3 of the P9 plan, commit `fef23349`). A setup
+  probe now completes as `connect.WizardProbeResult`, carrying the wizard
+  instance and a monotonically increasing attempt generation; `skipProbe`,
+  `cancel`, a retry and a replaced wizard all invalidate it, and
+  `AcceptsWizardProbe` additionally requires the probing step and the exact
+  provider. The host validates the live panel and the attempt before touching
+  session discovery or the on-disk cache, so a late success can neither rebuild
+  the picker nor move the user out of a later step, and a late failure cannot
+  evict a good cached catalog. A raw `probe.ResultMsg` is no longer accepted as
+  a setup completion. Evidenced by
+  `TestSetupProbeRejectsSkippedAndSupersededResults` (skip, retry, a later
+  summary step, and a replaced wizard) and
+  `TestStaleWizardProbeCannotPopulateHostCache`.
 
 ### Answering a question discards an unrelated composer draft
 
@@ -464,6 +496,20 @@ authorization URLs can exceed the panel width, leaving the fallback unusable.
   `internal/app/tui/chrome/frame.go:85`.
 - Potential direction: provide a keyboard action that copies the complete URL,
   as the provider sign-in flow does, and show whether copying succeeded.
+- Status (2026-10-29): fixed (tasks 5 and 6 of the P9 plan, commits `aa8fffcf`
+  and `c7c1ac5e`). The panel wraps the whole URL to its cell width inside a
+  pageable body with PgUp/PgDn/Home/End and an above/below position indicator,
+  keeps the copy and cancel hints visible, and renders control characters as
+  one-cell placeholders without altering the copied bytes. `c` emits
+  `CopyLinkMsg`, which the host honours only while the live panel still accepts
+  it, and routes through the existing clipboard path: a confirmed local write
+  flashes `Copied …`, while a failed or unavailable helper falls back to OSC 52
+  and says so instead of claiming the terminal confirmed the copy. The
+  `OpenBrowser` comment no longer claims the one-line display is sufficient for
+  manual copy. Evidenced by `TestMCPAuthLongURLCanBePagedAndCopied`,
+  `TestMCPAuthCopyWaitsForURLAndStopsAfterCancel`,
+  `TestMCPAuthURLViewportClampsOnResize` and `TestMCPAuthCopyThroughModel`
+  (injected clipboard and browser stub; no network).
 
 ### Plugin install can confirm a scan of a different source
 

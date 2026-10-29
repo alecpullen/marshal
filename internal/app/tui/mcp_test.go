@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
@@ -29,11 +32,172 @@ func lastMessage(t *testing.T, m Model) string {
 	return msgs[len(msgs)-1].Content
 }
 
-// TestMCPAuthDoneReconnectsRuntime pins the fix for the post-auth reconnect
-// gap: after Authorize stores a token, the runtime must be rebuilt so the
-// server that failed to start with ErrAuthRequired is connected and its tools
-// are registered. Without the reload the command reports success while the
-// server stays unreachable until a restart.
+// mcpAuthFixture docks an authorization panel holding a long local URL, the
+// way /mcp auth does, without an engine, browser or network.
+func mcpAuthFixture(t *testing.T, m Model) (Model, *mcpauth.Panel, string) {
+	t.Helper()
+	url := "https://auth.example.test/authorize?response_type=code&client_id=marshal" +
+		"&code_challenge=0123456789abcdefghijklmnopqrstuvwxyz0123456789&code_challenge_method=S256" +
+		"&scope=mcp%3Aread%20mcp%3Awrite&resource=https%3A%2F%2Fmcp.example.test%2Fmcp&state=fedcba9876543210"
+	disp := mcpauth.NewDisplay()
+	disp.ShowURL(url)
+	panel := mcpauth.NewPanel("linear", disp)
+	m.dock.Open(panel)
+	return m, panel, url
+}
+
+// runCopyMsgs executes a command and returns the formatted messages it saw,
+// feeding every message back through Update so a multi-hop copy
+// (link request → clipboard write → flash) completes. Flash timers are never
+// waited on: flattenCmd abandons a command that does not answer promptly.
+func runCopyMsgs(t *testing.T, m *Model, cmd tea.Cmd) []string {
+	t.Helper()
+	var seen []string
+	var run func(tea.Cmd)
+	run = func(c tea.Cmd) {
+		for _, msg := range flattenCmd(c) {
+			seen = append(seen, fmt.Sprintf("%T %v", msg, msg))
+			updated, follow := m.Update(msg)
+			*m = asModel(t, updated)
+			run(follow)
+		}
+	}
+	run(cmd)
+	return seen
+}
+
+func TestMCPAuthCopyThroughModel(t *testing.T) {
+	newModel := func(t *testing.T) Model {
+		m := newTestModel(t)
+		// A stub opener, so nothing ever launches a real browser.
+		m.openBrowser = func(string) error { return nil }
+		return m
+	}
+
+	t.Run("copies the exact URL through the local clipboard", func(t *testing.T) {
+		m := newModel(t)
+		m, _, url := mcpAuthFixture(t, m)
+		clip := &fakeClipboard{available: true}
+		m.copyWriter = clip
+		m.copyRemote = func() bool { return false }
+
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+		m = asModel(t, updated)
+		if cmd == nil {
+			t.Fatal("c produced no copy command")
+		}
+		seen := runCopyMsgs(t, &m, cmd)
+
+		if len(clip.writes) != 1 || clip.writes[0] != url {
+			t.Fatalf("clipboard writes = %q, want the exact authorization URL", clip.writes)
+		}
+		if sawOSC52(seen, url) {
+			t.Errorf("a confirmed local write must not also emit OSC 52: %v", seen)
+		}
+		if !strings.HasPrefix(m.flash, "Copied") {
+			t.Errorf("flash = %q, want the confirmed-copy flash", m.flash)
+		}
+	})
+
+	t.Run("a failing local writer reports an unconfirmed OSC 52 copy", func(t *testing.T) {
+		m := newModel(t)
+		m, _, url := mcpAuthFixture(t, m)
+		m.copyWriter = &fakeClipboard{available: true, err: errors.New("pbcopy: exit 1")}
+
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+		m = asModel(t, updated)
+		seen := runCopyMsgs(t, &m, cmd)
+
+		if !sawOSC52(seen, url) {
+			t.Fatalf("a failed local write must still reach the terminal: %v", seen)
+		}
+		if strings.HasPrefix(m.flash, "Copied") {
+			t.Errorf("flash = %q, must not claim the terminal confirmed the copy", m.flash)
+		}
+		if !strings.Contains(m.flash, "OSC 52") || !strings.Contains(m.flash, "pbcopy: exit 1") {
+			t.Errorf("flash = %q, want the OSC 52 fallback and its cause", m.flash)
+		}
+	})
+
+	t.Run("no URL yet copies nothing", func(t *testing.T) {
+		m := newModel(t)
+		m.dock.Open(mcpauth.NewPanel("linear", mcpauth.NewDisplay()))
+		clip := &fakeClipboard{available: true}
+		m.copyWriter = clip
+
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+		m = asModel(t, updated)
+		if cmd != nil {
+			runCopyMsgs(t, &m, cmd)
+		}
+		if len(clip.writes) != 0 {
+			t.Fatalf("clipboard writes = %q, want none before the URL exists", clip.writes)
+		}
+	})
+
+	t.Run("a cancelled flow refuses a late copy", func(t *testing.T) {
+		m := newModel(t)
+		m, _, _ = mcpAuthFixture(t, m)
+		clip := &fakeClipboard{available: true}
+		m.copyWriter = clip
+
+		updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		m = asModel(t, updated)
+
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Text: "c"})
+		m = asModel(t, updated)
+		if cmd != nil {
+			runCopyMsgs(t, &m, cmd)
+		}
+		if len(clip.writes) != 0 {
+			t.Fatalf("clipboard writes = %q, want none after cancellation", clip.writes)
+		}
+	})
+
+	t.Run("a delayed copy from a replaced panel is dropped", func(t *testing.T) {
+		m := newModel(t)
+		var old *mcpauth.Panel
+		var url string
+		m, old, url = mcpAuthFixture(t, m)
+		clip := &fakeClipboard{available: true}
+		m.copyWriter = clip
+
+		// A second authorization flow for the same server replaces the panel
+		// and shows an identical URL, so only panel identity can tell them
+		// apart.
+		m, _, _ = mcpAuthFixture(t, m)
+
+		updated, cmd := m.Update(mcpauth.CopyLinkMsg{Panel: old, URL: url})
+		m = asModel(t, updated)
+		if cmd != nil {
+			runCopyMsgs(t, &m, cmd)
+		}
+		if len(clip.writes) != 0 {
+			t.Fatalf("clipboard writes = %q, want none from a replaced panel", clip.writes)
+		}
+	})
+
+	t.Run("the live panel still accepts its own copy request", func(t *testing.T) {
+		m := newModel(t)
+		var panel *mcpauth.Panel
+		var url string
+		m, panel, url = mcpAuthFixture(t, m)
+		clip := &fakeClipboard{available: true}
+		m.copyWriter = clip
+
+		updated, cmd := m.Update(mcpauth.CopyLinkMsg{Panel: panel, URL: url})
+		m = asModel(t, updated)
+		if cmd == nil {
+			t.Fatal("the live panel's copy request should be honoured")
+		}
+		runCopyMsgs(t, &m, cmd)
+
+		if len(clip.writes) != 1 || clip.writes[0] != url {
+			t.Fatalf("clipboard writes = %q, want the exact URL", clip.writes)
+		}
+	})
+}
+
 func TestMCPAuthDoneReconnectsRuntime(t *testing.T) {
 	m := newTestModel(t)
 	m.mcpAuthServer = "linear"

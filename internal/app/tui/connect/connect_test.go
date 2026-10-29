@@ -182,10 +182,18 @@ func TestCustomBaseURLThenKey(t *testing.T) {
 	}
 }
 
+// wizardResult wraps a setup probe result in the correlation envelope the
+// wizard's runProbe command produces. Use it wherever a test delivers a probe
+// for the *current* attempt; hand-build WizardProbeResult with an older
+// Generation to construct a deliberately stale result.
+func wizardResult(m *Model, msg probe.ResultMsg) WizardProbeResult {
+	return WizardProbeResult{Owner: m, Generation: m.probeGen, Result: msg}
+}
+
 func TestProbeSuccessAdvancesToPickModel(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}, {ID: "llama3.1:8b"}}})
+	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}, {ID: "llama3.1:8b"}}}))
 	if updated.step != stepPickModel {
 		t.Fatalf("success should advance to pickModel, got %v", updated.step)
 	}
@@ -200,7 +208,7 @@ func TestProbeSuccessAdvancesToPickModel(t *testing.T) {
 func TestProbeFailureStaysWithRetrySkip(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("connection refused")})
+	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("connection refused")}))
 	if updated.step != stepProbing {
 		t.Fatalf("failure should stay probing, got %v", updated.step)
 	}
@@ -212,7 +220,7 @@ func TestProbeFailureStaysWithRetrySkip(t *testing.T) {
 func TestRetryReRunsProbe(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("boom")})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("boom")}))
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: 114})
 	if updated.step != stepProbing {
 		t.Fatalf("retry should stay probing, got %v", updated.step)
@@ -240,7 +248,7 @@ func TestPickModelEmitsDone(t *testing.T) {
 	cfg.Privacy.ModelsDevEnrichment = &deny
 	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, cmd := m.Update(pickerPicked("qwen2.5-coder:7b"))
 	if m.step != stepPreparing {
 		t.Fatalf("after pickModel should be stepPreparing, got %v", m.step)
@@ -283,7 +291,7 @@ func TestPickModelEmitsDone(t *testing.T) {
 func TestConsentEscReturnsToModelPick(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen3"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen3"}}}))
 	m, _ = m.Update(pickerPicked("qwen3"))
 	if m.step != stepConsent {
 		t.Fatalf("step = %v, want stepConsent", m.step)
@@ -493,7 +501,7 @@ func TestCustomLocalhostBaseURLSkipsGate(t *testing.T) {
 func TestSummaryShowsNameModelAndDestination(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}, CfgPath: "/tmp/.marshal/config.toml"})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	advanceToSummary(m)
 	if m.step != stepSummary {
@@ -514,7 +522,7 @@ func TestSummaryShowsNameModelAndDestination(t *testing.T) {
 func TestSummaryEnterEmitsDone(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	advanceToSummary(m)
 	if m.step != stepSummary {
@@ -533,7 +541,7 @@ func TestSummaryEnterEmitsDone(t *testing.T) {
 func TestSummaryRenameChangesProviderName(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	advanceToSummary(m)
 	if m.step != stepSummary {
@@ -603,7 +611,7 @@ func TestScopedModelSwitchPreparesPresets(t *testing.T) {
 func TestSummaryEscGoesBackToModelPick(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	advanceToSummary(m)
 	if m.step != stepSummary {
@@ -621,7 +629,7 @@ func TestSummaryEscGoesBackToModelPick(t *testing.T) {
 func TestRenameEmptyNameShowsError(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	advanceToSummary(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
@@ -639,7 +647,7 @@ func TestRenameDuplicateNameShowsError(t *testing.T) {
 	}
 	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	advanceToSummary(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
@@ -660,7 +668,7 @@ func TestRenameToOwnNameIsAllowed(t *testing.T) {
 	}
 	m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	advanceToSummary(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
@@ -681,7 +689,7 @@ func TestRenameToOwnNameIsAllowed(t *testing.T) {
 func TestRenameEscReturnsToSummary(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	advanceToSummary(m)
 	m, _ = m.Update(tea.KeyPressMsg{Code: 110}) // 'n'
@@ -697,7 +705,7 @@ func TestRenameEscReturnsToSummary(t *testing.T) {
 func TestPasteMsgIntoRenameInput(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	advanceToSummary(m)
 	if m.step != stepSummary {
@@ -765,7 +773,7 @@ func TestCustomFlowRenameEscReturnsToBaseURL(t *testing.T) {
 func TestSummaryRenameHintIsProminent(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	m, _ = m.Update(probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
 	m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
 	advanceToSummary(m)
 	view := m.View(80, 24)
@@ -1198,7 +1206,7 @@ func TestDollarPrefixEmptyNameShowsError(t *testing.T) {
 func TestProbeFailureShowsHint(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("connection refused")})
+	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("connection refused")}))
 	if updated.step != stepProbing {
 		t.Fatalf("failure should stay probing, got %v", updated.step)
 	}
@@ -1210,7 +1218,7 @@ func TestProbeFailureShowsHint(t *testing.T) {
 func TestProbeFailureHintForNoSuchHost(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("no such host")})
+	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("no such host")}))
 	if !strings.Contains(updated.err, "hostname not found") {
 		t.Fatalf("expected hostname hint, got: %q", updated.err)
 	}
@@ -1219,7 +1227,7 @@ func TestProbeFailureHintForNoSuchHost(t *testing.T) {
 func TestProbeFailureHintForUnauthorized(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("401 unauthorized")})
+	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("401 unauthorized")}))
 	if !strings.Contains(updated.err, "key rejected") {
 		t.Fatalf("expected key rejected hint, got: %q", updated.err)
 	}
@@ -1228,7 +1236,7 @@ func TestProbeFailureHintForUnauthorized(t *testing.T) {
 func TestProbeFailureHintForTimeout(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("deadline exceeded")})
+	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("deadline exceeded")}))
 	if !strings.Contains(updated.err, "timed out") {
 		t.Fatalf("expected timeout hint, got: %q", updated.err)
 	}
@@ -1237,7 +1245,7 @@ func TestProbeFailureHintForTimeout(t *testing.T) {
 func TestProbeFailureHintForCertificate(t *testing.T) {
 	m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
 	m, _ = m.Update(pickerPicked("ollama"))
-	updated, _ := m.Update(probe.ResultMsg{Provider: m.providerName, Err: errors.New("certificate signed by unknown authority")})
+	updated, _ := m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("certificate signed by unknown authority")}))
 	if !strings.Contains(updated.err, "TLS problem") {
 		t.Fatalf("expected TLS hint, got: %q", updated.err)
 	}
@@ -1503,7 +1511,7 @@ func TestProbeResultAttributesToMsgProviderInAllProvidersMode(t *testing.T) {
 	})
 	// Ollama's probe result arrives while the panel is scoped to kimi (the
 	// first sorted provider). It must land under "ollama", not clobber kimi.
-	updated, _ := m.Update(probe.ResultMsg{Provider: "ollama", Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
+	updated, _ := m.Update(probe.ResultMsg{FieldID: parentModelProbeFieldID, Provider: "ollama", Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}})
 	if got := updated.discovered["ollama"]; len(got) != 1 || got[0].ID != "qwen2.5-coder:7b" {
 		t.Errorf("discovered[ollama] = %v, want the probed model", got)
 	}
@@ -1529,7 +1537,7 @@ func TestProbeFailureInAllProvidersModeKeepsPickerAndNotesProvider(t *testing.T)
 		AllProviders:     true,
 		ScopedProvider:   "kimi",
 	})
-	updated, _ := m.Update(probe.ResultMsg{Provider: "kimi", Err: errors.New("401 unauthorized")})
+	updated, _ := m.Update(probe.ResultMsg{FieldID: parentModelProbeFieldID, Provider: "kimi", Err: errors.New("401 unauthorized")})
 	if updated.step != stepPickModel {
 		t.Errorf("step = %v, want to stay on pickModel", updated.step)
 	}
@@ -1543,7 +1551,7 @@ func TestProbeFailureInAllProvidersModeKeepsPickerAndNotesProvider(t *testing.T)
 		t.Errorf("picker view should note kimi's failed probe:\n%s", view)
 	}
 	// A later success clears the failure note.
-	updated, _ = updated.Update(probe.ResultMsg{Provider: "kimi", Models: []schema.ModelInfo{{ID: "kimi-k2"}}})
+	updated, _ = updated.Update(probe.ResultMsg{FieldID: parentModelProbeFieldID, Provider: "kimi", Models: []schema.ModelInfo{{ID: "kimi-k2"}}})
 	if _, ok := updated.probeErrs["kimi"]; ok {
 		t.Error("probeErrs should forget kimi after a successful probe")
 	}
@@ -2067,5 +2075,473 @@ func TestOAuthLoginNilOpenerFallsBackToProduction(t *testing.T) {
 	}
 	if engine.Open == nil {
 		t.Fatal("a nil opener must fall back to mcpauth.OpenBrowser, not leave Open unset")
+	}
+}
+
+// ── Discovery arriving while the model picker is open ────────────────
+//
+// /models probes run in the parent model and arrive here as a
+// probe.ResultMsg with FieldID "models". They may refresh the all-provider
+// model list, but they must never move the user's choice.
+
+// newDiscoveryModel builds an all-providers picker whose two providers offer
+// the same model id, so a selection is only identifiable by provider *and*
+// model. Rows: groq/llama-3.3-70b, groq/llama-3.3-70b-versatile,
+// openai/gpt-4o, openai/llama-3.3-70b.
+func newDiscoveryModel(t *testing.T) *Model {
+	t.Helper()
+	m := New(Opts{
+		Cfg: config.Config{Providers: map[string]config.ProviderConfig{
+			"groq":   {Type: "openai_compatible", BaseURL: "https://api.groq.com/openai/v1"},
+			"openai": {Type: "openai_compatible", BaseURL: "https://api.openai.com/v1"},
+		}},
+		Discovered: map[string][]schema.ModelInfo{
+			"groq":   {{ID: "llama-3.3-70b"}, {ID: "llama-3.3-70b-versatile"}},
+			"openai": {{ID: "gpt-4o"}, {ID: "llama-3.3-70b"}},
+		},
+		SkipToIntroModel: true,
+		AllProviders:     true,
+		ScopedProvider:   "groq",
+	})
+	if m.step != stepPickModel {
+		t.Fatalf("newDiscoveryModel: step = %v, want stepPickModel", m.step)
+	}
+	return m
+}
+
+// pressKeys drives the wizard through real key presses, the way the docked
+// panel is driven.
+func pressKeys(m *Model, keys ...tea.KeyPressMsg) *Model {
+	for _, k := range keys {
+		m, _ = m.Update(k)
+	}
+	return m
+}
+
+// typeFilter types text into the picker's filter box through the Update path.
+func typeFilter(m *Model, text string) *Model {
+	keys := make([]tea.KeyPressMsg, 0, len(text))
+	for _, r := range text {
+		keys = append(keys, tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	return pressKeys(m, keys...)
+}
+
+// deliverProbe feeds one discovery result through the Update path.
+func deliverProbe(m *Model, msg probe.ResultMsg) *Model {
+	m, _ = m.Update(msg)
+	return m
+}
+
+// enterCmd runs the command an Enter press produced and applies its message,
+// so a pick travels the same path the docked panel would take.
+func enterCmd(t *testing.T, m *Model) (*Model, tea.Msg) {
+	t.Helper()
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		return m, nil
+	}
+	msg := cmd()
+	m, _ = m.Update(msg)
+	return m, msg
+}
+
+// wizardState is a value snapshot of the state a stale probe result could
+// move. Update mutates the wizard in place and returns the same pointer, so a
+// "before" copy must be values, not a pointer.
+type wizardState struct {
+	step       step
+	err        string
+	chosen     string
+	discovered int
+	models     string
+	pickerNil  bool
+	pickerRows int
+	filter     string
+	pickerErr  string
+}
+
+func snapshotWizard(m *Model) wizardState {
+	s := wizardState{
+		step:       m.step,
+		err:        m.err,
+		chosen:     m.modelChosen,
+		discovered: len(m.discovered["ollama"]),
+		pickerNil:  m.picker == nil,
+	}
+	ids := make([]string, len(m.models))
+	for i, mi := range m.models {
+		ids[i] = mi.ID
+	}
+	s.models = strings.Join(ids, ",")
+	if m.picker != nil {
+		s.pickerRows = len(m.picker.Items())
+		s.filter = m.picker.FilterValue()
+		s.pickerErr = m.picker.ErrMsg()
+	}
+	return s
+}
+
+func assertWizardUnchanged(t *testing.T, want, got wizardState, label string) {
+	t.Helper()
+	if got.step != want.step {
+		t.Errorf("%s: step = %v, want unchanged %v", label, got.step, want.step)
+	}
+	if got.err != want.err {
+		t.Errorf("%s: err = %q, want unchanged %q", label, got.err, want.err)
+	}
+	if got.chosen != want.chosen {
+		t.Errorf("%s: chosen model = %q, want unchanged %q", label, got.chosen, want.chosen)
+	}
+	if got.discovered != want.discovered {
+		t.Errorf("%s: discovered entries = %d, want unchanged %d", label, got.discovered, want.discovered)
+	}
+	if got.models != want.models {
+		t.Errorf("%s: models = %q, want unchanged %q", label, got.models, want.models)
+	}
+	if got.pickerNil != want.pickerNil {
+		t.Errorf("%s: picker presence changed", label)
+	}
+	if got.pickerRows != want.pickerRows {
+		t.Errorf("%s: picker rows = %d, want unchanged %d", label, got.pickerRows, want.pickerRows)
+	}
+	if got.filter != want.filter {
+		t.Errorf("%s: filter = %q, want unchanged %q", label, got.filter, want.filter)
+	}
+	if got.pickerErr != want.pickerErr {
+		t.Errorf("%s: picker error = %q, want unchanged %q", label, got.pickerErr, want.pickerErr)
+	}
+}
+
+func TestSetupProbeRejectsSkippedAndSupersededResults(t *testing.T) {
+	// newProbingWizard lands on the setup-probing step with the ollama
+	// template. Its probe command is never executed here: results are
+	// delivered by hand so the test can hold two attempts at once.
+	newProbingWizard := func(t *testing.T) *Model {
+		t.Helper()
+		m := New(Opts{Cfg: config.Default(), Discovered: map[string][]schema.ModelInfo{}})
+		m, _ = m.Update(pickerPicked("ollama"))
+		if m.step != stepProbing {
+			t.Fatalf("step = %v, want stepProbing", m.step)
+		}
+		return m
+	}
+	// staleSuccess and staleFailure are built against the wizard's *current*
+	// generation; the test then moves the wizard on before delivering them.
+	staleSuccess := func(m *Model) WizardProbeResult {
+		return wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "stale-model"}}})
+	}
+	staleFailure := func(m *Model) WizardProbeResult {
+		return wizardResult(m, probe.ResultMsg{Provider: m.providerName, Err: errors.New("stale failure")})
+	}
+
+	t.Run("skipped probe", func(t *testing.T) {
+		m := newProbingWizard(t)
+		oldSuccess, oldFailure := staleSuccess(m), staleFailure(m)
+		if !m.AcceptsWizardProbe(oldSuccess) {
+			t.Fatal("precondition: the result matches the wizard before it is skipped")
+		}
+
+		m = pressKeys(m, tea.KeyPressMsg{Code: 115}) // s = skip
+		if m.step != stepPickModel {
+			t.Fatalf("skip: step = %v, want stepPickModel", m.step)
+		}
+		before := snapshotWizard(m)
+		m, _ = m.Update(oldSuccess)
+		assertWizardUnchanged(t, before, snapshotWizard(m), "stale success after skip")
+		m, _ = m.Update(oldFailure)
+		assertWizardUnchanged(t, before, snapshotWizard(m), "stale failure after skip")
+	})
+
+	t.Run("superseded by retry", func(t *testing.T) {
+		m := newProbingWizard(t)
+		oldSuccess, oldFailure := staleSuccess(m), staleFailure(m)
+
+		m = pressKeys(m, tea.KeyPressMsg{Code: 114}) // r = retry
+		if m.step != stepProbing {
+			t.Fatalf("retry: step = %v, want stepProbing", m.step)
+		}
+		if m.AcceptsWizardProbe(oldSuccess) {
+			t.Fatal("the superseded attempt must no longer be accepted")
+		}
+		before := snapshotWizard(m)
+		m, _ = m.Update(oldSuccess)
+		assertWizardUnchanged(t, before, snapshotWizard(m), "superseded success")
+		m, _ = m.Update(oldFailure)
+		assertWizardUnchanged(t, before, snapshotWizard(m), "superseded failure")
+
+		// The retry's own result is the current attempt and lands normally.
+		m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
+		if m.step != stepPickModel {
+			t.Fatalf("current retry: step = %v, want stepPickModel", m.step)
+		}
+		if len(m.models) != 1 || m.models[0].ID != "qwen2.5-coder:7b" {
+			t.Fatalf("current retry: models = %v, want the retried model", m.models)
+		}
+		if got := m.discovered[m.providerName]; len(got) != 1 || got[0].ID != "qwen2.5-coder:7b" {
+			t.Fatalf("current retry: discovered = %v, want the retried model", got)
+		}
+	})
+
+	t.Run("after a later wizard step", func(t *testing.T) {
+		// models.dev enrichment is denied so picking a model goes straight to
+		// preparation instead of stopping at the consent step; the stale
+		// result is then delivered at the summary, well past model selection.
+		cfg := config.Default()
+		deny := false
+		cfg.Privacy.ModelsDevEnrichment = &deny
+		m := New(Opts{Cfg: cfg, Discovered: map[string][]schema.ModelInfo{}})
+		m, _ = m.Update(pickerPicked("ollama"))
+		if m.step != stepProbing {
+			t.Fatalf("step = %v, want stepProbing", m.step)
+		}
+		oldSuccess, oldFailure := staleSuccess(m), staleFailure(m)
+
+		// Land a normal probe, pick its model and prepare presets, so the
+		// wizard sits well past both probing and model selection.
+		m, _ = m.Update(wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "qwen2.5-coder:7b"}}}))
+		m, _ = m.Update(pickerPicked("qwen2.5-coder:7b"))
+		m, _ = m.Update(PreparedMsg{
+			Provider: m.providerName,
+			Presets: map[string]routing.ModelPreset{
+				"ollama/qwen2.5-coder:7b": {Name: "ollama/qwen2.5-coder:7b", Provider: "ollama", Model: "qwen2.5-coder:7b"},
+			},
+			Result: presetsetup.Result{Prepared: 1, Fallback: 1},
+		})
+		if m.step != stepSummary {
+			t.Fatalf("step = %v, want stepSummary", m.step)
+		}
+		before := snapshotWizard(m)
+		m, _ = m.Update(oldSuccess)
+		assertWizardUnchanged(t, before, snapshotWizard(m), "stale success at summary")
+		m, _ = m.Update(oldFailure)
+		assertWizardUnchanged(t, before, snapshotWizard(m), "stale failure at summary")
+	})
+
+	t.Run("replaced wizard", func(t *testing.T) {
+		first := newProbingWizard(t)
+		second := newProbingWizard(t)
+		// Both instances sit at stepProbing on the same generation, so only
+		// the owner identity tells their results apart.
+		before := snapshotWizard(second)
+		second, _ = second.Update(wizardResult(first, probe.ResultMsg{Provider: first.providerName, Models: []schema.ModelInfo{{ID: "stale-model"}}}))
+		assertWizardUnchanged(t, before, snapshotWizard(second), "replaced wizard's result")
+	})
+
+	t.Run("other provider", func(t *testing.T) {
+		m := newProbingWizard(t)
+		// Right instance and generation, wrong provider: the result belongs to
+		// a different wizard's probe and must not touch this one.
+		wr := wizardResult(m, probe.ResultMsg{Provider: "someone-else", Models: []schema.ModelInfo{{ID: "elsewhere"}}})
+		if m.AcceptsWizardProbe(wr) {
+			t.Fatal("a result naming another provider must be rejected")
+		}
+		before := snapshotWizard(m)
+		m, _ = m.Update(wr)
+		assertWizardUnchanged(t, before, snapshotWizard(m), "other provider's result")
+	})
+
+	t.Run("cancelled wizard", func(t *testing.T) {
+		// Esc at the probing step abandons the wizard; the probe it launched
+		// is still running and must not land afterwards.
+		m := newProbingWizard(t)
+		old := wizardResult(m, probe.ResultMsg{Provider: m.providerName, Models: []schema.ModelInfo{{ID: "stale-model"}}})
+		if !m.AcceptsWizardProbe(old) {
+			t.Fatal("precondition: the result matches the wizard before it is cancelled")
+		}
+		m = pressKeys(m, tea.KeyPressMsg{Code: tea.KeyEscape})
+		if m.step != stepCancelled {
+			t.Fatalf("esc: step = %v, want stepCancelled", m.step)
+		}
+		if m.AcceptsWizardProbe(old) {
+			t.Fatal("a cancelled wizard must reject its in-flight probe")
+		}
+		before := snapshotWizard(m)
+		m, _ = m.Update(old)
+		assertWizardUnchanged(t, before, snapshotWizard(m), "result after cancel")
+	})
+}
+
+func TestDiscoveryKeepsSelectedProviderModel(t *testing.T) {
+	t.Run("a model row under a nonempty filter", func(t *testing.T) {
+		m := newDiscoveryModel(t)
+		// Typing a filter inserts the synthetic custom row first, so the
+		// matches are [custom, groq/llama-3.3-70b,
+		// groq/llama-3.3-70b-versatile, openai/llama-3.3-70b]. Three Downs
+		// land on openai's row, which shares its model id with groq's row.
+		m = typeFilter(m, "llama-3.3-70b")
+		m = pressKeys(m,
+			tea.KeyPressMsg{Code: tea.KeyDown},
+			tea.KeyPressMsg{Code: tea.KeyDown},
+			tea.KeyPressMsg{Code: tea.KeyDown})
+		want := encodeModelValue("openai", "llama-3.3-70b")
+
+		// Another provider's success, then its failure, arrive while the
+		// picker is open.
+		m = deliverProbe(m, probe.ResultMsg{
+			FieldID:  parentModelProbeFieldID,
+			Provider: "groq",
+			Models:   []schema.ModelInfo{{ID: "llama-3.3-70b"}, {ID: "llama-3.3-70b-versatile"}, {ID: "mixtral-8x7b"}},
+		})
+		m = deliverProbe(m, probe.ResultMsg{
+			FieldID:  parentModelProbeFieldID,
+			Provider: "groq",
+			Err:      errors.New("connection refused"),
+		})
+
+		if got := m.picker.FilterValue(); got != "llama-3.3-70b" {
+			t.Fatalf("filter = %q, want it preserved across discoveries", got)
+		}
+		_, msg := enterCmd(t, m)
+		picked, ok := msg.(picker.PickedMsg)
+		if !ok {
+			t.Fatalf("Enter produced %T, want picker.PickedMsg", msg)
+		}
+		if picked.Value != want {
+			t.Fatalf("picked %q, want the originally selected %q", picked.Value, want)
+		}
+	})
+
+	t.Run("the custom row", func(t *testing.T) {
+		m := newDiscoveryModel(t)
+		m = typeFilter(m, "brand-new-model")
+		// Nothing matches yet, so the custom row is the only choice and the
+		// cursor sits on it. When a provider then reports a model with
+		// exactly that id, the row appears — and the custom selection must
+		// still be the one Enter returns, not the new model row.
+		m = deliverProbe(m, probe.ResultMsg{
+			FieldID:  parentModelProbeFieldID,
+			Provider: "groq",
+			Models:   []schema.ModelInfo{{ID: "brand-new-model"}},
+		})
+
+		_, msg := enterCmd(t, m)
+		picked, ok := msg.(picker.PickedMsg)
+		if !ok {
+			t.Fatalf("Enter produced %T, want picker.PickedMsg", msg)
+		}
+		if picked.Value != "brand-new-model" {
+			t.Fatalf("picked %q, want the typed custom value %q", picked.Value, "brand-new-model")
+		}
+	})
+}
+
+func TestDiscoveryRemovedSelectionRequiresChoice(t *testing.T) {
+	const missing = "Selected model is no longer available; choose another"
+
+	m := newDiscoveryModel(t)
+	// Select the last row: openai/llama-3.3-70b.
+	m = pressKeys(m,
+		tea.KeyPressMsg{Code: tea.KeyDown},
+		tea.KeyPressMsg{Code: tea.KeyDown},
+		tea.KeyPressMsg{Code: tea.KeyDown})
+
+	// openai no longer offers that model: the chosen row is gone.
+	m = deliverProbe(m, probe.ResultMsg{
+		FieldID:  parentModelProbeFieldID,
+		Provider: "openai",
+		Models:   []schema.ModelInfo{{ID: "gpt-4o"}},
+	})
+	if got := m.picker.ErrMsg(); got != missing {
+		t.Fatalf("picker error = %q, want %q", got, missing)
+	}
+	if view := ansi.Strip(m.View(80, 24)); !strings.Contains(view, missing) {
+		t.Fatalf("the picker must show the missing-selection message:\n%s", view)
+	}
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatalf("Enter after the selection vanished must do nothing, got %T", cmd())
+	}
+
+	// A second result arriving before the user chooses must not select a row
+	// on their behalf either.
+	m = deliverProbe(m, probe.ResultMsg{
+		FieldID:  parentModelProbeFieldID,
+		Provider: "groq",
+		Models:   []schema.ModelInfo{{ID: "llama-3.3-70b"}, {ID: "mixtral-8x7b"}},
+	})
+	if got := m.picker.ErrMsg(); got != missing {
+		t.Fatalf("a second result changed the message to %q, want %q", got, missing)
+	}
+	if _, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}); cmd != nil {
+		t.Fatalf("Enter before the user picks again must do nothing, got %T", cmd())
+	}
+
+	// Explicit recovery: an arrow re-selects the first available row.
+	m = pressKeys(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if got := m.picker.ErrMsg(); got != "" {
+		t.Fatalf("picker error = %q, want it cleared once the user moved", got)
+	}
+	_, msg := enterCmd(t, m)
+	picked, ok := msg.(picker.PickedMsg)
+	if !ok {
+		t.Fatalf("Enter after an explicit choice produced %T, want picker.PickedMsg", msg)
+	}
+	if want := encodeModelValue("groq", "llama-3.3-70b"); picked.Value != want {
+		t.Fatalf("picked %q, want %q", picked.Value, want)
+	}
+}
+
+func TestAllProviderResultDoesNotReopenLaterWizardStep(t *testing.T) {
+	m := newDiscoveryModel(t)
+	// Enter on the first row accepts groq/llama-3.3-70b and leaves the picker
+	// for the consent step.
+	m, msg := enterCmd(t, m)
+	if _, ok := msg.(picker.PickedMsg); !ok {
+		t.Fatalf("Enter on the picker produced %T, want picker.PickedMsg", msg)
+	}
+	if m.step != stepConsent {
+		t.Fatalf("step = %v, want stepConsent after the pick", m.step)
+	}
+	if m.picker != nil {
+		t.Fatal("the picker should be gone once the selection advanced")
+	}
+
+	// A live success for another provider must not reopen the picker, move
+	// the wizard back, or touch the discovery state behind the closed panel.
+	m = deliverProbe(m, probe.ResultMsg{
+		FieldID:  parentModelProbeFieldID,
+		Provider: "openai",
+		Models:   []schema.ModelInfo{{ID: "gpt-4o-mini"}},
+	})
+	if m.step != stepConsent {
+		t.Fatalf("success moved the wizard to %v, want stepConsent", m.step)
+	}
+	if m.picker != nil {
+		t.Fatal("success reopened the model picker")
+	}
+	if got := m.discovered["openai"]; len(got) != 2 {
+		t.Fatalf("discovered[openai] = %v, want the pre-existing two models", got)
+	}
+	if m.err != "" {
+		t.Fatalf("err = %q, want empty", m.err)
+	}
+
+	// Advance to the summary, then deliver a failure.
+	m = pressKeys(m, tea.KeyPressMsg{Code: 110}) // n: skip models.dev
+	if m.step != stepPreparing {
+		t.Fatalf("step = %v, want stepPreparing", m.step)
+	}
+	m, _ = m.Update(PreparedMsg{Provider: m.providerName, Result: presetsetup.Result{Prepared: 1, Fallback: 1}})
+	if m.step != stepSummary {
+		t.Fatalf("step = %v, want stepSummary", m.step)
+	}
+
+	m = deliverProbe(m, probe.ResultMsg{
+		FieldID:  parentModelProbeFieldID,
+		Provider: "openai",
+		Err:      errors.New("401 unauthorized"),
+	})
+	if m.step != stepSummary {
+		t.Fatalf("failure moved the wizard to %v, want stepSummary", m.step)
+	}
+	if m.picker != nil {
+		t.Fatal("failure reopened the model picker")
+	}
+	if m.err != "" {
+		t.Fatalf("err = %q, want a discovery failure to stay out of the step's error line", m.err)
+	}
+	if _, ok := m.probeErrs["openai"]; ok {
+		t.Fatal("a discovery failure must not be recorded as a setup probe failure")
 	}
 }

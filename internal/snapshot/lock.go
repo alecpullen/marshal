@@ -79,6 +79,12 @@ type StoreLock struct {
 	file  *os.File
 	local *inProcLock
 
+	// releaseMu serialises Release attempts. A drain can be slow — it kills
+	// and reaps subprocess trees — so two callers must not interleave: the
+	// second waits for the first to finish and then sees its outcome. This is
+	// what stops one caller reporting success while another is still draining.
+	releaseMu sync.Mutex
+
 	mu       sync.Mutex
 	released bool
 	// drain runs before the OS lock is released and must leave no writer
@@ -145,6 +151,12 @@ func pollFlock(ctx context.Context, f *os.File) (bool, error) {
 // OnRelease registers a drain step that runs before ownership is released. A
 // drain that fails aborts the release: freeing the lock while a writer may
 // still be alive would let a second owner race the first.
+//
+// A callback registered while a release is already draining is not dropped: it
+// runs in that release before the lock is handed on, or — if a drain failed —
+// it stays registered for the next Release. Registration after the release has
+// committed is ignored, because the store is already unlocked and there is no
+// longer a critical section to fence.
 func (l *StoreLock) OnRelease(fn func() error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -154,34 +166,74 @@ func (l *StoreLock) OnRelease(fn func() error) {
 // Path is the lock file path.
 func (l *StoreLock) Path() string { return l.path }
 
-// Release drops ownership. Drains run first, newest first. It is idempotent and
-// never deletes the lock file.
+// Release drops ownership. Drains run first, newest registration first, and
+// every one of them must succeed before the OS lock and the process-local
+// semaphore are given up. It never deletes the lock file.
+//
+// A drain that fails aborts the release: the file lock, the local semaphore and
+// the failed callback all stay held, so a later Release retries exactly the
+// callbacks that failed. Successful callbacks are removed and never run twice,
+// and a callback registered while this release is draining runs before the
+// unlock instead of being dropped.
+//
+// Concurrent calls serialise on releaseMu. A second caller waits for the first
+// to finish, then either finds the lock already released (and reports success)
+// or retries the callbacks the first could not complete. Only the caller that
+// actually released reports success.
 func (l *StoreLock) Release() error {
+	l.releaseMu.Lock()
+	defer l.releaseMu.Unlock()
+
 	l.mu.Lock()
 	if l.released {
 		l.mu.Unlock()
 		return nil
 	}
-	l.released = true
-	drains := make([]func() error, len(l.drain))
-	copy(drains, l.drain)
-	l.drain = nil
 	l.mu.Unlock()
 
+	// Drain until nothing is pending, or a callback fails. The state mutex is
+	// never held while a callback runs, because a callback may take arbitrary
+	// time (killing and reaping subprocess trees) and may even register
+	// another callback.
 	var firstErr error
-	for i := len(drains) - 1; i >= 0; i-- {
-		if err := drains[i](); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	if firstErr != nil {
-		// Keep holding: the caller must not hand the store to another writer
-		// while one of its own may still be running. The file and the
-		// process-local semaphore stay held, and a later Release retries.
+	for {
 		l.mu.Lock()
-		l.released = false
+		if len(l.drain) == 0 {
+			// Commit to releasing while holding the state mutex, so a callback
+			// registered from this point on cannot be left behind: OnRelease
+			// either saw released == false (and its callback is in drain, which
+			// we are looking at) or knows the store is already unlocked.
+			l.released = true
+			l.mu.Unlock()
+			break
+		}
+		pending := l.drain
+		l.drain = nil
 		l.mu.Unlock()
-		return firstErr
+
+		// retained holds failures in registration order; the next pass (here
+		// or in a later Release) walks them newest-first again.
+		retained := make([]func() error, 0, len(pending))
+		for i := len(pending) - 1; i >= 0; i-- {
+			if err := pending[i](); err != nil {
+				retained = append([]func() error{pending[i]}, retained...)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+		if len(retained) > 0 {
+			l.mu.Lock()
+			// Callbacks registered during the pass are newer than the ones we
+			// just ran, so they follow the retained failures.
+			l.drain = append(retained, l.drain...)
+			l.mu.Unlock()
+			// Keep holding: the caller must not hand the store to another
+			// writer while one of its own may still be running. The file and
+			// the process-local semaphore stay held, and a callback registered
+			// during the failed pass stays registered too.
+			return firstErr
+		}
 	}
 
 	var err error

@@ -410,7 +410,13 @@ func (s *Service) store() (*Manager, *Catalog, error) {
 // Bootstrap runs before Acquire because Bootstrap is what accounts for the root
 // directory and the permanent lock file; creating them without accounting for
 // them is exactly how metadata creation evades a tiny configured limit.
-func (s *Service) withStore(ctx context.Context, fn func(*Manager, *Catalog) error) error {
+//
+// A release failure is joined with fn's error rather than only logged. An owner
+// that could not prove its writers are gone still holds the store, so reporting
+// the operation as successful would let a caller believe the snapshot is safely
+// published while this process keeps the lock the next owner needs. Both causes
+// stay visible: errors.Is/As reach fn's typed error through the join.
+func (s *Service) withStore(ctx context.Context, fn func(*Manager, *Catalog) error) (err error) {
 	m, cat, err := s.store()
 	if err != nil {
 		return err
@@ -422,12 +428,15 @@ func (s *Service) withStore(ctx context.Context, fn func(*Manager, *Catalog) err
 		return err
 	}
 	defer func() {
-		if releaseErr := m.Release(); releaseErr != nil {
-			// Ownership was retained because a writer could not be confirmed
-			// dead. Log it: the alternative is silence about a store this
-			// process still owns.
-			s.logger.Warn("snapshot store ownership was not released", "error", releaseErr)
+		releaseErr := m.Release()
+		if releaseErr == nil {
+			return
 		}
+		// Ownership was retained because a writer could not be confirmed dead.
+		// Log it: the alternative is silence about a store this process still
+		// owns.
+		s.logger.Warn("snapshot store ownership was not released", "error", releaseErr)
+		err = errors.Join(err, releaseErr)
 	}()
 	return fn(m, cat)
 }

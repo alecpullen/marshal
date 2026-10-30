@@ -28,7 +28,11 @@ snapshot store. It establishes a smaller, more interpretable failure baseline.
 The remaining full-suite baseline after P1a is four named `internal/app`
 failures (three shell admission-path fixtures and the prompt budget), owned by
 P2, plus the intermittent process-group EPERM in `internal/snapshot`, owned by
-P1b.
+P1b. Those four were re-confirmed at the P1b base commit inside an isolated
+worktree: the three shell failures want approval or command admission because
+the worktree path is not a trusted folder, and the prompt budget sits within
+31 bytes of its 9,000-byte ceiling, so both are path-dependent fixtures rather
+than runtime regressions.
 
 ## P1 — snapshot identity and cancellation safety
 
@@ -40,11 +44,22 @@ identity now governs capture, lookup, restore and maintenance; the original
 spelling is a constrained, validated historical fallback, so previously written
 data stays reachable without moving, merging or deleting a store.
 
-P1b remains open: diagnose process-group EPERM on the supported operating
-systems with an owned child tree, preserve fail-closed semantics and prove that
-no descendant survives before making a production change. Require the targeted
-snapshot suite and repeated cancellation tests to pass without the `TMPDIR`
-workaround. P1 does not close until that work is complete.
+P1b is implemented by the
+[2026-10-31 executable plan](plans/2026-10-31-p1b-process-tree-safety-plan.md).
+The process-group EPERM was a transient group-lifecycle race, not a surviving
+writer: the signal-0 probe now retries EPERM to the existing deadline and only
+ESRCH proves a group gone. A failed drain and its OS lock, process-local
+semaphore and callbacks are retained for retry, a managed tree stays registered
+with its platform handle until its disappearance is confirmed, the release
+drain waits for an in-flight start, and a service operation now reports a
+release failure instead of appearing successful. Repeated cancellation (30/30),
+the previously failing ownership integration test and the whole
+`internal/snapshot` package pass without the `TMPDIR` workaround, with the new
+deterministic probe and ownership tests clean under `-race`. Windows job-handle
+retention is implemented and the Windows build vets clean, but no Windows tests
+were run on this host; that limitation is recorded in the
+[audit](audit.md#process-group-cancellation-has-an-environment-sensitive-failure).
+P1 closes with the P2 `internal/app` failures unchanged.
 
 ## P2 — close remaining baseline failures
 

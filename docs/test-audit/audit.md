@@ -211,6 +211,39 @@ Instrument an owned child tree and record whether any descendant survives.
 Do not interpret EPERM as success or weaken the cleanup assertion without
 proving the process outcome.
 
+**Status (P1b, fixed):** EPERM is a transient group-lifecycle race, not
+evidence of a surviving writer. Planning reproduced it twice in 100 attempts
+with an isolated parent/grandchild pair after SIGKILL and direct-child reap;
+the same group returned ESRCH 50 ms later both times, and `ps` found no group
+members at that later observation. A single-child comparison returned ESRCH in
+20/20 runs. `waitForGroupGone` now retries EPERM from the signal-0 group probe
+until `processTreeKillTimeout` at the existing 5 ms interval: only ESRCH proves
+the group gone, a nil probe means still present, any other error returns
+immediately, and a persistent EPERM at the deadline is returned wrapping EPERM.
+Ownership is retained whenever exit is unproven. `StoreLock.Release` keeps a
+failed drain, the OS lock and the process-local semaphore for retry, runs
+drains newest-registration-first, removes only the ones that succeeded,
+serialises concurrent releases, and runs a drain registered mid-release before
+unlocking. A managed tree carries a lifecycle
+(starting/live/gone/unknown/not-started): the release drain waits for an
+in-flight start, keeps the tree and its platform handle until disappearance is
+confirmed, and a leader that exits normally no longer proves its descendants
+exited. `Service.withStore` joins a release failure with the operation's result
+instead of only logging it.
+
+Evidence: `TestRunManagedCancellationKillsTree` 30/30, the previously failing
+`TestIntegrationOwnershipReleaseDrainsWritersBeforeUnlock`, and the whole
+`internal/snapshot` package pass without the `TMPDIR` workaround. The new
+deterministic `TestWaitForGroupGone*` cases and the ownership tests
+(`TestStoreLock*`, `TestManagerRetainsUnknownTreeAndLock`,
+`TestManagerReleaseWaitsForInFlightTreeStart`,
+`TestManagerRetainsTreeWhenLeaderExitsBeforeWriter`,
+`TestManagerConcurrentReleaseKeepsUncertainTree`,
+`TestManagerRetainsUnknownTreeForEveryLaunchPath`, `TestServiceWithStore*`)
+pass under `-race`. Windows job-handle retention is implemented — `ownedTree`
+closes the handle only after a confirmed wait — and `GOOS=windows go vet
+./internal/snapshot` is clean, but no Windows tests were executed on this host.
+
 ### LSP cancellation fixture can cancel before its PID is written
 
 **Observed in the elevated full-suite run and once in ten focused runs:**

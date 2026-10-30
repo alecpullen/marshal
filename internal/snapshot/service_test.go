@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -990,4 +991,109 @@ func TestServiceMaintenanceSerializesAcrossAliases(t *testing.T) {
 	if err := other.Status(ctx); err != nil {
 		t.Fatalf("Status after release: %v", err)
 	}
+}
+
+// failingDrain fails once and then succeeds, so a test can observe a retained
+// lock and still let cleanup release it.
+type failingDrain struct {
+	mu   sync.Mutex
+	err  error
+	fail bool
+}
+
+func (d *failingDrain) run() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.fail {
+		return nil
+	}
+	d.fail = false
+	return d.err
+}
+
+// serviceWithFailingDrain builds a Service whose store lock has a drain that
+// fails exactly once. The failure is attached to this service's own manager
+// instance, not to a package global, so concurrent tests cannot see it.
+func serviceWithFailingDrain(t *testing.T) (*Service, *Manager, *failingDrain) {
+	t.Helper()
+	drain := &failingDrain{err: errors.New("writer still alive"), fail: true}
+	svc := New(t.TempDir(), t.TempDir(), 2_000_000, nil, testLogger())
+	m, _, err := svc.store()
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	m.hooks.AfterAcquire = func() error {
+		// The hook runs in the acquiring goroutine, after the lock has been
+		// recorded on this manager, so the lock is the one this operation holds.
+		lock := m.lock
+		if lock == nil {
+			return errors.New("AfterAcquire ran without a held lock")
+		}
+		lock.OnRelease(drain.run)
+		return nil
+	}
+	t.Cleanup(func() {
+		// Let the drain succeed on the retry: a test-owned lock must never stay
+		// held past the test that created it.
+		if err := m.Release(); err != nil {
+			t.Errorf("cleanup Release: %v", err)
+		}
+	})
+	return svc, m, drain
+}
+
+// An otherwise successful operation must not report success when its store lock
+// could not be safely released: this process still owns the store, and the next
+// owner is locked out.
+func TestServiceWithStoreReturnsReleaseFailure(t *testing.T) {
+	svc, m, drain := serviceWithFailingDrain(t)
+
+	ran := false
+	err := svc.withStore(context.Background(), func(*Manager, *Catalog) error {
+		ran = true
+		return nil
+	})
+	if !ran {
+		t.Fatal("withStore never ran the operation")
+	}
+	if !errors.Is(err, drain.err) {
+		t.Fatalf("withStore = %v, want it to report the failed drain %v", err, drain.err)
+	}
+
+	// The store stays owned, so a second owner is still refused.
+	requireStoreStillOwned(t, m.Root(), "after a release whose drain failed")
+
+	// Once the drain succeeds, the retry releases and the store moves on.
+	if err := m.Release(); err != nil {
+		t.Fatalf("Release after the drain succeeded: %v", err)
+	}
+	if err := svc.withStore(context.Background(), func(*Manager, *Catalog) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("withStore = %v, want nil once the operation and the release both succeed", err)
+	}
+}
+
+// When both the operation and the release fail, both causes must reach the
+// caller: the operation's typed reason and the retained lock.
+func TestServiceWithStoreJoinsOperationAndReleaseErrors(t *testing.T) {
+	svc, m, drain := serviceWithFailingDrain(t)
+
+	opErr := storeErrorf(ReasonUnreadableFile, m.Root(), "operation failed")
+	err := svc.withStore(context.Background(), func(*Manager, *Catalog) error {
+		return opErr
+	})
+	if err == nil {
+		t.Fatal("withStore reported success although the operation and the release both failed")
+	}
+	if !errors.Is(err, drain.err) {
+		t.Fatalf("withStore = %v, want the failed drain %v to be part of the error", err, drain.err)
+	}
+	if got := ReasonOf(err); got != ReasonUnreadableFile {
+		t.Fatalf("ReasonOf joined error = %q, want the operation's %q to survive the join", got, ReasonUnreadableFile)
+	}
+	if !errors.Is(err, opErr) {
+		t.Fatalf("withStore = %v, want the operation's own cause to remain reachable", err)
+	}
+	requireStoreStillOwned(t, m.Root(), "after joined operation and release errors")
 }

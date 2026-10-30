@@ -21,6 +21,14 @@ type processTree struct {
 	// and read by whichever goroutine releases ownership.
 	mu   sync.Mutex
 	pgid int
+
+	// probe overrides the signal-0 group probe and timeout overrides the
+	// disappearance budget. A test sets them (before the tree is started, and
+	// never afterwards) to model a group that stays inaccessible without
+	// signalling an unrelated process and without spending the production budget
+	// on every attempt. Production leaves both zero.
+	probe   func(int) error
+	timeout time.Duration
 }
 
 // newProcessTree arranges for cmd to run in its own process group.
@@ -65,27 +73,67 @@ func (t *processTree) kill() error {
 	return nil
 }
 
-// waitGone blocks until no process remains in the group. It is what lets a
-// caller conclude that no writer survives.
-func (t *processTree) waitGone() error {
-	pgid := t.group()
+// processGroupPollInterval is how long waitForGroupGone waits between probes of
+// a group that has not disappeared yet.
+const processGroupPollInterval = 5 * time.Millisecond
+
+// waitForGroupGone blocks until no process remains in the group, or reports why
+// disappearance could not be confirmed.
+//
+// Only ESRCH proves the group gone. A nil probe result means at least one member
+// is still present; a transient EPERM — the group exists but cannot be
+// signalled, which happens while the killed leader is still being reaped — is
+// retried until the deadline rather than reported as failure. Any other error
+// says nothing about the group, so it is returned immediately instead of being
+// waited out.
+//
+// Fail closed: a group that never disappears, and a group still inaccessible at
+// the deadline, are both errors. Returning nil for a group we cannot prove gone
+// would let a caller release store ownership while a writer is still alive.
+func waitForGroupGone(
+	pgid int,
+	timeout time.Duration,
+	probe func(int) error,
+	now func() time.Time,
+	sleep func(time.Duration),
+) error {
 	if pgid <= 0 {
 		return nil
 	}
-	deadline := time.Now().Add(processTreeKillTimeout)
+	deadline := now().Add(timeout)
 	for {
-		err := syscall.Kill(-pgid, 0)
+		err := probe(pgid)
 		if errors.Is(err, syscall.ESRCH) {
 			return nil
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, syscall.EPERM) {
 			return fmt.Errorf("probe process group %d: %w", pgid, err)
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("process group %d still has live members after %s", pgid, processTreeKillTimeout)
+		if now().After(deadline) {
+			if err != nil {
+				// Still EPERM at the deadline: the group is inaccessible, not
+				// gone. Keep EPERM in the chain so callers can tell this apart
+				// from a group that is merely slow to drain.
+				return fmt.Errorf("probe process group %d after %s: %w", pgid, timeout, err)
+			}
+			return fmt.Errorf("process group %d still has live members after %s", pgid, timeout)
 		}
-		time.Sleep(5 * time.Millisecond)
+		sleep(processGroupPollInterval)
 	}
+}
+
+// waitGone blocks until no process remains in the group. It is what lets a
+// caller conclude that no writer survives.
+func (t *processTree) waitGone() error {
+	probe := t.probe
+	if probe == nil {
+		probe = func(pgid int) error { return syscall.Kill(-pgid, 0) }
+	}
+	timeout := t.timeout
+	if timeout <= 0 {
+		timeout = processTreeKillTimeout
+	}
+	return waitForGroupGone(t.group(), timeout, probe, time.Now, time.Sleep)
 }
 
 // close releases the group handle. On Unix there is nothing to release; the

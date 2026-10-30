@@ -22,6 +22,12 @@ import (
 // a suspended process and resume it. A descendant created in that brief window
 // could escape the job. Unix has no such window (the process group exists from
 // fork), so this is recorded as a Windows-specific caveat rather than hidden.
+//
+// Handle retention: the job handle must stay open while the tree's termination
+// is uncertain. Closing it here would terminate whatever is left in the job
+// without proving it, and the release drain could then unlock under a writer.
+// ownedTree (process.go) closes the handle only once waitGone has confirmed the
+// job is empty, or once a start failed and created no process.
 type processTree struct {
 	// mu guards job: it is written when the tree is created and read by
 	// whichever goroutine releases ownership.

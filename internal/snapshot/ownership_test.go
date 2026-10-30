@@ -25,6 +25,10 @@ const (
 	helperModeLock      = "hold-lock"
 	helperModeWriter    = "writer-tree"
 	helperModeHeartbeat = "heartbeat"
+	// helperModeForkWriter starts a grandchild writer and exits at once. It is
+	// the case a normal leader exit must not be mistaken for "the whole tree is
+	// gone".
+	helperModeForkWriter = "fork-writer"
 )
 
 // TestSnapshotHelperProcess is the re-executed helper. It is inert unless a
@@ -71,6 +75,20 @@ func TestSnapshotHelperProcess(t *testing.T) {
 			os.Exit(2)
 		}
 		waitOrTimeout(t, 30*time.Second)
+
+	case helperModeForkWriter:
+		// The leader starts a grandchild writer and exits immediately. A normal
+		// leader exit must not be read as "the whole tree is gone".
+		heartbeat := os.Getenv(envHelperHeartbeat)
+		grandchild := exec.Command(os.Args[0], "-test.run=TestSnapshotHelperProcess")
+		grandchild.Env = append(os.Environ(),
+			envHelperMode+"="+helperModeHeartbeat,
+			envHelperHeartbeat+"="+heartbeat,
+		)
+		if err := grandchild.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "helper grandchild: %v\n", err)
+			os.Exit(2)
+		}
 
 	case helperModeHeartbeat:
 		path := os.Getenv(envHelperHeartbeat)
@@ -474,6 +492,226 @@ func waitForFileGrowth(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("helper never began writing %s", path)
+}
+
+// requireStoreStillOwned fails unless a second owner is refused the store
+// within a short deadline. Refusal is the evidence that the lock is still held;
+// the timeout is what keeps a wedged lock from hanging the test.
+func requireStoreStillOwned(t *testing.T, root, when string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	other, err := AcquireStoreLock(ctx, root)
+	if err == nil {
+		_ = other.Release()
+		t.Fatalf("%s: a second owner acquired the store while the first still held it", when)
+	}
+	if got := ReasonOf(err); got != ReasonLockTimeout {
+		t.Fatalf("%s: ReasonOf = %q, want %q (err = %v)", when, got, ReasonLockTimeout, err)
+	}
+}
+
+// A drain that fails must not release the store, and a later Release must rerun
+// exactly the callback that failed — never the ones that already succeeded.
+func TestStoreLockRetriesFailedDrain(t *testing.T) {
+	root := t.TempDir()
+	lock, err := AcquireStoreLock(context.Background(), root)
+	if err != nil {
+		t.Fatalf("AcquireStoreLock: %v", err)
+	}
+
+	var (
+		mu          sync.Mutex
+		failedCalls int
+		okCalls     int
+	)
+	injected := errors.New("writer still alive")
+	lock.OnRelease(func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		failedCalls++
+		if failedCalls == 1 {
+			return injected
+		}
+		return nil
+	})
+	lock.OnRelease(func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		okCalls++
+		return nil
+	})
+
+	err = lock.Release()
+	if !errors.Is(err, injected) {
+		t.Fatalf("first Release = %v, want it to report the failed drain %v", err, injected)
+	}
+	mu.Lock()
+	gotFailed, gotOK := failedCalls, okCalls
+	mu.Unlock()
+	if gotFailed != 1 {
+		t.Fatalf("failed drain ran %d times on the first Release, want 1", gotFailed)
+	}
+	if gotOK != 1 {
+		t.Fatalf("successful drain ran %d times on the first Release, want 1", gotOK)
+	}
+	requireStoreStillOwned(t, root, "after a failed drain")
+
+	// The retry reruns only the callback that failed.
+	if err := lock.Release(); err != nil {
+		t.Fatalf("second Release: %v", err)
+	}
+	mu.Lock()
+	gotFailed, gotOK = failedCalls, okCalls
+	mu.Unlock()
+	if gotFailed != 2 {
+		t.Fatalf("failed drain ran %d times after the retry, want 2", gotFailed)
+	}
+	if gotOK != 1 {
+		t.Fatalf("successful drain ran %d times after the retry, want 1 (a successful drain must not run twice)", gotOK)
+	}
+
+	// Only now may another owner take the store.
+	other, err := AcquireStoreLock(context.Background(), root)
+	if err != nil {
+		t.Fatalf("AcquireStoreLock after the retry succeeded: %v", err)
+	}
+	if err := other.Release(); err != nil {
+		t.Fatalf("second owner Release: %v", err)
+	}
+}
+
+// Two release callers must serialise: the second may not report success while
+// the first is still draining, and the drain must run exactly once.
+func TestStoreLockConcurrentReleaseWaitsForDrain(t *testing.T) {
+	root := t.TempDir()
+	lock, err := AcquireStoreLock(context.Background(), root)
+	if err != nil {
+		t.Fatalf("AcquireStoreLock: %v", err)
+	}
+
+	drainStarted := make(chan struct{})
+	unblockDrain := make(chan struct{})
+	var (
+		mu      sync.Mutex
+		drains  int
+		overlap bool
+	)
+	lock.OnRelease(func() error {
+		mu.Lock()
+		drains++
+		if drains > 1 {
+			overlap = true
+		}
+		mu.Unlock()
+		close(drainStarted)
+		<-unblockDrain
+		return nil
+	})
+
+	results := make(chan error, 2)
+	var armed sync.WaitGroup
+	armed.Add(2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			armed.Done()
+			results <- lock.Release()
+		}()
+	}
+	armed.Wait()
+	<-drainStarted
+
+	// Give the second caller every chance to reach Release, then assert it has
+	// not reported success: the drain is still blocked, so the store is not
+	// released and no caller may claim it was.
+	for i := 0; i < 1000; i++ {
+		if len(results) != 0 {
+			break
+		}
+		runtime.Gosched()
+	}
+	if n := len(results); n != 0 {
+		t.Fatalf("%d release call(s) reported completion while the drain was still blocked", n)
+	}
+
+	close(unblockDrain)
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatalf("Release: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a concurrent Release did not return after the drain resolved")
+		}
+	}
+
+	mu.Lock()
+	gotDrains, gotOverlap := drains, overlap
+	mu.Unlock()
+	if gotOverlap {
+		t.Fatal("drain callbacks ran concurrently; release attempts must serialise")
+	}
+	if gotDrains != 1 {
+		t.Fatalf("drain ran %d times across two release callers, want 1", gotDrains)
+	}
+}
+
+// A callback registered while a release is already draining must run before the
+// lock is handed on, not be dropped and not be deferred past the unlock.
+func TestStoreLockDrainsCallbackRegisteredDuringRelease(t *testing.T) {
+	root := t.TempDir()
+	lock, err := AcquireStoreLock(context.Background(), root)
+	if err != nil {
+		t.Fatalf("AcquireStoreLock: %v", err)
+	}
+
+	var (
+		mu            sync.Mutex
+		lateRan       int
+		stillOwnedErr error
+	)
+	late := func() error {
+		// Runs from inside the first release: the store must still be held.
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		other, err := AcquireStoreLock(ctx, root)
+		if err == nil {
+			_ = other.Release()
+		} else if ReasonOf(err) != ReasonLockTimeout {
+			stillOwnedErr = err
+		}
+		mu.Lock()
+		lateRan++
+		mu.Unlock()
+		return nil
+	}
+	lock.OnRelease(func() error {
+		lock.OnRelease(late)
+		return nil
+	})
+
+	if err := lock.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	mu.Lock()
+	gotLate, gotErr := lateRan, stillOwnedErr
+	mu.Unlock()
+	if gotErr != nil {
+		t.Fatalf("late drain probing ownership: %v", gotErr)
+	}
+	if gotLate != 1 {
+		t.Fatalf("callback registered during release ran %d times, want 1", gotLate)
+	}
+
+	// It ran inside the release, so the store is free now.
+	other, err := AcquireStoreLock(context.Background(), root)
+	if err != nil {
+		t.Fatalf("AcquireStoreLock after release: %v", err)
+	}
+	if err := other.Release(); err != nil {
+		t.Fatalf("second owner Release: %v", err)
+	}
 }
 
 func fileSize(t *testing.T, path string) int64 {

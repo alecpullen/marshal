@@ -20,6 +20,13 @@ const (
 	maxToolSchemaBytes   = 15000
 )
 
+// budgetFixtureWorkingDir is the fixed working-directory input used when
+// measuring the system prompt budget. The measurement is about prompt
+// content, not about how long an incidental temporary path happens to be
+// (t.TempDir() varies per run and per machine), so the directory is pinned
+// to a stable absolute string instead of the runtime's real one.
+const budgetFixtureWorkingDir = "/marshal-budget-fixture"
+
 func TestDefaultPromptBudget(t *testing.T) {
 	tmp := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0755); err != nil {
@@ -60,9 +67,14 @@ enabled = false
 		NativeTools:  true,
 		Access:       rt.State.InteractionState(),
 		Addendum:     r.SystemPromptAddendum,
-		WorkingDir:   rt.State.WorkingDir,
-		Roster:       agent.RenderAgentRoster(rt.State.Config),
-		Narration:    r.NarrationPrompt,
+		// The fixture measures the prompt's fixed prefix, so the
+		// working-directory input is pinned rather than taken from the
+		// runtime: the budget excludes incidental temporary-path length,
+		// not the working-directory content. The real runtime above still
+		// supplies every other input and all existing checks.
+		WorkingDir: budgetFixtureWorkingDir,
+		Roster:     agent.RenderAgentRoster(rt.State.Config),
+		Narration:  r.NarrationPrompt,
 	}).Content
 
 	var schemaBytes, modelTools int
@@ -96,5 +108,37 @@ enabled = false
 		if strings.Contains(sys, banned) {
 			t.Errorf("system prompt contains removed text %q", banned)
 		}
+	}
+}
+
+// TestBudgetFixtureWorkingDirIsStable pins the budget fixture's
+// working-directory input: the prompt must contain that exact string, and
+// pointing the builder at a different directory must change the result.
+// Together these show the fixture still measures a real path rather than
+// stripping or normalizing the working-directory content out of the prompt.
+func TestBudgetFixtureWorkingDirIsStable(t *testing.T) {
+	sys := agent.BuildSystemPromptWithSystem(agent.SystemPromptOptions{
+		Role:       agent.RoleGeneral,
+		WorkingDir: budgetFixtureWorkingDir,
+	}).Content
+
+	if !strings.Contains(sys, budgetFixtureWorkingDir) {
+		t.Fatalf("system prompt does not contain the fixture working directory %q", budgetFixtureWorkingDir)
+	}
+
+	other := t.TempDir()
+	otherSys := agent.BuildSystemPromptWithSystem(agent.SystemPromptOptions{
+		Role:       agent.RoleGeneral,
+		WorkingDir: other,
+	}).Content
+
+	if otherSys == sys {
+		t.Fatalf("system prompt unchanged when the working directory changed from %q to %q", budgetFixtureWorkingDir, other)
+	}
+	if strings.Contains(otherSys, budgetFixtureWorkingDir) {
+		t.Fatalf("prompt built with %q still contains the fixture working directory %q", other, budgetFixtureWorkingDir)
+	}
+	if !strings.Contains(otherSys, other) {
+		t.Fatalf("prompt built with %q does not contain it", other)
 	}
 }

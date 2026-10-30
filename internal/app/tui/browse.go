@@ -255,11 +255,6 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 		if t, ok := boxTargetOf(m.cursor); ok {
 			return *m, m.enterBoxStop(t), true
 		}
-		if v, ok := m.subagentAtCursor(true); ok {
-			m.drillIntoSubagent(v)
-			m.leaveBrowse()
-			return *m, nil, true
-		}
 		m.toggleExpanded(m.cursor)
 		m.invalidateTranscript()
 		m.refreshViewport()
@@ -280,7 +275,7 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 			m.leaveBrowse()
 			return *m, nil, true
 		}
-		if v, ok := m.subagentAtCursor(false); ok {
+		if v, ok := m.subagentAtCursor(); ok {
 			m.drillIntoSubagent(v)
 			m.leaveBrowse()
 		}
@@ -375,13 +370,8 @@ func (m *Model) boxAgentAtCursor() (session.SubagentView, bool) {
 }
 
 // subagentAtCursor resolves the subagent the cursor points at: the completion
-// event of a finished child, or the agent.run row that dispatched it. There is
-// no in-place card any more, so onlyCard — the "is there a card to expand?"
-// question Enter asks — is always false.
-func (m *Model) subagentAtCursor(onlyCard bool) (session.SubagentView, bool) {
-	if onlyCard {
-		return session.SubagentView{}, false
-	}
+// event of a finished child, or the agent.run row that dispatched it.
+func (m *Model) subagentAtCursor() (session.SubagentView, bool) {
 	w := m.wireNode(m.cursor)
 	if w == nil {
 		return session.SubagentView{}, false

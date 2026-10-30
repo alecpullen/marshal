@@ -14,7 +14,7 @@ var boundaryAllowlist = map[string][]string{
 	"browse_actions.go":              {"marshal/internal/viewmodel"},
 	"browse_inspect.go":              {"marshal/internal/commands", "marshal/internal/viewmodel"},
 	"callers.go":                     {"marshal/internal/viewmodel"},
-	"click.go":                       {"marshal/internal/app/session", "marshal/internal/viewmodel"},
+	"click.go":                       {"marshal/internal/viewmodel"},
 	"commands_dispatch.go":           {"marshal/internal/app/session", "marshal/internal/pipeline", "marshal/internal/worktree"},
 	"connect/connect.go":             {"marshal/internal/app/presetsetup", "marshal/internal/llm/modelcatalog", "marshal/internal/llm/provider", "marshal/internal/oauth"},
 	"docpanel/docpanel.go":           {"marshal/internal/app/session", "marshal/internal/commands"},

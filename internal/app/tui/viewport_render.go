@@ -139,7 +139,7 @@ func (m *Model) refreshViewport() {
 			regions = append(regions, nodeRegion{
 				startLine: lineCursor + sr.start,
 				endLine:   lineCursor + sr.end,
-				target:    clickTarget{node: sr.id, subagent: sr.subagent, isLiveRegion: sr.live},
+				target:    clickTarget{node: sr.id, isLiveRegion: sr.live},
 			})
 		}
 		lineCursor += n + 1 // +1 for the blank separator between blocks

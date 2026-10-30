@@ -3,19 +3,14 @@ package tui
 import (
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/app/session"
 	"marshal/internal/viewmodel"
 )
 
 // clickTarget identifies what a click region toggles: a node of the
 // transcript tree (a step, a tool row, a completion event, a thinking row).
-// The subagent field is retained for the drill-in branch below, but no region
-// sets it any more: drill-in starts from a completion event or a dispatch row,
-// not from an in-place card.
 type clickTarget struct {
 	// node is what the click toggles (or, for a live region, scrolls).
-	node     viewmodel.NodeID
-	subagent *session.SubagentView
+	node viewmodel.NodeID
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
 	isLiveRegion bool
@@ -152,15 +147,8 @@ func (m *Model) handleTranscriptClick(msg tea.Mouse) (tea.Cmd, bool) {
 			}
 		}
 	}
-	switch {
-	case target.subagent != nil:
-		// Unreachable: no region sets subagent any more. Kept so a future
-		// region cannot silently toggle a row that should drill in.
-		m.drillIntoSubagent(*target.subagent)
-	default:
-		m.toggleExpanded(target.node)
-		m.invalidateTranscript()
-		m.refreshViewport()
-	}
+	m.toggleExpanded(target.node)
+	m.invalidateTranscript()
+	m.refreshViewport()
 	return nil, true
 }

@@ -54,16 +54,10 @@ type testRunArgs struct {
 
 func (t *toolSet) shellRunTool() registry.Tool {
 	tool := registry.Tool{
-		Name: "shell.run",
-		Description: "Run a shell command with the workspace root as the current working directory. " +
-			"Prefer native tools such as repo.search, symbols, and file.read over broad filesystem commands " +
-			"(e.g. find /, ls -R /, grep -r /). " +
-			"Never use shell.run to create or modify files (no redirection, heredocs, or tee) — use file.write or file.edit instead. " +
-			"Use git.* for repository state and the workspace tools for worktree isolation and merging. " +
-			"The command is not killed by elapsed time: one still running when the wait ends continues in the background with a job_id. " +
-			"agent.await reports its status, exit code, stop cause and recent output; agent.kill stops one named job.",
-		Schema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card for a command you will watch (roughly >30s with something real to count). Common: {\"profile\":\"download\",\"source\":\"events-v1\"} for byte counts from a real Content-Length, {\"profile\":\"tests\",\"source\":\"go-test-json\"} for go tests, which needs no producer. Load skill progress-reporting for a multi-phase or custom job, or to write a producer.","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime. Omit or pass 0 for the foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately"}},"required":["command"],"additionalProperties":false}`),
-		Risk:   registry.RiskCommand,
+		Name:        "shell.run",
+		Description: "Run a command with the workspace root as current working directory. Prefer repo.search, symbols and file.read to broad searches. Never use shell.run to create or modify files (including redirection, heredocs or tee); use file.write or file.edit. Use git.* for repository state and workspace tools for worktrees. Commands are not killed by elapsed time: they continue in background with a job_id. agent.await reports status, exit code, stop cause and output; agent.kill stops a job.",
+		Schema:      json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"},"progress":{"type":"object","description":"live progress card for work >30s with measurable progress. Download bytes: {\"profile\":\"download\",\"source\":\"events-v1\"} (real Content-Length). Go tests: {\"profile\":\"tests\",\"source\":\"go-test-json\"} (no producer). For custom or multi-phase jobs or producers, load skill progress-reporting.","properties":{"profile":{"type":"string","enum":["generic","tests","download","transfer","custom"]},"source":{"type":"string","enum":["none","go-test-json","events-v1"]},"title":{"type":"string","maxLength":80}},"additionalProperties":false},"timeout_seconds":{"type":"integer","description":"maximum seconds this call waits before the still-running command continues in the background; it never limits the command's lifetime. Omit or pass 0 for the foreground wait."},"background":{"type":"boolean","description":"start the command and return its job_id immediately"}},"required":["command"],"additionalProperties":false}`),
+		Risk:        registry.RiskCommand,
 	}
 	tool.Handler = func(ctx context.Context, call registry.ToolCall) (registry.ToolResult, error) {
 		args, err := decodeArgs[shellRunArgs](tool, call.Args)

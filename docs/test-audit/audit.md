@@ -190,6 +190,27 @@ or normalize machine-specific path length before comparing runs. Treat the
 schema overage as a real budget decision to triage, not an excuse to simply
 raise the threshold. Measure what contributes to the bytes.
 
+**Status (P2, fixed with both ceilings unchanged):** the failure had two
+independent causes, and only one of them was path length. At the P2 base
+commit `10191e9c` the focused fixture measured 8,970 prompt bytes and **15,322
+schema bytes** across 23 model-facing tools: the schema was 322 bytes over its
+own 15,000-byte ceiling regardless of any workspace path. The prompt's 31-byte
+margin was the path-dependent half — `t.TempDir()` varies per run and machine.
+`TestDefaultPromptBudget` still starts the real `StartRuntime` with its
+temporary working and home directories and still checks the same ceilings,
+banned strings and registry contents; only the `WorkingDir` handed to
+`agent.BuildSystemPromptWithSystem` is now the fixed `/marshal-budget-fixture`
+string, so the prompt measurement excludes incidental temporary-path length
+rather than working-directory content. The new
+`TestBudgetFixtureWorkingDirIsStable` proves that input reaches the prompt
+verbatim and that changing it changes the result, so the fixture measures a
+real path instead of stripping it. The schema overage was closed by trimming
+three descriptions — `shell.run`'s tool description, its `progress` property
+description, and `transcript_read`'s description — while keeping the safety
+and workflow instructions those strings carry; `test.run` and every other
+schema are untouched. Neither constant moved. Measured after the edits: 8,951
+prompt bytes and 14,957 schema bytes.
+
 ### Shell integration fixtures need admission-path diagnosis
 
 Three known `internal/app/app_test.go` shell integration failures exercise
@@ -199,6 +220,34 @@ the correct fixture wiring versus any runtime regression must be established
 per test before changing assertions. Exercise the production admission path
 with isolated fixtures; do not bypass the policy boundary merely to obtain a
 green test.
+
+**Status (P2, fixed — the fail-closed path was correct and stayed correct):**
+all three fixtures now dispatch through production admission instead of
+stubbing it. A test-only helper, `testCommandProof`, evaluates the exact call
+against the fixture's real `policy.Authorizer`, rejects a deny or a missing
+capability, approves only a `DecisionConfirm`, and returns the proof context
+one launch needs; every attempt takes a fresh proof because a proof is
+consumed at commit. `TestSubagentChildRegistryBorrowsConversationService`
+configures normal Act access and dispatches through the child runner's
+authorizer, asserting first that a proof-less direct call returns
+`policy.ErrApprovalRequired` and launches nothing. Its running-count
+observation is now deterministic: a test-owned command touches a start marker
+and blocks until the test creates a release marker, so the parent-owned count
+is read while the command is provably running rather than after a fast `echo`
+may have settled, and cleanup releases the command even on failure.
+`TestPipelineRegistryCommandsCaptureDispatchWorktree` passes a real
+`policy.NewEngine` so the factory's existing child admission wiring is
+installed, proves the unapproved call never enters the fake runner, and then
+runs exactly one admitted invocation through a proof bound to the handler's
+invocation, command, dispatch working directory and workspace root.
+`TestSubagentShellOutputDoesNotReachParent` wires
+`native.Options.CommandAdmission` to a real authorizer over the child's own
+engine, registry and live authority, gives the child an active tool call whose
+ID matches the execution origin, and now asserts both halves of its claim: the
+child's active call received `marshal-scope-probe` and the parent's blocked
+`agent.await` call did not. No admission was weakened and no runtime behavior
+changed; the only production edits in P2 were the three description strings
+above.
 
 ### Process-group cancellation has an environment-sensitive failure
 
@@ -430,3 +479,32 @@ solely on test names.
   `internal/app/tui/glyph`, and `internal/watch/watchctx`. This is an
   inventory, not by itself evidence of missing behavior coverage; importing
   packages can test their behavior.
+- **P2 execution (`p2-admission-prompt-budget` branch, five labelled commits on
+  2026-10-31, base `10191e9c`):** the three admission-path fixtures and the
+  prompt budget were repaired without changing policy, admission, budgets or
+  any runtime behavior other than three tool-description strings. Commits:
+  `f34880e3` (child registry admission), `cc643a7f` (pipeline dispatch
+  admission), `a70b056b` (child-output isolation, positive and negative),
+  `1d306fca` (fixed budget working directory plus a stability test),
+  `5fd0ba6f` (schema description trims). Host: `Darwin 25.4.0 arm64`,
+  `go1.26.1 darwin/arm64`, `CGO_ENABLED=1`. Results:
+  `go test ./internal/app -run
+  '^(TestSubagentChildRegistryBorrowsConversationService|TestPipelineRegistryCommandsCaptureDispatchWorktree|TestSubagentShellOutputDoesNotReachParent|TestDefaultPromptBudget|TestBudgetFixtureWorkingDirIsStable)$'
+  -count=10 -timeout 2m` passes, as does each task's own focused repeat before
+  its commit (every one of them `-count=10`, the first two also `-count=1` on
+  the untouched base where they failed by name). `go test ./... -count=1
+  -timeout 5m` completes with no `FAIL` line and `go vet ./...`,
+  `CGO_ENABLED=1 go build ./cmd/marshal` and `git diff --check` are clean. The
+  measured budget at `5fd0ba6f` is 8,951 system-prompt bytes (ceiling 9,000) and
+  14,957 tool-schema bytes (ceiling 15,000) across 23 model-facing tools — the
+  365-byte schema reduction came from descriptions alone.
+- One full-suite run during P2 failed `TestContainerRunWithFakeRuntime` in
+  `internal/sandbox` with `signal: terminated` after 5.05s. It is unrelated to
+  this work: the fixture gives its fake container runtime a 5-second
+  per-command `Timeout`, it passes standalone in 1.36s, and it did not recur in
+  two subsequent full-suite runs on the same commit. It is recorded here as a
+  load-sensitive fixture, not attributed to P2 and not masked.
+- P2's platform limitation: every check above ran on macOS/darwin arm64 only.
+  Linux and Windows are supported platforms that were **not** exercised on
+  this execution host, so no claim is made that they pass; the same suite still
+  has to run there before P2 is called clean across supported CI platforms.

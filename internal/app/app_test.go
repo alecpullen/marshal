@@ -34,6 +34,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/credentials"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/oauthworker"
@@ -1066,6 +1067,9 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	cfg := nativeToolAgentConfig("test-provider")
+	// Normal Act access is the fixture's baseline: the child's command is an
+	// ordinary workspace command, so it is admitted without a specific approval.
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAct, false
 	cfg.Tools.Shell.Sandbox.Backend = "passthrough"
 	cfg.Tools.Shell.Sandbox.UnsafePassthrough = true
 
@@ -1089,13 +1093,54 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 		t.Fatal("child registry should expose shell.run")
 	}
 
-	// Run a background command through the child's registry.
-	res, err := tool.Handler(session.WithExecutionOrigin(ctx, session.ExecutionOrigin{
+	// A command that stays alive until THIS test releases it. The parent's
+	// running count must be observed while the execution is genuinely active,
+	// not after a fast echo may already have settled.
+	started := filepath.Join(dir, "child-started")
+	release := filepath.Join(dir, "child-release")
+	command := fmt.Sprintf("touch %q; while [ ! -f %q ]; do sleep 0.01; done", started, release)
+	t.Cleanup(func() {
+		// Never leave the child's command spinning if an assertion fails.
+		_ = os.WriteFile(release, nil, 0o644)
+	})
+
+	origin := session.ExecutionOrigin{
 		ConversationID: parentState.SessionID(),
 		Actor:          "subtask",
 		TurnID:         "turn-child",
 		ToolCallID:     "call-child",
-	}), registry.ToolCall{Name: "shell.run", Args: []byte(`{"command":"echo child-command","background":true}`)})
+	}
+	callCtx := session.WithExecutionOrigin(ctx, origin)
+	args, err := json.Marshal(map[string]any{"command": command, "background": true})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	// The exact admission facts the handler dispatches on: the child's live
+	// authorizer admits this command in this directory, under this invocation.
+	call := policy.Call{
+		InvocationID: origin.ToolCallID,
+		ToolName:     "shell.run",
+		Shell: &policy.ShellInput{
+			Command:       command,
+			Dir:           childState.WorkingDir,
+			WorkspaceRoot: childState.WorkingDir,
+		},
+	}
+	if child.Authorizer == nil {
+		t.Fatal("the child runner must carry the authorizer that admits its commands")
+	}
+
+	// A direct call with no proof must fail closed and launch nothing.
+	if _, err := tool.Handler(callCtx, registry.ToolCall{ID: origin.ToolCallID, Name: "shell.run", Args: args}); !errors.Is(err, policy.ErrApprovalRequired) {
+		t.Fatalf("unapproved child shell.run = %v, want ErrApprovalRequired", err)
+	}
+	if got := parentState.RunningJobsCount(); got != 0 {
+		t.Fatalf("parent running count after the unapproved call = %d, want 0", got)
+	}
+
+	// The admitted call runs under a fresh proof: one proof authorizes exactly
+	// one launch.
+	res, err := tool.Handler(testCommandProof(t, callCtx, child.Authorizer, call), registry.ToolCall{ID: origin.ToolCallID, Name: "shell.run", Args: args})
 	if err != nil {
 		t.Fatalf("child shell.run: %v", err)
 	}
@@ -1107,6 +1152,18 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 	}
 	if jobID == "" {
 		t.Fatalf("child result has no job id: %q", res.Content)
+	}
+	// The command's own start signal: the parent's count is asserted only once
+	// the execution is provably running, never on a fixed sleep.
+	startDeadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(startDeadline) {
+			t.Fatalf("the child's command never started: no %s", started)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	// The PARENT's service knows the execution: it was borrowed, not owned by
@@ -1124,7 +1181,11 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 	}
 
 	// Waiting on it settles it through the parent's sink, so the parent's
-	// transcript gains the durable completion.
+	// transcript gains the durable completion. Release the command first: it
+	// stays alive only so the count above was observed while it ran.
+	if err := os.WriteFile(release, nil, 0o644); err != nil {
+		t.Fatalf("release the child's command: %v", err)
+	}
 	waitForJobStatus(t, jobMgr, jobID, native.StatusCompleted, 10*time.Second)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -1154,6 +1215,9 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
+	// Normal Act access is the fixture's baseline: the dispatch command is an
+	// ordinary workspace command.
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAct, false
 	cfg.Privacy.RemoteProvidersAllowed = true
 	cfg.Providers = map[string]config.ProviderConfig{
 		"local": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "k", ToolCalling: true},
@@ -1175,6 +1239,11 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 	// immediately would only prove the record survived, not that the service
 	// holds it while it runs.
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCommand := func() { releaseOnce.Do(func() { close(release) }) }
+	// entered is signalled once the runner is inside the invocation, so the
+	// assertions below never race the dispatch goroutine.
+	entered := make(chan struct{}, 1)
 	runner := &fakeRunner{run: func(c context.Context, req native.CommandRequest) (native.CommandResult, error) {
 		mu.Lock()
 		dirs = append(dirs, req.Dir)
@@ -1184,6 +1253,10 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 		}
 		if req.Stdout != nil {
 			_, _ = req.Stdout.Write([]byte("pipeline-out\n"))
+		}
+		select {
+		case entered <- struct{}{}:
+		default:
 		}
 		select {
 		case <-release:
@@ -1201,9 +1274,16 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 		Retention:      time.Hour,
 	})
 	t.Cleanup(func() { _ = service.manager.Shutdown(context.Background()) })
+	// Registered after the shutdown cleanup so it runs first (cleanups are
+	// LIFO): a failed assertion must never leave the runner blocked.
+	t.Cleanup(releaseCommand)
 
 	childState := session.New(cfg, worktree, time.Unix(100, 0), session.Persistence{})
-	factory := makePipelineRegistryFactory(cfg, state, nil, runner, nil, nil, 0, nil, nil, service)
+	// The controller's engine, as production builds it. The factory clones it
+	// per dispatch, installs the child's config source, binds it to the child
+	// registry and wires its command admission.
+	pol := policy.NewEngine(&cfg, state.SessionRules())
+	factory := makePipelineRegistryFactory(cfg, state, pol, runner, nil, nil, 0, nil, nil, service)
 	reg, err := factory(pipeline.ExecutionContext{
 		RepoRoot:      repoRoot,
 		WorkspaceRoot: worktree,
@@ -1217,8 +1297,56 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 	if !ok {
 		t.Fatal("ScopeFull pipeline registry must expose shell.run")
 	}
-	if _, err := tool.Handler(ctx, registry.ToolCall{Name: "shell.run", Args: []byte(`{"command":"echo pipeline-out"}`)}); err != nil {
-		t.Fatalf("pipeline shell.run: %v", err)
+
+	// The proof authorizer is built the way the factory builds its child
+	// authorizer — the child's interaction authority, the child's live config
+	// source — bound to the registry the dispatch actually uses.
+	proofPol := pol.Clone()
+	proofPol.SetConfigSource(childState.PolicySnapshot)
+	proofPol.WithRegistry(reg)
+	proofAuthorizer := policy.NewAuthorizer(proofPol, childState.InteractionAuthority())
+
+	origin := session.ExecutionOrigin{
+		ConversationID: state.SessionID(),
+		Actor:          "implementer",
+		TurnID:         "turn-pipeline",
+		ToolCallID:     "call-pipeline",
+	}
+	callCtx := session.WithExecutionOrigin(ctx, origin)
+	call := registry.ToolCall{ID: origin.ToolCallID, Name: "shell.run", Args: []byte(`{"command":"echo pipeline-out"}`)}
+
+	// Without a proof the dispatch must fail closed, before the runner.
+	if _, err := tool.Handler(callCtx, call); !errors.Is(err, policy.ErrApprovalRequired) {
+		t.Fatalf("unapproved pipeline shell.run = %v, want ErrApprovalRequired", err)
+	}
+	mu.Lock()
+	unapprovedCalls := len(dirs)
+	mu.Unlock()
+	if unapprovedCalls != 0 {
+		t.Fatalf("the unapproved call entered the runner %d times, want 0", unapprovedCalls)
+	}
+
+	// The proof binds the handler's invocation, command, dispatch working
+	// directory and workspace root.
+	proofCall := policy.Call{
+		InvocationID: origin.ToolCallID,
+		ToolName:     "shell.run",
+		Shell: &policy.ShellInput{
+			Command:       "echo pipeline-out",
+			Dir:           worktree,
+			WorkspaceRoot: worktree,
+		},
+	}
+	proofCtx := testCommandProof(t, callCtx, proofAuthorizer, proofCall)
+	handlerErr := make(chan error, 1)
+	go func() {
+		_, err := tool.Handler(proofCtx, call)
+		handlerErr <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the admitted pipeline command never reached the runner")
 	}
 
 	mu.Lock()
@@ -1254,9 +1382,16 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 	}
 
 	// Let it finish so the test leaves no live execution behind.
-	close(release)
+	releaseCommand()
 	if _, err := service.manager.Wait(ctx, active[0].ID); err != nil {
 		t.Fatalf("Wait: %v", err)
+	}
+	// Exactly one admitted dispatch reached the runner for this test.
+	if err := <-handlerErr; err != nil {
+		t.Fatalf("admitted pipeline shell.run: %v", err)
+	}
+	if calls := func() int { mu.Lock(); defer mu.Unlock(); return len(dirs) }(); calls != 1 {
+		t.Fatalf("runner calls after the admitted dispatch = %d, want 1", calls)
 	}
 }
 
@@ -1369,6 +1504,35 @@ func waitForJobStatus(t *testing.T, jm *native.JobManager, id string, want nativ
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// testCommandProof evaluates call against the supplied production authorizer
+// and returns the context a fixture dispatches with: the exact authorization
+// proof, bound to the same live authority that admitted the command.
+//
+// It approves only a DecisionConfirm, and only after checking the evaluation's
+// required capabilities — a fixture that establishes normal Act access may
+// settle a specific approval, but it must never approve a deny or paper over a
+// missing capability. It creates no permissions and does not modify the live
+// authority.
+func testCommandProof(t *testing.T, ctx context.Context, az *policy.Authorizer, call policy.Call) context.Context {
+	t.Helper()
+	proof, ev, err := az.Evaluate(ctx, call)
+	if err != nil {
+		t.Fatalf("evaluate %s: %v", call.ToolName, err)
+	}
+	if ev.Decision == policy.DecisionDeny {
+		t.Fatalf("%s is denied in this fixture (%+v); establish the access it needs instead of approving a deny", call.ToolName, ev.Reasons)
+	}
+	if ev.Required.System {
+		t.Fatalf("%s requires the System capability this fixture does not hold", call.ToolName)
+	}
+	if ev.Decision == policy.DecisionConfirm {
+		if _, err := az.ApproveExact(proof, "test-approval-"+call.InvocationID); err != nil {
+			t.Fatalf("ApproveExact(%s): %v", call.ToolName, err)
+		}
+	}
+	return policy.WithAuthorization(ctx, proof)
 }
 
 func nativeToolAgentConfig(providerName string) config.Config {
@@ -5237,44 +5401,102 @@ func TestBuildSubagentFactoryNoSnapshotterWhenParentHasNone(t *testing.T) {
 // stray go-test output under the spinner.
 func TestSubagentShellOutputDoesNotReachParent(t *testing.T) {
 	cfg := config.Default()
+	// Normal Act access is the fixture's baseline: the child's command is an
+	// ordinary workspace command.
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAct, false
 	parentState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	childReg := registry.New()
+	// The child runs at the fixture's actual workspace root: the command's
+	// directory and workspace are that one real path.
+	dir := t.TempDir()
 	// Build a minimal native toolset for the child. Its commands belong to the
 	// conversation, so the child registry borrows an explicit owner: the
 	// parent's running-count callback is the one this fixture is separating
 	// OUTPUT from, and output follows SessionState, not the service.
-	childState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	dir := t.TempDir()
+	childState := session.New(cfg, dir, time.Unix(100, 0), session.Persistence{})
+	var mu sync.Mutex
+	runs := 0
 	childRunner := &fakeRunner{run: func(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		mu.Lock()
+		runs++
+		mu.Unlock()
 		if req.Stdout != nil {
 			_, _ = req.Stdout.Write([]byte("marshal-scope-probe\n"))
 		}
 		return native.CommandResult{Stdout: "marshal-scope-probe\n", ExitCode: 0}, nil
 	}}
 	jm := newOwnedCommandService(t, childRunner, dir, childState, nil)
+
+	// The child's own policy surface, bound to the child's live authority and
+	// the child registry it will dispatch through.
+	pol := policy.NewEngine(&cfg, childState.SessionRules())
+	pol.SetConfigSource(childState.PolicySnapshot)
+	pol.WithRegistry(childReg)
+	childAuthorizer := policy.NewAuthorizer(pol, childState.InteractionAuthority())
+
 	nativeOpts := native.Options{
-		WorkspaceRoot:  dir,
-		CommandRunner:  childRunner,
-		SessionState:   childState,
-		WorkspaceState: parentState,
-		Config:         cfg,
-		JobManager:     jm,
+		WorkspaceRoot:    dir,
+		CommandRunner:    childRunner,
+		SessionState:     childState,
+		WorkspaceState:   parentState,
+		Config:           cfg,
+		JobManager:       jm,
+		CommandAdmission: childAuthorizer.BeginCommand,
 	}
 	if err := native.RegisterAll(childReg, nativeOpts); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	// Set an active tool call on the parent (simulating agent.await in flight).
-	parentState.SetActiveToolCall(session.ActiveToolCall{Name: "agent.await"})
-	// Run shell.run "echo marshal-scope-probe" through the child's registry.
+	// The parent is blocked in agent.await while the child streams its command.
+	parentState.SetActiveToolCall(session.ActiveToolCall{Name: "agent.await", ToolCallID: "call-parent"})
+	// The child's in-flight call carries the same ID as the execution origin
+	// below, which is how the output reaches THIS call.
+	childState.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", ToolCallID: "call-child"})
+
 	tool, ok := childReg.Lookup("shell.run")
 	if !ok {
 		t.Fatal("shell.run not found in child registry")
 	}
-	// Execute the tool — we just need the output to land on the child.
-	_, err := tool.Handler(context.Background(), registry.ToolCall{Name: "shell.run", Args: []byte(`{"command":"echo marshal-scope-probe"}`)})
-	if err != nil {
+	call := registry.ToolCall{ID: "call-child", Name: "shell.run", Args: []byte(`{"command":"echo marshal-scope-probe"}`)}
+	callCtx := session.WithExecutionOrigin(context.Background(), session.ExecutionOrigin{
+		ConversationID: parentState.SessionID(),
+		Actor:          "subtask",
+		TurnID:         "turn-child",
+		ToolCallID:     "call-child",
+	})
+
+	// Without a proof nothing launches.
+	if _, err := tool.Handler(callCtx, call); !errors.Is(err, policy.ErrApprovalRequired) {
+		t.Fatalf("unapproved shell.run = %v, want ErrApprovalRequired", err)
+	}
+	if got := func() int { mu.Lock(); defer mu.Unlock(); return runs }(); got != 0 {
+		t.Fatalf("the unapproved call entered the runner %d times, want 0", got)
+	}
+
+	// Execute with a fresh proof for exactly this command and workspace. The
+	// call is synchronous, so the output has been delivered before the
+	// assertions below.
+	proofCall := policy.Call{
+		InvocationID: "call-child",
+		ToolName:     "shell.run",
+		Shell: &policy.ShellInput{
+			Command:       "echo marshal-scope-probe",
+			Dir:           dir,
+			WorkspaceRoot: dir,
+		},
+	}
+	if _, err := tool.Handler(testCommandProof(t, callCtx, childAuthorizer, proofCall), call); err != nil {
 		t.Fatalf("shell.run: %v", err)
 	}
+	if got := func() int { mu.Lock(); defer mu.Unlock(); return runs }(); got != 1 {
+		t.Fatalf("runner calls = %d, want the one admitted launch", got)
+	}
+
+	// Positive: the child's own call received the output.
+	childOut, _ := childState.ActiveToolCall()
+	if !strings.Contains(childOut.Output, "marshal-scope-probe") {
+		t.Fatalf("the child's active call never received its output: %q", childOut.Output)
+	}
+	// Negative: the parent's call did not.
 	parentOut, _ := parentState.ActiveToolCall()
 	if strings.Contains(parentOut.Output, "marshal-scope-probe") {
 		t.Fatalf("parent got child's output: %q", parentOut.Output)

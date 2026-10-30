@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -65,17 +66,22 @@ func TestStartServerCancelledAfterInit(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// pidResult carries the stub's published PID (or the readiness error)
+	// back to the main test. The channel is buffered so the watcher never
+	// blocks on a test that already returned.
+	type pidResult struct {
+		pid int
+		err error
+	}
+	pidCh := make(chan pidResult, 1)
 	go func() {
-		// Wait until the stub has recorded its PID, then cancel: the
-		// process is then provably running while Initialize is still in
-		// flight, which is the window this test targets.
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			if _, err := os.Stat(pidFile); err == nil {
-				break
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
+		// Wait until the stub has recorded a readable, positive PID, then
+		// cancel: the process is then provably running while Initialize is
+		// still in flight, which is the window this test targets. Cancelling
+		// even on timeout keeps the child from being left running.
+		pid, err := waitForPublishedPID(pidFile, 5*time.Second)
+		pidCh <- pidResult{pid: pid, err: err}
 		cancel()
 	}()
 
@@ -95,19 +101,14 @@ func TestStartServerCancelledAfterInit(t *testing.T) {
 		t.Fatal("test server should not be registered after context cancellation")
 	}
 
-	// The child process must have been reaped. If it were leaked, its PID
-	// would still be alive after startProcess returns.
-	pidData, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("stub did not record its PID: %v", err)
+	// The child process must have been reaped. The published PID comes from
+	// the readiness watcher so we never parse a partially written file after
+	// cancellation.
+	res := <-pidCh
+	if res.err != nil {
+		t.Fatalf("stub never published a readable PID: %v", res.err)
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
-	if err != nil {
-		t.Fatalf("bad PID in %s: %v", pidFile, err)
-	}
-	if err := processAlive(pid); err == nil {
-		t.Errorf("server process %d still alive after context cancellation; leaked (not reaped)", pid)
-	}
+	assertProcessGone(t, res.pid, "context cancellation")
 }
 
 // TestStartServerCancelledAfterInitPostInit exercises the new cancellation
@@ -181,8 +182,7 @@ func TestStartServerCancelledAfterInitPostInit(t *testing.T) {
 		t.Fatal("test server should not be registered after post-init context cancellation")
 	}
 
-	// The child process must have been reaped. If it were leaked, its PID
-	// would still be alive after startProcess returns.
+	// The child process must have been reaped.
 	pidData, err := os.ReadFile(pidFile)
 	if err != nil {
 		t.Fatalf("stub did not record its PID: %v", err)
@@ -191,8 +191,50 @@ func TestStartServerCancelledAfterInitPostInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bad PID in %s: %v", pidFile, err)
 	}
-	if err := processAlive(pid); err == nil {
-		t.Errorf("server process %d still alive after post-init cancellation; leaked (not reaped)", pid)
+	assertProcessGone(t, pid, "post-init cancellation")
+}
+
+// waitForPublishedPID polls pidFile until it holds a readable, positive PID
+// and returns it. The loop is bounded: a stub that never publishes a usable
+// PID yields an error instead of a silent pass on an empty file.
+func waitForPublishedPID(path string, timeout time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, perr := strconv.Atoi(strings.TrimSpace(string(data)))
+			switch {
+			case perr != nil:
+				lastErr = fmt.Errorf("parse %s: %w", path, perr)
+			case pid <= 0:
+				lastErr = fmt.Errorf("%s holds non-positive PID %d", path, pid)
+			default:
+				return pid, nil
+			}
+		} else {
+			lastErr = err
+		}
+		if !time.Now().Before(deadline) {
+			return 0, fmt.Errorf("no valid PID in %s within %s: %w", path, timeout, lastErr)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// assertProcessGone fails unless the PID is provably gone: only ESRCH or
+// os.ErrProcessDone prove exit. A successful signal-0 probe means the process
+// leaked; any other error (EPERM, …) leaves the outcome unproven.
+func assertProcessGone(t *testing.T, pid int, when string) {
+	t.Helper()
+	err := processAlive(pid)
+	switch {
+	case err == nil:
+		t.Errorf("server process %d still alive after %s; leaked (not reaped)", pid, when)
+	case errors.Is(err, syscall.ESRCH), errors.Is(err, os.ErrProcessDone):
+		// Proven gone.
+	default:
+		t.Errorf("cannot prove server process %d exited after %s: %v", pid, when, err)
 	}
 }
 

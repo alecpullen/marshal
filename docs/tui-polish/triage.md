@@ -448,12 +448,45 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
     [transcript click target](audit.md#transcript-click-target-retains-an-unreachable-subagent-branch),
     and [plan review dummy import](audit.md#plan-review-has-an-unused-import-retained-by-a-dummy-reference).
     Confirm the intended drill-in behavior before deleting branches.
+
+    Resolved 2026-10-30 (commit `e2707170`; task 1 of the
+    [P12 cleanup and baseline plan](plans/2026-10-30-p12-tui-cleanup-baseline-plan.md)).
+    The intended contract was confirmed from the existing tests before deleting
+    anything: browse Enter expands the selected node and acts on a live-box
+    stop, while `f` alone drills into a child. Browse Enter's unreachable
+    subagent-card branch and the helper's always-false `onlyCard` parameter are
+    gone, as are `clickTarget.subagent` and its unreachable drill-in branch; the
+    sole producer of that field was the region literal in `viewport_render.go`,
+    which went with it. Browse-cursor movement, event consumption and live-region
+    wheel routing are untouched. The plan-review dummy import needed no change:
+    at this base `sddreview/review.go` has no `var _ = strings.TrimSpace` and
+    `strings.Join`/`strings.Split` are live, so the finding was stale. Pruning
+    the now-unused `click.go` entry from `boundaryAllowlist` was required by
+    `TestTUIStaysOnTheClientSeam`. `subRegion.subagent`
+    (`internal/app/tui/steps.go`) is now neither written nor read; the plan
+    scoped out its removal, so it remains a named follow-up.
 14. Resolve the reproducible status-color test mismatch recorded under
     [verification observations](audit.md#verification-observations). The
     status uses `theme.Current().StatusWarning`, and the current default theme
     defines that slot as ANSI 215; the test expects the old hard-coded 172.
     Update the assertion to verify the semantic warning style across themes
     rather than one palette's literal value.
+
+    Resolved 2026-10-30 (commit `611057e4`; task 2 of the
+    [P12 cleanup and baseline plan](plans/2026-10-30-p12-tui-cleanup-baseline-plan.md)).
+    The assertion was stale, not the palette. `TestStatusLineUntrustedIsWarningColored`
+    now restores `theme.Current()` in `t.Cleanup`, reloads an explicit fixture
+    after model construction, and covers 256-color, 16-color, monochrome and a
+    256-color theme whose `StatusWarning` is overridden to
+    `lipgloss.Color("45")`. Each colored fixture renders its own expectation
+    from that fixture's `StatusWarning` slot and requires the exact styled
+    `untrusted` token inside the status line rather than a warning color
+    anywhere on it; monochrome must keep the visible text with no foreground
+    SGR. Pointing `untrustedStyle()` at `StatusError` fails all three colored
+    fixtures and leaves monochrome passing. The observation also proved
+    tier-dependent: under `TERM=dumb` the 16-color palette matched the old `33`
+    branch, so "fails in isolation" reproduces only on a 256-color `TERM`
+    (`215`).
 
 ## Cross-cutting verification
 

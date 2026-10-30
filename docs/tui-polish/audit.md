@@ -918,6 +918,17 @@ false and remains useful for the `f` action.
 - Evidence: `internal/app/tui/browse.go:258`, `:283` and `:381`.
 - Potential direction: remove the unreachable Enter branch and simplify the
   now-unnecessary parameter after checking intended keyboard discoverability.
+- Resolved 2026-10-30 (`e2707170`, task 1 of the
+  [P12 cleanup and baseline plan](plans/2026-10-30-p12-tui-cleanup-baseline-plan.md)):
+  browse Enter now only acts on a live-box stop and otherwise toggles the node
+  under the cursor, and `subagentAtCursor()` lost the always-false `onlyCard`
+  parameter. The `f` drill-in paths are unchanged — a box stop's `SourceID`, a
+  completion event, an `agent.run` dispatch row and a step's child — and are
+  still asserted by `TestBrowseFDrillsFromACompletionEvent`,
+  `TestBrowseFDrillsFromTheDispatchRow` and `TestBrowseFOpensAnAgentFromTheBox`,
+  as is the retained Enter behavior by
+  `TestBrowseEnterExpandsACompletionEvent` and
+  `TestBrowseEnterExpandsARunningCard`.
 
 ### Plan review has an unused import retained by a dummy reference
 
@@ -926,6 +937,10 @@ strings.TrimSpace`; neither is used by the panel. Both can be removed together
 if no concurrent work intends to use them.
 
 - Evidence: `internal/app/tui/sddreview/review.go:9` and `:130`.
+- Already resolved at the P11 base and closed here without a code change: the
+  file has no `var _ = strings.TrimSpace`, and `strings` is live —
+  `strings.Join` at `review.go:254` and `strings.Split` at `review.go:294`. The
+  import and the implementation stay; the finding was stale.
 
 ### Transcript click target retains an unreachable subagent branch
 
@@ -936,6 +951,20 @@ cards were removed. The source explicitly identifies this as unreachable.
 - Evidence: `internal/app/tui/click.go:9` and `:155`.
 - Potential direction: remove the unused field and branch if future card
   restoration is not planned; keep current transcript and tray drill paths.
+- Resolved 2026-10-30 (`e2707170`, task 1 of the
+  [P12 cleanup and baseline plan](plans/2026-10-30-p12-tui-cleanup-baseline-plan.md)):
+  `clickTarget.subagent`, its comment and the unreachable drill-in branch are
+  gone, and `handleTranscriptClick` now performs only the node toggle. The sole
+  producer — the `subagent: sr.subagent` key in the region literal at
+  `viewport_render.go:142` — went with the field. Browse-cursor movement, event
+  consumption and live-region wheel routing are unchanged and asserted by
+  `TestCompletionClickTogglesItsDisclosure`,
+  `TestMouseClickOnABeatShowsItsReasoning`, `TestBoxClickTogglesAWorkCard` and
+  `TestClickBeatWhileDrilledIntoSubagent`. The stale `click.go` entry was pruned
+  from `boundaryAllowlist`, which `TestTUIStaysOnTheClientSeam` requires.
+  `subRegion.subagent` (`internal/app/tui/steps.go`) is now neither written nor
+  read; this plan removed only the `clickTarget` field, so that leftover
+  `subRegion` field remains for a later cleanup.
 
 ## Verification observations
 
@@ -943,6 +972,19 @@ cards were removed. The source explicitly identifies this as unreachable.
   `TestStatusLineUntrustedIsWarningColored` expects ANSI 172 or 33, while the
   rendered warning uses ANSI 215. The test also fails in isolation. Determine
   whether the expected palette or the assertion is stale before changing it.
+  Resolved 2026-10-30 (`611057e4`, task 2 of the
+  [P12 cleanup and baseline plan](plans/2026-10-30-p12-tui-cleanup-baseline-plan.md)):
+  the assertion was stale, not the palette. Whether it failed was tier
+  dependent — under `TERM=dumb` the theme resolves the 16-color palette, where
+  the old `33` branch matched, so "fails in isolation" reproduces only on a
+  256-color `TERM`, which renders `215`. The test now reloads explicit
+  `theme.LoadFor` fixtures (256-color, 16-color, monochrome, and a 256-color
+  theme whose `StatusWarning` is overridden to `lipgloss.Color("45")`), builds
+  each expectation from that fixture's own `StatusWarning` slot, and requires
+  the exact styled `untrusted` token inside the rendered status line; the
+  monochrome fixture keeps the visible text and must carry no foreground SGR.
+  As a negative control, pointing `untrustedStyle()` at `StatusError` failed all
+  three colored fixtures and left monochrome passing.
 - Other TUI packages in that run passed. No manual terminal, screen reader,
   multiplexer, or full-suite verification has yet been performed for this audit.
 - Built a fresh binary at `/private/tmp/marshal-tui-audit` and ran the scripted
@@ -950,7 +992,20 @@ cards were removed. The source explicitly identifies this as unreachable.
   the other TUI workflows recorded here.
 - The later prompt and navigation findings are based on code-path inspection;
   reproduce them interactively and add focused regression coverage during triage.
-- The browse branch above is a candidate for removal; no change has been made.
+- P12 verification (2026-10-30, base `b864c7e8`, commits `e2707170` and
+  `611057e4`): `git merge-base --is-ancestor` passed,
+  `CGO_ENABLED=1 go build ./cmd/marshal` succeeded, and
+  `go test ./internal/app/tui/...`, `go vet ./...`, `gofmt -l` on the touched
+  files and `git diff --check` were clean. The scripted usability suite
+  (`USABILITY_MARSHAL_BINARY=... go test ./test/usability/... -run TestScripted`)
+  passed; it is help-only and does not exercise drill-in or mouse actions, so
+  the focused TUI tests are the evidence for the removed branches. `go test
+  ./...` fails identically before and after: 22 named failures at both commits
+  (7 in `internal/app`, 13 in `internal/snapshot`, 1 in
+  `internal/tools/desktop/browser`, 1 in `internal/worktree`), diffed as sets
+  and matching exactly. No controlling terminal was available in this
+  environment, so browse Enter, `f`, transcript and live-box clicks at 80×24,
+  live resize and a multiplexer/SSH session remain unexercised by hand.
 
 ## Coverage and remaining verification
 

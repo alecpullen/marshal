@@ -588,10 +588,9 @@ func (m Model) footerHints() help.FooterHints {
 		SkillGatePending:     m.state.PendingSkillGate() != nil,
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && st.HasBackup,
-		QueueNonEmpty:        len(st.Steering.Queue) > 0,
+		CtrlXHint:            m.ctrlXHint(st),
 		MouseReleased:        m.mouseReleased || !m.state.Config.TUI.MouseCapture,
 		RunActive:            st.SubagentRunning,
-		DrilledRunActive:     m.drilledIntoRunningSubagent(),
 		Browsing:             m.browsing,
 		// The interruption hint is only advertised when the runtime can honour
 		// it: a busy turn with a supported, active steering snapshot.
@@ -602,6 +601,45 @@ func (m Model) footerHints() help.FooterHints {
 	}
 }
 
+// ctrlXHint turns the TUI's single Ctrl+X decision into the one hint the
+// footer may render. It is none whenever a surface in front of the global
+// handler owns the keyboard: the decision is about what the global handler
+// would do, not a promise that the key reaches it. Browse mode stays eligible
+// because handleBrowseKey lets Ctrl chords through.
+func (m Model) ctrlXHint(st acpwire.SessionStatus) help.CtrlXHint {
+	if m.ctrlXOwned() {
+		return help.CtrlXHintNone
+	}
+	switch m.ctrlXAction() {
+	case ctrlXStopAgent:
+		return help.CtrlXHintStopAgent
+	case ctrlXClearQueue:
+		// Clearing an empty queue is not an action: the hint would advertise
+		// a key that does nothing. The check reads the same status snapshot
+		// as the rest of the hint cluster.
+		if len(st.Steering.Queue) == 0 {
+			return help.CtrlXHintNone
+		}
+		return help.CtrlXHintClearQueue
+	}
+	return help.CtrlXHintNone
+}
+
+// ctrlXOwned reports whether an input owner ahead of the global handler has
+// Ctrl+X right now: an open dock, a pending decision or prompt (including the
+// privileged-auth field), the /doctor key field, the approval command editor,
+// or the completion popup.
+func (m Model) ctrlXOwned() bool {
+	return m.dock.IsOpen() ||
+		m.hasPendingApproval() ||
+		m.state.PendingQuestion() != nil ||
+		m.state.PendingSkillGate() != nil ||
+		m.state.PendingSudoAuth() != nil ||
+		m.doctorSecret != nil ||
+		m.editingApproval() ||
+		m.activeCompletionPopup() != nil
+}
+
 // drilledIntoRunningSubagent reports whether the top of the view stack
 // is a running subagent, which makes the Ctrl+X stop-agent hint actionable.
 func (m Model) drilledIntoRunningSubagent() bool {
@@ -609,4 +647,30 @@ func (m Model) drilledIntoRunningSubagent() bool {
 		return false
 	}
 	return m.viewStack[len(m.viewStack)-1].Status == session.SubagentRunning
+}
+
+// ctrlXAction is the TUI's private decision about what Ctrl+X means. It is
+// shared by the keyboard handler and the footer construction so the hint and
+// the key agree.
+type ctrlXAction uint8
+
+const (
+	ctrlXNone ctrlXAction = iota
+	ctrlXStopAgent
+	ctrlXClearQueue
+)
+
+// ctrlXAction decides what Ctrl+X does right now: nothing while idle, a
+// targeted stop while drilled into a running subagent, and the queue clear
+// otherwise. The drilled-in check reads the view stack's snapshot status; the
+// snapshot can go stale, so the stop itself is attempted separately and may
+// fail.
+func (m Model) ctrlXAction() ctrlXAction {
+	if !m.busy {
+		return ctrlXNone
+	}
+	if m.drilledIntoRunningSubagent() {
+		return ctrlXStopAgent
+	}
+	return ctrlXClearQueue
 }

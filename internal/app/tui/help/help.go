@@ -12,6 +12,18 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+// CtrlXHint names the one action Ctrl+X takes in the current context, as
+// decided by the caller. The footer renders at most one hint from it, so the
+// bar can never advertise two different meanings for the same chord; deciding
+// what the key means is the caller's job, not the footer's.
+type CtrlXHint uint8
+
+const (
+	CtrlXHintNone CtrlXHint = iota
+	CtrlXHintStopAgent
+	CtrlXHintClearQueue
+)
+
 // FooterHints describes which mode-driven hints are currently actionable.
 // The footer shows the union of always-on hints plus the mode-specific ones
 // so a user never sees a hint they can't act on right now.
@@ -23,8 +35,10 @@ type FooterHints struct {
 	PopupOpen       bool
 	// IdleRollbackEligible is true when a backup exists and the user is idle.
 	IdleRollbackEligible bool
-	// QueueNonEmpty is true when the steering queue has items waiting.
-	QueueNonEmpty bool
+	// CtrlXHint is the single Ctrl+X action the global key handler will take
+	// right now. It is CtrlXHintNone whenever an earlier input owner has the
+	// key, and the caller leaves clear-queue at none while the queue is empty.
+	CtrlXHint CtrlXHint
 	// MouseReleased reports that the mouse currently belongs to the terminal
 	// (Ctrl+S). The hint's label flips on it: a user who has released the
 	// mouse needs to be told how to get wheel scrolling back, and a user who
@@ -44,9 +58,6 @@ type FooterHints struct {
 	// RunActive is true when a subagent is running, so the Ctrl+F drill-in
 	// hint is actionable.
 	RunActive bool
-	// DrilledRunActive is true when the user is drilled into a running
-	// subagent, so the Ctrl+X stop-agent hint is actionable.
-	DrilledRunActive bool
 	// SkillGatePending is true while a skill-load gate dialog is up, so
 	// the footer shows the gate's navigation keys instead of the chat keys.
 	SkillGatePending bool
@@ -74,6 +85,19 @@ var keyStyle = lipgloss.NewStyle().Bold(true)
 var sep = lipgloss.NewStyle().Faint(true).SetString(" · ")
 
 func pair(k, label string) string { return keyStyle.Render(k) + " " + label }
+
+// ctrlXPair renders the one Ctrl+X hint the caller asked for, or "" when the
+// key has no action here. Every branch that shows it goes through this
+// function, so the footer can never emit two labels for the same chord.
+func ctrlXPair(h CtrlXHint) string {
+	switch h {
+	case CtrlXHintStopAgent:
+		return pair("Ctrl+X", "stop agent")
+	case CtrlXHintClearQueue:
+		return pair("Ctrl+X", "clear queue")
+	}
+	return ""
+}
 
 // PromptKeys returns the key pairs the footer shows for a pending question,
 // skill gate or approval, joined the way the footer joins them. It is empty
@@ -114,9 +138,8 @@ func Footer(h FooterHints) string {
 	showHelpHint := !h.QuestionPending && !h.ApprovalPending && !h.PopupOpen && !h.EditingCommand && !h.SkillGatePending
 
 	// The mouse hint is only actionable while idle, but it is appended after
-	// the queue hint rather than inside the idle branch: the footer is
-	// truncated to the frame width, and losing "clear queue" to a mouse-mode
-	// reminder is the wrong trade.
+	// every other idle hint rather than first: the footer is truncated to the
+	// frame width, and a mouse-mode reminder is the cheapest hint to lose.
 	showMouseHint := false
 
 	var segs []string
@@ -137,6 +160,11 @@ func Footer(h FooterHints) string {
 		segs = append(segs,
 			pair("j/k", "move"), pair("↵", "detail"), pair("i", "inspect"),
 			pair("y", "copy"), pair("o", "open"), pair("esc", "back"))
+		// Browse mode lets Ctrl chords through to the global handler, so the
+		// one real Ctrl+X action is still actionable here.
+		if p := ctrlXPair(h.CtrlXHint); p != "" {
+			segs = append(segs, p)
+		}
 		return strings.Join(segs, sep.Render(""))
 	} else if h.QuestionPending {
 		segs = append(segs, PromptKeys(h))
@@ -156,16 +184,18 @@ func Footer(h FooterHints) string {
 			pair("Enter", "queue"),
 			pair("Shift+Enter", "newline"),
 			pair("Ctrl+C", "stop"),
-			pair("Ctrl+X", "clear queue"),
 		)
+		// One Ctrl+X hint, naming what the global handler will do with the
+		// key right now: never both labels, and none when a prompt or panel
+		// owns the key.
+		if p := ctrlXPair(h.CtrlXHint); p != "" {
+			segs = append(segs, p)
+		}
 		if h.SendNowAvailable {
 			segs = append(segs, pair("Alt+Enter", "send now"))
 		}
 		if h.RunActive {
 			segs = append(segs, pair("Ctrl+F", "inspect agent"))
-		}
-		if h.DrilledRunActive {
-			segs = append(segs, pair("Ctrl+X", "stop agent"))
 		}
 	} else {
 		segs = append(segs,
@@ -180,9 +210,6 @@ func Footer(h FooterHints) string {
 		}
 		segs = append(segs, pair("Ctrl+B", "session"))
 		showMouseHint = true
-	}
-	if h.QueueNonEmpty {
-		segs = append(segs, pair("Ctrl+X", "clear queue"))
 	}
 	if showMouseHint && !h.SuppressMouseHint {
 		if h.MouseReleased {

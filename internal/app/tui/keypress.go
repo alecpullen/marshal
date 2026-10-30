@@ -300,23 +300,30 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.cycleModel(false)
 		return *m, nil, true
 	case "ctrl+x":
-		// If the user is drilled into a running subagent, Ctrl+X stops
-		// that specific subagent instead of touching the steering queue.
-		// Esc still pops the drill; Ctrl+C (twice) stops the whole turn.
-		if m.busy && len(m.viewStack) > 0 {
-			if top := m.viewStack[len(m.viewStack)-1]; top.Status == session.SubagentRunning {
-				if m.state.CancelSubagent(top.ID) {
-					m.refreshViewport()
-					return *m, nil, true
-				}
+		switch m.ctrlXAction() {
+		case ctrlXStopAgent:
+			// The user is drilled into a subagent the snapshot says is
+			// running, so Ctrl+X stops that specific child instead of
+			// touching the steering queue. Esc still pops the drill;
+			// Ctrl+C (twice) stops the whole turn.
+			//
+			// The view stack holds a snapshot: the child can finish or lose
+			// its cancel handle before this request arrives. A refused stop is
+			// consumed and leaves the queue untouched — it must never fall
+			// through to clearing a different target, nor claim a stop that
+			// did not happen.
+			top := m.viewStack[len(m.viewStack)-1]
+			if m.state.CancelSubagent(top.ID) {
+				m.refreshViewport()
+				return *m, nil, true
 			}
-		}
-		// F16 R3: clear the steering queue while the agent is
-		// working. Out-of-band so /clear semantics don't collide.
-		// An accepted, undelivered Send now request keeps its covered entry:
-		// Ctrl+X clears ordinary queued text, it cannot revoke a request the
-		// runtime already accepted.
-		if m.busy {
+			return *m, m.setFlash("Agent could not be stopped; queue unchanged"), true
+		case ctrlXClearQueue:
+			// F16 R3: clear the steering queue while the agent is
+			// working. Out-of-band so /clear semantics don't collide.
+			// An accepted, undelivered Send now request keeps its covered entry:
+			// Ctrl+X clears ordinary queued text, it cannot revoke a request the
+			// runtime already accepted.
 			m.state.ClearSteering()
 			m.refreshViewport()
 			return *m, nil, true

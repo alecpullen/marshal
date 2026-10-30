@@ -12,6 +12,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/help"
 	"marshal/internal/app/tui/picker"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/contextpack"
@@ -503,12 +504,267 @@ func TestStatusLineHasNoBackgroundFill(t *testing.T) {
 
 func TestStatusLineShowsQueueHint(t *testing.T) {
 	m := newStatusTestModel(t)
+	// Ctrl+X is only actionable during a turn: the handler declines it while
+	// idle, so the hint belongs to the busy cluster.
+	m.busy = true
 	m.state.PushSteering("a")
 	m.state.PushSteering("b")
 	line := stripANSI(m.renderStatusLine(140))
 	if !strings.Contains(line, "Ctrl+X") || !strings.Contains(line, "clear queue") {
 		t.Fatalf("status line missing queue hint:\n%s", line)
 	}
+}
+
+// ctrlXDrill names the drill state a status-hint fixture stands in.
+type ctrlXDrill uint8
+
+const (
+	ctrlXUndrilled ctrlXDrill = iota
+	ctrlXDrilledRunning
+	ctrlXDrilledDone
+)
+
+// ctrlXStatusCase describes one state the status row must render a matching
+// Ctrl+X hint (or no hint at all) for.
+type ctrlXStatusCase struct {
+	name  string
+	drill ctrlXDrill
+	idle  bool
+	queue int
+	// own is true when a surface ahead of the global handler holds the key.
+	own    bool
+	browse bool
+	setup  func(t *testing.T, m *Model)
+}
+
+// ctrlXStatusModel builds a real model in the case's state.
+func ctrlXStatusModel(t *testing.T, width, height int, c ctrlXStatusCase) Model {
+	t.Helper()
+	m := newViewTestModel(t, width, height)
+	m.state.SetTrusted(true)
+	m.state.SetActiveRoute(session.RouteInfo{Active: true, Model: "qwen", Provider: "ollama"})
+	m.busy = !c.idle
+	for _, msg := range []string{"queued one", "queued two"}[:c.queue] {
+		m.state.PushSteering(msg)
+	}
+	if c.drill != ctrlXUndrilled {
+		child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
+		view := m.state.RegisterSubagent("explore repo", child)
+		m.drillIntoSubagent(view)
+		m.refreshViewport()
+		if c.drill == ctrlXDrilledDone {
+			m.viewStack[len(m.viewStack)-1].Status = session.SubagentDone
+		}
+	}
+	m.browsing = c.browse
+	if c.setup != nil {
+		c.setup(t, &m)
+	}
+	return m
+}
+
+// ctrlXStatusWant maps the model's own decision (ctrlXAction, task 1) to the
+// one label the row may carry, or "" when the key does nothing right now.
+func ctrlXStatusWant(m Model) string {
+	switch m.ctrlXAction() {
+	case ctrlXStopAgent:
+		return "stop agent"
+	case ctrlXClearQueue:
+		if len(m.sess.Status().Steering.Queue) > 0 {
+			return "clear queue"
+		}
+	}
+	return ""
+}
+
+// TestStatusCtrlXHintMatchesDrillAndWidth pins that the status row shows at
+// most one Ctrl+X pair, that it names the action the handler would take, and
+// that it is absent when a modal, the browser cue or an empty queue makes it
+// a dead key. Where the width fallback sheds the pair, the stop key must
+// survive whole and no fragment may remain.
+func TestStatusCtrlXHintMatchesDrillAndWidth(t *testing.T) {
+	geometries := []struct {
+		name string
+		w, h int
+		rowW int
+		// must is true for the wide row, which is wide enough that an
+		// actionable hint has to be there rather than shed.
+		must bool
+	}{
+		{name: "80x24", w: 80, h: 24, rowW: 80},
+		{name: "120x40", w: 120, h: 40, rowW: 120},
+		{name: "wide", w: 120, h: 40, rowW: 200, must: true},
+	}
+
+	cases := []ctrlXStatusCase{
+		{name: "busy undrilled empty queue"},
+		{name: "busy undrilled queued", queue: 2},
+		{name: "idle undrilled", idle: true},
+		{name: "idle undrilled queued", idle: true, queue: 2},
+		{name: "running drill empty queue", drill: ctrlXDrilledRunning},
+		{name: "running drill queued", drill: ctrlXDrilledRunning, queue: 2},
+		{name: "completed drill empty queue", drill: ctrlXDrilledDone},
+		{name: "completed drill queued", drill: ctrlXDrilledDone, queue: 2},
+		{
+			name:  "pending approval",
+			queue: 2,
+			own:   true,
+			setup: func(t *testing.T, m *Model) {
+				m.state.SetPendingApproval(&session.PendingToolCall{
+					ID: "call-1", Name: "shell.run",
+					ResponseChan: make(chan session.UserApprovalDecision, 1),
+				})
+			},
+		},
+		{
+			name:  "pending question",
+			queue: 2,
+			own:   true,
+			setup: func(t *testing.T, m *Model) {
+				m.state.SetPendingQuestion(&session.PendingQuestion{
+					Questions:    []session.Question{{Question: "Proceed?"}},
+					ResponseChan: make(chan []session.Answer, 1),
+				})
+			},
+		},
+		{
+			name:  "skill gate",
+			queue: 2,
+			own:   true,
+			setup: func(t *testing.T, m *Model) {
+				m.state.SetPendingSkillGate(&session.PendingSkillGate{
+					Skill:        "demo",
+					ResponseChan: make(chan session.SkillGateChoice, 1),
+				})
+			},
+		},
+		{
+			name:  "sudo input",
+			queue: 2,
+			own:   true,
+			setup: func(t *testing.T, m *Model) {
+				m.state.SetPendingSudoAuth(&session.PendingSudoAuth{Command: "id"})
+			},
+		},
+		{
+			name:  "approval editor",
+			queue: 2,
+			own:   true,
+			setup: func(t *testing.T, m *Model) {
+				m.state.SetPendingApproval(&session.PendingToolCall{
+					ID: "call-1", Name: "shell.run",
+					ResponseChan: make(chan session.UserApprovalDecision, 1),
+				})
+				*m = openTestApprovalEdit(t, *m, "go test")
+			},
+		},
+		{
+			name:  "completion popup",
+			queue: 2,
+			own:   true,
+			setup: func(t *testing.T, m *Model) {
+				m.cmdPopup = newCompletionPopup([]completionItem{{Text: "plan", Kind: completionCommand}})
+				m.cmdPopup.update("pl")
+			},
+		},
+		{
+			name:  "doctor key field",
+			queue: 2,
+			own:   true,
+			setup: func(t *testing.T, m *Model) {
+				m.doctorSecret = newDoctorSecret("openai", 40)
+			},
+		},
+		{
+			name:  "open dock",
+			queue: 2,
+			own:   true,
+			setup: func(t *testing.T, m *Model) {
+				m.dock.Open(&picker.Model{})
+			},
+		},
+		{name: "browse running drill queued", drill: ctrlXDrilledRunning, queue: 2, browse: true},
+		{name: "browse undrilled queued", queue: 2, browse: true},
+	}
+
+	for _, c := range cases {
+		for _, g := range geometries {
+			t.Run(c.name+"/"+g.name, func(t *testing.T) {
+				m := ctrlXStatusModel(t, g.w, g.h, c)
+				row := stripANSI(m.renderStatusLine(g.rowW))
+
+				if c.browse {
+					// The status row's browse cue replaces the hint cluster,
+					// so the row itself never carries the pair; the footer a
+					// browse surface draws stays eligible for the real action.
+					if !strings.Contains(row, "browse") {
+						t.Fatalf("browsing row lost the browse cue:\n%s", row)
+					}
+					if strings.Contains(row, "Ctrl+X") {
+						t.Fatalf("browsing row advertised Ctrl+X:\n%s", row)
+					}
+					want := help.CtrlXHintNone
+					switch m.ctrlXAction() {
+					case ctrlXStopAgent:
+						want = help.CtrlXHintStopAgent
+					case ctrlXClearQueue:
+						if len(m.sess.Status().Steering.Queue) > 0 {
+							want = help.CtrlXHintClearQueue
+						}
+					}
+					if got := m.footerHints().CtrlXHint; got != want {
+						t.Fatalf("footerHints().CtrlXHint = %v, want %v while browsing", got, want)
+					}
+					return
+				}
+
+				want := ""
+				if !c.own {
+					want = ctrlXStatusWant(m)
+				}
+				other := "stop agent"
+				if want == "stop agent" {
+					other = "clear queue"
+				}
+				if want != "" && strings.Contains(row, other) {
+					t.Fatalf("row shows the %q label while the action is %q:\n%s", other, want, row)
+				}
+				switch strings.Count(row, "Ctrl+X") {
+				case 0:
+					if want == "" {
+						break
+					}
+					if !m.busy || !strings.Contains(row, "Ctrl+C stop") {
+						t.Fatalf("row shed the Ctrl+X hint without keeping the stop key:\n%s", row)
+					}
+					if g.must {
+						t.Fatalf("a wide row that fits the cluster shed the Ctrl+X %q hint:\n%s", want, row)
+					}
+				case 1:
+					if want == "" {
+						t.Fatalf("row advertised Ctrl+X while no action is reachable:\n%s", row)
+					}
+					if !strings.Contains(row, "Ctrl+X "+want) {
+						t.Fatalf("row carries a Ctrl+X fragment instead of the whole %q pair:\n%s", want, row)
+					}
+				default:
+					t.Fatalf("row shows more than one Ctrl+X key:\n%s", row)
+				}
+			})
+		}
+	}
+
+	t.Run("no color", func(t *testing.T) {
+		m := ctrlXStatusModel(t, 120, 40, ctrlXStatusCase{name: "busy undrilled queued", queue: 2})
+		t.Setenv("NO_COLOR", "1")
+		row := stripANSI(m.renderStatusLine(200))
+		if strings.Contains(row, "stop agent") {
+			t.Fatalf("row shows the stop-agent label while the action is clear queue:\n%s", row)
+		}
+		if got := strings.Count(row, "Ctrl+X clear queue"); got != 1 {
+			t.Fatalf("monochrome row has %d complete clear-queue pairs, want exactly 1:\n%s", got, row)
+		}
+	})
 }
 
 func TestStatusLineShowsGitBranch(t *testing.T) {

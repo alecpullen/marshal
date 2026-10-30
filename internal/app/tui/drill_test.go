@@ -9,6 +9,8 @@ import (
 
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
+	"marshal/internal/app/tui/dock"
+	"marshal/internal/app/tui/help"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
 )
@@ -95,11 +97,21 @@ func TestCtrlXStopsRunningSubagentWhileDrilled(t *testing.T) {
 	m.busy = true
 	m.state.PushSteering("queued message")
 
+	// Two running children: only the drilled-in top may be stopped.
+	other := newChildState(t)
+	otherView := m.state.RegisterSubagent("other task", other)
+	otherCancelled := false
+	m.state.SetSubagentCancel(otherView.ID, func() { otherCancelled = true })
+
 	child := newChildState(t)
 	view := m.state.RegisterSubagent("explore repo", child)
 	cancelled := false
 	m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
 	m.drillIntoSubagent(view)
+
+	if got := m.ctrlXAction(); got != ctrlXStopAgent {
+		t.Fatalf("ctrlXAction = %v, want ctrlXStopAgent while drilled into a running subagent", got)
+	}
 
 	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 	if !handled {
@@ -108,9 +120,15 @@ func TestCtrlXStopsRunningSubagentWhileDrilled(t *testing.T) {
 	if !cancelled {
 		t.Fatal("ctrl+x did not cancel the drilled subagent")
 	}
+	if otherCancelled {
+		t.Fatal("ctrl+x cancelled the wrong subagent: only the drilled-in top is the target")
+	}
 	m = mm.(Model)
-	if len(m.state.SteeringQueue()) != 1 {
-		t.Fatal("ctrl+x while drilled must NOT clear the steering queue")
+	if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
+		t.Fatalf("ctrl+x while drilled must NOT clear the steering queue, queue = %v", q)
+	}
+	if m.flash != "" {
+		t.Fatalf("a successful stop must not flash a failure, flash = %q", m.flash)
 	}
 }
 
@@ -119,14 +137,144 @@ func TestCtrlXUndrilledClearsSteeringQueue(t *testing.T) {
 	m.busy = true
 	m.state.PushSteering("queued message")
 
+	// A running child exists but is not drilled into: the queue clear must not
+	// stop it.
+	child := newChildState(t)
+	view := m.state.RegisterSubagent("explore repo", child)
+	cancelled := false
+	m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
+
+	if got := m.ctrlXAction(); got != ctrlXClearQueue {
+		t.Fatalf("ctrlXAction = %v, want ctrlXClearQueue while busy and undrilled", got)
+	}
+
 	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 	if !handled {
 		t.Fatal("ctrl+x must be handled while busy and undrilled")
+	}
+	if cancelled {
+		t.Fatal("ctrl+x while undrilled must not stop a running subagent")
 	}
 	m = mm.(Model)
 	if len(m.state.SteeringQueue()) != 0 {
 		t.Fatal("ctrl+x while undrilled must clear the steering queue")
 	}
+}
+
+// TestCtrlXFailedDrilledStopKeepsQueue: the view stack holds a snapshot, so a
+// stop can fail. A refused stop consumes the key, leaves the queue alone and
+// says so instead of claiming a stop that did not happen.
+func TestCtrlXFailedDrilledStopKeepsQueue(t *testing.T) {
+	const wantFlash = "Agent could not be stopped; queue unchanged"
+
+	t.Run("finished child behind a stale running snapshot", func(t *testing.T) {
+		m := newTestModel(t)
+		m.busy = true
+
+		child := newChildState(t)
+		view := m.state.RegisterSubagent("explore repo", child)
+		cancelled := false
+		m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
+		// The snapshot says running, but the child settles before the key.
+		m.drillIntoSubagent(view)
+		m.state.FinishSubagent(view.ID, "finished on its own", nil)
+		m.state.PushSteering("queued message")
+
+		if got := m.ctrlXAction(); got != ctrlXStopAgent {
+			t.Fatalf("ctrlXAction = %v, want ctrlXStopAgent for the stale snapshot", got)
+		}
+
+		mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+		if !handled {
+			t.Fatal("a refused stop must still consume ctrl+x")
+		}
+		if cancelled {
+			t.Fatal("a child that already finished must not be cancelled")
+		}
+		m = mm.(Model)
+		if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
+			t.Fatalf("a failed stop must leave the queue intact, queue = %v", q)
+		}
+		if m.flash != wantFlash {
+			t.Fatalf("flash = %q, want %q", m.flash, wantFlash)
+		}
+	})
+
+	t.Run("running child without a cancel handle", func(t *testing.T) {
+		m := newTestModel(t)
+		m.busy = true
+
+		child := newChildState(t)
+		view := m.state.RegisterSubagent("explore repo", child)
+		// No SetSubagentCancel: the child is running but cannot be stopped.
+		m.drillIntoSubagent(view)
+		m.state.PushSteering("queued message")
+
+		mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+		if !handled {
+			t.Fatal("a refused stop must still consume ctrl+x")
+		}
+		m = mm.(Model)
+		if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
+			t.Fatalf("a failed stop must leave the queue intact, queue = %v", q)
+		}
+		if m.flash != wantFlash {
+			t.Fatalf("flash = %q, want %q", m.flash, wantFlash)
+		}
+		if got := m.state.Subagents()[0].Status; got != session.SubagentRunning {
+			t.Fatalf("subagent status = %v, want it still running", got)
+		}
+	})
+}
+
+// TestCtrlXCompletedDrillAndIdle: a completed snapshot is not a stop target, so
+// Ctrl+X falls back to the busy queue action, while idle Ctrl+X does nothing.
+func TestCtrlXCompletedDrillAndIdle(t *testing.T) {
+	t.Run("completed snapshot clears the busy queue", func(t *testing.T) {
+		m := newTestModel(t)
+		m.busy = true
+
+		child := newChildState(t)
+		view := m.state.RegisterSubagent("explore repo", child)
+		m.state.FinishSubagent(view.ID, "done", nil)
+		completed := m.state.Subagents()[0]
+		m.drillIntoSubagent(completed)
+		m.state.PushSteering("queued message")
+
+		if got := m.ctrlXAction(); got != ctrlXClearQueue {
+			t.Fatalf("ctrlXAction = %v, want ctrlXClearQueue for a completed snapshot", got)
+		}
+
+		mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+		if !handled {
+			t.Fatal("ctrl+x must be handled while busy")
+		}
+		m = mm.(Model)
+		if len(m.state.SteeringQueue()) != 0 {
+			t.Fatalf("a completed drill must use the busy queue action, queue = %v", m.state.SteeringQueue())
+		}
+		if m.flash != "" {
+			t.Fatalf("a completed drill must not flash a stop failure, flash = %q", m.flash)
+		}
+	})
+
+	t.Run("idle does not clear the queue", func(t *testing.T) {
+		m := newTestModel(t)
+		m.state.PushSteering("queued message")
+
+		if got := m.ctrlXAction(); got != ctrlXNone {
+			t.Fatalf("ctrlXAction = %v, want ctrlXNone while idle", got)
+		}
+
+		mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+		if handled {
+			t.Fatal("ctrl+x must fall through to the textarea while idle")
+		}
+		m = mm.(Model)
+		if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
+			t.Fatalf("idle ctrl+x must not clear the queue, queue = %v", q)
+		}
+	})
 }
 
 func TestBreadcrumbShowsPathWhileDrilled(t *testing.T) {
@@ -365,4 +513,280 @@ func TestClickBeatWhileDrilledIntoSubagent(t *testing.T) {
 	if !strings.Contains(stripANSI(mm.viewport.GetContent()), "child reasoning") {
 		t.Fatal("expected the reasoning text to be visible after the click")
 	}
+}
+
+// ctrlXStubPanel is the smallest dock panel that owns the keyboard: the dock
+// forwards every keypress to it, which is all these tests need.
+type ctrlXStubPanel struct{}
+
+func (ctrlXStubPanel) Update(tea.Msg) tea.Cmd { return nil }
+func (ctrlXStubPanel) View(int, int) string   { return "" }
+func (ctrlXStubPanel) Sizing() dock.Sizing    { return dock.Docked }
+
+// ctrlXFrameCounts counts the Ctrl+X guidance a rendered frame displays: the
+// key itself, and each of the two labels. A frame may show the pair once or
+// not at all; total == stop+clear is what rules out a fragment.
+func ctrlXFrameCounts(frame string) (total, stop, clear int) {
+	return strings.Count(frame, "Ctrl+X"),
+		strings.Count(frame, "Ctrl+X stop agent"),
+		strings.Count(frame, "Ctrl+X clear queue")
+}
+
+// sendCtrlX drives the key through Model.Update, the way the terminal does, so
+// browse routing, prompt ownership and dock ownership all apply.
+func sendCtrlX(t *testing.T, m Model) Model {
+	t.Helper()
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
+	return asModel(t, updated)
+}
+
+// TestCtrlXDisplayedActionThroughModel: the composed frame and Model.Update
+// must agree on what Ctrl+X does. The hint is shown at most once, names the
+// action the key actually performs, and is never a fragment or a promise the
+// key does not keep.
+func TestCtrlXDisplayedActionThroughModel(t *testing.T) {
+	// The busy hint cluster is long (81 cells with the queue pair and "? help"),
+	// so it only fits beside the identity cluster on a genuinely wide row.
+	// 80x24 exercises the shed path instead.
+	geometries := []struct {
+		name string
+		w, h int
+	}{
+		{"wide", 200, 50},
+		{"80x24", 80, 24},
+	}
+	cases := []struct {
+		name string
+		busy bool
+		// drill is "", "running" or "done": whether the user is drilled into a
+		// running, a completed, or no subagent when the key arrives.
+		drill string
+		// wantHint is the label the frame may display ("" for none).
+		wantHint string
+		// wantQueue is the steering queue length after the key.
+		wantQueue int
+		// wantCancel reports whether the drilled child must be stopped.
+		wantCancel bool
+	}{
+		{name: "undrilled busy clears the queue", busy: true, wantHint: "clear queue"},
+		{name: "running drill stops that agent", busy: true, drill: "running", wantHint: "stop agent", wantQueue: 1, wantCancel: true},
+		{name: "completed drill clears the queue", busy: true, drill: "done", wantHint: "clear queue"},
+		{name: "idle does nothing", wantQueue: 1},
+	}
+
+	for _, g := range geometries {
+		for _, tc := range cases {
+			t.Run(g.name+"/"+tc.name, func(t *testing.T) {
+				m := newTestModel(t)
+				m.resize(g.w, g.h)
+
+				// Two live children: only the drilled-in one may ever be the
+				// stop target.
+				child := newChildState(t)
+				view := m.state.RegisterSubagent("explore repo", child)
+				cancelled := false
+				m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
+				other := m.state.RegisterSubagent("other task", newChildState(t))
+				otherCancelled := false
+				m.state.SetSubagentCancel(other.ID, func() { otherCancelled = true })
+
+				switch tc.drill {
+				case "running":
+					m.drillIntoSubagent(view)
+				case "done":
+					m.state.FinishSubagent(view.ID, "done", nil)
+					for _, v := range m.state.Subagents() {
+						if v.ID == view.ID {
+							m.drillIntoSubagent(v)
+						}
+					}
+				}
+
+				m.busy = tc.busy
+				m.state.PushSteering("queued message")
+				m.refreshViewport()
+
+				frame := stripANSI(m.viewString())
+				total, stop, clear := ctrlXFrameCounts(frame)
+				if total != stop+clear {
+					t.Fatalf("frame left a Ctrl+X fragment:\n%s", frame)
+				}
+				if total > 1 {
+					t.Fatalf("frame shows %d Ctrl+X hints, want at most 1:\n%s", total, frame)
+				}
+				if tc.wantHint == "" {
+					if total != 0 {
+						t.Fatalf("frame advertised Ctrl+X with no action:\n%s", frame)
+					}
+				} else if total == 1 {
+					if got := map[string]int{"stop agent": stop, "clear queue": clear}[tc.wantHint]; got != 1 {
+						t.Fatalf("displayed hint does not name %q:\n%s", tc.wantHint, frame)
+					}
+				} else if tc.busy && !strings.Contains(frame, "Ctrl+C stop") {
+					// The hint may be shed for width, but the stop fallback
+					// that replaces it must then be there.
+					t.Fatalf("busy frame dropped Ctrl+X without the Ctrl+C stop fallback:\n%s", frame)
+				}
+
+				m = sendCtrlX(t, m)
+
+				if otherCancelled {
+					t.Fatal("ctrl+x stopped a subagent the user was not drilled into")
+				}
+				if cancelled != tc.wantCancel {
+					t.Fatalf("drilled child cancelled = %v, want %v", cancelled, tc.wantCancel)
+				}
+				if q := len(m.state.SteeringQueue()); q != tc.wantQueue {
+					t.Fatalf("steering queue = %d, want %d", q, tc.wantQueue)
+				}
+				// The displayed hint must name the action the key performed.
+				if stop == 1 && cancelled != true {
+					t.Fatal("frame advertised a stop the key did not perform")
+				}
+				if clear == 1 && len(m.state.SteeringQueue()) != 0 {
+					t.Fatal("frame advertised a queue clear the key did not perform")
+				}
+			})
+		}
+	}
+
+	// Browse mode declines Ctrl chords, so the key still reaches the global
+	// handler — but the status row shows the browse cue, not the hint cluster.
+	t.Run("browsing", func(t *testing.T) {
+		for _, g := range geometries {
+			m := newTestModel(t)
+			m.resize(g.w, g.h)
+			m.state.AddMessage(session.RoleAssistant, "hello", session.ContentTypePlain)
+			m.busy = true
+			m.state.PushSteering("queued message")
+			m.refreshViewport()
+			if !m.enterBrowse() {
+				t.Fatal("could not enter browse mode")
+			}
+
+			frame := stripANSI(m.viewString())
+			if total, _, _ := ctrlXFrameCounts(frame); total != 0 {
+				t.Fatalf("browse frame advertised the global Ctrl+X hint:\n%s", frame)
+			}
+			if got := m.footerHints().CtrlXHint; got != help.CtrlXHintClearQueue {
+				t.Fatalf("browse footer hint = %v, want the real clear-queue action", got)
+			}
+
+			m = sendCtrlX(t, m)
+			if q := len(m.state.SteeringQueue()); q != 0 {
+				t.Fatalf("ctrl+x in browse must reach the global handler, queue = %d", q)
+			}
+		}
+	})
+
+	// Resizing may shed the hint, but only whole: a fragment is never allowed
+	// and the stop fallback replaces a shed pair.
+	t.Run("resize", func(t *testing.T) {
+		m := newTestModel(t)
+		m.resize(200, 50)
+		m.busy = true
+		m.state.PushSteering("queued message")
+		m.refreshViewport()
+		if frame := stripANSI(m.viewString()); !strings.Contains(frame, "Ctrl+X clear queue") {
+			t.Fatalf("wide frame lost the whole clear-queue hint:\n%s", frame)
+		}
+
+		// 80x24 is the minimum supported terminal; anything smaller renders the
+		// too-small view instead of a frame.
+		for _, size := range []struct{ w, h int }{{140, 40}, {120, 40}, {100, 30}, {80, 24}} {
+			m.resize(size.w, size.h)
+			m.refreshViewport()
+			frame := stripANSI(m.viewString())
+			total, stop, clear := ctrlXFrameCounts(frame)
+			if total != stop+clear {
+				t.Fatalf("%dx%d left a Ctrl+X fragment:\n%s", size.w, size.h, frame)
+			}
+			if total == 0 && !strings.Contains(frame, "Ctrl+C stop") {
+				t.Fatalf("%dx%d dropped Ctrl+X without the Ctrl+C stop fallback:\n%s", size.w, size.h, frame)
+			}
+		}
+
+		m.resize(200, 50)
+		m.refreshViewport()
+		if frame := stripANSI(m.viewString()); !strings.Contains(frame, "Ctrl+X clear queue") {
+			t.Fatalf("widening again did not restore the whole hint:\n%s", frame)
+		}
+	})
+}
+
+// TestCtrlXStaleSubagentNeverClearsQueueThroughModel: the hint is rendered
+// from a snapshot, so a child can settle between the render and the key. The
+// key must then report itself and leave the queue alone, and a surface in
+// front of the global handler must neither advertise the hint nor leak the key
+// into the global action.
+func TestCtrlXStaleSubagentNeverClearsQueueThroughModel(t *testing.T) {
+	t.Run("stale running snapshot", func(t *testing.T) {
+		m := newTestModel(t)
+		// Wide enough for the busy cluster plus the identity cluster, so the
+		// running-drill hint is actually displayed.
+		m.resize(200, 50)
+		m.busy = true
+
+		child := newChildState(t)
+		view := m.state.RegisterSubagent("explore repo", child)
+		cancelled := false
+		m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
+		m.drillIntoSubagent(view)
+		m.state.PushSteering("queued message")
+		m.refreshViewport()
+
+		if frame := stripANSI(m.viewString()); !strings.Contains(frame, "Ctrl+X stop agent") {
+			t.Fatalf("a running drill must advertise the stop:\n%s", frame)
+		}
+
+		// The child settles on its own after the frame was drawn.
+		m.state.FinishSubagent(view.ID, "finished on its own", nil)
+		m = sendCtrlX(t, m)
+
+		if cancelled {
+			t.Fatal("a child that already finished must not be cancelled")
+		}
+		if q := m.state.SteeringQueue(); len(q) != 1 || q[0] != "queued message" {
+			t.Fatalf("a refused stop must leave the queue intact, queue = %v", q)
+		}
+		if frame := stripANSI(m.viewString()); !strings.Contains(frame, "Agent could not be stopped; queue unchanged") {
+			t.Fatalf("the refused stop did not report itself:\n%s", frame)
+		}
+	})
+
+	t.Run("pending prompt owns the key", func(t *testing.T) {
+		m := newTestModel(t)
+		m.resize(140, 40)
+		m.busy = true
+		m.state.PushSteering("queued message")
+		m.state.SetPendingQuestion(&session.PendingQuestion{
+			Questions: []session.Question{{Question: "what?"}},
+		})
+		m.refreshViewport()
+
+		if frame := stripANSI(m.viewString()); strings.Contains(frame, "Ctrl+X") {
+			t.Fatalf("a pending prompt must not advertise the global hint:\n%s", frame)
+		}
+		m = sendCtrlX(t, m)
+		if q := m.state.SteeringQueue(); len(q) != 1 {
+			t.Fatalf("ctrl+x leaked into the global action under a prompt, queue = %v", q)
+		}
+	})
+
+	t.Run("docked panel owns the key", func(t *testing.T) {
+		m := newTestModel(t)
+		m.resize(140, 40)
+		m.busy = true
+		m.state.PushSteering("queued message")
+		m.dock.Open(ctrlXStubPanel{})
+		m.refreshViewport()
+
+		if frame := stripANSI(m.viewString()); strings.Contains(frame, "Ctrl+X") {
+			t.Fatalf("an open dock must not advertise the global hint:\n%s", frame)
+		}
+		m = sendCtrlX(t, m)
+		if q := m.state.SteeringQueue(); len(q) != 1 {
+			t.Fatalf("ctrl+x leaked into the global action behind a dock, queue = %v", q)
+		}
+	})
 }

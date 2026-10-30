@@ -206,6 +206,30 @@ also cause the clear-queue hint to be repeated.
   `internal/app/tui/keypress.go:370`.
 - Potential direction: generate hints from the same action precedence as the
   handler and avoid duplicates.
+- Status (2026-10-30): fixed (all three tasks of the
+  [P11 Ctrl+X guidance plan](plans/2026-10-30-p11-ctrl-x-guidance-plan.md)).
+  The footer no longer decides for itself: `Model.ctrlXAction()` is the single
+  decision the keyboard handler and the hint both read, and
+  `help.FooterHints.CtrlXHint` carries it into the footer, replacing the
+  independent `DrilledRunActive` flag and the separate `QueueNonEmpty` append
+  (both removed). `Footer` renders at most one pair, only in the busy and
+  browse branches, and never in the idle, prompt, edit, popup or `KeysInFrame`
+  branches. The parent sets it to none while a dock, pending approval,
+  question, skill gate, privileged-auth field, `/doctor` key field, approval
+  editor or completion popup owns the key, and leaves clear-queue at none while
+  the steering queue is empty; browse stays eligible because `handleBrowseKey`
+  lets Ctrl chords through. A refused stop no longer falls through to the queue
+  action: a stale running snapshot or a child without a cancel handle consumes
+  the key, leaves the queue untouched and flashes `Agent could not be stopped;
+  queue unchanged`. Width still sheds the whole pair and keeps `Ctrl+C stop`.
+  Evidenced by `TestCtrlXStopsRunningSubagentWhileDrilled`,
+  `TestCtrlXUndrilledClearsSteeringQueue`, `TestCtrlXFailedDrilledStopKeepsQueue`,
+  `TestCtrlXCompletedDrillAndIdle`, `TestFooterCtrlXMatchesAction`,
+  `TestStatusCtrlXHintMatchesDrillAndWidth`,
+  `TestCtrlXDisplayedActionThroughModel` (200×50 and 80×24, browse, resize
+  through 140/120/100/80) and
+  `TestCtrlXStaleSubagentNeverClearsQueueThroughModel` (stale child, pending
+  prompt, open dock).
 
 ### Large pastes ignore the composer cursor
 

@@ -40,7 +40,7 @@ func TestFooterStopOnly(t *testing.T) {
 }
 
 func TestFooterBusyShowsCancelAndQueue(t *testing.T) {
-	out := stripANSI(Footer(FooterHints{Busy: true}))
+	out := stripANSI(Footer(FooterHints{Busy: true, CtrlXHint: CtrlXHintClearQueue}))
 	if !strings.Contains(out, "Ctrl+C stop") || !strings.Contains(out, "Ctrl+X clear queue") {
 		t.Fatalf("busy footer missing cancel/queue hints: %q", out)
 	}
@@ -150,10 +150,91 @@ func TestFooterApprovalWording(t *testing.T) {
 	}
 }
 
-func TestFooterIdleShowsClearQueue(t *testing.T) {
-	out := stripANSI(Footer(FooterHints{QueueNonEmpty: true}))
-	if !strings.Contains(out, "Ctrl+X") || !strings.Contains(out, "clear queue") {
-		t.Fatalf("footer missing clear-queue hint:\n%s", out)
+// TestFooterIdleNeverShowsClearQueue pins that idle never advertises Ctrl+X:
+// the key does nothing while no turn runs, so a hint would be a dead key.
+func TestFooterIdleNeverShowsClearQueue(t *testing.T) {
+	out := stripANSI(Footer(FooterHints{CtrlXHint: CtrlXHintClearQueue}))
+	if strings.Contains(out, "Ctrl+X") {
+		t.Fatalf("idle footer advertised Ctrl+X:\n%s", out)
+	}
+	if strings.Contains(out, "clear queue") {
+		t.Fatalf("idle footer advertised a queue action:\n%s", out)
+	}
+}
+
+// TestFooterCtrlXMatchesAction pins the presentation rule: the footer shows at
+// most one Ctrl+X pair, it names the caller's single decision, and it appears
+// only in the branches where the global handler still receives the key.
+func TestFooterCtrlXMatchesAction(t *testing.T) {
+	cases := []struct {
+		name string
+		h    FooterHints
+		// want is the label the Ctrl+X pair must carry, or "" for no pair.
+		want string
+		// exact, when set, is the whole expected footer.
+		exact string
+	}{
+		{name: "idle none", h: FooterHints{}},
+		{name: "idle clear queue", h: FooterHints{CtrlXHint: CtrlXHintClearQueue}},
+		{name: "idle stop agent", h: FooterHints{CtrlXHint: CtrlXHintStopAgent}},
+		{name: "busy none", h: FooterHints{Busy: true}},
+		{name: "busy stop agent", h: FooterHints{Busy: true, CtrlXHint: CtrlXHintStopAgent}, want: "stop agent"},
+		{name: "busy clear queue", h: FooterHints{Busy: true, CtrlXHint: CtrlXHintClearQueue}, want: "clear queue"},
+		{
+			name: "busy keeps send now and inspect agent",
+			h:    FooterHints{Busy: true, CtrlXHint: CtrlXHintStopAgent, SendNowAvailable: true, RunActive: true},
+			want: "stop agent",
+		},
+		{name: "browse none", h: FooterHints{Browsing: true}},
+		{name: "browse stop agent", h: FooterHints{Browsing: true, CtrlXHint: CtrlXHintStopAgent}, want: "stop agent"},
+		{name: "browse clear queue", h: FooterHints{Browsing: true, CtrlXHint: CtrlXHintClearQueue}, want: "clear queue"},
+		{name: "question prompt", h: FooterHints{Busy: true, QuestionPending: true, CtrlXHint: CtrlXHintClearQueue}},
+		{name: "skill gate", h: FooterHints{Busy: true, SkillGatePending: true, CtrlXHint: CtrlXHintClearQueue}},
+		{name: "approval prompt", h: FooterHints{Busy: true, ApprovalPending: true, CtrlXHint: CtrlXHintStopAgent}},
+		{
+			name: "command editor",
+			h:    FooterHints{Busy: true, ApprovalPending: true, EditingCommand: true, CtrlXHint: CtrlXHintClearQueue},
+		},
+		{name: "completion popup", h: FooterHints{Busy: true, PopupOpen: true, CtrlXHint: CtrlXHintClearQueue}},
+		{
+			name:  "keys in frame",
+			h:     FooterHints{Busy: true, QuestionPending: true, KeysInFrame: true, CtrlXHint: CtrlXHintClearQueue},
+			exact: pair("Ctrl+C", "stop"),
+		},
+		{
+			name:  "stop only",
+			h:     FooterHints{Busy: true, StopOnly: true, CtrlXHint: CtrlXHintClearQueue},
+			exact: pair("Ctrl+C", "stop"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := stripANSI(Footer(tc.h))
+			if tc.exact != "" {
+				if want := stripANSI(tc.exact); out != want {
+					t.Fatalf("footer = %q, want exactly %q", out, want)
+				}
+			}
+			// At most one Ctrl+X key, whatever the state.
+			if got := strings.Count(out, "Ctrl+X"); got > 1 {
+				t.Fatalf("footer shows %d Ctrl+X keys, want at most 1: %q", got, out)
+			}
+			// And never the label that is not the current action.
+			for _, label := range []string{"stop agent", "clear queue"} {
+				if label != tc.want && strings.Contains(out, label) {
+					t.Fatalf("footer shows the %q label, want only %q: %q", label, tc.want, out)
+				}
+			}
+			if tc.want == "" {
+				if strings.Contains(out, "Ctrl+X") {
+					t.Fatalf("footer advertised Ctrl+X with no action: %q", out)
+				}
+				return
+			}
+			if got := strings.Count(out, "Ctrl+X "+tc.want); got != 1 {
+				t.Fatalf("footer has %d complete %q pairs, want exactly 1: %q", got, "Ctrl+X "+tc.want, out)
+			}
+		})
 	}
 }
 
@@ -161,7 +242,7 @@ func TestFooterHasNoCtrlT(t *testing.T) {
 	states := []FooterHints{
 		{},
 		{Busy: true},
-		{QueueNonEmpty: true},
+		{CtrlXHint: CtrlXHintClearQueue},
 		{IdleRollbackEligible: true},
 		{Browsing: true},
 		{RunActive: true},

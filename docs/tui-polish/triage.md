@@ -399,6 +399,48 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
     [conflicting or duplicated Ctrl+X guidance](audit.md#ctrlx-footer-guidance-can-conflict-or-repeat),
     including narrow terminal fallbacks and drilled-in subagents.
 
+    **Status (2026-10-30): done** — [the P11 plan](plans/2026-10-30-p11-ctrl-x-guidance-plan.md),
+    three commits (`p11-ctrl-x-guidance: task 1 — make the Ctrl+X action
+    stable on failed stops`, `task 2 — render one context-appropriate Ctrl+X
+    hint`, `task 3 — verify the displayed hint against the real key path`).
+    Ctrl+X now has one decision, `Model.ctrlXAction()`, read by both the
+    keyboard handler and the footer; `help.FooterHints.CtrlXHint` carries it
+    into `help.Footer`, and the independent `DrilledRunActive` and
+    `QueueNonEmpty` inputs are gone. The footer emits at most one pair, only
+    while busy or browsing, and none while a dock, prompt, skill gate, sudo
+    input, `/doctor` key field, approval editor or completion popup owns the
+    key; clear-queue needs a nonempty queue from the same status snapshot.
+    A refused stop (stale running snapshot, or a running child with no cancel
+    handle) consumes the key, leaves the queue untouched and flashes
+    `Agent could not be stopped; queue unchanged` instead of falling through to
+    clearing the queue — the fall-through that could clear a different target
+    is what task 1 removed. Narrow rows still shed the pair as a unit and keep
+    `Ctrl+C stop`. Tests: `TestCtrlXStopsRunningSubagentWhileDrilled`,
+    `TestCtrlXUndrilledClearsSteeringQueue`,
+    `TestCtrlXFailedDrilledStopKeepsQueue`, `TestCtrlXCompletedDrillAndIdle`,
+    `TestFooterCtrlXMatchesAction` (18 footer states),
+    `TestStatusCtrlXHintMatchesDrillAndWidth` (200-cell row, 120×40, 80×24,
+    modal/dock/browse, `NO_COLOR`),
+    `TestCtrlXDisplayedActionThroughModel` (composed frame plus `Model.Update`
+    at 200×50 and 80×24, browse and resize) and
+    `TestCtrlXStaleSubagentNeverClearsQueueThroughModel` (stale child, pending
+    prompt, open dock). Verification:
+    `CGO_ENABLED=1 go build -o /private/tmp/marshal-p11-ctrl-x ./cmd/marshal`,
+    `go test ./internal/app/tui/...` (35 packages) and
+    `go test ./internal/app/session` pass; `go vet ./...` is clean;
+    `gofmt -l` reports no files and `git diff --check` is clean; the scripted
+    usability suite passes but remains help-only, so it does not cover subagent
+    stopping. Full `go test ./...`: the same 22 failures reproduce at the base
+    commit `dee8b086` (`internal/app` 7, `internal/snapshot` 13,
+    `internal/tools/desktop/browser` 1, `internal/worktree` 1 — developer git
+    identity, snapshot store and network fixtures), plus
+    `TestRunManagedCancellationKillsTree` in `internal/snapshot`, which is a
+    pre-existing flake (EPERM probing a process group; 1 of 5 isolated runs at
+    this commit, in a package that cannot import the changed code). No
+    controlling terminal was available, so the 80×24 queue and drilled-agent
+    behaviour, resize and a multiplexer/SSH environment were exercised through
+    composed frames in the model tests rather than by hand.
+
 ## P3 — cleanup and baseline
 
 13. Remove the reviewed dead branches and dummy import together with related

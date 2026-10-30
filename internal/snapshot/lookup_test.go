@@ -440,6 +440,415 @@ func TestLookupDiffAndRestoreAreExcludedByTheStoreLock(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Historical workspace identities
+// ---------------------------------------------------------------------------
+
+// writeSnapshotAt writes a blob, tree, and parentless commit carrying content
+// into dir and publishes its snapshot ref, exactly as a capture would. The
+// commit is stamped with a FIXED date so its hash is a pure function of the
+// content: a fixture can put the SAME hash in two stores, or rely on distinct
+// content producing distinct hashes, without depending on the clock.
+func writeSnapshotAt(t *testing.T, ctx context.Context, dir, content string) string {
+	t.Helper()
+	blob := newGitCmd(ctx, "git", dir, "", false, "hash-object", "-w", "-t", "blob", "--stdin")
+	blob.Stdin = strings.NewReader(content)
+	out, err := runGitCombined(ctx, blob, defaultMaxCommandOutput)
+	if err != nil {
+		t.Fatalf("hash-object in %s: %v\n%s", dir, err, out)
+	}
+	blobHash := strings.TrimSpace(string(out))
+
+	tree := newGitCmd(ctx, "git", dir, "", false, "mktree")
+	tree.Stdin = strings.NewReader("100644 blob " + blobHash + "\ta.txt\n")
+	out, err = runGitCombined(ctx, tree, defaultMaxCommandOutput)
+	if err != nil {
+		t.Fatalf("mktree in %s: %v\n%s", dir, err, out)
+	}
+	treeHash := strings.TrimSpace(string(out))
+
+	commit := newGitCmd(ctx, "git", dir, "", false, "commit-tree", treeHash)
+	commit.Stdin = strings.NewReader("snapshot\n")
+	commit.Env = append(commit.Env,
+		"GIT_AUTHOR_NAME=marshal", "GIT_AUTHOR_EMAIL=marshal@local",
+		"GIT_COMMITTER_NAME=marshal", "GIT_COMMITTER_EMAIL=marshal@local",
+		"GIT_AUTHOR_DATE=2020-01-01T00:00:00 +0000",
+		"GIT_COMMITTER_DATE=2020-01-01T00:00:00 +0000",
+	)
+	out, err = runGitCombined(ctx, commit, defaultMaxCommandOutput)
+	if err != nil {
+		t.Fatalf("commit-tree in %s: %v\n%s", dir, err, out)
+	}
+	commitHash := strings.TrimSpace(string(out))
+
+	gitEnv(t, ctx, dir, "update-ref", commitRef(commitHash), commitHash)
+	return commitHash
+}
+
+// historicalIdentityFixture is a workspace reachable by two spellings: a real
+// directory and an owned symlink to it. The canonical store holds one snapshot;
+// the symlink's spelling is the historical identity.
+type historicalIdentityFixture struct {
+	real, link, dataDir string
+	// svc is the service bound to the real (canonical) spelling.
+	svc *Service
+	// canonicalRoot is the canonical workspace root captures record; rawID is
+	// the identity of the original (symlink) spelling and canonicalID the store
+	// captures write to.
+	canonicalRoot      string
+	canonicalID, rawID string
+	canonicalHash      string
+}
+
+func newHistoricalIdentityFixture(t *testing.T, ctx context.Context) *historicalIdentityFixture {
+	t.Helper()
+	f := newAliasWorkspace(t)
+	hash, err := f.svc.Track(ctx)
+	if err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+	if !validObjectHash(hash) {
+		t.Fatalf("Track returned %q, which is not an object id", hash)
+	}
+	f.canonicalHash = hash
+	return f
+}
+
+// newAliasWorkspace builds a workspace reachable by a real path and an owned
+// symlink to it, WITHOUT capturing anything, so a maintenance test can decide
+// which stores exist.
+func newAliasWorkspace(t *testing.T) *historicalIdentityFixture {
+	t.Helper()
+	requireServiceGit(t)
+	parent := t.TempDir()
+	real := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "a.txt"), []byte("canonical\n"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+	link := filepath.Join(parent, "workspace-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("symlink workspace: %v", err)
+	}
+	dataDir := t.TempDir()
+	// The ORIGINAL supplied spelling is the link: that is the path whose raw
+	// hash becomes the workspace's one known historical identity, exactly as the
+	// plan specifies.
+	svc := New(dataDir, link, 2_000_000, nil, testLogger())
+	canonicalRoot, err := canonicalWorkspaceRoot(real)
+	if err != nil {
+		t.Fatalf("canonicalWorkspaceRoot: %v", err)
+	}
+	f := &historicalIdentityFixture{
+		real: real, link: link, dataDir: dataDir, svc: svc, canonicalRoot: canonicalRoot,
+		canonicalID: svc.Workspace(), rawID: WorkspaceHashFor(link),
+	}
+	if f.rawID == f.canonicalID {
+		t.Fatalf("the fixture's historical and canonical identities collided (%s); the alias is not exercised", f.rawID)
+	}
+	return f
+}
+
+// withLock runs fn while this fixture owns the store, releasing it afterwards.
+// Ownership is taken only for fixture setup: a Service operation acquires the
+// same lock through its own manager, so holding it across one would deadlock.
+func (f *historicalIdentityFixture) withLock(t *testing.T, ctx context.Context, fn func(*Manager)) {
+	t.Helper()
+	m, err := NewManager(f.dataDir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.Bootstrap(ctx); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if _, err := m.Acquire(ctx); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer func() {
+		if err := m.Release(); err != nil {
+			t.Fatalf("Release: %v", err)
+		}
+	}()
+	fn(m)
+}
+
+// historicalV2Catalog creates a v2 catalog under a HISTORICAL identity and
+// returns it with its active generation's directory. The manifest records
+// canonicalRoot, which is the provenance a historical catalog must prove before
+// it may serve or reclaim anything.
+func historicalV2Catalog(t *testing.T, ctx context.Context, m *Manager, rawID, canonicalRoot string) (*Catalog, string) {
+	t.Helper()
+	cat, err := m.Catalog(rawID)
+	if err != nil {
+		t.Fatalf("Catalog(%s): %v", rawID, err)
+	}
+	cat.WorkspaceRoot = canonicalRoot
+	rec, err := cat.CreateGeneration(ctx, "")
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	if err := cat.ActivateGeneration(rec.ID); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+	dir, err := cat.GenerationDir(rec.ID)
+	if err != nil {
+		t.Fatalf("GenerationDir: %v", err)
+	}
+	return cat, dir
+}
+
+// A workspace keeps serving snapshots from every identity it is known by: the
+// canonical v2 store, a validated historical v2 catalog written under the
+// original spelling, and a pre-v2 bare repository. An exact canonical hit wins
+// when both stores retain a hash, and no lookup, diff or restore touches the
+// historical stores.
+func TestServiceLookupHistoricalWorkspaceIdentity(t *testing.T) {
+	ctx := context.Background()
+	f := newHistoricalIdentityFixture(t, ctx)
+
+	var canonCat *Catalog
+	var rawDir, rawHash string
+	f.withLock(t, ctx, func(m *Manager) {
+		var err error
+		canonCat, err = m.CatalogForRoot(f.real)
+		if err != nil {
+			t.Fatalf("CatalogForRoot: %v", err)
+		}
+		_, rawDir = historicalV2Catalog(t, ctx, m, f.rawID, f.canonicalRoot)
+		rawHash = writeSnapshotAt(t, ctx, rawDir, "raw-v2\n")
+	})
+
+	legacyDir := filepath.Join(f.dataDir, snapshotsDirName, f.rawID)
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy: %v", err)
+	}
+	gitEnv(t, ctx, legacyDir, "init", "--bare")
+	legacyHash := writeSnapshotAt(t, ctx, legacyDir, "raw-legacy\n")
+
+	// A hash BOTH stores retain resolves to the canonical one: the historical
+	// store is a fallback, never a competing answer. The duplicate is written
+	// here, BEFORE the fingerprints, so the only writes after them are the
+	// lookups under test.
+	var sharedHash string
+	f.withLock(t, ctx, func(m *Manager) {
+		canonDir := generationHolding(t, m, canonCat, f.canonicalHash)
+		sharedHash = writeSnapshotAt(t, ctx, canonDir, "shared\n")
+		if got := writeSnapshotAt(t, ctx, rawDir, "shared\n"); got != sharedHash {
+			t.Fatalf("identical content produced different hashes (%s vs %s); the duplicate case is not exercised", got, sharedHash)
+		}
+	})
+
+	rawBefore := storeFingerprint(t, filepath.Join(f.dataDir, snapshotsDirName, v2DirName, f.rawID))
+	legacyBefore := storeFingerprint(t, legacyDir)
+
+	// Each exact hash resolves in its own store, and names it.
+	canonLoc, err := f.svc.LookupSnapshot(ctx, f.canonicalHash)
+	if err != nil {
+		t.Fatalf("LookupSnapshot(canonical): %v", err)
+	}
+	if canonLoc.Workspace != f.canonicalID || canonLoc.Legacy || canonLoc.GitDir == rawDir {
+		t.Fatalf("canonical location = %+v, want the canonical v2 store", canonLoc)
+	}
+
+	rawLoc, err := f.svc.LookupSnapshot(ctx, rawHash)
+	if err != nil {
+		t.Fatalf("LookupSnapshot(historical v2): %v", err)
+	}
+	if rawLoc.Workspace != f.rawID || rawLoc.Legacy || rawLoc.GitDir != rawDir {
+		t.Fatalf("historical v2 location = %+v, want %s in %s", rawLoc, f.rawID, rawDir)
+	}
+
+	legacyLoc, err := f.svc.LookupSnapshot(ctx, legacyHash)
+	if err != nil {
+		t.Fatalf("LookupSnapshot(legacy): %v", err)
+	}
+	if !legacyLoc.Legacy || legacyLoc.GitDir != legacyDir || legacyLoc.Workspace != f.rawID {
+		t.Fatalf("legacy location = %+v, want the bare repository %s", legacyLoc, legacyDir)
+	}
+	if legacyLoc.Protected {
+		t.Fatal("a legacy bare repository reported itself protected")
+	}
+
+	// Diff and restore reach the same repositories.
+	if _, err := f.svc.Diff(ctx, rawHash); err != nil {
+		t.Fatalf("Diff(historical v2): %v", err)
+	}
+	if _, err := f.svc.Diff(ctx, legacyHash); err != nil {
+		t.Fatalf("Diff(legacy): %v", err)
+	}
+	if err := f.svc.Restore(ctx, rawHash); err != nil {
+		t.Fatalf("Restore(historical v2): %v", err)
+	}
+	if err := f.svc.Restore(ctx, legacyHash); err != nil {
+		t.Fatalf("Restore(legacy): %v", err)
+	}
+
+	// The duplicate resolves to the canonical store rather than the historical
+	// one.
+	dupLoc, err := f.svc.LookupSnapshot(ctx, sharedHash)
+	if err != nil {
+		t.Fatalf("LookupSnapshot(duplicate): %v", err)
+	}
+	if dupLoc.Workspace != f.canonicalID {
+		t.Fatalf("a hash both stores retain resolved to %q, want the canonical %q", dupLoc.Workspace, f.canonicalID)
+	}
+
+	// Lookup, diff and restore never mutate a historical store. Reclamation is
+	// the only operation allowed to delete, and it was not called.
+	if got := storeFingerprint(t, filepath.Join(f.dataDir, snapshotsDirName, v2DirName, f.rawID)); got != rawBefore {
+		t.Fatal("lookup/diff/restore mutated the historical v2 catalog")
+	}
+	if got := storeFingerprint(t, legacyDir); got != legacyBefore {
+		t.Fatal("lookup/diff/restore mutated the legacy bare repository")
+	}
+}
+
+// A historical catalog is trusted only when its manifest can be read AND names
+// this workspace. A corrupt, unreadable or mismatched one is a repair problem
+// that must surface, never be skipped into "not found" — and it must not mask a
+// canonical hit.
+func TestServiceLookupRejectsMismatchedHistoricalManifest(t *testing.T) {
+	ctx := context.Background()
+	f := newHistoricalIdentityFixture(t, ctx)
+
+	ghost := strings.Repeat("f", 40)
+
+	// The manifest names a different workspace, so it may not serve this one.
+	var rawCat *Catalog
+	f.withLock(t, ctx, func(m *Manager) {
+		var err error
+		rawCat, _ = historicalV2Catalog(t, ctx, m, f.rawID, f.canonicalRoot)
+		var man *Manifest
+		man, err = rawCat.Load()
+		if err != nil || man == nil {
+			t.Fatalf("load historical manifest: %v (man=%v)", err, man)
+		}
+		man.Root = filepath.Join(t.TempDir(), "another-workspace")
+		if err := rawCat.Save(man); err != nil {
+			t.Fatalf("save historical manifest: %v", err)
+		}
+	})
+	if _, err := f.svc.LookupSnapshot(ctx, ghost); ReasonOf(err) != ReasonUnreadableFile {
+		t.Fatalf("lookup with a mismatched historical manifest = %v, want %q", err, ReasonUnreadableFile)
+	}
+
+	// A canonical hit is NOT masked by the historical problem.
+	if _, err := f.svc.LookupSnapshot(ctx, f.canonicalHash); err != nil {
+		t.Fatalf("a mismatched historical catalog masked a canonical hit: %v", err)
+	}
+
+	// A corrupt manifest is reported, not converted to "missing".
+	if err := os.WriteFile(rawCat.ManifestPath(), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("corrupt historical manifest: %v", err)
+	}
+	if _, err := f.svc.LookupSnapshot(ctx, ghost); ReasonOf(err) != ReasonUnreadableFile {
+		t.Fatalf("lookup with a corrupt historical manifest = %v, want %q", err, ReasonUnreadableFile)
+	}
+
+	// An unreadable manifest is reported too. A directory where the file belongs
+	// fails the read on every platform, including one running as root.
+	if err := os.Remove(rawCat.ManifestPath()); err != nil {
+		t.Fatalf("remove historical manifest: %v", err)
+	}
+	if err := os.Mkdir(rawCat.ManifestPath(), 0o755); err != nil {
+		t.Fatalf("replace historical manifest with a directory: %v", err)
+	}
+	if _, err := f.svc.LookupSnapshot(ctx, ghost); ReasonOf(err) != ReasonUnreadableFile {
+		t.Fatalf("lookup with an unreadable historical manifest = %v, want %q", err, ReasonUnreadableFile)
+	}
+}
+
+// A workspace whose checkout has been removed keeps its absolute/clean spelling.
+// The lookup must not guess that a dangling alias once named the store recorded
+// under the link's former target: an unidentified spelling is not this
+// workspace's history.
+func TestServiceLookupMissingRootDoesNotGuessAlias(t *testing.T) {
+	ctx := context.Background()
+	f := newHistoricalIdentityFixture(t, ctx)
+	if err := os.RemoveAll(f.real); err != nil {
+		t.Fatalf("remove workspace: %v", err)
+	}
+
+	// The symlink is now dangling. Its own spelling is the only identity this
+	// process may use.
+	gone := New(f.dataDir, f.link, 2_000_000, nil, testLogger())
+	if got := gone.Workspace(); got != f.rawID {
+		t.Fatalf("an absent path reported identity %q, want its absolute/clean hash %q", got, f.rawID)
+	}
+	wantDir := filepath.Join(f.dataDir, snapshotsDirName, v2DirName, f.rawID)
+	if got := gone.StoreDir(); got != wantDir {
+		t.Fatalf("StoreDir for an absent path = %q, want %q", got, wantDir)
+	}
+
+	// The canonical store still holds the snapshot, but reaching it would mean
+	// guessing the symlink's former target. That is exactly what must not happen.
+	if _, err := gone.LookupSnapshot(ctx, f.canonicalHash); ReasonOf(err) != ReasonSnapshotNotFound {
+		t.Fatalf("lookup through a dangling alias = %v, want %q", err, ReasonSnapshotNotFound)
+	}
+	if _, err := os.Lstat(wantDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the lookup created a store for the absent spelling: %v", err)
+	}
+	// The canonical store is untouched and still holds the snapshot.
+	still := New(f.dataDir, f.real, 2_000_000, nil, testLogger())
+	if _, err := still.LookupSnapshot(ctx, f.canonicalHash); err != nil {
+		// The canonical store is keyed by the RESOLVED spelling, which a deleted
+		// checkout no longer resolves to; a platform without a symlinked temp
+		// root keeps the same spelling and must still find it.
+		if ReasonOf(err) != ReasonSnapshotNotFound {
+			t.Fatalf("lookup after the checkout was removed = %v", err)
+		}
+	}
+}
+
+// The error precedence across identities: an unexpected canonical result is
+// final, a workspace that HAS a store reports an expiry rather than "never
+// captured", and only a workspace with no store at all reports not-found.
+func TestServiceLookupHistoricalErrorPrecedence(t *testing.T) {
+	ctx := context.Background()
+	f := newHistoricalIdentityFixture(t, ctx)
+
+	// A historical legacy repository that retains one hash, beside the canonical
+	// store.
+	legacyDir := filepath.Join(f.dataDir, snapshotsDirName, f.rawID)
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy: %v", err)
+	}
+	gitEnv(t, ctx, legacyDir, "init", "--bare")
+	writeSnapshotAt(t, ctx, legacyDir, "historical\n")
+
+	// Both identities hold a store; neither retains this hash. The answer stays
+	// "expired", not "never captured".
+	ghost := strings.Repeat("a", 40)
+	if _, err := f.svc.LookupSnapshot(ctx, ghost); ReasonOf(err) != ReasonSnapshotExpired {
+		t.Fatalf("lookup in two stores that lack the hash = %v, want %q", err, ReasonSnapshotExpired)
+	}
+
+	// A canonical store that does not exist beside a historical repository that
+	// lacks the hash is still an expiry: this workspace HAS captured before.
+	freshDataDir := t.TempDir()
+	freshLegacy := filepath.Join(freshDataDir, snapshotsDirName, f.rawID)
+	if err := os.MkdirAll(freshLegacy, 0o755); err != nil {
+		t.Fatalf("mkdir fresh legacy: %v", err)
+	}
+	gitEnv(t, ctx, freshLegacy, "init", "--bare")
+	fresh := New(freshDataDir, f.link, 2_000_000, nil, testLogger())
+	if _, err := fresh.LookupSnapshot(ctx, ghost); ReasonOf(err) != ReasonSnapshotExpired {
+		t.Fatalf("lookup with only a historical store = %v, want %q", err, ReasonSnapshotExpired)
+	}
+	// Resolving the fallback must not bootstrap the canonical store.
+	if _, err := os.Lstat(filepath.Join(freshDataDir, snapshotsDirName, v2DirName, f.canonicalID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the lookup created a canonical store while searching a fallback: %v", err)
+	}
+
+	// No store in either known identity: "never captured".
+	empty := New(t.TempDir(), f.real, 2_000_000, nil, testLogger())
+	if _, err := empty.LookupSnapshot(ctx, ghost); ReasonOf(err) != ReasonSnapshotNotFound {
+		t.Fatalf("lookup with no store at all = %v, want %q", err, ReasonSnapshotNotFound)
+	}
+}
+
 // A hash that lives in the legacy repository is still found once the v2 store
 // exists but does not retain it: the v2 path is checked first and the legacy
 // repository is the fallback that preserves pre-migration rollback history.

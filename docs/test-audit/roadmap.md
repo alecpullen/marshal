@@ -25,24 +25,26 @@ approval-activity false positives. The executable plan names the exact tasks,
 tests and commands. This stage does not weaken policy checks or change the
 snapshot store. It establishes a smaller, more interpretable failure baseline.
 
-The remaining full-suite baseline is 20 named failures (`internal/app` 6,
-`internal/snapshot` 14), each owned by P1 or P2.
+The remaining full-suite baseline after P1a is four named `internal/app`
+failures (three shell admission-path fixtures and the prompt budget), owned by
+P2, plus the intermittent process-group EPERM in `internal/snapshot`, owned by
+P1b.
 
 ## P1 — snapshot identity and cancellation safety
 
-Resolve the service/catalog root mismatch and its related snapshot/startup
-tests. First establish an explicit on-disk compatibility design for canonical
-and historical raw-hash v2 stores and legacy stores, including missing roots,
-two existing stores, no destructive implicit migration, and locking. Preserve
-lookup, restore and maintenance access to previously written data; verify
-symlinked and canonical workspace aliases, concurrent ownership and failure
-paths. Separately diagnose process-group EPERM on the supported operating
-systems with an owned child tree; preserve fail-closed semantics and prove
-that no descendant survives before making a production change. Repair the
-empty Git-operation recorder assertion without masking missing setup. Require
-the targeted snapshot suite and repeated cancellation tests to pass without
-the `TMPDIR` workaround. Author a separate executable plan after the identity
-and process-lifetime decisions are made.
+P1a — canonical identity, historical lookup and the recorder assertion — is
+implemented by the
+[2026-10-30 executable plan](plans/2026-10-30-p1a-snapshot-identity-plan.md) and
+records its evidence in the [audit](audit.md#verification-record). One canonical
+identity now governs capture, lookup, restore and maintenance; the original
+spelling is a constrained, validated historical fallback, so previously written
+data stays reachable without moving, merging or deleting a store.
+
+P1b remains open: diagnose process-group EPERM on the supported operating
+systems with an owned child tree, preserve fail-closed semantics and prove that
+no descendant survives before making a production change. Require the targeted
+snapshot suite and repeated cancellation tests to pass without the `TMPDIR`
+workaround. P1 does not close until that work is complete.
 
 ## P2 — close remaining baseline failures
 

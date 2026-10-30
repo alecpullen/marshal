@@ -79,6 +79,11 @@ func TestDiscoverFindsV2AndLegacyStoresWhoseCheckoutIsGone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CatalogForRoot: %v", err)
 	}
+	// The manifest records the CANONICAL root, so the comparison below uses the
+	// canonical spelling recorded before the checkout is removed rather than the
+	// raw temp path, which is a different spelling on a platform whose temp root
+	// is a symlink.
+	recordedOrphanRoot := orphan.WorkspaceRoot
 	if _, err := orphan.CreateGeneration(ctx, ""); err != nil {
 		t.Fatalf("CreateGeneration for orphan: %v", err)
 	}
@@ -130,8 +135,8 @@ func TestDiscoverFindsV2AndLegacyStoresWhoseCheckoutIsGone(t *testing.T) {
 	if orphaned == nil {
 		t.Fatal("the workspace whose checkout was deleted was not discovered")
 	}
-	if orphaned.Root != orphanRoot {
-		t.Fatalf("orphaned workspace root = %q, want the recorded %q", orphaned.Root, orphanRoot)
+	if orphaned.Root != recordedOrphanRoot {
+		t.Fatalf("orphaned workspace root = %q, want the recorded canonical root %q", orphaned.Root, recordedOrphanRoot)
 	}
 	if _, err := os.Lstat(orphaned.Root); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the orphaned checkout unexpectedly exists: %v", err)

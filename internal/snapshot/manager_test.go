@@ -586,6 +586,11 @@ func TestWorkspaceHashForMatchesProjectHash(t *testing.T) {
 // A Service and a Manager built from the same data dir and workspace root must
 // agree on which directory belongs to which workspace, so reclamation can never
 // target the wrong store.
+//
+// Both the reported directory and the reported identifier come from the
+// canonical catalog. They are NOT the raw-path hash: on a platform whose temp
+// root is a symlink (macOS /var -> /private/var) the two spellings hash
+// differently, and the catalog is the one captures use.
 func TestServiceStoreDirMatchesManagerCatalog(t *testing.T) {
 	dataDir := t.TempDir()
 	project := t.TempDir()
@@ -601,8 +606,8 @@ func TestServiceStoreDirMatchesManagerCatalog(t *testing.T) {
 	if got := svc.StoreDir(); got != cat.Root() {
 		t.Fatalf("Service.StoreDir() = %q, want the manager's catalog root %q", got, cat.Root())
 	}
-	if got := svc.Workspace(); got != WorkspaceHashFor(project) {
-		t.Fatalf("Service.Workspace() = %q, want %q", got, WorkspaceHashFor(project))
+	if got := svc.Workspace(); got != cat.Workspace() {
+		t.Fatalf("Service.Workspace() = %q, want the manager's catalog workspace %q", got, cat.Workspace())
 	}
 }
 

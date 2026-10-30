@@ -460,7 +460,13 @@ func TestRuntimeCloseRunsNoGitGC(t *testing.T) {
 	if hash == "" {
 		t.Fatal("Track returned no hash")
 	}
-	commandsBefore := strings.Count(readFileOrEmpty(t, logPath), "\n")
+	before := recordedGitEntries(t, logPath)
+	if len(before) == 0 {
+		// An empty log means the recording wrapper never saw the snapshot Git
+		// invocation, so the baseline below would be meaningless. Fail with the
+		// fixture path instead of asserting nothing.
+		t.Fatalf("recording Git wrapper saw no Git operation during Track (log %s)", logPath)
+	}
 
 	st := session.New(config.Default(), workDir, time.Now(), session.Persistence{})
 	rt := &Runtime{
@@ -477,13 +483,13 @@ func TestRuntimeCloseRunsNoGitGC(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	recorded := readFileOrEmpty(t, logPath)
-	after := strings.Split(strings.TrimRight(recorded, "\n"), "\n")
-	if len(after) > commandsBefore {
+	after := recordedGitEntries(t, logPath)
+	if len(after) > len(before) {
 		// The shutdown path's only permitted Git use is the read-only status
 		// probe (ref listings). Anything that could WRITE — gc, repack, reflog
-		// expiry, ref pruning, an object write — is the defect.
-		for _, c := range after[commandsBefore:] {
+		// expiry, ref pruning, an object write — is the defect. Only the
+		// entries appended by Close are inspected.
+		for _, c := range after[len(before):] {
 			sub := recordedGitSubcommand(c)
 			if banned := heavyGitSubcommand(sub, c); banned != "" {
 				t.Errorf("Close ran a heavy storage command %q (matched %q)", c, banned)
@@ -558,6 +564,21 @@ func readFileOrEmpty(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(data)
+}
+
+// recordedGitEntries parses a recording-wrapper log into one entry per Git
+// invocation: nil when the file is missing or empty, otherwise the non-empty
+// lines in the order they were appended. Splitting an empty log naively would
+// yield a single phantom "" entry and turn "no command" into "one command".
+func recordedGitEntries(t *testing.T, path string) []string {
+	t.Helper()
+	var entries []string
+	for _, line := range strings.Split(readFileOrEmpty(t, path), "\n") {
+		if line != "" {
+			entries = append(entries, line)
+		}
+	}
+	return entries
 }
 
 // TestStartupSnapshotMaintenanceIsBoundedAndSkipsStorelessWorkspaces pins the

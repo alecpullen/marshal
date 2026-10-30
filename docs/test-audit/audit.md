@@ -108,6 +108,18 @@ workaround into the tests as the fix. Inspect `internal/snapshot/service.go`,
 the manager/catalog implementation, and
 `TestServiceStoreDirMatchesManagerCatalog`.
 
+**Resolved (P1a, plan `2026-10-30-p1a-snapshot-identity-plan.md`):** one
+canonical identity now governs the service, its prechecks and its captures.
+`Service.Workspace()` and `StoreDir()` report the canonical catalog's hash, and
+the raw spelling survives only as the one known historical identity. Exact
+lookup, diff and restore try the canonical catalog first and then that
+identity's validated v2 catalog or pre-v2 bare repository; maintenance covers
+both validated catalogs under the existing store lock. Nothing is moved,
+merged or deleted implicitly, and a workspace with no store is never
+bootstrapped merely to be maintained. The fixtures now derive their expected
+identity from the canonical catalog rather than the raw temporary path, so no
+test depends on a `TMPDIR` override.
+
 ### Git fixtures inherit the developer's identity
 
 **Reproduced:** `TestCLIGitOpsCommitAllWithoutARepoIdentity` fails with the
@@ -230,6 +242,14 @@ expected baseline before checking the commands. The same test also passes
 with a canonical temporary root, so keep this assertion issue separate from
 the snapshot identity mismatch.
 
+**Resolved (P1a):** the log is normalized into zero entries when it is empty and
+one entry per non-empty line otherwise, before and after `rt.Close`, and an
+empty baseline now fails with the fixture's log path. Fixing the assertion
+exposed a second defect: `Rooted.svc()` built each per-root `Service` without the
+rooted Git binary, so the recorder never observed capture. That seam now threads
+through `snapshot.WithServiceGitBinary`, and the test proves the recorder saw
+`Track` before asserting anything about shutdown.
+
 ## Tests to improve, consolidate, or remove
 
 ### Session-list cache test never opens a database
@@ -325,6 +345,28 @@ solely on test names.
   `internal/agent`) passes in full, as do `internal/app/tui/...`,
   `go vet ./...`, `gofmt -l` over the eight touched files, `git diff --check`
   and the scripted usability journey against a freshly built binary.
+- **P1a execution (`p1a-snapshot-identity` branch, four labelled commits on
+  2026-10-30):** the canonical-identity, historical-lookup, validated-maintenance
+  and recorder fixes above were applied and verified. `go test
+  ./internal/snapshot -count=1 -timeout 3m` passes against the default temporary
+  root with no `TMPDIR` override, as do the shutdown and startup-maintenance
+  `internal/app` tests, `internal/app/tui/...`, `CGO_ENABLED=1 go build
+  ./cmd/marshal`, `go vet ./...`, `gofmt -l` over the touched files,
+  `git diff --check` and the scripted usability journey against the freshly
+  built binary. This was exercised on macOS/darwin only.
+- The post-P1a `go test ./... -count=1 -timeout 5m` leaves four named
+  `internal/app` failures — the three shell admission-path fixtures and the
+  prompt budget — which belong to P2, plus one intermittent
+  `TestRunManagedCancellationKillsTree` EPERM in `internal/snapshot` that passes
+  when the package is run alone and remains P1b. P1a deliberately neither
+  investigated nor weakened that fail-closed process-tree guarantee, so the
+  suite is not claimed clean while P1b and P2 are open.
+- P1a's recorded limitation: a workspace launched by a canonical path cannot
+  discover an arbitrary historical *legacy* alias, because a pre-v2 bare
+  repository's hash alone reveals no root provenance. Previously known raw paths
+  remain discoverable when that same path is supplied, and v2 manifests whose
+  matching roots correspond to neither known hash are left untouched for
+  manager-wide discovery.
 - The post-fix `go test ./... -count=1 -timeout 5m` still fails, as the roadmap
   expects before P1/P2: 20 named tests remain across `internal/app` (6) and
   `internal/snapshot` (14). Every one maps to an audit finding still open —

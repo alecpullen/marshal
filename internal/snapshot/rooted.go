@@ -104,6 +104,14 @@ func NewRooted(dataDir, projectRoot string, activeRoot func() string, maxFile in
 	return r
 }
 
+// newService builds a per-root Service that shares this Rooted's manager
+// configuration, including the Git executable override. Sharing it is what makes
+// a recording wrapper observe CAPTURE as well as maintenance: a Service whose
+// manager was built with the default binary would silently run the real git.
+func (r *Rooted) newService(root string) *Service {
+	return New(r.dataDir, root, r.maxFile, r.ignore, r.logger, WithServiceGitBinary(r.gitBinary))
+}
+
 func (r *Rooted) svc() *Service {
 	root := r.activeRoot()
 	if root == "" {
@@ -114,7 +122,7 @@ func (r *Rooted) svc() *Service {
 	if s, ok := r.services[root]; ok {
 		return s
 	}
-	s := New(r.dataDir, root, r.maxFile, r.ignore, r.logger)
+	s := r.newService(root)
 	if r.services == nil {
 		r.services = make(map[string]*Service)
 	}
@@ -304,7 +312,7 @@ func (r *Rooted) HasActiveStore() bool {
 	if root == "" {
 		root = r.projectRoot
 	}
-	svc := New(r.dataDir, root, r.maxFile, r.ignore, r.logger)
+	svc := r.newService(root)
 	if svc.hasStore() {
 		return true
 	}
@@ -335,7 +343,7 @@ func (r *Rooted) Status(ctx context.Context) error {
 	if root == "" {
 		root = r.projectRoot
 	}
-	svc := New(r.dataDir, root, r.maxFile, r.ignore, r.logger)
+	svc := r.newService(root)
 	if !svc.hasStore() {
 		return nil
 	}

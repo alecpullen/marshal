@@ -674,6 +674,11 @@ func TestCleanupReconcilesVersionedStoreWithoutConfirmation(t *testing.T) {
 	if len(report.Reconciled) != 1 {
 		t.Fatalf("reconciled %v workspaces, want the versioned one", report.Reconciled)
 	}
+	// The reconciled identity is the CANONICAL one captures write to, not the raw
+	// spelling of the temp path.
+	if report.Reconciled[0] != svc.Workspace() {
+		t.Fatalf("reconciled workspace = %q, want the canonical catalog's %q", report.Reconciled[0], svc.Workspace())
+	}
 	if report.StagingRemoved != 1 {
 		t.Fatalf("removed %d staging directories, want 1", report.StagingRemoved)
 	}

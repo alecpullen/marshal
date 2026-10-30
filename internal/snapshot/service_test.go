@@ -361,6 +361,114 @@ func TestService_DisabledCreatesNothing(t *testing.T) {
 	}
 }
 
+// A service reports the identity of the store captures actually use: a real
+// path and an owned symlink to it must agree, a path that no longer exists keeps
+// its absolute spelling, and the getters must never create the store they name.
+func TestServiceCanonicalAndSymlinkIdentityAgree(t *testing.T) {
+	requireServiceGit(t)
+
+	parent := t.TempDir()
+	real := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "a.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+	link := filepath.Join(parent, "workspace-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatalf("symlink workspace: %v", err)
+	}
+
+	dataDir := t.TempDir()
+	realSvc := New(dataDir, real, 2_000_000, nil, testLogger())
+	linkSvc := New(dataDir, link, 2_000_000, nil, testLogger())
+
+	// The getters report an identity; they do not create the store it names.
+	if _, err := os.Lstat(filepath.Join(dataDir, snapshotsDirName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the identity getters created the snapshot store: %v", err)
+	}
+
+	m, err := NewManager(dataDir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	cat, err := m.CatalogForRoot(real)
+	if err != nil {
+		t.Fatalf("CatalogForRoot(real): %v", err)
+	}
+	linkCat, err := m.CatalogForRoot(link)
+	if err != nil {
+		t.Fatalf("CatalogForRoot(link): %v", err)
+	}
+	if got := linkCat.Root(); got != cat.Root() {
+		t.Fatalf("CatalogForRoot disagrees between a real path and its symlink: %q vs %q", got, cat.Root())
+	}
+
+	for name, svc := range map[string]*Service{"real path": realSvc, "symlink": linkSvc} {
+		if got := svc.Workspace(); got != cat.Workspace() {
+			t.Fatalf("%s Workspace() = %q, want the manager's catalog workspace %q", name, got, cat.Workspace())
+		}
+		if got := svc.StoreDir(); got != cat.Root() {
+			t.Fatalf("%s StoreDir() = %q, want the manager's catalog root %q", name, got, cat.Root())
+		}
+	}
+
+	// A path that does not exist keeps its absolute/clean spelling: there is
+	// nothing to resolve, and the getters still succeed without creating a store.
+	absentDataDir := t.TempDir()
+	absent := filepath.Join(parent, "gone")
+	absentSvc := New(absentDataDir, absent, 2_000_000, nil, testLogger())
+	absentID := WorkspaceHashFor(absent)
+	if got := absentSvc.Workspace(); got != absentID {
+		t.Fatalf("absent Workspace() = %q, want the absolute/clean hash %q", got, absentID)
+	}
+	if got, want := absentSvc.StoreDir(), filepath.Join(absentDataDir, snapshotsDirName, v2DirName, absentID); got != want {
+		t.Fatalf("absent StoreDir() = %q, want %q", got, want)
+	}
+	if _, err := os.Lstat(filepath.Join(absentDataDir, snapshotsDirName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the identity getters created a snapshot store for an absent path: %v", err)
+	}
+
+	// Captures through either alias must land in that one active store.
+	ctx := context.Background()
+	first, err := realSvc.Track(ctx)
+	if err != nil {
+		t.Fatalf("Track via the real path: %v", err)
+	}
+	if !validObjectHash(first) {
+		t.Fatalf("Track via the real path returned %q, which is not an object id", first)
+	}
+	if err := os.WriteFile(filepath.Join(real, "a.txt"), []byte("two\n"), 0o644); err != nil {
+		t.Fatalf("rewrite workspace file: %v", err)
+	}
+	second, err := linkSvc.Track(ctx)
+	if err != nil {
+		t.Fatalf("Track via the symlink: %v", err)
+	}
+	if !validObjectHash(second) {
+		t.Fatalf("Track via the symlink returned %q, which is not an object id", second)
+	}
+	if first == second {
+		t.Fatalf("both captures published %q; rewriting the file should have produced a new snapshot", first)
+	}
+	generationHolding(t, m, cat, first)
+	generationHolding(t, m, cat, second)
+
+	// The alias must not have created a second workspace store.
+	entries, err := os.ReadDir(filepath.Join(dataDir, snapshotsDirName, v2DirName))
+	if err != nil {
+		t.Fatalf("read v2 store root: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if len(names) != 1 || names[0] != cat.Workspace() {
+		t.Fatalf("v2 store holds %v, want only the canonical workspace %q", names, cat.Workspace())
+	}
+}
+
 // Diff and Restore must reject a hash that is not an object id rather than
 // handing the text to Git as a revision expression.
 func TestService_RejectsNonHashIdentifiers(t *testing.T) {
@@ -646,5 +754,240 @@ func TestRootedTrackDiffRestoreThroughNewPath(t *testing.T) {
 	}
 	if string(data) != "hello" {
 		t.Fatalf("restored content = %q, want %q", data, "hello")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance across known workspace identities
+// ---------------------------------------------------------------------------
+
+// assertGenerationsReclaimed reports an error unless root's generation
+// directory is empty and its manifest survived: reclamation removes whole
+// generations, and forgetting the manifest would leave storage with no record
+// of where it came from.
+func assertGenerationsReclaimed(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, generationsDirName))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read generations in %s: %v", root, err)
+	}
+	for _, e := range entries {
+		t.Fatalf("maintenance left generation %s in %s", e.Name(), root)
+	}
+	if _, err := os.Stat(filepath.Join(root, manifestFileName)); err != nil {
+		t.Fatalf("maintenance removed the manifest of %s: %v", root, err)
+	}
+}
+
+// Maintenance covers every validated catalog of ONE workspace — the canonical
+// store and a validated historical one — and nothing else: unrelated sibling
+// stores and pre-v2 bare repositories are left byte-identical, protected
+// generations survive, and a workspace with no store is never bootstrapped just
+// to be maintained.
+func TestServiceMaintenanceKnownWorkspaceIdentities(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("canonical only", func(t *testing.T) {
+		f := newHistoricalIdentityFixture(t, ctx)
+		time.Sleep(1100 * time.Millisecond)
+		if err := f.svc.Prune(ctx, 0); err != nil {
+			t.Fatalf("Prune: %v", err)
+		}
+		assertGenerationsReclaimed(t, filepath.Join(f.dataDir, snapshotsDirName, v2DirName, f.canonicalID))
+	})
+
+	t.Run("historical only", func(t *testing.T) {
+		f := newAliasWorkspace(t)
+		var rawDir string
+		f.withLock(t, ctx, func(m *Manager) {
+			_, rawDir = historicalV2Catalog(t, ctx, m, f.rawID, f.canonicalRoot)
+			writeSnapshotAt(t, ctx, rawDir, "historical\n")
+		})
+
+		if err := f.svc.Prune(ctx, 0); err != nil {
+			t.Fatalf("Prune: %v", err)
+		}
+		assertGenerationsReclaimed(t, filepath.Join(f.dataDir, snapshotsDirName, v2DirName, f.rawID))
+		// The canonical catalog never existed and must not be created by a
+		// maintenance pass.
+		if _, err := os.Lstat(filepath.Join(f.dataDir, snapshotsDirName, v2DirName, f.canonicalID)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("maintenance bootstrapped the canonical store for a historical-only workspace: %v", err)
+		}
+	})
+
+	t.Run("both with a protected generation", func(t *testing.T) {
+		f := newHistoricalIdentityFixture(t, ctx)
+		var rawDir string
+		f.withLock(t, ctx, func(m *Manager) {
+			rawCat, dir := historicalV2Catalog(t, ctx, m, f.rawID, f.canonicalRoot)
+			rawDir = dir
+			writeSnapshotAt(t, ctx, dir, "historical\n")
+			man, err := rawCat.Load()
+			if err != nil || man == nil {
+				t.Fatalf("load historical manifest: %v (man=%v)", err, man)
+			}
+			for i := range man.Generations {
+				man.Generations[i].Protected = true
+			}
+			if err := rawCat.Save(man); err != nil {
+				t.Fatalf("protect historical generation: %v", err)
+			}
+		})
+
+		// A legacy bare repository under the same historical identity: read-only,
+		// never reclaimed.
+		legacyDir := filepath.Join(f.dataDir, snapshotsDirName, f.rawID)
+		if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+			t.Fatalf("mkdir legacy: %v", err)
+		}
+		gitEnv(t, ctx, legacyDir, "init", "--bare")
+		writeSnapshotAt(t, ctx, legacyDir, "legacy\n")
+		legacyBefore := storeFingerprint(t, legacyDir)
+
+		time.Sleep(1100 * time.Millisecond)
+		if err := f.svc.Prune(ctx, 0); err != nil {
+			t.Fatalf("Prune: %v", err)
+		}
+
+		assertGenerationsReclaimed(t, filepath.Join(f.dataDir, snapshotsDirName, v2DirName, f.canonicalID))
+		// The protected historical generation survives even though it expired.
+		if _, err := os.Stat(rawDir); err != nil {
+			t.Fatalf("maintenance reclaimed a protected generation: %v", err)
+		}
+		if got := storeFingerprint(t, legacyDir); got != legacyBefore {
+			t.Fatal("maintenance mutated a legacy bare repository")
+		}
+	})
+
+	t.Run("unexpired entries survive", func(t *testing.T) {
+		f := newHistoricalIdentityFixture(t, ctx)
+		if err := f.svc.Prune(ctx, 7); err != nil {
+			t.Fatalf("Prune: %v", err)
+		}
+		genDir := filepath.Join(f.dataDir, snapshotsDirName, v2DirName, f.canonicalID, generationsDirName)
+		entries, err := os.ReadDir(genDir)
+		if err != nil {
+			t.Fatalf("read generations: %v", err)
+		}
+		if len(entries) == 0 {
+			t.Fatal("maintenance reclaimed an unexpired generation")
+		}
+	})
+
+	t.Run("neither", func(t *testing.T) {
+		f := newAliasWorkspace(t)
+		if err := f.svc.Prune(ctx, 0); err != nil {
+			t.Fatalf("Prune: %v", err)
+		}
+		if err := f.svc.Status(ctx); err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(f.dataDir, snapshotsDirName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("maintenance bootstrapped a store for a workspace that never captured: %v", err)
+		}
+	})
+
+	t.Run("invalid historical manifest", func(t *testing.T) {
+		f := newHistoricalIdentityFixture(t, ctx)
+		var manifestPath string
+		f.withLock(t, ctx, func(m *Manager) {
+			rawCat, _ := historicalV2Catalog(t, ctx, m, f.rawID, f.canonicalRoot)
+			manifestPath = rawCat.ManifestPath()
+		})
+		if err := os.WriteFile(manifestPath, []byte("{not json"), 0o644); err != nil {
+			t.Fatalf("corrupt historical manifest: %v", err)
+		}
+		// A catalog that cannot be reasoned about must be reported, never
+		// silently reported healthy.
+		if err := f.svc.Prune(ctx, 7); ReasonOf(err) != ReasonUnreadableFile {
+			t.Fatalf("Prune over an invalid historical manifest = %v, want %q", err, ReasonUnreadableFile)
+		}
+		if err := f.svc.Status(ctx); ReasonOf(err) != ReasonUnreadableFile {
+			t.Fatalf("Status over an invalid historical manifest = %v, want %q", err, ReasonUnreadableFile)
+		}
+	})
+
+	t.Run("storeless beside an over-budget unrelated store", func(t *testing.T) {
+		f := newAliasWorkspace(t)
+		unrelated := WorkspaceHashFor(filepath.Join(t.TempDir(), "unrelated-workspace"))
+		unrelatedRoot := filepath.Join(f.dataDir, snapshotsDirName, v2DirName, unrelated)
+		if err := os.MkdirAll(unrelatedRoot, 0o755); err != nil {
+			t.Fatalf("mkdir unrelated store: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(unrelatedRoot, "blob.bin"), make([]byte, 1<<20), 0o644); err != nil {
+			t.Fatalf("write unrelated allocation: %v", err)
+		}
+		before := storeFingerprint(t, unrelatedRoot)
+
+		if err := f.svc.Prune(ctx, 0); err != nil {
+			t.Fatalf("Prune: %v", err)
+		}
+		if err := f.svc.Status(ctx); err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(f.dataDir, snapshotsDirName, v2DirName, f.canonicalID)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("maintenance bootstrapped a store beside an unrelated one: %v", err)
+		}
+		if got := storeFingerprint(t, unrelatedRoot); got != before {
+			t.Fatal("maintenance touched an unrelated workspace's store")
+		}
+	})
+}
+
+// Maintenance is mutually exclusive with a capture through EITHER spelling: a
+// second owner's hold on the store makes a sweep fail fast with the lock reason
+// rather than racing it, and the sweep succeeds once the lock is released.
+func TestServiceMaintenanceSerializesAcrossAliases(t *testing.T) {
+	ctx := context.Background()
+	f := newHistoricalIdentityFixture(t, ctx)
+
+	// A second service, bound to the RESOLVED spelling, reaches the same store.
+	other := New(f.dataDir, f.real, 2_000_000, nil, testLogger())
+	if other.Workspace() != f.canonicalID {
+		t.Fatalf("the alias and the real path reported different identities: %q vs %q", other.Workspace(), f.canonicalID)
+	}
+
+	m, err := NewManager(f.dataDir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	if err := m.Bootstrap(ctx); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if _, err := m.Acquire(ctx); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			_ = m.Release()
+		}
+	}()
+
+	// Each call gets its OWN bounded context, so one call's expiry can never be
+	// mistaken for the next call's answer.
+	heldPrune, cancelPrune := context.WithTimeout(ctx, lockPollInterval*4)
+	pruneErr := f.svc.Prune(heldPrune, 7)
+	cancelPrune()
+	if ReasonOf(pruneErr) != ReasonLockTimeout {
+		t.Fatalf("Prune while another owner held the store = %v, want a lock timeout", pruneErr)
+	}
+
+	heldStatus, cancelStatus := context.WithTimeout(ctx, lockPollInterval*4)
+	statusErr := other.Status(heldStatus)
+	cancelStatus()
+	if ReasonOf(statusErr) != ReasonLockTimeout {
+		t.Fatalf("Status through the other alias while the store was held = %v, want a lock timeout", statusErr)
+	}
+
+	if err := m.Release(); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	released = true
+	if err := f.svc.Prune(ctx, 7); err != nil {
+		t.Fatalf("Prune after release: %v", err)
+	}
+	if err := other.Status(ctx); err != nil {
+		t.Fatalf("Status after release: %v", err)
 	}
 }

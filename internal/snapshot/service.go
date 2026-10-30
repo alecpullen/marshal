@@ -44,6 +44,11 @@ type Service struct {
 	enabled  bool
 	maxFile  int64
 	ignore   []string
+	// gitBinary overrides the Git executable this service's manager runs. It is
+	// a fault-injection seam: a test installs a recording wrapper so it can
+	// assert exactly which Git commands a lifecycle path runs. Production leaves
+	// it empty (the manager default is "git").
+	gitBinary string
 
 	// sem serialises this service's operations. It is a channel rather than a
 	// sync.Mutex so a caller can give up when its context ends instead of
@@ -57,6 +62,22 @@ type Service struct {
 	catalog *Catalog
 }
 
+// ServiceOption configures a Service. Every option is optional; the
+// five-argument New form keeps working unchanged.
+type ServiceOption func(*Service)
+
+// WithServiceGitBinary installs the Git executable this service's manager runs
+// for capture, lookup and maintenance alike, so a recording wrapper observes
+// every invocation a service makes. It is a fault-injection seam: production
+// never calls it.
+func WithServiceGitBinary(path string) ServiceOption {
+	return func(s *Service) {
+		if path != "" {
+			s.gitBinary = path
+		}
+	}
+}
+
 // New builds a Service for one workspace rooted at projectRoot, storing
 // snapshots below dataDir.
 //
@@ -64,7 +85,7 @@ type Service struct {
 // catalog are all created lazily on the first capture that actually needs
 // them. That is what keeps `snapshots.enabled = false` from leaving an empty
 // store behind, and it is why a disabled service never touches the filesystem.
-func New(dataDir, projectRoot string, maxFileBytes int64, ignore []string, logger *slog.Logger) *Service {
+func New(dataDir, projectRoot string, maxFileBytes int64, ignore []string, logger *slog.Logger, opts ...ServiceOption) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -77,11 +98,26 @@ func New(dataDir, projectRoot string, maxFileBytes int64, ignore []string, logge
 		ignore:   ignore,
 		sem:      make(chan struct{}, 1),
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
 	if !gitAvailable() {
 		s.enabled = false
 		logger.Warn("git not found; snapshots disabled")
 	}
 	return s
+}
+
+// managerOptions is the manager configuration every per-workspace operation
+// uses, so a capture and a maintenance sweep can never disagree about the Git
+// executable in force.
+func (s *Service) managerOptions() []ManagerOption {
+	if s.gitBinary == "" {
+		return nil
+	}
+	return []ManagerOption{WithGitBinary(s.gitBinary)}
 }
 
 // Enabled reports whether capture is possible at all.
@@ -95,14 +131,245 @@ func (s *Service) WorkTree() string { return s.workTree }
 func (s *Service) DataDir() string { return s.dataDir }
 
 // StoreDir is the versioned store directory this service captures into,
-// <dataDir>/snapshots/v2/<workspace-hash>. It is reported rather than derived
-// by callers so a Service and a Manager can never disagree about the layout.
+// <dataDir>/snapshots/v2/<canonical-workspace-hash>. It is reported rather than
+// derived by callers so a Service and a Manager can never disagree about the
+// layout.
+//
+// The reported identifier is the canonical one captures use. The raw-path hash
+// is only a diagnostic fallback for a root that cannot be canonicalized.
+// Nothing is created here.
 func (s *Service) StoreDir() string {
-	return filepath.Join(s.dataDir, snapshotsDirName, v2DirName, WorkspaceHashFor(s.workTree))
+	return filepath.Join(s.dataDir, snapshotsDirName, v2DirName, s.Workspace())
 }
 
 // Workspace is this service's workspace hash.
-func (s *Service) Workspace() string { return WorkspaceHashFor(s.workTree) }
+//
+// It is the canonical identifier the manager uses for captures, so a service
+// and a manager built from the same workspace root always agree on the store
+// even when one of them was handed an alias of that root. The raw-path hash is
+// only a diagnostic fallback for a root that cannot be canonicalized. Nothing
+// is created here.
+func (s *Service) Workspace() string {
+	_, ids, err := s.serviceWorkspaceIDs()
+	if err != nil || len(ids) == 0 {
+		return WorkspaceHashFor(s.workTree)
+	}
+	return ids[0]
+}
+
+// serviceWorkspaceIDs returns canonical and original-path hashes in that
+// order, deduplicated. canonicalRoot is the validated canonical workspace.
+//
+// The first identifier is the one captures use; the second is the raw-path
+// hash, which is kept because a store written by an older layout may still be
+// named by it. Nothing is stat'd or created beyond the symlink resolution
+// canonicalWorkspaceRoot performs.
+func (s *Service) serviceWorkspaceIDs() (canonicalRoot string, ids []string, err error) {
+	canonicalRoot, err = canonicalWorkspaceRoot(s.workTree)
+	if err != nil {
+		return "", nil, err
+	}
+	canonical := WorkspaceHashFor(canonicalRoot)
+	ids = []string{canonical}
+	if raw := WorkspaceHashFor(s.workTree); raw != canonical {
+		ids = append(ids, raw)
+	}
+	return canonicalRoot, ids, nil
+}
+
+// serviceIdentity is one identity of this service's workspace that a lookup or
+// a maintenance pass may consult.
+type serviceIdentity struct {
+	// cat is the catalog handle for the identity. For a legacyOnly identity it
+	// is a bare handle whose only job is to name that identity's pre-v2
+	// repository.
+	cat *Catalog
+	// legacyOnly is set when the identity has no validated v2 catalog, so only
+	// its pre-v2 bare repository may be consulted.
+	legacyOnly bool
+}
+
+// serviceIdentities resolves every known identity of this service's workspace,
+// canonical first: the catalog captures use, then one entry per historical
+// identity.
+//
+// A historical identity is included only when it holds a v2 catalog whose
+// manifest provenance validates, or a pre-v2 bare repository. Nothing is
+// created, moved, merged or deleted here: an identity that holds neither is left
+// alone, and an unreadable or mismatched catalog is reported rather than
+// silently skipped.
+func (s *Service) serviceIdentities(m *Manager, canonical *Catalog) ([]serviceIdentity, error) {
+	if m == nil || canonical == nil {
+		return nil, storeErrorf(ReasonInternal, "snapshot identities need a manager and a canonical catalog")
+	}
+	canonicalRoot, ids, err := s.serviceWorkspaceIDs()
+	if err != nil {
+		return nil, err
+	}
+	out := []serviceIdentity{{cat: canonical}}
+	for _, id := range ids[1:] {
+		cat, present, err := s.historicalCatalog(m, canonicalRoot, id)
+		if err != nil {
+			return nil, err
+		}
+		if present {
+			out = append(out, serviceIdentity{cat: cat})
+			continue
+		}
+		// No validated v2 catalog. A pre-v2 bare repository has no root
+		// provenance at all, so it is consulted at its own exact hash — never a
+		// guessed one, and never a store discovered elsewhere.
+		raw, err := m.Catalog(id)
+		if err != nil {
+			return nil, err
+		}
+		if !legacyRepoPresent(m, raw) {
+			continue
+		}
+		out = append(out, serviceIdentity{cat: raw, legacyOnly: true})
+	}
+	return out, nil
+}
+
+// serviceCatalogs returns the canonical catalog and any existing, validated
+// historical v2 catalog, in that order.
+//
+// It must be called with manager store ownership held. It performs no
+// migration or deletion: an identity whose store is absent is simply not in the
+// result, and one whose manifest cannot be read or does not describe this
+// workspace is an error.
+func (s *Service) serviceCatalogs(m *Manager, canonical *Catalog) ([]*Catalog, error) {
+	identities, err := s.serviceIdentities(m, canonical)
+	if err != nil {
+		return nil, err
+	}
+	cats := make([]*Catalog, 0, len(identities))
+	for _, identity := range identities {
+		if identity.legacyOnly {
+			continue
+		}
+		cats = append(cats, identity.cat)
+	}
+	return cats, nil
+}
+
+// historicalCatalog resolves one KNOWN historical identity to a v2 catalog that
+// may be trusted, or reports that it holds none.
+//
+// Validation is provenance: the catalog is trusted only when its readable
+// manifest names, canonicalized now, the same canonical workspace root. A store
+// that cannot be read, or that describes a different workspace, is reported —
+// never used to serve or reclaim another workspace's snapshots. A historical
+// catalog is not trusted as a symbolic link either, because following one would
+// make "this workspace's store" a path this process never validated.
+func (s *Service) historicalCatalog(m *Manager, canonicalRoot, id string) (*Catalog, bool, error) {
+	cat, err := m.Catalog(id)
+	if err != nil {
+		return nil, false, err
+	}
+	info, err := os.Lstat(cat.Root())
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, m.storeError(ReasonUnreadableFile, cat.Root(), err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, false, storeErrorf(ReasonSymlinkEscape,
+			"historical snapshot catalog %s is a symbolic link, so it is not trusted as this workspace's store", cat.Root())
+	}
+	if !info.IsDir() {
+		return nil, false, m.storeErrorf(ReasonInternal, cat.Root(), "historical snapshot catalog is not a directory")
+	}
+	man, err := cat.Load()
+	if err != nil {
+		return nil, false, err
+	}
+	if man == nil {
+		// A directory with no manifest is not a v2 catalog: it has no
+		// provenance to validate, so it is left untouched.
+		return nil, false, nil
+	}
+	if man.Root == "" {
+		return nil, false, cat.errf(ReasonUnreadableFile,
+			"historical catalog %s records no workspace root, so it cannot be attributed to this workspace", id)
+	}
+	root, err := canonicalWorkspaceRoot(man.Root)
+	if err != nil {
+		return nil, false, err
+	}
+	if root != canonicalRoot {
+		return nil, false, cat.errf(ReasonUnreadableFile,
+			"historical catalog %s records workspace root %q, which is not %q", id, man.Root, canonicalRoot)
+	}
+	cat.WorkspaceRoot = canonicalRoot
+	return cat, true, nil
+}
+
+// lookupServiceSnapshotOwned tries the known identities under the store lock,
+// canonical first.
+//
+// It falls back to a second identity only when the canonical one reports the
+// snapshot as not found or expired: an unreadable, corrupt, cancelled or
+// otherwise unexpected canonical result is returned immediately, because a
+// repair problem must not be masked by a hit elsewhere. A corrupt historical
+// candidate is surfaced for the same reason.
+func (s *Service) lookupServiceSnapshotOwned(ctx context.Context, m *Manager, canonical *Catalog, hash string) (*SnapshotLocation, error) {
+	// The canonical identity is answered FIRST, and an unexpected result is
+	// final: resolving the historical identities eagerly would let a broken
+	// historical catalog mask a perfectly good canonical rollback point.
+	loc, canonicalErr := lookupSnapshotOwned(ctx, m, canonical, hash)
+	if canonicalErr == nil {
+		return loc, nil
+	}
+	if !lookupMayHaveAnotherIdentity(canonicalErr) {
+		return nil, canonicalErr
+	}
+	identities, err := s.serviceIdentities(m, canonical)
+	if err != nil {
+		return nil, err
+	}
+	// A canonical "expired" means the workspace HAS a store that does not retain
+	// this hash. That distinction survives the fallback: if every identity is
+	// absent or lacks the hash, the answer is still an expiry, not "never
+	// captured".
+	sawStore := ReasonOf(canonicalErr) == ReasonSnapshotExpired
+
+	for _, identity := range identities[1:] {
+		var found *SnapshotLocation
+		var err error
+		if identity.legacyOnly {
+			found, err = legacyLookup(ctx, m, identity.cat, hash)
+		} else {
+			found, err = lookupSnapshotOwned(ctx, m, identity.cat, hash)
+		}
+		if err == nil {
+			return found, nil
+		}
+		switch ReasonOf(err) {
+		case ReasonSnapshotNotFound:
+			// This identity holds no store at all; keep looking.
+		case ReasonSnapshotExpired:
+			sawStore = true
+		default:
+			return nil, err
+		}
+	}
+	if sawStore {
+		return nil, expiredSnapshotError(canonical, hash)
+	}
+	return nil, canonicalErr
+}
+
+// lookupMayHaveAnotherIdentity reports whether a failed canonical lookup is one
+// a second known identity could still answer.
+func lookupMayHaveAnotherIdentity(err error) bool {
+	switch ReasonOf(err) {
+	case ReasonSnapshotNotFound, ReasonSnapshotExpired:
+		return true
+	}
+	return false
+}
 
 // lock acquires the operation semaphore, returning the context error if ctx
 // ends first. On a non-nil error the semaphore was NOT acquired and unlock must
@@ -126,7 +393,7 @@ func (s *Service) store() (*Manager, *Catalog, error) {
 	if s.manager != nil {
 		return s.manager, s.catalog, nil
 	}
-	m, err := NewManager(s.dataDir)
+	m, err := NewManager(s.dataDir, s.managerOptions()...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -242,7 +509,7 @@ func (s *Service) Diff(ctx context.Context, hash string) (string, error) {
 
 	var out string
 	err := s.withStore(ctx, func(m *Manager, cat *Catalog) error {
-		loc, err := lookupSnapshotOwned(ctx, m, cat, hash)
+		loc, err := s.lookupServiceSnapshotOwned(ctx, m, cat, hash)
 		if err != nil {
 			return err
 		}
@@ -293,7 +560,7 @@ func (s *Service) Restore(ctx context.Context, hash string) error {
 	defer s.unlock()
 
 	return s.withStore(ctx, func(m *Manager, cat *Catalog) error {
-		loc, err := lookupSnapshotOwned(ctx, m, cat, hash)
+		loc, err := s.lookupServiceSnapshotOwned(ctx, m, cat, hash)
 		if err != nil {
 			return err
 		}
@@ -301,7 +568,8 @@ func (s *Service) Restore(ctx context.Context, hash string) error {
 	})
 }
 
-// hasStore reports whether this workspace already has a versioned store.
+// hasStore reports whether this workspace already has a versioned store under
+// EITHER known identity, the canonical one or the original supplied spelling.
 //
 // It exists because a MAINTENANCE pass over a workspace that has never captured
 // must be a no-op rather than a reason to bootstrap the store. Bootstrapping
@@ -311,12 +579,22 @@ func (s *Service) Restore(ctx context.Context, hash string) error {
 // already over budget". Neither belongs on the shutdown path of a session that
 // never captured anything.
 //
-// The check is one Lstat, and it is deliberately per-workspace: a versioned
-// store that DOES exist is maintained even when a different workspace is over
-// budget.
+// The check is one Lstat per known identity, and it is deliberately
+// per-workspace: a versioned store that DOES exist is maintained even when a
+// different workspace is over budget.
 func (s *Service) hasStore() bool {
-	info, err := os.Lstat(s.StoreDir())
-	return err == nil && info.IsDir()
+	_, ids, err := s.serviceWorkspaceIDs()
+	if err != nil || len(ids) == 0 {
+		// A root that cannot be canonicalized still gets the diagnostic spelling
+		// checked; store() propagates the canonicalization error itself.
+		ids = []string{WorkspaceHashFor(s.workTree)}
+	}
+	for _, id := range ids {
+		if catalogDirExists(filepath.Join(s.dataDir, snapshotsDirName, v2DirName, id)) {
+			return true
+		}
+	}
+	return false
 }
 
 // Prune reclaims every generation whose snapshots have ALL expired under
@@ -341,8 +619,23 @@ func (s *Service) Prune(ctx context.Context, retentionDays int) error {
 	defer s.unlock()
 
 	return s.withStore(ctx, func(m *Manager, cat *Catalog) error {
-		_, err := m.ReclaimExpiredWorkspace(ctx, cat, retentionDays)
-		return err
+		cats, err := s.serviceCatalogs(m, cat)
+		if err != nil {
+			return err
+		}
+		// Canonical first, then any validated historical catalog. Each existing
+		// reclaim commits its own progress, so this is NOT an atomic multi-store
+		// transaction: on the first error the sweep stops and returns it, and a
+		// later call resumes from whatever the stores actually contain.
+		for _, c := range cats {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if _, err := m.ReclaimExpiredWorkspace(ctx, c, retentionDays); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -352,7 +645,8 @@ func (s *Service) Prune(ctx context.Context, retentionDays int) error {
 // It is scoped to THIS workspace and, like Prune, is a no-op when there is no
 // versioned store: a whole-root status scan costs real time on a store holding
 // other workspaces' history, and the runtime calls this on the shutdown path
-// for every session.
+// for every session. Every validated catalog of this workspace is reported on,
+// so a problem in a historical store is not hidden by a healthy canonical one.
 func (s *Service) Status(ctx context.Context) error {
 	if !s.enabled || !s.hasStore() {
 		return nil
@@ -361,8 +655,20 @@ func (s *Service) Status(ctx context.Context) error {
 		return err
 	}
 	defer s.unlock()
-	return s.withStore(ctx, func(m *Manager, _ *Catalog) error {
-		return m.StatusWorkspace(ctx, s.Workspace())
+	return s.withStore(ctx, func(m *Manager, cat *Catalog) error {
+		cats, err := s.serviceCatalogs(m, cat)
+		if err != nil {
+			return err
+		}
+		for _, c := range cats {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := m.StatusWorkspace(ctx, c.Workspace()); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 

@@ -104,7 +104,7 @@ func (s *Service) LookupSnapshot(ctx context.Context, hash string) (*SnapshotLoc
 
 	var loc *SnapshotLocation
 	err := s.withStore(ctx, func(m *Manager, cat *Catalog) error {
-		found, err := lookupSnapshotOwned(ctx, m, cat, canonical)
+		found, err := s.lookupServiceSnapshotOwned(ctx, m, cat, canonical)
 		if err != nil {
 			return err
 		}

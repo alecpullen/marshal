@@ -12,6 +12,24 @@ import (
 	"time"
 )
 
+// canonicalWorkspaceID returns the identity CAPTURES use for dir: the canonical
+// catalog's workspace hash, not the raw spelling's. A platform whose temp root is
+// a symlink (macOS /var -> /private/var) hashes the two spellings differently, so a
+// fixture that derived the store name from the raw path would look in the wrong
+// directory.
+func canonicalWorkspaceID(t *testing.T, dataDir, dir string) string {
+	t.Helper()
+	m, err := NewManager(dataDir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	cat, err := m.CatalogForRoot(dir)
+	if err != nil {
+		t.Fatalf("CatalogForRoot(%s): %v", dir, err)
+	}
+	return cat.Workspace()
+}
+
 func TestRootedSnapshotsFollowActiveRoot(t *testing.T) {
 	dataDir := t.TempDir()
 	project := t.TempDir()
@@ -215,8 +233,8 @@ func TestRootedMaintainsWorktreeStoresNotJustActiveRoot(t *testing.T) {
 		t.Fatalf("worktree Track: %v", err)
 	}
 
-	projectHash := WorkspaceHashFor(project)
-	worktreeHash := WorkspaceHashFor(worktree)
+	projectHash := canonicalWorkspaceID(t, dataDir, project)
+	worktreeHash := canonicalWorkspaceID(t, dataDir, worktree)
 	if projectHash == worktreeHash {
 		t.Fatal("project and worktree hashed to the same store")
 	}
@@ -289,8 +307,8 @@ func TestRootedMaintenanceCoversBothRootsAcrossRebind(t *testing.T) {
 		t.Fatalf("worktree Track: %v", err)
 	}
 
-	projectHash := WorkspaceHashFor(project)
-	worktreeHash := WorkspaceHashFor(worktree)
+	projectHash := canonicalWorkspaceID(t, dataDir, project)
+	worktreeHash := canonicalWorkspaceID(t, dataDir, worktree)
 
 	// The sweep runs while bound to the WORKTREE, so the project's store is not
 	// the active root. Both must still be covered.

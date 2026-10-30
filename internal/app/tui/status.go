@@ -610,3 +610,29 @@ func (m Model) drilledIntoRunningSubagent() bool {
 	}
 	return m.viewStack[len(m.viewStack)-1].Status == session.SubagentRunning
 }
+
+// ctrlXAction is the TUI's private decision about what Ctrl+X means. It is
+// shared by the keyboard handler and the footer construction so the hint and
+// the key agree.
+type ctrlXAction uint8
+
+const (
+	ctrlXNone ctrlXAction = iota
+	ctrlXStopAgent
+	ctrlXClearQueue
+)
+
+// ctrlXAction decides what Ctrl+X does right now: nothing while idle, a
+// targeted stop while drilled into a running subagent, and the queue clear
+// otherwise. The drilled-in check reads the view stack's snapshot status; the
+// snapshot can go stale, so the stop itself is attempted separately and may
+// fail.
+func (m Model) ctrlXAction() ctrlXAction {
+	if !m.busy {
+		return ctrlXNone
+	}
+	if m.drilledIntoRunningSubagent() {
+		return ctrlXStopAgent
+	}
+	return ctrlXClearQueue
+}

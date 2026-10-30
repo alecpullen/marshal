@@ -29,10 +29,14 @@ The remaining full-suite baseline after P1a is four named `internal/app`
 failures (three shell admission-path fixtures and the prompt budget), owned by
 P2, plus the intermittent process-group EPERM in `internal/snapshot`, owned by
 P1b. Those four were re-confirmed at the P1b base commit inside an isolated
-worktree: the three shell failures want approval or command admission because
-the worktree path is not a trusted folder, and the prompt budget sits within
-31 bytes of its 9,000-byte ceiling, so both are path-dependent fixtures rather
-than runtime regressions.
+worktree. P2 corrected how they are described here: the three shell failures
+were not path-dependent. Each fixture called a shell handler directly without
+an authorization proof or without wiring command admission at all, so the
+fail-closed path rejected a call that no authority had ever admitted; the
+fixture wiring was missing, and the runtime behavior was correct. The prompt
+failure had two independent causes: a 31-byte margin that a longer temporary
+path could erase, and a tool-schema total that was 322 bytes over its own
+15,000-byte ceiling regardless of any path.
 
 ## P1 — snapshot identity and cancellation safety
 
@@ -62,6 +66,25 @@ were run on this host; that limitation is recorded in the
 P1 closes with the P2 `internal/app` failures unchanged.
 
 ## P2 — close remaining baseline failures
+
+**Status: implemented.** Plan
+[2026-10-31-p2-admission-prompt-budget](plans/2026-10-31-p2-admission-prompt-budget-plan.md)
+ran as five labelled commits on `p2-admission-prompt-budget` from base
+`10191e9c`; evidence is in the [audit](audit.md#verification-record). The three
+shell fixtures now dispatch through production admission with a real
+authorization proof from the fixture's own authorizer, and the child-output
+test asserts both halves of its claim — the child sees the output and the
+parent does not. Both budget constants are unchanged: the prompt fixture pins
+its working-directory input so a temporary path's length cannot move the
+measurement, and three description trims took the schema total from 15,322 to
+14,957 bytes while keeping the safety and workflow instructions they carry. On
+macOS/darwin arm64 the focused tests pass at `-count=10`, `go test ./...`
+completes without a failing package, and `go vet ./...`, the
+`CGO_ENABLED=1 go build ./cmd/marshal` and `git diff --check` are clean. Linux
+and Windows are supported platforms that were not exercised on the execution
+host, so passing there remains a reported CI requirement rather than a claim.
+One unrelated, load-sensitive `internal/sandbox` container fixture failure is
+recorded in the audit rather than attributed to P2.
 
 For each shell registry integration test, wire the production admission and
 approval lifecycle in an isolated fixture and assert the original behavior;

@@ -1,0 +1,108 @@
+# Test audit remediation roadmap
+
+Date: 2026-10-30. Base: `5468c7823a6cb40e6c90047e778f433ba28686cb`.
+Source: [test audit](audit.md). Status: proposed.
+
+This roadmap accounts for every finding in the audit. Each stage is planned
+against the integrated result of the stage before it; the first executable
+plan is [P0 test reliability](plans/2026-10-30-p0-test-reliability-plan.md).
+The later stages are sequenced scopes and acceptance criteria, not yet
+executor-ready implementation plans. Their designs need the evidence and
+interfaces established by earlier work. The user approves each written plan
+before execution, following the prior TUI-polish workflow.
+
+## P0 — restore trustworthy test signals
+
+**Status: executed.** Plan
+[2026-10-30-p0-test-reliability](plans/2026-10-30-p0-test-reliability-plan.md)
+ran as seven labelled commits on `p0-test-reliability`; evidence is recorded
+per finding in the [audit](audit.md#verification-record).
+
+Fix the reproduced LSP PID-file race, isolate the Git identity fixture and
+standalone browser tests, assert session-list caching, make the access/reload
+test accept and prove both legitimate orderings, and repair the watcher and
+approval-activity false positives. The executable plan names the exact tasks,
+tests and commands. This stage does not weaken policy checks or change the
+snapshot store. It establishes a smaller, more interpretable failure baseline.
+
+The remaining full-suite baseline is 20 named failures (`internal/app` 6,
+`internal/snapshot` 14), each owned by P1 or P2.
+
+## P1 — snapshot identity and cancellation safety
+
+Resolve the service/catalog root mismatch and its related snapshot/startup
+tests. First establish an explicit on-disk compatibility design for canonical
+and historical raw-hash v2 stores and legacy stores, including missing roots,
+two existing stores, no destructive implicit migration, and locking. Preserve
+lookup, restore and maintenance access to previously written data; verify
+symlinked and canonical workspace aliases, concurrent ownership and failure
+paths. Separately diagnose process-group EPERM on the supported operating
+systems with an owned child tree; preserve fail-closed semantics and prove
+that no descendant survives before making a production change. Repair the
+empty Git-operation recorder assertion without masking missing setup. Require
+the targeted snapshot suite and repeated cancellation tests to pass without
+the `TMPDIR` workaround. Author a separate executable plan after the identity
+and process-lifetime decisions are made.
+
+## P2 — close remaining baseline failures
+
+For each shell registry integration test, wire the production admission and
+approval lifecycle in an isolated fixture and assert the original behavior;
+do not bypass fail-closed policy. Resolve prompt-budget failures by normalizing
+the path-dependent fixture and measuring per-tool schema contributions. Keep
+the existing 9,000/15,000-byte budgets unless a reviewed design note explicitly
+justifies a change; avoid silent threshold increases. Require the individual
+app tests and full `go test ./...` to pass on supported CI platforms, with
+remaining environment-specific failures documented rather than suppressed.
+
+## P3 — make the real-binary usability harness trustworthy
+
+Replace accumulated-output-as-screen with an actual terminal state model;
+retain a separately bounded raw diagnostic log. Cover cursor movement, erase,
+alternate screen, incremental writes, cell width, resize and stale content.
+Add an explicit post-action oracle, and either implement or remove the unused
+`Scenario.Success` contract. Prove Help closes and that a deliberately broken
+close fails. Give the harness explicit resize, bracketed-paste and bounded
+graceful-shutdown actions; isolate home/cache/provider endpoints, report paths
+and child environment; make the dedicated integration job fail on a missing
+binary. Give the optional LLM repair scenario an independent fixture-test
+oracle or relabel it exploratory. Do not build journeys on the current
+historical-output parser.
+
+## P4 — expand real TUI journeys and gate changes in CI
+
+Using the repaired harness and test-owned deterministic providers, add a
+small set of meaningful 80×24 real-binary journeys for approval details and
+cancellation, multi-question partial skip, one skill/plugin management path,
+and paste/resize. Assert both success and refusal or cancellation outcomes;
+retain existing focused model tests rather than duplicating every unit case.
+Run the normal Go suite and vet on pull requests and main pushes after P1–P2
+have made the baseline reliable; do not silently quarantine baseline tests.
+Keep the scripted usability job and archive per-run artifacts. Make the CI
+definition and platform coverage explicit.
+
+## P5 — remove misleading and redundant tests
+
+Resolve the config-deletion and malformed-source tests' logging-only
+assertions according to their documented contracts; if the behavior is not a
+stable contract, remove or rename the test instead of cementing it. Rename
+the pre-write patch test and make its writer deterministic; add a controlled
+mid-operation race only if the production contract supports it. Replace the
+source-comment allowlist test with a missing container behavioral test, or
+delete it if existing tests cover that behavior. Narrow the paste inventory's
+claim and remove only duplicate assertions already covered by P8; compare
+the simulated question tests to P10 and retain distinct finalization tests.
+The acceptance condition is that every retained test has an asserted purpose
+and no behavior coverage is lost solely to reduce test count.
+
+## Completion criteria
+
+- Every finding in [the audit](audit.md) has a status, evidence and either a
+  fix or an explicit, reviewed disposition.
+- Full Go tests and vet pass in the documented supported CI environments;
+  repeated flaky tests demonstrate their guarantees rather than relying on
+  timing alone. External keychains, services and developer config remain
+  outside default-suite dependencies.
+- PR CI exercises the full suite, and real-binary scenarios have independent
+  current-screen and outcome oracles. Document any terminal, platform or
+  manual checks that could not be performed.

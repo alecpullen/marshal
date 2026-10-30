@@ -1,7 +1,11 @@
 package browser
 
 import (
+	"bytes"
 	"context"
+	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +56,20 @@ func skipWithoutDriver(t *testing.T, err error) {
 	}
 }
 
+// newFixtureServer starts an httptest server serving a static, test-owned page
+// so these tests never depend on the public internet. The page title and body
+// are fixed constants the tests assert against.
+func newFixtureServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	const page = `<!DOCTYPE html><html><head><title>Marshal fixture</title></head>` +
+		`<body><p>owned browser fixture</p></body></html>`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(page))
+	}))
+	return server
+}
+
 func TestStandaloneBackendNavigateAndRead(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping browser integration test in short mode")
@@ -74,8 +92,10 @@ func TestStandaloneBackendNavigateAndRead(t *testing.T) {
 	}
 	defer page.Close()
 
-	target := "https://example.com"
-	if err := page.Navigate(context.Background(), target); err != nil {
+	server := newFixtureServer(t)
+	defer server.Close()
+
+	if err := page.Navigate(context.Background(), server.URL); err != nil {
 		t.Fatalf("Navigate: %v", err)
 	}
 
@@ -83,16 +103,16 @@ func TestStandaloneBackendNavigateAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Title: %v", err)
 	}
-	if !strings.Contains(title, "Example") {
-		t.Errorf("title = %q, want something containing 'Example'", title)
+	if title != "Marshal fixture" {
+		t.Errorf("title = %q, want %q", title, "Marshal fixture")
 	}
 
 	text, err := page.ReadableText(context.Background())
 	if err != nil {
 		t.Fatalf("ReadableText: %v", err)
 	}
-	if !strings.Contains(text, "Example") {
-		t.Errorf("text = %q, want something containing 'Example'", text)
+	if !strings.Contains(text, "owned browser fixture") {
+		t.Errorf("text = %q, want something containing %q", text, "owned browser fixture")
 	}
 }
 
@@ -114,7 +134,12 @@ func TestStandaloneBackendScreenshot(t *testing.T) {
 	}
 	defer page.Close()
 
-	_ = page.Navigate(context.Background(), "https://example.com")
+	server := newFixtureServer(t)
+	defer server.Close()
+
+	if err := page.Navigate(context.Background(), server.URL); err != nil {
+		t.Fatalf("Navigate: %v", err)
+	}
 
 	data, err := page.Screenshot(context.Background(), ScreenshotOpts{Format: "png"})
 	if err != nil {
@@ -122,5 +147,12 @@ func TestStandaloneBackendScreenshot(t *testing.T) {
 	}
 	if len(data) < 100 {
 		t.Errorf("screenshot data too small: %d bytes", len(data))
+	}
+	img, err := png.Decode(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("Screenshot is not valid PNG: %v", err)
+	}
+	if b := img.Bounds(); b.Dx() <= 0 || b.Dy() <= 0 {
+		t.Errorf("screenshot has empty bounds: %v", b)
 	}
 }

@@ -868,39 +868,63 @@ func TestRunnerSetsActivityDuringApproval(t *testing.T) {
 	runner := NewRunner(p, reg, pol, state, "test-model")
 	runner.MaxToolIterations = 2
 
-	ctx, cancel := context.WithCancel(context.Background())
+	const approvalWait = 5 * time.Second
 
-	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancelling on cleanup keeps a failed assertion from stranding the
+	// runner goroutine.
+	t.Cleanup(cancel)
+
+	resCh := make(chan error, 1)
 	go func() {
-		defer close(done)
-		err := runner.Run(ctx, "hi")
-		if err != nil {
-			t.Logf("Run returned: %v", err)
-		}
+		resCh <- runner.Run(ctx, "hi")
 	}()
 
-	time.Sleep(100 * time.Millisecond)
-
-	act := state.Activity()
-	if act.Kind == session.ActivityApproval {
-		t.Logf("activity is approval: %v", act.Label)
+	// Registration precedes publication of the activity, so wait for both:
+	// polling only the pending slot would race the activity update. The
+	// runner result is monitored too, so an early exit fails here instead of
+	// hanging until the deadline.
+	var (
+		act session.Activity
+		tc  *session.PendingToolCall
+	)
+	deadline := time.Now().Add(approvalWait)
+	for {
+		act = state.Activity()
+		tc = state.PendingApproval()
+		if act.Kind == session.ActivityApproval && tc != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %s waiting for the approval prompt: pending=%v activity=%q label=%q",
+				approvalWait, tc != nil, act.Kind, act.Label)
+		}
+		select {
+		case err := <-resCh:
+			if err != nil {
+				t.Fatalf("Run exited before publishing the approval activity: %v (activity=%q)", err, act.Kind)
+			}
+			t.Fatalf("Run exited before publishing the approval activity (activity=%q)", act.Kind)
+		case <-time.After(time.Millisecond):
+		}
 	}
 
-	tc := state.PendingApproval()
 	if tc == nil {
 		t.Fatalf("expected pending approval")
+	}
+	if act.Kind != session.ActivityApproval {
+		t.Fatalf("activity during approval = %q, want %q", act.Kind, session.ActivityApproval)
 	}
 
 	tc.Respond(session.UserApprovalDecision{Approved: false})
 
-	time.Sleep(100 * time.Millisecond)
-
-	cancel()
-
 	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return")
+	case err := <-resCh:
+		if err != nil {
+			t.Fatalf("Run returned error after denial: %v", err)
+		}
+	case <-time.After(approvalWait):
+		t.Fatal("Run did not return after the approval decision")
 	}
 
 	act = state.Activity()

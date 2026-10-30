@@ -1806,30 +1806,95 @@ func TestRuntimeAccessSerializesWithReloadAndQuiesce(t *testing.T) {
 		t.Fatalf("tuple = %+v, want act with system access on", got)
 	}
 
-	// A grant and a reload racing each other must leave the runner and the
-	// session agreeing, whichever order they land in.
-	raceCfg := nativeToolAgentConfig("access-serialize")
-	raceRT, raceState := newAccessTestRuntime(t, raceCfg)
-	raceReq := registerAccess(t, raceState, "call-1", session.AccessIntent{System: true, Reason: "read outside the workspace"})
+	// A grant and a reload can land in either order, and each ordering has
+	// exactly one legal outcome. Drive both deterministically instead of
+	// racing them and accepting whichever the scheduler produces: a stale
+	// approval must never be applied against a pair the user was not shown.
+	t.Run("grant before reload", func(t *testing.T) {
+		cfg := nativeToolAgentConfig("access-serialize")
+		rt, state := newAccessTestRuntime(t, cfg)
+		req, responses := registerAccessCh(t, state, "call-1", session.AccessIntent{System: true, Reason: "read outside the workspace"})
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _ = raceRT.ResolveAccess(approve(raceReq, ""))
-	}()
-	go func() {
-		defer wg.Done()
-		_ = reloadAgentRuntime(context.Background(), raceCfg, raceRT)
-	}()
-	wg.Wait()
+		result, err := rt.ResolveAccess(approve(req, ""))
+		if err != nil {
+			t.Fatalf("ResolveAccess: %v", err)
+		}
+		if result.Status != session.AccessGranted {
+			t.Fatalf("status = %q, want %q", result.Status, session.AccessGranted)
+		}
+		if got := len(responses); got != 1 {
+			t.Fatalf("delivered %d decisions, want exactly 1", got)
+		}
+		if decision := <-responses; !decision.Approved {
+			t.Fatalf("decision = %+v, want an approval", decision)
+		}
 
-	effective := raceState.InteractionState()
+		if err := reloadAgentRuntime(context.Background(), cfg, rt); err != nil {
+			t.Fatalf("reloadAgentRuntime: %v", err)
+		}
+		assertAccessTuple(t, rt, state)
+	})
+
+	t.Run("reload before grant", func(t *testing.T) {
+		cfg := nativeToolAgentConfig("access-serialize")
+		rt, state := newAccessTestRuntime(t, cfg)
+		req, responses := registerAccessCh(t, state, "call-1", session.AccessIntent{System: true, Reason: "read outside the workspace"})
+
+		if err := reloadAgentRuntime(context.Background(), cfg, rt); err != nil {
+			t.Fatalf("reloadAgentRuntime: %v", err)
+		}
+
+		// The reload advanced the access revision, so the choice built from
+		// the pair the user was shown no longer names the live one.
+		result, err := rt.ResolveAccess(approve(req, ""))
+		if err != nil {
+			t.Fatalf("ResolveAccess with the pre-reload pair: %v", err)
+		}
+		if result.Status != session.AccessRefresh {
+			t.Fatalf("status = %q, want %q", result.Status, session.AccessRefresh)
+		}
+		select {
+		case decision := <-responses:
+			t.Fatalf("a pre-reload choice delivered a decision (%+v), want none", decision)
+		default:
+		}
+
+		refreshed, ok := state.AccessRequest()
+		if !ok {
+			t.Fatal("the request stopped being pending after a refresh")
+		}
+		if refreshed.Current == req.Current {
+			t.Fatalf("refreshed request still carries the pre-reload pair %+v", req.Current)
+		}
+
+		result, err = rt.ResolveAccess(approve(refreshed, ""))
+		if err != nil {
+			t.Fatalf("ResolveAccess with the refreshed pair: %v", err)
+		}
+		if result.Status != session.AccessGranted {
+			t.Fatalf("status = %q, want %q", result.Status, session.AccessGranted)
+		}
+		if got := len(responses); got != 1 {
+			t.Fatalf("delivered %d decisions, want exactly 1", got)
+		}
+		if decision := <-responses; !decision.Approved {
+			t.Fatalf("decision = %+v, want an approval", decision)
+		}
+
+		assertAccessTuple(t, rt, state)
+	})
+}
+
+// assertAccessTuple fails unless the session and the runner agree on the
+// canonical Act-with-system tuple a settled grant produces.
+func assertAccessTuple(t *testing.T, rt *Runtime, state *session.State) {
+	t.Helper()
+	effective := state.InteractionState()
 	if effective.Mode != interaction.ModeAct || !effective.System {
-		t.Fatalf("tuple after a concurrent reload = %+v, want act with system access on", effective)
+		t.Fatalf("tuple = %+v, want act with system access on", effective)
 	}
-	if got := raceRT.Runner.ForceClass; got != "edit" {
-		t.Fatalf("runner force class %q disagrees with the canonical Act tuple after a concurrent reload", got)
+	if got := rt.Runner.ForceClass; got != "edit" {
+		t.Fatalf("runner force class %q disagrees with the canonical Act tuple", got)
 	}
 }
 

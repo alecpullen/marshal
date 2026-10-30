@@ -170,31 +170,77 @@ func TestListSessionsDoesNotCreateDatabase(t *testing.T) {
 }
 
 // TestListSessionsCachesDatabase reproduces F-POL-66: two consecutive
-// list requests share the same DB handle.
+// list requests share the same DB handle. It runs against a real seeded
+// database so the returned session proves the cached handle is usable.
 func TestListSessionsCachesDatabase(t *testing.T) {
-	tmp := t.TempDir()
-	// Pre-create a session so the DB exists.
-	if err := os.MkdirAll(filepath.Join(tmp, ".marshal"), 0o755); err != nil {
-		t.Fatal(err)
+	root := t.TempDir()
+	absCwd, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatalf("abs: %v", err)
 	}
+
+	// Seed a real per-cwd DB exactly as StartRuntime would.
+	if err := os.MkdirAll(filepath.Join(absCwd, ".marshal"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	d, err := db.Open(filepath.Join(absCwd, ".marshal", "marshal.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if err := d.Migrate(); err != nil {
+		_ = d.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	pid, err := d.GetOrCreateProject(absCwd, "project")
+	if err != nil {
+		_ = d.Close()
+		t.Fatalf("project: %v", err)
+	}
+	t0 := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	if err := d.CreateSession("sess_alpha", pid, "Alpha", t0.Add(time.Hour)); err != nil {
+		_ = d.Close()
+		t.Fatalf("create: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("seed close: %v", err)
+	}
+
 	l := newPerCwdLister()
-	// First call opens the DB.
-	_, _, err := l.ListSessions(context.Background(), tmp, "", 10)
+	t.Cleanup(func() { _ = l.Close() })
+
+	// First call opens and caches the DB.
+	got, _, err := l.ListSessions(context.Background(), absCwd, "", 10)
 	if err != nil {
 		t.Fatalf("first ListSessions: %v", err)
 	}
-	// Capture the first call's start time and the second's; the
-	// second should be faster because the DB is cached. Use a
-	// deadline rather than a wall-clock comparison to be
-	// timing-independent.
-	start := time.Now()
-	_, _, err = l.ListSessions(context.Background(), tmp, "", 10)
+	if len(got) != 1 || got[0].SessionID != "sess_alpha" {
+		t.Fatalf("first list got = %+v, want the seeded sess_alpha", got)
+	}
+
+	l.mu.Lock()
+	first := l.cache[absCwd]
+	l.mu.Unlock()
+	if first == nil || first.db == nil {
+		t.Fatal("first ListSessions did not cache a DB handle")
+	}
+
+	// Second call must reuse the cached handle and return the session.
+	got, _, err = l.ListSessions(context.Background(), absCwd, "", 10)
 	if err != nil {
 		t.Fatalf("second ListSessions: %v", err)
 	}
-	elapsed := time.Since(start)
-	if elapsed > 100*time.Millisecond {
-		t.Logf("warning: second call took %v (cache may not be working)", elapsed)
+	if len(got) != 1 || got[0].SessionID != "sess_alpha" {
+		t.Fatalf("second list got = %+v, want the seeded sess_alpha", got)
+	}
+
+	l.mu.Lock()
+	second := l.cache[absCwd]
+	l.mu.Unlock()
+	if second == nil || second.db == nil {
+		t.Fatal("second ListSessions did not leave a DB handle cached")
+	}
+	if second.db != first.db {
+		t.Fatal("second ListSessions opened a new DB handle, want the cached one")
 	}
 }
 

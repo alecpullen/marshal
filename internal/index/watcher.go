@@ -17,7 +17,12 @@ type Watcher struct {
 	debounce time.Duration
 	run      func(ctx context.Context) error
 	log      *slog.Logger
-	wg       sync.WaitGroup
+	// ready, when set, is called synchronously once the watch set is installed
+	// and immediately before the event loop starts. Tests use it as a
+	// deterministic readiness signal instead of sleeping. Production leaves it
+	// nil, and a nil hook does nothing.
+	ready func()
+	wg    sync.WaitGroup
 }
 
 func NewWatcher(root string, debounce time.Duration, run func(ctx context.Context) error, log *slog.Logger) *Watcher {
@@ -39,6 +44,9 @@ func (w *Watcher) Run(ctx context.Context) error {
 	}
 	defer fsw.Close()
 	w.addRecursive(fsw, w.root)
+	if w.ready != nil {
+		w.ready()
+	}
 
 	timer := time.NewTimer(w.debounce)
 	timer.Stop()

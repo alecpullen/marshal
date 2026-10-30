@@ -34,6 +34,7 @@ import (
 	"marshal/internal/contextpack"
 	"marshal/internal/credentials"
 	"marshal/internal/db"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/provider/oauthworker"
@@ -1066,6 +1067,9 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	cfg := nativeToolAgentConfig("test-provider")
+	// Normal Act access is the fixture's baseline: the child's command is an
+	// ordinary workspace command, so it is admitted without a specific approval.
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAct, false
 	cfg.Tools.Shell.Sandbox.Backend = "passthrough"
 	cfg.Tools.Shell.Sandbox.UnsafePassthrough = true
 
@@ -1089,13 +1093,54 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 		t.Fatal("child registry should expose shell.run")
 	}
 
-	// Run a background command through the child's registry.
-	res, err := tool.Handler(session.WithExecutionOrigin(ctx, session.ExecutionOrigin{
+	// A command that stays alive until THIS test releases it. The parent's
+	// running count must be observed while the execution is genuinely active,
+	// not after a fast echo may already have settled.
+	started := filepath.Join(dir, "child-started")
+	release := filepath.Join(dir, "child-release")
+	command := fmt.Sprintf("touch %q; while [ ! -f %q ]; do sleep 0.01; done", started, release)
+	t.Cleanup(func() {
+		// Never leave the child's command spinning if an assertion fails.
+		_ = os.WriteFile(release, nil, 0o644)
+	})
+
+	origin := session.ExecutionOrigin{
 		ConversationID: parentState.SessionID(),
 		Actor:          "subtask",
 		TurnID:         "turn-child",
 		ToolCallID:     "call-child",
-	}), registry.ToolCall{Name: "shell.run", Args: []byte(`{"command":"echo child-command","background":true}`)})
+	}
+	callCtx := session.WithExecutionOrigin(ctx, origin)
+	args, err := json.Marshal(map[string]any{"command": command, "background": true})
+	if err != nil {
+		t.Fatalf("marshal args: %v", err)
+	}
+	// The exact admission facts the handler dispatches on: the child's live
+	// authorizer admits this command in this directory, under this invocation.
+	call := policy.Call{
+		InvocationID: origin.ToolCallID,
+		ToolName:     "shell.run",
+		Shell: &policy.ShellInput{
+			Command:       command,
+			Dir:           childState.WorkingDir,
+			WorkspaceRoot: childState.WorkingDir,
+		},
+	}
+	if child.Authorizer == nil {
+		t.Fatal("the child runner must carry the authorizer that admits its commands")
+	}
+
+	// A direct call with no proof must fail closed and launch nothing.
+	if _, err := tool.Handler(callCtx, registry.ToolCall{ID: origin.ToolCallID, Name: "shell.run", Args: args}); !errors.Is(err, policy.ErrApprovalRequired) {
+		t.Fatalf("unapproved child shell.run = %v, want ErrApprovalRequired", err)
+	}
+	if got := parentState.RunningJobsCount(); got != 0 {
+		t.Fatalf("parent running count after the unapproved call = %d, want 0", got)
+	}
+
+	// The admitted call runs under a fresh proof: one proof authorizes exactly
+	// one launch.
+	res, err := tool.Handler(testCommandProof(t, callCtx, child.Authorizer, call), registry.ToolCall{ID: origin.ToolCallID, Name: "shell.run", Args: args})
 	if err != nil {
 		t.Fatalf("child shell.run: %v", err)
 	}
@@ -1107,6 +1152,18 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 	}
 	if jobID == "" {
 		t.Fatalf("child result has no job id: %q", res.Content)
+	}
+	// The command's own start signal: the parent's count is asserted only once
+	// the execution is provably running, never on a fixed sleep.
+	startDeadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(startDeadline) {
+			t.Fatalf("the child's command never started: no %s", started)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	// The PARENT's service knows the execution: it was borrowed, not owned by
@@ -1124,7 +1181,11 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 	}
 
 	// Waiting on it settles it through the parent's sink, so the parent's
-	// transcript gains the durable completion.
+	// transcript gains the durable completion. Release the command first: it
+	// stays alive only so the count above was observed while it ran.
+	if err := os.WriteFile(release, nil, 0o644); err != nil {
+		t.Fatalf("release the child's command: %v", err)
+	}
 	waitForJobStatus(t, jobMgr, jobID, native.StatusCompleted, 10*time.Second)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -1369,6 +1430,35 @@ func waitForJobStatus(t *testing.T, jm *native.JobManager, id string, want nativ
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// testCommandProof evaluates call against the supplied production authorizer
+// and returns the context a fixture dispatches with: the exact authorization
+// proof, bound to the same live authority that admitted the command.
+//
+// It approves only a DecisionConfirm, and only after checking the evaluation's
+// required capabilities — a fixture that establishes normal Act access may
+// settle a specific approval, but it must never approve a deny or paper over a
+// missing capability. It creates no permissions and does not modify the live
+// authority.
+func testCommandProof(t *testing.T, ctx context.Context, az *policy.Authorizer, call policy.Call) context.Context {
+	t.Helper()
+	proof, ev, err := az.Evaluate(ctx, call)
+	if err != nil {
+		t.Fatalf("evaluate %s: %v", call.ToolName, err)
+	}
+	if ev.Decision == policy.DecisionDeny {
+		t.Fatalf("%s is denied in this fixture (%+v); establish the access it needs instead of approving a deny", call.ToolName, ev.Reasons)
+	}
+	if ev.Required.System {
+		t.Fatalf("%s requires the System capability this fixture does not hold", call.ToolName)
+	}
+	if ev.Decision == policy.DecisionConfirm {
+		if _, err := az.ApproveExact(proof, "test-approval-"+call.InvocationID); err != nil {
+			t.Fatalf("ApproveExact(%s): %v", call.ToolName, err)
+		}
+	}
+	return policy.WithAuthorization(ctx, proof)
 }
 
 func nativeToolAgentConfig(providerName string) config.Config {

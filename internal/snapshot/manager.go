@@ -88,9 +88,20 @@ type Manager struct {
 	// Production leaves it nil, and a nil observer costs one comparison.
 	writeObserver func(WriteEvent)
 
+	// newTree is the process-tree constructor. Production leaves it nil and uses
+	// newProcessTree. A test sets it on its own manager instance to model a tree
+	// whose termination cannot be confirmed, or to hold a start in flight,
+	// without signalling an unrelated process and without a package-global hook.
+	newTree func(*exec.Cmd) (*processTree, error)
+
+	// releaseMu serialises Release so a second caller cannot observe the
+	// temporary nil lock while the first is still draining and report success
+	// for a store that is in fact still owned.
+	releaseMu sync.Mutex
+
 	mu    sync.Mutex
 	lock  *StoreLock
-	trees map[*processTree]struct{}
+	trees map[*ownedTree]struct{}
 }
 
 // Hooks are fault-injection points used by the ownership, generation, and
@@ -403,7 +414,7 @@ func NewManager(dataDir string, opts ...ManagerOption) (*Manager, error) {
 		maintenanceBytes: DefaultMaintenanceAllowanceBytes,
 		manifestMaxBytes: ManifestMaxBytes,
 		liveWriterWindow: DefaultLiveWriterWindow,
-		trees:            make(map[*processTree]struct{}),
+		trees:            make(map[*ownedTree]struct{}),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -503,7 +514,15 @@ func (m *Manager) Acquire(ctx context.Context) (*StoreLock, error) {
 // Release drops ownership. It runs the registered drains (killing and reaping
 // any live subprocess tree) before the OS lock is released, and never deletes
 // the permanent lock file.
+//
+// Release attempts serialise on releaseMu. Without that, a second caller could
+// observe the temporary nil lock left by the first — which is nil for exactly as
+// long as the first is draining — and report success for a store that is still
+// owned.
 func (m *Manager) Release() error {
+	m.releaseMu.Lock()
+	defer m.releaseMu.Unlock()
+
 	m.mu.Lock()
 	lock := m.lock
 	m.lock = nil
@@ -529,43 +548,120 @@ func (m *Manager) Release() error {
 // killLiveTrees is the release drain: it kills and then waits for every
 // subprocess tree this manager started. waitGone is what makes the guarantee,
 // since kill alone only sends a signal.
+//
+// A tree whose disappearance cannot be proved stays registered with its platform
+// handle open and the joined error is returned, which keeps ownership (and this
+// drain, for retry) in place. Only trees confirmed gone are forgotten, so a retry
+// re-examines the uncertain ones instead of losing the condition that blocked
+// the release.
 func (m *Manager) killLiveTrees() error {
 	m.mu.Lock()
-	trees := make([]*processTree, 0, len(m.trees))
+	trees := make([]*ownedTree, 0, len(m.trees))
 	for t := range m.trees {
 		trees = append(trees, t)
 	}
 	m.mu.Unlock()
 
 	var errs []error
+	var settled []*ownedTree
 	for _, t := range trees {
-		if err := t.kill(); err != nil {
+		// terminate waits for an in-flight start before deciding anything: a
+		// tree that has not been assigned a group id or job handle would
+		// otherwise read as gone.
+		if err := t.terminate(); err != nil {
 			errs = append(errs, err)
+			continue
 		}
-		if err := t.waitGone(); err != nil {
-			errs = append(errs, err)
+		settled = append(settled, t)
+	}
+	if len(settled) > 0 {
+		m.mu.Lock()
+		for _, t := range settled {
+			delete(m.trees, t)
 		}
+		m.mu.Unlock()
 	}
 	return errors.Join(errs...)
 }
 
-// trackTreeIfOwned registers a live subprocess tree so that releasing ownership
-// drains it. The ownership check happens under the same lock as the insert, so
-// a tree can never be started just as Release is sweeping.
+// newManagedTree builds the process tree for cmd and registers it before the
+// child is started, so a release drain that runs in between waits for this start
+// to resolve instead of concluding that a tree without a group id is already
+// gone.
+func (m *Manager) newManagedTree(cmd *exec.Cmd) (*ownedTree, error) {
+	life := newStartingTree()
+	// The ownership check and the registration happen together under m.mu, so a
+	// tree can never be started just as Release is sweeping.
+	m.mu.Lock()
+	if m.lock != nil {
+		m.trees[life] = struct{}{}
+		life.markOwned()
+	}
+	m.mu.Unlock()
+
+	tree, err := m.processTreeFor(cmd)
+	if err != nil {
+		// Nothing was started, so there is no process to keep ownership for.
+		life.failStart()
+		m.mu.Lock()
+		delete(m.trees, life)
+		m.mu.Unlock()
+		return nil, err
+	}
+	life.attach(tree)
+	return life, nil
+}
+
+// processTreeFor builds the platform tree for cmd, honouring the instance-scoped
+// test seam when one is installed.
+func (m *Manager) processTreeFor(cmd *exec.Cmd) (*processTree, error) {
+	if m.newTree != nil {
+		return m.newTree(cmd)
+	}
+	return newProcessTree(cmd)
+}
+
+// releaseTree forgets a tree that is confirmed gone and keeps one whose fate is
+// unknown, so the next release drains it again rather than racing a writer that
+// may still be alive.
+func (m *Manager) releaseTree(life *ownedTree) {
+	if !life.finished() {
+		return
+	}
+	m.mu.Lock()
+	delete(m.trees, life)
+	m.mu.Unlock()
+}
+
+// trackTreeIfOwned registers a tree whose child is already running so that
+// releasing ownership drains it.
+//
+// It is the legacy migration reader's entry point: that reader owns its own
+// start and wait sequence, so there is no start boundary left to synchronise
+// with. Every other managed launch goes through newManagedTree.
 func (m *Manager) trackTreeIfOwned(t *processTree) bool {
+	life := newLiveTree(t)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.lock == nil {
 		return false
 	}
-	m.trees[t] = struct{}{}
+	m.trees[life] = struct{}{}
 	return true
 }
 
+// untrackTree forgets the lifecycle registered for t. It is the legacy reader's
+// counterpart to trackTreeIfOwned; the managed launch paths call releaseTree,
+// which keeps a tree whose termination is unconfirmed.
 func (m *Manager) untrackTree(t *processTree) {
 	m.mu.Lock()
-	delete(m.trees, t)
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	for life := range m.trees {
+		if life.platformTree() == t {
+			delete(m.trees, life)
+			return
+		}
+	}
 }
 
 // Bootstrap creates the snapshots root and the permanent lock file if they do
@@ -730,15 +826,15 @@ func (m *Manager) RunManaged(ctx context.Context, cmd *exec.Cmd) ([]byte, error)
 		ctx, cancel = context.WithTimeout(ctx, deadline)
 		defer cancel()
 	}
-	tree, err := newProcessTree(cmd)
+	life, err := m.newManagedTree(cmd)
 	if err != nil {
 		return nil, err
 	}
-	if m.trackTreeIfOwned(tree) {
-		defer m.untrackTree(tree)
-	}
 	out, bytesFn := combinedOutput(normalizeMaxOutput(m.maxOutputBytes))
-	err = runProcessTreeWith(ctx, cmd, tree, out)
+	err = runProcessTreeWith(ctx, cmd, life, out)
+	// A tree that is confirmed gone, or that was never started, can be forgotten.
+	// One whose termination is unknown stays registered for the next drain.
+	m.releaseTree(life)
 	return bytesFn(), err
 }
 
@@ -770,17 +866,15 @@ func (m *Manager) gitRun(ctx context.Context, gitDir string, stdin []byte, args 
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	tree, err := newProcessTree(cmd)
+	life, err := m.newManagedTree(cmd)
 	if err != nil {
 		return nil, nil, false, err
-	}
-	if m.trackTreeIfOwned(tree) {
-		defer m.untrackTree(tree)
 	}
 	max := normalizeMaxOutput(m.maxOutputBytes)
 	outBuf := &limitedBuffer{max: max}
 	errBuf := &limitedBuffer{max: max}
-	err = runProcessTreeWith(ctx, cmd, tree, treeOutput{stdout: outBuf, stderr: errBuf})
+	err = runProcessTreeWith(ctx, cmd, life, treeOutput{stdout: outBuf, stderr: errBuf})
+	m.releaseTree(life)
 	return outBuf.Bytes(), errBuf.Bytes(), outBuf.Truncated() || errBuf.Truncated(), err
 }
 
@@ -820,17 +914,15 @@ func (m *Manager) gitRunEnv(ctx context.Context, gitDir, workTree string, stdin 
 		// the cleared default.
 		cmd.Env = append(cmd.Env, extraEnv...)
 	}
-	tree, err := newProcessTree(cmd)
+	life, err := m.newManagedTree(cmd)
 	if err != nil {
 		return nil, nil, false, err
-	}
-	if m.trackTreeIfOwned(tree) {
-		defer m.untrackTree(tree)
 	}
 	max := normalizeMaxOutput(maxOutput)
 	outBuf := &limitedBuffer{max: max}
 	errBuf := &limitedBuffer{max: max}
-	err = runProcessTreeWith(ctx, cmd, tree, treeOutput{stdout: outBuf, stderr: errBuf})
+	err = runProcessTreeWith(ctx, cmd, life, treeOutput{stdout: outBuf, stderr: errBuf})
+	m.releaseTree(life)
 	return outBuf.Bytes(), errBuf.Bytes(), outBuf.Truncated() || errBuf.Truncated(), err
 }
 
@@ -858,15 +950,13 @@ func (m *Manager) gitRunEnvWriter(ctx context.Context, gitDir string, stdout io.
 		defer cancel()
 	}
 	cmd := newGitCmd(ctx, m.gitBinary, gitDir, "", true, args...)
-	tree, err := newProcessTree(cmd)
+	life, err := m.newManagedTree(cmd)
 	if err != nil {
 		return nil, false, err
 	}
-	if m.trackTreeIfOwned(tree) {
-		defer m.untrackTree(tree)
-	}
 	errBuf := &limitedBuffer{max: normalizeMaxOutput(m.maxOutputBytes)}
-	err = runProcessTreeWith(ctx, cmd, tree, treeOutput{stdout: stdout, stderr: errBuf})
+	err = runProcessTreeWith(ctx, cmd, life, treeOutput{stdout: stdout, stderr: errBuf})
+	m.releaseTree(life)
 	return errBuf.Bytes(), errBuf.Truncated(), err
 }
 

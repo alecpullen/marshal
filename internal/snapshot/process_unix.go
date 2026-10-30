@@ -21,6 +21,14 @@ type processTree struct {
 	// and read by whichever goroutine releases ownership.
 	mu   sync.Mutex
 	pgid int
+
+	// probe overrides the signal-0 group probe and timeout overrides the
+	// disappearance budget. A test sets them (before the tree is started, and
+	// never afterwards) to model a group that stays inaccessible without
+	// signalling an unrelated process and without spending the production budget
+	// on every attempt. Production leaves both zero.
+	probe   func(int) error
+	timeout time.Duration
 }
 
 // newProcessTree arranges for cmd to run in its own process group.
@@ -117,13 +125,15 @@ func waitForGroupGone(
 // waitGone blocks until no process remains in the group. It is what lets a
 // caller conclude that no writer survives.
 func (t *processTree) waitGone() error {
-	return waitForGroupGone(
-		t.group(),
-		processTreeKillTimeout,
-		func(pgid int) error { return syscall.Kill(-pgid, 0) },
-		time.Now,
-		time.Sleep,
-	)
+	probe := t.probe
+	if probe == nil {
+		probe = func(pgid int) error { return syscall.Kill(-pgid, 0) }
+	}
+	timeout := t.timeout
+	if timeout <= 0 {
+		timeout = processTreeKillTimeout
+	}
+	return waitForGroupGone(t.group(), timeout, probe, time.Now, time.Sleep)
 }
 
 // close releases the group handle. On Unix there is nothing to release; the

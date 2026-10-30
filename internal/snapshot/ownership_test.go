@@ -25,6 +25,10 @@ const (
 	helperModeLock      = "hold-lock"
 	helperModeWriter    = "writer-tree"
 	helperModeHeartbeat = "heartbeat"
+	// helperModeForkWriter starts a grandchild writer and exits at once. It is
+	// the case a normal leader exit must not be mistaken for "the whole tree is
+	// gone".
+	helperModeForkWriter = "fork-writer"
 )
 
 // TestSnapshotHelperProcess is the re-executed helper. It is inert unless a
@@ -71,6 +75,20 @@ func TestSnapshotHelperProcess(t *testing.T) {
 			os.Exit(2)
 		}
 		waitOrTimeout(t, 30*time.Second)
+
+	case helperModeForkWriter:
+		// The leader starts a grandchild writer and exits immediately. A normal
+		// leader exit must not be read as "the whole tree is gone".
+		heartbeat := os.Getenv(envHelperHeartbeat)
+		grandchild := exec.Command(os.Args[0], "-test.run=TestSnapshotHelperProcess")
+		grandchild.Env = append(os.Environ(),
+			envHelperMode+"="+helperModeHeartbeat,
+			envHelperHeartbeat+"="+heartbeat,
+		)
+		if err := grandchild.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "helper grandchild: %v\n", err)
+			os.Exit(2)
+		}
 
 	case helperModeHeartbeat:
 		path := os.Getenv(envHelperHeartbeat)

@@ -1215,6 +1215,9 @@ func TestSubagentChildRegistryBorrowsConversationService(t *testing.T) {
 func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Default()
+	// Normal Act access is the fixture's baseline: the dispatch command is an
+	// ordinary workspace command.
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAct, false
 	cfg.Privacy.RemoteProvidersAllowed = true
 	cfg.Providers = map[string]config.ProviderConfig{
 		"local": {Type: "openai_compatible", BaseURL: "http://localhost:11434/v1", APIKey: "k", ToolCalling: true},
@@ -1236,6 +1239,11 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 	// immediately would only prove the record survived, not that the service
 	// holds it while it runs.
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCommand := func() { releaseOnce.Do(func() { close(release) }) }
+	// entered is signalled once the runner is inside the invocation, so the
+	// assertions below never race the dispatch goroutine.
+	entered := make(chan struct{}, 1)
 	runner := &fakeRunner{run: func(c context.Context, req native.CommandRequest) (native.CommandResult, error) {
 		mu.Lock()
 		dirs = append(dirs, req.Dir)
@@ -1245,6 +1253,10 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 		}
 		if req.Stdout != nil {
 			_, _ = req.Stdout.Write([]byte("pipeline-out\n"))
+		}
+		select {
+		case entered <- struct{}{}:
+		default:
 		}
 		select {
 		case <-release:
@@ -1262,9 +1274,16 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 		Retention:      time.Hour,
 	})
 	t.Cleanup(func() { _ = service.manager.Shutdown(context.Background()) })
+	// Registered after the shutdown cleanup so it runs first (cleanups are
+	// LIFO): a failed assertion must never leave the runner blocked.
+	t.Cleanup(releaseCommand)
 
 	childState := session.New(cfg, worktree, time.Unix(100, 0), session.Persistence{})
-	factory := makePipelineRegistryFactory(cfg, state, nil, runner, nil, nil, 0, nil, nil, service)
+	// The controller's engine, as production builds it. The factory clones it
+	// per dispatch, installs the child's config source, binds it to the child
+	// registry and wires its command admission.
+	pol := policy.NewEngine(&cfg, state.SessionRules())
+	factory := makePipelineRegistryFactory(cfg, state, pol, runner, nil, nil, 0, nil, nil, service)
 	reg, err := factory(pipeline.ExecutionContext{
 		RepoRoot:      repoRoot,
 		WorkspaceRoot: worktree,
@@ -1278,8 +1297,56 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 	if !ok {
 		t.Fatal("ScopeFull pipeline registry must expose shell.run")
 	}
-	if _, err := tool.Handler(ctx, registry.ToolCall{Name: "shell.run", Args: []byte(`{"command":"echo pipeline-out"}`)}); err != nil {
-		t.Fatalf("pipeline shell.run: %v", err)
+
+	// The proof authorizer is built the way the factory builds its child
+	// authorizer — the child's interaction authority, the child's live config
+	// source — bound to the registry the dispatch actually uses.
+	proofPol := pol.Clone()
+	proofPol.SetConfigSource(childState.PolicySnapshot)
+	proofPol.WithRegistry(reg)
+	proofAuthorizer := policy.NewAuthorizer(proofPol, childState.InteractionAuthority())
+
+	origin := session.ExecutionOrigin{
+		ConversationID: state.SessionID(),
+		Actor:          "implementer",
+		TurnID:         "turn-pipeline",
+		ToolCallID:     "call-pipeline",
+	}
+	callCtx := session.WithExecutionOrigin(ctx, origin)
+	call := registry.ToolCall{ID: origin.ToolCallID, Name: "shell.run", Args: []byte(`{"command":"echo pipeline-out"}`)}
+
+	// Without a proof the dispatch must fail closed, before the runner.
+	if _, err := tool.Handler(callCtx, call); !errors.Is(err, policy.ErrApprovalRequired) {
+		t.Fatalf("unapproved pipeline shell.run = %v, want ErrApprovalRequired", err)
+	}
+	mu.Lock()
+	unapprovedCalls := len(dirs)
+	mu.Unlock()
+	if unapprovedCalls != 0 {
+		t.Fatalf("the unapproved call entered the runner %d times, want 0", unapprovedCalls)
+	}
+
+	// The proof binds the handler's invocation, command, dispatch working
+	// directory and workspace root.
+	proofCall := policy.Call{
+		InvocationID: origin.ToolCallID,
+		ToolName:     "shell.run",
+		Shell: &policy.ShellInput{
+			Command:       "echo pipeline-out",
+			Dir:           worktree,
+			WorkspaceRoot: worktree,
+		},
+	}
+	proofCtx := testCommandProof(t, callCtx, proofAuthorizer, proofCall)
+	handlerErr := make(chan error, 1)
+	go func() {
+		_, err := tool.Handler(proofCtx, call)
+		handlerErr <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the admitted pipeline command never reached the runner")
 	}
 
 	mu.Lock()
@@ -1315,9 +1382,16 @@ func TestPipelineRegistryCommandsCaptureDispatchWorktree(t *testing.T) {
 	}
 
 	// Let it finish so the test leaves no live execution behind.
-	close(release)
+	releaseCommand()
 	if _, err := service.manager.Wait(ctx, active[0].ID); err != nil {
 		t.Fatalf("Wait: %v", err)
+	}
+	// Exactly one admitted dispatch reached the runner for this test.
+	if err := <-handlerErr; err != nil {
+		t.Fatalf("admitted pipeline shell.run: %v", err)
+	}
+	if calls := func() int { mu.Lock(); defer mu.Unlock(); return len(dirs) }(); calls != 1 {
+		t.Fatalf("runner calls after the admitted dispatch = %d, want 1", calls)
 	}
 }
 

@@ -103,10 +103,19 @@ func TestFooterPromptKeepsAnswerAndSendNowDistinct(t *testing.T) {
 	}
 }
 
+// TestFooterQuestionShowsAnswer pins the question prompt's key pairs: Enter
+// answers, and Escape's label says what it actually does — skip the remaining
+// questions, keeping the ones already answered.
 func TestFooterQuestionShowsAnswer(t *testing.T) {
 	out := stripANSI(Footer(FooterHints{QuestionPending: true}))
 	if !strings.Contains(out, "Enter answer") {
 		t.Fatalf("question footer missing answer hint: %q", out)
+	}
+	if !strings.Contains(out, "Esc skip remaining") {
+		t.Fatalf("question footer missing the skip-remaining hint: %q", out)
+	}
+	if strings.Contains(out, "skip ·") || strings.HasSuffix(out, "Esc skip") {
+		t.Fatalf("question footer still advertises a bare skip: %q", out)
 	}
 }
 

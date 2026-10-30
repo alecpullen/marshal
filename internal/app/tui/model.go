@@ -3598,9 +3598,14 @@ func (m *Model) settleApproval(owner *session.State, tc *session.PendingToolCall
 }
 
 // handleQuestion routes messages to the inline question form while a
-// clarifying question is pending. On completion it sends the answers (or
-// every question marked "Unanswered" on abort) to the runner's response
-// channel.
+// clarifying question is pending. On completion it sends the answers to the
+// runner's response channel. Escape is an explicit skip rather than a blanket
+// abort: the form finalises the questions it has already advanced past and
+// records the focused question and every later one as
+// session.AnswerUnanswered (see questionModel.skipRemaining), so a partial
+// answer set is what reaches the owner. Live input on the focused question — a
+// highlighted default, half-typed text, an unsubmitted toggle — is not an
+// answer and is never copied.
 func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Model, tea.Cmd) {
 	if m.questionModel == nil || m.questionModel.q != q {
 		// Build the form for the question that is pending now — and rebuild it

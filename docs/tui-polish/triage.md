@@ -349,6 +349,52 @@ or visibility problem. **P3** means cleanup or a test maintenance issue.
     Confirm the intended skip contract before changing it and test both single
     and multiple choice.
 
+    **Status (2026-10-30): done** — [the P10 plan](plans/2026-10-30-p10-question-answers-plan.md),
+    two commits
+    (`p10-question-answers: task 1 — give the custom answer its own identity`,
+    `p10-question-answers: task 2 — preserve completed answers on Escape`). The
+    confirmed skip contract is "keep completed answers": Escape keeps the answer
+    the user submitted for a question the form already advanced past and records
+    `session.AnswerUnanswered` for the focused and every later question. A
+    highlighted default option, typed partial text, an unsubmitted multi-select
+    toggle or an unsubmitted custom input does not count as complete; navigating
+    back skips that question and every later one; an advancement still queued
+    when Escape arrives skips the focused question; Escape at the first question
+    skips everything; and an unmapped focused field fails closed to all unused
+    answers. Only explicit Escape applies it — an unexpected huh `StateAborted`
+    stays an all-unanswered abort — and the footer and console hint read
+    `Esc skip remaining`. Choice identity is now internal: supplied options carry
+    `option:<zero-based index>` and the appended custom row carries `custom`, so
+    a supplied label of `other`, `Other…`, `custom`, `option:0`, empty or
+    duplicated can no longer be read as the custom answer, and a malformed
+    identity is dropped rather than recorded as typed input. Rendered keys that
+    would collide gain ` (option N)` and the custom row reads
+    `Other… (custom answer)`; the generated identities never reach
+    `session.Question`, `session.Answer` or the wire format, and settlement still
+    runs one ordered answer per question through the pending-question identity
+    and the canonical `ResolveQuestion` claim, so a cancelled or replaced prompt
+    cannot receive another prompt's answers and the hidden composer keeps its
+    text, cursor and paste attachments. Tests drive the real huh form through
+    `questionModel.Update` and the registered-question path through
+    `Model.Update`: `TestQuestionListedOtherDoesNotOpenCustomInput`,
+    `TestQuestionMultiOtherAndCustomAreDistinct`,
+    `TestQuestionInvalidOptionIdentityIsNotAnAnswer`,
+    `TestQuestionEscapeKeepsCompletedPrefix` (free text, single choice, multi
+    choice, custom answer, untouched default, escape at the first question,
+    unsubmitted multi choices, partial custom text, queued advancement, unmapped
+    focus), `TestQuestionEscapeAfterNavigatingBack`,
+    `TestQuestionCompletedFormStillFinalizesAll`,
+    `TestQuestionPromptKeysFitMinimumWidth`,
+    `TestQuestionPartialSkipSettlesThroughModel`,
+    `TestQuestionLiteralOtherSettlesThroughModel`,
+    `TestQuestionPartialSkipCannotSettleReplacement`, and
+    `TestFooterQuestionShowsAnswer` for the hint wording. Verification:
+    `CGO_ENABLED=1 go test ./internal/app/tui -run '^Test(Question|BuildQuestion|PromptKeys)' -count=1 -timeout 90s`
+    and `CGO_ENABLED=1 go test ./internal/app/tui/help -count=1` pass, and
+    `gofmt -l internal/app/tui/question.go internal/app/tui/question_test.go internal/app/tui/help`
+    reports no files. The full repository suite and the scripted usability suite
+    were not run for this phase.
+
 12. **Make status hints match the active action.** Fix
     [conflicting or duplicated Ctrl+X guidance](audit.md#ctrlx-footer-guidance-can-conflict-or-repeat),
     including narrow terminal fallbacks and drilled-in subagents.

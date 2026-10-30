@@ -84,7 +84,7 @@ func PromptKeys(h FooterHints) string {
 	var segs []string
 	switch {
 	case h.QuestionPending:
-		segs = append(segs, pair("Enter", "answer"), pair("Esc", "skip"))
+		segs = append(segs, pair("Enter", "answer"), pair("Esc", "skip remaining"))
 	case h.SkillGatePending:
 		segs = append(segs, pair("↑↓", "choose"), pair("1-4", "jump"), pair("Enter", "confirm"))
 	case h.ApprovalPending && !h.EditingCommand:

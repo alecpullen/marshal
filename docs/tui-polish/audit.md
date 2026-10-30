@@ -372,6 +372,32 @@ array, including for questions the user already answered.
   `internal/app/tui/model.go:3361`.
 - Potential direction: retain completed answers on skip, or clearly describe
   and confirm an action that discards the entire form.
+- Status (2026-10-30): fixed. The confirmed contract is "keep completed
+  answers", and only explicit Escape applies it: `questionModel` keeps the
+  answer submitted for a question the form has already advanced past, and
+  records `session.AnswerUnanswered` for the focused question and every later
+  one. A question is complete only once the form moved on from it, so a
+  highlighted default option, typed partial text, an unsubmitted multi-select
+  toggle or an unsubmitted custom input does not finish it. After navigation
+  back, that question and every later one are skipped even if visited; an
+  advancement still queued when Escape arrives skips the focused question;
+  Escape at the first question skips everything; and an unmapped focused field
+  fails closed to all unused answers. An unexpected huh `StateAborted` remains
+  an all-unanswered abort rather than a partial skip, and the footer and
+  console hint read `Esc skip remaining`. Answer settlement is otherwise
+  unchanged: one ordered answer per question through the existing
+  pending-question identity and the canonical `ResolveQuestion` claim, so a
+  cancelled or replaced prompt never receives another prompt's answers, and the
+  hidden composer keeps its text, cursor and paste attachments. Evidenced by
+  `TestQuestionEscapeKeepsCompletedPrefix` (free text, single choice, multi
+  choice, custom answer, untouched default, escape at the first question,
+  unsubmitted multi choices, partial custom text, queued advancement, unmapped
+  focus), `TestQuestionEscapeAfterNavigatingBack`,
+  `TestQuestionCompletedFormStillFinalizesAll`,
+  `TestQuestionPartialSkipSettlesThroughModel`,
+  `TestQuestionPartialSkipCannotSettleReplacement` and the
+  `Esc skip remaining` assertion in `TestFooterQuestionShowsAnswer`; commit
+  `p10-question-answers: task 2 — preserve completed answers on Escape`.
 
 ### A legitimate “other” option collides with the custom-answer sentinel
 
@@ -384,6 +410,27 @@ This affects both single- and multiple-choice questions.
   `internal/tools/native/question.go:215`.
 - Potential direction: give the custom choice an identity that cannot collide
   with a supplied option value.
+- Status (2026-10-30): fixed. Choice identity is internal and the two
+  namespaces are disjoint: every supplied option carries the generated huh
+  value `option:<zero-based index>` (`questionOptionValue`) and the appended
+  custom row carries `custom` (`questionOtherSentinel`), so a supplied label of
+  `other`, `Other…`, `custom`, `option:0`, empty or duplicated can no longer be
+  read as the custom answer. `questionOptionLabel` decodes an identity back to
+  its source label on finalisation and accepts only canonical in-range
+  identities, so a malformed value is dropped instead of being recorded as if
+  the user had typed it. The generated identities never leave the TUI:
+  `session.Question`, `session.Answer` and the wire format are unchanged. The
+  custom row is labelled `Other… (custom answer)`, and rendered keys that would
+  collide — including duplicates, which huh's multi-select would otherwise
+  toggle together — gain ` (option N)` from their one-based source position,
+  repeated if still not unique, so every rendered row plus the custom row is
+  unique; descriptions still affect only the rendered key, never the answer.
+  Evidenced by `TestQuestionListedOtherDoesNotOpenCustomInput`,
+  `TestQuestionMultiOtherAndCustomAreDistinct`,
+  `TestQuestionInvalidOptionIdentityIsNotAnAnswer`,
+  `TestQuestionPromptKeysFitMinimumWidth` and
+  `TestQuestionLiteralOtherSettlesThroughModel`; commit
+  `p10-question-answers: task 1 — give the custom answer its own identity`.
 
 ### Plan review cannot reach overflow diagnostics
 

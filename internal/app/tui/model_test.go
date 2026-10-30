@@ -3693,6 +3693,271 @@ func TestQuestionCancellationAndReplacementKeepDraft(t *testing.T) {
 	}
 }
 
+// openQuestionThroughModel drives the message that builds the inline question
+// form. handleQuestion builds the form lazily on the first message and drops
+// that message, so the keys sent afterwards reach the real huh form.
+func openQuestionThroughModel(t *testing.T, m Model) Model {
+	t.Helper()
+	m = sendMsg(m, tea.KeyPressMsg{Code: tea.KeyDown})
+	if m.questionModel == nil {
+		t.Fatal("the inline question form was not built")
+	}
+	return m
+}
+
+// typeIntoQuestionThroughModel feeds text into the focused huh field one rune
+// at a time through Model.Update, exactly as the runtime delivers keypresses.
+func typeIntoQuestionThroughModel(m Model, text string) Model {
+	for _, r := range text {
+		m = sendMsg(m, tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	return m
+}
+
+// questionSettlement reads the one delivery a question's response channel
+// carries, failing when it carried none or settled more than once.
+func questionSettlement(t *testing.T, q *session.PendingQuestion, when string) []session.Answer {
+	t.Helper()
+	select {
+	case got, ok := <-q.ResponseChan:
+		if !ok {
+			t.Fatalf("%s: the response channel closed without an answer", when)
+		}
+		if extra, ok := <-q.ResponseChan; ok {
+			t.Fatalf("%s: the question settled more than once, second = %+v", when, extra)
+		}
+		return got
+	case <-time.After(time.Second):
+		t.Fatalf("%s: the question was never settled", when)
+	}
+	return nil
+}
+
+// assertQuestionAnswers compares a settlement against the questions it answers
+// and the answer each one must carry, in order.
+func assertQuestionAnswers(t *testing.T, got []session.Answer, questions []session.Question, want []string, when string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: got %d answers, want %d: %+v", when, len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].Question != questions[i].Question {
+			t.Fatalf("%s: answer %d is for %q, want %q", when, i, got[i].Question, questions[i].Question)
+		}
+		if got[i].Answer != w {
+			t.Fatalf("%s: answer %d = %q, want %q (all: %+v)", when, i, got[i].Answer, w, got)
+		}
+	}
+}
+
+// TestQuestionPartialSkipSettlesThroughModel pins the whole partial-skip round
+// trip through the host: a registered question driven by real keys and the
+// inline form's own navigation settles exactly once, on its own response
+// channel, with the answers the form advanced past and the focused question and
+// everything after it marked Unanswered. It also pins that the settlement
+// neither clears nor submits the composer draft it arrived over, at the
+// minimum frame and a wider one.
+func TestQuestionPartialSkipSettlesThroughModel(t *testing.T) {
+	for _, frame := range []struct {
+		name string
+		w, h int
+	}{
+		{name: "80x24", w: 80, h: 24},
+		{name: "120x40", w: 120, h: 40},
+	} {
+		t.Run(frame.name, func(t *testing.T) {
+			m := newViewTestModel(t, frame.w, frame.h)
+			var want composerDraft
+			m, want = seedComposerDraft(t, m)
+
+			questions := []session.Question{
+				{Question: "Name?"},
+				{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}}},
+				{Question: "Why?"},
+			}
+			q := &session.PendingQuestion{
+				Questions:    questions,
+				ResponseChan: make(chan []session.Answer, 1),
+			}
+			if _, err := m.state.RegisterQuestion(context.Background(), q); err != nil {
+				t.Fatalf("RegisterQuestion: %v", err)
+			}
+
+			m = openQuestionThroughModel(t, m)
+			m = typeIntoQuestionThroughModel(m, "alice")
+			m = sendMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → question 2
+			for _, msg := range questionMoveDown(1) {           // green
+				m = sendMsg(m, msg)
+			}
+			m = sendMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter}) // → question 3
+			m = sendMsg(m, tea.KeyPressMsg{Code: tea.KeyEscape})
+
+			assertQuestionAnswers(t, questionSettlement(t, q, "after the partial skip"), questions,
+				[]string{"alice", "green", session.AnswerUnanswered}, "after the partial skip")
+			if m.state.PendingQuestion() != nil {
+				t.Fatal("the question slot did not clear after settlement")
+			}
+			if m.questionModel != nil {
+				t.Fatal("the question form survived settlement")
+			}
+			assertDraftIntact(t, m, want, "after the partial skip")
+			if n := len(m.state.Messages()); n != 0 {
+				t.Fatalf("the partial skip submitted %d message(s); it must not submit the draft", n)
+			}
+		})
+	}
+}
+
+// TestQuestionLiteralOtherSettlesThroughModel pins that a supplied option
+// literally labelled "other" answers as that listed choice — its label alone,
+// with no generated option identity and nothing from the custom-answer input —
+// for single and multi selection, chosen through the real form's own keys.
+func TestQuestionLiteralOtherSettlesThroughModel(t *testing.T) {
+	options := []session.QuestionOption{{Label: "keep"}, {Label: "other"}, {Label: "drop"}}
+	const otherRow = 1
+	for _, tc := range []struct {
+		name     string
+		question session.Question
+		drive    func(m Model) Model
+	}{
+		{
+			name:     "single",
+			question: session.Question{Question: "Archive or delete?", Options: options},
+			drive: func(m Model) Model {
+				for _, msg := range questionMoveDown(otherRow) {
+					m = sendMsg(m, msg)
+				}
+				return sendMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+			},
+		},
+		{
+			name:     "multi",
+			question: session.Question{Question: "Archive or delete?", Options: options, Multi: true},
+			drive: func(m Model) Model {
+				for _, msg := range questionMoveDown(otherRow) {
+					m = sendMsg(m, msg)
+				}
+				m = sendMsg(m, questionToggle())
+				return sendMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newViewTestModel(t, 100, 30)
+			q := &session.PendingQuestion{
+				Questions:    []session.Question{tc.question},
+				ResponseChan: make(chan []session.Answer, 1),
+			}
+			if _, err := m.state.RegisterQuestion(context.Background(), q); err != nil {
+				t.Fatalf("RegisterQuestion: %v", err)
+			}
+			m = openQuestionThroughModel(t, m)
+			qm := m.questionModel
+			m = tc.drive(m)
+
+			got := questionSettlement(t, q, "after picking the listed other")
+			if len(got) != 1 {
+				t.Fatalf("got %d answers, want 1: %+v", len(got), got)
+			}
+			if got[0].Answer != "other" {
+				t.Fatalf("answer = %q, want the supplied label %q", got[0].Answer, "other")
+			}
+			if strings.Contains(got[0].Answer, questionOptionPrefix) {
+				t.Fatalf("answer carries a generated option identity: %q", got[0].Answer)
+			}
+			if qm.others[0] == nil {
+				t.Fatal("the options question lost its custom-answer input")
+			}
+			if custom := *qm.others[0]; custom != "" {
+				t.Fatalf("the custom-answer input recorded %q for a listed option", custom)
+			}
+			if m.state.PendingQuestion() != nil {
+				t.Fatal("the question slot did not clear after settlement")
+			}
+		})
+	}
+}
+
+// TestQuestionPartialSkipCannotSettleReplacement pins that a form holding a
+// completed prefix cannot answer the question that replaced its interrupted
+// owner: the interrupted request keeps the cancellation sentinel it was already
+// settled with, the replacement is rebuilt and answers — and is answered by —
+// its own request, and the composer draft survives untouched.
+func TestQuestionPartialSkipCannotSettleReplacement(t *testing.T) {
+	m := newViewTestModel(t, 80, 24)
+	var want composerDraft
+	m, want = seedComposerDraft(t, m)
+
+	first := &session.PendingQuestion{
+		Questions: []session.Question{
+			{Question: "Name?"},
+			{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}}},
+		},
+		ResponseChan: make(chan []session.Answer, 1),
+	}
+	if _, err := m.state.RegisterQuestion(context.Background(), first); err != nil {
+		t.Fatalf("RegisterQuestion: %v", err)
+	}
+	// Complete a prefix: question 1 is submitted and the form moves to
+	// question 2.
+	m = openQuestionThroughModel(t, m)
+	m = typeIntoQuestionThroughModel(m, "alice")
+	m = sendMsg(m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.questionModel == nil {
+		t.Fatal("the form settled before the prefix was complete")
+	}
+
+	// Send now claims the interrupted question. The form still holds "alice",
+	// but the cancellation settles the owner with the sentinel.
+	if !m.state.CancelPrompt(first.Key, session.ErrSendNow) {
+		t.Fatal("CancelPrompt did not win the interrupted question")
+	}
+	assertQuestionAnswers(t, questionSettlement(t, first, "after the interruption"), first.Questions,
+		[]string{session.AnswerUnanswered, session.AnswerUnanswered}, "after the interruption")
+
+	replacement := &session.PendingQuestion{
+		Questions:    []session.Question{{Question: "Continue?"}, {Question: "Where to?"}},
+		ResponseChan: make(chan []session.Answer, 1),
+	}
+	if _, err := m.state.RegisterQuestion(context.Background(), replacement); err != nil {
+		t.Fatalf("RegisterQuestion (replacement): %v", err)
+	}
+	if m.state.PendingQuestion() != replacement {
+		t.Fatal("the replacement does not hold the pending slot")
+	}
+
+	// The keys queued for the interrupted form arrive now. The first retires
+	// the stale form and must not answer the replacement.
+	for _, msg := range questionMoveDown(1) {
+		m = sendMsg(m, msg)
+	}
+	if m.questionModel == nil || m.questionModel.q != replacement {
+		t.Fatal("the stale form was not rebuilt for the replacement")
+	}
+	if m.state.PendingQuestion() != replacement {
+		t.Fatal("the queued navigation settled or cleared the replacement")
+	}
+	select {
+	case got := <-replacement.ResponseChan:
+		t.Fatalf("the stale form answered the replacement: %+v", got)
+	default:
+	}
+
+	// Escape reaches the replacement's own form, so the replacement is skipped
+	// by its own request with its own questions.
+	m = sendMsg(m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.state.PendingQuestion() != nil {
+		t.Fatal("the replacement stayed pending after its own Escape")
+	}
+	assertQuestionAnswers(t, questionSettlement(t, replacement, "after the replacement's own Escape"),
+		replacement.Questions, []string{session.AnswerUnanswered, session.AnswerUnanswered},
+		"after the replacement's own Escape")
+	if n := len(m.state.Messages()); n != 0 {
+		t.Fatalf("the replacement settlement submitted %d message(s); it must not submit the draft", n)
+	}
+	assertDraftIntact(t, m, want, "after the stale form was retired")
+}
+
 // chooseApprovalEdit drives the real approval form to its Edit choice through
 // Model.Update and returns the model with the isolated editor open.
 func chooseApprovalEdit(t *testing.T, m Model) Model {

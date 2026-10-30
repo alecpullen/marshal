@@ -5401,44 +5401,102 @@ func TestBuildSubagentFactoryNoSnapshotterWhenParentHasNone(t *testing.T) {
 // stray go-test output under the spinner.
 func TestSubagentShellOutputDoesNotReachParent(t *testing.T) {
 	cfg := config.Default()
+	// Normal Act access is the fixture's baseline: the child's command is an
+	// ordinary workspace command.
+	cfg.Agent.Mode, cfg.Agent.Auto = interaction.ModeAct, false
 	parentState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	childReg := registry.New()
+	// The child runs at the fixture's actual workspace root: the command's
+	// directory and workspace are that one real path.
+	dir := t.TempDir()
 	// Build a minimal native toolset for the child. Its commands belong to the
 	// conversation, so the child registry borrows an explicit owner: the
 	// parent's running-count callback is the one this fixture is separating
 	// OUTPUT from, and output follows SessionState, not the service.
-	childState := session.New(cfg, t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	dir := t.TempDir()
+	childState := session.New(cfg, dir, time.Unix(100, 0), session.Persistence{})
+	var mu sync.Mutex
+	runs := 0
 	childRunner := &fakeRunner{run: func(ctx context.Context, req native.CommandRequest) (native.CommandResult, error) {
+		mu.Lock()
+		runs++
+		mu.Unlock()
 		if req.Stdout != nil {
 			_, _ = req.Stdout.Write([]byte("marshal-scope-probe\n"))
 		}
 		return native.CommandResult{Stdout: "marshal-scope-probe\n", ExitCode: 0}, nil
 	}}
 	jm := newOwnedCommandService(t, childRunner, dir, childState, nil)
+
+	// The child's own policy surface, bound to the child's live authority and
+	// the child registry it will dispatch through.
+	pol := policy.NewEngine(&cfg, childState.SessionRules())
+	pol.SetConfigSource(childState.PolicySnapshot)
+	pol.WithRegistry(childReg)
+	childAuthorizer := policy.NewAuthorizer(pol, childState.InteractionAuthority())
+
 	nativeOpts := native.Options{
-		WorkspaceRoot:  dir,
-		CommandRunner:  childRunner,
-		SessionState:   childState,
-		WorkspaceState: parentState,
-		Config:         cfg,
-		JobManager:     jm,
+		WorkspaceRoot:    dir,
+		CommandRunner:    childRunner,
+		SessionState:     childState,
+		WorkspaceState:   parentState,
+		Config:           cfg,
+		JobManager:       jm,
+		CommandAdmission: childAuthorizer.BeginCommand,
 	}
 	if err := native.RegisterAll(childReg, nativeOpts); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	// Set an active tool call on the parent (simulating agent.await in flight).
-	parentState.SetActiveToolCall(session.ActiveToolCall{Name: "agent.await"})
-	// Run shell.run "echo marshal-scope-probe" through the child's registry.
+	// The parent is blocked in agent.await while the child streams its command.
+	parentState.SetActiveToolCall(session.ActiveToolCall{Name: "agent.await", ToolCallID: "call-parent"})
+	// The child's in-flight call carries the same ID as the execution origin
+	// below, which is how the output reaches THIS call.
+	childState.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", ToolCallID: "call-child"})
+
 	tool, ok := childReg.Lookup("shell.run")
 	if !ok {
 		t.Fatal("shell.run not found in child registry")
 	}
-	// Execute the tool — we just need the output to land on the child.
-	_, err := tool.Handler(context.Background(), registry.ToolCall{Name: "shell.run", Args: []byte(`{"command":"echo marshal-scope-probe"}`)})
-	if err != nil {
+	call := registry.ToolCall{ID: "call-child", Name: "shell.run", Args: []byte(`{"command":"echo marshal-scope-probe"}`)}
+	callCtx := session.WithExecutionOrigin(context.Background(), session.ExecutionOrigin{
+		ConversationID: parentState.SessionID(),
+		Actor:          "subtask",
+		TurnID:         "turn-child",
+		ToolCallID:     "call-child",
+	})
+
+	// Without a proof nothing launches.
+	if _, err := tool.Handler(callCtx, call); !errors.Is(err, policy.ErrApprovalRequired) {
+		t.Fatalf("unapproved shell.run = %v, want ErrApprovalRequired", err)
+	}
+	if got := func() int { mu.Lock(); defer mu.Unlock(); return runs }(); got != 0 {
+		t.Fatalf("the unapproved call entered the runner %d times, want 0", got)
+	}
+
+	// Execute with a fresh proof for exactly this command and workspace. The
+	// call is synchronous, so the output has been delivered before the
+	// assertions below.
+	proofCall := policy.Call{
+		InvocationID: "call-child",
+		ToolName:     "shell.run",
+		Shell: &policy.ShellInput{
+			Command:       "echo marshal-scope-probe",
+			Dir:           dir,
+			WorkspaceRoot: dir,
+		},
+	}
+	if _, err := tool.Handler(testCommandProof(t, callCtx, childAuthorizer, proofCall), call); err != nil {
 		t.Fatalf("shell.run: %v", err)
 	}
+	if got := func() int { mu.Lock(); defer mu.Unlock(); return runs }(); got != 1 {
+		t.Fatalf("runner calls = %d, want the one admitted launch", got)
+	}
+
+	// Positive: the child's own call received the output.
+	childOut, _ := childState.ActiveToolCall()
+	if !strings.Contains(childOut.Output, "marshal-scope-probe") {
+		t.Fatalf("the child's active call never received its output: %q", childOut.Output)
+	}
+	// Negative: the parent's call did not.
 	parentOut, _ := parentState.ActiveToolCall()
 	if strings.Contains(parentOut.Output, "marshal-scope-probe") {
 		t.Fatalf("parent got child's output: %q", parentOut.Output)

@@ -4,9 +4,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"charm.land/lipgloss/v2"
 
 	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
@@ -857,19 +860,68 @@ func TestStatusLineShowsSDDModeOnly(t *testing.T) {
 	}
 }
 
+// TestStatusLineUntrustedIsWarningColored asserts that the untrusted segment
+// follows the semantic StatusWarning slot rather than one palette's literal
+// value. Each fixture renders an expectation from its own theme, so the test
+// fails if untrustedStyle() reads a different slot — including under the
+// fixture whose warning colour is overridden to a value found nowhere in the
+// built-in palettes.
 func TestStatusLineUntrustedIsWarningColored(t *testing.T) {
+	prev := theme.Current()
+	t.Cleanup(func() { theme.Reload(prev) })
+
 	m := newStatusTestModel(t)
 	m.state.SetTrusted(false)
-	out := m.renderStatusLine(100)
-	// The untrusted segment should carry a foreground color SGR (any tier).
-	// In 256-color mode it's 38;5;172; in 16-color it's 33 (yellow).
-	has256 := strings.Contains(out, "38;5;172")
-	has16 := strings.Contains(out, "[1;33m") || strings.Contains(out, "[33m")
-	if !has256 && !has16 {
-		t.Fatalf("untrusted segment not warning-colored (expected 38;5;172 or 33m):\n%s", out)
+
+	// A foreground-colour SGR: 30–37/90–97 plus the 38;5;n and 38;2;r;g;b
+	// extended forms. Bold (1) is deliberately not a match.
+	fgSGR := regexp.MustCompile("\x1b\\[(3[0-9]|9[0-9]|38;[0-9;]*)m")
+
+	// A warning colour that no palette defines, so a match cannot be
+	// satisfied by an unrelated segment or a coincidental palette collision.
+	overridden := theme.LoadFor(false, "xterm-256color")
+	overridden.StatusWarning = lipgloss.Color("45")
+	if overridden.StatusWarning == overridden.FGDefault || overridden.StatusWarning == overridden.StatusError {
+		t.Fatalf("fixture warning colour collides with another slot")
 	}
-	if !strings.Contains(stripANSI(out), "untrusted") {
-		t.Fatalf("untrusted text missing:\n%s", out)
+
+	cases := []struct {
+		name       string
+		theme      theme.Theme
+		monochrome bool
+	}{
+		{name: "256-color", theme: theme.LoadFor(false, "xterm-256color")},
+		{name: "16-color", theme: theme.LoadFor(false, "xterm")},
+		{name: "overridden warning slot", theme: overridden},
+		{name: "monochrome", theme: theme.LoadFor(true, "xterm-256color"), monochrome: true},
+	}
+
+	// Subtests deliberately do not run in parallel: they share the global
+	// theme.
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reload after model construction so initialization cannot
+			// replace the fixture.
+			theme.Reload(tc.theme)
+			out := m.renderStatusLine(100)
+			if !strings.Contains(stripANSI(out), "untrusted") {
+				t.Fatalf("untrusted text missing:\n%s", out)
+			}
+			if tc.monochrome {
+				bold := lipgloss.NewStyle().Bold(true).Render("untrusted")
+				if !strings.Contains(out, bold) {
+					t.Fatalf("monochrome untrusted text must stay visible without colour styling:\n%q", out)
+				}
+				if fgSGR.MatchString(bold) {
+					t.Fatalf("monochrome untrusted token carries a foreground colour: %q", bold)
+				}
+				return
+			}
+			want := lipgloss.NewStyle().Foreground(tc.theme.StatusWarning).Bold(true).Render("untrusted")
+			if !strings.Contains(out, want) {
+				t.Fatalf("untrusted segment not rendered with the selected StatusWarning slot (%q):\n%s", want, out)
+			}
+		})
 	}
 }
 

@@ -143,18 +143,57 @@ func initRepoWithoutIdentity(t *testing.T) string {
 	return dir
 }
 
-// A bridge-made agent checkout has no git identity: the bridge clones it and
-// clones do not carry one. CommitAll then fails with "Author identity
-// unknown" and the agent's work can never be shipped — the exit path, the
-// pipeline controller and the CI fixer all commit through here.
-func TestCLIGitOpsCommitAllWithoutARepoIdentity(t *testing.T) {
+// isolateGitIdentity points git's config lookups at per-test files and clears
+// any identity from the environment, so an identity-free fixture really has no
+// identity no matter how the developer's machine is configured and nothing the
+// test does can touch their real Git configuration.
+//
+// The identity variables are unset rather than blanked: an empty
+// GIT_AUTHOR_NAME is still a value, and git rejects it.
+func isolateGitIdentity(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(dir, "global.gitconfig"))
+	t.Setenv("GIT_CONFIG_SYSTEM", filepath.Join(dir, "system.gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	for _, key := range []string{
+		"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+	} {
+		unsetEnvForTest(t, key)
+	}
+}
+
+// unsetEnvForTest removes key for the duration of the test and restores its
+// previous value, or its absence, on cleanup.
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+	prev, had := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("unset %s: %v", key, err)
+	}
+	t.Cleanup(func() {
+		if !had {
+			_ = os.Unsetenv(key)
+			return
+		}
+		_ = os.Setenv(key, prev)
+	})
+}
+
+// commitWithoutRepoIdentity builds the identity-free checkout, guards that it
+// really has no effective identity, commits through the production fallback,
+// and returns the author of the resulting commit.
+func commitWithoutRepoIdentity(t *testing.T) string {
+	t.Helper()
 	repo := initRepoWithoutIdentity(t)
 	g := CLIGitOps{}
 
-	// Guard the fixture: the repo must genuinely have no identity, or the
-	// test would pass for the wrong reason.
-	if out, err := exec.Command("git", "-C", repo, "config", "user.email").CombinedOutput(); err == nil {
-		t.Fatalf("fixture has a repo identity (%q); it is not exercising the bug", strings.TrimSpace(string(out)))
+	// Guard the fixture: no identity may be in effect, or the test would
+	// pass for the wrong reason.
+	if out, err := g.run(repo, "config", "user.email"); err == nil {
+		t.Fatalf("fixture has an effective identity (%q); it is not exercising the bug", out)
 	}
 
 	writeRepoFile(t, repo, "new.txt", "hello\n")
@@ -171,6 +210,54 @@ func TestCLIGitOpsCommitAllWithoutARepoIdentity(t *testing.T) {
 	author, err := g.run(repo, "log", "-1", "--format=%an <%ae>")
 	if err != nil {
 		t.Fatalf("log: %v", err)
+	}
+	return author
+}
+
+// A bridge-made agent checkout has no git identity: the bridge clones it and
+// clones do not carry one. CommitAll then fails with "Author identity
+// unknown" and the agent's work can never be shipped — the exit path, the
+// pipeline controller and the CI fixer all commit through here.
+func TestCLIGitOpsCommitAllWithoutARepoIdentity(t *testing.T) {
+	isolateGitIdentity(t)
+	author := commitWithoutRepoIdentity(t)
+	if !strings.Contains(author, "@") {
+		t.Fatalf("commit author = %q, want a usable identity", author)
+	}
+}
+
+// A real machine usually has a Git identity, so the identity-free fixture must
+// be shown to ignore one rather than merely benefit from its absence. A
+// synthetic global config stands in for the developer's here.
+func TestCLIGitOpsNoIdentityIgnoresPoisonedGlobal(t *testing.T) {
+	const (
+		poisonedName  = "Poisoned Developer"
+		poisonedEmail = "poisoned@example.com"
+	)
+	// A non-repository directory keeps the control lookup free of any local
+	// config: global beats system, so the synthetic identity must win.
+	dir := t.TempDir()
+	poisoned := filepath.Join(dir, "global.gitconfig")
+	body := "[user]\n\tname = " + poisonedName + "\n\temail = " + poisonedEmail + "\n"
+	if err := os.WriteFile(poisoned, []byte(body), 0o644); err != nil {
+		t.Fatalf("write synthetic global config: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", poisoned)
+
+	out, err := exec.Command("git", "-C", dir, "config", "user.email").CombinedOutput()
+	if err != nil {
+		t.Fatalf("control git config user.email: %v: %s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != poisonedEmail {
+		t.Fatalf("control git config user.email = %q, want the synthetic %q", got, poisonedEmail)
+	}
+
+	// The fixture overrides those lookups with its own per-test paths, so no
+	// identity is in effect and CommitAll must fall back to marshal's.
+	isolateGitIdentity(t)
+	author := commitWithoutRepoIdentity(t)
+	if strings.Contains(author, poisonedEmail) || strings.Contains(author, poisonedName) {
+		t.Fatalf("commit author = %q, want marshal's fallback, not the ambient identity", author)
 	}
 	if !strings.Contains(author, "@") {
 		t.Fatalf("commit author = %q, want a usable identity", author)

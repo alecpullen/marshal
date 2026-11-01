@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"marshal/internal/tools/registry"
 )
 
 const attrSrc = `package p
@@ -98,9 +100,65 @@ func TestSymbolsForEditMalformedDiffIsEmptyNotPanic(t *testing.T) {
 	}
 }
 
-func TestSymbolsForEditUnparseableSourceIsEmptyNotError(t *testing.T) {
-	diff := "--- a/p.go\n+++ b/p.go\n@@ -1,1 +1,1 @@\n-x\n+y\n"
-	if refs := symbolsForEdit(context.Background(), "p.go", "@@@ not go @@@", diff); len(refs) != 0 {
-		t.Logf("unparseable source yielded %+v (acceptable if empty)", refs)
+// TestSymbolsForEditToleratesPartialSyntaxErrors pins the actual contract for
+// malformed source: repo.ExtractSymbols explicitly permits a partial tree
+// around syntax errors, so a broken declaration later in the file must not
+// cost the caller the symbols it can still see. The earlier version of this
+// test asserted nothing at all (its only check logged), which neither proved
+// tolerance nor proved failure.
+func TestSymbolsForEditToleratesPartialSyntaxErrors(t *testing.T) {
+	// A valid file plus one explicitly malformed declaration appended.
+	source := attrSrc + "\nfunc Broken( {\n"
+	diff := "--- a/p.go\n+++ b/p.go\n@@ -3,3 +3,3 @@\n-\treturn 1\n+\treturn 11\n"
+	refs := symbolsForEdit(context.Background(), "p.go", source, diff)
+
+	var alpha *registry.SymbolRef
+	for i := range refs {
+		if refs[i].Name == "Alpha" {
+			alpha = &refs[i]
+			break
+		}
+	}
+	if alpha == nil {
+		t.Fatalf("malformed trailing declaration must not hide Alpha, got %+v", refs)
+	}
+	if alpha.File != "p.go" {
+		t.Fatalf("File = %q, want p.go", alpha.File)
+	}
+	if alpha.Kind != "function" {
+		t.Fatalf("Kind = %q, want function", alpha.Kind)
+	}
+}
+
+// TestSymbolsForEditCancelledParseReturnsNoSymbols exercises the parse-failure
+// fallback rather than treating ordinary syntax recovery as a parse error: a
+// canceled context makes the parser itself fail, which must degrade to no
+// symbols (never an error, never a panic).
+//
+// The source is deliberately large. tree-sitter polls the context only at
+// parse-progress boundaries, so a small file finishes before cancellation is
+// ever observed and the call would succeed — the fixture would then pass
+// without exercising the failure path at all. The control call below proves
+// the same source and diff do attribute to Alpha when parsing succeeds, so a
+// vacuous pass cannot hide here.
+func TestSymbolsForEditCancelledParseReturnsNoSymbols(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(attrSrc)
+	const padding = 2000
+	for i := 0; i < padding; i++ {
+		b.WriteString("\nfunc Pad() int {\n\treturn 0\n}\n")
+	}
+	source := b.String()
+	diff := "--- a/p.go\n+++ b/p.go\n@@ -3,3 +3,3 @@\n-\treturn 1\n+\treturn 11\n"
+
+	if refs := symbolsForEdit(context.Background(), "p.go", source, diff); len(refs) == 0 {
+		t.Fatal("fixture precondition: without cancellation the source must still attribute to Alpha")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	refs := symbolsForEdit(ctx, "p.go", source, diff)
+	if len(refs) != 0 {
+		t.Fatalf("a canceled parse must yield no symbols, got %+v", refs)
 	}
 }

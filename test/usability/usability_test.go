@@ -2,6 +2,7 @@ package usability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +31,62 @@ func binaryPath(t *testing.T) string {
 		t.Fatalf("resolve marshal binary path: %v", err)
 	}
 	return abs
+}
+
+// requireBinary resolves the Marshal binary under test and enforces its
+// availability. With USABILITY_REQUIRE_BINARY=1 a missing or non-executable
+// binary fails the test — the dedicated CI job builds the binary and must not
+// pass while silently skipping every scenario. Otherwise a file that is absent
+// or not executable is a skip. Any other stat error (permission denied, I/O)
+// fails in both modes: it is not the "binary was never built" case.
+func requireBinary(t *testing.T) string {
+	t.Helper()
+	path := binaryPath(t)
+	required := os.Getenv("USABILITY_REQUIRE_BINARY") == "1"
+	info, err := os.Stat(path)
+	if err != nil {
+		if required {
+			t.Fatalf("marshal binary is required but unavailable at %s: %v", path, err)
+		}
+		if os.IsNotExist(err) {
+			t.Skipf("marshal binary not found at %s; build with 'go build ./cmd/marshal'", path)
+		}
+		t.Fatalf("stat marshal binary at %s: %v", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		if required {
+			t.Fatalf("marshal binary is required but %s is not a regular file (mode %s)", path, info.Mode())
+		}
+		t.Skipf("marshal binary at %s is not a regular file (mode %s)", path, info.Mode())
+	}
+	if info.Mode()&0o111 == 0 {
+		if required {
+			t.Fatalf("marshal binary is required but %s is not executable (mode %s)", path, info.Mode())
+		}
+		t.Skipf("marshal binary at %s is not executable (mode %s)", path, info.Mode())
+	}
+	return path
+}
+
+// reportDir returns a report directory unique to this test run. With
+// USABILITY_REPORT_DIR set it creates a fresh subdirectory there, so the CI
+// upload step collects every run's artifacts; otherwise it uses t.TempDir().
+func reportDir(t *testing.T) string {
+	t.Helper()
+	parent := os.Getenv("USABILITY_REPORT_DIR")
+	if parent == "" {
+		return t.TempDir()
+	}
+	// The configured parent need not exist yet: CI points at a path under the
+	// runner temp that nothing has created.
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatalf("create report parent directory %s: %v", parent, err)
+	}
+	dir, err := os.MkdirTemp(parent, "usability-*")
+	if err != nil {
+		t.Fatalf("create report directory under %s: %v", parent, err)
+	}
+	return dir
 }
 
 // childEnv is one isolated child environment: the variables handed to the
@@ -306,21 +363,23 @@ func TestIsolatedHomeEnv(t *testing.T) {
 }
 
 func TestScriptedHelpOpenClose(t *testing.T) {
-	if _, err := os.Stat(binaryPath(t)); err != nil {
-		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")
-	}
+	bin := requireBinary(t)
 	env := isolatedHomeEnv(t)
 	r := scenario.NewRunner(scenario.RunnerConfig{
-		BinaryPath: binaryPath(t),
+		BinaryPath: bin,
 		WorkDir:    t.TempDir(),
 		Env:        env.Env,
-		ReportDir:  "/tmp/marshal-usability",
+		ReportDir:  reportDir(t),
 		// The /help cheatsheet printed by "?" is taller than the default
 		// 40-row terminal; at 40 rows its "Keys" header scrolls above the
 		// viewport before the harness's PTY buffer ever captures it.
 		Height: 80,
 	})
-	defer r.WriteReport()
+	t.Cleanup(func() {
+		if err := r.WriteReport(); err != nil {
+			t.Errorf("WriteReport: %v", err)
+		}
+	})
 	// Bounded: a close that never takes effect must fail with the runner's
 	// recorded result (and its screen_on_timeout viewport), not hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -411,17 +470,19 @@ func TestLLMSubtractFix(t *testing.T) {
 	if os.Getenv("USABILITY_LLM_MODEL") == "" {
 		t.Skip("set USABILITY_LLM_MODEL to run LLM scenarios")
 	}
-	if _, err := os.Stat(binaryPath(t)); err != nil {
-		t.Skip("marshal binary not found")
-	}
+	bin := requireBinary(t)
 	workDir := copyFixture(t, "go-calc-broken")
 	r := scenario.NewRunner(scenario.RunnerConfig{
-		BinaryPath: binaryPath(t),
+		BinaryPath: bin,
 		WorkDir:    workDir,
 		Env:        llmChildEnv(t),
-		ReportDir:  "/tmp/marshal-usability",
+		ReportDir:  reportDir(t),
 	})
-	defer r.WriteReport()
+	t.Cleanup(func() {
+		if err := r.WriteReport(); err != nil {
+			t.Errorf("WriteReport: %v", err)
+		}
+	})
 	res, err := r.Run(context.Background(), scenario.Scenario{
 		Name:  "subtract_fix",
 		Actor: scenario.SubtractFix(),
@@ -499,13 +560,11 @@ func writeHelperScript(t *testing.T, body string) string {
 // This is deliberately separate from TestScriptedHelpOpenClose: that scenario
 // asserts the same transition through the scripted actor's postcondition.
 func TestScriptedVisibleScreenRedraw(t *testing.T) {
-	if _, err := os.Stat(binaryPath(t)); err != nil {
-		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")
-	}
+	bin := requireBinary(t)
 
 	env := isolatedHomeEnv(t)
 	sess, err := harness.New(harness.Config{
-		BinaryPath: binaryPath(t),
+		BinaryPath: bin,
 		Width:      120,
 		Height:     80,
 		WorkDir:    t.TempDir(),
@@ -547,13 +606,11 @@ func TestScriptedVisibleScreenRedraw(t *testing.T) {
 // pins [postmortem] on_exit = "never", which removes the interactive postmortem
 // question from the exit path.
 func TestScriptedGracefulQuit(t *testing.T) {
-	if _, err := os.Stat(binaryPath(t)); err != nil {
-		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")
-	}
+	bin := requireBinary(t)
 
 	env := isolatedHomeEnv(t)
 	sess, err := harness.New(harness.Config{
-		BinaryPath: binaryPath(t),
+		BinaryPath: bin,
 		Width:      120,
 		Height:     80,
 		WorkDir:    t.TempDir(),
@@ -627,5 +684,66 @@ sleep 10
 	}
 	if !strings.Contains(string(sess.Snapshot().Content), helpTitleMarker) {
 		t.Fatalf("help marker disappeared from the viewport without a close action")
+	}
+}
+
+// TestRequireBinarySubprocess proves both of requireBinary's branches from a
+// real process exit code: the same missing binary fails the child in required
+// mode and is merely skipped (exit zero) when the requirement is unset.
+func TestRequireBinarySubprocess(t *testing.T) {
+	if os.Getenv("USABILITY_HELPER_PROCESS") == "1" {
+		requireBinary(t)
+		return
+	}
+
+	// A path inside a fresh temp dir that nothing created: the binary was
+	// never built, which is the skip case rather than a stat error.
+	missing := filepath.Join(t.TempDir(), "marshal-not-built")
+
+	for _, tc := range []struct {
+		name        string
+		required    string
+		wantNonzero bool
+	}{
+		{name: "required", required: "1", wantNonzero: true},
+		{name: "not_required", required: "", wantNonzero: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestRequireBinarySubprocess$")
+			// The child environment is constructed explicitly: an ambient
+			// USABILITY_REQUIRE_BINARY would otherwise pick the branch, and the
+			// non-required case must really run without it.
+			env := []string{
+				"USABILITY_HELPER_PROCESS=1",
+				"USABILITY_MARSHAL_BINARY=" + missing,
+			}
+			if tc.required != "" {
+				env = append(env, "USABILITY_REQUIRE_BINARY="+tc.required)
+			}
+			for _, e := range os.Environ() {
+				name, _, ok := strings.Cut(e, "=")
+				if !ok {
+					continue
+				}
+				switch name {
+				case "USABILITY_HELPER_PROCESS", "USABILITY_MARSHAL_BINARY", "USABILITY_REQUIRE_BINARY":
+					continue
+				}
+				env = append(env, e)
+			}
+			cmd.Env = env
+
+			err := cmd.Run()
+			var exitErr *exec.ExitError
+			if tc.wantNonzero {
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+					t.Fatalf("child exit = %v, want a nonzero exit when the binary is required and missing", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("child exit = %v, want zero: a missing binary is a skip when it is not required", err)
+			}
+		})
 	}
 }

@@ -141,6 +141,68 @@ func TestRunnerCountsKeystrokes(t *testing.T) {
 	}
 }
 
+// TestReportDirRequiresARunnerDirectory proves WriteReport never falls back to
+// a shared default directory: a runner built without ReportDir reports the
+// omission instead of writing artifacts somewhere everyone can overwrite.
+func TestReportDirRequiresARunnerDirectory(t *testing.T) {
+	r := NewRunner(RunnerConfig{BinaryPath: "cat", WorkDir: t.TempDir()})
+	err := r.WriteReport()
+	if err == nil {
+		t.Fatalf("WriteReport error = nil, want the missing ReportDir error")
+	}
+	if !strings.Contains(err.Error(), "ReportDir") {
+		t.Fatalf("WriteReport error = %q, want it to name ReportDir", err)
+	}
+}
+
+// TestReportDirsAreDistinctPerRun proves two concurrent runs cannot overwrite
+// each other's artifacts: each runner writes into its own directory, and each
+// directory carries only its own scenario's result.
+func TestReportDirsAreDistinctPerRun(t *testing.T) {
+	parent := t.TempDir()
+	run := func(name string) (dir string, rep []byte) {
+		t.Helper()
+		dir, err := os.MkdirTemp(parent, "run-*")
+		if err != nil {
+			t.Fatalf("create report dir for %s: %v", name, err)
+		}
+		r := NewRunner(RunnerConfig{BinaryPath: "cat", WorkDir: t.TempDir(), ReportDir: dir})
+		if _, err := r.Run(context.Background(), Scenario{Name: name, Actor: &stubActor{}}); err != nil {
+			t.Fatalf("Run(%s): %v", name, err)
+		}
+		if err := r.WriteReport(); err != nil {
+			t.Fatalf("WriteReport(%s): %v", name, err)
+		}
+		rep, err = os.ReadFile(filepath.Join(dir, "usability-report.json"))
+		if err != nil {
+			t.Fatalf("read report for %s: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "friction-log.md")); err != nil {
+			t.Fatalf("friction log missing for %s: %v", name, err)
+		}
+		return dir, rep
+	}
+
+	firstDir, firstReport := run("first-run")
+	secondDir, secondReport := run("second-run")
+
+	if firstDir == secondDir {
+		t.Fatalf("both runs wrote to the same directory %q", firstDir)
+	}
+	if !strings.Contains(string(firstReport), "first-run") {
+		t.Fatalf("first report does not contain its own scenario name")
+	}
+	if strings.Contains(string(firstReport), "second-run") {
+		t.Fatalf("first report contains the other run's scenario name")
+	}
+	if !strings.Contains(string(secondReport), "second-run") {
+		t.Fatalf("second report does not contain its own scenario name")
+	}
+	if strings.Contains(string(secondReport), "first-run") {
+		t.Fatalf("second report contains the other run's scenario name")
+	}
+}
+
 func TestRunnerFailsOnTerminalModelError(t *testing.T) {
 	// The child emits a screen-changing control the model rejects (DECSTBM).
 	// Even though the actor would report success, the runner must fail: an

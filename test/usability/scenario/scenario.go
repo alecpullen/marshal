@@ -2,9 +2,8 @@ package scenario
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -199,11 +198,13 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 	}
 }
 
-// WriteReport flushes reports to ReportDir or a temp dir.
+// WriteReport flushes reports to the runner's ReportDir. The directory is
+// required and explicit: a shared default would let concurrent runs overwrite
+// each other's artifacts.
 func (r *Runner) WriteReport() error {
 	dir := r.cfg.ReportDir
 	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "marshal-usability")
+		return errors.New("scenario: ReportDir is required; set RunnerConfig.ReportDir to a per-run directory")
 	}
 	return r.rep.WriteReport(dir)
 }

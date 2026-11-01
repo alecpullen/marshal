@@ -17,12 +17,15 @@ import (
 	"marshal/internal/db"
 )
 
-// TestPasteReachesEveryTextInput enumerates every TUI component that owns a
-// text field, sends it a tea.PasteMsg, and asserts the pasted text landed in
-// the field's value. The table lives in one shared file on purpose: when a
-// ninth input-owning component is added, add a row here and it fails until
-// paste reaches its input.
-func TestPasteReachesEveryTextInput(t *testing.T) {
+// TestPasteReachesSelectedTextInputs samples the TUI surfaces that own a text
+// field — the picker, memory, agents, connect, settings and skills filter
+// paths, plus the settings field-edit input — and asserts a paste reaches each
+// one. It is a sample, not a complete inventory and not a panel-routing
+// contract: other text fields are covered inside their own panels instead (for
+// the skills install source editor see
+// TestEscapeCancelsSkillEditorBeforeLeavingFrame, and for the plugin install
+// source see TestPluginPasteFollowsFocus).
+func TestPasteReachesSelectedTextInputs(t *testing.T) {
 	const pasted = "pasted-text-xyz"
 
 	cases := map[string]func(t *testing.T) string{
@@ -68,21 +71,6 @@ func TestPasteReachesEveryTextInput(t *testing.T) {
 			p := skills.NewPanel(t.TempDir(), t.TempDir(), false, nil, nil)
 			p.Update(tea.PasteMsg{Content: pasted})
 			return p.FilterValue()
-		},
-		"skills install source input": func(t *testing.T) string {
-			p := skills.NewPanel(t.TempDir(), t.TempDir(), false, nil, nil)
-			// Navigate down to the "＋ Install skill" action and activate it
-			// to push the install frame onto the stack.
-			p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-			p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-			p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-			// Now inside the install frame; row 0 is the source scalar.
-			// Open it for editing and paste.
-			fl := p.ActiveList()
-			settings.FieldListSetSize(fl, 60, 20)
-			settings.FieldListUpdate(fl, tea.KeyPressMsg{Code: tea.KeyEnter})
-			settings.FieldListUpdate(fl, tea.PasteMsg{Content: pasted})
-			return fl.InputValue()
 		},
 	}
 

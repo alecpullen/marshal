@@ -616,6 +616,58 @@ func TestContainerNilEnvAllowlistDefaults(t *testing.T) {
 	}
 }
 
+// TestContainerExplicitEmptyEnvAllowlistPassesNoParentEnv covers the
+// explicit-empty allowlist at the container argument boundary: unlike nil
+// (which defaults to AllowList), a non-nil empty allowlist passes no parent
+// environment at all — not even PATH.
+func TestContainerExplicitEmptyEnvAllowlistPassesNoParentEnv(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("HOME", "/home/test")
+	t.Setenv("MARSHAL_TEST", "harmless-test-value")
+	t.Setenv("ANTHROPIC_API_KEY", "sk-secret-test-value")
+
+	cfg := Config{
+		Backend:        "container",
+		ContainerImage: "alpine:latest",
+		EnvAllowlist:   []string{}, // explicit empty → no env vars at all
+	}
+	c := newContainer(cfg, "docker", "/usr/bin/docker", nil)
+
+	args, err := c.buildArgs("echo hi", "alpine:latest", "/workspace")
+	if err != nil {
+		t.Fatalf("buildArgs: %v", err)
+	}
+
+	for i, a := range args {
+		if a == "-e" || a == "--env" {
+			t.Fatalf("explicit-empty allowlist must pass no env, got %q at index %d (args: %v)", a, i, args)
+		}
+	}
+
+	// A truncated or malformed result must not pass vacuously: the image and
+	// the shell-wrapped command must still be present.
+	foundImage := false
+	for _, a := range args {
+		if a == "alpine:latest" {
+			foundImage = true
+			break
+		}
+	}
+	if !foundImage {
+		t.Fatalf("expected the image in args, got %v", args)
+	}
+	foundCommand := false
+	for i, a := range args {
+		if a == "-lc" && i+1 < len(args) && strings.Contains(args[i+1], "echo hi") {
+			foundCommand = true
+			break
+		}
+	}
+	if !foundCommand {
+		t.Fatalf("expected the command after -lc, got %v", args)
+	}
+}
+
 // TestContainerCPUTimeoutFallbackWarning verifies that isTimeoutNotFound
 // correctly detects a container image missing the `timeout` command
 // (TOOLS-MIN-F6). It inspects captured stderr (not err.Error()), because

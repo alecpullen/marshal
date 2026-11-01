@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
+
 	"marshal/internal/interaction"
 	"marshal/internal/llm/pricing"
 	"marshal/internal/llm/routing"
@@ -1048,65 +1050,57 @@ func TestSaveProjectConfigDoesNotResurrectDeletedKeys(t *testing.T) {
 		t.Errorf("deleted key max_tool_iterations resurrected:\n%s", raw)
 	}
 
-	// Scenario 2: [skills] max_active is present. Resetting it to the
-	// default in the running config and saving should update the existing
-	// key, not remove the whole section. The key preservation case is
-	// covered by round-trip tests above; this checks that an existing key
-	// is updated rather than dropped when it holds a non-default value.
-	cfg.Skills.MaxActive = Default().Skills.MaxActive
+	// Scenario 2: an existing [skills] max_active key must be updated in
+	// place, not dropped, when the running value differs from the default.
+	if err := os.WriteFile(path, []byte("[agent]\nmax_retries = 5\n\n[skills]\nmax_active = 3\n"), 0o644); err != nil {
+		t.Fatalf("write scenario 2: %v", err)
+	}
+	cfg, err = Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
+	if err != nil {
+		t.Fatalf("load scenario 2: %v", err)
+	}
+	if cfg.Skills.MaxActive != 3 {
+		t.Fatalf("loaded max_active = %d, want 3", cfg.Skills.MaxActive)
+	}
+	cfg.Skills.MaxActive = 5
 	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
-		t.Fatalf("save after reset: %v", err)
+		t.Fatalf("save scenario 2: %v", err)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read scenario 2: %v", err)
+	}
+	var parsed struct {
+		Agent struct {
+			MaxRetries *int `toml:"max_retries"`
+		} `toml:"agent"`
+		Skills struct {
+			MaxActive *int `toml:"max_active"`
+		} `toml:"skills"`
+	}
+	if err := toml.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("parse saved config: %v", err)
+	}
+	// The unrelated [agent] key the scenario seeded must survive the save, so
+	// this scenario fails if writeSections drops or mangles that section.
+	if parsed.Agent.MaxRetries == nil {
+		t.Fatalf("saved config dropped the seeded [agent] max_retries key:\n%s", raw)
+	}
+	if *parsed.Agent.MaxRetries != 5 {
+		t.Fatalf("saved agent max_retries = %d, want 5:\n%s", *parsed.Agent.MaxRetries, raw)
+	}
+	if parsed.Skills.MaxActive == nil {
+		t.Fatalf("saved config dropped the existing max_active key:\n%s", raw)
+	}
+	if *parsed.Skills.MaxActive != 5 {
+		t.Fatalf("saved max_active = %d, want 5:\n%s", *parsed.Skills.MaxActive, raw)
 	}
 	loaded, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if loaded.Skills.MaxActive != Default().Skills.MaxActive {
-		t.Fatalf("max_active = %d, want default %d", loaded.Skills.MaxActive, Default().Skills.MaxActive)
-	}
-}
-
-// TestSaveProjectConfigDeletedSkillsKeyStaysDeleted documents the boundary
-// of the Phase 5 fix. When a key is deleted from the file but the running
-// merged config still holds a non-default stale value, the per-key rule
-// cannot distinguish "deleted" from "changed in the UI" and will write the
-// key. Fixing that requires tracking per-field dirtiness or reloading the
-// file before every save; see Open Question OQ-2 in the follow-up plan.
-func TestSaveProjectConfigDeletedSkillsKeyStaysDeleted(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".marshal", "config.toml")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	if err := os.WriteFile(path, []byte("[skills]\nmax_active = 3\n"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	cfg, err := Load(LoadOptions{HomeDir: dir, WorkingDir: dir})
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.Skills.MaxActive != 3 {
-		t.Fatalf("loaded max_active = %d, want 3", cfg.Skills.MaxActive)
-	}
-
-	// Simulate the user deleting max_active from the file behind the app's
-	// back while the running config still holds the stale value 3.
-	if err := os.WriteFile(path, []byte("[skills]\nautoload = []\n"), 0o644); err != nil {
-		t.Fatalf("rewrite file without max_active: %v", err)
-	}
-	if err := SaveProjectConfig(path, cfg, Layers{}); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	// The per-key rule sees merged != default, so it writes max_active.
-	// This assertion documents current behavior rather than the ideal.
-	if !strings.Contains(string(raw), "max_active") {
-		t.Logf("note: max_active was omitted despite stale merged value (ideal, but not expected with current rule):\n%s", raw)
+	if loaded.Skills.MaxActive != 5 {
+		t.Fatalf("reloaded max_active = %d, want 5", loaded.Skills.MaxActive)
 	}
 }
 

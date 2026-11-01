@@ -3,7 +3,6 @@ package sandbox
 import (
 	"context"
 	"fmt"
-	"os"
 	"runtime"
 	"strings"
 	"syscall"
@@ -362,26 +361,6 @@ func TestRestrictedRunsCompoundCommands(t *testing.T) {
 				t.Fatalf("Run(%q) stdout = %q, want %q", tc.command, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestExplicitEmptyAllowlistDocumented verifies that both backends
-// document the explicit-empty allowlist behavior (TOOLS-MOD-F26).
-func TestExplicitEmptyAllowlistDocumented(t *testing.T) {
-	restrictedSrc, err := os.ReadFile("restricted.go")
-	if err != nil {
-		t.Skip("cannot read restricted.go: " + err.Error())
-	}
-	if !strings.Contains(string(restrictedSrc), "Explicit-empty allowlist") {
-		t.Error("restricted.go should document explicit-empty allowlist behavior")
-	}
-
-	containerSrc, err := os.ReadFile("container.go")
-	if err != nil {
-		t.Skip("cannot read container.go: " + err.Error())
-	}
-	if !strings.Contains(string(containerSrc), "Explicit-empty allowlist") {
-		t.Error("container.go should document explicit-empty allowlist behavior")
 	}
 }
 

@@ -1,7 +1,9 @@
 # Test audit remediation roadmap
 
 Date: 2026-10-30. Base: `5468c7823a6cb40e6c90047e778f433ba28686cb`.
-Source: [test audit](audit.md). Status: proposed.
+Source: [test audit](audit.md). Status: P0–P5 implemented on this host; see
+each stage for evidence and the [completion criteria](#completion-criteria) for
+what remains unobserved.
 
 This roadmap accounts for every finding in the audit. Each stage is planned
 against the integrated result of the stage before it; the first executable
@@ -103,8 +105,8 @@ finding](audit.md#the-pty-harness-does-not-model-the-current-terminal-screen).
 P3b closed the rest as seven labelled commits on `p3b-usability-harness` from
 base `e0d14b45`, following the
 [2026-11-01 executable plan](plans/2026-11-01-p3b-usability-harness-plan.md);
-the evidence is in the [audit](audit.md#verification-record). P4 and P5 remain
-open.
+the evidence is in the [audit](audit.md#verification-record). P4 and P5 are
+implemented; see their sections below.
 
 Replace accumulated-output-as-screen with an actual terminal state model;
 retain a separately bounded raw diagnostic log. Cover cursor movement, erase,
@@ -209,6 +211,28 @@ than quarantined or excluded.
 
 ## P5 — remove misleading and redundant tests
 
+**Status: implemented.** Plan
+[2026-11-01-p5-test-quality](plans/2026-11-01-p5-test-quality-plan.md) ran as
+six labelled test commits on `p5-test-quality` from base
+`4f81a41b4d28bcdaa2e2e9d3f9ef24f675cfa39d`; the evidence is in the
+[audit](audit.md#verification-record). No production code changed. Every
+retained test now asserts its claimed outcome: the config deletion test's
+logging-only sibling is removed and its surviving scenario asserts the real
+update path, symbol attribution pins partial-tree tolerance and the canceled
+parse fallback, the pre-patch test is renamed and made deterministic with an
+explicit pre-invocation boundary, the container backend gains an executable
+explicit-empty allowlist test in place of the source-comment check, the paste
+table is renamed and narrowed with its duplicate case removed, and the two
+simulated question transitions are replaced by one real-navigation test.
+Behavior coverage was not traded for test count: the distinct finalization,
+multi-select, collision and partial-skip tests all stay.
+
+Two limitations are recorded, not fixed. External deletion of a *nondefault*
+config value can still be overwritten by a later whole-struct save, which needs
+a separate product decision about per-field dirtiness. And the patch path
+remains a timestamp recheck followed by a separate write, so the pre-patch test
+proves a stale read rather than atomicity.
+
 Resolve the config-deletion and malformed-source tests' logging-only
 assertions according to their documented contracts; if the behavior is not a
 stable contract, remove or rename the test instead of cementing it. Rename
@@ -223,12 +247,26 @@ and no behavior coverage is lost solely to reduce test count.
 
 ## Completion criteria
 
+Met as of P5 on this host, to the extent recorded below:
+
 - Every finding in [the audit](audit.md) has a status, evidence and either a
-  fix or an explicit, reviewed disposition.
+  fix or an explicit, reviewed disposition. **Met** — each finding now carries
+  a status block, including the two P5-recorded limitations that are explicitly
+  *not* fixed (nondefault config-value resurrection on a whole-struct save, and
+  the non-atomic interval after the patch timestamp recheck).
 - Full Go tests and vet pass in the documented supported CI environments;
   repeated flaky tests demonstrate their guarantees rather than relying on
   timing alone. External keychains, services and developer config remain
-  outside default-suite dependencies.
+  outside default-suite dependencies. **Met on macOS/darwin arm64** —
+  `go test ./...` (117 packages, no `FAIL`) and `go vet ./...` are clean, the
+  P5 tests introduce no sleeps or goroutines, and the suite passed at the P5
+  base commit as well. **Not observed** on Linux or Windows, so passing in the
+  `ubuntu-latest` CI jobs is a requirement, not a claim.
 - PR CI exercises the full suite, and real-binary scenarios have independent
   current-screen and outcome oracles. Document any terminal, platform or
-  manual checks that could not be performed.
+  manual checks that could not be performed. **Defined, not observed** —
+  `.github/workflows/go-checks.yml` runs the full suite and vet on pull
+  requests with no exclusions, and P3b/P4 give the journeys current-screen and
+  outcome oracles; no hosted run of either job was seen from the execution
+  host, `actionlint` was unavailable to lint the workflow, and Windows was not
+  exercised.

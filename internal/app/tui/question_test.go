@@ -378,59 +378,60 @@ func TestQuestionMultiSelectOffersOther(t *testing.T) {
 	}
 }
 
-// TestQuestionPremadePickSkipsCustomInput is the regression guard for the
-// unwanted free-input regression (report 7b): picking a listed option must
-// submit that option without the custom-answer input ever standing in the
-// way. The input now lives in its own group behind a hide func, so a listed
-// pick leaves it hidden. (Fallback: huh's group navigation needs a live
-// tea.Program to drive, so this asserts the wiring indirectly through the
-// bound select value + the custom-answer input's existence.)
-func TestQuestionPremadePickSkipsCustomInput(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}}}},
-	}
-	qm := newQuestionModel(q, 80)
-	// A listed pick binds into the select; the input exists but is hidden
-	// by its group's hide func, so it must not interfere with completion.
-	*qm.selects[0] = questionOptionValue(0)
-	qm.form.State = huh.StateCompleted
-	qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if !qm.IsDone() {
-		t.Fatalf("form should complete after picking the first listed option")
-	}
-	if got := qm.Answers()[0].Answer; got != "red" {
-		t.Fatalf("answer = %q, want red", got)
-	}
-	if qm.others[0] == nil {
-		t.Fatal("custom-answer input should exist behind its hide func")
-	}
-}
+// TestQuestionSingleChoiceNavigation drives, through the real form, the two
+// single-choice paths whose interaction coverage used to be simulated: a
+// listed option submits directly and never focuses the custom field, while the
+// appended Other… row reveals the custom field and its trimmed text becomes the
+// answer. Every command the form returns is executed (timer-only commands such
+// as the cursor blink are skipped), so this fails if the form's own navigation
+// stops reaching either path.
+func TestQuestionSingleChoiceNavigation(t *testing.T) {
+	options := []session.QuestionOption{{Label: "red"}, {Label: "green"}}
 
-// TestQuestionOtherPickRevealsCustomInput guards the Other path wiring:
-// every options question owns a custom-answer input (qm.others[i]) and the
-// sentinel is a selectable option. (Fallback: driving the reveal via keys
-// needs a live tea.Program; asserting wiring covers the report-7b regression
-// that the input could be walked into unconditionally.)
-func TestQuestionOtherPickRevealsCustomInput(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}}}},
-	}
-	qm := newQuestionModel(q, 80)
-	if qm.others[0] == nil {
-		t.Fatal("custom-answer input should exist")
-	}
-	view := stripANSI(qm.View())
-	if !strings.Contains(view, "Other…") {
-		t.Fatalf("question view should offer Other…:\n%s", view)
-	}
-	// Sentinel selected + custom text set finalizes to the trimmed text.
-	*qm.selects[0] = questionOtherSentinel
-	*qm.others[0] = "  magenta  "
-	qm.form.State = huh.StateCompleted
-	qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if got := qm.Answers()[0].Answer; got != "magenta" {
-		t.Fatalf("answer = %q, want magenta (trimmed)", got)
-	}
+	t.Run("listed", func(t *testing.T) {
+		q := &session.PendingQuestion{
+			Questions: []session.Question{{Question: "Pick one:", Options: options}},
+		}
+		qm := questionStart(t, newQuestionModel(q, 80))
+		// Row 0 is red, row 1 is green, and the appended Other… row is 2.
+		qm = questionForm(t, qm, questionMoveDown(1)...)
+		if got := qm.form.GetFocusedField(); got != qm.fields[0][0] {
+			t.Fatal("focus left the option list while navigating a listed pick")
+		}
+		qm = questionForm(t, qm, tea.KeyPressMsg{Code: tea.KeyEnter})
+		if !qm.IsDone() {
+			t.Fatalf("a listed option must submit the form; state = %v", qm.form.State)
+		}
+		if got := qm.Answers()[0].Answer; got != "green" {
+			t.Fatalf("answer = %q, want green", got)
+		}
+		if got := qm.form.GetFocusedField(); got == qm.fields[0][1] {
+			t.Fatal("a listed pick must never focus the custom field")
+		}
+		if got := *qm.others[0]; got != "" {
+			t.Fatalf("custom input received %q for a listed pick", got)
+		}
+	})
+
+	t.Run("custom", func(t *testing.T) {
+		q := &session.PendingQuestion{
+			Questions: []session.Question{{Question: "Pick one:", Options: options}},
+		}
+		qm := questionStart(t, newQuestionModel(q, 80))
+		qm = questionForm(t, qm, questionMoveDown(len(options))...)
+		qm = questionForm(t, qm, tea.KeyPressMsg{Code: tea.KeyEnter})
+		if qm.IsDone() {
+			t.Fatal("picking the Other… row must reveal the custom input, not complete the form")
+		}
+		if got := qm.form.GetFocusedField(); got != qm.fields[0][1] {
+			t.Fatal("custom input is not focused after picking the Other… row")
+		}
+		qm = questionType(t, qm, "  magenta  ")
+		qm = questionForm(t, qm, tea.KeyPressMsg{Code: tea.KeyEnter})
+		if got := qm.Answers()[0].Answer; got != "magenta" {
+			t.Fatalf("answer = %q, want magenta (trimmed)", got)
+		}
+	})
 }
 
 // questionForm drives the real huh form through questionModel.Update: every

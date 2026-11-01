@@ -31,6 +31,10 @@ type Session struct {
 	cmd *exec.Cmd
 	pty *os.File
 	mu  sync.Mutex
+	// writeMu serializes every PTY write so a paste's framing bytes and its
+	// payload cannot interleave with ordinary keys. mu remains the state lock
+	// for term and raw; the two are never merged.
+	writeMu sync.Mutex
 	// term decodes PTY output into the visible viewport and owns the session
 	// dimensions; raw retains the last rawOutputCap bytes for diagnostics.
 	// Both are guarded by mu.
@@ -94,11 +98,26 @@ func (s *Session) readLoop() {
 	}
 }
 
+// writeAll writes p to the PTY, looping until the buffer is drained and
+// propagating any write error. Callers must hold s.writeMu.
+func (s *Session) writeAll(p []byte) error {
+	for len(p) > 0 {
+		n, err := s.pty.Write(p)
+		if err != nil {
+			return err
+		}
+		p = p[n:]
+	}
+	return nil
+}
+
 // Send writes text to the PTY with an optional human-like delay.
 func (s *Session) Send(text string) error {
 	delay := s.humanDelayPerChar()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	for _, r := range text {
-		if _, err := s.pty.Write([]byte(string(r))); err != nil {
+		if err := s.writeAll([]byte(string(r))); err != nil {
 			return err
 		}
 		if delay > 0 {
@@ -106,6 +125,25 @@ func (s *Session) Send(text string) error {
 		}
 	}
 	return nil
+}
+
+// Paste delivers text as bracketed paste: the start marker, the payload
+// unchanged, and the end marker, in order. It never submits Enter. Writes are
+// serialized against Send and SendKey so ordinary input cannot interleave
+// inside the framing bytes.
+func (s *Session) Paste(text string) error {
+	const (
+		start = "\x1b[200~"
+		end   = "\x1b[201~"
+	)
+	buf := make([]byte, 0, len(start)+len(text)+len(end))
+	buf = append(buf, start...)
+	buf = append(buf, text...)
+	buf = append(buf, end...)
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.writeAll(buf)
 }
 
 // SendKey writes a named key to the PTY.
@@ -155,8 +193,27 @@ func (s *Session) SendKey(key string) error {
 	default:
 		return fmt.Errorf("unknown key: %q", key)
 	}
-	_, err := s.pty.Write(seq)
-	return err
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.writeAll(seq)
+}
+
+// Resize changes the PTY window and the viewport model together. Dimensions
+// outside 1..65535 are rejected before any conversion, leaving both the PTY
+// and the model untouched. The ioctl runs under mu so the read loop cannot
+// feed the model between the two updates; on ioctl failure the model keeps
+// its previous dimensions.
+func (s *Session) Resize(width, height int) error {
+	if width < 1 || width > 65535 || height < 1 || height > 65535 {
+		return fmt.Errorf("resize to %dx%d: width and height must be in 1..65535", width, height)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := pty.Setsize(s.pty, &pty.Winsize{Cols: uint16(width), Rows: uint16(height)}); err != nil {
+		return fmt.Errorf("resize pty to %dx%d: %w", width, height, err)
+	}
+	return s.term.Resize(width, height)
 }
 
 // Snapshot returns the current visible viewport.

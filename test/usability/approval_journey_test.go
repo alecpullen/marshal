@@ -84,15 +84,17 @@ func TestScriptedApprovalDetailsAndDecision(t *testing.T) {
 			}
 
 			// The live approval must name the operation and show the exact
-			// command being authorized, at 80x24, before any decision. The
-			// docked panel titles itself "Approval" and reports why it fired:
-			// "confirmed by rule" is what proves the workspace's exact
-			// [tools.shell.confirm] entry matched, rather than rm's destructive
-			// default.
+			// command being authorized, its risk level, and why it fired, at
+			// 80x24, before any decision. The docked panel titles itself
+			// "Approval"; "Risk: command" is the registry level shell.run
+			// carries; and "confirmed by rule" is what proves the workspace's
+			// exact [tools.shell.confirm] entry matched, rather than rm's
+			// destructive default.
 			waitForViewport(t, sess, 90*time.Second, "approval screen", func(scr screen.Screen) bool {
 				return strings.Contains(scr.Content, "Approval") &&
 					strings.Contains(scr.Content, "Agent wants to run:") &&
 					strings.Contains(scr.Content, approvalCommand) &&
+					strings.Contains(scr.Content, "Risk: command") &&
 					strings.Contains(scr.Content, "Reason: confirmed by rule")
 			})
 

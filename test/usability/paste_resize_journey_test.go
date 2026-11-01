@@ -93,13 +93,21 @@ func TestScriptedPasteResizeDraft(t *testing.T) {
 	// Step 2: grow and shrink the window under the draft. Both waits demand
 	// evidence that the frame was repainted for the new size, not just that the
 	// harness viewport model reports it.
+	before, err := screen.Parse(sess.Snapshot())
+	if err != nil {
+		t.Fatalf("snapshot before resizing: %v", err)
+	}
 	if err := sess.Resize(100, 30); err != nil {
 		t.Fatalf("Resize(100, 30): %v", err)
 	}
 	waitForDraftAfterResize(t, sess, 100, 30, func(scr screen.Screen) bool {
 		// Growing: the retained cells stop at the old width, so a row wider than
-		// 80 is a row the app drew for the 100-column frame.
-		return widestRow(scr) > 80
+		// 80 is a row the app drew for the 100-column frame. A frame that fits
+		// its content inside 80 columns would never produce one, so any visible
+		// difference from the pre-resize frame is accepted as proof of a
+		// repaint too: this asserts that a fresh frame was drawn, without
+		// pinning how a wider frame is laid out.
+		return widestRow(scr) > 80 || repaintedSince(scr, before)
 	})
 	assertRowsFitViewport(t, sess, "after resizing to 100x30")
 
@@ -193,6 +201,21 @@ func widestRow(scr screen.Screen) int {
 		widest = max(widest, lipgloss.Width(line))
 	}
 	return widest
+}
+
+// repaintedSince reports whether scr differs from before in the rows the two
+// frames share. Resize only clips the retained cells, so a frame the app has not
+// repainted since the resize is identical to the pre-resize frame in those rows;
+// any difference is a fresh paint. Comparing rows rather than widths keeps the
+// check independent of how the app chooses to lay out a wider frame.
+func repaintedSince(scr, before screen.Screen) bool {
+	n := min(len(scr.Lines), len(before.Lines))
+	for i := 0; i < n; i++ {
+		if scr.Lines[i] != before.Lines[i] {
+			return true
+		}
+	}
+	return false
 }
 
 // assertRowsFitViewport holds every visible row to the viewport's width in

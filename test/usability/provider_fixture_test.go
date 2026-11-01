@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"marshal/internal/llm/provider"
 	"marshal/internal/llm/schema"
@@ -198,10 +199,17 @@ func (p *fixtureProvider) writeStream(w http.ResponseWriter, turn int, reply scr
 		if args == "" {
 			args = "{}"
 		}
-		half := len(args) / 2
+		// Split on a rune boundary, not a byte midpoint: cutting a multi-byte
+		// rune in half would make json.Marshal rewrite both halves' torn UTF-8
+		// as U+FFFD, so the reassembled arguments would not round-trip and the
+		// fixture would be silently lying about the payload it sent.
+		cut := len(args) / 2
+		for cut < len(args) && !utf8.RuneStart(args[cut]) {
+			cut++
+		}
 		chunks = []map[string]any{
-			chunkDelta(turn, reply, true, args[:half]),
-			chunkDelta(turn, reply, true, args[half:]),
+			chunkDelta(turn, reply, true, args[:cut]),
+			chunkDelta(turn, reply, true, args[cut:]),
 		}
 	}
 	var b strings.Builder

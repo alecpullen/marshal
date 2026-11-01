@@ -2,13 +2,19 @@ package usability
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"marshal/test/usability/actor"
 	"marshal/test/usability/harness"
 	"marshal/test/usability/scenario"
 	"marshal/test/usability/screen"
@@ -27,22 +33,167 @@ func binaryPath(t *testing.T) string {
 	return abs
 }
 
-// isolatedHomeEnv returns a copy of the current environment with HOME set to
-// a temp directory containing a minimal Marshal config. This keeps usability
-// tests independent of the developer's real config (autoloaded skills, chosen
-// provider, etc.) so the scripted scenarios see a predictable welcome screen.
-func isolatedHomeEnv(t *testing.T) []string {
+// requireBinary resolves the Marshal binary under test and enforces its
+// availability. With USABILITY_REQUIRE_BINARY=1 a missing or non-executable
+// binary fails the test — the dedicated CI job builds the binary and must not
+// pass while silently skipping every scenario. Otherwise a file that is absent
+// or not executable is a skip. Any other stat error (permission denied, I/O)
+// fails in both modes: it is not the "binary was never built" case.
+func requireBinary(t *testing.T) string {
 	t.Helper()
+	path := binaryPath(t)
+	required := os.Getenv("USABILITY_REQUIRE_BINARY") == "1"
+	info, err := os.Stat(path)
+	if err != nil {
+		if required {
+			t.Fatalf("marshal binary is required but unavailable at %s: %v", path, err)
+		}
+		if os.IsNotExist(err) {
+			t.Skipf("marshal binary not found at %s; build with 'go build ./cmd/marshal'", path)
+		}
+		t.Fatalf("stat marshal binary at %s: %v", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		if required {
+			t.Fatalf("marshal binary is required but %s is not a regular file (mode %s)", path, info.Mode())
+		}
+		t.Skipf("marshal binary at %s is not a regular file (mode %s)", path, info.Mode())
+	}
+	if info.Mode()&0o111 == 0 {
+		if required {
+			t.Fatalf("marshal binary is required but %s is not executable (mode %s)", path, info.Mode())
+		}
+		t.Skipf("marshal binary at %s is not executable (mode %s)", path, info.Mode())
+	}
+	return path
+}
+
+// reportDir returns a report directory unique to this test run. With
+// USABILITY_REPORT_DIR set it creates a fresh subdirectory there, so the CI
+// upload step collects every run's artifacts; otherwise it uses t.TempDir().
+func reportDir(t *testing.T) string {
+	t.Helper()
+	parent := os.Getenv("USABILITY_REPORT_DIR")
+	if parent == "" {
+		return t.TempDir()
+	}
+	// The configured parent need not exist yet: CI points at a path under the
+	// runner temp that nothing has created.
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatalf("create report parent directory %s: %v", parent, err)
+	}
+	dir, err := os.MkdirTemp(parent, "usability-*")
+	if err != nil {
+		t.Fatalf("create report directory under %s: %v", parent, err)
+	}
+	return dir
+}
+
+// childEnv is one isolated child environment: the variables handed to the
+// Marshal child, the temp home they point at, and the test-owned provider the
+// child is configured to call.
+type childEnv struct {
+	// Env is the child's complete environment (harness.Config.Env replaces the
+	// parent's environment rather than extending it).
+	Env []string
+	// HomeDir is the temp home every path override points into.
+	HomeDir string
+	// ServerURL is the fixture provider's URL; the child config's base_url is
+	// ServerURL + "/v1".
+	ServerURL string
+	// Requests reports how many requests the fixture provider has received. It
+	// is nil for environments built without a fixture server.
+	Requests func() int
+}
+
+// pinnedChildVars are the variables buildChildEnv sets to a test-owned value,
+// in the order it appends them.
+var pinnedChildVars = []string{
+	"HOME",
+	"USERPROFILE",
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+	"XDG_CACHE_HOME",
+	"MARSHAL_CONFIG_DIR",
+	"MARSHAL_DATA_DIR",
+	"TERM",
+}
+
+// providerKeys are the credential variables a developer may legitimately have
+// exported. None has a use in a scripted run against a test-owned provider, and
+// inheriting one would let the child authenticate to a real endpoint.
+var providerKeys = []string{
+	"OLLAMA_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY",
+	"OPENAI_API_KEY", "OPENCODE_API_KEY", "ANTHROPIC_API_KEY",
+	"GEMINI_API_KEY", "DEEPSEEK_API_KEY", "KIMI_API_KEY",
+	"MISTRAL_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY",
+	"XAI_API_KEY", "CEREBRAS_API_KEY",
+}
+
+// providerFixture starts a test-owned OpenAI-compatible endpoint. It records
+// every request and always answers with a deterministic error, so a scripted
+// UI scenario that reaches for the network shows up as a request count instead
+// of silently talking to whatever happens to run on the developer's machine.
+func providerFixture(t *testing.T) (url string, requests func() int) {
+	t.Helper()
+	var count atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"usability fixture provider does not serve completions","type":"fixture_error"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, func() int { return int(count.Load()) }
+}
+
+// isolatedHomeEnv returns an isolated environment for the Marshal child: a temp
+// home holding a minimal config, and a test-owned provider the child is
+// configured to call. This keeps usability tests independent of the developer's
+// real config, credentials, caches and running services, so the scripted
+// scenarios see a predictable welcome screen.
+func isolatedHomeEnv(t *testing.T) childEnv {
+	t.Helper()
+	serverURL, requests := providerFixture(t)
 	homeDir := t.TempDir()
+	return childEnv{
+		Env:       buildChildEnv(t, homeDir, serverURL+"/v1"),
+		HomeDir:   homeDir,
+		ServerURL: serverURL,
+		Requests:  requests,
+	}
+}
+
+// llmChildEnv is the opt-in LLM scenario's environment. It is deliberately
+// exploratory: the child's provider is the same endpoint the in-process LLM
+// actor reads from USABILITY_LLM_URL, so the scenario is not bound to the
+// deterministic fixture server and makes no request-count assertion.
+func llmChildEnv(t *testing.T) []string {
+	t.Helper()
+	base := strings.TrimRight(os.Getenv("USABILITY_LLM_URL"), "/")
+	if base == "" {
+		base = "http://localhost:11434"
+	}
+	return buildChildEnv(t, t.TempDir(), base+"/v1")
+}
+
+// buildChildEnv writes the child's minimal Marshal config into homeDir and
+// returns the environment to start it with. It reads the ambient environment
+// only to carry over execution essentials (PATH, platform loader variables) and
+// drops everything that could redirect the child outside the test-owned home or
+// authenticate it against a real endpoint.
+func buildChildEnv(t *testing.T, homeDir, baseURL string) []string {
+	t.Helper()
 	configDir := filepath.Join(homeDir, ".config", "marshal")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("create temp marshal config dir: %v", err)
 	}
 	// A local-only provider + preset + profile so Marshal starts on the main
-	// TUI screen instead of opening the connect-provider picker.
-	config := `[providers.ollama]
+	// TUI screen instead of opening the connect-provider picker. The provider is
+	// the test-owned fixture endpoint, never an ambient one.
+	config := fmt.Sprintf(`[providers.ollama]
 type = "openai_compatible"
-base_url = "http://localhost:11434/v1"
+base_url = %q
 
 [models.presets.coder]
 provider = "ollama"
@@ -56,113 +207,300 @@ default = "local"
 
 [agent_profiles.local]
 implementer = "coder"
-`
-	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0644); err != nil {
+
+[postmortem]
+on_exit = "never"
+`, baseURL)
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o644); err != nil {
 		t.Fatalf("write temp marshal config: %v", err)
 	}
 
 	// HOME alone no longer isolates the config: Marshal honours
 	// XDG_CONFIG_HOME / XDG_DATA_HOME / MARSHAL_*_DIR ahead of HOME
 	// (config-project-identity refactor), and CI runners export the XDG
-	// variables. Pin every config-location override into the temp home so
-	// the app reads this file and nothing else.
-	//
-	// The developer's ambient credential variables are dropped rather than
-	// inherited: the child would otherwise be able to authenticate to a real
-	// endpoint with a real key. The scripted scenarios run entirely against
-	// the test-owned local provider written above, so none of these has a
-	// legitimate use in the child's environment.
+	// variables. Pin every config-location override into the temp home so the
+	// app reads this file and nothing else. USERPROFILE covers platforms where
+	// os.UserHomeDir reads it instead of HOME.
 	overrides := map[string]string{
 		"HOME":               homeDir,
+		"USERPROFILE":        homeDir,
 		"XDG_CONFIG_HOME":    filepath.Join(homeDir, ".config"),
 		"XDG_DATA_HOME":      filepath.Join(homeDir, ".local", "share"),
+		"XDG_CACHE_HOME":     filepath.Join(homeDir, ".cache"),
 		"MARSHAL_CONFIG_DIR": filepath.Join(homeDir, ".config", "marshal"),
 		"MARSHAL_DATA_DIR":   filepath.Join(homeDir, ".local", "share", "marshal"),
+		// A deterministic terminal type: the scripted scenarios assert on
+		// rendered text, and an ambient TERM would change the child's output.
+		// The value is a real developer terminal so the child takes the same
+		// renderer path a user would, including its erase-character repaints.
+		"TERM": "xterm-256color",
 	}
-	dropped := map[string]bool{}
-	for _, key := range []string{
-		"OLLAMA_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY",
-		"OPENAI_API_KEY", "OPENCODE_API_KEY", "ANTHROPIC_API_KEY",
-		"GEMINI_API_KEY", "DEEPSEEK_API_KEY", "KIMI_API_KEY",
-		"MISTRAL_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY",
-		"XAI_API_KEY", "CEREBRAS_API_KEY",
-		// The live-keyring opt-in must not leak into the child either: its
-		// scenarios never exercise the real OS keychain.
-		"MARSHAL_CREDENTIALS_LIVE_TEST",
-	} {
+
+	// The developer's ambient credential variables are dropped rather than
+	// inherited: the child would otherwise be able to authenticate to a real
+	// endpoint with a real key. The live-keyring opt-in must not leak in either:
+	// no scenario exercises the real OS keychain.
+	dropped := map[string]bool{"MARSHAL_CREDENTIALS_LIVE_TEST": true}
+	for _, key := range providerKeys {
 		dropped[key] = true
 	}
-	env := os.Environ()[:0]
+
+	env := make([]string, 0, len(os.Environ())+len(pinnedChildVars))
 	for _, e := range os.Environ() {
-		eq := strings.Index(e, "=")
-		if eq > 0 {
-			name := e[:eq]
-			if _, pinned := overrides[name]; pinned {
-				continue
-			}
-			if dropped[name] {
-				continue
-			}
+		name, _, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		// An ambient value for a pinned variable is dropped, not merged: the
+		// child gets exactly one effective value, the test-owned one appended
+		// below.
+		if _, pinned := overrides[name]; pinned {
+			continue
+		}
+		if dropped[name] {
+			continue
+		}
+		// No USABILITY_* variable configures the child: the binary path and the
+		// opt-in actor knobs belong to the test process, and a later task's
+		// variables must not leak in by default.
+		if strings.HasPrefix(name, "USABILITY_") {
+			continue
 		}
 		env = append(env, e)
 	}
-	for k, v := range overrides {
-		env = append(env, k+"="+v)
+	for _, name := range pinnedChildVars {
+		env = append(env, name+"="+overrides[name])
 	}
 	return env
 }
 
-func TestScriptedHelpOpenClose(t *testing.T) {
-	if _, err := os.Stat(binaryPath(t)); err != nil {
-		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")
+// envValues returns every value the environment slice carries for name.
+func envValues(env []string, name string) []string {
+	prefix := name + "="
+	var values []string
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			values = append(values, strings.TrimPrefix(e, prefix))
+		}
 	}
+	return values
+}
+
+// TestIsolatedHomeEnv proves the child environment ignores ambient path
+// overrides and credentials: every config-location variable resolves inside the
+// temp home exactly once, no provider key survives, and the configured provider
+// endpoint is the test-owned fixture server.
+func TestIsolatedHomeEnv(t *testing.T) {
+	// Poison everything the builder is supposed to replace. t.Setenv restores
+	// the values when the test ends.
+	const poison = "/tmp/marshal-usability-poison"
+	for _, name := range []string{
+		"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+		"XDG_CACHE_HOME", "MARSHAL_CONFIG_DIR", "MARSHAL_DATA_DIR",
+	} {
+		t.Setenv(name, filepath.Join(poison, strings.ToLower(name)))
+	}
+	t.Setenv("TERM", "marshal-poison-term")
+	for _, name := range providerKeys {
+		t.Setenv(name, poison)
+	}
+	for _, name := range []string{
+		"MARSHAL_CREDENTIALS_LIVE_TEST",
+		"USABILITY_MARSHAL_BINARY", "USABILITY_REPORT_DIR",
+		"USABILITY_REQUIRE_BINARY", "USABILITY_LLM_URL", "USABILITY_LLM_MODEL",
+	} {
+		t.Setenv(name, poison)
+	}
+
+	env := isolatedHomeEnv(t)
+
+	// Exactly one effective value per pinned variable, inside the temp home.
+	for _, name := range pinnedChildVars {
+		values := envValues(env.Env, name)
+		if len(values) != 1 {
+			t.Fatalf("%s: child environment carries %d entries, want exactly 1", name, len(values))
+		}
+		if name == "TERM" {
+			continue
+		}
+		if !strings.HasPrefix(values[0], env.HomeDir) {
+			t.Fatalf("%s: child value is outside the temp home", name)
+		}
+	}
+	if values := envValues(env.Env, "TERM"); len(values) != 1 || values[0] != "xterm-256color" {
+		t.Fatalf("TERM: child environment does not carry exactly one deterministic value")
+	}
+
+	// No credential, keyring opt-in or harness knob reaches the child.
+	for _, name := range append(append([]string{}, providerKeys...), "MARSHAL_CREDENTIALS_LIVE_TEST") {
+		if len(envValues(env.Env, name)) != 0 {
+			t.Fatalf("%s leaked into the child environment", name)
+		}
+	}
+	for _, e := range env.Env {
+		if strings.HasPrefix(e, "USABILITY_") {
+			t.Fatalf("a USABILITY_* variable leaked into the child environment: %s", strings.SplitN(e, "=", 2)[0])
+		}
+	}
+
+	// The configured provider is the fixture server, not an ambient endpoint.
+	if !strings.HasPrefix(env.ServerURL, "http://127.0.0.1:") && !strings.HasPrefix(env.ServerURL, "http://[::1]:") {
+		t.Fatalf("fixture provider is not a loopback httptest server")
+	}
+	cfg, err := os.ReadFile(filepath.Join(env.HomeDir, ".config", "marshal", "config.toml"))
+	if err != nil {
+		t.Fatalf("read temp marshal config: %v", err)
+	}
+	want := `base_url = "` + env.ServerURL + `/v1"`
+	if !strings.Contains(string(cfg), want) {
+		t.Fatalf("temp marshal config does not point at the fixture server's /v1 endpoint")
+	}
+
+	// Building the environment must not itself reach the provider.
+	if n := env.Requests(); n != 0 {
+		t.Fatalf("fixture provider received %d requests while building the child environment, want 0", n)
+	}
+}
+
+func TestScriptedHelpOpenClose(t *testing.T) {
+	bin := requireBinary(t)
+	env := isolatedHomeEnv(t)
 	r := scenario.NewRunner(scenario.RunnerConfig{
-		BinaryPath: binaryPath(t),
+		BinaryPath: bin,
 		WorkDir:    t.TempDir(),
-		Env:        isolatedHomeEnv(t),
-		ReportDir:  "/tmp/marshal-usability",
+		Env:        env.Env,
+		ReportDir:  reportDir(t),
 		// The /help cheatsheet printed by "?" is taller than the default
 		// 40-row terminal; at 40 rows its "Keys" header scrolls above the
 		// viewport before the harness's PTY buffer ever captures it.
 		Height: 80,
 	})
-	defer r.WriteReport()
-	res, err := r.Run(context.Background(), scenario.Scenario{
+	t.Cleanup(func() {
+		if err := r.WriteReport(); err != nil {
+			t.Errorf("WriteReport: %v", err)
+		}
+	})
+	// Bounded: a close that never takes effect must fail with the runner's
+	// recorded result (and its screen_on_timeout viewport), not hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	res, err := r.Run(ctx, scenario.Scenario{
 		Name:  "help_open_close",
 		Actor: scenario.HelpOpenClose(),
 	})
 	if err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("Run: %v (result %+v)", err, res)
 	}
 	if !res.Success {
 		t.Fatalf("scenario failed: %+v", res)
 	}
+	// Opening and closing Help needs no model: any request to the test-owned
+	// provider means the child reached for the network on its own.
+	if n := env.Requests(); n != 0 {
+		t.Fatalf("fixture provider received %d requests, want 0: the scripted Help scenario must not call a model", n)
+	}
 }
 
-func TestLLMSubtractFix(t *testing.T) {
+// TestHelpScriptDoesNotCompleteWithoutClose drives the real HelpOpenClose
+// script against synthetic viewports. After a close that does nothing, the
+// script's wait-only postcondition must keep yielding no-op; only a viewport
+// that actually shows the prompt with no Help title lets it report done.
+func TestHelpScriptDoesNotCompleteWithoutClose(t *testing.T) {
+	ctx := context.Background()
+	scr := scenario.HelpOpenClose()
+
+	// Open: the prompt is already on screen, so the script types "?".
+	act, err := scr.Act(ctx, screen.Screen{Content: promptMarker})
+	if err != nil {
+		t.Fatalf("Act (open): %v", err)
+	}
+	if act.Type != actor.ActionType || act.Text != "?" {
+		t.Fatalf("open action = %+v, want type '?'", act)
+	}
+
+	// The panel is up, so the script sends esc.
+	act, err = scr.Act(ctx, screen.Screen{Content: helpTitleMarker + "\n  /help cheatsheet"})
+	if err != nil {
+		t.Fatalf("Act (help open): %v", err)
+	}
+	if act.Type != actor.ActionKey || act.Key != "esc" {
+		t.Fatalf("close action = %+v, want key esc", act)
+	}
+
+	// The close did nothing. Neither a viewport where the panel covers the
+	// prompt nor one where the prompt peeks through is a completed close:
+	// the postcondition holds conjunctively, so Help in the viewport keeps
+	// the script unfinished no matter how often it is observed.
+	stillOpen := []screen.Screen{
+		{Content: helpTitleMarker + "\n  /help cheatsheet"},
+		{Content: helpTitleMarker + "\n  /help cheatsheet\n" + promptMarker},
+	}
+	for i := 0; i < 5; i++ {
+		for j, sc := range stillOpen {
+			act, err = scr.Act(ctx, sc)
+			if err != nil {
+				t.Fatalf("Act (ineffective close, observation %d/%d): %v", i, j, err)
+			}
+			if act.Type != actor.ActionNoOp {
+				t.Fatalf("observation %d/%d after ineffective close = %+v, want noop (never done)", i, j, act)
+			}
+		}
+	}
+
+	// The panel is gone: the wait-only step matches, reports no-op, and the
+	// next observation completes the scenario.
+	closed := screen.Screen{Content: promptMarker + "\n❯ "}
+	act, err = scr.Act(ctx, closed)
+	if err != nil {
+		t.Fatalf("Act (closed): %v", err)
+	}
+	if act.Type != actor.ActionNoOp {
+		t.Fatalf("action on the closed viewport = %+v, want noop", act)
+	}
+	act, err = scr.Act(ctx, closed)
+	if err != nil {
+		t.Fatalf("Act (done): %v", err)
+	}
+	if act.Type != actor.ActionDone || !act.Success {
+		t.Fatalf("final action = %+v, want done success", act)
+	}
+}
+
+// TestExploratoryLLMSubtractFix is an exploratory smoke test, not a regression
+// gate. Its only verdict is the actor's own claim that it finished: the
+// fixture's `go test` is never run as an independent oracle, so a passing
+// result says the model believed it repaired the fixture and said so, not that
+// the code is correct. It is opt-in (USABILITY_LLM_MODEL), it is not part of the
+// scripted CI selection, and it must not be cited as evidence of correctness.
+func TestExploratoryLLMSubtractFix(t *testing.T) {
 	if os.Getenv("USABILITY_LLM_MODEL") == "" {
-		t.Skip("set USABILITY_LLM_MODEL to run LLM scenarios")
+		t.Skip("set USABILITY_LLM_MODEL to run the exploratory LLM scenario")
 	}
-	if _, err := os.Stat(binaryPath(t)); err != nil {
-		t.Skip("marshal binary not found")
-	}
+	bin := requireBinary(t)
 	workDir := copyFixture(t, "go-calc-broken")
 	r := scenario.NewRunner(scenario.RunnerConfig{
-		BinaryPath: binaryPath(t),
+		BinaryPath: bin,
 		WorkDir:    workDir,
-		Env:        isolatedHomeEnv(t),
-		ReportDir:  "/tmp/marshal-usability",
+		Env:        llmChildEnv(t),
+		ReportDir:  reportDir(t),
 	})
-	defer r.WriteReport()
+	t.Cleanup(func() {
+		if err := r.WriteReport(); err != nil {
+			t.Errorf("WriteReport: %v", err)
+		}
+	})
 	res, err := r.Run(context.Background(), scenario.Scenario{
-		Name:  "subtract_fix",
+		Name:  "exploratory_subtract_fix",
 		Actor: scenario.SubtractFix(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	// An actor failure is a real failure of the exploratory run: the model did
+	// not even claim success. An actor success is not proof the fixture works —
+	// see this test's doc comment.
 	if !res.Success {
-		t.Fatalf("scenario failed: %+v", res)
+		t.Fatalf("exploratory scenario did not report success: %+v", res)
 	}
 }
 
@@ -229,18 +567,17 @@ func writeHelperScript(t *testing.T, body string) string {
 // the prompt is back.
 //
 // This is deliberately separate from TestScriptedHelpOpenClose: that scenario
-// keeps its own (unsatisfiable) postcondition contract for a later P3 plan.
+// asserts the same transition through the scripted actor's postcondition.
 func TestScriptedVisibleScreenRedraw(t *testing.T) {
-	if _, err := os.Stat(binaryPath(t)); err != nil {
-		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")
-	}
+	bin := requireBinary(t)
 
+	env := isolatedHomeEnv(t)
 	sess, err := harness.New(harness.Config{
-		BinaryPath: binaryPath(t),
+		BinaryPath: bin,
 		Width:      120,
 		Height:     80,
 		WorkDir:    t.TempDir(),
-		Env:        isolatedHomeEnv(t),
+		Env:        env.Env,
 	})
 	if err != nil {
 		t.Fatalf("harness.New: %v", err)
@@ -264,6 +601,61 @@ func TestScriptedVisibleScreenRedraw(t *testing.T) {
 	waitForViewport(t, sess, 30*time.Second, "help closed and prompt restored", func(scr screen.Screen) bool {
 		return !strings.Contains(scr.Content, helpTitleMarker) && strings.Contains(scr.Content, promptMarker)
 	})
+
+	// A redraw of the Help panel needs no model: any request to the test-owned
+	// provider means the child reached for the network on its own.
+	if n := env.Requests(); n != 0 {
+		t.Fatalf("fixture provider received %d requests, want 0: the scripted redraw must not call a model", n)
+	}
+}
+
+// TestScriptedGracefulQuit requires a normal exit, not merely a process that
+// disappeared: after /quit the child's own Wait returns nil before its deadline,
+// so a forced kill at cleanup cannot stand in for the quit. The isolated config
+// pins [postmortem] on_exit = "never", which removes the interactive postmortem
+// question from the exit path.
+func TestScriptedGracefulQuit(t *testing.T) {
+	bin := requireBinary(t)
+
+	env := isolatedHomeEnv(t)
+	sess, err := harness.New(harness.Config{
+		BinaryPath: bin,
+		Width:      120,
+		Height:     80,
+		WorkDir:    t.TempDir(),
+		Env:        env.Env,
+	})
+	if err != nil {
+		t.Fatalf("harness.New: %v", err)
+	}
+	// Close is cleanup only. The assertion below is that the child exited on its
+	// own, not that it was removed.
+	defer sess.Close()
+
+	waitForViewport(t, sess, 30*time.Second, "initial prompt", func(scr screen.Screen) bool {
+		return strings.Contains(scr.Content, promptMarker)
+	})
+
+	if err := sess.Send("/quit"); err != nil {
+		t.Fatalf("Send(/quit): %v", err)
+	}
+	if err := sess.SendKey("enter"); err != nil {
+		t.Fatalf("SendKey(enter): %v", err)
+	}
+
+	// A forced kill would surface here as a non-nil *exec.ExitError, so nil is
+	// the assertion that the child exited normally before its deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := sess.Wait(ctx); err != nil {
+		t.Fatalf("Wait after /quit = %v, want nil for a normal exit\nscreen: %q", err, string(sess.Snapshot().Content))
+	}
+
+	// Quitting needs no model: any request to the test-owned provider means the
+	// child reached for the network on its own.
+	if n := env.Requests(); n != 0 {
+		t.Fatalf("fixture provider received %d requests, want 0: the scripted quit must not call a model", n)
+	}
 }
 
 // TestVisibleScreenAbsencePredicateNeedsTheClose is the deterministic negative
@@ -301,5 +693,66 @@ sleep 10
 	}
 	if !strings.Contains(string(sess.Snapshot().Content), helpTitleMarker) {
 		t.Fatalf("help marker disappeared from the viewport without a close action")
+	}
+}
+
+// TestRequireBinarySubprocess proves both of requireBinary's branches from a
+// real process exit code: the same missing binary fails the child in required
+// mode and is merely skipped (exit zero) when the requirement is unset.
+func TestRequireBinarySubprocess(t *testing.T) {
+	if os.Getenv("USABILITY_HELPER_PROCESS") == "1" {
+		requireBinary(t)
+		return
+	}
+
+	// A path inside a fresh temp dir that nothing created: the binary was
+	// never built, which is the skip case rather than a stat error.
+	missing := filepath.Join(t.TempDir(), "marshal-not-built")
+
+	for _, tc := range []struct {
+		name        string
+		required    string
+		wantNonzero bool
+	}{
+		{name: "required", required: "1", wantNonzero: true},
+		{name: "not_required", required: "", wantNonzero: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestRequireBinarySubprocess$")
+			// The child environment is constructed explicitly: an ambient
+			// USABILITY_REQUIRE_BINARY would otherwise pick the branch, and the
+			// non-required case must really run without it.
+			env := []string{
+				"USABILITY_HELPER_PROCESS=1",
+				"USABILITY_MARSHAL_BINARY=" + missing,
+			}
+			if tc.required != "" {
+				env = append(env, "USABILITY_REQUIRE_BINARY="+tc.required)
+			}
+			for _, e := range os.Environ() {
+				name, _, ok := strings.Cut(e, "=")
+				if !ok {
+					continue
+				}
+				switch name {
+				case "USABILITY_HELPER_PROCESS", "USABILITY_MARSHAL_BINARY", "USABILITY_REQUIRE_BINARY":
+					continue
+				}
+				env = append(env, e)
+			}
+			cmd.Env = env
+
+			err := cmd.Run()
+			var exitErr *exec.ExitError
+			if tc.wantNonzero {
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
+					t.Fatalf("child exit = %v, want a nonzero exit when the binary is required and missing", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("child exit = %v, want zero: a missing binary is a skip when it is not required", err)
+			}
+		})
 	}
 }

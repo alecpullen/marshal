@@ -147,6 +147,42 @@ func TestTerminalCursorAndErase(t *testing.T) {
 	wantLines(t, m.Snapshot(), "abcdeX  QW", "")
 }
 
+// TestTerminalEraseCharacters pins ECH: it blanks the requested number of
+// cells to the right of the cursor and leaves the cursor where it was, which
+// is what a 256-colour renderer relies on when it repaints a shortened line.
+func TestTerminalEraseCharacters(t *testing.T) {
+	m := newTerminalModel(10, 2)
+	writeAll(t, m, "abcdef\x1b[1;3H\x1b[2X")
+	// Two cells from the cursor are blank, the cursor has not moved, and a
+	// subsequent write lands on the cursor rather than after the erased run.
+	writeAll(t, m, "Z")
+	wantLines(t, m.Snapshot(), "abZ ef", "")
+
+	// An omitted or zero count erases exactly one cell, as CUP and the
+	// movement commands do.
+	m = newTerminalModel(10, 2)
+	writeAll(t, m, "abcdef\x1b[1;3H\x1b[X")
+	wantLines(t, m.Snapshot(), "ab def", "")
+	m = newTerminalModel(10, 2)
+	writeAll(t, m, "abcdef\x1b[1;3H\x1b[0X")
+	wantLines(t, m.Snapshot(), "ab def", "")
+
+	// A count past the right edge is clipped to the viewport.
+	m = newTerminalModel(6, 2)
+	writeAll(t, m, "abcdef\x1b[1;3H\x1b[99X")
+	wantLines(t, m.Snapshot(), "ab", "")
+
+	// ECH never scrolls or wraps: erasing at the bottom-right corner leaves
+	// the cursor in place.
+	m = newTerminalModel(6, 2)
+	writeAll(t, m, "abc\r\ndef\x1b[2;6H\x1b[2X")
+	wantLines(t, m.Snapshot(), "abc", "def")
+
+	if snap := m.Snapshot(); snap.Err != nil {
+		t.Fatalf("ECH latched a model error: %v", snap.Err)
+	}
+}
+
 func TestTerminalIncrementalWrites(t *testing.T) {
 	const (
 		w = 24

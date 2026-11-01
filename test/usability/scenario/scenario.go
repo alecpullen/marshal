@@ -2,9 +2,8 @@ package scenario
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,12 +40,9 @@ func NewRunner(cfg RunnerConfig) *Runner {
 	return &Runner{cfg: cfg, rep: report.New()}
 }
 
-// SuccessCriterion describes how to judge a scenario. For LLM scenarios the judge is separate.
-type SuccessCriterion struct {
-	ScreenContains string // for scripted assertions, handled by the actor
-}
-
-// Scenario is one usability test.
+// Scenario is one usability test. Success is whatever the actor reports in
+// its done action: a scripted actor's postconditions live in its steps, not in
+// a separate criterion.
 type Scenario struct {
 	Name      string
 	ActorType string // metadata describing the actor, e.g. "scripted" or "llm"
@@ -54,7 +50,6 @@ type Scenario struct {
 	Goal      string // optional task goal; informational/metadata only
 	Actor     actor.Actor
 	WorkDir   string
-	Success   SuccessCriterion
 }
 
 // Run executes the scenario and returns the result.
@@ -182,6 +177,20 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 				return finish(err)
 			}
 			keystrokes++
+		case actor.ActionPaste:
+			if err := sess.Paste(act.Text); err != nil {
+				result.Error = err.Error()
+				return finish(err)
+			}
+			// A paste counts by its payload's UTF-8 byte length.
+			keystrokes += len([]byte(act.Text))
+		case actor.ActionResize:
+			// An out-of-range size is rejected by the harness; the runner
+			// records that error as the scenario failure.
+			if err := sess.Resize(act.Width, act.Height); err != nil {
+				result.Error = err.Error()
+				return finish(err)
+			}
 		default:
 			result.Error = fmt.Sprintf("unknown action type %q", act.Type)
 			return finish(fmt.Errorf("unknown action type %q", act.Type))
@@ -189,11 +198,13 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 	}
 }
 
-// WriteReport flushes reports to ReportDir or a temp dir.
+// WriteReport flushes reports to the runner's ReportDir. The directory is
+// required and explicit: a shared default would let concurrent runs overwrite
+// each other's artifacts.
 func (r *Runner) WriteReport() error {
 	dir := r.cfg.ReportDir
 	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "marshal-usability")
+		return errors.New("scenario: ReportDir is required; set RunnerConfig.ReportDir to a per-run directory")
 	}
 	return r.rep.WriteReport(dir)
 }

@@ -97,9 +97,14 @@ remaining environment-specific failures documented rather than suppressed.
 
 ## P3 — make the real-binary usability harness trustworthy
 
-**Status:** P3a (terminal model and viewport snapshots) is implemented on
-`p3a-terminal-screen` — see the [audit finding](audit.md#the-pty-harness-does-not-model-the-current-terminal-screen).
-Everything else listed here stays open and blocks P4.
+**Status: complete.** P3a (terminal model and viewport snapshots) is
+implemented on `p3a-terminal-screen` — see the [audit
+finding](audit.md#the-pty-harness-does-not-model-the-current-terminal-screen).
+P3b closed the rest as seven labelled commits on `p3b-usability-harness` from
+base `e0d14b45`, following the
+[2026-11-01 executable plan](plans/2026-11-01-p3b-usability-harness-plan.md);
+the evidence is in the [audit](audit.md#verification-record). P4 and P5 remain
+open.
 
 Replace accumulated-output-as-screen with an actual terminal state model;
 retain a separately bounded raw diagnostic log. Cover cursor movement, erase,
@@ -114,12 +119,41 @@ oracle or relabel it exploratory. Do not build journeys on the current
 historical-output parser.
 
 P3a completed the first sentence, the movement/erase/alternate-screen/
-incremental-write/cell-width/stale-content coverage, and the "prove Help
-closes" demonstration in a new `TestScriptedVisibleScreenRedraw` (the named
-Help scenario keeps its own postcondition contract for the next P3 plan).
-The post-action oracle and `Scenario.Success` decision, harness resize and
-paste actions, graceful shutdown, fixture isolation, report paths, CI binary
-enforcement and the LLM oracle are still open.
+incremental-write/cell-width/stale-content coverage, and a real-binary redraw
+demonstration in `TestScriptedVisibleScreenRedraw`.
+
+P3b completed the rest:
+
+- **Postconditions.** Scripted steps gained a wait-only postcondition with
+  conjunctive positive and negative screen matching; `HelpOpenClose` cannot
+  report done until the viewport shows the prompt and no Help title, and a
+  deliberately ineffective close is asserted to stay unfinished.
+  `Scenario.Success`/`SuccessCriterion` were removed rather than implemented.
+- **Harness operations.** `Paste` delivers exact bracketed-paste framing without
+  Enter, `Resize` moves the PTY and the viewport model together in `1..65535`,
+  and both are scripted actions (`ActionPaste`, `ActionResize`) with errors
+  surfaced as scenario failures.
+- **Shutdown.** `Session` owns one `cmd.Wait`; `Wait(ctx)` observes the real exit
+  without killing the child, and idempotent `Close` performs bounded forced
+  cleanup. `TestScriptedGracefulQuit` proves a normal `/quit` exit rather than a
+  forced kill.
+- **Isolation.** The child environment is constructed rather than inherited —
+  home, XDG config/data/cache, Marshal dirs and `TERM` pinned inside a temp home,
+  provider keys and `USABILITY_*` withheld — and its provider is a per-test
+  `httptest.Server` whose request counter proves the scripted journeys make no
+  requests.
+- **CI and reports.** `Runner.WriteReport` requires a per-run directory;
+  `USABILITY_REPORT_DIR` gives each CI run its own artifact subdirectory, and
+  `USABILITY_REQUIRE_BINARY=1` makes the dedicated job fail instead of skipping
+  when its binary is missing.
+- **LLM scenario.** Relabelled `TestExploratoryLLMSubtractFix`: the actor's
+  success claim is observational, no fixture `go test` is run as an oracle, and
+  it stays opt-in and outside the scripted CI selection.
+
+P3's remaining limitation is platform coverage: the work was verified on
+macOS/darwin arm64 only, and no CI platform run was observed from the execution
+host. P4 owns the 80×24 product journeys, the full-suite PR gate and the
+remaining platform claims.
 
 ## P4 — expand real TUI journeys and gate changes in CI
 

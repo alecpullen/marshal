@@ -363,6 +363,8 @@ func (m *terminalModel) handleCsi(cmd ansi.Cmd, params ansi.Params) {
 			m.eraseDisplay(eraseMode(params))
 		case 'K': // EL erase line
 			m.eraseLine(eraseMode(params))
+		case 'X': // ECH erase characters from the cursor, without moving it
+			m.eraseSpan(m.row, m.col, m.col+cursorCount(params, 0))
 		case 's': // SCP save cursor
 			m.saveCursor()
 		case 'u': // RCP restore cursor

@@ -42,6 +42,17 @@ type headPos struct {
 	ok       bool
 }
 
+// screenState is one screen buffer together with the cursor state that
+// belongs to it. The primary and alternate screens each keep their own
+// buffer and cursor: the application draws to whichever one lives in the
+// terminalModel fields, and the other one waits here until the next switch.
+type screenState struct {
+	cells       [][]termCell
+	row, col    int
+	wrapPending bool
+	head        headPos
+}
+
 // terminalModel incrementally decodes PTY output into an accurate bounded
 // viewport for common writes, movement and erasure. Parser state is retained
 // across Write calls, so a stream split at any byte boundary decodes the
@@ -61,6 +72,13 @@ type terminalModel struct {
 	saved       savedCursor
 	head        headPos
 
+	// primary and alt hold the inactive screen. Exactly one of them is
+	// live: primary while altActive, alt otherwise. Snapshot renders only
+	// the live buffer, so the inactive screen never reaches a snapshot.
+	primary   screenState
+	alt       screenState
+	altActive bool
+
 	err error
 
 	inSeq        bool
@@ -79,10 +97,8 @@ func newTerminalModel(width, height int) *terminalModel {
 	m := &terminalModel{
 		width:  width,
 		height: height,
-		cells:  make([][]termCell, height),
-	}
-	for i := range m.cells {
-		m.cells[i] = make([]termCell, width)
+		cells:  blankCells(width, height),
+		alt:    screenState{cells: blankCells(width, height)},
 	}
 	m.p = ansi.NewParser()
 	m.p.SetHandler(ansi.Handler{
@@ -169,36 +185,34 @@ func (m *terminalModel) Snapshot() Snapshot {
 	}
 }
 
-// Resize changes the model dimensions and clips retained cells to the new
-// viewport; new cells are blank and the cursor clamps inside. Full resize
-// semantics belong to the alternate-screen work. It reports the sticky
-// error, if any.
+// Resize changes the model dimensions and clips retained cells on both the
+// primary and the alternate buffer. Buffers keep the upper-left intersection
+// of the old viewport: rows are never reflowed, added cells are blank and
+// both cursors clamp inside the new viewport. It rejects nonpositive sizes
+// without touching the model, and otherwise reports the sticky error, if any.
 func (m *terminalModel) Resize(width, height int) error {
-	if width < 1 {
-		width = 1
+	if width < 1 || height < 1 {
+		return fmt.Errorf("terminal model: resize to %dx%d: width and height must be at least 1", width, height)
 	}
-	if height < 1 {
-		height = 1
+	if width == m.width && height == m.height {
+		return m.err
 	}
-	if width != m.width || height != m.height {
-		cells := make([][]termCell, height)
-		for r := range cells {
-			cells[r] = make([]termCell, width)
-			if r < m.height {
-				copy(cells[r], m.cells[r][:min(width, m.width)])
-			}
-		}
-		m.cells = cells
-		m.width, m.height = width, height
-		m.row = m.clampRow(m.row)
-		m.col = m.clampCol(m.col)
-		m.wrapPending = false
-		m.saved.row = m.clampRow(m.saved.row)
-		m.saved.col = m.clampCol(m.saved.col)
-		if m.head.ok && (m.head.row >= m.height || m.head.col >= m.width) {
-			m.head = headPos{}
-		}
+	live := m.screen()
+	live.resize(width, height)
+	m.width, m.height = width, height
+	m.installScreen(live)
+	// The inactive screen keeps its own buffer and cursor for the next
+	// switch, so it is clipped to the new viewport as well: switching back
+	// must never install cells with stale dimensions.
+	if m.altActive {
+		m.alt = live
+		m.primary.resize(width, height)
+	} else {
+		m.primary = live
+		m.alt.resize(width, height)
 	}
+	m.saved.row = clampTo(m.saved.row, height)
+	m.saved.col = clampTo(m.saved.col, width)
 	return m.err
 }
 
@@ -291,10 +305,21 @@ func (m *terminalModel) handleCsi(cmd ansi.Cmd, params ansi.Params) {
 	switch cmd.Prefix() {
 	case '?':
 		switch final {
-		case 'h', 'l': // private modes: ignore only the screen-neutral ones
+		case 'h', 'l': // private modes: alternate screen plus the screen-neutral ones
+			set := final == 'h'
 			params.ForEach(0, func(_ int, mode int, _ bool) {
-				if m.err == nil && !ignorablePrivateMode(mode) {
-					m.fail("unsupported DEC private mode %d in %s", mode, m.seqQuoted())
+				if m.err != nil {
+					return
+				}
+				switch mode {
+				case 47: // alternate screen, keeping its previous contents
+					m.setAltScreen(set, false)
+				case 1047, 1049: // alternate screen, cleared before use
+					m.setAltScreen(set, true)
+				default:
+					if !ignorablePrivateMode(mode) {
+						m.fail("unsupported DEC private mode %d in %s", mode, m.seqQuoted())
+					}
 				}
 			})
 		case 'n': // private DSR
@@ -409,6 +434,123 @@ func (m *terminalModel) restoreCursor() {
 func (m *terminalModel) moveTo(row, col int) {
 	m.row, m.col = row, col
 	m.wrapPending = false
+}
+
+// screen returns the state of the screen the application is drawing to.
+func (m *terminalModel) screen() screenState {
+	return screenState{
+		cells:       m.cells,
+		row:         m.row,
+		col:         m.col,
+		wrapPending: m.wrapPending,
+		head:        m.head,
+	}
+}
+
+// installScreen makes s the screen the application draws to.
+func (m *terminalModel) installScreen(s screenState) {
+	m.cells, m.row, m.col, m.wrapPending, m.head = s.cells, s.row, s.col, s.wrapPending, s.head
+}
+
+// setAltScreen applies a DEC private mode transition for the alternate
+// screen. Entering with mode 47 keeps the alternate buffer's previous
+// contents, while 1047 and 1049 clear it first. Leaving always restores the
+// primary buffer and its cursor untouched, and a repeated enter or exit is
+// a no-op so the visible buffer is never cleared underneath the application.
+func (m *terminalModel) setAltScreen(set, clear bool) {
+	if set {
+		m.enterAltScreen(clear)
+	} else {
+		m.exitAltScreen()
+	}
+}
+
+// enterAltScreen switches to the alternate buffer, clearing it first when
+// clear is set.
+func (m *terminalModel) enterAltScreen(clear bool) {
+	if m.altActive {
+		return
+	}
+	m.primary = m.screen()
+	m.altActive = true
+	if clear {
+		m.alt = screenState{cells: blankCells(m.width, m.height)}
+	}
+	m.installScreen(m.alt)
+}
+
+// exitAltScreen restores the primary buffer and its cursor.
+func (m *terminalModel) exitAltScreen() {
+	if !m.altActive {
+		return
+	}
+	m.alt = m.screen()
+	m.altActive = false
+	m.installScreen(m.primary)
+}
+
+// resize clips the screen buffer to width x height and clamps its cursor.
+func (s *screenState) resize(width, height int) {
+	s.cells = resizeCells(s.cells, width, height)
+	s.row = clampTo(s.row, height)
+	s.col = clampTo(s.col, width)
+	s.wrapPending = false
+	s.head = liveHead(s.cells, s.head)
+}
+
+// blankCells allocates a blank width x height cell buffer.
+func blankCells(width, height int) [][]termCell {
+	cells := make([][]termCell, height)
+	for r := range cells {
+		cells[r] = make([]termCell, width)
+	}
+	return cells
+}
+
+// resizeCells clips cells to width x height, keeping the upper-left
+// intersection: rows and columns outside the new viewport are dropped rather
+// than reflowed, and added cells are blank.
+func resizeCells(cells [][]termCell, width, height int) [][]termCell {
+	out := make([][]termCell, height)
+	for r := range out {
+		row := make([]termCell, width)
+		if r < len(cells) {
+			copy(row, cells[r])
+		}
+		// A wide grapheme whose continuation cell fell outside the new width
+		// is cleared: half a glyph would misalign the rest of the row. In a
+		// well-formed buffer a multi-cell head only sits in the last retained
+		// column when its continuation was clipped.
+		if row[width-1].w > 1 {
+			row[width-1] = termCell{}
+		}
+		out[r] = row
+	}
+	return out
+}
+
+// liveHead returns h when it still points at the head of a grapheme inside
+// cells, and the zero position once clipping, erasure or scrolling moved
+// that grapheme away.
+func liveHead(cells [][]termCell, h headPos) headPos {
+	if !h.ok || h.row < 0 || h.row >= len(cells) || h.col < 0 || h.col >= len(cells[h.row]) {
+		return headPos{}
+	}
+	if c := cells[h.row][h.col]; c.g == "" || c.cont {
+		return headPos{}
+	}
+	return h
+}
+
+// clampTo clamps v into [0, limit-1].
+func clampTo(v, limit int) int {
+	if v < 0 {
+		return 0
+	}
+	if v >= limit {
+		return limit - 1
+	}
+	return v
 }
 
 // wrap moves the cursor to the start of the next line, scrolling the
@@ -548,9 +690,10 @@ func eraseMode(params ansi.Params) int {
 
 // ignorablePrivateMode reports whether setting or resetting a DEC private
 // mode cannot change visible cells or the cursor position. Every other mode
-// (the alternate screen, column mode, autowrap, reverse video, ...) must be
-// rejected rather than swallowed: a silently ignored mode would yield a
-// viewport the terminal never showed.
+// (column mode, autowrap, reverse video, ...) must be rejected rather than
+// swallowed: a silently ignored mode would yield a viewport the terminal
+// never showed. The alternate-screen modes 47, 1047 and 1049 are handled by
+// setAltScreen because they do change the visible cells.
 func ignorablePrivateMode(mode int) bool {
 	switch mode {
 	case 1, 12, 25: // application cursor keys, cursor blink, cursor visibility

@@ -285,6 +285,159 @@ func TestTerminalUnknownScreenControl(t *testing.T) {
 	}
 }
 
+func TestTerminalAlternateScreen(t *testing.T) {
+	// Primary -> alternate -> restored primary, with each screen keeping its
+	// own buffer and cursor.
+	m := newTerminalModel(10, 3)
+	writeAll(t, m, "one\r\ntwo")
+	wantLines(t, m.Snapshot(), "one", "two", "")
+
+	writeAll(t, m, "\x1b[?1049h") // a fresh 1049 entry starts empty
+	wantLines(t, m.Snapshot(), "", "", "")
+	writeAll(t, m, "alt")
+	wantLines(t, m.Snapshot(), "alt", "", "")
+
+	writeAll(t, m, "\x1b[?1049l")
+	wantLines(t, m.Snapshot(), "one", "two", "")
+	writeAll(t, m, "!") // the primary cursor came back with its buffer
+	wantLines(t, m.Snapshot(), "one", "two!", "")
+
+	// A repeated enter or exit must not clear the visible buffer.
+	writeAll(t, m, "\x1b[?1049h")
+	writeAll(t, m, "x")
+	writeAll(t, m, "\x1b[?1049h")
+	wantLines(t, m.Snapshot(), "x", "", "")
+	writeAll(t, m, "\x1b[?1049l\x1b[?1049l")
+	wantLines(t, m.Snapshot(), "one", "two!", "")
+
+	// 47 and 1047 switch buffers without discarding the primary, and a 47
+	// round trip keeps the alternate contents because 47 does not clear.
+	m = newTerminalModel(10, 2)
+	writeAll(t, m, "main")
+	writeAll(t, m, "\x1b[?47h")
+	writeAll(t, m, "alt")
+	wantLines(t, m.Snapshot(), "alt", "")
+	writeAll(t, m, "\x1b[?47l")
+	wantLines(t, m.Snapshot(), "main", "")
+	writeAll(t, m, "\x1b[?47h")
+	wantLines(t, m.Snapshot(), "alt", "")
+	writeAll(t, m, "\x1b[?1047l")
+	wantLines(t, m.Snapshot(), "main", "")
+	// 1049 clears an alternate buffer a previous 47 entry left behind.
+	writeAll(t, m, "\x1b[?1049h")
+	wantLines(t, m.Snapshot(), "", "")
+}
+
+func TestTerminalResize(t *testing.T) {
+	// Grow: retained cells keep their position, added cells are blank.
+	m := newTerminalModel(4, 2)
+	writeAll(t, m, "abcd\r\nwxyz")
+	if err := m.Resize(6, 3); err != nil {
+		t.Fatalf("Resize(6, 3) error = %v, want nil", err)
+	}
+	snap := m.Snapshot()
+	if snap.Width != 6 || snap.Height != 3 {
+		t.Fatalf("after Resize(6, 3) size = %dx%d, want 6x3", snap.Width, snap.Height)
+	}
+	wantLines(t, snap, "abcd", "wxyz", "")
+
+	// Shrink: the upper-left intersection survives and rows never reflow.
+	if err := m.Resize(3, 2); err != nil {
+		t.Fatalf("Resize(3, 2) error = %v, want nil", err)
+	}
+	wantLines(t, m.Snapshot(), "abc", "wxy")
+
+	// Nonpositive sizes are rejected and leave the model untouched.
+	for _, size := range [][2]int{{0, 2}, {3, 0}, {-1, -1}} {
+		if err := m.Resize(size[0], size[1]); err == nil {
+			t.Fatalf("Resize(%d, %d) error = nil, want a rejection", size[0], size[1])
+		}
+	}
+	wantLines(t, m.Snapshot(), "abc", "wxy")
+
+	// A wide grapheme whose continuation cell is clipped is cleared rather
+	// than left as half a glyph; one that still fits survives whole.
+	m = newTerminalModel(4, 1)
+	writeAll(t, m, "a\u4e16")
+	wantLines(t, m.Snapshot(), "a\u4e16")
+	if err := m.Resize(3, 1); err != nil {
+		t.Fatalf("Resize(3, 1) error = %v, want nil", err)
+	}
+	wantLines(t, m.Snapshot(), "a\u4e16")
+	if err := m.Resize(2, 1); err != nil {
+		t.Fatalf("Resize(2, 1) error = %v, want nil", err)
+	}
+	wantLines(t, m.Snapshot(), "a")
+	writeAll(t, m, "Z") // drawing continues from the clamped cursor
+	wantLines(t, m.Snapshot(), "aZ")
+
+	// Cursor positions clamp to the shrunken viewport.
+	m = newTerminalModel(6, 4)
+	writeAll(t, m, "\x1b[3;5HX") // row 2, column 4
+	wantLines(t, m.Snapshot(), "", "", "    X", "")
+	if err := m.Resize(3, 2); err != nil {
+		t.Fatalf("Resize(3, 2) error = %v, want nil", err)
+	}
+	writeAll(t, m, "Y")
+	wantLines(t, m.Snapshot(), "", "  Y")
+
+	// Resizing while the alternate screen is active clips both buffers, so
+	// the restored primary already has the new dimensions.
+	m = newTerminalModel(8, 3)
+	writeAll(t, m, "primary")
+	writeAll(t, m, "\x1b[?1049h")
+	writeAll(t, m, "alt")
+	if err := m.Resize(4, 2); err != nil {
+		t.Fatalf("Resize(4, 2) while alternate is active: error = %v, want nil", err)
+	}
+	wantLines(t, m.Snapshot(), "alt", "")
+	writeAll(t, m, "\x1b[?1049l")
+	wantLines(t, m.Snapshot(), "prim", "")
+	// The primary cursor came back clamped to the shrunken viewport, so it
+	// sits on the last column and overwrites it.
+	writeAll(t, m, "!")
+	wantLines(t, m.Snapshot(), "pri!", "")
+}
+
+func TestTerminalSnapshotIsIndependent(t *testing.T) {
+	m := newTerminalModel(6, 2)
+	writeAll(t, m, "ab\r\ncd")
+
+	before := m.Snapshot()
+	wantLines(t, before, "ab", "cd")
+
+	// A later write must never reach an already-returned snapshot.
+	writeAll(t, m, "\x1b[HXY")
+	wantLines(t, before, "ab", "cd")
+	wantLines(t, m.Snapshot(), "XY", "cd")
+
+	// Caller mutation of one snapshot cannot reach a later one or the model.
+	after := m.Snapshot()
+	for i := range before.Lines {
+		before.Lines[i] = strings.Repeat("z", 3)
+	}
+	for i := range before.Content {
+		before.Content[i] = 'Q'
+	}
+	fresh := m.Snapshot()
+	if !slices.Equal(fresh.Lines, after.Lines) {
+		t.Fatalf("Lines = %q, want %q after mutating an earlier snapshot", fresh.Lines, after.Lines)
+	}
+	if !bytes.Equal(fresh.Content, after.Content) {
+		t.Fatalf("Content = %q, want %q after mutating an earlier snapshot", fresh.Content, after.Content)
+	}
+	wantLines(t, fresh, "XY", "cd")
+
+	// Lines and Content of one snapshot do not share backing storage either.
+	for i := range after.Content {
+		after.Content[i] = 'Q'
+	}
+	if after.Lines[0] != "XY" {
+		t.Fatalf("Lines[0] = %q, want %q after mutating Content", after.Lines[0], "XY")
+	}
+	wantLines(t, m.Snapshot(), "XY", "cd")
+}
+
 func TestTerminalOversizedControlIsBounded(t *testing.T) {
 	m := newTerminalModel(20, 4)
 	// An unterminated OSC whose payload is far longer than the parser's

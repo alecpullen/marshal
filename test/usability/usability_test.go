@@ -2,10 +2,14 @@ package usability
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,22 +32,111 @@ func binaryPath(t *testing.T) string {
 	return abs
 }
 
-// isolatedHomeEnv returns a copy of the current environment with HOME set to
-// a temp directory containing a minimal Marshal config. This keeps usability
-// tests independent of the developer's real config (autoloaded skills, chosen
-// provider, etc.) so the scripted scenarios see a predictable welcome screen.
-func isolatedHomeEnv(t *testing.T) []string {
+// childEnv is one isolated child environment: the variables handed to the
+// Marshal child, the temp home they point at, and the test-owned provider the
+// child is configured to call.
+type childEnv struct {
+	// Env is the child's complete environment (harness.Config.Env replaces the
+	// parent's environment rather than extending it).
+	Env []string
+	// HomeDir is the temp home every path override points into.
+	HomeDir string
+	// ServerURL is the fixture provider's URL; the child config's base_url is
+	// ServerURL + "/v1".
+	ServerURL string
+	// Requests reports how many requests the fixture provider has received. It
+	// is nil for environments built without a fixture server.
+	Requests func() int
+}
+
+// pinnedChildVars are the variables buildChildEnv sets to a test-owned value,
+// in the order it appends them.
+var pinnedChildVars = []string{
+	"HOME",
+	"USERPROFILE",
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+	"XDG_CACHE_HOME",
+	"MARSHAL_CONFIG_DIR",
+	"MARSHAL_DATA_DIR",
+	"TERM",
+}
+
+// providerKeys are the credential variables a developer may legitimately have
+// exported. None has a use in a scripted run against a test-owned provider, and
+// inheriting one would let the child authenticate to a real endpoint.
+var providerKeys = []string{
+	"OLLAMA_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY",
+	"OPENAI_API_KEY", "OPENCODE_API_KEY", "ANTHROPIC_API_KEY",
+	"GEMINI_API_KEY", "DEEPSEEK_API_KEY", "KIMI_API_KEY",
+	"MISTRAL_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY",
+	"XAI_API_KEY", "CEREBRAS_API_KEY",
+}
+
+// providerFixture starts a test-owned OpenAI-compatible endpoint. It records
+// every request and always answers with a deterministic error, so a scripted
+// UI scenario that reaches for the network shows up as a request count instead
+// of silently talking to whatever happens to run on the developer's machine.
+func providerFixture(t *testing.T) (url string, requests func() int) {
 	t.Helper()
+	var count atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"message":"usability fixture provider does not serve completions","type":"fixture_error"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, func() int { return int(count.Load()) }
+}
+
+// isolatedHomeEnv returns an isolated environment for the Marshal child: a temp
+// home holding a minimal config, and a test-owned provider the child is
+// configured to call. This keeps usability tests independent of the developer's
+// real config, credentials, caches and running services, so the scripted
+// scenarios see a predictable welcome screen.
+func isolatedHomeEnv(t *testing.T) childEnv {
+	t.Helper()
+	serverURL, requests := providerFixture(t)
 	homeDir := t.TempDir()
+	return childEnv{
+		Env:       buildChildEnv(t, homeDir, serverURL+"/v1"),
+		HomeDir:   homeDir,
+		ServerURL: serverURL,
+		Requests:  requests,
+	}
+}
+
+// llmChildEnv is the opt-in LLM scenario's environment. It is deliberately
+// exploratory: the child's provider is the same endpoint the in-process LLM
+// actor reads from USABILITY_LLM_URL, so the scenario is not bound to the
+// deterministic fixture server and makes no request-count assertion.
+func llmChildEnv(t *testing.T) []string {
+	t.Helper()
+	base := strings.TrimRight(os.Getenv("USABILITY_LLM_URL"), "/")
+	if base == "" {
+		base = "http://localhost:11434"
+	}
+	return buildChildEnv(t, t.TempDir(), base+"/v1")
+}
+
+// buildChildEnv writes the child's minimal Marshal config into homeDir and
+// returns the environment to start it with. It reads the ambient environment
+// only to carry over execution essentials (PATH, platform loader variables) and
+// drops everything that could redirect the child outside the test-owned home or
+// authenticate it against a real endpoint.
+func buildChildEnv(t *testing.T, homeDir, baseURL string) []string {
+	t.Helper()
 	configDir := filepath.Join(homeDir, ".config", "marshal")
-	if err := os.MkdirAll(configDir, 0755); err != nil {
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("create temp marshal config dir: %v", err)
 	}
 	// A local-only provider + preset + profile so Marshal starts on the main
-	// TUI screen instead of opening the connect-provider picker.
-	config := `[providers.ollama]
+	// TUI screen instead of opening the connect-provider picker. The provider is
+	// the test-owned fixture endpoint, never an ambient one.
+	config := fmt.Sprintf(`[providers.ollama]
 type = "openai_compatible"
-base_url = "http://localhost:11434/v1"
+base_url = %q
 
 [models.presets.coder]
 provider = "ollama"
@@ -60,70 +153,167 @@ implementer = "coder"
 
 [postmortem]
 on_exit = "never"
-`
-	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0644); err != nil {
+`, baseURL)
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o644); err != nil {
 		t.Fatalf("write temp marshal config: %v", err)
 	}
 
 	// HOME alone no longer isolates the config: Marshal honours
 	// XDG_CONFIG_HOME / XDG_DATA_HOME / MARSHAL_*_DIR ahead of HOME
 	// (config-project-identity refactor), and CI runners export the XDG
-	// variables. Pin every config-location override into the temp home so
-	// the app reads this file and nothing else.
-	//
-	// The developer's ambient credential variables are dropped rather than
-	// inherited: the child would otherwise be able to authenticate to a real
-	// endpoint with a real key. The scripted scenarios run entirely against
-	// the test-owned local provider written above, so none of these has a
-	// legitimate use in the child's environment.
+	// variables. Pin every config-location override into the temp home so the
+	// app reads this file and nothing else. USERPROFILE covers platforms where
+	// os.UserHomeDir reads it instead of HOME.
 	overrides := map[string]string{
 		"HOME":               homeDir,
+		"USERPROFILE":        homeDir,
 		"XDG_CONFIG_HOME":    filepath.Join(homeDir, ".config"),
 		"XDG_DATA_HOME":      filepath.Join(homeDir, ".local", "share"),
+		"XDG_CACHE_HOME":     filepath.Join(homeDir, ".cache"),
 		"MARSHAL_CONFIG_DIR": filepath.Join(homeDir, ".config", "marshal"),
 		"MARSHAL_DATA_DIR":   filepath.Join(homeDir, ".local", "share", "marshal"),
+		// A deterministic terminal type: the scripted scenarios assert on
+		// rendered text, and an ambient TERM would change the child's output.
+		// The value is a real developer terminal so the child takes the same
+		// renderer path a user would, including its erase-character repaints.
+		"TERM": "xterm-256color",
 	}
-	dropped := map[string]bool{}
-	for _, key := range []string{
-		"OLLAMA_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY",
-		"OPENAI_API_KEY", "OPENCODE_API_KEY", "ANTHROPIC_API_KEY",
-		"GEMINI_API_KEY", "DEEPSEEK_API_KEY", "KIMI_API_KEY",
-		"MISTRAL_API_KEY", "TOGETHER_API_KEY", "FIREWORKS_API_KEY",
-		"XAI_API_KEY", "CEREBRAS_API_KEY",
-		// The live-keyring opt-in must not leak into the child either: its
-		// scenarios never exercise the real OS keychain.
-		"MARSHAL_CREDENTIALS_LIVE_TEST",
-	} {
+
+	// The developer's ambient credential variables are dropped rather than
+	// inherited: the child would otherwise be able to authenticate to a real
+	// endpoint with a real key. The live-keyring opt-in must not leak in either:
+	// no scenario exercises the real OS keychain.
+	dropped := map[string]bool{"MARSHAL_CREDENTIALS_LIVE_TEST": true}
+	for _, key := range providerKeys {
 		dropped[key] = true
 	}
-	env := os.Environ()[:0]
+
+	env := make([]string, 0, len(os.Environ())+len(pinnedChildVars))
 	for _, e := range os.Environ() {
-		eq := strings.Index(e, "=")
-		if eq > 0 {
-			name := e[:eq]
-			if _, pinned := overrides[name]; pinned {
-				continue
-			}
-			if dropped[name] {
-				continue
-			}
+		name, _, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		// An ambient value for a pinned variable is dropped, not merged: the
+		// child gets exactly one effective value, the test-owned one appended
+		// below.
+		if _, pinned := overrides[name]; pinned {
+			continue
+		}
+		if dropped[name] {
+			continue
+		}
+		// No USABILITY_* variable configures the child: the binary path and the
+		// opt-in actor knobs belong to the test process, and a later task's
+		// variables must not leak in by default.
+		if strings.HasPrefix(name, "USABILITY_") {
+			continue
 		}
 		env = append(env, e)
 	}
-	for k, v := range overrides {
-		env = append(env, k+"="+v)
+	for _, name := range pinnedChildVars {
+		env = append(env, name+"="+overrides[name])
 	}
 	return env
+}
+
+// envValues returns every value the environment slice carries for name.
+func envValues(env []string, name string) []string {
+	prefix := name + "="
+	var values []string
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			values = append(values, strings.TrimPrefix(e, prefix))
+		}
+	}
+	return values
+}
+
+// TestIsolatedHomeEnv proves the child environment ignores ambient path
+// overrides and credentials: every config-location variable resolves inside the
+// temp home exactly once, no provider key survives, and the configured provider
+// endpoint is the test-owned fixture server.
+func TestIsolatedHomeEnv(t *testing.T) {
+	// Poison everything the builder is supposed to replace. t.Setenv restores
+	// the values when the test ends.
+	const poison = "/tmp/marshal-usability-poison"
+	for _, name := range []string{
+		"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+		"XDG_CACHE_HOME", "MARSHAL_CONFIG_DIR", "MARSHAL_DATA_DIR",
+	} {
+		t.Setenv(name, filepath.Join(poison, strings.ToLower(name)))
+	}
+	t.Setenv("TERM", "marshal-poison-term")
+	for _, name := range providerKeys {
+		t.Setenv(name, poison)
+	}
+	for _, name := range []string{
+		"MARSHAL_CREDENTIALS_LIVE_TEST",
+		"USABILITY_MARSHAL_BINARY", "USABILITY_REPORT_DIR",
+		"USABILITY_REQUIRE_BINARY", "USABILITY_LLM_URL", "USABILITY_LLM_MODEL",
+	} {
+		t.Setenv(name, poison)
+	}
+
+	env := isolatedHomeEnv(t)
+
+	// Exactly one effective value per pinned variable, inside the temp home.
+	for _, name := range pinnedChildVars {
+		values := envValues(env.Env, name)
+		if len(values) != 1 {
+			t.Fatalf("%s: child environment carries %d entries, want exactly 1", name, len(values))
+		}
+		if name == "TERM" {
+			continue
+		}
+		if !strings.HasPrefix(values[0], env.HomeDir) {
+			t.Fatalf("%s: child value is outside the temp home", name)
+		}
+	}
+	if values := envValues(env.Env, "TERM"); len(values) != 1 || values[0] != "xterm-256color" {
+		t.Fatalf("TERM: child environment does not carry exactly one deterministic value")
+	}
+
+	// No credential, keyring opt-in or harness knob reaches the child.
+	for _, name := range append(append([]string{}, providerKeys...), "MARSHAL_CREDENTIALS_LIVE_TEST") {
+		if len(envValues(env.Env, name)) != 0 {
+			t.Fatalf("%s leaked into the child environment", name)
+		}
+	}
+	for _, e := range env.Env {
+		if strings.HasPrefix(e, "USABILITY_") {
+			t.Fatalf("a USABILITY_* variable leaked into the child environment: %s", strings.SplitN(e, "=", 2)[0])
+		}
+	}
+
+	// The configured provider is the fixture server, not an ambient endpoint.
+	if !strings.HasPrefix(env.ServerURL, "http://127.0.0.1:") && !strings.HasPrefix(env.ServerURL, "http://[::1]:") {
+		t.Fatalf("fixture provider is not a loopback httptest server")
+	}
+	cfg, err := os.ReadFile(filepath.Join(env.HomeDir, ".config", "marshal", "config.toml"))
+	if err != nil {
+		t.Fatalf("read temp marshal config: %v", err)
+	}
+	want := `base_url = "` + env.ServerURL + `/v1"`
+	if !strings.Contains(string(cfg), want) {
+		t.Fatalf("temp marshal config does not point at the fixture server's /v1 endpoint")
+	}
+
+	// Building the environment must not itself reach the provider.
+	if n := env.Requests(); n != 0 {
+		t.Fatalf("fixture provider received %d requests while building the child environment, want 0", n)
+	}
 }
 
 func TestScriptedHelpOpenClose(t *testing.T) {
 	if _, err := os.Stat(binaryPath(t)); err != nil {
 		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")
 	}
+	env := isolatedHomeEnv(t)
 	r := scenario.NewRunner(scenario.RunnerConfig{
 		BinaryPath: binaryPath(t),
 		WorkDir:    t.TempDir(),
-		Env:        isolatedHomeEnv(t),
+		Env:        env.Env,
 		ReportDir:  "/tmp/marshal-usability",
 		// The /help cheatsheet printed by "?" is taller than the default
 		// 40-row terminal; at 40 rows its "Keys" header scrolls above the
@@ -144,6 +334,11 @@ func TestScriptedHelpOpenClose(t *testing.T) {
 	}
 	if !res.Success {
 		t.Fatalf("scenario failed: %+v", res)
+	}
+	// Opening and closing Help needs no model: any request to the test-owned
+	// provider means the child reached for the network on its own.
+	if n := env.Requests(); n != 0 {
+		t.Fatalf("fixture provider received %d requests, want 0: the scripted Help scenario must not call a model", n)
 	}
 }
 
@@ -223,7 +418,7 @@ func TestLLMSubtractFix(t *testing.T) {
 	r := scenario.NewRunner(scenario.RunnerConfig{
 		BinaryPath: binaryPath(t),
 		WorkDir:    workDir,
-		Env:        isolatedHomeEnv(t),
+		Env:        llmChildEnv(t),
 		ReportDir:  "/tmp/marshal-usability",
 	})
 	defer r.WriteReport()
@@ -308,12 +503,13 @@ func TestScriptedVisibleScreenRedraw(t *testing.T) {
 		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")
 	}
 
+	env := isolatedHomeEnv(t)
 	sess, err := harness.New(harness.Config{
 		BinaryPath: binaryPath(t),
 		Width:      120,
 		Height:     80,
 		WorkDir:    t.TempDir(),
-		Env:        isolatedHomeEnv(t),
+		Env:        env.Env,
 	})
 	if err != nil {
 		t.Fatalf("harness.New: %v", err)
@@ -337,6 +533,12 @@ func TestScriptedVisibleScreenRedraw(t *testing.T) {
 	waitForViewport(t, sess, 30*time.Second, "help closed and prompt restored", func(scr screen.Screen) bool {
 		return !strings.Contains(scr.Content, helpTitleMarker) && strings.Contains(scr.Content, promptMarker)
 	})
+
+	// A redraw of the Help panel needs no model: any request to the test-owned
+	// provider means the child reached for the network on its own.
+	if n := env.Requests(); n != 0 {
+		t.Fatalf("fixture provider received %d requests, want 0: the scripted redraw must not call a model", n)
+	}
 }
 
 // TestScriptedGracefulQuit requires a normal exit, not merely a process that
@@ -349,12 +551,13 @@ func TestScriptedGracefulQuit(t *testing.T) {
 		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")
 	}
 
+	env := isolatedHomeEnv(t)
 	sess, err := harness.New(harness.Config{
 		BinaryPath: binaryPath(t),
 		Width:      120,
 		Height:     80,
 		WorkDir:    t.TempDir(),
-		Env:        isolatedHomeEnv(t),
+		Env:        env.Env,
 	})
 	if err != nil {
 		t.Fatalf("harness.New: %v", err)
@@ -380,6 +583,12 @@ func TestScriptedGracefulQuit(t *testing.T) {
 	defer cancel()
 	if err := sess.Wait(ctx); err != nil {
 		t.Fatalf("Wait after /quit = %v, want nil for a normal exit\nscreen: %q", err, string(sess.Snapshot().Content))
+	}
+
+	// Quitting needs no model: any request to the test-owned provider means the
+	// child reached for the network on its own.
+	if n := env.Requests(); n != 0 {
+		t.Fatalf("fixture provider received %d requests, want 0: the scripted quit must not call a model", n)
 	}
 }
 

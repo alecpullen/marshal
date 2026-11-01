@@ -66,9 +66,19 @@ func (m *Model) nodeCopyText(id viewmodel.NodeID) string {
 		return completionCopyText(w.Completion, res.Detail.Completion)
 	case w.Message != nil:
 		return w.Message.Content
+	case w.RunEvent != nil, w.Thinking != nil && w.ID != acpwire.LiveThinkingID:
+		// A run event or a finished thinking row copies its rendered text; a
+		// truncated run event reads its whole body from the session.
+		var d *acpwire.NodeDetail
+		if w.RunEvent != nil && w.RunEvent.Truncated {
+			if res, ok := m.nodeDetail(id); ok {
+				d = &res.Detail
+			}
+		}
+		return plainText(renderItem(w, d, true, 120))
 	}
-	// A receipt copies its rendered line, and any other item its rendered
-	// transcript text. Plan 3c ports these renderers to the wire index.
+	// A receipt copies its rendered line. Plan 3c ports the last renderers to
+	// the wire index.
 	n := m.browseTree[id]
 	if n == nil {
 		return ""
@@ -76,8 +86,6 @@ func (m *Model) nodeCopyText(id viewmodel.NodeID) string {
 	switch {
 	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return plainText(renderReceipt(n.Receipt, 200))
-	case n.Item != nil:
-		return plainText(renderTranscriptItem(*n.Item, true, "", regionView{}, nil, 120))
 	}
 	return ""
 }

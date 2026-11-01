@@ -65,9 +65,9 @@ func TestTranscriptIndentContract(t *testing.T) {
 		{"plan block", renderPlanBlock("step one\nstep two", width)},
 		{"plain prose", renderPlainProse("some fallback prose", width)},
 		{"queued messages", renderQueuedMessages([]string{"do the thing"}, width)},
-		{"final answer", renderFinalAnswer(session.Message{
+		{"final answer", renderFinalAnswer(wireMessage(session.Message{
 			Content: "the answer", Final: true,
-		}, width)},
+		}), width)},
 		{"thinking summary", renderThinkingSummary("reasoned", time.Second, false, width)},
 		{"agent markdown", renderAgentMarkdown("plain paragraph", width)},
 		{"beat with calls on its spine", func() string {

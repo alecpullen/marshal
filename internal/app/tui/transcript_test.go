@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
@@ -68,7 +69,7 @@ func TestRendererCacheEvicts(t *testing.T) {
 }
 
 func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
-	out := renderMessage(session.Message{Role: session.RoleUser, Content: "fix the tests", ContentType: session.ContentTypePlain}, 80)
+	out := renderMessage(wireMessage(session.Message{Role: session.RoleUser, Content: "fix the tests", ContentType: session.ContentTypePlain}), 80)
 	if !strings.Contains(out, "❯") || !strings.Contains(out, "fix the tests") {
 		t.Fatalf("user message missing ❯ prefix:\n%s", out)
 	}
@@ -81,7 +82,7 @@ func TestRenderUserMessageUsesPromptPrefix(t *testing.T) {
 }
 
 func TestRenderAgentProseHasNoRoleLabel(t *testing.T) {
-	out := stripANSI(renderMessage(session.Message{Role: session.RoleAssistant, Content: "I found the bug.", ContentType: session.ContentTypeMarkdown}, 80))
+	out := stripANSI(renderMessage(wireMessage(session.Message{Role: session.RoleAssistant, Content: "I found the bug.", ContentType: session.ContentTypeMarkdown}), 80))
 	if !strings.Contains(out, "I found the bug.") {
 		t.Fatalf("agent prose missing content:\n%s", out)
 	}
@@ -93,7 +94,7 @@ func TestRenderAgentProseHasNoRoleLabel(t *testing.T) {
 }
 
 func TestRenderAgentProseDoesNotAddBlankTrailingLine(t *testing.T) {
-	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "I found the bug.\n", ContentType: session.ContentTypeMarkdown}, 80)
+	out := renderMessage(wireMessage(session.Message{Role: session.RoleAssistant, Content: "I found the bug.\n", ContentType: session.ContentTypeMarkdown}), 80)
 	if strings.HasSuffix(out, "\n\n") {
 		t.Fatalf("agent prose should not add a blank trailing line:\n%q", out)
 	}
@@ -137,7 +138,7 @@ func TestRenderThinkingBoxUsesGutter(t *testing.T) {
 }
 
 func TestRenderToolResultUsesGutter(t *testing.T) {
-	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "shell.run: go test ./...\nFAIL: TestX", ContentType: session.ContentTypeToolResult}, 80)
+	out := renderMessage(wireMessage(session.Message{Role: session.RoleAssistant, Content: "shell.run: go test ./...\nFAIL: TestX", ContentType: session.ContentTypeToolResult}), 80)
 	plain := stripANSI(out)
 	if !strings.HasPrefix(plain, " · ") {
 		t.Fatalf("tool result missing · gutter:\n%s", out)
@@ -151,7 +152,7 @@ func TestRenderToolResultUsesGutter(t *testing.T) {
 }
 
 func TestRenderSystemNoticeIsDim(t *testing.T) {
-	out := renderMessage(session.Message{Role: session.RoleSystem, Content: "Agent turn cancelled.", ContentType: session.ContentTypePlain}, 80)
+	out := renderMessage(wireMessage(session.Message{Role: session.RoleSystem, Content: "Agent turn cancelled.", ContentType: session.ContentTypePlain}), 80)
 	// The notice sits on the shared 3-cell gutter, like every other item.
 	if !strings.Contains(stripANSI(out), " · Agent turn cancelled.") {
 		t.Fatalf("system notice missing dim · gutter:\n%s", out)
@@ -159,7 +160,7 @@ func TestRenderSystemNoticeIsDim(t *testing.T) {
 }
 
 func TestRenderPlanBlockUsesGutter(t *testing.T) {
-	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "1. read parser.go\n2. patch it", ContentType: session.ContentTypePlan}, 80)
+	out := renderMessage(wireMessage(session.Message{Role: session.RoleAssistant, Content: "1. read parser.go\n2. patch it", ContentType: session.ContentTypePlan}), 80)
 	plain := stripANSI(out)
 	if !strings.HasPrefix(plain, " · plan") {
 		t.Fatalf("plan block missing · plan gutter header:\n%s", out)
@@ -189,7 +190,7 @@ func TestRenderQueuedMessagesHaveGutter(t *testing.T) {
 }
 
 func TestRenderFinalAnswerUsesGutter(t *testing.T) {
-	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true}, 80)
+	out := renderMessage(wireMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true}), 80)
 	plain := stripANSI(out)
 	if strings.Contains(plain, "Response") {
 		t.Fatalf("final answer must not show Response label:\n%s", plain)
@@ -203,7 +204,7 @@ func TestRenderFinalAnswerUsesGutter(t *testing.T) {
 }
 
 func TestRenderFinalAnswerSalvagedNote(t *testing.T) {
-	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true, Salvaged: true, SalvageReason: "truncated"}, 80)
+	out := renderMessage(wireMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true, Salvaged: true, SalvageReason: "truncated"}), 80)
 	plain := stripANSI(out)
 	if !strings.Contains(plain, "salvaged") {
 		t.Fatalf("salvaged final answer missing salvage marker:\n%s", plain)
@@ -217,7 +218,7 @@ func TestRenderFinalAnswerSalvagedNote(t *testing.T) {
 }
 
 func TestRenderFinalAnswerNotSalvagedHasNoMarker(t *testing.T) {
-	out := renderMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true}, 80)
+	out := renderMessage(wireMessage(session.Message{Role: session.RoleAssistant, Content: "All done.", ContentType: session.ContentTypeMarkdown, Final: true}), 80)
 	if strings.Contains(out, "salvaged") {
 		t.Fatalf("normal final answer must not contain salvage marker:\n%s", out)
 	}
@@ -267,7 +268,7 @@ func TestRenderMessageSkillMessages(t *testing.T) {
 				"skill_name: using-superpowers\n---\n# Using Skills\n\nThe full body.\n```\n",
 			ContentType: session.ContentTypeSkillBody,
 		}
-		if out := renderMessage(msg, 80); out != "" {
+		if out := renderMessage(wireMessage(msg), 80); out != "" {
 			t.Fatalf("skill body must not render in the transcript, got:\n%s", out)
 		}
 	})
@@ -278,7 +279,7 @@ func TestRenderMessageSkillMessages(t *testing.T) {
 			Content:     "using-superpowers",
 			ContentType: session.ContentTypeSkill,
 		}
-		plain := stripANSI(renderMessage(msg, 80))
+		plain := stripANSI(renderMessage(wireMessage(msg), 80))
 		if !strings.Contains(plain, "skill.load: using-superpowers") {
 			t.Fatalf("expected compact skill.load tag, got:\n%s", plain)
 		}
@@ -297,7 +298,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 				StartedAt: time.Now(),
 			},
 		}
-		result := renderTranscriptItem(item, false, "⠋", regionView{}, nil, width)
+		result := renderItem(wireItem(item), nil, false, width)
 		if !strings.Contains(result, "thought for 2s") {
 			t.Errorf("expected thinking summary, got: %s", result)
 		}
@@ -316,7 +317,7 @@ func TestRenderTranscriptItem(t *testing.T) {
 			Kind:    session.KindMessage,
 			Message: &msg,
 		}
-		result := renderTranscriptItem(item, false, "⠋", regionView{}, nil, width)
+		result := renderItem(wireItem(item), nil, false, width)
 		if !strings.Contains(result, "thought for 1s") {
 			t.Errorf("expected thinking summary before message, got: %s", result)
 		}
@@ -333,7 +334,7 @@ func TestTranscriptLinesFitWidth(t *testing.T) {
 	}
 	for _, width := range []int{38, 60, 80} {
 		for _, msg := range messages {
-			out := renderMessage(msg, width)
+			out := renderMessage(wireMessage(msg), width)
 			for _, line := range strings.Split(out, "\n") {
 				if visibleRunes(line) > width {
 					t.Fatalf("line exceeds width %d (%d): %q", width, visibleRunes(line), line)
@@ -832,11 +833,11 @@ func TestThinkingSummaryStaysUnboundedAndFlat(t *testing.T) {
 // cards_render_test.go.
 
 func TestCompactionMarkerRendersAsOneLine(t *testing.T) {
-	out := renderMessage(session.Message{
+	out := renderMessage(wireMessage(session.Message{
 		Role:        session.RoleSystem,
 		ContentType: session.ContentTypeCompaction,
 		Content:     "compacted 62 messages to 5 · 118k → 9k · generation 3",
-	}, 80)
+	}), 80)
 
 	if out == "" {
 		t.Fatal("compaction marker rendered empty")
@@ -859,7 +860,7 @@ func TestSubagentReportRendersNothing(t *testing.T) {
 		Content:     "[subagent 1 finished] found two issues",
 		ContentType: session.ContentTypeSubagentReport,
 	}
-	if out := renderMessage(msg, 80); out != "" {
+	if out := renderMessage(wireMessage(msg), 80); out != "" {
 		t.Fatalf("subagent report must render nothing, got %q", out)
 	}
 }
@@ -886,7 +887,7 @@ func TestWatchReportRendersNothing(t *testing.T) {
 		Content:     "[watch build fired] kind=command",
 		ContentType: session.ContentTypeWatchReport,
 	}
-	if out := renderMessage(msg, 80); out != "" {
+	if out := renderMessage(wireMessage(msg), 80); out != "" {
 		t.Fatalf("watch report must render nothing, got %q", out)
 	}
 }
@@ -916,5 +917,38 @@ func TestRealUserMessageStillIsAUserTurn(t *testing.T) {
 	}
 	if !isUserTurn(item) {
 		t.Fatal("an ordinary user message must still be a user turn")
+	}
+}
+
+// An expanded message draws the whole reasoning, which the wire cut: until
+// the detail lands the row still shows the cut, and once it lands the tail is
+// there.
+func TestExpandedMessageReadsItsWholeReasoning(t *testing.T) {
+	m := newTestModel(t)
+	var reasoning strings.Builder
+	for i := 1; i <= 600; i++ {
+		fmt.Fprintf(&reasoning, "thought %04d\n", i)
+	}
+	reasoning.WriteString("REASONING END")
+	m.state.BeginStreaming()
+	m.state.AppendThinking(reasoning.String())
+	m.state.AddMessage(session.RoleAssistant, "Done.", session.ContentTypeMarkdown)
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	content := func() string { return stripANSI(strings.Join(m.contentLines, "\n")) }
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	m = asModel(t, updated)
+	if !m.expandAll {
+		t.Fatal("ctrl+g did not turn expand-all on")
+	}
+	if strings.Contains(content(), "REASONING END") {
+		t.Fatalf("the undrained expansion must draw the wire's cut:\n%s", content())
+	}
+
+	m = drainCmds(m, cmd)
+	if got := content(); !strings.Contains(got, "REASONING END") {
+		t.Fatalf("the drained expansion must read the whole reasoning:\n%s", got)
 	}
 }

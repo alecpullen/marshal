@@ -27,7 +27,7 @@ import (
 // regionView is the Model-owned view state for one bounded live region.
 // offset is how far its body is scrolled back; minRows is its high-water
 // mark. They travel together because they are the same concern, and
-// because renderTranscriptItem's parameter list is already long.
+// because the live-region renderers' parameter lists are already long.
 type regionView struct {
 	offset  int
 	minRows int
@@ -343,7 +343,7 @@ func renderCodeBlock(content string, width int) string {
 	return b.String()
 }
 
-func renderFinalAnswer(msg session.Message, width int) string {
+func renderFinalAnswer(msg *acpwire.WireMessage, width int) string {
 	if width < 10 {
 		width = 10
 	}
@@ -473,46 +473,48 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 // user prompts get a ❯ prefix, agent prose renders as plain markdown with
 // no role label, tool results render with a · gutter, system notices are
 // dim. Final answers use a ▍ gutter and rich-content rendering.
-func renderMessage(msg session.Message, width int) string {
-	// Expand tabs once, here, so every content-type branch below measures
-	// what the terminal will actually render. See expandTabs.
-	msg.Content = expandTabs(msg.Content)
+func renderMessage(msg *acpwire.WireMessage, width int) string {
+	// The copy is what tab expansion writes into: the wire index's payload is
+	// read-only, and every content-type branch below must measure what the
+	// terminal will actually render. See expandTabs.
+	cp := *msg
+	cp.Content = expandTabs(cp.Content)
 	// Skill messages are handled before the role branches: the body
 	// (ContentTypeSkillBody) is model context, not transcript content, and
 	// the tag (ContentTypeSkill) renders as a compact one-line trace
 	// regardless of the role it was stored under (always RoleSystem today).
-	switch msg.ContentType {
+	switch session.ContentType(cp.ContentType) {
 	case session.ContentTypeSkillBody:
 		return ""
 	case session.ContentTypeSkill:
-		return renderSkillTag(msg.Content, width)
+		return renderSkillTag(cp.Content, width)
 	case session.ContentTypeCompaction:
-		return renderCompactionMarker(msg.Content, width)
+		return renderCompactionMarker(cp.Content, width)
 	case session.ContentTypeSubagentReport:
 		return ""
 	case session.ContentTypeWatchReport:
 		return ""
 	case session.ContentTypeSteering:
-		return renderSteeringMarker(msg.Content, width)
+		return renderSteeringMarker(cp.Content, width)
 	}
-	if msg.Final {
-		return renderFinalAnswer(msg, width)
+	if cp.Final {
+		return renderFinalAnswer(&cp, width)
 	}
-	if msg.Role == session.RoleUser {
-		return renderUserMessage(msg.Content, width)
+	if session.Role(cp.Role) == session.RoleUser {
+		return renderUserMessage(cp.Content, width)
 	}
-	if msg.Role == session.RoleSystem {
-		return renderSystemNotice(msg.Content, width)
+	if session.Role(cp.Role) == session.RoleSystem {
+		return renderSystemNotice(cp.Content, width)
 	}
-	switch msg.ContentType {
+	switch session.ContentType(cp.ContentType) {
 	case session.ContentTypePlan:
-		return renderPlanBlock(msg.Content, width)
+		return renderPlanBlock(cp.Content, width)
 	case session.ContentTypeToolResult:
-		return renderToolResultLine(msg.Content, width)
+		return renderToolResultLine(cp.Content, width)
 	case session.ContentTypeCode:
-		return gutterPrefix(glyph.Rail, accentColor) + renderCodeBlock(msg.Content, max(width-3, 1)) + "\n"
+		return gutterPrefix(glyph.Rail, accentColor) + renderCodeBlock(cp.Content, max(width-3, 1)) + "\n"
 	default: // plain and markdown prose render identically
-		return renderAgentMarkdown(msg.Content, width)
+		return renderAgentMarkdown(cp.Content, width)
 	}
 }
 
@@ -557,43 +559,39 @@ func renderAgentMarkdown(content string, width int) string {
 	return strings.Trim(out, "\n") + "\n"
 }
 
-func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int) string {
-	return renderTranscriptItemIn(item, detailExpanded, spinnerFrame, rv, callers, width, "")
-}
-
-// renderTranscriptItemIn is renderTranscriptItem with the session's active
-// root, so a pass-through shell row elides a leading cd into it.
-func renderTranscriptItemIn(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int, workdir string) string {
-	switch item.Kind {
-	case session.KindThinking:
-		if item.Thinking == nil {
-			return ""
-		}
-		return renderThinkingSummary(item.Thinking.Text, item.Thinking.Duration, detailExpanded, width)
-	case session.KindMessage:
-		if item.Message == nil {
-			return ""
-		}
-		if item.Message.ContentType == session.ContentTypeSkillAuto {
-			return renderAutoSkills(item.Message.Content, detailExpanded, width)
+// renderItem draws a message, a finished thinking row or a run event. d is
+// the node's detail when the wire cut it; nil draws the wire's text.
+func renderItem(w *acpwire.WireNode, d *acpwire.NodeDetail, expanded bool, width int) string {
+	switch {
+	case w == nil:
+		return ""
+	case w.Thinking != nil:
+		return renderThinkingSummary(w.Thinking.Text, time.Duration(w.Thinking.DurationMs)*time.Millisecond, expanded, width)
+	case w.Message != nil:
+		msg := w.Message
+		if session.ContentType(msg.ContentType) == session.ContentTypeSkillAuto {
+			return renderAutoSkills(msg.Content, expanded, width)
 		}
 		// Narration is a distinct block type: it renders through its own
 		// renderer — the same markdown as the final answer, on the ambient
 		// gutter — rather than falling through to renderMessage.
-		if item.Message.ContentType == session.ContentTypeNarration {
-			return renderNarration(item.Message.Content, width)
+		if session.ContentType(msg.ContentType) == session.ContentTypeNarration {
+			return renderNarration(msg.Content, width)
+		}
+		// The reasoning is the whole of it when the detail holds it; the
+		// wire's is capped.
+		reasoning := msg.Reasoning
+		if d != nil && len(d.Thinking) > 0 {
+			reasoning = d.Thinking[0].Text
 		}
 		var b strings.Builder
-		if item.Message.Reasoning != "" {
-			b.WriteString(renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, detailExpanded, width))
+		if reasoning != "" {
+			b.WriteString(renderThinkingSummary(reasoning, time.Duration(msg.ThinkMs)*time.Millisecond, expanded, width))
 		}
-		b.WriteString(renderMessage(*item.Message, width))
+		b.WriteString(renderMessage(msg, width))
 		return b.String()
-	case session.KindRunEvent:
-		if item.RunEvent == nil {
-			return ""
-		}
-		return renderRunEvent(*item.RunEvent, detailExpanded, width)
+	case w.RunEvent != nil:
+		return renderRunEvent(w.RunEvent, d, expanded, width)
 	}
 	return ""
 }

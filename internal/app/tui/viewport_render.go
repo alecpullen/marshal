@@ -187,7 +187,7 @@ func (m *Model) refreshViewport() {
 				bitems = collectBrowse(bitems, node, out, subs, lineCursor, turnFirst)
 				turnFirst = false
 			}
-			addBlock(blockKey{node: node.ID}, out, m.blockTarget(node), subs)
+			addBlock(blockKey{node: node.ID}, out, m.blockTarget(node, m.wire[node.ID.Key]), subs)
 			nextTight = false // never leaks onto a later block, even if this one was empty
 		}
 	}
@@ -288,9 +288,17 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 		return renderCompletion(w.Completion, d, expanded, width, c.workdir), nil
 	case n.Kind == viewmodel.KindTool && n.Active != nil:
 		return renderActiveToolCall(*n.Active, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
-	case n.Item != nil:
-		rv := m.regionView(n.ID)
-		return renderTranscriptItemIn(*n.Item, m.expandedUnder(n.ID, m.expandAll), m.spinnerFrame, rv, m.callers[n.ID], width, c.workdir), nil
+	case w != nil && (w.Message != nil || w.Thinking != nil || w.RunEvent != nil):
+		expanded := m.expandedUnder(n.ID, m.expandAll)
+		// d is the row's whole body or reasoning when the wire cut it and the
+		// row is open. Until the answer lands the row draws the wire's text.
+		var d *acpwire.NodeDetail
+		if expanded && ((w.RunEvent != nil && w.RunEvent.Truncated) || (w.Message != nil && w.Message.Truncated)) {
+			if det := c.detailOf(w.ID, w.Version); det != nil {
+				d = det
+			}
+		}
+		return renderItem(w, d, expanded, width), nil
 	}
 	return "", nil
 }
@@ -356,20 +364,20 @@ func completionIndex(turns []*viewmodel.Node) map[string]completionRef {
 // blockTarget says what a click on a top-level block does. Steps, tools,
 // completion events and thinking rows toggle; plain messages are not
 // interactive.
-func (m *Model) blockTarget(n *viewmodel.Node) *clickTarget {
+func (m *Model) blockTarget(n *viewmodel.Node, w *acpwire.WireNode) *clickTarget {
 	switch {
 	case n.Kind == viewmodel.KindStep:
 		return &clickTarget{node: n.ID}
-	case n.Kind == viewmodel.KindThinking && n.Step != nil:
+	case n.ID.Key == acpwire.LiveThinkingID:
 		return &clickTarget{node: viewmodel.LiveThinkingID, isLiveRegion: true}
 	case n.Kind == viewmodel.KindTool:
 		return &clickTarget{node: n.ID}
-	case n.Kind == viewmodel.KindCompletion && n.Completion != nil:
+	case w != nil && w.Completion != nil:
 		return &clickTarget{node: n.ID}
 	case n.Kind == viewmodel.KindThinking:
 		return &clickTarget{node: n.ID}
-	case n.Kind == viewmodel.KindMessage && n.Item != nil && n.Item.Message != nil &&
-		n.Item.Message.ContentType == session.ContentTypeSkillAuto:
+	case w != nil && w.Message != nil &&
+		session.ContentType(w.Message.ContentType) == session.ContentTypeSkillAuto:
 		return &clickTarget{node: n.ID}
 	}
 	return nil

@@ -54,3 +54,24 @@ func wireCompletion(c viewmodel.CompletionInfo) *acpwire.WireCompletion {
 	w, _ := wireOf(n, "")
 	return w.Completion
 }
+
+// wireItem is the wire node of a transcript item's row.
+func wireItem(it session.TranscriptItem) *acpwire.WireNode {
+	n := &viewmodel.Node{
+		ID:   viewmodel.NodeID{Kind: viewmodel.KindPassthrough, Key: "item"},
+		Kind: viewmodel.KindPassthrough,
+		Item: &it,
+	}
+	w, _ := wireOf(n, "")
+	return w
+}
+
+// wireMessage is the wire form of a message.
+func wireMessage(m session.Message) *acpwire.WireMessage {
+	return wireItem(session.TranscriptItem{Kind: session.KindMessage, Message: &m}).Message
+}
+
+// wireRunEvent is the wire form of a run event.
+func wireRunEvent(e session.RunEvent) *acpwire.WireRunEvent {
+	return wireItem(session.TranscriptItem{Kind: session.KindRunEvent, RunEvent: &e}).RunEvent
+}

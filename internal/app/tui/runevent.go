@@ -8,7 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 )
@@ -27,7 +27,7 @@ const runEventCollapsedBodyLines = 12
 // This is the surface that makes a run legible: without it the only
 // evidence of a failed gate or a rejected review is a transient one-word
 // phase label in the run panel.
-func renderRunEvent(ev session.RunEvent, expanded bool, width int) string {
+func renderRunEvent(ev *acpwire.WireRunEvent, d *acpwire.NodeDetail, expanded bool, width int) string {
 	g, c, headline := runEventHeadline(ev)
 	cw := contentWidth(width)
 
@@ -36,13 +36,21 @@ func renderRunEvent(ev session.RunEvent, expanded bool, width int) string {
 	b.WriteString(lipgloss.NewStyle().Foreground(c).Render(ansi.Truncate(headline, max(cw, 1), "…")))
 	b.WriteString("\n")
 
-	if ev.Body == "" {
+	// The wire caps its body; the detail holds all of it. Which body this is
+	// determines what "… N more lines" counts against.
+	body := ev.Body
+	if d != nil && d.Body != "" {
+		body = d.Body
+	}
+	if body == "" {
 		return b.String()
 	}
-	lines := strings.Split(strings.TrimRight(ev.Body, "\n"), "\n")
+	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
 	hidden := 0
 	if !expanded && len(lines) > runEventCollapsedBodyLines {
-		hidden = len(lines) - runEventCollapsedBodyLines
+		// BodyLines counts the whole body, which the wire may have cut, so
+		// the hidden count comes from it rather than from the lines in hand.
+		hidden = ev.BodyLines - runEventCollapsedBodyLines
 		lines = lines[:runEventCollapsedBodyLines]
 	}
 	for _, line := range lines {
@@ -60,47 +68,47 @@ func renderRunEvent(ev session.RunEvent, expanded bool, width int) string {
 
 // runEventHeadline returns the glyph, color, and one-line summary for an
 // event kind.
-func runEventHeadline(ev session.RunEvent) (string, color.Color, string) {
+func runEventHeadline(ev *acpwire.WireRunEvent) (string, color.Color, string) {
 	th := theme.Current()
 	task := ""
 	if ev.TaskN > 0 {
 		task = fmt.Sprintf("task %d · ", ev.TaskN)
 	}
 	switch ev.Kind {
-	case session.RunEventVerifyFailed:
+	case acpwire.RunEventVerifyFailed:
 		text := fmt.Sprintf("%s%s failed", task, ev.Title)
 		if ev.Detail != "" {
 			text += " — " + ev.Detail
 		}
 		return glyph.Error, th.StatusError, text
 
-	case session.RunEventGateSkipped:
+	case acpwire.RunEventGateSkipped:
 		return glyph.Warning, th.StatusWarning,
 			fmt.Sprintf("%sverification skipped — %s", task, ev.Title)
 
-	case session.RunEventReview:
+	case acpwire.RunEventReview:
 		if ev.Detail == "clean" {
 			return glyph.OK, th.StatusSuccess, task + "review clean"
 		}
 		return glyph.Warning, th.StatusWarning,
 			fmt.Sprintf("%sreview · %s · %s", task, ev.Severity, ev.Title)
 
-	case session.RunEventCommit:
+	case acpwire.RunEventCommit:
 		return glyph.Brand, th.FGMuted,
 			fmt.Sprintf("%s%s  %s", task, ev.Title, ev.Detail)
 
-	case session.RunEventRetry:
+	case acpwire.RunEventRetry:
 		text := fmt.Sprintf("%s%s", task, ev.Title)
 		if ev.Detail != "" {
 			text += " — " + ev.Detail
 		}
 		return glyph.Warning, th.StatusWarning, text
 
-	case session.RunEventConcern:
+	case acpwire.RunEventConcern:
 		return glyph.Warning, th.StatusWarning,
 			fmt.Sprintf("%sconcern — %s", task, ev.Title)
 
-	case session.RunEventTaskDone:
+	case acpwire.RunEventTaskDone:
 		text := fmt.Sprintf("%sdone", task)
 		if ev.Detail != "" {
 			text += " — " + ev.Detail

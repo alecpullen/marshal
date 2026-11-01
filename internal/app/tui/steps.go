@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
@@ -41,6 +42,9 @@ type stepRenderCtx struct {
 	region       func(viewmodel.NodeID) regionView
 	noteRows     func(id viewmodel.NodeID, rows int)
 	callers      func(viewmodel.NodeID) []string
+	// detail is wantDetail: a node's cached detail, or nil once the want is
+	// recorded.
+	detail func(key, version string) *acpwire.NodeDetail
 	// pointer names the box row a running call's work landed in, so the call
 	// points at it instead of spinning and repeating its own output.
 	pointer func(toolCallID string) string
@@ -48,7 +52,6 @@ type stepRenderCtx struct {
 	spinner       string // live step header glyph
 	toolSpinner   string // live tool row glyph
 	thinkSpinner  string
-	thinkElapsed  time.Duration
 	now           time.Time
 	routeModel    string
 	routeProvider string
@@ -81,6 +84,15 @@ func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
 	return c.callers(id)
 }
 
+// detailOf is the nil-safe form of detail: a context built by hand has no
+// cache, and reads as "no detail".
+func (c *stepRenderCtx) detailOf(key, version string) *acpwire.NodeDetail {
+	if c.detail == nil {
+		return nil
+	}
+	return c.detail(key, version)
+}
+
 // workPointer maps a tool call to the box row its work landed in: the kind
 // glyph and id of the first active item whose origin is that call. A call whose
 // work has no row yet reads "", so it keeps its spinner and its output.
@@ -111,10 +123,10 @@ func workPointer(items []viewmodel.WorkItem) func(toolCallID string) string {
 // meta), its reasoning when the beat is expanded, then tool rows at nested
 // indent. Every piece ends in a newline, so the block's line count is
 // strings.Count(out, "\n").
-func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) (string, []subRegion) {
-	si := n.Step
-	rows := n.Children
-	open := c.open(n.ID, inherited)
+func renderStep(beat *acpwire.WireNode, rows []*acpwire.WireNode, c *stepRenderCtx, width int, inherited bool) (string, []subRegion) {
+	step := beat.Step
+	beatID := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: beat.ID}
+	open := c.open(beatID, inherited)
 	var b strings.Builder
 	var subs []subRegion
 	lines := 0
@@ -129,20 +141,20 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 		sub.end = lines
 		subs = append(subs, sub)
 	}
-	head, _ := stepHeadline(si)
+	head := step.Headline
 	headless := head == ""
 
 	failed := stepFailed(rows)
 
-	g, gc := stepGlyph(n, failed, c)
+	g, gc := stepGlyph(beat.Live, failed, c)
 	meta := metaParts{
-		owner:      stepOwner(si.Step),
-		role:       stepRoleWord(si.Step),
-		model:      stepModel(si.Step.Actor, c.routeModel, c.routeProvider),
-		thought:    thoughtMeta(si.Thinking),
-		dur:        stepDuration(n, c.now),
-		tag:        todoTag(si.Todo),
-		ownerColor: actorColor(si.Step.Actor.Role),
+		owner:      step.Owner,
+		role:       step.RoleWord,
+		model:      stepModel(step.Model, step.Provider, c.routeModel, c.routeProvider),
+		thought:    thoughtMeta(step.Thoughts),
+		dur:        stepDuration(step, beat.Live, c.now),
+		tag:        todoTag(step.Todo),
+		ownerColor: actorColor(step.Role),
 	}
 	if headless {
 		// A beat with no narration gets no invented title: its head counts
@@ -150,10 +162,11 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 		write(headlessHead(g, gc, countToolCalls(rows), meta, width))
 	} else {
 		// Render narration as a single Markdown document so formatting and
-		// code fences survive sentence boundaries.
+		// code fences survive sentence boundaries. The wire has already
+		// trimmed each entry.
 		var texts []string
-		for _, m := range si.Narration {
-			if text := strings.TrimSpace(m.Content); text != "" {
+		for _, text := range step.Narration {
+			if text != "" {
 				texts = append(texts, text)
 			}
 		}
@@ -203,12 +216,12 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 	// The reasoning shows when the beat is expanded; collapsed, the head's
 	// "thought Ns" stands for it.
 	if open {
-		write(renderBeatReasoning(si.Thinking, width))
+		write(renderBeatReasoning(step.Thoughts, width))
 	}
 
 	// A long beat shows its newest rows; the rest collapse into one line.
 	// Expanding the beat shows them all.
-	rows = slices.DeleteFunc(slices.Clone(rows), func(ch *viewmodel.Node) bool { return !spineRow(ch) })
+	rows = slices.DeleteFunc(slices.Clone(rows), func(r *acpwire.WireNode) bool { return !spineRow(r) })
 	if over := len(rows) - viewmodel.BeatRowCap; over > 0 && !open {
 		write(spineBlock(mutedStyle().Render(fmt.Sprintf("… %d earlier calls", over))+"\n", false))
 		rows = rows[over:]
@@ -216,19 +229,29 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 
 	// Calls and the plan line, each hung off the spine.
 	w := max(width-spineWidth, 1)
-	for i, ch := range rows {
+	for i, r := range rows {
 		last := i == len(rows)-1
+		id := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: r.ID}
 		switch {
-		case ch.Kind == viewmodel.KindPlanUpdate:
+		case r.Plan != nil:
 			// The plan line is not a target of its own: a click on it opens
 			// the beat.
-			write(spineBlock(renderPlanRow(ch.PlanUpdate, w), last))
-		case ch.Active != nil:
-			row(ch.ID, spineBlock(renderActiveCallRow(*ch.Active, c, c.liveToolExpanded(ch.ID), w), last), subRegion{})
-		case len(ch.Tools) > 1:
-			row(ch.ID, spineBlock(renderGroupRow(ch.Tools, c.open(ch.ID, open), w, c.workdir), last), subRegion{})
+			write(spineBlock(renderPlanRow(r.Plan, w), last))
+		case r.Tool.Running != nil:
+			row(id, spineBlock(renderActiveCallRow(r.Tool, c, c.liveToolExpanded(id), w), last), subRegion{})
+		case len(r.Tool.Calls) > 1:
+			row(id, spineBlock(renderGroupRow(r.Tool, c.open(id, open), w), last), subRegion{})
 		default:
-			row(ch.ID, spineBlock(renderCallRow(ch.Tools[0], c.open(ch.ID, open), c.callersFor(ch.ID), w, c.workdir), last), subRegion{})
+			expanded := c.open(id, open)
+			// d is the call's whole text when the wire cut it and the row is
+			// open. Until the answer lands the row draws the wire's text.
+			var d *acpwire.CallDetail
+			if expanded && r.Tool.Calls[0].Truncated {
+				if det := c.detailOf(r.ID, r.Version); det != nil && len(det.Calls) > 0 {
+					d = &det.Calls[0]
+				}
+			}
+			row(id, spineBlock(renderCallRow(r.Tool, d, expanded, c.callersFor(id), w), last), subRegion{})
 		}
 	}
 
@@ -236,33 +259,37 @@ func renderStep(n *viewmodel.Node, c *stepRenderCtx, width int, inherited bool) 
 }
 
 // spineRow reports whether a beat's child draws as a row on its spine.
-func spineRow(ch *viewmodel.Node) bool {
-	switch ch.Kind {
-	case viewmodel.KindPlanUpdate:
-		return ch.PlanUpdate != nil
-	case viewmodel.KindTool:
-		return ch.Active != nil || len(ch.Tools) > 0
+func spineRow(r *acpwire.WireNode) bool {
+	switch {
+	case r.Plan != nil:
+		return true
+	case r.Tool != nil:
+		return r.Tool.Running != nil || len(r.Tool.Calls) > 0
 	}
 	return false
 }
 
 // renderCompletion is one finished piece of background work: a head row with
 // its outcome, final measurement and duration, and the summary line under it.
-// Expanded, it becomes the issue report.
-func renderCompletion(c *viewmodel.CompletionInfo, expanded bool, width int, workdir string) string {
+// Expanded, it becomes the issue report. d is the whole report when the wire
+// cut it and the row is open; until the answer lands the row draws the wire's
+// text.
+func renderCompletion(c *acpwire.WireCompletion, d *acpwire.CompletionDetail, expanded bool, width int, workdir string) string {
 	th := theme.Current()
 	g, colour := glyph.Job, th.StatusInfo
-	if c.Source == viewmodel.CompletionSubagent {
+	if c.Source == acpwire.CompletionSubagent {
 		g, colour = glyph.Agent, th.AccentSecondary
 	}
 	head := lipgloss.NewStyle().Foreground(colour).Render(c.ID) + " " +
 		lipgloss.NewStyle().Foreground(th.FGDefault).Render(viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Label, workdir)))
 
+	duration := time.Duration(c.DurationMs) * time.Millisecond
+
 	var meta []string
 	switch c.Outcome {
-	case viewmodel.OutcomeDone:
+	case acpwire.OutcomeDone:
 		meta = append(meta, statusOkStyle().Render(c.Outcome))
-	case viewmodel.OutcomeUnknown:
+	case acpwire.OutcomeUnknown:
 		meta = append(meta, warningStyle().Render(c.Outcome))
 	default:
 		meta = append(meta, errorStyle().Render(c.Outcome))
@@ -270,8 +297,8 @@ func renderCompletion(c *viewmodel.CompletionInfo, expanded bool, width int, wor
 	if c.Measure != "" {
 		meta = append(meta, mutedStyle().Render(c.Measure))
 	}
-	if c.Duration > 0 {
-		meta = append(meta, mutedStyle().Render(formatElapsed(c.Duration)))
+	if duration > 0 {
+		meta = append(meta, mutedStyle().Render(formatElapsed(duration)))
 	}
 	if len(meta) > 0 {
 		head += dimSeparator + strings.Join(meta, dimSeparator)
@@ -293,7 +320,7 @@ func renderCompletion(c *viewmodel.CompletionInfo, expanded bool, width int, wor
 	b.WriteString(mutedStyle().Render(disclosure))
 	b.WriteString("\n")
 	if expanded {
-		b.WriteString(renderCompletionReport(c, width, workdir))
+		b.WriteString(renderCompletionReport(c, d, width, workdir))
 	} else if c.Summary != "" {
 		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
 		b.WriteString(mutedStyle().Render(ansi.Truncate(viewmodel.ScrubText(c.Summary), max(width-nestedBodyIndent, 1), "…")))
@@ -309,7 +336,7 @@ const completionReportKeyWidth = 10
 // renderCompletionReport draws an expanded completion event's issue report:
 // one line per field, the key muted and padded, the value in the default
 // foreground. It is what a reader opens when the head's outcome is not enough.
-func renderCompletionReport(c *viewmodel.CompletionInfo, width int, workdir string) string {
+func renderCompletionReport(c *acpwire.WireCompletion, d *acpwire.CompletionDetail, width int, workdir string) string {
 	th := theme.Current()
 	valueStyle := lipgloss.NewStyle().Foreground(th.FGDefault)
 	valueIndent := nestedBodyIndent + completionReportKeyWidth
@@ -342,26 +369,34 @@ func renderCompletionReport(c *viewmodel.CompletionInfo, width int, workdir stri
 	}
 	field("outcome", outcome, valueStyle)
 
-	if c.Source == viewmodel.CompletionSubagent {
+	if c.Source == acpwire.CompletionSubagent {
 		field("task", viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Label, workdir)), valueStyle)
 	} else {
 		field("command", viewmodel.ScrubText(viewmodel.ElideWorkdir(firstLine(c.Command), workdir)), valueStyle)
 	}
 	field("cwd", viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Cwd, workdir)), valueStyle)
 
+	elapsed := time.Duration(c.DurationMs) * time.Millisecond
 	duration := ""
 	switch {
-	case c.Outcome == viewmodel.OutcomeLost:
+	case c.Outcome == acpwire.OutcomeLost:
 		duration = "ended with session"
-	case c.Duration > 0:
-		duration = formatElapsed(c.Duration)
+	case elapsed > 0:
+		duration = formatElapsed(elapsed)
 	}
 	field("duration", duration, valueStyle)
 	field("progress", c.Measure, valueStyle)
 
+	// d is the completion's whole output and report when the wire cut them,
+	// and its own truncation flag rather than the wire's folded one.
+	output, report, truncated := c.Output, c.Report, c.Truncated
+	if d != nil {
+		output, report, truncated = d.Output, d.Report, d.Truncated
+	}
+
 	// The output tail: the first line sits on the key's line, the rest under
 	// the value column. Every line is model-authored, so each is scrubbed.
-	lines := viewmodel.ReportTail(c.Output)
+	lines := viewmodel.ReportTail(output)
 	if len(lines) > 0 {
 		line := mutedStyle().Render(padReportKey("output")) + mutedStyle().Render(viewmodel.ScrubText(lines[0]))
 		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
@@ -375,17 +410,17 @@ func renderCompletionReport(c *viewmodel.CompletionInfo, width int, workdir stri
 		}
 		block(rest, mutedStyle())
 	}
-	if c.Truncated {
+	if truncated {
 		block([]string{"earlier output dropped"}, mutedStyle())
 	}
 
 	// A subagent's report is prose, so it renders as markdown under the value
 	// column; plain prose is the fallback when glamour is unavailable.
-	if c.Report != "" {
+	if report != "" {
 		rw := max(width-nestedBodyIndent-completionReportKeyWidth, 1)
-		body, ok := renderMarkdown(c.Report, rw)
+		body, ok := renderMarkdown(report, rw)
 		if !ok {
-			body = renderPlainProse(c.Report, rw)
+			body = renderPlainProse(report, rw)
 		}
 		rendered := strings.Split(strings.Trim(body, "\n"), "\n")
 		if len(rendered) > 0 {
@@ -411,11 +446,14 @@ func padReportKey(key string) string {
 
 // countToolCalls is the number of tool calls a step made, counting each call
 // of a merged run.
-func countToolCalls(rows []*viewmodel.Node) int {
+func countToolCalls(rows []*acpwire.WireNode) int {
 	n := 0
 	for _, r := range rows {
-		n += len(r.Tools)
-		if r.Active != nil {
+		if r.Tool == nil {
+			continue
+		}
+		n += len(r.Tool.Calls)
+		if r.Tool.Running != nil {
 			n++
 		}
 	}
@@ -441,12 +479,12 @@ func indentLines(s string, n int) string {
 
 // stepGlyph picks the state glyph: ✗ if any row failed, the spinner while
 // live, and a muted ● once settled.
-func stepGlyph(n *viewmodel.Node, failed bool, c *stepRenderCtx) (string, color.Color) {
+func stepGlyph(live, failed bool, c *stepRenderCtx) (string, color.Color) {
 	th := theme.Current()
 	switch {
 	case failed:
 		return glyph.Error, th.StatusError
-	case n.Live:
+	case live:
 		g := c.spinner
 		if g == "" {
 			g = glyph.Running
@@ -461,10 +499,13 @@ func stepGlyph(n *viewmodel.Node, failed bool, c *stepRenderCtx) (string, color.
 
 // stepFailed reports whether any tool row in the step failed: an error, a
 // denied approval, or a non-zero exit.
-func stepFailed(rows []*viewmodel.Node) bool {
+func stepFailed(rows []*acpwire.WireNode) bool {
 	for _, r := range rows {
-		for _, ev := range r.Tools {
-			if viewmodel.EventFailed(ev) {
+		if r.Tool == nil {
+			continue
+		}
+		for _, c := range r.Tool.Calls {
+			if c.Failed {
 				return true
 			}
 		}
@@ -474,38 +515,34 @@ func stepFailed(rows []*viewmodel.Node) bool {
 
 func stepOwner(st session.Step) string { return viewmodel.StepOwner(st) }
 
-// stepRoleWord is the owner shortened to its role word ("reviewer #1" →
-// "reviewer"), the form that survives a narrow header.
-func stepRoleWord(st session.Step) string { return viewmodel.StepRoleWord(st) }
-
 // stepModel is "model @ provider" only when it differs from the active route:
 // a step on the session's own model adds nothing the status line lacks.
-func stepModel(a session.Actor, routeModel, routeProvider string) string {
-	if a.Model == "" || (a.Model == routeModel && (a.Provider == "" || a.Provider == routeProvider)) {
+func stepModel(model, provider, routeModel, routeProvider string) string {
+	if model == "" || (model == routeModel && (provider == "" || provider == routeProvider)) {
 		return ""
 	}
-	if a.Provider != "" && a.Provider != routeProvider {
-		return a.Model + " @ " + a.Provider
+	if provider != "" && provider != routeProvider {
+		return model + " @ " + provider
 	}
-	return a.Model
+	return model
 }
 
 // stepDuration is the step's wall time: end minus start once settled, elapsed
 // while live, and nothing for steps whose end is unknown (heuristic steps, or
 // an open step in an idle session).
-func stepDuration(n *viewmodel.Node, now time.Time) string {
-	st := n.Step.Step
-	if st.StartedAt.IsZero() {
+func stepDuration(s *acpwire.WireStep, live bool, now time.Time) string {
+	start := acpwire.Time(s.StartedAt)
+	if start.IsZero() {
 		return ""
 	}
-	end := st.EndedAt
+	end := acpwire.Time(s.EndedAt)
 	if end.IsZero() {
-		if !n.Live {
+		if !live {
 			return ""
 		}
 		end = now
 	}
-	d := max(end.Sub(st.StartedAt), 0)
+	d := max(end.Sub(start), 0)
 	if d < notableStepDuration {
 		return ""
 	}
@@ -576,14 +613,6 @@ func renderMeta(p metaParts) (string, int) {
 	return strings.Join(styled, mutedStyle().Render(sep)), ansi.StringWidth(strings.Join(plain, sep))
 }
 
-// stepHeadline picks the header text. A narrated beat uses the first sentence
-// of its first narration; the remainder (and any later narration) becomes the
-// continuation. A beat without narration is headless (head == ""): its rows
-// render on their own, with no invented title.
-func stepHeadline(si *viewmodel.StepInfo) (head, rest string) {
-	return viewmodel.StepHeadline(si)
-}
-
 // firstSentence splits s at the first ". ", "! ", "? " or newline that comes
 // after at least 8 runes. A sentence-final mark at the very end of s stays
 // with the head.
@@ -595,20 +624,20 @@ func stripEmphasis(s string) string { return viewmodel.StripEmphasis(s) }
 
 // thoughtMeta is the head's "thought 2s": how long the beat reasoned, or
 // nothing when it did not.
-func thoughtMeta(ts []*session.ThinkingEntry) string {
+func thoughtMeta(ts []acpwire.WireThought) string {
 	if len(ts) == 0 {
 		return ""
 	}
 	var d time.Duration
 	for _, t := range ts {
-		d += t.Duration
+		d += time.Duration(t.DurationMs) * time.Millisecond
 	}
 	return "thought " + formatThinkDuration(d)
 }
 
 // todoTag is "▸ 2/4" on the beat where work moves to the second of four
 // todos, and nothing on every other beat.
-func todoTag(l *viewmodel.TodoLabel) string {
+func todoTag(l *acpwire.WireTodoLabel) string {
 	if l == nil {
 		return ""
 	}
@@ -631,7 +660,7 @@ func headlessHead(g string, gc color.Color, calls int, meta metaParts, width int
 
 // renderBeatReasoning is an expanded beat's reasoning, behind the nested rail
 // under its head: every thinking block in order, a blank rail between them.
-func renderBeatReasoning(ts []*session.ThinkingEntry, width int) string {
+func renderBeatReasoning(ts []acpwire.WireThought, width int) string {
 	var b strings.Builder
 	cw := nestedContentWidth(width)
 	for i, t := range ts {

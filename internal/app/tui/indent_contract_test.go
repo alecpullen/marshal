@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/app/session"
-	"marshal/internal/tools/registry"
 )
 
 // assertGutterContract checks rendered output obeys the transcript's
@@ -66,16 +65,14 @@ func TestTranscriptIndentContract(t *testing.T) {
 		{"plan block", renderPlanBlock("step one\nstep two", width)},
 		{"plain prose", renderPlainProse("some fallback prose", width)},
 		{"queued messages", renderQueuedMessages([]string{"do the thing"}, width)},
-		{"final answer", renderFinalAnswer(session.Message{
+		{"final answer", renderFinalAnswer(wireMessage(session.Message{
 			Content: "the answer", Final: true,
-		}, width)},
-		{"completed tool call", renderCompletedToolCall(registry.AuditEvent{
-			ToolName: "file.read", ResultSummary: "ok",
-		}, false, nil, width)},
+		}), width)},
 		{"thinking summary", renderThinkingSummary("reasoned", time.Second, false, width)},
 		{"agent markdown", renderAgentMarkdown("plain paragraph", width)},
 		{"beat with calls on its spine", func() string {
-			out, _ := renderStep(beatNode("Reading the parser.", 3), &stepRenderCtx{}, width, false)
+			beat, rows := wireOf(beatNode("Reading the parser.", 3), "")
+			out, _ := renderStep(beat, rows, &stepRenderCtx{}, width, false)
 			return out
 		}()},
 	}

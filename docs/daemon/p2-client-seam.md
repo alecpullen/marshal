@@ -394,7 +394,8 @@ Decision: `WireTree`, with the C6 additions.
   caches rendered rows without hashing them.
 - **Additive fields.** The projection carries every field a collapsed row
   reads, computed by the helpers the renderer uses now:
-  - `WireMessage.reasoning`, capped;
+  - `WireMessage.reasoning`, capped, with `truncated` set when it is
+    cut;
   - `WireStep` gains `narration`, the beat's trimmed narration texts in
     order. The renderer joins them as one markdown document, and
     `headline` (emphasis stripped, cut at the first sentence) plus
@@ -686,10 +687,12 @@ The TUI works after every plan.
      copy read a node's wire form from that index and its uncapped detail
      from `StackNode`, instead of its payload. Callers lookups move agent
      side.
-   - **3c. Rows.** The row renderers take wire payloads from the same
-     index. Expanded rows read `StackNode` detail. The settled-row
-     renderer nothing reaches is deleted, and so is the TUI's index of
-     `viewmodel` nodes.
+   - **3c. Rows** ([plan](plans/2026-11-01-p2-3c-rows-plan.md)). The row
+     renderers take wire payloads from the same index. An expanded row the
+     wire cut reads its `StackNode` detail, which the TUI fetches off the
+     render path and caches by node version; a running row reads the wire
+     alone. The settled-row renderer nothing reaches is deleted, and so is
+     the TUI's index of `viewmodel` nodes.
    - **3d. Tree.** `Session.Stack`. The TUI's tree, node identity,
      expansion, regions, browse items, drill-in, band and completion
      index come from wire nodes. The text helpers move to an allowed
@@ -955,6 +958,47 @@ writing plan 3b:
   asks `Callers` for those rows, and only while it is not drilled into a
   subagent, because the index then holds the child's transcript.
 
+**2026-11-01, against `d12762c6` (plan 3b merged).** Found while writing
+plan 3c:
+- **Expanded rows fetch their detail off the render path** (C6). The
+  renderer never calls the session. A row the wire cut asks for its node's
+  detail, and the answer is cached for the node's version. Until it lands,
+  the row draws its wire text. The TUI sends the fetches after each update,
+  so in-process the answer lands on the next message, and over ACP (P3)
+  the same code waits a round trip. The cache is keyed by wire node ID.
+- **Only rows the wire cut ask:** a call whose arguments or output were
+  cut, and a completion, run event or message the projection cut. Every
+  other expanded row has its whole text on the wire: a beat's narration
+  and thoughts, a group's subjects, a thinking row, a message's content, a
+  plan row and a receipt.
+- **Running rows never ask** (C6). A running call's output changes on
+  every tick and its node carries no version, so a cached answer could not
+  be validated and a fetch would repeat every frame. Its row shows the
+  wire's last `WireTextCap` bytes of output, which is what a live tail
+  reads. Once the call settles, its row asks like any other.
+- **What the wire and the detail gain** (C6):
+  - `WireMessage.truncated`, set when the reasoning is cut. A capped field
+    already sets its node's flag everywhere else;
+  - `NodeDetail.body`, a run event's whole body;
+  - `CompletionDetail.truncated`, the completion's own "earlier output
+    dropped" flag, which `WireCompletion.truncated` folds together with the
+    projection's cuts;
+  - `NodeDetail.thinking` carries a message's reasoning, as one entry, as
+    it carries a beat's thoughts.
+- **A cut call's arguments show compacted.** `CallDetail.args` is
+  indented, and the expanded row's `args:` line shows it with
+  `json.Compact`. The content is whole, and the spacing can differ from
+  what the model wrote.
+- **The settled-row renderer takes its helpers with it** (Migration
+  order). `symbolrow.go`'s wrappers, `toolCategoryGlyph` and two `spine.go`
+  wrappers were reached only from that renderer or from nothing. The
+  `viewmodel` functions behind the wrappers keep their tests, moved to
+  `viewmodel`.
+- **The tree's shape stays with plan 3d** (Migration order). The turn
+  walk, node identity, expansion, regions, browse items, the seen set, the
+  completion index and `rowBeats` keep reading `viewmodel` nodes. Plan 3c
+  moves only the payloads the renderers read.
+
 ## Implementation record
 
 **Plan 1 (foundation), branch `p2-1-foundation`.** Added
@@ -1166,3 +1210,76 @@ five entries across three files — `session` and `registry` from
 before: the inspector's subject and a beat's copied rows use the wire's
 scrubbed `target`, so a command with a line break shows on one line, and the
 inspector's times are built from Unix milliseconds in local time.
+
+**Plan 3c (the rows), branch `p2-3c-rows`.** The wire and the detail carry
+the last four things an expanded row needed. `WireMessage.truncated` says the
+reasoning was cut, beside the capped `reasoning`. `NodeDetail.body` is a run
+event's whole body, and `NodeDetail.thinking` now also carries a message's
+reasoning, as one entry with its think time. `CompletionDetail.truncated` is
+the completion's own flag — the job dropped earlier output before it was
+retained — which `WireCompletion.truncated` folds together with the
+projection's two cuts, so a client cannot read the own flag from the node
+alone. `viewmodel.StackNodeOf` answers all of it from the session's own
+transcript.
+
+The settled-row renderer nothing reached is deleted, with the helpers only it
+used: `renderCompletedToolCall`, `renderCompletedToolCallIn`, `toolRowHead`,
+the collapsed diff preview in `toolBody` with `maxDiffLinesPerFile` and
+`maxDiffFiles`, the audit branch of `renderTranscriptItemIn`, all of
+`symbolrow.go`, `toolCategoryGlyph` with its table, and `spine.go`'s
+`toolTarget` and `fallbackSubject` wrappers. Their tests were ported to the
+spine row, moved to `internal/viewmodel/subjects_test.go` against the
+functions the wrappers composed, or deleted where they pinned the old head.
+
+The TUI fetches an expanded row's detail off the render path. A render calls
+`wantDetail(key, version)`: it returns the detail cached for that wire node ID
+at that version, or records the want and returns nil, and the row draws the
+wire's text until the answer lands. `Update` batches `detailQueryCmds` after
+every message, which sends one `Session.StackNode` call per want not already
+in flight at its version, carrying the subagent ID the want recorded; a failed
+call is stored under the version asked for and is not asked again until the
+node changes. `handleDetail` stores the answer under the version it carries
+and refreshes, and a stored entry folds into the node's render signature, so
+its block repaints without invalidating the transcript. `pruneDetails` drops
+the entries and the fetches of nodes the wire index no longer holds. Only rows
+the wire cut ask: a one-call row whose call is truncated, and a truncated
+completion, run event or message. Running rows never ask, because their node
+carries no version and their output changes on every tick: a running call's
+row draws the wire's last `WireTextCap` bytes of output, and a running call
+outside a beat its first `WireTextCap` bytes of arguments. In-process the
+answer lands on the next message; over ACP (P3) the same code waits a round
+trip while the row shows its wire text.
+
+Every row renderer takes `acpwire` payloads from the same index: `renderStep`
+and its head helpers, `renderCallRow`, `renderGroupRow`, `renderActiveCallRow`
+and `renderPlanRow`, `renderCompletion` and its report, `renderItem`,
+`renderMessage`, `renderFinalAnswer`, `renderRunEvent`, `renderReceipt` and
+`renderActiveToolCall`. `drawNode` opens the node's wire form and returns
+nothing when the index lacks it, so the live box reads `WireThinking` and the
+beat's rows are its wire children, `viewmodel.NodeID{KindTool, key}` rebuilt
+for expansion state and click regions. The turn walk, node identity,
+expansion, regions, browse items, `collectSeen`, the completion index and
+`rowBeats` still read `viewmodel` nodes; plan 3d moves them. The TUI keeps no
+index of `viewmodel` nodes: `browseTree` and `indexTree` are gone, and
+`setBrowseItems` takes the items alone.
+
+T1b did not change: no state read moved. T1's allowlist lost eight entries
+across five files, and three keys with them — `symbolrow.go`, whose two
+entries went with the file, and `runevent.go` and `receipt.go`. `spine.go`
+keeps only `viewmodel` and `transcript.go` only `session`.
+
+Five edge cases differ from before. A beat's reasoning, a thinking row and an
+expanded call's `error:` line lose control characters and carriage returns,
+because the wire scrubs them. A cut call's `args:` line shows compacted JSON,
+so its spacing can differ from what the model wrote. An expanded running call
+shows its last `WireTextCap` bytes of output, and a running call outside a
+beat its first `WireTextCap` bytes of arguments. A plan row whose active todo
+holds a CRLF shows two spaces where it showed one. Durations are worked out
+from Unix milliseconds, so a step duration or think time within a millisecond
+of a rounding boundary can round the other way.
+
+One limit is unchanged and worth naming: copying a run event or a thinking row
+copies its *expanded render* at 120 columns, so a body line longer than that
+arrives cut with an ellipsis even though a wider screen draws it whole. The
+copy takes the whole body past `WireTextCap` (that is what the detail fetch
+buys) but not past the display width it was rendered at.

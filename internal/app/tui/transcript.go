@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"strings"
@@ -13,20 +15,19 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/liveregion"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/diffview"
 	"marshal/internal/strutil"
-	"marshal/internal/tools/registry"
-	"marshal/internal/viewmodel"
 )
 
 // regionView is the Model-owned view state for one bounded live region.
 // offset is how far its body is scrolled back; minRows is its high-water
 // mark. They travel together because they are the same concern, and
-// because renderTranscriptItem's parameter list is already long.
+// because the live-region renderers' parameter lists are already long.
 type regionView struct {
 	offset  int
 	minRows int
@@ -342,7 +343,7 @@ func renderCodeBlock(content string, width int) string {
 	return b.String()
 }
 
-func renderFinalAnswer(msg session.Message, width int) string {
+func renderFinalAnswer(msg *acpwire.WireMessage, width int) string {
 	if width < 10 {
 		width = 10
 	}
@@ -472,46 +473,48 @@ func renderThinkingSummary(reasoning string, duration time.Duration, expanded bo
 // user prompts get a ❯ prefix, agent prose renders as plain markdown with
 // no role label, tool results render with a · gutter, system notices are
 // dim. Final answers use a ▍ gutter and rich-content rendering.
-func renderMessage(msg session.Message, width int) string {
-	// Expand tabs once, here, so every content-type branch below measures
-	// what the terminal will actually render. See expandTabs.
-	msg.Content = expandTabs(msg.Content)
+func renderMessage(msg *acpwire.WireMessage, width int) string {
+	// The copy is what tab expansion writes into: the wire index's payload is
+	// read-only, and every content-type branch below must measure what the
+	// terminal will actually render. See expandTabs.
+	cp := *msg
+	cp.Content = expandTabs(cp.Content)
 	// Skill messages are handled before the role branches: the body
 	// (ContentTypeSkillBody) is model context, not transcript content, and
 	// the tag (ContentTypeSkill) renders as a compact one-line trace
 	// regardless of the role it was stored under (always RoleSystem today).
-	switch msg.ContentType {
+	switch session.ContentType(cp.ContentType) {
 	case session.ContentTypeSkillBody:
 		return ""
 	case session.ContentTypeSkill:
-		return renderSkillTag(msg.Content, width)
+		return renderSkillTag(cp.Content, width)
 	case session.ContentTypeCompaction:
-		return renderCompactionMarker(msg.Content, width)
+		return renderCompactionMarker(cp.Content, width)
 	case session.ContentTypeSubagentReport:
 		return ""
 	case session.ContentTypeWatchReport:
 		return ""
 	case session.ContentTypeSteering:
-		return renderSteeringMarker(msg.Content, width)
+		return renderSteeringMarker(cp.Content, width)
 	}
-	if msg.Final {
-		return renderFinalAnswer(msg, width)
+	if cp.Final {
+		return renderFinalAnswer(&cp, width)
 	}
-	if msg.Role == session.RoleUser {
-		return renderUserMessage(msg.Content, width)
+	if session.Role(cp.Role) == session.RoleUser {
+		return renderUserMessage(cp.Content, width)
 	}
-	if msg.Role == session.RoleSystem {
-		return renderSystemNotice(msg.Content, width)
+	if session.Role(cp.Role) == session.RoleSystem {
+		return renderSystemNotice(cp.Content, width)
 	}
-	switch msg.ContentType {
+	switch session.ContentType(cp.ContentType) {
 	case session.ContentTypePlan:
-		return renderPlanBlock(msg.Content, width)
+		return renderPlanBlock(cp.Content, width)
 	case session.ContentTypeToolResult:
-		return renderToolResultLine(msg.Content, width)
+		return renderToolResultLine(cp.Content, width)
 	case session.ContentTypeCode:
-		return gutterPrefix(glyph.Rail, accentColor) + renderCodeBlock(msg.Content, max(width-3, 1)) + "\n"
+		return gutterPrefix(glyph.Rail, accentColor) + renderCodeBlock(cp.Content, max(width-3, 1)) + "\n"
 	default: // plain and markdown prose render identically
-		return renderAgentMarkdown(msg.Content, width)
+		return renderAgentMarkdown(cp.Content, width)
 	}
 }
 
@@ -556,48 +559,39 @@ func renderAgentMarkdown(content string, width int) string {
 	return strings.Trim(out, "\n") + "\n"
 }
 
-func renderTranscriptItem(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int) string {
-	return renderTranscriptItemIn(item, detailExpanded, spinnerFrame, rv, callers, width, "")
-}
-
-// renderTranscriptItemIn is renderTranscriptItem with the session's active
-// root, so a pass-through shell row elides a leading cd into it.
-func renderTranscriptItemIn(item session.TranscriptItem, detailExpanded bool, spinnerFrame string, rv regionView, callers []string, width int, workdir string) string {
-	switch item.Kind {
-	case session.KindThinking:
-		if item.Thinking == nil {
-			return ""
-		}
-		return renderThinkingSummary(item.Thinking.Text, item.Thinking.Duration, detailExpanded, width)
-	case session.KindAudit:
-		if item.Audit == nil {
-			return ""
-		}
-		return renderCompletedToolCallIn(*item.Audit, detailExpanded, callers, width, workdir)
-	case session.KindMessage:
-		if item.Message == nil {
-			return ""
-		}
-		if item.Message.ContentType == session.ContentTypeSkillAuto {
-			return renderAutoSkills(item.Message.Content, detailExpanded, width)
+// renderItem draws a message, a finished thinking row or a run event. d is
+// the node's detail when the wire cut it; nil draws the wire's text.
+func renderItem(w *acpwire.WireNode, d *acpwire.NodeDetail, expanded bool, width int) string {
+	switch {
+	case w == nil:
+		return ""
+	case w.Thinking != nil:
+		return renderThinkingSummary(w.Thinking.Text, time.Duration(w.Thinking.DurationMs)*time.Millisecond, expanded, width)
+	case w.Message != nil:
+		msg := w.Message
+		if session.ContentType(msg.ContentType) == session.ContentTypeSkillAuto {
+			return renderAutoSkills(msg.Content, expanded, width)
 		}
 		// Narration is a distinct block type: it renders through its own
 		// renderer — the same markdown as the final answer, on the ambient
 		// gutter — rather than falling through to renderMessage.
-		if item.Message.ContentType == session.ContentTypeNarration {
-			return renderNarration(item.Message.Content, width)
+		if session.ContentType(msg.ContentType) == session.ContentTypeNarration {
+			return renderNarration(msg.Content, width)
+		}
+		// The reasoning is the whole of it when the detail holds it; the
+		// wire's is capped.
+		reasoning := msg.Reasoning
+		if d != nil && len(d.Thinking) > 0 {
+			reasoning = d.Thinking[0].Text
 		}
 		var b strings.Builder
-		if item.Message.Reasoning != "" {
-			b.WriteString(renderThinkingSummary(item.Message.Reasoning, item.Message.ThinkDuration, detailExpanded, width))
+		if reasoning != "" {
+			b.WriteString(renderThinkingSummary(reasoning, time.Duration(msg.ThinkMs)*time.Millisecond, expanded, width))
 		}
-		b.WriteString(renderMessage(*item.Message, width))
+		b.WriteString(renderMessage(msg, width))
 		return b.String()
-	case session.KindRunEvent:
-		if item.RunEvent == nil {
-			return ""
-		}
-		return renderRunEvent(*item.RunEvent, detailExpanded, width)
+	case w.RunEvent != nil:
+		return renderRunEvent(w.RunEvent, d, expanded, width)
 	}
 	return ""
 }
@@ -741,12 +735,16 @@ func renderPlanBlock(content string, width int) string {
 // sandbox backend is active, an isolation-status line, both dim-indented
 // under the gutter. When the tool has streamed output, the last 6 lines
 // are rendered dim-indented beneath the command line.
-func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, expanded bool, width int) string {
-	elapsed := now.Sub(atc.StartedAt)
+func renderActiveToolCall(t *acpwire.WireTool, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, expanded bool, width int) string {
+	if t == nil || t.Running == nil {
+		return ""
+	}
+	running := t.Running
+	elapsed := now.Sub(acpwire.Time(running.StartedAt))
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", DisplayToolName(atc.Name), formatElapsed(elapsed)))
+	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", t.Display, formatElapsed(elapsed)))
 	gutter := gutterPrefix(glyph.Running, accentColor)
 	cw := contentWidth(width)
 	headerWrapped := ansi.Wrap(head, cw, WrapBreakpoints)
@@ -760,8 +758,8 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 		}
 		b.WriteString("\n")
 	}
-	if atc.Name == "shell.run" || atc.Name == "test.run" {
-		cmdLine := "$ " + atc.Args
+	if t.Name == "shell.run" || t.Name == "test.run" {
+		cmdLine := "$ " + running.Args
 		cmdWrapped := ansi.Wrap(cmdLine, cw, WrapBreakpoints)
 		for _, wl := range strings.Split(cmdWrapped, "\n") {
 			b.WriteString(continuation())
@@ -776,16 +774,16 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 				b.WriteString("\n")
 			}
 		}
-	} else if atc.Args != "" {
-		argsWrapped := ansi.Wrap(atc.Args, cw, WrapBreakpoints)
+	} else if running.Args != "" {
+		argsWrapped := ansi.Wrap(running.Args, cw, WrapBreakpoints)
 		for _, wl := range strings.Split(argsWrapped, "\n") {
 			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(wl))
 			b.WriteString("\n")
 		}
 	}
-	if atc.Output != "" {
-		lines := strings.Split(strings.TrimRight(atc.Output, "\n"), "\n")
+	if running.Output != "" {
+		lines := strings.Split(strings.TrimRight(running.Output, "\n"), "\n")
 		const tail = 6
 		if !expanded && len(lines) > tail {
 			lines = lines[len(lines)-tail:]
@@ -798,126 +796,6 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 				b.WriteString("\n")
 			}
 		}
-	}
-	return b.String()
-}
-
-// renderCompletedToolCall renders a settled call with no working tree known,
-// so a shell command keeps the text the model wrote.
-func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers []string, width int) string {
-	return renderCompletedToolCallIn(event, expanded, callers, width, "")
-}
-
-// toolRowHead is a completed call's head without its disclosure marker: the
-// text a collapsed row shows before it is truncated to the row. Copying a
-// fully selected truncated row uses it, so the clipboard gets the whole
-// command or path rather than the row's ellipsis.
-func toolRowHead(event registry.AuditEvent, workdir string) string {
-	head := DisplayToolName(event.ToolName)
-	shellRow := viewmodel.IsShellFamily(event.ToolName)
-	// summaryDupesCommand tracks whether the head already carries the
-	// command text. Only then should we suppress the ResultSummary —
-	// background jobs ("started background job <id>") and killed commands
-	// ("command "x" killed: timeout") carry information the head lacks.
-	summaryDupesCommand := false
-	// Subject-first for file and symbol tools that carry attribution: the
-	// tool name is the least interesting thing on such a row. Falls back to
-	// the tool-name-first shape whenever there are no symbols, which is
-	// every language without a tree-sitter grammar and every whole-file
-	// rewrite — so the fallback is the common path, not a degraded one.
-	if s := shellSubjectIn(event, workdir); shellRow && s != "" {
-		head = s
-		// The summary duplicates the head only for normal foreground
-		// runs (command + exit code). Background jobs ("started
-		// background job <id>") and killed commands ("killed: timeout")
-		// carry information the head lacks, so keep them.
-		if event.CommandExitCode != nil && event.Sandbox.KilledReason == "" {
-			summaryDupesCommand = true
-		}
-		if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
-			head += dimSeparator + hookHint
-		}
-	} else if subject := symbolSubject(event); subject != "" && subjectFirstTool(event.ToolName) {
-		head = subject
-		if stat := diffStat(event.ResultContent); stat != "" {
-			head += dimSeparator + stat
-		}
-		// A hooked edit must still surface its hook decision even when the
-		// row leads with the symbol subject; the else-if below would
-		// otherwise drop it on exactly the rows that carry attribution.
-		if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
-			head += dimSeparator + hookHint
-		}
-	} else if s := searchSubject(event); s != "" {
-		head = s
-		if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
-			head += dimSeparator + hookHint
-		}
-	} else if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
-		head += dimSeparator + hookHint
-	}
-	if event.Error != "" {
-		head += dimSeparator + event.Error
-	} else if s := viewmodel.DisplaySummary(event); s != "" && !summaryDupesCommand {
-		head += dimSeparator + s
-	}
-	return head
-}
-
-// renderCompletedToolCallIn is renderCompletedToolCall with the session's
-// active root, which elides a leading cd into it from shell rows.
-func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers []string, width int, workdir string) string {
-	g := toolCategoryGlyph(event.ToolName)
-	style := statusOkStyle()
-	if event.Error != "" {
-		g = glyph.Error
-		style = errorStyle()
-	}
-	// Glyph and label share the state colour in both directions; success used
-	// to pair a muted glyph with a green label while errors made both red.
-	gutterColor := theme.Current().FGMuted
-	if event.Error != "" {
-		gutterColor = theme.Current().StatusError
-	}
-	gutter := gutterPrefix(g, gutterColor)
-	head := toolRowHead(event, workdir)
-	if event.ResultContent != "" || event.Error != "" {
-		if expanded {
-			head += " " + glyph.DisclosureExpanded
-		} else {
-			head += " " + glyph.DisclosureCollapsed
-		}
-	}
-
-	cw := contentWidth(width)
-	var b strings.Builder
-	if !expanded {
-		// A collapsed row is one line. The transcript is a list of what
-		// happened, and a wrapped row costs the reader a line for detail they
-		// did not ask for; expanding it is how they ask.
-		b.WriteString(gutter)
-		b.WriteString(style.Render(ansi.Truncate(oneLine(head), cw, "…")))
-		b.WriteString("\n")
-	} else {
-		for i, hl := range strings.Split(ansi.Wrap(head, cw, WrapBreakpoints), "\n") {
-			if i == 0 {
-				b.WriteString(gutter)
-			} else {
-				b.WriteString(continuation())
-			}
-			b.WriteString(style.Render(hl))
-			b.WriteString("\n")
-		}
-	}
-	for _, l := range callersDetail(callers, contentWidth(width)) {
-		b.WriteString(continuation())
-		b.WriteString(l)
-		b.WriteString("\n")
-	}
-	for _, l := range toolBody(event, expanded, nestedContentWidth(width)) {
-		b.WriteString(nestedRail())
-		b.WriteString(l)
-		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -949,19 +827,25 @@ func callersDetail(callers []string, w int) []string {
 	return out
 }
 
-// toolBody is a settled call's body under its head, styled and fitted to w:
-// an edit's diff (capped while collapsed), and when expanded any other call's
-// result and a failed call's error and arguments.
-func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
-	var out []string
-	if isDiffTool(event.ToolName) && event.ResultContent != "" {
-		files := splitDiffFiles(event.ResultContent)
-		shown := len(files)
-		if !expanded {
-			shown = min(shown, maxDiffFiles)
+// toolBody is an expanded call's body under its subject, styled and fitted to
+// w: its diff or its result, then its error and arguments when it failed. d
+// is the call's detail when the wire cut it; nil draws the wire's text.
+func toolBody(name string, c acpwire.WireCall, d *acpwire.CallDetail, w int) []string {
+	output, args := c.Output, c.Args
+	if d != nil {
+		args = compactJSON(d.Args)
+		// An empty wire output means the call had no result: d.Output falls
+		// back to the summary, which is not a result.
+		if output != "" {
+			output = d.Output
+			if isDiffTool(name) {
+				output = d.Diff
+			}
 		}
-		for i := 0; i < shown; i++ {
-			f := files[i]
+	}
+	var out []string
+	if isDiffTool(name) && output != "" {
+		for _, f := range splitDiffFiles(output) {
 			stat := fmt.Sprintf("+%d −%d", f.added, f.removed)
 			if f.path != "" {
 				stat = f.path + " " + stat
@@ -972,13 +856,7 @@ func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
 				Mode:      diffview.ModeAuto,
 				Highlight: true,
 			})
-			lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
-			elided := 0
-			if !expanded && len(lines) > maxDiffLinesPerFile {
-				elided = len(lines) - maxDiffLinesPerFile
-				lines = lines[:maxDiffLinesPerFile]
-			}
-			for _, line := range lines {
+			for _, line := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
 				if line == "" {
 					continue
 				}
@@ -987,20 +865,14 @@ func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
 				// rail, so an over-wide line breaks the chrome.
 				out = append(out, ansi.Truncate(line, w, "…"))
 			}
-			if elided > 0 {
-				out = append(out, dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
-			}
-		}
-		if !expanded && len(files) > shown {
-			out = append(out, dimStyle().Render(fmt.Sprintf("… %d more files", len(files)-shown)))
 		}
 	}
 	// Non-diff tools with captured output (agent.run is the motivating
-	// case — its ResultContent holds the subagent's report) render it when
-	// expanded, wrapped rather than clipped since the content is prose, not
-	// code lines.
-	if expanded && !isDiffTool(event.ToolName) && event.ResultContent != "" {
-		lines := strings.Split(strings.TrimRight(event.ResultContent, "\n"), "\n")
+	// case — its ResultContent holds the subagent's report) render it,
+	// wrapped rather than clipped since the content is prose, not code
+	// lines.
+	if !isDiffTool(name) && output != "" {
+		lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
 		elided := 0
 		if len(lines) > maxExpandedResultLines {
 			elided = len(lines) - maxExpandedResultLines
@@ -1019,14 +891,14 @@ func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
 	// error, the exit code when the tool reported one, and the call args.
 	// Each detail line wraps at w — the raw args JSON used to run straight
 	// off the terminal edge.
-	if expanded && event.Error != "" {
-		detail := "error: " + event.Error
-		if event.CommandExitCode != nil {
-			detail += fmt.Sprintf(" (exit code %d)", *event.CommandExitCode)
+	if c.Error != "" {
+		detail := "error: " + c.Error
+		if c.ExitCode != nil {
+			detail += fmt.Sprintf(" (exit code %d)", *c.ExitCode)
 		}
 		lines := []string{detail}
-		if len(event.Args) > 0 {
-			lines = append(lines, "args: "+string(event.Args))
+		if args != "" {
+			lines = append(lines, "args: "+args)
 		}
 		for _, line := range lines {
 			for _, wl := range strings.Split(ansi.Wrap(line, w, WrapBreakpoints), "\n") {
@@ -1037,12 +909,17 @@ func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
 	return out
 }
 
+// compactJSON is s with its JSON whitespace removed, or s itself when it does
+// not parse.
+func compactJSON(s string) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(s)); err != nil {
+		return s
+	}
+	return buf.String()
+}
+
 const (
-	// maxDiffLinesPerFile caps the rendered body lines each changed file
-	// gets; maxDiffFiles caps how many files render, so a sweeping
-	// refactor cannot flood the transcript.
-	maxDiffLinesPerFile = 12
-	maxDiffFiles        = 6
 	// maxExpandedResultLines caps the body an expanded (ctrl+g) non-diff
 	// tool row renders — a subagent report gets the same budget as one
 	// file's diff.
@@ -1104,10 +981,6 @@ func splitDiffFiles(diff string) []diffFile {
 func isDiffTool(name string) bool {
 	return name == "file.write_patch" || name == "file.edit" || name == "patch.apply"
 }
-
-// hookIndicatorText picks the single highest-signal hook event for the tool
-// summary line; viewmodel.HookHint decides it.
-func hookIndicatorText(hooks []registry.HookMetadata) string { return viewmodel.HookHint(hooks) }
 
 func formatElapsed(d time.Duration) string {
 	if d < time.Minute {

@@ -197,11 +197,12 @@ func wireItem(w *acpwire.WireNode, it *session.TranscriptItem) {
 	switch {
 	case it.Message != nil:
 		m := it.Message
-		reasoning, _ := capText(m.Reasoning)
+		reasoning, cut := capText(m.Reasoning)
 		w.Message = &acpwire.WireMessage{
 			Role: string(m.Role), ContentType: string(m.ContentType), Content: m.Content,
 			Final: m.Final, Usage: m.Usage, Salvaged: m.Salvaged, SalvageReason: m.SalvageReason,
 			ThinkMs: m.ThinkDuration.Milliseconds(), At: ms(it.Timestamp), Reasoning: reasoning,
+			Truncated: cut,
 		}
 	case it.Thinking != nil:
 		w.Thinking = &acpwire.WireThinking{Text: ScrubBlock(it.Thinking.Text), DurationMs: it.Thinking.Duration.Milliseconds()}

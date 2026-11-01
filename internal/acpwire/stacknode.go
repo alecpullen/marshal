@@ -4,8 +4,9 @@ import "encoding/json"
 
 // NodeDetail is the uncapped detail behind one stack node.
 type NodeDetail struct {
-	Calls     []CallDetail    `json:"calls,omitempty"`
-	Narration []string        `json:"narration,omitempty"`
+	Calls     []CallDetail `json:"calls,omitempty"`
+	Narration []string     `json:"narration,omitempty"`
+	// Thinking is a beat's thoughts, or a message's reasoning as one entry.
 	Thinking  []ThoughtDetail `json:"thinking,omitempty"`
 	Todo      *TodoDetail     `json:"todo,omitempty"`
 	Relations *RelationDetail `json:"relations,omitempty"`
@@ -16,6 +17,8 @@ type NodeDetail struct {
 	// Completion is a completion's retained output and its report, neither
 	// capped.
 	Completion *CompletionDetail `json:"completion,omitempty"`
+	// Body is a run event's whole body.
+	Body string `json:"body,omitempty"`
 }
 
 // CallDetail is one tool call with nothing capped.
@@ -166,6 +169,10 @@ type StepDetail struct {
 type CompletionDetail struct {
 	Output string `json:"output,omitempty"`
 	Report string `json:"report,omitempty"`
+	// Truncated is the completion's own flag: the job dropped earlier output
+	// before it was retained. WireCompletion.Truncated folds it together with
+	// the projection's cuts.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // ApprovalNotRequired is the WireCall.Approval value of a call that needed no

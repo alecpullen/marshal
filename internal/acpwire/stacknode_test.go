@@ -100,6 +100,66 @@ func TestHookAndSandboxDetailsDecode(t *testing.T) {
 	}
 }
 
+// TestExpandedRowDetailJSON pins the fields plan 3c adds to the detail
+// transport and to a message's wire form: what an expanded row reads that the
+// projection cut. As with TestDetailAdditionsJSON, the literals were produced
+// by encoding the declared types.
+func TestExpandedRowDetailJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		got  any
+		want string
+	}{
+		{
+			name: "the new detail fields",
+			got: NodeDetail{
+				Thinking:   []ThoughtDetail{{Text: "weighing two configs", DurationMs: 4000}},
+				Completion: &CompletionDetail{Output: "ok\n", Truncated: true},
+				Body:       "line 01\nline 02",
+			},
+			want: `{"thinking":[{"text":"weighing two configs","durationMs":4000}],"completion":{"output":"ok\n","truncated":true},"body":"line 01\nline 02"}`,
+		},
+		{
+			name: "a message whose reasoning was cut",
+			got: WireNode{
+				ID: "msg:2", Kind: KindMessage,
+				Message: &WireMessage{Role: "assistant", Content: "Done.", Reasoning: "weighing", Truncated: true},
+			},
+			want: `{"id":"msg:2","kind":"message","message":{"role":"assistant","content":"Done.","reasoning":"weighing","truncated":true}}`,
+		},
+		{
+			// The false state of all three flags is the contract a client reads
+			// as "the wire text is whole": an absent key, not a false one.
+			name: "the same fields uncut",
+			got: NodeDetail{
+				Thinking:   []ThoughtDetail{{Text: "short", DurationMs: 900}},
+				Completion: &CompletionDetail{Output: "ok\n"},
+				Body:       "one line",
+			},
+			want: `{"thinking":[{"text":"short","durationMs":900}],"completion":{"output":"ok\n"},"body":"one line"}`,
+		},
+		{
+			name: "a message whose reasoning is whole",
+			got: WireNode{
+				ID: "msg:2", Kind: KindMessage,
+				Message: &WireMessage{Role: "assistant", Content: "Done.", Reasoning: "short"},
+			},
+			want: `{"id":"msg:2","kind":"message","message":{"role":"assistant","content":"Done.","reasoning":"short"}}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			raw, err := json.Marshal(c.got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(raw) != c.want {
+				t.Fatalf("JSON = %s\nwant    %s", raw, c.want)
+			}
+		})
+	}
+}
+
 // TestDetailAdditionsJSON pins the fields plan 3b adds to the detail transport
 // and to a call row's wire form. As with TestStackNodeResultJSON, the literals
 // were produced by encoding the declared types.

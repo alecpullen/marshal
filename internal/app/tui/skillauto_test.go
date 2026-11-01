@@ -73,7 +73,7 @@ func TestAutoSkillsRoutesFromTranscriptItem(t *testing.T) {
 			ContentType: session.ContentTypeSkillAuto,
 		},
 	}
-	out := ansi.Strip(renderTranscriptItem(item, false, "", regionView{}, nil, 80))
+	out := ansi.Strip(renderItem(wireItem(item), nil, false, 80))
 	if !strings.Contains(out, "brainstorming") {
 		t.Fatalf("skill-auto item did not route to renderAutoSkills:\n%s", out)
 	}

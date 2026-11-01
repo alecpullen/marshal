@@ -26,51 +26,6 @@ func messageItem() session.TranscriptItem {
 	}
 }
 
-func TestToolTarget(t *testing.T) {
-	cases := []struct {
-		name  string
-		event registry.AuditEvent
-		want  string
-	}{
-		{
-			name:  "file.read returns the path",
-			event: registry.AuditEvent{ToolName: "file.read", Args: json.RawMessage(`{"path":"budget.go"}`)},
-			want:  "budget.go",
-		},
-		{
-			name:  "shell.run returns the command",
-			event: registry.AuditEvent{ToolName: "shell.run", Args: json.RawMessage(`{"command":"go test ./..."}`)},
-			want:  "go test ./...",
-		},
-		{
-			name:  "search tool returns the query",
-			event: registry.AuditEvent{ToolName: "repo.search", Args: json.RawMessage(`{"query":"auth flow"}`)},
-			want:  "auth flow",
-		},
-		{
-			name: "FilesChanged wins over args",
-			event: registry.AuditEvent{
-				ToolName:     "file.write_patch",
-				FilesChanged: []string{"a.go"},
-				Args:         json.RawMessage(`{"path":"b.go"}`),
-			},
-			want: "a.go",
-		},
-		{
-			name:  "no recognizable subject returns empty",
-			event: registry.AuditEvent{ToolName: "todos", Args: json.RawMessage(`{"items":[]}`)},
-			want:  "",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := toolTarget(tc.event); got != tc.want {
-				t.Errorf("toolTarget() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestRunningToolRendersBelowGroupThenFolds(t *testing.T) {
 	readEvent := func(path string, ts time.Time) registry.AuditEvent {
 		args, err := json.Marshal(map[string]string{"path": path})

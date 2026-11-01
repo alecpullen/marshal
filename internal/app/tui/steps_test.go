@@ -194,7 +194,8 @@ func TestNarrationWrapsCompletelyWithoutDuplication(t *testing.T) {
 				// Exercise the production renderer directly at narrow widths too.
 				si := &viewmodel.StepInfo{Narration: []*session.Message{{Content: narration}}}
 				n := &viewmodel.Node{Kind: viewmodel.KindStep, Step: si}
-				out, _ := renderStep(n, &stepRenderCtx{}, width, d)
+				beat, rows := wireOf(n, "")
+				out, _ := renderStep(beat, rows, &stepRenderCtx{}, width, d)
 				plain := stripANSI(out)
 				if strings.Contains(plain, "…") {
 					t.Fatalf("narration truncated:\n%s", plain)
@@ -217,7 +218,9 @@ func TestNarrationWrapsCompletelyWithoutDuplication(t *testing.T) {
 func TestNarrationMarkdownRemainsWhole(t *testing.T) {
 	for _, text := range []string{"**Checking the parser. Then checking the lexer.**", "```go\nfunc example() {}\n```"} {
 		si := &viewmodel.StepInfo{Narration: []*session.Message{{Content: text}}}
-		out, _ := renderStep(&viewmodel.Node{Kind: viewmodel.KindStep, Step: si}, &stepRenderCtx{}, 80, false)
+		n := &viewmodel.Node{Kind: viewmodel.KindStep, Step: si}
+		beat, rows := wireOf(n, "")
+		out, _ := renderStep(beat, rows, &stepRenderCtx{}, 80, false)
 		plain := stripANSI(out)
 		if strings.Contains(plain, "**") || strings.Contains(plain, "```") {
 			t.Fatalf("markdown split or unrendered:\n%s", plain)

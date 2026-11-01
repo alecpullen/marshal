@@ -936,7 +936,7 @@ func TestPolishedTranscriptReflowsAfterResize(t *testing.T) {
 	m = updated.(Model)
 	narrowView := stripANSI(m.View().Content)
 	ip := state.InProgress()
-	expectedViewport := renderMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}, m.viewport.Width()) + "\n" + renderThinkingBox(thinking, m.spinnerFrame, m.now().Sub(ip.StartedAt), regionView{}, m.viewport.Width())
+	expectedViewport := renderMessage(wireMessage(session.Message{Role: session.RoleUser, Content: message, ContentType: session.ContentTypePlain}), m.viewport.Width()) + "\n" + renderThinkingBox(thinking, m.spinnerFrame, m.now().Sub(ip.StartedAt), regionView{}, m.viewport.Width())
 
 	// viewport.View() pads every line to the viewport's fixed width/height
 	// with trailing spaces and blank lines; strip that padding before
@@ -3089,7 +3089,7 @@ func setupCmdReg(t *testing.T) *commands.Registry {
 }
 
 func TestRenderCodeBlockWrapsInBorder(t *testing.T) {
-	result := renderMessage(session.Message{Role: session.RoleAssistant, Content: "func main() {}", ContentType: session.ContentTypeCode}, 80)
+	result := renderMessage(wireMessage(session.Message{Role: session.RoleAssistant, Content: "func main() {}", ContentType: session.ContentTypeCode}), 80)
 	if !strings.Contains(result, "func main()") {
 		t.Fatalf("expected code content, got: %s", result)
 	}

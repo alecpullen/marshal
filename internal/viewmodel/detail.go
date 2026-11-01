@@ -46,7 +46,19 @@ func StackNodeOf(st *session.State, tree []*Node, nodeID string) (res acpwire.St
 		// beat: the client shows the actor and the stored todo regardless.
 		detail.Step = stepDetailOf(st, n.Step.Step)
 	case n.Completion != nil:
-		detail.Completion = &acpwire.CompletionDetail{Output: n.Completion.Output, Report: n.Completion.Report}
+		detail.Completion = &acpwire.CompletionDetail{Output: n.Completion.Output, Report: n.Completion.Report,
+			Truncated: n.Completion.Truncated}
+	case n.Item != nil:
+		// A message's reasoning travels as one thought, the way a beat's
+		// thoughts do; a run event's body travels whole. A run event with no
+		// body sets no detail at all, which reads the same as no answer: the
+		// client falls back to the event's wire body.
+		if m := n.Item.Message; m != nil && m.Reasoning != "" {
+			detail.Thinking = []acpwire.ThoughtDetail{{Text: m.Reasoning, DurationMs: m.ThinkDuration.Milliseconds()}}
+		}
+		if e := n.Item.RunEvent; e != nil {
+			detail.Body = e.Body
+		}
 	}
 	if rel, ok := ResolveBeats(Relations(st.Transcript()), tree)[n.ID]; ok {
 		detail.Relations = &acpwire.RelationDetail{CausedBy: nodeKeys(rel.CausedBy), FixedBy: nodeKeys(rel.FixedBy)}

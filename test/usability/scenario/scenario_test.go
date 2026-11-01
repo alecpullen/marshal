@@ -204,11 +204,13 @@ func TestReportDirsAreDistinctPerRun(t *testing.T) {
 }
 
 func TestRunnerFailsOnTerminalModelError(t *testing.T) {
-	// The child emits a screen-changing control the model rejects (DECSTBM).
+	// The child emits a screen-changing control the model rejects (IL, insert
+	// lines). DECSTBM used to stand in here, but the model implements it now, so
+	// it no longer produces a decode error.
 	// Even though the actor would report success, the runner must fail: an
 	// untrustworthy screen can never produce a passing scenario.
 	bin := filepath.Join(t.TempDir(), "helper.sh")
-	body := "#!/bin/sh\nprintf 'ok\\033[2;5r'\nsleep 5\n"
+	body := "#!/bin/sh\nprintf 'ok\\033[2L'\nsleep 5\n"
 	if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
 		t.Fatalf("write helper: %v", err)
 	}

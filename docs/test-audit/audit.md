@@ -124,6 +124,18 @@ and bracketed-paste actions, bounded graceful shutdown, fixture isolation and
 report paths, CI enforcement that the binary exists, and the optional LLM
 oracle. P4 journeys must wait for those.
 
+**P4 addendum.** The 80×24 journeys found three more sequences the model
+rejected, all standard and all emitted by the real renderer at that size: RI
+(`ESC M`), DECSTBM (`CSI r`) and SU/SD (`CSI Ps S` / `CSI Ps T`). Each is now
+modelled to its actual effect — cursor up one line, a scrolling region bounded
+by two rows, and a region-scoped scroll by N lines — with
+`TestTerminalReverseIndex` and `TestTerminalScrollRegion` pinning them. Two
+fixtures had used DECSTBM as their example of a sequence the model rejects
+(`harness/terminal_test.go`'s unknown-control test and
+`scenario/scenario_test.go`'s decode-error test); both now use IL (`CSI L`),
+which stays unmodelled and is still cell-changing. Nothing was silenced: the
+model still fails loudly on an unmodelled sequence.
+
 ### Core TUI workflows lack real-binary interaction coverage
 
 The only scripted scenario is Help (`test/usability/usability_test.go:112`;
@@ -141,6 +153,20 @@ together within `1..65535`, and both are reachable from a scripted step
 (`ActionPaste`, `ActionResize`) and exercised by `TestSessionPasteFraming`,
 `TestSessionResize`, `TestRunnerPasteAndResize` and the invalid-size path. The
 journeys themselves remain P4's scope.
+
+**Status: implemented by P4.** Four new real-binary journeys now drive the
+built binary at 80×24 in an isolated home, workspace and provider:
+`TestScriptedApprovalDetailsAndDecision` (the approval shows the exact command,
+and denial and execution are distinguished by the marker file's bytes and by
+the tool-role message the provider received), `TestScriptedQuestionsPartialSkip`
+(a completed answer survives a partial skip; a full skip sends no fabricated
+answer), `TestScriptedSkillRemoval` (cancel leaves both skills byte-for-byte
+intact; confirm removes only the selected one) and
+`TestScriptedPasteResizeDraft` (bracketed paste lands inline, survives a
+100×30 round trip, and Backspace cancellation never submits). Together with
+P3b's three they give seven `TestScripted*` journeys, each selected by the
+dedicated CI job. Evidence, including the two harness defects these journeys
+exposed, is in the [verification record](#verification-record).
 
 ### Optional LLM repair scenario trusts the actor's success claim
 
@@ -679,3 +705,56 @@ solely on test names.
   carries the require-binary and report-directory settings, but no CI platform
   was exercised from this host, so no claim is made that the workflow itself
   passed.
+- **P4 execution (`p4-real-tui-journeys` branch, eight commits on 2026-11-01,
+  base `c6c79913` — P3b's merge — on `Darwin arm64`, `go1.26.1 darwin/arm64`,
+  `CGO_ENABLED=1`):** the planned tasks landed as `2237fc7d` (provider fixture),
+  `609a2f96` (approval details and decision), `5314aa22` (questions partial
+  skip), `48cd27ca` (skill removal and cancellation), `8523c0b6` (paste and
+  resize) and `fa0ce65b` (pull-request full-suite and vet gate), plus two
+  commits the journeys forced: `b4d2497e` (terminal model gains RI, DECSTBM and
+  SU/SD) and `21384b4b` (the scenario decode-error fixture moves off DECSTBM,
+  which the model now implements, onto IL). The baseline was captured first:
+  the union of every task's verification command passed at `c6c79913`, so no
+  pre-existing failure was inherited.
+  Every named journey executed rather than skipped:
+  `TestScriptedApprovalDetailsAndDecision` (10.28s),
+  `TestScriptedQuestionsPartialSkip` (10.33s), `TestScriptedSkillRemoval`
+  (5.99s), `TestScriptedPasteResizeDraft` (4.62s), with P3b's
+  `TestScriptedHelpOpenClose` (4.42s), `TestScriptedVisibleScreenRedraw`
+  (4.36s) and `TestScriptedGracefulQuit` (4.18s).
+  `USABILITY_REQUIRE_BINARY=1 go test ./test/usability/... -run '^TestScripted'
+  -count=3 -v -timeout 5m` passed all three iterations against the freshly
+  built binary, with reports written to separate per-run directories under a
+  fresh `USABILITY_REPORT_DIR=/tmp/marshal-p4-usability-20261101-181028` (four
+  `usability-*` run directories). `USABILITY_LLM_MODEL` was left unset, so
+  `TestExploratoryLLMSubtractFix` stayed skipped.
+  `go test -race ./test/usability/... -count=1 -timeout 5m` passed;
+  `CGO_ENABLED=1 go vet ./...`, `gofmt -l` over every changed Go file and
+  `git diff --check` were clean; `CGO_ENABLED=1 go test ./... -count=1
+  -timeout 5m` passed with exit 0 when run alone.
+  Recorded honestly, not quarantined: one full-suite run executed
+  **concurrently** with the scripted and `-race` suites exited 1, and its
+  failing package scrolled out of the captured tail before it could be named.
+  It did not reproduce — a serial run produced no `FAIL` line at all, and a
+  second serial run reporting its own exit code gave 0 — so it is treated as
+  load-sensitive pending a hosted run, and nothing was excluded or retried into
+  passing.
+  Two deviations from the plan are recorded, both because the plan's literal
+  strings do not match the code and the plan's own non-goals forbid changing
+  behaviour to suit a test. First, the approval screen identifies a shell call
+  as "Agent wants to run:" plus the command rather than by the literal tool name
+  `shell.run` (`DisplayToolName` renders it "Run command" in the transcript), so
+  the journey asserts that user-visible identity plus "Reason: confirmed by
+  rule", which is what proves the workspace's exact `[tools.shell.confirm]`
+  entry fired rather than `rm`'s destructive default. Second, `question.ask`
+  results are built by `executeNativeQuestionAsk`
+  (`internal/agent/execute.go`) as `- "question": "answer"` lines, and a form
+  with every answer skipped is collapsed into one decline sentence that carries
+  no pairs; the journey asserts those exact lines in order and, for the full
+  skip, the decline message plus the absence of any answer line, which is a
+  stronger statement than three `Unanswered` pairs.
+  Platform and CI limitations: exercised on macOS/darwin arm64 only. The two
+  pull-request jobs are defined for `ubuntu-latest` — `full-suite` in
+  `.github/workflows/go-checks.yml` and P3b's `scripted` job — but no hosted run
+  was observed from this host, no `actionlint` was available to lint the new
+  workflow, and Windows was not exercised. None of these is claimed as passing.

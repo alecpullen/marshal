@@ -157,6 +157,20 @@ remaining platform claims.
 
 ## P4 — expand real TUI journeys and gate changes in CI
 
+**Status: implemented.** The journeys and the pull-request gate landed as eight
+commits on `p4-real-tui-journeys` from P3b's merge `c6c79913`; the evidence,
+including the two harness defects the journeys exposed, is in the
+[audit](audit.md#verification-record). Four new real-binary journeys run at
+80×24 against a test-owned OpenAI-compatible provider and a test-owned
+filesystem: `TestScriptedApprovalDetailsAndDecision` (approval details, then
+denial and execution with independent filesystem and provider oracles),
+`TestScriptedQuestionsPartialSkip` (a completed answer survives a partial skip,
+and a full skip fabricates nothing), `TestScriptedSkillRemoval` (cancel
+preserves both skills byte-for-byte; confirm removes only the selected one) and
+`TestScriptedPasteResizeDraft` (bracketed paste survives a resize round trip and
+Backspace cancellation never submits). They sit alongside P3b's three. P5
+remains open: nothing in this phase removed or renamed a test.
+
 Using the repaired harness and test-owned deterministic providers, add a
 small set of meaningful 80×24 real-binary journeys for approval details and
 cancellation, multi-question partial skip, one skill/plugin management path,

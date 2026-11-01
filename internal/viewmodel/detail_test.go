@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
@@ -241,6 +242,97 @@ func TestStackNodeOfCarriesACompletionsOutputAndReport(t *testing.T) {
 	}
 	if want := "## Review\nwhole report"; gotSub.Detail.Completion.Report != want {
 		t.Fatalf("report = %q, want %q", gotSub.Detail.Completion.Report, want)
+	}
+}
+
+func TestStackNodeOfCarriesAMessagesReasoning(t *testing.T) {
+	long := strings.Repeat("r", acpwire.WireTextCap*3)
+	st := projTestState(t)
+	tree := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0),
+		{Timestamp: at(2), Kind: session.KindMessage, Message: &session.Message{
+			ID: 2, Role: session.RoleAssistant, Content: "done", Reasoning: long,
+			ThinkDuration: 4 * time.Second, CreatedAt: at(2)}},
+		{Timestamp: at(3), Kind: session.KindMessage, Message: &session.Message{
+			ID: 3, Role: session.RoleAssistant, Content: "more", CreatedAt: at(3)}},
+	}})
+
+	res, found := StackNodeOf(st, tree, "msg:2")
+	if !found {
+		t.Fatal(`StackNodeOf("msg:2") not found`)
+	}
+	if len(res.Detail.Thinking) != 1 {
+		t.Fatalf("thinking = %d entries, want the reasoning as one", len(res.Detail.Thinking))
+	}
+	if got := res.Detail.Thinking[0].Text; got != long {
+		t.Fatalf("thinking text = %d bytes, want the whole %d-byte reasoning", len(got), len(long))
+	}
+	if got := res.Detail.Thinking[0].DurationMs; got != 4000 {
+		t.Fatalf("thinking duration = %d ms, want 4000", got)
+	}
+	if res.Node.Message == nil || !res.Node.Message.Truncated {
+		t.Fatalf("message = %+v, want its reasoning flagged as cut", res.Node.Message)
+	}
+
+	plain, found := StackNodeOf(st, tree, "msg:3")
+	if !found {
+		t.Fatal(`StackNodeOf("msg:3") not found`)
+	}
+	if len(plain.Detail.Thinking) != 0 {
+		t.Fatalf("a message without reasoning carries %d thoughts, want none", len(plain.Detail.Thinking))
+	}
+}
+
+func TestStackNodeOfCarriesARunEventsBody(t *testing.T) {
+	body := strings.Repeat("x", acpwire.WireTextCap*3)
+	st := projTestState(t)
+	tree := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0),
+		{Timestamp: at(2), Kind: session.KindRunEvent, RunEvent: &session.RunEvent{
+			Kind: session.RunEventVerifyFailed, Body: body, At: at(2)}},
+	}})
+	ev, _ := findKind(tree, KindRunEvent)
+	if ev == nil {
+		t.Fatal("the built tree has no run event")
+	}
+
+	res, found := StackNodeOf(st, tree, ev.ID.Key)
+	if !found {
+		t.Fatalf("StackNodeOf(%q) not found", ev.ID.Key)
+	}
+	if res.Detail.Body != body {
+		t.Fatalf("body = %d bytes, want the whole %d-byte body", len(res.Detail.Body), len(body))
+	}
+	if res.Node.RunEvent == nil || !res.Node.RunEvent.Truncated {
+		t.Fatalf("run event = %+v, want its body flagged as cut", res.Node.RunEvent)
+	}
+}
+
+func TestStackNodeOfCarriesACompletionsOwnTruncation(t *testing.T) {
+	flagged := completionNode(CompletionInfo{Source: CompletionJob, ID: "job-1", Label: "test",
+		Outcome: OutcomeDone, Output: "ok\n", Truncated: true}, "job-1")
+	cut := completionNode(CompletionInfo{Source: CompletionJob, ID: "job-2", Label: "test",
+		Outcome: OutcomeDone, Output: strings.Repeat("o", acpwire.WireTextCap*3)}, "job-2")
+	tree := []*Node{flagged, cut}
+	st := projTestState(t)
+
+	got, found := StackNodeOf(st, tree, flagged.ID.Key)
+	if !found || got.Detail.Completion == nil {
+		t.Fatalf("the flagged job's detail is missing (found = %v)", found)
+	}
+	if !got.Detail.Completion.Truncated {
+		t.Fatal("the job's own truncation flag is missing from its detail")
+	}
+
+	gotCut, found := StackNodeOf(st, tree, cut.ID.Key)
+	if !found || gotCut.Detail.Completion == nil {
+		t.Fatalf("the long job's detail is missing (found = %v)", found)
+	}
+	if !gotCut.Node.Completion.Truncated {
+		t.Fatal("the projection cut the long output, want the wire's flag set")
+	}
+	if gotCut.Detail.Completion.Truncated {
+		t.Fatal("the projection's cut is not the job's own flag, want the detail's unset")
 	}
 }
 

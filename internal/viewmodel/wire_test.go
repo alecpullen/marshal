@@ -512,12 +512,20 @@ func TestWireMessageCarriesItsReasoning(t *testing.T) {
 		return n.Message
 	}
 
-	if got := msg("weighing two configs").Reasoning; got != "weighing two configs" {
-		t.Errorf("reasoning = %q", got)
+	short := msg("weighing two configs")
+	if short.Reasoning != "weighing two configs" {
+		t.Errorf("reasoning = %q", short.Reasoning)
+	}
+	if short.Truncated {
+		t.Error("a short reasoning is not truncated")
 	}
 	long := strings.Repeat("y", acpwire.WireTextCap+64)
-	if got := msg(long).Reasoning; len(got) != acpwire.WireTextCap {
-		t.Errorf("long reasoning = %d bytes, want it cut to %d", len(got), acpwire.WireTextCap)
+	cut := msg(long)
+	if len(cut.Reasoning) != acpwire.WireTextCap {
+		t.Errorf("long reasoning = %d bytes, want it cut to %d", len(cut.Reasoning), acpwire.WireTextCap)
+	}
+	if !cut.Truncated {
+		t.Error("a cut reasoning sets the message's truncated flag")
 	}
 }
 

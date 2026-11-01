@@ -235,6 +235,7 @@ type WireMessage struct {
 	ThinkMs       int64  `json:"thinkMs,omitempty"`
 	At            int64  `json:"at,omitempty"`
 	Reasoning     string `json:"reasoning,omitempty"` // capped at WireTextCap
+	Truncated     bool   `json:"truncated,omitempty"` // the reasoning was cut
 }
 
 // WireThinking is a reasoning row outside any step, finished or live.

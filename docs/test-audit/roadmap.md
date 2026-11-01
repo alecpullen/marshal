@@ -105,8 +105,8 @@ finding](audit.md#the-pty-harness-does-not-model-the-current-terminal-screen).
 P3b closed the rest as seven labelled commits on `p3b-usability-harness` from
 base `e0d14b45`, following the
 [2026-11-01 executable plan](plans/2026-11-01-p3b-usability-harness-plan.md);
-the evidence is in the [audit](audit.md#verification-record). P4 and P5 remain
-open.
+the evidence is in the [audit](audit.md#verification-record). P4 and P5 are
+implemented; see their sections below.
 
 Replace accumulated-output-as-screen with an actual terminal state model;
 retain a separately bounded raw diagnostic log. Cover cursor movement, erase,
@@ -213,7 +213,7 @@ than quarantined or excluded.
 
 **Status: implemented.** Plan
 [2026-11-01-p5-test-quality](plans/2026-11-01-p5-test-quality-plan.md) ran as
-six labelled commits on `p5-test-quality` from base
+six labelled test commits on `p5-test-quality` from base
 `4f81a41b4d28bcdaa2e2e9d3f9ef24f675cfa39d`; the evidence is in the
 [audit](audit.md#verification-record). No production code changed. Every
 retained test now asserts its claimed outcome: the config deletion test's
@@ -259,8 +259,8 @@ Met as of P5 on this host, to the extent recorded below:
   timing alone. External keychains, services and developer config remain
   outside default-suite dependencies. **Met on macOS/darwin arm64** —
   `go test ./...` (117 packages, no `FAIL`) and `go vet ./...` are clean, the
-  P5 tests use no sleeps or goroutines, and the suite passed at the P5 base
-  commit as well. **Not observed** on Linux or Windows, so passing in the
+  P5 tests introduce no sleeps or goroutines, and the suite passed at the P5
+  base commit as well. **Not observed** on Linux or Windows, so passing in the
   `ubuntu-latest` CI jobs is a requirement, not a claim.
 - PR CI exercises the full suite, and real-binary scenarios have independent
   current-screen and outcome oracles. Document any terminal, platform or

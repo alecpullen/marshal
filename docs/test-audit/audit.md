@@ -22,12 +22,13 @@ integration tests that protect it running in CI. The existing known failures
 must be addressed before making the full suite a reliable required PR gate;
 do not hide them with blanket exclusions. **Evidence:** workflow inspection.
 
-**Status: fixed by P4.** `.github/workflows/go-checks.yml` runs two jobs on
-pull requests and pushes to `main`: `full-suite`
+**Status: fixed by P4.** Two jobs run on pull requests and pushes to `main`:
+`full-suite` in `.github/workflows/go-checks.yml`
 (`CGO_ENABLED=1 go test ./... -count=1 -timeout 5m` and
-`CGO_ENABLED=1 go vet ./...`) and P3b's `scripted` journey job. The full-suite
-job carries no package exclusions and no `continue-on-error`, so a failing
-package or vet diagnostic fails the pull request. The fix was possible because
+`CGO_ENABLED=1 go vet ./...`) and P3b's `scripted` journey job in
+`.github/workflows/usability.yml`. The full-suite job carries no package
+exclusions and no `continue-on-error`, so a failing package or vet diagnostic
+fails the pull request. The fix was possible because
 P0–P2 removed the known baseline failures rather than hiding them. No hosted
 run of either job was observed from the execution host (see the
 [verification record](#verification-record)).
@@ -873,7 +874,8 @@ finalization cases (`TestQuestionFinalizeSingleChoice`,
   `.github/workflows/go-checks.yml` and P3b's `scripted` job — but no hosted run
   was observed from this host, no `actionlint` was available to lint the new
   workflow, and Windows was not exercised. None of these is claimed as passing.
-- **P5 execution (`p5-test-quality` branch, six labelled commits on 2026-11-01,
+- **P5 execution (`p5-test-quality` branch, six labelled test commits plus the
+  record's own commit, on 2026-11-01,
   base `4f81a41b4d28bcdaa2e2e9d3f9ef24f675cfa39d`, on `Darwin 25.4.0 arm64`,
   `go1.26.1 darwin/arm64`, `CGO_ENABLED=1`):** no production code was changed.
   Commits: `c7b11a8c` (config deleted-key test), `4d83a394` (deterministic
@@ -894,9 +896,9 @@ finalization cases (`TestQuestionFinalizeSingleChoice`,
   '^TestWritePatch_(RejectsFileChangedSinceRead|ChangedOnDiskErrorIncludesCurrentContent)$'
   -count=20` and the same test `-count=3` under `-race`; the four named
   `internal/sandbox` tests `-count=3` plus the whole package; the three named
-  paste/panel tests `-count=3 -v`; and the nine named question tests plus
-  `TestQuestionCompletedFormStillFinalizesAll` `-count=3 -v` plus
-  `go test ./internal/app/tui -count=1`.
+  paste/panel tests `-count=3 -v`; and the nine named question tests
+  (the verify pattern's nine alternatives, `CompletedFormStillFinalizesAll`
+  among them) `-count=3 -v` plus `go test ./internal/app/tui -count=1`.
   Final gates, all clean on this host: `CGO_ENABLED=1 go build ./cmd/marshal`;
   `USABILITY_REQUIRE_BINARY=1 go test ./test/usability/... -run '^TestScripted'
   -count=1 -v -timeout 5m`, where all seven real-binary journeys executed rather

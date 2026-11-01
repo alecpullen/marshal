@@ -382,8 +382,9 @@ func TestQuestionMultiSelectOffersOther(t *testing.T) {
 // single-choice paths whose interaction coverage used to be simulated: a
 // listed option submits directly and never focuses the custom field, while the
 // appended Other… row reveals the custom field and its trimmed text becomes the
-// answer. Every command the form returns is executed, so this fails if the
-// form's own navigation stops reaching either path.
+// answer. Every command the form returns is executed (timer-only commands such
+// as the cursor blink are skipped), so this fails if the form's own navigation
+// stops reaching either path.
 func TestQuestionSingleChoiceNavigation(t *testing.T) {
 	options := []session.QuestionOption{{Label: "red"}, {Label: "green"}}
 

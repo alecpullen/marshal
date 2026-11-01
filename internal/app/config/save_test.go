@@ -1071,12 +1071,23 @@ func TestSaveProjectConfigDoesNotResurrectDeletedKeys(t *testing.T) {
 		t.Fatalf("read scenario 2: %v", err)
 	}
 	var parsed struct {
+		Agent struct {
+			MaxRetries *int `toml:"max_retries"`
+		} `toml:"agent"`
 		Skills struct {
 			MaxActive *int `toml:"max_active"`
 		} `toml:"skills"`
 	}
 	if err := toml.Unmarshal(raw, &parsed); err != nil {
 		t.Fatalf("parse saved config: %v", err)
+	}
+	// The unrelated [agent] key the scenario seeded must survive the save, so
+	// this scenario fails if writeSections drops or mangles that section.
+	if parsed.Agent.MaxRetries == nil {
+		t.Fatalf("saved config dropped the seeded [agent] max_retries key:\n%s", raw)
+	}
+	if *parsed.Agent.MaxRetries != 5 {
+		t.Fatalf("saved agent max_retries = %d, want 5:\n%s", *parsed.Agent.MaxRetries, raw)
 	}
 	if parsed.Skills.MaxActive == nil {
 		t.Fatalf("saved config dropped the existing max_active key:\n%s", raw)

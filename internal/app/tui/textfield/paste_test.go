@@ -21,10 +21,10 @@ import (
 // field — the picker, memory, agents, connect, settings and skills filter
 // paths, plus the settings field-edit input — and asserts a paste reaches each
 // one. It is a sample, not a complete inventory and not a panel-routing
-// contract: components such as the skills install source editor are covered
-// through their own panels instead (see
-// TestEscapeCancelsSkillEditorBeforeLeavingFrame and
-// TestPluginPasteFollowsFocus).
+// contract: other text fields are covered inside their own panels instead (for
+// the skills install source editor see
+// TestEscapeCancelsSkillEditorBeforeLeavingFrame, and for the plugin install
+// source see TestPluginPasteFollowsFocus).
 func TestPasteReachesSelectedTextInputs(t *testing.T) {
 	const pasted = "pasted-text-xyz"
 

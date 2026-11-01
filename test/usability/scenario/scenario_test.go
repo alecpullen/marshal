@@ -33,9 +33,8 @@ func TestRunnerCountsKeystrokes(t *testing.T) {
 		},
 	}
 	sc := Scenario{
-		Name:    "stub",
-		Actor:   act,
-		Success: SuccessCriterion{},
+		Name:  "stub",
+		Actor: act,
 	}
 
 	r := NewRunner(RunnerConfig{BinaryPath: "cat", WorkDir: t.TempDir()})

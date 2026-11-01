@@ -16,12 +16,20 @@ import (
 // true at startup ("Type a question" — the input prompt banner is
 // already on screen). The second step waits for the post-`?` state
 // ("Help" — the docpanel chrome title) before sending esc.
+//
+// The third step sends nothing: it is a postcondition. Reaching "done" means
+// the viewport itself showed the prompt again with no Help title, so a close
+// that silently fails can never report success.
 func HelpOpenClose() *scripted.Scripted {
 	return &scripted.Scripted{
 		Name: "help_open_close",
 		Steps: []scripted.Step{
 			{Send: "?", WaitFor: scripted.WaitFor{ScreenContains: "Type a question"}},
 			{SendKey: "esc", WaitFor: scripted.WaitFor{ScreenContains: "Help"}},
+			{WaitOnly: true, WaitFor: scripted.WaitFor{
+				ScreenContains:    "Type a question",
+				ScreenNotContains: "Help",
+			}},
 		},
 	}
 }

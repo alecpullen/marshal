@@ -41,12 +41,9 @@ func NewRunner(cfg RunnerConfig) *Runner {
 	return &Runner{cfg: cfg, rep: report.New()}
 }
 
-// SuccessCriterion describes how to judge a scenario. For LLM scenarios the judge is separate.
-type SuccessCriterion struct {
-	ScreenContains string // for scripted assertions, handled by the actor
-}
-
-// Scenario is one usability test.
+// Scenario is one usability test. Success is whatever the actor reports in
+// its done action: a scripted actor's postconditions live in its steps, not in
+// a separate criterion.
 type Scenario struct {
 	Name      string
 	ActorType string // metadata describing the actor, e.g. "scripted" or "llm"
@@ -54,7 +51,6 @@ type Scenario struct {
 	Goal      string // optional task goal; informational/metadata only
 	Actor     actor.Actor
 	WorkDir   string
-	Success   SuccessCriterion
 }
 
 // Run executes the scenario and returns the result.

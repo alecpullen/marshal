@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/test/usability/actor"
 	"marshal/test/usability/harness"
 	"marshal/test/usability/scenario"
 	"marshal/test/usability/screen"
@@ -127,15 +128,84 @@ func TestScriptedHelpOpenClose(t *testing.T) {
 		Height: 80,
 	})
 	defer r.WriteReport()
-	res, err := r.Run(context.Background(), scenario.Scenario{
+	// Bounded: a close that never takes effect must fail with the runner's
+	// recorded result (and its screen_on_timeout viewport), not hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	res, err := r.Run(ctx, scenario.Scenario{
 		Name:  "help_open_close",
 		Actor: scenario.HelpOpenClose(),
 	})
 	if err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("Run: %v (result %+v)", err, res)
 	}
 	if !res.Success {
 		t.Fatalf("scenario failed: %+v", res)
+	}
+}
+
+// TestHelpScriptDoesNotCompleteWithoutClose drives the real HelpOpenClose
+// script against synthetic viewports. After a close that does nothing, the
+// script's wait-only postcondition must keep yielding no-op; only a viewport
+// that actually shows the prompt with no Help title lets it report done.
+func TestHelpScriptDoesNotCompleteWithoutClose(t *testing.T) {
+	ctx := context.Background()
+	scr := scenario.HelpOpenClose()
+
+	// Open: the prompt is already on screen, so the script types "?".
+	act, err := scr.Act(ctx, screen.Screen{Content: promptMarker})
+	if err != nil {
+		t.Fatalf("Act (open): %v", err)
+	}
+	if act.Type != actor.ActionType || act.Text != "?" {
+		t.Fatalf("open action = %+v, want type '?'", act)
+	}
+
+	// The panel is up, so the script sends esc.
+	act, err = scr.Act(ctx, screen.Screen{Content: helpTitleMarker + "\n  /help cheatsheet"})
+	if err != nil {
+		t.Fatalf("Act (help open): %v", err)
+	}
+	if act.Type != actor.ActionKey || act.Key != "esc" {
+		t.Fatalf("close action = %+v, want key esc", act)
+	}
+
+	// The close did nothing. Neither a viewport where the panel covers the
+	// prompt nor one where the prompt peeks through is a completed close:
+	// the postcondition holds conjunctively, so Help in the viewport keeps
+	// the script unfinished no matter how often it is observed.
+	stillOpen := []screen.Screen{
+		{Content: helpTitleMarker + "\n  /help cheatsheet"},
+		{Content: helpTitleMarker + "\n  /help cheatsheet\n" + promptMarker},
+	}
+	for i := 0; i < 5; i++ {
+		for j, sc := range stillOpen {
+			act, err = scr.Act(ctx, sc)
+			if err != nil {
+				t.Fatalf("Act (ineffective close, observation %d/%d): %v", i, j, err)
+			}
+			if act.Type != actor.ActionNoOp {
+				t.Fatalf("observation %d/%d after ineffective close = %+v, want noop (never done)", i, j, act)
+			}
+		}
+	}
+
+	// The panel is gone: the wait-only step matches, reports no-op, and the
+	// next observation completes the scenario.
+	closed := screen.Screen{Content: promptMarker + "\n❯ "}
+	act, err = scr.Act(ctx, closed)
+	if err != nil {
+		t.Fatalf("Act (closed): %v", err)
+	}
+	if act.Type != actor.ActionNoOp {
+		t.Fatalf("action on the closed viewport = %+v, want noop", act)
+	}
+	act, err = scr.Act(ctx, closed)
+	if err != nil {
+		t.Fatalf("Act (done): %v", err)
+	}
+	if act.Type != actor.ActionDone || !act.Success {
+		t.Fatalf("final action = %+v, want done success", act)
 	}
 }
 
@@ -229,7 +299,7 @@ func writeHelperScript(t *testing.T, body string) string {
 // the prompt is back.
 //
 // This is deliberately separate from TestScriptedHelpOpenClose: that scenario
-// keeps its own (unsatisfiable) postcondition contract for a later P3 plan.
+// asserts the same transition through the scripted actor's postcondition.
 func TestScriptedVisibleScreenRedraw(t *testing.T) {
 	if _, err := os.Stat(binaryPath(t)); err != nil {
 		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")

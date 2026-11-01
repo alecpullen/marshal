@@ -71,7 +71,8 @@ func TestTranscriptIndentContract(t *testing.T) {
 		{"thinking summary", renderThinkingSummary("reasoned", time.Second, false, width)},
 		{"agent markdown", renderAgentMarkdown("plain paragraph", width)},
 		{"beat with calls on its spine", func() string {
-			out, _ := renderStep(beatNode("Reading the parser.", 3), &stepRenderCtx{}, width, false)
+			beat, rows := wireOf(beatNode("Reading the parser.", 3), "")
+			out, _ := renderStep(beat, rows, &stepRenderCtx{}, width, false)
 			return out
 		}()},
 	}

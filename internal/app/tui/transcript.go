@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"strings"
@@ -13,14 +15,13 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/liveregion"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/diffview"
 	"marshal/internal/strutil"
-	"marshal/internal/tools/registry"
-	"marshal/internal/viewmodel"
 )
 
 // regionView is the Model-owned view state for one bounded live region.
@@ -824,13 +825,25 @@ func callersDetail(callers []string, w int) []string {
 	return out
 }
 
-// toolBody is a settled call's body under its head, styled and fitted to w:
-// an edit's diff with every line, and any other call's result, plus a failed
-// call's error and arguments.
-func toolBody(event registry.AuditEvent, w int) []string {
+// toolBody is an expanded call's body under its subject, styled and fitted to
+// w: its diff or its result, then its error and arguments when it failed. d
+// is the call's detail when the wire cut it; nil draws the wire's text.
+func toolBody(name string, c acpwire.WireCall, d *acpwire.CallDetail, w int) []string {
+	output, args := c.Output, c.Args
+	if d != nil {
+		args = compactJSON(d.Args)
+		// An empty wire output means the call had no result: d.Output falls
+		// back to the summary, which is not a result.
+		if output != "" {
+			output = d.Output
+			if isDiffTool(name) {
+				output = d.Diff
+			}
+		}
+	}
 	var out []string
-	if isDiffTool(event.ToolName) && event.ResultContent != "" {
-		for _, f := range splitDiffFiles(event.ResultContent) {
+	if isDiffTool(name) && output != "" {
+		for _, f := range splitDiffFiles(output) {
 			stat := fmt.Sprintf("+%d −%d", f.added, f.removed)
 			if f.path != "" {
 				stat = f.path + " " + stat
@@ -856,8 +869,8 @@ func toolBody(event registry.AuditEvent, w int) []string {
 	// case — its ResultContent holds the subagent's report) render it,
 	// wrapped rather than clipped since the content is prose, not code
 	// lines.
-	if !isDiffTool(event.ToolName) && event.ResultContent != "" {
-		lines := strings.Split(strings.TrimRight(event.ResultContent, "\n"), "\n")
+	if !isDiffTool(name) && output != "" {
+		lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
 		elided := 0
 		if len(lines) > maxExpandedResultLines {
 			elided = len(lines) - maxExpandedResultLines
@@ -876,14 +889,14 @@ func toolBody(event registry.AuditEvent, w int) []string {
 	// error, the exit code when the tool reported one, and the call args.
 	// Each detail line wraps at w — the raw args JSON used to run straight
 	// off the terminal edge.
-	if event.Error != "" {
-		detail := "error: " + event.Error
-		if event.CommandExitCode != nil {
-			detail += fmt.Sprintf(" (exit code %d)", *event.CommandExitCode)
+	if c.Error != "" {
+		detail := "error: " + c.Error
+		if c.ExitCode != nil {
+			detail += fmt.Sprintf(" (exit code %d)", *c.ExitCode)
 		}
 		lines := []string{detail}
-		if len(event.Args) > 0 {
-			lines = append(lines, "args: "+string(event.Args))
+		if args != "" {
+			lines = append(lines, "args: "+args)
 		}
 		for _, line := range lines {
 			for _, wl := range strings.Split(ansi.Wrap(line, w, WrapBreakpoints), "\n") {
@@ -892,6 +905,16 @@ func toolBody(event registry.AuditEvent, w int) []string {
 		}
 	}
 	return out
+}
+
+// compactJSON is s with its JSON whitespace removed, or s itself when it does
+// not parse.
+func compactJSON(s string) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(s)); err != nil {
+		return s
+	}
+	return buf.String()
 }
 
 const (
@@ -956,10 +979,6 @@ func splitDiffFiles(diff string) []diffFile {
 func isDiffTool(name string) bool {
 	return name == "file.write_patch" || name == "file.edit" || name == "patch.apply"
 }
-
-// hookIndicatorText picks the single highest-signal hook event for the tool
-// summary line; viewmodel.HookHint decides it.
-func hookIndicatorText(hooks []registry.HookMetadata) string { return viewmodel.HookHint(hooks) }
 
 func formatElapsed(d time.Duration) string {
 	if d < time.Minute {

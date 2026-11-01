@@ -4,15 +4,15 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
 )
 
@@ -40,58 +40,47 @@ const (
 	maxPlanMarks = 12
 )
 
-// callVerb is the verb a call's row leads with; viewmodel.CallVerb decides it.
-func callVerb(name string) string { return viewmodel.CallVerb(name) }
-
-// callSubject is what a settled call acted on; viewmodel.CallSubject decides
-// it, against the session's active root.
-func callSubject(ev registry.AuditEvent, workdir string) string {
-	return viewmodel.CallSubject(ev, workdir)
-}
-
 // callResult is a settled call's right-aligned result, styled: its error, a
 // command's exit and duration, an edit's diff stat, the subagent it started,
 // or its summary. A hook's decision leads.
-func callResult(ev registry.AuditEvent) string {
+func callResult(t *acpwire.WireTool, c acpwire.WireCall) string {
 	var parts []string
 	style := mutedStyle()
-	if h := hookIndicatorText(ev.Hooks); h != "" {
-		parts = append(parts, h)
+	if c.HookHint != "" {
+		parts = append(parts, c.HookHint)
 	}
-	stat := viewmodel.CallDiffStat(ev)
 	switch {
-	case ev.Error != "":
-		parts = append(parts, firstLine(ev.Error))
+	case c.Error != "":
+		parts = append(parts, firstLine(c.Error))
 		style = errorStyle()
-	case viewmodel.IsShellFamily(ev.ToolName) && ev.CommandExitCode != nil && ev.Sandbox.KilledReason == "":
-		parts = append(parts, fmt.Sprintf("exit %d", *ev.CommandExitCode))
-		if ev.Duration > 0 {
-			parts = append(parts, formatElapsed(ev.Duration))
+	case viewmodel.IsShellFamily(t.Name) && c.ExitCode != nil && c.KilledReason == "":
+		parts = append(parts, fmt.Sprintf("exit %d", *c.ExitCode))
+		if c.DurationMs > 0 {
+			parts = append(parts, formatElapsed(time.Duration(c.DurationMs)*time.Millisecond))
 		}
-		if *ev.CommandExitCode != 0 {
+		if *c.ExitCode != 0 {
 			style = errorStyle()
 		}
-	case stat != "":
-		parts = append(parts, stat)
-	case viewmodel.JobStartID(ev) != "":
-		id := viewmodel.JobStartID(ev)
-		started := lipgloss.NewStyle().Foreground(theme.Current().StatusInfo).Render(glyph.Job+" "+id) +
+	case c.DiffStat != "":
+		parts = append(parts, c.DiffStat)
+	case c.JobID != "":
+		started := lipgloss.NewStyle().Foreground(theme.Current().StatusInfo).Render(glyph.Job+" "+c.JobID) +
 			mutedStyle().Render(" started")
 		if len(parts) > 0 {
 			return mutedStyle().Render(viewmodel.ScrubText(strings.Join(parts, dimSeparator))+dimSeparator) + started
 		}
 		return started
 	default:
-		if id := viewmodel.StartedSubagent(ev); id > 0 {
-			started := lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary).Render(fmt.Sprintf("%s #%d", glyph.Agent, id)) +
+		if t.SubagentID > 0 {
+			started := lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary).Render(fmt.Sprintf("%s #%d", glyph.Agent, t.SubagentID)) +
 				mutedStyle().Render(" started")
 			if len(parts) > 0 {
 				return mutedStyle().Render(viewmodel.ScrubText(strings.Join(parts, dimSeparator))+dimSeparator) + started
 			}
 			return started
 		}
-		if s := viewmodel.SummaryLine(ev); s != "" {
-			parts = append(parts, s)
+		if c.SummaryLine != "" {
+			parts = append(parts, c.SummaryLine)
 		}
 	}
 	return style.Render(viewmodel.ScrubText(strings.Join(parts, dimSeparator)))
@@ -148,16 +137,17 @@ func detailLines(b *strings.Builder, lines []string) {
 // renderCallRow is a settled call's row. Collapsed it is one line, plus the
 // callers of a symbol it changed and, when it failed, the last lines of its
 // output. Expanded, its diff, result or error follow under the subject.
-func renderCallRow(ev registry.AuditEvent, expanded bool, callers []string, w int, workdir string) string {
+func renderCallRow(t *acpwire.WireTool, d *acpwire.CallDetail, expanded bool, callers []string, w int) string {
+	call := t.Calls[0]
 	var b strings.Builder
-	b.WriteString(spineHead(callVerb(ev.ToolName), callSubject(ev, workdir), callResult(ev), w) + "\n")
+	b.WriteString(spineHead(t.Verb, call.Subject, callResult(t, call), w) + "\n")
 	dw := max(w-verbWidth, 1)
 	detailLines(&b, callersDetail(callers, dw))
 	switch {
 	case expanded:
-		detailLines(&b, toolBody(ev, dw))
-	case viewmodel.EventFailed(ev):
-		detailLines(&b, failedTail(ev, dw))
+		detailLines(&b, toolBody(t.Name, call, d, dw))
+	case call.Failed:
+		detailLines(&b, failedTail(call.Tail, dw))
 	}
 	return b.String()
 }
@@ -165,8 +155,7 @@ func renderCallRow(ev registry.AuditEvent, expanded bool, callers []string, w in
 // failedTail is the last few lines of a failed call's output, shown under its
 // collapsed row so the reason is visible without opening it. The tail is the
 // useful end: a test run prints its failures last.
-func failedTail(ev registry.AuditEvent, w int) []string {
-	lines := viewmodel.FailedTail(ev)
+func failedTail(lines []string, w int) []string {
 	out := make([]string, 0, len(lines))
 	for _, l := range lines {
 		out = append(out, mutedStyle().Render(ansi.Truncate(l, w, "…")))
@@ -180,25 +169,25 @@ const failedTailLines = viewmodel.FailedTailLines
 // renderGroupRow is a merged run of same-tool calls: their subjects on one
 // line and the count as the result. Expanded, one line per call follows with
 // its subject and summary.
-func renderGroupRow(evs []registry.AuditEvent, expanded bool, w int, workdir string) string {
-	subjects := make([]string, 0, len(evs))
-	for _, ev := range evs {
-		if s := callSubject(ev, workdir); s != "" {
-			subjects = append(subjects, s)
+func renderGroupRow(t *acpwire.WireTool, expanded bool, w int) string {
+	subjects := make([]string, 0, len(t.Calls))
+	for _, c := range t.Calls {
+		if c.Subject != "" {
+			subjects = append(subjects, c.Subject)
 		}
 	}
 	var b strings.Builder
-	b.WriteString(spineHead(callVerb(evs[0].ToolName), strings.Join(subjects, ", "), mutedStyle().Render(fmt.Sprintf("×%d", len(evs))), w) + "\n")
+	b.WriteString(spineHead(t.Verb, strings.Join(subjects, ", "), mutedStyle().Render(fmt.Sprintf("×%d", len(t.Calls))), w) + "\n")
 	if expanded {
 		dw := max(w-verbWidth, 1)
 		var lines []string
-		for _, ev := range evs {
-			line := callSubject(ev, workdir)
-			if s := viewmodel.SummaryLine(ev); s != "" {
+		for _, c := range t.Calls {
+			line := c.Subject
+			if c.SummaryLine != "" {
 				if line != "" {
 					line += dimSeparator
 				}
-				line += s
+				line += c.SummaryLine
 			}
 			lines = append(lines, mutedStyle().Render(ansi.Truncate(line, dw, "…")))
 		}
@@ -225,34 +214,34 @@ func pointerColor(p string) color.Color {
 // raw arguments, with a spinner and its elapsed time as the result. A
 // command's sandbox and the tail of its output follow; expanded, the whole
 // captured output does.
-func renderActiveCallRow(atc session.ActiveToolCall, c *stepRenderCtx, expanded bool, w int) string {
-	subject := viewmodel.RunningSubject(atc)
+func renderActiveCallRow(t *acpwire.WireTool, c *stepRenderCtx, expanded bool, w int) string {
+	r := t.Running
 	spin := c.toolSpinner
 	if spin == "" {
 		spin = spinnerFrames[0]
 	}
-	elapsed := formatElapsed(max(c.now.Sub(atc.StartedAt), 0))
+	elapsed := formatElapsed(max(c.now.Sub(acpwire.Time(r.StartedAt)), 0))
 	result := lipgloss.NewStyle().Foreground(accentColor).Render(spin + " " + elapsed)
 	// A call whose work already has a row in the box points at that row: the
 	// box shows the work, so the row keeps only its sandbox line.
 	ptr := ""
 	if c.pointer != nil {
-		ptr = c.pointer(atc.ToolCallID)
+		ptr = c.pointer(r.CallID)
 	}
 	if ptr != "" {
 		result = lipgloss.NewStyle().Foreground(pointerColor(ptr)).Render("→ " + ptr)
 	}
 	var b strings.Builder
-	b.WriteString(spineHead(callVerb(atc.Name), subject, result, w) + "\n")
+	b.WriteString(spineHead(t.Verb, r.Subject, result, w) + "\n")
 	dw := max(w-verbWidth, 1)
 	var lines []string
-	if viewmodel.IsShellFamily(atc.Name) {
+	if viewmodel.IsShellFamily(t.Name) {
 		if iso := sandboxIsolationText(c.sandbox, c.allowNetwork); iso != "" {
 			lines = append(lines, mutedStyle().Render(ansi.Truncate(iso, dw, "…")))
 		}
 	}
-	if ptr == "" && atc.Output != "" {
-		out := strings.Split(strings.TrimRight(viewmodel.ScrubBlock(atc.Output), "\n"), "\n")
+	if ptr == "" && r.Output != "" {
+		out := strings.Split(strings.TrimRight(viewmodel.ScrubBlock(r.Output), "\n"), "\n")
 		if !expanded && len(out) > liveTailLines {
 			out = out[len(out)-liveTailLines:]
 		}
@@ -269,15 +258,15 @@ func renderActiveCallRow(atc session.ActiveToolCall, c *stepRenderCtx, expanded 
 // renderPlanRow is a beat's plan line: one mark per todo (✓ done, ▸ in
 // progress, · waiting), the active todo's position and its text. A list
 // longer than maxPlanMarks draws the plan blocks instead of marks.
-func renderPlanRow(p *viewmodel.PlanUpdate, w int) string {
+func renderPlanRow(p *acpwire.WirePlan, w int) string {
 	v := "plan" + strings.Repeat(" ", verbWidth-len("plan"))
 	if p.Cleared {
 		return mutedStyle().Render(v+"cleared") + "\n"
 	}
 	th := theme.Current()
 	var marks string
-	if p.Total() <= maxPlanMarks {
-		parts := make([]string, 0, p.Total())
+	if p.Total <= maxPlanMarks {
+		parts := make([]string, 0, p.Total)
 		for _, st := range p.Status {
 			switch st {
 			case "completed":
@@ -290,13 +279,13 @@ func renderPlanRow(p *viewmodel.PlanUpdate, w int) string {
 		}
 		marks = strings.Join(parts, " ")
 	} else {
-		marks = livebox.Blocks(p.Done(), p.Total(), 8)
+		marks = livebox.Blocks(p.Done, p.Total, 8)
 	}
-	pos, text := fmt.Sprintf("%d/%d", p.Done(), p.Total()), ""
+	pos, text := fmt.Sprintf("%d/%d", p.Done, p.Total), ""
 	switch {
 	case p.Active > 0:
-		pos, text = fmt.Sprintf("%d/%d", p.Active, p.Total()), viewmodel.ScrubText(oneLine(p.ActiveText))
-	case p.Done() == p.Total():
+		pos, text = fmt.Sprintf("%d/%d", p.Active, p.Total), viewmodel.ScrubText(oneLine(p.ActiveText))
+	case p.Done == p.Total:
 		text = "done"
 	}
 	line := mutedStyle().Render(v) + marks + "  " + mutedStyle().Render(pos)

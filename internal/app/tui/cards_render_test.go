@@ -21,12 +21,12 @@ func TestCollapsedShellRowIsOneLine(t *testing.T) {
 	ev := registry.AuditEvent{ToolName: "shell.run", CommandExitCode: &code,
 		Args:          []byte(`{"command":"` + strings.Repeat("echo hello; ", 30) + `"}`),
 		ResultContent: "x"}
-	out := ansi.Strip(renderCallRow(ev, false, nil, 80, ""))
+	out := ansi.Strip(renderCallRow(wireTool("", ev), nil, false, nil, 80))
 	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 || !strings.Contains(out, "…") {
 		t.Fatalf("collapsed row = %q", out)
 	}
 	// Expanded rows keep the wrap: that is where the reader asked for detail.
-	if got := ansi.Strip(renderCallRow(ev, true, nil, 80, "")); strings.Count(got, "\n") < 2 {
+	if got := ansi.Strip(renderCallRow(wireTool("", ev), nil, true, nil, 80)); strings.Count(got, "\n") < 2 {
 		t.Fatalf("expanded row should wrap:\n%s", got)
 	}
 }
@@ -44,7 +44,8 @@ func TestShellRowElidesTheWorktree(t *testing.T) {
 			Step: &viewmodel.StepInfo{Step: session.Step{ID: 1}}, Children: []*viewmodel.Node{row}}
 	}
 
-	out, _ := renderStep(step(), &stepRenderCtx{workdir: root}, 100, false)
+	beat, rows := wireOf(step(), root)
+	out, _ := renderStep(beat, rows, &stepRenderCtx{workdir: root}, 100, false)
 	plain := ansi.Strip(out)
 	if !strings.Contains(plain, "⌂ pytest -q") {
 		t.Fatalf("row = %q", plain)
@@ -53,7 +54,8 @@ func TestShellRowElidesTheWorktree(t *testing.T) {
 		t.Fatalf("the worktree path should be gone: %q", plain)
 	}
 	// With no workdir known, the command stays exactly as the model wrote it.
-	out, _ = renderStep(step(), &stepRenderCtx{}, 100, false)
+	beat, rows = wireOf(step(), "")
+	out, _ = renderStep(beat, rows, &stepRenderCtx{}, 100, false)
 	if got := ansi.Strip(out); !strings.Contains(got, "cd "+root) {
 		t.Fatalf("row = %q", got)
 	}
@@ -69,7 +71,7 @@ func TestJobLaunchRowNamesTheJob(t *testing.T) {
 			ExecutionID: "exec-4", DisplayID: "job-4", ConversationID: "conv",
 			Attachment: registry.ExecutionAttachmentBackground, State: "running",
 		})}
-	out := ansi.Strip(renderCallRow(ev, false, nil, 80, ""))
+	out := ansi.Strip(renderCallRow(wireTool("", ev), nil, false, nil, 80))
 	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 {
 		t.Fatalf("launch row is not one line:\n%s", out)
 	}

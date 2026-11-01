@@ -90,6 +90,14 @@ func (m *Model) refreshViewport() {
 	}
 	m.lastTranscriptHash = sig
 
+	workdir := transcriptState.Workspace().ActiveRoot
+	// The wire index is projected here, after the content-signature check, so
+	// a frame whose content did not change keeps the index it already built.
+	// It is what is on screen, which is what browse actions act on, and it is
+	// what the renderers below read.
+	m.wire = wireIndex(viewmodel.Project(turns, workdir))
+	m.pruneDetails()
+
 	toolFrame := m.activeSpinnerFrame(session.ActivityTool)
 	rctx := &stepRenderCtx{
 		expanded:      m.expandedUnder,
@@ -108,7 +116,7 @@ func (m *Model) refreshViewport() {
 		routeProvider: transcriptState.ActiveRoute().Provider,
 		sandbox:       transcriptState.SandboxInfo(),
 		allowNetwork:  transcriptState.Config.Tools.Shell.AllowNetwork,
-		workdir:       transcriptState.Workspace().ActiveRoot,
+		workdir:       workdir,
 	}
 
 	blocks := make([]string, 0, len(snap.Items)+4)
@@ -169,12 +177,13 @@ func (m *Model) refreshViewport() {
 			indexTree(node, tree)
 			out, subs := m.renderNode(node, rctx, width, themeSig)
 			if out != "" {
-				isTight := prevNarrationOnly && node.Kind == viewmodel.KindStep && (node.Step == nil || node.Step.Todo == nil)
+				w := m.wire[node.ID.Key]
+				isTight := prevNarrationOnly && w != nil && w.Kind == acpwire.KindStep && (w.Step == nil || w.Step.Todo == nil)
 				if isTight && len(blocks) > 0 {
 					lineCursor-- // no blank line before a tight block
 					nextTight = true
 				}
-				prevNarrationOnly = narrationOnly(node)
+				prevNarrationOnly = narrationOnly(w)
 				bitems = collectBrowse(bitems, node, out, subs, lineCursor, turnFirst)
 				turnFirst = false
 			}
@@ -195,11 +204,6 @@ func (m *Model) refreshViewport() {
 	m.pruneRenderState(seen)
 	m.nodeRegions = regions
 	m.blockSpans = spans
-	// The wire index is projected here, after the content-signature check, so
-	// a frame whose content did not change keeps the index it already built.
-	// It is what is on screen, which is what browse actions act on.
-	m.wire = wireIndex(viewmodel.Project(turns, rctx.workdir))
-	m.pruneDetails()
 	m.setBrowseItems(bitems, tree)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
@@ -226,9 +230,9 @@ func (m *Model) refreshViewport() {
 
 // narrationOnly is a step that said something and ran nothing: the next step
 // continues it instead of starting a new paragraph.
-func narrationOnly(n *viewmodel.Node) bool {
-	return n.Kind == viewmodel.KindStep && n.Step != nil && !n.Live && len(n.Step.Narration) > 0 &&
-		len(n.Children) == 0 && len(n.Step.Thinking) == 0
+func narrationOnly(w *acpwire.WireNode) bool {
+	return w != nil && w.Kind == acpwire.KindStep && w.Step != nil && !w.Live && len(w.Step.Narration) > 0 &&
+		len(w.Children) == 0 && len(w.Step.Thoughts) == 0
 }
 
 // renderNode renders one top-level block, from the cache when it is still
@@ -257,11 +261,12 @@ func (m *Model) renderNode(n *viewmodel.Node, c *stepRenderCtx, width int, theme
 
 // drawNode is the renderer proper: it dispatches on what the node holds.
 func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string, []subRegion) {
+	w := m.wire[n.ID.Key]
 	switch {
 	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
 		return renderReceipt(n.Receipt, width), nil
-	case n.Kind == viewmodel.KindStep && n.Step != nil:
-		return renderStep(n, c, width, m.expandAll)
+	case w != nil && w.Step != nil:
+		return renderStep(w, m.wireChildren(w), c, width, m.expandAll)
 	case n.Kind == viewmodel.KindThinking && n.Step != nil:
 		// Reasoning before any step has begun: the bounded live box on its own.
 		rv := m.regionView(viewmodel.LiveThinkingID)
@@ -286,6 +291,18 @@ func wireIndex(tree acpwire.WireTree) map[string]*acpwire.WireNode {
 	out := make(map[string]*acpwire.WireNode, len(tree.Nodes))
 	for i := range tree.Nodes {
 		out[tree.Nodes[i].ID] = &tree.Nodes[i]
+	}
+	return out
+}
+
+// wireChildren is w's children's wire nodes, in order, skipping any the index
+// lacks.
+func (m *Model) wireChildren(w *acpwire.WireNode) []*acpwire.WireNode {
+	out := make([]*acpwire.WireNode, 0, len(w.Children))
+	for _, key := range w.Children {
+		if c, ok := m.wire[key]; ok {
+			out = append(out, c)
+		}
 	}
 	return out
 }

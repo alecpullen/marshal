@@ -79,7 +79,7 @@ func flaggedCallerKey(t *testing.T, m Model) viewmodel.NodeID {
 }
 
 func TestCallersLineRendersWhenResolved(t *testing.T) {
-	out := stripANSI(renderCallRow(editEvent(), false, []string{"a.go:10", "b.go:20"}, 100, ""))
+	out := stripANSI(renderCallRow(wireTool("", editEvent()), nil, false, []string{"a.go:10", "b.go:20"}, 100))
 	if !strings.Contains(out, "callers") {
 		t.Fatalf("expected a callers line:\n%s", out)
 	}
@@ -89,7 +89,7 @@ func TestCallersLineRendersWhenResolved(t *testing.T) {
 }
 
 func TestNoCallersLineWhenEmpty(t *testing.T) {
-	out := stripANSI(renderCallRow(editEvent(), false, nil, 100, ""))
+	out := stripANSI(renderCallRow(wireTool("", editEvent()), nil, false, nil, 100))
 	if strings.Contains(out, "callers") {
 		t.Fatalf("empty result must render no callers line — '0 callers' is\nindistinguishable from an unindexed server:\n%s", out)
 	}

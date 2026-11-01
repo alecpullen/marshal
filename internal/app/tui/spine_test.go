@@ -1,14 +1,17 @@
 package tui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
 	"marshal/internal/viewmodel"
@@ -31,12 +34,12 @@ func plainLines(s string) []string {
 // the row's right edge. A long subject gives way to the result.
 func TestCallRowLaysOutVerbSubjectAndResult(t *testing.T) {
 	ev := registry.AuditEvent{ToolName: "file.read", Args: json.RawMessage(`{"path":"evals/tokenizer.toml"}`), ResultSummary: "18 lines"}
-	line := plainLines(renderCallRow(ev, false, nil, 60, ""))[0]
+	line := plainLines(renderCallRow(wireTool("", ev), nil, false, nil, 60))[0]
 	if !strings.HasPrefix(line, "read    evals/tokenizer.toml") || !strings.HasSuffix(line, "18 lines") || ansi.StringWidth(line) != 60 {
 		t.Fatalf("row = %q", line)
 	}
 	ev.Args = json.RawMessage(`{"path":"` + strings.Repeat("deep/", 20) + `file.go"}`)
-	line = plainLines(renderCallRow(ev, false, nil, 60, ""))[0]
+	line = plainLines(renderCallRow(wireTool("", ev), nil, false, nil, 60))[0]
 	if !strings.Contains(line, "…") || !strings.HasSuffix(line, "18 lines") || ansi.StringWidth(line) > 60 {
 		t.Fatalf("a long subject truncates and keeps the result: %q", line)
 	}
@@ -69,7 +72,8 @@ func TestCallResults(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := ansi.Strip(callResult(c.ev)); got != c.want {
+			tool := wireTool("", c.ev)
+			if got := ansi.Strip(callResult(tool, tool.Calls[0])); got != c.want {
 				t.Fatalf("callResult = %q, want %q", got, c.want)
 			}
 		})
@@ -81,10 +85,10 @@ func TestCallResults(t *testing.T) {
 func TestEditRowIsOneLineUntilExpanded(t *testing.T) {
 	ev := registry.AuditEvent{ToolName: "file.edit", Args: json.RawMessage(`{"path":"x.go"}`),
 		ResultContent: "--- a/x.go\n+++ b/x.go\n@@ -1 +1 @@\n-old line\n+new line\n"}
-	if got := plainLines(renderCallRow(ev, false, nil, 80, "")); len(got) != 1 {
+	if got := plainLines(renderCallRow(wireTool("", ev), nil, false, nil, 80)); len(got) != 1 {
 		t.Fatalf("collapsed edit = %q", got)
 	}
-	open := plainLines(renderCallRow(ev, true, nil, 80, ""))
+	open := plainLines(renderCallRow(wireTool("", ev), nil, true, nil, 80))
 	body := strings.Join(open[1:], "\n")
 	if !strings.Contains(body, "new line") || !strings.HasPrefix(open[1], strings.Repeat(" ", verbWidth)) {
 		t.Fatalf("expanded edit = %q", open)
@@ -97,21 +101,21 @@ func TestFailedCallShowsItsTailCollapsed(t *testing.T) {
 	code := 1
 	ev := registry.AuditEvent{ToolName: "shell.run", Args: json.RawMessage(`{"command":"go test ./..."}`), CommandExitCode: &code,
 		ResultContent: "line 1\nline 2\nline 3\nline 4\n--- FAIL: TestX"}
-	lines := plainLines(renderCallRow(ev, false, nil, 80, ""))
+	lines := plainLines(renderCallRow(wireTool("", ev), nil, false, nil, 80))
 	if len(lines) != 1+failedTailLines || !strings.Contains(lines[len(lines)-1], "--- FAIL: TestX") || strings.Contains(strings.Join(lines, "\n"), "line 1") {
 		t.Fatalf("collapsed failure = %q", lines)
 	}
-	if open := ansi.Strip(renderCallRow(ev, true, nil, 80, "")); !strings.Contains(open, "line 1") {
+	if open := ansi.Strip(renderCallRow(wireTool("", ev), nil, true, nil, 80)); !strings.Contains(open, "line 1") {
 		t.Fatalf("expanded failure = %q", open)
 	}
 }
 
 func TestGroupRowCollapsedIsOneLineExpandedOnePerCall(t *testing.T) {
-	collapsed := plainLines(renderGroupRow(groupEvents(), false, 80, ""))
+	collapsed := plainLines(renderGroupRow(wireTool("", groupEvents()...), false, 80))
 	if len(collapsed) != 1 || !strings.Contains(collapsed[0], "budget.go, runner.go, execute.go") || !strings.HasSuffix(collapsed[0], "×3") {
 		t.Fatalf("collapsed run = %q", collapsed)
 	}
-	expanded := plainLines(renderGroupRow(groupEvents(), true, 80, ""))
+	expanded := plainLines(renderGroupRow(wireTool("", groupEvents()...), true, 80))
 	if len(expanded) != 4 {
 		t.Fatalf("expanded run = %q", expanded)
 	}
@@ -130,7 +134,7 @@ func TestGroupRowFitsItsWidth(t *testing.T) {
 		evs = append(evs, registry.AuditEvent{ToolName: "file.read", ResultSummary: "ok", Args: json.RawMessage(`{"path":"` + p + `"}`)})
 	}
 	for _, w := range []int{30, 60} {
-		lines := plainLines(renderGroupRow(evs, false, w, ""))
+		lines := plainLines(renderGroupRow(wireTool("", evs...), false, w))
 		if len(lines) != 1 || ansi.StringWidth(lines[0]) > w || !strings.Contains(lines[0], "…") || !strings.HasSuffix(lines[0], "×4") {
 			t.Fatalf("w=%d: run = %q", w, lines)
 		}
@@ -143,7 +147,7 @@ func TestActiveCallRowNamesItsSubject(t *testing.T) {
 	now := time.Unix(1000, 0)
 	c := &stepRenderCtx{toolSpinner: "⠋", now: now}
 	edit := session.ActiveToolCall{Name: "file.edit", Path: "evals/thresholds.toml", Args: "evals/thresholds.toml", StartedAt: now.Add(-2 * time.Second)}
-	if line := plainLines(renderActiveCallRow(edit, c, false, 80))[0]; !strings.HasPrefix(line, "edit    evals/thresholds.toml") || !strings.HasSuffix(line, "⠋ 2s") {
+	if line := plainLines(renderActiveCallRow(wireRunning(edit), c, false, 80))[0]; !strings.HasPrefix(line, "edit    evals/thresholds.toml") || !strings.HasSuffix(line, "⠋ 2s") {
 		t.Fatalf("running edit = %q", line)
 	}
 	var out []string
@@ -151,11 +155,11 @@ func TestActiveCallRowNamesItsSubject(t *testing.T) {
 		out = append(out, fmt.Sprintf("PASS pkg/%d", i))
 	}
 	run := session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: now, Output: strings.Join(out, "\n")}
-	collapsed := plainLines(renderActiveCallRow(run, c, false, 80))
+	collapsed := plainLines(renderActiveCallRow(wireRunning(run), c, false, 80))
 	if len(collapsed) != 1+liveTailLines || strings.Contains(strings.Join(collapsed, "\n"), "pkg/1\n") || !strings.Contains(collapsed[len(collapsed)-1], "pkg/10") {
 		t.Fatalf("collapsed running command = %q", collapsed)
 	}
-	if expanded := plainLines(renderActiveCallRow(run, c, true, 80)); len(expanded) != 11 {
+	if expanded := plainLines(renderActiveCallRow(wireRunning(run), c, true, 80)); len(expanded) != 11 {
 		t.Fatalf("expanded running command = %q", expanded)
 	}
 }
@@ -174,7 +178,7 @@ func TestPlanRow(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := plainLines(renderPlanRow(&c.p, 80))[0]; got != c.want {
+			if got := plainLines(renderPlanRow(wirePlan(c.p), 80))[0]; got != c.want {
 				t.Fatalf("plan row = %q, want %q", got, c.want)
 			}
 		})
@@ -184,7 +188,7 @@ func TestPlanRow(t *testing.T) {
 		long.Status[i] = "pending"
 	}
 	long.Status[0] = "in_progress"
-	if got := plainLines(renderPlanRow(&long, 80))[0]; strings.Contains(got, "·") || !strings.Contains(got, "▱") || !strings.Contains(got, "1/13  first") {
+	if got := plainLines(renderPlanRow(wirePlan(long), 80))[0]; strings.Contains(got, "·") || !strings.Contains(got, "▱") || !strings.Contains(got, "1/13  first") {
 		t.Fatalf("a long plan draws blocks: %q", got)
 	}
 }
@@ -240,7 +244,8 @@ func TestSpineConnectsRowsToTheirBeat(t *testing.T) {
 		n.Children[i].Tools[0].ToolName = "git.status" // distinct rows that do not merge
 		n.Children[i].Tools[0].ResultContent = fmt.Sprintf("body %d", i)
 	}
-	out, _ := renderStep(n, &stepRenderCtx{expanded: func(id viewmodel.NodeID, inherited bool) bool {
+	beat, rows := wireOf(n, "")
+	out, _ := renderStep(beat, rows, &stepRenderCtx{expanded: func(id viewmodel.NodeID, inherited bool) bool {
 		return id == n.Children[0].ID || id == n.Children[2].ID
 	}}, 80, false)
 	lines := plainLines(out)
@@ -273,9 +278,10 @@ func TestSpineRowsFitTheFrame(t *testing.T) {
 		PlanUpdate: &viewmodel.PlanUpdate{Status: []string{"completed", "in_progress"}, Active: 2, ActiveText: strings.Repeat("long todo ", 20)}})
 	add(&viewmodel.Node{ID: viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "live"}, Kind: viewmodel.KindTool, Live: true,
 		Active: &session.ActiveToolCall{Name: "shell.run", Args: strings.Repeat("make all ", 20), StartedAt: t0, Output: strings.Repeat("o", 300)}})
+	beat, rows := wireOf(n, "")
 	for _, width := range []int{40, 80, 120} {
 		for _, open := range []bool{false, true} {
-			out, _ := renderStep(n, &stepRenderCtx{now: t0}, width, open)
+			out, _ := renderStep(beat, rows, &stepRenderCtx{now: t0}, width, open)
 			for _, l := range plainLines(out) {
 				if w := ansi.StringWidth(l); w > width {
 					t.Errorf("width=%d open=%v: %d-cell line %q", width, open, w, l)
@@ -312,7 +318,7 @@ func TestRunningCallPointsAtItsBoxRow(t *testing.T) {
 	c := &stepRenderCtx{now: now, toolSpinner: "⠋", pointer: workPointer([]viewmodel.WorkItem{item})}
 	call := session.ActiveToolCall{Name: "agent.run", Args: `{"description":"review the config change"}`,
 		ToolCallID: "g", StartedAt: now, Output: "reviewing the config change"}
-	lines := plainLines(renderActiveCallRow(call, c, false, 80))
+	lines := plainLines(renderActiveCallRow(wireRunning(call), c, false, 80))
 	if len(lines) != 1 || !strings.HasSuffix(lines[0], "→ ⧉ #3") {
 		t.Fatalf("a pointed call = %q", lines)
 	}
@@ -333,7 +339,7 @@ func TestRunningCallWithoutWorkKeepsItsSpinner(t *testing.T) {
 	}
 	c := &stepRenderCtx{now: now, toolSpinner: "⠋", pointer: workPointer(items)}
 	call := session.ActiveToolCall{Name: "file.read", Path: "a.go", ToolCallID: "r", StartedAt: now.Add(-2 * time.Second)}
-	line := plainLines(renderActiveCallRow(call, c, false, 80))[0]
+	line := plainLines(renderActiveCallRow(wireRunning(call), c, false, 80))[0]
 	if !strings.HasSuffix(line, "⠋ 2s") || strings.Contains(line, "→") {
 		t.Fatalf("a call without work = %q", line)
 	}
@@ -349,7 +355,7 @@ func TestStepRowNamesItsSubagentInCallResult(t *testing.T) {
 			Data: map[string]any{registry.NoticeSubagentWork: registry.SubagentWorkReference{
 				TaskKey: "task-1", RuntimeEpoch: "epoch-1", AgentID: 3, ChildSessionID: "child"}}},
 	}
-	line := plainLines(renderCallRow(ev, false, nil, 80, ""))[0]
+	line := plainLines(renderCallRow(wireTool("", ev), nil, false, nil, 80))[0]
 	if !strings.Contains(line, "⧉ #3 started") {
 		t.Fatalf("dispatch row = %q, want the subagent it started", line)
 	}
@@ -359,11 +365,11 @@ func TestStepRowNamesItsSubagentInCallResult(t *testing.T) {
 // each under its own header.
 func TestCallRowRendersEveryFileOfAPatch(t *testing.T) {
 	diff := unifiedDiffForFile("alpha.go", 4) + unifiedDiffForFile("beta.go", 4) + unifiedDiffForFile("gamma.go", 4)
-	out := stripANSI(renderCallRow(registry.AuditEvent{
+	out := stripANSI(renderCallRow(wireTool("", registry.AuditEvent{
 		ToolName:      "file.write_patch",
 		ResultSummary: "applied patch",
 		ResultContent: diff,
-	}, true, nil, 80, ""))
+	}), nil, true, nil, 80))
 	for _, path := range []string{"alpha.go", "beta.go", "gamma.go"} {
 		if !strings.Contains(out, path) {
 			t.Fatalf("diff output missing stat header for %s:\n%s", path, out)
@@ -389,7 +395,7 @@ func TestDiffLinesAreTruncatedNotWrapped(t *testing.T) {
 		FilesChanged:  []string{"x.go"},
 	}
 	const width = 80
-	for i, line := range strings.Split(strings.TrimRight(renderCallRow(event, true, nil, width, ""), "\n"), "\n") {
+	for i, line := range strings.Split(strings.TrimRight(renderCallRow(wireTool("", event), nil, true, nil, width), "\n"), "\n") {
 		if got := ansi.StringWidth(line); got > width {
 			t.Fatalf("row %d is %d cells wide, want <= %d — it will wrap and break the rail", i, got, width)
 		}
@@ -398,22 +404,22 @@ func TestDiffLinesAreTruncatedNotWrapped(t *testing.T) {
 
 // A collapsed row carries no body; expanding it is how a reader asks for one.
 func TestCallRowHidesItsResultWhenCollapsed(t *testing.T) {
-	out := stripANSI(renderCallRow(registry.AuditEvent{
+	out := stripANSI(renderCallRow(wireTool("", registry.AuditEvent{
 		ToolName:      "agent.run",
 		ResultSummary: "subagent completed",
 		ResultContent: "full subagent report body",
-	}, false, nil, 80, ""))
+	}), nil, false, nil, 80))
 	if strings.Contains(out, "full subagent report body") {
 		t.Fatalf("collapsed row must not render result content:\n%s", out)
 	}
 }
 
 func TestCallRowShowsItsResultWhenExpanded(t *testing.T) {
-	out := stripANSI(renderCallRow(registry.AuditEvent{
+	out := stripANSI(renderCallRow(wireTool("", registry.AuditEvent{
 		ToolName:      "agent.run",
 		ResultSummary: "subagent completed",
 		ResultContent: "full subagent report body",
-	}, true, nil, 80, ""))
+	}), nil, true, nil, 80))
 	if !strings.Contains(out, "full subagent report body") {
 		t.Fatalf("expanded row must render result content:\n%s", out)
 	}
@@ -421,13 +427,13 @@ func TestCallRowShowsItsResultWhenExpanded(t *testing.T) {
 
 func TestFailedEditRowShowsItsFailureWhenExpanded(t *testing.T) {
 	exitCode := 2
-	out := stripANSI(renderCallRow(registry.AuditEvent{
+	out := stripANSI(renderCallRow(wireTool("", registry.AuditEvent{
 		ToolName:        "file.write_patch",
 		Error:           "patch rejected",
 		Args:            []byte(`{"path":"a.go"}`),
 		CommandExitCode: &exitCode,
 		ResultContent:   "patch output",
-	}, true, nil, 80, ""))
+	}), nil, true, nil, 80))
 	if !strings.Contains(out, "(exit code 2)") || !strings.Contains(out, `args: {"path":"a.go"}`) {
 		t.Fatalf("expanded failed diff tool must show failure details:\n%s", out)
 	}
@@ -438,11 +444,11 @@ func TestCallRowCapsItsExpandedResult(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		lines = append(lines, fmt.Sprintf("report line %d", i))
 	}
-	out := stripANSI(renderCallRow(registry.AuditEvent{
+	out := stripANSI(renderCallRow(wireTool("", registry.AuditEvent{
 		ToolName:      "agent.run",
 		ResultSummary: "subagent completed",
 		ResultContent: strings.Join(lines, "\n"),
-	}, true, nil, 80, ""))
+	}), nil, true, nil, 80))
 	if !strings.Contains(out, "… 8 more lines") {
 		t.Fatalf("expanded content must be capped with an elision marker:\n%s", out)
 	}
@@ -452,10 +458,10 @@ func TestCallRowCapsItsExpandedResult(t *testing.T) {
 }
 
 func TestCallRowFitsWidthWithWideRunes(t *testing.T) {
-	out := renderCallRow(registry.AuditEvent{
+	out := renderCallRow(wireTool("", registry.AuditEvent{
 		ToolName:      "file.read",
 		ResultSummary: "読み込み完了 — これは幅を超えるとても長い日本語のサマリーです",
-	}, false, nil, 40, "")
+	}), nil, false, nil, 40)
 	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		if w := ansi.StringWidth(line); w > 40 {
 			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
@@ -474,7 +480,7 @@ func TestExpandedCallRowShowsTheWholeDiff(t *testing.T) {
 		ToolName:      "file.write_patch",
 		ResultContent: diff.String(),
 	}
-	expanded := renderCallRow(event, true, nil, 80, "")
+	expanded := renderCallRow(wireTool("", event), nil, true, nil, 80)
 	if strings.Contains(expanded, "more lines") {
 		t.Fatalf("expected expanded diff to show every line, got: %s", expanded)
 	}
@@ -487,7 +493,7 @@ func TestExpandedCallRowShowsTheFailureDetail(t *testing.T) {
 	longArgs := `{"command": "run a very long command that keeps going and going until it wraps well past the sixty cell budget of this test renderer"}`
 	event := registry.AuditEvent{ToolName: "shell.run", Error: "boom", Args: []byte(longArgs)}
 
-	expanded := stripANSI(renderCallRow(event, true, nil, 60, ""))
+	expanded := stripANSI(renderCallRow(wireTool("", event), nil, true, nil, 60))
 	if !strings.Contains(expanded, "error: boom") {
 		t.Fatalf("expected the error detail line, got:\n%q", expanded)
 	}
@@ -500,8 +506,108 @@ func TestExpandedCallRowShowsTheFailureDetail(t *testing.T) {
 		}
 	}
 
-	collapsed := stripANSI(renderCallRow(event, false, nil, 60, ""))
+	collapsed := stripANSI(renderCallRow(wireTool("", event), nil, false, nil, 60))
 	if strings.Contains(collapsed, "args: ") {
 		t.Fatalf("collapsed render should not contain the args body:\n%q", collapsed)
+	}
+}
+
+// The wire caps a call's text. An expanded row it cut reads the whole diff
+// from the cache once the row is open, and draws the cut text until then.
+func TestExpandedCallRowReadsItsWholeDiff(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	var diff strings.Builder
+	diff.WriteString("--- a/x.go\n+++ b/x.go\n")
+	for i := 0; i < 400; i++ {
+		diff.WriteString(fmt.Sprintf("+added line %03d xx\n", i))
+	}
+	diff.WriteString("+LAST LINE\n")
+	stepFixture(t, &m, session.Actor{}, "Editing the file.", registry.AuditEvent{
+		ToolName: "file.edit", Args: []byte(`{"path":"x.go"}`), ResultContent: diff.String()})
+	counter := &stackNodeCounter{Session: m.sess}
+	m.sess = counter
+	content := func() string { return stripANSI(strings.Join(m.contentLines, "\n")) }
+
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if len(m.detailWant) != 0 {
+		t.Fatalf("a collapsed row asked for %d details", len(m.detailWant))
+	}
+	if strings.Contains(content(), "LAST LINE") {
+		t.Fatal("a collapsed row must not draw the diff")
+	}
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	m = asModel(t, updated)
+	if strings.Contains(content(), "LAST LINE") {
+		t.Fatal("the wire's cut text is all the row has until the detail lands")
+	}
+	if counter.calls != 0 {
+		t.Fatalf("a render made %d StackNode calls, want none", counter.calls)
+	}
+	if cmd == nil {
+		t.Fatal("expanding the row must send the detail it asked for")
+	}
+
+	m = drainCmds(m, cmd)
+	if !strings.Contains(content(), "LAST LINE") {
+		t.Fatalf("the expanded row must draw the whole diff:\n%s", content())
+	}
+	if counter.calls != 1 {
+		t.Fatalf("want one StackNode call, got %d", counter.calls)
+	}
+}
+
+// A running row never asks for detail: it draws the wire's own tail, however
+// much the wire cut.
+func TestRunningRowsNeverAskForDetail(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	m.busy, m.turnStartedAt = true, time.Now()
+	m.state.AddMessage(session.RoleUser, "Run the evals", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Running the eval suite now.")
+	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./evals/...", StepID: id,
+		ToolCallID: "c1", StartedAt: time.Now()}
+	m.state.SetActiveToolCall(atc)
+	m.state.AppendActiveToolCallOutput("c1", strings.Repeat("ok\n", acpwire.WireTextCap))
+	m.toggleExpanded(viewmodel.ActiveToolID(atc))
+
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if len(m.detailWant) != 0 {
+		t.Fatalf("a running row asked for %d details", len(m.detailWant))
+	}
+}
+
+// toolBody draws the wire's text, and the cache's whole text when the wire
+// cut it, so a cut call still shows all of it.
+func TestToolBodyTakesTheWholeTextFromTheDetail(t *testing.T) {
+	full := `{"path":"a.go","content":"` + strings.Repeat("x", 5000) + `END"}`
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, []byte(full), "", "  "); err != nil {
+		t.Fatalf("json.Indent: %v", err)
+	}
+	// Joined with no separator, so a wrap cannot split what the test looks
+	// for.
+	joined := func(lines []string) string { return stripANSI(strings.Join(lines, "")) }
+
+	failed := acpwire.WireCall{Args: full[:acpwire.WireTextCap], Error: "boom", Truncated: true}
+	got := joined(toolBody("file.write", failed, &acpwire.CallDetail{Args: indented.String()}, 60))
+	if !strings.Contains(got, `args: {"path":"a.go","content":"`) || !strings.HasSuffix(got, `END"}`) {
+		t.Fatalf("the detail's args = %q", got)
+	}
+
+	got = joined(toolBody("file.write", failed, &acpwire.CallDetail{Args: "not json"}, 60))
+	if !strings.HasSuffix(got, "args: not json") {
+		t.Fatalf("args that do not parse pass through = %q", got)
+	}
+
+	// An empty wire output means the call had no result, and the detail's
+	// summary fallback is not one.
+	run := acpwire.WireCall{Args: "go test", Truncated: true}
+	if lines := toolBody("shell.run", run, &acpwire.CallDetail{Output: "exit 0"}, 60); len(lines) != 0 {
+		t.Fatalf("a call with no result drew %q", lines)
 	}
 }

@@ -28,7 +28,8 @@ func beatNode(narr string, calls int) *viewmodel.Node {
 }
 
 func TestRenderHeadlessBeatHasNoInventedHeader(t *testing.T) {
-	out, _ := renderStep(beatNode("", 2), &stepRenderCtx{}, 100, false)
+	beat, rows := wireOf(beatNode("", 2), "")
+	out, _ := renderStep(beat, rows, &stepRenderCtx{}, 100, false)
 	plain := ansi.Strip(out)
 	for _, bad := range []string{"inferred", "ran ", "working", "thinking"} {
 		if strings.Contains(plain, bad) {
@@ -46,7 +47,8 @@ func TestRenderHeadlessBeatHasNoInventedHeader(t *testing.T) {
 
 // Review focus 1: a long headless beat shows the last BeatRowCap rows.
 func TestRenderHeadlessBeatCapsRows(t *testing.T) {
-	out, _ := renderStep(beatNode("", viewmodel.BeatRowCap+5), &stepRenderCtx{}, 100, false)
+	beat, rows := wireOf(beatNode("", viewmodel.BeatRowCap+5), "")
+	out, _ := renderStep(beat, rows, &stepRenderCtx{}, 100, false)
 	plain := ansi.Strip(out)
 	if !strings.Contains(plain, "… 5 earlier calls") {
 		t.Fatalf("want a collapsed-count line:\n%s", plain)
@@ -61,7 +63,8 @@ func TestRenderHeadlessBeatCapsRows(t *testing.T) {
 func TestLabelledBeatCarriesTheTodoTag(t *testing.T) {
 	n := beatNode("Parser first.", 1)
 	n.Step.Todo = &viewmodel.TodoLabel{ID: "p", Index: 3, Total: 9, Content: "AccessibleModal initialFocus"}
-	out, _ := renderStep(n, &stepRenderCtx{}, 80, false)
+	beat, rows := wireOf(n, "")
+	out, _ := renderStep(beat, rows, &stepRenderCtx{}, 80, false)
 	plain := ansi.Strip(out)
 	first := strings.SplitN(plain, "\n", 2)[0]
 	if !strings.HasPrefix(first, " ● Parser first.") || !strings.HasSuffix(first, "▸ 3/9") || len([]rune(first)) != 80 {

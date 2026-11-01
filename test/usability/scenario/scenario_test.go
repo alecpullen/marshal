@@ -2,14 +2,105 @@ package scenario
 
 import (
 	"context"
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"marshal/test/usability/actor"
+	"marshal/test/usability/actor/scripted"
 	"marshal/test/usability/screen"
 )
+
+// writeHelper writes an executable /bin/sh script that runs body.
+func writeHelper(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "helper.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatalf("write helper: %v", err)
+	}
+	return path
+}
+
+func strPtr(s string) *string { return &s }
+
+// pasteResizeHelper acknowledges a bracketed paste by echoing the exact bytes
+// it received as hex, and reports the window size it observes whenever a line
+// arrives. COUNT is replaced with the framing length before the script runs.
+const pasteResizeHelper = `
+stty raw -echo
+printf 'READY\r\n'
+printf 'SIZE:%s\r\n' "$(stty size)"
+pasted=$(dd bs=1 count=COUNT 2>/dev/null | od -An -v -tx1 | tr -d ' \n')
+printf 'PASTE:%s\r\n' "$pasted"
+stty sane
+stty -echo
+while read -r line; do
+  printf 'SIZE:%s\r\n' "$(stty size)"
+done
+`
+
+// TestRunnerPasteAndResize drives the runner's paste and resize dispatch. The
+// script waits for both the exact bracketed-paste acknowledgement and the
+// observed window size before it succeeds.
+func TestRunnerPasteAndResize(t *testing.T) {
+	t.Run("PasteAndResize", func(t *testing.T) {
+		const payload = "héllo ☃"
+		framed := "\x1b[200~" + payload + "\x1b[201~"
+		wantAck := "PASTE:" + hex.EncodeToString([]byte(framed))
+
+		bin := writeHelper(t, strings.ReplaceAll(pasteResizeHelper, "COUNT", strconv.Itoa(len(framed))))
+
+		scr := &scripted.Scripted{
+			Name: "paste and resize",
+			Steps: []scripted.Step{
+				{Paste: strPtr(payload), WaitFor: scripted.WaitFor{ScreenContains: "READY"}},
+				{WaitOnly: true, WaitFor: scripted.WaitFor{ScreenContains: wantAck}},
+				{Resize: &actor.Size{Width: 100, Height: 30}, WaitFor: scripted.WaitFor{ScreenContains: "PASTE:"}},
+				{SendKey: "enter", WaitFor: scripted.WaitFor{ScreenContains: "SIZE:24 80"}},
+				{WaitOnly: true, WaitFor: scripted.WaitFor{ScreenContains: "SIZE:30 100"}},
+			},
+		}
+
+		r := NewRunner(RunnerConfig{BinaryPath: bin, Width: 80, Height: 24, WorkDir: t.TempDir()})
+		res, err := r.Run(context.Background(), Scenario{Name: "paste-resize", ActorType: "scripted", Actor: scr})
+		if err != nil {
+			t.Fatalf("Run: %v; result = %+v", err, res)
+		}
+		if !res.Success {
+			t.Fatalf("Success = false, want true; result = %+v", res)
+		}
+		// The paste counts by payload bytes, the enter by one; resize and
+		// wait-only steps add nothing.
+		if want := len(payload) + 1; res.Keystrokes != want {
+			t.Fatalf("Keystrokes = %d, want %d", res.Keystrokes, want)
+		}
+	})
+
+	t.Run("InvalidSizeFails", func(t *testing.T) {
+		bin := writeHelper(t, "\nprintf 'READY\\r\\n'\nsleep 5\n")
+		act := &stubActor{actions: []actor.Action{
+			{Type: actor.ActionResize, Width: 0, Height: 24},
+		}}
+
+		r := NewRunner(RunnerConfig{BinaryPath: bin, Width: 80, Height: 24, WorkDir: t.TempDir()})
+		res, err := r.Run(context.Background(), Scenario{Name: "bad-resize", Actor: act})
+		if err == nil {
+			t.Fatalf("Run error = nil, want the harness resize rejection; result = %+v", res)
+		}
+		if res.Success {
+			t.Fatalf("Success = true, want false when the resize is rejected")
+		}
+		if res.Error == "" {
+			t.Fatalf("result.Error is empty, want the resize rejection recorded")
+		}
+		if !strings.Contains(res.Error, "65535") {
+			t.Fatalf("result.Error = %q, want the out-of-range resize error", res.Error)
+		}
+	})
+}
 
 type stubActor struct {
 	actions []actor.Action

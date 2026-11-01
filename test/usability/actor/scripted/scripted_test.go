@@ -49,6 +49,123 @@ func TestScriptedTypeStep(t *testing.T) {
 
 func boolPtr(b bool) *bool { return &b }
 
+func strPtr(s string) *string { return &s }
+
+// TestScriptedPasteAndResize pins the paste/resize action mapping, their wait
+// gating, the empty-paste payload, and the exactly-one-action rejection.
+func TestScriptedPasteAndResize(t *testing.T) {
+	t.Run("PayloadAndGating", func(t *testing.T) {
+		const payload = "héllo ☃"
+		scr := &Scripted{
+			Steps: []Step{
+				{Paste: strPtr(payload), WaitFor: WaitFor{ScreenContains: "prompt"}},
+				{Resize: &actor.Size{Width: 100, Height: 30}, WaitFor: WaitFor{ScreenContains: "SIZE"}},
+				{Paste: strPtr(""), WaitFor: WaitFor{ScreenContains: "PASTE-END"}},
+			},
+		}
+
+		// Wait gating: an unmatched condition yields a no-op and stays put.
+		act, err := scr.Act(context.Background(), screen.Screen{Content: "loading"})
+		if err != nil {
+			t.Fatalf("Act (unmatched paste): %v", err)
+		}
+		if act.Type != actor.ActionNoOp {
+			t.Fatalf("unmatched paste action = %+v, want noop", act)
+		}
+		if scr.pos != 0 {
+			t.Fatalf("pos = %d after unmatched paste step, want 0", scr.pos)
+		}
+
+		// Matched: the paste action carries the payload verbatim.
+		act, err = scr.Act(context.Background(), screen.Screen{Content: "prompt ❯ "})
+		if err != nil {
+			t.Fatalf("Act (paste): %v", err)
+		}
+		if act.Type != actor.ActionPaste || act.Text != payload {
+			t.Fatalf("paste action = %+v, want type %q payload %q", act, actor.ActionPaste, payload)
+		}
+		if act.Width != 0 || act.Height != 0 {
+			t.Fatalf("paste action = %+v, want no resize dimensions", act)
+		}
+		if scr.pos != 1 {
+			t.Fatalf("pos = %d after paste step, want 1", scr.pos)
+		}
+
+		// The resize step is gated too.
+		act, err = scr.Act(context.Background(), screen.Screen{Content: "prompt ❯ PASTE:héllo"})
+		if err != nil {
+			t.Fatalf("Act (unmatched resize): %v", err)
+		}
+		if act.Type != actor.ActionNoOp || scr.pos != 1 {
+			t.Fatalf("unmatched resize action = %+v pos = %d, want noop at step 1", act, scr.pos)
+		}
+
+		// Matched: the resize action carries the dimensions and no text.
+		act, err = scr.Act(context.Background(), screen.Screen{Content: "SIZE:30x100"})
+		if err != nil {
+			t.Fatalf("Act (resize): %v", err)
+		}
+		if act.Type != actor.ActionResize || act.Width != 100 || act.Height != 30 {
+			t.Fatalf("resize action = %+v, want type %q size 100x30", act, actor.ActionResize)
+		}
+		if act.Text != "" {
+			t.Fatalf("resize action text = %q, want empty", act.Text)
+		}
+		if scr.pos != 2 {
+			t.Fatalf("pos = %d after resize step, want 2", scr.pos)
+		}
+
+		// An empty paste is a real paste: the pointer is set with an empty
+		// payload, so it must still emit a paste action.
+		act, err = scr.Act(context.Background(), screen.Screen{Content: "PASTE-END"})
+		if err != nil {
+			t.Fatalf("Act (empty paste): %v", err)
+		}
+		if act.Type != actor.ActionPaste || act.Text != "" {
+			t.Fatalf("empty paste action = %+v, want type %q with an empty payload", act, actor.ActionPaste)
+		}
+		if scr.pos != 3 {
+			t.Fatalf("pos = %d after empty paste step, want 3", scr.pos)
+		}
+
+		act, err = scr.Act(context.Background(), screen.Screen{Content: "PASTE-END"})
+		if err != nil {
+			t.Fatalf("Act (completed): %v", err)
+		}
+		if act.Type != actor.ActionDone || !act.Success {
+			t.Fatalf("completed action = %+v, want done success", act)
+		}
+	})
+
+	t.Run("MixedActionsRejected", func(t *testing.T) {
+		cases := []struct {
+			name string
+			step Step
+		}{
+			{"paste plus send", Step{Paste: strPtr("x"), Send: "x"}},
+			{"paste plus send_key", Step{Paste: strPtr("x"), SendKey: "esc"}},
+			{"paste plus wait_only", Step{Paste: strPtr(""), WaitOnly: true, WaitFor: WaitFor{ScreenContains: "Help"}}},
+			{"paste plus resize", Step{Paste: strPtr("x"), Resize: &actor.Size{Width: 80, Height: 24}}},
+			{"resize plus send", Step{Resize: &actor.Size{Width: 80, Height: 24}, Send: "x"}},
+			{"resize plus wait_only", Step{Resize: &actor.Size{Width: 80, Height: 24}, WaitOnly: true, WaitFor: WaitFor{ScreenContains: "Help"}}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				scr := &Scripted{Steps: []Step{tc.step}}
+				// The screen matches whatever the step waits for, so the
+				// failure comes from the step's own validation.
+				act, err := scr.Act(context.Background(), screen.Screen{Content: "Help"})
+				if err == nil {
+					t.Fatalf("Act error = nil, action = %+v; want a validation error", act)
+				}
+				if scr.pos != 0 {
+					t.Fatalf("pos = %d after invalid step, want 0", scr.pos)
+				}
+			})
+		}
+	})
+}
+
 func TestLoad(t *testing.T) {
 	json := `{"name":"open help","steps":[{"send":"?","wait_for":{"screen_contains":"prompt"}},{"send_key":"esc","wait_for":{"state":{"help_open":false}}}]}`
 	dir := t.TempDir()

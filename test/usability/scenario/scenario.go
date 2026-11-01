@@ -178,6 +178,20 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 				return finish(err)
 			}
 			keystrokes++
+		case actor.ActionPaste:
+			if err := sess.Paste(act.Text); err != nil {
+				result.Error = err.Error()
+				return finish(err)
+			}
+			// A paste counts by its payload's UTF-8 byte length.
+			keystrokes += len([]byte(act.Text))
+		case actor.ActionResize:
+			// An out-of-range size is rejected by the harness; the runner
+			// records that error as the scenario failure.
+			if err := sess.Resize(act.Width, act.Height); err != nil {
+				result.Error = err.Error()
+				return finish(err)
+			}
 		default:
 			result.Error = fmt.Sprintf("unknown action type %q", act.Type)
 			return finish(fmt.Errorf("unknown action type %q", act.Type))

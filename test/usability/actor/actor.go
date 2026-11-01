@@ -8,17 +8,27 @@ import (
 
 // ActionType values for Action.Type.
 const (
-	ActionType = "type"
-	ActionKey  = "key"
-	ActionDone = "done"
-	ActionNoOp = "noop"
+	ActionType   = "type"
+	ActionKey    = "key"
+	ActionPaste  = "paste"
+	ActionResize = "resize"
+	ActionDone   = "done"
+	ActionNoOp   = "noop"
 )
+
+// Size is a terminal viewport in character cells.
+type Size struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
 
 // Action is one input decision from an actor.
 type Action struct {
-	Type    string // "type", "key", "done", "noop"
-	Text    string // for "type"
+	Type    string // "type", "key", "paste", "resize", "done", "noop"
+	Text    string // for "type" and "paste"
 	Key     string // for "key"
+	Width   int    // for "resize"
+	Height  int    // for "resize"
 	Success bool   // for "done"
 	Notes   string // for "done" or debugging
 }

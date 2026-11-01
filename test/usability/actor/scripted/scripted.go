@@ -16,14 +16,17 @@ type Scripted struct {
 	pos   int
 }
 
-// Step is one scripted interaction. Exactly one of Send, SendKey or WaitOnly
-// must be set: a step either sends input or waits for a visible outcome
+// Step is one scripted interaction. Exactly one of Send, SendKey, WaitOnly,
+// Paste or Resize must be set: a step either sends input (typed text, a named
+// key, a bracketed paste, a window resize) or waits for a visible outcome
 // without sending anything.
 type Step struct {
-	Send     string  `json:"send"`
-	SendKey  string  `json:"send_key"`
-	WaitFor  WaitFor `json:"wait_for"`
-	WaitOnly bool    `json:"wait_only,omitempty"`
+	Send     string      `json:"send"`
+	SendKey  string      `json:"send_key"`
+	WaitFor  WaitFor     `json:"wait_for"`
+	WaitOnly bool        `json:"wait_only,omitempty"`
+	Paste    *string     `json:"paste,omitempty"`
+	Resize   *actor.Size `json:"resize,omitempty"`
 }
 
 // WaitFor describes the screen condition required before this step executes.
@@ -65,8 +68,14 @@ func (st Step) validate(pos int) error {
 	if st.WaitOnly {
 		actions++
 	}
+	if st.Paste != nil {
+		actions++
+	}
+	if st.Resize != nil {
+		actions++
+	}
 	if actions != 1 {
-		return fmt.Errorf("scripted: step %d must set exactly one of send, send_key or wait_only, got %d", pos, actions)
+		return fmt.Errorf("scripted: step %d must set exactly one of send, send_key, wait_only, paste or resize, got %d", pos, actions)
 	}
 	if st.WaitOnly && !st.WaitFor.hasCondition() {
 		return fmt.Errorf("scripted: wait-only step %d has no condition", pos)
@@ -95,6 +104,14 @@ func (s *Scripted) Act(ctx context.Context, sc screen.Screen) (actor.Action, err
 		// The postcondition held on this viewport: report a no-op so the
 		// following observation falls through to the done branch.
 		return actor.Action{Type: actor.ActionNoOp}, nil
+	}
+	if step.Paste != nil {
+		return actor.Action{Type: actor.ActionPaste, Text: *step.Paste}, nil
+	}
+	if step.Resize != nil {
+		// Dimensions are passed through unvalidated: the harness rejects an
+		// out-of-range size and the runner records that as a failure.
+		return actor.Action{Type: actor.ActionResize, Width: step.Resize.Width, Height: step.Resize.Height}, nil
 	}
 	if step.Send != "" {
 		return actor.Action{Type: actor.ActionType, Text: step.Send}, nil

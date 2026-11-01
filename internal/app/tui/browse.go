@@ -54,15 +54,7 @@ func collectBrowse(items []browseItem, n *viewmodel.Node, out string, subs []sub
 	return items
 }
 
-// indexTree records every node of a block by ID, for copy/open/inspect.
-func indexTree(n *viewmodel.Node, into map[viewmodel.NodeID]*viewmodel.Node) {
-	into[n.ID] = n
-	for _, c := range n.Children {
-		indexTree(c, into)
-	}
-}
-
-func (m *Model) setBrowseItems(items []browseItem, tree map[viewmodel.NodeID]*viewmodel.Node) {
+func (m *Model) setBrowseItems(items []browseItem) {
 	prev := m.cursorIndex()
 	// Browse continues past the last history row into the box's stops. They
 	// own no content lines (the box paints its own cursor), so start and end
@@ -70,7 +62,7 @@ func (m *Model) setBrowseItems(items []browseItem, tree map[viewmodel.NodeID]*vi
 	for _, t := range m.boxLayout().Stops {
 		items = append(items, browseItem{id: boxStopID(t), kind: viewmodel.KindPassthrough, start: -1, end: -1})
 	}
-	m.browseItems, m.browseTree = items, tree
+	m.browseItems = items
 	if !m.browsing {
 		return
 	}

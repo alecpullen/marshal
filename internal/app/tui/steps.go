@@ -52,7 +52,6 @@ type stepRenderCtx struct {
 	spinner       string // live step header glyph
 	toolSpinner   string // live tool row glyph
 	thinkSpinner  string
-	thinkElapsed  time.Duration
 	now           time.Time
 	routeModel    string
 	routeProvider string

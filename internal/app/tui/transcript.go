@@ -735,12 +735,16 @@ func renderPlanBlock(content string, width int) string {
 // sandbox backend is active, an isolation-status line, both dim-indented
 // under the gutter. When the tool has streamed output, the last 6 lines
 // are rendered dim-indented beneath the command line.
-func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, expanded bool, width int) string {
-	elapsed := now.Sub(atc.StartedAt)
+func renderActiveToolCall(t *acpwire.WireTool, sb session.SandboxInfo, allowNetwork bool, spinnerFrame string, now time.Time, expanded bool, width int) string {
+	if t == nil || t.Running == nil {
+		return ""
+	}
+	running := t.Running
+	elapsed := now.Sub(acpwire.Time(running.StartedAt))
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", DisplayToolName(atc.Name), formatElapsed(elapsed)))
+	head := spinnerLabel(spinnerFrame, fmt.Sprintf("%s · %s", t.Display, formatElapsed(elapsed)))
 	gutter := gutterPrefix(glyph.Running, accentColor)
 	cw := contentWidth(width)
 	headerWrapped := ansi.Wrap(head, cw, WrapBreakpoints)
@@ -754,8 +758,8 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 		}
 		b.WriteString("\n")
 	}
-	if atc.Name == "shell.run" || atc.Name == "test.run" {
-		cmdLine := "$ " + atc.Args
+	if t.Name == "shell.run" || t.Name == "test.run" {
+		cmdLine := "$ " + running.Args
 		cmdWrapped := ansi.Wrap(cmdLine, cw, WrapBreakpoints)
 		for _, wl := range strings.Split(cmdWrapped, "\n") {
 			b.WriteString(continuation())
@@ -770,16 +774,16 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 				b.WriteString("\n")
 			}
 		}
-	} else if atc.Args != "" {
-		argsWrapped := ansi.Wrap(atc.Args, cw, WrapBreakpoints)
+	} else if running.Args != "" {
+		argsWrapped := ansi.Wrap(running.Args, cw, WrapBreakpoints)
 		for _, wl := range strings.Split(argsWrapped, "\n") {
 			b.WriteString(continuation())
 			b.WriteString(mutedStyle().Render(wl))
 			b.WriteString("\n")
 		}
 	}
-	if atc.Output != "" {
-		lines := strings.Split(strings.TrimRight(atc.Output, "\n"), "\n")
+	if running.Output != "" {
+		lines := strings.Split(strings.TrimRight(running.Output, "\n"), "\n")
 		const tail = 6
 		if !expanded && len(lines) > tail {
 			lines = lines[len(lines)-tail:]

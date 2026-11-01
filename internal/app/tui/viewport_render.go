@@ -110,7 +110,6 @@ func (m *Model) refreshViewport() {
 		spinner:       m.spinnerFrame,
 		toolSpinner:   toolFrame,
 		thinkSpinner:  m.activeSpinnerFrame(session.ActivityThinking),
-		thinkElapsed:  m.now().Sub(snap.InProgress.StartedAt),
 		now:           m.now(),
 		routeModel:    transcriptState.ActiveRoute().Model,
 		routeProvider: transcriptState.ActiveRoute().Provider,
@@ -158,7 +157,6 @@ func (m *Model) refreshViewport() {
 		addBlock(blockKey{name: "banner"}, renderWelcomeBanner(width), nil, nil)
 	}
 	seen := map[viewmodel.NodeID]bool{}
-	tree := map[viewmodel.NodeID]*viewmodel.Node{}
 	var bitems []browseItem
 	firstTurn := true
 	for _, turn := range turns {
@@ -174,7 +172,6 @@ func (m *Model) refreshViewport() {
 		prevNarrationOnly := false
 		for _, node := range turn.Children {
 			collectSeen(node, seen)
-			indexTree(node, tree)
 			out, subs := m.renderNode(node, rctx, width, themeSig)
 			if out != "" {
 				w := m.wire[node.ID.Key]
@@ -204,7 +201,7 @@ func (m *Model) refreshViewport() {
 	m.pruneRenderState(seen)
 	m.nodeRegions = regions
 	m.blockSpans = spans
-	m.setBrowseItems(bitems, tree)
+	m.setBrowseItems(bitems)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
 	var sb strings.Builder
@@ -259,23 +256,26 @@ func (m *Model) renderNode(n *viewmodel.Node, c *stepRenderCtx, width int, theme
 	return out, subs
 }
 
-// drawNode is the renderer proper: it dispatches on what the node holds.
+// drawNode is the renderer proper: it dispatches on what the wire node holds.
 func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string, []subRegion) {
 	w := m.wire[n.ID.Key]
+	if w == nil {
+		return "", nil
+	}
 	switch {
-	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
-		return renderReceipt(n.Receipt, width), nil
-	case w != nil && w.Step != nil:
+	case w.Receipt != nil:
+		return renderReceipt(w.Receipt, width), nil
+	case w.Step != nil:
 		return renderStep(w, m.wireChildren(w), c, width, m.expandAll)
-	case n.Kind == viewmodel.KindThinking && n.Step != nil:
+	case w.ID == acpwire.LiveThinkingID && w.Thinking != nil:
 		// Reasoning before any step has begun: the bounded live box on its own.
 		rv := m.regionView(viewmodel.LiveThinkingID)
-		box := renderThinkingBox(n.Step.LiveThinking, c.thinkSpinner, c.thinkElapsed, rv, width)
+		box := renderThinkingBox(w.Thinking.Text, c.thinkSpinner, c.now.Sub(acpwire.Time(w.Thinking.StartedAt)), rv, width)
 		if cnt := strings.Count(box, "\n"); cnt > rv.minRows {
 			m.noteRegionRows(viewmodel.LiveThinkingID, cnt)
 		}
 		return box, nil
-	case w != nil && w.Completion != nil:
+	case w.Completion != nil:
 		expanded := m.expandedUnder(n.ID, m.expandAll)
 		// d is the completion's whole output when the wire cut it and the row
 		// is open. Until the answer lands the report draws the wire's text.
@@ -286,9 +286,9 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 			}
 		}
 		return renderCompletion(w.Completion, d, expanded, width, c.workdir), nil
-	case n.Kind == viewmodel.KindTool && n.Active != nil:
-		return renderActiveToolCall(*n.Active, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
-	case w != nil && (w.Message != nil || w.Thinking != nil || w.RunEvent != nil):
+	case w.Tool != nil && w.Tool.Running != nil:
+		return renderActiveToolCall(w.Tool, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
+	case w.Message != nil || w.Thinking != nil || w.RunEvent != nil:
 		expanded := m.expandedUnder(n.ID, m.expandAll)
 		// d is the row's whole body or reasoning when the wire cut it and the
 		// row is open. Until the answer lands the row draws the wire's text.

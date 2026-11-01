@@ -75,3 +75,14 @@ func wireMessage(m session.Message) *acpwire.WireMessage {
 func wireRunEvent(e session.RunEvent) *acpwire.WireRunEvent {
 	return wireItem(session.TranscriptItem{Kind: session.KindRunEvent, RunEvent: &e}).RunEvent
 }
+
+// wireReceipt is the wire form of a turn's receipt.
+func wireReceipt(r viewmodel.ReceiptInfo) *acpwire.WireReceipt {
+	n := &viewmodel.Node{
+		ID:      viewmodel.NodeID{Kind: viewmodel.KindReceipt, Key: "receipt"},
+		Kind:    viewmodel.KindReceipt,
+		Receipt: &r,
+	}
+	w, _ := wireOf(n, "")
+	return w.Receipt
+}

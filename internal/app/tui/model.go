@@ -567,8 +567,7 @@ type Model struct {
 	expandAll bool
 	expanded  map[viewmodel.NodeID]bool
 	// Browse mode (Esc): a cursor over the rendered nodes. browseItems is
-	// rebuilt on every full refresh; browseTree indexes the nodes for copy,
-	// open and inspect.
+	// rebuilt on every full refresh.
 	browsing   bool
 	osc52Noted bool
 	// copyWriter is the local clipboard helper; copyRemote reports an SSH
@@ -578,7 +577,6 @@ type Model struct {
 	copyRemote  func() bool
 	cursor      viewmodel.NodeID
 	browseItems []browseItem
-	browseTree  map[viewmodel.NodeID]*viewmodel.Node
 	// wire indexes the transcript's wire nodes by ID, from the last refresh
 	// that changed the content. Browse actions read node fields from it.
 	wire map[string]*acpwire.WireNode

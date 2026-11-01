@@ -41,7 +41,6 @@ var boundaryAllowlist = map[string][]string{
 	"probe/probe.go":                 {"marshal/internal/llm/provider"},
 	"pump.go":                        {"marshal/internal/pubsub", "marshal/internal/viewmodel"},
 	"question.go":                    {"marshal/internal/app/session"},
-	"receipt.go":                     {"marshal/internal/viewmodel"},
 	"runoutcome.go":                  {"marshal/internal/app/session", "marshal/internal/commands", "marshal/internal/worktree"},
 	"sdd_authoring.go":               {"marshal/internal/app/session", "marshal/internal/sddauthor"},
 	"sdd_command.go":                 {"marshal/internal/app/session", "marshal/internal/pipeline"},

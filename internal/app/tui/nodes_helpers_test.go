@@ -16,13 +16,17 @@ func thinkID(ts time.Time) viewmodel.NodeID {
 // beatWithThinking is the beat holding the reasoning that started at ts, from
 // the last refresh. Reasoning is part of its beat: expanding the beat shows it.
 func beatWithThinking(m *Model, ts time.Time) viewmodel.NodeID {
-	for id, n := range m.browseTree {
-		if n.Kind != viewmodel.KindStep || n.Step == nil {
-			continue
-		}
-		for _, th := range n.Step.Thinking {
-			if th.StartedAt.Equal(ts) {
-				return id
+	st, _ := m.transcriptSource()
+	turns := viewmodel.Build(viewmodel.SnapshotOf(st, m.busy, m.now()))
+	for _, turn := range turns {
+		for _, n := range turn.Children {
+			if n.Kind != viewmodel.KindStep || n.Step == nil {
+				continue
+			}
+			for _, th := range n.Step.Thinking {
+				if th.StartedAt.Equal(ts) {
+					return n.ID
+				}
 			}
 		}
 	}

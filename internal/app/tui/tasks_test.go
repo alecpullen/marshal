@@ -256,7 +256,7 @@ func TestReceiptGolden(t *testing.T) {
 
 func TestSalvagedTurnReceiptSaysSo(t *testing.T) {
 	r := &viewmodel.ReceiptInfo{Duration: time.Minute, Steps: 3, Tools: 4, Salvaged: true}
-	if got := stripANSI(renderReceipt(r, 100)); !strings.Contains(got, "salvaged") || !strings.Contains(got, "!") && !strings.Contains(got, "⚠") {
+	if got := stripANSI(renderReceipt(wireReceipt(*r), 100)); !strings.Contains(got, "salvaged") || !strings.Contains(got, "!") && !strings.Contains(got, "⚠") {
 		t.Fatalf("salvaged receipt = %q", got)
 	}
 }

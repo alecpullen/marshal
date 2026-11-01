@@ -479,7 +479,7 @@ func TestCursorStaysNearWhereItWasWhenItsNodeVanishes(t *testing.T) {
 	m.cursor = viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:gone"} // as if it had been rewound away
 	m.invalidateTranscript()
 	m.browseItems = append([]browseItem(nil), m.browseItems...)
-	m.setBrowseItems(m.browseItems, m.browseTree)
+	m.setBrowseItems(m.browseItems)
 	if m.cursorIndex() < 0 {
 		t.Fatal("cursor must land on a real node")
 	}
@@ -597,11 +597,11 @@ func TestCopyWithoutDetailSaysNothingToCopy(t *testing.T) {
 // completion event.
 func browseItemForCompletion(m *Model, id int64) (browseItem, bool) {
 	for _, it := range m.browseItems {
-		n := m.browseTree[it.id]
-		if n == nil || n.Kind != viewmodel.KindCompletion || n.Completion == nil {
+		w := m.wire[it.id.Key]
+		if w == nil || w.Completion == nil {
 			continue
 		}
-		if n.Completion.SubagentID == id {
+		if w.Completion.SubagentID == id {
 			return it, true
 		}
 	}
@@ -612,11 +612,11 @@ func browseItemForCompletion(m *Model, id int64) (browseItem, bool) {
 // started a subagent.
 func browseItemForDispatch(m *Model, id int64) (browseItem, bool) {
 	for _, it := range m.browseItems {
-		n := m.browseTree[it.id]
-		if n == nil || n.Kind != viewmodel.KindTool || len(n.Tools) != 1 {
+		w := m.wire[it.id.Key]
+		if w == nil || w.Tool == nil || len(w.Tool.Calls) != 1 {
 			continue
 		}
-		if viewmodel.StartedSubagent(n.Tools[0]) == id {
+		if w.Tool.SubagentID == id {
 			return it, true
 		}
 	}

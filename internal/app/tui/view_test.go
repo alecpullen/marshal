@@ -902,7 +902,7 @@ func TestTurnSpinnerOmitsActivityLabel(t *testing.T) {
 
 func TestRenderActiveToolCallUsesRunningGutter(t *testing.T) {
 	out := renderActiveToolCall(
-		session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)},
+		wireRunning(session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StartedAt: time.Unix(100, 0)}),
 		session.SandboxInfo{}, false, "⠻", time.Unix(104, 0), false, 80)
 	plain := stripANSI(out)
 	if !strings.HasPrefix(plain, " ▸ ") {

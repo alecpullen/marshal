@@ -7,9 +7,9 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/viewmodel"
 )
 
 // compactDuration is "42s" or "6m40s": the form the turn receipt and the task
@@ -29,15 +29,15 @@ func compactDuration(d time.Duration) string {
 
 // renderReceipt is the turn's closing line:
 // "✓ done · 6m40s · 4 tasks · 11 steps · 19 tools · ±3 files · 212k tok".
-func renderReceipt(r *viewmodel.ReceiptInfo, width int) string {
+func renderReceipt(r *acpwire.WireReceipt, width int) string {
 	th := theme.Current()
 	g, gc, word := glyph.OK, th.StatusSuccess, "done"
 	if r.Salvaged {
 		g, gc, word = glyph.Warning, th.StatusWarning, "salvaged"
 	}
 	parts := []string{word}
-	if r.Duration > 0 {
-		parts = append(parts, compactDuration(r.Duration))
+	if r.DurationMs > 0 {
+		parts = append(parts, compactDuration(time.Duration(r.DurationMs)*time.Millisecond))
 	}
 	if r.Tasks > 0 {
 		parts = append(parts, pluralCount(r.Tasks, "task", "tasks"))

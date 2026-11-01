@@ -76,16 +76,8 @@ func (m *Model) nodeCopyText(id viewmodel.NodeID) string {
 			}
 		}
 		return plainText(renderItem(w, d, true, 120))
-	}
-	// A receipt copies its rendered line. Plan 3c ports the last renderers to
-	// the wire index.
-	n := m.browseTree[id]
-	if n == nil {
-		return ""
-	}
-	switch {
-	case n.Kind == viewmodel.KindReceipt && n.Receipt != nil:
-		return plainText(renderReceipt(n.Receipt, 200))
+	case w.Receipt != nil:
+		return plainText(renderReceipt(w.Receipt, 200))
 	}
 	return ""
 }

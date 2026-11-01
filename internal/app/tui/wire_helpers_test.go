@@ -43,3 +43,14 @@ func wirePlan(p viewmodel.PlanUpdate) *acpwire.WirePlan {
 	w, _ := wireOf(n, "")
 	return w.Plan
 }
+
+// wireCompletion is the wire form of a completion event.
+func wireCompletion(c viewmodel.CompletionInfo) *acpwire.WireCompletion {
+	n := &viewmodel.Node{
+		ID:         viewmodel.NodeID{Kind: viewmodel.KindCompletion, Key: c.ID},
+		Kind:       viewmodel.KindCompletion,
+		Completion: &c,
+	}
+	w, _ := wireOf(n, "")
+	return w.Completion
+}

@@ -275,8 +275,17 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 			m.noteRegionRows(viewmodel.LiveThinkingID, cnt)
 		}
 		return box, nil
-	case n.Kind == viewmodel.KindCompletion && n.Completion != nil:
-		return renderCompletion(n.Completion, m.expandedUnder(n.ID, m.expandAll), width, c.workdir), nil
+	case w != nil && w.Completion != nil:
+		expanded := m.expandedUnder(n.ID, m.expandAll)
+		// d is the completion's whole output when the wire cut it and the row
+		// is open. Until the answer lands the report draws the wire's text.
+		var d *acpwire.CompletionDetail
+		if expanded && w.Completion.Truncated {
+			if det := c.detailOf(w.ID, w.Version); det != nil {
+				d = det.Completion
+			}
+		}
+		return renderCompletion(w.Completion, d, expanded, width, c.workdir), nil
 	case n.Kind == viewmodel.KindTool && n.Active != nil:
 		return renderActiveToolCall(*n.Active, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
 	case n.Item != nil:

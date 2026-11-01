@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/tools/registry"
@@ -85,7 +87,7 @@ func TestJobLaunchRowNamesTheJob(t *testing.T) {
 func TestCompletionLine(t *testing.T) {
 	done := &viewmodel.CompletionInfo{Source: viewmodel.CompletionJob, ID: "job-4", Label: "Harness tests",
 		Outcome: viewmodel.OutcomeDone, Duration: 81 * time.Second}
-	out := ansi.Strip(renderCompletion(done, false, 80, ""))
+	out := ansi.Strip(renderCompletion(wireCompletion(*done), nil, false, 80, ""))
 	if !strings.Contains(out, "job-4 Harness tests") || !strings.Contains(out, "done") || !strings.Contains(out, "1m") {
 		t.Fatalf("completion = %q", out)
 	}
@@ -96,7 +98,7 @@ func TestCompletionLine(t *testing.T) {
 	failed := &viewmodel.CompletionInfo{Source: viewmodel.CompletionSubagent, ID: "#3", Label: "review",
 		Outcome: viewmodel.OutcomeFailed, Failed: true, Summary: "budget exhausted"}
 	// Collapsed, the summary line stands in for the report.
-	collapsed := ansi.Strip(renderCompletion(failed, false, 80, ""))
+	collapsed := ansi.Strip(renderCompletion(wireCompletion(*failed), nil, false, 80, ""))
 	lines := strings.Split(strings.TrimRight(collapsed, "\n"), "\n")
 	if len(lines) != 2 || !strings.Contains(lines[0], "#3") || !strings.Contains(lines[0], "failed") {
 		t.Fatalf("failed completion = %q", collapsed)
@@ -105,7 +107,7 @@ func TestCompletionLine(t *testing.T) {
 		t.Fatalf("summary line = %q", lines[1])
 	}
 	// Expanded, the report replaces the summary line.
-	out = ansi.Strip(renderCompletion(failed, true, 80, ""))
+	out = ansi.Strip(renderCompletion(wireCompletion(*failed), nil, true, 80, ""))
 	head := strings.Split(strings.TrimRight(out, "\n"), "\n")[0]
 	if !strings.HasSuffix(head, glyph.DisclosureExpanded) {
 		t.Fatalf("expanded head must end with the disclosure glyph: %q", head)
@@ -128,7 +130,7 @@ func TestCompletionReportShowsTheFailure(t *testing.T) {
 		Command: "go test ./...", Cwd: "/home/a/proj",
 		Output: strings.Join(lines, "\n"),
 	}
-	out := ansi.Strip(renderCompletion(c, true, 80, ""))
+	out := ansi.Strip(renderCompletion(wireCompletion(*c), nil, true, 80, ""))
 	for _, want := range []string{"outcome", "command", "cwd", "duration", "progress", "output"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report %q missing %q", out, want)
@@ -153,7 +155,7 @@ func TestCompletionReportShowsASubagentsReport(t *testing.T) {
 		Outcome: viewmodel.OutcomeDone, Duration: 62 * time.Second,
 		Report: "The config change is sound.",
 	}
-	out := ansi.Strip(renderCompletion(c, true, 80, ""))
+	out := ansi.Strip(renderCompletion(wireCompletion(*c), nil, true, 80, ""))
 	if !strings.Contains(out, "task") || !strings.Contains(out, "review the config change") {
 		t.Fatalf("report = %q", out)
 	}
@@ -169,8 +171,65 @@ func TestLostJobReportSaysItEndedWithTheSession(t *testing.T) {
 		Source: viewmodel.CompletionJob, ID: "job-7", Label: "Download",
 		Outcome: viewmodel.OutcomeLost, Failed: true,
 	}
-	out := ansi.Strip(renderCompletion(c, true, 80, ""))
+	out := ansi.Strip(renderCompletion(wireCompletion(*c), nil, true, 80, ""))
 	if !strings.Contains(out, "ended with session") {
 		t.Fatalf("report = %q", out)
+	}
+}
+
+// The wire keeps only a job's last WireTextCap bytes, so the top of a failure
+// is gone from the collapsed row's payload. Expanded, the row reads the whole
+// output from the cache, and the completion's own truncation flag with it: the
+// cut was the wire's, not the job's, so the report must stop saying earlier
+// output was dropped.
+func TestExpandedCompletionReadsItsWholeOutput(t *testing.T) {
+	m := newTestModel(t)
+	st := m.state
+
+	st.AddMessage(session.RoleUser, "Build", session.ContentTypePlain)
+	s1 := st.BeginStep(session.Actor{})
+	st.LogToolCall(registry.AuditEvent{
+		ToolName:      "shell.run",
+		ToolCallID:    "c1",
+		StepID:        int64(s1),
+		Args:          []byte(`{"command":"go test ./..."}`),
+		ResultSummary: session.JobStartPrefix + "job-1",
+	})
+	st.EndStep(s1)
+
+	var body strings.Builder
+	body.WriteString("--- FAIL: TestEarly\n")
+	for i := 1; body.Len() <= acpwire.WireTextCap; i++ {
+		fmt.Fprintf(&body, "ok  \tpkg/%04d\n", i)
+	}
+	one := 1
+	if err := st.AddJobExit(session.JobExit{
+		ID: "job-1", Command: "go test ./...", ExitCode: 1, Exit: &one,
+		Duration: 41 * time.Second, Output: body.String(),
+	}); err != nil {
+		t.Fatalf("AddJobExit: %v", err)
+	}
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	content := func() string { return stripANSI(strings.Join(m.contentLines, "\n")) }
+	if !strings.Contains(content(), "job-1") {
+		t.Fatalf("the completion row is not in the transcript:\n%s", content())
+	}
+
+	// Ctrl+G, its fetch left undrained: the row draws the wire's cut.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	m = asModel(t, updated)
+	if !m.expandAll {
+		t.Fatal("ctrl+g did not turn expand-all on")
+	}
+	if got := content(); !strings.Contains(got, "earlier output dropped") || strings.Contains(got, "TestEarly") {
+		t.Fatalf("the undrained expansion must draw the wire's cut:\n%s", got)
+	}
+
+	// Drained, the fetch lands and the report reads the whole output.
+	m = drainCmds(m, cmd)
+	if got := content(); !strings.Contains(got, "--- FAIL: TestEarly") || strings.Contains(got, "earlier output dropped") {
+		t.Fatalf("the drained expansion must read the whole output:\n%s", got)
 	}
 }

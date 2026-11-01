@@ -272,21 +272,25 @@ func spineRow(r *acpwire.WireNode) bool {
 
 // renderCompletion is one finished piece of background work: a head row with
 // its outcome, final measurement and duration, and the summary line under it.
-// Expanded, it becomes the issue report.
-func renderCompletion(c *viewmodel.CompletionInfo, expanded bool, width int, workdir string) string {
+// Expanded, it becomes the issue report. d is the whole report when the wire
+// cut it and the row is open; until the answer lands the row draws the wire's
+// text.
+func renderCompletion(c *acpwire.WireCompletion, d *acpwire.CompletionDetail, expanded bool, width int, workdir string) string {
 	th := theme.Current()
 	g, colour := glyph.Job, th.StatusInfo
-	if c.Source == viewmodel.CompletionSubagent {
+	if c.Source == acpwire.CompletionSubagent {
 		g, colour = glyph.Agent, th.AccentSecondary
 	}
 	head := lipgloss.NewStyle().Foreground(colour).Render(c.ID) + " " +
 		lipgloss.NewStyle().Foreground(th.FGDefault).Render(viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Label, workdir)))
 
+	duration := time.Duration(c.DurationMs) * time.Millisecond
+
 	var meta []string
 	switch c.Outcome {
-	case viewmodel.OutcomeDone:
+	case acpwire.OutcomeDone:
 		meta = append(meta, statusOkStyle().Render(c.Outcome))
-	case viewmodel.OutcomeUnknown:
+	case acpwire.OutcomeUnknown:
 		meta = append(meta, warningStyle().Render(c.Outcome))
 	default:
 		meta = append(meta, errorStyle().Render(c.Outcome))
@@ -294,8 +298,8 @@ func renderCompletion(c *viewmodel.CompletionInfo, expanded bool, width int, wor
 	if c.Measure != "" {
 		meta = append(meta, mutedStyle().Render(c.Measure))
 	}
-	if c.Duration > 0 {
-		meta = append(meta, mutedStyle().Render(formatElapsed(c.Duration)))
+	if duration > 0 {
+		meta = append(meta, mutedStyle().Render(formatElapsed(duration)))
 	}
 	if len(meta) > 0 {
 		head += dimSeparator + strings.Join(meta, dimSeparator)
@@ -317,7 +321,7 @@ func renderCompletion(c *viewmodel.CompletionInfo, expanded bool, width int, wor
 	b.WriteString(mutedStyle().Render(disclosure))
 	b.WriteString("\n")
 	if expanded {
-		b.WriteString(renderCompletionReport(c, width, workdir))
+		b.WriteString(renderCompletionReport(c, d, width, workdir))
 	} else if c.Summary != "" {
 		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
 		b.WriteString(mutedStyle().Render(ansi.Truncate(viewmodel.ScrubText(c.Summary), max(width-nestedBodyIndent, 1), "…")))
@@ -333,7 +337,7 @@ const completionReportKeyWidth = 10
 // renderCompletionReport draws an expanded completion event's issue report:
 // one line per field, the key muted and padded, the value in the default
 // foreground. It is what a reader opens when the head's outcome is not enough.
-func renderCompletionReport(c *viewmodel.CompletionInfo, width int, workdir string) string {
+func renderCompletionReport(c *acpwire.WireCompletion, d *acpwire.CompletionDetail, width int, workdir string) string {
 	th := theme.Current()
 	valueStyle := lipgloss.NewStyle().Foreground(th.FGDefault)
 	valueIndent := nestedBodyIndent + completionReportKeyWidth
@@ -366,26 +370,34 @@ func renderCompletionReport(c *viewmodel.CompletionInfo, width int, workdir stri
 	}
 	field("outcome", outcome, valueStyle)
 
-	if c.Source == viewmodel.CompletionSubagent {
+	if c.Source == acpwire.CompletionSubagent {
 		field("task", viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Label, workdir)), valueStyle)
 	} else {
 		field("command", viewmodel.ScrubText(viewmodel.ElideWorkdir(firstLine(c.Command), workdir)), valueStyle)
 	}
 	field("cwd", viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Cwd, workdir)), valueStyle)
 
+	elapsed := time.Duration(c.DurationMs) * time.Millisecond
 	duration := ""
 	switch {
-	case c.Outcome == viewmodel.OutcomeLost:
+	case c.Outcome == acpwire.OutcomeLost:
 		duration = "ended with session"
-	case c.Duration > 0:
-		duration = formatElapsed(c.Duration)
+	case elapsed > 0:
+		duration = formatElapsed(elapsed)
 	}
 	field("duration", duration, valueStyle)
 	field("progress", c.Measure, valueStyle)
 
+	// d is the completion's whole output and report when the wire cut them,
+	// and its own truncation flag rather than the wire's folded one.
+	output, report, truncated := c.Output, c.Report, c.Truncated
+	if d != nil {
+		output, report, truncated = d.Output, d.Report, d.Truncated
+	}
+
 	// The output tail: the first line sits on the key's line, the rest under
 	// the value column. Every line is model-authored, so each is scrubbed.
-	lines := viewmodel.ReportTail(c.Output)
+	lines := viewmodel.ReportTail(output)
 	if len(lines) > 0 {
 		line := mutedStyle().Render(padReportKey("output")) + mutedStyle().Render(viewmodel.ScrubText(lines[0]))
 		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
@@ -399,17 +411,17 @@ func renderCompletionReport(c *viewmodel.CompletionInfo, width int, workdir stri
 		}
 		block(rest, mutedStyle())
 	}
-	if c.Truncated {
+	if truncated {
 		block([]string{"earlier output dropped"}, mutedStyle())
 	}
 
 	// A subagent's report is prose, so it renders as markdown under the value
 	// column; plain prose is the fallback when glamour is unavailable.
-	if c.Report != "" {
+	if report != "" {
 		rw := max(width-nestedBodyIndent-completionReportKeyWidth, 1)
-		body, ok := renderMarkdown(c.Report, rw)
+		body, ok := renderMarkdown(report, rw)
 		if !ok {
-			body = renderPlainProse(c.Report, rw)
+			body = renderPlainProse(report, rw)
 		}
 		rendered := strings.Split(strings.Trim(body, "\n"), "\n")
 		if len(rendered) > 0 {

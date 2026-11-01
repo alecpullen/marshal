@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"marshal/test/usability/actor"
@@ -87,13 +88,27 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 
 	r.rep.Record("turn_started", map[string]any{"scenario": sc.Name, "work_dir": workDir})
 
-	// Give Marshal a moment to render initial UI.
+	// Give Marshal a moment to render its first frame. A viewport of blank
+	// rows is not a rendered UI, and a decoder error must fail the run rather
+	// than wait out the timeout on a screen we cannot trust.
 	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	var decodeErr error
 	_ = sess.WaitFor(waitCtx, func(snap harness.Snapshot) bool {
-		scr, _ := screen.Parse(snap)
-		return scr.Content != ""
+		scr, err := screen.Parse(snap)
+		if err != nil {
+			// Return true so the wait ends on its stability tick; the error is
+			// handled below instead of being swallowed by the timeout.
+			decodeErr = err
+			return true
+		}
+		return strings.TrimSpace(scr.Content) != ""
 	})
+	if decodeErr != nil {
+		r.recordFailure(sc, sess, "initial render", decodeErr)
+		result.Error = decodeErr.Error()
+		return finish(decodeErr)
+	}
 
 	maxDuration := 2 * time.Minute
 	if deadline, ok := ctx.Deadline(); ok {
@@ -108,14 +123,25 @@ func (r *Runner) Run(ctx context.Context, sc Scenario) (report.ScenarioResult, e
 		select {
 		case <-scenarioCtx.Done():
 			if lastScreen != "" {
-				r.rep.Record("screen_on_timeout", map[string]any{"scenario": sc.Name, "screen": lastScreen})
+				r.rep.Record("screen_on_timeout", map[string]any{
+					"scenario": sc.Name,
+					"screen":   lastScreen,
+					"raw_tail": diagnosticTail(sess.Output()),
+				})
 			}
 			result.Error = "scenario timeout"
 			return finish(scenarioCtx.Err())
 		default:
 		}
 
-		scr, _ := screen.Parse(sess.Snapshot())
+		scr, parseErr := screen.Parse(sess.Snapshot())
+		if parseErr != nil {
+			// A decoder error means the screen cannot be trusted: fail the
+			// scenario instead of acting on a partial frame.
+			r.recordFailure(sc, sess, "screen parse", parseErr)
+			result.Error = parseErr.Error()
+			return finish(parseErr)
+		}
 		if scr.Content != "" {
 			lastScreen = scr.Content
 		}
@@ -170,6 +196,34 @@ func (r *Runner) WriteReport() error {
 		dir = filepath.Join(os.TempDir(), "marshal-usability")
 	}
 	return r.rep.WriteReport(dir)
+}
+
+// recordFailure records a failure together with the visible screen and a
+// bounded raw output tail. The raw bytes are diagnostic only; no assertion
+// reads them.
+func (r *Runner) recordFailure(sc Scenario, sess *harness.Session, cause string, causeErr error) {
+	fields := map[string]any{
+		"scenario": sc.Name,
+		"cause":    cause,
+		"raw_tail": diagnosticTail(sess.Output()),
+	}
+	if causeErr != nil {
+		fields["error"] = causeErr.Error()
+	}
+	if snap := sess.Snapshot(); snap.Err == nil {
+		fields["screen"] = string(snap.Content)
+	}
+	r.rep.Record("scenario_failure", fields)
+}
+
+// diagnosticTail keeps the tail of the raw PTY output small enough to be
+// useful in a report.
+func diagnosticTail(raw []byte) string {
+	const limit = 4 << 10
+	if len(raw) > limit {
+		raw = raw[len(raw)-limit:]
+	}
+	return string(raw)
 }
 
 func actorName(sc Scenario) string {

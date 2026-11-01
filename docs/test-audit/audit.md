@@ -22,6 +22,16 @@ integration tests that protect it running in CI. The existing known failures
 must be addressed before making the full suite a reliable required PR gate;
 do not hide them with blanket exclusions. **Evidence:** workflow inspection.
 
+**Status: fixed by P4.** `.github/workflows/go-checks.yml` runs two jobs on
+pull requests and pushes to `main`: `full-suite`
+(`CGO_ENABLED=1 go test ./... -count=1 -timeout 5m` and
+`CGO_ENABLED=1 go vet ./...`) and P3b's `scripted` journey job. The full-suite
+job carries no package exclusions and no `continue-on-error`, so a failing
+package or vet diagnostic fails the pull request. The fix was possible because
+P0–P2 removed the known baseline failures rather than hiding them. No hosted
+run of either job was observed from the execution host (see the
+[verification record](#verification-record)).
+
 ### The sole scripted real-binary TUI journey lacks a close assertion
 
 **Status: fixed by P3b.** `HelpOpenClose` now ends with a wait-only
@@ -541,6 +551,47 @@ timing-warning branch is gone. Evidence: the focused run and the package pass.
   invocation one and then invocation two, and assert the watcher had not exited
   in between. Evidence: 20/20 focused runs and `go test -race ./internal/index`.
 
+**Status (P5, fixed) for the two remaining bullets.** Both now fail when the
+behavior their name claims breaks.
+
+The deleted-skills-key test in `internal/app/config/save_test.go` is **removed**:
+its only final check logged either outcome, and asserting the resurrection its
+comment described would have frozen a known limitation as a regression
+contract. Its sibling `TestSaveProjectConfigDoesNotResurrectDeletedKeys` keeps
+scenario 1 (an absent default `max_tool_iterations` stays absent) and its
+scenario 2 now seeds a file that really contains `[skills] max_active = 3`,
+asserts the load, sets the running value to 5, then **parses** the saved TOML
+and asserts the key still exists with 5 and reloads as 5. The plan's original
+scenario — reset the running value to the default and expect the file to hold
+the default — does not match the code: `writeSections` emits `[skills]` only
+when the merged value differs from `Default()`, so a reset leaves the loaded
+on-disk value (3) in place. That was confirmed with a throwaway probe, and the
+user ruled for asserting the real update path rather than encoding either
+stale outcome.
+
+**Open product decision — recorded, deliberately not fixed by P5.** External
+deletion of a *nondefault* config value can still be overwritten by a later
+whole-struct save: `SaveProjectConfig` has no per-field dirty tracking, so a
+key the user removed from the file is indistinguishable from one they changed
+in the UI, and the merged non-default value is written back. Fixing it needs
+per-field dirtiness or a reload-before-save, which is a config-persistence
+change and outside this stage's non-goals. No test asserts either outcome in
+the meantime.
+
+The malformed-source nonassertion in `internal/tools/native/attribute_test.go`
+became two tests. `TestSymbolsForEditToleratesPartialSyntaxErrors` appends an
+explicitly broken declaration to the valid source and requires the diff's
+`Alpha` symbol to come back with `File: "p.go"` and `Kind: "function"`, pinning
+`repo.ExtractSymbols`' documented partial-tree tolerance instead of demanding
+an empty result. `TestSymbolsForEditCancelledParseReturnsNoSymbols` exercises
+the parse-failure fallback: it needs a source large enough for tree-sitter to
+reach a cancellation poll (a few hundred functions — a tiny file parses to
+completion before the context is ever observed), and it first proves the same
+source and diff attribute to `Alpha` with a live context so the empty result
+after cancellation cannot pass vacuously.
+`TestSymbolsForEditMalformedDiffIsEmptyNotPanic` and the unsupported-language
+case are unchanged.
+
 ### Concurrent-patch test does not exercise a mid-patch race
 
 `internal/tools/native/file_test.go:1484` uses 10/20 ms sleeps, logs a
@@ -552,6 +603,24 @@ accordingly; add a controlled mid-operation interleaving only if that is a
 supported guarantee, with an explicit synchronization seam and asserted
 writer result.
 
+**Status (P5, fixed).** Renamed to `TestWritePatch_RejectsFileChangedSinceRead`
+and made deterministic: a real database-backed `filetrack` service and a real
+`file.read`, then a synchronous, error-checked external `os.WriteFile` and
+`os.Chtimes` to a known time two seconds after `ft.LastReadTime`, with
+`os.Stat` proving the resulting mtime is later. The goroutine and both sleeps
+are gone, and the tracker lookup resolves the path with
+`filepath.EvalSymlinks` because the tool records the canonical path (on macOS
+`t.TempDir()` lives behind `/var` → `/private/var`). The test asserts the
+`changed on disk` error **and** that the file still holds `v1-modified\n`, so a
+rejected patch provably wrote nothing.
+
+The test and its comment state the boundary explicitly: this is a
+pre-invocation stale-read check. `internal/tools/native/file.go` performs a
+timestamp recheck and then a separate write — not an atomic
+compare-and-swap — so a non-atomic interval remains after the last recheck. No
+mid-operation interleaving test was added, because that guarantee does not
+exist to test and inventing it was a non-goal.
+
 ### Source-comment assertion is a deletion candidate
 
 `internal/sandbox/sandbox_test.go:369` checks for the words
@@ -560,6 +629,22 @@ It tests wording, not sandbox behavior. Restricted-backend behavior tests
 already exist (`sandbox_test.go:167`, `restricted_env_floor_test.go:39`);
 verify container-backend behavioral coverage, then remove the comment test or
 replace the missing backend coverage with executable assertions.
+
+**Status (P5, fixed).**
+`TestContainerExplicitEmptyEnvAllowlistPassesNoParentEnv` now covers the
+container backend at the argument boundary: with
+`Config{EnvAllowlist: []string{}}` and `PATH`, `HOME`, a harmless
+`MARSHAL_TEST` and a secret-like variable set in the environment, `buildArgs`
+must emit no `-e`/`--env` entry, while the image and the `-lc`-wrapped command
+must still be present so a truncated or malformed result cannot pass. It sits
+beside `TestContainerNilEnvAllowlistDefaults` (nil → `AllowList` defaults) and
+`TestContainerBuildArgs_DropsSecretAndDangerousAllowlistKeys` (nonempty,
+filtered), so the three cases stay distinguished. The restricted backend keeps
+its own executable test, `TestRestrictedEmptyAllowlistDeniesEnvInversion`,
+because its explicit-empty PATH behavior legitimately differs from the
+container backend's. `TestExplicitEmptyAllowlistDocumented` is deleted; the
+production documentation comments in `restricted.go` and `container.go` are
+untouched.
 
 ### Paste and question tests overstate or duplicate coverage
 
@@ -575,6 +660,36 @@ P10 added interactive question regressions later in the same file. Compare
 their assertions, keep distinct finalization coverage, and remove or rename
 only truly redundant simulated cases; do not delete behavior coverage based
 solely on test names.
+
+**Status (P5, fixed).** The paste table is renamed
+`TestPasteReachesSelectedTextInputs`, and its comment now says it samples the
+picker, memory, agents, connect, settings and skills filter paths plus the
+settings field-edit input — explicitly not a complete inventory and not a
+panel-routing contract. The `skills install source input` case is removed
+because it called `settings.FieldListUpdate` directly rather than
+`skills.Panel.Update`; the `skills panel filter` case and the independent
+settings field-edit case stay, and the install source editor keeps real-panel
+coverage through `TestEscapeCancelsSkillEditorBeforeLeavingFrame` (which sends
+paste through `Panel.Update`) and `TestPluginPasteFollowsFocus`.
+
+`TestQuestionSingleChoiceNavigation` replaces the two simulated question tests
+with real form navigation driven through the existing `questionStart`,
+`questionForm`, `questionMoveDown` and `questionType` helpers, so every command
+the form returns is executed. Its `listed` subtest navigates to `green`, presses
+Enter, and requires completion with `green`, the custom field never focused and
+the custom value empty; its `custom` subtest navigates to the appended `Other…`
+row, presses Enter, requires the custom field focused and the form not
+completed, types `  magenta  ` and requires the trimmed answer `magenta`.
+`TestQuestionPremadePickSkipsCustomInput` and
+`TestQuestionOtherPickRevealsCustomInput` are deleted. The distinct
+finalization cases (`TestQuestionFinalizeSingleChoice`,
+`TestQuestionFinalizeOtherWithText`,
+`TestQuestionFinalizeOtherBlankStaysUnanswered`,
+`TestQuestionSubFormMarksDoneWithoutDispatching`) and P10's
+`TestQuestionListedOtherDoesNotOpenCustomInput`,
+`TestQuestionMultiOtherAndCustomAreDistinct`,
+`TestQuestionEscapeKeepsCompletedPrefix` and
+`TestQuestionCompletedFormStillFinalizesAll` are retained unchanged.
 
 ## Verification record
 
@@ -758,3 +873,63 @@ solely on test names.
   `.github/workflows/go-checks.yml` and P3b's `scripted` job — but no hosted run
   was observed from this host, no `actionlint` was available to lint the new
   workflow, and Windows was not exercised. None of these is claimed as passing.
+- **P5 execution (`p5-test-quality` branch, six labelled commits on 2026-11-01,
+  base `4f81a41b4d28bcdaa2e2e9d3f9ef24f675cfa39d`, on `Darwin 25.4.0 arm64`,
+  `go1.26.1 darwin/arm64`, `CGO_ENABLED=1`):** no production code was changed.
+  Commits: `c7b11a8c` (config deleted-key test), `4d83a394` (deterministic
+  pre-patch test), `42224e3e` (container explicit-empty allowlist), `b8c63f25`
+  (symbol attribution and cancelled parse), `f71bd58e` (paste table scope),
+  `b39c9ccc` (real question navigation).
+  The baseline was captured first: `CGO_ENABLED=1 go test ./... -count=1
+  -timeout 15m` exited 0 at the base commit with no failing package, so no
+  pre-existing failure was inherited and no failure in the final run can be
+  explained away as baseline.
+  Each task passed its own focused repeats before its commit:
+  `go test ./internal/app/config -run
+  '^TestSaveProjectConfigDoesNotResurrectDeletedKeys$' -count=3` and the whole
+  package; `go test ./internal/tools/native -run '^TestSymbolsForEdit' -count=3`
+  (all eight named tests execute) plus
+  `go test ./internal/repo -run '^TestExtractSymbolsToleratesSyntaxError$'`;
+  `go test ./internal/tools/native -run
+  '^TestWritePatch_(RejectsFileChangedSinceRead|ChangedOnDiskErrorIncludesCurrentContent)$'
+  -count=20` and the same test `-count=3` under `-race`; the four named
+  `internal/sandbox` tests `-count=3` plus the whole package; the three named
+  paste/panel tests `-count=3 -v`; and the nine named question tests plus
+  `TestQuestionCompletedFormStillFinalizesAll` `-count=3 -v` plus
+  `go test ./internal/app/tui -count=1`.
+  Final gates, all clean on this host: `CGO_ENABLED=1 go build ./cmd/marshal`;
+  `USABILITY_REQUIRE_BINARY=1 go test ./test/usability/... -run '^TestScripted'
+  -count=1 -v -timeout 5m`, where all seven real-binary journeys executed rather
+  than skipped (`TestScriptedApprovalDetailsAndDecision` 12.08s,
+  `TestScriptedQuestionsPartialSkip` 10.33s, `TestScriptedSkillRemoval` 6.04s,
+  `TestScriptedPasteResizeDraft` 4.67s, `TestScriptedHelpOpenClose` 4.47s,
+  `TestScriptedVisibleScreenRedraw` 4.41s, `TestScriptedGracefulQuit` 4.18s);
+  `go test ./internal/app/config ./internal/tools/native ./internal/sandbox
+  ./internal/app/tui/... -count=1 -timeout 5m`; `CGO_ENABLED=1 go test ./...
+  -count=1 -timeout 5m` with exit 0, 117 `ok` packages and no `FAIL` line;
+  `CGO_ENABLED=1 go vet ./...`; and `git diff --check`.
+  Three deviations are recorded rather than smoothed over. First, the plan's
+  Task 1 scenario 2 cannot pass as written (see the config finding above): a
+  reset to the default leaves the on-disk value untouched because the section
+  is only written when it differs from `Default()`. A probe confirmed it, and
+  the user ruled for asserting the real update path with a non-default value.
+  Second, the plan's Task 2 canceled-context fixture does not reach a parser
+  error with a tiny file — tree-sitter polls the context only at parse-progress
+  boundaries — so the test uses a source large enough to reach one, with a
+  live-context control call proving the same fixture still attributes to
+  `Alpha`; no package-global parser hook was added. Third, the Task 3 tracker
+  lookup resolves the path with `filepath.EvalSymlinks`, because the tool
+  records the canonical path and macOS `t.TempDir()` sits behind
+  `/var` → `/private/var`.
+  Recorded limitation, not fixed: external deletion of a nondefault config value
+  can still be overwritten by a later whole-struct save and needs a separate
+  product decision; the patch test proves a pre-invocation stale read, not
+  atomicity, and a non-atomic interval remains after the last timestamp check.
+  The opt-in `TestExploratoryLLMSubtractFix` stayed skipped and was not enabled
+  to make anything pass.
+  Platform limitations: every check above ran on macOS/darwin arm64 only. The
+  `full-suite` and `scripted` jobs are defined for `ubuntu-latest` but **no
+  hosted run was observed from this host**; Linux and Windows are supported
+  platforms that were not exercised, so passing there remains a CI requirement
+  rather than a claim. No unrelated failing or load-sensitive fixture was
+  observed in the final runs.

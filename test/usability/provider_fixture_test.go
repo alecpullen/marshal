@@ -1,6 +1,7 @@
 package usability
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"marshal/internal/llm/provider"
+	"marshal/internal/llm/schema"
 )
 
 // fixtureModel is the single model the fixture provider advertises. The child
@@ -722,4 +727,54 @@ func TestFixtureProviderConcurrentRecords(t *testing.T) {
 		seen[m.CallID] = m.Content
 	}
 	p.AssertNoUnexpectedRequests(t)
+}
+
+// TestFixtureProviderThroughMarshalClient feeds the fixture's stream through
+// Marshal's own OpenAI-compatible client. The chunk assertions above check the
+// shape against the OpenAI spec; this proves it is the shape Marshal actually
+// parses, which is what every agent-driven journey depends on.
+func TestFixtureProviderThroughMarshalClient(t *testing.T) {
+	args := json.RawMessage(`{"command":"echo fixture"}`)
+	p := newFixtureProvider(t, []scriptedReply{{ToolName: "shell.run", ToolArgs: args}})
+
+	prov, err := provider.NewOpenAICompatible(provider.Options{
+		Name:         "fixture",
+		BaseURL:      p.URL() + "/v1",
+		Capabilities: &schema.ProviderCapabilities{ToolCalling: true},
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAICompatible: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	events, err := prov.Chat(ctx, schema.ChatRequest{
+		Model:    fixtureModel,
+		Stream:   true,
+		Messages: []schema.ChatMessage{{Role: schema.RoleUser, Content: "run it"}},
+	})
+	if err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+
+	var done *schema.ChatEvent
+	for ev := range events {
+		if ev.Type == schema.ChatEventDone {
+			copied := ev
+			done = &copied
+		}
+	}
+	if done == nil {
+		t.Fatalf("client produced no Done event")
+	}
+	if done.FinishReason != "tool_calls" {
+		t.Fatalf("FinishReason = %q, want tool_calls", done.FinishReason)
+	}
+	if len(done.ToolCalls) != 1 {
+		t.Fatalf("client parsed %d tool calls, want 1: %+v", len(done.ToolCalls), done.ToolCalls)
+	}
+	call := done.ToolCalls[0]
+	if call.ID != "call_1" || call.Name != "shell.run" || string(call.Args) != string(args) {
+		t.Fatalf("client parsed tool call = %+v, want call_1/shell.run/%s", call, args)
+	}
 }

@@ -267,6 +267,12 @@ auto = false
 narration_prompt = false
 intent_nudge = false
 
+# A conversation-title side call is a second, non-agent completion: it would
+# consume a scripted reply and shift every later turn. Disabled so each reply
+# maps to exactly one agent turn.
+[titling]
+enabled = false
+
 [postmortem]
 on_exit = "never"
 `, baseURL, fixtureModel)

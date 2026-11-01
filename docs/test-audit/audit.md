@@ -36,16 +36,69 @@ removed. **Evidence:** actor and runner control flow.
 
 ### The PTY harness does not model the current terminal screen
 
-`test/usability/harness/harness.go:63` appends every output chunk to an
-unbounded buffer, and `Snapshot` at `:158` returns the entire history.
-`test/usability/screen/parse.go:8` strips a subset of escape sequences but
-does not apply cursor movement, erasure, alternate-screen or redraw commands.
-Past text can therefore satisfy a later `ScreenContains` or boolean state
-predicate after it has disappeared; absence and current-frame assertions are
-unreliable. Add a terminal-state model with fixtures for redraw, erase,
-alternate screen and Unicode; keep raw output separately for diagnostics.
-This is a prerequisite for trustworthy postconditions and resize journeys.
-**Evidence:** snapshot and parser implementation.
+**Status: fixed for P3a** — the harness now keeps a bounded terminal model and
+snapshots describe the visible viewport; the items below that P3a does *not*
+cover remain open (see the roadmap).
+
+The original defect: `test/usability/harness/harness.go:63` appended every
+output chunk to an unbounded buffer, and `Snapshot` returned the entire
+history. `test/usability/screen/parse.go:8` stripped a subset of escape
+sequences but did not apply cursor movement, erasure, alternate-screen or
+redraw commands. Past text could therefore satisfy a later `ScreenContains` or
+boolean state predicate after it had disappeared; absence and current-frame
+assertions were unreliable. **Evidence:** snapshot and parser implementation.
+
+What P3a established (`p3a-terminal-screen`: `c9515db1`, `a493e645`,
+`f899e577`):
+
+- `test/usability/harness/terminal.go` decodes PTY bytes incrementally with
+  `github.com/charmbracelet/x/ansi` into a bounded cell viewport. It implements
+  cursor addressing and movement, erase display/line, save/restore cursor,
+  scrolling, CR/LF/BS/TAB, cell widths for wide and combining graphemes, the
+  alternate screen (`?47`/`?1047`/`?1049`), DECAWM autowrap (`?7`) and resize.
+  Cell-changing controls it does not model latch a sticky error instead of
+  yielding a silently wrong screen; `Snapshot.Err` carries it.
+- `Session` feeds each chunk to the model once under `Session.mu`, keeps only
+  the last 1 MiB of raw bytes as a diagnostic tail, and returns the model's
+  viewport from `Snapshot`. `Output` returns that tail.
+- `screen.Parse` propagates the model error and consumes `Content`/`Lines`
+  directly; the regex `StripANSI` helper was removed as it had no other
+  caller.
+- The scenario runner fails a run whose screen cannot be decoded, treats a
+  viewport of blank rows as not-yet-rendered, and records a bounded raw tail
+  in failure diagnostics without asserting on it.
+
+Verified with:
+
+```sh
+CGO_ENABLED=1 go build ./cmd/marshal
+go test ./test/usability/... -run 'Test(Scripted|Terminal|Session|Parse|Runner)' -count=1 -v -timeout 5m
+go test -race ./test/usability/harness ./test/usability/screen ./test/usability/scenario -count=1 -timeout 2m
+go test ./... -count=1 -timeout 5m
+go vet ./...
+```
+
+Measured result: `TestScriptedVisibleScreenRedraw` opens Help on the real
+binary, observes the Help title in the viewport, sends Escape, and then
+observes a viewport with the title absent and the prompt present; it fails on
+any terminal-model error. `TestSessionSnapshotIsCurrent` shows the same
+transition against a helper subprocess (the marker leaves the viewport while
+remaining in the raw tail), and `TestVisibleScreenAbsencePredicateNeedsTheClose`
+proves the absence predicate cannot pass while Help is still drawn.
+
+Running the real TUI surfaced escape sequences the first model rejected; each
+was implemented to its actual (cell-neutral or cell-changing) effect with a
+regression fixture rather than silenced: OSC 10/11/12 colour queries, DA1
+(`CSI c`) and DA2/XTVERSION queries, DECRQM (`CSI ? … $ p`) and DECRPM
+responses, modifyOtherKeys (`CSI > 4 m`) and the kitty keyboard protocol
+(`CSI = … u`) are ignored as cell-neutral; DECAWM (`?7l`) is modelled because
+it changes where the next cell lands. Run on macOS only.
+
+Still open from this finding (owned by the remaining P3 plans): an explicit
+post-action Help oracle and the `Scenario.Success` disposition, harness resize
+and bracketed-paste actions, bounded graceful shutdown, fixture isolation and
+report paths, CI enforcement that the binary exists, and the optional LLM
+oracle. P4 journeys must wait for those.
 
 ### Core TUI workflows lack real-binary interaction coverage
 

@@ -153,10 +153,12 @@ func TestTerminalIncrementalWrites(t *testing.T) {
 		h = 6
 	)
 	// One stream with CSI (cursor addressing, erase, SGR, a private mode),
-	// OSC (window title) and multibyte UTF-8: two-, three- and four-byte
-	// runes plus a combining mark.
+	// OSC (window title and the colour queries the real TUI issues at startup)
+	// and multibyte UTF-8: two-, three- and four-byte runes plus a combining
+	// mark.
 	stream := "h\u00e9llo \x1b]2;demo\x07\u4e16 \x1b[1;31mbold\x1b[0m\r\n" +
-		"second \U0001F600 line\x1b[4;3Htail e\u0301nd\x1b[4;8H\x1b[K\x1b[?25l"
+		"second \U0001F600 line\x1b[4;3Htail e\u0301nd\x1b[4;8H\x1b[K\x1b[?25l" +
+		"\x1b]11;?\x07"
 	golden := []string{
 		"h\u00e9llo \u4e16 bold",
 		"second \U0001F600 line",
@@ -185,6 +187,37 @@ func TestTerminalIncrementalWrites(t *testing.T) {
 		writeAll(t, m, stream[i:i+1])
 	}
 	assertSnapshot(t, "single bytes", m.Snapshot(), ref.Snapshot())
+}
+
+func TestTerminalAutowrap(t *testing.T) {
+	// DECAWM (?7) off is what the real TUI sets: writing in the last column
+	// overwrites that cell instead of moving to the next line.
+	m := newTerminalModel(8, 3)
+	writeAll(t, m, "\x1b[?7l123456789")
+	wantLines(t, m.Snapshot(), "12345679", "", "")
+
+	// Re-enabling autowrap restores the deferred wrap: the next grapheme moves
+	// to the following row.
+	writeAll(t, m, "\x1b[?7h0")
+	wantLines(t, m.Snapshot(), "12345670", "", "")
+	writeAll(t, m, "A")
+	wantLines(t, m.Snapshot(), "12345670", "A", "")
+
+	// With autowrap off, a wide grapheme that cannot fit is not split.
+	m = newTerminalModel(8, 3)
+	writeAll(t, m, "\x1b[?7l1234567\u4e16")
+	wantLines(t, m.Snapshot(), "1234567", "", "")
+}
+
+func TestTerminalColorQueryOSC(t *testing.T) {
+	// The real TUI asks the terminal for its colours at startup
+	// ("\x1b]11;?\a" among others). Those queries never change visible cells, so
+	// the model must ignore them instead of failing on a real screen.
+	m := newTerminalModel(20, 3)
+	writeAll(t, m, "ok")
+	writeAll(t, m, "\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07")
+	writeAll(t, m, "\x1b]11;rgb:0000/0000/0000\x07")
+	wantLines(t, m.Snapshot(), "ok", "", "")
 }
 
 func TestTerminalCellWidths(t *testing.T) {

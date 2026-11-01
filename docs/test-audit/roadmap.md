@@ -97,6 +97,10 @@ remaining environment-specific failures documented rather than suppressed.
 
 ## P3 — make the real-binary usability harness trustworthy
 
+**Status:** P3a (terminal model and viewport snapshots) is implemented on
+`p3a-terminal-screen` — see the [audit finding](audit.md#the-pty-harness-does-not-model-the-current-terminal-screen).
+Everything else listed here stays open and blocks P4.
+
 Replace accumulated-output-as-screen with an actual terminal state model;
 retain a separately bounded raw diagnostic log. Cover cursor movement, erase,
 alternate screen, incremental writes, cell width, resize and stale content.
@@ -108,6 +112,14 @@ and child environment; make the dedicated integration job fail on a missing
 binary. Give the optional LLM repair scenario an independent fixture-test
 oracle or relabel it exploratory. Do not build journeys on the current
 historical-output parser.
+
+P3a completed the first sentence, the movement/erase/alternate-screen/
+incremental-write/cell-width/stale-content coverage, and the "prove Help
+closes" demonstration in a new `TestScriptedVisibleScreenRedraw` (the named
+Help scenario keeps its own postcondition contract for the next P3 plan).
+The post-action oracle and `Scenario.Success` decision, harness resize and
+paste actions, graceful shutdown, fixture isolation, report paths, CI binary
+enforcement and the LLM oracle are still open.
 
 ## P4 — expand real TUI journeys and gate changes in CI
 

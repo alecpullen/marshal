@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"marshal/test/usability/harness"
 	"marshal/test/usability/scenario"
+	"marshal/test/usability/screen"
 )
 
 func binaryPath(t *testing.T) string {
@@ -173,4 +176,130 @@ func copyFixture(t *testing.T, name string) string {
 		t.Fatalf("copy fixture: %v", err)
 	}
 	return dst
+}
+
+// helpTitleMarker is the text the /help doc panel shows in its chrome title.
+// It is matched case-sensitively so the lowercase "? help" footer hint cannot
+// stand in for an open panel.
+const helpTitleMarker = "Help"
+
+// promptMarker is the welcome banner's call to action, which only the main
+// screen shows: the help panel covers the transcript where it is drawn.
+const promptMarker = "Type a question"
+
+// waitForViewport waits until pred holds for two consecutive current
+// viewports, failing the test on a terminal model error instead of treating a
+// broken screen as a false result.
+func waitForViewport(t *testing.T, s *harness.Session, timeout time.Duration, what string, pred func(screen.Screen) bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var modelErr error
+	err := s.WaitFor(ctx, func(snap harness.Snapshot) bool {
+		scr, parseErr := screen.Parse(snap)
+		if parseErr != nil {
+			// End the wait early; the model error is fatal and reported below.
+			modelErr = parseErr
+			return true
+		}
+		return pred(scr)
+	})
+	if modelErr != nil {
+		t.Fatalf("%s: terminal model error: %v", what, modelErr)
+	}
+	if err != nil {
+		t.Fatalf("%s: %v\nscreen: %q", what, err, string(s.Snapshot().Content))
+	}
+}
+
+// writeHelperScript writes an executable POSIX shell helper to a temp dir.
+func writeHelperScript(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "helper.sh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+		t.Fatalf("write helper: %v", err)
+	}
+	return path
+}
+
+// TestScriptedVisibleScreenRedraw proves the harness snapshot follows the
+// visible screen across a real redraw: Help opens over the transcript and,
+// once Escape closes it, the snapshot no longer contains the Help title while
+// the prompt is back.
+//
+// This is deliberately separate from TestScriptedHelpOpenClose: that scenario
+// keeps its own (unsatisfiable) postcondition contract for a later P3 plan.
+func TestScriptedVisibleScreenRedraw(t *testing.T) {
+	if _, err := os.Stat(binaryPath(t)); err != nil {
+		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")
+	}
+
+	sess, err := harness.New(harness.Config{
+		BinaryPath: binaryPath(t),
+		Width:      120,
+		Height:     80,
+		WorkDir:    t.TempDir(),
+		Env:        isolatedHomeEnv(t),
+	})
+	if err != nil {
+		t.Fatalf("harness.New: %v", err)
+	}
+	defer sess.Close()
+
+	waitForViewport(t, sess, 30*time.Second, "initial prompt", func(scr screen.Screen) bool {
+		return strings.Contains(scr.Content, promptMarker)
+	})
+
+	if err := sess.Send("?"); err != nil {
+		t.Fatalf("Send(?): %v", err)
+	}
+	waitForViewport(t, sess, 30*time.Second, "help open", func(scr screen.Screen) bool {
+		return strings.Contains(scr.Content, helpTitleMarker)
+	})
+
+	if err := sess.SendKey("esc"); err != nil {
+		t.Fatalf("SendKey(esc): %v", err)
+	}
+	waitForViewport(t, sess, 30*time.Second, "help closed and prompt restored", func(scr screen.Screen) bool {
+		return !strings.Contains(scr.Content, helpTitleMarker) && strings.Contains(scr.Content, promptMarker)
+	})
+}
+
+// TestVisibleScreenAbsencePredicateNeedsTheClose is the deterministic negative
+// case for the redraw test: with the close action suppressed, a helper that
+// keeps drawing the Help title never satisfies the absence predicate, so that
+// predicate cannot pass on a screen that still shows Help.
+func TestVisibleScreenAbsencePredicateNeedsTheClose(t *testing.T) {
+	bin := writeHelperScript(t, `
+printf 'Help\r\n  /help cheatsheet\r\n'
+printf 'Type a question\r\n'
+sleep 10
+`)
+	sess, err := harness.New(harness.Config{BinaryPath: bin, Width: 120, Height: 40})
+	if err != nil {
+		t.Fatalf("harness.New: %v", err)
+	}
+	defer sess.Close()
+
+	waitForViewport(t, sess, 10*time.Second, "help drawn", func(scr screen.Screen) bool {
+		return strings.Contains(scr.Content, helpTitleMarker)
+	})
+
+	// The close action is suppressed: the absence predicate used by the redraw
+	// test must keep failing for as long as the helper draws Help.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err = sess.WaitFor(ctx, func(snap harness.Snapshot) bool {
+		scr, parseErr := screen.Parse(snap)
+		return parseErr == nil &&
+			!strings.Contains(scr.Content, helpTitleMarker) &&
+			strings.Contains(scr.Content, promptMarker)
+	})
+	if err == nil {
+		t.Fatalf("absence predicate held while Help was still on screen")
+	}
+	if !strings.Contains(string(sess.Snapshot().Content), helpTitleMarker) {
+		t.Fatalf("help marker disappeared from the viewport without a close action")
+	}
 }

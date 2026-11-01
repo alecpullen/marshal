@@ -72,6 +72,11 @@ type terminalModel struct {
 	saved       savedCursor
 	head        headPos
 
+	// autowrap is DECAWM (?7), on by default. With autowrap off, writing in
+	// the last column overwrites that cell instead of moving to the next
+	// line, so it changes visible cells and must be modelled.
+	autowrap bool
+
 	// primary and alt hold the inactive screen. Exactly one of them is
 	// live: primary while altActive, alt otherwise. Snapshot renders only
 	// the live buffer, so the inactive screen never reaches a snapshot.
@@ -95,10 +100,11 @@ func newTerminalModel(width, height int) *terminalModel {
 		height = 1
 	}
 	m := &terminalModel{
-		width:  width,
-		height: height,
-		cells:  blankCells(width, height),
-		alt:    screenState{cells: blankCells(width, height)},
+		width:    width,
+		height:   height,
+		cells:    blankCells(width, height),
+		alt:      screenState{cells: blankCells(width, height)},
+		autowrap: true,
 	}
 	m.p = ansi.NewParser()
 	m.p.SetHandler(ansi.Handler{
@@ -232,13 +238,20 @@ func (m *terminalModel) print(r rune) {
 		}
 		return
 	}
-	if m.wrapPending || m.col+w > m.width {
+	if m.wrapPending {
+		m.wrap()
+	} else if m.col+w > m.width && m.autowrap {
 		// Wrap before drawing, including a two-cell grapheme that would
 		// straddle the right edge.
 		m.wrap()
 	}
 	if w > m.width {
 		w = 1 // Degenerate viewport narrower than one wide cell.
+	}
+	if m.col+w > m.width {
+		// Autowrap is off and the grapheme cannot fit in the last column: it
+		// is not drawn and never split across rows.
+		return
 	}
 	row, col := m.row, m.col
 	// Overwriting either half of a wide cell clears the entire prior
@@ -257,7 +270,7 @@ func (m *terminalModel) print(r rune) {
 	m.col += w
 	if m.col >= m.width {
 		m.col = m.width - 1
-		m.wrapPending = true
+		m.wrapPending = m.autowrap
 	}
 }
 
@@ -316,6 +329,8 @@ func (m *terminalModel) handleCsi(cmd ansi.Cmd, params ansi.Params) {
 					m.setAltScreen(set, false)
 				case 1047, 1049: // alternate screen, cleared before use
 					m.setAltScreen(set, true)
+				case 7: // DECAWM autowrap: changes where the next cell lands
+					m.autowrap = set
 				default:
 					if !ignorablePrivateMode(mode) {
 						m.fail("unsupported DEC private mode %d in %s", mode, m.seqQuoted())
@@ -323,6 +338,8 @@ func (m *terminalModel) handleCsi(cmd ansi.Cmd, params ansi.Params) {
 				}
 			})
 		case 'n': // private DSR
+		case 'p': // DECRQM mode query: a report, no cells
+		case 'c', 'u', 'W': // DA1, kitty-protocol and DECRPM reports: no cells
 		default:
 			m.failUnsupported()
 		}
@@ -350,7 +367,20 @@ func (m *terminalModel) handleCsi(cmd ansi.Cmd, params ansi.Params) {
 			m.saveCursor()
 		case 'u': // RCP restore cursor
 			m.restoreCursor()
-		case 'm', 'n', 'q': // SGR, DSR, cursor style
+		case 'm', 'n', 'q', 'c': // SGR, DSR, cursor style, DA1 device-attributes query
+		default:
+			m.failUnsupported()
+		}
+	case '>':
+		switch final {
+		case 'c', 'n', 'q': // DA2, DSR and XTVERSION queries: reports, no cells
+		case 'm': // modifyOtherKeys: keyboard reporting only, no cells
+		default:
+			m.failUnsupported()
+		}
+	case '=':
+		switch final {
+		case 'u': // kitty keyboard protocol: keyboard reporting only, no cells
 		default:
 			m.failUnsupported()
 		}
@@ -376,14 +406,17 @@ func (m *terminalModel) handleEsc(cmd ansi.Cmd) {
 	}
 }
 
-// handleOsc ignores window title changes (OSC 0/2); any other OSC is
-// unsupported and fails the model.
+// handleOsc ignores the sequences that cannot change visible cells: window
+// titles (OSC 0/2) and the foreground/background/cursor colour queries and
+// sets (OSC 10/11/12) the TUI issues at startup. Any other OSC is unsupported
+// and fails the model.
 func (m *terminalModel) handleOsc(cmd int, data []byte) {
 	if m.err != nil {
 		return
 	}
 	switch cmd {
 	case 0, 2: // window title
+	case 10, 11, 12: // foreground, background and cursor colour get/set
 	default:
 		m.failUnsupported()
 	}

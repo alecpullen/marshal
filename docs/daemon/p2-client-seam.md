@@ -322,10 +322,10 @@ Decision: `WireTree`, with the C6 additions.
     number of files changed against the sheet's base, which the status
     line shows (plan 2c). HEAD itself stays agent side: the adapter keeps
     it as that base, and only the changed-files diff reads it;
-  - **live state:** browser info. Sandbox info arrives with plans 3
-    and 4, because only the running-call and approval renderers read
-    it. The current notice arrives with plan 6, which also moves
-    notice writes (C9);
+  - **live state:** browser info. Sandbox info arrives with plan 4,
+    because only the running-call and approval renderers read it, and
+    both read the session's. The current notice arrives with plan 6,
+    which also moves notice writes (C9);
   - **queues and runs** (plan 2b): the steering queue, the Send-now
     snapshot and the newest receipt for its turn, the running job count,
     subagent views, swarm and SDD progress (the tray's plan-run row), the
@@ -340,7 +340,9 @@ Decision: `WireTree`, with the C6 additions.
     the tray and the drill-in breadcrumb read today: the role, label,
     model, provider and fallback flag. While the child runs, it also
     carries the child's newest narration headline (`subagentHeadline`,
-    `steps.go:703`).
+    `steps.go:703`). While the session keeps the child's state, it also
+    carries `drill`: what a view drilled into the child reads about it,
+    namely its active root, active route and activity (plan 3d).
 - The job, watch, steering, workspace and subagent broker pumps go away.
   Their data are `Status` fields, and the adapter fires `Changed` when
   they publish and after a `SendNow`. A value no event announces (swarm
@@ -376,10 +378,12 @@ Decision: `WireTree`, with the C6 additions.
 
 ### C6. Transcript
 
-- `Session.Stack(subagentID int64) acpwire.StackSnapshot` returns the
-  projected tree with the band node: the one projection `session/stack`
-  already serves. P-B removed the legacy projection, so the stack needs
-  no parameter to select one.
+- `Session.Stack(subagentID int64, busy bool) acpwire.StackSnapshot`
+  returns the projected tree with the band node: the one projection
+  `session/stack` already serves. P-B removed the legacy projection, so
+  the stack needs no parameter to select one. `busy` is the TUI's own
+  turn flag until plan 5 moves turns behind `Prompt` (revision record
+  2026-11-02).
 - `Session.StackNode(ctx, nodeID, subagentID)` returns
   `acpwire.NodeDetail`, the uncapped detail behind a row. ACP:
   `session/stack_node` (exists).
@@ -693,10 +697,14 @@ The TUI works after every plan.
      render path and caches by node version; a running row reads the wire
      alone. The settled-row renderer nothing reaches is deleted, and so is
      the TUI's index of `viewmodel` nodes.
-   - **3d. Tree.** `Session.Stack`. The TUI's tree, node identity,
-     expansion, regions, browse items, drill-in, band and completion
-     index come from wire nodes. The text helpers move to an allowed
-     package, and T1b and the allowlist close the group.
+   - **3d. Tree** ([plan](plans/2026-11-02-p2-3d-tree-plan.md)).
+     `Session.Stack`. The TUI renders the snapshot it returns: its tree,
+     node identity, expansion, regions, browse items, band and completion
+     index come from wire nodes, and drill-in reads the subagent views in
+     `Status`. The text helpers move to `strutil`, T1b gains `Subagent`,
+     and the allowlist loses the transcript group's entries. The files
+     that also hold approval, work or notice code keep their entries for
+     plans 4, 5 and 6.
 4. **Agent requests** (C7).
 5. **Turns and runs** (C8).
 6. **Notes, notices and commands** (C9).
@@ -998,6 +1006,55 @@ plan 3c:
   walk, node identity, expansion, regions, browse items, the seen set, the
   completion index and `rowBeats` keep reading `viewmodel` nodes. Plan 3c
   moves only the payloads the renderers read.
+
+**2026-11-02, against `025242f9` (plan 3c merged).** Found while writing
+plan 3d:
+- **`Stack` takes the busy flag until plan 5** (C6). `busy` decides a
+  tree's live beat and whether its turn has a receipt. The TUI owns turns
+  until plan 5, and builds every tree, a drilled child's included, with its
+  own flag. So it passes that flag, and the adapter builds the tree with it.
+  ACP's `session/stack` keeps its own rule: a subagent's tree is busy while
+  the subagent runs. P3 drops the parameter, and a drilled view then shows a
+  finished child's receipt while the parent's turn runs.
+- **`Stack` is built on the state's clock.** The snapshot's time decides
+  only the band's stale signal. The goldens run the state and the model on
+  one clock, so the adapter reads the state's (`State.Now`, new), not the
+  wall clock.
+- **An ID that names no kept child reads as an empty snapshot**, unlike
+  `Sheet`, which falls back to the session's own. A drilled frame must never
+  show the session's transcript.
+- **No projection cache.** Measured on a session of 2,000 calls: a live
+  refresh already projects every frame (13.9 ms, of which the projection is
+  5.5 ms), so `Stack` adds nothing while a turn runs. An idle refresh gains
+  the 5.5 ms. P3 projects agent side.
+- **Subagent views carry what a drilled view reads** (C5). `drill` holds the
+  child's active root (completion rows elide it), its active route (a
+  beat's model is compared against it) and its activity (the reconnect
+  notice). It is set only while the session keeps the child's state, which
+  is what `Stack` reads, so it also says the subagent can be drilled into.
+  The route comes from the child's state, not from the view's `model` and
+  `provider`, because `agent.run` records the provider object's name there.
+  A child never dispatches subagents (`agent.run` is withheld from
+  children), so drill-in is one level deep and the views do not nest.
+- **The text helpers go to `strutil`** (C1): `ScrubText`, `ScrubBlock`,
+  `ElideWorkdir`, `FirstSentence` and `StripEmphasis`. `viewmodel`, the
+  adapter and the TUI call them there. `ReportTail` and `BeatRowCap`, which
+  only the TUI read, move into the TUI. The TUI keeps its own
+  `isShellFamily`, and a test holds it equal to `viewmodel.IsShellFamily`.
+- **Node identity is the wire kind and ID** (C6). A final answer's identity
+  kind becomes `final`, which its node's kind already was. The seen set
+  holds the wire nodes only: nothing keys state by a beat's reasoning entry
+  or by a call inside a merged row since plan 3c.
+- **Sandbox info arrives with plan 4, not 3** (C5). The running-call row
+  reads the session's. A drilled view reads none, as today, because only
+  the root state records sandbox info. Plan 4 moves it with the approval
+  panel, which reads the same value.
+- **What stays for later plans.** `approvalWhyFor`'s step owner keeps
+  `steps.go` on `viewmodel` and `session`, and `DisplayToolName` keeps
+  `toolnames.go` on `viewmodel`, until plan 4. The work types keep their
+  files until plan 5, and so does `jumpToWorkOrigin`'s match of a child by
+  its session ID. The notice keeps `viewport_render.go` on `session` until
+  plan 6.
 
 ## Implementation record
 

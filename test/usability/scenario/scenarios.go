@@ -34,7 +34,13 @@ func HelpOpenClose() *scripted.Scripted {
 	}
 }
 
-// SubtractFix drives Marshal to add a missing Subtract function and make tests pass.
+// SubtractFix drives Marshal to add a missing Subtract function and make tests
+// pass, and is used only by the exploratory LLM scenario.
+//
+// Its result is the actor's claim, not an independent verdict: nothing here runs
+// the fixture's own `go test` to confirm the repair, so a success must not be
+// read as evidence that the code is correct. It is opt-in and outside the
+// scripted CI selection.
 func SubtractFix() *llm.LLM {
 	return llm.New(llm.Config{}, nil).WithGoal("Add a Subtract function to the calc package and run tests until they pass.")
 }

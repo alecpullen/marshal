@@ -466,9 +466,15 @@ func TestHelpScriptDoesNotCompleteWithoutClose(t *testing.T) {
 	}
 }
 
-func TestLLMSubtractFix(t *testing.T) {
+// TestExploratoryLLMSubtractFix is an exploratory smoke test, not a regression
+// gate. Its only verdict is the actor's own claim that it finished: the
+// fixture's `go test` is never run as an independent oracle, so a passing
+// result says the model believed it repaired the fixture and said so, not that
+// the code is correct. It is opt-in (USABILITY_LLM_MODEL), it is not part of the
+// scripted CI selection, and it must not be cited as evidence of correctness.
+func TestExploratoryLLMSubtractFix(t *testing.T) {
 	if os.Getenv("USABILITY_LLM_MODEL") == "" {
-		t.Skip("set USABILITY_LLM_MODEL to run LLM scenarios")
+		t.Skip("set USABILITY_LLM_MODEL to run the exploratory LLM scenario")
 	}
 	bin := requireBinary(t)
 	workDir := copyFixture(t, "go-calc-broken")
@@ -484,14 +490,17 @@ func TestLLMSubtractFix(t *testing.T) {
 		}
 	})
 	res, err := r.Run(context.Background(), scenario.Scenario{
-		Name:  "subtract_fix",
+		Name:  "exploratory_subtract_fix",
 		Actor: scenario.SubtractFix(),
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	// An actor failure is a real failure of the exploratory run: the model did
+	// not even claim success. An actor success is not proof the fixture works —
+	// see this test's doc comment.
 	if !res.Success {
-		t.Fatalf("scenario failed: %+v", res)
+		t.Fatalf("exploratory scenario did not report success: %+v", res)
 	}
 }
 

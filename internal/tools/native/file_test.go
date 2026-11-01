@@ -1478,11 +1478,26 @@ func TestFileWritePatchRollbackIntegration(t *testing.T) {
 	}
 }
 
-func TestWritePatch_AtomicOnConcurrentModification(t *testing.T) {
+// TestWritePatch_RejectsFileChangedSinceRead proves the pre-invocation
+// stale-read check: a tracked file modified after its read and before
+// file.write_patch is invoked is rejected, and the external edit survives
+// untouched. This is a stale-read check, not an atomic compare-and-swap —
+// a non-atomic interval still remains between the last timestamp recheck and
+// the write itself.
+func TestWritePatch_RejectsFileChangedSinceRead(t *testing.T) {
 	root := t.TempDir()
 	filePath := filepath.Join(root, "test.txt")
 	if err := os.WriteFile(filePath, []byte("v1\n"), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
+	}
+	// The tool's path resolver symlink-resolves what it records, and on
+	// macOS t.TempDir() lives behind the /var -> /private/var symlink, so
+	// the tracker keys this file by its canonical path. Resolve it once and
+	// use that for the tracker lookup so the key matches what file.read
+	// recorded. Both paths name the same file.
+	trackedPath, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
 	}
 
 	dbPath := filepath.Join(t.TempDir(), "filetrack.db")
@@ -1506,39 +1521,53 @@ func TestWritePatch_AtomicOnConcurrentModification(t *testing.T) {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 
-	// Read the file first to register a read-time in the file tracker.
-	_, err = invokeTool(t, reg, "file.read", `{"path":"test.txt"}`)
-	if err != nil {
+	// Read the file first so the tracker records a read time for it.
+	if _, err := invokeTool(t, reg, "file.read", `{"path":"test.txt"}`); err != nil {
 		t.Fatalf("file.read failed: %v", err)
 	}
-
-	// Launch a goroutine that modifies the file concurrently.
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		time.Sleep(10 * time.Millisecond)
-		if wErr := os.WriteFile(filePath, []byte("v1-modified\n"), 0644); wErr != nil {
-			t.Logf("concurrent write failed: %v", wErr)
-		}
-	}()
-
-	// Give the goroutine time to fire and modify the file before calling
-	// write_patch. The goroutine fires at ~10ms; this sleep ensures it has
-	// already modified the file so the tool's validate loop detects the change.
-	time.Sleep(20 * time.Millisecond)
-
-	// Patch v1 -> v2. The file was modified concurrently so the tool should
-	// reject it with "changed on disk".
-	args := `{"patch": "File: test.txt\n<<<<<<< SEARCH\nv1\n=======\nv2\n>>>>>>> REPLACE"}`
-	_, err = invokeTool(t, reg, "file.write_patch", args)
-
-	<-done // wait for the goroutine to finish
-
-	if err == nil {
-		t.Fatal("expected error for concurrent modification, got nil")
+	lastRead, ok, err := ft.LastReadTime(trackedPath)
+	if err != nil {
+		t.Fatalf("LastReadTime: %v", err)
 	}
-	if !strings.Contains(err.Error(), "changed on disk") {
+	if !ok {
+		t.Fatal("file.read did not record a read time for the file")
+	}
+
+	// Apply the external edit now, synchronously, before file.write_patch is
+	// invoked, and stamp its mtime strictly later than the recorded read. The
+	// two-second offset survives coarse filesystem timestamp resolution
+	// without a sleep; the tool's check is mtime.After(lastRead).
+	modified := lastRead.Add(2 * time.Second)
+	if err := os.WriteFile(filePath, []byte("v1-modified\n"), 0644); err != nil {
+		t.Fatalf("external write: %v", err)
+	}
+	if err := os.Chtimes(filePath, modified, modified); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !info.ModTime().After(lastRead) {
+		t.Fatalf("mtime %v is not after the recorded read time %v", info.ModTime(), lastRead)
+	}
+
+	// Patch v1 -> v2. The file changed after its read, so the tool must
+	// reject it rather than overwrite the external edit.
+	args := `{"patch": "File: test.txt\n<<<<<<< SEARCH\nv1\n=======\nv2\n>>>>>>> REPLACE"}`
+	if _, err := invokeTool(t, reg, "file.write_patch", args); err == nil {
+		t.Fatal("expected an error for a file changed since its read, got nil")
+	} else if !strings.Contains(err.Error(), "changed on disk") {
 		t.Fatalf("error should mention 'changed on disk', got: %v", err)
+	}
+
+	// The external edit must survive: the rejected patch wrote nothing.
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != "v1-modified\n" {
+		t.Fatalf("rejected patch modified the file: got %q, want %q", got, "v1-modified\n")
 	}
 }
 

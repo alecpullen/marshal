@@ -57,6 +57,9 @@ default = "local"
 
 [agent_profiles.local]
 implementer = "coder"
+
+[postmortem]
+on_exit = "never"
 `
 	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0644); err != nil {
 		t.Fatalf("write temp marshal config: %v", err)
@@ -334,6 +337,50 @@ func TestScriptedVisibleScreenRedraw(t *testing.T) {
 	waitForViewport(t, sess, 30*time.Second, "help closed and prompt restored", func(scr screen.Screen) bool {
 		return !strings.Contains(scr.Content, helpTitleMarker) && strings.Contains(scr.Content, promptMarker)
 	})
+}
+
+// TestScriptedGracefulQuit requires a normal exit, not merely a process that
+// disappeared: after /quit the child's own Wait returns nil before its deadline,
+// so a forced kill at cleanup cannot stand in for the quit. The isolated config
+// pins [postmortem] on_exit = "never", which removes the interactive postmortem
+// question from the exit path.
+func TestScriptedGracefulQuit(t *testing.T) {
+	if _, err := os.Stat(binaryPath(t)); err != nil {
+		t.Skip("marshal binary not found; build with 'go build ./cmd/marshal'")
+	}
+
+	sess, err := harness.New(harness.Config{
+		BinaryPath: binaryPath(t),
+		Width:      120,
+		Height:     80,
+		WorkDir:    t.TempDir(),
+		Env:        isolatedHomeEnv(t),
+	})
+	if err != nil {
+		t.Fatalf("harness.New: %v", err)
+	}
+	// Close is cleanup only. The assertion below is that the child exited on its
+	// own, not that it was removed.
+	defer sess.Close()
+
+	waitForViewport(t, sess, 30*time.Second, "initial prompt", func(scr screen.Screen) bool {
+		return strings.Contains(scr.Content, promptMarker)
+	})
+
+	if err := sess.Send("/quit"); err != nil {
+		t.Fatalf("Send(/quit): %v", err)
+	}
+	if err := sess.SendKey("enter"); err != nil {
+		t.Fatalf("SendKey(enter): %v", err)
+	}
+
+	// A forced kill would surface here as a non-nil *exec.ExitError, so nil is
+	// the assertion that the child exited normally before its deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := sess.Wait(ctx); err != nil {
+		t.Fatalf("Wait after /quit = %v, want nil for a normal exit\nscreen: %q", err, string(sess.Snapshot().Content))
+	}
 }
 
 // TestVisibleScreenAbsencePredicateNeedsTheClose is the deterministic negative

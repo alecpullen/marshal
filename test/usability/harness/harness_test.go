@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -453,5 +455,204 @@ func TestSessionResizeInvalid(t *testing.T) {
 	}
 	if snap := s.Snapshot(); snap.Width != 80 || snap.Height != 24 {
 		t.Fatalf("snapshot = %dx%d after invalid resizes, want an unchanged 80x24", snap.Width, snap.Height)
+	}
+}
+
+// waitForMarker waits until want appears in the viewport, failing with the
+// screen and the raw tail when it never does.
+func waitForMarker(t *testing.T, s *Session, want string, timeout time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := s.WaitFor(ctx, func(snap Snapshot) bool {
+		return strings.Contains(string(snap.Content), want)
+	}); err != nil {
+		t.Fatalf("WaitFor %q: %v\nscreen: %q\noutput: %q", want, err, string(s.Snapshot().Content), string(s.Output()))
+	}
+}
+
+// runWithin runs fn on its own goroutine and fails unless it returns within
+// timeout. It is the bounded-deadline assertion: a teardown that hangs shows up
+// as a test failure rather than a suite timeout.
+func runWithin(t *testing.T, timeout time.Duration, what string, fn func() error) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	case <-time.After(timeout):
+		t.Fatalf("%s did not return within %s", what, timeout)
+	}
+}
+
+// TestSessionWaitGraceful observes a natural child exit: the helper waits for a
+// test-owned input, writes a final marker and exits with status zero, so Wait
+// returns nil without killing anything. Repeated Close and Wait neither wait nor
+// reap a second time, and the final screen survives cleanup.
+func TestSessionWaitGraceful(t *testing.T) {
+	bin := writeHelper(t, `
+printf 'READY\r\n'
+dd bs=1 count=1 of=/dev/null 2>/dev/null
+printf 'FINAL-MARKER\r\n'
+exit 0
+`)
+	s, err := New(Config{BinaryPath: bin, Width: 40, Height: 8})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	waitForMarker(t, s, "READY", 10*time.Second)
+
+	// The helper reads one canonical-mode line, so acknowledgement is a line.
+	if err := s.Send("x"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if err := s.SendKey("enter"); err != nil {
+		t.Fatalf("SendKey enter: %v", err)
+	}
+	waitForMarker(t, s, "FINAL-MARKER", 10*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.Wait(ctx); err != nil {
+		t.Fatalf("Wait = %v, want nil for a clean exit\noutput: %q", err, string(s.Output()))
+	}
+
+	// The child has already been reaped: a second Close and a later Wait must
+	// return at once with the recorded result instead of waiting or reaping.
+	runWithin(t, 15*time.Second, "repeated Close and Wait", func() error {
+		if err := s.Close(); err != nil {
+			return fmt.Errorf("first Close: %w", err)
+		}
+		if err := s.Close(); err != nil {
+			return fmt.Errorf("second Close: %w", err)
+		}
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+		defer waitCancel()
+		if err := s.Wait(waitCtx); err != nil {
+			return fmt.Errorf("Wait after Close: %w", err)
+		}
+		return nil
+	})
+
+	// Cleanup preserved the final screen and the raw tail.
+	if snap := s.Snapshot(); !strings.Contains(string(snap.Content), "FINAL-MARKER") {
+		t.Fatalf("final snapshot = %q, want the marker preserved after Close", string(snap.Content))
+	}
+	if out := string(s.Output()); !strings.Contains(out, "FINAL-MARKER") {
+		t.Fatalf("Output = %q, want the marker preserved after Close", out)
+	}
+}
+
+// TestSessionWaitTimeoutAndClose covers the other half of the contract: a child
+// that refuses to exit makes Wait report its deadline without being touched, and
+// Close then kills and reaps it inside its own deadline.
+func TestSessionWaitTimeoutAndClose(t *testing.T) {
+	bin := writeHelper(t, `
+printf 'STICKY\r\n'
+while :; do sleep 1; done
+`)
+	s, err := New(Config{BinaryPath: bin, Width: 40, Height: 8})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	waitForMarker(t, s, "STICKY", 10*time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	err = s.Wait(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait = %v, want context.DeadlineExceeded for a child that keeps running", err)
+	}
+
+	// A cancelled Wait leaves the child and its screen untouched: cleanup, not
+	// Wait, owns the kill.
+	if !strings.Contains(string(s.Snapshot().Content), "STICKY") {
+		t.Fatalf("snapshot = %q, want the child's screen still readable after a cancelled Wait", string(s.Snapshot().Content))
+	}
+
+	// Close force-kills and reaps the stuck child within its bounded deadline.
+	// The recorded result is the kill's exit status, not a teardown failure.
+	runWithin(t, 15*time.Second, "Close of a stuck child", func() error {
+		err := s.Close()
+		if err == nil {
+			return nil
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return fmt.Errorf("Close = %v, want nil or the killed child's exit status", err)
+		}
+		return nil
+	})
+
+	// The exit was recorded during teardown, so a later Wait returns it at once
+	// rather than reporting its own deadline.
+	finalCtx, finalCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer finalCancel()
+	if err := s.Wait(finalCtx); err == nil {
+		t.Fatalf("Wait after Close = nil, want the recorded exit status of the killed child")
+	} else if errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Wait after Close reported its deadline instead of returning the recorded result")
+	}
+}
+
+// TestSessionWaitConcurrentClose drives Wait and Close concurrently: every
+// waiter observes the one recorded exit and Close tears down exactly once. It is
+// meaningful under -race.
+func TestSessionWaitConcurrentClose(t *testing.T) {
+	bin := writeHelper(t, `
+printf 'BUSY\r\n'
+sleep 30
+`)
+	s, err := New(Config{BinaryPath: bin, Width: 40, Height: 8})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	waitForMarker(t, s, "BUSY", 10*time.Second)
+
+	const waiters = 8
+	errs := make(chan error, waiters+1)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < waiters; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			waitCtx, waitCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer waitCancel()
+			errs <- s.Wait(waitCtx)
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		errs <- s.Close()
+	}()
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	// The child never exits on its own, so every observer must report the kill's
+	// exit status: a waiter that timed out would mean Close never completed the
+	// exit, and a nil would mean the exit was never recorded.
+	for err := range errs {
+		if errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("a concurrent Wait reported its deadline: teardown never completed the exit")
+			continue
+		}
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Errorf("concurrent Wait/Close = %v, want the killed child's exit status", err)
+		}
 	}
 }

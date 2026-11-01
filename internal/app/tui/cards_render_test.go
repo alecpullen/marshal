@@ -21,12 +21,12 @@ func TestCollapsedShellRowIsOneLine(t *testing.T) {
 	ev := registry.AuditEvent{ToolName: "shell.run", CommandExitCode: &code,
 		Args:          []byte(`{"command":"` + strings.Repeat("echo hello; ", 30) + `"}`),
 		ResultContent: "x"}
-	out := ansi.Strip(renderCompletedToolCall(ev, false, nil, 80))
+	out := ansi.Strip(renderCallRow(ev, false, nil, 80, ""))
 	if strings.Count(strings.TrimRight(out, "\n"), "\n") != 0 || !strings.Contains(out, "…") {
 		t.Fatalf("collapsed row = %q", out)
 	}
 	// Expanded rows keep the wrap: that is where the reader asked for detail.
-	if got := ansi.Strip(renderCompletedToolCall(ev, true, nil, 80)); strings.Count(got, "\n") < 2 {
+	if got := ansi.Strip(renderCallRow(ev, true, nil, 80, "")); strings.Count(got, "\n") < 2 {
 		t.Fatalf("expanded row should wrap:\n%s", got)
 	}
 }

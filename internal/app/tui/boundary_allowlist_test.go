@@ -58,7 +58,6 @@ var boundaryAllowlist = map[string][]string{
 	"status.go":                      {"marshal/internal/app/session"},
 	"steps.go":                       {"marshal/internal/app/session", "marshal/internal/viewmodel"},
 	"sudoauth.go":                    {"marshal/internal/app/session"},
-	"symbolrow.go":                   {"marshal/internal/tools/registry", "marshal/internal/viewmodel"},
 	"todos.go":                       {"marshal/internal/app/session", "marshal/internal/tools/native", "marshal/internal/viewmodel"},
 	"toolnames.go":                   {"marshal/internal/viewmodel"},
 	"transcript.go":                  {"marshal/internal/app/session", "marshal/internal/tools/registry", "marshal/internal/viewmodel"},

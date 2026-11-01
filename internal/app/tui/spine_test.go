@@ -60,6 +60,11 @@ func TestCallResults(t *testing.T) {
 		{"a started subagent", registry.AuditEvent{ToolName: "agent.run", Notice: notice, ResultSummary: "started as subagent 3 — review"}, "⧉ #3 started"},
 		{"a legacy started subagent", registry.AuditEvent{ToolName: "agent.run", ResultSummary: "started as subagent 7 — review"}, "⧉ #7 started"},
 		{"a hook leads", registry.AuditEvent{ToolName: "file.read", ResultSummary: "4 lines", Hooks: []registry.HookMetadata{{Rewrote: true}}}, "hook rewrote · 4 lines"},
+		{"a blocking hook leads the error", registry.AuditEvent{
+			ToolName: "file.write_patch",
+			Error:    "blocked by pre_tool_use hook: lint gate",
+			Hooks:    []registry.HookMetadata{{Event: "pre_tool_use", Decision: "block", Reason: "lint gate"}},
+		}, "hook blocked · blocked by pre_tool_use hook: lint gate"},
 		{"the summary", registry.AuditEvent{ToolName: "repo.search", ResultSummary: "4 matches"}, "4 matches"},
 	}
 	for _, c := range cases {
@@ -347,5 +352,156 @@ func TestStepRowNamesItsSubagentInCallResult(t *testing.T) {
 	line := plainLines(renderCallRow(ev, false, nil, 80, ""))[0]
 	if !strings.Contains(line, "⧉ #3 started") {
 		t.Fatalf("dispatch row = %q, want the subagent it started", line)
+	}
+}
+
+// A patch touching several files renders every one of them: stats and body,
+// each under its own header.
+func TestCallRowRendersEveryFileOfAPatch(t *testing.T) {
+	diff := unifiedDiffForFile("alpha.go", 4) + unifiedDiffForFile("beta.go", 4) + unifiedDiffForFile("gamma.go", 4)
+	out := stripANSI(renderCallRow(registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultSummary: "applied patch",
+		ResultContent: diff,
+	}, true, nil, 80, ""))
+	for _, path := range []string{"alpha.go", "beta.go", "gamma.go"} {
+		if !strings.Contains(out, path) {
+			t.Fatalf("diff output missing stat header for %s:\n%s", path, out)
+		}
+	}
+	if !strings.Contains(out, "+4 −4") {
+		t.Fatalf("diff output missing +N −M stats:\n%s", out)
+	}
+	// The flat 20-line cap this replaces would have dropped gamma.go's body.
+	if !strings.Contains(out, "new line 3") {
+		t.Fatalf("later files lost their body lines:\n%s", out)
+	}
+}
+
+// A long diff line must be clipped, not wrapped: a wrapped continuation
+// carries no nested rail and breaks the chrome.
+func TestDiffLinesAreTruncatedNotWrapped(t *testing.T) {
+	long := strings.Repeat("x", 400)
+	diff := "--- a/x.go\n+++ b/x.go\n@@ -1,1 +1,2 @@\n+" + long + "\n"
+	event := registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultContent: diff,
+		FilesChanged:  []string{"x.go"},
+	}
+	const width = 80
+	for i, line := range strings.Split(strings.TrimRight(renderCallRow(event, true, nil, width, ""), "\n"), "\n") {
+		if got := ansi.StringWidth(line); got > width {
+			t.Fatalf("row %d is %d cells wide, want <= %d — it will wrap and break the rail", i, got, width)
+		}
+	}
+}
+
+// A collapsed row carries no body; expanding it is how a reader asks for one.
+func TestCallRowHidesItsResultWhenCollapsed(t *testing.T) {
+	out := stripANSI(renderCallRow(registry.AuditEvent{
+		ToolName:      "agent.run",
+		ResultSummary: "subagent completed",
+		ResultContent: "full subagent report body",
+	}, false, nil, 80, ""))
+	if strings.Contains(out, "full subagent report body") {
+		t.Fatalf("collapsed row must not render result content:\n%s", out)
+	}
+}
+
+func TestCallRowShowsItsResultWhenExpanded(t *testing.T) {
+	out := stripANSI(renderCallRow(registry.AuditEvent{
+		ToolName:      "agent.run",
+		ResultSummary: "subagent completed",
+		ResultContent: "full subagent report body",
+	}, true, nil, 80, ""))
+	if !strings.Contains(out, "full subagent report body") {
+		t.Fatalf("expanded row must render result content:\n%s", out)
+	}
+}
+
+func TestFailedEditRowShowsItsFailureWhenExpanded(t *testing.T) {
+	exitCode := 2
+	out := stripANSI(renderCallRow(registry.AuditEvent{
+		ToolName:        "file.write_patch",
+		Error:           "patch rejected",
+		Args:            []byte(`{"path":"a.go"}`),
+		CommandExitCode: &exitCode,
+		ResultContent:   "patch output",
+	}, true, nil, 80, ""))
+	if !strings.Contains(out, "(exit code 2)") || !strings.Contains(out, `args: {"path":"a.go"}`) {
+		t.Fatalf("expanded failed diff tool must show failure details:\n%s", out)
+	}
+}
+
+func TestCallRowCapsItsExpandedResult(t *testing.T) {
+	var lines []string
+	for i := 0; i < 20; i++ {
+		lines = append(lines, fmt.Sprintf("report line %d", i))
+	}
+	out := stripANSI(renderCallRow(registry.AuditEvent{
+		ToolName:      "agent.run",
+		ResultSummary: "subagent completed",
+		ResultContent: strings.Join(lines, "\n"),
+	}, true, nil, 80, ""))
+	if !strings.Contains(out, "… 8 more lines") {
+		t.Fatalf("expanded content must be capped with an elision marker:\n%s", out)
+	}
+	if strings.Contains(out, "report line 19") {
+		t.Fatalf("expanded content exceeded the cap:\n%s", out)
+	}
+}
+
+func TestCallRowFitsWidthWithWideRunes(t *testing.T) {
+	out := renderCallRow(registry.AuditEvent{
+		ToolName:      "file.read",
+		ResultSummary: "読み込み完了 — これは幅を超えるとても長い日本語のサマリーです",
+	}, false, nil, 40, "")
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if w := ansi.StringWidth(line); w > 40 {
+			t.Fatalf("line is %d cells wide, budget 40: %q", w, line)
+		}
+	}
+}
+
+// Expanded, a diff shows every line: no per-file cap and no file cap.
+func TestExpandedCallRowShowsTheWholeDiff(t *testing.T) {
+	var diff strings.Builder
+	diff.WriteString("--- a/file.go\n+++ b/file.go\n")
+	for i := 0; i < 17; i++ {
+		diff.WriteString(fmt.Sprintf("+line %d\n", i))
+	}
+	event := registry.AuditEvent{
+		ToolName:      "file.write_patch",
+		ResultContent: diff.String(),
+	}
+	expanded := renderCallRow(event, true, nil, 80, "")
+	if strings.Contains(expanded, "more lines") {
+		t.Fatalf("expected expanded diff to show every line, got: %s", expanded)
+	}
+	if n := strings.Count(expanded, "+line "); n != 17 {
+		t.Fatalf("expected all 17 added lines, got %d", n)
+	}
+}
+
+func TestExpandedCallRowShowsTheFailureDetail(t *testing.T) {
+	longArgs := `{"command": "run a very long command that keeps going and going until it wraps well past the sixty cell budget of this test renderer"}`
+	event := registry.AuditEvent{ToolName: "shell.run", Error: "boom", Args: []byte(longArgs)}
+
+	expanded := stripANSI(renderCallRow(event, true, nil, 60, ""))
+	if !strings.Contains(expanded, "error: boom") {
+		t.Fatalf("expected the error detail line, got:\n%q", expanded)
+	}
+	if !strings.Contains(expanded, "args: ") {
+		t.Fatalf("expected the args detail line, got:\n%q", expanded)
+	}
+	for _, line := range strings.Split(expanded, "\n") {
+		if w := ansi.StringWidth(line); w > 60 {
+			t.Errorf("line %d cells wide exceeds the 60-cell budget: %q", w, line)
+		}
+	}
+
+	collapsed := stripANSI(renderCallRow(event, false, nil, 60, ""))
+	if strings.Contains(collapsed, "args: ") {
+		t.Fatalf("collapsed render should not contain the args body:\n%q", collapsed)
 	}
 }

@@ -569,11 +569,6 @@ func renderTranscriptItemIn(item session.TranscriptItem, detailExpanded bool, sp
 			return ""
 		}
 		return renderThinkingSummary(item.Thinking.Text, item.Thinking.Duration, detailExpanded, width)
-	case session.KindAudit:
-		if item.Audit == nil {
-			return ""
-		}
-		return renderCompletedToolCallIn(*item.Audit, detailExpanded, callers, width, workdir)
 	case session.KindMessage:
 		if item.Message == nil {
 			return ""
@@ -802,126 +797,6 @@ func renderActiveToolCall(atc session.ActiveToolCall, sb session.SandboxInfo, al
 	return b.String()
 }
 
-// renderCompletedToolCall renders a settled call with no working tree known,
-// so a shell command keeps the text the model wrote.
-func renderCompletedToolCall(event registry.AuditEvent, expanded bool, callers []string, width int) string {
-	return renderCompletedToolCallIn(event, expanded, callers, width, "")
-}
-
-// toolRowHead is a completed call's head without its disclosure marker: the
-// text a collapsed row shows before it is truncated to the row. Copying a
-// fully selected truncated row uses it, so the clipboard gets the whole
-// command or path rather than the row's ellipsis.
-func toolRowHead(event registry.AuditEvent, workdir string) string {
-	head := DisplayToolName(event.ToolName)
-	shellRow := viewmodel.IsShellFamily(event.ToolName)
-	// summaryDupesCommand tracks whether the head already carries the
-	// command text. Only then should we suppress the ResultSummary —
-	// background jobs ("started background job <id>") and killed commands
-	// ("command "x" killed: timeout") carry information the head lacks.
-	summaryDupesCommand := false
-	// Subject-first for file and symbol tools that carry attribution: the
-	// tool name is the least interesting thing on such a row. Falls back to
-	// the tool-name-first shape whenever there are no symbols, which is
-	// every language without a tree-sitter grammar and every whole-file
-	// rewrite — so the fallback is the common path, not a degraded one.
-	if s := shellSubjectIn(event, workdir); shellRow && s != "" {
-		head = s
-		// The summary duplicates the head only for normal foreground
-		// runs (command + exit code). Background jobs ("started
-		// background job <id>") and killed commands ("killed: timeout")
-		// carry information the head lacks, so keep them.
-		if event.CommandExitCode != nil && event.Sandbox.KilledReason == "" {
-			summaryDupesCommand = true
-		}
-		if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
-			head += dimSeparator + hookHint
-		}
-	} else if subject := symbolSubject(event); subject != "" && subjectFirstTool(event.ToolName) {
-		head = subject
-		if stat := diffStat(event.ResultContent); stat != "" {
-			head += dimSeparator + stat
-		}
-		// A hooked edit must still surface its hook decision even when the
-		// row leads with the symbol subject; the else-if below would
-		// otherwise drop it on exactly the rows that carry attribution.
-		if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
-			head += dimSeparator + hookHint
-		}
-	} else if s := searchSubject(event); s != "" {
-		head = s
-		if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
-			head += dimSeparator + hookHint
-		}
-	} else if hookHint := hookIndicatorText(event.Hooks); hookHint != "" {
-		head += dimSeparator + hookHint
-	}
-	if event.Error != "" {
-		head += dimSeparator + event.Error
-	} else if s := viewmodel.DisplaySummary(event); s != "" && !summaryDupesCommand {
-		head += dimSeparator + s
-	}
-	return head
-}
-
-// renderCompletedToolCallIn is renderCompletedToolCall with the session's
-// active root, which elides a leading cd into it from shell rows.
-func renderCompletedToolCallIn(event registry.AuditEvent, expanded bool, callers []string, width int, workdir string) string {
-	g := toolCategoryGlyph(event.ToolName)
-	style := statusOkStyle()
-	if event.Error != "" {
-		g = glyph.Error
-		style = errorStyle()
-	}
-	// Glyph and label share the state colour in both directions; success used
-	// to pair a muted glyph with a green label while errors made both red.
-	gutterColor := theme.Current().FGMuted
-	if event.Error != "" {
-		gutterColor = theme.Current().StatusError
-	}
-	gutter := gutterPrefix(g, gutterColor)
-	head := toolRowHead(event, workdir)
-	if event.ResultContent != "" || event.Error != "" {
-		if expanded {
-			head += " " + glyph.DisclosureExpanded
-		} else {
-			head += " " + glyph.DisclosureCollapsed
-		}
-	}
-
-	cw := contentWidth(width)
-	var b strings.Builder
-	if !expanded {
-		// A collapsed row is one line. The transcript is a list of what
-		// happened, and a wrapped row costs the reader a line for detail they
-		// did not ask for; expanding it is how they ask.
-		b.WriteString(gutter)
-		b.WriteString(style.Render(ansi.Truncate(oneLine(head), cw, "…")))
-		b.WriteString("\n")
-	} else {
-		for i, hl := range strings.Split(ansi.Wrap(head, cw, WrapBreakpoints), "\n") {
-			if i == 0 {
-				b.WriteString(gutter)
-			} else {
-				b.WriteString(continuation())
-			}
-			b.WriteString(style.Render(hl))
-			b.WriteString("\n")
-		}
-	}
-	for _, l := range callersDetail(callers, contentWidth(width)) {
-		b.WriteString(continuation())
-		b.WriteString(l)
-		b.WriteString("\n")
-	}
-	for _, l := range toolBody(event, expanded, nestedContentWidth(width)) {
-		b.WriteString(nestedRail())
-		b.WriteString(l)
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 // callersDetail is the blast-radius line under a row that changed a symbol,
 // wrapped to w and styled: what references the symbol. It is a settled
 // one-time addition to a settled row, so the height change it causes is
@@ -950,18 +825,12 @@ func callersDetail(callers []string, w int) []string {
 }
 
 // toolBody is a settled call's body under its head, styled and fitted to w:
-// an edit's diff (capped while collapsed), and when expanded any other call's
-// result and a failed call's error and arguments.
-func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
+// an edit's diff with every line, and any other call's result, plus a failed
+// call's error and arguments.
+func toolBody(event registry.AuditEvent, w int) []string {
 	var out []string
 	if isDiffTool(event.ToolName) && event.ResultContent != "" {
-		files := splitDiffFiles(event.ResultContent)
-		shown := len(files)
-		if !expanded {
-			shown = min(shown, maxDiffFiles)
-		}
-		for i := 0; i < shown; i++ {
-			f := files[i]
+		for _, f := range splitDiffFiles(event.ResultContent) {
 			stat := fmt.Sprintf("+%d −%d", f.added, f.removed)
 			if f.path != "" {
 				stat = f.path + " " + stat
@@ -972,13 +841,7 @@ func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
 				Mode:      diffview.ModeAuto,
 				Highlight: true,
 			})
-			lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
-			elided := 0
-			if !expanded && len(lines) > maxDiffLinesPerFile {
-				elided = len(lines) - maxDiffLinesPerFile
-				lines = lines[:maxDiffLinesPerFile]
-			}
-			for _, line := range lines {
+			for _, line := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
 				if line == "" {
 					continue
 				}
@@ -987,19 +850,13 @@ func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
 				// rail, so an over-wide line breaks the chrome.
 				out = append(out, ansi.Truncate(line, w, "…"))
 			}
-			if elided > 0 {
-				out = append(out, dimStyle().Render(fmt.Sprintf("… %d more lines", elided)))
-			}
-		}
-		if !expanded && len(files) > shown {
-			out = append(out, dimStyle().Render(fmt.Sprintf("… %d more files", len(files)-shown)))
 		}
 	}
 	// Non-diff tools with captured output (agent.run is the motivating
-	// case — its ResultContent holds the subagent's report) render it when
-	// expanded, wrapped rather than clipped since the content is prose, not
-	// code lines.
-	if expanded && !isDiffTool(event.ToolName) && event.ResultContent != "" {
+	// case — its ResultContent holds the subagent's report) render it,
+	// wrapped rather than clipped since the content is prose, not code
+	// lines.
+	if !isDiffTool(event.ToolName) && event.ResultContent != "" {
 		lines := strings.Split(strings.TrimRight(event.ResultContent, "\n"), "\n")
 		elided := 0
 		if len(lines) > maxExpandedResultLines {
@@ -1019,7 +876,7 @@ func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
 	// error, the exit code when the tool reported one, and the call args.
 	// Each detail line wraps at w — the raw args JSON used to run straight
 	// off the terminal edge.
-	if expanded && event.Error != "" {
+	if event.Error != "" {
 		detail := "error: " + event.Error
 		if event.CommandExitCode != nil {
 			detail += fmt.Sprintf(" (exit code %d)", *event.CommandExitCode)
@@ -1038,11 +895,6 @@ func toolBody(event registry.AuditEvent, expanded bool, w int) []string {
 }
 
 const (
-	// maxDiffLinesPerFile caps the rendered body lines each changed file
-	// gets; maxDiffFiles caps how many files render, so a sweeping
-	// refactor cannot flood the transcript.
-	maxDiffLinesPerFile = 12
-	maxDiffFiles        = 6
 	// maxExpandedResultLines caps the body an expanded (ctrl+g) non-diff
 	// tool row renders — a subagent report gets the same budget as one
 	// file's diff.

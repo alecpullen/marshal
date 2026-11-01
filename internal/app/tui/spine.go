@@ -43,14 +43,6 @@ const (
 // callVerb is the verb a call's row leads with; viewmodel.CallVerb decides it.
 func callVerb(name string) string { return viewmodel.CallVerb(name) }
 
-// fallbackSubject is a row's subject when the call's arguments name none;
-// viewmodel.FallbackSubject decides it.
-func fallbackSubject(name string) string { return viewmodel.FallbackSubject(name) }
-
-// toolTarget returns the short human-facing subject of a tool call — the
-// path it read, the command it ran, the query it searched for.
-func toolTarget(event registry.AuditEvent) string { return viewmodel.ToolTarget(event) }
-
 // callSubject is what a settled call acted on; viewmodel.CallSubject decides
 // it, against the session's active root.
 func callSubject(ev registry.AuditEvent, workdir string) string {
@@ -163,7 +155,7 @@ func renderCallRow(ev registry.AuditEvent, expanded bool, callers []string, w in
 	detailLines(&b, callersDetail(callers, dw))
 	switch {
 	case expanded:
-		detailLines(&b, toolBody(ev, true, dw))
+		detailLines(&b, toolBody(ev, dw))
 	case viewmodel.EventFailed(ev):
 		detailLines(&b, failedTail(ev, dw))
 	}

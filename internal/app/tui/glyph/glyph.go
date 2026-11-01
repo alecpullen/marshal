@@ -51,7 +51,7 @@ const (
 	Question = "?"
 	Thinking = "⚙"
 
-	// Tool categories. Referenced by toolCategoryGlyphs.
+	// Tool categories.
 	Edit   = "✎"
 	File   = "≡"
 	Shell  = "›"

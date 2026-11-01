@@ -121,16 +121,13 @@ func CallersSymbol(ev registry.AuditEvent) (ref registry.SymbolRef, ok bool) {
 	return registry.SymbolRef{}, false
 }
 
-// searchQualifiers gives each ◈ tool a short, distinguishable label.
-//
-// toolCategoryGlyph maps several tools onto ◈ (toolnames.go), so unlike the
-// shell family the glyph cannot stand alone here: a literal grep and a
-// semantic search answer different questions and cost very different
-// amounts, and a reader must be able to tell them apart at a glance.
+// searchQualifiers gives each search tool a short, distinguishable label: a
+// literal grep and a semantic search answer different questions and cost very
+// different amounts, and a reader must be able to tell them apart at a glance.
 //
 // json.query and csv.inspect are retired (context-diet Tier 2a); their
 // entries stay so persisted transcripts still render a qualifier instead of
-// a bare ◈.
+// none.
 var searchQualifiers = map[string]string{
 	"repo.search":     "search",
 	"codebase.search": "semantic",

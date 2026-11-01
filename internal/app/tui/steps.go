@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
@@ -41,6 +42,9 @@ type stepRenderCtx struct {
 	region       func(viewmodel.NodeID) regionView
 	noteRows     func(id viewmodel.NodeID, rows int)
 	callers      func(viewmodel.NodeID) []string
+	// detail is wantDetail: a node's cached detail, or nil once the want is
+	// recorded.
+	detail func(key, version string) *acpwire.NodeDetail
 	// pointer names the box row a running call's work landed in, so the call
 	// points at it instead of spinning and repeating its own output.
 	pointer func(toolCallID string) string
@@ -79,6 +83,15 @@ func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
 		return nil
 	}
 	return c.callers(id)
+}
+
+// detailOf is the nil-safe form of detail: a context built by hand has no
+// cache, and reads as "no detail".
+func (c *stepRenderCtx) detailOf(key, version string) *acpwire.NodeDetail {
+	if c.detail == nil {
+		return nil
+	}
+	return c.detail(key, version)
 }
 
 // workPointer maps a tool call to the box row its work landed in: the kind

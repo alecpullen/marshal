@@ -599,6 +599,13 @@ type Model struct {
 	// entry is a negative result and must not be re-queried.
 	callers      map[viewmodel.NodeID][]string
 	callersAsked map[viewmodel.NodeID]bool
+	// details caches StackNode detail for expanded rows the wire cut, by wire
+	// node ID, each for the node version it was fetched at. detailWant holds
+	// what renders asked for since the last update, and detailAsked the
+	// version in flight per node.
+	details     map[string]cachedDetail
+	detailWant  map[string]detailWant
+	detailAsked map[string]string
 	// renderCache holds each settled transcript block's rendered output,
 	// keyed by node identity and valid while its payload version, width and
 	// render inputs are unchanged. Only live nodes re-render on a spinner
@@ -2102,13 +2109,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.dock.Update(msg)
 		}
 		updated, cmd := m.routeWithSuspendedSurface(msg)
+		// Detail wants are fetched here, after the update, never during it:
+		// refreshViewport runs on every spinner tick and returns no commands.
+		// tea.Batch drops nil commands, so an update with nothing wanted
+		// returns exactly the command it returned before.
 		switch next := updated.(type) {
 		case Model:
 			next.reconcileAccess()
-			return next, cmd
+			fetch := next.detailQueryCmds()
+			return next, tea.Batch(cmd, fetch)
 		case *Model:
 			next.reconcileAccess()
-			return next, cmd
+			fetch := next.detailQueryCmds()
+			return next, tea.Batch(cmd, fetch)
 		default:
 			return updated, cmd
 		}
@@ -2118,10 +2131,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch next := updated.(type) {
 	case Model:
 		next.reconcileAccess()
-		return next, cmd
+		fetch := next.detailQueryCmds()
+		return next, tea.Batch(cmd, fetch)
 	case *Model:
 		next.reconcileAccess()
-		return next, cmd
+		fetch := next.detailQueryCmds()
+		return next, tea.Batch(cmd, fetch)
 	default:
 		return updated, cmd
 	}
@@ -2493,7 +2508,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleWorkMsg(wm)
 	}
 	switch msg.(type) {
-	case agentFinishedMsg, planAuthorFinishedMsg, changedMsg, agentTickMsg, spinnerTickMsg, suggestionMsg, callersMsg:
+	case agentFinishedMsg, planAuthorFinishedMsg, changedMsg, agentTickMsg, spinnerTickMsg, suggestionMsg, callersMsg, detailMsg:
 		return m.handleRuntimeMessage(msg)
 	}
 
@@ -7031,6 +7046,8 @@ func (m Model) dispatchRuntimeMessage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSuggestionMsg(msg)
 	case callersMsg:
 		return m.handleCallers(msg)
+	case detailMsg:
+		return m.handleDetail(msg)
 	}
 	return m, nil
 }

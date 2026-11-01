@@ -97,6 +97,7 @@ func (m *Model) refreshViewport() {
 		region:        m.regionView,
 		noteRows:      m.noteRegionRows,
 		callers:       func(id viewmodel.NodeID) []string { return m.callers[id] },
+		detail:        m.wantDetail,
 		pointer:       workPointer(m.workSnapshot.Items),
 		spinner:       m.spinnerFrame,
 		toolSpinner:   toolFrame,
@@ -198,6 +199,7 @@ func (m *Model) refreshViewport() {
 	// a frame whose content did not change keeps the index it already built.
 	// It is what is on screen, which is what browse actions act on.
 	m.wire = wireIndex(viewmodel.Project(turns, rctx.workdir))
+	m.pruneDetails()
 	m.setBrowseItems(bitems, tree)
 	// Every block ends with exactly one newline; separation between blocks
 	// is the caller's job — one blank line, none within a block.
@@ -431,6 +433,9 @@ func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
 	}
 	if lines, ok := m.callers[n.ID]; ok {
 		fmt.Fprintf(h, "c%q|", lines)
+	}
+	if d, ok := m.details[n.ID.Key]; ok {
+		fmt.Fprintf(h, "d%q|%v|", d.version, d.failed)
 	}
 	for _, ch := range n.Children {
 		m.foldNodeSig(h, ch, c)

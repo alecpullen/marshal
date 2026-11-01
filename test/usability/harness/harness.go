@@ -214,4 +214,8 @@ type Snapshot struct {
 	Height  int
 	Content []byte
 	Lines   []string
+	// Err reports a sticky terminal decoding or unsupported screen-operation
+	// error from the terminal model. A nil Err means the screen decoded
+	// cleanly.
+	Err error
 }

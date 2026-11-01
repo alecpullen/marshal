@@ -167,6 +167,32 @@ have made the baseline reliable; do not silently quarantine baseline tests.
 Keep the scripted usability job and archive per-run artifacts. Make the CI
 definition and platform coverage explicit.
 
+### P4 CI and platform scope
+
+Pull requests and pushes to `main` run two independent jobs, both on
+`ubuntu-latest`:
+
+- **`full-suite`** (`.github/workflows/go-checks.yml`) runs
+  `CGO_ENABLED=1 go test ./... -count=1 -timeout 5m` and then
+  `CGO_ENABLED=1 go vet ./...`. It carries no package exclusions and no
+  `continue-on-error`, so a failing package or a vet diagnostic fails the pull
+  request. `-count=1` stops a cached result standing in for a run against the
+  pull request's own code.
+- **`scripted`** (`.github/workflows/usability.yml`) builds the binary and runs
+  the real-binary `TestScripted*` journeys with `USABILITY_REQUIRE_BINARY=1`,
+  uploading its per-run report artifacts.
+
+Release tag pushes keep the checks in `release.yaml`; neither of these workflows
+replaces them.
+
+Platform coverage is explicit and deliberately narrow. Both jobs run on Linux,
+and the journeys' terminal model was verified on macOS/darwin arm64 from the
+execution host. macOS and Windows are supported platforms but are **not**
+claimed as pull-request gates, and no hosted run is claimed until one is
+observed. The load-sensitive `internal/sandbox` container fixture failure
+recorded earlier stays a real failure: if it reproduces, it is diagnosed rather
+than quarantined or excluded.
+
 ## P5 — remove misleading and redundant tests
 
 Resolve the config-deletion and malformed-source tests' logging-only

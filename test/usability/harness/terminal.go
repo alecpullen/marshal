@@ -77,6 +77,14 @@ type terminalModel struct {
 	// line, so it changes visible cells and must be modelled.
 	autowrap bool
 
+	// topMargin and bottomMargin bound the scrolling region set by DECSTBM
+	// (CSI r), 0-based and inclusive. They default to the whole viewport, so
+	// a renderer that never sets a region sees plain full-screen scrolling;
+	// one that pins header and footer rows (as the TUI does at 80x24) scrolls
+	// only the rows it chose.
+	topMargin    int
+	bottomMargin int
+
 	// primary and alt hold the inactive screen. Exactly one of them is
 	// live: primary while altActive, alt otherwise. Snapshot renders only
 	// the live buffer, so the inactive screen never reaches a snapshot.
@@ -100,11 +108,12 @@ func newTerminalModel(width, height int) *terminalModel {
 		height = 1
 	}
 	m := &terminalModel{
-		width:    width,
-		height:   height,
-		cells:    blankCells(width, height),
-		alt:      screenState{cells: blankCells(width, height)},
-		autowrap: true,
+		width:        width,
+		height:       height,
+		cells:        blankCells(width, height),
+		alt:          screenState{cells: blankCells(width, height)},
+		autowrap:     true,
+		bottomMargin: height - 1,
 	}
 	m.p = ansi.NewParser()
 	m.p.SetHandler(ansi.Handler{
@@ -219,6 +228,9 @@ func (m *terminalModel) Resize(width, height int) error {
 	}
 	m.saved.row = clampTo(m.saved.row, height)
 	m.saved.col = clampTo(m.saved.col, width)
+	// A resize resets the scrolling region to the whole viewport, so a
+	// renderer that set margins for the old size starts from a clean one.
+	m.topMargin, m.bottomMargin = 0, height-1
 	return m.err
 }
 
@@ -286,10 +298,9 @@ func (m *terminalModel) execute(b byte) {
 		m.wrapPending = false
 	case 0x0A, 0x0B, 0x0C: // LF, VT, FF
 		m.wrapPending = false
-		if m.row >= m.height-1 {
+		if m.row == m.bottomMargin {
 			m.scrollUp()
-			m.row = m.height - 1
-		} else {
+		} else if m.row < m.height-1 {
 			m.row++
 		}
 	case 0x08: // BS
@@ -369,6 +380,12 @@ func (m *terminalModel) handleCsi(cmd ansi.Cmd, params ansi.Params) {
 			m.saveCursor()
 		case 'u': // RCP restore cursor
 			m.restoreCursor()
+		case 'r': // DECSTBM set top/bottom scrolling margins
+			m.setScrollRegion(params)
+		case 'S': // SU scroll the region up, leaving the cursor put
+			m.scrollLines(-cursorCount(params, 0))
+		case 'T': // SD scroll the region down, leaving the cursor put
+			m.scrollLines(cursorCount(params, 0))
 		case 'm', 'n', 'q', 'c': // SGR, DSR, cursor style, DA1 device-attributes query
 		default:
 			m.failUnsupported()
@@ -391,8 +408,8 @@ func (m *terminalModel) handleCsi(cmd ansi.Cmd, params ansi.Params) {
 	}
 }
 
-// handleEsc implements DECSC/DECRC. The ST terminator dispatched as ESC \
-// after a string sequence is ignored; anything else is unsupported.
+// handleEsc implements DECSC/DECRC and RI. The ST terminator dispatched as
+// ESC \ after a string sequence is ignored; anything else is unsupported.
 func (m *terminalModel) handleEsc(cmd ansi.Cmd) {
 	if m.err != nil {
 		return
@@ -402,6 +419,8 @@ func (m *terminalModel) handleEsc(cmd ansi.Cmd) {
 		m.saveCursor()
 	case '8': // DECRC restore cursor
 		m.restoreCursor()
+	case 'M': // RI, reverse index
+		m.reverseIndex()
 	case '\\': // ST terminating an ESC \ string sequence
 	default:
 		m.failUnsupported()
@@ -512,6 +531,9 @@ func (m *terminalModel) enterAltScreen(clear bool) {
 		m.alt = screenState{cells: blankCells(m.width, m.height)}
 	}
 	m.installScreen(m.alt)
+	// Switching screens resets the scrolling region, as a real terminal
+	// does; the renderer sets it again for the screen it draws next.
+	m.topMargin, m.bottomMargin = 0, m.height-1
 }
 
 // exitAltScreen restores the primary buffer and its cursor.
@@ -522,6 +544,7 @@ func (m *terminalModel) exitAltScreen() {
 	m.alt = m.screen()
 	m.altActive = false
 	m.installScreen(m.primary)
+	m.topMargin, m.bottomMargin = 0, m.height-1
 }
 
 // resize clips the screen buffer to width x height and clamps its cursor.
@@ -589,30 +612,109 @@ func clampTo(v, limit int) int {
 }
 
 // wrap moves the cursor to the start of the next line, scrolling the
-// viewport up when already at the bottom.
+// scrolling region up when already at its bottom row.
 func (m *terminalModel) wrap() {
 	m.wrapPending = false
-	if m.row >= m.height-1 {
+	if m.row == m.bottomMargin {
 		m.scrollUp()
-		m.row = m.height - 1
-	} else {
+	} else if m.row < m.height-1 {
 		m.row++
 	}
 	m.col = 0
 }
 
-// scrollUp shifts the viewport up one row and blanks the last row.
+// scrollUp shifts the scrolling region up one row and blanks its last row.
 func (m *terminalModel) scrollUp() {
-	copy(m.cells, m.cells[1:])
+	top, bottom := m.topMargin, m.bottomMargin
+	copy(m.cells[top:bottom], m.cells[top+1:bottom+1])
 	// A fresh row: reusing the old backing array would alias the row that
 	// just moved up.
-	m.cells[m.height-1] = make([]termCell, m.width)
+	m.cells[bottom] = make([]termCell, m.width)
 	if m.head.ok {
-		if m.head.row == 0 {
+		switch {
+		case m.head.row < top, m.head.row > bottom:
+			// Outside the region, so the scroll does not touch it.
+		case m.head.row == top:
+			// Its row scrolled off the top of the region.
 			m.head = headPos{}
-		} else {
+		default:
 			m.head.row--
 		}
+	}
+}
+
+// reverseIndex implements RI (ESC M): move the cursor up one line, scrolling
+// the viewport down when it is already on the top row. A renderer that grows a
+// frame upward instead of repainting from row 0 emits it, so a model that
+// rejected it would report an error for a correct redraw.
+func (m *terminalModel) reverseIndex() {
+	m.wrapPending = false
+	if m.row == m.topMargin {
+		m.scrollDown()
+		return
+	}
+	if m.row > 0 {
+		m.row--
+	}
+}
+
+// scrollDown shifts the scrolling region down one row and blanks its first
+// row.
+func (m *terminalModel) scrollDown() {
+	top, bottom := m.topMargin, m.bottomMargin
+	copy(m.cells[top+1:bottom+1], m.cells[top:bottom])
+	// A fresh row, for the same reason scrollUp allocates one.
+	m.cells[top] = make([]termCell, m.width)
+	if m.head.ok {
+		switch {
+		case m.head.row < top, m.head.row > bottom:
+			// Outside the region, so the scroll does not touch it.
+		case m.head.row == bottom:
+			// Its row scrolled off the bottom of the region.
+			m.head = headPos{}
+		default:
+			m.head.row++
+		}
+	}
+}
+
+// setScrollRegion implements DECSTBM (CSI r). An omitted or zero lower
+// parameter means the last row. An invalid region is ignored, leaving the
+// previous one in force, and a valid one homes the cursor to the region's
+// top-left, as terminals do.
+func (m *terminalModel) setScrollRegion(params ansi.Params) {
+	top := cursorCount(params, 0) - 1
+	bottom := m.height - 1
+	if v, _, ok := params.Param(1, 0); ok && v > 0 {
+		bottom = v - 1
+	}
+	if top < 0 || bottom >= m.height || top >= bottom {
+		return
+	}
+	m.topMargin, m.bottomMargin = top, bottom
+	m.moveTo(top, 0)
+}
+
+// scrollLines implements SU and SD (CSI Ps S / CSI Ps T): scroll the region by
+// count lines without moving the cursor. A negative count scrolls up, a
+// positive one down. The scroll is clamped to the region's height, which is
+// what stops a large count from being a long loop over an unchanged screen.
+func (m *terminalModel) scrollLines(count int) {
+	height := m.bottomMargin - m.topMargin + 1
+	if height < 1 {
+		return
+	}
+	if count > height {
+		count = height
+	}
+	if count < -height {
+		count = -height
+	}
+	for ; count > 0; count-- {
+		m.scrollDown()
+	}
+	for ; count < 0; count++ {
+		m.scrollUp()
 	}
 }
 

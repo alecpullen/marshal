@@ -1277,3 +1277,9 @@ beat its first `WireTextCap` bytes of arguments. A plan row whose active todo
 holds a CRLF shows two spaces where it showed one. Durations are worked out
 from Unix milliseconds, so a step duration or think time within a millisecond
 of a rounding boundary can round the other way.
+
+One limit is unchanged and worth naming: copying a run event or a thinking row
+copies its *expanded render* at 120 columns, so a body line longer than that
+arrives cut with an ellipsis even though a wider screen draws it whole. The
+copy takes the whole body past `WireTextCap` (that is what the detail fetch
+buys) but not past the display width it was rendered at.

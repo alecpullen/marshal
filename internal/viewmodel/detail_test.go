@@ -281,6 +281,26 @@ func TestStackNodeOfCarriesAMessagesReasoning(t *testing.T) {
 	if len(plain.Detail.Thinking) != 0 {
 		t.Fatalf("a message without reasoning carries %d thoughts, want none", len(plain.Detail.Thinking))
 	}
+
+	// Reasoning under the cap: the detail still carries it whole, and the wire
+	// flag stays clear. "No flag" is what lets a client trust the wire text.
+	short := "weighing two configs"
+	wholeTree := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0),
+		{Timestamp: at(2), Kind: session.KindMessage, Message: &session.Message{
+			ID: 2, Role: session.RoleAssistant, Content: "done", Reasoning: short,
+			ThinkDuration: time.Second, CreatedAt: at(2)}},
+	}})
+	whole, found := StackNodeOf(st, wholeTree, "msg:2")
+	if !found {
+		t.Fatal(`StackNodeOf("msg:2") with a short reasoning not found`)
+	}
+	if len(whole.Detail.Thinking) != 1 || whole.Detail.Thinking[0].Text != short {
+		t.Fatalf("thinking = %+v, want the short reasoning whole", whole.Detail.Thinking)
+	}
+	if whole.Node.Message == nil || whole.Node.Message.Truncated {
+		t.Fatalf("message = %+v, want a reasoning under the cap not flagged as cut", whole.Node.Message)
+	}
 }
 
 func TestStackNodeOfCarriesARunEventsBody(t *testing.T) {
@@ -305,6 +325,29 @@ func TestStackNodeOfCarriesARunEventsBody(t *testing.T) {
 	}
 	if res.Node.RunEvent == nil || !res.Node.RunEvent.Truncated {
 		t.Fatalf("run event = %+v, want its body flagged as cut", res.Node.RunEvent)
+	}
+
+	// A body under the cap: the detail still carries it, and the wire flag
+	// stays clear, so a client can trust the wire's own text.
+	short := "2 files changed"
+	wholeTree := Build(Snapshot{Items: []session.TranscriptItem{
+		userMsg(1, 0),
+		{Timestamp: at(2), Kind: session.KindRunEvent, RunEvent: &session.RunEvent{
+			Kind: session.RunEventCommit, Body: short, At: at(2)}},
+	}})
+	wev, _ := findKind(wholeTree, KindRunEvent)
+	if wev == nil {
+		t.Fatal("the built tree has no short run event")
+	}
+	shortRes, found := StackNodeOf(st, wholeTree, wev.ID.Key)
+	if !found {
+		t.Fatalf("StackNodeOf(%q) not found", wev.ID.Key)
+	}
+	if shortRes.Detail.Body != short {
+		t.Fatalf("body = %q, want %q", shortRes.Detail.Body, short)
+	}
+	if shortRes.Node.RunEvent == nil || shortRes.Node.RunEvent.Truncated {
+		t.Fatalf("run event = %+v, want an uncut body not flagged as cut", shortRes.Node.RunEvent)
 	}
 }
 

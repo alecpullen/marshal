@@ -58,7 +58,15 @@ func (m *Model) wantDetail(key, version string) *acpwire.NodeDetail {
 // detailQueryCmds sends one StackNode fetch for every want not already in
 // flight at its version, and clears the wants.
 func (m *Model) detailQueryCmds() tea.Cmd {
-	if m.sess == nil || len(m.detailWant) == 0 {
+	if len(m.detailWant) == 0 {
+		return nil
+	}
+	// With no session there is nobody to ask. The wants are dropped rather than
+	// held for a later frame: a want is recorded by a render, so the next one
+	// records it again, and holding it here would fire it against whatever
+	// session the node IDs happen to match later.
+	if m.sess == nil {
+		m.detailWant = nil
 		return nil
 	}
 	if m.detailAsked == nil {
@@ -91,6 +99,14 @@ func fetchDetailCmd(ctx context.Context, sess acpclient.Session, key string, w d
 func (m Model) handleDetail(msg detailMsg) (Model, tea.Cmd) {
 	if v, ok := m.detailAsked[msg.key]; ok && v == msg.version {
 		delete(m.detailAsked, msg.key)
+	}
+	// The node can leave the tree while its detail is in flight: a rollback, a
+	// cleared run, a swap to another transcript. Nothing would draw the answer,
+	// and pruneDetails only reaches it on the next content change, so it is
+	// dropped here rather than cached in the window between.
+	if _, ok := m.wire[msg.key]; !ok {
+		delete(m.details, msg.key)
+		return m, nil
 	}
 	if m.details == nil {
 		m.details = map[string]cachedDetail{}

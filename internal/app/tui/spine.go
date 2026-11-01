@@ -137,6 +137,10 @@ func detailLines(b *strings.Builder, lines []string) {
 // renderCallRow is a settled call's row. Collapsed it is one line, plus the
 // callers of a symbol it changed and, when it failed, the last lines of its
 // output. Expanded, its diff, result or error follow under the subject.
+//
+// t always carries the calls its node was built from: renderStep reaches this
+// row only through spineRow, so a running, grouped or plan shape never gets
+// here, and t.Calls[0] is the call that opened the row.
 func renderCallRow(t *acpwire.WireTool, d *acpwire.CallDetail, expanded bool, callers []string, w int) string {
 	call := t.Calls[0]
 	var b strings.Builder
@@ -266,7 +270,7 @@ func renderPlanRow(p *acpwire.WirePlan, w int) string {
 	th := theme.Current()
 	var marks string
 	if p.Total <= maxPlanMarks {
-		parts := make([]string, 0, p.Total)
+		parts := make([]string, 0, max(p.Total, 0))
 		for _, st := range p.Status {
 			switch st {
 			case "completed":

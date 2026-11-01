@@ -200,6 +200,53 @@ func TestDetailOfAGoneNodeIsPruned(t *testing.T) {
 	}
 }
 
+// An answer that lands after its node left the tree must not be cached: the
+// prune that would drop it only runs on the next content change, so the window
+// between has to be closed by the answer itself.
+func TestDetailOfAGoneNodeIsNotStored(t *testing.T) {
+	m := newTestModel(t)
+	// A live wire index, so the guard is exercised against a real one rather
+	// than an empty map.
+	runEventModel(t, &m)
+	if d := m.wantDetail("run:gone", "v"); d != nil {
+		t.Fatal("a first want has no detail to draw yet")
+	}
+
+	updated, _ := m.handleDetail(detailMsg{
+		key:     "run:gone",
+		version: "v",
+		res: acpwire.StackNodeResult{
+			Node:   acpwire.WireNode{Version: "v"},
+			Detail: acpwire.NodeDetail{Body: "a body"},
+		},
+	})
+
+	if _, ok := updated.details["run:gone"]; ok {
+		t.Fatal("detail for a node the wire does not hold must not be cached")
+	}
+	if _, ok := updated.detailAsked["run:gone"]; ok {
+		t.Fatal("the in-flight version of a node the wire does not hold must be dropped")
+	}
+}
+
+// With no session there is nobody to ask, so the wants are dropped rather than
+// held to fire against a later session's node IDs.
+func TestWantsAreDroppedWithoutASession(t *testing.T) {
+	m := newTestModel(t)
+	key, version := runEventModel(t, &m)
+	if d := m.wantDetail(key, version); d != nil {
+		t.Fatal("a first want has no detail to draw yet")
+	}
+
+	m.sess = nil
+	if cmd := m.detailQueryCmds(); cmd != nil {
+		t.Fatal("a want with no session has nothing to send")
+	}
+	if len(m.detailWant) != 0 {
+		t.Fatalf("%d wants survived with no session, want none", len(m.detailWant))
+	}
+}
+
 // A want remembers which subagent's transcript holds the node, so the answer
 // is read from the transcript the render drew.
 func TestAWantRemembersItsSubagent(t *testing.T) {

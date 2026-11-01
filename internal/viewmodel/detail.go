@@ -50,7 +50,9 @@ func StackNodeOf(st *session.State, tree []*Node, nodeID string) (res acpwire.St
 			Truncated: n.Completion.Truncated}
 	case n.Item != nil:
 		// A message's reasoning travels as one thought, the way a beat's
-		// thoughts do; a run event's body travels whole.
+		// thoughts do; a run event's body travels whole. A run event with no
+		// body sets no detail at all, which reads the same as no answer: the
+		// client falls back to the event's wire body.
 		if m := n.Item.Message; m != nil && m.Reasoning != "" {
 			detail.Thinking = []acpwire.ThoughtDetail{{Text: m.Reasoning, DurationMs: m.ThinkDuration.Milliseconds()}}
 		}

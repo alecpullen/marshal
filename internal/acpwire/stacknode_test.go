@@ -127,6 +127,25 @@ func TestExpandedRowDetailJSON(t *testing.T) {
 			},
 			want: `{"id":"msg:2","kind":"message","message":{"role":"assistant","content":"Done.","reasoning":"weighing","truncated":true}}`,
 		},
+		{
+			// The false state of all three flags is the contract a client reads
+			// as "the wire text is whole": an absent key, not a false one.
+			name: "the same fields uncut",
+			got: NodeDetail{
+				Thinking:   []ThoughtDetail{{Text: "short", DurationMs: 900}},
+				Completion: &CompletionDetail{Output: "ok\n"},
+				Body:       "one line",
+			},
+			want: `{"thinking":[{"text":"short","durationMs":900}],"completion":{"output":"ok\n"},"body":"one line"}`,
+		},
+		{
+			name: "a message whose reasoning is whole",
+			got: WireNode{
+				ID: "msg:2", Kind: KindMessage,
+				Message: &WireMessage{Role: "assistant", Content: "Done.", Reasoning: "short"},
+			},
+			want: `{"id":"msg:2","kind":"message","message":{"role":"assistant","content":"Done.","reasoning":"short"}}`,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -1,16 +1,8 @@
 package screen
 
 import (
-	"regexp"
 	"strings"
 )
-
-var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*[a-zA-Z]")
-
-// StripANSI removes ANSI escape sequences.
-func StripANSI(b []byte) string {
-	return ansiRe.ReplaceAllString(string(b), "")
-}
 
 func extractState(content string, lines []string) UIState {
 	state := UIState{}

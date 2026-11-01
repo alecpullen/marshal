@@ -22,14 +22,20 @@ type Config struct {
 	HumanDelay time.Duration
 }
 
+// rawOutputCap bounds the raw PTY bytes retained per session. The tail is
+// diagnostic only: snapshots come from the terminal model.
+const rawOutputCap = 1 << 20
+
 // Session wraps a running process inside a PTY.
 type Session struct {
-	cmd    *exec.Cmd
-	pty    *os.File
-	mu     sync.Mutex
-	buf    []byte
-	width  int
-	height int
+	cmd *exec.Cmd
+	pty *os.File
+	mu  sync.Mutex
+	// term decodes PTY output into the visible viewport and owns the session
+	// dimensions; raw retains the last rawOutputCap bytes for diagnostics.
+	// Both are guarded by mu.
+	term *terminalModel
+	raw  []byte
 }
 
 // New starts a process in a PTY and begins collecting output.
@@ -58,10 +64,9 @@ func New(cfg Config) (*Session, error) {
 	}
 
 	s := &Session{
-		cmd:    cmd,
-		pty:    ptmx,
-		width:  cfg.Width,
-		height: cfg.Height,
+		cmd:  cmd,
+		pty:  ptmx,
+		term: newTerminalModel(cfg.Width, cfg.Height),
 	}
 	go s.readLoop()
 	return s, nil
@@ -73,7 +78,14 @@ func (s *Session) readLoop() {
 		n, err := s.pty.Read(tmp[:])
 		if n > 0 {
 			s.mu.Lock()
-			s.buf = append(s.buf, tmp[:n]...)
+			// Each chunk feeds the terminal model exactly once; the raw bytes
+			// are retained only as a bounded diagnostic tail, never as the
+			// source of a screen.
+			_, _ = s.term.Write(tmp[:n])
+			s.raw = append(s.raw, tmp[:n]...)
+			if over := len(s.raw) - rawOutputCap; over > 0 {
+				s.raw = append(s.raw[:0], s.raw[over:]...)
+			}
 			s.mu.Unlock()
 		}
 		if err != nil {
@@ -147,23 +159,19 @@ func (s *Session) SendKey(key string) error {
 	return err
 }
 
-// Snapshot returns the current terminal contents.
+// Snapshot returns the current visible viewport.
 func (s *Session) Snapshot() Snapshot {
 	s.mu.Lock()
-	content := make([]byte, len(s.buf))
-	copy(content, s.buf)
-	s.mu.Unlock()
-
-	lines := strings.Split(string(content), "\n")
-	return Snapshot{Width: s.width, Height: s.height, Content: content, Lines: lines}
+	defer s.mu.Unlock()
+	return s.term.Snapshot()
 }
 
-// Output returns all raw output bytes collected so far.
+// Output returns a copy of the raw PTY tail retained for diagnostics.
 func (s *Session) Output() []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]byte, len(s.buf))
-	copy(out, s.buf)
+	out := make([]byte, len(s.raw))
+	copy(out, s.raw)
 	return out
 }
 
@@ -214,4 +222,8 @@ type Snapshot struct {
 	Height  int
 	Content []byte
 	Lines   []string
+	// Err reports a sticky terminal decoding or unsupported screen-operation
+	// error from the terminal model. A nil Err means the screen decoded
+	// cleanly.
+	Err error
 }

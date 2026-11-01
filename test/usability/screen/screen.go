@@ -1,6 +1,10 @@
 package screen
 
-import "marshal/test/usability/harness"
+import (
+	"fmt"
+
+	"marshal/test/usability/harness"
+)
 
 // UIState captures actionable signals parsed from the TUI.
 type UIState struct {
@@ -23,13 +27,18 @@ type Screen struct {
 	State   UIState
 }
 
-// Parse turns a harness snapshot into a structured Screen.
+// Parse turns a harness snapshot into a structured Screen. Content and Lines
+// are already the plain-UTF-8 visible viewport, so no escape stripping is
+// needed; a terminal model error is propagated rather than masked by a
+// partial screen.
 func Parse(snap harness.Snapshot) (Screen, error) {
-	content := StripANSI(snap.Content)
-	lines := make([]string, 0, len(snap.Lines))
-	for _, ln := range snap.Lines {
-		lines = append(lines, StripANSI([]byte(ln)))
+	if snap.Err != nil {
+		return Screen{}, fmt.Errorf("screen: terminal model error: %w", snap.Err)
 	}
+
+	content := string(snap.Content)
+	lines := make([]string, len(snap.Lines))
+	copy(lines, snap.Lines)
 
 	scr := Screen{
 		Width:   snap.Width,

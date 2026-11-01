@@ -164,6 +164,31 @@ func isolatedHomeEnv(t *testing.T) childEnv {
 	}
 }
 
+// isolatedAgentEnv returns an isolated environment for a child that must drive
+// a real agent turn against an explicit test-owned provider. Unlike
+// isolatedHomeEnv it does not start the passive always-failing server: the
+// journey asserts on what the provider actually received, so the caller owns
+// the fixture and passes its URL. Requests stays nil — a request count here
+// would assert "no requests", which is the opposite of what an agent journey
+// wants.
+func isolatedAgentEnv(t *testing.T, serverURL string) childEnv {
+	t.Helper()
+	homeDir := t.TempDir()
+	return childEnv{
+		Env:       buildAgentChildEnv(t, homeDir, serverURL+"/v1"),
+		HomeDir:   homeDir,
+		ServerURL: serverURL,
+	}
+}
+
+// buildAgentChildEnv writes the agent-facing child config and returns the
+// environment to start it with.
+func buildAgentChildEnv(t *testing.T, homeDir, baseURL string) []string {
+	t.Helper()
+	writeChildConfig(t, homeDir, agentChildConfig(baseURL))
+	return childEnviron(homeDir)
+}
+
 // llmChildEnv is the opt-in LLM scenario's environment. It is deliberately
 // exploratory: the child's provider is the same endpoint the in-process LLM
 // actor reads from USABILITY_LLM_URL, so the scenario is not bound to the
@@ -177,21 +202,18 @@ func llmChildEnv(t *testing.T) []string {
 	return buildChildEnv(t, t.TempDir(), base+"/v1")
 }
 
-// buildChildEnv writes the child's minimal Marshal config into homeDir and
-// returns the environment to start it with. It reads the ambient environment
-// only to carry over execution essentials (PATH, platform loader variables) and
-// drops everything that could redirect the child outside the test-owned home or
-// authenticate it against a real endpoint.
 func buildChildEnv(t *testing.T, homeDir, baseURL string) []string {
 	t.Helper()
-	configDir := filepath.Join(homeDir, ".config", "marshal")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatalf("create temp marshal config dir: %v", err)
-	}
-	// A local-only provider + preset + profile so Marshal starts on the main
-	// TUI screen instead of opening the connect-provider picker. The provider is
-	// the test-owned fixture endpoint, never an ambient one.
-	config := fmt.Sprintf(`[providers.ollama]
+	writeChildConfig(t, homeDir, passiveChildConfig(baseURL))
+	return childEnviron(homeDir)
+}
+
+// passiveChildConfig is the child config for scenarios that must not reach a
+// model. A local-only provider + preset + profile so Marshal starts on the main
+// TUI screen instead of opening the connect-provider picker. The provider is the
+// test-owned fixture endpoint, never an ambient one.
+func passiveChildConfig(baseURL string) string {
+	return fmt.Sprintf(`[providers.ollama]
 type = "openai_compatible"
 base_url = %q
 
@@ -211,10 +233,68 @@ implementer = "coder"
 [postmortem]
 on_exit = "never"
 `, baseURL)
+}
+
+// agentChildConfig is the child config for scenarios that drive a real agent
+// turn. It differs from passiveChildConfig only where determinism requires it:
+// the provider advertises native tool calling so a scripted reply arrives as a
+// tool call rather than an action envelope, narration and the intent nudge are
+// off so a turn is exactly the scripted requests and no extra round trip, and
+// the interaction stays normal Act with Auto off so approvals and questions
+// still reach the user.
+func agentChildConfig(baseURL string) string {
+	return fmt.Sprintf(`[providers.fixture]
+type = "openai_compatible"
+base_url = %q
+tool_calling = true
+
+[models.presets.coder]
+provider = "fixture"
+model = %q
+context_window = 32768
+temperature = 0.0
+local_only = true
+
+[profile]
+default = "local"
+
+[agent_profiles.local]
+implementer = "coder"
+
+[agent]
+mode = "act"
+auto = false
+narration_prompt = false
+intent_nudge = false
+
+# A conversation-title side call is a second, non-agent completion: it would
+# consume a scripted reply and shift every later turn. Disabled so each reply
+# maps to exactly one agent turn.
+[titling]
+enabled = false
+
+[postmortem]
+on_exit = "never"
+`, baseURL, fixtureModel)
+}
+
+// writeChildConfig writes the child's minimal Marshal config into homeDir.
+func writeChildConfig(t *testing.T, homeDir, config string) {
+	t.Helper()
+	configDir := filepath.Join(homeDir, ".config", "marshal")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("create temp marshal config dir: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(config), 0o644); err != nil {
 		t.Fatalf("write temp marshal config: %v", err)
 	}
+}
 
+// childEnviron returns the environment to start the child with. It reads the
+// ambient environment only to carry over execution essentials (PATH, platform
+// loader variables) and drops everything that could redirect the child outside
+// the test-owned home or authenticate it against a real endpoint.
+func childEnviron(homeDir string) []string {
 	// HOME alone no longer isolates the config: Marshal honours
 	// XDG_CONFIG_HOME / XDG_DATA_HOME / MARSHAL_*_DIR ahead of HOME
 	// (config-project-identity refactor), and CI runners export the XDG

@@ -305,7 +305,11 @@ func TestTerminalCellWidths(t *testing.T) {
 
 func TestTerminalUnknownScreenControl(t *testing.T) {
 	m := newTerminalModel(10, 3)
-	const p = "ok\x1b[2;5r" // DECSTBM: an unsupported screen-changing command
+	// IL (insert lines) shifts cells and is not modelled, so it stands in
+	// here as a genuinely unsupported screen-changing command. DECSTBM used
+	// to occupy this slot; the model implements it now, which
+	// TestTerminalScrollRegion pins.
+	const p = "ok\x1b[2L"
 	n, err := m.Write([]byte(p))
 	if err != nil {
 		t.Fatalf("Write error = %v, want nil", err)
@@ -318,7 +322,7 @@ func TestTerminalUnknownScreenControl(t *testing.T) {
 	if snap.Err == nil {
 		t.Fatalf("Snapshot.Err = nil, want a sticky unsupported-sequence error")
 	}
-	if !strings.Contains(snap.Err.Error(), `\x1b[2;5r`) {
+	if !strings.Contains(snap.Err.Error(), `\x1b[2L`) {
 		t.Fatalf("error should report the offending sequence bytes: %v", snap.Err)
 	}
 	// The snapshot still carries the cells decoded before the failure.
@@ -539,4 +543,69 @@ func TestTerminalOversizedControlIsBounded(t *testing.T) {
 	if m.Snapshot().Err == nil {
 		t.Fatalf("sticky error cleared by a later write")
 	}
+}
+
+// TestTerminalScrollRegion pins DECSTBM (CSI r), which the TUI sets at 80x24
+// to keep its header and status rows fixed while the transcript scrolls
+// between them. The region is 1-based on the wire and every row outside it
+// must survive a scroll untouched.
+func TestTerminalScrollRegion(t *testing.T) {
+	m := newTerminalModel(6, 4)
+	writeAll(t, m, "H\r\nA\r\nB\r\nZ")
+	wantLines(t, m.Snapshot(), "H", "A", "B", "Z")
+
+	// Region rows 2..3 of 4 (0-based 1..2). DECSTBM homes the cursor to the
+	// region's top-left, and a newline at its bottom row scrolls only those
+	// rows: A is discarded, the first and last rows are untouched.
+	writeAll(t, m, "\x1b[2;3r\x1b[3;1H\n")
+	wantLines(t, m.Snapshot(), "H", "B", "", "Z")
+
+	// Reverse index at the region's top row scrolls it back down.
+	writeAll(t, m, "\x1b[2;1H\x1bM")
+	wantLines(t, m.Snapshot(), "H", "", "B", "Z")
+
+	// A parameterless reset restores whole-viewport scrolling.
+	writeAll(t, m, "\x1b[r\x1b[4;1H\n")
+	wantLines(t, m.Snapshot(), "", "B", "Z", "")
+
+	// An invalid region is ignored rather than latching an error.
+	writeAll(t, m, "\x1b[3;2r")
+	wantLines(t, m.Snapshot(), "", "B", "Z", "")
+	if err := m.Snapshot().Err; err != nil {
+		t.Fatalf("invalid DECSTBM latched an error: %v", err)
+	}
+
+	// SU and SD scroll the region without moving the cursor.
+	m = newTerminalModel(6, 4)
+	writeAll(t, m, "H\r\nA\r\nB\r\nZ")
+	writeAll(t, m, "\x1b[2;3r\x1b[1S")
+	wantLines(t, m.Snapshot(), "H", "B", "", "Z")
+	writeAll(t, m, "\x1b[1T")
+	wantLines(t, m.Snapshot(), "H", "", "B", "Z")
+
+	// A count larger than the region blanks it instead of scrolling again.
+	writeAll(t, m, "\x1b[99S")
+	wantLines(t, m.Snapshot(), "H", "", "", "Z")
+}
+
+// TestTerminalReverseIndex pins RI (ESC M), which a redraw emits to grow a
+// frame upward by one line instead of repainting from the top row. The model
+// used to reject it, so a correct redraw at 80x24 surfaced as an unsupported
+// control sequence rather than a screen.
+func TestTerminalReverseIndex(t *testing.T) {
+	// Away from the top row: the cursor moves up one line, nothing scrolls.
+	m := newTerminalModel(6, 3)
+	writeAll(t, m, "1\r\n2\r\n3")
+	writeAll(t, m, "\x1b[2;1H\x1bM")
+	writeAll(t, m, "X")
+	wantLines(t, m.Snapshot(), "X", "2", "3")
+
+	// On the top row: the viewport scrolls down and the cursor stays put.
+	m = newTerminalModel(6, 3)
+	writeAll(t, m, "1\r\n2\r\n3\x1b[1;1H\x1bM")
+	wantLines(t, m.Snapshot(), "", "1", "2")
+
+	// The new blank first row is where the following write lands.
+	writeAll(t, m, "Z")
+	wantLines(t, m.Snapshot(), "Z", "1", "2")
 }

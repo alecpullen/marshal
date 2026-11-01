@@ -157,6 +157,20 @@ remaining platform claims.
 
 ## P4 — expand real TUI journeys and gate changes in CI
 
+**Status: implemented.** The journeys and the pull-request gate landed as eight
+commits on `p4-real-tui-journeys` from P3b's merge `c6c79913`; the evidence,
+including the two harness defects the journeys exposed, is in the
+[audit](audit.md#verification-record). Four new real-binary journeys run at
+80×24 against a test-owned OpenAI-compatible provider and a test-owned
+filesystem: `TestScriptedApprovalDetailsAndDecision` (approval details, then
+denial and execution with independent filesystem and provider oracles),
+`TestScriptedQuestionsPartialSkip` (a completed answer survives a partial skip,
+and a full skip fabricates nothing), `TestScriptedSkillRemoval` (cancel
+preserves both skills byte-for-byte; confirm removes only the selected one) and
+`TestScriptedPasteResizeDraft` (bracketed paste survives a resize round trip and
+Backspace cancellation never submits). They sit alongside P3b's three. P5
+remains open: nothing in this phase removed or renamed a test.
+
 Using the repaired harness and test-owned deterministic providers, add a
 small set of meaningful 80×24 real-binary journeys for approval details and
 cancellation, multi-question partial skip, one skill/plugin management path,
@@ -166,6 +180,32 @@ Run the normal Go suite and vet on pull requests and main pushes after P1–P2
 have made the baseline reliable; do not silently quarantine baseline tests.
 Keep the scripted usability job and archive per-run artifacts. Make the CI
 definition and platform coverage explicit.
+
+### P4 CI and platform scope
+
+Pull requests and pushes to `main` run two independent jobs, both on
+`ubuntu-latest`:
+
+- **`full-suite`** (`.github/workflows/go-checks.yml`) runs
+  `CGO_ENABLED=1 go test ./... -count=1 -timeout 5m` and then
+  `CGO_ENABLED=1 go vet ./...`. It carries no package exclusions and no
+  `continue-on-error`, so a failing package or a vet diagnostic fails the pull
+  request. `-count=1` stops a cached result standing in for a run against the
+  pull request's own code.
+- **`scripted`** (`.github/workflows/usability.yml`) builds the binary and runs
+  the real-binary `TestScripted*` journeys with `USABILITY_REQUIRE_BINARY=1`,
+  uploading its per-run report artifacts.
+
+Release tag pushes keep the checks in `release.yaml`; neither of these workflows
+replaces them.
+
+Platform coverage is explicit and deliberately narrow. Both jobs run on Linux,
+and the journeys' terminal model was verified on macOS/darwin arm64 from the
+execution host. macOS and Windows are supported platforms but are **not**
+claimed as pull-request gates, and no hosted run is claimed until one is
+observed. The load-sensitive `internal/sandbox` container fixture failure
+recorded earlier stays a real failure: if it reproduces, it is diagnosed rather
+than quarantined or excluded.
 
 ## P5 — remove misleading and redundant tests
 

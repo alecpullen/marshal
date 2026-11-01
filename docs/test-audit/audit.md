@@ -24,15 +24,39 @@ do not hide them with blanket exclusions. **Evidence:** workflow inspection.
 
 ### The sole scripted real-binary TUI journey lacks a close assertion
 
-`test/usability/scenario/scenarios.go:18` sends `?`, waits for Help, then
-sends Escape. `test/usability/actor/scripted/scripted.go:40` returns success
-as soon as the last action was emitted: there is no observation that Escape
-closed Help. `test/usability/scenario/scenario.go:43` defines `Success`, but
-the runner's `ActionDone` branch does not evaluate it. Thus the named
-`TestScriptedHelpOpenClose` can pass if the final Escape has no effect.
-Add an explicit post-action condition, exercise a deliberately failing
-postcondition, and decide whether `Scenario.Success` should be implemented or
-removed. **Evidence:** actor and runner control flow.
+**Status: fixed by P3b.** `HelpOpenClose` now ends with a wait-only
+postcondition step, and `Scenario.Success`/`SuccessCriterion` are removed
+rather than implemented: success is the actor's own `ActionDone.Success`, so a
+scripted scenario proves its outcome through its own last step.
+
+The original defect: `test/usability/scenario/scenarios.go:18` sent `?`, waited
+for Help, then sent Escape. `test/usability/actor/scripted/scripted.go:40`
+returned success as soon as the last action was emitted: there was no
+observation that Escape closed Help. `test/usability/scenario/scenario.go:43`
+defined `Success`, but the runner's `ActionDone` branch never evaluated it.
+Thus the named `TestScriptedHelpOpenClose` could pass if the final Escape had no
+effect. **Evidence:** actor and runner control flow.
+
+What P3b established (`p3b-usability-harness`: `b9a92244`):
+
+- `scripted.Step` gained `WaitOnly` and `WaitFor.ScreenNotContains`, and
+  `matchesWaitFor` enforces every populated predicate conjunctively. A
+  wait-only step advances only when the *current* viewport satisfies all of
+  them; an unmatched one stays on its step and yields a no-op. Validation
+  rejects a step with none or several of `Send`/`SendKey`/`WaitOnly`, and a
+  wait-only step with no condition, instead of silently choosing one.
+- `HelpOpenClose`'s third step requires `ScreenContains: "Type a question"` and
+  `ScreenNotContains: "Help"` — the same markers as the P3a redraw test. A close
+  that does nothing can therefore never report success.
+- `TestScriptedWaitOnlyPostcondition` covers unmatched, matched and completed
+  steps; `TestScriptedRejectsInvalidWaitOnly` covers empty and conflicting
+  actions; `TestLoadWaitOnlyPostcondition` covers JSON decoding; and
+  `TestHelpScriptDoesNotCompleteWithoutClose` drives the real `HelpOpenClose`
+  actor through the open step and a deliberately ineffective close, asserting
+  repeated no-ops and no done, then a closed viewport and done.
+- `TestScriptedHelpOpenClose` remains the real-binary positive check, now under
+  a bounded 90-second context so a broken close fails with the runner's
+  recorded viewport instead of hanging.
 
 ### The PTY harness does not model the current terminal screen
 
@@ -110,38 +134,95 @@ end for approval and sudo review, questions, plugin/skill management, paste,
 80×24 overflow, resize, or cancellation. After repairing the screen oracle,
 add a small set of deterministic real-binary journeys with test-owned provider
 and filesystem fixtures, including negative outcomes and 80×24. Do not
-duplicate every panel unit test or require a real model. The harness currently
-has no resize or bracketed-paste action (`harness/harness.go:33,83`).
+duplicate every panel unit test or require a real model. P3b added the harness
+actions such a journey needs — `Paste` writes the exact `ESC [ 200 ~` … `ESC [
+201 ~` framing without Enter, `Resize` moves the PTY and the viewport model
+together within `1..65535`, and both are reachable from a scripted step
+(`ActionPaste`, `ActionResize`) and exercised by `TestSessionPasteFraming`,
+`TestSessionResize`, `TestRunnerPasteAndResize` and the invalid-size path. The
+journeys themselves remain P4's scope.
 
 ### Optional LLM repair scenario trusts the actor's success claim
 
-`test/usability/usability_test.go:139` checks only `res.Success`. The runner
-copies that from `actor.ActionDone.Success` (`scenario/scenario.go:130`), and
-the LLM actor can report success without the fixture's tests being run or the
-missing function being fixed. If kept as a regression test, independently run
-the fixture's Go tests and inspect the result; otherwise label the scenario as
-exploratory, not a correctness gate. This scenario is opt-in and is not part
-of the PR scripted job.
+**Status: relabelled exploratory by P3b.** No independent oracle was added, and
+the finding's "otherwise label the scenario as exploratory, not a correctness
+gate" branch was taken deliberately: running the fixture's tests would make an
+opt-in model run a correctness gate, which is not what this scenario is for.
+
+The original defect: `test/usability/usability_test.go:139` checked only
+`res.Success`. The runner copies that from `actor.ActionDone.Success`
+(`scenario/scenario.go:130`), and the LLM actor can report success without the
+fixture's tests being run or the missing function being fixed. **Evidence:**
+test and runner implementation.
+
+What P3b established (`p3b-usability-harness`: `24bbb400`):
+
+- `TestLLMSubtractFix` is now `TestExploratoryLLMSubtractFix`, with scenario
+  name `exploratory_subtract_fix`. Its doc comment and the package docs state
+  that the actor's claimed success is observational, that the fixture's `go
+  test` is never run as an oracle, and that a pass must not be cited as
+  evidence of correctness. The `SubtractFix` scenario comment says the same.
+- The explicit `USABILITY_LLM_MODEL` opt-in is preserved, and the test remains
+  outside the scripted CI selection (`-run TestScripted` does not start an LLM
+  actor); it skips without the opt-in.
+- An actor failure is still reported as a failure of the exploratory run.
+  Reporting stays isolated per run through Task 6's `ReportDir` mechanism, so a
+  concurrent scripted run cannot overwrite its artifacts.
 
 ### Usability setup and cleanup limit what the suite can prove
 
-The generic suite silently skips `TestScriptedHelpOpenClose` when the binary
-is missing (`usability_test.go:112`); the dedicated PR workflow does build it,
-so that specific job is not silently skipped. A dedicated integration job
-should fail if its required binary is absent. `Session.Close` kills the child
-(`harness/harness.go:193`), so it cannot prove graceful exit, terminal
-restoration or shutdown persistence. Reports use the shared fixed directory
-`/tmp/marshal-usability` (`usability_test.go:120,151`), risking concurrent
-report overwrites. Use per-run artifacts and add an explicit graceful-exit
-path with bounded forced cleanup.
+**Status: fixed by P3b** for the setup, cleanup, report-path and CI-gate parts.
+The provider question is answered for the scripted journeys: they are proven to
+make zero requests, and the endpoint is a test-owned server rather than
+`localhost:11434`.
 
-`isolatedHomeEnv` pins Marshal/XDG config and data paths and drops provider
-keys, but inherits `USERPROFILE` and `XDG_CACHE_HOME`
-(`usability_test.go:70`); cross-platform isolation should be tested with
-poisoned ambient variables. Its provider points to `localhost:11434` (`:42`),
-which is not a test-owned service. The current Help journey does not establish
-that it makes a request; new probe or inference scenarios need a controlled
-endpoint before they can be considered hermetic.
+The original defect: the generic suite silently skipped
+`TestScriptedHelpOpenClose` when the binary was missing
+(`usability_test.go:112`); the dedicated PR workflow did build it, so that
+specific job was not silently skipped. A dedicated integration job should fail
+if its required binary is absent. `Session.Close` killed the child
+(`harness/harness.go:193`), so it could not prove graceful exit, terminal
+restoration or shutdown persistence. Reports used the shared fixed directory
+`/tmp/marshal-usability` (`usability_test.go:120,151`), risking concurrent
+report overwrites. **Evidence:** harness and test implementation.
+
+What P3b established (`p3b-usability-harness`: `431f8ed0`, `86f28641`,
+`5447c8ac`, `1b7c0ced`):
+
+- `Session` now owns exactly one `cmd.Wait` goroutine. `Wait(ctx)` observes that
+  result without killing the child or closing the PTY, returning the context
+  error on cancellation; `Close` is idempotent, kills only a child that has not
+  exited, treats `os.ErrProcessDone` as "already exited", closes the descriptor
+  before draining the reader, and bounds both the reap and the read with its own
+  deadline. Repeated and concurrent `Wait`/`Close` are safe (proven under
+  `-race`), and the final snapshot survives teardown.
+- `TestScriptedGracefulQuit` proves a real normal exit: it waits for the prompt,
+  sends `/quit` and Enter, and requires `Wait` to return nil well before its
+  deadline, with `Close` used only as cleanup. The child config pins
+  `[postmortem] non_exit = "never"` so the interactive postmortem cannot
+  interpose.
+- Reports are per run: `Runner.WriteReport` refuses an empty `ReportDir`, and
+  `reportDir(t)` allocates a unique directory under `USABILITY_REPORT_DIR`
+  (CI) or `t.TempDir()` (local). CI sets `USABILITY_REPORT_DIR` under
+  `runner.temp` and uploads that path with `if: always()`.
+- `requireBinary(t)` is the single availability gate. With
+  `USABILITY_REQUIRE_BINARY=1` — set by the dedicated CI job — a missing,
+  irregular or non-executable binary fails and names the resolved path;
+  otherwise only the "never built" cases skip. Other stat errors fail in both
+  modes. `TestRequireBinarySubprocess` exercises both branches in a subprocess.
+- The child environment is built rather than inherited. `HOME`, `USERPROFILE`,
+  `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `MARSHAL_CONFIG_DIR` and
+  `MARSHAL_DATA_DIR` are pinned inside the test's temp home with exactly one
+  effective value each (ambient copies are dropped, not merged), `TERM` is the
+  deterministic `xterm-256color`, provider keys and the live-keyring opt-in are
+  dropped, and every `USABILITY_*` variable is withheld. PATH and platform
+  loader variables still pass through so the child can start.
+- The provider is a per-test `httptest.Server` recorded by a request counter;
+  the child's `base_url` is its URL plus `/v1`. `TestIsolatedHomeEnv` poisons all
+  pinned variables, provider keys and harness knobs, then asserts the overrides
+  land in the temp home, no sensitive key survives, and the configured endpoint
+  is the fixture. The Help, quit and redraw tests assert zero requests, so
+  hermeticity is proven rather than assumed.
 
 ## Baseline failures and flake candidates
 
@@ -561,3 +642,40 @@ solely on test names.
   Linux and Windows are supported platforms that were **not** exercised on
   this execution host, so no claim is made that they pass; the same suite still
   has to run there before P2 is called clean across supported CI platforms.
+- **P3b execution (`p3b-usability-harness` branch, seven labelled commits on
+  2026-11-01, base `e0d14b45`):** the remaining P3 harness work is implemented
+  and verified on `Darwin 26.4.1 arm64`, `go1.26.1 darwin/arm64`,
+  `CGO_ENABLED=1`. Commits: `b9a92244` (scripted postconditions),
+  `431f8ed0` (harness paste and resize), `0a9d2dfb` (scripted paste/resize
+  actions), `86f28641` (bounded graceful shutdown), `5447c8ac` (isolated child
+  environment and provider), `1b7c0ced` (per-run reports, required binary),
+  `24bbb400` (exploratory LLM label). The baseline was captured first: the
+  union of every task's verification command passed at `e0d14b45`, so no
+  pre-existing failure was inherited.
+  Final verification, all clean on this host:
+  `CGO_ENABLED=1 go build ./cmd/marshal`;
+  `USABILITY_REQUIRE_BINARY=1 go test ./test/usability/... -count=1 -timeout 5m`
+  (every usability package `ok`, with the real-binary tests executing rather
+  than skipping); `go test -race ./test/usability/harness
+  ./test/usability/screen ./test/usability/scenario
+  ./test/usability/actor/scripted -count=1 -timeout 3m`;
+  `go test ./... -count=1 -timeout 5m` with no `FAIL` line;
+  `go vet ./...`; and `git diff --check`. The opt-in
+  `TestExploratoryLLMSubtractFix` skipped as expected and was not enabled to
+  make the suite pass.
+  The real-binary Help scenario was repeated with `-count=3` after the
+  deterministic `TERM` change, and the required-binary gate was re-checked by
+  hand: with `USABILITY_REQUIRE_BINARY=1` and a missing path it fails naming the
+  resolved path, and a temporary `USABILITY_REPORT_DIR` produced one
+  `usability-*` subdirectory holding its own JSON, benchmark and Markdown
+  artifacts.
+  One deviation from the plan is recorded with the user's ruling: pinning
+  `TERM=xterm-256color` made the renderer emit ECH (`CSI Ps X`), which the P3a
+  terminal model rejected as unsupported, so the harness gained that one CSI
+  handler plus `TestTerminalEraseCharacters` instead of weakening the
+  deterministic `TERM` to a reduced renderer. `TERM=dumb` would have passed but
+  exercised less of the renderer than a real developer terminal.
+  Platform limitation: macOS/darwin arm64 only. The GitHub Actions job now
+  carries the require-binary and report-directory settings, but no CI platform
+  was exercised from this host, so no claim is made that the workflow itself
+  passed.

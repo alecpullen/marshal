@@ -508,13 +508,12 @@ type Model struct {
 	// another, so a single retained slot is enough.
 	composerDisplaced dock.Panel
 	// composerDisplacedAccess is the canonical access-request ID that panel
-	// represented, and composerDisplacedPrompt the canonical prompt key when a
-	// pending prompt (approval/question/skill/sudo) was displaced. Restoring
-	// requires the same identity: a request cancelled by interruption, or a
-	// prompt that settled while the composer was up, must retire rather than
-	// resurrect.
+	// represented, and composerDisplacedPrompt the request when a pending
+	// prompt (approval/question/skill/sudo) was displaced. Restoring requires
+	// the same identity: a request cancelled by interruption, or a prompt that
+	// settled while the composer was up, must retire rather than resurrect.
 	composerDisplacedAccess string
-	composerDisplacedPrompt session.PromptKey
+	composerDisplacedPrompt promptRef
 	// composerInputFocused is the base textarea's focus state before the
 	// composer took over, restored on close so Esc puts the user back where
 	// they were rather than stealing or leaving focus arbitrarily.
@@ -6123,24 +6122,23 @@ func (m *Model) surfaceOwnsInput() bool {
 		m.state.PendingSudoAuth() != nil
 }
 
-// focusedPromptKey returns the canonical key of the pending prompt that owns
-// the input, in the same order the update routing resolves them. A prompt
-// registered outside this session's registry (a legacy fixture) carries the
-// zero key and reports false.
-func (m *Model) focusedPromptKey() (session.PromptKey, bool) {
-	if sa := m.state.PendingSudoAuth(); sa != nil && sa.Key.ID != "" {
-		return sa.Key, true
+// focusedPromptKey returns the key of the pending prompt that owns the input,
+// in the same order the update routing resolves them.
+func (m *Model) focusedPromptKey() (promptRef, bool) {
+	p := m.sess.Pending()
+	if p.Sudo != nil && p.Sudo.Key != "" {
+		return promptRef{kind: promptSudo, key: p.Sudo.Key}, true
 	}
-	if sg := m.state.PendingSkillGate(); sg != nil && sg.Key.ID != "" {
-		return sg.Key, true
+	if p.SkillGate != nil && p.SkillGate.Key != "" {
+		return promptRef{kind: promptSkill, key: p.SkillGate.Key}, true
 	}
-	if tc, _ := m.pendingApprovalDisplay(); tc != nil && tc.Key.ID != "" {
-		return tc.Key, true
+	if len(p.Approvals) > 0 && p.Approvals[0].Key != "" {
+		return promptRef{kind: promptApproval, key: p.Approvals[0].Key}, true
 	}
-	if q := m.state.PendingQuestion(); q != nil && q.Key.ID != "" {
-		return q.Key, true
+	if p.Question != nil && p.Question.Key != "" {
+		return promptRef{kind: promptQuestion, key: p.Question.Key}, true
 	}
-	return session.PromptKey{}, false
+	return promptRef{}, false
 }
 
 // beginSendNow is the global Alt+Enter action. A plain chat editor submits its
@@ -6190,7 +6188,7 @@ func (m *Model) openSteeringComposer() {
 	}
 	m.composerDisplaced = nil
 	m.composerDisplacedAccess = ""
-	m.composerDisplacedPrompt = session.PromptKey{}
+	m.composerDisplacedPrompt = promptRef{}
 	m.composerInputFocused = m.input.Focused()
 	if panel := m.dock.Panel(); panel != nil {
 		if ap, ok := panel.(*accesspanel.Panel); ok {
@@ -6247,7 +6245,7 @@ func (m *Model) restoreComposerSurface() {
 			panel = nil
 		}
 	}
-	if key := m.composerDisplacedPrompt; key.ID != "" && !m.promptStillPending(key) {
+	if key := m.composerDisplacedPrompt; key.key != "" && !m.promptStillPending(key) {
 		m.retireStalePromptModels(key)
 	}
 	// The composer is permanently gone once it closes, whether or not the
@@ -6255,7 +6253,7 @@ func (m *Model) restoreComposerSurface() {
 	retired := m.composerDisplaced
 	m.composerDisplaced = nil
 	m.composerDisplacedAccess = ""
-	m.composerDisplacedPrompt = session.PromptKey{}
+	m.composerDisplacedPrompt = promptRef{}
 	if panel != nil {
 		// The restored surface takes the slot silently; the composer it
 		// replaces is what has been permanently discarded.
@@ -6268,39 +6266,31 @@ func (m *Model) restoreComposerSurface() {
 	m.dock.CloseNow()
 }
 
-// promptStillPending reports whether key still names the live pending prompt
+// promptStillPending reports whether ref still names the live pending request
 // of its kind.
-func (m *Model) promptStillPending(key session.PromptKey) bool {
-	switch key.Kind {
-	case session.PromptQuestion:
-		if q := m.state.PendingQuestion(); q != nil && q.Key == key {
-			return true
-		}
-	case session.PromptSkill:
-		if sg := m.state.PendingSkillGate(); sg != nil && sg.Key == key {
-			return true
-		}
-	case session.PromptSudo:
-		if sa := m.state.PendingSudoAuth(); sa != nil && sa.Key == key {
-			return true
-		}
+func (m *Model) promptStillPending(ref promptRef) bool {
+	p := m.sess.Pending()
+	switch ref.kind {
+	case promptQuestion:
+		return p.Question != nil && p.Question.Key == ref.key
+	case promptSkill:
+		return p.SkillGate != nil && p.SkillGate.Key == ref.key
+	case promptSudo:
+		return p.Sudo != nil && p.Sudo.Key == ref.key
 	default:
-		if tc, _ := m.pendingApprovalDisplay(); tc != nil && tc.Key == key {
-			return true
-		}
+		return len(p.Approvals) > 0 && p.Approvals[0].Key == ref.key
 	}
-	return false
 }
 
 // retireStalePromptModels drops a form bound to a prompt that settled while the
 // composer held the input, so a late keypress cannot drive a dead dialog.
-func (m *Model) retireStalePromptModels(key session.PromptKey) {
-	switch key.Kind {
-	case session.PromptQuestion:
+func (m *Model) retireStalePromptModels(ref promptRef) {
+	switch ref.kind {
+	case promptQuestion:
 		m.questionModel = nil
-	case session.PromptSkill:
+	case promptSkill:
 		m.skillGateModel = nil
-	case session.PromptSudo:
+	case promptSudo:
 		m.sudoAuthModel = nil
 	default:
 		m.approvalModel = nil
@@ -6827,25 +6817,26 @@ func (m *Model) openWorkDetailUnavailable(item viewmodel.WorkItem) {
 	m.refreshViewport()
 }
 
-// promptKeyByID finds the canonical key of the pending prompt carrying id, in
-// the same order focusedPromptKey resolves them.
-func (m Model) promptKeyByID(id string) (session.PromptKey, bool) {
+// promptKeyByID finds the pending request carrying id, in the same order
+// focusedPromptKey resolves them.
+func (m Model) promptKeyByID(id string) (promptRef, bool) {
 	if id == "" {
-		return session.PromptKey{}, false
+		return promptRef{}, false
 	}
-	if sa := m.state.PendingSudoAuth(); sa != nil && sa.Key.ID == id {
-		return sa.Key, true
+	p := m.sess.Pending()
+	if p.Sudo != nil && p.Sudo.Key == id {
+		return promptRef{kind: promptSudo, key: id}, true
 	}
-	if sg := m.state.PendingSkillGate(); sg != nil && sg.Key.ID == id {
-		return sg.Key, true
+	if p.SkillGate != nil && p.SkillGate.Key == id {
+		return promptRef{kind: promptSkill, key: id}, true
 	}
-	if tc, _ := m.pendingApprovalDisplay(); tc != nil && tc.Key.ID == id {
-		return tc.Key, true
+	if len(p.Approvals) > 0 && p.Approvals[0].Key == id {
+		return promptRef{kind: promptApproval, key: id}, true
 	}
-	if q := m.state.PendingQuestion(); q != nil && q.Key.ID == id {
-		return q.Key, true
+	if p.Question != nil && p.Question.Key == id {
+		return promptRef{kind: promptQuestion, key: id}, true
 	}
-	return session.PromptKey{}, false
+	return promptRef{}, false
 }
 
 // navigateToWorkPrompt navigates to the pending request a work item names, by

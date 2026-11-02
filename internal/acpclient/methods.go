@@ -27,4 +27,5 @@ var Methods = []Method{
 	{Iface: "Session", Name: "Stack", ACP: "session/stack", Exists: true},
 	{Iface: "Session", Name: "StackNode", ACP: "session/stack_node", Exists: true},
 	{Iface: "Session", Name: "Callers", ACP: "session/callers"},
+	{Iface: "Session", Name: "Pending", ACP: "session/request_permission"},
 }

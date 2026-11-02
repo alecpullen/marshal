@@ -3,8 +3,8 @@ package acpwire
 // SessionStatus is what the status line, the footer and input gating read
 // about a session (C5).
 //
-// It arrives over several plans: plan 4 adds the sandbox info, and plan
-// 6 the current notice. The session ID is not here: Session.ID() carries it.
+// It arrives over several plans: plan 6 adds the current notice. The session
+// ID is not here: Session.ID() carries it.
 // The start time is not here either: only the sheet reads it, so SessionSheet
 // carries it.
 type SessionStatus struct {
@@ -33,6 +33,7 @@ type SessionStatus struct {
 	SubagentRunning bool          `json:"subagentRunning,omitempty"`
 	Workspace       Workspace     `json:"workspace"`
 	Browser         Browser       `json:"browser"`
+	Sandbox         Sandbox       `json:"sandbox"`
 	Steering        Steering      `json:"steering"`
 	RunningJobs     int           `json:"runningJobs,omitempty"`
 	Subagents       []Subagent    `json:"subagents,omitempty"`
@@ -109,4 +110,13 @@ type Browser struct {
 	Mode        string `json:"mode,omitempty"`
 	SessionOpen bool   `json:"sessionOpen,omitempty"`
 	UpdatedAt   int64  `json:"updatedAt,omitempty"`
+}
+
+// Sandbox is the shell sandbox a running shell row and the approval panel
+// describe (C5): the backend, whether it isolates the network, and the
+// shell's configured network allowance, which the isolation line weighs.
+type Sandbox struct {
+	Backend          string `json:"backend,omitempty"`
+	NetworkIsolation bool   `json:"networkIsolation,omitempty"`
+	AllowNetwork     bool   `json:"allowNetwork,omitempty"` // tools.shell.allow_network
 }

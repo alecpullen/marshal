@@ -34,6 +34,7 @@ func newSession(d Deps) *Session {
 		cancel:    cancel,
 		changed:   make(chan struct{}, 1),
 		receipts:  map[string]session.SteeringReceipt{},
+		localKeys: map[any]string{},
 	}
 	s.subscribe(d)
 	return s

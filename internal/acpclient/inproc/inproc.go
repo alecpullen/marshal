@@ -91,6 +91,10 @@ type Session struct {
 	resume        *acpwire.WatchResume
 	resumeSeq     uint64
 	sheet         sheetCache
+	// localKeys holds the minted key of each open unregistered prompt, by the
+	// prompt's pointer; localSeq numbers them. Both are guarded by mu.
+	localKeys map[any]string
+	localSeq  uint64
 }
 
 var (
@@ -144,6 +148,7 @@ func (s *Session) Status() acpwire.SessionStatus {
 	act := st.Activity()
 	ws := st.Workspace()
 	bi := st.BrowserInfo()
+	sb := st.SandboxInfo()
 	gate := st.SDDGate()
 	// An empty queue encodes as absent under omitempty, so keep it nil rather
 	// than the non-nil empty slice SteeringQueue returns.
@@ -193,6 +198,11 @@ func (s *Session) Status() acpwire.SessionStatus {
 			Mode:        bi.Mode,
 			SessionOpen: bi.SessionOpen,
 			UpdatedAt:   acpwire.Millis(bi.UpdatedAt),
+		},
+		Sandbox: acpwire.Sandbox{
+			Backend:          sb.Backend,
+			NetworkIsolation: sb.NetworkIsolation,
+			AllowNetwork:     st.Config.Tools.Shell.AllowNetwork,
 		},
 		Steering: acpwire.Steering{
 			Queue: queue,

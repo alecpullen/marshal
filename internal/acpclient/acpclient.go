@@ -117,4 +117,15 @@ type Session interface {
 	//
 	// ACP: session/callers (new in P3).
 	Callers(ctx context.Context, nodeID string) ([]string, error)
+
+	// Pending lists every open request a person can answer (C7): the
+	// session's own, and the approvals of its running subagents. Pending does
+	// not block and settles nothing, so it is safe to read while rendering.
+	// Changed does not fire when a request opens or settles: the TUI reads
+	// Pending on every update and tick.
+	//
+	// ACP: session/request_permission (new in P3). The agent already sends it
+	// and session/request_question, and P3 adds session/request_secret. P3's
+	// mirror keeps each request until it is answered or an update settles it.
+	Pending() acpwire.PendingRequests
 }

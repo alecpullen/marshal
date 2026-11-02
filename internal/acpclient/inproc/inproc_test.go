@@ -160,6 +160,7 @@ func TestStatusMirrorsTheState(t *testing.T) {
 		SessionOpen: true,
 		UpdatedAt:   time.Unix(200, 0),
 	})
+	state.SetSandboxInfo(session.SandboxInfo{Backend: "container", NetworkIsolation: true})
 	state.BeginGeneration("g", 2, "d")
 	// Plant the identity, backup and subagent state the TUI reads: a fresh
 	// state has leaf 0 and no branches, so without this the expectations below
@@ -244,6 +245,9 @@ func TestStatusMirrorsTheState(t *testing.T) {
 			SessionOpen: true,
 			UpdatedAt:   200000,
 		},
+		// config.Default() leaves tools.shell.allow_network false, so only the
+		// backend and the isolation are planted here.
+		Sandbox: acpwire.Sandbox{Backend: "container", NetworkIsolation: true},
 		// The child has no narration, so its view carries no headline.
 		Subagents: []acpwire.Subagent{{
 			ID:     view.ID,

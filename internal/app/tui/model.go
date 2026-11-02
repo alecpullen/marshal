@@ -3523,19 +3523,10 @@ func (m Model) handleApproval(msg tea.Msg, owner *session.State, tc *session.Pen
 		return m, nil
 	case choiceRollback:
 		if st.HasBackup {
-			// The error is load-bearing: a partial rollback leaves a mixed
-			// working tree, and reporting success would hide that from both
-			// the user and the audit trail.
-			ev := registry.AuditEvent{
-				Timestamp:     time.Now(),
-				ToolName:      "rollback",
-				ResultSummary: "Rollback applied successfully",
-			}
-			if err := m.state.RollbackBackup(); err != nil {
-				ev.Error = err.Error()
-				ev.ResultSummary = "Rollback failed"
-			}
-			m.state.LogToolCall(ev)
+			// The adapter restores the backup and logs the audit row, failed or
+			// not. The error is ignored here because the row carries it, as the
+			// transcript did before.
+			_ = m.sess.Rollback(m.ctx)
 			m.invalidateTranscript()
 			m.refreshViewport()
 			// Keep the approval open so the user can then approve/deny the

@@ -88,6 +88,11 @@ var movedStateReads = map[string]string{
 	// The running shell row and the approval panel read the sandbox from
 	// Status since 4.
 	"SandboxInfo": "4",
+
+	// Both rollback paths call Session.Rollback since 4; the adapter restores
+	// the backup and logs the audit row.
+	"RollbackBackup": "4",
+	"LogToolCall":    "4",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

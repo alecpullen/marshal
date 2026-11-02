@@ -18,7 +18,7 @@ var boundaryAllowlist = map[string][]string{
 	"doctorpanel/intelligence.go":    {"marshal/internal/db", "marshal/internal/lsp"},
 	"effort.go":                      {"marshal/internal/app/session"},
 	"events.go":                      {"marshal/internal/viewmodel"},
-	"keypress.go":                    {"marshal/internal/app/session", "marshal/internal/tools/registry"},
+	"keypress.go":                    {"marshal/internal/app/session"},
 	"livebox/box.go":                 {"marshal/internal/viewmodel"},
 	"livebox/livebox.go":             {"marshal/internal/viewmodel"},
 	"livebox/running.go":             {"marshal/internal/viewmodel"},

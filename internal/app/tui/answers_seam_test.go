@@ -4,12 +4,14 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/acpclient"
 	"marshal/internal/acpclient/inproc"
 	"marshal/internal/acpwire"
+	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 )
 
@@ -194,5 +196,40 @@ func TestTheSudoPromptAnswersThroughTheSession(t *testing.T) {
 	// for a secret.
 	if !got.answer.OK || string(got.answer.Password) != "pw" {
 		t.Fatal("the recorded answer is not OK with the typed bytes")
+	}
+}
+
+// TestCtrlRRollsBackThroughTheSession pins that the second Ctrl+R rolls back
+// through the session: the recorder counts one rollback, the backup is
+// cleared, and the adapter's audit row is the last one.
+func TestCtrlRRollsBackThroughTheSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	state := session.New(config.Default(), tmpDir, time.Unix(100, 0), session.Persistence{})
+	state.StoreBackup([]session.BackupFile{
+		{Path: "app.go", Content: "original content", Exists: true},
+	})
+	rec := &answerRecorder{}
+	m := testModelRecording(state, rec)
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	m = updated.(Model)
+	if !state.HasBackup() {
+		t.Fatal("the first Ctrl+R rolled back without confirmation")
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	if rec.rollbacks != 1 {
+		t.Fatalf("recorded %d rollbacks, want 1", rec.rollbacks)
+	}
+	if state.HasBackup() {
+		t.Fatal("the backup survived the rollback")
+	}
+	log := state.AuditLog()
+	if len(log) == 0 {
+		t.Fatal("the rollback logged no audit row")
+	}
+	if last := log[len(log)-1]; last.ToolName != "rollback" || last.ResultSummary != "Rollback applied successfully" {
+		t.Fatalf("last audit row = %+v, want the rollback row", last)
 	}
 }

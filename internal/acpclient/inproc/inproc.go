@@ -298,7 +298,8 @@ func (s *Session) SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpw
 	return viewmodel.SteeringReceiptOf(receipt), nil
 }
 
-// interactionOf is s on the wire. Status uses it too.
+// interactionOf copies an interaction state onto the wire. Status uses it
+// too, so the two never disagree about which fields cross the seam.
 func interactionOf(s interaction.State) acpwire.Interaction {
 	return acpwire.Interaction{
 		Mode:     string(s.Mode),

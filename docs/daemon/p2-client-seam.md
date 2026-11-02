@@ -1758,3 +1758,13 @@ T1b gains eight names, all at plan `5b`: `PushSteering`, `PopSteering`,
 `TakeWatchResume` and `SetSudoUnlockEnabled`. T1's allowlist did not change:
 every file this plan edits keeps its `marshal/internal/app/session` import
 for the system notes it still writes, which plan 6 moves.
+
+Two details the plan left open, recorded here rather than silently settled.
+`flushQueuedSteering` ignores the error from the `Steer` call that puts a
+refused follow-up back: the old `PushSteering` could not fail, but the seam
+call can, and a closed session therefore drops the text instead of reporting
+it. That matches the plan's decision to leave the prompt-side put-back to
+plan 5c; surfacing it now would add a note 5c has to remove. And the
+replacement model in `TestAdapterAccessFollowsNewSession`'s post-swap `/act`
+check carries `WithCommandRegistry`, which the plan's step did not mention:
+without it `/act` never dispatches, so the check would have asserted nothing.

@@ -106,6 +106,20 @@ var movedStateReads = map[string]string{
 	// the item's reference names the child's session ID, and the wire view
 	// carries it on its drill.
 	"Subagents": "5a",
+
+	// The steering queue, the drilled subagent's stop, a finished run's clear
+	// and the watch-resume latch all go through the session since 5b: the
+	// adapter forwards each to the state.
+	"PushSteering":     "5b",
+	"PopSteering":      "5b",
+	"ClearSteering":    "5b",
+	"CancelSubagent":   "5b",
+	"ClearRunEvents":   "5b",
+	"ClearSDDProgress": "5b",
+	"TakeWatchResume":  "5b",
+
+	// /system unlock goes through the session since 5b.
+	"SetSudoUnlockEnabled": "5b",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

@@ -39,4 +39,13 @@ var Methods = []Method{
 	{Iface: "Session", Name: "ListWork", ACP: "session/work_list", Exists: true},
 	{Iface: "Session", Name: "InspectWork", ACP: "session/work_inspect", Exists: true},
 	{Iface: "Session", Name: "StopWork", ACP: "session/work_stop", Exists: true},
+	{Iface: "Session", Name: "Steer", ACP: "session/steer", Exists: true},
+	{Iface: "Session", Name: "PopSteering", ACP: "session/steering_pop"},
+	{Iface: "Session", Name: "ClearSteering", ACP: "session/steering_clear"},
+	{Iface: "Session", Name: "SetInteraction", ACP: "session/set_mode", Exists: true},
+	{Iface: "Session", Name: "SetEffort", ACP: "session/set_effort", Exists: true},
+	{Iface: "Session", Name: "SetSudoUnlock", ACP: "session/set_sudo_unlock"},
+	{Iface: "Session", Name: "CancelSubagent", ACP: "session/subagent_cancel"},
+	{Iface: "Session", Name: "ClearFinishedRun", ACP: "session/sdd_clear"},
+	{Iface: "Session", Name: "TakeWatchResume", ACP: "session/watch_resume_take"},
 }

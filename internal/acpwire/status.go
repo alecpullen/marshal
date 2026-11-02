@@ -85,6 +85,22 @@ type Interaction struct {
 	Revision uint64 `json:"revision,omitempty"`
 }
 
+// InteractionPatch changes some of a session's interaction state (C8). A nil
+// field is left alone, so revoking system access (false) and leaving it alone
+// (nil) are different patches. Mode is "ask" or "act".
+type InteractionPatch struct {
+	Mode   *string `json:"mode,omitempty"`
+	Auto   *bool   `json:"auto,omitempty"`
+	System *bool   `json:"system,omitempty"`
+}
+
+// When an effort change takes effect, as SetEffort reports it. They equal
+// session.EffortAppliesNextStep and session.EffortAppliesNextTurn.
+const (
+	EffortAppliesNextStep = "next_step"
+	EffortAppliesNextTurn = "next_turn"
+)
+
 // Activity mirrors the session's Activity.
 type Activity struct {
 	Kind      string `json:"kind"`

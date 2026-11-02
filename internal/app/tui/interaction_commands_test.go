@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpclient/inproc"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/interaction"
@@ -15,10 +16,7 @@ import (
 // supplied session state, plus the real command registry.
 func newInteractionDispatchModel(t *testing.T, state *session.State, opts ...Option) Model {
 	t.Helper()
-	opts = append([]Option{WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
-		return state.ApplyInteraction(p)
-	})}, opts...)
-	return newDispatchModel(t, state, opts...)
+	return newDispatchModelWith(t, inproc.Deps{State: state, SetInteraction: state.ApplyInteraction}, opts...)
 }
 
 func TestInteractionCommandTransitionTable(t *testing.T) {
@@ -77,9 +75,12 @@ func TestInteractionCommandTransitionTable(t *testing.T) {
 func TestInteractionCommandFailureDoesNotClaimSuccess(t *testing.T) {
 	state := session.New(config.Default(), "/repo", time.Unix(100, 0), session.Persistence{})
 	before := state.InteractionState()
-	m := newDispatchModel(t, state, WithInteractionSetter(func(interaction.Patch) (interaction.State, error) {
-		return interaction.State{}, errors.New("runtime refused the patch")
-	}))
+	m := newDispatchModelWith(t, inproc.Deps{
+		State: state,
+		SetInteraction: func(interaction.Patch) (interaction.State, error) {
+			return interaction.State{}, errors.New("runtime refused the patch")
+		},
+	})
 
 	updated, _ := m.dispatchCommand("/ask")
 	m = asModel(t, updated)

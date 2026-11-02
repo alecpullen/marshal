@@ -2141,19 +2141,6 @@ func roleToolIterations(cfg config.Config, role agent.AgentRole) int {
 	return cfg.Agent.MaxToolIterations
 }
 
-// accessTUIOptions wires the TUI's interaction and effort seams to this
-// runtime. Access requests reach the TUI through the adapter's Deps instead
-// (inproc.Deps.AccessRequest and ResolveAccess). The bound methods read the
-// runtime's current State and Runner under the runtime gate, so a successful
-// NewSession does not leave the TUI holding a closure over the session it
-// replaced: the same options keep working against the new one.
-func accessTUIOptions(rt *Runtime) []tui.Option {
-	return []tui.Option{
-		tui.WithInteractionSetter(rt.SetInteraction),
-		tui.WithSessionEffortSetter(rt.SetSessionEffort),
-	}
-}
-
 // buildSubagentFactory is the test-facing form: children serialize on a
 // private lock. Production uses buildSubagentFactoryWithLock so the parent
 // runner and every agent.run child share one gate. (Keeping this wrapper
@@ -2830,6 +2817,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			ReferenceFinder: refFinder,
 			AccessRequest:   rt.AccessRequest,
 			ResolveAccess:   rt.ResolveAccess,
+			SetInteraction:  rt.SetInteraction,
+			SetEffort:       rt.SetSessionEffort,
 		}
 		if providerReady {
 			deps.Work = rt
@@ -2858,10 +2847,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// successful reload rebuilds the runtime in place, and the runner
 		// source lets the TUI adopt the rebuilt runner (see tui.adoptRunner).
 		tuiOpts = append(tuiOpts, tui.WithConfigReloader(configReloader))
-		// The access seam is wired alongside the reloader: both are runtime
-		// operations the TUI invokes, and both must keep working after a
-		// session swap.
-		tuiOpts = append(tuiOpts, accessTUIOptions(rt)...)
 		tuiOpts = append(tuiOpts, tui.WithHomeDir(homeDir))
 		tuiOpts = append(tuiOpts, tui.WithDataDir(config.DataDir(homeDir)))
 		// The TUI's auth-backed surfaces (provider probes, the connect

@@ -5067,9 +5067,7 @@ func TestModePickerMarksCurrentAndApplies(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg), WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
-		return state.ApplyInteraction(p)
-	}))
+	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	updated, _ := m.dispatchCommand("/mode")
@@ -5101,9 +5099,7 @@ func TestModeWithArgDispatchesDirectly(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg), WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
-		return state.ApplyInteraction(p)
-	}))
+	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction}, WithCommandRegistry(reg))
 	m.resize(80, 24)
 	updated, _ := m.dispatchCommand("/mode ask")
 	m = asModel(t, updated)
@@ -5123,9 +5119,7 @@ func TestTabTogglesAskActAndClearsAuto(t *testing.T) {
 	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
 		t.Fatalf("seed Auto: %v", err)
 	}
-	m := testModel(state, WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
-		return state.ApplyInteraction(p)
-	}))
+	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction})
 	m.resize(80, 24)
 
 	if got := string(m.state.InteractionState().Mode); got != "act" {
@@ -5154,9 +5148,7 @@ func TestTabTogglesAskActAndClearsAuto(t *testing.T) {
 
 func TestShiftTabTogglesAskAct(t *testing.T) {
 	state := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
-	m := testModel(state, WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
-		return state.ApplyInteraction(p)
-	}))
+	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction})
 	m.resize(80, 24)
 
 	m = sendKey(m, tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
@@ -7845,9 +7837,7 @@ func TestModeCycleContainsOnlyAskActAndClearsAuto(t *testing.T) {
 	if _, err := state.ApplyInteraction(interaction.Patch{Auto: &on}); err != nil {
 		t.Fatalf("seed Auto: %v", err)
 	}
-	m := testModel(state, WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
-		return state.ApplyInteraction(p)
-	}))
+	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction})
 	m.resize(80, 24)
 
 	m.cycleMode(true)

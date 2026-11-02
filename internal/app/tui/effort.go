@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/picker"
 )
@@ -25,20 +26,15 @@ func (m *Model) effortCycle() []string {
 	return append([]string{""}, m.effortLevels()...)
 }
 
-// applyEffort sets the session's reasoning-effort override through the
-// runtime-facing setter and reports the outcome. The TUI does not validate:
-// the runtime owns the valid-level set and the off-boundary rule, and reports
-// when the change takes effect. An empty (or "default") level clears the
-// override.
+// applyEffort sets the session's reasoning-effort override through the session
+// and reports the outcome. The TUI does not validate: the runtime owns the
+// valid-level set and the off-boundary rule, and reports when the change takes
+// effect. An empty (or "default") level clears the override.
 func (m *Model) applyEffort(level string) {
 	if level == "default" {
 		level = ""
 	}
-	if m.effortSetter == nil {
-		m.state.AddMessage(session.RoleSystem, "Effort changes are unavailable.", session.ContentTypePlain)
-		return
-	}
-	applies, err := m.effortSetter(level)
+	applies, err := m.sess.SetEffort(m.ctx, level)
 	if err != nil {
 		m.state.AddMessage(session.RoleSystem, err.Error(), session.ContentTypePlain)
 		return
@@ -48,7 +44,7 @@ func (m *Model) applyEffort(level string) {
 		label = "default"
 	}
 	when := "from the next turn"
-	if applies == session.EffortAppliesNextStep {
+	if applies == acpwire.EffortAppliesNextStep {
 		when = "from the next step"
 	}
 	m.state.AddMessage(session.RoleSystem, fmt.Sprintf("Effort set to %s (%s).", label, when), session.ContentTypePlain)

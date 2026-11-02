@@ -33,9 +33,8 @@ func TestSystemCommandTogglesFlagAndNotes(t *testing.T) {
 	if err := commands.RegisterAll(reg, nil); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
-	m := testModel(state, WithCommandRegistry(reg), WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
-		return state.ApplyInteraction(p)
-	}))
+	m := testModelWith(inproc.Deps{State: state, SetInteraction: state.ApplyInteraction},
+		WithCommandRegistry(reg))
 	m.resize(80, 24)
 
 	if state.SystemAccess() {
@@ -247,12 +246,11 @@ func newAccessTestFixture(t *testing.T, width, height int, cfg config.Config) *a
 		ResolveAccess: func(choice session.AccessChoice) (session.AccessResult, error) {
 			return state.ResolveAccess(choice, f.prepare())
 		},
-	},
-		WithInteractionSetter(func(p interaction.Patch) (interaction.State, error) {
+		SetInteraction: func(p interaction.Patch) (interaction.State, error) {
 			f.modeSetterCalls.Add(1)
 			return state.ApplyInteraction(p)
-		}),
-	)
+		},
+	})
 	m.resize(width, height)
 	m.refreshViewport()
 	f.m = m

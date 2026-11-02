@@ -6693,10 +6693,12 @@ func TestAdapterAccessResolvesWithoutConfigReload(t *testing.T) {
 	}
 
 	m := testTUIModelWith(inproc.Deps{
-		State:         state,
-		AccessRequest: rt.AccessRequest,
-		ResolveAccess: rt.ResolveAccess,
-	}, accessTUIOptions(rt)...)
+		State:          state,
+		AccessRequest:  rt.AccessRequest,
+		ResolveAccess:  rt.ResolveAccess,
+		SetInteraction: rt.SetInteraction,
+		SetEffort:      rt.SetSessionEffort,
+	})
 
 	// The size gate needs a real frame first, exactly as the production
 	// program gets one at startup.
@@ -6764,10 +6766,6 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 		t.Fatal("the fixture provider was not built")
 	}
 
-	// The options are captured once, before the swap: production builds them
-	// once and keeps them for the life of the program.
-	opts := accessTUIOptions(rt)
-
 	oldState := rt.State
 	oldReq, oldDecisions := accessTUIRequest(t, oldState, session.AccessIntent{
 		System: true, Reason: "The agent requests system access.",
@@ -6776,12 +6774,14 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 	// their callbacks read the runtime's current state, so the same seam keeps
 	// working after a swap.
 	deps := inproc.Deps{
-		State:         oldState,
-		AccessRequest: rt.AccessRequest,
-		ResolveAccess: rt.ResolveAccess,
+		State:          oldState,
+		AccessRequest:  rt.AccessRequest,
+		ResolveAccess:  rt.ResolveAccess,
+		SetInteraction: rt.SetInteraction,
+		SetEffort:      rt.SetSessionEffort,
 	}
 	host, oldSess := inproc.New(deps)
-	oldModel := tui.New(host, oldSess, append([]tui.Option{tui.WithLegacyState(oldState)}, opts...)...)
+	oldModel := tui.New(host, oldSess, tui.WithLegacyState(oldState))
 	updated, _ := oldModel.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	oldModel = updated.(tui.Model)
 	if view := ansi.Strip(oldModel.View().Content); !strings.Contains(view, "Allow system access?") {
@@ -6818,7 +6818,11 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 
 	// The same Deps now drive the replacement session.
 	newSess := host.Swap(newState)
-	newModel := tui.New(host, newSess, append([]tui.Option{tui.WithLegacyState(newState)}, opts...)...)
+	reg := commands.New()
+	if err := commands.RegisterAll(reg, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	newModel := tui.New(host, newSess, tui.WithLegacyState(newState), tui.WithCommandRegistry(reg))
 	newReq, newDecisions := accessTUIRequest(t, newState, session.AccessIntent{
 		System: true, Reason: "The agent requests system access.",
 	})
@@ -6851,6 +6855,29 @@ func TestAdapterAccessFollowsNewSession(t *testing.T) {
 	}
 	if !newState.SystemAccess() {
 		t.Fatal("the replacement grant did not reach the new session")
+	}
+
+	// The same Deps carry the runtime's interaction setter, so /act on the
+	// replacement model reaches the state the runtime holds now.
+	ask := interaction.ModeAsk
+	if _, err := newState.ApplyInteraction(interaction.Patch{Mode: &ask}); err != nil {
+		t.Fatalf("seed Ask: %v", err)
+	}
+	send := func(msg tea.Msg) {
+		t.Helper()
+		upd, _ := newModel.Update(msg)
+		if p, ok := upd.(*tui.Model); ok {
+			newModel = *p
+			return
+		}
+		newModel = upd.(tui.Model)
+	}
+	for _, r := range "/act" {
+		send(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if got := newState.InteractionState().Mode; got != interaction.ModeAct {
+		t.Fatalf("replacement mode = %q after /act, want act", got)
 	}
 }
 

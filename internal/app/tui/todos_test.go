@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/tools/native"
@@ -66,8 +67,8 @@ var ansiTodoRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // workTask builds a live Work item (a running command) for the Tasks-panel
 // tests: kind "command" with no attachment counts as active membership.
-func workTask(key, label string) viewmodel.WorkItem {
-	return viewmodel.WorkItem{TaskKey: key, Kind: "command", Label: label, State: "running"}
+func workTask(key, label string) acpwire.WorkItem {
+	return acpwire.WorkItem{TaskKey: key, Kind: "command", Label: label, State: "running"}
 }
 
 // panelKey feeds one keypress through the model and returns the resulting model.
@@ -136,8 +137,8 @@ func TestWorkTasksSearchPagingAndSelection(t *testing.T) {
 	}
 
 	// Page 1 arrives: the list replaces, and the opaque cursor is retained.
-	if !p.applyPage(req.requestID, viewmodel.WorkPage{
-		Items:      []viewmodel.WorkItem{workTask("work:a", "A"), workTask("work:b", "B")},
+	if !p.applyPage(req.requestID, acpwire.WorkPage{
+		Items:      []acpwire.WorkItem{workTask("work:a", "A"), workTask("work:b", "B")},
 		NextCursor: "cur1",
 	}, nil) {
 		t.Fatal("page 1 was not applied")
@@ -147,7 +148,7 @@ func TestWorkTasksSearchPagingAndSelection(t *testing.T) {
 	}
 
 	// A late page for a superseded request is ignored, never concatenated.
-	if p.applyPage("bogus-request", viewmodel.WorkPage{Items: []viewmodel.WorkItem{workTask("work:z", "Z")}}, nil) {
+	if p.applyPage("bogus-request", acpwire.WorkPage{Items: []acpwire.WorkItem{workTask("work:z", "Z")}}, nil) {
 		t.Fatal("a foreign request ID must be ignored")
 	}
 
@@ -165,8 +166,8 @@ func TestWorkTasksSearchPagingAndSelection(t *testing.T) {
 	if req.query.Cursor != "cur1" {
 		t.Fatalf("next-page cursor = %q, want cur1", req.query.Cursor)
 	}
-	p.applyPage(req.requestID, viewmodel.WorkPage{
-		Items:      []viewmodel.WorkItem{workTask("work:c", "C")},
+	p.applyPage(req.requestID, acpwire.WorkPage{
+		Items:      []acpwire.WorkItem{workTask("work:c", "C")},
 		NextCursor: "cur2",
 	}, nil)
 	if len(p.items) != 3 {
@@ -184,7 +185,7 @@ func TestWorkTasksSearchPagingAndSelection(t *testing.T) {
 	}
 	req = cmd().(workRequestMsg)
 	before := len(p.items)
-	if !p.applyPage(req.requestID, viewmodel.WorkPage{}, viewmodel.ErrWorkStaleCursor) {
+	if !p.applyPage(req.requestID, acpwire.WorkPage{}, viewmodel.ErrWorkStaleCursor) {
 		t.Fatal("the stale-cursor result was dropped")
 	}
 	if !p.stale || len(p.items) != before {
@@ -223,11 +224,11 @@ func TestWorkTasksInspectNeverAcknowledges(t *testing.T) {
 
 	// Opening the detail does not acknowledge either, and nothing in the
 	// detail offers an acknowledgement at all.
-	item := viewmodel.WorkItem{
+	item := acpwire.WorkItem{
 		TaskKey: "work:a", State: "failed",
-		Capabilities: viewmodel.WorkCapabilities{Inspect: true, Acknowledge: true},
+		Capabilities: acpwire.WorkCapabilities{Inspect: true, Acknowledge: true},
 	}
-	if !p.applyDetail(req.requestID, viewmodel.WorkDetail{Item: item}, nil) {
+	if !p.applyDetail(req.requestID, acpwire.WorkDetail{Item: item}, nil) {
 		t.Fatal("the inspect result was not applied")
 	}
 	if !p.detailOpen {
@@ -241,7 +242,7 @@ func TestWorkTasksInspectNeverAcknowledges(t *testing.T) {
 	}
 
 	// A result for a request the panel never made is dropped.
-	if p.applyDetail("bogus-request", viewmodel.WorkDetail{}, nil) {
+	if p.applyDetail("bogus-request", acpwire.WorkDetail{}, nil) {
 		t.Fatal("a foreign detail request must be ignored")
 	}
 }
@@ -295,8 +296,8 @@ func TestWorkTasksKeyboardEmitsExactTargets(t *testing.T) {
 func TestWorkTasksSpaceTogglesAndReleasesTheBooking(t *testing.T) {
 	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1}}
 	m := newWorkModel(t, svc)
-	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1,
-		Items: []viewmodel.WorkItem{workTask("work:a", "Alpha"), workTask("work:b", "Beta")}}
+	m.workSnapshot = acpwire.WorkSnapshot{ConversationID: "conv", Revision: 1,
+		Items: []acpwire.WorkItem{workTask("work:a", "Alpha"), workTask("work:b", "Beta")}}
 	m = toggleTasks(m)
 	p := m.tasksPanel
 
@@ -337,9 +338,9 @@ func TestWorkTasksSpaceTogglesAndReleasesTheBooking(t *testing.T) {
 	// booking the same way.
 	m, cmd = panelKeyCmd(m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	inspect := cmd().(workRequestMsg)
-	if !p.applyDetail(inspect.requestID, viewmodel.WorkDetail{Item: viewmodel.WorkItem{
+	if !p.applyDetail(inspect.requestID, acpwire.WorkDetail{Item: acpwire.WorkItem{
 		TaskKey: "work:a", State: "failed",
-		Capabilities: viewmodel.WorkCapabilities{Inspect: true},
+		Capabilities: acpwire.WorkCapabilities{Inspect: true},
 	}}, nil) {
 		t.Fatal("the inspect result was not applied")
 	}
@@ -366,7 +367,7 @@ func TestWorkTasksSpaceTogglesAndReleasesTheBooking(t *testing.T) {
 func TestWorkAsyncReplyCannotReopenClosedPanel(t *testing.T) {
 	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1}}
 	m := newWorkModel(t, svc)
-	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{workTask("work:a", "Alpha")}}
+	m.workSnapshot = acpwire.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []acpwire.WorkItem{workTask("work:a", "Alpha")}}
 	m = toggleTasks(m)
 	if !m.tasksOpen() {
 		t.Fatal("the Tasks panel did not open")
@@ -405,7 +406,7 @@ func TestWorkAsyncReplyCannotReopenClosedPanel(t *testing.T) {
 		conversationID: conversationID,
 		panelID:        panelID,
 		requestID:      requestID,
-		page:           viewmodel.WorkPage{Items: []viewmodel.WorkItem{workTask("work:x", "X")}},
+		page:           acpwire.WorkPage{Items: []acpwire.WorkItem{workTask("work:x", "X")}},
 	})
 	m = updated.(Model)
 	if m.tasksPanel != nil || m.dock.IsOpen() {
@@ -427,7 +428,7 @@ func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		m.state.AddMessage(session.RoleUser, fmt.Sprintf("line %d", i), session.ContentTypePlain)
 	}
-	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{
+	m.workSnapshot = acpwire.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []acpwire.WorkItem{
 		workTask("work:a", "Alpha"), workTask("work:b", "Beta"),
 	}}
 	m.invalidateTranscript()
@@ -454,7 +455,7 @@ func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
 	anchor := m.viewport.YOffset()
 
 	updated, _ := m.Update(workMsg{
-		snapshot: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 2, Items: []viewmodel.WorkItem{
+		snapshot: acpwire.WorkSnapshot{ConversationID: "conv", Revision: 2, Items: []acpwire.WorkItem{
 			workTask("work:a", "Alpha"), workTask("work:c", "Gamma"),
 		}},
 		subscriptionID: m.workSubscriptionID,
@@ -483,7 +484,7 @@ func TestWorkActionReplyClearsPending(t *testing.T) {
 	p := m.tasksPanel
 
 	for _, kind := range []string{workReqStop} {
-		cmd := p.request(kind, "work:a", "rev-1", viewmodel.WorkQuery{ConversationID: p.conversationID}, false)
+		cmd := p.request(kind, "work:a", "rev-1", acpwire.WorkQuery{}, false)
 		req := cmd().(workRequestMsg)
 		if _, ok := p.pending[req.requestID]; !ok {
 			t.Fatalf("the %s request was not booked", kind)
@@ -494,7 +495,7 @@ func TestWorkActionReplyClearsPending(t *testing.T) {
 			resultRevision: req.resultRevision,
 			requestID:      req.requestID,
 			kind:           req.kind,
-			stop:           viewmodel.WorkStopResult{TaskKey: "work:a", Accepted: true},
+			stop:           acpwire.WorkStopResult{TaskKey: "work:a", Accepted: true},
 		})
 		m = updated.(Model)
 		if _, ok := m.tasksPanel.pending[req.requestID]; ok {

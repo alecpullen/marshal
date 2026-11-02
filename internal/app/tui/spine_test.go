@@ -314,11 +314,11 @@ func TestSpineRowsCopyFromTheSubjectColumn(t *testing.T) {
 // instead of spinning and repeating the work's own output.
 func TestRunningCallPointsAtItsBoxRow(t *testing.T) {
 	now := time.Unix(1000, 0)
-	item := viewmodel.WorkItem{
+	item := acpwire.WorkItem{
 		TaskKey: "task-1", Kind: "agent", SourceID: "3", DisplayID: "3", State: "running",
-		Origin: viewmodel.WorkOrigin{ToolCallID: "g"},
+		Origin: acpwire.WorkOrigin{ToolCallID: "g"},
 	}
-	c := &stepRenderCtx{now: now, toolSpinner: "⠋", pointer: workPointer([]viewmodel.WorkItem{item})}
+	c := &stepRenderCtx{now: now, toolSpinner: "⠋", pointer: workPointer([]acpwire.WorkItem{item})}
 	call := session.ActiveToolCall{Name: "agent.run", Args: `{"description":"review the config change"}`,
 		ToolCallID: "g", StartedAt: now, Output: "reviewing the config change"}
 	lines := plainLines(renderActiveCallRow(wireRunning(call), c, false, 80))
@@ -334,11 +334,11 @@ func TestRunningCallPointsAtItsBoxRow(t *testing.T) {
 // names this call as its origin points a run at the box.
 func TestRunningCallWithoutWorkKeepsItsSpinner(t *testing.T) {
 	now := time.Unix(1000, 0)
-	items := []viewmodel.WorkItem{
+	items := []acpwire.WorkItem{
 		{TaskKey: "task-1", Kind: "agent", SourceID: "3", DisplayID: "3", State: "running",
-			Origin: viewmodel.WorkOrigin{ToolCallID: "other"}},
+			Origin: acpwire.WorkOrigin{ToolCallID: "other"}},
 		{TaskKey: "task-2", Kind: "agent", SourceID: "4", DisplayID: "4", State: "completed",
-			Origin: viewmodel.WorkOrigin{ToolCallID: "r"}},
+			Origin: acpwire.WorkOrigin{ToolCallID: "r"}},
 	}
 	c := &stepRenderCtx{now: now, toolSpinner: "⠋", pointer: workPointer(items)}
 	call := session.ActiveToolCall{Name: "file.read", Path: "a.go", ToolCallID: "r", StartedAt: now.Add(-2 * time.Second)}

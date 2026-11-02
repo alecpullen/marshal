@@ -14,7 +14,6 @@ import (
 	"marshal/internal/app/tui/help"
 	"marshal/internal/llm/routing"
 	"marshal/internal/tools/registry"
-	"marshal/internal/viewmodel"
 )
 
 func newChildState(t *testing.T) *session.State {
@@ -92,9 +91,9 @@ func TestWorkOriginDrillsIntoItsSubagent(t *testing.T) {
 	child := newChildStateWithID(t, "child-1")
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
 	view := m.state.RegisterSubagent("explore repo", child)
-	m.workSnapshot = viewmodel.WorkSnapshot{Items: []viewmodel.WorkItem{{
+	m.workSnapshot = acpwire.WorkSnapshot{Items: []acpwire.WorkItem{{
 		TaskKey:   "work:agent",
-		Reference: viewmodel.WorkReference{ChildSessionID: "child-1"},
+		Reference: acpwire.WorkReference{ChildSessionID: "child-1"},
 	}}}
 
 	m, _ = m.jumpToWorkOrigin("work:agent")
@@ -109,9 +108,9 @@ func TestWorkOriginDrillsIntoItsSubagent(t *testing.T) {
 
 func TestWorkOriginWithAGoneChildFallsThrough(t *testing.T) {
 	m := newTestModel(t)
-	m.workSnapshot = viewmodel.WorkSnapshot{Items: []viewmodel.WorkItem{{
+	m.workSnapshot = acpwire.WorkSnapshot{Items: []acpwire.WorkItem{{
 		TaskKey:   "work:agent",
-		Reference: viewmodel.WorkReference{ChildSessionID: "gone"},
+		Reference: acpwire.WorkReference{ChildSessionID: "gone"},
 	}}}
 
 	m, _ = m.jumpToWorkOrigin("work:agent")

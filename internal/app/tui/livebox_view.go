@@ -9,8 +9,6 @@ import (
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/livebox"
-	"marshal/internal/progress"
-	"marshal/internal/viewmodel"
 )
 
 // livebox_view.go wires the live box to the model: it snapshots the model for
@@ -54,20 +52,6 @@ func planFingerprint(tasks []acpwire.WireTask) string {
 	return b.String()
 }
 
-// wirePrevious is the model's previous progress observations on the wire, the
-// form the live box measures them in. It is one of the three conversions of
-// the temporary bridge in this file; it goes with Task 5.
-func wirePrevious(prev map[string]*progress.Snapshot) map[string]*acpwire.WorkProgress {
-	if prev == nil {
-		return nil
-	}
-	out := make(map[string]*acpwire.WorkProgress, len(prev))
-	for key, p := range prev {
-		out[key] = viewmodel.WorkProgressOf(p)
-	}
-	return out
-}
-
 // boxInput snapshots the model for livebox.Plan.
 func (m Model) boxInput() livebox.Input {
 	now := m.now()
@@ -77,7 +61,7 @@ func (m Model) boxInput() livebox.Input {
 		MaxRows:  m.boxMaxRows(),
 		Now:      now,
 		Spinner:  m.turnSpinnerFrame(),
-		Previous: wirePrevious(m.workPrevious),
+		Previous: m.workPrevious,
 		Expanded: m.workExpanded,
 		Cursor:   m.boxCursor(),
 	}
@@ -106,8 +90,8 @@ func (m Model) boxInput() livebox.Input {
 		}
 	}
 	for _, it := range m.workSnapshot.Items {
-		if viewmodel.WorkActive(it) {
-			in.Work = append(in.Work, viewmodel.WorkItemOf(it))
+		if livebox.WorkActive(it) {
+			in.Work = append(in.Work, it)
 			continue
 		}
 		if h, ok := m.heldItem(it); ok {
@@ -182,7 +166,7 @@ func (m Model) boxInput() livebox.Input {
 // has been trimmed or rolled out of the transcript, the row says so rather
 // than swallowing the key.
 func (m *Model) activateWorkRow(key string) tea.Cmd {
-	if it, ok := m.workItemByKey(key); ok && viewmodel.WorkActive(it) {
+	if it, ok := m.workItemByKey(key); ok && livebox.WorkActive(it) {
 		if m.workExpanded == key {
 			m.workExpanded = ""
 		} else {
@@ -203,7 +187,7 @@ func (m *Model) activateWorkRow(key string) tea.Cmd {
 // ordinary tool row. The row's words come from the completion event, so the
 // tray and history always agree; until the event exists it falls back to the
 // item's own state, with no summary.
-func (m Model) heldItem(it viewmodel.WorkItem) (livebox.HeldItem, bool) {
+func (m Model) heldItem(it acpwire.WorkItem) (livebox.HeldItem, bool) {
 	if it.Kind == "command" && it.Attachment == "foreground" {
 		return livebox.HeldItem{}, false
 	}
@@ -212,12 +196,13 @@ func (m Model) heldItem(it viewmodel.WorkItem) (livebox.HeldItem, bool) {
 	default:
 		return livebox.HeldItem{}, false
 	}
-	if !it.EndedAt.After(m.heldSince) {
+	ended := acpwire.Time(it.EndedAt)
+	if !ended.After(m.heldSince) {
 		return livebox.HeldItem{}, false
 	}
 	h := livebox.HeldItem{
-		Item:     viewmodel.WorkItemOf(it),
-		Duration: max(it.EndedAt.Sub(it.StartedAt), 0),
+		Item:     it,
+		Duration: max(ended.Sub(acpwire.Time(it.StartedAt)), 0),
 	}
 	if ref, ok := m.completions[it.TaskKey]; ok && ref.info != nil {
 		h.Outcome = ref.info.Outcome

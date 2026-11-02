@@ -12,7 +12,6 @@ import (
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/viewmodel"
 )
 
 // stripANSI removes SGR escape sequences so tests can inspect visible runes
@@ -146,7 +145,7 @@ func (m *Model) reconcileWorkExpansion() {
 		return
 	}
 	for _, it := range m.workSnapshot.Items {
-		if it.TaskKey == m.workExpanded && viewmodel.WorkActive(it) {
+		if it.TaskKey == m.workExpanded && livebox.WorkActive(it) {
 			return
 		}
 	}

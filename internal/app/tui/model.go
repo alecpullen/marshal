@@ -66,7 +66,6 @@ import (
 	"marshal/internal/llm/schema"
 	"marshal/internal/pipeline"
 	"marshal/internal/postmortem"
-	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
@@ -762,10 +761,10 @@ type Model struct {
 	// workSnapshot is the newest immutable Work projection. The bar only
 	// reads it: it never mutates the snapshot and never fills a gap from the
 	// agent, job or watch owners.
-	workSnapshot viewmodel.WorkSnapshot
+	workSnapshot acpwire.WorkSnapshot
 	// workPrevious holds the previous progress observation per TaskKey, kept
 	// so a card can derive a measured rate and ETA from two observations.
-	workPrevious map[string]*progress.Snapshot
+	workPrevious map[string]*acpwire.WorkProgress
 	// workExpanded names the single card the reader opened. Empty is the
 	// collapsed default; a card whose item settles or disappears clears it.
 	workExpanded string
@@ -6232,7 +6231,7 @@ func (m *Model) startWorkSubscription() {
 	m.workCancel = cancel
 	m.workSubscriptionID++
 	m.workEvents = m.workService.SubscribeWork(child)
-	snap := m.workService.WorkSnapshot()
+	snap := viewmodel.WorkSnapshotOf(m.workService.WorkSnapshot())
 	m.workSnapshot = snap
 	m.workPrevious = nil
 	m.workConversation = snap.ConversationID
@@ -6318,21 +6317,21 @@ func (m Model) handleWorkMsg(msg workMsg) (Model, tea.Cmd) {
 // notePreviousProgress records each running item's previous progress
 // observation, so the next snapshot can be measured against it. Keys absent
 // from next are dropped: a settled item has no rate to show.
-func (m *Model) notePreviousProgress(next viewmodel.WorkSnapshot) {
-	prev := make(map[string]*progress.Snapshot, len(next.Items))
+func (m *Model) notePreviousProgress(next acpwire.WorkSnapshot) {
+	prev := make(map[string]*acpwire.WorkProgress, len(next.Items))
 	for _, it := range next.Items {
 		if it.Progress == nil {
 			continue
 		}
-		var old *progress.Snapshot
+		var old *acpwire.WorkProgress
 		for i := range m.workSnapshot.Items {
 			if m.workSnapshot.Items[i].TaskKey == it.TaskKey {
 				old = m.workSnapshot.Items[i].Progress
 				break
 			}
 		}
-		if old != nil && old.ObservedAt.Before(it.Progress.ObservedAt) {
-			prev[it.TaskKey] = progress.Clone(old)
+		if old != nil && old.ObservedAt < it.Progress.ObservedAt {
+			prev[it.TaskKey] = old
 			continue
 		}
 		if p, ok := m.workPrevious[it.TaskKey]; ok {
@@ -6392,13 +6391,19 @@ func (m Model) workListCmd(msg workRequestMsg) tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		page, err := svc.ListWork(context.Background(), msg.query)
+		page, err := svc.ListWork(context.Background(), viewmodel.WorkQuery{
+			ConversationID: msg.conversationID,
+			View:           msg.query.View,
+			Query:          msg.query.Query,
+			Cursor:         msg.query.Cursor,
+			Limit:          msg.query.Limit,
+		})
 		return workPageMsg{
 			conversationID: msg.conversationID,
 			panelID:        msg.panelID,
 			requestID:      msg.requestID,
 			query:          msg.query,
-			page:           page,
+			page:           viewmodel.WorkPageOf(page),
 			err:            err,
 		}
 	}
@@ -6418,7 +6423,7 @@ func (m Model) workInspectCmd(msg workRequestMsg) tea.Cmd {
 			conversationID: msg.conversationID,
 			panelID:        msg.panelID,
 			requestID:      msg.requestID,
-			detail:         detail,
+			detail:         viewmodel.WorkDetailOf(detail),
 			err:            err,
 		}
 	}
@@ -6441,7 +6446,7 @@ func (m Model) workStopCmd(msg workRequestMsg) tea.Cmd {
 			resultRevision: msg.resultRevision,
 			requestID:      msg.requestID,
 			kind:           workReqStop,
-			stop:           stop,
+			stop:           viewmodel.WorkStopResultOf(stop),
 			err:            err,
 		}
 	}
@@ -6452,7 +6457,7 @@ func (m Model) workStopCmd(msg workRequestMsg) tea.Cmd {
 // validated as one.
 type boxStopMsg struct {
 	taskKey string
-	stop    viewmodel.WorkStopResult
+	stop    acpwire.WorkStopResult
 	err     error
 }
 
@@ -6467,7 +6472,7 @@ func (m Model) boxStopCmd(taskKey string) tea.Cmd {
 	target := viewmodel.WorkTarget{ConversationID: m.workSnapshot.ConversationID, TaskKey: taskKey}
 	return func() tea.Msg {
 		stop, err := svc.StopWork(context.Background(), target, "requested from the live box")
-		return boxStopMsg{taskKey: taskKey, stop: stop, err: err}
+		return boxStopMsg{taskKey: taskKey, stop: viewmodel.WorkStopResultOf(stop), err: err}
 	}
 }
 
@@ -6553,10 +6558,10 @@ func (m Model) handleWorkAction(msg workActionMsg) (Model, tea.Cmd) {
 func (m Model) workLaneAging() bool {
 	now := m.now()
 	for _, it := range m.workSnapshot.Items {
-		if viewmodel.WorkActive(it) {
+		if livebox.WorkActive(it) {
 			return true
 		}
-		if !it.EndedAt.IsZero() && now.Sub(it.EndedAt) <= workReceiptTickWindow {
+		if it.EndedAt != 0 && now.Sub(acpwire.Time(it.EndedAt)) <= workReceiptTickWindow {
 			return true
 		}
 	}
@@ -6564,13 +6569,13 @@ func (m Model) workLaneAging() bool {
 }
 
 // workItemByKey finds one item in the current projection by TaskKey.
-func (m Model) workItemByKey(taskKey string) (viewmodel.WorkItem, bool) {
+func (m Model) workItemByKey(taskKey string) (acpwire.WorkItem, bool) {
 	for _, it := range m.workSnapshot.Items {
 		if it.TaskKey == taskKey {
 			return it, true
 		}
 	}
-	return viewmodel.WorkItem{}, false
+	return acpwire.WorkItem{}, false
 }
 
 // jumpToWorkOrigin resolves a work item's stored reference and navigates to it.
@@ -6632,14 +6637,14 @@ func (m Model) browseNodeForKey(key string) (nodeID, bool) {
 // openWorkDetailUnavailable opens the panel's bounded retained detail for an
 // item whose referenced transcript position is gone, with the unavailable text
 // the reader can act on.
-func (m *Model) openWorkDetailUnavailable(item viewmodel.WorkItem) {
+func (m *Model) openWorkDetailUnavailable(item acpwire.WorkItem) {
 	p := m.tasksPanel
 	if p == nil {
 		m.state.AddMessage(session.RoleSystem, "The referenced transcript position is no longer available.", session.ContentTypePlain)
 		m.refreshViewport()
 		return
 	}
-	d := viewmodel.WorkDetail{
+	d := acpwire.WorkDetail{
 		Item:        item,
 		Unavailable: "The referenced transcript position is no longer retained.",
 	}

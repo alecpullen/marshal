@@ -39,7 +39,7 @@ func pumpWorkEvents(ch <-chan pubsub.Event[viewmodel.WorkSnapshot], subscription
 		if !ok {
 			return nil
 		}
-		return workMsg{snapshot: ev.Payload, subscriptionID: subscriptionID}
+		return workMsg{snapshot: viewmodel.WorkSnapshotOf(ev.Payload), subscriptionID: subscriptionID}
 	}
 }
 

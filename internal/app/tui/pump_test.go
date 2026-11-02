@@ -7,8 +7,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
-	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/viewmodel"
 )
@@ -249,7 +249,7 @@ func TestWorkPumpSingleSubscriptionAndSessionRebind(t *testing.T) {
 
 	// An event whose subscription ID is no longer current is ignored.
 	updated, _ = m.Update(workMsg{
-		snapshot:       viewmodel.WorkSnapshot{ConversationID: "convA", Revision: 99},
+		snapshot:       acpwire.WorkSnapshot{ConversationID: "convA", Revision: 99},
 		subscriptionID: m.workSubscriptionID + 1,
 	})
 	m = updated.(Model)
@@ -279,7 +279,7 @@ func TestWorkPumpSingleSubscriptionAndSessionRebind(t *testing.T) {
 	// A late event from the superseded subscription is ignored after the
 	// rebind, even though it names the old conversation.
 	updated, _ = m.Update(workMsg{
-		snapshot:       viewmodel.WorkSnapshot{ConversationID: "convA", Revision: 500},
+		snapshot:       acpwire.WorkSnapshot{ConversationID: "convA", Revision: 500},
 		subscriptionID: staleID,
 	})
 	m = updated.(Model)
@@ -294,7 +294,7 @@ func TestWorkPumpSingleSubscriptionAndSessionRebind(t *testing.T) {
 func TestWorkUpdateAcceptsNewRevisionWhilePromptOpen(t *testing.T) {
 	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", RuntimeEpoch: "epoch", Revision: 1}}
 	m := newWorkModel(t, svc)
-	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{workTask("work:a", "Alpha")}}
+	m.workSnapshot = acpwire.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []acpwire.WorkItem{workTask("work:a", "Alpha")}}
 	m = toggleTasks(m)
 	if !m.tasksOpen() {
 		t.Fatal("the Tasks panel did not open")
@@ -306,8 +306,8 @@ func TestWorkUpdateAcceptsNewRevisionWhilePromptOpen(t *testing.T) {
 	})
 
 	updated, cmd := m.Update(workMsg{
-		snapshot: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 7,
-			Items: []viewmodel.WorkItem{workTask("work:b", "Beta")}},
+		snapshot: acpwire.WorkSnapshot{ConversationID: "conv", Revision: 7,
+			Items: []acpwire.WorkItem{workTask("work:b", "Beta")}},
 		subscriptionID: m.workSubscriptionID,
 	})
 	m = updated.(Model)
@@ -327,16 +327,14 @@ func TestWorkUpdateAcceptsNewRevisionWhilePromptOpen(t *testing.T) {
 }
 
 // workProgressItem is a running command carrying one progress observation.
-func workProgressItem(key string, observed time.Time) viewmodel.WorkItem {
+func workProgressItem(key string, observed time.Time) acpwire.WorkItem {
 	it := workRunningCard(key, time.Unix(10_000, 0))
 	total := 2.0
-	it.Progress = &progress.Snapshot{
-		Frame: progress.Frame{
-			Version:  1,
-			Sequence: 1,
-			Metrics:  []progress.Metric{{ID: "bytes", Unit: "bytes", Current: 1, Total: &total}},
-		},
-		ObservedAt: observed,
+	it.Progress = &acpwire.WorkProgress{
+		Version:    1,
+		Sequence:   1,
+		Metrics:    []acpwire.WorkMetric{{ID: "bytes", Unit: "bytes", Current: 1, Total: &total}},
+		ObservedAt: acpwire.Millis(observed),
 	}
 	return it
 }
@@ -349,8 +347,8 @@ func TestWorkProgressKeepsThePreviousObservation(t *testing.T) {
 	m.workSnapshot = workSnapOf(workProgressItem("k", first))
 	m.notePreviousProgress(workSnapOf(workProgressItem("k", first.Add(2*time.Second))))
 	got := m.workPrevious["k"]
-	if got == nil || !got.ObservedAt.Equal(first) {
-		t.Fatalf("previous observation = %v, want %v", got, first)
+	if got == nil || got.ObservedAt != acpwire.Millis(first) {
+		t.Fatalf("previous observation = %v, want %v", got, acpwire.Millis(first))
 	}
 }
 
@@ -380,7 +378,7 @@ func TestWorkProgressIgnoresARepeatedObservation(t *testing.T) {
 	m.workSnapshot = workSnapOf(workProgressItem("k", second))
 	m.notePreviousProgress(workSnapOf(workProgressItem("k", second)))
 	got := m.workPrevious["k"]
-	if got == nil || !got.ObservedAt.Equal(first) {
+	if got == nil || got.ObservedAt != acpwire.Millis(first) {
 		t.Fatalf("a repeated observation replaced the earlier previous: %v", got)
 	}
 }

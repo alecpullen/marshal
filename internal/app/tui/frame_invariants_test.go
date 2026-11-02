@@ -19,7 +19,6 @@ import (
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/app/tui/trustpanel"
 	"marshal/internal/tools/native"
-	"marshal/internal/viewmodel"
 )
 
 // TestFrameInvariants sweeps stacked-panel states and asserts two things of
@@ -56,7 +55,7 @@ func TestFrameInvariants(t *testing.T) {
 		// The live box in its fullest state: running work with overflow, a
 		// long plan and a beat in flight.
 		{"box+live", func(t *testing.T, m *Model) {
-			cards := make([]viewmodel.WorkItem, 0, 12)
+			cards := make([]acpwire.WorkItem, 0, 12)
 			for i := range 12 {
 				cards = append(cards, workRunningCard(fmt.Sprintf("work:%02d", i), workT0.Add(-time.Duration(i)*time.Second)))
 			}

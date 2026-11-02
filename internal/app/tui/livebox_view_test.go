@@ -111,7 +111,7 @@ func TestBoxIsBudgetedInTheFrameHeight(t *testing.T) {
 		t.Run(fmt.Sprintf("%dx%d", sz.w, sz.h), func(t *testing.T) {
 			m := newTestModel(t)
 			m.resize(sz.w, sz.h)
-			cards := make([]viewmodel.WorkItem, 0, 8)
+			cards := make([]acpwire.WorkItem, 0, 8)
 			for i := range 8 {
 				cards = append(cards, workRunningCard(fmt.Sprintf("work:%02d", i), workT0.Add(-time.Duration(i)*time.Second)))
 			}
@@ -148,7 +148,7 @@ func TestBoxIsBudgetedInTheFrameHeight(t *testing.T) {
 func TestBoxClickTogglesAWorkCard(t *testing.T) {
 	m := newTestModel(t)
 	m.resize(120, 40)
-	cards := []viewmodel.WorkItem{
+	cards := []acpwire.WorkItem{
 		workRunningCard("work:one", workT0.Add(-30*time.Second)),
 		workRunningCard("work:two", workT0.Add(-20*time.Second)),
 	}
@@ -369,10 +369,10 @@ func TestTraySubagentCardShowsItsModelAndProvider(t *testing.T) {
 	view := m.state.RegisterSubagentWithMeta("explore repo", child, session.SubagentMeta{
 		Model: "kimi-k3", Provider: "kimi",
 	})
-	m.workSnapshot = workSnapOf(viewmodel.WorkItem{
+	m.workSnapshot = workSnapOf(acpwire.WorkItem{
 		TaskKey: "work:child", Kind: "agent", SourceID: fmt.Sprint(view.ID),
 		DisplayID: fmt.Sprintf("#%d", view.ID), Label: "explore repo",
-		State: "running", StartedAt: m.now().Add(-time.Minute),
+		State: "running", StartedAt: acpwire.Millis(m.now().Add(-time.Minute)),
 	})
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -439,7 +439,7 @@ func TestFinishedItemHoldsItsRowUntilTheNextPrompt(t *testing.T) {
 
 	finished := workRunningCard("k1", base.Add(-2*time.Minute))
 	finished.State = "completed"
-	finished.EndedAt = base.Add(-30 * time.Second)
+	finished.EndedAt = acpwire.Millis(base.Add(-30 * time.Second))
 	m.workSnapshot = workSnapOf(finished)
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -465,7 +465,7 @@ func TestFinishedItemHoldsItsRowUntilTheNextPrompt(t *testing.T) {
 	// An item that ended before the window opened is never shown.
 	old := workRunningCard("k2", base.Add(-5*time.Minute))
 	old.State = "completed"
-	old.EndedAt = base.Add(-4 * time.Minute)
+	old.EndedAt = acpwire.Millis(base.Add(-4 * time.Minute))
 	m.workSnapshot = workSnapOf(old)
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -479,7 +479,7 @@ func TestFinishedItemHoldsItsRowUntilTheNextPrompt(t *testing.T) {
 	fg := workRunningCard("k3", base.Add(-2*time.Minute))
 	fg.Attachment = "foreground"
 	fg.State = "completed"
-	fg.EndedAt = base.Add(-30 * time.Second)
+	fg.EndedAt = acpwire.Millis(base.Add(-30 * time.Second))
 	m.workSnapshot = workSnapOf(fg)
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -500,7 +500,7 @@ func TestNewModelStartsWithNothingHeld(t *testing.T) {
 	// An item that ended before the model was built is never held.
 	old := workRunningCard("k-old", time.Unix(50, 0))
 	old.State = "completed"
-	old.EndedAt = time.Unix(60, 0)
+	old.EndedAt = acpwire.Millis(time.Unix(60, 0))
 	m.workSnapshot = workSnapOf(old)
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -528,7 +528,7 @@ func TestHeldRowMatchesItsCompletionEvent(t *testing.T) {
 	key := viewmodel.WorkKey(conv, epoch, "command", execID)
 	item := workRunningCard(key, base.Add(-2*time.Minute))
 	item.State = "failed"
-	item.EndedAt = base.Add(-30 * time.Second)
+	item.EndedAt = acpwire.Millis(base.Add(-30 * time.Second))
 	m.workSnapshot = workSnapOf(item)
 	m.invalidateTranscript()
 	m.refreshViewport()

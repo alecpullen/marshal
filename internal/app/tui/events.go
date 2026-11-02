@@ -1,7 +1,7 @@
 package tui
 
 import (
-	"marshal/internal/viewmodel"
+	"marshal/internal/acpwire"
 )
 
 // workMsg is the tea.Msg the Work snapshot pump emits when a WorkSnapshot
@@ -9,7 +9,7 @@ import (
 // an event from a superseded subscription (a prior conversation, or a rebind
 // that replaced the channel) is ignored rather than applied.
 type workMsg struct {
-	snapshot       viewmodel.WorkSnapshot
+	snapshot       acpwire.WorkSnapshot
 	subscriptionID uint64
 }
 
@@ -19,7 +19,7 @@ type workMsg struct {
 type workRequestMsg struct {
 	conversationID, panelID, requestID string
 	kind, taskKey, resultRevision      string
-	query                              viewmodel.WorkQuery
+	query                              acpwire.WorkQuery
 	raw                                bool
 }
 
@@ -28,8 +28,8 @@ type workRequestMsg struct {
 // the panel and request that are still current before it is applied.
 type workPageMsg struct {
 	conversationID, panelID, requestID string
-	query                              viewmodel.WorkQuery
-	page                               viewmodel.WorkPage
+	query                              acpwire.WorkQuery
+	page                               acpwire.WorkPage
 	err                                error
 }
 
@@ -37,7 +37,7 @@ type workPageMsg struct {
 // captured identity so a late detail cannot open the wrong item.
 type workDetailMsg struct {
 	conversationID, panelID, requestID string
-	detail                             viewmodel.WorkDetail
+	detail                             acpwire.WorkDetail
 	err                                error
 }
 
@@ -47,7 +47,7 @@ type workDetailMsg struct {
 type workActionMsg struct {
 	conversationID, taskKey, resultRevision, requestID string
 	kind                                               string
-	stop                                               viewmodel.WorkStopResult
+	stop                                               acpwire.WorkStopResult
 	err                                                error
 }
 

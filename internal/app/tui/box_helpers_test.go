@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
-	"marshal/internal/viewmodel"
 )
 
 // registerRunningSubagent registers a running background child on the test
@@ -23,18 +23,18 @@ var workT0 = time.Unix(10_000, 0)
 
 // workRunningCard is a running command card with one activity line, so a
 // collapsed card is exactly two rows.
-func workRunningCard(key string, started time.Time) viewmodel.WorkItem {
-	return viewmodel.WorkItem{
+func workRunningCard(key string, started time.Time) acpwire.WorkItem {
+	return acpwire.WorkItem{
 		TaskKey:   key,
 		Kind:      "command",
 		Label:     key,
 		SourceID:  key,
 		State:     "running",
-		StartedAt: started,
+		StartedAt: acpwire.Millis(started),
 		Activity:  "working",
 	}
 }
 
-func workSnapOf(items ...viewmodel.WorkItem) viewmodel.WorkSnapshot {
-	return viewmodel.WorkSnapshot{Version: 1, Items: items}
+func workSnapOf(items ...acpwire.WorkItem) acpwire.WorkSnapshot {
+	return acpwire.WorkSnapshot{Version: 1, Items: items}
 }

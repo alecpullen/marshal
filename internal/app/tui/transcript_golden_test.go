@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/livebox"
@@ -694,15 +695,15 @@ func buildLive(t *testing.T, clk *goldenClock, st *session.State, m *Model) {
 		Name: "agent.run", Args: "review the evals", StepID: s1,
 		ToolCallID: "c2", StartedAt: clk.now(),
 	})
-	m.workSnapshot = workSnapOf(viewmodel.WorkItem{
+	m.workSnapshot = workSnapOf(acpwire.WorkItem{
 		TaskKey:   "k1",
 		Kind:      "agent",
 		SourceID:  "7",
 		DisplayID: "#7",
 		Label:     "review the evals",
 		State:     "running",
-		StartedAt: clk.now(),
-		Origin:    viewmodel.WorkOrigin{ToolCallID: "c2"},
+		StartedAt: acpwire.Millis(clk.now()),
+		Origin:    acpwire.WorkOrigin{ToolCallID: "c2"},
 	})
 
 	clk.advance(time.Second)
@@ -770,14 +771,14 @@ func buildTray(t *testing.T, clk *goldenClock, st *session.State, m *Model) {
 	m.heldSince = goldenT0
 	m.workSnapshot = workSnapOf(
 		workRunningCard("k2", clk.now().Add(-5*time.Second)),
-		viewmodel.WorkItem{
+		acpwire.WorkItem{
 			TaskKey:   viewmodel.WorkKey("conv", "ep1", "command", "e1"),
 			Kind:      "command",
 			DisplayID: "job-1",
 			Label:     "go build ./...",
 			State:     "failed",
-			StartedAt: clk.now().Add(-11 * time.Second),
-			EndedAt:   clk.now(),
+			StartedAt: acpwire.Millis(clk.now().Add(-11 * time.Second)),
+			EndedAt:   acpwire.Millis(clk.now()),
 		},
 	)
 

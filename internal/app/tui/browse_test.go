@@ -725,7 +725,7 @@ func browseToBoxStop(t *testing.T, m Model, kind livebox.TargetKind, key string)
 
 // boxHistoryModel is the smallest scene with both history and a live box: one
 // finished beat in the transcript and one running row in the box.
-func boxHistoryModel(t *testing.T, items ...viewmodel.WorkItem) Model {
+func boxHistoryModel(t *testing.T, items ...acpwire.WorkItem) Model {
 	t.Helper()
 	m := newTestModel(t)
 	m.resize(120, 40)
@@ -803,10 +803,13 @@ func TestBrowseSRequestsAStopOnlyWhenAllowed(t *testing.T) {
 	stoppable.Capabilities.Stop = true
 	quiet := workRunningCard("work:quiet", workT0.Add(-time.Second))
 	svc := &fakeWorkService{
-		snap:       viewmodel.WorkSnapshot{ConversationID: "conv1", Items: []viewmodel.WorkItem{stoppable, quiet}},
+		snap:       viewmodel.WorkSnapshot{ConversationID: "conv1"},
 		stopResult: viewmodel.WorkStopResult{Accepted: true},
 	}
 	m := newWorkModel(t, svc)
+	snap := workSnapOf(stoppable, quiet)
+	snap.ConversationID = "conv1"
+	m.workSnapshot = snap
 	m.resize(120, 40)
 	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
 	m.invalidateTranscript()
@@ -1006,7 +1009,7 @@ func TestBrowseEnterOnAHeldRowScrollsToItsEvent(t *testing.T) {
 	item := workRunningCard(view.WorkKey, base.Add(-2*time.Minute))
 	item.Kind = "agent"
 	item.State = "completed"
-	item.EndedAt = base.Add(-30 * time.Second)
+	item.EndedAt = acpwire.Millis(base.Add(-30 * time.Second))
 	m.workSnapshot = workSnapOf(item)
 	m.invalidateTranscript()
 	m.refreshViewport()

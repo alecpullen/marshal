@@ -4157,7 +4157,7 @@ func replaceTriggerToken(value, replacement string) string {
 // message. Used by the F16 R2 follow-up path so each Enter pops one
 // item at a time; the runner's loop-top drain handles any remainder.
 func (m *Model) popOldestSteering() (string, bool) {
-	return m.state.PopSteering()
+	return m.sess.PopSteering(m.ctx)
 }
 
 // drilledInto returns the subagent whose transcript is currently drilled
@@ -4550,7 +4550,7 @@ func (m *Model) flushQueuedSteering() tea.Cmd {
 		// The turn could not start, so the text goes back on the queue rather
 		// than disappearing. It lands at the tail, which only reorders entries
 		// in the rare refused-start case.
-		m.state.PushSteering(followUp)
+		m.sess.Steer(m.ctx, followUp)
 		return nil
 	}
 	*m = model.(Model)
@@ -5599,7 +5599,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 		// ones an accepted, undelivered Send now request is still responsible
 		// for: the user asked explicitly for those to be delivered, and a UI
 		// cleanup must not silently revoke the request.
-		m.state.ClearSteering()
+		m.sess.ClearSteering(m.ctx)
 		m.state.AddMessage(session.RoleSystem, "Agent turn cancelled.", session.ContentTypePlain)
 		m.state.ClearNotice(session.NoticeProvider)
 		m.cancelling = false
@@ -5689,7 +5689,7 @@ func (m Model) handleAgentFinished(msg agentFinishedMsg) (Model, tea.Cmd) {
 	// their next fire, and once-watches lose the wake (spec edge
 	// cases). startAgentRun clears the ghost suggestion and bumps the
 	// suggestion generation, so no computeSuggestion gating is needed.
-	if name, repeat, ok := m.state.TakeWatchResume(); ok {
+	if name, repeat, ok := m.sess.TakeWatchResume(m.ctx); ok {
 		if cmd := m.startWatchResumeRun(name, repeat); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -6826,7 +6826,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 			}
 		}
 		if m.busy {
-			m.state.PushSteering(goal)
+			m.sess.Steer(m.ctx, goal)
 			m.refreshViewport()
 			return m, nil
 		}
@@ -6851,7 +6851,7 @@ func (m *Model) dispatchCommand(raw string) (tea.Model, tea.Cmd) {
 		// branch's busy/steering/runner idiom exactly.
 		if res.AgentGoal != "" {
 			if m.busy {
-				m.state.PushSteering(res.AgentGoal)
+				m.sess.Steer(m.ctx, res.AgentGoal)
 				m.refreshViewport()
 				return m, nil
 			}

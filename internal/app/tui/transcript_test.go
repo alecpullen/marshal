@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/liveregion"
@@ -413,12 +414,12 @@ func TestRenderActiveToolCallNonBrowserGlyph(t *testing.T) {
 }
 
 func TestRenderQuestionPanelEmpty(t *testing.T) {
-	q := &session.PendingQuestion{Questions: []session.Question{}}
+	q := acpwire.QuestionRequest{Questions: []acpwire.Question{}}
 	if out := renderQuestionPanel(q, 80); out != "" {
 		t.Fatalf("empty question panel should render nothing; got %q", out)
 	}
-	if out := renderQuestionPanel(nil, 80); out != "" {
-		t.Fatalf("nil question panel should render nothing; got %q", out)
+	if out := renderQuestionPanel(acpwire.QuestionRequest{}, 80); out != "" {
+		t.Fatalf("empty question panel should render nothing; got %q", out)
 	}
 }
 

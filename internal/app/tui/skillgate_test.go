@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 )
 
@@ -26,7 +27,7 @@ func skillGateKeyPress(key string) tea.KeyPressMsg {
 }
 
 func TestSkillGateModelNavigation(t *testing.T) {
-	sg := &session.PendingSkillGate{Skill: "review"}
+	sg := acpwire.SkillGateRequest{Skill: "review"}
 	gm := newSkillGateModel(sg, 80)
 
 	// down walks 0 → 1 → 2 → 3 and wraps 3 → 0.
@@ -67,13 +68,13 @@ func TestSkillGateModelNavigation(t *testing.T) {
 	if !gm.IsDone() {
 		t.Fatal("enter should set done")
 	}
-	if got, want := gm.Choice(), session.SkillGateAllowSkill; got != want {
+	if got, want := gm.Choice(), acpwire.SkillGateAllowSkill; got != want {
 		t.Fatalf("Choice() after '2'+enter = %v, want %v", got, want)
 	}
 }
 
 func TestSkillGateModelEscSelectsDenyWithoutDone(t *testing.T) {
-	sg := &session.PendingSkillGate{Skill: "review"}
+	sg := acpwire.SkillGateRequest{Skill: "review"}
 	gm := newSkillGateModel(sg, 80)
 
 	gm, _ = gm.Update(skillGateKeyPress("esc"))
@@ -83,13 +84,13 @@ func TestSkillGateModelEscSelectsDenyWithoutDone(t *testing.T) {
 	if gm.IsDone() {
 		t.Fatal("esc must not set done: an accidental Esc must not record a sticky deny")
 	}
-	if got, want := gm.Choice(), session.SkillGateDeny; got != want {
+	if got, want := gm.Choice(), acpwire.SkillGateDeny; got != want {
 		t.Fatalf("Choice() after esc = %v, want %v", got, want)
 	}
 }
 
 func TestSkillGateModelViewContent(t *testing.T) {
-	sg := &session.PendingSkillGate{
+	sg := acpwire.SkillGateRequest{
 		Skill:       "review",
 		Description: "Loads project review guidelines.",
 		Reason:      "small context window",
@@ -215,7 +216,7 @@ func TestSkillGateSuppressesTextareaAndBudget(t *testing.T) {
 	m := newViewTestModel(t, 100, 30)
 	sg := &session.PendingSkillGate{Skill: "x", ResponseChan: make(chan session.SkillGateChoice, 1)}
 	m.state.SetPendingSkillGate(sg)
-	m.skillGateModel = newSkillGateModel(sg, max(m.leftWidth-4, 30))
+	m.skillGateModel = newSkillGateModel(acpwire.SkillGateRequest{Skill: "x"}, max(m.leftWidth-4, 30))
 
 	// While the gate is pending the textarea is suppressed: the input area
 	// is exactly the chrome rows (gate panel), nothing else.

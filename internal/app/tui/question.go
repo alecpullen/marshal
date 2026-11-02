@@ -9,7 +9,7 @@ import (
 	"charm.land/huh/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/huhtheme"
 )
 
@@ -36,7 +36,7 @@ func questionOptionValue(index int) string {
 // questionOptionLabel decodes a generated option identity back to its
 // original label. It accepts only a canonical, in-range identity, so a
 // malformed or out-of-range value is never emitted as an answer.
-func questionOptionLabel(options []session.QuestionOption, value string) (string, bool) {
+func questionOptionLabel(options []acpwire.QuestionOption, value string) (string, bool) {
 	if !strings.HasPrefix(value, questionOptionPrefix) {
 		return "", false
 	}
@@ -71,18 +71,18 @@ func questionOptionLabel(options []session.QuestionOption, value string) (string
 // Pressing Esc skips the focused question and every question after it:
 // earlier questions, which the form has already advanced past, keep the
 // answers the user submitted, and the skipped ones are recorded as
-// session.AnswerUnanswered. Live input on the focused question (a
+// acpwire.AnswerUnanswered. Live input on the focused question (a
 // highlighted default, typed text, an unsubmitted toggle) is not an answer
 // and is not copied.
 type questionModel struct {
 	form    *huh.Form
-	q       *session.PendingQuestion
+	q       acpwire.QuestionRequest
 	width   int
 	done    bool
 	aborted bool
 	initCmd tea.Cmd
 
-	answers []session.Answer
+	answers []acpwire.Answer
 	inputs  []*string
 	selects []*string
 	multis  []*[]string
@@ -92,11 +92,20 @@ type questionModel struct {
 	fields [][]huh.Field
 }
 
-func newQuestionModel(q *session.PendingQuestion, width int) *questionModel {
+// unansweredAnswers is one AnswerUnanswered answer per question, in order.
+func unansweredAnswers(questions []acpwire.Question) []acpwire.Answer {
+	answers := make([]acpwire.Answer, len(questions))
+	for i, q := range questions {
+		answers[i] = acpwire.Answer{Question: q.Question, Answer: acpwire.AnswerUnanswered}
+	}
+	return answers
+}
+
+func newQuestionModel(q acpwire.QuestionRequest, width int) *questionModel {
 	qm := &questionModel{
 		q:       q,
 		width:   max(width, 30),
-		answers: session.UnansweredAnswers(q.Questions),
+		answers: unansweredAnswers(q.Questions),
 		inputs:  make([]*string, len(q.Questions)),
 		selects: make([]*string, len(q.Questions)),
 		multis:  make([]*[]string, len(q.Questions)),
@@ -213,7 +222,7 @@ func questionFieldWidth(panelWidth int) int {
 // When an option carries a description, it is folded into the rendered
 // key (huh.Option has no description field); the identity is unaffected, so
 // recorded answers never carry the description.
-func buildQuestionOptions(in []session.QuestionOption) []huh.Option[string] {
+func buildQuestionOptions(in []acpwire.QuestionOption) []huh.Option[string] {
 	keys := questionOptionKeys(in)
 	opts := make([]huh.Option[string], 0, len(in)+1)
 	for i := range in {
@@ -230,7 +239,7 @@ func buildQuestionOptions(in []session.QuestionOption) []huh.Option[string] {
 // gain their one-based source position, repeated with a further suffix if
 // that is still not unique. The custom-answer row's own key counts as a
 // collision because it shares the list.
-func questionOptionKeys(in []session.QuestionOption) []string {
+func questionOptionKeys(in []acpwire.QuestionOption) []string {
 	keys := make([]string, len(in))
 	for i, o := range in {
 		keys[i] = o.Label
@@ -380,7 +389,7 @@ func (qm *questionModel) focusedQuestionIndex() (int, bool) {
 // submission — copying the focused question's live value would answer with an
 // untouched default or half-typed text.
 func (qm *questionModel) skipRemaining() {
-	qm.answers = session.UnansweredAnswers(qm.q.Questions)
+	qm.answers = unansweredAnswers(qm.q.Questions)
 	if idx, ok := qm.focusedQuestionIndex(); ok {
 		for i := 0; i < idx; i++ {
 			qm.finalizeAnswer(i)
@@ -411,7 +420,7 @@ func (qm *questionModel) View() string {
 
 	var b strings.Builder
 	for i, qs := range qm.q.Questions {
-		if ans := qm.answers[i].Answer; ans != "" && ans != session.AnswerUnanswered {
+		if ans := qm.answers[i].Answer; ans != "" && ans != acpwire.AnswerUnanswered {
 			for j, line := range strings.Split(ansi.Wrap(qs.Question+" · "+ans, contentWidth, WrapBreakpoints), "\n") {
 				if j == 0 {
 					b.WriteString(gutter)
@@ -459,6 +468,6 @@ func focusedFieldFor(focused huh.Field, fields []huh.Field) huh.Field {
 	return nil
 }
 
-func (qm *questionModel) Answers() []session.Answer { return qm.answers }
+func (qm *questionModel) Answers() []acpwire.Answer { return qm.answers }
 func (qm *questionModel) Aborted() bool             { return qm.aborted }
 func (qm *questionModel) IsDone() bool              { return qm.done }

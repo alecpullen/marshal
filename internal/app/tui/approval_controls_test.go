@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 )
 
@@ -37,7 +38,7 @@ func assertShowsControls(t *testing.T, name, out string) {
 }
 
 func TestSudoPromptShowsControlCharacters(t *testing.T) {
-	sa := &session.PendingSudoAuth{Command: spoofCommand, Reason: "refresh " + rlo + "package lists", Error: "bad\x1b[2J"}
+	sa := acpwire.SudoRequest{Command: spoofCommand, Reason: "refresh " + rlo + "package lists", Error: "bad\x1b[2J"}
 	out := newSudoAuthModel(sa, 120).View()
 	assertShowsControls(t, "sudo prompt", out)
 	if strings.Contains(out, "\x1b[2J") || !strings.Contains(ansi.Strip(out), `refresh \u202epackage lists`) {
@@ -116,7 +117,7 @@ func TestExactCommandApprovalOmitsStandingChoices(t *testing.T) {
 }
 
 func TestSudoPromptShowsCombinedConsentMetadata(t *testing.T) {
-	sa := &session.PendingSudoAuth{
+	sa := acpwire.SudoRequest{
 		Command:         "systemctl restart nginx",
 		Reason:          "policy requires approval: environment change",
 		StepID:          7,

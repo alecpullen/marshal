@@ -254,14 +254,15 @@ func modeSegmentFor(access acpwire.Interaction) string {
 // decision first. Replacing it with the edit cue would hide the one persistent
 // reminder that a decision is outstanding.
 func (m Model) transientStatusSegment() string {
+	p := m.sess.Pending()
 	switch {
 	case m.sess.Status().SDD.Active:
 		return "sdd"
 	case m.activeCompletionPopup() != nil:
 		return "completing"
-	case m.state.PendingSkillGate() != nil:
+	case p.SkillGate != nil:
 		return "skill gate"
-	case m.state.PendingQuestion() != nil:
+	case p.Question != nil:
 		return "answering"
 	case m.browsing:
 		return "browse"
@@ -580,12 +581,13 @@ func quotaSegment(q *acpwire.Quota) string {
 
 func (m Model) footerHints() help.FooterHints {
 	st := m.sess.Status()
+	p := m.sess.Pending()
 	return help.FooterHints{
 		Busy:                 m.busy,
 		EditingCommand:       m.editingApproval(),
 		ApprovalPending:      m.hasPendingApproval(),
-		QuestionPending:      m.state.PendingQuestion() != nil,
-		SkillGatePending:     m.state.PendingSkillGate() != nil,
+		QuestionPending:      p.Question != nil,
+		SkillGatePending:     p.SkillGate != nil,
 		PopupOpen:            m.activeCompletionPopup() != nil,
 		IdleRollbackEligible: !m.busy && st.HasBackup,
 		CtrlXHint:            m.ctrlXHint(st),
@@ -630,11 +632,12 @@ func (m Model) ctrlXHint(st acpwire.SessionStatus) help.CtrlXHint {
 // privileged-auth field), the /doctor key field, the approval command editor,
 // or the completion popup.
 func (m Model) ctrlXOwned() bool {
+	p := m.sess.Pending()
 	return m.dock.IsOpen() ||
 		m.hasPendingApproval() ||
-		m.state.PendingQuestion() != nil ||
-		m.state.PendingSkillGate() != nil ||
-		m.state.PendingSudoAuth() != nil ||
+		p.Question != nil ||
+		p.SkillGate != nil ||
+		p.Sudo != nil ||
 		m.doctorSecret != nil ||
 		m.editingApproval() ||
 		m.activeCompletionPopup() != nil

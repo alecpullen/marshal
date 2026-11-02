@@ -1119,8 +1119,8 @@ func approvalActionRow(armed int) string {
 	return strings.Join(parts, "")
 }
 
-func renderQuestionPanel(q *session.PendingQuestion, width int) string {
-	if q == nil || len(q.Questions) == 0 {
+func renderQuestionPanel(q acpwire.QuestionRequest, width int) string {
+	if len(q.Questions) == 0 {
 		return ""
 	}
 	gutter := gutterPrefix(glyph.Question, violetColor)

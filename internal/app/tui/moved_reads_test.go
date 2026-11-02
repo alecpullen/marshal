@@ -70,6 +70,20 @@ var movedStateReads = map[string]string{
 	// through AnswerAccess since 4.
 	"AccessRequest": "4",
 	"CancelAccess":  "4",
+
+	// The three prompts read Pending and answer through the session since 4:
+	// their forms hold the wire request, and the adapter records what the
+	// answer implies.
+	"PendingQuestion":      "4",
+	"PendingSkillGate":     "4",
+	"PendingSudoAuth":      "4",
+	"SetPendingQuestion":   "4",
+	"SetPendingSkillGate":  "4",
+	"SetPendingSudoAuth":   "4",
+	"ResolveQuestion":      "4",
+	"ResolveSkillGate":     "4",
+	"ResolveSudoAuth":      "4",
+	"SkillGateRecordAllow": "4",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

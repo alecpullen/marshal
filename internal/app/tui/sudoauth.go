@@ -7,7 +7,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
-	"marshal/internal/app/session"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/strutil"
@@ -19,7 +19,7 @@ import (
 // primitive the provider connect flow uses at connect.go:465). Enter submits,
 // Esc denies — a dismissed prompt never executes.
 type sudoAuthModel struct {
-	sa    *session.PendingSudoAuth
+	sa    acpwire.SudoRequest
 	input textfield.Model
 	width int
 	// review is the bounded, pageable window over the command and the context
@@ -42,7 +42,7 @@ type sudoAuthModel struct {
 // make the row budget disagree with what is drawn.
 func sudoControlRows() int { return 3 }
 
-func newSudoAuthModel(sa *session.PendingSudoAuth, width int) *sudoAuthModel {
+func newSudoAuthModel(sa acpwire.SudoRequest, width int) *sudoAuthModel {
 	ti := textfield.New()
 	ti.EchoMode = textinput.EchoPassword
 	ti.SetVirtualCursor(true)
@@ -88,11 +88,11 @@ func (m *sudoAuthModel) Update(msg tea.Msg) (*sudoAuthModel, tea.Cmd) {
 }
 
 // Decision returns the response to send. A denied prompt carries no password.
-func (m *sudoAuthModel) Decision() session.SudoAuthDecision {
+func (m *sudoAuthModel) Decision() acpwire.SudoAnswer {
 	if m.denied {
-		return session.SudoAuthDecision{OK: false}
+		return acpwire.SudoAnswer{OK: false}
 	}
-	return session.SudoAuthDecision{OK: true, Password: []byte(m.input.Value())}
+	return acpwire.SudoAnswer{OK: true, Password: []byte(m.input.Value())}
 }
 
 func (m *sudoAuthModel) IsDone() bool { return m.done }
@@ -193,7 +193,7 @@ func (m *sudoAuthModel) View() string {
 
 // renderSudoAuthPanel is the fallback static panel shown before the
 // interactive model is built (mirrors renderSkillGatePanel's role).
-func renderSudoAuthPanel(sa *session.PendingSudoAuth, width int) string {
+func renderSudoAuthPanel(sa acpwire.SudoRequest, width int) string {
 	m := newSudoAuthModel(sa, width)
 	return m.View()
 }

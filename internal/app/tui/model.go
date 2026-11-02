@@ -1757,14 +1757,16 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	if tc, _ := m.pendingApprovalDisplay(); tc != nil {
 		m.approvalModel = newApprovalModel(tc, m.state.SandboxInfo(), m.state.Config.Tools.Shell.AllowNetwork, st.HasBackup, max(m.leftWidth-4, 30), m.approvalWhyFor(m.approvalOwner(), tc))
 	}
-	if q := m.state.PendingQuestion(); q != nil {
-		m.questionModel = newQuestionModel(q, max(m.leftWidth-4, 30))
+	// One Pending read for the three forms below.
+	pending := m.sess.Pending()
+	if q := pending.Question; q != nil {
+		m.questionModel = newQuestionModel(*q, max(m.leftWidth-4, 30))
 	}
-	if sg := m.state.PendingSkillGate(); sg != nil {
-		m.skillGateModel = newSkillGateModel(sg, max(m.leftWidth-4, 30))
+	if sg := pending.SkillGate; sg != nil {
+		m.skillGateModel = newSkillGateModel(*sg, max(m.leftWidth-4, 30))
 	}
-	if sa := m.state.PendingSudoAuth(); sa != nil {
-		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
+	if sa := pending.Sudo; sa != nil {
+		m.sudoAuthModel = newSudoAuthModel(*sa, max(m.leftWidth-4, 30))
 	}
 
 	m.histIdx = -1
@@ -2868,7 +2870,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// F-BUG-147: Block overlay-opening hotkeys (Ctrl+O, Ctrl+K) while a
 	// tool decision is pending. These must be intercepted before the
 	// approval/question routing below, which would otherwise swallow them.
-	if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSkillGate() != nil || m.state.PendingSudoAuth() != nil {
+	// One Pending read serves this block and the prompt routing chain.
+	p := m.sess.Pending()
+	if m.hasPendingApproval() || p.Question != nil || p.SkillGate != nil || p.Sudo != nil {
 		if k, ok := msg.(tea.KeyPressMsg); ok {
 			switch k.String() {
 			case "ctrl+o":
@@ -2890,7 +2894,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Inline privileged-auth prompt: while a sudo password is pending, route
 	// messages to the masked form (scroll gestures first, mirroring the
 	// approval and question forms).
-	if sa := m.state.PendingSudoAuth(); sa != nil {
+	if sa := p.Sudo; sa != nil {
 		// A prompt the user cannot see must never read a password byte or
 		// authenticate: below the supported minimum, behind a full-frame panel,
 		// or with no room for its body, only Escape reaches the form so denial
@@ -2905,7 +2909,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if k.String() != "esc" {
 					return m, nil
 				}
-				return m.handleSudoAuth(msg, sa)
+				return m.handleSudoAuth(msg, *sa)
 			}
 		}
 		if m.handleSudoPageKey(msg) {
@@ -2914,17 +2918,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
-		return m.handleSudoAuth(msg, sa)
+		return m.handleSudoAuth(msg, *sa)
 	}
 
 	// Inline skill-gate dialog: while a skill load gate is pending, route
 	// messages to it (scroll gestures first, mirroring the approval and
 	// question forms).
-	if sg := m.state.PendingSkillGate(); sg != nil {
+	if sg := p.SkillGate; sg != nil {
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
-		return m.handleSkillGate(msg, sg)
+		return m.handleSkillGate(msg, *sg)
 	}
 
 	// Inline approval chooser: when a tool call is pending, route every
@@ -2966,11 +2970,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Inline question prompt: when a clarifying question is pending, route
 	// messages to the question form. Scroll gestures are handled first so the
 	// transcript remains navigable while the question is visible.
-	if q := m.state.PendingQuestion(); q != nil {
+	if q := p.Question; q != nil {
 		if updated, cmd, handled := m.scrollTranscript(msg); handled {
 			return updated, cmd
 		}
-		return m.handleQuestion(msg, q)
+		return m.handleQuestion(msg, *q)
 	}
 
 	// Bubble Tea v2 emits a KeyReleaseMsg alongside every KeyPressMsg.
@@ -3571,16 +3575,16 @@ func (m *Model) settleApproval(owner *session.State, tc *session.PendingToolCall
 }
 
 // handleQuestion routes messages to the inline question form while a
-// clarifying question is pending. On completion it sends the answers to the
-// runner's response channel. Escape is an explicit skip rather than a blanket
-// abort: the form finalises the questions it has already advanced past and
-// records the focused question and every later one as
-// session.AnswerUnanswered (see questionModel.skipRemaining), so a partial
-// answer set is what reaches the owner. Live input on the focused question — a
-// highlighted default, half-typed text, an unsubmitted toggle — is not an
-// answer and is never copied.
-func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Model, tea.Cmd) {
-	if m.questionModel == nil || m.questionModel.q != q {
+// clarifying question is pending. On completion it answers through the
+// session. Escape is an explicit skip rather than a blanket abort: the form
+// finalises the questions it has already advanced past and records the
+// focused question and every later one as acpwire.AnswerUnanswered (see
+// questionModel.skipRemaining), so a partial answer set is what the session
+// answers with. Live input on the focused question — a highlighted default,
+// half-typed text, an unsubmitted toggle — is not an answer and is never
+// copied.
+func (m Model) handleQuestion(msg tea.Msg, q acpwire.QuestionRequest) (tea.Model, tea.Cmd) {
+	if m.questionModel == nil || m.questionModel.q.Key != q.Key {
 		// Build the form for the question that is pending now — and rebuild it
 		// when the open form is bound to a round-trip that settled or was
 		// interrupted out from under it. Driving the stale form would answer
@@ -3595,18 +3599,10 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 		return m, cmd
 	}
 
-	answers := m.questionModel.Answers()
-	switch {
-	case q.Key.ID != "" && m.state.PendingQuestion() == q:
-		// Canonical settlement: the registry arbitrates the answer against an
-		// accepted steering cancellation, so a late answer cannot answer a
-		// question the interruption already settled, and only a winning claim
-		// clears the slot.
-		m.state.ResolveQuestion(q.Key, answers)
-	case m.state.PendingQuestion() == q:
-		q.Respond(answers)
-		m.state.SetPendingQuestion(nil)
-	}
+	// The session is the one place that settles the request: it arbitrates a
+	// late answer against an accepted steering cancellation and clears only a
+	// winning claim. The form closes either way, so the error is not acted on.
+	_ = m.sess.AnswerQuestion(m.ctx, q.Key, m.questionModel.Answers())
 	// The form has its own input: settling it must leave the composer exactly
 	// as the user left it — text, cursor, placeholder and paste attachments.
 	// Clearing here would discard an unrelated draft the user was writing
@@ -3618,13 +3614,13 @@ func (m Model) handleQuestion(msg tea.Msg, q *session.PendingQuestion) (tea.Mode
 }
 
 // handleSkillGate routes messages to the inline skill-gate dialog while a
-// skill load gate is pending. The decision is responded on the original
-// pending struct; per-skill and allow-all decisions are recorded on the
-// session state here so the runner's gate sees them on the next attempt.
-func (m Model) handleSkillGate(msg tea.Msg, sg *session.PendingSkillGate) (tea.Model, tea.Cmd) {
-	if m.skillGateModel == nil || m.skillGateModel.sg != sg {
+// skill load gate is pending. On completion it answers through the session,
+// which responds on the gate and records a per-skill or allow-all choice so
+// the runner's gate sees it on the next attempt.
+func (m Model) handleSkillGate(msg tea.Msg, sg acpwire.SkillGateRequest) (tea.Model, tea.Cmd) {
+	if m.skillGateModel == nil || m.skillGateModel.sg.Key != sg.Key {
 		// Build lazily — and rebuild when the open dialog is bound to a
-		// pending struct that was superseded while it was up (parity with
+		// pending request that was superseded while it was up (parity with
 		// the approval/question pending-identity guards, F-BUG-51 class).
 		m.skillGateModel = newSkillGateModel(sg, max(m.leftWidth-4, 30))
 		return m, nil
@@ -3634,47 +3630,23 @@ func (m Model) handleSkillGate(msg tea.Msg, sg *session.PendingSkillGate) (tea.M
 	if !gm.IsDone() {
 		return m, cmd
 	}
-	choice := gm.Choice()
-	m.skillGateModel = nil
-	// The sticky-skill record is a session side effect: it belongs inside the
-	// apply callback, so a decision that lost to an accepted steering
+	// The adapter records the choice: the sticky-skill record belongs inside
+	// the settlement, so a decision that lost to an accepted steering
 	// cancellation never records a bypass for a gate it cancelled.
-	apply := func() error {
-		switch choice {
-		case session.SkillGateAllowSkill:
-			m.state.SkillGateRecordAllow(sg.Skill, false)
-		case session.SkillGateAllowAll:
-			m.state.SkillGateRecordAllow(sg.Skill, true)
-		}
-		return nil
-	}
-	if sg.Key.ID != "" && m.state.PendingSkillGate() == sg {
-		if _, err := m.state.ResolveSkillGate(sg.Key, choice, apply); err != nil {
-			m.state.ClearPrompt(sg.Key)
-		}
-		m.refreshViewport()
-		return m, nil
-	}
-	apply()
-	// Respond only if the slot still holds this prompt: a pending that
-	// was resolved out-from-under the dialog (shutdown race) must not
-	// have its replacement cleared without a response.
-	if cur := m.state.PendingSkillGate(); cur == sg {
-		sg.Respond(choice)
-		m.state.SetPendingSkillGate(nil)
-	}
+	_ = m.sess.AnswerSkillGate(m.ctx, sg.Key, gm.Choice())
+	m.skillGateModel = nil
 	m.refreshViewport()
 	return m, nil
 }
 
 // handleSudoAuth routes messages to the inline masked password prompt while a
-// privileged-command authentication is pending. The decision is responded on
-// the original pending struct; the password lives only in the decision value
-// on that channel and is zeroed by the tool handler after use.
-func (m Model) handleSudoAuth(msg tea.Msg, sa *session.PendingSudoAuth) (tea.Model, tea.Cmd) {
-	if m.sudoAuthModel == nil || m.sudoAuthModel.sa != sa {
-		// Build lazily — and rebuild when the open form is bound to a pending
-		// struct that was superseded while it was up (parity with the
+// privileged-command authentication is pending. The decision goes to the
+// session, which hands it to the handler; the password lives only in that
+// answer and is zeroed after use.
+func (m Model) handleSudoAuth(msg tea.Msg, sa acpwire.SudoRequest) (tea.Model, tea.Cmd) {
+	if m.sudoAuthModel == nil || m.sudoAuthModel.sa.Key != sa.Key {
+		// Build lazily — and rebuild when the open form is bound to a request
+		// that was superseded while it was up (parity with the
 		// approval/question/skill-gate pending-identity guards). A freshly
 		// built prompt starts its review at the top.
 		m.sudoAuthModel = newSudoAuthModel(sa, max(m.leftWidth-4, 30))
@@ -3691,21 +3663,10 @@ func (m Model) handleSudoAuth(msg tea.Msg, sa *session.PendingSudoAuth) (tea.Mod
 	}
 	decision := sm.Decision()
 	m.sudoAuthModel = nil
-	if sa.Key.ID != "" && m.state.PendingSudoAuth() == sa {
-		// Canonical settlement: a canceled prompt delivers an empty decision,
-		// so a password typed into a prompt the interruption already settled
-		// never reaches the privileged runner.
-		m.state.ResolveSudoAuth(sa.Key, decision)
-		m.refreshViewport()
-		return m, nil
-	}
-	// Respond only if the slot still holds this prompt: a pending resolved
-	// out-from-under the form (shutdown race) must not have its replacement
-	// cleared without a response.
-	if cur := m.state.PendingSudoAuth(); cur == sa {
-		sa.Respond(decision)
-		m.state.SetPendingSudoAuth(nil)
-	}
+	// The session settles the prompt: a canceled one delivers an empty
+	// decision, so a password typed into a prompt the interruption already
+	// settled never reaches the privileged runner.
+	_ = m.sess.AnswerSudo(m.ctx, sa.Key, decision)
 	m.refreshViewport()
 	return m, nil
 }
@@ -3769,28 +3730,30 @@ func (m Model) inputChromeRows() int {
 	if m.sess.Status().SDD.Active {
 		rows++ // SDD hint row
 	}
-	if sa := m.state.PendingSudoAuth(); sa != nil {
+	// One Pending read for the three prompts this budget mirrors.
+	pending := m.sess.Pending()
+	if sa := pending.Sudo; sa != nil {
 		content := ""
 		if m.sudoAuthModel != nil {
 			content = m.sudoAuthModel.View()
 		} else {
-			content = renderSudoAuthPanel(sa, max(m.leftWidth-4, 1))
+			content = renderSudoAuthPanel(*sa, max(m.leftWidth-4, 1))
 		}
 		rows += len(consoleLines(content))
-	} else if sg := m.state.PendingSkillGate(); sg != nil {
+	} else if sg := pending.SkillGate; sg != nil {
 		content := ""
 		if m.skillGateModel != nil {
 			content = m.skillGateModel.View()
 		} else {
-			content = renderSkillGatePanel(sg, max(m.leftWidth-4, 1))
+			content = renderSkillGatePanel(*sg, max(m.leftWidth-4, 1))
 		}
 		rows += len(consoleLines(content))
-	} else if q := m.state.PendingQuestion(); q != nil {
+	} else if q := pending.Question; q != nil {
 		content := ""
 		if m.questionModel != nil {
 			content = m.questionModel.View()
 		} else {
-			content = renderQuestionPanel(q, max(m.leftWidth-4, 1))
+			content = renderQuestionPanel(*q, max(m.leftWidth-4, 1))
 		}
 		rows += len(consoleLines(content))
 	} else if tc, _ := m.pendingApprovalDisplay(); tc != nil {
@@ -3837,8 +3800,9 @@ func (m Model) inputAreaRows() int {
 		// input area below it renders only its suspended notice row.
 		return rows
 	}
-	if m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil &&
-		m.state.PendingSudoAuth() == nil && m.doctorSecret == nil {
+	pending := m.sess.Pending()
+	if pending.Question == nil && !m.hasPendingApproval() && pending.SkillGate == nil &&
+		pending.Sudo == nil && m.doctorSecret == nil {
 		// DynamicHeight clamps Height() to [MinHeight, MaxHeight], so the
 		// only guard needed is the max(..., 1) floor.
 		rows += max(m.input.Height(), 1)
@@ -5776,10 +5740,11 @@ func (m Model) settingsBlockReason() string {
 	if m.hasPendingApproval() {
 		return "Resolve the pending tool approval to save."
 	}
-	if m.state.PendingQuestion() != nil {
+	pending := m.sess.Pending()
+	if pending.Question != nil {
 		return "Answer the pending question to save."
 	}
-	if m.state.PendingSudoAuth() != nil {
+	if pending.Sudo != nil {
 		return "Authenticate or deny the pending privileged command to save."
 	}
 	if m.dock.IsOpen() {
@@ -6116,10 +6081,11 @@ func (m *Model) surfaceOwnsInput() bool {
 	if m.dock.IsOpen() || m.editingApproval() || m.doctorSecret != nil {
 		return true
 	}
+	pending := m.sess.Pending()
 	return m.hasPendingApproval() ||
-		m.state.PendingQuestion() != nil ||
-		m.state.PendingSkillGate() != nil ||
-		m.state.PendingSudoAuth() != nil
+		pending.Question != nil ||
+		pending.SkillGate != nil ||
+		pending.Sudo != nil
 }
 
 // focusedPromptKey returns the key of the pending prompt that owns the input,

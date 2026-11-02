@@ -74,7 +74,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		// (or mid approval/question/skill-gate/command-edit), ? falls
 		// through to the trailing m.input.Update(msg) below and is typed
 		// literally.
-		if m.input.Value() == "" && !m.editingApproval() && m.state.PendingQuestion() == nil && !m.hasPendingApproval() && m.state.PendingSkillGate() == nil && m.state.PendingSudoAuth() == nil {
+		p := m.sess.Pending()
+		if m.input.Value() == "" && !m.editingApproval() && p.Question == nil && !m.hasPendingApproval() && p.SkillGate == nil && p.Sudo == nil {
 			mm, cmd := m.dispatchCommand("/help")
 			return mm, cmd, true
 		}
@@ -276,7 +277,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if m.acceptCompletion() {
 			return *m, nil, true
 		}
-		if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSudoAuth() != nil {
+		p := m.sess.Pending()
+		if m.hasPendingApproval() || p.Question != nil || p.Sudo != nil {
 			return *m, nil, false
 		}
 		m.cycleMode(true)
@@ -285,7 +287,8 @@ func (m *Model) handleKeypress(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		if m.activeCompletionPopup() != nil {
 			return *m, nil, true
 		}
-		if m.hasPendingApproval() || m.state.PendingQuestion() != nil || m.state.PendingSudoAuth() != nil {
+		p := m.sess.Pending()
+		if m.hasPendingApproval() || p.Question != nil || p.Sudo != nil {
 			return *m, nil, false
 		}
 		m.cycleMode(false)

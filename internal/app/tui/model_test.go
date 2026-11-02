@@ -3931,7 +3931,10 @@ func TestQuestionPartialSkipCannotSettleReplacement(t *testing.T) {
 	for _, msg := range questionMoveDown(1) {
 		m = sendMsg(m, msg)
 	}
-	if m.questionModel == nil || m.questionModel.q != replacement {
+	if m.questionModel == nil {
+		t.Fatal("the stale form was not rebuilt for the replacement")
+	}
+	if pending := m.sess.Pending().Question; pending == nil || m.questionModel.q.Key != pending.Key {
 		t.Fatal("the stale form was not rebuilt for the replacement")
 	}
 	if m.state.PendingQuestion() != replacement {

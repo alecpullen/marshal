@@ -8,17 +8,17 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/help"
 )
 
 func TestQuestionModelInitReturnsCommand(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{
 			{Question: "What is your favorite color?"},
 		},
-		ResponseChan: make(chan []session.Answer, 1),
 	}
 	qm := newQuestionModel(q, 80)
 
@@ -50,16 +50,14 @@ func TestQuestionModelInitReturnsCommand(t *testing.T) {
 }
 
 func TestQuestionSubFormMarksDoneWithoutDispatching(t *testing.T) {
-	ch := make(chan []session.Answer, 1)
-	q := &session.PendingQuestion{
-		Questions: []session.Question{
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{
 			{Question: "What is your favorite color?"},
 		},
-		ResponseChan: ch,
 	}
 	qm := newQuestionModel(q, 80)
 
-	// Esc should mark done + aborted without writing to the channel.
+	// Esc should mark done + aborted.
 	qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if !qm.IsDone() {
 		t.Fatal("esc should set done")
@@ -67,32 +65,24 @@ func TestQuestionSubFormMarksDoneWithoutDispatching(t *testing.T) {
 	if !qm.Aborted() {
 		t.Fatal("esc should set aborted")
 	}
-	select {
-	case got := <-ch:
-		t.Fatalf("sub-form dispatched on esc: %v", got)
-	default:
-	}
 
 	// Reset and test the completion path.
 	// Drive the form to completion by setting the form state directly
 	// (huh's internal state machine requires a running tea.Program to
 	// finalize via commands; in a unit test we simulate the terminal
 	// state that the parent would see after the command executes).
-	ch2 := make(chan []session.Answer, 1)
-	q2 := &session.PendingQuestion{
-		Questions: []session.Question{
+	q2 := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{
 			{
 				Question: "Pick one:",
-				Options:  []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}},
+				Options:  []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}},
 			},
 		},
-		ResponseChan: ch2,
 	}
 	qm2 := newQuestionModel(q2, 80)
 	// Set the value through the bound pointer and force the form to
-	// StateCompleted, then call Update to verify the model marks done
-	// without dispatching. The bound value is the generated option
-	// identity, not the label.
+	// StateCompleted, then call Update to verify the model marks done.
+	// The bound value is the generated option identity, not the label.
 	*qm2.selects[0] = questionOptionValue(0)
 	qm2.form.State = huh.StateCompleted
 	qm2, _ = qm2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -109,18 +99,13 @@ func TestQuestionSubFormMarksDoneWithoutDispatching(t *testing.T) {
 	if answers[0].Answer != "red" {
 		t.Fatalf("expected answer 'red'; got %q", answers[0].Answer)
 	}
-	select {
-	case got := <-ch2:
-		t.Fatalf("sub-form dispatched on completion: %v", got)
-	default:
-	}
 }
 
 // TestQuestionFinalizeSingleChoice verifies a listed single-choice option
 // submits directly.
 func TestQuestionFinalizeSingleChoice(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "Pick one:", Options: []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.selects[0] = questionOptionValue(1)
@@ -139,10 +124,10 @@ func TestQuestionFinalizeSingleChoice(t *testing.T) {
 }
 
 func TestBuildQuestionOptionsAlwaysAppendsOther(t *testing.T) {
-	if got := buildQuestionOptions([]session.QuestionOption{{Label: "red"}}); len(got) != 2 {
+	if got := buildQuestionOptions([]acpwire.QuestionOption{{Label: "red"}}); len(got) != 2 {
 		t.Fatalf("option count = %d, want 2", len(got))
 	}
-	if got := buildQuestionOptions([]session.QuestionOption{{Label: "red"}}); got[len(got)-1].Value != questionOtherSentinel {
+	if got := buildQuestionOptions([]acpwire.QuestionOption{{Label: "red"}}); got[len(got)-1].Value != questionOtherSentinel {
 		t.Fatalf("last option value should be the Other sentinel, got %q", got[len(got)-1].Value)
 	}
 }
@@ -151,7 +136,7 @@ func TestBuildQuestionOptionsAlwaysAppendsOther(t *testing.T) {
 // is rendered in the visible key while the value stays the bare label, so a
 // recorded answer never carries the description.
 func TestBuildQuestionOptionsFoldsDescription(t *testing.T) {
-	opts := buildQuestionOptions([]session.QuestionOption{
+	opts := buildQuestionOptions([]acpwire.QuestionOption{
 		{Label: "red", Description: "the warm one"},
 		{Label: "green"},
 	})
@@ -175,8 +160,8 @@ func TestBuildQuestionOptionsFoldsDescription(t *testing.T) {
 // TestQuestionModelViewShowsOptionDescriptions verifies the description is
 // visible in the rendered question view.
 func TestQuestionModelViewShowsOptionDescriptions(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "Pick one:", Options: []acpwire.QuestionOption{
 			{Label: "red", Description: "the warm one"},
 			{Label: "green"},
 		}}},
@@ -194,8 +179,8 @@ func TestQuestionModelViewShowsOptionDescriptions(t *testing.T) {
 // TestQuestionFinalizeMultiChoice verifies a multi-select submits the joined
 // selected values.
 func TestQuestionFinalizeMultiChoice(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick some:", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}, {Label: "c"}}, Multi: true}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "Pick some:", Options: []acpwire.QuestionOption{{Label: "a"}, {Label: "b"}, {Label: "c"}}, Multi: true}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.multis[0] = []string{questionOptionValue(0), questionOptionValue(2)}
@@ -213,8 +198,8 @@ func TestQuestionFinalizeMultiChoice(t *testing.T) {
 // TestQuestionFinalizeOtherWithText verifies the Other sentinel uses the
 // trimmed custom text.
 func TestQuestionFinalizeOtherWithText(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "Pick one:", Options: []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.selects[0] = questionOtherSentinel
@@ -233,8 +218,8 @@ func TestQuestionFinalizeOtherWithText(t *testing.T) {
 // TestQuestionFinalizeOtherBlankStaysUnanswered verifies the Other sentinel
 // with blank custom text does NOT submit the sentinel.
 func TestQuestionFinalizeOtherBlankStaysUnanswered(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "Pick one:", Options: []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.selects[0] = questionOtherSentinel
@@ -245,14 +230,14 @@ func TestQuestionFinalizeOtherBlankStaysUnanswered(t *testing.T) {
 	if len(answers) != 1 {
 		t.Fatalf("expected 1 answer, got %d", len(answers))
 	}
-	if answers[0].Answer != session.AnswerUnanswered {
+	if answers[0].Answer != acpwire.AnswerUnanswered {
 		t.Fatalf("blank Other should leave the answer unanswered, got %q", answers[0].Answer)
 	}
 }
 
 func TestQuestionModelViewUsesGutter(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "What is your favorite color?", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "What is your favorite color?", Options: []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	view := stripANSI(qm.View())
@@ -265,9 +250,9 @@ func TestQuestionModelViewUsesGutter(t *testing.T) {
 }
 
 func TestQuestionModelViewHasNoRail(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{
-			{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{
+			{Question: "Pick one:", Options: []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}}},
 			{Question: "Why?"},
 		},
 	}
@@ -289,8 +274,8 @@ func TestQuestionModelViewHasNoRail(t *testing.T) {
 
 func TestQuestionModelViewWrapsLongQuestion(t *testing.T) {
 	long := strings.TrimSpace(strings.Repeat("wrapme ", 30))
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: long}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: long}},
 	}
 	qm := newQuestionModel(q, 40)
 	view := stripANSI(qm.View())
@@ -302,8 +287,8 @@ func TestQuestionModelViewWrapsLongQuestion(t *testing.T) {
 }
 
 func TestQuestionModelViewRendersMarkdown(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "**Pick** one approach:"}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "**Pick** one approach:"}},
 	}
 	qm := newQuestionModel(q, 80)
 	if strings.Contains(qm.View(), "**") {
@@ -312,8 +297,8 @@ func TestQuestionModelViewRendersMarkdown(t *testing.T) {
 }
 
 func TestQuestionModelViewEchoesTypedInput(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "What is your name?"}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "What is your name?"}},
 	}
 	qm := newQuestionModel(q, 80)
 	if msg := qm.Init()(); msg != nil {
@@ -329,8 +314,8 @@ func TestQuestionModelViewEchoesTypedInput(t *testing.T) {
 }
 
 func TestQuestionModelViewShowsInteractiveOptions(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "Pick one:", Options: []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}}},
 	}
 	qm := newQuestionModel(q, 80)
 	view := stripANSI(qm.View())
@@ -351,7 +336,9 @@ func TestRenderInputAreaHidesTextareaWhileQuestionPending(t *testing.T) {
 		ResponseChan: make(chan []session.Answer, 1),
 	}
 	m.state.SetPendingQuestion(q)
-	m.questionModel = newQuestionModel(q, 76)
+	m.questionModel = newQuestionModel(acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "What is your name?"}},
+	}, 76)
 	out := stripANSI(m.renderInputArea())
 	// The dead textarea's tell is its placeholder; the ▍ rail is legitimate
 	// chrome on the question panel itself.
@@ -361,8 +348,8 @@ func TestRenderInputAreaHidesTextareaWhileQuestionPending(t *testing.T) {
 }
 
 func TestQuestionMultiSelectOffersOther(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick some:", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}}, Multi: true}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "Pick some:", Options: []acpwire.QuestionOption{{Label: "a"}, {Label: "b"}}, Multi: true}},
 	}
 	qm := newQuestionModel(q, 80)
 	if qm.multis[0] == nil {
@@ -386,11 +373,11 @@ func TestQuestionMultiSelectOffersOther(t *testing.T) {
 // as the cursor blink are skipped), so this fails if the form's own navigation
 // stops reaching either path.
 func TestQuestionSingleChoiceNavigation(t *testing.T) {
-	options := []session.QuestionOption{{Label: "red"}, {Label: "green"}}
+	options := []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}}
 
 	t.Run("listed", func(t *testing.T) {
-		q := &session.PendingQuestion{
-			Questions: []session.Question{{Question: "Pick one:", Options: options}},
+		q := acpwire.QuestionRequest{
+			Questions: []acpwire.Question{{Question: "Pick one:", Options: options}},
 		}
 		qm := questionStart(t, newQuestionModel(q, 80))
 		// Row 0 is red, row 1 is green, and the appended Other… row is 2.
@@ -414,8 +401,8 @@ func TestQuestionSingleChoiceNavigation(t *testing.T) {
 	})
 
 	t.Run("custom", func(t *testing.T) {
-		q := &session.PendingQuestion{
-			Questions: []session.Question{{Question: "Pick one:", Options: options}},
+		q := acpwire.QuestionRequest{
+			Questions: []acpwire.Question{{Question: "Pick one:", Options: options}},
 		}
 		qm := questionStart(t, newQuestionModel(q, 80))
 		qm = questionForm(t, qm, questionMoveDown(len(options))...)
@@ -521,7 +508,7 @@ func questionType(t *testing.T, qm *questionModel, text string) *questionModel {
 // label must stay a listed choice, submit directly, and never open or record
 // the custom-answer input.
 func TestQuestionListedOtherDoesNotOpenCustomInput(t *testing.T) {
-	options := []session.QuestionOption{
+	options := []acpwire.QuestionOption{
 		{Label: "other"},
 		{Label: "Other…"},
 		{Label: "custom"},
@@ -529,9 +516,8 @@ func TestQuestionListedOtherDoesNotOpenCustomInput(t *testing.T) {
 	}
 	for _, row := range []int{0, 1, 2, 3} {
 		t.Run(options[row].Label, func(t *testing.T) {
-			q := &session.PendingQuestion{
-				Questions:    []session.Question{{Question: "Pick one:", Options: options}},
-				ResponseChan: make(chan []session.Answer, 1),
+			q := acpwire.QuestionRequest{
+				Questions: []acpwire.Question{{Question: "Pick one:", Options: options}},
 			}
 			qm := questionStart(t, newQuestionModel(q, 80))
 			qm = questionForm(t, qm, questionMoveDown(row)...)
@@ -557,7 +543,7 @@ func TestQuestionListedOtherDoesNotOpenCustomInput(t *testing.T) {
 // labels, and the appended custom row all stay separate choices, and only the
 // custom row reveals the input.
 func TestQuestionMultiOtherAndCustomAreDistinct(t *testing.T) {
-	options := []session.QuestionOption{
+	options := []acpwire.QuestionOption{
 		{Label: "other"},
 		{Label: "custom", Description: "a listed choice"},
 		{Label: "dup"},
@@ -582,8 +568,8 @@ func TestQuestionMultiOtherAndCustomAreDistinct(t *testing.T) {
 	customRow := len(options)
 	newMulti := func(t *testing.T) *questionModel {
 		t.Helper()
-		q := &session.PendingQuestion{
-			Questions: []session.Question{{Question: "Pick some:", Options: options, Multi: true}},
+		q := acpwire.QuestionRequest{
+			Questions: []acpwire.Question{{Question: "Pick some:", Options: options, Multi: true}},
 		}
 		return questionStart(t, newQuestionModel(q, 80))
 	}
@@ -657,8 +643,8 @@ func TestQuestionMultiOtherAndCustomAreDistinct(t *testing.T) {
 		qm = questionForm(t, qm, questionToggle())
 		qm = questionForm(t, qm, tea.KeyPressMsg{Code: tea.KeyEnter})
 		qm = questionForm(t, qm, tea.KeyPressMsg{Code: tea.KeyEnter})
-		if got := qm.Answers()[0].Answer; got != session.AnswerUnanswered {
-			t.Fatalf("answer = %q, want %q", got, session.AnswerUnanswered)
+		if got := qm.Answers()[0].Answer; got != acpwire.AnswerUnanswered {
+			t.Fatalf("answer = %q, want %q", got, acpwire.AnswerUnanswered)
 		}
 	})
 }
@@ -667,7 +653,7 @@ func TestQuestionMultiOtherAndCustomAreDistinct(t *testing.T) {
 // in-range generated identity names a supplied option: a malformed or stale
 // value is never recorded as if the user had typed it.
 func TestQuestionInvalidOptionIdentityIsNotAnAnswer(t *testing.T) {
-	options := []session.QuestionOption{{Label: "red"}, {Label: "green"}}
+	options := []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}}
 	for _, value := range []string{
 		"option:2",   // out of range
 		"option:-1",  // out of range
@@ -685,8 +671,8 @@ func TestQuestionInvalidOptionIdentityIsNotAnAnswer(t *testing.T) {
 				name += "/multi"
 			}
 			t.Run(name, func(t *testing.T) {
-				q := &session.PendingQuestion{
-					Questions: []session.Question{{Question: "Pick:", Options: options, Multi: multi}},
+				q := acpwire.QuestionRequest{
+					Questions: []acpwire.Question{{Question: "Pick:", Options: options, Multi: multi}},
 				}
 				qm := newQuestionModel(q, 80)
 				if multi {
@@ -696,8 +682,8 @@ func TestQuestionInvalidOptionIdentityIsNotAnAnswer(t *testing.T) {
 				}
 				qm.form.State = huh.StateCompleted
 				qm, _ = qm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-				if got := qm.Answers()[0].Answer; got != session.AnswerUnanswered {
-					t.Fatalf("identity %q produced answer %q, want %q", value, got, session.AnswerUnanswered)
+				if got := qm.Answers()[0].Answer; got != acpwire.AnswerUnanswered {
+					t.Fatalf("identity %q produced answer %q, want %q", value, got, acpwire.AnswerUnanswered)
 				}
 			})
 		}
@@ -709,23 +695,23 @@ func TestQuestionInvalidOptionIdentityIsNotAnAnswer(t *testing.T) {
 // submitted, and the focused question plus every later one are recorded as
 // unanswered. Live input on the focused question is never copied.
 func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
-	stops := []session.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}
-	three := func(first session.Question) []session.Question {
-		return []session.Question{first, {Question: "Second?"}, {Question: "Third?"}}
+	stops := []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}, {Label: "blue"}}
+	three := func(first acpwire.Question) []acpwire.Question {
+		return []acpwire.Question{first, {Question: "Second?"}, {Question: "Third?"}}
 	}
 	escape := tea.KeyPressMsg{Code: tea.KeyEscape}
 	submit := tea.KeyPressMsg{Code: tea.KeyEnter}
-	unanswered := session.AnswerUnanswered
+	unanswered := acpwire.AnswerUnanswered
 
 	for _, tc := range []struct {
 		name      string
-		questions []session.Question
+		questions []acpwire.Question
 		drive     func(t *testing.T, qm *questionModel) *questionModel
 		want      []string
 	}{
 		{
 			name:      "free text then skip",
-			questions: three(session.Question{Question: "Name?"}),
+			questions: three(acpwire.Question{Question: "Name?"}),
 			drive: func(t *testing.T, qm *questionModel) *questionModel {
 				qm = questionType(t, qm, "alice")
 				qm = questionForm(t, qm, submit)
@@ -735,7 +721,7 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 		},
 		{
 			name:      "single choice then skip",
-			questions: three(session.Question{Question: "Pick one:", Options: stops}),
+			questions: three(acpwire.Question{Question: "Pick one:", Options: stops}),
 			drive: func(t *testing.T, qm *questionModel) *questionModel {
 				qm = questionForm(t, qm, questionMoveDown(1)...)
 				qm = questionForm(t, qm, submit)
@@ -745,7 +731,7 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 		},
 		{
 			name:      "multi choice then skip",
-			questions: three(session.Question{Question: "Pick some:", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}, {Label: "c"}}, Multi: true}),
+			questions: three(acpwire.Question{Question: "Pick some:", Options: []acpwire.QuestionOption{{Label: "a"}, {Label: "b"}, {Label: "c"}}, Multi: true}),
 			drive: func(t *testing.T, qm *questionModel) *questionModel {
 				qm = questionForm(t, qm, questionToggle())
 				qm = questionForm(t, qm, questionMoveDown(2)...)
@@ -757,7 +743,7 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 		},
 		{
 			name:      "custom answer then skip",
-			questions: three(session.Question{Question: "Pick one:", Options: stops}),
+			questions: three(acpwire.Question{Question: "Pick one:", Options: stops}),
 			drive: func(t *testing.T, qm *questionModel) *questionModel {
 				// The custom row is appended after the listed options.
 				qm = questionForm(t, qm, questionMoveDown(len(stops))...)
@@ -770,7 +756,7 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 		},
 		{
 			name:      "untouched default is not an answer",
-			questions: three(session.Question{Question: "Pick one:", Options: stops}),
+			questions: three(acpwire.Question{Question: "Pick one:", Options: stops}),
 			drive: func(t *testing.T, qm *questionModel) *questionModel {
 				// The list highlights its first row, but nothing was submitted.
 				return questionForm(t, qm, escape)
@@ -779,7 +765,7 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 		},
 		{
 			name:      "escape at the first question skips everything",
-			questions: three(session.Question{Question: "Name?"}),
+			questions: three(acpwire.Question{Question: "Name?"}),
 			drive: func(t *testing.T, qm *questionModel) *questionModel {
 				return questionForm(t, qm, escape)
 			},
@@ -787,7 +773,7 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 		},
 		{
 			name:      "unsubmitted multi choices are not an answer",
-			questions: three(session.Question{Question: "Pick some:", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}}, Multi: true}),
+			questions: three(acpwire.Question{Question: "Pick some:", Options: []acpwire.QuestionOption{{Label: "a"}, {Label: "b"}}, Multi: true}),
 			drive: func(t *testing.T, qm *questionModel) *questionModel {
 				qm = questionForm(t, qm, questionToggle())
 				return questionForm(t, qm, escape)
@@ -796,7 +782,7 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 		},
 		{
 			name:      "partial custom text is not an answer",
-			questions: three(session.Question{Question: "Pick one:", Options: stops}),
+			questions: three(acpwire.Question{Question: "Pick one:", Options: stops}),
 			drive: func(t *testing.T, qm *questionModel) *questionModel {
 				qm = questionForm(t, qm, questionMoveDown(len(stops))...)
 				qm = questionForm(t, qm, submit)
@@ -807,7 +793,7 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 		},
 		{
 			name:      "queued advancement skips the focused question",
-			questions: three(session.Question{Question: "Name?"}),
+			questions: three(acpwire.Question{Question: "Name?"}),
 			drive: func(t *testing.T, qm *questionModel) *questionModel {
 				qm = questionType(t, qm, "alice")
 				// Submit without running the returned command: the form has
@@ -819,7 +805,7 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 		},
 		{
 			name:      "unmapped focus falls back to all unanswered",
-			questions: three(session.Question{Question: "Name?"}),
+			questions: three(acpwire.Question{Question: "Name?"}),
 			drive: func(t *testing.T, qm *questionModel) *questionModel {
 				qm = questionType(t, qm, "alice")
 				qm = questionForm(t, qm, submit)
@@ -831,9 +817,8 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			q := &session.PendingQuestion{
-				Questions:    tc.questions,
-				ResponseChan: make(chan []session.Answer, 1),
+			q := acpwire.QuestionRequest{
+				Questions: tc.questions,
 			}
 			qm := questionStart(t, newQuestionModel(q, 80))
 			qm = tc.drive(t, qm)
@@ -861,14 +846,13 @@ func TestQuestionEscapeKeepsCompletedPrefix(t *testing.T) {
 // returns to an earlier question: the focused question and every later one are
 // skipped, even when they were visited before.
 func TestQuestionEscapeAfterNavigatingBack(t *testing.T) {
-	stops := []session.QuestionOption{{Label: "red"}, {Label: "green"}}
-	q := &session.PendingQuestion{
-		Questions: []session.Question{
+	stops := []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}}
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{
 			{Question: "Name?"},
 			{Question: "Pick one:", Options: stops},
 			{Question: "Why?"},
 		},
-		ResponseChan: make(chan []session.Answer, 1),
 	}
 	qm := questionStart(t, newQuestionModel(q, 80))
 	qm = questionType(t, qm, "alice")
@@ -883,7 +867,7 @@ func TestQuestionEscapeAfterNavigatingBack(t *testing.T) {
 	qm = questionForm(t, qm, tea.KeyPressMsg{Code: tea.KeyEscape})
 
 	answers := qm.Answers()
-	want := []string{"alice", session.AnswerUnanswered, session.AnswerUnanswered}
+	want := []string{"alice", acpwire.AnswerUnanswered, acpwire.AnswerUnanswered}
 	if len(answers) != len(want) {
 		t.Fatalf("got %d answers, want %d: %+v", len(answers), len(want), answers)
 	}
@@ -897,13 +881,12 @@ func TestQuestionEscapeAfterNavigatingBack(t *testing.T) {
 // TestQuestionCompletedFormStillFinalizesAll keeps the ordinary path: a form
 // the user completes keeps every question's answer and is not an abort.
 func TestQuestionCompletedFormStillFinalizesAll(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{
 			{Question: "Name?"},
-			{Question: "Pick one:", Options: []session.QuestionOption{{Label: "red"}, {Label: "green"}}},
-			{Question: "Pick some:", Options: []session.QuestionOption{{Label: "a"}, {Label: "b"}}, Multi: true},
+			{Question: "Pick one:", Options: []acpwire.QuestionOption{{Label: "red"}, {Label: "green"}}},
+			{Question: "Pick some:", Options: []acpwire.QuestionOption{{Label: "a"}, {Label: "b"}}, Multi: true},
 		},
-		ResponseChan: make(chan []session.Answer, 1),
 	}
 	qm := questionStart(t, newQuestionModel(q, 80))
 	qm = questionType(t, qm, "alice")
@@ -944,8 +927,8 @@ func TestQuestionPromptKeysFitMinimumWidth(t *testing.T) {
 }
 
 func TestQuestionFinalizeMultiOtherSubstitutesCustom(t *testing.T) {
-	q := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick some:", Options: []session.QuestionOption{{Label: "real"}, {Label: "other-choice"}}, Multi: true}},
+	q := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "Pick some:", Options: []acpwire.QuestionOption{{Label: "real"}, {Label: "other-choice"}}, Multi: true}},
 	}
 	qm := newQuestionModel(q, 80)
 	*qm.multis[0] = []string{questionOptionValue(0), questionOtherSentinel}
@@ -961,8 +944,8 @@ func TestQuestionFinalizeMultiOtherSubstitutesCustom(t *testing.T) {
 	}
 
 	// Sentinel with blank custom text is omitted entirely.
-	q2 := &session.PendingQuestion{
-		Questions: []session.Question{{Question: "Pick some:", Options: []session.QuestionOption{{Label: "real"}, {Label: "other-choice"}}, Multi: true}},
+	q2 := acpwire.QuestionRequest{
+		Questions: []acpwire.Question{{Question: "Pick some:", Options: []acpwire.QuestionOption{{Label: "real"}, {Label: "other-choice"}}, Multi: true}},
 	}
 	qm2 := newQuestionModel(q2, 80)
 	*qm2.multis[0] = []string{questionOptionValue(0), questionOtherSentinel}

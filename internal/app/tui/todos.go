@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"errors"
 	"fmt"
 	"image/color"
 	"strings"
@@ -10,6 +9,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpclient"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/dock"
@@ -17,12 +18,12 @@ import (
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/layout"
 	"marshal/internal/app/tui/listpanel"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/progress"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
-	"marshal/internal/viewmodel"
 )
 
 // todoLine renders one todo row: ✓ teal done, ▸ coral bold in-progress,
@@ -76,8 +77,8 @@ func (m Model) tasksOpen() bool {
 
 const (
 	// workSearchMaxRunes bounds the Work history query, mirroring the
-	// service's own 200-rune limit (viewmodel.workQueryMaxRunes) so the client
-	// can never ask for a page the service would reject.
+	// service's own 200-rune limit (workQueryMaxRunes in viewmodel) so the
+	// client can never ask for a page the service would reject.
 	workSearchMaxRunes = 200
 	// workPageLimit is the page size every Work list request asks for.
 	workPageLimit = 50
@@ -105,7 +106,7 @@ const (
 // replaces the list or appends to it.
 type workPending struct {
 	kind  string
-	query viewmodel.WorkQuery
+	query acpwire.WorkQuery
 	raw   bool
 }
 
@@ -114,7 +115,7 @@ type workPending struct {
 // projection (a listpanel view). It implements dock.Panel.
 //
 // The panel never performs a runtime call. Every Work action emits a
-// workRequestMsg for the model's pump to service, and results come back
+// workRequestMsg for the model's work commands to service, and results come back
 // through applyPage/applyDetail, which reconcile by request ID and TaskKey so
 // a page from a superseded request can never corrupt the list.
 type tasksPanelModel struct {
@@ -122,15 +123,15 @@ type tasksPanelModel struct {
 	panelID string
 
 	// Work availability and identity, refreshed when the panel opens and by
-	// the pump (Task 18) when a snapshot arrives.
+	// the model's syncWork when a snapshot arrives.
 	available      bool
 	conversationID string
-	snapshot       viewmodel.WorkSnapshot
+	snapshot       acpwire.WorkSnapshot
 
 	// Work list
 	list        *listpanel.FieldList
 	mode        string // "live", "attention", "history"
-	items       []viewmodel.WorkItem
+	items       []acpwire.WorkItem
 	nextCursor  string
 	stale       bool
 	selectedKey string
@@ -142,7 +143,7 @@ type tasksPanelModel struct {
 
 	// detail
 	detailOpen bool
-	detail     *viewmodel.WorkDetail
+	detail     *acpwire.WorkDetail
 
 	// request bookkeeping: a page or detail result is only applied while its
 	// requestID still names an outstanding request.
@@ -187,9 +188,9 @@ func (m *Model) nextPanelID() string {
 }
 
 // setWork refreshes the Work availability, identity and projection. The model's
-// Work pump (Task 18) calls it when a snapshot arrives; the panel never reads
-// the service itself.
-func (p *tasksPanelModel) setWork(available bool, conversationID string, snapshot viewmodel.WorkSnapshot) {
+// syncWork calls it when a snapshot arrives; the panel never reads the service
+// itself.
+func (p *tasksPanelModel) setWork(available bool, conversationID string, snapshot acpwire.WorkSnapshot) {
 	p.available = available
 	p.conversationID = conversationID
 	p.snapshot = snapshot
@@ -295,20 +296,19 @@ func (p *tasksPanelModel) openView(name string) tea.Cmd {
 }
 
 // listCmd builds a Work-list request for the current view and query. The
-// conversation identity is filled from the panel's current conversation so a
-// page can never be requested for the wrong root.
+// conversation identity travels in the request, not the query: the session
+// names the conversation (decision 5).
 func (p *tasksPanelModel) listCmd() tea.Cmd {
-	return p.request(workReqList, "", "", viewmodel.WorkQuery{
-		ConversationID: p.conversationID,
-		View:           p.mode,
-		Query:          p.query,
-		Limit:          workPageLimit,
+	return p.request(workReqList, "", "", acpwire.WorkQuery{
+		View:  p.mode,
+		Query: p.query,
+		Limit: workPageLimit,
 	}, false)
 }
 
 // request emits one workRequestMsg and records it as outstanding. The panel
 // returns the command; it never calls the Work service.
-func (p *tasksPanelModel) request(kind, taskKey, resultRevision string, query viewmodel.WorkQuery, raw bool) tea.Cmd {
+func (p *tasksPanelModel) request(kind, taskKey, resultRevision string, query acpwire.WorkQuery, raw bool) tea.Cmd {
 	p.reqSeq++
 	id := fmt.Sprintf("%s.r%d", p.panelID, p.reqSeq)
 	p.pending[id] = workPending{kind: kind, query: query, raw: raw}
@@ -330,14 +330,14 @@ func (p *tasksPanelModel) request(kind, taskKey, resultRevision string, query vi
 // panel or a stale epoch is dropped rather than concatenated. A stale-cursor
 // error marks the list stale instead of appending; the refresh row then asks
 // for page 1 again. Selection is reconciled by TaskKey, never by list index.
-func (p *tasksPanelModel) applyPage(requestID string, page viewmodel.WorkPage, err error) bool {
+func (p *tasksPanelModel) applyPage(requestID string, page acpwire.WorkPage, err error) bool {
 	req, ok := p.pending[requestID]
 	if !ok || req.kind != workReqList {
 		return false
 	}
 	delete(p.pending, requestID)
 	if err != nil {
-		if errors.Is(err, viewmodel.ErrWorkStaleCursor) {
+		if acpclient.IsCode(err, acpwire.CodeStaleWorkCursor) {
 			p.stale = true
 			p.err = ""
 			return true
@@ -348,7 +348,7 @@ func (p *tasksPanelModel) applyPage(requestID string, page viewmodel.WorkPage, e
 	p.err = ""
 	p.stale = false
 	if req.query.Cursor == "" {
-		p.items = append([]viewmodel.WorkItem(nil), page.Items...)
+		p.items = append([]acpwire.WorkItem(nil), page.Items...)
 	} else {
 		for _, it := range page.Items {
 			if p.keyPresent(it.TaskKey) {
@@ -367,7 +367,7 @@ func (p *tasksPanelModel) applyPage(requestID string, page viewmodel.WorkPage, e
 
 // applyDetail opens the read-only detail for one item. Opening or inspecting
 // work never acknowledges it; only the ack action does.
-func (p *tasksPanelModel) applyDetail(requestID string, detail viewmodel.WorkDetail, err error) bool {
+func (p *tasksPanelModel) applyDetail(requestID string, detail acpwire.WorkDetail, err error) bool {
 	req, ok := p.pending[requestID]
 	if !ok || req.kind != workReqInspect {
 		return false
@@ -402,7 +402,7 @@ func (p *tasksPanelModel) expandCursor() tea.Cmd {
 	if !p.liveKey(key) {
 		return nil
 	}
-	return p.request(workReqExpand, key, "", viewmodel.WorkQuery{ConversationID: p.conversationID}, false)
+	return p.request(workReqExpand, key, "", acpwire.WorkQuery{}, false)
 }
 
 // syncSelection records the item under the cursor so the selection survives a
@@ -442,7 +442,7 @@ func (p *tasksPanelModel) keyPresent(key string) bool {
 
 func (p *tasksPanelModel) liveKey(key string) bool {
 	for _, it := range p.snapshot.Items {
-		if it.TaskKey == key && viewmodel.WorkActive(it) {
+		if it.TaskKey == key && livebox.WorkActive(it) {
 			return true
 		}
 	}
@@ -452,12 +452,12 @@ func (p *tasksPanelModel) liveKey(key string) bool {
 // liveAndAttention splits the snapshot into the cards the Work view shows:
 // active membership and settled work that still needs attention. Receipts are
 // counted in the summary, never carded here.
-func (p *tasksPanelModel) liveAndAttention() (live, attention []viewmodel.WorkItem) {
+func (p *tasksPanelModel) liveAndAttention() (live, attention []acpwire.WorkItem) {
 	for _, it := range p.snapshot.Items {
 		switch {
-		case viewmodel.WorkActive(it):
+		case livebox.WorkActive(it):
 			live = append(live, it)
-		case viewmodel.WorkNeedsAttention(it):
+		case livebox.WorkNeedsAttention(it):
 			attention = append(attention, it)
 		}
 	}
@@ -489,7 +489,7 @@ func (p *tasksPanelModel) viewTitle() string {
 
 // itemTitle names one Work row: kind, label and the owner badge, so a row from
 // a subagent or pipeline worker is attributable at a glance.
-func (p *tasksPanelModel) itemTitle(it viewmodel.WorkItem) string {
+func (p *tasksPanelModel) itemTitle(it acpwire.WorkItem) string {
 	kind := progress.Clean(it.Kind, 24, false)
 	if kind == "" {
 		kind = "work"
@@ -511,7 +511,7 @@ func (p *tasksPanelModel) itemTitle(it viewmodel.WorkItem) string {
 	return out
 }
 
-func (p *tasksPanelModel) itemDesc(it viewmodel.WorkItem) string {
+func (p *tasksPanelModel) itemDesc(it acpwire.WorkItem) string {
 	var parts []string
 	if it.State != "" {
 		parts = append(parts, it.State)
@@ -540,7 +540,7 @@ func (p *tasksPanelModel) actionField(id, title string, act func() tea.Cmd) *lis
 	return &listpanel.Field{ID: id, Title: title, Kind: listpanel.KindAction, Act: act}
 }
 
-func (p *tasksPanelModel) itemField(it viewmodel.WorkItem) *listpanel.Field {
+func (p *tasksPanelModel) itemField(it acpwire.WorkItem) *listpanel.Field {
 	item := it
 	return &listpanel.Field{
 		ID:       "item:" + item.TaskKey,
@@ -549,8 +549,7 @@ func (p *tasksPanelModel) itemField(it viewmodel.WorkItem) *listpanel.Field {
 		Kind:     listpanel.KindAction,
 		ActLabel: func() string { return "↵ inspect" },
 		Act: func() tea.Cmd {
-			return p.request(workReqInspect, item.TaskKey, "",
-				viewmodel.WorkQuery{ConversationID: p.conversationID}, false)
+			return p.request(workReqInspect, item.TaskKey, "", acpwire.WorkQuery{}, false)
 		},
 	}
 }
@@ -611,12 +610,11 @@ func (p *tasksPanelModel) pageFields() []*listpanel.Field {
 	case p.nextCursor != "":
 		cursor := p.nextCursor
 		rows = append(rows, p.actionField("work-next", "Next page ›", func() tea.Cmd {
-			return p.request(workReqList, "", "", viewmodel.WorkQuery{
-				ConversationID: p.conversationID,
-				View:           p.mode,
-				Query:          p.query,
-				Cursor:         cursor,
-				Limit:          workPageLimit,
+			return p.request(workReqList, "", "", acpwire.WorkQuery{
+				View:   p.mode,
+				Query:  p.query,
+				Cursor: cursor,
+				Limit:  workPageLimit,
 			}, false)
 		}))
 	}
@@ -651,7 +649,7 @@ func (p *tasksPanelModel) detailFields() []*listpanel.Field {
 		}
 	}
 	rows = append(rows, p.actionField("d-origin", "Jump to origin", func() tea.Cmd {
-		return p.request(workReqOrigin, it.TaskKey, "", viewmodel.WorkQuery{ConversationID: p.conversationID}, false)
+		return p.request(workReqOrigin, it.TaskKey, "", acpwire.WorkQuery{}, false)
 	}))
 	rawLabel := "Show raw"
 	if d.Raw {
@@ -659,11 +657,11 @@ func (p *tasksPanelModel) detailFields() []*listpanel.Field {
 	}
 	rows = append(rows, p.actionField("d-raw", rawLabel, func() tea.Cmd {
 		return p.request(workReqInspect, it.TaskKey, "",
-			viewmodel.WorkQuery{ConversationID: p.conversationID}, !d.Raw)
+			acpwire.WorkQuery{}, !d.Raw)
 	}))
 	if it.Capabilities.Stop {
 		rows = append(rows, p.actionField("d-stop", "Stop", func() tea.Cmd {
-			return p.request(workReqStop, it.TaskKey, "", viewmodel.WorkQuery{ConversationID: p.conversationID}, false)
+			return p.request(workReqStop, it.TaskKey, "", acpwire.WorkQuery{}, false)
 		}))
 	}
 	if it.Capabilities.ResolvePrompt && it.Prompt != nil {

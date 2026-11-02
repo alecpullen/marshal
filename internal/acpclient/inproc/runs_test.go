@@ -86,6 +86,7 @@ func TestStatusCarriesSubagentViews(t *testing.T) {
 				ActiveRoot:  running.Workspace().ActiveRoot,
 				ActiveRoute: routeOf(running.ActiveRoute()),
 				Activity:    activityWire(running.Activity()),
+				SessionID:   running.SessionID(),
 			},
 		},
 		{
@@ -100,6 +101,7 @@ func TestStatusCarriesSubagentViews(t *testing.T) {
 				ActiveRoot:  finished.Workspace().ActiveRoot,
 				ActiveRoute: routeOf(finished.ActiveRoute()),
 				Activity:    activityWire(finished.Activity()),
+				SessionID:   finished.SessionID(),
 			},
 		},
 	}
@@ -138,6 +140,7 @@ func TestSubagentViewsCarryTheDrillOnlyWhileTheChildIsKept(t *testing.T) {
 			Label:     "retrying",
 			StartedAt: 100000,
 		},
+		SessionID: "child-1",
 	}
 	if !reflect.DeepEqual(got[0].Drill, want) {
 		t.Errorf("Subagents[0].Drill = %+v, want %+v", got[0].Drill, want)

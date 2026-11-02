@@ -101,6 +101,11 @@ var movedStateReads = map[string]string{
 	"SetPendingApproval": "4",
 	"ResolveApproval":    "4",
 	"ClearPrompt":        "4",
+
+	// A work item's subagent is found through Status().Subagents since 5a:
+	// the item's reference names the child's session ID, and the wire view
+	// carries it on its drill.
+	"Subagents": "5a",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

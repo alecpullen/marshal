@@ -19,10 +19,9 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/progress"
-	"marshal/internal/viewmodel"
 )
 
 const (
@@ -127,8 +126,8 @@ type AgentMeta struct {
 
 // HeldItem is a finished item that keeps its tray row until the next prompt.
 type HeldItem struct {
-	Item     viewmodel.WorkItem // the finished item; its TaskKey and StartedAt keep its slot
-	Outcome  string             // "done", "exit 1", "stopped", "lost", "failed" or "outcome unknown"
+	Item     acpwire.WorkItem // the finished item; its TaskKey and StartedAt keep its slot
+	Outcome  string           // "done", "exit 1", "stopped", "lost", "failed" or "outcome unknown"
 	Failed   bool
 	Summary  string        // the completion event's summary line; "" when none
 	Duration time.Duration // EndedAt − StartedAt
@@ -140,11 +139,11 @@ type Input struct {
 	Width     int // the column the tray spans
 	MaxRows   int // the most rows the tray may take
 	Now       time.Time
-	Spinner   string               // the turn spinner frame; "" draws glyph.Running
-	Run       *RunRow              // the plan-run row; nil when no run is active
-	Work      []viewmodel.WorkItem // running items only (viewmodel.WorkActive)
-	Held      []HeldItem           // finished items held until the next prompt
-	Previous  map[string]*progress.Snapshot
+	Spinner   string             // the turn spinner frame; "" draws glyph.Running
+	Run       *RunRow            // the plan-run row; nil when no run is active
+	Work      []acpwire.WorkItem // running items only (WorkActive)
+	Held      []HeldItem         // finished items held until the next prompt
+	Previous  map[string]*acpwire.WorkProgress
 	Headlines map[string]string    // agent TaskKey → the child's newest narration headline
 	Agents    map[string]AgentMeta // agent TaskKey → the model and provider running it
 	Expanded  string               // TaskKey of the one open card

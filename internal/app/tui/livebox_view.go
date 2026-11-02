@@ -9,7 +9,6 @@ import (
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/livebox"
-	"marshal/internal/viewmodel"
 )
 
 // livebox_view.go wires the live box to the model: it snapshots the model for
@@ -91,7 +90,7 @@ func (m Model) boxInput() livebox.Input {
 		}
 	}
 	for _, it := range m.workSnapshot.Items {
-		if viewmodel.WorkActive(it) {
+		if livebox.WorkActive(it) {
 			in.Work = append(in.Work, it)
 			continue
 		}
@@ -102,7 +101,7 @@ func (m Model) boxInput() livebox.Input {
 	// A subagent's card carries its route provenance and, while it runs, its
 	// child's newest narration headline. Held agents keep the provenance too:
 	// the finished row still says which model ran the work.
-	agents := make([]viewmodel.WorkItem, 0, len(in.Work)+len(in.Held))
+	agents := make([]acpwire.WorkItem, 0, len(in.Work)+len(in.Held))
 	agents = append(agents, in.Work...)
 	for _, h := range in.Held {
 		agents = append(agents, h.Item)
@@ -135,7 +134,7 @@ func (m Model) boxInput() livebox.Input {
 			Provider: v.Provider,
 			Fallback: v.Fallback,
 		}
-		if !viewmodel.WorkActive(it) || v.Headline == "" {
+		if !livebox.WorkActive(it) || v.Headline == "" {
 			continue
 		}
 		if in.Headlines == nil {
@@ -167,7 +166,7 @@ func (m Model) boxInput() livebox.Input {
 // has been trimmed or rolled out of the transcript, the row says so rather
 // than swallowing the key.
 func (m *Model) activateWorkRow(key string) tea.Cmd {
-	if it, ok := m.workItemByKey(key); ok && viewmodel.WorkActive(it) {
+	if it, ok := m.workItemByKey(key); ok && livebox.WorkActive(it) {
 		if m.workExpanded == key {
 			m.workExpanded = ""
 		} else {
@@ -188,7 +187,7 @@ func (m *Model) activateWorkRow(key string) tea.Cmd {
 // ordinary tool row. The row's words come from the completion event, so the
 // tray and history always agree; until the event exists it falls back to the
 // item's own state, with no summary.
-func (m Model) heldItem(it viewmodel.WorkItem) (livebox.HeldItem, bool) {
+func (m Model) heldItem(it acpwire.WorkItem) (livebox.HeldItem, bool) {
 	if it.Kind == "command" && it.Attachment == "foreground" {
 		return livebox.HeldItem{}, false
 	}
@@ -197,12 +196,13 @@ func (m Model) heldItem(it viewmodel.WorkItem) (livebox.HeldItem, bool) {
 	default:
 		return livebox.HeldItem{}, false
 	}
-	if !it.EndedAt.After(m.heldSince) {
+	ended := acpwire.Time(it.EndedAt)
+	if !ended.After(m.heldSince) {
 		return livebox.HeldItem{}, false
 	}
 	h := livebox.HeldItem{
 		Item:     it,
-		Duration: max(it.EndedAt.Sub(it.StartedAt), 0),
+		Duration: max(ended.Sub(acpwire.Time(it.StartedAt)), 0),
 	}
 	if ref, ok := m.completions[it.TaskKey]; ok && ref.info != nil {
 		h.Outcome = ref.info.Outcome

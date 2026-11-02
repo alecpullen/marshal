@@ -13,9 +13,9 @@ import (
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
+	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/strutil"
-	"marshal/internal/viewmodel"
 )
 
 // minHeadlineCols is the room the right-aligned meta must leave the headline.
@@ -94,13 +94,13 @@ func (c *stepRenderCtx) detailOf(key, version string) *acpwire.NodeDetail {
 // workPointer maps a tool call to the box row its work landed in: the kind
 // glyph and id of the first active item whose origin is that call. A call whose
 // work has no row yet reads "", so it keeps its spinner and its output.
-func workPointer(items []viewmodel.WorkItem) func(toolCallID string) string {
+func workPointer(items []acpwire.WorkItem) func(toolCallID string) string {
 	return func(toolCallID string) string {
 		if toolCallID == "" {
 			return ""
 		}
 		for _, it := range items {
-			if !viewmodel.WorkActive(it) || it.Origin.ToolCallID != toolCallID {
+			if !livebox.WorkActive(it) || it.Origin.ToolCallID != toolCallID {
 				continue
 			}
 			switch it.Kind {

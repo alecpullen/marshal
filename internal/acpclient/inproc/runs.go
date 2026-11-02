@@ -34,6 +34,7 @@ func subagentsOf(views []session.SubagentView) []acpwire.Subagent {
 				ActiveRoot:  v.Child.Workspace().ActiveRoot,
 				ActiveRoute: routeOf(v.Child.ActiveRoute()),
 				Activity:    activityWire(v.Child.Activity()),
+				SessionID:   v.Child.SessionID(),
 			}
 		}
 	}

@@ -10,10 +10,10 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/viewmodel"
 )
 
 // Plan assembles the tray from its sections and sheds it until it fits
@@ -242,7 +242,7 @@ func borderLine(open, label, close string, w int) string {
 // mergedEntry is one row of the running-and-held stack: a running item, or a
 // held one, with the start time and key that fix its slot.
 type mergedEntry struct {
-	item    viewmodel.WorkItem
+	item    acpwire.WorkItem
 	held    *HeldItem
 	start   time.Time
 	key     string
@@ -257,7 +257,7 @@ func mergedOrder(in Input, heldFolded bool) []mergedEntry {
 	for _, it := range in.Work {
 		entries = append(entries, mergedEntry{
 			item:    it,
-			start:   it.StartedAt,
+			start:   acpwire.Time(it.StartedAt),
 			key:     it.TaskKey,
 			blocked: it.State == "blocked",
 		})
@@ -267,7 +267,7 @@ func mergedOrder(in Input, heldFolded bool) []mergedEntry {
 			h := &in.Held[i]
 			entries = append(entries, mergedEntry{
 				held:  h,
-				start: h.Item.StartedAt,
+				start: acpwire.Time(h.Item.StartedAt),
 				key:   h.Item.TaskKey,
 			})
 		}

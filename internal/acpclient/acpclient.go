@@ -51,9 +51,10 @@ type Session interface {
 	// ACP: session/status (new in P3). A session_status update refreshes it.
 	Status() acpwire.SessionStatus
 
-	// Changed fires after anything Status returns may have changed. It is a
-	// coalescing signal with a buffer of 1: a reader re-reads Status and never
-	// infers what changed. It is closed when a swap replaces the session.
+	// Changed fires after anything Status or Work returns may have changed. It
+	// is a coalescing signal with a buffer of 1: a reader re-reads Status and
+	// never infers what changed. It is closed when a swap replaces the
+	// session.
 	//
 	// ACP: none (the client fires it; P3's mirror fires it after applying a
 	// session/update notification).
@@ -186,4 +187,33 @@ type Session interface {
 	//
 	// ACP: session/rollback (new in P3).
 	Rollback(ctx context.Context) error
+
+	// Work is the session's live work projection (C8), and whether the
+	// session serves work at all. The snapshot is the newest one the work
+	// stream delivered for the session's conversation, and Changed fires
+	// after each. Work does not block. A session that serves no work reports
+	// false and a zero snapshot.
+	//
+	// ACP: session/work_list (exists), the live view. A work_state update
+	// refreshes it.
+	Work() (acpwire.WorkSnapshot, bool)
+
+	// ListWork lists one page of the session's attention or history view. A
+	// cursor older than the work history fails with CodeStaleWorkCursor.
+	//
+	// ACP: session/work_list (exists), the attention and history views.
+	ListWork(ctx context.Context, query acpwire.WorkQuery) (acpwire.WorkPage, error)
+
+	// InspectWork returns the bounded detail of the item with that task key.
+	// raw asks for the output as captured, without display cleaning.
+	//
+	// ACP: session/work_inspect (exists).
+	InspectWork(ctx context.Context, taskKey string, raw bool) (acpwire.WorkDetail, error)
+
+	// StopWork asks the owner of the item with that task key to stop it,
+	// giving reason. The result describes the request, and comes back with
+	// the error when the request is refused.
+	//
+	// ACP: session/work_stop (exists).
+	StopWork(ctx context.Context, taskKey, reason string) (acpwire.WorkStopResult, error)
 }

@@ -21,6 +21,13 @@ func newChildState(t *testing.T) *session.State {
 	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 }
 
+// newChildStateWithID is newChildState with the child's session ID set: a work
+// item's reference names the child by that ID, not by the registered view.
+func newChildStateWithID(t *testing.T, id string) *session.State {
+	t.Helper()
+	return session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{SessionID: id})
+}
+
 func TestDrillSwapsTranscriptToChildSession(t *testing.T) {
 	m := newTestModel(t)
 	m.state.AddMessage(session.RoleAssistant, "parent normal text", session.ContentTypePlain)
@@ -76,6 +83,43 @@ func TestDrillIntoAnUnknownSubagentDoesNothing(t *testing.T) {
 	}
 	if len(m.viewStack) != 0 {
 		t.Fatal("drilling into an ID Status does not name must not push the view stack")
+	}
+}
+
+func TestWorkOriginDrillsIntoItsSubagent(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildStateWithID(t, "child-1")
+	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.workSnapshot = acpwire.WorkSnapshot{Items: []acpwire.WorkItem{{
+		TaskKey:   "work:agent",
+		Reference: acpwire.WorkReference{ChildSessionID: "child-1"},
+	}}}
+
+	m, _ = m.jumpToWorkOrigin("work:agent")
+
+	if len(m.viewStack) != 1 {
+		t.Fatalf("viewStack = %d views, want one after jumping to a live child", len(m.viewStack))
+	}
+	if got := m.viewStack[0].ID; got != view.ID {
+		t.Fatalf("drilled into %d, want the registered view %d", got, view.ID)
+	}
+}
+
+func TestWorkOriginWithAGoneChildFallsThrough(t *testing.T) {
+	m := newTestModel(t)
+	m.workSnapshot = acpwire.WorkSnapshot{Items: []acpwire.WorkItem{{
+		TaskKey:   "work:agent",
+		Reference: acpwire.WorkReference{ChildSessionID: "gone"},
+	}}}
+
+	m, _ = m.jumpToWorkOrigin("work:agent")
+
+	if len(m.viewStack) != 0 {
+		t.Fatalf("viewStack = %d views, want none for a child the session released", len(m.viewStack))
+	}
+	if got := lastMessage(t, m); got != "The referenced transcript position is no longer available." {
+		t.Fatalf("last message = %q, want the unavailable transcript text", got)
 	}
 }
 

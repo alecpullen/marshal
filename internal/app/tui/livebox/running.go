@@ -9,10 +9,10 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/progress"
-	"marshal/internal/viewmodel"
 )
 
 // edge draws the running row's left edge. The glyph package has no constant
@@ -45,7 +45,7 @@ func kindStyle(kind string) (g string, c color.Color) {
 
 // itemID is the row's identity: a subagent's #N, else the display id, else
 // the source id, cut to six cells so it never eats the title's room.
-func itemID(it viewmodel.WorkItem) string {
+func itemID(it acpwire.WorkItem) string {
 	id := it.DisplayID
 	if it.Kind == "agent" {
 		id = "#" + it.SourceID
@@ -74,19 +74,19 @@ func cardEdge(kind string) string {
 // kind's colour, the title, the measurement, and the elapsed clock with the
 // spinner right-aligned. It is pure — every string is cleaned and cut on a
 // cell boundary, and the producer controls none of the colour or layout.
-func runningRow(it viewmodel.WorkItem, in Input, w int) Row {
+func runningRow(it acpwire.WorkItem, in Input, w int) Row {
 	return runningRowText(it, in, w, true)
 }
 
 // runningHeadRow is runningRow without its measurement: a subagent's card draws
 // the measurement on its second line, under the title, so its head row leaves
 // that room to the title and the clock.
-func runningHeadRow(it viewmodel.WorkItem, in Input, w int) Row {
+func runningHeadRow(it acpwire.WorkItem, in Input, w int) Row {
 	return runningRowText(it, in, w, false)
 }
 
 // runningRowText is runningRow with the measurement suppressible.
-func runningRowText(it viewmodel.WorkItem, in Input, w int, withMeasure bool) Row {
+func runningRowText(it acpwire.WorkItem, in Input, w int, withMeasure bool) Row {
 	w = max(w, 1)
 	g, c := kindStyle(it.Kind)
 	style := lipgloss.NewStyle().Foreground(c)
@@ -95,8 +95,8 @@ func runningRowText(it viewmodel.WorkItem, in Input, w int, withMeasure bool) Ro
 	// The right-hand side is the elapsed clock and the turn spinner. The
 	// clock stays plain so the row has one coloured anchor.
 	elapsed := time.Duration(0)
-	if !it.StartedAt.IsZero() {
-		elapsed = max(in.Now.Sub(it.StartedAt), 0)
+	if it.StartedAt != 0 {
+		elapsed = max(in.Now.Sub(acpwire.Time(it.StartedAt)), 0)
 	}
 	spinner := in.Spinner
 	if spinner == "" {
@@ -132,7 +132,7 @@ func runningRowText(it viewmodel.WorkItem, in Input, w int, withMeasure bool) Ro
 // itemRows is a running item's rows as the tray draws them. A subagent is a
 // two-row card — its head, then the model running it and what it is doing — so
 // the provenance is visible without expanding it. Every other kind is one row.
-func itemRows(it viewmodel.WorkItem, in Input, w int) []Row {
+func itemRows(it acpwire.WorkItem, in Input, w int) []Row {
 	if it.Kind != "agent" {
 		return []Row{runningRow(it, in, w)}
 	}
@@ -145,7 +145,7 @@ func itemRows(it viewmodel.WorkItem, in Input, w int) []Row {
 // under the title so the pair reads as one card, and carries the item's target so a click anywhere on the card acts on
 // the same work. It is always one row: a card that grew and shrank as a child
 // went quiet would move the rows under the cursor.
-func agentDetailRow(it viewmodel.WorkItem, in Input, w int) Row {
+func agentDetailRow(it acpwire.WorkItem, in Input, w int) Row {
 	route := agentRoute(in.Agents[it.TaskKey])
 	room := max(w-rowIndent-ansi.StringWidth(route)-3, 0)
 	measurement := measure(headlined(it, in.Headlines), in.Previous[it.TaskKey], in.Now, room)
@@ -291,7 +291,7 @@ func outcomeGlyph(outcome string, failed bool) string {
 // headlined folds the child agent's newest narration headline into the item's
 // activity, so the measurement reads one field whether the headline came from
 // the projection or the turn's live narration.
-func headlined(it viewmodel.WorkItem, headlines map[string]string) viewmodel.WorkItem {
+func headlined(it acpwire.WorkItem, headlines map[string]string) acpwire.WorkItem {
 	if it.Kind != "agent" {
 		return it
 	}
@@ -304,13 +304,13 @@ func headlined(it viewmodel.WorkItem, headlines map[string]string) viewmodel.Wor
 // measure is the running item's measurement: the one line that says how far
 // the work has got, in the most honest form its producer supports. First
 // match wins.
-func measure(it viewmodel.WorkItem, prev *progress.Snapshot, now time.Time, room int) string {
+func measure(it acpwire.WorkItem, prev *acpwire.WorkProgress, now time.Time, room int) string {
 	return measureText(it, prev, now, room, true)
 }
 
 // measureText is measure with the bar suppressible: the expanded card draws
 // its own full-width bar, so its measurement line carries the text alone.
-func measureText(it viewmodel.WorkItem, prev *progress.Snapshot, now time.Time, room int, withBar bool) string {
+func measureText(it acpwire.WorkItem, prev *acpwire.WorkProgress, now time.Time, room int, withBar bool) string {
 	if room <= 0 {
 		return ""
 	}
@@ -327,8 +327,8 @@ func measureText(it viewmodel.WorkItem, prev *progress.Snapshot, now time.Time, 
 			return cut(act, room)
 		}
 	}
-	if p := it.Progress; p != nil {
-		if s := progressText(it, p, prev, now, room, withBar); s != "" {
+	if it.Progress != nil {
+		if s := progressText(it, progressOf(it.Progress), progressOf(prev), now, room, withBar); s != "" {
 			return cut(s, room)
 		}
 	}
@@ -341,7 +341,7 @@ func measureText(it viewmodel.WorkItem, prev *progress.Snapshot, now time.Time, 
 // progressText renders a progress-bearing item's measurement: the go test
 // JSON counts, a bar with its percentage and count, an untotalled metric, or a
 // bare phase label. "" when the snapshot carries none of them.
-func progressText(it viewmodel.WorkItem, p *progress.Snapshot, prev *progress.Snapshot, now time.Time, room int, withBar bool) string {
+func progressText(it acpwire.WorkItem, p *progress.Snapshot, prev *progress.Snapshot, now time.Time, room int, withBar bool) string {
 	m, ok := primaryMetric(p)
 	est := progress.EstimateFor(prev, p, m.ID, now, it.State == "stopping")
 	switch {
@@ -360,7 +360,7 @@ func progressText(it viewmodel.WorkItem, p *progress.Snapshot, prev *progress.Sn
 // isGoTestJSON reports whether a snapshot came from the go test JSON source,
 // which reports observed counts only: there is no suite denominator to invent,
 // so it never renders a percentage.
-func isGoTestJSON(it viewmodel.WorkItem) bool {
+func isGoTestJSON(it acpwire.WorkItem) bool {
 	return it.ProgressConfig != nil && it.ProgressConfig.Source == "go-test-json"
 }
 
@@ -400,7 +400,7 @@ func goMetric(p *progress.Snapshot, label string) float64 {
 // fractionText renders a metric with a known total: the phase prefix when the
 // phase has one, the bar and percentage, the count, and then the stale signal,
 // the reported-done notice or the ETA and rate.
-func fractionText(it viewmodel.WorkItem, p *progress.Snapshot, m progress.Metric, est progress.Estimate, now time.Time, room int, withBar bool) string {
+func fractionText(it acpwire.WorkItem, p *progress.Snapshot, m progress.Metric, est progress.Estimate, now time.Time, room int, withBar bool) string {
 	_, c := kindStyle(it.Kind)
 	frac := *est.Fraction
 	pct := fmt.Sprintf("%.0f%%", frac*100)
@@ -455,7 +455,7 @@ func phaseLabel(ph *progress.Phase) string {
 }
 
 // promptWord names what a blocked item is waiting for, by the request's kind.
-func promptWord(p *viewmodel.WorkPrompt) string {
+func promptWord(p *acpwire.WorkPrompt) string {
 	if p == nil {
 		return "input"
 	}
@@ -478,7 +478,7 @@ func promptWord(p *viewmodel.WorkPrompt) string {
 // header row first, then the full-width bar, the measurement, the detail or
 // checklist, and the actions. Every row carries the item's target, so a click
 // anywhere on the card acts on the same work.
-func card(it viewmodel.WorkItem, in Input, w int) []Row {
+func card(it acpwire.WorkItem, in Input, w int) []Row {
 	w = max(w, 1)
 	target := Target{Kind: TargetWork, Key: it.TaskKey}
 	it = headlined(it, in.Headlines)
@@ -502,9 +502,9 @@ func card(it viewmodel.WorkItem, in Input, w int) []Row {
 	}
 	inner := max(w-2, 1)
 
-	if p := it.Progress; p != nil {
+	if p := progressOf(it.Progress); p != nil {
 		if m, ok := primaryMetric(p); ok {
-			if est := progress.EstimateFor(prev, p, m.ID, in.Now, it.State == "stopping"); est.Fraction != nil {
+			if est := progress.EstimateFor(progressOf(prev), p, m.ID, in.Now, it.State == "stopping"); est.Fraction != nil {
 				_, c := kindStyle(it.Kind)
 				frac := *est.Fraction
 				add(Bar(frac, max(inner-8, 1), c) + " " + fmt.Sprintf("%.0f%%", frac*100))
@@ -522,8 +522,8 @@ func card(it viewmodel.WorkItem, in Input, w int) []Row {
 
 // cardDetail is the card's detail row: the producer's detail, else the
 // checklist, else the last useful output line.
-func cardDetail(it viewmodel.WorkItem, in Input) string {
-	if p := it.Progress; p != nil {
+func cardDetail(it acpwire.WorkItem, in Input) string {
+	if p := progressOf(it.Progress); p != nil {
 		if d := clean(p.Detail, 120); d != "" {
 			return d
 		}
@@ -566,7 +566,7 @@ func cardChecklist(p *progress.Snapshot, in Input) string {
 }
 
 // cardActions is the card's action line, each action only when it applies.
-func cardActions(it viewmodel.WorkItem) string {
+func cardActions(it acpwire.WorkItem) string {
 	parts := []string{"↵ collapse"}
 	if it.Capabilities.Stop {
 		parts = append(parts, "s stop")

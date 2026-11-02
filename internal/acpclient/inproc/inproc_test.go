@@ -257,6 +257,7 @@ func TestStatusMirrorsTheState(t *testing.T) {
 				ActiveRoot:  child.Workspace().ActiveRoot,
 				ActiveRoute: routeOf(child.ActiveRoute()),
 				Activity:    activityWire(child.Activity()),
+				SessionID:   child.SessionID(),
 			},
 		}},
 		Git: acpwire.Git{Branch: "feature", Worktree: "wt", InRepo: true},

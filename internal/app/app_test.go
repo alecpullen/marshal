@@ -2449,13 +2449,14 @@ func TestRunWiresMemoryBrowserOpensWithCtrlK(t *testing.T) {
 	}
 }
 
-// TestRunWiresSharedWorkService pins that Run hands the TUI the same Work
-// facade the runtime and ACP use: the runtime pointer itself. With a Work
-// service attached, the now bar's project-owned work lane is active, so Ctrl+T
-// opens the Tasks panel on the Work tab and renders its empty state. A nil
-// service (the pre-change wiring) leaves the work lane inactive and produces a
-// notice instead of the panel, so the "No work yet" assertion is what proves
-// WithWork(rt) reached the model.
+// TestRunWiresSharedWorkService pins that Run's session serves the same Work
+// facade the runtime and ACP use: the adapter's Deps.Work is the runtime
+// pointer itself. With a Work service attached, the now bar's project-owned
+// work lane is active, so Ctrl+T opens the Tasks panel on the Work tab and
+// renders its empty state. A nil service (the pre-change wiring) leaves the
+// work lane inactive and produces a notice instead of the panel, so the "No
+// work yet" assertion is what proves the adapter's work service reached the
+// model.
 func TestRunWiresSharedWorkService(t *testing.T) {
 	dir := t.TempDir()
 	// Run() resolves the user config and first-run state from the real home
@@ -2481,8 +2482,8 @@ func TestRunWiresSharedWorkService(t *testing.T) {
 
 	// An active legacy route: the runtime must build a runner, because a
 	// provider-less startup leaves a NoticeProvider notice that suppresses the
-	// whole runner-options block (and with it WithWork). This fixture config
-	// needs no network; it only has to resolve a route.
+	// whole runner-options block (and with it the adapter's work service). This
+	// fixture config needs no network; it only has to resolve a route.
 	cfg := config.Default()
 	cfg.Profile.Default = "single"
 	cfg.Models.Presets = map[string]routing.ModelPreset{

@@ -66,7 +66,6 @@ import (
 	"marshal/internal/llm/schema"
 	"marshal/internal/pipeline"
 	"marshal/internal/postmortem"
-	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/sddauthor"
 	"marshal/internal/sddplans"
@@ -74,7 +73,6 @@ import (
 	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
-	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -740,32 +738,13 @@ type Model struct {
 	// tray and history always agree.
 	completions map[string]completionRef
 
-	// workService is the runtime's Work facade (WithWork). When attached the
-	// now bar renders the immutable WorkSnapshot's bounded cards instead of
-	// the legacy owner rows; nil (the default) leaves the existing now bar
-	// untouched. Task 18 owns the event pump that refreshes workSnapshot.
-	workService viewmodel.WorkService
-	// workEvents is the persistent WorkSnapshot subscription. It is created
-	// once by New (and re-created on a session rebind) with a child cancel
-	// context; workCancel cancels it. workSubscriptionID advances on every
-	// rebind and is captured by each pump, so an event from a superseded
-	// subscription is ignored rather than applied. A terminated pump does not
-	// resubscribe itself.
-	workEvents         <-chan pubsub.Event[viewmodel.WorkSnapshot]
-	workCancel         context.CancelFunc
-	workSubscriptionID uint64
-	// workConversation and workEpoch bind the conversation and runtime epoch
-	// the stream must match. They are taken from the service's own seed
-	// snapshot at subscribe time, never from an arbitrary late event.
-	workConversation string
-	workEpoch        string
 	// workSnapshot is the newest immutable Work projection. The bar only
 	// reads it: it never mutates the snapshot and never fills a gap from the
 	// agent, job or watch owners.
-	workSnapshot viewmodel.WorkSnapshot
+	workSnapshot acpwire.WorkSnapshot
 	// workPrevious holds the previous progress observation per TaskKey, kept
 	// so a card can derive a measured rate and ETA from two observations.
-	workPrevious map[string]*progress.Snapshot
+	workPrevious map[string]*acpwire.WorkProgress
 	// workExpanded names the single card the reader opened. Empty is the
 	// collapsed default; a card whose item settles or disappears clears it.
 	workExpanded string
@@ -1087,18 +1066,6 @@ func WithPlanAuthorFactory(ctx context.Context, factory PlanAuthorFactory) Optio
 	return func(m *Model) {
 		m.ctx = ctx
 		m.planAuthorFactory = factory
-	}
-}
-
-// WithWork wires the runtime's Work facade. When set, the now bar renders
-// the immutable WorkSnapshot's bounded cards from the runtime projection and
-// never reads the local agent, job or watch owners. A nil service (the
-// default) leaves the existing now bar fallback intact, so old behaviour and
-// its tests are unchanged. Task 18 connects the event pump that refreshes the
-// snapshot; until then callers may inject one directly.
-func WithWork(service viewmodel.WorkService) Option {
-	return func(m *Model) {
-		m.workService = service
 	}
 }
 
@@ -1745,13 +1712,9 @@ func New(host acpclient.Host, sess acpclient.Session, opts ...Option) Model {
 	if m.filePopup == nil {
 		m.filePopup = newCompletionPopup(m.fileIndex)
 	}
-	// Subscribe to the Work snapshot stream once. The subscription is created
-	// before the seed snapshot is read so nothing published between the two is
-	// lost; the seed then binds the conversation and epoch the stream must
-	// match.
-	if m.workService != nil {
-		m.startWorkSubscription()
-	}
+	// Seed the work view from the session the model holds. The session serves
+	// the runtime's Work snapshot, and signals Changed when it changes.
+	m.resetWork()
 
 	// Eagerly build inline approval/question forms if the session already
 	// has a pending request (parent or subagent), so the first render shows
@@ -1809,9 +1772,6 @@ func (m Model) Init() tea.Cmd {
 	cmds = append(cmds, refreshSheetCmd(m.ctx, m.sess, acpwire.SheetRefresh{Rebase: true}))
 	if cmd := pumpChanged(m.sess.Changed()); cmd != nil {
 		cmds = append(cmds, cmd)
-	}
-	if m.workEvents != nil {
-		cmds = append(cmds, pumpWorkEvents(m.workEvents, m.workSubscriptionID))
 	}
 	return tea.Batch(cmds...)
 }
@@ -2484,11 +2444,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Runtime messages always stay with the parent model so background state
-	// remains current while a dock panel is open. A Work snapshot is the same
-	// kind of background state: it must land even with a panel or prompt up.
-	if wm, ok := msg.(workMsg); ok {
-		return m.handleWorkMsg(wm)
-	}
+	// remains current while a dock panel is open.
 	switch msg.(type) {
 	case agentFinishedMsg, planAuthorFinishedMsg, changedMsg, agentTickMsg, spinnerTickMsg, suggestionMsg, callersMsg, detailMsg:
 		return m.handleRuntimeMessage(msg)
@@ -5859,6 +5815,7 @@ func (m Model) handleChanged(msg changedMsg) (Model, tea.Cmd) {
 		}
 	}
 
+	m.syncWork()
 	m.refreshViewport()
 	if cmd := m.flushPendingModelOptions(); cmd != nil {
 		cmds = append(cmds, cmd)
@@ -6213,60 +6170,46 @@ func (m Model) steeringStatusSegment(r *acpwire.SteeringReceipt) (string, bool) 
 // is inside it. It is a repaint bound only — it never extends a receipt.
 const workReceiptTickWindow = 5 * time.Second
 
-// startWorkSubscription (re)establishes the Work snapshot stream. It runs once
-// from New for the initial conversation and again on every session rebind. The
-// subscription is created before the seed snapshot is read, so an event
-// published between the two is never lost; the seed then binds the conversation
-// and runtime epoch the stream must match. workSubscriptionID advances on every
-// rebind, so a pump from the superseded channel is ignored rather than applied.
-func (m *Model) startWorkSubscription() {
-	if m.workService == nil {
+// workAvailable reports whether the session serves work.
+func (m Model) workAvailable() bool {
+	_, ok := m.sess.Work()
+	return ok
+}
+
+// syncWork applies the session's work snapshot: it records the previous
+// progress observations, keeps the snapshot and hands it to an open Tasks
+// panel. A session that serves no work leaves the model's snapshot alone.
+func (m *Model) syncWork() {
+	snap, ok := m.sess.Work()
+	if !ok {
 		return
 	}
-	m.cancelWorkSubscription()
-	ctx := m.ctx
-	if ctx == nil {
-		ctx = context.Background()
+	if snap.ConversationID == m.workSnapshot.ConversationID &&
+		snap.Revision == m.workSnapshot.Revision {
+		return
 	}
-	child, cancel := context.WithCancel(ctx)
-	m.workCancel = cancel
-	m.workSubscriptionID++
-	m.workEvents = m.workService.SubscribeWork(child)
-	snap := m.workService.WorkSnapshot()
+	m.notePreviousProgress(snap)
+	m.workSnapshot = snap
+	if m.tasksPanel != nil {
+		m.tasksPanel.setWork(true, m.sess.ID(), snap)
+	}
+}
+
+// resetWork starts the work view over for the session the model holds: the
+// session's snapshot as the seed, no previous observations, no expanded card,
+// and an open Tasks panel's Work tab cleared. It does nothing for a session
+// that serves no work.
+func (m *Model) resetWork() {
+	if !m.workAvailable() {
+		return
+	}
+	snap, _ := m.sess.Work()
 	m.workSnapshot = snap
 	m.workPrevious = nil
-	m.workConversation = snap.ConversationID
-	m.workEpoch = snap.RuntimeEpoch
 	m.workExpanded = ""
 	if m.tasksPanel != nil {
 		m.resetTasksPanelWork()
 	}
-}
-
-// cancelWorkSubscription drops the current stream and its child context. A
-// terminated pump does not resubscribe itself: only an explicit rebind starts a
-// new one.
-func (m *Model) cancelWorkSubscription() {
-	if m.workCancel != nil {
-		m.workCancel()
-		m.workCancel = nil
-	}
-	m.workEvents = nil
-}
-
-// rebindWorkSession tears down the old conversation's Work stream, clears the
-// cards and the panel's outstanding requests, seeds the new conversation's epoch
-// and re-arms the pump. It returns the re-armed pump command, or nil when no
-// service is attached.
-func (m *Model) rebindWorkSession() tea.Cmd {
-	if m.workService == nil {
-		return nil
-	}
-	m.startWorkSubscription()
-	if m.workEvents == nil {
-		return nil
-	}
-	return pumpWorkEvents(m.workEvents, m.workSubscriptionID)
 }
 
 // resetTasksPanelWork clears the panel's Work tab after a session rebind: its
@@ -6285,54 +6228,27 @@ func (m *Model) resetTasksPanelWork() {
 	p.detail = nil
 	p.detailOpen = false
 	p.err = ""
-	p.setWork(m.workService != nil, m.sess.ID(), m.workSnapshot)
-}
-
-// handleWorkMsg applies one snapshot event. An event from a superseded
-// subscription, another conversation or an older revision is dropped; either
-// way the same pump is re-armed (unless this subscription was replaced, in
-// which case its pump is dead and the current one re-arms itself).
-func (m Model) handleWorkMsg(msg workMsg) (Model, tea.Cmd) {
-	if msg.subscriptionID != m.workSubscriptionID || m.workEvents == nil {
-		return m, nil
-	}
-	rearm := func() tea.Cmd { return pumpWorkEvents(m.workEvents, msg.subscriptionID) }
-	// Bind strictly: a snapshot from another conversation, or one older than
-	// what is already shown for the same conversation, is ignored.
-	if m.workConversation != "" && msg.snapshot.ConversationID != m.workConversation {
-		return m, rearm()
-	}
-	if msg.snapshot.ConversationID == m.workSnapshot.ConversationID &&
-		msg.snapshot.Revision < m.workSnapshot.Revision {
-		return m, rearm()
-	}
-	m.notePreviousProgress(msg.snapshot)
-	m.workSnapshot = msg.snapshot
-	if m.tasksPanel != nil {
-		m.tasksPanel.setWork(m.workService != nil, m.sess.ID(), msg.snapshot)
-	}
-	m.refreshViewport()
-	return m, rearm()
+	p.setWork(m.workAvailable(), m.sess.ID(), m.workSnapshot)
 }
 
 // notePreviousProgress records each running item's previous progress
 // observation, so the next snapshot can be measured against it. Keys absent
 // from next are dropped: a settled item has no rate to show.
-func (m *Model) notePreviousProgress(next viewmodel.WorkSnapshot) {
-	prev := make(map[string]*progress.Snapshot, len(next.Items))
+func (m *Model) notePreviousProgress(next acpwire.WorkSnapshot) {
+	prev := make(map[string]*acpwire.WorkProgress, len(next.Items))
 	for _, it := range next.Items {
 		if it.Progress == nil {
 			continue
 		}
-		var old *progress.Snapshot
+		var old *acpwire.WorkProgress
 		for i := range m.workSnapshot.Items {
 			if m.workSnapshot.Items[i].TaskKey == it.TaskKey {
 				old = m.workSnapshot.Items[i].Progress
 				break
 			}
 		}
-		if old != nil && old.ObservedAt.Before(it.Progress.ObservedAt) {
-			prev[it.TaskKey] = progress.Clone(old)
+		if old != nil && old.ObservedAt < it.Progress.ObservedAt {
+			prev[it.TaskKey] = old
 			continue
 		}
 		if p, ok := m.workPrevious[it.TaskKey]; ok {
@@ -6387,12 +6303,12 @@ func (m Model) handleWorkRequest(msg workRequestMsg) (Model, tea.Cmd) {
 // workListCmd issues one list request off the Update thread, capturing the
 // exact conversation, panel and request identity so the reply can be validated.
 func (m Model) workListCmd(msg workRequestMsg) tea.Cmd {
-	svc := m.workService
-	if svc == nil {
+	if !m.workAvailable() {
 		return nil
 	}
+	sess := m.sess
 	return func() tea.Msg {
-		page, err := svc.ListWork(context.Background(), msg.query)
+		page, err := sess.ListWork(context.Background(), msg.query)
 		return workPageMsg{
 			conversationID: msg.conversationID,
 			panelID:        msg.panelID,
@@ -6406,14 +6322,13 @@ func (m Model) workListCmd(msg workRequestMsg) tea.Cmd {
 
 // workInspectCmd issues one inspect request off the Update thread.
 func (m Model) workInspectCmd(msg workRequestMsg) tea.Cmd {
-	svc := m.workService
-	if svc == nil {
+	if !m.workAvailable() {
 		return nil
 	}
-	target := viewmodel.WorkTarget{ConversationID: msg.conversationID, TaskKey: msg.taskKey}
+	sess := m.sess
 	raw := msg.raw
 	return func() tea.Msg {
-		detail, err := svc.InspectWork(context.Background(), target, raw)
+		detail, err := sess.InspectWork(context.Background(), msg.taskKey, raw)
 		return workDetailMsg{
 			conversationID: msg.conversationID,
 			panelID:        msg.panelID,
@@ -6428,13 +6343,12 @@ func (m Model) workInspectCmd(msg workRequestMsg) tea.Cmd {
 // revision, key and conversation travel with the reply so a stale acceptance can
 // never describe the wrong item.
 func (m Model) workStopCmd(msg workRequestMsg) tea.Cmd {
-	svc := m.workService
-	if svc == nil {
+	if !m.workAvailable() {
 		return nil
 	}
-	target := viewmodel.WorkTarget{ConversationID: msg.conversationID, TaskKey: msg.taskKey}
+	sess := m.sess
 	return func() tea.Msg {
-		stop, err := svc.StopWork(context.Background(), target, "requested from the Tasks panel")
+		stop, err := sess.StopWork(context.Background(), msg.taskKey, "requested from the Tasks panel")
 		return workActionMsg{
 			conversationID: msg.conversationID,
 			taskKey:        msg.taskKey,
@@ -6452,7 +6366,7 @@ func (m Model) workStopCmd(msg workRequestMsg) tea.Cmd {
 // validated as one.
 type boxStopMsg struct {
 	taskKey string
-	stop    viewmodel.WorkStopResult
+	stop    acpwire.WorkStopResult
 	err     error
 }
 
@@ -6460,13 +6374,12 @@ type boxStopMsg struct {
 // It does not reuse workStopCmd: that reply is addressed to the Tasks panel and
 // is dropped unless the panel that asked is still open.
 func (m Model) boxStopCmd(taskKey string) tea.Cmd {
-	svc := m.workService
-	if svc == nil {
+	if !m.workAvailable() {
 		return nil
 	}
-	target := viewmodel.WorkTarget{ConversationID: m.workSnapshot.ConversationID, TaskKey: taskKey}
+	sess := m.sess
 	return func() tea.Msg {
-		stop, err := svc.StopWork(context.Background(), target, "requested from the live box")
+		stop, err := sess.StopWork(context.Background(), taskKey, "requested from the live box")
 		return boxStopMsg{taskKey: taskKey, stop: stop, err: err}
 	}
 }
@@ -6553,10 +6466,10 @@ func (m Model) handleWorkAction(msg workActionMsg) (Model, tea.Cmd) {
 func (m Model) workLaneAging() bool {
 	now := m.now()
 	for _, it := range m.workSnapshot.Items {
-		if viewmodel.WorkActive(it) {
+		if livebox.WorkActive(it) {
 			return true
 		}
-		if !it.EndedAt.IsZero() && now.Sub(it.EndedAt) <= workReceiptTickWindow {
+		if it.EndedAt != 0 && now.Sub(acpwire.Time(it.EndedAt)) <= workReceiptTickWindow {
 			return true
 		}
 	}
@@ -6564,13 +6477,13 @@ func (m Model) workLaneAging() bool {
 }
 
 // workItemByKey finds one item in the current projection by TaskKey.
-func (m Model) workItemByKey(taskKey string) (viewmodel.WorkItem, bool) {
+func (m Model) workItemByKey(taskKey string) (acpwire.WorkItem, bool) {
 	for _, it := range m.workSnapshot.Items {
 		if it.TaskKey == taskKey {
 			return it, true
 		}
 	}
-	return viewmodel.WorkItem{}, false
+	return acpwire.WorkItem{}, false
 }
 
 // jumpToWorkOrigin resolves a work item's stored reference and navigates to it.
@@ -6588,8 +6501,8 @@ func (m *Model) jumpToWorkOrigin(taskKey string) (Model, tea.Cmd) {
 	// actual child while it is still registered. This is the same target Ctrl+F
 	// reaches.
 	if childID := item.Reference.ChildSessionID; childID != "" {
-		for _, v := range m.state.Subagents() {
-			if v.Child != nil && v.Child.SessionID() == childID {
+		for _, v := range m.sess.Status().Subagents {
+			if v.Drill != nil && v.Drill.SessionID == childID {
 				// The child's state can outlive the wire's retention window,
 				// in which case there is nothing to drill into and the jump
 				// falls through to the retained node or the unavailable
@@ -6632,14 +6545,14 @@ func (m Model) browseNodeForKey(key string) (nodeID, bool) {
 // openWorkDetailUnavailable opens the panel's bounded retained detail for an
 // item whose referenced transcript position is gone, with the unavailable text
 // the reader can act on.
-func (m *Model) openWorkDetailUnavailable(item viewmodel.WorkItem) {
+func (m *Model) openWorkDetailUnavailable(item acpwire.WorkItem) {
 	p := m.tasksPanel
 	if p == nil {
 		m.state.AddMessage(session.RoleSystem, "The referenced transcript position is no longer available.", session.ContentTypePlain)
 		m.refreshViewport()
 		return
 	}
-	d := viewmodel.WorkDetail{
+	d := acpwire.WorkDetail{
 		Item:        item,
 		Unavailable: "The referenced transcript position is no longer retained.",
 	}

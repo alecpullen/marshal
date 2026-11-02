@@ -2805,6 +2805,12 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		// events flow from the first frame: a start whose initial provider
 		// build failed still repaints on workspace, subagent, job, watch and
 		// steering events.
+		// The seam serves work exactly when the runtime's runner is attached
+		// below: a start whose provider build failed serves no work either.
+		providerReady := true
+		if n, ok := state.Notice(); ok && n.Category == session.NoticeProvider {
+			providerReady = false
+		}
 		// The seam answers Callers through the runtime's one LSP handle. A
 		// runtime without one leaves the finder nil rather than assigning a
 		// nil *lsp.SymbolQuery to the interface.
@@ -2812,7 +2818,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 		if rt.LSPManager != nil {
 			refFinder = lsp.NewSymbolQuery(rt.LSPManager, nil, 0)
 		}
-		seamHost, seamSession := inproc.New(inproc.Deps{
+		deps := inproc.Deps{
 			State:           state,
 			Context:         ctx,
 			Jobs:            jobBroker,
@@ -2824,7 +2830,11 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			ReferenceFinder: refFinder,
 			AccessRequest:   rt.AccessRequest,
 			ResolveAccess:   rt.ResolveAccess,
-		})
+		}
+		if providerReady {
+			deps.Work = rt
+		}
+		seamHost, seamSession := inproc.New(deps)
 
 		cmdReg := rt.CommandRegistry
 
@@ -2877,7 +2887,7 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			return ctx, rt.Runner
 		}))
 		tuiOpts = append(tuiOpts, tui.WithContext(ctx))
-		if n, ok := state.Notice(); !ok || n.Category != session.NoticeProvider {
+		if providerReady {
 			tuiOpts = append(tuiOpts, tui.WithRunner(ctx, runner))
 			tuiOpts = append(tuiOpts, tui.WithSwarmRunner(ctx, swarmRunner))
 			tuiOpts = append(tuiOpts, tui.WithPipelineFactory(ctx, rt.PipelineFactory))
@@ -2885,7 +2895,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				tuiOpts = append(tuiOpts, tui.WithSwarmOverrideFactory(rt.SwarmOverrideFactory))
 			}
 			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
-			tuiOpts = append(tuiOpts, tui.WithWork(rt))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
 				func(agentName string) (tui.AgentRunner, error) {

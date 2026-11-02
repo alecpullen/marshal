@@ -1644,3 +1644,68 @@ tracks it too; a subagent's mode-elevation `file.write` approval no longer
 offers "always" or "session", which both denied anyway; and a new request
 rebuilds the approval form even when it reuses a tool-call ID, so two
 model-cost consents in a row no longer share the first one's form.
+
+**Plan 5a (work), branch `p2-5a-work`.** Added `internal/acpwire/work.go`:
+`WorkSnapshot`, `WorkItem`, `WorkOrigin`, `WorkReference`,
+`WorkCapabilities`, `WorkPrompt`, `WorkProgressConfig`, `WorkProgress`,
+`WorkPhase`, `WorkMetric`, `WorkRow`, `WorkQuery`, `WorkPage`, `WorkDetail`
+and `WorkStopResult`. Every time is an `int64` Unix millisecond with
+`omitempty` — a call's `startedAt` and `endedAt`, the snapshot's
+`observedAt`, and the progress observation's `observedAt` and `measuredAt` —
+written and read with `acpwire.Millis` and `acpwire.Time`, because C3
+forbids RFC 3339 strings. ACP's own `Work*Wire` types stay in `internal/acp`,
+and `WorkTarget` and `WorkAck` are not added to the wire, because the TUI
+never acknowledges work. `acpwire.SubagentDrill` gains `sessionId`, the
+child's session ID, which a work item's reference names.
+
+`internal/viewmodel/workwire.go` holds six conversions: `WorkSnapshotOf`,
+`WorkItemOf`, `WorkProgressOf`, `WorkPageOf`, `WorkDetailOf` and
+`WorkStopResultOf`. Each makes fresh values — a nil slice or pointer stays
+nil, every non-nil pointer is a new pointer to a copy, and a zero time is
+0 — and `WorkProgressOf` was exported for the live box's temporary bridge, which
+Task 5 removed; it stays exported so `livebox`'s test can round-trip the
+conversion through `progressOf`, pinning that it is lossless. `viewmodel` keeps
+its own work types and predicates, which the work coordinator and ACP use.
+
+`acpclient.Session` gains four methods, each with its `Methods` row:
+`Work() (acpwire.WorkSnapshot, bool)` and
+`ListWork(ctx, acpwire.WorkQuery) (acpwire.WorkPage, error)` on
+`session/work_list`, `InspectWork(ctx, taskKey string, raw bool)
+(acpwire.WorkDetail, error)` on `session/work_inspect`, and
+`StopWork(ctx, taskKey, reason string) (acpwire.WorkStopResult, error)` on
+`session/work_stop`. All four methods exist in ACP, and no acknowledge call
+is added: P3 adds `session/work_acknowledge` when a client needs it.
+
+The in-process adapter subscribes to the work stream before it reads the seed
+snapshot when a session is made, so nothing published between the two is
+lost, and the seed binds the conversation. It keeps a published snapshot
+unless it names another conversation than the bound one or is older than the
+kept snapshot of that conversation, and fires `Changed` only for a snapshot
+it keeps; `Changed` now fires after anything `Status` or `Work` returns may
+have changed. It names its conversation by its state's session ID, maps
+`viewmodel.ErrWorkStaleCursor` to `CodeStaleWorkCursor`, answers a closed
+session's `Work` from the last snapshot it kept, and fails the three calls on
+a closed session. It serves work only when `Run` found a working provider:
+`Deps.Work` is the runtime only when the startup notice is not
+`session.NoticeProvider`.
+
+The TUI applies the session's snapshot on `Changed`, keeps its previous
+progress observations, and renders the wire types through `livebox`'s own
+copies of `WorkActive` and `WorkNeedsAttention` and through `progressOf`,
+which turns a wire observation back into a `progress.Snapshot` so
+`progress.EstimateFor` can measure it. A work item's subagent comes from
+`Status().Subagents` by `Drill.SessionID`. `tui.WithWork`, the TUI's work
+subscription and its work pump are gone.
+
+T1b gains one name, at plan `5a`: `Subagents`, because a work item's
+subagent is found through it. T1's allowlist lost 11 entries across 10 files
+and eight keys with them — `events.go`, `livebox/box.go`,
+`livebox/livebox.go`, `livebox/running.go`, `livebox_view.go`, `pump.go`,
+`steps.go` and `view.go` — and `internal/app/tui` imports no `viewmodel`
+outside its tests, which stand in for the runtime's service.
+
+Decision 12's edge cases, one sentence each: when two work snapshots land
+before the TUI reads one, a card's rate is measured across both, so it
+averages over the longer window, where the pump delivered every event; and
+times lose their sub-millisecond part, so two progress observations within
+the same millisecond measure no rate.

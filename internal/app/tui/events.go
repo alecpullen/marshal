@@ -1,25 +1,16 @@
 package tui
 
 import (
-	"marshal/internal/viewmodel"
+	"marshal/internal/acpwire"
 )
 
-// workMsg is the tea.Msg the Work snapshot pump emits when a WorkSnapshot
-// event arrives. subscriptionID names the subscription the pump captured, so
-// an event from a superseded subscription (a prior conversation, or a rebind
-// that replaced the channel) is ignored rather than applied.
-type workMsg struct {
-	snapshot       viewmodel.WorkSnapshot
-	subscriptionID uint64
-}
-
-// workRequestMsg is contract C5's UI→pump request. Every Tasks-panel Work
-// action emits one for the model's pump to service; the panel itself never
-// calls the Work service.
+// workRequestMsg is contract C5's UI→model request. Every Tasks-panel Work
+// action emits one for the model's work commands (workListCmd, workInspectCmd,
+// workStopCmd) to service; the panel itself never calls the Work service.
 type workRequestMsg struct {
 	conversationID, panelID, requestID string
 	kind, taskKey, resultRevision      string
-	query                              viewmodel.WorkQuery
+	query                              acpwire.WorkQuery
 	raw                                bool
 }
 
@@ -28,8 +19,8 @@ type workRequestMsg struct {
 // the panel and request that are still current before it is applied.
 type workPageMsg struct {
 	conversationID, panelID, requestID string
-	query                              viewmodel.WorkQuery
-	page                               viewmodel.WorkPage
+	query                              acpwire.WorkQuery
+	page                               acpwire.WorkPage
 	err                                error
 }
 
@@ -37,7 +28,7 @@ type workPageMsg struct {
 // captured identity so a late detail cannot open the wrong item.
 type workDetailMsg struct {
 	conversationID, panelID, requestID string
-	detail                             viewmodel.WorkDetail
+	detail                             acpwire.WorkDetail
 	err                                error
 }
 
@@ -47,7 +38,7 @@ type workDetailMsg struct {
 type workActionMsg struct {
 	conversationID, taskKey, resultRevision, requestID string
 	kind                                               string
-	stop                                               viewmodel.WorkStopResult
+	stop                                               acpwire.WorkStopResult
 	err                                                error
 }
 

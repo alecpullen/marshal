@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/help"
 	"marshal/internal/tools/native"
-	"marshal/internal/viewmodel"
 )
 
 // consoleTestModel is an idle, trusted session at the given terminal size: the
@@ -85,7 +85,7 @@ func TestConsoleContinuesUnderAnOpenTray(t *testing.T) {
 	m := consoleTestModel(t, 80, 24)
 	// Enough running work that the tray exceeds its row budget and sheds: the
 	// first shed step folds the plan into the tray's last border row.
-	cards := make([]viewmodel.WorkItem, 0, 6)
+	cards := make([]acpwire.WorkItem, 0, 6)
 	for i := range 6 {
 		cards = append(cards, workRunningCard(fmt.Sprintf("work:%02d", i), workT0.Add(-time.Duration(i)*time.Second)))
 	}

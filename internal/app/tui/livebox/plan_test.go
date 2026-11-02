@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/glyph"
-	"marshal/internal/viewmodel"
 )
 
 // planOf builds a plan of n items labelled "todo a", "todo b", …: the first
@@ -126,7 +126,7 @@ func TestFinishedPlanIsOneRow(t *testing.T) {
 		t.Errorf("finished plan row = %q, want the finished notice", got)
 	}
 
-	in.Work = []viewmodel.WorkItem{subagentItem()}
+	in.Work = []acpwire.WorkItem{subagentItem()}
 	beside := rowTexts(Plan(in))
 	if got := beside[len(beside)-1]; !strings.HasPrefix(got, "├─ plan") || !strings.Contains(got, "4/4 done") {
 		t.Errorf("last row = %q, want the finished plan's header alone", got)

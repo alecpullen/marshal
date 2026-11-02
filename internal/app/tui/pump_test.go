@@ -2,13 +2,15 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
-	"marshal/internal/progress"
 	"marshal/internal/pubsub"
 	"marshal/internal/viewmodel"
 )
@@ -199,92 +201,105 @@ func (f *fakeWorkService) subscriptionCount() int {
 	return f.subs
 }
 
-// newWorkModel builds a model with a Work service attached, running the same
-// one-time subscription New does for the initial conversation.
+// newWorkModel builds a model whose session serves the fake's work, as the
+// runtime's session serves the runtime's.
 func newWorkModel(t *testing.T, svc viewmodel.WorkService) Model {
 	t.Helper()
 	m := newTestModel(t)
-	m.workService = svc
-	m.startWorkSubscription()
+	_, sess := inproc.New(inproc.Deps{State: m.state, Work: svc})
+	m.sess = sess
+	m.resetWork()
 	m.refreshViewport()
 	return m
 }
 
-// TestWorkPumpSingleSubscriptionAndSessionRebind pins the subscription
-// lifecycle: one subscription for the initial conversation, the pump re-arming
-// the same channel, and a rebind cancelling and replacing it so a superseded
-// event can never be applied.
-func TestWorkPumpSingleSubscriptionAndSessionRebind(t *testing.T) {
-	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "convA", RuntimeEpoch: "epochA", Revision: 1}}
+// vmWorkTask is a running command item as the runtime's service reports it.
+func vmWorkTask(key, label string) viewmodel.WorkItem {
+	return viewmodel.WorkItem{
+		TaskKey:   key,
+		Kind:      "command",
+		Label:     label,
+		SourceID:  key,
+		State:     "running",
+		StartedAt: workT0,
+	}
+}
+
+// deliverWork publishes snap on svc and applies the change the session
+// signals, as the change pump delivers it. snap must be one the adapter keeps.
+func deliverWork(t *testing.T, m Model, svc *fakeWorkService, snap viewmodel.WorkSnapshot) Model {
+	t.Helper()
+	svc.publish(snap)
+	msg := runCmdOnce(pumpChanged(m.sess.Changed()), 5*time.Second)
+	if _, ok := msg.(changedMsg); !ok {
+		t.Fatalf("the session did not signal the work change: got %#v", msg)
+	}
+	updated, _ := m.Update(msg)
+	return updated.(Model)
+}
+
+// TestWorkArrivesOnChanged pins that a snapshot the session keeps reaches the
+// model and the box through the session's own change signal.
+func TestWorkArrivesOnChanged(t *testing.T) {
+	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", RuntimeEpoch: "epoch", Revision: 1}}
 	m := newWorkModel(t, svc)
-
-	if got := svc.subscriptionCount(); got != 1 {
-		t.Fatalf("initial subscriptions = %d, want exactly 1", got)
-	}
-	if m.workEvents == nil || m.workSubscriptionID == 0 {
-		t.Fatal("no work subscription was established")
-	}
-	if m.workConversation != "convA" || m.workSnapshot.ConversationID != "convA" {
-		t.Fatalf("bound conversation = %q, seed = %q, want convA", m.workConversation, m.workSnapshot.ConversationID)
+	if !m.workAvailable() {
+		t.Fatal("the session does not serve work")
 	}
 
-	// A published snapshot bridges through the pump, which captures the
-	// subscription ID, and Update re-arms the same channel.
-	svc.publish(viewmodel.WorkSnapshot{ConversationID: "convA", RuntimeEpoch: "epochA", Revision: 2})
-	wm, ok := runCmdOnce(pumpWorkEvents(m.workEvents, m.workSubscriptionID), time.Second).(workMsg)
-	if !ok {
-		t.Fatal("the work pump did not bridge a published snapshot")
-	}
-	if wm.subscriptionID != m.workSubscriptionID {
-		t.Fatalf("pump captured subscription %d, want %d", wm.subscriptionID, m.workSubscriptionID)
-	}
-	updated, rearm := m.Update(wm)
-	m = updated.(Model)
-	if m.workSnapshot.Revision != 2 {
-		t.Fatalf("applied revision = %d, want 2", m.workSnapshot.Revision)
-	}
-	if rearm == nil {
-		t.Fatal("Update did not re-arm the work pump")
-	}
-
-	// An event whose subscription ID is no longer current is ignored.
-	updated, _ = m.Update(workMsg{
-		snapshot:       viewmodel.WorkSnapshot{ConversationID: "convA", Revision: 99},
-		subscriptionID: m.workSubscriptionID + 1,
+	m = deliverWork(t, m, svc, viewmodel.WorkSnapshot{
+		ConversationID: "conv", RuntimeEpoch: "epoch", Revision: 2,
+		Items: []viewmodel.WorkItem{vmWorkTask("work:a", "Alpha")},
 	})
-	m = updated.(Model)
 	if m.workSnapshot.Revision != 2 {
-		t.Fatalf("a superseded subscription event was applied: revision %d", m.workSnapshot.Revision)
+		t.Fatalf("snapshot revision = %d, want 2", m.workSnapshot.Revision)
+	}
+	if view := m.viewString(); !strings.Contains(view, "Alpha") {
+		t.Fatalf("the box did not show the item's label:\n%s", view)
+	}
+}
+
+// TestResetWorkStartsTheViewOver pins that a new conversation's work view
+// starts from its own snapshot: no previous observations, no expanded card.
+func TestResetWorkStartsTheViewOver(t *testing.T) {
+	svcA := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "A", Revision: 1}}
+	m := newWorkModel(t, svcA)
+	m.workExpanded = "k"
+	m.workPrevious = map[string]*acpwire.WorkProgress{
+		"k": {Version: 1, Sequence: 1, ObservedAt: acpwire.Millis(workT0)},
 	}
 
-	// Session rebind: the old subscription is cancelled, a new one is opened,
-	// the ID advances and the new conversation's epoch is seeded.
-	staleID := wm.subscriptionID
-	svc.mu.Lock()
-	svc.snap = viewmodel.WorkSnapshot{ConversationID: "convB", RuntimeEpoch: "epochB", Revision: 1}
-	svc.mu.Unlock()
-	rebind := m.rebindWorkSession()
-	if got := svc.subscriptionCount(); got != 2 {
-		t.Fatalf("subscriptions after rebind = %d, want 2", got)
+	svcB := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "B", Revision: 1}}
+	_, sessB := inproc.New(inproc.Deps{State: m.state, Work: svcB})
+	m.sess = sessB
+	m.resetWork()
+
+	if m.workSnapshot.ConversationID != "B" {
+		t.Fatalf("snapshot conversation = %q, want B", m.workSnapshot.ConversationID)
 	}
-	if m.workSubscriptionID == staleID {
-		t.Fatal("workSubscriptionID did not advance on rebind")
+	if len(m.workPrevious) != 0 {
+		t.Fatalf("previous observations = %v, want none", m.workPrevious)
 	}
-	if m.workConversation != "convB" || m.workSnapshot.ConversationID != "convB" {
-		t.Fatalf("rebind did not seed convB: bound %q seed %q", m.workConversation, m.workSnapshot.ConversationID)
+	if m.workExpanded != "" {
+		t.Fatalf("expanded card = %q, want none", m.workExpanded)
 	}
-	if rebind == nil {
-		t.Fatal("rebind did not re-arm the pump")
-	}
-	// A late event from the superseded subscription is ignored after the
-	// rebind, even though it names the old conversation.
-	updated, _ = m.Update(workMsg{
-		snapshot:       viewmodel.WorkSnapshot{ConversationID: "convA", Revision: 500},
-		subscriptionID: staleID,
-	})
+}
+
+// TestASessionWithoutWorkLeavesTheSnapshotAlone pins that a session serving no
+// work is not read as an empty work view.
+func TestASessionWithoutWorkLeavesTheSnapshotAlone(t *testing.T) {
+	m := newTestModel(t)
+	m.workSnapshot = workSnapOf(workTask("work:a", "Alpha"))
+	before := m.workSnapshot
+
+	updated, _ := m.Update(changedMsg{ch: m.sess.Changed()})
 	m = updated.(Model)
-	if m.workSnapshot.ConversationID != "convB" || m.workSnapshot.Revision != 1 {
-		t.Fatalf("stale event after rebind applied: %+v", m.workSnapshot)
+
+	if m.workSnapshot.ConversationID != before.ConversationID || len(m.workSnapshot.Items) != len(before.Items) {
+		t.Fatalf("a session without work changed the snapshot: %+v", m.workSnapshot)
+	}
+	if !m.workLaneActive() {
+		t.Fatal("the work lane went inactive")
 	}
 }
 
@@ -294,7 +309,7 @@ func TestWorkPumpSingleSubscriptionAndSessionRebind(t *testing.T) {
 func TestWorkUpdateAcceptsNewRevisionWhilePromptOpen(t *testing.T) {
 	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", RuntimeEpoch: "epoch", Revision: 1}}
 	m := newWorkModel(t, svc)
-	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{workTask("work:a", "Alpha")}}
+	m.workSnapshot = acpwire.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []acpwire.WorkItem{workTask("work:a", "Alpha")}}
 	m = toggleTasks(m)
 	if !m.tasksOpen() {
 		t.Fatal("the Tasks panel did not open")
@@ -305,18 +320,11 @@ func TestWorkUpdateAcceptsNewRevisionWhilePromptOpen(t *testing.T) {
 		Questions: []session.Question{{Question: "what?"}},
 	})
 
-	updated, cmd := m.Update(workMsg{
-		snapshot: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 7,
-			Items: []viewmodel.WorkItem{workTask("work:b", "Beta")}},
-		subscriptionID: m.workSubscriptionID,
-	})
-	m = updated.(Model)
+	m = deliverWork(t, m, svc, viewmodel.WorkSnapshot{ConversationID: "conv", RuntimeEpoch: "epoch", Revision: 7,
+		Items: []viewmodel.WorkItem{vmWorkTask("work:b", "Beta")}})
 
 	if m.workSnapshot.Revision != 7 {
 		t.Fatalf("revision while prompt open = %d, want 7", m.workSnapshot.Revision)
-	}
-	if cmd == nil {
-		t.Fatal("a background work update was dropped instead of re-arming the pump")
 	}
 	if m.tasksPanel == nil || m.tasksPanel.snapshot.Revision != 7 {
 		t.Fatal("the open panel did not receive the new projection")
@@ -327,16 +335,14 @@ func TestWorkUpdateAcceptsNewRevisionWhilePromptOpen(t *testing.T) {
 }
 
 // workProgressItem is a running command carrying one progress observation.
-func workProgressItem(key string, observed time.Time) viewmodel.WorkItem {
+func workProgressItem(key string, observed time.Time) acpwire.WorkItem {
 	it := workRunningCard(key, time.Unix(10_000, 0))
 	total := 2.0
-	it.Progress = &progress.Snapshot{
-		Frame: progress.Frame{
-			Version:  1,
-			Sequence: 1,
-			Metrics:  []progress.Metric{{ID: "bytes", Unit: "bytes", Current: 1, Total: &total}},
-		},
-		ObservedAt: observed,
+	it.Progress = &acpwire.WorkProgress{
+		Version:    1,
+		Sequence:   1,
+		Metrics:    []acpwire.WorkMetric{{ID: "bytes", Unit: "bytes", Current: 1, Total: &total}},
+		ObservedAt: acpwire.Millis(observed),
 	}
 	return it
 }
@@ -349,8 +355,8 @@ func TestWorkProgressKeepsThePreviousObservation(t *testing.T) {
 	m.workSnapshot = workSnapOf(workProgressItem("k", first))
 	m.notePreviousProgress(workSnapOf(workProgressItem("k", first.Add(2*time.Second))))
 	got := m.workPrevious["k"]
-	if got == nil || !got.ObservedAt.Equal(first) {
-		t.Fatalf("previous observation = %v, want %v", got, first)
+	if got == nil || got.ObservedAt != acpwire.Millis(first) {
+		t.Fatalf("previous observation = %v, want %v", got, acpwire.Millis(first))
 	}
 }
 
@@ -380,7 +386,7 @@ func TestWorkProgressIgnoresARepeatedObservation(t *testing.T) {
 	m.workSnapshot = workSnapOf(workProgressItem("k", second))
 	m.notePreviousProgress(workSnapOf(workProgressItem("k", second)))
 	got := m.workPrevious["k"]
-	if got == nil || !got.ObservedAt.Equal(first) {
+	if got == nil || got.ObservedAt != acpwire.Millis(first) {
 		t.Fatalf("a repeated observation replaced the earlier previous: %v", got)
 	}
 }

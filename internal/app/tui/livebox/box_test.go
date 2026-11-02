@@ -7,27 +7,26 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/progress"
-	"marshal/internal/viewmodel"
+	"marshal/internal/acpwire"
 )
 
 // downloadItem is a running command with a measured total, so its card has
 // every row.
-func downloadItem(key, id string, started time.Time) viewmodel.WorkItem {
+func downloadItem(key, id string, started time.Time) acpwire.WorkItem {
 	total := 3.7 * gib
-	return viewmodel.WorkItem{
+	return acpwire.WorkItem{
 		TaskKey: key, Kind: "command", DisplayID: id,
 		Label: "Download qwen3-coder weights", State: "running",
-		ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-		Progress: &progress.Snapshot{
-			Frame: progress.Frame{Sequence: 2, PrimaryMetricID: "bytes",
-				Metrics: []progress.Metric{
-					{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
-				},
-				Detail: "shard 7 of 12"},
-			ObservedAt: testNow,
+		ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+		Progress: &acpwire.WorkProgress{
+			Sequence: 2, PrimaryMetricID: "bytes",
+			Metrics: []acpwire.WorkMetric{
+				{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
+			},
+			Detail:     "shard 7 of 12",
+			ObservedAt: acpwire.Millis(testNow),
 		},
-		StartedAt: started,
+		StartedAt: acpwire.Millis(started),
 	}
 }
 
@@ -39,36 +38,36 @@ func busyInput() Input {
 		MaxRows: 40,
 		Now:     testNow,
 		Spinner: "⠋",
-		Work: []viewmodel.WorkItem{
+		Work: []acpwire.WorkItem{
 			downloadItem("k1", "job-1", testNow.Add(-2*time.Minute)),
 			{
 				TaskKey: "k2", Kind: "agent", SourceID: "1", DisplayID: "#1",
 				Label: "review the config change", State: "running",
-				StartedAt: testNow.Add(-time.Minute),
+				StartedAt: acpwire.Millis(testNow.Add(-time.Minute)),
 			},
 			{
 				TaskKey: "k3", Kind: "command", DisplayID: "job-2",
 				Label: "Harness tests", State: "running",
 				OutputTail: "--- FAIL: TestX\nlast useful line\n",
-				StartedAt:  testNow.Add(-30 * time.Second),
+				StartedAt:  acpwire.Millis(testNow.Add(-30 * time.Second)),
 			},
 			{
 				TaskKey: "k4", Kind: "watch", DisplayID: "w-1",
 				Label: "src/", State: "watching",
-				StartedAt: testNow.Add(-20 * time.Second),
+				StartedAt: acpwire.Millis(testNow.Add(-20 * time.Second)),
 			},
 			{
 				TaskKey: "k5", Kind: "agent", SourceID: "2", DisplayID: "#2",
 				Label: "review the diff", State: "blocked",
-				Prompt:    &viewmodel.WorkPrompt{Kind: "approval"},
-				StartedAt: testNow.Add(-10 * time.Second),
+				Prompt:    &acpwire.WorkPrompt{Kind: "approval"},
+				StartedAt: acpwire.Millis(testNow.Add(-10 * time.Second)),
 			},
 		},
 		Held: []HeldItem{{
-			Item: viewmodel.WorkItem{
+			Item: acpwire.WorkItem{
 				TaskKey: "k6", Kind: "command", DisplayID: "job-0",
 				Label: "go build ./...", State: "completed",
-				StartedAt: testNow.Add(-3 * time.Minute),
+				StartedAt: acpwire.Millis(testNow.Add(-3 * time.Minute)),
 			},
 			Outcome:  "done",
 			Summary:  "ok",
@@ -475,14 +474,14 @@ func hasCursorRow(l Layout) bool {
 func TestHeldRowKeepsItsSlot(t *testing.T) {
 	in := Input{
 		Width: 100, MaxRows: 40, Now: testNow, Spinner: "⠋",
-		Work: []viewmodel.WorkItem{
-			{TaskKey: "a", Kind: "command", DisplayID: "job-a", Label: "first", State: "running", StartedAt: testNow.Add(-3 * time.Minute)},
-			{TaskKey: "c", Kind: "command", DisplayID: "job-c", Label: "third", State: "running", StartedAt: testNow.Add(-time.Minute)},
+		Work: []acpwire.WorkItem{
+			{TaskKey: "a", Kind: "command", DisplayID: "job-a", Label: "first", State: "running", StartedAt: acpwire.Millis(testNow.Add(-3 * time.Minute))},
+			{TaskKey: "c", Kind: "command", DisplayID: "job-c", Label: "third", State: "running", StartedAt: acpwire.Millis(testNow.Add(-time.Minute))},
 		},
 		Held: []HeldItem{{
-			Item: viewmodel.WorkItem{
+			Item: acpwire.WorkItem{
 				TaskKey: "b", Kind: "command", DisplayID: "job-b", Label: "second", State: "completed",
-				StartedAt: testNow.Add(-2 * time.Minute),
+				StartedAt: acpwire.Millis(testNow.Add(-2 * time.Minute)),
 			},
 			Outcome:  "done",
 			Summary:  "ok",
@@ -515,10 +514,10 @@ func TestHeldRowKeepsItsSlot(t *testing.T) {
 // leaves the order unchanged when uncapped; capped at one, the blocked item is
 // the one kept.
 func TestRowsDoNotMoveWhenOneBlocks(t *testing.T) {
-	items := []viewmodel.WorkItem{
-		{TaskKey: "a", Kind: "command", DisplayID: "job-a", Label: "first", State: "running", StartedAt: testNow.Add(-3 * time.Minute)},
-		{TaskKey: "b", Kind: "command", DisplayID: "job-b", Label: "second", State: "running", StartedAt: testNow.Add(-2 * time.Minute)},
-		{TaskKey: "c", Kind: "command", DisplayID: "job-c", Label: "third", State: "running", StartedAt: testNow.Add(-time.Minute)},
+	items := []acpwire.WorkItem{
+		{TaskKey: "a", Kind: "command", DisplayID: "job-a", Label: "first", State: "running", StartedAt: acpwire.Millis(testNow.Add(-3 * time.Minute))},
+		{TaskKey: "b", Kind: "command", DisplayID: "job-b", Label: "second", State: "running", StartedAt: acpwire.Millis(testNow.Add(-2 * time.Minute))},
+		{TaskKey: "c", Kind: "command", DisplayID: "job-c", Label: "third", State: "running", StartedAt: acpwire.Millis(testNow.Add(-time.Minute))},
 	}
 	order := func(l Layout) string {
 		var keys []string
@@ -531,9 +530,9 @@ func TestRowsDoNotMoveWhenOneBlocks(t *testing.T) {
 	}
 
 	before := order(Plan(Input{Width: 100, MaxRows: 40, Now: testNow, Work: items}))
-	blocked := append([]viewmodel.WorkItem(nil), items...)
+	blocked := append([]acpwire.WorkItem(nil), items...)
 	blocked[1].State = "blocked"
-	blocked[1].Prompt = &viewmodel.WorkPrompt{Kind: "approval"}
+	blocked[1].Prompt = &acpwire.WorkPrompt{Kind: "approval"}
 	after := order(Plan(Input{Width: 100, MaxRows: 40, Now: testNow, Work: blocked}))
 	if before != after {
 		t.Errorf("order changed when one item blocked: %q → %q", before, after)
@@ -638,7 +637,7 @@ func TestCompactRowHasNoOutline(t *testing.T) {
 func TestFinishedPlanBesideWorkLeavesTheTrayOpen(t *testing.T) {
 	in := Input{
 		Width: 100, MaxRows: 40, Now: testNow, Spinner: "⠋",
-		Work: []viewmodel.WorkItem{subagentItem()},
+		Work: []acpwire.WorkItem{subagentItem()},
 		Plan: planOf(4, 4, 0),
 	}
 	l := Plan(in)

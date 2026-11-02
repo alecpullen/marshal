@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/activeworkpanel"
@@ -274,7 +275,7 @@ func TestSendNowCommandTokenBoundary(t *testing.T) {
 
 // openWorkDetail drives the panel from open to a detail view for the given
 // item, returning the model and the live panel.
-func openWorkDetail(t *testing.T, m Model, item viewmodel.WorkItem) (Model, *tasksPanelModel) {
+func openWorkDetail(t *testing.T, m Model, item acpwire.WorkItem) (Model, *tasksPanelModel) {
 	t.Helper()
 	m = toggleTasks(m)
 	if !m.tasksOpen() {
@@ -291,7 +292,7 @@ func openWorkDetail(t *testing.T, m Model, item viewmodel.WorkItem) (Model, *tas
 		conversationID: req.conversationID,
 		panelID:        req.panelID,
 		requestID:      req.requestID,
-		detail:         viewmodel.WorkDetail{Item: item},
+		detail:         acpwire.WorkDetail{Item: item},
 	})
 	m = updated.(Model)
 	if !p.detailOpen {
@@ -304,16 +305,16 @@ func openWorkDetail(t *testing.T, m Model, item viewmodel.WorkItem) (Model, *tas
 // outside Update, capture the exact target, and that a reply from a different
 // panel is dropped.
 func TestWorkStopStaysAsyncAndExact(t *testing.T) {
-	item := viewmodel.WorkItem{
+	item := acpwire.WorkItem{
 		TaskKey: "work:a", Kind: "command", Label: "Alpha", State: "running",
-		Capabilities: viewmodel.WorkCapabilities{Inspect: true, Stop: true},
+		Capabilities: acpwire.WorkCapabilities{Inspect: true, Stop: true},
 	}
 	svc := &fakeWorkService{
 		snap:       viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1},
 		stopResult: viewmodel.WorkStopResult{TaskKey: "work:a", State: "stopping", Accepted: true},
 	}
 	m := newWorkModel(t, svc)
-	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{item}}
+	m.workSnapshot = acpwire.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []acpwire.WorkItem{item}}
 	m, p := openWorkDetail(t, m, item)
 
 	// Stop: the model returns a cmd; the service is untouched until it runs.
@@ -361,7 +362,7 @@ func TestWorkStopStaysAsyncAndExact(t *testing.T) {
 		taskKey:        "work:a",
 		requestID:      "otherpanel.r9",
 		kind:           workReqStop,
-		stop:           viewmodel.WorkStopResult{TaskKey: "work:a", Accepted: true},
+		stop:           acpwire.WorkStopResult{TaskKey: "work:a", Accepted: true},
 	})
 	m = updated.(Model)
 	if p.err != "keep" {
@@ -373,14 +374,14 @@ func TestWorkStopStaysAsyncAndExact(t *testing.T) {
 // action navigates to the pending request but never answers it or takes over
 // steering.
 func TestWorkPromptNavigationDoesNotResolveOrStealSteering(t *testing.T) {
-	item := viewmodel.WorkItem{
+	item := acpwire.WorkItem{
 		TaskKey: "work:p", Kind: "agent", Label: "child", State: "blocked",
-		Capabilities: viewmodel.WorkCapabilities{Inspect: true, ResolvePrompt: true},
-		Prompt:       &viewmodel.WorkPrompt{Kind: "question", RequestID: "q-1", AgentID: 2},
+		Capabilities: acpwire.WorkCapabilities{Inspect: true, ResolvePrompt: true},
+		Prompt:       &acpwire.WorkPrompt{Kind: "question", RequestID: "q-1", AgentID: 2},
 	}
 	svc := &fakeWorkService{snap: viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1}}
 	m := newWorkModel(t, svc)
-	m.workSnapshot = viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []viewmodel.WorkItem{item}}
+	m.workSnapshot = acpwire.WorkSnapshot{ConversationID: "conv", Revision: 1, Items: []acpwire.WorkItem{item}}
 	m, p := openWorkDetail(t, m, item)
 
 	// A question with the canonical request ID is pending.

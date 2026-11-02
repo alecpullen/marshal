@@ -8,6 +8,7 @@ import (
 	"marshal/internal/pubsub"
 	"marshal/internal/repo/gitinfo"
 	"marshal/internal/tools/native"
+	"marshal/internal/viewmodel"
 	"marshal/internal/watch"
 )
 
@@ -32,6 +33,7 @@ func newSession(d Deps) *Session {
 		refs:          d.ReferenceFinder,
 		accessRequest: d.AccessRequest,
 		resolveAccess: d.ResolveAccess,
+		work:          d.Work,
 		ctx:           ctx,
 		cancel:        cancel,
 		changed:       make(chan struct{}, 1),
@@ -52,6 +54,7 @@ func (s *Session) subscribe(d Deps) {
 		steering  <-chan pubsub.Event[session.SteeringEvent]
 		workspace <-chan pubsub.Event[session.WorkspaceEvent]
 		subagents <-chan pubsub.Event[session.SubagentEvent]
+		work      <-chan pubsub.Event[viewmodel.WorkSnapshot]
 	)
 	if d.Jobs != nil {
 		jobs = d.Jobs.Subscribe(s.ctx)
@@ -69,10 +72,16 @@ func (s *Session) subscribe(d Deps) {
 	if d.Subagents != nil {
 		subagents = d.Subagents.Subscribe(s.ctx)
 	}
-	if jobs == nil && watches == nil && steering == nil && workspace == nil && subagents == nil {
+	// The work subscription leads, and its snapshot seeds the session, so the
+	// first Work read already has a value.
+	if d.Work != nil {
+		work = d.Work.SubscribeWork(s.ctx)
+		s.seedWork(d.Work.WorkSnapshot())
+	}
+	if jobs == nil && watches == nil && steering == nil && workspace == nil && subagents == nil && work == nil {
 		return
 	}
-	go s.run(jobs, watches, steering, workspace, subagents)
+	go s.run(jobs, watches, steering, workspace, subagents, work)
 }
 
 // run signals Changed after each event from any broker. A channel that closes
@@ -84,9 +93,10 @@ func (s *Session) run(
 	steering <-chan pubsub.Event[session.SteeringEvent],
 	workspace <-chan pubsub.Event[session.WorkspaceEvent],
 	subagents <-chan pubsub.Event[session.SubagentEvent],
+	work <-chan pubsub.Event[viewmodel.WorkSnapshot],
 ) {
 	defer s.closeSignal()
-	for jobs != nil || watches != nil || steering != nil || workspace != nil || subagents != nil {
+	for jobs != nil || watches != nil || steering != nil || workspace != nil || subagents != nil || work != nil {
 		select {
 		case <-s.ctx.Done():
 			return
@@ -126,11 +136,19 @@ func (s *Session) run(
 				continue
 			}
 			s.signal()
+		case ev, ok := <-work:
+			if !ok {
+				work = nil
+				continue
+			}
+			if s.absorbWork(ev.Payload) {
+				s.signal()
+			}
 		}
 	}
 }
 
-// Changed fires after anything Status returns may have changed.
+// Changed fires after anything Status or Work returns may have changed.
 func (s *Session) Changed() <-chan struct{} { return s.changed }
 
 // signal wakes a reader without blocking. A closed channel takes no send.

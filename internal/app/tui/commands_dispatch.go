@@ -235,10 +235,10 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	// a replaced session's cache starts empty.
 	st := m.sess.Status()
 	m.workspaceSeen = st.Workspace
-	// Rebind the Work stream: the previous conversation's subscription is
-	// cancelled and drained, its cards cleared, and the new epoch seeded and
-	// re-armed so no work from the old session leaks into the new one.
-	workCmd := m.rebindWorkSession()
+	// The session the model now holds serves the new conversation's work:
+	// its snapshot seeds the view and its cards replace the old ones, so no
+	// work from the old session leaks into the new one.
+	m.resetWork()
 
 	msg := fmt.Sprintf("Started new conversation. Cleared %d messages.", oldCount)
 	if name != "" {
@@ -251,9 +251,6 @@ func startNewSession(m *Model, name string) tea.Cmd {
 	// channel no longer matches.
 	if replaced {
 		cmds = append(cmds, pumpChanged(m.sess.Changed()))
-	}
-	if workCmd != nil {
-		cmds = append(cmds, workCmd)
 	}
 	return tea.Batch(cmds...)
 }

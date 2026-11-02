@@ -11,9 +11,8 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/progress"
-	"marshal/internal/viewmodel"
 )
 
 // update rewrites the golden frames instead of comparing them.
@@ -24,18 +23,18 @@ var frameNow = time.Unix(10_000, 0)
 
 // frameWork is the standard frame's running rows: a subagent and a command,
 // both running.
-func frameWork() []viewmodel.WorkItem {
-	return []viewmodel.WorkItem{
+func frameWork() []acpwire.WorkItem {
+	return []acpwire.WorkItem{
 		{
 			TaskKey: "k1", Kind: "agent", SourceID: "1", DisplayID: "#1",
 			Label: "review the config change", State: "running",
-			StartedAt: frameNow.Add(-62 * time.Second),
+			StartedAt: acpwire.Millis(frameNow.Add(-62 * time.Second)),
 		},
 		{
 			TaskKey: "k2", Kind: "command", DisplayID: "job-2",
 			Label: "Harness tests", State: "running",
 			OutputTail: "--- FAIL: TestX\nlast useful line\n",
-			StartedAt:  frameNow.Add(-48 * time.Second),
+			StartedAt:  acpwire.Millis(frameNow.Add(-48 * time.Second)),
 		},
 	}
 }
@@ -44,10 +43,10 @@ func frameWork() []viewmodel.WorkItem {
 // the next prompt.
 func frameHeld() []HeldItem {
 	return []HeldItem{{
-		Item: viewmodel.WorkItem{
+		Item: acpwire.WorkItem{
 			TaskKey: "k3", Kind: "command", DisplayID: "job-1",
 			Label: "go build ./...", State: "completed",
-			StartedAt: frameNow.Add(-3 * time.Minute),
+			StartedAt: acpwire.Millis(frameNow.Add(-3 * time.Minute)),
 		},
 		Outcome:  "done",
 		Summary:  "ok",
@@ -81,21 +80,21 @@ func heldInput(w, h int) Input {
 }
 
 // frameDownload is the expanded frame's item: a download with every card row.
-func frameDownload() viewmodel.WorkItem {
+func frameDownload() acpwire.WorkItem {
 	total := 3.7 * gib
-	return viewmodel.WorkItem{
+	return acpwire.WorkItem{
 		TaskKey: "k1", Kind: "command", DisplayID: "job-3",
 		Label: "Download qwen3-coder weights", State: "running",
-		ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-		Progress: &progress.Snapshot{
-			Frame: progress.Frame{Sequence: 2, PrimaryMetricID: "bytes",
-				Metrics: []progress.Metric{
-					{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
-				},
-				Detail: "shard 7 of 12"},
-			ObservedAt: frameNow,
+		ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+		Progress: &acpwire.WorkProgress{
+			Sequence: 2, PrimaryMetricID: "bytes",
+			Metrics: []acpwire.WorkMetric{
+				{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
+			},
+			Detail:     "shard 7 of 12",
+			ObservedAt: acpwire.Millis(frameNow),
 		},
-		StartedAt: frameNow.Add(-2 * time.Minute),
+		StartedAt: acpwire.Millis(frameNow.Add(-2 * time.Minute)),
 	}
 }
 
@@ -107,7 +106,7 @@ func idleInput(w, h int) Input {
 		MaxRows: h * 2 / 5,
 		Now:     frameNow,
 		Spinner: "⠋",
-		Work:    []viewmodel.WorkItem{frameDownload()},
+		Work:    []acpwire.WorkItem{frameDownload()},
 		Plan:    planOf(4, 2, 3),
 	}
 }
@@ -118,7 +117,7 @@ func cardInput(w, h int) Input {
 	in := frameInput(w, h)
 	in.Plan = nil
 	in.Expanded = "k1"
-	in.Work = []viewmodel.WorkItem{frameDownload()}
+	in.Work = []acpwire.WorkItem{frameDownload()}
 	return in
 }
 
@@ -132,8 +131,8 @@ func compactInput(w, h int) Input {
 // shapeFrame is one running-row shape from the spec §5.6 table.
 type shapeFrame struct {
 	name      string
-	item      viewmodel.WorkItem
-	previous  map[string]*progress.Snapshot
+	item      acpwire.WorkItem
+	previous  map[string]*acpwire.WorkProgress
 	headlines map[string]string
 	agents    map[string]AgentMeta
 }
@@ -144,136 +143,136 @@ func shapeFrames() []shapeFrame {
 	return []shapeFrame{
 		{
 			name: "subagent-with-headline",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "agent", SourceID: "1", DisplayID: "#1",
 				Label: "review the config change", State: "running",
-				StartedAt: frameNow.Add(-62 * time.Second),
+				StartedAt: acpwire.Millis(frameNow.Add(-62 * time.Second)),
 			},
 			headlines: map[string]string{"k1": "Checking context_window…"},
 			agents:    map[string]AgentMeta{"k1": {Model: "kimi-k3", Provider: "kimi"}},
 		},
 		{
 			name: "blocked-subagent",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "agent", SourceID: "2", DisplayID: "#2",
 				Label: "review the config change", State: "blocked",
-				Prompt:    &viewmodel.WorkPrompt{Kind: "approval"},
-				StartedAt: frameNow.Add(-90 * time.Second),
+				Prompt:    &acpwire.WorkPrompt{Kind: "approval"},
+				StartedAt: acpwire.Millis(frameNow.Add(-90 * time.Second)),
 			},
 			agents: map[string]AgentMeta{"k1": {Model: "glm-5.3", Provider: "ollama-cloud", Fallback: true}},
 		},
 		{
 			name: "generic-command-with-output",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "command", DisplayID: "job-1",
 				Label: "Harness tests", State: "running",
 				OutputTail: "go: downloading x\n--- FAIL: TestX\nlast useful line\n",
-				StartedAt:  frameNow.Add(-30 * time.Second),
+				StartedAt:  acpwire.Millis(frameNow.Add(-30 * time.Second)),
 			},
 		},
 		{
 			name: "go-tests-210-passed-2-failed",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "command", DisplayID: "job-2",
 				Label: "go test", State: "running",
-				ProgressConfig: &progress.Config{Profile: "tests", Source: "go-test-json"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 7, Metrics: []progress.Metric{
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "tests", Source: "go-test-json"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 7, Metrics: []acpwire.WorkMetric{
 						{ID: "passed", Label: "Passed", Unit: "cases", Current: 210},
 						{ID: "failed", Label: "Failed", Unit: "cases", Current: 2},
 						{ID: "skipped", Label: "Skipped", Unit: "cases", Current: 0},
-					}},
-					ObservedAt: frameNow,
+					},
+					ObservedAt: acpwire.Millis(frameNow),
 				},
-				StartedAt: frameNow.Add(-48 * time.Second),
+				StartedAt: acpwire.Millis(frameNow.Add(-48 * time.Second)),
 			},
 		},
 		{
 			name: "download-with-a-total",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "command", DisplayID: "job-3",
 				Label: "Download qwen3-coder weights", State: "running",
-				ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 2, PrimaryMetricID: "bytes",
-						Metrics: []progress.Metric{
-							{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
-						}},
-					ObservedAt: frameNow,
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 2, PrimaryMetricID: "bytes",
+					Metrics: []acpwire.WorkMetric{
+						{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
+					},
+					ObservedAt: acpwire.Millis(frameNow),
 				},
-				StartedAt: frameNow.Add(-2*time.Minute - 3*time.Second),
+				StartedAt: acpwire.Millis(frameNow.Add(-2*time.Minute - 3*time.Second)),
 			},
-			previous: map[string]*progress.Snapshot{"k1": {
-				Frame: progress.Frame{Sequence: 1, PrimaryMetricID: "bytes",
-					Metrics: []progress.Metric{
-						{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.0 * gib, Total: &total},
-					}},
-				ObservedAt: frameNow.Add(-10 * time.Second),
+			previous: map[string]*acpwire.WorkProgress{"k1": {
+				Sequence: 1, PrimaryMetricID: "bytes",
+				Metrics: []acpwire.WorkMetric{
+					{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.0 * gib, Total: &total},
+				},
+				ObservedAt: acpwire.Millis(frameNow.Add(-10 * time.Second)),
 			}},
 		},
 		{
 			name: "download-without-a-total",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "command", DisplayID: "job-4",
 				Label: "Fetch shard", State: "running",
-				ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 3, PrimaryMetricID: "bytes",
-						Metrics: []progress.Metric{
-							{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 512 * 1024 * 1024},
-						}},
-					ObservedAt: frameNow,
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 3, PrimaryMetricID: "bytes",
+					Metrics: []acpwire.WorkMetric{
+						{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 512 * 1024 * 1024},
+					},
+					ObservedAt: acpwire.Millis(frameNow),
 				},
-				StartedAt: frameNow.Add(-12 * time.Second),
+				StartedAt: acpwire.Millis(frameNow.Add(-12 * time.Second)),
 			},
 		},
 		{
 			name: "phased-custom-job",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "command", DisplayID: "job-5",
 				Label: "Eval sweep", State: "running",
-				ProgressConfig: &progress.Config{Profile: "custom", Source: "events-v1"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 4, PrimaryMetricID: "checks",
-						Phase: &progress.Phase{ID: "verify", Label: "verify", Index: 2, Total: 3},
-						Metrics: []progress.Metric{
-							{ID: "checks", Label: "Checks", Unit: "checks", Current: 2, Total: f64(3)},
-						}},
-					ObservedAt: frameNow,
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "custom", Source: "events-v1"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 4, PrimaryMetricID: "checks",
+					Phase: &acpwire.WorkPhase{ID: "verify", Label: "verify", Index: 2, Total: 3},
+					Metrics: []acpwire.WorkMetric{
+						{ID: "checks", Label: "Checks", Unit: "checks", Current: 2, Total: f64(3)},
+					},
+					ObservedAt: acpwire.Millis(frameNow),
 				},
-				StartedAt: frameNow.Add(-40 * time.Second),
+				StartedAt: acpwire.Millis(frameNow.Add(-40 * time.Second)),
 			},
 		},
 		{
 			name: "stale-snapshot",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "command", DisplayID: "job-6",
 				Label: "Download qwen3-coder weights", State: "running",
-				ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 5, PrimaryMetricID: "bytes",
-						Metrics: []progress.Metric{
-							{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
-						}},
-					ObservedAt: frameNow.Add(-42 * time.Second),
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 5, PrimaryMetricID: "bytes",
+					Metrics: []acpwire.WorkMetric{
+						{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
+					},
+					ObservedAt: acpwire.Millis(frameNow.Add(-42 * time.Second)),
 				},
-				StartedAt: frameNow.Add(-5 * time.Minute),
+				StartedAt: acpwire.Millis(frameNow.Add(-5 * time.Minute)),
 			},
 		},
 		{
 			name: "100-while-running",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "command", DisplayID: "job-7",
 				Label: "Download qwen3-coder weights", State: "running",
-				ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 6, PrimaryMetricID: "bytes",
-						Metrics: []progress.Metric{
-							{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: total, Total: &total},
-						}},
-					ObservedAt: frameNow,
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 6, PrimaryMetricID: "bytes",
+					Metrics: []acpwire.WorkMetric{
+						{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: total, Total: &total},
+					},
+					ObservedAt: acpwire.Millis(frameNow),
 				},
-				StartedAt: frameNow.Add(-3 * time.Minute),
+				StartedAt: acpwire.Millis(frameNow.Add(-3 * time.Minute)),
 			},
 		},
 	}
@@ -308,7 +307,7 @@ func TestFrames(t *testing.T) {
 			MaxRows:   13,
 			Now:       frameNow,
 			Spinner:   "⠋",
-			Work:      []viewmodel.WorkItem{shape.item},
+			Work:      []acpwire.WorkItem{shape.item},
 			Previous:  shape.previous,
 			Headlines: shape.headlines,
 			Agents:    shape.agents,
@@ -325,10 +324,10 @@ func TestFrames(t *testing.T) {
 	checkFrame(t, "rows-held-exit-1", Input{
 		Width: 96, MaxRows: 13, Now: frameNow, Spinner: "⠋",
 		Held: []HeldItem{{
-			Item: viewmodel.WorkItem{
+			Item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "command", DisplayID: "job-9",
 				Label: "go test ./...", State: "failed",
-				StartedAt: frameNow.Add(-4 * time.Minute),
+				StartedAt: acpwire.Millis(frameNow.Add(-4 * time.Minute)),
 			},
 			Outcome:  "exit 1",
 			Failed:   true,

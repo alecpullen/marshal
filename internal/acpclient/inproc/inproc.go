@@ -53,6 +53,10 @@ type Deps struct {
 	// access request as failed instead of presenting it.
 	AccessRequest func() (session.AccessRequest, bool)
 	ResolveAccess func(session.AccessChoice) (session.AccessResult, error)
+
+	// Work is the runtime's work service. Nil means the session serves no
+	// work: Work reports false, and the work calls fail.
+	Work viewmodel.WorkService
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -91,6 +95,13 @@ type Session struct {
 	// instead of presenting it.
 	accessRequest func() (session.AccessRequest, bool)
 	resolveAccess func(session.AccessChoice) (session.AccessResult, error)
+
+	// work is Deps.Work. workSnap is the newest work snapshot the session
+	// kept, and workConv the conversation its seed bound. workSnap and
+	// workConv are guarded by mu.
+	work     viewmodel.WorkService
+	workSnap acpwire.WorkSnapshot
+	workConv string
 
 	// ctx bounds the event subscriptions; cancel releases them.
 	ctx    context.Context

@@ -528,10 +528,15 @@ Decision: `WireTree`, with the C6 additions.
     the receipt it returns is part of `Status`;
   - `SetInteraction(ctx, patch)` replaces the interaction setter. It
     covers mode, auto and system access (`session/set_mode` exists and
-    takes all three). `SetEffort` exists, and `SetSudoUnlock` is new;
+    takes all three). The patch is an `acpwire.InteractionPatch`, and
+    the result the `acpwire.Interaction` that `Status` carries.
+    `SetEffort` exists, and `SetSudoUnlock` is new;
   - `CancelSubagent` (new);
-  - `ClearRunEvents`, `ClearSDDProgress` and `SetIdle` (new);
+  - `ClearFinishedRun` (new) clears a finished run's progress and its
+    event log together, the two clears the TUI always makes at once;
   - `TakeWatchResume` (new);
+  - no `SetIdle`: the TUI sets the session idle only where a run it owns
+    ends, and plans 5c and 5d move those ends agent side;
   - `AnswerSDDGate(ctx, answer)` and its stop (`session/sdd_answer`
     exists). Answering the SDD human gate resumes the pipeline run, so it
     moves with the runs, not with C7's requests.
@@ -746,14 +751,16 @@ The TUI works after every plan.
      work types in `acpwire`. The work pump moves into the adapter, and
      the tray, the live box and the Tasks panel render the wire types. A
      work item's subagent is found through `Status`.
-   - **5b. Turn control.** `Steer`, `PopSteering`, `ClearSteering`,
-     `SetInteraction`, `SetEffort`, `SetSudoUnlock`, `CancelSubagent`,
-     `ClearRunEvents`, `ClearSDDProgress`, `SetIdle` and
-     `TakeWatchResume`. The interaction and effort setter options go.
+   - **5b. Turn control** ([plan](plans/2026-11-02-p2-5b-turn-control-plan.md)).
+     `Steer`, `PopSteering`, `ClearSteering`, `SetInteraction`,
+     `SetEffort`, `SetSudoUnlock`, `CancelSubagent`, `ClearFinishedRun`
+     and `TakeWatchResume`. The interaction and effort setter options
+     go, and the adapter's `Deps` carry the runtime's setters.
    - **5c. Prompt.** `Prompt` replaces `runAgentCmd`, `startAgentRun`'s
      dispatch and the user-message writes. `Stop` moves with it, because
      the turn's stop is registered before dispatch. `Review`,
-     `RunAgent`, `Suggest` and `VerifyProposal` move too.
+     `RunAgent`, `Suggest` and `VerifyProposal` move too. A turn's end
+     sets the session idle agent side.
    - **5d. Pipelines.** `StartSwarm` with role overrides, `StartSDD`,
      `AuthorPlan`, and `AnswerSDDGate` with its stop.
    - **5e. Ending and swapping.** The `EndController` calls and
@@ -1198,6 +1205,35 @@ plan 5a:
 - **A session names its conversation by its own ID** (C8). The adapter
   passes its state's session ID as the work conversation, as ACP passes
   the request's.
+
+**2026-11-02, against `80532121` (written while plan 5a ran).** Found
+while writing plan 5b:
+- **No `SetIdle`** (C8, Migration order). The TUI sets the session idle
+  in three places, and all three are where a run it owns ends: an agent
+  turn (twice, the SDD gate's branch included) and a plan-authoring run.
+  Plans 5c and 5d move those ends agent side, so a `SetIdle` added now
+  would be deleted by them. The three calls stay until then.
+- **`ClearFinishedRun` replaces `ClearRunEvents` and `ClearSDDProgress`**
+  (C8). The TUI's one caller clears both together, on the user's next
+  turn after a finished run.
+- **`SetInteraction` takes `acpwire` types** (C3, C8). `acpclient`
+  signatures may use only `acpwire` and C3's shared data packages, and
+  `interaction` is not one of them. `acpwire.InteractionPatch` carries
+  the patch, and the result is `Status`'s `acpwire.Interaction`. Both
+  spell system access `system`. ACP's `session/set_mode` keeps
+  `system_access`, and P3 maps between them.
+- **The runtime's setters move into the adapter's `Deps`** (C4).
+  `inproc.Deps` gains `SetInteraction` and `SetEffort`, bound to the
+  runtime as `accessTUIOptions` bound the TUI options, so they keep
+  working after a swap. The options and `accessTUIOptions` go.
+- **`Steer` is the queued delivery** (C8). In process it queues even when
+  no turn runs: the TUI puts a refused follow-up back on the queue.
+  ACP's `session/steer` needs an active turn, and that put-back moves
+  agent side with `Prompt` in plan 5c.
+- **The new ACP methods are named** `session/steering_pop`,
+  `session/steering_clear`, `session/set_sudo_unlock`,
+  `session/subagent_cancel`, `session/sdd_clear` and
+  `session/watch_resume_take`.
 
 ## Implementation record
 

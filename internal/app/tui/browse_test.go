@@ -832,8 +832,8 @@ func TestBrowseSRequestsAStopOnlyWhenAllowed(t *testing.T) {
 	if len(svc.stopCalls) != 1 {
 		t.Fatalf("stop calls = %d, want 1", len(svc.stopCalls))
 	}
-	if got := svc.stopCalls[0]; got.TaskKey != "work:stoppable" || got.ConversationID != "conv1" {
-		t.Fatalf("stop target = %+v, want the conversation and the stop's key", got)
+	if got := svc.stopCalls[0]; got.TaskKey != "work:stoppable" || got.ConversationID != m.sess.ID() {
+		t.Fatalf("stop target = %+v, want the session's conversation and the stop's key", got)
 	}
 	if m.flash != "Stop requested" {
 		t.Fatalf("flash = %q, want the accepted stop's confirmation", m.flash)

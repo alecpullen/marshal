@@ -2895,7 +2895,6 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 				tuiOpts = append(tuiOpts, tui.WithSwarmOverrideFactory(rt.SwarmOverrideFactory))
 			}
 			tuiOpts = append(tuiOpts, tui.WithPlanAuthorFactory(ctx, rt.PlanAuthorFactory))
-			tuiOpts = append(tuiOpts, tui.WithWork(rt))
 			tuiOpts = append(tuiOpts, tui.WithToolRegistry(toolReg))
 			tuiOpts = append(tuiOpts, tui.WithCustomAgentRunnerFactory(
 				func(agentName string) (tui.AgentRunner, error) {

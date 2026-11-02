@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"errors"
 	"fmt"
 	"image/color"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
@@ -24,7 +24,6 @@ import (
 	"marshal/internal/progress"
 	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
-	"marshal/internal/viewmodel"
 )
 
 // todoLine renders one todo row: ✓ teal done, ▸ coral bold in-progress,
@@ -338,7 +337,7 @@ func (p *tasksPanelModel) applyPage(requestID string, page acpwire.WorkPage, err
 	}
 	delete(p.pending, requestID)
 	if err != nil {
-		if errors.Is(err, viewmodel.ErrWorkStaleCursor) {
+		if acpclient.IsCode(err, acpwire.CodeStaleWorkCursor) {
 			p.stale = true
 			p.err = ""
 			return true

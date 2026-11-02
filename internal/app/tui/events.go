@@ -4,15 +4,6 @@ import (
 	"marshal/internal/acpwire"
 )
 
-// workMsg is the tea.Msg the Work snapshot pump emits when a WorkSnapshot
-// event arrives. subscriptionID names the subscription the pump captured, so
-// an event from a superseded subscription (a prior conversation, or a rebind
-// that replaced the channel) is ignored rather than applied.
-type workMsg struct {
-	snapshot       acpwire.WorkSnapshot
-	subscriptionID uint64
-}
-
 // workRequestMsg is contract C5's UI→pump request. Every Tasks-panel Work
 // action emits one for the model's pump to service; the panel itself never
 // calls the Work service.

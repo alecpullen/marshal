@@ -185,7 +185,7 @@ func TestWorkTasksSearchPagingAndSelection(t *testing.T) {
 	}
 	req = cmd().(workRequestMsg)
 	before := len(p.items)
-	if !p.applyPage(req.requestID, acpwire.WorkPage{}, viewmodel.ErrWorkStaleCursor) {
+	if !p.applyPage(req.requestID, acpwire.WorkPage{}, &acpwire.Error{Code: acpwire.CodeStaleWorkCursor}) {
 		t.Fatal("the stale-cursor result was dropped")
 	}
 	if !p.stale || len(p.items) != before {
@@ -454,13 +454,9 @@ func TestWorkScrollAndMouseTargetsSurviveRefresh(t *testing.T) {
 	m.viewportFollow = false
 	anchor := m.viewport.YOffset()
 
-	updated, _ := m.Update(workMsg{
-		snapshot: acpwire.WorkSnapshot{ConversationID: "conv", Revision: 2, Items: []acpwire.WorkItem{
-			workTask("work:a", "Alpha"), workTask("work:c", "Gamma"),
-		}},
-		subscriptionID: m.workSubscriptionID,
-	})
-	m = updated.(Model)
+	m = deliverWork(t, m, svc, viewmodel.WorkSnapshot{ConversationID: "conv", Revision: 2, Items: []viewmodel.WorkItem{
+		vmWorkTask("work:a", "Alpha"), vmWorkTask("work:c", "Gamma"),
+	}})
 	_ = m.viewString()
 
 	if m.viewport.YOffset() != anchor {

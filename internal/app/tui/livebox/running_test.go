@@ -8,10 +8,9 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/progress"
 	"marshal/internal/testenv"
-	"marshal/internal/viewmodel"
 )
 
 func TestMain(m *testing.M) {
@@ -29,7 +28,7 @@ func f64(v float64) *float64 { return &v }
 
 // rowText renders one running row at a generous width and returns its text
 // with every escape stripped.
-func rowText(it viewmodel.WorkItem, in Input) string {
+func rowText(it acpwire.WorkItem, in Input) string {
 	return ansi.Strip(runningRow(it, in, 200).Text)
 }
 
@@ -40,17 +39,17 @@ func TestRunningRowPerShape(t *testing.T) {
 	total := 3.7 * gib
 	tests := []struct {
 		name    string
-		item    viewmodel.WorkItem
+		item    acpwire.WorkItem
 		in      Input
 		want    []string
 		notWant []string
 	}{
 		{
 			name: "subagent with headline",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k1", Kind: "agent", SourceID: "1", DisplayID: "#1",
 				Label: "review the config change", State: "running",
-				StartedAt: testNow.Add(-62 * time.Second),
+				StartedAt: acpwire.Millis(testNow.Add(-62 * time.Second)),
 			},
 			in: Input{Now: testNow, Spinner: "⠋",
 				Headlines: map[string]string{"k1": "Checking context_window…"}},
@@ -59,41 +58,41 @@ func TestRunningRowPerShape(t *testing.T) {
 		},
 		{
 			name: "blocked subagent",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k2", Kind: "agent", SourceID: "2", DisplayID: "#2",
 				Label: "review the config change", State: "blocked",
-				Prompt:    &viewmodel.WorkPrompt{Kind: "approval"},
-				StartedAt: testNow.Add(-90 * time.Second),
+				Prompt:    &acpwire.WorkPrompt{Kind: "approval"},
+				StartedAt: acpwire.Millis(testNow.Add(-90 * time.Second)),
 			},
 			in:   Input{Now: testNow},
 			want: []string{"⚠ needs approval"},
 		},
 		{
 			name: "generic command with output",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k3", Kind: "command", DisplayID: "job-1",
 				Label: "Harness tests", State: "running",
 				OutputTail: "go: downloading x\n--- FAIL: TestX\nlast useful line\n",
-				StartedAt:  testNow.Add(-30 * time.Second),
+				StartedAt:  acpwire.Millis(testNow.Add(-30 * time.Second)),
 			},
 			in:   Input{Now: testNow},
 			want: []string{"last useful line"},
 		},
 		{
 			name: "go tests 210 passed 2 failed",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k4", Kind: "command", DisplayID: "job-2",
 				Label: "go test", State: "running",
-				ProgressConfig: &progress.Config{Profile: "tests", Source: "go-test-json"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 7, Metrics: []progress.Metric{
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "tests", Source: "go-test-json"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 7, Metrics: []acpwire.WorkMetric{
 						{ID: "passed", Label: "Passed", Unit: "cases", Current: 210},
 						{ID: "failed", Label: "Failed", Unit: "cases", Current: 2},
 						{ID: "skipped", Label: "Skipped", Unit: "cases", Current: 0},
-					}},
-					ObservedAt: testNow,
+					},
+					ObservedAt: acpwire.Millis(testNow),
 				},
-				StartedAt: testNow.Add(-48 * time.Second),
+				StartedAt: acpwire.Millis(testNow.Add(-48 * time.Second)),
 			},
 			in:      Input{Now: testNow},
 			want:    []string{"210 passed · 2 failed"},
@@ -101,25 +100,25 @@ func TestRunningRowPerShape(t *testing.T) {
 		},
 		{
 			name: "download with a total",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k5", Kind: "command", DisplayID: "job-3",
 				Label: "Download qwen3-coder weights", State: "running",
-				ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 2, PrimaryMetricID: "bytes",
-						Metrics: []progress.Metric{
-							{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
-						}},
-					ObservedAt: testNow,
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 2, PrimaryMetricID: "bytes",
+					Metrics: []acpwire.WorkMetric{
+						{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
+					},
+					ObservedAt: acpwire.Millis(testNow),
 				},
-				StartedAt: testNow.Add(-2*time.Minute + -3*time.Second),
+				StartedAt: acpwire.Millis(testNow.Add(-2*time.Minute + -3*time.Second)),
 			},
-			in: Input{Now: testNow, Previous: map[string]*progress.Snapshot{"k5": {
-				Frame: progress.Frame{Sequence: 1, PrimaryMetricID: "bytes",
-					Metrics: []progress.Metric{
-						{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.0 * gib, Total: &total},
-					}},
-				ObservedAt: testNow.Add(-10 * time.Second),
+			in: Input{Now: testNow, Previous: map[string]*acpwire.WorkProgress{"k5": {
+				Sequence: 1, PrimaryMetricID: "bytes",
+				Metrics: []acpwire.WorkMetric{
+					{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.0 * gib, Total: &total},
+				},
+				ObservedAt: acpwire.Millis(testNow.Add(-10 * time.Second)),
 			}}},
 			// The ETA is derived from the previous observation's delta, so it
 			// is present but its last second is float-sensitive; ~2m is the
@@ -128,18 +127,18 @@ func TestRunningRowPerShape(t *testing.T) {
 		},
 		{
 			name: "download without a total",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k6", Kind: "command", DisplayID: "job-4",
 				Label: "Fetch shard", State: "running",
-				ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 3, PrimaryMetricID: "bytes",
-						Metrics: []progress.Metric{
-							{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 512 * 1024 * 1024},
-						}},
-					ObservedAt: testNow,
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 3, PrimaryMetricID: "bytes",
+					Metrics: []acpwire.WorkMetric{
+						{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 512 * 1024 * 1024},
+					},
+					ObservedAt: acpwire.Millis(testNow),
 				},
-				StartedAt: testNow.Add(-12 * time.Second),
+				StartedAt: acpwire.Millis(testNow.Add(-12 * time.Second)),
 			},
 			in:      Input{Now: testNow},
 			want:    []string{"512.0 MiB", "size unknown"},
@@ -147,37 +146,37 @@ func TestRunningRowPerShape(t *testing.T) {
 		},
 		{
 			name: "phased custom job",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k7", Kind: "command", DisplayID: "job-5",
 				Label: "Eval sweep", State: "running",
-				ProgressConfig: &progress.Config{Profile: "custom", Source: "events-v1"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 4, PrimaryMetricID: "checks",
-						Phase: &progress.Phase{ID: "verify", Label: "verify", Index: 2, Total: 3},
-						Metrics: []progress.Metric{
-							{ID: "checks", Label: "Checks", Unit: "checks", Current: 2, Total: f64(3)},
-						}},
-					ObservedAt: testNow,
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "custom", Source: "events-v1"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 4, PrimaryMetricID: "checks",
+					Phase: &acpwire.WorkPhase{ID: "verify", Label: "verify", Index: 2, Total: 3},
+					Metrics: []acpwire.WorkMetric{
+						{ID: "checks", Label: "Checks", Unit: "checks", Current: 2, Total: f64(3)},
+					},
+					ObservedAt: acpwire.Millis(testNow),
 				},
-				StartedAt: testNow.Add(-40 * time.Second),
+				StartedAt: acpwire.Millis(testNow.Add(-40 * time.Second)),
 			},
 			in:   Input{Now: testNow},
 			want: []string{"2/3 verify", "67%", "2/3 checks"},
 		},
 		{
 			name: "stale snapshot",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k8", Kind: "command", DisplayID: "job-6",
 				Label: "Download qwen3-coder weights", State: "running",
-				ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 5, PrimaryMetricID: "bytes",
-						Metrics: []progress.Metric{
-							{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
-						}},
-					ObservedAt: testNow.Add(-42 * time.Second),
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 5, PrimaryMetricID: "bytes",
+					Metrics: []acpwire.WorkMetric{
+						{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
+					},
+					ObservedAt: acpwire.Millis(testNow.Add(-42 * time.Second)),
 				},
-				StartedAt: testNow.Add(-5 * time.Minute),
+				StartedAt: acpwire.Millis(testNow.Add(-5 * time.Minute)),
 			},
 			in:      Input{Now: testNow},
 			want:    []string{"no update for 42s", "57%", "━"},
@@ -185,18 +184,18 @@ func TestRunningRowPerShape(t *testing.T) {
 		},
 		{
 			name: "100% while running",
-			item: viewmodel.WorkItem{
+			item: acpwire.WorkItem{
 				TaskKey: "k9", Kind: "command", DisplayID: "job-7",
 				Label: "Download qwen3-coder weights", State: "running",
-				ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-				Progress: &progress.Snapshot{
-					Frame: progress.Frame{Sequence: 6, PrimaryMetricID: "bytes",
-						Metrics: []progress.Metric{
-							{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: total, Total: &total},
-						}},
-					ObservedAt: testNow,
+				ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+				Progress: &acpwire.WorkProgress{
+					Sequence: 6, PrimaryMetricID: "bytes",
+					Metrics: []acpwire.WorkMetric{
+						{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: total, Total: &total},
+					},
+					ObservedAt: acpwire.Millis(testNow),
 				},
-				StartedAt: testNow.Add(-3 * time.Minute),
+				StartedAt: acpwire.Millis(testNow.Add(-3 * time.Minute)),
 			},
 			in:   Input{Now: testNow},
 			want: []string{"100%", "reported done · process still running"},
@@ -256,19 +255,19 @@ func TestBarDrawsHalfCells(t *testing.T) {
 // height cap and its conditional stop action.
 func TestCardCapsAtFiveRowsAndOffersStopOnlyWhenAllowed(t *testing.T) {
 	total := 3.7 * gib
-	base := viewmodel.WorkItem{
+	base := acpwire.WorkItem{
 		TaskKey: "k5", Kind: "command", DisplayID: "job-3",
 		Label: "Download qwen3-coder weights", State: "running",
-		ProgressConfig: &progress.Config{Profile: "download", Source: "events-v1"},
-		Progress: &progress.Snapshot{
-			Frame: progress.Frame{Sequence: 2, PrimaryMetricID: "bytes",
-				Metrics: []progress.Metric{
-					{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
-				},
-				Detail: "shard 7 of 12"},
-			ObservedAt: testNow,
+		ProgressConfig: &acpwire.WorkProgressConfig{Profile: "download", Source: "events-v1"},
+		Progress: &acpwire.WorkProgress{
+			Sequence: 2, PrimaryMetricID: "bytes",
+			Metrics: []acpwire.WorkMetric{
+				{ID: "bytes", Label: "Downloaded", Unit: "bytes", Current: 2.1 * gib, Total: &total},
+			},
+			Detail:     "shard 7 of 12",
+			ObservedAt: acpwire.Millis(testNow),
 		},
-		StartedAt: testNow.Add(-2 * time.Minute),
+		StartedAt: acpwire.Millis(testNow.Add(-2 * time.Minute)),
 	}
 	in := Input{Now: testNow, Spinner: "⠋"}
 
@@ -311,11 +310,11 @@ func TestCardCapsAtFiveRowsAndOffersStopOnlyWhenAllowed(t *testing.T) {
 }
 
 // subagentItem is a running subagent's tray item.
-func subagentItem() viewmodel.WorkItem {
-	return viewmodel.WorkItem{
+func subagentItem() acpwire.WorkItem {
+	return acpwire.WorkItem{
 		TaskKey: "k1", Kind: "agent", SourceID: "1", DisplayID: "#1",
 		Label: "review the config change", State: "running",
-		StartedAt: testNow.Add(-62 * time.Second),
+		StartedAt: acpwire.Millis(testNow.Add(-62 * time.Second)),
 	}
 }
 
@@ -405,7 +404,7 @@ func TestOnlySubagentsGetTwoRows(t *testing.T) {
 func TestHeldSubagentRowKeepsItsRoute(t *testing.T) {
 	item := subagentItem()
 	item.State = "completed"
-	item.EndedAt = testNow
+	item.EndedAt = acpwire.Millis(testNow)
 	held := HeldItem{
 		Item: item, Outcome: "done",
 		Summary:  "found 4 call sites",

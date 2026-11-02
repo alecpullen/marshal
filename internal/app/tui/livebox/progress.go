@@ -7,11 +7,58 @@ import (
 	"strings"
 	"time"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/progress"
 )
 
 // The measurement helpers below are the display boundary for producer
 // strings: everything they return is already cleaned, measured and cut.
+
+// progressOf is a wire progress observation as the progress package measures
+// it, or nil for nil.
+func progressOf(p *acpwire.WorkProgress) *progress.Snapshot {
+	if p == nil {
+		return nil
+	}
+	out := &progress.Snapshot{
+		Frame: progress.Frame{
+			Version:         p.Version,
+			Sequence:        p.Sequence,
+			PrimaryMetricID: p.PrimaryMetricID,
+			Detail:          p.Detail,
+		},
+		ObservedAt:    acpwire.Time(p.ObservedAt),
+		MeasuredAt:    acpwire.Time(p.MeasuredAt),
+		Partial:       p.Partial,
+		Warning:       p.Warning,
+		ReportedError: p.ReportedError,
+	}
+	if p.Phase != nil {
+		out.Phase = &progress.Phase{ID: p.Phase.ID, Label: p.Phase.Label, Index: p.Phase.Index, Total: p.Phase.Total}
+	}
+	if p.Metrics != nil {
+		out.Metrics = make([]progress.Metric, len(p.Metrics))
+		for i, m := range p.Metrics {
+			pm := progress.Metric{ID: m.ID, Label: m.Label, Unit: m.Unit, Current: m.Current}
+			if m.Total != nil {
+				total := *m.Total
+				pm.Total = &total
+			}
+			if m.Rate != nil {
+				rate := *m.Rate
+				pm.Rate = &rate
+			}
+			out.Metrics[i] = pm
+		}
+	}
+	if p.Rows != nil {
+		out.Rows = make([]progress.Row, len(p.Rows))
+		for i, r := range p.Rows {
+			out.Rows[i] = progress.Row{ID: r.ID, Label: r.Label, State: r.State}
+		}
+	}
+	return out
+}
 
 // primaryMetric resolves the profile-selected primary metric, falling back
 // to the first observation and then to nothing.

@@ -9,6 +9,7 @@ import (
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/tui/livebox"
+	"marshal/internal/progress"
 	"marshal/internal/viewmodel"
 )
 
@@ -53,6 +54,20 @@ func planFingerprint(tasks []acpwire.WireTask) string {
 	return b.String()
 }
 
+// wirePrevious is the model's previous progress observations on the wire, the
+// form the live box measures them in. It is one of the three conversions of
+// the temporary bridge in this file; it goes with Task 5.
+func wirePrevious(prev map[string]*progress.Snapshot) map[string]*acpwire.WorkProgress {
+	if prev == nil {
+		return nil
+	}
+	out := make(map[string]*acpwire.WorkProgress, len(prev))
+	for key, p := range prev {
+		out[key] = viewmodel.WorkProgressOf(p)
+	}
+	return out
+}
+
 // boxInput snapshots the model for livebox.Plan.
 func (m Model) boxInput() livebox.Input {
 	now := m.now()
@@ -62,7 +77,7 @@ func (m Model) boxInput() livebox.Input {
 		MaxRows:  m.boxMaxRows(),
 		Now:      now,
 		Spinner:  m.turnSpinnerFrame(),
-		Previous: m.workPrevious,
+		Previous: wirePrevious(m.workPrevious),
 		Expanded: m.workExpanded,
 		Cursor:   m.boxCursor(),
 	}
@@ -92,7 +107,7 @@ func (m Model) boxInput() livebox.Input {
 	}
 	for _, it := range m.workSnapshot.Items {
 		if viewmodel.WorkActive(it) {
-			in.Work = append(in.Work, it)
+			in.Work = append(in.Work, viewmodel.WorkItemOf(it))
 			continue
 		}
 		if h, ok := m.heldItem(it); ok {
@@ -102,7 +117,7 @@ func (m Model) boxInput() livebox.Input {
 	// A subagent's card carries its route provenance and, while it runs, its
 	// child's newest narration headline. Held agents keep the provenance too:
 	// the finished row still says which model ran the work.
-	agents := make([]viewmodel.WorkItem, 0, len(in.Work)+len(in.Held))
+	agents := make([]acpwire.WorkItem, 0, len(in.Work)+len(in.Held))
 	agents = append(agents, in.Work...)
 	for _, h := range in.Held {
 		agents = append(agents, h.Item)
@@ -135,7 +150,7 @@ func (m Model) boxInput() livebox.Input {
 			Provider: v.Provider,
 			Fallback: v.Fallback,
 		}
-		if !viewmodel.WorkActive(it) || v.Headline == "" {
+		if !livebox.WorkActive(it) || v.Headline == "" {
 			continue
 		}
 		if in.Headlines == nil {
@@ -201,7 +216,7 @@ func (m Model) heldItem(it viewmodel.WorkItem) (livebox.HeldItem, bool) {
 		return livebox.HeldItem{}, false
 	}
 	h := livebox.HeldItem{
-		Item:     it,
+		Item:     viewmodel.WorkItemOf(it),
 		Duration: max(it.EndedAt.Sub(it.StartedAt), 0),
 	}
 	if ref, ok := m.completions[it.TaskKey]; ok && ref.info != nil {

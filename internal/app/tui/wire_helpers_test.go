@@ -10,7 +10,7 @@ import (
 // wireOf returns n's wire node and its children's, in order, projected
 // against the active root workdir.
 func wireOf(n *viewmodel.Node, workdir string) (*acpwire.WireNode, []*acpwire.WireNode) {
-	idx := wireIndex(viewmodel.Project([]*viewmodel.Node{n}, workdir))
+	idx := wireIndex(viewmodel.Project([]*viewmodel.Node{n}, workdir).Nodes)
 	w := idx[n.ID.Key]
 	rows := make([]*acpwire.WireNode, 0, len(w.Children))
 	for _, key := range w.Children {

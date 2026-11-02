@@ -553,10 +553,10 @@ func ctrlXStatusModel(t *testing.T, width, height int, c ctrlXStatusCase) Model 
 	if c.drill != ctrlXUndrilled {
 		child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 		view := m.state.RegisterSubagent("explore repo", child)
-		m.drillIntoSubagent(view)
+		m.drillIntoSubagent(view.ID)
 		m.refreshViewport()
 		if c.drill == ctrlXDrilledDone {
-			m.viewStack[len(m.viewStack)-1].Status = session.SubagentDone
+			m.viewStack[len(m.viewStack)-1].Status = acpwire.SubagentDone
 		}
 	}
 	m.browsing = c.browse

@@ -52,7 +52,6 @@ import (
 	"marshal/internal/tools/native"
 	"marshal/internal/tools/registry"
 	"marshal/internal/trust"
-	"marshal/internal/viewmodel"
 	"marshal/internal/worktree"
 )
 
@@ -6551,7 +6550,10 @@ func TestBoxFollowsDrilledSubagentTodos(t *testing.T) {
 	childState.EndStep(childStep)
 
 	m.busy, m.turnStartedAt = true, m.now().Add(-time.Second)
-	m.viewStack = append(m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: childState})
+	// The stack can only read a child the session holds, so it holds the
+	// status view the session carries for it.
+	childView := m.state.RegisterSubagent("child", childState)
+	m.viewStack = append(m.viewStack, statusView(t, &m, childView.ID))
 	m.invalidateTranscript()
 	m.refreshViewport()
 	body := stripANSI(boxOut(m))
@@ -9238,8 +9240,8 @@ func TestUncancelledProviderFailureSetsNotice(t *testing.T) {
 
 func TestRefreshViewportKeepsOverridesAcrossNewTool(t *testing.T) {
 	m := newTestModel(t)
-	keyA := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:a"}
-	keyB := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:b"}
+	keyA := nodeID{Kind: acpwire.KindTool, Key: "tool:a"}
+	keyB := nodeID{Kind: acpwire.KindTool, Key: "tool:b"}
 	m.toggleExpanded(keyA) // expand tool A
 
 	m.state.SetActiveToolCall(session.ActiveToolCall{Name: "shell.run", StartedAt: time.Unix(500, 0), ToolCallID: "a"})
@@ -9367,7 +9369,7 @@ func TestDrilledInChildActiveToolOverrideSurvivesRepaint(t *testing.T) {
 	m.refreshViewport()
 
 	// Locate the active-tool region (resolved from the child's transcript).
-	key := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:child_call"}
+	key := nodeID{Kind: acpwire.KindTool, Key: "tool:child_call"}
 	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the child's active tool call")
@@ -12094,8 +12096,8 @@ func TestSendNowAltEnterAcceptsOnlyActiveParentDraft(t *testing.T) {
 	// Drilled into a running child, the request still targets the parent turn.
 	f.m.input.SetValue("parent only")
 	child := newChildState(t)
-	f.state.RegisterSubagent("child", child)
-	f.m.viewStack = append(f.m.viewStack, session.SubagentView{ID: 1, Status: session.SubagentRunning, Child: child, Label: "child"})
+	childView := f.state.RegisterSubagent("child", child)
+	f.m.viewStack = append(f.m.viewStack, statusView(f.t, &f.m, childView.ID))
 	f.send(sendNowKey())
 	if len(f.submits) != 2 {
 		t.Fatalf("submits = %d, want 2", len(f.submits))

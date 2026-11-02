@@ -3,6 +3,7 @@ package tui
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -25,7 +26,7 @@ func (m *Model) startHeldWindow() {
 }
 
 // allTasksCompleted reports whether every item of a non-empty list is done.
-func allTasksCompleted(tasks []viewmodel.BandTask) bool {
+func allTasksCompleted(tasks []acpwire.WireTask) bool {
 	if len(tasks) == 0 {
 		return false
 	}
@@ -39,7 +40,7 @@ func allTasksCompleted(tasks []viewmodel.BandTask) bool {
 
 // planFingerprint identifies a plan list by its items' identity and status, so
 // a finished list seen at the last turn start can be left out of the tray.
-func planFingerprint(tasks []viewmodel.BandTask) string {
+func planFingerprint(tasks []acpwire.WireTask) string {
 	var b strings.Builder
 	for _, t := range tasks {
 		b.WriteString(t.ID)
@@ -150,13 +151,13 @@ func (m Model) boxInput() livebox.Input {
 				ID:        t.ID,
 				Content:   t.Content,
 				Status:    t.Status,
-				StartedAt: t.StartedAt,
-				First:     t.First,
+				StartedAt: acpwire.Time(t.StartedAt),
+				First:     t.Ref,
 			})
 		}
 	}
 	if m.band.Stale {
-		in.Stale = m.band.StaleAge
+		in.Stale = time.Duration(m.band.StaleAgeMs) * time.Millisecond
 	}
 	return in
 }
@@ -236,13 +237,13 @@ func (m Model) boxCursor() livebox.Target {
 // boxStopID is the synthetic browse identity of a box stop. The box's stops
 // are not transcript nodes, so the ID carries the stop's kind and key instead
 // of a node key.
-func boxStopID(t livebox.Target) viewmodel.NodeID {
-	return viewmodel.NodeID{Kind: viewmodel.KindPassthrough, Key: "box:" + boxKindName(t.Kind) + ":" + t.Key}
+func boxStopID(t livebox.Target) nodeID {
+	return nodeID{Kind: acpwire.KindPassthrough, Key: "box:" + boxKindName(t.Kind) + ":" + t.Key}
 }
 
 // boxTargetOf recovers the box stop a browse cursor ID names.
-func boxTargetOf(id viewmodel.NodeID) (livebox.Target, bool) {
-	if id.Kind != viewmodel.KindPassthrough {
+func boxTargetOf(id nodeID) (livebox.Target, bool) {
+	if id.Kind != acpwire.KindPassthrough {
 		return livebox.Target{}, false
 	}
 	if !strings.HasPrefix(id.Key, "box:") {
@@ -366,15 +367,15 @@ func (m *Model) scrollToPlanItem(key string) {
 		if it.ID != key && "#"+strconv.Itoa(i+1) != key {
 			continue
 		}
-		m.scrollToNode(it.First)
+		m.scrollToNode(nodeID{Kind: acpwire.KindStep, Key: it.First})
 		return
 	}
 }
 
 // scrollToNode reveals a transcript node by scrolling the viewport to the
 // first line of a region that targets it, and reports whether it was found.
-func (m *Model) scrollToNode(id viewmodel.NodeID) bool {
-	if id == (viewmodel.NodeID{}) {
+func (m *Model) scrollToNode(id nodeID) bool {
+	if id.Key == "" {
 		return false
 	}
 	for _, r := range m.nodeRegions {

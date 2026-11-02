@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/db"
@@ -491,8 +492,8 @@ func TestTightJoinsKeepClickAndBrowsePositionsOnTheirRows(t *testing.T) {
 	}
 
 	lines := transcriptLines(&m)
-	wants := map[viewmodel.Kind][]string{
-		viewmodel.KindStep: {"Reading it.", "Writing the first half", "Writing the second half", "One thought", "Another thought"},
+	wants := map[string][]string{
+		acpwire.KindStep: {"Reading it.", "Writing the first half", "Writing the second half", "One thought", "Another thought"},
 	}
 	seen := 0
 	for _, r := range m.nodeRegions {
@@ -515,7 +516,7 @@ func TestTightJoinsKeepClickAndBrowsePositionsOnTheirRows(t *testing.T) {
 		t.Fatalf("expected regions for the five beats, saw %d:\n%s", seen, strings.Join(lines, "\n"))
 	}
 	for _, it := range m.browseItems {
-		if it.kind != viewmodel.KindStep {
+		if it.kind != acpwire.KindStep {
 			continue
 		}
 		if it.start >= len(lines) || strings.TrimSpace(lines[it.start]) == "" {

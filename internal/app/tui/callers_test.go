@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"marshal/internal/acpclient/inproc"
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/commands"
 	"marshal/internal/tools/registry"
-	"marshal/internal/viewmodel"
 )
 
 type fakeFinder struct {
@@ -67,15 +67,15 @@ func callersModel(t *testing.T, f *fakeFinder) Model {
 }
 
 // flaggedCallerKey is the row the wire flagged for a callers lookup.
-func flaggedCallerKey(t *testing.T, m Model) viewmodel.NodeID {
+func flaggedCallerKey(t *testing.T, m Model) nodeID {
 	t.Helper()
 	for id, w := range m.wire {
 		if w.Tool != nil && w.Tool.Callers {
-			return viewmodel.NodeID{Kind: viewmodel.KindTool, Key: id}
+			return nodeID{Kind: acpwire.KindTool, Key: id}
 		}
 	}
 	t.Fatal("no row is flagged for a callers lookup")
-	return viewmodel.NodeID{}
+	return nodeID{}
 }
 
 func TestCallersLineRendersWhenResolved(t *testing.T) {
@@ -195,7 +195,7 @@ func TestCallersWaitWhileDrilledIn(t *testing.T) {
 	child := session.New(config.Default(), t.TempDir(), time.Unix(200, 0), session.Persistence{})
 	v := m.state.RegisterSubagent("scout", child)
 	m.state.LogToolCall(editEvent())
-	m.drillIntoSubagent(v)
+	m.drillIntoSubagent(v.ID)
 	m.refreshViewport()
 	if cmd := m.callerQueryCmds(); cmd != nil {
 		t.Fatal("a lookup must wait while the view is drilled in: the index holds the child's transcript")
@@ -215,13 +215,13 @@ func TestCallersBustTheTranscriptHash(t *testing.T) {
 	m.refreshViewport()
 	before := m.viewport.GetContent()
 
-	var key viewmodel.NodeID
+	var key nodeID
 	for _, item := range m.state.Transcript() {
 		if item.Kind == session.KindAudit {
-			key = viewmodel.ToolID(*item.Audit)
+			key = toolNodeID(*item.Audit)
 		}
 	}
-	m.callers = map[viewmodel.NodeID][]string{key: {"a.go:10"}}
+	m.callers = map[nodeID][]string{key: {"a.go:10"}}
 	m.refreshViewport()
 	if m.viewport.GetContent() == before {
 		t.Fatal("callers must be folded into the content signature, or results repaint nothing")
@@ -230,9 +230,9 @@ func TestCallersBustTheTranscriptHash(t *testing.T) {
 
 func TestStaleCallersArePruned(t *testing.T) {
 	m := newTestModel(t)
-	gone := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:gone"}
-	m.callers = map[viewmodel.NodeID][]string{gone: {"a.go:1"}}
-	m.callersAsked = map[viewmodel.NodeID]bool{gone: true}
+	gone := nodeID{Kind: acpwire.KindTool, Key: "tool:gone"}
+	m.callers = map[nodeID][]string{gone: {"a.go:1"}}
+	m.callersAsked = map[nodeID]bool{gone: true}
 	m.state.LogToolCall(editEvent())
 	m.refreshViewport()
 	if _, still := m.callers[gone]; still {

@@ -7,7 +7,6 @@ import (
 
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
-	"marshal/internal/viewmodel"
 )
 
 // selectionFixture is a two-turn transcript with every row shape the copier
@@ -102,7 +101,7 @@ func selectRows(t *testing.T, m *Model, from, to selPos) {
 }
 
 // readRowOf returns the node of the fixture's file.read row.
-func readRowOf(t *testing.T, m *Model) viewmodel.NodeID {
+func readRowOf(t *testing.T, m *Model) nodeID {
 	t.Helper()
 	l := lineOf(t, m, "read    a.go")
 	target, ok := m.regionAt(l)

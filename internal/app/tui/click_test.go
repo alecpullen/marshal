@@ -7,11 +7,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/tools/registry"
-	"marshal/internal/viewmodel"
 )
 
 func TestClickRegionsCoverABeatThatOnlyReasoned(t *testing.T) {
@@ -22,7 +22,7 @@ func TestClickRegionsCoverABeatThatOnlyReasoned(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	r, ok := regionOf(&m, beatWithThinking(&m, ts1))
+	r, ok := regionOf(&m, beatWithThinking(&m, m.state, ts1))
 	if !ok {
 		t.Fatal("expected a click region for the beat holding the reasoning")
 	}
@@ -60,9 +60,9 @@ func TestContentLineForClickRejectsOutsideViewport(t *testing.T) {
 
 func TestRegionAtFindsContainingRegion(t *testing.T) {
 	m := newTestModel(t)
-	step := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: "step:1"}
-	row := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:a"}
-	other := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: "step:2"}
+	step := nodeID{Kind: acpwire.KindStep, Key: "step:1"}
+	row := nodeID{Kind: acpwire.KindTool, Key: "tool:a"}
+	other := nodeID{Kind: acpwire.KindStep, Key: "step:2"}
 	m.nodeRegions = []nodeRegion{
 		{startLine: 0, endLine: 6, target: clickTarget{node: step}},
 		{startLine: 2, endLine: 4, target: clickTarget{node: row}},
@@ -100,7 +100,7 @@ func TestMouseClickOnABeatShowsItsReasoning(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	key := beatWithThinking(&m, ts)
+	key := beatWithThinking(&m, m.state, ts)
 	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the beat")
@@ -130,7 +130,7 @@ func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	key := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:call_a"}
+	key := nodeID{Kind: acpwire.KindTool, Key: "tool:call_a"}
 	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the active tool call")
@@ -153,7 +153,7 @@ func TestMouseClickActiveToolExpandsPerToolCall(t *testing.T) {
 	}
 
 	// A different call collapses back.
-	if mm.isToolExpanded(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:call_b"}, true) {
+	if mm.isToolExpanded(nodeID{Kind: acpwire.KindTool, Key: "tool:call_b"}, true) {
 		t.Fatal("expected a different tool call to be collapsed")
 	}
 }
@@ -243,7 +243,7 @@ func TestCompletionClickTogglesItsDisclosure(t *testing.T) {
 
 	var region nodeRegion
 	for _, r := range m.nodeRegions {
-		if r.target.node.Kind == viewmodel.KindCompletion {
+		if r.target.node.Kind == acpwire.KindCompletion {
 			region = r
 		}
 	}

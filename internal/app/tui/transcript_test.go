@@ -865,20 +865,6 @@ func TestSubagentReportRendersNothing(t *testing.T) {
 	}
 }
 
-func TestSubagentReportIsNotAUserTurn(t *testing.T) {
-	item := session.TranscriptItem{
-		Kind: session.KindMessage,
-		Message: &session.Message{
-			Role:        session.RoleUser,
-			Content:     "[subagent 1 finished] found two issues",
-			ContentType: session.ContentTypeSubagentReport,
-		},
-	}
-	if isUserTurn(item) {
-		t.Fatal("a subagent report must not count as a user turn, or it emits a turn separator")
-	}
-}
-
 // The durable watch report is model context, not transcript content, and
 // must not count as a user turn (mirrors the subagent report behavior).
 func TestWatchReportRendersNothing(t *testing.T) {
@@ -889,34 +875,6 @@ func TestWatchReportRendersNothing(t *testing.T) {
 	}
 	if out := renderMessage(wireMessage(msg), 80); out != "" {
 		t.Fatalf("watch report must render nothing, got %q", out)
-	}
-}
-
-func TestWatchReportIsNotAUserTurn(t *testing.T) {
-	item := session.TranscriptItem{
-		Kind: session.KindMessage,
-		Message: &session.Message{
-			Role:        session.RoleUser,
-			Content:     "[watch build fired] kind=command",
-			ContentType: session.ContentTypeWatchReport,
-		},
-	}
-	if isUserTurn(item) {
-		t.Fatal("a watch report must not count as a user turn, or it emits a turn separator")
-	}
-}
-
-func TestRealUserMessageStillIsAUserTurn(t *testing.T) {
-	item := session.TranscriptItem{
-		Kind: session.KindMessage,
-		Message: &session.Message{
-			Role:        session.RoleUser,
-			Content:     "fix the wheel handler",
-			ContentType: session.ContentTypePlain,
-		},
-	}
-	if !isUserTurn(item) {
-		t.Fatal("an ordinary user message must still be a user turn")
 	}
 }
 

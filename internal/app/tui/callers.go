@@ -6,7 +6,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/acpclient"
-	"marshal/internal/viewmodel"
+	"marshal/internal/acpwire"
 )
 
 // maxCallersShown caps how many references a row names before collapsing
@@ -16,7 +16,7 @@ const maxCallersShown = 3
 // callersMsg carries a completed reference lookup back to the model. A nil
 // callers is an answer, not a missing one: no callers line, and no second ask.
 type callersMsg struct {
-	key     viewmodel.NodeID
+	key     nodeID
 	callers []string // nil: no callers line, and no second ask
 }
 
@@ -36,14 +36,14 @@ func (m *Model) callerQueryCmds() tea.Cmd {
 		return nil
 	}
 	if m.callersAsked == nil {
-		m.callersAsked = map[viewmodel.NodeID]bool{}
+		m.callersAsked = map[nodeID]bool{}
 	}
 	var cmds []tea.Cmd
 	for id, w := range m.wire {
 		if w.Tool == nil || !w.Tool.Callers {
 			continue
 		}
-		key := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: id}
+		key := nodeID{Kind: acpwire.KindTool, Key: id}
 		if m.callersAsked[key] {
 			continue
 		}
@@ -58,7 +58,7 @@ func (m *Model) callerQueryCmds() tea.Cmd {
 
 // queryCallersCmd asks the session what references the symbol the row changed.
 // An error is an empty answer: the row renders without a callers line.
-func queryCallersCmd(ctx context.Context, sess acpclient.Session, key viewmodel.NodeID) tea.Cmd {
+func queryCallersCmd(ctx context.Context, sess acpclient.Session, key nodeID) tea.Cmd {
 	return func() tea.Msg {
 		refs, err := sess.Callers(ctx, key.Key)
 		if err != nil {
@@ -72,7 +72,7 @@ func queryCallersCmd(ctx context.Context, sess acpclient.Session, key viewmodel.
 // is present and the query is not retried.
 func (m Model) handleCallers(msg callersMsg) (Model, tea.Cmd) {
 	if m.callers == nil {
-		m.callers = map[viewmodel.NodeID][]string{}
+		m.callers = map[nodeID][]string{}
 	}
 	m.callers[msg.key] = msg.callers
 	m.invalidateTranscript()

@@ -167,7 +167,8 @@ func TestStatusMirrorsTheState(t *testing.T) {
 	state.AddMessage(session.RoleUser, "hello", session.ContentTypePlain)
 	state.AddMessage(session.RoleAssistant, "hi", session.ContentTypeMarkdown)
 	state.StoreBackup([]session.BackupFile{{Path: "notes.txt", Content: "old"}})
-	view := state.RegisterSubagent("scout", newState(t, "child"))
+	child := newState(t, "child")
+	view := state.RegisterSubagent("scout", child)
 
 	got := sess.Status()
 	want := acpwire.SessionStatus{
@@ -248,6 +249,11 @@ func TestStatusMirrorsTheState(t *testing.T) {
 			ID:     view.ID,
 			Label:  "scout",
 			Status: acpwire.SubagentRunning,
+			Drill: &acpwire.SubagentDrill{
+				ActiveRoot:  child.Workspace().ActiveRoot,
+				ActiveRoute: routeOf(child.ActiveRoute()),
+				Activity:    activityWire(child.Activity()),
+			},
 		}},
 		Git: acpwire.Git{Branch: "feature", Worktree: "wt", InRepo: true},
 	}

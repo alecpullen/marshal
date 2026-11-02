@@ -6,7 +6,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/repo/gitinfo"
-	"marshal/internal/viewmodel"
+	"marshal/internal/strutil"
 )
 
 // subagentsOf projects the session's subagent views onto the wire, leaving out
@@ -29,8 +29,24 @@ func subagentsOf(views []session.SubagentView) []acpwire.Subagent {
 		if v.Status == session.SubagentRunning && v.Child != nil {
 			out[i].Headline = subagentHeadline(v.Child)
 		}
+		if v.Child != nil {
+			out[i].Drill = &acpwire.SubagentDrill{
+				ActiveRoot:  v.Child.Workspace().ActiveRoot,
+				ActiveRoute: routeOf(v.Child.ActiveRoute()),
+				Activity:    activityWire(v.Child.Activity()),
+			}
+		}
 	}
 	return out
+}
+
+// activityWire is a session activity on the wire.
+func activityWire(a session.Activity) acpwire.Activity {
+	return acpwire.Activity{
+		Kind:      string(a.Kind),
+		Label:     a.Label,
+		StartedAt: acpwire.Millis(a.StartedAt),
+	}
 }
 
 // subagentStatusOf maps a session subagent status onto its wire constant.
@@ -55,8 +71,8 @@ func subagentHeadline(child *session.State) string {
 	if line == "" {
 		return ""
 	}
-	head, _ := viewmodel.FirstSentence(line)
-	return viewmodel.StripEmphasis(head)
+	head, _ := strutil.FirstSentence(line)
+	return strutil.StripEmphasis(head)
 }
 
 // swarmOf copies the session's swarm progress onto the wire.

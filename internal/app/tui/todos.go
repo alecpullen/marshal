@@ -20,6 +20,7 @@ import (
 	"marshal/internal/app/tui/textfield"
 	"marshal/internal/app/tui/theme"
 	"marshal/internal/progress"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/native"
 	"marshal/internal/viewmodel"
 )
@@ -40,7 +41,7 @@ func todoLine(t native.TodoItem, width int) string {
 	default:
 		g, c = glyph.Ambient, theme.Current().FGMuted
 	}
-	return gutterPrefix(g, c) + labelStyle.Render(ansi.Truncate(viewmodel.ScrubText(t.Content), max(width-3, 1), "…"))
+	return gutterPrefix(g, c) + labelStyle.Render(ansi.Truncate(strutil.ScrubText(t.Content), max(width-3, 1), "…"))
 }
 
 // todoProgress returns the completed count and the index of the
@@ -263,7 +264,7 @@ func (p *tasksPanelModel) openSearch() {
 // matching it. It replaces the list rather than concatenating onto whatever was
 // on screen.
 func (p *tasksPanelModel) applySearch() tea.Cmd {
-	q := viewmodel.ScrubText(p.search.Value())
+	q := strutil.ScrubText(p.search.Value())
 	if r := []rune(q); len(r) > workSearchMaxRunes {
 		q = string(r[:workSearchMaxRunes])
 	}

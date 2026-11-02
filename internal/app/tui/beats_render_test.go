@@ -45,15 +45,15 @@ func TestRenderHeadlessBeatHasNoInventedHeader(t *testing.T) {
 	}
 }
 
-// Review focus 1: a long headless beat shows the last BeatRowCap rows.
+// Review focus 1: a long headless beat shows the last beatRowCap rows.
 func TestRenderHeadlessBeatCapsRows(t *testing.T) {
-	beat, rows := wireOf(beatNode("", viewmodel.BeatRowCap+5), "")
+	beat, rows := wireOf(beatNode("", beatRowCap+5), "")
 	out, _ := renderStep(beat, rows, &stepRenderCtx{}, 100, false)
 	plain := ansi.Strip(out)
 	if !strings.Contains(plain, "… 5 earlier calls") {
 		t.Fatalf("want a collapsed-count line:\n%s", plain)
 	}
-	if strings.Contains(plain, "read f0") || !strings.Contains(plain, fmt.Sprintf("read f%d", viewmodel.BeatRowCap+4)) {
+	if strings.Contains(plain, "read f0") || !strings.Contains(plain, fmt.Sprintf("read f%d", beatRowCap+4)) {
 		t.Fatalf("want only the newest rows:\n%s", plain)
 	}
 }

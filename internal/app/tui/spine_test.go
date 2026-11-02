@@ -102,7 +102,7 @@ func TestFailedCallShowsItsTailCollapsed(t *testing.T) {
 	ev := registry.AuditEvent{ToolName: "shell.run", Args: json.RawMessage(`{"command":"go test ./..."}`), CommandExitCode: &code,
 		ResultContent: "line 1\nline 2\nline 3\nline 4\n--- FAIL: TestX"}
 	lines := plainLines(renderCallRow(wireTool("", ev), nil, false, nil, 80))
-	if len(lines) != 1+failedTailLines || !strings.Contains(lines[len(lines)-1], "--- FAIL: TestX") || strings.Contains(strings.Join(lines, "\n"), "line 1") {
+	if len(lines) != 1+viewmodel.FailedTailLines || !strings.Contains(lines[len(lines)-1], "--- FAIL: TestX") || strings.Contains(strings.Join(lines, "\n"), "line 1") {
 		t.Fatalf("collapsed failure = %q", lines)
 	}
 	if open := ansi.Strip(renderCallRow(wireTool("", ev), nil, true, nil, 80)); !strings.Contains(open, "line 1") {
@@ -245,8 +245,11 @@ func TestSpineConnectsRowsToTheirBeat(t *testing.T) {
 		n.Children[i].Tools[0].ResultContent = fmt.Sprintf("body %d", i)
 	}
 	beat, rows := wireOf(n, "")
-	out, _ := renderStep(beat, rows, &stepRenderCtx{expanded: func(id viewmodel.NodeID, inherited bool) bool {
-		return id == n.Children[0].ID || id == n.Children[2].ID
+	rowID := func(i int) nodeID {
+		return nodeID{Kind: n.Children[i].Kind.String(), Key: n.Children[i].ID.Key}
+	}
+	out, _ := renderStep(beat, rows, &stepRenderCtx{expanded: func(id nodeID, inherited bool) bool {
+		return id == rowID(0) || id == rowID(2)
 	}}, 80, false)
 	lines := plainLines(out)
 	want := []string{"├", "│", "├", "└", " "}
@@ -572,7 +575,7 @@ func TestRunningRowsNeverAskForDetail(t *testing.T) {
 		ToolCallID: "c1", StartedAt: time.Now()}
 	m.state.SetActiveToolCall(atc)
 	m.state.AppendActiveToolCallOutput("c1", strings.Repeat("ok\n", acpwire.WireTextCap))
-	m.toggleExpanded(viewmodel.ActiveToolID(atc))
+	m.toggleExpanded(activeNodeID(atc))
 
 	m.invalidateTranscript()
 	m.refreshViewport()
@@ -609,5 +612,17 @@ func TestToolBodyTakesTheWholeTextFromTheDetail(t *testing.T) {
 	run := acpwire.WireCall{Args: "go test", Truncated: true}
 	if lines := toolBody("shell.run", run, &acpwire.CallDetail{Output: "exit 0"}, 60); len(lines) != 0 {
 		t.Fatalf("a call with no result drew %q", lines)
+	}
+}
+
+// The renderer decides which rows carry a command line's exit and sandbox, and
+// the projection decides which calls elide the workdir. The two sets must stay
+// equal: a divergence shows a row without its exit code, or a subject that
+// repeats the path the row already implies.
+func TestShellFamilyMatchesTheProjection(t *testing.T) {
+	for _, name := range []string{"shell.run", "test.run", "file.read", "file.edit", "repo.search", "agent.run", "git.diff", ""} {
+		if got, want := isShellFamily(name), viewmodel.IsShellFamily(name); got != want {
+			t.Errorf("isShellFamily(%q) = %v, want %v", name, got, want)
+		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/theme"
+	"marshal/internal/strutil"
 	"marshal/internal/viewmodel"
 )
 
@@ -26,8 +27,7 @@ const minHeadlineCols = 24
 // toggles that row rather than the whole step.
 type subRegion struct {
 	start, end int
-	id         viewmodel.NodeID
-	subagent   *session.SubagentView
+	id         nodeID
 	live       bool // bounded live region (wheel scrolls it)
 }
 
@@ -35,13 +35,13 @@ type subRegion struct {
 type stepRenderCtx struct {
 	// expanded resolves whether a node draws expanded: its own choice, else
 	// the state it inherits.
-	expanded func(id viewmodel.NodeID, inherited bool) bool
+	expanded func(id nodeID, inherited bool) bool
 	// liveExpanded is expanded for an in-flight call, which stays collapsed
 	// until clicked whatever the global default says.
-	liveExpanded func(viewmodel.NodeID) bool
-	region       func(viewmodel.NodeID) regionView
-	noteRows     func(id viewmodel.NodeID, rows int)
-	callers      func(viewmodel.NodeID) []string
+	liveExpanded func(nodeID) bool
+	region       func(nodeID) regionView
+	noteRows     func(id nodeID, rows int)
+	callers      func(nodeID) []string
 	// detail is wantDetail: a node's cached detail, or nil once the want is
 	// recorded.
 	detail func(key, version string) *acpwire.NodeDetail
@@ -63,21 +63,21 @@ type stepRenderCtx struct {
 }
 
 // open resolves whether a node draws expanded.
-func (c *stepRenderCtx) open(id viewmodel.NodeID, inherited bool) bool {
+func (c *stepRenderCtx) open(id nodeID, inherited bool) bool {
 	if c.expanded == nil {
 		return inherited
 	}
 	return c.expanded(id, inherited)
 }
 
-func (c *stepRenderCtx) liveToolExpanded(id viewmodel.NodeID) bool {
+func (c *stepRenderCtx) liveToolExpanded(id nodeID) bool {
 	return c.liveExpanded != nil && c.liveExpanded(id)
 }
 
 // callersFor is the nil-safe form of the callers callback: a render context
 // built by hand (tests, a one-off render) has no blast-radius cache, and a
 // missing callback must read as "no callers" rather than panic.
-func (c *stepRenderCtx) callersFor(id viewmodel.NodeID) []string {
+func (c *stepRenderCtx) callersFor(id nodeID) []string {
 	if c.callers == nil {
 		return nil
 	}
@@ -119,13 +119,17 @@ func workPointer(items []viewmodel.WorkItem) func(toolCallID string) string {
 	}
 }
 
+// beatRowCap is how many rows a beat shows before older ones collapse into a
+// count line.
+const beatRowCap = 8
+
 // renderStep renders one beat: a head (state glyph, narration, right-aligned
 // meta), its reasoning when the beat is expanded, then tool rows at nested
 // indent. Every piece ends in a newline, so the block's line count is
 // strings.Count(out, "\n").
 func renderStep(beat *acpwire.WireNode, rows []*acpwire.WireNode, c *stepRenderCtx, width int, inherited bool) (string, []subRegion) {
 	step := beat.Step
-	beatID := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: beat.ID}
+	beatID := wireID(beat)
 	open := c.open(beatID, inherited)
 	var b strings.Builder
 	var subs []subRegion
@@ -134,7 +138,7 @@ func renderStep(beat *acpwire.WireNode, rows []*acpwire.WireNode, c *stepRenderC
 		b.WriteString(s)
 		lines += strings.Count(s, "\n")
 	}
-	row := func(id viewmodel.NodeID, s string, sub subRegion) {
+	row := func(id nodeID, s string, sub subRegion) {
 		sub.id = id
 		sub.start = lines
 		write(s)
@@ -222,7 +226,7 @@ func renderStep(beat *acpwire.WireNode, rows []*acpwire.WireNode, c *stepRenderC
 	// A long beat shows its newest rows; the rest collapse into one line.
 	// Expanding the beat shows them all.
 	rows = slices.DeleteFunc(slices.Clone(rows), func(r *acpwire.WireNode) bool { return !spineRow(r) })
-	if over := len(rows) - viewmodel.BeatRowCap; over > 0 && !open {
+	if over := len(rows) - beatRowCap; over > 0 && !open {
 		write(spineBlock(mutedStyle().Render(fmt.Sprintf("… %d earlier calls", over))+"\n", false))
 		rows = rows[over:]
 	}
@@ -231,7 +235,7 @@ func renderStep(beat *acpwire.WireNode, rows []*acpwire.WireNode, c *stepRenderC
 	w := max(width-spineWidth, 1)
 	for i, r := range rows {
 		last := i == len(rows)-1
-		id := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: r.ID}
+		id := wireID(r)
 		switch {
 		case r.Plan != nil:
 			// The plan line is not a target of its own: a click on it opens
@@ -281,7 +285,7 @@ func renderCompletion(c *acpwire.WireCompletion, d *acpwire.CompletionDetail, ex
 		g, colour = glyph.Agent, th.AccentSecondary
 	}
 	head := lipgloss.NewStyle().Foreground(colour).Render(c.ID) + " " +
-		lipgloss.NewStyle().Foreground(th.FGDefault).Render(viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Label, workdir)))
+		lipgloss.NewStyle().Foreground(th.FGDefault).Render(strutil.ScrubText(strutil.ElideWorkdir(c.Label, workdir)))
 
 	duration := time.Duration(c.DurationMs) * time.Millisecond
 
@@ -323,7 +327,7 @@ func renderCompletion(c *acpwire.WireCompletion, d *acpwire.CompletionDetail, ex
 		b.WriteString(renderCompletionReport(c, d, width, workdir))
 	} else if c.Summary != "" {
 		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
-		b.WriteString(mutedStyle().Render(ansi.Truncate(viewmodel.ScrubText(c.Summary), max(width-nestedBodyIndent, 1), "…")))
+		b.WriteString(mutedStyle().Render(ansi.Truncate(strutil.ScrubText(c.Summary), max(width-nestedBodyIndent, 1), "…")))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -370,11 +374,11 @@ func renderCompletionReport(c *acpwire.WireCompletion, d *acpwire.CompletionDeta
 	field("outcome", outcome, valueStyle)
 
 	if c.Source == acpwire.CompletionSubagent {
-		field("task", viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Label, workdir)), valueStyle)
+		field("task", strutil.ScrubText(strutil.ElideWorkdir(c.Label, workdir)), valueStyle)
 	} else {
-		field("command", viewmodel.ScrubText(viewmodel.ElideWorkdir(firstLine(c.Command), workdir)), valueStyle)
+		field("command", strutil.ScrubText(strutil.ElideWorkdir(firstLine(c.Command), workdir)), valueStyle)
 	}
-	field("cwd", viewmodel.ScrubText(viewmodel.ElideWorkdir(c.Cwd, workdir)), valueStyle)
+	field("cwd", strutil.ScrubText(strutil.ElideWorkdir(c.Cwd, workdir)), valueStyle)
 
 	elapsed := time.Duration(c.DurationMs) * time.Millisecond
 	duration := ""
@@ -396,9 +400,9 @@ func renderCompletionReport(c *acpwire.WireCompletion, d *acpwire.CompletionDeta
 
 	// The output tail: the first line sits on the key's line, the rest under
 	// the value column. Every line is model-authored, so each is scrubbed.
-	lines := viewmodel.ReportTail(output)
+	lines := reportTail(output)
 	if len(lines) > 0 {
-		line := mutedStyle().Render(padReportKey("output")) + mutedStyle().Render(viewmodel.ScrubText(lines[0]))
+		line := mutedStyle().Render(padReportKey("output")) + mutedStyle().Render(strutil.ScrubText(lines[0]))
 		b.WriteString(strings.Repeat(" ", nestedBodyIndent))
 		b.WriteString(ansi.Truncate(line, lineWidth, "…"))
 		b.WriteString("\n")
@@ -406,7 +410,7 @@ func renderCompletionReport(c *acpwire.WireCompletion, d *acpwire.CompletionDeta
 	if len(lines) > 1 {
 		rest := make([]string, 0, len(lines)-1)
 		for _, l := range lines[1:] {
-			rest = append(rest, viewmodel.ScrubText(l))
+			rest = append(rest, strutil.ScrubText(l))
 		}
 		block(rest, mutedStyle())
 	}
@@ -434,6 +438,52 @@ func renderCompletionReport(c *acpwire.WireCompletion, d *acpwire.CompletionDeta
 
 	field("error", firstLine(c.Error), errorStyle())
 	return b.String()
+}
+
+// reportTailLines bounds the output an issue report shows.
+const reportTailLines = 20
+
+// reportTail is the bounded output an issue report shows: the failure lines
+// first, then the end of the output.
+func reportTail(output string) []string {
+	trimmed := strings.TrimRight(output, "\n")
+	if trimmed == "" {
+		return nil
+	}
+	lines := strings.Split(trimmed, "\n")
+	var failures []string
+	for _, l := range lines {
+		if strings.Contains(l, "--- FAIL") {
+			failures = append(failures, l)
+			if len(failures) == 10 {
+				break
+			}
+		}
+	}
+	if len(failures) == 0 {
+		return tailLines(lines, reportTailLines)
+	}
+	out := append([]string{}, failures...)
+	rest := reportTailLines - len(failures)
+	if rest <= 0 {
+		return out
+	}
+	var others []string
+	for _, l := range lines {
+		if strings.Contains(l, "--- FAIL") {
+			continue
+		}
+		others = append(others, l)
+	}
+	return append(out, tailLines(others, rest)...)
+}
+
+// tailLines is the last n elements, or the whole slice when it is shorter.
+func tailLines(lines []string, n int) []string {
+	if n <= 0 || len(lines) <= n {
+		return lines
+	}
+	return lines[len(lines)-n:]
 }
 
 // padReportKey pads a report key to the value column.
@@ -616,11 +666,11 @@ func renderMeta(p metaParts) (string, int) {
 // firstSentence splits s at the first ". ", "! ", "? " or newline that comes
 // after at least 8 runes. A sentence-final mark at the very end of s stays
 // with the head.
-func firstSentence(s string) (head, rest string) { return viewmodel.FirstSentence(s) }
+func firstSentence(s string) (head, rest string) { return strutil.FirstSentence(s) }
 
 // stripEmphasis removes markdown emphasis and code markers from a headline,
 // which is rendered as plain text.
-func stripEmphasis(s string) string { return viewmodel.StripEmphasis(s) }
+func stripEmphasis(s string) string { return strutil.StripEmphasis(s) }
 
 // thoughtMeta is the head's "thought 2s": how long the beat reasoned, or
 // nothing when it did not.

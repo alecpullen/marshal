@@ -1,4 +1,4 @@
-package viewmodel
+package strutil
 
 import "strings"
 

@@ -142,8 +142,8 @@ func TestCompletionReportShowsTheFailure(t *testing.T) {
 	if !strings.Contains(first, "--- FAIL") {
 		t.Fatalf("first output line = %q", first)
 	}
-	// The tail is bounded: at most ReportTailLines output lines show.
-	if got := strings.Count(tail, "line "); got > viewmodel.ReportTailLines {
+	// The tail is bounded: at most reportTailLines output lines show.
+	if got := strings.Count(tail, "line "); got > reportTailLines {
 		t.Fatalf("%d output lines shown", got)
 	}
 }
@@ -231,5 +231,25 @@ func TestExpandedCompletionReadsItsWholeOutput(t *testing.T) {
 	m = drainCmds(m, cmd)
 	if got := content(); !strings.Contains(got, "--- FAIL: TestEarly") || strings.Contains(got, "earlier output dropped") {
 		t.Fatalf("the drained expansion must read the whole output:\n%s", got)
+	}
+}
+
+func TestReportTailPutsFailuresFirst(t *testing.T) {
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i)
+	}
+	lines[5] = "--- FAIL: TestA"
+	lines[20] = "--- FAIL: TestB"
+	got := reportTail(strings.Join(lines, "\n"))
+	if len(got) != reportTailLines {
+		t.Fatalf("lines = %d, want %d", len(got), reportTailLines)
+	}
+	if got[0] != "--- FAIL: TestA" || got[1] != "--- FAIL: TestB" {
+		t.Fatalf("failures first: %q", got[:2])
+	}
+	// The rest are the last 18 lines that are not failures, in order.
+	if got[2] != "line 11" || got[len(got)-1] != "line 29" {
+		t.Fatalf("tail = %q", got[2:])
 	}
 }

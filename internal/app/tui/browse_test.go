@@ -85,14 +85,14 @@ func TestEscEntersBrowseModeOnNewestStepAndDoesNotCancelTheTurn(t *testing.T) {
 	if cancelled {
 		t.Fatal("Esc must never cancel a turn")
 	}
-	if m.cursor.Kind != viewmodel.KindStep {
+	if m.cursor.Kind != acpwire.KindStep {
 		t.Fatalf("cursor = %+v, want the newest step", m.cursor)
 	}
 	// Every beat of the turn is browsable; the cursor is the newest of them.
 	steps := 0
-	var newest viewmodel.NodeID
+	var newest nodeID
 	for _, it := range m.browseItems {
-		if it.kind == viewmodel.KindStep {
+		if it.kind == acpwire.KindStep {
 			steps++
 			newest = it.id
 		}
@@ -163,7 +163,7 @@ func TestEnterTogglesTheNodeAndOnlyThatNode(t *testing.T) {
 func TestEnterOnTheFailedTestRowExpandsItsOutput(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc", "j") // newest step -> its test row
-	if m.cursor.Kind != viewmodel.KindTool {
+	if m.cursor.Kind != acpwire.KindTool {
 		t.Fatalf("cursor = %+v, want the tool row", m.cursor)
 	}
 	if strings.Contains(viewText(&m), "boom") && !strings.Contains(stripANSI(m.viewport.GetContent()), "boom") {
@@ -205,8 +205,8 @@ func TestEscLeavesBrowseAndFollowResumesOnlyAtBottom(t *testing.T) {
 func TestCursorMovesDoNotInvalidateTheRenderCache(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc")
-	var rendered []viewmodel.NodeID
-	nodeRenderHook = func(id viewmodel.NodeID) { rendered = append(rendered, id) }
+	var rendered []nodeID
+	nodeRenderHook = func(id nodeID) { rendered = append(rendered, id) }
 	t.Cleanup(func() { nodeRenderHook = nil })
 	m = pressKeys(m, "k", "j", "k")
 	if len(rendered) != 0 {
@@ -420,7 +420,7 @@ func TestTaskStepCountsMatchTheTaskHeaders(t *testing.T) {
 	m.refreshViewport()
 	// Build the same snapshot refreshViewport builds, then recompute the
 	// per-task stats through the production path the task headers use.
-	ts, _ := m.transcriptSource()
+	ts := m.state
 	active := ts.ActiveToolCalls()
 	inProgress := ts.InProgress()
 	snap := viewmodel.Snapshot{
@@ -442,7 +442,7 @@ func TestEnterOnAToolRowTogglesAndNeverHidesIt(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc", "j") // the failing test row
 	row := m.cursor
-	if row.Kind != viewmodel.KindTool {
+	if row.Kind != acpwire.KindTool {
 		t.Fatalf("cursor = %+v", row)
 	}
 	for i := 0; i < 4; i++ {
@@ -476,7 +476,7 @@ func TestCursorStaysNearWhereItWasWhenItsNodeVanishes(t *testing.T) {
 	m := browseFixture(t)
 	m = pressKeys(m, "esc", "g", "j")
 	idx := m.cursorIndex()
-	m.cursor = viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:gone"} // as if it had been rewound away
+	m.cursor = nodeID{Kind: acpwire.KindTool, Key: "tool:gone"} // as if it had been rewound away
 	m.invalidateTranscript()
 	m.browseItems = append([]browseItem(nil), m.browseItems...)
 	m.setBrowseItems(m.browseItems)
@@ -588,7 +588,7 @@ func TestOpenKeepsAChangedFileWhenTheDetailIsGone(t *testing.T) {
 
 func TestCopyWithoutDetailSaysNothingToCopy(t *testing.T) {
 	m := newTestModel(t)
-	if got := m.nodeCopyText(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:gone"}); got != "" {
+	if got := m.nodeCopyText(nodeID{Kind: acpwire.KindTool, Key: "tool:gone"}); got != "" {
 		t.Fatalf("copy of a key no node has = %q, want nothing", got)
 	}
 }
@@ -644,7 +644,7 @@ func finishedSubagentFixture(t *testing.T) (Model, *session.State, session.Subag
 }
 
 func TestBrowseFDrillsFromACompletionEvent(t *testing.T) {
-	m, child, view := finishedSubagentFixture(t)
+	m, _, view := finishedSubagentFixture(t)
 	m = pressKeys(m, "esc")
 	it, ok := browseItemForCompletion(&m, view.ID)
 	if !ok {
@@ -655,7 +655,7 @@ func TestBrowseFDrillsFromACompletionEvent(t *testing.T) {
 	if len(m.viewStack) != 1 {
 		t.Fatalf("f on a completion event should drill in, viewStack = %v", m.viewStack)
 	}
-	if m.viewStack[0].Child != child {
+	if m.viewStack[0].ID != view.ID {
 		t.Fatal("the drilled view is not the subagent's child")
 	}
 }
@@ -684,7 +684,7 @@ func TestBrowseFDrillsFromTheDispatchRow(t *testing.T) {
 	if len(m.viewStack) != 1 {
 		t.Fatalf("f on the dispatch row should drill in, viewStack = %v", m.viewStack)
 	}
-	if m.viewStack[0].Child != child {
+	if m.viewStack[0].ID != view.ID {
 		t.Fatal("the drilled view is not the subagent's child")
 	}
 }
@@ -763,7 +763,7 @@ func TestBrowseJPastHistoryEntersTheBox(t *testing.T) {
 		t.Fatalf("cursor = %+v, want the running card's stop", m.cursor)
 	}
 	it := m.browseItems[m.cursorIndex()]
-	if it.kind != viewmodel.KindPassthrough {
+	if it.kind != acpwire.KindPassthrough {
 		t.Fatalf("box stop kind = %v, want passthrough", it.kind)
 	}
 	if it.start != -1 || it.end != -1 {
@@ -869,6 +869,46 @@ func TestBrowseFOpensAnAgentFromTheBox(t *testing.T) {
 	}
 }
 
+// TestBrowseFRefusesASecondDrill: a drilled transcript shows a child's stack,
+// so the parent's box stop names no subagent to enter. f must not stack a
+// second level (the drill invariant is at most one).
+func TestBrowseFRefusesASecondDrill(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(120, 40)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	child := newChildState(t)
+	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	view := m.state.RegisterSubagent("explore repo", child)
+	card := workRunningCard("work:agent", workT0)
+	card.Kind = "agent"
+	card.SourceID = strconv.FormatInt(view.ID, 10)
+	m.workSnapshot = workSnapOf(card)
+	m.invalidateTranscript()
+	m.refreshViewport()
+	m.viewString()
+
+	m = pressKeys(m, "esc")
+	m = browseToBoxStop(t, m, livebox.TargetWork, "work:agent")
+	m = pressKeys(m, "f")
+	if len(m.viewStack) != 1 {
+		t.Fatalf("viewStack = %v, want one level after the first drill", m.viewStack)
+	}
+
+	// Browse is reachable from the drilled view, and the parent's agent stop
+	// is still listed. f there must not push the parent onto the stack again.
+	if !m.enterBrowse() {
+		t.Fatal("the drilled view has nothing to browse")
+	}
+	m = browseToBoxStop(t, m, livebox.TargetWork, "work:agent")
+	m = pressKeys(m, "f")
+	if len(m.viewStack) != 1 {
+		t.Fatalf("f while drilled stacked a second level: %v", m.viewStack)
+	}
+	if got, ok := m.drilledInto(); !ok || got.ID != view.ID {
+		t.Fatalf("drilled view changed to %+v, want the child still showing", got)
+	}
+}
+
 // TestBrowseEnterOnAPlanItemScrollsToItsBeat: Enter on a plan stop reveals the
 // first beat bound to that item, exactly as a click does.
 func TestBrowseEnterOnAPlanItemScrollsToItsBeat(t *testing.T) {
@@ -896,10 +936,10 @@ func TestBrowseEnterOnAPlanItemScrollsToItsBeat(t *testing.T) {
 	m.refreshViewport()
 	m.viewString()
 
-	var beat viewmodel.NodeID
+	var beat nodeID
 	for _, task := range m.band.Tasks {
 		if task.ID == "t1" {
-			beat = task.First
+			beat = nodeID{Kind: acpwire.KindStep, Key: task.Ref}
 		}
 	}
 	want := -1
@@ -909,7 +949,7 @@ func TestBrowseEnterOnAPlanItemScrollsToItsBeat(t *testing.T) {
 			break
 		}
 	}
-	if beat == (viewmodel.NodeID{}) || want <= 0 {
+	if beat.Key == "" || want <= 0 {
 		t.Fatalf("todo t1 has no beat region to scroll to (beat %v, line %d)", beat, want)
 	}
 
@@ -1000,5 +1040,43 @@ func TestBrowseEnterOnAHeldRowScrollsToItsEvent(t *testing.T) {
 	}
 	if got := m.viewport.YOffset(); got != want {
 		t.Errorf("Enter on a held row went to line %d, want the event's region at %d", got, want)
+	}
+}
+
+// Every browse item is keyed by its node's wire identity: the wire kind and
+// the wire ID, the two its wire node carries. A box stop owns no content lines
+// and no node, so it is left out.
+func TestNodeIdentityIsTheWireKindAndID(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Reading a.go.")
+	m.state.LogToolCall(registry.AuditEvent{Timestamp: time.Unix(200, 0), ToolName: "file.read", StepID: id, ToolCallID: "c1",
+		Args: []byte(`{"path":"a.go"}`), ResultSummary: "package a"})
+	m.state.EndStep(id)
+	m.state.AddMessageFinal(session.RoleAssistant, "Done reading.", session.ContentTypePlain)
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	if len(m.browseItems) == 0 {
+		t.Fatal("the transcript has no browse items")
+	}
+	final := false
+	for _, it := range m.browseItems {
+		if it.start < 0 {
+			continue // a box stop owns no content lines
+		}
+		w := m.wire[it.id.Key]
+		if w == nil {
+			t.Fatalf("browse item %+v has no wire node", it.id)
+		}
+		if want := wireID(w); it.id != want {
+			t.Fatalf("browse item identity = %+v, want its wire identity %+v", it.id, want)
+		}
+		final = final || it.kind == acpwire.KindFinal
+	}
+	if !final {
+		t.Fatalf("the final answer is not a browse item: %+v", m.browseItems)
 	}
 }

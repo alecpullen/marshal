@@ -181,7 +181,7 @@ func TestDrilledFrameFitsTheTerminal(t *testing.T) {
 		child := newChildState(t)
 		child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
 		view := m.state.RegisterSubagent("explore repo", child)
-		m.drillIntoSubagent(view)
+		m.drillIntoSubagent(view.ID)
 		m.workSnapshot = workSnapOf(workRunningCard("work:01", workT0))
 		m.busy = true
 		m.refreshViewport()

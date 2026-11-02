@@ -9,8 +9,8 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/inspector"
 	"marshal/internal/db"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
-	"marshal/internal/viewmodel"
 )
 
 // The inspector is where the whole retained output lives: the report in the
@@ -27,7 +27,7 @@ func TestInspectorShowsACompletionsFullOutput(t *testing.T) {
 	if d.Title != "job-3" || d.Subject != "Harness tests" {
 		t.Fatalf("detail = %+v", d)
 	}
-	if got := sectionOf(d, "output"); got != viewmodel.ScrubBlock(output) {
+	if got := sectionOf(d, "output"); got != strutil.ScrubBlock(output) {
 		t.Fatalf("output section = %q", got)
 	}
 	if got := fieldOf(d, "exit"); got != "1" {
@@ -69,7 +69,7 @@ func sectionOf(d inspector.Detail, name string) string {
 }
 
 // wireToolKey is the browse cursor's identity for the row holding callID.
-func wireToolKey(t *testing.T, m Model, callID string) viewmodel.NodeID {
+func wireToolKey(t *testing.T, m Model, callID string) nodeID {
 	t.Helper()
 	for _, w := range m.wire {
 		if w.Tool == nil {
@@ -77,24 +77,24 @@ func wireToolKey(t *testing.T, m Model, callID string) viewmodel.NodeID {
 		}
 		for _, c := range w.Tool.Calls {
 			if c.CallID == callID {
-				return viewmodel.NodeID{Kind: viewmodel.KindTool, Key: w.ID}
+				return nodeID{Kind: acpwire.KindTool, Key: w.ID}
 			}
 		}
 	}
 	t.Fatalf("the wire index holds no row for call %q", callID)
-	return viewmodel.NodeID{}
+	return nodeID{}
 }
 
 // wireBeatKey is the browse cursor's identity for the only beat.
-func wireBeatKey(t *testing.T, m Model) viewmodel.NodeID {
+func wireBeatKey(t *testing.T, m Model) nodeID {
 	t.Helper()
 	for _, w := range m.wire {
 		if w.Kind == acpwire.KindStep {
-			return viewmodel.NodeID{Kind: viewmodel.KindStep, Key: w.ID}
+			return nodeID{Kind: acpwire.KindStep, Key: w.ID}
 		}
 	}
 	t.Fatal("the wire index holds no beat")
-	return viewmodel.NodeID{}
+	return nodeID{}
 }
 
 // withBeat logs a beat by "reviewer #1" that narrates and then reads a.go and
@@ -233,7 +233,7 @@ func TestInspectorShowsASandboxedHookedCall(t *testing.T) {
 
 func TestInspectorSaysNothingWhenTheNodeIsGone(t *testing.T) {
 	m := withBeat(t)
-	if _, ok := m.inspectorDetail(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:gone"}); ok {
+	if _, ok := m.inspectorDetail(nodeID{Kind: acpwire.KindTool, Key: "tool:gone"}); ok {
 		t.Fatal("a key no node has must not be inspectable")
 	}
 }

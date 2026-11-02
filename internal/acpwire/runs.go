@@ -17,6 +17,19 @@ type Subagent struct {
 	Provider string `json:"provider,omitempty"`
 	Fallback bool   `json:"fallback,omitempty"`
 	Headline string `json:"headline,omitempty"` // running children only
+
+	// Drill is set while the session keeps the child's state, which is what
+	// Session.Stack reads for the subagent. Nil means the subagent cannot be
+	// drilled into: a status-only card, or a child the session has released.
+	Drill *SubagentDrill `json:"drill,omitempty"`
+}
+
+// SubagentDrill is what a view drilled into a subagent reads about the child
+// beyond its transcript (C5, C6).
+type SubagentDrill struct {
+	ActiveRoot  string   `json:"activeRoot,omitempty"` // the root a completion row elides
+	ActiveRoute Route    `json:"activeRoute"`          // the route a beat's model is compared against
+	Activity    Activity `json:"activity"`             // the reconnect notice reads it
 }
 
 // The subagent statuses.

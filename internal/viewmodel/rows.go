@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"marshal/internal/app/session"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -64,7 +65,7 @@ func CallSubject(ev registry.AuditEvent, workdir string) string {
 	var s string
 	switch {
 	case IsShellFamily(ev.ToolName):
-		s = ElideWorkdir(ToolTarget(ev), workdir)
+		s = strutil.ElideWorkdir(ToolTarget(ev), workdir)
 	case ev.ToolName == "agent.run":
 		s = ArgString(ev.Args, "description")
 	default:
@@ -86,7 +87,7 @@ func CallSubject(ev registry.AuditEvent, workdir string) string {
 	if s == "" {
 		s = FallbackSubject(ev.ToolName)
 	}
-	return ScrubText(firstLine(s))
+	return strutil.ScrubText(firstLine(s))
 }
 
 // SubjectFirstTool reports whether a tool's row should lead with its subject
@@ -243,13 +244,13 @@ func RunningSubject(atc session.ActiveToolCall) string {
 	if subject == "" {
 		subject = FallbackSubject(atc.Name)
 	}
-	return ScrubText(subject)
+	return strutil.ScrubText(subject)
 }
 
 // SummaryLine is the first line of the call's display summary, scrubbed: what
 // its row shows.
 func SummaryLine(ev registry.AuditEvent) string {
-	return ScrubText(firstLine(DisplaySummary(ev)))
+	return strutil.ScrubText(firstLine(DisplaySummary(ev)))
 }
 
 // CallDiffStat is the diff stat a call's row shows: DiffStat of the result
@@ -275,7 +276,7 @@ func FailedTail(ev registry.AuditEvent) []string {
 	if text == "" {
 		return nil
 	}
-	lines := strings.Split(ScrubBlock(text), "\n")
+	lines := strings.Split(strutil.ScrubBlock(text), "\n")
 	if len(lines) > FailedTailLines {
 		lines = lines[len(lines)-FailedTailLines:]
 	}

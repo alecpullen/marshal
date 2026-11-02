@@ -169,7 +169,7 @@ func TestEscBusyDrilledPopsDrillWithoutCancel(t *testing.T) {
 	m, _, cancelled := busyModel(t)
 	child := newChildState(t)
 	view := m.state.RegisterSubagent("explore repo", child)
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 	m, _ = press(m, tea.KeyPressMsg{Code: tea.KeyEsc})
 	if len(m.viewStack) != 0 {
 		t.Fatal("Esc should pop the drill")

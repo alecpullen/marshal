@@ -11,11 +11,6 @@ import (
 	"marshal/internal/viewmodel"
 )
 
-// node is a live row's identity.
-func node(key string) viewmodel.NodeID {
-	return viewmodel.NodeID{Kind: viewmodel.KindMessage, Key: key}
-}
-
 // downloadItem is a running command with a measured total, so its card has
 // every row.
 func downloadItem(key, id string, started time.Time) viewmodel.WorkItem {

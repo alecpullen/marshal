@@ -27,7 +27,7 @@ func TestDrillSwapsTranscriptToChildSession(t *testing.T) {
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
 	view := m.state.RegisterSubagent("explore repo", child)
 
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
 
 	content := stripANSI(m.viewport.GetContent())
@@ -49,7 +49,7 @@ func TestPopDrillRestoresParentTranscript(t *testing.T) {
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
 	view := m.state.RegisterSubagent("explore repo", child)
 
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
 	if !m.popDrill() {
 		t.Fatal("popDrill returned false while drilled")
@@ -68,11 +68,85 @@ func TestPopDrillRestoresParentTranscript(t *testing.T) {
 	}
 }
 
-func TestDrillIntoSubagentRequiresChild(t *testing.T) {
+func TestDrillIntoAnUnknownSubagentDoesNothing(t *testing.T) {
 	m := newTestModel(t)
-	m.drillIntoSubagent(session.SubagentView{Label: "no child"})
+	if m.drillIntoSubagent(987654321) {
+		t.Fatal("drilling into an ID Status does not name must report that nothing was pushed")
+	}
 	if len(m.viewStack) != 0 {
-		t.Fatal("drilling into a childless subagent must not push the view stack")
+		t.Fatal("drilling into an ID Status does not name must not push the view stack")
+	}
+}
+
+// drillIntoSubagent reports whether it pushed, so a caller that reached it by a
+// stale reference can fall through instead of silently doing nothing.
+func TestDrillIntoASubagentReportsThePush(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
+	view := m.state.RegisterSubagent("explore repo", child)
+
+	if !m.drillIntoSubagent(view.ID) {
+		t.Fatal("drilling into a registered subagent must report the push")
+	}
+	if len(m.viewStack) != 1 {
+		t.Fatalf("viewStack = %v, want one level", m.viewStack)
+	}
+}
+
+// A drilled view reads the child's facts from its drill: the root a completion
+// row elides, the route a beat's model is compared against, and the reconnect
+// notice. A child's state carries no sandbox info, so a drilled shell row shows
+// none (decision 7).
+func TestDrilledViewReadsTheChildsFacts(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	child.SetWorkspace(session.Workspace{ActiveRoot: "/repo/wt"})
+	child.SetActiveRoute(session.RouteInfo{Active: true, Model: "m-child", Provider: "p-child"})
+	child.SetActivity(session.Activity{Kind: session.ActivityReconnecting, Label: "retrying in 2s"})
+	view := m.state.RegisterSubagent("explore repo", child)
+	m.state.SetSandboxInfo(session.SandboxInfo{Backend: "restricted", NetworkIsolation: true})
+
+	m.drillIntoSubagent(view.ID)
+	facts := m.viewFacts()
+	if facts.workdir != "/repo/wt" {
+		t.Errorf("workdir = %q, want the child's active root", facts.workdir)
+	}
+	if facts.routeModel != "m-child" || facts.routeProvider != "p-child" {
+		t.Errorf("route = %s @ %s, want the child's", facts.routeModel, facts.routeProvider)
+	}
+	if facts.reconnect != "retrying in 2s" {
+		t.Errorf("reconnect = %q, want the child's label", facts.reconnect)
+	}
+	if facts.sandbox != (session.SandboxInfo{}) {
+		t.Errorf("sandbox = %+v, want none for a drilled child", facts.sandbox)
+	}
+	if facts.allowNetwork != m.state.Config.Tools.Shell.AllowNetwork {
+		t.Errorf("allowNetwork = %v, want the session's", facts.allowNetwork)
+	}
+
+	m.invalidateTranscript()
+	m.refreshViewport()
+	if plain := stripANSI(m.viewport.GetContent()); !strings.Contains(plain, "retrying in 2s") {
+		t.Fatalf("the drilled transcript must show the child's reconnect notice, got:\n%s", plain)
+	}
+}
+
+// The stack holds the view as it was at drill-in, but the facts follow the live
+// view each refresh.
+func TestDrilledFactsFollowTheLiveChild(t *testing.T) {
+	m := newTestModel(t)
+	child := newChildState(t)
+	child.SetWorkspace(session.Workspace{ActiveRoot: "/repo/wt"})
+	view := m.state.RegisterSubagent("explore repo", child)
+
+	m.drillIntoSubagent(view.ID)
+	child.SetWorkspace(session.Workspace{ActiveRoot: "/repo/wt2"})
+	if got := m.viewFacts().workdir; got != "/repo/wt2" {
+		t.Fatalf("workdir = %q, want the live child's root", got)
+	}
+	if got := m.viewStack[0].Drill.ActiveRoot; got != "/repo/wt" {
+		t.Fatalf("the stack's snapshot root = %q, want /repo/wt", got)
 	}
 }
 
@@ -80,7 +154,7 @@ func TestEscPopsDrillInsteadOfCancelling(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
 	view := m.state.RegisterSubagent("explore repo", child)
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 
 	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if !handled {
@@ -107,7 +181,7 @@ func TestCtrlXStopsRunningSubagentWhileDrilled(t *testing.T) {
 	view := m.state.RegisterSubagent("explore repo", child)
 	cancelled := false
 	m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 
 	if got := m.ctrlXAction(); got != ctrlXStopAgent {
 		t.Fatalf("ctrlXAction = %v, want ctrlXStopAgent while drilled into a running subagent", got)
@@ -176,7 +250,7 @@ func TestCtrlXFailedDrilledStopKeepsQueue(t *testing.T) {
 		cancelled := false
 		m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
 		// The snapshot says running, but the child settles before the key.
-		m.drillIntoSubagent(view)
+		m.drillIntoSubagent(view.ID)
 		m.state.FinishSubagent(view.ID, "finished on its own", nil)
 		m.state.PushSteering("queued message")
 
@@ -207,7 +281,7 @@ func TestCtrlXFailedDrilledStopKeepsQueue(t *testing.T) {
 		child := newChildState(t)
 		view := m.state.RegisterSubagent("explore repo", child)
 		// No SetSubagentCancel: the child is running but cannot be stopped.
-		m.drillIntoSubagent(view)
+		m.drillIntoSubagent(view.ID)
 		m.state.PushSteering("queued message")
 
 		mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
@@ -238,7 +312,7 @@ func TestCtrlXCompletedDrillAndIdle(t *testing.T) {
 		view := m.state.RegisterSubagent("explore repo", child)
 		m.state.FinishSubagent(view.ID, "done", nil)
 		completed := m.state.Subagents()[0]
-		m.drillIntoSubagent(completed)
+		m.drillIntoSubagent(completed.ID)
 		m.state.PushSteering("queued message")
 
 		if got := m.ctrlXAction(); got != ctrlXClearQueue {
@@ -281,7 +355,7 @@ func TestBreadcrumbShowsPathWhileDrilled(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
 	view := m.state.RegisterSubagent("explore repo", child)
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 
 	frame := stripANSI(m.renderTranscriptFrame())
 	for _, want := range []string{"orchestrator", "explore repo", "go back"} {
@@ -298,7 +372,7 @@ func TestDrillFrameDrawsTheCrumbInTheBorder(t *testing.T) {
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
 	view := m.state.RegisterSubagent("explore repo", child)
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
 
 	rows := strings.Split(stripANSI(m.renderTranscriptFrame()), "\n")
@@ -336,7 +410,7 @@ func TestDrillNarrowsTheTranscript(t *testing.T) {
 	if got, want := m.viewport.Width(), m.leftWidth; got != want {
 		t.Fatalf("undrilled viewport width = %d, want the full column %d", got, want)
 	}
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 	if got, want := m.viewport.Width(), m.leftWidth-4; got != want {
 		t.Fatalf("drilled viewport width = %d, want %d", got, want)
 	}
@@ -353,7 +427,7 @@ func TestDrillClickOffsetsTheBorder(t *testing.T) {
 	child := newChildState(t)
 	child.AddMessage(session.RoleAssistant, "child says hi", session.ContentTypePlain)
 	view := m.state.RegisterSubagent("explore repo", child)
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
 
 	y := m.scrollHintRows() + m.breadcrumbRows()
@@ -374,7 +448,7 @@ func TestBreadcrumbShowsDispatchedRole(t *testing.T) {
 	view := m.state.RegisterSubagentWithMeta("review", child, session.SubagentMeta{
 		Role: routing.RoleReviewer,
 	})
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 
 	frame := stripANSI(m.renderTranscriptFrame())
 	if !strings.Contains(frame, "reviewer — review") {
@@ -386,7 +460,7 @@ func TestBreadcrumbOmitsRoleWhenUnset(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
 	view := m.state.RegisterSubagent("explore repo", child)
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 
 	frame := stripANSI(m.renderTranscriptFrame())
 	if !strings.Contains(frame, "explore repo") {
@@ -407,7 +481,7 @@ func TestDrilledChildAuditEventsRenderNormally(t *testing.T) {
 	})
 	view := m.state.RegisterSubagent("explore repo", child)
 
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
 
 	content := stripANSI(m.viewport.GetContent())
@@ -420,7 +494,7 @@ func TestUpArrowPopsDrill(t *testing.T) {
 	m := newTestModel(t)
 	child := newChildState(t)
 	view := m.state.RegisterSubagent("explore repo", child)
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 
 	mm, _, handled := m.handleKeypress(tea.KeyPressMsg{Code: tea.KeyUp})
 	if !handled {
@@ -441,7 +515,7 @@ func TestDrilledChildShowsChildActiveTool(t *testing.T) {
 		StartedAt: time.Now(),
 	})
 	view := m.state.RegisterSubagent("explore repo", child)
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 	m.refreshViewport()
 
 	content := stripANSI(m.viewport.GetContent())
@@ -482,7 +556,7 @@ func TestClickBeatWhileDrilledIntoSubagent(t *testing.T) {
 	child.AddMessage(session.RoleAssistant, "child answer", session.ContentTypePlain)
 
 	view := m.state.RegisterSubagent("explore repo", child)
-	m.drillIntoSubagent(view)
+	m.drillIntoSubagent(view.ID)
 	m.invalidateTranscript()
 	m.refreshViewport()
 
@@ -492,7 +566,7 @@ func TestClickBeatWhileDrilledIntoSubagent(t *testing.T) {
 	}
 
 	// Find the click region for the child's beat that reasoned.
-	key := beatWithThinking(&m, ts)
+	key := beatWithThinking(&m, child, ts)
 	region, found := regionOf(&m, key)
 	if !found {
 		t.Fatal("expected a click region for the child's beat while drilled in")
@@ -592,12 +666,12 @@ func TestCtrlXDisplayedActionThroughModel(t *testing.T) {
 
 				switch tc.drill {
 				case "running":
-					m.drillIntoSubagent(view)
+					m.drillIntoSubagent(view.ID)
 				case "done":
 					m.state.FinishSubagent(view.ID, "done", nil)
 					for _, v := range m.state.Subagents() {
 						if v.ID == view.ID {
-							m.drillIntoSubagent(v)
+							m.drillIntoSubagent(v.ID)
 						}
 					}
 				}
@@ -731,7 +805,7 @@ func TestCtrlXStaleSubagentNeverClearsQueueThroughModel(t *testing.T) {
 		view := m.state.RegisterSubagent("explore repo", child)
 		cancelled := false
 		m.state.SetSubagentCancel(view.ID, func() { cancelled = true })
-		m.drillIntoSubagent(view)
+		m.drillIntoSubagent(view.ID)
 		m.state.PushSteering("queued message")
 		m.refreshViewport()
 

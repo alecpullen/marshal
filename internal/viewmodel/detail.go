@@ -6,6 +6,7 @@ import (
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -81,8 +82,8 @@ func stepDetailOf(st *session.State, rec session.Step) *acpwire.StepDetail {
 		TodoID:   rec.TodoID,
 	}
 	if rec.ID != 0 {
-		if h, _ := FirstSentence(st.StepNarration(rec.ID)); h != "" {
-			d.Why = StripEmphasis(h)
+		if h, _ := strutil.FirstSentence(st.StepNarration(rec.ID)); h != "" {
+			d.Why = strutil.StripEmphasis(h)
 		}
 	}
 	return d
@@ -110,16 +111,16 @@ func executionDetail(ex registry.CommandExecution) *acpwire.ExecutionDetail {
 		TurnID:          ex.TurnID,
 		StepID:          ex.StepID,
 		ToolCallID:      ex.ToolCallID,
-		Cwd:             ScrubText(ex.Cwd),
+		Cwd:             strutil.ScrubText(ex.Cwd),
 		Generation:      ex.Generation,
 		PID:             ex.PID,
 		State:           ex.State,
 		Outcome:         ex.Outcome,
 		Attachment:      string(ex.Attachment),
 		Wait:            ex.Wait,
-		DetachReason:    ScrubText(ex.DetachReason),
+		DetachReason:    strutil.ScrubText(ex.DetachReason),
 		DetachedAt:      ms(ex.DetachedAt),
-		StopCause:       ScrubText(ex.StopCause),
+		StopCause:       strutil.ScrubText(ex.StopCause),
 		StopRequestedAt: ms(ex.StopRequestedAt),
 		Exit:            copyExitCode(ex.ExitCode),
 		Truncated:       ex.Truncated,

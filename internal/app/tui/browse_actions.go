@@ -15,13 +15,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/viewmodel"
 )
 
 // nodeCopyText is what `y` puts on the clipboard for a node, ANSI-free. Node
 // fields come from the wire index; the text the wire caps or leaves out comes
 // from the session.
-func (m *Model) nodeCopyText(id viewmodel.NodeID) string {
+func (m *Model) nodeCopyText(id nodeID) string {
 	w := m.wireNode(id)
 	if w == nil {
 		return ""
@@ -236,7 +235,7 @@ func fileIn(root string, calls []openCall) (path string, line int) {
 		}
 	}
 	for _, c := range calls {
-		if !viewmodel.IsShellFamily(c.tool) {
+		if !isShellFamily(c.tool) {
 			continue
 		}
 		for _, mt := range pathLineRE.FindAllStringSubmatch(c.output, -1) {
@@ -252,7 +251,7 @@ func fileIn(root string, calls []openCall) (path string, line int) {
 // nodeFile resolves the file a node is about: the call's path argument, else
 // the first file it changed, else for a shell row the first path:line in its
 // output that exists inside the workspace.
-func (m *Model) nodeFile(id viewmodel.NodeID) (path string, line int) {
+func (m *Model) nodeFile(id nodeID) (path string, line int) {
 	w := m.wireNode(id)
 	if w == nil {
 		return "", 0
@@ -268,7 +267,7 @@ func (m *Model) nodeFile(id viewmodel.NodeID) (path string, line int) {
 		// wire still says which files the call changed, so fall through
 		// with the changed files and no args or output rather than
 		// claiming there is nothing to open.
-		res, _ := m.nodeDetail(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: key})
+		res, _ := m.nodeDetail(nodeID{Kind: acpwire.KindTool, Key: key})
 		for i, call := range row.Tool.Calls {
 			var cd acpwire.CallDetail
 			if i < len(res.Detail.Calls) {

@@ -1,6 +1,9 @@
 package viewmodel
 
-import "marshal/internal/db"
+import (
+	"marshal/internal/db"
+	"marshal/internal/strutil"
+)
 
 // TodoLabel marks the beat where work moves to a different todo. It is shown
 // once per transition, never repeated for later beats of the same todo, so a
@@ -43,7 +46,7 @@ func labelTransitions(nodes []*Node, todos []db.TodoItem, plan *PlanUpdate) *Pla
 				src = cur
 			}
 			if src != nil && src.Active > 0 {
-				n.Step.Todo = &TodoLabel{ID: id, Index: src.Active, Total: src.Total(), Content: ScrubText(src.ActiveText)}
+				n.Step.Todo = &TodoLabel{ID: id, Index: src.Active, Total: src.Total(), Content: strutil.ScrubText(src.ActiveText)}
 			} else {
 				// Fallback: no plan row in the transcript names this item, so
 				// the tag reads the session's current list. This is the one
@@ -52,7 +55,7 @@ func labelTransitions(nodes []*Node, todos []db.TodoItem, plan *PlanUpdate) *Pla
 				// the append-only property (plan decision 5).
 				for i, td := range todos {
 					if td.ID == id {
-						n.Step.Todo = &TodoLabel{ID: id, Index: i + 1, Total: len(todos), Content: ScrubText(td.Content)}
+						n.Step.Todo = &TodoLabel{ID: id, Index: i + 1, Total: len(todos), Content: strutil.ScrubText(td.Content)}
 						break
 					}
 				}

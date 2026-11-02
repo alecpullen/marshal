@@ -327,8 +327,8 @@ const (
 // completionRef is one completion event, indexed by the WorkKey it shares with
 // the work item it finished.
 type completionRef struct {
-	node viewmodel.NodeID
-	info *viewmodel.CompletionInfo
+	node nodeID
+	info *acpwire.WireCompletion
 }
 
 type Model struct {
@@ -565,7 +565,7 @@ type Model struct {
 	// per-node choices made with Enter or a click, cleared whenever Ctrl+G
 	// flips. A row without one follows its beat, and a beat follows expandAll.
 	expandAll bool
-	expanded  map[viewmodel.NodeID]bool
+	expanded  map[nodeID]bool
 	// Browse mode (Esc): a cursor over the rendered nodes. browseItems is
 	// rebuilt on every full refresh.
 	browsing   bool
@@ -575,10 +575,10 @@ type Model struct {
 	// With neither usable, copies go to the terminal over OSC 52.
 	copyWriter  clipboard.Writer
 	copyRemote  func() bool
-	cursor      viewmodel.NodeID
+	cursor      nodeID
 	browseItems []browseItem
-	// wire indexes the transcript's wire nodes by ID, from the last refresh
-	// that changed the content. Browse actions read node fields from it.
+	// wire holds the last refresh's snapshot without the band, indexed by
+	// node ID. Browse actions read node fields from it.
 	wire map[string]*acpwire.WireNode
 	// flash is a transient status-line message (see flash.go).
 	flash      string
@@ -586,17 +586,17 @@ type Model struct {
 	// regionOffset holds the per-region body scroll offset for bounded live
 	// regions (see internal/app/tui/liveregion). Pruned on every
 	// refreshViewport, so a finished region's entry does not leak.
-	regionOffset map[viewmodel.NodeID]int
+	regionOffset map[nodeID]int
 	// regionRows is the high-water mark for each bounded live region: the
 	// tallest it has rendered so far. liveregion.Render is pure and cannot
 	// remember, and the body genuinely shrinks (SubagentActivityTail
 	// switches between streamed reasoning and audit summaries), so without
 	// this the card oscillates. Pruned with regionOffset.
-	regionRows map[viewmodel.NodeID]int
+	regionRows map[nodeID]int
 	// callers caches reference lookups per tool row. A present-but-empty
 	// entry is a negative result and must not be re-queried.
-	callers      map[viewmodel.NodeID][]string
-	callersAsked map[viewmodel.NodeID]bool
+	callers      map[nodeID][]string
+	callersAsked map[nodeID]bool
 	// details caches StackNode detail for expanded rows the wire cut, by wire
 	// node ID, each for the node version it was fetched at. detailWant holds
 	// what renders asked for since the last update, and detailAsked the
@@ -608,7 +608,7 @@ type Model struct {
 	// keyed by node identity and valid while its payload version, width and
 	// render inputs are unchanged. Only live nodes re-render on a spinner
 	// tick. Pruned to the nodes seen on the latest refresh.
-	renderCache map[viewmodel.NodeID]cachedNode
+	renderCache map[nodeID]cachedNode
 	// nodeRegions maps content-line ranges in the transcript viewport to the
 	// node occupying them, rebuilt every time refreshViewport rebuilds
 	// blocks. Rows inside a step record their own narrower ranges. See
@@ -626,11 +626,12 @@ type Model struct {
 	press *tea.Mouse
 	drag  dragState
 	// viewStack is the subagent drill-down stack: when non-empty, the
-	// transcript viewport renders the top subagent's child session instead
-	// of the orchestrator's. Pushed by clicking a subagent card (see
-	// click.go), popped by Esc (see keypress.go). Depth is ≤1 today
-	// (nested agent.run is forbidden) but the stack is kept general.
-	viewStack []session.SubagentView
+	// transcript viewport renders the top subagent's transcript instead of
+	// the orchestrator's. Each entry is the subagent's status view as it was
+	// at drill-in. Pushed by clicking a subagent card (see browse.go),
+	// popped by Esc (see keypress.go). Depth is ≤1 today (nested agent.run
+	// is forbidden) but the stack is kept general.
+	viewStack []acpwire.Subagent
 	// rollbackArmed is the first half of Ctrl+R's arm-then-confirm. Cleared
 	// by any other keypress; see handleKeypress.
 	rollbackArmed bool
@@ -731,9 +732,9 @@ type Model struct {
 	dockFramed bool
 
 	// band is the pinned band's content: todo progress with its stale
-	// signal, and the running cards. viewmodel.BandOf builds it in
-	// refreshViewport; the now bar renders it.
-	band viewmodel.BandInfo
+	// signal, and the running cards. It comes from the stack's band node;
+	// the now bar renders it.
+	band acpwire.WireBand
 
 	// heldSince is when the current held window opened: a finished item that
 	// ended after it keeps its tray row until the next prompt. It is set when
@@ -780,7 +781,7 @@ type Model struct {
 	// rowBeat maps each row of a beat to the beat, from the last build, so
 	// a completion marker can open the beat that hides its card past the row
 	// cap before jumping to it.
-	rowBeat map[viewmodel.NodeID]viewmodel.NodeID
+	rowBeat map[nodeID]nodeID
 	// sheetPanel is the open Ctrl+B session sheet, kept for the same reason.
 	sheetPanel *sessionsheet.Panel
 
@@ -4414,44 +4415,22 @@ func (m *Model) popOldestSteering() (string, bool) {
 	return m.state.PopSteering()
 }
 
-// isUserTurn reports whether a transcript item is a user prompt, the boundary
-// the turn separator marks.
-func isUserTurn(item session.TranscriptItem) bool {
-	return item.Kind == session.KindMessage && session.IsUserTurnMessage(item.Message)
-}
-
-// hasConversationTurns reports whether the transcript holds any real
-// conversation content — a user prompt or an assistant message. Boot-time
-// system items (the autoloaded-skill body, startup notices) must not
-// suppress the welcome banner, or every first run opens on a bare screen.
-func hasConversationTurns(items []session.TranscriptItem) bool {
-	for _, item := range items {
-		if item.Kind != session.KindMessage || item.Message == nil {
-			continue
-		}
-		if isUserTurn(item) || item.Message.Role == session.RoleAssistant {
-			return true
-		}
-	}
-	return false
-}
-
 // drilledInto returns the subagent whose transcript is currently drilled
 // into (top of viewStack), or false when the viewport shows the
 // orchestrator's own transcript.
-func (m *Model) drilledInto() (session.SubagentView, bool) {
+func (m *Model) drilledInto() (acpwire.Subagent, bool) {
 	if len(m.viewStack) == 0 {
-		return session.SubagentView{}, false
+		return acpwire.Subagent{}, false
 	}
 	return m.viewStack[len(m.viewStack)-1], true
 }
 
 // drillCrumb is the drilled-in child's identity line: the orchestrator, the
 // child's role and label, and its route.
-func drillCrumb(v session.SubagentView) string {
+func drillCrumb(v acpwire.Subagent) string {
 	label := v.Label
 	if v.Role != "" {
-		label = string(v.Role) + " — " + label
+		label = v.Role + " — " + label
 	}
 	if v.Model != "" {
 		if v.Provider != "" {
@@ -4474,9 +4453,9 @@ func drillCrumb(v session.SubagentView) string {
 // frame closes the region, so the first row under it — the tray or the console
 // — opens a new outline.
 //
-// It lives here rather than in view.go because it names session.SubagentView:
-// the boundary test keeps view.go off the agent side (P2 C1).
-func (m Model) renderDrillFrame(v session.SubagentView) string {
+// It lives here rather than in view.go because the boundary test keeps
+// view.go off the agent side (P2 C1).
+func (m Model) renderDrillFrame(v acpwire.Subagent) string {
 	border := lipgloss.NewStyle().Foreground(accentColor)
 	inner := max(m.leftWidth-4, 1)
 	body := func(row string) string {
@@ -4497,28 +4476,34 @@ func (m Model) renderDrillFrame(v session.SubagentView) string {
 	return chrome.PaintBand(strings.Join(lines, "\n"), m.leftWidth, theme.Current().TranscriptBG())
 }
 
-// drillIntoSubagent pushes a subagent onto the view stack so its child
-// session's transcript replaces the orchestrator's in the viewport.
-// Cards without a child session (status-only) are not drillable.
-func (m *Model) drillIntoSubagent(v session.SubagentView) {
-	if v.Child == nil {
-		return
+// drillIntoSubagent pushes the subagent with that ID onto the view stack, so
+// its transcript replaces the orchestrator's. It reports false and changes
+// nothing for an ID that names no subagent in Status, or one without Drill.
+func (m *Model) drillIntoSubagent(id int64) bool {
+	for _, v := range m.sess.Status().Subagents {
+		if v.ID != id || v.Drill == nil {
+			continue
+		}
+		m.viewStack = append(m.viewStack, v)
+		m.syncTranscriptWidth()
+		m.clearSelection()
+		m.invalidateTranscript()
+		m.viewportFollow = true
+		return true
 	}
-	m.viewStack = append(m.viewStack, v)
-	m.syncTranscriptWidth()
-	m.clearSelection()
-	m.invalidateTranscript()
-	m.viewportFollow = true
+	return false
 }
 
 // drillIntoLatestRunningSubagent pushes the most recently registered
 // running subagent onto the view stack, so inspecting live work does not
 // require a mouse. Returns false when no subagent is running.
 func (m *Model) drillIntoLatestRunningSubagent() bool {
-	subs := m.state.Subagents()
+	subs := m.sess.Status().Subagents
 	for i := len(subs) - 1; i >= 0; i-- {
-		if subs[i].Status == session.SubagentRunning && subs[i].Child != nil {
-			m.drillIntoSubagent(subs[i])
+		if subs[i].Status != acpwire.SubagentRunning {
+			continue
+		}
+		if m.drillIntoSubagent(subs[i].ID) {
 			return true
 		}
 	}
@@ -6823,10 +6808,16 @@ func (m *Model) jumpToWorkOrigin(taskKey string) (Model, tea.Cmd) {
 	if childID := item.Reference.ChildSessionID; childID != "" {
 		for _, v := range m.state.Subagents() {
 			if v.Child != nil && v.Child.SessionID() == childID {
-				m.drillIntoSubagent(v)
-				m.invalidateTranscript()
-				m.refreshViewport()
-				return *m, nil
+				// The child's state can outlive the wire's retention window,
+				// in which case there is nothing to drill into and the jump
+				// falls through to the retained node or the unavailable
+				// detail rather than doing nothing.
+				if m.drillIntoSubagent(v.ID) {
+					m.invalidateTranscript()
+					m.refreshViewport()
+					return *m, nil
+				}
+				break
 			}
 		}
 	}
@@ -6847,13 +6838,13 @@ func (m *Model) jumpToWorkOrigin(taskKey string) (Model, tea.Cmd) {
 
 // browseNodeForKey resolves a stored node key to the navigable node the
 // transcript is currently showing, if any.
-func (m Model) browseNodeForKey(key string) (viewmodel.NodeID, bool) {
+func (m Model) browseNodeForKey(key string) (nodeID, bool) {
 	for _, it := range m.browseItems {
 		if it.id.Key == key {
 			return it.id, true
 		}
 	}
-	return viewmodel.NodeID{}, false
+	return nodeID{}, false
 }
 
 // openWorkDetailUnavailable opens the panel's bounded retained detail for an

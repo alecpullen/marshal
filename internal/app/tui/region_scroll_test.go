@@ -8,10 +8,10 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
-	"marshal/internal/viewmodel"
 )
 
 // THE regression test for the reported bug: a running card must not resize
@@ -49,8 +49,8 @@ func TestSubagentCardDoesNotResizeWhenTailSourceFlips(t *testing.T) {
 
 func TestRegionRowsArePruned(t *testing.T) {
 	m := newTestModel(t)
-	gone := viewmodel.NodeID{Kind: viewmodel.KindSubagent, Key: "sub:999"}
-	m.regionRows = map[viewmodel.NodeID]int{gone: 6}
+	gone := nodeID{Kind: acpwire.KindSubagent, Key: "sub:999"}
+	m.regionRows = map[nodeID]int{gone: 6}
 	m.refreshViewport()
 	if _, still := m.regionRows[gone]; still {
 		t.Fatal("high-water marks for regions no longer rendered must be pruned")
@@ -69,7 +69,7 @@ func TestRegionScrollRepaintsViewport(t *testing.T) {
 	m.refreshViewport()
 	before := m.viewport.GetContent()
 
-	m.regionOffset = map[viewmodel.NodeID]int{viewmodel.LiveThinkingID: 5}
+	m.regionOffset = map[nodeID]int{liveThinkingID: 5}
 	m.refreshViewport()
 	after := m.viewport.GetContent()
 
@@ -116,8 +116,8 @@ func TestWheelOutsideRegionScrollsTranscript(t *testing.T) {
 
 func TestStaleRegionOffsetsArePruned(t *testing.T) {
 	m := newTestModel(t)
-	gone := viewmodel.NodeID{Kind: viewmodel.KindSubagent, Key: "sub:999"}
-	m.regionOffset = map[viewmodel.NodeID]int{gone: 3}
+	gone := nodeID{Kind: acpwire.KindSubagent, Key: "sub:999"}
+	m.regionOffset = map[nodeID]int{gone: 3}
 	m.refreshViewport()
 	if _, still := m.regionOffset[gone]; still {
 		t.Fatal("offsets for regions no longer rendered must be pruned")
@@ -131,8 +131,8 @@ func TestRegionOffsetNeverGoesNegative(t *testing.T) {
 	child.AppendThinking("line\n")
 	v := m.state.RegisterSubagent("reviewer", child)
 	m.refreshViewport()
-	key := viewmodel.NodeID{Kind: viewmodel.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
-	m.regionOffset = map[viewmodel.NodeID]int{key: 0}
+	key := nodeID{Kind: acpwire.KindSubagent, Key: fmt.Sprintf("sub:%d", v.ID)}
+	m.regionOffset = map[nodeID]int{key: 0}
 	for i := 0; i < 5; i++ {
 		m.scrollLiveRegionAt(tea.MouseWheelMsg{X: 1, Y: 1, Button: tea.MouseWheelDown})
 	}
@@ -143,7 +143,7 @@ func TestRegionOffsetNeverGoesNegative(t *testing.T) {
 }
 
 // screenRowForNode returns the screen row of a node's first visible line.
-func screenRowForNode(m *Model, id viewmodel.NodeID) (int, bool) {
+func screenRowForNode(m *Model, id nodeID) (int, bool) {
 	top := m.scrollHintRows() + m.breadcrumbRows()
 	for _, r := range m.nodeRegions {
 		if r.target.node != id {
@@ -167,14 +167,14 @@ func TestWheelOverTheLiveReasoningRegionScrollsIt(t *testing.T) {
 	}
 	m.refreshViewport()
 
-	y, ok := screenRowForNode(&m, viewmodel.LiveThinkingID)
+	y, ok := screenRowForNode(&m, liveThinkingID)
 	if !ok {
 		t.Fatalf("the live reasoning region is not on screen:\n%s", stripANSI(m.viewport.GetContent()))
 	}
-	before := m.regionOffset[viewmodel.LiveThinkingID]
+	before := m.regionOffset[liveThinkingID]
 	out, _ := m.Update(tea.MouseWheelMsg{X: 1, Y: y, Button: tea.MouseWheelUp})
 	got := out.(Model)
-	if got.regionOffset[viewmodel.LiveThinkingID] == before {
+	if got.regionOffset[liveThinkingID] == before {
 		t.Fatalf("the wheel did not scroll the live region (offset %d)", before)
 	}
 }
@@ -193,7 +193,7 @@ func TestClickOnARunningCallRowExpandsIt(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	row := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
+	row := nodeID{Kind: acpwire.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
 	y, ok := screenRowForNode(&m, row)
 	if !ok {
 		t.Fatalf("the running call row is not on screen:\n%s", stripANSI(m.viewport.GetContent()))

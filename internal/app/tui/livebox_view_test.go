@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/tools/native"
@@ -221,13 +222,13 @@ func twoItemPlanModel(t *testing.T, gap int) Model {
 func TestBoxClickOnPlanItemJumpsToItsBeat(t *testing.T) {
 	m := twoItemPlanModel(t, 0)
 
-	var want viewmodel.NodeID
+	var want nodeID
 	for _, t := range m.band.Tasks {
 		if t.ID == "t1" {
-			want = t.First
+			want = nodeID{Kind: acpwire.KindStep, Key: t.Ref}
 		}
 	}
-	if want == (viewmodel.NodeID{}) {
+	if want.Key == "" {
 		t.Fatalf("todo t1 has no beat: %+v", m.band.Tasks)
 	}
 
@@ -256,10 +257,10 @@ func TestBoxClickOnTheRightPlanColumn(t *testing.T) {
 	// The history between the beats keeps t1's beat clear of the bottom, so
 	// the jump to it is not clamped to the same offset as t2's.
 	m := twoItemPlanModel(t, 80)
-	var first viewmodel.NodeID
+	var first nodeID
 	for _, t := range m.band.Tasks {
 		if t.ID == "t1" {
-			first = t.First
+			first = nodeID{Kind: acpwire.KindStep, Key: t.Ref}
 		}
 	}
 	firstLine := -1
@@ -325,10 +326,10 @@ func TestScrollToPlanItemUsesTheOneBasedSlot(t *testing.T) {
 
 	// The steps the transcript rendered, in order, with the line each one
 	// starts at: the beats the plan's items would be bound to.
-	var beats []viewmodel.NodeID
-	starts := map[viewmodel.NodeID]int{}
+	var beats []nodeID
+	starts := map[nodeID]int{}
 	for _, r := range m.nodeRegions {
-		if r.target.node.Kind != viewmodel.KindStep {
+		if r.target.node.Kind != acpwire.KindStep {
 			continue
 		}
 		if _, seen := starts[r.target.node]; !seen {
@@ -340,9 +341,9 @@ func TestScrollToPlanItemUsesTheOneBasedSlot(t *testing.T) {
 		t.Fatalf("transcript rendered %d step regions, want 2", len(beats))
 	}
 	// Both todos are ID-less, so the plan names them by 1-based position.
-	m.band = viewmodel.BandInfo{Tasks: []viewmodel.BandTask{
-		{Content: "First", Status: "completed", TaskStat: viewmodel.TaskStat{First: beats[0]}},
-		{Content: "Second", Status: "in_progress", TaskStat: viewmodel.TaskStat{First: beats[1]}},
+	m.band = acpwire.WireBand{Tasks: []acpwire.WireTask{
+		{Content: "First", Status: "completed", Ref: beats[0].Key},
+		{Content: "Second", Status: "in_progress", Ref: beats[1].Key},
 	}}
 	if plan := m.boxInput().Plan; len(plan) != 2 || plan[0].ID != "" {
 		t.Fatalf("plan = %+v, want two ID-less items", plan)

@@ -2,15 +2,13 @@ package tui
 
 import (
 	tea "charm.land/bubbletea/v2"
-
-	"marshal/internal/viewmodel"
 )
 
 // clickTarget identifies what a click region toggles: a node of the
 // transcript tree (a step, a tool row, a completion event, a thinking row).
 type clickTarget struct {
 	// node is what the click toggles (or, for a live region, scrolls).
-	node viewmodel.NodeID
+	node nodeID
 	// isLiveRegion marks a block rendered by liveregion, whose body scrolls
 	// independently of the transcript when the wheel is over it.
 	isLiveRegion bool
@@ -107,9 +105,9 @@ func (m *Model) scrollLiveRegionAt(msg tea.MouseWheelMsg) bool {
 
 // setRegionOffset moves a bounded live region's scroll offset by delta, and
 // reports whether it moved.
-func (m *Model) setRegionOffset(id viewmodel.NodeID, delta int) bool {
+func (m *Model) setRegionOffset(id nodeID, delta int) bool {
 	if m.regionOffset == nil {
-		m.regionOffset = map[viewmodel.NodeID]int{}
+		m.regionOffset = map[nodeID]int{}
 	}
 	cur := m.regionOffset[id]
 	next := min(max(cur+delta, 0), maxRegionOffset)

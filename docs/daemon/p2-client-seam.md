@@ -1340,3 +1340,54 @@ copies its *expanded render* at 120 columns, so a body line longer than that
 arrives cut with an ellipsis even though a wider screen draws it whole. The
 copy takes the whole body past `WireTextCap` (that is what the detail fetch
 buys) but not past the display width it was rendered at.
+
+**Plan 3d (the tree), branch `p2-3d-tree`.** `acpclient.Session` gains
+`Stack(subagentID int64, busy bool) acpwire.StackSnapshot`, with its
+`session/stack` row in `Methods` just before `StackNode`. The in-process
+adapter answers it with `viewmodel.ProjectState(src, busy, src.Now())` —
+the shared projector, at the source state's clock, with the busy flag it is
+given — and an ID that names no kept child reads as an empty snapshot
+carrying that `SubagentID`, never the session's own transcript; a closed
+session still answers. `session.State` gains `Now()`, the one `WithClock`
+clock or else `time.Now`. `acpwire.Subagent` gains `drill` (`SubagentDrill`,
+holding the child's `activeRoot`, `activeRoute` and `activity`), set only
+while the session keeps the child's state, which is what `Stack` reads, and
+nil for a status-only card or a released child.
+
+The five text helpers moved from `internal/viewmodel` to `internal/strutil`:
+`ScrubText`, `ScrubBlock`, `ElideWorkdir`, `FirstSentence` and
+`StripEmphasis`. `ReportTail` and `ReportTailLines` with `tailLines`, and
+`BeatRowCap`, which only the TUI read, become the TUI's `reportTail`,
+`reportTailLines`, `tailLines` and `beatRowCap` in `steps.go`, and the TUI
+keeps its own `isShellFamily`, which a test holds equal to
+`viewmodel.IsShellFamily`.
+
+The TUI keys every per-node thing by a local `nodeID`, the wire kind and the
+wire ID, which replaces `viewmodel.NodeID`; `livebox.PlanItem.First` is a
+string and `livebox.Target.Node` is gone. `refreshViewport` takes the
+snapshot first and sets `m.wire`, the band, the completion index and
+`rowBeats` before the content-signature check, and the seen set, the render
+cache and the browse items read the snapshot's wire nodes too.
+`viewport_render.go` and `browse.go` import no agent-side package.
+
+Drill-in goes by ID: `drillIntoSubagent(id)` looks the ID up in
+`Status().Subagents` and pushes a view only when it carries a `drill`. The
+view stack holds `acpwire.Subagent`, and a drilled view's facts — its root,
+its route and its reconnect label — come from the view's `drill`, read live
+each refresh and falling back to the snapshot. `transcriptSource` is
+deleted, so the TUI holds no child state, and a child's shell rows show no
+sandbox info until plan 4 decides.
+
+T1b gains one name, at plan `3d`: `Subagent`. T1's allowlist lost ten
+entries across nine files: `spine.go`, `browse_actions.go`, `callers.go`,
+`click.go`, `expand.go`, `selection.go` and `browse.go` lost their keys
+entirely, and `browse_inspect.go` and `viewport_render.go` were trimmed to
+the entries that remain.
+
+Decision 11's two edge cases differ from before. The tray's plan rows come
+from the wire's band, which scrubs todo text with `strutil.ScrubText` rather
+than `progress.Clean`, so a todo holding an escape sequence shows its
+printable remainder and one holding a CRLF shows two spaces where it showed
+one. A drilled-in child whose state the session releases now shows an empty
+frame with the welcome banner, which happens only when more than ten newer
+children finish while the view is drilled into an old finished one.

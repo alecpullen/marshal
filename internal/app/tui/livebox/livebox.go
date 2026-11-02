@@ -88,7 +88,7 @@ func Bar(fraction float64, cells int, c color.Color) string {
 type PlanItem struct {
 	ID, Content, Status string // Status: "completed", "in_progress" or "pending"
 	StartedAt           time.Time
-	First               viewmodel.NodeID // the first beat bound to it; zero when none
+	First               string // the first beat's wire ID bound to it; "" when none
 }
 
 // TargetKind is what a tray row acts on when clicked.
@@ -101,10 +101,9 @@ const (
 	TargetPlan            // a plan item; Key is its ID, or "#<position>" (1-based) when it has none
 )
 
-// Target is a tray row's click target: what it opens, and which node or item.
+// Target is a tray row's click target: what it opens, and which item.
 type Target struct {
 	Kind TargetKind
-	Node viewmodel.NodeID
 	Key  string
 }
 

@@ -173,14 +173,10 @@ func (s *Session) Status() acpwire.SessionStatus {
 			System:   access.System,
 			Revision: access.Revision,
 		},
-		SudoUnlock: st.SudoUnlockEnabled(),
-		Trusted:    st.Trusted(),
-		HasBackup:  st.HasBackup(),
-		Activity: acpwire.Activity{
-			Kind:      string(act.Kind),
-			Label:     act.Label,
-			StartedAt: acpwire.Millis(act.StartedAt),
-		},
+		SudoUnlock:      st.SudoUnlockEnabled(),
+		Trusted:         st.Trusted(),
+		HasBackup:       st.HasBackup(),
+		Activity:        activityWire(act),
 		SubagentRunning: st.HasRunningSubagent(),
 		Workspace: acpwire.Workspace{
 			ProjectRoot:  ws.ProjectRoot,

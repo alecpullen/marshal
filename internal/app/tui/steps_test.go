@@ -9,6 +9,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/config"
 	"marshal/internal/app/session"
 	"marshal/internal/db"
@@ -330,7 +331,7 @@ func TestThinkingTimeSitsInTheBeatHead(t *testing.T) {
 		t.Error("a collapsed beat must not show its reasoning")
 	}
 
-	m.toggleExpanded(viewmodel.NodeID{Kind: viewmodel.KindStep, Key: fmt.Sprintf("step:%d", id)})
+	m.toggleExpanded(nodeID{Kind: acpwire.KindStep, Key: fmt.Sprintf("step:%d", id)})
 	m.invalidateTranscript()
 	lines = transcriptLines(&m)
 	reason, call := -1, -1
@@ -356,12 +357,12 @@ func TestClickOnToolRowTogglesThatRowOnly(t *testing.T) {
 	m.invalidateTranscript()
 	m.refreshViewport()
 
-	row := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: fmt.Sprintf("tool:%d:row_a", id)}
+	row := nodeID{Kind: acpwire.KindTool, Key: fmt.Sprintf("tool:%d:row_a", id)}
 	region, ok := regionOf(&m, row)
 	if !ok {
 		t.Fatal("tool row recorded no region of its own")
 	}
-	stepRegion, ok := regionOf(&m, viewmodel.NodeID{Kind: viewmodel.KindStep, Key: fmt.Sprintf("step:%d", id)})
+	stepRegion, ok := regionOf(&m, nodeID{Kind: acpwire.KindStep, Key: fmt.Sprintf("step:%d", id)})
 	if !ok || stepRegion.endLine-stepRegion.startLine <= region.endLine-region.startLine {
 		t.Fatalf("row region %+v should sit inside the step region %+v", region, stepRegion)
 	}
@@ -371,7 +372,7 @@ func TestClickOnToolRowTogglesThatRowOnly(t *testing.T) {
 	if !mm.isExpanded(row) {
 		t.Fatal("click on the row did not expand it")
 	}
-	if mm.isExpanded(viewmodel.NodeID{Kind: viewmodel.KindStep, Key: fmt.Sprintf("step:%d", id)}) || mm.isExpanded(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: fmt.Sprintf("tool:%d:row_b", id)}) {
+	if mm.isExpanded(nodeID{Kind: acpwire.KindStep, Key: fmt.Sprintf("step:%d", id)}) || mm.isExpanded(nodeID{Kind: acpwire.KindTool, Key: fmt.Sprintf("tool:%d:row_b", id)}) {
 		t.Fatal("click on a row must not toggle the step or its siblings")
 	}
 }
@@ -389,8 +390,8 @@ func TestSettledStepsAreNotReRenderedOnSpinnerTicks(t *testing.T) {
 	m.busy = true
 	m.turnStartedAt = time.Now()
 
-	var rendered []viewmodel.NodeID
-	nodeRenderHook = func(id viewmodel.NodeID) { rendered = append(rendered, id) }
+	var rendered []nodeID
+	nodeRenderHook = func(id nodeID) { rendered = append(rendered, id) }
 	t.Cleanup(func() { nodeRenderHook = nil })
 
 	m.invalidateTranscript()
@@ -427,10 +428,10 @@ func TestExpandingOneStepRendersOnlyThatStep(t *testing.T) {
 	}
 	m.invalidateTranscript()
 	m.refreshViewport()
-	var rendered []viewmodel.NodeID
-	nodeRenderHook = func(id viewmodel.NodeID) { rendered = append(rendered, id) }
+	var rendered []nodeID
+	nodeRenderHook = func(id nodeID) { rendered = append(rendered, id) }
 	t.Cleanup(func() { nodeRenderHook = nil })
-	target := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: fmt.Sprintf("step:%d", ids[2])}
+	target := nodeID{Kind: acpwire.KindStep, Key: fmt.Sprintf("step:%d", ids[2])}
 	m.toggleExpanded(target)
 	m.refreshViewport()
 	if len(rendered) != 1 || rendered[0] != target {
@@ -579,8 +580,8 @@ func TestOlderStepWithRunningCallKeepsRendering(t *testing.T) {
 
 	m.invalidateTranscript()
 	m.refreshViewport()
-	var rendered []viewmodel.NodeID
-	nodeRenderHook = func(id viewmodel.NodeID) { rendered = append(rendered, id) }
+	var rendered []nodeID
+	nodeRenderHook = func(id nodeID) { rendered = append(rendered, id) }
 	t.Cleanup(func() { nodeRenderHook = nil })
 	base := m.now()
 	m.now = func() time.Time { return base.Add(5 * time.Second) }
@@ -605,7 +606,7 @@ func TestRunningToolRowInsideStepExpandsOnClickEvenWithGlobalExpand(t *testing.T
 	m.busy, m.turnStartedAt = true, time.Now()
 	m.expandAll = true // ctrl+g on: settled rows open, running rows stay closed
 
-	row := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
+	row := nodeID{Kind: acpwire.KindTool, Key: fmt.Sprintf("tool:%d:run", id)}
 	m.invalidateTranscript()
 	m.refreshViewport()
 	if strings.Contains(stripANSI(m.viewport.GetContent()), "PASS pkg/first") {
@@ -625,13 +626,13 @@ func TestExpandStateDoesNotLeakIntoSubagentViews(t *testing.T) {
 	m := newTestModel(t)
 	child := session.New(config.Default(), t.TempDir(), time.Unix(100, 0), session.Persistence{})
 	v := m.state.RegisterSubagent("reviewer", child)
-	step1 := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: "step:1"}
+	step1 := nodeID{Kind: acpwire.KindStep, Key: "step:1"}
 
 	m.toggleExpanded(step1)
 	if !m.isExpanded(step1) {
 		t.Fatal("main toggle did not stick")
 	}
-	m.viewStack = append(m.viewStack, v)
+	m.viewStack = append(m.viewStack, acpwire.Subagent{ID: v.ID})
 	if m.isExpanded(step1) {
 		t.Fatal("the main transcript's expansion leaked into the subagent view")
 	}

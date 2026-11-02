@@ -3,7 +3,7 @@ package tui
 import (
 	"fmt"
 
-	"marshal/internal/viewmodel"
+	"marshal/internal/acpwire"
 )
 
 // The transcript has one level of detail. Every row draws collapsed until it
@@ -15,22 +15,22 @@ import (
 // numbers its own steps from 1, so without the scope, expanding step 3 of the
 // main transcript would also expand step 3 of a subagent's, and toggling it
 // there would flip the main one.
-func (m *Model) expandKey(id viewmodel.NodeID) viewmodel.NodeID {
+func (m *Model) expandKey(id nodeID) nodeID {
 	if v, ok := m.drilledInto(); ok {
-		return viewmodel.NodeID{Kind: id.Kind, Key: fmt.Sprintf("sub%d/%s", v.ID, id.Key)}
+		return nodeID{Kind: id.Kind, Key: fmt.Sprintf("sub%d/%s", v.ID, id.Key)}
 	}
 	return id
 }
 
 // ownExpanded returns the node's own choice, if the user made one.
-func (m *Model) ownExpanded(id viewmodel.NodeID) (expanded, ok bool) {
+func (m *Model) ownExpanded(id nodeID) (expanded, ok bool) {
 	expanded, ok = m.expanded[m.expandKey(id)]
 	return expanded, ok
 }
 
 // expandedUnder resolves whether a node draws expanded: its own choice, else
 // what it inherits from its beat or from Ctrl+G.
-func (m *Model) expandedUnder(id viewmodel.NodeID, inherited bool) bool {
+func (m *Model) expandedUnder(id nodeID, inherited bool) bool {
 	if e, ok := m.ownExpanded(id); ok {
 		return e
 	}
@@ -39,7 +39,7 @@ func (m *Model) expandedUnder(id viewmodel.NodeID, inherited bool) bool {
 
 // isExpanded reports whether a node draws expanded: its own choice, else its
 // beat's, else Ctrl+G's.
-func (m *Model) isExpanded(id viewmodel.NodeID) bool {
+func (m *Model) isExpanded(id nodeID) bool {
 	inherited := m.expandAll
 	if beat, ok := m.rowBeat[id]; ok {
 		inherited = m.expandedUnder(beat, inherited)
@@ -51,7 +51,7 @@ func (m *Model) isExpanded(id viewmodel.NodeID) bool {
 // stays collapsed unless it was opened itself, whatever its beat or Ctrl+G
 // says: its output is a live tail, not history. The choice carries over when
 // the call settles, because a call's node ID is the same before and after.
-func (m *Model) isToolExpanded(id viewmodel.NodeID, live bool) bool {
+func (m *Model) isToolExpanded(id nodeID, live bool) bool {
 	if live {
 		e, ok := m.ownExpanded(id)
 		return ok && e
@@ -59,16 +59,16 @@ func (m *Model) isToolExpanded(id viewmodel.NodeID, live bool) bool {
 	return m.isExpanded(id)
 }
 
-func (m *Model) setExpanded(id viewmodel.NodeID, e bool) {
+func (m *Model) setExpanded(id nodeID, e bool) {
 	if m.expanded == nil {
-		m.expanded = map[viewmodel.NodeID]bool{}
+		m.expanded = map[nodeID]bool{}
 	}
 	m.expanded[m.expandKey(id)] = e
 }
 
 // toggleExpanded is the click and Enter action: it flips what the node shows
 // now.
-func (m *Model) toggleExpanded(id viewmodel.NodeID) {
+func (m *Model) toggleExpanded(id nodeID) {
 	if m.isLiveToolNode(id) {
 		m.setExpanded(id, !m.isToolExpanded(id, true))
 		return
@@ -80,29 +80,21 @@ func (m *Model) toggleExpanded(id viewmodel.NodeID) {
 // transcript reads one way.
 func (m *Model) toggleExpandAll() {
 	m.expandAll = !m.expandAll
-	m.expanded = map[viewmodel.NodeID]bool{}
+	m.expanded = map[nodeID]bool{}
 }
 
 // resetExpansion collapses everything and forgets every choice, for a new
 // session.
 func (m *Model) resetExpansion() {
 	m.expandAll = false
-	m.expanded = map[viewmodel.NodeID]bool{}
+	m.expanded = map[nodeID]bool{}
 	m.invalidateTranscript()
 }
 
-func (m *Model) isLiveToolNode(id viewmodel.NodeID) bool {
-	if id.Kind != viewmodel.KindTool {
+func (m *Model) isLiveToolNode(id nodeID) bool {
+	if id.Kind != acpwire.KindTool {
 		return false
 	}
-	st, _ := m.transcriptSource()
-	if st == nil {
-		return false
-	}
-	for _, a := range st.ActiveToolCalls() {
-		if viewmodel.ActiveToolID(a) == id {
-			return true
-		}
-	}
-	return false
+	w := m.wire[id.Key]
+	return w != nil && w.Tool != nil && w.Tool.Running != nil
 }

@@ -10,6 +10,7 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/progress"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
@@ -27,9 +28,6 @@ const (
 	OutcomeFailed  = acpwire.OutcomeFailed
 	OutcomeUnknown = acpwire.OutcomeUnknown
 )
-
-// ReportTailLines bounds the output an issue report shows.
-const ReportTailLines = 20
 
 // CompletionInfo is one finished piece of background work at the moment it
 // ended: a background job's exit or a subagent's end.
@@ -169,8 +167,8 @@ func bytesIEC(v float64) string {
 // ReportHeadline is a summary's first sentence as a row: emphasis and a
 // leading markdown heading mark come off, because the row is plain text.
 func ReportHeadline(summary string) string {
-	head, _ := FirstSentence(strings.TrimSpace(summary))
-	return stripHeading(StripEmphasis(head))
+	head, _ := strutil.FirstSentence(strings.TrimSpace(summary))
+	return stripHeading(strutil.StripEmphasis(head))
 }
 
 // stripHeading drops a leading ATX heading marker — one to six '#' followed by
@@ -183,50 +181,6 @@ func stripHeading(s string) string {
 		return s
 	}
 	return strings.TrimLeft(t[n:], " ")
-}
-
-// ReportTail is the bounded output an issue report shows: the failure lines
-// first, then the end of the output, so a reader sees what broke and where the
-// run stopped.
-func ReportTail(output string) []string {
-	trimmed := strings.TrimRight(output, "\n")
-	if trimmed == "" {
-		return nil
-	}
-	lines := strings.Split(trimmed, "\n")
-	var failures []string
-	for _, l := range lines {
-		if strings.Contains(l, "--- FAIL") {
-			failures = append(failures, l)
-			if len(failures) == 10 {
-				break
-			}
-		}
-	}
-	if len(failures) == 0 {
-		return tailLines(lines, ReportTailLines)
-	}
-	out := append([]string{}, failures...)
-	rest := ReportTailLines - len(failures)
-	if rest <= 0 {
-		return out
-	}
-	var others []string
-	for _, l := range lines {
-		if strings.Contains(l, "--- FAIL") {
-			continue
-		}
-		others = append(others, l)
-	}
-	return append(out, tailLines(others, rest)...)
-}
-
-// tailLines is the last n elements, or the whole slice when it is shorter.
-func tailLines(lines []string, n int) []string {
-	if n <= 0 || len(lines) <= n {
-		return lines
-	}
-	return lines[len(lines)-n:]
 }
 
 // jobCompletion is a background job's exit as a completion event. start is the
@@ -382,14 +336,14 @@ func subagentCompletion(v *session.SubagentView, launch NodeID) CompletionInfo {
 // here, at the one place every event is constructed, rather than at each
 // renderer.
 func completionNode(c CompletionInfo, refKey string) *Node {
-	c.Label = ScrubText(c.Label)
-	c.Summary = ScrubText(c.Summary)
-	c.StopCause = ScrubText(c.StopCause)
-	c.Cwd = ScrubText(c.Cwd)
-	c.Command = ScrubBlock(c.Command)
-	c.Output = ScrubBlock(c.Output)
-	c.Report = ScrubBlock(c.Report)
-	c.Error = ScrubBlock(c.Error)
+	c.Label = strutil.ScrubText(c.Label)
+	c.Summary = strutil.ScrubText(c.Summary)
+	c.StopCause = strutil.ScrubText(c.StopCause)
+	c.Cwd = strutil.ScrubText(c.Cwd)
+	c.Command = strutil.ScrubBlock(c.Command)
+	c.Output = strutil.ScrubBlock(c.Output)
+	c.Report = strutil.ScrubBlock(c.Report)
+	c.Error = strutil.ScrubBlock(c.Error)
 	n := &Node{ID: NodeID{KindCompletion, "completion:" + refKey}, Kind: KindCompletion, Completion: &c}
 	n.Version = versionOfCompletion(&c)
 	return n

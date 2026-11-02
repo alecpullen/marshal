@@ -8,14 +8,14 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"marshal/internal/viewmodel"
+	"marshal/internal/acpwire"
 )
 
 // blockKey names a transcript block across refreshes: the node it renders,
 // or a name for a block that renders no node (the banner, a turn
 // separator, the notice, the queued messages, the reconnect line).
 type blockKey struct {
-	node viewmodel.NodeID
+	node nodeID
 	name string
 }
 
@@ -133,7 +133,7 @@ func (m *Model) selRowAt(l int) selRow {
 	}
 	sp := m.blockSpans[bi]
 	r.segment = bi
-	r.inStep = sp.key.node.Kind == viewmodel.KindStep
+	r.inStep = sp.key.node.Kind == acpwire.KindStep
 	// The narrowest region holding the line that is not the block's own
 	// region is a sub-region (a tool row, a card, a thinking row).
 	sub := -1
@@ -168,8 +168,8 @@ func (m *Model) selRowAt(l int) selRow {
 
 // fullToolHead is the untruncated subject of a call row whose subject was
 // truncated, or "": the part of the row a selection copies.
-func (m *Model) fullToolHead(id viewmodel.NodeID, text string) string {
-	if id.Kind != viewmodel.KindTool || !strings.Contains(text, "…") {
+func (m *Model) fullToolHead(id nodeID, text string) string {
+	if id.Kind != acpwire.KindTool || !strings.Contains(text, "…") {
 		return ""
 	}
 	w := m.wireNode(id)

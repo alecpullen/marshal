@@ -61,6 +61,10 @@ var movedStateReads = map[string]string{
 	// callers.go's last transcript read moved in 3b: the rows a callers
 	// lookup applies to now come from the wire index.
 	"Transcript": "3b",
+
+	// The cursor's box stop found its child through the state; drill-in
+	// resolves it through Status since 3d.
+	"Subagent": "3d",
 }
 
 // movedReadSites returns one "<line>\t<Name>" entry per selector X.Sel in f

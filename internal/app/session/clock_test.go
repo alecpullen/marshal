@@ -141,3 +141,19 @@ func TestStateWithoutAClockStampsTheWallClock(t *testing.T) {
 		t.Errorf("clockNow() = %v, want within a second of time.Now()", got)
 	}
 }
+
+// TestNowReadsTheStatesClock pins the exported clock the in-process adapter
+// builds the transcript's tree at: the time WithClock installed, or the wall
+// clock for a State that New did not build.
+func TestNowReadsTheStatesClock(t *testing.T) {
+	fixed := time.Unix(1_700_000_000, 0)
+	s := New(config.Default(), t.TempDir(), fixed, Persistence{}, WithClock(func() time.Time { return fixed }))
+	if got := s.Now(); !got.Equal(fixed) {
+		t.Errorf("Now() = %v, want %v (the state's clock)", got, fixed)
+	}
+
+	empty := &State{}
+	if got := empty.Now(); time.Since(got) < 0 || time.Since(got) > time.Second {
+		t.Errorf("(&State{}).Now() = %v, want within a second of time.Now()", got)
+	}
+}

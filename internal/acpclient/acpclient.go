@@ -83,6 +83,22 @@ type Session interface {
 	// ACP: session/sheet (new in P3), sent with the refresh flags.
 	RefreshSheet(ctx context.Context, req acpwire.SheetRefresh) error
 
+	// Stack is the transcript the TUI renders (C6): the session's own when
+	// subagentID is 0, or that of the subagent with that ID anywhere in the
+	// session's tree. Roots are the turns in order. Nodes hold every node of
+	// the tree, then the band node, which is not in Roots. An ID that names no
+	// child the session keeps reads as an empty snapshot with that SubagentID.
+	// Stack does not block.
+	//
+	// busy says a turn is running, which decides the live beat and the turn's
+	// receipt. Until plan 5 moves turns behind Prompt the TUI owns turns, so it
+	// passes its own flag, and the tree is built with it whatever subagentID
+	// names. P3 drops the parameter: session/stack builds a session's tree as
+	// busy while its turn runs, and a subagent's while the subagent runs.
+	//
+	// ACP: session/stack (exists). A stack_patch update refreshes it.
+	Stack(subagentID int64, busy bool) acpwire.StackSnapshot
+
 	// StackNode is one transcript node's wire form with the detail the
 	// projection caps or leaves out (C6): a call's whole arguments, output,
 	// diff and summary and its step; a beat's narration, reasoning and step;

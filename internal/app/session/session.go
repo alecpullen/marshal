@@ -924,6 +924,13 @@ func (s *State) clockNow() time.Time {
 	return time.Now()
 }
 
+// Now is the state's clock: the one WithClock set, or time.Now. The in-process
+// adapter builds the transcript's tree at this time, so a state on a frozen
+// clock projects the same tree every time.
+func (s *State) Now() time.Time {
+	return s.clockNow()
+}
+
 func New(cfg config.Config, workingDir string, now time.Time, p Persistence, opts ...Option) *State {
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &State{

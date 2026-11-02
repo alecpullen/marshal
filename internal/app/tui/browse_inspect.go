@@ -12,7 +12,7 @@ import (
 	"marshal/internal/app/tui/docpanel"
 	"marshal/internal/app/tui/inspector"
 	"marshal/internal/commands"
-	"marshal/internal/viewmodel"
+	"marshal/internal/strutil"
 )
 
 // openInspector opens the inspector on the cursor node. Only steps, tool rows
@@ -31,7 +31,7 @@ func (m *Model) openInspector() (tea.Model, tea.Cmd, bool) {
 // inspectorDetail builds the inspector's view model for a step, tool row or
 // completion event. It reads the node's fields from the wire index and its
 // uncapped detail from the session: either missing means nothing to inspect.
-func (m *Model) inspectorDetail(id viewmodel.NodeID) (inspector.Detail, bool) {
+func (m *Model) inspectorDetail(id nodeID) (inspector.Detail, bool) {
 	w := m.wireNode(id)
 	if w == nil {
 		return inspector.Detail{}, false
@@ -94,7 +94,7 @@ func completionDetail(c *acpwire.WireCompletion, d *acpwire.CompletionDetail) in
 	if d != nil {
 		output, report = d.Output, d.Report
 	}
-	sec("output", viewmodel.ScrubBlock(output))
+	sec("output", strutil.ScrubBlock(output))
 	sec("report", report)
 	sec("error", c.Error)
 	sec("command", c.Command)
@@ -362,7 +362,7 @@ func (m *Model) stepInspector(delta int) {
 	i := m.cursorIndex()
 	for j := i + delta; j >= 0 && j < len(m.browseItems); j += delta {
 		k := m.browseItems[j].kind
-		if k != viewmodel.KindStep && k != viewmodel.KindTool {
+		if k != acpwire.KindStep && k != acpwire.KindTool {
 			continue
 		}
 		m.moveCursorNoScroll(j)

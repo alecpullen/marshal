@@ -44,7 +44,7 @@ func TestFrameInvariants(t *testing.T) {
 		{"todos+lane+drilled", func(t *testing.T, m *Model) {
 			registerRunningSubagent(t, m, "reviewer")
 			mustSetTodos(t, m, native.TodoItem{Content: "a task", Status: native.TodoInProgress})
-			if subs := m.state.Subagents(); len(subs) > 0 {
+			if subs := m.sess.Status().Subagents; len(subs) > 0 {
 				m.viewStack = append(m.viewStack, subs[0])
 			}
 		}},

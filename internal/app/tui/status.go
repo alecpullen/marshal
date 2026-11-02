@@ -646,7 +646,7 @@ func (m Model) drilledIntoRunningSubagent() bool {
 	if len(m.viewStack) == 0 {
 		return false
 	}
-	return m.viewStack[len(m.viewStack)-1].Status == session.SubagentRunning
+	return m.viewStack[len(m.viewStack)-1].Status == acpwire.SubagentRunning
 }
 
 // ctrlXAction is the TUI's private decision about what Ctrl+X means. It is

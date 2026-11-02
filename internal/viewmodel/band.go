@@ -14,6 +14,7 @@ import (
 	"marshal/internal/app/session"
 	"marshal/internal/progress"
 	"marshal/internal/pubsub"
+	"marshal/internal/strutil"
 )
 
 // BandInfo is the pinned band's content: todo progress with its stale
@@ -135,7 +136,7 @@ func BandOf(s Snapshot, turns []*Node) BandInfo {
 		stats := TaskStats(turns)
 		b.Tasks = make([]BandTask, len(s.Todos))
 		for i, t := range s.Todos {
-			b.Tasks[i] = BandTask{ID: t.ID, Content: ScrubText(t.Content), Status: t.Status,
+			b.Tasks[i] = BandTask{ID: t.ID, Content: strutil.ScrubText(t.Content), Status: t.Status,
 				StartedAt: t.StartedAt, CompletedAt: t.CompletedAt}
 			if t.ID != "" {
 				b.Tasks[i].TaskStat = stats[t.ID]
@@ -162,10 +163,10 @@ func BandOf(s Snapshot, turns []*Node) BandInfo {
 			}
 		}
 		if active >= 0 {
-			b.Active = ScrubText(s.Todos[active].Content)
+			b.Active = strutil.ScrubText(s.Todos[active].Content)
 			for _, t := range s.Todos[active+1:] {
 				if t.Status != "completed" && t.Status != "in_progress" {
-					b.Next = append(b.Next, ScrubText(t.Content))
+					b.Next = append(b.Next, strutil.ScrubText(t.Content))
 				}
 			}
 		}
@@ -201,7 +202,7 @@ func runningEntities(items []session.TranscriptItem) []BandEntity {
 		case it.Subagent != nil && it.Subagent.Status == session.SubagentRunning:
 			v := it.Subagent
 			out = append(out, BandEntity{Ref: NodeID{KindSubagent, fmt.Sprintf("sub:%d", v.ID)},
-				Label: fmt.Sprintf("#%d %s", v.ID, ScrubText(v.Label)), Detail: ScrubText(v.CurrentTool), Started: v.StartedAt})
+				Label: fmt.Sprintf("#%d %s", v.ID, strutil.ScrubText(v.Label)), Detail: strutil.ScrubText(v.CurrentTool), Started: v.StartedAt})
 		case it.Audit != nil:
 			ev := *it.Audit
 			js, ok := JobStartOf(ev)
@@ -212,7 +213,7 @@ func runningEntities(items []session.TranscriptItem) []BandEntity {
 				continue
 			}
 			out = append(out, BandEntity{Ref: ToolID(ev), Label: js.DisplayID,
-				Detail: ScrubText(ToolTarget(ev)), Started: ev.Timestamp})
+				Detail: strutil.ScrubText(ToolTarget(ev)), Started: ev.Timestamp})
 		}
 	}
 	return out

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -17,11 +18,15 @@ type stackNodeCounter struct {
 	acpclient.Session
 	calls        int
 	lastSubagent int64
+	fail         error // when set, StackNode counts the call and returns it
 }
 
 func (s *stackNodeCounter) StackNode(ctx context.Context, nodeID string, subagentID int64) (acpwire.StackNodeResult, error) {
 	s.calls++
 	s.lastSubagent = subagentID
+	if s.fail != nil {
+		return acpwire.StackNodeResult{}, s.fail
+	}
 	return s.Session.StackNode(ctx, nodeID, subagentID)
 }
 
@@ -98,10 +103,9 @@ func TestWantedDetailIsFetchedOffTheRenderPath(t *testing.T) {
 func TestAFailedDetailIsNotAskedAgain(t *testing.T) {
 	m := newTestModel(t)
 	key, version := runEventModel(t, &m)
-	// A drilled-in subagent with no child transcript: the adapter has nothing
-	// to read, so StackNode fails, while the viewport still draws the
-	// session's own nodes.
-	m.viewStack = []session.SubagentView{{ID: 7}}
+	// The fetch fails while the node stays on screen: its answer is kept for
+	// the version, so the row is not asked again until the node changes.
+	m.sess = &stackNodeCounter{Session: m.sess, fail: errors.New("detail unavailable")}
 
 	if d := m.wantDetail(key, version); d != nil {
 		t.Fatal("a first want has no detail to draw yet")
@@ -252,7 +256,7 @@ func TestWantsAreDroppedWithoutASession(t *testing.T) {
 func TestAWantRemembersItsSubagent(t *testing.T) {
 	m := newTestModel(t)
 	key, version := runEventModel(t, &m)
-	m.viewStack = []session.SubagentView{{ID: 7}}
+	m.viewStack = []acpwire.Subagent{{ID: 7}}
 	counter := &stackNodeCounter{Session: m.sess}
 	m.sess = counter
 

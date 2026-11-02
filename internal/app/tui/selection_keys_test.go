@@ -30,7 +30,7 @@ func TestDrillClearsTheSelection(t *testing.T) {
 	m.refreshViewport()
 	l := lineOf(t, &m, "Model switched")
 	selectRows(t, &m, selPos{l, 0}, selPos{l, 79})
-	m.drillIntoSubagent(m.state.Subagents()[0])
+	m.drillIntoSubagent(m.state.Subagents()[0].ID)
 	if m.sel != nil {
 		t.Fatal("drilling in must clear the selection")
 	}

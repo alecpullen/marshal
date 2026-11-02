@@ -7,8 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
-	"marshal/internal/viewmodel"
 )
 
 func TestRenderVerifyFailureShowsCommandAndOutput(t *testing.T) {
@@ -196,7 +196,7 @@ func TestCopyingACutRunEventCopiesItsWholeBody(t *testing.T) {
 	m := newTestModel(t)
 	key := thousandLineRunEvent(t, &m)
 
-	got := m.nodeCopyText(viewmodel.NodeID{Kind: viewmodel.KindRunEvent, Key: key})
+	got := m.nodeCopyText(nodeID{Kind: acpwire.KindRunEvent, Key: key})
 	if !strings.Contains(got, "line 1000") {
 		t.Fatalf("the copy must hold the whole body, got %d bytes:\n%s", len(got), got)
 	}

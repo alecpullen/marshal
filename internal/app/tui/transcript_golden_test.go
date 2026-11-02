@@ -726,7 +726,7 @@ func buildLiveExpanded(t *testing.T, clk *goldenClock, st *session.State, m *Mod
 	buildLive(t, clk, st, m)
 	for _, atc := range st.ActiveToolCalls() {
 		if atc.ToolCallID == "c1" || atc.ToolCallID == "c3" {
-			m.toggleExpanded(viewmodel.ActiveToolID(atc))
+			m.toggleExpanded(activeNodeID(atc))
 		}
 	}
 }

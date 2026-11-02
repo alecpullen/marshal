@@ -13,7 +13,7 @@ import (
 	"marshal/internal/app/tui/glyph"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/viewmodel"
+	"marshal/internal/strutil"
 )
 
 // The spine ties a beat's calls to the narration above them. Each row hangs
@@ -53,7 +53,7 @@ func callResult(t *acpwire.WireTool, c acpwire.WireCall) string {
 	case c.Error != "":
 		parts = append(parts, firstLine(c.Error))
 		style = errorStyle()
-	case viewmodel.IsShellFamily(t.Name) && c.ExitCode != nil && c.KilledReason == "":
+	case isShellFamily(t.Name) && c.ExitCode != nil && c.KilledReason == "":
 		parts = append(parts, fmt.Sprintf("exit %d", *c.ExitCode))
 		if c.DurationMs > 0 {
 			parts = append(parts, formatElapsed(time.Duration(c.DurationMs)*time.Millisecond))
@@ -67,7 +67,7 @@ func callResult(t *acpwire.WireTool, c acpwire.WireCall) string {
 		started := lipgloss.NewStyle().Foreground(theme.Current().StatusInfo).Render(glyph.Job+" "+c.JobID) +
 			mutedStyle().Render(" started")
 		if len(parts) > 0 {
-			return mutedStyle().Render(viewmodel.ScrubText(strings.Join(parts, dimSeparator))+dimSeparator) + started
+			return mutedStyle().Render(strutil.ScrubText(strings.Join(parts, dimSeparator))+dimSeparator) + started
 		}
 		return started
 	default:
@@ -75,7 +75,7 @@ func callResult(t *acpwire.WireTool, c acpwire.WireCall) string {
 			started := lipgloss.NewStyle().Foreground(theme.Current().AccentSecondary).Render(fmt.Sprintf("%s #%d", glyph.Agent, t.SubagentID)) +
 				mutedStyle().Render(" started")
 			if len(parts) > 0 {
-				return mutedStyle().Render(viewmodel.ScrubText(strings.Join(parts, dimSeparator))+dimSeparator) + started
+				return mutedStyle().Render(strutil.ScrubText(strings.Join(parts, dimSeparator))+dimSeparator) + started
 			}
 			return started
 		}
@@ -83,8 +83,13 @@ func callResult(t *acpwire.WireTool, c acpwire.WireCall) string {
 			parts = append(parts, c.SummaryLine)
 		}
 	}
-	return style.Render(viewmodel.ScrubText(strings.Join(parts, dimSeparator)))
+	return style.Render(strutil.ScrubText(strings.Join(parts, dimSeparator)))
 }
+
+// isShellFamily reports whether a tool's subject is a command line: the same
+// set as viewmodel.IsShellFamily, which TestShellFamilyMatchesTheProjection
+// keeps equal.
+func isShellFamily(name string) bool { return name == "shell.run" || name == "test.run" }
 
 // spineHead lays out a row's first line in w cells: the verb in its column,
 // the subject truncated to what the result leaves, and the styled result
@@ -167,9 +172,6 @@ func failedTail(lines []string, w int) []string {
 	return out
 }
 
-// failedTailLines is how many output lines a failed row shows collapsed.
-const failedTailLines = viewmodel.FailedTailLines
-
 // renderGroupRow is a merged run of same-tool calls: their subjects on one
 // line and the count as the result. Expanded, one line per call follows with
 // its subject and summary.
@@ -239,13 +241,13 @@ func renderActiveCallRow(t *acpwire.WireTool, c *stepRenderCtx, expanded bool, w
 	b.WriteString(spineHead(t.Verb, r.Subject, result, w) + "\n")
 	dw := max(w-verbWidth, 1)
 	var lines []string
-	if viewmodel.IsShellFamily(t.Name) {
+	if isShellFamily(t.Name) {
 		if iso := sandboxIsolationText(c.sandbox, c.allowNetwork); iso != "" {
 			lines = append(lines, mutedStyle().Render(ansi.Truncate(iso, dw, "…")))
 		}
 	}
 	if ptr == "" && r.Output != "" {
-		out := strings.Split(strings.TrimRight(viewmodel.ScrubBlock(r.Output), "\n"), "\n")
+		out := strings.Split(strings.TrimRight(strutil.ScrubBlock(r.Output), "\n"), "\n")
 		if !expanded && len(out) > liveTailLines {
 			out = out[len(out)-liveTailLines:]
 		}
@@ -288,7 +290,7 @@ func renderPlanRow(p *acpwire.WirePlan, w int) string {
 	pos, text := fmt.Sprintf("%d/%d", p.Done, p.Total), ""
 	switch {
 	case p.Active > 0:
-		pos, text = fmt.Sprintf("%d/%d", p.Active, p.Total), viewmodel.ScrubText(oneLine(p.ActiveText))
+		pos, text = fmt.Sprintf("%d/%d", p.Active, p.Total), strutil.ScrubText(oneLine(p.ActiveText))
 	case p.Done == p.Total:
 		text = "done"
 	}

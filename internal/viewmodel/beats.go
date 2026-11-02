@@ -2,11 +2,6 @@ package viewmodel
 
 import "time"
 
-// BeatRowCap is how many rows a beat shows before older ones collapse into a
-// "+N earlier calls" line. A model that rarely narrates can pile dozens of
-// calls into one beat; the live tail is what matters while watching.
-const BeatRowCap = 8
-
 // mergeBeats folds each narrationless step into the beat directly before it,
 // when the same actor produced both and it did not move to a different todo.
 // Any other block between them (a message, a run event, a turn-level card)

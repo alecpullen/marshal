@@ -1,8 +1,6 @@
 package viewmodel
 
 import (
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -130,25 +128,5 @@ func TestReportHeadlineStripsAHeading(t *testing.T) {
 	}
 	if got := ReportHeadline("#3 done"); got != "#3 done" {
 		t.Errorf("ReportHeadline = %q, want the number kept", got)
-	}
-}
-
-func TestReportTailPutsFailuresFirst(t *testing.T) {
-	lines := make([]string, 30)
-	for i := range lines {
-		lines[i] = fmt.Sprintf("line %d", i)
-	}
-	lines[5] = "--- FAIL: TestA"
-	lines[20] = "--- FAIL: TestB"
-	got := ReportTail(strings.Join(lines, "\n"))
-	if len(got) != ReportTailLines {
-		t.Fatalf("lines = %d, want %d", len(got), ReportTailLines)
-	}
-	if got[0] != "--- FAIL: TestA" || got[1] != "--- FAIL: TestB" {
-		t.Fatalf("failures first: %q", got[:2])
-	}
-	// The rest are the last 18 lines that are not failures, in order.
-	if got[2] != "line 11" || got[len(got)-1] != "line 29" {
-		t.Fatalf("tail = %q", got[2:])
 	}
 }

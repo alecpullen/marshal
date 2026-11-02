@@ -160,7 +160,7 @@ func TestNilChildCardCannotDrillIn(t *testing.T) {
 	if len(views) != 1 {
 		t.Fatalf("registered subagents = %d, want 1", len(views))
 	}
-	m.drillIntoSubagent(views[0])
+	m.drillIntoSubagent(views[0].ID)
 	if len(m.viewStack) != 0 {
 		t.Fatal("nil-Child card must not be pushed onto the view stack")
 	}
@@ -177,7 +177,7 @@ func TestSheetDataChildScopedDuringDrillIn(t *testing.T) {
 	child.LogToolCall(registry.AuditEvent{ToolName: "zchild-only-probe"})
 	m.state.RegisterSubagent("explore repo", child)
 	m.state.LogToolCall(registry.AuditEvent{ToolName: "zparent-only-probe"})
-	m.drillIntoSubagent(m.state.Subagents()[0])
+	m.drillIntoSubagent(m.state.Subagents()[0].ID)
 	if len(m.viewStack) != 1 {
 		t.Fatalf("viewStack len = %d, want 1 after drill-in", len(m.viewStack))
 	}
@@ -202,7 +202,7 @@ func TestChildSheetDataLeavesOutTheRunProgress(t *testing.T) {
 	if got := m.sheetDataFor().Swarm.Goal; got != "ship it" {
 		t.Fatalf("Swarm.Goal = %q before the drill-in, want %q", got, "ship it")
 	}
-	m.drillIntoSubagent(m.state.Subagents()[0])
+	m.drillIntoSubagent(m.state.Subagents()[0].ID)
 	if got := m.sheetDataFor().Swarm.Goal; got != "" {
 		t.Errorf("Swarm.Goal = %q during the drill-in, want empty", got)
 	}

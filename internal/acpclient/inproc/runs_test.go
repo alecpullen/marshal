@@ -67,7 +67,8 @@ func TestStatusCarriesSubagentViews(t *testing.T) {
 	running := newState(t, "child-1")
 	running.AddMessage(session.RoleAssistant, "**Reading** the config. Then the tests.", session.ContentTypeNarration)
 	first := state.RegisterSubagentWithMeta("scout", running, meta)
-	second := state.RegisterSubagentWithMeta("reviewer", newState(t, "child-2"), meta)
+	finished := newState(t, "child-2")
+	second := state.RegisterSubagentWithMeta("reviewer", finished, meta)
 	state.FinishSubagent(second.ID, "done", nil)
 
 	got := sess.Status().Subagents
@@ -81,6 +82,11 @@ func TestStatusCarriesSubagentViews(t *testing.T) {
 			Provider: "provider-a",
 			Fallback: true,
 			Headline: "Reading the config.",
+			Drill: &acpwire.SubagentDrill{
+				ActiveRoot:  running.Workspace().ActiveRoot,
+				ActiveRoute: routeOf(running.ActiveRoute()),
+				Activity:    activityWire(running.Activity()),
+			},
 		},
 		{
 			ID:       second.ID,
@@ -90,10 +96,54 @@ func TestStatusCarriesSubagentViews(t *testing.T) {
 			Model:    "model-a",
 			Provider: "provider-a",
 			Fallback: true,
+			Drill: &acpwire.SubagentDrill{
+				ActiveRoot:  finished.Workspace().ActiveRoot,
+				ActiveRoute: routeOf(finished.ActiveRoute()),
+				Activity:    activityWire(finished.Activity()),
+			},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Subagents =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// TestSubagentViewsCarryTheDrillOnlyWhileTheChildIsKept pins that a view
+// carries a drill exactly when the session still holds the child's state: the
+// child's workspace root, active route and activity, or nothing at all.
+func TestSubagentViewsCarryTheDrillOnlyWhileTheChildIsKept(t *testing.T) {
+	state := newState(t, "s1")
+	_, sess := New(Deps{State: state})
+
+	child := newState(t, "child-1")
+	child.SetWorkspace(session.Workspace{ActiveRoot: "/repo/wt"})
+	child.SetActiveRoute(session.RouteInfo{Provider: "p-child", Model: "m-child"})
+	child.SetActivity(session.Activity{
+		Kind:      session.ActivityReconnecting,
+		Label:     "retrying",
+		StartedAt: time.Unix(100, 0),
+	})
+	state.RegisterSubagent("scout", child)
+	state.RegisterSubagent("card", nil)
+
+	got := sess.Status().Subagents
+	if len(got) != 2 {
+		t.Fatalf("Subagents = %+v, want 2 views", got)
+	}
+	want := &acpwire.SubagentDrill{
+		ActiveRoot:  "/repo/wt",
+		ActiveRoute: acpwire.Route{Provider: "p-child", Model: "m-child"},
+		Activity: acpwire.Activity{
+			Kind:      string(session.ActivityReconnecting),
+			Label:     "retrying",
+			StartedAt: 100000,
+		},
+	}
+	if !reflect.DeepEqual(got[0].Drill, want) {
+		t.Errorf("Subagents[0].Drill = %+v, want %+v", got[0].Drill, want)
+	}
+	if got[1].Drill != nil {
+		t.Errorf("Subagents[1].Drill = %+v, want nil for a nil child", got[1].Drill)
 	}
 }
 

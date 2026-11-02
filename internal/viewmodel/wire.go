@@ -8,23 +8,24 @@ import (
 
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/strutil"
 	"marshal/internal/tools/registry"
 )
 
 // ProjectBand is the band as a wire node. Its ID is fixed so every patch
 // updates the same node rather than accumulating copies.
 func ProjectBand(b BandInfo) acpwire.WireNode {
-	wb := &acpwire.WireBand{Todos: b.Todos, Done: b.Done, Total: b.Total, Active: ScrubText(b.Active), Stale: b.Stale,
+	wb := &acpwire.WireBand{Todos: b.Todos, Done: b.Done, Total: b.Total, Active: strutil.ScrubText(b.Active), Stale: b.Stale,
 		StaleAgeMs: b.StaleAge.Milliseconds(), StaleSince: ms(b.StaleSince)}
 	for _, n := range b.Next {
-		wb.Next = append(wb.Next, ScrubText(n))
+		wb.Next = append(wb.Next, strutil.ScrubText(n))
 	}
 	for _, t := range b.Tasks {
-		wb.Tasks = append(wb.Tasks, acpwire.WireTask{ID: t.ID, Content: ScrubText(t.Content), Status: t.Status,
+		wb.Tasks = append(wb.Tasks, acpwire.WireTask{ID: t.ID, Content: strutil.ScrubText(t.Content), Status: t.Status,
 			StartedAt: ms(t.StartedAt), CompletedAt: ms(t.CompletedAt), Steps: t.Steps, WorkMs: t.Work.Milliseconds(), Ref: t.First.Key})
 	}
 	for _, e := range b.Entities {
-		wb.Entities = append(wb.Entities, acpwire.WireBandEntity{Ref: e.Ref.Key, Label: ScrubText(e.Label), Detail: ScrubText(e.Detail), StartedAt: ms(e.Started)})
+		wb.Entities = append(wb.Entities, acpwire.WireBandEntity{Ref: e.Ref.Key, Label: strutil.ScrubText(e.Label), Detail: strutil.ScrubText(e.Detail), StartedAt: ms(e.Started)})
 	}
 	return acpwire.WireNode{ID: acpwire.BandID, Kind: acpwire.KindBand, Band: wb}
 }
@@ -109,7 +110,7 @@ func wireNode(n *Node, workdir string) acpwire.WireNode {
 	case n.PlanUpdate != nil:
 		p := n.PlanUpdate
 		w.Plan = &acpwire.WirePlan{Status: p.Status, Done: p.Done(), Total: p.Total(), Active: p.Active,
-			ActiveText: ScrubText(p.ActiveText), Cleared: p.Cleared}
+			ActiveText: strutil.ScrubText(p.ActiveText), Cleared: p.Cleared}
 	case n.Active != nil:
 		w.Tool = wireActive(n.Active)
 	case len(n.Tools) > 0:
@@ -139,13 +140,13 @@ func wireStep(n *Node) *acpwire.WireStep {
 		StartedAt: ms(st.StartedAt), EndedAt: ms(st.EndedAt),
 	}
 	for _, t := range si.Thinking {
-		ws.Thoughts = append(ws.Thoughts, acpwire.WireThought{Text: ScrubBlock(t.Text), DurationMs: t.Duration.Milliseconds()})
+		ws.Thoughts = append(ws.Thoughts, acpwire.WireThought{Text: strutil.ScrubBlock(t.Text), DurationMs: t.Duration.Milliseconds()})
 	}
 	for _, m := range si.Narration {
 		ws.Narration = append(ws.Narration, strings.TrimSpace(m.Content))
 	}
 	if l := si.Todo; l != nil {
-		ws.Todo = &acpwire.WireTodoLabel{ID: l.ID, Index: l.Index, Total: l.Total, Content: ScrubText(l.Content)}
+		ws.Todo = &acpwire.WireTodoLabel{ID: l.ID, Index: l.Index, Total: l.Total, Content: strutil.ScrubText(l.Content)}
 	}
 	return ws
 }
@@ -154,25 +155,25 @@ func wireTools(evs []registry.AuditEvent, workdir string) *acpwire.WireTool {
 	wt := &acpwire.WireTool{Name: evs[0].ToolName, Display: DisplayToolName(evs[0].ToolName), Verb: CallVerb(evs[0].ToolName)}
 	for _, ev := range evs {
 		c := acpwire.WireCall{
-			CallID: ev.ToolCallID, Target: ScrubText(ToolTarget(ev)), Summary: ScrubText(DisplaySummary(ev)),
-			Error: ScrubBlock(ev.Error), ExitCode: ev.CommandExitCode, Failed: EventFailed(ev),
+			CallID: ev.ToolCallID, Target: strutil.ScrubText(ToolTarget(ev)), Summary: strutil.ScrubText(DisplaySummary(ev)),
+			Error: strutil.ScrubBlock(ev.Error), ExitCode: ev.CommandExitCode, Failed: EventFailed(ev),
 			Approval: string(ev.Approval), Risk: string(ev.Risk), Role: ev.AgentRole,
 			DurationMs: ev.Duration.Milliseconds(), At: ms(ev.Timestamp),
 			Subject: CallSubject(ev, workdir), SummaryLine: SummaryLine(ev), DiffStat: CallDiffStat(ev),
-			HookHint: HookHint(ev.Hooks), KilledReason: ScrubText(ev.Sandbox.KilledReason), JobID: JobStartID(ev),
+			HookHint: HookHint(ev.Hooks), KilledReason: strutil.ScrubText(ev.Sandbox.KilledReason), JobID: JobStartID(ev),
 		}
 		if EventFailed(ev) {
 			c.Tail = FailedTail(ev)
 		}
 		for _, f := range ev.FilesChanged {
-			c.Files = append(c.Files, ScrubText(f))
+			c.Files = append(c.Files, strutil.ScrubText(f))
 		}
 		var cut1, cut2 bool
 		c.Args, cut1 = capText(string(ev.Args))
 		c.Output, cut2 = capText(ev.ResultContent)
 		c.Truncated = cut1 || cut2
 		if ev.Notice != nil {
-			c.Notice = ScrubText(ev.Notice.Text)
+			c.Notice = strutil.ScrubText(ev.Notice.Text)
 		}
 		wt.Calls = append(wt.Calls, c)
 	}
@@ -205,7 +206,7 @@ func wireItem(w *acpwire.WireNode, it *session.TranscriptItem) {
 			Truncated: cut,
 		}
 	case it.Thinking != nil:
-		w.Thinking = &acpwire.WireThinking{Text: ScrubBlock(it.Thinking.Text), DurationMs: it.Thinking.Duration.Milliseconds()}
+		w.Thinking = &acpwire.WireThinking{Text: strutil.ScrubBlock(it.Thinking.Text), DurationMs: it.Thinking.Duration.Milliseconds()}
 	case it.RunEvent != nil:
 		e := it.RunEvent
 		wr := &acpwire.WireRunEvent{Kind: runEventKind(e.Kind), TaskN: e.TaskN, Title: e.Title, Detail: e.Detail,

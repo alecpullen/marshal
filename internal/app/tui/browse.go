@@ -9,28 +9,26 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"marshal/internal/acpwire"
-	"marshal/internal/app/session"
 	"marshal/internal/app/tui/chrome"
 	"marshal/internal/app/tui/livebox"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/viewmodel"
 )
 
 // browseItem is one navigable node and the content lines it occupies. The
 // list is rebuilt on every full refresh from the rendered tree, so it always
 // matches what is on screen.
 type browseItem struct {
-	id         viewmodel.NodeID
-	kind       viewmodel.Kind
+	id         nodeID
+	kind       string
 	start, end int  // content lines, end exclusive
 	jump       bool // a stop for J/K: a task header or a turn's first node
 }
 
 // navigable reports whether browse mode can put the cursor on a node.
-func navigable(k viewmodel.Kind) bool {
+func navigable(k string) bool {
 	switch k {
-	case viewmodel.KindStep, viewmodel.KindTool, viewmodel.KindSubagent, viewmodel.KindMessage,
-		viewmodel.KindFinal, viewmodel.KindRunEvent, viewmodel.KindCompletion, viewmodel.KindPassthrough, viewmodel.KindReceipt:
+	case acpwire.KindStep, acpwire.KindTool, acpwire.KindSubagent, acpwire.KindMessage,
+		acpwire.KindFinal, acpwire.KindRunEvent, acpwire.KindCompletion, acpwire.KindPassthrough, acpwire.KindReceipt:
 		return true
 	}
 	return false
@@ -39,11 +37,11 @@ func navigable(k viewmodel.Kind) bool {
 // collectBrowse appends the navigable nodes of one rendered top-level block.
 // A beat that opens a todo is a J/K stop; its steps and their rows come from
 // the sub-regions the renderer recorded.
-func collectBrowse(items []browseItem, n *viewmodel.Node, out string, subs []subRegion, base int, turnFirst bool) []browseItem {
+func collectBrowse(items []browseItem, w *acpwire.WireNode, out string, subs []subRegion, base int, turnFirst bool) []browseItem {
 	lines := strings.Count(out, "\n")
-	if navigable(n.Kind) {
-		labelled := n.Kind == viewmodel.KindStep && n.Step != nil && n.Step.Todo != nil
-		items = append(items, browseItem{id: n.ID, kind: n.Kind, start: base, end: base + lines, jump: turnFirst || labelled})
+	if navigable(w.Kind) {
+		labelled := w.Kind == acpwire.KindStep && w.Step != nil && w.Step.Todo != nil
+		items = append(items, browseItem{id: wireID(w), kind: w.Kind, start: base, end: base + lines, jump: turnFirst || labelled})
 	}
 	for _, sr := range subs {
 		if !navigable(sr.id.Kind) {
@@ -60,7 +58,7 @@ func (m *Model) setBrowseItems(items []browseItem) {
 	// own no content lines (the box paints its own cursor), so start and end
 	// are -1 and they are never J/K stops.
 	for _, t := range m.boxLayout().Stops {
-		items = append(items, browseItem{id: boxStopID(t), kind: viewmodel.KindPassthrough, start: -1, end: -1})
+		items = append(items, browseItem{id: boxStopID(t), kind: acpwire.KindPassthrough, start: -1, end: -1})
 	}
 	m.browseItems = items
 	if !m.browsing {
@@ -101,7 +99,7 @@ func (m *Model) enterBrowse() bool {
 	}
 	pick := m.browseItems[len(m.browseItems)-1].id
 	for i := len(m.browseItems) - 1; i >= 0; i-- {
-		if m.browseItems[i].kind == viewmodel.KindStep {
+		if m.browseItems[i].kind == acpwire.KindStep {
 			pick = m.browseItems[i].id
 			break
 		}
@@ -262,13 +260,13 @@ func (m *Model) handleBrowseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) 
 	case "f":
 		// A box stop names its child by SourceID, so it is resolved before
 		// subagentAtCursor — which finds no node for a stop.
-		if v, ok := m.boxAgentAtCursor(); ok {
-			m.drillIntoSubagent(v)
+		if id, ok := m.boxAgentAtCursor(); ok {
+			m.drillIntoSubagent(id)
 			m.leaveBrowse()
 			return *m, nil, true
 		}
-		if v, ok := m.subagentAtCursor(); ok {
-			m.drillIntoSubagent(v)
+		if id, ok := m.subagentAtCursor(); ok {
+			m.drillIntoSubagent(id)
 			m.leaveBrowse()
 		}
 		return *m, nil, true
@@ -301,11 +299,11 @@ func isPrintable(msg tea.KeyPressMsg) bool {
 }
 
 // wireNode is id's wire form from the last refresh, or nil.
-func (m *Model) wireNode(id viewmodel.NodeID) *acpwire.WireNode { return m.wire[id.Key] }
+func (m *Model) wireNode(id nodeID) *acpwire.WireNode { return m.wire[id.Key] }
 
 // nodeDetail asks the session for id's detail, in the drilled-in subagent's
 // transcript while the view is drilled in. ok is false when the call fails.
-func (m *Model) nodeDetail(id viewmodel.NodeID) (acpwire.StackNodeResult, bool) {
+func (m *Model) nodeDetail(id nodeID) (acpwire.StackNodeResult, bool) {
 	res, err := m.sess.StackNode(m.ctx, id.Key, m.drilledSheetID())
 	if err != nil {
 		return acpwire.StackNodeResult{}, false
@@ -343,30 +341,37 @@ func (m *Model) boxStopAtCursor() (tea.Cmd, bool) {
 }
 
 // boxAgentAtCursor resolves the running subagent a box stop names: the item's
-// SourceID is the child session's subagent ID.
-func (m *Model) boxAgentAtCursor() (session.SubagentView, bool) {
+// SourceID is the child session's subagent ID. A drilled transcript shows a
+// child's stack, so the parent's box stops name no subagent to enter.
+func (m *Model) boxAgentAtCursor() (int64, bool) {
+	if len(m.viewStack) > 0 {
+		return 0, false
+	}
 	t, ok := boxTargetOf(m.cursor)
 	if !ok || t.Kind != livebox.TargetWork {
-		return session.SubagentView{}, false
+		return 0, false
 	}
 	it, found := m.workItemByKey(t.Key)
 	if !found || it.Kind != "agent" {
-		return session.SubagentView{}, false
+		return 0, false
 	}
 	id, err := strconv.ParseInt(it.SourceID, 10, 64)
 	if err != nil {
-		return session.SubagentView{}, false
+		return 0, false
 	}
-	v, ok := m.state.Subagent(id)
-	return v, ok && v.Child != nil
+	return id, m.drillable(id)
 }
 
 // subagentAtCursor resolves the subagent the cursor points at: the completion
 // event of a finished child, or the agent.run row that dispatched it.
-func (m *Model) subagentAtCursor() (session.SubagentView, bool) {
+func (m *Model) subagentAtCursor() (int64, bool) {
+	// A child dispatches no subagents, so a drilled transcript names none.
+	if len(m.viewStack) > 0 {
+		return 0, false
+	}
 	w := m.wireNode(m.cursor)
 	if w == nil {
-		return session.SubagentView{}, false
+		return 0, false
 	}
 	id := subagentIDOf(w)
 	if id == 0 && w.Kind == acpwire.KindStep {
@@ -377,11 +382,20 @@ func (m *Model) subagentAtCursor() (session.SubagentView, bool) {
 		}
 	}
 	if id == 0 {
-		return session.SubagentView{}, false
+		return 0, false
 	}
-	src, _ := m.transcriptSource()
-	v, ok := src.Subagent(id)
-	return v, ok && v.Child != nil
+	return id, m.drillable(id)
+}
+
+// drillable reports whether Status carries that subagent's state, which is
+// what makes it drillable.
+func (m *Model) drillable(id int64) bool {
+	for _, v := range m.sess.Status().Subagents {
+		if v.ID == id && v.Drill != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // subagentIDOf is the subagent a wire node names: a completion event for a
@@ -423,9 +437,9 @@ func (m *Model) paintCursor(content string) string {
 
 	// A step's own rows get the lighter overlay.
 	lighter := map[int]bool{}
-	if cur.kind == viewmodel.KindStep {
+	if cur.kind == acpwire.KindStep {
 		for _, it := range m.browseItems {
-			if (it.kind == viewmodel.KindTool || it.kind == viewmodel.KindSubagent) && it.start >= cur.start && it.end <= cur.end {
+			if (it.kind == acpwire.KindTool || it.kind == acpwire.KindSubagent) && it.start >= cur.start && it.end <= cur.end {
 				for l := it.start; l < it.end; l++ {
 					lighter[l] = true
 				}

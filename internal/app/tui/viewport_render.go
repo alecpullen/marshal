@@ -8,14 +8,13 @@ import (
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/app/tui/theme"
-	"marshal/internal/viewmodel"
 )
 
 // cachedNode is a rendered top-level block. It is reusable while the node's
 // payload version, the width, the model-side render inputs (sig) and the
 // theme are all unchanged.
 type cachedNode struct {
-	version  uint64
+	version  string
 	width    int
 	sig      uint64
 	themeSig uint64
@@ -26,32 +25,68 @@ type cachedNode struct {
 // nodeRenderHook is a test seam: when set it is told about every node the
 // renderer actually draws (a cache miss), so tests can assert that a spinner
 // tick re-renders only live nodes.
-var nodeRenderHook func(viewmodel.NodeID)
+var nodeRenderHook func(nodeID)
+
+// viewFacts is what the transcript's renderers read about the session the
+// view shows, beyond its tree: the session's own, or the drilled-in child's.
+type viewFacts struct {
+	workdir       string // the active root a completion row elides
+	routeModel    string // the route a beat's model is compared against
+	routeProvider string
+	reconnect     string              // the reconnect notice's label; "" when none
+	sandbox       session.SandboxInfo // a running shell row's isolation line
+	allowNetwork  bool
+}
+
+// viewFacts resolves what the transcript's renderers read about the session
+// the view shows, beyond its tree: the session's own, or the drilled-in
+// child's.
+func (m *Model) viewFacts() viewFacts {
+	st := m.sess.Status()
+	f := viewFacts{
+		allowNetwork: m.state.Config.Tools.Shell.AllowNetwork,
+	}
+	drilled, drilling := m.drilledInto()
+	if !drilling {
+		f.workdir = st.Workspace.ActiveRoot
+		f.routeModel, f.routeProvider = st.ActiveRoute.Model, st.ActiveRoute.Provider
+		if st.Activity.Kind == string(session.ActivityReconnecting) && st.Activity.Label != "" {
+			f.reconnect = st.Activity.Label
+		}
+		f.sandbox = m.state.SandboxInfo()
+		return f
+	}
+	// The stack holds the view as it was at drill-in; the facts follow the
+	// live view each refresh, falling back to that snapshot.
+	v := drilled
+	for _, cur := range st.Subagents {
+		if cur.ID == drilled.ID {
+			v = cur
+			break
+		}
+	}
+	if v.Drill != nil {
+		f.workdir = v.Drill.ActiveRoot
+		f.routeModel, f.routeProvider = v.Drill.ActiveRoute.Model, v.Drill.ActiveRoute.Provider
+		if v.Drill.Activity.Kind == string(session.ActivityReconnecting) && v.Drill.Activity.Label != "" {
+			f.reconnect = v.Drill.Activity.Label
+		}
+	}
+	// A drilled view reads no sandbox info: only the root state has it.
+	return f
+}
 
 // invalidateTranscript forces the next refreshViewport to rebuild the
 // viewport content. The render cache stays: it validates itself.
 func (m *Model) invalidateTranscript() { m.lastTranscriptHash = 0 }
 
-// transcriptSource resolves which session the transcript shows: the drilled
-// subagent's child while drilling into a real child, the orchestrator's
-// otherwise. The parent transcript is left untouched so popping back restores
-// it as-is.
-func (m *Model) transcriptSource() (state *session.State, drilling bool) {
-	state = m.state
-	drilled, ok := m.drilledInto()
-	if ok && drilled.Child != nil {
-		return drilled.Child, true
-	}
-	return state, false
-}
-
 // refreshViewport rebuilds the transcript viewport from the session.
 //
-// The transcript becomes a tree (viewmodel.Build), each top-level block is
-// rendered at most once per change and cached by node identity, and the
-// viewport content is only replaced when something a block depends on moved.
-// A spinner tick therefore costs rendering the live nodes, not the whole
-// history.
+// The tree is the session's Stack: the snapshot a client outside the process
+// receives. Each top-level block is rendered at most once per change and
+// cached by node identity, and the viewport content is only replaced when
+// something a block depends on moved. A spinner tick therefore costs
+// rendering the live nodes, not the whole history.
 func (m *Model) refreshViewport() {
 	// A selection cannot outlive the mouse that paints it, and neither
 	// can a press waiting for its release. The signature check below can
@@ -62,63 +97,53 @@ func (m *Model) refreshViewport() {
 		m.clearSelection()
 	}
 	m.updateViewportHeight()
-	transcriptState, _ := m.transcriptSource()
 
-	snap := viewmodel.SnapshotOf(transcriptState, m.busy, m.now())
-	turns := viewmodel.Build(snap)
-	// The band is derived here, once, so the now bar and the frame height
+	snap := m.sess.Stack(m.drilledSheetID(), m.busy)
+	m.wire = wireIndex(snap.Nodes)
+	// The band is derived once, here, so the now bar and the frame height
 	// both read the same value.
-	m.band = viewmodel.BandOf(snap, turns)
-	m.completions = completionIndex(turns)
-	m.rowBeat = rowBeats(turns)
+	m.band = bandOf(snap.Nodes)
+	m.pruneDetails()
+	m.completions = m.completionIndex(snap.Roots)
+	m.rowBeat = m.rowBeats(snap.Roots)
 	m.updateViewportHeight()
 
 	width := m.viewport.Width()
 	themeSig := themeFingerprint()
 	queued := m.sess.Status().Steering.Queue
 	notice, noticeUp := m.state.Notice()
-	reconnect := ""
-	if act := transcriptState.Activity(); act.Kind == session.ActivityReconnecting && act.Label != "" {
-		reconnect = act.Label
-	}
+	facts := m.viewFacts()
+	hasTurns := m.hasConversationTurns(snap.Roots)
 
 	// Cheap signature of everything the content depends on, taken before any
 	// rendering: if it matches the last refresh, nothing needs to move.
-	sig := m.contentSignature(turns, width, themeSig, queued, notice, noticeUp, reconnect, hasConversationTurns(snap.Items))
+	sig := m.contentSignature(snap.Roots, facts, width, themeSig, queued, notice, noticeUp, hasTurns)
 	if sig == m.lastTranscriptHash {
 		return
 	}
 	m.lastTranscriptHash = sig
 
-	workdir := transcriptState.Workspace().ActiveRoot
-	// The wire index is projected here, after the content-signature check, so
-	// a frame whose content did not change keeps the index it already built.
-	// It is what is on screen, which is what browse actions act on, and it is
-	// what the renderers below read.
-	m.wire = wireIndex(viewmodel.Project(turns, workdir))
-	m.pruneDetails()
-
 	toolFrame := m.activeSpinnerFrame(session.ActivityTool)
 	rctx := &stepRenderCtx{
 		expanded:      m.expandedUnder,
-		liveExpanded:  func(id viewmodel.NodeID) bool { return m.isToolExpanded(id, true) },
+		liveExpanded:  func(id nodeID) bool { return m.isToolExpanded(id, true) },
 		region:        m.regionView,
 		noteRows:      m.noteRegionRows,
-		callers:       func(id viewmodel.NodeID) []string { return m.callers[id] },
+		callers:       func(id nodeID) []string { return m.callers[id] },
 		detail:        m.wantDetail,
 		pointer:       workPointer(m.workSnapshot.Items),
 		spinner:       m.spinnerFrame,
 		toolSpinner:   toolFrame,
 		thinkSpinner:  m.activeSpinnerFrame(session.ActivityThinking),
 		now:           m.now(),
-		routeModel:    transcriptState.ActiveRoute().Model,
-		routeProvider: transcriptState.ActiveRoute().Provider,
-		sandbox:       transcriptState.SandboxInfo(),
-		allowNetwork:  transcriptState.Config.Tools.Shell.AllowNetwork,
-		workdir:       workdir,
+		routeModel:    facts.routeModel,
+		routeProvider: facts.routeProvider,
+		sandbox:       facts.sandbox,
+		allowNetwork:  facts.allowNetwork,
+		workdir:       facts.workdir,
 	}
 
-	blocks := make([]string, 0, len(snap.Items)+4)
+	blocks := make([]string, 0, len(m.wire)+4)
 	// tight[i] joins block i to the one before it with no blank line:
 	// back-to-back narration reads as one text.
 	var tight []bool
@@ -153,43 +178,46 @@ func (m *Model) refreshViewport() {
 		lineCursor += n + 1 // +1 for the blank separator between blocks
 	}
 
-	if !hasConversationTurns(snap.Items) {
+	if !hasTurns {
 		addBlock(blockKey{name: "banner"}, renderWelcomeBanner(width), nil, nil)
 	}
-	seen := map[viewmodel.NodeID]bool{}
+	seen := map[nodeID]bool{}
 	var bitems []browseItem
 	firstTurn := true
-	for _, turn := range turns {
+	for _, id := range snap.Roots {
+		turn := m.wire[id]
+		if turn == nil {
+			continue
+		}
 		// A separator precedes every user turn but the first, so the rule
 		// always reads as "a new turn starts here" rather than as a header.
-		if turn.ID.Key != "turn:pre" {
+		if turn.ID != "turn:pre" {
 			if !firstTurn {
-				addBlock(blockKey{name: "sep:" + turn.ID.Key}, renderTurnSeparator(width), nil, nil)
+				addBlock(blockKey{name: "sep:" + turn.ID}, renderTurnSeparator(width), nil, nil)
 			}
 			firstTurn = false
 		}
 		turnFirst := true
 		prevNarrationOnly := false
-		for _, node := range turn.Children {
-			collectSeen(node, seen)
-			out, subs := m.renderNode(node, rctx, width, themeSig)
+		for _, w := range m.wireChildren(turn) {
+			m.collectSeen(w, seen)
+			out, subs := m.renderNode(w, rctx, width, themeSig)
 			if out != "" {
-				w := m.wire[node.ID.Key]
-				isTight := prevNarrationOnly && w != nil && w.Kind == acpwire.KindStep && (w.Step == nil || w.Step.Todo == nil)
+				isTight := prevNarrationOnly && w.Kind == acpwire.KindStep && (w.Step == nil || w.Step.Todo == nil)
 				if isTight && len(blocks) > 0 {
 					lineCursor-- // no blank line before a tight block
 					nextTight = true
 				}
 				prevNarrationOnly = narrationOnly(w)
-				bitems = collectBrowse(bitems, node, out, subs, lineCursor, turnFirst)
+				bitems = collectBrowse(bitems, w, out, subs, lineCursor, turnFirst)
 				turnFirst = false
 			}
-			addBlock(blockKey{node: node.ID}, out, m.blockTarget(node, m.wire[node.ID.Key]), subs)
+			addBlock(blockKey{node: wireID(w)}, out, m.blockTarget(w), subs)
 			nextTight = false // never leaks onto a later block, even if this one was empty
 		}
 	}
-	if reconnect != "" {
-		addBlock(blockKey{name: "reconnect"}, renderReconnectNotice(reconnect, m.activeSpinnerFrame(session.ActivityReconnecting), width), nil, nil)
+	if facts.reconnect != "" {
+		addBlock(blockKey{name: "reconnect"}, renderReconnectNotice(facts.reconnect, m.activeSpinnerFrame(session.ActivityReconnecting), width), nil, nil)
 	}
 	if noticeUp {
 		addBlock(blockKey{name: "notice"}, renderNotice(notice, width), nil, nil)
@@ -235,33 +263,37 @@ func narrationOnly(w *acpwire.WireNode) bool {
 // renderNode renders one top-level block, from the cache when it is still
 // valid. Nodes that are live, or hold a live descendant, are never cached: their output changes with the clock and
 // the spinner.
-func (m *Model) renderNode(n *viewmodel.Node, c *stepRenderCtx, width int, themeSig uint64) (string, []subRegion) {
-	sig := m.nodeSig(n, c)
-	live := n.AnyLive()
+func (m *Model) renderNode(w *acpwire.WireNode, c *stepRenderCtx, width int, themeSig uint64) (string, []subRegion) {
+	if w == nil {
+		return "", nil
+	}
+	id := wireID(w)
+	sig := m.nodeSig(w, c)
+	live := m.anyLive(w)
 	if !live {
-		if hit, ok := m.renderCache[n.ID]; ok && hit.version == n.Version && hit.width == width && hit.sig == sig && hit.themeSig == themeSig {
+		if hit, ok := m.renderCache[id]; ok && hit.version == w.Version && hit.width == width && hit.sig == sig && hit.themeSig == themeSig {
 			return hit.out, hit.subs
 		}
 	}
 	if nodeRenderHook != nil {
-		nodeRenderHook(n.ID)
+		nodeRenderHook(id)
 	}
-	out, subs := m.drawNode(n, c, width)
+	out, subs := m.drawNode(w, c, width)
 	if !live {
 		if m.renderCache == nil {
-			m.renderCache = map[viewmodel.NodeID]cachedNode{}
+			m.renderCache = map[nodeID]cachedNode{}
 		}
-		m.renderCache[n.ID] = cachedNode{version: n.Version, width: width, sig: sig, themeSig: themeSig, out: out, subs: subs}
+		m.renderCache[id] = cachedNode{version: w.Version, width: width, sig: sig, themeSig: themeSig, out: out, subs: subs}
 	}
 	return out, subs
 }
 
 // drawNode is the renderer proper: it dispatches on what the wire node holds.
-func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string, []subRegion) {
-	w := m.wire[n.ID.Key]
+func (m *Model) drawNode(w *acpwire.WireNode, c *stepRenderCtx, width int) (string, []subRegion) {
 	if w == nil {
 		return "", nil
 	}
+	id := wireID(w)
 	switch {
 	case w.Receipt != nil:
 		return renderReceipt(w.Receipt, width), nil
@@ -269,14 +301,14 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 		return renderStep(w, m.wireChildren(w), c, width, m.expandAll)
 	case w.ID == acpwire.LiveThinkingID && w.Thinking != nil:
 		// Reasoning before any step has begun: the bounded live box on its own.
-		rv := m.regionView(viewmodel.LiveThinkingID)
+		rv := m.regionView(liveThinkingID)
 		box := renderThinkingBox(w.Thinking.Text, c.thinkSpinner, c.now.Sub(acpwire.Time(w.Thinking.StartedAt)), rv, width)
 		if cnt := strings.Count(box, "\n"); cnt > rv.minRows {
-			m.noteRegionRows(viewmodel.LiveThinkingID, cnt)
+			m.noteRegionRows(liveThinkingID, cnt)
 		}
 		return box, nil
 	case w.Completion != nil:
-		expanded := m.expandedUnder(n.ID, m.expandAll)
+		expanded := m.expandedUnder(id, m.expandAll)
 		// d is the completion's whole output when the wire cut it and the row
 		// is open. Until the answer lands the report draws the wire's text.
 		var d *acpwire.CompletionDetail
@@ -287,9 +319,9 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 		}
 		return renderCompletion(w.Completion, d, expanded, width, c.workdir), nil
 	case w.Tool != nil && w.Tool.Running != nil:
-		return renderActiveToolCall(w.Tool, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(n.ID, true), width), nil
+		return renderActiveToolCall(w.Tool, c.sandbox, c.allowNetwork, c.toolSpinner, c.now, m.isToolExpanded(id, true), width), nil
 	case w.Message != nil || w.Thinking != nil || w.RunEvent != nil:
-		expanded := m.expandedUnder(n.ID, m.expandAll)
+		expanded := m.expandedUnder(id, m.expandAll)
 		// d is the row's whole body or reasoning when the wire cut it and the
 		// row is open. Until the answer lands the row draws the wire's text.
 		var d *acpwire.NodeDetail
@@ -303,13 +335,27 @@ func (m *Model) drawNode(n *viewmodel.Node, c *stepRenderCtx, width int) (string
 	return "", nil
 }
 
-// wireIndex keeps tree's nodes by ID. The pointers address tree's slice.
-func wireIndex(tree acpwire.WireTree) map[string]*acpwire.WireNode {
-	out := make(map[string]*acpwire.WireNode, len(tree.Nodes))
-	for i := range tree.Nodes {
-		out[tree.Nodes[i].ID] = &tree.Nodes[i]
+// wireIndex keeps nodes by ID, leaving the band out. The pointers address
+// nodes' slice.
+func wireIndex(nodes []acpwire.WireNode) map[string]*acpwire.WireNode {
+	out := make(map[string]*acpwire.WireNode, len(nodes))
+	for i := range nodes {
+		if nodes[i].Kind == acpwire.KindBand {
+			continue
+		}
+		out[nodes[i].ID] = &nodes[i]
 	}
 	return out
+}
+
+// bandOf is the band node's payload, or the zero band when nodes hold none.
+func bandOf(nodes []acpwire.WireNode) acpwire.WireBand {
+	for i := range nodes {
+		if nodes[i].Kind == acpwire.KindBand && nodes[i].Band != nil {
+			return *nodes[i].Band
+		}
+	}
+	return acpwire.WireBand{}
 }
 
 // wireChildren is w's children's wire nodes, in order, skipping any the index
@@ -324,16 +370,33 @@ func (m *Model) wireChildren(w *acpwire.WireNode) []*acpwire.WireNode {
 	return out
 }
 
+// anyLive reports whether w or any node under it re-renders on every tick.
+func (m *Model) anyLive(w *acpwire.WireNode) bool {
+	if w.Live {
+		return true
+	}
+	for _, c := range m.wireChildren(w) {
+		if m.anyLive(c) {
+			return true
+		}
+	}
+	return false
+}
+
 // rowBeats maps every row inside a beat to that beat.
-func rowBeats(turns []*viewmodel.Node) map[viewmodel.NodeID]viewmodel.NodeID {
-	out := map[viewmodel.NodeID]viewmodel.NodeID{}
-	for _, turn := range turns {
-		for _, n := range turn.Children {
-			if n.Kind != viewmodel.KindStep {
+func (m *Model) rowBeats(roots []string) map[nodeID]nodeID {
+	out := map[nodeID]nodeID{}
+	for _, id := range roots {
+		turn := m.wire[id]
+		if turn == nil {
+			continue
+		}
+		for _, n := range m.wireChildren(turn) {
+			if n.Kind != acpwire.KindStep {
 				continue
 			}
-			for _, row := range n.Children {
-				out[row.ID] = n.ID
+			for _, row := range m.wireChildren(n) {
+				out[wireID(row)] = wireID(n)
 			}
 		}
 	}
@@ -342,77 +405,114 @@ func rowBeats(turns []*viewmodel.Node) map[viewmodel.NodeID]viewmodel.NodeID {
 
 // completionIndex indexes the completion events by WorkKey, so a held row can
 // take its outcome and summary from the same event history draws.
-func completionIndex(turns []*viewmodel.Node) map[string]completionRef {
+func (m *Model) completionIndex(roots []string) map[string]completionRef {
 	out := map[string]completionRef{}
-	var walk func(n *viewmodel.Node)
-	walk = func(n *viewmodel.Node) {
-		if n.Kind == viewmodel.KindCompletion && n.Completion != nil && n.Completion.WorkKey != "" {
-			out[n.Completion.WorkKey] = completionRef{node: n.ID, info: n.Completion}
+	var walk func(w *acpwire.WireNode)
+	walk = func(w *acpwire.WireNode) {
+		if w.Kind == acpwire.KindCompletion && w.Completion != nil && w.Completion.WorkKey != "" {
+			out[w.Completion.WorkKey] = completionRef{node: wireID(w), info: w.Completion}
 		}
-		for _, c := range n.Children {
+		for _, c := range m.wireChildren(w) {
 			walk(c)
 		}
 	}
-	for _, turn := range turns {
-		for _, n := range turn.Children {
-			walk(n)
+	for _, id := range roots {
+		turn := m.wire[id]
+		if turn == nil {
+			continue
+		}
+		for _, w := range m.wireChildren(turn) {
+			walk(w)
 		}
 	}
 	return out
 }
 
+// hasConversationTurns reports whether the tree holds a user turn or
+// assistant text, which ends the welcome banner (decision 10).
+func (m *Model) hasConversationTurns(roots []string) bool {
+	for _, id := range roots {
+		if id != "turn:pre" {
+			return true
+		}
+	}
+	var walk func(w *acpwire.WireNode) bool
+	walk = func(w *acpwire.WireNode) bool {
+		switch w.Kind {
+		case acpwire.KindMessage, acpwire.KindFinal:
+			if w.Message != nil && w.Message.Role == string(session.RoleAssistant) {
+				return true
+			}
+		case acpwire.KindStep:
+			if w.Step != nil && len(w.Step.Narration) > 0 {
+				return true
+			}
+		}
+		for _, c := range m.wireChildren(w) {
+			if walk(c) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, id := range roots {
+		turn := m.wire[id]
+		if turn == nil {
+			continue
+		}
+		for _, w := range m.wireChildren(turn) {
+			if walk(w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // blockTarget says what a click on a top-level block does. Steps, tools,
 // completion events and thinking rows toggle; plain messages are not
 // interactive.
-func (m *Model) blockTarget(n *viewmodel.Node, w *acpwire.WireNode) *clickTarget {
+func (m *Model) blockTarget(w *acpwire.WireNode) *clickTarget {
+	if w == nil {
+		return nil
+	}
 	switch {
-	case n.Kind == viewmodel.KindStep:
-		return &clickTarget{node: n.ID}
-	case n.ID.Key == acpwire.LiveThinkingID:
-		return &clickTarget{node: viewmodel.LiveThinkingID, isLiveRegion: true}
-	case n.Kind == viewmodel.KindTool:
-		return &clickTarget{node: n.ID}
-	case w != nil && w.Completion != nil:
-		return &clickTarget{node: n.ID}
-	case n.Kind == viewmodel.KindThinking:
-		return &clickTarget{node: n.ID}
-	case w != nil && w.Message != nil &&
+	case w.Kind == acpwire.KindStep:
+		return &clickTarget{node: wireID(w)}
+	case w.ID == acpwire.LiveThinkingID:
+		return &clickTarget{node: liveThinkingID, isLiveRegion: true}
+	case w.Kind == acpwire.KindTool:
+		return &clickTarget{node: wireID(w)}
+	case w.Completion != nil:
+		return &clickTarget{node: wireID(w)}
+	case w.Kind == acpwire.KindThinking:
+		return &clickTarget{node: wireID(w)}
+	case w.Message != nil &&
 		session.ContentType(w.Message.ContentType) == session.ContentTypeSkillAuto:
-		return &clickTarget{node: n.ID}
+		return &clickTarget{node: wireID(w)}
 	}
 	return nil
 }
 
-func (m *Model) regionView(id viewmodel.NodeID) regionView {
+func (m *Model) regionView(id nodeID) regionView {
 	return regionView{offset: m.regionOffset[id], minRows: m.regionRows[id]}
 }
 
-func (m *Model) noteRegionRows(id viewmodel.NodeID, rows int) {
+func (m *Model) noteRegionRows(id nodeID, rows int) {
 	if m.regionRows == nil {
-		m.regionRows = map[viewmodel.NodeID]int{}
+		m.regionRows = map[nodeID]int{}
 	}
 	if rows > m.regionRows[id] {
 		m.regionRows[id] = rows
 	}
 }
 
-// collectSeen records every node ID a block can address: the block, its rows,
-// and a step's thinking rows.
-func collectSeen(n *viewmodel.Node, seen map[viewmodel.NodeID]bool) {
-	seen[n.ID] = true
-	if n.Step != nil {
-		for _, t := range n.Step.Thinking {
-			seen[viewmodel.ThinkingID(t)] = true
-		}
-		if n.Step.LiveThinking != "" {
-			seen[viewmodel.LiveThinkingID] = true
-		}
-	}
-	for _, ev := range n.Tools {
-		seen[viewmodel.ToolID(ev)] = true
-	}
-	for _, ch := range n.Children {
-		collectSeen(ch, seen)
+// collectSeen records every node ID a block can address, the block and every
+// node under it.
+func (m *Model) collectSeen(w *acpwire.WireNode, seen map[nodeID]bool) {
+	seen[wireID(w)] = true
+	for _, c := range m.wireChildren(w) {
+		m.collectSeen(c, seen)
 	}
 }
 
@@ -421,7 +521,7 @@ func collectSeen(n *viewmodel.Node, seen map[viewmodel.NodeID]bool) {
 // Pruning callers is what makes rollback correct for free: a rewound audit
 // event leaves the transcript, so its blast-radius cache goes with it rather
 // than re-rendering stale callers at moved lines.
-func (m *Model) pruneRenderState(seen map[viewmodel.NodeID]bool) {
+func (m *Model) pruneRenderState(seen map[nodeID]bool) {
 	for k := range m.regionOffset {
 		if !seen[k] {
 			delete(m.regionOffset, k)
@@ -448,30 +548,31 @@ func (m *Model) pruneRenderState(seen map[viewmodel.NodeID]bool) {
 // nodeSig hashes the model-side inputs a node's rendering depends on beyond
 // its payload: expand overrides, caller lines, scroll offsets and high-water
 // marks, and the active route a step's meta compares against.
-func (m *Model) nodeSig(n *viewmodel.Node, c *stepRenderCtx) uint64 {
+func (m *Model) nodeSig(w *acpwire.WireNode, c *stepRenderCtx) uint64 {
 	h := fnv.New64a()
-	m.foldNodeSig(h, n, c)
+	m.foldNodeSig(h, w, c)
 	return h.Sum64()
 }
 
 type sigWriter interface{ Write([]byte) (int, error) }
 
-func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
+func (m *Model) foldNodeSig(h sigWriter, w *acpwire.WireNode, c *stepRenderCtx) {
 	// The node's own choice (if any) is what varies per node; inherited
 	// states come from ancestors, which this fold also covers.
-	ov, hasOv := m.ownExpanded(n.ID)
-	fmt.Fprintf(h, "%s|%v|%v|%d|%d|", n.ID.Key, hasOv, ov, m.regionOffset[n.ID], m.regionRows[n.ID])
+	id := wireID(w)
+	ov, hasOv := m.ownExpanded(id)
+	fmt.Fprintf(h, "%s|%s|l%v|%v|%v|%d|%d|", w.ID, w.Version, w.Live, hasOv, ov, m.regionOffset[id], m.regionRows[id])
 	fmt.Fprintf(h, "x%v|", m.expandAll)
-	if n.Kind == viewmodel.KindStep {
+	if w.Kind == acpwire.KindStep {
 		fmt.Fprintf(h, "%s|%s|", c.routeModel, c.routeProvider)
 	}
-	if lines, ok := m.callers[n.ID]; ok {
+	if lines, ok := m.callers[id]; ok {
 		fmt.Fprintf(h, "c%q|", lines)
 	}
-	if d, ok := m.details[n.ID.Key]; ok {
+	if d, ok := m.details[w.ID]; ok {
 		fmt.Fprintf(h, "d%q|%v|", d.version, d.failed)
 	}
-	for _, ch := range n.Children {
+	for _, ch := range m.wireChildren(w) {
 		m.foldNodeSig(h, ch, c)
 	}
 }
@@ -480,30 +581,23 @@ func (m *Model) foldNodeSig(h sigWriter, n *viewmodel.Node, c *stepRenderCtx) {
 // into one number. Live nodes also fold the spinner frame and the clock, so a
 // running session changes the signature each tick while a settled one does
 // not.
-func (m *Model) contentSignature(turns []*viewmodel.Node, width int, themeSig uint64, queued []string, notice session.Notice, noticeUp bool, reconnect string, hasTurns bool) uint64 {
+func (m *Model) contentSignature(roots []string, facts viewFacts, width int, themeSig uint64, queued []string, notice session.Notice, noticeUp bool, hasTurns bool) uint64 {
 	h := fnv.New64a()
 	fmt.Fprintf(h, "w%d|t%d|x%v|", width, themeSig, m.expandAll)
 	fmt.Fprintf(h, "turns%v|", hasTurns)
-	c := &stepRenderCtx{}
-	if st, _ := m.transcriptSource(); st != nil {
-		c.routeModel, c.routeProvider = st.ActiveRoute().Model, st.ActiveRoute().Provider
-	}
+	c := &stepRenderCtx{routeModel: facts.routeModel, routeProvider: facts.routeProvider}
 	live := false
-	var fold func(n *viewmodel.Node)
-	fold = func(n *viewmodel.Node) {
-		fmt.Fprintf(h, "%s|%d|", n.ID.Key, n.Version)
-		if n.Live {
-			live = true
+	for _, id := range roots {
+		fmt.Fprintf(h, "%s|", id)
+		turn := m.wire[id]
+		if turn == nil {
+			continue
 		}
-		for _, ch := range n.Children {
-			fold(ch)
-		}
-	}
-	for _, t := range turns {
-		fmt.Fprintf(h, "%s|", t.ID.Key)
-		for _, n := range t.Children {
-			m.foldNodeSig(h, n, c)
-			fold(n)
+		for _, w := range m.wireChildren(turn) {
+			m.foldNodeSig(h, w, c)
+			if m.anyLive(w) {
+				live = true
+			}
 		}
 	}
 	// Entries for nodes that are gone must be pruned, so their count counts.
@@ -512,7 +606,7 @@ func (m *Model) contentSignature(turns []*viewmodel.Node, width int, themeSig ui
 		fmt.Fprintf(h, "live|%s|%d|", m.spinnerFrame, m.now().Unix())
 	}
 	if m.browsing {
-		fmt.Fprintf(h, "browse|%d|%s|", m.cursor.Kind, m.cursor.Key)
+		fmt.Fprintf(h, "browse|%s|%s|", m.cursor.Kind, m.cursor.Key)
 	}
 	for _, q := range queued {
 		fmt.Fprintf(h, "q%q|", q)
@@ -520,8 +614,8 @@ func (m *Model) contentSignature(turns []*viewmodel.Node, width int, themeSig ui
 	if noticeUp {
 		fmt.Fprintf(h, "n%v|", notice)
 	}
-	if reconnect != "" {
-		fmt.Fprintf(h, "rc%s|%s|", reconnect, m.spinnerFrame)
+	if facts.reconnect != "" {
+		fmt.Fprintf(h, "rc%s|%s|", facts.reconnect, m.spinnerFrame)
 	}
 	return h.Sum64()
 }

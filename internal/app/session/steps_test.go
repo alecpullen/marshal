@@ -346,3 +346,36 @@ func TestContinuedNarrationStaysInTheTurnAndActor(t *testing.T) {
 		t.Fatalf("a new turn must not continue the previous turn's narration: %q", got)
 	}
 }
+
+func TestSubagentReportIsNotAUserTurn(t *testing.T) {
+	msg := &Message{
+		Role:        RoleUser,
+		Content:     "[subagent 1 finished] found two issues",
+		ContentType: ContentTypeSubagentReport,
+	}
+	if IsUserTurnMessage(msg) {
+		t.Fatal("a subagent report must not count as a user turn, or it emits a turn separator")
+	}
+}
+
+func TestWatchReportIsNotAUserTurn(t *testing.T) {
+	msg := &Message{
+		Role:        RoleUser,
+		Content:     "[watch build fired] kind=command",
+		ContentType: ContentTypeWatchReport,
+	}
+	if IsUserTurnMessage(msg) {
+		t.Fatal("a watch report must not count as a user turn, or it emits a turn separator")
+	}
+}
+
+func TestRealUserMessageStillIsAUserTurn(t *testing.T) {
+	msg := &Message{
+		Role:        RoleUser,
+		Content:     "fix the wheel handler",
+		ContentType: ContentTypePlain,
+	}
+	if !IsUserTurnMessage(msg) {
+		t.Fatal("an ordinary user message must still be a user turn")
+	}
+}

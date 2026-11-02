@@ -8,9 +8,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
 	"marshal/internal/tools/registry"
-	"marshal/internal/viewmodel"
 )
 
 func TestIsExpandedFollowsExpandAllUntilToggled(t *testing.T) {
@@ -63,8 +63,8 @@ func TestCtrlGClearsPerNodeChoices(t *testing.T) {
 
 func TestCtrlGClearsActiveToolChoices(t *testing.T) {
 	m := newTestModel(t)
-	keyA := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:a"}
-	keyB := viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:b"}
+	keyA := nodeID{Kind: acpwire.KindTool, Key: "tool:a"}
+	keyB := nodeID{Kind: acpwire.KindTool, Key: "tool:b"}
 	m.setExpanded(keyA, true)
 	m.setExpanded(keyB, true)
 	if !m.isToolExpanded(keyA, true) || !m.isToolExpanded(keyB, true) {
@@ -104,14 +104,14 @@ func TestExpandingABeatOpensItsRows(t *testing.T) {
 		t.Fatalf("rows start collapsed:\n%s", text)
 	}
 
-	beat := viewmodel.NodeID{Kind: viewmodel.KindStep, Key: "step:1"}
+	beat := nodeID{Kind: acpwire.KindStep, Key: "step:1"}
 	m.toggleExpanded(beat)
 	m.invalidateTranscript()
 	if text := viewText(&m); !strings.Contains(text, "alpha body") || !strings.Contains(text, "beta body") {
 		t.Fatalf("an expanded beat opens its rows:\n%s", text)
 	}
 
-	m.toggleExpanded(viewmodel.NodeID{Kind: viewmodel.KindTool, Key: "tool:1:a"})
+	m.toggleExpanded(nodeID{Kind: acpwire.KindTool, Key: "tool:1:a"})
 	m.invalidateTranscript()
 	if text := viewText(&m); strings.Contains(text, "alpha body") || !strings.Contains(text, "beta body") {
 		t.Fatalf("collapsing one row leaves the others open:\n%s", text)
@@ -138,7 +138,7 @@ func TestRefreshViewportShowsReasoningPerBeat(t *testing.T) {
 		t.Fatalf("expected both beats' reasoning collapsed by default, got: %s", content)
 	}
 
-	m.toggleExpanded(beatWithThinking(&m, ts1))
+	m.toggleExpanded(beatWithThinking(&m, m.state, ts1))
 	m.invalidateTranscript()
 	m.refreshViewport()
 
@@ -148,5 +148,33 @@ func TestRefreshViewportShowsReasoningPerBeat(t *testing.T) {
 	}
 	if strings.Contains(content, "reasoning two") {
 		t.Fatal("expected the other item to remain collapsed")
+	}
+}
+
+// A live tool row is one the wire says is running: a click or Enter acts on a
+// row on screen, so the last refresh's index is what it reads.
+func TestIsLiveToolNodeReadsTheWire(t *testing.T) {
+	m := newTestModel(t)
+	m.resize(100, 40)
+	m.state.AddMessage(session.RoleUser, "go", session.ContentTypePlain)
+	id := m.state.BeginStep(session.Actor{})
+	m.state.AddNarration(id, "Reading a.go, then running the suite.")
+	read := registry.AuditEvent{Timestamp: time.Unix(200, 0), ToolName: "file.read", StepID: id, ToolCallID: "read",
+		Args: []byte(`{"path":"a.go"}`), ResultSummary: "package a"}
+	m.state.LogToolCall(read)
+	atc := session.ActiveToolCall{Name: "shell.run", Args: "go test ./...", StepID: id, ToolCallID: "live", StartedAt: time.Unix(201, 0)}
+	m.state.SetActiveToolCall(atc)
+	m.busy, m.turnStartedAt = true, time.Now()
+	m.invalidateTranscript()
+	m.refreshViewport()
+
+	if !m.isLiveToolNode(activeNodeID(atc)) {
+		t.Fatalf("a running call's row is live: %+v", activeNodeID(atc))
+	}
+	if m.isLiveToolNode(toolNodeID(read)) {
+		t.Fatalf("a settled call's row is not live: %+v", toolNodeID(read))
+	}
+	if m.isLiveToolNode(nodeID{Kind: acpwire.KindStep, Key: activeNodeID(atc).Key}) {
+		t.Fatal("a step is not a tool row, whatever its key")
 	}
 }

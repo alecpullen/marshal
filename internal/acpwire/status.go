@@ -3,7 +3,7 @@ package acpwire
 // SessionStatus is what the status line, the footer and input gating read
 // about a session (C5).
 //
-// It arrives over several plans: plans 3 and 4 add the sandbox info, and plan
+// It arrives over several plans: plan 4 adds the sandbox info, and plan
 // 6 the current notice. The session ID is not here: Session.ID() carries it.
 // The start time is not here either: only the sheet reads it, so SessionSheet
 // carries it.

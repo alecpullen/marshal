@@ -1709,3 +1709,52 @@ before the TUI reads one, a card's rate is measured across both, so it
 averages over the longer window, where the pump delivered every event; and
 times lose their sub-millisecond part, so two progress observations within
 the same millisecond measure no rate.
+
+**Plan 5b (turn control), branch `p2-5b-turn-control`.** Added
+`acpwire.InteractionPatch` — `Mode`, `Auto` and `System`, each a nil-able
+field with `omitempty`, so revoking system access (`false`) and leaving it
+alone (`nil`) are different patches — and the two effort timing values
+`acpwire.EffortAppliesNextStep` and `EffortAppliesNextTurn`, which equal
+`session.EffortAppliesNextStep` and `session.EffortAppliesNextTurn`.
+
+`acpclient.Session` gains nine methods, each with its `Methods` row: `Steer`
+on `session/steer` (existing), `SetInteraction` on `session/set_mode`
+(existing) and `SetEffort` on `session/set_effort` (existing), plus six that
+are new in P3 — `PopSteering` on `session/steering_pop`, `ClearSteering` on
+`session/steering_clear`, `SetSudoUnlock` on `session/set_sudo_unlock`,
+`CancelSubagent` on `session/subagent_cancel`, `ClearFinishedRun` on
+`session/sdd_clear` and `TakeWatchResume` on `session/watch_resume_take`.
+
+The in-process adapter forwards each call to the state, adding no policy of
+its own: `Steer`, `PopSteering`, `ClearSteering`, `SetSudoUnlock`,
+`CancelSubagent`, `ClearFinishedRun` (progress then event log, the order the
+TUI's helper used) and `TakeWatchResume` reach `session.State` directly.
+`SetInteraction` and `SetEffort` go through two new `inproc.Deps` fields
+bound to `rt.SetInteraction` and `rt.SetSessionEffort` in `Run`'s `Deps`
+literal; each reads the runtime's current state, so the same `Deps` keep
+working after a swap, and a call without its setter fails with
+`errNoInteraction` or `errNoEffort`. `Status` now builds its interaction
+through `interactionOf`, which `SetInteraction` shares. A closed session
+refuses every call: the error-returning ones answer `CodeSessionClosed`, the
+bool-reporting ones report their zero values, and none of them touch the
+replaced state.
+
+The TUI makes all nine calls through the session: Enter while busy queues
+with `Steer`, Ctrl+X undrilled clears with `ClearSteering`, a follow-up pops
+with `PopSteering`, the drilled Ctrl+X stops with `CancelSubagent`, the next
+turn clears a finished run with `ClearFinishedRun`, the turn end takes the
+latch with `TakeWatchResume`, `/mode`, `/auto` and `/system` submit with
+`SetInteraction`, `/effort` and Alt+E with `SetEffort`, and `/system unlock`
+toggles with `SetSudoUnlock`. `tui.WithInteractionSetter`,
+`tui.WithSessionEffortSetter`, the two model fields behind them and `app`'s
+`accessTUIOptions` are deleted, along with the two "unavailable" notes they
+printed: production always wires both setters through `Deps`, so the TUI can
+no longer tell a missing setter from a failing one. The three idle resets
+(`handleAgentFinished` twice, `handlePlanAuthorFinished` once) stay until
+plans 5c and 5d move those turn ends agent side.
+
+T1b gains eight names, all at plan `5b`: `PushSteering`, `PopSteering`,
+`ClearSteering`, `CancelSubagent`, `ClearRunEvents`, `ClearSDDProgress`,
+`TakeWatchResume` and `SetSudoUnlockEnabled`. T1's allowlist did not change:
+every file this plan edits keeps its `marshal/internal/app/session` import
+for the system notes it still writes, which plan 6 moves.

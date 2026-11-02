@@ -17,6 +17,7 @@ import (
 	"marshal/internal/acpclient"
 	"marshal/internal/acpwire"
 	"marshal/internal/app/session"
+	"marshal/internal/interaction"
 	"marshal/internal/llm/schema"
 	"marshal/internal/pubsub"
 	"marshal/internal/repo/gitinfo"
@@ -57,6 +58,12 @@ type Deps struct {
 	// Work is the runtime's work service. Nil means the session serves no
 	// work: Work reports false, and the work calls fail.
 	Work viewmodel.WorkService
+
+	// SetInteraction and SetEffort are the runtime's interaction and effort
+	// setters. Each reads the runtime's current state, so the same Deps keep
+	// working after a swap. Without one, the matching Session call fails.
+	SetInteraction func(interaction.Patch) (interaction.State, error)
+	SetEffort      func(level string) (applies string, err error)
 }
 
 // ReferenceFinder resolves what references a symbol. ok is false when no
@@ -102,6 +109,11 @@ type Session struct {
 	work     viewmodel.WorkService
 	workSnap acpwire.WorkSnapshot
 	workConv string
+
+	// setInteraction and setEffort are the runtime's setters. Nil means the
+	// matching call fails.
+	setInteraction func(interaction.Patch) (interaction.State, error)
+	setEffort      func(string) (string, error)
 
 	// ctx bounds the event subscriptions; cancel releases them.
 	ctx    context.Context
@@ -197,12 +209,7 @@ func (s *Session) Status() acpwire.SessionStatus {
 			Provider: effort.Provider,
 			Model:    effort.Model,
 		},
-		Interaction: acpwire.Interaction{
-			Mode:     string(access.Mode),
-			Auto:     access.Auto,
-			System:   access.System,
-			Revision: access.Revision,
-		},
+		Interaction:     interactionOf(access),
 		SudoUnlock:      st.SudoUnlockEnabled(),
 		Trusted:         st.Trusted(),
 		HasBackup:       st.HasBackup(),
@@ -289,6 +296,16 @@ func (s *Session) SendNow(ctx context.Context, req acpwire.SendNowRequest) (acpw
 	s.absorbReceipt(receipt)
 	s.signal()
 	return viewmodel.SteeringReceiptOf(receipt), nil
+}
+
+// interactionOf is s on the wire. Status uses it too.
+func interactionOf(s interaction.State) acpwire.Interaction {
+	return acpwire.Interaction{
+		Mode:     string(s.Mode),
+		Auto:     s.Auto,
+		System:   s.System,
+		Revision: s.Revision,
+	}
 }
 
 // routeOf copies a session route onto the wire.

@@ -2830,6 +2830,8 @@ func Run(ctx context.Context, stdout io.Writer, opts ...Option) error {
 			ReferenceFinder: refFinder,
 			AccessRequest:   rt.AccessRequest,
 			ResolveAccess:   rt.ResolveAccess,
+			SetInteraction:  rt.SetInteraction,
+			SetEffort:       rt.SetSessionEffort,
 		}
 		if providerReady {
 			deps.Work = rt

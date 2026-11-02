@@ -216,4 +216,60 @@ type Session interface {
 	//
 	// ACP: session/work_stop (exists).
 	StopWork(ctx context.Context, taskKey, reason string) (acpwire.WorkStopResult, error)
+
+	// Steer queues text for the running turn to read at its next step. In
+	// process it queues even when no turn runs.
+	//
+	// ACP: session/steer (exists), with the queued delivery.
+	Steer(ctx context.Context, text string) error
+
+	// PopSteering removes and returns the oldest queued steering text. It
+	// reports false when the queue is empty, and on a closed session.
+	//
+	// ACP: session/steering_pop (new in P3).
+	PopSteering(ctx context.Context) (string, bool)
+
+	// ClearSteering drops the queued steering text. An accepted Send now
+	// request keeps the entry it covers.
+	//
+	// ACP: session/steering_clear (new in P3).
+	ClearSteering(ctx context.Context) error
+
+	// SetInteraction applies one interaction patch and returns the committed
+	// state. A nil field is left alone.
+	//
+	// ACP: session/set_mode (exists).
+	SetInteraction(ctx context.Context, patch acpwire.InteractionPatch) (acpwire.Interaction, error)
+
+	// SetEffort sets the session's effort override for the active route, or
+	// clears it for "", and returns when the change applies:
+	// EffortAppliesNextStep or EffortAppliesNextTurn.
+	//
+	// ACP: session/set_effort (exists).
+	SetEffort(ctx context.Context, level string) (string, error)
+
+	// SetSudoUnlock turns sudo's own timestamp grace on or off for the
+	// session. Status().SudoUnlock reports it.
+	//
+	// ACP: session/set_sudo_unlock (new in P3).
+	SetSudoUnlock(ctx context.Context, on bool) error
+
+	// CancelSubagent asks the running subagent with that ID to stop. It
+	// reports false when no running subagent has the ID, and on a closed
+	// session.
+	//
+	// ACP: session/subagent_cancel (new in P3).
+	CancelSubagent(ctx context.Context, subagentID int64) bool
+
+	// ClearFinishedRun clears a finished run's progress and its event log.
+	//
+	// ACP: session/sdd_clear (new in P3).
+	ClearFinishedRun(ctx context.Context) error
+
+	// TakeWatchResume takes the watch-resume latch: the watch a resume fire
+	// named when it landed too late for the turn that just ended. ok is false
+	// when the latch is not set, and on a closed session.
+	//
+	// ACP: session/watch_resume_take (new in P3).
+	TakeWatchResume(ctx context.Context) (name string, repeat bool, ok bool)
 }
